@@ -116,7 +116,7 @@ offscreen wgpu TextureTarget (RGBA8) on Ruffle's own wgpu/Vulkan device
         ▼  downcast renderer → WgpuRenderBackend::capture_frame() → CPU RGBA into SwfPlayer.pixel_buffer
 RGBA pixel buffer (cached; only re-emitted when `dirty`)
         │
-        ▼  byroredux::app_frame → texture_registry.update_rgba(ui_texture_handle, …)
+        ▼  byroredux::app_frame → texture_registry.update_rgba(layer.texture(), …), one per open layer
 queued pixels copied into the existing VkImage by the next frame submission
         │
         ▼  presentation pass: fullscreen tone-map triangle writes the swapchain
@@ -185,6 +185,7 @@ impl SwfPlayer {
     pub fn set_mouse_in_stage(&mut self, is_in_stage: bool);
     pub fn set_stage_transparent(&mut self);
     pub fn dimensions(&self) -> (u32, u32);
+    pub fn resize(&mut self, width: u32, height: u32) -> bool; // in place, Stage.onResize (GUI-REG-008)
     pub fn host_object_state(&self) -> ScaleformHostObjectState;
     pub fn current_frame(&self) -> Option<u16>;
     pub fn resource_loads(&self) -> &[ScaleformResourceLoad];
@@ -220,7 +221,7 @@ mismatch guard, which is a real check, but a caller that obtains the value by
 extracting the archive entry and running `ScaleformProfile::detect` itself is
 spending a second archive extraction and a second whole-stream inflate to
 answer this module's own detection with itself. `--menu` did exactly that until
-#3771 and now passes `None`, reading `UiManager::menu_profile()` afterward.
+#3771 and now passes `None`, reading `UiLayer::profile()` afterward.
 `load_swf_with_profile()` is the separate explicit-profile entry and keeps a
 plain `ScaleformProfile`. `Ba2Archive` and `BsaArchive` implement
 `ScaleformResourceProvider`; other overlay/mod stacks can implement the
@@ -282,12 +283,41 @@ drops from 150 passes per 150 ticks to 26.
 
 ## UiManager
 
+The open movies, bottom to top (M48 Phase 1, #6653). Each layer is one
+`SwfPlayer` with its menu name, the path it was loaded from, its visibility and
+the engine's texture handle for it; every visible layer ticks and renders to
+its own overlay texture, and the renderer draws the layers as consecutive
+instances of the UI quad, so each blends over the one below
+(`FrameInputs::ui_texture_handles`). Which layer receives input is the menu
+registry's decision (GUI-REG-009): the app hands it over with
+`set_input_owner` every frame.
+
 ```rust
+pub struct UiLayer { /* player, menu_name, path, visible, texture, id */ }
+
+impl UiLayer {
+    pub fn menu_name(&self) -> &str;             // canonical name (#4757)
+    pub fn path(&self) -> &str;                  // archive path / loose file it was loaded as
+    pub fn id(&self) -> u64;                     // new per installed player (#3772 latches)
+    pub fn visible(&self) -> bool;               // hud.off hides without closing
+    pub fn set_visible(&mut self, visible: bool);
+    pub fn texture(&self) -> Option<u32>;        // the engine's compositor handle
+    pub fn set_texture(&mut self, texture: Option<u32>);
+    pub fn profile(&self) -> ScaleformProfile;   // resolved profile (#3771)
+    pub fn host_bridge(&self) -> ScaleformHostBridge;
+    pub fn drain_host_calls(&self) -> Vec<ScaleformHostCall>;   // once/frame per layer (#2714)
+    pub fn dropped_host_calls(&self) -> u64;     // latched per layer id by the app (#2969 / #3772)
+    pub fn invoke_callback(
+        &mut self,
+        name: &str,
+        arguments: impl IntoIterator<Item = ScaleformValue>,
+    ) -> Option<ScaleformValue>;
+    pub fn render(&mut self) -> UiFrame<'_>;     // Fresh / Unchanged / Hidden (#2972)
+}
+
 pub struct UiManager {
-    player: Option<SwfPlayer>,  // None until a menu is loaded
-    pub visible: bool,
-    input_focused: bool,
-    pub menu_name: String,      // e.g. the SWF path / "startmenu"
+    layers: Vec<UiLayer>,          // bottom to top
+    input_owner: Option<String>,   // the layer that receives UiInputEvent
     pub width: u32,
     pub height: u32,
 }
@@ -307,62 +337,38 @@ impl UiManager {
         movie_path: &str,
         name: &str,
         profile: Option<ScaleformProfile>,   // None = let prepare_movie detect (#3771)
-    ) -> anyhow::Result<()>;
-    pub fn tick(&mut self, dt: f64);             // forwards to the active player when visible
-    pub fn render(&mut self) -> UiFrame<'_>;     // Fresh / Unchanged / Hidden (#2972)
-    pub fn host_bridge(&self) -> Option<ScaleformHostBridge>;
-    pub fn drain_host_calls(&self) -> Vec<ScaleformHostCall>;   // engine-consumed ActionScript calls, once/frame beside tick (#2714)
-    pub fn dropped_host_calls(&self) -> u64;     // latches per active menu — a decrease means a menu change (#2969)
-    pub fn invoke_callback(
-        &mut self,
-        name: &str,
-        arguments: impl IntoIterator<Item = ScaleformValue>,
-    ) -> Option<ScaleformValue>;
+    ) -> anyhow::Result<()>;              // pushes a layer on top; a same-named menu is replaced in place
+    pub fn close(&mut self, name: &str) -> Option<UiLayer>;   // GUI-REG-007; caller releases the texture
+    pub fn layers(&self) -> &[UiLayer];
+    pub fn layer_mut(&mut self, name: &str) -> Option<&mut UiLayer>;
+    pub fn tick(&mut self, dt: f64);             // every visible layer
+    pub fn resize(&mut self, width: u32, height: u32) -> bool; // GUI-REG-008, every layer
+    pub fn device_count() -> u32;                // GUI-REG-005: 1 once any movie exists (#2733)
+    pub fn set_input_owner(&mut self, owner: Option<&str>) -> bool; // FocusLost / FocusGained once
     pub fn has_input_focus(&self) -> bool;
-    pub fn set_input_focus(&mut self, focused: bool) -> bool;
-    pub fn handle_input(&mut self, event: UiInputEvent) -> bool;
+    pub fn handle_input(&mut self, event: UiInputEvent) -> bool;    // to the input owner only
     pub fn set_mouse_in_stage(&mut self, is_in_stage: bool) -> bool;
 }
 ```
 
-**No `close()` method** — deleted under #2723. There is no way to
-explicitly unload a menu today short of loading a different one or
-dropping the `UiManager` (or its `Option<UiManager>` slot) entirely.
-
 `UiManager` is **deliberately not** an ECS `World` resource — Ruffle's
 `Player` owns non-`Send`/`Sync` backends (video, audio), so the manager
-is held directly on the main `App` struct (`ui_manager: Option<UiManager>`
-in `byroredux/src/main.rs`) alongside the `VulkanContext`, and ticked /
-rendered inline in the per-frame loop rather than through the scheduler.
+is held directly on the main `App` struct (`App::ui.manager`) alongside the
+`VulkanContext`, and ticked / rendered inline in the per-frame loop rather than
+through the scheduler. What the stack holds reaches the rest of the engine
+through the menu registry (below), which is a `World` resource.
 
-In the current loose-SWF demo (`--swf path.swf`) there is exactly one
-optional player sized to the swapchain extent. Future Bethesda menu
-integration will need to manage multiple active menus (one per layer);
-that compositing happens inside Ruffle, so the engine-side change is
-about which SWF(s) `UiManager` drives, not about stacking Vulkan quads.
-
-**The overlay viewport is fixed at load time, not live-resized** (#2723 /
-SAFEUI-07). `UiManager::new(w, h)` captures the swapchain extent once;
-`SwfPlayer::from_movie` bakes that size into both Ruffle's viewport and the
-offscreen `TextureTarget`. Nothing currently drives Ruffle's
-`set_viewport_dimensions` or re-registers the UI texture when
-`WindowEvent::Resized` recreates the swapchain (`app_events.rs`), so a
-window resize while a menu is loaded stretches the last-rendered frame to
-the new aspect ratio instead of re-rendering at it. This is confirmed
-visual-only, not a Vulkan hazard: `update_rgba` is always called with the
-menu's original `width`/`height`, matching both the registered texture and
-`pixel_buffer`'s size, so `Texture::from_rgba`'s length assertion cannot
-fire and no staging copy can over-read. Making the overlay track a resize
-needs a real teardown/rebuild of the `SwfPlayer`'s renderer (there is no
-in-place resize path on `TextureTarget`/`WgpuRenderBackend` today) plus a
-texture re-registration call from `main.rs`'s resize handler — tracked as
-follow-up work, not implemented here.
-
-> **Superseded premise (#6643).** At the pinned Ruffle revision
-> `Player::set_viewport_dimensions` does resize in place (it reaches
-> `TextureTarget::resize`), so no teardown is needed; see the Resize part of
-> [Menu registry, stack and path access](#menu-registry-stack-and-path-access-m48-design-phase-0).
-> The stretch described above is still the behaviour today until Phase 1 wires it.
+**Resize (GUI-REG-008).** The app reads the swapchain extent once a frame
+(`App::sync_ui_extent`, before the overlay ticks) and resizes every layer
+(`SwfPlayer::resize` → `Player::set_viewport_dimensions` → `TextureTarget::resize`,
+which re-lays the stage and raises `Stage.onResize` under `noScale`) and the
+MenuXml HUD (`MenuXmlHud::resize`: new screen traits, the engine-anchored meters
+and sneak text re-placed, its texture replaced at the new size). The next upload
+of each layer goes through `update_rgba`'s extent-change path (new image, old one
+deferred, same handle). This retires #2723's documented stretch: its premise
+("no in-place resize path") did not hold at the pinned Ruffle (#6643). Pinned by
+`a_resized_player_renders_at_the_new_extent_on_the_shared_device` (GPU) and
+`a_viewport_resize_reaches_the_movie_as_stage_on_resize` (`crates/ui/tests/avm1_path_access_probe.rs`).
 
 ## Vulkan integration
 
@@ -432,11 +438,13 @@ rebuilds — with:
 There is no bespoke *update_ui_texture* entry point; the UI texture is an
 ordinary entry in the renderer's `TextureRegistry`:
 
-- On `--swf` load (`byroredux/src/scene.rs`) a transparent-black RGBA
-  buffer is registered with `texture_registry.register_rgba(...)`, yielding
-  a `ui_texture_handle` stored on the `App`.
-- Each frame, when `UiManager::render()` returns a fresh buffer, the main
-  loop calls `texture_registry.update_rgba(handle, w, h, pixels)`.
+- When a movie layer loads (`--swf` / `--menu` in `byroredux/src/scene.rs`,
+  `--hud`, `ui.open`) a transparent-black RGBA buffer is registered with
+  `texture_registry.register_rgba(...)` and the handle is stored on the layer
+  (`UiLayer::set_texture`); `ui.close` drops it.
+- Each frame, when a layer's `render()` returns a fresh buffer, the main
+  loop calls `texture_registry.update_rgba(handle, w, h, pixels)`, and the
+  frame composites every visible layer's handle in stack order.
 
 For matching single-mip RGBA images, `update_rgba` queues the latest pixels
 in a retained CPU buffer. After the frame-slot fence wait, the renderer copies
@@ -726,10 +734,14 @@ this is a matter of connecting it to Ruffle, not building it from zero.)
 
 ### Input routing
 
-Loading a menu now grants `UiManager` input focus, and replacing it moves
-focus (`install_player` drops it from the old player before the new one takes
-it). There is no close: `UiManager::close` was deleted with no caller (#2723),
-so a menu stays loaded until another replaces it.
+Input goes to at most one menu: the menu registry's input owner, the topmost
+open menu whose flags claim input (GUI-REG-009). When that menu is a movie the
+app hands it Ruffle focus (`UiManager::set_input_owner`, once a frame after the
+registry publishes); a native page or the HUD owning (or not claiming) input
+leaves every movie unfocused. A newly loaded movie takes focus at load, and the
+same frame's registry publish confirms or moves it; closing a movie
+(`UiManager::close`, `ui.close`) hands input to the next owner in the same
+frame (GUI-REG-007).
 `byroredux/src/ui_input.rs` translates winit's physical and logical keyboard
 identity, key location, text controls, Unicode input, IME composition, pointer
 coordinates/buttons, and wheel units into `UiInputEvent`. `SwfPlayer` forwards
@@ -753,17 +765,18 @@ egui frame, avoiding simultaneous UI reads and ECS mutation. Fallout 4/76 Mods,
 Junk, and Misc are separate categories based on OMOD loose-item links and MISC
 component data.
 
-The current manager still owns one active menu. A real menu stack must define
-which visible layer receives focus and how non-modal HUD movies coexist with a
-modal pause/container/Pip-Boy layer. Gamepad translation is also a later slice;
+The HUD stays open, and drawn, under a modal (GUI-REG-003; the draw rule is the
+open runtime-measured item below). Gamepad translation is a later slice;
 the input contract intentionally starts with the native keyboard/pointer path
 used by the existing engine loop.
 
 ### Menu registry, stack and path access (M48 design, Phase 0)
 
 Design for [`docs/prd/game-ui-integration.md`](../prd/game-ui-integration.md)
-(GUI-REG, GUI-PATH, GUI-XML), written under #6643. **Nothing in this section is
-built yet** except where it says "today". Evidence is in `docs/data/game-ui/`
+(GUI-REG, GUI-PATH, GUI-XML), written under #6643. **Phase 1 (#6653) built the
+registry and stack** below (`crates/core/src/ecs/resources/menu_registry/`,
+`byroredux/src/menu_stack.rs`, `UiManager`'s layers above); the path access and
+MenuXml input parts are Phases 2 and 3. Evidence is in `docs/data/game-ui/`
 (tables named below) and `crates/ui/tests/avm1_path_access_probe.rs`.
 
 #### Registry and stack (GUI-REG-001…011)
@@ -823,7 +836,50 @@ built yet** except where it says "today". Evidence is in `docs/data/game-ui/`
   (`crates/ui/src/player.rs`) creates the wgpu device once per process (#2733);
   PRD §3.1 row 2 is stale. The registry only has to report the count.
 
+#### Phase 1 as built (#6653)
+
+- **Tables.** The flags, codes and inventory TSVs are `include_str!`'d into
+  `menu_registry/tables.rs` and parsed once per game; `phase0_tables_parse_with_the_flags_the_design_states`
+  and `every_vanilla_menu_code_names_a_menu` pin the parse. Fallout 3 and New
+  Vegas share one table (one `GameKind`, one code table; the New Vegas inventory
+  is the superset). Fallout 76 and Starfield read the Fallout 4 table until
+  Phase 6 inventories them. "Claims input" on Skyrim / Fallout 4 is any of
+  `kUsesCursor`, `kUsesMenuContext`, `kModal`, `kUpdateUsesCursor`.
+- **Engine defaults beyond the rule above, each named in the code.** The
+  Oblivion / Fallout `DialogMenu` keeps the world running (menu mode, input, no
+  pause): no source gives it a pause bit, the documented Skyrim / Fallout 4
+  dialogue menus carry none, and the engine's dialogue page plays its timed
+  responses through the scheduler (766e1746e). The operator overlay registers
+  as the console (`MenuMode 3`, `UI.IsMenuOpen("Console")`) with input only — it
+  is an engine tool and neither pauses the world it inspects (#5141) nor puts
+  the game in menu mode. A crafting page on a game with no crafting menu
+  (Oblivion, Fallout 4) registers as the engine name `Crafting Menu` with the
+  game's default flags.
+- **Publishing.** `App::step_menus` runs once a frame after the modal pages:
+  sync the UI extent, apply `ui.open` / `ui.close`, then `MenuRegistry::publish`
+  from the native layers (`native_menus`: the HUD first, the loading cover, the
+  page under its game-facing name, a barter session, a message box waiting with
+  no other page up, the overlay), the movie layers (named by the inventory's
+  movie join, `interface\hudmenu.swf` → `HUD Menu`) and the surface-less menus
+  `ui.open` opened. A menu still up keeps its place; a HUD goes to the bottom.
+- **Pause.** `menu_stack::simulation_paused`: any open menu with `PAUSES_GAME`,
+  except while the loading / movie cover holds the game, which already runs the
+  scheduler at a held clock. A paused frame runs `run_menu_mode_frame` (quest
+  and object `MenuMode` blocks, stage results) and the debug drain.
+- **Scripts.** ObScript `MenuMode` reads `menu_mode_query`; `Begin GameMode`
+  blocks (quest and object) skip menu-mode frames and `Begin MenuMode` blocks
+  run on them (`obscript_object_menu_mode_system` is new); Papyrus
+  `Utility.IsInMenuMode` is `papyrus_in_menu_mode`; the SDK `ui.menu-is-open`
+  snapshot is every registry name.
+- **Console.** `ui.menus`, `ui.open <menu>`, `ui.close <menu> [accept|cancel]`
+  ([debug-cli.md](debug-cli.md)). `ui.open` loads a movie target from the
+  game's interface archive, opens a bare-openable native page (Pause,
+  Inventory) or records an absent menu; a MenuXml target falls back to its
+  native page until Phase 3. Gate: `docs/smoke-tests/m48-menu-stack.sh` (A3).
+
 #### Resize (GUI-REG-008)
+
+Built in Phase 1; see [UiManager](#uimanager). The design as written:
 
 Ruffle at the pinned revision **does** resize in place, so #2723's premise
 ("no in-place resize path") no longer holds: `Player::set_viewport_dimensions`
@@ -840,9 +896,10 @@ calls `WgpuRenderBackend::set_viewport_dimensions`, which calls
 3. MenuXml: `MenuRenderer::set_screen(ScreenTraits::for_width(w))` and a fresh
    `frame_size()`.
 
-Not exercised here (no engine run). Phase 1's exit test resizes a headless
-player and asserts `dimensions()`, the pixel buffer length and that the movie
-sees `Stage.onResize`.
+Phase 1's tests resize a headless player (GPU-gated) and assert `dimensions()`
+and the next frame's length, and a Ruffle player without a renderer asserts the
+movie hears `Stage.onResize` with the new `Stage.width`. The live window-resize
+path itself is not driven by a gate yet.
 
 #### Path access (GUI-PATH-001…005, decision Q2)
 
@@ -1202,8 +1259,8 @@ three HUD-grade fixes over the raw `--menu` route:
   texture carries an opaque stage clear and the rendered world is
   invisible behind the HUD. `--menu` keeps the opaque stage (modal menus
   own the screen by design).
-- **World input stays live** — `set_input_focus(false)` at launch; a HUD
-  is not a modal menu.
+- **World input stays live** — `set_input_owner(None)` at launch, and the
+  HUD's registry flags claim no input (GUI-REG-009); a HUD is not a modal menu.
 - **`hud.off` hides** — the driver mirrors `HudControl.visible` into the
   player each frame; `render()` answers `UiFrame::Hidden` and the UI
   quad stops.

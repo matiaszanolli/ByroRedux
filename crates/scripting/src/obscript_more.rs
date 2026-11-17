@@ -12,6 +12,7 @@
 
 use byroredux_core::ecs::components::GlobalTransform;
 use byroredux_core::ecs::resource::Resource;
+use byroredux_core::ecs::resources::MenuRegistry;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
 
@@ -47,8 +48,6 @@ pub struct EngineQueries {
     pub should_attack: Option<fn(&World, EntityId, EntityId) -> bool>,
     /// Whether the camera is first person (`IsPC1stPerson`).
     pub first_person: Option<fn(&World) -> bool>,
-    /// Whether a menu of the given type or code is open (`MenuMode`); `0` asks about any menu.
-    pub menu_open: Option<fn(&World, u32) -> bool>,
     /// The point the crosshair is aimed at, within `distance` (`0` for the default reach), in Z-up world
     /// units (`PlaceAtReticle`).
     pub reticle_point: Option<ReticlePointFn>,
@@ -272,13 +271,24 @@ fn get_los(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ctx
     }
 }
 
-// `MenuMode [type]`: 1 while a menu of that type or code is open — the UI the app installs answers.
+// `MenuMode [type]`: 1 while a menu of that type or code is open, as the menu registry the app
+// publishes answers it (GUI-REG-002); no registry, no answer.
 fn menu_mode(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    let queries = world.try_resource::<EngineQueries>().map(|queries| *queries).unwrap_or_default();
-    match queries.menu_open {
-        Some(open) => flag(open(world, num(args, 0) as u32)),
+    match world.try_resource::<MenuRegistry>() {
+        Some(registry) => flag(registry.menu_mode_query(num(args, 0) as u32)),
         None => Action::Declined,
     }
+}
+
+/// Whether the game is in menu mode this frame (GUI-EVT-006): a menu that counts toward it is in
+/// the registry. `Begin GameMode` blocks do not run then; `Begin MenuMode` blocks do.
+pub fn in_menu_mode(world: &World) -> bool {
+    world.try_resource::<MenuRegistry>().is_some_and(|registry| registry.menu_mode())
+}
+
+/// Whether a `Begin MenuMode [code]` block runs this frame (GUI-EVT-006).
+pub fn menu_mode_block_runs(world: &World, filter: Option<u32>) -> bool {
+    world.try_resource::<MenuRegistry>().is_some_and(|registry| registry.menu_mode_block_runs(filter))
 }
 
 // GECK *GetSleeping*: 0 not sleeping, 3 is sleeping. An actor whose active package is Sleep has

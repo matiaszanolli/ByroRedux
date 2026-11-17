@@ -349,7 +349,7 @@ impl VulkanContext {
         fsr_frame: Option<FsrFrameParameters>,
         underwater: [f32; 4],
         image_space_modifier: ImageSpaceModifier,
-        ui_instance_idx: Option<u32>,
+        ui_instance_idx: Option<super::build_and_upload_instances::UiInstanceRange>,
         fog_cluster_ns: &mut u64,
     ) {
         self.record_svgf_pass(cmd, frame);
@@ -1549,7 +1549,7 @@ impl VulkanContext {
         img: usize,
         underwater: [f32; 4],
         image_space_modifier: ImageSpaceModifier,
-        ui_instance_idx: Option<u32>,
+        ui_instance_idx: Option<super::build_and_upload_instances::UiInstanceRange>,
     ) {
         // SAFETY: `cmd` is recording outside a render pass, and presentation,
         // exposure, swapchain-image, and timer resources are live for this frame.
@@ -1565,7 +1565,7 @@ impl VulkanContext {
             // `record_post_passes_has_no_error_propagation_after_the_svgf_latch`
             // enforces that by scanning this file's text (#2146 / #917).
             let overlay = ui_instance_idx.zip(self.overlay.ui_quad_handle).and_then(
-                |(instance_index, ui_quad)| {
+                |(instances, ui_quad)| {
                     self.mesh_registry.get(ui_quad).and_then(|mesh| {
                         mesh.vertex_buffer
                             .as_ref()
@@ -1576,7 +1576,8 @@ impl VulkanContext {
                                 vertex_buffer: vb.buffer,
                                 index_buffer: ib.buffer,
                                 index_count: mesh.index_count,
-                                instance_index,
+                                instance_index: instances.first,
+                                instance_count: instances.count,
                             })
                     })
                 },

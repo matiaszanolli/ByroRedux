@@ -36,7 +36,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use byroredux_core::ecs::World;
-use byroredux_ui::{RenderPacing, ScaleformHostBridge, ScaleformValue, UiManager};
+use byroredux_ui::{RenderPacing, ScaleformHostBridge, ScaleformValue, UiLayer, UiManager};
 
 use crate::asset_provider::Archive;
 use crate::hud::{fraction, HudBackend, HudControl, HUD_REFRESH_INTERVAL};
@@ -154,6 +154,8 @@ pub(crate) struct HudSnapshot {
 /// in `scene.rs`), ticked from the Ruffle overlay branch.
 pub(crate) struct ScaleformHudDriver {
     game: ScaleformGame,
+    /// The HUD movie's layer in the [`UiManager`] stack (its `menu_name`).
+    menu: String,
     /// Handle into the live player's bridge — used to register response
     /// handlers (launch) and to read the movie's registered callbacks /
     /// unanswered-method sets (per-tick diagnostics mirror).
@@ -206,6 +208,13 @@ fn hud_scaleform_args(args: &[String]) -> Result<Option<(ScaleformGame, String)>
     if !args.iter().any(|arg| arg == "--hud") {
         return Ok(None);
     }
+    interface_archive(args)
+}
+
+/// The Scaleform game and its vanilla interface archive beside `--esm` (Skyrim probed before
+/// Fallout 4), or `None` on a pre-Scaleform install. The HUD and `ui.open` (M48 GUI-OPS-005)
+/// load their movies from it.
+pub(crate) fn interface_archive(args: &[String]) -> Result<Option<(ScaleformGame, String)>, String> {
     let (_esm, esm_dir) = crate::cli_args::esm_discovery_root(args)?;
     for game in [ScaleformGame::Skyrim, ScaleformGame::Fallout4] {
         let archive = esm_dir.join(game.menu_archive());
@@ -228,7 +237,6 @@ pub(crate) fn launch(
     ctx: &mut byroredux_renderer::vulkan::context::VulkanContext,
     world: &mut World,
     ui_manager: &mut Option<UiManager>,
-    ui_texture_handle: &mut Option<u32>,
     args: &[String],
 ) -> Option<ScaleformHudDriver> {
     let (game, archive_path) = match hud_scaleform_args(args) {
@@ -261,18 +269,22 @@ pub(crate) fn launch(
         log::error!("hud: failed to load {menu_path}: {e}");
         return None;
     }
+    let menu = UiManager::installed_menu_name(menu_path);
+    // A HUD is not a modal menu: world input (fly camera, console) must
+    // keep working. `install_player` grabbed focus at load; the menu
+    // registry would hand it back to the world on the next frame (the HUD's
+    // flags claim no input, GUI-REG-009), but not before this one.
+    ui.set_input_owner(None);
+    let layer = ui.layer_mut(&menu).expect("menu loaded above");
     // The overlay texture is full-screen: with Ruffle's default opaque
     // stage the movie's background clear washes the rendered world out
     // entirely. A HUD composites over the frame, so the stage clears to
     // transparent wherever the movie drew nothing. (`--menu` keeps the
     // opaque stage — modal menus own the whole screen by design.)
-    ui.set_stage_transparent();
+    layer.set_stage_transparent();
     // #4717 — the HUD is up all session, so its render + full-target readback
     // is paced instead of running at the movie's own frame rate.
-    ui.set_render_pacing(HUD_RENDER_PACING);
-    // A HUD is not a modal menu: world input (fly camera, console) must
-    // keep working. `install_player` grabbed focus at load.
-    ui.set_input_focus(false);
+    layer.set_render_pacing(HUD_RENDER_PACING);
 
     let handle = {
         let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
@@ -286,9 +298,8 @@ pub(crate) fn launch(
             return None;
         }
     };
-    *ui_texture_handle = Some(handle);
-
-    let bridge = ui.host_bridge().expect("menu loaded above");
+    layer.set_texture(Some(handle));
+    let bridge = layer.host_bridge();
 
     // Response handlers — the menu→engine channel. The per-game set is
     // [`ScaleformGame::poll_handlers`] data (#4725), not an inline `if`.
@@ -309,8 +320,12 @@ pub(crate) fn launch(
         });
     }
 
+    // `Some(..)`: the boot-line tokens kept their pre-stack shape (`state=Some(AdapterInjected)`
+    // is m48-7's gate), from when the manager held at most one optional movie.
+    let (profile, state) = (Some(layer.profile()), Some(layer.host_object_state()));
     let driver = ScaleformHudDriver {
         game,
+        menu,
         callbacks: bridge.available_callbacks(),
         bridge,
         snapshot,
@@ -318,7 +333,6 @@ pub(crate) fn launch(
         last_push: std::time::Instant::now(),
         last_diag_refresh: std::time::Instant::now(),
     };
-    let (profile, state) = (ui.menu_profile(), ui.host_object_state());
     log::info!(
         "hud: loaded {menu_path} archive='{archive_path}' backend={} \
          profile={profile:?} state={state:?} texture={handle} ({w}x{h}) \
@@ -351,7 +365,14 @@ impl ScaleformHudDriver {
     /// One frame: refresh the shared snapshot from the World, mirror
     /// bridge diagnostics to the console resource, and (on change, at
     /// the shared HUD cadence) push state into the movie.
-    pub(crate) fn tick(&mut self, world: &World, ui: &mut UiManager, cam_forward: [f32; 3]) {
+    /// The HUD movie's layer name in the [`UiManager`] stack.
+    pub(crate) fn menu(&self) -> &str {
+        &self.menu
+    }
+
+    /// `layer` is the HUD movie's layer; `None` (closed) still refreshes the snapshot the
+    /// response handlers read.
+    pub(crate) fn tick(&mut self, world: &World, mut layer: Option<&mut UiLayer>, cam_forward: [f32; 3]) {
         // Copy the control out and drop its read guard here: `let control =
         // *control;` shadows the guard without releasing it, and the `live`
         // write below then takes a write lock on the same resource while
@@ -365,8 +386,10 @@ impl ScaleformHudDriver {
         // answers `UiFrame::Hidden` while this is false, which stops the
         // UI quad entirely — `hud.off` really hides a Scaleform HUD (the
         // MenuXml driver's equivalent is its own early return).
-        if ui.visible != control.visible {
-            ui.visible = control.visible;
+        if let Some(layer) = layer.as_deref_mut() {
+            if layer.visible() != control.visible {
+                layer.set_visible(control.visible);
+            }
         }
 
         // The shared snapshot the response handlers read. #4675 — editor
@@ -406,7 +429,9 @@ impl ScaleformHudDriver {
         if changed && cadence_ok && control.visible {
             self.last_signature = hash;
             self.last_push = std::time::Instant::now();
-            self.push(ui, fractions, heading);
+            if let Some(layer) = layer.as_deref_mut() {
+                self.push(layer, fractions, heading);
+            }
             if let Some(mut diag) = world.try_resource_mut::<ScaleformHudDiag>() {
                 diag.last_push = Some((fractions[0], fractions[1], fractions[2], heading));
             }
@@ -422,7 +447,7 @@ impl ScaleformHudDriver {
                 diag.callbacks = self.callbacks.clone();
                 diag.unknown_methods = self.bridge.unknown_methods();
                 diag.unanswered_methods = self.bridge.unanswered_methods();
-                diag.render_passes = ui.render_passes();
+                diag.render_passes = layer.as_deref().map_or(0, UiLayer::render_passes);
             }
         }
     }
@@ -442,7 +467,7 @@ impl ScaleformHudDriver {
     /// `_ => continue` arm already declines every reserved lifecycle hook.
     /// An arm that ever names one fails that test and the guard must come
     /// back.
-    fn push(&mut self, ui: &mut UiManager, fractions: [f32; 3], heading: f32) {
+    fn push(&mut self, ui: &mut UiLayer, fractions: [f32; 3], heading: f32) {
         for name in &self.callbacks {
             let args: Vec<ScaleformValue> = match name.as_str() {
                 // SkyUI-class meter pushes (shapes are the working
@@ -470,6 +495,7 @@ mod tests {
     fn driver() -> ScaleformHudDriver {
         ScaleformHudDriver {
             game: ScaleformGame::Skyrim,
+            menu: "HUD Menu".to_owned(),
             bridge: ScaleformHostBridge::new(ScaleformProfile::SkyrimAvm1),
             snapshot: Rc::new(RefCell::new(HudSnapshot::default())),
             callbacks: Vec::new(),
@@ -489,9 +515,7 @@ mod tests {
     fn tick_publishes_live_bars_without_deadlocking_on_hud_control() {
         let mut world = World::new();
         world.insert_resource(HudControl::default());
-        let mut ui = UiManager::new(4, 4);
-
-        driver().tick(&world, &mut ui, [0.0, 0.0, -1.0]);
+        driver().tick(&world, None, [0.0, 0.0, -1.0]);
 
         assert_eq!(
             world.resource::<HudControl>().live[0],

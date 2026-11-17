@@ -368,9 +368,9 @@ pub fn run_quest_game_mode(
 }
 
 /// Run every running quest script's `Begin MenuMode [code]` blocks whose code
-/// names a menu that is open now, or any menu for a block without a code (GECK
-/// *MenuMode*; GUI-EVT-006). A no-op on frames no menu is open, and when the
-/// app installed no menu answer ([`crate::obscript_more::EngineQueries`]).
+/// names a menu-mode menu that is open now, or any one for a block without a
+/// code (GECK *MenuMode*; GUI-EVT-006). A no-op on frames the menu registry
+/// holds no menu-mode menu, and when the app published no registry.
 ///
 /// It runs on the frames a menu is up, including the frames a native page
 /// pauses the simulation on, which the app runs it on by hand: the original
@@ -380,10 +380,7 @@ pub fn run_quest_game_mode(
 /// to 40 in `Begin MenuMode 1036`, while the race menu is open.
 pub fn obscript_quest_menu_mode_system(world: &World, dt: f32) {
     use crate::obscript_vm::BLOCK_MENU_MODE;
-    let Some(menu_open) = world.try_resource::<crate::obscript_more::EngineQueries>().and_then(|queries| queries.menu_open) else {
-        return;
-    };
-    if !menu_open(world, 0) {
+    if !crate::obscript_more::in_menu_mode(world) {
         return;
     }
     let running: Vec<u32> = match world.try_resource::<QuestStageState>() {
@@ -419,7 +416,7 @@ pub fn obscript_quest_menu_mode_system(world: &World, dt: f32) {
             .blocks()
             .unwrap_or_default()
             .into_iter()
-            .filter(|block| block.block_type == BLOCK_MENU_MODE && block.filter.is_none_or(|code| menu_open(world, code)))
+            .filter(|block| block.block_type == BLOCK_MENU_MODE && crate::obscript_more::menu_mode_block_runs(world, block.filter))
             .collect();
         if blocks.is_empty() {
             continue;
@@ -1110,6 +1107,13 @@ fn running_quests_in_order(stages: &QuestStageState) -> Vec<u32> {
 /// quest resources and runs pure interpreter work, so exclusivity costs
 /// nothing and keeps the timer maps race-free.
 pub fn obscript_quest_tick_system(world: &World, dt: f32) {
+    // GUI-EVT-006 — `Begin GameMode` blocks do not run while the game is in menu
+    // mode (GECK / CS *GameMode*), even on a frame the simulation advances (an
+    // open dialogue menu); `obscript_quest_menu_mode_system` runs the MenuMode
+    // blocks instead.
+    if crate::obscript_more::in_menu_mode(world) {
+        return;
+    }
     let running: Vec<u32> = match world.try_resource::<QuestStageState>() {
         Some(stages) => running_quests_in_order(&stages),
         None => return,
@@ -1725,14 +1729,13 @@ mod persisted_locals_tests {
     /// run on its own cadence (here a 1 s delay): the first as a menu opens, then a second later.
     #[test]
     fn a_menu_mode_block_runs_while_its_menu_is_open() {
-        use crate::obscript_more::EngineQueries;
         use crate::quest_stages::QuestStageState;
+        use byroredux_core::ecs::resources::menu_registry::{MenuRegistry, MenuSurface};
         use byroredux_plugin::esm::reader::GameKind;
-        static OPEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        fn menu_open(_: &World, code: u32) -> bool {
-            let open = OPEN.load(std::sync::atomic::Ordering::Relaxed);
-            open != 0 && (code == 0 || code == open)
-        }
+        let open = |world: &World, name: Option<&str>| {
+            let page = MenuSurface::Native { page: "test".into() };
+            world.resource_mut::<MenuRegistry>().publish(name.map(|name| (name.to_owned(), page)));
+        };
         const RACE_QUEST: u32 = QUEST;
         const ANY_QUEST: u32 = QUEST + 1;
         let mut world = World::new();
@@ -1751,7 +1754,7 @@ mod persisted_locals_tests {
         world.insert_resource(ObScriptQuestLocals::default());
         world.insert_resource(ObScriptQuestTimers::default());
         world.insert_resource(crate::ScriptGame(GameKind::Fallout3NV));
-        world.insert_resource(EngineQueries { menu_open: Some(menu_open), ..Default::default() });
+        world.insert_resource(MenuRegistry::default());
         let mut stages = QuestStageState::default();
         stages.start_quest(QuestFormId(RACE_QUEST), None);
         stages.start_quest(QuestFormId(ANY_QUEST), None);
@@ -1760,15 +1763,19 @@ mod persisted_locals_tests {
 
         obscript_quest_menu_mode_system(&world, 0.016);
         assert_eq!((counter(&world, RACE_QUEST), counter(&world, ANY_QUEST)), (0.0, 0.0), "no menu: no MenuMode run");
-        OPEN.store(1009, std::sync::atomic::Ordering::Relaxed);
+        open(&world, Some("DialogMenu"));
         obscript_quest_menu_mode_system(&world, 0.016);
         assert_eq!((counter(&world, RACE_QUEST), counter(&world, ANY_QUEST)), (0.0, 1.0), "dialogue is not the race menu");
         obscript_quest_menu_mode_system(&world, 0.5);
         assert_eq!(counter(&world, ANY_QUEST), 1.0, "not every frame: the quest's own cadence");
-        OPEN.store(1036, std::sync::atomic::Ordering::Relaxed);
+        open(&world, Some("RaceSexMenu"));
         obscript_quest_menu_mode_system(&world, 0.5);
         assert_eq!((counter(&world, RACE_QUEST), counter(&world, ANY_QUEST)), (1.0, 2.0));
-        OPEN.store(0, std::sync::atomic::Ordering::Relaxed);
+        // The HUD alone is no menu mode.
+        open(&world, Some("HUDMainMenu"));
+        obscript_quest_menu_mode_system(&world, 5.0);
+        assert_eq!((counter(&world, RACE_QUEST), counter(&world, ANY_QUEST)), (1.0, 2.0), "the HUD is not a menu-mode menu");
+        open(&world, None);
     }
 }
 

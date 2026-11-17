@@ -12,7 +12,8 @@
 //!
 //! | block | runs |
 //! |-------|------|
-//! | `GameMode` | every frame, for every loaded scripted reference |
+//! | `GameMode` | every frame the game is not in menu mode, for every loaded scripted reference |
+//! | `MenuMode [code]` | every frame the game is in menu mode under a matching menu ([`obscript_object_menu_mode_system`], GUI-EVT-006) |
 //! | `OnLoad` | the frame the reference's cell loads ([`OnCellLoadEvent`]) |
 //! | `OnDeath` | the frame an actor dies ([`OnDeathEvent`]) |
 //! | `OnActivate` | the frame the reference is activated ([`ActivateEvent`]), with `GetActionRef` the activator |
@@ -74,7 +75,7 @@ use crate::events::{
 };
 use crate::obscript_quests::ObScriptCommandHost;
 use crate::obscript_vm::{
-    BlockInfo, BlockOutcome, ObScriptProgram, VmState, BLOCK_GAME_MODE, BLOCK_ON_ACTIVATE, BLOCK_ON_ADD,
+    BlockInfo, BlockOutcome, ObScriptProgram, VmState, BLOCK_GAME_MODE, BLOCK_MENU_MODE, BLOCK_ON_ACTIVATE, BLOCK_ON_ADD,
     BLOCK_ON_DROP, BLOCK_ON_EQUIP, BLOCK_ON_UNEQUIP, BLOCK_SAY_TO_DONE,
     BLOCK_ON_COMBAT_END, BLOCK_ON_DEATH, BLOCK_ON_HIT, BLOCK_ON_HIT_WITH, BLOCK_ON_LOAD,
     BLOCK_ON_PACKAGE_CHANGE, BLOCK_ON_PACKAGE_DONE, BLOCK_ON_PACKAGE_START, BLOCK_ON_RESET, BLOCK_ON_START_COMBAT,
@@ -265,6 +266,46 @@ pub fn obscript_object_system(world: &World, dt: f32) {
     }
 }
 
+/// Run the object scripts' `Begin MenuMode [code]` blocks (GUI-EVT-006): every frame the menu
+/// registry holds a menu-mode menu the block's code matches (any one when it names none), for every
+/// loaded scripted reference. Scheduled beside [`obscript_object_system`], and run by hand on the
+/// frames an open menu pauses the simulation, since the original runs these blocks exactly then.
+pub fn obscript_object_menu_mode_system(world: &World, dt: f32) {
+    if !crate::obscript_more::in_menu_mode(world) {
+        return;
+    }
+    let instances: Vec<(EntityId, u32)> = match world.query::<ObScriptInstance>() {
+        Some(query) => query.iter().map(|(entity, instance)| (entity, instance.script)).collect(),
+        None => return,
+    };
+    let due: Vec<(EntityId, Arc<ScriptRecord>, Vec<BlockInfo>)> = {
+        let Some(table) = world.try_resource::<ObScriptObjectTable>() else { return };
+        instances
+            .into_iter()
+            .filter_map(|(entity, script_id)| {
+                let object = table.scripts.get(&script_id)?;
+                let blocks: Vec<BlockInfo> = object
+                    .of_type(BLOCK_MENU_MODE)
+                    .filter(|block| !table.malformed.contains(&(script_id, **block)))
+                    .filter(|block| crate::obscript_more::menu_mode_block_runs(world, block.filter))
+                    .copied()
+                    .collect();
+                (!blocks.is_empty()).then(|| (entity, Arc::clone(&object.record), blocks))
+            })
+            .collect()
+    };
+    for (entity, script, blocks) in due {
+        // #6220 — a stand-in for a reference in an unloaded cell runs no per-frame block.
+        if world.has::<UnloadedReferenceStub>(entity) || world.has::<crate::RemoteSceneActorStub>(entity) {
+            continue;
+        }
+        let Some(form) = entity_global_form_id(world, entity) else { continue };
+        for block in blocks {
+            run_block(world, entity, form, &script, block, dt, None);
+        }
+    }
+}
+
 /// The references with something to run, and which blocks, snapshotted before any
 /// runs.
 fn collect_due(world: &World) -> Vec<Due> {
@@ -296,6 +337,9 @@ fn collect_due(world: &World) -> Vec<Due> {
     // instance, not gathered into a set: the stubs are every logical-only persistent actor of the
     // worldspace (thousands), the instances with a `GameMode` block are hundreds (#6333).
     let is_stub = |entity: EntityId| world.has::<UnloadedReferenceStub>(entity) || world.has::<crate::RemoteSceneActorStub>(entity);
+    // GUI-EVT-006 — no `GameMode` block runs while the game is in menu mode (GECK / CS *GameMode*),
+    // even on a frame the simulation advances; `obscript_object_menu_mode_system` runs `MenuMode`.
+    let menu_mode = crate::obscript_more::in_menu_mode(world);
     // Read, not drained: `reference_script_event_system` owns the marker.
     let died = entities_with(world.query::<OnDeathEvent>().map(|e| e.iter().map(|(entity, _)| entity).collect()));
     // Activations, minus the native-only ones: "no OnActivate event will be sent
@@ -364,7 +408,7 @@ fn collect_due(world: &World) -> Vec<Due> {
                     }
                 }
                 BLOCK_ON_DEATH if died.contains(&entity) => runs.push(Run { block, who: None }),
-                BLOCK_GAME_MODE if !is_stub(entity) => runs.push(Run { block, who: None }),
+                BLOCK_GAME_MODE if !menu_mode && !is_stub(entity) => runs.push(Run { block, who: None }),
                 _ => {}
             }
         }
@@ -887,7 +931,8 @@ mod tests {
             assert!(src.contains(decl), "`{decl}` is probed per instance per block per frame (#6333)");
         }
         assert!(!src.contains("not_loaded"), "the per-frame unloaded-stub set is back (#6333)");
-        assert!(src.contains("BLOCK_GAME_MODE if !is_stub(entity)"));
+        // GUI-EVT-006 — the menu-mode gate is one bool read per frame, ahead of the per-instance stub check.
+        assert!(src.contains("BLOCK_GAME_MODE if !menu_mode && !is_stub(entity)"));
         assert!(!src.contains("std::collections::{HashMap, HashSet}"));
     }
 
@@ -1006,6 +1051,35 @@ mod tests {
             obscript_object_system(&world, 0.016);
         }
         assert_eq!(counter(&world, entity), 3.0);
+    }
+
+    /// GUI-EVT-006 — while the menu registry holds a menu-mode menu, a reference's `GameMode` block
+    /// stops and its `MenuMode` block runs, every frame, whether or not the frame advances the
+    /// world; the HUD alone is no menu mode.
+    #[test]
+    fn menu_mode_replaces_game_mode_while_a_menu_mode_menu_is_open() {
+        use byroredux_core::ecs::resources::menu_registry::{MenuRegistry, MenuSurface};
+        let (mut world, entity) = world_with(&[BLOCK_GAME_MODE, BLOCK_MENU_MODE]);
+        world.insert_resource(MenuRegistry::default());
+        let open = |world: &World, names: &[&str]| {
+            let page = || MenuSurface::Native { page: "test".into() };
+            world.resource_mut::<MenuRegistry>().publish(names.iter().map(|name| (name.to_string(), page())));
+        };
+        let frame = |world: &World| {
+            obscript_object_system(world, 0.016);
+            obscript_object_menu_mode_system(world, 0.016);
+        };
+        open(&world, &["HUDMainMenu"]);
+        frame(&world);
+        assert_eq!(counter(&world, entity), 1.0, "the HUD alone: GameMode only");
+        open(&world, &["HUDMainMenu", "InventoryMenu"]);
+        frame(&world);
+        frame(&world);
+        assert_eq!(counter(&world, entity), 3.0, "the inventory: MenuMode once a frame, GameMode never");
+        let ran = world.resource::<ObScriptObjectTable>().runs.values().sum::<u32>();
+        open(&world, &["HUDMainMenu"]);
+        frame(&world);
+        assert_eq!(world.resource::<ObScriptObjectTable>().runs.values().sum::<u32>(), ran + 1, "one block a frame");
     }
 
     /// #6220 — a stand-in for a reference whose cell is not loaded runs no `GameMode` (CS *GameMode*:

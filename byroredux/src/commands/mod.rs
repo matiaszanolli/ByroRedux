@@ -62,6 +62,7 @@ pub(crate) mod shared;
 mod studio;
 mod terrain;
 mod time;
+mod ui_menus;
 mod view;
 mod water;
 mod world_info;
@@ -101,6 +102,7 @@ use world_info::*;
 use music::MusicStatusCommand;
 use stealth::{StealthSneakCommand, StealthStatusCommand};
 use video::{VideoSkipCommand, VideoStatusCommand};
+use ui_menus::{UiCloseCommand, UiMenusCommand, UiOpenCommand};
 
 pub(crate) fn build_command_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
@@ -111,6 +113,10 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(HudHeadingCommand);
     registry.register(HudStatusCommand);
     registry.register(HudDebugCommand);
+    // M48 GUI-OPS-001 / -005 — the menu registry.
+    registry.register(UiMenusCommand);
+    registry.register(UiOpenCommand);
+    registry.register(UiCloseCommand);
     // M65 (SNK-DX-002) — the sneak stance through the key's path.
     registry.register(StealthSneakCommand);
     // M65 (SNK-DX-001) — every detector's terms, value, level and alert state.

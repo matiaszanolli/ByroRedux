@@ -1972,8 +1972,7 @@ fn ui_alias_reads_the_active_engine_menu_snapshot() {
     let mut host =
         ExtensionHost::new(SandboxConfig::default(), ComponentStoreLimits::default()).unwrap();
     host.set_ui_menu_snapshot(PapyrusUiMenuSnapshot {
-        active_menu: Some("InventoryMenu".to_owned()),
-        visible: true,
+        open_menus: vec!["HUD Menu".to_owned(), "InventoryMenu".to_owned()],
     });
     assert_eq!(
         host.invoke_owned_papyrus_provider(
@@ -1993,10 +1992,7 @@ fn ui_alias_reads_the_active_engine_menu_snapshot() {
         .unwrap(),
         ScriptValue::Boolean(false)
     );
-    host.set_ui_menu_snapshot(PapyrusUiMenuSnapshot {
-        active_menu: Some("InventoryMenu".to_owned()),
-        visible: false,
-    });
+    host.set_ui_menu_snapshot(PapyrusUiMenuSnapshot::default());
     assert_eq!(
         host.invoke_owned_papyrus_provider(
             None,
@@ -2008,40 +2004,47 @@ fn ui_alias_reads_the_active_engine_menu_snapshot() {
     );
 }
 
+/// M48 GUI-REG-002 — the sync publishes the menu registry: a menu closed in the registry is closed
+/// to `UI.IsMenuOpen` on the next sync.
 #[test]
-fn ui_menu_sync_clears_hidden_or_absent_menus() {
+fn ui_menu_sync_follows_the_menu_registry() {
+    use byroredux_core::ecs::resources::menu_registry::{MenuGame, MenuRegistry, MenuSurface};
     let slot = ExtensionHostSlot::initialize_default();
     let host = slot.host().unwrap();
     let mut world = World::new();
     world.insert_resource(slot);
+    let mut registry = MenuRegistry::new(MenuGame::Skyrim);
+    registry.open("InventoryMenu", MenuSurface::Native { page: "Inventory".into() });
+    world.insert_resource(registry);
 
-    extension_ui_menu_sync(&world, Some("InventoryMenu"), true);
-    extension_ui_menu_sync(&world, Some("InventoryMenu"), false);
-
-    let host = host.lock().unwrap();
-    assert!(!adapt_papyrus_ui_is_menu_open(
-        &host.ui_menu_snapshot,
-        "InventoryMenu"
-    ));
+    extension_ui_menu_sync(&world);
+    assert!(adapt_papyrus_ui_is_menu_open(&host.lock().unwrap().ui_menu_snapshot, "InventoryMenu"));
+    world.resource_mut::<MenuRegistry>().publish(std::iter::empty());
+    extension_ui_menu_sync(&world);
+    assert!(!adapt_papyrus_ui_is_menu_open(&host.lock().unwrap().ui_menu_snapshot, "InventoryMenu"));
 }
 
-/// #4757 — the production chain: both SWF load routes hand the UI an
-/// on-disk movie path, and the app feeds `ui.menu_name` (canonicalized at
-/// `install_player`) into the menu sync — so a real archive path must end
-/// with `UI.IsMenuOpen` answering true for the Bethesda menu name.
+/// #4757 — a movie loaded from its archive path answers `UI.IsMenuOpen` for the Bethesda menu
+/// name: the registry names it by the Phase 0 inventory's movie join (Skyrim's
+/// `interface\hudmenu.swf` is `HUD Menu`, Fallout 4's is `HUDMenu`).
 #[test]
 fn a_loaded_archive_menu_path_answers_is_menu_open_for_the_bethesda_name() {
-    let slot = ExtensionHostSlot::initialize_default();
-    let host = slot.host().unwrap();
-    let mut world = World::new();
-    world.insert_resource(slot);
+    use byroredux_core::ecs::resources::menu_registry::{MenuGame, MenuRegistry, MenuSurface};
+    for (game, name) in [(MenuGame::Skyrim, "HUD Menu"), (MenuGame::Fallout4, "HUDMenu")] {
+        let slot = ExtensionHostSlot::initialize_default();
+        let host = slot.host().unwrap();
+        let mut world = World::new();
+        world.insert_resource(slot);
+        let mut registry = MenuRegistry::new(game);
+        let def = registry.table().by_document("interface\\hudmenu.swf").expect("the HUD movie joins a menu").clone();
+        registry.open(&def.name, MenuSurface::Movie { path: "interface\\hudmenu.swf".into(), profile: "test".into() });
+        world.insert_resource(registry);
 
-    let menu_name = byroredux_ui::UiManager::installed_menu_name("interface\\hudmenu.swf");
-    extension_ui_menu_sync(&world, Some(menu_name.as_str()), true);
-
-    let host = host.lock().unwrap();
-    assert!(adapt_papyrus_ui_is_menu_open(&host.ui_menu_snapshot, "HUDMenu"));
-    assert!(!adapt_papyrus_ui_is_menu_open(&host.ui_menu_snapshot, "InventoryMenu"));
+        extension_ui_menu_sync(&world);
+        let host = host.lock().unwrap();
+        assert!(adapt_papyrus_ui_is_menu_open(&host.ui_menu_snapshot, name));
+        assert!(!adapt_papyrus_ui_is_menu_open(&host.ui_menu_snapshot, "InventoryMenu"));
+    }
 }
 
 #[test]

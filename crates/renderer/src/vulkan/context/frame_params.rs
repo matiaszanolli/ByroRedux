@@ -2184,8 +2184,9 @@ pub struct FrameInputs<'a> {
     /// `x = gust_frequency` in cycles per second. Remaining lanes are spare
     /// std140-compatible slots for future atmospheric shear controls.
     pub wind_gust: [f32; 4],
-    /// Optional UI overlay texture handle.
-    pub ui_texture_handle: Option<u32>,
+    /// The UI overlay's texture handles, one per layer, bottom to top
+    /// (M48 GUI-REG-001); empty draws no overlay.
+    pub ui_texture_handles: &'a [u32],
     /// Sky / weather parameters.
     pub sky_params: &'a SkyParams,
     /// Depth-of-field lens parameters. `dof.aperture == 0.0` = pinhole camera

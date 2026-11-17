@@ -61,6 +61,7 @@ mod list_cells;
 mod material_dump;
 mod material_flags;
 mod material_translate;
+mod menu_stack;
 mod name_lookup;
 mod npc_spawn;
 mod ownership_sample;
@@ -1172,7 +1173,6 @@ impl App {
             &mut self.world,
             ctx,
             &mut self.ui.manager,
-            &mut self.ui.texture_handle,
             &mut self.ui.hud,
             &mut self.ui.scaleform_hud,
             self.capture.camera_pos_override,

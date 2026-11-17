@@ -351,14 +351,12 @@ impl DebugUiState {
         self.game_menu.visible || self.visible
     }
 
-    /// Whether the simulation clock and scheduler stop while a surface is
-    /// open. The pause/settings/inventory pages stop the world; the
-    /// dialogue response surface deliberately does not — vanilla dialogue
-    /// is in-world and timed, and a running world keeps the debug-server
-    /// drain alive so a route smoke can assert on the presented response
-    /// while the surface is up.
-    pub fn simulation_paused(&self) -> bool {
-        self.game_menu.visible && self.game_menu.page != GameMenuPage::Dialogue
+    /// The native page open now, if the player-facing menu is up. The engine
+    /// registers it in the menu registry under the game-facing name of the
+    /// menu it stands in for (M48 GUI-PAGE-001); whether the world pauses is
+    /// that menu's flags', not the page's (GUI-REG-010).
+    pub fn open_game_menu_page(&self) -> Option<GameMenuPage> {
+        self.game_menu.visible.then_some(self.game_menu.page)
     }
 
     /// Run one egui frame against a pre-built [`PanelSnapshot`].

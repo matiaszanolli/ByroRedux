@@ -72,7 +72,7 @@ EOF2
 
 env BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 \
     BYROREDUX_SETTINGS_PATH="$LOG_DIR/settings.toml" \
-    RUST_LOG="warn,byroredux_scripting=info,byroredux::asset_provider=info,byroredux::cell_loader::created=info" \
+    RUST_LOG="warn,byroredux_scripting=info,byroredux::asset_provider=info,byroredux::scene::scene_runtime=info,byroredux::cell_loader::created=info" \
     target/release/byroredux \
     --game skyrim_se --grid 2,-4 --radius 2 \
     --player --bench-frames 30 --bench-hold \

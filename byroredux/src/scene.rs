@@ -241,7 +241,6 @@ pub(crate) fn setup_scene(
     world: &mut World,
     ctx: &mut VulkanContext,
     ui_manager: &mut Option<UiManager>,
-    ui_texture_handle: &mut Option<u32>,
     hud: &mut Option<crate::hud::MenuXmlHud>,
     scaleform_hud: &mut Option<crate::scaleform_hud::ScaleformHudDriver>,
     camera_pos_override: Option<(f32, f32, f32)>,
@@ -278,7 +277,7 @@ pub(crate) fn setup_scene(
         camera_pos_override.is_some(),
     );
     spawn_player_body(world, ctx, cam_pos, forward, spawn_plan, player_mode);
-    launch_archive_menu(ctx, ui_manager, ui_texture_handle, &args);
+    launch_archive_menu(ctx, ui_manager, &args);
     // M48.4/M48.5/M48.6 — `--hud` is the vanilla-HUD front door, dispatched
     // per game: Scaleform first (Skyrim — it would ride `ui_manager`), then
     // the MenuXml profiles (Oblivion / FO3 / FNV). The routes are mutually
@@ -290,12 +289,9 @@ pub(crate) fn setup_scene(
     // hud-over-ui_manager preference froze the menu player while it still
     // held input focus). That tick preference therefore never sees both
     // set.
-    *scaleform_hud = crate::scaleform_hud::launch(ctx, world, ui_manager, ui_texture_handle, &args);
+    *scaleform_hud = crate::scaleform_hud::launch(ctx, world, ui_manager, &args);
     if scaleform_hud.is_none() {
         *hud = crate::hud::launch_hud(ctx, world, ui_manager, &args);
-        if hud.is_some() {
-            *ui_texture_handle = Some(hud.as_ref().unwrap().current_texture());
-        }
     }
 }
 
@@ -1399,7 +1395,6 @@ fn spawn_player_body(
 fn launch_archive_menu(
     ctx: &mut VulkanContext,
     ui_manager: &mut Option<UiManager>,
-    ui_texture_handle: &mut Option<u32>,
     args: &[String],
 ) {
     // UI: `--menu` launches a vanilla archive-backed menu with its relative
@@ -1416,7 +1411,7 @@ fn launch_archive_menu(
             // tautologically match. `None` skips the (dead-by-construction,
             // on this route) cross-check and trusts prepare_movie's single
             // detect; the resolved profile is still available afterward via
-            // `ui.menu_profile()` for the `ui.menu: loaded` line below.
+            // the layer's `profile()` for the `ui.menu: loaded` line below.
             Ok(archive) => {
                 let (w, h) = ctx.swapchain_extent();
                 let mut ui = UiManager::new(w, h);
@@ -1427,7 +1422,10 @@ fn launch_archive_menu(
                     None,
                 ) {
                     Ok(()) => {
-                        let profile = ui.menu_profile();
+                        let menu = UiManager::installed_menu_name(menu_path);
+                        let layer = ui.layer_mut(&menu).expect("menu loaded above");
+                        // `Some(..)`: the `ui.menu: loaded` tokens keep their pre-stack shape.
+                        let profile = Some(layer.profile());
                         let pixels = vec![0u8; (w * h * 4) as usize];
                         let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
                         match ctx
@@ -1457,9 +1455,9 @@ fn launch_archive_menu(
                                     archive_path,
                                     profile,
                                     handle,
-                                    ui.host_object_state()
+                                    Some(layer.host_object_state())
                                 );
-                                *ui_texture_handle = Some(handle);
+                                layer.set_texture(Some(handle));
                                 *ui_manager = Some(ui);
                             }
                             Err(error) => {
@@ -1494,7 +1492,9 @@ fn launch_archive_menu(
                                 .register_rgba(upload_ctx, w, h, &pixels)
                             {
                                 Ok(handle) => {
-                                    *ui_texture_handle = Some(handle);
+                                    let menu = UiManager::installed_menu_name(swf_path);
+                                    let layer = ui.layer_mut(&menu).expect("menu loaded above");
+                                    layer.set_texture(Some(handle));
                                     // #3427 — same `state=` observable as the
                                     // `--menu` archive route, so a loose-file
                                     // AVM2 dev SWF whose host object landed in
@@ -1502,7 +1502,7 @@ fn launch_archive_menu(
                                     log::info!(
                                         "UI texture registered (handle {}) state={:?}",
                                         handle,
-                                        ui.host_object_state()
+                                        Some(layer.host_object_state())
                                     );
                                 }
                                 Err(e) => log::error!("Failed to register UI texture: {e:#}"),

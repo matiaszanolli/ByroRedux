@@ -105,21 +105,17 @@ pub const PAPYRUS_INPUT_AUTO_DEVICE: i32 = 0xff;
 
 pub const PAPYRUS_INPUT_UNBOUND_KEY: i32 = 0xff;
 
-/// Snapshot of the one active menu exposed by the current UI manager.
+/// Snapshot of the open menus `UI.IsMenuOpen` answers from.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PapyrusUiMenuSnapshot {
-    pub active_menu: Option<String>,
-    pub visible: bool,
+    /// Every open menu's game-facing name, bottom to top, as the engine's menu registry holds them
+    /// (GUI-REG-002): a native page, a MenuXml document and a movie alike.
+    pub open_menus: Vec<String>,
 }
 
-/// Resolve `UI.IsMenuOpen` against the current active-menu snapshot.
+/// Resolve `UI.IsMenuOpen` against the open-menu snapshot: the name is on the stack.
 pub fn adapt_papyrus_ui_is_menu_open(snapshot: &PapyrusUiMenuSnapshot, menu_name: &str) -> bool {
-    snapshot.visible
-        && !menu_name.is_empty()
-        && snapshot
-            .active_menu
-            .as_deref()
-            .is_some_and(|active| active == menu_name)
+    !menu_name.is_empty() && snapshot.open_menus.iter().any(|open| open == menu_name)
 }
 
 /// Resolve a control name using the current engine binding snapshot.

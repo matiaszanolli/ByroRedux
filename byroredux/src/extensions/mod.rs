@@ -203,6 +203,9 @@ pub(crate) use systems::{
     register_console_commands, register_legacy_script_principals,
     sync_extension_script_function_invoker, ExtensionHostSlot, SessionEventQueue,
 };
+/// The `UI.IsMenuOpen` snapshot the menu registry publishes (M48 A2's assertion surface).
+#[cfg(test)]
+pub(crate) use systems::ui_menu_snapshot;
 
 const EXTENSION_STATE_RESOURCE: &str = "ByroExtensionState";
 const MAX_PERSISTED_EXTENSION_ROWS: usize = 262_144;

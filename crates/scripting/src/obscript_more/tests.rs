@@ -343,13 +343,16 @@ fn the_engine_queries_the_app_installs_answer_los_menu_and_first_person() {
     let (mut world, ..) = world(GameKind::Fallout3NV);
     let c = ctx(Some(ACTOR));
     assert_eq!(run(&world, 0x101b, &refs(&[OTHER]), &c), Action::Declined, "no sight query installed");
-    assert_eq!(run(&world, 0x1024, &[], &c), Action::Declined);
+    assert_eq!(run(&world, 0x1024, &[], &c), Action::Declined, "no menu registry published");
     world.insert_resource(EngineQueries {
         line_of_sight: Some(|_, _, _| true),
-        menu_open: Some(|_, kind| kind == 1009),
         first_person: Some(|_| true),
         ..Default::default()
     });
+    // `MenuMode` reads the menu registry the app publishes (GUI-REG-002).
+    let mut menus = byroredux_core::ecs::resources::MenuRegistry::default();
+    menus.open("DialogMenu", byroredux_core::ecs::resources::menu_registry::MenuSurface::Native { page: "Dialogue".into() });
+    world.insert_resource(menus);
     assert_eq!(value(run(&world, 0x101b, &refs(&[OTHER]), &c)), 1.0);
     assert_eq!(value(run(&world, 0x1024, &nums(&[1009.0]), &c)), 1.0);
     assert_eq!(value(run(&world, 0x1024, &nums(&[1002.0]), &c)), 0.0);

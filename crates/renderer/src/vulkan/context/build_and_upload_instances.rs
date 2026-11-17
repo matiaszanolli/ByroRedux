@@ -222,7 +222,7 @@ pub(super) struct BuildInstancesOutput {
     pub(super) previous_models: Vec<scene_buffer::GpuPreviousModel>,
     pub(super) current_rigid_models: rustc_hash::FxHashMap<u32, [f32; 16]>,
     pub(super) batches: Vec<DrawBatch>,
-    pub(super) ui_instance_idx: Option<u32>,
+    pub(super) ui_instance_idx: Option<UiInstanceRange>,
     pub(super) caustic_history_valid: bool,
 }
 
@@ -296,7 +296,7 @@ impl VulkanContext {
         pose_dirty: &rustc_hash::FxHashSet<byroredux_core::ecs::storage::EntityId>,
         lights: &[scene_buffer::GpuLight],
         instance_map: &[Option<u32>],
-        ui_texture_handle: Option<u32>,
+        ui_texture_handles: &[u32],
         materials: &[GpuMaterial],
         fog_color: [f32; 3],
         fog_near: f32,
@@ -608,30 +608,11 @@ impl VulkanContext {
         // against here is necessary but not sufficient. The final value is
         // re-clamped against the slot's post-grow capacity after
         // `grow_instance_ssbos` runs.
-        let ui_instance_idx_candidate =
-            if let (Some(ui_tex), Some(_)) = (ui_texture_handle, self.overlay.ui_quad_handle) {
-                let idx = gpu_instances.len();
-                let instance = GpuInstance {
-                    texture_index: ui_tex,
-                    ..GpuInstance::default()
-                };
-                previous_models.push(instance.model);
-                gpu_instances.push(instance);
-                // #3601 (REN-2026-08-30-D11-01) — `upload_instances` clamps
-                // an overflowing `gpu_instances` to `instances[..MAX_
-                // INSTANCES]` (the PREFIX), and the UI instance is always
-                // pushed last, so it is exactly the entry an overflowing
-                // frame drops. Submitting its now-uploaded-nowhere index as
-                // `firstInstance` anyway would read past the SSBO's
-                // allocated capacity — an undefined read
-                // (`robust_buffer_access` is not enabled) feeding a
-                // bindless `nonuniformEXT` texture index in `ui.frag`.
-                // Skip the overlay for this frame instead; the RP-1 log
-                // below already reports the overflow that caused it.
-                ui_instance_candidate(idx)
-            } else {
-                None
-            };
+        let ui_instance_idx_candidate = if self.overlay.ui_quad_handle.is_some() {
+            push_ui_instances(&mut gpu_instances, &mut previous_models, ui_texture_handles)
+        } else {
+            None
+        };
 
         let SceneHistoryGates {
             caustic_history_valid,
@@ -1792,16 +1773,49 @@ impl VulkanContext {
 /// the UI instance is always pushed last, so it is exactly the entry an
 /// overflowing frame drops. `None` skips the overlay for the frame instead of
 /// submitting a `firstInstance` past the SSBO's allocated capacity.
-fn ui_instance_candidate(pushed_at: usize) -> Option<u32> {
-    (pushed_at < super::super::scene_buffer::MAX_INSTANCES).then_some(pushed_at as u32)
+fn ui_instance_candidate(pushed_at: usize, count: usize) -> Option<UiInstanceRange> {
+    (count > 0 && pushed_at + count <= super::super::scene_buffer::MAX_INSTANCES)
+        .then_some(UiInstanceRange { first: pushed_at as u32, count: count as u32 })
+}
+
+/// Append one UI instance per overlay layer, bottom to top (M48 GUI-REG-001): the layers draw as
+/// consecutive instances of one quad, and Vulkan rasterizes instances in order, so each blends
+/// over the one below. Pushed before the bulk upload so they ride its single flush (#189).
+///
+/// #3601 (REN-2026-08-30-D11-01) — `upload_instances` clamps an overflowing `gpu_instances` to
+/// `instances[..MAX_INSTANCES]` (the PREFIX), and the UI instances are always pushed last, so they
+/// are exactly the entries an overflowing frame drops. Submitting their now-uploaded-nowhere index
+/// as `firstInstance` anyway would read past the SSBO's allocated capacity — an undefined read
+/// (`robust_buffer_access` is not enabled) feeding a bindless `nonuniformEXT` texture index in
+/// `ui.frag`. The candidate is `None` then, and the overlay skips the frame; the RP-1 log reports
+/// the overflow that caused it.
+fn push_ui_instances(
+    gpu_instances: &mut Vec<GpuInstance>,
+    previous_models: &mut Vec<scene_buffer::GpuPreviousModel>,
+    ui_texture_handles: &[u32],
+) -> Option<UiInstanceRange> {
+    let first = gpu_instances.len();
+    for &ui_tex in ui_texture_handles {
+        let instance = GpuInstance { texture_index: ui_tex, ..GpuInstance::default() };
+        previous_models.push(instance.model);
+        gpu_instances.push(instance);
+    }
+    ui_instance_candidate(first, ui_texture_handles.len())
+}
+
+/// The UI overlay's instances: one per layer, consecutive, drawn bottom to top.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct UiInstanceRange {
+    pub(super) first: u32,
+    pub(super) count: u32,
 }
 
 /// The UI instance's final index (#4722): the candidate re-checked against
 /// the capacity the upload actually clamped to, which is the slot's grown
 /// capacity (#4199), not `MAX_INSTANCES`. Callers read `capacity` after
 /// `grow_instance_ssbos`.
-fn ui_instance_within_capacity(candidate: Option<u32>, capacity: u32) -> Option<u32> {
-    candidate.filter(|idx| *idx < capacity)
+fn ui_instance_within_capacity(candidate: Option<UiInstanceRange>, capacity: u32) -> Option<UiInstanceRange> {
+    candidate.filter(|range| range.first + range.count <= capacity)
 }
 
 /// #4726 / UI-D5-2026-09-21-05 — clamp scene draw batches to what the slot's
@@ -2066,7 +2080,11 @@ mod batches_scratch_reserve_tests {
 
 #[cfg(test)]
 mod ui_instance_idx_overflow_tests {
-    use super::{ui_instance_candidate, ui_instance_within_capacity};
+    use super::{ui_instance_candidate, ui_instance_within_capacity, UiInstanceRange};
+
+    fn range(first: u32, count: u32) -> Option<UiInstanceRange> {
+        Some(UiInstanceRange { first, count })
+    }
     use crate::vulkan::scene_buffer::MAX_INSTANCES;
 
     /// #3601 (REN-2026-08-30-D11-01) — `upload_instances` clamps an
@@ -2078,10 +2096,15 @@ mod ui_instance_idx_overflow_tests {
     /// SSBO's allocated capacity.
     #[test]
     fn ui_instance_idx_is_clamped_to_none_past_max_instances() {
-        assert_eq!(ui_instance_candidate(0), Some(0));
-        assert_eq!(ui_instance_candidate(MAX_INSTANCES - 1), Some(MAX_INSTANCES as u32 - 1));
-        assert_eq!(ui_instance_candidate(MAX_INSTANCES), None);
-        assert_eq!(ui_instance_candidate(MAX_INSTANCES + 7), None);
+        assert_eq!(ui_instance_candidate(0, 1), range(0, 1));
+        assert_eq!(ui_instance_candidate(MAX_INSTANCES - 1, 1), range(MAX_INSTANCES as u32 - 1, 1));
+        assert_eq!(ui_instance_candidate(MAX_INSTANCES, 1), None);
+        assert_eq!(ui_instance_candidate(MAX_INSTANCES + 7, 1), None);
+        // M48 — a stack of layers is kept or dropped whole: a partly
+        // uploaded run would draw the bottom layers without the top ones.
+        assert_eq!(ui_instance_candidate(MAX_INSTANCES - 2, 2), range(MAX_INSTANCES as u32 - 2, 2));
+        assert_eq!(ui_instance_candidate(MAX_INSTANCES - 1, 2), None);
+        assert_eq!(ui_instance_candidate(0, 0), None);
     }
 
     /// #4722 (UI-D5-2026-09-21-01) — #4199 moved `upload_instances`' clamp
@@ -2095,9 +2118,11 @@ mod ui_instance_idx_overflow_tests {
     /// capacity the upload clamped to is dropped, one below it survives.
     #[test]
     fn ui_instance_idx_is_reclamped_to_the_post_grow_slot_capacity() {
-        assert_eq!(ui_instance_within_capacity(Some(9), 10), Some(9));
-        assert_eq!(ui_instance_within_capacity(Some(10), 10), None);
-        assert_eq!(ui_instance_within_capacity(Some(11), 10), None);
+        assert_eq!(ui_instance_within_capacity(range(9, 1), 10), range(9, 1));
+        assert_eq!(ui_instance_within_capacity(range(10, 1), 10), None);
+        assert_eq!(ui_instance_within_capacity(range(11, 1), 10), None);
+        assert_eq!(ui_instance_within_capacity(range(8, 2), 10), range(8, 2));
+        assert_eq!(ui_instance_within_capacity(range(9, 2), 10), None);
         assert_eq!(ui_instance_within_capacity(None, 10), None);
     }
 

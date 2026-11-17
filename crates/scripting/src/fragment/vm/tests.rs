@@ -3919,6 +3919,38 @@ fn get_current_real_time_reads_the_engine_clock() {
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
 }
 
+/// GUI-REG-011 — `Utility.IsInMenuMode` is true exactly while the menu registry holds a menu that
+/// pauses the game: the inventory does, the dialogue menu and the HUD do not.
+#[test]
+fn is_in_menu_mode_reads_the_menu_registry() {
+    use byroredux_core::ecs::resources::menu_registry::{MenuGame, MenuRegistry, MenuSurface};
+    let script = parsed_source(
+        "ScriptName QF_VmMenuMode extends Quest\n\
+         Function Fragment_1()\n\
+           If Utility.IsInMenuMode()\n\
+             Self.SetStage(20)\n\
+           Else\n\
+             Self.SetStage(30)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let page = |name: &str| (name.to_owned(), MenuSurface::Native { page: "test".into() });
+    let answer = |open: &[&str]| {
+        let mut world = world_with_fragment(Arc::clone(&script));
+        let mut registry = MenuRegistry::new(MenuGame::Skyrim);
+        registry.publish(open.iter().map(|name| page(name)));
+        world.insert_resource(registry);
+        world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+        crate::fragment::quest_fragment_dispatch_system(&world);
+        let stage = world.resource::<QuestStageState>().get_stage(Q);
+        stage
+    };
+    assert_eq!(answer(&["HUD Menu", "InventoryMenu"]), 20, "the inventory pauses the game");
+    assert_eq!(answer(&["HUD Menu", "Dialogue Menu"]), 30, "the dialogue menu does not");
+    assert_eq!(answer(&["HUD Menu"]), 30, "nor the HUD alone");
+}
+
 /// `IsInDialogueWithPlayer` is true for the NPC whose response surface is open.
 #[test]
 fn is_in_dialogue_with_player_follows_the_open_surface() {

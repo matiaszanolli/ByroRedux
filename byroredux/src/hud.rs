@@ -550,15 +550,9 @@ pub(crate) fn launch_hud(
                 compass_strip,
             } = profile.style
             {
-                let layout = [
-                    ("hp_meter", 30.0),
-                    ("ap_meter", w as f32 - 330.0),
-                ];
-                for (i, (name, x)) in layout.iter().enumerate() {
+                for (i, name) in ASSEMBLED_METERS.iter().enumerate() {
                     match renderer.graft_fragment(&assets, meter_prefab, containers[i], name) {
                         Ok(_) => {
-                            renderer.set_override(name, "x", *x);
-                            renderer.set_override(name, "y", h as f32 - 100.0);
                             renderer.set_override(name, "width", 300.0);
                             renderer.set_override(name, "visible", 2.0);
                             renderer.set_override(name, "alpha", 255.0);
@@ -593,7 +587,8 @@ pub(crate) fn launch_hud(
                 }
             }
 
-            install_sneak_element(&mut renderer, &assets, profile.sneak, w as f32);
+            install_sneak_element(&mut renderer, &assets, profile.sneak);
+            place_engine_anchored(&mut renderer, &profile, w as f32, h as f32);
 
             // Same transparent initial upload the `--menu` route uses, so
             // the composite quad exists before the first rasterized frame.
@@ -744,6 +739,43 @@ impl MenuXmlHud {
         (self.width, self.height)
     }
 
+    /// The HUD's MenuXml document (`menus\main\hud_main_menu.xml`) — its surface in the menu
+    /// registry (M48 GUI-REG-001).
+    pub(crate) fn document_path(&self) -> &'static str {
+        self.profile.menu_path
+    }
+
+    /// Re-render at a new screen extent (M48 GUI-REG-008, ui.md § *Resize*): the document's
+    /// screen traits and the engine-anchored placements follow, the overlay texture is replaced at
+    /// the new size (same handle, old image deferred), and the next tick rasterizes afresh.
+    /// `false` when the extent did not change.
+    pub(crate) fn resize(
+        &mut self,
+        ctx: &mut byroredux_renderer::vulkan::context::VulkanContext,
+        width: u32,
+        height: u32,
+    ) -> bool {
+        if (width, height) == (self.width, self.height) || width == 0 || height == 0 {
+            return false;
+        }
+        self.renderer.set_screen(ScreenTraits::new(width as f32, height as f32));
+        place_engine_anchored(&mut self.renderer, &self.profile, width as f32, height as f32);
+        let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
+        if let Err(error) = ctx.texture_registry.update_rgba(
+            upload_ctx,
+            self.texture_handle,
+            width,
+            height,
+            &vec![0u8; (width * height * 4) as usize],
+        ) {
+            log::error!("hud: texture resize failed: {error:#}");
+        }
+        self.width = width;
+        self.height = height;
+        self.last_signature = 0;
+        true
+    }
+
     /// The handle the frame being recorded should composite.
     pub fn current_texture(&self) -> u32 {
         self.texture_handle
@@ -807,17 +839,11 @@ impl MenuXmlHud {
 
 /// M65 (SNK-HUD-003) — place the vanilla sneak element at launch. A failure
 /// leaves the HUD without it rather than refusing the HUD.
-fn install_sneak_element(renderer: &mut MenuRenderer, assets: &HudAssets, sneak: HudSneak, width: f32) {
+fn install_sneak_element(renderer: &mut MenuRenderer, assets: &HudAssets, sneak: HudSneak) {
     match sneak {
-        HudSneak::Text { meter, text } => {
-            // Engine-side placement, as for the meters: the XML authors only the
-            // meter's 356 × 34 size, and a child's x / y are screen positions
-            // unless it copies its parent's. Top centre (the text is
-            // `<justify> &center;`), in the HUD's label font, slot 7.
-            renderer.set_override(meter, "x", width / 2.0 - 178.0);
-            renderer.set_override(meter, "y", 40.0);
-            renderer.set_override(text, "x", width / 2.0);
-            renderer.set_override(text, "y", 40.0);
+        HudSneak::Text { meter: _, text } => {
+            // Top centre (the text is `<justify> &center;`, placed by
+            // `place_engine_anchored`), in the HUD's label font, slot 7.
             renderer.set_override(text, "font", 7.0);
             renderer.set_override(text, "alpha", 0.0);
         }
@@ -831,6 +857,29 @@ fn install_sneak_element(renderer: &mut MenuRenderer, assets: &HudAssets, sneak:
             renderer.set_override(crosshair, "visible", 0.0);
             renderer.set_override(eye, "user8", 0.0);
         }
+    }
+}
+
+/// The two Fallout meters `--hud` grafts under the named containers (the authored container rects
+/// carry no x/y, so the engine places them, [`place_engine_anchored`]).
+const ASSEMBLED_METERS: [&str; 2] = ["hp_meter", "ap_meter"];
+
+/// The engine-side placements the source engine performed in C++, against the screen extent:
+/// the assembled meters at the bottom corners, the sneak text top centre (the XML authors only the
+/// meter's 356 × 34 size, and a child's x / y are screen positions unless it copies its parent's).
+/// Run at launch and again after a resize (M48 GUI-REG-008).
+fn place_engine_anchored(renderer: &mut MenuRenderer, profile: &HudGameProfile, width: f32, height: f32) {
+    if matches!(profile.style, HudStyle::Assembled { .. }) {
+        for (name, x) in ASSEMBLED_METERS.iter().zip([30.0, width - 330.0]) {
+            renderer.set_override(name, "x", x);
+            renderer.set_override(name, "y", height - 100.0);
+        }
+    }
+    if let HudSneak::Text { meter, text } = profile.sneak {
+        renderer.set_override(meter, "x", width / 2.0 - 178.0);
+        renderer.set_override(meter, "y", 40.0);
+        renderer.set_override(text, "x", width / 2.0);
+        renderer.set_override(text, "y", 40.0);
     }
 }
 
@@ -980,7 +1029,8 @@ mod tests {
             renderer.set_override(mode.0, mode.1, 1.0);
         }
         let baseline = renderer.render_frame(&assets).to_vec();
-        install_sneak_element(&mut renderer, &assets, profile.sneak, 1280.0);
+        install_sneak_element(&mut renderer, &assets, profile.sneak);
+        place_engine_anchored(&mut renderer, &profile, 1280.0, 720.0);
         drive_sneak_element(&mut renderer, profile.sneak, None, 0);
         let hidden = renderer.render_frame(&assets).to_vec();
         drive_sneak_element(&mut renderer, profile.sneak, Some(&view), 255);

@@ -1495,17 +1495,9 @@ impl ApplicationHandler for App {
             self.capture_world_input();
         }
         // Keep the engine-owned UI compatibility snapshot current before the
-        // scheduler runs provider callbacks. The manager is main-thread-only,
-        // so this small projection is the bridge into the sandbox host.
-        if let Some(ui) = self.ui.manager.as_ref() {
-            crate::extensions::extension_ui_menu_sync(
-                &self.world,
-                Some(ui.menu_name.as_str()),
-                ui.visible,
-            );
-        } else {
-            crate::extensions::extension_ui_menu_sync(&self.world, None, false);
-        }
+        // scheduler runs provider callbacks: `UI.IsMenuOpen` answers from the
+        // menu registry the last frame published (M48 GUI-REG-002).
+        crate::extensions::extension_ui_menu_sync(&self.world);
 
         // Menu focus can change through engine code without a corresponding
         // winit event. Enforce modal ownership before the scheduler reads
@@ -1574,10 +1566,9 @@ impl ApplicationHandler for App {
         let vats_dt = if vats_scale < 1.0 { unscaled_dt } else { 0.0 };
         world_resource_set::<crate::components::VatsClock>(&self.world, |r| r.0 = vats_dt);
 
-        let simulation_paused = self
-            .debug_ui
-            .as_ref()
-            .is_some_and(byroredux_debug_ui::DebugUiState::simulation_paused);
+        // M48 GUI-REG-010 — the open registry menus' PauseGame flags, whatever
+        // their surface (a native page, a movie, a MenuXml document).
+        let simulation_paused = crate::menu_stack::simulation_paused(&self.world, self.cover_holds_game());
 
         // Update time resources.
         world_resource_set::<DeltaTime>(&self.world, |r| r.0 = dt);
@@ -1609,12 +1600,10 @@ impl ApplicationHandler for App {
         if !simulation_paused {
             self.scheduler.run(&self.world, dt);
         } else {
-            // GUI-EVT-006 — a native page pauses the world, but the original
-            // runs `Begin MenuMode` blocks exactly then; the result scripts of
-            // the stages they set run with them, as a SetStage runs its
-            // stage's script at once in the original.
-            byroredux_scripting::obscript_quests::obscript_quest_menu_mode_system(&self.world, wall_dt);
-            byroredux_scripting::obscript_results::obscript_stage_result_system(&self.world, wall_dt);
+            // GUI-EVT-006 — an open menu pauses the world, but the original
+            // runs `Begin MenuMode` blocks exactly then (and their stages'
+            // result scripts with them).
+            crate::menu_stack::run_menu_mode_frame(&self.world, wall_dt);
             // #5141 — the native pause menu used to gate the whole
             // scheduler, taking the debug-server drain with it: commands
             // queued while a Pause/Settings/Inventory page was open sat in
@@ -2062,10 +2051,14 @@ mod explicit_start_pin_release_tests {
 #[cfg(test)]
 mod app_scratch_telemetry_coverage_tests {
     /// Container fields of `App` that are deliberately not per-frame scratch.
-    const NOT_SCRATCH: [(&str, &str); 3] = [
+    const NOT_SCRATCH: [(&str, &str); 4] = [
         (
             "ui.reported_host_methods",
             "a dedup set capped by MAX_DISTINCT_HOST_METHOD_NAMES (#2964), not a per-frame buffer",
+        ),
+        (
+            "ui.dropped_host_calls",
+            "one latch per open Scaleform movie, pruned to the open layers every frame (#2969 / M48)",
         ),
         (
             "bench.cpu_frame_ms",

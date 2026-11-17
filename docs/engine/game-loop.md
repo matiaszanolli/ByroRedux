@@ -379,8 +379,7 @@ struct App {
     world: World,
     scheduler: Scheduler,
     last_frame: Instant,
-    ui_manager: Option<UiManager>,          // Ruffle SWF overlay
-    ui_texture_handle: Option<u32>,
+    ui: UiState,                            // Ruffle movie stack (each layer owns its texture), HUD drivers
     draw_commands: Vec<DrawCommand>,         // reused per-frame scratch
     water_commands: Vec<WaterDrawCommand>,   // reused per-frame scratch
     gpu_lights: Vec<GpuLight>,               // reused per-frame scratch

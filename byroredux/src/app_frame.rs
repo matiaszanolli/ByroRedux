@@ -304,7 +304,8 @@ impl App {
             }
         }
         self.present_modal_pages();
-        crate::systems::script_queries::publish_ui_menus(&self.world, self.debug_ui.as_ref(), self.loading_screen.active());
+        // M48 Phase 1 — UI extent, the console's ui.open / ui.close, the registry.
+        self.step_menus();
         let mut snapshot = if self
             .debug_ui
             .as_ref()
@@ -613,10 +614,10 @@ impl App {
             // (M48.4) owns the overlay when live; otherwise this is the
             // Ruffle SWF player.
             let ui_t0 = Instant::now();
-            let ui_tex = if let Some(movie) = self.video.tick(ctx, &self.world) {
-                Some(movie)
+            let ui_textures: Vec<u32> = if let Some(movie) = self.video.tick(ctx, &self.world) {
+                vec![movie]
             } else if self.loading_screen.active() {
-                self.loading_screen.texture()
+                self.loading_screen.texture().into_iter().collect()
             } else if self.ui.hud.is_some() {
                 // Read the control resource before mutably borrowing the
                 // HUD renderer (disjoint-field borrows, but the resource
@@ -628,6 +629,8 @@ impl App {
                     .unwrap_or_default();
                 let hud = self.ui.hud.as_mut().expect("is_some checked above");
                 tick_hud_overlay(hud, &self.world, ctx, frame.cam_forward, &control)
+                    .into_iter()
+                    .collect()
             } else {
                 tick_ui_overlay(
                     &self.world,
@@ -636,9 +639,7 @@ impl App {
                     frame.cam_forward,
                     self.ui.scaleform_hud.as_mut(),
                     UiOverlayState {
-                        texture_handle: self.ui.texture_handle,
                         dropped_host_calls: &mut self.ui.dropped_host_calls,
-                        dropped_host_calls_menu: &mut self.ui.dropped_host_calls_menu,
                         reported_host_methods: &mut self.ui.reported_host_methods,
                         reported_host_methods_capped: &mut self.ui.reported_host_methods_capped,
                     },
@@ -811,7 +812,7 @@ impl App {
                 fog_height_reference: frame.fog_height_reference,
                 wind_params,
                 wind_gust,
-                ui_texture_handle: ui_tex,
+                ui_texture_handles: &ui_textures,
                 sky_params: &frame.sky,
                 dof,
                 frame_time_delta_ms,
@@ -1017,6 +1018,7 @@ impl App {
             self.open_dialogue_menu();
         }
         self.close_dialogue_menu_if_goodbye_ended();
+        self.open_inventory_on_injected_press();
         self.present_barter_menu();
         self.present_crafting_menu();
         self.present_script_messages();
@@ -1409,12 +1411,9 @@ fn collect_and_prepare_groundcover(
 }
 
 /// The Scaleform overlay's latches and diagnostic sets, as disjoint borrows
-/// of `App`'s fields. `texture_handle` is by value — it is `Option<u32>`,
-/// and the overlay only reads it.
+/// of `App`'s fields.
 struct UiOverlayState<'a> {
-    texture_handle: Option<u32>,
-    dropped_host_calls: &'a mut u64,
-    dropped_host_calls_menu: &'a mut Option<String>,
+    dropped_host_calls: &'a mut std::collections::HashMap<String, (u64, String)>,
     reported_host_methods: &'a mut std::collections::HashSet<(String, String)>,
     reported_host_methods_capped: &'a mut bool,
 }
@@ -1460,10 +1459,11 @@ fn tick_hud_overlay(
     }
 }
 
-/// Tick the Ruffle overlay, drain what the menu asked of the host, and
-/// upload the frame it produced. Returns the texture handle `draw_frame`
-/// should composite, or `None` when the overlay is hidden — which is what
-/// stops the UI quad being emitted at all (#2972).
+/// Tick the Ruffle overlay, drain what each open movie asked of the host, and
+/// upload the frames they produced. Returns the texture handles `draw_frame`
+/// should composite, one per visible layer, bottom to top (M48 GUI-REG-001);
+/// empty when no movie is up — which is what stops the UI quad being emitted
+/// at all (#2972).
 ///
 /// `scaleform_hud` carries the M48.6 Skyrim `--hud` driver: when live it
 /// rides this same branch (the player must keep ticking/draining either
@@ -1477,17 +1477,24 @@ fn tick_ui_overlay(
     cam_forward: [f32; 3],
     scaleform_hud: Option<&mut crate::scaleform_hud::ScaleformHudDriver>,
     ui_state: UiOverlayState<'_>,
-) -> Option<u32> {
-    let mut ui_tex = None;
-    if let Some(ui) = ui_manager.as_mut() {
-        let dt = world
-            .try_resource::<DeltaTime>()
-            .map(|d| d.0 as f64)
-            .unwrap_or(1.0 / 60.0);
-        let ui_w = ui.width;
-        let ui_h = ui.height;
-        ui.tick(dt);
+) -> Vec<u32> {
+    let mut ui_textures = Vec::new();
+    let Some(manager) = ui_manager.as_mut() else {
+        ui_state.dropped_host_calls.clear();
+        return ui_textures;
+    };
+    let dt = world
+        .try_resource::<DeltaTime>()
+        .map(|d| d.0 as f64)
+        .unwrap_or(1.0 / 60.0);
+    let (ui_w, ui_h) = (manager.width, manager.height);
+    manager.tick(dt);
+    // A closed movie's latch goes with it.
+    ui_state
+        .dropped_host_calls
+        .retain(|menu, _| manager.layer(menu).is_some());
 
+    for ui in manager.layers_mut() {
         // Consume what the menu asked of the host (#2714). The bridge
         // is drain-based by design and had no consumer outside its own
         // tests, so every ActionScript call was retained for the life
@@ -1504,42 +1511,32 @@ fn tick_ui_overlay(
         let host_calls = ui.drain_host_calls();
         // #2969 — `drain_calls`' own contract: a batch must be read
         // together with the eviction counter, because it may not be
-        // contiguous. The bridge warns once at the producer when it
-        // first evicts, but that says "a call was lost", not "the
-        // batch you are about to act on has a hole in it" — and the
-        // moment this loop routes calls into quest / inventory /
-        // player state, that hole is a lost state transition with no
-        // signal. Latched, so the warning tracks increases rather
-        // than repeating every frame for the life of the menu.
+        // contiguous. Latched per movie, so the warning tracks increases
+        // rather than repeating every frame for the life of the menu.
         let dropped = ui.dropped_host_calls();
-        // #3772 — `host_call_gap_for_menu` resets the latch
-        // EXPLICITLY on a menu swap (effective latch 0 whenever
-        // `ui.menu_name` differs from what it was last latched
-        // against) rather than relying on `host_call_gap`'s
-        // decrease guard to infer one. A swap landing on a frame
-        // where the new bridge has already evicted N < the old
-        // latch would otherwise read as "un-dropped" (the same
-        // shape as same-bridge un-dropping, which cannot happen)
-        // and silently absorb the new menu's first N drops.
-        if let Some(lost) = crate::host_call_gap_for_menu(
-            *ui_state.dropped_host_calls,
-            ui_state.dropped_host_calls_menu.as_deref(),
-            &ui.menu_name,
-            dropped,
-        ) {
+        // #3772 — `host_call_gap_for_menu` resets the latch EXPLICITLY
+        // when the layer under this menu name is a different player
+        // (`menu#id`) from the one it was latched against, rather than
+        // relying on `host_call_gap`'s decrease guard to infer it.
+        let menu_name = ui.menu_name().to_owned();
+        let layer_key = format!("{menu_name}#{}", ui.id());
+        let (latched, latched_key) = ui_state
+            .dropped_host_calls
+            .get(&menu_name)
+            .map_or((0, None), |(count, key)| (*count, Some(key.as_str())));
+        if let Some(lost) = crate::host_call_gap_for_menu(latched, latched_key, &layer_key, dropped) {
             log::warn!(
                 "Scaleform menu '{}' lost {lost} host call(s) to the \
                  {}-entry bridge cap since the last drain ({dropped} \
                  total for this menu) — the {} call(s) drained this \
                  frame are not a contiguous record of what the menu \
                  asked for",
-                ui.menu_name,
+                menu_name,
                 byroredux_ui::MAX_QUEUED_CALLS,
                 host_calls.len(),
             );
         }
-        *ui_state.dropped_host_calls = dropped;
-        *ui_state.dropped_host_calls_menu = Some(ui.menu_name.clone());
+        ui_state.dropped_host_calls.insert(menu_name.clone(), (dropped, layer_key));
 
         for call in host_calls {
             log::debug!(
@@ -1557,7 +1554,7 @@ fn tick_ui_overlay(
             // gives `unknown_methods`/`unanswered_methods` upstream,
             // or a menu calling a distinct unimplemented name every
             // frame would grow this HashSet without limit.
-            let diagnostic_key = host_method_diagnostic_key(&ui.menu_name, &call.method);
+            let diagnostic_key = host_method_diagnostic_key(&menu_name, &call.method);
             if matches!(
                 call.dispatch,
                 ScaleformHostDispatch::Unknown | ScaleformHostDispatch::MissingResponse
@@ -1577,47 +1574,53 @@ fn tick_ui_overlay(
                     log::warn!(
                         "Scaleform menu '{}' called host method '{}' ({:?}) — \
                          no engine handler is registered, so the menu received Null",
-                        ui.menu_name,
+                        menu_name,
                         call.method,
                         call.dispatch,
                     );
                 }
             }
         }
+    }
 
-        // M48.6 — feed the Scaleform HUD (if live) after the drain: the
-        // driver's pushes mark the surface dirty, so the render below
-        // uploads them this frame, and any GameDelegate calls the movie
-        // makes in response are drained next tick.
-        if let Some(driver) = scaleform_hud {
-            driver.tick(world, ui, cam_forward);
-        }
+    // M48.6 — feed the Scaleform HUD (if live) after the drain: the
+    // driver's pushes mark the surface dirty, so the render below
+    // uploads them this frame, and any GameDelegate calls the movie
+    // makes in response are drained next tick.
+    if let Some(driver) = scaleform_hud {
+        let layer = manager.layer_mut(driver.menu());
+        driver.tick(world, layer, cam_forward);
+    }
 
+    for ui in manager.layers_mut() {
+        let texture = ui.texture();
         // #2972 — three-state, so "hidden" and "unchanged" no longer
-        // share one `None`. Leaving `ui_tex` at `None` is what stops
-        // `draw_frame` emitting the UI quad; previously a hidden
-        // overlay fell into the `Unchanged` arm and kept compositing
-        // its last uploaded frame over the world indefinitely.
+        // share one `None`. A hidden layer contributes no texture, which
+        // is what stops `draw_frame` compositing it; previously a hidden
+        // overlay fell into the `Unchanged` arm and kept compositing its
+        // last uploaded frame over the world indefinitely.
         match ui.render() {
             byroredux_ui::UiFrame::Fresh(pixels) => {
-                if let Some(handle) = ui_state.texture_handle {
+                if let Some(handle) = texture {
                     let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
+                    // GUI-REG-008 — the extent is the manager's current one,
+                    // so the first frame after a resize replaces the image.
                     if let Err(e) = ctx
                         .texture_registry
                         .update_rgba(upload_ctx, handle, ui_w, ui_h, pixels)
                     {
                         log::error!("UI texture update failed: {e:#}");
                     }
-                    ui_tex = Some(handle);
+                    ui_textures.push(handle);
                 }
             }
             byroredux_ui::UiFrame::Unchanged => {
-                ui_tex = ui_state.texture_handle;
+                ui_textures.extend(texture);
             }
             byroredux_ui::UiFrame::Hidden => {}
         }
     }
-    ui_tex
+    ui_textures
 }
 
 /// Drain the skin-slot pool's first-sight `bind_inverses` uploads.
