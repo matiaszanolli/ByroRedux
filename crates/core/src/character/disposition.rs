@@ -145,6 +145,22 @@ mod tests {
         );
     }
 
+    /// UESP *Oblivion:Disposition* (OAV-USE-005): NPC Personality 40 with the player at 39 and at 35 loses
+    /// 1 and 2 points, the player at 44 gains 1, and Fame pays +3 per 10 up to +20.
+    #[test]
+    fn personality_differential_and_fame_match_the_uesp_worked_examples() {
+        let at = |player: f32, fame: f32| {
+            vanilla().starting(DispositionInput {
+                actor_personality: 40.0,
+                target_personality: player,
+                target_fame: fame,
+                ..Default::default()
+            })
+        };
+        assert_eq!((at(40.0, 0.0), at(39.0, 0.0), at(35.0, 0.0), at(44.0, 0.0)), (40, 39, 38, 41));
+        assert_eq!((at(40.0, 10.0), at(40.0, 67.0), at(40.0, 100.0)), (43, 60, 60));
+    }
+
     #[test]
     fn faction_rank_and_mod_settings_are_applied_before_final_truncation() {
         let input = DispositionInput {
