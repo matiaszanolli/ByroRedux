@@ -815,6 +815,116 @@ attribute receives a +1 to +5 bonus based on governed major-skill increases
 skill-use progression curve. Source: [UESP Oblivion:
 Leveling](https://en.uesp.net/wiki/Oblivion:Leveling).
 
+## Engine-supplied actor values and stat models — BUILT at HEAD (#7008, OAV-RES / OAV-POP / OAI)
+
+`Oblivion.esm` authors no `AVIF` record: the executable hardcodes its 72 actor
+values. The engine therefore supplies one `AVIF` per index, so every consumer
+that resolves an actor value by record (conditions, magic effects, ObScript,
+`ActorValues`, CHARAL) reads Oblivion exactly as it reads the games whose
+masters author them. Parents: [oblivion-actor-values.md](../prd/oblivion-actor-values.md)
+(what the values are and who fills them) and
+[oblivion-actor-value-identity.md](../prd/oblivion-actor-value-identity.md)
+(identity, slot and saves). State below was read from the code at commit
+`99bf86ee4`; it says what exists, not that each path is tested or wired to
+every consumer (the PRD's Phase 2 census measures that).
+
+### The 72 records
+
+The roster is the one `const` table `OBLIVION_ACTOR_VALUES`
+(`crates/plugin/src/esm/records/oblivion_actor_values.rs`), in xEdit's TES4
+`wbActorValueEnum` order with the Construction Set's script spellings as
+EditorIDs:
+
+| Index | Values |
+|---|---|
+| 0–7 | Strength, Intelligence, Willpower, Agility, Speed, Endurance, Personality, Luck |
+| 8–11 | Health, Magicka, Fatigue, Encumbrance |
+| 12–32 | The 21 skills, seven per specialization: Combat 12–18 (Armorer … HeavyArmor), Magic 19–25 (Alchemy … Restoration), Stealth 26–32 (Acrobatics … Speechcraft) |
+| 33–36 | Aggression, Confidence, Energy, Responsibility (from `AIDT`) |
+| 37–71 | Bounty, Fame, Infamy, MagickaMultiplier, NightEyeBonus, AttackBonus, DefendBonus, CastingPenalty, Blindness, Chameleon, Invisibility, Paralysis, Silence, Confusion, … Vampirism, Darkness, ResistWaterDamage |
+
+Fame and Infamy (38, 39) are installed but excluded from index and name
+resolution unless the caller asks for reserved values
+(`oblivion_actor_value(index, include_reserved)`, `vanilla_name`). That
+mirrors the executable: vanilla `GetActorValue`, `SetActorValue` and
+`ModActorValue` reject them while the dedicated player fame and infamy
+commands and OBSE accept them (see [charal.md §9](charal.md)).
+
+### Identity and slot
+
+- Durable identity: `FormIdPair { ENGINE_PLUGIN_ID, local = index + 1 }`.
+  `ENGINE_PLUGIN_ID` is a UUID v5 in the engine's own namespace
+  (`crates/core/src/form_id.rs`), so no plugin filename can derive it; the
+  `+ 1` is because `LoadOrderIdentity::global_form_id` rejects local id 0.
+- Runtime key: the engine slot composed with the local id. The slot is the
+  lowest unused `Regular` slot in `0x00..=0xFB` after every real plugin
+  (`LoadOrderIdentity::allocate_engine_slot`, `crates/scripting/src/load_order.rs`;
+  `0xFC` and above belong to alias owners and other form spaces). A loaded
+  plugin that already carries the engine identity, a duplicate slot or plugin
+  identity, and a full table (252 slots) are errors with a named message, never
+  a reuse of a plugin's slot.
+- Install: `EsmIndex::install_oblivion_actor_values(slot)` inserts the 72
+  records atomically and idempotently, and refuses a slot that already holds
+  other records.
+- Saves: `FORMAT_MAJOR` is 133 and the actor-value save codec
+  (`crates/scripting/src/actor_value_save.rs`) writes `FormIdPair` keys, never
+  the session's slot. A pair whose plugin is not loaded is dropped with a
+  diagnostic (OAI-SAVE-005).
+
+### Stat models
+
+`CharacterRulesProfile::OBLIVION` selects `NpcStatModel::OblivionNpc` for
+`NPC_` and `NpcStatModel::OblivionCreature` for `CREA`
+(`crates/core/src/character/profile.rs`); both dispatch to
+`oblivion_population::derive` (`crates/plugin/src/esm/records/oblivion_population.rs`).
+Consumers branch on the record kind, never on the game.
+
+| Record | Model | Values |
+|---|---|---|
+| `NPC_`, neither `ACBS` bit 4 nor bit 7, and the `Player` record (form id 7) | Stored | Attributes 0–7, 21 skills and Health from `DATA`; Magicka and Fatigue from `ACBS`; Encumbrance 5 × Strength |
+| `NPC_`, bit 4 or bit 7 | Class auto-calc | The rules of [NPC auto-calc stats](#npc-auto-calc-stats--locked-from-the-executable-7008-oav-pop-003) from the race (`ATTR`, `DATA`), the class (favored attributes, specialization, seven major skills) and the level; no values are stamped if the race or class record is missing or the class is malformed (the model declines, it never invents) |
+| `CREA` | Creature data | Attributes from `DATA`; each skill is its group's value (Combat for 12–18, Magic for 19–25, Stealth for 26–32); Health, Magicka and Fatigue are multiplied by the level when `ACBS` bit 7 is set (CS *Stats Tab - Creatures*); Encumbrance 5 × Strength |
+| Any actor with `AIDT` | Extra values | 33–36 from the first four bytes |
+
+The level an auto-calc or level-offset actor spawns at follows the
+executable: bit 7 adds the actor's level to the player's level, a positive
+minimum and then a positive maximum clamp it, and the floor is 1
+(`0x467807`–`0x467872`; zero bounds are disabled). Bit 7 clear uses the
+authored level.
+
+**Creature skills have two views.** The executable remaps each skill group
+onto one current-value index (Combat 12, Magic 19, Stealth 26) and routes
+Marksman (28) to Combat for the *current* value but to Stealth for the *base*
+value (`0x6253c0`–`0x625456` against `0x51d56a`–`0x51d577`). The engine models
+this with per-skill aliases (`creature_skill_aliases`): each non-group skill
+reads its current value from the group's source (28 from 12) and its base
+value from the group head, so a script or magic effect that modifies the
+group is seen by every skill that shares it. Stamping one raw number per
+skill would lose that sharing.
+
+### Known gaps against the executable
+
+These are measured differences at the commit above, found by reading the
+code against the traces in the next section; none has a test that pins it yet.
+
+1. **Magicka.** The code stamps `2.5 * Intelligence` unrounded with the
+   multiplier hardcoded. The executable computes
+   `trunc(Int * (1 + fNPCBaseMagickaMult))` from the game setting
+   (`0x5482b0`, GMST 1.5 in `Oblivion.esm`). Odd Intelligence therefore
+   differs by 0.5 (45 gives 112.5, the executable 112), and a mod that retunes
+   the GMST is not followed.
+2. **Favored-attribute bonus.** Hardcoded 5.0 for both favored attributes. The
+   executable reads `fAttributeClassPrimaryBonus` and
+   `fAttributeClassSecondaryBonus` (default 5.0 each, no `Oblivion.esm`
+   record), so only a mod that sets them diverges.
+3. **Rounding.** Attribute and skill rounding is round-half-to-even, which
+   assumes the x87 default of the executable's `fistp`; the control word was
+   not measured.
+4. **Creature level scaling** rests on the Construction Set text alone; the
+   executable's creature path was not traced.
+5. **Flag timing.** Which trigger applies at spawn, level change and reload
+   for each of the four flag combinations is [#7022](https://github.com/matiaszanolli/ByroRedux/issues/7022).
+
 ## NPC auto-calc stats — LOCKED from the executable (#7008, OAV-POP-003)
 
 The `ClassAutoCalc` stat model of the Oblivion Actor Values PRD
