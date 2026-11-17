@@ -97,7 +97,7 @@ pub(crate) struct HudGameProfile {
     /// transparent split the texture provider gives `--textures-bsa`.
     default_textures_bsa: &'static str,
     menu_path: &'static str,
-    menu: MenuProfile,
+    pub(crate) menu: MenuProfile,
     style: HudStyle,
     bars: &'static [HudBar],
     sneak: HudSneak,
@@ -225,6 +225,17 @@ pub(crate) struct HudAssets {
 }
 
 impl HudAssets {
+    /// The menu and texture archives of `profile` in the game data directory `data`, for a test
+    /// that loads a corpus document (the HUD, a menu); `None` when the archives are missing.
+    #[cfg(test)]
+    pub(crate) fn open_in(profile: HudGameProfile, data: &std::path::Path) -> Option<Self> {
+        let misc = Archive::open(&data.join(profile.misc_bsa).to_string_lossy()).ok()?;
+        let mut textures = Vec::new();
+        let textures_path = data.join(profile.default_textures_bsa).to_string_lossy().into_owned();
+        open_with_numeric_siblings(&textures_path, "HUD textures", &mut textures, &mut std::collections::HashSet::new());
+        Some(Self { misc, textures, profile })
+    }
+
     fn extract_texture(&self, path: &str) -> Option<Vec<u8>> {
         extract_first(self.textures.iter().rev(), path)
     }
@@ -1017,11 +1028,7 @@ mod tests {
         data: std::path::PathBuf,
         view: byroredux_debug_ui::StealthIndicatorView,
     ) -> Option<SneakFrames> {
-        let misc = Archive::open(&data.join(profile.misc_bsa).to_string_lossy()).ok()?;
-        let mut textures = Vec::new();
-        let textures_path = data.join(profile.default_textures_bsa).to_string_lossy().into_owned();
-        open_with_numeric_siblings(&textures_path, "HUD textures", &mut textures, &mut std::collections::HashSet::new());
-        let assets = HudAssets { misc, textures, profile };
+        let assets = HudAssets::open_in(profile, &data)?;
         let mut renderer =
             MenuRenderer::load_with_profile(&assets, profile.menu_path, ScreenTraits::new(1280.0, 720.0), profile.menu)
                 .expect("the vanilla HUD loads");

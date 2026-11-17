@@ -68,6 +68,9 @@ enum Selector<'a> {
     Child(&'a str),
     /// `screen()` / `strings()` pseudo-tiles.
     Pseudo(&'a str),
+    /// `io()`: the menu's input / output traits — the root tile's, which engine code and scripts
+    /// set (`SetUIFloat "HudMainMenu\_MyModVisible" 1`, GECK *Tutorial: Understanding XML*).
+    Io,
     /// Bare tile name, resolved through the document's name index.
     Named(&'a str),
 }
@@ -80,6 +83,7 @@ fn parse_selector(src: &str) -> Selector<'_> {
             "parent" => return Selector::Parent,
             "screen" => return Selector::Pseudo("screen"),
             "strings" => return Selector::Pseudo("strings"),
+            "io" => return Selector::Io,
             _ => {}
         }
     }
@@ -223,6 +227,7 @@ impl<'a> EvalState<'a> {
     fn read_selected(&mut self, tile: usize, src: &str, trait_name: &str) -> Scalar {
         match parse_selector(src) {
             Selector::Me => self.trait_value(tile, trait_name),
+            Selector::Io => self.trait_value(0, trait_name),
             Selector::Parent => match self.doc.tiles[tile].parent {
                 Some(p) => self.trait_value(p, trait_name),
                 // Root's parent: read against the root itself (harmless

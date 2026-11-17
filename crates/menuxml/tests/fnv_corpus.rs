@@ -176,9 +176,11 @@ fn fnv_menu_xml_corpus_parses_with_exact_totals() {
         spliced_tiles += included.tiles.len();
     }
 
-    assert_eq!(tiles, 1_060, "FNV un-spliced tile total changed");
-    assert_eq!(spliced_tiles, 2_206, "FNV include-spliced tile total changed");
-    assert_eq!(largest, 195, "FNV largest menu tile count changed");
+    // #6665 — `<hotrect>` parses as a tile (it used to parse as a trait, swallowing the list
+    // items and their subtrees): 1,060 / 2,206 / 195 before.
+    assert_eq!(tiles, 1_545, "FNV un-spliced tile total changed");
+    assert_eq!(spliced_tiles, 4_273, "FNV include-spliced tile total changed");
+    assert_eq!(largest, 303, "FNV largest menu tile count changed");
 }
 
 /// #5669 — header census of every DDS under `textures\interface\`: the

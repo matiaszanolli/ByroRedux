@@ -178,9 +178,11 @@ fn fo3_menu_xml_corpus_parses_with_exact_totals() {
         spliced_tiles += included.tiles.len();
     }
 
-    assert_eq!(tiles, 736, "FO3 un-spliced tile total changed");
-    assert_eq!(spliced_tiles, 1_445, "FO3 include-spliced tile total changed");
-    assert_eq!(largest, 150, "FO3 largest menu tile count changed");
+    // #6665 — `<hotrect>` parses as a tile (it used to parse as a trait, swallowing the list
+    // items and their subtrees): 736 / 1,445 / 150 before.
+    assert_eq!(tiles, 1_054, "FO3 un-spliced tile total changed");
+    assert_eq!(spliced_tiles, 2_742, "FO3 include-spliced tile total changed");
+    assert_eq!(largest, 249, "FO3 largest menu tile count changed");
 }
 
 /// Full FO3 HUD render: meters grafted from `meter.xml` under the

@@ -62,6 +62,7 @@ mod material_dump;
 mod material_flags;
 mod material_translate;
 mod menu_stack;
+mod menu_xml_input;
 mod name_lookup;
 mod npc_spawn;
 mod ownership_sample;

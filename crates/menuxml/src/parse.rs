@@ -165,7 +165,10 @@ impl TileKind {
     fn from_element(name: &str) -> Option<Self> {
         Some(match name {
             "menu" => Self::Menu,
-            "rect" | "window" => Self::Rect,
+            // `hotrect` (Fallout 3 / New Vegas): a rect that takes the pointer — list items and
+            // the lists that hold them (`menus\message_menu.xml`'s `MM_ButtonList`). Before
+            // #6665 it parsed as a trait, which swallowed the tile and its subtree.
+            "rect" | "window" | "hotrect" => Self::Rect,
             "image" => Self::Image,
             "text" => Self::Text,
             "nif" | "3d" => Self::Nif,

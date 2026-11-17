@@ -99,6 +99,29 @@ pub enum MenuError {
 /// so 1 GiB cannot refuse vanilla art in any supported game.
 const MAX_DECODED_TEXTURE_BYTES: usize = 1 << 30;
 
+/// A target tile the pointer or the keyboard reached (GUI-XML-002): its arena index, its
+/// document name and its `<id>`, the handle the engine's menu code keys a control by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TileHit {
+    pub tile: usize,
+    pub name: Option<String>,
+    pub id: Option<i32>,
+}
+
+/// A navigation key, as the input adapter maps the platform's keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuKey {
+    /// Focus the next target in draw order (Down / Tab).
+    Next,
+    /// Focus the previous target (Up / Shift+Tab).
+    Previous,
+    /// Activate the focused target (Enter / Space).
+    Activate,
+}
+
+/// Activations held for a drain at most; the oldest goes past it.
+const MAX_PENDING_ACTIVATIONS: usize = 64;
+
 /// A loaded, renderable menu.
 pub struct MenuRenderer {
     doc: Document,
@@ -135,6 +158,12 @@ pub struct MenuRenderer {
     texture_set: TextureSet,
     /// nif tiles encountered (diagnostic, logged once at load).
     pub nif_tiles: usize,
+    /// The target the pointer went down on, until it comes up.
+    pressed: Option<usize>,
+    /// The keyboard-focused target.
+    focus: Option<usize>,
+    /// Activations since the last [`Self::take_activations`].
+    activations: Vec<TileHit>,
 }
 
 struct AssetsAsFileSource<'a> {
@@ -260,6 +289,9 @@ impl MenuRenderer {
             frame: Framebuffer::new(screen.width as u32, screen.height as u32),
             texture_set,
             nif_tiles,
+            pressed: None,
+            focus: None,
+            activations: Vec::new(),
         })
     }
 
@@ -355,6 +387,90 @@ impl MenuRenderer {
             .copied()
             .ok_or_else(|| MenuError::MissingTile(parent_name.to_string()))?;
         Ok(self.doc.graft_subtree(&fragment, 0, parent, Some(new_name)))
+    }
+
+    /// The tiles that take the pointer this frame, in draw order (later is on top).
+    pub fn hit_targets(&self) -> Vec<crate::layout::HitTarget> {
+        let mut eval = EvalState::new(&self.doc, self.screen, &self.strings, &self.overrides);
+        eval.resolve_all();
+        crate::layout::build_layout(&self.doc, &mut eval).1
+    }
+
+    fn hit(&self, tile: usize) -> TileHit {
+        let tile_data = &self.doc.tiles[tile];
+        TileHit { tile, name: tile_data.name.clone(), id: tile_data.id }
+    }
+
+    /// The topmost target under `(x, y)` (UI pixels), if any (GUI-XML-002).
+    pub fn hit_test(&self, x: f32, y: f32) -> Option<TileHit> {
+        self.hit_targets().iter().rev().find(|target| target.contains(x, y)).map(|target| self.hit(target.tile))
+    }
+
+    /// The pointer went down at `(x, y)`: the target there is pressed (and focused).
+    pub fn pointer_down(&mut self, x: f32, y: f32) {
+        self.pressed = self.hit_test(x, y).map(|hit| hit.tile);
+        if self.pressed.is_some() {
+            self.focus = self.pressed;
+        }
+    }
+
+    /// The pointer came up at `(x, y)`: a target pressed and released in place is activated once.
+    pub fn pointer_up(&mut self, x: f32, y: f32) {
+        let pressed = self.pressed.take();
+        if let Some(hit) = self.hit_test(x, y).filter(|hit| Some(hit.tile) == pressed) {
+            self.push_activation(hit);
+        }
+    }
+
+    /// A navigation key: move the focus through the targets in draw order (starting from the one
+    /// whose `xdefault` is set), or activate the focused one.
+    pub fn key(&mut self, key: MenuKey) {
+        let targets: Vec<usize> = self.hit_targets().iter().map(|target| target.tile).collect();
+        if targets.is_empty() {
+            self.focus = None;
+            return;
+        }
+        let position = self.focus.and_then(|focus| targets.iter().position(|tile| *tile == focus));
+        match key {
+            MenuKey::Activate => {
+                if let Some(tile) = position.map(|at| targets[at]) {
+                    let hit = self.hit(tile);
+                    self.push_activation(hit);
+                }
+            }
+            MenuKey::Next | MenuKey::Previous => {
+                let next = match (position, key) {
+                    (None, _) => self.default_target(&targets).unwrap_or(0),
+                    (Some(at), MenuKey::Next) => (at + 1) % targets.len(),
+                    (Some(at), _) => (at + targets.len() - 1) % targets.len(),
+                };
+                self.focus = Some(targets[next]);
+            }
+        }
+    }
+
+    /// The first target whose `xdefault` trait is set (the list items' default focus).
+    fn default_target(&self, targets: &[usize]) -> Option<usize> {
+        let mut eval = EvalState::new(&self.doc, self.screen, &self.strings, &self.overrides);
+        eval.resolve_all();
+        targets.iter().position(|tile| eval.trait_value(*tile, "xdefault").truthy())
+    }
+
+    /// The keyboard-focused target, if any.
+    pub fn focused(&self) -> Option<TileHit> {
+        self.focus.map(|tile| self.hit(tile))
+    }
+
+    fn push_activation(&mut self, hit: TileHit) {
+        if self.activations.len() >= MAX_PENDING_ACTIVATIONS {
+            self.activations.remove(0);
+        }
+        self.activations.push(hit);
+    }
+
+    /// The targets activated since the last call, in order.
+    pub fn take_activations(&mut self) -> Vec<TileHit> {
+        std::mem::take(&mut self.activations)
     }
 
     /// Tile index by name, for drivers that want to probe traits.

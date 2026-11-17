@@ -1880,3 +1880,69 @@ fn a_parsed_font_record_reads_x_before_y() {
     assert_eq!((g.width, g.height), (5.0, 7.0));
     assert!(g.inked);
 }
+
+/// M48 GUI-XML-002 (#6665) — pointer and keyboard input over a menu's targets: a `hotrect` parses
+/// as a tile (with its children); `hit_test` returns the topmost visible target under the point
+/// (alpha 0 still counts, a non-target or invisible tile does not, a clip window bounds a target
+/// that `clips`); a down / up pair on one target activates it once; Next / Activate walk the
+/// targets from the `xdefault` one.
+#[test]
+fn targets_take_pointer_and_keyboard_input() {
+    let assets = SynthAssets {
+        xml: br#"
+        <menu name="HUDMainMenu">
+            <locus> &true; </locus>
+            <hotrect name="List">
+                <locus> &true; </locus>
+                <clipwindow> &true; </clipwindow>
+                <x> 100 </x> <y> 100 </y> <width> 200 </width> <height> 100 </height>
+                <hotrect name="Yes">
+                    <id> 7 </id>
+                    <target> &true; </target> <alpha> 0 </alpha>
+                    <x> 0 </x> <y> 0 </y> <width> 200 </width> <height> 40 </height>
+                    <text name="YesText"> <string> Yes </string> </text>
+                </hotrect>
+                <hotrect name="No">
+                    <id> 8 </id>
+                    <target> &true; </target> <xdefault> &true; </xdefault>
+                    <clips> &true; </clips>
+                    <x> 0 </x> <y> 80 </y> <width> 200 </width> <height> 40 </height>
+                </hotrect>
+                <rect name="Hidden">
+                    <target> &true; </target> <visible> &false; </visible>
+                    <x> 0 </x> <y> 0 </y> <width> 200 </width> <height> 40 </height>
+                </rect>
+                <rect name="Plain">
+                    <x> 0 </x> <y> 40 </y> <width> 200 </width> <height> 40 </height>
+                </rect>
+            </hotrect>
+        </menu>"#
+            .to_vec(),
+        strings: b"<menu></menu>".to_vec(),
+    };
+    let mut r = MenuRenderer::load(&assets, "menus\\main\\hud_main_menu.xml", ScreenTraits::new(1280.0, 720.0)).unwrap();
+    assert!(r.tile("YesText").is_some(), "a hotrect's children are tiles");
+    let name = |hit: Option<crate::TileHit>| hit.and_then(|hit| hit.name);
+    assert_eq!(name(r.hit_test(150.0, 120.0)).as_deref(), Some("Yes"));
+    assert_eq!(r.hit_test(150.0, 120.0).and_then(|hit| hit.id), Some(7));
+    assert_eq!(r.hit_test(150.0, 160.0), None, "a plain rect takes no pointer");
+    assert_eq!(name(r.hit_test(150.0, 185.0)).as_deref(), Some("No"));
+    assert_eq!(r.hit_test(150.0, 205.0), None, "No's lower half is clipped by its list");
+    assert_eq!(r.hit_test(50.0, 50.0), None);
+
+    r.pointer_down(150.0, 120.0);
+    r.pointer_up(152.0, 125.0);
+    r.pointer_down(150.0, 120.0);
+    r.pointer_up(150.0, 185.0);
+    r.pointer_down(50.0, 50.0);
+    r.pointer_up(50.0, 50.0);
+    let activated: Vec<_> = r.take_activations().into_iter().filter_map(|hit| hit.name).collect();
+    assert_eq!(activated, ["Yes"], "one activation, only for a press released on the same target");
+
+    r.key(crate::MenuKey::Next);
+    assert_eq!(name(r.focused()).as_deref(), Some("No"), "the xdefault target first");
+    r.key(crate::MenuKey::Next);
+    assert_eq!(name(r.focused()).as_deref(), Some("Yes"));
+    r.key(crate::MenuKey::Activate);
+    assert_eq!(r.take_activations().into_iter().filter_map(|hit| hit.name).collect::<Vec<_>>(), ["Yes"]);
+}

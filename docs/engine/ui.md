@@ -1019,25 +1019,43 @@ Phase 2 built the path service on both VMs:
   Noto Sans fallback until Fallout 4's `$MAIN_Font_Bold` class is mapped (Phase 6).
   Quest and location markers are not modelled.
 
-#### MenuXml input (GUI-XML-001…003)
+#### MenuXml input (GUI-XML-001…003) — built in Phase 3 (#6665)
 
-`crates/menuxml` has no input handling today and must stay engine-neutral (no
-dependency on the UI or Ruffle crates). Phase 3 adds
-`MenuRenderer::hit_test(x, y) -> Option<TileHit>` and an activation event
-queue; a new binary-side adapter (a `menu_xml_input` module in the `byroredux` crate, not yet written), maps
-`UiInputEvent::{MouseMove, MouseDown, MouseUp, KeyDown}` onto them, routed by the
-registry's input owner so one rule covers both tracks. Values a document reads
-go in through `set_override`, `instantiate_template` and `graft_fragment`.
+`crates/menuxml` stays engine-neutral (no dependency on the UI or Ruffle crates).
+The layout walk that builds the draw list also collects the **hit targets**
+(`layout::build_layout`, `HitTarget`): visible tiles whose `target` trait is true,
+whatever their alpha (vanilla's hit rects are alpha 0), with the clip window they
+are seen through when they `clips`. `MenuRenderer::hit_test(x, y) -> Option<TileHit>`
+returns the topmost (`TileHit` carries the tile, its name and its `<id>`);
+`pointer_down` / `pointer_up` activate a target pressed and released in place,
+once; `key(MenuKey::{Next, Previous, Activate})` moves a focus through the targets
+in draw order from the `xdefault` one; `take_activations` drains. The binary-side
+adapter is `byroredux/src/menu_xml_input.rs`: `route` maps
+`UiInputEvent::{MouseMove, MouseDown, MouseUp, KeyDown}` (Down / Tab, Up, Enter /
+Space) onto those, and `owns_input` is the registry's input-owner rule
+(GUI-REG-009). Values a document reads go in through `set_override`,
+`instantiate_template` and `graft_fragment` (GUI-XML-003).
 
-The corpus-gated tests the Phase 3 exit names, in that module, `#[ignore = "needs
-FNV/FO3 game data on disk"]` like `fo3_corpus.rs`:
-`fnv_menu_document_takes_pointer_input` and
+Two dialect fixes came with it: **`<hotrect>`** (Fallout 3 / New Vegas list items
+and the lists that hold them) is a rect tile; it used to parse as a trait, which
+swallowed the tile and its subtree (the corpus pins grew: FNV 1,060 → 1,545
+un-spliced tiles, FO3 736 → 1,054). **`io()`** reads the menu root's traits, the
+ones engine code and scripts set (`SetUIFloat "HudMainMenu\_trait"`, GECK
+*Tutorial: Understanding XML*); it used to read 0.
+
+The Phase 3 exit's corpus-gated tests, `#[ignore = "needs FNV/FO3 game data on
+disk"]`: `menu_xml_input::tests::fnv_menu_document_takes_pointer_input` and
 `fo3_menu_document_takes_pointer_input`. Each loads `menus\message_menu.xml`
-through the game's `MenuProfile` (a non-HUD document; the engine builds its
-buttons by instantiating `MM_ButtonTemplate` under `MM_ButtonList`), instantiates
-two buttons, and asserts that (1) `hit_test` at a button's centre returns that
-tile, (2) a `UiInputEvent` down / up pair on it yields exactly one activation for
-it, (3) a pair outside every tile yields none.
+through the game's `MenuProfile`, stands in for what native code sets (the
+menu's io traits, the list's size: `list_box.xml` "REQUIRED OVERRIDE" width,
+"recommended override" height; per button `listindex`, `_y`, `string` and the
+height native computes from the text), instantiates two buttons
+(`MM_ButtonTemplate` under `MM_ButtonList`), and asserts that `hit_test` at a
+button's centre returns it, a `UiInputEvent` down / up pair on it yields exactly
+one activation for it, and a pair outside every tile yields none. **Not built:**
+a live S2 surface for a non-HUD MenuXml menu (opening `message_menu.xml` as a
+registry layer and feeding it the frame's input); `route` / `owns_input` carry a
+self-expiring `expect(dead_code)` until it lands.
 
 #### Strings and fonts the design depends on
 
