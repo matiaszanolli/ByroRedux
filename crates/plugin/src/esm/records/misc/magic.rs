@@ -792,6 +792,8 @@ struct MagicEffectAccumulator {
     game: GameKind,
     pending_efid: u32,
     items: Vec<MagicEffectItem>,
+    /// Oblivion's `EFIT` range / type (@16: 0 self, 1 touch, 2 target), one per item; 0 on every other game.
+    ranges: Vec<u32>,
 }
 
 impl MagicEffectAccumulator {
@@ -800,6 +802,7 @@ impl MagicEffectAccumulator {
             game,
             pending_efid: 0,
             items: Vec::new(),
+            ranges: Vec::new(),
         }
     }
 
@@ -853,6 +856,10 @@ impl MagicEffectAccumulator {
                     script_form_id: 0,
                     conditions: Vec::new(),
                 });
+                self.ranges.push(match self.game {
+                    GameKind::Oblivion => sub.data.get(16..20).map_or(0, |bytes| u32::from_le_bytes(bytes.try_into().unwrap())),
+                    _ => 0,
+                });
                 self.pending_efid = 0;
             }
             // Script Effect Data, written after its EFIT: `[script FormID][magic school][visual
@@ -873,6 +880,18 @@ impl MagicEffectAccumulator {
             _ => {}
         }
     }
+}
+
+/// An Oblivion record's complete effect chain with each effect's `EFIT` range (0 self, 1 touch, 2 target):
+/// `None` when an `EFID` has no `EFIT` (an incomplete chain is never partly used) or the chain is empty.
+pub(crate) fn oblivion_effect_chain(subs: &[SubRecord]) -> Option<Vec<(MagicEffectItem, u32)>> {
+    let mut chain = MagicEffectAccumulator::for_game(GameKind::Oblivion);
+    for sub in subs {
+        chain.feed(sub, &None);
+    }
+    let declared = subs.iter().filter(|sub| &sub.sub_type == b"EFID").count();
+    (chain.pending_efid == 0 && declared == chain.items.len() && !chain.items.is_empty())
+        .then(|| chain.items.into_iter().zip(chain.ranges).collect())
 }
 
 /// `SPEL` spell / ability / power record. FO3/FNV also covers passive

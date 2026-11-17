@@ -2911,6 +2911,84 @@ fn caster_effects_refuse_what_the_runtime_cannot_play_whole() {
     assert_eq!(caster_effects(&partial, 10, true).map(|effects| effects.len()), Some(1));
 }
 
+/// #7045 — an Oblivion restore potion (`ALCH` with an `REHE` effect code) is admitted by the catalog and its
+/// effect is the value change the caster runtime applies to the player's installed Health, where the
+/// Fallout-only parse and header gates refused every Oblivion ingestible.
+#[test]
+fn an_oblivion_restore_potion_is_catalogued_with_its_health_effect() {
+    use byroredux_plugin::esm::reader::{GlobalSlot, SubRecord};
+    use byroredux_plugin::esm::records::{parse_alch_for_game, parse_mgef_for_game};
+    let mut index = EsmIndex { game: GameKind::Oblivion, character_rules: byroredux_core::character::CharacterRulesProfile::OBLIVION, ..Default::default() };
+    index.install_oblivion_actor_values(GlobalSlot::Regular(1)).unwrap();
+    let health = index.actor_value_form_id("Health").unwrap();
+    // REHE: a self effect on the actor value its DATA names (Health, index 8).
+    let mut mgef = vec![0u8; 36];
+    mgef[..4].copy_from_slice(&((1u32 << 24) | 0x10).to_le_bytes());
+    mgef[8..12].copy_from_slice(&8u32.to_le_bytes());
+    index.magic_effects.insert(0x10, parse_mgef_for_game(0x10, &[SubRecord { sub_type: *b"DATA", data: mgef }], GameKind::Oblivion, &None));
+    index.magic_effects_by_code.insert(*b"REHE", 0x10);
+    let mut efit = b"REHE".to_vec();
+    for word in [25u32, 0, 0, 0] {
+        efit.extend(word.to_le_bytes());
+    }
+    efit.extend((-1i32).to_le_bytes());
+    let subs = [
+        SubRecord { sub_type: *b"ENIT", data: vec![0; 8] },
+        SubRecord { sub_type: *b"EFID", data: b"REHE".to_vec() },
+        SubRecord { sub_type: *b"EFIT", data: efit },
+    ];
+    index.items.insert(0x98496, parse_alch_for_game(0x98496, &subs, GameKind::Oblivion, &None));
+
+    let effects = caster_effects(&index, 0x98496, false).expect("the potion is a simple self consumable");
+    assert_eq!(effects.len(), 1);
+    let value = effects[0].effect.value.expect("a modelled value effect");
+    assert_eq!((value.actor_value, value.amount, value.recover), (health, 25.0, false));
+    assert_eq!(effects[0].effect.duration, 0.0, "instant");
+
+    let mut world = World::new();
+    install_catalog(&mut world, &index);
+    assert!(world.resource::<InventoryCatalog>().script_effects.contains_key(&0x98496));
+}
+
+/// #7045 — the real `Oblivion.esm` ingestibles through the catalog: how many of the 253 `ALCH` are admitted, and
+/// which are refused (a touch / target / area effect, an effect the runtime does not model, a script).
+#[test]
+#[ignore = "needs installed Oblivion.esm"]
+fn real_oblivion_ingestibles_census() {
+    use byroredux_plugin::esm::reader::GlobalSlot;
+    let path = byroredux_plugin::esm::test_paths::oblivion_data_dir().join("Oblivion.esm");
+    let mut index = byroredux_plugin::esm::parse_esm(&std::fs::read(path).expect("Oblivion.esm")).unwrap();
+    let free = (0u8..=0xfb).find(|slot| !index.record_types.keys().any(|id| (id >> 24) as u8 == *slot)).unwrap();
+    index.install_oblivion_actor_values(GlobalSlot::Regular(free)).unwrap();
+    let mut world = World::new();
+    install_catalog(&mut world, &index);
+    let catalog = world.resource::<InventoryCatalog>();
+    let aids: Vec<_> = index.items.iter().filter(|(_, item)| matches!(item.kind, ItemKind::Aid { .. })).collect();
+    let admitted = aids.iter().filter(|(id, _)| catalog.script_effects.contains_key(id) || catalog.restorations.contains_key(id)).count();
+    let mut refused = std::collections::BTreeMap::<&str, Vec<String>>::new();
+    for (id, item) in &aids {
+        if catalog.script_effects.contains_key(id) || catalog.restorations.contains_key(id) {
+            continue;
+        }
+        let ItemKind::Aid { authored_effects, simple_consumption_header, .. } = &item.kind else { continue };
+        let why = match (authored_effects, simple_consumption_header) {
+            (None, _) => "no authored chain (incomplete, or none)",
+            (_, false) => "header not simple (a script)",
+            (Some(effects), true) if effects.iter().any(|e| e.delivery != Some(0)) => "touch or target delivery",
+            (Some(effects), true) if effects.iter().any(|e| e.effect.area != 0) => "an area effect",
+            _ => "an effect the runtime does not model",
+        };
+        refused.entry(why).or_default().push(format!("{:08X} {}", id, item.common.editor_id));
+    }
+    eprintln!("[Oblivion/ingestibles] {} ALCH, {admitted} admitted", aids.len());
+    for (why, items) in &refused {
+        eprintln!("  refused ({}): {why}: {:?}", items.len(), &items[..items.len().min(6)]);
+    }
+    assert_eq!((aids.len(), admitted), (253, 239), "Oblivion.esm's ingestible census moved");
+    assert_eq!(refused.values().map(Vec::len).collect::<Vec<_>>(), vec![11, 3], "the refusals moved: {refused:?}");
+    assert!(catalog.script_effects.contains_key(&0x98496), "PotionRestoreHealth is admitted");
+}
+
 /// A scripted ingestible whose one effect is gated on `condition` for the player, used from the fixture inventory.
 fn gated_script_use(condition: byroredux_plugin::esm::records::condition::Condition) -> (MutationResult, usize) {
     use byroredux_scripting::magic_effects::{ActiveMagicEffects, CastEffect};

@@ -26,6 +26,25 @@ pub(super) fn parse_effects(
     game: GameKind,
     remap: &Option<FormIdRemap>,
 ) -> Option<Vec<ConsumableEffect>> {
+    if game == GameKind::Oblivion {
+        // Oblivion's effect codes and 24-byte `EFIT` are decoded once, for spells and ingestibles alike. An
+        // ingestible has no effect conditions there.
+        return super::super::misc::oblivion_effect_chain(subs).map(|chain| {
+            chain
+                .into_iter()
+                .map(|(effect, range)| ConsumableEffect {
+                    actor_value_cache: match effect.actor_value {
+                        Some(super::super::ActorValueRef::Index(index)) => Some(index),
+                        _ => None,
+                    },
+                    effect,
+                    delivery: Some(range),
+                    conditions: Vec::new(),
+                    condition_flags: Vec::new(),
+                })
+                .collect()
+        });
+    }
     if !matches!(game, GameKind::Skyrim | GameKind::Fallout3NV) {
         return None;
     }
@@ -292,5 +311,53 @@ mod tests {
                 assert_eq!(effect.delivery, Some(0));
             }
         }
+    }
+
+    /// #7045 — an Oblivion ALCH: `ENIT` is a value and a one-byte flags field, each effect an `EFID` effect
+    /// code and a 24-byte `EFIT` (code, magnitude, area, duration, range, actor value).
+    fn oblivion_efit(magnitude: u32, duration: u32, range: u32, actor_value: i32) -> Vec<u8> {
+        let mut data = b"REHE".to_vec();
+        for word in [magnitude, 0, duration, range] {
+            data.extend(word.to_le_bytes());
+        }
+        data.extend(actor_value.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn an_oblivion_potion_keeps_its_effect_chain_and_a_simple_header() {
+        let potion = |subs: Vec<SubRecord>| parse_alch_for_game(0x98496, &subs, GameKind::Oblivion, &None);
+        let item = potion(vec![
+            sub(b"ENIT", [25u8, 0, 0, 0, 0, 0xCD, 0xCD, 0xCD]),
+            sub(b"EFID", *b"REHE"),
+            sub(b"EFIT", oblivion_efit(25, 0, 0, -1)),
+        ]);
+        let ItemKind::Aid { authored_effects: Some(effects), simple_consumption_header, food, .. } = item.kind else {
+            panic!("an Oblivion potion has an authored effect chain")
+        };
+        assert!(simple_consumption_header && !food);
+        assert_eq!(effects.len(), 1);
+        let effect = &effects[0];
+        assert_eq!(effect.effect.effect_form_id, u32::from_le_bytes(*b"REHE"));
+        assert_eq!((effect.effect.magnitude, effect.effect.area, effect.effect.duration), (25.0, 0, 0));
+        assert_eq!((effect.delivery, effect.actor_value_cache), (Some(0), None));
+        assert!(effect.conditions.is_empty());
+
+        // The item's actor value rides its `EFIT` (a Fortify Attribute names one), and a touch effect keeps its range.
+        let item = potion(vec![
+            sub(b"ENIT", [0u8; 8]),
+            sub(b"EFID", *b"FOAT"),
+            sub(b"EFIT", oblivion_efit(5, 60, 1, 5)),
+        ]);
+        let ItemKind::Aid { authored_effects: Some(effects), .. } = item.kind else { panic!("chain") };
+        assert_eq!((effects[0].delivery, effects[0].actor_value_cache, effects[0].effect.duration), (Some(1), Some(5), 60));
+
+        // An incomplete chain is never partly used; a scripted or header-less item is not a simple consumable.
+        let item = potion(vec![sub(b"ENIT", [0u8; 8]), sub(b"EFID", *b"REHE")]);
+        assert!(matches!(item.kind, ItemKind::Aid { authored_effects: None, .. }));
+        let item = potion(vec![sub(b"ENIT", [0u8; 8]), sub(b"SCRI", 0x1234u32.to_le_bytes()), sub(b"EFID", *b"REHE"), sub(b"EFIT", oblivion_efit(1, 0, 0, -1))]);
+        assert!(matches!(item.kind, ItemKind::Aid { simple_consumption_header: false, .. }));
+        let item = potion(vec![sub(b"EFID", *b"REHE"), sub(b"EFIT", oblivion_efit(1, 0, 0, -1))]);
+        assert!(matches!(item.kind, ItemKind::Aid { simple_consumption_header: false, .. }), "no ENIT, no header");
     }
 }

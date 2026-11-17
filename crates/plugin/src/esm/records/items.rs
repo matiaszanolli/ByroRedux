@@ -1281,7 +1281,7 @@ pub fn parse_alch_for_game(
         *authored_effects = authored;
         *food = food_flag;
     }
-    if !matches!(game, GameKind::Skyrim | GameKind::Fallout3NV)
+    if !matches!(game, GameKind::Skyrim | GameKind::Fallout3NV | GameKind::Oblivion)
         || subs
             .iter()
             .any(|s| matches!(&s.sub_type, b"VMAD" | b"SCRI"))
@@ -1291,7 +1291,13 @@ pub fn parse_alch_for_game(
     let mut valid_header = false;
     let mut medicine_flag = false;
     for sub in subs {
-        if &sub.sub_type == b"ENIT" {
+        if &sub.sub_type == b"ENIT" && game == GameKind::Oblivion {
+            // Value s32 and a one-byte flags field: no addiction fields, so a present header is simple.
+            if sub.data.len() < 5 {
+                return item;
+            }
+            valid_header = true;
+        } else if &sub.sub_type == b"ENIT" {
                 if sub.data.len() < 20 {
                     return item;
                 }
