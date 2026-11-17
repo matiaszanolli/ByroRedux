@@ -14,6 +14,33 @@ use byroredux_core::ecs::components::{
     RigidBodyData, SandboxBehavior, Transform, TravelBehavior, WanderBehavior,
 };
 
+/// OAV-POP-007 (#7010) — on an Oblivion index `build_character_ruleset` returns `Some`, and the TES pool
+/// regeneration lanes resolve Fatigue and Magicka (and the Willpower and `StuntedMagicka` inputs) to the
+/// installed records. The reference loader installs both beside each other when a cell loads.
+#[test]
+fn an_oblivion_index_builds_the_ruleset_and_the_fatigue_and_magicka_regen_lanes() {
+    use byroredux_core::character::CharacterRulesProfile;
+    use byroredux_plugin::esm::reader::GlobalSlot;
+    let mut index = EsmIndex { game: GameKind::Oblivion, character_rules: CharacterRulesProfile::OBLIVION, ..Default::default() };
+    index.install_oblivion_actor_values(GlobalSlot::Regular(2)).unwrap();
+    assert!(build_character_ruleset(&index).is_some(), "the built Oblivion ruleset resolves on the installed roster");
+    let regen = index
+        .character_rules
+        .build_tes_pool_regen(|name| index.actor_value_form_id(name))
+        .expect("an Oblivion profile has TES regeneration lanes");
+    assert_eq!(regen.fatigue_avif, index.actor_value_form_id("Fatigue"));
+    assert_eq!(regen.magicka_avif, index.actor_value_form_id("Magicka"));
+    assert_eq!(regen.willpower_avif, index.actor_value_form_id("Willpower"));
+    assert_eq!(regen.stunted_magicka_avif, index.actor_value_form_id("StuntedMagicka"));
+    assert!(regen.fatigue_avif.is_some() && regen.magicka_avif.is_some());
+    assert!(regen.action_points.is_none(), "Action Points are the Fallout lane");
+    // The install itself: the reference loader builds both resources behind the same `is_none()` guards.
+    let loader = include_str!("../cell_loader/references/mod.rs");
+    assert!(loader.contains("build_character_ruleset(record_index)") && loader.contains("build_tes_pool_regen(|name|"));
+    // A non-Oblivion profile carries no TES lanes.
+    assert!(CharacterRulesProfile::FALLOUT_NEW_VEGAS.build_tes_pool_regen(|_| None).is_none());
+}
+
 #[test]
 fn oblivion_offset_creature_uses_the_live_player_level_for_stats_and_level() {
     use byroredux_core::character::{CharacterLevel, CharacterRulesProfile};

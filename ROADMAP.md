@@ -109,9 +109,12 @@ all-slots fence wait that dominates GPU-bound frames (#5365, the throughput half
 - Texture streaming (M39) is off by default (`render.texture_streaming`) until its open gates close:
   the A11 reflection A/B, a clean FO4 A9 soak and the default flip
   ([results](docs/engine/texture-streaming.md#12-measured-results-2026-11-04)).
-- Oblivion's CHARAL ruleset is built but unwired: `Oblivion.esm` has no AVIF
-  records, so a legacy actor-value resolver comes first
-  ([`charal.md`](docs/engine/charal.md)).
+- Oblivion's actor values are live (tracking #7007): the engine supplies the 72 `AVIF` records
+  `Oblivion.esm` lacks (index coverage 70 / 70 vanilla-resolvable) under its own plugin identity, every
+  actor is populated at spawn (`Oblivion.esm` census, 2026-11-17: `NPC_` 2 482 / 2 482 and `CREA` 914 / 914 carry
+  all 33 standard values), and saves store portable `FormIdPair` keys (`FORMAT_MAJOR` 133). Open: the auto-calc
+  flag timing (#7022) and the consumers (#7011)
+  ([`charal-oblivion-ruleset.md`](docs/engine/charal-oblivion-ruleset.md)).
 
 **Active focus.**
 - The [playable vertical slice](#playable-vertical-slice) is **complete**
@@ -639,8 +642,7 @@ performance finding. The measured knob table is in
   then-current NPC Health row (fixed, and the capture's Health rows are now
   split player/NPC — #5342), so treat that "zero mismatch" as dated, not
   standing. FO3, FNV, Skyrim and FO4 reach actors. Still open:
-  - The Oblivion ruleset is unwired (see Status).
-  - `regen` is live for FO3/FNV Action Points only (#6350); the Fatigue/Magicka lanes no-op until Oblivion gets a pre-AVIF resolver (#3768).
+  - `regen` was live for FO3/FNV Action Points only (#6350); the Oblivion Fatigue / Magicka lanes are now installed with the engine-supplied records (#7010), their effect on the HUD and pools being #7011.
   - `affliction_tick_system` is never registered.
   - FO76's capture is locked with no builder; Starfield waits on pending data.
 - [ ] **MQ101 residue.** The quest plays end-to-end (live-verified

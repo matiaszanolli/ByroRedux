@@ -7138,3 +7138,93 @@ fn m65_detection_settings_census() {
     }
     eprintln!("[M65] {ran} master(s) censused");
 }
+
+/// OAV §7.2 scenario 3 / OAV-G-002 (#7010) — the Oblivion actor-value census. Over every `NPC_` and `CREA` of
+/// `Oblivion.esm`, the population path (`derive_resolved_actor_values_with_player_level`) must stamp all 33
+/// standard values (indices 0–32). The pass is 100 % of both record kinds; the test reports, per kind, the
+/// actors populated, those that also carry the four `AIDT` extras (33–36), and the first few failures.
+///
+/// Run at player level 1 and at level 30: a PC-level-offset actor's level, and so its calculated values, move
+/// with the player.
+#[test]
+#[ignore = "needs Oblivion game data on disk"]
+fn oblivion_population_census_stamps_every_standard_value() {
+    use byroredux_plugin::equip::ResolvedNpc;
+    use byroredux_plugin::esm::reader::GlobalSlot;
+    use byroredux_plugin::esm::records::derive_resolved_actor_values_with_player_level;
+    use byroredux_plugin::esm::records::oblivion_actor_values::OBLIVION_ACTOR_VALUES;
+
+    let Some(data) = data_dir(test_paths::OBLIVION_ENV, test_paths::OBLIVION_DEFAULT) else {
+        eprintln!("[Oblivion/population] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Oblivion.esm")).expect("read Oblivion.esm");
+    let mut index = parse_esm(&bytes).expect("parse Oblivion.esm");
+    assert_eq!(index.game, GameKind::Oblivion);
+    // `Oblivion.esm` is slot 0; the engine's records take the lowest slot no record occupies, as the loader
+    // does (the master carries records whose top byte is not its own).
+    let free = (0u8..=0xfb)
+        .find(|slot| !index.record_types.keys().any(|id| (id >> 24) as u8 == *slot))
+        .expect("a free regular slot");
+    index.install_oblivion_actor_values(GlobalSlot::Regular(free)).expect("install the engine roster");
+    let standard: Vec<u32> = (0..33).map(|i| index.oblivion_actor_value(i, false).expect("standard value installed")).collect();
+    let extras: Vec<u32> = (33..37).map(|i| index.oblivion_actor_value(i, false).expect("AIDT value installed")).collect();
+    assert_eq!(OBLIVION_ACTOR_VALUES.len(), 72);
+
+    let mut failed_any = false;
+    for player_level in [1u16, 30] {
+        for (kind, records) in [("NPC_", &index.npcs), ("CREA", &index.creatures)] {
+            let (mut full, mut with_extras, mut failures) = (0usize, 0usize, Vec::new());
+            for (form_id, record) in records {
+                let resolved = ResolvedNpc::resolve(record, &index);
+                let values = derive_resolved_actor_values_with_player_level(&resolved, &index, Some(player_level));
+                let has = |key: &u32| values.iter().any(|(id, _)| id == key);
+                // Populated is not enough: every value is finite and >= 0. (Authored values above 100 are kept
+                // as authored: the master has stored attributes of 125 and skills of 255.)
+                let implausible = values.iter().find(|&&(_, value)| !value.is_finite() || value < 0.0);
+                if let Some(&(id, value)) = implausible {
+                    failed_any = true;
+                    if failures.len() < 8 {
+                        failures.push(format!("{form_id:08X} {} has an implausible value {value} at key {id:#010x}", record.editor_id));
+                    }
+                }
+                if standard.iter().all(has) {
+                    full += 1;
+                } else if failures.len() < 8 {
+                    let missing: Vec<_> = standard.iter().enumerate().filter(|(_, key)| !has(key)).map(|(i, _)| OBLIVION_ACTOR_VALUES[i]).collect();
+                    failures.push(format!("{form_id:08X} {} missing {missing:?}", record.editor_id));
+                }
+                if extras.iter().all(has) {
+                    with_extras += 1;
+                }
+            }
+            eprintln!(
+                "[Oblivion/population] player level {player_level}: {kind} {full}/{} with all 33 standard values, {with_extras} with the four AIDT extras",
+                records.len()
+            );
+            for line in &failures {
+                eprintln!("    {line}");
+            }
+            failed_any |= full != records.len();
+            assert!(!records.is_empty(), "{kind}: no records parsed");
+        }
+    }
+    // OAV-POP-006 (Q3): the `Player` NPC_ (form 0x7) carries the standard values exactly as the master authors them,
+    // even though its ACBS asks for auto-calc.
+    let player = index.npcs.get(&7).expect("Oblivion.esm authors the Player NPC_");
+    let stats = player.oblivion_npc_stats.as_ref().expect("the Player's DATA decodes");
+    let pools = player.oblivion_pools.expect("the Player's ACBS pools decode");
+    let resolved = ResolvedNpc::resolve(player, &index);
+    let values = derive_resolved_actor_values_with_player_level(&resolved, &index, Some(1));
+    let value = |code: u32| values.iter().find(|(id, _)| *id == standard[code as usize]).map(|(_, v)| *v);
+    for (i, authored) in stats.attributes.iter().enumerate() {
+        assert_eq!(value(i as u32), Some(f32::from(*authored)), "Player attribute {i}");
+    }
+    for (i, authored) in stats.skills.iter().enumerate() {
+        assert_eq!(value(12 + i as u32), Some(f32::from(*authored)), "Player skill {i}");
+    }
+    assert_eq!(value(8), Some(f32::from(stats.health)));
+    assert_eq!((value(9), value(10)), (Some(f32::from(pools.magicka)), Some(f32::from(pools.fatigue))));
+    eprintln!("[Oblivion/population] Player NPC_: Health {}, Magicka {}, Fatigue {}", stats.health, pools.magicka, pools.fatigue);
+    assert!(!failed_any, "OAV-G-002: every NPC_ and CREA must carry all 33 standard values");
+}
