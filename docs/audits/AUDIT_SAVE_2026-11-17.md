@@ -84,6 +84,8 @@ CODE-CONFIRMED: atomic write order, ring never clobbers the last good save, head
 - **D2-04 (INFO)**: the v133 baseline refresh also absorbs the `declaration_terminator` scanner change (it moves the hash of every tuple struct followed by an `impl`); the justification comment names only the bump.
 - **D2-05 (INFO)**: the skill text says "eight explicit files" (now twelve) and "129", and omits the two new codec entry points and `UnownedFormId`.
 
+All five format-discipline items are fixed in 01d390583: D2-01 derives codec wire files and names (new `every_codec_registration_reaches_the_scan`), D2-02 drops the dead derives (baseline refreshed without a bump, reason recorded), D2-03 documents and pins the None-decode contract, D2-04 notes the scanner change in the baseline comment, D2-05 refreshes the skill text.
+
 ## Data-Loss Class matrix
 
 | Class | Findings |
