@@ -522,6 +522,15 @@ pub(super) fn discard_outgoing_session_requests(world: &World) {
     if let Some(mut dropped) = world.try_resource_mut::<crate::inventory::PendingDroppedItems>() {
         dropped.0.clear();
     }
+    // SAVE-6 — M65 detection transients of the same shape. Their producers run after the detection tick, which
+    // takes them next frame, so an F9 in between would apply the outgoing session's hearing events and
+    // attack noise to the loaded world's first tick.
+    if let Some(mut events) = world.try_resource_mut::<byroredux_scripting::PendingDetectionEvents>() {
+        events.0.clear();
+    }
+    if let Some(mut noise) = world.try_resource_mut::<crate::detection::PlayerActionNoise>() {
+        *noise = Default::default();
+    }
     // #6927 — XCT transients of the same shape. A relocation (a Travel hop, a door pass) or a scripted
     // move raised earlier this frame names an actor by FormID in the outgoing timeline; the relocation
     // step drains them after this load, in the same frame, and would move or evict that actor in the

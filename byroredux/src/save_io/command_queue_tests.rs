@@ -565,6 +565,61 @@ fn quickload_falls_back_past_a_slot_whose_columns_do_not_decode() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// SAVE-5 — a saved actor-value key with no load-order identity is refused before the snapshot, with the
+/// entity and column named, instead of failing inside `save_world`.
+#[test]
+fn a_save_with_an_unowned_actor_value_key_is_refused_before_the_snapshot() {
+    use byroredux_core::ecs::components::ActorValues;
+    use byroredux_core::form_id::ENGINE_PLUGIN_ID;
+    use byroredux_plugin::esm::reader::GlobalSlot;
+    let dir = std::env::temp_dir().join(format!("byro_av_identity_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut world = quicksave_test_world(dir.clone());
+    world.insert_resource(byroredux_scripting::LoadOrderIdentity::new(vec![(GlobalSlot::Regular(1), ENGINE_PLUGIN_ID)]));
+    let entity = world.spawn();
+    world.insert(entity, ActorValues::from_pairs([(0x0100_0001, 5.0)]));
+    assert!(!command_output_is_failure(&SaveCommand.execute(&world, "0")), "an owned key saves");
+    let _ = std::fs::remove_file(disk::slot_path(&dir, 0));
+
+    // A key from a slot no plugin owns (a stale session key, a stray `setav`).
+    world.insert(entity, ActorValues::from_pairs([(0x0100_0001, 5.0), (0x0700_0001, 1.0)]));
+    let out = SaveCommand.execute(&world, "");
+    assert!(command_output_is_failure(&out), "{:?}", out.lines);
+    let text = out.lines.join("\n");
+    // The gate's own abort (before any snapshot), not `save_world`'s late "snapshot failed".
+    assert!(text.contains("save ABORTED") && text.contains("ActorValueIdentity"), "{text}");
+    assert!(text.contains(&format!("entity {entity}")) && text.contains("ActorValues"), "{text}");
+    assert!(disk::slots_by_recency(&dir).is_empty(), "nothing is written");
+    assert_eq!(world.resource::<SaveState>().ring.peek(), 0, "the ring does not advance");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// SAVE-7 — the console `save` runs before `step_actor_relocations`, so it cannot save in the tick of a scripted
+/// move: it refuses (loudly, nothing written, ring untouched) and succeeds once the move reaches its ledger. The
+/// player-action drain's own capped wait still ends in a save.
+#[test]
+fn the_console_save_refuses_in_the_tick_of_a_scripted_move() {
+    let dir = std::env::temp_dir().join(format!("byro_console_move_save_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut world = quicksave_test_world(dir.clone());
+    let request = byroredux_scripting::ActorMoveRequest::ToPackageLocation { actor: 0x104C1C };
+    world.insert_resource(byroredux_scripting::PendingActorMoves(vec![request]));
+
+    let out = SaveCommand.execute(&world, "");
+    assert!(command_output_is_failure(&out), "{:?}", out.lines);
+    assert!(out.lines.join(" ").contains("save DEFERRED"), "{:?}", out.lines);
+    let out = SaveCommand.execute(&world, "2");
+    assert!(command_output_is_failure(&out), "an explicit slot waits too: {:?}", out.lines);
+    assert!(disk::slots_by_recency(&dir).is_empty(), "nothing is written");
+    assert_eq!(world.resource::<SaveState>().ring.peek(), 0, "the ring does not advance");
+
+    // The drain's quicksave path is the bounded wait's last resort and must still save.
+    assert!(!command_output_is_failure(&quicksave(&world)));
+    world.resource_mut::<byroredux_scripting::PendingActorMoves>().0.clear();
+    assert!(!command_output_is_failure(&SaveCommand.execute(&world, "2")), "the move reached its ledger");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn quickload_empty_errors_and_corrupt_newest_falls_back() {
     let dir = std::env::temp_dir().join(format!("byro_quickload_fallback_{}", std::process::id()));

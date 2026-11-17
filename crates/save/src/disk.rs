@@ -103,7 +103,9 @@ pub fn slots_by_recency(dir: &Path) -> Vec<u32> {
 /// `0` when no slots exist. Pure so the resume policy is unit-testable
 /// without touching the filesystem. SAVE-D3-02.
 fn cursor_after_newest(slots: &[(u32, std::time::SystemTime)], size: u32) -> u32 {
-    match slots.iter().max_by_key(|(_, mtime)| *mtime) {
+    // Same order as `slots_by_recency`: newest mtime, ties broken by the higher slot number. A bare
+    // `max_by_key` keeps the last equal maximum in `read_dir` order, which is arbitrary (SAVE-8).
+    match slots.iter().max_by(|(slot_a, time_a), (slot_b, time_b)| time_a.cmp(time_b).then_with(|| slot_a.cmp(slot_b))) {
         Some((newest, _)) => (newest + 1) % size.max(1),
         None => 0,
     }
@@ -279,6 +281,11 @@ mod tests {
         assert_eq!(cursor_after_newest(&slots, 3), 0);
         // No slots → start at 0.
         assert_eq!(cursor_after_newest(&[], 3), 0);
+        // SAVE-8: equal mtimes (FAT / exFAT, a mtime-normalizing copy) resume like `slots_by_recency`
+        // (higher slot is newer), whatever order `read_dir` listed them in.
+        let same = t(100);
+        assert_eq!(cursor_after_newest(&[(0u32, same), (2, same), (1, same)], 5), 3);
+        assert_eq!(cursor_after_newest(&[(2u32, same), (1, same), (0, same)], 5), 3);
     }
 
     #[test]

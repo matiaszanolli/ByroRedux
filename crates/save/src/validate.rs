@@ -51,6 +51,11 @@ pub enum ValidationKind {
     /// so the binary can reuse [`ValidationError`] for a uniform abort
     /// message. See `byroredux::save_io::validate_form_ids`.
     FormId,
+    /// A saved actor-value key (an `ActorValues` / `ActorVitals` / restoration / active-effect / `SkillProgress`
+    /// key, or one inside a parked reference row) has no load-order identity, so the portable codec cannot
+    /// name it and the save would fail inside `save_world`. Emitted by the binary-side check
+    /// `byroredux::save_io::validate_actor_value_identities` (SAVE-5).
+    ActorValueIdentity,
     /// An entity reference points past `next_entity` (never spawned).
     DanglingEntity,
     /// A `Material` carries a non-finite (NaN/Inf) scalar — see

@@ -1009,6 +1009,9 @@ fn live_load_drain_discards_the_outgoing_sessions_requests() {
         scripted: None,
     }]));
     world.insert_resource(byroredux_scripting::PendingNonArmorEquips(vec![(seated_player, 0x1234)]));
+    // SAVE-6 — M65 detection transients: a hearing event and the last attack's noise, both taken by the next detection tick.
+    world.insert_resource(byroredux_scripting::PendingDetectionEvents(vec![byroredux_scripting::DetectionEvent { source: 0x10, owner: 0x14, sound_level: 60 }]));
+    world.insert_resource(crate::detection::PlayerActionNoise { rating: 40.0 });
     world.register::<byroredux_scripting::obscript_speech::SpeakingLine>();
     world.insert(
         seated_player,
@@ -1021,6 +1024,8 @@ fn live_load_drain_discards_the_outgoing_sessions_requests() {
     );
     assert!(world.resource::<byroredux_scripting::story_manager::PendingScriptStoryEvents>().0.is_empty(), "SAVE-3: queued story events are dropped");
     assert!(world.resource::<byroredux_scripting::PendingNonArmorEquips>().0.is_empty(), "SAVE-3: queued weapon equips are dropped");
+    assert!(world.resource::<byroredux_scripting::PendingDetectionEvents>().0.is_empty(), "SAVE-6: queued detection events are dropped");
+    assert_eq!(world.resource::<crate::detection::PlayerActionNoise>().rating, 0.0, "SAVE-6: the outgoing attack's noise is dropped");
     assert!(world.get::<byroredux_core::ecs::components::Seated>(seated_player).is_none(), "INC4-1: the loaded player stands");
     assert!(world.resource::<byroredux_scripting::PendingRelocations>().0.is_empty(), "#6927: queued relocations are dropped");
     assert!(world.resource::<byroredux_scripting::PendingActorMoves>().0.is_empty(), "#6927: queued scripted moves are dropped");

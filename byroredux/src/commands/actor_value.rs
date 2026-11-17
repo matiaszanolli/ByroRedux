@@ -70,6 +70,15 @@ fn edit_av(world: &World, args: &str, cmd: &str, edit: AvEdit) -> CommandOutput 
     let Some(av) = parse_console_u32(av_tok) else {
         return CommandOutput::error(format!("{cmd}: bad actor-value FormID `{av_tok}`"));
     };
+    // SAVE-4 — a key no loaded plugin owns (and local id 0) cannot be saved: `save_key` refuses it and every later
+    // save fails until a reload. Refuse it at the source, with the load order that will have to name it.
+    if let Some(identity) = world.try_resource::<byroredux_scripting::LoadOrderIdentity>() {
+        if identity.pair(av).is_none_or(|pair| pair.local.0 == 0) {
+            return CommandOutput::error(format!(
+                "{cmd}: actor-value FormID {av:#010x} is not owned by any loaded plugin (it could not be saved)"
+            ));
+        }
+    }
     // `f32::from_str` accepts `nan` and `inf`; a non-finite layer serializes as JSON `null`, which makes the
     // next save unloadable (SAVE-3). The save gate refuses it too; refuse it at the source.
     let Some(value) = val_tok.parse::<f32>().ok().filter(|value| value.is_finite()) else {
@@ -207,6 +216,30 @@ mod tests {
         // Confirm via the component.
         let q = world.query::<ActorValues>().unwrap();
         assert_eq!(q.get(e).unwrap().current(0x05), 10.0);
+    }
+
+    /// SAVE-4 — a key no loaded plugin owns would make every later save fail with `UnownedFormId`.
+    #[test]
+    fn setav_and_modav_refuse_a_key_no_plugin_owns() {
+        use byroredux_core::form_id::PluginId;
+        use byroredux_plugin::esm::reader::GlobalSlot;
+        let mut world = World::new();
+        world.insert_resource(byroredux_scripting::LoadOrderIdentity::new(vec![(
+            GlobalSlot::Regular(0),
+            PluginId::from_filename("Oblivion.esm"),
+        )]));
+        let e = world.spawn();
+        world.insert(e, ActorValues::new());
+        // Owned: slot 0, local 5.
+        assert!(run(&world, &format!("{e} 0x05 7"), true).contains("0 -> 7"));
+        // Local id 0, and a slot nobody owns.
+        for bad in ["0x00000000", "0x07000001"] {
+            for set in [true, false] {
+                let out = run(&world, &format!("{e} {bad} 3"), set);
+                assert!(out.contains("not owned by any loaded plugin"), "`{bad}` must be refused: {out}");
+            }
+        }
+        assert!(world.query::<ActorValues>().unwrap().get(e).unwrap().get(0x0700_0001).is_none());
     }
 
     /// SAVE-3 — `f32::from_str` accepts `nan` / `inf`; a non-finite layer serializes as JSON `null` and

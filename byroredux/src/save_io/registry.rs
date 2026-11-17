@@ -65,9 +65,9 @@ pub(crate) const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     "TwoStateActivator",
     "ScriptVariables",
     // #1834 — runtime-mutated by the `setav`/`modav` console commands
-    // (`commands/actor_value.rs`). Delta-safe: the map is keyed by
-    // runtime global-space AVIF FormIDs are converted to stable pairs by the
-    // save codec and resolved against the new load order on overlay.
+    // (`commands/actor_value.rs`). Delta-safe: the map is keyed by runtime
+    // global-space AVIF FormIDs, which the save codec converts to stable pairs
+    // and resolves against the new load order on overlay.
     "ActorValues",
     // SAVE-1 (2026-11-17) — the player body is stamped once and outlives a live load, which re-parses the
     // save's masters and can move the Oblivion engine slot; the vitals' Health key must follow the

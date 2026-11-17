@@ -207,6 +207,29 @@ pub(crate) struct SavedPersistentReferenceStates {
     scripts: Vec<(FormIdPair, ScriptState)>,
 }
 
+impl PersistentReferenceStates {
+    /// SAVE-5 — dry-run the actor-value codecs over every parked row and report the rows that cannot be
+    /// saved, each with the parked reference's own pair. Inside `save_parked` the same failure surfaces from a
+    /// codec called with the placeholder entity 0, which names neither the row nor the right column.
+    pub(crate) fn actor_value_errors(&self, world: &World) -> Vec<(FormIdPair, byroredux_save::SaveError)> {
+        use byroredux_scripting::actor_value_save as codec;
+        let mut errors = Vec::new();
+        for (&pair, state) in &self.rows {
+            if let Some(values) = &state.actor_values {
+                if let Err(error) = codec::save_values(world, 0, values) {
+                    errors.push((pair, error));
+                }
+            }
+            if let Some(effects) = &state.magic_effects {
+                if let Err(error) = codec::save_active_effects(world, 0, effects) {
+                    errors.push((pair, error));
+                }
+            }
+        }
+        errors
+    }
+}
+
 pub(crate) fn save_parked(world: &World, store: &PersistentReferenceStates) -> Result<SavedPersistentReferenceStates, byroredux_save::SaveError> {
     use byroredux_scripting::actor_value_save as codec;
     let mut rows = Vec::with_capacity(store.rows.len());
@@ -2572,6 +2595,28 @@ mod tests {
         assert!(restore(&mut dst, first));
         assert_eq!(dst.get::<Inventory>(second).unwrap().items[0].count, 7);
         assert!(dst.get::<Inventory>(first).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_parked_row_with_an_unowned_actor_value_key_is_named_with_its_reference() {
+        use byroredux_core::form_id::ENGINE_PLUGIN_ID;
+        use byroredux_plugin::esm::reader::GlobalSlot;
+        let identity = |slot| byroredux_scripting::LoadOrderIdentity::new(vec![(GlobalSlot::Regular(slot), ENGINE_PLUGIN_ID)]);
+        let pair = FormIdPair { plugin: PluginId::from_filename("Band.esm"), local: LocalFormId(0x200) };
+        let mut store = PersistentReferenceStates::default();
+        store.rows.insert(pair, ReferenceState {
+            actor_values: Some(ActorValues::from_pairs([(0x0100_0020, 42.0)])),
+            ..ReferenceState::blank()
+        });
+        let mut w = world();
+        w.insert_resource(identity(1));
+        assert!(store.actor_value_errors(&w).is_empty(), "every key is owned");
+        // The engine slot moved after the row was parked: its key no longer has an owner.
+        w.insert_resource(identity(2));
+        let errors = store.actor_value_errors(&w);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].0, pair, "the error names the parked reference, not entity 0");
+        assert!(matches!(errors[0].1, byroredux_save::SaveError::UnownedFormId { form: 0x0100_0020, .. }));
     }
 
     #[test]
