@@ -513,6 +513,58 @@ fn a_quicksave_waits_for_queued_actor_moves_to_reach_their_ledger() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// SAVE-3 — a non-finite `f32` in a saved column encodes as JSON `null`, which does not decode back. The save
+/// must be refused before anything is written (and without advancing the ring), not committed and then
+/// unloadable.
+#[test]
+fn a_save_with_a_non_finite_float_is_refused_not_written() {
+    let dir = std::env::temp_dir().join(format!("byro_nan_save_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut world = quicksave_test_world(dir.clone());
+    let entity = world.spawn();
+    world.insert(entity, Transform::from_translation(Vec3::new(f32::NAN, 0.0, 0.0)));
+
+    let out = SaveCommand.execute(&world, "");
+    assert!(command_output_is_failure(&out), "{:?}", out.lines);
+    assert!(out.lines.join(" ").contains("does not load back"), "{:?}", out.lines);
+    assert!(
+        disk::slots_by_recency(&dir).is_empty(),
+        "an unloadable save must not reach the disk"
+    );
+    assert_eq!(world.resource::<SaveState>().ring.peek(), 0, "a refused save must not advance the ring");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// SAVE-3 — a slot that decodes at the container level but whose columns do not decode is rejected when it is
+/// queued, so `quickload_latest` falls back to the older good slot instead of queueing it and aborting the load.
+#[test]
+fn quickload_falls_back_past_a_slot_whose_columns_do_not_decode() {
+    let dir = std::env::temp_dir().join(format!("byro_typed_fallback_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut world = quicksave_test_world(dir.clone());
+    let entity = world.spawn();
+    world.insert(entity, Transform::from_translation(Vec3::new(1.0, 2.0, 3.0)));
+    assert!(!command_output_is_failure(&SaveCommand.execute(&world, "0")));
+
+    // Slot 1: a valid container whose Transform column holds `null` where an f32 belongs — what an
+    // older build wrote for a NaN.
+    let registry = world.resource::<SaveRegistry>();
+    let mut snapshot = byroredux_save::save_world(&world, &registry).unwrap();
+    let rows = snapshot.components.get_mut("Transform").expect("Transform column");
+    let text = serde_json::to_string(&rows).unwrap().replacen("1.0", "null", 1);
+    *rows = serde_json::from_str(&text).unwrap();
+    let bytes = byroredux_save::encode(&snapshot, registry.schema_fingerprint()).unwrap();
+    drop(registry);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(disk::slot_path(&dir, 1), &bytes).unwrap();
+
+    let output = quickload_latest(&world);
+    assert!(!command_output_is_failure(&output), "{:?}", output.lines);
+    assert!(output.lines.iter().any(|line| line.contains("skipped invalid quickload slot 1")), "{:?}", output.lines);
+    assert_eq!(world.resource::<PendingSaveLoadSlot>().slot, 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn quickload_empty_errors_and_corrupt_newest_falls_back() {
     let dir = std::env::temp_dir().join(format!("byro_quickload_fallback_{}", std::process::id()));

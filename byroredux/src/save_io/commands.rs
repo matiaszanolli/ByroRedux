@@ -289,6 +289,18 @@ impl ConsoleCommand for SaveCommand {
             Ok(b) => b,
             Err(e) => return CommandOutput::error(format!("encode failed: {e}")),
         };
+        // SAVE-3 (audit 2026-11-17) — `serde_json` writes a non-finite `f32` as `null`, which no `f32` field
+        // decodes, so such a save used to commit and then never load. The disk read-back only proves the file
+        // equals memory; prove the bytes load before they are written. Nothing is written and the ring does
+        // not advance on this refusal.
+        if let Err(error) = byroredux_save::decode(&bytes, registry.schema_fingerprint())
+            .and_then(|decoded| byroredux_save::validate_snapshot_types(&registry, &decoded))
+        {
+            return CommandOutput::lines(vec![format!(
+                "save ABORTED: the encoded snapshot does not load back (a non-finite float in a saved column \
+                 is the usual cause) — refusing to write an unloadable save: {error}"
+            )]);
+        }
         match disk::write_slot(&dir, slot, &bytes) {
             Ok(path) => {
                 // Consume quicksave rotation only after every validation,
@@ -563,6 +575,11 @@ impl ConsoleCommand for LoadCommand {
             Ok(s) => s,
             Err(e) => return CommandOutput::error(format!("slot {slot} INVALID: {e}")),
         };
+        // SAVE-3 — the typed preflight the drain runs, run here so `quickload_latest` falls back past a slot
+        // whose columns do not decode instead of queueing it and aborting the load with the session kept.
+        if let Err(e) = byroredux_save::validate_snapshot_types(&registry, &snapshot) {
+            return CommandOutput::error(format!("slot {slot} INVALID: {e}"));
+        }
         // EX-09/17 item 4 — a live load can reconstruct either kind of
         // session now; only reject a snapshot carrying neither.
         let destination_label = match (

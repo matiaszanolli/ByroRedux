@@ -70,7 +70,9 @@ fn edit_av(world: &World, args: &str, cmd: &str, edit: AvEdit) -> CommandOutput 
     let Some(av) = parse_console_u32(av_tok) else {
         return CommandOutput::error(format!("{cmd}: bad actor-value FormID `{av_tok}`"));
     };
-    let Ok(value) = val_tok.parse::<f32>() else {
+    // `f32::from_str` accepts `nan` and `inf`; a non-finite layer serializes as JSON `null`, which makes the
+    // next save unloadable (SAVE-3). The save gate refuses it too; refuse it at the source.
+    let Some(value) = val_tok.parse::<f32>().ok().filter(|value| value.is_finite()) else {
         return CommandOutput::error(format!("{cmd}: bad value `{val_tok}`"));
     };
 
@@ -205,6 +207,23 @@ mod tests {
         // Confirm via the component.
         let q = world.query::<ActorValues>().unwrap();
         assert_eq!(q.get(e).unwrap().current(0x05), 10.0);
+    }
+
+    /// SAVE-3 — `f32::from_str` accepts `nan` / `inf`; a non-finite layer serializes as JSON `null` and
+    /// makes the next save unloadable, so the console refuses it and leaves the value alone.
+    #[test]
+    fn setav_and_modav_refuse_non_finite_values() {
+        let mut world = World::new();
+        let e = world.spawn();
+        world.insert(e, ActorValues::new());
+        for bad in ["nan", "NaN", "inf", "-inf", "infinity"] {
+            for set in [true, false] {
+                let out = run(&world, &format!("{e} 0x05 {bad}"), set);
+                assert!(out.contains("bad value"), "`{bad}` must be refused: {out}");
+            }
+        }
+        let q = world.query::<ActorValues>().unwrap();
+        assert_eq!(q.get(e).unwrap().current(0x05), 0.0, "a refused edit must not write");
     }
 
     /// #5039 — `modav Endurance` on the player moves FO4 Health once the
