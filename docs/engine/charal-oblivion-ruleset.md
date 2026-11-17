@@ -943,7 +943,13 @@ disagrees with the formula by 35.
 (`CharacterRuleset::retain_player_base`): Health and Fatigue keep the record's values, Magicka follows its
 formula. Live: the player's Magicka reads 100 at Intelligence 50, 120 after `ModAV Intelligence 10`, and the
 HUD bar reads 0.75 after `DamageAV Magicka 30`. Pinned by
-`oblivion_profile_refreshes_the_players_magicka_and_keeps_health_and_fatigue`.
+`oblivion_profile_refreshes_the_players_magicka_and_fatigue_and_keeps_health`.
+
+**Fixed for Fatigue (#7041).** Once the load-time zeroing was found (below), Fatigue joined Magicka: it is its
+formula alone. Fatigue is a drained and regenerated pool like Fallout's Action Points, so the refresh moves
+the maximum (the base) and leaves the damage layer, which the regeneration tick (10 per second) restores.
+Live: 150 at the placeholder attributes; `DamageAV Fatigue 60` reads 0.60 on the HUD and regenerates to the
+maximum; `ModAV Endurance 10` raises the maximum to 160. Only Health stays retained.
 
 What `Oblivion.exe` does for the player. The base of actor values 8 to 11 is read through one function
 (`0x5ead00`, taken only when the actor is the player singleton at `0xb333c4`): `(stored + derived) x
