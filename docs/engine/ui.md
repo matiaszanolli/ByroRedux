@@ -1082,6 +1082,53 @@ Mitchell with the speaking cue. Live, the document draws the speaker and the
 wrapped line in `Glow_Monofonto_VL_dialogs` on its panel. The list's bracket art
 (`fade_to_top.dds` / `fade_to_bottom.dds`, `solid.dds`) does not resolve yet.
 
+#### Script message boxes on the game's own surfaces (Q1) — Phase 4 (#6666)
+
+After dialogue, the script message box is the one other menu the engine opens itself whose Q1
+surface is S1 / S2 with H1 host calls; it now opens there, the native page kept as the fallback
+(`App::present_script_messages` → `open_message_box_surface`, `byroredux/src/menu_drivers.rs`).
+
+- **Skyrim, `interface\messagebox.swf` (`MessageBoxMenu`, S1).** `scaleform_messagebox.rs`
+  feeds `_root.MessageMenu` through the path service, read off the movie's own `MessageBox`
+  class: `SetMessage(text, false)` (`setMessageText`), `SetIsCancellable(false, 0)`,
+  `setupButtons(true, label…)` (`setButtons`; a `" "` label is skipped, button *i* is label
+  *i*). It serves `buttonPress [index]` (H1), which answers the box. The movie shows no title
+  line.
+- **Fallout 3 / New Vegas, `menus\message_menu.xml` (code 1001, S2).** `menuxml_message.rs`
+  sets what the document marks "set in code": `MM_Title` (hidden when empty) and
+  `MM_MessageText`; a pool of 10 `MM_ButtonTemplate` rows under `MM_ButtonList` (`listindex`,
+  `_y`, `height` 51 = font 2's line + `_VerticalSpacing`, `string`) and the list's height;
+  `MM_MainRect`'s width from the measured message / title (`MenuRenderer::value`) within
+  `_MinMenuWidth` / `_MaxMenuWidth`, the list getting the inner width (its authored width is
+  only a cap). A click on row *i* answers with button *i*.
+- Both: a box with no authored buttons offers the game's "Ok" (`sOk`); the next box of a queue
+  replaces an answered one; the surface closes once no box waits (answered on it, by
+  `ui.answer` or by a perk's activate choice). A box raised during a conversation stacks over
+  the dialogue surface and takes the input until answered.
+
+The plumbing is shared with the dialogue surfaces: `menuxml_document::MenuDocument` is the open
+document (renderer, texture, raster / upload), `UiState::menu_documents` the open ones (input
+to the registry's owner; activations stay in the renderer until the driver's step), and
+`UiState::movie_calls` the drained host calls of each served movie layer. MenuXml gained
+`MenuRenderer::value` (an evaluated trait read back) and string truthiness (a non-numeric
+string is true when it has text: `message_menu.xml` places its buttons below the message only
+`onlyif … trait="string"`).
+
+Gate: `fnv-new-game.sh` checks that the route's script message boxes (the Hardcore box) come
+up on `menus\message_menu.xml`; the corpus test `fnv_message_document_presents_a_message_box`
+checks the feed and the answer on the vanilla document. Live on Skyrim, `script.exec (Game.GetForm(0x0010E294) as
+Message).Show()` (`CharGenCombatTutorial`) opens `MessageBoxMenu` on the movie with the text and
+"Ok", and `ui.answer` closes it. Open there: the movie sizes its dark panel narrower than the
+text (it reads the text field's metrics, which Ruffle reports for the fallback font), and its
+`PlaySound` focus call is reported H3 (unserved) on this layer.
+
+**Menu surface coverage** (PRD §8): `ui.coverage` measures, over the registry's table, the
+menus the engine can put up on the game's movie (S1; how many it feeds), document (S2), a
+native page (S3) or none (S4) — `menu_drivers::surface_coverage`, pinned for wave 1 by
+`wave_one_menu_surface_coverage_is_the_published_one` and published in ROADMAP's compatibility
+matrix: Skyrim SE 27 of 46 (S1 24, 3 fed; S3 3), New Vegas 10 of 49 (S2 3; S3 7, the
+character-creation screens among them). The unfed S1 / S2 menus are #7042.
+
 #### Native pages out of the operator crate (GUI-PAGE-006) — Phase 4 (#6666)
 
 The player's HUD and native pages (pause, settings, inventory, message box, barter, crafting,

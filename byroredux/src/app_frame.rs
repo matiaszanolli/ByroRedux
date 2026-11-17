@@ -1142,11 +1142,16 @@ impl App {
         // M48 Q1 — the game's own message box surface when it has one (Skyrim's movie, FO3 / FNV's
         // document); the native page otherwise.
         if self.open_message_box_surface() {
+            // One surface per box: a native page that took it on an earlier frame closes.
+            if let Some(ui) = self.debug_ui.as_mut().filter(|ui| ui.message_box_menu_visible()) {
+                ui.close_game_menu();
+            }
             self.release_world_input_for_ui();
             return;
         }
         match self.debug_ui.as_mut() {
             Some(ui) if !ui.game_menu_visible() => {
+                log::info!("the message box opens on the native page (no surface of its own)");
                 ui.open_message_box_menu();
                 self.release_world_input_for_ui();
             }

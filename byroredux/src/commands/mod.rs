@@ -102,7 +102,7 @@ use world_info::*;
 use music::MusicStatusCommand;
 use stealth::{StealthSneakCommand, StealthStatusCommand};
 use video::{VideoSkipCommand, VideoStatusCommand};
-use ui_menus::{UiCloseCommand, UiHostCommand, UiMenusCommand, UiOpenCommand};
+use ui_menus::{UiCloseCommand, UiCoverageCommand, UiHostCommand, UiMenusCommand, UiOpenCommand};
 
 pub(crate) fn build_command_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
@@ -118,6 +118,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(UiOpenCommand);
     registry.register(UiCloseCommand);
     registry.register(UiHostCommand);
+    registry.register(UiCoverageCommand);
     // M65 (SNK-DX-002) — the sneak stance through the key's path.
     registry.register(StealthSneakCommand);
     // M65 (SNK-DX-001) — every detector's terms, value, level and alert state.

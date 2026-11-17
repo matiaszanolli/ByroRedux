@@ -4,7 +4,8 @@
 //! flags and the input owner, plus the movies' device count and the pause state. `ui.open` /
 //! `ui.close` queue a request the frame applies before it republishes the registry, so the next
 //! `ui.menus` shows the change. `ui.host` reports an open movie's host calls by behaviour class
-//! (GUI-OPS-002, #6665). `hud.status` / `hud.debug` stay as they are.
+//! (GUI-OPS-002, #6665). `ui.coverage` measures the game's menu surface coverage (PRD §8, #6666).
+//! `hud.status` / `hud.debug` stay as they are.
 
 use super::shared::*;
 use crate::menu_stack::{MenuRequest, MenuResult};
@@ -25,6 +26,38 @@ impl ConsoleCommand for UiMenusCommand {
             Some(registry) => CommandOutput::lines(registry.report()),
             None => CommandOutput::error("ui.menus: no menu registry"),
         }
+    }
+}
+
+/// `ui.coverage` — PRD §8 *Menu surface coverage* for the running game: of the menus the
+/// registry knows (the Phase 0 inventory), how many the engine can put up on the game's movie
+/// (S1, and how many of those it feeds), on the game's document (S2), on a native page (S3), and
+/// how many have none (S4). ROADMAP's compatibility matrix publishes it per game.
+pub(crate) struct UiCoverageCommand;
+
+impl ConsoleCommand for UiCoverageCommand {
+    fn name(&self) -> &str {
+        "ui.coverage"
+    }
+    fn description(&self) -> &str {
+        "Menu surface coverage for this game: menus on the game's movie (S1, fed), document (S2), a native page (S3), none (S4)"
+    }
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let Some(registry) = world.try_resource::<MenuRegistry>() else {
+            return CommandOutput::error("ui.coverage: no menu registry");
+        };
+        let barter = world.try_resource::<crate::barter::BarterRules>().is_some();
+        let c = crate::menu_drivers::surface_coverage(&registry, barter);
+        let (covered, total) = c.covered();
+        CommandOutput::line(format!(
+            "ui.coverage: game={} S1 {} ({} fed) · S2 {} · S3 {} · S4 {} — {covered} of {total} menus with a surface",
+            registry.game().label(),
+            c.movie,
+            c.movie_fed,
+            c.document,
+            c.native,
+            c.absent,
+        ))
     }
 }
 

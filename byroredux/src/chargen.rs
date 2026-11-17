@@ -63,8 +63,18 @@ impl ChargenScreen {
         })
     }
 
+    /// Every screen's menu code: the FO3 / FNV menus the native character-creation page stands in
+    /// for.
+    pub(crate) const MENU_CODES: [u32; 5] = [
+        Self::Name.menu_code(),
+        Self::RaceSex.menu_code(),
+        Self::Special { points: 0 }.menu_code(),
+        Self::TagSkills { count: 1 }.menu_code(),
+        Self::Traits.menu_code(),
+    ];
+
     /// The menu code `MenuMode` blocks and the `MenuMode` function see while it is open.
-    pub(crate) fn menu_code(self) -> u32 {
+    pub(crate) const fn menu_code(self) -> u32 {
         match self {
             Self::Name => 1051,
             Self::RaceSex => 1036,

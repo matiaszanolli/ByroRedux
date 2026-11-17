@@ -41,7 +41,10 @@ impl App {
         };
         let assets = match crate::hud::session_menu_assets(&crate::cli_args::effective_args()) {
             Ok(Some((assets, _, _))) => assets,
-            Ok(None) => return false,
+            Ok(None) => {
+                log::warn!("{name}: the session has no menu archives beside its ESM; {purpose} opens on the native page");
+                return false;
+            }
             Err(error) => {
                 log::warn!("{error}; {purpose} opens on the native page");
                 return false;
@@ -209,5 +212,81 @@ impl App {
             }
         }
         self.close_menu_document(crate::menuxml_message::MESSAGE_MENU_CODE);
+    }
+}
+
+/// The movies the engine feeds (S1): the HUD driver's, and the drivers above.
+const FED_MOVIES: [&str; 3] = ["HUD Menu", "Dialogue Menu", "MessageBoxMenu"];
+/// The documents the engine feeds (S2), by `MenuMode` code: the MenuXml HUD (`--hud`), the
+/// dialogue document and the message box document.
+const FED_DOCUMENTS: [u32; 3] = [1004, crate::menuxml_dialogue::DIALOGUE_MENU_CODE, crate::menuxml_message::MESSAGE_MENU_CODE];
+/// The native pages the engine opens from a game action or the player (S3); barter needs the
+/// game's barter rules (`BarterRules`), which only some games carry.
+const NATIVE_PAGES: [&str; 5] = ["Inventory", "Pause", "Dialogue", "MessageBox", "Crafting"];
+
+/// PRD §8 *Menu surface coverage*: per surface class, how many of the game's menus (the
+/// registry's table, built from the Phase 0 inventory) the engine can put up, and how.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SurfaceCoverage {
+    /// S1: the movie loads when the menu opens (`ui.open`, a script request).
+    pub(crate) movie: usize,
+    /// …of which the engine feeds (the HUD, dialogue and message box drivers).
+    pub(crate) movie_fed: usize,
+    /// S2: a document the engine opens and feeds.
+    pub(crate) document: usize,
+    /// S3: a native page stands in.
+    pub(crate) native: usize,
+    /// S4: no surface (the menu is recorded).
+    pub(crate) absent: usize,
+}
+
+impl SurfaceCoverage {
+    /// The menus with a surface (S1–S3), and every menu.
+    pub(crate) fn covered(&self) -> (usize, usize) {
+        let covered = self.movie + self.document + self.native;
+        (covered, covered + self.absent)
+    }
+}
+
+/// Measure [`SurfaceCoverage`] over `registry`'s table; `barter` says whether the game has barter
+/// rules (its barter page can open).
+pub(crate) fn surface_coverage(registry: &MenuRegistry, barter: bool) -> SurfaceCoverage {
+    let page_opens = |surface: &TargetSurface| match surface {
+        TargetSurface::Native(page) => NATIVE_PAGES.contains(&page.as_str()) || (barter && page == "Barter"),
+        _ => false,
+    };
+    let chargen = registry.game() == MenuGame::Fallout3NV;
+    let mut coverage = SurfaceCoverage::default();
+    for def in registry.table().menus() {
+        let code = def.code.unwrap_or(0);
+        match &def.target {
+            TargetSurface::Movie if def.document.is_some() => {
+                coverage.movie += 1;
+                coverage.movie_fed += usize::from(FED_MOVIES.contains(&def.name.as_str()));
+            }
+            TargetSurface::MenuXml if FED_DOCUMENTS.contains(&code) => coverage.document += 1,
+            target if page_opens(target) || page_opens(&def.fallback) => coverage.native += 1,
+            _ if chargen && crate::chargen::ChargenScreen::MENU_CODES.contains(&code) => coverage.native += 1,
+            _ => coverage.absent += 1,
+        }
+    }
+    coverage
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The coverage ROADMAP's compatibility matrix publishes for wave 1 (Skyrim SE, New Vegas).
+    /// A menu gaining or losing a surface moves these numbers: re-measure and update the matrix.
+    #[test]
+    fn wave_one_menu_surface_coverage_is_the_published_one() {
+        let skyrim = surface_coverage(&MenuRegistry::new(MenuGame::Skyrim), true);
+        assert_eq!(skyrim, SurfaceCoverage { movie: 24, movie_fed: 3, document: 0, native: 3, absent: 19 });
+        assert_eq!(skyrim.covered(), (27, 46));
+        // New Vegas has no barter rules: its barter page cannot open.
+        let new_vegas = surface_coverage(&MenuRegistry::new(MenuGame::Fallout3NV), false);
+        assert_eq!(new_vegas, SurfaceCoverage { movie: 0, movie_fed: 0, document: 3, native: 7, absent: 39 });
+        assert_eq!(new_vegas.covered(), (10, 49));
     }
 }
