@@ -951,6 +951,17 @@ the maximum (the base) and leaves the damage layer, which the regeneration tick 
 Live: 150 at the placeholder attributes; `DamageAV Fatigue 60` reads 0.60 on the HUD and regenerates to the
 maximum; `ModAV Endurance 10` raises the maximum to 160. Only Health stays retained.
 
+**What the engine's player level-up does with Health (#7041, checked 2026-11-17).** Nothing, for Oblivion.
+`LevelingModel::OBLIVION` is `SkillUse`: it has no XP curve, so `roll_levels` reaches no level, and
+`scripted_skill_system` advances skills for Skyrim's model only. The remaining writers of the player's level
+are ObScript `SetLevel` (it sets `CharacterLevel.level` and, as the GECK says, "not any of his stats") and the
+Skyrim-shaped `levelup pool` pick. No Oblivion code adds `0.1 x End` per level to Health
+(`oblivion_health_gain_per_level` is a tested helper with no caller). So the only Health the engine can
+reach today is the level-1 one, `2 x End`, and the retained record value (45) is simply wrong for it. When
+Oblivion skill-use leveling is built, the per-level gain must be kept apart from the refreshed base (the
+original adds it to the stored term, `0x66c3e0`); the permanent-modifier layer is the candidate, and it also
+carries abilities and gear.
+
 What `Oblivion.exe` does for the player. The base of actor values 8 to 11 is read through one function
 (`0x5ead00`, taken only when the actor is the player singleton at `0xb333c4`): `(stored + derived) x
 multiplier`, with `derived` from `0x5e2210`:
