@@ -36,6 +36,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use byroredux_core::ecs::World;
+use byroredux_ui::path::{PATH_CALL_CALLBACK, PATH_GET_CALLBACK, PATH_SET_CALLBACK};
 use byroredux_ui::{PathOp, PathOutcome, RenderPacing, ScaleformHostBridge, ScaleformValue, UiLayer, UiManager, WhenAbsent};
 
 use crate::asset_provider::Archive;
@@ -522,7 +523,15 @@ impl ScaleformHudDriver {
             self.last_diag_refresh = std::time::Instant::now();
             self.callbacks = self.bridge.available_callbacks();
             if let Some(mut diag) = world.try_resource_mut::<ScaleformHudDiag>() {
-                diag.callbacks = self.callbacks.clone();
+                // The path adapters' own callbacks are the path service's surface, reported on
+                // `hud.debug`'s paths line; this list stays the movie's push targets (and FO4's
+                // adapter lifecycle hooks, m48-7's AdapterInjected observable).
+                diag.callbacks = self
+                    .callbacks
+                    .iter()
+                    .filter(|name| ![PATH_GET_CALLBACK, PATH_SET_CALLBACK, PATH_CALL_CALLBACK].contains(&name.as_str()))
+                    .cloned()
+                    .collect();
                 diag.unknown_methods = self.bridge.unknown_methods();
                 diag.unanswered_methods = self.bridge.unanswered_methods();
                 diag.render_passes = layer.as_deref().map_or(0, UiLayer::render_passes);

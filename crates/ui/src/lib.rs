@@ -507,6 +507,32 @@ mod tests {
     /// #2714 — the engine's per-frame drain walks the open layers, so an
     /// empty manager is simply no layers: nothing to drain, nothing to
     /// composite, no input owner.
+    /// M48 GUI-PATH-003 — a path operation issued before its target exists, with
+    /// `WhenAbsent::Queue`, is held (the adapter registers on frame 1, which has not run yet)
+    /// and lands after the next tick; with `WhenAbsent::Refuse` the same call answers now.
+    #[test]
+    fn a_queued_path_lands_once_the_movie_runs_its_first_frame() {
+        if !crate::player::vulkan_adapter_available() {
+            eprintln!("skipped: no Vulkan adapter (headless CI) — #4595");
+            return;
+        }
+        let mut manager = UiManager::new(64, 64);
+        manager.load_swf(&crate::avm1_path::test_movie::movie(), "test.swf").unwrap();
+        let layer = manager.layer_mut("test.swf").unwrap();
+        let set = PathOp::Set("_root.meter.value".into(), ScaleformValue::Number(31.0));
+        assert_eq!(layer.path_op(set.clone(), WhenAbsent::Refuse), PathOutcome::NotReady);
+        assert_eq!(layer.path_op(set, WhenAbsent::Queue), PathOutcome::Queued);
+        assert_eq!(layer.queued_paths(), 1);
+        manager.tick(1.0 / 30.0);
+        let layer = manager.layer_mut("test.swf").unwrap();
+        assert_eq!(layer.queued_paths(), 0, "the held set landed after the tick");
+        assert_eq!(
+            layer.path_op(PathOp::Get("_root.meter.value".into()), WhenAbsent::Refuse),
+            PathOutcome::Found(ScaleformValue::Number(31.0))
+        );
+        assert_eq!(layer.path_op(PathOp::Get("_root.nope".into()), WhenAbsent::Refuse), PathOutcome::Absent);
+    }
+
     #[test]
     fn an_empty_manager_has_nothing_to_drain_or_focus() {
         let mut manager = UiManager::new(1280, 720);

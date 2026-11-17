@@ -320,32 +320,15 @@ pub(crate) fn inject(header: &swf::Header, tags: &[u8]) -> Result<Vec<u8>, Strin
     Ok(out)
 }
 
+/// A synthetic AVM1 movie for the path-service tests (no game data).
 #[cfg(test)]
-mod tests {
+pub(crate) mod test_movie {
     use super::*;
-    use crate::path::{decode_reply, PathOp, PathOutcome};
-    use crate::ScaleformValue;
-    use ruffle_core::external::{ExternalInterfaceProvider, Value as ExternalValue};
-    use ruffle_core::tag_utils::SwfMovieData;
-    use ruffle_core::{FloatDuration, LoadBehavior, Player, PlayerBuilder};
-    use std::sync::{Arc, Mutex};
-
-    struct Provider;
-
-    impl ExternalInterfaceProvider for Provider {
-        fn call_method(&self, _: &mut ruffle_core::context::UpdateContext<'_>, _: &str, _: &[ExternalValue]) -> ExternalValue {
-            ExternalValue::Undefined
-        }
-        fn on_callback_available(&self, _: &str) {}
-        fn get_id(&self) -> Option<String> {
-            Some("avm1-path-adapter-test".into())
-        }
-    }
 
     /// Stand-in HUD state under `_root`: `_root.meter = {value: 7, bump: function (n) {
     /// this.value = n; return n + 1; }}` — `bump` writes through `this`, so a call proves the
     /// adapter binds the parent.
-    fn movie() -> Vec<u8> {
+    pub(crate) fn movie() -> Vec<u8> {
         let mut bump = vec![s("this"), op(Action::GetVariable), s("value")];
         bump.extend(var("n"));
         bump.push(op(Action::SetMember));
@@ -375,6 +358,31 @@ mod tests {
         let mut bytes = Vec::new();
         swf::write_swf(&header, &[swf::Tag::DoAction(&frame), swf::Tag::ShowFrame], &mut bytes).unwrap();
         bytes
+    }
+
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_movie::movie;
+    use crate::path::{decode_reply, PathOp, PathOutcome};
+    use crate::ScaleformValue;
+    use ruffle_core::external::{ExternalInterfaceProvider, Value as ExternalValue};
+    use ruffle_core::tag_utils::SwfMovieData;
+    use ruffle_core::{FloatDuration, LoadBehavior, Player, PlayerBuilder};
+    use std::sync::{Arc, Mutex};
+
+    struct Provider;
+
+    impl ExternalInterfaceProvider for Provider {
+        fn call_method(&self, _: &mut ruffle_core::context::UpdateContext<'_>, _: &str, _: &[ExternalValue]) -> ExternalValue {
+            ExternalValue::Undefined
+        }
+        fn on_callback_available(&self, _: &str) {}
+        fn get_id(&self) -> Option<String> {
+            Some("avm1-path-adapter-test".into())
+        }
     }
 
     /// The movie as the engine loads it — through `prepare_movie`, which injects the adapter —
