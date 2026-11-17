@@ -1297,7 +1297,8 @@ impl ApplicationHandler for App {
             if let Err(error) = crate::save_io::queue_player_save_action(&self.world, action) {
                 crate::surface_save_load_output(
                     self.debug_ui.as_mut(),
-                    action.context(),
+                    &self.world,
+                    action,
                     byroredux_core::console::CommandOutput::error(error),
                 );
             }

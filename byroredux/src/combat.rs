@@ -848,7 +848,9 @@ pub(crate) fn grant_experience(world: &World, player: EntityId, xp: u32) {
     use byroredux_core::character::{CharacterLevel, LevelUpPoints};
     // #5874 — progression reaches the player as notices, not only the log.
     if xp > 0 {
-        crate::notifications::push(world, format!("+{xp} XP"));
+        // GUI-PAGE-005 — the game's word for experience points (`sStatsXP`).
+        let xp_word = world.try_resource::<byroredux_core::ui_labels::UiLabels>().map_or_else(|| "XP".into(), |labels| labels.shared("XP"));
+        crate::notifications::push(world, format!("+{xp} {xp_word}"));
     }
     let leveling = world
         .try_resource::<CharacterRuleset>()

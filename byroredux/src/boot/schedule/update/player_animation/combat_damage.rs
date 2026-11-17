@@ -23,6 +23,8 @@ fn register_damage_pass(scheduler: &mut Scheduler) {
         crate::combat::combat_damage_system,
         Access::new()
             .reads::<byroredux_core::ecs::components::Inventory>()
+            // GUI-PAGE-005 — the XP notice in the game's word (`sStatsXP`).
+            .reads_resource::<byroredux_core::ui_labels::UiLabels>()
             .writes::<byroredux_core::ecs::components::EquipmentSlots>()
             .writes::<byroredux_core::ecs::components::EquippedWeapon>()
             .writes_resource::<crate::combat::CombatState>()

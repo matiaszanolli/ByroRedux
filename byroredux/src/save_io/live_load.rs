@@ -110,9 +110,17 @@ impl LiveReloadLedgers {
     }
 }
 
-fn notify_player(world: &World, message: impl Into<String>) {
-    crate::notifications::push(world, message);
+/// A load failed. Every caller has already logged the diagnostic (`log::error!`, the cell or
+/// worldspace, the error chain); the player sees one short line instead of it (#6825: the
+/// diagnostics are operator text, not the HUD's). Neither game authors a load-failure notice
+/// to draw instead, so the line is engine text, listed in the native-page string inventory.
+fn notify_player(world: &World, diagnostic: impl Into<String>) {
+    let _logged_by_the_caller = diagnostic.into();
+    crate::notifications::push(world, LOAD_FAILED);
 }
+
+/// The player's line for a failed load (see [`notify_player`]).
+pub(crate) const LOAD_FAILED: &str = "Load failed.";
 
 /// What a `reload_*_session` helper reports back to
 /// [`execute_pending_save_loads`]'s shared tail (delta restore/apply,

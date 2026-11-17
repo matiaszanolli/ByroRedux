@@ -1653,7 +1653,14 @@ fn build_debug_ui_snapshot(
         chargen: crate::chargen::snapshot(world),
         entities,
         studio: studio_host::snapshot(world),
+        labels: ui_labels(world),
     }
+}
+
+/// M48 GUI-PAGE-005 — the load order's words for the native pages (a handle; the engine text
+/// when no load order resolved them).
+fn ui_labels(world: &World) -> byroredux_core::ui_labels::UiLabels {
+    world.try_resource::<byroredux_core::ui_labels::UiLabels>().map(|labels| labels.clone()).unwrap_or_default()
 }
 
 fn build_interaction_prompt(world: &World) -> Option<byroredux_debug_ui::InteractionPrompt> {
@@ -1664,26 +1671,40 @@ fn build_interaction_prompt(world: &World) -> Option<byroredux_debug_ui::Interac
         .try_resource::<crate::interaction::ActionBindings>()
         .map(|bindings| bindings.binding_label(crate::interaction::InputAction::Activate))
         .unwrap_or("E");
+    // GUI-PAGE-005 — the verb in the game's word (`sTakeAll`, `sTalk` …), shared with the table.
+    let verb = world.try_resource::<byroredux_core::ui_labels::UiLabels>().map_or_else(|| verb.into(), |labels| labels.shared(verb));
     Some(byroredux_debug_ui::InteractionPrompt { binding, verb })
 }
 
+/// Report a player quicksave / quickload. The command's output is operator text (the slot,
+/// the file path, a refusal's reason): it goes to the log and the console. The HUD gets the
+/// game's own line for the outcome (#6825, GUI-PAGE-005): `sQuickSaving` / `sQuickLoading`
+/// ("Quicksaving..." / "Quickloading..."), `sCantSaveNow` when a save is refused, and the
+/// engine's "Load failed." when a load is (no game authors a load-failure notice).
 fn surface_save_load_output(
     debug_ui: Option<&mut byroredux_debug_ui::DebugUiState>,
-    context: &str,
+    world: &World,
+    action: save_io::PlayerSaveAction,
     output: byroredux_core::console::CommandOutput,
 ) {
+    let context = action.context();
     let joined = output.lines.join(" | ");
-    if save_io::command_output_is_failure(&output) {
+    let failed = save_io::command_output_is_failure(&output);
+    if failed {
         log::warn!("{context}: {joined}");
     } else {
         log::info!("{context}: {joined}");
     }
+    let labels = ui_labels(world);
+    let player_line = match (action, failed) {
+        (save_io::PlayerSaveAction::Quicksave, false) => labels.text("Quicksaving..."),
+        (save_io::PlayerSaveAction::Quickload, false) => labels.text("Quickloading..."),
+        (save_io::PlayerSaveAction::Quicksave, true) => labels.text("You cannot save right now."),
+        (save_io::PlayerSaveAction::Quickload, true) => save_io::LOAD_FAILED,
+    };
     if let Some(ui) = debug_ui {
-        let mut lines = output.lines.into_iter();
-        if let Some(first) = lines.next() {
-            ui.push_player_message(first);
-        }
-        for line in lines {
+        ui.push_player_message(player_line.to_owned());
+        for line in output.lines {
             ui.push_console_line(line);
         }
     }
@@ -1749,7 +1770,8 @@ fn apply_debug_ui_outputs(
         {
             surface_save_load_output(
                 debug_ui.as_deref_mut(),
-                "pause menu quicksave",
+                world,
+                save_io::PlayerSaveAction::Quicksave,
                 byroredux_core::console::CommandOutput::error(error),
             );
         }
@@ -1760,7 +1782,8 @@ fn apply_debug_ui_outputs(
         {
             surface_save_load_output(
                 debug_ui.as_deref_mut(),
-                "pause menu quickload",
+                world,
+                save_io::PlayerSaveAction::Quickload,
                 byroredux_core::console::CommandOutput::error(error),
             );
         }

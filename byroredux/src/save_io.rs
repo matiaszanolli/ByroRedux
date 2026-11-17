@@ -68,6 +68,7 @@ pub use registry::{
     PendingSaveLoadSlot, SaveState, build_save_registry, discover_save_dir,
 };
 pub(crate) use commands::{command_output_is_failure, execute_pending_player_save_actions};
+pub(crate) use live_load::LOAD_FAILED;
 // Same-width re-exports for the items that were module-private before the
 // split and are consumed across the sibling boundary in production: the
 // load drain (live_load) runs the same validation gates the save command

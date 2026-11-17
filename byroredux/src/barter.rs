@@ -405,11 +405,18 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::BarterSnapsh
     })
 }
 
-/// Buy or sell one item; `Err` says why the trade was refused.
+fn labels(world: &World) -> byroredux_core::ui_labels::UiLabels {
+    world.try_resource::<byroredux_core::ui_labels::UiLabels>().map(|labels| labels.clone()).unwrap_or_default()
+}
+
+/// Buy or sell one item; `Err` says why the trade was refused. The two refusals the player
+/// sees in a vanilla barter menu read the game's own text (GUI-PAGE-005: `sItemTooExpensive` /
+/// `sNotEnoughCaps`, `sNotEnoughVendorGold` / `sMerchantNoGold`, filled with the price and the
+/// purse); the rest are engine wording.
 pub(crate) fn apply_action(
     world: &World,
     action: byroredux_debug_ui::BarterAction,
-) -> Result<(), &'static str> {
+) -> Result<(), std::borrow::Cow<'static, str>> {
     use byroredux_debug_ui::BarterAction;
     let snapshot = snapshot(world).ok_or("no barter in progress")?;
     let session = session(world).ok_or("no barter in progress")?;
@@ -422,7 +429,7 @@ pub(crate) fn apply_action(
                 .find(|item| item.form_id == form_id)
                 .ok_or("the merchant has none left")?;
             if snapshot.player_gold < item.price {
-                return Err("You don't have enough gold.");
+                return Err(labels(world).format("You can't afford that.", &[&item.price, &snapshot.player_gold]).into());
             }
             byroredux_scripting::remove_items(world, session.stock, form_id, 1, Some(player));
             byroredux_scripting::remove_items(
@@ -440,7 +447,7 @@ pub(crate) fn apply_action(
                 .find(|item| item.form_id == form_id)
                 .ok_or("the merchant won't buy that")?;
             if snapshot.vendor_gold < item.price {
-                return Err("The merchant doesn't have enough gold.");
+                return Err(labels(world).format("The merchant can't afford that.", &[&item.price, &snapshot.vendor_gold]).into());
             }
             byroredux_scripting::remove_items(world, player, form_id, 1, Some(session.stock));
             byroredux_scripting::remove_items(

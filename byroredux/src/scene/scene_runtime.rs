@@ -95,6 +95,14 @@ pub(crate) fn populate_scene_runtime(
     crate::systems::stance::install_sneak_movement(world, index);
     // The per-game crime fines (Oblivion's theft bounty), cleared for a game without a model.
     crate::crime::install_crime_model(world, index);
+    // M48 GUI-PAGE-005 — the native pages' words from the load order's game settings.
+    let labels = byroredux_core::ui_labels::UiLabels::resolve(|editor_id| index.game_setting_string(editor_id).map(str::to_owned));
+    log::info!(
+        "Native page labels: {} of {} from the game's settings",
+        labels.resolved_count(),
+        byroredux_core::ui_labels::LABELS.len()
+    );
+    world.insert_resource(labels);
     let imad_count = byroredux_scripting::install_image_space_modifiers(
         world,
         index.imagespace_modifiers.values().cloned(),

@@ -1593,7 +1593,8 @@ fn unlock_with_carried_key(world: &World, target: EntityId, commit: bool) -> boo
         return true;
     }
     // M43 — no key: a pick may open it (engine policy, see `lockpick.rs`).
-    let keyless = carried_unlock_key(world, target).is_none();
+    let key = carried_unlock_key(world, target);
+    let keyless = key.is_none();
     let bypass = if keyless { crate::lockpick::bypass_of(world, target) } else { None };
     if keyless && bypass.is_none() {
         return false;
@@ -1634,7 +1635,14 @@ fn unlock_with_carried_key(world: &World, target: EntityId, commit: bool) -> boo
             }
         }
     } else {
-        crate::notifications::push(world, "Unlocked with key");
+        // GUI-PAGE-005 — the game's `sOpenWithKey` ("Unlocked with %s.") names the key.
+        let key_name = key
+            .and_then(|key| world.try_resource::<crate::inventory::InventoryCatalog>()?.item_name(key).map(str::to_owned))
+            .unwrap_or_default();
+        let message = world
+            .try_resource::<byroredux_core::ui_labels::UiLabels>()
+            .map_or_else(|| "Unlocked with key".to_owned(), |labels| labels.format("Unlocked with key", &[&key_name]));
+        crate::notifications::push(world, message);
     }
     true
 }

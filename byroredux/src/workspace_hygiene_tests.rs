@@ -1465,7 +1465,9 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // `SpaceGraph` (-44 LOC).
         // #6909 (M65 Phase 0) re-measure: +1 — `stealth_gmst_census.rs`, the per-master stealth /
         // detection GMST census the PRD's §7.2 scenario 3 reads (+67 LOC).
-        ("plugin", 75, 10209),
+        // #6666 (M48 GUI-PAGE-005) re-measure: +38 LOC — `menu_gmst_census gmst` parses the master as
+        // the engine does, so a localized master's (Skyrim's) string settings resolve.
+        ("plugin", 75, 10247),
         // M47.3 result scripts — `obscript_tools avcodes` aligns the Fallout
         // misc-stat codes and `live` names the quests a script advanced
         // (no new target; the existing triage tool grew).

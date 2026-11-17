@@ -71,6 +71,9 @@ pub struct PanelSnapshot {
     pub entities: Option<Vec<(u32, String)>>,
     /// Present when the executable is hosting an SDK Studio document.
     pub studio: Option<StudioSnapshot>,
+    /// M48 GUI-PAGE-005 — the native pages' words in the load order's vocabulary (a handle;
+    /// the default is the engine text).
+    pub labels: byroredux_core::ui_labels::UiLabels,
 }
 
 impl PanelSnapshot {
@@ -214,21 +217,23 @@ pub enum CraftingAction {
     Craft { recipe: u32 },
 }
 
-/// Allocation-free native prompt assembled from the active binding and the
-/// selected interaction's verb.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Native prompt assembled from the active binding and the selected interaction's verb. The
+/// verb is the load order's word (GUI-PAGE-005), shared with the resolved `UiLabels`, so a
+/// frame rebuild only bumps a refcount.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InteractionPrompt {
     pub binding: &'static str,
-    pub verb: &'static str,
+    pub verb: std::sync::Arc<str>,
 }
 
-/// One vitals bar's presentation state: the composed current value and the
-/// undamaged maximum of one canonical actor value. Labels are compile-time
-/// constants resolved once per plugin load, so a frame rebuild allocates no
-/// strings (same contract as `InteractionPrompt`).
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// One vitals bar's presentation state: the composed current value and the undamaged maximum
+/// of one canonical actor value. The label is the load order's word (shared with `UiLabels`);
+/// the bar's colour keys on `actor_value`, never on the label's spelling (#6825).
+#[derive(Debug, Clone, PartialEq)]
 pub struct VitalBarView {
-    pub label: &'static str,
+    pub label: std::sync::Arc<str>,
+    /// The canonical actor value's name (`Health`, `ActionPoints`, `RadiationRads` …).
+    pub actor_value: &'static str,
     pub current: f32,
     pub max: f32,
 }

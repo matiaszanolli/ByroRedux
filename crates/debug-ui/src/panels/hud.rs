@@ -40,7 +40,7 @@ pub fn draw_hud(ctx: &Context, snapshot: &PanelSnapshot) {
 
     let Some(prompt) = snapshot
         .show_prompts
-        .then_some(snapshot.interaction_prompt)
+        .then_some(snapshot.interaction_prompt.as_ref())
         .flatten()
     else {
         return;
@@ -69,14 +69,15 @@ pub fn draw_hud(ctx: &Context, snapshot: &PanelSnapshot) {
 /// the per-game vitals vocabulary (`Health`/`Magicka`/`Stamina`,
 /// `Fatigue`, `HP`/`AP`), so the match is presentation-only — an unknown
 /// label degrades to a neutral color rather than failing to draw.
-fn vital_color(label: &str) -> Color32 {
-    match label.to_ascii_lowercase().as_str() {
-        "magicka" => Color32::from_rgb(72, 110, 220),
-        "stamina" | "fatigue" => Color32::from_rgb(74, 168, 88),
-        "hp" | "health" => Color32::from_rgb(198, 58, 48),
-        "ap" | "actionpoints" | "o2" => Color32::from_rgb(212, 176, 62),
+/// A bar's colour by its actor value (#6825: not by the label, which is the game's word).
+fn vital_color(actor_value: &str) -> Color32 {
+    match actor_value {
+        "Magicka" => Color32::from_rgb(72, 110, 220),
+        "Stamina" | "Fatigue" => Color32::from_rgb(74, 168, 88),
+        "Health" => Color32::from_rgb(198, 58, 48),
+        "ActionPoints" | "Oxygen" => Color32::from_rgb(212, 176, 62),
         // The FO3 / FNV rad meter: a radiation-sign green, distinct from AP's gold.
-        "rad" | "rads" => Color32::from_rgb(132, 204, 54),
+        "RadiationRads" => Color32::from_rgb(132, 204, 54),
         _ => Color32::from_rgb(170, 170, 170),
     }
 }
@@ -111,7 +112,7 @@ fn draw_vitals_bars(ctx: &Context, vitals: &[VitalBarView]) {
                     painter.rect_filled(
                         egui::Rect::from_min_size(rect.min + inset, egui::vec2(fill_width, BAR_HEIGHT - 2.0 * inset.y)),
                         CornerRadius::same(3),
-                        vital_color(bar.label),
+                        vital_color(bar.actor_value),
                     );
                 }
                 painter.text(
@@ -276,7 +277,7 @@ mod tests {
             &PanelSnapshot {
                 interaction_prompt: Some(InteractionPrompt {
                     binding: "E",
-                    verb: "Open",
+                    verb: "Open".into(),
                 }),
                 show_prompts: true,
                 ..Default::default()
@@ -314,12 +315,14 @@ mod tests {
                 show_vitals: true,
                 vitals: Some(vec![
                     VitalBarView {
-                        label: "Health",
+                        label: "Health".into(),
+                        actor_value: "Health",
                         current: 65.0,
                         max: 100.0,
                     },
                     VitalBarView {
-                        label: "Magicka",
+                        label: "Magicka".into(),
+                        actor_value: "Magicka",
                         current: 50.0,
                         max: 50.0,
                     },
@@ -343,7 +346,8 @@ mod tests {
             &PanelSnapshot {
                 show_vitals: false,
                 vitals: Some(vec![VitalBarView {
-                    label: "Health",
+                    label: "Health".into(),
+                        actor_value: "Health",
                     current: 65.0,
                     max: 100.0,
                 }]),

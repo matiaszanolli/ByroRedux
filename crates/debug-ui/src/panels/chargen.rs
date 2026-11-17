@@ -7,6 +7,7 @@
 //! The page keeps an editable draft per screen, seeded from the snapshot when a screen opens
 //! (its `serial` changes), and hands the accepted draft back as a [`ChargenChoice`].
 
+use byroredux_core::ui_labels::UiLabels;
 use egui::{Color32, RichText};
 
 use super::{ChargenChoice, ChargenScreenView, ChargenSnapshot, PanelOutputs};
@@ -59,9 +60,15 @@ impl ChargenDraft {
 
 /// Draw the open character-creation screen. With no screen (the snapshot raced the close),
 /// the page offers only a way back to the game.
-pub(super) fn draw_chargen_page(ui: &mut egui::Ui, snapshot: Option<&ChargenSnapshot>, draft: &mut ChargenDraft, outputs: &mut PanelOutputs) {
+pub(super) fn draw_chargen_page(
+    ui: &mut egui::Ui,
+    labels: &UiLabels,
+    snapshot: Option<&ChargenSnapshot>,
+    draft: &mut ChargenDraft,
+    outputs: &mut PanelOutputs,
+) {
     let Some(snapshot) = snapshot else {
-        if ui.button("Close").clicked() {
+        if ui.button(labels.text("Close")).clicked() {
             outputs.resume_game = true;
         }
         return;
@@ -78,7 +85,7 @@ pub(super) fn draw_chargen_page(ui: &mut egui::Ui, snapshot: Option<&ChargenSnap
                     edit.request_focus();
                 }
             }
-            ChargenScreenView::RaceSex => draw_race_sex(ui, snapshot, draft),
+            ChargenScreenView::RaceSex => draw_race_sex(ui, labels, snapshot, draft),
             ChargenScreenView::Special { points, min, max } => draw_special(ui, snapshot, draft, *points, *min, *max),
             ChargenScreenView::TagSkills { count } => draw_picks(ui, &snapshot.skills.iter().map(|(skill, value)| (skill, Some(*value))).collect::<Vec<_>>(), &mut draft.tags, *count),
             ChargenScreenView::Traits { max } => draw_picks(ui, &snapshot.traits.iter().map(|chosen| (chosen, None)).collect::<Vec<_>>(), &mut draft.traits, *max),
@@ -86,16 +93,16 @@ pub(super) fn draw_chargen_page(ui: &mut egui::Ui, snapshot: Option<&ChargenSnap
     });
     ui.add_space(14.0);
     let choice = draft.choice(snapshot);
-    let done = ui.add_enabled(choice.is_some(), egui::Button::new(RichText::new("Done").size(18.0)).min_size(egui::vec2(160.0, 38.0)));
+    let done = ui.add_enabled(choice.is_some(), egui::Button::new(RichText::new(labels.text("Done")).size(18.0)).min_size(egui::vec2(160.0, 38.0)));
     if done.clicked() {
         outputs.chargen_choice = choice;
     }
 }
 
-fn draw_race_sex(ui: &mut egui::Ui, snapshot: &ChargenSnapshot, draft: &mut ChargenDraft) {
+fn draw_race_sex(ui: &mut egui::Ui, labels: &UiLabels, snapshot: &ChargenSnapshot, draft: &mut ChargenDraft) {
     ui.horizontal(|ui| {
-        ui.selectable_value(&mut draft.female, false, RichText::new("Male").size(17.0));
-        ui.selectable_value(&mut draft.female, true, RichText::new("Female").size(17.0));
+        ui.selectable_value(&mut draft.female, false, RichText::new(labels.text("Male")).size(17.0));
+        ui.selectable_value(&mut draft.female, true, RichText::new(labels.text("Female")).size(17.0));
     });
     ui.add_space(8.0);
     for race in &snapshot.races {

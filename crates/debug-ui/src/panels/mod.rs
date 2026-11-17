@@ -19,6 +19,8 @@ mod game_menu;
 mod hud;
 mod snapshots;
 mod studio;
+#[cfg(test)]
+mod page_strings_tests;
 
 pub use chargen::ChargenDraft;
 pub use game_menu::{draw_game_menu, GameMenuPage, GameMenuState};

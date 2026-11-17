@@ -2228,7 +2228,7 @@ fn vitals_snapshot_composes_layers_and_skips_absent_values() {
     let player = world.spawn();
     world.insert_resource(PlayerEntity(Some(player)));
     world.insert_resource(PlayerVitals {
-        bars: vec![("Health", 1000), ("Magicka", 1001), ("Fatigue", 1002)],
+        bars: vec![("Health", "Health", 1000), ("Magicka", "Magicka", 1001), ("Fatigue", "Fatigue", 1002)],
         by_editor_id: FxHashMap::from_iter([
             ("Health", 1000),
             ("Magicka", 1001),
@@ -2249,12 +2249,14 @@ fn vitals_snapshot_composes_layers_and_skips_absent_values() {
         bars,
         vec![
             byroredux_debug_ui::VitalBarView {
-                label: "Health",
+                label: "Health".into(),
+                actor_value: "Health",
                 current: 65.0,
                 max: 100.0
             },
             byroredux_debug_ui::VitalBarView {
-                label: "Magicka",
+                label: "Magicka".into(),
+                actor_value: "Magicka",
                 current: 70.0,
                 max: 70.0
             },
@@ -2272,7 +2274,7 @@ fn vitals_snapshot_yields_to_a_visible_original_hud() {
     let player = world.spawn();
     world.insert_resource(PlayerEntity(Some(player)));
     world.insert_resource(PlayerVitals {
-        bars: vec![("Health", 1000)],
+        bars: vec![("Health", "Health", 1000)],
         by_editor_id: FxHashMap::from_iter([("Health", 1000)]),
         radiation: None,
     });
@@ -2296,7 +2298,7 @@ fn vitals_snapshot_max_includes_the_set_override_layer() {
     let player = world.spawn();
     world.insert_resource(PlayerEntity(Some(player)));
     world.insert_resource(PlayerVitals {
-        bars: vec![("Health", 1000)],
+        bars: vec![("Health", "Health", 1000)],
         by_editor_id: FxHashMap::from_iter([("Health", 1000)]),
         radiation: None,
     });
@@ -2310,7 +2312,8 @@ fn vitals_snapshot_max_includes_the_set_override_layer() {
     assert_eq!(
         bars,
         vec![byroredux_debug_ui::VitalBarView {
-            label: "Health",
+            label: "Health".into(),
+            actor_value: "Health",
             current: 405.0,
             max: 605.0
         }],
@@ -2327,16 +2330,16 @@ fn vitals_snapshot_appends_the_rad_gauge_after_the_pools() {
     let player = world.spawn();
     world.insert_resource(PlayerEntity(Some(player)));
     world.insert_resource(PlayerVitals {
-        bars: vec![("HP", 1000), ("AP", 1001)],
+        bars: vec![("HP", "Health", 1000), ("AP", "ActionPoints", 1001)],
         by_editor_id: FxHashMap::from_iter([("Health", 1000), ("ActionPoints", 1001), ("RadiationRads", 0x5E4)]),
-        radiation: Some(("RAD", 0x5E4, 1000.0)),
+        radiation: Some(("RAD", "RadiationRads", 0x5E4, 1000.0)),
     });
     let mut values = byroredux_core::ecs::components::ActorValues::new();
     values.set_base(1000, 200.0);
     values.set_base(1001, 70.0);
     world.insert(player, values);
     let rad = |world: &World| vitals_snapshot(world).unwrap().pop().unwrap();
-    assert_eq!(rad(&world), byroredux_debug_ui::VitalBarView { label: "RAD", current: 0.0, max: 1000.0 });
+    assert_eq!(rad(&world), byroredux_debug_ui::VitalBarView { label: "RAD".into(), actor_value: "RadiationRads", current: 0.0, max: 1000.0 });
 
     world.get_mut::<byroredux_core::ecs::components::ActorValues>(player).unwrap().mod_temporary(0x5E4, 250.0);
     assert_eq!(rad(&world).current, 250.0);
@@ -2355,9 +2358,9 @@ fn the_rad_gauge_and_the_affliction_pool_read_one_write() {
     let player = world.spawn();
     world.insert_resource(PlayerEntity(Some(player)));
     world.insert_resource(PlayerVitals {
-        bars: vec![("HP", 1000)],
+        bars: vec![("HP", "Health", 1000)],
         by_editor_id: FxHashMap::from_iter([("Health", 1000), ("RadiationRads", 0x5E4)]),
-        radiation: Some(("RAD", 0x5E4, 1000.0)),
+        radiation: Some(("RAD", "RadiationRads", 0x5E4, 1000.0)),
     });
     let mut values = byroredux_core::ecs::components::ActorValues::new();
     values.set_base(1000, 200.0);
@@ -2418,7 +2421,7 @@ fn install_catalog_resolves_per_game_vital_keys() {
         .unwrap()
         .bars
         .iter()
-        .map(|&(label, _)| label)
+        .map(|&(label, _, _)| label)
         .collect();
     assert_eq!(labels, vec!["Health", "Magicka", "Fatigue"]);
 
@@ -2432,7 +2435,7 @@ fn install_catalog_resolves_per_game_vital_keys() {
         .unwrap()
         .bars
         .iter()
-        .map(|&(label, _)| label)
+        .map(|&(label, _, _)| label)
         .collect();
     assert_eq!(
         labels,
@@ -2483,7 +2486,7 @@ fn install_catalog_installs_the_rad_gauge_only_where_the_profile_says() {
     let fnv = CharacterRulesProfile::FALLOUT_NEW_VEGAS;
     assert_eq!(
         radiation(&master(GameKind::Fallout3NV, fnv, true)),
-        Some(("RAD", 0x5E4, 1000.0))
+        Some(("RAD", "RadiationRads", 0x5E4, 1000.0))
     );
     // No stages authored -> no scale -> no gauge (the degraded rule).
     assert_eq!(radiation(&master(GameKind::Fallout3NV, fnv, false)), None);

@@ -1091,7 +1091,7 @@ impl App {
                 self.interior_transition.is_some() || self.loading_screen.active(),
             ));
         for (action, output) in crate::save_io::execute_pending_player_save_actions(&self.world) {
-            crate::surface_save_load_output(self.debug_ui.as_mut(), action.context(), output);
+            crate::surface_save_load_output(self.debug_ui.as_mut(), &self.world, action, output);
         }
     }
 

@@ -30,3 +30,4 @@ pub mod source_scan;
 pub mod stealth;
 pub mod string;
 pub mod types;
+pub mod ui_labels;

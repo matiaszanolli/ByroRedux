@@ -4,6 +4,7 @@ use super::*;
 use egui::{Align2, Color32, Context, CornerRadius, Frame, Id, Margin, Order, RichText, Stroke, Window};
 
 use byroredux_core::settings::{SettingChange, SettingEntry};
+use byroredux_core::ui_labels::UiLabels;
 
 use super::studio::draw_setting_control;
 
@@ -56,6 +57,8 @@ pub fn draw_game_menu(
                 });
         });
 
+    // GUI-PAGE-005: every word a page draws that the game has goes through the load order's labels.
+    let labels = &snapshot.labels;
     let title = match state.page {
         GameMenuPage::Pause => "Paused",
         GameMenuPage::Settings => "Settings",
@@ -91,20 +94,20 @@ pub fn draw_game_menu(
                 .inner_margin(Margin::same(22)),
         )
         .show(ctx, |ui| match state.page {
-            GameMenuPage::Pause => draw_pause_page(ui, state, outputs),
-            GameMenuPage::Settings => draw_game_settings(ui, &snapshot.settings, state, outputs),
+            GameMenuPage::Pause => draw_pause_page(ui, labels, state, outputs),
+            GameMenuPage::Settings => draw_game_settings(ui, labels, &snapshot.settings, state, outputs),
             GameMenuPage::Inventory => {
-                draw_inventory_page(ui, snapshot.inventory.as_ref(), state, outputs)
+                draw_inventory_page(ui, labels, snapshot.inventory.as_ref(), state, outputs)
             }
             GameMenuPage::Dialogue => {
-                draw_dialogue_page(ui, snapshot.dialogue.as_ref(), state, outputs)
+                draw_dialogue_page(ui, labels, snapshot.dialogue.as_ref(), state, outputs)
             }
             GameMenuPage::MessageBox => {
-                draw_message_box_page(ui, snapshot.message_box.as_ref(), state, outputs)
+                draw_message_box_page(ui, labels, snapshot.message_box.as_ref(), state, outputs)
             }
-            GameMenuPage::Barter => draw_barter_page(ui, snapshot.barter.as_ref(), state, outputs),
-            GameMenuPage::Crafting => draw_crafting_page(ui, snapshot.crafting.as_ref(), state, outputs),
-            GameMenuPage::CharGen => super::chargen::draw_chargen_page(ui, snapshot.chargen.as_ref(), &mut state.chargen, outputs),
+            GameMenuPage::Barter => draw_barter_page(ui, labels, snapshot.barter.as_ref(), state, outputs),
+            GameMenuPage::Crafting => draw_crafting_page(ui, labels, snapshot.crafting.as_ref(), state, outputs),
+            GameMenuPage::CharGen => super::chargen::draw_chargen_page(ui, labels, snapshot.chargen.as_ref(), &mut state.chargen, outputs),
         });
 }
 
@@ -113,6 +116,7 @@ pub fn draw_game_menu(
 /// session.
 fn draw_crafting_page(
     ui: &mut egui::Ui,
+    labels: &UiLabels,
     crafting: Option<&CraftingSnapshot>,
     state: &mut GameMenuState,
     outputs: &mut PanelOutputs,
@@ -120,7 +124,7 @@ fn draw_crafting_page(
     let Some(crafting) = crafting else {
         ui.label("There is nothing to craft here.");
         ui.add_space(12.0);
-        if wide_button(ui, "Close (Esc)").clicked() {
+        if wide_button(ui, labels.text("Close")).clicked() {
             outputs.resume_game = true;
             state.visible = false;
         }
@@ -156,7 +160,7 @@ fn draw_crafting_page(
                         .collect();
                     ui.label(RichText::new(needs.join(", ")).color(Color32::from_gray(150)));
                     if ui
-                        .add_enabled(recipe.craftable, egui::Button::new("Craft"))
+                        .add_enabled(recipe.craftable, egui::Button::new(labels.text("Craft")))
                         .clicked()
                     {
                         outputs.crafting_actions.push(CraftingAction::Craft { recipe: recipe.form_id });
@@ -165,7 +169,7 @@ fn draw_crafting_page(
             }
         });
     ui.add_space(12.0);
-    if wide_button(ui, "Close (Esc)").clicked() {
+    if wide_button(ui, labels.text("Close")).clicked() {
         outputs.resume_game = true;
         state.visible = false;
     }
@@ -176,6 +180,7 @@ fn draw_crafting_page(
 /// the shared resume path, which ends the session.
 fn draw_barter_page(
     ui: &mut egui::Ui,
+    labels: &UiLabels,
     barter: Option<&BarterSnapshot>,
     state: &mut GameMenuState,
     outputs: &mut PanelOutputs,
@@ -183,7 +188,7 @@ fn draw_barter_page(
     let Some(barter) = barter else {
         ui.label("The merchant has nothing to trade.");
         ui.add_space(12.0);
-        if wide_button(ui, "Close (Esc)").clicked() {
+        if wide_button(ui, labels.text("Close")).clicked() {
             outputs.resume_game = true;
             state.visible = false;
         }
@@ -199,7 +204,7 @@ fn draw_barter_page(
                   action: fn(u32) -> BarterAction,
                   outputs: &mut PanelOutputs| {
         ui.vertical(|ui| {
-            ui.label(RichText::new(format!("{title} — gold {gold}")).strong());
+            ui.label(RichText::new(format!("{title} — {gold} {}", labels.text("gold"))).strong());
             egui::ScrollArea::vertical()
                 .id_salt(salt)
                 .max_height(470.0)
@@ -209,8 +214,13 @@ fn draw_barter_page(
                         ui.label("Nothing.");
                     }
                     for item in items {
-                        let label =
-                            format!("{}  ×{}  —  {} gold", item.name, item.count, item.price);
+                        let label = format!(
+                            "{}  ×{}  —  {} {}",
+                            item.name,
+                            item.count,
+                            item.price,
+                            labels.text("gold")
+                        );
                         if ui.selectable_label(false, label).clicked() {
                             outputs.barter_actions.push(action(item.form_id));
                         }
@@ -221,7 +231,7 @@ fn draw_barter_page(
     ui.horizontal_top(|ui| {
         column(
             ui,
-            "Merchant's goods (buy)",
+            labels.text("Buy"),
             barter.vendor_gold,
             &barter.buy,
             "native_barter_buy",
@@ -231,7 +241,7 @@ fn draw_barter_page(
         ui.separator();
         column(
             ui,
-            "Your goods (sell)",
+            labels.text("Sell"),
             barter.player_gold,
             &barter.sell,
             "native_barter_sell",
@@ -240,7 +250,7 @@ fn draw_barter_page(
         );
     });
     ui.add_space(12.0);
-    if wide_button(ui, "Close (Esc)").clicked() {
+    if wide_button(ui, labels.text("Close")).clicked() {
         outputs.resume_game = true;
         state.visible = false;
     }
@@ -252,6 +262,7 @@ fn draw_barter_page(
 /// and reopens the page while more are queued.
 fn draw_message_box_page(
     ui: &mut egui::Ui,
+    labels: &UiLabels,
     message: Option<&MessageBoxView>,
     state: &mut GameMenuState,
     outputs: &mut PanelOutputs,
@@ -259,7 +270,7 @@ fn draw_message_box_page(
     ui.vertical_centered(|ui| {
         ui.add_space(4.0);
         let Some(message) = message else {
-            if wide_button(ui, "Ok").clicked() {
+            if wide_button(ui, labels.text("Ok")).clicked() {
                 outputs.resume_game = true;
                 state.visible = false;
             }
@@ -282,7 +293,7 @@ fn draw_message_box_page(
             });
         ui.add_space(12.0);
         if message.buttons.is_empty() {
-            if wide_button(ui, "Ok").clicked() {
+            if wide_button(ui, labels.text("Ok")).clicked() {
                 outputs.message_box_choice = Some(0);
             }
             return;
@@ -304,6 +315,7 @@ fn draw_message_box_page(
 /// the same Escape / Resume handling every other page shares.
 fn draw_dialogue_page(
     ui: &mut egui::Ui,
+    labels: &UiLabels,
     dialogue: Option<&DialogueTopicSnapshot>,
     state: &mut GameMenuState,
     outputs: &mut PanelOutputs,
@@ -373,7 +385,7 @@ fn draw_dialogue_page(
             });
         ui.add_space(12.0);
         if ui
-            .add_sized([220.0, 40.0], egui::Button::new("Close (Esc)"))
+            .add_sized([220.0, 40.0], egui::Button::new(labels.text("Close")))
             .clicked()
         {
             outputs.resume_game = true;
@@ -385,7 +397,7 @@ fn draw_dialogue_page(
         ui.label("The conversation has moved on.");
         ui.add_space(12.0);
         if ui
-            .add_sized([220.0, 40.0], egui::Button::new("Close (Esc)"))
+            .add_sized([220.0, 40.0], egui::Button::new(labels.text("Close")))
             .clicked()
         {
             outputs.resume_game = true;
@@ -394,7 +406,7 @@ fn draw_dialogue_page(
     }
 }
 
-fn draw_pause_page(ui: &mut egui::Ui, state: &mut GameMenuState, outputs: &mut PanelOutputs) {
+fn draw_pause_page(ui: &mut egui::Ui, labels: &UiLabels, state: &mut GameMenuState, outputs: &mut PanelOutputs) {
     ui.vertical_centered(|ui| {
         ui.add_space(12.0);
         ui.label(
@@ -403,21 +415,21 @@ fn draw_pause_page(ui: &mut egui::Ui, state: &mut GameMenuState, outputs: &mut P
                 .strong()
                 .color(Color32::from_rgb(145, 175, 210)),
         );
-        ui.heading(RichText::new("Paused").size(34.0));
+        ui.heading(RichText::new(labels.text("Paused")).size(34.0));
         ui.add_space(24.0);
-        if wide_button(ui, "Continue").clicked() {
+        if wide_button(ui, labels.text("Continue")).clicked() {
             outputs.resume_game = true;
         }
         ui.add_space(8.0);
-        if wide_button(ui, "Settings").clicked() {
+        if wide_button(ui, labels.text("Settings")).clicked() {
             state.page = GameMenuPage::Settings;
         }
         ui.add_space(8.0);
-        if wide_button(ui, "Inventory").clicked() {
+        if wide_button(ui, labels.text("Inventory")).clicked() {
             state.page = GameMenuPage::Inventory;
         }
         ui.add_space(8.0);
-        if wide_button(ui, "Quicksave").clicked() {
+        if wide_button(ui, labels.text("Quicksave")).clicked() {
             outputs.quicksave = true;
         }
         ui.add_space(8.0);
@@ -425,7 +437,7 @@ fn draw_pause_page(ui: &mut egui::Ui, state: &mut GameMenuState, outputs: &mut P
             outputs.quickload = true;
         }
         ui.add_space(8.0);
-        if wide_button(ui, "Quit to desktop").clicked() {
+        if wide_button(ui, labels.text("Quit to desktop")).clicked() {
             outputs.quit_game = true;
         }
         ui.add_space(20.0);
@@ -442,15 +454,16 @@ fn wide_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
 
 fn draw_game_settings(
     ui: &mut egui::Ui,
+    labels: &UiLabels,
     settings: &[SettingEntry],
     state: &mut GameMenuState,
     outputs: &mut PanelOutputs,
 ) {
     ui.horizontal(|ui| {
-        if ui.button("← Back").clicked() {
+        if ui.button(format!("← {}", labels.text("Back"))).clicked() {
             state.page = GameMenuPage::Pause;
         }
-        ui.heading("Settings");
+        ui.heading(labels.text("Settings"));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
                 RichText::new("Changes are saved automatically")
@@ -476,7 +489,7 @@ fn draw_game_settings(
 
     ui.horizontal_wrapped(|ui| {
         for section in &sections {
-            ui.selectable_value(&mut state.selected_section, (*section).to_owned(), *section);
+            ui.selectable_value(&mut state.selected_section, (*section).to_owned(), labels.text(section));
         }
     });
     ui.separator();
@@ -493,7 +506,7 @@ fn draw_game_settings(
                 .iter()
                 .filter(|entry| entry.section == state.selected_section)
             {
-                draw_player_setting(ui, entry, outputs);
+                draw_player_setting(ui, labels, entry, outputs);
                 ui.add_space(7.0);
             }
         });
@@ -501,15 +514,16 @@ fn draw_game_settings(
 
 fn draw_inventory_page(
     ui: &mut egui::Ui,
+    labels: &UiLabels,
     inventory: Option<&InventorySnapshot>,
     state: &mut GameMenuState,
     outputs: &mut PanelOutputs,
 ) {
     ui.horizontal(|ui| {
-        if ui.button("← Back").clicked() {
+        if ui.button(format!("← {}", labels.text("Back"))).clicked() {
             state.page = GameMenuPage::Pause;
         }
-        ui.heading("Inventory");
+        ui.heading(labels.text("Inventory"));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.label(
                 RichText::new("Tab / Esc  Close")
@@ -549,13 +563,14 @@ fn draw_inventory_page(
         ui.selectable_value(
             &mut state.selected_inventory_category,
             "All".to_owned(),
-            "All",
+            labels.text("All"),
         );
+        // A category is an engine key (`Aid`, `Weapon` …); its tab shows the game's word.
         for category in &categories {
             ui.selectable_value(
                 &mut state.selected_inventory_category,
                 (*category).to_owned(),
-                *category,
+                labels.text(category),
             );
         }
     });
@@ -615,7 +630,6 @@ fn draw_inventory_page(
                     if response.clicked() {
                         state.selected_inventory_index = Some(item.index);
                     }
-                    response.on_hover_text(format!("{} · {:08X}", item.category, item.form_id));
                 }
             });
 
@@ -627,7 +641,7 @@ fn draw_inventory_page(
         };
         columns[1].heading(&item.name);
         columns[1].label(
-            RichText::new(item.category)
+            RichText::new(labels.text(item.category))
                 .strong()
                 .color(Color32::from_rgb(145, 175, 210)),
         );
@@ -639,23 +653,20 @@ fn draw_inventory_page(
             .num_columns(2)
             .spacing([24.0, 8.0])
             .show(&mut columns[1], |ui| {
-                ui.label("Count");
+                ui.label(labels.text("Count"));
                 ui.monospace(item.count.to_string());
                 ui.end_row();
-                ui.label("Weight");
+                ui.label(labels.text("Weight"));
                 ui.monospace(format!("{:.1}", item.weight));
                 ui.end_row();
-                ui.label("Value");
+                ui.label(labels.text("Value"));
                 ui.monospace(item.value.to_string());
-                ui.end_row();
-                ui.label("Form ID");
-                ui.monospace(format!("{:08X}", item.form_id));
                 ui.end_row();
             });
         columns[1].add_space(24.0);
         if !item.equipped
             && columns[1]
-                .add_sized([220.0, 32.0], egui::Button::new("Drop"))
+                .add_sized([220.0, 32.0], egui::Button::new(labels.text("Drop")))
                 .clicked()
         {
             outputs.inventory_actions.push(InventoryAction::Drop {
@@ -666,7 +677,7 @@ fn draw_inventory_page(
         columns[1].add_space(8.0);
         if item.consumable {
             if columns[1]
-                .add_sized([220.0, 42.0], egui::Button::new("Use"))
+                .add_sized([220.0, 42.0], egui::Button::new(labels.text("Use")))
                 .clicked()
             {
                 outputs.inventory_actions.push(InventoryAction::Consume {
@@ -675,7 +686,7 @@ fn draw_inventory_page(
                 });
             }
         } else if item.equippable {
-            let label = if item.equipped { "Unequip" } else { "Equip" };
+            let label = labels.text(if item.equipped { "Unequip" } else { "Equip" });
             if columns[1]
                 .add_sized(
                     [220.0, 42.0],
@@ -721,12 +732,13 @@ fn section_rank(section: &str) -> (u8, &str) {
     (rank, section)
 }
 
-fn draw_player_setting(ui: &mut egui::Ui, entry: &SettingEntry, outputs: &mut PanelOutputs) {
+fn draw_player_setting(ui: &mut egui::Ui, labels: &UiLabels, entry: &SettingEntry, outputs: &mut PanelOutputs) {
     ui.group(|ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                let mut title = RichText::new(&entry.label).strong().size(16.0);
+                // A registry label the game has a word for (`Activate`, `Quicksave` …) reads it.
+                let mut title = RichText::new(labels.text(&entry.label)).strong().size(16.0);
                 if entry.restart_required {
                     title = title.color(Color32::YELLOW);
                 }
@@ -740,7 +752,7 @@ fn draw_player_setting(ui: &mut egui::Ui, entry: &SettingEntry, outputs: &mut Pa
                 }
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if entry.value != entry.default && ui.small_button("Reset").clicked() {
+                if entry.value != entry.default && ui.small_button(labels.text("Reset")).clicked() {
                     outputs
                         .setting_changes
                         .push(SettingChange::new(&entry.id, entry.default.clone()));

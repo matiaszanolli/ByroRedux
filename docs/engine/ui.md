@@ -1082,6 +1082,44 @@ Mitchell with the speaking cue. Live, the document draws the speaker and the
 wrapped line in `Glow_Monofonto_VL_dialogs` on its panel. The list's bracket art
 (`fade_to_top.dds` / `fade_to_bottom.dds`, `solid.dds`) does not resolve yet.
 
+#### Native page labels (GUI-PAGE-005) — Phase 4 (#6666)
+
+Where a native page stays the surface, its words come from the game's data.
+`byroredux_core::ui_labels::UiLabels` is one table, resolved per load order beside the stealth
+rules (`populate_scene_runtime`): each `LabelDef` names a word by its engine text (the key) and
+the string `GMST`s that carry the game's word, tried in order (`Use` → `sInventoryUse`, `sUse`;
+`gold` → `sInventoryCaps`, `sGold`). The load order's winning value is drawn when one is
+authored, else the key. A value may be a printf template, which `UiLabels::format` fills
+(`sNotEnoughVendorGold` takes the price and the purse; `sOpenWithKey` the key's name). The table
+is a handle (`Arc`), so the panel snapshot carries it per frame for a refcount, and views that
+outlive the frame (`InteractionPrompt::verb`, `VitalBarView::label`) hold `Arc<str>` clones.
+
+- **Coverage.** Skyrim resolves 39 of the 57 labels from `Skyrim.esm` (through its string
+  tables; the boot log prints `Native page labels: 39 of 57`). The rest are FO3 / FNV words
+  (`HP`, `AP`, `RAD`, `Aid`, `Ammo`) or exist on Skyrim only as Scaleform `$` translations,
+  which native pages do not read. **New Vegas resolves 0:** `FalloutNV.esm` authors none of
+  these settings (its 648 `GMST`s are gameplay values); the defaults are in the packed
+  executable (GUI-FONT-005's FNV source is open), so FNV draws the keys unless a plugin authors
+  the setting.
+- **Where it is used.** Every page in `crates/debug-ui/src/panels/game_menu.rs` and
+  `chargen.rs` (buttons, headings, tabs, detail rows, the settings registry's labels), the
+  interaction prompt verbs, the vitals labels, the barter refusals, the XP and key notices, and
+  the quicksave / quickload lines.
+- **#6825's residues.** Barter's currency word is the `gold` label (it was hard-coded); vitals
+  colour by actor value (`VitalBarView::actor_value`), not by the label's spelling; the
+  inventory's `Form ID` row and form-id hover text are gone; save / load diagnostics stay in
+  the log and console, and the HUD gets the game's line (`sQuickSaving`, `sQuickLoading`,
+  `sCantSaveNow`) or the engine's "Load failed.".
+- **The inventory and its test.** `docs/data/game-ui/native-page-strings.tsv` lists every word
+  the native pages draw: `game-string` (resolved through `UiLabels`; the row's string is the
+  fallback) or `engine-text` with its reason (candidates whose setting means something else,
+  such as `sLevelUp` being a menu caption, were moved here with that reason; none is left a
+  candidate). `page_strings_tests.rs` draws each page (pause, settings, inventory, message box,
+  barter, crafting, dialogue, character creation, the HUD prompt and vitals) twice: with every
+  label resolved to a marker, where anything left beyond the snapshot's data must be listed
+  engine text, and with the engine defaults, where the fallbacks must be listed too. Producer
+  text that reaches the HUD message layer (notices) is listed but not drawn by a page test.
+
 #### MenuXml input (GUI-XML-001…003) — built in Phase 3 (#6665)
 
 `crates/menuxml` stays engine-neutral (no dependency on the UI or Ruffle crates).

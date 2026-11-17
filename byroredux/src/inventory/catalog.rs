@@ -224,7 +224,9 @@ impl Resource for PlayerCharacterTemplate {}
 /// catalog it sits beside.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PlayerVitals {
-    pub(super) bars: Vec<(&'static str, u32)>,
+    /// `(label key, AVIF editor id, AVIF FormID)` per bar; the drawn label is the load order's
+    /// word for the key (`UiLabels`, GUI-PAGE-005).
+    pub(super) bars: Vec<(&'static str, &'static str, u32)>,
     /// #4675 — canonical AVIF editor id → resolved FormID, from the same
     /// `vital_bar_candidates` table. The HUD drivers' bar tables carry
     /// editor ids (never literal FormIDs — the old hardcoded 0x2C9/0x2D0
@@ -236,7 +238,7 @@ pub(crate) struct PlayerVitals {
     /// threshold — 1000 rads in `FalloutNV.esm`'s `Rad5`), so the gauge
     /// fills as the player nears the last stage. `None` when the profile
     /// names no radiation value or the master authors no stages.
-    pub(super) radiation: Option<(&'static str, u32, f32)>,
+    pub(super) radiation: Option<(&'static str, &'static str, u32, f32)>,
 }
 
 impl PlayerVitals {
@@ -262,7 +264,7 @@ pub(super) fn build_player_vitals(index: &EsmIndex) -> PlayerVitals {
         .filter_map(|&(label, editor_id)| {
             let avif = index.actor_value_form_id(editor_id)?;
             by_editor_id.insert(editor_id, avif);
-            Some((label, avif))
+            Some((label, editor_id, avif))
         })
         .collect();
     let radiation = index.character_rules.radiation_gauge().and_then(|(label, editor_id)| {
@@ -270,7 +272,7 @@ pub(super) fn build_player_vitals(index: &EsmIndex) -> PlayerVitals {
         let scale = index.radiation_stages.values().map(|stage| stage.threshold).max()?;
         (scale > 0).then(|| {
             by_editor_id.insert(editor_id, avif);
-            (label, avif, scale as f32)
+            (label, editor_id, avif, scale as f32)
         })
     });
     PlayerVitals { bars, by_editor_id, radiation }
@@ -296,17 +298,19 @@ pub(crate) fn vitals_snapshot(
     let player = PlayerEntity::get(world)?;
     let vitals = world.try_resource::<PlayerVitals>()?;
     let values = world.get::<ActorValues>(player)?;
+    let labels = world.try_resource::<byroredux_core::ui_labels::UiLabels>().map(|labels| labels.clone()).unwrap_or_default();
     let mut bars: Vec<byroredux_debug_ui::VitalBarView> = vitals
         .bars
         .iter()
-        .filter_map(|&(label, avif)| {
+        .filter_map(|&(label, actor_value, avif)| {
             let entry = values.get(avif)?;
             let max = entry.undamaged();
             if max <= 0.0 {
                 return None;
             }
             Some(byroredux_debug_ui::VitalBarView {
-                label,
+                label: labels.shared(label),
+                actor_value,
                 current: max - entry.damage,
                 max,
             })
@@ -315,9 +319,10 @@ pub(crate) fn vitals_snapshot(
     // The rad meter accumulates rather than depletes: it shows the current
     // rads (none yet is an empty gauge, not a missing one) against the
     // last sickness stage, and is drawn only beside real pools.
-    if let (Some((label, avif, scale)), false) = (vitals.radiation, bars.is_empty()) {
+    if let (Some((label, actor_value, avif, scale)), false) = (vitals.radiation, bars.is_empty()) {
         bars.push(byroredux_debug_ui::VitalBarView {
-            label,
+            label: labels.shared(label),
+            actor_value,
             current: values.current(avif).clamp(0.0, scale),
             max: scale,
         });
