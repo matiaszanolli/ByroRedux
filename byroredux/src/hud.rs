@@ -968,7 +968,8 @@ fn bar_fractions(world: &World, control: &HudControl, profile: &HudGameProfile) 
 }
 
 /// One bar's fraction: pinned debug value wins, then the player's actor
-/// value for `av` (a resolved AVIF FormID), else full. Shared with the
+/// value for `av` (a resolved AVIF FormID): current over its undamaged maximum, empty when the player
+/// carries the pool with no maximum, and full when it carries no such pool or `av` is unresolved. Shared with the
 /// Scaleform HUD driver, which uses the same `PlayerVitals` resolution and
 /// pin semantics.
 pub(crate) fn fraction(world: &World, av: Option<u32>, pinned: Option<f32>) -> f32 {
@@ -996,7 +997,9 @@ pub(crate) fn fraction(world: &World, av: Option<u32>, pinned: Option<f32>) -> f
         if max > 0.0 {
             (entry.current() / max).clamp(0.0, 1.0)
         } else {
-            1.0
+            // A pool the actor carries with no maximum has nothing to show: empty, not full (#7041). A pool
+            // it does not carry at all (no entry, or no resolved key) stays at the "no information" full bar.
+            0.0
         }
     })
 }
@@ -1149,7 +1152,7 @@ mod tests {
         // Auto reads the player's 0.25, not the bystander's 1.0.
         assert!((fraction(&world, Some(43), None) - 0.25).abs() < 1e-6);
 
-        // Every no-signal arm is full, never zero.
+        // Every no-signal arm is full.
         assert_eq!(fraction(&world, None, None), 1.0, "no vitals resource");
         let mut bare = World::new();
         assert_eq!(fraction(&bare, Some(43), None), 1.0, "no player stamped");
@@ -1157,11 +1160,11 @@ mod tests {
         bare.insert(orphan, ActorValues::new());
         bare.insert_resource(PlayerEntity(Some(orphan)));
         assert_eq!(fraction(&bare, Some(43), None), 1.0, "key not carried");
-        // A degenerate 0-max value cannot divide.
+        // #7041 — a pool the player carries with no maximum has nothing to show: empty, and it cannot divide.
         let mut zero = ActorValues::new();
         zero.set_base(43, 0.0);
         bare.insert(orphan, zero);
-        assert_eq!(fraction(&bare, Some(43), None), 1.0, "zero-max degenerate");
+        assert_eq!(fraction(&bare, Some(43), None), 0.0, "carried zero-max pool is empty");
     }
 
     /// #5508 — the bar's `max` includes the `set_override` layer: with

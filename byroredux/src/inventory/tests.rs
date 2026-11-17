@@ -2603,6 +2603,10 @@ fn hud_bars_resolve_through_player_vitals_and_read_the_player_only() {
     );
     // Unpinned absent key → full bar; pins still win.
     assert_eq!(fraction(&world, Some(0x999), None), 1.0);
+    assert_eq!(fraction(&world, None, None), 1.0, "an unresolved bar key reads full");
+    // #7041 — a pool the player carries with no maximum is empty, not full (both HUD drivers share this).
+    world.get_mut::<ActorValues>(player).unwrap().set_base(0x44C, 0.0);
+    assert_eq!(fraction(&world, Some(0x44C), None), 0.0);
     assert_eq!(fraction(&world, Some(health), Some(0.3)), 0.3);
 }
 
