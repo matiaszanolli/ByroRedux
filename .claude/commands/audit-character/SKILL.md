@@ -62,8 +62,8 @@ ruleset.md` — **the authority for every constant**; a coefficient no capture s
   `Game.AdvanceSkill` rank-ups via `xp_from_skill_rank`) rolls levels through `LevelingModel::roll_levels` up to
   `level_cap()` and banks the rewards into the saved `LevelUpPoints` (Dim 3/4) — Fallout `skill_point_reward`,
   Skyrim a perk point + a pool pick (#5916 `612bd179e`); only classic-TES `SkillUse` has no XP-driven roll.
-- Oblivion `RulesetBuilder::None` is deliberate (no AVIF pre-FO3 → no resolver); pinned by
-  `oblivion_still_has_no_runtime_ruleset_and_that_is_deliberate`. FO76/Starfield: captures, no builders.
+- Oblivion has a runtime ruleset (`RulesetBuilder::Oblivion`, `tes::oblivion_ruleset`; engine-supplied actor values, #7008–#7010), pinned by
+  `oblivion_builds_its_runtime_ruleset`. Only FO76/Starfield: captures, no builders (`RulesetBuilder::None`).
 - Open (verified 2026-11-14) — cite, do not re-file: #4137 (two `template_flags` bits with no consumer — Script 0x0200, Def Pack List 0x0400;
   the other four listed gained `ResolvedNpc` terminals, `eae8fd740`), #6350 (VATS umbrella, carries the to-hit ground-truth captures; #6403 itself is closed, `2d6af0aeb`). #4232 (`effective_actor_level` returns 0 verbatim) is closed (`4fbff2c6c`, see Dim 4). #4415 (magic runtime) is closed (`9813af435`). The 2026-09-19 report's
   #4452-#4457/#4459-#4463 are all closed — regression checks now. Verify with `gh issue view` before citing.

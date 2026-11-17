@@ -104,7 +104,7 @@ catalogued — `CATALOG` 88 → 102 with #6657's `IsWeaponSkillType` (103 with #
 `CrimeModel`, `dcc3dc681`), #6510/#6511 (Oblivion's caller-scoped crime-gold getters honour the caller, `a48017e7b`;
 `SendTrespassAlarm` declines, `baa93fe87`), #6615 (`select_info` takes a short `QuestStageState` read per question, not a
 body-long one, `6af13ef37`), #6619 (a scripted `AddPerk` raises a held perk's rank on FO3/FNV/FO4, `2d9c5802c`), #6620
-(`MenuMode` answers Oblivion's barter code 1008 from a `MenuCodes` resource, `16d9e18f3`), #6716 (`populate_scene_runtime` /
+(`MenuMode` answers Oblivion's barter code 1008 from the menu registry's per-game codes, `16d9e18f3`, re-seated by M48 GUI-EVT-003), #6716 (`populate_scene_runtime` /
 `materialize_scene_actor_alias_stubs` live in `scene/scene_runtime.rs`, `6413d542b`). Closed since the 2026-10-27 sync: #6355 (*obscript_effects.rs* crossed 2 000 LOC after the #6139 table conversion — now
 `obscript_effects/`, `aa29774ec`), #6460 (ten FO3/FNV script getters — `IsChild` 365, `GetTalkedToPC` 50, `GetHasNote` 382,
 `IsInList` 372, `GetLocked` 5, `GetCurrentTime` 18, `GetInSameCell` 32, `GetBaseActorValue` 277, `GetDestructionStage` 471,
@@ -1023,7 +1023,7 @@ SCTX frontend (`ScriptSource::Obscript` placeholder).
 until trespass is routed into the crime runtime (#6511 `baa93fe87`); Oblivion's caller-scoped `GetCrimeGold` / `SetCrimeGold` /
 `ModCrimeGold` / `GetGold` honour the calling reference — no caller or the player's own keeps the player path, any other named
 actor declines (crime gold) or counts that actor's own `Gold001` (`GetGold`), and an unloaded caller never falls through to the
-player (#6510 `a48017e7b`); `MenuMode` reads its per-game codes from the `MenuCodes` resource, so Oblivion answers barter 1008
+player (#6510 `a48017e7b`); `MenuMode` reads its per-game codes from the M48 menu registry (`MenuRequest::code`, GUI-EVT-003; it was the retired *MenuCodes* resource until then), so Oblivion answers barter 1008
 (#6620 `16d9e18f3`).
 - **Object and item scripts** (`obscript_objects.rs`, M47.3 phase 2; live gate `docs/smoke-tests/m47-3-obscript.sh`
   on FNV): a placed reference whose base carries an `SCRI` gets an `ObScriptInstance` at attach; blocks run on the

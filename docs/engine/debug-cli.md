@@ -344,7 +344,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**181**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**182**) grouped by
 purpose:
 
 ```
@@ -547,6 +547,7 @@ script.activate <entity_id|0xREFR> → emit an `ActivateEvent` on the entity (M4
 quest.show / quest.aliases  → inspect quest state, objectives, and aliases
 scene.show                  → inspect a live scene and its phase/action state
 quest.start / quest.stop    → control quest running state
+quest.reset                 → reset an installed quest to never started, as Quest.Reset() does
 quest.setstage              → advance a quest through the canonical stage path
 perk.run                    → run a perk entry's fragment on the player (perk, entry id, optional target)
 terminal.select             → pick a terminal menu item by reference + item id, running its fragment

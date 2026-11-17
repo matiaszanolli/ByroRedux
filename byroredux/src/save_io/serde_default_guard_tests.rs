@@ -1345,7 +1345,11 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `SavedPersistentReferenceStates`, which are unchanged; nothing serialized the in-memory types any more.
     // Only the scan's input shrank; no registered column decodes differently.
     // #6667 — v135: `Effect::ShowAppearanceMenu` (Fallout 4's `ShowRaceMenu` appearance modes).
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x7aa1_711a_ba7a_5a81;
+    // #6667 — refreshed WITHOUT a major bump: `FragmentResumeCondition::MessageAnswered { ticket }` was
+    // appended (a script frozen on `Message.Show()`'s value). Name-tagged like `MovieEnded` and
+    // `DetectedBy` before it: no v135 save carries the variant and no existing variant or field moved.
+    // `PapyrusMessageAnswers` is UI state and is not saved (`registry_completeness_tests`).
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x9eda_fc8e_fe40_0ef5;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.
