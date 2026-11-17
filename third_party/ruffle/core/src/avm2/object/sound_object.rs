@@ -1,0 +1,306 @@
+//! Object representation for sounds
+
+use crate::avm2::Avm2;
+use crate::avm2::Error;
+use crate::avm2::EventObject;
+use crate::avm2::activation::Activation;
+use crate::avm2::globals::slots::flash_media_id3info as id3_slots;
+use crate::avm2::object::script_object::ScriptObjectData;
+use crate::avm2::object::{ClassObject, Object, TObject};
+use crate::backend::audio::{AudioManager, SoundHandle};
+use crate::context::UpdateContext;
+use crate::display_object::SoundTransform;
+use crate::string::AvmString;
+use core::fmt;
+use gc_arena::barrier::unlock;
+use gc_arena::{
+    Collect, DynamicRoot, Gc, GcWeak, Mutation, Rootable,
+    lock::{Lock, RefLock},
+};
+use id3::{Tag, TagLike};
+use ruffle_common::utils::HasPrefixField;
+use std::cell::Cell;
+use std::io::Cursor;
+use swf::SoundInfo;
+
+use super::SoundChannelObject;
+
+/// A class instance allocator that allocates Sound objects.
+pub fn sound_allocator<'gc>(
+    class: ClassObject<'gc>,
+    activation: &mut Activation<'_, 'gc>,
+) -> Result<Object<'gc>, Error<'gc>> {
+    let base = ScriptObjectData::new(class);
+
+    Ok(SoundObject(Gc::new(
+        activation.gc(),
+        SoundObjectData {
+            base,
+            loading_state: Cell::new(SoundLoadingState::New),
+            sound_data: RefLock::new(SoundData::NotLoaded {
+                queued_plays: Vec::new(),
+            }),
+            id3: Lock::new(None),
+        },
+    ))
+    .into())
+}
+
+#[derive(Clone, Collect, Copy)]
+#[collect(no_drop)]
+pub struct SoundObject<'gc>(pub Gc<'gc, SoundObjectData<'gc>>);
+
+#[derive(Clone, Collect, Copy, Debug)]
+#[collect(no_drop)]
+pub struct SoundObjectWeak<'gc>(pub GcWeak<'gc, SoundObjectData<'gc>>);
+
+impl fmt::Debug for SoundObject<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SoundObject")
+            .field("ptr", &Gc::as_ptr(self.0))
+            .finish()
+    }
+}
+
+#[derive(Clone)]
+pub struct SoundObjectHandle(DynamicRoot<Rootable![SoundObjectData<'_>]>);
+
+impl SoundObjectHandle {
+    pub fn stash<'gc>(context: &UpdateContext<'gc>, this: SoundObject<'gc>) -> Self {
+        Self(context.dynamic_root.stash(context.gc(), this.0))
+    }
+
+    pub fn fetch<'gc>(&self, context: &UpdateContext<'gc>) -> SoundObject<'gc> {
+        SoundObject(context.dynamic_root.fetch(&self.0))
+    }
+}
+
+#[derive(Collect, HasPrefixField)]
+#[collect(no_drop)]
+#[repr(C, align(8))]
+pub struct SoundObjectData<'gc> {
+    /// Base script object
+    base: ScriptObjectData<'gc>,
+
+    /// Loading state of the sound.
+    loading_state: Cell<SoundLoadingState>,
+
+    /// The sound this object holds.
+    sound_data: RefLock<SoundData<'gc>>,
+
+    /// ID3Info Object
+    id3: Lock<Option<Object<'gc>>>,
+}
+
+#[derive(Collect)]
+#[collect(no_drop)]
+pub enum SoundData<'gc> {
+    NotLoaded {
+        queued_plays: Vec<QueuedPlay<'gc>>,
+    },
+    Loaded {
+        #[collect(require_static)]
+        sound: SoundHandle,
+    },
+}
+
+#[derive(Clone, Collect)]
+#[collect(no_drop)]
+pub struct QueuedPlay<'gc> {
+    #[collect(require_static)]
+    pub sound_info: SoundInfo,
+    #[collect(require_static)]
+    pub sound_transform: Option<SoundTransform>,
+    pub sound_channel: SoundChannelObject<'gc>,
+    pub position: f64,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SoundLoadingState {
+    New,
+    Loading,
+    Loaded,
+}
+
+impl<'gc> SoundObject<'gc> {
+    pub fn sound_handle(self) -> Option<SoundHandle> {
+        let sound_data = self.0.sound_data.borrow();
+        match &*sound_data {
+            SoundData::NotLoaded { .. } => None,
+            SoundData::Loaded { sound } => Some(*sound),
+        }
+    }
+
+    pub fn loading_state(self) -> SoundLoadingState {
+        self.0.loading_state.get()
+    }
+
+    pub fn set_loading_state(self, value: SoundLoadingState) {
+        self.0.loading_state.set(value);
+    }
+
+    /// Returns `true` if a `SoundChannel` should be returned back to the AVM2 caller.
+    pub fn play(self, queued: QueuedPlay<'gc>, activation: &mut Activation<'_, 'gc>) -> bool {
+        let mut sound_data = unlock!(
+            Gc::write(activation.gc(), self.0),
+            SoundObjectData,
+            sound_data
+        )
+        .borrow_mut();
+        match &mut *sound_data {
+            SoundData::NotLoaded { queued_plays } => {
+                // Avoid to enqueue more unloaded sounds than the maximum allowed to be played
+                if queued_plays.len() >= AudioManager::MAX_SOUNDS {
+                    tracing::warn!("Sound.play: too many unloaded sounds queued");
+                    return false;
+                }
+
+                queued_plays.push(queued);
+
+                // We don't know the length yet, so return the `SoundChannel`
+                true
+            }
+            SoundData::Loaded { sound } => play_queued(queued, *sound, activation.context),
+        }
+    }
+
+    pub fn set_sound(self, context: &mut UpdateContext<'gc>, sound: SoundHandle) {
+        let mut sound_data =
+            unlock!(Gc::write(context.gc(), self.0), SoundObjectData, sound_data).borrow_mut();
+
+        match &mut *sound_data {
+            SoundData::NotLoaded { queued_plays } => {
+                for queued in std::mem::take(queued_plays) {
+                    play_queued(queued, sound, context);
+                }
+                *sound_data = SoundData::Loaded { sound };
+            }
+            SoundData::Loaded { sound: old_sound } => {
+                panic!("Tried to replace sound {old_sound:?} with {sound:?}")
+            }
+        }
+        self.set_loading_state(SoundLoadingState::Loaded);
+    }
+
+    pub fn id3(self) -> Option<Object<'gc>> {
+        self.0.id3.get()
+    }
+
+    pub fn set_id3(self, mc: &Mutation<'gc>, id3: Option<Object<'gc>>) {
+        unlock!(Gc::write(mc, self.0), SoundObjectData, id3).set(id3);
+    }
+
+    pub fn read_and_call_id3_event(self, activation: &mut Activation<'_, 'gc>, bytes: &[u8]) {
+        let id3 = activation
+            .avm2()
+            .classes()
+            .id3info
+            .construct(activation, &[])
+            .expect("failed to construct ID3Info object")
+            .as_object()
+            .unwrap();
+
+        let tag = Tag::read_from2(Cursor::new(bytes));
+        if let Ok(ref tag) = tag {
+            if let Some(v) = tag.album() {
+                id3.set_slot(
+                    id3_slots::ALBUM,
+                    AvmString::new_utf8(activation.gc(), v).into(),
+                    activation,
+                )
+                .expect("slot is typed String");
+            }
+            if let Some(v) = tag.artist() {
+                id3.set_slot(
+                    id3_slots::ARTIST,
+                    AvmString::new_utf8(activation.gc(), v).into(),
+                    activation,
+                )
+                .expect("slot is typed String");
+            }
+            if let Some(v) = tag.comments().next() {
+                id3.set_slot(
+                    id3_slots::COMMENT,
+                    AvmString::new_utf8(activation.gc(), v.text.clone()).into(),
+                    activation,
+                )
+                .expect("slot is typed String");
+            }
+            if let Some(v) = tag.genre() {
+                id3.set_slot(
+                    id3_slots::GENRE,
+                    AvmString::new_utf8(activation.gc(), v).into(),
+                    activation,
+                )
+                .expect("slot is typed String");
+            }
+            if let Some(v) = tag.title() {
+                id3.set_slot(
+                    id3_slots::SONG_NAME,
+                    AvmString::new_utf8(activation.gc(), v).into(),
+                    activation,
+                )
+                .expect("slot is typed String");
+            }
+            if let Some(v) = tag.track() {
+                id3.set_slot(
+                    id3_slots::TRACK,
+                    AvmString::new_utf8(activation.gc(), v.to_string()).into(),
+                    activation,
+                )
+                .expect("slot is typed String");
+            }
+            if let Some(v) = tag.year() {
+                id3.set_slot(
+                    id3_slots::YEAR,
+                    AvmString::new_utf8(activation.gc(), v.to_string()).into(),
+                    activation,
+                )
+                .expect("slot is typed String");
+            }
+        }
+        self.set_id3(activation.gc(), Some(id3));
+        if tag.is_ok() {
+            let id3_evt = EventObject::bare_default_event(activation.context, "id3");
+            Avm2::dispatch_event(activation.context, id3_evt, self.into());
+        }
+    }
+}
+
+/// Returns `true` if the sound had a valid position, and `false` otherwise
+fn play_queued<'gc>(
+    queued: QueuedPlay<'gc>,
+    sound: SoundHandle,
+    context: &mut UpdateContext<'gc>,
+) -> bool {
+    if let Some(duration) = context.audio.get_sound_duration(sound)
+        && queued.position > duration.as_millis()
+    {
+        tracing::error!(
+            "Sound.play: position={} is greater than duration={}",
+            queued.position,
+            duration.as_millis()
+        );
+        return false;
+    }
+
+    if let Some(instance) = context.start_sound(
+        sound,
+        &queued.sound_info,
+        queued.sound_transform,
+        None,
+        None,
+    ) {
+        queued.sound_channel.set_sound_instance(context, instance);
+
+        context.attach_avm2_sound_channel(instance, queued.sound_channel);
+    }
+
+    true
+}
+
+impl<'gc> TObject<'gc> for SoundObject<'gc> {
+    fn gc_base(&self) -> Gc<'gc, ScriptObjectData<'gc>> {
+        HasPrefixField::as_prefix_gc(self.0)
+    }
+}

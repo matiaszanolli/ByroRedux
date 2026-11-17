@@ -1,0 +1,12 @@
+context-menu-play = 播放
+context-menu-rewind = 倒帶
+context-menu-forward = 快轉
+context-menu-back = 後退
+context-menu-quality-low = 品質: 低
+context-menu-quality-medium = 品質: 中
+context-menu-quality-high = 品質: 高
+context-menu-cut = 剪下
+context-menu-copy = 複製
+context-menu-paste = 貼上
+context-menu-delete = 刪除
+context-menu-select-all = 全選

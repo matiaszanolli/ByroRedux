@@ -121,7 +121,9 @@ fn visit_workspace_rs_files(dir: &std::path::Path, visit: &mut dyn FnMut(&std::p
             .path();
         if path.is_dir() {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name == "target" || name == ".git" {
+            // `third_party` holds vendored upstream code (the patched `ruffle_core`, #6665): its
+            // conventions are upstream's, not this workspace's.
+            if name == "target" || name == ".git" || name == "third_party" {
                 continue;
             }
             visit_workspace_rs_files(&path, visit);
@@ -1483,7 +1485,9 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // #7036 re-measure: +109 — `hud_feed_paths` `layout` / `fonts` / `cat` subcommands (a widget's
         // display list with bounds, the text fields' font classes, an archive entry's bytes), the
         // evidence for the Fallout 4 compass driver and its TSV row (no new target; the tool grew).
-        ("ui", 3, 2388),
+        // #6665 re-measure: +15 — `hud_feed_paths` `skyrim cat` / `skyrim fonts` and the font
+        // census's `ExportAssets` rows (the evidence for the fontconfig-built font library).
+        ("ui", 3, 2403),
     ];
     let by_entry = |root: &std::path::Path| {
         // `crates/<name>/examples` or `byroredux/examples` → crate name.

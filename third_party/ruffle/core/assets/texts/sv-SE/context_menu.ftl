@@ -1,0 +1,12 @@
+context-menu-play = Spela upp
+context-menu-rewind = Spola tillbaka
+context-menu-forward = Spola framåt
+context-menu-back = Bakåt
+context-menu-quality-low = Kvalitet: låg
+context-menu-quality-medium = Kvalitet: medel
+context-menu-quality-high = Kvalitet: hög
+context-menu-cut = Klipp ut
+context-menu-copy = Kopiera
+context-menu-paste = Klistra in
+context-menu-delete = Ta bort
+context-menu-select-all = Markera allt

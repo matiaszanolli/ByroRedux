@@ -15,6 +15,7 @@
 //! cargo run -q -p byroredux-ui --example hud_feed_paths -- fo4 strings <swf> <needle>  # constant-pool strings
 //! cargo run -q -p byroredux-ui --example hud_feed_paths -- fo4 refs <swf> <needle>     # every get/set/call site of a member name
 //! cargo run -q -p byroredux-ui --example hud_feed_paths -- fo4 layout <swf> <char>     # a character's display list: placements, matrices, bounds (px)
+//! cargo run -q -p byroredux-ui --example hud_feed_paths -- skyrim cat <entry> | skyrim fonts <swf>
 //! cargo run -q -p byroredux-ui --example hud_feed_paths -- fo4 cat <entry>              # an archive entry's raw bytes (e.g. interface\translate_en.txt)
 //! ```
 //!
@@ -894,6 +895,11 @@ fn print_fonts(data: &[u8]) {
                         println!("import {} {:?} <- {}", i.id, i.name.to_string_lossy(swf::UTF_8), url.to_string_lossy(swf::UTF_8));
                     }
                 }
+                Tag::ExportAssets(exports) => {
+                    for e in exports {
+                        println!("export {} {:?}", e.id, e.name.to_string_lossy(swf::UTF_8));
+                    }
+                }
                 Tag::DefineEditText(e) => println!(
                     "edittext {} font {:?} outlines {} html {}",
                     e.id(),
@@ -1096,6 +1102,15 @@ fn main() {
             }
             let name = name.unwrap_or_else(|| "interface\\hudmenu.swf".to_string());
             let data = a.extract(&name).expect("extract");
+            if cmd == "cat" {
+                use std::io::Write;
+                std::io::stdout().write_all(&data).expect("stdout");
+                return;
+            }
+            if cmd == "fonts" {
+                print_fonts(&data);
+                return;
+            }
             let m = load_movie_avm1(&data);
             match cmd {
                 "dump" => print_dump(&m),

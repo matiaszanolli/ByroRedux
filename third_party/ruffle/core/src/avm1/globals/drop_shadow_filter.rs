@@ -1,0 +1,442 @@
+//! flash.filters.DropShadowFilter object
+
+use crate::avm1::object::NativeObject;
+use crate::avm1::property_decl::{DeclContext, PropertyOrder, StaticDeclarations, SystemClass};
+use crate::avm1::{Activation, Error, Object, Value};
+use gc_arena::{Collect, Gc, Mutation};
+use std::cell::Cell;
+use swf::{Color, DropShadowFilterFlags, Fixed8, Fixed16};
+
+#[derive(Clone, Debug, Collect)]
+#[collect(require_static)]
+struct DropShadowFilterData {
+    distance: Cell<f64>,
+    // TODO: Introduce `Angle<Radians>` struct.
+    angle: Cell<f64>,
+    color: Cell<Color>,
+    quality: Cell<i32>,
+    inner: Cell<bool>,
+    knockout: Cell<bool>,
+    blur_x: Cell<f64>,
+    blur_y: Cell<f64>,
+    // TODO: Introduce unsigned `Fixed8`?
+    strength: Cell<u16>,
+    hide_object: Cell<bool>,
+}
+
+impl From<&DropShadowFilterData> for swf::DropShadowFilter {
+    fn from(filter: &DropShadowFilterData) -> swf::DropShadowFilter {
+        let mut flags = DropShadowFilterFlags::empty();
+        flags |= DropShadowFilterFlags::from_passes(filter.quality.get() as u8);
+        flags.set(DropShadowFilterFlags::KNOCKOUT, filter.knockout.get());
+        flags.set(DropShadowFilterFlags::INNER_SHADOW, filter.inner.get());
+        flags.set(
+            DropShadowFilterFlags::COMPOSITE_SOURCE,
+            !filter.hide_object.get(),
+        );
+        swf::DropShadowFilter {
+            color: filter.color.get(),
+            blur_x: Fixed16::from_f64(filter.blur_x.get()),
+            blur_y: Fixed16::from_f64(filter.blur_y.get()),
+            angle: Fixed16::from_f64(filter.angle.get()),
+            distance: Fixed16::from_f64(filter.distance.get()),
+            strength: Fixed8::from_f64(filter.strength()),
+            flags,
+        }
+    }
+}
+
+impl From<swf::DropShadowFilter> for DropShadowFilterData {
+    fn from(filter: swf::DropShadowFilter) -> DropShadowFilterData {
+        Self {
+            distance: Cell::new(filter.distance.into()),
+            angle: Cell::new(filter.angle.into()),
+            color: Cell::new(filter.color),
+            quality: Cell::new(filter.num_passes().into()),
+            strength: Cell::new((filter.strength.to_f64() * 256.0) as u16),
+            knockout: Cell::new(filter.is_knockout()),
+            blur_x: Cell::new(filter.blur_x.into()),
+            blur_y: Cell::new(filter.blur_y.into()),
+            inner: Cell::new(filter.is_inner()),
+            hide_object: Cell::new(filter.hide_object()),
+        }
+    }
+}
+
+impl Default for DropShadowFilterData {
+    #[expect(clippy::approx_constant)]
+    fn default() -> Self {
+        Self {
+            distance: Cell::new(4.0),
+            angle: Cell::new(0.785398163), // ~45 degrees
+            color: Cell::new(Color::BLACK),
+            quality: Cell::new(1),
+            inner: Cell::new(false),
+            knockout: Cell::new(false),
+            blur_x: Cell::new(4.0),
+            blur_y: Cell::new(4.0),
+            strength: Cell::new(1 << 8),
+            hide_object: Cell::new(false),
+        }
+    }
+}
+
+impl DropShadowFilterData {
+    pub fn strength(&self) -> f64 {
+        f64::from(self.strength.get()) / 256.0
+    }
+
+    pub fn set_strength(&self, strength: f64) {
+        let strength = ((strength * 256.0) as u16).clamp(0, 0xFF00);
+        self.strength.set(strength);
+    }
+}
+
+#[derive(Copy, Clone, Debug, Collect)]
+#[collect(no_drop)]
+#[repr(transparent)]
+pub struct DropShadowFilter<'gc>(Gc<'gc, DropShadowFilterData>);
+
+impl<'gc> DropShadowFilter<'gc> {
+    fn new(activation: &mut Activation<'_, 'gc>, args: &[Value<'gc>]) -> Result<Self, Error<'gc>> {
+        let drop_shadow_filter = Self(Gc::new(activation.gc(), Default::default()));
+        drop_shadow_filter.set_distance(activation, args.get(0))?;
+        drop_shadow_filter.set_angle(activation, args.get(1))?;
+        drop_shadow_filter.set_color(activation, args.get(2))?;
+        drop_shadow_filter.set_alpha(activation, args.get(3))?;
+        drop_shadow_filter.set_blur_x(activation, args.get(4))?;
+        drop_shadow_filter.set_blur_y(activation, args.get(5))?;
+        drop_shadow_filter.set_strength(activation, args.get(6))?;
+        drop_shadow_filter.set_quality(activation, args.get(7))?;
+        drop_shadow_filter.set_inner(activation, args.get(8))?;
+        drop_shadow_filter.set_knockout(activation, args.get(9))?;
+        drop_shadow_filter.set_hide_object(activation, args.get(10))?;
+        Ok(drop_shadow_filter)
+    }
+
+    pub fn from_filter(gc_context: &Mutation<'gc>, filter: swf::DropShadowFilter) -> Self {
+        Self(Gc::new(gc_context, filter.into()))
+    }
+
+    pub(crate) fn duplicate(self, gc_context: &Mutation<'gc>) -> Self {
+        Self(Gc::new(gc_context, self.0.as_ref().clone()))
+    }
+
+    fn distance(self) -> f64 {
+        self.0.distance.get()
+    }
+
+    fn set_distance(
+        self,
+        activation: &mut Activation<'_, 'gc>,
+        value: Option<&Value<'gc>>,
+    ) -> Result<(), Error<'gc>> {
+        if let Some(value) = value {
+            let distance = value.coerce_to_f64(activation)?;
+            self.0.distance.set(distance);
+        }
+        Ok(())
+    }
+
+    fn angle(self) -> f64 {
+        self.0.angle.get().to_degrees()
+    }
+
+    fn set_angle(
+        self,
+        activation: &mut Activation<'_, 'gc>,
+        value: Option<&Value<'gc>>,
+    ) -> Result<(), Error<'gc>> {
+        if let Some(value) = value {
+            let angle = (value.coerce_to_f64(activation)? % 360.0).to_radians();
+            self.0.angle.set(angle);
+        }
+        Ok(())
+    }
+
+    fn color(self) -> i32 {
+        self.0.color.get().to_rgb() as i32
+    }
+
+    fn set_color(
+        self,
+        activation: &mut Activation<'_, 'gc>,
+        value: Option<&Value<'gc>>,
+    ) -> Result<(), Error<'gc>> {
+        if let Some(value) = value {
+            let value = value.coerce_to_u32(activation)?;
+            let color = self.0.color.get();
+            self.0.color.set(Color::from_rgb(value, color.a));
+        }
+        Ok(())
+    }
+
+    fn alpha(self) -> f64 {
+        f64::from(self.0.color.get().a) / 255.0
+    }
+
+    fn set_alpha(
+        self,
+        activation: &mut Activation<'_, 'gc>,
+        value: Option<&Value<'gc>>,
+    ) -> Result<(), Error<'gc>> {
+        if let Some(value) = value {
+            let alpha = (value.coerce_to_f64(activation)? * 255.0) as u8;
+            let mut color = self.0.color.get();
+            color.a = alpha;
+            self.0.color.set(color);
+        }
+        Ok(())
+    }
+
+    fn quality(self) -> i32 {
+        self.0.quality.get()
+    }
+
+    fn set_quality(
+        self,
+        activation: &mut Activation<'_, 'gc>,
+        value: Option<&Value<'gc>>,
+    ) -> Result<(), Error<'gc>> {
+        if let Some(value) = value {
+            let quality = value.coerce_to_i32(activation)?.clamp(0, 15);
+            self.0.quality.set(quality);
+        }
+        Ok(())
+    }
+
+    fn inner(self) -> bool {
+        self.0.inner.get()
+    }
+
+    fn set_inner(
+        self,
+        activation: &mut Activation<'_, 'gc>,
+        value: Option<&Value<'gc>>,
+    ) -> Result<(), Error<'gc>> {
+        if let Some(value) = value {
+            let inner = value.as_bool(activation.swf_version());
+            self.0.inner.set(inner);
+        }
+        Ok(())
+    }
+
+    fn knockout(self) -> bool {
+        self.0.knockout.get()
+    }
+
+    fn set_knockout(
+        self,
+        activation: &mut Activation<'_, 'gc>,
+        value: Option<&Value<'gc>>,
+    ) -> Result<(), Error<'gc>> {
+        if let Some(value) = value {
+            let knockout = value.as_bool(activation.swf_version());
+            self.0.knockout.set(knockout);
+        }
+        Ok(())
+    }
+
+    fn blur_x(self) -> f64 {
+        self.0.blur_x.get()
+    }
+
+    fn set_blur_x(
+        self,
+        activation: &mut Activation<'_, 'gc>,
+        value: Option<&Value<'gc>>,
+    ) -> Result<(), Error<'gc>> {
+        if let Some(value) = value {
+            let blur_x = value.coerce_to_f64(activation)?.clamp(0.0, 255.0);
+            self.0.blur_x.set(blur_x);
+        }
+        Ok(())
+    }
+
+    fn blur_y(self) -> f64 {
+        self.0.blur_y.get()
+    }
+
+    fn set_blur_y(
+        self,
+        activation: &mut Activation<'_, 'gc>,
+        value: Option<&Value<'gc>>,
+    ) -> Result<(), Error<'gc>> {
+        if let Some(value) = value {
+            let blur_y = value.coerce_to_f64(activation)?.clamp(0.0, 255.0);
+            self.0.blur_y.set(blur_y);
+        }
+        Ok(())
+    }
+
+    fn strength(self) -> f64 {
+        self.0.strength()
+    }
+
+    fn set_strength(
+        self,
+        activation: &mut Activation<'_, 'gc>,
+        value: Option<&Value<'gc>>,
+    ) -> Result<(), Error<'gc>> {
+        if let Some(value) = value {
+            self.0.set_strength(value.coerce_to_f64(activation)?);
+        }
+        Ok(())
+    }
+
+    fn hide_object(self) -> bool {
+        self.0.hide_object.get()
+    }
+
+    fn set_hide_object(
+        self,
+        activation: &mut Activation<'_, 'gc>,
+        value: Option<&Value<'gc>>,
+    ) -> Result<(), Error<'gc>> {
+        if let Some(value) = value {
+            let hide_object = value.as_bool(activation.swf_version());
+            self.0.hide_object.set(hide_object);
+        }
+        Ok(())
+    }
+
+    pub fn filter(self) -> swf::DropShadowFilter {
+        self.0.as_ref().into()
+    }
+}
+
+const PROTO_DECLS: StaticDeclarations = declare_static_properties! {
+    use fn method;
+    "distance" => property(GET_DISTANCE, SET_DISTANCE; VERSION_8);
+    "angle" => property(GET_ANGLE, SET_ANGLE; VERSION_8);
+    "color" => property(GET_COLOR, SET_COLOR; VERSION_8);
+    "alpha" => property(GET_ALPHA, SET_ALPHA; VERSION_8);
+    "quality" => property(GET_QUALITY, SET_QUALITY; VERSION_8);
+    "inner" => property(GET_INNER, SET_INNER; VERSION_8);
+    "knockout" => property(GET_KNOCKOUT, SET_KNOCKOUT; VERSION_8);
+    "blurX" => property(GET_BLUR_X, SET_BLUR_X; VERSION_8);
+    "blurY" => property(GET_BLUR_Y, SET_BLUR_Y; VERSION_8);
+    "strength" => property(GET_STRENGTH, SET_STRENGTH; VERSION_8);
+    "hideObject" => property(GET_HIDE_OBJECT, SET_HIDE_OBJECT; VERSION_8);
+};
+
+pub fn create_class<'gc>(
+    context: &mut DeclContext<'_, 'gc>,
+    super_proto: Object<'gc>,
+) -> SystemClass<'gc> {
+    let class = context.native_class(
+        table_constructor!(method),
+        None,
+        super_proto,
+        PropertyOrder::PrototypeFirst,
+    );
+    context.define_properties_on(class.proto, PROTO_DECLS(context));
+    class
+}
+
+pub mod method {
+    pub const CONSTRUCTOR: u16 = 0;
+    pub const GET_DISTANCE: u16 = 1;
+    pub const SET_DISTANCE: u16 = 2;
+    pub const GET_ANGLE: u16 = 3;
+    pub const SET_ANGLE: u16 = 4;
+    pub const GET_COLOR: u16 = 5;
+    pub const SET_COLOR: u16 = 6;
+    pub const GET_ALPHA: u16 = 7;
+    pub const SET_ALPHA: u16 = 8;
+    pub const GET_QUALITY: u16 = 9;
+    pub const SET_QUALITY: u16 = 10;
+    pub const GET_INNER: u16 = 11;
+    pub const SET_INNER: u16 = 12;
+    pub const GET_KNOCKOUT: u16 = 13;
+    pub const SET_KNOCKOUT: u16 = 14;
+    pub const GET_BLUR_X: u16 = 15;
+    pub const SET_BLUR_X: u16 = 16;
+    pub const GET_BLUR_Y: u16 = 17;
+    pub const SET_BLUR_Y: u16 = 18;
+    pub const GET_STRENGTH: u16 = 19;
+    pub const SET_STRENGTH: u16 = 20;
+    pub const GET_HIDE_OBJECT: u16 = 21;
+    pub const SET_HIDE_OBJECT: u16 = 22;
+}
+
+pub fn method<'gc>(
+    activation: &mut Activation<'_, 'gc>,
+    this: Object<'gc>,
+    args: &[Value<'gc>],
+    index: u16,
+) -> Result<Value<'gc>, Error<'gc>> {
+    use method::*;
+
+    if index == CONSTRUCTOR {
+        let drop_shadow_filter = DropShadowFilter::new(activation, args)?;
+        this.set_native(
+            activation.gc(),
+            NativeObject::DropShadowFilter(drop_shadow_filter),
+        );
+        return Ok(this.into());
+    }
+
+    let NativeObject::DropShadowFilter(this) = this.native() else {
+        return Ok(Value::Undefined);
+    };
+
+    Ok(match index {
+        GET_DISTANCE => this.distance().into(),
+        SET_DISTANCE => {
+            this.set_distance(activation, args.get(0))?;
+            Value::Undefined
+        }
+        GET_ANGLE => this.angle().into(),
+        SET_ANGLE => {
+            this.set_angle(activation, args.get(0))?;
+            Value::Undefined
+        }
+        GET_COLOR => this.color().into(),
+        SET_COLOR => {
+            this.set_color(activation, args.get(0))?;
+            Value::Undefined
+        }
+        GET_ALPHA => this.alpha().into(),
+        SET_ALPHA => {
+            this.set_alpha(activation, args.get(0))?;
+            Value::Undefined
+        }
+        GET_QUALITY => this.quality().into(),
+        SET_QUALITY => {
+            this.set_quality(activation, args.get(0))?;
+            Value::Undefined
+        }
+        GET_INNER => this.inner().into(),
+        SET_INNER => {
+            this.set_inner(activation, args.get(0))?;
+            Value::Undefined
+        }
+        GET_KNOCKOUT => this.knockout().into(),
+        SET_KNOCKOUT => {
+            this.set_knockout(activation, args.get(0))?;
+            Value::Undefined
+        }
+        GET_BLUR_X => this.blur_x().into(),
+        SET_BLUR_X => {
+            this.set_blur_x(activation, args.get(0))?;
+            Value::Undefined
+        }
+        GET_BLUR_Y => this.blur_y().into(),
+        SET_BLUR_Y => {
+            this.set_blur_y(activation, args.get(0))?;
+            Value::Undefined
+        }
+        GET_STRENGTH => this.strength().into(),
+        SET_STRENGTH => {
+            this.set_strength(activation, args.get(0))?;
+            Value::Undefined
+        }
+        GET_HIDE_OBJECT => this.hide_object().into(),
+        SET_HIDE_OBJECT => {
+            this.set_hide_object(activation, args.get(0))?;
+            Value::Undefined
+        }
+        _ => Value::Undefined,
+    })
+}

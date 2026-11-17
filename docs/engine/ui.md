@@ -1002,10 +1002,10 @@ Phase 2 built the path service on both VMs:
   Nothing scrolls: `CompassBar_mc` is a static strip. The driver
   (`Fallout4Compass`) does the same through attach and set. The labels set through
   `htmlText` with the authored `<b>`: Ruffle's `text` setter drops to the field's
-  non-bold default format. They do not draw yet, nor does any Fallout 4 HUD text:
-  the fields ask for the GFx font classes `$MAIN_Font` / `$MAIN_Font_Bold`, which
-  only `fontconfig.txt` maps to `fonts_en.swf` (GUI-FONT-001, Phase 6). The
-  markers' ticks draw and move. Quest and location markers are not modelled.
+  non-bold default format. Since #6665 the label is the key itself, as native sets
+  it, translated by the patched Ruffle text pass (GUI-FONT-004), and draws in the
+  Noto Sans fallback until Fallout 4's `$MAIN_Font_Bold` class is mapped (Phase 6).
+  Quest and location markers are not modelled.
 
 #### MenuXml input (GUI-XML-001…003)
 
@@ -1048,9 +1048,39 @@ it, (3) a pair outside every tile yields none.
 ### Font loading
 
 Bethesda ships custom font SWFs that menus load at startup. The archive
-navigator now delivers Fallout 4's `fonts_en.swf` through `ImportAssets`;
-per-game font mapping, fallback selection, and visual-fidelity coverage
-remain.
+navigator delivers Fallout 4's `fonts_en.swf` through `ImportAssets`.
+
+**M48 Phase 3 (#6665, `crates/ui/src/fonts.rs`, `translate.rs`):**
+
+- **Font classes (GUI-FONT-001).** A Skyrim movie imports its fonts by class
+  name from `gfxfontlib.swf`; the shipped one is a placeholder (it lacks
+  `$EverywhereMediumFont`, which `hudmenu.swf` imports), and GFx fills the import
+  from `fontconfig.txt` instead. The navigator serves a library built from it:
+  each `map "$Class" = "Face" Style` exported under its class, pointing at the
+  face of that style copied out of the `fontlib` SWFs. All 20 vanilla Skyrim
+  classes resolve (`installed_skyrim_font_configuration_builds_the_classes_the_hud_imports`).
+  Fallout 4's AVM2 movies name classes on their text fields (`$MAIN_Font_Bold`)
+  rather than importing them; mapping those is Phase 6.
+- **Language (GUI-FONT-002).** `fontconfig_<language>.txt` when the archive ships
+  one for the game-text language (`BYRO_STRINGS_LANG`, the `.STRINGS` loader's
+  token; `set_text_languages`), else `fontconfig.txt`.
+- **Fallback (GUI-FONT-003).** Noto Sans Regular and Bold (SIL OFL 1.1, Q5,
+  `assets/fonts/noto-sans/` with `OFL.txt`) are every player's device font and
+  default sans / serif / typewriter. Ruffle lays a span whose embedded face it
+  cannot find out in the default sans, so an unmapped class, a missing face or a
+  missing glyph falls back to it; each unresolved class is reported once. Before
+  this, Fallout 4 HUD text did not draw at all.
+- **`$` keys (GUI-FONT-004).** GFx shows a translation-table entry for text that
+  is a `$` key; Ruffle has no such pass. The workspace patches `ruffle_core` (vendored
+  at the pinned revision, `third_party/ruffle/PATCHES.md`): `EditText` creation,
+  `text` and `htmlText` pass through `byro_translation::translate` (whole text,
+  or each run between HTML tags), and `install_translations` gives it the
+  language's `interface\translate_<language>.txt` on the first movie load.
+- **Unfed HUD widgets.** With fonts resolving, widgets native code fills and
+  hides showed their authored sample text (Skyrim's "Dialogue Line 1 / 2",
+  Fallout 4's quest-update, XP, region, ammo, crit, stealth and enemy-health
+  widgets). `ScaleformGame::unfed_widgets` stands in once: Skyrim's own
+  `HideSubtitle()`, Fallout 4 `visible = false` on each until its feed lands.
 
 ### Menu pack
 

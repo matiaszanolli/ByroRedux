@@ -1,0 +1,30 @@
+use crate::avm1::Value;
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+pub enum Error<'gc> {
+    #[error("Prototype recursion limit has been exceeded")]
+    PrototypeRecursionLimit,
+
+    #[error("A script in this movie has taken too long to execute and has been terminated.")]
+    ExecutionTimeout,
+
+    #[error(
+        "{0} levels of function recursion were exceeded in one action list. This is probably an infinite loop."
+    )]
+    FunctionRecursionLimit(u16),
+
+    #[error(
+        "66 levels of special recursion were exceeded in one action list. This is probably an infinite loop."
+    )]
+    SpecialRecursionLimit,
+
+    #[error("Property recursion limit has been hit.")]
+    PropertyRecursionLimit,
+
+    #[error("Couldn't parse AVM1 bytecode")]
+    InvalidBytecode(#[from] swf::error::Avm1ParseError),
+
+    #[error("A script has thrown a custom error.")]
+    ThrownValue(Value<'gc>),
+}

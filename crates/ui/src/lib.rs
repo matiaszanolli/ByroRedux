@@ -11,6 +11,7 @@ mod avm1_path;
 mod avm2_host;
 mod behaviour;
 mod catalog;
+mod fonts;
 mod host;
 mod input;
 mod navigator;
@@ -25,6 +26,7 @@ use std::sync::Arc;
 
 pub use avm2_host::ScaleformHostObjectState;
 pub use behaviour::{HostBehaviour, HostCallReport, HostClass, Placeholder};
+pub use fonts::{set_text_languages, text_languages, FALLBACK_FONT_NAME};
 pub use catalog::{
     ScaleformHostCatalog, ScaleformHostMethod, ScaleformHostMethodKind, ScaleformHostObject,
 };
@@ -269,6 +271,8 @@ impl UiManager {
         name: &str,
         profile: Option<ScaleformProfile>,
     ) -> anyhow::Result<()> {
+        // M48 GUI-FONT-004 — the language's `$`-key table, before the movie lays any text out.
+        translate::install_translations(provider.as_ref(), &fonts::text_languages());
         let player = SwfPlayer::from_resource_provider(
             provider,
             movie_path,

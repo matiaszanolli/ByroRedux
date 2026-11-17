@@ -1,0 +1,25 @@
+package flash.ui {
+    import __ruffle__.stub_getter;
+    import __ruffle__.stub_method;
+
+    [Ruffle(Abstract)]
+    public final class Mouse {
+        public static native function hide():void;
+        public static native function show():void;
+
+        public static native function get cursor():String;
+        public static native function set cursor(value:String):void;
+
+        public static function get supportsCursor():Boolean {
+            stub_getter("flash.ui.Mouse", "supportsCursor");
+            return true;
+        }
+        public static function get supportsNativeCursor():Boolean {
+            stub_getter("flash.ui.Mouse", "supportsNativeCursor");
+            return true;
+        }
+
+        public static native function registerCursor(name:String, cursor:MouseCursorData):void;
+        public static native function unregisterCursor(name:String):void;
+    }
+}

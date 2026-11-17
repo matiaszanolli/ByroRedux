@@ -5682,7 +5682,6 @@ checksum = "9278fb35b3e730abe136e9b395b5b81b96d06b9f5478a50f0c8430a2237b22de"
 [[package]]
 name = "ruffle_common"
 version = "0.8.0-nightly.2026.10.10"
-source = "git+https://github.com/ruffle-rs/ruffle?rev=2edfd97d11897e6cf6301c30cd87e86d774919c1#2edfd97d11897e6cf6301c30cd87e86d774919c1"
 dependencies = [
  "fnv",
  "gc-arena",
@@ -5700,7 +5699,6 @@ dependencies = [
 [[package]]
 name = "ruffle_core"
 version = "0.8.0-nightly.2026.10.10"
-source = "git+https://github.com/ruffle-rs/ruffle?rev=2edfd97d11897e6cf6301c30cd87e86d774919c1#2edfd97d11897e6cf6301c30cd87e86d774919c1"
 dependencies = [
  "async-channel",
  "bitflags 2.13.2",
@@ -5758,7 +5756,6 @@ dependencies = [
 [[package]]
 name = "ruffle_macros"
 version = "0.8.0-nightly.2026.10.10"
-source = "git+https://github.com/ruffle-rs/ruffle?rev=2edfd97d11897e6cf6301c30cd87e86d774919c1#2edfd97d11897e6cf6301c30cd87e86d774919c1"
 dependencies = [
  "proc-macro2",
  "quote",

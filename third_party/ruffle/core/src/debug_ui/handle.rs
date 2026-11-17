@@ -1,0 +1,327 @@
+use crate::avm2::object::TObject as _;
+use crate::context::UpdateContext;
+use crate::display_object::{DisplayObject, DisplayObjectPtr, TDisplayObject};
+use crate::tag_utils::{SwfMovie, SwfMovieData};
+use gc_arena::{DynamicRoot, DynamicRootSet, Gc, Rootable};
+use std::fmt::{Debug, Formatter};
+use std::hash::{Hash, Hasher};
+
+// TODO: Make this generic somehow
+#[derive(Clone)]
+pub struct DisplayObjectHandle {
+    root: DynamicRoot<Rootable![DisplayObject<'_>]>,
+    ptr: *const DisplayObjectPtr,
+}
+
+impl DisplayObjectHandle {
+    pub fn new<'gc>(
+        context: &mut UpdateContext<'gc>,
+        object: impl Into<DisplayObject<'gc>>,
+    ) -> Self {
+        let object = object.into();
+        Self {
+            // TODO(moulins): it'd be nice to avoid the double indirection here...
+            root: context
+                .dynamic_root
+                .stash(context.gc(), Gc::new(context.gc(), object)),
+            ptr: object.as_ptr(),
+        }
+    }
+
+    pub fn fetch<'gc>(&self, dynamic_root_set: DynamicRootSet<'gc>) -> DisplayObject<'gc> {
+        *dynamic_root_set.fetch(&self.root)
+    }
+
+    pub fn as_ptr(&self) -> *const DisplayObjectPtr {
+        self.ptr
+    }
+}
+
+impl Debug for DisplayObjectHandle {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("DisplayObjectHandle")
+            .field(&self.ptr)
+            .finish()
+    }
+}
+
+impl PartialEq<DisplayObjectHandle> for DisplayObjectHandle {
+    #[inline(always)]
+    fn eq(&self, other: &DisplayObjectHandle) -> bool {
+        std::ptr::eq(self.ptr, other.ptr)
+    }
+}
+
+impl Hash for DisplayObjectHandle {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.ptr.hash(state);
+    }
+}
+
+impl Eq for DisplayObjectHandle {}
+
+#[derive(Clone)]
+pub struct AVM1ObjectHandle {
+    root: DynamicRoot<Rootable![crate::avm1::Object<'_>]>,
+    ptr: *const crate::avm1::ObjectPtr,
+}
+
+impl AVM1ObjectHandle {
+    pub fn new<'gc>(context: &mut UpdateContext<'gc>, object: crate::avm1::Object<'gc>) -> Self {
+        Self {
+            // TODO(moulins): it'd be nice to avoid the double indirection here...
+            root: context
+                .dynamic_root
+                .stash(context.gc(), Gc::new(context.gc(), object)),
+            ptr: object.as_ptr(),
+        }
+    }
+
+    pub fn fetch<'gc>(&self, dynamic_root_set: DynamicRootSet<'gc>) -> crate::avm1::Object<'gc> {
+        *dynamic_root_set.fetch(&self.root)
+    }
+}
+
+impl Debug for AVM1ObjectHandle {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("AVM1ObjectHandle").field(&self.ptr).finish()
+    }
+}
+
+impl PartialEq<AVM1ObjectHandle> for AVM1ObjectHandle {
+    #[inline(always)]
+    fn eq(&self, other: &AVM1ObjectHandle) -> bool {
+        std::ptr::eq(self.ptr, other.ptr)
+    }
+}
+
+impl Hash for AVM1ObjectHandle {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.ptr.hash(state);
+    }
+}
+
+impl Eq for AVM1ObjectHandle {}
+
+#[derive(Clone)]
+pub struct AVM2ObjectHandle {
+    root: DynamicRoot<Rootable![crate::avm2::Object<'_>]>,
+    ptr: *const crate::avm2::object::ObjectPtr,
+}
+
+impl AVM2ObjectHandle {
+    pub fn new<'gc>(context: &mut UpdateContext<'gc>, object: crate::avm2::Object<'gc>) -> Self {
+        Self {
+            // TODO(moulins): it'd be nice to avoid the double indirection here...
+            root: context
+                .dynamic_root
+                .stash(context.gc(), Gc::new(context.gc(), object)),
+            ptr: object.as_ptr(),
+        }
+    }
+
+    pub fn fetch<'gc>(&self, dynamic_root_set: DynamicRootSet<'gc>) -> crate::avm2::Object<'gc> {
+        *dynamic_root_set.fetch(&self.root)
+    }
+}
+
+impl Debug for AVM2ObjectHandle {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("AVM2ObjectHandle").field(&self.ptr).finish()
+    }
+}
+
+impl PartialEq<AVM2ObjectHandle> for AVM2ObjectHandle {
+    #[inline(always)]
+    fn eq(&self, other: &AVM2ObjectHandle) -> bool {
+        std::ptr::eq(self.ptr, other.ptr)
+    }
+}
+
+impl Hash for AVM2ObjectHandle {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.ptr.hash(state);
+    }
+}
+
+impl Eq for AVM2ObjectHandle {}
+
+// Domain
+
+#[derive(Clone)]
+pub struct DomainHandle {
+    root: DynamicRoot<Rootable![crate::avm2::Domain<'_>]>,
+    ptr: *const crate::avm2::DomainPtr,
+}
+
+impl DomainHandle {
+    pub fn new<'gc>(context: &mut UpdateContext<'gc>, domain: crate::avm2::Domain<'gc>) -> Self {
+        Self {
+            // TODO(moulins): it'd be nice to avoid the double indirection here...
+            root: context
+                .dynamic_root
+                .stash(context.gc(), Gc::new(context.gc(), domain)),
+            ptr: domain.as_ptr(),
+        }
+    }
+
+    pub fn fetch<'gc>(&self, dynamic_root_set: DynamicRootSet<'gc>) -> crate::avm2::Domain<'gc> {
+        *dynamic_root_set.fetch(&self.root)
+    }
+}
+
+impl Debug for DomainHandle {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("DomainHandle").field(&self.ptr).finish()
+    }
+}
+
+impl PartialEq<DomainHandle> for DomainHandle {
+    #[inline(always)]
+    fn eq(&self, other: &DomainHandle) -> bool {
+        std::ptr::eq(self.ptr, other.ptr)
+    }
+}
+
+impl Hash for DomainHandle {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.ptr.hash(state);
+    }
+}
+
+impl Eq for DomainHandle {}
+
+// AVM2 Class
+
+#[derive(Clone)]
+pub struct ClassHandle {
+    root: DynamicRoot<Rootable![crate::avm2::Class<'_>]>,
+    ptr: *const (),
+}
+
+impl ClassHandle {
+    pub fn new<'gc>(context: &mut UpdateContext<'gc>, class: crate::avm2::Class<'gc>) -> Self {
+        Self {
+            // TODO(moulins): it'd be nice to avoid the double indirection here...
+            root: context
+                .dynamic_root
+                .stash(context.gc(), Gc::new(context.gc(), class)),
+            ptr: class.as_ptr(),
+        }
+    }
+
+    pub fn fetch<'gc>(&self, dynamic_root_set: DynamicRootSet<'gc>) -> crate::avm2::Class<'gc> {
+        *dynamic_root_set.fetch(&self.root)
+    }
+}
+
+impl Debug for ClassHandle {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("ClassHandle").field(&self.ptr).finish()
+    }
+}
+
+impl PartialEq<ClassHandle> for ClassHandle {
+    #[inline(always)]
+    fn eq(&self, other: &ClassHandle) -> bool {
+        std::ptr::eq(self.ptr, other.ptr)
+    }
+}
+
+impl Hash for ClassHandle {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.ptr.hash(state);
+    }
+}
+
+impl Eq for ClassHandle {}
+
+// Font
+
+#[derive(Clone)]
+pub struct FontHandle {
+    root: DynamicRoot<Rootable![crate::font::Font<'_>]>,
+    ptr: *const (),
+}
+
+impl FontHandle {
+    pub fn new<'gc>(context: &mut UpdateContext<'gc>, font: crate::font::Font<'gc>) -> Self {
+        Self {
+            root: context
+                .dynamic_root
+                .stash(context.gc(), Gc::new(context.gc(), font)),
+            ptr: font.as_ptr(),
+        }
+    }
+
+    pub fn fetch<'gc>(&self, dynamic_root_set: DynamicRootSet<'gc>) -> crate::font::Font<'gc> {
+        *dynamic_root_set.fetch(&self.root)
+    }
+}
+
+impl Debug for FontHandle {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("FontHandle").field(&self.ptr).finish()
+    }
+}
+
+impl PartialEq<FontHandle> for FontHandle {
+    #[inline(always)]
+    fn eq(&self, other: &FontHandle) -> bool {
+        std::ptr::eq(self.ptr, other.ptr)
+    }
+}
+
+impl Hash for FontHandle {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.ptr.hash(state);
+    }
+}
+
+impl Eq for FontHandle {}
+
+// Movie
+
+/// TODO: Once `SwfMovie` is behind a `Gc` instead of an `Arc`, this should
+/// use a proper `DynamicRoot`.
+#[derive(Clone)]
+pub struct MovieHandle {
+    root: DynamicRoot<Rootable![SwfMovie<'_>]>,
+    ptr: *const SwfMovieData,
+}
+
+impl MovieHandle {
+    pub fn new<'gc>(context: &UpdateContext<'gc>, movie: SwfMovie<'gc>) -> Self {
+        Self {
+            root: context
+                .dynamic_root
+                .stash(context.gc(), Gc::new(context.gc(), movie)),
+            ptr: movie.as_ptr(),
+        }
+    }
+
+    pub fn fetch<'gc>(&self, dynamic_root_set: DynamicRootSet<'gc>) -> SwfMovie<'gc> {
+        *dynamic_root_set.fetch(&self.root)
+    }
+}
+
+impl Debug for MovieHandle {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("MovieHandle").field(&self.ptr).finish()
+    }
+}
+
+impl PartialEq<MovieHandle> for MovieHandle {
+    #[inline(always)]
+    fn eq(&self, other: &MovieHandle) -> bool {
+        std::ptr::eq(self.ptr, other.ptr)
+    }
+}
+
+impl Hash for MovieHandle {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.ptr.hash(state);
+    }
+}
+
+impl Eq for MovieHandle {}

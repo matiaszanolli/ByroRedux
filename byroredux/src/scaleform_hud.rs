@@ -168,6 +168,39 @@ impl ScaleformGame {
         }
     }
 
+    /// The operations that stand in, once, for native writes the engine does not model yet, so
+    /// a HUD widget nothing feeds shows nothing rather than its authored sample text (#6665: the
+    /// sample text drew once GUI-FONT-001/003 gave the movies their fonts).
+    ///
+    /// - **Skyrim**: `_root.HUDMovieBaseInstance.HideSubtitle()`, the native call that clears the
+    ///   subtitle (`hud-feeds-skyrim-se.tsv`; `ShowSubtitle` is its pair), whose authored text is
+    ///   "Dialogue Line 1 / 2".
+    /// - **Fallout 4**: `visible = false` on each widget native code feeds and the engine does
+    ///   not yet (`hud-feeds-fallout4.tsv`): the XP gain bar, quest updates, the rads counter, the
+    ///   region text, the ammo counts, the VATS crit meter, the subtitle, the stealth meter and the
+    ///   enemy health bar. This is the engine's policy for an unfed widget, not a claim about how
+    ///   native hides them; each comes back when its feed lands (M48 Phase 6).
+    fn unfed_widgets(self) -> Vec<PathOp> {
+        match self {
+            Self::Skyrim => vec![PathOp::Call("_root.HUDMovieBaseInstance.HideSubtitle".into(), Vec::new())],
+            Self::Fallout4 => [
+                "HUDNotificationsGroup_mc.XPMeter_mc",
+                "HUDNotificationsGroup_mc.QuestUpdates_mc",
+                "LeftMeters_mc.RadsMeter_mc",
+                "LeftMeters_mc.LocationText_mc",
+                "RightMeters_mc.AmmoCount_mc",
+                "RightMeters_mc.ExplosiveAmmoCount_mc",
+                "BottomCenterGroup_mc.CritMeter_mc",
+                "BottomCenterGroup_mc.SubtitleText_mc",
+                "TopCenterGroup_mc.StealthMeter_mc",
+                "TopCenterGroup_mc.EnemyHealthMeter_mc",
+            ]
+            .into_iter()
+            .map(|widget| PathOp::Set(format!("{widget}.visible"), ScaleformValue::Bool(false)))
+            .collect(),
+        }
+    }
+
     /// The vanilla HUD movie, archive-relative.
     fn menu_path(self) -> &'static str {
         "interface\\hudmenu.swf"
@@ -208,14 +241,12 @@ impl ScaleformGame {
 ///
 /// The engine stands in for that construction through the path service's attach
 /// ([`PathOp::Attach`]) and feeds `x` / `visible` from the camera heading. The quest and
-/// other location markers the native compass also places are not modelled. The letters do not
-/// draw yet, like every Fallout 4 HUD text field: they ask for the GFx font class
-/// `$MAIN_Font_Bold`, which only `fontconfig.txt` maps into `fonts_en.swf` (GUI-FONT-001, M48
-/// Phase 6); the markers' ticks draw and move.
+/// other location markers the native compass also places are not modelled. Each label is set
+/// to its key, as native does, and Ruffle's `$`-key pass translates it (GUI-FONT-004). The letters
+/// draw in the bundled fallback face until Fallout 4's font classes (`$MAIN_Font_Bold`) are
+/// mapped from its `fontconfig.txt` (GUI-FONT-001, M48 Phase 6).
+#[derive(Default)]
 struct Fallout4Compass {
-    /// The four direction labels, from the interface translation table (GFx shows a missing key
-    /// as itself).
-    labels: [String; 4],
     /// `halfW`, read from the movie once its adapter answers.
     half_width: Option<f32>,
     /// The markers are attached and labelled.
@@ -237,25 +268,6 @@ const FALLOUT4_COMPASS_DIRECTIONS: [(&str, &str, f32); 4] = [
 ];
 
 impl Fallout4Compass {
-    /// Resolve the labels through `interface\translate_<language>.txt` in `archive`.
-    fn new(archive: &Archive) -> Self {
-        let language = crate::cell_loader::load_order::strings_language();
-        let table = byroredux_plugin::esm::strings_table::language_candidates(&language)
-            .into_iter()
-            .map(|candidate| format!("interface\\translate_{candidate}.txt"))
-            .find(|path| archive.contains(path))
-            .and_then(|path| archive.extract(&path).ok())
-            .map(|bytes| byroredux_ui::parse_translation_table(&bytes))
-            .unwrap_or_default();
-        let labels = FALLOUT4_COMPASS_DIRECTIONS.map(|(_, key, _)| {
-            table.get(key).cloned().unwrap_or_else(|| {
-                log::warn!("hud: no '{language}' translation for {key}; the compass shows the key");
-                key.to_owned()
-            })
-        });
-        Self { labels, half_width: None, built: false, disabled: false }
-    }
-
     fn marker(name: &str) -> String {
         format!("{FALLOUT4_COMPASS}.OtherMarkerHolder_mc.{name}")
     }
@@ -292,7 +304,7 @@ impl Fallout4Compass {
             }
         }
         if !self.built {
-            for ((name, _, _), label) in FALLOUT4_COMPASS_DIRECTIONS.iter().zip(&self.labels) {
+            for (name, key, _) in FALLOUT4_COMPASS_DIRECTIONS {
                 let marker = Self::marker(name);
                 let text = format!("{marker}.Direction_tf");
                 let steps = [
@@ -300,8 +312,9 @@ impl Fallout4Compass {
                     PathOp::Set(format!("{text}.autoSize"), ScaleformValue::String("center".to_owned())),
                     // Through `htmlText` with the authored `<b>` (the tag's placeholder is
                     // `<b>NSEW</b>`): Ruffle's `text` setter drops to the field's non-bold default
-                    // format, which no `$MAIN_Font_Bold` face matches once fonts resolve.
-                    PathOp::Set(format!("{text}.htmlText"), ScaleformValue::String(format!("<b>{}</b>", html_escape(label)))),
+                    // format, which no `$MAIN_Font_Bold` face matches once fonts resolve. The key
+                    // is translated by Ruffle's `$`-key pass, per HTML run.
+                    PathOp::Set(format!("{text}.htmlText"), ScaleformValue::String(format!("<b>{key}</b>"))),
                 ];
                 for op in steps {
                     match run(op, WhenAbsent::Refuse, feed) {
@@ -329,11 +342,6 @@ impl Fallout4Compass {
         self.disabled = true;
         true
     }
-}
-
-/// Escape a translation-table label (game-archive text) for an `htmlText` write.
-fn html_escape(text: &str) -> String {
-    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
 fn outcome_name(outcome: &PathOutcome) -> &'static str {
@@ -376,6 +384,8 @@ pub(crate) struct ScaleformHudDriver {
     last_diag_refresh: std::time::Instant,
     /// Fallout 4's compass (#7036); `None` on Skyrim, whose movie drives its own.
     compass: Option<Fallout4Compass>,
+    /// [`ScaleformGame::unfed_widgets`] were queued.
+    unfed_hidden: bool,
 }
 
 /// World-resource mirror of the Scaleform HUD's bridge diagnostics —
@@ -473,7 +483,7 @@ pub(crate) fn launch(
         }
     };
 
-    let compass = (game == ScaleformGame::Fallout4).then(|| Fallout4Compass::new(&archive));
+    let compass = (game == ScaleformGame::Fallout4).then(Fallout4Compass::default);
     let menu_path = game.menu_path();
     let mut ui = UiManager::new(w, h);
     if let Err(e) =
@@ -546,6 +556,7 @@ pub(crate) fn launch(
         last_push: std::time::Instant::now(),
         last_diag_refresh: std::time::Instant::now(),
         compass,
+        unfed_hidden: false,
     };
     log::info!(
         "hud: loaded {menu_path} archive='{archive_path}' backend={} \
@@ -658,6 +669,14 @@ impl ScaleformHudDriver {
                         (path, outcome_name(&outcome).to_owned())
                     })
                     .collect();
+                if !std::mem::replace(&mut self.unfed_hidden, true) {
+                    // Queued: they land once the adapter answers, like the meter feeds.
+                    for op in self.game.unfed_widgets() {
+                        let path = op.path().to_owned();
+                        let outcome = layer.path_op(op, WhenAbsent::Queue);
+                        feed.push((path, outcome_name(&outcome).to_owned()));
+                    }
+                }
                 if let Some(compass) = self.compass.as_mut() {
                     if !compass.feed(layer, heading, &mut feed) {
                         // Still waiting on the movie: push again next cadence, heading or not.
@@ -748,6 +767,7 @@ mod tests {
             last_push: std::time::Instant::now(),
             last_diag_refresh: std::time::Instant::now(),
             compass: None,
+            unfed_hidden: false,
         }
     }
 

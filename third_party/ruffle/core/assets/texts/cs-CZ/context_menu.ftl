@@ -1,0 +1,12 @@
+context-menu-play = Spustit
+context-menu-rewind = Přetočit zpět
+context-menu-forward = Přetočit dopředu
+context-menu-back = Zpět
+context-menu-quality-low = Kvalita: nízká
+context-menu-quality-medium = Kvalita: střední
+context-menu-quality-high = Kvalita: vysoká
+context-menu-cut = Vyjmout
+context-menu-copy = Kopírovat
+context-menu-paste = Vložit
+context-menu-delete = Odstranit
+context-menu-select-all = Označit vše

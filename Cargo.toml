@@ -39,6 +39,9 @@ members = [
     "tools/texture-upscale",
     "byroredux",
 ]
+# M48 GUI-FONT-004 (#6665) — the vendored, patched ruffle_core is its own mini-workspace.
+exclude = ["third_party/ruffle"]
+
 resolver = "2"
 
 [workspace.package]
@@ -358,3 +361,11 @@ opt-level = 3
 # made `noexcept`.
 [profile.release]
 panic = "unwind"
+
+# M48 GUI-FONT-004 (#6665) — ruffle_core with the GFx `$`-key text translation hook
+# (third_party/ruffle/PATCHES.md). Same revision as the git dependency; the other Ruffle crates
+# still come from git, and the vendored crates depend on them there.
+[patch."https://github.com/ruffle-rs/ruffle"]
+ruffle_core = { path = "third_party/ruffle/core" }
+ruffle_common = { path = "third_party/ruffle/core/common" }
+ruffle_macros = { path = "third_party/ruffle/core/macros" }

@@ -1,0 +1,310 @@
+//! AVM1 LoadVars object
+//! TODO: bytesLoaded, bytesTotal, contentType, addRequestHeader
+
+use crate::avm1::activation::Activation;
+use crate::avm1::error::Error;
+use crate::avm1::function::ExecutionReason;
+use crate::avm1::property::Attribute;
+use crate::avm1::property_decl::{DeclContext, PropertyOrder, StaticDeclarations, SystemClass};
+use crate::avm1::{Object, Value};
+use crate::avm1_stub;
+use crate::backend::navigator::{NavigationMethod, Request};
+use crate::string::AvmString;
+use ruffle_macros::istr;
+use ruffle_wstr::WString;
+
+const PROTO_DECLS: StaticDeclarations = declare_static_properties! {
+    "load" => method(load; DONT_ENUM | DONT_DELETE);
+    "send" => method(send; DONT_ENUM | DONT_DELETE);
+    "sendAndLoad" => method(send_and_load; DONT_ENUM | DONT_DELETE);
+    "decode" => method(decode; DONT_ENUM | DONT_DELETE);
+    "getBytesLoaded" => method(get_bytes_loaded; DONT_ENUM | DONT_DELETE);
+    "getBytesTotal" => method(get_bytes_total; DONT_ENUM | DONT_DELETE);
+    "toString" => method(to_string; DONT_ENUM | DONT_DELETE);
+    "contentType" => value("application/x-www-form-urlencoded"; DONT_ENUM | DONT_DELETE);
+    "onLoad" => method(on_load; DONT_ENUM | DONT_DELETE);
+    "onData" => method(on_data; DONT_ENUM | DONT_DELETE);
+    "addRequestHeader" => method(add_request_header; DONT_ENUM | DONT_DELETE);
+};
+
+pub fn create_class<'gc>(
+    context: &mut DeclContext<'_, 'gc>,
+    super_proto: Object<'gc>,
+) -> SystemClass<'gc> {
+    let class = context.empty_class(super_proto, PropertyOrder::PrototypeFirst);
+    context.define_properties_on(class.proto, PROTO_DECLS(context));
+    class
+}
+
+fn add_request_header<'gc>(
+    activation: &mut Activation<'_, 'gc>,
+    _this: Object<'gc>,
+    _args: &[Value<'gc>],
+) -> Result<Value<'gc>, Error<'gc>> {
+    avm1_stub!(activation, "LoadVars", "addRequestHeader");
+    Ok(Value::Undefined)
+}
+
+fn decode<'gc>(
+    activation: &mut Activation<'_, 'gc>,
+    this: Object<'gc>,
+    args: &[Value<'gc>],
+) -> Result<Value<'gc>, Error<'gc>> {
+    // Spec says added in SWF 7, but not version gated.
+    // Decode the query string into properties on this object.
+
+    let Some(data) = args.get(0) else {
+        return Ok(Value::Bool(false));
+    };
+
+    let data = data.coerce_to_string(activation)?;
+    for (k, v) in url::form_urlencoded::parse(data.to_utf8_lossy().as_bytes()) {
+        let k = AvmString::new_utf8(activation.gc(), k);
+        let v = AvmString::new_utf8(activation.gc(), v);
+        this.set(k, v, activation)?;
+    }
+
+    Ok(Value::Undefined)
+}
+
+fn get_bytes_loaded<'gc>(
+    activation: &mut Activation<'_, 'gc>,
+    this: Object<'gc>,
+    _args: &[Value<'gc>],
+) -> Result<Value<'gc>, Error<'gc>> {
+    // Forwards to undocumented property on the object.
+    this.get(istr!("_bytesLoaded"), activation)
+}
+
+fn get_bytes_total<'gc>(
+    activation: &mut Activation<'_, 'gc>,
+    this: Object<'gc>,
+    _args: &[Value<'gc>],
+) -> Result<Value<'gc>, Error<'gc>> {
+    // Forwards to undocumented property on the object.
+    this.get(istr!("_bytesTotal"), activation)
+}
+
+fn load<'gc>(
+    activation: &mut Activation<'_, 'gc>,
+    this: Object<'gc>,
+    args: &[Value<'gc>],
+) -> Result<Value<'gc>, Error<'gc>> {
+    let url = match args.get(0) {
+        Some(val) => val.coerce_to_string(activation)?,
+        None => return Ok(false.into()),
+    };
+
+    spawn_load_var_fetch(activation, this, url, None)?;
+
+    Ok(true.into())
+}
+
+fn on_data<'gc>(
+    activation: &mut Activation<'_, 'gc>,
+    this: Object<'gc>,
+    args: &[Value<'gc>],
+) -> Result<Value<'gc>, Error<'gc>> {
+    // Default implementation forwards to decode and onLoad.
+    let success = match args.get(0).unwrap_or(&Value::Undefined) {
+        Value::Undefined | Value::Null => false,
+        val => {
+            this.call_method(
+                istr!("decode"),
+                &[*val],
+                activation,
+                ExecutionReason::FunctionCall,
+            )?;
+            this.set(istr!("loaded"), true, activation)?;
+            true
+        }
+    };
+
+    this.call_method(
+        istr!("onLoad"),
+        &[success.into()],
+        activation,
+        ExecutionReason::FunctionCall,
+    )?;
+
+    Ok(Value::Undefined)
+}
+
+fn on_load<'gc>(
+    _activation: &mut Activation<'_, 'gc>,
+    _this: Object<'gc>,
+    _args: &[Value<'gc>],
+) -> Result<Value<'gc>, Error<'gc>> {
+    // Default implementation: no-op?
+    Ok(Value::Undefined)
+}
+
+fn send<'gc>(
+    activation: &mut Activation<'_, 'gc>,
+    this: Object<'gc>,
+    args: &[Value<'gc>],
+) -> Result<Value<'gc>, Error<'gc>> {
+    // `send` navigates the browser to a URL with the given query parameter.
+    let url = match args.get(0) {
+        Some(url) => url.coerce_to_string(activation)?,
+        None => return Ok(false.into()),
+    };
+
+    let window = match args.get(1) {
+        Some(window) => window.coerce_to_string(activation)?,
+        None => istr!(""),
+    };
+
+    let method_name = args
+        .get(2)
+        .unwrap_or(&Value::Undefined)
+        .coerce_to_string(activation)?;
+    let method = NavigationMethod::from_method_str(&method_name).unwrap_or(NavigationMethod::Post);
+
+    use indexmap::IndexMap;
+
+    let mut form_values = IndexMap::new();
+    let keys = this.get_keys(activation, false);
+
+    for k in keys {
+        let v = this.get(k, activation);
+
+        form_values.insert(
+            k.to_string(),
+            v.ok()
+                .unwrap_or(Value::Undefined)
+                .coerce_to_string(activation)
+                .unwrap_or_else(|_| istr!("undefined"))
+                .to_string(),
+        );
+    }
+
+    activation.context.navigator.navigate_to_url(
+        &url.to_utf8_lossy(),
+        &window.to_utf8_lossy(),
+        Some((method, form_values)),
+    );
+
+    Ok(true.into())
+}
+
+fn send_and_load<'gc>(
+    activation: &mut Activation<'_, 'gc>,
+    this: Object<'gc>,
+    args: &[Value<'gc>],
+) -> Result<Value<'gc>, Error<'gc>> {
+    let url_val = args.get(0).cloned().unwrap_or(Value::Undefined);
+    let url = url_val.coerce_to_string(activation)?;
+    let target = match args.get(1) {
+        Some(&Value::Object(o)) => o,
+        _ => return Ok(false.into()),
+    };
+
+    let method_name = args
+        .get(2)
+        .unwrap_or(&Value::Undefined)
+        .coerce_to_string(activation)?;
+    let method = NavigationMethod::from_method_str(&method_name).unwrap_or(NavigationMethod::Post);
+
+    spawn_load_var_fetch(activation, target, url, Some((this, method)))?;
+
+    Ok(true.into())
+}
+
+fn to_string<'gc>(
+    activation: &mut Activation<'_, 'gc>,
+    this: Object<'gc>,
+    _args: &[Value<'gc>],
+) -> Result<Value<'gc>, Error<'gc>> {
+    use indexmap::IndexMap;
+
+    let mut form_values = IndexMap::new();
+    let keys = this.get_keys(activation, false);
+
+    for key in keys {
+        form_values.insert(
+            key,
+            this.get(key, activation)?.coerce_to_string(activation)?,
+        );
+    }
+
+    let mut query_string = WString::new();
+    let mut first = true;
+
+    for (k, v) in form_values {
+        if first {
+            first = false;
+        } else {
+            query_string.push_byte(b'&');
+        }
+
+        let k = crate::avm1::globals::escape_internal(k.as_wstr());
+        let v = crate::avm1::globals::escape_internal(v.as_wstr());
+        query_string.push_str(&k);
+        query_string.push_byte(b'=');
+        query_string.push_str(&v);
+    }
+
+    Ok(AvmString::new(activation.gc(), query_string).into())
+}
+
+fn spawn_load_var_fetch<'gc>(
+    activation: &mut Activation<'_, 'gc>,
+    loader_object: Object<'gc>,
+    url: AvmString<'gc>,
+    send_object: Option<(Object<'gc>, NavigationMethod)>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    let request = if let Some((send_object, method)) = send_object {
+        // Send properties from `send_object`.
+        activation.object_into_request(send_object, url, Some(method))
+    } else {
+        // Not sending any parameters.
+        Request::get(url.to_utf8_lossy().into_owned())
+    };
+
+    let future =
+        crate::loader::load_form_into_load_vars(activation.context, loader_object, request);
+    activation.context.navigator.spawn_future(future);
+
+    // Create hidden properties on object.
+    let bytes_loaded_string = istr!("_bytesLoaded");
+
+    if !loader_object.has_property(activation, bytes_loaded_string) {
+        loader_object.define_value(
+            activation.gc(),
+            bytes_loaded_string,
+            0.into(),
+            Attribute::DONT_DELETE | Attribute::DONT_ENUM,
+        );
+    } else {
+        loader_object.set(bytes_loaded_string, 0, activation)?;
+    }
+
+    let bytes_total_string = istr!("_bytesTotal");
+
+    if !loader_object.has_property(activation, bytes_total_string) {
+        loader_object.define_value(
+            activation.gc(),
+            bytes_total_string,
+            Value::Undefined,
+            Attribute::DONT_DELETE | Attribute::DONT_ENUM,
+        );
+    } else {
+        loader_object.set(bytes_total_string, Value::Undefined, activation)?;
+    }
+
+    let loaded_string = istr!("loaded");
+
+    if !loader_object.has_property(activation, loaded_string) {
+        loader_object.define_value(
+            activation.gc(),
+            loaded_string,
+            false.into(),
+            Attribute::DONT_DELETE | Attribute::DONT_ENUM,
+        );
+    } else {
+        loader_object.set(loaded_string, false, activation)?;
+    }
+
+    Ok(true.into())
+}

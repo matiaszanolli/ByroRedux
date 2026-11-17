@@ -379,6 +379,8 @@ impl SwfPlayer {
             None
         };
         let player = player_builder.build();
+        // M48 GUI-FONT-003 — the bundled fallback face, before the first frame lays text out.
+        crate::fonts::install_fallback_fonts(&mut player.lock().unwrap());
 
         // Start playback.
         player.lock().unwrap().set_is_playing(true);

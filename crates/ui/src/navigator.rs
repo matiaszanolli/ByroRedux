@@ -258,7 +258,23 @@ fn load_archive_resource(
     resolved: Url,
     archive_path: String,
 ) -> Box<dyn SuccessResponse> {
-    let mut body = match provider.load(&archive_path) {
+    // M48 GUI-FONT-001/002 — `gfxfontlib.swf` is built from the language's font configuration;
+    // the shipped placeholder serves only an archive with no configuration.
+    let font_library = crate::fonts::is_font_library_request(&archive_path)
+        .then(|| crate::fonts::font_library(provider, &crate::fonts::text_languages()))
+        .flatten();
+    let loaded = match font_library {
+        Some(library) => {
+            log::info!(
+                "Scaleform font library {archive_path:?} built from the font configuration: {} class(es), {} unresolved",
+                library.classes.len(),
+                library.unresolved.len()
+            );
+            Ok(Some(library.swf))
+        }
+        None => provider.load(&archive_path),
+    };
+    let mut body = match loaded {
         Ok(Some(body)) => body,
         Ok(None) => {
             return record_degraded(

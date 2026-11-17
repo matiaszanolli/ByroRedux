@@ -1,0 +1,200 @@
+//! Object representation for sounds
+
+use crate::avm2::Error;
+use crate::avm2::activation::Activation;
+use crate::avm2::object::script_object::ScriptObjectData;
+use crate::avm2::object::{ClassObject, Object, TObject};
+use crate::backend::audio::SoundInstanceHandle;
+use crate::context::UpdateContext;
+use crate::display_object::SoundTransform;
+use core::fmt;
+use gc_arena::{Collect, Gc, GcWeak};
+use ruffle_common::utils::HasPrefixField;
+use std::cell::{Cell, RefCell};
+
+/// A class instance allocator that allocates SoundChannel objects.
+pub fn sound_channel_allocator<'gc>(
+    class: ClassObject<'gc>,
+    activation: &mut Activation<'_, 'gc>,
+) -> Result<Object<'gc>, Error<'gc>> {
+    let base = ScriptObjectData::new(class);
+
+    Ok(SoundChannelObject(Gc::new(
+        activation.gc(),
+        SoundChannelObjectData {
+            base,
+            sound_channel_data: RefCell::new(SoundChannelData::NotLoaded {
+                sound_transform: None,
+                should_stop: false,
+            }),
+            position: Cell::new(0.0),
+        },
+    ))
+    .into())
+}
+
+#[derive(Clone, Collect, Copy)]
+#[collect(no_drop)]
+pub struct SoundChannelObject<'gc>(pub Gc<'gc, SoundChannelObjectData<'gc>>);
+
+#[derive(Clone, Collect, Copy, Debug)]
+#[collect(no_drop)]
+pub struct SoundChannelObjectWeak<'gc>(pub GcWeak<'gc, SoundChannelObjectData<'gc>>);
+
+impl fmt::Debug for SoundChannelObject<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SoundChannelObject")
+            .field("ptr", &Gc::as_ptr(self.0))
+            .finish()
+    }
+}
+
+#[derive(Collect, HasPrefixField)]
+#[collect(no_drop)]
+#[repr(C, align(8))]
+pub struct SoundChannelObjectData<'gc> {
+    /// Base script object
+    base: ScriptObjectData<'gc>,
+
+    /// The sound this object holds.
+    sound_channel_data: RefCell<SoundChannelData>,
+
+    /// Position of the last playing sound in milliseconds.
+    position: Cell<f64>,
+}
+
+pub enum SoundChannelData {
+    NotLoaded {
+        sound_transform: Option<SoundTransform>,
+        should_stop: bool,
+    },
+    Loaded {
+        sound_instance: SoundInstanceHandle,
+    },
+}
+
+impl<'gc> SoundChannelObject<'gc> {
+    /// Create an empty SoundChannel instance.
+    pub fn empty(activation: &mut Activation<'_, 'gc>) -> Self {
+        let class = activation.avm2().classes().soundchannel;
+        let base = ScriptObjectData::new(class);
+
+        SoundChannelObject(Gc::new(
+            activation.gc(),
+            SoundChannelObjectData {
+                base,
+                sound_channel_data: RefCell::new(SoundChannelData::NotLoaded {
+                    sound_transform: None,
+                    should_stop: false,
+                }),
+                position: Cell::new(0.0),
+            },
+        ))
+    }
+
+    /// Return the position of the playing sound in seconds.
+    pub fn position(self, context: &mut UpdateContext<'gc>) -> f64 {
+        // The position is cached on read. This means that if the position isn't read until after
+        // the sound has played, the position will be 0 (#9952).
+        let sound_channel_data = self.0.sound_channel_data.borrow();
+        if let SoundChannelData::Loaded { sound_instance } = &*sound_channel_data
+            && let Some(pos) = context.audio.get_sound_position(*sound_instance)
+        {
+            self.0.position.set(pos);
+        }
+
+        self.0.position.get()
+    }
+
+    pub fn instance(self) -> Option<SoundInstanceHandle> {
+        let sound_channel_data = self.0.sound_channel_data.borrow();
+        match &*sound_channel_data {
+            SoundChannelData::NotLoaded { .. } => None,
+            SoundChannelData::Loaded { sound_instance } => Some(*sound_instance),
+        }
+    }
+
+    pub fn set_sound_instance(
+        self,
+        context: &mut UpdateContext<'gc>,
+        instance: SoundInstanceHandle,
+    ) {
+        let mut sound_channel_data = self.0.sound_channel_data.borrow_mut();
+        match &mut *sound_channel_data {
+            SoundChannelData::NotLoaded {
+                sound_transform,
+                should_stop,
+            } => {
+                if let Some(sound_transform) = sound_transform {
+                    context.set_local_sound_transform(instance, *sound_transform);
+                }
+
+                if *should_stop {
+                    context.stop_sound(instance);
+                }
+                *sound_channel_data = SoundChannelData::Loaded {
+                    sound_instance: instance,
+                }
+            }
+            SoundChannelData::Loaded { sound_instance } => {
+                panic!(
+                    "Tried to replace loaded sound instance {sound_instance:?} with {instance:?}"
+                )
+            }
+        }
+    }
+
+    pub fn sound_transform(self, activation: &mut Activation<'_, 'gc>) -> Option<SoundTransform> {
+        let sound_channel_data = self.0.sound_channel_data.borrow();
+        match *sound_channel_data {
+            SoundChannelData::NotLoaded {
+                sound_transform, ..
+            } => sound_transform,
+            SoundChannelData::Loaded { sound_instance } => activation
+                .context
+                .local_sound_transform(sound_instance)
+                .cloned(),
+        }
+    }
+
+    pub fn set_sound_transform(
+        self,
+        activation: &mut Activation<'_, 'gc>,
+        new_sound_transform: SoundTransform,
+    ) {
+        let mut sound_channel_data = self.0.sound_channel_data.borrow_mut();
+        match &mut *sound_channel_data {
+            SoundChannelData::NotLoaded {
+                sound_transform, ..
+            } => {
+                *sound_transform = Some(new_sound_transform);
+            }
+            SoundChannelData::Loaded { sound_instance } => {
+                activation
+                    .context
+                    .set_local_sound_transform(*sound_instance, new_sound_transform);
+            }
+        }
+    }
+
+    pub fn stop(self, activation: &mut Activation<'_, 'gc>) {
+        let mut sound_channel_data = self.0.sound_channel_data.borrow_mut();
+        match &mut *sound_channel_data {
+            SoundChannelData::NotLoaded {
+                sound_transform: _,
+                should_stop,
+            } => {
+                *should_stop = true;
+            }
+            SoundChannelData::Loaded { sound_instance } => {
+                activation.context.stop_sound(*sound_instance);
+            }
+        }
+    }
+}
+
+impl<'gc> TObject<'gc> for SoundChannelObject<'gc> {
+    fn gc_base(&self) -> Gc<'gc, ScriptObjectData<'gc>> {
+        HasPrefixField::as_prefix_gc(self.0)
+    }
+}

@@ -12,8 +12,8 @@
 # from the cell's RT shimmer by differencing.
 #
 # `hud.heading 90` vs `270` (the issue's wording) puts E, then W, at the same centre: the two
-# captures differ only in the letter, and the Fallout 4 HUD draws no text until its font classes
-# (`$MAIN_Font_Bold`, fontconfig.txt) resolve, M48 Phase 6 (GUI-FONT-001, #6668).
+# captures differ only in the letter, which this gate leaves alone (the letters draw in the Noto
+# Sans fallback since #6665, until Fallout 4's font classes are mapped, M48 Phase 6).
 #
 # Pre-conditions: Fallout 4 installed (BYROREDUX_FO4_DATA or the default path), a Vulkan device,
 # Xvfb, a debug build (`cargo build`, with byro-dbg).
