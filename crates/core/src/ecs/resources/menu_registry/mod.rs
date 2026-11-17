@@ -354,6 +354,7 @@ impl MenuRegistry {
             document: None,
             target: TargetSurface::Absent,
             fallback: TargetSurface::Absent,
+            script_functions: Vec::new(),
         })
     }
 

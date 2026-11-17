@@ -376,20 +376,40 @@ const REQUEST_LOG_CAP: usize = 64;
 /// Move the menus (the chargen screens, the casino games ...) scripts asked for into the log
 /// (videos, `PlayBink`, are the app's movie player's: `video.rs`), and carry out `ExitGame` — "plays credits and returns the game to the main
 /// menu"; there is no main menu, so the game ends through the orderly shutdown.
+/// M48 GUI-EVT-003 — the report line for a script-opened menu nothing presents: the game-facing name
+/// the registry's per-game inventory gives it (by code, else by the script function) and its S4
+/// state, with the fallback its effect used.
+pub(crate) fn script_menu_report(world: &World, menu: &byroredux_scripting::obscript_more::MenuRequest) -> String {
+    let named = world.try_resource::<byroredux_core::ecs::resources::MenuRegistry>().and_then(|registry| {
+        menu.code
+            .and_then(|code| registry.name_for_code(code))
+            .or_else(|| menu.function.and_then(|function| registry.table().by_script_function(function)).map(|def| def.name.as_str()))
+            .map(str::to_owned)
+    });
+    let name = named.unwrap_or_else(|| format!("({}: no menu in this game's inventory)", menu.menu));
+    let code = menu.code.map(|code| format!(" code {code}")).unwrap_or_default();
+    let from = menu.function.map(|function| format!(" from {function}")).unwrap_or_default();
+    let fallback = menu.fallback.unwrap_or("recorded");
+    format!("menu {name}{code} (S4, {fallback}){from} form {:08X}", menu.form)
+}
+
 pub(crate) fn script_ui_request_system(world: &World, _dt: f32) {
     use byroredux_scripting::obscript_more::{ExitGameRequest, PendingMenus};
     let mut lines = Vec::new();
     let menus: Vec<_> = world.try_resource_mut::<PendingMenus>().map(|mut menus| std::mem::take(&mut menus.0)).unwrap_or_default();
     for menu in menus {
-        // The character-creation screens have a page (`chargen.rs`); the rest are logged.
-        match crate::chargen::ChargenScreen::for_request(menu.menu, menu.form) {
+        // The character-creation screens have a page (`chargen.rs`), which publishes itself in the
+        // registry under its game-facing name; a request whose effect already stood in for the
+        // menu (`fallback`) is reported only.
+        let chargen = menu.fallback.is_none().then(|| crate::chargen::ChargenScreen::for_request(menu.menu, menu.form)).flatten();
+        match chargen {
             Some(screen) => {
                 if let Some(mut session) = world.try_resource_mut::<crate::chargen::ChargenSession>() {
                     session.request(screen);
                 }
                 log::info!("script request: menu {} opens the character-creation page", menu.menu);
             }
-            None => lines.push(format!("menu {} form {:08X}", menu.menu, menu.form)),
+            None => lines.push(script_menu_report(world, &menu)),
         }
     }
     if !lines.is_empty() {
@@ -709,5 +729,40 @@ mod tests {
             let body = source.split_once(teardown).and_then(|(_, rest)| rest.split_once("\n}\n")).map(|(body, _)| body).unwrap();
             assert!(body.contains("crate::music::end_script_layer(world)"), "{teardown} must end the scripted music");
         }
+    }
+}
+
+#[cfg(test)]
+mod script_menu_tests {
+    use super::*;
+    use byroredux_core::ecs::resources::menu_registry::{MenuGame, MenuRegistry};
+    use byroredux_scripting::obscript_more::MenuRequest;
+
+    /// M48 GUI-EVT-003 — a script-opened menu nothing presents is reported under the game-facing
+    /// name the per-game inventory gives it: by code on a coded game, by script function on a
+    /// name-addressed one, with the fallback its effect already used.
+    #[test]
+    fn script_opened_menus_report_their_game_facing_name() {
+        let mut world = World::new();
+        world.insert_resource(MenuRegistry::new(MenuGame::Fallout3NV));
+        let roulette = MenuRequest::coded("roulette", Some(1082), 0x0001_2345);
+        let line = script_menu_report(&world, &roulette);
+        assert!(line.starts_with("menu ") && line.contains("code 1082 (S4, recorded)") && line.ends_with("form 00012345"), "{line}");
+        assert!(!line.contains("roulette"), "the game's name, not the engine's label: {line}");
+        let subtitles = MenuRequest::coded("dialog subtitles", None, 0);
+        assert!(script_menu_report(&world, &subtitles).contains("(dialog subtitles: no menu in this game's inventory)"));
+
+        world.insert_resource(MenuRegistry::new(MenuGame::Skyrim));
+        let race = MenuRequest {
+            menu: "race",
+            code: None,
+            function: Some("ShowRaceMenu"),
+            form: 0,
+            fallback: Some("accepts the current appearance"),
+        };
+        assert_eq!(
+            script_menu_report(&world, &race),
+            "menu RaceSex Menu (S4, accepts the current appearance) from ShowRaceMenu form 00000000"
+        );
     }
 }

@@ -225,14 +225,15 @@ fn get_casino_winnings_level(world: &World, _fallout: bool, _cmd: u16, args: &[O
 
 // The blackjack, roulette and slot-machine screens: asked of the UI that shows them.
 fn cmd_1254(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    let menu = match cmd {
-        0x1254 => "blackjack",
-        0x1256 => "roulette",
-        _ => "slot machine",
+    // GECK *MenuTypes*: 1081 Blackjack, 1082 Roulette, 1080 Slot Machine.
+    let (menu, code) = match cmd {
+        0x1254 => ("blackjack", 1081),
+        0x1256 => ("roulette", 1082),
+        _ => ("slot machine", 1080),
     };
     let casino = form_arg(args, 0).unwrap_or(0);
     if let Some(mut menus) = world.try_resource_mut::<PendingMenus>() {
-        menus.0.push(MenuRequest { menu, form: casino });
+        menus.0.push(MenuRequest::coded(menu, Some(code), casino));
     }
     done(format!("Show{menu}Menu {casino:08X}"))
 }

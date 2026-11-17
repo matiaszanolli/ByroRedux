@@ -205,3 +205,18 @@ fn openings_and_closings_leave_transitions_for_the_script_events() {
     assert_eq!(kept.len(), MAX_PENDING_MENU_TRANSITIONS);
     assert_eq!(kept.last(), Some(&transition("PauseMenu", false)), "the newest are kept");
 }
+
+/// GUI-EVT-003 — a script function resolves to the menu the per-game inventory says it opens, by
+/// that menu's game-facing name (and code, on a coded game), case-insensitively.
+#[test]
+fn script_functions_resolve_to_the_inventory_menu() {
+    let named = |game: MenuGame, function: &str| tables::table(game).by_script_function(function).map(|def| (def.name.clone(), def.code));
+    assert_eq!(named(MenuGame::Skyrim, "ShowRaceMenu").map(|(n, _)| n), Some("RaceSex Menu".to_owned()));
+    assert_eq!(named(MenuGame::Skyrim, "showgiftmenu").map(|(n, _)| n), Some("GiftMenu".to_owned()));
+    assert_eq!(named(MenuGame::Fallout4, "ShowRaceMenu").map(|(n, _)| n), Some("LooksMenu".to_owned()));
+    assert_eq!(named(MenuGame::Fallout4, "ShowSPECIALMenu").map(|(n, _)| n), Some("SPECIALMenu".to_owned()));
+    assert_eq!(named(MenuGame::Fallout3NV, "ShowSPECIALBookMenuParams").and_then(|(_, code)| code), Some(1060));
+    assert_eq!(named(MenuGame::Fallout3NV, "ShowRecipeMenu").and_then(|(_, code)| code), Some(1077));
+    assert_eq!(named(MenuGame::Oblivion, "ShowBirthsignMenu").and_then(|(_, code)| code), Some(1029));
+    assert_eq!(named(MenuGame::Skyrim, "NotAMenuFunction"), None);
+}

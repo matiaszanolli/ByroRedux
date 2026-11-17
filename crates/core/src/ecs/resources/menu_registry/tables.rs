@@ -48,6 +48,9 @@ pub struct MenuDef {
     pub target: TargetSurface,
     /// The surface it falls back to while the target is not served (`S3:<page>` or S4).
     pub fallback: TargetSurface,
+    /// The script functions the inventory says open it (`ShowRaceMenu`, `ShowSPECIALBookMenuParams`),
+    /// as the cited CK / GECK / CS pages spell them (GUI-EVT-003).
+    pub script_functions: Vec<String>,
 }
 
 /// One game's menus, looked up by name (case-insensitively, as the games compare them) or code.
@@ -63,6 +66,12 @@ impl MenuTable {
 
     pub fn by_name(&self, name: &str) -> Option<&MenuDef> {
         self.menus.iter().find(|def| def.name.eq_ignore_ascii_case(name))
+    }
+
+    /// The menu a script function opens, by the inventory's `script_entry_points` (GUI-EVT-003),
+    /// compared case-insensitively.
+    pub fn by_script_function(&self, function: &str) -> Option<&MenuDef> {
+        self.menus.iter().find(|def| def.script_functions.iter().any(|f| f.eq_ignore_ascii_case(function)))
     }
 
     pub fn by_code(&self, code: u32) -> Option<&MenuDef> {
@@ -150,6 +159,18 @@ fn target(row: &[&str]) -> TargetSurface {
     }
 }
 
+/// The script functions an inventory row's `script_entry_points` cell names: each `;` entry's
+/// leading identifier, before its citation (`ShowRaceMenu - Game [ck…]` -> `ShowRaceMenu`).
+fn script_functions(row: &[&str]) -> Vec<String> {
+    column(row, 5)
+        .split(';')
+        .filter_map(|entry| {
+            let name: String = entry.trim().chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+            (!name.is_empty()).then_some(name)
+        })
+        .collect()
+}
+
 /// A document path the inventory names, or `None` for the "no movie / document found" rows.
 fn document(row: &[&str]) -> Option<String> {
     let cell = column(row, 2);
@@ -189,6 +210,7 @@ fn imenu_table(game: MenuGame, flags_tsv: &str, inventory_tsv: &str) -> MenuTabl
             document: inventory.and_then(|row| document(row)),
             target: inventory.map_or(TargetSurface::Absent, |row| target(row)),
             fallback: inventory.map_or(TargetSurface::Absent, |row| fallback(row)),
+            script_functions: inventory.map(|row| script_functions(row)).unwrap_or_default(),
         });
     }
     // Inventory menus no flags source names (none on Skyrim SE or Fallout 4 at Phase 0, but the
@@ -207,6 +229,7 @@ fn imenu_table(game: MenuGame, flags_tsv: &str, inventory_tsv: &str) -> MenuTabl
             document: document(row),
             target: target(row),
             fallback: fallback(row),
+            script_functions: script_functions(row),
         });
     }
     MenuTable { menus }
@@ -299,6 +322,7 @@ fn coded_table(game: MenuGame, flags_tsv: &str, codes_tsv: &str, inventory_tsv: 
             document: inventory.and_then(|row| document(row)),
             target: inventory.map_or(TargetSurface::Absent, |row| target(row)),
             fallback: inventory.map_or(TargetSurface::Absent, |row| fallback(row)),
+            script_functions: inventory.map(|row| script_functions(row)).unwrap_or_default(),
         });
     }
     // Codes no flags row names (Oblivion's `HUDReticle`, `Generic`, `BirthSign`): the menu exists
@@ -317,6 +341,7 @@ fn coded_table(game: MenuGame, flags_tsv: &str, codes_tsv: &str, inventory_tsv: 
             document: inventory.and_then(|row| document(row)),
             target: inventory.map_or(TargetSurface::Absent, |row| target(row)),
             fallback: inventory.map_or(TargetSurface::Absent, |row| fallback(row)),
+            script_functions: inventory.map(|row| script_functions(row)).unwrap_or_default(),
         });
     }
     // The console has no menu code or document on these games: `MenuMode 3` asks for it by type.
@@ -329,6 +354,7 @@ fn coded_table(game: MenuGame, flags_tsv: &str, codes_tsv: &str, inventory_tsv: 
         document: None,
         target: TargetSurface::Absent,
         fallback: TargetSurface::Absent,
+        script_functions: Vec::new(),
     });
     MenuTable { menus }
 }

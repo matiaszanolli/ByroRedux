@@ -349,7 +349,9 @@ fn cmd_1189(_world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], 
 
 fn cmd_1164(world: &World, _fallout: bool, cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
     if let Some(mut menus) = world.try_resource_mut::<PendingMenus>() {
-        menus.0.push(MenuRequest { menu: if cmd == 0x1164 { "dialog subtitles" } else { "birthsign" }, form: 0 });
+        // CS *MenuTypes* 1029 BirthSign; the subtitle toggle opens no menu.
+        let (menu, code) = if cmd == 0x1164 { ("dialog subtitles", None) } else { ("birthsign", Some(1029)) };
+        menus.0.push(MenuRequest::coded(menu, code, 0));
     }
     done(format!("{cmd:#06x}"))
 }

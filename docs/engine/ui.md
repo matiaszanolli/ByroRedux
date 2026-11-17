@@ -890,6 +890,18 @@ MenuXml input parts are Phases 2 and 3. Evidence is in `docs/data/game-ui/`
   run on them (`obscript_object_menu_mode_system` is new); Papyrus
   `Utility.IsInMenuMode` is `papyrus_in_menu_mode`; the SDK `ui.menu-is-open`
   snapshot is every registry name.
+- **Script-opened menus** (GUI-EVT-003, #6665). A script's menu request carries
+  the menu's code (Oblivion, Fallout 3, New Vegas) or its script function, and
+  the registry's tables resolve it to the game-facing name the Phase 0 inventory
+  gives (`MenuDef::script_functions`, `MenuTable::by_script_function`, read off
+  the inventory's `script_entry_points`). The character-creation screens open
+  their native page, which publishes under that name; every other request is
+  reported as S4 with its fallback (`script.requests`: `menu RouletteMenu code
+  1082 (S4, recorded)`, `menu RaceSex Menu (S4, accepts the current appearance)
+  from ShowRaceMenu`). `Game.ShowRaceMenu`'s auto-accept placeholder is that
+  fallback. Papyrus menu functions the VM does not run yet (`ShowGiftMenu`,
+  `ShowTrainingMenu`, `OpenInventory`, `ShowSPECIALMenu`) still decline their
+  script.
 - **Menu events** (GUI-EVT-001/002, #6668). Every opening and closing the
   registry makes (`open`, `close`, and a publish that drops a menu) leaves a
   `MenuTransition` under the table's spelling, at most 256 between drains.

@@ -422,6 +422,9 @@ mod doc_ground_truth_tests {
             "the declaration scan found only {declared:?} — the extraction \
              broke, not the docs"
         );
+        // Papyrus events the VM delivers by name, not engine marker types: their names read like
+        // markers but are the CK's, held as constants where they are delivered.
+        declared.push(crate::fragment::MENU_OPEN_CLOSE_EVENT);
 
         // Names that read like this module's markers. `Batch`/`Events`
         // suffixes included: they are the shapes a marker gets replaced BY,

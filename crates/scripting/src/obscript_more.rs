@@ -88,11 +88,30 @@ pub struct PendingSleep(pub f32);
 impl Resource for PendingSleep {}
 
 /// A menu a script asked for, for the UI that shows it. `NOT_SAVED_BY_DESIGN`: drained by the UI.
+///
+/// M48 GUI-EVT-003 — the app opens it through the menu registry under its game-facing name, found
+/// by `code` (Oblivion, Fallout 3, New Vegas) or by `function` in the per-game inventory
+/// (Skyrim, Fallout 4), or reports it as S4 (no surface) with the fallback the effect used.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MenuRequest {
+    /// The screen asked for, as the engine's own pages key it (`"race"`, `"special book"`).
     pub menu: &'static str,
+    /// The menu's `MenuMode` code, on a game with codes.
+    pub code: Option<u32>,
+    /// The script function that asked, as the inventory spells it (`ShowRaceMenu`).
+    pub function: Option<&'static str>,
     /// The form the menu is about (a recipe list, a map marker, a casino), if any.
     pub form: u32,
+    /// What the effect already did in the menu's place (`Game.ShowRaceMenu` accepts the current
+    /// appearance); `Some` means the request is reported only.
+    pub fallback: Option<&'static str>,
+}
+
+impl MenuRequest {
+    /// A menu request with its code, for the UI to show.
+    pub fn coded(menu: &'static str, code: Option<u32>, form: u32) -> Self {
+        Self { menu, code, function: None, form, fallback: None }
+    }
 }
 
 #[derive(Debug, Default)]

@@ -1002,6 +1002,26 @@ impl DeferredFragmentEffects {
     }
 
     fn flush_cinematic_presentation(&mut self, world: &World) {
+        // M48 GUI-EVT-003 — `Game.ShowRaceMenu()` is reported to the menu registry as the race
+        // menu it would open (S4: no surface), with the placeholder it already applies.
+        let race_menus = self
+            .cinematic_presentation
+            .iter()
+            .filter(|effect| matches!(effect, DeferredCinematicPresentationEffect::ShowRaceMenu))
+            .count();
+        if race_menus > 0 {
+            if let Some(mut menus) = world.try_resource_mut::<crate::obscript_more::PendingMenus>() {
+                for _ in 0..race_menus {
+                    menus.0.push(crate::obscript_more::MenuRequest {
+                        menu: "race",
+                        code: None,
+                        function: Some("ShowRaceMenu"),
+                        form: 0,
+                        fallback: Some("accepts the current appearance"),
+                    });
+                }
+            }
+        }
         drain_into_resource::<crate::CinematicPresentationState, _>(world, &mut self.cinematic_presentation, |state, effect| {
                 match effect {
                     DeferredCinematicPresentationEffect::SetSittingRotation(degrees) => {

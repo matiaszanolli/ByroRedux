@@ -141,9 +141,11 @@ fn races_flagged(
 /// Honest Hearts, Old World Blues, Lonesome Road, Gun Runners' Arsenal, Courier's Stash.
 const DLC_MASTERS: [&str; 6] = ["DeadMoney.esm", "HonestHearts.esm", "OldWorldBlues.esm", "LonesomeRoad.esm", "GunRunnersArsenal.esm", "ClassicPack.esm"];
 
-fn menu(world: &World, name: &'static str, form: u32) -> Action {
+/// Queue `name` (with its `MenuMode` code, `None` for a screen the character-creation page owns
+/// by its own code) for the UI.
+fn menu(world: &World, name: &'static str, code: Option<u32>, form: u32) -> Action {
     if let Some(mut menus) = world.try_resource_mut::<PendingMenus>() {
-        menus.0.push(MenuRequest { menu: name, form });
+        menus.0.push(MenuRequest::coded(name, code, form));
     }
     done(format!("{name} menu requested"))
 }
@@ -198,7 +200,7 @@ fn exit_game(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], 
     if let Some(mut exit) = world.try_resource_mut::<ExitGameRequest>() {
         exit.0 = true;
     }
-    menu(world, "credits", 0)
+    menu(world, "credits", Some(1047), 0)
 }
 
 // GECK *PlayBink "<file>" [interruptable mute pause letterbox]*: a Bink video from `data\video`, the
@@ -272,41 +274,41 @@ fn cmd_121e(_world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _
 
 // ── the character-creation screens: requests for the UI that shows them ────────────────────
 fn cmd_10d9(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
-    menu(world, "class", 0)
+    menu(world, "class", Some(1030), 0)
 }
 
 fn cmd_10ea(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
-    menu(world, "spell making", 0)
+    menu(world, "spell making", Some(1041), 0)
 }
 
 fn cmd_10eb(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
-    menu(world, "enchanting", 0)
+    menu(world, "enchanting", Some(1042), 0)
 }
 
 fn cmd_1268(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
-    menu(world, "traits", 0)
+    menu(world, "traits", None, 0)
 }
 
 fn cmd_11e1(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
-    menu(world, "name entry", 0)
+    menu(world, "name entry", None, 0)
 }
 
 // `SetSPECIALPoints <n>` / `SetTagSkills <n>` / `ShowLoveTesterMenuParams <n>` / `SSBMP <n>`: the
 // SPECIAL, tagged-skill and Vigor Tester screens with that many points to give.
 fn set_special_points(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    menu(world, "special points", num(args, 0) as u32)
+    menu(world, "special points", None, num(args, 0) as u32)
 }
 
 fn cmd_121a(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    menu(world, "tag skills", num(args, 0) as u32)
+    menu(world, "tag skills", None, num(args, 0) as u32)
 }
 
 fn cmd_1245(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    menu(world, "vigor tester", num(args, 0) as u32)
+    menu(world, "vigor tester", None, num(args, 0) as u32)
 }
 
 fn cmd_11ee(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    menu(world, "special book", num(args, 0) as u32)
+    menu(world, "special book", None, num(args, 0) as u32)
 }
 
 // CS *ShowRaceMenu*: with no race screen the call accepts the player's current appearance, as
@@ -315,7 +317,7 @@ fn show_race_menu(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptVal
     if let Some(mut presentation) = world.try_resource_mut::<crate::cinematic::CinematicPresentationState>() {
         presentation.show_race_menu();
     }
-    menu(world, "race", 0)
+    menu(world, "race", None, 0)
 }
 
 // GECK *SetInChargen <flag>*: "while in this state the player will not level up (XP accumulates)".

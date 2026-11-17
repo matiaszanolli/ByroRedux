@@ -217,7 +217,9 @@ fn cmd_1260(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _c
 // GECK *ShowRecipeMenu <recipe list>*, *OpenTeammateContainer*: a menu for the UI that shows it.
 fn open_teammate_container(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
     if let Some(mut menus) = world.try_resource_mut::<PendingMenus>() {
-        menus.0.push(MenuRequest { menu: if cmd == 0x1250 { "recipes" } else { "teammate container" }, form: form_arg(args, 0).or(ctx.caller).unwrap_or(0) });
+        // GECK *MenuTypes*: 1077 Recipe, 1008 Container.
+        let (menu, code) = if cmd == 0x1250 { ("recipes", 1077) } else { ("teammate container", 1008) };
+        menus.0.push(MenuRequest::coded(menu, Some(code), form_arg(args, 0).or(ctx.caller).unwrap_or(0)));
     }
     done(format!("{cmd:#06x}"))
 }
