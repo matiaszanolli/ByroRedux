@@ -790,7 +790,19 @@ impl CharacterRulesProfile {
             RulesetBuilder::FalloutNewVegas => falloutnv_ruleset_with_gmst(resolve, &gmst),
             RulesetBuilder::Fallout4 => fallout4_ruleset_with_gmst(resolve, &gmst),
             RulesetBuilder::Skyrim => skyrim_ruleset(resolve),
-            RulesetBuilder::Oblivion => oblivion_ruleset(resolve).retain_player_bases(),
+            // The player's Magicka is `Int x (1 + fPCBaseMagickaMult)` with nothing added to it, so its
+            // formula applies (#7037, `Oblivion.exe` `0x5e2210`). Health accumulates per level on top of
+            // its formula and Fatigue's record value is the formula's own at the placeholder attributes,
+            // so both keep their carried base until their stored term is decoded.
+            RulesetBuilder::Oblivion => {
+                let mut ruleset = oblivion_ruleset(&resolve);
+                for name in ["Health", "Fatigue"] {
+                    if let Some(avif) = resolve(name) {
+                        ruleset = ruleset.retain_player_base(avif);
+                    }
+                }
+                ruleset
+            }
             RulesetBuilder::None => return None,
         };
         ruleset.leveling = ruleset
@@ -1266,16 +1278,30 @@ mod tests {
         );
     }
 
+    /// #7037 — the player's Magicka is its formula (`Int x (1 + fPCBaseMagickaMult)`, `Oblivion.exe`
+    /// `0x5e2210`), so the record's authored 0 is replaced; Health and Fatigue keep their carried base.
     #[test]
-    fn oblivion_profile_keeps_authored_player_pools_on_refresh() {
+    fn oblivion_profile_refreshes_the_players_magicka_and_keeps_health_and_fatigue() {
         use crate::ecs::components::ActorValues;
-        let resolve = |name: &str| match name { "Health" => Some(1), "Endurance" => Some(2), _ => None };
+        let resolve = |name: &str| match name {
+            "Health" => Some(1), "Magicka" => Some(2), "Fatigue" => Some(3), "Intelligence" => Some(4),
+            "Endurance" => Some(5), "Strength" => Some(6), "Willpower" => Some(7), "Agility" => Some(8),
+            _ => None,
+        };
         let rules = CharacterRulesProfile::OBLIVION.build_ruleset(resolve, |_| None, &[]).unwrap();
-        let mut values = ActorValues::from_pairs([(1, 123.0), (2, 40.0)]);
-        assert!(rules.player_only_output_avifs().is_empty());
-        assert!(!rules.is_player_derived_pool(1));
-        assert!(!rules.refresh_player_only_bases(&mut values, 5));
-        assert_eq!(values.current(1), 123.0);
+        let mut values = ActorValues::from_pairs([
+            (1, 45.0), (2, 0.0), (3, 999.0), (4, 50.0), (5, 40.0), (6, 50.0), (7, 30.0), (8, 30.0),
+        ]);
+        assert_eq!(rules.player_only_output_avifs(), vec![2]);
+        assert!(rules.is_player_derived_pool(2));
+        assert!(!rules.is_player_derived_pool(1) && !rules.is_player_derived_pool(3));
+        assert!(rules.refresh_player_only_bases(&mut values, 5));
+        assert_eq!(values.current(2), 100.0, "Magicka = 2 x Intelligence");
+        assert_eq!((values.current(1), values.current(3)), (45.0, 999.0), "Health and Fatigue keep their carried base");
+        // It follows the input: a Fortify Intelligence ability reaches Magicka on the next refresh.
+        values.set_base(4, 60.0);
+        assert!(rules.refresh_player_only_bases(&mut values, 5));
+        assert_eq!(values.current(2), 120.0);
         assert!(rules.derived_value(1, &values, 5).is_some());
     }
 

@@ -936,8 +936,14 @@ class `CharactergenClass`, every skill 5, `DATA` Health 45, `ACBS` Magicka 0 and
 chargen placeholder. The ruleset's player-only rows (Health `2 x End` = 80, Magicka `2 x Int` = 100,
 Fatigue `Str + End + Agi + Wil` = 150) exist but do not apply: `RulesetBuilder::Oblivion` builds the
 ruleset with `retain_player_bases`, so `player_derived_stats_system` leaves the authored bases alone.
-Two consequences: the Magicka bar reads full (a zero maximum is a full bar, `hud::fraction`), and Health
+Two consequences: the Magicka bar read full (a zero maximum is a full bar, `hud::fraction`), and Health
 disagrees with the formula by 35.
+
+**Fixed for Magicka (#7037).** The ruleset now retains the carried base per stat
+(`CharacterRuleset::retain_player_base`): Health and Fatigue keep the record's values, Magicka follows its
+formula. Live: the player's Magicka reads 100 at Intelligence 50, 120 after `ModAV Intelligence 10`, and the
+HUD bar reads 0.75 after `DamageAV Magicka 30`. Pinned by
+`oblivion_profile_refreshes_the_players_magicka_and_keeps_health_and_fatigue`.
 
 What `Oblivion.exe` does for the player. The base of actor values 8 to 11 is read through one function
 (`0x5ead00`, taken only when the actor is the player singleton at `0xb333c4`): `(stored + derived) x
