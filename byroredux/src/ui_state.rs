@@ -39,12 +39,14 @@ pub(crate) struct UiState {
     pub(crate) host_reports: std::collections::HashMap<String, (String, byroredux_ui::HostCallReport)>,
     /// M48 GUI-PAGE-004 — the conversation on the game's own dialogue movie (S1), when open.
     pub(crate) dialogue_movie: Option<crate::scaleform_dialogue::DialogueMovie>,
-    /// The dialogue movie's host calls the frame's drain took, for the driver's next step.
-    pub(crate) dialogue_calls: Vec<byroredux_ui::ScaleformHostCall>,
-    /// M48 GUI-PAGE-004 — the conversation on the game's own dialogue document (S2), when open.
-    pub(crate) dialogue_document: Option<crate::menuxml_dialogue::DialogueDocument>,
-    /// What the dialogue document's input asked, for the driver's next step.
-    pub(crate) dialogue_document_actions: Vec<crate::menuxml_dialogue::DocumentAction>,
+    /// M48 Q1 — the script message box on the game's own movie (S1, Skyrim), when open.
+    pub(crate) message_box_movie: Option<crate::scaleform_messagebox::MessageBoxMovie>,
+    /// Per movie layer a driver serves (the dialogue and message box movies), the host calls the
+    /// frame's drain took, for that driver's next step. A layer is a key while its driver is open.
+    pub(crate) movie_calls: std::collections::HashMap<String, Vec<byroredux_ui::ScaleformHostCall>>,
+    /// M48 Q1 — the menus open on the game's own MenuXml documents (S2, FO3 / FNV), in opening
+    /// order (the last on top): the dialogue document, a script message box.
+    pub(crate) menu_documents: Vec<crate::menuxml_document::MenuDocument>,
     /// Per open movie (by `menu_name`), the last `dropped_host_calls()` reading the per-frame
     /// Scaleform drain observed (#2969), paired with the layer it came from (`menu#id`, #3772):
     /// `drain_calls`' contract is that a full batch must be read together with the drop counter

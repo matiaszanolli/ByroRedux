@@ -643,8 +643,7 @@ impl App {
                     UiOverlayState {
                         dropped_host_calls: &mut self.ui.dropped_host_calls,
                         host_reports: &mut self.ui.host_reports,
-                        dialogue_layer: self.ui.dialogue_movie.as_ref().map(|movie| movie.layer.as_str()),
-                        dialogue_calls: &mut self.ui.dialogue_calls,
+                        movie_calls: &mut self.ui.movie_calls,
                         reported_host_methods: &mut self.ui.reported_host_methods,
                         reported_host_methods_capped: &mut self.ui.reported_host_methods_capped,
                     },
@@ -652,7 +651,7 @@ impl App {
             };
             // M48 GUI-PAGE-004 — the dialogue document (S2) composites over the HUD / movies.
             let covered = self.video.active() || self.loading_screen.active();
-            crate::menuxml_dialogue::composite(self.ui.dialogue_document.as_mut(), ctx, covered, &mut ui_textures);
+            crate::menuxml_document::composite(&mut self.ui.menu_documents, ctx, covered, &mut ui_textures);
             if is_benching {
                 self.bench.ui_ns += ui_t0.elapsed().as_nanos() as u64;
             }
@@ -1030,6 +1029,7 @@ impl App {
         // they present.
         self.step_dialogue_movie();
         self.step_dialogue_document();
+        self.step_message_box();
         self.open_inventory_on_injected_press();
         self.present_barter_menu();
         self.present_crafting_menu();
@@ -1137,6 +1137,12 @@ impl App {
             self.resume_from_game_menu();
         }
         if !crate::notifications::route_script_messages(&self.world) {
+            return;
+        }
+        // M48 Q1 — the game's own message box surface when it has one (Skyrim's movie, FO3 / FNV's
+        // document); the native page otherwise.
+        if self.open_message_box_surface() {
+            self.release_world_input_for_ui();
             return;
         }
         match self.debug_ui.as_mut() {
@@ -1419,9 +1425,8 @@ fn collect_and_prepare_groundcover(
 struct UiOverlayState<'a> {
     dropped_host_calls: &'a mut std::collections::HashMap<String, (u64, String)>,
     host_reports: &'a mut std::collections::HashMap<String, (String, byroredux_ui::HostCallReport)>,
-    /// The dialogue movie's layer, whose calls go to [`Self::dialogue_calls`] (GUI-PAGE-004).
-    dialogue_layer: Option<&'a str>,
-    dialogue_calls: &'a mut Vec<byroredux_ui::ScaleformHostCall>,
+    /// Per movie layer a driver serves, its drained host calls (GUI-PAGE-004, Q1).
+    movie_calls: &'a mut std::collections::HashMap<String, Vec<byroredux_ui::ScaleformHostCall>>,
     reported_host_methods: &'a mut std::collections::HashSet<(String, String)>,
     reported_host_methods_capped: &'a mut bool,
 }
@@ -1601,8 +1606,8 @@ fn tick_ui_overlay(
             reports_changed = true;
         }
         reports_changed |= !host_calls.is_empty();
-        if ui_state.dialogue_layer.is_some_and(|dialogue| dialogue == menu_name) {
-            ui_state.dialogue_calls.extend(host_calls.iter().cloned());
+        if let Some(served) = ui_state.movie_calls.get_mut(&menu_name) {
+            served.extend(host_calls.iter().cloned());
         }
 
         for call in host_calls {

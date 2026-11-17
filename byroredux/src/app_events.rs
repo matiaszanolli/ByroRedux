@@ -2062,12 +2062,12 @@ mod app_scratch_telemetry_coverage_tests {
             "one latch per open Scaleform movie, pruned to the open layers every frame (#2969 / M48)",
         ),
         (
-            "ui.dialogue_document_actions",
-            "the dialogue document's activations, taken whole by the next step_dialogue_document (M48 GUI-PAGE-004)",
+            "ui.movie_calls",
+            "one entry per driven movie layer (the dialogue and message box movies), its drained host calls taken whole by the driver's next step, the entry removed when the movie closes (M48 GUI-PAGE-004, Q1)",
         ),
         (
-            "ui.dialogue_calls",
-            "the dialogue movie's drained host calls, taken whole by the next step_dialogue_movie (M48 GUI-PAGE-004)",
+            "ui.menu_documents",
+            "the menus open on their MenuXml documents (at most the dialogue document and a message box), each closed with its menu (M48 GUI-PAGE-004, Q1)",
         ),
         (
             "ui.host_reports",

@@ -520,6 +520,14 @@ impl MenuRenderer {
         std::mem::take(&mut self.activations)
     }
 
+    /// The evaluated value of `tile`'s `trait_name` this frame (overrides, `io()`, measured
+    /// text sizes included), as native code reads a menu back to size it (a message box's width
+    /// from its text, #6666). `None` when no tile has the name.
+    pub fn value(&self, tile: &str, trait_name: &str) -> Option<Scalar> {
+        let index = self.tile(tile)?;
+        Some(self.evaluate().trait_value(index, trait_name))
+    }
+
     /// Tile index by name, for drivers that want to probe traits.
     pub fn tile(&self, name: &str) -> Option<usize> {
         self.doc.name_index.get(&name.to_lowercase()).copied()

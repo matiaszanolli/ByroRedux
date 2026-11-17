@@ -63,7 +63,10 @@ mod material_flags;
 mod material_translate;
 mod menu_stack;
 mod menu_xml_input;
+mod menu_drivers;
 mod menuxml_dialogue;
+mod menuxml_document;
+mod menuxml_message;
 mod name_lookup;
 mod npc_spawn;
 mod ownership_sample;
@@ -79,6 +82,7 @@ mod scene_import_cache;
 #[cfg(test)]
 mod scheduler_access_tests;
 mod scaleform_dialogue;
+mod scaleform_messagebox;
 mod scaleform_hud;
 mod settings_io;
 mod sf_smoke;
@@ -1203,29 +1207,24 @@ impl App {
             .as_ref()
             .map(Window::inner_size)
             .unwrap_or_default();
-        // M48 GUI-PAGE-004 / GUI-XML-002 — the dialogue document takes the input while it is the
-        // registry's input owner.
-        if let Some(document) = self.ui.dialogue_document.as_mut() {
-            let owns = self
-                .world
-                .try_resource::<byroredux_core::ecs::resources::MenuRegistry>()
-                .is_some_and(|registry| crate::menu_xml_input::owns_input(&registry, &document.name));
-            if owns {
-                let extent = document.extent();
-                let mut routed = false;
-                let dispatch = ui_input::dispatch_window_event(event, &mut self.ui.input_state, window_size, extent, |event| {
-                    routed |= crate::menu_xml_input::route(&mut document.renderer, &event);
-                });
-                let actions: Vec<_> = document.renderer.take_activations().iter().filter_map(crate::menuxml_dialogue::action_of).collect();
-                if routed {
-                    document.touch();
-                }
-                self.ui.dialogue_document_actions.extend(actions);
-                if dispatch.captured {
-                    self.release_world_input_for_ui();
-                }
-                return dispatch.captured;
+        // M48 GUI-PAGE-004 / GUI-XML-002 — an open menu document takes the input while it is the
+        // registry's input owner; its driver takes the activations on its next step.
+        let owner = self.world.try_resource::<byroredux_core::ecs::resources::MenuRegistry>().and_then(|registry| {
+            self.ui.menu_documents.iter().position(|document| crate::menu_xml_input::owns_input(&registry, &document.name))
+        });
+        if let Some(document) = owner.map(|position| &mut self.ui.menu_documents[position]) {
+            let extent = document.extent();
+            let mut routed = false;
+            let dispatch = ui_input::dispatch_window_event(event, &mut self.ui.input_state, window_size, extent, |event| {
+                routed |= crate::menu_xml_input::route(&mut document.renderer, &event);
+            });
+            if routed {
+                document.touch();
             }
+            if dispatch.captured {
+                self.release_world_input_for_ui();
+            }
+            return dispatch.captured;
         }
         let Some(ui_manager) = self.ui.manager.as_mut() else {
             return false;
@@ -1310,12 +1309,15 @@ impl App {
     /// movie, GUI-PAGE-004): the shared teardown, then the movie's layer closes.
     fn leave_open_dialogue(&mut self) {
         let native = self.debug_ui.as_ref().is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible);
-        let movie = self.ui.dialogue_movie.is_some() || self.ui.dialogue_document.is_some();
+        let code = crate::menuxml_dialogue::DIALOGUE_MENU_CODE;
+        let movie = self.ui.dialogue_movie.is_some() || self.menu_document_mut(code).is_some();
         Self::leave_dialogue_page(&self.world, native || movie);
         if let Some(movie) = self.ui.dialogue_movie.take() {
+            self.ui.movie_calls.remove(&movie.layer);
             self.drop_movie_layer(&movie.layer);
         }
-        if let Some(document) = self.ui.dialogue_document.take() {
+        if let Some(position) = self.ui.menu_documents.iter().position(|document| document.code == code) {
+            let document = self.ui.menu_documents.remove(position);
             if let Some(ctx) = self.renderer.as_mut() {
                 document.close(ctx);
             }
@@ -1402,6 +1404,7 @@ impl App {
                         bridge.register_method(method);
                     }
                 }
+                self.ui.movie_calls.insert(layer.clone(), Vec::new());
                 self.ui.dialogue_movie = Some(crate::scaleform_dialogue::DialogueMovie::new(layer));
                 true
             }
@@ -1412,90 +1415,14 @@ impl App {
         }
     }
 
-    /// Open the conversation on the game's dialogue document (S2, Fallout 3 / New Vegas); `false`
-    /// when the game has none or it does not load.
-    fn open_dialogue_document(&mut self) -> bool {
-        if self.ui.dialogue_document.is_some() {
-            return true;
-        }
-        let def = self.world.try_resource::<byroredux_core::ecs::resources::MenuRegistry>().and_then(|registry| {
-            (registry.game() == byroredux_core::ecs::resources::menu_registry::MenuGame::Fallout3NV)
-                .then(|| registry.table().by_code(crate::menuxml_dialogue::DIALOGUE_MENU_CODE).cloned())
-                .flatten()
-                .filter(|def| def.target == byroredux_core::ecs::resources::menu_registry::TargetSurface::MenuXml)
-        });
-        let Some((name, document)) = def.and_then(|def| def.document.map(|document| (def.name, document))) else {
-            return false;
-        };
-        let assets = match crate::hud::session_menu_assets(&crate::cli_args::effective_args()) {
-            Ok(Some((assets, _, _))) => assets,
-            Ok(None) => return false,
-            Err(error) => {
-                log::warn!("{error}; the conversation opens on the native page");
-                return false;
-            }
-        };
-        let Some(ctx) = self.renderer.as_mut() else {
-            return false;
-        };
-        match crate::menuxml_dialogue::DialogueDocument::open(ctx, assets, name.clone(), document.clone()) {
-            Ok(opened) => {
-                log::info!("ui.open: {name} opened as menuxml {document} — the conversation's surface (GUI-PAGE-004)");
-                self.ui.dialogue_document = Some(opened);
-                true
-            }
-            Err(error) => {
-                log::warn!("{name}: {error}; the conversation opens on the native page");
-                false
-            }
-        }
-    }
-
-    /// Close the dialogue document and give the world its input back.
-    fn close_dialogue_document(&mut self) {
-        self.ui.dialogue_document_actions.clear();
-        if let Some(document) = self.ui.dialogue_document.take() {
-            if let Some(ctx) = self.renderer.as_mut() {
-                document.close(ctx);
-            }
-            self.capture_world_input();
-        }
-    }
-
-    /// M48 GUI-PAGE-004 — the dialogue document's frame: apply what its input asked, then present
-    /// the conversation's snapshot when it changed; a conversation that ended closes it.
-    pub(crate) fn step_dialogue_document(&mut self) {
-        let actions = std::mem::take(&mut self.ui.dialogue_document_actions);
-        if self.ui.dialogue_document.is_none() {
-            return;
-        }
-        let npc = self.world.try_resource::<crate::systems::npc_dialogue::DialogueSurfaceState>().and_then(|surface| surface.npc);
-        let snapshot = crate::systems::npc_dialogue::dialogue_snapshot(&self.world);
-        for action in actions {
-            let call = match action {
-                crate::menuxml_dialogue::DocumentAction::Skip => crate::scaleform_dialogue::DialogueCall::Skip,
-                crate::menuxml_dialogue::DocumentAction::SelectTopic(index) => crate::scaleform_dialogue::DialogueCall::SelectTopic(index),
-            };
-            crate::scaleform_dialogue::apply(&self.world, npc, snapshot.as_ref(), call);
-        }
-        if npc.is_none() {
-            self.close_dialogue_document();
-            return;
-        }
-        let snapshot = crate::systems::npc_dialogue::dialogue_snapshot(&self.world);
-        if let (Some(snapshot), Some(document)) = (snapshot.as_ref(), self.ui.dialogue_document.as_mut()) {
-            document.feed(snapshot);
-        }
-    }
-
     /// M48 GUI-PAGE-004 — the dialogue movie's frame: apply what it asked (the drained host calls),
     /// then present the conversation's snapshot when it changed. A conversation that ended
     /// elsewhere (a Goodbye, `dialogue.end`) closes the movie.
     pub(crate) fn step_dialogue_movie(&mut self) {
-        let calls = std::mem::take(&mut self.ui.dialogue_calls);
         let Some(movie) = self.ui.dialogue_movie.as_mut() else {
             return;
         };
+        let calls = self.ui.movie_calls.get_mut(&movie.layer).map(std::mem::take).unwrap_or_default();
         let npc = self.world.try_resource::<crate::systems::npc_dialogue::DialogueSurfaceState>().and_then(|surface| surface.npc);
         let snapshot = crate::systems::npc_dialogue::dialogue_snapshot(&self.world);
         let mut done = false;
@@ -1522,6 +1449,7 @@ impl App {
     /// Close the dialogue movie's layer and give the world its input back.
     fn close_dialogue_movie(&mut self) {
         if let Some(movie) = self.ui.dialogue_movie.take() {
+            self.ui.movie_calls.remove(&movie.layer);
             self.drop_movie_layer(&movie.layer);
             self.capture_world_input();
         }
@@ -1536,8 +1464,7 @@ impl App {
             self.close_dialogue_movie();
             return;
         }
-        if self.ui.dialogue_document.is_some() {
-            self.close_dialogue_document();
+        if self.close_menu_document(crate::menuxml_dialogue::DIALOGUE_MENU_CODE) {
             return;
         }
         if let Some(ui) = self.debug_ui.as_mut() {

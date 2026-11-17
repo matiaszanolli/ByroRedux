@@ -2086,4 +2086,18 @@ fn text_tiles_report_their_displayed_size() {
     assert_eq!(name(45.0, 35.0).as_deref(), Some("Panel"));
     assert_eq!(name(55.0, 35.0), None, "the panel is as wide as the name");
     assert_eq!(name(45.0, 45.0), None, "and as high as the wrapped line");
+    // A driver reads the measured sizes back.
+    assert_eq!(r.value("Line", "height").map(|v| v.as_num()), Some(40.0));
+    assert_eq!(r.value("Name", "width").map(|v| v.as_num()), Some(50.0));
+    assert_eq!(r.value("Missing", "width"), None);
+}
+
+/// #6666 — a non-numeric string is true when it has text (vanilla's `onlyif` on a text tile's
+/// `string`); a numeric string keeps its number's truth.
+#[test]
+fn a_string_with_text_is_true() {
+    assert!(Scalar::Str("Rest here?".into()).truthy());
+    assert!(!Scalar::Str("  ".into()).truthy());
+    assert!(!Scalar::Str("0".into()).truthy());
+    assert!(Scalar::Str("2".into()).truthy());
 }

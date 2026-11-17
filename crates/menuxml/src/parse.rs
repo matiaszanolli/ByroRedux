@@ -143,9 +143,15 @@ impl Scalar {
             Scalar::Str(s) => s.trim().parse().unwrap_or(0.0),
         }
     }
-    /// Truthiness follows Gamebryo: anything non-zero is true.
+    /// Truthiness follows Gamebryo: anything non-zero is true. A string that is not a number is
+    /// true when it has text: vanilla gates layout on a text tile's `string`
+    /// (`message_menu.xml` places its buttons below the message only
+    /// `<onlyif src="sibling(MM_MessageText)" trait="string"/>`, #6666).
     pub fn truthy(&self) -> bool {
-        self.as_num() != 0.0
+        match self {
+            Scalar::Num(n) => *n != 0.0,
+            Scalar::Str(s) => s.trim().parse::<f32>().map_or(!s.trim().is_empty(), |n| n != 0.0),
+        }
     }
 }
 

@@ -22,9 +22,9 @@
 //! topic through `select_topic_by_form_id`, as the native page's click does.
 
 use byroredux_native_ui::DialogueTopicSnapshot;
-use byroredux_menuxml::{MenuRenderer, ScreenTraits, TileHit};
+use byroredux_menuxml::TileHit;
 
-use crate::hud::HudAssets;
+use crate::menuxml_document::MenuDocument;
 
 /// The game-facing name of the dialogue menu on Fallout 3 / New Vegas (`MenuMode` 1009).
 pub(crate) const DIALOGUE_MENU_CODE: u32 = 1009;
@@ -57,118 +57,44 @@ pub(crate) fn action_of(hit: &TileHit) -> Option<DocumentAction> {
     name.strip_prefix("DM_Topic").and_then(|index| index.parse().ok()).map(DocumentAction::SelectTopic)
 }
 
-/// The open dialogue document.
-pub(crate) struct DialogueDocument {
-    /// The registry's name for the menu (`DialogMenu`).
-    pub(crate) name: String,
-    /// The document path (`menus\dialog\dialog_menu.xml`).
-    pub(crate) document: String,
-    pub(crate) renderer: MenuRenderer,
-    assets: HudAssets,
-    texture: u32,
-    width: u32,
-    height: u32,
-    upload_buffer: Vec<u8>,
-    signature: Option<u64>,
-    dirty: bool,
+/// Make `document` ready for conversations: the topic rows instantiated once (hidden) and the
+/// menu shown.
+pub(crate) fn prepare(document: &mut MenuDocument) -> Result<(), String> {
+    let renderer = &mut document.renderer;
+    for index in 0..ROW_POOL {
+        renderer
+            .instantiate_template("DM_TopicTemplate", "DM_TopicList", &row_name(index))
+            .map_err(|error| format!("{}: topic row: {error}", document.document))?;
+        renderer.set_override(&row_name(index), "listindex", -1.0);
+    }
+    renderer.set_override("DialogMenu", "_DialogVisible", 2.0);
+    Ok(())
 }
 
-impl DialogueDocument {
-    /// Load `document` through the session's `MenuProfile` and instantiate the topic rows.
-    pub(crate) fn open(
-        ctx: &mut byroredux_renderer::vulkan::context::VulkanContext,
-        assets: HudAssets,
-        name: String,
-        document: String,
-    ) -> Result<Self, String> {
-        let (w, h) = ctx.swapchain_extent();
-        let profile = assets.profile.menu;
-        let mut renderer = MenuRenderer::load_with_profile(&assets, &document, ScreenTraits::new(w as f32, h as f32), profile)
-            .map_err(|error| format!("{document}: {error}"))?;
-        for index in 0..ROW_POOL {
-            renderer
-                .instantiate_template("DM_TopicTemplate", "DM_TopicList", &row_name(index))
-                .map_err(|error| format!("{document}: topic row: {error}"))?;
-            renderer.set_override(&row_name(index), "listindex", -1.0);
-        }
-        renderer.set_override("DialogMenu", "_DialogVisible", 2.0);
-        let texture = {
-            let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
-            ctx.texture_registry
-                .register_rgba(upload_ctx, w, h, &vec![0u8; (w * h * 4) as usize])
-                .map_err(|error| format!("{document}: texture registration failed: {error:#}"))?
-        };
-        Ok(Self { name, document, renderer, assets, texture, width: w, height: h, upload_buffer: Vec::new(), signature: None, dirty: true })
+/// Present `snapshot` on `document` when it changed.
+pub(crate) fn feed(document: &mut MenuDocument, snapshot: &DialogueTopicSnapshot) {
+    let signature = signature(snapshot);
+    if document.signature == Some(signature) {
+        return;
     }
-
-    /// Present `snapshot` when it changed.
-    pub(crate) fn feed(&mut self, snapshot: &DialogueTopicSnapshot) {
-        let signature = signature(snapshot);
-        if self.signature == Some(signature) {
-            return;
-        }
-        self.signature = Some(signature);
-        self.dirty = true;
-        let r = &mut self.renderer;
-        r.set_override("DialogMenu", "_ShowingText", if snapshot.speaking { 2.0 } else { 0.0 });
-        r.set_override_str("DM_SpeakerNameLabel", "string", &snapshot.speaker_name);
-        r.set_override_str("DM_SpeakerText", "string", &snapshot.response_text);
-        for index in 0..ROW_POOL {
-            let row = row_name(index);
-            match snapshot.topics.get(index) {
-                Some(entry) => {
-                    r.set_override(&row, "listindex", index as f32);
-                    r.set_override(&row, "_y", index as f32 * ROW_HEIGHT);
-                    r.set_override(&row, "height", ROW_HEIGHT);
-                    r.set_override_str(&row, "string", &entry.name);
-                    r.set_override(&row, "_line_alpha", if entry.said { SAID_ALPHA } else { 255.0 });
-                }
-                None => r.set_override(&row, "listindex", -1.0),
+    document.signature = Some(signature);
+    document.touch();
+    let r = &mut document.renderer;
+    r.set_override("DialogMenu", "_ShowingText", if snapshot.speaking { 2.0 } else { 0.0 });
+    r.set_override_str("DM_SpeakerNameLabel", "string", &snapshot.speaker_name);
+    r.set_override_str("DM_SpeakerText", "string", &snapshot.response_text);
+    for index in 0..ROW_POOL {
+        let row = row_name(index);
+        match snapshot.topics.get(index) {
+            Some(entry) => {
+                r.set_override(&row, "listindex", index as f32);
+                r.set_override(&row, "_y", index as f32 * ROW_HEIGHT);
+                r.set_override(&row, "height", ROW_HEIGHT);
+                r.set_override_str(&row, "string", &entry.name);
+                r.set_override(&row, "_line_alpha", if entry.said { SAID_ALPHA } else { 255.0 });
             }
+            None => r.set_override(&row, "listindex", -1.0),
         }
-    }
-
-    /// Mark the document for a fresh raster (input changed what it shows).
-    pub(crate) fn touch(&mut self) {
-        self.dirty = true;
-    }
-
-    /// Rasterize and upload when something changed; the texture to composite either way.
-    pub(crate) fn render_and_upload(&mut self, ctx: &mut byroredux_renderer::vulkan::context::VulkanContext) -> u32 {
-        if self.dirty {
-            self.dirty = false;
-            let pixels = self.renderer.render_frame(&self.assets);
-            self.upload_buffer.clear();
-            self.upload_buffer.extend_from_slice(pixels);
-            let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
-            if let Err(error) = ctx.texture_registry.write_rgba_inplace(upload_ctx, self.texture, self.width, self.height, &self.upload_buffer) {
-                log::error!("{}: texture upload failed: {error:#}", self.document);
-            }
-        }
-        self.texture
-    }
-
-    /// Release the texture.
-    pub(crate) fn close(self, ctx: &mut byroredux_renderer::vulkan::context::VulkanContext) {
-        ctx.texture_registry.drop_texture(&ctx.device, self.texture);
-    }
-
-    /// The UI pixel extent input is mapped to.
-    pub(crate) fn extent(&self) -> (u32, u32) {
-        (self.width, self.height)
-    }
-}
-
-/// Composite the open `document` over the UI overlay's `textures`, unless a video or loading
-/// screen `covered` the frame.
-pub(crate) fn composite(
-    document: Option<&mut DialogueDocument>,
-    ctx: &mut byroredux_renderer::vulkan::context::VulkanContext,
-    covered: bool,
-    textures: &mut Vec<u32>,
-) {
-    if let (Some(document), false) = (document, covered) {
-        textures.push(document.render_and_upload(ctx));
     }
 }
 
@@ -209,26 +135,9 @@ mod tests {
         use byroredux_native_ui::DialogueTopicEntryView;
         use byroredux_plugin::esm::test_paths::{data_dir, FNV_DEFAULT, FNV_ENV};
         let profile = crate::hud::HudGameProfile::fallout_nv();
-        let assets = HudAssets::open_in(profile, &data_dir(FNV_ENV, FNV_DEFAULT)).expect("FNV menu archives");
-        let mut r = MenuRenderer::load_with_profile(&assets, "menus\\dialog\\dialog_menu.xml", ScreenTraits::new(1280.0, 720.0), profile.menu)
-            .expect("dialog_menu.xml loads");
-        for index in 0..ROW_POOL {
-            r.instantiate_template("DM_TopicTemplate", "DM_TopicList", &row_name(index)).expect("a row");
-            r.set_override(&row_name(index), "listindex", -1.0);
-        }
-        r.set_override("DialogMenu", "_DialogVisible", 2.0);
-        let mut doc = DialogueDocument {
-            name: "DialogMenu".into(),
-            document: "menus\\dialog\\dialog_menu.xml".into(),
-            renderer: r,
-            assets,
-            texture: 0,
-            width: 1280,
-            height: 720,
-            upload_buffer: Vec::new(),
-            signature: None,
-            dirty: true,
-        };
+        let assets = crate::hud::HudAssets::open_in(profile, &data_dir(FNV_ENV, FNV_DEFAULT)).expect("FNV menu archives");
+        let mut doc = MenuDocument::headless(DIALOGUE_MENU_CODE, "DialogMenu", "menus\\dialog\\dialog_menu.xml", assets, (1280, 720));
+        prepare(&mut doc).expect("the topic rows instantiate");
         let mut snapshot = DialogueTopicSnapshot {
             npc: 1,
             speaker_name: "Doc Mitchell".into(),
@@ -244,15 +153,15 @@ mod tests {
             voiced: true,
             choices: false,
         };
-        doc.feed(&snapshot);
-        let names = |doc: &DialogueDocument| doc.renderer.hit_targets().iter().filter_map(|t| doc.renderer.hit_test(t.rect.x + 1.0, t.rect.y + 1.0)).filter_map(|h| h.name).collect::<Vec<_>>();
+        feed(&mut doc, &snapshot);
+        let names = |doc: &MenuDocument| doc.renderer.hit_targets().iter().filter_map(|t| doc.renderer.hit_test(t.rect.x + 1.0, t.rect.y + 1.0)).filter_map(|h| h.name).collect::<Vec<_>>();
         assert!(names(&doc).iter().any(|n| n == "DM_ClickRect"), "the line shows: the click rect takes the pointer");
         doc.renderer.pointer_down(640.0, 100.0);
         doc.renderer.pointer_up(640.0, 100.0);
         assert_eq!(doc.renderer.take_activations().iter().filter_map(action_of).collect::<Vec<_>>(), [DocumentAction::Skip]);
 
         snapshot.speaking = false;
-        doc.feed(&snapshot);
+        feed(&mut doc, &snapshot);
         let targets = doc.renderer.hit_targets();
         let row = |index: usize| {
             let tile = doc.renderer.tile(&row_name(index)).unwrap();
@@ -265,7 +174,7 @@ mod tests {
         doc.renderer.pointer_up(x, y);
         assert_eq!(doc.renderer.take_activations().iter().filter_map(action_of).collect::<Vec<_>>(), [DocumentAction::SelectTopic(1)]);
         assert!(!targets.iter().any(|t| Some(t.tile) == doc.renderer.tile(&row_name(2))), "unused rows are hidden");
-        let pixels = doc.renderer.render_frame(&doc.assets);
+        let pixels = doc.render();
         assert!(pixels.as_chunks::<4>().0.iter().any(|p| p[3] > 0), "the document draws");
     }
 }
