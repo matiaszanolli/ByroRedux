@@ -1,5 +1,5 @@
-//! The AVM2 path adapter (M48 Phase 2, GUI-PATH-001): the get / set / call callbacks of the path
-//! service, added to the `BGSCodeObj` adapter and registered by its installer once the movie root
+//! The AVM2 path adapter (M48 Phase 2, GUI-PATH-001): the get / set / call / attach callbacks of
+//! the path service, added to the `BGSCodeObj` adapter and registered by its installer once the movie root
 //! is stored. AS3 has no `eval`, so a shared walker splits the dotted path and indexes from the
 //! root one segment at a time, checking presence first. In ActionScript 3 terms:
 //!
@@ -15,19 +15,28 @@
 //! set(p, v)      w = walk(p, 1); !w.found or !(w.key in w.o) -> absent; w.o[w.key] = v; {found: true}
 //! call(p, args)  w = walk(p, 1); f = w.o[w.key]; typeof f != "function" -> absent
 //!                res = f.apply(w.o, args); {found: true, type: typeof res, value: primitive res}
+//! attach(p, cls) w = walk(p, 1); o = w.o; typeof o != "object" or o == null
+//!                  or !("getChildByName" in o) -> absent
+//!                o.getChildByName(w.key) != null -> {found: true}         (idempotent)
+//!                d = ApplicationDomain.currentDomain; !d.hasDefinition(cls) -> absent
+//!                c = new (d.getDefinition(cls))(); !(c is DisplayObject) -> absent
+//!                c.name = w.key; o.addChild(c); {found: true}
 //! ```
+//!
+//! `attach` (#7036) stands in for native code that instantiates a movie's exported widget classes
+//! (Fallout 4's compass direction markers); `currentDomain` is the adapter's, which is the movie's.
 //!
 //! The reply is the AVM1 adapter's shape (`crate::path`). A value crosses back only when it is a
 //! number, string or boolean: a display object would be converted member by member.
 
 use swf::avm2::types::{Index, Method, MethodFlags, MethodParam, Multiname, Op};
 
-use super::{add_multiname, add_string, method_trait, qname, AdapterMethods, AdapterNames, AdapterPools};
-use crate::path::{PATH_CALL_CALLBACK, PATH_GET_CALLBACK, PATH_SET_CALLBACK};
+use super::{add_multiname, add_namespace, add_string, method_trait, qname, AdapterMethods, AdapterNames, AdapterPools};
+use crate::path::{PATH_ATTACH_CALLBACK, PATH_CALL_CALLBACK, PATH_GET_CALLBACK, PATH_SET_CALLBACK};
 
 /// The installer's view of the path helpers: each callback name and the helper it registers.
 pub(super) struct PathHelpers {
-    pub(super) registrations: [(Index<String>, Index<Multiname>); 3],
+    pub(super) registrations: [(Index<String>, Index<Multiname>); 4],
 }
 
 /// Pool entries the path methods name.
@@ -46,6 +55,15 @@ struct PathNames {
     apply: Index<Multiname>,
     get_child_by_name: Index<Multiname>,
     get_child_by_name_string: Index<String>,
+    /// `flash.system.ApplicationDomain` and its `currentDomain`, `hasDefinition`, `getDefinition`.
+    application_domain: Index<Multiname>,
+    current_domain: Index<Multiname>,
+    has_definition: Index<Multiname>,
+    get_definition: Index<Multiname>,
+    /// `flash.display.DisplayObject`, the type an attached instance must be.
+    display_object: Index<Multiname>,
+    name: Index<Multiname>,
+    add_child: Index<Multiname>,
     found_string: Index<String>,
     type_string: Index<String>,
     object_string: Index<String>,
@@ -382,28 +400,94 @@ fn call(names: &PathNames) -> std::io::Result<Vec<u8>> {
     assemble(&items)
 }
 
+/// `attach(p, cls)`: locals 1 p, 2 cls, 3 w, 4 o, 5 key, 6 domain, 7 child.
+fn attach(names: &PathNames) -> std::io::Result<Vec<u8>> {
+    let mut items = prologue();
+    items.extend(walk_into(names, 1, 3));
+    items.extend([
+        local(3),
+        op(Op::GetProperty { index: names.object }),
+        store(4),
+        local(3),
+        op(Op::GetProperty { index: names.key }),
+        store(5),
+        // The parent is a display container (`in` on a primitive would throw).
+        local(4),
+        op(Op::TypeOf),
+        string(names.object_type),
+        if_strict_ne(ABSENT),
+        local(4),
+        op(Op::PushNull),
+        if_strict_eq(ABSENT),
+        string(names.get_child_by_name_string),
+        local(4),
+        op(Op::In),
+        if_false(ABSENT),
+        // Already there: found, nothing made.
+        local(4),
+        local(5),
+        op(Op::CallProperty { index: names.get_child_by_name, num_args: 1 }),
+        op(Op::PushNull),
+        if_strict_ne(STORED),
+        op(Op::GetLex { index: names.application_domain }),
+        op(Op::GetProperty { index: names.current_domain }),
+        store(6),
+        local(6),
+        local(2),
+        op(Op::CallProperty { index: names.has_definition, num_args: 1 }),
+        if_false(ABSENT),
+        local(6),
+        local(2),
+        op(Op::CallProperty { index: names.get_definition, num_args: 1 }),
+        op(Op::Construct { num_args: 0 }),
+        store(7),
+        local(7),
+        op(Op::GetLex { index: names.display_object }),
+        op(Op::IsTypeLate),
+        if_false(ABSENT),
+        local(7),
+        local(5),
+        op(Op::SetProperty { index: names.name }),
+        local(4),
+        local(7),
+        op(Op::CallPropVoid { index: names.add_child, num_args: 1 }),
+        Item::Label(STORED),
+        string(names.found_string),
+        op(Op::PushTrue),
+        op(Op::NewObject { num_args: 1 }),
+        op(Op::ReturnValue),
+        Item::Label(ABSENT),
+    ]);
+    items.extend(return_absent(names));
+    assemble(&items)
+}
+
 fn params(count: usize) -> Vec<MethodParam> {
     (0..count).map(|_| MethodParam { name: None, kind: Index::new(0), default_value: None }).collect()
 }
 
 /// How many methods (and script traits) the path service adds to the adapter: the walker and
-/// get / set / call. They follow the adapter's fixed tail (ready / destroy / installer / init).
+/// get / set / call / attach. They follow the adapter's fixed tail (ready / destroy / installer /
+/// init).
 #[cfg(test)]
-pub(super) const PATH_ADAPTER_METHODS: usize = 4;
-/// The constant-pool entries the path service adds: 14 member / type names, the walker and three
-/// helper names, the three callback names; 13 multinames (10 members plus the three helpers).
+pub(super) const PATH_ADAPTER_METHODS: usize = 5;
+/// The constant-pool entries the path service adds: 23 member / type / namespace names, the walker
+/// and four helper names, the four callback names; 21 multinames (17 members plus the four
+/// helpers); the `flash.system` and `flash.display` namespaces.
 #[cfg(test)]
-pub(super) const PATH_ADAPTER_STRINGS: usize = 21;
+pub(super) const PATH_ADAPTER_STRINGS: usize = 32;
 #[cfg(test)]
-pub(super) const PATH_ADAPTER_MULTINAMES: usize = 13;
+pub(super) const PATH_ADAPTER_MULTINAMES: usize = 21;
+#[cfg(test)]
+pub(super) const PATH_ADAPTER_NAMESPACES: usize = 2;
 
 /// The path methods' pool entries, made before the installer (which registers the helpers) and
 /// emitted after the script initialiser ([`emit`]).
 pub(super) struct PathPlan {
     names: PathNames,
     walker_string: Index<String>,
-    helper_strings: [Index<String>; 3],
-    helpers: [Index<Multiname>; 3],
+    helper_strings: [Index<String>; 4],
+    helpers: [Index<Multiname>; 4],
     pub(super) registrations: PathHelpers,
 }
 
@@ -419,6 +503,15 @@ pub(super) fn prepare(pools: &mut AdapterPools, adapter: &AdapterNames) -> PathP
     let split_string = name("split");
     let length_string = name("length");
     let get_child_by_name_string = name("getChildByName");
+    let flash_system = name("flash.system");
+    let application_domain_string = name("ApplicationDomain");
+    let current_domain_string = name("currentDomain");
+    let has_definition_string = name("hasDefinition");
+    let get_definition_string = name("getDefinition");
+    let flash_display = name("flash.display");
+    let display_object_string = name("DisplayObject");
+    let name_string = name("name");
+    let add_child_string = name("addChild");
     let dot = name(".");
     let number = name("number");
     let string_type = name("string");
@@ -426,8 +519,17 @@ pub(super) fn prepare(pools: &mut AdapterPools, adapter: &AdapterNames) -> PathP
     let object_type = name("object");
     let function_type = name("function");
     let walker_string = name("__byro_fallout4_path_walk");
-    let helper_strings = [name("__byro_fallout4_path_get"), name("__byro_fallout4_path_set"), name("__byro_fallout4_path_call")];
-    let callback_strings = [name(PATH_GET_CALLBACK), name(PATH_SET_CALLBACK), name(PATH_CALL_CALLBACK)];
+    let helper_strings = [
+        name("__byro_fallout4_path_get"),
+        name("__byro_fallout4_path_set"),
+        name("__byro_fallout4_path_call"),
+        name("__byro_fallout4_path_attach"),
+    ];
+    let callback_strings =
+        [name(PATH_GET_CALLBACK), name(PATH_SET_CALLBACK), name(PATH_CALL_CALLBACK), name(PATH_ATTACH_CALLBACK)];
+
+    let flash_system = add_namespace(&mut pools.namespaces, swf::avm2::types::Namespace::Package(flash_system));
+    let flash_display = add_namespace(&mut pools.namespaces, swf::avm2::types::Namespace::Package(flash_display));
 
     pools.namespace_sets.push(vec![public]);
     let public_set = Index::new(pools.namespace_sets.len() as u32);
@@ -446,6 +548,13 @@ pub(super) fn prepare(pools: &mut AdapterPools, adapter: &AdapterNames) -> PathP
         apply: adapter.apply,
         get_child_by_name: multiname(qname(public, get_child_by_name_string)),
         get_child_by_name_string,
+        application_domain: multiname(qname(flash_system, application_domain_string)),
+        current_domain: multiname(qname(public, current_domain_string)),
+        has_definition: multiname(qname(public, has_definition_string)),
+        get_definition: multiname(qname(public, get_definition_string)),
+        display_object: multiname(qname(flash_display, display_object_string)),
+        name: multiname(qname(public, name_string)),
+        add_child: multiname(qname(public, add_child_string)),
         found_string,
         type_string,
         object_string,
@@ -468,18 +577,20 @@ pub(super) fn prepare(pools: &mut AdapterPools, adapter: &AdapterNames) -> PathP
                 (callback_strings[0], helpers[0]),
                 (callback_strings[1], helpers[1]),
                 (callback_strings[2], helpers[2]),
+                (callback_strings[3], helpers[3]),
             ],
         },
     }
 }
 
-/// Append the walker and the three path helpers as script traits from `next_disp_id` on.
+/// Append the walker and the four path helpers as script traits from `next_disp_id` on.
 pub(super) fn emit(plan: &PathPlan, out: &mut AdapterMethods, next_disp_id: &mut u32) -> std::io::Result<()> {
     let names = &plan.names;
     let walker_method = out.add(plan.walker_string, params(2), MethodFlags::empty(), (8, 9), walker(names)?);
     out.traits.push(method_trait(names.walker, walker_method, *next_disp_id));
     *next_disp_id += 1;
-    let bodies = [(get(names)?, 1, (6, 5)), (set(names)?, 2, (6, 7)), (call(names)?, 2, (6, 8))];
+    let bodies =
+        [(get(names)?, 1, (6, 5)), (set(names)?, 2, (6, 7)), (call(names)?, 2, (6, 8)), (attach(names)?, 2, (6, 8))];
     for ((code, param_count, sizes), (helper, helper_string)) in
         bodies.into_iter().zip(plan.helpers.iter().zip(plan.helper_strings))
     {
@@ -541,11 +652,11 @@ mod tests {
     /// The driver: hands the adapter's installer a stand-in movie root, as the patched lifecycle
     /// constructor does — `{BGSCodeObj: {}, onCodeObjCreate: function () {},
     /// LeftMeters_mc: {HPMeter_mc: {MeterBar_mc: {Percent: 1}}}, value: 0,
-    /// bump: function (n) { this.value = n; return n + 1; }}`.
+    /// bump: function (n) { this.value = n; return n + 1; }, Holder: new flash.display.Sprite()}`.
     fn driver_abc() -> Vec<u8> {
         let strings: Vec<Vec<u8>> = [
             "", "BGSCodeObj", "onCodeObjCreate", INSTALL_HELPER, "LeftMeters_mc", "HPMeter_mc", "MeterBar_mc", "Percent", "value",
-            "bump",
+            "bump", "Holder", "flash.display", "Sprite",
         ]
         .iter()
         .map(|s| s.as_bytes().to_vec())
@@ -554,6 +665,7 @@ mod tests {
         let public = Index::new(1);
         let install = Index::new(1);
         let value = Index::new(2);
+        let sprite = Index::new(3);
         let abc = AbcFile {
             major_version: 46,
             minor_version: 16,
@@ -562,11 +674,12 @@ mod tests {
                 uints: Vec::new(),
                 doubles: Vec::new(),
                 strings,
-                namespaces: vec![Namespace::Package(s(0))],
+                namespaces: vec![Namespace::Package(s(0)), Namespace::Package(s(11))],
                 namespace_sets: Vec::new(),
                 multinames: vec![
                     Multiname::QName { namespace: public, name: s(3) },
                     Multiname::QName { namespace: public, name: s(8) },
+                    Multiname::QName { namespace: Index::new(2), name: s(12) },
                 ],
             },
             methods: vec![method(0, 0), method(0, 1), method(1, 2)],
@@ -575,7 +688,7 @@ mod tests {
             classes: Vec::new(),
             scripts: vec![Script { init_method: Index::new(0), traits: Vec::new() }],
             method_bodies: vec![
-                body(0, 16, 1, &[
+                body(0, 20, 1, &[
                     Op::GetLocal { index: 0 },
                     Op::PushScope,
                     Op::FindPropStrict { index: install },
@@ -595,7 +708,10 @@ mod tests {
                     Op::PushByte { value: 0 },
                     Op::PushString { value: s(9) },
                     Op::NewFunction { index: Index::new(2) },
-                    Op::NewObject { num_args: 5 },
+                    Op::PushString { value: s(10) },
+                    Op::FindPropStrict { index: sprite },
+                    Op::ConstructProp { index: sprite, num_args: 0 },
+                    Op::NewObject { num_args: 6 },
                     Op::CallPropVoid { index: install, num_args: 1 },
                     Op::ReturnVoid,
                 ]),
@@ -681,5 +797,28 @@ mod tests {
         assert_eq!(run(&player, PathOp::Get("value.deeper".into())), PathOutcome::Absent);
         // An object is found without its members crossing the boundary.
         assert_eq!(run(&player, PathOp::Get("LeftMeters_mc".into())), PathOutcome::Found(ScaleformValue::Undefined));
+    }
+
+    /// #7036 — `attach` constructs an exported display class under a container, names it, and
+    /// leaves it reachable by path (through `getChildByName`); a second attach finds it instead of
+    /// adding another. A class the domain lacks, a non-display class and a parent that is no
+    /// container are absent.
+    #[test]
+    fn avm2_adapter_attaches_a_named_display_instance_once() {
+        let player = start();
+        let attach = |path: &str, class: &str| run(&player, PathOp::Attach(path.into(), class.into()));
+        let found = PathOutcome::Found(ScaleformValue::Undefined);
+        assert_eq!(run(&player, PathOp::Get("Holder.Marker.x".into())), PathOutcome::Absent);
+        assert_eq!(attach("Holder.Marker", "flash.display.Sprite"), found);
+        assert_eq!(run(&player, PathOp::Set("Holder.Marker.x".into(), ScaleformValue::Number(12.0))), found);
+        assert_eq!(run(&player, PathOp::Get("Holder.Marker.x".into())), PathOutcome::Found(ScaleformValue::Number(12.0)));
+        assert_eq!(attach("Holder.Marker", "flash.display.Sprite"), found, "idempotent");
+        assert_eq!(run(&player, PathOp::Get("Holder.Marker.x".into())), PathOutcome::Found(ScaleformValue::Number(12.0)), "not replaced");
+        assert_eq!(run(&player, PathOp::Get("Holder.numChildren".into())), PathOutcome::Found(ScaleformValue::Number(1.0)));
+        assert_eq!(attach("Holder.Other", "NoSuchWidget"), PathOutcome::Absent);
+        assert_eq!(attach("Holder.Other", "Object"), PathOutcome::Absent, "not a DisplayObject");
+        assert_eq!(attach("LeftMeters_mc.Marker", "flash.display.Sprite"), PathOutcome::Absent, "not a container");
+        assert_eq!(attach("Nope.Marker", "flash.display.Sprite"), PathOutcome::Absent);
+        assert_eq!(run(&player, PathOp::Get("Holder.numChildren".into())), PathOutcome::Found(ScaleformValue::Number(1.0)));
     }
 }

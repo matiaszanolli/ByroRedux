@@ -8,8 +8,8 @@
 # `hud.debug` must show the HP feed landed. Bands are the bars' bounds at the 1280x720 capture,
 # measured from the movie (HP fill 96..295 x 652..657, AP its mirror). The control sits where the
 # first run measured zero world change: MedTekResearch01 is lit and RT-noisy, so the compass band
-# (mostly transparent; the widget is undriven, #7036) picks up ~20-30 px of world shimmer between
-# any two captures, as m48-7's own control does.
+# (mostly transparent) picks up ~20-30 px of world shimmer between any two captures, as m48-7's own
+# control does. The compass has its own gate, m48-fo4-hud-compass.sh (#7036).
 #
 # Pre-conditions: Fallout 4 installed (BYROREDUX_FO4_DATA or the default path), a Vulkan device,
 # Xvfb, a debug build (`cargo build`, with byro-dbg).

@@ -18,6 +18,7 @@ pub mod path;
 mod player;
 mod prepare;
 mod profile;
+mod translate;
 
 use std::sync::Arc;
 
@@ -38,6 +39,7 @@ pub use pacing::RenderPacing;
 pub use path::{PathOp, PathOutcome, WhenAbsent};
 pub use player::SwfPlayer;
 pub use profile::ScaleformProfile;
+pub use translate::parse_translation_table;
 /// What [`UiManager::render`] wants the compositor to do this frame.
 ///
 /// #2972 — three states, because `Option` only has two and the overlay has

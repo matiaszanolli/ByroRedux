@@ -36,7 +36,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use byroredux_core::ecs::World;
-use byroredux_ui::path::{PATH_CALL_CALLBACK, PATH_GET_CALLBACK, PATH_SET_CALLBACK};
+use byroredux_ui::path::PATH_CALLBACKS;
 use byroredux_ui::{PathOp, PathOutcome, RenderPacing, ScaleformHostBridge, ScaleformValue, UiLayer, UiManager, WhenAbsent};
 
 use crate::asset_provider::Archive;
@@ -135,8 +135,8 @@ impl ScaleformGame {
     ///   `RightMeters_mc.ActionPointMeter_mc.MeterBar_mc`, plus the HP meter's rads overlay
     ///   `RadsBar_mc`, which the movie initialises full and draws over the HP fill. The engine
     ///   models no Fallout 4 radiation (`PlayerVitals` carries FO3 / FNV rads only), so the overlay
-    ///   is 0: the state of a player with no rads. The compass widget has no ActionScript at all,
-    ///   so no path drives it (GUI-HUD-005 is Skyrim's here; Fallout 4's is a follow-up).
+    ///   is 0: the state of a player with no rads. The compass widget has no ActionScript at all:
+    ///   [`Fallout4Compass`] builds and moves it as native code does (#7036).
     fn meter_feeds(self, fractions: [f32; 3], heading: f32) -> Vec<PathOp> {
         let number = |value: f32| ScaleformValue::Number(value as f64);
         match self {
@@ -193,6 +193,158 @@ impl ScaleformGame {
     }
 }
 
+/// #7036 — Fallout 4's compass (GUI-HUD-005). `BottomCenterGroup_mc.CompassWidget_mc` has no
+/// ActionScript: native `HUDCompass` builds and moves it. Measured from `Fallout4.exe` (RVAs):
+///
+/// - construction (`0x9b8240`) keeps `halfW = (CompassBar_mc.width − 2) · 0.5` (151 px on the
+///   vanilla 304 px bar) and instantiates one `DirectionMarkerWidget` (the movie's exported
+///   letter-and-tick class) per cardinal into `OtherMarkerHolder_mc`, at 0, π/2, π and 3π/2 rad;
+///   each sets `Direction_tf.text` to `$Compass_North` / `East` / `South` / `West` and
+///   `Direction_tf.autoSize` to `"center"` (`0x9bb800`);
+/// - every update (`0x9b88d1`, half field of view `0x252e960` = 0.872665 rad = 50°) places each
+///   marker through `0x9bb5d0`: `Δ = wrap(heading − angle)` into ±π; a direction marker
+///   (never clamped to the edge) is hidden once `|Δ| ≥ halfFov`, otherwise shown at
+///   `x = −halfW · Δ / halfFov`.
+///
+/// The engine stands in for that construction through the path service's attach
+/// ([`PathOp::Attach`]) and feeds `x` / `visible` from the camera heading. The quest and
+/// other location markers the native compass also places are not modelled. The letters do not
+/// draw yet, like every Fallout 4 HUD text field: they ask for the GFx font class
+/// `$MAIN_Font_Bold`, which only `fontconfig.txt` maps into `fonts_en.swf` (GUI-FONT-001, M48
+/// Phase 6); the markers' ticks draw and move.
+struct Fallout4Compass {
+    /// The four direction labels, from the interface translation table (GFx shows a missing key
+    /// as itself).
+    labels: [String; 4],
+    /// `halfW`, read from the movie once its adapter answers.
+    half_width: Option<f32>,
+    /// The markers are attached and labelled.
+    built: bool,
+    /// The movie cannot carry the compass (no `DirectionMarkerWidget`, no holder): stop asking.
+    disabled: bool,
+}
+
+const FALLOUT4_COMPASS: &str = "BottomCenterGroup_mc.CompassWidget_mc";
+/// `HUDCompass`'s half field of view, `0x252e960` (0.872665 rad).
+const FALLOUT4_COMPASS_HALF_FOV_DEGREES: f32 = 50.0;
+/// The direction markers: the child name the engine gives each, its translation key, its angle
+/// (degrees clockwise from north, as the heading).
+const FALLOUT4_COMPASS_DIRECTIONS: [(&str, &str, f32); 4] = [
+    ("ByroCompassNorth", "$Compass_North", 0.0),
+    ("ByroCompassEast", "$Compass_East", 90.0),
+    ("ByroCompassSouth", "$Compass_South", 180.0),
+    ("ByroCompassWest", "$Compass_West", 270.0),
+];
+
+impl Fallout4Compass {
+    /// Resolve the labels through `interface\translate_<language>.txt` in `archive`.
+    fn new(archive: &Archive) -> Self {
+        let language = crate::cell_loader::load_order::strings_language();
+        let table = byroredux_plugin::esm::strings_table::language_candidates(&language)
+            .into_iter()
+            .map(|candidate| format!("interface\\translate_{candidate}.txt"))
+            .find(|path| archive.contains(path))
+            .and_then(|path| archive.extract(&path).ok())
+            .map(|bytes| byroredux_ui::parse_translation_table(&bytes))
+            .unwrap_or_default();
+        let labels = FALLOUT4_COMPASS_DIRECTIONS.map(|(_, key, _)| {
+            table.get(key).cloned().unwrap_or_else(|| {
+                log::warn!("hud: no '{language}' translation for {key}; the compass shows the key");
+                key.to_owned()
+            })
+        });
+        Self { labels, half_width: None, built: false, disabled: false }
+    }
+
+    fn marker(name: &str) -> String {
+        format!("{FALLOUT4_COMPASS}.OtherMarkerHolder_mc.{name}")
+    }
+
+    /// The markers' placement for `heading` (degrees): `(x, visible)` per direction, by the
+    /// native rule.
+    fn placement(half_width: f32, heading: f32) -> [(f32, bool); 4] {
+        FALLOUT4_COMPASS_DIRECTIONS.map(|(_, _, angle)| {
+            let delta = (heading - angle + 180.0).rem_euclid(360.0) - 180.0;
+            let visible = delta.abs() < FALLOUT4_COMPASS_HALF_FOV_DEGREES;
+            (-half_width * delta / FALLOUT4_COMPASS_HALF_FOV_DEGREES, visible)
+        })
+    }
+
+    /// One push: build the markers once the adapter answers, then place them. Each operation's
+    /// path and outcome goes to `hud.debug`'s paths line. `false` while the compass still waits on
+    /// the movie, so the driver pushes again on its cadence even with a still heading.
+    fn feed(&mut self, layer: &mut UiLayer, heading: f32, feed: &mut Vec<(String, String)>) -> bool {
+        if self.disabled {
+            return true;
+        }
+        let mut run = |op: PathOp, when_absent: WhenAbsent, feed: &mut Vec<(String, String)>| {
+            let path = op.path().to_owned();
+            let outcome = layer.path_op(op, when_absent);
+            feed.push((path, outcome_name(&outcome).to_owned()));
+            outcome
+        };
+        if self.half_width.is_none() {
+            let width = format!("{FALLOUT4_COMPASS}.CompassBar_mc.width");
+            match run(PathOp::Get(width), WhenAbsent::Refuse, feed) {
+                PathOutcome::Found(ScaleformValue::Number(width)) => self.half_width = Some(((width - 2.0) * 0.5) as f32),
+                PathOutcome::NotReady => return false,
+                _ => return self.disable("its CompassBar_mc has no width"),
+            }
+        }
+        if !self.built {
+            for ((name, _, _), label) in FALLOUT4_COMPASS_DIRECTIONS.iter().zip(&self.labels) {
+                let marker = Self::marker(name);
+                let text = format!("{marker}.Direction_tf");
+                let steps = [
+                    PathOp::Attach(marker, "DirectionMarkerWidget".to_owned()),
+                    PathOp::Set(format!("{text}.autoSize"), ScaleformValue::String("center".to_owned())),
+                    // Through `htmlText` with the authored `<b>` (the tag's placeholder is
+                    // `<b>NSEW</b>`): Ruffle's `text` setter drops to the field's non-bold default
+                    // format, which no `$MAIN_Font_Bold` face matches once fonts resolve.
+                    PathOp::Set(format!("{text}.htmlText"), ScaleformValue::String(format!("<b>{}</b>", html_escape(label)))),
+                ];
+                for op in steps {
+                    match run(op, WhenAbsent::Refuse, feed) {
+                        PathOutcome::Found(_) => {}
+                        PathOutcome::NotReady => return false,
+                        _ => return self.disable("a DirectionMarkerWidget could not be attached and labelled"),
+                    }
+                }
+            }
+            self.built = true;
+        }
+        let half_width = self.half_width.unwrap_or_default();
+        for ((name, _, _), (x, visible)) in FALLOUT4_COMPASS_DIRECTIONS.iter().zip(Self::placement(half_width, heading)) {
+            let marker = Self::marker(name);
+            run(PathOp::Set(format!("{marker}.visible"), ScaleformValue::Bool(visible)), WhenAbsent::Queue, feed);
+            if visible {
+                run(PathOp::Set(format!("{marker}.x"), ScaleformValue::Number(x as f64)), WhenAbsent::Queue, feed);
+            }
+        }
+        true
+    }
+
+    fn disable(&mut self, why: &str) -> bool {
+        log::warn!("hud: the Fallout 4 compass stays static: {why}");
+        self.disabled = true;
+        true
+    }
+}
+
+/// Escape a translation-table label (game-archive text) for an `htmlText` write.
+fn html_escape(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+fn outcome_name(outcome: &PathOutcome) -> &'static str {
+    match outcome {
+        PathOutcome::Found(_) => "found",
+        PathOutcome::Absent => "absent",
+        PathOutcome::NotReady => "not-ready",
+        PathOutcome::Queued => "queued",
+    }
+}
+
 /// The bar state the response handlers answer requests from. `Rc`
 /// shared between the driver (frame loop, refreshed from the World) and
 /// the handler closures (Ruffle's thread during `ExternalInterface.call`
@@ -222,6 +374,8 @@ pub(crate) struct ScaleformHudDriver {
     last_signature: u64,
     last_push: std::time::Instant,
     last_diag_refresh: std::time::Instant,
+    /// Fallout 4's compass (#7036); `None` on Skyrim, whose movie drives its own.
+    compass: Option<Fallout4Compass>,
 }
 
 /// World-resource mirror of the Scaleform HUD's bridge diagnostics —
@@ -319,6 +473,7 @@ pub(crate) fn launch(
         }
     };
 
+    let compass = (game == ScaleformGame::Fallout4).then(|| Fallout4Compass::new(&archive));
     let menu_path = game.menu_path();
     let mut ui = UiManager::new(w, h);
     if let Err(e) =
@@ -390,6 +545,7 @@ pub(crate) fn launch(
         last_signature: 0,
         last_push: std::time::Instant::now(),
         last_diag_refresh: std::time::Instant::now(),
+        compass,
     };
     log::info!(
         "hud: loaded {menu_path} archive='{archive_path}' backend={} \
@@ -492,21 +648,22 @@ impl ScaleformHudDriver {
                 // M48 GUI-HUD-001…003 — the vanilla meters and compass through the path service.
                 // Queued: the movie's adapter registers on its first frame (AVM1) or when the
                 // lifecycle class is constructed (AVM2); a newer value replaces a held one.
-                let feed: Vec<(String, String)> = self
+                let mut feed: Vec<(String, String)> = self
                     .game
                     .meter_feeds(fractions, heading)
                     .into_iter()
                     .map(|op| {
                         let path = op.path().to_owned();
-                        let outcome = match layer.path_op(op, WhenAbsent::Queue) {
-                            PathOutcome::Found(_) => "found",
-                            PathOutcome::Absent => "absent",
-                            PathOutcome::NotReady => "not-ready",
-                            PathOutcome::Queued => "queued",
-                        };
-                        (path, outcome.to_owned())
+                        let outcome = layer.path_op(op, WhenAbsent::Queue);
+                        (path, outcome_name(&outcome).to_owned())
                     })
                     .collect();
+                if let Some(compass) = self.compass.as_mut() {
+                    if !compass.feed(layer, heading, &mut feed) {
+                        // Still waiting on the movie: push again next cadence, heading or not.
+                        self.last_signature = 0;
+                    }
+                }
                 if let Some(mut diag) = world.try_resource_mut::<ScaleformHudDiag>() {
                     diag.path_feed = feed;
                 }
@@ -529,7 +686,7 @@ impl ScaleformHudDriver {
                 diag.callbacks = self
                     .callbacks
                     .iter()
-                    .filter(|name| ![PATH_GET_CALLBACK, PATH_SET_CALLBACK, PATH_CALL_CALLBACK].contains(&name.as_str()))
+                    .filter(|name| !PATH_CALLBACKS.contains(&name.as_str()))
                     .cloned()
                     .collect();
                 diag.unknown_methods = self.bridge.unknown_methods();
@@ -590,6 +747,7 @@ mod tests {
             last_signature: 0,
             last_push: std::time::Instant::now(),
             last_diag_refresh: std::time::Instant::now(),
+            compass: None,
         }
     }
 
@@ -653,7 +811,36 @@ mod tests {
         );
         assert_eq!(fallout4[0], PathOp::Set(paths[0].into(), ScaleformValue::Number(0.35f32 as f64)));
         assert_eq!(fallout4[1], PathOp::Set(paths[1].into(), ScaleformValue::Number(0.0)));
-        assert!(!paths.iter().any(|path| path.contains("Compass")), "Fallout 4's compass has no ActionScript");
+        assert!(!paths.iter().any(|path| path.contains("Compass")), "Fallout 4's compass is Fallout4Compass's (#7036)");
+    }
+
+    /// #7036 — the Fallout 4 compass places its direction markers by `HUDCompass`'s rule: each at
+    /// `x = −halfW · Δ / 50°` with `Δ = wrap(heading − angle)`, hidden from `|Δ| ≥ 50°` on.
+    #[test]
+    fn fallout4_compass_markers_follow_the_native_placement() {
+        let half_width = 151.0;
+        let near = |(x, visible): (f32, bool), want: f32| visible && (x - want).abs() < 1e-3;
+        // Facing north: N centred, E and W out of the 100° window, S behind.
+        let [n, e, s, w] = Fallout4Compass::placement(half_width, 0.0);
+        assert!(near(n, 0.0), "{n:?}");
+        assert!(!e.1 && !s.1 && !w.1);
+        // Facing 20° (east of north): N sits left, 20/50 of the half width.
+        let [n, e, ..] = Fallout4Compass::placement(half_width, 20.0);
+        assert!(near(n, -half_width * 0.4), "{n:?}");
+        assert!(!e.1, "E is 70° away");
+        // Facing 70°: E to the left of centre by 20°, N out.
+        let [n, e, ..] = Fallout4Compass::placement(half_width, 70.0);
+        assert!(near(e, half_width * 0.4), "{e:?}");
+        assert!(!n.1);
+        // Wrap: facing 350°, N is 10° to the right; W at 280° is out (70°).
+        let [n, _, _, w] = Fallout4Compass::placement(half_width, 350.0);
+        assert!(near(n, half_width * 0.2), "{n:?}");
+        assert!(!w.1);
+        // The window edge is exclusive, as the native `comiss`/`jb` pair.
+        assert!(!Fallout4Compass::placement(half_width, 50.0)[0].1);
+        // hud.heading 90 vs 270: the visible marker changes, which the smoke diffs.
+        assert!(Fallout4Compass::placement(half_width, 90.0)[1].1 && !Fallout4Compass::placement(half_width, 90.0)[3].1);
+        assert!(Fallout4Compass::placement(half_width, 270.0)[3].1 && !Fallout4Compass::placement(half_width, 270.0)[1].1);
     }
 
     /// #4725 — the per-game poll-handler set is table data on

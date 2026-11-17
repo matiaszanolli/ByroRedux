@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# Shared body of the M48 Phase 2 HUD-meter gates (#6661): m48-skyrim-hud-meters.sh (A4) and
-# m48-fo4-hud-meters.sh (A5). The caller sets GATE, DATA, PORT, ENGINE_ARGS (array), FULL / LOW
-# (`hud.values` lines), FEED_TOKEN (a `hud.debug` path that must read `=found`) and BANDS (a
-# Python literal: {"name": (x0, x1, y0, y1, "moves"|"still")}), then sources this file.
+# Shared body of the M48 Phase 2 HUD-meter gates (#6661): m48-skyrim-hud-meters.sh (A4),
+# m48-fo4-hud-meters.sh (A5) and m48-fo4-hud-compass.sh (#7036). The caller sets GATE, DATA,
+# PORT, ENGINE_ARGS (array), FULL / LOW (the console line each capture follows: `hud.values`,
+# `hud.heading`), FEED_TOKEN (a `hud.debug` path that must read `=found`) and BANDS (a Python
+# literal: {"name": (x0, x1, y0, y1, kind)}), then sources this file.
 #
-# Same-run differencing: two captures of one held frame, one at FULL and one at LOW. The world
-# cancels; a "moves" band (a meter whose pinned value changed) must change, a "still" band (HUD
-# chrome whose value did not) must not.
+# Same-run differencing: two captures of one held frame, one after FULL and one after LOW. The
+# world cancels; a "moves" band (a meter whose pinned value changed) must change, a "still" band
+# (HUD chrome whose value did not) must not. The ink kinds count near-white HUD pixels instead, for
+# a widget too small to tell from world shimmer by differencing: "ink-full" / "ink-low" hold ink in
+# that capture only, "no-ink" in neither.
 
 set -euo pipefail
 LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -96,17 +99,23 @@ stop_engine
 python3 - "$OUT_DIR" "$LIB_DIR" "$GATE" "$BANDS" <<'PY'
 import ast, sys
 sys.path.insert(0, sys.argv[2])
-from pngdiff import load, changed
+from pngdiff import load, changed, ink
 out, gate, bands = sys.argv[1], sys.argv[3], ast.literal_eval(sys.argv[4])
 full, width, _ = load(f"{out}/full.png")
 low, _, _ = load(f"{out}/low.png")
-counts = {name: changed(full, low, width, x0, x1, y0, y1) for name, (x0, x1, y0, y1, _) in bands.items()}
-print(f"{gate}: changed pixels per band {counts}")
-for name, (*_, expect) in bands.items():
-    if expect == "moves":
-        assert counts[name] > 0, f"FAIL[{gate}]: the {name} band did not change ({counts[name]} px)"
+for name, (x0, x1, y0, y1, expect) in bands.items():
+    if expect in ("moves", "still"):
+        count = changed(full, low, width, x0, x1, y0, y1)
+        print(f"{gate}: {name} changed {count} px")
+        if expect == "moves":
+            assert count > 0, f"FAIL[{gate}]: the {name} band did not change ({count} px)"
+        else:
+            assert count == 0, f"FAIL[{gate}]: the control {name} band changed ({count} px)"
     else:
-        assert counts[name] == 0, f"FAIL[{gate}]: the control {name} band changed ({counts[name]} px)"
-print(f"PASS[{gate}]: the pinned meters moved and the control band held")
+        lit = (ink(full, width, x0, x1, y0, y1), ink(low, width, x0, x1, y0, y1))
+        print(f"{gate}: {name} ink (full, low) {lit}")
+        want = {"ink-full": (True, False), "ink-low": (False, True), "no-ink": (False, False)}[expect]
+        assert (lit[0] > 0, lit[1] > 0) == want, f"FAIL[{gate}]: the {name} band's ink is {lit}, expected {expect}"
+print(f"PASS[{gate}]: every band held its expectation")
 PY
 echo "$GATE: PASS"

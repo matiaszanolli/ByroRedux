@@ -909,7 +909,8 @@ Phase 2 built the path service on both VMs:
 
 - **The contract** (`crates/ui/src/path.rs`). Three ExternalInterface callbacks,
   `__byro_path_get(p)`, `__byro_path_set(p, v)` and `__byro_path_call(p, args)`,
-  all in `RESERVED_ENGINE_CALLBACKS` by exact name (GUI-PATH-004). Both adapters
+  plus the AVM2 adapter's `__byro_path_attach(p, class)` (#7036), all in
+  `RESERVED_ENGINE_CALLBACKS` by exact name (GUI-PATH-004). Both adapters
   answer `{found, type, value}`, which `decode_reply` turns into a `PathOutcome`:
   `Found(value)`, `Absent` (GUI-PATH-002, reported once per path), `NotReady`
   (the adapter's callbacks are not registered yet) or `Queued`. `value` crosses
@@ -928,6 +929,13 @@ Phase 2 built the path service on both VMs:
   installer stores. The installer registers the callbacks after
   `onCodeObjCreate`. **Only movies carrying the `BGSCodeObj` lifecycle class get
   the AVM2 adapter**, so an AVM2 movie without it answers `NotReady`.
+- **Attach** (`PathOp::Attach`, #7036, AVM2 only). Stands in for native code that
+  instantiates a movie's exported widget classes: when the path's parent (a
+  display container) has no child of the last segment's name, the adapter
+  constructs the class from `ApplicationDomain.currentDomain` (the adapter's
+  domain is the movie's), checks it is a `DisplayObject`, names it and
+  `addChild`s it; a child already there is found as-is, so it is idempotent. An
+  AVM1 movie answers `NotReady` (its `attachMovie` is reachable through a call).
 - **Queue or refuse** (GUI-PATH-003), chosen per call: `UiLayer::path_op(op,
   WhenAbsent::Queue)` holds an operation whose target (or adapter) is not there
   yet and retries it after every tick, a newer operation on the same path
@@ -941,7 +949,8 @@ Phase 2 built the path service on both VMs:
   `prepare_movie` injection on a synthetic AVM1 movie) and
   `avm2_adapter_reports_an_absent_path` (the real adapter ABC, installed on a
   stand-in root by a driver script, as the patched lifecycle constructor does),
-  both on renderer-less Ruffle players, no GPU.
+  plus `avm2_adapter_attaches_a_named_display_instance_once` (#7036), all on
+  renderer-less Ruffle players, no GPU.
 
 **What the runtime measurements settled** (Phase 0 read these from bytecode):
 
@@ -955,8 +964,19 @@ Phase 2 built the path service on both VMs:
 - **Fallout 4's HP bar sits under its rads overlay.** `RadsBar_mc.Percent` starts
   at 1 and is drawn over the fill, so the HP meter shows nothing until the rads
   overlay is fed. The engine models no Fallout 4 radiation, so the driver feeds 0.
-- **Fallout 4's compass widget has no ActionScript**; no path can drive it.
-  GUI-HUD-005 is Skyrim's here (`SetCompassAngle`); Fallout 4's is a follow-up.
+- **Fallout 4's compass widget has no ActionScript** (#7036). `Fallout4.exe`'s
+  `HUDCompass` builds it: one `DirectionMarkerWidget` (the movie's exported
+  letter-and-tick class) per cardinal in `OtherMarkerHolder_mc`, at 0 / 90 / 180 /
+  270°, labelled from the translation table (`$Compass_North` → `N`); each update
+  sets a marker's `x = −halfW · Δ / 50°` (`Δ = wrap(heading − angle)`,
+  `halfW = (CompassBar_mc.width − 2) / 2` = 151) and hides it from `|Δ| ≥ 50°` on.
+  Nothing scrolls: `CompassBar_mc` is a static strip. The driver
+  (`Fallout4Compass`) does the same through attach and set. The labels set through
+  `htmlText` with the authored `<b>`: Ruffle's `text` setter drops to the field's
+  non-bold default format. They do not draw yet, nor does any Fallout 4 HUD text:
+  the fields ask for the GFx font classes `$MAIN_Font` / `$MAIN_Font_Bold`, which
+  only `fontconfig.txt` maps to `fonts_en.swf` (GUI-FONT-001, Phase 6). The
+  markers' ticks draw and move. Quest and location markers are not modelled.
 
 #### MenuXml input (GUI-XML-001…003)
 
@@ -1288,13 +1308,14 @@ feeds them every changed frame through the path service
 [Path access](#path-access-gui-path-001005-decision-q2--built-in-phase-2-6661)):
 Skyrim's `Set{Health,Magicka,Stamina}MeterPercent` (0..100, `abForce = false`) and
 `SetCompassAngle`, Fallout 4's HP and AP `MeterBarWidget.Percent` (0..1) with the
-rads overlay cleared. The movie's own `call` callback does not reach those
+rads overlay cleared, and Fallout 4's compass direction markers (#7036, attached and
+placed by `HUDCompass`'s rule; see the path-access notes above). The movie's own `call` callback does not reach those
 handlers (measured in Phase 2; Phase 0 had read it from bytecode). The SkyUI-class
 poll handlers (`updateStats`, `RequestPlayerInfo`) and the push table stay for
 menus that speak that protocol. `hud.debug` prints each feed path's last outcome
 and the queued count. While an original HUD is up, the native layer draws no
 second set of vitals bars (GUI-HUD-004). Gates: `m48-skyrim-hud-meters.sh` (A4),
-`m48-fo4-hud-meters.sh` (A5).
+`m48-fo4-hud-meters.sh` (A5), `m48-fo4-hud-compass.sh` (#7036).
 
 The smoke gate (`docs/smoke-tests/m48-6-skyrim-hud.sh`) gates the boot
 line, `backend=scaleform` + 3-bar pins, the `hud.debug` callback pair +

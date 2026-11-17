@@ -85,15 +85,16 @@ pub const MAX_DISTINCT_HOST_METHOD_NAMES: usize = 1024;
 /// registers — when a future adapter adds a lifecycle callback whose
 /// absence is functional, not just diagnostic.
 ///
-/// M48 GUI-PATH-004 — the path adapters' three callbacks (both VMs) are functional: without
-/// them the path service, and every vanilla HUD meter it feeds, goes dark.
-pub const RESERVED_ENGINE_CALLBACKS: [&str; 6] = [
+/// M48 GUI-PATH-004 — the path adapters' callbacks (both VMs) are functional: without them the
+/// path service, and every vanilla HUD meter it feeds, goes dark.
+pub const RESERVED_ENGINE_CALLBACKS: [&str; 7] = [
     crate::avm2_host::READY_CALLBACK,
     crate::avm2_host::LOADED_CALLBACK,
     crate::avm2_host::DESTROY_CALLBACK,
     crate::path::PATH_GET_CALLBACK,
     crate::path::PATH_SET_CALLBACK,
     crate::path::PATH_CALL_CALLBACK,
+    crate::path::PATH_ATTACH_CALLBACK,
 ];
 
 /// Value type shared between the engine and ActionScript.

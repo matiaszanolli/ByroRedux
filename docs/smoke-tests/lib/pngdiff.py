@@ -4,7 +4,9 @@ Usage (as a library):  sys.path.insert(0, "<smoke-tests>/lib"); from pngdiff imp
 Usage (as a tool):     python3 pngdiff.py <a.png> <b.png> <x0> <x1> <y0> <y1> [eps]
 
 `load` decodes an 8-bit RGBA PNG with all five scanline filters; `changed` counts the pixels in a
-rectangle whose RGB moved by more than `eps` (summed over the channels). The presentation pass
+rectangle whose RGB moved by more than `eps` (summed over the channels); `ink` counts the pixels in
+a rectangle that are near-white HUD ink (every channel at least `floor`), for a gate that must not
+read world shimmer as a moved widget (#7036). The presentation pass
 does not preserve alpha, so alpha is ignored. Same-run differencing cancels the world, so a gate
 measures only what the HUD drew.
 """
@@ -64,6 +66,16 @@ def changed(a, b, width, x0, x1, y0, y1, eps=60):
         for x in range(x0, x1):
             i = (y * width + x) * 4
             if abs(a[i] - b[i]) + abs(a[i + 1] - b[i + 1]) + abs(a[i + 2] - b[i + 2]) > eps:
+                count += 1
+    return count
+
+
+def ink(a, width, x0, x1, y0, y1, floor=220):
+    count = 0
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            i = (y * width + x) * 4
+            if min(a[i], a[i + 1], a[i + 2]) >= floor:
                 count += 1
     return count
 

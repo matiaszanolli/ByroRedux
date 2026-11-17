@@ -1480,7 +1480,10 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // (GUI-GFX-003) and `hud_feed_paths.rs` (GUI-HUD-003); each states its re-run command.
         // Rust 1.100 clippy re-measure: +3 — `type_complexity` aliases and reasoned allows in `host_call_sites.rs` and
         // `hud_feed_paths.rs`, net of a collapsed `if_same_then_else`.
-        ("ui", 3, 2279),
+        // #7036 re-measure: +109 — `hud_feed_paths` `layout` / `fonts` / `cat` subcommands (a widget's
+        // display list with bounds, the text fields' font classes, an archive entry's bytes), the
+        // evidence for the Fallout 4 compass driver and its TSV row (no new target; the tool grew).
+        ("ui", 3, 2388),
     ];
     let by_entry = |root: &std::path::Path| {
         // `crates/<name>/examples` or `byroredux/examples` → crate name.

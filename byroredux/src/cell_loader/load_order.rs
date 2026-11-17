@@ -828,18 +828,7 @@ where
         }
     }
     // #1553 — companion `.STRINGS` language. Read once outside the loop.
-    //
-    // #4168 — this default is a *token*, not a file-name segment. Only
-    // Skyrim spells the language out in full (`Skyrim_english.STRINGS`);
-    // Fallout 4, Fallout 76 and Starfield ship the short tag instead
-    // (`Fallout4_en.STRINGS` — the shipped `Fallout4 - Interface.ba2`
-    // contains no file whose name holds "english" at all). The token is
-    // expanded to every shipped spelling by
-    // `StringTableSet::language_candidates`, so `"english"` resolves on
-    // all four games and an explicit `BYRO_STRINGS_LANG` (`ptbr`,
-    // `zhhans`, `russian`, …) is still honoured verbatim.
-    let strings_language =
-        std::env::var("BYRO_STRINGS_LANG").unwrap_or_else(|_| "english".to_string());
+    let strings_language = strings_language();
 
     // #1554 — global-slot assignment. Regular plugins consume a full
     // top-byte slot (0x00–0xFD); ESL / light-master plugins share the
@@ -1066,6 +1055,20 @@ fn allocate_global_slot(
         .checked_add(1)
         .ok_or_else(|| anyhow::anyhow!("Regular-plugin slot counter overflow"))?;
     Ok(slot)
+}
+
+/// The game-text language token: `BYRO_STRINGS_LANG`, `"english"` by default (#1553). It picks
+/// the `.STRINGS` companions and, since #7036, the Scaleform translation table
+/// (`interface\translate_<language>.txt`).
+///
+/// #4168 — the default is a *token*, not a file-name segment. Only Skyrim spells the language
+/// out in full (`Skyrim_english.STRINGS`); Fallout 4, Fallout 76 and Starfield ship the short tag
+/// instead (`Fallout4_en.STRINGS` — the shipped `Fallout4 - Interface.ba2` contains no file whose
+/// name holds "english" at all). The token is expanded to every shipped spelling by
+/// `strings_table::language_candidates`, so `"english"` resolves on all four games and an
+/// explicit `BYRO_STRINGS_LANG` (`ptbr`, `zhhans`, `russian`, …) is still honoured verbatim.
+pub(crate) fn strings_language() -> String {
+    std::env::var("BYRO_STRINGS_LANG").unwrap_or_else(|_| "english".to_string())
 }
 
 #[cfg(test)]

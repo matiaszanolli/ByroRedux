@@ -923,6 +923,7 @@ fn reserved_engine_callbacks_are_exactly_the_adapter_lifecycle_names() {
         crate::path::PATH_GET_CALLBACK,
         crate::path::PATH_SET_CALLBACK,
         crate::path::PATH_CALL_CALLBACK,
+        crate::path::PATH_ATTACH_CALLBACK,
     ];
     expected.sort_unstable();
     assert_eq!(

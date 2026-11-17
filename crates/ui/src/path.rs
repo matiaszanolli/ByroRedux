@@ -1,11 +1,12 @@
 //! M48 Phase 2 — the path service (GUI-PATH-001…005, design in `docs/engine/ui.md` § *Path
 //! access*).
 //!
-//! Every open movie, AVM1 or AVM2, carries an injected adapter that registers three
-//! ExternalInterface callbacks: get, set and invoke a member by its dotted path from the movie
-//! root (`_root.HUDMovieBaseInstance.SetHealthMeterPercent`, `LeftMeters_mc.HPMeter_mc.MeterBar_mc.Percent`).
+//! Every open movie, AVM1 or AVM2, carries an injected adapter that registers ExternalInterface
+//! callbacks to get, set and invoke a member by its dotted path from the movie root (`_root.HUDMovieBaseInstance.SetHealthMeterPercent`, `LeftMeters_mc.HPMeter_mc.MeterBar_mc.Percent`).
 //! The AVM1 adapter is a `DoAction` spliced into frame 1 ([`crate::avm1_path`]); the AVM2 one is
-//! three more methods in the `BGSCodeObj` adapter ([`crate::avm2_host`]). Both answer one shape —
+//! more methods in the `BGSCodeObj` adapter ([`crate::avm2_host`]), which also attaches a new
+//! instance of one of the movie's exported classes ([`PathOp::Attach`], #7036). Both answer one
+//! shape —
 //! an object `{found: Boolean, value: *, type: String}` — which [`decode_reply`] turns into a
 //! [`PathOutcome`]: an absent path is a typed result with a diagnostic, never a silent no-op
 //! (GUI-PATH-002).
@@ -22,6 +23,13 @@ pub const PATH_GET_CALLBACK: &str = "__byro_path_get";
 pub const PATH_SET_CALLBACK: &str = "__byro_path_set";
 /// `__byro_path_call(path, [args])` — invoke a function member with its parent as `this`.
 pub const PATH_CALL_CALLBACK: &str = "__byro_path_call";
+/// `__byro_path_attach(path, class)` — add a new instance of an exported display class under the
+/// path's parent, named by its last segment (AVM2 only, [`PathOp::Attach`]).
+pub const PATH_ATTACH_CALLBACK: &str = "__byro_path_attach";
+
+/// Every path-service callback, in either VM's adapter: the service's surface, not a movie's own
+/// push target.
+pub const PATH_CALLBACKS: [&str; 4] = [PATH_GET_CALLBACK, PATH_SET_CALLBACK, PATH_CALL_CALLBACK, PATH_ATTACH_CALLBACK];
 
 /// One path operation.
 #[derive(Clone, Debug, PartialEq)]
@@ -29,12 +37,20 @@ pub enum PathOp {
     Get(String),
     Set(String, ScaleformValue),
     Call(String, Vec<ScaleformValue>),
+    /// Make `path` exist: when the parent has no child of the last segment's name, construct the
+    /// exported display class `class` (its linkage name, `DirectionMarkerWidget`), name it, and
+    /// `addChild` it to the parent. A child already there is found as-is, so the operation is
+    /// idempotent. #7036 — how the engine stands in for native code that instantiates a movie's
+    /// widgets (Fallout 4's compass direction markers). The AVM2 adapter only: an AVM1 movie
+    /// answers [`PathOutcome::NotReady`], and reaches the same through
+    /// `Call("<parent>.attachMovie", [linkage, name, depth])`.
+    Attach(String, String),
 }
 
 impl PathOp {
     pub fn path(&self) -> &str {
         match self {
-            Self::Get(path) | Self::Set(path, _) | Self::Call(path, _) => path,
+            Self::Get(path) | Self::Set(path, _) | Self::Call(path, _) | Self::Attach(path, _) => path,
         }
     }
 
@@ -45,6 +61,9 @@ impl PathOp {
             Self::Set(path, value) => (PATH_SET_CALLBACK, vec![ScaleformValue::String(path.clone()), value.clone()]),
             Self::Call(path, args) => {
                 (PATH_CALL_CALLBACK, vec![ScaleformValue::String(path.clone()), ScaleformValue::List(args.clone())])
+            }
+            Self::Attach(path, class) => {
+                (PATH_ATTACH_CALLBACK, vec![ScaleformValue::String(path.clone()), ScaleformValue::String(class.clone())])
             }
         }
     }
@@ -134,6 +153,7 @@ impl PathQueue {
             PathOp::Get(_) => "get",
             PathOp::Set(..) => "set",
             PathOp::Call(..) => "call",
+            PathOp::Attach(..) => "attach",
         });
     }
 }

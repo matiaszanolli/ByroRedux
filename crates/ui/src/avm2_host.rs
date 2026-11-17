@@ -1481,8 +1481,8 @@ mod tests {
             }
         }
         assert_eq!(installed_properties, catalog.len() + 1);
-        // on_create + addCallback(ready) + addCallback(destroy) + the three path callbacks.
-        assert_eq!(void_calls, 3 + 3);
+        // on_create + addCallback(ready) + addCallback(destroy) + the four path callbacks.
+        assert_eq!(void_calls, 3 + 4);
 
         let destroy = &abc.method_bodies[catalog.len() + 1];
         let mut reader = Reader::new(&destroy.code);
@@ -1566,8 +1566,8 @@ mod tests {
                 add_callback_calls += 1;
             }
         }
-        // on_create + addCallback(ready) + the three path callbacks — no addCallback(destroy).
-        assert_eq!(add_callback_calls, 2 + 3);
+        // on_create + addCallback(ready) + the four path callbacks — no addCallback(destroy).
+        assert_eq!(add_callback_calls, 2 + 4);
     }
 
     fn ops(code: &[u8]) -> Vec<Op> {
@@ -1712,8 +1712,9 @@ mod tests {
         let bytes = build_adapter_abc(catalog, &[], true).unwrap();
         let abc = Reader::new(&bytes).read().unwrap();
 
+        // `flash.display` is not here: since #7036 the path service's attach names
+        // `flash.display.DisplayObject` for its type check — none of the loader strategy below.
         for abandoned in [
-            "flash.display",
             "flash.utils",
             "LoaderInfo",
             "getLoaderInfoByDefinition",
@@ -1735,11 +1736,12 @@ mod tests {
         // 18 fixed strings + 3 per catalog method (helper name, `BGSCodeObj.X`
         // transport name, bare method name); 12 fixed multinames + 2 per method
         // (helper, installed property); public + `flash.external` namespaces.
-        // + the M48 path service's entries and its one namespace set (`o[k]`).
-        use super::path_helpers::{PATH_ADAPTER_MULTINAMES, PATH_ADAPTER_STRINGS};
+        // + the M48 path service's entries, its two namespaces (#7036 attach) and its one
+        // namespace set (`o[k]`).
+        use super::path_helpers::{PATH_ADAPTER_MULTINAMES, PATH_ADAPTER_NAMESPACES, PATH_ADAPTER_STRINGS};
         assert_eq!(abc.constant_pool.strings.len(), 18 + catalog.len() * 3 + PATH_ADAPTER_STRINGS);
         assert_eq!(abc.constant_pool.multinames.len(), 12 + catalog.len() * 2 + PATH_ADAPTER_MULTINAMES);
-        assert_eq!(abc.constant_pool.namespaces.len(), 2);
+        assert_eq!(abc.constant_pool.namespaces.len(), 2 + PATH_ADAPTER_NAMESPACES);
         assert_eq!(abc.constant_pool.namespace_sets.len(), 1);
     }
 
