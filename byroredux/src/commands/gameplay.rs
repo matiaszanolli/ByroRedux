@@ -168,19 +168,36 @@ impl ConsoleCommand for CraftCommand {
     }
 
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
-        let mut parts = args.split_whitespace();
+        let mut parts = args.split_whitespace().peekable();
+        // `craft benches` answers whatever the nearest bench is, so it can say why there is none.
+        if parts.peek() == Some(&"benches") {
+            let player = crate::systems::PlayerEntity::get(world)
+                .and_then(|player| world.get::<byroredux_core::ecs::components::GlobalTransform>(player).map(|t| t.translation));
+            let benches = crate::crafting::loaded_benches(world);
+            let enabled = benches.iter().filter(|bench| bench.enabled).count();
+            let mut lines = vec![format!(
+                "{} loaded bench(es), {enabled} enabled; player at {}",
+                benches.len(),
+                player.map_or_else(|| "(no player)".to_owned(), |at| format!("({:.1}, {:.1}, {:.1})", at.x, at.y, at.z)),
+            )];
+            lines.extend(benches.iter().take(60).map(|bench| {
+                format!(
+                    "bench {} ref {:08X} base {:08X} at ({:.1}, {:.1}, {:.1}){}",
+                    bench.entity,
+                    bench.reference,
+                    bench.base,
+                    bench.at.x,
+                    bench.at.y,
+                    bench.at.z,
+                    if bench.enabled { "" } else { " disabled" },
+                )
+            }));
+            return CommandOutput::lines(lines);
+        }
         let Some(bench) = crate::crafting::nearest_bench(world) else {
             return CommandOutput::error("craft: no workbench is loaded");
         };
         match parts.next() {
-            Some("benches") => {
-                let lines = crate::crafting::loaded_benches(world)
-                    .into_iter()
-                    .take(60)
-                    .map(|(entity, base, at)| format!("bench {entity} base {base:08X} at ({:.1}, {:.1}, {:.1})", at.x, at.y, at.z))
-                    .collect::<Vec<_>>();
-                CommandOutput::lines(std::iter::once(format!("{} loaded bench(es)", lines.len())).chain(lines).collect())
-            }
             Some("list") => {
                 let recipes = crate::crafting::recipes_at(world, bench);
                 let base = world.get::<byroredux_scripting::SceneAliasCandidate>(bench).map_or(0, |identity| identity.base_form_id);

@@ -449,7 +449,7 @@ player.status               → report player mode, pose, and control state
 player.view [first|third]   → show or switch the player camera view (V key)
 player.body                 → report the assembled player body (root, meshes, view, equipment parts)
 inventory.status            → report the player's live inventory/equipment state
-craft benches              → list every loaded crafting bench with its base form and position (M43)
+craft benches              → list every loaded crafting bench (reference, base, position, `disabled` when its enable state rules it out, #6539) and the player position; answers even when no bench is usable (#7035)
 lock.status                 → locked references with their level and how the player could bypass each (pick / hack / none), M43
 lock.open <entity>          → open a locked reference the way activating it does (key, pick or hack); raises LOCK / HACK
 word.teach <form>           → give the player a word of power (Game.TeachWord); raises NVPE for a new word
