@@ -42,6 +42,7 @@ CODE-CONFIRMED: atomic write order, ring never clobbers the last good save, head
 - **Outcome**: older ring slots stay intact until the ring wraps (10 slots), so this is recoverable by hand, but the newest save is silently unusable.
 - **Fix**: run `decode` + `validate_snapshot_types` on the encoded bytes before `write_slot` and refuse on failure; run typed validation per candidate in `quickload_latest`; reject non-finite input in `edit_av`.
 - **Found by**: Dim 3 and Dim 4, independently.
+- **Outcome**: 8cfb70c44. `SaveCommand` decodes and type-validates the encoded bytes before `write_slot` and refuses (nothing written, ring not advanced); `LoadCommand` runs the typed preflight when it queues, so `quickload_latest` falls back past an undecodable slot; `setav` / `modav` reject non-finite values. Each new test fails without its fix.
 
 ### SAVE-4 — LOW — `setav` / `modav` accept any actor-value key, and a bad key makes every later save fail
 - **Where**: `byroredux/src/commands/actor_value.rs`
