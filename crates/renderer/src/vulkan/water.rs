@@ -2648,18 +2648,20 @@ mod push_constant_block_tests {
 
 /// #4543 — the reflection intensity contract of `water.frag`.
 ///
-/// The pre-fix shader serially multiplied FOUR authored scalars into the
+/// The pre-#4543 shader serially multiplied FOUR authored scalars into the
 /// reflected ray colour (reflection tint × the "Reflections" depth weight ×
 /// Reflection Magnitude × Reflectivity Amount) before the Fresnel mix ran,
-/// capping Skyrim's `RiverWaterFlowNE` mirror at ~1% of sky radiance —
-/// water read as matte at every viewing angle. The authored semantics
-/// (verified against UESP's WATR DNAM table and a raw record decode):
-/// Reflection Magnitude (DNAM[196]) is THE intensity; the depth weight
-/// (DNAM[208]) belongs to the depth-effect family like its absorption /
-/// normal-amplitude / sun-glint siblings; Reflectivity Amount (DNAM[20])
-/// scales the Fresnel share; the reflection colour tints geometry hits
-/// only. SPIR-V reflection cannot see arithmetic, so this pins the GLSL
-/// source shape the same way `mesh.rs` / `buffer.rs` pin their hot paths.
+/// capping Skyrim's `RiverWaterFlowNE` mirror at ~1% of sky radiance. #4543
+/// kept Reflection Magnitude as the intensity and Reflectivity as a Fresnel
+/// scale, which still left that mirror at ~3% of the sky face-on. The
+/// Creation Kit WaterType page defines both differently, and the contract
+/// now follows it: Reflection Magnitude (DNAM[196]) is the normal-distortion
+/// weight of the reflection ray; Reflectivity Amount (DNAM[20]) blends the
+/// solid Reflection Color with the rendered reflection; the surface mix is
+/// Fresnel alone. The "Reflections" depth weight (DNAM[208]) still gates the
+/// geometry-hit arm (its semantics are undocumented). SPIR-V reflection
+/// cannot see arithmetic, so this pins the GLSL source shape the same way
+/// `mesh.rs` / `buffer.rs` pin their hot paths.
 #[cfg(test)]
 mod reflection_intensity_contract_tests {
     const WATER_FRAG_SRC: &str = include_str!("../../shaders/water.frag");
@@ -2682,76 +2684,67 @@ mod reflection_intensity_contract_tests {
         );
     }
 
-    /// Reflection Magnitude is the sole ray-colour intensity multiplier,
-    /// applied unconditionally after the hit/miss arms — never compounded
-    /// with the depth weight on the same line, the pre-fix shape.
+    /// Reflection Magnitude (Skyrim DNAM[196]) is the reflection's
+    /// normal-distortion weight per the Creation Kit WaterType page ("0%
+    /// perfectly still reflections ... 100% the full effect of
+    /// distortion"), the sibling of Refraction Magnitude — never a
+    /// multiplier on the reflected colour.
     #[test]
-    fn reflection_magnitude_is_the_sole_ray_multiplier() {
+    fn reflection_magnitude_bends_the_ray_and_never_scales_its_colour() {
         assert!(
-            WATER_FRAG_SRC.contains("reflColor *= max(push.effects.z, 0.0);"),
-            "water.frag lost its Reflection Magnitude gate (#4543) — the \
-             authored intensity (canonical default 1.0) must stay the single \
-             ray-colour multiplier"
+            WATER_FRAG_SRC.contains(
+                "float reflectionNormalWeight = clamp(push.effects.z, 0.0, 1.0);"
+            ) && WATER_FRAG_SRC.contains("vec3 R = reflect(-V, reflectionNormal);"),
+            "water.frag no longer bends the reflection ray by Reflection \
+             Magnitude — the authored control is a distortion weight"
         );
         assert!(
-            !WATER_FRAG_SRC.contains("* max(push.effects.z, 0.0);"),
-            "water.frag re-compounded the reflection magnitude with another \
-             scalar on one line (#4543 relapse) — each authored control owns \
-             one role: magnitude = intensity, depth.x = geometry-hit gate, \
-             reflectivity = Fresnel share"
+            !WATER_FRAG_SRC.contains("reflColor *= max(push.effects.z"),
+            "water.frag multiplies the reflected colour by Reflection \
+             Magnitude again — the #4543 brightness reading the CK page \
+             contradicts (RiverWaterFlowNE's 0.42 dimmed its mirror 58%)"
         );
     }
 
-    /// The reflection tint and the "Reflections" depth weight gate the
-    /// geometry-HIT arm only; the sky-miss mirror keeps the environment's
-    /// own colour so an authored grey tint cannot dim it.
+    /// Reflection Color is a solid fill blended with the rendered
+    /// reflection by Reflectivity Amount (CK WaterType page); it is not a
+    /// filter on geometry hits, and Reflectivity does not scale Fresnel.
+    /// The "Reflections" depth weight still gates the geometry-hit arm.
     #[test]
-    fn tint_and_depth_weight_gate_the_geometry_hit_arm_only() {
+    fn reflectivity_blends_the_reflection_colour_with_the_rendered_mirror() {
+        let blend = "reflColor = mix(push.tint_reflect.rgb, reflColor, \
+                     clamp(push.tint_reflect.w, 0.0, 1.0));";
+        assert_eq!(
+            WATER_FRAG_SRC.matches(blend).count(),
+            1,
+            "water.frag lost the Reflectivity colour/rendered blend"
+        );
+        assert!(
+            !WATER_FRAG_SRC.contains("reflColor *= push.tint_reflect.rgb;"),
+            "water.frag filters the reflection by Reflection Color again — \
+             the colour is the fill Reflectivity blends in, not a tint"
+        );
+        assert!(
+            !WATER_FRAG_SRC.contains("fresnel * clamp(push.tint_reflect.w"),
+            "water.frag scales the Fresnel share by Reflectivity again — \
+             Reflectivity already chose what the mirror shows"
+        );
+        assert!(
+            WATER_FRAG_SRC.contains("float reflMix = tirReflection ? 1.0 : fresnel;"),
+            "water.frag lost the Fresnel-only surface mix or its TIR \
+             full-energy flag"
+        );
         let hit_arm = WATER_FRAG_SRC
             .find("if (reflHit) {")
             .expect("water.frag lost its reflHit arm");
-        let magnitude = WATER_FRAG_SRC
-            .find("reflColor *= max(push.effects.z, 0.0);")
-            .expect("magnitude gate (guarded by the sibling test)");
-        let tint = WATER_FRAG_SRC
-            .find("reflColor *= push.tint_reflect.rgb;")
-            .expect("water.frag lost the reflection-tint filter");
         let depth = WATER_FRAG_SRC
             .find("reflColor *= max(push.depth.x, 0.0);")
             .expect("water.frag lost the Reflections depth-weight gate");
+        let blend_at = WATER_FRAG_SRC.find(blend).expect("guarded above");
         assert!(
-            hit_arm < tint && tint < depth && depth < magnitude,
-            "water.frag moved the tint / depth-weight filters outside the \
-             geometry-hit arm (#4543 relapse) — they must apply before the \
-             magnitude and inside `if (reflHit)`"
-        );
-        assert_eq!(
-            WATER_FRAG_SRC.match_indices("reflColor *= push.tint_reflect.rgb;").count(),
-            1,
-            "the reflection tint must be applied exactly once"
-        );
-    }
-
-    /// Reflectivity Amount scales the Fresnel share inside the surface
-    /// mix; it must not dim the ray colour a second time, and TIR keeps
-    /// full energy.
-    #[test]
-    fn reflectivity_scales_the_fresnel_mix_not_the_ray() {
-        assert!(
-            WATER_FRAG_SRC.contains("fresnel * clamp(push.tint_reflect.w, 0.0, 1.0)"),
-            "water.frag lost the Reflectivity-scaled Fresnel mix (#4543) — \
-             Reflectivity Amount (DNAM[20]) scales the mirror share, it is \
-             not a third serial ray dimmer"
-        );
-        assert!(
-            !WATER_FRAG_SRC.contains("reflColor * push.tint_reflect.w, fresnel)"),
-            "water.frag re-introduced the pre-#4543 surface mix that dimmed \
-             the ray colour by Reflectivity before Fresnel"
-        );
-        assert!(
-            WATER_FRAG_SRC.contains("tirReflection"),
-            "water.frag lost the TIR full-energy flag — total internal \
-             reflection must pin the surface mix at 1.0"
+            hit_arm < depth && depth < blend_at,
+            "the Reflections depth weight must gate the geometry-hit arm, \
+             before the Reflectivity blend"
         );
     }
 

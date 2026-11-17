@@ -250,16 +250,15 @@ pub struct WaterMaterial {
     /// Schlick F0 at normal incidence. ~0.02 for clean water; ~0.04
     /// for muddy / chemical / Hubris Comics water. Drives fresnel.
     pub fresnel_f0: f32,
-    /// 0..1 — how much of the reflection ray colour is mixed back
-    /// (post-fresnel). 1.0 = pure mirror; 0.7 = REDengine-style
-    /// "convincing but not chrome".
+    /// 0..1 Reflectivity Amount — the blend between the solid
+    /// [`Self::reflection_tint`] colour (0) and the rendered reflection (1),
+    /// per the Creation Kit WaterType page. It chooses what the mirror shows;
+    /// it does not scale the Fresnel share or dim the rendered reflection.
     pub reflectivity: f32,
-    /// Tint applied to the reflected geometry hit colour in
-    /// `traceWaterRay`. Sourced from `WATR DATA reflection_color`
-    /// (#1069 / F-WAT-09). Allows chemically-tinted, lava, and
-    /// ocean water to show distinct reflected-geometry hues.
-    /// Default `[0.65, 0.70, 0.75]` matches the pre-fix hard-coded
-    /// neutral-grey value in `water.frag`.
+    /// Solid Reflection Color (`WATR` reflection_color, #1069 / F-WAT-09):
+    /// the colour [`Self::reflectivity`] blends with the rendered reflection
+    /// below 100%. A fill, not a filter on the reflected radiance. Default
+    /// `[0.65, 0.70, 0.75]`.
     pub reflection_tint: [f32; 3],
     /// Authored legacy reflection HDR multiplier. One is neutral.
     pub reflection_hdr_multiplier: f32,
@@ -301,13 +300,11 @@ pub struct WaterMaterial {
     /// streaks all running the same way.
     ///
     /// Composition lives at the translate boundary (`env_translate/water.rs`),
-    /// not the cell loader: for `River` / `Rapids`, vector 0 is the flow
-    /// term `flow.direction * flow.speed * WATER_SCROLL_UV_PER_BU_PER_S`
-    /// plus the record's converted layer-0 motion; vector 1 is the
-    /// perpendicular shear at half the downstream rate
-    /// (`WATER_PERPENDICULAR_SHEAR_SCROLL`) plus the converted layer-1
-    /// motion; vector 2 carries the converted layer-2 (third layer) motion
-    /// verbatim, or mirrors vector 0 when the record authors none. `Calm`
+    /// not the cell loader: for `River` / `Rapids` / `Waterfall`, vector `i`
+    /// is the flow term `flow.direction * flow.speed * |uv_scale_i|` — the
+    /// layer's pattern travelling at the current's own world speed — plus
+    /// the record's converted layer-`i` motion. No layer carries a
+    /// synthesized cross-stream term. `Calm`
     /// water — and a `River` / `Rapids` record with neither a NAM0 current
     /// nor an authored heading, which emits no physics flow (#4734) —
     /// keeps the converted authored vectors verbatim when present, with no
@@ -358,7 +355,10 @@ pub struct WaterMaterial {
     /// specular lighting. Legacy records use neutral ones.
     pub depth_weights: [f32; 4],
     /// Authored effect controls: refraction magnitude, local specular power,
-    /// reflection magnitude, and sun-specular magnitude.
+    /// reflection magnitude, and sun-specular magnitude. Both magnitudes are
+    /// normal-distortion weights (Creation Kit WaterType page), not
+    /// brightness: reflection magnitude 0..1 bends the reflection ray from
+    /// the flat plane (0) to the full wave normal (1).
     pub effect_controls: [f32; 4],
     /// Authored specular magnitude. One is neutral; zero means legacy
     /// records without a separate magnitude field.

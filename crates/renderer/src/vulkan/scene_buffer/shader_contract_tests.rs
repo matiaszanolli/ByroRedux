@@ -1153,7 +1153,7 @@ fn secondary_ray_material_hits_resolve_parallax_uvs() {
     }
 }
 
-/// Reflection tint belongs only to reflected radiance, and transmitted rays
+/// Reflection colour belongs only to reflected radiance, and transmitted rays
 /// must start on the opposite side of the view-facing water surface. These
 /// source pins catch the exact coupling and self-intersection bugs that made
 /// water render as a pale, flat slab.
@@ -1172,8 +1172,11 @@ fn water_reflection_and_refraction_keep_distinct_two_sided_semantics() {
         "the shared water-ray terminus must not apply a reflection-only tint."
     );
     assert!(
-        frag.contains("reflColor *= push.tint_reflect.rgb;"),
-        "WATR reflection colour must filter reflected radiance explicitly."
+        frag.contains(
+            "reflColor = mix(push.tint_reflect.rgb, reflColor, clamp(push.tint_reflect.w, 0.0, 1.0));"
+        ),
+        "WATR reflection colour must be blended into reflected radiance explicitly, \
+         by Reflectivity Amount (Creation Kit WaterType semantics)."
     );
     assert!(
         frag.contains("vec3 reflectionMiss = sceneFlags.yzw;")

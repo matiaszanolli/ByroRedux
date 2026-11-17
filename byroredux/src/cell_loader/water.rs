@@ -1627,21 +1627,20 @@ mod tests {
         let flow = flow.expect("reference current");
         assert_eq!(flow.direction, [0.6, 0.0, -0.8]);
 
-        let uv = 5.0 * crate::env_translate::WATER_SCROLL_UV_PER_BU_PER_S;
-        let shear = crate::env_translate::WATER_PERPENDICULAR_SHEAR_SCROLL;
+        // Every layer's flow term is the 5 BU/s current at that layer's own
+        // UV-per-BU scale; the default record authors no layer motion.
+        let m = &plane.material;
+        let along = |uv_scale: f32| {
+            let uv = 5.0 * uv_scale.abs();
+            [0.6 * uv, -0.8 * uv]
+        };
+        assert_eq!(m.scroll_a, along(m.uv_scale_a), "layer A rides the XWCU axis, not the WATR's");
         assert_eq!(
-            plane.material.scroll_a,
-            [0.6 * uv, -0.8 * uv],
-            "layer A rides the XWCU axis, not the WATR's"
+            m.scroll_b,
+            along(m.uv_scale_b),
+            "layer B rides the XWCU axis too: no perpendicular shear"
         );
-        assert_eq!(
-            plane.material.scroll_b,
-            [0.8 * uv * shear, 0.6 * uv * shear],
-            "layer B rides the perpendicular shear of the XWCU axis"
-        );
-        // No authored layer C on the default record: it mirrors the
-        // recomposed A.
-        assert_eq!(plane.material.scroll_c, plane.material.scroll_a);
+        assert_eq!(m.scroll_c, along(m.uv_scale_c));
     }
 
     /// #5183 — the merge arm follows the WATR arm's rule for an authored
@@ -1679,10 +1678,13 @@ mod tests {
 
         // The pattern term follows the promoted flow — the same composition
         // the River case produces, so ripples and current agree.
-        let uv = 5.0 * crate::env_translate::WATER_SCROLL_UV_PER_BU_PER_S;
-        let shear = crate::env_translate::WATER_PERPENDICULAR_SHEAR_SCROLL;
-        assert_eq!(plane.material.scroll_a, [0.6 * uv, -0.8 * uv]);
-        assert_eq!(plane.material.scroll_b, [0.8 * uv * shear, 0.6 * uv * shear]);
+        let m = &plane.material;
+        let along = |uv_scale: f32| {
+            let uv = 5.0 * uv_scale.abs();
+            [0.6 * uv, -0.8 * uv]
+        };
+        assert_eq!(m.scroll_a, along(m.uv_scale_a));
+        assert_eq!(m.scroll_b, along(m.uv_scale_b));
         assert_eq!(
             plane.material.foam_strength,
             WaterKind::River.canonical_foam_strength(),

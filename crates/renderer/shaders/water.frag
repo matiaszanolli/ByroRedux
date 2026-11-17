@@ -1005,7 +1005,16 @@ void main() {
     float fresnel = F0 + (1.0 - F0) * pow(1.0 - NdotV, 5.0);
 
     // ── Reflection ray ──
-    vec3 R = reflect(-V, Nperturbed);
+    // Reflection Magnitude (Skyrim DNAM[196]; canonical default 1.0) is how
+    // much the wave normals distort the reflection — the Creation Kit
+    // WaterType page: "At 0% you will have perfectly still reflections while
+    // at 100% you will have the full effect of distortion". It bends the
+    // reflected ray, the sibling of Refraction Magnitude's refraction-normal
+    // weight below; it is not a brightness. Both endpoints sit in the
+    // stability-clamped upper half-space, so their mix does too.
+    float reflectionNormalWeight = clamp(push.effects.z, 0.0, 1.0);
+    vec3 reflectionNormal = normalize(mix(N, Nperturbed, reflectionNormalWeight));
+    vec3 R = reflect(-V, reflectionNormal);
     float reflDist; bool reflHit;
     // Reflection miss follows the same environment contract as the main
     // material path: exterior rays see the baked sky cube along the reflected
@@ -1042,14 +1051,6 @@ void main() {
     }
     if (reflHit) {
         reflColor *= exp(-reflDist * RT_DIST_FALLOFF);
-        // WATR DATA reflection_color is a filter on *geometry-hit*
-        // radiance (#1069 / F-WAT-09 — "tints geometry-hit colour"), so it
-        // lives inside the hit arm: the sky-miss reflection keeps the
-        // environment's own colour and an authored grey tint can no longer
-        // dim the sky mirror it was never meant to touch. It still lands
-        // before the TIR capture below, which is correct — TIR energy is
-        // all reflection by definition.
-        reflColor *= push.tint_reflect.rgb;
         // The "Reflections" depth weight (Skyrim DNAM[208]) gates the
         // geometry term of the same depth-effect family as its siblings:
         // depth.y is the absorption rate, depth.z the normal amplitude,
@@ -1062,13 +1063,17 @@ void main() {
     // `mix(reflectionMiss, reflColor, reflHit ? 1.0 : 0.0)` selected
     // `reflColor` in both branches.
     //
-    // Reflection Magnitude (Skyrim DNAM[196]; canonical default 1.0) is the
-    // single authored reflection intensity. The pre-fix stack serially
-    // multiplied depth.x, effects.z, the reflection tint AND Reflectivity
-    // Amount into the ray colour, so RiverWaterFlowNE's 0.30 x 0.42 x ~0.55
-    // tint x 0.8 capped the whole mirror at ~1% of sky radiance before
-    // Fresnel even ran — water read as matte at every viewing angle.
-    reflColor *= max(push.effects.z, 0.0);
+    // Reflectivity Amount (Skyrim DNAM[20]; canonical default 0.85) blends
+    // the solid Reflection Color (WATR reflection_color, day/night resolved
+    // on the CPU) with the rendered reflection — the Creation Kit WaterType
+    // page: "Blend between the solid reflection color ... and the rendered
+    // reflection texture", and Reflection Color is "the color mixed with the
+    // reflection texture when the Reflectivity Amount is set to less than
+    // 100%". Neither is a brightness on the rendered reflection: the colour
+    // is a fill, not a filter, and Reflectivity does not scale Fresnel. The
+    // blend lands before the TIR capture below, which is correct — TIR
+    // energy is all reflection by definition.
+    reflColor = mix(push.tint_reflect.rgb, reflColor, clamp(push.tint_reflect.w, 0.0, 1.0));
 
     // ── Refraction ray (skipped for waterfalls) ──
     vec3 refrColor;
@@ -1265,14 +1270,12 @@ void main() {
     refrColor = mix(refrColor, scatterColour, clamp(lightScatter, 0.0, 1.0));
 
     // ── Surface colour ──
-    // Reflectivity Amount (Skyrim DNAM[20]; canonical default 0.85) scales
-    // the Fresnel share of the mirror instead of dimming the ray colour a
-    // second time. TIR pins the mix at full energy by flag — the TIR arm's
+    // The mirror share is Fresnel alone: Reflectivity Amount already chose
+    // what the mirror shows (the colour/rendered blend above), so it does
+    // not scale this share too. TIR pins the mix at full energy by flag — the TIR arm's
     // `refrColor = reflColor` alias alone would not survive the scatter
     // rewrite above.
-    float reflMix = tirReflection
-        ? 1.0
-        : fresnel * clamp(push.tint_reflect.w, 0.0, 1.0);
+    float reflMix = tirReflection ? 1.0 : fresnel;
     vec3 surfaceColor = mix(refrColor, reflColor, reflMix);
     surfaceColor += vec3(sunSpecular);
 

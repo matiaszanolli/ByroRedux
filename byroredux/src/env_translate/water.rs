@@ -11,31 +11,6 @@ use byroredux_core::ecs::components::water::{
 use byroredux_plugin::esm;
 use byroredux_plugin::esm::reader::GameKind;
 
-/// Shader UV-scroll rate produced by 1 BU/s of canonical [`WaterFlow`]
-/// (#2872).
-///
-/// Calibrated against the two constants the engine already documents, not
-/// invented: `WaterMaterial::default().scroll_a == [0.020, 0.011]` — a
-/// magnitude of `hypot(0.020, 0.011) ≈ 0.02283` UV/s — is the authored look
-/// of the slowest current [`WaterFlow::speed`] documents, its
-/// `SPEED_MIN` "calm river" anchor of 0.5 BU/s. So one BU/s of flow scrolls
-/// the wave layer `0.02283 / 0.5 ≈ 0.04565` UV/s, and a `River` plane
-/// reproduces the default appearance exactly while `Rapids` / `Waterfall`
-/// scale up in proportion to the current the physics sink is simulating.
-pub(crate) const WATER_SCROLL_UV_PER_BU_PER_S: f32 = 0.045_651;
-
-/// Fraction of the downstream rate at which scroll vector 1 crosses the
-/// current — the canonical perpendicular shear the `WaterMaterial.scroll_*`
-/// contract documents.
-///
-/// #4727 restores the pre-#4544 value of 0.5: #4544 halved it to 0.25 to
-/// offset a ~90° frame error in the per-layer wind angles that slid the
-/// dominant layer sideways across the current. With that frame corrected
-/// at the boundary ([`watr_angle_to_engine_xz`]) the authored layers run
-/// downstream and compose verbatim, so the compensating attenuation — and
-/// the old `WATER_CROSS_STREAM_SCROLL` confinement — are gone.
-pub(crate) const WATER_PERPENDICULAR_SHEAR_SCROLL: f32 = 0.5;
-
 /// #4727 / #4910 — WATR's authored noise-wind angles (the per-layer DNAM
 /// offsets, and the `wind_direction` alias Skyrim promotes from DNAM) are
 /// wind-FROM compass bearings β in the record's Z-up frame: β = 0 blows from
@@ -531,13 +506,26 @@ fn classify_water_kind_and_flow(
     (kind, flow)
 }
 
-/// #4911 — compose the flow scroll term onto the authored layer motion:
-/// layer A rides the flow axis, layer B the perpendicular shear, layer C
-/// keeps its authored motion or mirrors A. Shared by the WATR translation
-/// above and `merge_placed_water`, which recomposes the term when a REFR
-/// `XWCU` current replaces the WATR flow — across Skyrim's 128 XWCU REFRs
-/// two run up to ~79° off their WATR, and the old shape let ripples run
-/// across the current that carried floating bodies.
+/// #4911 — compose the flow scroll term onto the authored layer motion.
+/// Shared by the WATR translation above and `merge_placed_water`, which
+/// recomposes the term when a REFR `XWCU` current replaces the WATR flow —
+/// across Skyrim's 128 XWCU REFRs two run up to ~79° off their WATR, and the
+/// old shape let ripples run across the current that carried floating bodies.
+///
+/// Every layer rides the current at the current's own world speed: its flow
+/// term is `speed` (BU/s) × the layer's UV-per-BU scale, the same conversion
+/// the wind-driven arm of `WaterMaterial::wave_scrolls` uses, plus the
+/// layer's converted authored motion. Two earlier shapes are gone:
+///
+/// - One BU/s → UV/s constant for every layer ignored the layer's scale, so
+///   on Skyrim's ~1/1700 BU scales the flow term alone moved the pattern
+///   ~75× faster than the physics current it claims to show (White River:
+///   ~219 BU/s on layer A against a 2.9 BU/s current).
+/// - Layer B carried a synthesized cross-stream shear at half the flow rate.
+///   No game authors it (the CK scrolls each layer along its own wind
+///   direction only), and on Skyrim's finest layer it was the fastest
+///   pattern on the surface: ~400 BU/s across a river whose current is
+///   2.9 BU/s, read as water sloshing between the banks.
 ///
 /// `direction_xz` is a unit vector in engine XZ; `speed` is world units per
 /// second.
@@ -548,32 +536,17 @@ pub(crate) fn compose_flow_scrolls(
     direction_xz: [f32; 2],
     speed: f32,
 ) {
-    let scroll = speed * WATER_SCROLL_UV_PER_BU_PER_S;
-    // #4727 — the per-layer angles are converted to the engine XZ
-    // frame at the boundary (resolve_water_layer_motion), so the
-    // authored layers run downstream and compose with the flow term
-    // verbatim. The #4544 cross-stream confinement is gone: it
-    // compensated exactly the frame error the conversion fixes and
-    // discarded ~70% of the authored speed profile while what
-    // survived still pointed mostly sideways.
-    let flow_x = direction_xz[0];
-    let flow_z = direction_xz[1];
-    let authored_a = resolve_water_layer_motion(rec, 0, game);
-    let authored_b = resolve_water_layer_motion(rec, 1, game);
-    let authored_c = resolve_water_layer_motion(rec, 2, game);
-    mat.scroll_a = [
-        flow_x * scroll + authored_a[0],
-        flow_z * scroll + authored_a[1],
-    ];
-    mat.scroll_b = [
-        -flow_z * scroll * WATER_PERPENDICULAR_SHEAR_SCROLL + authored_b[0],
-        flow_x * scroll * WATER_PERPENDICULAR_SHEAR_SCROLL + authored_b[1],
-    ];
-    mat.scroll_c = if authored_c != [0.0, 0.0] {
-        authored_c
-    } else {
-        mat.scroll_a
+    // #4727 — the per-layer angles are converted to the engine XZ frame at
+    // the boundary (resolve_water_layer_motion), so the authored layers run
+    // downstream and compose with the flow term verbatim.
+    let [flow_x, flow_z] = direction_xz;
+    let compose = |uv_scale: f32, authored: [f32; 2]| {
+        let uv_per_s = speed * uv_scale.abs();
+        [flow_x * uv_per_s + authored[0], flow_z * uv_per_s + authored[1]]
     };
+    mat.scroll_a = compose(mat.uv_scale_a, resolve_water_layer_motion(rec, 0, game));
+    mat.scroll_b = compose(mat.uv_scale_b, resolve_water_layer_motion(rec, 1, game));
+    mat.scroll_c = compose(mat.uv_scale_c, resolve_water_layer_motion(rec, 2, game));
 }
 
 /// The no-current scroll arm: authored noise layers scroll the surface
@@ -1153,25 +1126,25 @@ mod tests {
         // wind_direction 0 is a raw Z-up wind-FROM bearing (from game
         // north); under the corrected frame (#4727: φ = β + 90°) it reads
         // as engine +Z — game SOUTH, since Z-up (x, y, z) maps to Y-up
-        // (x, z, −y) — so the current runs south and the perpendicular
-        // shear is the scroll-x lane.
-        let scroll = flow.speed * WATER_SCROLL_UV_PER_BU_PER_S;
+        // (x, z, −y) — so the current runs south (+Z).
+        // Each layer's flow term moves its pattern at the current's world
+        // speed: BU/s × that layer's UV-per-BU scale.
+        let along = |uv_scale: f32| flow.speed * uv_scale.abs();
         // Layer A: raw bearing 0 converts to (−sin 0, cos 0) = +Z — fully
         // along-flow — and composes on top of the current-driven term.
         assert!((mat.scroll_a[0] - 0.0).abs() < 1e-6);
-        assert!((mat.scroll_a[1] - (scroll + 0.10)).abs() < 1e-6);
-        // Layer B: raw π/2 converts to (−1, 0) — pure cross-stream toward
-        // −X — and survives VERBATIM now (the #4544 quartering is gone);
-        // the deliberate perpendicular shear also points −X here (flow is
-        // +Z, the shear term is (−flow_z, flow_x)) and returns to the
-        // documented half rate.
-        assert!(
-            (mat.scroll_b[0] - (-0.20 - scroll * WATER_PERPENDICULAR_SHEAR_SCROLL)).abs() < 1e-6
-        );
-        assert!(mat.scroll_b[1].abs() < 1e-6);
-        // Layer C: raw 0.25 converts to (−sin 0.25, cos 0.25)·0.30 verbatim.
+        assert!((mat.scroll_a[1] - (along(mat.uv_scale_a) + 0.10)).abs() < 1e-6);
+        // Layer B: raw π/2 converts to (−1, 0) — authored cross-stream motion
+        // toward −X, kept verbatim — plus its own downstream flow term. No
+        // synthesized perpendicular shear is added on top.
+        assert!((mat.scroll_b[0] - -0.20).abs() < 1e-6);
+        assert!((mat.scroll_b[1] - along(mat.uv_scale_b)).abs() < 1e-6);
+        // Layer C: raw 0.25 converts to (−sin 0.25, cos 0.25)·0.30, plus
+        // its downstream flow term.
         assert!((mat.scroll_c[0] - -0.30 * 0.25_f32.sin()).abs() < 1e-6);
-        assert!((mat.scroll_c[1] - 0.30 * 0.25_f32.cos()).abs() < 1e-6);
+        assert!(
+            (mat.scroll_c[1] - (0.30 * 0.25_f32.cos() + along(mat.uv_scale_c))).abs() < 1e-6
+        );
     }
 
     /// #4727 — the census relation pinned against the vanilla
@@ -1321,8 +1294,8 @@ mod tests {
     /// zero speed (FO4 `IntOldGulletWaterSlow`: NAM0 (0.08, 0, 0), layer
     /// speeds (0.0072, 0.0, 0.0145)). The parser used to fill that layer
     /// from NAM0 in the engine frame; the translate then rotated it +90°
-    /// again, so it slid across the current at 4× the flow term. Only the
-    /// synthesized perpendicular shear may cross the current.
+    /// again, so it slid across the current at 4× the flow term. No layer
+    /// crosses the current: there is no synthesized perpendicular shear.
     #[test]
     fn nam0_water_layers_never_run_across_the_current_after_parse() {
         use byroredux_plugin::esm::reader::SubRecord;
@@ -1352,16 +1325,16 @@ mod tests {
         let flow = flow.expect("a nonzero NAM0 is an authored current");
         assert!((flow.direction[0] - 1.0).abs() < 1e-6 && flow.direction[2].abs() < 1e-6);
 
-        // Layers 0 and 2 are authored along the current: no cross-stream part.
-        assert!(mat.scroll_a[1].abs() < 1e-6, "scroll_a crosses the current: {:?}", mat.scroll_a);
-        assert!(mat.scroll_c[1].abs() < 1e-6, "scroll_c crosses the current: {:?}", mat.scroll_c);
-        // Layer 1 is unauthored: exactly the canonical perpendicular shear
-        // of the (SPEED_MIN-clamped) canonical current.
-        let shear = flow.speed * WATER_SCROLL_UV_PER_BU_PER_S * WATER_PERPENDICULAR_SHEAR_SCROLL;
-        assert!(mat.scroll_b[0].abs() < 1e-6);
+        // No layer has a cross-stream part.
+        for (name, scroll) in [("a", mat.scroll_a), ("b", mat.scroll_b), ("c", mat.scroll_c)] {
+            assert!(scroll[1].abs() < 1e-6, "scroll_{name} crosses the current: {scroll:?}");
+        }
+        // Layer 1 is unauthored: exactly the downstream flow term of the
+        // (SPEED_MIN-clamped) canonical current at its own UV scale.
+        let along = flow.speed * mat.uv_scale_b.abs();
         assert!(
-            (mat.scroll_b[1] - shear).abs() < 1e-6,
-            "scroll_b {:?} is not the bare shear {shear}",
+            (mat.scroll_b[0] - along).abs() < 1e-6,
+            "scroll_b {:?} is not the bare flow term {along}",
             mat.scroll_b
         );
     }
@@ -1428,7 +1401,7 @@ mod tests {
             .speed;
         assert!(matches!(kind, WaterKind::River));
         assert_eq!(mat.flowmap_scale, 3.0);
-        assert!((mat.scroll_a[0] - speed * WATER_SCROLL_UV_PER_BU_PER_S).abs() < 1.0e-6);
+        assert!((mat.scroll_a[0] - speed * mat.uv_scale_a).abs() < 1.0e-6);
     }
 
     #[test]
@@ -1711,10 +1684,11 @@ mod tests {
         let flow = flow.expect("NAM0 velocity must produce a canonical current");
         assert!(flow.direction[0] > 0.99);
         assert!((flow.speed - 3.0).abs() < 1.0e-6);
-        assert!(material.scroll_a[0] > 0.0);
-        assert!(material.scroll_a[1].abs() < 1.0e-6);
-        assert!(material.scroll_b[0].abs() < 1.0e-6);
-        assert!(material.scroll_b[1] > 0.0);
+        // Every layer rides the current; none crosses it.
+        for scroll in [material.scroll_a, material.scroll_b, material.scroll_c] {
+            assert!(scroll[0] > 0.0, "{scroll:?}");
+            assert!(scroll[1].abs() < 1.0e-6, "{scroll:?}");
+        }
     }
 
     #[test]
