@@ -194,7 +194,15 @@ fn npc_values(
         1.0
     };
     push(index, out, 8, (raw_health * factor).trunc());
-    push(index, out, 9, 2.5 * computed[1]);
+    // 0x5482b0: `trunc(Int * mult + Int)` with `fNPCBaseMagickaMult` read from
+    // the game settings (1.5 in Oblivion.esm, so 2.5 x Intelligence).
+    let magicka_mult = setting("fNPCBaseMagickaMult", 1.5);
+    push(
+        index,
+        out,
+        9,
+        (computed[1] * magicka_mult + computed[1]).trunc(),
+    );
     push(
         index,
         out,
@@ -417,6 +425,28 @@ mod tests {
             (Some(48.0), Some(48.0), Some(43.0), Some(27.0))
         );
         assert_eq!(value(&rows, 8), Some(42.0));
+    }
+
+    #[test]
+    fn auto_calc_magicka_truncates_and_follows_the_setting() {
+        use super::super::{GameSetting, SettingValue};
+        let (mut index, mut npc) = fixture();
+        npc.acbs_flags = AUTO_CALC;
+        // Odd Intelligence: 2.5 * 41 = 102.5, which the executable truncates.
+        index.races.get_mut(&1).unwrap().base_attributes.as_mut().unwrap().male.intelligence = 41;
+        let rows = derive(&ResolvedNpc::resolve(&npc, &index), &index, None);
+        assert_eq!((value(&rows, 1), value(&rows, 9)), (Some(41.0), Some(102.0)));
+        // A retuned multiplier is followed (41 * 2.0 + 41 = 123).
+        index.game_settings.insert(
+            0x200,
+            GameSetting {
+                form_id: 0x200,
+                editor_id: "fNPCBaseMagickaMult".to_string(),
+                value: SettingValue::Float(2.0),
+            },
+        );
+        let rows = derive(&ResolvedNpc::resolve(&npc, &index), &index, None);
+        assert_eq!(value(&rows, 9), Some(123.0));
     }
 
     #[test]

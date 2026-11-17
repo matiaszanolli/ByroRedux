@@ -904,25 +904,22 @@ skill would lose that sharing.
 
 ### Known gaps against the executable
 
-These are measured differences at the commit above, found by reading the
-code against the traces in the next section; none has a test that pins it yet.
+These are measured differences found by reading the code against the traces
+in the next section; none has a test that pins it yet. (Magicka was the first
+one found and is fixed: it truncates `Int * (1 + fNPCBaseMagickaMult)` with the
+setting read from the load order, pinned by
+`auto_calc_magicka_truncates_and_follows_the_setting`.)
 
-1. **Magicka.** The code stamps `2.5 * Intelligence` unrounded with the
-   multiplier hardcoded. The executable computes
-   `trunc(Int * (1 + fNPCBaseMagickaMult))` from the game setting
-   (`0x5482b0`, GMST 1.5 in `Oblivion.esm`). Odd Intelligence therefore
-   differs by 0.5 (45 gives 112.5, the executable 112), and a mod that retunes
-   the GMST is not followed.
-2. **Favored-attribute bonus.** Hardcoded 5.0 for both favored attributes. The
+1. **Favored-attribute bonus.** Hardcoded 5.0 for both favored attributes. The
    executable reads `fAttributeClassPrimaryBonus` and
    `fAttributeClassSecondaryBonus` (default 5.0 each, no `Oblivion.esm`
    record), so only a mod that sets them diverges.
-3. **Rounding.** Attribute and skill rounding is round-half-to-even, which
+2. **Rounding.** Attribute and skill rounding is round-half-to-even, which
    assumes the x87 default of the executable's `fistp`; the control word was
    not measured.
-4. **Creature level scaling** rests on the Construction Set text alone; the
+3. **Creature level scaling** rests on the Construction Set text alone; the
    executable's creature path was not traced.
-5. **Flag timing.** Which trigger applies at spawn, level change and reload
+4. **Flag timing.** Which trigger applies at spawn, level change and reload
    for each of the four flag combinations is [#7022](https://github.com/matiaszanolli/ByroRedux/issues/7022).
 
 ## NPC auto-calc stats — LOCKED from the executable (#7008, OAV-POP-003)
