@@ -927,6 +927,38 @@ alone when both name one attribute, pinned by
 3. **Flag timing.** Which trigger applies at spawn, level change and reload
    for each of the four flag combinations is [#7022](https://github.com/matiaszanolli/ByroRedux/issues/7022).
 
+### The player's pools (#7037)
+
+Measured on 2026-11-17 (`--player` in AnvilTheCountsArms, `obscript.cmd 0x14 GetAV`): the live player
+reads Health 45, Magicka 0, Fatigue 150 with Intelligence 50, Endurance 40, Strength 50, Agility 30,
+Willpower 30. These are the `Player` `NPC_` record's own stored values (`ACBS` flags 0, race `0x907`,
+class `CharactergenClass`, every skill 5, `DATA` Health 45, `ACBS` Magicka 0 and Fatigue 150): the
+chargen placeholder. The ruleset's player-only rows (Health `2 x End` = 80, Magicka `2 x Int` = 100,
+Fatigue `Str + End + Agi + Wil` = 150) exist but do not apply: `RulesetBuilder::Oblivion` builds the
+ruleset with `retain_player_bases`, so `player_derived_stats_system` leaves the authored bases alone.
+Two consequences: the Magicka bar reads full (a zero maximum is a full bar, `hud::fraction`), and Health
+disagrees with the formula by 35.
+
+What `Oblivion.exe` does for the player. The base of actor values 8 to 11 is read through one function
+(`0x5ead00`, taken only when the actor is the player singleton at `0xb333c4`): `(stored + derived) x
+multiplier`, with `derived` from `0x5e2210`:
+
+| AV | derived (`0x5e2210`) | multiplier |
+|---|---|---|
+| 8 Health | `trunc(End x fPCBaseHealthMult)` (`0x548020`, `0xb37720`, exe default 2.0) | 1 |
+| 9 Magicka | `trunc(Int x (1 + fPCBaseMagickaMult))` (`0x5482b0` with the player flag set), GMST 1.0, so `2 x Int` | AV 40 (Magicka Multiplier) / 10 (`0xa3f3e8` is the double 10.0) |
+| 10 Fatigue | `Str + End + Agi + Wil` (`0x5479d0`) | 1 |
+
+`stored` is the base form's value read through its virtual at `+0x128`. **Not settled:** what that
+returns for AV 8 to 10 on the `Player` record. If it were the record's 45 / 0 / 150, Fatigue would be 300
+at the placeholder attributes, against UESP's `Str + End + Agi + Wil`; so it is probably not the `ACBS`
+values, but the function was not decoded. The consequences differ: Magicka is 100 under either reading
+that keeps UESP's Fatigue, while Health is `80 + accumulated` or `45 + 80`.
+
+Not run: the `Player` record is also what a new game starts from before character creation assigns the
+class, race and birthsign (OAV-NG-001 puts those menus out of scope), so the placeholder may be what the
+original shows until chargen. That is unobserved.
+
 ## NPC auto-calc stats — LOCKED from the executable (#7008, OAV-POP-003)
 
 The `ClassAutoCalc` stat model of the Oblivion Actor Values PRD
