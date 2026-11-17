@@ -431,7 +431,19 @@ impl App {
             MenuSurface::Native { page } if [NativeMenu::Hud.page(), NativeMenu::Loading.page()].contains(&page.as_str()) => {
                 return Err(format!("ui.close: {name} is an engine layer, not a closable menu"));
             }
+            // GUI-PAGE-002 — a character-creation menu closes with its queued screens of the same
+            // menu (a race menu's name); accept keeps the choices as they stand, as cancel does.
+            MenuSurface::Native { page } if page == NativeMenu::CharGen.page() => {
+                crate::chargen::close_menu(&self.world);
+                self.resume_from_game_menu();
+            }
             MenuSurface::Native { .. } => self.resume_from_game_menu(),
+            // The message box and dialogue documents (Phase 4) close as their native pages do.
+            MenuSurface::MenuXml { .. } if entry.code == Some(crate::menuxml_message::MESSAGE_MENU_CODE) => {
+                let choice = (result == MenuResult::Accept).then_some(0);
+                crate::notifications::answer_message_box(&self.world, choice);
+            }
+            MenuSurface::MenuXml { .. } if entry.code == Some(crate::menuxml_dialogue::DIALOGUE_MENU_CODE) => self.leave_open_dialogue(),
             MenuSurface::MenuXml { .. } => return Err(format!("ui.close: {name} is the MenuXml HUD; hide it with hud.off")),
             MenuSurface::Absent { .. } => {
                 if let Some(mut requests) = self.world.try_resource_mut::<MenuRequests>() {

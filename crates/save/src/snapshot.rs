@@ -655,7 +655,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v133 -> v134 (M48 GUI-EVT-001, #6668): the `MenuEventRegistrations` resource column
 /// (`RegisterForMenuOpenCloseEvent`), so a v133 snapshot has no record of a script's
 /// registrations and the schema no longer matches.
-pub const FORMAT_MAJOR: u16 = 134;
+///
+/// v134 -> v135 (M48 GUI-PAGE-003, #6667): `Effect::ShowAppearanceMenu`, Fallout 4's
+/// `ShowRaceMenu` appearance modes, joins the effects a saved fragment continuation serializes.
+pub const FORMAT_MAJOR: u16 = 135;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

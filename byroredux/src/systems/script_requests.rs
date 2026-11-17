@@ -402,8 +402,17 @@ pub(crate) fn script_ui_request_system(world: &World, _dt: f32) {
         let chargen = menu.fallback.is_none().then(|| crate::chargen::ChargenScreen::for_request(menu.menu, menu.form)).flatten();
         match chargen {
             Some(screen) => {
+                // PRD Q4 — a race menu that takes the name (Skyrim, Oblivion) is the RaceSex
+                // screen then the Name screen.
+                let with_name = screen == crate::chargen::ChargenScreen::RaceSex
+                    && world
+                        .try_resource::<byroredux_core::ecs::resources::MenuRegistry>()
+                        .is_some_and(|registry| crate::chargen::race_menu_has_name(registry.game()));
                 if let Some(mut session) = world.try_resource_mut::<crate::chargen::ChargenSession>() {
                     session.request(screen);
+                    if with_name {
+                        session.request(crate::chargen::ChargenScreen::Name);
+                    }
                 }
                 log::info!("script request: menu {} opens the character-creation page", menu.menu);
             }
@@ -749,17 +758,19 @@ mod script_menu_tests {
         let subtitles = MenuRequest::coded("dialog subtitles", None, 0);
         assert!(script_menu_report(&world, &subtitles).contains("(dialog subtitles: no menu in this game's inventory)"));
 
-        world.insert_resource(MenuRegistry::new(MenuGame::Skyrim));
-        let race = MenuRequest {
-            menu: "race",
+        // Fallout 4's appearance modes have no surface (GUI-PAGE-003): reported under the game's
+        // race menu, with the reason.
+        world.insert_resource(MenuRegistry::new(MenuGame::Fallout4));
+        let appearance = MenuRequest {
+            menu: "appearance",
             code: None,
             function: Some("ShowRaceMenu"),
-            form: 0,
-            fallback: Some("accepts the current appearance"),
+            form: 3,
+            fallback: Some("no appearance editor until the slider milestone (GUI-NG-005)"),
         };
         assert_eq!(
-            script_menu_report(&world, &race),
-            "menu RaceSex Menu (S4, accepts the current appearance) from ShowRaceMenu form 00000000"
+            script_menu_report(&world, &appearance),
+            "menu LooksMenu (S4, no appearance editor until the slider milestone (GUI-NG-005)) from ShowRaceMenu form 00000003"
         );
     }
 }

@@ -229,6 +229,7 @@ pub(crate) fn apply_effect(
         | Effect::SetSittingRotation { .. }
         | Effect::SetInChargen { .. }
         | Effect::ShowRaceMenu
+        | Effect::ShowAppearanceMenu { .. }
         | Effect::RequestSave { .. }
         | Effect::RegisterPlayerAnimationEvent { .. } => {
             apply_player_control_effect(effect, context, vmad, world, deferred)

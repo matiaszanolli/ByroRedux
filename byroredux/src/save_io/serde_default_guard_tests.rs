@@ -906,7 +906,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // #6944 — refreshed WITH a major bump (v131 -> v132): the new `SpeakingLine` component column.
     // M48 GUI-EVT-001 (#6668) — refreshed WITH a major bump (v133 -> v134): the new
     // `MenuEventRegistrations` resource column.
-    const BASELINE_MAJOR: u16 = 134;
+    const BASELINE_MAJOR: u16 = 135;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1344,7 +1344,8 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // adapter. Since v133 the wire shape of the parked store is `SavedReferenceState` /
     // `SavedPersistentReferenceStates`, which are unchanged; nothing serialized the in-memory types any more.
     // Only the scan's input shrank; no registered column decodes differently.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x2d67_b3dc_52fd_a43d;
+    // #6667 — v135: `Effect::ShowAppearanceMenu` (Fallout 4's `ShowRaceMenu` appearance modes).
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x7aa1_711a_ba7a_5a81;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.

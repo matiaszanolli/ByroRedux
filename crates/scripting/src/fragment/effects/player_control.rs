@@ -86,6 +86,12 @@ pub(super) fn apply_player_control_effect(
                 .push(DeferredCinematicPresentationEffect::ShowRaceMenu);
             None
         }
+        Effect::ShowAppearanceMenu { mode } => {
+            deferred
+                .cinematic_presentation
+                .push(DeferredCinematicPresentationEffect::ShowAppearanceMenu(*mode));
+            None
+        }
         Effect::RequestSave { auto } => {
             deferred
                 .cinematic_presentation

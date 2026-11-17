@@ -310,8 +310,8 @@ fn cmd_11ee(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _c
     menu(world, "special book", None, num(args, 0) as u32)
 }
 
-// CS *ShowRaceMenu*: with no race screen the call accepts the player's current appearance, as
-// `Game.ShowRaceMenu` does.
+// CS *ShowRaceMenu*: the race (and sex) menu, which the engine's character-creation page opens
+// (M48 GUI-PAGE-002); the call returns at once, as it does in the original (Phase 0).
 fn show_race_menu(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
     if let Some(mut presentation) = world.try_resource_mut::<crate::cinematic::CinematicPresentationState>() {
         presentation.show_race_menu();

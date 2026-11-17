@@ -16,6 +16,8 @@ pub(super) enum DeferredCinematicPresentationEffect {
         show_controls_disabled_message: bool,
     },
     ShowRaceMenu,
+    /// Fallout 4's `uiMode` 1–4 (GUI-PAGE-003).
+    ShowAppearanceMenu(u8),
     RequestSave {
         auto: bool,
     },
@@ -990,25 +992,25 @@ impl DeferredFragmentEffects {
     }
 
     fn flush_cinematic_presentation(&mut self, world: &World) {
-        // M48 GUI-EVT-003 — `Game.ShowRaceMenu()` is reported to the menu registry as the race
-        // menu it would open (S4: no surface), with the placeholder it already applies.
-        let race_menus = self
-            .cinematic_presentation
-            .iter()
-            .filter(|effect| matches!(effect, DeferredCinematicPresentationEffect::ShowRaceMenu))
-            .count();
-        if race_menus > 0
-            && let Some(mut menus) = world.try_resource_mut::<crate::obscript_more::PendingMenus>() {
-                for _ in 0..race_menus {
-                    menus.0.push(crate::obscript_more::MenuRequest {
-                        menu: "race",
-                        code: None,
-                        function: Some("ShowRaceMenu"),
-                        form: 0,
-                        fallback: Some("accepts the current appearance"),
-                    });
-                }
+        // M48 GUI-PAGE-002 — `Game.ShowRaceMenu()` asks for the race menu, which the engine's
+        // character-creation page opens; Fallout 4's appearance modes (GUI-PAGE-003) are reported
+        // with no surface (S4) until the slider milestone.
+        if let Some(mut menus) = world.try_resource_mut::<crate::obscript_more::PendingMenus>() {
+            for effect in &self.cinematic_presentation {
+                let (menu, fallback) = match effect {
+                    DeferredCinematicPresentationEffect::ShowRaceMenu => ("race", None),
+                    DeferredCinematicPresentationEffect::ShowAppearanceMenu(_) => {
+                        ("appearance", Some("no appearance editor until the slider milestone (GUI-NG-005)"))
+                    }
+                    _ => continue,
+                };
+                let form = match effect {
+                    DeferredCinematicPresentationEffect::ShowAppearanceMenu(mode) => u32::from(*mode),
+                    _ => 0,
+                };
+                menus.0.push(crate::obscript_more::MenuRequest { menu, code: None, function: Some("ShowRaceMenu"), form, fallback });
             }
+        }
         drain_into_resource::<crate::CinematicPresentationState, _>(world, &mut self.cinematic_presentation, |state, effect| {
                 match effect {
                     DeferredCinematicPresentationEffect::SetSittingRotation(degrees) => {
@@ -1039,6 +1041,8 @@ impl DeferredFragmentEffects {
                     DeferredCinematicPresentationEffect::ShowRaceMenu => {
                         state.show_race_menu();
                     }
+                    // Reported to the registry above; nothing presents it.
+                    DeferredCinematicPresentationEffect::ShowAppearanceMenu(_) => {}
                     DeferredCinematicPresentationEffect::RequestSave { auto } => {
                         state.request_save(auto);
                     }

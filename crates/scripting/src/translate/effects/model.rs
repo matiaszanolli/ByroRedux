@@ -524,11 +524,11 @@ pub enum Effect {
         #[cfg_attr(feature = "save", serde(alias = "stay_in_first_person"))]
         show_controls_disabled_message: bool,
     },
-    /// `Game.ShowRaceMenu()`. No interactive race-menu UI exists yet (a full
-    /// slider-based character creator is its own milestone); the runtime
-    /// treats the call as an instant auto-accept of the player's current
-    /// appearance so the fragment it's authored in — MQ101's execution-block
-    /// scene — no longer declines wholesale over an unmodeled statement.
+    /// `Game.ShowRaceMenu()` (and Fallout 4's `uiMode` 0, start-of-game chargen): opens the race
+    /// and sex selection (M48 GUI-PAGE-002, the native character-creation page; plus the name
+    /// where the game's race menu has it). The call returns at once, as Phase 0 found the original
+    /// does: a caller waits through `Utility.Wait`, which does not count while the menu pauses the
+    /// game. Face and body sliders are their own milestone (GUI-NG-005).
     ShowRaceMenu,
     /// `Game.RequestSave()` / `Game.RequestAutoSave()`. Deliberately does
     /// not write a save file — see `CinematicPresentationState::
@@ -923,6 +923,12 @@ pub enum Effect {
     /// barrier. Runtime dispatch occurs only after quest/object ECS guards are
     /// released, then resumes the remaining top-level effects in order.
     ProviderCall(FragmentProviderCall),
+    /// M48 GUI-PAGE-003 — Fallout 4's `Game.ShowRaceMenu(akMenuTarget, uiMode, …)` with `uiMode`
+    /// 1–4 (remake, barber, plastic surgery, face paint; FO4 CK *ShowRaceMenu*): the appearance
+    /// editor those modes open needs the slider milestone (GUI-NG-005), so the request is reported
+    /// to the menu registry with no surface (S4). Appended last: existing variants keep their
+    /// place in saved fragment queues.
+    ShowAppearanceMenu { mode: u8 },
 }
 
 /// M47.2 — an `ActorBase` receiver: an actor's `GetActorBase()`, or an
@@ -1045,6 +1051,7 @@ impl Effect {
             Effect::SetInChargen { .. } => "SetInChargen",
             Effect::ShowRaceMenu => "ShowRaceMenu",
             Effect::RequestSave { .. } => "RequestSave",
+            Effect::ShowAppearanceMenu { .. } => "ShowAppearanceMenu",
             Effect::SetEnemy { .. } => "SetEnemy",
             Effect::StartCombat { .. } => "StartCombat",
             Effect::StopCombat { .. } => "StopCombat",
@@ -1071,7 +1078,7 @@ impl Effect {
 
     /// Whether this effect's runtime arm only *records* that the call ran —
     /// a counter or flag nothing reads — without doing what the call does
-    /// (#4328). `Game.ShowRaceMenu` opens no menu; `Game.RequestSave` and
+    /// (#4328). Fallout 4's appearance modes (`ShowAppearanceMenu`) open no editor; `Game.RequestSave` and
     /// `RequestAutoSave` write no save; `Game.SetHudCartMode` sets
     /// `PlayerControlState::hud_cart_mode`, which no HUD reads (#4372).
     /// `Game.SetInChargen` is not a placeholder: its `abDisableSaving` flag
@@ -1091,7 +1098,7 @@ impl Effect {
     pub fn is_placeholder(&self) -> bool {
         matches!(
             self,
-            Effect::ShowRaceMenu
+            Effect::ShowAppearanceMenu { .. }
                 | Effect::RequestSave { .. }
                 | Effect::SetHudCartMode { .. }
                 | Effect::AddAchievement { .. }
