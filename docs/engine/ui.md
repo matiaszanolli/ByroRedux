@@ -1048,6 +1048,40 @@ lists topics and carries the speaking cue (sampled on a topic's answer: the 0.6 
 greeting is over by the first poll). The movie draws the speaker, topic list and
 subtitle; the button icon glyph and the dialogue font class are not resolved yet.
 
+#### Dialogue menu on the game's document (GUI-PAGE-004, New Vegas) — Phase 4 (#6666)
+
+Q1 on the MenuXml track. When the registry's game is Fallout 3 / New Vegas and its
+`DialogMenu` (code 1009) targets a MenuXml document, a conversation opens
+`menus\dialog\dialog_menu.xml` (archives from `session_menu_assets`, no `--hud`
+needed) instead of the native page, which stays the fallback.
+`byroredux/src/menuxml_dialogue.rs` feeds what native code sets, read off the
+document's own traits:
+
+- the root's io traits `_DialogVisible` and `_ShowingText` (on while the line's
+  speaking cue is; off shows the topic list in its place);
+- `DM_SpeakerNameLabel` / `DM_SpeakerText` strings;
+- a pool of 16 `DM_TopicTemplate` rows under `DM_TopicList`, each with
+  `listindex`, `_y`, `height` (34), `string` and `_line_alpha` (128 for a topic
+  already said, the native page's said-marker).
+
+Input routes through `menu_xml_input` while the document owns it: a click on
+`DM_ClickRect` or the line skips it, a click on `DM_Topic<i>` selects that topic
+through `select_topic_by_form_id`; both reuse `scaleform_dialogue::apply`. The
+document composites over the HUD unless a video or loading screen covers the
+frame. Exits share `leave_open_dialogue` / `close_dialogue_menu` with S1.
+
+Bringing it up fixed four MenuXml dialect gaps (all in `crates/menuxml`, pinned
+by unit and corpus tests): `visible` propagates to descendants; the `.fnt`
+record's last fields are kerning-left / kerning-right / ascent (text had been
+spaced by ascent and top-aligned); `globals()` reads `menus\globals.xml`; and
+text tiles report their displayed size.
+
+Gate: `dt1-dialogue-layers.sh` Phase P — `ui.menus` shows `DialogMenu code=1009
+surface=menuxml menus\dialog\dialog_menu.xml` and the page snapshot names Doc
+Mitchell with the speaking cue. Live, the document draws the speaker and the
+wrapped line in `Glow_Monofonto_VL_dialogs` on its panel. The list's bracket art
+(`fade_to_top.dds` / `fade_to_bottom.dds`, `solid.dds`) does not resolve yet.
+
 #### MenuXml input (GUI-XML-001…003) — built in Phase 3 (#6665)
 
 `crates/menuxml` stays engine-neutral (no dependency on the UI or Ruffle crates).
@@ -1081,10 +1115,9 @@ menu's io traits, the list's size: `list_box.xml` "REQUIRED OVERRIDE" width,
 height native computes from the text), instantiates two buttons
 (`MM_ButtonTemplate` under `MM_ButtonList`), and asserts that `hit_test` at a
 button's centre returns it, a `UiInputEvent` down / up pair on it yields exactly
-one activation for it, and a pair outside every tile yields none. **Not built:**
-a live S2 surface for a non-HUD MenuXml menu (opening `message_menu.xml` as a
-registry layer and feeding it the frame's input); `route` / `owns_input` carry a
-self-expiring `expect(dead_code)` until it lands.
+one activation for it, and a pair outside every tile yields none. The first live S2
+surface for a non-HUD menu is the FNV dialogue document (Phase 4, above), which
+routes the frame's input through `route` / `owns_input`.
 
 #### Strings and fonts the design depends on
 
@@ -1239,10 +1272,17 @@ profile with a ninth font slot).
   argument chains, `&true;` = 2, comparisons yield 2/0, switch-case
   `copy` of a `_name_` string appends the numeric working value
   (`_animation_` + 23 → `_animation_23`). Selectors: `me()`, `parent()`,
-  `sibling()`, `child()`, `screen()`, `strings()`, bare tile names.
-  Only `visible` defaults true; `alpha/red/green/blue` default 255.
+  `sibling()`, `child()`, `screen()`, `strings()`, `globals()` (FO3/FNV
+  `menus\globals.xml`, e.g. `_background_fill_alpha`; #6666), bare tile names.
+  Only `visible` defaults true; `alpha/red/green/blue` default 255. A text
+  tile's `width` / `height` are the size of its displayed text (the native
+  code sets them; documents read them to centre and frame text): the
+  renderer evaluates once, measures each visible text with the raster's
+  wrap, and evaluates again with those sizes (#6666).
 - `layout.rs` — locus-chain positioning, depth sort (document order
-  tiebreak), `clipwindow` scissor accumulation. Rect tiles never paint
+  tiebreak), `clipwindow` scissor accumulation. `visible` propagates: a
+  hidden tile hides its whole subtree, hit targets included (#6666; CS
+  wiki: "unlike visible, clips does not propagate"). Rect tiles never paint
   (vanilla's screen-wide grab zones are invisible hit targets). The
   depth sort uses `f32::total_cmp` (#4716): `<depth>NaN</depth>` parses,
   and the old `partial_cmp().unwrap_or(Equal)` comparator is not a total
@@ -1269,7 +1309,11 @@ profile with a ninth font slot).
 - `tex.rs` / `font.rs` — own DDS decoder (BC1/BC2/BC3 + masked
   uncompressed; the `image` crate rejects some vanilla headers) and the
   `.fnt` + `.tex` bitmap-font pair (296-byte header, 256×56-byte glyph
-  records, white-on-transparent atlas tinted at draw time).
+  records, white-on-transparent atlas tinted at draw time). A record ends
+  `width, height, kerningLeft, kerningRight, ascent`: the pen advances
+  `kerningLeft + width + kerningRight` and a glyph's top sits
+  `point size − ascent` below the line's top (#6666, matching OpenMW's
+  reader; the corpus tests pin that letters share a baseline).
 - `menu.rs` — `MenuRenderer`: loads a menu + the game's strings
   document + font table (per `MenuProfile`), resolves menu art
   across the three shipped resolution sets (`textures\Menus`,
