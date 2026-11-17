@@ -429,4 +429,15 @@ fn installed_skyrim_host_calls_are_all_cataloged() {
          on the vanilla corpus — the scanner is reading less than it did",
         found.methods.len(),
     );
+    // M48 A7 (GUI-HOST-001) — every method the vanilla archive calls carries a Phase 0 behaviour
+    // class, so none can be H4 at run time; the class split is reported for the ROADMAP's host
+    // behaviour coverage.
+    let mut by_class = std::collections::BTreeMap::new();
+    for name in &found.methods {
+        let behaviour = catalog
+            .behaviour(name)
+            .unwrap_or_else(|| panic!("{name}: called by the vanilla corpus but carries no behaviour class"));
+        *by_class.entry(behaviour.target.code()).or_insert(0usize) += 1;
+    }
+    eprintln!("  behaviour targets of the called methods: {by_class:?}");
 }

@@ -842,6 +842,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("FleeState", "M47.3 — a ForceFlee under way; it lasts seconds and a save keeps the actor standing"),
         ("MenuRegistry", "M48 GUI-EVT-005 — the open menus, republished every frame by the app from the surfaces"),
         ("MenuRequests", "M48 GUI-OPS-005 — the console's pending ui.open / ui.close and its surface-less menus"),
+        ("ScaleformHostReports", "M48 GUI-OPS-002 — the open movies' host calls by behaviour class, mirrored each frame for ui.host"),
         ("TrapMotionSamples", "M47.3 — last positions of traps and the actors touching them, to measure relative speed"),
         ("KnockbackForceMax", "M47.3 — fKnockbackForceMax, read from the records at every content load"),
         ("KnockedDown", "M47.3 — an actor down after PushActorAway; the ragdoll it follows is not saved either"),

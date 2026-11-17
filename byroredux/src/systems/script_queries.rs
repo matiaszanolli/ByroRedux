@@ -123,6 +123,7 @@ fn player_airborne(world: &World) -> bool {
 pub(crate) fn install(world: &mut World) {
     world.init_resource::<byroredux_core::ecs::resources::MenuRegistry>();
     world.init_resource::<crate::menu_stack::MenuRequests>();
+    world.init_resource::<crate::menu_stack::ScaleformHostReports>();
     world.init_resource::<TrapMotionSamples>();
     world.insert_resource(EngineQueries {
         line_of_sight: Some(crate::detection::has_line_of_sight),

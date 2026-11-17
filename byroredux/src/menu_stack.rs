@@ -49,6 +49,13 @@ pub(crate) fn install_menu_registry(world: &mut World, game: GameKind) {
     world.insert_resource(MenuRegistry::new(game));
 }
 
+/// M48 GUI-OPS-002 — each open Scaleform movie's host calls by behaviour class since it opened,
+/// mirrored from the frame's drain for `ui.host`. Diagnostics, `NOT_SAVED_BY_DESIGN`.
+#[derive(Debug, Default)]
+pub(crate) struct ScaleformHostReports(pub(crate) std::collections::BTreeMap<String, byroredux_ui::HostCallReport>);
+
+impl byroredux_core::ecs::resource::Resource for ScaleformHostReports {}
+
 /// What the engine's own layers have up this frame.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct NativeMenuState {

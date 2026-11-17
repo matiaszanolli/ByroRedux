@@ -34,6 +34,9 @@ pub(crate) struct UiState {
     pub(crate) reported_host_methods: std::collections::HashSet<(String, String)>,
     /// One-shot latch for the `reported_host_methods` cap warning.
     pub(crate) reported_host_methods_capped: bool,
+    /// M48 GUI-OPS-002 — per open movie (by `menu_name`), its host calls by behaviour class since
+    /// it opened, keyed to the layer (`menu#id`) so a replaced movie starts a fresh report.
+    pub(crate) host_reports: std::collections::HashMap<String, (String, byroredux_ui::HostCallReport)>,
     /// Per open movie (by `menu_name`), the last `dropped_host_calls()` reading the per-frame
     /// Scaleform drain observed (#2969), paired with the layer it came from (`menu#id`, #3772):
     /// `drain_calls`' contract is that a full batch must be read together with the drop counter

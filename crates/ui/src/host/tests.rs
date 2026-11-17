@@ -241,6 +241,54 @@ fn skyrim_catalog_distinguishes_commands_requests_and_unknowns() {
     );
 }
 
+/// M48 GUI-HOST-001/003/004 — each recorded call carries what it met: an engine handler (H1), a
+/// realized placeholder (H2: a fixed answer through GameDelegate's `respond`, or a deliberate
+/// no-op), neither on a cataloged method (H3: `Null`, whatever the method's Phase 0 target), or
+/// no catalog entry (H4). An engine handler takes precedence over a placeholder.
+#[test]
+fn skyrim_calls_carry_their_behaviour_class() {
+    use crate::HostClass;
+    let bridge = ScaleformHostBridge::new(ScaleformProfile::SkyrimAvm1);
+    let answered = bridge.record_call("ShouldShowMod", &[ExternalValue::from(4_i32)]);
+    assert_eq!(
+        answered.callback_response,
+        Some(vec![ExternalValue::from(4_i32), ExternalValue::Bool(false)]),
+        "the hosted-services placeholder hides the Creations entry"
+    );
+    bridge.record_call("RequestIsOnPC", &[ExternalValue::from(5_i32)]);
+    bridge.record_call("OpenMarketplace", &[ExternalValue::from(6_i32)]);
+    // Phase 0 targets H1 (an inventory action) but nothing serves it yet: H3.
+    let unserved = bridge.record_call("EquipItem", &[ExternalValue::from(7_i32)]);
+    assert_eq!(unserved.return_value, ExternalValue::Null);
+    // A cited H2 whose answer is not established is no placeholder either.
+    bridge.record_call("CanFadeItemInfo", &[ExternalValue::from(8_i32)]);
+    bridge.record_call("NotACatalogMethod", &[ExternalValue::from(9_i32)]);
+    bridge.set_response_handler("RequestIsOnPC", |_| vec![ScaleformValue::Bool(true)]);
+    bridge.record_call("RequestIsOnPC", &[ExternalValue::from(10_i32)]);
+    bridge.register_method("EquipItem");
+    bridge.record_call("EquipItem", &[ExternalValue::from(11_i32)]);
+
+    let classes: Vec<(String, HostClass)> = bridge.drain_calls().into_iter().map(|call| (call.method, call.class)).collect();
+    let named = |method: &str, class| (method.to_owned(), class);
+    assert_eq!(
+        classes,
+        [
+            named("ShouldShowMod", HostClass::Placeholder),
+            named("RequestIsOnPC", HostClass::Placeholder),
+            named("OpenMarketplace", HostClass::Placeholder),
+            named("EquipItem", HostClass::Unserved),
+            named("CanFadeItemInfo", HostClass::Unserved),
+            named("NotACatalogMethod", HostClass::Unknown),
+            named("RequestIsOnPC", HostClass::Served),
+            named("EquipItem", HostClass::Served),
+        ]
+    );
+    assert_eq!(bridge.unanswered_methods(), ["CanFadeItemInfo".to_owned()], "a placeholder answer is an answer");
+    let catalog = ScaleformHostCatalog::for_profile(ScaleformProfile::SkyrimAvm1);
+    assert_eq!(catalog.behaviour("EquipItem").map(|b| b.target), Some(HostClass::Served), "the target stays Phase 0's");
+    assert!(catalog.behaviour("NotACatalogMethod").is_none());
+}
+
 /// #2965 (UI-D2-02) — the leading-integer heuristic used to fire on ANY
 /// `SkyrimAvm1` call, catalog membership be damned, because `SkyrimAvm1` is
 /// also the fallback profile for every non-AS3 movie (loose demo SWFs,

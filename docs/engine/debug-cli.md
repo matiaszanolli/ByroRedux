@@ -344,7 +344,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**179**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**180**) grouped by
 purpose:
 
 ```
@@ -590,6 +590,7 @@ hud.debug                   → toggle HUD diagnostics
 ui.menus                    → the M48 menu registry: every open menu bottom to top (name, code, surface, flags), the input owner, pause, menu mode and the movie device count
 ui.open <menu>              → open a menu by its game-facing name on its Phase 0 surface (movie, native page, or none); applied next frame
 ui.close <menu> [accept|cancel] → close an open menu with the stated result (default accept); applied next frame
+ui.host [menu]              → an open Scaleform movie's host calls since it opened, by behaviour class (H1 served, H2 placeholder, H3 unserved, H4 unknown), and its distinct H3 / H4 method names
 depth.stats                 → inspect depth-buffer precision statistics
 npc.appearance              → inspect NPC appearance and FaceGen state
 ragdoll.status              → report active ragdoll state

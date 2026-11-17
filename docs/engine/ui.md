@@ -647,6 +647,25 @@ entries are recognition
 and protocol metadata, not claims that gameplay behavior exists. The engine
 must still implement or explicitly stub each drained call.
 
+**Behaviour classes (M48 GUI-HOST-001…004, #6665).** The catalog compiles Phase
+0's per-method review in (`docs/data/game-ui/host-classes-{skyrim,fallout4}.tsv`,
+`crates/ui/src/behaviour.rs`): `ScaleformHostCatalog::behaviour(name)` gives a
+method's *target* class (H1 served, H2 placeholder, H3 unserved), the H2 reason
+and the canonical API an H1 method is to act through. Every recorded call also
+carries what it actually met (`ScaleformHostCall::class`): H1 when the engine
+registered a handler, H2 when the method's placeholder is realized (25 Skyrim
+rows: console-only features, hosted services and movie-kept state are ignored;
+`RequestIsOnPC` answers `true`, `ShouldShowKinectTunerOption` and
+`ShouldShowMod` `false`, read off the callbacks in `quest_journal.swf`), H3 for
+any other cataloged method (`Null`, whatever its target), H4 for one the catalog
+lacks. H2 rows whose answer is not established or not produced stay H3. The
+per-frame drain logs one diagnostic per (menu, method) for H3 and H4, naming the
+class and the target; `ui.host [menu]` reports an open movie's calls per class
+and its distinct H3 / H4 names (GUI-OPS-002). The corpus sweep (A7) asserts every
+method the vanilla archive calls has a class: 141 called, targets H1 76, H2 34,
+H3 31. No Skyrim method is H1 at run time yet: the H1 actions (GUI-HOST-002,
+-005, -006, GUI-EVT-004) are the rest of Phase 3.
+
 Fallout 4 does not use Skyrim's protocol. Its dynamic menu root constructs
 `BGSCodeObj`; native code fills that object with function values and invokes
 `onCodeObjCreate`, while `onCodeObjDestruction` clears the reference. The

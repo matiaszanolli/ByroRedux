@@ -18,7 +18,7 @@ use byroredux_core::ecs::{DebugStats, DeltaTime, ScratchTelemetry};
 use byroredux_renderer::shader_constants::GROUNDCOVER_DETAIL_ATLAS_EDGE;
 use byroredux_renderer::vulkan::context::FrameInputs;
 use byroredux_renderer::ImageSpaceModifier;
-use byroredux_ui::{ScaleformHostDispatch, MAX_DISTINCT_HOST_METHOD_NAMES};
+use byroredux_ui::{HostClass, MAX_DISTINCT_HOST_METHOD_NAMES};
 use std::time::Instant;
 use winit::event_loop::ActiveEventLoop;
 
@@ -33,6 +33,34 @@ use crate::{
 
 fn host_method_diagnostic_key(menu_name: &str, method: &str) -> (String, String) {
     (menu_name.to_owned(), method.to_owned())
+}
+
+/// M48 GUI-HOST-004 — what an H3 / H4 diagnostic says about the call's class: H3 with the
+/// method's Phase 0 target (and the canonical API an H1 target acts through, or the H2 reason),
+/// H4 as absent from the profile's catalog.
+fn host_class_diagnostic(call: &byroredux_ui::ScaleformHostCall) -> String {
+    let catalog = byroredux_ui::ScaleformHostCatalog::for_profile(call.profile);
+    match (call.class, catalog.behaviour(&call.method)) {
+        (HostClass::Unserved, Some(behaviour)) => {
+            let why = match behaviour.target {
+                HostClass::Placeholder => behaviour.reason,
+                _ => behaviour.canonical_api,
+            };
+            format!("{} {} (Phase 0 target {}: {why})", call.class.code(), call.class.label(), behaviour.target.code())
+        }
+        (HostClass::Unknown, _) => format!("{} {}: not in the {:?} catalog", call.class.code(), call.class.label(), call.profile),
+        (class, _) => format!("{} {}", class.code(), class.label()),
+    }
+}
+
+/// M48 GUI-OPS-002 — mirror the open movies' host-call reports for `ui.host`.
+fn mirror_host_reports(
+    world: &byroredux_core::ecs::World,
+    reports: &std::collections::HashMap<String, (String, byroredux_ui::HostCallReport)>,
+) {
+    if let Some(mut mirror) = world.try_resource_mut::<crate::menu_stack::ScaleformHostReports>() {
+        mirror.0 = reports.iter().map(|(menu, (_, report))| (menu.clone(), report.clone())).collect();
+    }
 }
 
 /// #6197 — publish the terrain parallax settings to every live LAND tile:
@@ -640,6 +668,7 @@ impl App {
                     self.ui.scaleform_hud.as_mut(),
                     UiOverlayState {
                         dropped_host_calls: &mut self.ui.dropped_host_calls,
+                        host_reports: &mut self.ui.host_reports,
                         reported_host_methods: &mut self.ui.reported_host_methods,
                         reported_host_methods_capped: &mut self.ui.reported_host_methods_capped,
                     },
@@ -1414,6 +1443,7 @@ fn collect_and_prepare_groundcover(
 /// of `App`'s fields.
 struct UiOverlayState<'a> {
     dropped_host_calls: &'a mut std::collections::HashMap<String, (u64, String)>,
+    host_reports: &'a mut std::collections::HashMap<String, (String, byroredux_ui::HostCallReport)>,
     reported_host_methods: &'a mut std::collections::HashSet<(String, String)>,
     reported_host_methods_capped: &'a mut bool,
 }
@@ -1481,6 +1511,10 @@ fn tick_ui_overlay(
     let mut ui_textures = Vec::new();
     let Some(manager) = ui_manager.as_mut() else {
         ui_state.dropped_host_calls.clear();
+        if !ui_state.host_reports.is_empty() {
+            ui_state.host_reports.clear();
+            mirror_host_reports(world, ui_state.host_reports);
+        }
         return ui_textures;
     };
     let dt = world
@@ -1493,6 +1527,9 @@ fn tick_ui_overlay(
     ui_state
         .dropped_host_calls
         .retain(|menu, _| manager.layer(menu).is_some());
+    let reports_before = ui_state.host_reports.len();
+    ui_state.host_reports.retain(|menu, _| manager.layer(menu).is_some());
+    let mut reports_changed = reports_before != ui_state.host_reports.len();
 
     for ui in manager.layers_mut() {
         // Consume what the menu asked of the host (#2714). The bridge
@@ -1536,9 +1573,21 @@ fn tick_ui_overlay(
                 host_calls.len(),
             );
         }
-        ui_state.dropped_host_calls.insert(menu_name.clone(), (dropped, layer_key));
+        ui_state.dropped_host_calls.insert(menu_name.clone(), (dropped, layer_key.clone()));
+
+        // M48 GUI-OPS-002 — this movie's report; a different player under the name starts afresh.
+        let report = ui_state.host_reports.entry(menu_name.clone()).or_insert_with(|| {
+            reports_changed = true;
+            (layer_key.clone(), byroredux_ui::HostCallReport::default())
+        });
+        if report.0 != layer_key {
+            *report = (layer_key.clone(), byroredux_ui::HostCallReport::default());
+            reports_changed = true;
+        }
+        reports_changed |= !host_calls.is_empty();
 
         for call in host_calls {
+            report.1.record(&call);
             log::debug!(
                 "Scaleform host call #{} {} -> {} ({:?}, {} arg(s))",
                 call.sequence,
@@ -1554,11 +1603,13 @@ fn tick_ui_overlay(
             // gives `unknown_methods`/`unanswered_methods` upstream,
             // or a menu calling a distinct unimplemented name every
             // frame would grow this HashSet without limit.
+            //
+            // M48 GUI-HOST-004 — one diagnostic per (menu, method) for an H3 (cataloged, nothing
+            // serves it) or H4 (uncataloged) call, naming the class; neither is ever answered with
+            // a made-up value.
             let diagnostic_key = host_method_diagnostic_key(&menu_name, &call.method);
-            if matches!(
-                call.dispatch,
-                ScaleformHostDispatch::Unknown | ScaleformHostDispatch::MissingResponse
-            ) && !ui_state.reported_host_methods.contains(&diagnostic_key)
+            if matches!(call.class, HostClass::Unserved | HostClass::Unknown)
+                && !ui_state.reported_host_methods.contains(&diagnostic_key)
             {
                 if ui_state.reported_host_methods.len() >= MAX_DISTINCT_HOST_METHOD_NAMES {
                     if !*ui_state.reported_host_methods_capped {
@@ -1572,15 +1623,20 @@ fn tick_ui_overlay(
                 } else {
                     ui_state.reported_host_methods.insert(diagnostic_key);
                     log::warn!(
-                        "Scaleform menu '{}' called host method '{}' ({:?}) — \
+                        "Scaleform menu '{}' called host method '{}' ({:?}): {} — \
                          no engine handler is registered, so the menu received Null",
                         menu_name,
                         call.method,
                         call.dispatch,
+                        host_class_diagnostic(&call),
                     );
                 }
             }
         }
+    }
+
+    if reports_changed {
+        mirror_host_reports(world, ui_state.host_reports);
     }
 
     // M48.6 — feed the Scaleform HUD (if live) after the drain: the

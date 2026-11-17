@@ -2051,7 +2051,7 @@ mod explicit_start_pin_release_tests {
 #[cfg(test)]
 mod app_scratch_telemetry_coverage_tests {
     /// Container fields of `App` that are deliberately not per-frame scratch.
-    const NOT_SCRATCH: [(&str, &str); 4] = [
+    const NOT_SCRATCH: [(&str, &str); 5] = [
         (
             "ui.reported_host_methods",
             "a dedup set capped by MAX_DISTINCT_HOST_METHOD_NAMES (#2964), not a per-frame buffer",
@@ -2059,6 +2059,10 @@ mod app_scratch_telemetry_coverage_tests {
         (
             "ui.dropped_host_calls",
             "one latch per open Scaleform movie, pruned to the open layers every frame (#2969 / M48)",
+        ),
+        (
+            "ui.host_reports",
+            "one host-call report per open Scaleform movie, pruned to the open layers every frame; its name sets are capped by MAX_DISTINCT_HOST_METHOD_NAMES (M48 GUI-OPS-002)",
         ),
         (
             "bench.cpu_frame_ms",

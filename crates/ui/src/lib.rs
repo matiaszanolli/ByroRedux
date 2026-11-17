@@ -9,6 +9,7 @@
 pub mod avm1_host;
 mod avm1_path;
 mod avm2_host;
+mod behaviour;
 mod catalog;
 mod host;
 mod input;
@@ -23,6 +24,7 @@ mod translate;
 use std::sync::Arc;
 
 pub use avm2_host::ScaleformHostObjectState;
+pub use behaviour::{HostBehaviour, HostCallReport, HostClass, Placeholder};
 pub use catalog::{
     ScaleformHostCatalog, ScaleformHostMethod, ScaleformHostMethodKind, ScaleformHostObject,
 };
