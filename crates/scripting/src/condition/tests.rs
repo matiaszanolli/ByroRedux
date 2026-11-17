@@ -248,6 +248,37 @@ fn authored_get_actor_value_index_translates_to_the_loaded_avif() {
     assert_eq!(check(&mut fo4, &[(0x2BC, 7.0)], 0x2BC, ComparisonOp::Ge, 5.0), (true, true));
 }
 
+/// OAV-RES-004 (#7009) — an authored Oblivion `GetActorValue` operand is the actor-value index (xEdit's
+/// `wbActorValueEnum`); with the engine-supplied roster installed it resolves to the record and reads the
+/// actor's value. Fame and Infamy (38, 39) and an index past the table stay unresolved.
+/// `GetPermanentActorValue` (495) reads the same operand the same way.
+#[test]
+fn authored_oblivion_actor_value_operands_resolve_the_engine_supplied_roster() {
+    use byroredux_core::ecs::components::ActorValues;
+    use byroredux_plugin::esm::reader::{GameKind, GlobalSlot};
+    use byroredux_plugin::esm::records::EsmIndex;
+    const SNEAK: u32 = 31;
+    let mut index = EsmIndex { game: GameKind::Oblivion, ..Default::default() };
+    let slot = GlobalSlot::Regular(2);
+    index.install_oblivion_actor_values(slot).unwrap();
+    let mut world = World::new();
+    crate::register(&mut world);
+    crate::install_actor_value_names(&mut world, &index);
+    let actor = world.spawn();
+    world.insert(actor, ActorValues::from_pairs([(slot.compose(SNEAK + 1), 40.0)]));
+    let at_least = |function: u32, bound: f32, operand: u32| {
+        let condition = cond(function, ComparisonOp::Ge, bound, false).with_param_1(operand);
+        (is_modeled(&world, &condition), evaluate_condition(&condition, &world, &ctx(actor)))
+    };
+    for function in [14, 495] {
+        assert_eq!(at_least(function, 25.0, SNEAK), (true, true), "function {function}: Sneak 40 >= 25");
+        assert_eq!(at_least(function, 50.0, SNEAK), (true, false), "function {function}: Sneak 40 < 50");
+        for unresolved in [38, 39, 72, 9999] {
+            assert!(!at_least(function, 0.0, unresolved).0, "function {function}: operand {unresolved} resolves to no record");
+        }
+    }
+}
+
 #[test]
 fn get_quest_variable_uses_obscript_locals_only_for_legacy_game_paths() {
     use byroredux_plugin::esm::reader::GameKind;

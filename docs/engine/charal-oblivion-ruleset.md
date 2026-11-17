@@ -843,6 +843,11 @@ EditorIDs:
 | 33–36 | Aggression, Confidence, Energy, Responsibility (from `AIDT`) |
 | 37–71 | Bounty, Fame, Infamy, MagickaMultiplier, NightEyeBonus, AttackBonus, DefendBonus, CastingPenalty, Blindness, Chameleon, Invisibility, Paralysis, Silence, Confusion, … Vampirism, Darkness, ResistWaterDamage |
 
+**Index coverage: 70 / 70** vanilla-resolvable indices (0–37 and 40–71) resolve by number and by name, 72
+records installed, `None` for 38, 39 and anything above 71 (checked 2026-11-17 against UESP *Oblivion Mod:Actor
+Value Indices*: all 72 EditorIDs match its names, Fame and Infamy being its reserved rows; pinned by
+`install_and_resolve_the_roster_without_reserved_vanilla_values`).
+
 Fame and Infamy (38, 39) are installed but excluded from index and name
 resolution unless the caller asks for reserved values
 (`oblivion_actor_value(index, include_reserved)`, `vanilla_name`). That

@@ -1704,6 +1704,37 @@ mod tests {
         assert!(reserved.contains("unknown actor value"), "{reserved}");
     }
 
+    /// OAV-RES-005 (#7009) — the four value commands take the actor value by the name the Construction Set uses.
+    #[test]
+    fn obscript_console_sets_mods_and_forces_an_oblivion_actor_value_by_name() {
+        use byroredux_core::ecs::components::{ActorValues, FormIdComponent};
+        use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+        use byroredux_plugin::esm::{reader::{GameKind, GlobalSlot}, records::EsmIndex};
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.insert_resource(QuestStageState::default());
+        let mut pool = FormIdPool::new();
+        let form = pool.intern(FormIdPair { plugin: PluginId::from_filename("Oblivion.esm"), local: LocalFormId(0x1234) });
+        let actor = world.spawn();
+        world.insert(actor, FormIdComponent(form));
+        world.insert(actor, ActorValues::new());
+        world.insert_resource(pool);
+        let mut index = EsmIndex { game: GameKind::Oblivion, ..Default::default() };
+        index.install_oblivion_actor_values(GlobalSlot::Regular(1)).unwrap();
+        byroredux_scripting::install_actor_value_names(&mut world, &index);
+        let sneak = index.actor_value_form_id("Sneak").unwrap();
+        let run = |text: &str| ObScriptCmdCommand.execute(&world, &format!("{actor} {text}")).lines.join("\n");
+        let current = |world: &World| world.get::<ActorValues>(actor).unwrap().current(sneak);
+        assert!(!run("SetAV Sneak 25").contains("Error:"));
+        assert_eq!(current(&world), 25.0);
+        assert!(!run("ModAV Sneak 5").contains("Error:"));
+        assert_eq!(current(&world), 30.0);
+        assert!(!run("ForceAV Sneak 40").contains("Error:"));
+        assert_eq!(current(&world), 40.0);
+        assert!(run("GetAV Sneak").contains("40"));
+        assert!(run("SetAV Fame 5").contains("unknown actor value"), "the reserved values are not vanilla names");
+    }
+
     #[test]
     fn obscript_console_damages_the_player_by_named_actor_value() {
         use byroredux_core::ecs::components::{ActorValues, FormIdComponent};
