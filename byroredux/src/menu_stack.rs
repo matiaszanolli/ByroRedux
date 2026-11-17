@@ -21,7 +21,7 @@ use byroredux_core::ecs::resources::menu_registry::{
     AbsentFallback, MenuFlags, MenuGame, MenuRegistry, MenuSurface, NativeMenu, TargetSurface,
 };
 use byroredux_core::ecs::World;
-use byroredux_debug_ui::GameMenuPage;
+use byroredux_native_ui::GameMenuPage;
 use byroredux_plugin::esm::reader::GameKind;
 use byroredux_ui::UiManager;
 

@@ -129,6 +129,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/debug-protocol/` | tooling | MEDIUM |
 | `crates/debug-ui/src/panels/` | tooling, performance | LOW |
 | `crates/debug-ui/` | tooling | LOW |
+| `crates/native-ui/` | ui, tooling, performance | MEDIUM |
 | `crates/boot-request/` | tooling | MEDIUM |
 | `crates/settings-io/` | tooling | MEDIUM |
 | `crates/cxx-bridge/` | tech-debt (placeholder) | LOW |

@@ -23,7 +23,7 @@ use std::collections::VecDeque;
 
 use byroredux_core::character::CharacterIdentity;
 use byroredux_core::ecs::{Resource, World};
-use byroredux_debug_ui::{ChargenChoice, ChargenOption, ChargenScreenView, ChargenSnapshot};
+use byroredux_native_ui::{ChargenChoice, ChargenOption, ChargenScreenView, ChargenSnapshot};
 use byroredux_plugin::esm::records::EsmIndex;
 
 /// The SPECIAL attributes' Fallout actor-value codes, Strength (5) to Luck (11).

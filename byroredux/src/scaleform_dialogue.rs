@@ -24,7 +24,7 @@
 //! `dialogue_snapshot` is what both surfaces present.
 
 use byroredux_core::ecs::{EntityId, World};
-use byroredux_debug_ui::DialogueTopicSnapshot;
+use byroredux_native_ui::DialogueTopicSnapshot;
 use byroredux_ui::{PathOp, ScaleformHostCall, ScaleformValue, UiLayer, WhenAbsent};
 
 /// The movie's root clip, the `DialogueMenu` instance.
@@ -174,7 +174,7 @@ pub(crate) fn apply(world: &World, npc: Option<EntityId>, snapshot: Option<&Dial
 #[cfg(test)]
 mod tests {
     use super::*;
-    use byroredux_debug_ui::DialogueTopicEntryView;
+    use byroredux_native_ui::DialogueTopicEntryView;
     use byroredux_ui::{HostClass, ScaleformHostDispatch, ScaleformProfile};
 
     fn snapshot(said_second: bool) -> DialogueTopicSnapshot {

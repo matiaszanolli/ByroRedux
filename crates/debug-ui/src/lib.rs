@@ -43,12 +43,8 @@ use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 
-pub use panels::{
-    BarterAction, BarterItemView, BarterSnapshot, ChargenChoice, ChargenDraft, ChargenOption, ChargenScreenView,
-    ChargenSnapshot, CraftingAction, CraftingRecipeView, CraftingSnapshot, DialogueTopicEntryView, DialogueTopicSnapshot, DialogueUiAction, GameMenuPage, GameMenuState,
-    InteractionPrompt, InventoryAction, InventoryItemView, InventorySnapshot, MessageBoxView,
-    ObjectiveView, PanelOutputs, PanelSnapshot, PanelTab, QueuedLoad, StealthIndicatorLook, StealthIndicatorView, VitalBarView,
-};
+pub use panels::{PanelOutputs, PanelSnapshot, PanelTab, QueuedLoad};
+use byroredux_native_ui::{GameMenuPage, GameMenuState};
 
 /// Setting IDs and the built-in registrations, re-exported from `core`.
 ///
@@ -380,7 +376,7 @@ impl DebugUiState {
         }
         if !self.visible
             && !self.game_menu.visible
-            && !snapshot.has_live_hud_content()
+            && !snapshot.game.has_live_hud_content()
             && self.player_message.is_none()
         {
             // #2831 — still drain. `on_window_event` is forwarded for EVERY
@@ -408,20 +404,22 @@ impl DebugUiState {
         // sugar fighting the borrow.
         self.egui_ctx.begin_pass(raw_input);
         let mut outputs = PanelOutputs::default();
-        if let Some(tip) = snapshot.loading_tip.as_deref() {
-            panels::draw_loading_tip(&self.egui_ctx, tip);
+        // The player's HUD and pages are `byroredux_native_ui`'s (GUI-PAGE-006); they draw into
+        // this context and read / write only the snapshot's and the outputs' `game` halves.
+        if let Some(tip) = snapshot.game.loading_tip.as_deref() {
+            byroredux_native_ui::draw_loading_tip(&self.egui_ctx, tip);
         } else {
             if !self.game_menu.visible {
-                panels::draw_hud(&self.egui_ctx, snapshot);
+                byroredux_native_ui::draw_hud(&self.egui_ctx, &snapshot.game);
             }
             if let Some((message, _)) = &self.player_message {
-                panels::draw_player_message(&self.egui_ctx, message);
+                byroredux_native_ui::draw_player_message(&self.egui_ctx, message);
             }
             if self.visible {
                 panels::draw(&self.egui_ctx, snapshot, &mut self.panels, &mut outputs);
             }
             if self.game_menu.visible {
-                panels::draw_game_menu(&self.egui_ctx, snapshot, &mut self.game_menu, &mut outputs);
+                byroredux_native_ui::draw_game_menu(&self.egui_ctx, &snapshot.game, &mut self.game_menu, &mut outputs.game);
             }
         }
         let output = self.egui_ctx.end_pass();
@@ -470,36 +468,6 @@ mod builtin_settings_tests {
 
 #[cfg(test)]
 mod hidden_overlay_drain_tests {
-    /// #7002 — every always-live HUD layer keeps the egui pass running with
-    /// the overlay hidden. The sneak indicator was drawn by `draw_hud` but was
-    /// no term of the skip, so with the crosshair, vitals and objectives off a
-    /// sneaking player's label never drew.
-    #[test]
-    fn each_live_hud_layer_keeps_the_hidden_pass_running() {
-        assert!(!crate::PanelSnapshot::default().has_live_hud_content());
-        let indicator = crate::PanelSnapshot {
-            stealth_indicator: Some(crate::StealthIndicatorView {
-                state: byroredux_core::stealth::IndicatorState::Hidden,
-                look: crate::StealthIndicatorLook::Eye,
-            }),
-            ..Default::default()
-        };
-        assert!(indicator.has_live_hud_content());
-        let crosshair = crate::PanelSnapshot {
-            show_crosshair: true,
-            ..Default::default()
-        };
-        assert!(crosshair.has_live_hud_content());
-        // A toggle with nothing to draw stays cheap.
-        let empty_vitals = crate::PanelSnapshot {
-            show_vitals: true,
-            vitals: Some(Vec::new()),
-            show_objectives: true,
-            ..Default::default()
-        };
-        assert!(!empty_vitals.has_live_hud_content());
-    }
-
     /// #2831 — `DebugUiState::run`'s hidden-overlay early return must still
     /// drain egui-winit's raw-input queue.
     ///

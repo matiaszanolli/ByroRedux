@@ -76,10 +76,10 @@ pub(crate) fn message_box_waiting(world: &World) -> bool {
 }
 
 /// The box the message-box page shows.
-pub(crate) fn front_message_box(world: &World) -> Option<byroredux_debug_ui::MessageBoxView> {
+pub(crate) fn front_message_box(world: &World) -> Option<byroredux_native_ui::MessageBoxView> {
     let boxes = world.try_resource::<MessageBoxQueue>()?;
     let message = boxes.0.front()?;
-    Some(byroredux_debug_ui::MessageBoxView {
+    Some(byroredux_native_ui::MessageBoxView {
         title: message.title.clone(),
         text: message.text.clone(),
         buttons: message.buttons.clone(),

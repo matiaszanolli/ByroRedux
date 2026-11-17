@@ -70,8 +70,8 @@ def via(settings, note=''):
     return (f'drawn from {settings} when the load order authors it (UiLabels); else this engine text. FNV authors none '
             '(its defaults are in the packed executable, GUI-FONT-005)') + (f'; {note}' if note else '')
 NOT_GMST = "Skyrim's word is a Scaleform translation key, not a game setting; native pages resolve game settings only"
-GM = 'crates/debug-ui/src/panels/game_menu.rs'
-HUD = 'crates/debug-ui/src/panels/hud.rs'
+GM = 'crates/native-ui/src/game_menu.rs'
+HUD = 'crates/native-ui/src/hud.rs'
 # ---- window titles
 for page, t in (('pause','Paused'),('settings','Settings'),('inventory','Inventory'),('dialogue','Conversation'),('message box','Message'),('barter','Barter'),('crafting','Crafting')):
     R(page, GM, f'=> "{t}"', t, E, 'egui window name only: the window is built with title_bar(false), so this string is never drawn (it is the window id)')
@@ -123,7 +123,7 @@ R('settings', IN, 'Self::Attack => "Attack"', 'Attack', E, 'keybinding row label
 R('settings', IN, '"Selecting a key already in use swaps the two bindings."', 'Selecting a key already in use swaps the two bindings.', E, 'description under every keybinding row; engine rebind policy, no vanilla equivalent')
 for lab in ('TAA (native resolution)','FSR 3.1 — Native AA','FSR 3.1 — Quality','FSR 3.1 — Balanced','FSR 3.1 — Performance'):
     R('settings', CORE, f'"{lab}"', lab, E, 'upscaler choice label (SettingChoice); product names, no vanilla equivalent')
-R('settings', 'crates/debug-ui/src/panels/studio.rs', '"Invalid setting"', 'Invalid setting', E, 'shared draw_setting_control error (studio.rs, also used by the player settings page); developer-facing')
+R('settings', 'crates/native-ui/src/setting_control.rs', '"Invalid setting"', 'Invalid setting', E, 'shared draw_setting_control error (the player settings page and the operator settings tab); developer-facing')
 R('settings', IN, '"×",', '×', E, 'slider unit glyph for mouse sensitivity')
 R('settings', IN, 'fn key_label', '(key names via key_label: W, A, S, D, E, ...)', E, 'physical key names for the binding choices; device vocabulary, not game text. Lines of the table are in key_label()')
 # ---- inventory page
@@ -205,7 +205,7 @@ R('dialogue', GM, '"The conversation has moved on."', 'The conversation has move
 for _n, _page in enumerate(('crafting', 'crafting', 'barter', 'barter', 'dialogue', 'dialogue'), 1):
     R(_page, GM, 'labels.text("Close")', 'Close', G, via('sClose, sExit', 'the page close button (Esc still closes)'), 'f:$CLOSE g:sExit s:$Exit f:$Exit', nth=_n)
 # ---- character creation (a native page since FNV's new-game route, #6666 census)
-CG = 'crates/debug-ui/src/panels/chargen.rs'
+CG = 'crates/native-ui/src/chargen.rs'
 R('chargen', CG, 'labels.text("Close")', 'Close', G, via('sClose, sExit', 'shown only when the screen closed under the page'))
 R('chargen', CG, 'labels.text("Done")', 'Done', G, via('sDone', 'confirms the screen'))
 R('chargen', CG, 'labels.text("Male")', 'Male', G, via('sSexMale', 'Skyrim\'s value is lower-case "male"'))

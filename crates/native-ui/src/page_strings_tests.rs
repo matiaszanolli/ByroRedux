@@ -12,7 +12,7 @@ use super::*;
 use byroredux_core::settings::{SettingEntry, SettingValue};
 use byroredux_core::ui_labels::UiLabels;
 
-const INVENTORY: &str = include_str!("../../../../docs/data/game-ui/native-page-strings.tsv");
+const INVENTORY: &str = include_str!("../../../docs/data/game-ui/native-page-strings.tsv");
 
 /// The inventory's rows: `(string, pages, disposition)`.
 fn rows() -> Vec<(String, Vec<String>, String)> {
@@ -113,14 +113,14 @@ fn game_labels() -> UiLabels {
 }
 
 /// Draw `snapshot` (with each label table) and assert nothing unlisted for `pages` is drawn.
-fn assert_page(pages: &[&str], snapshot: &PanelSnapshot, state: &GameMenuState, data: &[&str]) {
+fn assert_page(pages: &[&str], snapshot: &PageSnapshot, state: &GameMenuState, data: &[&str]) {
     for (mode, labels, fallbacks) in [("game settings", game_labels(), false), ("engine defaults", UiLabels::default(), true)] {
         // With the game's words, a fallback drawn anyway is a literal that skipped the labels.
         let listed = listed(pages, fallbacks);
-        let snapshot = PanelSnapshot { labels: labels.clone(), ..snapshot.clone() };
+        let snapshot = PageSnapshot { labels: labels.clone(), ..snapshot.clone() };
         let texts = drawn(|ctx| {
             let mut state = state.clone();
-            let mut outputs = PanelOutputs::default();
+            let mut outputs = PageOutputs::default();
             if state.visible {
                 draw_game_menu(ctx, &snapshot, &mut state, &mut outputs);
             } else {
@@ -162,14 +162,14 @@ fn the_word_matcher_accounts_for_listed_strings_data_and_markers() {
 
 #[test]
 fn pause_page_draws_only_game_and_listed_words() {
-    assert_page(&["pause"], &PanelSnapshot::default(), &menu(GameMenuPage::Pause), &[]);
+    assert_page(&["pause"], &PageSnapshot::default(), &menu(GameMenuPage::Pause), &[]);
 }
 
 #[test]
 fn settings_page_draws_only_game_and_listed_words() {
     let mut changed = SettingEntry::toggle("controls.invert", "Gameplay", "Activate", "Picks up and uses things.", true);
     changed.value = SettingValue::Bool(false);
-    let snapshot = PanelSnapshot {
+    let snapshot = PageSnapshot {
         settings: vec![changed, SettingEntry::toggle("interface.crosshair", "Interface", "Show crosshair", "Draws the reticle.", true)],
         ..Default::default()
     };
@@ -192,7 +192,7 @@ fn inventory_page_draws_only_game_and_listed_words() {
         equippable,
         consumable,
     };
-    let snapshot = PanelSnapshot {
+    let snapshot = PageSnapshot {
         inventory: Some(InventorySnapshot {
             total_weight: 9.0,
             items: vec![item(0, "Stimpak", "Aid", false, true), item(1, "Varmint Rifle", "Weapon", true, false), item(2, "Bobby Pin", "Misc", false, false)],
@@ -209,25 +209,25 @@ fn inventory_page_draws_only_game_and_listed_words() {
     state.selected_inventory_index = Some(2);
     state.selected_inventory_category = "Misc".into();
     assert_page(&["inventory"], &snapshot, &state, &["Bobby Pin details", "Bobby Pin"]);
-    assert_page(&["inventory"], &PanelSnapshot::default(), &menu(GameMenuPage::Inventory), &[]);
-    let empty = PanelSnapshot { inventory: Some(InventorySnapshot::default()), ..Default::default() };
+    assert_page(&["inventory"], &PageSnapshot::default(), &menu(GameMenuPage::Inventory), &[]);
+    let empty = PageSnapshot { inventory: Some(InventorySnapshot::default()), ..Default::default() };
     assert_page(&["inventory"], &empty, &menu(GameMenuPage::Inventory), &[]);
 }
 
 #[test]
 fn message_box_page_draws_only_game_and_listed_words() {
-    let snapshot = PanelSnapshot {
+    let snapshot = PageSnapshot {
         message_box: Some(MessageBoxView { title: "Vault 21".into(), text: "The door is sealed.".into(), buttons: Vec::new() }),
         ..Default::default()
     };
     assert_page(&["message box"], &snapshot, &menu(GameMenuPage::MessageBox), &["Vault 21", "The door is sealed."]);
-    assert_page(&["message box"], &PanelSnapshot::default(), &menu(GameMenuPage::MessageBox), &[]);
+    assert_page(&["message box"], &PageSnapshot::default(), &menu(GameMenuPage::MessageBox), &[]);
 }
 
 #[test]
 fn barter_page_draws_only_game_and_listed_words() {
     let goods = |name: &str| BarterItemView { form_id: 1, name: name.into(), count: 3, price: 12 };
-    let snapshot = PanelSnapshot {
+    let snapshot = PageSnapshot {
         barter: Some(BarterSnapshot {
             vendor_name: "Belethor".into(),
             player_gold: 40,
@@ -238,12 +238,12 @@ fn barter_page_draws_only_game_and_listed_words() {
         ..Default::default()
     };
     assert_page(&["barter"], &snapshot, &menu(GameMenuPage::Barter), &["Belethor", "Iron Dagger"]);
-    assert_page(&["barter"], &PanelSnapshot::default(), &menu(GameMenuPage::Barter), &[]);
+    assert_page(&["barter"], &PageSnapshot::default(), &menu(GameMenuPage::Barter), &[]);
 }
 
 #[test]
 fn crafting_page_draws_only_game_and_listed_words() {
-    let snapshot = PanelSnapshot {
+    let snapshot = PageSnapshot {
         crafting: Some(CraftingSnapshot {
             bench_name: "Forge".into(),
             recipes: vec![CraftingRecipeView {
@@ -257,14 +257,14 @@ fn crafting_page_draws_only_game_and_listed_words() {
         ..Default::default()
     };
     assert_page(&["crafting"], &snapshot, &menu(GameMenuPage::Crafting), &["Forge", "Iron Sword", "Iron Ingot"]);
-    let empty = PanelSnapshot { crafting: Some(CraftingSnapshot { bench_name: "Forge".into(), recipes: Vec::new() }), ..Default::default() };
+    let empty = PageSnapshot { crafting: Some(CraftingSnapshot { bench_name: "Forge".into(), recipes: Vec::new() }), ..Default::default() };
     assert_page(&["crafting"], &empty, &menu(GameMenuPage::Crafting), &["Forge"]);
-    assert_page(&["crafting"], &PanelSnapshot::default(), &menu(GameMenuPage::Crafting), &[]);
+    assert_page(&["crafting"], &PageSnapshot::default(), &menu(GameMenuPage::Crafting), &[]);
 }
 
 #[test]
 fn dialogue_page_draws_only_game_and_listed_words() {
-    let snapshot = PanelSnapshot {
+    let snapshot = PageSnapshot {
         dialogue: Some(DialogueTopicSnapshot {
             npc: 7,
             speaker_name: "Eltrys".into(),
@@ -283,13 +283,13 @@ fn dialogue_page_draws_only_game_and_listed_words() {
         ..Default::default()
     };
     assert_page(&["dialogue"], &snapshot, &menu(GameMenuPage::Dialogue), &["Eltrys", "Greeting", "Well met.", "Hello", "Leave"]);
-    assert_page(&["dialogue"], &PanelSnapshot::default(), &menu(GameMenuPage::Dialogue), &[]);
+    assert_page(&["dialogue"], &PageSnapshot::default(), &menu(GameMenuPage::Dialogue), &[]);
 }
 
 #[test]
 fn chargen_page_draws_only_game_and_listed_words() {
     let option = |id: u32, name: &str| ChargenOption { id, name: name.into(), description: String::new() };
-    let screen = |screen: ChargenScreenView| PanelSnapshot {
+    let screen = |screen: ChargenScreenView| PageSnapshot {
         chargen: Some(ChargenSnapshot {
             screen,
             serial: 1,
@@ -316,13 +316,13 @@ fn chargen_page_draws_only_game_and_listed_words() {
     ] {
         assert_page(&["chargen"], &screen(view), &menu(GameMenuPage::CharGen), &data);
     }
-    assert_page(&["chargen"], &PanelSnapshot::default(), &menu(GameMenuPage::CharGen), &[]);
+    assert_page(&["chargen"], &PageSnapshot::default(), &menu(GameMenuPage::CharGen), &[]);
 }
 
 #[test]
 fn hud_prompt_and_vitals_draw_only_game_and_listed_words() {
     for (labels, fallbacks) in [(game_labels(), false), (UiLabels::default(), true)] {
-        let snapshot = PanelSnapshot {
+        let snapshot = PageSnapshot {
             interaction_prompt: Some(InteractionPrompt { binding: "E", verb: labels.shared("Take all") }),
             show_prompts: true,
             show_vitals: true,

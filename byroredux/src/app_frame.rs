@@ -354,33 +354,7 @@ impl App {
                 include_dialogue,
             )
         } else {
-            byroredux_debug_ui::PanelSnapshot {
-                interaction_prompt: build_interaction_prompt(&self.world),
-                show_crosshair: setting_bool(
-                    &self.world,
-                    byroredux_debug_ui::SHOW_CROSSHAIR_SETTING_ID,
-                    true,
-                ),
-                show_prompts: setting_bool(
-                    &self.world,
-                    byroredux_debug_ui::SHOW_PROMPTS_SETTING_ID,
-                    true,
-                ),
-                show_vitals: setting_bool(
-                    &self.world,
-                    byroredux_debug_ui::SHOW_VITALS_SETTING_ID,
-                    true,
-                ),
-                vitals: crate::inventory::vitals_snapshot(&self.world),
-                show_objectives: setting_bool(
-                    &self.world,
-                    byroredux_debug_ui::SHOW_OBJECTIVES_SETTING_ID,
-                    true,
-                ),
-                objectives: self.ui.objective_hud_cache.lend(&self.world),
-                stealth_indicator: crate::detection::indicator_view(&self.world),
-                ..Default::default()
-            }
+            hud_only_snapshot(&self.world, &mut self.ui.objective_hud_cache)
         };
         // Benchmark screenshots are renderer evidence rather than gameplay
         // captures, so the HUD stays out of them — but only while the
@@ -399,10 +373,10 @@ impl App {
             strip_gameplay_hud(&mut snapshot, &mut self.ui.objective_hud_cache);
         }
         self.debug_ui_refresh_entities = false;
-        snapshot.loading_tip = self.loading_screen.tip().map(str::to_owned);
-        if snapshot.loading_tip.is_some() {
+        snapshot.game.loading_tip = self.loading_screen.tip().map(str::to_owned);
+        if snapshot.game.loading_tip.is_some() {
             strip_gameplay_hud(&mut snapshot, &mut self.ui.objective_hud_cache);
-            snapshot.interaction_prompt = None;
+            snapshot.game.interaction_prompt = None;
         }
 
         // #5153 — objective journal transitions (a stage fragment's
@@ -429,7 +403,7 @@ impl App {
                 (None, byroredux_debug_ui::PanelOutputs::default())
             };
         self.ui.objective_hud_cache
-            .give_back(snapshot.objectives.take());
+            .give_back(snapshot.game.objectives.take());
 
         let (resume_game, quit_game) = apply_debug_ui_outputs(
             &mut self.world,
@@ -1452,6 +1426,44 @@ struct UiOverlayState<'a> {
     reported_host_methods_capped: &'a mut bool,
 }
 
+/// The snapshot of a frame with the overlay and the game menu hidden: only the HUD's always-live
+/// layers (the player's `game` half), built without the pages' or the operator panels' data.
+fn hud_only_snapshot(
+    world: &byroredux_core::ecs::World,
+    objective_cache: &mut crate::objectives::ObjectiveHudCache,
+) -> byroredux_debug_ui::PanelSnapshot {
+    byroredux_debug_ui::PanelSnapshot {
+        game: byroredux_native_ui::PageSnapshot {
+            interaction_prompt: build_interaction_prompt(world),
+            show_crosshair: setting_bool(
+                world,
+                byroredux_debug_ui::SHOW_CROSSHAIR_SETTING_ID,
+                true,
+            ),
+            show_prompts: setting_bool(
+                world,
+                byroredux_debug_ui::SHOW_PROMPTS_SETTING_ID,
+                true,
+            ),
+            show_vitals: setting_bool(
+                world,
+                byroredux_debug_ui::SHOW_VITALS_SETTING_ID,
+                true,
+            ),
+            vitals: crate::inventory::vitals_snapshot(world),
+            show_objectives: setting_bool(
+                world,
+                byroredux_debug_ui::SHOW_OBJECTIVES_SETTING_ID,
+                true,
+            ),
+            objectives: objective_cache.lend(world),
+            stealth_indicator: crate::detection::indicator_view(world),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
 /// Strip the gameplay HUD layer (crosshair, vitals, detection indicator,
 /// objectives) from a frame's snapshot — the bench capture window and the
 /// loading screen — handing the objective lines back to their cache.
@@ -1459,10 +1471,10 @@ fn strip_gameplay_hud(
     snapshot: &mut byroredux_debug_ui::PanelSnapshot,
     objective_cache: &mut crate::objectives::ObjectiveHudCache,
 ) {
-    snapshot.show_crosshair = false;
-    snapshot.vitals = None;
-    snapshot.stealth_indicator = None;
-    objective_cache.give_back(snapshot.objectives.take());
+    snapshot.game.show_crosshair = false;
+    snapshot.game.vitals = None;
+    snapshot.game.stealth_indicator = None;
+    objective_cache.give_back(snapshot.game.objectives.take());
 }
 
 /// Tick the MenuXml HUD (Oblivion M48.4 / FO3-FNV M48.5): push engine

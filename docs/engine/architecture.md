@@ -65,7 +65,8 @@ byroredux/
 │   ├── cxx-bridge/            C++ interop via cxx
 │   ├── debug-protocol/        Wire types + component registry for the debug CLI
 │   ├── debug-server/          TCP debug server embedded in the engine
-│   ├── debug-ui/              In-engine egui overlay (metrics, load queue)
+│   ├── debug-ui/              In-engine egui overlay (metrics, load queue); hosts the native UI's frame
+│   ├── native-ui/             The player's HUD and native pages (egui; GUI-PAGE-006)
 │   └── sdk/                   Public tooling APIs for content applications
 ├── tools/
 │   ├── byro-dbg/              Standalone debug CLI binary (TCP client, REPL)
@@ -242,7 +243,7 @@ each crate's `Cargo.toml`):
 ```
 byroredux (binary)  →  core, save, renderer, platform, scripting, nif, hkx,
                        spt, bsa, bgsm, sfmaterial, facegen, audio, physics,
-                       plugin, cxx-bridge, ui, debug-ui
+                       plugin, cxx-bridge, ui, debug-ui, native-ui
                        (+ debug-server, optional)
 
 core            → (no internal deps — spine)
@@ -268,7 +269,8 @@ audio           → core             (+ bsa dev-only)
 pex             → papyrus          (+ bsa dev-only)
 scripting       → core, plugin, papyrus, pex (+ bsa dev-only)
 debug-server    → core, papyrus, debug-protocol
-debug-ui        → core
+debug-ui        → core, native-ui
+native-ui       → core
 ```
 
 `byroredux-physics` depends only on `core`, keeping `rapier3d` / `nalgebra`

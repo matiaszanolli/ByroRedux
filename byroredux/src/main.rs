@@ -966,7 +966,7 @@ mod active_upscaler_setting_tests {
         // Needles are composed at runtime so this test's own text cannot
         // satisfy them (#3442) — this module sits above the loop it scans.
         let src = include_str!("main.rs");
-        let loop_head = ["for change in ", "outputs.setting_changes {"].concat();
+        let loop_head = ["for change in ", "outputs.game.setting_changes {"].concat();
         let mut loops = src.split(loop_head.as_str());
         let loop_body = loops.nth(1).expect("setting change loop");
         assert!(loops.next().is_none(), "exactly one setting change loop");
@@ -1625,35 +1625,37 @@ fn build_debug_ui_snapshot(
         .unwrap_or_default();
 
     byroredux_debug_ui::PanelSnapshot {
-        loading_tip: None,
-        interaction_prompt: build_interaction_prompt(world),
-        show_crosshair: setting_bool(world, byroredux_debug_ui::SHOW_CROSSHAIR_SETTING_ID, true),
-        show_prompts: setting_bool(world, byroredux_debug_ui::SHOW_PROMPTS_SETTING_ID, true),
-        show_vitals: setting_bool(world, byroredux_debug_ui::SHOW_VITALS_SETTING_ID, true),
-        vitals: inventory::vitals_snapshot(world),
-        show_objectives: setting_bool(
-            world,
-            byroredux_debug_ui::SHOW_OBJECTIVES_SETTING_ID,
-            true,
-        ),
-        objectives: objectives::snapshot(world),
-        stealth_indicator: detection::indicator_view(world),
+        game: byroredux_native_ui::PageSnapshot {
+            loading_tip: None,
+            interaction_prompt: build_interaction_prompt(world),
+            show_crosshair: setting_bool(world, byroredux_debug_ui::SHOW_CROSSHAIR_SETTING_ID, true),
+            show_prompts: setting_bool(world, byroredux_debug_ui::SHOW_PROMPTS_SETTING_ID, true),
+            show_vitals: setting_bool(world, byroredux_debug_ui::SHOW_VITALS_SETTING_ID, true),
+            vitals: inventory::vitals_snapshot(world),
+            show_objectives: setting_bool(
+                world,
+                byroredux_debug_ui::SHOW_OBJECTIVES_SETTING_ID,
+                true,
+            ),
+            objectives: objectives::snapshot(world),
+            stealth_indicator: detection::indicator_view(world),
+            settings,
+            inventory: include_inventory
+                .then(|| inventory::snapshot(world))
+                .flatten(),
+            dialogue: include_dialogue
+                .then(|| crate::systems::npc_dialogue::dialogue_snapshot(world))
+                .flatten(),
+            // Empty outside a script message box: the queue drains as answered.
+            message_box: crate::notifications::front_message_box(world),
+            barter: crate::barter::snapshot(world),
+            crafting: crate::crafting::snapshot(world),
+            chargen: crate::chargen::snapshot(world),
+            labels: ui_labels(world),
+        },
         metrics,
-        settings,
-        inventory: include_inventory
-            .then(|| inventory::snapshot(world))
-            .flatten(),
-        dialogue: include_dialogue
-            .then(|| crate::systems::npc_dialogue::dialogue_snapshot(world))
-            .flatten(),
-        // Empty outside a script message box: the queue drains as answered.
-        message_box: crate::notifications::front_message_box(world),
-        barter: crate::barter::snapshot(world),
-        crafting: crate::crafting::snapshot(world),
-        chargen: crate::chargen::snapshot(world),
         entities,
         studio: studio_host::snapshot(world),
-        labels: ui_labels(world),
     }
 }
 
@@ -1663,7 +1665,7 @@ fn ui_labels(world: &World) -> byroredux_core::ui_labels::UiLabels {
     world.try_resource::<byroredux_core::ui_labels::UiLabels>().map(|labels| labels.clone()).unwrap_or_default()
 }
 
-fn build_interaction_prompt(world: &World) -> Option<byroredux_debug_ui::InteractionPrompt> {
+fn build_interaction_prompt(world: &World) -> Option<byroredux_native_ui::InteractionPrompt> {
     let verb = world
         .try_resource::<crate::interaction::InteractionState>()
         .and_then(|state| state.prompt_verb())?;
@@ -1673,7 +1675,7 @@ fn build_interaction_prompt(world: &World) -> Option<byroredux_debug_ui::Interac
         .unwrap_or("E");
     // GUI-PAGE-005 — the verb in the game's word (`sTakeAll`, `sTalk` …), shared with the table.
     let verb = world.try_resource::<byroredux_core::ui_labels::UiLabels>().map_or_else(|| verb.into(), |labels| labels.shared(verb));
-    Some(byroredux_debug_ui::InteractionPrompt { binding, verb })
+    Some(byroredux_native_ui::InteractionPrompt { binding, verb })
 }
 
 /// Report a player quicksave / quickload. The command's output is operator text (the slot,
@@ -1747,24 +1749,24 @@ fn apply_debug_ui_outputs(
     // for the next one, and the last answer closes it back to the world.
     // A character-creation screen closes on its answer, or unchanged when the page is dismissed;
     // the next screen asked for opens on a later frame (`App::present_chargen`).
-    let chargen_answered = outputs.chargen_choice.is_some();
-    if let Some(choice) = outputs.chargen_choice {
+    let chargen_answered = outputs.game.chargen_choice.is_some();
+    if let Some(choice) = outputs.game.chargen_choice {
         if crate::chargen::apply(world, choice) {
             world.resource_mut::<crate::player_body::PlayerBodyRebuildRequest>().0 = true;
         }
-    } else if outputs.resume_game && debug_ui.as_deref().is_some_and(byroredux_debug_ui::DebugUiState::chargen_menu_visible) {
+    } else if outputs.game.resume_game && debug_ui.as_deref().is_some_and(byroredux_debug_ui::DebugUiState::chargen_menu_visible) {
         crate::chargen::dismiss(world);
     }
-    let resume_game = outputs.resume_game
+    let resume_game = outputs.game.resume_game
         || chargen_answered
         || outputs
-            .message_box_choice
+            .game.message_box_choice
             .is_some_and(|choice| !crate::notifications::answer_message_box(world, Some(choice)));
-    let quit_game = outputs.quit_game;
+    let quit_game = outputs.game.quit_game;
     for command in outputs.studio_commands {
         studio_host::apply_command(world, command);
     }
-    if outputs.quicksave {
+    if outputs.game.quicksave {
         if let Err(error) =
             save_io::queue_player_save_action(world, save_io::PlayerSaveAction::Quicksave)
         {
@@ -1776,7 +1778,7 @@ fn apply_debug_ui_outputs(
             );
         }
     }
-    if outputs.quickload {
+    if outputs.game.quickload {
         if let Err(error) =
             save_io::queue_player_save_action(world, save_io::PlayerSaveAction::Quickload)
         {
@@ -1789,26 +1791,26 @@ fn apply_debug_ui_outputs(
         }
     }
     let mut settings_changed = false;
-    for action in outputs.inventory_actions {
+    for action in outputs.game.inventory_actions {
         if inventory::apply_action(world, action) == inventory::MutationResult::Unavailable {
             log::warn!("native inventory action was unavailable for the current player/item");
         }
     }
     // M47.2 — barter trades, one unit each; a refusal is player feedback.
-    for action in outputs.barter_actions {
+    for action in outputs.game.barter_actions {
         if let Err(reason) = crate::barter::apply_action(world, action) {
             crate::notifications::push(world, reason);
         }
     }
     // M43 — crafting at the open bench; a refusal is player feedback.
-    for action in outputs.crafting_actions {
+    for action in outputs.game.crafting_actions {
         if let Err(reason) = crate::crafting::apply_action(world, action) {
             crate::notifications::push(world, reason);
         }
     }
-    for action in outputs.dialogue_actions {
+    for action in outputs.game.dialogue_actions {
         match action {
-            byroredux_debug_ui::DialogueUiAction::SelectTopic {
+            byroredux_native_ui::DialogueUiAction::SelectTopic {
                 npc,
                 topic_form_id,
             } => {
@@ -1835,7 +1837,7 @@ fn apply_debug_ui_outputs(
             }
         }
     }
-    for change in outputs.setting_changes {
+    for change in outputs.game.setting_changes {
         // The upscaler entry cannot be applied here: switching rebuilds every
         // render-resolution target and needs `&mut VulkanContext`. Stage it
         // for the frame boundary, where `step_upscaler_switch` drains it.

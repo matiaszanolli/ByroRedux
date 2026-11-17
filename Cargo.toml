@@ -32,6 +32,7 @@ members = [
     "crates/debug-protocol",
     "crates/debug-server",
     "crates/debug-ui",
+    "crates/native-ui",
     "crates/sdk",
     "tools/byro-detect",
     "tools/byro-launcher",
@@ -83,6 +84,7 @@ byroredux-binkaudio = { path = "crates/binkaudio" }
 byroredux-debug-protocol = { path = "crates/debug-protocol" }
 byroredux-debug-server = { path = "crates/debug-server" }
 byroredux-debug-ui = { path = "crates/debug-ui" }
+byroredux-native-ui = { path = "crates/native-ui" }
 byroredux-sdk = { path = "crates/sdk" }
 byro-texture-upscale = { path = "tools/texture-upscale" }
 

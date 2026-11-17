@@ -91,7 +91,7 @@ fn timed_consumption_ticks_partial_frames_and_stops_on_death() {
         .get_mut(&0x5678)
         .unwrap()[0]
         .duration = 3;
-    let action = byroredux_debug_ui::InventoryAction::Consume {
+    let action = byroredux_native_ui::InventoryAction::Consume {
         index: 1,
         form_id: 0x5678,
     };
@@ -154,7 +154,7 @@ fn medicine_scaling_uses_live_composed_skill_and_preflights_missing_or_invalid_v
         .get_mut(&0x5678)
         .unwrap()[0]
         .medicine = scale;
-    let action = byroredux_debug_ui::InventoryAction::Consume {
+    let action = byroredux_native_ui::InventoryAction::Consume {
         index: 1,
         form_id: 0x5678,
     };
@@ -272,7 +272,7 @@ fn real_stimpaks_restore_scaled_health_and_limbs_but_hardcore_only_health() {
                 assert_eq!(
                     apply_action(
                         &mut world,
-                        byroredux_debug_ui::InventoryAction::Consume {
+                        byroredux_native_ui::InventoryAction::Consume {
                             index: 0,
                             form_id: 0x15169
                         }
@@ -385,7 +385,7 @@ fn conditional_consumption_observes_perks_at_use_time() {
         parse_alch_for_game(0x5678, &subs, index.game, &None),
     );
     install_catalog(&mut world, &index);
-    let action = byroredux_debug_ui::InventoryAction::Consume {
+    let action = byroredux_native_ui::InventoryAction::Consume {
         index: 1,
         form_id: 0x5678,
     };
@@ -452,7 +452,7 @@ fn consuming_restores_damage_decrements_once_and_keeps_equipment_indices() {
             .unwrap()
             .consumable
     );
-    let action = byroredux_debug_ui::InventoryAction::Consume {
+    let action = byroredux_native_ui::InventoryAction::Consume {
         index: 1,
         form_id: 0x5678,
     };
@@ -513,7 +513,7 @@ fn unavailable_consumption_never_changes_health_or_count() {
         assert_eq!(
             apply_action(
                 &mut world,
-                byroredux_debug_ui::InventoryAction::Consume { index: 1, form_id }
+                byroredux_native_ui::InventoryAction::Consume { index: 1, form_id }
             ),
             MutationResult::Unavailable
         );
@@ -547,7 +547,7 @@ fn consuming_invalid_instance_is_atomic() {
             assert_eq!(
                 apply_action(
                     &mut world,
-                    byroredux_debug_ui::InventoryAction::Consume {
+                    byroredux_native_ui::InventoryAction::Consume {
                         index: 1,
                         form_id: 0x5678,
                     },
@@ -594,7 +594,7 @@ fn consuming_final_instance_releases_pool_and_never_overheals() {
     assert_eq!(
         apply_action(
             &mut world,
-            byroredux_debug_ui::InventoryAction::Consume {
+            byroredux_native_ui::InventoryAction::Consume {
                 index: 1,
                 form_id: 0x5678
             }
@@ -625,7 +625,7 @@ fn real_skyrim_healing_potion_runs_through_native_action() {
     assert_eq!(
         apply_action(
             &mut world,
-            byroredux_debug_ui::InventoryAction::Consume {
+            byroredux_native_ui::InventoryAction::Consume {
                 index: 1,
                 form_id: 0x3EADD
             }
@@ -658,7 +658,7 @@ fn real_fallout3_bloodpack_selects_live_perk_bonus() {
     values.apply_damage(health, 60.0);
     world.insert(player, values);
     world.insert(player, ActorVitals { health });
-    let action = byroredux_debug_ui::InventoryAction::Consume {
+    let action = byroredux_native_ui::InventoryAction::Consume {
         index: 1,
         form_id: 0x34051,
     };
@@ -1451,7 +1451,7 @@ fn toggle_equip_mutates_only_supported_items() {
     assert_eq!(
         apply_action(
             &mut world,
-            byroredux_debug_ui::InventoryAction::ToggleEquip { index: 0 }
+            byroredux_native_ui::InventoryAction::ToggleEquip { index: 0 }
         ),
         MutationResult::Equipped
     );
@@ -1462,7 +1462,7 @@ fn toggle_equip_mutates_only_supported_items() {
     assert_eq!(
         apply_action(
             &mut world,
-            byroredux_debug_ui::InventoryAction::ToggleEquip { index: 0 }
+            byroredux_native_ui::InventoryAction::ToggleEquip { index: 0 }
         ),
         MutationResult::Unequipped
     );
@@ -1471,14 +1471,14 @@ fn toggle_equip_mutates_only_supported_items() {
     assert_eq!(
         apply_action(
             &mut world,
-            byroredux_debug_ui::InventoryAction::ToggleEquip { index: 1 }
+            byroredux_native_ui::InventoryAction::ToggleEquip { index: 1 }
         ),
         MutationResult::Unavailable
     );
     assert_eq!(
         apply_action(
             &mut world,
-            byroredux_debug_ui::InventoryAction::ToggleEquip { index: 2 }
+            byroredux_native_ui::InventoryAction::ToggleEquip { index: 2 }
         ),
         MutationResult::Equipped
     );
@@ -1496,7 +1496,7 @@ fn toggle_equip_mutates_only_supported_items() {
     assert_eq!(
         apply_action(
             &mut world,
-            byroredux_debug_ui::InventoryAction::ToggleEquip { index: 2 }
+            byroredux_native_ui::InventoryAction::ToggleEquip { index: 2 }
         ),
         MutationResult::Unequipped
     );
@@ -1539,7 +1539,7 @@ fn refused_menu_actions_notify_and_a_dead_player_cannot_toggle_equipment() {
 
     let result = apply_action(
         &mut world,
-        byroredux_debug_ui::InventoryAction::ToggleEquip { index: 0 },
+        byroredux_native_ui::InventoryAction::ToggleEquip { index: 0 },
     );
     assert_eq!(result, MutationResult::Unavailable);
     assert!(!world
@@ -1548,7 +1548,7 @@ fn refused_menu_actions_notify_and_a_dead_player_cannot_toggle_equipment() {
         .is_equipped(InventoryIndex(0)));
     let result = apply_action(
         &mut world,
-        byroredux_debug_ui::InventoryAction::Consume {
+        byroredux_native_ui::InventoryAction::Consume {
             index: 1,
             form_id: 0x5678,
         },
@@ -1565,7 +1565,7 @@ fn refused_menu_actions_notify_and_a_dead_player_cannot_toggle_equipment() {
     world.remove::<Dead>(player);
     let result = apply_action(
         &mut world,
-        byroredux_debug_ui::InventoryAction::ToggleEquip { index: 0 },
+        byroredux_native_ui::InventoryAction::ToggleEquip { index: 0 },
     );
     assert_eq!(result, MutationResult::Equipped);
     assert!(
@@ -1605,7 +1605,7 @@ fn equipping_a_bit31_armor_does_not_unequip_the_weapon() {
     assert_eq!(
         apply_action(
             &mut world,
-            byroredux_debug_ui::InventoryAction::ToggleEquip { index: 2 }
+            byroredux_native_ui::InventoryAction::ToggleEquip { index: 2 }
         ),
         MutationResult::Equipped
     );
@@ -1615,7 +1615,7 @@ fn equipping_a_bit31_armor_does_not_unequip_the_weapon() {
     assert_eq!(
         apply_action(
             &mut world,
-            byroredux_debug_ui::InventoryAction::ToggleEquip { index: 0 }
+            byroredux_native_ui::InventoryAction::ToggleEquip { index: 0 }
         ),
         MutationResult::Equipped
     );
@@ -1648,11 +1648,11 @@ fn equipping_a_weapon_does_not_displace_a_bit31_armor() {
 
     apply_action(
         &mut world,
-        byroredux_debug_ui::InventoryAction::ToggleEquip { index: 0 },
+        byroredux_native_ui::InventoryAction::ToggleEquip { index: 0 },
     );
     apply_action(
         &mut world,
-        byroredux_debug_ui::InventoryAction::ToggleEquip { index: 2 },
+        byroredux_native_ui::InventoryAction::ToggleEquip { index: 2 },
     );
 
     let slots = world.get::<EquipmentSlots>(player).unwrap();
@@ -1697,18 +1697,18 @@ fn armor_toggles_never_touch_the_equipped_weapon() {
     let (mut world, player) = fixture();
     apply_action(
         &mut world,
-        byroredux_debug_ui::InventoryAction::ToggleEquip { index: 2 },
+        byroredux_native_ui::InventoryAction::ToggleEquip { index: 2 },
     );
     let before = *world.get::<EquippedWeapon>(player).unwrap();
 
     // Equip then unequip the armor.
     apply_action(
         &mut world,
-        byroredux_debug_ui::InventoryAction::ToggleEquip { index: 0 },
+        byroredux_native_ui::InventoryAction::ToggleEquip { index: 0 },
     );
     apply_action(
         &mut world,
-        byroredux_debug_ui::InventoryAction::ToggleEquip { index: 0 },
+        byroredux_native_ui::InventoryAction::ToggleEquip { index: 0 },
     );
 
     let after = *world.get::<EquippedWeapon>(player).unwrap();
@@ -2250,13 +2250,13 @@ fn vitals_snapshot_composes_layers_and_skips_absent_values() {
     assert_eq!(
         bars,
         vec![
-            byroredux_debug_ui::VitalBarView {
+            byroredux_native_ui::VitalBarView {
                 label: "Health".into(),
                 actor_value: "Health",
                 current: 65.0,
                 max: 100.0
             },
-            byroredux_debug_ui::VitalBarView {
+            byroredux_native_ui::VitalBarView {
                 label: "Magicka".into(),
                 actor_value: "Magicka",
                 current: 70.0,
@@ -2313,7 +2313,7 @@ fn vitals_snapshot_max_includes_the_set_override_layer() {
     let bars = vitals_snapshot(&world).expect("a populated player must compose bars");
     assert_eq!(
         bars,
-        vec![byroredux_debug_ui::VitalBarView {
+        vec![byroredux_native_ui::VitalBarView {
             label: "Health".into(),
             actor_value: "Health",
             current: 405.0,
@@ -2341,7 +2341,7 @@ fn vitals_snapshot_appends_the_rad_gauge_after_the_pools() {
     values.set_base(1001, 70.0);
     world.insert(player, values);
     let rad = |world: &World| vitals_snapshot(world).unwrap().pop().unwrap();
-    assert_eq!(rad(&world), byroredux_debug_ui::VitalBarView { label: "RAD".into(), actor_value: "RadiationRads", current: 0.0, max: 1000.0 });
+    assert_eq!(rad(&world), byroredux_native_ui::VitalBarView { label: "RAD".into(), actor_value: "RadiationRads", current: 0.0, max: 1000.0 });
 
     world.get_mut::<byroredux_core::ecs::components::ActorValues>(player).unwrap().mod_temporary(0x5E4, 250.0);
     assert_eq!(rad(&world).current, 250.0);
@@ -2941,7 +2941,7 @@ fn gated_script_use(condition: byroredux_plugin::esm::records::condition::Condit
             }],
         );
     }
-    let result = apply_action(&mut world, byroredux_debug_ui::InventoryAction::Consume { index: 1, form_id: 0x6000 });
+    let result = apply_action(&mut world, byroredux_native_ui::InventoryAction::Consume { index: 1, form_id: 0x6000 });
     let active = world.get::<ActiveMagicEffects>(player).map_or(0, |effects| effects.0.len());
     (result, active)
 }
@@ -3000,7 +3000,7 @@ fn dropping_an_item_creates_a_reference_and_raises_remove_from_player() {
     });
     world.resource_mut::<InventoryCatalog>().containers.clear();
 
-    let action = byroredux_debug_ui::InventoryAction::Drop { index: 1, form_id: 0x5678 };
+    let action = byroredux_native_ui::InventoryAction::Drop { index: 1, form_id: 0x5678 };
     assert_eq!(apply_action(&mut world, action), MutationResult::Dropped);
     assert_eq!(world.get::<Inventory>(player).unwrap().items[1].count, 11);
 
@@ -3036,7 +3036,7 @@ fn dropping_an_item_creates_a_reference_and_raises_remove_from_player() {
     // An equipped row cannot be dropped, nor a base the pickup path would not take.
     world.get_mut::<EquipmentSlots>(player).unwrap().equip(1 << 12, InventoryIndex(0));
     assert_eq!(
-        apply_action(&mut world, byroredux_debug_ui::InventoryAction::Drop { index: 0, form_id: 0x1234 }),
+        apply_action(&mut world, byroredux_native_ui::InventoryAction::Drop { index: 0, form_id: 0x1234 }),
         MutationResult::Unavailable
     );
 }

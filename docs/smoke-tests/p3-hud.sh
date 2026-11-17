@@ -10,7 +10,7 @@
 #           as the top-left objective line
 #
 # The gate is pixel-deterministic: it scans the captures for the exact
-# bar-fill and title colors `crates/debug-ui/src/panels/hud.rs` paints, so a
+# bar-fill and title colors `crates/native-ui/src/hud.rs` paints, so a
 # washed-out or misplaced HUD fails rather than passes. The fixture carries
 # the route: cell + pose, the quest stage whose script displays an objective
 # (Skyrim: MS01's stage-15 fragment; FNV: VCG02's stage-5 result script), and

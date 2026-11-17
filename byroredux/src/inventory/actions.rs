@@ -3,7 +3,7 @@
 use super::*;
 
 /// Build the presentation snapshot only while the native inventory is visible.
-pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::InventorySnapshot> {
+pub(crate) fn snapshot(world: &World) -> Option<byroredux_native_ui::InventorySnapshot> {
     let player = PlayerEntity::get(world)?;
     // Clone each component before acquiring the next storage lock. The menu
     // is off the hot path, and this preserves the ECS invariant that callers
@@ -31,7 +31,7 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::InventorySna
             .and_then(|instance| pool.as_ref()?.get(instance).map(|inst| inst.quality))
             .unwrap_or(0);
         let improvement = (quality > 0).then(|| crate::smithing::describe(quality, definition));
-        items.push(byroredux_debug_ui::InventoryItemView {
+        items.push(byroredux_native_ui::InventoryItemView {
             index,
             form_id: stack.base_form_id,
             name: definition.map_or_else(
@@ -66,7 +66,7 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::InventorySna
             .then_with(|| left.index.cmp(&right.index))
     });
 
-    Some(byroredux_debug_ui::InventorySnapshot {
+    Some(byroredux_native_ui::InventorySnapshot {
         items,
         total_weight: catalog
             .as_ref()
@@ -380,9 +380,9 @@ pub(crate) fn dropped_item_story_event_system(world: &World, dt: f32) {
 /// of the "Used {name}" line a successful use pushes.
 pub(crate) fn apply_action(
     world: &mut World,
-    action: byroredux_debug_ui::InventoryAction,
+    action: byroredux_native_ui::InventoryAction,
 ) -> MutationResult {
-    use byroredux_debug_ui::InventoryAction;
+    use byroredux_native_ui::InventoryAction;
     let result = match action {
         InventoryAction::Consume { index, form_id } => consume_item(world, index, form_id),
         InventoryAction::ToggleEquip { index } => toggle_equip(world, index),
@@ -397,8 +397,8 @@ pub(crate) fn apply_action(
 /// The player-visible half of a refused menu action (#4707). The item is
 /// named from the catalog; the row's base form stands in when the catalog
 /// has no entry, the same fallback [`pickup_loot`] uses.
-pub(super) fn notify_refused_action(world: &World, action: byroredux_debug_ui::InventoryAction) {
-    use byroredux_debug_ui::InventoryAction;
+pub(super) fn notify_refused_action(world: &World, action: byroredux_native_ui::InventoryAction) {
+    use byroredux_native_ui::InventoryAction;
     let (verb, form_id) = match action {
         InventoryAction::Consume { form_id, .. } => ("use", Some(form_id)),
         InventoryAction::Drop { form_id, .. } => ("drop", Some(form_id)),

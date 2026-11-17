@@ -1066,7 +1066,7 @@ fn speaker_full_name(world: &World, npc: EntityId) -> String {
 /// happens to yield first.
 pub(crate) fn dialogue_snapshot(
     world: &World,
-) -> Option<byroredux_debug_ui::DialogueTopicSnapshot> {
+) -> Option<byroredux_native_ui::DialogueTopicSnapshot> {
     let surface = *world.try_resource::<DialogueSurfaceState>()?;
     let npc = surface.npc?;
     let topic = world.get::<NpcDialogueTopic>(npc)?.clone();
@@ -1074,7 +1074,7 @@ pub(crate) fn dialogue_snapshot(
         .try_resource::<byroredux_core::ecs::resources::TotalTime>()
         .map(|time| time.0)
         .unwrap_or_default();
-    Some(byroredux_debug_ui::DialogueTopicSnapshot {
+    Some(byroredux_native_ui::DialogueTopicSnapshot {
         speaking: surface.line_ends_at.is_some_and(|ends| now < ends),
         voiced: surface.line_voiced,
         choices: topic.choices,
@@ -1087,7 +1087,7 @@ pub(crate) fn dialogue_snapshot(
         topics: topic
             .topics
             .iter()
-            .map(|entry| byroredux_debug_ui::DialogueTopicEntryView {
+            .map(|entry| byroredux_native_ui::DialogueTopicEntryView {
                 topic_form_id: entry.topic_form_id,
                 name: entry.name.clone(),
                 said: byroredux_scripting::info_spoken(world, npc, entry.info_form_id),

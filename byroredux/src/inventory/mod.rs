@@ -82,7 +82,7 @@ pub(crate) fn player_npc_form_id(game: GameKind) -> u32 {
 /// beside the other per-frame player actions. Runtime plumbing, never
 /// serialized.
 #[derive(Debug, Default)]
-pub(crate) struct PendingInventoryActions(pub(crate) Vec<byroredux_debug_ui::InventoryAction>);
+pub(crate) struct PendingInventoryActions(pub(crate) Vec<byroredux_native_ui::InventoryAction>);
 
 impl Resource for PendingInventoryActions {}
 
@@ -132,7 +132,7 @@ pub(crate) fn queue_equip_by_form_id(world: &World, form_id: u32) -> Result<Stri
     };
     pending
         .0
-        .push(byroredux_debug_ui::InventoryAction::ToggleEquip {
+        .push(byroredux_native_ui::InventoryAction::ToggleEquip {
             index: index as u32,
         });
     Ok(format!(
@@ -143,12 +143,12 @@ pub(crate) fn queue_equip_by_form_id(world: &World, form_id: u32) -> Result<Stri
 /// Queue the menu's own `Consume` of the player's row carrying `form_id` (`inv.use`): the same door a
 /// click on "use" takes, drained by [`drain_pending_inventory_actions`].
 pub(crate) fn queue_consume_by_form_id(world: &World, form_id: u32) -> Result<String, String> {
-    queue_by_form_id(world, form_id, "use", |index, form_id| byroredux_debug_ui::InventoryAction::Consume { index, form_id })
+    queue_by_form_id(world, form_id, "use", |index, form_id| byroredux_native_ui::InventoryAction::Consume { index, form_id })
 }
 
 /// Queue the menu's own `Drop` of one item of the player's row carrying `form_id` (`inv.drop`).
 pub(crate) fn queue_drop_by_form_id(world: &World, form_id: u32) -> Result<String, String> {
-    queue_by_form_id(world, form_id, "drop", |index, form_id| byroredux_debug_ui::InventoryAction::Drop { index, form_id })
+    queue_by_form_id(world, form_id, "drop", |index, form_id| byroredux_native_ui::InventoryAction::Drop { index, form_id })
 }
 
 /// Queue `action` for the player's first row carrying `form_id`; `verb` names it in the reply.
@@ -156,7 +156,7 @@ fn queue_by_form_id(
     world: &World,
     form_id: u32,
     verb: &str,
-    action: impl FnOnce(u32, u32) -> byroredux_debug_ui::InventoryAction,
+    action: impl FnOnce(u32, u32) -> byroredux_native_ui::InventoryAction,
 ) -> Result<String, String> {
     let player = PlayerEntity::get(world).ok_or_else(|| "no player".to_string())?;
     let index = world
@@ -205,7 +205,7 @@ fn drain_script_weapon_equips(world: &mut World) {
         let wielded = world.get::<EquipmentSlots>(actor).is_some_and(|slots| slots.is_equipped(InventoryIndex(row as u32)));
         if !wielded {
             if let Some(mut pending) = world.try_resource_mut::<PendingInventoryActions>() {
-                pending.0.push(byroredux_debug_ui::InventoryAction::ToggleEquip { index: row as u32 });
+                pending.0.push(byroredux_native_ui::InventoryAction::ToggleEquip { index: row as u32 });
             }
         }
     }

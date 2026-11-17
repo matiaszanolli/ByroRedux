@@ -60,8 +60,8 @@ impl ConsoleCommand for StealthStatusCommand {
         let summary = world.try_resource::<crate::detection::PlayerDetection>().map(|d| *d).unwrap_or_default();
         let indicator = match crate::detection::indicator_view(world) {
             Some(view) => match view.look {
-                byroredux_debug_ui::StealthIndicatorLook::Label(label) => format!("{:?} \"{label}\"", view.state),
-                byroredux_debug_ui::StealthIndicatorLook::Eye => format!("{:?} (eye)", view.state),
+                byroredux_native_ui::StealthIndicatorLook::Label(label) => format!("{:?} \"{label}\"", view.state),
+                byroredux_native_ui::StealthIndicatorLook::Eye => format!("{:?} (eye)", view.state),
             },
             None => "hidden".to_string(),
         };

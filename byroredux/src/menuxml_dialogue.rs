@@ -21,7 +21,7 @@
 //! whole screen while the line shows) or on the line skips it; a click on a row selects that
 //! topic through `select_topic_by_form_id`, as the native page's click does.
 
-use byroredux_debug_ui::DialogueTopicSnapshot;
+use byroredux_native_ui::DialogueTopicSnapshot;
 use byroredux_menuxml::{MenuRenderer, ScreenTraits, TileHit};
 
 use crate::hud::HudAssets;
@@ -206,7 +206,7 @@ mod tests {
     #[test]
     #[ignore = "needs FNV game data on disk"]
     fn fnv_dialogue_document_presents_a_conversation() {
-        use byroredux_debug_ui::DialogueTopicEntryView;
+        use byroredux_native_ui::DialogueTopicEntryView;
         use byroredux_plugin::esm::test_paths::{data_dir, FNV_DEFAULT, FNV_ENV};
         let profile = crate::hud::HudGameProfile::fallout_nv();
         let assets = HudAssets::open_in(profile, &data_dir(FNV_ENV, FNV_DEFAULT)).expect("FNV menu archives");

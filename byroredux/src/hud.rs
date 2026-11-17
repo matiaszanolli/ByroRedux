@@ -903,7 +903,7 @@ fn place_engine_anchored(renderer: &mut MenuRenderer, profile: &HudGameProfile, 
 
 /// The sneak element's alpha this frame: 0 without an indicator, a 0.5 s
 /// pulse in the danger state (`Fallout3.exe` `0x937bd2`), 255 otherwise.
-fn sneak_alpha(view: Option<&byroredux_debug_ui::StealthIndicatorView>, secs: f32) -> u8 {
+fn sneak_alpha(view: Option<&byroredux_native_ui::StealthIndicatorView>, secs: f32) -> u8 {
     match view.map(|view| view.state) {
         None => 0,
         Some(byroredux_core::stealth::IndicatorState::Danger) => {
@@ -917,7 +917,7 @@ fn sneak_alpha(view: Option<&byroredux_debug_ui::StealthIndicatorView>, secs: f3
 fn drive_sneak_element(
     renderer: &mut MenuRenderer,
     sneak: HudSneak,
-    view: Option<&byroredux_debug_ui::StealthIndicatorView>,
+    view: Option<&byroredux_native_ui::StealthIndicatorView>,
     alpha: u8,
 ) {
     use byroredux_core::stealth::IndicatorState;
@@ -925,7 +925,7 @@ fn drive_sneak_element(
         HudSneak::Text { text, .. } => {
             renderer.set_override(text, "alpha", f32::from(alpha));
             let Some(view) = view else { return };
-            if let byroredux_debug_ui::StealthIndicatorLook::Label(label) = &view.look {
+            if let byroredux_native_ui::StealthIndicatorLook::Label(label) = &view.look {
                 renderer.set_override_str(text, "string", label);
             }
             let alarmed = view.state >= IndicatorState::Caution;
@@ -1033,7 +1033,7 @@ mod tests {
     fn sneak_frames(
         profile: HudGameProfile,
         data: std::path::PathBuf,
-        view: byroredux_debug_ui::StealthIndicatorView,
+        view: byroredux_native_ui::StealthIndicatorView,
     ) -> Option<SneakFrames> {
         let assets = HudAssets::open_in(profile, &data)?;
         let mut renderer =
@@ -1068,9 +1068,9 @@ mod tests {
     #[ignore = "needs FNV game data on disk"]
     fn the_fnv_hud_draws_the_sneak_label() {
         let data = byroredux_plugin::esm::test_paths::fnv_data_dir();
-        let view = byroredux_debug_ui::StealthIndicatorView {
+        let view = byroredux_native_ui::StealthIndicatorView {
             state: byroredux_core::stealth::IndicatorState::Hidden,
-            look: byroredux_debug_ui::StealthIndicatorLook::Label("[HIDDEN]".into()),
+            look: byroredux_native_ui::StealthIndicatorLook::Label("[HIDDEN]".into()),
         };
         let Some(frames) = sneak_frames(HudGameProfile::fallout_nv(), data, view) else {
             byroredux_plugin::esm::test_paths::require_or_skip("the FNV Misc and Textures archives");
@@ -1087,9 +1087,9 @@ mod tests {
     #[ignore = "needs Oblivion game data on disk"]
     fn the_oblivion_hud_lights_the_sneak_eye() {
         let data = byroredux_plugin::esm::test_paths::oblivion_data_dir();
-        let view = byroredux_debug_ui::StealthIndicatorView {
+        let view = byroredux_native_ui::StealthIndicatorView {
             state: byroredux_core::stealth::IndicatorState::Detected,
-            look: byroredux_debug_ui::StealthIndicatorLook::Eye,
+            look: byroredux_native_ui::StealthIndicatorLook::Eye,
         };
         let Some(frames) = sneak_frames(HudGameProfile::oblivion(), data, view) else {
             byroredux_plugin::esm::test_paths::require_or_skip("the Oblivion Misc and Textures archives");

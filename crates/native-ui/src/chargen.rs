@@ -10,7 +10,7 @@
 use byroredux_core::ui_labels::UiLabels;
 use egui::{Color32, RichText};
 
-use super::{ChargenChoice, ChargenScreenView, ChargenSnapshot, PanelOutputs};
+use super::{ChargenChoice, ChargenScreenView, ChargenSnapshot, PageOutputs};
 
 /// The page's working copy of the open screen's choices.
 #[derive(Debug, Clone, Default)]
@@ -65,7 +65,7 @@ pub(super) fn draw_chargen_page(
     labels: &UiLabels,
     snapshot: Option<&ChargenSnapshot>,
     draft: &mut ChargenDraft,
-    outputs: &mut PanelOutputs,
+    outputs: &mut PageOutputs,
 ) {
     let Some(snapshot) = snapshot else {
         if ui.button(labels.text("Close")).clicked() {
@@ -156,7 +156,7 @@ fn draw_picks(ui: &mut egui::Ui, options: &[(&super::ChargenOption, Option<i32>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::panels::ChargenOption;
+    use crate::ChargenOption;
 
     fn snapshot(screen: ChargenScreenView) -> ChargenSnapshot {
         let option = |id: u32| ChargenOption { id, name: format!("option {id}"), description: String::new() };

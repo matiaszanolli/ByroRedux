@@ -345,7 +345,7 @@ fn price_terms(
 }
 
 /// The barter page's view of the open session.
-pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::BarterSnapshot> {
+pub(crate) fn snapshot(world: &World) -> Option<byroredux_native_ui::BarterSnapshot> {
     let session = session(world)?;
     let player = crate::systems::PlayerEntity::get(world)?;
     let rules = world.try_resource::<BarterRules>()?.clone();
@@ -358,7 +358,7 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::BarterSnapsh
         let name = catalog
             .sdk_metadata(form)
             .map_or_else(|| format!("{form:08X}"), |item| item.name().to_owned());
-        byroredux_debug_ui::BarterItemView {
+        byroredux_native_ui::BarterItemView {
             form_id: form,
             name,
             count,
@@ -396,7 +396,7 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::BarterSnapsh
                 .map(str::to_owned)
         })
         .unwrap_or_else(|| "Merchant".to_owned());
-    Some(byroredux_debug_ui::BarterSnapshot {
+    Some(byroredux_native_ui::BarterSnapshot {
         vendor_name,
         player_gold: world.get::<Inventory>(player).map_or(0, |inventory| inventory.count_of(CURRENCY)),
         vendor_gold: world.get::<Inventory>(session.stock).map_or(0, |inventory| inventory.count_of(CURRENCY)),
@@ -415,9 +415,9 @@ fn labels(world: &World) -> byroredux_core::ui_labels::UiLabels {
 /// purse); the rest are engine wording.
 pub(crate) fn apply_action(
     world: &World,
-    action: byroredux_debug_ui::BarterAction,
+    action: byroredux_native_ui::BarterAction,
 ) -> Result<(), std::borrow::Cow<'static, str>> {
-    use byroredux_debug_ui::BarterAction;
+    use byroredux_native_ui::BarterAction;
     let snapshot = snapshot(world).ok_or("no barter in progress")?;
     let session = session(world).ok_or("no barter in progress")?;
     let player = crate::systems::PlayerEntity::get(world).ok_or("no player")?;

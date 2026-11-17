@@ -569,6 +569,7 @@ dependencies = [
  "byroredux-hkx",
  "byroredux-menuxml",
  "byroredux-mod-runtime",
+ "byroredux-native-ui",
  "byroredux-nif",
  "byroredux-papyrus",
  "byroredux-physics",
@@ -707,6 +708,7 @@ name = "byroredux-debug-ui"
 version = "0.1.0"
 dependencies = [
  "byroredux-core",
+ "byroredux-native-ui",
  "byroredux-sdk",
  "egui",
  "egui-winit",
@@ -773,6 +775,14 @@ dependencies = [
  "thiserror 2.0.18",
  "wasmtime",
  "wat",
+]
+
+[[package]]
+name = "byroredux-native-ui"
+version = "0.1.0"
+dependencies = [
+ "byroredux-core",
+ "egui",
 ]
 
 [[package]]

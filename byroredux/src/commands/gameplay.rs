@@ -79,7 +79,7 @@ impl ConsoleCommand for InvAddCommand {
 
 /// `inv.equip <form_id>` — toggle the equipment state of the player's row
 /// carrying `form_id`. Queues the native menu's own
-/// [`byroredux_debug_ui::InventoryAction::ToggleEquip`], drained through
+/// [`byroredux_native_ui::InventoryAction::ToggleEquip`], drained through
 /// `apply_action` on the main thread — one canonical mutation path, a
 /// delayed frontend.
 pub(crate) struct InvEquipCommand;

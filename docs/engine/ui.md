@@ -1082,6 +1082,19 @@ Mitchell with the speaking cue. Live, the document draws the speaker and the
 wrapped line in `Glow_Monofonto_VL_dialogs` on its panel. The list's bracket art
 (`fade_to_top.dds` / `fade_to_bottom.dds`, `solid.dds`) does not resolve yet.
 
+#### Native pages out of the operator crate (GUI-PAGE-006) — Phase 4 (#6666)
+
+The player's HUD and native pages (pause, settings, inventory, message box, barter, crafting,
+dialogue, character creation) live in `crates/native-ui` (`byroredux-native-ui`, depending on
+core and egui only), no longer beside the F3 panels in `byroredux-debug-ui`. They read only
+`PageSnapshot` (the player's state) and hand back only `PageOutputs` (the player's actions);
+the operator overlay's `PanelSnapshot` / `PanelOutputs` nest those as `game` beside the
+operator fields (metrics, entities, Studio, the load queue, console evals). The overlay crate
+still hosts the one egui context and pass both draw into (input, the frame, the render
+handoff): `DebugUiState::run` calls `byroredux_native_ui::{draw_hud, draw_game_menu, …}` with
+`&snapshot.game` / `&mut outputs.game`, and keeps the `GameMenuState` instance. The setting
+control both settings surfaces share (`draw_setting_control`) moved with the pages.
+
 #### Native page labels (GUI-PAGE-005) — Phase 4 (#6666)
 
 Where a native page stays the surface, its words come from the game's data.
@@ -1101,7 +1114,7 @@ outlive the frame (`InteractionPrompt::verb`, `VitalBarView::label`) hold `Arc<s
   these settings (its 648 `GMST`s are gameplay values); the defaults are in the packed
   executable (GUI-FONT-005's FNV source is open), so FNV draws the keys unless a plugin authors
   the setting.
-- **Where it is used.** Every page in `crates/debug-ui/src/panels/game_menu.rs` and
+- **Where it is used.** Every page in `crates/native-ui/src/game_menu.rs` and
   `chargen.rs` (buttons, headings, tabs, detail rows, the settings registry's labels), the
   interaction prompt verbs, the vitals labels, the barter refusals, the XP and key notices, and
   the quicksave / quickload lines.

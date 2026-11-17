@@ -36,7 +36,7 @@ const MAX_OBJECTIVE_CHARS: usize = 96;
 /// each dropped before the next is taken, so this producer can never
 /// participate in a cross-storage acquisition cycle — the parallel-systems
 /// discipline `inventory::consume_item` documents for its catalog guard.
-pub(crate) fn snapshot(world: &World) -> Option<Vec<byroredux_debug_ui::ObjectiveView>> {
+pub(crate) fn snapshot(world: &World) -> Option<Vec<byroredux_native_ui::ObjectiveView>> {
     let running: Vec<byroredux_scripting::QuestFormId> = world
         .try_resource::<QuestStageState>()?
         .iter()
@@ -67,7 +67,7 @@ pub(crate) fn snapshot(world: &World) -> Option<Vec<byroredux_debug_ui::Objectiv
     let definitions = world.try_resource::<QuestDefinitionRegistry>()?;
     // Collect every candidate, then order — an early break would let the
     // stage map's iteration order decide which quest survives the cap.
-    let mut lines: Vec<(u32, i32, byroredux_debug_ui::ObjectiveView)> = Vec::new();
+    let mut lines: Vec<(u32, i32, byroredux_native_ui::ObjectiveView)> = Vec::new();
     for (quest, objectives) in candidates {
         for (index, status) in objectives {
             if !status.displayed || status.completed || status.failed {
@@ -83,7 +83,7 @@ pub(crate) fn snapshot(world: &World) -> Option<Vec<byroredux_debug_ui::Objectiv
             lines.push((
                 quest.0,
                 index,
-                byroredux_debug_ui::ObjectiveView {
+                byroredux_native_ui::ObjectiveView {
                     quest: quest_display_name(Some(&definitions), quest),
                     text: flatten_text(text),
                 },
@@ -108,14 +108,14 @@ pub(crate) fn snapshot(world: &World) -> Option<Vec<byroredux_debug_ui::Objectiv
 #[derive(Default)]
 pub(crate) struct ObjectiveHudCache {
     key: Option<[QuestRevision; 3]>,
-    lines: Option<Vec<byroredux_debug_ui::ObjectiveView>>,
+    lines: Option<Vec<byroredux_native_ui::ObjectiveView>>,
     lent: bool,
 }
 
 impl ObjectiveHudCache {
     /// The current objective lines, moved out of the cache. Pair with
     /// [`give_back`](Self::give_back) once the frame is done with them.
-    pub(crate) fn lend(&mut self, world: &World) -> Option<Vec<byroredux_debug_ui::ObjectiveView>> {
+    pub(crate) fn lend(&mut self, world: &World) -> Option<Vec<byroredux_native_ui::ObjectiveView>> {
         let key = revisions(world);
         if self.lent || key.is_none() || key != self.key {
             self.lines = snapshot(world);
@@ -127,7 +127,7 @@ impl ObjectiveHudCache {
 
     /// Return what [`lend`](Self::lend) handed out. Ignored when nothing is
     /// on loan — e.g. a snapshot built by the uncached debug-overlay path.
-    pub(crate) fn give_back(&mut self, lines: Option<Vec<byroredux_debug_ui::ObjectiveView>>) {
+    pub(crate) fn give_back(&mut self, lines: Option<Vec<byroredux_native_ui::ObjectiveView>>) {
         if self.lent {
             self.lines = lines;
             self.lent = false;

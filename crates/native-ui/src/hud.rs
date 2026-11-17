@@ -4,7 +4,7 @@ use super::*;
 use egui::{Align2, Color32, Context, CornerRadius, FontId, Frame, Id, Margin, Order, RichText, Stroke};
 
 /// Draw the small gameplay HUD layer shared with the debug renderer.
-pub fn draw_hud(ctx: &Context, snapshot: &PanelSnapshot) {
+pub fn draw_hud(ctx: &Context, snapshot: &PageSnapshot) {
     if snapshot.show_crosshair {
         let center = ctx.content_rect().center();
         let painter = ctx.layer_painter(egui::LayerId::new(
@@ -246,7 +246,7 @@ pub fn draw_player_message(ctx: &Context, message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::panels::end_pass;
+    use crate::end_pass;
 
     #[test]
     fn original_loading_tip_draws_without_debug_panels() {
@@ -274,7 +274,7 @@ mod tests {
         ctx.begin_pass(egui::RawInput::default());
         draw_hud(
             &ctx,
-            &PanelSnapshot {
+            &PageSnapshot {
                 interaction_prompt: Some(InteractionPrompt {
                     binding: "E",
                     verb: "Open".into(),
@@ -296,7 +296,7 @@ mod tests {
         ctx.begin_pass(egui::RawInput::default());
         draw_hud(
             &ctx,
-            &PanelSnapshot {
+            &PageSnapshot {
                 show_crosshair: true,
                 ..Default::default()
             },
@@ -311,7 +311,7 @@ mod tests {
         ctx.begin_pass(egui::RawInput::default());
         draw_hud(
             &ctx,
-            &PanelSnapshot {
+            &PageSnapshot {
                 show_vitals: true,
                 vitals: Some(vec![
                     VitalBarView {
@@ -343,7 +343,7 @@ mod tests {
         ctx.begin_pass(egui::RawInput::default());
         draw_hud(
             &ctx,
-            &PanelSnapshot {
+            &PageSnapshot {
                 show_vitals: false,
                 vitals: Some(vec![VitalBarView {
                     label: "Health".into(),
@@ -370,7 +370,7 @@ mod tests {
                 ctx.begin_pass(egui::RawInput::default());
                 draw_hud(
                     &ctx,
-                    &PanelSnapshot {
+                    &PageSnapshot {
                         stealth_indicator: Some(StealthIndicatorView { state, look: look.clone() }),
                         ..Default::default()
                     },
@@ -380,14 +380,14 @@ mod tests {
         }
         let ctx = Context::default();
         ctx.begin_pass(egui::RawInput::default());
-        draw_hud(&ctx, &PanelSnapshot::default());
+        draw_hud(&ctx, &PageSnapshot::default());
         assert!(end_pass(&ctx).shapes.is_empty(), "no view outside the stance draws nothing");
     }
 
     #[test]
     fn objective_lines_draw_during_gameplay_without_debug_panels() {
         let ctx = Context::default();
-        let snapshot = PanelSnapshot {
+        let snapshot = PageSnapshot {
             show_objectives: true,
             objectives: Some(vec![ObjectiveView {
                 quest: "A Testable Errand".to_owned(),

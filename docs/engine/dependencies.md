@@ -68,7 +68,7 @@ internal graph are not repeated).
 | dhat               | 0.3      | nif (`dhat-heap` feature, opt-in)             | Heap-allocation regression gate for NIF-PERF / #408 pins (#1247) |
 | sysinfo            | 0.39 (defaults off; bin `system`, texture-upscale `disk`) | byroredux, texture-upscale | Host CPU/RAM sampling plus offline texture-workbench disk-space preflight |
 | **Debug UI**       |          |                                               |                                                               |
-| egui               | 0.36     | renderer, debug-ui, byro-launcher             | CPU-side immediate-mode UI for the embedded overlay (Phase 4) and the launcher |
+| egui               | 0.36     | renderer, debug-ui, native-ui, byro-launcher  | CPU-side immediate-mode UI for the embedded overlay (Phase 4) and the launcher |
 | egui-winit         | 0.36     | debug-ui                                      | winit event → egui input bridge                               |
 | egui-ash-renderer  | 0.13 (`gpu-allocator`) | renderer                          | GPU pipeline for tessellated egui primitives; shares `SharedAllocator` |
 | ratatui            | 0.30     | byro-dbg                                       | Terminal UI for `byro-dbg --tui` (Phase 3)                    |
@@ -167,7 +167,8 @@ dependency is only ever consumed by that one crate:
 | byroredux-ui                | byroredux-bsa (+ vendored Ruffle/wgpu; `byroredux-plugin` dev-only) |
 | byroredux-renderer          | byroredux-core, byroredux-fsr3-sys (`byroredux-core` also build-time) |
 | byroredux-debug-server      | byroredux-core (`inspect`), byroredux-papyrus, byroredux-scripting, byroredux-debug-protocol |
-| byroredux-debug-ui          | byroredux-core, byroredux-sdk |
+| byroredux-debug-ui          | byroredux-core, byroredux-sdk, byroredux-native-ui |
+| byroredux-native-ui         | byroredux-core |
 | byroredux (binary)          | every engine crate above except fsr3-sys (reached through the renderer), bink2 / binkaudio (through video), pex (through scripting) and debug-protocol (through debug-server), + byro-texture-upscale; debug-server is optional, on by default; `byroredux-papyrus` dev-only |
 | byro-dbg (tool)             | byroredux-debug-protocol |
 | byro-launcher (tool)        | byroredux-core, byroredux-boot-request, byroredux-game-detect, byroredux-settings-io |

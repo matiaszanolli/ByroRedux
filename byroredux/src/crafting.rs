@@ -466,7 +466,7 @@ pub(crate) fn end_crafting(world: &World) {
 }
 
 /// The page's snapshot while a session is open.
-pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::CraftingSnapshot> {
+pub(crate) fn snapshot(world: &World) -> Option<byroredux_native_ui::CraftingSnapshot> {
     let bench = world.try_resource::<ActiveCrafting>()?.0?;
     let bench_name = base_of(world, bench)
         .and_then(|base| {
@@ -479,7 +479,7 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::CraftingSnap
         .unwrap_or_else(|| "Workbench".to_owned());
     let recipes = recipes_at(world, bench)
         .into_iter()
-        .map(|recipe| byroredux_debug_ui::CraftingRecipeView {
+        .map(|recipe| byroredux_native_ui::CraftingRecipeView {
             form_id: recipe.form_id,
             name: recipe.name,
             count: recipe.output_count,
@@ -487,7 +487,7 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::CraftingSnap
             craftable: recipe.craftable,
         })
         .collect();
-    Some(byroredux_debug_ui::CraftingSnapshot { bench_name, recipes })
+    Some(byroredux_native_ui::CraftingSnapshot { bench_name, recipes })
 }
 
 /// A bench's editor id as a heading: `CraftingTanningRackMarker` -> `Tanning Rack` (the `Crafting`
@@ -506,8 +506,8 @@ fn bench_display_name(editor_id: &str) -> String {
 }
 
 /// Apply the page's action at the open bench.
-pub(crate) fn apply_action(world: &World, action: byroredux_debug_ui::CraftingAction) -> Result<String, String> {
-    let byroredux_debug_ui::CraftingAction::Craft { recipe } = action;
+pub(crate) fn apply_action(world: &World, action: byroredux_native_ui::CraftingAction) -> Result<String, String> {
+    let byroredux_native_ui::CraftingAction::Craft { recipe } = action;
     let bench = world
         .try_resource::<ActiveCrafting>()
         .and_then(|active| active.0)
@@ -658,7 +658,7 @@ mod tests {
         world.insert_resource(ActiveCrafting::default());
         give(&mut world, player, IRON_INGOT, 1);
         give(&mut world, player, LEATHER, 1);
-        let action = byroredux_debug_ui::CraftingAction::Craft { recipe: RECIPE };
+        let action = byroredux_native_ui::CraftingAction::Craft { recipe: RECIPE };
         assert!(apply_action(&world, action).is_err(), "no bench open");
         begin_crafting(&world, forge).unwrap();
         assert!(apply_action(&world, action).is_ok());

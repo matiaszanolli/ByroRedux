@@ -3,10 +3,11 @@
 use super::*;
 use egui::{Color32, Context, Frame, RichText, Window};
 
-use byroredux_core::settings::{SettingChange, SettingControl, SettingEntry, SettingValue};
+use byroredux_core::settings::{SettingChange, SettingEntry};
 use byroredux_sdk::studio::{MaterialValue, StudioCommand, StudioSnapshot, TransformValue};
 
 use crate::PanelState;
+use byroredux_native_ui::draw_setting_control;
 
 /// Top-level draw — orchestrates the five panel tabs. Called by
 /// the binary inside `DebugUiState::run`'s closure.
@@ -49,7 +50,7 @@ pub fn draw(
             PanelTab::Loader => draw_loader(ui, state, outputs),
             PanelTab::Entities => draw_entities(ui, snapshot.entities.as_deref(), outputs),
             PanelTab::Console => draw_console(ui, state, outputs),
-            PanelTab::Settings => draw_settings(ui, &snapshot.settings, state, outputs),
+            PanelTab::Settings => draw_settings(ui, &snapshot.game.settings, state, outputs),
         }
     });
 }
@@ -746,11 +747,13 @@ fn draw_settings(
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if entry.value != entry.default && ui.small_button("Reset").clicked() {
                                 outputs
+                                    .game
                                     .setting_changes
                                     .push(SettingChange::new(&entry.id, entry.default.clone()));
                             }
                             if let Some(value) = draw_setting_control(ui, entry) {
                                 outputs
+                                    .game
                                     .setting_changes
                                     .push(SettingChange::new(&entry.id, value));
                             }
@@ -770,54 +773,6 @@ fn draw_settings(
 
     if visible_count == 0 {
         ui.label("No settings match this filter.");
-    }
-}
-
-pub(super) fn draw_setting_control(ui: &mut egui::Ui, entry: &SettingEntry) -> Option<SettingValue> {
-    match (&entry.control, &entry.value) {
-        (SettingControl::Toggle, SettingValue::Bool(current)) => {
-            let mut value = *current;
-            ui.checkbox(&mut value, "")
-                .changed()
-                .then_some(SettingValue::Bool(value))
-        }
-        (
-            SettingControl::Slider {
-                min,
-                max,
-                step,
-                unit,
-            },
-            SettingValue::Number(current),
-        ) => {
-            let mut value = *current;
-            let response = ui.add(
-                egui::Slider::new(&mut value, *min..=*max)
-                    .step_by(*step as f64)
-                    .suffix(unit.as_str()),
-            );
-            response.changed().then_some(SettingValue::Number(value))
-        }
-        (SettingControl::Choice { options }, SettingValue::Choice(current)) => {
-            let mut value = current.clone();
-            let selected_label = options
-                .iter()
-                .find(|option| option.value == value)
-                .map(|option| option.label.clone())
-                .unwrap_or_else(|| value.clone());
-            egui::ComboBox::from_id_salt(("universal_setting", &entry.id))
-                .selected_text(selected_label)
-                .show_ui(ui, |ui| {
-                    for option in options {
-                        ui.selectable_value(&mut value, option.value.clone(), &option.label);
-                    }
-                });
-            (value != *current).then_some(SettingValue::Choice(value))
-        }
-        _ => {
-            ui.colored_label(Color32::RED, "Invalid setting");
-            None
-        }
     }
 }
 

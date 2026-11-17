@@ -6,7 +6,7 @@ use egui::{Align2, Color32, Context, CornerRadius, Frame, Id, Margin, Order, Ric
 use byroredux_core::settings::{SettingChange, SettingEntry};
 use byroredux_core::ui_labels::UiLabels;
 
-use super::studio::draw_setting_control;
+use crate::setting_control::draw_setting_control;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GameMenuPage {
@@ -40,9 +40,9 @@ pub struct GameMenuState {
 /// operator panel, so there is one validation/application path.
 pub fn draw_game_menu(
     ctx: &Context,
-    snapshot: &PanelSnapshot,
+    snapshot: &PageSnapshot,
     state: &mut GameMenuState,
-    outputs: &mut PanelOutputs,
+    outputs: &mut PageOutputs,
 ) {
     let viewport = ctx.content_rect();
     egui::Area::new(Id::new("game_menu_backdrop"))
@@ -119,7 +119,7 @@ fn draw_crafting_page(
     labels: &UiLabels,
     crafting: Option<&CraftingSnapshot>,
     state: &mut GameMenuState,
-    outputs: &mut PanelOutputs,
+    outputs: &mut PageOutputs,
 ) {
     let Some(crafting) = crafting else {
         ui.label("There is nothing to craft here.");
@@ -183,7 +183,7 @@ fn draw_barter_page(
     labels: &UiLabels,
     barter: Option<&BarterSnapshot>,
     state: &mut GameMenuState,
-    outputs: &mut PanelOutputs,
+    outputs: &mut PageOutputs,
 ) {
     let Some(barter) = barter else {
         ui.label("The merchant has nothing to trade.");
@@ -202,7 +202,7 @@ fn draw_barter_page(
                   items: &[BarterItemView],
                   salt: &str,
                   action: fn(u32) -> BarterAction,
-                  outputs: &mut PanelOutputs| {
+                  outputs: &mut PageOutputs| {
         ui.vertical(|ui| {
             ui.label(RichText::new(format!("{title} — {gold} {}", labels.text("gold"))).strong());
             egui::ScrollArea::vertical()
@@ -265,7 +265,7 @@ fn draw_message_box_page(
     labels: &UiLabels,
     message: Option<&MessageBoxView>,
     state: &mut GameMenuState,
-    outputs: &mut PanelOutputs,
+    outputs: &mut PageOutputs,
 ) {
     ui.vertical_centered(|ui| {
         ui.add_space(4.0);
@@ -318,7 +318,7 @@ fn draw_dialogue_page(
     labels: &UiLabels,
     dialogue: Option<&DialogueTopicSnapshot>,
     state: &mut GameMenuState,
-    outputs: &mut PanelOutputs,
+    outputs: &mut PageOutputs,
 ) {
     ui.add_space(4.0);
     if let Some(dialogue) = dialogue {
@@ -406,7 +406,7 @@ fn draw_dialogue_page(
     }
 }
 
-fn draw_pause_page(ui: &mut egui::Ui, labels: &UiLabels, state: &mut GameMenuState, outputs: &mut PanelOutputs) {
+fn draw_pause_page(ui: &mut egui::Ui, labels: &UiLabels, state: &mut GameMenuState, outputs: &mut PageOutputs) {
     ui.vertical_centered(|ui| {
         ui.add_space(12.0);
         ui.label(
@@ -457,7 +457,7 @@ fn draw_game_settings(
     labels: &UiLabels,
     settings: &[SettingEntry],
     state: &mut GameMenuState,
-    outputs: &mut PanelOutputs,
+    outputs: &mut PageOutputs,
 ) {
     ui.horizontal(|ui| {
         if ui.button(format!("← {}", labels.text("Back"))).clicked() {
@@ -517,7 +517,7 @@ fn draw_inventory_page(
     labels: &UiLabels,
     inventory: Option<&InventorySnapshot>,
     state: &mut GameMenuState,
-    outputs: &mut PanelOutputs,
+    outputs: &mut PageOutputs,
 ) {
     ui.horizontal(|ui| {
         if ui.button(format!("← {}", labels.text("Back"))).clicked() {
@@ -732,7 +732,7 @@ fn section_rank(section: &str) -> (u8, &str) {
     (rank, section)
 }
 
-fn draw_player_setting(ui: &mut egui::Ui, labels: &UiLabels, entry: &SettingEntry, outputs: &mut PanelOutputs) {
+fn draw_player_setting(ui: &mut egui::Ui, labels: &UiLabels, entry: &SettingEntry, outputs: &mut PageOutputs) {
     ui.group(|ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
@@ -770,7 +770,7 @@ fn draw_player_setting(ui: &mut egui::Ui, labels: &UiLabels, entry: &SettingEntr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::panels::end_pass;
+    use crate::end_pass;
 
     #[test]
     fn native_pause_menu_draws_without_the_debug_overlay() {
@@ -780,8 +780,8 @@ mod tests {
             visible: true,
             ..Default::default()
         };
-        let mut outputs = PanelOutputs::default();
-        draw_game_menu(&ctx, &PanelSnapshot::default(), &mut state, &mut outputs);
+        let mut outputs = PageOutputs::default();
+        draw_game_menu(&ctx, &PageSnapshot::default(), &mut state, &mut outputs);
         let output = end_pass(&ctx);
         assert!(!output.shapes.is_empty());
         assert!(!outputs.resume_game);
@@ -792,7 +792,7 @@ mod tests {
     fn native_inventory_page_draws_real_item_details() {
         let ctx = Context::default();
         ctx.begin_pass(egui::RawInput::default());
-        let snapshot = PanelSnapshot {
+        let snapshot = PageSnapshot {
             inventory: Some(InventorySnapshot {
                 total_weight: 30.0,
                 items: vec![InventoryItemView {
@@ -816,7 +816,7 @@ mod tests {
             page: GameMenuPage::Inventory,
             ..Default::default()
         };
-        let mut outputs = PanelOutputs::default();
+        let mut outputs = PageOutputs::default();
         draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
         let output = end_pass(&ctx);
         assert!(!output.shapes.is_empty());
@@ -828,7 +828,7 @@ mod tests {
     #[test]
     fn restorative_use_button_emits_identity_checked_action() {
         let ctx = Context::default();
-        let snapshot = PanelSnapshot {
+        let snapshot = PageSnapshot {
             inventory: Some(InventorySnapshot {
                 total_weight: 0.5,
                 items: vec![InventoryItemView {
@@ -852,7 +852,7 @@ mod tests {
             page: GameMenuPage::Inventory,
             ..Default::default()
         };
-        let mut outputs = PanelOutputs::default();
+        let mut outputs = PageOutputs::default();
         ctx.begin_pass(egui::RawInput::default());
         draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
         // egui sizes a newly opened window before painting its contents.
@@ -906,7 +906,7 @@ mod tests {
     #[test]
     fn dialogue_page_marks_speaking_replies_and_said_topics() {
         let ctx = Context::default();
-        let snapshot = PanelSnapshot {
+        let snapshot = PageSnapshot {
             dialogue: Some(DialogueTopicSnapshot {
                 npc: 7,
                 speaker_name: "Eltrys".into(),
@@ -925,7 +925,7 @@ mod tests {
             ..Default::default()
         };
         let mut state = GameMenuState { visible: true, page: GameMenuPage::Dialogue, ..Default::default() };
-        let mut outputs = PanelOutputs::default();
+        let mut outputs = PageOutputs::default();
         // egui sizes a newly opened window before painting its contents: assert on the second pass.
         ctx.begin_pass(egui::RawInput::default());
         draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
@@ -952,7 +952,7 @@ mod tests {
     #[test]
     fn dialogue_page_shows_the_response_and_emits_topic_clicks() {
         let ctx = Context::default();
-        let snapshot = PanelSnapshot {
+        let snapshot = PageSnapshot {
             dialogue: Some(DialogueTopicSnapshot {
                 npc: 7,
                 speaker_name: "Eltrys".into(),
@@ -983,7 +983,7 @@ mod tests {
             page: GameMenuPage::Dialogue,
             ..Default::default()
         };
-        let mut outputs = PanelOutputs::default();
+        let mut outputs = PageOutputs::default();
         ctx.begin_pass(egui::RawInput::default());
         draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
         // egui sizes a newly opened window before painting its contents;
@@ -1047,7 +1047,7 @@ mod tests {
     #[test]
     fn dialogue_page_close_returns_through_the_shared_resume_path() {
         let ctx = Context::default();
-        let snapshot = PanelSnapshot {
+        let snapshot = PageSnapshot {
             dialogue: Some(DialogueTopicSnapshot {
                 npc: 7,
                 speaker_name: "Eltrys".into(),
@@ -1067,7 +1067,7 @@ mod tests {
             page: GameMenuPage::Dialogue,
             ..Default::default()
         };
-        let mut outputs = PanelOutputs::default();
+        let mut outputs = PageOutputs::default();
         ctx.begin_pass(egui::RawInput::default());
         draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
         let _ = end_pass(&ctx);
@@ -1133,7 +1133,7 @@ mod tests {
             equippable: false,
             consumable: false,
         };
-        let snapshot = PanelSnapshot {
+        let snapshot = PageSnapshot {
             inventory: Some(InventorySnapshot {
                 total_weight: 2.0,
                 items: vec![item(0, "Long Barrel", "Mods"), item(1, "Desk Fan", "Junk")],
@@ -1147,7 +1147,7 @@ mod tests {
             selected_inventory_index: Some(0),
             ..Default::default()
         };
-        let mut outputs = PanelOutputs::default();
+        let mut outputs = PageOutputs::default();
 
         draw_game_menu(&ctx, &snapshot, &mut state, &mut outputs);
         let output = end_pass(&ctx);

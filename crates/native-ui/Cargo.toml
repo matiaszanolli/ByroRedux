@@ -1,0 +1,8 @@
+[package]
+name = "byroredux-native-ui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+byroredux-core = { workspace = true }
+egui = { workspace = true }

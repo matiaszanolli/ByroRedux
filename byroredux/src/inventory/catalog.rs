@@ -287,7 +287,7 @@ pub(super) fn build_player_vitals(index: &EsmIndex) -> PlayerVitals {
 /// and restorative consumption read it.
 pub(crate) fn vitals_snapshot(
     world: &World,
-) -> Option<Vec<byroredux_debug_ui::VitalBarView>> {
+) -> Option<Vec<byroredux_native_ui::VitalBarView>> {
     use byroredux_core::ecs::components::ActorValues;
     // M48 GUI-HUD-004 — an original HUD that is up draws the player's vitals itself (the vanilla
     // meters the path service feeds, or the MenuXml bars); the native layer draws no second copy.
@@ -299,7 +299,7 @@ pub(crate) fn vitals_snapshot(
     let vitals = world.try_resource::<PlayerVitals>()?;
     let values = world.get::<ActorValues>(player)?;
     let labels = world.try_resource::<byroredux_core::ui_labels::UiLabels>().map(|labels| labels.clone()).unwrap_or_default();
-    let mut bars: Vec<byroredux_debug_ui::VitalBarView> = vitals
+    let mut bars: Vec<byroredux_native_ui::VitalBarView> = vitals
         .bars
         .iter()
         .filter_map(|&(label, actor_value, avif)| {
@@ -308,7 +308,7 @@ pub(crate) fn vitals_snapshot(
             if max <= 0.0 {
                 return None;
             }
-            Some(byroredux_debug_ui::VitalBarView {
+            Some(byroredux_native_ui::VitalBarView {
                 label: labels.shared(label),
                 actor_value,
                 current: max - entry.damage,
@@ -320,7 +320,7 @@ pub(crate) fn vitals_snapshot(
     // rads (none yet is an empty gauge, not a missing one) against the
     // last sickness stage, and is drawn only beside real pools.
     if let (Some((label, actor_value, avif, scale)), false) = (vitals.radiation, bars.is_empty()) {
-        bars.push(byroredux_debug_ui::VitalBarView {
+        bars.push(byroredux_native_ui::VitalBarView {
             label: labels.shared(label),
             actor_value,
             current: values.current(avif).clamp(0.0, scale),

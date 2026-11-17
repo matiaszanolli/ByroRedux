@@ -367,7 +367,7 @@ mod tests {
         let stored = || std::fs::read_to_string(&path).unwrap_or_default();
         let menu_edit = |world: &mut World, id: &str, value: SettingValue| {
             let mut outputs = byroredux_debug_ui::PanelOutputs::default();
-            outputs.setting_changes.push(SettingChange::new(id, value));
+            outputs.game.setting_changes.push(SettingChange::new(id, value));
             crate::apply_debug_ui_outputs(world, outputs, &mut false, None);
         };
 

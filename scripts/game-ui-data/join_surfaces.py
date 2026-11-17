@@ -24,7 +24,7 @@ from pathlib import Path
 DATA = Path(__file__).resolve().parents[2] / "docs" / "data" / "game-ui"
 ADDED = ["target_surface", "fallback_surface", "surface_basis", "host_classes"]
 
-# Engine-native pages that exist today (`GameMenuPage`, crates/debug-ui/src/panels/game_menu.rs):
+# Engine-native pages that exist today (`GameMenuPage`, crates/native-ui/src/game_menu.rs):
 # Pause, Settings, Inventory, Dialogue, MessageBox, Barter, Crafting. A menu maps to a page
 # only when its name says so; nothing is inferred from function.
 NATIVE = {
