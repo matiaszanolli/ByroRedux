@@ -11,10 +11,11 @@ use crate::shader_constants::{
     HISTORY_MODE_MOVING, HISTORY_MODE_PARKED, HISTORY_MODE_RIG_STATIC, HISTORY_MODE_SCENE_STATIC,
 };
 use super::frame_params::{
+    FrameInputs,
     build_fsr_frame_parameters, camera_frame_deltas, dof_effective_view_proj, fsr_gated_dof,
     is_camera_cut, origin_corrected_prev_view_proj, taa_jitter, CameraFrameDeltas,
 };
-use super::{DofView, SkyParams, VulkanContext};
+use super::VulkanContext;
 use anyhow::Result;
 
 /// Pack the two normalized weather-surface channels into the structured
@@ -190,25 +191,28 @@ impl VulkanContext {
     /// resolve TAA/FSR jitter and DOF, detect camera cuts, and update the
     /// frame-over-frame camera bookkeeping. Extracted verbatim from
     /// `draw_frame` — the recording order is unchanged.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn assemble_camera_and_lights(
         &mut self,
         frame: usize,
-        lights: &[scene_buffer::GpuLight],
-        light_ids: &[[u32; 4]],
-        fog_volumes: &[super::super::volumetrics::GpuFogVolume],
-        view_proj: &[f32; 16],
-        camera_pos: [f32; 3],
-        input_render_origin: [f32; 3],
-        ambient_color: [f32; 3],
-        fog_color: [f32; 3],
-        fog_near: f32,
-        fog_far: f32,
-        fog_extinction_per_meter: f32,
-        sky_params: &SkyParams,
-        dof: DofView,
-        frame_time_delta_ms: f32,
+        inputs: &FrameInputs,
     ) -> Result<CameraAssemblyOutput> {
+        let FrameInputs {
+            lights,
+            light_ids,
+            fog_volumes,
+            view_proj,
+            camera_pos,
+            render_origin: input_render_origin,
+            ambient_color,
+            fog_color,
+            fog_near,
+            fog_far,
+            fog_extinction_per_meter,
+            sky_params,
+            dof,
+            frame_time_delta_ms,
+            ..
+        } = *inputs;
         // Drain the completed transported combustion field before uploading
         // scene lights. This is intentionally a renderer boundary: the app
         // submits canonical medium primitives, while only the renderer owns

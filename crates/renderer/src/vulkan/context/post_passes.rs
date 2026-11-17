@@ -11,6 +11,7 @@ use super::super::descriptors::{memory_barrier, whole_buffer};
 use crate::vulkan::gpu_timers::TimerPass;
 use super::super::frame_upscaler::{FsrFrameParameters, UpscaleDispatchInputs};
 use super::super::presentation::{ImageSpaceModifier, PresentationFrame, UiOverlayDraw};
+use super::frame_params::{FrameInputs, FrameSlot};
 use super::{SkyParams, VulkanContext};
 use ash::vk;
 
@@ -108,6 +109,28 @@ fn volumetric_open_sky_flag(sky: &SkyParams) -> f32 {
     } else {
         0.0
     }
+}
+
+/// What `draw_frame` resolved for the post-geometry passes: the camera matrices it assembled,
+/// the history-validity flags and the FSR parameters. The pass inputs that come straight from the
+/// frame's [`FrameInputs`] (fog, sky, wind, underwater) are read from there.
+#[derive(Clone, Copy)]
+pub(super) struct PostPassFrame<'a> {
+    /// #2468 — camera parked AND the scene unchanged. The caustic accumulator's EMA is the only
+    /// consumer down here. SVGF consumes the same flag, through `next_svgf_temporal_alpha`, at its
+    /// param upload in `build_and_upload_instances.rs` (#4046); TAA takes no static flag at all.
+    pub caustic_history_valid: bool,
+    pub render_origin: byroredux_core::math::Vec3,
+    /// The jittered / DOF view-projection actually uploaded this frame.
+    pub vp: &'a [f32; 16],
+    /// Origin-corrected previous-frame view-projection.
+    pub prev_view_proj: &'a [f32; 16],
+    pub inv_vp_arr: [[f32; 4]; 4],
+    pub previous_camera_pos: [f32; 3],
+    pub volumetric_time_seconds: f32,
+    pub local_emitters_present: bool,
+    pub fsr_frame: Option<FsrFrameParameters>,
+    pub ui_instance_idx: Option<super::build_and_upload_instances::UiInstanceRange>,
 }
 
 impl VulkanContext {
@@ -314,44 +337,46 @@ impl VulkanContext {
     /// signature infallible turns any future `?` added inside one of the
     /// ten helpers into a compile error at the point of introduction,
     /// rather than a silent reopening of that hazard.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn record_post_passes(
         &mut self,
-        cmd: vk::CommandBuffer,
-        frame: usize,
+        slot: FrameSlot,
         img: usize,
-        // #2468 — camera parked AND the scene unchanged. The caustic
-        // accumulator's EMA is the only consumer down here. SVGF consumes
-        // the same flag, through `next_svgf_temporal_alpha`, at its param
-        // upload in `build_and_upload_instances.rs` (#4046); TAA takes no
-        // static flag at all.
-        caustic_history_valid: bool,
-        camera_pos: [f32; 3],
-        render_origin: byroredux_core::math::Vec3,
-        vp: &[f32; 16],
-        prev_view_proj: &[f32; 16],
-        inv_vp_arr: [[f32; 4]; 4],
-        previous_camera_pos: [f32; 3],
-        frame_counter: u32,
-        volumetric_time_seconds: f32,
-        sky_params: &SkyParams,
-        fog_color: [f32; 3],
-        fog_far: f32,
-        fog_extinction_per_meter: f32,
-        local_emitters_present: bool,
-        fog_single_scatter_albedo: f32,
-        fog_scale_height_meters: f32,
-        fog_coverage: f32,
-        fog_height_reference: f32,
-        wind_params: [f32; 4],
-        wind_gust: [f32; 4],
-        fog_volumes: &[super::super::volumetrics::GpuFogVolume],
-        fsr_frame: Option<FsrFrameParameters>,
-        underwater: [f32; 4],
-        image_space_modifier: ImageSpaceModifier,
-        ui_instance_idx: Option<super::build_and_upload_instances::UiInstanceRange>,
+        inputs: &FrameInputs,
+        post: PostPassFrame,
         fog_cluster_ns: &mut u64,
     ) {
+        let FrameSlot { cmd, frame } = slot;
+        let FrameInputs {
+            camera_pos,
+            sky_params,
+            fog_color,
+            fog_far,
+            fog_extinction_per_meter,
+            fog_single_scatter_albedo,
+            fog_scale_height_meters,
+            fog_coverage,
+            fog_height_reference,
+            wind_params,
+            wind_gust,
+            fog_volumes,
+            underwater,
+            image_space_modifier,
+            ..
+        } = *inputs;
+        let underwater = underwater.grade;
+        let PostPassFrame {
+            caustic_history_valid,
+            render_origin,
+            vp,
+            prev_view_proj,
+            inv_vp_arr,
+            previous_camera_pos,
+            volumetric_time_seconds,
+            local_emitters_present,
+            fsr_frame,
+            ui_instance_idx,
+        } = post;
+        let frame_counter = self.frame_counter;
         self.record_svgf_pass(cmd, frame);
         self.record_caustic_splat_pass(cmd, frame, caustic_history_valid, sky_params.is_exterior);
         self.record_volumetrics_pass(
@@ -1859,157 +1884,57 @@ mod tests {
         assert_eq!(volumetric_open_sky_flag(&exterior), 1.0);
     }
 
-    /// Regression: #4773 / REN-D8-2026-09-23-01 — `draw_frame` passed
-    /// `fog_coverage, fog_scale_height_meters` into parameters declared
-    /// `fog_scale_height_meters, fog_coverage`. Both are `f32`, so it
-    /// compiled, and the froxel medium collapsed to a ~1 m ground layer.
+    /// Regression: #4773 / REN-D8-2026-09-23-01 — `draw_frame` passed `fog_coverage,
+    /// fog_scale_height_meters` into parameters declared `fog_scale_height_meters,
+    /// fog_coverage`. Both are `f32`, so it compiled, and the froxel medium collapsed to a ~1 m
+    /// ground layer. #6830 pinned the same hazard on the other two calls that carry the adjacent
+    /// fog lanes.
     ///
-    /// Shared body of the #4773 / #6830 positional-argument pins. A call whose
-    /// arguments are same-typed scalars compiles when two are swapped, so every
-    /// argument spelled as a parameter's name must sit in that parameter's
-    /// position. The list is split on top-level commas (comments dropped,
-    /// `&`/`&mut`/`self.` prefixes stripped), so it does not matter how many
-    /// entries share a line -- the original `fog_scale_height_meters,
-    /// fog_coverage,` pair on one line is read like any other. Returns the
-    /// parameter names in order.
-    fn assert_named_arguments_match_parameter_positions(
-        sig_src: &str,
-        sig_marker: &str,
-        call_src: &str,
-        call_marker: &str,
-        min_pinned: usize,
-    ) -> Vec<String> {
-        fn ident(token: &str) -> &str {
-            let token = token.trim().trim_start_matches('&');
-            let token = token.strip_prefix("mut ").unwrap_or(token);
-            token.strip_prefix("self.").unwrap_or(token)
-        }
-        // Top-level comma-separated entries of the parenthesised list that
-        // starts right after `marker` (which ends in its opening `(`).
-        fn entries(src: &str, marker: &str) -> Vec<String> {
+    /// The fix that removes the hazard rather than watching it: `record_post_passes`,
+    /// `build_and_upload_instances` and `upload_frame_parameters` no longer take the fog lanes as
+    /// positional parameters at all. They read them by name from the frame's `FrameInputs`, so
+    /// there is no argument order left to swap. This pins that shape: a fog lane reappearing as a
+    /// bare `f32` parameter is the regression.
+    #[test]
+    fn fog_lanes_reach_the_frame_phases_by_name_not_position() {
+        fn signature<'a>(src: &'a str, marker: &str) -> &'a str {
             let at = src
                 .find(marker)
                 .unwrap_or_else(|| panic!("`{marker}` must still exist under this name"));
-            let body: String = src[at + marker.len()..]
-                .lines()
-                .map(|line| line.split("//").next().unwrap_or(""))
-                .collect::<Vec<_>>()
-                .join("\n");
-            let (mut depth, mut current, mut out) = (1_i32, String::new(), Vec::new());
-            for ch in body.chars() {
-                match ch {
-                    '(' | '[' | '{' | '<' => depth += 1,
-                    ')' | ']' | '}' | '>' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            break;
-                        }
-                    }
-                    ',' if depth == 1 => {
-                        out.push(std::mem::take(&mut current));
-                        continue;
-                    }
-                    _ => {}
-                }
-                current.push(ch);
-            }
-            out.push(current);
-            out.into_iter()
-                .map(|e| e.trim().to_string())
-                .filter(|e| !e.is_empty())
-                .collect()
+            let rest = &src[at..];
+            &rest[..rest.find("\n    ) ").expect("signature end")]
         }
-
-        let params: Vec<String> = entries(sig_src, sig_marker)
-            .into_iter()
-            .filter(|e| !matches!(e.as_str(), "&mut self" | "&self" | "self"))
-            .filter_map(|e| e.split_once(':').map(|(name, _)| name.trim().to_string()))
-            .collect();
-        let args: Vec<String> = entries(call_src, call_marker)
-            .iter()
-            .map(|e| ident(e).to_string())
-            .collect();
-
-        assert_eq!(
-            args.len(),
-            params.len(),
-            "`{call_marker}` argument/parameter count drifted: args {args:?} params {params:?}"
-        );
-        let mut pinned = 0;
-        for (position, arg) in args.iter().enumerate() {
-            if params.contains(arg) {
-                assert_eq!(
-                    *arg, params[position],
-                    "argument `{arg}` is passed in the `{}` slot (position {position})",
-                    params[position]
-                );
-                pinned += 1;
-            }
-        }
-        assert!(
-            pinned >= min_pinned,
-            "only {pinned} arguments share a parameter name; pin is vacuous"
-        );
-        params
-    }
-
-    /// `record_post_passes` takes ~30 positional arguments, most of them
-    /// same-typed scalars, and the call site names nearly every local after
-    /// its parameter. Pin that convention: every argument spelled as a
-    /// parameter's name must sit in that parameter's position.
-    #[test]
-    fn record_post_passes_named_arguments_match_parameter_positions() {
-        let params = assert_named_arguments_match_parameter_positions(
-            include_str!("post_passes.rs"),
-            "fn record_post_passes(",
-            include_str!("draw.rs"),
-            "self.record_post_passes(",
-            20,
-        );
-        assert!(
-            params.iter().any(|p| p == "fog_scale_height_meters")
-                && params.iter().any(|p| p == "fog_coverage"),
-            "fog params renamed"
-        );
-    }
-
-    /// #6830 — the same pin for the other two calls that carry the adjacent
-    /// `f32` fog lanes (`fog_single_scatter_albedo`, `fog_scale_height_meters`,
-    /// `fog_coverage`, `fog_clip`, `fog_power`, `fog_height_reference`):
-    /// `draw_frame` -> `build_and_upload_instances`, and that function ->
-    /// `upload_frame_parameters`. #6728 threaded `fog_coverage` through both,
-    /// and the swap-prone pair sits on one line there, which the previous
-    /// line-oriented reader could not read.
-    #[test]
-    fn build_and_upload_instances_named_arguments_match_parameter_positions() {
+        let post = include_str!("post_passes.rs");
         let build = include_str!("build_and_upload_instances.rs");
-        let params = assert_named_arguments_match_parameter_positions(
-            build,
-            "fn build_and_upload_instances(",
-            include_str!("draw.rs"),
-            "self.build_and_upload_instances(",
-            20,
-        );
-        // The fog lanes the pin exists for stay in the signature, adjacent and
-        // in the order the shader-side constants assume.
-        let fog = params
-            .iter()
-            .position(|p| p == "fog_scale_height_meters")
-            .expect("fog_scale_height_meters renamed");
-        assert_eq!(params[fog + 1], "fog_coverage", "fog lanes reordered");
-
-        let forwarded = assert_named_arguments_match_parameter_positions(
-            build,
-            "fn upload_frame_parameters(",
-            build,
-            "self.upload_frame_parameters(",
-            15,
-        );
-        let fog = forwarded
-            .iter()
-            .position(|p| p == "fog_scale_height_meters")
-            .expect("fog_scale_height_meters renamed");
-        assert_eq!(forwarded[fog + 1], "fog_coverage", "fog lanes reordered");
+        for (src, marker) in [
+            (post, "fn record_post_passes("),
+            (build, "fn build_and_upload_instances("),
+            (build, "fn upload_frame_parameters("),
+        ] {
+            let sig = signature(src, marker);
+            for lane in [
+                "fog_color",
+                "fog_near",
+                "fog_far",
+                "fog_extinction_per_meter",
+                "fog_single_scatter_albedo",
+                "fog_scale_height_meters",
+                "fog_coverage",
+                "fog_clip",
+                "fog_power",
+                "fog_height_reference",
+            ] {
+                assert!(
+                    !sig.contains(&format!("{lane}:")),
+                    "`{marker}` takes `{lane}` as a positional parameter again — read it from \
+                     `FrameInputs` by name so same-typed lanes cannot be swapped (#4773 / #6830)"
+                );
+            }
+            assert!(
+                sig.contains("inputs: &FrameInputs"),
+                "`{marker}` must receive the frame's `FrameInputs`"
+            );
+        }
     }
 
     /// A real dispatch running must never trigger a clear, and must reset

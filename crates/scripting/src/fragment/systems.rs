@@ -87,6 +87,16 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
                     still_pending.push(pending);
                 }
             }
+            FragmentResumeCondition::MessageAnswered { ticket } => match crate::messages::take_papyrus_answer(world, *ticket) {
+                Some(button) => {
+                    // The run's own continuation carries the answer to the statement it replays.
+                    if let Some(crate::Effect::Interpret { resume: Some(state), .. }) = pending.effects.first_mut() {
+                        state.answer = Some(button);
+                    }
+                    ready.push(pending);
+                }
+                None => still_pending.push(pending),
+            },
             FragmentResumeCondition::Actors3DLoaded {
                 actors,
                 poll_seconds,

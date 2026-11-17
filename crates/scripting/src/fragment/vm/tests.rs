@@ -6349,3 +6349,81 @@ fn menu_open_close_registration_on_another_quest_is_declined() {
     let reason = check_function_reason(script, "Fragment_1", None).err().unwrap_or_default();
     assert!(reason.contains("registerformenuopencloseevent"), "{reason}");
 }
+
+/// M48 #6667 — `Message.Show()` for its value is latent (CK *Show - Message*: "returns the
+/// button pressed"): MQ101's `If TempChooseSidesMessage.Show() == 0` raises the box, the run
+/// waits for the answer, and the statement runs again with it, taking the branch it names. A
+/// box a load took resumes with its default, button 0.
+#[test]
+fn message_show_waits_for_its_answer_and_branches_on_it() {
+    const MESSAGE: u32 = 0x0001_0F10;
+    const SOURCE: &str = "ScriptName QF_VmShow extends Quest\n\
+        Message Property TempChooseSidesMessage Auto\n\
+        Function Fragment_1()\n\
+          Utility.Wait(1.0)\n\
+          If TempChooseSidesMessage.Show() == 0\n\
+            Self.SetStage(6)\n\
+          Else\n\
+            Self.SetStage(7)\n\
+          EndIf\n\
+        EndFunction\n";
+    let run = |answer: Option<usize>| {
+        let (script, errors) = byroredux_papyrus::parse_script(SOURCE).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let script = Arc::new(script);
+        if let Err(why) = crate::fragment::vm::checker::check_function_reason(Arc::clone(&script), "Fragment_1", None) { panic!("{why}") }
+        let mut world = World::new();
+        crate::register(&mut world);
+        let player = world.spawn();
+        world.insert_resource(PapyrusPlayerEntity(player));
+        world.insert_resource(QuestStageState::default());
+        let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+        index.messages.insert(
+            MESSAGE,
+            byroredux_plugin::esm::records::MesgRecord {
+                form_id: MESSAGE,
+                description: "Who will you follow?".into(),
+                message_box: true,
+                buttons: vec!["Hadvar".into(), "Ralof".into()],
+                ..Default::default()
+            },
+        );
+        crate::install_message_catalog(&mut world, &index);
+        let mut vmad = vmad();
+        vmad.scripts[0].name = "QF_VmShow".into();
+        vmad.scripts[0].properties.push(ScriptProperty {
+            name: "TempChooseSidesMessage".into(),
+            status: 1,
+            value: PropertyValue::Object { form_id: MESSAGE, alias: -1 },
+        });
+        {
+            let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+            fragments.insert_vmad(Q, vmad);
+            fragments.insert_vm_script(Arc::clone(&script));
+            fragments.insert(
+                Q,
+                0,
+                vec![Effect::Interpret { script: "QF_VmShow".into(), function: "Fragment_1".into(), args: Vec::new(), resume: None }],
+            );
+        }
+        world.resource_mut::<QuestStageState>().set_stage(Q, 0);
+        crate::fragment::quest_fragment_dispatch_system(&world);
+        crate::fragment::fragment_continuation_system(&world, 1.0);
+        let raised = std::mem::take(&mut world.resource_mut::<crate::PendingScriptMessages>().0);
+        assert_eq!(raised.len(), 1, "the box is up");
+        let crate::MessageAnswer::Papyrus(ticket) = raised[0].answer else { panic!("{:?}", raised[0].answer) };
+        crate::fragment::fragment_continuation_system(&world, 5.0);
+        assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 0, "the run waits for the answer");
+        match answer {
+            Some(button) => crate::messages::record_papyrus_answer(&world, ticket, button),
+            // A load drops the box and its ticket.
+            None => world.resource_mut::<crate::messages::PapyrusMessageAnswers>().forget_boxes(),
+        }
+        crate::fragment::fragment_continuation_system(&world, 0.0);
+        assert!(world.resource::<crate::PendingScriptMessages>().0.is_empty(), "the replay reads the answer; no second box");
+        world.resource::<QuestStageState>().get_stage(Q)
+    };
+    assert_eq!(run(Some(0)), 6, "Hadvar");
+    assert_eq!(run(Some(1)), 7, "Ralof");
+    assert_eq!(run(None), 6, "a box a load took resumes with its default");
+}

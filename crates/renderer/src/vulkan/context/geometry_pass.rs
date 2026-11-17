@@ -8,7 +8,10 @@ use super::super::gpu_timers::GeometryTimerPhase;
 use crate::vulkan::gpu_timers::TimerPass;
 use super::super::pipeline::{PipelineKey, default_depth_compare_op, depth_compare_op};
 use super::super::water::{WaterDrawCommand, water_instance_slot};
-use super::frame_params::{DrawBatch, group_state, needs_two_sided_blend_split, should_use_indirect_draws};
+use super::frame_params::{
+    DrawBatch, FrameInputs, FrameSlot, group_state, needs_two_sided_blend_split,
+    should_use_indirect_draws,
+};
 use super::{DrawCommand, VulkanContext};
 use ash::vk;
 
@@ -39,17 +42,16 @@ impl VulkanContext {
     /// single `unsafe` scope, barrier order, and recording order are
     /// unchanged. Runs between the bulk pre-render barrier and
     /// `copy_depth_to_history` / `record_post_passes`.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn record_geometry_pass(
         &mut self,
-        cmd: vk::CommandBuffer,
-        frame: usize,
+        slot: FrameSlot,
         render_pass_begin: &vk::RenderPassBeginInfo,
         batches: &[DrawBatch],
-        draw_commands: &[DrawCommand],
-        water_commands: &[WaterDrawCommand],
+        inputs: &FrameInputs,
         instance_map: &[Option<u32>],
     ) {
+        let FrameSlot { cmd, frame } = slot;
+        let FrameInputs { draw_commands, water_commands, .. } = *inputs;
         // SAFETY: `cmd` is recording (begin_command_buffer succeeded above) and `framebuffers[frame]` / `render_pass` / pipeline layout + descriptor sets / global VB+IB are all live for this frame. `cmd_begin_render_pass` opens the pass; viewport/scissor/cull/depth dynamic state is set before any draw; all binds use the GRAPHICS bind point with the matching `pipeline_layout`; `cmd` is recorded by this thread only and `end_command_buffer` closes it. The fence wait at frame start guarantees no in-flight frame is still using this buffer or its bound resources.
         unsafe {
             self.begin_main_render_pass(cmd, frame, render_pass_begin);

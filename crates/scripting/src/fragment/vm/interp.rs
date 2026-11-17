@@ -33,7 +33,14 @@ pub(super) struct Vm<'a> {
     /// The members of the script-filled reference collections this run has
     /// read or changed, written back when it ends.
     pub(super) collections: std::cell::RefCell<HashMap<crate::alias_collections::CollectionKey, Vec<u32>>>,
+    /// M48 #6667 — the answer to the `Message.Show()` the resumed statement waited on: its
+    /// value, once (the statement replays from its start).
+    pub(super) answer: Option<i32>,
 }
+
+/// M48 #6667 — the `Stop` a `Message.Show()` raises to unwind its expression to the statement
+/// that waits on it (`Vm::exec_block` turns it into a suspension).
+const AWAITS_MESSAGE: &str = "a Message.Show() awaiting its answer";
 
 /// Run `script`'s `function` attached to `context` — a quest's fragment, or
 /// a reference script's event with its `args` — its properties bound by
@@ -78,6 +85,7 @@ pub(in crate::fragment) fn run_fragment(
         for_effect: false,
         aggregates: Default::default(),
         collections: Default::default(),
+        answer: resume.and_then(|state| state.answer),
     };
     let frame = Frame {
         script: Arc::clone(&script),
@@ -120,7 +128,7 @@ pub(in crate::fragment) fn run_fragment(
     .map(|flow| match flow {
         Flow::Suspend(seconds, _, frames) => {
             let carried_steps = if vm.yielded { vm.steps as u32 } else { 0 };
-            Some((seconds, VmResume { frames, carried_steps }))
+            Some((seconds, VmResume { frames, carried_steps, answer: None }))
         }
         _ => None,
     });
@@ -356,7 +364,10 @@ impl Vm<'_> {
         ends_function: bool,
     ) -> Run<Flow> {
         let mut start = 0;
-        if let Some(path) = resume {
+        // M48 #6667 — a statement whose `Message.Show()` was answered runs again from its start.
+        if let Some([VmStep::Replay(index)]) = resume {
+            start = *index as usize;
+        } else if let Some(path) = resume {
             let Some((VmStep::Statement(index), rest)) = path.split_first() else {
                 return stop("a malformed resume path");
             };
@@ -377,7 +388,15 @@ impl Vm<'_> {
             start = index + 1;
         }
         for (index, statement) in body.iter().enumerate().skip(start) {
-            match self.exec(frame, &statement.node)? {
+            let flow = match self.exec(frame, &statement.node) {
+                // M48 #6667 — the statement's expression asked for a box's answer: suspend here,
+                // to run the statement again with it.
+                Err(Stop(why)) if why == AWAITS_MESSAGE && self.deferred.awaits_message.is_some() => {
+                    return Ok(Flow::Suspend(0.0, vec![VmStep::Replay(index as u32)], Vec::new()));
+                }
+                flow => flow?,
+            };
+            match flow {
                 Flow::Normal => {
                     // The frame budget ran out: suspend after this statement,
                     // as a zero-second `Utility.Wait` here would.
@@ -1139,6 +1158,9 @@ impl Vm<'_> {
             let script = Arc::clone(&frame.script);
             return Ok(Value::Str(self.script_state(frame.owner, &script)));
         }
+        if let Some(button) = self.message_show(frame, callee, args)? {
+            return Ok(Value::Int(button));
+        }
         let (call, bindings, vmad) = self.synthesize(frame, callee, args)?;
         if let Some((value, int)) = classify_native_number(&call, &bindings) {
             let number = evaluate_value(&value, self.context, Some(&vmad), self.world, self.stages, self.deferred);
@@ -1161,6 +1183,44 @@ impl Vm<'_> {
             return Ok(Value::Bool(all));
         }
         stop(format!("unsupported call {}", callee_name(callee)))
+    }
+
+    /// M48 #6667 — `<message>.Show(afArg1 … afArg9)` for its value: CK *Show - Message* is latent
+    /// and "returns the button pressed". The first time, the box is raised under a ticket and the
+    /// run unwinds to its statement ([`AWAITS_MESSAGE`]), which suspends until the answer and then
+    /// runs again; this time the call is the answer. `None` when the call is not a message box's
+    /// `Show`.
+    fn message_show(&mut self, frame: &mut Frame, callee: &Expr, args: &[CallArg]) -> Run<Option<i32>> {
+        let Expr::MemberAccess { object, member } = callee else {
+            return Ok(None);
+        };
+        if !member.node.0.eq_ignore_ascii_case("show") || static_class(&object.node).is_some() {
+            return Ok(None);
+        }
+        let Value::Form(form) = self.eval(frame, &object.node)? else {
+            return Ok(None);
+        };
+        let is_box = self
+            .world
+            .try_resource::<crate::messages::MessageCatalog>()
+            .is_some_and(|catalog| catalog.message(form).is_some_and(|message| message.message_box));
+        if !is_box {
+            return Ok(None);
+        }
+        if let Some(button) = self.answer.take() {
+            return Ok(Some(button));
+        }
+        let mut numbers = Vec::with_capacity(args.len());
+        for arg in args {
+            numbers.push(self.eval(frame, &arg.value.node)?.number().unwrap_or(0.0));
+        }
+        match crate::messages::show_message_awaiting(self.world, form, &numbers) {
+            Some(ticket) => {
+                self.deferred.awaits_message = Some(ticket);
+                stop(AWAITS_MESSAGE)
+            }
+            None => stop("Message.Show could not raise its box"),
+        }
     }
 
     pub(super) fn call_statement(&mut self, frame: &mut Frame, expression: &Expr) -> Run<Flow> {

@@ -499,6 +499,10 @@ pub(super) fn discard_outgoing_session_requests(world: &World) {
     if let Some(mut boxes) = world.try_resource_mut::<crate::notifications::MessageBoxQueue>() {
         boxes.0.clear();
     }
+    // M48 #6667 — a loaded Papyrus run waiting on `Message.Show()` resumes with its default.
+    if let Some(mut answers) = world.try_resource_mut::<byroredux_scripting::messages::PapyrusMessageAnswers>() {
+        answers.forget_boxes();
+    }
     // PERK-HOOK-007 — the activation the discarded activate-choice box held names the outgoing world's target.
     if let Some(mut pending) = world.try_resource_mut::<crate::perk_activate::PendingActivateChoice>() {
         *pending = crate::perk_activate::PendingActivateChoice::default();

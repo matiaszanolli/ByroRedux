@@ -2074,6 +2074,28 @@ pub(super) fn should_use_indirect_draws(
         && batch_count <= MAX_INDIRECT_DRAWS
 }
 
+/// The command buffer a frame is being recorded into and the frame-in-flight slot it belongs to.
+/// Every recording phase takes both, so they travel as one value.
+#[derive(Clone, Copy)]
+pub(super) struct FrameSlot {
+    pub cmd: vk::CommandBuffer,
+    pub frame: usize,
+}
+
+/// What `draw_frame` has resolved for this frame by the time it uploads instances and parameters:
+/// the camera state, the merged light list and the draw-command-to-instance map. Unlike
+/// [`FrameInputs`] these are computed here, so they travel beside it, not inside it.
+#[derive(Clone, Copy)]
+pub(super) struct FrameDerived<'a> {
+    pub render_origin: byroredux_core::math::Vec3,
+    pub camera_cut: bool,
+    pub camera_static: bool,
+    pub inv_vp_arr: [[f32; 4]; 4],
+    /// The app's lights plus the transported-combustion lights, after the priority re-sort.
+    pub merged_lights: &'a [scene_buffer::GpuLight],
+    pub instance_map: &'a [Option<u32>],
+}
+
 /// All per-frame inputs consumed by [`VulkanContext::draw_frame`].
 ///
 /// Groups `draw_frame`'s per-frame inputs into one struct so the call stays

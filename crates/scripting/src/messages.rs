@@ -132,6 +132,68 @@ pub enum MessageAnswer {
     /// The player's activate choice (PERK-HOOK-007, Q5): button 0 is the default activation and each later
     /// button one perk entry; the engine that raised the box keeps what each button runs.
     ActivateChoice,
+    /// M48 #6667 — a Papyrus run waits on `Message.Show()`'s value (CK *Show - Message*: latent,
+    /// returns the button pressed): the answer goes to [`PapyrusMessageAnswers`] under this ticket,
+    /// and the run resumes with it.
+    Papyrus(u32),
+}
+
+/// M48 #6667 — the answers Papyrus runs wait on, by ticket ([`MessageAnswer::Papyrus`]).
+/// `NOT_SAVED_BY_DESIGN`: a box is UI state, gone with a load; a run whose box a load took
+/// resumes with button 0, the box's default.
+#[derive(Debug, Default)]
+pub struct PapyrusMessageAnswers {
+    next: u32,
+    /// Raised and not yet answered.
+    waiting: std::collections::HashSet<u32>,
+    /// Answered and not yet read by the run, button by ticket.
+    answered: std::collections::HashMap<u32, i32>,
+}
+
+impl Resource for PapyrusMessageAnswers {}
+
+/// At most this many unanswered or unread tickets; past it the oldest are forgotten (a run that
+/// later asks for one resumes with its default).
+const MAX_PAPYRUS_TICKETS: usize = 64;
+
+impl PapyrusMessageAnswers {
+    fn issue(&mut self) -> u32 {
+        self.next = self.next.wrapping_add(1).max(1);
+        if self.waiting.len() + self.answered.len() >= MAX_PAPYRUS_TICKETS {
+            let oldest = self.waiting.iter().chain(self.answered.keys()).min().copied();
+            if let Some(oldest) = oldest {
+                self.waiting.remove(&oldest);
+                self.answered.remove(&oldest);
+            }
+        }
+        self.waiting.insert(self.next);
+        self.next
+    }
+
+    /// A load took every box: each run waiting on one resumes with its default. The ticket
+    /// counter keeps counting, so a ticket a loaded run holds is never issued to a new box.
+    pub fn forget_boxes(&mut self) {
+        self.waiting.clear();
+        self.answered.clear();
+    }
+}
+
+/// The player answered the Papyrus box `ticket` with `button`.
+pub fn record_papyrus_answer(world: &World, ticket: u32, button: usize) {
+    if let Some(mut answers) = world.try_resource_mut::<PapyrusMessageAnswers>()
+        && answers.waiting.remove(&ticket) {
+            answers.answered.insert(ticket, button as i32);
+        }
+}
+
+/// The answer a run waiting on `ticket` resumes with: the button pressed, `0` (the default)
+/// when its box was lost (a load, the ticket cap), or `None` while it is still up.
+pub fn take_papyrus_answer(world: &World, ticket: u32) -> Option<i32> {
+    let mut answers = world.try_resource_mut::<PapyrusMessageAnswers>()?;
+    if let Some(button) = answers.answered.remove(&ticket) {
+        return Some(button);
+    }
+    (!answers.waiting.contains(&ticket)).then_some(0)
 }
 
 /// The last answered ObScript message-box button, consumed by the first
@@ -452,6 +514,24 @@ fn global_text(world: &World, name: &str) -> Option<String> {
 /// Format message `form_id` with `args` and queue it for presentation.
 /// `false` when the load order carries no such message.
 pub fn show_message(world: &World, form_id: u32, args: &[f32]) -> bool {
+    queue_message(world, form_id, args, MessageAnswer::Unread)
+}
+
+/// M48 #6667 — `Message.Show()` whose value a Papyrus run reads: queue the message as
+/// [`show_message`] does, its answer going to a new ticket; the ticket, or `None` when `form_id`
+/// is not a message box. A message that is not a box (a notification) has no answer to wait on.
+pub fn show_message_awaiting(world: &World, form_id: u32, args: &[f32]) -> Option<u32> {
+    let is_box = world
+        .try_resource::<MessageCatalog>()
+        .and_then(|catalog| catalog.message(form_id).map(|definition| definition.message_box))?;
+    if !is_box {
+        return None;
+    }
+    let ticket = world.try_resource_mut::<PapyrusMessageAnswers>()?.issue();
+    queue_message(world, form_id, args, MessageAnswer::Papyrus(ticket)).then_some(ticket)
+}
+
+fn queue_message(world: &World, form_id: u32, args: &[f32], answer: MessageAnswer) -> bool {
     let Some(definition) = world
         .try_resource::<MessageCatalog>()
         .and_then(|catalog| catalog.message(form_id).cloned())
@@ -469,7 +549,7 @@ pub fn show_message(world: &World, form_id: u32, args: &[f32]) -> bool {
         text,
         message_box: definition.message_box,
         buttons: definition.buttons,
-        answer: MessageAnswer::Unread,
+        answer,
     };
     match world.try_resource_mut::<PendingScriptMessages>() {
         Some(mut pending) => {
@@ -511,6 +591,7 @@ pub fn notify(world: &World, text: String) {
 pub fn register(world: &mut World) {
     world.init_resource::<PendingScriptMessages>();
     world.init_resource::<ButtonPresses>();
+    world.init_resource::<PapyrusMessageAnswers>();
 }
 
 #[cfg(test)]

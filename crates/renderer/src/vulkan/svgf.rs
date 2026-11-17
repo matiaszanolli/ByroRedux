@@ -1666,10 +1666,10 @@ mod tests {
 
         let post = include_str!("context/post_passes.rs");
         let doc = post
-            .split_once("fn record_post_passes(")
-            .expect("record_post_passes")
+            .split_once("struct PostPassFrame<'a> {")
+            .expect("PostPassFrame")
             .1
-            .split_once("caustic_history_valid: bool")
+            .split_once("pub caustic_history_valid: bool")
             .expect("parameter")
             .0;
         assert!(doc.contains("build_and_upload_instances.rs") && !doc.contains("draw.rs"));

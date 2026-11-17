@@ -20,6 +20,9 @@ pub struct VmResume {
     /// still bounds the whole run; 0 after a real wait, which starts the
     /// count afresh as it always did.
     pub carried_steps: u32,
+    /// M48 #6667 — the button the box a run waited on was answered with (`Message.Show()`'s
+    /// value), for the statement that resumes it ([`VmStep::Replay`]).
+    pub answer: Option<i32>,
 }
 
 /// One suspended function activation of a [`VmResume`].
@@ -50,6 +53,9 @@ pub enum VmStep {
     /// Inside an `If` (0 its body, `k` its `k`-th `ElseIf`, `u32::MAX` its
     /// `Else`) or a `While` (0, its body).
     Branch(u32),
+    /// M48 #6667 — the statement at this index runs again from its start: a `Message.Show()` its
+    /// expression waited on reads the answer this time ([`VmResume::answer`]).
+    Replay(u32),
 }
 
 /// A local's value across a suspension.

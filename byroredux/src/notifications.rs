@@ -108,6 +108,10 @@ pub(crate) fn answer_message_box(world: &World, choice: Option<usize>) -> bool {
         Some(byroredux_scripting::MessageAnswer::ActivateChoice) => {
             crate::perk_activate::answer_activate_choice(world, choice)
         }
+        // M48 #6667 — a Papyrus `Message.Show()` waits on its button; dismissed is the default.
+        Some(byroredux_scripting::MessageAnswer::Papyrus(ticket)) => {
+            byroredux_scripting::messages::record_papyrus_answer(world, ticket, choice.unwrap_or(0))
+        }
         Some(byroredux_scripting::MessageAnswer::Unread) | None => {}
     }
     more

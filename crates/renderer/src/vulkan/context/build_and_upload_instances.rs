@@ -20,10 +20,10 @@ use super::super::scene_buffer::{
     INSTANCE_TERRAIN_TILE_SHIFT,
 };
 use super::frame_params::{
-    CompositeParamsInputs, DrawBatch, build_composite_params, build_sky_cube_params,
+    CompositeParamsInputs, DrawBatch, FrameDerived, FrameInputs, FrameSlot, build_composite_params, build_sky_cube_params,
     is_caustic_source, is_refractive_glass, morph_gpu_fields_for_draw, morph_slot_backs_mesh,
     rebase_model_matrix, rigid_instance_set_changed, skin_slot_backs_mesh,
-    skinned_vertex_address_for_draw, uses_rigid_motion_history, UnderwaterView,
+    skinned_vertex_address_for_draw, uses_rigid_motion_history,
 };
 use super::{DrawCommand, FrameTimings, SkyParams, VulkanContext};
 use ash::vk;
@@ -217,6 +217,26 @@ fn svgf_continuous_inputs_jumped(
 /// `draw_frame`'s own tail (bookkeeping after `record_geometry_pass`) and
 /// the immediately-following `record_geometry_pass` / `record_post_passes`
 /// calls still need.
+/// The rigid-body motion history `build_and_upload_instances` has accumulated by the time it
+/// derives the scene history gates.
+struct RigidHistory<'a> {
+    /// Whether last frame's rigid transforms are a valid history (no camera cut, nothing suppressing it).
+    live: bool,
+    /// A rigid instance appeared this frame.
+    first_sight: bool,
+    /// A rigid instance moved this frame.
+    moved: bool,
+    /// This frame's rigid model matrices, keyed by instance.
+    current_models: &'a rustc_hash::FxHashMap<u32, [f32; 16]>,
+}
+
+/// The CPU-built instance arrays one frame uploads into the instance SSBOs.
+struct InstanceUpload<'a> {
+    gpu_instances: &'a [GpuInstance],
+    previous_models: &'a [[[f32; 4]; 4]],
+    moved_surface_ids: &'a [u32],
+}
+
 pub(super) struct BuildInstancesOutput {
     pub(super) gpu_instances: Vec<GpuInstance>,
     pub(super) previous_models: Vec<scene_buffer::GpuPreviousModel>,
@@ -284,42 +304,37 @@ impl VulkanContext {
     /// TAA/water per-frame UBOs, and emit the bulk pre-render-pass barrier.
     /// Extracted verbatim from `draw_frame` — the recording order (including
     /// the final barrier and the water-caustic pre-clear) is unchanged.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn build_and_upload_instances(
         &mut self,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-        draw_commands: &[DrawCommand],
-        render_origin: byroredux_core::math::Vec3,
-        camera_cut: bool,
-        camera_static: bool,
-        pose_dirty: &rustc_hash::FxHashSet<byroredux_core::ecs::storage::EntityId>,
-        lights: &[scene_buffer::GpuLight],
-        instance_map: &[Option<u32>],
-        ui_texture_handles: &[u32],
-        materials: &[GpuMaterial],
-        fog_color: [f32; 3],
-        fog_near: f32,
-        fog_far: f32,
-        fog_extinction_per_meter: f32,
-        fog_single_scatter_albedo: f32,
-        fog_scale_height_meters: f32, fog_coverage: f32,
-        fog_clip: f32,
-        fog_power: f32,
-        fog_height_reference: f32,
-        sky_params: &SkyParams,
-        camera_pos: [f32; 3],
-        inv_vp_arr: [[f32; 4]; 4],
-        fog_volumes: &[super::super::volumetrics::GpuFogVolume],
-        underwater: UnderwaterView,
-        water_commands: &[super::super::water::WaterDrawCommand],
+        slot: FrameSlot,
+        inputs: &FrameInputs,
+        derived: FrameDerived,
         armed_selected_ray_probe_generation: &mut Option<u32>,
         t: &mut FrameTimings,
-        // Stage 1 — frame delta in seconds for the exposure meter's
-        // adaptation factor (precomputed host-side; see
-        // `exposure::adaptation_alpha`).
-        frame_delta_seconds: f32,
     ) -> BuildInstancesOutput {
+        let FrameSlot { cmd, frame } = slot;
+        let FrameInputs {
+            draw_commands,
+            pose_dirty,
+            ui_texture_handles,
+            materials,
+            fog_color,
+            fog_near,
+            fog_far,
+            fog_extinction_per_meter,
+            fog_single_scatter_albedo,
+            fog_scale_height_meters,
+            fog_clip,
+            fog_power,
+            fog_height_reference,
+            ..
+        } = *inputs;
+        let FrameDerived {
+            render_origin,
+            camera_cut,
+            instance_map,
+            ..
+        } = derived;
         // ── Build instance SSBO + draw batches ────────────────────────
         //
         // Each DrawCommand becomes one GpuInstance in the SSBO. Consecutive
@@ -619,9 +634,8 @@ impl VulkanContext {
             svgf_history_valid,
         } = self.update_scene_history_gates(
             caustic_scene_key,
-            lights,
-            materials,
-            sky_params,
+            inputs,
+            derived,
             &[
                 fog_color[0],
                 fog_color[1],
@@ -635,12 +649,12 @@ impl VulkanContext {
                 fog_power,
                 fog_height_reference,
             ],
-            rigid_history_live,
-            rigid_instance_first_sight,
-            rigid_instance_moved,
-            &current_rigid_models,
-            pose_dirty,
-            camera_static,
+            RigidHistory {
+                live: rigid_history_live,
+                first_sight: rigid_instance_first_sight,
+                moved: rigid_instance_moved,
+                current_models: &current_rigid_models,
+            },
         );
 
 
@@ -723,11 +737,12 @@ impl VulkanContext {
 
         finish_moved_surface_ids(&mut moved_surface_ids);
         self.upload_instance_and_draw_buffers(
-            cmd,
-            frame,
-            &gpu_instances,
-            &previous_models,
-            &moved_surface_ids,
+            slot,
+            InstanceUpload {
+                gpu_instances: &gpu_instances,
+                previous_models: &previous_models,
+                moved_surface_ids: &moved_surface_ids,
+            },
             materials,
             &batches,
         );
@@ -743,26 +758,10 @@ impl VulkanContext {
         let parameter_t0 = Instant::now();
 
         self.upload_frame_parameters(
-            cmd,
-            frame,
-            render_origin,
-            fog_color,
-            fog_near,
-            fog_far,
-            fog_extinction_per_meter,
-            fog_single_scatter_albedo,
-            fog_scale_height_meters, fog_coverage,
-            fog_clip,
-            fog_power,
-            fog_height_reference,
-            sky_params,
-            camera_pos,
-            inv_vp_arr,
-            fog_volumes,
-            underwater,
-            water_commands,
+            slot,
+            inputs,
+            derived,
             armed_selected_ray_probe_generation,
-            frame_delta_seconds,
             svgf_history_valid,
         );
 
@@ -1147,21 +1146,22 @@ impl VulkanContext {
     /// caustic, SVGF and ReSTIR scene keys, and derive the history-validity gates
     /// from them (#2468 / #4046 / #5369 / #6247). Updates the `prev_*` keys on
     /// `self`. (#6143, split out of `build_and_upload_instances`.)
-    #[allow(clippy::too_many_arguments)]
     fn update_scene_history_gates(
         &mut self,
         mut caustic_scene_key: u64,
-        lights: &[scene_buffer::GpuLight],
-        materials: &[GpuMaterial],
-        sky_params: &SkyParams,
+        inputs: &FrameInputs,
+        derived: FrameDerived,
         fog_inputs: &[f32; SVGF_FOG_INPUTS],
-        rigid_history_live: bool,
-        rigid_instance_first_sight: bool,
-        rigid_instance_moved: bool,
-        current_rigid_models: &rustc_hash::FxHashMap<u32, [f32; 16]>,
-        pose_dirty: &rustc_hash::FxHashSet<byroredux_core::ecs::storage::EntityId>,
-        camera_static: bool,
+        rigid: RigidHistory,
     ) -> SceneHistoryGates {
+        let FrameInputs { materials, sky_params, pose_dirty, .. } = *inputs;
+        let FrameDerived { merged_lights: lights, camera_static, .. } = derived;
+        let RigidHistory {
+            live: rigid_history_live,
+            first_sight: rigid_instance_first_sight,
+            moved: rigid_instance_moved,
+            current_models: current_rigid_models,
+        } = rigid;
         // #2468 — finish the caustic scene key with the light rig. Every
         // splat is a refraction of a specific light through a specific
         // surface, so a lantern being carried, a light being coloured /
@@ -1353,17 +1353,15 @@ impl VulkanContext {
     /// terrain-tile and indirect-draw buffers for this frame (#309 / #496 / #6250).
     /// Runs after the frame's final instance-SSBO grow and batch clamp.
     /// (#6143, split out of `build_and_upload_instances`.)
-    #[allow(clippy::too_many_arguments)]
     fn upload_instance_and_draw_buffers(
         &mut self,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-        gpu_instances: &[GpuInstance],
-        previous_models: &[[[f32; 4]; 4]],
-        moved_surface_ids: &[u32],
+        slot: FrameSlot,
+        upload: InstanceUpload,
         materials: &[GpuMaterial],
         batches: &[DrawBatch],
     ) {
+        let FrameSlot { cmd, frame } = slot;
+        let InstanceUpload { gpu_instances, previous_models, moved_surface_ids } = upload;
         // Upload all instance data (scene + UI) to the SSBO in one flush.
         if !gpu_instances.is_empty() {
             debug_assert_eq!(gpu_instances.len(), previous_models.len());
@@ -1473,32 +1471,38 @@ impl VulkanContext {
     /// water, selected-ray probe) and record the SKYAL sky-cube bake, all ahead of
     /// the bulk HOST -> shader barrier that covers their writes (#909 / #961 /
     /// #1397). (#6143, split out of `build_and_upload_instances`.)
-    #[allow(clippy::too_many_arguments)]
     fn upload_frame_parameters(
         &mut self,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-        render_origin: byroredux_core::math::Vec3,
-        fog_color: [f32; 3],
-        fog_near: f32,
-        fog_far: f32,
-        fog_extinction_per_meter: f32,
-        fog_single_scatter_albedo: f32,
-        fog_scale_height_meters: f32,
-        fog_coverage: f32,
-        fog_clip: f32,
-        fog_power: f32,
-        fog_height_reference: f32,
-        sky_params: &SkyParams,
-        camera_pos: [f32; 3],
-        inv_vp_arr: [[f32; 4]; 4],
-        fog_volumes: &[super::super::volumetrics::GpuFogVolume],
-        underwater: UnderwaterView,
-        water_commands: &[super::super::water::WaterDrawCommand],
+        slot: FrameSlot,
+        inputs: &FrameInputs,
+        derived: FrameDerived,
         armed_selected_ray_probe_generation: &mut Option<u32>,
-        frame_delta_seconds: f32,
         svgf_history_valid: bool,
     ) {
+        let FrameSlot { cmd, frame } = slot;
+        let FrameInputs {
+            fog_color,
+            fog_near,
+            fog_far,
+            fog_extinction_per_meter,
+            fog_single_scatter_albedo,
+            fog_scale_height_meters,
+            fog_coverage,
+            fog_clip,
+            fog_power,
+            fog_height_reference,
+            sky_params,
+            camera_pos,
+            fog_volumes,
+            underwater,
+            water_commands,
+            frame_time_delta_ms,
+            ..
+        } = *inputs;
+        let FrameDerived { render_origin, inv_vp_arr, .. } = derived;
+        // Stage 1 — frame delta in seconds for the exposure meter's adaptation factor
+        // (precomputed host-side; see `exposure::adaptation_alpha`).
+        let frame_delta_seconds = frame_time_delta_ms / 1000.0;
         // Upload composite params (fog + sky) up-front so the bulk host
         // barrier below covers this UBO's HOST_WRITE too (#909 /
         // REN-D1-NEW-03). All inputs are available from `draw_frame`'s

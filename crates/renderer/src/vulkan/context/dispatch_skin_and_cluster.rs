@@ -10,10 +10,11 @@
 
 use super::super::descriptors::memory_barrier;
 use crate::vulkan::gpu_timers::TimerPass;
-use super::frame_params::{next_clean_skin_frames, should_skip_skin_gpu_refresh};
-use super::{DrawCommand, FrameTimings, VulkanContext};
+use super::frame_params::{
+    next_clean_skin_frames, should_skip_skin_gpu_refresh, FrameInputs, FrameSlot,
+};
+use super::{FrameTimings, VulkanContext};
 use ash::vk;
-use byroredux_core::ecs::storage::EntityId;
 use std::time::Instant;
 
 impl VulkanContext {
@@ -21,20 +22,23 @@ impl VulkanContext {
     /// compute pass, refit skinned BLASes, build the TLAS, and dispatch
     /// cluster light culling. Extracted verbatim from `draw_frame` — the
     /// recording order is unchanged.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn dispatch_skin_and_cluster(
         &mut self,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-        draw_commands: &[DrawCommand],
-        bone_world: &[[[f32; 4]; 4]],
-        skin_offsets: &rustc_hash::FxHashMap<EntityId, u32>,
-        bind_inverse_pending_uploads: &[(u32, Vec<[[f32; 4]; 4]>)],
-        pose_dirty: &rustc_hash::FxHashSet<EntityId>,
+        slot: FrameSlot,
+        inputs: &FrameInputs,
         instance_map: &[Option<u32>],
         tlas_t0: Instant,
         t: &mut FrameTimings,
     ) {
+        let FrameSlot { cmd, frame } = slot;
+        let FrameInputs {
+            draw_commands,
+            bone_world,
+            skin_offsets,
+            bind_inverse_pending_uploads,
+            pose_dirty,
+            ..
+        } = *inputs;
         // D6-04 / #1811 — track how many consecutive frames had no
         // skinned-pose change and no pending first-sight bind_inverses
         // upload. Any dirty signal resets the streak so the forthcoming

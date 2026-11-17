@@ -842,6 +842,40 @@ impl ConsoleCommand for QuestStopCommand {
     }
 }
 
+/// `quest.reset <formid>` — Papyrus `Quest.Reset()` / ObScript `ResetQuest`: the quest's stages
+/// and objectives go back to never started, so a following `quest.start` runs its startup stage
+/// again (M48 #6667: MQ101's stage 0 reads `MQQuickstart` only then).
+pub(crate) struct QuestResetCommand;
+
+impl ConsoleCommand for QuestResetCommand {
+    fn name(&self) -> &str {
+        "quest.reset"
+    }
+
+    fn description(&self) -> &str {
+        "Reset an installed quest to never started, as Quest.Reset() does"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let quest = match parse_quest_arg(args, "quest.reset <formid>") {
+            Ok(quest) => quest,
+            Err(error) => return error,
+        };
+        let before = world
+            .try_resource::<QuestStageState>()
+            .and_then(|stages| stages.state(quest).cloned());
+        if let Err(error) = apply_control_effect(world, quest, Effect::ResetQuest { quest: QuestRef::SelfRef }) {
+            return error;
+        }
+        CommandOutput::line(format!(
+            "Quest 0x{:08X} result: {} state=not-started previous={}",
+            quest.0,
+            if before.is_some() { "reset" } else { "unchanged" },
+            status_name(before.as_ref())
+        ))
+    }
+}
+
 pub(crate) struct QuestSetStageCommand;
 
 impl ConsoleCommand for QuestSetStageCommand {
@@ -1856,6 +1890,14 @@ mod tests {
             .join("\n");
         assert!(aliases.contains("0/1 bound refresh=current"));
         assert!(aliases.contains("reason=quest-not-running"));
+
+        // M48 #6667 — a reset quest starts over through its startup stage; a stopped one only resumes.
+        let reset = QuestResetCommand.execute(&world, "0x1234").lines.join("\n");
+        assert!(reset.contains("result: reset state=not-started previous=stopped"), "{reset}");
+        let again = QuestResetCommand.execute(&world, "0x1234").lines.join("\n");
+        assert!(again.contains("result: unchanged"), "{again}");
+        let started = QuestStartCommand.execute(&world, "0x1234").lines.join("\n");
+        assert!(started.contains("result: started state=running stage=5"), "{started}");
     }
 
     #[test]

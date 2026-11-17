@@ -1096,6 +1096,22 @@ impl<'l> Checker<'l> {
             && let Some(script) = self.quest_script_for(frame, receiver, &name) {
                 return self.check_call_into(&script, &name, statement, Kind::Quest);
             }
+        // M48 #6667 — `<message>.Show(…)` for its value is latent: the VM raises the box and
+        // waits for the button pressed, the call's value (CK *Show - Message*). As a statement
+        // it lowers like any other native.
+        if !statement
+            && receiver_kind == Kind::Object
+            && name.eq_ignore_ascii_case("show")
+            && self.declared_type_name(frame, receiver).is_some_and(|ty| ty.eq_ignore_ascii_case("message"))
+        {
+            let numeric = |arg: &Arg| {
+                matches!(arg, Arg::Kind(Kind::Num) | Arg::Literal(Expr::IntLit(_) | Expr::FloatLit(_)))
+            };
+            if arg_kinds.len() <= 9 && arg_kinds.iter().all(numeric) {
+                return Some(Kind::Num);
+            }
+            return self.fail(|| format!("Message.Show/{} as written", arg_kinds.len()));
+        }
         let Some(placeholder) = spanned_placeholder(receiver_kind) else {
             return self.fail(|| format!("{name} on {receiver_kind:?}"));
         };
@@ -1149,7 +1165,17 @@ impl<'l> Checker<'l> {
     }
 
     pub(super) fn declared_script(&mut self, frame: &CheckFrame, receiver: &Expr) -> Option<Arc<Script>> {
-        let type_name = match receiver {
+        let type_name = self.declared_type_name(frame, receiver)?;
+        let script = self.library?.script(&type_name)?;
+        self.scripts
+            .insert(script.name.node.0.to_ascii_lowercase(), Arc::clone(&script));
+        Some(script)
+    }
+
+    /// The object type `receiver` is declared as: a cast's target, a property's or local's
+    /// type, `Self`'s script, or `Owner.Member`'s declared type.
+    pub(super) fn declared_type_name(&mut self, frame: &CheckFrame, receiver: &Expr) -> Option<String> {
+        Some(match receiver {
             Expr::Cast { target_type, .. } => match &target_type.node {
                 Type::Object(ty) => ty.0.clone(),
                 _ => return None,
@@ -1174,11 +1200,7 @@ impl<'l> Checker<'l> {
                 }
             }
             _ => return None,
-        };
-        let script = self.library?.script(&type_name)?;
-        self.scripts
-            .insert(script.name.node.0.to_ascii_lowercase(), Arc::clone(&script));
-        Some(script)
+        })
     }
 
     /// Whether the primitives take this native call, over placeholders.
