@@ -966,12 +966,8 @@ allocated actor, not the player. **Still not settled, and it conflicts with UESP
 derived` gives Magicka 0 + 100 = 100 (agrees with UESP) but Fatigue 150 + 150 = 300 and Health 45 + 80 =
 125 at the placeholder attributes. Either the final combine in `0x5ead00` is not a plain sum (the zero test
 after the `0x5e2210` call at `0x5ead3d` rewrites one of its two outputs to 1.0, which was not worked
-through), or a new game zeroes the player's stored pools. Earlier wording, kept for the record:
-**Not settled:** what that
-returns for AV 8 to 10 on the `Player` record. If it were the record's 45 / 0 / 150, Fatigue would be 300
-at the placeholder attributes, against UESP's `Str + End + Agi + Wil`; so it is probably not the `ACBS`
-values, but the function was not decoded. The consequences differ: Magicka is 100 under either reading
-that keeps UESP's Fatigue, while Health is `80 + accumulated` or `45 + 80`.
+through), or a new game zeroes the player's stored pools. Magicka is 100 under every one of these
+readings, which is why it is applied (#7037); Health is `80 + accumulated` or `45 + 80`.
 
 Not run: the `Player` record is also what a new game starts from before character creation assigns the
 class, race and birthsign (OAV-NG-001 puts those menus out of scope), so the placeholder may be what the
