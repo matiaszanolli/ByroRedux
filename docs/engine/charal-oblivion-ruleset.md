@@ -962,11 +962,18 @@ and `+0x4c` of the `ACBS` sub-object at `+0x24`), and AV 11 is derived from Stre
 record's own `ACBS` / health value, as the engine already reads it. The character-creation calls of the
 calculator (`0x596ae5`, `0x5c29e6`, `0x5c2ac0`) pass 1 and skip the pools, so nothing there rewrites the
 `Player` record's pool fields. The flag-0 callers `0x50c77c` and `0x50cf9d` run the calculator on a freshly
-allocated actor, not the player. **Still not settled, and it conflicts with UESP:** a literal `stored +
-derived` gives Magicka 0 + 100 = 100 (agrees with UESP) but Fatigue 150 + 150 = 300 and Health 45 + 80 =
-125 at the placeholder attributes. Either the final combine in `0x5ead00` is not a plain sum (the zero test
-after the `0x5e2210` call at `0x5ead3d` rewrites one of its two outputs to 1.0, which was not worked
-through), or a new game zeroes the player's stored pools. Magicka is 100 under every one of these
+allocated actor, not the player. **Worked through (#7041).** The combine in `0x5ead00` is a plain `(stored + derived) x multiplier`: the
+zero test at `0x5ead3d` only rewrites a zero *multiplier* to 1.0 (the callee's two outputs are the derived
+term and the multiplier; arguments traced from the stack frame). The player level-up path (`0x66c3e0`) adds
+to the stored Health: `stored = trunc(stored + End x [0xb37708])` through the setter `0x519c50`, i.e. the
+stored term is the accumulation, and the formula term is separate. **Still not settled, and it conflicts
+with UESP:** at the placeholder attributes a literal sum gives Magicka 0 + 100 = 100 (agrees), but Fatigue
+150 + 150 = 300 and Health 45 + 80 = 125, where UESP gives `Str + End + Agi + Wil` and `2 x End`. For both to
+hold the player's stored pools must be 0 when a new game starts, i.e. something clears the `Player`
+record's 45 / 150 first. No clearing writer is identified yet; the callers of the pool setters (`0x519c50`
+Health, `0x467290` Magicka, `0x4672b0` Fatigue: `0x5115ff` / `0x511617` / `0x51162c`, `0x51a025` /
+`0x51a036` / `0x51a047`, the calculator, `0x5240bc`..`0x5240ce`, and the level-up) were listed, and only
+the calculator and the level-up were read. Magicka is 100 under every one of these
 readings, which is why it is applied (#7037); Health is `80 + accumulated` or `45 + 80`.
 
 Not run: the `Player` record is also what a new game starts from before character creation assigns the
