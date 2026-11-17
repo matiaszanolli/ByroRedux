@@ -15,8 +15,9 @@
 #     fails if the rulesets or the player's keys are stale;
 #   * the next save is accepted, and a save made after the load loads back across the plugin sets again, with
 #     its values (a stale key is refused by the save's identity preflight).
-# Not observed from the console: ActorVitals.health itself (SAVE-1's consumers need a consumable, and the
-# inventory catalog has no ingestible entry for Oblivion potions yet).
+#   * after each live load the player drinks PotionRestoreHealth (0x98496, Restore Health 35, instant) and
+#     Health rises by 35: the consume path reads ActorVitals.health, so a stale key (SAVE-1) refuses the potion
+#     where the console's GetAV / DamageAV, which resolve by name, would not notice (#7045).
 set -euo pipefail
 
 DATA="${BYROREDUX_OBLIVION_DATA:-}"
@@ -112,6 +113,16 @@ state() {
     expect "$2 Fatigue" "$(av Fatigue)" "$6"
 }
 saved() { run "save $1" | grep -Fq "saved slot $1" || fail "save $1 was not accepted"; }
+# potion <label>: damage Health by 40 and drink PotionRestoreHealth; Health must rise by its authored 35.
+potion() {
+    run 'inv.add 0x98496 1' | grep -Fq 'inv.add: 1 x' || fail "$1: the potion was not added"
+    run 'obscript.cmd 0x14 DamageAV Health 40' >/dev/null
+    local before
+    before="$(av Health)"
+    run 'inv.use 0x98496' | grep -Fq 'queued use' || fail "$1: the potion use was not queued"
+    sleep 2
+    expect "$1 potion Health" "$(av Health)" "$(awk -v b="$before" 'BEGIN { print b + 35 }')"
+}
 
 # 1. Boot under B (engine slot 3), give the player a distinctive state, save it (slot 1).
 launch b1 B
@@ -141,6 +152,7 @@ sleep 1
 expect 'A<-B ModAV Fatigue' "$(av Fatigue)" 160
 expect 'A<-B ModAV Health' "$(av Health)" 90
 saved 2
+potion 'A<-B loaded'
 stop_engine
 
 # 3. Boot under B again and load the A save (slot 3) back across the move in the other direction, then
@@ -156,7 +168,9 @@ run 'obscript.cmd 0x14 ModAV Endurance 5' >/dev/null
 sleep 1
 expect 'B<-A ModAV Fatigue' "$(av Fatigue)" 155
 saved 4
+potion 'B<-A loaded'
 live_load b2 2
 [[ "$(slot_of "$LOG_DIR/b2.log")" == 3 ]] || fail 'loading the re-saved slot did not return to Regular(3)'
 state b2 'B<-resaved loaded' 50 90 100 160
+potion 'B<-resaved loaded'
 printf 'smoke[oblivion-live-load-plugin-set]: PASS -- A(2)<->B(3) both directions; artifacts: %s\n' "$LOG_DIR"
