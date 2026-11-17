@@ -815,6 +815,62 @@ attribute receives a +1 to +5 bonus based on governed major-skill increases
 skill-use progression curve. Source: [UESP Oblivion:
 Leveling](https://en.uesp.net/wiki/Oblivion:Leveling).
 
+## NPC auto-calc stats — LOCKED from the executable (#7008, OAV-POP-003)
+
+The `ClassAutoCalc` stat model of the Oblivion Actor Values PRD
+([oblivion-actor-values.md §3.4](../prd/oblivion-actor-values.md)). Source:
+the stat calculator `0x5222d0` of the local classic `Oblivion.exe` (SHA-256
+`a8f313845c1545e9a60e1e995961eef4c033115da9443f6d756341df3c2b7dc6`, `.text`
+unencrypted) and the `Oblivion.esm` GMST records, with UESP *Oblivion:NPCs*
+as the cross-check (level-1 values "identical to those for a player character
+created using the same race, gender, and class"). Static analysis only: what
+the calculator does is settled, **when** each flag combination reaches it is
+[#7022](https://github.com/matiaszanolli/ByroRedux/issues/7022).
+
+`n = level - 1`. Every rounded value is stored with x87 `fistp`
+(`0x52248d`, `0x5225c2`); the rounding mode is the process control word,
+which was not checked (round to nearest is the default, so this is the
+assumption until measured).
+
+| Value | Rule (address) |
+|---|---|
+| Skill | minor `5 + 0.1n`; major (one of the class's 7 major skills) `25 + n`; the skill's specialization equals the class's: add `5 + 0.5n`; add the race skill bonus (7 pairs, `race+0x50`); cap 100 (`0x5224ff`–`0x5225ca`; doubles `0xa2fc80` 0.1, `0xa3f3f0` 5.0, `0xa492b0` 25.0, `0xa2faa0` 0.5). Per level this is the PRD's +0.1 / +0.6 / +1.0 / +1.5 |
+| Attribute | race base for the sex (`race+0x74` male, `+0x80` female) `+ fAttributeClassPrimaryBonus` if it is the class's first favored attribute `+ fAttributeClassSecondaryBonus` if the second (`0x5223ab`, `0x5223c2`; both exe defaults 5.0, no `Oblivion.esm` GMST) `+` for each skill it governs: `n` if the skill is major, `0.2n` otherwise (`0x5223d5`–`0x522464`, double `0xa38538`); cap 100. Each attribute has three governed skills, so the per-level step is `0.2(3 - m) + m` = 0.6 / 1.4 / 2.2 / 3 for `m` = 0 / 1 / 2 / 3 major skills |
+| Personality | Skipped for every NPC; the authored `DATA` byte stays (`0x522345`–`0x52234f`). Calculated only for form id 7, the `Player` NPC |
+| Luck | Calculated like any attribute, but no skill is governed by Luck: race base plus the favored bonus, at every level. The authored `DATA` byte is replaced |
+| Health | `base = trunc((Str + End) * fNPCAttributeHealthMult)`; `sum = base + n * (iNPCBasePerLevelHealthMult + [End is a favored attribute] + s)` with `s` = +1 Combat, -1 Magic, 0 Stealth; `factor = fLowLevelNPCBaseHealthMult + (1 - fLowLevelNPCBaseHealthMult) * n / iLowLevelNPCMaxLevel` when `n < iLowLevelNPCMaxLevel`, else 1; `Health = trunc(sum * factor)` (`0x547f80`; truncation `0x9828c0`). `Oblivion.esm` GMSTs: 0.5, 4, 0.4, 4 (the exe defaults differ: 0.5, 4, 0.25, 3). Form id 7 uses `End * fPCBaseHealthMult` (exe default 2.0, no GMST) through `0x548020` |
+| Magicka | `trunc(Int * (1 + fNPCBaseMagickaMult))`, GMST 1.5, so 2.5 x Intelligence (`0x5482b0`); the player record uses `fPCBaseMagickaMult` (GMST 1.0) |
+| Fatigue | `Str + End + Agi + Wil` (`0x5479d0`; arguments pushed at `0x5226b3`–`0x5226f5`) |
+| Encumbrance | Not in the calculator; 5 x Strength stays sourced from UESP only |
+
+Health, Magicka and Fatigue are skipped when the calculator's argument is
+nonzero (`0x522689`). The calls at `0x44733a`, `0x50c77c`, `0x50cf9d` and
+`0x523ff4` push 0 (full recalculation); the calls at `0x596ae5`, `0x5c29e6`
+and `0x5c2ac0` push 1 (attributes and skills only); `0x50ab73` was not
+resolved.
+
+**Triggers.** Two independent tests reach the calculator:
+
+- Bit 4 of `ACBS` flags ("Auto-calc stats"): the NPC load path calls the NPC
+  vtable slot `0xe4` (`0x519d40`, test at `0x519d46`) and then the calculator
+  at `0x523ff4`.
+- Bit 7 ("PC Level Offset"): the walker `0x447300` runs the calculator on
+  every NPC with the bit set (`0x44732b`–`0x44733a`). Its callers: the
+  data-load tail of the program start (`0x40df80`, calls at `0x40ebaa`,
+  `0x40f45d`), the savegame load (`0x465860`, call at `0x466990`) and
+  `0x66c3e0` (call at `0x66c551`, after a store through `0x519c50`; its
+  only caller is `0x5ac724`, which fits a player level-up and is inferred
+  from the call shape).
+
+The engine therefore treats an NPC with either bit as auto-calc. Which of the
+two the editor's own controls map to, and the result of each of the four flag
+combinations over spawn, level change and reload, is the observation in #7022.
+Eight direct calculator call sites exist (`0x44733a`, `0x50ab73`, `0x50c77c`,
+`0x50cf9d`, `0x523ff4`, `0x596ae5`, `0x5c29e6`, `0x5c2ac0`); the functions
+holding `0x50ab73`, `0x50c77c`, `0x50cf9d`, `0x596ae5`, `0x5c29e6` and
+`0x5c2ac0` have no direct caller (command table or vtable) and were not
+decoded.
+
 ## Essential bleedout and encumbrance — LOCKED / NOT WIRED (#6284)
 
 The two executable-derived facts `CharacterRulesProfile::OBLIVION` carries (#5921).

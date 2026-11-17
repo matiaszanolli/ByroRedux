@@ -723,52 +723,12 @@ follows the smoke-test pattern).
   sources and independently resolved base views, with portable identities
   for every alias in saves. Independent per-skill snapshots lose that sharing
   when a script or magic effect modifies one of them.
-- The editor has an Auto-Calc Stats control independently of PC Level Offset;
-  PC Level Offset also forces recalculation ([Construction Set: NPC](https://cs.uesp.net/wiki/Category:NPC),
-  [NPC discussion](https://cs.uesp.net/wiki/Category_talk:NPC)). This does not
-  by itself establish the runtime flag precedence for every combination.
-  The [NPC record format](https://en.uesp.net/wiki/Oblivion_Mod:Mod_File_Format/NPC)
-  assigns Auto-calc Stats `0x10` and PC Level Offset `0x80`.
-  The executable provides two independent recalculation triggers. In the
-  NPC load path, `0x523fea` calls the NPC vtable slot `0xe4`, which resolves
-  to `0x519d40`; that method tests bit 4 at `0x519d46`–`0x519d4e`.
-  A true result calls the stat calculator `0x5222d0` at `0x523ff4`.
-  Separately, the NPC iteration at `0x447310`–`0x44734a` tests bit 7
-  (`0x44732b`–`0x447334`) and calls the same calculator at `0x44733a`.
-  The calculator reads race, sex, class and level and writes attributes and
-  skills (`0x522355`–`0x5225d7`). These traces establish both triggers;
-  the exact timing and interaction of subsequent recalculations are tracked
-  as an original-game observation in [#7022](https://github.com/matiaszanolli/ByroRedux/issues/7022).
-- [UESP NPC statistics](https://en.uesp.net/wiki/Oblivion:NPCs#NPC_Statistics)
-  fixes both Personality and Luck across levels. At level 1, attributes and
-  skills match a player of the same race, gender and class. Starting skills
-  have base 5, plus racial bonuses, 20 for a major skill and 5 for a skill in
-  the specialization; favored attributes gain 5
-  ([character creation](https://en.uesp.net/wiki/Oblivion:Character_Creation),
-  [classes](https://en.uesp.net/wiki/Oblivion:Classes#Custom_Classes)).
-  The executable's skill calculation corroborates the constants: for
-  `n = level - 1`, `0x5224ff`–`0x52251e` starts a minor skill at
-  `5 + 0.1*n` or a major at `25 + n`; the specialization arm at
-  `0x522529`–`0x522567` adds `5 + 0.5*n`. The racial bonus is added at
-  `0x52256b`–`0x522597` and the result is capped and converted at
-  `0x5225a3`–`0x5225ca` using x87 `fistp`. NPC Personality is skipped by
-  the calculator at `0x522345`–`0x52234f`, leaving its authored DATA byte.
-  Level offsets use the player level at `0x467807`–`0x46782b`; the bounds at
-  `0x467832`–`0x467864` apply only when nonzero, followed by a minimum of 1.
-- NPC auto-calculated health uses `0x547f80` in the executable identified
-  below. With `n = level - 1`, first convert
-  `(Strength + Endurance) * fNPCAttributeHealthMult` to an integer at
-  `0x547f80`–`0x547f98`; add `n * (iNPCBasePerLevelHealthMult +
-  is_endurance_favored + is_combat - is_magic)` at `0x547f9d`–`0x547fd0`.
-  If `n < iLowLevelNPCMaxLevel`, multiply by
-  `fLowLevelNPCBaseHealthMult + (1 - fLowLevelNPCBaseHealthMult) *
-  n / iLowLevelNPCMaxLevel`; otherwise multiply by 1. The code computes
-  that factor at `0x547fd2`–`0x54800c`, multiplies and converts at
-  `0x54800c`–`0x548014`. Setting initializers at `0x9ed910`, `0x9ed940`,
-  `0x9ed960` and `0x9ed980` associate those four names with the addresses
-  read by the calculation. The conversion helper is `0x9828c0`; its SSE
-  path uses `cvttsd2si` at `0x9828d5` (truncation). Values are read from
-  the active game settings, not the executable initializer defaults.
+- **Auto-calc stats are answered** (flag triggers, level-1 and per-level skill and
+  attribute values, Luck, Personality, Health, Magicka, Fatigue): see
+  [NPC auto-calc stats](charal-oblivion-ruleset.md#npc-auto-calc-stats--locked-from-the-executable-7008-oav-pop-003).
+  The one open part is the timing of each flag combination, observed in
+  [#7022](https://github.com/matiaszanolli/ByroRedux/issues/7022).
+
 - The [Aggression](https://cs.uesp.net/wiki/Aggression) page documents
   `SetActorValue Aggression` and the disposition comparison; it does not
   independently prove the initial `GetAV` value equals the AIDT byte.

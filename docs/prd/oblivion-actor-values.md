@@ -1,6 +1,6 @@
 # Oblivion Actor Values — Product Requirements
 
-**Status**: ACTIVE (2026-11-15). Revision 5 files the tracking issues; revision 4 records the owner's approval; revision 3 the decisions on Q1–Q3; revision 2 folded in review round 1. Statements
+**Status**: ACTIVE (2026-11-17). Revision 6 settles the §3.4 auto-calc rules from the executable; revision 5 files the tracking issues; revision 4 records the owner's approval; revision 3 the decisions on Q1–Q3; revision 2 folded in review round 1. Statements
 about how Oblivion behaves cite external sources (UESP, the Construction Set
 wiki dump under `/mnt/data/src/reference/`, xEdit's `wbDefinitionsTES4.pas`);
 a claim that could not be verified is marked **Phase 0: verify** instead of
@@ -119,19 +119,26 @@ them from then on.
 
 UESP *Oblivion:NPCs*, "NPC Statistics". Level-1 values are "identical to
 those for a player character created using the same race, gender, and
-class" (same page); their exact construction is a **Phase 0: verify** item
-(OAV-POP-003).
+class" (same page). The construction below is read from the executable's stat
+calculator (`0x5222d0`) and the `Oblivion.esm` GMSTs; the evidence, the
+addresses and the two flag triggers are in
+[CHARAL — Oblivion ruleset, NPC auto-calc stats](../engine/charal-oblivion-ruleset.md#npc-auto-calc-stats--locked-from-the-executable-7008-oav-pop-003).
+`n` is the level minus 1.
 
 | Value | Rule |
 |---|---|
-| Skill, per level | +0.1 minor, +0.6 specialization, +1.0 major, +1.5 major and specialization; rounded to a whole number |
-| Attribute, per level | +0.6 / +1.4 / +2.2 / +3 for 0 / 1 / 2 / 3 governed major skills |
-| Personality | Fixed (UESP and CS agree) |
-| Luck | Fixed per UESP; the CS names only Personality (**Phase 0: verify**) |
-| Health | `fLowLevelNPCBaseHealthMult`, `iLowLevelNPCMaxLevel`, `fNPCAttributeHealthMult`, `iNPCBasePerLevelHealthMult` formula (defaults 0.4, 4, 0.5, 4), set at spawn |
-| Magicka | 2.5 × Intelligence |
+| Skill | Minor `5 + 0.1n`; major `25 + n`; plus `5 + 0.5n` when the skill is in the class's specialization; plus the race bonus; cap 100; rounded to a whole number. Per level: +0.1 minor, +0.6 specialization, +1.0 major, +1.5 major and specialization |
+| Attribute | Race base for the sex, plus 5 for the class's first favored attribute and 5 for the second, plus for each skill it governs `n` (major) or `0.2n` (other); cap 100. Per level: +0.6 / +1.4 / +2.2 / +3 for 0 / 1 / 2 / 3 governed major skills |
+| Personality | Not calculated for an NPC: the authored `DATA` byte stays |
+| Luck | Calculated, with no per-level term (no skill is governed by Luck): race base plus the favored bonus; the authored byte is replaced |
+| Health | `trunc((Str + End) * fNPCAttributeHealthMult)` `+ n * (iNPCBasePerLevelHealthMult + [Endurance favored] + s)`, `s` = +1 Combat, -1 Magic, 0 Stealth, all multiplied by `fLowLevelNPCBaseHealthMult + (1 - fLowLevelNPCBaseHealthMult) * n / iLowLevelNPCMaxLevel` while `n < iLowLevelNPCMaxLevel`, then truncated. `Oblivion.esm` values 0.5, 4, 0.4, 4 |
+| Magicka | `trunc(Int * (1 + fNPCBaseMagickaMult))`, GMST 1.5: 2.5 × Intelligence |
 | Fatigue | Endurance + Strength + Agility + Willpower |
-| Encumbrance | 5 × Strength |
+| Encumbrance | 5 × Strength (UESP; not in the calculator) |
+
+Open: the timing of the two triggers and the four flag combinations over spawn,
+level change and reload (#7022). Rounding is `fistp` under the process
+control word, not measured.
 
 ### 3.5 Reporting
 
@@ -199,12 +206,12 @@ census's output (§7.2 scenario 3).
   `ACBS` values as authored.
 - **OAV-POP-003.** An auto-calc `NPC_` MUST carry the values §3.4's rules
   give, computed at spawn from its level at that moment (UESP
-  *Oblivion:NPCs*: "health is set at NPC's spawn"). **Phase 0: verify** which
-  `ACBS` flag selects auto-calc at runtime (bit 4 or bit 7; CS *Stats Tab -
-  NPC* and xEdit TES4 differ), whether Luck is fixed (UESP and CS differ), and
-  the level-1 values: the base skill value, the major-skill and
-  specialization bonuses and the favored-attribute bonus (UESP
-  *Oblivion:Skills*, *Oblivion:Attributes*).
+  *Oblivion:NPCs*: "health is set at NPC's spawn"). Phase 0 answered
+  from the executable: both `ACBS` bit 4 (at NPC load) and bit 7 (a walk at
+  data load, save load and, inferred, player level-up) reach the same stat
+  calculator, so an NPC with either bit is auto-calc; Luck is calculated but
+  does not scale with level; the level-1 values are §3.4's. Still open: the
+  per-combination timing (#7022).
 - **OAV-POP-004.** A `CREA` MUST carry its `DATA` values, with Health, spell
   points and Fatigue multiplied by its level where it is PC-level-offset (CS
   *Stats Tab - Creatures*). **Phase 0: verify** how the Combat / Magic /
@@ -366,3 +373,4 @@ Exit: §7.2 scenario 4 passes; consumers on real values 10 / 10.
 | 3 | 2026-11-15 | Owner's decisions recorded: Q1 engine-supplied `AVIF` records under an engine-owned plugin identity, Q2 starting disposition and the aggression comparison in scope (OAV-USE-005 unconditional), Q3 the `Player` `NPC_` record (OAV-POP-006) | — |
 | 4 | 2026-11-15 | PROPOSED → APPROVED | owner: approved |
 | 5 | 2026-11-15 | APPROVED → ACTIVE: parent #7007, phases #7008–#7011; the Phase 0 verify items are on #7008 | — |
+| 6 | 2026-11-17 | §3.4 auto-calc table rewritten from the executable and `Oblivion.esm` GMSTs (#7008): the health row now carries the favored-Endurance and specialization terms; Luck calculated with no level term; Personality kept; level-1 skill and attribute values; OAV-POP-003's three verify items answered, flag timing moved to #7022 | — |
