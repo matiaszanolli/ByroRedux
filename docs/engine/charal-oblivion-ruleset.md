@@ -905,21 +905,21 @@ skill would lose that sharing.
 ### Known gaps against the executable
 
 These are measured differences found by reading the code against the traces
-in the next section; none has a test that pins it yet. (Magicka was the first
-one found and is fixed: it truncates `Int * (1 + fNPCBaseMagickaMult)` with the
-setting read from the load order, pinned by
-`auto_calc_magicka_truncates_and_follows_the_setting`.)
+in the next section; none of the open ones has a test that pins it yet. (Two were found
+and fixed: Magicka truncates `Int * (1 + fNPCBaseMagickaMult)` with the setting
+read from the load order, pinned by
+`auto_calc_magicka_truncates_and_follows_the_setting`; and the favored-attribute
+bonus reads `fAttributeClassPrimaryBonus` for the class's first favored
+attribute and `fAttributeClassSecondaryBonus` for the second, the primary
+alone when both name one attribute, pinned by
+`favored_attribute_bonuses_follow_their_settings_in_class_order`.)
 
-1. **Favored-attribute bonus.** Hardcoded 5.0 for both favored attributes. The
-   executable reads `fAttributeClassPrimaryBonus` and
-   `fAttributeClassSecondaryBonus` (default 5.0 each, no `Oblivion.esm`
-   record), so only a mod that sets them diverges.
-2. **Rounding.** Attribute and skill rounding is round-half-to-even, which
+1. **Rounding.** Attribute and skill rounding is round-half-to-even, which
    assumes the x87 default of the executable's `fistp`; the control word was
    not measured.
-3. **Creature level scaling** rests on the Construction Set text alone; the
+2. **Creature level scaling** rests on the Construction Set text alone; the
    executable's creature path was not traced.
-4. **Flag timing.** Which trigger applies at spawn, level change and reload
+3. **Flag timing.** Which trigger applies at spawn, level change and reload
    for each of the four flag combinations is [#7022](https://github.com/matiaszanolli/ByroRedux/issues/7022).
 
 ## NPC auto-calc stats — LOCKED from the executable (#7008, OAV-POP-003)

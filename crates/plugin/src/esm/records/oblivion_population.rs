@@ -107,6 +107,17 @@ fn npc_values(
         gender.luck,
     ];
     let n = (i32::from(level) - 1) as f32;
+    let setting = |name, default| {
+        index
+            .game_setting_float(name)
+            .filter(|v| v.is_finite())
+            .unwrap_or(default)
+    };
+    // 0x5223a2–0x5223ce: the class's first favored attribute (class +0x38) gets
+    // `fAttributeClassPrimaryBonus`, otherwise the second (+0x3c) gets
+    // `fAttributeClassSecondaryBonus`; Oblivion.esm authors neither (default 5.0).
+    let primary_bonus = setting("fAttributeClassPrimaryBonus", 5.0);
+    let secondary_bonus = setting("fAttributeClassSecondaryBonus", 5.0);
     let mut computed = [0.0; 8];
     for (i, (&base, attr)) in bases
         .iter()
@@ -120,8 +131,10 @@ fn npc_values(
             push(index, out, i as u32, computed[i]);
             continue;
         }
-        let favored_bonus = if favored.0 == i as u32 || favored.1 == i as u32 {
-            5.0
+        let favored_bonus = if favored.0 == i as u32 {
+            primary_bonus
+        } else if favored.1 == i as u32 {
+            secondary_bonus
         } else {
             0.0
         };
@@ -168,12 +181,6 @@ fn npc_values(
             value.round_ties_even().clamp(0.0, 100.0),
         );
     }
-    let setting = |name, default| {
-        index
-            .game_setting_float(name)
-            .filter(|v| v.is_finite())
-            .unwrap_or(default)
-    };
     let attr_mult = setting("fNPCAttributeHealthMult", 0.5);
     let per_level = setting("iNPCBasePerLevelHealthMult", 4.0);
     let low_mult = setting("fLowLevelNPCBaseHealthMult", 0.4);
@@ -447,6 +454,28 @@ mod tests {
         );
         let rows = derive(&ResolvedNpc::resolve(&npc, &index), &index, None);
         assert_eq!(value(&rows, 9), Some(123.0));
+    }
+
+    #[test]
+    fn favored_attribute_bonuses_follow_their_settings_in_class_order() {
+        use super::super::{GameSetting, SettingValue};
+        let (mut index, mut npc) = fixture();
+        npc.acbs_flags = AUTO_CALC;
+        let rows = derive(&ResolvedNpc::resolve(&npc, &index), &index, None);
+        // Fixture class favors Strength (0) then Endurance (5): default +5 each.
+        assert_eq!((value(&rows, 0), value(&rows, 5), value(&rows, 1)), (Some(45.0), Some(45.0), Some(40.0)));
+        for (form_id, name, bonus) in [(0x201, "fAttributeClassPrimaryBonus", 8.0), (0x202, "fAttributeClassSecondaryBonus", 3.0)] {
+            index.game_settings.insert(
+                form_id,
+                GameSetting { form_id, editor_id: name.to_string(), value: SettingValue::Float(bonus) },
+            );
+        }
+        let rows = derive(&ResolvedNpc::resolve(&npc, &index), &index, None);
+        assert_eq!((value(&rows, 0), value(&rows, 5)), (Some(48.0), Some(43.0)));
+        // The same attribute twice takes the primary bonus only (else-if).
+        index.classes.get_mut(&2).unwrap().primary_attributes = Some((0, 0));
+        let rows = derive(&ResolvedNpc::resolve(&npc, &index), &index, None);
+        assert_eq!(value(&rows, 0), Some(48.0));
     }
 
     #[test]
