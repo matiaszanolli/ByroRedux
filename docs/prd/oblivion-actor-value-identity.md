@@ -1,6 +1,6 @@
 # Oblivion Actor-Value Identity and Portable Saves — Product Requirements
 
-**Status**: ACTIVE (2026-11-15). Revision 4 files the tracking issue; revision 3 records the owner's approval; revision 2 records the owner's decisions on Q1–Q4; revision 1: the identity, load-order slot and save-portability contract that [oblivion-actor-values.md](oblivion-actor-values.md) decided in its Q1 but left unspecified, plus the execution sequence for that PRD's phases. Statements about how Oblivion behaves cite external sources (UESP, the Construction Set wiki dump under `/mnt/data/src/reference/`, xEdit's `wbDefinitionsTES4.pas`, the `Oblivion.exe` disassembly); a claim that could not be verified is marked **Phase 0: verify** instead of being stated as fact.
+**Status**: ACTIVE (2026-11-17). Revision 5 corrects the §3.4 `ActorVitals` row; revision 4 files the tracking issue; revision 3 records the owner's approval; revision 2 records the owner's decisions on Q1–Q4; revision 1: the identity, load-order slot and save-portability contract that [oblivion-actor-values.md](oblivion-actor-values.md) decided in its Q1 but left unspecified, plus the execution sequence for that PRD's phases. Statements about how Oblivion behaves cite external sources (UESP, the Construction Set wiki dump under `/mnt/data/src/reference/`, xEdit's `wbDefinitionsTES4.pas`, the `Oblivion.exe` disassembly); a claim that could not be verified is marked **Phase 0: verify** instead of being stated as fact.
 
 **Tracking**: #7007 (parent PRD), #7021 (Phase 1). Phases 0, 2, 3 and 4 run under #7008, #7009, #7010 and #7011, which carry this PRD's requirements beside the parent's.
 
@@ -66,7 +66,7 @@ A saved `ActorValues` key is the stable pair. On restore the pair goes through `
 | # | Where | Today |
 |---|---|---|
 | 1 | `ActorValues` map keys (`crates/core/src/ecs/components/actor_values.rs`) | `HashMap<u32, ActorValue>`; the global `u32` is serialized as is |
-| 2 | `ActorVitals.health` (same file) | A resolved Health `u32`, stamped at spawn and registered for full restore; live reload re-derives it |
+| 2 | `ActorVitals.health` (same file) | A resolved Health `u32`, stamped at spawn and registered for full restore. A live reload re-derives an NPC's, but the player body is stamped once and outlives it, so it is a live-overlay column too (SAVE-1, rev 5) |
 | 3 | Recover-effect `actor_value` (`crates/core/src/ecs/components/restoration.rs`) | `u32` in a saved component |
 | 4 | Active magic effect `actor_value` (`crates/scripting/src/magic.rs`, `magic_effects.rs`) | `u32` in a saved component |
 | 5 | `SkillProgress` (`crates/scripting/src/skills.rs`) | Saved resource keyed by AVIF `u32` |
@@ -227,6 +227,7 @@ The numbers are published in ROADMAP's per-game compatibility matrix, Oblivion r
 | 2 | 2026-11-15 | Owner's decisions recorded: Q1 lowest unused `Regular` slot, Q2 the pair codec for every game, Q3 pre-133 saves rejected, Q4 72 installed and 38 / 39 rejected in vanilla resolution | — |
 | 3 | 2026-11-15 | PROPOSED → APPROVED | owner: approved |
 | 4 | 2026-11-15 | APPROVED → ACTIVE: tracking #7021 (Phase 1) under parent #7007 | — |
+| 5 | 2026-11-17 | §3.4 row 2 corrected: `ActorVitals` joins `MUTABLE_DELTA_COLUMNS` because the player's Health key is not re-derived on a live load (audit SAVE-1); OAI-SAVE-004's live-load leg now covers vitals | — |
 
 ---
 

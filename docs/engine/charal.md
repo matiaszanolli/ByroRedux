@@ -817,7 +817,7 @@ including nested copies:
 | Saved column or resource | Actor-value reference |
 |---|---|
 | `ActorValues` | Map keys and each view-specific alias's key and source keys; all layers travel with their source key. |
-| `ActorVitals` | `health`; registered for full restore, re-derived on live cell reload. |
+| `ActorVitals` | `health`; registered for full restore and overlaid on a live load (the player body is stamped once and outlives the reload, so its Health key must follow the load order). |
 | `TimedRestorations` | Each effect's `actor_value`. |
 | `ActiveMagicEffects` | Each `ActiveEffect.value.actor_value`, when present. |
 | `SkillProgress` | Map keys, even though the resource is not named as an actor-value component. |

@@ -69,6 +69,10 @@ pub(crate) const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     // runtime global-space AVIF FormIDs are converted to stable pairs by the
     // save codec and resolved against the new load order on overlay.
     "ActorValues",
+    // SAVE-1 (2026-11-17) — the player body is stamped once and outlives a live load, which re-parses the
+    // save's masters and can move the Oblivion engine slot; the vitals' Health key must follow the
+    // overlay or it points at a stale slot. The portable codec resolves it against the new identity.
+    "ActorVitals",
     // Ranked perk FormIDs (u32) and ranks (u8) are session-stable. Its
     // replacing registration also clears a saved absence on the live player.
     "Perks",
@@ -315,20 +319,12 @@ pub fn build_save_registry() -> SaveRegistry {
         byroredux_scripting::actor_value_save::save_restorations, byroredux_scripting::actor_value_save::load_restorations);
     byroredux_scripting::magic::register_saved(&mut r);
     // Core types: `byroredux-core` sits below `byroredux-save`, so they cannot register themselves (#6705).
-    // #3027 (SAVE-D1-2026-08-16-02) — registered (so a hand load of an
-    // older save still resolves the column), but deliberately absent
-    // from `MUTABLE_DELTA_COLUMNS` below: despite the name/field
-    // reading like a live HP value, `ActorVitals.health` is a stable
-    // per-game AVIF FormID key (see the type's own doc comment,
-    // `crates/core/src/ecs/components/actor_values.rs`), stamped once
-    // at NPC spawn from static game data and never mutated at runtime
-    // — combat damage writes through `ActorValues` (already a delta
-    // column) using this FormID as the lookup key, not through this
-    // struct. Mid-session health changes already survive a reload via
-    // that path; this is write-once/re-derivable, the same shape as
-    // `CharacterLevel` below, just not listed in
-    // `REDERIVED_NOT_SAVED` because it's plain-registered (not the
-    // save-omitted case that allowlist tracks).
+    // #3027 (SAVE-D1-2026-08-16-02) — `ActorVitals.health` is a per-game AVIF key (see the type's own
+    // doc comment, `crates/core/src/ecs/components/actor_values.rs`), stamped at spawn and never mutated:
+    // combat damage writes through `ActorValues` using this key as the lookup. It WAS left out of
+    // `MUTABLE_DELTA_COLUMNS` on that ground; v133 made the premise false for the player (SAVE-1,
+    // 2026-11-17): the key is now slot-composed, the player body is stamped once, and a live load can move
+    // the engine slot. It is a delta column now; an NPC's row is re-stamped at spawn from the current index.
     r.register_component_codec("ActorVitals", false,
         byroredux_scripting::actor_value_save::save_vitals, byroredux_scripting::actor_value_save::load_vitals);
     r.register_component::<EquippedWeapon>("EquippedWeapon");
@@ -461,6 +457,8 @@ pub fn build_save_registry() -> SaveRegistry {
     // M47.2 — destructible references' damage.
     byroredux_scripting::destruction::register_saved(&mut r);
     byroredux_scripting::fragment::register_hits_saved(&mut r);
+    // M48 GUI-EVT-001 — RegisterForMenuOpenCloseEvent registrations.
+    byroredux_scripting::fragment::register_menu_events_saved(&mut r);
     // M47.2 — Location.SetKeywordData data.
     byroredux_scripting::location_keyword_data::register_saved(&mut r);
     byroredux_scripting::reference_flags::register_saved(&mut r);

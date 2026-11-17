@@ -53,6 +53,9 @@ fn delta_columns_carry_only_session_stable_fields() {
         // The codec stores stable pairs and resolves them for the new load
         // order before the component is overlaid.
         "ActorValues",
+        // SAVE-1 — ActorVitals: one AVIF key (u32, resolved through the portable codec).
+        // No FixedString / EntityId / session handle.
+        "ActorVitals",
         // Perks: Vec<PerkRank { perk_form_id: u32, rank: u8 }>.
         "Perks",
         "CharacterLevel",
@@ -537,9 +540,14 @@ fn actor_value_save_survives_a_changed_engine_slot() {
     live.insert_resource(identity(2));
     live.spawn();
     let live_actor = live.spawn();
+    // SAVE-1: the process-lifetime player keeps the key it was stamped with under the OLD slot; the overlay
+    // must replace it with the key resolved against the new identity.
+    live.insert(live_actor, ActorVitals { health: old_health });
     let remap = std::collections::HashMap::from([(actor, live_actor)]);
     byroredux_save::apply_deltas(&mut live, &registry, &decoded, &remap,
-        &["ActorValues", "TimedRestorations", "ActiveMagicEffects"]).unwrap();
+        &["ActorValues", "ActorVitals", "TimedRestorations", "ActiveMagicEffects"]).unwrap();
+    assert_eq!(live.get::<ActorVitals>(live_actor).unwrap().health, new_health, "a live load must re-key the player's vitals");
+    assert!(MUTABLE_DELTA_COLUMNS.contains(&"ActorVitals"), "the live overlay must carry ActorVitals");
     {
         let restored = live.get::<ActorValues>(live_actor).unwrap();
         for (local, current, base) in &expected {
@@ -1801,9 +1809,9 @@ fn npc_spawn_stamped_components_are_saved_or_intentionally_rederived() {
         "EquipmentSlots",
         "ActorValues",
         // #3027 — registered (not re-derived), so it satisfies the XOR
-        // below via `saved`, not `REDERIVED_NOT_SAVED`. See the
-        // registration-site comment in `save_io.rs` for why it's still
-        // excluded from `MUTABLE_DELTA_COLUMNS`.
+        // below via `saved`, not `REDERIVED_NOT_SAVED`. It is a delta
+        // column since SAVE-1 (see the registration-site comment in
+        // `registry.rs`).
         "ActorVitals",
         // #3762 — CREA.DATA.Damage, stamped by `stamp_creature_attack`.
         "CreatureAttack",

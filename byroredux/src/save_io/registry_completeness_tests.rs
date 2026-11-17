@@ -1343,6 +1343,10 @@ fn every_delta_column_is_parked_or_explicitly_not() {
             "the only production insert is on the player (inventory/); the player is never evicted",
         ),
         (
+            "ActorVitals",
+            "stamped on the player once by attach_to_player (never evicted) and on an NPC at spawn from the current index, so a respawned NPC already carries the current key",
+        ),
+        (
             "GuardState",
             "AI runtime that re-rolls on respawn, as WanderState does",
         ),
@@ -1473,7 +1477,9 @@ fn the_schema_fingerprint_is_pinned() {
     // `Say` / `SayTo` made an actor say), registered after `ActiveMagicEffects`.
     // OAI-SAVE v133 replaces codecs in place; names and row order are unchanged,
     // so the row-order fingerprint remains the same despite the new wire shapes.
-    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0xfcd0_0f04_d111_bbd2;
+    // M48 GUI-EVT-001 (#6668) — `MenuEventRegistrations` joined the registry as a new resource column
+    // (`RegisterForMenuOpenCloseEvent`), registered after `HitRegistrations`.
+    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x659f_6afa_13ef_2c81;
     let actual = build_save_registry().schema_fingerprint();
     assert_eq!(
         actual, BASELINE_SCHEMA_FINGERPRINT,
