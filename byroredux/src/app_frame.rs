@@ -669,6 +669,8 @@ impl App {
                     UiOverlayState {
                         dropped_host_calls: &mut self.ui.dropped_host_calls,
                         host_reports: &mut self.ui.host_reports,
+                        dialogue_layer: self.ui.dialogue_movie.as_ref().map(|movie| movie.layer.as_str()),
+                        dialogue_calls: &mut self.ui.dialogue_calls,
                         reported_host_methods: &mut self.ui.reported_host_methods,
                         reported_host_methods_capped: &mut self.ui.reported_host_methods_capped,
                     },
@@ -1047,6 +1049,8 @@ impl App {
             self.open_dialogue_menu();
         }
         self.close_dialogue_menu_if_goodbye_ended();
+        // M48 GUI-PAGE-004 — the dialogue movie's requests and the conversation it presents.
+        self.step_dialogue_movie();
         self.open_inventory_on_injected_press();
         self.present_barter_menu();
         self.present_crafting_menu();
@@ -1105,11 +1109,7 @@ impl App {
         let Some(bench) = crate::crafting::take_crafting_request(&self.world) else {
             return;
         };
-        let dialogue_page = self
-            .debug_ui
-            .as_ref()
-            .is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible);
-        Self::leave_dialogue_page(&self.world, dialogue_page);
+        self.leave_open_dialogue();
         match crate::crafting::begin_crafting(&self.world, bench) {
             Ok(()) => {
                 if let Some(ui) = self.debug_ui.as_mut() {
@@ -1129,11 +1129,7 @@ impl App {
         let Some(vendor) = byroredux_scripting::menus::take_barter_request(&self.world) else {
             return;
         };
-        let dialogue_page = self
-            .debug_ui
-            .as_ref()
-            .is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible);
-        Self::leave_dialogue_page(&self.world, dialogue_page);
+        self.leave_open_dialogue();
         match crate::barter::begin_barter(&mut self.world, vendor) {
             Ok(()) => {
                 if let Some(ui) = self.debug_ui.as_mut() {
@@ -1444,6 +1440,9 @@ fn collect_and_prepare_groundcover(
 struct UiOverlayState<'a> {
     dropped_host_calls: &'a mut std::collections::HashMap<String, (u64, String)>,
     host_reports: &'a mut std::collections::HashMap<String, (String, byroredux_ui::HostCallReport)>,
+    /// The dialogue movie's layer, whose calls go to [`Self::dialogue_calls`] (GUI-PAGE-004).
+    dialogue_layer: Option<&'a str>,
+    dialogue_calls: &'a mut Vec<byroredux_ui::ScaleformHostCall>,
     reported_host_methods: &'a mut std::collections::HashSet<(String, String)>,
     reported_host_methods_capped: &'a mut bool,
 }
@@ -1585,6 +1584,9 @@ fn tick_ui_overlay(
             reports_changed = true;
         }
         reports_changed |= !host_calls.is_empty();
+        if ui_state.dialogue_layer.is_some_and(|dialogue| dialogue == menu_name) {
+            ui_state.dialogue_calls.extend(host_calls.iter().cloned());
+        }
 
         for call in host_calls {
             report.1.record(&call);

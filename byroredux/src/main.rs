@@ -77,6 +77,7 @@ mod scene;
 mod scene_import_cache;
 #[cfg(test)]
 mod scheduler_access_tests;
+mod scaleform_dialogue;
 mod scaleform_hud;
 mod settings_io;
 mod sf_smoke;
@@ -1280,6 +1281,17 @@ impl App {
     /// `dialogue_menu_visible` already reads false and the guard is
     /// dead. The page's Close button, Escape and the Inventory key all
     /// funnel through here now.
+    /// Leave the open conversation, on whichever surface it is (the native page or the dialogue
+    /// movie, GUI-PAGE-004): the shared teardown, then the movie's layer closes.
+    fn leave_open_dialogue(&mut self) {
+        let native = self.debug_ui.as_ref().is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible);
+        let movie = self.ui.dialogue_movie.is_some();
+        Self::leave_dialogue_page(&self.world, native || movie);
+        if let Some(movie) = self.ui.dialogue_movie.take() {
+            self.drop_movie_layer(&movie.layer);
+        }
+    }
+
     fn leave_dialogue_page(world: &World, dialogue_page_visible: bool) {
         if dialogue_page_visible {
             crate::systems::npc_dialogue::end_open_conversation(world);
@@ -1291,11 +1303,7 @@ impl App {
         // here) must end the open conversation exactly like the page's
         // Close button; the bare visibility flip used to skip OnEnd and
         // leave the stale selection on the NPC.
-        let dialogue_page = self
-            .debug_ui
-            .as_ref()
-            .is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible);
-        Self::leave_dialogue_page(&self.world, dialogue_page);
+        self.leave_open_dialogue();
         crate::barter::end_barter(&mut self.world);
         crate::crafting::end_crafting(&self.world);
         let opened = self
@@ -1312,11 +1320,7 @@ impl App {
     fn open_inventory_menu(&mut self) {
         // #5409 — the Inventory key replaces the dialogue page outright;
         // the open line ends before the page switch, same as Escape.
-        let dialogue_page = self
-            .debug_ui
-            .as_ref()
-            .is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible);
-        Self::leave_dialogue_page(&self.world, dialogue_page);
+        self.leave_open_dialogue();
         crate::barter::end_barter(&mut self.world);
         crate::crafting::end_crafting(&self.world);
         if let Some(ui) = self.debug_ui.as_mut() {
@@ -1329,9 +1333,91 @@ impl App {
     /// machinery as the pause/inventory pages: gameplay input released while
     /// it is open, focus recaptured by `resume_from_game_menu` on close.
     fn open_dialogue_menu(&mut self) {
+        // M48 GUI-PAGE-004 — the game's own dialogue movie when the registry names one and it loads
+        // (Skyrim), else the native page (Q1's fallback).
+        if self.open_dialogue_movie() {
+            self.release_world_input_for_ui();
+            return;
+        }
         if let Some(ui) = self.debug_ui.as_mut() {
             ui.open_dialogue_menu();
             self.release_world_input_for_ui();
+        }
+    }
+
+    /// Open the conversation on the game's dialogue movie (S1); `false` when the game has none or
+    /// it does not load. A fresh selection inside an open conversation keeps the open movie.
+    fn open_dialogue_movie(&mut self) -> bool {
+        if self.ui.dialogue_movie.is_some() {
+            return true;
+        }
+        let target = self.world.try_resource::<byroredux_core::ecs::resources::MenuRegistry>().and_then(|registry| {
+            // Wave 1 (Skyrim): the one dialogue movie whose protocol `scaleform_dialogue` serves.
+            (registry.game() == byroredux_core::ecs::resources::menu_registry::MenuGame::Skyrim)
+                .then(|| registry.table().by_name("Dialogue Menu").cloned())
+                .flatten()
+                .filter(|def| def.target == byroredux_core::ecs::resources::menu_registry::TargetSurface::Movie)
+                .map(|def| (def, registry.game()))
+        });
+        let Some((def, game)) = target else {
+            return false;
+        };
+        match self.open_movie_menu(&def.name, def.document.as_deref(), game) {
+            Ok(line) => {
+                log::info!("{line} — the conversation's surface (GUI-PAGE-004)");
+                let layer = def.document.as_deref().map(byroredux_ui::UiManager::installed_menu_name).unwrap_or(def.name);
+                if let Some(movie) = self.ui.manager.as_ref().and_then(|manager| manager.layer(&layer)) {
+                    let bridge = movie.host_bridge();
+                    for method in crate::scaleform_dialogue::SERVED_METHODS {
+                        bridge.register_method(method);
+                    }
+                }
+                self.ui.dialogue_movie = Some(crate::scaleform_dialogue::DialogueMovie::new(layer));
+                true
+            }
+            Err(error) => {
+                log::warn!("{error}; the conversation opens on the native page");
+                false
+            }
+        }
+    }
+
+    /// M48 GUI-PAGE-004 — the dialogue movie's frame: apply what it asked (the drained host calls),
+    /// then present the conversation's snapshot when it changed. A conversation that ended
+    /// elsewhere (a Goodbye, `dialogue.end`) closes the movie.
+    pub(crate) fn step_dialogue_movie(&mut self) {
+        let calls = std::mem::take(&mut self.ui.dialogue_calls);
+        let Some(movie) = self.ui.dialogue_movie.as_mut() else {
+            return;
+        };
+        let npc = self.world.try_resource::<crate::systems::npc_dialogue::DialogueSurfaceState>().and_then(|surface| surface.npc);
+        let snapshot = crate::systems::npc_dialogue::dialogue_snapshot(&self.world);
+        let mut done = false;
+        for call in calls.iter().filter_map(crate::scaleform_dialogue::decode) {
+            if call == crate::scaleform_dialogue::DialogueCall::Close {
+                movie.closing = true;
+            }
+            done |= crate::scaleform_dialogue::apply(&self.world, npc, snapshot.as_ref(), call);
+        }
+        if movie.closing {
+            movie.closing_frames += 1;
+        }
+        let ended = npc.is_none() && !movie.closing;
+        let fade_overran = movie.closing_frames > crate::scaleform_dialogue::MAX_FADE_FRAMES;
+        if done || ended || fade_overran {
+            self.close_dialogue_movie();
+            return;
+        }
+        if let (Some(snapshot), Some(layer)) = (snapshot.as_ref(), self.ui.manager.as_mut().and_then(|manager| manager.layer_mut(&movie.layer))) {
+            movie.feed(layer, snapshot);
+        }
+    }
+
+    /// Close the dialogue movie's layer and give the world its input back.
+    fn close_dialogue_movie(&mut self) {
+        if let Some(movie) = self.ui.dialogue_movie.take() {
+            self.drop_movie_layer(&movie.layer);
+            self.capture_world_input();
         }
     }
 
@@ -1340,6 +1426,10 @@ impl App {
     /// same modal teardown the page's own Close button reaches, minus the
     /// now-redundant `end_open_conversation`.
     fn close_dialogue_menu(&mut self) {
+        if self.ui.dialogue_movie.is_some() {
+            self.close_dialogue_movie();
+            return;
+        }
         if let Some(ui) = self.debug_ui.as_mut() {
             ui.close_game_menu();
         }
@@ -1352,11 +1442,7 @@ impl App {
         // [`Self::leave_dialogue_page`]) ends the open line: the OnEnd
         // fragment runs and the selection clears, before the shared
         // close/teardown.
-        let dialogue_page = self
-            .debug_ui
-            .as_ref()
-            .is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible);
-        Self::leave_dialogue_page(&self.world, dialogue_page);
+        self.leave_open_dialogue();
         crate::barter::end_barter(&mut self.world);
         crate::crafting::end_crafting(&self.world);
         if let Some(ui) = self.debug_ui.as_mut() {
@@ -1804,8 +1890,9 @@ mod dialogue_page_leave_tests {
     /// (Escape's `toggle_game_menu`, the Inventory key's
     /// `open_inventory_menu`, and the Close button's
     /// `resume_from_game_menu`) each funnel through
-    /// [`App::leave_dialogue_page`] — sampled before their visibility
-    /// flip. Static by necessity (the paths need a live window + UI);
+    /// [`App::leave_open_dialogue`], which runs [`App::leave_dialogue_page`]
+    /// for either surface (the native page, or since #6666 the dialogue
+    /// movie) — sampled before their visibility flip. Static by necessity (the paths need a live window + UI);
     /// same convention as the cinematic purge's wiring pin.
     #[test]
     fn every_native_page_leave_path_routes_through_the_shared_teardown() {
@@ -1817,8 +1904,13 @@ mod dialogue_page_leave_tests {
             .next()
             .expect("this module still exists");
         assert_eq!(
+            production.matches("Self::leave_dialogue_page(&self.world, native || movie);").count(),
+            1,
+            "leave_open_dialogue runs the shared teardown for either surface"
+        );
+        assert_eq!(
             production
-                .matches("Self::leave_dialogue_page(&self.world, dialogue_page);")
+                .matches("        self.leave_open_dialogue();")
                 .count(),
             3,
             "expected toggle_game_menu, open_inventory_menu and \

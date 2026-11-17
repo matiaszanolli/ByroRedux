@@ -37,6 +37,10 @@ pub(crate) struct UiState {
     /// M48 GUI-OPS-002 — per open movie (by `menu_name`), its host calls by behaviour class since
     /// it opened, keyed to the layer (`menu#id`) so a replaced movie starts a fresh report.
     pub(crate) host_reports: std::collections::HashMap<String, (String, byroredux_ui::HostCallReport)>,
+    /// M48 GUI-PAGE-004 — the conversation on the game's own dialogue movie (S1), when open.
+    pub(crate) dialogue_movie: Option<crate::scaleform_dialogue::DialogueMovie>,
+    /// The dialogue movie's host calls the frame's drain took, for the driver's next step.
+    pub(crate) dialogue_calls: Vec<byroredux_ui::ScaleformHostCall>,
     /// Per open movie (by `menu_name`), the last `dropped_host_calls()` reading the per-frame
     /// Scaleform drain observed (#2969), paired with the layer it came from (`menu#id`, #3772):
     /// `drain_calls`' contract is that a full batch must be read together with the drop counter

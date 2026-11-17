@@ -346,7 +346,7 @@ impl App {
     }
 
     /// Load `name`'s original movie from the game's interface archive as a new layer on top.
-    fn open_movie_menu(&mut self, name: &str, document: Option<&str>, game: MenuGame) -> Result<String, String> {
+    pub(crate) fn open_movie_menu(&mut self, name: &str, document: Option<&str>, game: MenuGame) -> Result<String, String> {
         let path = document.ok_or_else(|| format!("ui.open: {name} has no movie"))?;
         let args = crate::cli_args::effective_args();
         let (_, archive_path) = crate::scaleform_hud::interface_archive(&args)?
@@ -377,6 +377,17 @@ impl App {
         Ok(format!("ui.open: {name} opened as movie {path} profile={:?}", layer.profile()))
     }
 
+    /// Close the movie layer `menu` and release its UI texture; `false` when no such layer is open.
+    pub(crate) fn drop_movie_layer(&mut self, menu: &str) -> bool {
+        let Some(layer) = self.ui.manager.as_mut().and_then(|manager| manager.close(menu)) else {
+            return false;
+        };
+        if let (Some(handle), Some(ctx)) = (layer.texture(), self.renderer.as_mut()) {
+            ctx.texture_registry.drop_texture(&ctx.device, handle);
+        }
+        true
+    }
+
     /// Open a native page by its Phase 0 name. Only the pages the player opens directly can be
     /// opened bare; the others need the game action that feeds them.
     fn open_native_page(&mut self, name: &str, page: &str) -> Result<String, String> {
@@ -402,11 +413,10 @@ impl App {
         };
         match &entry.surface {
             MenuSurface::Movie { path, .. } => {
-                let manager = self.ui.manager.as_mut().ok_or("ui.close: no movie stack")?;
+                let manager = self.ui.manager.as_ref().ok_or("ui.close: no movie stack")?;
                 let menu = manager.layers().iter().find(|layer| layer.path() == path).map(|layer| layer.menu_name().to_owned());
-                let layer = menu.and_then(|menu| manager.close(&menu)).ok_or_else(|| format!("ui.close: {name}'s movie is gone"))?;
-                if let (Some(handle), Some(ctx)) = (layer.texture(), self.renderer.as_mut()) {
-                    ctx.texture_registry.drop_texture(&ctx.device, handle);
+                if !menu.is_some_and(|menu| self.drop_movie_layer(&menu)) {
+                    return Err(format!("ui.close: {name}'s movie is gone"));
                 }
             }
             MenuSurface::Native { page } if page == NativeMenu::MessageBox.page() => {

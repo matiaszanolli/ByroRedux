@@ -1019,6 +1019,35 @@ Phase 2 built the path service on both VMs:
   Noto Sans fallback until Fallout 4's `$MAIN_Font_Bold` class is mapped (Phase 6).
   Quest and location markers are not modelled.
 
+#### Dialogue menu on the game's movie (GUI-PAGE-004, Skyrim) — Phase 4 (#6666)
+
+Q1's first menu. When the registry's game is Skyrim and its `Dialogue Menu` targets
+a movie, a conversation opens `interface\dialoguemenu.swf` through the registry's
+`open_movie_menu` instead of the native page (which stays the fallback when the
+movie does not load). `byroredux/src/scaleform_dialogue.rs` stands in for native
+code on both sides, from the movie's own `InitExtensions` and `GameDelegate.call`
+sites:
+
+- **Engine → movie** (path service on `_root.DialogueMenu_mc`, when
+  `dialogue_snapshot` changes): `SetSpeakerName`, `ShowDialogueText` /
+  `HideDialogueText`, `PopulateDialogueLists` (`text, topicIsNew, topicIndex` per
+  topic, `topicIsNew` = not yet said, then `-1`), `DoShowDialogueList(true,
+  false)`, and `OnVoiceReady` once per line (it arms the movie's skip / pick
+  timer).
+- **Movie → engine** (H1, registered with the bridge): `TopicClicked
+  [topicIndex]` → `select_topic_by_form_id`, the native page's click path;
+  `SkipText` → the line's voice stops and its speaking cue ends; `CloseMenu` →
+  `end_open_conversation`; `FadeDone` → the layer closes (also after
+  `MAX_FADE_FRAMES` if the movie never reports it). A conversation that ends
+  elsewhere (Goodbye, `dialogue.end`, Escape, Inventory, barter, crafting) closes
+  the movie through `leave_open_dialogue` / `close_dialogue_menu`.
+
+Gate: `dt2-skyrim-forcegreet.sh` Phase P — `ui.menus` shows `Dialogue Menu …
+surface=movie interface\dialoguemenu.swf`, and the page snapshot names Irileth,
+lists topics and carries the speaking cue (sampled on a topic's answer: the 0.6 s
+greeting is over by the first poll). The movie draws the speaker, topic list and
+subtitle; the button icon glyph and the dialogue font class are not resolved yet.
+
 #### MenuXml input (GUI-XML-001…003) — built in Phase 3 (#6665)
 
 `crates/menuxml` stays engine-neutral (no dependency on the UI or Ruffle crates).

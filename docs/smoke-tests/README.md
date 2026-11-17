@@ -125,7 +125,7 @@ docs/smoke-tests/m42-eat-sleep.sh              # FNV: Eat/Sleep schedule procedu
 docs/smoke-tests/m42-package-procedures.sh    # FNV: creatures never take furniture (#5495), UseWeapon torchers, Motor-Runner UseItemAt + Eat seat step, Oliver troopers Find (M42)
 docs/smoke-tests/m47-2-bleedout.sh             # Skyrim: an essential NPC bleeds out and gets back up; a plain one dies (M47.2)
 docs/smoke-tests/fo4-ragdoll.sh                  # FO4: XRGD-posed ghoul / human corpses + ghoul and raider ragdolls on death + a starts-dead molerat, validation-clean (#6070)
-docs/smoke-tests/dt2-skyrim-forcegreet.sh        # Skyrim SE: ForceGreet-tree PACK dialect resolves its PDTO topic / greets generically (#5367)
+docs/smoke-tests/dt2-skyrim-forcegreet.sh        # Skyrim SE: ForceGreet-tree PACK dialect resolves its PDTO topic / greets generically (#5367); Phase P: the conversation on interface\dialoguemenu.swf (#6666)
 docs/smoke-tests/m47-3-obscript.sh               # FNV: ObScript object scripts (OnLoad / OnTriggerEnter / OnDeath) and an item's OnAdd+RemoveMe run live (M47.3)
 docs/smoke-tests/m65-stealth-detection.sh        # FNV: the detection tick, sneaking in the Prospector Saloon — a detector Lost behind cover, Seen beside it, and the indicator's label (M65, PRD scenarios 5 and 9)
 docs/smoke-tests/oblivion-actor-values.sh        # Oblivion: patron Sneak, detection skill term and live HUD Health after damage (OAV scenario 4; owner-run)
