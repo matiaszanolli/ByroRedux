@@ -191,7 +191,7 @@ fn oblivion_actor_stats_and_pools_decode_their_distinct_layouts() {
     acbs.extend_from_slice(&(-2i16).to_le_bytes());
     acbs.extend_from_slice(&3u16.to_le_bytes());
     acbs.extend_from_slice(&40u16.to_le_bytes());
-    let npc = parse_npc(1, &[sub(b"DATA", &npc_data), sub(b"ACBS", &acbs), sub(b"AIDT", &[5, 40, 70, 90])], GameKind::Oblivion, &None);
+    let npc = parse_npc(1, &[sub(b"DATA", &npc_data), sub(b"ACBS", &acbs), sub(b"AIDT", [5, 40, 70, 90])], GameKind::Oblivion, &None);
     let stats = npc.oblivion_npc_stats.unwrap();
     assert_eq!(stats.skills, std::array::from_fn(|i| i as u8 + 1));
     assert_eq!((stats.health, stats.attributes), (450, [10, 20, 30, 40, 50, 60, 70, 80]));
@@ -201,7 +201,7 @@ fn oblivion_actor_stats_and_pools_decode_their_distinct_layouts() {
     assert!(npc.oblivion_creature_stats.is_none());
 
     let creature_data = [2, 65, 45, 35, 3, 0, 0x2c, 1, 0, 0, 0x34, 0x12, 1, 2, 3, 4, 5, 6, 7, 8];
-    let creature = parse_npc(2, &[sub(b"DATA", &creature_data)], GameKind::Oblivion, &None);
+    let creature = parse_npc(2, &[sub(b"DATA", creature_data)], GameKind::Oblivion, &None);
     let stats = creature.oblivion_creature_stats.unwrap();
     assert_eq!((stats.creature_type, stats.combat, stats.magic, stats.stealth, stats.soul), (2, 65, 45, 35, 3));
     assert_eq!((stats.health, stats.damage, stats.attributes), (300, 0x1234, [1, 2, 3, 4, 5, 6, 7, 8]));
@@ -2795,7 +2795,7 @@ fn race_subgraph_role_enum_follows_the_game() {
 #[test]
 fn oblivion_aidt_keeps_its_rated_aggression_and_confidence() {
     let aidt = [70u8, 50, 50, 50, 0, 0, 0, 0, 0xFF, 0, 0, 0];
-    let npc = parse_npc(0x1234, &[sub(b"AIDT", &aidt)], GameKind::Oblivion, &None);
+    let npc = parse_npc(0x1234, &[sub(b"AIDT", aidt)], GameKind::Oblivion, &None);
     let ai = npc.ai_data.expect("Oblivion AIDT decodes");
     assert_eq!(ai.aggression, Aggression::Rated(70));
     assert_eq!(ai.confidence, Confidence::Rated(50));

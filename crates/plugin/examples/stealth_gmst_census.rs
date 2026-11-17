@@ -58,7 +58,7 @@ fn main() -> anyhow::Result<()> {
                 (setting.editor_id.clone(), value)
             })
             .collect();
-        rows.sort_by(|a, b| a.0.to_ascii_lowercase().cmp(&b.0.to_ascii_lowercase()));
+        rows.sort_by_cached_key(|row| row.0.to_ascii_lowercase());
         for (id, value) in rows {
             println!("{master}\t{id}\t{value}");
         }
