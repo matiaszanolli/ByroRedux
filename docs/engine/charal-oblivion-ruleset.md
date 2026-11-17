@@ -966,19 +966,24 @@ allocated actor, not the player. **Worked through (#7041).** The combine in `0x5
 zero test at `0x5ead3d` only rewrites a zero *multiplier* to 1.0 (the callee's two outputs are the derived
 term and the multiplier; arguments traced from the stack frame). The player level-up path (`0x66c3e0`) adds
 to the stored Health: `stored = trunc(stored + End x [0xb37708])` through the setter `0x519c50`, i.e. the
-stored term is the accumulation, and the formula term is separate. **Still not settled, and it conflicts
-with UESP:** at the placeholder attributes a literal sum gives Magicka 0 + 100 = 100 (agrees), but Fatigue
-150 + 150 = 300 and Health 45 + 80 = 125, where UESP gives `Str + End + Agi + Wil` and `2 x End`. For both to
-hold the player's stored pools must be 0 when a new game starts, i.e. something clears the `Player`
-record's 45 / 150 first. No clearing writer is identified yet; the callers of the pool setters (`0x519c50`
-Health, `0x467290` Magicka, `0x4672b0` Fatigue: `0x5115ff` / `0x511617` / `0x51162c`, `0x51a025` /
-`0x51a036` / `0x51a047`, the calculator, `0x5240bc`..`0x5240ce`, and the level-up) were listed, and only
-the calculator and the level-up were read. Magicka is 100 under every one of these
-readings, which is why it is applied (#7037); Health is `80 + accumulated` or `45 + 80`.
+stored term is the accumulation, and the formula term is separate. **Settled (#7041): the original zeroes the `Player` record's stored pools when it loads.** The tail of the
+`TESNPC` load function (`0x523fc0`..`0x5240f2`: vtable slot `0xe4` test, the calculator at `0x523ff4`) ends,
+for every NPC, with `cmp [esi+0xc], 7` at `0x5240b2` (form id 7, the `Player`), and then stores 0 through
+the Fatigue setter (`0x5240bc`), the Health setter (`0x5240c5`) and the Magicka setter (`0x5240ce`). The
+record's Health 45, Magicka 0 and Fatigue 150 are therefore placeholders that never reach the game; the
+player's pools start as the formula term alone (`2 x End`, `2 x Int`, `Str + End + Agi + Wil`), which is
+what UESP gives, and the level-up path (`0x66c3e0`) then accumulates into the stored Health on top. (The
+Health getter is read at `0x524096` before the zeroing, so a record Health of 0 or less still marks the
+actor dead first; the `Player`'s 45 does not.) The other callers of the pool setters: `0x5115ff` /
+`0x511617` / `0x51162c` are in a function that allocates a new actor record and, when the source actor is
+the player singleton, writes the player's computed Health, Fatigue and Magicka (through `0x5f1910` →
+`0x5ead00`) into it, which is a copy of the player, not the player's own start; `0x51a025` / `0x51a036` /
+`0x51a047` are the generic base-value setter on `TESActorBase`, whose own callers were not traced.
+Consequence for the engine: Fatigue and Magicka are stateless and take their formula; Health is the formula
+plus a separately kept accumulation, which the engine's retained total does not model.
 
-Not run: the `Player` record is also what a new game starts from before character creation assigns the
-class, race and birthsign (OAV-NG-001 puts those menus out of scope), so the placeholder may be what the
-original shows until chargen. That is unobserved.
+Not observed in the original game: the values a new game shows. The executable reading above predicts the
+formula values (Health `2 x End`, Magicka `2 x Int`, Fatigue the four-attribute sum) at level 1.
 
 ## NPC auto-calc stats — LOCKED from the executable (#7008, OAV-POP-003)
 
