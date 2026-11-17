@@ -955,7 +955,19 @@ multiplier`, with `derived` from `0x5e2210`:
 | 9 Magicka | `trunc(Int x (1 + fPCBaseMagickaMult))` (`0x5482b0` with the player flag set), GMST 1.0, so `2 x Int` | AV 40 (Magicka Multiplier) / 10 (`0xa3f3e8` is the double 10.0) |
 | 10 Fatigue | `Str + End + Agi + Wil` (`0x5479d0`) | 1 |
 
-`stored` is the base form's value read through its virtual at `+0x128`. **Not settled:** what that
+`stored` is the base form's value read through its virtual at `+0x128`. **Decoded (#7041):** on `TESNPC`
+that slot is `0x5232d0`, which sends AV 8 to 11 to `TESActorBase`'s getter (`0x519d90`): Health is the
+record's stored health field (`0x519c10`), Magicka and Fatigue are the `ACBS` values (getters at `+0x48`
+and `+0x4c` of the `ACBS` sub-object at `+0x24`), and AV 11 is derived from Strength. So `stored` is the
+record's own `ACBS` / health value, as the engine already reads it. The character-creation calls of the
+calculator (`0x596ae5`, `0x5c29e6`, `0x5c2ac0`) pass 1 and skip the pools, so nothing there rewrites the
+`Player` record's pool fields. The flag-0 callers `0x50c77c` and `0x50cf9d` run the calculator on a freshly
+allocated actor, not the player. **Still not settled, and it conflicts with UESP:** a literal `stored +
+derived` gives Magicka 0 + 100 = 100 (agrees with UESP) but Fatigue 150 + 150 = 300 and Health 45 + 80 =
+125 at the placeholder attributes. Either the final combine in `0x5ead00` is not a plain sum (the zero test
+after the `0x5e2210` call at `0x5ead3d` rewrites one of its two outputs to 1.0, which was not worked
+through), or a new game zeroes the player's stored pools. Earlier wording, kept for the record:
+**Not settled:** what that
 returns for AV 8 to 10 on the `Player` record. If it were the record's 45 / 0 / 150, Fatigue would be 300
 at the placeholder attributes, against UESP's `Str + End + Agi + Wil`; so it is probably not the `ACBS`
 values, but the function was not decoded. The consequences differ: Magicka is 100 under either reading
