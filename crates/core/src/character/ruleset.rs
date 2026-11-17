@@ -32,9 +32,6 @@ pub struct CharacterRuleset {
     /// `(output AVIF FormID, formula)` — the stat each formula produces and
     /// how to compute it from base AVs + level.
     derived: Vec<(u32, DerivedStatFormula)>,
-    /// Player-only outputs whose carried base is kept instead of being replaced by the formula on spawn and
-    /// refresh (a stat that accumulates beyond its formula, or whose record value is authoritative).
-    retained_player_bases: Vec<u32>,
     /// XP curve + per-level reward.
     pub leveling: LevelingModel,
 }
@@ -48,7 +45,6 @@ impl CharacterRuleset {
             attributes: AttributeSet::default(),
             skills: SkillSet::default(),
             derived: Vec::new(),
-            retained_player_bases: Vec::new(),
             leveling,
         }
     }
@@ -66,17 +62,6 @@ impl CharacterRuleset {
     #[must_use]
     pub fn with_skills(mut self, skills: SkillSet) -> Self {
         self.skills = skills;
-        self
-    }
-
-    /// Keep the player's authored or accumulated base of `avif` instead of replacing it with its
-    /// player formula on each frame. A stat the formula alone does not determine (Oblivion's Health
-    /// gains per level on top of it) is retained; a stateless one is not.
-    #[must_use]
-    pub fn retain_player_base(mut self, avif: u32) -> Self {
-        if !self.retained_player_bases.contains(&avif) {
-            self.retained_player_bases.push(avif);
-        }
         self
     }
 
@@ -126,7 +111,7 @@ impl CharacterRuleset {
         let mut out: Vec<u32> = self
             .derived
             .iter()
-            .filter(|(id, f)| f.scope == DerivedScope::PlayerOnly && !self.retained_player_bases.contains(id))
+            .filter(|(_, f)| f.scope == DerivedScope::PlayerOnly)
             .map(|(id, _)| *id)
             .collect();
         out.sort_unstable();
@@ -198,7 +183,7 @@ impl CharacterRuleset {
     /// are left intact", which the old permanent_mod destination
     /// violated by overwriting the constant-spell sum).
     pub fn is_player_derived_pool(&self, avif: u32) -> bool {
-        !self.retained_player_bases.contains(&avif) && self.derived_formula(avif).is_some_and(|formula| {
+        self.derived_formula(avif).is_some_and(|formula| {
             formula.scope == DerivedScope::PlayerOnly && formula.kind == DerivedOutput::Absolute
         })
     }
@@ -222,9 +207,6 @@ impl CharacterRuleset {
     pub fn refresh_player_only_bases(&self, avs: &mut ActorValues, level: u16) -> bool {
         let mut changed = false;
         for (index, (key, formula)) in self.derived.iter().enumerate() {
-            if self.retained_player_bases.contains(key) {
-                continue;
-            }
             // Scope and kind come from a stat's first row, as in
             // `derived_formula`; its value is the sum of all its rows.
             if self.derived[..index].iter().any(|(earlier, _)| earlier == key) {

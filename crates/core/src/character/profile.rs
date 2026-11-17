@@ -791,16 +791,11 @@ impl CharacterRulesProfile {
             RulesetBuilder::Fallout4 => fallout4_ruleset_with_gmst(resolve, &gmst),
             RulesetBuilder::Skyrim => skyrim_ruleset(resolve),
             // The original zeroes the `Player` record's stored pools when it loads (`Oblivion.exe` `0x5240b2`), so
-            // Magicka (`Int x (1 + fPCBaseMagickaMult)`) and Fatigue (`Str + End + Agi + Wil`) are their formulas
-            // alone (#7037, #7041). Health is its formula plus an accumulation the level-up adds to the stored
-            // value (`0x66c3e0`), which this model keeps in the carried total, so it stays retained.
-            RulesetBuilder::Oblivion => {
-                let mut ruleset = oblivion_ruleset(&resolve);
-                if let Some(health) = resolve("Health") {
-                    ruleset = ruleset.retain_player_base(health);
-                }
-                ruleset
-            }
+            // the player's Health (`End x fPCBaseHealthMult`), Magicka (`Int x (1 + fPCBaseMagickaMult)`) and
+            // Fatigue (`Str + End + Agi + Wil`) are their formulas (#7037, #7041). The original's level-up adds
+            // a per-level Health gain to the stored term (`0x66c3e0`); no Oblivion level-up exists here yet, and
+            // when one does the gain must be kept apart from this refreshed base.
+            RulesetBuilder::Oblivion => oblivion_ruleset(resolve),
             RulesetBuilder::None => return None,
         };
         ruleset.leveling = ruleset
@@ -1276,11 +1271,11 @@ mod tests {
         );
     }
 
-    /// #7037, #7041 — the player's Magicka and Fatigue are their formulas (`Oblivion.exe` `0x5e2210`; the
-    /// original zeroes the record's stored pools at `0x5240b2`), so the record's authored values are replaced;
-    /// Health keeps its carried base (formula plus accumulation).
+    /// #7037, #7041 — the player's Health, Magicka and Fatigue are their formulas (`Oblivion.exe` `0x5e2210`;
+    /// the original zeroes the record's stored pools at `0x5240b2`), so the record's authored values are
+    /// replaced and nothing is retained.
     #[test]
-    fn oblivion_profile_refreshes_the_players_magicka_and_fatigue_and_keeps_health() {
+    fn oblivion_profile_refreshes_all_three_player_pools() {
         use crate::ecs::components::ActorValues;
         let resolve = |name: &str| match name {
             "Health" => Some(1), "Magicka" => Some(2), "Fatigue" => Some(3), "Intelligence" => Some(4),
@@ -1291,19 +1286,19 @@ mod tests {
         let mut values = ActorValues::from_pairs([
             (1, 45.0), (2, 0.0), (3, 999.0), (4, 50.0), (5, 40.0), (6, 50.0), (7, 30.0), (8, 30.0),
         ]);
-        assert_eq!(rules.player_only_output_avifs(), vec![2, 3]);
-        assert!(rules.is_player_derived_pool(2) && rules.is_player_derived_pool(3));
-        assert!(!rules.is_player_derived_pool(1));
+        assert_eq!(rules.player_only_output_avifs(), vec![1, 2, 3]);
+        assert!((1..=3).all(|pool| rules.is_player_derived_pool(pool)));
         assert!(rules.refresh_player_only_bases(&mut values, 5));
+        assert_eq!(values.current(1), 80.0, "Health = 2 x Endurance replaces the authored 45");
         assert_eq!(values.current(2), 100.0, "Magicka = 2 x Intelligence");
         assert_eq!(values.current(3), 150.0, "Fatigue = Str + End + Agi + Wil replaces the authored 999");
-        assert_eq!(values.current(1), 45.0, "Health keeps its carried base");
-        // Fatigue is a drained and regenerated pool like Fallout's Action Points: the refresh moves the maximum
-        // (the base) and leaves the damage layer, which regeneration restores.
+        // Fatigue and Health are drained and regenerated pools like Fallout's Action Points: the refresh moves
+        // the maximum (the base) and leaves the damage layer, which regeneration restores.
         values.apply_damage(3, 50.0);
         values.set_base(5, 50.0);
         assert!(rules.refresh_player_only_bases(&mut values, 5));
         assert_eq!((values.get(3).unwrap().undamaged(), values.current(3)), (160.0, 110.0), "End 50: maximum 160, 50 damage kept");
+        assert_eq!(values.current(1), 100.0, "Health follows Endurance");
         values.restore(3, 50.0);
         assert_eq!(values.current(3), 160.0);
         values.set_base(5, 40.0);
@@ -1313,7 +1308,6 @@ mod tests {
         values.set_base(4, 60.0);
         assert!(rules.refresh_player_only_bases(&mut values, 5));
         assert_eq!(values.current(2), 120.0);
-        assert!(rules.derived_value(1, &values, 5).is_some());
     }
 
     #[test]

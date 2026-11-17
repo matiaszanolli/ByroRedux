@@ -943,13 +943,18 @@ disagrees with the formula by 35.
 (`CharacterRuleset::retain_player_base`): Health and Fatigue keep the record's values, Magicka follows its
 formula. Live: the player's Magicka reads 100 at Intelligence 50, 120 after `ModAV Intelligence 10`, and the
 HUD bar reads 0.75 after `DamageAV Magicka 30`. Pinned by
-`oblivion_profile_refreshes_the_players_magicka_and_fatigue_and_keeps_health`.
+`oblivion_profile_refreshes_all_three_player_pools` (it first retained Health and Fatigue per stat; both
+retains were dropped under #7041, below).
 
 **Fixed for Fatigue (#7041).** Once the load-time zeroing was found (below), Fatigue joined Magicka: it is its
 formula alone. Fatigue is a drained and regenerated pool like Fallout's Action Points, so the refresh moves
 the maximum (the base) and leaves the damage layer, which the regeneration tick (10 per second) restores.
 Live: 150 at the placeholder attributes; `DamageAV Fatigue 60` reads 0.60 on the HUD and regenerates to the
-maximum; `ModAV Endurance 10` raises the maximum to 160. Only Health stays retained.
+maximum; `ModAV Endurance 10` raises the maximum to 160.
+
+**Fixed for Health (#7041).** The last retain is gone (`retain_player_base` was removed with it): Health is
+`2 x End` like the other two. Pinned by the same test and by
+`oblivion_player_template_derives_all_three_pools_from_the_formulas`. The reasoning is in the next paragraph.
 
 **What the engine's player level-up does with Health (#7041, checked 2026-11-17).** Nothing, for Oblivion.
 `LevelingModel::OBLIVION` is `SkillUse`: it has no XP curve, so `roll_levels` reaches no level, and
