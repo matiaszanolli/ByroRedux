@@ -1,6 +1,6 @@
 # Oblivion Actor Values — Product Requirements
 
-**Status**: ACTIVE (2026-11-17). Revision 6 settles the §3.4 auto-calc rules from the executable; revision 5 files the tracking issues; revision 4 records the owner's approval; revision 3 the decisions on Q1–Q3; revision 2 folded in review round 1. Statements
+**Status**: ACTIVE (2026-11-17). Revision 7 brings the §3.3 consumer table to HEAD; revision 6 settles the §3.4 auto-calc rules from the executable; revision 5 files the tracking issues; revision 4 records the owner's approval; revision 3 the decisions on Q1–Q3; revision 2 folded in review round 1. Statements
 about how Oblivion behaves cite external sources (UESP, the Construction Set
 wiki dump under `/mnt/data/src/reference/`, xEdit's `wbDefinitionsTES4.pas`);
 a claim that could not be verified is marked **Phase 0: verify** instead of
@@ -96,24 +96,23 @@ verify** item (OAV-RES-002).
 | The player | Q3 | The `Player` `NPC_` record, or character creation |
 | `AIDT` (all actors) | Extra values 33–36 | Aggression, Confidence, Energy, Responsibility, 0–100 (xEdit TES4 `AIDT`; already decoded, #6995) |
 
-### 3.3 Consumers, at HEAD on 2026-11-15
+### 3.3 Consumers, at HEAD on 2026-11-17
 
-| # | Consumer | Today on Oblivion |
+Every row read 0, failed closed or declined on 2026-11-15 (the first draft of this table). Each now reads
+real values; the evidence is in the phase issues (#7008–#7011).
+
+| # | Consumer | On Oblivion now |
 |---|---|---|
-| 1 | CHARAL ruleset (derived pools, leveling) | `CharacterRulesProfile::OBLIVION` carries `ruleset: RulesetBuilder::None` and `npc_stats` / `creature_stats: NpcStatModel::None` (`crates/core/src/character/profile.rs`) |
-| 2 | Actor-value index resolution | `EsmIndex::resolve_actor_value` maps FO3 / FNV and Skyrim indices; Oblivion returns `None` (`crates/plugin/src/esm/records/index.rs`) |
-| 3 | `NPC_ DATA` stats | Parsed on FO3 / FNV only; no Oblivion arm (`crates/plugin/src/esm/records/actor/npc.rs`) |
-| 4 | Conditions `GetActorValue` | `condition_actor_value_form` resolves FO3 / FNV and Skyrim indices; Oblivion falls to `None`, so the condition fails closed (`crates/scripting/src/actor_value_names.rs`) |
-| 5 | ObScript `GetAV` / `SetAV` / `ModAV` | `obscript_actor_values::actor_value_form` returns `None` unless FO3 / FNV |
-| 6 | Detection (M65) | Sneak, Chameleon, Blindness and Night Eye read 0 (`byroredux/src/detection/tick.rs::actor_value`); the skill term is 0 |
-| 7 | Sneak attacks (M65) | The attacker's Sneak reads 0, so every sneak attack takes the Novice ladder (`stealth::oblivion::sneak_attack_mult`) |
-| 8 | HUD bars | Health / Magicka / Fatigue stay full unless pinned: "Oblivion resolves no ids today" (`byroredux/src/hud.rs::bar_fractions`) |
-| 9 | Pool regeneration | `PoolRegenConfig` is built only in `npc_spawn/stamps.rs::build_vats_model` (the FO3 / FNV Action Points lane); no Oblivion path builds one |
-| 10 | Hostility (the CS aggression rule) | `Aggression::Rated` starts no combat: no disposition is kept (`byroredux/src/systems/faction_hostility.rs::attacks`, #6995) |
-
-This table is hand-written; the Phase 2 census (§7.2 scenario 3) replaces
-rows 1, 3 and 6–8 with measured numbers, and ROADMAP's Oblivion row carries
-them from then on.
+| 1 | CHARAL ruleset (derived pools, leveling) | Built from the executable: `build_character_ruleset` returns `Some` on an Oblivion index ([charal-oblivion-ruleset.md](../engine/charal-oblivion-ruleset.md)); #7008, #7010 |
+| 2 | Actor-value index resolution | `EsmIndex::resolve_actor_value` resolves every recognized index through the installed records (`oblivion_actor_value`); #7008 |
+| 3 | `NPC_ DATA` stats | Parsed (`OblivionNpcStats`, `OblivionActorPools`); a census stamps all 33 standard values on 2482 / 2482 `NPC_` and 914 / 914 `CREA`; #7010 |
+| 4 | Conditions `GetActorValue` | Resolves the engine-supplied keys (`condition_actor_value_form`); #7009 |
+| 5 | ObScript `GetAV` / `SetAV` / `ModAV` | Resolve by name and index; the reserved values (Fame, Infamy) are not vanilla names; #7009 |
+| 6 | Detection (M65) | Sneak, Chameleon, Blindness and Night Eye (`NightEyeBonus`) read the actor's values; the live smoke reads a non-zero skill term on three detectors (2.70, 8.38, -0.35); #7011 |
+| 7 | Sneak attacks (M65) | The attacker's Sneak is read; Sneak 20 → x4, Sneak 100 → x6 on a 10-point hit (`oblivion_sneak_attack_reads_the_players_installed_skill`); #7011 |
+| 8 | HUD bars | Track the player's installed Health, Magicka and Fatigue (`oblivion_hud_tracks_all_three_installed_vital_values`); the live smoke's Health bar fell 1.00 → 0.78 after `DamageAV Health 10`; #7011 |
+| 9 | Pool regeneration | A `PoolRegenConfig` with Fatigue and Magicka lanes is installed (OAV-POP-007); #7010 |
+| 10 | Hostility (the CS aggression rule) | A rated actor compares its Aggression with its starting disposition toward the player (`rated_attack`, `DispositionModel::OBLIVION`, Oblivion.exe 0x546260); #7011 |
 
 ### 3.4 Auto-calc rules
 
@@ -374,3 +373,4 @@ Exit: §7.2 scenario 4 passes; consumers on real values 10 / 10.
 | 4 | 2026-11-15 | PROPOSED → APPROVED | owner: approved |
 | 5 | 2026-11-15 | APPROVED → ACTIVE: parent #7007, phases #7008–#7011; the Phase 0 verify items are on #7008 | — |
 | 6 | 2026-11-17 | §3.4 auto-calc table rewritten from the executable and `Oblivion.esm` GMSTs (#7008): the health row now carries the favored-Endurance and specialization terms; Luck calculated with no level term; Personality kept; level-1 skill and attribute values; OAV-POP-003's three verify items answered, flag timing moved to #7022 | — |
+| 7 | 2026-11-17 | §3.3 consumer table rewritten to HEAD: all ten rows read real values (#7011 acceptance pass; live smoke passes) | — |

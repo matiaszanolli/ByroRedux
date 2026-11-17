@@ -20,8 +20,9 @@ use byroredux_core::stealth::{
 use byroredux_plugin::esm::records::EsmIndex;
 
 /// The actor values the formulas read, by their `AVIF` name (`ActorValueNames`): the same records the GECK's
-/// codes 6, 42, 48, 49 and 50 name on FO3 / FNV, and Skyrim's of those names. Oblivion has no `AVIF` records
-/// (its legacy actor-value resolver is open CHARAL work), so these read 0 there.
+/// codes 6, 42, 48, 49 and 50 name on FO3 / FNV, and Skyrim's of those names. Oblivion authors none; its
+/// engine-supplied records answer to the same names (`NightEye` is `NightEyeBonus` there), so they read the
+/// actor's values on every game (OAV-USE-001).
 const AV_PERCEPTION: &str = "Perception";
 const AV_SNEAK: &str = "Sneak";
 const AV_INVISIBILITY: &str = "Invisibility";

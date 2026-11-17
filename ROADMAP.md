@@ -112,8 +112,9 @@ all-slots fence wait that dominates GPU-bound frames (#5365, the throughput half
 - Oblivion's actor values are live (tracking #7007): the engine supplies the 72 `AVIF` records
   `Oblivion.esm` lacks (index coverage 70 / 70 vanilla-resolvable) under its own plugin identity, every
   actor is populated at spawn (`Oblivion.esm` census, 2026-11-17: `NPC_` 2 482 / 2 482 and `CREA` 914 / 914 carry
-  all 33 standard values), and saves store portable `FormIdPair` keys (`FORMAT_MAJOR` 133). Open: the auto-calc
-  flag timing (#7022) and the consumers (#7011)
+  all 33 standard values), and saves store portable `FormIdPair` keys (`FORMAT_MAJOR` 133). The consumers read
+  them (#7011: detection, sneak attacks, HUD bars, constant-effect abilities, starting disposition; live gate
+  `docs/smoke-tests/oblivion-actor-values.sh` passes). Open: the auto-calc flag timing (#7022)
   ([`charal-oblivion-ruleset.md`](docs/engine/charal-oblivion-ruleset.md)).
 
 **Active focus.**

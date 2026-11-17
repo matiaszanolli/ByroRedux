@@ -308,8 +308,9 @@ pub(crate) fn attacks(disposition: &ActorAiData, standing: Standing, distance: f
         Aggression::Aggressive => standing == Standing::Enemy,
         Aggression::VeryAggressive | Aggression::Frenzied => true,
         // #6995 — Oblivion attacks whoever it holds a disposition below this score toward (CS *Aggression*).
-        // The engine keeps no disposition yet (UESP *Oblivion:Disposition*: Personality, race and faction
-        // reactions, fame and infamy), so a rated actor starts no combat on its own, as before it was decoded.
+        // That comparison needs the actor's and the player's live values, so `actor_would_attack` answers
+        // it through `rated_attack` before this function is reached; a rated actor without them starts
+        // no combat here.
         Aggression::Rated(_) => false,
     }
 }
