@@ -7079,7 +7079,7 @@ fn fnv_music_sources_decode_against_the_census() {
 /// (the design's §13.1 census). A name with neither cannot occur: every setting a row reads has a default, so the
 /// test fails only if a row lost one. The authored values the design pins are checked.
 #[test]
-#[ignore = "needs FO3 / FNV / Oblivion / Skyrim SE game data on disk"]
+#[ignore = "needs FO3 / FNV / Oblivion / Skyrim SE / FO4 game data on disk"]
 fn m65_detection_settings_census() {
     use byroredux_core::stealth::{StealthKind, StealthRules};
     let cases = [
@@ -7087,6 +7087,7 @@ fn m65_detection_settings_census() {
         (test_paths::FNV_ENV, test_paths::FNV_DEFAULT, "FalloutNV.esm", StealthKind::FalloutNv),
         (test_paths::OBLIVION_ENV, test_paths::OBLIVION_DEFAULT, "Oblivion.esm", StealthKind::Oblivion),
         (test_paths::SKYRIM_SE_ENV, test_paths::SKYRIM_SE_DEFAULT, "Skyrim.esm", StealthKind::Skyrim),
+        (test_paths::FO4_ENV, test_paths::FO4_DEFAULT, "Fallout4.esm", StealthKind::Fallout4),
     ];
     let mut ran = 0;
     for (env, fallback, master, kind) in cases {
@@ -7121,6 +7122,12 @@ fn m65_detection_settings_census() {
                 assert_eq!((s.base_value, s.max_distance, s.exterior_distance_mult, s.light_mult), (-15.0, 2500.0, 2.1, 0.33), "{master}");
                 assert_eq!((s.light_level_max, s.player_detection_sneak_mult, s.stealth_point_drain_mult), (300.0, 0.4, 3.0));
                 assert_eq!((s.sneak_dagger, s.sneak_two_hand_sword, s.sneak_bow), (3.0, 2.0, 2.0), "authored 1H / 2H, executable bow");
+            }
+            // #6996: `Fallout4.esm` over `Fallout4.exe`'s defaults.
+            StealthKind::Fallout4 => {
+                assert_eq!((s.max_distance, s.sound_los_mult, s.light_level_max, s.light_level_interior_mod), (4096.0, 0.4, 150.0, 25.0), "{master}");
+                assert_eq!((s.stealth_point_sound_floor, s.stealth_point_regen_lost_mult, s.stealth_point_regen_min), (25.0, 20.0, 2.0));
+                assert_eq!((s.sneak_dagger, s.sneak_gun, s.visual_base_value), (3.0, 2.0, -20.0), "authored melee, executable gun and base");
             }
             _ => {
                 assert_eq!((s.base_value, s.max_distance, s.sound_los_mult), (-35.0, 2500.0, 0.1), "{master}");

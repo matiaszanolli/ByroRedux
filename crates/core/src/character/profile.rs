@@ -560,7 +560,8 @@ impl CharacterRulesProfile {
         vats: None,
         armor: None,
         stance: StanceModel::FALLOUT4,
-        stealth: crate::stealth::StealthKind::SightOnly,
+        // `Fallout4.exe`'s detection (#6996).
+        stealth: crate::stealth::StealthKind::Fallout4,
         indicator: crate::stealth::IndicatorModel::FALLOUT4,
     };
 

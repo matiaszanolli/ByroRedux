@@ -1,6 +1,6 @@
 # Sneak and Detection — Product Requirements
 
-**Status**: ACTIVE (2026-11-15). Revision 10 records the Phase 6 outcome; revision 9 the Phase 5 findings; revision 8 the Phase 4 ones; revision 7 the Phase 2 scope moves.
+**Status**: ACTIVE (2026-11-16). Revision 11 records Fallout 4's row, decoded from `Fallout4.exe` (#6996); revision 10 records the Phase 6 outcome; revision 9 the Phase 5 findings; revision 8 the Phase 4 ones; revision 7 the Phase 2 scope moves.
 Revision 5 filed the tracking issues. Revision 2
 folded in review round 1, revision 3 recorded the §10 decisions, and the owner
 approved it (§12).
@@ -472,7 +472,9 @@ is a branch on the game in the tick, a consumer or the HUD.
   Points PRD's PERK-HOOK-009; this PRD MUST supply the "while sneaking" state it
   reads.
 - **SNK-PERK-008.** Fallout 4's sneak hooks (15, 18, 47, 48, 57; §3.1 row 11)
-  MUST stay Pending until §10 Q2 gives Fallout 4 a detection value. Its *Apply
+  MUST stay Pending until §10 Q2 gives Fallout 4 a detection value. That value
+  exists since #6996, and the five are Consumed where `Fallout4.exe` runs them
+  (design §9). Its *Apply
   Sneaking Spell* (69) reads only the stance, which this PRD MUST supply as
   SNK-PERK-007 does for Skyrim.
 
@@ -526,7 +528,7 @@ is a branch on the game in the tick, a consumer or the HUD.
 | 4 | The detection state survives a save (**Phase 0: verify**) | Re-derived on the first tick | — | An NPC searching before a save forgets on load → SNK-SAVE-002 |
 | 5 | "it does not return any value other than 0 when the player is the target" (GECK *GetDetectionLevel*) | The real level, recorded as an engine-behaviour fix in the FO3 / FNV fix catalogs by SNK-USE-010 | Mods that work around the bug | A script that relied on the 0 sees a level → SNK-USE-002 |
 | 6 | Oblivion's sneak multipliers, sourced two ways (CS *Sneak* "4x Marksman" at Apprentice against 3.0 in the GMST pages; a loading screen's "A Novice of Sneak does not get the critical damage bonus") | The settings `Oblivion.esm` authors | — | The wrong bonus at low mastery if the load order's settings are not the ones the game uses → SNK-ATK-002, SNK-DX-003 |
-| 7 | Fallout 4 and Starfield detect by formulas no source gives | Per §10 Q2 | — | Either no detection on those games or an unverified one → SNK-DET-002 |
+| 7 | Starfield detects by a formula no source gives yet (Fallout 4's is `Fallout4.exe`'s since #6996) | Per §10 Q2 | — | Either no detection on Starfield or an unverified one → SNK-DET-002 |
 | 8 | Actors detect each other through the same detection states as they detect the player ("Actors pass through 4 detection states", GECK *Category:Detection*) | Per §10 Q7; recommended, levels toward the player only and the actor-to-actor sight test for every other pair | — | NPCs notice each other by sight alone, blind to light, sound and sneak skill; `IsActorDetected` answers by sight → SNK-USE-003, SNK-USE-005, SNK-USE-008, SNK-USE-009 |
 | 9 | Skyrim shows detection in its vanilla HUD (the eye, UESP *Skyrim:Sneak*, §3.2); Fallout 4 names a CAUTION detection state (FO4 CK *OnTutorialEvent*), its HUD rendering **Phase 0: verify** | The vanilla Scaleform meter MAY stay empty until the Game UI Integration PRD feeds HUD meters; the native indicator stands in | — | A Skyrim or Fallout 4 player sees no vanilla eye or meter → SNK-HUD-004, SNK-HUD-001 |
 
@@ -542,7 +544,7 @@ is a branch on the game in the tick, a consumer or the HUD.
 | Fallout 3 | yes | Wave 1. The GECK formula; shares the FNV runtime without the level terms |
 | Fallout: New Vegas | yes | Wave 1. The reference title, the formula `stealth.rs` already transcribes, and the activate perks |
 | Skyrim (LE / SE / AE) | yes | Wave 2. The CK formula and settings; stealth points; the Scaleform meter per SNK-HUD-004 |
-| Fallout 4 | partly | Stance and conditions in Wave 1; detection per §10 Q2 (the CHARAL FO4 ruleset records the formula as a dead end); sneak hooks per SNK-PERK-008 |
+| Fallout 4 | yes | Stance and conditions in Wave 1; detection by `Fallout4.exe`'s formula, levels, split stealth points and sneak-attack classes (#6996; the CHARAL FO4 ruleset's "dead end" was the wiki's, not the executable's); sneak hooks per SNK-PERK-008 |
 | Fallout 76 | no | SNK-NG-005 |
 | Starfield | partly | Stance and conditions in Wave 1; detection per §10 Q2 (game settings sourced, formula not) |
 
@@ -778,3 +780,4 @@ games are recorded out with the reason.
 | 8 | 2026-11-15 | Phase 4 (#6913): V20 decoded for FO3 / FNV from `Fallout3.exe` `0x937a70` — [DANGER] flashing while a combat group fights the player and saw it within `fCombatDetectionLostTime`, [CAUTION] when every such group lost it or a hostile detector's value is above 0, [DETECTED] for any value above 0, else [HIDDEN] (design §10); SNK-HUD-002's per-detector table is that decision, folded to the highest state. The original drives the `sneak_nif` text (`string`, `systemcolor`, `alpha`, `user0`), not the XML's `_SneakVisible` / `_SneakLevel` traits (SNK-HUD-003). Starfield's master and executable carry no labels, so Fallout 4's stand in; its gate is the `PERK` `Skill_Stealth` (SNK-HUD-005). SNK-DET-014 is saved at `FORMAT_MAJOR` 131. Oblivion, Skyrim, Fallout 4 and Starfield tables stay provisional on #6935 | — |
 | 9 | 2026-11-15 | Phase 5 (#6914): V10, V11, V12, V15 and V18 decoded (design §13.3). Oblivion's classifier has no hysteresis (Seen / Noticed / Lost; SNK-DET-012); Skyrim's formula is `SkyrimSE.exe` `0x14041cd90` (its detector term reads the detector's Sneak, and the player as target is 0.4·Sneak + 10), and its stealth points drain and refill per `0x140818570` (SNK-DET-015). Oblivion and Skyrim strikes read the target's stored value (Oblivion holding a target that fights the attacker to `iAICombatMinDetection`; SNK-ATK-001). Skyrim's sneak multiplier is the class table by animation type through entry 18, the hit flagged only above ×1 (SNK-ATK-004); 48 scales the visual movement multiplier and 57 the target's sneak skill (SNK-PERK-004). SNK-PERK-007: *Apply Sneaking Spell* stays on PERK-HOOK-009, the stance it reads supplied. Live Oblivion detection waits on Oblivion actors becoming detectors (`AIDT`, actor values; #6995) | — |
 | 10 | 2026-11-15 | Phase 6 (#6915): per Q2 Fallout 4 and Starfield detect by the actor-to-actor sight test, formula coverage 0 for both. A source now exists for Fallout 4: `Fallout4.exe`'s code is readable, and its detection is its own model (split sound / visual stealth points, cover, visibility; ~130 settings), not Skyrim's; `Starfield.exe` names its settings but keeps them in another layout. Decoding and building both rows is #6996; SNK-PERK-008's hooks stay Pending until then | — |
+| 11 | 2026-11-16 | Fallout 4's row built from `Fallout4.exe` (#6996): sound and visual values (`0x1406c8770`), the pair's visual range, line-of-sight reach and height-weighted distance (`0x140cc00c0`), stealth points split by sense with their thresholds, drain floor and eased refill (`0x140e94420`, `0x140e9f170`), and the twelve-class sneak table with Gun, Grenade and Mine (`0x140479660`); SNK-PERK-008's hooks Consumed; A2 transcription and A3 census (93 settings, 33 authored by `Fallout4.esm`) pass. Formula coverage 5 / 6 rows; Starfield keeps the sight test, its settings built by per-setting initializers that the defaults tool does not read yet | — |
