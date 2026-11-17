@@ -23,11 +23,20 @@
 //!   [8]  v1
 //!   [9]  glyph width, texels
 //!   [10] glyph height, texels
-//!   [11] 0 across the corpus
-//!   [12] y offset (−1 for inked glyphs; the space glyph parks its
-//!        advance here — 11 — with [13] left at 0)
-//!   [13] horizontal advance (0 for control chars / space)
+//!   [11] left kerning: pen offset before the glyph (0 across the corpus)
+//!   [12] right kerning: pen offset after the glyph (−1 / −3 / −4 per font for
+//!        inked glyphs, the glow's overlap; the space glyph's whole advance)
+//!   [13] ascent: the glyph's top above the baseline (cap height for `D`,
+//!        x-height for `o`, ~10 for `.`)
 //! ```
+//!
+//! #6666: the pen advances `[11] + width + [12]` and a glyph's top sits
+//! `point size − ascent` below the line's top — OpenMW reads the same
+//! record (`GlyphInfo { …, width, height, kerningLeft, kerningRight,
+//! ascent }`, `advance = width + kerningRight`, bearing `(kerningLeft,
+//! fontSize − ascent)`), and the vanilla Oblivion and New Vegas fonts carry
+//! it unchanged. An earlier reading took [13] for the advance and [12] for
+//! a y offset, which spaced text by ascent and set every glyph on its top.
 //!
 //! The companion `.tex` is `u32 width, u32 height, width*height*4` raw
 //! RGBA — white glyph ink on transparent, tinted at draw time by the
@@ -52,9 +61,11 @@ pub struct Glyph {
     /// Inked size in texels.
     pub width: f32,
     pub height: f32,
-    /// Horizontal pen advance in texels.
+    /// Horizontal pen advance in texels (left kerning + width + right kerning).
     pub advance: f32,
-    /// Vertical draw offset (typically −1).
+    /// Horizontal draw offset from the pen (the left kerning).
+    pub x_offset: f32,
+    /// Vertical draw offset from the line's top (point size − ascent).
     pub y_offset: f32,
     /// Whether the glyph has any ink (false for space/control chars).
     pub inked: bool,
@@ -110,12 +121,8 @@ impl Font {
             let v1 = f(6);
             let width = f(9);
             let height = f(10);
-            let y_offset = f(12);
-            // Advance lives at [13]; the space glyph alone parks it at
-            // [12] with [13] zero (verified across the vanilla corpus:
-            // every inked glyph has [12] == −1 and [13] > 0, space has
-            // [12] == 11 and [13] == 0).
-            let advance = if f(13) != 0.0 { f(13) } else if c == b' ' as usize { y_offset } else { 0.0 };
+            let (kerning_left, kerning_right, ascent) = (f(11), f(12), f(13));
+            let inked = width > 0.0 && height > 0.0;
             glyphs.push(Glyph {
                 u0,
                 v0,
@@ -123,9 +130,10 @@ impl Font {
                 v1,
                 width,
                 height,
-                advance,
-                y_offset: if c == b' ' as usize { 0.0 } else { y_offset },
-                inked: width > 0.0 && height > 0.0,
+                advance: kerning_left + width + kerning_right,
+                x_offset: kerning_left,
+                y_offset: if inked { point_size - ascent } else { 0.0 },
+                inked,
             });
         }
         Ok(Self {

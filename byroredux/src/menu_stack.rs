@@ -266,6 +266,10 @@ impl App {
             let Some(mut registry) = self.world.try_resource_mut::<MenuRegistry>() else { return };
             let mut open = native_menus(&registry, &state);
             open.extend(movie_menus(&registry, self.ui.manager.as_ref()));
+            // M48 GUI-PAGE-004 — a menu on its own MenuXml document (S2).
+            if let Some(document) = self.ui.dialogue_document.as_ref() {
+                open.push((document.name.clone(), MenuSurface::MenuXml { path: document.document.clone() }));
+            }
             open.extend(absent.into_iter().map(|name| (name, MenuSurface::Absent { fallback: AbsentFallback::Recorded })));
             registry.publish(open);
             let movies = self.ui.manager.as_ref().is_some_and(|manager| !manager.is_empty());

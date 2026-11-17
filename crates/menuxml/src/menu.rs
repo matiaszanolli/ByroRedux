@@ -122,11 +122,34 @@ pub enum MenuKey {
 /// Activations held for a drain at most; the oldest goes past it.
 const MAX_PENDING_ACTIVATIONS: usize = 64;
 
+/// A flat document's traits (`strings.xml`, `globals.xml`: one `<rect name="Strings">` of `_name`
+/// traits), literal values only — an operator-built trait in one reads as absent (0).
+fn flat_document(assets: &dyn MenuAssets, path: &str) -> Option<HashMap<String, Scalar>> {
+    let text = String::from_utf8(assets.menu_xml(path)?).ok()?;
+    let mut src = AssetsAsFileSource { assets };
+    let doc = parse_document(&text, &mut src);
+    let mut map = HashMap::new();
+    for (k, v) in &doc.tiles[0].traits {
+        match v {
+            crate::parse::RawTrait::Str(s) => {
+                map.insert(k.clone(), Scalar::Str(s.clone()));
+            }
+            crate::parse::RawTrait::Num(n) => {
+                map.insert(k.clone(), Scalar::Num(*n));
+            }
+            crate::parse::RawTrait::Ops(_) => {}
+        }
+    }
+    Some(map)
+}
+
 /// A loaded, renderable menu.
 pub struct MenuRenderer {
     doc: Document,
     /// `strings.xml` traits (`_name` → string).
     strings: HashMap<String, Scalar>,
+    /// `globals.xml` traits, the `globals()` source.
+    globals: HashMap<String, Scalar>,
     /// Engine-driven trait overrides, `(tile-name-lower, trait-lower)`.
     overrides: Overrides,
     screen: ScreenTraits,
@@ -203,31 +226,14 @@ impl MenuRenderer {
         let text = String::from_utf8(xml)
             .map_err(|_| MenuError::BadUtf8(menu_path.to_string()))?;
 
-        let strings = profile.strings_path.and_then(|path| {
-            assets.menu_xml(path).and_then(|b| {
-                String::from_utf8(b).ok().map(|s| {
-                    let mut src = AssetsAsFileSource { assets };
-                    let doc = parse_document(&s, &mut src);
-                    let mut map = HashMap::new();
-                    // A strings document is a flat `<rect name="Strings">`
-                    // of `_name` text traits.
-                    for (k, v) in &doc.tiles[0].traits {
-                        if let crate::parse::RawTrait::Str(s) = v {
-                            map.insert(k.clone(), Scalar::Str(s.clone()));
-                        } else if let crate::parse::RawTrait::Num(n) = v {
-                            map.insert(k.clone(), Scalar::Num(*n));
-                        }
-                    }
-                    map
-                })
-            })
-        });
+        let strings = profile.strings_path.and_then(|path| flat_document(assets, path));
         if strings.is_none() {
             log::debug!(
                 "menuxml: no strings document for the {} corpus — strings() reads 0",
                 profile.label
             );
         }
+        let globals = profile.globals_path.and_then(|path| flat_document(assets, path));
 
         let mut src = AssetsAsFileSource { assets };
         let doc = parse_document(&text, &mut src);
@@ -276,6 +282,7 @@ impl MenuRenderer {
         Ok(Self {
             doc,
             strings: strings.unwrap_or_default(),
+            globals: globals.unwrap_or_default(),
             overrides: Overrides::new(),
             screen,
             fonts,
@@ -389,10 +396,51 @@ impl MenuRenderer {
         Ok(self.doc.graft_subtree(&fragment, 0, parent, Some(new_name)))
     }
 
+    /// Evaluate every trait for this frame. A text tile's `width` / `height` are the size of its
+    /// displayed text, which the native code sets and documents read (CS wiki, Traits: "these
+    /// traits cannot be set on Text tiles; instead, the executable sets them to the size of the
+    /// displayed text if the text is visible") — FNV's dialogue menu centres the line and sizes
+    /// its panel from them (#6666). A first pass resolves each text's string, font and wrap; a
+    /// second answers the measured sizes.
+    fn evaluate(&self) -> EvalState<'_> {
+        let fresh = || EvalState::new(&self.doc, self.screen, &self.strings, &self.overrides).with_globals(&self.globals);
+        let mut first = fresh();
+        first.resolve_all();
+        let sizes = self.measure_texts(&mut first);
+        if sizes.is_empty() {
+            return first;
+        }
+        let mut eval = fresh().with_text_sizes(sizes);
+        eval.resolve_all();
+        eval
+    }
+
+    /// The displayed size of every visible text tile with a loaded font, wrapped as the raster
+    /// wraps it.
+    fn measure_texts(&self, eval: &mut EvalState) -> HashMap<usize, (f32, f32)> {
+        let mut sizes = HashMap::new();
+        for (tile, data) in self.doc.tiles.iter().enumerate() {
+            if data.kind != crate::parse::TileKind::Text || !eval.trait_value(tile, "visible").truthy() {
+                continue;
+            }
+            let string = match eval.trait_value(tile, "string") {
+                Scalar::Str(s) => s,
+                Scalar::Num(_) => continue,
+            };
+            let font_index = eval.trait_value(tile, "font").as_num().clamp(0.0, 255.0) as usize;
+            let Some(font) = self.fonts.get(font_index).and_then(|f| f.as_deref()) else { continue };
+            let wrap_width = eval.trait_value(tile, "wrapwidth").as_num().max(0.0);
+            let wrap_lines = eval.trait_value(tile, "wraplines").as_num().max(0.0) as u32;
+            let lines = crate::raster::wrap(&string, font, wrap_width, wrap_lines);
+            let width = lines.iter().map(|line| font.measure_width(line)).fold(0.0, f32::max);
+            sizes.insert(tile, (width, lines.len() as f32 * font.line_height()));
+        }
+        sizes
+    }
+
     /// The tiles that take the pointer this frame, in draw order (later is on top).
     pub fn hit_targets(&self) -> Vec<crate::layout::HitTarget> {
-        let mut eval = EvalState::new(&self.doc, self.screen, &self.strings, &self.overrides);
-        eval.resolve_all();
+        let mut eval = self.evaluate();
         crate::layout::build_layout(&self.doc, &mut eval).1
     }
 
@@ -451,8 +499,7 @@ impl MenuRenderer {
 
     /// The first target whose `xdefault` trait is set (the list items' default focus).
     fn default_target(&self, targets: &[usize]) -> Option<usize> {
-        let mut eval = EvalState::new(&self.doc, self.screen, &self.strings, &self.overrides);
-        eval.resolve_all();
+        let mut eval = self.evaluate();
         targets.iter().position(|tile| eval.trait_value(*tile, "xdefault").truthy())
     }
 
@@ -502,8 +549,7 @@ impl MenuRenderer {
     /// Evaluate, lay out, and rasterize one frame. Returns the RGBA
     /// pixels (`width * height * 4`, top-down).
     pub fn render_frame(&mut self, assets: &dyn MenuAssets) -> &[u8] {
-        let mut eval = EvalState::new(&self.doc, self.screen, &self.strings, &self.overrides);
-        eval.resolve_all();
+        let mut eval = self.evaluate();
         let items = build_draw_list(&self.doc, &mut eval);
         log::debug!(
             "menuxml frame: {} tiles -> {} draw items ({} textures cached)",

@@ -642,7 +642,7 @@ impl App {
             // (M48.4) owns the overlay when live; otherwise this is the
             // Ruffle SWF player.
             let ui_t0 = Instant::now();
-            let ui_textures: Vec<u32> = if let Some(movie) = self.video.tick(ctx, &self.world) {
+            let mut ui_textures: Vec<u32> = if let Some(movie) = self.video.tick(ctx, &self.world) {
                 vec![movie]
             } else if self.loading_screen.active() {
                 self.loading_screen.texture().into_iter().collect()
@@ -676,6 +676,9 @@ impl App {
                     },
                 )
             };
+            // M48 GUI-PAGE-004 — the dialogue document (S2) composites over the HUD / movies.
+            let covered = self.video.active() || self.loading_screen.active();
+            crate::menuxml_dialogue::composite(self.ui.dialogue_document.as_mut(), ctx, covered, &mut ui_textures);
             if is_benching {
                 self.bench.ui_ns += ui_t0.elapsed().as_nanos() as u64;
             }
@@ -1049,8 +1052,10 @@ impl App {
             self.open_dialogue_menu();
         }
         self.close_dialogue_menu_if_goodbye_ended();
-        // M48 GUI-PAGE-004 — the dialogue movie's requests and the conversation it presents.
+        // M48 GUI-PAGE-004 — the dialogue movie's / document's requests and the conversation
+        // they present.
         self.step_dialogue_movie();
+        self.step_dialogue_document();
         self.open_inventory_on_injected_press();
         self.present_barter_menu();
         self.present_crafting_menu();

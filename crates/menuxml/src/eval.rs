@@ -83,6 +83,7 @@ fn parse_selector(src: &str) -> Selector<'_> {
             "parent" => return Selector::Parent,
             "screen" => return Selector::Pseudo("screen"),
             "strings" => return Selector::Pseudo("strings"),
+            "globals" => return Selector::Pseudo("globals"),
             "io" => return Selector::Io,
             _ => {}
         }
@@ -112,6 +113,11 @@ pub struct EvalState<'a> {
     pub screen: ScreenTraits,
     /// `strings.xml` traits (`_name` → string), the `strings()` source.
     pub strings: &'a HashMap<String, Scalar>,
+    /// `globals.xml` traits, the `globals()` source (FO3/FNV).
+    globals: Option<&'a HashMap<String, Scalar>>,
+    /// Text tiles' displayed `(width, height)`, measured by the renderer: what a text tile's
+    /// `width` / `height` read (the native code sets them; documents cannot author them).
+    text_sizes: HashMap<usize, (f32, f32)>,
     /// Engine overrides, keyed `(tile-name-lower, trait-lower)`; the
     /// empty tile name addresses the menu root.
     overrides: &'a Overrides,
@@ -137,10 +143,24 @@ impl<'a> EvalState<'a> {
             doc,
             screen,
             strings,
+            globals: None,
+            text_sizes: HashMap::new(),
             overrides,
             memo: HashMap::new(),
             depth: 0,
         }
+    }
+
+    /// Answer text tiles' `width` / `height` from `sizes` (tile → displayed size).
+    pub fn with_text_sizes(mut self, sizes: HashMap<usize, (f32, f32)>) -> Self {
+        self.text_sizes = sizes;
+        self
+    }
+
+    /// Feed `globals()` selections from `globals`.
+    pub fn with_globals(mut self, globals: &'a HashMap<String, Scalar>) -> Self {
+        self.globals = Some(globals);
+        self
     }
 
     /// Evaluate every trait of every tile, in arena (document) order.
@@ -169,6 +189,17 @@ impl<'a> EvalState<'a> {
             if let Some(v) = self.overrides.get(&(owner.to_lowercase(), key.clone())) {
                 self.memo.insert((tile, key), v.clone());
                 return v.clone();
+            }
+        }
+        if let Some(&(width, height)) = self.text_sizes.get(&tile) {
+            let measured = match key.as_str() {
+                "width" => Some(width),
+                "height" => Some(height),
+                _ => None,
+            };
+            if let Some(value) = measured {
+                self.memo.insert((tile, key), Scalar::Num(value));
+                return Scalar::Num(value);
             }
         }
         let raw = self.doc.tiles[tile].traits.get(&key).cloned();
@@ -287,6 +318,13 @@ impl<'a> EvalState<'a> {
                         log::debug!("menuxml: strings() trait '{trait_name}' missing");
                         Scalar::Num(0.0)
                     })
+            }
+            Selector::Pseudo("globals") => {
+                let key = trait_name.to_lowercase();
+                self.globals.and_then(|globals| globals.get(&key)).cloned().unwrap_or_else(|| {
+                    log::debug!("menuxml: globals() trait '{trait_name}' missing");
+                    Scalar::Num(0.0)
+                })
             }
             Selector::Pseudo(other) => {
                 log::debug!("menuxml: unknown pseudo-selector {other}()");

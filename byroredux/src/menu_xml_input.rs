@@ -7,7 +7,9 @@
 //! - `KeyDown`: Down / Tab focus the next target, Up the previous (the list items' `xdefault`
 //!   one first), Enter / Space activate the focused one.
 //!
-//! The menu's own code then reads [`MenuRenderer::take_activations`] — the activated tiles with
+//! The live caller is the window-input path while a MenuXml menu (the dialogue document,
+//! GUI-PAGE-004) is the registry's input owner. The menu's own code then reads
+//! [`MenuRenderer::take_activations`] — the activated tiles with
 //! their `<id>`, the handle a native page's control is keyed by.
 
 use byroredux_core::ecs::resources::MenuRegistry;
@@ -15,15 +17,11 @@ use byroredux_menuxml::{MenuKey, MenuRenderer};
 use byroredux_ui::{UiInputEvent, UiLogicalKey, UiMouseButton, UiNamedKey};
 
 /// Whether the MenuXml menu `menu` owns input: it is the registry's input owner (GUI-REG-009).
-// Self-expiring (#2732's pattern): no live MenuXml menu surface (S2) routes input yet; the
-// frame's input path calls these when it opens one, and the expectation then fails the build.
-#[cfg_attr(not(test), expect(dead_code, reason = "no live S2 MenuXml menu surface yet"))]
 pub(crate) fn owns_input(registry: &MenuRegistry, menu: &str) -> bool {
     registry.input_owner().is_some_and(|owner| owner.name.eq_ignore_ascii_case(menu))
 }
 
 /// Route one input event to `renderer`; `true` when the event is one a MenuXml menu takes.
-#[cfg_attr(not(test), expect(dead_code, reason = "no live S2 MenuXml menu surface yet"))]
 pub(crate) fn route(renderer: &mut MenuRenderer, event: &UiInputEvent) -> bool {
     match event {
         UiInputEvent::MouseMove { .. } => true,

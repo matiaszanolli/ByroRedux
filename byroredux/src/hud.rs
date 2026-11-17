@@ -221,7 +221,7 @@ pub(crate) struct HudAssets {
     /// The named texture archive followed by its numeric siblings, in open
     /// order. Last-listed wins, as in `TextureProvider::extract`.
     textures: Vec<Archive>,
-    profile: HudGameProfile,
+    pub(crate) profile: HudGameProfile,
 }
 
 impl HudAssets {
@@ -419,10 +419,19 @@ fn fallout_profile(load_order: &[&str], data_dir: &std::path::Path) -> HudGamePr
 /// BSA (menus + Oblivion fonts); the texture BSA defaults per profile and
 /// can be overridden with `--hud-textures <path>`. Either way the texture
 /// archive is opened with its numeric siblings, like `--textures-bsa`.
+/// The HUD's archives: none without `--hud` (`launch_hud` applies the same gate before it asks
+/// [`session_menu_assets`]). Kept for the tests that pin the discovery under the HUD flag.
+#[cfg(test)]
 fn hud_archive_args(args: &[String]) -> Result<Option<(String, String, HudGameProfile)>, String> {
     if !args.iter().any(|arg| arg == "--hud") {
         return Ok(None);
     }
+    menu_archive_args(args)
+}
+
+/// The session's MenuXml archives and profile, discovered beside the ESM whether or not `--hud`
+/// asked for the HUD (the menus that run on their documents need them too, GUI-PAGE-004).
+fn menu_archive_args(args: &[String]) -> Result<Option<(String, String, HudGameProfile)>, String> {
     let (esm, esm_dir) = crate::cli_args::esm_discovery_root(args)?;
 
     let masters = crate::cli_args::parse_all_string_args(args, "--master");
@@ -500,6 +509,25 @@ pub(crate) fn menu_owned_overlay_skip(menu_player_installed: bool) -> Option<&'s
 /// opens the archives, assembles the per-game HUD content, registers the
 /// transparent overlay texture (#4892 collapsed the triple buffer to one),
 /// and logs the `hud: loaded` line a smoke gate can grep.
+/// The session's MenuXml game (Oblivion, Fallout 3, New Vegas): its menu and texture archives and
+/// profile, discovered beside the ESM as the HUD's are. `Ok(None)` when the session is no MenuXml
+/// game. Shared by the HUD and the menus that run on their documents (M48 GUI-PAGE-004).
+/// The archive paths come back with them, for the load log.
+pub(crate) fn session_menu_assets(args: &[String]) -> Result<Option<(HudAssets, String, String)>, String> {
+    let Some((misc_path, textures_path, profile)) = menu_archive_args(args)? else {
+        return Ok(None);
+    };
+    let misc = Archive::open(&misc_path).map_err(|e| format!("hud: archive open failed: {e}"))?;
+    // `open_with_numeric_siblings` reports a failed open as a warning and
+    // pushes nothing, so an empty pool is the failure signal.
+    let mut textures = Vec::new();
+    open_with_numeric_siblings(&textures_path, "HUD textures", &mut textures, &mut std::collections::HashSet::new());
+    if textures.is_empty() {
+        return Err(format!("hud: texture archive open failed: '{textures_path}'"));
+    }
+    Ok(Some((HudAssets { misc, textures, profile }, misc_path, textures_path)))
+}
+
 pub(crate) fn launch_hud(
     ctx: &mut byroredux_renderer::vulkan::context::VulkanContext,
     world: &mut World,
@@ -510,39 +538,18 @@ pub(crate) fn launch_hud(
         log::info!("{reason} (MenuXml)");
         return None;
     }
-    let (misc_path, textures_path, profile) = match hud_archive_args(args) {
-        Ok(Some(triple)) => triple,
+    if !args.iter().any(|arg| arg == "--hud") {
+        return None;
+    }
+    let (assets, misc_path, textures_path) = match session_menu_assets(args) {
+        Ok(Some(found)) => found,
         Ok(None) => return None,
         Err(error) => {
             log::error!("{error}");
             return None;
         }
     };
-    let misc = match Archive::open(&misc_path) {
-        Ok(misc) => misc,
-        Err(e) => {
-            log::error!("hud: archive open failed: {e}");
-            return None;
-        }
-    };
-    // `open_with_numeric_siblings` reports a failed open as a warning and
-    // pushes nothing, so an empty pool is the failure signal.
-    let mut textures = Vec::new();
-    open_with_numeric_siblings(
-        &textures_path,
-        "HUD textures",
-        &mut textures,
-        &mut std::collections::HashSet::new(),
-    );
-    if textures.is_empty() {
-        log::error!("hud: texture archive open failed: '{textures_path}'");
-        return None;
-    }
-    let assets = HudAssets {
-        misc,
-        textures,
-        profile,
-    };
+    let profile = assets.profile;
 
     let (w, h) = ctx.swapchain_extent();
     let screen = ScreenTraits::new(w as f32, h as f32);

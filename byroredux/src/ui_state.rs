@@ -41,6 +41,10 @@ pub(crate) struct UiState {
     pub(crate) dialogue_movie: Option<crate::scaleform_dialogue::DialogueMovie>,
     /// The dialogue movie's host calls the frame's drain took, for the driver's next step.
     pub(crate) dialogue_calls: Vec<byroredux_ui::ScaleformHostCall>,
+    /// M48 GUI-PAGE-004 — the conversation on the game's own dialogue document (S2), when open.
+    pub(crate) dialogue_document: Option<crate::menuxml_dialogue::DialogueDocument>,
+    /// What the dialogue document's input asked, for the driver's next step.
+    pub(crate) dialogue_document_actions: Vec<crate::menuxml_dialogue::DocumentAction>,
     /// Per open movie (by `menu_name`), the last `dropped_host_calls()` reading the per-frame
     /// Scaleform drain observed (#2969), paired with the layer it came from (`menu#id`, #3772):
     /// `drain_calls`' contract is that a full batch must be read together with the drop counter

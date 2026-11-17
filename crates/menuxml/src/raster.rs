@@ -320,7 +320,7 @@ impl Framebuffer {
                 // Glyphs draw at 1:1 texel scale — the authored font
                 // sizes are pixel metrics.
                 let dst = Rect {
-                    x: pen,
+                    x: pen + g.x_offset,
                     y: y + g.y_offset,
                     w: g.width,
                     h: g.height,
@@ -793,6 +793,7 @@ mod tests {
                     width: 8.0,
                     height: 8.0,
                     advance,
+                    x_offset: 0.0,
                     y_offset: 0.0,
                     inked: true,
                 })

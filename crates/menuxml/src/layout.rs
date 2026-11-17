@@ -176,7 +176,12 @@ fn walk_children(
         if doc.tiles[child].kind == TileKind::Template {
             continue;
         }
-        let visible = eval.trait_value(child, "visible").truthy();
+        // `visible` propagates: a hidden tile hides its whole subtree, its hit targets included
+        // (CS wiki, Traits: "unlike visible, clips does not propagate to descendant tiles").
+        // FNV's dialogue menu hides its topic list this way while the line shows (#6666).
+        if !eval.trait_value(child, "visible").truthy() {
+            continue;
+        }
         let alpha = num(eval, child, "alpha").clamp(0.0, 255.0);
         let x = origin.0 + num(eval, child, "x");
         let y = origin.1 + num(eval, child, "y");
@@ -198,12 +203,12 @@ fn walk_children(
             };
         }
 
-        if visible && eval.trait_value(child, "target").truthy() {
+        if eval.trait_value(child, "target").truthy() {
             let seen_through = if eval.trait_value(child, "clips").truthy() { child_clip } else { clip };
             out.targets.push(HitTarget { tile: child, rect, clip: seen_through });
         }
 
-        if visible && alpha > 0.5 {
+        if alpha > 0.5 {
             let tint = [
                 num(eval, child, "red"),
                 num(eval, child, "green"),
