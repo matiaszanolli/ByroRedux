@@ -349,6 +349,54 @@ pub(crate) fn install_form_resolver(
     world.insert_resource(ActiveLoadOrder(load_order));
 }
 
+/// The load order the once-built, load-order-resolved resources below were built against (SAVE-2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LoadOrderBasis {
+    names: Vec<String>,
+    slots: Vec<esm::reader::GlobalSlot>,
+    engine_slot: Option<esm::reader::GlobalSlot>,
+}
+
+impl Resource for LoadOrderBasis {}
+
+/// SAVE-2 (audit 2026-11-17) — `CharacterRuleset`, `PoolRegenConfig`, `VatsModel`, `LimbEffects`,
+/// `MeleeDamageConfig` and `ScriptKilledCorpseForms` are built once behind `is_none()` guards, from actor-value
+/// ids and FormIDs resolved against the load order that was live when they were built. A live load re-parses the
+/// *save's* masters, so when its plugin set differs from the running process the engine slot (and any plugin
+/// slot) moves while the process-lifetime player survives: the player's derived pools were then written to the
+/// old slot's keys every frame, and the next save stored them as pairs for whichever plugin owns that slot.
+///
+/// Returns `true` when the load order changed since they were built and they were dropped, so the build
+/// blocks that follow resolve them against the load order now in force. An unchanged load order (the usual live
+/// load) keeps them.
+pub(super) fn discard_stale_load_order_caches(
+    world: &mut byroredux_core::ecs::World,
+    load_order: &LoadOrder,
+) -> bool {
+    let basis = LoadOrderBasis {
+        names: load_order.names.clone(),
+        slots: load_order.slots.clone(),
+        engine_slot: load_order.engine_slot,
+    };
+    let (known, stale) = match world.try_resource::<LoadOrderBasis>() {
+        Some(previous) => (true, *previous != basis),
+        None => (false, false),
+    };
+    if stale {
+        log::info!("load order changed since the actor-value resources were built; rebuilding them");
+        world.remove_resource::<byroredux_core::character::CharacterRuleset>();
+        world.remove_resource::<byroredux_core::character::regen::PoolRegenConfig>();
+        world.remove_resource::<byroredux_core::character::VatsModel>();
+        world.remove_resource::<crate::limbs::LimbEffects>();
+        world.remove_resource::<byroredux_core::character::MeleeDamageConfig>();
+        world.remove_resource::<super::reference_state::ScriptKilledCorpseForms>();
+    }
+    if stale || !known {
+        world.insert_resource(basis);
+    }
+    stale
+}
+
 /// Previous load-order resources, retained while a resumable cell load is
 /// in progress so cancelling it restores the complete bridge atomically.
 pub(crate) struct PreviousFormResolver {
@@ -1102,6 +1150,60 @@ mod tests {
             "even one resolved table must NOT count as all-missing — a mod \
              that ships only .STRINGS is normal, not a localization failure"
         );
+    }
+
+    /// SAVE-2 — resources resolved against one load order must not outlive a live load that re-parses
+    /// different masters; an unchanged load order keeps them.
+    #[test]
+    fn a_changed_load_order_discards_the_load_order_resolved_caches() {
+        use byroredux_core::character::{CharacterRuleset, LevelingModel};
+        let order = |engine: u8| {
+            let mut order = LoadOrder::new(
+                vec!["Oblivion.esm".to_string()],
+                vec![esm::reader::GlobalSlot::Regular(0)],
+            );
+            order.engine_slot = Some(esm::reader::GlobalSlot::Regular(engine));
+            order
+        };
+        let mut world = byroredux_core::ecs::World::new();
+        world.insert_resource(CharacterRuleset::new(LevelingModel::FO4));
+        world.insert_resource(crate::cell_loader::reference_state::ScriptKilledCorpseForms::default());
+
+        // First sight of a load order only records it.
+        assert!(!discard_stale_load_order_caches(&mut world, &order(1)));
+        assert!(world.try_resource::<CharacterRuleset>().is_some());
+        // The same load order (the usual live load) keeps what was built.
+        assert!(!discard_stale_load_order_caches(&mut world, &order(1)));
+        assert!(world.try_resource::<CharacterRuleset>().is_some());
+        // A moved engine slot drops them, so the next build resolves the new keys.
+        assert!(discard_stale_load_order_caches(&mut world, &order(2)));
+        assert!(world.try_resource::<CharacterRuleset>().is_none());
+        assert!(world
+            .try_resource::<crate::cell_loader::reference_state::ScriptKilledCorpseForms>()
+            .is_none());
+        // ...once: rebuilt resources survive the next call under the same load order.
+        world.insert_resource(CharacterRuleset::new(LevelingModel::FO4));
+        assert!(!discard_stale_load_order_caches(&mut world, &order(2)));
+        assert!(world.try_resource::<CharacterRuleset>().is_some());
+        // A changed plugin set is a changed load order even with the same engine slot.
+        let mut other = order(2);
+        other.names.push("Extra.esp".to_string());
+        other.slots.push(esm::reader::GlobalSlot::Regular(1));
+        assert!(discard_stale_load_order_caches(&mut world, &other));
+    }
+
+    /// SAVE-2 — the discard only helps if it runs before the once-built resources are read: pin the call
+    /// ahead of the first build in the reference loader (a live load reaches it on every cell load).
+    #[test]
+    fn the_reference_loader_discards_stale_caches_before_building_them() {
+        let source = include_str!("references/mod.rs");
+        let discard = source
+            .find("load_order::discard_stale_load_order_caches(world, load_order)")
+            .expect("load_references_budgeted must call discard_stale_load_order_caches");
+        for build in ["ScriptKilledCorpseForms>()", "build_character_ruleset(record_index)"] {
+            let at = source.find(build).unwrap_or_else(|| panic!("`{build}` moved out of references/mod.rs"));
+            assert!(discard < at, "the discard must precede `{build}`");
+        }
     }
 
     #[test]

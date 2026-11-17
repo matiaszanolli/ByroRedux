@@ -346,6 +346,9 @@ pub(super) fn load_references_budgeted(
     // #5304 — the load order is what proves a matching SCPT is
     // vanilla-defined (exact EDID + defining-plugin gate) rather than a
     // mod name-alike or an override of a vanilla script.
+    // SAVE-2 — drop the load-order-resolved caches built under a different load order before anything below
+    // reads them: a live load can re-parse the save's masters and move every slot.
+    load_order::discard_stale_load_order_caches(world, load_order);
     let cached = world
         .try_resource::<super::reference_state::ScriptKilledCorpseForms>()
         .map(|killed| Arc::clone(&killed.0));

@@ -927,8 +927,9 @@ pub(crate) fn script_killed_corpse_forms(
 /// editor-id strings across FNV's 4,495 `XLKR` placements on every
 /// budgeted resume).
 ///
-/// Valid for the process's load order, like `CharacterRuleset` — the
-/// order is fixed at boot, so there is nothing to invalidate.
+/// Valid for the load order it was computed under, like `CharacterRuleset`.
+/// `load_order::discard_stale_load_order_caches` drops it when a live load
+/// re-parses different masters (SAVE-2), so the next cell load recomputes it.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct ScriptKilledCorpseForms(pub std::sync::Arc<std::collections::HashSet<u32>>);
 
