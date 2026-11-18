@@ -973,6 +973,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("NameIndex", "lazily-rebuilt Name->EntityId cache, invalidated by its own generation counter (#249)"),
         ("NavPath", "cached single-tile NAVM waypoint path (EX-16 item 3 Phase 3 / #2372), rederived on demand from resident NavmeshTile data by navmesh_path::path_from_resident_tiles — same posture as NavmeshTile itself, never lossy gameplay state"),
         ("NavmeshTile", "NAVM geometry residency plumbing (EX-16 item 2 / #2372), rederived identically from the plugin's parsed NavmRecord every cell/tile load — same posture as DoorTeleport/Locked"),
+        ("PathGridTile", "Oblivion PGRD walk-graph residency plumbing, the NavmeshTile counterpart (Oblivion authors no NAVM); a clone of the plugin's parsed PathGridRecord, spawned in the cell's stamped window and rederived identically every cell/tile load — same posture as NavmeshTile"),
         ("NifImportRegistry", "process-lifetime parsed-NIF LRU cache, keyed by model path — re-populated on demand, never save-relevant"),
         ("NoSorter", "marker for NiAlphaProperty.flags bit 13 (\"No Sorter\", #3797), rederived identically from NIF material data every load — same posture as TwoSided"),
         ("NormalMapHandle", "bindless GPU texture handle for the water normal-map path, rebuilt by the texture-upload path every load"),
