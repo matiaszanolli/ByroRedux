@@ -49,6 +49,7 @@ mod light_anim;
 pub(crate) mod locomotion;
 mod metrics;
 pub(crate) mod navmesh_path;
+pub(crate) mod pathgrid_path;
 pub(crate) mod npc_dialogue;
 mod particle;
 mod patrol;

@@ -136,7 +136,7 @@ fn resolve_for(world: &World, actor: EntityId, goal: Vec3) -> (Vec3, VecDeque<Ve
         .query::<Transform>()
         .and_then(|q| q.get(actor).map(|t| t.translation))
         .expect("the actor must have a Transform");
-    let tiles = world.query::<NavmeshTile>();
+    let tiles = crate::systems::navmesh_path::NavGraphs::of(world);
     resolve_cached_waypoints(
         cached.as_ref(),
         tiles.as_ref(),

@@ -793,6 +793,8 @@ impl InteriorCellApplyJob {
         let navmesh_first = world.next_entity_id();
         // The parser keeps a cell's NAVMs in the global map, not on the cell.
         crate::components::spawn_navmesh_tiles(world, index.navmeshes_of_cell(cell, None));
+        // Oblivion's walk graph: it authors `PGRD` pathgrids on the cell, no NAVM.
+        crate::components::spawn_pathgrid_tiles(world, &cell.pathgrids);
         stamp_cell_root_range(world, cell_root, navmesh_first, world.next_entity_id());
         crate::scene::populate_scene_runtime(world, &index);
         crate::asset_provider::populate_idle_clip_runtime(world, &index, tex_provider);

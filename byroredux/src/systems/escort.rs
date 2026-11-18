@@ -70,7 +70,7 @@ use super::navmesh_path::resolve_cached_waypoints;
 use super::travel::{
     defer_unresolved_reference, resolve_destination as resolve_travel_destination,
 };
-use crate::components::{NavPath, NavmeshTile};
+use crate::components::NavPath;
 use byroredux_core::ecs::components::{
     EscortBehavior, EscortState, Escorted, GlobalTransform, Transform,
 };
@@ -249,7 +249,7 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
         };
         let escorted_q = world.query::<Escorted>();
         let state_q = world.query::<EscortState>();
-        let tile_q = world.query::<NavmeshTile>();
+        let tile_q = super::navmesh_path::NavGraphs::of(world);
         let nav_path_q = world.query::<NavPath>();
         let walk_speed_q = world.query::<crate::components::WalkSpeed>();
 
@@ -494,6 +494,7 @@ pub(crate) fn escort_system(world: &World, dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::NavmeshTile;
     use crate::systems::navmesh_path::test_tiles::two_triangle_quad_scaled;
     use byroredux_core::ecs::components::FormIdComponent;
     use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};

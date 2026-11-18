@@ -52,6 +52,36 @@ pub(crate) fn spawn_navmesh_tiles<'a>(
     }
 }
 
+/// A resident Oblivion pathgrid — CPU-only walk graph, the `PGRD` counterpart of
+/// [`NavmeshTile`] (Oblivion authors no `NAVM`; PRD `ai-packages-completion` Q5).
+///
+/// Spawned beside the NAVM tiles, in the same stamped window, so it is reclaimed
+/// with its cell and bumps the same residency generation. Not save-registered, for
+/// the reason [`NavmeshTile`] is not.
+pub(crate) struct PathGridTile(pub(crate) byroredux_plugin::esm::records::PathGridRecord);
+
+impl Component for PathGridTile {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// Spawn one [`PathGridTile`] entity per `pathgrids` entry, the way
+/// [`spawn_navmesh_tiles`] spawns NAVM tiles. Call it in the same
+/// `first_entity..last_entity` window.
+pub(crate) fn spawn_pathgrid_tiles<'a>(
+    world: &mut byroredux_core::ecs::World,
+    pathgrids: impl IntoIterator<Item = &'a byroredux_plugin::esm::records::PathGridRecord>,
+) {
+    let mut spawned = false;
+    for grid in pathgrids {
+        let entity = world.spawn();
+        world.insert(entity, PathGridTile(grid.clone()));
+        spawned = true;
+    }
+    if spawned {
+        bump_navmesh_residency(world);
+    }
+}
+
 /// Monotonic counter of NAVM tile-residency changes (#3256).
 ///
 /// [`NavPath`] caches a path — **including a deliberately-cached empty
@@ -175,6 +205,21 @@ mod navmesh_tile_tests {
             [0x100, 0x101].into_iter().collect(),
             "one resident tile per NavmRecord, identity preserved"
         );
+    }
+
+    #[test]
+    fn spawns_one_entity_per_pathgrid_and_bumps_the_generation() {
+        use byroredux_plugin::esm::records::PathGridRecord;
+        let mut world = byroredux_core::ecs::World::new();
+        let before = navmesh_residency_generation(&world);
+        spawn_pathgrid_tiles(
+            &mut world,
+            &[PathGridRecord { form_id: 0x200, ..Default::default() }, PathGridRecord { form_id: 0x201, ..Default::default() }],
+        );
+        let q = world.query::<PathGridTile>().expect("PathGridTile storage");
+        let forms: std::collections::HashSet<u32> = q.iter().map(|(_, g)| g.0.form_id).collect();
+        assert_eq!(forms, [0x200, 0x201].into_iter().collect());
+        assert_ne!(navmesh_residency_generation(&world), before, "cached paths computed without the grid are stale");
     }
 
     #[test]

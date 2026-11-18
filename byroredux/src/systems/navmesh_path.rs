@@ -697,6 +697,56 @@ pub(crate) fn path_from_resident_tiles(
     Some(waypoints.into_iter().skip(1).collect())
 }
 
+/// The walk graphs resident now, as one thing to path over: the NAVM tiles every
+/// game but Oblivion ships, and the `PGRD` pathgrids Oblivion ships instead
+/// ([`super::pathgrid_path`]). The locomotion systems query it once per tick and
+/// hand it to [`resolve_cached_waypoints`].
+pub(crate) struct NavGraphs<'a> {
+    tiles: Option<byroredux_core::ecs::QueryRead<'a, crate::components::NavmeshTile>>,
+    grids: Option<byroredux_core::ecs::QueryRead<'a, crate::components::PathGridTile>>,
+    /// Whether [`Self::path`] may route over the pathgrids. Off by default: a grid is
+    /// a set of points, not a surface, so it cannot say that the straight walk is
+    /// blocked, and routing every walk over it sent the Imperial Prison's actors
+    /// into stair walls the straight walk had cleared. A mover turns it on for an
+    /// actor its character controller has stopped ([`Self::use_grids`]).
+    use_grids: bool,
+}
+
+impl<'a> NavGraphs<'a> {
+    /// `None` when neither storage exists (a world no cell was ever loaded into).
+    pub(crate) fn of(world: &'a World) -> Option<Self> {
+        let tiles = world.query::<crate::components::NavmeshTile>();
+        let grids = world.query::<crate::components::PathGridTile>();
+        if tiles.is_none() && grids.is_none() {
+            return None;
+        }
+        Some(Self { tiles, grids, use_grids: false })
+    }
+
+    /// Let [`Self::path`] route over the pathgrids (see the field).
+    pub(crate) fn use_grids(&mut self, on: bool) {
+        self.use_grids = on;
+    }
+
+    /// The remaining waypoints from `current` to `goal` (never including `current`,
+    /// always ending with `goal`): over the NAVM tiles when they route it, else over
+    /// the first pathgrid both points snap onto when grids are enabled. `None` means
+    /// walk straight.
+    pub(crate) fn path(&self, current: Vec3, goal: Vec3) -> Option<Vec<Vec3>> {
+        self.tiles
+            .as_ref()
+            .and_then(|tiles| path_from_resident_tiles(tiles, current, goal))
+            .or_else(|| {
+                if !self.use_grids {
+                    return None;
+                }
+                self.grids.as_ref()?.iter().find_map(|(_, grid)| {
+                    super::pathgrid_path::find_path_over_grid(&grid.0, current, goal)
+                })
+            })
+    }
+}
+
 /// What [`path_from_resident_tiles`] sees for one pair of points: the tile and
 /// triangle each lands on, how many tiles are resident, and the path's
 /// waypoint count. Diagnostic (`nav.path`).
@@ -758,7 +808,7 @@ pub(crate) fn probe_path(
 /// call's `goal`.
 pub(crate) fn resolve_cached_waypoints(
     cached: Option<&crate::components::NavPath>,
-    tiles: Option<&byroredux_core::ecs::QueryRead<'_, crate::components::NavmeshTile>>,
+    graphs: Option<&NavGraphs<'_>>,
     current: Vec3,
     goal: Vec3,
     repath_threshold: f32,
@@ -778,8 +828,8 @@ pub(crate) fn resolve_cached_waypoints(
             (path.goal, path.waypoints.clone())
         }
         _ => {
-            let waypoints = tiles
-                .and_then(|tiles| path_from_resident_tiles(tiles, current, goal))
+            let waypoints = graphs
+                .and_then(|graphs| graphs.path(current, goal))
                 .map(std::collections::VecDeque::from)
                 .unwrap_or_default();
             (goal, waypoints)
@@ -819,15 +869,15 @@ pub(crate) fn cached_walk_step(
     dt: f32,
     speed: f32,
 ) -> CachedWalkStep {
-    use crate::components::{navmesh_residency_generation, NavPath, NavmeshTile};
+    use crate::components::{navmesh_residency_generation, NavPath};
     let residency_generation = navmesh_residency_generation(world);
     let (effective_goal, waypoints) = {
-        let tiles = world.query::<NavmeshTile>();
+        let graphs = NavGraphs::of(world);
         let cached_q = world.query::<NavPath>();
         let cached = cached_q.as_ref().and_then(|q| q.get(npc));
         resolve_cached_waypoints(
             cached,
-            tiles.as_ref(),
+            graphs.as_ref(),
             current,
             goal,
             repath_threshold,
@@ -1529,6 +1579,45 @@ mod tests {
         assert!(waypoints.is_empty());
     }
 
+    /// Oblivion ships no NAVM, only `PGRD`: with a resident pathgrid and no tile the
+    /// actor is routed along the grid's edges, round the gap between its two arms.
+    #[test]
+    fn a_resident_pathgrid_routes_an_actor_when_no_navmesh_tile_exists() {
+        use byroredux_plugin::esm::records::{PathGridPoint, PathGridRecord};
+        // Engine points (0,0,0) → (0,0,200) → (200,0,200) → (200,0,0), file Z-up (x, -z, y).
+        let ends = [[0.0, 0.0, 0.0], [0.0, 0.0, 200.0], [200.0, 0.0, 200.0], [200.0, 0.0, 0.0]];
+        let links: [&[u16]; 4] = [&[1], &[0, 2], &[1, 3], &[2]];
+        let grid = PathGridRecord {
+            declared_point_count: 4,
+            points: ends
+                .iter()
+                .zip(links)
+                .map(|(p, l)| PathGridPoint { position: [p[0], -p[2], p[1]], connection_count: l.len() as u8 })
+                .collect(),
+            edges: links.iter().map(|l| l.iter().map(|&i| Some(i)).collect()).collect(),
+            ..Default::default()
+        };
+        let mut world = byroredux_core::ecs::World::new();
+        crate::components::spawn_pathgrid_tiles(&mut world, [&grid]);
+
+        let mut graphs = NavGraphs::of(&world).expect("a pathgrid is resident");
+        let goal = Vec3::new(190.0, 0.0, 0.0);
+        let (_, off) =
+            resolve_cached_waypoints(None, Some(&graphs), Vec3::new(0.0, 0.0, 50.0), goal, 0.0, 1);
+        assert!(off.is_empty(), "grids are off until a mover turns them on: walk straight");
+
+        graphs.use_grids(true);
+        let (effective_goal, waypoints) =
+            resolve_cached_waypoints(None, Some(&graphs), Vec3::new(0.0, 0.0, 50.0), goal, 0.0, 1);
+
+        assert_eq!(effective_goal, goal);
+        assert_eq!(
+            waypoints.iter().copied().collect::<Vec<_>>(),
+            vec![Vec3::new(0.0, 0.0, 200.0), Vec3::new(200.0, 0.0, 200.0), Vec3::new(200.0, 0.0, 0.0), goal],
+            "round the L over the grid, not straight through the gap"
+        );
+    }
+
     /// #3256 (ECS-2026-08-24-08) regression — the negative cache must be
     /// recoverable when navmesh residency changes.
     ///
@@ -1556,9 +1645,7 @@ mod tests {
             tile_entity,
             crate::components::NavmeshTile(two_triangle_quad()),
         );
-        let tiles = world
-            .query::<crate::components::NavmeshTile>()
-            .expect("NavmeshTile registered");
+        let tiles = NavGraphs::of(&world).expect("NavmeshTile registered");
         let inside_goal = Vec3::new(9.0, 0.0, 9.0);
         let start = Vec3::new(1.0, 0.0, 1.0);
         let cached = NavPath {

@@ -60,10 +60,10 @@
 //!   that would be Follow's job (a different, unimplemented procedure).
 //! - **Ground-snapped, not physically simulated**, same as Wander.
 
-use super::locomotion::{step_along_waypoints, LOCOMOTION_ARRIVAL_EPSILON};
+use super::locomotion::{step_along_waypoints_detailed, LOCOMOTION_ARRIVAL_EPSILON};
 use super::navmesh_path::resolve_cached_waypoints;
 use super::wander::pick_wander_target;
-use crate::components::{NavPath, NavmeshTile};
+use crate::components::NavPath;
 use byroredux_core::ecs::components::{
     GlobalTransform, Transform, TravelBehavior, TravelState, Traveled,
 };
@@ -231,7 +231,22 @@ struct TravelScratch {
     /// `ANCHOR_RETRY_SECS` rather than every frame: the route is an `O(n)`
     /// FormID resolve plus a door scan.
     unroutable: HashMap<EntityId, f32>,
+    /// Seconds each traveler's walk has been blocked by the character controller.
+    blocked_secs: HashMap<EntityId, f32>,
+    /// Travelers blocked for [`GRID_AFTER_BLOCKED_SECS`] on this destination: they
+    /// route over a pathgrid (Oblivion's walk graph) from then on.
+    on_grid: std::collections::HashSet<EntityId>,
+    /// Travelers that joined `on_grid` this frame, whose cached straight path is
+    /// dropped in Pass 2 so the next tick routes them.
+    regrid: Vec<EntityId>,
 }
+
+/// How long a straight Travel walk may be blocked before the traveler takes a pathgrid
+/// route instead. A grid is points, not a surface, so it cannot tell where the straight
+/// walk fails; the controller can, and a walk that is clear needs no route (the
+/// Imperial Prison's actors, routed over the grid from the start, walked into the stair
+/// they stand on). Long enough that one clipped corner does not trigger it.
+const GRID_AFTER_BLOCKED_SECS: f32 = 1.5;
 
 /// How close to the floor in front of a load door a traveler passes it: the
 /// pose is where the engine places someone coming the other way, so it is
@@ -252,6 +267,8 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
     };
     scratch.anchor_retry.retain(|entity, _| behavior_q.contains(*entity));
     scratch.unroutable.retain(|entity, _| behavior_q.contains(*entity));
+    scratch.blocked_secs.retain(|entity, _| behavior_q.contains(*entity));
+    scratch.on_grid.retain(|entity| behavior_q.contains(*entity));
     scratch.hops.clear();
 
     // ── Pass 1a: resolve destinations (reads only; `resolve_destination`
@@ -271,7 +288,7 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
         };
         let traveled_q = world.query::<Traveled>();
         let state_q = world.query::<TravelState>();
-        let tile_q = world.query::<NavmeshTile>();
+        let mut tile_q = super::navmesh_path::NavGraphs::of(world);
         let nav_path_q = world.query::<NavPath>();
         let walk_speed_q = world.query::<crate::components::WalkSpeed>();
         let hop_q = world.query::<crate::cell_loader::relocated::CrossSpaceHop>();
@@ -295,6 +312,9 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
                     s.destination
                 }
                 None => {
+                    // A new destination: the walk starts straight again.
+                    scratch.on_grid.remove(&entity);
+                    scratch.blocked_secs.remove(&entity);
                     if let Some(wait) = scratch.unroutable.get_mut(&entity) {
                         *wait -= dt.max(0.0);
                         if *wait > 0.0 {
@@ -366,6 +386,9 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
             // Effective goal discarded (`_`): with a `0.0` threshold it's
             // always bit-identical to `destination`, whether reused or
             // freshly computed — see `resolve_cached_waypoints`'s own doc.
+            if let Some(graphs) = tile_q.as_mut() {
+                graphs.use_grids(scratch.on_grid.contains(&entity));
+            }
             let cached = nav_path_q.as_ref().and_then(|q| q.get(entity));
             let (_, waypoints) = resolve_cached_waypoints(
                 cached,
@@ -417,7 +440,7 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
             // Phase 3), falling back to the final destination directly
             // when no resident-tile path was found — unchanged straight-
             // line behavior in that case.
-            let (new_pos, rotation, waypoints) = step_along_waypoints(
+            let (new_pos, rotation, waypoints, blocked) = step_along_waypoints_detailed(
                 p.current,
                 p.rotation,
                 p.waypoints,
@@ -434,6 +457,16 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
             );
             let reach = if p.door_hop { DOOR_HOP_REACH } else { LOCOMOTION_ARRIVAL_EPSILON };
             let arrived = horiz_delta.length_squared() <= reach * reach;
+
+            if blocked && !arrived {
+                let secs = scratch.blocked_secs.entry(p.entity).or_insert(0.0);
+                *secs += dt;
+                if *secs >= GRID_AFTER_BLOCKED_SECS && scratch.on_grid.insert(p.entity) {
+                    scratch.regrid.push(p.entity);
+                }
+            } else {
+                scratch.blocked_secs.remove(&p.entity);
+            }
 
             scratch.decisions.push(TravelDecision {
                 entity: p.entity,
@@ -471,6 +504,9 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
     // ── Pass 2: apply writes (each a scoped single-type lock). The shared
     // Transform + NavPath tail (#5580), then this system's own state. ──
     super::navmesh_path::write_back_walk(world, &mut scratch.decisions);
+    for entity in scratch.regrid.drain(..) {
+        super::navmesh_path::clear_cached_path(world, entity);
+    }
     if !scratch.hops.is_empty()
         && let Some(mut hq) = world.query_mut::<crate::cell_loader::relocated::CrossSpaceHop>() {
             for (entity, hop) in scratch.hops.drain(..) {
@@ -602,6 +638,7 @@ pub(crate) fn travel_system(world: &World, dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::NavmeshTile;
     use crate::systems::navmesh_path::test_tiles::two_triangle_quad_scaled;
     use byroredux_core::ecs::components::FormIdComponent;
     use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};

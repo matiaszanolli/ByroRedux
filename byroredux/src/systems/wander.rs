@@ -76,7 +76,7 @@
 
 use super::locomotion::{advance_stuck_repick, pop_reached_waypoint, step_toward_detailed};
 use super::navmesh_path::resolve_cached_waypoints;
-use crate::components::{NavPath, NavmeshTile, WalkStuckTimer};
+use crate::components::{NavPath, WalkStuckTimer};
 use byroredux_core::ecs::components::{Transform, WanderBehavior, WanderPhase, WanderState};
 use byroredux_core::ecs::{Component, EntityId, World};
 use byroredux_core::math::{Quat, Vec3};
@@ -370,7 +370,7 @@ pub(crate) fn oscillating_walk_system_inner<B: OscillatingWalkProcedure>(
             return;
         };
         let state_q = world.query::<B::State>();
-        let tile_q = world.query::<NavmeshTile>();
+        let tile_q = super::navmesh_path::NavGraphs::of(world);
         let nav_path_q = world.query::<NavPath>();
         let stuck_q = world.query::<WalkStuckTimer>();
         let walk_speed_q = world.query::<crate::components::WalkSpeed>();
@@ -523,6 +523,7 @@ pub(crate) fn wander_system(world: &World, dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::NavmeshTile;
     use crate::systems::navmesh_path::test_tiles::two_triangle_quad_scaled;
 
     #[test]

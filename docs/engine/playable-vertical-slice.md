@@ -1890,9 +1890,16 @@ with the placement (`trigger_volume_from_phantom`, `has_trigger_block`). This zo
 units wide and 534 long across a raised platform at `x ~ 810`.
 
 Observed headless: with the player moved onto that platform once the quest was at 13, stage 14 fired at
-once. It stops at 14: stage 15 is set by Glenroy's `OnPackageDone CGGlenroyToMarkerB`, a package-completion
-event, so the next piece is the AI packages `evp` evaluates for Glenroy and Baurus at stage 14, not a
-trigger. Nothing was watched on screen.
+once. It stops at 14: stage 15 is set by Glenroy's `OnPackageDone CGGlenroyToMarkerB`, whose package is a
+Travel to the player (`PLDT` type 0, target `0x14`, radius 120). The arrival event already fires; Glenroy
+never arrives. He walks straight and stalls against geometry near (24, 133, -330), and Oblivion's walk
+graph (`PGRD`, no `NAVM`) was not read at all. Travel now routes over a cell's pathgrid
+(`systems/pathgrid_path.rs`, `PathGridTile`) once the character controller has blocked its straight walk
+for 1.5 s; routing every walk over the grid from the start sent the party into the stair walls. It still
+stops at 14: the Emperor's party spawn on the prison stairs and hover 100-150 units above the grid's points
+(NPCs have no gravity), and the grid's heights do not match the surfaces they stand on, so the grid route
+from Glenroy's stall point does not reach the platform either. The next piece is why they spawn above the
+stair and hover, not more pathing. Nothing was watched on screen.
 
 **Not modelled yet.** The movies' mute and pause-music flags, Papyrus
 `Game.PlayBink`, the INI start sequences, which audio track a movie plays (PRD `bink-video-playback`,
