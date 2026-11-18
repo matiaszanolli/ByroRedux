@@ -658,7 +658,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v134 -> v135 (M48 GUI-PAGE-003, #6667): `Effect::ShowAppearanceMenu`, Fallout 4's
 /// `ShowRaceMenu` appearance modes, joins the effects a saved fragment continuation serializes.
-pub const FORMAT_MAJOR: u16 = 135;
+///
+/// v135 -> v136 (#7044): `ActorValue` gained the required `stored` layer, what a level-up accumulates into an
+/// actor value (Oblivion's per-level Health gain), so every saved `ActorValues` row carries one more field.
+pub const FORMAT_MAJOR: u16 = 136;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

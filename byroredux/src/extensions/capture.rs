@@ -232,12 +232,12 @@ pub(super) fn capture_entity_projections(
                 .iter()
                 .filter_map(|(form_id, value)| {
                     let actor_value = resolver.resolve(form_id).map(form_ref)?;
-                    // The SDK has no `set_override` slot: fold the #5412
-                    // layer into `base` so `current()` agrees with the
-                    // live `ActorValue::current` and a mod reads back its
-                    // own routed `SetBase` (#5508).
+                    // The SDK has no `set_override` or `stored` slot: fold the #5412
+                    // layer and the #7044 level-up term into `base` so
+                    // `current()` agrees with the live `ActorValue::current`
+                    // and a mod reads back its own routed `SetBase` (#5508).
                     let value = ActorValueState::new(
-                        value.base + value.set_override,
+                        value.base + value.set_override + value.stored,
                         value.permanent_mod,
                         value.temporary_mod,
                         value.damage,

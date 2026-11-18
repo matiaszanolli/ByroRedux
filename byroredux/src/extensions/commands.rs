@@ -498,7 +498,7 @@ pub(super) fn apply_pending_actor_value_writes(world: &World, host: &mut Extensi
             .into_iter()
             .any(|value| !value.is_finite())
                 || actor_values.get_base(actor_value).is_some_and(|value|
-                    [value.base, value.set_override, value.permanent_mod, value.temporary_mod, value.damage, value.current()]
+                    [value.base, value.set_override, value.stored, value.permanent_mod, value.temporary_mod, value.damage, value.current()]
                         .into_iter().any(|part| !part.is_finite()))
             {
                 return Err("actor-value command batch produced a non-finite value".to_owned());

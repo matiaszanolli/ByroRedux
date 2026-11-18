@@ -964,8 +964,14 @@ Skyrim-shaped `levelup pool` pick. No Oblivion code adds `0.1 x End` per level t
 (`oblivion_health_gain_per_level` is a tested helper with no caller). So the only Health the engine can
 reach today is the level-1 one, `2 x End`, and the retained record value (45) is simply wrong for it. When
 Oblivion skill-use leveling is built, the per-level gain must be kept apart from the refreshed base (the
-original adds it to the stored term, `0x66c3e0`); the permanent-modifier layer is the candidate, and it also
-carries abilities and gear.
+original adds it to the stored term, `0x66c3e0`). **Storage built (#7044):** `ActorValue::stored`, a layer of its
+own that `undamaged()` adds, and `apply_oblivion_level_up_health` (whole-number tenth of Endurance, rounded
+down) writes it. The permanent-modifier layer was the other candidate; it also carries abilities and gear, so a
+Fortify Health ability coming and going could not tell its share from the gains. Pinned by
+`oblivion_level_up_health_gains_survive_the_refresh_and_an_ability_coming_and_going`. Nothing calls the helper in
+the running game until the level-up exists
+([skill-use leveling PRD](../prd/oblivion-skill-use-leveling.md), Phase 3); a `FORMAT_MAJOR` bump (v136)
+rejects older saves, per the format's rule (`crates/save/src/snapshot.rs`).
 
 What `Oblivion.exe` does for the player. The base of actor values 8 to 11 is read through one function
 (`0x5ead00`, taken only when the actor is the player singleton at `0xb333c4`): `(stored + derived) x

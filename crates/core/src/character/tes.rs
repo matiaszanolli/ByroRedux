@@ -26,6 +26,7 @@
 //! sum is the true total.
 
 use super::attribute::AttributeSet;
+use crate::ecs::components::ActorValues;
 use super::derived::{DerivedInput, DerivedStatFormula};
 use super::leveling::LevelingModel;
 use super::ruleset::CharacterRuleset;
@@ -215,6 +216,22 @@ pub fn oblivion_health_gain_per_level(endurance: u16) -> f32 {
     0.1 * f32::from(endurance)
 }
 
+/// Apply one Oblivion level-up's Health gain to the player's [`ActorValues`] (#7044): the whole-number part of
+/// [`oblivion_health_gain_per_level`] goes into the Health actor value's [`ActorValue::stored`](crate::ecs::components::ActorValue::stored) layer, the term
+/// the original keeps beside the formula (`(stored + derived) x multiplier`, `Oblivion.exe` `0x5ead00`; the
+/// level-up adds to it at `0x66c3e0`). It is the layer the per-frame derived-stat refresh and the permanent
+/// (ability and gear) modifiers both leave alone, so the gain survives a refresh and a Fortify Health ability
+/// coming and going. Returns the gain applied.
+///
+/// UESP *Oblivion:Health*: "you gain health points equal to a tenth of your endurance, rounded down"
+/// (Endurance 98 gives +9). Which Endurance the executable reads, before or after the level's attribute bonus,
+/// is unverified (the skill-use leveling PRD's V8): the caller passes the value it settles on.
+pub fn apply_oblivion_level_up_health(values: &mut ActorValues, health: u32, endurance: u16) -> f32 {
+    let gain = oblivion_health_gain_per_level(endurance).floor();
+    values.add_stored(health, gain);
+    gain
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,6 +241,20 @@ mod tests {
     // Resolved stand-in AVIF FormIDs.
     const END: u32 = 0x07;
     const INT: u32 = 0x09;
+    const HEALTH: u32 = 0x08;
+
+    /// #7044 — the whole-number tenth of Endurance lands in the stored layer and nowhere else.
+    #[test]
+    fn the_level_up_health_gain_rounds_down_into_the_stored_layer() {
+        let mut values = ActorValues::from_pairs([(HEALTH, 80.0), (END, 98.0)]);
+        // UESP *Oblivion:Health*: Endurance 98 at level-up gives +9, rounded down.
+        assert_eq!(apply_oblivion_level_up_health(&mut values, HEALTH, 98), 9.0);
+        assert_eq!(apply_oblivion_level_up_health(&mut values, HEALTH, 45), 4.0);
+        let health = values.get(HEALTH).unwrap();
+        assert_eq!((health.stored, health.base, health.permanent_mod, health.set_override), (13.0, 80.0, 0.0, 0.0));
+        assert_eq!(values.current(HEALTH), 93.0);
+        assert_eq!(values.stored(HEALTH), 13.0);
+    }
 
     #[test]
     fn health_is_twice_endurance() {

@@ -906,7 +906,8 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // #6944 — refreshed WITH a major bump (v131 -> v132): the new `SpeakingLine` component column.
     // M48 GUI-EVT-001 (#6668) — refreshed WITH a major bump (v133 -> v134): the new
     // `MenuEventRegistrations` resource column.
-    const BASELINE_MAJOR: u16 = 135;
+    // #7044 — refreshed WITH a major bump (v135 -> v136): `ActorValue` gained the required `stored` layer.
+    const BASELINE_MAJOR: u16 = 136;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1349,7 +1350,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // appended (a script frozen on `Message.Show()`'s value). Name-tagged like `MovieEnded` and
     // `DetectedBy` before it: no v135 save carries the variant and no existing variant or field moved.
     // `PapyrusMessageAnswers` is UI state and is not saved (`registry_completeness_tests`).
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x9eda_fc8e_fe40_0ef5;
+    // #7044 — v136: `ActorValue` gained the required `stored` layer (a level-up's accumulated term), refreshed WITH the
+    // major bump above.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xee8b_9b2d_6a58_f83a;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.

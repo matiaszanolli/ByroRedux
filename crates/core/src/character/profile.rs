@@ -1310,6 +1310,44 @@ mod tests {
         assert_eq!(values.current(2), 120.0);
     }
 
+    /// #7044 — the per-level Health gain is its own layer: it survives the per-frame refresh, and a Fortify Health
+    /// ability added and removed leaves it intact.
+    #[test]
+    fn oblivion_level_up_health_gains_survive_the_refresh_and_an_ability_coming_and_going() {
+        use crate::character::apply_oblivion_level_up_health;
+        use crate::ecs::components::ActorValues;
+        let resolve = |name: &str| match name {
+            "Health" => Some(1), "Magicka" => Some(2), "Fatigue" => Some(3), "Intelligence" => Some(4),
+            "Endurance" => Some(5), "Strength" => Some(6), "Willpower" => Some(7), "Agility" => Some(8),
+            _ => None,
+        };
+        let rules = CharacterRulesProfile::OBLIVION.build_ruleset(resolve, |_| None, &[]).unwrap();
+        let mut values = ActorValues::from_pairs([
+            (1, 0.0), (2, 0.0), (3, 0.0), (4, 50.0), (5, 40.0), (6, 50.0), (7, 30.0), (8, 30.0),
+        ]);
+        assert!(rules.refresh_player_only_bases(&mut values, 5));
+        assert_eq!(values.current(1), 80.0, "level 1: 2 x Endurance 40");
+        // Three levels, Endurance raised by +5 each time: gains of floor(4.5), floor(4.5 + 0.5), floor(5.0).
+        let mut gains = 0.0;
+        for endurance in [45.0, 50.0, 55.0] {
+            values.set_base(5, endurance);
+            gains += apply_oblivion_level_up_health(&mut values, 1, endurance as u16);
+            assert!(rules.refresh_player_only_bases(&mut values, 5), "the per-frame refresh runs every tick");
+            assert_eq!(values.current(1), 2.0 * endurance + gains, "base 2 x Endurance plus the accumulated gains");
+        }
+        assert_eq!(gains, 4.0 + 5.0 + 5.0);
+        // A Fortify Health ability adds and removes its share without touching the gains.
+        values.mod_permanent(1, 30.0);
+        assert_eq!(values.current(1), 110.0 + 14.0 + 30.0);
+        values.mod_permanent(1, -30.0);
+        rules.refresh_player_only_bases(&mut values, 5); // nothing to rewrite: the inputs did not move
+        assert_eq!((values.current(1), values.stored(1)), (110.0 + 14.0, 14.0), "the gains stay after the ability goes");
+        // Damage is separate from all of it.
+        values.apply_damage(1, 20.0);
+        rules.refresh_player_only_bases(&mut values, 5);
+        assert_eq!(values.get(1).unwrap().undamaged(), 124.0);
+    }
+
     #[test]
     fn oblivion_profile_resolves_pool_regeneration_inputs() {
         let resolve = |name: &str| match name {
