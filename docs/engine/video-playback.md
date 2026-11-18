@@ -140,13 +140,21 @@ setting whose compiled-in default is empty and whose INI value is
   menu, and what limits its play to one is not decoded (`0x8bfac0` has seven callers,
   three of them in the save-game load region, where the flag is clear). Nothing else
   in either executable names the movie.
-- Both movies are played muted with the music paused and letterboxed; FO3's is also
-  interruptable (its argument is `1`, the one the script flag of that name feeds).
-  FO3's `sMainMenuMovieIntro` (empty by default) is played interruptable, muted,
-  music-paused and **not letterboxed**.
-- The engine plays neither: it has no new-game flow for Oblivion or Fallout 3 to
-  hang them on. Whoever builds one queues `VideoRequest { file: <the setting>,
-  interruptable, mute_audio, pause_music, letterbox, new_game: true }` at its start.
+- FO3's call passes interruptable, mute and pause-music `1` and letterbox `1`
+  (the arguments the script command feeds from its flags). Oblivion's call passes the
+  script command's own argument list with its one flag set to `1`; what Oblivion's
+  other arguments mean was not decoded. FO3's `sMainMenuMovieIntro` (empty by
+  default) is played interruptable, muted, music-paused and **not letterboxed**.
+- The engine queues the movie when the session is a new game (`NewGameStart`: no
+  location named, or `--new-game`, and not restoring a save), right after the start
+  sequence, as an interruptable, muted, music-paused, letterboxed request with
+  `new_game: true` (`new_game_movie`, `VideoPlayer::queue_start_sequence`). Fallout
+  3 and New Vegas share a game kind and an INI, and New Vegas ships no
+  `Fallout INTRO Vsk.bik` (its VCG00 plays `FNVIntro.bik`), so a movie that is not
+  installed is not queued. `--skip-movies` skips it with the start sequence. The
+  engine has no Oblivion or Fallout 3 new-game cell or chargen flow, so the movie
+  plays at the start of a session that begins without a location, not between the
+  new-game menus and a birth sequence.
 
 Neither is played at launch.
 

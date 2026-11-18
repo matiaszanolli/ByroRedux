@@ -207,8 +207,9 @@ run's live state.
   every game's compiled-in defaults: §3). A user INI is not read
   (deviation 6). Fallout 3's `sIntroMovie` and Oblivion's `OblivionIntro.bik`
   (the `sOblivionIntro` setting) play at a new game, read out of the executables
-  (#6897, [video-playback.md](../engine/video-playback.md) §5). The engine has no
-  new-game flow for those two games yet, so neither plays.
+  (#6897, [video-playback.md](../engine/video-playback.md) §5). The engine queues
+  them after the start sequence on a new-game session (`NewGameStart`), when the
+  file is installed.
 
 - **BIK-REQ-005.** Engine-started movies MUST play where the original
   plays them, and a launch flag MUST skip every one of them for development
@@ -498,4 +499,4 @@ Fallout 4's too; Starfield's is wired but has no smoke fixture).
 | 10 | 2026-11-14 | Review round 2 folded in: BIK-DEC-004 met by a code fix (a frame that does not decode ends the movie Failed, two tests), stale "Today" claims (BIK-REQ-001/-002, thesis), BIK-PRES-006 narrowed and BIK-PRES-003 restated as the sound clock, start-sequence table and BIK-REQ-004 (executable defaults, Starfield), Fallout 4's mod Bink 1 file, verify items linked to #6896–#6898, provenance to #6907, format and original-engine citations, coverage and A/V-drift metrics withdrawn, §6 rows 4–8, scenarios 1, 3, 4 named to their gates, numbers moved to the crate READMEs, document map | claude: revise |
 | 11 | 2026-11-14 | Owner-directed: the decoders' provenance risk is accepted (#6907): Q1 and Q2 record it, BIK-NG-001 says a disassembly-derived open decoder is not closed, thesis and document map updated | — |
 | 12 | 2026-11-14 | ACTIVE → SHIPPED: Phases 0–3 closed (#6856–#6859, #6855); the decode rate is published in ROADMAP's compatibility matrix, Video column; the provenance risk is accepted (#6907); verify items #6896–#6898 stay open | — |
-| 13 | 2026-11-17 | Verify items #6896–#6898 settled from the executables (track = the language's ID, `en` 1; `sIntroMovie` and `sOblivionIntro` play at a new game; the letterbox flag clear fills the window; the original opens only files on disk); BIK-DEC-002, BIK-REQ-004, BIK-PRES-001, §6 rows 1, 5, 8 and the start-sequence table updated; the engine plays the English track by ID | — |
+| 13 | 2026-11-17 | Verify items #6896–#6898 settled from the executables (track = the language's ID, `en` 1; `sIntroMovie` and `sOblivionIntro` play at a new game; the letterbox flag clear fills the window; the original opens only files on disk); BIK-DEC-002, BIK-REQ-004, BIK-PRES-001, §6 rows 1, 5, 8 and the start-sequence table updated; the engine plays the English track by ID and queues the new-game movie of Oblivion and Fallout 3 after the start sequence on a new-game session | — |
