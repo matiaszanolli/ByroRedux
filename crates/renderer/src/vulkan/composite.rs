@@ -36,7 +36,6 @@ use super::image::{GpuImage, GpuImageDesc};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::upscaling::FrameExtentSet;
-use super::GpuUploadCtx;
 use crate::vulkan::descriptors::clamp_sampler;
 use crate::vulkan::descriptors::layout_binding;
 use anyhow::{Context, Result};
@@ -606,13 +605,13 @@ impl CompositePipeline {
     /// at write time — callers must pass `indirect_is_general=true` when
     /// wiring up the SVGF output.
     pub fn new(
-        upload: GpuUploadCtx<'_>,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
         pipeline_cache: vk::PipelineCache,
         inputs: CompositeInputs,
         bindless_layout: vk::DescriptorSetLayout,
         extents: FrameExtentSet,
     ) -> Result<Self> {
-        let GpuUploadCtx { device, allocator, .. } = upload;
         let result = Self::new_inner(
             device,
             allocator,
@@ -620,13 +619,7 @@ impl CompositePipeline {
             inputs,
             bindless_layout,
             extents,
-        )
-        .and_then(|mut composite| {
-            try_or_cleanup!(
-                composite, device, allocator, composite.initialize_far_sun_layouts(upload)
-            );
-            Ok(composite)
-        });
+        );
         if let Err(ref e) = result {
             log::debug!("Composite pipeline creation failed at: {e}");
         }
@@ -809,36 +802,6 @@ impl CompositePipeline {
             )?);
         }
         Ok(())
-    }
-
-    fn initialize_far_sun_layouts(&mut self, upload: GpuUploadCtx<'_>) -> Result<()> {
-        let barriers: Vec<_> = self.far_sun_occlusion
-            .iter()
-            .map(|target| image_barrier_undef_to_general(target.image))
-            .collect();
-        // SAFETY: the targets have just been allocated. The upload context
-        // uses the same device and a queue that can run graphics and compute.
-        let result = unsafe {
-            super::texture::submit_initial_layouts(
-                upload.device,
-                upload.queue,
-                upload.command_pool,
-                &barriers,
-                vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
-            )
-        };
-        if let Err(ref error) = result {
-            super::texture::release_after_failed_submit(
-                std::mem::take(&mut self.far_sun_occlusion),
-                error,
-                |targets| {
-                    for mut target in targets {
-                        target.destroy(upload.device, upload.allocator);
-                    }
-                },
-            );
-        }
-        result
     }
 
     fn write_far_sun_descriptors(
@@ -1369,7 +1332,7 @@ impl CompositePipeline {
         Ok(())
     }
 
-    /// Record the exterior sun occlusion pass. The targets stay in GENERAL.
+    /// Record the exterior sun occlusion pass or establish the idle output layout.
     ///
     /// # Safety
     ///
@@ -1381,42 +1344,54 @@ impl CompositePipeline {
         frame: usize,
         projection: Option<FarSunProjection>,
     ) {
-        let Some(projection) = projection else { return };
         let image = self.far_sun_occlusion[frame].image;
-        // SAFETY: this slot's prior use is fenced. The dispatch overwrites
-        // the target and the main pass publishes its depth and transparency.
+        // SAFETY: this frame slot is fenced before recording. Discard the
+        // old contents and establish the layout even when composite will
+        // skip reading the inactive term. The main pass's outgoing
+        // dependency covers the depth and transparency samples.
         unsafe {
-            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.far_sun_pipeline);
-            device.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::COMPUTE,
-                self.pipeline_layout,
-                0,
-                &[self.descriptor_sets[frame]],
-                &[],
-            );
-            device.cmd_push_constants(
-                cmd,
-                self.pipeline_layout,
-                vk::ShaderStageFlags::COMPUTE,
-                0,
-                super::buffer::byte_view(std::slice::from_ref(&projection)),
-            );
-            device.cmd_dispatch(
-                cmd,
-                self.render_extent.width.div_ceil(crate::shader_constants::WORKGROUP_X),
-                self.render_extent.height.div_ceil(crate::shader_constants::WORKGROUP_Y),
-                1,
-            );
             device.cmd_pipeline_barrier(
                 cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
                 vk::DependencyFlags::empty(),
                 &[],
                 &[],
-                &[image_barrier_general_write_to_read(image)],
+                &[image_barrier_undef_to_general(image)],
             );
+            if let Some(projection) = projection {
+                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.far_sun_pipeline);
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::COMPUTE,
+                    self.pipeline_layout,
+                    0,
+                    &[self.descriptor_sets[frame]],
+                    &[],
+                );
+                device.cmd_push_constants(
+                    cmd,
+                    self.pipeline_layout,
+                    vk::ShaderStageFlags::COMPUTE,
+                    0,
+                    super::buffer::byte_view(std::slice::from_ref(&projection)),
+                );
+                device.cmd_dispatch(
+                    cmd,
+                    self.render_extent.width.div_ceil(crate::shader_constants::WORKGROUP_X),
+                    self.render_extent.height.div_ceil(crate::shader_constants::WORKGROUP_Y),
+                    1,
+                );
+                device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::PipelineStageFlags::FRAGMENT_SHADER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[image_barrier_general_write_to_read(image)],
+                );
+            }
         }
     }
 
@@ -1519,11 +1494,11 @@ impl CompositePipeline {
     /// would be redundant.
     pub fn recreate_on_resize(
         &mut self,
-        upload: GpuUploadCtx<'_>,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
         inputs: CompositeInputs,
         extents: FrameExtentSet,
     ) -> Result<()> {
-        let GpuUploadCtx { device, allocator, .. } = upload;
         let CompositeInputs {
             indirect_views,
             indirect_is_general,
@@ -1599,7 +1574,6 @@ impl CompositePipeline {
                 )?);
             }
             self.create_far_sun_targets(device, allocator)?;
-            self.initialize_far_sun_layouts(upload)?;
 
             // Rewrite descriptor sets to point at the new HDR, indirect,
             // albedo views, and updated depth view. Params UBO buffers are unchanged.

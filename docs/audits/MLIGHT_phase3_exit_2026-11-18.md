@@ -53,10 +53,13 @@ partial edge tiles included and the 0.01 margin unchanged.
 The preserved entry executable reproduced all five archived entry
 captures with zero tiles outside tolerance. The Phase 2 exit captures,
 recorded after `a89ca367e`, already differ from those entry anchors.
-Comparing the saved seed-0 images with the entry's frozen two-seed
-floor gives 331 / 545 tiles outside tolerance in Prospector,
+Comparing the saved Phase 3 entry seed-0 images against the Phase 2
+exit's two-seed floor gives 331 / 545 tiles outside tolerance in Prospector,
 609 / 920 in Whiterun and 384 / 851 in Dugout. Cornell and MedTek
-both have zero. This comparison uses the undeclared 0.01 margin.
+both have zero. This comparison uses the undeclared 0.01 margin. A
+fresh release build at `a89ca367e` reproduced the three differing
+Phase 2 exit captures with zero tiles outside their own two-seed
+tolerance.
 [Phase 2 capture metadata](MLIGHT_phase2_exit_metadata.txt)
 
 The November 6 `a33220cf4` capture retained RLT-SHD-012 and reverted
@@ -71,6 +74,27 @@ of `indirect_only` drops from 0.198224893 to 0.197415496. Repeating
 the direct captures with direct shadows disabled gives 0.051386428
 and 0.044272247, a 13.84% decrease. This locates the broad early
 darkening in the unshadowed direct term.
+
+The unshadowed Whiterun capture at `b8233b4b2` is pixel-identical
+to the entry capture. Its child `a290c755f` (#6657) first shows
+the lower value. That commit creates a scratch weapon subject before
+scene loading, shifting entity IDs by one. Procedural light animation
+uses those IDs for both the phase offset and the flicker noise. An
+isolated rebuild of `a290c755f` retained the scratch entity and used the
+previous IDs only to compute the light-animation phase and noise. With
+direct shadows disabled, that build matches the parent RGB capture
+exactly across all 921,600 pixels in each of the three scenes.
+
+| Scene | Parent mean luminance | Weapon-perk commit mean luminance | Flicker control mean luminance |
+|---|---:|---:|---:|
+| Prospector | 0.010457827 | 0.010644030 | 0.010457827 |
+| Whiterun | 0.051386428 | 0.044272250 | 0.051386428 |
+| Dugout | 0.154482736 | 0.160552724 | 0.154482736 |
+
+This experiment attributes the early direct-light shifts at the
+weapon-perk commit. The pre-entry drift and the remaining full-phase
+differences still need disposition under RLT-OPS-004.
+[Phase and noise sources](../../byroredux/src/systems/light_anim.rs)
 
 | Scene | Far-sun change vs. immediate control | Pre-far-sun vs. Phase 3 entry | Final vs. Phase 3 entry |
 |---|---:|---:|---:|
@@ -108,6 +132,29 @@ A trial that cached blocker widths in workgroup memory raised the
 Prospector `shadow_filter` median from 0.538 to 0.897 ms and the wall
 median from 10.10 to 10.37 ms in three interleaved runs. The final
 working tree uses the original blocker-width reads.
+
+A single-sample trial that factored the Gaussian and replaced the
+normal-weight power with multiplications increased the Prospector
+`shadow_filter` bracket from 0.544 to 0.901 ms. Moving the blocker
+search's per-tap bounds checks into the loop limits raised the median
+bracket from 0.544 to 0.582 ms over three interleaved runs. The latter
+trial's wall increase against the entry was 0.620 ms, above its 0.488 ms
+allowance. The worktree keeps the original filter.
+
+A second timing run interleaved the entry, the original far-sun
+candidate, and a trial that moved the far-sun image layout transitions
+to initialization and swapchain recreation. Each row has three
+300-frame pinned-tier TAA samples per build.
+
+| Scene | Entry (ms) | Original (ms) | One-time transitions (ms) | Original / trial increase (ms) | Q8 allowance (ms) |
+|---|---:|---:|---:|---:|---:|
+| Prospector | 9.63 | 10.40 | 10.35 | +0.770 / +0.720 | 0.488 |
+| Whiterun | 13.91 | 14.44 | 14.76 | +0.530 / +0.850 | 0.681 |
+| Dugout | 15.70 | 17.02 | 16.59 | +1.320 / +0.890 | 0.776 |
+
+The layout trial was reverted. Prospector and Dugout still exceed their
+Q8 allowance with the original candidate. Whiterun passes in this rerun
+and exceeds its allowance in the original matrix.
 
 The [far-sun-only retest](MLIGHT_phase3_far_sun_cost_2026-11-18.tsv)
 uses the pre-far-sun A3 release candidate as its control. The same three
