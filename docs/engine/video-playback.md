@@ -146,15 +146,31 @@ setting whose compiled-in default is empty and whose INI value is
   other arguments mean was not decoded. FO3's `sMainMenuMovieIntro` (empty by
   default) is played interruptable, muted, music-paused and **not letterboxed**.
 - The engine queues the movie when the session is a new game (`NewGameStart`: no
-  location named, or `--new-game`, and not restoring a save), right after the start
+  location named, or `--new-game`, and not restoring a save; in practice `--new-game`,
+  because `--esm` alone is refused without `--cell` or `--grid`), right after the start
   sequence, as an interruptable, muted, music-paused, letterboxed request with
   `new_game: true` (`new_game_movie`, `VideoPlayer::queue_start_sequence`). Fallout
   3 and New Vegas share a game kind and an INI, and New Vegas ships no
   `Fallout INTRO Vsk.bik` (its VCG00 plays `FNVIntro.bik`), so a movie that is not
   installed is not queued. `--skip-movies` skips it with the start sequence. The
-  engine has no Oblivion or Fallout 3 new-game cell or chargen flow, so the movie
-  plays at the start of a session that begins without a location, not between the
-  new-game menus and a birth sequence.
+  engine has no Oblivion or Fallout 3 new-game cell or chargen flow, and their
+  profiles name no new-game target, so the run is `--new-game` with an explicit
+  `--cell`; the movie plays when the world is up, not between the new-game menus
+  and a birth sequence.
+- **Live run (2026-11-17, release build, headless Xvfb, `--new-game --start-movies
+  --bench-frames 30 --bench-hold`, one engine at a time).** Oblivion, with
+  `--cell AbandonedMine`: the log line `video: start sequence [five logos],
+  new-game movie Some("OblivionIntro.bik")`, then the five start movies each
+  `Played { ended_early: false }` (300, 180, 299, 122 and 418 frames), then
+  `OblivionIntro.bik` (1280x720, 115.5 s, one audio track, soundtrack=yes,
+  `new_game=true`) `Played { ended_early: false }` after 3461 frames. Fallout 3,
+  with `--cell MegatonMoriartysSaloon`: `video: start sequence [], new-game movie
+  Some("Fallout INTRO Vsk.bik")`, then that movie (1280x720, 243.5 s, one audio
+  track, soundtrack=yes, `new_game=true`) `Played { ended_early: false }` after
+  7299 frames. Not exercised: the skip flags, a New Vegas launch (its missing file
+  is filtered by `movie_path`), and a window with a hardware display (the run's
+  frames were not looked at; the played-to-the-last-frame outcome comes from the
+  player's log, not a screenshot).
 
 Neither is played at launch.
 
