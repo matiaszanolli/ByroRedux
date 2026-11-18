@@ -40,8 +40,7 @@ use byroredux_ui::path::PATH_CALLBACKS;
 use byroredux_ui::{PathOp, PathOutcome, RenderPacing, ScaleformHostBridge, ScaleformValue, UiLayer, UiManager, WhenAbsent};
 
 use crate::asset_provider::Archive;
-use crate::hud::{fraction, HudBackend, HudControl, HUD_REFRESH_INTERVAL};
-use crate::inventory::PlayerVitals;
+use crate::hud::{bar_reading, publish_readings, shown_bits, BarReading, HudBackend, HudControl, HUD_REFRESH_INTERVAL};
 
 /// #4717 — how often the always-on HUD may render and read back its Ruffle
 /// target. A live movie asks for a render at its own frame rate (24–30 Hz)
@@ -166,6 +165,27 @@ impl ScaleformGame {
                 PathOp::Set("RightMeters_mc.ActionPointMeter_mc.MeterBar_mc.Percent".into(), number(fractions[1])),
             ],
         }
+    }
+
+    /// The operations that show or hide each driven bar's widget (#7043): hidden for a pool the player
+    /// does not carry, shown again when it appears. The same widgets [`Self::meter_feeds`] drives, through
+    /// the property each movie's runtime owns: `visible` (AVM2, Fallout 4) and `_visible` (AVM1, Skyrim).
+    /// Skyrim's `HealthMeterLeft` is the left half of the health meter; a vanilla Skyrim player carries all
+    /// three pools, so this channel only ever writes `true` there.
+    fn bar_visibility(self, shown: [bool; 3]) -> Vec<PathOp> {
+        let widgets: &[&str] = match self {
+            Self::Skyrim => &[
+                "_root.HUDMovieBaseInstance.HealthMeterLeft._visible",
+                "_root.HUDMovieBaseInstance.MagickaMeter._visible",
+                "_root.HUDMovieBaseInstance.StaminaMeter._visible",
+            ],
+            Self::Fallout4 => &["LeftMeters_mc.HPMeter_mc.visible", "RightMeters_mc.ActionPointMeter_mc.visible"],
+        };
+        widgets
+            .iter()
+            .zip(shown)
+            .map(|(path, shown)| PathOp::Set((*path).to_owned(), ScaleformValue::Bool(shown)))
+            .collect()
     }
 
     /// The operations that stand in, once, for native writes the engine does not model yet, so
@@ -618,16 +638,13 @@ impl ScaleformHudDriver {
 
         // The shared snapshot the response handlers read. #4675 — editor
         // ids resolve through the per-load `PlayerVitals` table.
-        let vitals = world.try_resource::<PlayerVitals>();
         let bars = self.game.bars();
-        let mut fractions = [1.0f32; 3];
+        let mut readings = [BarReading { fraction: 1.0, shown: true }; 3];
         for (i, bar) in bars.iter().enumerate() {
-            let key = vitals.as_ref().and_then(|v| v.resolved(bar.av));
-            fractions[i] = fraction(world, key, control.bars[i]);
+            readings[i] = bar_reading(world, Some(bar.av), control.bars[i]);
         }
-        if let Some(mut control_mut) = world.try_resource_mut::<HudControl>() {
-            control_mut.live = fractions.map(Some);
-        }
+        publish_readings(world, &readings);
+        let fractions = readings.map(|r| r.fraction);
         let heading = control.heading.unwrap_or_else(|| {
             f32::atan2(cam_forward[0], -cam_forward[2])
                 .to_degrees()
@@ -648,6 +665,7 @@ impl ScaleformHudDriver {
             (heading * 10.0) as i32,
             u8::from(control.visible),
         ));
+        let hash = crate::hud::mix_signature(hash, shown_bits(&readings));
         let changed = hash != self.last_signature;
         let cadence_ok = self.last_push.elapsed() >= HUD_REFRESH_INTERVAL;
         if changed && cadence_ok && control.visible {
@@ -662,6 +680,7 @@ impl ScaleformHudDriver {
                     .game
                     .meter_feeds(fractions, heading)
                     .into_iter()
+                    .chain(self.game.bar_visibility(readings.map(|r| r.shown)))
                     .map(|op| {
                         let path = op.path().to_owned();
                         let outcome = layer.path_op(op, WhenAbsent::Queue);
@@ -752,6 +771,7 @@ impl ScaleformHudDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inventory::PlayerVitals;
     use byroredux_ui::ScaleformProfile;
 
     fn driver() -> ScaleformHudDriver {
@@ -767,6 +787,57 @@ mod tests {
             compass: None,
             unfed_hidden: false,
         }
+    }
+
+    /// #7043 — the bar-visibility channel names each driven bar's own widget, hides it for a pool the
+    /// player does not carry and shows it again, one write per bar and in `hud.values` order.
+    #[test]
+    fn bar_visibility_writes_each_bars_widget_in_order() {
+        let ops = |game: ScaleformGame, shown| {
+            game.bar_visibility(shown)
+                .into_iter()
+                .map(|op| match op {
+                    PathOp::Set(path, ScaleformValue::Bool(visible)) => (path, visible),
+                    other => panic!("a bar's visibility is a boolean property write, got {other:?}"),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ops(ScaleformGame::Fallout4, [true, false, true]),
+            [
+                ("LeftMeters_mc.HPMeter_mc.visible".to_owned(), true),
+                ("RightMeters_mc.ActionPointMeter_mc.visible".to_owned(), false),
+            ],
+            "FO4 drives two bars; the third slot is unused"
+        );
+        let skyrim = ops(ScaleformGame::Skyrim, [false, true, false]);
+        assert_eq!(skyrim.len(), 3);
+        assert_eq!(skyrim.iter().map(|(_, visible)| *visible).collect::<Vec<_>>(), [false, true, false]);
+        assert!(skyrim.iter().all(|(path, _)| path.starts_with("_root.HUDMovieBaseInstance.") && path.ends_with("._visible")));
+        // Every widget it addresses is one the meter feed already drives, so a bar the feed moves is the
+        // bar the channel hides.
+        let fed = ScaleformGame::Skyrim.meter_feeds([0.0; 3], 0.0);
+        for (path, _) in &skyrim {
+            let object = path.trim_end_matches("._visible");
+            assert!(fed.iter().any(|op| op.path() == format!("{object}.SetPercent")), "{object} is not fed");
+        }
+    }
+
+    /// #7043 — a tick publishes which bars are shown, `HudControl::shown`, for `hud.status`: a player
+    /// carrying no pool the game authors reads hidden, one carrying it reads shown.
+    #[test]
+    fn tick_publishes_which_bars_are_shown() {
+        let mut world = World::new();
+        world.insert_resource(HudControl::default());
+        world.insert_resource(PlayerVitals::resolving(&[("Health", 1), ("Magicka", 2)]));
+        let player = world.spawn();
+        let mut values = byroredux_core::ecs::components::ActorValues::new();
+        values.set_base(1, 100.0);
+        world.insert(player, values);
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        driver().tick(&world, None, [0.0, 0.0, -1.0]);
+        let control = world.resource::<HudControl>();
+        assert_eq!(control.shown, [true, false, false], "Health carried; Magicka resolves but is not carried; Stamina is not authored");
     }
 
     /// `tick` reads `HudControl` and writes its `live` bars back in the same

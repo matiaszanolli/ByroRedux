@@ -67,6 +67,9 @@ pub(crate) enum HudStyle {
     /// pairs, per the vanilla XML comments' HUD contract.
     Authored {
         bars: [(&'static str, &'static str); 3],
+        /// Each bar's root tile: the `_empty` ribbon whose `full` fill and `edge` slider are its
+        /// children, so one `visible` override hides the whole bar (`visible` propagates, #7043).
+        bar_roots: [&'static str; 3],
         compass: (&'static str, &'static str),
         mode: (&'static str, &'static str),
     },
@@ -164,6 +167,7 @@ impl HudGameProfile {
                     ("hudmain_magic_full", "user0"),
                     ("hudmain_fatigue_full", "user0"),
                 ],
+                bar_roots: ["hudmain_health_empty", "hudmain_magic_empty", "hudmain_fatigue_empty"],
                 compass: ("hudmain_compass_window", "user0"),
                 mode: ("HUDMainMenu", "user3"),
             },
@@ -307,6 +311,9 @@ pub struct HudControl {
     /// `hud.status` reports the LIVE value instead of a constant
     /// "1.00 (auto)" no gate could read.
     pub live: [Option<f32>; 3],
+    /// #7043 — whether each bar is drawn: `false` for a pool the player does not carry, so the driver
+    /// hides the bar. Written with `live`; `hud.status` reports a hidden bar distinctly.
+    pub shown: [bool; 3],
 }
 
 impl byroredux_core::ecs::Resource for HudControl {}
@@ -321,6 +328,7 @@ impl Default for HudControl {
             bar_labels: ["health", "magicka", "fatigue"],
             heading: None,
             live: [None; 3],
+            shown: [true; 3],
         }
     }
 }
@@ -678,7 +686,8 @@ impl MenuXmlHud {
         camera_forward: [f32; 3],
         control: &HudControl,
     ) -> Option<&[u8]> {
-        let fractions = bar_fractions(world, control, &self.profile);
+        let readings = bar_readings(world, control, &self.profile);
+        let fractions = readings.map(|r| r.fraction);
         let heading = control.heading.unwrap_or_else(|| {
             f32::atan2(camera_forward[0], -camera_forward[2])
                 .to_degrees()
@@ -695,6 +704,7 @@ impl MenuXmlHud {
             (heading * 10.0) as i32,
             u8::from(control.visible),
         ));
+        let hash = mix_signature(hash, shown_bits(&readings));
         let hash = mix_signature(
             hash,
             sneak.as_ref().map_or(u64::MAX, |view| view.state as u64) ^ (u64::from(sneak_alpha) << 8),
@@ -721,22 +731,13 @@ impl MenuXmlHud {
             u8::from(control.visible),
         );
 
+        drive_bars(&mut self.renderer, self.profile.style, &readings);
         match self.profile.style {
-            HudStyle::Authored {
-                bars,
-                compass,
-                mode,
-            } => {
+            HudStyle::Authored { compass, mode, .. } => {
                 self.renderer.set_override(mode.0, mode.1, 1.0);
-                for ((tile, trait_name), fraction) in bars.iter().zip(fractions) {
-                    self.renderer.set_override(tile, trait_name, fraction);
-                }
-                self.renderer
-                    .set_override(compass.0, compass.1, heading);
+                self.renderer.set_override(compass.0, compass.1, heading);
             }
             HudStyle::Assembled { .. } => {
-                self.renderer.set_override("hp_meter", "_Value", fractions[0]);
-                self.renderer.set_override("ap_meter", "_Value", fractions[1]);
                 if self.px_per_degree > 0.0 {
                     self.renderer
                         .set_override("hud_compass", "cropx", heading * self.px_per_degree);
@@ -882,6 +883,31 @@ fn install_sneak_element(renderer: &mut MenuRenderer, assets: &HudAssets, sneak:
 /// carry no x/y, so the engine places them, [`place_engine_anchored`]).
 const ASSEMBLED_METERS: [&str; 2] = ["hp_meter", "ap_meter"];
 
+/// Push the bars' readings into the HUD document: each fill's value, and its tile's `visible` (#7043:
+/// a pool the player does not carry is hidden, and drawn again when it appears).
+fn drive_bars(renderer: &mut MenuRenderer, style: HudStyle, readings: &[BarReading; 3]) {
+    match style {
+        HudStyle::Authored { bars, bar_roots, .. } => {
+            for (((tile, trait_name), root), reading) in bars.iter().zip(bar_roots).zip(readings) {
+                renderer.set_override(tile, trait_name, reading.fraction);
+                renderer.set_override(root, "visible", visible_trait(reading.shown));
+            }
+        }
+        HudStyle::Assembled { .. } => {
+            for (meter, reading) in ASSEMBLED_METERS.iter().zip(readings) {
+                renderer.set_override(meter, "_Value", reading.fraction);
+                renderer.set_override(meter, "visible", visible_trait(reading.shown));
+            }
+        }
+    }
+}
+
+/// The `visible` trait value for a bar: 2.0 is the shown value the launch already writes for the grafted
+/// meters (a truthy number), 0.0 hides the tile and its subtree (#7043).
+fn visible_trait(shown: bool) -> f32 {
+    if shown { 2.0 } else { 0.0 }
+}
+
 /// The engine-side placements the source engine performed in C++, against the screen extent:
 /// the assembled meters at the bottom corners, the sneak text top centre (the XML authors only the
 /// meter's 356 × 34 size, and a child's x / y are screen positions unless it copies its parent's).
@@ -939,69 +965,88 @@ fn drive_sneak_element(
     }
 }
 
-/// Bar fractions for the HUD: pinned debug values win, then the player's
-/// own actor values, else full bars.
+/// Bar readings for the HUD: pinned debug values win, then the player's own actor values, else full
+/// bars (and a hidden one for a pool the player does not carry, #7043).
 ///
-/// Every profile resolves its bar editor ids through the per-load
-/// `PlayerVitals` table and reads `PlayerEntity`'s `ActorValues` only
-/// (#4675) — no literal FormIDs, no scan of other actors. Oblivion's
-/// engine-supplied records resolve through the same table. `hud.values`
-/// can still pin the bars for deterministic smokes.
-fn bar_fractions(world: &World, control: &HudControl, profile: &HudGameProfile) -> [f32; 3] {
-    // #4675 — editor ids resolve through the per-load `PlayerVitals`
-    // table (the same resolution `build_player_vitals` performs), never
-    // embedded literal FormIDs.
-    let vitals = world.try_resource::<PlayerVitals>();
-    let mut out = [1.0f32; 3];
+/// Every profile resolves its bar editor ids through the per-load `PlayerVitals` table and reads
+/// `PlayerEntity`'s `ActorValues` only (#4675) — no literal FormIDs, no scan of other actors. Oblivion's
+/// engine-supplied records resolve through the same table. `hud.values` can still pin the bars for
+/// deterministic smokes.
+fn bar_readings(world: &World, control: &HudControl, profile: &HudGameProfile) -> [BarReading; 3] {
+    let mut out = [BarReading { fraction: 1.0, shown: true }; 3];
     for (slot, bar) in profile.bars.iter().enumerate() {
-        let key = bar
-            .av
-            .and_then(|id| vitals.as_ref().and_then(|v| v.resolved(id)));
-        out[slot] = fraction(world, key, control.bars[slot]);
+        out[slot] = bar_reading(world, bar.av, control.bars[slot]);
     }
     // hud.status's auto arm reports these; the driver computes them
     // every frame, before the change-signature skip.
-    if let Some(mut control_mut) = world.try_resource_mut::<HudControl>() {
-        control_mut.live = out.map(Some);
-    }
+    publish_readings(world, &out);
     out
 }
 
-/// One bar's fraction: pinned debug value wins, then the player's actor
-/// value for `av` (a resolved AVIF FormID): current over its undamaged maximum, empty when the player
-/// carries the pool with no maximum, and full when it carries no such pool or `av` is unresolved. Shared with the
-/// Scaleform HUD driver, which uses the same `PlayerVitals` resolution and
-/// pin semantics.
-pub(crate) fn fraction(world: &World, av: Option<u32>, pinned: Option<f32>) -> f32 {
-    pinned.map(|v| v.clamp(0.0, 1.0)).unwrap_or_else(|| {
-        let av = match av {
-            Some(av) => av,
-            None => return 1.0,
-        };
-        // #4675 — the PLAYER's values only. The old "first stamped actor"
-        // fallback scanned the whole `ActorValues` storage in insertion
-        // (swap-remove perturbed) order, so the bar could track any NPC
-        // that happened to carry the key — and it ran per bar per frame
-        // before the change-signature check. `PlayerEntity` is the
-        // contract the native vitals path already uses.
-        let Some(player) = PlayerEntity::get(world) else {
-            return 1.0;
-        };
-        let Some(values) = world.get::<ActorValues>(player) else {
-            return 1.0;
-        };
-        let Some(entry) = values.get(av) else {
-            return 1.0;
-        };
-        let max = entry.undamaged();
-        if max > 0.0 {
-            (entry.current() / max).clamp(0.0, 1.0)
-        } else {
-            // A pool the actor carries with no maximum has nothing to show: empty, not full (#7041). A pool
-            // it does not carry at all (no entry, or no resolved key) stays at the "no information" full bar.
-            0.0
-        }
-    })
+/// Publish the frame's readings to `HudControl` for `hud.status` (both drivers).
+pub(crate) fn publish_readings(world: &World, readings: &[BarReading; 3]) {
+    if let Some(mut control) = world.try_resource_mut::<HudControl>() {
+        control.live = readings.map(|r| Some(r.fraction));
+        control.shown = readings.map(|r| r.shown);
+    }
+}
+
+/// The readings' `shown` flags as signature bits, so a bar that appears or disappears re-renders.
+pub(crate) fn shown_bits(readings: &[BarReading; 3]) -> u64 {
+    readings.iter().enumerate().fold(0, |bits, (i, r)| bits | (u64::from(r.shown) << i))
+}
+
+/// One bar's reading: how full it is, and whether the bar is drawn at all (#7043).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct BarReading {
+    pub(crate) fraction: f32,
+    /// `false` when the player demonstrably carries no such pool: the drivers hide the bar instead
+    /// of drawing it full. Pinned values, a missing player and a missing resolution table are "no
+    /// information" and stay shown.
+    pub(crate) shown: bool,
+}
+
+/// One bar's reading: pinned debug value wins, then the player's actor value for the bar's canonical
+/// AVIF editor id (resolved through the per-load `PlayerVitals` table, #4675): current over its
+/// undamaged maximum, empty when the player carries the pool with no maximum (#7041).
+///
+/// A pool the player does not carry reads `shown: false` (#7043): the game authors no such AVIF
+/// (`PlayerVitals` is built and does not resolve the id), or the player's `ActorValues` has no entry for
+/// it. Before the world can say so — no `PlayerVitals`, no player, no `ActorValues`, or a bar with no
+/// source wired (`None`) — the bar stays shown and full, the "no information" reading. Shared with the
+/// Scaleform HUD driver, which uses the same resolution and pin semantics.
+pub(crate) fn bar_reading(world: &World, editor_id: Option<&str>, pinned: Option<f32>) -> BarReading {
+    const NO_INFORMATION: BarReading = BarReading { fraction: 1.0, shown: true };
+    if let Some(pinned) = pinned {
+        return BarReading { fraction: pinned.clamp(0.0, 1.0), shown: true };
+    }
+    let Some(editor_id) = editor_id else {
+        return NO_INFORMATION;
+    };
+    let Some(vitals) = world.try_resource::<PlayerVitals>() else {
+        return NO_INFORMATION;
+    };
+    // #4675 — the PLAYER's values only. The old "first stamped actor" fallback scanned the whole
+    // `ActorValues` storage in insertion (swap-remove perturbed) order, so the bar could track any NPC
+    // that happened to carry the key — and it ran per bar per frame before the change-signature check.
+    // `PlayerEntity` is the contract the native vitals path already uses.
+    let Some(player) = PlayerEntity::get(world) else {
+        return NO_INFORMATION;
+    };
+    let Some(values) = world.get::<ActorValues>(player) else {
+        return NO_INFORMATION;
+    };
+    let Some(entry) = vitals.resolved(editor_id).and_then(|av| values.get(av)) else {
+        return BarReading { fraction: 1.0, shown: false };
+    };
+    let max = entry.undamaged();
+    let fraction = if max > 0.0 {
+        (entry.current() / max).clamp(0.0, 1.0)
+    } else {
+        // Carried with no maximum: nothing to show, so empty rather than full (#7041).
+        0.0
+    };
+    BarReading { fraction, shown: true }
 }
 
 /// FxHash-style combiner for the frame signature — cheap and stable
@@ -1067,6 +1112,67 @@ mod tests {
         a.as_chunks::<4>().0.iter().zip(b.as_chunks::<4>().0).filter(|(x, y)| x != y).count()
     }
 
+    /// #7043 — the vanilla HUD rendered from the installed corpus with bar 0 hidden, shown, and
+    /// hidden then restored: hiding must change pixels (the bar leaves the frame whole, not just its fill),
+    /// and showing it again must restore the frame exactly. `None` when the archives are missing.
+    fn hidden_bar_frames(profile: HudGameProfile, data: std::path::PathBuf) -> Option<[Vec<u8>; 3]> {
+        let assets = HudAssets::open_in(profile, &data)?;
+        let mut renderer =
+            MenuRenderer::load_with_profile(&assets, profile.menu_path, ScreenTraits::new(1280.0, 720.0), profile.menu)
+                .expect("the vanilla HUD loads");
+        match profile.style {
+            HudStyle::Authored { mode, .. } => renderer.set_override(mode.0, mode.1, 1.0),
+            HudStyle::Assembled { containers, meter_prefab, .. } => {
+                for (name, container) in ASSEMBLED_METERS.iter().zip(containers) {
+                    renderer.graft_fragment(&assets, meter_prefab, container, name).expect("the meter grafts");
+                    renderer.set_override(name, "width", 300.0);
+                    renderer.set_override(name, "visible", 2.0);
+                    renderer.set_override(name, "alpha", 255.0);
+                }
+            }
+        }
+        place_engine_anchored(&mut renderer, &profile, 1280.0, 720.0);
+        let shown = BarReading { fraction: 0.5, shown: true };
+        let hidden = BarReading { fraction: 0.5, shown: false };
+        let mut frame = |first: BarReading| {
+            drive_bars(&mut renderer, profile.style, &[first, shown, shown]);
+            renderer.render_frame(&assets).to_vec()
+        };
+        let drawn = frame(shown);
+        let gone = frame(hidden);
+        let restored = frame(shown);
+        Some([drawn, gone, restored])
+    }
+
+    fn assert_a_hidden_bar_leaves_the_frame(frames: [Vec<u8>; 3]) {
+        let [drawn, gone, restored] = frames;
+        let removed = changed_pixels(&drawn, &gone);
+        assert!(removed > 500, "hiding the bar changed only {removed} pixels");
+        assert_eq!(changed_pixels(&drawn, &restored), 0, "showing the bar must restore the frame exactly");
+    }
+
+    #[test]
+    #[ignore = "needs Oblivion game data on disk"]
+    fn the_oblivion_hud_hides_and_restores_a_bar() {
+        let data = byroredux_plugin::esm::test_paths::oblivion_data_dir();
+        let Some(frames) = hidden_bar_frames(HudGameProfile::oblivion(), data) else {
+            eprintln!("skip: Oblivion HUD archives not found");
+            return;
+        };
+        assert_a_hidden_bar_leaves_the_frame(frames);
+    }
+
+    #[test]
+    #[ignore = "needs FNV game data on disk"]
+    fn the_fnv_hud_hides_and_restores_a_bar() {
+        let data = byroredux_plugin::esm::test_paths::fnv_data_dir();
+        let Some(frames) = hidden_bar_frames(HudGameProfile::fallout_nv(), data) else {
+            eprintln!("skip: FNV HUD archives not found");
+            return;
+        };
+        assert_a_hidden_bar_leaves_the_frame(frames);
+    }
+
     #[test]
     #[ignore = "needs FNV game data on disk"]
     fn the_fnv_hud_draws_the_sneak_label() {
@@ -1124,12 +1230,9 @@ mod tests {
         assert_eq!(menu_owned_overlay_skip(false), None);
     }
 
-    /// #4724 — the player-vs-NPC fraction contract: the pinned debug value
-    /// wins (clamped to 0..1); the auto path reads the PLAYER's stamped
-    /// actor value only (#4675 — the pre-fix first-stamped-actor scan made
-    /// a bar track any NPC), and every "no signal" arm degrades to full.
-    #[test]
-    fn fraction_pins_clamps_and_reads_only_the_player() {
+    /// A world whose player carries `Health` 25 of 100 under AVIF id 43, with `PlayerVitals` resolving
+    /// `Health` (43) and `Magicka` (44, never carried), and a bystander NPC carrying the same key.
+    fn vitals_world() -> World {
         let mut world = World::new();
         let player = world.spawn();
         let mut values = ActorValues::new();
@@ -1143,45 +1246,82 @@ mod tests {
         let mut npc_values = ActorValues::new();
         npc_values.set_base(43, 1000.0);
         world.insert(npc, npc_values);
+        world.insert_resource(PlayerVitals::resolving(&[("Health", 43), ("Magicka", 44)]));
+        world
+    }
 
-        // Pinned wins over everything, clamped.
-        assert_eq!(fraction(&world, Some(43), Some(0.75)), 0.75);
-        assert_eq!(fraction(&world, Some(43), Some(9.0)), 1.0);
-        assert_eq!(fraction(&world, Some(43), Some(-3.0)), 0.0);
+    /// #4724 — the player-vs-NPC fraction contract: the pinned debug value
+    /// wins (clamped to 0..1); the auto path reads the PLAYER's stamped
+    /// actor value only (#4675 — the pre-fix first-stamped-actor scan made
+    /// a bar track any NPC), and every "no signal" arm degrades to a shown full bar.
+    #[test]
+    fn bar_reading_pins_clamps_and_reads_only_the_player() {
+        let world = vitals_world();
+        let full = BarReading { fraction: 1.0, shown: true };
+
+        // Pinned wins over everything, clamped, and is always shown.
+        for (pin, want) in [(0.75, 0.75), (9.0, 1.0), (-3.0, 0.0)] {
+            assert_eq!(bar_reading(&world, Some("Health"), Some(pin)), BarReading { fraction: want, shown: true });
+        }
+        assert_eq!(bar_reading(&world, Some("Magicka"), Some(0.5)), BarReading { fraction: 0.5, shown: true });
 
         // Auto reads the player's 0.25, not the bystander's 1.0.
-        assert!((fraction(&world, Some(43), None) - 0.25).abs() < 1e-6);
+        let auto = bar_reading(&world, Some("Health"), None);
+        assert!((auto.fraction - 0.25).abs() < 1e-6 && auto.shown);
 
-        // Every no-signal arm is full.
-        assert_eq!(fraction(&world, None, None), 1.0, "no vitals resource");
+        // Every no-signal arm is a shown full bar.
+        assert_eq!(bar_reading(&world, None, None), full, "a bar with no source wired");
         let mut bare = World::new();
-        assert_eq!(fraction(&bare, Some(43), None), 1.0, "no player stamped");
+        assert_eq!(bar_reading(&bare, Some("Health"), None), full, "no vitals resource");
+        bare.insert_resource(PlayerVitals::resolving(&[("Health", 43)]));
+        assert_eq!(bar_reading(&bare, Some("Health"), None), full, "no player stamped");
         let orphan = bare.spawn();
-        bare.insert(orphan, ActorValues::new());
         bare.insert_resource(PlayerEntity(Some(orphan)));
-        assert_eq!(fraction(&bare, Some(43), None), 1.0, "key not carried");
+        assert_eq!(bar_reading(&bare, Some("Health"), None), full, "the player has no ActorValues yet");
         // #7041 — a pool the player carries with no maximum has nothing to show: empty, and it cannot divide.
         let mut zero = ActorValues::new();
         zero.set_base(43, 0.0);
         bare.insert(orphan, zero);
-        assert_eq!(fraction(&bare, Some(43), None), 0.0, "carried zero-max pool is empty");
+        assert_eq!(
+            bar_reading(&bare, Some("Health"), None),
+            BarReading { fraction: 0.0, shown: true },
+            "a carried zero-max pool is empty, and still drawn"
+        );
+    }
+
+    /// #7043 — a pool the player demonstrably does not carry is hidden, not drawn full: the game
+    /// authors no such AVIF (the table does not resolve the id), or the player has no entry for it. The
+    /// bar comes back when the pool appears, and a pin keeps it shown.
+    #[test]
+    fn a_pool_the_player_does_not_carry_is_hidden_and_returns_when_it_appears() {
+        let mut world = vitals_world();
+        let hidden = BarReading { fraction: 1.0, shown: false };
+        assert_eq!(bar_reading(&world, Some("Magicka"), None), hidden, "resolved, but the player has no entry");
+        assert_eq!(bar_reading(&world, Some("Stamina"), None), hidden, "the game authors no such AVIF");
+        assert_eq!(
+            bar_reading(&world, Some("Magicka"), Some(0.4)),
+            BarReading { fraction: 0.4, shown: true },
+            "a pinned bar is always drawn"
+        );
+        let player = PlayerEntity::get(&world).unwrap();
+        world.get_mut::<ActorValues>(player).unwrap().set_base(44, 50.0);
+        assert_eq!(bar_reading(&world, Some("Magicka"), None), BarReading { fraction: 1.0, shown: true });
     }
 
     /// #5508 — the bar's `max` includes the `set_override` layer: with
     /// base 105 + override 500 and 200 damage the bar reads 405/605, not a
     /// clamped-full 1.0 against a stale 105 max.
     #[test]
-    fn fraction_max_includes_the_set_override_layer() {
-        let mut world = World::new();
-        let player = world.spawn();
+    fn bar_reading_max_includes_the_set_override_layer() {
+        let mut world = vitals_world();
+        let player = PlayerEntity::get(&world).unwrap();
         let mut values = ActorValues::new();
         values.set_base(43, 105.0);
         values.set_override(43, 500.0);
         values.apply_damage(43, 200.0);
         world.insert(player, values);
-        world.insert_resource(PlayerEntity(Some(player)));
         let want = 405.0 / 605.0;
-        assert!((fraction(&world, Some(43), None) - want).abs() < 1e-6);
+        assert!((bar_reading(&world, Some("Health"), None).fraction - want).abs() < 1e-6);
     }
 
     /// #4724 — the change-signature combiner: stable within a process, and
@@ -1207,12 +1347,11 @@ mod tests {
         }
     }
 
-    /// #4724 — the bar table composes `fraction` per profile slot: a pinned
-    /// control value wins per slot, an unpinned one falls through to the
-    /// player's actor values (full when the player carries nothing), and the
-    /// driver publishes what it derived into `HudControl::live`.
+    /// #4724 — the bar table composes `bar_reading` per profile slot: a pinned control value wins per
+    /// slot, an unpinned one falls through to the player's actor values, and the driver publishes what it
+    /// derived into `HudControl::live` / `shown` (#7043: a pool the player does not carry reads hidden).
     #[test]
-    fn bar_fractions_composes_the_profile_table_through_fraction() {
+    fn bar_readings_compose_the_profile_table() {
         let mut world = World::new();
         let player = world.spawn();
         let mut values = ActorValues::new();
@@ -1220,25 +1359,24 @@ mod tests {
         values.apply_damage(7, 90.0);
         world.insert(player, values);
         world.insert_resource(PlayerEntity(Some(player)));
+        // Health resolves to the carried key 7; Magicka resolves but is not carried; Fatigue is not authored.
+        world.insert_resource(PlayerVitals::resolving(&[("Health", 7), ("Magicka", 8)]));
 
         let profile = HudGameProfile::oblivion();
         let control = HudControl {
-            bars: [Some(0.1), None, Some(0.9)],
+            bars: [None, None, Some(0.9)],
             ..HudControl::default()
         };
         world.insert_resource(control);
-        // The player carries no Oblivion bar keys here: slot 0 pinned (0.1),
-        // slot 1 auto → full, slot 2 pinned (0.9).
-        let out = bar_fractions(&world, &control, &profile);
-        assert_eq!(out[0], 0.1);
-        assert!((out[1] - 1.0).abs() < 1e-6);
-        assert_eq!(out[2], 0.9);
-        // The auto arm's derivation is published for hud.status.
-        {
-            let control = world.resource::<HudControl>();
-            assert_eq!(control.live[1], Some(1.0), "the auto slot's derivation");
-            assert_eq!(control.live[0], Some(0.1), "pinned slots publish too");
-        }
+        let out = bar_readings(&world, &control, &profile);
+        assert!((out[0].fraction - 0.1).abs() < 1e-6 && out[0].shown, "carried Health reads 10/100");
+        assert!(!out[1].shown, "Magicka resolves but the player carries none");
+        assert_eq!(out[2], BarReading { fraction: 0.9, shown: true }, "a pinned bar is shown");
+        // The derivation is published for hud.status.
+        let control = world.resource::<HudControl>();
+        assert_eq!(control.shown, [true, false, true]);
+        assert_eq!(control.live[2], Some(0.9), "pinned slots publish too");
+        assert_eq!(shown_bits(&out), 0b101);
     }
 
     #[test]
@@ -1260,8 +1398,8 @@ mod tests {
         world.insert_resource(PlayerEntity(Some(player)));
         let control = HudControl::default();
         world.insert_resource(control);
-        let fractions = bar_fractions(&world, &control, &HudGameProfile::oblivion());
-        assert_eq!(fractions, [0.6, 0.75, 0.5]);
+        let readings = bar_readings(&world, &control, &HudGameProfile::oblivion());
+        assert_eq!(readings.map(|r| (r.fraction, r.shown)), [(0.6, true), (0.75, true), (0.5, true)]);
         assert_eq!(world.resource::<HudControl>().live, [Some(0.6), Some(0.75), Some(0.5)]);
     }
 

@@ -1490,7 +1490,14 @@ signature (bar bits + heading×10 + visibility) plus a 33 ms cadence cap
 keeps a static HUD at zero raster cost. Bar values come from pinned
 console values or the PLAYER's `ActorValues` (resolved through
 `PlayerVitals`, #4675); the playable slice stamps the player from the
-base `NPC_` with the PlayerOnly formulas evaluated (#4674). Console surface: `hud.on`, `hud.off`,
+base `NPC_` with the PlayerOnly formulas evaluated (#4674). A pool the player demonstrably does not
+carry (the game authors no such AVIF, or the player has no entry for it) is **hidden**, not drawn full
+(#7043): `hud::bar_reading` returns a fraction plus `shown`, both drivers act on it, and `hud.status`
+reports it as `hidden (auto)`. The MenuXml driver sets the bar's root tile `visible` trait (Oblivion's
+`hudmain_*_empty` ribbon, which parents the fill and the edge; FO3/FNV's grafted `hp_meter`/`ap_meter`),
+the Scaleform driver writes the meter widget's `visible` (FO4, AVM2) or `_visible` (Skyrim, AVM1) through
+the path service. Before the world can say so (no `PlayerVitals`, no player, no `ActorValues`) and for a
+pinned bar the bar stays shown. Console surface: `hud.on`, `hud.off`,
 `hud.values <f0> <f1> [<f2>]` — one fraction per the game's bars, 2 for FO3 (or `auto`), `hud.heading <deg>`, `hud.status`;
 `tex.dump <bsa-path> <texture-path> [out.png]` (in the `tex.*` family)
 extracts and decodes any archive texture — including menu sets and font

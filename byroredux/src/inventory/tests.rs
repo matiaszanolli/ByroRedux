@@ -2545,12 +2545,12 @@ fn real_master_player_seed_evaluates_the_player_only_rows() {
 /// #4675 — the HUD's bar keys resolve through `PlayerVitals` (real
 /// FNV AVIF ids `AVHealth 0x450` / `AVActionPoints 0x44C` here, not
 /// the fallout.rs test-fixture 0x2C9/0x2D0 the drivers used to
-/// hardcode), and `fraction` reads the PLAYER only: an NPC inserted
+/// hardcode), and `bar_reading` reads the PLAYER only: an NPC inserted
 /// first — whose values the old first-hit storage scan would have
 /// reported — must not move the bar.
 #[test]
 fn hud_bars_resolve_through_player_vitals_and_read_the_player_only() {
-    use crate::hud::fraction;
+    use crate::hud::{bar_reading, BarReading};
     use byroredux_core::character::CharacterRulesProfile;
     use byroredux_core::ecs::components::ActorValues;
     use byroredux_plugin::esm::records::AvifRecord;
@@ -2593,20 +2593,19 @@ fn hud_bars_resolve_through_player_vitals_and_read_the_player_only() {
     world.insert_resource(PlayerEntity(Some(player)));
     world.insert_resource(vitals);
 
-    let health = index.actor_value_form_id("Health").unwrap();
     assert_eq!(
-        fraction(&world, Some(health), None),
+        bar_reading(&world, Some("Health"), None).fraction,
         0.5,
         "the bar must read the player's 50/100, not the first-scanned \
          NPC's 10/10"
     );
-    // Unpinned absent key → full bar; pins still win.
-    assert_eq!(fraction(&world, Some(0x999), None), 1.0);
-    assert_eq!(fraction(&world, None, None), 1.0, "an unresolved bar key reads full");
+    // A key the table does not resolve is a pool the game does not author: hidden (#7043); pins still win.
+    assert!(!bar_reading(&world, Some("Magicka"), None).shown, "FNV authors no Magicka");
+    assert_eq!(bar_reading(&world, None, None), BarReading { fraction: 1.0, shown: true }, "no bar source wired");
     // #7041 — a pool the player carries with no maximum is empty, not full (both HUD drivers share this).
     world.get_mut::<ActorValues>(player).unwrap().set_base(0x44C, 0.0);
-    assert_eq!(fraction(&world, Some(0x44C), None), 0.0);
-    assert_eq!(fraction(&world, Some(health), Some(0.3)), 0.3);
+    assert_eq!(bar_reading(&world, Some("ActionPoints"), None), BarReading { fraction: 0.0, shown: true });
+    assert_eq!(bar_reading(&world, Some("Health"), Some(0.3)), BarReading { fraction: 0.3, shown: true });
 }
 
 /// #4818 — a taken item's collision entities are standalone (never

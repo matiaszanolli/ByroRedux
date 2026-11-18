@@ -246,6 +246,13 @@ impl PlayerVitals {
     pub(crate) fn resolved(&self, editor_id: &str) -> Option<u32> {
         self.by_editor_id.get(editor_id).copied()
     }
+
+    /// A table resolving exactly `pairs` (canonical editor id, AVIF FormID), for a test that needs the HUD
+    /// bars to resolve without building an `EsmIndex`.
+    #[cfg(test)]
+    pub(crate) fn resolving(pairs: &[(&'static str, u32)]) -> Self {
+        Self { bars: Vec::new(), by_editor_id: pairs.iter().copied().collect(), radiation: None }
+    }
 }
 
 impl Resource for PlayerVitals {}
