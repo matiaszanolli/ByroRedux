@@ -291,6 +291,11 @@ pub(crate) fn sleep_system(world: &World, _dt: f32) {
         time.advance_hours(hours);
         log::info!("SetPCSleepHours: the clock runs {hours} h to day {} {:.2}", time.day, time.hour);
     }
+    // #7052 (OSL-SLP-001) — a sleep that ran to its end is the one event Oblivion's level-up reads, whether a script or
+    // the jail bed asked for it. Nothing interrupts a sleep in this engine, so it always completed.
+    if let Some(mut completions) = world.try_resource_mut::<byroredux_scripting::oblivion_skill_use::SleepCompletions>() {
+        completions.0.push(byroredux_scripting::oblivion_skill_use::SleepCompleted { hours, interrupted: false });
+    }
 }
 
 // ── Data-folder lookups ────────────────────────────────────────────────────────────────────────────

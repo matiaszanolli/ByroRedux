@@ -2564,11 +2564,11 @@ fn a_line_in_flight_survives_save_load_round_trip() {
     assert_eq!(dst.get::<SpeakingLine>(actor).map(|l| l.clone()), Some(line));
 }
 
-/// #7050 (OSL-SAVE-001 / OSL-SAVE-003) — a save taken mid-level resumes it: the player's major-increase count
-/// and each attribute's tally read back identical, and the saved experience (`SkillProgress`) with them.
+/// #7050 / #7052 (OSL-SAVE-001 / OSL-SAVE-003) — a save taken mid-level resumes it: the player's major-increase count,
+/// each attribute's tally, and every pending level with its frozen tallies and picks read back identical.
 #[test]
 fn the_skill_use_level_tallies_survive_save_load_round_trip() {
-    use byroredux_core::character::SkillUseLevel;
+    use byroredux_core::character::{PendingLevel, SkillUseLevel};
 
     let reg = build_save_registry();
     let mut src = World::new();
@@ -2576,8 +2576,15 @@ fn the_skill_use_level_tallies_survive_save_load_round_trip() {
     src.insert_resource(FormIdPool::new());
     src.register::<SkillUseLevel>();
     let player = src.spawn();
-    let level = SkillUseLevel { major_increases: 7, attribute_tallies: [3, 0, 1, 2, 0, 4, 0, 5] };
-    src.insert(player, level);
+    let level = SkillUseLevel {
+        major_increases: 17,
+        attribute_tallies: [3, 0, 1, 2, 0, 4, 0, 5],
+        pending: vec![
+            PendingLevel { tallies: [10, 0, 0, 2, 0, 3, 0, 1], picks: vec![0, 5] },
+            PendingLevel { tallies: [0, 0, 0, 0, 0, 10, 0, 0], picks: Vec::new() },
+        ],
+    };
+    src.insert(player, level.clone());
 
     let snapshot = save_world(&src, &reg).unwrap();
     let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
@@ -2586,7 +2593,7 @@ fn the_skill_use_level_tallies_survive_save_load_round_trip() {
     let mut dst = World::new();
     dst.insert_resource(FormIdPool::new());
     restore_world(&mut dst, &reg, &decoded).unwrap();
-    assert_eq!(dst.get::<SkillUseLevel>(player).map(|l| *l), Some(level));
+    assert_eq!(dst.get::<SkillUseLevel>(player).map(|l| l.clone()), Some(level));
     // A re-captured snapshot of the loaded state decodes equal to the one loaded.
     let again = save_world(&dst, &reg).unwrap();
     assert_eq!(again.components.get("SkillUseLevel"), decoded.components.get("SkillUseLevel"));

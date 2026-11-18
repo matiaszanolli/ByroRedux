@@ -157,3 +157,26 @@ unfed list; its source is `FED_SKILLS` in `oblivion_skill_use.rs`, where a skill
   in `boot/schedule/late/scripted_combat.rs`, so the scheduler orders it against the emitters.
 - **The same entry for script calls.** `AdvancePCSkill` and `ModPCSkill` (one handler in the executable, `0x50d020`) raise a skill by
   `Amount` **ranks** (V14), through the rank-up path and its tallies, not through use.
+
+## 5. Levels (#7052)
+
+The level-up the rank-ups build toward (`crates/scripting/src/oblivion_skill_use.rs`, `byroredux/src/skill_use_emit.rs`):
+
+- **Pending levels.** `SkillUseLevel` keeps the running attribute tallies and the major-increase count. Every `iLevelUpSkillCount`-th
+  (10th) major increase freezes the tallies, **including that increase's own** (V13), into a `PendingLevel` and starts fresh tallies
+  (`0x65fb30`); a rank-up after it belongs to the next level. Several levels can be pending, each with its own tallies (OSL-LVL-005).
+  `AdvancePCLevel` freezes whatever the tallies are now. Saved: `FORMAT_MAJOR` 138.
+- **Picks.** `levelup attr <attribute>` picks one of a pending level's three attributes (distinct, none at 100). The offered bonus is
+  `oblivion_attribute_bonus` of the frozen tally (+1 for none, up to +5 for ten; Luck, governing nothing, is always +1). The console is the
+  interim surface (PRD Q3, #7048).
+- **The sleep.** `sleep_system`, which `SetPCSleepHours` and the jail bed's rest both feed, raises a `SleepCompleted` event after the clock has
+  run; `oblivion_level_system` takes the oldest pending level on each completed, uninterrupted sleep (OSL-LVL-004). Waiting raises none, and
+  nothing in the engine interrupts a sleep today, so `interrupted` is always false (OSL-SLP-002). A bed outside a jail has no rest action
+  yet (the rest menu, #7048), so no other bed raises the event. A level with fewer than three picks stays pending and the sleep says so.
+- **Taking a level** (`0x66c3e0`, V7 to V9): each pick's base rises by its bonus, capped at 100, and an unspent tally rolls over to nothing;
+  Health's **stored** term gains `floor(0.1 × Endurance)`, Endurance read after the picks (V8), and Magicka's and Fatigue's stored terms are
+  untouched (V9); the level rises by one and the count falls by ten, a surplus carrying to the next level. With every attribute at 100 there
+  is no level (OSL-LVL-006): "Perfection cannot be improved upon." and the level stays pending. The notification is "You are now level N."
+  followed by the load order's `sLevelUp{N}` text (`Oblivion.esm` authors 2 to 20); the tenth major increase says the executable's default
+  `sMeditate` (V12).
+

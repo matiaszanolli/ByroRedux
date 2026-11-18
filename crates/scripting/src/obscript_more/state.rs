@@ -58,6 +58,19 @@ fn pc_skill(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx
     done(format!("{name} {code} {ranks}"))
 }
 
+// CS *AdvancePCLevel* (Oblivion; opcode `0x10d5`, `Oblivion.exe` `0x5056f0`): "raises the player's level by
+// bringing up the level-up menu". The tallies as they stand become a pending level, picked with `levelup attr`
+// and taken at the next completed sleep (#7052). No vanilla script calls it (#7049 V11).
+fn advance_pc_level(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], ctx: &Context) -> Action {
+    if names_other_actor(ctx) {
+        return Action::Declined;
+    }
+    match player(world) {
+        Some(player) if crate::oblivion_skill_use::advance_level(world, player) => done("AdvancePCLevel"),
+        _ => Action::Declined,
+    }
+}
+
 /// Whether `ctx` names an actor other than the player: an explicit or defaulted `Ref.Cmd` whose reference
 /// is not the player's. No caller is the player's scope, as is the player's own reference (CS
 /// `[ActorID.]Cmd` syntax). The caller is NOT resolved to a live entity: an unloaded actor still is not
@@ -702,6 +715,7 @@ pub(crate) const STATE_COMMANDS: &[Command] = &[
     Command { id: 0x10fb, games: Games::Oblivion, needs_caller: false, handler: cmd_10fb },
     Command { id: 0x10f8, games: Games::Oblivion, needs_caller: false, handler: cmd_10f8 },
     Command { id: 0x10d4, games: Games::Oblivion, needs_caller: false, handler: pc_skill },
+    Command { id: 0x10d5, games: Games::Oblivion, needs_caller: false, handler: advance_pc_level },
     Command { id: 0x110f, games: Games::Oblivion, needs_caller: false, handler: pc_skill },
     Command { id: 0x1074, games: Games::Oblivion, needs_caller: false, handler: get_crime_gold },
     Command { id: 0x1075, games: Games::Oblivion, needs_caller: false, handler: cmd_1075 },
@@ -729,7 +743,9 @@ pub(crate) const STATE_COMMANDS: &[Command] = &[
     Command { id: 0x1145, games: Games::Oblivion, needs_caller: false, handler: refresh_topic_list },
     Command { id: 0x110d, games: Games::Both, needs_caller: false, handler: set_quest_object },
     Command { id: 0x114e, games: Games::Oblivion, needs_caller: false, handler: cmd_114e },
-    Command { id: 0x10bd, games: Games::Fallout, needs_caller: false, handler: cmd_10bd },
+    // Oblivion's `SetPCSleepHours` is the same opcode (`Oblivion.exe` command table, `0x50bac0`): hours queued for the clock, and a
+    // completed sleep is what applies a pending level (#7052).
+    Command { id: 0x10bd, games: Games::Both, needs_caller: false, handler: cmd_10bd },
     Command { id: 0x10af, games: Games::Both, needs_caller: false, handler: is_pc_sleeping },
     Command { id: 0x1109, games: Games::Oblivion, needs_caller: false, handler: is_pc_sleeping },
     Command { id: 0x10ae, games: Games::Both, needs_caller: false, handler: wake_up_pc },

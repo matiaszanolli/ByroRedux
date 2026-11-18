@@ -68,6 +68,24 @@ pub(super) fn register_scripted_combat_systems(scheduler: &mut Scheduler) {
             .writes::<byroredux_core::character::SkillUseLevel>()
             .writes::<byroredux_core::ecs::components::ActorValues>(),
     );
+    // Oblivion skill-use leveling: announce a level that became pending, and take one at a completed sleep
+    // (#7052). After the drain, so a rank-up and the sleep that follows it can share a frame.
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
+        crate::skill_use_emit::oblivion_level_system,
+        Access::new()
+            .writes_resource::<byroredux_scripting::oblivion_skill_use::SleepCompletions>()
+            .writes_resource::<crate::skill_use_emit::LevelNotices>()
+            .reads_resource::<byroredux_core::character::CharacterRuleset>()
+            .reads_resource::<byroredux_scripting::ActorValueNames>()
+            .reads_resource::<byroredux_scripting::ScriptGame>()
+            .reads_resource::<crate::systems::PlayerEntity>()
+            .reads_resource::<crate::components::LoadedCellIndex>()
+            .writes_resource::<crate::notifications::PlayerNotifications>()
+            .writes::<byroredux_core::character::SkillUseLevel>()
+            .writes::<byroredux_core::character::CharacterLevel>()
+            .writes::<byroredux_core::ecs::components::ActorValues>(),
+    );
     // M47.2 — script Kill requests, ahead of the shared death reconciler.
     scheduler.add_exclusive_with_access(
         Stage::Late,

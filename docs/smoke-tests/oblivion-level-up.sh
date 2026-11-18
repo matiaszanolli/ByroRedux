@@ -7,6 +7,9 @@
 # Strength; `AdvancePCSkill Sneak 1` tallies Agility and, Sneak being no major skill of the class, not the level.
 # Phase 2b (#7051): a jump banks Acrobatics (0.3), moving undetected in the sneak stance banks Sneak (0.75 a second),
 # and `levelup` lists the unfed skills.
+# Phase 3 (#7052, scenarios 4 and 7): ten major increases make a level pending, `levelup attr` picks three attributes,
+# a completed sleep (`SetPCSleepHours 8`) takes the level: GetLevel 2, Strength +5, Endurance +1, Luck +1 and Health
+# `2 x Endurance + floor(0.1 x Endurance)`; no sleep, no level.
 set -euo pipefail
 
 DATA="${BYROREDUX_OBLIVION_DATA:-}"
@@ -127,6 +130,39 @@ command 'levelup' "$LOG_DIR/jumped.log" || fail 'levelup failed after the jump'
 python3 - "$(banked "$LOG_DIR/jumped.log" Acrobatics)" <<'PY' || fail 'a jump banked no Acrobatics experience'
 import sys
 assert float(sys.argv[1] or 0) > 0, sys.argv
+PY
+# Phase 3: a level. Blade is 2 ranks in; eight more make the tenth major increase.
+value_of() { sed -nE 's/.*0x[0-9a-f]+ -> (-?[0-9.]+).*/\1/p' "$1" | head -1; }
+av() { command "obscript.cmd 0x14 GetBaseAV $1" "$LOG_DIR/av-$1-$2.log" || fail "GetBaseAV $1 failed"; value_of "$LOG_DIR/av-$1-$2.log"; }
+strength_before="$(av Strength before)"; endurance_before="$(av Endurance before)"; luck_before="$(av Luck before)"
+command 'obscript.cmd none ModPCSkill Blade 8' "$LOG_DIR/mod8.log" || fail 'ModPCSkill failed'
+command 'levelup' "$LOG_DIR/pending.log" || fail 'levelup failed'
+grep -Eq 'pending level 1 offers Strength \+5' "$LOG_DIR/pending.log" || fail 'no pending level offering Strength +5 after ten major increases'
+grep -Fq 'level=1' "$LOG_DIR/pending.log" || fail 'the level moved before any sleep'
+for attribute in Strength Endurance Luck; do
+    command "levelup attr $attribute" "$LOG_DIR/pick-$attribute.log" || fail "levelup attr $attribute failed"
+    grep -Fq "$attribute" "$LOG_DIR/pick-$attribute.log" || fail "the $attribute pick was refused"
+done
+sleep 2
+command 'levelup' "$LOG_DIR/before-sleep.log" || fail 'levelup failed'
+grep -Fq 'level=1' "$LOG_DIR/before-sleep.log" || fail 'picking changed the level (only a completed sleep takes it)'
+command 'obscript.cmd none 0x10bd 8' "$LOG_DIR/sleep.log" || fail 'SetPCSleepHours failed'
+grep -q '\[declined:' "$LOG_DIR/sleep.log" && fail 'SetPCSleepHours was declined'
+sleep 3
+command 'levelup' "$LOG_DIR/leveled.log" || fail 'levelup failed after the sleep'
+grep -Fq 'level=2' "$LOG_DIR/leveled.log" || fail 'a completed sleep did not take the level'
+grep -Fq 'pending level' "$LOG_DIR/leveled.log" && fail 'the level is still pending after the sleep'
+strength_after="$(av Strength after)"; endurance_after="$(av Endurance after)"; luck_after="$(av Luck after)"
+python3 - "$strength_before" "$strength_after" "$endurance_before" "$endurance_after" "$luck_before" "$luck_after" <<'PY' || fail 'the picked attributes did not rise by their bonuses'
+import sys
+sb, sa, eb, ea, lb, la = map(float, sys.argv[1:7])
+assert sa == min(100, sb + 5) and ea == eb + 1 and la == lb + 1, (sb, sa, eb, ea, lb, la)
+PY
+command 'obscript.cmd 0x14 GetAV Health' "$LOG_DIR/health.log" || fail 'GetAV Health failed'
+python3 - "$(value_of "$LOG_DIR/health.log")" "$endurance_after" <<'PY' || fail 'Health is not 2 x Endurance + floor(0.1 x Endurance)'
+import math, sys
+health, endurance = float(sys.argv[1]), float(sys.argv[2])
+assert health == 2 * endurance + math.floor(0.1 * endurance), (health, endurance)
 PY
 printf 'smoke[oblivion-level-up]: PASS -- Blade %s -> %s, Sneak %s -> %s; artifacts: %s\n' \
     "$blade_before" "$blade_after" "$sneak_before" "$sneak_after" "$LOG_DIR"

@@ -27,24 +27,46 @@ impl Component for CharacterLevel {
     type Storage = SparseSetStorage<Self>;
 }
 
-/// Classic-TES skill-use leveling's running tally (Oblivion; PRD
-/// `oblivion-skill-use-leveling` OSL-LVL-002, OSL-SAVE-001): what the skill
-/// rank-ups since the last level-up add up to. A rank-up of *any* governed
-/// skill adds to its attribute's tally (the attribute bonus at level-up reads
-/// it), and a rank-up of a *major* skill also counts toward the level
-/// (`LevelingModel::SkillUse::major_skill_ups_per_level`). The player only.
+/// One level the player has earned and not yet taken (Oblivion; OSL-LVL-003, OSL-LVL-005): the attribute
+/// tallies frozen at the tenth major increase that made it (V13: that increase is in them), and the
+/// attributes the player has picked for it so far (`levelup attr`, up to three). Each pending level uses
+/// its own tallies; a rank-up after the freeze counts toward the next level.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub struct PendingLevel {
+    /// Rank-ups per governing attribute (index = Oblivion attribute code), frozen when the level became pending.
+    pub tallies: [u16; 8],
+    /// Attribute codes chosen for this level, in pick order, without repeats.
+    pub picks: Vec<u8>,
+}
+
+impl PendingLevel {
+    /// The bonus the level offers attribute code `attribute` (`oblivion_attribute_bonus` of its tally).
+    #[must_use]
+    pub fn bonus(&self, attribute: usize) -> u8 {
+        crate::character::oblivion_attribute_bonus(self.tallies.get(attribute).copied().unwrap_or(0))
+    }
+}
+
+/// Classic-TES skill-use leveling's running tally (Oblivion; PRD `oblivion-skill-use-leveling`
+/// OSL-LVL-002, OSL-LVL-003, OSL-SAVE-001): what the skill rank-ups since the last level-up add up to, and
+/// the levels they have already earned. A rank-up of *any* governed skill adds to its attribute's tally
+/// (the attribute bonus at level-up reads it), and a rank-up of a *major* skill also counts toward the level.
+/// Every `major_skill_ups_per_level`-th major increase freezes the tallies into a [`PendingLevel`] and
+/// starts a fresh set (`Oblivion.exe` `0x65fb30`, a new node of the list at `player + 0x5b4`). The player only.
 ///
 /// The banked experience is not here: it is the per-skill `SkillProgress`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct SkillUseLevel {
-    /// Major-skill increases since the last level-up. Counted after the
-    /// attribute tally of the same rank-up (`Oblivion.exe` `0x668070`).
+    /// Major-skill increases not yet spent on a level. Counted after the attribute tally of the same rank-up
+    /// (V13); each level taken subtracts `major_skill_ups_per_level`.
     pub major_increases: u16,
-    /// Rank-ups per governing attribute since the last level-up, indexed by
-    /// the Oblivion attribute code (Strength 0 … Luck 7, see
-    /// [`SkillUseLevel::attribute_index`]).
+    /// Rank-ups per governing attribute since the last freeze, indexed by the Oblivion attribute code
+    /// (Strength 0 … Luck 7, see [`SkillUseLevel::attribute_index`]).
     pub attribute_tallies: [u16; 8],
+    /// The levels earned and not yet taken, oldest first.
+    pub pending: Vec<PendingLevel>,
 }
 
 impl Component for SkillUseLevel {
@@ -72,17 +94,31 @@ impl SkillUseLevel {
         }
     }
 
-    /// Record one rank-up: `governing` is the index of the skill's governing
-    /// attribute ([`Self::attribute_index`]), and `major` whether the skill is
-    /// one of the class's major skills. The tally runs before the major count
-    /// (V13: the tenth major increase counts toward its attribute's tally).
-    pub fn record_rank_up(&mut self, governing: Option<usize>, major: bool) {
+    /// Record one rank-up: `governing` is the index of the skill's governing attribute
+    /// ([`Self::attribute_index`]), `major` whether the skill is one of the class's major skills, and
+    /// `per_level` the major increases a level takes (`LevelingModel::SkillUse::major_skill_ups_per_level`,
+    /// 10). The tally runs before the major count (V13: the tenth major increase counts toward its
+    /// attribute's tally); a count that reaches a multiple of `per_level` freezes the tallies as a new
+    /// pending level. Returns `true` when it did.
+    pub fn record_rank_up(&mut self, governing: Option<usize>, major: bool, per_level: u16) -> bool {
         if let Some(tally) = governing.and_then(|i| self.attribute_tallies.get_mut(i)) {
             *tally = tally.saturating_add(1);
         }
-        if major {
-            self.major_increases = self.major_increases.saturating_add(1);
+        if !major {
+            return false;
         }
+        self.major_increases = self.major_increases.saturating_add(1);
+        if per_level > 0 && self.major_increases % per_level == 0 {
+            self.freeze_pending();
+            return true;
+        }
+        false
+    }
+
+    /// Freeze the running tallies as a new pending level and start fresh tallies.
+    pub fn freeze_pending(&mut self) {
+        let tallies = std::mem::take(&mut self.attribute_tallies);
+        self.pending.push(PendingLevel { tallies, picks: Vec::new() });
     }
 }
 
@@ -593,15 +629,43 @@ mod skill_use_level_tests {
     #[test]
     fn a_major_rank_up_counts_toward_the_level_and_any_one_tallies() {
         let mut level = SkillUseLevel::default();
-        level.record_rank_up(Some(0), true);
-        level.record_rank_up(Some(0), false);
-        level.record_rank_up(Some(5), false);
+        level.record_rank_up(Some(0), true, 10);
+        level.record_rank_up(Some(0), false, 10);
+        level.record_rank_up(Some(5), false, 10);
         assert_eq!(level.major_increases, 1);
         assert_eq!(level.attribute_tallies, [2, 0, 0, 0, 0, 1, 0, 0]);
         // An ungoverned skill tallies nothing; an out-of-range index is ignored.
-        level.record_rank_up(None, true);
-        level.record_rank_up(Some(9), false);
+        level.record_rank_up(None, true, 10);
+        level.record_rank_up(Some(9), false, 10);
         assert_eq!(level.major_increases, 2);
         assert_eq!(level.attribute_tallies.iter().sum::<u16>(), 3);
+    }
+
+    /// OSL-LVL-003 / V13: the tenth major increase is in the tallies it freezes, a rank-up after it starts the
+    /// next level's, and a second ten make a second pending level with its own tallies (OSL-LVL-005).
+    #[test]
+    fn the_tenth_major_increase_freezes_its_tallies_into_a_pending_level() {
+        let mut level = SkillUseLevel::default();
+        let mut froze = Vec::new();
+        for _ in 0..10 {
+            froze.push(level.record_rank_up(Some(0), true, 10)); // Strength
+        }
+        assert_eq!(froze.iter().filter(|&&f| f).count(), 1);
+        assert!(froze[9], "the tenth is the one that freezes");
+        assert_eq!(level.pending.len(), 1);
+        assert_eq!(level.pending[0].tallies[0], 10, "the tenth increase counts toward its attribute (V13)");
+        assert_eq!(level.attribute_tallies, [0; 8], "fresh tallies after the freeze");
+        // A minor rank-up of another attribute after the freeze belongs to the next level.
+        level.record_rank_up(Some(3), false, 10);
+        for _ in 0..10 {
+            level.record_rank_up(Some(5), true, 10); // Endurance
+        }
+        assert_eq!(level.pending.len(), 2, "several levels may be pending");
+        assert_eq!(level.pending[1].tallies[3], 1);
+        assert_eq!(level.pending[1].tallies[5], 10);
+        assert_eq!(level.pending[0].tallies[3], 0, "each level keeps its own tallies");
+        // The offered bonuses read the frozen tallies: 10 gives +5, none +1.
+        assert_eq!(level.pending[0].bonus(0), 5);
+        assert_eq!(level.pending[0].bonus(7), 1);
     }
 }

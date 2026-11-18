@@ -972,9 +972,8 @@ original adds it to the stored term, `0x66c3e0`). **Storage built (#7044):** `Ac
 own that `undamaged()` adds, and `apply_oblivion_level_up_health` (whole-number tenth of Endurance, rounded
 down) writes it. The permanent-modifier layer was the other candidate; it also carries abilities and gear, so a
 Fortify Health ability coming and going could not tell its share from the gains. Pinned by
-`oblivion_level_up_health_gains_survive_the_refresh_and_an_ability_coming_and_going`. Nothing calls the helper in
-the running game until the level-up exists
-([skill-use leveling PRD](../prd/oblivion-skill-use-leveling.md), Phase 3); a `FORMAT_MAJOR` bump (v136)
+`oblivion_level_up_health_gains_survive_the_refresh_and_an_ability_coming_and_going`. The level-up calls the helper
+since #7052 ([skill-use.md](skill-use.md) §5): at a completed sleep, with the Endurance read after the level's attribute picks; a `FORMAT_MAJOR` bump (v136)
 rejects older saves, per the format's rule (`crates/save/src/snapshot.rs`).
 
 What `Oblivion.exe` does for the player. The base of actor values 8 to 11 is read through one function

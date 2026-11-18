@@ -625,7 +625,7 @@ impl ConsoleCommand for LevelUpCommand {
     }
 
     fn description(&self) -> &str {
-        "Spend level-up rewards (usage: levelup | levelup skill <Skill> <points> | levelup perk <perk_hex> | levelup pool <health|magicka|stamina> | levelup xp <n>)"
+        "Spend level-up rewards (usage: levelup | levelup attr <attribute> | levelup skill <Skill> <points> | levelup perk <perk_hex> | levelup pool <health|magicka|stamina> | levelup xp <n>)"
     }
 
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
@@ -661,6 +661,38 @@ impl ConsoleCommand for LevelUpCommand {
                     rewards.perk_points,
                     rewards.pool_picks
                 ))
+            }
+            // OSL-API-005 (Q3): the level-up surface until a native page exists. Picks one of the three attributes
+            // the oldest pending level raises; the level is taken at the next completed sleep.
+            Some("attr") => {
+                use byroredux_scripting::oblivion_skill_use::{pick_attribute, PickRefusal, LEVEL_PICKS};
+                const ATTRIBUTES: [&str; 8] =
+                    ["Strength", "Intelligence", "Willpower", "Agility", "Speed", "Endurance", "Personality", "Luck"];
+                let Some(name) = parts.next() else {
+                    return CommandOutput::error("usage: levelup attr <Strength|Intelligence|Willpower|Agility|Speed|Endurance|Personality|Luck>");
+                };
+                let Some(code) = ATTRIBUTES.iter().position(|attribute| attribute.eq_ignore_ascii_case(name)) else {
+                    return CommandOutput::error(format!("levelup: `{name}` is not an attribute"));
+                };
+                match pick_attribute(world, player, code as u32) {
+                    Ok(picked) => CommandOutput::line(format!(
+                        "levelup: {} +{} picked ({}/{LEVEL_PICKS}){}",
+                        ATTRIBUTES[code],
+                        picked.bonus,
+                        picked.picks,
+                        if picked.picks == LEVEL_PICKS { "; sleep to take the level" } else { "" }
+                    )),
+                    Err(refusal) => CommandOutput::error(format!(
+                        "levelup: {}",
+                        match refusal {
+                            PickRefusal::NoPendingLevel => "no level is pending",
+                            PickRefusal::NotAnAttribute => "not an attribute",
+                            PickRefusal::AlreadyPicked => "that attribute is already picked for this level",
+                            PickRefusal::LevelFull => "three attributes are already picked; sleep to take the level",
+                            PickRefusal::AtMaximum => "that attribute is at 100",
+                        }
+                    )),
+                }
             }
             Some("skill") => {
                 let (Some(name), Some(points)) =

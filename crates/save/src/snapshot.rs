@@ -665,7 +665,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v136 -> v137 (#7050, OSL-SAVE-001): a new component column, `SkillUseLevel` (the player's Oblivion
 /// skill-use level tallies: the major increases and each attribute's rank-ups since the last level-up), so a
 /// v136 snapshot has no such column and the schema no longer matches.
-pub const FORMAT_MAJOR: u16 = 137;
+///
+/// v137 -> v138 (#7052, OSL-SAVE-001): `SkillUseLevel` gained the required `pending` (the levels earned and not
+/// yet taken, each with its frozen attribute tallies and its picks), so a v137 snapshot's column lacks the field.
+pub const FORMAT_MAJOR: u16 = 138;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

@@ -100,6 +100,7 @@ pub fn install_skill_use_classes(world: &mut World, index: &EsmIndex) {
 pub fn install(world: &mut World) {
     world.init_resource::<PendingSkillUse>();
     world.init_resource::<SkillUseClasses>();
+    world.init_resource::<SleepCompletions>();
 }
 
 /// The class of `player`: a class its `Background` names, else the player
@@ -121,6 +122,8 @@ struct Skill {
     costs: SkillUseCosts,
     class: SkillClass,
     governing: Option<usize>,
+    /// The major increases a level takes (`iLevelUpSkillCount`, 10).
+    per_level: u16,
 }
 
 fn resolve(world: &World, player: EntityId, code: u32) -> Option<Skill> {
@@ -130,7 +133,9 @@ fn resolve(world: &World, player: EntityId, code: u32) -> Option<Skill> {
     {
         return None;
     }
-    let costs = world.try_resource::<CharacterRuleset>()?.leveling.skill_use_costs()?;
+    let leveling = world.try_resource::<CharacterRuleset>()?.leveling;
+    let costs = leveling.skill_use_costs()?;
+    let per_level = per_level_of(&leveling)?;
     let name = *OBLIVION_ACTOR_VALUES.get(code as usize)?;
     let av = crate::obscript_actor_values::actor_value_form(world, code as f32)?;
     let class = player_class(world, player).map_or_else(SkillClass::default, |class| {
@@ -139,7 +144,7 @@ fn resolve(world: &World, player: EntityId, code: u32) -> Option<Skill> {
     let governing = SkillSet::OBLIVION
         .governing(name)
         .and_then(SkillUseLevel::attribute_index);
-    Some(Skill { av, code, costs, class, governing })
+    Some(Skill { av, code, costs, class, governing, per_level })
 }
 
 /// What `apply` does to the skill's value and banked experience.
@@ -185,14 +190,24 @@ fn apply(
     reached
 }
 
+/// The major-skill increases a level takes under `leveling`, when it levels by skill use.
+fn per_level_of(leveling: &byroredux_core::character::LevelingModel) -> Option<u16> {
+    match leveling {
+        byroredux_core::character::LevelingModel::SkillUse { major_skill_ups_per_level, .. } => {
+            Some(u16::from(*major_skill_ups_per_level))
+        }
+        _ => None,
+    }
+}
+
 fn record_rank_up(world: &World, player: EntityId, skill: &Skill) {
     if let Some(mut levels) = world.query_mut::<SkillUseLevel>() {
         if let Some(level) = levels.get_mut(player) {
-            level.record_rank_up(skill.governing, skill.class.major);
+            level.record_rank_up(skill.governing, skill.class.major, skill.per_level);
             return;
         }
         let mut level = SkillUseLevel::default();
-        level.record_rank_up(skill.governing, skill.class.major);
+        level.record_rank_up(skill.governing, skill.class.major, skill.per_level);
         levels.insert(player, level);
     }
 }
@@ -240,6 +255,175 @@ pub fn raise_skill_ranks(
         }
         (value, banked, value - start)
     })
+}
+
+// ── Levels (#7052, Phase 3) ──────────────────────────────────────────────────────────────────────────
+
+/// A sleep that ran to its end: the one event the level-up reads (OSL-SLP-001). The script path
+/// (`SetPCSleepHours`, and the jail bed's rest) raises it through `sleep_system`; a bed activation outside
+/// a jail has no rest action to raise it yet (the sleep/rest menu has no owner, #7048). Waiting raises
+/// nothing (OSL-LVL-004). Transient.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SleepCompleted {
+    pub hours: f32,
+    /// A sleep an enemy encounter cut short does not apply a level (OSL-SLP-002). The engine has no random
+    /// encounter that interrupts a sleep, so nothing sets it today.
+    pub interrupted: bool,
+}
+
+/// The completed sleeps nothing has read yet, drained by `oblivion_level_system`.
+#[derive(Debug, Default)]
+pub struct SleepCompletions(pub Vec<SleepCompleted>);
+
+impl Resource for SleepCompletions {}
+
+/// Why `levelup attr` refused a pick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickRefusal {
+    /// No level is pending (the ruleset may not level by skill use at all).
+    NoPendingLevel,
+    /// The code is not one of the eight attributes (0 Strength … 7 Luck).
+    NotAnAttribute,
+    /// The attribute is already one of this level's picks: the three are distinct.
+    AlreadyPicked,
+    /// Three attributes are already picked for the level.
+    LevelFull,
+    /// The attribute is at 100 and cannot rise.
+    AtMaximum,
+}
+
+/// A pick `levelup attr` accepted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PickAccepted {
+    pub attribute: u8,
+    /// The bonus the level will give it (`oblivion_attribute_bonus` of its frozen tally).
+    pub bonus: u8,
+    /// Picks the oldest pending level now holds, of three.
+    pub picks: usize,
+}
+
+/// The attributes a level raises: the picks a level takes.
+pub const LEVEL_PICKS: usize = 3;
+
+/// OSL-API-005 / OSL-ATT-001: pick attribute `attribute` (0 to 7) for the oldest pending level. The picks
+/// are distinct, at most three, and an attribute at 100 cannot be picked. The level applies at the next
+/// completed sleep.
+pub fn pick_attribute(world: &World, player: EntityId, attribute: u32) -> Result<PickAccepted, PickRefusal> {
+    if attribute > 7 {
+        return Err(PickRefusal::NotAnAttribute);
+    }
+    let base = crate::obscript_actor_values::actor_value_form(world, attribute as f32)
+        .and_then(|av| world.get::<ActorValues>(player).and_then(|values| values.get_base(av).map(|entry| entry.base)));
+    if base.is_some_and(|base| base >= 100.0) {
+        return Err(PickRefusal::AtMaximum);
+    }
+    let mut levels = world.query_mut::<SkillUseLevel>().ok_or(PickRefusal::NoPendingLevel)?;
+    let level = levels.get_mut(player).and_then(|level| level.pending.first_mut()).ok_or(PickRefusal::NoPendingLevel)?;
+    if level.picks.contains(&(attribute as u8)) {
+        return Err(PickRefusal::AlreadyPicked);
+    }
+    if level.picks.len() >= LEVEL_PICKS {
+        return Err(PickRefusal::LevelFull);
+    }
+    level.picks.push(attribute as u8);
+    Ok(PickAccepted { attribute: attribute as u8, bonus: level.bonus(attribute as usize), picks: level.picks.len() })
+}
+
+/// What a completed sleep did with the pending levels.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LevelUp {
+    /// No level was pending.
+    NoPending,
+    /// A level is pending but fewer than three attributes are picked: nothing applied.
+    NotReady { picks: usize },
+    /// Every attribute is at 100: no level (OSL-LVL-006), the pending level stays.
+    Perfection,
+    /// The level applied: the new level, each raised attribute as `(code, from, to)`, and the Health gain.
+    Applied { level: u16, raised: Vec<(u8, f32, f32)>, health_gain: f32 },
+}
+
+/// OSL-LVL-004 / OSL-ATT-001 / OSL-HP-001: take the oldest pending level, if its three attributes are picked.
+/// Each pick rises by its frozen bonus, to at most 100 (the unspent tally rolls over to nothing); Health's
+/// stored term gains `floor(0.1 × Endurance)` with Endurance read **after** the picks (V8; the stored sum is
+/// truncated, V7); the level rises by one and the level's `major_skill_ups_per_level` leave the count. Magicka
+/// and Fatigue's stored terms are untouched (V9). Nothing here is gated on sleeping: the caller is the system
+/// that reads a completed sleep.
+pub fn apply_pending_level(world: &World, player: EntityId) -> LevelUp {
+    let Some(per_level) = world.try_resource::<CharacterRuleset>().and_then(|r| per_level_of(&r.leveling)) else {
+        return LevelUp::NoPending;
+    };
+    let Some(pending) = world
+        .get::<SkillUseLevel>(player)
+        .and_then(|level| level.pending.first().cloned())
+    else {
+        return LevelUp::NoPending;
+    };
+    if pending.picks.len() < LEVEL_PICKS {
+        return LevelUp::NotReady { picks: pending.picks.len() };
+    }
+    let attribute_av = |code: usize| crate::obscript_actor_values::actor_value_form(world, code as f32);
+    let (Some(endurance), Some(health)) = (attribute_av(5), attribute_av(8)) else {
+        return LevelUp::NoPending;
+    };
+    let mut raised = Vec::new();
+    let health_gain: f32;
+    {
+        let Some(mut values) = world.query_mut::<ActorValues>() else {
+            return LevelUp::NoPending;
+        };
+        let Some(values) = values.get_mut(player) else {
+            return LevelUp::NoPending;
+        };
+        let at_max = (0..8usize).all(|code| attribute_av(code).and_then(|av| values.get_base(av)).is_none_or(|entry| entry.base >= 100.0));
+        if at_max {
+            return LevelUp::Perfection;
+        }
+        for &code in &pending.picks {
+            let Some(av) = attribute_av(code as usize) else { continue };
+            let from = values.get_base(av).map_or(0.0, |entry| entry.base);
+            let to = (from + f32::from(pending.bonus(code as usize))).min(100.0);
+            values.set_base(av, to);
+            raised.push((code, from, to));
+        }
+        let endurance_now = values.get_base(endurance).map_or(0.0, |entry| entry.base).max(0.0) as u16;
+        health_gain = byroredux_core::character::apply_oblivion_level_up_health(values, health, endurance_now);
+    }
+    if let Some(mut levels) = world.query_mut::<SkillUseLevel>()
+        && let Some(level) = levels.get_mut(player)
+    {
+        level.pending.remove(0);
+        level.major_increases = level.major_increases.saturating_sub(per_level);
+    }
+    let new_level = world.query_mut::<byroredux_core::character::CharacterLevel>().map_or(2, |mut levels| {
+        if let Some(level) = levels.get_mut(player) {
+            level.level = level.level.saturating_add(1);
+            return level.level;
+        }
+        levels.insert(player, byroredux_core::character::CharacterLevel { level: 2, xp: 0 });
+        2
+    });
+    LevelUp::Applied { level: new_level, raised, health_gain }
+}
+
+/// OSL-API-002: ObScript `AdvancePCLevel`: "raises the player's level by bringing up the level-up menu".
+/// Here it freezes the tallies as they stand into a pending level, to be picked and taken at the next
+/// completed sleep. `false` for a ruleset that does not level by skill use or a player with no tallies yet.
+pub fn advance_level(world: &World, player: EntityId) -> bool {
+    if world.try_resource::<CharacterRuleset>().and_then(|r| per_level_of(&r.leveling)).is_none() {
+        return false;
+    }
+    let Some(mut levels) = world.query_mut::<SkillUseLevel>() else {
+        return false;
+    };
+    match levels.get_mut(player) {
+        Some(level) => level.freeze_pending(),
+        None => {
+            let mut level = SkillUseLevel::default();
+            level.freeze_pending();
+            levels.insert(player, level);
+        }
+    }
+    true
 }
 
 /// The Oblivion skills (actor-value codes) an engine system feeds today. The one list behind `levelup`'s
@@ -298,7 +482,7 @@ pub fn skill_use_report(world: &World, player: EntityId) -> Option<Vec<String>> 
         )),
         None => out.push("levelup: class unknown (no Player class in the load order)".to_string()),
     }
-    let level = world.get::<SkillUseLevel>(player).map(|level| *level).unwrap_or_default();
+    let level = world.get::<SkillUseLevel>(player).map(|level| level.clone()).unwrap_or_default();
     out.push(format!(
         "levelup: major increases {}/{}; attribute tallies: {}",
         level.major_increases,
@@ -310,6 +494,27 @@ pub fn skill_use_report(world: &World, player: EntityId) -> Option<Vec<String>> 
             .collect::<Vec<_>>()
             .join(", "),
     ));
+    for (i, pending) in level.pending.iter().enumerate() {
+        let offered = ATTRIBUTES
+            .iter()
+            .enumerate()
+            .map(|(code, name)| format!("{name} +{}", pending.bonus(code)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let picked = pending
+            .picks
+            .iter()
+            .map(|&code| ATTRIBUTES.get(code as usize).copied().unwrap_or("?"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push(format!(
+            "levelup: pending level {} offers {offered}; picked {}/{LEVEL_PICKS}{}{}",
+            i + 1,
+            pending.picks.len(),
+            if picked.is_empty() { String::new() } else { format!(" ({picked})") },
+            if pending.picks.len() == LEVEL_PICKS { "; sleep to take it" } else { "; `levelup attr <attribute>` picks" },
+        ));
+    }
     for code in byroredux_core::character::OBLIVION_SKILL_AV_FIRST..=byroredux_core::character::OBLIVION_SKILL_AV_LAST {
         let Some(skill) = resolve(world, player, code) else { continue };
         let value = world
@@ -559,5 +764,171 @@ mod tests {
         world.insert_resource(CharacterRuleset::new(LevelingModel::SKYRIM));
         queue_skill_use(&world, BLADE, 0, 0.0);
         assert!(world.resource::<PendingSkillUse>().0.is_empty());
+    }
+
+    /// A world whose player also carries the eight attributes at 40 (Luck 50), Health at `2 × Endurance` and a level.
+    fn level_world() -> (World, EntityId) {
+        let (mut world, player, ..) = world();
+        world.register::<byroredux_core::character::CharacterLevel>();
+        let avs: Vec<u32> = (0..9usize)
+            .map(|code| crate::obscript_actor_values::actor_value_form(&world, code as f32).unwrap())
+            .collect();
+        {
+            let mut values = world.query_mut::<ActorValues>().unwrap();
+            let values = values.get_mut(player).unwrap();
+            for (code, av) in avs.iter().enumerate() {
+                let base = match code {
+                    7 => 50.0,
+                    8 => 80.0,
+                    _ => 40.0,
+                };
+                values.set_base(*av, base);
+            }
+        }
+        world.insert(player, byroredux_core::character::CharacterLevel { level: 1, xp: 0 });
+        (world, player)
+    }
+
+    fn attribute(world: &World, player: EntityId, code: usize) -> f32 {
+        let av = crate::obscript_actor_values::actor_value_form(world, code as f32).unwrap();
+        base(world, player, av)
+    }
+
+    /// OSL-LVL-003 / OSL-LVL-005: ten Blade rank-ups (major) make one pending level whose tallies are frozen with
+    /// the tenth in them; ten more make a second.
+    #[test]
+    fn ten_major_increases_make_a_level_pending() {
+        let (world, player) = level_world();
+        raise_skill_ranks(&world, player, BLADE, 9, false);
+        assert!(world.get::<SkillUseLevel>(player).unwrap().pending.is_empty());
+        raise_skill_ranks(&world, player, BLADE, 1, false);
+        {
+            let level = world.get::<SkillUseLevel>(player).unwrap();
+            assert_eq!(level.pending.len(), 1);
+            assert_eq!(level.pending[0].tallies[0], 10, "Blade is Strength's; the tenth counts (V13)");
+            assert_eq!(level.attribute_tallies, [0; 8]);
+        }
+        raise_skill_ranks(&world, player, BLADE, 10, false);
+        assert_eq!(world.get::<SkillUseLevel>(player).unwrap().pending.len(), 2);
+        // A minor skill's rank-up tallies its attribute but never freezes a level.
+        raise_skill_ranks(&world, player, SNEAK, 12, false);
+        assert_eq!(world.get::<SkillUseLevel>(player).unwrap().pending.len(), 2);
+    }
+
+    /// OSL-ATT-001 / OSL-API-005: three distinct picks; refusals for none pending, a fourth, a repeat, a
+    /// non-attribute and an attribute at 100.
+    #[test]
+    fn a_level_takes_three_distinct_picks() {
+        let (world, player) = level_world();
+        assert_eq!(pick_attribute(&world, player, 0), Err(PickRefusal::NoPendingLevel));
+        raise_skill_ranks(&world, player, BLADE, 10, false);
+        assert_eq!(pick_attribute(&world, player, 0), Ok(PickAccepted { attribute: 0, bonus: 5, picks: 1 }));
+        assert_eq!(pick_attribute(&world, player, 0), Err(PickRefusal::AlreadyPicked));
+        assert_eq!(pick_attribute(&world, player, 8), Err(PickRefusal::NotAnAttribute));
+        assert_eq!(pick_attribute(&world, player, 7), Ok(PickAccepted { attribute: 7, bonus: 1, picks: 2 }));
+        let av = crate::obscript_actor_values::actor_value_form(&world, 5.0).unwrap();
+        world.query_mut::<ActorValues>().unwrap().get_mut(player).unwrap().set_base(av, 100.0);
+        assert_eq!(pick_attribute(&world, player, 5), Err(PickRefusal::AtMaximum));
+        assert_eq!(pick_attribute(&world, player, 4), Ok(PickAccepted { attribute: 4, bonus: 1, picks: 3 }));
+        assert_eq!(pick_attribute(&world, player, 3), Err(PickRefusal::LevelFull));
+    }
+
+    /// OSL-LVL-003 / OSL-ATT-001 / OSL-HP-001 / OSL-HP-003: the level takes nothing until three picks, then each pick
+    /// rises by its frozen bonus (the +5 Strength, +1 Luck and Endurance's +1 here), caps at 100, the level
+    /// rises, the count falls by ten, and Health's stored term gains a tenth of the Endurance read after the picks;
+    /// Magicka and Fatigue stored terms are untouched.
+    #[test]
+    fn a_picked_level_applies_its_bonuses_and_health() {
+        let (world, player) = level_world();
+        assert_eq!(apply_pending_level(&world, player), LevelUp::NoPending);
+        raise_skill_ranks(&world, player, BLADE, 10, false);
+        assert_eq!(apply_pending_level(&world, player), LevelUp::NotReady { picks: 0 });
+        for code in [0, 5, 7] {
+            pick_attribute(&world, player, code).unwrap();
+        }
+        // Make Endurance 49 so the +1 bonus (no Endurance rank-ups were earned) makes it 50: a tenth is 5.
+        let end = crate::obscript_actor_values::actor_value_form(&world, 5.0).unwrap();
+        world.query_mut::<ActorValues>().unwrap().get_mut(player).unwrap().set_base(end, 49.0);
+        let outcome = apply_pending_level(&world, player);
+        let LevelUp::Applied { level, raised, health_gain } = outcome else { panic!("{outcome:?}") };
+        assert_eq!(level, 2);
+        assert_eq!(raised, vec![(0, 40.0, 45.0), (5, 49.0, 50.0), (7, 50.0, 51.0)]);
+        assert_eq!(health_gain, 5.0, "Endurance after the picks (V8): floor(0.1 × 50)");
+        assert_eq!(attribute(&world, player, 0), 45.0);
+        let health = crate::obscript_actor_values::actor_value_form(&world, 8.0).unwrap();
+        let magicka = crate::obscript_actor_values::actor_value_form(&world, 9.0).unwrap();
+        let values = world.get::<ActorValues>(player).unwrap();
+        assert_eq!(values.stored(health), 5.0);
+        assert_eq!(values.stored(magicka), 0.0);
+        drop(values);
+        let level = world.get::<SkillUseLevel>(player).unwrap();
+        assert!(level.pending.is_empty());
+        assert_eq!(level.major_increases, 0, "ten taken");
+    }
+
+    /// OSL-ATT-001: the bonus a pick takes is the frozen tally's, a cap of 100 holds, and an unspent tally rolls
+    /// over to nothing: rank-ups after the freeze change nothing about this level.
+    #[test]
+    fn the_bonus_is_frozen_and_capped() {
+        let (world, player) = level_world();
+        raise_skill_ranks(&world, player, BLADE, 10, false);
+        // Rank-ups after the freeze (three more of Blade, Strength's) do not enter the pending level.
+        raise_skill_ranks(&world, player, BLADE, 3, false);
+        for code in [0, 4, 7] {
+            pick_attribute(&world, player, code).unwrap();
+        }
+        let strength = crate::obscript_actor_values::actor_value_form(&world, 0.0).unwrap();
+        world.query_mut::<ActorValues>().unwrap().get_mut(player).unwrap().set_base(strength, 98.0);
+        let LevelUp::Applied { raised, .. } = apply_pending_level(&world, player) else { panic!() };
+        assert_eq!(raised[0], (0, 98.0, 100.0), "+5 capped at 100");
+        let level = world.get::<SkillUseLevel>(player).unwrap();
+        assert_eq!(level.attribute_tallies[0], 3, "the post-freeze rank-ups wait for the next level");
+        assert_eq!(level.major_increases, 3, "thirteen less the ten the level took");
+    }
+
+    /// OSL-LVL-006: with every attribute at 100 there is no level, and the pending one stays.
+    #[test]
+    fn perfection_cannot_be_improved_upon() {
+        let (world, player) = level_world();
+        raise_skill_ranks(&world, player, BLADE, 10, false);
+        for code in [0, 5, 7] {
+            pick_attribute(&world, player, code).unwrap();
+        }
+        for code in 0..8usize {
+            let av = crate::obscript_actor_values::actor_value_form(&world, code as f32).unwrap();
+            world.query_mut::<ActorValues>().unwrap().get_mut(player).unwrap().set_base(av, 100.0);
+        }
+        assert_eq!(apply_pending_level(&world, player), LevelUp::Perfection);
+        assert_eq!(world.get::<byroredux_core::character::CharacterLevel>(player).unwrap().level, 1);
+        assert_eq!(world.get::<SkillUseLevel>(player).unwrap().pending.len(), 1);
+    }
+
+    /// OSL-ATT-002: Health, Magicka and Fatigue follow the raised attributes through their formulas: here that
+    /// is the formulas' own business (`player_derived_stats_system`); the level's job is only to write the
+    /// attributes' base, which `a_picked_level_applies_its_bonuses_and_health` pins.
+    /// OSL-API-002: `AdvancePCLevel` freezes the tallies as they stand into a pending level.
+    #[test]
+    fn advance_level_makes_a_level_pending_now() {
+        let (world, player) = level_world();
+        raise_skill_ranks(&world, player, BLADE, 4, false);
+        assert!(advance_level(&world, player));
+        let level = world.get::<SkillUseLevel>(player).unwrap();
+        assert_eq!(level.pending.len(), 1);
+        assert_eq!(level.pending[0].tallies[0], 4);
+        drop(level);
+        let (mut other, player2) = level_world();
+        other.insert_resource(CharacterRuleset::new(LevelingModel::SKYRIM));
+        assert!(!advance_level(&other, player2));
+    }
+
+    /// OSL-API-003: `levelup` lists each pending level with the bonuses it offers and the picks made.
+    #[test]
+    fn the_report_lists_pending_levels() {
+        let (world, player) = level_world();
+        raise_skill_ranks(&world, player, BLADE, 10, false);
+        pick_attribute(&world, player, 0).unwrap();
+        let report = skill_use_report(&world, player).unwrap().join("\n");
+        assert!(report.contains("pending level 1 offers Strength +5, Intelligence +1"), "{report}");
+        assert!(report.contains("picked 1/3 (Strength); `levelup attr <attribute>` picks"), "{report}");
     }
 }

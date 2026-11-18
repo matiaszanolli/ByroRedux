@@ -72,7 +72,7 @@ const FALLOUT: &[u16] = &[
 
 /// Oblivion command ids this module runs.
 const OBLIVION: &[u16] = &[
-    0x10d4, 0x110f, 0x104e, 0x1617, 0x19e5, 0x101b, 0x1024, 0x1031, 0x1032, 0x103e, 0x1040, 0x1045, 0x1053, 0x1055, 0x1058, 0x1063, 0x106e, 0x1070, 0x1074,
+    0x10d4, 0x10d5, 0x10bd, 0x110f, 0x104e, 0x1617, 0x19e5, 0x101b, 0x1024, 0x1031, 0x1032, 0x103e, 0x1040, 0x1045, 0x1053, 0x1055, 0x1058, 0x1063, 0x106e, 0x1070, 0x1074,
     0x1075, 0x1076, 0x1077, 0x1082, 0x108f, 0x10a8, 0x10ae, 0x10af, 0x10b1, 0x10b5, 0x10bb, 0x10be, 0x10c1, 0x10c2,
     0x10c3, 0x10c4, 0x10c5, 0x10c6, 0x10c7, 0x10d1, 0x10d8, 0x10df, 0x10f8, 0x10f9, 0x10fb, 0x1109, 0x110d, 0x1116,
     0x111c, 0x1122, 0x1132, 0x1134, 0x1137, 0x1145, 0x1147, 0x114e, 0x1151, 0x1156, 0x1159, 0x115a, 0x115b, 0x115c,
@@ -1103,6 +1103,7 @@ fn the_pc_skill_commands_raise_the_players_skill_by_ranks() {
     let blade = index.oblivion_actor_value(14, true).unwrap();
     world.insert(player, ActorValues::from_pairs([(blade, 5.0)]));
     world.insert_resource(crate::skills::SkillProgress::default());
+    world.register::<byroredux_core::character::SkillUseLevel>();
     let c = ctx(None);
     let base = |world: &World| world.get::<ActorValues>(player).unwrap().get_base(blade).unwrap().base;
 
@@ -1120,4 +1121,12 @@ fn the_pc_skill_commands_raise_the_players_skill_by_ranks() {
     assert!(matches!(run(&world, 0x10d4, &nums(&[14.0, f32::NAN]), &c), Action::Declined));
     assert!(matches!(run(&world, 0x10d4, &nums(&[14.5, 1.0]), &c), Action::Declined));
     assert_eq!(base(&world), 8.0);
+
+    // `AdvancePCLevel` (#7052) freezes the tallies as a pending level; `SetPCSleepHours` queues its hours on Oblivion too.
+    assert!(is_done(&run(&world, 0x10d5, &[], &c)));
+    assert_eq!(world.get::<byroredux_core::character::SkillUseLevel>(player).unwrap().pending.len(), 1);
+    assert!(matches!(run(&world, 0x10d5, &[], &ctx(Some(ACTOR))), Action::Declined));
+    world.insert_resource(PendingSleep::default());
+    assert!(is_done(&run(&world, 0x10bd, &nums(&[8.0]), &c)));
+    assert_eq!(world.resource::<PendingSleep>().0, 8.0);
 }
