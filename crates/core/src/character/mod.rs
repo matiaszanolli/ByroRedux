@@ -57,6 +57,9 @@
 //! * [`skill`] — [`SkillDef`] / [`SkillSet`] / [`ResolvedSkill`]: the
 //!   per-game skill roster and its governing-attribute map, resolved to
 //!   `AVIF` FormIDs at load (resolve-or-skip).
+//! * [`skill_use`] — [`SkillUseCosts`] / [`SkillClass`]: classic-TES skill-use
+//!   experience (Oblivion): the cost of a rank from the five `fSkillUse*`
+//!   settings, the skill's class, and banking with rollover.
 //! * **Per-game family impls** — where every per-game *number* actually
 //!   lives, one module per lineage:
 //!   * [`fallout`] — [`fallout3_ruleset`], [`falloutnv_ruleset`],
@@ -102,6 +105,7 @@ pub mod reputation;
 pub mod resistance;
 pub mod ruleset;
 pub mod skill;
+pub mod skill_use;
 pub mod skyrim;
 pub mod stance;
 pub mod tes;
@@ -144,6 +148,7 @@ pub use resistance::{damage_multiplier, Affliction};
 pub use ruleset::CharacterRuleset;
 pub use stance::{SneakMovement, SneakSpeed, SneakSpeedSource, StanceModel};
 pub use skill::{ResolvedSkill, SkillDef, SkillSet};
+pub use skill_use::{SkillBank, SkillClass, SkillUseCosts, SKILL_USE_CAP};
 pub use skyrim::{
     skyrim_ruleset, skyrim_skill_xp_between, skyrim_skill_xp_to_next, SKYRIM_POOL_BASE,
     SKYRIM_SKILL_USE_CURVE,
@@ -179,7 +184,7 @@ mod tests {
             .collect();
         assert_eq!(
             declared.len(),
-            20,
+            21,
             "sub-module count changed — {declared:?}"
         );
         for module in declared {

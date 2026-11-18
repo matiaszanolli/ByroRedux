@@ -30,6 +30,8 @@
 //! and category-spend thresholds are unpublished research (`charal.md` §9),
 //! so no `LevelingModel::STARFIELD` is buildable yet.
 
+use super::skill_use::SkillUseCosts;
+
 /// What a single level-up grants in the [`LevelingModel::XpCurve`] (Fallout)
 /// model — the per-game progression seam.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
@@ -72,6 +74,9 @@ pub enum LevelingModel {
     SkillUse {
         major_skill_ups_per_level: u8,
         level_cap: u16,
+        /// The five `fSkillUse*` settings of a rank's cost
+        /// ([`SkillUseCosts`]), overlaid by [`LevelingModel::with_gmst`].
+        costs: SkillUseCosts,
     },
     /// Skyrim — a character-XP system fed by skill advancement. Raising a
     /// skill to rank `R` grants `R · xp_per_skill_rank` character XP; a level
@@ -109,6 +114,25 @@ impl LevelingModel {
                 pool_pick_gain,
                 level_cap,
             },
+            // OSL-XP-006 — the five `fSkillUse*` settings of a rank's cost.
+            // `Oblivion.esm` authors Factor and Exp; Minor, Major and Spec
+            // come from the executable's defaults, so a setting the load
+            // order does not author keeps the sourced constant.
+            Self::SkillUse {
+                major_skill_ups_per_level,
+                level_cap,
+                costs,
+            } => Self::SkillUse {
+                major_skill_ups_per_level,
+                level_cap,
+                costs: SkillUseCosts {
+                    factor: gmst("fSkillUseFactor").unwrap_or(costs.factor),
+                    exp: gmst("fSkillUseExp").unwrap_or(costs.exp),
+                    minor_mult: gmst("fSkillUseMinorMult").unwrap_or(costs.minor_mult),
+                    major_mult: gmst("fSkillUseMajorMult").unwrap_or(costs.major_mult),
+                    spec_mult: gmst("fSkillUseSpecMult").unwrap_or(costs.spec_mult),
+                },
+            },
             // #5915 — Fallout's curve and cap are authored too. GECK
             // *Experience Settings*: XP needed for level n is
             // `(n−1)·((n−2)/2·iXPBumpBase + iXPBase)`, and differencing gives
@@ -136,7 +160,6 @@ impl LevelingModel {
                     reward,
                 }
             }
-            other => other,
         }
     }
 
@@ -196,6 +219,7 @@ impl LevelingModel {
     pub const OBLIVION: Self = Self::SkillUse {
         major_skill_ups_per_level: 10,
         level_cap: 0,
+        costs: SkillUseCosts::OBLIVION,
     };
 
     /// Skyrim — `25·L + 75` XP per level, `1` character XP per skill rank
@@ -326,6 +350,16 @@ impl LevelingModel {
             .unwrap_or(matches!(self, Self::SkillXp { .. }))
     }
 
+    /// The classic-TES rank cost settings ([`SkillUseCosts`]), or `None` for a
+    /// model that does not level by skill use.
+    #[inline]
+    pub fn skill_use_costs(&self) -> Option<SkillUseCosts> {
+        match self {
+            Self::SkillUse { costs, .. } => Some(*costs),
+            _ => None,
+        }
+    }
+
     /// The hard level cap (`0` = uncapped): the sourced base-game constant,
     /// or the load order's authored `iMaxCharacterLevel` where
     /// [`Self::with_gmst`] overlaid one.
@@ -445,12 +479,39 @@ mod tests {
             LevelingModel::SkillUse {
                 major_skill_ups_per_level,
                 level_cap,
+                ..
             } => {
                 assert_eq!(major_skill_ups_per_level, 10);
                 assert_eq!(level_cap, 0);
             }
             _ => panic!("Oblivion should be a skill-use model"),
         }
+    }
+
+    /// OSL-XP-006 — the five `fSkillUse*` settings overlay the sourced
+    /// constants, and a setting the load order does not author keeps its
+    /// constant. No game branch: the arm is the model's own.
+    #[test]
+    fn skill_use_costs_overlay_the_load_orders_settings() {
+        let untouched = LevelingModel::OBLIVION.with_gmst(|_| None);
+        assert_eq!(untouched, LevelingModel::OBLIVION);
+
+        let tuned = LevelingModel::OBLIVION.with_gmst(|name| match name {
+            "fSkillUseFactor" => Some(0.5),
+            "fSkillUseMinorMult" => Some(2.0),
+            _ => None,
+        });
+        let costs = tuned.skill_use_costs().expect("a skill-use model");
+        assert_eq!(costs.factor, 0.5);
+        assert_eq!(costs.minor_mult, 2.0);
+        // Unauthored settings keep the sourced constants.
+        assert_eq!(costs.exp, SkillUseCosts::OBLIVION.exp);
+        assert_eq!(costs.major_mult, SkillUseCosts::OBLIVION.major_mult);
+        assert_eq!(costs.spec_mult, SkillUseCosts::OBLIVION.spec_mult);
+        // The model's other fields are untouched, and other models have no costs.
+        assert_eq!(tuned.level_cap(), 0);
+        assert!(LevelingModel::SKYRIM.skill_use_costs().is_none());
+        assert!(LevelingModel::FNV.skill_use_costs().is_none());
     }
 
     /// #6227 — a raise lifts a capped curve and leaves an uncapped or
