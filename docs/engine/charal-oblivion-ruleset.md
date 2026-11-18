@@ -1020,9 +1020,21 @@ the calculator does is settled, **when** each flag combination reaches it is
 [#7022](https://github.com/matiaszanolli/ByroRedux/issues/7022).
 
 `n = level - 1`. Every rounded value is stored with x87 `fistp`
-(`0x52248d`, `0x5225c2`); the rounding mode is the process control word,
-which was not checked (round to nearest is the default, so this is the
-assumption until measured).
+(`0x52248d`, `0x5225c2`), a bare store of a float local, so it rounds by the
+thread's control word. **Settled from the executable (#7040): round to nearest
+even.** The calculator holds no control-word instruction. Below `0x980000`
+every `fnstcw` of the program is followed by exactly two `fldcw` (set, then
+restore): no code writes the word one way. The C runtime's math routines
+compare it with `0x027F` and reload that constant from `0xaa5098` when it
+differs; `0x027F` is round to nearest even at 53-bit precision. Direct3D 9
+uses single precision with round to nearest unless the device is created with
+`D3DCREATE_FPU_PRESERVE` ([Microsoft: D3DCREATE](https://learn.microsoft.com/en-us/windows/win32/direct3d9/d3dcreate)),
+which keeps the thread's word. Every case rounds to nearest even, and the
+operands are float locals (`fstp dword [esp+0x14]` before each store), the
+width the engine computes in: `round_ties_even` in
+`crates/plugin/src/esm/records/oblivion_population.rs` is the same rule. Not
+observed in the running game; the flag the game passes to Direct3D was not
+decoded, and it does not change the rounding mode.
 
 | Value | Rule (address) |
 |---|---|
@@ -1036,10 +1048,32 @@ assumption until measured).
 | Encumbrance | Not in the calculator; 5 x Strength stays sourced from UESP only |
 
 Health, Magicka and Fatigue are skipped when the calculator's argument is
-nonzero (`0x522689`). The calls at `0x44733a`, `0x50c77c`, `0x50cf9d` and
-`0x523ff4` push 0 (full recalculation); the calls at `0x596ae5`, `0x5c29e6`
-and `0x5c2ac0` push 1 (attributes and skills only); `0x50ab73` was not
-resolved.
+nonzero (`0x522689`).
+
+**Callers (#7040).** Every call site resolved to its owner by the function's
+data references (the command table, the class vtables):
+
+| Call site | Owner | Argument |
+|---|---|---|
+| `0x44733a` | the walker `0x447300` over every NPC with ACBS bit 7; its callers are the data-load tail `0x40df80` (`0x40ebaa`, `0x40f45d`), the savegame load `0x465860` (`0x466990`), the level-up routine `0x66c3e0` (`0x66c551`) and the console command `RevertWorld` (`rw`, opcode `0x162`, `0x500c90`, call `0x500cf3`) | 0 (full) |
+| `0x523ff4` | a `TESNPC` virtual (`0x523f40`), after the bit 4 test | 0 |
+| `0x50ab73` | the script command `DuplicateNPCStats` (opcode `0x114f`, `0x50aaa0`): copies the source NPC's class (`+0x104`) and level to the destination, then recalculates it | 0 |
+| `0x50c77c` | `SetClass` (opcode `0x10f0`, `0x50c6e0`): stores the class, then recalculates | 0 |
+| `0x50cf9d` | `SetLevel` (opcode `0x1133`, `0x50cd30`): a non-player NPC base is recalculated after the level and its bounds are written; the player (`0xb333c4`) skips the whole tail, as the CS says ("will change the player's level, but not any of his/her stats", [CS: SetLevel](https://cs.uesp.net/wiki/SetLevel)) | 0 |
+| `0x596ae5` | `ClassMenu` virtual (`0x596980`, vtable offset `0x38`), the character-creation class screen | 1 (attributes and skills) |
+| `0x5c29e6`, `0x5c2ac0` | `RaceSexMenu` virtual (`0x5c2870`, vtable offset `0x28`), the race screen | 1 |
+
+The player's level-up is confirmed: `0x66c3e0` is reached from `0x5ac6a0`, then
+`0x5ac730`, then a `LevelUpMenu` virtual (`0x5ac7b0`, offset `0xc`). The
+calculator itself tests no ACBS flag: it needs a race (`+0xe8`) and a class
+(`+0x104`) and nothing else, and form id 7 (the `Player`) takes the player
+branch. The flag tests belong to the callers (bit 4 at the NPC load, bit 7 in
+the walker), so `SetLevel`, `SetClass` and `DuplicateNPCStats` recalculate
+any NPC whatever its flags, which is evidence for #7022. The engine does not
+do that: its `SetLevel` writes the level only
+(`crates/scripting/src/obscript_more/tail.rs`, `cmd_1133`) and `SetClass`
+stores the class only, so a script that retunes an NPC's level or class
+leaves its stats as spawned.
 
 **Triggers.** Two independent tests reach the calculator:
 
@@ -1050,18 +1084,56 @@ resolved.
   every NPC with the bit set (`0x44732b`–`0x44733a`). Its callers: the
   data-load tail of the program start (`0x40df80`, calls at `0x40ebaa`,
   `0x40f45d`), the savegame load (`0x465860`, call at `0x466990`) and
-  `0x66c3e0` (call at `0x66c551`, after a store through `0x519c50`; its
-  only caller is `0x5ac724`, which fits a player level-up and is inferred
-  from the call shape).
+  `0x66c3e0` (call at `0x66c551`, after a store through `0x519c50`; reached
+  from the `LevelUpMenu` virtual `0x5ac7b0`, so it is the player's level-up),
+  and the console command `RevertWorld` (`0x500cf3`).
 
 The engine therefore treats an NPC with either bit as auto-calc. Which of the
 two the editor's own controls map to, and the result of each of the four flag
 combinations over spawn, level change and reload, is the observation in #7022.
-Eight direct calculator call sites exist (`0x44733a`, `0x50ab73`, `0x50c77c`,
-`0x50cf9d`, `0x523ff4`, `0x596ae5`, `0x5c29e6`, `0x5c2ac0`); the functions
-holding `0x50ab73`, `0x50c77c`, `0x50cf9d`, `0x596ae5`, `0x5c29e6` and
-`0x5c2ac0` have no direct caller (command table or vtable) and were not
-decoded.
+
+### Creature level scaling — LOCKED from the executable (#7040)
+
+The CS says a PC-level-offset creature's Health, spell points and Fatigue are
+"multiplied by the level of the creature" ([CS: Stats Tab - Creatures](https://cs.uesp.net/wiki/Stats_Tab_-_Creatures)).
+The executable agrees, and shows where. Creatures have no calculator: the
+base form answers the value on every read.
+
+- The base value of an actor is `0x5ead00`; for every actor but the player it
+  asks the base form's virtual at `+0x128` and adds nothing (the multiplier is
+  1). For a `TESCreature` that virtual is `0x51d540`, which hands the pools
+  to `TESActorBase`'s getter `0x519d90`.
+- That getter reads Health through the form at `this+0x80` (virtual `+0x10`)
+  and spell points and Fatigue through the ACBS object at `this+0x24`
+  (virtuals `+0x48`, `+0x4c`). `TESCreature` overrides all three:
+  `0x51ca10` (Health), `0x51caa0` (spell points, ACBS word `+8`) and
+  `0x51cad0` (Fatigue, ACBS word `+0xa`).
+- Each returns the stored word unchanged when ACBS bit 7 ("PC Level Offset",
+  `acbs >> 7 & 1`) is clear. With it set, each returns `stored x max(level, 1)`
+  in 16-bit arithmetic (`imul cx, ax` then `movzx`), so a product past 65 535
+  wraps.
+- The level is the ACBS level getter `0x4677f0`: with bit 7 set it is the
+  record's level plus the player's base level (`0xb333c4`, the form's `+0x24`
+  data), then the Calc Min (`+0x10`) and Calc Max (`+0x12`) bounds; zero
+  bounds are disabled.
+
+The engine matches this (`creature_values` and `level` in
+`oblivion_population.rs`) with two differences, one fixed here:
+
+- **Fixed:** the product was an `f32` multiply, so 400 Health at level 200
+  read 80 000; the executable's is 14 464. It wraps now
+  (`creature_pools_scale_by_the_level_in_sixteen_bit_arithmetic`, which fails
+  on the old product).
+- **Open:** the executable multiplies on every read, so a PC-offset creature's
+  maxima follow the player's level while it lives; the engine stamps them once
+  at spawn (`actor_level_at_spawn`). The two agree until the player levels
+  with such a creature loaded, which cannot happen until Oblivion has a
+  level-up ([skill-use leveling PRD](../prd/oblivion-skill-use-leveling.md)).
+- A second word form of the creature (`0x51c980`, vtable offset `0x10` of another sub-object) scales as
+  `stored + level x fCreatureCalcDamage` with the same level. The CS says the attack damage of a PC-level-offset
+  creature is "added to 1/2 the level of the creature", which is that formula at a setting of 0.5; the value
+  `Oblivion.esm` authors was not read (the executable's default is 1.0). Not decoded further, and the engine
+  reads no attack damage from this model.
 
 ## Essential bleedout and encumbrance — LOCKED / NOT WIRED (#6284)
 

@@ -241,15 +241,14 @@ fn creature_values(
         push(index, out, code, f32::from(value));
     }
     if let Some(pools) = npc.oblivion_pools {
-        let multiplier = if npc.acbs_flags & PC_LEVEL_OFFSET == 0 {
-            Some(1.0)
-        } else {
-            level(npc, player_level).map(f32::from)
-        };
-        if let Some(multiplier) = multiplier {
-            push(index, out, 8, f32::from(stats.health) * multiplier);
-            push(index, out, 9, f32::from(pools.magicka) * multiplier);
-            push(index, out, 10, f32::from(pools.fatigue) * multiplier);
+        // The creature's Health, spell point and Fatigue getters (`0x51ca10`, `0x51caa0`, `0x51cad0`) hand the
+        // stored value back unchanged, or, with ACBS bit 7 set, multiply it by the level in 16-bit arithmetic
+        // (`imul cx, ax` then `movzx`): a product past 65 535 wraps (#7040).
+        let level = if npc.acbs_flags & PC_LEVEL_OFFSET == 0 { Some(1) } else { level(npc, player_level) };
+        if let Some(level) = level {
+            push(index, out, 8, f32::from(stats.health.wrapping_mul(level)));
+            push(index, out, 9, f32::from(pools.magicka.wrapping_mul(level)));
+            push(index, out, 10, f32::from(pools.fatigue.wrapping_mul(level)));
         }
     }
     push(index, out, 11, f32::from(stats.attributes[0]) * 5.0);
@@ -489,5 +488,38 @@ mod tests {
         npc.oblivion_pools.as_mut().unwrap().calc_max = 15;
         assert_eq!(level(&npc, Some(5)), Some(10));
         assert_eq!(level(&npc, Some(20)), Some(15));
+    }
+
+    #[test]
+    fn creature_pools_scale_by_the_level_in_sixteen_bit_arithmetic() {
+        use crate::esm::records::actor::OblivionCreatureStats;
+        let (index, mut npc) = fixture();
+        npc.is_creature = true;
+        npc.oblivion_creature_stats = Some(OblivionCreatureStats {
+            creature_type: 0,
+            combat: 20,
+            magic: 20,
+            stealth: 20,
+            soul: 0,
+            health: 400,
+            damage: 10,
+            attributes: [30; 8],
+        });
+        npc.oblivion_pools = Some(OblivionActorPools { magicka: 60, fatigue: 90, calc_max: 0 });
+        let pools = |npc: &super::super::NpcRecord, player: Option<u16>| {
+            let rows = derive(&ResolvedNpc::resolve(npc, &index), &index, player);
+            (value(&rows, 8), value(&rows, 9), value(&rows, 10))
+        };
+        // Without ACBS bit 7 the stored values stand, whatever the level.
+        npc.level = 12;
+        assert_eq!(pools(&npc, Some(20)), (Some(400.0), Some(60.0), Some(90.0)));
+        // With it, each is multiplied by the effective level (player 20 + offset 0).
+        npc.acbs_flags = PC_LEVEL_OFFSET;
+        npc.level = 0;
+        assert_eq!(pools(&npc, Some(20)), (Some(8000.0), Some(1200.0), Some(1800.0)));
+        // A product past 65 535 wraps, as the executable's 16-bit multiply does: 400 * 200 = 80 000.
+        assert_eq!(pools(&npc, Some(200)).0, Some(14464.0));
+        // The level is unknown before a player exists: no pool is stamped.
+        assert_eq!(pools(&npc, None), (None, None, None));
     }
 }
