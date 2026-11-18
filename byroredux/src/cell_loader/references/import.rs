@@ -463,6 +463,21 @@ pub(super) fn parse_and_import_spt(
         });
     let leaf_texture_override = resolved_leaf_texture.as_deref();
 
+    // A TREE authored without an ICON (6 of 142 in Oblivion.esm, among them
+    // `ShrubDeadBush`) has no leaf texture anywhere: its `.spt` names only a
+    // bark path. The placeholder then sampled the default white texture and
+    // drew a flat white card. The tree's own distant billboard,
+    // `textures\trees\billboards\<stem>.dds`, is the original engine's image
+    // of that tree, so use it when the archives hold it.
+    let billboard_fallback = if leaf_texture_override.is_none() {
+        tex_provider.and_then(|provider| {
+            crate::cell_loader::tree_lod_legacy::billboard_texture_path(label)
+                .filter(|path| provider.has_texture(path))
+        })
+    } else {
+        None
+    };
+
     let bounds = tree_record.and_then(|t| t.bounds).map(|b| {
         let min = [b.min[0] as f32, b.min[1] as f32, b.min[2] as f32];
         let max = [b.max[0] as f32, b.max[1] as f32, b.max[2] as f32];
@@ -495,6 +510,7 @@ pub(super) fn parse_and_import_spt(
 
     let params = byroredux_spt::SptImportParams {
         leaf_texture_override,
+        fallback_texture: billboard_fallback.as_deref(),
         bounds,
         wind,
         form_id,

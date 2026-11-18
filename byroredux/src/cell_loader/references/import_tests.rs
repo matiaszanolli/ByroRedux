@@ -490,3 +490,47 @@ fn placement_replaces_model_root_only_for_verified_games() {
         assert!(!placement_replaces_model_root(game), "{game:?}");
     }
 }
+
+/// A TREE with no `ICON` (6 of 142 in Oblivion.esm, among them
+/// `ShrubDeadBush`) used to get the default white texture: the placeholder was
+/// a flat white card. Its `.spt` carries only a bark path, so the texture comes
+/// from the tree's own `trees\billboards\<stem>.dds`.
+///
+/// Env-gated like the other corpus pins: skips when Oblivion is not installed.
+#[test]
+fn oblivion_trees_without_icon_get_their_billboard_texture() {
+    let dir = std::env::var("BYROREDUX_OBL_DATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            "/mnt/data/SteamLibrary/steamapps/common/Oblivion/Data".into()
+        });
+    let Ok(esm) = std::fs::read(dir.join("Oblivion.esm")) else {
+        eprintln!("oblivion_trees_without_icon: no game data, nothing checked");
+        return;
+    };
+    // The Dementia trees' billboards ship in the Shivering Isles archive.
+    let archives: Vec<_> = [
+        "Oblivion - Textures - Compressed.bsa",
+        "DLCShiveringIsles - Textures.bsa",
+    ]
+    .iter()
+    .filter_map(|n| byroredux_bsa::BsaArchive::open(&dir.join(n)).ok())
+    .collect();
+    if archives.is_empty() {
+        eprintln!("oblivion_trees_without_icon: no texture archive, nothing checked");
+        return;
+    }
+    let index = byroredux_plugin::esm::records::parse_esm(&esm).expect("parse esm");
+    let mut checked = 0;
+    for tree in index.trees.values().filter(|t| t.leaf_texture.is_empty()) {
+        let path = crate::cell_loader::tree_lod_legacy::billboard_texture_path(&tree.model_path)
+            .expect("an .spt model");
+        assert!(
+            archives.iter().any(|a| a.contains(&path)),
+            "TREE {:?} has no ICON and no billboard texture '{path}'",
+            tree.editor_id
+        );
+        checked += 1;
+    }
+    assert!(checked > 0, "the census fixture found no ICON-less TREE");
+}
