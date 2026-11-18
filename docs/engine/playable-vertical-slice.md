@@ -1850,6 +1850,19 @@ front door opens onto Goodsprings.
   stays where the actor is; and a script's `player.equipitem <weapon>` wields it
   (the bark hands over a Varmint Rifle). `fnv-vcg02-route.sh` gates all of it.
 
+**Fallout 3's birth (2026-11-17).** `--game fo3 --new-game` opens Vault 101 (`Vault101d`)
+and starts the quest the shipped `Fallout_default.ini` names in `SCharGenQuest`, CG00
+("Birth", `0001f388`), at stage 0: the same start as VCG00, now read from the INI for
+both games (`chargen_quest`). The new-game handler of `Fallout3.exe` enables that quest
+(`TESQuest::SetEnabled`), and nothing else starts it. CG00's own scripts then run
+(stages 0, 5, 6, 8, 9, 10, 18, 20, 22, 38, 40, 42, 60, 62, 65, 80, 85, 90, 100): the "Choose
+sex" message box (`ui.answer`), the name entry (`chargen name`), the race and sex page
+(`chargen race`), and the quest stops at 100 and CG01 ("Baby Steps") starts at its stages
+0, 5 and 10. Every stage's result script reported `Completed`. Observed in one headless
+run, driven by the console; nothing was watched on screen, and which commands inside those
+scripts had an effect (the imod fades, `addscriptpackage` for the player, the actors'
+`evp` animations, the baby's cry) was not checked.
+
 **Not modelled yet.** The movies' mute and pause-music flags, Papyrus
 `Game.PlayBink`, the INI start sequences, which audio track a movie plays (PRD `bink-video-playback`,
 #6855); face sliders (GUI-NG-005); an unwatched actor's offscreen arrival and multi-hop routes

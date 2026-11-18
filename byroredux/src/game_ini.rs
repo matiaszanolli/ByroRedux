@@ -28,6 +28,14 @@ pub(crate) fn read_default_ini(args: &[String], game: GameKind) -> Option<String
     std::fs::read(path).ok().map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// The form ID the install's default INI gives `sCharGenQuest:General`: the quest a Fallout 3 /
+/// New Vegas new game starts (hex digits, eight in the shipped files). `None` when the INI does not
+/// set it or the value is not hex.
+pub(crate) fn chargen_quest(ini_text: &str) -> Option<u32> {
+    let value = ini_value(ini_text, "General", "sCharGenQuest")?;
+    u32::from_str_radix(value.trim(), 16).ok()
+}
+
 /// `[section] key` of an INI file's text, both matched case-insensitively: `Some("")` for a key set
 /// to nothing, `None` for one the section does not set. Lines starting with `;` are comments.
 pub(crate) fn ini_value(text: &str, section: &str, key: &str) -> Option<String> {
@@ -91,5 +99,16 @@ mod tests {
             assert_eq!(ini_f32(&ini, "Audio", "iMusicTransitionInMS"), None, "{value}");
         }
         assert_eq!(ini_f32("[Audio]\niMusicTransitionInMS=1000\n", "Audio", "iMusicTransitionInMS"), Some(1000.0));
+    }
+
+    /// The new-game quest comes from `SCharGenQuest`: Fallout 3's CG00, New Vegas's VCG00.
+    #[test]
+    fn the_chargen_quest_is_read_from_the_default_ini() {
+        assert_eq!(chargen_quest("[General]\nSStartingCell=\nSCharGenQuest=0001f388\n"), Some(0x0001_F388));
+        assert_eq!(chargen_quest("[General]\nSCharGenQuest=00102037\n"), Some(0x0010_2037));
+        assert_eq!(chargen_quest("[General]\nSStartingCell=\n"), None, "unset");
+        assert_eq!(chargen_quest("[General]\nSCharGenQuest=\n"), None, "empty");
+        assert_eq!(chargen_quest("[General]\nSCharGenQuest=Tutorial\n"), None, "not hex");
+        assert_eq!(chargen_quest("[Audio]\nSCharGenQuest=0001f388\n"), None, "another section");
     }
 }

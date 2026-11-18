@@ -319,18 +319,24 @@ pub(crate) fn populate_scene_runtime(
     if index.game == byroredux_plugin::esm::reader::GameKind::Fallout3NV
         && crate::components::NewGameStart::active(world)
     {
-        // New Vegas opens with VCG00 ("Welcome To Fabulous New Vegas"): its
-        // stage 0 moves the player to VCG01PlayerStartMarkerREF in Doc
-        // Mitchell's house, plays FNVIntro.bik and hands over to VCG01, the
-        // character-creation quest. The QUST is not Start Game Enabled and no
-        // record or script in the masters starts it or sets a stage on it;
-        // its own MenuMode block ("if starting at VCG00": stage 0 while the
-        // stage is below 5) runs under the original's new-game menus, which
-        // this engine does not have. So the engine starts it at stage 0, on a
-        // new game only: stage 0 takes the Pip-Boy and the controls, which
-        // would strand a session that began in a named cell or from a save.
+        // A Fallout 3 / New Vegas new game starts the quest named by the
+        // `sCharGenQuest` setting: the new-game handler of `Fallout3.exe`
+        // looks the form up and enables the quest (`TESQuest::SetEnabled`,
+        // 0x775720), and the shipped default INI sets it (`0001f388` = CG00
+        // "Birth" on Fallout 3, `00102037` = VCG00 on New Vegas). The QUSTs
+        // are not Start Game Enabled and no record or script in the masters
+        // starts them or sets a stage on them; New Vegas's own MenuMode block
+        // ("if starting at VCG00": stage 0 while the stage is below 5) runs
+        // under the original's new-game menus, which this engine does not
+        // have. So the engine starts the quest at stage 0, on a new game
+        // only: stage 0 takes the Pip-Boy and the controls (New Vegas) or the
+        // actors and the chargen flag (Fallout 3), which would strand a
+        // session that began in a named cell or from a save.
         const VCG00: u32 = 0x0010_2037;
-        if let Some(quest) = index.quests.get(&VCG00).filter(|quest| quest.editor_id.eq_ignore_ascii_case("VCG00")) {
+        let ini = crate::game_ini::read_default_ini(&crate::cli_args::effective_args(), index.game);
+        let chargen = ini.as_deref().and_then(crate::game_ini::chargen_quest).unwrap_or(VCG00);
+        if let Some(quest) = index.quests.get(&chargen) {
+            log::info!("new game: starting chargen quest {} ({chargen:08X}) at stage 0", quest.editor_id);
             engine_start_quests += usize::from(byroredux_scripting::install_engine_start_quest(
                 world,
                 byroredux_scripting::QuestFormId(quest.form_id),

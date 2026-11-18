@@ -165,8 +165,9 @@ default_materials_bsas = []
 # `SCharGenQuest=0001f388` (CG00, "Birth"), and the three start markers its
 # stage 0 moves the actors to (CG00DadStartMarker, CG00DoctorLiStartMarker,
 # CG00MomStartMarker) are all placed in `Vault101d` (form 00028138, 1610 REFRs;
-# FULL "Vault 101"). The engine has no birth sequence yet: the new-game movie
-# (`sIntroMovie`) plays and the player stands in the cell.
+# FULL "Vault 101"). The engine starts CG00 at stage 0 on a new game (the same
+# `SCharGenQuest` start as New Vegas's VCG00) and its birth sequence runs from the
+# quest's own scripts; the new-game movie (`sIntroMovie`) plays first.
 new_game_cell = "Vault101d"
 sample_cells = [
     "MegatonPlayerHouse",
