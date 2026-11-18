@@ -3031,6 +3031,40 @@ fn oblivion_skill_use_settings_resolve_against_the_real_master() {
     assert!((costs.cost(5, base) - 2.89).abs() < 0.005, "{}", costs.cost(5, base));
 }
 
+/// #7051 (OSL-USE-001) — `byroredux_core::character::OBLIVION_SKILL_USE_VALUES` is UESP's per-action table,
+/// held as data; `Oblivion.esm`'s 21 `SKIL` records author the same two use values (`DATA`: action, attribute,
+/// specialization, use value 1, use value 2; `INDX` is the skill's actor-value code, Armorer 12).
+#[test]
+#[ignore = "needs Oblivion game data on disk"]
+fn oblivion_skill_use_values_match_the_masters_skil_records() {
+    use byroredux_core::character::OBLIVION_SKILL_USE_VALUES;
+    use byroredux_plugin::esm::reader::EsmReader;
+    use byroredux_plugin::esm::records::oblivion_actor_values::OBLIVION_ACTOR_VALUES;
+    let Some(data) = data_dir(test_paths::OBLIVION_ENV, test_paths::OBLIVION_DEFAULT) else {
+        eprintln!("[OBL] skipping: BYROREDUX_OBL_DATA unset and fallback path missing");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Oblivion.esm")).expect("read Oblivion.esm");
+    let mut reader = EsmReader::new(&bytes);
+    reader.read_file_header().unwrap();
+    let mut authored: Vec<(String, u32, f32, f32)> = Vec::new();
+    reader
+        .for_each_record(bytes.len(), Some(b"SKIL"), |_, subs| {
+            let find = |tag: &[u8; 4]| subs.iter().find(|s| &s.sub_type == tag).map(|s| &s.data);
+            let index = u32::from_le_bytes(find(b"INDX").expect("INDX")[..4].try_into().unwrap());
+            let data = find(b"DATA").expect("DATA");
+            assert_eq!(data.len(), 20, "SKIL DATA is action, attribute, specialization, two use values");
+            let value = |at: usize| f32::from_le_bytes(data[at..at + 4].try_into().unwrap());
+            authored.push((OBLIVION_ACTOR_VALUES[index as usize].to_owned(), index, value(12), value(16)));
+        })
+        .unwrap();
+    assert_eq!(authored.len(), 21, "{authored:?}");
+    for (name, code, first, second) in &authored {
+        let row = OBLIVION_SKILL_USE_VALUES.get(code.wrapping_sub(12) as usize);
+        assert_eq!(row, Some(&(*first, *second)), "{name} ({code})");
+    }
+}
+
 /// Oblivion: the 160-byte NAM0 stride target of #533. Minimal parse
 /// harness (no per-category floors — that lives in future Oblivion
 /// dispatch work) just verifies every NAM0 is read. Observed vanilla

@@ -546,6 +546,13 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
             outcome.push_str("; bleedout");
         }
         note_player_damage(world, event.aggressor, target, before - after.max(0.0));
+        // Oblivion skill-use leveling (#7051): the blow landed on a living target, so it feeds the
+        // weapon's skill (the player's blow) or the struck armor piece's (the player's hit).
+        let seed = world
+            .try_resource::<CombatState>()
+            .map_or(0, |state| u64::from(state.hits_landed))
+            ^ (u64::from(target) << 32 | u64::from(event.aggressor));
+        crate::skill_use_emit::on_landed_hit(world, event.aggressor, target, event.blocked, seed);
 
         if killed {
             if let Some(mut dead) = world.query_mut::<Dead>() {

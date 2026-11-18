@@ -758,6 +758,14 @@ pub fn parse_armo(
                     r.u32_or_default()
                 });
                 slot_mask = (biped_flags & 0xFFFF) as u16;
+                // Oblivion's General Flags byte carries Heavy Armor (bit 7); every Oblivion ARMO is light or
+                // heavy (clothing is its own `CLOT` record), so the same `armor_type` the Skyrim path reads
+                // (0 light, 1 heavy) names the skill a struck piece feeds (#7051, OSL-USE-003).
+                if game == GameKind::Oblivion
+                    && let Some(general) = r.u8().ok()
+                {
+                    armor_type = Some(u32::from(general & 0x80 != 0));
+                }
             }
             // BOD2 (Skyrim+): biped_slots (u32) + armor_type (u32).
             // armor_type: 0=light, 1=clothing, 2=heavy, 3=none, 4=gauntlets.
@@ -2754,12 +2762,13 @@ mod tests {
         ];
         let item = parse_armo(0x000972BB, &subs, GameKind::Oblivion, &None);
         match &item.kind {
-            ItemKind::Armor { biped_flags, slot_mask, .. } => {
+            ItemKind::Armor { biped_flags, slot_mask, armor_type, .. } => {
                 assert_eq!(
                     *biped_flags, 0x3,
                     "the General Flags byte (0x80, Heavy) must not leak into bits 16-23"
                 );
                 assert_eq!(*slot_mask, 0x3);
+                assert_eq!(*armor_type, Some(1), "General Flags 0x80 is Heavy Armor");
             }
             _ => panic!("expected Armor kind"),
         }
@@ -2817,7 +2826,10 @@ mod tests {
         let subs = vec![sub(b"BMDT", bmdt), sub(b"DATA", data)];
         let item = parse_armo(0x1, &subs, GameKind::Oblivion, &None);
         match item.kind {
-            ItemKind::Armor { biped_flags, .. } => assert_eq!(biped_flags, 0x4),
+            ItemKind::Armor { biped_flags, armor_type, .. } => {
+                assert_eq!(biped_flags, 0x4);
+                assert_eq!(armor_type, Some(1), "0xC0 includes Heavy");
+            }
             _ => panic!("expected Armor kind"),
         }
     }

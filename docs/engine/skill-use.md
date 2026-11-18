@@ -102,10 +102,29 @@ executable differ, the executable's census is the source: Mercantile banks per b
 
 ## 3. What the engine can feed
 
-OSL-USE-006 and -007 stand: a skill whose system the engine lacks is reported unfed, never fed by a stand-in action. Which rows the engine
-has a system for is the PRD's §3 and Phase 2's census (#7051). From this document's side: alchemy (rows 1 and 2), the lock-picking game
-(5), the persuasion game (6), repair (7) and barter (4) are menus and games the original runs and the engine does not run for Oblivion;
-combat, magic, movement and stance time (rows 8 to 17) are the actions systems the engine already has to varying degrees.
+OSL-USE-006 and -007 stand: a skill whose system the engine lacks is reported unfed, never fed by a stand-in action. `levelup` prints the
+unfed list; its source is `FED_SKILLS` in `oblivion_skill_use.rs`, where a skill joins in the commit that adds its emitter.
+
+**Fed since #7051 Phase 2a** (5 of 21 skills), all at `combat_damage_system`'s one `HitEvent` site (`byroredux/src/skill_use_emit.rs`):
+
+- **Blade, Blunt, Hand to Hand** (usage 0: 0.5, 0.5, 0.6): a melee blow the player lands on a living target. The weapon's skill is its
+  `WEAP` type: 0 and 1 are blades, 2 and 3 blunt weapons, no weapon is Hand to Hand (UESP's weapon pages). A staff (type 4) casts and a
+  bow (type 5) has no shot path in the engine, so neither feeds a melee skill. UESP and the PRD say "each hit", so the emitter feeds per
+  landed blow, not per swing; whether the executable's swing loop (row 17) counts swings is not read.
+- **Light and Heavy Armor** (usage 0: 1.5, 1.25): a hit the player takes. The struck piece is `0x5e5a00`'s roll, decoded this phase: a
+  number from 0 to 99 is compared with the running total of the five slots' weights, Helmet 10, Cuirass 25, Greaves 15, Gauntlets 10,
+  Boots 10 (`iArmorDamageHelmChance` and its siblings, executable defaults; the setting objects are created in the order Cuirass,
+  Greaves, Helm, Gauntlets, Boots and are summed in the order Helm, Cuirass, Greaves, Gauntlets, Boots), and a roll past the fifth slot
+  strikes the shield, the remaining 30. An empty struck slot re-rolls, up to seven times; a piece that is a heavy armor feeds Heavy Armor,
+  any other Light Armor. Oblivion's heavy flag is `BMDT` General Flags bit 7, now kept as `armor_type` 1 (the Skyrim field). The engine's roll is
+  a deterministic mix of the hit counter and the two actors, not the executable's RNG.
+
+**Not fed, and why** (OSL-USE-006):
+
+- **Block**: a blocked hit needs a target-side guard, and no producer models one (`HitEvent::blocked` is the aggressor's own stance, #4324).
+- **Marksman**: the bow (type 5) has no shot path; the engine's ranged path is the guns'.
+- **Alchemy (rows 1 and 2), Armorer (7), Security (5), Speechcraft (6), Mercantile (4)**: menus and minigames the engine does not run for Oblivion.
+- **Spell schools (16), Athletics (14, 15), Sneak (3, 13), Acrobatics (10 to 12)**: Phase 2b.
 
 ## 4. The emitter contract (OSL-XP-007)
 

@@ -134,6 +134,103 @@ impl SkillUseCosts {
     }
 }
 
+/// The experience each Oblivion skill's action earns: the two use values of the skill's `SKIL` record
+/// (`DATA`: value 1, value 2), which UESP's *Increasing Skills* "Exp./Action" column lists and which
+/// `Oblivion.exe` reads through `0x668c30(skill, usage, mult)` (`docs/engine/skill-use.md` §1). Held as
+/// data (OSL-USE-001), by actor-value code in `CLAS` order (Armorer 12 first, Speechcraft 32 last; the
+/// roster's names live once, in the plugin's `OBLIVION_ACTOR_VALUES`). The real-data test
+/// `oblivion_skill_use_values_match_the_masters_skil_records` checks it against `Oblivion.esm`. Each
+/// row is value 1 (`usage` 0) and value 2 (`usage` 1).
+pub const OBLIVION_SKILL_USE_VALUES: [(f32, f32); 21] = [
+    (1.5, 1.0),   // Armorer
+    (0.03, 0.04), // Athletics
+    (0.5, 1.0),   // Blade
+    (1.25, 1.0),  // Block
+    (0.5, 1.0),   // Blunt
+    (0.6, 1.0),   // Hand to Hand
+    (1.25, 1.0),  // Heavy Armor
+    (5.0, 0.5),   // Alchemy
+    (0.0, 4.0),   // Alteration
+    (0.0, 6.0),   // Conjuration
+    (0.0, 1.2),   // Destruction
+    (0.0, 3.0),   // Illusion
+    (0.0, 3.0),   // Mysticism
+    (0.0, 0.6),   // Restoration
+    (0.3, 3.0),   // Acrobatics
+    (1.5, 1.0),   // Light Armor
+    (0.8, 1.0),   // Marksman
+    (0.4, 1.0),   // Mercantile
+    (1.5, 1.0),   // Security
+    (0.75, 2.0),  // Sneak
+    (2.4, 1.0),   // Speechcraft
+];
+
+/// The experience of one use of the skill with actor-value code `skill_av` (12 to 32): `use value[usage]`
+/// (`usage` 0 or 1), times `mult` when `mult` is not 0 (`0x668c30`); `None` for a code outside the 21
+/// skills or a result not above 0 (the original drops it).
+#[must_use]
+pub fn skill_use_amount(skill_av: u32, usage: u8, mult: f32) -> Option<f32> {
+    let &(first, second) = OBLIVION_SKILL_USE_VALUES.get(skill_av.checked_sub(OBLIVION_SKILL_AV_FIRST)? as usize)?;
+    let value = if usage == 0 { first } else { second };
+    let amount = if mult != 0.0 { value * mult } else { value };
+    (amount > 0.0 && amount.is_finite()).then_some(amount)
+}
+
+/// The armor slots a hit can strike, in the executable's roll order (`0x5e5a00`): five weighted slots,
+/// then the shield as the remainder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArmorHitSlot {
+    Helmet,
+    Cuirass,
+    Greaves,
+    Gauntlets,
+    Boots,
+    Shield,
+}
+
+impl ArmorHitSlot {
+    /// The five rolled slots with their setting and executable default (`iArmorDamage*Chance`: 10, 25,
+    /// 15, 10, 10 of 100; the shield takes the rest, 30).
+    pub const ROLLED: [(Self, &'static str, u32); 5] = [
+        (Self::Helmet, "iArmorDamageHelmChance", 10),
+        (Self::Cuirass, "iArmorDamageCuirassChance", 25),
+        (Self::Greaves, "iArmorDamageGreavesChance", 15),
+        (Self::Gauntlets, "iArmorDamageGauntletsChance", 10),
+        (Self::Boots, "iArmorDamageBootsChance", 10),
+    ];
+
+    /// The slot a roll of `0..100` strikes under `chances` (the five rolled slots' weights, in
+    /// [`Self::ROLLED`] order): the first slot whose running total exceeds the roll; past the fifth, the shield.
+    #[must_use]
+    pub fn from_roll(chances: [u32; 5], roll: u32) -> Self {
+        let mut total = 0;
+        for (slot, chance) in Self::ROLLED.iter().map(|(slot, ..)| *slot).zip(chances) {
+            total += chance;
+            if roll < total {
+                return slot;
+            }
+        }
+        Self::Shield
+    }
+
+    /// The Oblivion biped-flag bits the slot's piece occupies (xEdit `wbBipedFlags`: Head 0, Hair 1, Upper
+    /// Body 2, Lower Body 3, Hand 4, Foot 5, Shield 13).
+    #[must_use]
+    pub const fn biped_mask(self) -> u32 {
+        match self {
+            Self::Helmet => 0b11,
+            Self::Cuirass => 1 << 2,
+            Self::Greaves => 1 << 3,
+            Self::Gauntlets => 1 << 4,
+            Self::Boots => 1 << 5,
+            Self::Shield => 1 << 13,
+        }
+    }
+}
+
+/// How many times a hit re-rolls when the struck slot holds nothing (`0x5e5a00` loops seven times).
+pub const ARMOR_HIT_ATTEMPTS: usize = 7;
+
 fn sanitize(banked: f32) -> f32 {
     if banked.is_finite() && banked > 0.0 {
         banked
@@ -318,5 +415,47 @@ mod tests {
         // Outside the roster: no specialization.
         assert_eq!(SkillClass::of(5, 0, &[]), BASE);
         assert_eq!(SkillClass::of(33, 2, &[]), BASE);
+    }
+
+    /// OSL-USE-001: there is a row for every skill the ruleset names, and a row holds the amounts UESP lists
+    /// (spot checks across the three specializations; codes: Blade 14, Block 15, Alteration 20, Mercantile 29).
+    #[test]
+    fn every_oblivion_skill_has_a_use_row() {
+        assert_eq!(OBLIVION_SKILL_USE_VALUES.len(), crate::character::SkillSet::OBLIVION.len());
+        assert_eq!((OBLIVION_SKILL_AV_LAST - OBLIVION_SKILL_AV_FIRST + 1) as usize, OBLIVION_SKILL_USE_VALUES.len());
+        for code in OBLIVION_SKILL_AV_FIRST..=OBLIVION_SKILL_AV_LAST {
+            assert!(
+                skill_use_amount(code, 0, 0.0).is_some() || skill_use_amount(code, 1, 0.0).is_some(),
+                "skill {code} earns nothing"
+            );
+        }
+        assert_eq!(skill_use_amount(14, 0, 0.0), Some(0.5)); // Blade: each hit on a target
+        assert_eq!(skill_use_amount(15, 0, 0.0), Some(1.25)); // Block: each blocked hit
+        assert_eq!(skill_use_amount(20, 1, 0.0), Some(4.0)); // Alteration: each spell cast
+        assert_eq!(skill_use_amount(20, 0, 0.0), None, "school skills' value 1 is 0");
+        assert_eq!(skill_use_amount(29, 0, 5.0), Some(2.0)); // Mercantile: a multiplier scales the value
+        assert_eq!(skill_use_amount(11, 0, 0.0), None, "Encumbrance is not a skill");
+        assert_eq!(skill_use_amount(33, 0, 0.0), None);
+    }
+
+    /// `0x5e5a00`: a roll under the first weight strikes the helmet; each weight extends the running total;
+    /// what is left of the 100 (30 by default) is the shield.
+    #[test]
+    fn a_roll_strikes_the_slot_whose_running_total_covers_it() {
+        let chances = [10, 25, 15, 10, 10];
+        let slot = |roll| ArmorHitSlot::from_roll(chances, roll);
+        assert_eq!(slot(0), ArmorHitSlot::Helmet);
+        assert_eq!(slot(9), ArmorHitSlot::Helmet);
+        assert_eq!(slot(10), ArmorHitSlot::Cuirass);
+        assert_eq!(slot(34), ArmorHitSlot::Cuirass);
+        assert_eq!(slot(35), ArmorHitSlot::Greaves);
+        assert_eq!(slot(49), ArmorHitSlot::Greaves);
+        assert_eq!(slot(50), ArmorHitSlot::Gauntlets);
+        assert_eq!(slot(60), ArmorHitSlot::Boots);
+        assert_eq!(slot(69), ArmorHitSlot::Boots);
+        assert_eq!(slot(70), ArmorHitSlot::Shield);
+        assert_eq!(slot(99), ArmorHitSlot::Shield);
+        // The defaults sum to 70, leaving the shield its authored 30.
+        assert_eq!(ArmorHitSlot::ROLLED.iter().map(|(.., chance)| chance).sum::<u32>(), 70);
     }
 }

@@ -149,7 +149,8 @@ pub use ruleset::CharacterRuleset;
 pub use stance::{SneakMovement, SneakSpeed, SneakSpeedSource, StanceModel};
 pub use skill::{ResolvedSkill, SkillDef, SkillSet};
 pub use skill_use::{
-    SkillBank, SkillClass, SkillUseCosts, OBLIVION_SKILL_AV_FIRST, OBLIVION_SKILL_AV_LAST, SKILL_USE_CAP,
+    skill_use_amount, ArmorHitSlot, SkillBank, SkillClass, SkillUseCosts, ARMOR_HIT_ATTEMPTS, OBLIVION_SKILL_AV_FIRST,
+    OBLIVION_SKILL_AV_LAST, OBLIVION_SKILL_USE_VALUES, SKILL_USE_CAP,
 };
 pub use skyrim::{
     skyrim_ruleset, skyrim_skill_xp_between, skyrim_skill_xp_to_next, SKYRIM_POOL_BASE,

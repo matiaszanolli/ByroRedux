@@ -242,6 +242,32 @@ pub fn raise_skill_ranks(
     })
 }
 
+/// The Oblivion skills (actor-value codes) an engine system feeds today. The one list behind `levelup`'s
+/// unfed report and the PRD's fed-skills metric (§8, OSL-USE-006): a skill joins it in the commit that
+/// adds its emitter, never before. Blade, Blunt and Hand to Hand are fed by a melee hit that lands on a
+/// living target, Light and Heavy Armor by a hit the player takes (#7051). Block waits on a target-side
+/// guard (no producer models one: `HitEvent::blocked` is the aggressor's own stance, #4324) and
+/// Marksman on a bow shot (the engine's ranged path is the guns').
+pub const FED_SKILLS: &[u32] = &[14, 16, 17, 18, 27];
+
+/// Queue one use of the skill `code` for the drain (OSL-XP-007): the experience is the skill's use
+/// value `usage` times `mult` (0 for none), `skill_use_amount`. An emitter calls this and nothing else;
+/// it locks nothing of the player's. A ruleset that does not level by skill use queues nothing.
+pub fn queue_skill_use(world: &World, code: u32, usage: u8, mult: f32) {
+    let levels_by_use = world
+        .try_resource::<CharacterRuleset>()
+        .is_some_and(|ruleset| ruleset.leveling.skill_use_costs().is_some());
+    if !levels_by_use || !FED_SKILLS.contains(&code) {
+        return;
+    }
+    let Some(amount) = byroredux_core::character::skill_use_amount(code, usage, mult) else {
+        return;
+    };
+    if let Some(mut pending) = world.try_resource_mut::<PendingSkillUse>() {
+        pending.0.push(SkillUseRecord { skill: code, amount });
+    }
+}
+
 /// OSL-API-003: what `levelup` reports for an Oblivion player — the class it read and its
 /// major skills, the level count, each attribute's tally, and per skill the value, the experience
 /// banked and its cost. `None` when the ruleset does not level by skill use. (The pending levels
@@ -304,6 +330,17 @@ pub fn skill_use_report(world: &World, player: EntityId) -> Option<Vec<String>> 
             skill.costs.cost(value, skill.class),
         ));
     }
+    // OSL-USE-006 / 007: a skill no system feeds is reported, never fed by a stand-in action.
+    let unfed: Vec<&str> = (byroredux_core::character::OBLIVION_SKILL_AV_FIRST
+        ..=byroredux_core::character::OBLIVION_SKILL_AV_LAST)
+        .filter(|code| !FED_SKILLS.contains(code))
+        .filter_map(|code| OBLIVION_ACTOR_VALUES.get(code as usize).copied())
+        .collect();
+    out.push(format!(
+        "levelup: fed skills {}/21; unfed: {}",
+        FED_SKILLS.len(),
+        unfed.join(", ")
+    ));
     Some(out)
 }
 
@@ -490,5 +527,35 @@ mod tests {
         assert!(report.contains("Sneak 5 banked 0.00 / cost 2.89"), "{report}");
         world.insert_resource(CharacterRuleset::new(LevelingModel::SKYRIM));
         assert!(skill_use_report(&world, player).is_none());
+    }
+
+    /// OSL-USE-001 / OSL-USE-006: a fed skill queues its SKIL amount; an unfed one queues nothing, and
+    /// `levelup` lists it; another model queues nothing.
+    #[test]
+    fn an_emitter_queues_the_skil_amount_and_only_for_fed_skills() {
+        let (mut world, player, _, _) = world();
+        install(&mut world);
+        queue_skill_use(&world, BLADE, 0, 0.0);
+        queue_skill_use(&world, 30, 0, 0.0); // Security: no lock-picking game
+        queue_skill_use(&world, 15, 0, 0.0); // Block: no target-side guard
+        queue_skill_use(&world, 17, 0, 0.0); // Hand to Hand
+        queue_skill_use(&world, 99, 0, 0.0);
+        assert_eq!(
+            world.resource::<PendingSkillUse>().0,
+            vec![
+                SkillUseRecord { skill: BLADE, amount: 0.5 },
+                SkillUseRecord { skill: 17, amount: 0.6 },
+            ]
+        );
+        let report = skill_use_report(&world, player).unwrap().join("\n");
+        assert!(report.contains("fed skills 5/21; unfed: "), "{report}");
+        for unfed in ["Security", "Speechcraft", "Mercantile", "Alchemy", "Armorer", "Block", "Marksman"] {
+            assert!(report.split("unfed: ").nth(1).unwrap().contains(unfed), "{unfed}: {report}");
+        }
+        assert!(!report.split("unfed: ").nth(1).unwrap().contains("Blade"));
+        world.resource_mut::<PendingSkillUse>().0.clear();
+        world.insert_resource(CharacterRuleset::new(LevelingModel::SKYRIM));
+        queue_skill_use(&world, BLADE, 0, 0.0);
+        assert!(world.resource::<PendingSkillUse>().0.is_empty());
     }
 }

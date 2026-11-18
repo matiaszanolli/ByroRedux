@@ -28,6 +28,10 @@ fn register_damage_pass(scheduler: &mut Scheduler) {
             .writes::<byroredux_core::ecs::components::EquipmentSlots>()
             .writes::<byroredux_core::ecs::components::EquippedWeapon>()
             .writes_resource::<crate::combat::CombatState>()
+            // #7051 — the skill uses a landed hit queues for `skill_use_system`, and what it reads to name them.
+            .writes_resource::<byroredux_scripting::oblivion_skill_use::PendingSkillUse>()
+            .reads_resource::<byroredux_core::character::CharacterRuleset>()
+            .reads_resource::<crate::components::LoadedCellIndex>()
             .reads::<byroredux_scripting::HitEvent>()
             .reads::<byroredux_core::ecs::components::ActorVitals>()
             .reads::<crate::components::AnimationTarget>()

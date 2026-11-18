@@ -28,6 +28,7 @@ pub(crate) mod cell_loader;
 mod chargen;
 mod cli_args;
 mod combat;
+mod skill_use_emit;
 mod commands;
 mod crime;
 mod detection;
