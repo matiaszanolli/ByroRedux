@@ -240,6 +240,8 @@ pub(crate) fn step_toward_detailed(
         } else {
             Vec3::ZERO
         };
+        // What this tick asked for horizontally: one step, not the whole way to the target.
+        let requested = desired.length();
         // Exactly to resting contact — `offset` above the support — and no
         // further. Signed on purpose: a capsule that crept slightly BELOW
         // the band is lifted back (the player controller's anti-drift
@@ -294,9 +296,9 @@ pub(crate) fn step_toward_detailed(
             // height.
         }
 
-        if desired_length > 1e-6 {
+        if requested > 1e-6 {
             let moved_xz = Vec3::new(new_pos.x - current.x, 0.0, new_pos.z - current.z);
-            blocked = moved_xz.length() < desired_length * LOCOMOTION_BLOCKED_FRACTION;
+            blocked = moved_xz.length() < requested * LOCOMOTION_BLOCKED_FRACTION;
         }
     }
 
@@ -580,6 +582,38 @@ mod stuck_tests {
                 super::LOCOMOTION_NPC_KCC_OFFSET_BU
             );
         }
+    }
+
+    /// `blocked` is measured against the step the tick asked for, not the whole distance to
+    /// the target: a long walk across open floor is never blocked, and the same walk into a
+    /// wall is. Measured against the distance, every walk with more than four steps to go
+    /// read as blocked, so Travel's pathgrid fallback (and Wander's stuck re-pick) fired on
+    /// walks that were clear — Renote, sent down a prison stair, was routed over a grid
+    /// whose first point lay across a wall and stood there.
+    #[test]
+    fn a_long_clear_walk_is_not_blocked_and_the_same_walk_into_a_wall_is() {
+        use super::step_toward_detailed;
+        use byroredux_core::math::{Quat, Vec3};
+        use byroredux_physics::world::PHYSICS_DT;
+
+        let mut open = byroredux_physics::PhysicsWorld::new();
+        let _floor = open.spawn_fixed_cuboid(Vec3::new(2000.0, 20.0, 2000.0), Vec3::new(0.0, -20.0, 0.0));
+        let start = Vec3::new(0.0, super::LOCOMOTION_NPC_KCC_OFFSET_BU, 0.0);
+        let far = Vec3::new(1500.0, start.y, 0.0);
+        let (_, _, blocked) = step_toward_detailed(start, Quat::IDENTITY, far, PHYSICS_DT, 100.0, Some(&open));
+        assert!(!blocked, "1500 units of open floor to go is a clear step, not a blocked one");
+
+        let mut walled = byroredux_physics::PhysicsWorld::new();
+        let _floor = walled.spawn_fixed_cuboid(Vec3::new(2000.0, 20.0, 2000.0), Vec3::new(0.0, -20.0, 0.0));
+        let _wall = walled.spawn_fixed_cuboid(Vec3::new(10.0, 200.0, 500.0), Vec3::new(30.0, 200.0, 0.0));
+        let mut pos = start;
+        let mut last = false;
+        for _ in 0..120 {
+            let (next, _, blocked) = step_toward_detailed(pos, Quat::IDENTITY, far, PHYSICS_DT, 100.0, Some(&walled));
+            pos = next;
+            last = blocked;
+        }
+        assert!(last, "pressed against a wall the walk reads as blocked (stopped at x = {})", pos.x);
     }
 
     /// #5539 — the NPC analogue of the player's #2857 convex-floor sink
