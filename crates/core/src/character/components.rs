@@ -27,6 +27,65 @@ impl Component for CharacterLevel {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// Classic-TES skill-use leveling's running tally (Oblivion; PRD
+/// `oblivion-skill-use-leveling` OSL-LVL-002, OSL-SAVE-001): what the skill
+/// rank-ups since the last level-up add up to. A rank-up of *any* governed
+/// skill adds to its attribute's tally (the attribute bonus at level-up reads
+/// it), and a rank-up of a *major* skill also counts toward the level
+/// (`LevelingModel::SkillUse::major_skill_ups_per_level`). The player only.
+///
+/// The banked experience is not here: it is the per-skill `SkillProgress`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub struct SkillUseLevel {
+    /// Major-skill increases since the last level-up. Counted after the
+    /// attribute tally of the same rank-up (`Oblivion.exe` `0x668070`).
+    pub major_increases: u16,
+    /// Rank-ups per governing attribute since the last level-up, indexed by
+    /// the Oblivion attribute code (Strength 0 … Luck 7, see
+    /// [`SkillUseLevel::attribute_index`]).
+    pub attribute_tallies: [u16; 8],
+}
+
+impl Component for SkillUseLevel {
+    type Storage = SparseSetStorage<Self>;
+}
+
+impl SkillUseLevel {
+    /// The Oblivion actor-value code of a TES attribute (`0` Strength,
+    /// `1` Intelligence, `2` Willpower, `3` Agility, `4` Speed, `5` Endurance,
+    /// `6` Personality, `7` Luck): the index of its tally. `None` for a
+    /// Fallout-only attribute.
+    #[must_use]
+    pub const fn attribute_index(attribute: crate::character::Attribute) -> Option<usize> {
+        use crate::character::Attribute::*;
+        match attribute {
+            Strength => Some(0),
+            Intelligence => Some(1),
+            Willpower => Some(2),
+            Agility => Some(3),
+            Speed => Some(4),
+            Endurance => Some(5),
+            Personality => Some(6),
+            Luck => Some(7),
+            Perception | Charisma => None,
+        }
+    }
+
+    /// Record one rank-up: `governing` is the index of the skill's governing
+    /// attribute ([`Self::attribute_index`]), and `major` whether the skill is
+    /// one of the class's major skills. The tally runs before the major count
+    /// (V13: the tenth major increase counts toward its attribute's tally).
+    pub fn record_rank_up(&mut self, governing: Option<usize>, major: bool) {
+        if let Some(tally) = governing.and_then(|i| self.attribute_tallies.get_mut(i)) {
+            *tally = tally.saturating_add(1);
+        }
+        if major {
+            self.major_increases = self.major_increases.saturating_add(1);
+        }
+    }
+}
+
 /// M47.2 — what the player's level-ups granted and has not spent yet:
 /// Fallout 3 / New Vegas skill points (`LevelReward::SkillPoints`), perks, and
 /// Skyrim's Health / Magicka / Stamina pool picks.
@@ -501,5 +560,48 @@ mod tests {
         fn assert_copy<T: Copy>() {}
         assert_copy::<FactionStanding>();
         assert_eq!(std::mem::size_of::<FactionStanding>(), 8);
+    }
+}
+
+#[cfg(test)]
+mod skill_use_level_tests {
+    use super::*;
+    use crate::character::Attribute;
+
+    /// The tally slots are the Oblivion attribute codes, and a Fallout-only
+    /// attribute has none.
+    #[test]
+    fn attributes_index_by_the_oblivion_code() {
+        let order = [
+            Attribute::Strength,
+            Attribute::Intelligence,
+            Attribute::Willpower,
+            Attribute::Agility,
+            Attribute::Speed,
+            Attribute::Endurance,
+            Attribute::Personality,
+            Attribute::Luck,
+        ];
+        for (code, attribute) in order.into_iter().enumerate() {
+            assert_eq!(SkillUseLevel::attribute_index(attribute), Some(code));
+        }
+        assert_eq!(SkillUseLevel::attribute_index(Attribute::Perception), None);
+    }
+
+    /// OSL-LVL-002: any rank-up adds to its attribute's tally; only a major
+    /// one counts toward the level.
+    #[test]
+    fn a_major_rank_up_counts_toward_the_level_and_any_one_tallies() {
+        let mut level = SkillUseLevel::default();
+        level.record_rank_up(Some(0), true);
+        level.record_rank_up(Some(0), false);
+        level.record_rank_up(Some(5), false);
+        assert_eq!(level.major_increases, 1);
+        assert_eq!(level.attribute_tallies, [2, 0, 0, 0, 0, 1, 0, 0]);
+        // An ungoverned skill tallies nothing; an out-of-range index is ignored.
+        level.record_rank_up(None, true);
+        level.record_rank_up(Some(9), false);
+        assert_eq!(level.major_increases, 2);
+        assert_eq!(level.attribute_tallies.iter().sum::<u16>(), 3);
     }
 }

@@ -3001,6 +3001,36 @@ fn parse_rate_fo3_esm() {
     );
 }
 
+/// #7050 (OSL-XP-002, PRD §7.2 scenario 2) — the five `fSkillUse*` settings resolve against the real
+/// `Oblivion.esm`. The master authors Factor (0.35) and Exp (1.5) only (#7049 V1); the minor, major and
+/// specialization multipliers come from the executable's defaults, so the load order leaves them to the
+/// ruleset's constants. The resolved set prices a base skill at 5 at 2.89 experience (UESP *Increasing
+/// Skills*' worked example).
+#[test]
+#[ignore = "needs Oblivion game data on disk"]
+fn oblivion_skill_use_settings_resolve_against_the_real_master() {
+    use byroredux_core::character::{SkillClass, SkillUseCosts};
+    let Some(data) = data_dir(test_paths::OBLIVION_ENV, test_paths::OBLIVION_DEFAULT) else {
+        eprintln!("[OBL] skipping: BYROREDUX_OBL_DATA unset and fallback path missing");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Oblivion.esm")).expect("read Oblivion.esm");
+    let index = parse_esm(&bytes).expect("parse Oblivion.esm");
+    assert_eq!(index.game_setting_float("fSkillUseFactor"), Some(0.35));
+    assert_eq!(index.game_setting_float("fSkillUseExp"), Some(1.5));
+    for unauthored in ["fSkillUseMinorMult", "fSkillUseMajorMult", "fSkillUseSpecMult"] {
+        assert_eq!(index.game_setting_float(unauthored), None, "{unauthored}: the executable's default");
+    }
+    let ruleset = index
+        .character_rules
+        .build_ruleset(|id| index.actor_value_form_id(id), |id| index.game_setting_float(id), &index.plugin_files)
+        .expect("Oblivion builds a ruleset");
+    let costs = ruleset.leveling.skill_use_costs().expect("Oblivion levels by skill use");
+    assert_eq!(costs, SkillUseCosts::OBLIVION);
+    let base = SkillClass { specialization: false, major: false };
+    assert!((costs.cost(5, base) - 2.89).abs() < 0.005, "{}", costs.cost(5, base));
+}
+
 /// Oblivion: the 160-byte NAM0 stride target of #533. Minimal parse
 /// harness (no per-category floors — that lives in future Oblivion
 /// dispatch work) just verifies every NAM0 is read. Observed vanilla

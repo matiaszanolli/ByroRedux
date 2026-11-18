@@ -68,6 +68,7 @@ pub mod location_keyword_data;
 pub mod messages;
 pub mod name_table;
 pub mod scanning;
+pub mod oblivion_skill_use;
 pub mod skills;
 pub mod tempering;
 pub mod words_of_power;

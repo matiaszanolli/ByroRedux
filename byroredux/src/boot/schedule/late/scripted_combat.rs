@@ -35,6 +35,23 @@ pub(super) fn register_scripted_combat_systems(scheduler: &mut Scheduler) {
             .writes::<byroredux_core::character::LevelUpPoints>()
             .writes::<byroredux_core::ecs::components::ActorValues>(),
     );
+    // Oblivion skill-use leveling: the one drain of the skill uses emitters queue (OSL-XP-007). Banks
+    // experience, raises the base skill, and feeds the level tallies.
+    scheduler.add_exclusive_with_access(
+        Stage::Late,
+        crate::combat::skill_use_system,
+        Access::new()
+            .writes_resource::<byroredux_scripting::oblivion_skill_use::PendingSkillUse>()
+            .reads_resource::<byroredux_scripting::oblivion_skill_use::SkillUseClasses>()
+            .reads_resource::<byroredux_scripting::ActorValueNames>()
+            .reads_resource::<byroredux_scripting::ScriptGame>()
+            .reads_resource::<byroredux_core::character::CharacterRuleset>()
+            .writes_resource::<byroredux_scripting::SkillProgress>()
+            .reads_resource::<crate::systems::PlayerEntity>()
+            .reads::<byroredux_core::character::Background>()
+            .writes::<byroredux_core::character::SkillUseLevel>()
+            .writes::<byroredux_core::ecs::components::ActorValues>(),
+    );
     // M47.2 — script Kill requests, ahead of the shared death reconciler.
     scheduler.add_exclusive_with_access(
         Stage::Late,

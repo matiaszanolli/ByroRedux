@@ -661,7 +661,11 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v135 -> v136 (#7044): `ActorValue` gained the required `stored` layer, what a level-up accumulates into an
 /// actor value (Oblivion's per-level Health gain), so every saved `ActorValues` row carries one more field.
-pub const FORMAT_MAJOR: u16 = 136;
+///
+/// v136 -> v137 (#7050, OSL-SAVE-001): a new component column, `SkillUseLevel` (the player's Oblivion
+/// skill-use level tallies: the major increases and each attribute's rank-ups since the last level-up), so a
+/// v136 snapshot has no such column and the schema no longer matches.
+pub const FORMAT_MAJOR: u16 = 137;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

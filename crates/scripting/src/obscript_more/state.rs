@@ -31,6 +31,33 @@ fn cmd_10f8(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _c
     done(format!("ModPCFame {}", num(args, 0)))
 }
 
+// CS *AdvancePCSkill* / *ModPCSkill* (Oblivion): "increases the player's skill by `Amount`". In the
+// executable one handler serves both (`0x50d020`, opcodes `0x10d4` and `0x110f`, both taking the skill's
+// actor-value code and an amount). `Amount` is skill **ranks**: it loops once per rank, each raising the base
+// skill by 1 and counting toward the level and the attribute tally (#7049 V14). `ModPCSkill` leaves 0.0 of the
+// skill's experience banked (the Beta Patch 1.1 behaviour, PRD Q5); `AdvancePCSkill` keeps the executable's
+// "banked - cost, clamped at 0". Only the player has these (CS: *ModPCSkill* is a player function).
+fn pc_skill(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
+    if names_other_actor(ctx) {
+        return Action::Declined;
+    }
+    let (Some(player), true) = (player(world), num(args, 1).is_finite()) else {
+        return Action::Declined;
+    };
+    let code = num(args, 0);
+    if !code.is_finite() || code < 0.0 || code.fract() != 0.0 {
+        return Action::Declined;
+    }
+    let ranks = num(args, 1).max(0.0) as u32;
+    let name = if cmd == 0x110f { "ModPCSkill" } else { "AdvancePCSkill" };
+    // A game without skill-use leveling (or a code that is no Oblivion skill) is declined, not faked.
+    if world.try_resource::<byroredux_core::character::CharacterRuleset>().and_then(|r| r.leveling.skill_use_costs()).is_none() {
+        return Action::Declined;
+    }
+    crate::oblivion_skill_use::raise_skill_ranks(world, player, code as u32, ranks, cmd != 0x110f);
+    done(format!("{name} {code} {ranks}"))
+}
+
 /// Whether `ctx` names an actor other than the player: an explicit or defaulted `Ref.Cmd` whose reference
 /// is not the player's. No caller is the player's scope, as is the player's own reference (CS
 /// `[ActorID.]Cmd` syntax). The caller is NOT resolved to a live entity: an unloaded actor still is not
@@ -674,6 +701,8 @@ pub(crate) const STATE_COMMANDS: &[Command] = &[
     Command { id: 0x10f9, games: Games::Oblivion, needs_caller: false, handler: get_pc_fame },
     Command { id: 0x10fb, games: Games::Oblivion, needs_caller: false, handler: cmd_10fb },
     Command { id: 0x10f8, games: Games::Oblivion, needs_caller: false, handler: cmd_10f8 },
+    Command { id: 0x10d4, games: Games::Oblivion, needs_caller: false, handler: pc_skill },
+    Command { id: 0x110f, games: Games::Oblivion, needs_caller: false, handler: pc_skill },
     Command { id: 0x1074, games: Games::Oblivion, needs_caller: false, handler: get_crime_gold },
     Command { id: 0x1075, games: Games::Oblivion, needs_caller: false, handler: cmd_1075 },
     Command { id: 0x1076, games: Games::Oblivion, needs_caller: false, handler: cmd_1076 },

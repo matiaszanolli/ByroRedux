@@ -1477,7 +1477,7 @@ impl ConsoleCommand for ObScriptCmdCommand {
     }
 
     fn description(&self) -> &str {
-        "Run an ObScript command: obscript.cmd <caller entity|.|none> <command id or GetAV/GetBaseAV/SetAV/ModAV/ForceAV/DamageAV/RestoreAV> [arguments]"
+        "Run an ObScript command: obscript.cmd <caller entity|.|none> <command id or GetAV/GetBaseAV/SetAV/ModAV/ForceAV/DamageAV/RestoreAV/AdvancePCSkill/ModPCSkill> [arguments]"
     }
 
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
@@ -1495,6 +1495,9 @@ impl ConsoleCommand for ObScriptCmdCommand {
             "forceav" | "forceactorvalue" => Some(0x110e),
             "damageav" | "damageactorvalue" => Some(0x1181),
             "restoreav" | "restoreactorvalue" => Some(0x1182),
+            // Oblivion's skill raises (the same handler in the executable, `0x50d020`).
+            "advancepcskill" => Some(0x10d4),
+            "modpcskill" => Some(0x110f),
             _ => None,
         };
         let Some(cmd) = named_command.or_else(|| u16::from_str_radix(cmd_token.trim_start_matches("0x"), 16).ok()) else {
@@ -1527,7 +1530,7 @@ impl ConsoleCommand for ObScriptCmdCommand {
                 },
                 None => match token.parse::<f32>() {
                     Ok(number) => ObScriptValue::Num(number),
-                    Err(_) if values.is_empty() && matches!(cmd, 0x100e | 0x1115 | 0x100f | 0x1010 | 0x110e | 0x1181 | 0x1182) => {
+                    Err(_) if values.is_empty() && matches!(cmd, 0x100e | 0x1115 | 0x100f | 0x1010 | 0x110e | 0x1181 | 0x1182 | 0x10d4 | 0x110f) => {
                         match byroredux_scripting::obscript_actor_values::actor_value_code(world, token) {
                             Some(code) => ObScriptValue::Num(code as f32),
                             None => return CommandOutput::error(format!("unknown actor value `{token}`")),

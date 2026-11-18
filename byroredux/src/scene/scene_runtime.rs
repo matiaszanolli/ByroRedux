@@ -233,6 +233,8 @@ pub(crate) fn populate_scene_runtime(
     byroredux_scripting::install_owner_kinds(world, index);
     // Oblivion's guard classes (the `CLAS` Guard flag): `IsGuard`, `IsTurnArrest`.
     byroredux_scripting::guards::install_guard_classes(world, index);
+    // Oblivion skill-use leveling: the classes' specialization and major skills (and the player's class).
+    byroredux_scripting::oblivion_skill_use::install_skill_use_classes(world, index);
     // The jails (linked `PrisonMarker` door pairs): `PayFine`, `GoToJail`.
     byroredux_scripting::jail::install_jail_table(world, index);
     // M47.2 — Actor.GetCrimeFaction.

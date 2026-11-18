@@ -1,6 +1,6 @@
 # Oblivion skill use — what the original does, and the emitter contract
 
-**Status**: DESIGN (Phase 0 of the [Oblivion skill-use leveling PRD](../prd/oblivion-skill-use-leveling.md), #7049, 2026-11-18). Nothing here is built.
+**Status**: Phase 0 design (#7049, 2026-11-18) of the [Oblivion skill-use leveling PRD](../prd/oblivion-skill-use-leveling.md); **Phase 1 built (#7050)**: §1's arithmetic and §4's contract run (`crates/core/src/character/skill_use.rs`, `crates/scripting/src/oblivion_skill_use.rs`); no emitter feeds it yet (Phase 2, #7051).
 It records what `Oblivion.exe` does when the player uses a skill (OSL-XP-007's action census, V3 and V4), and the contract every emitter in
 the engine follows. The level-up, the attribute bonus and the sleep trigger are in the PRD; the Health term is in
 [charal-oblivion-ruleset.md](charal-oblivion-ruleset.md). Addresses are `Oblivion.exe` 1.2.0.416 (sha256 `a8f31384…dc6`, image base
@@ -109,12 +109,13 @@ combat, magic, movement and stance time (rows 8 to 17) are the actions systems t
 
 ## 4. The emitter contract (OSL-XP-007)
 
-- **One pending resource.** Emitters in the combat, magic, movement and detection systems append `(skill, usage, mult)` records to one
-  resource (precedent: `PendingSkillAdvances`, `byroredux/src/combat.rs`, drained by the late stage). They do **not** lock the player's
+- **One pending resource.** Emitters in the combat, magic, movement and detection systems append `(skill code, amount)` records to one
+  resource (`PendingSkillUse`; the amount is the `SKIL` use value of §1 times the multiplier, resolved at the emitter in Phase 2) (precedent: `PendingSkillAdvances`, `byroredux/src/combat.rs`, drained by the late stage). They do **not** lock the player's
   `ActorValues`; invariants 3 and 4 of `CLAUDE.md` (interior mutability by `RwLock`, TypeId-sorted lock acquisition) stay with the one
   drain.
-- **One draining system.** It reads the records, resolves each against the `SKIL` use values and the player's class
-  (OSL-CLS-001, OSL-CLS-002), calls the entry point of OSL-XP-001 and appends its rank-ups to the level state.
+- **One draining system** (`combat::skill_use_system`). It reads the records, resolves the player's class at each use (OSL-CLS-001,
+  OSL-CLS-002), calls the entry point of OSL-XP-001 (`bank_skill_use`) and appends its rank-ups to `SkillUseLevel`. The banked
+  experience is the per-skill `SkillProgress` the Skyrim path already saves; the new saved column is `SkillUseLevel` (format 137).
 - **Scheduler access declared.** The system declares the resource it writes and the components it reads, as `PendingSkillAdvances` does
   in `boot/schedule/late/scripted_combat.rs`, so the scheduler orders it against the emitters.
 - **The same entry for script calls.** `AdvancePCSkill` and `ModPCSkill` (one handler in the executable, `0x50d020`) raise a skill by

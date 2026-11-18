@@ -1,0 +1,494 @@
+//! Oblivion skill-use leveling: the one entry point (PRD
+//! `oblivion-skill-use-leveling`, OSL-XP-001, OSL-XP-004, OSL-XP-007,
+//! OSL-LVL-001/002, OSL-API-001/006; design `docs/engine/skill-use.md`).
+//!
+//! Skill use banks experience against the player's skill; enough of it raises
+//! the skill's **base** actor value by one (never the permanent-modifier
+//! layer), and every rank-up feeds [`SkillUseLevel`]'s tallies. Everything
+//! reaches the rules through [`bank_skill_use`] (use, trainers) or
+//! [`raise_skill_ranks`] (`AdvancePCSkill` / `ModPCSkill`); both read the
+//! cost from the ruleset's [`LevelingModel::SkillUse`] settings, so there is no
+//! game test here. A ruleset with another leveling model changes nothing.
+//!
+//! Emitters append to [`PendingSkillUse`]; one system (the host's) drains it.
+//! The banked experience is the per-skill [`SkillProgress`] the Skyrim path
+//! already saves. The skill is named by its Oblivion actor-value code
+//! (Armorer 12 … Speechcraft 32).
+
+use std::collections::HashMap;
+
+use byroredux_core::character::{
+    CharacterRuleset, SkillClass, SkillSet, SkillUseCosts, SkillUseLevel, SKILL_USE_CAP,
+};
+use byroredux_core::ecs::components::ActorValues;
+use byroredux_core::ecs::resource::Resource;
+use byroredux_core::ecs::storage::EntityId;
+use byroredux_core::ecs::world::World;
+use byroredux_plugin::esm::reader::GameKind;
+use byroredux_plugin::esm::records::oblivion_actor_values::OBLIVION_ACTOR_VALUES;
+use byroredux_plugin::esm::records::EsmIndex;
+
+use crate::skills::SkillProgress;
+
+/// One skill use an emitter in the combat, magic, movement or detection
+/// system queued: the skill's Oblivion actor-value code and the experience
+/// the action earned.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SkillUseRecord {
+    pub skill: u32,
+    pub amount: f32,
+}
+
+/// The skill uses emitters queued this frame, drained by one system
+/// (OSL-XP-007). Emitters lock nothing of the player's. Transient.
+#[derive(Debug, Default)]
+pub struct PendingSkillUse(pub Vec<SkillUseRecord>);
+
+impl Resource for PendingSkillUse {}
+
+/// What a `CLAS` says about skills: the specialization (`0` Combat, `1` Magic,
+/// `2` Stealth) and the seven major skills (Oblivion actor-value codes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassSkills {
+    /// The class's editor ID, for `levelup` to name the class it read (OSL-CLS-001).
+    pub name: String,
+    pub specialization: u32,
+    pub major_skills: Vec<u32>,
+}
+
+/// The classes the load order authors, and which one the player has
+/// (OSL-CLS-001). Read at each skill use (OSL-CLS-002): an edit to a record
+/// here, or a script setting the player's `Background` class, changes the
+/// next cost (OSL-CLS-003). Derived from the load order; not saved.
+#[derive(Debug, Default, Clone)]
+pub struct SkillUseClasses {
+    /// The class of the player's `NPC_` record (`0x7`): the interim class
+    /// until a character-creation flow exists (OSL-NG-001).
+    pub player_class: Option<u32>,
+    pub classes: HashMap<u32, ClassSkills>,
+}
+
+impl Resource for SkillUseClasses {}
+
+/// The form id of the player's `NPC_` record.
+const PLAYER_NPC: u32 = 0x0000_0007;
+
+/// Build [`SkillUseClasses`] from the load order. Only Oblivion's `CLAS` carries
+/// a specialization and seven major skills; any other game installs an empty
+/// resource, so no class is ever read there.
+pub fn install_skill_use_classes(world: &mut World, index: &EsmIndex) {
+    let mut out = SkillUseClasses::default();
+    if index.game == GameKind::Oblivion {
+        for (&form, class) in &index.classes {
+            if let Some(specialization) = class.specialization {
+                out.classes.insert(
+                    form,
+                    ClassSkills {
+                        name: class.editor_id.clone(),
+                        specialization,
+                        major_skills: class.major_skills.clone(),
+                    },
+                );
+            }
+        }
+        out.player_class = index.npcs.get(&PLAYER_NPC).map(|npc| npc.class_form_id);
+    }
+    world.insert_resource(out);
+}
+
+/// This subsystem's transient world setup.
+pub fn install(world: &mut World) {
+    world.init_resource::<PendingSkillUse>();
+    world.init_resource::<SkillUseClasses>();
+}
+
+/// The class of `player`: a class its `Background` names, else the player
+/// record's. `None` when neither is a known class.
+pub fn player_class(world: &World, player: EntityId) -> Option<ClassSkills> {
+    let classes = world.try_resource::<SkillUseClasses>()?;
+    world
+        .get::<byroredux_core::character::Background>(player)
+        .and_then(|background| classes.classes.get(&background.class_form_id))
+        .or_else(|| classes.player_class.and_then(|form| classes.classes.get(&form)))
+        .cloned()
+}
+
+/// A skill's name, actor value and governing attribute, with the rules to
+/// bank it by.
+struct Skill {
+    av: u32,
+    code: u32,
+    costs: SkillUseCosts,
+    class: SkillClass,
+    governing: Option<usize>,
+}
+
+fn resolve(world: &World, player: EntityId, code: u32) -> Option<Skill> {
+    if !(byroredux_core::character::OBLIVION_SKILL_AV_FIRST
+        ..=byroredux_core::character::OBLIVION_SKILL_AV_LAST)
+        .contains(&code)
+    {
+        return None;
+    }
+    let costs = world.try_resource::<CharacterRuleset>()?.leveling.skill_use_costs()?;
+    let name = *OBLIVION_ACTOR_VALUES.get(code as usize)?;
+    let av = crate::obscript_actor_values::actor_value_form(world, code as f32)?;
+    let class = player_class(world, player).map_or_else(SkillClass::default, |class| {
+        SkillClass::of(code, class.specialization, &class.major_skills)
+    });
+    let governing = SkillSet::OBLIVION
+        .governing(name)
+        .and_then(SkillUseLevel::attribute_index);
+    Some(Skill { av, code, costs, class, governing })
+}
+
+/// What `apply` does to the skill's value and banked experience.
+fn apply(
+    world: &World,
+    player: EntityId,
+    skill: &Skill,
+    step: impl FnOnce(u16, f32) -> (u16, f32, u16),
+) -> Vec<u16> {
+    let banked = world
+        .try_resource::<SkillProgress>()
+        .and_then(|progress| progress.0.get(&skill.av).copied())
+        .unwrap_or(0.0);
+    let (value, banked, ranks_reached) = {
+        let Some(mut values) = world.query_mut::<ActorValues>() else {
+            return Vec::new();
+        };
+        let Some(values) = values.get_mut(player) else {
+            return Vec::new();
+        };
+        let Some(entry) = values.get_base(skill.av) else {
+            log::debug!("skill use: the player has no Oblivion skill {}", skill.code);
+            return Vec::new();
+        };
+        let before = entry.base.max(0.0) as u16;
+        let (after, banked, ranks) = step(before, banked);
+        if after != before {
+            // OSL-LVL-001: the base layer, not the permanent-modifier layer.
+            values.set_base(skill.av, f32::from(after));
+        }
+        (after, banked, ranks)
+    };
+    if let Some(mut stored) = world.try_resource_mut::<SkillProgress>() {
+        stored.0.insert(skill.av, banked);
+    }
+    let reached: Vec<u16> = (value - ranks_reached + 1..=value).collect();
+    if !reached.is_empty() {
+        for _ in &reached {
+            record_rank_up(world, player, skill);
+        }
+        log::info!("skill use: skill {} reached {value}", skill.code);
+    }
+    reached
+}
+
+fn record_rank_up(world: &World, player: EntityId, skill: &Skill) {
+    if let Some(mut levels) = world.query_mut::<SkillUseLevel>() {
+        if let Some(level) = levels.get_mut(player) {
+            level.record_rank_up(skill.governing, skill.class.major);
+            return;
+        }
+        let mut level = SkillUseLevel::default();
+        level.record_rank_up(skill.governing, skill.class.major);
+        levels.insert(player, level);
+    }
+}
+
+/// OSL-XP-001: bank `amount` experience against the player's skill `code` and
+/// return the values it reached, in order. Empty when the skill only banked, is
+/// at 100, is not an Oblivion skill, or the ruleset does not level by use.
+pub fn bank_skill_use(world: &World, player: EntityId, code: u32, amount: f32) -> Vec<u16> {
+    let Some(skill) = resolve(world, player, code) else {
+        return Vec::new();
+    };
+    apply(world, player, &skill, |value, banked| {
+        let out = skill.costs.bank(value, banked, skill.class, amount);
+        (out.value, out.banked, out.ranks.len() as u16)
+    })
+}
+
+/// OSL-API-001 / OSL-API-006: raise the player's skill `code` by `ranks` ranks
+/// (the unit of `AdvancePCSkill` and `ModPCSkill`, V14), counting each toward the
+/// level and the attribute tally. `keep_surplus` is the executable's
+/// "banked − cost, clamped at 0" per rank; without it the banked experience is
+/// set to 0.0, as `ModPCSkill` does (Q5). A skill stops at 100.
+pub fn raise_skill_ranks(
+    world: &World,
+    player: EntityId,
+    code: u32,
+    ranks: u32,
+    keep_surplus: bool,
+) -> Vec<u16> {
+    let Some(skill) = resolve(world, player, code) else {
+        return Vec::new();
+    };
+    apply(world, player, &skill, |mut value, mut banked| {
+        let start = value;
+        for _ in 0..ranks {
+            if value >= SKILL_USE_CAP {
+                break;
+            }
+            let cost = skill.costs.cost(value, skill.class);
+            banked = if keep_surplus { (banked - cost).max(0.0) } else { 0.0 };
+            value += 1;
+        }
+        if !keep_surplus && value == start {
+            banked = 0.0;
+        }
+        (value, banked, value - start)
+    })
+}
+
+/// OSL-API-003: what `levelup` reports for an Oblivion player — the class it read and its
+/// major skills, the level count, each attribute's tally, and per skill the value, the experience
+/// banked and its cost. `None` when the ruleset does not level by skill use. (The pending levels
+/// and the unfed skills arrive with the phases that build them.)
+pub fn skill_use_report(world: &World, player: EntityId) -> Option<Vec<String>> {
+    let rules = world.try_resource::<CharacterRuleset>()?.leveling;
+    let byroredux_core::character::LevelingModel::SkillUse { major_skill_ups_per_level, .. } = rules else {
+        return None;
+    };
+    const SPECIALIZATIONS: [&str; 3] = ["Combat", "Magic", "Stealth"];
+    const ATTRIBUTES: [&str; 8] = [
+        "Strength", "Intelligence", "Willpower", "Agility", "Speed", "Endurance", "Personality", "Luck",
+    ];
+    let mut out = Vec::new();
+    match player_class(world, player) {
+        Some(class) => out.push(format!(
+            "levelup: class {} ({}), major skills: {}",
+            class.name,
+            SPECIALIZATIONS.get(class.specialization as usize).copied().unwrap_or("?"),
+            class
+                .major_skills
+                .iter()
+                .map(|&code| OBLIVION_ACTOR_VALUES.get(code as usize).copied().unwrap_or("?"))
+                .collect::<Vec<_>>()
+                .join(", "),
+        )),
+        None => out.push("levelup: class unknown (no Player class in the load order)".to_string()),
+    }
+    let level = world.get::<SkillUseLevel>(player).map(|level| *level).unwrap_or_default();
+    out.push(format!(
+        "levelup: major increases {}/{}; attribute tallies: {}",
+        level.major_increases,
+        major_skill_ups_per_level,
+        ATTRIBUTES
+            .iter()
+            .zip(level.attribute_tallies)
+            .map(|(name, tally)| format!("{name} {tally}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+    ));
+    for code in byroredux_core::character::OBLIVION_SKILL_AV_FIRST..=byroredux_core::character::OBLIVION_SKILL_AV_LAST {
+        let Some(skill) = resolve(world, player, code) else { continue };
+        let value = world
+            .get::<ActorValues>(player)
+            .and_then(|values| values.get_base(skill.av).map(|entry| entry.base.max(0.0) as u16));
+        let Some(value) = value else { continue };
+        let banked = world
+            .try_resource::<SkillProgress>()
+            .and_then(|progress| progress.0.get(&skill.av).copied())
+            .unwrap_or(0.0);
+        let tags = match (skill.class.major, skill.class.specialization) {
+            (true, true) => " major, specialization",
+            (true, false) => " major",
+            (false, true) => " specialization",
+            (false, false) => "",
+        };
+        out.push(format!(
+            "levelup: {} {value} banked {banked:.2} / cost {:.2}{tags}",
+            OBLIVION_ACTOR_VALUES[code as usize],
+            skill.costs.cost(value, skill.class),
+        ));
+    }
+    Some(out)
+}
+
+/// Drain [`PendingSkillUse`] into [`bank_skill_use`] for the player. The one
+/// system that writes the player's skills for skill use (OSL-XP-007).
+pub fn skill_use_system(world: &World, player: Option<EntityId>) {
+    let pending = world
+        .try_resource_mut::<PendingSkillUse>()
+        .map(|mut pending| std::mem::take(&mut pending.0))
+        .unwrap_or_default();
+    let Some(player) = player else {
+        return;
+    };
+    for record in pending {
+        bank_skill_use(world, player, record.skill, record.amount);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use byroredux_core::character::{Background, LevelingModel};
+    use byroredux_plugin::esm::reader::GlobalSlot;
+
+    const BLADE: u32 = 14;
+    const SNEAK: u32 = 31;
+
+    /// A world with Oblivion's roster installed, the Oblivion ruleset, a class
+    /// (Combat, Blade and Block major) and a player with Blade 5 and Sneak 5.
+    fn world() -> (World, EntityId, u32, u32) {
+        let mut index = EsmIndex { game: GameKind::Oblivion, ..Default::default() };
+        index.install_oblivion_actor_values(GlobalSlot::Regular(0)).unwrap();
+        let mut world = World::new();
+        crate::install_actor_value_names(&mut world, &index);
+        world.insert_resource(crate::ScriptGame(GameKind::Oblivion));
+        world.insert_resource(CharacterRuleset::new(LevelingModel::OBLIVION));
+        world.insert_resource(SkillProgress::default());
+        world.insert_resource(SkillUseClasses {
+            player_class: Some(0x100),
+            classes: HashMap::from([(
+                0x100,
+                ClassSkills { name: "Test".into(), specialization: 0, major_skills: vec![BLADE, 15] },
+            )]),
+        });
+        world.register::<ActorValues>();
+        world.register::<SkillUseLevel>();
+        world.register::<Background>();
+        let player = world.spawn();
+        let blade = index.oblivion_actor_value(BLADE, true).unwrap();
+        let sneak = index.oblivion_actor_value(SNEAK, true).unwrap();
+        world.insert(player, ActorValues::from_pairs([(blade, 5.0), (sneak, 5.0)]));
+        (world, player, blade, sneak)
+    }
+
+    fn base(world: &World, player: EntityId, av: u32) -> f32 {
+        world.get::<ActorValues>(player).unwrap().get_base(av).unwrap().base
+    }
+
+    /// OSL-XP-001 / OSL-LVL-001/002: banking ranks the skill's base, feeds the
+    /// governing attribute's tally (Blade → Strength) and, being major, the
+    /// level count. The surplus stays banked.
+    #[test]
+    fn use_ranks_the_base_and_feeds_the_tallies() {
+        let (world, player, blade, _) = world();
+        // Blade 5, major and in the Combat specialization: (0.35·5)^1.5 · 0.75 · 0.75 = 1.30.
+        let reached = bank_skill_use(&world, player, BLADE, 2.0);
+        assert_eq!(reached, vec![6]);
+        assert_eq!(base(&world, player, blade), 6.0);
+        let level = world.get::<SkillUseLevel>(player).unwrap();
+        assert_eq!(level.major_increases, 1);
+        assert_eq!(level.attribute_tallies[0], 1, "Blade is governed by Strength");
+        let banked = world.resource::<SkillProgress>().0[&blade];
+        assert!((banked - (2.0 - 1.302)).abs() < 0.01, "{banked}");
+    }
+
+    /// A skill outside the class's majors ranks slower and feeds the
+    /// attribute tally but not the level count (OSL-LVL-002).
+    #[test]
+    fn a_minor_skill_tallies_its_attribute_but_not_the_level() {
+        let (world, player, _, sneak) = world();
+        // Sneak 5, minor and outside Combat: 2.894.
+        assert!(bank_skill_use(&world, player, SNEAK, 2.0).is_empty());
+        assert_eq!(bank_skill_use(&world, player, SNEAK, 1.0), vec![6]);
+        assert_eq!(base(&world, player, sneak), 6.0);
+        let level = world.get::<SkillUseLevel>(player).unwrap();
+        assert_eq!(level.major_increases, 0);
+        assert_eq!(level.attribute_tallies[3], 1, "Sneak is governed by Agility");
+    }
+
+    /// OSL-CLS-002 / OSL-CLS-003: the class is read at each use, so editing the
+    /// record's major skills between two uses changes the second cost, and a
+    /// player `Background` class overrides the record's.
+    #[test]
+    fn the_class_is_read_at_each_use() {
+        let (mut world, player, blade, _) = world();
+        assert_eq!(bank_skill_use(&world, player, BLADE, 2.0), vec![6]);
+        // Blade stops being major: the next rank costs more, so an amount that
+        // would have ranked it is now short.
+        world
+            .resource_mut::<SkillUseClasses>()
+            .classes
+            .get_mut(&0x100)
+            .unwrap()
+            .major_skills
+            .clear();
+        let banked = world.resource::<SkillProgress>().0[&blade];
+        let minor_cost = SkillUseCosts::OBLIVION
+            .cost(6, SkillClass { specialization: true, major: false });
+        assert!(minor_cost > banked);
+        assert!(bank_skill_use(&world, player, BLADE, minor_cost - banked - 0.01).is_empty());
+        // A script giving the player another class (Stealth) takes effect on the next use.
+        world.resource_mut::<SkillUseClasses>().classes.insert(
+            0x200,
+            ClassSkills { name: "Other".into(), specialization: 2, major_skills: vec![BLADE] },
+        );
+        world.insert(player, Background { race_form_id: 1, class_form_id: 0x200 });
+        assert_eq!(player_class(&world, player).unwrap().specialization, 2);
+    }
+
+    /// V2 / OSL-XP-003: a skill at 100 banks nothing.
+    #[test]
+    fn a_skill_at_100_banks_nothing() {
+        let (world, player, blade, _) = world();
+        world.query_mut::<ActorValues>().unwrap().get_mut(player).unwrap().set_base(blade, 100.0);
+        assert!(bank_skill_use(&world, player, BLADE, 1.0e6).is_empty());
+        assert!(!world.resource::<SkillProgress>().0.get(&blade).is_some_and(|b| *b > 0.0));
+    }
+
+    /// A ruleset that does not level by skill use, a code outside the 21
+    /// skills and an unknown player change nothing.
+    #[test]
+    fn what_is_not_an_oblivion_skill_use_changes_nothing() {
+        let (mut world, player, blade, _) = world();
+        assert!(bank_skill_use(&world, player, 11, 50.0).is_empty(), "Encumbrance is not a skill");
+        assert!(bank_skill_use(&world, player, 33, 50.0).is_empty());
+        assert!(bank_skill_use(&world, 9999, BLADE, 50.0).is_empty());
+        world.insert_resource(CharacterRuleset::new(LevelingModel::SKYRIM));
+        assert!(bank_skill_use(&world, player, BLADE, 50.0).is_empty());
+        assert_eq!(base(&world, player, blade), 5.0);
+    }
+
+    /// OSL-API-001 / OSL-API-006 (V14): `Amount` is ranks. ModPCSkill leaves 0.0
+    /// banked (Q5); AdvancePCSkill keeps "banked − cost" (the executable's
+    /// loop). Both feed the tallies once per rank.
+    #[test]
+    fn the_script_calls_raise_ranks() {
+        let (world, player, blade, _) = world();
+        bank_skill_use(&world, player, BLADE, 0.5);
+        assert_eq!(raise_skill_ranks(&world, player, BLADE, 2, false), vec![6, 7]);
+        assert_eq!(base(&world, player, blade), 7.0);
+        assert_eq!(world.resource::<SkillProgress>().0[&blade], 0.0);
+        let level = world.get::<SkillUseLevel>(player).unwrap();
+        assert_eq!((level.major_increases, level.attribute_tallies[0]), (2, 2));
+        drop(level);
+        bank_skill_use(&world, player, BLADE, 1.0);
+        assert_eq!(raise_skill_ranks(&world, player, BLADE, 1, true), vec![8]);
+        assert_eq!(world.resource::<SkillProgress>().0[&blade], 0.0, "1.0 banked < the cost, clamped at 0");
+        // A skill stops at 100.
+        assert_eq!(raise_skill_ranks(&world, player, BLADE, 500, false).last(), Some(&100));
+        assert_eq!(base(&world, player, blade), 100.0);
+    }
+
+    /// OSL-XP-007: emitters only append; the drain applies them.
+    #[test]
+    fn the_drain_applies_the_pending_records() {
+        let (mut world, player, blade, _) = world();
+        install(&mut world);
+        world.resource_mut::<PendingSkillUse>().0.push(SkillUseRecord { skill: BLADE, amount: 2.0 });
+        skill_use_system(&world, Some(player));
+        assert_eq!(base(&world, player, blade), 6.0);
+        assert!(world.resource::<PendingSkillUse>().0.is_empty());
+    }
+
+    /// OSL-API-003 / OSL-CLS-001: `levelup` names the class it read, its major skills, the level
+    /// count, the tallies and each skill's banked experience and cost; another model reports nothing.
+    #[test]
+    fn the_report_names_the_class_and_each_skill() {
+        let (mut world, player, _, _) = world();
+        bank_skill_use(&world, player, BLADE, 2.0);
+        let report = skill_use_report(&world, player).unwrap().join("\n");
+        assert!(report.contains("class Test (Combat), major skills: Blade, Block"), "{report}");
+        assert!(report.contains("major increases 1/10; attribute tallies: Strength 1,"), "{report}");
+        assert!(report.contains("Blade 6 banked 0.70 / cost 1.71 major, specialization"), "{report}");
+        assert!(report.contains("Sneak 5 banked 0.00 / cost 2.89"), "{report}");
+        world.insert_resource(CharacterRuleset::new(LevelingModel::SKYRIM));
+        assert!(skill_use_report(&world, player).is_none());
+    }
+}

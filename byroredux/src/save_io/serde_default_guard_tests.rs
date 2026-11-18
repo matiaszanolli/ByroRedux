@@ -907,7 +907,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // M48 GUI-EVT-001 (#6668) — refreshed WITH a major bump (v133 -> v134): the new
     // `MenuEventRegistrations` resource column.
     // #7044 — refreshed WITH a major bump (v135 -> v136): `ActorValue` gained the required `stored` layer.
-    const BASELINE_MAJOR: u16 = 136;
+    const BASELINE_MAJOR: u16 = 137;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1352,7 +1352,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `PapyrusMessageAnswers` is UI state and is not saved (`registry_completeness_tests`).
     // #7044 — v136: `ActorValue` gained the required `stored` layer (a level-up's accumulated term), refreshed WITH the
     // major bump above.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xee8b_9b2d_6a58_f83a;
+    // #7050 — v137: `SkillUseLevel` (u16 + [u16; 8]) joined the saved registry as a NEW component column, refreshed
+    // WITH the major bump above.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xa6c0_5b06_ae98_2a78;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.

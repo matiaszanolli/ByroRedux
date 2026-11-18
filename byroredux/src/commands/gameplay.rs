@@ -641,6 +641,13 @@ impl ConsoleCommand for LevelUpCommand {
             .unwrap_or_default();
         match parts.next() {
             None | Some("status") => {
+                // OSL-API-003: Oblivion's skill-use leveling reports its class, tallies and skills.
+                if let Some(lines) = byroredux_scripting::oblivion_skill_use::skill_use_report(world, player) {
+                    let level = world.get::<CharacterLevel>(player).map(|level| *level).unwrap_or_default();
+                    let mut out = vec![format!("levelup: level={}", level.level)];
+                    out.extend(lines);
+                    return CommandOutput { lines: out };
+                }
                 let level = world
                     .get::<CharacterLevel>(player)
                     .map(|level| *level)

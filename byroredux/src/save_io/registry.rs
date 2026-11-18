@@ -84,6 +84,8 @@ pub(crate) const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     "FactionReputation",
     // M47.2 — unspent level-up skill points (u32 + an f32 carry) and perks.
     "LevelUpPoints",
+    // OSL-SAVE-001 (#7050) — Oblivion skill-use tallies: u16 major increases + eight u16 attribute tallies.
+    "SkillUseLevel",
     // Actor-value identities pass through the portable codec on overlay.
     "TimedRestorations",
     // #4415 — spell FormIDs (u32) only.
@@ -304,6 +306,8 @@ pub fn build_save_registry() -> SaveRegistry {
     // guard) ended.
     r.register_replacing_component::<byroredux_core::character::LevelUpPoints>("LevelUpPoints");
     r.register_replacing_component::<byroredux_core::character::CharacterLevel>("CharacterLevel");
+    // OSL-SAVE-001 (#7050) — the player's skill-use level tallies (major increases, per-attribute rank-ups).
+    r.register_replacing_component::<byroredux_core::character::SkillUseLevel>("SkillUseLevel");
     // #6759 — player-scoped like `CharacterLevel` above (the player outlives cell reloads), so a
     // reputation earned by a quest script survives a save/load instead of resetting to Neutral.
     r.register_replacing_component::<byroredux_core::character::FactionReputation>("FactionReputation");

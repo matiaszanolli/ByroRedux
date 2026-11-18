@@ -116,7 +116,7 @@ pub use affliction::{
 };
 pub use attribute::{Attribute, AttributeSet};
 pub use components::{
-    Background, CharacterIdentity, CharacterLevel, DismemberRecord, FactionReputation, FactionStanding, LevelUpPoints, PerkRank,
+    Background, CharacterIdentity, CharacterLevel, DismemberRecord, FactionReputation, FactionStanding, LevelUpPoints, PerkRank, SkillUseLevel,
     Perks, MAX_BODY_LOCATION,
 };
 pub use armor::ArmorModel;
@@ -148,7 +148,9 @@ pub use resistance::{damage_multiplier, Affliction};
 pub use ruleset::CharacterRuleset;
 pub use stance::{SneakMovement, SneakSpeed, SneakSpeedSource, StanceModel};
 pub use skill::{ResolvedSkill, SkillDef, SkillSet};
-pub use skill_use::{SkillBank, SkillClass, SkillUseCosts, SKILL_USE_CAP};
+pub use skill_use::{
+    SkillBank, SkillClass, SkillUseCosts, OBLIVION_SKILL_AV_FIRST, OBLIVION_SKILL_AV_LAST, SKILL_USE_CAP,
+};
 pub use skyrim::{
     skyrim_ruleset, skyrim_skill_xp_between, skyrim_skill_xp_to_next, SKYRIM_POOL_BASE,
     SKYRIM_SKILL_USE_CURVE,

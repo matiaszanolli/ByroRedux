@@ -786,6 +786,8 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PendingEvidenceDeposits", "confiscated stolen goods (the Oblivion PayFine / GoToJail path) queued for a jail's StolenGoods chest, drained by evidence_deposit_system on the NEXT frame's Update (the INFO / stage-result producers run after the consumer, so the queue straddles the frame boundary a save or load drains on); the ObScriptLedger's saved evidence is the durable record until delivered, and a load discards the queue (#6573). Faction.SendPlayerToJail does not queue: it deposits synchronously through EvidenceChestDeposit and removes goods only once the chest took them"),
         ("EvidenceChestDeposit", "the engine's deposit-into-a-placed-reference function Faction.SendPlayerToJail calls (loaded chest directly, an unloaded one parked); installed at boot (#6573)"),
         ("JailTable", "the load order's jails (linked interior / exterior PrisonMarker door pairs) for PayFine / GoToJail; rebuilt from the records every boot"),
+        ("PendingSkillUse", "Oblivion skill uses the emitters queue, drained by combat::skill_use_system within the frame; empty at a save"),
+        ("SkillUseClasses", "the load order's CLAS specialization and major skills, and the player's class (Oblivion); rebuilt from the records every boot"),
         ("GuardClasses", "the load order's CLAS forms flagged Guard (Oblivion), for IsGuard / IsTurnArrest; rebuilt from the records every boot"),
         ("OwnerKinds", "M47.2 — which forms are factions and which actor bases, for GetFactionOwner / GetActorOwner; rebuilt from the records every boot"),
         ("FormLists", "M47.2 — every FLST record's forms for FormList.GetSize / GetAt / HasForm / Find, rebuilt from the records every boot"),
@@ -1336,6 +1338,10 @@ fn every_delta_column_is_parked_or_explicitly_not() {
             "player progression; the player outlives cell reloads and is never evicted",
         ),
         (
+            "SkillUseLevel",
+            "player progression (oblivion_skill_use, a skill rank-up); the player outlives cell reloads and is never evicted",
+        ),
+        (
             "FactionReputation",
             "player-scoped (obscript_effects::adjust_standing, the SDK AddFame/AddInfamy); the player outlives cell reloads and is never evicted",
         ),
@@ -1484,7 +1490,9 @@ fn the_schema_fingerprint_is_pinned() {
     // so the row-order fingerprint remains the same despite the new wire shapes.
     // M48 GUI-EVT-001 (#6668) — `MenuEventRegistrations` joined the registry as a new resource column
     // (`RegisterForMenuOpenCloseEvent`), registered after `HitRegistrations`.
-    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x659f_6afa_13ef_2c81;
+    // #7050 (OSL-SAVE-001) — `SkillUseLevel` joined the registry as a new replacing component column (the
+    // player's Oblivion skill-use level tallies), registered after `CharacterLevel`.
+    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0xa8a1_8b15_7ac0_e084;
     let actual = build_save_registry().schema_fingerprint();
     assert_eq!(
         actual, BASELINE_SCHEMA_FINGERPRINT,

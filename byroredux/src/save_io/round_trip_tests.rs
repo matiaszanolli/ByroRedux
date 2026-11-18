@@ -63,6 +63,8 @@ fn delta_columns_carry_only_session_stable_fields() {
         "FactionReputation",
         // M47.2 — LevelUpPoints: u32 / f32 / u32 / u32 (#5916 pool_picks).
         "LevelUpPoints",
+        // #7050 — SkillUseLevel: u16 major increases and [u16; 8] attribute tallies.
+        "SkillUseLevel",
         // TimedRestorations: source/AV u32 FormIDs, f32 rate, f64 time.
         "TimedRestorations",
         // #4415 — SpellList: Vec<u32> spell FormIDs, global-space.
@@ -2560,4 +2562,32 @@ fn a_line_in_flight_survives_save_load_round_trip() {
     dst.insert_resource(FormIdPool::new());
     restore_world(&mut dst, &reg, &decoded).unwrap();
     assert_eq!(dst.get::<SpeakingLine>(actor).map(|l| l.clone()), Some(line));
+}
+
+/// #7050 (OSL-SAVE-001 / OSL-SAVE-003) — a save taken mid-level resumes it: the player's major-increase count
+/// and each attribute's tally read back identical, and the saved experience (`SkillProgress`) with them.
+#[test]
+fn the_skill_use_level_tallies_survive_save_load_round_trip() {
+    use byroredux_core::character::SkillUseLevel;
+
+    let reg = build_save_registry();
+    let mut src = World::new();
+    src.insert_resource(StringPool::new());
+    src.insert_resource(FormIdPool::new());
+    src.register::<SkillUseLevel>();
+    let player = src.spawn();
+    let level = SkillUseLevel { major_increases: 7, attribute_tallies: [3, 0, 1, 2, 0, 4, 0, 5] };
+    src.insert(player, level);
+
+    let snapshot = save_world(&src, &reg).unwrap();
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+    let mut dst = World::new();
+    dst.insert_resource(FormIdPool::new());
+    restore_world(&mut dst, &reg, &decoded).unwrap();
+    assert_eq!(dst.get::<SkillUseLevel>(player).map(|l| *l), Some(level));
+    // A re-captured snapshot of the loaded state decodes equal to the one loaded.
+    let again = save_world(&dst, &reg).unwrap();
+    assert_eq!(again.components.get("SkillUseLevel"), decoded.components.get("SkillUseLevel"));
 }

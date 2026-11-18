@@ -1552,6 +1552,13 @@ pub(crate) fn scripted_skill_system(world: &World, _dt: f32) {
     }
 }
 
+/// Oblivion skill-use leveling (OSL-XP-007): the one system that drains `PendingSkillUse`, the skill uses
+/// the combat, magic, movement and detection systems queued, into the experience entry point for the
+/// player. A ruleset that does not level by skill use drops them unapplied.
+pub(crate) fn skill_use_system(world: &World, _dt: f32) {
+    byroredux_scripting::oblivion_skill_use::skill_use_system(world, crate::systems::PlayerEntity::get(world));
+}
+
 /// M47.2 — script `Kill` requests (`PendingScriptKills`), through the same
 /// death path as a lethal hit: an essential victim goes into bleedout
 /// instead (the CK *Kill* console page: "Essential actors will be made
