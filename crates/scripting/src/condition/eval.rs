@@ -792,6 +792,19 @@ pub fn evaluate_modeled(conditions: &ConditionList, world: &World, ctx: &Conditi
     conditions.iter().all(|condition| is_modeled(world, condition)) && evaluate(conditions, world, ctx)
 }
 
+/// Whether `conditions` could pass, for a consumer that stays open on a term the evaluator cannot
+/// honestly read ([`is_modeled`]). Every unreadable term counts as satisfied; the readable ones are
+/// evaluated as in [`evaluate`]. An OR block passes when any member is unreadable or true, and the
+/// blocks are AND-combined, so the answer is `false` only when a readable term refutes the list
+/// whatever the unreadable ones are. (The list has no negation, so this is the exact upper bound.)
+pub fn evaluate_unless_refuted(conditions: &ConditionList, world: &World, ctx: &ConditionContext) -> bool {
+    or_blocks(conditions).all(|block| {
+        conditions[block]
+            .iter()
+            .any(|condition| !is_modeled(world, condition) || evaluate_condition(condition, world, ctx))
+    })
+}
+
 /// The OR blocks of `conditions`, in order, as index ranges — the units
 /// [`evaluate`] AND-combines.
 pub(crate) fn or_blocks(

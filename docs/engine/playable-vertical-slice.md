@@ -1869,13 +1869,23 @@ the compiled-in default of `sCharGenQuest` (`Oblivion_default.ini` does not set 
 new-game handler (`0x5b5df0`) enables it. Stage 5 starts MQ01 (the tutorial quest) and does
 `player.moveto CGPlayerStartMarker`. Oblivion's player `MoveTo` was declined because the CS says it
 also ends the script; it now queues the move as Fallout's does and ends the script
-(`Action::Returned`). Observed in one headless run: the quest ran stages 0, 5, 6, the player stood at
-`CGPlayerStartMarker`, and once moved within 610 units of `CGValenDrethTauntMarker` (about 620 from the
-start marker; the original player walks there) Valen Dreth's taunts ran (`tauntCount=4`) and the quest
-reached stage 9. It stops there. Stage 10 is set by a dialogue line's result script (INFO `00032B04`,
-"Yessir.") and stage 12 by Renote's `OnPackageDone CGRenoteToMarkerA`, so the Emperor, Renote, Glenroy
-and Baurus conversation, which runs on `evp` package evaluations and `SayTo` lines, does not advance.
-That is the next piece, not done. Nothing was watched on screen.
+(`Action::Returned`).
+
+Observed in headless runs, the player standing within 610 units of `CGValenDrethTauntMarker` (the start
+marker is about 620 away, so the original player walks a few steps): stages 0, 5, 6, Valen Dreth's taunts
+(`tauntCount=4`), 9, then the Emperor conversation through `CharGenMain` (Renote's, Baurus's "Yessir."
+which sets 10, Renote's `OnPackageDone` which sets 12) to 13. Baurus's cross-cell travel was what held
+it at 9: his package `BaurusGuardMartinCloudRulerGreatHall` carries `GetStage MQ05 >= 90` (false) beside an
+uncatalogued condition function (230), and package selection passed a whole list for one unreadable term,
+so he left for the Cloud Ruler Temple and his script stopped. Selection now passes a list unless a
+readable term refutes it (`evaluate_unless_refuted`), still open on the unreadable ones.
+
+It stops at 13. Stage 14 is set by `CGTriggerZoneCellScript`'s `OnTrigger player` on reference `00097A3B`
+(base `00097A3C`, model `meshes\Dungeons\Misc\Triggers\TrigZone02.NIF`, scale 1.3). The engine builds
+trigger volumes from a reference's `XPRM` primitive only; an Oblivion reference has none, and the zone's
+NIF has no mesh, so the reference gets no `TriggerVolume` and its `OnTrigger` never runs. Its box is the
+NIF's `BSBound`, which the importer reads (`ImportedScene::bs_bound`) but the cell-load cache does not
+carry. That is the next piece. Nothing was watched on screen.
 
 **Not modelled yet.** The movies' mute and pause-music flags, Papyrus
 `Game.PlayBink`, the INI start sequences, which audio track a movie plays (PRD `bink-video-playback`,

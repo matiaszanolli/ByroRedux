@@ -363,6 +363,37 @@ fn single_false_condition_returns_false() {
     assert!(!evaluate(&list, &world, &ctx(0)));
 }
 
+/// A list passes `evaluate_unless_refuted` unless a readable term refutes it: an unreadable term counts
+/// as satisfied, alone in its AND block or beside others in its OR block, and the readable terms still
+/// decide. Oblivion's `BaurusGuardMartinCloudRulerGreatHall` carries an uncatalogued function beside
+/// `GetStage MQ05 >= 90`; the whole package used to pass.
+#[test]
+fn a_readable_false_term_refutes_a_list_beside_an_unreadable_one() {
+    use crate::quest_stages::{QuestFormId, QuestStageState};
+    let mut world = World::new();
+    crate::register(&mut world);
+    let mut state = QuestStageState::default();
+    state.set_stage(QuestFormId(0xAA), 42);
+    world.insert_resource(state);
+    let unreadable = || cond(99999, ComparisonOp::Eq, 1.0, false);
+    let stage = |op, value, or_next| cond(58, op, value, or_next).with_param_1(0xAA);
+
+    // [unreadable] AND [GetStage >= 90]: refuted, where `evaluate_modeled` declines and the old
+    // whole-package rule passed.
+    let refuted = vec![unreadable(), stage(ComparisonOp::Ge, 90.0, false)];
+    assert!(!evaluate_unless_refuted(&refuted, &world, &ctx(0)));
+    // [unreadable] AND [GetStage < 90]: nothing readable refutes it.
+    let open = vec![unreadable(), stage(ComparisonOp::Lt, 90.0, false)];
+    assert!(evaluate_unless_refuted(&open, &world, &ctx(0)));
+    // [GetStage >= 90 OR unreadable]: the unreadable member may be true, so the block holds.
+    let or_block = vec![stage(ComparisonOp::Ge, 90.0, true), unreadable()];
+    assert!(evaluate_unless_refuted(&or_block, &world, &ctx(0)));
+    // [GetStage >= 90 OR GetStage >= 91]: all readable, both false: refuted.
+    let both_false = vec![stage(ComparisonOp::Ge, 90.0, true), stage(ComparisonOp::Ge, 91.0, false)];
+    assert!(!evaluate_unless_refuted(&both_false, &world, &ctx(0)));
+    assert!(evaluate_unless_refuted(&Vec::new(), &world, &ctx(0)), "no conditions: always");
+}
+
 #[test]
 fn unknown_function_index_returns_zero_and_satisfies_eq_zero() {
     // Bethesda's "unknown function safe-default" — function returns

@@ -36,26 +36,20 @@ use byroredux_scripting::{
 /// Whether an AI package's CTDA conditions permit it to be selected for this
 /// actor (M42.2), evaluated through the M47.1 condition evaluator.
 ///
-/// Unknown condition functions retain the established fail-open policy. The
-/// evaluator cannot soundly preserve the authored OR/AND blocks when one leaf
-/// is unknown, so rejecting the entire package would regress pre-CTDA behavior.
+/// A condition function the evaluator cannot read keeps the established
+/// fail-open policy: that one term counts as satisfied. The readable terms
+/// still decide: a package whose list a readable term refutes is not selected
+/// however many unreadable terms sit beside it (`evaluate_unless_refuted`). The
+/// old rule passed the whole package for one unreadable term, which sent
+/// Oblivion's Baurus to the Cloud Ruler Temple during the prison sequence
+/// (`BaurusGuardMartinCloudRulerGreatHall`: `GetStage MQ05 >= 90` is false, an
+/// uncatalogued function 230 sits beside it).
 fn package_conditions_pass(
     conditions: &byroredux_plugin::esm::records::condition::ConditionList,
     world: &World,
     ctx: &ConditionContext,
 ) -> bool {
-    use byroredux_scripting::condition::evaluate;
-
-    if conditions.is_empty() {
-        return true;
-    }
-    let all_known = conditions
-        .iter()
-        .all(|condition| byroredux_scripting::condition::is_modeled(world, condition));
-    if !all_known {
-        return true;
-    }
-    evaluate(conditions, world, ctx)
+    byroredux_scripting::condition::evaluate_unless_refuted(conditions, world, ctx)
 }
 
 /// #5376 — whether a package's whole condition list could be evaluated
