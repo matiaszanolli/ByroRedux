@@ -31,7 +31,10 @@ pub(crate) fn light_level_at(world: &World, position: Vec3) -> f32 {
         && !cell.is_interior {
             level += luminance(cell.directional_color);
         }
-    let lights: Vec<(LightSource, Vec3)> = match (world.query::<LightSource>(), world.query::<GlobalTransform>()) {
+    // `GlobalTransform` before `LightSource`, the order `render::lights::collect_lights` takes them in:
+    // the opposite order closed a lock-order cycle under the ABBA detector.
+    let (transforms, lights) = (world.query::<GlobalTransform>(), world.query::<LightSource>());
+    let lights: Vec<(LightSource, Vec3)> = match (lights, transforms) {
         (Some(lights), Some(transforms)) => lights
             .iter()
             .filter_map(|(entity, light)| transforms.get(entity).map(|t| (*light, t.translation)))

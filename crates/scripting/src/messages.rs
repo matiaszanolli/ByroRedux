@@ -461,9 +461,13 @@ fn fill_tag(world: &World, tag: &str, quest: Option<QuestFormId>) -> Option<Stri
 }
 
 fn alias_name(world: &World, name: &str, quest: Option<QuestFormId>) -> Option<String> {
-    let catalog = world.try_resource::<MessageCatalog>()?;
+    // The catalog guard is taken last and held only for the name lookups: the alias registry, the
+    // bindings and the actor's base form are read first without it, so no lock is ever acquired
+    // while `MessageCatalog` is held (a `Message.Show()` run already holds quest locks when it
+    // reads the catalog — acquiring more behind it closed a lock-order cycle).
     if name.eq_ignore_ascii_case("player") {
-        return catalog
+        return world
+            .try_resource::<MessageCatalog>()?
             .display_name(crate::relationships::PLAYER_BASE)
             .map(str::to_owned);
     }
@@ -487,6 +491,7 @@ fn alias_name(world: &World, name: &str, quest: Option<QuestFormId>) -> Option<S
             None => None,
         }
     };
+    let catalog = world.try_resource::<MessageCatalog>()?;
     // "If the resulting text is '[...]', then that means the alias wasn't
     // filled."
     let Some(form) = form else {
