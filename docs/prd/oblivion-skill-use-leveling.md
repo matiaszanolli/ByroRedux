@@ -1,6 +1,6 @@
 # Oblivion skill-use leveling — Product Requirements
 
-**Status**: PROPOSED (2026-11-17). Revision 2 folds in review round 1: the container-versus-actor level readers, the owners of the menus and the skill-use hooks, phase dependencies, acceptance fixtures, uncited original-engine claims, undefined terms, the lock and storage invariants and links in place of copies. Statements about how Oblivion behaves cite UESP and the Construction Set wiki; a claim that could not be verified is marked **Phase 0: verify** instead of being stated as fact.
+**Status**: PROPOSED (2026-11-18). Revision 3 records the owner's decisions on Q1 to Q4, all as recommended. Revision 2 folded in review round 1: the container-versus-actor level readers, the owners of the menus and the skill-use hooks, phase dependencies, acceptance fixtures, uncited original-engine claims, undefined terms, the lock and storage invariants and links in place of copies. Statements about how Oblivion behaves cite UESP and the Construction Set wiki; a claim that could not be verified is marked **Phase 0: verify** instead of being stated as fact.
 
 **Scope**: the player of Oblivion levels the way the original's player does: using a skill banks experience, enough experience raises the skill, ten raises of major skills make a level available, a night's sleep applies it, the player raises three attributes by the bonuses their skill use earned, and Health grows by a tenth of Endurance. Everything the player does that the original counts as skill use feeds it, where the engine has the system that action belongs to. It covers the player only, on Oblivion only (every other title has a leveling model already; §7.1). Outside it: character creation (class, birthsign, race choice), the original's trainers and skill books, creature and NPC level scaling, and the visual level-up and sleep/rest menus, which no design owns yet (§4.2).
 
@@ -253,9 +253,13 @@ The verify items Phase 0 closes:
 ## 10. Decisions required
 
 1. **Q1 — Where the stored Health term lives.** Recommended: a dedicated saved layer on the player's Health actor value that `undamaged()` adds, so the HUD, regeneration and restores keep reading one maximum, and abilities and gear keep their own layer. Alternative: the permanent-modifier layer: no shape change, but it also carries abilities and gear, so removing one cannot tell its share from the gains (#7044's concern). Alternative: a component the Health formula row reads as an input: every consumer of the maximum then needs to know it.
+   **Decided** (2026-11-18): as recommended: a dedicated saved layer on the player's Health actor value that `undamaged()` adds (OSL-HP-002, OSL-SAVE-001).
 2. **Q2 — The first skill-use wave.** Recommended: feed the combat skills, the magic schools and Sneak, Athletics and Acrobatics, the actions whose systems exist, and leave Security, Speechcraft, Mercantile, Alchemy and Armorer unfed and reported (OSL-USE-006). Alternative: feed the missing skills from simple stand-in actions so every skill rises; the player levels faster than the original in those skills and the table's numbers lose their meaning.
+   **Decided** (2026-11-18): as recommended: only the skills whose system exists are fed; the rest are reported unfed (OSL-USE-006).
 3. **Q3 — The level-up surface before the native page.** Recommended: the console command `levelup attr <attribute>`, mirroring the Skyrim `levelup pool` picks, plus the level-up notification. Alternative: pick the three attributes by a fixed rule (the highest tallies): a level then needs no input, but the player loses the choice that defines the original's level-up. Alternative: wait for the native page, which no design owns yet (OSL-NG-004): nothing then plays end to end.
+   **Decided** (2026-11-18): as recommended: the console command `levelup attr <attribute>` plus the level-up notification (OSL-API-005, OSL-API-004).
 4. **Q4 — The player's class until chargen.** Recommended: the `Player` `NPC_` record's class (OSL-CLS-001), which follows the [Oblivion Actor Values PRD](oblivion-actor-values.md)'s decided Q3 (the player's values come from that record). Alternative: a console command that sets the class for a session: more testable, but a second source of truth next to the record. Alternative: wait for a character-creation PRD: nothing in this PRD can then be played end to end.
+   **Decided** (2026-11-18): as recommended: the class of the `Player` `NPC_` record (OSL-CLS-001).
 
 ---
 
@@ -281,3 +285,4 @@ The verify items Phase 0 closes:
 |---|---|---|---|
 | 1 | 2026-11-17 | First draft, at the owner's request, from #7044's blocked status | — |
 | 2 | 2026-11-17 | Review round 1 folded in: container vs actor level readers, menu and emitter owners, phase dependencies, acceptance fixtures, uncited original-engine claims, undefined terms, lock and storage invariants, links not copies | claude: revise |
+| 3 | 2026-11-18 | Owner decisions Q1 to Q4 recorded, each as recommended: a dedicated saved Health layer, only skills with a system fed, the console `levelup attr` surface, the `Player` record's class | — |
