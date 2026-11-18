@@ -1,0 +1,82 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "include/depth_convention.glsl"
+
+// RLT-CON-004. Project the ray toward the directional light into the opaque
+// depth buffer. Method from Bend Studio's SIGGRAPH 2023 presentation.
+layout(local_size_x = WORKGROUP_X, local_size_y = WORKGROUP_Y) in;
+layout(set = 0, binding = 4) uniform sampler2D depthTex;
+layout(set = 0, binding = 18) uniform sampler2D transparencyAndSun;
+layout(set = 0, binding = 19, rgba16f) uniform writeonly image2D sunOcclusion;
+
+layout(push_constant) uniform FarSunProjection {
+    mat4 invViewProj;
+    vec4 clipSunDirection;
+} projection;
+
+float screenOcclusion(ivec2 pixel, ivec2 extent) {
+    float z = texelFetch(depthTex, pixel, 0).r;
+    if (!depthIsSurface(z)) return 0.0;
+
+    vec2 startPx = vec2(pixel) + 0.5;
+    vec2 startNdc = startPx * (2.0 / vec2(extent)) - 1.0;
+    vec4 startClip = vec4(startNdc, z, 1.0);
+    float invStartW = (projection.invViewProj * startClip).w;
+    vec4 ray = projection.clipSunDirection * invStartW;
+    // Clip the world-space search interval before it can cross the eye
+    // plane. A sun parallel to the view plane has ray.w == 0 and needs
+    // no special projection or division by the sun's own w.
+    float reach = 8000.0;
+    if (ray.w < 0.0) reach = min(reach, -0.95 / ray.w);
+    vec4 endClip = startClip + ray * reach;
+    vec3 endNdc = endClip.xyz / endClip.w;
+    vec2 span = (endNdc.xy - startNdc) * (0.5 * vec2(extent));
+    float major = max(abs(span.x), abs(span.y));
+    if (major < 2.0) return 0.0;
+
+    // Along the projected line, encoded depth is affine in screen space.
+    // Sample on a bounded major-axis grid starting outside the receiver's
+    // own texel. Point depth prevents interpolation through silhouettes.
+    float occlusion = 0.0;
+    for (int tap = 2; tap <= 48; ++tap) {
+        float t = float(tap) / major;
+        if (t > 1.0) break;
+        vec2 samplePx = startPx + span * t;
+        if (any(lessThan(samplePx, vec2(0.0))) || any(greaterThanEqual(samplePx, vec2(extent)))) break;
+        float rayZ = mix(z, endNdc.z, t);
+        if (rayZ < 0.0 || rayZ > 1.0) break;
+        ivec2 samplePixel = ivec2(samplePx);
+        float travelZ = texelFetch(depthTex, samplePixel, 0).r;
+        if (!depthIsSurface(travelZ) || !depthIsInFront(travelZ, rayZ)) continue;
+
+        vec2 ndc = (vec2(samplePixel) + 0.5) * (2.0 / vec2(extent)) - 1.0;
+        float rayDepth = depthViewSpace(projection.invViewProj, ndc, rayZ);
+        float blockerDepth = depthViewSpace(projection.invViewProj, ndc, travelZ);
+        float behind = rayDepth - blockerDepth;
+        // Bias by a fraction of the view depth to reject self-hits. A
+        // finite slab excludes foreground geometry far in front of the ray.
+        float bias = clamp(0.0015 * rayDepth, 4.0, 80.0);
+        float thickness = clamp(0.025 * rayDepth, 60.0, 420.0);
+        float hit = smoothstep(bias, 2.0 * bias, behind)
+            * (1.0 - smoothstep(0.5 * thickness, thickness, behind));
+        vec2 edge = min(samplePx, vec2(extent) - samplePx);
+        hit *= smoothstep(0.0, 6.0, min(edge.x, edge.y));
+        hit *= 1.0 - smoothstep(40.0, 48.0, float(tap));
+        occlusion = max(occlusion, hit);
+        if (occlusion >= 1.0) break;
+    }
+    return occlusion;
+}
+
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 extent = imageSize(sunOcclusion);
+    if (any(greaterThanEqual(pixel, extent))) return;
+    vec4 source = texelFetch(transparencyAndSun, pixel, 0);
+    // The transparency bit describes the composed foreground. Skip there
+    // because the underlying opaque sun is no longer the full direct term.
+    vec3 occludedSun = source.r == 0.0 && any(greaterThan(source.gba, vec3(0.0)))
+        ? source.gba * screenOcclusion(pixel, extent) : vec3(0.0);
+    imageStore(sunOcclusion, pixel, vec4(occludedSun, 0.0));
+}

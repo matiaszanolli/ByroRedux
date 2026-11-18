@@ -86,6 +86,25 @@ class TemporalHarnessTests(unittest.TestCase):
         self.assertEqual(record["reference_spp"], "")
         self.assertEqual(record["reference_seeds"], "")
 
+    def test_a3_floor_compares_excess_at_the_same_frame_across_seeds(self):
+        _, primary = self.run_gate("A3", seed=0)
+        _, paired = self.run_gate("A3", seed=1)
+        for row, _ in paired:
+            if row.region == "frame_32":
+                row.value += 0.04
+                row.floor_engine += 0.03
+            if row.region == "frame_48":
+                row.value += 0.02
+        gates.measure_a3_seed_floor(primary, paired)
+        motion, settle = [row for row, _ in primary if row.case == "penumbra-direct-pan"]
+        self.assertAlmostEqual(motion.floor_engine, 0.02)
+        self.assertAlmostEqual(motion.value, 0.02)
+        self.assertEqual(motion.temporal_floor_seed, 1)
+        self.assertEqual(settle.floor_engine, 0.0)
+        gates.apply_thresholds(primary, 3, gates.load_thresholds())
+        self.assertEqual(motion.passed, "no")
+        self.assertEqual(settle.passed, "yes")
+
 
 if __name__ == "__main__":
     unittest.main()

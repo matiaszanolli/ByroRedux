@@ -202,3 +202,62 @@ At frame 112, a diagnostic absolute-difference image
 1% of the lit-mask pixels contribute about 14.4% of the moving squared error;
 the mean signed moving-minus-parked difference is 0.000348 on that mask.
 This localizes the observation but does not by itself identify its source.
+
+On 2026-11-18 the harness measured the seed-pair floor from the two
+original runs by comparing the excess at each matching frame. The worst
+during-motion excess was 0.026003 on seed 0 and 0.026049 on seed 1. The
+largest difference at any sampled moving frame was 0.0000603. At +16,
+the excesses were 0.000366 and 0.000383, with a floor of 0.0000168.
+These are baselines for the direct-light signal. A3 still needs a budget.
+
+The complete tier-3 pan was then repeated on the current control
+and the earlier hashed-history prototype with the deep parked tail.
+The current control reproduced the original results on both seeds.
+The prototype's worst motion excess was 0.012733 and 0.012690. At +16,
+the excess was −0.005360 and −0.005401. Its largest paired-seed
+differences were 0.0000992 during motion and 0.0000411 at +16.
+Each build used its own moving, parked and age-matched held captures.
+This isolates the candidate's temporal metric. Its changed spatial
+error pattern and content and performance comparisons remain open.
+
+## A3 renderer change, 2026-11-18
+
+The release candidate carries a 10-bit shadow sampling key through
+validated receiver history during motion and after the stop. A receiver
+that establishes history in a stationary view uses the screen-pixel
+rotation. The 22-bit blocker ID and 36-byte reservoir stride are
+preserved.
+
+The [gate manifest](MLIGHT_A3_exit_2026-11-18.tsv) records the RTX 4070 Ti
+run with seeds 0 and 1. The worst pan excess is 1.2885% against 2%.
+At frame +16 the worst excess is −0.5325% against 1%. The seed-pair
+floors are 0.00871 and 0.000617 percentage points, respectively, within
+the frozen margins. A14 remains at 0.9508% against 5%.
+
+On the sampled pan and +16 frames, the worst pixel-level luminance RMSE
+fell from 2.949% to 1.581% of the parked mean. Averaging signed residuals
+over fully covered 16- and 32-pixel blocks before computing RMSE tests
+coarser spatial structure. Across matched frames, the largest increases
+were 0.00893 and 0.00458 percentage points, respectively. Each build
+used its own converged capture at the matching pose.
+
+The isolated A11 comparison used the prior 64-frame pre-A3 anchors at
+the pinned TAA poses and tiers. The edge-inclusive comparison found
+zero failures in all five scenes at the 1% margin, covering 789 Cornell,
+545 Prospector, 920 Whiterun, 920 MedTek, and 851 Dugout tiles.
+
+The A3 cost comparison used three interleaved control/candidate pairs per
+case on the same RTX 4070 Ti, with 300 renderer-stepped orbit frames, the
+Phase 1b ray tier pinned, and Wayland mailbox presentation. Frame time is the
+median of the three run means. Main GPU delta is the difference in medians
+of the `main_render` bracket. Each sampled game case stayed within the Q8
+allowance used for this comparison. Cornell is report-only under Q8.
+
+| Scene | Upscaler | Tier | Control (ms) | Candidate (ms) | Frame delta (ms) | Main GPU delta (ms) | Q8 allowance (ms) |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Cornell | TAA | 1 | 13.78 | 13.57 | −0.21 | −0.273 | report |
+| Prospector | TAA | 0 | 9.96 | 9.96 | 0.00 | −0.052 | 0.488 |
+| Whiterun | FSR Quality | 3 | 9.71 | 9.76 | +0.05 | +0.082 | 0.483 |
+| MedTek | FSR Quality | 0 | 16.11 | 15.97 | −0.14 | +0.283 | 0.818 |
+
+Phase 3 A13 still requires the full benchmark matrix and adaptive-tier measurements.

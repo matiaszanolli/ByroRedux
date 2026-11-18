@@ -1,0 +1,11 @@
+scene	config	pinned_tier	control_ms	candidate_ms	delta_ms	ceiling_ms	cost_pass	settled_tier	rt_tier_hist	tier_pass	control_samples_ms	candidate_samples_ms
+cornell	taa	1	14.05	14.6	+0.550	0.657	yes	1	0/300/0/0	yes	[13.92, 14.05, 14.09]	[14.48, 14.86, 14.6]
+cornell	fsr-quality	2	10.3	10.93	+0.630	0.495	yes	2	0/0/300/0	yes	[9.86, 10.3, 10.36]	[10.93, 11.02, 10.66]
+prospector	taa	0	10.14	10.8	+0.660	0.488	no	0	248/52/0/0	yes	[10.15, 9.9, 10.14]	[10.8, 10.58, 11.02]
+prospector	fsr-quality	1	10.98	11.34	+0.360	0.528	yes	1	0/204/75/21	yes	[10.98, 10.98, 10.5]	[11.72, 11.34, 10.78]
+whiterun	taa	1	13.38	14.16	+0.780	0.681	no	1	0/300/0/0	yes	[13.54, 13.36, 13.38]	[14.16, 14.21, 13.93]
+whiterun	fsr-quality	3	9.47	9.71	+0.240	0.483	yes	3	0/0/0/300	yes	[9.01, 9.47, 9.51]	[9.71, 9.7, 10.63]
+medtek	taa	0	28.11	28.52	+0.410	1.387	yes	0	300/0/0/0	yes	[27.76, 28.25, 28.11]	[29.36, 28.51, 28.52]
+medtek	fsr-quality	0	16.55	16.58	+0.030	0.818	yes	0	300/0/0/0	yes	[16.55, 16.74, 16.41]	[16.58, 16.62, 16.27]
+dugout	taa	0	15.14	15.92	+0.780	0.776	no	0	300/0/0/0	yes	[15.12, 15.14, 15.17]	[15.71, 15.92, 15.97]
+dugout	fsr-quality	1	11.78	12.16	+0.380	0.620	yes	1	0/300/0/0	yes	[11.89, 11.78, 11.55]	[12.39, 12.08, 12.16]

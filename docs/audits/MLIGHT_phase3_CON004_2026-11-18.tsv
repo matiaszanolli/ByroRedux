@@ -1,0 +1,7 @@
+gate	case	region	metric	value	floor_engine	floor_reference	floor_combined	frozen_floor	threshold	pass	tier	engine_frames	engine_seeds	reference_spp	reference_seeds	k_exp	reference_cache_key	revision	gpu
+CON-004	near	frame	darkened_pixels	21625	0	0	0		>0	yes	3	16	0			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+CON-004	far	frame	darkened_pixels	422	0	0	0		>0	yes	3	16	0			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+CON-004	far	frame	max_channel_gain	-0	0	0	0		<=2^-10	yes	3	16	0			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+CON-004	far	frame	darkened_pixels_with_blue_fill	191	0	0	0		>0	yes	3	16	0			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+CON-004	far_disabled	frame	max_absolute_change	0	0	0	0		<=2^-10	yes	3	16	0			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+CON-004	offscreen	frame	max_absolute_change	0	0	0	0		<=2^-10	yes	3	16	0			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04

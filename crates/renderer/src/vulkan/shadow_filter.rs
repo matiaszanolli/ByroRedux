@@ -56,7 +56,8 @@ pub fn pixel_angle(fov_y_radians: f32, height: u32) -> f32 {
 }
 
 /// Ratio ping-pong and correction images: RGBA16F. The ratio images carry
-/// the pixel's kernel radius in pixels in alpha (PAF-005).
+/// the pixel's kernel radius in pixels in alpha (PAF-005). The correction
+/// image carries the radius normalised to the active tier's reach (PAF-011).
 const FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 
 /// Screen-sized bytes per pixel this pass allocates per frame-in-flight:

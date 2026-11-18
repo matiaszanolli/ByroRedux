@@ -58,7 +58,7 @@ layout(location = 0) out vec4 outColor;
 layout(location = 2) out vec2 outMotion;
 layout(location = 5) out vec4 outAlbedo;
 layout(location = 6) out float outFsrReactive;
-layout(location = 7) out float outFsrTransparency;
+layout(location = 7) out vec4 outTransparencyAndSun;
 
 #include "include/bindings.glsl"
 #include "include/render_debug_view.glsl"
@@ -419,5 +419,5 @@ void main() {
     // tiers geomorph into one another instead of cross-fading, so there is no
     // changing composition for the upscaler to mistake for motion.
     outFsrReactive = 0.0;
-    outFsrTransparency = 0.0;
+    outTransparencyAndSun = vec4(0.0);
 }

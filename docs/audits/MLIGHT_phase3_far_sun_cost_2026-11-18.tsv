@@ -1,0 +1,4 @@
+scene	config	pinned_tier	control_ms	candidate_ms	delta_ms	ceiling_ms	cost_pass	settled_tier	rt_tier_hist	tier_pass	control_samples_ms	candidate_samples_ms
+prospector	taa	0	9.85	10.01	+0.160	0.488	yes	0	209/91/0/0	yes	[9.89, 9.85, 9.84]	[10.01, 10.01, 10.07]
+whiterun	taa	1	13.72	14.06	+0.340	0.681	yes	1	0/300/0/0	yes	[13.64, 13.72, 13.92]	[13.99, 14.06, 15.0]
+dugout	taa	0	15.25	15.82	+0.570	0.776	yes	0	300/0/0/0	yes	[16.02, 15.25, 15.2]	[15.59, 16.56, 15.82]

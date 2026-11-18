@@ -2,7 +2,7 @@
 //!
 //! Bracketing GPU hot spots with `vkCmdWriteTimestamp` so per-pass
 //! cost can be measured rather than guessed. Owns one `VkQueryPool`
-//! per frame-in-flight slot, `QUERIES_PER_FRAME` (62) TIMESTAMP queries
+//! per frame-in-flight slot, `QUERIES_PER_FRAME` TIMESTAMP queries
 //! each — 31 start/end brackets, bumped from 32/16 by #4052's
 //! ground-cover-bench bracket (#4210), again from 34/17 by the SKYAL
 //! sky-cubemap bake, again from 36/18 by the production ground-cover
@@ -79,6 +79,8 @@
 //! | 59   | main pass, ground-cover model draw (profile only) — end   |
 //! | 60   | main pass, ground-cover blade draw (profile only) — start |
 //! | 61   | main pass, ground-cover blade draw (profile only) — end   |
+//! | 62   | far-field sun shadows — start                        |
+//! | 63   | far-field sun shadows — end                          |
 //!
 //! The original three brackets (skin dispatch / BLAS refit / TAA) shipped
 //! with the #1194 perf-bisect work; the skin-palette bracket (slots 28/29)
@@ -138,7 +140,7 @@ use super::sync::MAX_FRAMES_IN_FLIGHT;
 
 /// Two TIMESTAMP queries per bracket (start, end); the module doc's table is
 /// the one place that counts them.
-const QUERIES_PER_FRAME: u32 = 62;
+const QUERIES_PER_FRAME: u32 = 64;
 
 const Q_SKIN_DISPATCH_START: u32 = 0;
 const Q_SKIN_DISPATCH_END: u32 = 1;
@@ -220,6 +222,8 @@ const Q_CLOUD_SHADOW_END: u32 = 49;
 /// reads this frame's atlas).
 const Q_VOLUMETRICS_LOCAL_SIM_START: u32 = 50;
 const Q_VOLUMETRICS_LOCAL_SIM_END: u32 = 51;
+const Q_FAR_SUN_START: u32 = 62;
+const Q_FAR_SUN_END: u32 = 63;
 
 /// Per-pass elapsed GPU time, milliseconds. Reads `0.0` for any
 /// bracket that didn't run on the snapshot frame OR before the
@@ -358,6 +362,7 @@ pub struct GpuTimerSnapshot {
     /// `COMPUTE_SHADER`. Inactive on any frame the filter is off or failed
     /// to initialise.
     pub shadow_filter_ms: f32,
+    pub far_sun_ms: f32,
     /// #6316 — the SKYAL cloud-shadow bake (`cloud_shadow.comp`, one
     /// invocation per texel of the camera-centred map, marching the cloud
     /// column toward the sun). Recorded inside the sky-cube bracket, so it
@@ -420,6 +425,7 @@ pub struct GpuTimerSnapshot {
     pub volumetrics_inject_active: bool,
     pub volumetrics_integrate_active: bool,
     pub shadow_filter_active: bool,
+    pub far_sun_active: bool,
     pub cloud_shadow_active: bool,
     pub volumetrics_local_sim_active: bool,
     pub main_opaque_active: bool,
@@ -493,6 +499,7 @@ const BIT_CLOUD_SHADOW: u32 = 1 << 24;
 /// Bits 25..=29 belong to the geometry phases (`GEOMETRY_PHASE_BIT_BASE`), so
 /// the next named bracket takes bit 30.
 const BIT_VOLUMETRICS_LOCAL_SIM: u32 = 1 << 30;
+const BIT_FAR_SUN: u32 = 1 << 31;
 
 /// A named START/END timestamp bracket. One row of [`TimerPass::row`] holds everything the two timestamp
 /// writes vary on, so adding a pass is a variant, a row and its `Q_*` / `BIT_*` constants — not two methods.
@@ -524,6 +531,7 @@ pub enum TimerPass {
     CloudShadow,
     VolumetricsIntegrate,
     VolumetricsLocalSim,
+    FarSun,
 }
 
 /// The query slots, active bit and pipeline stages of one [`TimerPass`].
@@ -602,6 +610,7 @@ impl TimerPass {
             Self::VolumetricsIntegrate => PassRow { start: Q_VOLUMETRICS_INTEGRATE_START, end: Q_VOLUMETRICS_INTEGRATE_END, bit: BIT_VOLUMETRICS_INTEGRATE, start_stage: S::COMPUTE_SHADER, end_stage: S::COMPUTE_SHADER },
             // #6533 stage 1b — opens after an execution barrier that retires the compute work recorded before it; the inject dispatch is recorded after the sim.
             Self::VolumetricsLocalSim => PassRow { start: Q_VOLUMETRICS_LOCAL_SIM_START, end: Q_VOLUMETRICS_LOCAL_SIM_END, bit: BIT_VOLUMETRICS_LOCAL_SIM, start_stage: S::COMPUTE_SHADER, end_stage: S::COMPUTE_SHADER },
+            Self::FarSun => PassRow { start: Q_FAR_SUN_START, end: Q_FAR_SUN_END, bit: BIT_FAR_SUN, start_stage: S::COMPUTE_SHADER, end_stage: S::COMPUTE_SHADER },
         }
     }
 }
@@ -630,9 +639,10 @@ const Q_GEOMETRY_PHASE_BASE: u32 = Q_VOLUMETRICS_LOCAL_SIM_END + 1;
 const GEOMETRY_PHASE_BIT_BASE: u32 = BIT_CLOUD_SHADOW.trailing_zeros() + 1;
 const GEOMETRY_TIMER_PHASE_COUNT: u32 = 5;
 const _: () = assert!(
-    Q_GEOMETRY_PHASE_BASE + 2 * GEOMETRY_TIMER_PHASE_COUNT == QUERIES_PER_FRAME,
-    "geometry phases must end exactly at QUERIES_PER_FRAME"
+    Q_GEOMETRY_PHASE_BASE + 2 * GEOMETRY_TIMER_PHASE_COUNT == Q_FAR_SUN_START,
+    "geometry phases must end before the far-sun bracket"
 );
+const _: () = assert!(Q_FAR_SUN_END + 1 == QUERIES_PER_FRAME);
 const _: () = assert!(
     GEOMETRY_PHASE_BIT_BASE + GEOMETRY_TIMER_PHASE_COUNT <= u32::BITS,
     "geometry phase active bits must fit active_bits' u32"
@@ -778,6 +788,10 @@ fn snapshot_from_bits_with_valid_bits(
     snap.shadow_filter_active = bits & BIT_SHADOW_FILTER != 0;
     if snap.shadow_filter_active {
         snap.shadow_filter_ms = bracket_ms(Q_SHADOW_FILTER_START);
+    }
+    snap.far_sun_active = bits & BIT_FAR_SUN != 0;
+    if snap.far_sun_active {
+        snap.far_sun_ms = bracket_ms(Q_FAR_SUN_START);
     }
     snap.cloud_shadow_active = bits & BIT_CLOUD_SHADOW != 0;
     if snap.cloud_shadow_active {

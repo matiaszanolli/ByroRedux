@@ -129,7 +129,7 @@ layout(location = 4) out vec4 outRawIndirect;
 // accumulates these, and the remaining intermediate G-buffer attachments
 // (1 normal, 2 motion, 3 mesh_id, 5 albedo) stay masked off.
 layout(location = 6) out float outFsrReactive;
-layout(location = 7) out float outFsrTransparency;
+layout(location = 7) out vec4 outTransparencyAndSun;
 
 // Water uses the same scene descriptors and secondary-hit material contract
 // as triangle.frag. The scene set already exposes the material table and
@@ -630,7 +630,7 @@ void main() {
     // Water's wave, reflection and refraction terms are not represented by
     // the plane's surface motion; mark the full pixel as reactive/composited.
     outFsrReactive = 1.0;
-    outFsrTransparency = 1.0;
+    outTransparencyAndSun = vec4(1.0, 0.0, 0.0, 0.0);
     // Seeded here alongside the FSR masks so the attachment is never left
     // undefined; the alpha lane (water's blend coverage) is filled in once
     // `alpha` is resolved, next to the `outColor` write. See #3977.

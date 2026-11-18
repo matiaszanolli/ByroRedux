@@ -8,6 +8,7 @@
 //! post-pass sequence.
 
 use super::super::descriptors::{memory_barrier, whole_buffer};
+use super::super::composite::FarSunProjection;
 use crate::vulkan::gpu_timers::TimerPass;
 use super::super::frame_upscaler::{FsrFrameParameters, UpscaleDispatchInputs};
 use super::super::presentation::{ImageSpaceModifier, PresentationFrame, UiOverlayDraw};
@@ -410,7 +411,15 @@ impl VulkanContext {
             fog_cluster_ns,
         );
         self.record_ssao_pass(cmd, frame, vp, inv_vp_arr, camera_pos, render_origin);
-        self.record_composite_pass(cmd, frame);
+        let far_sun = (sky_params.is_exterior && sky_params.sun_intensity > 0.0).then(|| {
+            use byroredux_core::math::{Mat4, Vec3};
+            let sun = Vec3::from_array(sky_params.sun_direction).extend(0.0);
+            FarSunProjection {
+                inv_view_proj: inv_vp_arr,
+                clip_sun_direction: (Mat4::from_cols_array(vp) * sun).to_array(),
+            }
+        });
+        self.record_composite_pass(cmd, frame, far_sun);
         // M-LIGHT RLT-REF-007 — the scene-linear capture reads composite's
         // output here, before bloom adds into it in place.
         // SAFETY: outside any render pass, after composite and before bloom,
@@ -1412,12 +1421,24 @@ impl VulkanContext {
     /// in `draw_frame` and not yet closed — and this runs once per frame
     /// between the main render pass end and `end_command_buffer`, at the
     /// fixed position `record_post_passes` calls it from.
-    fn record_composite_pass(&mut self, cmd: vk::CommandBuffer, frame: usize) {
+    fn record_composite_pass(
+        &mut self,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+        far_sun: Option<FarSunProjection>,
+    ) {
         // SAFETY: `cmd` is recording outside a render pass, and the composite
         // pipeline plus per-frame bindless descriptors remain live here.
         unsafe {
             if let Some(ref composite) = self.post.composite {
                 let bindless_set = self.texture_registry.descriptor_set(frame);
+                if far_sun.is_some() && let Some(ref mut timers) = self.gpu_timers {
+                    timers.cmd_start(TimerPass::FarSun, &self.device, cmd, frame);
+                }
+                composite.dispatch_far_sun(&self.device, cmd, frame, far_sun);
+                if far_sun.is_some() && let Some(ref mut timers) = self.gpu_timers {
+                    timers.cmd_end(TimerPass::FarSun, &self.device, cmd, frame);
+                }
                 if let Some(ref mut timers) = self.gpu_timers {
                     timers.cmd_start(TimerPass::Composite, &self.device, cmd, frame);
                 }
@@ -2267,7 +2288,7 @@ mod tests {
             .find("pub(super) fn record_post_passes(")
             .expect("record_post_passes must exist");
         let body = &src[fn_start..];
-        let composite = body.find("self.record_composite_pass(cmd, frame);").expect("composite call");
+        let composite = body.find("self.record_composite_pass(cmd, frame, far_sun);").expect("composite call");
         let bloom = body.find("self.record_bloom_pass(cmd, frame);").expect("bloom call");
         let meter = body
             .find("self.record_exposure_meter_pass(cmd, frame);")

@@ -828,7 +828,9 @@ word. Modes are `final`, `shadow_visibility`, `selected_light`, `direct_only`,
 `volumetric_radiance` (the froxel radiance alone, no opacity floor, #6727), `water_term`, `water_normal`, `terrain_lod`, `water_refl`,
 `facing_ratio`, `restir_light`, `traced_share` (the traced GI share as it
 enters `indirectLight`, M-LIGHT RLT-GI-009), `filtered_direct` (`direct_only`
-with the shadow filter's correction, RLT-SHD-009), and `restir_history` (the direct-light
+with the shadow filter's correction, RLT-SHD-009), `shadow_filter_radius`
+(the shadow filter reach from blue at one pixel to red at the tier maximum,
+PAF-011), and `restir_history` (the direct-light
 shadow-ratio history: grey = length over the active cap, green tint = the deep
 scene-static tail, red = rejected this frame, blue = a blended decal borrowing
 its surface's history); the legacy

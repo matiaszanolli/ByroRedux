@@ -25,7 +25,7 @@ use super::allocator::SharedAllocator;
 use super::composite::HDR_FORMAT;
 use super::descriptors::color_subresource_single_mip;
 use super::exposure::EXPOSURE_FORMAT;
-use super::gbuffer::{FSR_MASK_FORMAT, MOTION_FORMAT};
+use super::gbuffer::{FSR_MASK_FORMAT, MOTION_FORMAT, TRANSPARENCY_SUN_FORMAT};
 use super::image::{GpuImage, GpuImageDesc};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::upscaling::{fsr_motion_vector_scale, FrameExtentSet, UpscalerMode};
@@ -564,7 +564,7 @@ impl FrameUpscaler {
                 )),
                 transparency_and_composition: Some(vulkan_image(
                     inputs.transparency,
-                    FSR_MASK_FORMAT,
+                    TRANSPARENCY_SUN_FORMAT,
                     vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
                     render_size,
                 )),

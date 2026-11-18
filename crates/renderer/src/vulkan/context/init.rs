@@ -764,9 +764,14 @@ impl VulkanContext {
                 vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
             },
         };
+        let upload = super::super::GpuUploadCtx {
+            device: &device,
+            allocator: &gpu_allocator,
+            queue: &graphics_queue,
+            command_pool: transfer_pool,
+        };
         let composite = match CompositePipeline::new(
-            &device,
-            &gpu_allocator,
+            upload,
             pipeline_cache,
             super::super::composite::CompositeInputs {
                 indirect_views: &composite_indirect_views,
@@ -805,12 +810,7 @@ impl VulkanContext {
         let frame_upscaler = FrameUpscaler::new(
             &vk_instance,
             physical_device,
-            super::super::GpuUploadCtx {
-                device: &device,
-                allocator: &gpu_allocator,
-                queue: &graphics_queue,
-                command_pool: transfer_pool,
-            },
+            upload,
             renderer_config.upscaler,
             frame_extents,
             device_caps.shader_float16_supported,

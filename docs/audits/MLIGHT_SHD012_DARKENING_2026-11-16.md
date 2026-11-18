@@ -53,3 +53,18 @@ In Dugout, (16,15) falls from 0.01520 to 0.01473 (-3.08%) and (17,15)
 from 0.01158 to 0.00988 (-14.69%) in that same view. This is one seed;
 the direct-view noise floor and reference error at these tiles remain
 unmeasured.
+
+The 2026-11-18 A11 rerun used the same historical captures with partial
+edge tiles included and applied the declaration to both mean and p95
+change. Cornell has five failures out of 790 tiles. Tile (27,20) exceeds
+the declared p95 allowance. Four dark tiles on the bottom edge,
+(18,22), (19,22), (20,22), and (33,22), are outside the declaration.
+Dugout has zero failures out of 851 tiles.
+
+A separate 2026-11-18 same-machine comparison covered the moving-blocker
+update and radius debug view at the Phase 1b poses and pinned TAA tiers.
+It used 64-frame captures with jitter disabled, control seeds 0 and 1,
+and candidate seed 0. With the 1% margin and no declaration, all five
+scenes had zero failures: Cornell 789 tiles, Prospector 545, Whiterun
+920, MedTek 920, and Dugout 851. This comparison covers the new patch
+against its immediate control. The full Phase 3 comparison stays open.

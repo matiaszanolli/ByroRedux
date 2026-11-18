@@ -358,6 +358,8 @@ is not named here.
                            pure host state, #4780)
 14 volumetrics_integrate ─┘
 15 ssao.comp             ─  SSAO texture (`record_ssao_pass`)
+   far_sun_shadow.comp    ─  Opaque screen-space sun occlusion after the traced
+                           fade, timed separately before `record_composite_pass`
 16 [Composite render pass]─ raster:
      composite.vert / .frag  HDR combine → intermediate HDR image
                            (`record_composite_pass`)

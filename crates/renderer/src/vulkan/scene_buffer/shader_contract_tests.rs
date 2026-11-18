@@ -203,10 +203,22 @@ fn shadow_ray_disk_samples_are_dithered_low_discrepancy() {
         .1;
     let finalize = &finalize[..finalize.find("transmissionSum += sampleTransmission").expect("loop tail")];
     assert!(
-        finalize.contains("ditheredSequence2(")
+        finalize.contains("ditheredSequence2(shadowSequencePixel,")
             && !finalize.contains("hash2_pixel_frame("),
         "the finalize shadow rays must draw dithered samples, not the white hash"
     );
+}
+
+#[test]
+fn shadow_rotation_follows_validated_receiver_history() {
+    let src = include_str!("../../../shaders/triangle.frag");
+    let validated = src.split_once("reprojValid = true;").unwrap().1;
+    assert!(validated.contains(
+        "shadowSequenceKey = rp.occluderAndShadowSequence >> (32u - RESERVOIR_LIGHT_BITS);"
+    ));
+    assert!(src.contains("reprojValid && shadowSequenceKey == 0u"));
+    assert!(src.contains("dofParams.w < HISTORY_MODE_PARKED - 0.5"));
+    assert!(src.contains("| (shadowSequenceKey << (32u - RESERVOIR_LIGHT_BITS));"));
 }
 
 /// RLT-SHD-012: each shadow ray's transmission is weighted by the receiver's
@@ -2154,6 +2166,14 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
             NO_ALIASES,
         ),
         (
+            "FarSunProjection",
+            include_str!("../../../shaders/far_sun_shadow.comp"),
+            "uniform FarSunProjection",
+            include_str!("../composite.rs"),
+            "struct FarSunProjection",
+            NO_ALIASES,
+        ),
+        (
             "PresentationParams",
             presentation_frag,
             "uniform PresentationParams",
@@ -2469,6 +2489,7 @@ fn every_shader_struct_is_classified() {
         // #4906 — `gcPickLocalRecord`'s return bundle, never stored or uploaded.
         ("GcLocalPick", ShaderLocal),
         ("ShadowFilterGuide", ShaderLocal),
+        ("FarSunProjection", Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep")),
         ("TerrainSample", ShaderLocal),
         ("LocalMedium", ShaderLocal),
         ("DisneyDiffuseSplit", ShaderLocal),
@@ -3374,7 +3395,7 @@ fn bloom_dispatches_after_composite_and_applies_itself_downstream() {
         .find("\n    }\n")
         .expect("record_post_passes must close at impl indentation")];
     let composite_call = body
-        .find("self.record_composite_pass(cmd, frame)")
+        .find("self.record_composite_pass(cmd, frame, far_sun)")
         .expect("record_post_passes must call record_composite_pass");
     let bloom_call = body
         .find("self.record_bloom_pass(cmd, frame)")

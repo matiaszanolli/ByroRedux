@@ -761,7 +761,7 @@ layout(std430, set = 1, binding = 23) writeonly buffer DirectUnshadowedBuffer {
 // reprojection: element [0] is the count N (clamped to
 // RESTIR_MAX_MOVED_SURFACES by the uploader), [1..N] the surface IDs of
 // every instance flagged INSTANCE_FLAG_MOVED_THIS_FRAME. The mover taint
-// matches last frame's recorded occluder (`Reservoir::occluderSurface`)
+// matches last frame's recorded occluder (low bits of `occluderAndShadowSequence`)
 // against it, because instance indices are per-frame sort order and cannot
 // be resolved across frames — surface IDs are stable. Partially bound is
 // not relied on: the CPU writes every frame slot at init.

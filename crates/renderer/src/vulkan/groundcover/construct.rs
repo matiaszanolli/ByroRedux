@@ -737,7 +737,7 @@ fn draw_color_write_masks(debug_points: bool) -> [vk::ColorComponentFlags; 8] {
     // `B10G11R11_UFLOAT` carries no alpha channel.
     masks[5] = C::R | C::G | C::B;
     masks[6] = C::R;
-    masks[7] = C::R;
+    masks[7] = C::RGBA;
     masks
 }
 
@@ -775,7 +775,7 @@ mod tests {
             frag.contains("layout(location = 2) out vec2 outMotion;")
                 && frag.contains("outMotion = (currNDC - prevNDC) * 0.5;")
                 && frag.contains("outFsrReactive = 0.0;")
-                && frag.contains("outFsrTransparency = 0.0;"),
+                && frag.contains("outTransparencyAndSun = vec4(0.0);"),
             "blade ribbons must write real velocity and no FSR exception: the \
              segment tiers geomorph, so there is no stochastic handoff left to flag"
         );

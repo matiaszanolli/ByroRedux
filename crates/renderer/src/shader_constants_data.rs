@@ -131,11 +131,13 @@ const _: () = {
 // - parked and scene-static (history mode >= `HISTORY_MODE_SCENE_STATIC`):
 //   a 1024-frame tail with a 0.002 floor — measured on the Cornell penumbra
 //   at one shadow ray per pixel (`cornell_parked_penumbra_converges_at_one_shadow_ray`);
-// - otherwise: a 16-frame tail with a 0.1 floor, so ghosts stay responsive.
+// - camera or scene motion: a 16-frame tail with a 0.1 floor;
+// - history touched by a moving blocker: a 0.3 floor through its settle period.
 pub const RESTIR_HISTORY_CAP_PARKED: f32 = 1024.0;
 pub const RESTIR_HISTORY_CAP_MOVING: f32 = 16.0;
 pub const RESTIR_ALPHA_FLOOR_PARKED: f32 = 0.002;
 pub const RESTIR_ALPHA_FLOOR_MOVING: f32 = 0.1;
+pub const RESTIR_ALPHA_FLOOR_MOVER_TAINTED: f32 = 0.3;
 // ReSTIR surface/plane compatibility gates shared by temporal reuse, decal
 // substrate reuse and spatial-neighbour rejection in `triangle.frag`.
 pub const RESTIR_SURFACE_NORMAL_COS: f32 = 0.906;
@@ -146,8 +148,8 @@ pub const RESTIR_VIEW_COS_FLOOR: f32 = 0.1;
 // Per-pixel mover taint: a pixel whose selected shadow ray hit an instance
 // that moved this build (`INSTANCE_FLAG_MOVED_THIS_FRAME`) keeps the moving
 // tail, and keeps it for this many hit-free frames past the moving cap before
-// rejoining the parked tail, so a shadow an occluder leaves behind fades at
-// the moving floor instead of ghosting at the parked one.
+// rejoining the parked tail, so a shadow an occluder leaves behind keeps
+// fading at the faster mover-tainted floor.
 pub const RESTIR_MOVER_SETTLE_FRAMES: f32 = 32.0;
 // #6250 — capacity of the moved-surface-ID set (scene set binding 25): the
 // per-frame list of stable surface IDs flagged `INSTANCE_FLAG_MOVED_THIS_FRAME`
@@ -215,6 +217,8 @@ const _: () = {
     assert!(RESTIR_HISTORY_CAP_PARKED <= HALF_INTEGER_EXACT_MAX);
     assert!(RESTIR_HISTORY_CAP_MOVING <= RESTIR_HISTORY_CAP_PARKED);
     assert!(RESTIR_ALPHA_FLOOR_PARKED <= RESTIR_ALPHA_FLOOR_MOVING);
+    assert!(RESTIR_ALPHA_FLOOR_MOVING <= RESTIR_ALPHA_FLOOR_MOVER_TAINTED);
+    assert!(RESTIR_ALPHA_FLOOR_MOVER_TAINTED <= 1.0);
     // The tainted count runs past the moving cap to the settle end; it must
     // stay integer-exact in the half it is stored in.
     assert!(RESTIR_HISTORY_CAP_MOVING + RESTIR_MOVER_SETTLE_FRAMES <= HALF_INTEGER_EXACT_MAX);
@@ -2306,7 +2310,8 @@ pub const RENDER_DEBUG_FILTERED_DIRECT: u32 = 18;
 // so wherever a medium is dense it shows the medium's opacity, which does not depend on lighting; this view has
 // no opacity floor, so a shaft's in-scattered light (and its absence) can be measured directly (#6727).
 pub const RENDER_DEBUG_VOLUMETRIC_RADIANCE: u32 = 19;
-pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_VOLUMETRIC_RADIANCE;
+pub const RENDER_DEBUG_SHADOW_FILTER_RADIUS: u32 = 20;
+pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_SHADOW_FILTER_RADIUS;
 pub const RENDER_DEBUG_LEGACY_FLAGS: u32 = u32::MAX;
 
 pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
@@ -2333,6 +2338,7 @@ pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
     ("RENDER_DEBUG_TRACED_SHARE", RENDER_DEBUG_TRACED_SHARE),
     ("RENDER_DEBUG_FILTERED_DIRECT", RENDER_DEBUG_FILTERED_DIRECT),
     ("RENDER_DEBUG_VOLUMETRIC_RADIANCE", RENDER_DEBUG_VOLUMETRIC_RADIANCE),
+    ("RENDER_DEBUG_SHADOW_FILTER_RADIUS", RENDER_DEBUG_SHADOW_FILTER_RADIUS),
     ("RENDER_DEBUG_MODE_MAX", RENDER_DEBUG_MODE_MAX),
     ("RENDER_DEBUG_LEGACY_FLAGS", RENDER_DEBUG_LEGACY_FLAGS),
 ];
@@ -2857,6 +2863,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float RESTIR_HISTORY_CAP_MOVING),
     shader_define!(Float RESTIR_ALPHA_FLOOR_PARKED),
     shader_define!(Float RESTIR_ALPHA_FLOOR_MOVING),
+    shader_define!(Float RESTIR_ALPHA_FLOOR_MOVER_TAINTED),
     shader_define!(Float RESTIR_SURFACE_NORMAL_COS),
     shader_define!(Float RESTIR_TEMPORAL_DEPTH_FLOOR),
     shader_define!(Float RESTIR_SUBSTRATE_DEPTH_FLOOR),
@@ -3444,6 +3451,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Uint RENDER_DEBUG_RESTIR_HISTORY),
     shader_define!(Uint RENDER_DEBUG_TRACED_SHARE),
     shader_define!(Uint RENDER_DEBUG_FILTERED_DIRECT),
+    shader_define!(Uint RENDER_DEBUG_SHADOW_FILTER_RADIUS),
     shader_define!(Uint RENDER_DEBUG_MODE_MAX),
     shader_define!(Uint RENDER_DEBUG_LEGACY_FLAGS),
     HeaderLine::Blank,

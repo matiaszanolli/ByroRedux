@@ -157,6 +157,7 @@ layout(std430, set = 0, binding = 16) readonly buffer LocalFireBricks {
 // 17: the species phase lobes tabulated over the scattering angle
 // (`combustion_phase_bake.comp`): row 0 soot, row 1 steam, x/y/z = octave 0/1/2.
 layout(set = 0, binding = 17) uniform sampler2D combustionPhaseTable;
+layout(set = 0, binding = 20) uniform sampler2D farSunOcclusionTex;
 
 // The octave lobes of the medium at table coordinate `u`
 // (`combustionPhaseTableCoord`): one fetch per species, blended by the steam
@@ -1007,7 +1008,21 @@ void main() {
             && debugMode != RENDER_DEBUG_COMPOSITE_TERM
             && debugMode != RENDER_DEBUG_VOLUMETRIC_TERM
             && debugMode != RENDER_DEBUG_VOLUMETRIC_RADIANCE);
+    if (params.depth_params.x > 0.5 && params.sun_dir.w > 0.0
+        && (!rawDebug || debugMode == RENDER_DEBUG_FILTERED_DIRECT)) {
+        vec3 occludedSun = texelFetch(farSunOcclusionTex, ivec2(gl_FragCoord.xy), 0).rgb;
+        direct = max(direct - occludedSun, vec3(0.0));
+    }
     if (rawDebug) {
+        if (debugMode == RENDER_DEBUG_SHADOW_FILTER_RADIUS) {
+            float code = params.caustic_flags.y > 0.5
+                ? texelFetch(shadowCorrectionTex, ivec2(gl_FragCoord.xy), 0).a
+                : 0.0;
+            float radius = clamp(code - 1.0, 0.0, 1.0);
+            outColor = code >= 1.0 ? vec4(radius, 0.0, 1.0 - radius, 1.0)
+                                   : vec4(0.0, 0.0, 0.0, 1.0);
+            return;
+        }
         // RLT-SHD-009 — the filtered-direct oracle is the one raw view that
         // keeps the shadow filter's correction applied above.
         outColor = debugMode == RENDER_DEBUG_FILTERED_DIRECT

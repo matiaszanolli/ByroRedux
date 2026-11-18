@@ -37,10 +37,12 @@ pub enum RenderDebugMode {
     FilteredDirect = crate::shader_constants::RENDER_DEBUG_FILTERED_DIRECT,
     /// The froxel field's radiance with no opacity floor (#6727).
     VolumetricRadiance = crate::shader_constants::RENDER_DEBUG_VOLUMETRIC_RADIANCE,
+    /// M-LIGHT PAF-011 — the direct-shadow filter's screen-space reach.
+    ShadowFilterRadius = crate::shader_constants::RENDER_DEBUG_SHADOW_FILTER_RADIUS,
 }
 
 impl RenderDebugMode {
-    pub const USER_MODES: [Self; 20] = [
+    pub const USER_MODES: [Self; 21] = [
         Self::Final,
         Self::ShadowVisibility,
         Self::SelectedLight,
@@ -61,6 +63,7 @@ impl RenderDebugMode {
         Self::TracedShare,
         Self::FilteredDirect,
         Self::VolumetricRadiance,
+        Self::ShadowFilterRadius,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -86,6 +89,7 @@ impl RenderDebugMode {
             Self::TracedShare => "traced_share",
             Self::FilteredDirect => "filtered_direct",
             Self::VolumetricRadiance => "volumetric_radiance",
+            Self::ShadowFilterRadius => "shadow_filter_radius",
         }
     }
 
@@ -135,6 +139,7 @@ impl FromStr for RenderDebugMode {
             "history" | "restir_history" => Ok(Self::RestirHistory),
             "traced" | "traced_share" => Ok(Self::TracedShare),
             "filtered_direct" => Ok(Self::FilteredDirect),
+            "shadow_filter_radius" => Ok(Self::ShadowFilterRadius),
             _ => Err(format!(
                 "unknown render debug mode '{value}' (expected {})",
                 Self::user_mode_names()
@@ -331,6 +336,7 @@ mod tests {
     fn user_mode_values_match_the_dense_shader_contract() {
         for (index, mode) in RenderDebugMode::USER_MODES.iter().enumerate() {
             assert_eq!(mode.shader_value(), index as u32);
+            assert_eq!(mode.as_str().parse(), Ok(*mode));
         }
         assert_eq!(
             RenderDebugMode::LegacyFlags.shader_value(),

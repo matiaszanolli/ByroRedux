@@ -458,6 +458,34 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
             let reach = if p.door_hop { DOOR_HOP_REACH } else { LOCOMOTION_ARRIVAL_EPSILON };
             let arrived = horiz_delta.length_squared() <= reach * reach;
 
+            if p.entity == 1315 {
+                use std::sync::atomic::{AtomicU32, Ordering};
+                static N: AtomicU32 = AtomicU32::new(0);
+                if N.fetch_add(1, Ordering::Relaxed) % 60 == 0 {
+                    let mut out = String::new();
+                    for k in 0..8 {
+                        let a = k as f32 * std::f32::consts::FRAC_PI_4;
+                        let tgt = Vec3::new(p.current.x + a.cos() * 100.0, p.current.y, p.current.z + a.sin() * 100.0);
+                        let (np, _, b) = super::locomotion::step_toward_detailed(p.current, p.rotation, tgt, dt, p.speed, physics.as_deref());
+                        out += &format!(" [{:.0} d=({:.2},{:.2},{:.2}) b={}]", a.to_degrees(), np.x - p.current.x, np.y - p.current.y, np.z - p.current.z, b);
+                    }
+                    if let (Some(gq), Some(pw)) = (world.query::<crate::components::PathGridTile>(), physics.as_deref()) {
+                        for (_, g) in gq.iter() {
+                            for (i, pt) in g.0.points.iter().enumerate() {
+                                let n = Vec3::from(byroredux_core::math::coord::zup_to_yup_pos(pt.position));
+                                let d = n.distance(p.current);
+                                if d < 330.0 {
+                                    let up = Vec3::Y * 50.0;
+                                    let blocked_los = pw.line_of_sight_blocked(p.current + up, n + up, None);
+                                    let level = pw.line_of_sight_blocked(p.current + up, Vec3::new(n.x, p.current.y + 50.0, n.z), None);
+                                    out += &format!("\n   node {i} {:?} d={d:.0} los_blocked={blocked_los} level_blocked={level}", n);
+                                }
+                            }
+                        }
+                    }
+                    log::info!("TRACE-G pos={:?} new={:?} dest={:?} wp={} first={:?} blocked={} grid={} secs={:?}\n   dirs{out}", p.current, new_pos, p.destination, waypoints.len(), waypoints.front(), blocked, scratch.on_grid.contains(&p.entity), scratch.blocked_secs.get(&p.entity));
+                }
+            }
             if blocked && !arrived {
                 let secs = scratch.blocked_secs.entry(p.entity).or_insert(0.0);
                 *secs += dt;

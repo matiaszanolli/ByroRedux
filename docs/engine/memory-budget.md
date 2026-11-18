@@ -1353,8 +1353,9 @@ authoritative rather than re-derived.
 
 | Subsystem | Typical | Peak |
 |---|---|---|
-| G-buffer (7 attachments per [`gbuffer.rs`](../../crates/renderer/src/vulkan/gbuffer.rs)'s own table — normal/motion/mesh_id/raw_indirect/albedo at 4 B/px + FSR reactive/transparency masks at 1 B/px = 22 B/px, × 2 FIF; the separate HDR colour, depth and depth-history attachments are counted in their own row below, not here) | ~91 MB (1080p) | ~365 MB (4K) |
+| G-buffer (five attachments at 4 B/px, FSR reactive at 1 B/px and transparency/sun at 8 B/px, 2 FIF) | ~120 MB (1080p) | ~481 MB (4K) |
 | Composite HDR pair + depth / depth-history (40 B/px, #3993) | ~83 MB (1080p) | ~332 MB (4K) |
+| Far-field sun occlusion (RGBA16F, 2 FIF) | ~33 MB (1080p) | ~133 MB (4K) |
 | Cluster light-index buffers (fixed size, 2 FIF, #3993) | ~14 MB | ~14 MB |
 | Volumetric medium + sun-aperture cluster buffers (16³ clusters × (64 density + 128 aperture) indices × 4 B, 16 B entries, 512 × 96 B volumes, 2 FIF) | ~6.5 MB | ~6.5 MB |
 | Scene SSBOs (see [Scene Buffers](#scene-buffers-per-frame-ssbos--ubos); instance pair at starting capacity, peak = grown to `MAX_INSTANCES`) | ~155 MB | ~243 MB |

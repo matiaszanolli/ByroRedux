@@ -458,7 +458,9 @@ fn triangle_pipeline_inner(
         color_blend_none, // 4 raw_indirect
         color_blend_none, // 5 albedo
         fsr_mask_off,     // 6 fsr_reactive
-        fsr_mask_off,     // 7 fsr_transparency
+        color_blend_none.color_write_mask(
+            vk::ColorComponentFlags::G | vk::ColorComponentFlags::B | vk::ColorComponentFlags::A,
+        ), // 7 far-field sun; preserve the transparency mask in R
     ];
 
     let color_blending = vk::PipelineColorBlendStateCreateInfo::default()

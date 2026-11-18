@@ -34,9 +34,11 @@ L2	A5	filtered_direct	con_panel_band	visibility_error_p95	3	0.00142	2.4e-05	done
 L2	A5	filtered_direct	con_proxy_band	visibility_error_mean	3	0.0012	2.81e-05	done	0.00123	2x frozen floor	done: baseline accepted (see note A5); threshold = frozen floor + baseline
 L2	A5	filtered_direct	con_proxy_band	visibility_error_p95	3	0.00586	0.000314	done	0.00618	2x frozen floor	done: baseline accepted (see note A5); threshold = frozen floor + baseline
 # Historical A3 final-image rows, superseded by the direct-light measurement (PRD rev 32).
-# They are retained as evidence only; direct-light floors and budgets remain to be set.
+# The two-seed direct-light control supersedes these rows (rev 35).
 # L1	A3	penumbra-pan	during_motion	excess_over_hold_max	3	+0.0242	0.0372	0.02	0.02	see note T	temporal, note T
 # L1	A3	penumbra-pan	post_stop_16	excess_over_hold	3	+0.0248	0.0358	0.01	0.01	see note T	temporal, note T
+L1	A3	penumbra-direct-pan	during_motion	excess_over_hold_max	3	0.026049	0.0000603	0.02	0.02	2x frozen floor	worst of both seeds and all sampled pan frames
+L1	A3	penumbra-direct-pan	post_stop_16	excess_over_hold	3	0.000383	0.0000168	0.01	0.01	2x frozen floor	worst seed after 16 parked frames
 L1	A14	penumbra-moving	from_frame_80	excess_over_hold_max	3	+0.0792	0.0482	0.05	0.05	see note T	temporal, note T
 #
 # Frozen 2026-11-05 at Phase 3 entry, steps 2-3 (#6603, rev 20). Baselines are
@@ -52,13 +54,10 @@ L1	A14	penumbra-moving	from_frame_80	excess_over_hold_max	3	+0.0792	0.0482	0.05	
 #   block, cube, panel and the skinned proxy are declared done. The plank is as large with the
 #   filter off (4.0e-3 / 2.1e-2), so the filter is not its cause.
 # note T: temporal metrics are the excess of the moving capture's temporal error over the
-#   hold-from-frame-0 control (--bench-camera-hold-at); frozen_floor is that control's own
-#   value (cold start + sampling noise) at the worst frame. The historical final-image
-#   A3 rows (now report-only on direct light) used the maximum over frames
-#   32-112 and the value 16 frames after the stop (settled within 1 % RMSE, about a quarter
-#   second). A14: frames before 80 carry the run's cold start and are reported, not gated.
-#   An excess metric's threshold is its budget (the floor is already subtracted). The excess's own seed-pair noise is not yet measured; the 2x-floor drift margin is
-#   carried over from rev 13 and is provisional for these rows.
+#   hold-from-frame-0 control (--bench-camera-hold-at). A3's floor is the largest
+#   difference between two seed excesses at matching frames. Its 0.02 / 0.01 limits
+#   apply to the excess itself. A14 still uses the held-control error as its floor,
+#   and reports frames before 80 separately from its gated interval.
 # Not decided (report-only until the owner writes them): A2 penumbra width, A4 thin-rod
 #   shadow (mean 8.7e-3 / p95 2.3e-2), and the A14 frames before 80.
 #

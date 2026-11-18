@@ -13,7 +13,7 @@
 #   scripts/m-light-gates.sh                 # A15 + A16, warm cache
 #   scripts/m-light-gates.sh --cold          # empty the reference cache first (A18)
 #   scripts/m-light-gates.sh --gates A16 --out target/m-light-closure
-#   scripts/m-light-gates.sh --gates A3 --temporal-seed 1 --out target/m-light-a3-seed1
+#   scripts/m-light-gates.sh --gates A3 --out target/m-light-a3 # primary seed 0, paired seed 1
 
 set -euo pipefail
 

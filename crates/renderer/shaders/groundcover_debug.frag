@@ -27,7 +27,7 @@ layout(location = 0) out vec4 outColor;
 // terrain's own `indirect * albedo` on top of an emissive point (#4295).
 layout(location = 5) out vec4 outAlbedo;
 layout(location = 6) out float outFsrReactive;
-layout(location = 7) out float outFsrTransparency;
+layout(location = 7) out vec4 outTransparencyAndSun;
 
 /// Perceptually ordered ramp: dark red (sparse) → amber → green (dense).
 /// Deliberately not a rainbow — a rainbow ramp has non-monotonic lightness, so
@@ -47,5 +47,5 @@ void main() {
     outColor = vec4(densityRamp(vDGround), 1.0);
     outAlbedo = vec4(0.0);
     outFsrReactive = 1.0;
-    outFsrTransparency = 1.0;
+    outTransparencyAndSun = vec4(1.0, 0.0, 0.0, 0.0);
 }

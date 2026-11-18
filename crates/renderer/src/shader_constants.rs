@@ -853,7 +853,7 @@ mod tests {
         let water_main = water.split_once("void main()").unwrap().1;
         assert!(water_main.contains("Water's wave, reflection and refraction"));
         assert!(water_main.contains("outFsrReactive = 1.0;"));
-        assert!(water_main.contains("outFsrTransparency = 1.0;"));
+        assert!(water_main.contains("outTransparencyAndSun = vec4(1.0, 0.0, 0.0, 0.0);"));
         let proxy = triangle
             .split_once("if (proxyCoverage < 0.01)")
             .unwrap()
@@ -862,7 +862,7 @@ mod tests {
             .unwrap()
             .0;
         assert!(proxy.contains("outFsrReactive = 1.0;"));
-        assert!(proxy.contains("outFsrTransparency = 1.0;"));
+        assert!(proxy.contains("outTransparencyAndSun.r = 1.0;"));
     }
 
     /// #5113 (TD7-2026-09-29-01) — the splat channel count and lanes-per-word

@@ -17,13 +17,11 @@ struct Reservoir {
     float pad0;        // geometric normal: octEncode → packSnorm2x16 → float
                        // bits. Consumed by temporal + spatial rejection;
                        // kept the struct at 32 B pre-#6250.
-    uint  occluderSurface; // #6250 — the selected shadow ray's BLOCKER's
-                       // stable surface ID (0 when the ray found no blocker
-                       // this frame). Next frame's reprojection taints the
-                       // pixel when this surface appears in binding 25's
-                       // moved set, so a mover's first moving frame — and a
-                       // teleport — clears the deep tail on the pixels it
-                       // used to shadow. std430 stride 36 B.
+    uint  occluderAndShadowSequence; // low 22b: stable blocker ID (#6250)
+                       // for mover taint, zero when there is no blocker.
+                       // high 10b: shadow sequence key carried by validated
+                       // receiver history. Zero uses the screen pixel.
+                       // std430 stride 36 B.
 };
 
 #endif // BYRO_RESERVOIR_GLSL

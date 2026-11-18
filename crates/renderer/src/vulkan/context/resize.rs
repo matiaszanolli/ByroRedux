@@ -1174,10 +1174,7 @@ impl VulkanContext {
         };
         if let Some(ref mut composite) = self.post.composite {
             composite.recreate_on_resize(
-                &self.device,
-                self.allocator
-                    .as_ref()
-                    .expect("allocator missing during resize"),
+                crate::upload_ctx!(self),
                 super::super::composite::CompositeInputs {
                     indirect_views: &composite_indirect_views,
                     indirect_is_general,

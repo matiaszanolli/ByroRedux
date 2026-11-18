@@ -400,7 +400,7 @@ impl VulkanContext {
             std::mem::take(&mut self.history.suppress_rigid_history_next_build);
         let mut rigid_instance_moved = false;
         // #6250 — the moved stable surface IDs for the scene set's mover
-        // list (binding 25): `Reservoir::occluderSurface` records blockers
+        // list (binding 25): the reservoir records blockers
         // by this identity, and instance indices cannot be resolved across
         // frames (they follow the per-frame sort order), so the taint's
         // prev-occluder arm matches on the stable ID. Same `surface_id`

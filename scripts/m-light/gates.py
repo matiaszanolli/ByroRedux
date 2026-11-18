@@ -321,10 +321,11 @@ class Row:
     passed: str = ""
     threshold: str = ""
     frozen_floor: str = ""
-    # Set where a gate renders its references at a different sample count than
-    # the run's (A5, CONTACT_REFERENCE_SPP_FACTOR); the manifest records it.
+    # Set where a gate renders its references at a different sample count
+    # than the overall run. The manifest records the actual count.
     reference_spp: int | None = None
     temporal_seed: int | None = None
+    temporal_floor_seed: int | None = None
 
     @property
     def floor_combined(self) -> float:
@@ -347,16 +348,24 @@ def write_manifest(path: Path, rows: list[tuple[Row, str]], ctx: Context) -> Non
     with open(path, "w") as out:
         out.write("\t".join(MANIFEST_COLUMNS) + "\n")
         for row, key in rows:
-            # Temporal sequences use one seed and single moving/held frames;
-            # their parked references are engine captures, not Mitsuba seeds.
+            # Temporal sequences use single moving/held frames; their parked
+            # references are engine captures, not Mitsuba seeds.
             temporal = row.gate in {"A3", "A14", "SHD-006", "SHD-006-BASE"}
+            reference_free = temporal or row.reference_spp == 0
+            engine_seeds = "0" if row.reference_spp == 0 else ctx.engine_seeds
+            if temporal:
+                engine_seeds = str(row.temporal_seed if row.temporal_seed is not None else 0)
+                if row.temporal_floor_seed is not None:
+                    engine_seeds += f",{row.temporal_floor_seed}"
+            k_exp = {"cal-sun": "sun=pi", "penumbra-sun": "sun=pi",
+                     "cal-sky": "environment=1"}.get(row.case, ctx.k_exp)
             values = [
                 row.gate, row.case, row.region, row.metric, f"{row.value:.6g}",
                 f"{row.floor_engine:.3g}", f"{row.floor_reference:.3g}", f"{row.floor_combined:.3g}",
                 row.frozen_floor, row.threshold, row.passed, str(ctx.tier), "1" if temporal else str(ctx.engine_frames),
-                str(row.temporal_seed if row.temporal_seed is not None else 0) if temporal else ctx.engine_seeds,
-                "" if temporal else str(row.reference_spp or ctx.reference_spp),
-                "" if temporal else ctx.reference_seeds, ctx.k_exp, key,
+                engine_seeds,
+                "" if reference_free else str(row.reference_spp or ctx.reference_spp),
+                "" if reference_free else ctx.reference_seeds, k_exp, key,
                 ctx.revision, ctx.gpu,
             ]
             out.write("\t".join(values) + "\n")
@@ -377,12 +386,12 @@ def unit_ratio_row(gate: str, case: str, region: str, ea, eb, ra, rb, mask) -> R
 
 
 # Calibration rungs per emitter kind, each from the phase that first uses it
-# (A15): the point from Phase 1a, the sun from Phase 3.
-CALIBRATION_RUNGS = ("cal-point", "cal-sun")
+# (A15): the point from Phase 1a, the sun from Phase 3, the sky from Phase 4.
+CALIBRATION_RUNGS = ("cal-point", "cal-sun", "cal-sky")
 
 
 def gate_calibration(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
-    """A15, per emitter kind (RLT-REF-010): direct_only over the plane."""
+    """A15, per emitter kind (RLT-REF-010): one isolated term over the plane."""
     rows = []
     for rung in CALIBRATION_RUNGS:
         rows += calibration_rows(engine, store, ctx, spp, rung)
@@ -392,9 +401,13 @@ def gate_calibration(engine: Engine, store: ReferenceStore, ctx: Context, spp: i
 def calibration_rows(engine: Engine, store: ReferenceStore, ctx: Context, spp: int, rung: str):
     rows = []
     export = engine.out / "scenes" / rung
-    name = rung.replace("-", "_") + "_direct"
-    ea = engine.capture(name, rung, "direct_only", 0, ctx.tier, export_dir=export)
-    eb = engine.capture(name, rung, "direct_only", 1, ctx.tier)
+    # The sky plane has unit albedo, so its indirect-only irradiance already
+    # matches the reference's outgoing radiance.
+    view = "indirect_only" if rung == "cal-sky" else "direct_only"
+    name = rung.replace("-", "_") + ("_sky" if rung == "cal-sky" else "_direct")
+    native = ["--upscaler", "taa"]
+    ea = engine.capture(name, rung, view, 0, ctx.tier, export_dir=export, extra=native)
+    eb = engine.capture(name, rung, view, 1, ctx.tier, extra=native)
     ra, key = store.render(export, "direct", spp, 0)
     rb, _ = store.render(export, "direct", spp, 1)
     mask = region_masks(export)["cal_plane"]
@@ -650,6 +663,9 @@ def gate_traced_share_ao(engine: Engine, store: ReferenceStore, ctx: Context, sp
 # ── Penumbra: A2, A4 (Phase 3) ───────────────────────────────────────────
 
 PENUMBRA_RUNGS = ("penumbra", "penumbra-sun")
+# At 1024 spp the finite solar disk's reference noise can leak into A4's
+# fitted umbra band and raise the p95 floor above its frozen drift margin.
+SUN_PENUMBRA_REFERENCE_SPP = 16384
 DBG_DISABLE_DIRECT_SHADOWS = 0x8000000  # crates/renderer/src/shader_constants_data.rs
 PENUMBRA_MIN_PX = 10  # RLT-SHD-001: the reference penumbra spans at least 10 px
 
@@ -839,8 +855,10 @@ def gate_penumbra(engine: Engine, store: ReferenceStore, ctx: Context, spp: int,
     """
     del ctx
     rows = []
+    sun_spp = max(spp, SUN_PENUMBRA_REFERENCE_SPP)
     extra = ["--upscaler", "taa", "--rt-test-no-jitter"]
     for rung_name in PENUMBRA_RUNGS:
+        reference_spp = sun_spp if rung_name == "penumbra-sun" else spp
         export = engine.out / "scenes" / rung_name
         shadowed = [load_exr(engine.capture(f"{rung_name}_fdirect", rung_name, "filtered_direct", s, 3,
                                             extra=extra, export_dir=export if s == 0 else None))
@@ -851,8 +869,8 @@ def gate_penumbra(engine: Engine, store: ReferenceStore, ctx: Context, spp: int,
         rung = read_rung(export)
         form = STEP_FORMS[rung.step_form]
         opened = without_casters(export, rung.casters)
-        ref = [store.render(export, "direct", spp, s) for s in (0, 1)]
-        ref_open = [store.render(opened, "direct", spp, s) for s in (0, 1)]
+        ref = [store.render(export, "direct", reference_spp, s) for s in (0, 1)]
+        ref_open = [store.render(opened, "direct", reference_spp, s) for s in (0, 1)]
         key = ref[0][1]
         masks, positions = pixel_hits(export)
 
@@ -917,6 +935,9 @@ def gate_penumbra(engine: Engine, store: ReferenceStore, ctx: Context, spp: int,
                              abs(mean_e - mean), abs(mean_r - mean), passed="report"), key))
             rows.append((Row("A4", rung_name, region, "visibility_error_p95", p95,
                              abs(p95_e - p95), abs(p95_r - p95), passed="report"), key))
+    for row, _ in rows:
+        if row.case == "penumbra-sun":
+            row.reference_spp = sun_spp
     return rows
 
 
@@ -951,6 +972,46 @@ def band_mask(positions: np.ndarray, receiver: np.ndarray, band) -> np.ndarray:
 # the last tier, beside the normal-mapped plank's.
 CONTROL_RUNG = "contact-flat"
 CONTROL_BAND = "con_plank_band"
+
+
+def gate_far_sun(engine: Engine, ctx: Context):
+    """RLT-CON-004: traced, screen-space, and off-screen caster controls."""
+    def capture(name: str, pose: int, mode: str, disable: bool = False) -> np.ndarray:
+        return load_exr(engine.capture(
+            f"far_sun_{name}", "far-sun", mode, 0, ctx.tier, reference_view=pose,
+            extra=["--upscaler", "taa", "--rt-test-no-jitter"],
+            debug_flags=hex(DBG_DISABLE_DIRECT_SHADOWS) if disable else "0",
+        ))
+
+    near = capture("near", 0, "filtered_direct")
+    near_light = capture("near_unshadowed", 0, "filtered_direct", disable=True)
+    far = capture("far", 1, "filtered_direct")
+    far_raw = capture("far_raw", 1, "direct_only")
+    far_disabled = capture("far_disabled", 1, "filtered_direct", disable=True)
+    offscreen = capture("offscreen", 2, "filtered_direct")
+    offscreen_raw = capture("offscreen_raw", 2, "direct_only")
+
+    # Ignore differences of one half-float step near unit radiance.
+    epsilon = F16_REPRESENTATION
+    far_loss = far_raw - far
+    darkened = far_loss.max(axis=2) > epsilon
+    near_count = np.count_nonzero((near_light - near).max(axis=2) > epsilon)
+    blue_count = np.count_nonzero(darkened & (far[..., 2] > 0.01))
+    checks = [
+        ("near", "darkened_pixels", float(near_count), ">0", near_count > 0),
+        ("far", "darkened_pixels", float(darkened.sum()), ">0", darkened.any()),
+        ("far", "max_channel_gain", float((-far_loss).max()), "<=2^-10",
+         far_loss.min() >= -epsilon),
+        ("far", "darkened_pixels_with_blue_fill", float(blue_count), ">0", blue_count > 0),
+        ("far_disabled", "max_absolute_change", float(np.abs(far_raw - far_disabled).max()),
+         "<=2^-10", np.all(np.abs(far_raw - far_disabled) <= epsilon)),
+        ("offscreen", "max_absolute_change", float(np.abs(offscreen_raw - offscreen).max()),
+         "<=2^-10", np.all(np.abs(offscreen_raw - offscreen) <= epsilon)),
+    ]
+    return [(Row("CON-004", case, "frame", metric, value, 0.0, 0.0,
+                 passed="yes" if passed else "no", threshold=limit,
+                 reference_spp=0), "")
+            for case, metric, value, limit, passed in checks]
 
 
 def gate_contact(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
@@ -1189,7 +1250,8 @@ def gate_temporal(engine: Engine, store: ReferenceStore, ctx: Context, spp: int,
         # The receiver in view at the rung's own (start) pose; the pan's
         # later poses see a rotated view of the same floor, so its mask is
         # taken from the parked capture's non-black floor pixels instead.
-        engine.capture(f"{gate}_export", rung, "final", seed, ctx.tier, export_dir=export, debug_flags=debug_flags)
+        engine.capture(f"{gate}_export", rung, "final", seed, ctx.tier,
+                       extra=["--upscaler", "taa"], export_dir=export, debug_flags=debug_flags)
         masks = region_masks(export)
         floor = masks["pen_floor"]
         moving = engine.sequence(f"{gate}_{rung}_moving", rung, ctx.tier, motion + post, bench_frames, extra,
@@ -1278,6 +1340,32 @@ def temporal_excess_rows(gate: str, excess: dict[int, tuple[float, float]], moti
     return []
 
 
+def measure_a3_seed_floor(primary_rows: list[tuple[Row, str]], paired_rows: list[tuple[Row, str]]) -> None:
+    """Measure how much A3's per-frame excess changes with the RT seed."""
+    def excess_by_frame(rows: list[tuple[Row, str]]) -> dict[str, Row]:
+        return {row.region: row for row, _ in rows if row.gate == "A3" and row.metric == "temporal_error"}
+
+    primary = excess_by_frame(primary_rows)
+    paired = excess_by_frame(paired_rows)
+    for row, _ in primary_rows:
+        if row.gate != "A3" or row.case != "penumbra-direct-pan":
+            continue
+        phase = "during" if row.region == "during_motion" else row.region
+        frames = [sample for sample in primary.values() if sample.case == f"penumbra-{phase}"]
+        # The threshold applies to both seeds. The floor tracks their
+        # disagreement at the same frame rather than a difference of maxima.
+        row.value = max(row.value, *(paired[sample.region].value - paired[sample.region].floor_engine
+                                     for sample in frames))
+        # The per-frame floor_engine column holds the matched control error.
+        # Subtract it within each seed before comparing the two excesses.
+        row.floor_engine = max(
+            abs((sample.value - sample.floor_engine)
+                - (paired[sample.region].value - paired[sample.region].floor_engine))
+            for sample in frames
+        )
+        row.temporal_floor_seed = paired[frames[0].region].temporal_seed
+
+
 # ── Threshold table (RLT-REF-006, Q6) ────────────────────────────────────
 
 THRESHOLD_TABLE = REPO / "docs" / "audits" / "MLIGHT_thresholds.tsv"
@@ -1325,6 +1413,8 @@ def apply_thresholds(rows: list[tuple[Row, str]], tier: int,
     3x the frozen one (plus DRIFT_EPSILON). Rows the table does not name stay
     `report`."""
     for row, _ in rows:
+        if row.gate == "A3" and row.temporal_floor_seed is None:
+            continue
         record = table.get(threshold_key(row, tier))
         if record is None:
             continue
@@ -1417,8 +1507,17 @@ def main() -> int:
         rows += gate_penumbra(engine, store, ctx, args.spp, gates)
     if "A5" in gates:
         rows += gate_contact(engine, store, ctx, args.spp)
+    if "CON-004" in gates:
+        rows += gate_far_sun(engine, ctx)
     if gates & {"A3", "A14", "SHD-006"}:
         rows += gate_temporal(engine, store, ctx, args.spp, gates, args.temporal_seed, args.temporal_debug_flags)
+    a3_floor_seed = None
+    if "A3" in gates and temporal_mask == 0:
+        a3_floor_seed = args.temporal_seed ^ 1
+        paired = gate_temporal(engine, store, ctx, args.spp, {"A3"}, a3_floor_seed)
+        measure_a3_seed_floor(rows, paired)
+        # Preserve both seeds' per-frame moving and control errors.
+        rows += [(row, key) for row, key in paired if row.metric == "temporal_error"]
     if "SHD-005" in gates:
         rows += gate_reservoir_clamp(engine, store, ctx, args.spp)
 
@@ -1435,6 +1534,8 @@ def main() -> int:
         meta.write(f"revision={ctx.revision}\ngpu={ctx.gpu}\nmitsuba={mi.__version__}\nvariant={variant}\n")
         meta.write(f"tier={ctx.tier}\nengine_frames={ctx.engine_frames}\nreference_spp={ctx.reference_spp}\n")
         meta.write(f"temporal_seed={args.temporal_seed}\ntemporal_debug_flags={args.temporal_debug_flags}\n")
+        if a3_floor_seed is not None:
+            meta.write(f"a3_floor_seed={a3_floor_seed}\n")
         meta.write(f"cache={'cold' if args.cold else 'warm'}\nreferences_rendered={store.timings['rendered']}\n")
         meta.write(f"references_cached={store.timings['cached']}\n")
         meta.write(f"reference_render_seconds={store.timings['seconds']:.1f}\nwall_seconds={wall:.1f}\n")

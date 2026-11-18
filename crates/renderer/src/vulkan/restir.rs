@@ -353,7 +353,7 @@ mod tests {
     #[test]
     fn reservoir_stride_matches_shader() {
         // lightAndSurface + W + M + packed(histLen, depth) + accumR/G/B
-        // + pad0 (packed geometric normal) + occluderSurface (#6250).
+        // + pad0 (packed geometric normal) + blocker ID and A3 sequence key.
         // 9 scalars × 4 bytes.
         assert_eq!(RESERVOIR_STRIDE, 9 * 4);
     }
@@ -427,11 +427,12 @@ mod tests {
         assert!(
             src.contains("bool sceneStatic = dofParams.w > HISTORY_MODE_SCENE_STATIC - 0.5;")
                 && src.contains("? RESTIR_HISTORY_CAP_PARKED : RESTIR_HISTORY_CAP_MOVING")
-                // The parked floor applies only to an untainted pixel of a
-                // static scene; everything else takes the moving floor.
+                // Reserve the faster moving-blocker floor for tainted pixels.
                 && src.contains("bool deep = sceneStatic && !tainted;")
+                && src.contains("float movingAlphaFloor = tainted")
+                && src.contains("? RESTIR_ALPHA_FLOOR_MOVER_TAINTED : RESTIR_ALPHA_FLOOR_MOVING;")
                 && src.contains("max(1.0 / histLen, RESTIR_ALPHA_FLOOR_PARKED)")
-                && src.contains("RESTIR_ALPHA_FLOOR_MOVING);")
+                && src.contains("movingAlphaFloor);")
                 && src.contains("clamp(abs(rpHistLen), 0.0, RESTIR_HISTORY_CAP_PARKED)"),
             "direct-light history must converge when camera AND scene are static and \
              remain responsive otherwise (#4942: not the bare camera flag; #5369: \
@@ -481,7 +482,7 @@ mod tests {
     /// floor (~346-frame half-life). Three source shapes pin the mechanism
     /// (the GPU behaviour needs RenderDoc):
     /// 1. the reservoir records the selected ray's blocker by STABLE surface
-    ///    ID (`occluderSurface`) — instance indices follow the per-frame
+    ///    ID (low bits of `occluderAndShadowSequence`) — instance indices follow the per-frame
     ///    sort order and cannot be resolved across frames;
     /// 2. the taint ORs a prev-occluder arm matching the CPU-built moved set
     ///    (scene binding 25), uploaded every frame with a clamped count;
@@ -496,8 +497,9 @@ mod tests {
 
         assert!(
             frag.contains("uint prevOccluderSid = 0u;")
-                && frag.contains("prevOccluderSid = rp.occluderSurface;")
-                && frag.contains("rc.occluderSurface = selectedRayHitInstance != 0xFFFFFFFFu")
+                && frag.contains("prevOccluderSid = rp.occluderAndShadowSequence & RESERVOIR_SURFACE_MASK;")
+                && frag.contains("uint occluderSurface = selectedRayHitInstance != 0xFFFFFFFFu")
+                && frag.contains("rc.occluderAndShadowSequence = occluderSurface")
                 && frag.contains("& RESERVOIR_SURFACE_MASK"),
             "the reservoir must record the blocker's masked stable surface ID and \
              the reprojection must carry it to the taint"
@@ -611,8 +613,8 @@ mod tests {
     #[test]
     fn restir_direct_light_ema_constants_come_from_the_generated_header() {
         use crate::shader_constants::{
-            render_shader_constants_header, RESTIR_ALPHA_FLOOR_MOVING, RESTIR_ALPHA_FLOOR_PARKED,
-            RESTIR_HISTORY_CAP_MOVING, RESTIR_HISTORY_CAP_PARKED,
+            RESTIR_ALPHA_FLOOR_MOVER_TAINTED, RESTIR_ALPHA_FLOOR_MOVING, RESTIR_ALPHA_FLOOR_PARKED,
+            RESTIR_HISTORY_CAP_MOVING, RESTIR_HISTORY_CAP_PARKED, render_shader_constants_header,
         };
         // #5369: deep enough that the standing MC speckle sits under one
         // perceivable level; the moving tail stays responsive.
@@ -620,12 +622,14 @@ mod tests {
         assert_eq!(RESTIR_HISTORY_CAP_MOVING, 16.0);
         assert_eq!(RESTIR_ALPHA_FLOOR_PARKED, 0.002);
         assert_eq!(RESTIR_ALPHA_FLOOR_MOVING, 0.1);
+        assert_eq!(RESTIR_ALPHA_FLOOR_MOVER_TAINTED, 0.3);
         let header = render_shader_constants_header();
         for define in [
             "#define RESTIR_HISTORY_CAP_PARKED 1024.0\n",
             "#define RESTIR_HISTORY_CAP_MOVING 16.0\n",
             "#define RESTIR_ALPHA_FLOOR_PARKED 0.002\n",
             "#define RESTIR_ALPHA_FLOOR_MOVING 0.1\n",
+            "#define RESTIR_ALPHA_FLOOR_MOVER_TAINTED 0.3\n",
             "#define HISTORY_MODE_PARKED 1.0\n",
             "#define HISTORY_MODE_SCENE_STATIC 2.0\n",
         ] {

@@ -75,13 +75,14 @@ present, and its angular radius θ is the `sun_angular_radius` that
 `build_sky_params` hands the shader. One radius on both sides is
 RLT-SHD-007's "same value".
 
-Mitsuba gets a sphere area emitter 10 km away (`SUN_DISTANCE_M`) along
-the sun direction. The sphere's radius is *D* sin θ and its radiance is
-*k*<sub>exp</sub> · *E* ⁄ (π sin² θ). That subtends θ and delivers the
-irradiance *k*<sub>exp</sub> · *E* to a facing receiver, so the reference
-draws the same finite disk the engine samples. A `directional` emitter is
-a delta and would cast hard shadows. The sun row of `export.tsv` carries
-*E*, *k*<sub>exp</sub> and θ.
+Mitsuba gets a disk area emitter 10 km away (`SUN_DISTANCE_M`) facing
+the rung origin along the sun direction. Its radius is *D* tan θ. Its
+cosine-projected solid angle at the origin is π sin² θ, so a radiance of
+*k*<sub>exp</sub> · *E* ⁄ (π sin² θ) delivers irradiance
+*k*<sub>exp</sub> · *E* to a facing receiver. Area sampling keeps the
+finite disc and avoids cancellation in the Mitsuba 3.9.1 sphere's
+solid-angle PDF at the physical sun angle. The sun row of `export.tsv`
+carries *E*, *k*<sub>exp</sub> and θ.
 
 A rung that measures geometry (penumbra profiles, the thin rod's
 shadow) states it in its own code, as the `RungMeasurements` resource

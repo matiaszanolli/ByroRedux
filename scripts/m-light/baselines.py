@@ -131,8 +131,8 @@ def tile_stats(a: np.ndarray, b: np.ndarray) -> tuple[float, float]:
     la, lb = a @ LUMA, b @ LUMA
     h, w = la.shape
     values = []
-    for y in range(0, h - TILE + 1, TILE):
-        for x in range(0, w - TILE + 1, TILE):
+    for y in range(0, h, TILE):
+        for x in range(0, w, TILE):
             ma = la[y:y + TILE, x:x + TILE].mean()
             mb = lb[y:y + TILE, x:x + TILE].mean()
             base = max((ma + mb) * 0.5, 1e-4)

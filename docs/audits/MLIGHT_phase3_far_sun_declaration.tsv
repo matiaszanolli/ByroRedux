@@ -1,0 +1,6 @@
+# RLT-CNT-002, far-field screen-space sun visibility (RLT-CON-004).
+# Scene	tiles	direction	expected	tolerance	note
+# The five pinned A11 anchors are interior scenes. They have no exterior sun,
+# so every tile retains the ordinary per-scene tolerance. No gate is re-frozen.
+# In exteriors the pass can only darken the direct sun term on opaque receivers
+# past the traced fade, when a caster appears in the current opaque depth.

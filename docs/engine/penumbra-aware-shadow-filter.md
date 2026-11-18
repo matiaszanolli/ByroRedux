@@ -1,6 +1,6 @@
 # Penumbra-Aware Shadow Filter — Design
 
-**Status**: IMPLEMENTED (2026-11-05, #6603), with the deviations in §7; PAF-011 (the radius debug view) is not built yet. Proposed 2026-11-02. Written in M-LIGHT Phase 0 (#6596) to
+**Status**: IMPLEMENTED (2026-11-05, #6603), with the deviations in §7. Proposed 2026-11-02. Written in M-LIGHT Phase 0 (#6596) to
 satisfy [RLT-SHD-003](../prd/reference-lighting.md#52-soft-shadows-and-penumbrae-rlt-shd);
 implemented in Phase 3 (#6603), after that phase's entry baselines
 (A2–A5, A14) are published, so the change is measured against them.
@@ -139,6 +139,9 @@ region.
 - **PAF-011.** A debug view MUST show *R* in pixels (blue = *R*<sub>min</sub>,
   red = *R*<sub>max</sub>), listed in the `RenderDebugMode` catalog, so a
   wrong blocker distance is visible before it is a width error.
+  Use `render.debug shadow_filter_radius`. The correction image's alpha
+  channel carries the radius relative to the active tier's maximum. Black
+  marks pixels without a valid receiver or frames with the filter disabled.
 
 ## 5. Validation
 
@@ -176,5 +179,5 @@ against the post-RLT-SHD-007 baseline (`docs/audits/MLIGHT_phase3_shd007_A2A4_su
 | Iteration count | a `GpuRayBudget` field (PAF-007) | `shadow_filter_iterations`, in the word that was `reserved` | Tiers 0–3 run 2, 2, 3, 4; the CPU dispatch reads it, the shader copy keeps the word. |
 | Pixel footprint | 2z tan(fov ⁄ 2) ⁄ H | the same; the fov reaches the pass through `ShadowFilterPipeline::set_camera_fov_y` | An unset fov (0) falls back to the chain's full reach with no Gaussian. |
 
-Not built: PAF-011 (the radius debug view), the anisotropic kernel (PAF-004,
-as designed), and the A13 cost measurement (PAF-010).
+The anisotropic kernel (PAF-004, as designed) and the A13 cost measurement
+(PAF-010) remain open.
