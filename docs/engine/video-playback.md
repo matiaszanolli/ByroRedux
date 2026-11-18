@@ -27,14 +27,31 @@ at a given time. A decoder that falls behind holds the last frame; one that runs
 ahead is held back by the ring. A frame that does not decode ends the ring with
 its reason (file and frame): `advance` shows the frames decoded before it, then
 returns `Playhead::Failed`, and the player reports the movie **Failed** with that
-reason in `video.status` (BIK-DEC-004). The movie's first audio track is decoded once,
-up front, into a temporary WAV that the audio crate streams (BIK-DEC-002: the
-first track plays until #6896 settles which one the original picks; a Bink 2
-file's tracks differ but correlate closely, `crates/binkaudio` probe A9, and
-whether they are language versions is part of #6896).
+reason in `video.status` (BIK-DEC-004). The movie's audio track is decoded once,
+up front, into a temporary WAV that the audio crate streams (BIK-DEC-002, settled
+by #6896). A Bink 2 file's tracks are language versions of one mix
+(`crates/binkaudio` probe A9) and carry the language's ID. `Fallout4.exe` maps its
+`sLanguage` setting to a track ID before `BinkSetSoundTrack`: `en` 1, `fr` 2,
+`it` 3, `de` 4, `es` 5, `ja` 8, any other language 1. The engine has no language
+setting, so it plays the track with ID 1 and, in a file without that ID, the
+first. Oblivion and Fallout 3 never ask Bink for a track (no import of
+`BinkSetSoundTrack`, no `BINKSNDTRACK` open flag) and none of their movies has
+more than one; Skyrim SE imports no track call either, and the two tracks of its
+`BGS_Logo.bik` decode to identical samples (Starfield's six-track `EndingVision`
+and Fallout 4's `GameIntro_V3_B` are identical across tracks too).
 
 ## 3. Presentation
 
+- **Letterbox flag clear (BIK-PRES-001, #6898).** Fallout 3's draw routine
+  (`0xb5efb0`) skips a step when the letterbox argument is non-zero and otherwise,
+  if the game's viewport flag (`0x131a446`) is set, resets the viewport to the
+  whole render target before drawing the movie and again after. So a movie that is
+  not letterboxed fills the entire window (no bars, no crop, not its native size),
+  and a letterboxed one is drawn inside the viewport the game already has. That is
+  what the engine does: `fit` stretches to the window when the flag is clear. What
+  the flag-clear picture does with a widescreen movie on a 4:3 screen is the GECK's
+  "will not be letterboxed", i.e. it is stretched. The quad's scale and offset
+  fields (`1, 1` and `0, 0` when reset) were not traced to every writer.
 - **Overlay.** Frames are uploaded into one overlay texture, kept between
   movies, and drawn full-screen through the quad the loading cover and the HUD
   use. Letterboxing happens at conversion, so the overlay is always
@@ -104,13 +121,37 @@ then the value before it:
 | Fallout 4 | `GameIntro_V3_B.bk2` | no such setting | `Fallout4_Default.ini`, neither key |
 | Starfield | `BGS_LOGO_1080p_BinkVersion.bk2` | no such setting | `Starfield.ini`, neither key |
 
-`OblivionIntro.bik` is a bare string in `Oblivion.exe`, not a setting.
-Fallout 3's `sIntroMovie` is a setting whose compiled-in default is empty. When
-the original plays either (presumably at a new game) is verify item #6897.
+`OblivionIntro.bik` is the compiled-in default of Oblivion's `sOblivionIntro:General`
+setting (its name string sits right after the file name, as `sCreditsMenuMovie`'s
+does), and `Oblivion_default.ini` does not set it. Fallout 3's `sIntroMovie` is a
+setting whose compiled-in default is empty and whose INI value is
+`Fallout INTRO Vsk.bik`. Both play **at a new game** (#6897, read out of
+`Oblivion.exe` and `Fallout3.exe` on 2026-11-17):
+
+- Both executables start a new game the same way. The new-game starter looks up the
+  character-generation quest (Oblivion: the routine that logs "Unable to find
+  character generation quest '%s'." at `0x5b5df0`, FO3: the handler at `0x9671b0`
+  that reads `sCharGenQuest`) and sets a flag (Oblivion: byte `+0x7f8` of the player
+  object; FO3: global `0x1239beb`).
+- A later routine plays the movie while that flag is set (Oblivion: the cell-change
+  routine `0x66eaf0`, at `0x66f2be`, passing the file name from `sOblivionIntro`
+  and clearing the flag, so it plays once; FO3: `0x8bfac0`, at `0x8c071f`, passing
+  `sIntroMovie`). FO3 keeps its global set until the player leaves for the main
+  menu, and what limits its play to one is not decoded (`0x8bfac0` has seven callers,
+  three of them in the save-game load region, where the flag is clear). Nothing else
+  in either executable names the movie.
+- Both movies are played muted with the music paused and letterboxed; FO3's is also
+  interruptable (its argument is `1`, the one the script flag of that name feeds).
+  FO3's `sMainMenuMovieIntro` (empty by default) is played interruptable, muted,
+  music-paused and **not letterboxed**.
+- The engine plays neither: it has no new-game flow for Oblivion or Fallout 3 to
+  hang them on. Whoever builds one queues `VideoRequest { file: <the setting>,
+  interruptable, mute_audio, pause_music, letterbox, new_game: true }` at its start.
+
 Neither is played at launch.
 
-Start movies are interruptable, muted, music-paused and letterboxed. The
-interruptable choice is the engine's: the original's is not recorded. A user INI
+Start movies are interruptable, muted, music-paused and letterboxed, as FO3's
+`sIntroMovie` is. A user INI
 override (`My Games\<game>\<game>.ini`) is not read; `--skip-movies` stands in
 for the common "skip the intro" tweak.
 
@@ -132,12 +173,20 @@ FO3 16, FNV 21, Skyrim SE 23, FO4 187, Starfield 129, listed with
 one archive hit is a mod's (`ss2_xpac_chapter3 - main.ba2`,
 `video\threeweekslater_withsound.bk2`, Sim Settlements 2). The same mod's loose
 `threeweekslater_withSound.bik` is Fallout 4's one "Bink 1" file in the PRD's
-census. A mod that packs movies in an archive does not play (lead in #6898).
+census. A mod that packs movies in an archive does not play here, and it does
+not in the original either (#6898): Oblivion, Fallout 3 and Fallout 4 each check
+the file with `stat` (`_stat64i32` in Fallout 4, which tries an explicit path and
+then `Data\Video\<name>`) and hand the path to `BinkOpen` with the flags
+preload (`0x2000`), no-MMX (`0x8000000`) and, in Fallout 4, sound-track
+(`0x4000`); none sets `BINKFROMMEMORY`, so Bink reads the file from disk. The GECK
+page for `PlayBink` says the same ("they can't be packaged into a BSA File"). Skyrim
+SE and Starfield were not read.
 
 | Item | Settled by | State |
 |---|---|---|
 | BIK-REQ-003: loose files only on Skyrim, FO4, Starfield | whether any archive holds a Bink file | closed: no vanilla archive does |
-| BIK-REQ-004: what FO3's `sIntroMovie` plays and when; where Oblivion's new-game intro and Skyrim's logo are named | the executables' settings and strings | Skyrim's logo and Oblivion's start sequence: closed (§5). FO3's `sIntroMovie` and `OblivionIntro.bik` *timing*: filed #6897 |
-| BIK-DEC-002: which audio track the original plays | listening against the original | filed #6896 |
-| BIK-PRES-001: what the original does with the letterbox flag clear | observation in the original | filed #6898 (with the archive lead) |
+| BIK-REQ-004: what FO3's `sIntroMovie` plays and when; where Oblivion's new-game intro and Skyrim's logo are named | the executables' settings, strings and code | closed (§5): both play at a new game; the engine has no new-game flow for them yet (#6897) |
+| BIK-DEC-002: which audio track the original plays | `Fallout4.exe`'s `BinkSetSoundTrack` caller and the tracks' samples | closed (§2): the language's track, `en` is ID 1, and the engine plays it (#6896) |
+| BIK-PRES-001: what the original does with the letterbox flag clear | `Fallout3.exe`'s movie draw routine | closed (§3): the movie fills the whole render target (#6898) |
+| BIK-REQ-003 (archive lead): a movie packed in an archive | the movie-open routines of Oblivion, FO3 and FO4 | closed (§6): the original opens only files on disk (#6898) |
 | Q2: the open Bink 2 decoders | superseded | closed: Q2 re-decided 2026-11-13. The workspace's clean-room decoders are measured against the games' own DLL (PRD §10) |

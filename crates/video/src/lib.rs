@@ -276,12 +276,25 @@ fn write_wav(pcm: &[i16], channels: u16, rate: u32) -> Option<PathBuf> {
     }
 }
 
-/// BIK-DEC-003: a Bink 2 movie's sound, its first track decoded up front by `byroredux-binkaudio` into
-/// a temporary WAV. The tracks are language versions of one mix (binkaudio A9); which one the original
-/// picks is BIK-DEC-002's open question, so the first plays. `None` without tracks, or when the track
-/// does not decode (the picture then plays silent, with a warning).
+/// The Bink track ID the original plays for an English install (BIK-DEC-002, #6896). A Bink 2 file's
+/// tracks are language versions of one mix (binkaudio A9) and carry the language's ID. Fallout 4
+/// (`Fallout4.exe`, 2026-11-17) maps `sLanguage` to a track ID before `BinkSetSoundTrack`: `en` 1, `fr`
+/// 2, `it` 3, `de` 4, `es` 5, `ja` 8, and every other language 1. The engine has no language setting, so
+/// it plays the English track.
+const ENGLISH_TRACK_ID: u32 = 1;
+
+/// The index of the track the original plays: the one carrying [`ENGLISH_TRACK_ID`], else the first
+/// (a file with no such ID, such as a mod's, plays its first track).
+fn original_track_index(ids: impl IntoIterator<Item = u32>) -> usize {
+    ids.into_iter().position(|id| id == ENGLISH_TRACK_ID).unwrap_or(0)
+}
+
+/// BIK-DEC-003: a Bink 2 movie's sound, one track decoded up front by `byroredux-binkaudio` into a
+/// temporary WAV: the English one ([`original_track_index`], BIK-DEC-002), else the first. `None` without
+/// tracks, or when the track does not decode (the picture then plays silent, with a warning).
 fn bink2_audio(file: &mut bink2::Bk2, name: &str) -> Option<PathBuf> {
-    let track = *file.tracks.first()?;
+    let index = original_track_index(file.tracks.iter().map(|track| track.id));
+    let track = *file.tracks.get(index)?;
     let mut decoder = match byroredux_binkaudio::Decoder::new(track.rate, track.stereo(), track.dct()) {
         Ok(decoder) => decoder,
         Err(error) => {
@@ -291,7 +304,7 @@ fn bink2_audio(file: &mut bink2::Bk2, name: &str) -> Option<PathBuf> {
     };
     let cap = pcm_cap(describe_bink2(file).duration_secs, track.rate, track.channels());
     let pcm = decode_soundtrack(name, file.frames, cap, |frame, pcm| {
-        let packet = file.audio(frame).map_err(|error| error.to_string())?.swap_remove(0);
+        let packet = file.audio(frame).map_err(|error| error.to_string())?.swap_remove(index);
         let Some(packet) = packet else { return Ok(true) };
         // Refuse a packet that would pass the cap before `decode` grows the buffer for it.
         if pcm.len().saturating_add(packet.decoded_bytes as usize / 2) > cap {
@@ -302,7 +315,7 @@ fn bink2_audio(file: &mut bink2::Bk2, name: &str) -> Option<PathBuf> {
         Ok(true)
     });
     if file.tracks.len() > 1 {
-        log::info!("video: {name}: sound from audio track ID {} (the first of {})", track.id, file.tracks.len());
+        log::info!("video: {name}: sound from audio track ID {} (track {index} of {})", track.id, file.tracks.len());
     }
     write_wav(&pcm, track.channels() as u16, track.rate)
 }
@@ -739,6 +752,17 @@ mod tests {
     fn without_letterbox_the_picture_fills_the_window() {
         let out = fit(&solid(4, 3, [9, 8, 7]), (4, 3), (8, 8), false);
         assert!(out.chunks(4).all(|p| p == [9, 8, 7, 255]));
+    }
+
+    /// BIK-DEC-002 (#6896): the English track is the one with ID 1, wherever it sits in the file; a file
+    /// without that ID plays its first track.
+    #[test]
+    fn the_english_track_is_the_one_with_id_one() {
+        assert_eq!(original_track_index([1, 2, 3, 4, 5]), 0, "Fallout 4's films: IDs 1 to 5");
+        assert_eq!(original_track_index([0, 1, 2, 3, 4, 5]), 1, "Fallout 4's GameIntro_V3_B: IDs 0 to 5");
+        assert_eq!(original_track_index([8, 3, 1]), 2);
+        assert_eq!(original_track_index([7, 9]), 0, "no ID 1: the first track");
+        assert_eq!(original_track_index([]), 0);
     }
 
     /// INC3-1: the soundtrack buffer is bounded by the movie's running time, and stops there.

@@ -185,7 +185,7 @@ separate integration gap. See the gaps table below.
 | Presentation | ✓ full screen over the game, letterboxed when flagged, the picture locked to the soundtrack's playback position, the game held while it plays; Escape / `video.skip` ends an interruptable movie |
 | Requests | ✓ ObScript `PlayBink` (opcode `0x1114`) and Papyrus `Game.PlayBink` (the calling script frozen until the movie ends); the movie's mute and pause-music flags hold the world's sound and music |
 | Observability | ✓ `video.status` / `video.skip`; `--skip-movies`, and `--start-movies` for a benchmark run |
-| Open verify items | ◐ which audio track the original plays (#6896, the first plays); when FO3's `sIntroMovie` and `OblivionIntro.bik` play (#6897); the letterbox flag clear, and movies packed in mod archives (#6898) |
+| Verify items | ✓ settled from the executables (#6896–#6898): the English track plays (ID 1); the letterbox flag clear fills the window; movies packed in archives do not play in the original either. FO3's `sIntroMovie` and Oblivion's `sOblivionIntro` play at a new game, which the engine does not yet hang them on |
 
 ---
 

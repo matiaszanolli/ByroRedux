@@ -133,6 +133,8 @@ the correlation).
 - Fallout 4 `Intro`: 5 tracks of the same loudness, each differing from track 0 in 99% of samples with
   correlation 0.87-0.89 (the same music and effects, different voices); the narrated `CHARISMA`: 0.15-0.18;
   Fallout 76 `Intro` (6 tracks, IDs 1-5 and 8): 0.78-0.83; Starfield `EndingVision` (6 tracks): all six
-  identical. So the tracks of a file are language versions of one mix. Which ID is which language is
-  not measured here (ByroRedux PRD `bink-video-playback`, BIK-DEC-002's verify item).
+  identical. So the tracks of a file are language versions of one mix. Which ID is which language was
+  read out of `Fallout4.exe` afterwards (ByroRedux #6896, 2026-11-17): it maps `sLanguage` to the track ID
+  passed to `BinkSetSoundTrack`: `en` 1, `fr` 2, `it` 3, `de` 4, `es` 5, `ja` 8, any other language 1.
+  Skyrim SE's `BGS_Logo.bik` (IDs 1, 0) and Fallout 4's `GameIntro_V3_B` (IDs 0-5) have identical tracks.
 - Speed (`examples/speed.rs`): about 490 times real time per stereo track on one core.
