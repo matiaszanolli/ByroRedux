@@ -7078,7 +7078,7 @@ fn fnv_music_sources_decode_against_the_census() {
 /// (the design's §13.1 census). A name with neither cannot occur: every setting a row reads has a default, so the
 /// test fails only if a row lost one. The authored values the design pins are checked.
 #[test]
-#[ignore = "needs FO3 / FNV / Oblivion / Skyrim SE / FO4 game data on disk"]
+#[ignore = "needs FO3 / FNV / Oblivion / Skyrim SE / FO4 / Starfield game data on disk"]
 fn m65_detection_settings_census() {
     use byroredux_core::stealth::{StealthKind, StealthRules};
     let cases = [
@@ -7087,6 +7087,7 @@ fn m65_detection_settings_census() {
         (test_paths::OBLIVION_ENV, test_paths::OBLIVION_DEFAULT, "Oblivion.esm", StealthKind::Oblivion),
         (test_paths::SKYRIM_SE_ENV, test_paths::SKYRIM_SE_DEFAULT, "Skyrim.esm", StealthKind::Skyrim),
         (test_paths::FO4_ENV, test_paths::FO4_DEFAULT, "Fallout4.esm", StealthKind::Fallout4),
+        (test_paths::STARFIELD_ENV, test_paths::STARFIELD_DEFAULT, "Starfield.esm", StealthKind::Starfield),
     ];
     let mut ran = 0;
     for (env, fallback, master, kind) in cases {
@@ -7127,6 +7128,17 @@ fn m65_detection_settings_census() {
                 assert_eq!((s.max_distance, s.sound_los_mult, s.light_level_max, s.light_level_interior_mod), (4096.0, 0.4, 150.0, 25.0), "{master}");
                 assert_eq!((s.stealth_point_sound_floor, s.stealth_point_regen_lost_mult, s.stealth_point_regen_min), (25.0, 20.0, 2.0));
                 assert_eq!((s.sneak_dagger, s.sneak_gun, s.visual_base_value), (3.0, 2.0, -20.0), "authored melee, executable gun and base");
+            }
+            // #7046: `Starfield.esm` (52 of 101 settings authored, in metres) over `Starfield.exe`'s defaults; the
+            // distances are lifted to Bethesda units by ×70 at resolve.
+            StealthKind::Starfield => {
+                assert_eq!((s.max_distance, s.exterior_distance_mult, s.sound_los_mult, s.light_level_max), (4200.0, 1.15, 0.4, 150.0), "{master}");
+                assert_eq!((s.ambient_sound_mult, s.sound_level_quiet, s.sound_level_normal, s.sound_level_loud), (0.1, 35.0, 70.0, 100.0));
+                assert_eq!((s.detection_running_mult, s.running_mult, s.detection_sprinting_mult), (1.5, 1.25, 2.0), "authored run, executable sprint");
+                assert_eq!((s.visual_min_distance_max, s.visual_min_distance_min, s.stealth_point_sound_threshold_radius), (262.5, 131.25, 560.0));
+                assert_eq!((s.sneak_dagger, s.sneak_gun, s.sneak_bow, s.visual_base_value), (3.0, 2.0, 2.0, -20.0));
+                assert_eq!(readings.len(), 101, "{master}");
+                assert_eq!(authored, 52, "{master}");
             }
             _ => {
                 assert_eq!((s.base_value, s.max_distance, s.sound_los_mult), (-35.0, 2500.0, 0.1), "{master}");

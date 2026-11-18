@@ -36,9 +36,9 @@
 //!
 //! [`StealthKind::Oblivion`] is the CS formula (`oblivion`), [`StealthKind::Skyrim`]
 //! `SkyrimSE.exe`'s (`skyrim`), with its stealth points, and [`StealthKind::Fallout4`]
-//! `Fallout4.exe`'s split sound and visual values (`fallout4`, #6996). A game without a
-//! sourced formula ([`StealthKind::SightOnly`]: Starfield per Q2) has no value; the tick
-//! answers its levels from the sight test.
+//! `Fallout4.exe`'s split sound and visual values (`fallout4`, #6996). [`StealthKind::Starfield`] is its
+//! metre-based descendant (`starfield`, #7046). A game without a sourced formula
+//! ([`StealthKind::SightOnly`]) has no value; the tick answers its levels from the sight test.
 
 mod fallout;
 mod fallout4;
@@ -46,6 +46,7 @@ pub mod indicator;
 pub mod oblivion;
 mod settings;
 pub mod skyrim;
+mod starfield;
 
 pub use indicator::{IndicatorGate, IndicatorModel, IndicatorState, IndicatorStyle, StealthIndicator};
 pub use settings::{DetectionSettings, SettingReading};
@@ -66,6 +67,8 @@ pub enum StealthKind {
     Skyrim,
     /// `Fallout4.exe`'s sound and visual values with stealth points split by sense (#6996).
     Fallout4,
+    /// `Starfield.exe`'s pair: Fallout 4's model re-based to metres, with an ambient-sound term and a sprint tier (#7046).
+    Starfield,
 }
 
 /// A detector's awareness of the player (CS *GetDetectionLevel*: "0 = Lost :1 =
@@ -177,6 +180,8 @@ pub struct DetectionInputs {
     pub target_weight: f32,
     pub target_moving: bool,
     pub target_running: bool,
+    /// Starfield: the target is sprinting (`fDetectionSprintingMult`).
+    pub target_sprinting: bool,
     /// Chameleon / invisibility (a Stealth Boy): no visual contact (FO3 / FNV).
     pub target_stealth_boy: bool,
     /// Invisibility alone (Oblivion: −100; Skyrim: no visual contact).
@@ -224,6 +229,9 @@ pub struct DetectionInputs {
     pub view_angle: f32,
     /// Fallout 4: the target's elevation seen from the detector, radians, positive above.
     pub view_pitch: f32,
+    /// Starfield: the detector's ambient sound class 1 (silent) to 5 (very loud), 0 for none. The cell field it
+    /// comes from is not identified (#7046), so the engine leaves it 0 and the ambient term off.
+    pub ambient_sound_class: u8,
 }
 
 impl Default for DetectionInputs {
@@ -248,6 +256,7 @@ impl Default for DetectionInputs {
             target_weight: 0.0,
             target_moving: false,
             target_running: false,
+            target_sprinting: false,
             target_stealth_boy: false,
             target_invisible: false,
             target_size: 1.0,
@@ -270,6 +279,7 @@ impl Default for DetectionInputs {
             target_in_cover: false,
             view_angle: 0.0,
             view_pitch: 0.0,
+            ambient_sound_class: 0,
         }
     }
 }
@@ -366,7 +376,7 @@ impl StealthRules {
     #[must_use]
     pub fn pair_distance(&self, horizontal: f32, vertical: f32) -> f32 {
         match self.kind {
-            StealthKind::Fallout4 => fallout4::pair_distance(&self.settings, horizontal, vertical),
+            StealthKind::Fallout4 | StealthKind::Starfield => fallout4::pair_distance(&self.settings, horizontal, vertical),
             _ => horizontal.hypot(vertical),
         }
     }
@@ -378,7 +388,7 @@ impl StealthRules {
     pub fn period(&self, roll: f32) -> f32 {
         let s = &self.settings;
         match self.kind {
-            StealthKind::Skyrim | StealthKind::Fallout4 => {
+            StealthKind::Skyrim | StealthKind::Fallout4 | StealthKind::Starfield => {
                 s.update_time_min + (s.update_time_max - s.update_time_min) * roll.clamp(0.0, 1.0)
             }
             _ => s.timer,
@@ -392,7 +402,9 @@ impl StealthRules {
     #[must_use]
     pub fn view_cone_degrees(&self) -> Option<f32> {
         match self.kind {
-            StealthKind::Fallout3 | StealthKind::FalloutNv | StealthKind::Skyrim | StealthKind::Fallout4 => Some(self.settings.view_cone),
+            StealthKind::Fallout3 | StealthKind::FalloutNv | StealthKind::Skyrim | StealthKind::Fallout4 | StealthKind::Starfield => {
+                Some(self.settings.view_cone)
+            },
             StealthKind::Oblivion | StealthKind::SightOnly => None,
         }
     }
@@ -415,6 +427,7 @@ impl StealthRules {
             StealthKind::Oblivion => oblivion::value(s, inputs),
             StealthKind::Skyrim => skyrim::value(s, inputs, perks),
             StealthKind::Fallout4 => fallout4::value(s, inputs, perks),
+            StealthKind::Starfield => starfield::value(s, inputs, perks),
         })
     }
 
@@ -431,7 +444,7 @@ impl StealthRules {
             StealthKind::Skyrim => {
                 skyrim::level(s, value, context.hostile, context.target_sneaking, context.stealth_points)
             }
-            StealthKind::Fallout4 => fallout4::level(
+            StealthKind::Fallout4 | StealthKind::Starfield => fallout4::level(
                 s,
                 &DetectionTerms { value, ..context.terms },
                 context.distance,
@@ -452,7 +465,7 @@ impl StealthRules {
     #[must_use]
     pub fn noticed(&self, value: f32) -> bool {
         match self.kind {
-            StealthKind::Skyrim | StealthKind::Fallout4 => value > 0.0,
+            StealthKind::Skyrim | StealthKind::Fallout4 | StealthKind::Starfield => value > 0.0,
             _ => value > self.settings.noticed_min,
         }
     }
@@ -475,7 +488,7 @@ impl StealthRules {
     #[must_use]
     pub fn strike_value(&self) -> StrikeValue {
         match self.kind {
-            StealthKind::Oblivion | StealthKind::Skyrim | StealthKind::Fallout4 => StrikeValue::Stored,
+            StealthKind::Oblivion | StealthKind::Skyrim | StealthKind::Fallout4 | StealthKind::Starfield => StrikeValue::Stored,
             _ => StrikeValue::Fresh,
         }
     }
@@ -521,7 +534,7 @@ impl StealthRules {
                 let mult = mod_sneak_attack_mult(skyrim::sneak_attack_mult(s, weapon));
                 Some((damage * mult, mult > 1.0))
             }
-            StealthKind::Fallout4 => {
+            StealthKind::Fallout4 | StealthKind::Starfield => {
                 let mult = mod_sneak_attack_mult(fallout4::sneak_attack_mult(s, weapon));
                 Some((damage * mult, mult > 1.0))
             }
@@ -532,7 +545,7 @@ impl StealthRules {
     pub fn step_stealth_points(&self, points: &mut StealthPoints, inputs: StealthPointInputs, dt: f32) {
         match self.kind {
             StealthKind::Skyrim => skyrim::step_points(&self.settings, points, inputs, dt),
-            StealthKind::Fallout4 => fallout4::step_points(&self.settings, points, inputs, dt),
+            StealthKind::Fallout4 | StealthKind::Starfield => fallout4::step_points(&self.settings, points, inputs, dt),
             _ => {}
         }
     }
@@ -541,7 +554,7 @@ impl StealthRules {
     /// points (`Fallout4.exe` `0x140e9465d`); never on the other rows.
     #[must_use]
     pub fn exceeds_stealth_thresholds(&self, terms: &DetectionTerms, distance: f32, target_sneaking: bool) -> bool {
-        self.kind == StealthKind::Fallout4 && fallout4::exceeds_thresholds(&self.settings, terms, distance, target_sneaking)
+        matches!(self.kind, StealthKind::Fallout4 | StealthKind::Starfield) && fallout4::exceeds_thresholds(&self.settings, terms, distance, target_sneaking)
     }
 }
 

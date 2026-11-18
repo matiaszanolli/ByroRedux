@@ -349,6 +349,8 @@ fn player_inputs(world: &World, player: EntityId, at: Vec3) -> DetectionInputs {
         target_weight: crate::inventory::equipped_weight(world, player),
         target_moving: moving,
         target_running: running,
+        // The engine has walk and sprint: Starfield's sprint is a run that is also a sprint (`0x1419418ea`).
+        target_sprinting: running,
         target_stealth_boy: actor_value(world, player, AV_CHAMELEON) > 0.0
             || actor_value(world, player, AV_INVISIBILITY) > 0.0,
         target_invisible: actor_value(world, player, AV_INVISIBILITY) > 0.0,

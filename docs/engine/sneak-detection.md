@@ -1,6 +1,6 @@
 # Sneak and Detection
 
-**Status**: DESIGN (Phase 0, 2026-11-15); the stance (Phase 1, #6910), Wave 1 detection with its consumers (Phase 2, #6911), Wave 1 sneak attacks and perks (Phase 3, #6912), the indicator (Phase 4, #6913) and Wave 2 (Oblivion, Skyrim: detection, stealth points, sneak attacks, the Skyrim sneak hooks and the sneak locomotion clips; Phase 5, #6914) are BUILT (2026-11-15). Phase 6 (#6915) recorded Fallout 4 and Starfield on the sight test (Q2); Fallout 4's row, decoded from `Fallout4.exe`, is BUILT (2026-11-16, #6996), and Starfield's stays open there. The design the [Sneak and Detection
+**Status**: DESIGN (Phase 0, 2026-11-15); the stance (Phase 1, #6910), Wave 1 detection with its consumers (Phase 2, #6911), Wave 1 sneak attacks and perks (Phase 3, #6912), the indicator (Phase 4, #6913) and Wave 2 (Oblivion, Skyrim: detection, stealth points, sneak attacks, the Skyrim sneak hooks and the sneak locomotion clips; Phase 5, #6914) are BUILT (2026-11-15). Phase 6 (#6915) recorded Fallout 4 and Starfield on the sight test (Q2); Fallout 4's row, decoded from `Fallout4.exe`, is BUILT (2026-11-16, #6996), and Starfield's is BUILT (2026-11-18, #7046). The design the [Sneak and Detection
 PRD](../prd/sneak-and-detection.md) names as the owner of the stance, the detection
 tick, the per-pair level and alert state, the actor-to-actor sight test (§10 Q7), the
 light input (Q3), consumer migration and FO3 / FNV sneak-attack damage (PRD
@@ -244,12 +244,34 @@ term only. Entries 47, 48 and 57 run on the target's perks with the detector on 
 its 1 is added. The engine has no ambush package, combat-group "observed" target,
 flight, cover rays or occluder count yet, so those inputs stay neutral.
 
-**Starfield** keeps the actor-to-actor sight test (§5) as its level source, Seen or
-Lost (Q2; Phase 6, #6915). `Starfield.exe`'s `.text` is readable, but its settings
-are not static objects: one small initializer per setting builds each
-(`vmovss xmm2, [default]` or `vxorps`, `lea rdx, name`, `lea rcx, object`, the
-constructor; `fSneakMaxDistance`'s is at `0x1400f1700`). Its row needs that form in
-`scripts/exe-setting-defaults.py` and a decode of its AVX formula (#6996).
+**Starfield** (`Starfield.exe`, #7046; `crates/core/src/stealth/starfield.rs`) is Fallout 4's model
+re-based to metres, read from the pair `0x140d7e2a0`, its filler `0x141940c10`, the
+rounding caller `0x141942618` and the stealth-point routine `0x141ba6ac0`. Each setting is built
+by its own initializer (`vmovss xmm2, [default]` or `vxorps`, `lea rdx, name`, `lea rcx, object`, a
+float registrar; integers load `r8d` and use a second one), which
+`scripts/exe-setting-defaults.py` reads. Its distances are metres, lifted by 70 to Bethesda
+units at resolve, as the scene data is. What differs from Fallout 4:
+
+- **Ambient sound.** The sound term subtracts `trunc(fSneakAmbientSoundMult · iSoundLevel{Silent, Quiet, Normal,
+  Loud, VeryLoud}[class])` for the detector's ambient class 1 to 5, and is not clamped at 0.
+- **Movement.** Sprinting is `fDetectionSprintingMult`; running is `fSneakRunningMult` while sneaking and
+  `fDetectionRunningMult` otherwise; the skill-movement term applies only while moving.
+- **Visual range.** `fSneakMaxDistanceVisualMult` (1.5) over the sound range; the angle falloff runs from
+  `fDetectionVisualDistanceAngleMin` to `…Max`; the pitch falloffs are Fallout 4's; a Stealth Boy skips the
+  whole visual term; nothing farther than the visual range is detected.
+- **Light.** `iLightLevelMax` 150, no interior or exterior light-level mod (Starfield has neither setting).
+- Entry points 57, 15, 47 and 48 run at the same places as Fallout 4's (`0x1419419a1`, `0x1419419b9`,
+  `0x141941a76`, `0x140d7e6dd`); the stealth points, their thresholds and the sneak-attack classes are Fallout 4's code over
+  Starfield's defaults.
+
+`Starfield.esm` authors 52 of the row's 101 settings (the census, `m65_detection_settings_census`).
+
+Not identified, so neutral in the engine: the detector's ambient sound class (read from a `+0x1a0` field of
+the detector's and the target's parent cells; the record field is not named), the sky / weather factor the
+filler multiplies into the visibility, the *combat* set of the visual-range falloffs (which pair selects it),
+the ambush mode, the observed-target and flying range multipliers and the 0.75 non-target range factor, and
+`fSneakStealthiness*` (read at `0x141a32ffe`). Starfield's `PERK` records run no entry-point dialect in the
+engine (`PerkEntryPointDialect::None`), so the four hooks above receive their unmodified values.
 
 ### 4.3 Levels
 

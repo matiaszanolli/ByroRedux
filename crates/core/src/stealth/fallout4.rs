@@ -63,12 +63,12 @@
 use super::{DetectionInputs, DetectionLevel, DetectionSettings, DetectionTerms, SneakPerkHook, SneakWeapon, StealthPointInputs, StealthPoints};
 
 /// `lerp` as `Fallout4.exe` `0x14101b560` computes it: `from` at `x0`, `to` at `x1`, clamped between.
-fn lerp(x: f32, x0: f32, x1: f32, from: f32, to: f32) -> f32 {
+pub(super) fn lerp(x: f32, x0: f32, x1: f32, from: f32, to: f32) -> f32 {
     let t = if x1 != x0 { ((x - x0) / (x1 - x0)).clamp(0.0, 1.0) } else { 1.0 };
     from + t * (to - from)
 }
 
-fn size_mult(s: &DetectionSettings, class: u8) -> f32 {
+pub(super) fn size_mult(s: &DetectionSettings, class: u8) -> f32 {
     match class {
         0 => s.size_small,
         1 => s.size_normal,
@@ -94,7 +94,7 @@ pub(super) fn pair_distance(s: &DetectionSettings, horizontal: f32, vertical: f3
 }
 
 /// `⌈value⌉`, with 0 counting as −1 (`0x140c98979`).
-fn level_of(value: f32) -> f32 {
+pub(super) fn level_of(value: f32) -> f32 {
     let ceiling = value.ceil();
     if ceiling == 0.0 { -1.0 } else { ceiling }
 }

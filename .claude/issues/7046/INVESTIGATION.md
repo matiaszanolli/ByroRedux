@@ -66,3 +66,53 @@ Unchanged: P, D, A, the visual terms, the close-range floor, `fSneakSkillMult`, 
 The context filler (the Starfield counterpart of Fallout 4's `0x140cc00c0`), the rounding caller, the stealth-point
 thresholds and drain/refill, the sneak-attack table, `0x140d7e8e0` (a routine that inverts the attenuation, probably the
 "distance at which the target becomes visible" for the HUD), and the second copy near `0x141943c00`.
+
+## The context filler (`0x141940c10`, read 2026-11-18; Fallout 4's is `0x140cc00c0`)
+
+Fills the struct above for a (detector `r14`, target `r15`) pair. What it computes, with the address of each piece:
+
+| Field | Value |
+|---|---|
+| range | `0x140d7de10(size class +0x0c, exterior +0x66, flying +0x72, observed +0x70)` → +0x20 (sound range) |
+| visual range +0x1c | `range · fSneakMaxDistanceVisualMult` (1.5, **new**); both ×`fDetectionCombatNonTargetDistanceMult` (0.75) when the detector is hostile, has no combat target and the target is not the player (`0x14194121a`) |
+| Perception / Blindness / Deafness | actor values `+0x1a8` / `+0x50` / `+0xc0` of the AV singleton; Deafness 100 in observer mode |
+| distance +0x34 | `√(dx² + dy² + (fDetectionDistanceHeightMult · dz)²)`, but **FLT_MAX when it reaches the visual range** (`0x141941436`, new: nothing farther than the visual range is detected) |
+| observer mode (mode 4) | distance `range · fSneakObserverDistanceMult` (0.3), angle `fSneakObserverAngle` (0) |
+| LOS | tested only when `reach · visualRange ≥ distance`, `reach = lerp(angle, fDetectionLOSDistanceAngle → π, 1 → LOSDistanceMult)` (not toward the combat target); `sees = LOS ∧ angle < viewCone/2` |
+| flags | +0x6a moving (target vtable `+0x630`), +0x6b running, +0x6c sprinting (running ∧ a state at `+0xf0` vtable `+0x128`), +0x6d sneaking, +0x6e stealth boy, +0x72 flying |
+| perk entries | `0x39` (57) on the agility bonus +0x44; **`0xf` (15) on a float: non-zero clears running and sprinting, and clears moving when sneaking** (new); `0x2f` (47) on the light level; `0x30` (48) on the light-move term |
+| light +0x18 | `min(level · [night eye +0x69: fDetectionNightEyeBonus], iLightLevelMax)` then entry 47 |
+| visible +0x58 | `(100 − Invisibility) · 0.01` (when the target has the stealth flag `+0xe8 & 2` and no stealth boy) · a sky/weather lerp (`0x141941ac2`, state `+0xf20 == 3`, **not identified**) · occluders `max(fDetectionObjectVisibilityMult − (n − 1) · …Offset, …Min)` (n from a ray count) · `[cover +0x6f]` `fSneakVisualCoverMod` |
+| visual range falloffs | the angle, up and down falloffs of Fallout 4's filler, now with a **Combat** set for each of `fDetectionVisualDistanceAngle{Min,Max}`, `…MultExterior/Interior`, `…AngleUp/Down{Min,Max}` and `…Up/DownMult`; the visual range ends as `visualRange · falloffs · visible` (`0x1419421b0`) |
+| ambient class +0x74 | max of two reads of a `+0x1a0` field of the detector's and the target's parent cells (and a player-state read), searched further while below 5; **source field not identified** (see the ambient term above) |
+
+Which set (normal or combat) the falloffs use is chosen in code at `0x141941f85` and before (a pointer array at `[rbp+0x20..+0x70]`),
+not yet read.
+
+### Defaults that differ from Fallout 4 (`scripts/exe-setting-defaults.py` on both executables)
+
+Distances are metres (÷64 of the unit values): `fSneakMaxDistance` 64, `fDetectionMaxDistance*`, `fSneakVisualMinDistanceMax/Min` 4 / 2,
+`fDetectionCover*`, `fDetectEvent*Distance*`, `fDetectProjectile*`, `fDetectionCheckShouldHelpTargetDistance`,
+`fCombatStealthPointDetectionSoundThresholdRadius` 8; `iLightLevelMax` 150. Not distance conversions:
+`fCombatStealthPointAttackedMaxValue` 25 (65), `…KilledMaxValue` 10 (50), `…RegenAlertMult` 50 (20), `…RegenHostileMult` 15 (10),
+`…RegenLostMult` 20 (10), `…RegenMin` 2 (1), `…SoundThreshold` 25 (20), `fDetectionVisualDistanceAngleUpMin/Max` 5 / 30 (15 / 45),
+`…AngleDownMin/Max` 10 / 45 (15 / 60), `…MultExterior/Interior` 0.2 (0.33). Settings with no Fallout 4 counterpart:
+`fSneakAmbientSoundMult`, `fSneakMaxDistanceVisualMult`, `fSneakObserver*`, `fSneakStealthiness*` (read at `0x141a32ffe`, not decoded),
+`fDetectionSprintingMult`, `fDetectionRunningMult`, the `…Combat` visual falloffs, `fSneakingStartDelay` / `StopDelay`.
+
+### Stealth points
+
+`0x141ba6ac0` (read 2026-11-18) is `0x140e9f170`'s counterpart: the drain is `max(sound · DrainSoundMult, visual · DrainVisualMult) · dt`,
+floored at `fCombatStealthPointSoundThreshold` unless the visual level is positive or the sound reaches
+`fCombatStealthPointLOSSoundValueThreshold` with line of sight (`0x141ba6b3a..0x141ba6b88`); the refill picks
+Lost / Hostile / Alert mult, `max(RegenMin, (1 − attenuation) · mult)` (`0x141ba6c49..0x141ba6ca4`). Same shape as Fallout 4's,
+so the engine reuses `fallout4::step_points`. The thresholds routine (`0x141b9d765`, `0x141add378..`) was not compared line by line.
+The caller of the pair (`0x141942618`) rounds up and maps 0 to −1 as Fallout 4's does.
+
+## Built (2026-11-18)
+
+`StealthKind::Starfield`, `crates/core/src/stealth/starfield.rs`, a fifth defaults column in `settings.rs` (distances lifted ×70
+at resolve), `DetectionInputs::{target_sprinting, ambient_sound_class}`, the profile row, the A2 transcription test and the A3
+census over `Starfield.esm` (101 settings, 52 authored). Perk hooks: the formula runs entries 57, 15, 47 and 48 as Fallout 4's does,
+but Starfield's `PERK` records have no entry-point dialect in the engine, so they receive their unmodified values (issue step 4 is
+not met: the hooks do not leave Pending until that dialect exists).

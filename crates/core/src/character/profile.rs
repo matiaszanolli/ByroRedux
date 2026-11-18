@@ -633,7 +633,7 @@ impl CharacterRulesProfile {
         vats: None,
         armor: None,
         stance: StanceModel::NONE,
-        stealth: crate::stealth::StealthKind::SightOnly,
+        stealth: crate::stealth::StealthKind::Starfield,
         indicator: crate::stealth::IndicatorModel::STARFIELD,
     };
 
