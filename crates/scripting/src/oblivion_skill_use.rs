@@ -245,10 +245,12 @@ pub fn raise_skill_ranks(
 /// The Oblivion skills (actor-value codes) an engine system feeds today. The one list behind `levelup`'s
 /// unfed report and the PRD's fed-skills metric (§8, OSL-USE-006): a skill joins it in the commit that
 /// adds its emitter, never before. Blade, Blunt and Hand to Hand are fed by a melee hit that lands on a
-/// living target, Light and Heavy Armor by a hit the player takes (#7051). Block waits on a target-side
-/// guard (no producer models one: `HitEvent::blocked` is the aggressor's own stance, #4324) and
-/// Marksman on a bow shot (the engine's ranged path is the guns').
-pub const FED_SKILLS: &[u32] = &[14, 16, 17, 18, 27];
+/// living target, Light and Heavy Armor by a hit the player takes (#7051 2a); Athletics by seconds of
+/// running or swimming, Sneak by seconds of moving undetected in the sneak stance, Acrobatics by a jump
+/// (2b). Block waits on a target-side guard (no producer models one: `HitEvent::blocked` is the
+/// aggressor's own stance, #4324), Marksman on a bow shot, the schools on a player cast action (the
+/// engine has only the console's `magic.cast` and a script's `Cast`), and Acrobatics' fall on fall damage.
+pub const FED_SKILLS: &[u32] = &[13, 14, 16, 17, 18, 26, 27, 31];
 
 /// Queue one use of the skill `code` for the drain (OSL-XP-007): the experience is the skill's use
 /// value `usage` times `mult` (0 for none), `skill_use_amount`. An emitter calls this and nothing else;
@@ -548,7 +550,7 @@ mod tests {
             ]
         );
         let report = skill_use_report(&world, player).unwrap().join("\n");
-        assert!(report.contains("fed skills 5/21; unfed: "), "{report}");
+        assert!(report.contains("fed skills 8/21; unfed: "), "{report}");
         for unfed in ["Security", "Speechcraft", "Mercantile", "Alchemy", "Armorer", "Block", "Marksman"] {
             assert!(report.split("unfed: ").nth(1).unwrap().contains(unfed), "{unfed}: {report}");
         }

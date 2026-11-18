@@ -10,6 +10,12 @@
 //!   a roll of 0 to 99 over the slots' `iArmorDamage*Chance` weights, re-rolled up to seven times while the
 //!   struck slot is empty), usage 0.
 //!
+//! * **seconds of a stance** (`stance_use_system`, `Oblivion.exe` `0x671620`): each full second the player
+//!   moves while sneaking and undetected feeds Sneak (usage 0), while swimming Athletics (usage 1), while
+//!   running Athletics (usage 0), one at a time in that order; the original's one-second timer accumulates
+//!   only while its stance holds and resets when it fires;
+//! * **a jump** (`on_jump`) feeds Acrobatics (usage 0): UESP's "each jump or dodge".
+//!
 //! Emitters only queue ([`byroredux_scripting::oblivion_skill_use::queue_skill_use`]); nothing here touches
 //! the player's actor values. A weapon the engine cannot feed (a staff casts, a bow has no shot path here)
 //! feeds nothing, and a blocked hit feeds nothing: no producer models a target's own guard (#4324).
@@ -26,6 +32,9 @@ const BLUNT: u32 = 16;
 const HAND_TO_HAND: u32 = 17;
 const HEAVY_ARMOR: u32 = 18;
 const LIGHT_ARMOR: u32 = 27;
+const ATHLETICS: u32 = 13;
+const ACROBATICS: u32 = 26;
+const SNEAK: u32 = 31;
 
 /// The skill a melee weapon of Oblivion `WEAP` type `weapon_type` feeds (0 and 1 blades, 2 and 3 blunt
 /// weapons; 4, a staff, casts instead, and 5, a bow, has no melee blow), or Hand to Hand for no weapon.
@@ -107,6 +116,110 @@ pub(crate) fn on_landed_hit(world: &World, aggressor: EntityId, target: EntityId
     {
         byroredux_scripting::oblivion_skill_use::queue_skill_use(world, skill, 0, 0.0);
     }
+}
+
+/// The one-second timers of the stances (`player + 0x5a4` sneak, `+0x59c` run, `+0x5a0` swim), each
+/// accumulating only while its stance holds. Session state, `NOT_SAVED_BY_DESIGN`.
+#[derive(Debug, Default)]
+pub(crate) struct StanceTimers {
+    sneak: f32,
+    swim: f32,
+    run: f32,
+}
+
+impl byroredux_core::ecs::resource::Resource for StanceTimers {}
+
+/// Advance one stance timer: it counts `dt` while `active` and, on reaching a second, fires and resets
+/// (`0x671855`: `1.0 <= timer` fires, otherwise the frame time is added). A stance that does not hold
+/// leaves the timer where it was.
+pub(crate) fn stance_step(timer: &mut f32, active: bool, dt: f32) -> bool {
+    if !active {
+        return false;
+    }
+    if *timer >= 1.0 {
+        *timer = 0.0;
+        return true;
+    }
+    *timer += dt.max(0.0);
+    false
+}
+
+/// Which stance the player holds this frame: sneaking and undetected (Sneak), swimming (Athletics, usage 1),
+/// or running (Athletics, usage 0). The first that holds wins, as the executable's branches do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Stance {
+    Sneak,
+    Swim,
+    Run,
+}
+
+/// The stance of a moving player. `undetected` is the detection level toward the player below Noticed.
+#[must_use]
+pub(crate) fn stance_of(moving: bool, sneaking: bool, undetected: bool, swimming: bool, running: bool) -> Option<Stance> {
+    if !moving {
+        None
+    } else if sneaking && undetected {
+        Some(Stance::Sneak)
+    } else if swimming {
+        Some(Stance::Swim)
+    } else if running && !sneaking {
+        Some(Stance::Run)
+    } else {
+        None
+    }
+}
+
+/// Feed Sneak, Athletics from the player's stance (OSL-USE-005). Runs every frame in the Late stage
+/// ahead of the drain; the timers only advance while their stance holds.
+pub(crate) fn stance_use_system(world: &World, dt: f32) {
+    use byroredux_core::ecs::components::Sneaking;
+    use byroredux_core::stealth::DetectionLevel;
+    let Some(player) = crate::systems::PlayerEntity::get(world) else {
+        return;
+    };
+    let (moving, running) = world
+        .try_resource::<crate::interaction::ActionState>()
+        .map(|actions| {
+            use crate::interaction::InputAction::*;
+            let moving = [MoveForward, MoveBackward, StrafeLeft, StrafeRight].into_iter().any(|action| actions.is_held(action));
+            (moving, actions.is_held(Sprint))
+        })
+        .unwrap_or((false, false));
+    let undetected = world
+        .try_resource::<crate::detection::PlayerDetection>()
+        .is_none_or(|detection| detection.level < DetectionLevel::Noticed);
+    let stance = stance_of(
+        moving,
+        world.has::<Sneaking>(player),
+        undetected,
+        crate::systems::actor_is_swimming(world, player),
+        running,
+    );
+    let fired = {
+        let Some(mut timers) = world.try_resource_mut::<StanceTimers>() else {
+            return;
+        };
+        let timers = &mut *timers;
+        let mut fired = Vec::new();
+        if stance_step(&mut timers.sneak, stance == Some(Stance::Sneak), dt) {
+            fired.push((SNEAK, 0));
+        }
+        if stance_step(&mut timers.swim, stance == Some(Stance::Swim), dt) {
+            fired.push((ATHLETICS, 1));
+        }
+        if stance_step(&mut timers.run, stance == Some(Stance::Run), dt) {
+            fired.push((ATHLETICS, 0));
+        }
+        fired
+    };
+    for (skill, usage) in fired {
+        byroredux_scripting::oblivion_skill_use::queue_skill_use(world, skill, usage, 0.0);
+    }
+}
+
+/// The player jumped (the controller's `jump_fired` on land, not in water): feed Acrobatics, usage 0.
+pub(crate) fn on_jump(world: &World) {
+    byroredux_scripting::oblivion_skill_use::queue_skill_use(world, ACROBATICS, 0, 0.0);
 }
 
 #[cfg(test)]
@@ -262,5 +375,61 @@ mod tests {
         on_landed_hit(&world, player, npc, false, 1);
         on_landed_hit(&world, npc, player, false, 1);
         assert!(queued(&world).is_empty());
+    }
+
+    /// `0x671855`: the timer counts only while its stance holds, fires at a second and restarts; an
+    /// interrupted stance keeps its count.
+    #[test]
+    fn a_stance_timer_fires_each_second_of_its_stance() {
+        let mut timer = 0.0;
+        let mut fired = 0;
+        for _ in 0..300 {
+            fired += usize::from(stance_step(&mut timer, true, 0.05));
+        }
+        assert!((14..=15).contains(&fired), "15 s at 20 Hz: {fired}"); // a fire frame adds no time
+        let mut paused = 0.5;
+        assert!(!stance_step(&mut paused, false, 10.0));
+        assert_eq!(paused, 0.5, "a stance that does not hold leaves the count");
+    }
+
+    /// The executable's branch order: sneaking undetected, else swimming, else running (never while
+    /// sneaking); nothing while standing still.
+    #[test]
+    fn the_stance_follows_the_branch_order() {
+        assert_eq!(stance_of(true, true, true, true, true), Some(Stance::Sneak));
+        assert_eq!(stance_of(true, true, false, true, false), Some(Stance::Swim), "detected: not sneaking for the skill");
+        assert_eq!(stance_of(true, false, true, true, true), Some(Stance::Swim));
+        assert_eq!(stance_of(true, false, true, false, true), Some(Stance::Run));
+        assert_eq!(stance_of(true, true, false, false, true), None, "detected and sneaking runs nothing");
+        assert_eq!(stance_of(true, false, true, false, false), None, "walking");
+        assert_eq!(stance_of(false, true, true, true, true), None, "standing still");
+    }
+
+    /// OSL-USE-005 end to end: a player running for a second queues one Athletics use at 0.03 (value 1),
+    /// sneaking undetected 0.75 of Sneak, and a jump 0.3 of Acrobatics; swimming would use value 2.
+    #[test]
+    fn seconds_of_a_stance_and_a_jump_queue_their_skil_amounts() {
+        use byroredux_core::ecs::components::Sneaking;
+        let (mut world, player, _) = world();
+        world.insert_resource(StanceTimers::default());
+        world.register::<Sneaking>();
+        let mut actions = crate::interaction::ActionState::default();
+        actions.press_for_test(crate::interaction::InputAction::MoveForward);
+        actions.press_for_test(crate::interaction::InputAction::Sprint);
+        world.insert_resource(actions);
+        for _ in 0..30 {
+            stance_use_system(&world, 0.05);
+        }
+        let amounts = |world: &World| -> Vec<(u32, f32)> {
+            world.resource::<PendingSkillUse>().0.iter().map(|r| (r.skill, r.amount)).collect()
+        };
+        assert_eq!(amounts(&world), vec![(ATHLETICS, 0.03)], "one second of running in 30 frames of 0.05 s");
+        world.insert(player, Sneaking);
+        for _ in 0..30 {
+            stance_use_system(&world, 0.05);
+        }
+        assert_eq!(amounts(&world), vec![(ATHLETICS, 0.03), (SNEAK, 0.75)]);
+        on_jump(&world);
+        assert_eq!(amounts(&world).last(), Some(&(ACROBATICS, 0.3)));
     }
 }

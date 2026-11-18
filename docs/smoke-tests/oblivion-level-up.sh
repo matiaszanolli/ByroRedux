@@ -5,6 +5,8 @@
 # In Anvil's Count's Arms: `levelup` names the Player record's class and each skill's banked experience and
 # cost; `ModPCSkill Blade 2` raises the base skill by two ranks, counts them toward the level, and tallies
 # Strength; `AdvancePCSkill Sneak 1` tallies Agility and, Sneak being no major skill of the class, not the level.
+# Phase 2b (#7051): a jump banks Acrobatics (0.3), moving undetected in the sneak stance banks Sneak (0.75 a second),
+# and `levelup` lists the unfed skills.
 set -euo pipefail
 
 DATA="${BYROREDUX_OBLIVION_DATA:-}"
@@ -83,6 +85,48 @@ major = re.search(r"major increases (\d+)/10", text)
 assert major and int(major.group(1)) == 2, text
 tallies = dict(re.findall(r"(\w+) (\d+)(?:,|$)", re.search(r"attribute tallies: (.*)", text).group(1)))
 assert tallies["Strength"] == "2" and tallies["Agility"] == "1", tallies
+PY
+# Phase 2b: the emitters. `levelup` reports 8 of 21 skills fed and names what is not.
+grep -Fq 'fed skills 8/21; unfed: ' "$LOG_DIR/after.log" || fail 'levelup did not report the fed skills'
+for unfed in Security Speechcraft Mercantile Alchemy Armorer Block Marksman Alteration; do
+    grep -E 'fed skills 8/21; unfed: ' "$LOG_DIR/after.log" | grep -Fq "$unfed" || fail "$unfed is not reported unfed"
+done
+banked() { sed -nE "s/^.*levelup: $2 [0-9]+ banked ([0-9.]+) .*/\1/p" "$1" | head -1; }
+# Running (forward and Sprint together) cannot be held from the console: `input.hold` holds one key. The stance
+# rules are unit-tested (`skill_use_emit::tests`); here the sneak stance and a jump run live.
+# Sneaking undetected: the stance, then forward for a few seconds.
+command 'stealth.sneak on' "$LOG_DIR/sneak-on.log" || fail 'stealth.sneak failed'
+sneak_before_run="$(skill_value "$LOG_DIR/after.log" Sneak)"
+sleep 1
+command 'input.hold forward 600' "$LOG_DIR/hold-sneak.log" || fail 'input.hold forward failed (sneak)'
+sleep 5
+command 'stealth.status' "$LOG_DIR/stealth-mid.log" || fail 'stealth.status failed'
+sleep 7
+command 'stealth.status' "$LOG_DIR/stealth-end.log" || fail 'stealth.status failed'
+command 'levelup' "$LOG_DIR/sneak.log" || fail 'levelup failed after the sneak'
+sneak_after="$(skill_value "$LOG_DIR/sneak.log" Sneak)"
+sneak_banked="$(banked "$LOG_DIR/sneak.log" Sneak)"
+# Sneak banks only while undetected (UESP; the worst detection level below Noticed). The cell's patrons may see the
+# player: then the skill must not move, and the leg proves the gate the other way round.
+worst() { sed -nE 's/.*worst level ([A-Za-z]+).*/\1/p' "$1" | head -1; }
+mid_level="$(worst "$LOG_DIR/stealth-mid.log")"
+end_level="$(worst "$LOG_DIR/stealth-end.log")"
+python3 - "$sneak_banked" "$sneak_after" "$sneak_before_run" "$mid_level" "$end_level" <<'PY' || fail 'the Sneak skill did not follow the detection level'
+import sys
+banked, after, before = float(sys.argv[1] or 0), int(sys.argv[2] or 0), int(sys.argv[3] or 0)
+levels = sys.argv[4:6]
+undetected = all(level in ("Lost", "Unseen") for level in levels)
+gained = banked > 0 or after > before
+print(f"smoke[oblivion-level-up]: sneak leg, detection {levels}, gained={gained}")
+assert gained == undetected or (gained and not undetected and any(l in ("Lost", "Unseen") for l in levels)), (banked, after, before, levels)
+PY
+# A jump.
+command 'input.press jump' "$LOG_DIR/jump.log" || fail 'input.press jump failed'
+sleep 2
+command 'levelup' "$LOG_DIR/jumped.log" || fail 'levelup failed after the jump'
+python3 - "$(banked "$LOG_DIR/jumped.log" Acrobatics)" <<'PY' || fail 'a jump banked no Acrobatics experience'
+import sys
+assert float(sys.argv[1] or 0) > 0, sys.argv
 PY
 printf 'smoke[oblivion-level-up]: PASS -- Blade %s -> %s, Sneak %s -> %s; artifacts: %s\n' \
     "$blade_before" "$blade_after" "$sneak_before" "$sneak_after" "$LOG_DIR"

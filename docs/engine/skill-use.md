@@ -119,12 +119,30 @@ unfed list; its source is `FED_SKILLS` in `oblivion_skill_use.rs`, where a skill
   any other Light Armor. Oblivion's heavy flag is `BMDT` General Flags bit 7, now kept as `armor_type` 1 (the Skyrim field). The engine's roll is
   a deterministic mix of the hit counter and the two actors, not the executable's RNG.
 
+**Fed since #7051 Phase 2b** (3 more skills, 8 of 21 in all):
+
+- **Athletics, Sneak** (`stance_use_system`, the player's per-frame update `0x671620`): the original keeps three one-second timers that
+  count only while their stance holds, fire at a second and reset. Sneaking and moving feeds **Sneak usage 0** (0.75), else swimming and
+  moving feeds **Athletics usage 1** (0.04), else running and moving feeds **Athletics usage 0** (0.03). The two usages the Phase 0 census
+  left open (rows 13 and 15) are decoded: both push `edi`, which is 0 for an unmounted player, so usage 0. The executable gates its Sneak
+  branch on a flag at `player + 0x5a8` that was not traced; the engine reads UESP's and the PRD's "undetected" from the detection level
+  (`PlayerDetection`, below Noticed). The engine's "running" is the Sprint action, as the detection tick reads it.
+- **Acrobatics** (a jump, usage 0, 0.3): the controller's `jump_fired` on land. UESP: "each jump or dodge".
+
 **Not fed, and why** (OSL-USE-006):
 
+- **The six schools** (row 16): the engine has no player cast action. A spell leaves the player only through the console's `magic.cast`
+  and a script's `Cast`, and a script-forced cast is not the player's own action, so feeding from it would be a stand-in. Row 16's routine `0x5fca20` was read this phase: it is the item-use path, and its spell cases pass
+  usage 0, whose value is 0 for every school, so the spell-casting site is not among the 19 vtable calls and stays unread. The
+  school of a multi-effect spell is the effect with the highest base cost (UESP *Spell Making*); that rule waits for the cast action.
 - **Block**: a blocked hit needs a target-side guard, and no producer models one (`HitEvent::blocked` is the aggressor's own stance, #4324).
 - **Marksman**: the bow (type 5) has no shot path; the engine's ranged path is the guns'.
+- **Acrobatics' fall** (rows 10 and 11): the engine has no fall damage. Row 11's gating setting (`0xb37490`) is still unnamed.
+- **Sneak's pickpocket** (row 3): no pickpocket action.
 - **Alchemy (rows 1 and 2), Armorer (7), Security (5), Speechcraft (6), Mercantile (4)**: menus and minigames the engine does not run for Oblivion.
-- **Spell schools (16), Athletics (14, 15), Sneak (3, 13), Acrobatics (10 to 12)**: Phase 2b.
+
+**Metrics** (PRD §8, published in the ROADMAP compatibility matrix): fed skills 8 / 21; fed actions 9 / 26 of UESP's table: combat 6 / 8
+(Athletics running and swimming, Blade, Blunt, Hand to Hand, Heavy Armor), magic 0 / 8, stealth 3 / 10 (Acrobatics' jump, Light Armor, Sneak's movement).
 
 ## 4. The emitter contract (OSL-XP-007)
 

@@ -384,6 +384,10 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     // not-already-pressed — see `wants_jump` latch on the controller).
     let jump_fired =
         want_jump_now && (controller.is_grounded || swim.is_some()) && !controller.wants_jump;
+    if jump_fired && swim.is_none() {
+        // #7051 — UESP: "each jump or dodge" feeds Acrobatics (Oblivion; other rulesets queue nothing).
+        crate::skill_use_emit::on_jump(world);
+    }
     let vertical_velocity = match swim {
         Some(state) => swim_vertical_velocity(
             controller.vertical_velocity,
