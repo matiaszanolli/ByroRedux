@@ -5,7 +5,7 @@ set -euo pipefail
 
 DATA="${BYROREDUX_OBLIVION_DATA:-}"
 if [[ -z "$DATA" || ! -f "$DATA/Oblivion.esm" || ! -f "$DATA/Oblivion - Meshes.bsa" || ! -f "$DATA/Oblivion - Textures - Compressed.bsa" ]]; then
-    echo 'smoke[oblivion-actor-values]: SKIP -- set BYROREDUX_OBLIVION_DATA to the Oblivion Data directory'
+    echo 'smoke[oblivion-actor-values]: SKIP -- missing BYROREDUX_OBLIVION_DATA (set it to the Oblivion Data directory)'
     exit 77
 fi
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

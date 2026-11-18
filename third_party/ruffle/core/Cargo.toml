@@ -96,3 +96,8 @@ serde = ["serde/derive"]
 
 [build-dependencies]
 build_playerglobal = { git = "https://github.com/ruffle-rs/ruffle", rev = "2edfd97d11897e6cf6301c30cd87e86d774919c1" }
+
+# byroredux: cargo-machete false positive — `build_playerglobal` is a [build-dependencies] entry
+# consumed from build.rs, which --with-metadata's source scan does not read (same class as #5851).
+[package.metadata.cargo-machete]
+ignored = ["build_playerglobal"]

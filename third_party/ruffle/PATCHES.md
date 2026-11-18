@@ -18,6 +18,8 @@ them there, so the graph holds one copy of each. Licence: MIT OR Apache-2.0 (`LI
 - `core/Cargo.toml` and `core/common/Cargo.toml`: path dependencies on sibling Ruffle crates
   (`../render`, `../video`, `../wstr`, `../swf`, `../flv`, `../render/naga-agal`,
   `build_playerglobal`) became git dependencies at the pinned revision.
+  `core/Cargo.toml` also carries a `[package.metadata.cargo-machete]` ignore for `build_playerglobal`
+  (a build-dependency used from `build.rs`, which the unused-dependency scan does not read); keep it on a re-vendor.
 - `core/build_playerglobal` is not vendored (the git crate builds the AS2/AS3 globals from
   `core/src` here, which `core/build.rs` points it at).
 

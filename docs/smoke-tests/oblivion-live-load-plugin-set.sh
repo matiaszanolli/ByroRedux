@@ -23,12 +23,12 @@ set -euo pipefail
 DATA="${BYROREDUX_OBLIVION_DATA:-}"
 need=(Oblivion.esm Knights.esp DLCThievesDen.esp "Oblivion - Meshes.bsa" "Oblivion - Textures - Compressed.bsa")
 if [[ -z "$DATA" ]]; then
-    echo 'smoke[oblivion-live-load-plugin-set]: SKIP -- set BYROREDUX_OBLIVION_DATA to the Oblivion Data directory'
+    echo 'smoke[oblivion-live-load-plugin-set]: SKIP -- missing BYROREDUX_OBLIVION_DATA (set it to the Oblivion Data directory)'
     exit 77
 fi
 for file in "${need[@]}"; do
     if [[ ! -f "$DATA/$file" ]]; then
-        echo "smoke[oblivion-live-load-plugin-set]: SKIP -- $DATA/$file missing"
+        echo "smoke[oblivion-live-load-plugin-set]: SKIP -- missing $DATA/$file"
         exit 77
     fi
 done
