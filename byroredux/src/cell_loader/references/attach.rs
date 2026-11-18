@@ -157,6 +157,34 @@ pub(super) fn trigger_volume_from_primitive(
     })
 }
 
+/// Build a world-space [`TriggerVolume`](byroredux_scripting::TriggerVolume) from the box a trigger
+/// zone's model authors as a Havok phantom (`collision::extract_phantom_bounds`: `(min, max)` in
+/// NIF-root engine Y-up space), placed at `position` with `rotation` and `scale`. This is how Oblivion
+/// authors its trigger zones (`meshes\Dungeons\Misc\Triggers\TrigZone*.NIF`: a
+/// `bhkSimpleShapePhantom` over a `bhkBoxShape`, with no `XPRM` on the reference). The box is
+/// oriented with the placement, centred on its own centre. `None` for a non-finite or empty box.
+pub(super) fn trigger_volume_from_phantom(
+    (min, max): ([f32; 3], [f32; 3]),
+    position: Vec3,
+    rotation: Quat,
+    scale: f32,
+) -> Option<byroredux_scripting::TriggerVolume> {
+    let (min, max) = (Vec3::from_array(min), Vec3::from_array(max));
+    let half_extents = (max - min) * 0.5 * scale.abs();
+    if !(min.is_finite() && max.is_finite()) || half_extents.min_element() <= 0.0 {
+        return None;
+    }
+    let centre = position + rotation * ((min + max) * 0.5 * scale);
+    Some(byroredux_scripting::TriggerVolume {
+        center: centre,
+        half_extents,
+        rotation,
+        shape: byroredux_scripting::TriggerShape::Box,
+        // Seeded by the first detection tick, as for an `XPRM` volume (#1817).
+        occupant_inside: None,
+    })
+}
+
 /// Returns `true` when canonical behavior attached (either per-game arm
 /// recognized the script) — the cell loader counts these for its summary.
 ///

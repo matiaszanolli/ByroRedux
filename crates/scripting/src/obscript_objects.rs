@@ -117,6 +117,24 @@ pub struct ObScriptInstance {
     pub script: u32,
 }
 
+/// Whether the object script `entity` runs has a trigger block (`OnTrigger`, `OnTriggerEnter` or
+/// `OnTriggerLeave`): the references that need a [`crate::TriggerVolume`] to fire. `false` for an
+/// entity with no object script.
+pub fn has_trigger_block(world: &World, entity: EntityId) -> bool {
+    let Some(instance) = world.get::<ObScriptInstance>(entity).map(|instance| *instance) else {
+        return false;
+    };
+    let Some(table) = world.try_resource::<ObScriptObjectTable>() else {
+        return false;
+    };
+    table.scripts.get(&instance.script).is_some_and(|object| {
+        object
+            .blocks
+            .iter()
+            .any(|block| matches!(block.block_type, BLOCK_ON_TRIGGER | BLOCK_ON_TRIGGER_ENTER | BLOCK_ON_TRIGGER_LEAVE))
+    })
+}
+
 impl Component for ObScriptInstance {
     type Storage = SparseSetStorage<Self>;
 }
@@ -1700,6 +1718,18 @@ mod tests {
             obscript_object_system(&world, 0.016);
             assert_eq!(counter(&world, trigger), runs, "{game:?}");
         }
+    }
+
+    /// The references that need a trigger volume are the ones whose script has a trigger block.
+    #[test]
+    fn a_trigger_block_marks_the_reference_that_needs_a_volume() {
+        for block in [BLOCK_ON_TRIGGER, BLOCK_ON_TRIGGER_ENTER, BLOCK_ON_TRIGGER_LEAVE] {
+            let (world, trigger, player) = world_with_activator(trigger_script(block, None));
+            assert!(has_trigger_block(&world, trigger), "{block:#x}");
+            assert!(!has_trigger_block(&world, player), "an entity with no object script");
+        }
+        let (world, activator, _) = world_with_activator(trigger_script(BLOCK_GAME_MODE, None));
+        assert!(!has_trigger_block(&world, activator), "a GameMode-only script needs no volume");
     }
 
     /// `OnTrigger` runs every frame while something is inside, and stops when it

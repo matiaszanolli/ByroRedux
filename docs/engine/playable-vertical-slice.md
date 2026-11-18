@@ -1880,12 +1880,19 @@ uncatalogued condition function (230), and package selection passed a whole list
 so he left for the Cloud Ruler Temple and his script stopped. Selection now passes a list unless a
 readable term refutes it (`evaluate_unless_refuted`), still open on the unreadable ones.
 
-It stops at 13. Stage 14 is set by `CGTriggerZoneCellScript`'s `OnTrigger player` on reference `00097A3B`
-(base `00097A3C`, model `meshes\Dungeons\Misc\Triggers\TrigZone02.NIF`, scale 1.3). The engine builds
-trigger volumes from a reference's `XPRM` primitive only; an Oblivion reference has none, and the zone's
-NIF has no mesh, so the reference gets no `TriggerVolume` and its `OnTrigger` never runs. Its box is the
-NIF's `BSBound`, which the importer reads (`ImportedScene::bs_bound`) but the cell-load cache does not
-carry. That is the next piece. Nothing was watched on screen.
+Stage 14 is set by `CGTriggerZoneCellScript`'s `OnTrigger player` on reference `00097A3B` (base
+`00097A3C`, model `meshes\Dungeons\Misc\Triggers\TrigZone02.NIF`, scale 1.3). Oblivion authors a trigger
+zone as a Havok phantom in its model (a `bhkSimpleShapePhantom` over a `bhkBoxShape`; there is no `XPRM`
+on the reference and no `BSBound`), and the engine built volumes from `XPRM` only, so the reference got
+no `TriggerVolume` and its `OnTrigger` never ran. A scripted static whose script has a trigger block
+and whose model authors a phantom now gets a volume from the cached `phantom_bounds`, oriented and scaled
+with the placement (`trigger_volume_from_phantom`, `has_trigger_block`). This zone is a strip about 54
+units wide and 534 long across a raised platform at `x ~ 810`.
+
+Observed headless: with the player moved onto that platform once the quest was at 13, stage 14 fired at
+once. It stops at 14: stage 15 is set by Glenroy's `OnPackageDone CGGlenroyToMarkerB`, a package-completion
+event, so the next piece is the AI packages `evp` evaluates for Glenroy and Baurus at stage 14, not a
+trigger. Nothing was watched on screen.
 
 **Not modelled yet.** The movies' mute and pause-music flags, Papyrus
 `Game.PlayBink`, the INI start sequences, which audio track a movie plays (PRD `bink-video-playback`,
