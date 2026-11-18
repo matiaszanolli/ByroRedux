@@ -26,6 +26,23 @@ Commits hold that record.
 
 ---
 
+## Session 115 — "Sleep on It": Oblivion's skill-use leveling goes from PRD to a level-up in a day, the new-game routes reach Oblivion and Fallout 3, and Oblivion actors walk their own pathgrids  (2026-11-17 → 2026-11-18, `449ea0fed..f3677b704`, 39 commits)
+
+Session 114's closeout left CI red, two Oblivion PRDs half-built and the new-game route working only on New Vegas. This window cleared the CI, then ran the Oblivion skill-use leveling PRD from first draft to a live level-up, carried the start sequence to Oblivion and Fallout 3, and gave Oblivion actors a walk graph. No milestone closed.
+
+- **CI and the Session 114 tail** — the smoke contract loop and the vendored Ruffle machete false positive (`2bfa71524`); two lock-order cycles fixed by acquisition order (`10f7c16fc`); `v0.113` and `v0.114` tagged; the SpeedTree audit clean (`7e239a473`); #6996 closed with Starfield split to #7046.
+- **Oblivion skill-use leveling (PRD ACTIVE)** — Phase 0 decode and census (#7049); experience, cost, banking, class and rank-up (#7050); weapon-hit, armor-hit, Sneak, Athletics and Acrobatics emitters, with 8 of 21 skills and 9 of 26 UESP actions fed (#7051); levels, pending levels, attribute picks and the completed-sleep trigger, saved at `FORMAT_MAJOR` 138 (#7052). The stored Health layer for level-up gains landed at v136 (#7044). The live `oblivion-level-up.sh` gate takes a level. Magic, Block, Marksman and Acrobatics falls wait on #7053 to #7056.
+- **Oblivion actor values, tail** — creature pools wrap at 16 bits and the auto-calc timing is decoded with an observation protocol and test plugin (`d1e7b0f81`, `b12d04ea1`); the HUD hides the bar of a pool the player does not carry in both drivers (#7043); ingestibles reach the catalog (#7045).
+- **New-game routes** — Oblivion's Charactergen quest starts and the player's `MoveTo` ends the script (`8abbd3679`); Fallout 3's CG00 birth quest starts from the default INI (`b972009d7`); both name their new-game cell (`8a67fba80`); both queue their start movie after the start sequence (`5a147d4dc`); the Bink verify items are settled from the executables (#6896 to #6898).
+- **AI and the world** — Oblivion `PGRD` pathgrids are read, and Travel routes over them once blocked (`0580afe57`, with `e1ab78673` and `f09ba4ee6`); trigger zones get a `TriggerVolume` from their Havok phantom (`00c2bf882`); a package whose readable condition fails is no longer selected beside an unreadable one (`300a7dbca`); an active effect keeps its own conditions when a spell lists one MGEF twice (#6941).
+- **Stealth** — Starfield's detection row is decoded from `Starfield.exe`'s per-setting initializers; formula coverage is 6 / 6 rows (#7046).
+- **Renderer** — a far-sun shadow compute pass, the shadow filter radius and the paired-seed A3 content comparison (`ea979a6f7`); `GpuUploadCtx` and the composite pipeline initialization streamlined (`4d820686d`).
+- **Closeout** — `audit-ui` cited a renamed pin; `PathGridTile` classified not-saved-by-design (`45ad4ab69`).
+
+Net: tests 12 658 → 12 731 (+73), Rust source lines 962 338 → 966 778, `.rs` files 1861 → 1866. No bench was run; the bench-of-record is now 1398 commits old.
+
+---
+
 ## Session 114 — "The Menu": the game UI milestone (M48) reaches the games' own surfaces from the registry up to the race menu, Oblivion's actor values go live, and a save audit drains the day it is filed  (2026-11-15 → 2026-11-17, `e11de827c..b35f2881e`, 93 commits)
 
 Session 113 ended with M65 done and the audit queue full. This window turned to the two PRDs that were ACTIVE and unfinished: Game UI Integration (M48), whose phases had been design-only, and Oblivion Actor Values, whose engine-supplied records had no population or consumers yet. Alongside them, the physics, renderer and save audits filed on 11-15 to 11-17 were fixed in the same week, and a refactor pass cleared the clippy backlog. No milestone closed; M48 stays open at Phase 6.

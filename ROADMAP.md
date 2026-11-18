@@ -20,7 +20,7 @@ commit. Live state only: when something closes, it becomes a one-liner under
 
 ## Status
 
-**Last session close:** Session 114, 2026-11-17. Workspace numbers (tests, LOC,
+**Last session close:** Session 115, 2026-11-18. Workspace numbers (tests, LOC,
 files, issue dirs) live in [Project Stats](#project-stats) only.
 
 **Gates.** `rust-toolchain.toml` pins rustc 1.100.0 (#5308; raised from 1.96.0 on 2026-11-14), above the bin crate's 1.96 MSRV (wasmtime 49). CI on
@@ -206,7 +206,7 @@ baseline (`688f42705`, RTX 4070 Ti, 1280×720, stepped orbit, tier histogram pas
 | MedTek Research 01 | 0 / 0 (0 / 0) | 27.73 / 16.36 |
 | FO4 Dugout Inn | 0 / 1 (0 / 0.01) | 15.51 / 12.40 |
 
-The baseline is 857 commits old at the Session 114 close (Session 108's Phase 2 exit A13
+The baseline is 898 commits old at the Session 115 close (Session 108's Phase 2 exit A13
 last checked cost against it); re-run `scripts/m-light-baselines.sh` before citing it.
 
 ### Compatibility matrix
@@ -566,7 +566,7 @@ it; the full list as it stood on 2026-09-29 (open and closed) is in
   is +0.5–1.2 ms on Cornell, Whiterun and MedTek, unattributed (742-commit
   window: ReSTIR `c2647d468` / `17e0b7464` / `6110b6078`, GI sampling `0b56f1133`,
   SVGF history `1092b5b9e` / `24eb7dba8`, cloud-shadow map `c231f5b5f`). Next:
-  bisect Cornell `gpu_main`. The record is 1357 commits old at the Session 114
+  bisect Cornell `gpu_main`. The record is 1398 commits old at the Session 115
   close (renderer paths since: render-layer depth bias `0c118907c`, explicit LODs on streamed textures `f754eee28`, synthetic parallax `51ce1c2f9` (off by default), cloud deck drift `ea1f464b9`, shadow filter `0999490b9` and its reach `a2180dd18`,
   shadow-ray cosine weighting `55ba81e20`, ReSTIR taint `bed162262`, water waves/shores
   `7dd294ee3`, geometry-pool caps and admission tiers `bb97be77c` / `22d6e1a80`, terrain
@@ -704,16 +704,16 @@ performance finding. The measured knob table is in
 
 ## Project Stats
 
-Ground-truth as of 2026-11-17, HEAD `b35f2881e` plus the closeout's test and doc fixes: all figures re-counted at the Session 114 close.
+Ground-truth as of 2026-11-18, HEAD `f3677b704`: all figures re-counted at the Session 115 close.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | 962 338                       |
-| Rust total lines (all `.rs`, excl. `target/`) | 1 022 735                |
-| Source files (`.rs`, excl. `target/`)   | 1861 total · 1751 outside `tests/` dirs (+31 / +30 since the Session 113 close) |
+| Rust source lines (`src/` dirs)         | 966 778                       |
+| Rust total lines (all `.rs`, excl. `target/`) | 1 027 251                |
+| Source files (`.rs`, excl. `target/`)   | 1866 total · 1756 outside `tests/` dirs (+5 / +5 since the Session 114 close) |
 | Workspace members                       | 39 (count the `[workspace] members` block only; 34 crates — `video`, `bink2`, `binkaudio` joined in Session 111, `native-ui` with M48 GUI-PAGE-006 — + `byroredux` binary + 4 tools — `tools/nifskope` is on disk but not a member) |
-| Tests                                   | **12 658 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.100.0, 2026-11-17; 458 ignored; the lock-order detector is off in this count). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
-| Open issue directories                  | 6858 (`.claude/issues/`)     |
+| Tests                                   | **12 731 passing, 2 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.100.0, 2026-11-18; 462 ignored; the two failures are the sight-test caller guard (`systems/travel.rs` calls `line_of_sight_blocked`) and the missing `SkillUseLevel` debug registration; the lock-order detector is off in this count). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
+| Open issue directories                  | 6864 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **562 069** across eight games (Skyrim SE re-measured 2026-09-29 at 33 468 over 8 archives, #3712 added Animations; FO76's tail closed by #3461 and the 2026-10-03 re-measure (#4628) swept 102 980 over 5 of its 20 mesh-bearing archives; Skyrim LE 22 466 gated since fb8173fe0; earlier widenings #3369/#3466, Oblivion DLC #3925, Starfield #4440). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 468 · Skyrim LE 22 466 · FO4 235 082 · FO76 102 980 · Starfield 120 543. |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on all eight titles (Starfield re-measured 2026-09-24 #4440; FO76's `GeneratedMeshes` truncation tail closed by #3461 and re-measured 2026-10-03, #4628). |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
