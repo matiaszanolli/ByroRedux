@@ -1863,6 +1863,20 @@ run, driven by the console; nothing was watched on screen, and which commands in
 scripts had an effect (the imod fades, `addscriptpackage` for the player, the actors'
 `evp` animations, the baby's cry) was not checked.
 
+**Oblivion's prison (2026-11-18).** `--game oblivion --new-game` opens the Imperial Prison
+(`ImperialDungeon01`) and starts `Charactergen` (`0002466E`) at stage 0. `Oblivion.exe` names it as
+the compiled-in default of `sCharGenQuest` (`Oblivion_default.ini` does not set it), and its
+new-game handler (`0x5b5df0`) enables it. Stage 5 starts MQ01 (the tutorial quest) and does
+`player.moveto CGPlayerStartMarker`. Oblivion's player `MoveTo` was declined because the CS says it
+also ends the script; it now queues the move as Fallout's does and ends the script
+(`Action::Returned`). Observed in one headless run: the quest ran stages 0, 5, 6, the player stood at
+`CGPlayerStartMarker`, and once moved within 610 units of `CGValenDrethTauntMarker` (about 620 from the
+start marker; the original player walks there) Valen Dreth's taunts ran (`tauntCount=4`) and the quest
+reached stage 9. It stops there. Stage 10 is set by a dialogue line's result script (INFO `00032B04`,
+"Yessir.") and stage 12 by Renote's `OnPackageDone CGRenoteToMarkerA`, so the Emperor, Renote, Glenroy
+and Baurus conversation, which runs on `evp` package evaluations and `SayTo` lines, does not advance.
+That is the next piece, not done. Nothing was watched on screen.
+
 **Not modelled yet.** The movies' mute and pause-music flags, Papyrus
 `Game.PlayBink`, the INI start sequences, which audio track a movie plays (PRD `bink-video-playback`,
 #6855); face sliders (GUI-NG-005); an unwatched actor's offscreen arrival and multi-hop routes

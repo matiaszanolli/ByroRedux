@@ -708,6 +708,12 @@ impl<'a> ObScriptHost for ObScriptCommandHost<'a> {
                         }
                         value
                     }
+                    // The command ran and ends the script, as a `Return` does.
+                    Action::Returned { effect: text } => {
+                        effect(self, text);
+                        self.ends.set(true);
+                        None
+                    }
                     _ => self.decline(cmd),
                 }
             }

@@ -316,25 +316,27 @@ pub(crate) fn populate_scene_runtime(
             );
         }
     }
-    if index.game == byroredux_plugin::esm::reader::GameKind::Fallout3NV
+    if let Some(default_quest) = chargen_quest_default(index.game)
         && crate::components::NewGameStart::active(world)
     {
-        // A Fallout 3 / New Vegas new game starts the quest named by the
-        // `sCharGenQuest` setting: the new-game handler of `Fallout3.exe`
-        // looks the form up and enables the quest (`TESQuest::SetEnabled`,
-        // 0x775720), and the shipped default INI sets it (`0001f388` = CG00
-        // "Birth" on Fallout 3, `00102037` = VCG00 on New Vegas). The QUSTs
-        // are not Start Game Enabled and no record or script in the masters
-        // starts them or sets a stage on them; New Vegas's own MenuMode block
-        // ("if starting at VCG00": stage 0 while the stage is below 5) runs
-        // under the original's new-game menus, which this engine does not
-        // have. So the engine starts the quest at stage 0, on a new game
-        // only: stage 0 takes the Pip-Boy and the controls (New Vegas) or the
-        // actors and the chargen flag (Fallout 3), which would strand a
-        // session that began in a named cell or from a save.
-        const VCG00: u32 = 0x0010_2037;
+        // A Fallout 3 / New Vegas / Oblivion new game starts the quest named by
+        // the `sCharGenQuest` setting: the new-game handler of each executable
+        // looks the form up and enables the quest (Fallout3.exe
+        // `TESQuest::SetEnabled`, 0x775720; Oblivion.exe 0x5b5df0, which logs
+        // "Unable to find character generation quest '%s'." when it is absent).
+        // The shipped default INI sets it on Fallout 3 and New Vegas
+        // (`0001f388` = CG00 "Birth", `00102037` = VCG00); Oblivion's INI does
+        // not, so its compiled-in default stands (`0002466E` = Charactergen).
+        // The QUSTs are not Start Game Enabled and no record or script in the
+        // masters starts them or sets a stage on them; New Vegas's own
+        // MenuMode block ("if starting at VCG00": stage 0 while the stage is
+        // below 5) runs under the original's new-game menus, which this engine
+        // does not have. So the engine starts the quest at stage 0, on a new
+        // game only: stage 0 takes the Pip-Boy and the controls (New Vegas),
+        // the actors and the chargen flag (Fallout 3, Oblivion), which would
+        // strand a session that began in a named cell or from a save.
         let ini = crate::game_ini::read_default_ini(&crate::cli_args::effective_args(), index.game);
-        let chargen = ini.as_deref().and_then(crate::game_ini::chargen_quest).unwrap_or(VCG00);
+        let chargen = ini.as_deref().and_then(crate::game_ini::chargen_quest).unwrap_or(default_quest);
         if let Some(quest) = index.quests.get(&chargen) {
             log::info!("new game: starting chargen quest {} ({chargen:08X}) at stage 0", quest.editor_id);
             engine_start_quests += usize::from(byroredux_scripting::install_engine_start_quest(
@@ -664,6 +666,20 @@ pub(crate) fn materialize_scene_actor_alias_stubs(
         );
     }
     spawned
+}
+
+
+/// The quest a new game starts when the default INI does not name one (`sCharGenQuest`'s compiled-in
+/// default): New Vegas's VCG00 (its executable is encrypted; the shipped INI sets the same form) and
+/// Oblivion's `Charactergen`, read out of `Oblivion.exe` (#6903 method). Fallout 3 and New Vegas share
+/// a game kind; Fallout 3's INI always sets it. `None` for a game without a chargen quest to start.
+fn chargen_quest_default(game: byroredux_plugin::esm::reader::GameKind) -> Option<u32> {
+    use byroredux_plugin::esm::reader::GameKind;
+    match game {
+        GameKind::Fallout3NV => Some(0x0010_2037),
+        GameKind::Oblivion => Some(0x0002_466E),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

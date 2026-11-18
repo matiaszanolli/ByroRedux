@@ -228,9 +228,10 @@ optional_bsas = [
 # `sCharGenQuest` is 0002466E ("Charactergen"; `Oblivion_default.ini` does not
 # set it), and the actors its stages move and script (GlenroyRef, RenoteRef,
 # BaurusRef, UrielSeptimRef) are placed in `ImperialDungeon01` (form 0001FBB9,
-# 467 REFRs; FULL "Imperial Prison"). The engine runs no chargen quest for
-# Oblivion yet: the new-game movie (`sOblivionIntro`) plays and the player stands
-# in the cell.
+# 467 REFRs; FULL "Imperial Prison"). The engine starts Charactergen at stage 0
+# on a new game and its scripts run the prison sequence as far as the dialogue and
+# NPC packages allow (see `playable-vertical-slice.md`, "Oblivion's prison"); the
+# new-game movie (`sOblivionIntro`) plays first.
 new_game_cell = "ImperialDungeon01"
 sample_cells = [
     "ICMarketDistrictTheGildedCarafe",
