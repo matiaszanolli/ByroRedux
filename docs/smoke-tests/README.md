@@ -130,6 +130,7 @@ docs/smoke-tests/m47-3-obscript.sh               # FNV: ObScript object scripts 
 docs/smoke-tests/m65-stealth-detection.sh        # FNV: the detection tick, sneaking in the Prospector Saloon — a detector Lost behind cover, Seen beside it, and the indicator's label (M65, PRD scenarios 5 and 9)
 docs/smoke-tests/oblivion-actor-values.sh        # Oblivion: patron Sneak, detection skill term and live HUD Health after damage (OAV scenario 4; owner-run)
 docs/smoke-tests/oblivion-live-load-plugin-set.sh   # Oblivion: a save loaded live across two plugin sets, both directions, engine slot 2 <-> 3 (#7039; owner-run)
+docs/smoke-tests/oblivion-autocalc-timing.md        # Oblivion: the ORIGINAL game's NPC auto-calc timing over the four flag combinations, with a generated test plugin (#7022; owner-run, in Oblivion.exe, not the engine)
 docs/smoke-tests/m65-robotics-expert.sh          # FNV: Robotics Expert deactivates a Lucky 38 securitron from the stance under Chameleon (M65, PRD scenario 7)
 docs/smoke-tests/tsd1-height-census.sh           # Skyrim/FNV/Oblivion/FO4 exteriors: every resident terrain layer has a height map (census `terrain.height all`, screenshots per area) (#6195)
 ```

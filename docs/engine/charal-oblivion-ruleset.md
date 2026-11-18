@@ -1092,6 +1092,42 @@ The engine therefore treats an NPC with either bit as auto-calc. Which of the
 two the editor's own controls map to, and the result of each of the four flag
 combinations over spawn, level change and reload, is the observation in #7022.
 
+### When the calculator runs — decoded, observation pending (#7022)
+
+What the executable's code paths say for each combination of ACBS bit 4 (auto-calc) and bit 7 (PC level
+offset). The in-game observation that checks it is [oblivion-autocalc-timing.md](../smoke-tests/oblivion-autocalc-timing.md)
+(a four-NPC test plugin, `scripts/oblivion-autocalc-plugin.py`); until it is run, every row is a prediction from
+static analysis, not an observed value.
+
+- **Bit 4** is tested once per NPC form in the form's init virtual, `0x523f40` (`TESNPC` vtable offset `0x6c`).
+  It returns at once when the form's flag `0x8` is set and sets it at the end (`0x46ab80`), so it runs once per
+  form; it links the race and class (`+0x104`), calls the calculator when the vtable `+0xe4` test (`0x519d40`:
+  form type `NPC_` and ACBS bit 4) holds, flags a Health of 0 or less as starts-dead (`0x46ab40`) and zeroes the
+  `Player` record's stored pools (`0x5240b2`). The calculator's level is `0x4677f0`, which for bit 7 clear is the
+  ACBS level. What calls the init pass, and so when in the session it runs, was not decoded.
+- **Bit 7** is tested in the walker `0x447300` over every NPC base form (`[0xb33a98]`, the data handler). It
+  runs at the end of the data load, on a savegame load, when the player levels up (`LevelUpMenu` to `0x66c3e0`)
+  and from the console command `RevertWorld`. With bit 7 set the level `0x4677f0` returns is the record's level
+  plus the player's current base level, within Calc Min and Max.
+- **Neither is on a cell-change path.** Every caller of the walker and of the calculator is in the lists above
+  (the data load, the savegame load, the level-up, `RevertWorld`, the three script commands, the two character
+  creation menus); none is cell-load or spawn code. A reload of a cell leaves the base form's values as the last
+  event left them, and an actor reads them from the base form on each use (`0x5ead00`).
+
+| Bits (auto-calc, offset) | Calculated | Level used | Recalculated |
+|---|---|---|---|
+| 0, 0 | never | none: the authored values | never (except by `SetLevel`, `SetClass`, `DuplicateNPCStats`, which need no flag) |
+| 1, 0 | once, in the init pass | the ACBS level | never |
+| 0, 1 | in the walker | player level + offset | data load, savegame load, level-up, `RevertWorld` |
+| 1, 1 | in the init pass, then in the walker | player level + offset | as 0, 1 |
+
+The engine stamps these values once, when an NPC spawns (`derive`, `oblivion_population.rs`), from the player's
+level at that moment (`player_level_for_spawn`). It agrees with the table for an NPC spawned after the last
+walker event, and for the auto-calc-only combination at any time; it differs for an already-spawned offset NPC
+when the player levels up (the executable recalculates every offset NPC; the engine keeps the spawn-time
+values), which cannot happen until Oblivion has a level-up
+([skill-use leveling PRD](../prd/oblivion-skill-use-leveling.md)).
+
 ### Creature level scaling — LOCKED from the executable (#7040)
 
 The CS says a PC-level-offset creature's Health, spell points and Fatigue are
