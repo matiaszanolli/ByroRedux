@@ -808,12 +808,16 @@ into the existing classifier shape. Not built — no per-NPC Disposition
 storage or any of these contributor formulas exist in the engine yet.
 ## Leveling — LOCKED
 
-Oblivion uses skill-use leveling rather than character XP: a level becomes
-available after 10 increases in major skills. At level-up, each selected
-attribute receives a +1 to +5 bonus based on governed major-skill increases
-(0, 1–4, 5–7, 8–9, and 10+). The engine's `fSkillUseCurve` is 1.95 for the
-skill-use progression curve. Source: [UESP Oblivion:
-Leveling](https://en.uesp.net/wiki/Oblivion:Leveling).
+Oblivion uses skill-use leveling rather than character XP: using a skill banks experience, enough experience raises the skill by one, and
+a level becomes available after 10 increases of major skills (`iLevelUpSkillCount`), applied by a night's sleep. At level-up the player
+raises three attributes; each receives a bonus from the number of governed skill increases tallied for it, **counting every governed
+skill's increase, not only major skills** (V13: the tally runs on every rank-up, the major count only on major ones): 0 increases give +1,
+1–4 give +2, 5–7 +3, 8–9 +4, 10 or more +5 (`iLevelUp01Mult` to `iLevelUp10Mult`, `0x5480a0`). The experience a skill needs from value `L` is
+`(fSkillUseFactor · L) ^ fSkillUseExp`, times `fSkillUseSpecMult` for a specialization skill, times `fSkillUseMajorMult` for a major skill
+or `fSkillUseMinorMult` otherwise (executable defaults 1, 1, 0.75, 0.75, 1.25; `Oblivion.esm` authors Factor 0.35 and Exp 1.5).
+`fSkillUseCurve` 1.95 is **Skyrim's** setting, not Oblivion's. Source: [UESP Oblivion:
+Leveling](https://en.uesp.net/wiki/Oblivion:Leveling) and the executable decode in [skill-use.md](skill-use.md) (#7049, V1, V2, V13).
+Not built: the PRD [Oblivion skill-use leveling](../prd/oblivion-skill-use-leveling.md) owns the build.
 
 ## Engine-supplied actor values and stat models — BUILT at HEAD (#7008, OAV-RES / OAV-POP / OAI)
 

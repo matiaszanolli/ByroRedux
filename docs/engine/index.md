@@ -154,6 +154,7 @@ also rows in the subsystem table above.
 | [CHARAL — FO4 Ruleset](charal-fo4-ruleset.md) | core | Perk-only Fallout 4 `CharacterRuleset` data capture |
 | [CHARAL — FO76 Ruleset](charal-fo76-ruleset.md) | core | Fallout 76 `CharacterRuleset` data capture |
 | [CHARAL — Oblivion Ruleset](charal-oblivion-ruleset.md) | core | Oblivion gameplay-system formulas downstream of the core ruleset |
+| [Oblivion skill use](skill-use.md) | core, scripting, byroredux | The original's skill-use model decoded from `Oblivion.exe` (cost, banking, rank-up, the `SKIL` amounts, the action census) and the emitter contract the engine's systems follow (#7049) |
 | [CHARAL — Skyrim Ruleset](charal-skyrim-ruleset.md) | core | Skyrim `CharacterRuleset` gameplay-system formulas |
 | [CHARAL — Starfield Ruleset](charal-starfield-ruleset.md) | core | Starfield `CharacterRuleset` data capture |
 
