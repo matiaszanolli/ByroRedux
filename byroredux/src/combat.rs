@@ -3102,6 +3102,7 @@ mod tests {
             locals: Vec::new(),
             ref_locals: Vec::new(),
             suspended: false,
+            effect_index: 0,
         }
     }
 

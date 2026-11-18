@@ -505,7 +505,7 @@ fn actor_value_save_survives_a_changed_engine_slot() {
         source: 1, mgef: 2, caster: 3, script: 4, duration: 5.0, indefinite: false,
         elapsed: 1.0, started: true, ending: false,
         value: Some(ValueEffect { actor_value: old_key, amount: 5.0, recover: true }),
-        ticks: 2, locals: vec![(3, 4.5)], ref_locals: vec![(7, 8)], suspended: false,
+        ticks: 2, locals: vec![(3, 4.5)], ref_locals: vec![(7, 8)], suspended: false, effect_index: 0,
     };
     let unrelated = ActiveEffect { source: 9, value: None, indefinite: true, ..active.clone() };
     source.insert(actor, ActiveMagicEffects(vec![active.clone(), unrelated.clone()]));
@@ -894,7 +894,7 @@ fn the_obscript_runtime_state_survives_save_load_round_trip() {
         ticks: 4,
         locals: vec![(1, 3.0)],
         ref_locals: vec![(2, 0x0100_0004)],
-        suspended: false,
+        suspended: false, effect_index: 0,
     }]);
     src.insert(actor, effects.clone());
     src.insert(actor, WeaponDrawn);

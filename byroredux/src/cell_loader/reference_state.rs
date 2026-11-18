@@ -2232,7 +2232,7 @@ mod tests {
                 ticks: 0,
                 locals: Vec::new(),
                 ref_locals: Vec::new(),
-                suspended: false,
+                suspended: false, effect_index: 0,
             }]),
         );
         let trap = reference(&mut src, "Band.esm", 0x421);
@@ -2614,7 +2614,7 @@ mod tests {
             source: 1, mgef: 2, caster: 3, script: 4, duration: 5.0, indefinite: false,
             elapsed: 1.0, started: true, ending: false,
             value: Some(ValueEffect { actor_value: 0x0100_0020, amount: 5.0, recover: true }),
-            ticks: 0, locals: vec![], ref_locals: vec![], suspended: false,
+            ticks: 0, locals: vec![], ref_locals: vec![], suspended: false, effect_index: 0,
         }]));
         evict(&mut src, &[actor]);
         let registry = crate::save_io::build_save_registry();
@@ -2789,7 +2789,7 @@ mod tests {
                 ticks: 0,
                 locals: Vec::new(),
                 ref_locals: Vec::new(),
-                suspended: false,
+                suspended: false, effect_index: 0,
             }]),
         );
         world.insert(actor, WeaponDrawn);

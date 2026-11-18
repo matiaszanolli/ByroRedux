@@ -204,6 +204,7 @@ pub struct SavedActiveEffect {
     locals: Vec<(u16, f32)>,
     ref_locals: Vec<(u16, u32)>,
     suspended: bool,
+    effect_index: u16,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -248,6 +249,7 @@ pub fn save_active_effects(
             locals: effect.locals.clone(),
             ref_locals: effect.ref_locals.clone(),
             suspended: effect.suspended,
+            effect_index: effect.effect_index,
         });
     }
     Ok(SavedActiveMagicEffects(rows))
@@ -285,6 +287,7 @@ pub fn load_active_effects(
             locals: effect.locals,
             ref_locals: effect.ref_locals,
             suspended: effect.suspended,
+            effect_index: effect.effect_index,
         });
     }
     Ok(Some(crate::magic_effects::ActiveMagicEffects(rows)))
@@ -467,10 +470,12 @@ mod tests {
                 locals: vec![(2, 3.0)],
                 ref_locals: vec![],
                 suspended: false,
+                effect_index: 2,
             }]);
         let saved = save_active_effects(&old, 9, &effects).unwrap();
         let restored = load_active_effects(&new, 9, saved).unwrap().unwrap();
         assert_eq!(restored.0[0].value.unwrap().actor_value, 0x0200_0020);
         assert_eq!(restored.0[0].locals, vec![(2, 3.0)]);
+        assert_eq!(restored.0[0].effect_index, 2, "the effect's position in its spell is saved");
     }
 }

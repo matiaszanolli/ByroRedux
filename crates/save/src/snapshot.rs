@@ -668,7 +668,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v137 -> v138 (#7052, OSL-SAVE-001): `SkillUseLevel` gained the required `pending` (the levels earned and not
 /// yet taken, each with its frozen attribute tallies and its picks), so a v137 snapshot's column lacks the field.
-pub const FORMAT_MAJOR: u16 = 138;
+///
+/// v138 -> v139 (#6941): the saved `ActiveEffect` gained the required `effect_index` (its position in the spell's effect
+/// list), so a v138 save's effects lack the field and could not say which of a spell's same-`MGEF` effects they are.
+pub const FORMAT_MAJOR: u16 = 139;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

@@ -145,6 +145,10 @@ pub struct ActiveEffect {
     /// The effect's conditions do not hold: its recovered value is given back, and no per-second
     /// change runs, until they do ([`effect_conditions`]).
     pub suspended: bool,
+    /// Its position in the effect list its source cast it from (the spell's landing effects, in order), so its own
+    /// conditions are found even when the spell lists the same `MGEF` twice with different ones
+    /// ([`effect_conditions`]). 0 for an effect with no spell behind it.
+    pub effect_index: u16,
 }
 
 /// The effects running on an actor.
@@ -203,8 +207,9 @@ pub fn start_effects(world: &World, target: EntityId, caster: Option<EntityId>, 
     let target_form = crate::obscript_state::reference_form(world, target).unwrap_or(0);
     let taken: Vec<ActiveEffect> = effects
         .iter()
-        .filter(|effect| effect.lands(indefinite))
-        .map(|effect| ActiveEffect {
+        .enumerate()
+        .filter(|(_, effect)| effect.lands(indefinite))
+        .map(|(index, effect)| ActiveEffect {
             source,
             mgef: effect.mgef,
             caster: caster_form,
@@ -219,6 +224,7 @@ pub fn start_effects(world: &World, target: EntityId, caster: Option<EntityId>, 
             locals: Vec::new(),
             ref_locals: Vec::new(),
             suspended: false,
+            effect_index: u16::try_from(index).unwrap_or(u16::MAX),
         })
         .collect();
     if taken.is_empty() {
@@ -292,7 +298,14 @@ pub fn dispel(world: &World, target: EntityId, source: Option<u32>) -> usize {
 /// source is not a spell (an ingestible checks its own at use).
 pub fn effect_conditions(world: &World, effect: &ActiveEffect) -> Option<Arc<byroredux_plugin::esm::records::condition::ConditionList>> {
     let catalog = world.try_resource::<crate::magic::SpellCatalog>()?;
-    catalog.get(effect.source)?.effects.iter().find(|cast| cast.mgef == effect.mgef)?.conditions.clone()
+    let effects = &catalog.get(effect.source)?.effects;
+    // The effect's own position; a record that changed under a save (a different load order) falls back to the first
+    // effect of that `MGEF`, as before.
+    let cast = effects
+        .get(usize::from(effect.effect_index))
+        .filter(|cast| cast.mgef == effect.mgef)
+        .or_else(|| effects.iter().find(|cast| cast.mgef == effect.mgef))?;
+    cast.conditions.clone()
 }
 
 /// Whether `effect`'s conditions hold on `target` (the subject). A condition this runtime cannot
@@ -635,6 +648,46 @@ mod tests {
         magic_effect_system(&world, 20.0);
         assert_eq!(health(&world, target), base, "ending suspended owes nothing back");
         assert!(world.get::<ActiveMagicEffects>(target).is_none());
+    }
+
+    /// #6941: a spell that lists the same `MGEF` twice, each gated on its own condition, gates the two independently.
+    /// Two Fortify Health +25 effects, one waiting on quest stage 10 and the other on stage 20: stage 10 gives one bonus,
+    /// stage 20 both. (Looked up by `MGEF` alone, both read the first effect's condition and gave +50 at stage 10.)
+    #[test]
+    fn two_effects_of_one_mgef_keep_their_own_conditions() {
+        use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue, RunOn};
+        const QUEST: u32 = 0x00AB_0001;
+        let at_stage = |stage: f32| {
+            vec![Condition {
+                function_index: 58, // GetStage
+                comparator: ComparisonOp::Ge,
+                comparand: ConditionValue::Literal(stage),
+                param_1: QUEST,
+                run_on: RunOn::Subject,
+                ..Default::default()
+            }]
+        };
+        let mut index = index_with_value_effect(MGEF_FLAG_RECOVER, 25.0, 100);
+        let spell = index.spells.get_mut(&0x500).unwrap();
+        spell.effects[0].conditions = at_stage(10.0);
+        let mut second = spell.effects[0].clone();
+        second.conditions = at_stage(20.0);
+        spell.effects.push(second);
+        let (mut world, target) = world_with(index);
+        world.insert_resource(crate::quest_stages::QuestStageState::default());
+        let base = health(&world, target);
+        let stage = |world: &World, stage: u16| world.resource_mut::<crate::quest_stages::QuestStageState>().set_stage(crate::quest_stages::QuestFormId(QUEST), stage);
+        assert!(cast_spell(&world, None, target, 0x500));
+        let indexes: Vec<u16> = world.get::<ActiveMagicEffects>(target).unwrap().0.iter().map(|effect| effect.effect_index).collect();
+        assert_eq!(indexes, vec![0, 1], "each effect remembers its own position in the spell");
+        magic_effect_system(&world, 0.0);
+        assert_eq!(health(&world, target), base);
+        stage(&world, 10);
+        magic_effect_system(&world, 1.0);
+        assert_eq!(health(&world, target), base + 25.0, "only the first effect's condition holds");
+        stage(&world, 20);
+        magic_effect_system(&world, 1.0);
+        assert_eq!(health(&world, target), base + 50.0);
     }
 
     fn pending_kills(world: &World) -> Vec<(EntityId, Option<EntityId>, bool)> {

@@ -907,7 +907,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // M48 GUI-EVT-001 (#6668) — refreshed WITH a major bump (v133 -> v134): the new
     // `MenuEventRegistrations` resource column.
     // #7044 — refreshed WITH a major bump (v135 -> v136): `ActorValue` gained the required `stored` layer.
-    const BASELINE_MAJOR: u16 = 138;
+    const BASELINE_MAJOR: u16 = 139;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1356,7 +1356,8 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // WITH the major bump above.
     // #7052 — v138: `SkillUseLevel::pending` (`PendingLevel { tallies, picks }`) is a new required field, refreshed WITH
     // the major bump above.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x2c0c_0dae_ff05_5d79;
+    // #6941 — v139: the saved `ActiveEffect` gained the required `effect_index`, refreshed WITH the major bump above.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x8ce5_7e94_486c_63cc;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.
