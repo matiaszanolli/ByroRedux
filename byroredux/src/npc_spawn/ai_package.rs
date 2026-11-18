@@ -460,8 +460,16 @@ impl AmbientBehavior {
             // position, not the hash-picked point around it that an
             // unresolvable location falls back to (which walked VCG02's Sunny
             // out of the shooting-range trigger she is told to stay in).
+            //
+            // Near Editor Location with no radius is the same stay: the actor is
+            // placed at its editor location, and a zero radius around it is where it
+            // stands. Oblivion's `CGBladesWaitToMove` (the Emperor's party, waiting on
+            // the prison stair for the sequence to start) is one; the hash-picked
+            // point walked them off the stair's edge, and with no gravity under an
+            // NPC they hovered over the void for the rest of the sequence.
             let radius = match location_anchor(package.location) {
                 EatSleepLocation::NearCurrentLocation if location_reference.is_none() => Some(0.0),
+                EatSleepLocation::NearEditorLocation if location_radius.is_none() => Some(0.0),
                 _ => location_radius,
             };
             Some(Self::Travel {
@@ -2408,13 +2416,26 @@ mod tests {
     /// that walked Sunny out of her trigger; a reference destination keeps
     /// its authored radius.
     #[test]
-    fn a_travel_to_the_current_location_stays_where_it_is() {
+    fn a_travel_to_the_current_or_editor_location_stays_where_it_is() {
         use byroredux_plugin::esm::records::misc::pack::PROCEDURE_TRAVEL;
         let mut stay = pack(0x100, PROCEDURE_TRAVEL, None);
         stay.location = Some(PackLocation { location_type: 2, target: PackLocationTarget::Other(0), radius: 0 });
         let (world, actor) = setup_actor(10.0, vec![stay]);
         let behavior = world.get::<TravelBehavior>(actor).map(|behavior| *behavior).expect("Travel installs");
         assert_eq!((behavior.radius, behavior.target_form_id), (Some(0.0), None));
+
+        // Near Editor Location with no radius (Oblivion `CGBladesWaitToMove`) stays too; one
+        // with a radius keeps it, as the walk's v0 pick area.
+        let mut wait = pack(0x300, PROCEDURE_TRAVEL, None);
+        wait.location = Some(PackLocation { location_type: 3, target: PackLocationTarget::Other(0), radius: 0 });
+        let (world, actor) = setup_actor(10.0, vec![wait]);
+        let behavior = world.get::<TravelBehavior>(actor).map(|behavior| *behavior).expect("Travel installs");
+        assert_eq!((behavior.radius, behavior.target_form_id), (Some(0.0), None));
+        let mut near = pack(0x400, PROCEDURE_TRAVEL, None);
+        near.location = Some(PackLocation { location_type: 3, target: PackLocationTarget::Other(0), radius: 256 });
+        let (world, actor) = setup_actor(10.0, vec![near]);
+        let behavior = world.get::<TravelBehavior>(actor).map(|behavior| *behavior).expect("Travel installs");
+        assert_eq!(behavior.radius, Some(256.0));
 
         let mut go = pack(0x200, PROCEDURE_TRAVEL, None);
         go.location = Some(PackLocation { location_type: 0, target: PackLocationTarget::NearReference(0x10_A201), radius: 128 });
