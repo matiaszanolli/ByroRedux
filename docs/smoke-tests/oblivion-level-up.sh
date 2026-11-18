@@ -131,6 +131,24 @@ python3 - "$(banked "$LOG_DIR/jumped.log" Acrobatics)" <<'PY' || fail 'a jump ba
 import sys
 assert float(sys.argv[1] or 0) > 0, sys.argv
 PY
+# A fight (Phase 2 exit): the unarmed player walks up to a patron and strikes; every landed blow banks Hand to Hand
+# (0.6 each). The patron is the first detector `stealth.status` listed.
+target="$(sed -nE 's/.*entity ([0-9]+) ref .*/\1/p' "$LOG_DIR/stealth-end.log" | head -1)"
+[[ -n "$target" ]] || fail 'no patron to fight in the cell'
+h2h_before="$(banked "$LOG_DIR/jumped.log" HandToHand)"
+# Each swing is re-aimed in the same batch (the patron moves, and the controller resets the camera between frames).
+for _ in 1 2 3 4 5 6; do
+    command "combat.approach $target
+input.press attack" "$LOG_DIR/attack.log" || fail 'combat.approach / input.press attack failed'
+    sleep 1.5
+done
+command 'levelup' "$LOG_DIR/fought.log" || fail 'levelup failed after the fight'
+command 'combat.status' "$LOG_DIR/combat.log" || fail 'combat.status failed'
+python3 - "$(banked "$LOG_DIR/fought.log" HandToHand)" "$h2h_before" "$(skill_value "$LOG_DIR/fought.log" HandToHand)" <<'PY' || fail 'landed blows banked no Hand to Hand experience'
+import sys
+banked, before, value = float(sys.argv[1] or 0), float(sys.argv[2] or 0), int(sys.argv[3] or 5)
+assert banked > before or value > 5, (banked, before, value)
+PY
 # Phase 3: a level. Blade is 2 ranks in; eight more make the tenth major increase.
 value_of() { sed -nE 's/.*0x[0-9a-f]+ -> (-?[0-9.]+).*/\1/p' "$1" | head -1; }
 av() { command "obscript.cmd 0x14 GetBaseAV $1" "$LOG_DIR/av-$1-$2.log" || fail "GetBaseAV $1 failed"; value_of "$LOG_DIR/av-$1-$2.log"; }

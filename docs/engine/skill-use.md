@@ -110,7 +110,8 @@ unfed list; its source is `FED_SKILLS` in `oblivion_skill_use.rs`, where a skill
 - **Blade, Blunt, Hand to Hand** (usage 0: 0.5, 0.5, 0.6): a melee blow the player lands on a living target. The weapon's skill is its
   `WEAP` type: 0 and 1 are blades, 2 and 3 blunt weapons, no weapon is Hand to Hand (UESP's weapon pages). A staff (type 4) casts and a
   bow (type 5) has no shot path in the engine, so neither feeds a melee skill. UESP and the PRD say "each hit", so the emitter feeds per
-  landed blow, not per swing; whether the executable's swing loop (row 17) counts swings is not read.
+  landed blow, not per swing; whether the executable's swing loop (row 17) counts swings is not read. Live (`oblivion-level-up.sh`): six
+  unarmed blows on an Anvil patron took Hand to Hand from 5 to 7 with 0.59 banked, which is 6 × 0.6 less the two rank costs (1.30 and 1.71).
 - **Light and Heavy Armor** (usage 0: 1.5, 1.25): a hit the player takes. The struck piece is `0x5e5a00`'s roll, decoded this phase: a
   number from 0 to 99 is compared with the running total of the five slots' weights, Helmet 10, Cuirass 25, Greaves 15, Gauntlets 10,
   Boots 10 (`iArmorDamageHelmChance` and its siblings, executable defaults; the setting objects are created in the order Cuirass,
