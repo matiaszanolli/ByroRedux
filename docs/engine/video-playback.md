@@ -153,10 +153,13 @@ setting whose compiled-in default is empty and whose INI value is
   3 and New Vegas share a game kind and an INI, and New Vegas ships no
   `Fallout INTRO Vsk.bik` (its VCG00 plays `FNVIntro.bik`), so a movie that is not
   installed is not queued. `--skip-movies` skips it with the start sequence. The
-  engine has no Oblivion or Fallout 3 new-game cell or chargen flow, and their
-  profiles name no new-game target, so the run is `--new-game` with an explicit
-  `--cell`; the movie plays when the world is up, not between the new-game menus
-  and a birth sequence.
+  engine has no Oblivion or Fallout 3 chargen or birth flow. Their profiles name the
+  new-game cell (`assets/debug_profiles.toml`: Fallout 3 `Vault101d`, where the
+  start markers of the chargen quest CG00 named by `Fallout_default.ini` sit;
+  Oblivion `ImperialDungeon01`, where the actors of the exe's `Charactergen` quest
+  sit), so `--game fo3 --new-game` and `--game oblivion --new-game` reach it; the
+  movie plays when the world is up, not between the new-game menus and a birth
+  sequence.
 - **Live run (2026-11-17, release build, headless Xvfb, `--new-game --start-movies
   --bench-frames 30 --bench-hold`, one engine at a time).** Oblivion, with
   `--cell AbandonedMine`: the log line `video: start sequence [five logos],
