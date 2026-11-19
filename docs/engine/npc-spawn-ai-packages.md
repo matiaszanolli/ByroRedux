@@ -646,7 +646,7 @@ animation-clip swap).
 - **Pathing is single-tile.** Superseded 2026-08-23: the six locomotion
   procedures route through `navmesh_path::path_from_resident_tiles` (A\*
   over one NAVM tile's triangle adjacency, waypoints from shared-edge
-  midpoints) via `locomotion::step_along_waypoints`, so obstacles
+  midpoints) via `locomotion::step_along_waypoints_detailed`, so obstacles
   *within* a resident tile are walked around. A destination that doesn't
   localize onto the same resident tile as the actor falls back to a
   straight line for the remainder — Phase 2 (cross-tile search) is

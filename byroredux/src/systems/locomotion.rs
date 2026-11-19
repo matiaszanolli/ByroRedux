@@ -17,7 +17,7 @@
 //! [`step_toward`] itself still knows nothing about NAVM — it walks
 //! straight at whatever point it's given. Single-tile NAVM pathing
 //! (EX-16 item 3, `docs/engine/navmesh-pathfinding.md`) sits one layer
-//! up: [`step_along_waypoints`]/[`pop_reached_waypoint`] below turn a
+//! up: [`step_along_waypoints_detailed`]/[`pop_reached_waypoint`] below turn a
 //! cached waypoint queue (`crate::components::NavPath`, resolved via
 //! `navmesh_path::path_from_resident_tiles`) into the single point
 //! `step_toward` steps toward each tick, so a wall or obstacle *within* a
@@ -343,7 +343,7 @@ pub(crate) fn advance_stuck_repick(secs: &mut f32, blocked: bool, dt: f32) -> bo
 
 /// Pop `waypoints`' front entry once `new_pos` has arrived within
 /// [`LOCOMOTION_ARRIVAL_EPSILON`] of it. Split out from
-/// [`step_along_waypoints`] below so a caller whose own `step_toward`
+/// [`step_along_waypoints_detailed`] below so a caller whose own `step_toward`
 /// call is nested inside another function — `wander_system`'s
 /// `step_oscillating_wander`, which must keep deciding the Walking→Paused
 /// transition itself — can still share the exact same pop decision
@@ -374,30 +374,11 @@ pub(crate) fn pop_reached_waypoint(new_pos: Vec3, waypoints: &mut VecDeque<Vec3>
 /// owns the waypoint-consumption mechanics every caller shares. Returns
 /// the new position/rotation from the underlying `step_toward` call and
 /// `waypoints` with the just-reached entry (if any) popped.
-pub(crate) fn step_along_waypoints(
-    current: Vec3,
-    current_rotation: Quat,
-    waypoints: VecDeque<Vec3>,
-    goal: Vec3,
-    dt: f32,
-    speed: f32,
-    physics: Option<&byroredux_physics::PhysicsWorld>,
-) -> (Vec3, Option<Quat>, VecDeque<Vec3>) {
-    let (new_pos, rotation, waypoints, _blocked) = step_along_waypoints_detailed(
-        current,
-        current_rotation,
-        waypoints,
-        goal,
-        dt,
-        speed,
-        physics,
-    );
-    (new_pos, rotation, waypoints)
-}
-
-/// [`step_along_waypoints`], plus the underlying step's `blocked` flag (see
+///
+/// Also returns the underlying step's `blocked` flag (see
 /// [`step_toward_detailed`]) — for movers that must notice a KCC-blocked
-/// walk and give up on it (#5452) rather than grinding into the obstacle.
+/// walk, to give up on it (#5452) or to take the pathgrid (AIP-WALK-003)
+/// rather than grinding into the obstacle.
 pub(crate) fn step_along_waypoints_detailed(
     current: Vec3,
     current_rotation: Quat,

@@ -10,7 +10,7 @@
 //! within `wander_radius` of the actor's own spawn position, pause for a few
 //! seconds on arrival, then pick a new point and repeat indefinitely. The
 //! walk is NAVM-routed within the actor's own resident tile (`navmesh_path`,
-//! via `locomotion::step_along_waypoints`) and degrades to a straight line
+//! via `locomotion::step_along_waypoints_detailed`) and degrades to a straight line
 //! for any remainder that leaves it — Phase 2 cross-tile search is blocked,
 //! not merely unscheduled (see `docs/engine/navmesh-pathfinding.md` §9). [`WanderState`] is the
 //! per-actor runtime state — lazily inserted the first tick an actor is
@@ -305,6 +305,8 @@ pub(crate) struct OscillateDecision {
     waypoint_override: Option<Vec3>,
     effective_goal: Vec3,
     waypoints: VecDeque<Vec3>,
+    /// The leg's pathgrid switch, resolved with `waypoints`.
+    grid: crate::components::GridWalk,
     translation: Vec3,
     /// `None` when the actor didn't move enough this tick to have a
     /// meaningful facing direction (e.g. paused, or already at target).
@@ -408,10 +410,10 @@ pub(crate) fn oscillating_walk_system_inner<B: OscillatingWalkProcedure>(
             // actually walking this leg — mirrors `guard_system`'s same
             // "skip the resident-tile scan while nothing to walk toward"
             // shape (here: while `Paused`).
-            let (waypoint_override, effective_goal, waypoints) =
+            let (waypoint_override, effective_goal, waypoints, grid) =
                 if matches!(state.phase, WanderPhase::Walking) {
                     let cached = nav_path_q.as_ref().and_then(|q| q.get(entity));
-                    let (effective_goal, waypoints) = resolve_cached_waypoints(
+                    let (effective_goal, waypoints, grid) = resolve_cached_waypoints(
                         cached,
                         tile_q.as_ref(),
                         transform.translation,
@@ -419,9 +421,9 @@ pub(crate) fn oscillating_walk_system_inner<B: OscillatingWalkProcedure>(
                         0.0,
                         residency_generation,
                     );
-                    (waypoints.front().copied(), effective_goal, waypoints)
+                    (waypoints.front().copied(), effective_goal, waypoints, grid)
                 } else {
-                    (None, state.target, VecDeque::new())
+                    (None, state.target, VecDeque::new(), Default::default())
                 };
 
             scratch.decisions.push(OscillateDecision {
@@ -434,6 +436,7 @@ pub(crate) fn oscillating_walk_system_inner<B: OscillatingWalkProcedure>(
                 waypoint_override,
                 effective_goal,
                 waypoints,
+                grid,
                 translation: transform.translation,
                 rotation: None,
                 state,
@@ -476,6 +479,9 @@ pub(crate) fn oscillating_walk_system_inner<B: OscillatingWalkProcedure>(
                 goal: d.effective_goal,
                 residency_generation,
                 waypoints: std::mem::take(&mut d.waypoints),
+                // The leg is blocked while the stuck clock runs: it is zeroed by an unblocked
+                // step and by the re-pick it triggers.
+                grid: d.grid.stepped(d.stuck_secs > 0.0, dt),
             });
         }
     }
@@ -805,6 +811,7 @@ mod tests {
                 goal: Vec3::new(999.0, 0.0, 999.0),
                 residency_generation: 0,
                 waypoints: std::collections::VecDeque::from(vec![Vec3::new(999.0, 0.0, 999.0)]),
+                grid: Default::default(),
             },
         );
 
@@ -815,5 +822,47 @@ mod tests {
             nq.get(entity).is_none(),
             "paused — nothing to walk toward this tick, stale cache must be cleared"
         );
+    }
+
+    /// AIP-WALK-003 — a leg that grinds against a wall takes the pathgrid after the controller has
+    /// held it for 1.5 s, before the 2.5 s stuck clock re-picks the target.
+    #[test]
+    fn a_wander_leg_blocked_by_a_wall_takes_the_pathgrid_before_it_re_picks() {
+        use crate::systems::navmesh_path::test_tiles::{grid_round_the_wall, walled_physics};
+        let mut world = World::new();
+        world.register::<WanderBehavior>();
+        world.register::<WanderState>();
+        world.register::<Transform>();
+        world.register::<NavPath>();
+        world.register::<WalkStuckTimer>();
+        world.insert_resource(walled_physics());
+        crate::components::spawn_pathgrid_tiles(&mut world, [&grid_round_the_wall()]);
+        let home = Vec3::new(-100.0, 0.0, 0.0);
+        let actor = world.spawn();
+        world.insert(actor, Transform::from_translation(home));
+        world.insert(actor, WanderBehavior { wander_radius: Some(1000.0), form_id: 0x0012_0001 });
+        world.insert(
+            actor,
+            WanderState {
+                home,
+                target: Vec3::new(400.0, 0.0, 0.0),
+                phase: WanderPhase::Walking,
+                pick_count: 0,
+            },
+        );
+
+        let mut tick = make_wander_system();
+        let mut switched_at = None;
+        // 100 units from the wall at 100 units/s: held from about 0.65 s, so the 1.5 s switch comes
+        // at about 2.2 s and the 2.5 s re-pick would not come before 3.2 s.
+        for i in 0..30 {
+            tick(&world, 0.1);
+            if world.get::<NavPath>(actor).is_some_and(|p| p.grid.on_grid) {
+                switched_at = Some((i + 1) as f32 * 0.1);
+                break;
+            }
+        }
+        let t = switched_at.expect("a leg held against a wall must take the grid before the re-pick at 2.5 s");
+        assert!(t >= crate::components::GridWalk::AFTER_BLOCKED_SECS, "switched at {t}s");
     }
 }

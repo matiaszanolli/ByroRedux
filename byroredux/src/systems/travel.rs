@@ -176,6 +176,8 @@ struct TravelPending {
     /// tile path found," which falls back to walking straight at
     /// `destination`, unchanged from pre-pathing behavior.
     waypoints: VecDeque<Vec3>,
+    /// The walk's pathgrid switch, resolved with `waypoints` and advanced by this tick's step.
+    grid: crate::components::GridWalk,
     /// Authored stride speed (M42.11 `WalkSpeed`), engine default when
     /// absent.
     speed: f32,
@@ -231,22 +233,7 @@ struct TravelScratch {
     /// `ANCHOR_RETRY_SECS` rather than every frame: the route is an `O(n)`
     /// FormID resolve plus a door scan.
     unroutable: HashMap<EntityId, f32>,
-    /// Seconds each traveler's walk has been blocked by the character controller.
-    blocked_secs: HashMap<EntityId, f32>,
-    /// Travelers blocked for [`GRID_AFTER_BLOCKED_SECS`] on this destination: they
-    /// route over a pathgrid (Oblivion's walk graph) from then on.
-    on_grid: std::collections::HashSet<EntityId>,
-    /// Travelers that joined `on_grid` this frame, whose cached straight path is
-    /// dropped in Pass 2 so the next tick routes them.
-    regrid: Vec<EntityId>,
 }
-
-/// How long a straight Travel walk may be blocked before the traveler takes a pathgrid
-/// route instead. A grid is points, not a surface, so it cannot tell where the straight
-/// walk fails; the controller can, and a walk that is clear needs no route (the
-/// Imperial Prison's actors, routed over the grid from the start, walked into the stair
-/// they stand on). Long enough that one clipped corner does not trigger it.
-const GRID_AFTER_BLOCKED_SECS: f32 = 1.5;
 
 /// How close to the floor in front of a load door a traveler passes it: the
 /// pose is where the engine places someone coming the other way, so it is
@@ -267,8 +254,6 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
     };
     scratch.anchor_retry.retain(|entity, _| behavior_q.contains(*entity));
     scratch.unroutable.retain(|entity, _| behavior_q.contains(*entity));
-    scratch.blocked_secs.retain(|entity, _| behavior_q.contains(*entity));
-    scratch.on_grid.retain(|entity| behavior_q.contains(*entity));
     scratch.hops.clear();
 
     // ── Pass 1a: resolve destinations (reads only; `resolve_destination`
@@ -288,7 +273,7 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
         };
         let traveled_q = world.query::<Traveled>();
         let state_q = world.query::<TravelState>();
-        let mut tile_q = super::navmesh_path::NavGraphs::of(world);
+        let tile_q = super::navmesh_path::NavGraphs::of(world);
         let nav_path_q = world.query::<NavPath>();
         let walk_speed_q = world.query::<crate::components::WalkSpeed>();
         let hop_q = world.query::<crate::cell_loader::relocated::CrossSpaceHop>();
@@ -312,9 +297,6 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
                     s.destination
                 }
                 None => {
-                    // A new destination: the walk starts straight again.
-                    scratch.on_grid.remove(&entity);
-                    scratch.blocked_secs.remove(&entity);
                     if let Some(wait) = scratch.unroutable.get_mut(&entity) {
                         *wait -= dt.max(0.0);
                         if *wait > 0.0 {
@@ -386,11 +368,10 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
             // Effective goal discarded (`_`): with a `0.0` threshold it's
             // always bit-identical to `destination`, whether reused or
             // freshly computed — see `resolve_cached_waypoints`'s own doc.
-            if let Some(graphs) = tile_q.as_mut() {
-                graphs.use_grids(scratch.on_grid.contains(&entity));
-            }
-            let cached = nav_path_q.as_ref().and_then(|q| q.get(entity));
-            let (_, waypoints) = resolve_cached_waypoints(
+            // A new destination (no `TravelState` yet) starts straight again, whatever a
+            // previous walk cached: it must not inherit that walk's pathgrid switch.
+            let cached = if state.is_some() { nav_path_q.as_ref().and_then(|q| q.get(entity)) } else { None };
+            let (_, waypoints, grid) = resolve_cached_waypoints(
                 cached,
                 tile_q.as_ref(),
                 current,
@@ -412,6 +393,7 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
                 rotation: transform.rotation,
                 destination,
                 waypoints,
+                grid,
                 speed,
                 door_hop,
             });
@@ -429,7 +411,7 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
     scratch.decisions.clear();
     {
         let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
-        // #3269 — consume `pending` by value: `step_along_waypoints` takes
+        // #3269 — consume `pending` by value: `step_along_waypoints_detailed` takes
         // ownership of the `VecDeque`, so iterating by reference forced a
         // clone of the whole waypoint list per entity per tick purely to
         // satisfy the borrow checker. Nothing reads `pending` after this
@@ -458,16 +440,6 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
             let reach = if p.door_hop { DOOR_HOP_REACH } else { LOCOMOTION_ARRIVAL_EPSILON };
             let arrived = horiz_delta.length_squared() <= reach * reach;
 
-            if blocked && !arrived {
-                let secs = scratch.blocked_secs.entry(p.entity).or_insert(0.0);
-                *secs += dt;
-                if *secs >= GRID_AFTER_BLOCKED_SECS && scratch.on_grid.insert(p.entity) {
-                    scratch.regrid.push(p.entity);
-                }
-            } else {
-                scratch.blocked_secs.remove(&p.entity);
-            }
-
             scratch.decisions.push(TravelDecision {
                 entity: p.entity,
                 translation: new_pos,
@@ -492,6 +464,7 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
                         goal: p.destination,
                         residency_generation,
                         waypoints,
+                        grid: p.grid.stepped(blocked && !arrived, dt),
                     })
                 },
             });
@@ -504,9 +477,6 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
     // ── Pass 2: apply writes (each a scoped single-type lock). The shared
     // Transform + NavPath tail (#5580), then this system's own state. ──
     super::navmesh_path::write_back_walk(world, &mut scratch.decisions);
-    for entity in scratch.regrid.drain(..) {
-        super::navmesh_path::clear_cached_path(world, entity);
-    }
     if !scratch.hops.is_empty()
         && let Some(mut hq) = world.query_mut::<crate::cell_loader::relocated::CrossSpaceHop>() {
             for (entity, hop) in scratch.hops.drain(..) {
@@ -638,8 +608,8 @@ pub(crate) fn travel_system(world: &World, dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::components::NavmeshTile;
-    use crate::systems::navmesh_path::test_tiles::two_triangle_quad_scaled;
+    use crate::components::{GridWalk, NavmeshTile};
+    use crate::systems::navmesh_path::test_tiles::{grid_round_the_wall, two_triangle_quad_scaled, walled_physics};
     use byroredux_core::ecs::components::FormIdComponent;
     use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
 
@@ -1178,5 +1148,85 @@ mod tests {
             path_after_second.waypoints.len() <= path_after_first.waypoints.len(),
             "waypoints must only be consumed (popped), never grow, across ticks"
         );
+    }
+
+    // ── AIP-WALK-003: Oblivion's pathgrid, taken once the straight walk is blocked ──
+
+    /// A traveler at (-400,0,0) bound for (400,0,0), the pathgrid resident, `physics` installed.
+    fn grid_traveler(physics: byroredux_physics::PhysicsWorld) -> (World, EntityId) {
+        let mut world = World::new();
+        world.register::<TravelBehavior>();
+        world.register::<TravelState>();
+        world.register::<Traveled>();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<FormIdComponent>();
+        world.register::<NavPath>();
+        world.insert_resource(physics);
+        let mut pool = FormIdPool::new();
+        let target_fid = pool.intern(FormIdPair {
+            plugin: PluginId::from_filename("Oblivion.esm"),
+            local: LocalFormId(0x000E_0001),
+        });
+        world.insert_resource(pool);
+        let target = world.spawn();
+        world.insert(target, FormIdComponent(target_fid));
+        world.insert(target, GlobalTransform::new(Vec3::new(400.0, 0.0, 0.0), Quat::IDENTITY, 1.0));
+        crate::components::spawn_pathgrid_tiles(&mut world, [&grid_round_the_wall()]);
+        let actor = world.spawn();
+        world.insert(actor, Transform::from_translation(Vec3::new(-400.0, 0.0, 0.0)));
+        world.insert(
+            actor,
+            TravelBehavior { radius: None, target_form_id: Some(0x000E_0001), form_id: 0x000E_0002 },
+        );
+        (world, actor)
+    }
+
+    /// A wall across the straight line: Travel walks into it, takes the grid after the controller
+    /// has held it for `GridWalk::AFTER_BLOCKED_SECS`, goes round and arrives.
+    #[test]
+    fn a_traveler_blocked_by_a_wall_takes_the_pathgrid_and_arrives() {
+        let (world, actor) = grid_traveler(walled_physics());
+        let mut tick = make_travel_system();
+        let (mut switched_at, mut arrived_at) = (None, None);
+        for i in 0..400 {
+            tick(&world, 0.1);
+            let t = (i + 1) as f32 * 0.1;
+            let on_grid = world.get::<NavPath>(actor).is_some_and(|p| p.grid.on_grid);
+            if on_grid && switched_at.is_none() {
+                switched_at = Some(t);
+            }
+            if world.get::<Traveled>(actor).is_some() {
+                arrived_at = Some(t);
+                break;
+            }
+        }
+        let switched_at = switched_at.expect("a walk held against a wall must take the pathgrid");
+        assert!(
+            switched_at >= GridWalk::AFTER_BLOCKED_SECS,
+            "not before the controller has held it for the threshold: switched at {switched_at}s"
+        );
+        assert!(arrived_at.is_some(), "the grid route must carry the traveler round the wall");
+    }
+
+    /// The Imperial Prison regression: a straight walk that is clear never takes the grid, whatever
+    /// is resident, so its route is not bent into the stairs it stands on.
+    #[test]
+    fn a_traveler_with_a_clear_straight_walk_never_takes_the_pathgrid() {
+        let mut floor_only = byroredux_physics::PhysicsWorld::new();
+        floor_only.spawn_fixed_cuboid(Vec3::new(2000.0, 20.0, 2000.0), Vec3::new(0.0, -20.0, 0.0));
+        let (world, actor) = grid_traveler(floor_only);
+        let mut tick = make_travel_system();
+        for _ in 0..200 {
+            tick(&world, 0.1);
+            assert!(
+                !world.get::<NavPath>(actor).is_some_and(|p| p.grid.on_grid),
+                "a clear walk must stay straight"
+            );
+            if world.get::<Traveled>(actor).is_some() {
+                return;
+            }
+        }
+        panic!("a clear straight walk must arrive");
     }
 }

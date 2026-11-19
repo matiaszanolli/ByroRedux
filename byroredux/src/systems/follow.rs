@@ -53,7 +53,7 @@
 //!   packages also gate on combat state, dialogue, etc. — none of that
 //!   exists here; this is straight-line stand-off tracking only.
 
-use super::locomotion::{step_along_waypoints, LOCOMOTION_ARRIVAL_EPSILON};
+use super::locomotion::{step_along_waypoints_detailed, LOCOMOTION_ARRIVAL_EPSILON};
 use super::navmesh_path::resolve_cached_waypoints;
 use crate::components::NavPath;
 use byroredux_core::ecs::components::{FollowBehavior, FollowState, GlobalTransform, Transform};
@@ -109,6 +109,8 @@ struct FollowDecision {
     /// those two must not be conflated for a live-goal (repath-threshold)
     /// caller like this one.
     effective_goal: Vec3,
+    /// The walk's pathgrid switch, resolved with `waypoints` and advanced by this tick's step.
+    grid: crate::components::GridWalk,
     /// `None` when the actor didn't move this tick (already within
     /// stand-off distance, or has no resolvable target).
     movement: Option<(Vec3, Option<Quat>)>,
@@ -205,6 +207,7 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
                     pending_move: None,
                     waypoints: VecDeque::new(),
                     effective_goal: Vec3::ZERO,
+                    grid: Default::default(),
                     movement: None,
                     nav_path: None,
                     state_to_insert,
@@ -220,6 +223,7 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
                     pending_move: None,
                     waypoints: VecDeque::new(),
                     effective_goal: Vec3::ZERO,
+                    grid: Default::default(),
                     movement: None,
                     nav_path: None,
                     state_to_insert,
@@ -241,7 +245,7 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
             // EX-16 item 3 Phase 4: only bother resolving a path when
             // actually moving this tick — mirrors `guard_system`'s same
             // "skip the resident-tile scan when not walking" shape.
-            let (effective_goal, waypoints) = if pending_move.is_some() {
+            let (effective_goal, waypoints, grid) = if pending_move.is_some() {
                 let cached = nav_path_q.as_ref().and_then(|q| q.get(entity));
                 resolve_cached_waypoints(
                     cached,
@@ -252,7 +256,7 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
                     residency_generation,
                 )
             } else {
-                (Vec3::ZERO, VecDeque::new())
+                (Vec3::ZERO, VecDeque::new(), Default::default())
             };
 
             scratch.decisions.push(FollowDecision {
@@ -261,6 +265,7 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
                 pending_move,
                 waypoints,
                 effective_goal,
+                grid,
                 movement: None,
                 nav_path: None,
                 state_to_insert,
@@ -271,7 +276,7 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
         return;
     }
 
-    // ── Pass 1b: compute movement via `step_along_waypoints`. `Transform`
+    // ── Pass 1b: compute movement via `step_along_waypoints_detailed`. `Transform`
     // and `GlobalTransform` locks from Pass 1a have already dropped, so
     // `PhysicsWorld` is acquired here without ever overlapping either
     // (#2134). ──
@@ -279,10 +284,10 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
         let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
         for d in &mut scratch.decisions {
             if let Some((current, rotation, target_xz)) = d.pending_move {
-                let (new_pos, new_rotation, waypoints) = step_along_waypoints(
+                let (new_pos, new_rotation, waypoints, blocked) = step_along_waypoints_detailed(
                     current,
                     rotation,
-                    // #3269 — `step_along_waypoints` consumes the deque and
+                    // #3269 — `step_along_waypoints_detailed` consumes the deque and
                     // `d.waypoints` is dead after this call (Pass 2 reads
                     // only `movement` / `nav_path` / `state_to_insert`), so
                     // hand the list over instead of cloning it every tick.
@@ -303,6 +308,7 @@ fn follow_system_inner(world: &World, dt: f32, scratch: &mut FollowScratch) {
                     goal: d.effective_goal,
                     residency_generation,
                     waypoints,
+                    grid: d.grid.stepped(blocked, dt),
                 });
             }
             // `None` when not moving this tick — drops any stale cached
@@ -683,5 +689,40 @@ mod tests {
             goal_after_first, goal_after_second,
             "a sub-threshold target move must reuse the cached path's goal, not recompute"
         );
+    }
+
+    /// AIP-WALK-003 — a follower whose target is behind a wall takes the pathgrid once the
+    /// controller has held it, and closes to its stand-off.
+    #[test]
+    fn a_follower_blocked_by_a_wall_takes_the_pathgrid() {
+        use crate::systems::navmesh_path::test_tiles::{grid_round_the_wall, walled_physics};
+        let mut world = World::new();
+        world.register::<FollowBehavior>();
+        world.register::<FollowState>();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<NavPath>();
+        world.insert_resource(walled_physics());
+        crate::components::spawn_pathgrid_tiles(&mut world, [&grid_round_the_wall()]);
+        let target_at = Vec3::new(400.0, 0.0, 0.0);
+        let target = world.spawn();
+        world.insert(target, GlobalTransform::new(target_at, Quat::IDENTITY, 1.0));
+        let follower = world.spawn();
+        world.insert(follower, Transform::from_translation(Vec3::new(-400.0, 0.0, 0.0)));
+        world.insert(follower, FollowBehavior { target_form_id: None, follow_distance: Some(50.0) });
+        world.insert(follower, FollowState { target_entity: Some(target) });
+
+        let mut switched = false;
+        let mut tick = make_follow_system();
+        for _ in 0..400 {
+            tick(&world, 0.1);
+            switched |= world.get::<NavPath>(follower).is_some_and(|p| p.grid.on_grid);
+            let at = world.get::<Transform>(follower).expect("transform").translation;
+            if (at - target_at).length() <= 60.0 {
+                assert!(switched, "it cannot have got round the wall on the straight walk");
+                return;
+            }
+        }
+        panic!("a follower held against a wall must take the pathgrid");
     }
 }

@@ -137,14 +137,15 @@ fn resolve_for(world: &World, actor: EntityId, goal: Vec3) -> (Vec3, VecDeque<Ve
         .and_then(|q| q.get(actor).map(|t| t.translation))
         .expect("the actor must have a Transform");
     let tiles = crate::systems::navmesh_path::NavGraphs::of(world);
-    resolve_cached_waypoints(
+    let (effective_goal, waypoints, _) = resolve_cached_waypoints(
         cached.as_ref(),
         tiles.as_ref(),
         current,
         goal,
         FROZEN_GOAL_THRESHOLD,
         navmesh_residency_generation(world),
-    )
+    );
+    (effective_goal, waypoints)
 }
 
 /// Write a resolved result back onto the actor, the way every NAVM-pathed
@@ -158,6 +159,7 @@ fn store_path(world: &mut World, actor: EntityId, effective_goal: Vec3, waypoint
             goal: effective_goal,
             residency_generation,
             waypoints,
+            grid: Default::default(),
         },
     );
 }

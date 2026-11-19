@@ -175,6 +175,55 @@ pub(crate) struct NavPath {
     /// resident-tile path was found for this goal" — callers fall back
     /// to walking straight at `goal`, today's pre-pathing behavior.
     pub(crate) waypoints: VecDeque<Vec3>,
+    /// Whether this walk routes over Oblivion's pathgrid, and how close it is to
+    /// switching to it ([`GridWalk`]).
+    pub(crate) grid: GridWalk,
+}
+
+/// One walk's memory of when to route over a `PGRD` pathgrid (Oblivion's walk graph,
+/// PRD `ai-packages-completion` Q5, AIP-WALK-003). It rides on the [`NavPath`] every
+/// walking system already reads and writes, so no system needs a lock or a scratch
+/// map of its own for it.
+///
+/// A grid is a set of points, not a surface: it cannot say that the straight walk is
+/// blocked, and routing every walk over it sent the Imperial Prison's party into the
+/// stair walls the straight walk had cleared. The character controller can say it, so
+/// a walk starts straight and switches to the grid once the controller has held it
+/// for [`GridWalk::AFTER_BLOCKED_SECS`]. A walk that has switched stays on the grid
+/// until its [`NavPath`] is dropped (arrival, or another procedure taking over).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct GridWalk {
+    /// Seconds the walk has been blocked without a break, while still straight.
+    pub(crate) blocked_secs: f32,
+    /// Route over the grid from now on.
+    pub(crate) on_grid: bool,
+    /// The cached waypoints were computed before the switch: drop them and route
+    /// again on the next tick.
+    pub(crate) repath: bool,
+}
+
+impl GridWalk {
+    /// How long a straight walk may be blocked before it takes the grid. Long enough
+    /// that one clipped corner does not trigger it, and short of
+    /// `LOCOMOTION_STUCK_REPICK_SECS`, where the movers that can give up do.
+    pub(crate) const AFTER_BLOCKED_SECS: f32 = 1.5;
+
+    /// This walk's state after one more tick: `blocked` is whether the controller held
+    /// the step back (and the walk had not arrived).
+    pub(crate) fn stepped(self, blocked: bool, dt: f32) -> Self {
+        if self.on_grid {
+            return Self { blocked_secs: 0.0, repath: false, ..self };
+        }
+        if !blocked {
+            return Self::default();
+        }
+        let blocked_secs = self.blocked_secs + dt.max(0.0);
+        if blocked_secs >= Self::AFTER_BLOCKED_SECS {
+            Self { blocked_secs: 0.0, on_grid: true, repath: true }
+        } else {
+            Self { blocked_secs, on_grid: false, repath: false }
+        }
+    }
 }
 impl Component for NavPath {
     type Storage = SparseSetStorage<Self>;

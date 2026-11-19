@@ -1,6 +1,6 @@
 # AI Packages Completion — Product Requirements
 
-**Status**: ACTIVE (2026-11-18). Revision 6 re-measures the "Today" claims at HEAD after Phases 1–5 and folds in review round 3 (§12). Revision 5 files the tracking issues; every **Phase 0: verify** item is an acceptance criterion of the Phase 0 issue. Revision 4 recorded the owner's §10 decisions: Q2 sets Skyrim's weekday origin per edition, every other answer is the recommendation. Revision 3 folded in review round 2
+**Status**: ACTIVE (2026-11-19). Revision 8 records AIP-WALK-003 as built (the pathgrid switch on every walking mover) and rev 7 its first slice. Revision 6 re-measures the "Today" claims at HEAD after Phases 1–5 and folds in review round 3 (§12). Revision 5 files the tracking issues; every **Phase 0: verify** item is an acceptance criterion of the Phase 0 issue. Revision 4 recorded the owner's §10 decisions: Q2 sets Skyrim's weekday origin per edition, every other answer is the recommendation. Revision 3 folded in review round 2
 (§12 lists the topics). It covers the remainder of milestone M42: the
 procedures, package fields and per-game prerequisites that do not run yet.
 Statements about how the original engines behave cite external sources
@@ -34,7 +34,7 @@ an issue in Phase 0.
 | FO4 `NVNM` body decode, the prerequisite of AIP-WALK-002 | none. NAVM Pathfinding names it and disclaims it ([§9](../engine/navmesh-pathfinding.md#9-rollout) item 5: "Not this document's job"), and ROADMAP lists it open. Phase 0 files it as an issue |
 | Package state across tile eviction and respawn | [Stream-Boundary State Continuity](../engine/stream-boundary-state-continuity.md) |
 | Conditions (the M47.1 evaluator), the caster runtime, ObScript package commands | [Scripting](../engine/scripting.md) |
-| Oblivion `PGRD` pathing | Decision Q5 took it. The first slice shipped without a design (`byroredux/src/systems/pathgrid_path.rs` module doc; the stall it targets is recorded in [Playable Vertical Slice](../engine/playable-vertical-slice.md)). The section Q5 promised in [NAVM Pathfinding](../engine/navmesh-pathfinding.md) is still unwritten (no `PGRD` text in it at HEAD on 2026-11-18); Phase 0 writes it |
+| Oblivion `PGRD` pathing | [NAVM Pathfinding §11](../engine/navmesh-pathfinding.md#11-oblivion-pathgrids-pgrd), written with rev 8 after the code (decision Q5). The stall it targets is recorded in [Playable Vertical Slice](../engine/playable-vertical-slice.md) |
 | Starfield `.agx` animation-text tables, the walk source of AIP-WALK-001 | none. Decision Q7 takes it; Phase 5 writes the missing design under `docs/engine/` and this row then links it |
 | Per-game engine tiers | [Game Compatibility](../engine/game-compatibility.md#per-game-support-detail) |
 
@@ -204,7 +204,7 @@ The state at HEAD on 2026-11-18 for the Oblivion pathing, Day-of-week and Starfi
 
 | Game | Package shape | Walk source Today | Sit-enter Today | Pathing Today | Day-of-week Today |
 |---|---|---|---|---|---|
-| Oblivion | flat | `handtohandforward.kf` (`humanoid_walk_kf_path`, `npc_spawn/anim_clips.rs`) | none (`sandbox_sit_enter_kf_path`, "deferred") | no `NAVM` exists. `PGRD` is resident as `PathGridTile` and routed by `systems/pathgrid_path.rs` (shipped 2026-11-18, `0580afe57`): one cell's grid at a time, and Travel turns it on after the character controller has blocked its straight walk for 1.5 s. The `PGRI` inter-cell links are not followed | evaluated from the `GameCalendar` origin (`package_weekday`, `crates/scripting/src/globals.rs:136-139`), plus the date byte (`package_day_of_month`) |
+| Oblivion | flat | `handtohandforward.kf` (`humanoid_walk_kf_path`, `npc_spawn/anim_clips.rs`) | none (`sandbox_sit_enter_kf_path`, "deferred") | no `NAVM` exists. `PGRD` is resident as `PathGridTile` and routed by `systems/pathgrid_path.rs` (`0580afe57`): one cell's grid at a time. Every walking mover takes it once the character controller has blocked its straight walk for 1.5 s (`GridWalk`, `NavPath.grid`; AIP-WALK-003) | evaluated from the `GameCalendar` origin (`package_weekday`, `crates/scripting/src/globals.rs:136-139`), plus the date byte (`package_day_of_month`) |
 | FO3 / FNV | flat | `mtforward.kf` per gender and child | `chairskirt_leftenter.kf` | `NAVM` within and across resident tiles (`path_from_resident_tiles`, `systems/navmesh_path.rs`) | evaluated from the `GameCalendar` origin (`package_weekday`) |
 | Skyrim LE / SE | tree | `1hm_walkforward.hkx` (`SkyrimWalkClip`, `components/ai_anim.rs`) | none | `NAVM` (`NVNM` decoded, `decode_nvnm`) | evaluated, Morndas on the launch master and Sundas on SE / AE (Q2, AIP-SCHED-004) |
 | FO4 | tree | behaviour graph `MTBehavior.hkx` (`graph_locomotion_system`, `asset_provider/actor_graph.rs`) | none, and the sit positions authored on `FURN` `SNAM` are not read (AIP-SEAT-007) | none: the `NVNM` body never reconciles and its bytes are retained (`decode_nvnm`, `crates/plugin/src/esm/records/misc/world/navigation.rs`) | evaluated from the authored start date (Q2) |
@@ -647,13 +647,24 @@ script-package slot also reads Must Complete and Must Reach Location
   [NAVM Pathfinding §9](../engine/navmesh-pathfinding.md#9-rollout) item 5
   names it as a prerequisite and disclaims it. This PRD depends on it and
   does not build it; Phase 0 files it as an issue.
-- **AIP-WALK-003.** An Oblivion actor's walk legs MUST follow decision Q5.
-  Shipped in part on 2026-11-18 (`0580afe57`, `systems/pathgrid_path.rs`):
-  A* over one cell's grid, snapping start and goal to a point within 256
-  units, turned on for Travel after 1.5 s of being blocked. Open: grids
-  stay off for the other walkers (`wander.rs`, `follow.rs`, `guard.rs` and
-  `escort.rs` carry the graphs only), the `PGRI` inter-cell links are not
-  followed, and the first slice has no design section (Related).
+- **AIP-WALK-003.** An Oblivion actor's walk legs MUST follow decision Q5:
+  walk round walls over the cell's `PGRD`. Shipped on 2026-11-18 and
+  2026-11-19 (`0580afe57`, then rev 8): `systems/pathgrid_path.rs` runs A\*
+  over one cell's grid, snapping start and goal to a point within 256
+  units. A walk starts straight and takes the grid once the controller has
+  held it for 1.5 s (`GridWalk`, carried on `NavPath.grid`), so Travel,
+  Follow, Escort, Guard, Wander, Patrol and the `cached_walk_step` movers
+  (Eat, Sleep, Find, force-greet, random conversation) all route over it.
+  Observable: the tests `a_traveler_blocked_by_a_wall_takes_the_pathgrid_and_arrives`
+  (`travel.rs`), `a_guard_blocked_on_its_way_back_takes_the_pathgrid`,
+  `a_follower_blocked_by_a_wall_takes_the_pathgrid`,
+  `a_wander_leg_blocked_by_a_wall_takes_the_pathgrid_before_it_re_picks` and
+  `a_cached_walk_step_blocked_by_a_wall_takes_the_pathgrid`, and
+  `a_traveler_with_a_clear_straight_walk_never_takes_the_pathgrid`. Not
+  covered by a system test: Escort, which shares Follow's and Guard's
+  pattern. Out of the requirement as decided: the `PGRI` inter-cell links,
+  whose mapping onto the `0xFFFF` edge sentinel the record's own doc calls
+  unresolved (`crates/plugin/src/esm/records/pathgrid.rs:66-70`).
 - **AIP-WALK-004.** The walk-source lookup MUST stay at the asset boundary
   (`anim_clips.rs`, `asset_provider/`). The walk-animation systems
   (`npc_walk_animation_system`, `graph_locomotion_system`) MUST NOT read the
@@ -738,7 +749,7 @@ FNV leads as the engine's reference title.
 
 | Game | In scope | Why / wave |
 |---|---|---|
-| Oblivion | yes | Wave 3. Tier 3. Same flat shape, so the ambient driver already runs it. Its remainder is sit-enter and the rest of the `PGRD` pathing (Q5); the object-type enum shipped (#6662) and CastMagic is declined (AIP-CAST-004) |
+| Oblivion | yes | Wave 3. Tier 3. Same flat shape, so the ambient driver already runs it. Its remainder is sit-enter; the object-type enum shipped (#6662), `PGRD` pathing shipped (AIP-WALK-003) and CastMagic is declined (AIP-CAST-004) |
 | Fallout 3 | yes | Wave 1. Shares FNV's procedures and runtime |
 | Fallout: New Vegas | yes | Wave 1. Reference title. Has the live gates `m42-package-procedures.sh` and `m42-eat-sleep.sh` |
 | Skyrim (LE / SE / AE) | yes | Wave 2. Tree shape (AIP-TREE), sit (AIP-SIT-002), weekday (AIP-SCHED-001). LE shares SE's records and is counted with it |
@@ -1015,3 +1026,4 @@ option.
 | 5 | 2026-11-03 | → ACTIVE: parent #6634 and phase issues #6655, #6656, #6658, #6660, #6662, #6663 filed; the Phase 0 verify items are acceptance criteria of #6655 | — |
 | 6 | 2026-11-18 | Review round 3 folded in: "Today" claims re-measured at HEAD after Phases 1–5 (FIND, UW, SEAT, SCHED, CAST-004, TREE, FLG, DX, §3.1–§3.3, §6 row 7); AIP-CAST-001 / -002 withdrawn (four of five vanilla CastMagic packages name no spell); Q7 and AIP-WALK-005 added for the Starfield `.agx` reader (Related row); AIP-DX-003 rewritten to the census code that exists; Phase 4 / Phase 5 measured notes logged; Q2's FO4 / Starfield half confirmed by the owner | claude: revise |
 | 7 | 2026-11-18 | Oblivion `PGRD` pathing first slice recorded as shipped in part (AIP-WALK-003, §3.3, Related row, §7.1); its open parts and the unwritten NAVM Pathfinding section named | claude: revise |
+| 8 | 2026-11-19 | AIP-WALK-003 built: the pathgrid switch moves onto `NavPath.grid` and serves every walking mover (Travel, Follow, Escort, Guard, Wander, Patrol, `cached_walk_step`); design written as NAVM Pathfinding §11; `PGRI` inter-cell links stated as outside Q5 | claude: revise |

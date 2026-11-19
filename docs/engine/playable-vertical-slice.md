@@ -1895,7 +1895,7 @@ Travel to the player (`PLDT` type 0, target `0x14`, radius 120). The arrival eve
 never arrives. He walks straight and stalls against geometry near (24, 133, -330), and Oblivion's walk
 graph (`PGRD`, no `NAVM`) was not read at all. Travel now routes over a cell's pathgrid
 (`systems/pathgrid_path.rs`, `PathGridTile`) once the character controller has blocked its straight walk
-for 1.5 s; routing every walk over the grid from the start sent the party into the stair walls. It still
+for 1.5 s (every walking mover does, see [navmesh-pathfinding.md §11](navmesh-pathfinding.md#11-oblivion-pathgrids-pgrd)); routing every walk over the grid from the start sent the party into the stair walls. It still
 stops at 14: the Emperor's party spawn on the prison stairs and hover 100-150 units above the grid's points
 (NPCs have no gravity), and the grid's heights do not match the surfaces they stand on, so the grid route
 from Glenroy's stall point does not reach the platform either. The next piece is why they spawn above the

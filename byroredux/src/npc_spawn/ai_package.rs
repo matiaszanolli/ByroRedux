@@ -3099,6 +3099,7 @@ mod tests {
                 goal: Vec3::new(10.0, 0.0, 0.0),
                 residency_generation: 1,
                 waypoints: std::collections::VecDeque::from(vec![Vec3::new(10.0, 0.0, 0.0)]),
+                grid: Default::default(),
             },
         );
         assert!(world.has::<NavPath>(actor));

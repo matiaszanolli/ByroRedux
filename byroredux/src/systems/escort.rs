@@ -65,7 +65,7 @@
 //!   `travel_system` moving on the very tick it resolves) — there's no
 //!   extra idle tick in between.
 
-use super::locomotion::{step_along_waypoints, LOCOMOTION_ARRIVAL_EPSILON};
+use super::locomotion::{step_along_waypoints_detailed, LOCOMOTION_ARRIVAL_EPSILON};
 use super::navmesh_path::resolve_cached_waypoints;
 use super::travel::{
     defer_unresolved_reference, resolve_destination as resolve_travel_destination,
@@ -155,11 +155,13 @@ struct EscortPending {
     current: Vec3,
     rotation: Quat,
     /// The raw (un-Y-adjusted) point this tick is walking toward —
-    /// `step_along_waypoints` projects it onto the XZ plane itself, same
+    /// `step_along_waypoints_detailed` projects it onto the XZ plane itself, same
     /// as `travel_system`/`guard_system`'s usage.
     goal: Vec3,
     /// Resident-tile waypoints toward `goal` (EX-16 item 3 Phase 4).
     waypoints: VecDeque<Vec3>,
+    /// The walk's pathgrid switch, resolved with `waypoints` and advanced by this tick's step.
+    grid: crate::components::GridWalk,
     /// The goal to persist into `NavPath` alongside `waypoints` —
     /// `resolve_cached_waypoints`'s *effective* goal, not necessarily
     /// `goal` itself. Identical to `goal` for the Lead phase (frozen,
@@ -279,7 +281,7 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
                 // it's always bit-identical to `destination`, whether
                 // reused or freshly computed.
                 let cached = nav_path_q.as_ref().and_then(|q| q.get(entity));
-                let (_, waypoints) = resolve_cached_waypoints(
+                let (_, waypoints, grid) = resolve_cached_waypoints(
                     cached,
                     tile_q.as_ref(),
                     current,
@@ -294,6 +296,7 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
                     rotation: transform.rotation,
                     goal: destination,
                     waypoints,
+                    grid,
                     effective_goal: destination,
                     kind: EscortPendingKind::Lead {
                         destination,
@@ -336,7 +339,7 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
                 // first tick.
                 let destination = resolve_destination(world, behavior, current);
                 let cached = nav_path_q.as_ref().and_then(|q| q.get(entity));
-                let (_, waypoints) = resolve_cached_waypoints(
+                let (_, waypoints, grid) = resolve_cached_waypoints(
                     cached,
                     tile_q.as_ref(),
                     current,
@@ -351,6 +354,7 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
                     rotation: transform.rotation,
                     goal: destination,
                     waypoints,
+                    grid,
                     effective_goal: destination,
                     kind: EscortPendingKind::Lead {
                         destination,
@@ -366,7 +370,7 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
                 // `follow_system` uses for its own live target.
                 let pos = live_target_pos.expect("collected == false implies Some");
                 let cached = nav_path_q.as_ref().and_then(|q| q.get(entity));
-                let (effective_goal, waypoints) = resolve_cached_waypoints(
+                let (effective_goal, waypoints, grid) = resolve_cached_waypoints(
                     cached,
                     tile_q.as_ref(),
                     current,
@@ -381,6 +385,7 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
                     rotation: transform.rotation,
                     goal: pos,
                     waypoints,
+                    grid,
                     effective_goal,
                     kind: EscortPendingKind::Collect {
                         new_state: existing_state.is_none().then_some(EscortState {
@@ -397,21 +402,21 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
         return;
     }
 
-    // ── Pass 1b: compute movement via `step_along_waypoints`. `Transform`
+    // ── Pass 1b: compute movement via `step_along_waypoints_detailed`. `Transform`
     // and `GlobalTransform` locks from Pass 1a have already dropped, so
     // `PhysicsWorld` is acquired here without ever overlapping either
     // (#2134). ──
     scratch.decisions.clear();
     {
         let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
-        // #3269 — consume `pending` by value: `step_along_waypoints` takes
+        // #3269 — consume `pending` by value: `step_along_waypoints_detailed` takes
         // ownership of the `VecDeque`, so iterating by reference forced a
         // clone of the whole waypoint list per entity per tick purely to
         // satisfy the borrow checker. Nothing reads `pending` after this
         // pass, and `drain` keeps the allocation for next frame, so the
         // scratch buffer's whole purpose is preserved.
         for p in scratch.pending.drain(..) {
-            let (new_pos, rotation, waypoints) = step_along_waypoints(
+            let (new_pos, rotation, waypoints, blocked) = step_along_waypoints_detailed(
                 p.current,
                 p.rotation,
                 p.waypoints,
@@ -446,6 +451,7 @@ fn escort_system_inner(world: &World, dt: f32, scratch: &mut EscortScratch) {
                     goal: p.effective_goal,
                     residency_generation,
                     waypoints,
+                    grid: p.grid.stepped(blocked && !arrived, dt),
                 }),
             });
         }
