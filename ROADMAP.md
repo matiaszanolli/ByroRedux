@@ -313,8 +313,7 @@ design doc.
 
 #### Tier 8 — Visual fidelity stretch (post-Tier-4 horizon)
 
-Make existing content look as good as it can: beauty only, with
-pure-performance work in Tier 11. Each entry builds on the RT investment
+Make existing content look as good as it can: beauty only, with pure-performance work in Tier 11. Each entry builds on the RT investment
 rather than adding a parallel pipeline — volumetric and hair shadows are RT,
 SSS can be RT-traced, and decals take part in GI. Sequencing is impact-first:
 M55 (volumetrics) and M59 (decals and material layering) change every
