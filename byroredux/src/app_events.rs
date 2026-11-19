@@ -939,6 +939,56 @@ impl App {
             ctx.fill_texture_residency_telemetry(&mut telemetry);
         }
     }
+
+    /// The scheduler's replacement on a frame whose simulation is paused (an open menu, a
+    /// movie, a held capture): the MenuMode blocks and the debug-server drain still run.
+    /// Split out of `about_to_wait` to hold its size pin (#7065).
+    #[cfg_attr(not(feature = "debug-server"), allow(unused_variables))]
+    fn run_paused_frame(&mut self, dt: f32, wall_dt: f32, held_simulation_frozen: bool) {
+        // GUI-EVT-006 — an open menu pauses the world, but the original
+        // runs `Begin MenuMode` blocks exactly then (and their stages'
+        // result scripts with them).
+        if !held_simulation_frozen {
+            crate::menu_stack::run_menu_mode_frame(&self.world, wall_dt);
+        }
+        // #5141 — the native pause menu used to gate the whole
+        // scheduler, taking the debug-server drain with it: commands
+        // queued while a Pause/Settings/Inventory page was open sat in
+        // the queue, answered "timeout waiting for engine response",
+        // then every retried one fired in a burst the moment the menu
+        // closed. Keep exactly the drain alive while the simulation is
+        // frozen — inspecting (and mutating) the world through the
+        // debugger is the most natural thing to do while paused. The
+        // dialogue page already opted out of `simulation_paused` for
+        // the same reason (766e1746e).
+        //
+        // #5292 — the name is `DRAIN_SYSTEM_NAME`, the same constant
+        // `DebugDrainSystem::name()` returns, not a hand-typed copy: a
+        // rename used to leave this literal behind, the call returned
+        // `false`, and nothing reported it (the #5141 regression
+        // returning unseen). A miss is legitimate only when the server
+        // never started (feature off, or bind refused — the drain
+        // system is registered solely on `debug_server::start`'s
+        // success path), so the debug assert is gated on the handle.
+        #[cfg(feature = "debug-server")]
+        {
+            let drained = self.scheduler.run_exclusive_named(
+                &self.world,
+                dt,
+                byroredux_debug_server::DRAIN_SYSTEM_NAME,
+            );
+            debug_assert!(
+                drained || self.debug_server.is_none(),
+                "paused-frame drain did not find the debug-server system \
+                 by its shared name"
+            );
+        }
+        #[cfg(not(feature = "debug-server"))]
+        {
+            // No drain system exists without the debug-server feature;
+            // there is nothing to keep alive while paused.
+        }
+    }
 }
 
 impl ApplicationHandler for App {
@@ -1609,49 +1659,7 @@ impl ApplicationHandler for App {
         if !simulation_paused {
             self.scheduler.run(&self.world, dt);
         } else {
-            // GUI-EVT-006 — an open menu pauses the world, but the original
-            // runs `Begin MenuMode` blocks exactly then (and their stages'
-            // result scripts with them).
-            if !held_simulation_frozen {
-                crate::menu_stack::run_menu_mode_frame(&self.world, wall_dt);
-            }
-            // #5141 — the native pause menu used to gate the whole
-            // scheduler, taking the debug-server drain with it: commands
-            // queued while a Pause/Settings/Inventory page was open sat in
-            // the queue, answered "timeout waiting for engine response",
-            // then every retried one fired in a burst the moment the menu
-            // closed. Keep exactly the drain alive while the simulation is
-            // frozen — inspecting (and mutating) the world through the
-            // debugger is the most natural thing to do while paused. The
-            // dialogue page already opted out of `simulation_paused` for
-            // the same reason (766e1746e).
-            //
-            // #5292 — the name is `DRAIN_SYSTEM_NAME`, the same constant
-            // `DebugDrainSystem::name()` returns, not a hand-typed copy: a
-            // rename used to leave this literal behind, the call returned
-            // `false`, and nothing reported it (the #5141 regression
-            // returning unseen). A miss is legitimate only when the server
-            // never started (feature off, or bind refused — the drain
-            // system is registered solely on `debug_server::start`'s
-            // success path), so the debug assert is gated on the handle.
-            #[cfg(feature = "debug-server")]
-            {
-                let drained = self.scheduler.run_exclusive_named(
-                    &self.world,
-                    dt,
-                    byroredux_debug_server::DRAIN_SYSTEM_NAME,
-                );
-                debug_assert!(
-                    drained || self.debug_server.is_none(),
-                    "paused-frame drain did not find the debug-server system \
-                     by its shared name"
-                );
-            }
-            #[cfg(not(feature = "debug-server"))]
-            {
-                // No drain system exists without the debug-server feature;
-                // there is nothing to keep alive while paused.
-            }
+            self.run_paused_frame(dt, wall_dt, held_simulation_frozen);
         }
         let atw_scheduler_ns = systems_t0.elapsed().as_nanos() as u64;
         if self.bench.frames_target.is_some() && self.renderer.is_some() {

@@ -1289,8 +1289,10 @@ fn per_frame_driver_functions_stay_within_their_size_pins() {
     for (source, declaration, pin) in [
         // about_to_wait was 822 when #4342 was filed and 1044 by #5096;
         // #6143 moved the bench summary, the screenshot state machine and the
-        // telemetry refresh out into `App` methods.
-        (APP_EVENTS_RS, "fn about_to_wait(", 219),
+        // telemetry refresh out into `App` methods. #7065 — 222 against a 219 pin
+        // after the menu-stack and detection work; the paused-frame arm (MenuMode
+        // blocks + debug-server drain) moved into `App::run_paused_frame`.
+        (APP_EVENTS_RS, "fn about_to_wait(", 204),
         // render_one_frame: #4342 extracted it to 591; +125 since.
         (APP_FRAME_RS, "fn render_one_frame(", 494),
         // #6143 — 1031 lines before the query bundle and the DrawCommand build
