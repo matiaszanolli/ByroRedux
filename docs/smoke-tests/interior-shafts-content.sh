@@ -18,6 +18,7 @@
 # control with no volume at all uses the entities nearest its spawn). A pose whose
 # three frames are identical and not empty is a frozen frame (a held menu), not a measurement: the cell is
 # reported `invalid`, never as a pass. The cell must also show a loaded world (a stable, large entity count).
+# Camera position, yaw and pitch must be readable and unchanged across all three captures.
 #
 # The frames are the froxel in-scatter radiance view (`render.debug volumetric_radiance`), not the finished
 # frame: a window or roof hole shows the sky, which differs between noon and midnight whether or not a shaft
@@ -52,6 +53,8 @@
 #   BYRO_INTERIOR_ONLY  comma-separated cell ids to run instead of the whole list.
 #   BYRO_INTERIOR_LOG   optional RUST_LOG filter; retain app_step=info for door transitions.
 #   BYRO_CLOUD_SEED     repeatable outdoor cloud field (default 0).
+#   BYRO_BENCH_HOLD_FREEZE_SIM=1 pauses world systems during direct-route captures. It can remove moving-actor
+#   depth confounds; use a live-sun positive control alongside it. Door routes require live world systems.
 # Needs xvfb-run or a display, a Vulkan device, python3 with numpy and Pillow, and the games' data (a game whose
 # data is absent is skipped). Exit 0 when every run cell passes, 1 when any fails, 77 when nothing could run
 # or every selected door route is unavailable.
@@ -102,6 +105,8 @@ INVENTORY_ONLY = os.environ["BYRO_INVENTORY_ONLY"] == "1"
 ROUTE = os.environ.get("BYRO_INTERIOR_ROUTE", "direct")
 if ROUTE not in ("direct", "door"):
     sys.exit(f"BYRO_INTERIOR_ROUTE must be direct or door, not {ROUTE!r}")
+if ROUTE == "door" and os.environ.get("BYRO_BENCH_HOLD_FREEZE_SIM") == "1":
+    sys.exit("door route requires live world systems; unset BYRO_BENCH_HOLD_FREEZE_SIM")
 
 MIN_REGION_FRAC = 0.001      # 0.1 % of the frame
 MIN_THRESHOLD = 3.0          # luma levels
@@ -231,8 +236,13 @@ def aim(port, target):
     time.sleep(POSE_SETTLE_S)
 
 def cam_where(port):
-    m = re.search(r"position: \(([-\d.]+), ([-\d.]+), ([-\d.]+)\)", dbg(port, "cam.where"))
-    return tuple(float(v) for v in m.groups()) if m else None
+    report = dbg(port, "cam.where")
+    position = re.search(r"position: \(([-\d.]+), ([-\d.]+), ([-\d.]+)\)", report)
+    yaw = re.search(r"yaw:\s*([-\d.]+) rad", report)
+    pitch = re.search(r"pitch:\s*([-\d.]+) rad", report)
+    if not (position and yaw and pitch):
+        return None
+    return tuple(float(v) for v in (*position.groups(), yaw.group(1), pitch.group(1)))
 
 def measure(port, tag, targets):
     """Per pose, camera unmoved: noon, midnight, noon again. One metrics dict per pose."""
@@ -244,9 +254,11 @@ def measure(port, tag, targets):
         a = luma(shot(port, f"{tag}_p{k}_noon.png"))
         dbg(port, "time.set 0"); time.sleep(TIME_SETTLE_S)
         mid = luma(shot(port, f"{tag}_p{k}_mid.png"))
-        moved = cam_where(port) != here
+        middle_camera = cam_where(port)
         dbg(port, "time.set 12"); time.sleep(TIME_SETTLE_S)
         c = luma(shot(port, f"{tag}_p{k}_noon2.png"))
+        final_camera = cam_where(port)
+        moved = here is None or middle_camera != here or final_camera != here
         noise = float(np.percentile(np.abs(a - c), 99))
         thr = max(MIN_THRESHOLD, NOISE_FACTOR * noise)
         d = (a + c) / 2 - mid

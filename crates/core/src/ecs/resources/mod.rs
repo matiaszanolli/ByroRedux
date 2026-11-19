@@ -58,12 +58,11 @@ pub struct ScreenshotBridge {
 /// Renderer-side depth-capture request/result channel (#3308).
 ///
 /// Sibling of [`ScreenshotBridge`], deliberately thinner: the depth capture
-/// has exactly one consumer (the `depth.stats` console command), so there is
-/// no second claimant for a straggler result to be served to and neither an
-/// owner tag nor a capture generation is needed. A stale result is simply an
-/// older frame's depth, which for a diagnostic is a meaningful answer rather
-/// than a correctness hazard — the opposite of the golden-frame comparison
-/// `ScreenshotBridge` feeds, where #1006 and #1603 both mattered.
+/// has a shared result slot for the `depth.stats` and `depth.sample`
+/// console diagnostics. Either command consumes the latest result and arms
+/// the next capture. Keep the camera fixed while sampling because a result
+/// can belong to an earlier frame. This is separate from the golden-frame
+/// comparison `ScreenshotBridge` feeds, where capture ownership matters.
 ///
 /// `samples` are raw `D32_SFLOAT` values; hand them to
 /// [`crate::ecs::components::Camera::analyze_depth_field`] rather than

@@ -132,6 +132,8 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(VatsExitCommand);
     registry.register(CondCommand);
     registry.register(DepthStatsCommand);
+    registry.register(DepthSampleCommand);
+    registry.register(DepthDumpCommand);
     registry.register(SetAvCommand);
     registry.register(AnimArchetypeCommand);
     registry.register(CndfCommand);

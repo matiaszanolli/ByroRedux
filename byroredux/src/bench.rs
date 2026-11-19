@@ -26,6 +26,26 @@ pub(crate) const fn harness_active(summary_printed: bool) -> bool {
     !summary_printed
 }
 
+/// Optional capture diagnostic for a held session. The default remains live
+/// and interactive; this explicit override pins simulation time after the
+/// finite benchmark while debug commands and rendering continue; world
+/// systems are paused as well as the simulation clock.
+pub(crate) fn freeze_held_simulation() -> bool {
+    static FREEZE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FREEZE.get_or_init(|| {
+        matches!(std::env::var("BYRO_BENCH_HOLD_FREEZE_SIM"), Ok(value) if value == "1")
+    })
+}
+
+pub(crate) const fn held_simulation_frozen(
+    has_target: bool,
+    hold: bool,
+    summary_printed: bool,
+    freeze_requested: bool,
+) -> bool {
+    has_target && hold && summary_printed && freeze_requested
+}
+
 /// Whether a named finite benchmark owns gameplay input.
 ///
 /// Benchmark windows are created and destroyed repeatedly by matrix runners,
@@ -476,6 +496,15 @@ mod tests {
     fn held_session_releases_harness_after_summary() {
         assert!(harness_active(false));
         assert!(!harness_active(true));
+    }
+
+    #[test]
+    fn simulation_freeze_is_opt_in_and_only_after_held_benchmark() {
+        assert!(held_simulation_frozen(true, true, true, true));
+        assert!(!held_simulation_frozen(false, true, true, true));
+        assert!(!held_simulation_frozen(true, false, true, true));
+        assert!(!held_simulation_frozen(true, true, false, true));
+        assert!(!held_simulation_frozen(true, true, true, false));
     }
 
     #[test]

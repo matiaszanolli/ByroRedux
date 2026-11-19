@@ -10,6 +10,18 @@ use crate::fog::FogMedium;
 use byroredux_core::ecs::components::water::WaterMaterial;
 use byroredux_plugin::esm::reader::GameKind;
 
+#[test]
+fn health_with_camera_and_lighting_reports_fog_reference_without_reentrant_lock() {
+    use byroredux_core::ecs::{ActiveCamera, components::Transform};
+    let mut world = World::new();
+    let entity = world.spawn();
+    world.insert(entity, Transform::default());
+    world.insert_resource(ActiveCamera(entity));
+    world.insert_resource(healthy_exterior().0);
+    let output = EnvHealthCommand.execute(&world, "").lines.join("\n");
+    assert!(output.contains("fog_height_reference="), "{output}");
+}
+
 /// The shape a real exterior load produces: normalised sun, non-negative
 /// radiance everywhere, and the two exterior flags agreeing.
 fn healthy_exterior() -> (CellLightingRes, SkyParamsRes) {

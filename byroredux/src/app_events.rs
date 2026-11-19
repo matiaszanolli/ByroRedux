@@ -1520,6 +1520,12 @@ impl ApplicationHandler for App {
         // Outside a finite bench, retain BYROREDUX_FIXED_DT as a diagnostic
         // override for tools that do not emit benchmark conclusions.
         let wall_dt = now.duration_since(self.last_frame).as_secs_f32();
+        let held_simulation_frozen = crate::bench::held_simulation_frozen(
+            self.bench.frames_target.is_some(),
+            self.bench.hold,
+            self.bench.summary_printed,
+            crate::bench::freeze_held_simulation(),
+        );
         let dt = if self.cover_holds_game() {
             // Continue the scheduler's debug drain while holding simulation
             // time still; gameplay input is cleared above on every load tick.
@@ -1542,8 +1548,13 @@ impl ApplicationHandler for App {
         } else {
             // A held session becomes interactive after its finite benchmark:
             // fixed dt (including a legacy environment override resolved by
-            // the bench) must no longer suppress walk/fly movement.
-            wall_dt
+            // the bench) must no longer suppress walk/fly movement unless
+            // the explicit capture diagnostic requests a frozen simulation.
+            if held_simulation_frozen {
+                0.0
+            } else {
+                wall_dt
+            }
         };
         self.last_frame = now;
 
@@ -1565,7 +1576,8 @@ impl ApplicationHandler for App {
 
         // M48 GUI-REG-010 — the open registry menus' PauseGame flags, whatever
         // their surface (a native page, a movie, a MenuXml document).
-        let simulation_paused = crate::menu_stack::simulation_paused(&self.world, self.cover_holds_game());
+        let simulation_paused = held_simulation_frozen
+            || crate::menu_stack::simulation_paused(&self.world, self.cover_holds_game());
 
         // Update time resources.
         world_resource_set::<DeltaTime>(&self.world, |r| r.0 = dt);
@@ -1600,7 +1612,9 @@ impl ApplicationHandler for App {
             // GUI-EVT-006 — an open menu pauses the world, but the original
             // runs `Begin MenuMode` blocks exactly then (and their stages'
             // result scripts with them).
-            crate::menu_stack::run_menu_mode_frame(&self.world, wall_dt);
+            if !held_simulation_frozen {
+                crate::menu_stack::run_menu_mode_frame(&self.world, wall_dt);
+            }
             // #5141 — the native pause menu used to gate the whole
             // scheduler, taking the debug-server drain with it: commands
             // queued while a Pause/Settings/Inventory page was open sat in
@@ -1831,8 +1845,13 @@ impl ApplicationHandler for App {
                     if !self.bench.hold {
                         event_loop.exit();
                     } else if let Some(endpoint) = self.debug_server_endpoint() {
+                        let mode = if crate::bench::freeze_held_simulation() {
+                            "simulation-frozen diagnostic mode"
+                        } else {
+                            "live interactive mode"
+                        };
                         eprintln!(
-                            "bench-hold: engine held open in live interactive mode — \
+                            "bench-hold: engine held open in {mode} — \
                              attach via `cargo run -p byro-dbg` \
                              ({endpoint}). Ctrl+C / window close to exit.",
                         );

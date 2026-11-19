@@ -594,6 +594,8 @@ ui.close <menu> [accept|cancel] → close an open menu with the stated result (d
 ui.host [menu]              → an open Scaleform movie's host calls since it opened, by behaviour class (H1 served, H2 placeholder, H3 unserved, H4 unknown), and its distinct H3 / H4 method names
 ui.coverage                 → menu surface coverage for this game (PRD §8): menus on the game's movie (S1, how many fed), document (S2), a native page (S3), none (S4); ROADMAP's compatibility matrix publishes it
 depth.stats                 → inspect depth-buffer precision statistics
+depth.sample <x> <y> [...]  → sample view-axis depth at up to 32 render-resolution pixels
+depth.dump <name>.pfm       → export the full depth field as a PFM file in screenshots/
 npc.appearance              → inspect NPC appearance and FaceGen state
 ragdoll.status              → report active ragdoll state
 sdk.compat                  → summarize SDK compatibility adapters
@@ -603,6 +605,20 @@ save <slot>                 → queue an atomic snapshot write
 save.info <slot>            → validate and summarize a save container
 load <slot>                 → queue a validated live reload
 ```
+
+`depth.sample` uses zero-based render-resolution coordinates with the origin
+at the top left. If no readback is ready, it arms one; call it again after
+the next frames to read the samples. It shares the latest capture with
+`depth.stats`, so keep the camera fixed and allow a fresh capture after
+changing the view. Reported distance is along the camera's view axis in
+world units.
+
+`depth.dump` uses the same two-step readback and writes a new, single-channel
+little-endian PFM file; it refuses to overwrite an existing file. Values are
+view-axis world units, with infinity for background and NaN for invalid depth.
+PFM stores rows bottom to top. The depth readback and a screenshot are not
+synchronized to the same frame, so comparisons require a fixed camera and
+stable geometry; the export itself does not guarantee either.
 
 The dispatcher (#518) only kicks in for the *first whitespace-delimited
 token* — args after the name pass through to the command's
@@ -1218,6 +1234,9 @@ shipping rule.
 | `BYRO_RELEASE` / `BYRO_COMMIT` | **Build-time** (`option_env!`), stamped by the release workflow; what `--version` prints. A source build reports itself as one |
 | `BYRO_FOG_NEAR` / `BYRO_FOG_FAR` | Override the authored fog ramp, in game units (finite, ≥ 0; logged when active) |
 | `BYRO_HAZE_FLOOR` | Seed the exterior haze floor (VLM-SH-010): `off`, or `<base_per_m>[,<horizon_gain>]` (0–0.05, 0–20); a bad value warns and keeps the engine default. `fog.haze` retunes it live |
+| `BYRO_DISABLE_SKY_CLOUDS` | Set to `1` for a diagnostic clear sky: disables the procedural cloud deck and authored cloud layers, including their lighting and shadows. The weather's other properties remain in effect. |
+| `BYRO_FOG_HEIGHT_REFERENCE` | Pin the fog reference altitude to a finite value in world units for diagnostics; otherwise it follows the ground below the camera. `env.health` reports the live reference. |
+| `BYRO_BENCH_HOLD_FREEZE_SIM` | Set to `1` to pause world systems after a finite benchmark while rendering and debug commands continue; fly movement is also frozen |
 | `BYRO_INTERIOR_AMBIENT_SCALE` | Replace the `INTERIOR_AMBIENT_SCALE` constant, for ambient sweeps against a reference capture (finite, ≥ 0) |
 | `BYRO_NO_CULL` | Skip the raster frustum test for static meshes (draw everything) |
 | `BYRO_RT_FRUSTUM_ONLY` | Exclude every off-frustum ray candidate from the TLAS. Off-frustum geometry can legitimately cast shadows and appear in reflections, so this changes the image; it exists to measure what the exclusion would cost and save |
