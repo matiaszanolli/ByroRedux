@@ -1,6 +1,6 @@
 # Volumetric Lighting — Product Requirements
 
-**Status**: ACTIVE (2026-11-19). Revision 36 records the owner's Q12 decision on the haze floor; revision 35 recorded its re-measure and revision 34 folded in review round 2. The revision history is §12. This document covers
+**Status**: ACTIVE (2026-11-19). Revision 37 cross-links the [Radiance Cache and GI Coverage PRD](radiance-cache-gi-coverage.md) (it owns the world-space radiance cache; froxel in-scatter may consume it later, which this PRD does not promise); revision 36 records the owner's Q12 decision on the haze floor; revision 35 recorded its re-measure and revision 34 folded in review round 2. The revision history is §12. This document covers
 the remainder of ROADMAP milestone M55 after the froxel fog slice, the transported
 combustion solver and the interior godray vertical slice shipped. Statements about
 how an original engine, a record format, a paper or another engine behaves cite
@@ -849,6 +849,7 @@ as VLM-NG-006 instead of being reopened.
 | Engine tiers per game | [Game Compatibility](../engine/game-compatibility.md) |
 | Path-traced media | [Path Tracing Reference Mode PRD](path-tracing-reference-mode.md) |
 | Shadows, contact shadows, sky IBL and GI (M-LIGHT; M55 is out of its scope) | [Reference-Quality Lighting PRD](reference-lighting.md) |
+| The world-space radiance cache and traced GI at any distance; a possible later consumer is froxel in-scatter, not promised here | [Radiance Cache and GI Coverage PRD](radiance-cache-gi-coverage.md) |
 | Distant-LOD geometry the aerial tail fades | [Distant LOD Completion PRD](distant-lod-completion.md) |
 | Weather-driven surface wetness | [Wet-Surface Accumulation PRD](wet-surface-accumulation.md) |
 | Sun-path census, placed-beam census, opening evidence | [Interior Shaft Openings](../engine/interior-shaft-openings.md) |
@@ -897,3 +898,4 @@ as VLM-NG-006 instead of being reopened.
 | 34 | 2026-11-19 | Review round 2 folded in: §3 inventory re-measured at HEAD and frozen to symbols, stale Today sentences and line references removed, REG-013 and HF-003 and HF-007 and SH-005 restated, tests named for REG-002, -005, -007, -008, -009, -011, -013, document map and Related rows brought current, §6 deviations 7 to 9 added and uncited mod claims turned into a Phase 0: verify item, §8 coverage denominator fixed, VLM-SH-012 added, header layout fixed. Owner decisions recorded: Q9 (merge rule), Q10 (shaft range), Q11 (seam tolerance); the haze floor default stays open behind a re-measure (VLM-SH-011, #6776) | claude: revise |
 | 35 | 2026-11-19 | Q12 haze-floor re-measure recorded (VLM-SH-011, #6776): authored extinction against the floor at thirteen hours on five fixtures, and floor-off against shipped frames on Oblivion, FNV and FO3; the default is still the owner's to decide | claude: revise |
 | 36 | 2026-11-19 | Q12 decided by the owner: the exterior haze floor and its default stand (VLM-SH-010, -011); VLM-SH-011's noon tolerance is the measured change; #6776 is answered | — |
+| 37 | 2026-11-19 | Scope table cross-links the [Radiance Cache and GI Coverage PRD](radiance-cache-gi-coverage.md): the world-space radiance cache is owned there, and froxel in-scatter querying it is a possible later consumer, not a requirement of M55. No requirement changed. | — |

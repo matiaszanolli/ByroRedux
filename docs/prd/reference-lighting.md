@@ -1,6 +1,6 @@
 # Reference-Quality Lighting — Product Requirements
 
-**Status**: ACTIVE (2026-11-18). Revision 37. The change history is in
+**Status**: ACTIVE (2026-11-19). Revision 38. The change history is in
 §12. Every decision in §10 is decided and every Phase 0 verify item is
 closed or filed as an issue.
 
@@ -45,7 +45,8 @@ table, or Phase 0 writes the missing design.
 | XCLL / DALC ambient, interior directional key | [Cell Lighting](../engine/lighting-from-cells.md) |
 | Ground-cover ray-tracing boundary | [EXAL Ground Cover](../engine/exal-groundcover.md#5-ray-tracing-boundary) |
 | SVGF, G-buffer, pass order | [Vulkan Renderer](../engine/renderer.md) |
-| External reference renderer (M51 §10 Q5), the Cornell exporter (PTR-VAL-004), the EXR writer (PTR-OUT-001), the hash-grid radiance cache (PTR-RT-002) | [Path Tracing Reference Mode PRD](path-tracing-reference-mode.md) alone. What this PRD needs the exporter to do beyond PTR-VAL-004 is filed as change requests against M51 (§5.9, `RLT-EXP`), unowned until M51's revision log accepts them; the rung subsection is [§2 of path-tracing.md](../engine/path-tracing.md#2-reference-lighting-rung-subsection), written early with its exporter section (rev 10); M51's Phase 0 writes the rest of that design |
+| External reference renderer (M51 §10 Q5), the Cornell exporter (PTR-VAL-004), the EXR writer (PTR-OUT-001), the PT-mode use of the hash-grid radiance cache (PTR-RT-002) | [Path Tracing Reference Mode PRD](path-tracing-reference-mode.md) alone. What this PRD needs the exporter to do beyond PTR-VAL-004 is filed as change requests against M51 (§5.9, `RLT-EXP`), unowned until M51's revision log accepts them; the rung subsection is [§2 of path-tracing.md](../engine/path-tracing.md#2-reference-lighting-rung-subsection), written early with its exporter section (rev 10); M51's Phase 0 writes the rest of that design |
+| The realtime hash-grid radiance cache, and traced GI on every surface in view at any distance (rev 38; RLT-GI-008 and RLT-GI-012 point here) | [Radiance Cache and GI Coverage PRD](radiance-cache-gi-coverage.md) |
 | Component-decomposition contract, calibration, rung content policy | This PRD, §3.4 and RLT-REF-008…014 |
 | Penumbra-aware shadow filtering | [Penumbra-Aware Shadow Filter](../engine/penumbra-aware-shadow-filter.md) (RLT-SHD-003; written in Phase 0, rev 10) |
 
@@ -912,7 +913,9 @@ reach.
   rule (the exception PTR-RT-006 hands over): its buffers MUST have a row
   in [memory-budget.md](../engine/memory-budget.md) and its per-pixel
   query and update work MUST be bounded by a `GpuRayBudget` field
-  (RLT-PERF-002).
+  (RLT-PERF-002). Rev 38: the cache itself is specified and built in the
+  [Radiance Cache and GI Coverage PRD](radiance-cache-gi-coverage.md); this requirement stays here
+  as the allocation contract that PRD MUST satisfy.
 - **RLT-GI-009.** A component view that outputs the traced share as it
   enters `indirectLight`, including whatever multiplies it, MUST exist,
   listed in the `RenderDebugMode` catalog. At HEAD on 2026-11-01
@@ -953,7 +956,10 @@ reach.
   screen derivative, so at 1280 × 720 the box's grazing floor and ceiling
   get no traced GI at any tier (A7 deficit 1.00). Added at Phase 2's entry
   by owner decision (2026-11-02). **Deferred** to the Q5 radiance cache
-  (owner, 2026-11-02, rev 14). The isotropic-footprint gate met the
+  (owner, 2026-11-02, rev 14). **Rev 38** (owner, 2026-11-19): the deferral
+  ends as a wait on M51's Phase 5. A surface in view MUST keep traced GI at
+  any distance, and the [Radiance Cache and GI Coverage PRD](radiance-cache-gi-coverage.md) owns the cache and
+  the replacement of this gate; a wider gate is not an acceptable stopgap. The isotropic-footprint gate met the
   coverage clause on the box but not the cost clause. On content it traces
   GI on every grazing surface in range. Against the Phase 1b control with
   the tier pinned:
@@ -1449,7 +1455,9 @@ Each needs the project owner. The recommendation is the first option.
    milestone closes without an L4 reference-quality claim.
    **Decided** (2026-11-02): the recommendation — M51's hash-grid radiance
    cache as the bounded path's terminator; A7 runs report-only
-   (RLT-GI-003) until it lands.
+   (RLT-GI-003) until it lands. Revised 2026-11-19 (rev 38, owner): the
+   cache is built by the [Radiance Cache and GI Coverage PRD](radiance-cache-gi-coverage.md),
+   not in M51's Phase 5.
 6. **Q6 — The bias budget of each term.** **Decided** (2026-11-02): the
    recommendation below — the owner writes each term's budget, rationale
    and drift margin (or a done declaration) at that term's phase entry,
@@ -1569,7 +1577,7 @@ Each needs the project owner. The recommendation is the first option.
 | Need | Go to |
 |---|---|
 | The milestone row and its dependency on M51 | [ROADMAP Tier 8](../../ROADMAP.md#tier-8--visual-fidelity-stretch-post-tier-4-horizon) |
-| PT modes, external renderer, exporter, EXR writer, radiance cache, PT-mode bounces | [Path Tracing Reference Mode PRD](path-tracing-reference-mode.md) (§2, §5.5, §5.6, §5.7, §10 Q2 / Q5 / Q6) |
+| PT modes, external renderer, exporter, EXR writer, the PT-mode use of the radiance cache, PT-mode bounces | [Path Tracing Reference Mode PRD](path-tracing-reference-mode.md) (§2, §5.5, §5.6, §5.7, §10 Q2 / Q5 / Q6) |
 | The denoiser this PRD does not gate | [Neural Denoiser PRD](neural-denoiser.md) |
 | Distant geometry and its (absent) shadow promise | [Distant LOD Completion PRD](distant-lod-completion.md) |
 | Units, emitters, visibility bits, ray budget | [Physical Lighting Backbone](../engine/physical-lighting-backbone.md#runtime-contract) |
@@ -1630,3 +1638,4 @@ Each needs the project owner. The recommendation is the first option.
 | 35 | 2026-11-18 | A3 uses 2% excess during the pan and 1% at frame +16, with the worst value across both seeds. The renderer carries a fixed shadow sampling key through validated receiver reprojection. A3 passes at 0.012885 during the pan and −0.005325 at +16. A14 passes at 0.009508. The isolated A3 content comparison passed all five scenes, and the sampled timing cases stayed within their Q8 allowances. See the [gate manifest](../audits/MLIGHT_A3_exit_2026-11-18.tsv) and [A3 spatial, content, and timing comparisons](../audits/MLIGHT_A3_DIRECT_2026-11-16.md). | — |
 | 36 | 2026-11-18 | RLT-CON-004 applies screen-space sun visibility to exterior receivers beyond the full traced fade. Opaque sun radiance shares attachment 7 with the FSR transparency mask. `scripts/m-light-gates.sh --gates CON-004 --profile release` checks a near caster, a far caster, the off-screen control, and the direct-shadow disable. The far scan darkened 422 pixels in the Cornell test and its median bracket was 0.018 ms. A2 reports width errors of at most 0.025% for the local light and 0.416% for the sun, and all judged A4 and A5 rows pass. A11 passes in all five scenes against the immediate control. Full-phase A11 still fails against the recovered entry anchors. All A13 settled tiers pass. Three TAA timing cases exceed the phase cost ceiling, and the isolated far-sun delta fits those three cases' ceilings. See the [Phase 3 evidence](../audits/MLIGHT_phase3_exit_2026-11-18.md). | — |
 | 37 | 2026-11-18 | Both historical builds reproduce their own A11 anchors for Prospector, Whiterun, and Dugout. The same three scenes differ between the Phase 2 exit and Phase 3 entry. Within Phase 3, `a290c755f` (#6657) shifts the unshadowed direct-light image in all three. An isolated build that retains the scratch weapon subject and restores the earlier light-animation seeds exactly reproduces the parent images. The original A11 thresholds and anchors still apply. A13 reruns reproduce the TAA cost overruns in Prospector and Dugout. Whiterun passes the rerun and exceeds budget in the original matrix. Phase 3 remains open. See the [Phase 3 evidence](../audits/MLIGHT_phase3_exit_2026-11-18.md). | — |
+| 38 | 2026-11-19 | The radiance cache and traced-GI coverage move to their own PRD (Radiance Cache and GI Coverage PRD). RLT-GI-012's deferral no longer waits on M51's Phase 5: the owner requires every surface in view to keep traced GI at any distance, and rejects a widened gate as a stopgap. RLT-GI-008 stays as the allocation contract; Q5's decision is revised to say who builds the cache. Related tables updated. | — |

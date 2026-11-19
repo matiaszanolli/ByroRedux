@@ -1,6 +1,6 @@
 # Path Tracing Reference Mode — Product Requirements
 
-**Status**: PROPOSED (2026-11-02). Revision 4 accepts reference-lighting's
+**Status**: PROPOSED (2026-11-19). Revision 5 hands the realtime radiance cache to the [Radiance Cache and GI Coverage PRD](radiance-cache-gi-coverage.md) (§12); this PRD keeps the cache's use by the interactive PT mode (PTR-RT-002). Revision 4 accepts reference-lighting's
 RLT-EXP-001…006 change requests into the exporter's scope (§12). Revision
 3 (2026-11-01): this PRD now
 owns the Cornell exporter, the EXR writer and the external-renderer
@@ -411,7 +411,9 @@ requirement adds a ray representation for it.
   frame; the cache's implementation provenance follows §10 Q2. The cache's
   query and update entry points SHOULD live in a shared shader include so
   the realtime GI walk can use the same cache as its terminator, which is
-  what reference-lighting Q5 recommends.
+  what reference-lighting Q5 recommends. Rev 5: the cache itself, its
+  update and query entry points and its realtime allocation are specified and built in the
+  [Radiance Cache and GI Coverage PRD](radiance-cache-gi-coverage.md); the interactive PT mode consumes that cache and MUST NOT carry a second implementation.
 - **PTR-RT-003.** The interactive PT mode MUST feed the existing SVGF and
   TAA chain with demodulated radiance, and the `DBG_DISABLE_ATROUS` A/B of
   the evaluation harness MUST keep working in that mode. When M54's neural
@@ -634,7 +636,7 @@ Each needs the project owner. The recommendation is the first option.
    reference-lighting Q5's recommended terminator does not exist (its
    Alternative A or B applies). V2 must close before this is decided.
    Whichever option is taken, reference-lighting Q5's "SHARC" reads as
-   "M51's hash-grid radiance cache" (§2).
+   "M51's hash-grid radiance cache" (§2). Rev 5 (2026-11-19): this decision moved with the cache to the [Radiance Cache and GI Coverage PRD](radiance-cache-gi-coverage.md)'s Q2; V2 below still feeds it.
 3. **Q3 — NRC.** Recommended: out of M51 (PTR-NG-003), revisited after M54
    builds a Vulkan-compute inference path. Alternative A: in M51 with an
    engine-written MLP trained in compute; consequence: M51 absorbs M54's
@@ -707,3 +709,4 @@ Each needs the project owner. The recommendation is the first option.
 | 2 | 2026-11-01 | Review round 1 folded in: console-command inventory (PTR-MODE-001), missing TLAS exclusions, GI clamps and interior ambient in §3.1, V8 closed, determinism softened (PTR-EST-004, V13), per-game scope linked to the ROADMAP matrix, SHaRC licence clauses, GRIS convergence wording, verify list as a table, cross-PRD alignment with reference-lighting and neural-denoiser (PTR-RT-003, PTR-RT-006, PTR-RT-007, PTR-VAL-004, Q2, Q5); coordinator cross-PRD sync (sibling links and citations) | claude: revise |
 | 3 | 2026-11-01 | Single ownership, from reference-lighting's review round 2: the exporter (PTR-VAL-004) and the EXR writer (PTR-OUT-001) are owned here and filed as their own Phase 1 issues ahead of the progressive reference; Q5 is decided here and cited by reference-lighting Q1; PTR-VAL-003 points at reference-lighting's component-decomposition contract | — |
 | 4 | 2026-11-02 | Accepts reference-lighting's change requests RLT-EXP-001…006 (skinned pose at a frame index, normal-map and alpha textures, sun-free analytic environment, sun as a distant emitter, export-time *k*<sub>exp</sub> emitter scaling, per-rung overrides) into PTR-VAL-004's exporter scope. Per the owner's reference-lighting Q1 decision (2026-11-02), the exporter (PTR-VAL-004) and the EXR writer (PTR-OUT-001) are built now as their two stand-alone Phase 1 issues, ahead of this PRD's approval; nothing else of M51 is | — |
+| 5 | 2026-11-19 | The realtime hash-grid radiance cache is specified and built by the [Radiance Cache and GI Coverage PRD](radiance-cache-gi-coverage.md), not in this PRD's Phase 5 (owner decision, reference-lighting rev 38). PTR-RT-002 keeps the interactive PT mode's use of it and now names that PRD as the single owner of the cache. | — |
