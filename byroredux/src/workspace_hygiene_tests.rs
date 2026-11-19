@@ -1427,7 +1427,10 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // NIFAL synthetic-height census (2026-11-08) re-measure: +1 — `synthetic_height_census.rs`, the static-mesh
         // population a normal-integrated height map could displace (docs/audits/AUDIT_NIFAL_2026-11-08.md);
         // its `--emit-normals` TSV feeds terrain-height's `tileability_census`. #6065: `skeleton_tree_dump` grew.
-        ("nif", 39, 4763),
+        // AIP-DX-003 re-measure: +2 files / +110 LOC — `furniture_marker_census.rs` (legacy `BsFurnitureMarker` refs,
+        // AIP-SEAT-002) and `kf_root_probe.rs` (an enter clip's accumulation root, AIP-SIT-001), the probes behind
+        // the figures in docs/prd/ai-packages-completion.md; each states its re-run command.
+        ("nif", 41, 4873),
         // M43 — +1: `pex_list_fns.rs`, which prints a script's typed function signatures; it read the
         // FO4 `OnStory*` event payloads out of `Quest.pex` (docs/engine/story-manager.md §6.4).
         // M48 Phase 0 (#6643) re-measure: +1 — `pex_find_call.rs`, which lists every call site of a

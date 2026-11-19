@@ -257,6 +257,38 @@ pub(crate) fn load_skyrim_locomotion_clip(
     path: &str,
     name: &str,
 ) -> Option<u32> {
+    load_skyrim_character_clip(world, provider, path, name, false, Some("NPC COM [COM ]"))
+}
+
+/// The Skyrim humanoid sit-**enter** clip (AIP-SIT-002): `chair_leftenter.hkx`, which the Sandbox seat
+/// procedure parks on its final frame. `NPC COM` drops from 69.08 to 39.00 over 1.77 s, and 39.00 is the seated
+/// height of the `chair_idlebasevar2.hkx` loop (38.97), so the last frame is the grounded seated pose and
+/// the behaviour graph's furniture state is not needed (archive scan 2026-11-19, `Skyrim - Animations.bsa`).
+/// Skyrim ships `female\` twins; the male clip serves both genders, as the FO3/FNV and Oblivion `_male`
+/// clips do. A one-shot (`CycleType::Clamp`, so holding it at `local_time = duration` does not wrap to the
+/// standing pose) with no accumulation root: the COM drop is the pose, not root motion to be split out.
+const SKYRIM_SIT_ENTER_PATH: &str = r"meshes\actors\character\animations\male\chair_leftenter.hkx";
+
+/// Install the Skyrim sit-enter clip and return `(handle, duration)` for the `SandboxSitClip` resource.
+/// `None` when the game isn't Skyrim, the archives are absent, or decode fails.
+pub(crate) fn load_skyrim_sit_clip(world: &mut World, provider: &TextureProvider) -> Option<(u32, f32)> {
+    let handle = load_skyrim_character_clip(world, provider, SKYRIM_SIT_ENTER_PATH, "chair_leftenter", true, None)?;
+    let duration = world.resource::<AnimationClipRegistry>().get(handle).map(|clip| clip.duration)?;
+    Some((handle, duration))
+}
+
+/// Decode one Skyrim humanoid take at `path` against the character skeleton into the clip registry:
+/// `one_shot` holds the last pose instead of looping, `accum_root` names the bone whose travel becomes root
+/// motion (see [`convert_hkx_clip`]). Path-keyed and idempotent; `None` (diagnosed at `warn`) when the skeleton,
+/// the archive entry or the decode fails.
+fn load_skyrim_character_clip(
+    world: &mut World,
+    provider: &TextureProvider,
+    path: &str,
+    name: &str,
+    one_shot: bool,
+    accum_root: Option<&str>,
+) -> Option<u32> {
     if let Some(handle) = world.try_resource::<AnimationClipRegistry>()?.get_by_path(path) {
         return Some(handle);
     }
@@ -264,41 +296,30 @@ pub(crate) fn load_skyrim_locomotion_clip(
     let skeleton = match byroredux_hkx::decode_skeleton(&skeleton_bytes) {
         Ok(skeleton) => skeleton,
         Err(error) => {
-            log::warn!("Skyrim locomotion clip: failed to decode skeleton HKX: {error}");
+            log::warn!("Skyrim character clip: failed to decode skeleton HKX: {error}");
             return None;
         }
     };
     let Some(anim_bytes) = provider.extract_mesh(path) else {
-        log::warn!("Skyrim locomotion clip: '{path}' is missing; add Skyrim - Animations.bsa");
+        log::warn!("Skyrim character clip: '{path}' is missing; add Skyrim - Animations.bsa");
         return None;
     };
     let animation = match byroredux_hkx::decode_animation(&anim_bytes) {
         Ok(animation) => animation,
         Err(error) => {
-            log::warn!("Skyrim locomotion clip: HKX '{path}' is not usable: {error}");
+            log::warn!("Skyrim character clip: HKX '{path}' is not usable: {error}");
             return None;
         }
     };
     let clip = {
         let mut pool = world.resource_mut::<StringPool>();
-        convert_hkx_clip(
-            path,
-            // Not an `idlecart*` event → no synthesized completion
-            // events and `CycleType::Loop`; the accum-root argument
-            // binds COM inside the boundary (#4563) — the cart idles
-            // get the same bone through their exit-event branch.
-            name,
-            &skeleton,
-            &animation,
-            &mut pool,
-            false,
-            Some("NPC COM [COM ]"),
-        )
+        // `name` is not an `idlecart*` event, so no completion events are synthesized.
+        convert_hkx_clip(path, name, &skeleton, &animation, &mut pool, one_shot, accum_root)
     };
     let handle = world
         .resource_mut::<AnimationClipRegistry>()
         .get_or_insert_by_path(path.to_owned(), || clip);
-    log::info!("Skyrim locomotion clip installed from '{path}' → handle {handle}");
+    log::info!("Skyrim character clip installed from '{path}' → handle {handle}");
     Some(handle)
 }
 
@@ -1458,5 +1479,42 @@ mod tests {
             let clip = registry.get(handle).unwrap();
             assert_eq!(clip.cycle_type, CycleType::Clamp, "handle {handle}");
         }
+    }
+
+    /// AIP-SIT-002 — the real `chair_leftenter.hkx` installs as a one-shot with the seated-height COM on
+    /// its final frame, and no accumulation root (the drop is the pose).
+    #[test]
+    #[ignore = "needs Skyrim SE game data on disk"]
+    fn skyrim_sit_enter_clip_installs_as_a_one_shot_that_ends_seated() {
+        let Some((_, animations_path)) = skyrim_se_animation_fixture() else {
+            return;
+        };
+        let provider = build_texture_provider(&[
+            "--bsa".to_owned(),
+            animations_path.to_string_lossy().into_owned(),
+        ]);
+        let mut world = World::new();
+        world.insert_resource(StringPool::new());
+        world.insert_resource(AnimationClipRegistry::new());
+
+        let (handle, duration) = load_skyrim_sit_clip(&mut world, &provider).expect("the clip installs");
+        assert!((duration - 1.77).abs() < 0.05, "scan: 1.77 s, got {duration}");
+        let again = load_skyrim_sit_clip(&mut world, &provider).unwrap();
+        assert_eq!(again.0, handle, "path-keyed and idempotent");
+
+        let registry = world.resource::<AnimationClipRegistry>();
+        let clip = registry.get(handle).unwrap();
+        assert_eq!(clip.cycle_type, CycleType::Clamp);
+        assert!(clip.accum_root_name.is_none());
+        let pool = world.resource::<StringPool>();
+        let com = clip
+            .channels
+            .iter()
+            .find(|(name, _)| pool.resolve(**name).is_some_and(|n| n.eq_ignore_ascii_case("NPC COM [COM ]")))
+            .map(|(_, channel)| channel)
+            .expect("the clip drives NPC COM");
+        // Z-up 39.00 (the seated height of chair_idlebasevar2) is Y-up `y` after the axis swap.
+        let last = com.translation_keys.last().unwrap();
+        assert!((last.value.y - 39.0).abs() < 0.5, "final COM height {:?}", last.value);
     }
 }

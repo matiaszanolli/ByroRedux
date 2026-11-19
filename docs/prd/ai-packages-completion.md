@@ -1,6 +1,6 @@
 # AI Packages Completion — Product Requirements
 
-**Status**: ACTIVE (2026-11-19). Revision 10 wires the Oblivion sit-enter clip (AIP-SIT-001). Revision 8 records AIP-WALK-003 as built (the pathgrid switch on every walking mover) and rev 7 its first slice. Revision 6 re-measures the "Today" claims at HEAD after Phases 1–5 and folds in review round 3 (§12). Revision 5 files the tracking issues; every **Phase 0: verify** item is an acceptance criterion of the Phase 0 issue. Revision 4 recorded the owner's §10 decisions: Q2 sets Skyrim's weekday origin per edition, every other answer is the recommendation. Revision 3 folded in review round 2
+**Status**: ACTIVE (2026-11-19). Revision 11 wires Skyrim's sit-enter clip (AIP-SIT-002) and revision 10 Oblivion's (AIP-SIT-001). Revision 8 records AIP-WALK-003 as built (the pathgrid switch on every walking mover) and rev 7 its first slice. Revision 6 re-measures the "Today" claims at HEAD after Phases 1–5 and folds in review round 3 (§12). Revision 5 files the tracking issues; every **Phase 0: verify** item is an acceptance criterion of the Phase 0 issue. Revision 4 recorded the owner's §10 decisions: Q2 sets Skyrim's weekday origin per edition, every other answer is the recommendation. Revision 3 folded in review round 2
 (§12 lists the topics). It covers the remainder of milestone M42: the
 procedures, package fields and per-game prerequisites that do not run yet.
 Statements about how the original engines behave cite external sources
@@ -187,7 +187,7 @@ the state at HEAD on 2026-11-18 (`npc_spawn/ai_package/tree.rs:1-25, 308`,
 | Travel, Sleep, Eat, Follow, Escort, Guard, Flee, root Wander | installs the FO3/FNV counterpart's component (`tree.rs:17-20`) | Travel, Escort: move-to (`resolve_command`, `crates/scripting/src/package.rs`); the others none |
 | FollowTo | none, reason `no-runtime` (AIP-TREE-007) | move-to (`resolve_command`) |
 | ForceGreet | installs the Dialogue behaviour only when every condition is modelled (AIP-TREE-005, `tree.rs:242`) | none: `resolve_command` returns `AwaitExternal` (`package.rs:550`). `PackRecord::force_greet` resolves both dialects, but only the `dialogue.forcegreet` console command calls it (`commands/quest.rs:1183`) |
-| Sit, UseIdleMarker | none: waits on the seat runtime (AIP-SIT-002, -003; `tree.rs:308`) | interaction (`resolve_command`) |
+| Sit, UseIdleMarker | none: waits on the tree leaf wiring (AIP-TREE-004) and, for FO4+, AIP-SIT-003 (`tree.rs:308`) | interaction (`resolve_command`) |
 | Acquire, Activate, Shout, UseWeapon | none, reason `no-runtime` (AIP-TREE-007) | interaction (`resolve_command`) |
 | Find, HoldPosition, KeepAnEyeOn, LockDoors, UnlockDoors, Say, UseMagic, Wait, FlightGrab, Hover, Orbit | none, reason `no-runtime` (AIP-TREE-007) | none |
 The FO4, FO76 and Starfield leaf vocabularies are not documented locally
@@ -558,9 +558,14 @@ Skyrim+ `BSFurnitureMarker` / `BSFurnitureMarkerNode` positions carry an
   the `_male` clip.
 - **AIP-SIT-002.** Skyrim SE seating MUST produce a seated pose from the
   game's own animation data: a furniture-enter HKX clip, or the behaviour
-  graph's furniture state. Today Skyrim has no sit-enter source, so a
-  Skyrim sandboxer stands at its location. The clip is the one Skyrim
-  ships (archive scan at HEAD on 2026-11-19, `Skyrim - Animations.bsa`,
+  graph's furniture state. Built in rev 11: `load_sit_clip` installs the
+  clip below through `asset_provider::load_skyrim_sit_clip` (a one-shot
+  with no accumulation root), a real-data test pins it, and an actor with
+  no `AnimationPlayer` (Skyrim's ambient actors gain one only when
+  something plays on them) is given one on its skeleton, which un-seating
+  removes (`SeatedAnimationRestore::inserted_player`); before this a
+  Skyrim sandboxer stood at its location. No Skyrim seat has been
+  observed live. The clip is the one Skyrim ships (archive scan at HEAD on 2026-11-19, `Skyrim - Animations.bsa`,
   `hkx` example `root_travel`):
   `meshes\actors\character\animations\male\chair_leftenter.hkx`, with `female\`
   twins and `chair_rightenter`, `chair_frontentervar1` and the child
@@ -887,7 +892,7 @@ is still open at HEAD on 2026-11-18.)
 | Legacy marker refs above 20 | AIP-SEAT-002 | census done 2026-11-19 (the table in AIP-SEAT-002); what the refs *mean* stays open, no editor source names them |
 | A creature furniture-enter clip exists | AIP-SEAT-005 | closed 2026-11-19: FO3 / FNV `hillfolk2and3` and `alien` directories |
 | The Oblivion sit-enter KF | AIP-SIT-001 | closed 2026-11-19: `chair_leftenter.kf`; wired in rev 10 |
-| Skyrim's chair-entry source (HKX clip or graph state) | AIP-SIT-002 | closed 2026-11-19: the `chair_leftenter.hkx` clip |
+| Skyrim's chair-entry source (HKX clip or graph state) | AIP-SIT-002 | closed 2026-11-19: the `chair_leftenter.hkx` clip; wired in rev 11 |
 | What a zero-duration window does | AIP-SCHED-003 | one of the Travel packages `PackSchedule::active_at` names, observed live |
 | The radius of Continue if PC near | AIP-FLG-003 | an editor or game-setting source for "nearby" |
 | FO4 / FO76 / Starfield leaf names | §3.2 | the per-leaf output of the install-count tests (AIP-DX-004) on the three masters |
@@ -1092,3 +1097,4 @@ option.
 | 8 | 2026-11-19 | AIP-WALK-003 built: the pathgrid switch moves onto `NavPath.grid` and serves every walking mover (Travel, Follow, Escort, Guard, Wander, Patrol, `cached_walk_step`); design written as NAVM Pathfinding §11; `PGRI` inter-cell links stated as outside Q5 | claude: revise |
 | 9 | 2026-11-19 | Archive scans folded in (AIP-SIT-001 `chair_leftenter.kf`, AIP-SIT-002 `chair_leftenter.hkx`, AIP-UW-006 `sneak*reload*.kf`, AIP-SEAT-005 creature chair clips, AIP-SEAT-002 marker census with its table); verify table rows closed or narrowed; two probes checked in (`furniture_marker_census`, `kf_root_probe`) | claude: revise |
 | 10 | 2026-11-19 | AIP-SIT-001 built: `sandbox_sit_enter_kf_path(Oblivion)` returns `chair_leftenter.kf`, with a unit test; the Oblivion live gate stays open | claude: revise |
+| 11 | 2026-11-19 | AIP-SIT-002 built: Skyrim's `chair_leftenter.hkx` installs as the sit-enter clip, and a seated actor with no `AnimationPlayer` is given one that un-seating removes; the Skyrim live check stays open | claude: revise |

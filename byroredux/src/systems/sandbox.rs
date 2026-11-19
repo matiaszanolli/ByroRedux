@@ -210,8 +210,18 @@ pub(crate) fn apply_seat_assignments(
         }
     }
     let mut restores: Vec<SeatedAnimationRestore> = Vec::with_capacity(assignments.len());
+    // AIP-SIT-002 — an animated actor with no player yet (Skyrim's ambient actors gain one only when
+    // something plays on them) is given one on its skeleton. The roots are read under their own lock,
+    // before the player storage is taken.
+    let skeleton_roots: Vec<Option<EntityId>> = match world.query::<crate::components::AnimationTarget>() {
+        Some(targets) => assignments
+            .iter()
+            .map(|(npc, _, _)| targets.get(*npc).map(|target| target.skeleton_root))
+            .collect(),
+        None => vec![None; assignments.len()],
+    };
     if let Some(mut pq) = world.query_mut::<AnimationPlayer>() {
-        for (npc, _, _) in assignments {
+        for ((npc, _, _), skeleton_root) in assignments.iter().zip(&skeleton_roots) {
             if let Some(p) = pq.get_mut(*npc) {
                 restores.push(SeatedAnimationRestore {
                     clip_handle: p.clip_handle,
@@ -225,6 +235,13 @@ pub(crate) fn apply_seat_assignments(
                 p.prev_time = hold_time;
                 p.playing = false;
                 p.speed = 1.0;
+            } else if let Some(root) = skeleton_root {
+                let mut player = AnimationPlayer::new(sit_handle).with_root(*root);
+                player.local_time = hold_time;
+                player.prev_time = hold_time;
+                player.playing = false;
+                pq.insert(*npc, player);
+                restores.push(SeatedAnimationRestore::inserted_player());
             } else {
                 restores.push(SeatedAnimationRestore::default());
             }
@@ -574,6 +591,60 @@ mod tests {
                 .is_some_and(|q| q.contains(creature)),
             "control: the same actor without CreatureActor seats normally"
         );
+    }
+
+    /// AIP-SIT-002 — a Skyrim ambient actor has no `AnimationPlayer` until something plays on it, so
+    /// seating it on a parked clip needs one. The seat inserts it on the actor's skeleton, held on the
+    /// final frame, and records that it did (`SeatedAnimationRestore::player_was_inserted`) so un-seating
+    /// removes it instead of restoring a clip. An actor that already has a player keeps the captured
+    /// restore (#3333).
+    #[test]
+    fn an_animated_actor_without_a_player_gets_one_parked_on_the_sit_clip() {
+        use crate::components::{AnimationTarget, SandboxSitClip, SeatReservations};
+        use byroredux_core::ecs::components::{Furniture, GlobalTransform, Seated};
+
+        let mut world = World::new();
+        world.register::<SandboxBehavior>();
+        world.register::<Seated>();
+        world.register::<Furniture>();
+        world.register::<GlobalTransform>();
+        world.register::<AnimationPlayer>();
+        world.register::<AnimationTarget>();
+        world.insert_resource(SandboxSitClip(Some((7, 1.77))));
+        world.insert_resource(SeatReservations::default());
+
+        let furn = world.spawn();
+        world.insert(furn, GlobalTransform::default());
+        world.insert(furn, Furniture { markers: vec![marker([0.0, 0.0, 0.0], None, 0), marker([50.0, 0.0, 0.0], None, 0)] });
+
+        let spawn_actor = |world: &mut World, at: f32| {
+            let skeleton = world.spawn();
+            let actor = world.spawn();
+            let mut at_pose = GlobalTransform::default();
+            at_pose.translation.x = at;
+            world.insert(actor, at_pose);
+            world.insert(actor, SandboxBehavior { search_radius: Some(1000.0) });
+            world.insert(actor, AnimationTarget { skeleton_root: skeleton, consumed_idle_serial: 0 });
+            (actor, skeleton)
+        };
+        let (bare, bare_skeleton) = spawn_actor(&mut world, 0.0);
+        let (animated, animated_skeleton) = spawn_actor(&mut world, 50.0);
+        let mut idle = AnimationPlayer::new(3).with_root(animated_skeleton);
+        idle.local_time = 0.4;
+        world.insert(animated, idle);
+
+        sandbox_seat_system_inner(&world, 0.0, &mut SandboxScratch::default());
+
+        let players = world.query::<AnimationPlayer>().unwrap();
+        let inserted = players.get(bare).expect("the seat inserts a player");
+        assert_eq!((inserted.clip_handle, inserted.local_time, inserted.playing), (7, 1.77, false));
+        assert_eq!(inserted.root_entity, Some(bare_skeleton));
+        let seated = world.query::<Seated>().unwrap();
+        assert!(seated.get(bare).unwrap().animation_restore.player_was_inserted());
+
+        let kept = seated.get(animated).unwrap().animation_restore;
+        assert!(!kept.player_was_inserted(), "an existing player is restored, not removed");
+        assert_eq!((kept.clip_handle, kept.local_time, kept.playing), (3, 0.4, true));
     }
 
     /// Mirrors `furniture_component`'s `animation_type` → `kind` resolution

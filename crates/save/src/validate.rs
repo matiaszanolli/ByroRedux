@@ -457,7 +457,9 @@ fn validate_animation(world: &World, next_entity: EntityId, errors: &mut Vec<Val
     // riding to disk inside a saved column with no gate on the way out.
     if let Some(q) = world.query::<Seated>() {
         for (entity, seated) in q.iter() {
+            // The seat-inserted-player marker is not a registry handle.
             if let Some(reg) = registry.as_ref()
+                && !seated.animation_restore.player_was_inserted()
                 && reg.get(seated.animation_restore.clip_handle).is_none() {
                     errors.push(ValidationError {
                         entity,

@@ -852,14 +852,20 @@ pub(crate) fn clear_ambient_behavior(world: &World, actor: EntityId) {
     // seated at all.
     if let Some(seated) = world.get::<Seated>(actor).map(|s| *s)
         && let Some(mut players) = world.query_mut::<AnimationPlayer>()
-            && let Some(player) = players.get_mut(actor) {
-                let restore = seated.animation_restore;
-                player.clip_handle = restore.clip_handle;
-                player.local_time = restore.local_time;
-                player.prev_time = restore.prev_time;
-                player.playing = restore.playing;
-                player.speed = restore.speed;
-            }
+    {
+        let restore = seated.animation_restore;
+        if restore.player_was_inserted() {
+            // AIP-SIT-002 — the seat inserted this player (a Skyrim ambient actor has none until
+            // something plays on it): there is no clip to go back to, so it goes.
+            players.remove(actor);
+        } else if let Some(player) = players.get_mut(actor) {
+            player.clip_handle = restore.clip_handle;
+            player.local_time = restore.local_time;
+            player.prev_time = restore.prev_time;
+            player.playing = restore.playing;
+            player.speed = restore.speed;
+        }
+    }
 
     // Declared in this body, not at module level, so the scheduler's source scan
     // (`acquired_in`) still sees every removal as a write acquisition.
@@ -3043,6 +3049,32 @@ mod tests {
         assert_eq!(restored.prev_time, 0.3);
         assert_eq!(restored.speed, 1.05);
         drop(restored);
+        assert!(!world.has::<Seated>(actor));
+    }
+
+    /// AIP-SIT-002 — a player the seat itself inserted (Skyrim ambient actors have none) has no clip to go
+    /// back to: un-seating removes it, so the actor does not stand up frozen on the seated pose.
+    #[test]
+    fn unseating_removes_a_player_the_seat_inserted() {
+        use byroredux_core::animation::AnimationPlayer;
+        use byroredux_core::ecs::components::SeatedAnimationRestore;
+
+        let mut world = World::new();
+        world.insert_resource(SeatReservations::default());
+        world.register::<AnimationPlayer>();
+        world.register::<Seated>();
+        world.register::<SandboxBehavior>();
+        let actor = world.spawn();
+        let furniture = world.spawn();
+        let mut parked = AnimationPlayer::new(42);
+        parked.local_time = 1.77;
+        parked.playing = false;
+        world.insert(actor, parked);
+        world.insert(actor, Seated { furniture, animation_restore: SeatedAnimationRestore::inserted_player() });
+
+        clear_ambient_behavior(&world, actor);
+
+        assert!(!world.has::<AnimationPlayer>(actor), "the seat's own player must go");
         assert!(!world.has::<Seated>(actor));
     }
 

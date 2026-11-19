@@ -33,12 +33,16 @@ pub fn load_idle_clip(
 /// registry. Returns `(handle, duration)`: the seat system holds the clip at
 /// `local_time = duration` with `playing = false`, which yields the seated end
 /// pose (see the M42.1 diagnosis in `systems::sandbox`). Path-keyed memoised
-/// (#790). `None` for Skyrim+/Havok games or when the clip isn't archived.
+/// (#790). Skyrim's is a decoded `.hkx` (AIP-SIT-002); `None` for FO4+ or when
+/// the clip isn't archived.
 pub fn load_sit_clip(
     world: &mut World,
     tex_provider: &TextureProvider,
     game: GameKind,
 ) -> Option<(u32, f32)> {
+    if game == GameKind::Skyrim {
+        return crate::asset_provider::load_skyrim_sit_clip(world, tex_provider);
+    }
     let kf_path = sandbox_sit_enter_kf_path(game)?;
     let handle = load_kf_clip_by_path(world, tex_provider, kf_path)?;
     // The held-frame time is the clip duration; fetch it once now so the seat
@@ -59,7 +63,7 @@ pub fn load_sit_clip(
 /// complete, grounded seated pose. Verified present in vanilla FNV
 /// `Fallout - Meshes.bsa` (BSA scan 2026-07-12). `None` for games whose actors
 /// animate through Havok `.hkx` (Skyrim+/FO4+; Skyrim's standalone clip is
-/// AIP-SIT-002, not yet wired).
+/// `asset_provider::load_skyrim_sit_clip`, AIP-SIT-002).
 /// FO3 shares the FNV path. Oblivion's counterpart is `chair_leftenter.kf`:
 /// same 1.13 s length, accum root `Bip01` dropping ~51.6 units onto the seat
 /// (FNV 50.7), where its `dynamicidle_sit.kf` loop is flat like the FO3/FNV
