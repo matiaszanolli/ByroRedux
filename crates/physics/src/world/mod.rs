@@ -588,6 +588,27 @@ impl PhysicsWorld {
         body
     }
 
+    /// [`spawn_fixed_cuboid`](Self::spawn_fixed_cuboid) turned by `rotation`: the fixture for a ramp or a
+    /// tilted slab (a character controller meets slopes the axis-aligned boxes cannot make).
+    pub fn spawn_fixed_cuboid_rotated(
+        &mut self,
+        half: byroredux_core::math::Vec3,
+        translation: byroredux_core::math::Vec3,
+        rotation: byroredux_core::math::Quat,
+    ) -> RigidBodyHandle {
+        use rapier3d::prelude::*;
+        let body = self.bodies.insert(RigidBodyBuilder::fixed().build());
+        self.colliders.insert_with_parent(
+            ColliderBuilder::cuboid(half.x, half.y, half.z)
+                .position(Pose::from_parts(translation, rotation))
+                .build(),
+            body,
+            &mut self.bodies,
+        );
+        self.update_query_pipeline();
+        body
+    }
+
     /// [`spawn_fixed_cuboid`](Self::spawn_fixed_cuboid) returning the entity-side
     /// handles (body and collider), for fixtures that give a slab an owner.
     pub fn spawn_fixed_cuboid_handles(

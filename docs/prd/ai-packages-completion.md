@@ -1,6 +1,6 @@
 # AI Packages Completion — Product Requirements
 
-**Status**: ACTIVE (2026-11-19). Revision 12 adds the two live gates and records what they found. Revision 11 wires Skyrim's sit-enter clip (AIP-SIT-002) and revision 10 Oblivion's (AIP-SIT-001). Revision 8 records AIP-WALK-003 as built (the pathgrid switch on every walking mover) and rev 7 its first slice. Revision 6 re-measures the "Today" claims at HEAD after Phases 1–5 and folds in review round 3 (§12). Revision 5 files the tracking issues; every **Phase 0: verify** item is an acceptance criterion of the Phase 0 issue. Revision 4 recorded the owner's §10 decisions: Q2 sets Skyrim's weekday origin per edition, every other answer is the recommendation. Revision 3 folded in review round 2
+**Status**: ACTIVE (2026-11-19). Revision 13 fixes the two walking faults the Oblivion Find gate exposed. Revision 12 adds the two live gates and records what they found. Revision 11 wires Skyrim's sit-enter clip (AIP-SIT-002) and revision 10 Oblivion's (AIP-SIT-001). Revision 8 records AIP-WALK-003 as built (the pathgrid switch on every walking mover) and rev 7 its first slice. Revision 6 re-measures the "Today" claims at HEAD after Phases 1–5 and folds in review round 3 (§12). Revision 5 files the tracking issues; every **Phase 0: verify** item is an acceptance criterion of the Phase 0 issue. Revision 4 recorded the owner's §10 decisions: Q2 sets Skyrim's weekday origin per edition, every other answer is the recommendation. Revision 3 folded in review round 2
 (§12 lists the topics). It covers the remainder of milestone M42: the
 procedures, package fields and per-game prerequisites that do not run yet.
 Statements about how the original engines behave cite external sources
@@ -739,19 +739,22 @@ script-package slot also reads Must Complete and Must Reach Location
   `a_cached_walk_step_blocked_by_a_wall_takes_the_pathgrid`, and
   `a_traveler_with_a_clear_straight_walk_never_takes_the_pathgrid`. Not
   covered by a system test: Escort, which shares Follow's and Guard's
-  pattern. Open, found live in rev 12: a walk can stall at the first leg
-  although the grid has a route. In `TempleMothCatacombs02` the priest's
-  Find walks 3,200 units to a container; the grid takes over at 1.5 s and
-  returns 37 waypoints, yet the actor keeps pressing against the same
-  spot and gives the target up (`Find package: ... cannot reach`). The
-  start and the container both snap onto the one connected component of
-  the cell's grid (points 69 and 148 units away). It is not the choice
-  of entry point: the first waypoint is 85 units away with a clear line
-  of sight and the ground rising to it, so the cause is where the
-  character controller meets the geometry there (a Fixed `TriMesh`,
-  form `0x092B6A`, 64 units tall over a 395 by 307 footprint, `phys.census`).
-  A trial with the autostep raised to 70 and the slope limit to 75 left
-  the log unchanged. The cause is not found. Out of the requirement as decided: the `PGRI` inter-cell links,
+  pattern. Found live in rev 12 and fixed in rev 13: two faults in the
+  character-controller step (`step_toward_detailed`), not in the grid. In
+  `TempleMothCatacombs02` the priest's Find walks 3,200 units to a
+  container; the grid took over at 1.5 s with a 37-waypoint route, and the
+  actor still stood at the foot of a 47-degree ramp (limit 50) and gave the
+  target up. (1) The support correction asks the capsule to settle on its
+  contact band, which is a descent once the slope has lifted it, and into
+  the upslope the downward part cancelled the climb; a step with no
+  horizontal headway is now repeated without it
+  (`an_npc_walks_up_a_ramp_below_the_slope_limit`). (2) The ledge fallback
+  ray started 256 units over the feet, and under a low ceiling one airborne
+  tick set the actor down on the roof (595 to 916); it now starts at the
+  capsule's centre (`an_airborne_npc_is_not_set_down_on_the_roof_over_its_head`).
+  The priest then walks 1,600 units in 30 s. The route still ends at a
+  closed door, and NPCs do not open doors (AIP-NG-004), so the container is
+  not reached and the gate's activation check stays optional. Out of the requirement as decided: the `PGRI` inter-cell links,
   whose mapping onto the `0xFFFF` edge sentinel the record's own doc calls
   unresolved (`crates/plugin/src/esm/records/pathgrid.rs:66-70`).
 - **AIP-WALK-004.** The walk-source lookup MUST stay at the asset boundary
@@ -869,7 +872,7 @@ an acceptance pass.
 | Census | `cargo test -p byroredux-plugin --test package_schedule_census -- --ignored` and the `real_*_esm_package_install_counts` tests (AIP-DX-003, -004) | Oblivion, FO3, FNV, Skyrim SE, FO4, Starfield masters | Every procedure with authored packages maps to a §3 class; no "unknown" row |
 | Skyrim tree | `real_skyrim_esm_ambient_packages_now_resolve_for_previously_blind_npcs` (`--ignored`), extended by AIP-DX-004 | Skyrim SE | Reports per-leaf counts; every PKID-referenced package installs or declines with a reason; the skip line is absent |
 | Skyrim sit live | `docs/smoke-tests/m42-skyrim-ambient.sh` (rev 12): `--bench-hold` into `WhiterunBanneredMare`, `time.set 19` | Skyrim SE | `entities(Seated)` is non-empty, the clip is installed and the patron's player is parked on its last frame. Passes |
-| Oblivion live | `docs/smoke-tests/m42-oblivion-packages.sh` (rev 12): the Bravil castle dinner at 21:00 (Oblivion seats through Eat, not Sandbox), and the Moth priest's Find-a-container in `TempleMothCatacombs02` | Oblivion | A diner is `Seated` on `chair_leftenter.kf` (passes); the Find installs and picks a container (passes), but the container receives no `ActivateEvent` yet: see AIP-WALK-003, "Open". `STRICT_FIND=1` requires it |
+| Oblivion live | `docs/smoke-tests/m42-oblivion-packages.sh` (rev 12): the Bravil castle dinner at 21:00 (Oblivion seats through Eat, not Sandbox), and the Moth priest's Find-a-container in `TempleMothCatacombs02` | Oblivion | A diner is `Seated` on `chair_leftenter.kf` (passes); the Find installs and picks a container (passes), and the priest walks 500+ units, but the container receives no `ActivateEvent` yet: the route ends at a closed door (AIP-NG-004). `STRICT_FIND=1` requires it |
 | Schedules | new tests in `crates/plugin` / `npc_spawn::ai_package` (`a_skyrim_weekday_package_selects_on_its_day`, `psdt_month_gates_the_schedule`, `a_v122_month_zero_is_any`) | none | A day- or month-constrained package wins only on its day or month; a stored 0 on a version-122 record is "any" |
 
 ---
@@ -1122,3 +1125,4 @@ option.
 | 10 | 2026-11-19 | AIP-SIT-001 built: `sandbox_sit_enter_kf_path(Oblivion)` returns `chair_leftenter.kf`, with a unit test; the Oblivion live gate stays open | claude: revise |
 | 11 | 2026-11-19 | AIP-SIT-002 built: Skyrim's `chair_leftenter.hkx` installs as the sit-enter clip, and a seated actor with no `AnimationPlayer` is given one that un-seating removes; the Skyrim live check stays open | claude: revise |
 | 12 | 2026-11-19 | Live gates written (`m42-oblivion-packages.sh`, `m42-skyrim-ambient.sh`, `lib/m42_live.sh`): Oblivion Eat seats on `chair_leftenter.kf`, Skyrim sandboxers on `chair_leftenter.hkx`; the Skyrim root height fixed (a headed Sit marker roots the actor on the furniture floor); the Find walk's stall at a ramp recorded under AIP-WALK-003 (not the grid's entry point) | claude: revise |
+| 13 | 2026-11-19 | The two walking faults behind the Oblivion Find stall fixed in `step_toward_detailed` (the support correction cancelling an upslope climb; the ledge fallback ray setting an actor on the roof); the gate now requires the priest to walk; the closed door after that named as AIP-NG-004 | claude: revise |

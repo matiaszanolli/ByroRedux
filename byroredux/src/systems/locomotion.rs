@@ -51,8 +51,14 @@ pub(crate) const LOCOMOTION_ARRIVAL_EPSILON: f32 = 8.0;
 pub(crate) const LOCOMOTION_TURN_RATE: f32 = 4.0;
 
 /// Raycast origin is lifted this far above the actor's last known Y
-/// before casting down, so walking uphill doesn't cast from underground.
-pub(crate) const LOCOMOTION_GROUND_RAY_UP_OFFSET: f32 = 256.0;
+/// before casting down, so walking uphill doesn't cast from underground:
+/// the capsule's centre, which is under the head and so under any ceiling
+/// the actor fits beneath. It was 256, and in an interior the first solid
+/// under a ray from that high is the roof: an actor the KCC reported
+/// airborne for one tick under a low ceiling was set down on top of the
+/// building (Moth catacombs, 595 to 916 in two ticks, AIP-WALK-003).
+pub(crate) const LOCOMOTION_GROUND_RAY_UP_OFFSET: f32 =
+    LOCOMOTION_NPC_CAPSULE_HALF_HEIGHT + LOCOMOTION_NPC_CAPSULE_RADIUS;
 
 /// M42.10 — NPC KCC capsule half-height (BU, excludes caps), matching the
 /// shape-less-actor fallback collider (`install_fallback_actor_collider`,
@@ -251,6 +257,7 @@ pub(crate) fn step_toward_detailed(
         // support within a step of the feet = walked off a ledge or a
         // hole: request the horizontal move alone and let the clamped
         // fallback ray below decide.
+        let horizontal = desired;
         let desired = match probe {
             Some(surface_y) => {
                 let correction = -(current.y - surface_y - kcc_offset);
@@ -258,20 +265,40 @@ pub(crate) fn step_toward_detailed(
             }
             None => desired,
         };
-        let result = pw.move_character(byroredux_physics::CharacterMoveParams {
-            capsule_half_height: LOCOMOTION_NPC_CAPSULE_HALF_HEIGHT,
-            capsule_radius: LOCOMOTION_NPC_CAPSULE_RADIUS,
-            position: Vec3::new(current.x, current.y + lift, current.z),
-            desired_translation: desired,
-            dt,
-            max_slope_climb_deg: LOCOMOTION_NPC_MAX_SLOPE_DEG,
-            step_height: LOCOMOTION_NPC_STEP_HEIGHT,
-            step_min_width: LOCOMOTION_NPC_STEP_MIN_WIDTH,
-            snap_to_ground: LOCOMOTION_NPC_SNAP_TO_GROUND,
-            exclude_collider: None,
-            filter_groups: Some(byroredux_physics::actor_move_interaction_groups()),
-            kcc_offset_bu: LOCOMOTION_NPC_KCC_OFFSET_BU,
-        });
+        let sweep = |desired_translation: Vec3| {
+            pw.move_character(byroredux_physics::CharacterMoveParams {
+                capsule_half_height: LOCOMOTION_NPC_CAPSULE_HALF_HEIGHT,
+                capsule_radius: LOCOMOTION_NPC_CAPSULE_RADIUS,
+                position: Vec3::new(current.x, current.y + lift, current.z),
+                desired_translation,
+                dt,
+                max_slope_climb_deg: LOCOMOTION_NPC_MAX_SLOPE_DEG,
+                step_height: LOCOMOTION_NPC_STEP_HEIGHT,
+                step_min_width: LOCOMOTION_NPC_STEP_MIN_WIDTH,
+                snap_to_ground: LOCOMOTION_NPC_SNAP_TO_GROUND,
+                exclude_collider: None,
+                filter_groups: Some(byroredux_physics::actor_move_interaction_groups()),
+                kcc_offset_bu: LOCOMOTION_NPC_KCC_OFFSET_BU,
+            })
+        };
+        let mut result = sweep(desired);
+        // AIP-WALK-003 — the support correction above is a *descent* request whenever the capsule rests a
+        // little above its contact band, and the support ray reads the floor under the feet, not the slope
+        // ahead. Into a climbable upslope the downward part cancels the climb: on the Moth catacombs'
+        // 47-degree ramp (limit 50) the projected step along the slope came to zero and the priest stood
+        // against it for ever. A step that made no horizontal headway is repeated without the vertical
+        // part, which is how the player controller climbs it.
+        if desired.y < 0.0 && requested > 1e-6 {
+            let headway = |t: Vec3| Vec3::new(t.x, 0.0, t.z).length();
+            if headway(result.translation) < requested * LOCOMOTION_BLOCKED_FRACTION {
+                let retry = sweep(horizontal);
+                // Grounded only: an airborne result sends the ledge fallback ray up from
+                // 256 units over the feet, and under a low ceiling that lands on the roof.
+                if retry.grounded && headway(retry.translation) > headway(result.translation) {
+                    result = retry;
+                }
+            }
+        }
         new_pos = current + result.translation;
 
         if !result.grounded {
@@ -563,6 +590,53 @@ mod stuck_tests {
                 super::LOCOMOTION_NPC_KCC_OFFSET_BU
             );
         }
+    }
+
+    /// AIP-WALK-003 — a walk into a climbable upslope. The support correction asks the capsule to settle
+    /// `offset` above the floor under its feet; once the slope has lifted it a little that is a descent, and
+    /// into a 47-degree ramp (limit 50) the downward part cancelled the climb: the Moth catacombs priest stood
+    /// at the foot of one for ever. The step repeated without the vertical part climbs it.
+    #[test]
+    fn an_npc_walks_up_a_ramp_below_the_slope_limit() {
+        use super::step_toward_detailed;
+        use byroredux_core::math::{Quat, Vec3};
+        use byroredux_physics::world::PHYSICS_DT;
+
+        let angle = 47.0_f32.to_radians();
+        let mut pw = byroredux_physics::PhysicsWorld::new();
+        let _floor = pw.spawn_fixed_cuboid(Vec3::new(2000.0, 20.0, 2000.0), Vec3::new(0.0, -20.0, 0.0));
+        // The ramp's top face passes through (40, 0) and rises toward +x.
+        let normal = Vec3::new(-angle.sin(), angle.cos(), 0.0);
+        let _ramp = pw.spawn_fixed_cuboid_rotated(
+            Vec3::new(300.0, 5.0, 200.0),
+            Vec3::new(40.0, 0.0, 0.0) - normal * 5.0,
+            Quat::from_rotation_z(angle),
+        );
+        let goal = Vec3::new(400.0, 0.0, 0.0);
+        let mut pos = Vec3::new(-100.0, super::LOCOMOTION_NPC_KCC_OFFSET_BU, 0.0);
+        // 250 ticks put it half way up the 205-unit ramp; running on would walk off its top.
+        for _ in 0..250 {
+            let (next, _, _) = step_toward_detailed(pos, Quat::IDENTITY, Vec3::new(goal.x, pos.y, goal.z), PHYSICS_DT, 100.0, Some(&pw));
+            pos = next;
+        }
+        assert!(pos.x > 150.0 && pos.y > 100.0, "the walker should be well up the ramp, stood at {pos:?}");
+    }
+
+    /// AIP-WALK-003 — the airborne fallback ray starts at the capsule's centre, so a roof over a low ceiling
+    /// is not "the ground": an actor with no support under it (here 40 units up, past the step height) under a
+    /// slab 150 units over the floor was set down on the slab's top, 170 up.
+    #[test]
+    fn an_airborne_npc_is_not_set_down_on_the_roof_over_its_head() {
+        use super::step_toward_detailed;
+        use byroredux_core::math::{Quat, Vec3};
+        use byroredux_physics::world::PHYSICS_DT;
+
+        let mut pw = byroredux_physics::PhysicsWorld::new();
+        let _floor = pw.spawn_fixed_cuboid(Vec3::new(2000.0, 20.0, 2000.0), Vec3::new(0.0, -20.0, 0.0));
+        let _roof = pw.spawn_fixed_cuboid(Vec3::new(2000.0, 10.0, 2000.0), Vec3::new(0.0, 160.0, 0.0));
+        let start = Vec3::new(0.0, 40.0, 0.0);
+        let (next, _, _) = step_toward_detailed(start, Quat::IDENTITY, Vec3::new(100.0, start.y, 0.0), PHYSICS_DT, 100.0, Some(&pw));
+        assert!(next.y < 60.0, "set down at y = {}, on the roof (170) or the floor (0)?", next.y);
     }
 
     /// `blocked` is measured against the step the tick asked for, not the whole distance to
