@@ -769,6 +769,10 @@ impl ActionState {
 pub(crate) enum InteractionKind {
     Activate,
     Door,
+    /// M66 — an in-cell door that is shut: activation opens it.
+    OpenDoor,
+    /// M66 — an in-cell door that is open: activation closes it.
+    CloseDoor,
     Container,
     Corpse,
     /// #4697 — a loose world item ([`crate::inventory::is_pickup_target`]);
@@ -794,7 +798,8 @@ impl InteractionKind {
     pub(crate) const fn verb(self) -> &'static str {
         match self {
             Self::Activate => "Activate",
-            Self::Door => "Open",
+            Self::Door | Self::OpenDoor => "Open",
+            Self::CloseDoor => "Close",
             Self::Container | Self::Corpse => "Take all",
             Self::Pickup => "Take",
             Self::Npc => "Talk",
@@ -1494,11 +1499,16 @@ fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, Inter
         }
     }
     if let Some(query) = world.query::<byroredux_scripting::TwoStateActivator>() {
+        let doors = world.query::<crate::components::Door>();
         for (entity, state) in query.iter() {
             if !(state.is_animating || state.do_once && state.activated_once) {
-                candidates
-                    .entry(entity)
-                    .or_insert(InteractionKind::Activate);
+                // M66 — a door says what activating it does.
+                let kind = match doors.as_ref().is_some_and(|doors| doors.contains(entity)) {
+                    true if state.is_open => InteractionKind::CloseDoor,
+                    true => InteractionKind::OpenDoor,
+                    false => InteractionKind::Activate,
+                };
+                candidates.entry(entity).or_insert(kind);
             }
         }
     }

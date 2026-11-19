@@ -75,10 +75,32 @@ pub(crate) fn build_static_object_from_subs(
     let mut xpwr_form_id: Option<u32> = None;
     let mut god_rays_form: Option<u32> = None;
     let mut destruction: Option<DestructionData> = None;
+    let is_door = record_type == b"DOOR";
+    let mut door = is_door.then(DoorData::default);
 
     for sub in subs {
         match &sub.sub_type {
             b"EDID" => editor_id = read_zstring(&sub.data),
+            // DRT-REC-001, -002 — a `DOOR`'s flag byte and open / close / loop sounds.
+            b"FNAM" if is_door && !sub.data.is_empty() => {
+                if let Some(door) = door.as_mut() {
+                    door.fnam = sub.data[0];
+                }
+            }
+            b"SNAM" | b"ANAM" | b"BNAM" if is_door && sub.data.len() >= 4 => {
+                let form = super::super::records::common::remap_fid(
+                    crate::esm::sub_reader::SubReader::new(&sub.data).u32_or_default(),
+                    remap,
+                );
+                if let Some(door) = door.as_mut() {
+                    let sound = (form != 0).then_some(form);
+                    match &sub.sub_type {
+                        b"SNAM" => door.open_sound = sound,
+                        b"ANAM" => door.close_sound = sound,
+                        _ => door.loop_sound = sound,
+                    }
+                }
+            }
             // xEdit `wbDEST`: `DEST` is health (i32), stage count (u8), VATS
             // flag (u8) and two unknown bytes; each `DSTD` opens with health %
             // (u8), index (u8), model damage stage (u8) and flags (u8).
@@ -432,6 +454,7 @@ pub(crate) fn build_static_object_from_subs(
             script_form_id,
             visible_when_distant,
             destruction,
+            door,
         })
     } else {
         None
@@ -936,6 +959,7 @@ fn parse_scol_group_inner(
                         script_form_id: 0,
                         visible_when_distant: header.is_visible_when_distant(),
                         destruction: None,
+                        door: None,
                     },
                 );
             }
@@ -1021,6 +1045,7 @@ fn parse_pkin_group_inner(
                         // though the synthetic child placements are what render.
                         visible_when_distant: header.is_visible_when_distant(),
                         destruction: None,
+                        door: None,
                     },
                 );
             }
@@ -1107,6 +1132,7 @@ fn parse_movs_group_inner(
                         script_form_id: 0,
                         visible_when_distant: header.is_visible_when_distant(),
                         destruction: None,
+                        door: None,
                     },
                 );
             }

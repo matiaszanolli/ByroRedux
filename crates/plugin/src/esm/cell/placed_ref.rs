@@ -202,6 +202,11 @@ pub struct PlacedRef {
     /// presence). Applies to both doors and containers; `None` means
     /// unlocked / not applicable. See #3098.
     pub lock: Option<LockData>,
+    /// `Open by Default` (the empty `ONAM` sub-record): the reference's default state is open. Applies only to doors:
+    /// "the default state for the door is open" (CS and GECK *Reference*), and the state a door returns to when its cell
+    /// is unloaded and re-entered (CS *GetDoorDefaultOpen*). xEdit types it as `wbEmpty(ONAM, 'Open by Default')` on Oblivion,
+    /// Fallout 3, Fallout: New Vegas, Skyrim and Fallout 4 (PRD door-runtime DRT-REC-004).
+    pub open_by_default: bool,
     /// Authored local water-current velocity from entry 0 of the REFR `XWCU`
     /// array, in Gamebryo Z-up coordinates. Vanilla Skyrim authors it on
     /// placed water activators, mirroring their WATR `NAM0`; current-marker
@@ -317,6 +322,7 @@ impl PlacedRef {
             ownership: None,
             script_instance: None,
             lock: None,
+            open_by_default: false,
             water_velocity: None,
             item_count: None,
             initially_disabled: false,

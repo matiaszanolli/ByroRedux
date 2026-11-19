@@ -2747,6 +2747,7 @@ mod tests {
                 script_form_id: 0,
                 visible_when_distant: false,
                 destruction: None,
+                door: None,
             },
         );
 
@@ -2779,6 +2780,7 @@ mod tests {
                 script_form_id: 0,
                 visible_when_distant: false,
                 destruction: None,
+                door: None,
             },
         );
         assert!(idx.base_record_script_instance(PLAIN).is_none());
@@ -2818,6 +2820,7 @@ mod tests {
                 script_form_id: SCPT,
                 visible_when_distant: false,
                 destruction: None,
+                door: None,
             },
         );
 
@@ -2854,6 +2857,7 @@ mod tests {
                 script_form_id: 0,
                 visible_when_distant: false,
                 destruction: None,
+                door: None,
             },
         );
 

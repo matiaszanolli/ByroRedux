@@ -912,6 +912,10 @@ pub(super) fn spawn_synth_child(
     accum.blas_built += spawn_stats.blas_built;
     if is_primary_synth {
         stamp_quest_reference(world, placement_root, placed_ref, load_order);
+        // M66 — an in-cell door (no teleport) gets its open state and motion before any saved state is restored over it.
+        if let Some(door) = stat.door.filter(|_| placed_ref.teleport.is_none()) {
+            crate::systems::door::attach_door(world, placement_root, door, record_index.game, placed_ref.open_by_default);
+        }
         if let Some(current) = water_current_volume_from_ref(placed_ref, ref_pos, ref_scale) {
             world.insert(placement_root, current);
         }

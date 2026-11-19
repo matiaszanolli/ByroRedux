@@ -741,6 +741,7 @@ mod tests {
             script_form_id: 0,
             visible_when_distant: false,
             destruction: None,
+            door: None,
         }
     }
 

@@ -37,7 +37,7 @@ pub(crate) use support::build_static_object_from_subs;
 // into the sibling modules above; every public path through `esm::cell::`
 // is re-exported below so no caller changes.
 pub use base_objects::{
-    AddonData, DecalData, DestructionData, DestructionStage, LightData, StaticObject, TextureSet,
+    AddonData, DecalData, DestructionData, DestructionStage, DoorData, DoorFlags, LightData, StaticObject, TextureSet,
 };
 pub use cell_data::CellData;
 pub use index::{

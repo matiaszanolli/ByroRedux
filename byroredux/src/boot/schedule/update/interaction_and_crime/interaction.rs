@@ -94,6 +94,8 @@ fn register_interaction_system(scheduler: &mut Scheduler) {
             .reads::<crate::components::DoorTeleport>()
             .reads::<byroredux_core::ecs::components::Locked>()
             .reads::<byroredux_scripting::TwoStateActivator>()
+            // M66 — an in-cell door's prompt says Open or Close.
+            .reads::<crate::components::Door>()
             .reads::<byroredux_scripting::papyrus_demo::RumbleOnActivate>()
             .reads::<byroredux_scripting::papyrus_demo::quest_advance::QuestAdvanceOnActivate>()
             .reads::<byroredux_scripting::papyrus_demo::mg07_door::MG07LabyrinthianDoor>()

@@ -479,6 +479,7 @@ mod unresolved_attribution_tests {
             script_form_id: 0,
             visible_when_distant: false,
             destruction: None,
+            door: None,
         };
         let placed = |form_id: u32, base: u32| PlacedRef {
             form_id,

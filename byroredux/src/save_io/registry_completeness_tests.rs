@@ -1017,6 +1017,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PickedUp", "volatile pickup marker; the durable half is the saved PersistentReferenceStates tombstone row, and reference_state::restore re-stamps the marker at load"),
         ("RegionAmbientRes", "resolved REGN Sound-entry FormIDs for the resident cell/tile (EX-16 item 1 / #2372), rederived identically from the cell's XCLR list + the plugin's parsed REGN map every cell load — same posture as CellLightingRes/NavmeshTile"),
         ("SandboxSitClip", "resolved once at cell load from the archive provider, read-only afterward"),
+        ("Door", "M66 in-cell door runtime: the motion clips, record flags and sounds are re-derived from the model and the DOOR record at every spawn, and the open state it animates is the saved TwoStateActivator; `posed`/`remaining` are presentation bookkeeping that the first tick re-establishes"),
         ("SkyrimWalkClip", "resolved once at cell load from the archive provider, read-only afterward — same posture as SandboxSitClip"),
         ("WalkAnimation", "runtime walk-clip playback state (M42.10): `walk_handle` re-derives from the spawn path lookup, `walking`/`last_pos`/`captured` are per-frame transient — same posture as NavPath"),
         ("WalkStuckTimer", "runtime blocked-leg scratch (M42.10), cleared on package handover and re-accumulated from zero against the same deterministic obstacle — same posture as NavPath"),

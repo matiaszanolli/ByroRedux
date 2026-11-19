@@ -1488,3 +1488,10 @@ fn xrgd_decodes_the_authored_ragdoll_pose() {
     let live = parse_one_refr(&build_refr_with_subs(0x1234, &[]));
     assert!(live.ragdoll_pose.is_empty());
 }
+
+/// DRT-REC-004 — an empty `ONAM` on a REFR is `Open by Default`; its absence is not.
+#[test]
+fn a_reference_with_onam_is_open_by_default() {
+    assert!(parse_one_refr(&build_refr_with_subs(0xABCD, &[(b"ONAM", &[])])).open_by_default);
+    assert!(!parse_one_refr(&build_refr_with_subs(0xABCD, &[])).open_by_default);
+}

@@ -18,6 +18,7 @@ fn make_static(form_id: u32, model: &str) -> StaticObject {
         script_form_id: 0,
         visible_when_distant: false,
         destruction: None,
+        door: None,
     }
 }
 
@@ -131,6 +132,7 @@ fn placed(form_id: u32, base_form_id: u32) -> PlacedRef {
         ownership: None,
         script_instance: None,
         lock: None,
+        open_by_default: false,
         water_velocity: None,
         item_count: None,
         initially_disabled: false,

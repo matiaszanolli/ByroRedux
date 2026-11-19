@@ -143,6 +143,11 @@ pub fn two_state_activator_system(world: &World, _dt: f32) {
             if state.do_once && state.activated_once {
                 continue;
             }
+            // M66 — an activation while the door's clip is running is ignored (DRT-ACT-001); the presentation
+            // system sets `is_animating` for a clip's length and clears it at the end.
+            if state.is_animating {
+                continue;
+            }
             state.is_open = !state.is_open;
             state.is_animating = false;
             state.activated_once = true;

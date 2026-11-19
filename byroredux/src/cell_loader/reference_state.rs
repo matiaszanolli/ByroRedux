@@ -1313,6 +1313,7 @@ mod script_kill_tests {
             ownership: None,
             script_instance: None,
             lock: None,
+            open_by_default: false,
             water_velocity: None,
             item_count: None,
             initially_disabled: false,

@@ -176,6 +176,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(crate::combat::CombatState::default());
     // #3709 — per-combatant melee cooldown/blocking, split out of
     // CombatState (a Resource can only ever represent one combatant).
+    world.register::<crate::components::Door>();
     world.register::<crate::combat::MeleeState>();
     // M65 (SNK-DET-001) — each detector's awareness of the player, written by the detection tick.
     world.register::<byroredux_core::ecs::components::Awareness>();

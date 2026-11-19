@@ -21,6 +21,7 @@ pub(crate) mod knockdown;
 pub(crate) mod flee;
 pub(crate) mod script_requests;
 pub(crate) mod archetype_idle;
+pub(crate) mod door;
 pub(crate) mod eat_sleep;
 mod cinematic;
 #[cfg(test)]

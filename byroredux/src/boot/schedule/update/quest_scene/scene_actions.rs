@@ -19,6 +19,9 @@ pub(super) fn register_scene_actions_systems(scheduler: &mut Scheduler) {
     // consumer next frame. This registration consumes the flushed
     // marker so GetVMScriptVariable phase gates observe the updated
     // two-state activator, before end-of-frame event cleanup.
+    // M66 — the door motion consumes the transition batch `two_state_activator_system` publishes, so it runs
+    // before the system that drains it: a transition published in frame N plays in frame N + 1.
+    scheduler.add_exclusive(Stage::Update, crate::systems::door::door_motion_system);
     scheduler.add_exclusive(
         Stage::Update,
         byroredux_scripting::two_state_activator_system,
