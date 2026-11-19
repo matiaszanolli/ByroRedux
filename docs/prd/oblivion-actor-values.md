@@ -1,6 +1,6 @@
 # Oblivion Actor Values — Product Requirements
 
-**Status**: ACTIVE (2026-11-17). Revision 7 brings the §3.3 consumer table to HEAD; revision 6 settles the §3.4 auto-calc rules from the executable; revision 5 files the tracking issues; revision 4 records the owner's approval; revision 3 the decisions on Q1–Q3; revision 2 folded in review round 1. Statements
+**Status**: SHIPPED (2026-11-19). Revision 8 moves the PRD to SHIPPED after its phase exits were re-checked (§12); #7022 stays open as an observation in the original game. Revision 7 brings the §3.3 consumer table to HEAD; revision 6 settles the §3.4 auto-calc rules from the executable; revision 5 files the tracking issues; revision 4 records the owner's approval; revision 3 the decisions on Q1–Q3; revision 2 folded in review round 1. Statements
 about how Oblivion behaves cite external sources (UESP, the Construction Set
 wiki dump under `/mnt/data/src/reference/`, xEdit's `wbDefinitionsTES4.pas`);
 a claim that could not be verified is marked **Phase 0: verify** instead of
@@ -374,3 +374,4 @@ Exit: §7.2 scenario 4 passes; consumers on real values 10 / 10.
 | 5 | 2026-11-15 | APPROVED → ACTIVE: parent #7007, phases #7008–#7011; the Phase 0 verify items are on #7008 | — |
 | 6 | 2026-11-17 | §3.4 auto-calc table rewritten from the executable and `Oblivion.esm` GMSTs (#7008): the health row now carries the favored-Endurance and specialization terms; Luck calculated with no level term; Personality kept; level-1 skill and attribute values; OAV-POP-003's three verify items answered, flag timing moved to #7022 | — |
 | 7 | 2026-11-17 | §3.3 consumer table rewritten to HEAD: all ten rows read real values (#7011 acceptance pass; live smoke passes) | — |
+| 8 | 2026-11-19 | → SHIPPED. Exits re-checked at HEAD `35c871ccc`: scenario 1 (the resolution tests, 70 of 70 indices, 38, 39 and 72 rejected), scenario 2 (`oblivion_stamps_every_stored_and_knight_actor_value`), scenario 3 (the `Oblivion.esm` census: `NPC_` 2 482 / 2 482 and `CREA` 914 / 914 with all 33 standard values, at player levels 1 and 30) and scenario 4 (`docs/smoke-tests/oblivion-actor-values.sh` passes: three detectors with a non-zero skill term, the Health bar falls after damage) all pass, and each of the ten §3.3 consumers has a passing test. Carried open: #7022, the owner-run observation of the auto-calc flag timing. The figures move into the ROADMAP matrix's Oblivion row, as §8 says | — |

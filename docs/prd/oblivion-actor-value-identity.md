@@ -1,6 +1,6 @@
 # Oblivion Actor-Value Identity and Portable Saves — Product Requirements
 
-**Status**: ACTIVE (2026-11-17). Revision 5 corrects the §3.4 `ActorVitals` row; revision 4 files the tracking issue; revision 3 records the owner's approval; revision 2 records the owner's decisions on Q1–Q4; revision 1: the identity, load-order slot and save-portability contract that [oblivion-actor-values.md](oblivion-actor-values.md) decided in its Q1 but left unspecified, plus the execution sequence for that PRD's phases. Statements about how Oblivion behaves cite external sources (UESP, the Construction Set wiki dump under `/mnt/data/src/reference/`, xEdit's `wbDefinitionsTES4.pas`, the `Oblivion.exe` disassembly); a claim that could not be verified is marked **Phase 0: verify** instead of being stated as fact.
+**Status**: SHIPPED (2026-11-19). Revision 6 moves the PRD to SHIPPED after its phase exits were re-checked (§12). Revision 5 corrects the §3.4 `ActorVitals` row; revision 4 files the tracking issue; revision 3 records the owner's approval; revision 2 records the owner's decisions on Q1–Q4; revision 1: the identity, load-order slot and save-portability contract that [oblivion-actor-values.md](oblivion-actor-values.md) decided in its Q1 but left unspecified, plus the execution sequence for that PRD's phases. Statements about how Oblivion behaves cite external sources (UESP, the Construction Set wiki dump under `/mnt/data/src/reference/`, xEdit's `wbDefinitionsTES4.pas`, the `Oblivion.exe` disassembly); a claim that could not be verified is marked **Phase 0: verify** instead of being stated as fact.
 
 **Tracking**: #7007 (parent PRD), #7021 (Phase 1). Phases 0, 2, 3 and 4 run under #7008, #7009, #7010 and #7011, which carry this PRD's requirements beside the parent's.
 
@@ -228,6 +228,7 @@ The numbers are published in ROADMAP's per-game compatibility matrix, Oblivion r
 | 3 | 2026-11-15 | PROPOSED → APPROVED | owner: approved |
 | 4 | 2026-11-15 | APPROVED → ACTIVE: tracking #7021 (Phase 1) under parent #7007 | — |
 | 5 | 2026-11-17 | §3.4 row 2 corrected: `ActorVitals` joins `MUTABLE_DELTA_COLUMNS` because the player's Health key is not re-derived on a live load (audit SAVE-1); OAI-SAVE-004's live-load leg now covers vitals | — |
+| 6 | 2026-11-19 | → SHIPPED. Exits re-checked at HEAD `35c871ccc`: scenario 1 (all 72 identities round-trip; the lowest unused slot; slot exhaustion and an identity collision fail by name), scenario 2 (resolution and install order) and scenario 3 (`actor_value_save_survives_a_changed_engine_slot`, the missing-plugin drop) pass; the scripting crate's `actor_value_save` tests compile only with `--features save`. Scenario 4 stands on the audit recorded on #7008 and in [AUDIT_SAVE_2026-11-17](../audits/AUDIT_SAVE_2026-11-17.md). Scenario 5's live reload passes in both directions across a changed plugin set (`docs/smoke-tests/oblivion-live-load-plugin-set.sh`, engine slot 2 and 3). #7022 stays open as the observation issue Phase 0's exit allows | — |
 
 ---
 
