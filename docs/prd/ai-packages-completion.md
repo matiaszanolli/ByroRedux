@@ -1,6 +1,6 @@
 # AI Packages Completion — Product Requirements
 
-**Status**: ACTIVE (2026-11-19). Revision 14 scopes NPC door passage (AIP-DOOR, §5.11) and records decision Q8 (the door runtime gets its own PRD). Revision 13 fixes the two walking faults the Oblivion Find gate exposed. Revision 12 adds the two live gates and records what they found. Revision 11 wires Skyrim's sit-enter clip (AIP-SIT-002) and revision 10 Oblivion's (AIP-SIT-001). Revision 8 records AIP-WALK-003 as built (the pathgrid switch on every walking mover) and rev 7 its first slice. Revision 6 re-measures the "Today" claims at HEAD after Phases 1–5 and folds in review round 3 (§12). Revision 5 files the tracking issues; every **Phase 0: verify** item is an acceptance criterion of the Phase 0 issue. Revision 4 recorded the owner's §10 decisions: Q2 sets Skyrim's weekday origin per edition, every other answer is the recommendation. Revision 3 folded in review round 2
+**Status**: ACTIVE (2026-11-19). Revision 15 links the Door Runtime PRD. Revision 14 scopes NPC door passage (AIP-DOOR, §5.11) and records decision Q8 (the door runtime gets its own PRD). Revision 13 fixes the two walking faults the Oblivion Find gate exposed. Revision 12 adds the two live gates and records what they found. Revision 11 wires Skyrim's sit-enter clip (AIP-SIT-002) and revision 10 Oblivion's (AIP-SIT-001). Revision 8 records AIP-WALK-003 as built (the pathgrid switch on every walking mover) and rev 7 its first slice. Revision 6 re-measures the "Today" claims at HEAD after Phases 1–5 and folds in review round 3 (§12). Revision 5 files the tracking issues; every **Phase 0: verify** item is an acceptance criterion of the Phase 0 issue. Revision 4 recorded the owner's §10 decisions: Q2 sets Skyrim's weekday origin per edition, every other answer is the recommendation. Revision 3 folded in review round 2
 (§12 lists the topics). It covers the remainder of milestone M42: the
 procedures, package fields and per-game prerequisites that do not run yet.
 Statements about how the original engines behave cite external sources
@@ -865,8 +865,8 @@ How an actor passes an in-cell door that is locked, whether it closes the
 door behind it, and how long it waits for the swing are not documented in
 these sources: **Phase 0: verify** (AIP-DOOR-005).
 
-- **AIP-DOOR-001.** This PRD depends on the `door-runtime` PRD (decision Q8,
-  not yet written) delivering the following: a placed in-cell door MUST have an open state, and an
+- **AIP-DOOR-001.** This PRD depends on the [Door Runtime PRD](door-runtime.md)
+  (decision Q8; its DRT-STATE, DRT-ACT and DRT-MOVE areas) delivering the following: a placed in-cell door MUST have an open state, and an
   `ActivateEvent` from any activator (the player, an actor's package, a
   script) MUST toggle it, play the model's `Open` or `Close` sequence, and
   move its collision with the model, so the door stops blocking the
@@ -875,7 +875,7 @@ these sources: **Phase 0: verify** (AIP-DOOR-005).
   Observable: a unit test that opens a door fixture and walks the
   controller through it, and a live check that the player opens the
   Moth catacombs door. The requirement is the contract AIP-DOOR-002 builds
-  on; the `door-runtime` PRD owns its design and its issues.
+  on; the Door Runtime PRD owns its design and its issues.
 - **AIP-DOOR-002.** The character controller's blocked step MUST report the
   collider that blocked it (`CharacterMoveResult`), and a walking mover
   whose blocker is a closed, unlocked in-cell door within arm's reach
@@ -890,14 +890,13 @@ these sources: **Phase 0: verify** (AIP-DOOR-005).
   keeps today's give-up path (`cannot reach`). Which of the three the
   original actor needs for an *in-cell* lock is **Phase 0: verify**
   (AIP-DOOR-005); the CK sentence above is about load doors.
-- **AIP-DOOR-004.** The `DOOR` record's `FNAM` flags and its three sounds
-  MUST decode onto a canonical door component (the flags as named, per game,
-  from the xEdit definitions above). `Minimal Use` MUST keep a route from
-  choosing the door as a shortcut once a router can choose between doors;
-  today's single-grid walk has no choice to make, so until then the
-  requirement is the decode and a test that the flag reaches the component.
-  The open and close sounds MUST play through the M44 audio path on the
-  transition.
+- **AIP-DOOR-004.** The `Minimal Use` door flag, decoded under DRT-REC-001
+  (CS: "NPCs will not use this door when path finding through the cell"),
+  MUST keep a route from choosing that door as a shortcut once a router can
+  choose between doors. Today's single-grid walk has no such choice, so
+  until then the requirement is a test that the flag is readable where the
+  walk decides to open a door. The decode, the sounds and the transition
+  belong to the Door Runtime PRD.
 - **AIP-DOOR-005.** The unsourced behaviours MUST be settled from a CS /
   GECK / CK page, a UESP page or an observation of the original game before
   they are built, and until then the runtime does the least that unblocks
@@ -1213,7 +1212,7 @@ option.
    actors then stay behind any closed door for good (807 of its 1,855
    interior cells hold one, 741 of them with a `PGRD`).
    **Decided** (2026-11-19): the recommendation — the door runtime gets its
-   own PRD (`door-runtime`, prefix `DRT`, not yet written), AIP-DOOR-001
+   own PRD ([Door Runtime](door-runtime.md), prefix `DRT`, drafted in rev 15), AIP-DOOR-001
    becomes this PRD's dependency on it, and Phase 4's exit waits for its
    open state.
 
@@ -1252,3 +1251,4 @@ option.
 | 12 | 2026-11-19 | Live gates written (`m42-oblivion-packages.sh`, `m42-skyrim-ambient.sh`, `lib/m42_live.sh`): Oblivion Eat seats on `chair_leftenter.kf`, Skyrim sandboxers on `chair_leftenter.hkx`; the Skyrim root height fixed (a headed Sit marker roots the actor on the furniture floor); the Find walk's stall at a ramp recorded under AIP-WALK-003 (not the grid's entry point) | claude: revise |
 | 13 | 2026-11-19 | The two walking faults behind the Oblivion Find stall fixed in `step_toward_detailed` (the support correction cancelling an upslope climb; the ledge fallback ray setting an actor on the roof); the gate now requires the priest to walk; the closed door after that named as AIP-NG-004 | claude: revise |
 | 14 | 2026-11-19 | NPC door passage scoped as AIP-DOOR (§5.11): what exists at HEAD, a four-master census of in-cell doors, the sourced door behaviour, six requirements, the unsourced behaviours as a verify item; AIP-NG-004 clarified; AIP-FIND-005 and Phase 4 reference it; decision Q8 added and decided by the owner: the door runtime gets its own PRD | claude: revise |
+| 15 | 2026-11-19 | Door Runtime PRD drafted (`door-runtime.md`, prefix `DRT`): AIP-DOOR-001 and -004 now cite it; decision Q8 links it | claude: revise |
