@@ -1,6 +1,6 @@
 # Sneak and Detection — Product Requirements
 
-**Status**: ACTIVE (2026-11-18). Revision 12 records Starfield's row, decoded from `Starfield.exe` (#7046); revision 11 records Fallout 4's row, decoded from `Fallout4.exe` (#6996); revision 10 records the Phase 6 outcome; revision 9 the Phase 5 findings; revision 8 the Phase 4 ones; revision 7 the Phase 2 scope moves.
+**Status**: SHIPPED (2026-11-19). Revision 13 moves the PRD to SHIPPED after every phase exit was re-checked (§12); it is retained as history. Revision 12 records Starfield's row, decoded from `Starfield.exe` (#7046); revision 11 records Fallout 4's row, decoded from `Fallout4.exe` (#6996); revision 10 records the Phase 6 outcome; revision 9 the Phase 5 findings; revision 8 the Phase 4 ones; revision 7 the Phase 2 scope moves.
 Revision 5 filed the tracking issues. Revision 2
 folded in review round 1, revision 3 recorded the §10 decisions, and the owner
 approved it (§12).
@@ -17,8 +17,7 @@ community-derived, not official, and are cited as such. A claim that could not
 be verified is marked **Phase 0: verify** instead of being stated as fact, and
 every such item is a row of the Phase 0 verify table (§9).
 
-**Tracking**: #6908 (parent). Phases: #6909 (0), #6910 (1), #6911 (2), #6912 (3),
-#6913 (4), #6914 (5), #6915 (6).
+**Tracking**: #6908 (parent). Phases: #6909 (0), #6910 (1), #6911 (2), #6912 (3), #6913 (4), #6914 (5), #6915 (6). Open verify follow-ups: #6935, #6936, #6937.
 
 **Scope**: The player's sneak stance and how the actors around the player
 become aware of them, in Oblivion, Fallout 3, Fallout: New Vegas and Skyrim:
@@ -632,15 +631,15 @@ and the census table is checked in.
 | V7 | The FO3 / FNV detection cadence | SNK-DET-006 | A timer setting found by the census, or the executable's default table | closed (design §4.1) |
 | V8 | Skyrim's `fSneakBaseValue` | SNK-DET-007 | `Skyrim.esm` through the census, or the executable's default table | closed (design §13.1) |
 | V9 | Whether Oblivion and FO3 / FNV have a view cone | SNK-DET-008 | A view-cone setting found by the census, or an in-game test | FO3 / FNV closed; Oblivion #6936 |
-| V10 | The rule that moves a detector to level Lost | SNK-DET-012 | The *Category:Detection* timers through the census, then an in-game test | FO3 / FNV closed (design §4.3); Oblivion, Skyrim #6936 |
-| V11 | Skyrim's stealth-point regeneration | SNK-DET-015 | The CK settings through the census and an in-game test | #6936 |
-| V12 | Whether level Unseen counts as unaware for a sneak attack | SNK-ATK-001 | An in-game test per game | FO3 / FNV closed (design §8); Oblivion, Skyrim #6936 |
+| V10 | The rule that moves a detector to level Lost | SNK-DET-012 | The *Category:Detection* timers through the census, then an in-game test | closed (design §4.3) |
+| V11 | Skyrim's stealth-point regeneration | SNK-DET-015 | The CK settings through the census and an in-game test | closed (design §4.3) |
+| V12 | Whether level Unseen counts as unaware for a sneak attack | SNK-ATK-001 | An in-game test per game | closed (design §8) |
 | V13 | Oblivion's Apprentice marksman multiplier and Novice bonus | SNK-ATK-002 | `Oblivion.esm` through the census and an in-game test | closed (design §8) |
 | V14 | The FO3 / FNV sneak-attack damage multiplier | SNK-ATK-003 | The three GECK-named settings through the census and an in-game test | closed (design §8) |
-| V15 | Where Skyrim's base sneak-attack multipliers live | SNK-ATK-004 | `Skyrim.esm` settings and weapon records, and an in-game test | closed (design §8); bonus-mult role #6936 |
+| V15 | Where Skyrim's base sneak-attack multipliers live | SNK-ATK-004 | `Skyrim.esm` settings and weapon records, and an in-game test | closed (design §8); `fCombatSneakAttackBonusMult` has no reader found |
 | V16 | What `fVATSStealthMult` scales | SNK-ATK-006 | An in-game VATS test | closed (design §8) |
 | V17 | What `StartCannibal` and `StartMisterSandman` change, and whether "eaten" is saved | SNK-PERK-002 | An in-game test across a save and load | #6937 |
-| V18 | Which terms Skyrim 48 and 57 scale | SNK-PERK-004 | An in-game test with a vanilla perk using each, named by the census | #6936 |
+| V18 | Which terms Skyrim 48 and 57 scale | SNK-PERK-004 | An in-game test with a vanilla perk using each, named by the census | closed (design §9) |
 | V19 | What FNV 69, 70 and 71 do | SNK-PERK-006 | The vanilla perks using each, named by the census, and an in-game test | closed (design §9): companion perception perks |
 | V20 | Each game's indicator table: FO3 / FNV [DETECTED] versus flashing [DANGER], the rest whole | SNK-HUD-002, §3.2, §6 row 9 | In-game captures of each state with its detector's level and hostility | #6935 |
 | V21 | The sneak element and trait of the vanilla `hud_main_menu.xml` | SNK-HUD-003 | Reading the XML from each MenuXml game's archives | closed (design §10) |
@@ -782,3 +781,4 @@ games are recorded out with the reason.
 | 10 | 2026-11-15 | Phase 6 (#6915): per Q2 Fallout 4 and Starfield detect by the actor-to-actor sight test, formula coverage 0 for both. A source now exists for Fallout 4: `Fallout4.exe`'s code is readable, and its detection is its own model (split sound / visual stealth points, cover, visibility; ~130 settings), not Skyrim's; `Starfield.exe` names its settings but keeps them in another layout. Decoding and building both rows is #6996; SNK-PERK-008's hooks stay Pending until then | — |
 | 11 | 2026-11-16 | Fallout 4's row built from `Fallout4.exe` (#6996): sound and visual values (`0x1406c8770`), the pair's visual range, line-of-sight reach and height-weighted distance (`0x140cc00c0`), stealth points split by sense with their thresholds, drain floor and eased refill (`0x140e94420`, `0x140e9f170`), and the twelve-class sneak table with Gun, Grenade and Mine (`0x140479660`); SNK-PERK-008's hooks Consumed; A2 transcription and A3 census (93 settings, 33 authored by `Fallout4.esm`) pass. Formula coverage 5 / 6 rows; Starfield keeps the sight test, its settings built by per-setting initializers that the defaults tool does not read yet | — |
 | 12 | 2026-11-18 | Starfield's row built from `Starfield.exe` (#7046): its settings are per-setting initializers (`scripts/exe-setting-defaults.py` reads them), its pair `0x140d7e2a0` is Fallout 4's model in metres with an ambient-sound term, a sprint tier and a visual range 1.5× the sound range, and its stealth points are Fallout 4's code over Starfield's defaults. A2 transcription and A3 census (101 settings, 52 authored by `Starfield.esm`) pass; formula coverage 6 / 6 sourced rows. The ambient sound class, the sky factor and the combat falloff set stay neutral (design §4.2) | — |
+| 13 | 2026-11-19 | → SHIPPED. Exits re-checked at HEAD `aea8db907`: scenario 1 (stance), 2 (formula, one test per ruleset row), 4 (the one-producer scan `the_detection_module_is_the_only_caller_of_the_line_test_and_the_range`), 6 (unseen theft), 8 (sneak attacks, every game) and 9 (the indicator per game) pass as `cargo test` (73 tests across the core, scripting and binary crates); scenario 3's census over six real masters passes; scenarios 5 and 7 pass live on FNV (`m65-stealth-detection.sh`: Lost behind cover, Seen in sight, indicator `[DETECTED]`; `m65-robotics-expert.sh`: Robotics Expert deactivates the robot under Chameleon). The verify table's V10, V11, V12, V15 and V18 rows are brought to the design's §13.3 (17 of 23 closed). Carried open as filed issues, which Phase 0's exit allows: #6935 (in-game checks V1, V3, V4, V23 and the Oblivion, Skyrim, Fallout 4 and Starfield indicator tables), #6936 (whether Oblivion has a view cone, V9) and #6937 (V17: the Cannibal family and Mister Sandman stay unoffered, SNK-PERK-002). The lower first-person camera (SNK-STN-007, a SHOULD) waits on #6935. Metrics stay in the ROADMAP M65 row | — |
