@@ -26,7 +26,7 @@ those defaults one for one.
 | Stance path | `byroredux_scripting::stance` (`set_sneaking`, `toggle_sneaking`, the `sneaking_enabled` gate) behind the binary's `set_player_sneaking` | The one write of `Sneaking`: the key, `stealth.sneak` and Papyrus `StartSneaking` (SNK-DX-002) |
 | Stance speed | `StanceModel` profile row (`crates/core/src/character/stance.rs`) resolved per load into the `SneakMovement` resource; `MOVT` decoded into `EsmIndex::movement_types` | SNK-STN-005 |
 | Ruleset row | `StealthRules` built by `CharacterRulesProfile` from the load order's game settings (`crates/core/src/character/`) | Which formula, which settings, thresholds, cadence, view cone, indicator table. The only per-game data (SNK-DET-002) |
-| Formulas | `crates/core/src/stealth.rs` | Pure functions, one per ruleset kind: `fo3_value`, `fnv_value`, `oblivion_value`, `skyrim_value`. No ECS. Today's `detection_score` becomes `fnv_value` with its constants turned into `StealthRules` fields |
+| Formulas | `crates/core/src/stealth.rs` and `crates/core/src/stealth/` | Pure functions behind `StealthRules::value`, one module per ruleset kind: `fallout` (FO3 and FNV, `fallout::value`), `oblivion`, `skyrim`, `fallout4`, `starfield`. No ECS. Every coefficient is a `StealthRules` field |
 | Detection module | `byroredux/src/detection/` (`byroredux/src/detection/sight.rs`, `byroredux/src/detection/light.rs`, `byroredux/src/detection/tick.rs`) | The tick, the light level, the actor-to-actor sight test and the line test. The only caller of `PhysicsWorld::line_of_sight_blocked` and of the range from `DetectionConfig` (SNK-USE-007) |
 | Awareness | `Awareness` component on each detector (`crates/core/src/ecs/components/detection.rs`, `SparseSetStorage`): value, level toward the player, alert state, per-detector timer, last terms | Produced by the tick only; read by every consumer (SNK-DET-001) |
 | Summary | `PlayerDetection` resource: worst counted level, its detector's alert state and hostility | What the indicator draws (SNK-HUD-001) |
@@ -182,7 +182,7 @@ wiki gives (CHARAL FNV ruleset *Sneak Detection*; `stealth.rs`). The FNV capture
 constants are exactly these settings' values: base −35, exponent 2, range 2500 / 5000,
 sound 1.6 and 1.6 · 0.1, boot weight 12 + 0.5·w, running 1.5, action ×2, light 1.4,
 visual movement 0.01 / 0.21 (= 0.01 + 0.2), perception 10 + 8·Per, skill ×0.5.
-`fnv_value` therefore reads every coefficient from `StealthRules`. One term
+`fallout::value` therefore reads every coefficient from `StealthRules`. One term
 disagrees: the capture's `DetectorState` (0.8 asleep or fighting this target, 1.2
 alert, lost or fighting another). The FO3 code instead computes 1 + alert·0.2 +
 sleeping·(−0.2) + notCombatTarget·(−0.4) + ambush. Phase 2 uses the settings form,

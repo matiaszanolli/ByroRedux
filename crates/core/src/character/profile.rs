@@ -793,8 +793,9 @@ impl CharacterRulesProfile {
             // The original zeroes the `Player` record's stored pools when it loads (`Oblivion.exe` `0x5240b2`), so
             // the player's Health (`End x fPCBaseHealthMult`), Magicka (`Int x (1 + fPCBaseMagickaMult)`) and
             // Fatigue (`Str + End + Agi + Wil`) are their formulas (#7037, #7041). The original's level-up adds
-            // a per-level Health gain to the stored term (`0x66c3e0`); no Oblivion level-up exists here yet, and
-            // when one does the gain must be kept apart from this refreshed base.
+            // a per-level Health gain to the stored term (`0x66c3e0`). The level-up is wired (#7052,
+            // `oblivion_skill_use.rs`): the gain lands in `ActorValue::stored` (#7044), apart from this
+            // refreshed base, so the refresh does not erase it.
             RulesetBuilder::Oblivion => oblivion_ruleset(resolve),
             RulesetBuilder::None => return None,
         };

@@ -443,8 +443,8 @@ fn cmd_1156(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx
     }
 }
 
-// Oblivion path grids: *EnableLinkedPathPoints* / *DisableLinkedPathPoints*: the engine paths on
-// navmeshes, so the flag is kept for the grid that would read it.
+// Oblivion path grids: *EnableLinkedPathPoints* / *DisableLinkedPathPoints*: the flag is stored, but
+// the grid router (`find_path_over_grid`, `pathgrid_path.rs`) does not read it yet.
 fn enable_linked_path_points(world: &World, _fallout: bool, cmd: u16, _args: &[ObScriptValue], ctx: &Context) -> Action {
     match caller(world, ctx) {
         Some((form, _)) => store(world, 0x112a, form, if cmd == 0x112a { 1.0 } else { 0.0 }),
