@@ -25,8 +25,9 @@
 #
 # MIN_REGION_FRAC keeps a handful of hot pixels from passing: 0.1 % of a 1280x720 frame is 921 pixels.
 #
-# Reading a FAIL: it means no sampled pose (at most MAX_POSES per cell) showed a sun-driven change in the medium,
-# not that none exists. For a cell whose volumes are all fixture-beam cones beside local lights (the inventory
+# A shaft cell that fails the initial four poses is also measured at its remaining shaft or aperture volumes.
+# Reading a FAIL means no sampled pose showed a sun-driven change in the medium. For a cell whose volumes
+# are all fixture-beam cones beside local lights (the inventory
 # line shows only `Homogeneous` volumes, Show Sky off) that is the authored content, not an engine fault: those
 # beams have no sun path to follow (docs/engine/interior-shaft-openings.md). A cell with no volume at all fails
 # its shaft run by construction.
@@ -52,7 +53,8 @@
 #   BYRO_INTERIOR_LOG   optional RUST_LOG filter; retain app_step=info for door transitions.
 #   BYRO_CLOUD_SEED     repeatable outdoor cloud field (default 0).
 # Needs xvfb-run or a display, a Vulkan device, python3 with numpy and Pillow, and the games' data (a game whose
-# data is absent is skipped). Exit 0 when every run cell passes, 1 when any fails, 77 when nothing could run.
+# data is absent is skipped). Exit 0 when every run cell passes, 1 when any fails, 77 when nothing could run
+# or every selected door route is unavailable.
 
 set -euo pipefail
 
@@ -213,7 +215,7 @@ def inventory(port):
     return {"volumes": rows, "show_sky": portal.group(2) == "true" if portal else None,
             "portal_radiance": [float(v) for v in portal.group(1).split(",")] if portal else None}
 
-def pick_targets(inv):
+def pick_targets(inv, max_poses=MAX_POSES):
     vols = inv["volumes"]
     # Aim at what can follow the sun first: marked apertures, then light-shaft volumes, then anything.
     apertures = [v for v in vols if v["profile"] == "SkyAperture"]
@@ -221,7 +223,7 @@ def pick_targets(inv):
     pool = apertures or shafts or vols
     if not pool:
         return []
-    n = min(MAX_POSES, len(pool))
+    n = min(max_poses, len(pool))
     return [pool[round(i * (len(pool) - 1) / max(n - 1, 1))]["id"] for i in range(n)]
 
 def aim(port, target):
@@ -428,6 +430,11 @@ def run_cell(i, game, profile, cell, role, note):
         res = measure(port, tag, poses)
         rec["poses"] = res
         best = max(res, key=lambda r: r["region_frac"])
+        if role == "shaft" and best["region_frac"] < MIN_REGION_FRAC:
+            remaining = [target for target in pick_targets(inv, len(inv["volumes"])) if target not in targets]
+            if remaining:
+                res.extend(measure(port, f"{tag}_additional", remaining))
+                best = max(res, key=lambda r: r["region_frac"])
         rec["best"] = best
         if any(r["frozen"] for r in res) or any(r["camera_moved"] for r in res):
             rec["status"] = "invalid"
@@ -515,5 +522,7 @@ ran = [r for r in records if r.get("status") not in ("boot-failed", "boot-timeou
 if not ran:
     sys.exit(77)
 counted = [r for r in ran if r["role"] != "gap" and r.get("status") != "no-route"]
+if not counted and any(r.get("status") == "no-route" for r in ran):
+    sys.exit(77)
 sys.exit(0 if all(r.get("status") == "PASS" for r in counted) else 1)
 PY

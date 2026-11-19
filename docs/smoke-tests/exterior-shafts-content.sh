@@ -15,6 +15,7 @@
 # BYRO_CONTENT_BIN overrides the engine binary; BYRO_CONTENT_OUT keeps captures; BYROREDUX_GAMES_DIR is the Steam
 # `common` directory. Needs a display or `xvfb-run`, a Vulkan device, python3 with numpy and Pillow. Exit 77 to skip.
 # BYRO_CLOUD_SEED selects the same cloud field for every capture (default 0).
+# BYRO_CONTENT_CAMERA_POS and BYRO_CONTENT_CAMERA_FORWARD pin a pose for a single fixture.
 
 set -euo pipefail
 
@@ -24,6 +25,14 @@ OUT="${BYRO_CONTENT_OUT:-$(mktemp -d /tmp/byro-shaft-content.XXXXXX)}"
 GAMES="${BYROREDUX_GAMES_DIR:-/mnt/data/SteamLibrary/steamapps/common}"
 WHICH="${1:-all}"
 HOURS=(12 7 17.5)
+CAMERA=()
+if [[ -n "${BYRO_CONTENT_CAMERA_POS:-}" || -n "${BYRO_CONTENT_CAMERA_FORWARD:-}" ]]; then
+    if [[ "$WHICH" == all || -z "${BYRO_CONTENT_CAMERA_POS:-}" || -z "${BYRO_CONTENT_CAMERA_FORWARD:-}" ]]; then
+        echo "FAIL: supply both camera vectors for one fixture" >&2
+        exit 2
+    fi
+    CAMERA=(--camera-pos "$BYRO_CONTENT_CAMERA_POS" --camera-forward "$BYRO_CONTENT_CAMERA_FORWARD")
+fi
 
 [[ -x "$BIN" ]] || { echo "SKIP: engine binary not found at $BIN" >&2; exit 77; }
 mkdir -p "$OUT"
@@ -65,8 +74,9 @@ capture() { # game hour kind(final|radiance)
     local game="$1" hour="$2" kind="$3" debug=()
     [[ "$kind" == radiance ]] && debug=(--render-debug-mode volumetric_radiance)
     ( cd "$DATA_DIR" && env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 BYRO_DEBUG_SERVER=0 BYRO_HOUR="$hour" BYRO_CLOUD_SEED="${BYRO_CLOUD_SEED:-0}" \
+        BYROREDUX_SETTINGS_PATH="$OUT/settings_${game}_${hour}_${kind}.toml" \
         "${RUNNER[@]}" timeout 300s "$BIN" "${ARGS[@]}" --bench-mode renderer-stepped --bench-camera static \
-        --bench-frames 40 --upscaler taa --window-size 1280x720 "${debug[@]}" \
+        --bench-frames 40 --upscaler taa --window-size 1280x720 "${CAMERA[@]}" "${debug[@]}" \
         --screenshot "$OUT/${game}_${hour}_${kind}.png" ) >"$OUT/${game}_${hour}_${kind}.log" 2>&1 \
         || { echo "FAIL: $game $hour $kind; see $OUT/${game}_${hour}_${kind}.log" >&2; exit 1; }
 }
@@ -82,8 +92,12 @@ for game in "${games[@]}"; do
     done
     ran+=("$game")
 done
-# SKIP != PASS: with no game captured the table below would print empty and exit 0.
+# A full A8 measurement needs all five fixtures.
 (( ${#ran[@]} > 0 )) || exit 77
+if [[ "$WHICH" == all && ${#ran[@]} -ne ${#games[@]} ]]; then
+    echo "SKIP: A8 requires all five fixtures; only ${#ran[@]} ran" >&2
+    exit 77
+fi
 
 python3 -I - "$OUT" "${ran[@]}" <<'PY'
 import sys
@@ -98,9 +112,11 @@ for game in games:
     cells = []
     for hour in ("12", "7", "17.5"):
         rad = np.asarray(Image.open(out / f"{game}_{hour}_radiance.png").convert("RGB")).astype(float) / 255
+        fin = np.asarray(Image.open(out / f"{game}_{hour}_final.png").convert("RGB")).astype(float)
+        if rad.shape != (720, 1280, 3) or fin.shape != (720, 1280, 3):
+            sys.exit(f"FAIL: {game} {hour}: capture resolution is not 1280x720")
         x = -np.log(1 - np.clip(rad.mean(axis=2), 0, 0.999))
-        fin = np.asarray(Image.open(out / f"{game}_{hour}_final.png").convert("RGB")).astype(float).mean()
-        cells.append(f"{hour:>4}h {x.mean():.4f} / {np.percentile(x, 95):.4f} / {np.percentile(x, 5):.4f}; {fin:6.1f}")
+        cells.append(f"{hour:>4}h {x.mean():.4f} / {np.percentile(x, 95):.4f} / {np.percentile(x, 5):.4f}; {fin.mean():6.1f}")
     print(f"{game:4s} " + " | ".join(cells))
 print(f"Captures and logs: {out}")
 PY

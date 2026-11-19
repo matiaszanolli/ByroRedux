@@ -223,6 +223,15 @@ and is unverified there.
 
 ## A9 through a door (VLM-INT-004), measured 2026-11-09 and 2026-11-10 (#6727)
 
+**Current-build update, 2026-11-18.** All nine listed shaft cells pass
+both direct entry and a door round trip, FNV 3/3 and FO4 6/6. Trinity
+Tower exited to Commonwealth `(0,-6)` and returned through a door to
+`TrinityTower01`, with the same named-entity count before and after.
+The door capture's best qualifying region was 0.241% against the 0.1%
+threshold. The earlier no-route observation below is retained as history.
+The outdoor-border geometry evidence remains open.
+[Measurements and captures](../audits/M55_LIGHTING_GATES_2026-11-15.md#current-build-recheck-2026-11-18)
+
 `BYRO_INTERIOR_ROUTE=door docs/smoke-tests/interior-shafts-content.sh` boots each listed cell as before, then takes its own
 exit door out (`door.teleport`, the console frontend of the E-key path) and, from the exterior arrival, the door that
 leads back to the cell, and runs the same day / night pass on the cell that second transition delivered. `door.list`

@@ -36,19 +36,23 @@ FO4 it captures the default-spawn frame and the froxel in-scatter radiance view 
 deterministic `renderer-stepped` mode and prints the frame's mean / p95 / p5 in-scatter radiance with the finished-frame
 mean. It measures and exits `0`: a shaft contrast across a named occluder needs a lit and an occluded sample at one
 depth, which these poses do not offer. Needs the five games' data, a display or `xvfb-run`, a Vulkan device, and Python
-with numpy and Pillow; exit `77` when one is missing.
+with numpy and Pillow. The `all` run exits `77` if any fixture is missing. Each capture uses isolated settings,
+and the measurement rejects frames that are not 1280 × 720. For one fixture,
+`BYRO_CONTENT_CAMERA_POS` and `BYRO_CONTENT_CAMERA_FORWARD` together pin a camera pose.
 
 `interior-shafts-content.sh` is A9, the interior day / night pass on real cells (VLM-INT-001 to -003, #6727). For each
 listed cell (the sun-path census's list: `shaft` cells the census predicts can show a shaft, `sealed` controls with no sun path, and `gap` cells with an authored sun and no medium, which are reported and never fail the run) it boots the cell held open
 on the free camera (`--fly`), with the clock paused and the exposure fixed, prints the inventory of fog volumes and sky
-apertures the engine built, then for up to four poses (`cam.tp` onto the cell's volumes: sky apertures first, then light-shaft volumes) captures the
+apertures the engine built, then for four initial poses (`cam.tp` onto the cell's volumes: sky apertures first, then light-shaft volumes) captures the
 froxel in-scatter view at `time.set 12`, `time.set 0` and `time.set 12` again. The two noon frames bracket the midnight one,
 so their difference is the noise floor. A `shaft` cell passes when the pixels where noon beats midnight by more than
-max(3 levels, twice that noise) cover at least 0.1 % of the frame; a `sealed` control passes when no pose does. It prints
+max(3 levels, twice that noise) cover at least 0.1 % of the frame; a `sealed` control passes when no pose does. It measures
+the remaining shaft or aperture volumes when the initial four miss the threshold. It prints
 the pass count per game, exits `1` on any failure and `77` when a dependency is missing. `BYRO_INTERIOR_ROUTE=door`
 runs VLM-INT-004: each cell is left through its exit door and re-entered through the exterior door that leads to it
 (`door.list` names the loaded doors by destination; a cell with no such door reports `no-route`, and an FO4 exterior
-loads slowly, so the wait for it is up to five minutes). `--inventory-only` stops after the inventory;
+loads slowly, so the wait for it is up to five minutes). A selection with only unavailable door routes exits `77`.
+`--inventory-only` stops after the inventory;
 `BYRO_INTERIOR_ONLY=<cell,...>` runs chosen cells. Needs the games' data, a display or `xvfb-run`, a Vulkan device and
 Python with numpy and Pillow; it takes about half an hour. Captures, logs and `results.json` stay in the printed directory.
 
