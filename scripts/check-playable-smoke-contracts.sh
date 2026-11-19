@@ -126,6 +126,7 @@ done
 # The Session 111/112 gates (Bink, FNV routes, music, perk entry points, cross-cell travel) are the fifth.
 # The Session 113 M65 gates (m65-stealth-detection, m65-robotics-expert) are the sixth.
 # The Session 114 gates (the M48 HUD gates, oblivion-actor-values, oblivion-live-load-plugin-set) are the seventh.
+# #7064 — the Session 115 gates (m42-oblivion-packages, m42-skyrim-ambient, oblivion-level-up) are the eighth.
 for name in dt1-dialogue-layers m42-eat-sleep sm1-story-manager dt2-skyrim-forcegreet m47-3-obscript fo4-ragdoll m41-ragdoll \
     p4-fnv-quest-route p5-fnv-quest-persistence m42-package-procedures vats-targeting m43-adia-conversations m43-item-drop m43-crafting \
     m43-armor m43-attraction m43-attraction-reaction m43-fo4-actions m43-hello m43-mines m43-node-window \
@@ -133,7 +134,8 @@ for name in dt1-dialogue-layers m42-eat-sleep sm1-story-manager dt2-skyrim-force
     bik-flags bik-start-sequence fnv-new-game fnv-vcg02-route music-fnv music-fo3 music-oblivion perk-entry-points \
     xct-census xct-scripted-move m65-stealth-detection m65-robotics-expert \
     m48-fo4-hud-compass m48-fo4-hud-meters m48-skyrim-hud-meters m48-menu-stack \
-    oblivion-actor-values oblivion-live-load-plugin-set; do
+    oblivion-actor-values oblivion-live-load-plugin-set \
+    m42-oblivion-packages m42-skyrim-ambient oblivion-level-up; do
     smoke="$ROOT_DIR/docs/smoke-tests/$name.sh"
     set +e
     output="$(env "${DATA_NEUTRALISE[@]}" "$smoke" 2>&1)"
