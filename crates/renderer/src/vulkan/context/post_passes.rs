@@ -112,6 +112,20 @@ fn volumetric_open_sky_flag(sky: &SkyParams) -> f32 {
     }
 }
 
+fn volumetric_sun_trace_mode(sky: &SkyParams, occlusion: bool, alpha: bool) -> f32 {
+    if sky.is_exterior && !occlusion {
+        -1.0
+    } else if alpha {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+fn interior_portal_sun_active(is_exterior: bool, radiance: [f32; 4]) -> bool {
+    !is_exterior && radiance[..3].iter().any(|channel| *channel > 0.0)
+}
+
 /// What `draw_frame` resolved for the post-geometry passes: the camera matrices it assembled,
 /// the history-validity flags and the FSR parameters. The pass inputs that come straight from the
 /// frame's [`FrameInputs`] (fog, sky, wind, underwater) are read from there.
@@ -752,16 +766,21 @@ impl VulkanContext {
                     // It is below normal gameplay fog density, so it does
                     // not turn the room into haze or alter exterior weather.
                     const INTERIOR_DUST_EXTINCTION_PER_METER: f32 = 0.006;
-                    let portal_sun_active = !sky_params.is_exterior
-                        && sky_params
-                            .portal_sun_radiance
-                            .iter()
-                            .any(|channel| *channel > 0.0);
-                    let (sun_direction, sun_radiance) = volumetric_sun(
+                    let (sun_direction, mut sun_radiance) = volumetric_sun(
                         sky_params,
                         fog_far,
                         self.camera_cloud_sun_transmittance,
                     );
+                    // Isolate sunlight from local lights in comparison captures.
+                    // Preserve the fourth lane, which carries the fog range.
+                    if !super::super::volumetrics::froxel_sun_enabled() {
+                        sun_radiance[..3].fill(0.0);
+                    }
+                    // The portal lists have no consumer when the uploaded sun
+                    // term is zero, including diagnostic or cloud-extinguished
+                    // sunlight. Match the shader's actual input.
+                    let portal_sun_active =
+                        interior_portal_sun_active(sky_params.is_exterior, sun_radiance);
                     super::super::volumetrics::filter_fog_volumes_for_grid(
                         fog_volumes,
                         camera_pos,
@@ -969,7 +988,11 @@ impl VulkanContext {
                                 temporal_params: [
                                     super::super::volumetrics::DEFAULT_TEMPORAL_HISTORY_WEIGHT,
                                     super::super::volumetrics::DEFAULT_DENSITY_REJECTION,
-                                    volumetric_time_seconds,
+                                    if super::super::volumetrics::freeze_froxel_pattern() {
+                                        0.0
+                                    } else {
+                                        volumetric_time_seconds
+                                    },
                                     fog_coverage.clamp(0.01, 1.0),
                                 ],
                                 // Filled by `dispatch` after it builds the
@@ -993,13 +1016,12 @@ impl VulkanContext {
                                     wind_gust[0],
                                     super::super::volumetrics::
                                         bfecc_error_correction_multiplier(),
-                                    // Lane z: the alpha-aware sun trace switch
-                                    // (`BYRO_SUN_ALPHA=0` reads every triangle as solid).
-                                    if super::super::volumetrics::sun_alpha_trace_enabled() {
-                                        1.0
-                                    } else {
-                                        0.0
-                                    },
+                                    // Lane z: exterior visibility diagnostic, then alpha mode.
+                                    volumetric_sun_trace_mode(
+                                        sky_params,
+                                        super::super::volumetrics::exterior_sun_occlusion_enabled(),
+                                        super::super::volumetrics::sun_alpha_trace_enabled(),
+                                    ),
                                     super::super::volumetrics::open_sky_sun_dust_per_meter(),
                                 ],
                             };
@@ -1709,7 +1731,10 @@ fn skip_clear_decision(ran: bool, already_cleared: bool) -> (bool, bool) {
 
 #[cfg(test)]
 mod tests {
-    use super::{caustic_sun_transmittance, skip_clear_decision, volumetric_open_sky_flag, volumetric_sun, SkyParams};
+    use super::{
+        caustic_sun_transmittance, skip_clear_decision, volumetric_open_sky_flag, volumetric_sun,
+        volumetric_sun_trace_mode, interior_portal_sun_active, SkyParams,
+    };
     use crate::source_scan::strip_test_modules;
 
     #[test]
@@ -1903,6 +1928,30 @@ mod tests {
             ..SkyParams::default()
         };
         assert_eq!(volumetric_open_sky_flag(&exterior), 1.0);
+    }
+
+    #[test]
+    fn sun_occlusion_diagnostic_never_disables_interior_tracing() {
+        let interior = SkyParams {
+            interior_show_sky: true,
+            ..SkyParams::default()
+        };
+        let exterior = SkyParams {
+            is_exterior: true,
+            ..SkyParams::default()
+        };
+        assert_eq!(volumetric_sun_trace_mode(&interior, false, true), 1.0);
+        assert_eq!(volumetric_sun_trace_mode(&interior, false, false), 0.0);
+        assert_eq!(volumetric_sun_trace_mode(&exterior, false, true), -1.0);
+        assert_eq!(volumetric_sun_trace_mode(&exterior, true, true), 1.0);
+        assert_eq!(volumetric_sun_trace_mode(&exterior, true, false), 0.0);
+    }
+
+    #[test]
+    fn portal_sweep_tracks_uploaded_sun_radiance() {
+        assert!(!interior_portal_sun_active(false, [0.0, 0.0, 0.0, 4096.0]));
+        assert!(interior_portal_sun_active(false, [0.0, 0.25, 0.0, 4096.0]));
+        assert!(!interior_portal_sun_active(true, [1.0, 1.0, 1.0, 4096.0]));
     }
 
     /// Regression: #4773 / REN-D8-2026-09-23-01 — `draw_frame` passed `fog_coverage,

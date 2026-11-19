@@ -163,8 +163,8 @@ pub struct VolumetricsParams {
     /// x = gust cycles per second. y = BFECC advection error-correction
     /// multiplier — 0.0 when `BYRO_BFECC=0` (see
     /// [`bfecc_error_correction_multiplier`]), 1.0 otherwise. z = the
-    /// alpha-aware sun trace switch ([`sun_alpha_trace_enabled`], VLM-SH-009),
-    /// 1.0 on. w = the open-sky sun dust strength per metre
+    /// sun trace mode: 1.0 alpha-aware, 0.0 opaque, -1.0 unoccluded for
+    /// exterior comparison captures. w = the open-sky sun dust strength per metre
     /// ([`open_sky_sun_dust_per_meter`], the `BYRO_SUN_DUST` experiment; 0 = off).
     /// All four lanes are now in use: a new parameter needs a new vec4, not a
     /// lane here.
@@ -189,6 +189,29 @@ pub fn bfecc_error_correction_multiplier() -> f32 {
 pub fn sun_alpha_trace_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| !matches!(std::env::var("BYRO_SUN_ALPHA"), Ok(value) if value == "0"))
+}
+
+/// Diagnostic control for isolating the contribution of exterior sun occlusion.
+/// It does not change interior visibility or surface shadows.
+pub fn exterior_sun_occlusion_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        !matches!(std::env::var("BYRO_FROXEL_SUN_OCCLUSION"), Ok(value) if value == "0")
+    })
+}
+
+/// Diagnostic control for isolating the froxel sun term from local lights and emission.
+pub fn froxel_sun_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| !matches!(std::env::var("BYRO_FROXEL_SUN"), Ok(value) if value == "0"))
+}
+
+/// Diagnostic control for holding procedural density noise at its initial phase.
+pub fn freeze_froxel_pattern() -> bool {
+    static FREEZE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FREEZE.get_or_init(|| {
+        matches!(std::env::var("BYRO_FREEZE_FROXEL_PATTERN"), Ok(value) if value == "1")
+    })
 }
 
 /// `BYRO_SUN_DUST=<per metre>` experiment: extra scattering that rides the sun term only under open sky

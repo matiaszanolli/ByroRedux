@@ -1481,6 +1481,7 @@ impl VulkanContext {
     ) {
         let FrameSlot { cmd, frame } = slot;
         let FrameInputs {
+            interior_cell_root,
             fog_color,
             fog_near,
             fog_far,
@@ -1516,6 +1517,7 @@ impl VulkanContext {
         // pipeline's presence. Leaving the bake gated on `composite` would
         // make that flag lie whenever composite is absent, and the shader
         // would sample a cube still in `UNDEFINED` layout.
+        let dropped_sky_apertures = std::cell::Cell::new(0);
         let composite_inputs = CompositeParamsInputs {
             fog_color,
             fog_near,
@@ -1547,6 +1549,7 @@ impl VulkanContext {
             render_origin,
             inv_vp_arr,
             sky_aperture_volumes: fog_volumes,
+            dropped_sky_apertures: &dropped_sky_apertures,
             underwater: underwater.grade,
             underwater_surface: underwater.surface,
             water_caustic_active: self.post.water_caustic_accum.is_some(),
@@ -1554,6 +1557,11 @@ impl VulkanContext {
             camera_cloud_sun_transmittance: self.camera_cloud_sun_transmittance,
         };
         let composite_params = build_composite_params(composite_inputs);
+        self.post_state.aperture_overflow_log.note(
+            interior_cell_root,
+            dropped_sky_apertures.get(),
+            composite_params.sky_aperture_count[0] as usize,
+        );
         if let Some(ref mut composite) = self.post.composite
             && let Err(e) = composite.upload_params(&self.device, frame, &composite_params) {
                 log::warn!("composite upload_params failed: {e}");

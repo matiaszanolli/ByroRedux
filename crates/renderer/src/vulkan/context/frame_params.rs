@@ -820,6 +820,8 @@ pub(super) struct CompositeParamsInputs<'a> {
     pub(super) render_origin: byroredux_core::math::Vec3,
     pub(super) inv_vp_arr: [[f32; 4]; 4],
     pub(super) sky_aperture_volumes: &'a [super::super::volumetrics::GpuFogVolume],
+    /// Receives the count excluded from this frame's composite aperture list.
+    pub(super) dropped_sky_apertures: &'a std::cell::Cell<usize>,
     pub(super) underwater: [f32; 4],
     pub(super) underwater_surface: [f32; 4],
     /// Whether `water_caustic_accum` is genuinely live this session — see
@@ -861,9 +863,9 @@ fn pack_camera_cloud_sun_transmittance(transmittance: f32) -> u32 {
 
 /// Assemble this frame's `CompositeParams` (#2255 / TD1-NEW-02, extracted
 /// from `draw_frame` alongside `build_fsr_frame_parameters` — same
-/// rationale: pure data assembly with no borrow-checker reason to stay
-/// inline). The caller still owns the `composite.upload_params` call and
-/// its error handling; only the field-by-field construction moved here.
+/// rationale: data assembly with no borrow-checker reason to stay inline).
+/// The caller owns overflow reporting and `composite.upload_params`; the
+/// scratch cell returns the count discarded while building the list.
 pub(super) fn build_composite_params(
     inputs: CompositeParamsInputs<'_>,
 ) -> super::super::composite::CompositeParams {
@@ -888,6 +890,7 @@ pub(super) fn build_composite_params(
         render_origin,
         inv_vp_arr,
         sky_aperture_volumes,
+        dropped_sky_apertures,
         underwater,
         underwater_surface,
         water_caustic_active,
@@ -905,6 +908,7 @@ pub(super) fn build_composite_params(
     };
     let mut sky_apertures = [super::super::composite::CompositeSkyAperture::default();
         super::super::composite::MAX_SKY_APERTURES];
+    dropped_sky_apertures.set(0);
     let mut aperture_count = 0usize;
     // The forward view-projection `inv_vp_arr` inverts, once on the CPU: the aperture projection
     // below and the shader's underwater god-ray march both need it, so the shader does not
@@ -941,7 +945,7 @@ pub(super) fn build_composite_params(
         }
         let (kept, dropped) = nearest.finish();
         aperture_count = kept;
-        super::sky_apertures::note_sky_aperture_overflow(dropped, kept);
+        dropped_sky_apertures.set(dropped);
     }
     let dome = pack_sky_dome(
         sky_params,
@@ -1346,6 +1350,7 @@ mod composite_params_tests {
             render_origin: byroredux_core::math::Vec3::new(10.0, 20.0, 30.0),
             inv_vp_arr: [[0.0; 4]; 4],
             sky_aperture_volumes: &aperture_volumes,
+            dropped_sky_apertures: &std::cell::Cell::new(0),
             underwater: [0.0; 4],
             underwater_surface: [0.0; 4],
             water_caustic_active: false,
@@ -1368,6 +1373,23 @@ mod composite_params_tests {
         );
         assert_eq!(composite.sky_apertures[0].camera_local_origin[..3], [-100.0, -200.0, -300.0]);
         assert_eq!(composite.sky_apertures[0].half_extents[..2], [10.0, 20.0]);
+        let overflow = std::cell::Cell::new(0);
+        let many_windows = vec![window; crate::vulkan::composite::MAX_SKY_APERTURES + 2];
+        let capped = build_composite_params(CompositeParamsInputs {
+            sky_aperture_volumes: &many_windows,
+            dropped_sky_apertures: &overflow,
+            ..inputs
+        });
+        assert_eq!(capped.sky_aperture_count[0] as usize, crate::vulkan::composite::MAX_SKY_APERTURES);
+        assert_eq!(overflow.get(), 2);
+        let exterior = SkyParams { is_exterior: true, ..SkyParams::default() };
+        build_composite_params(CompositeParamsInputs {
+            sky_params: &exterior,
+            sky_aperture_volumes: &[],
+            dropped_sky_apertures: &overflow,
+            ..inputs
+        });
+        assert_eq!(overflow.get(), 0, "exterior frames reset the scratch count");
         assert_eq!(cube.depth_params[0], 1.0);
         assert_eq!(cube.sky_lower[3], 0.0);
         assert_eq!(cube.sky_zenith[..3], [0.7, 0.2, 0.1]);
@@ -1505,6 +1527,7 @@ mod composite_params_tests {
             render_origin: byroredux_core::math::Vec3::ZERO,
             inv_vp_arr: [[0.0; 4]; 4],
             sky_aperture_volumes: &[],
+            dropped_sky_apertures: &std::cell::Cell::new(0),
             underwater: [0.0; 4],
             underwater_surface: [0.0; 4],
             water_caustic_active: false,
@@ -1571,6 +1594,7 @@ mod composite_params_tests {
             render_origin: byroredux_core::math::Vec3::new(1.0, 2.0, 3.0),
             inv_vp_arr: [[0.0; 4]; 4],
             sky_aperture_volumes: &[],
+            dropped_sky_apertures: &std::cell::Cell::new(0),
             underwater: [0.1, 0.2, 0.3, 0.4],
             underwater_surface: [75.0, 600.0, 0.0, 0.0],
             water_caustic_active: true,
@@ -1656,6 +1680,7 @@ mod composite_params_tests {
             render_origin: byroredux_core::math::Vec3::ZERO,
             inv_vp_arr: [[0.0; 4]; 4],
             sky_aperture_volumes: &[],
+            dropped_sky_apertures: &std::cell::Cell::new(0),
             underwater: [0.0; 4],
             underwater_surface: [0.0; 4],
             water_caustic_active: false,
@@ -2102,6 +2127,8 @@ pub(super) struct FrameDerived<'a> {
 /// under the argument-count lint. Construction is mechanical: one field per
 /// input.
 pub struct FrameInputs<'a> {
+    /// Identity of the loaded interior cell root, if any; changes on a cell visit.
+    pub interior_cell_root: Option<u32>,
     /// Clear color (RGBA) for the main render pass.
     pub clear_color: [f32; 4],
     /// Combined view-projection matrix as column-major `[f32; 16]`.

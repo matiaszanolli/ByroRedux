@@ -782,6 +782,9 @@ impl App {
                 });
             let frame_before_draw = ctx.frame_counter;
             let draw_result = ctx.draw_frame(FrameInputs {
+                interior_cell_root: self.world
+                    .try_resource::<crate::cell_loader::CurrentCellRoot>()
+                    .and_then(|root| root.0),
                 clear_color,
                 view_proj: &frame.view_proj,
                 draw_commands: &self.draw_commands,

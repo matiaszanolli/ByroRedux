@@ -791,6 +791,7 @@ pub struct SkinningState {
 /// survives a pipeline rebuild (its own docs call that out). Nothing here owns a
 /// Vulkan handle, so `teardown.rs` never names it.
 pub struct PostPassState {
+    aperture_overflow_log: sky_apertures::ApertureOverflowLog,
     /// Permanent-failure latch for the TAA compute pass. Set on the
     /// first `taa.upload_params` error in a session, through
     /// `latch_taa_failure` (#3981) — `TaaPipeline::dispatch` records

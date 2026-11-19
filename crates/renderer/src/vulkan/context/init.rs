@@ -994,6 +994,7 @@ impl VulkanContext {
             reservoir_buffers,
             water,
             post_state: PostPassState {
+                aperture_overflow_log: Default::default(),
                 taa_failed: false,
                 svgf_failed: false,
                 svgf_recovery_frames: 0,
