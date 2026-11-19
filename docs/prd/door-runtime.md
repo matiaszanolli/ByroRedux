@@ -1,6 +1,6 @@
 # Door Runtime — Product Requirements
 
-**Status**: PROPOSED (2026-11-19). Revision 1, the first draft. It is the prerequisite that decision Q8 of [AI Packages Completion](ai-packages-completion.md#10-decisions-required) split out of that PRD: no in-cell door opens for anyone today. Statements about how an original engine, format or tool behaves cite external sources; a claim that could not be verified is marked **Phase 0: verify** instead of being stated as fact.
+**Status**: PROPOSED (2026-11-19). Revision 2 folds in the owner's three decisions (Q1 to Q3, all as recommended); revision 1 was the first draft. It is the prerequisite that decision Q8 of [AI Packages Completion](ai-packages-completion.md#10-decisions-required) split out of that PRD: no in-cell door opens for anyone today. Statements about how an original engine, format or tool behaves cite external sources; a claim that could not be verified is marked **Phase 0: verify** instead of being stated as fact.
 
 **Scope**: a placed door that is not a load door (a `DOOR` reference with no teleport, in any cell) gets an open state, an open and close motion, collision that follows the motion, a lock gate, its authored sounds, a prompt for the player, script parity and a saved state. Actors use the same door by raising the same activation; that behaviour is [AIP-DOOR-002…006](ai-packages-completion.md#511-door-passage-aip-door), not this document. Outside it: load doors (they work: `queue_door_transition`, [Cross-cell actor travel](cross-cell-actor-travel.md)), Oblivion-gate random teleports, door damage and destruction, lockpicking policy (`lockpick.rs` owns it), and navmesh door semantics ([NAVM Pathfinding §2](../engine/navmesh-pathfinding.md#2-scope)).
 
@@ -100,7 +100,7 @@ Two model measurements bear on the motion classes (`nif_stats`, 2026-11-19): Obl
 
 - **DRT-STATE-001.** Every in-cell door MUST carry the door state from spawn, not only after a script has touched it. Today the component appears only for a `default2StateActivator` script or an ObScript `SetOpenState` (row 2). Observable: a test that spawns a plain `DOOR` placement and finds the component, `closed`.
 - **DRT-STATE-002.** The state MUST be four values, `closed`, `opening`, `open` and `closing`, and `GetOpenState` MUST read them as 3, 4, 1 and 2 (GECK *GetOpenState*, as `getters.rs` already maps `is_open` and `is_animating`). The existing two booleans MAY stay as the representation. Observable: the existing getter tests plus one per transition state.
-- **DRT-STATE-003.** A door whose reference carries `Open by Default` MUST spawn `open`, and a door MUST return to its default state when its cell is unloaded and re-entered, whatever state it was left in (CS *GetDoorDefaultOpen*). Today `ONAM` is not read (row 9). Whether the return applies to a cell re-entered from a saved game, and to exteriors, is **Phase 0: verify**; decision Q1 sets the promise. Observable: a test that opens a door, unloads and reloads the cell, and reads `closed`.
+- **DRT-STATE-003.** A door whose reference carries `Open by Default` MUST spawn `open`, and a door MUST return to its default state when its cell is unloaded and re-entered, whatever state it was left in (CS *GetDoorDefaultOpen*). Today `ONAM` is not read (row 9). A cell restored from a save MUST keep the saved state (decision Q1, DRT-SAVE-001). Whether the original returns doors to default for exteriors, and how it treats a save, is **Phase 0: verify**; the promise here is the owner's decision. Observable: a test that opens a door, unloads and reloads the cell in one session and reads `closed`, and a round-trip test that a saved `open` door loads `open`.
 - **DRT-STATE-004.** `SetOpenState`, `SetDefaultOpen`'s runtime read, and Papyrus `SetOpen` MUST drive the same transition as an activation: the motion plays and the collision follows (DRT-MOVE-001, -004). Today `SetOpen` changes the flag only (row 3). Observable: a test that raises `Effect::SetOpen` and sees the transition begin.
 
 ### 5.2 Activation and locks (`DRT-ACT`)
@@ -113,7 +113,7 @@ Two model measurements bear on the motion classes (`nif_stats`, 2026-11-19): Obl
 ### 5.3 Motion and collision (`DRT-MOVE`)
 
 - **DRT-MOVE-001.** On a transition the door MUST play the motion its model authors: the `Open` or `Close` sequence of its `NamedSequences`, or the open event of its behaviour graph. Observable: a test per class that the animation player or the graph receives the clip or the event.
-- **DRT-MOVE-002.** A door model that authors neither MUST swing about its hinge. The hinge axis, the angle, the duration and the direction relative to the activator are **Phase 0: verify** (CS and GECK say only that animating doors "run their animation when activated"; a hinged door with no authored animation has no source). Until Phase 0 settles them the swing uses one labelled approximation (§6 row 1, decision Q2). Observable: a test that a swing door's rotation reaches the open pose over its duration and returns.
+- **DRT-MOVE-002.** A door model that authors neither MUST swing about its hinge. The hinge axis, the angle, the duration and the direction relative to the activator are **Phase 0: verify** (CS and GECK say only that animating doors "run their animation when activated"; a hinged door with no authored animation has no source). Until Phase 0 settles them the swing uses one labelled approximation, its constants in one place (§6 row 1, decision Q2). Observable: a test that a swing door's rotation reaches the open pose over its duration and returns.
 - **DRT-MOVE-003.** The motion class MUST be chosen once, at the model translation boundary, and the door systems MUST NOT read the game kind to pick it. Observable: a text-scan guard over the door systems, as AIP-WALK-004's guard over the walk systems.
 - **DRT-MOVE-004.** A door's collision MUST follow its motion, so that the character controller passes an open door and stops at a closed one. The keyframed-body path exists (row 6); this requirement is that the door's collider is on the moving node. Observable: a physics test that walks a controller into a closed door fixture (stopped) and through the same fixture opened (passes).
 - **DRT-MOVE-005.** A door MUST NOT close onto a body standing in its swept volume: while a capsule overlaps it the close MUST hold, and no body may be left embedded in a closed door. What the original game does is **Phase 0: verify**. Observable: a test that holds a capsule in the doorway during `closing` and finds the door `open` and the capsule free.
@@ -144,8 +144,8 @@ Two model measurements bear on the motion classes (`nif_stats`, 2026-11-19): Obl
 
 | # | Original behaviour | Redux behaviour | Becomes redundant | Risk and its requirement |
 |---|---|---|---|---|
-| 1 | The hinge, angle, speed and direction of a door with no authored motion are not documented in the sources read | One labelled approximation, replaced when Phase 0 sources the values (DRT-MOVE-002, Q2) | None | A door that swings the wrong way or at the wrong speed; DRT-MOVE-002 names the constants in one place and the Phase 0 verify item closes them |
-| 2 | A door returns to its default state when its cell is unloaded and re-entered (CS *GetDoorDefaultOpen*) | The same, unless Q1 is decided the other way | None | A quest that left a door open loses it on re-entry; DRT-STATE-003 and Q1 |
+| 1 | The hinge, angle, speed and direction of a door with no authored motion are not documented in the sources read | One labelled approximation, replaced when Phase 0 sources the values (DRT-MOVE-002, decided in Q2) | None | A door that swings the wrong way or at the wrong speed; DRT-MOVE-002 names the constants in one place and the Phase 0 verify item closes them |
+| 2 | A door returns to its default state when its cell is unloaded and re-entered (CS *GetDoorDefaultOpen*) | The same within a session; a cell restored from a save keeps its saved state (Q1) | None | A quest that left a door open loses it on re-entry, as in the original; a save is not affected (DRT-STATE-003, DRT-SAVE-001) |
 | 3 | An actor may pass a locked door by ownership, faction or key (CK, for load doors) | The activator needs the key or a pick until Phase 0 sources the in-cell rule (DRT-ACT-003) | None | An NPC refused a door the original would open; the give-up path keeps it from freezing (AIP-DOOR-003) |
 
 ---
@@ -160,9 +160,9 @@ Two model measurements bear on the motion classes (`nif_stats`, 2026-11-19): Obl
 | Fallout 3 | yes | Wave 1. Same record shape as Oblivion's plus `Sliding Door`; authored sequences on the animated doors |
 | Fallout: New Vegas | yes | Wave 1. The reference title; its authored sequences exercise the `Sequence` class |
 | Skyrim (LE / SE / AE) | yes | Wave 2. Doors move through a behaviour graph; the graph runtime exists (row 5) |
-| Fallout 4 | yes | Wave 3, if decision Q3 holds. Graph doors; no census yet |
+| Fallout 4 | yes | Wave 3 (decision Q3). Graph doors; no census yet |
 | Fallout 76 | no | Out of the sibling PRD's scope ([AIP-NG-005](ai-packages-completion.md#42-non-goals)) |
-| Starfield | no | Census only (Q3): no door motion source has been read, and its animation text tables have no reader |
+| Starfield | no | Census only (decision Q3): no door motion source has been read, and its animation text tables have no reader |
 
 ### 7.2 Acceptance
 
@@ -190,13 +190,13 @@ The numbers live in ROADMAP's [M42 row](../../ROADMAP.md#tier-7--deep-gameplay-s
 
 ## 9. Delivery sequence
 
-**Phase 0 — Census, sources and the design (no engine code).** The DRT-REC-003 census over the five games; the verify items named in §5 (the hinge and its timing, the closing rule, the loop sound, the default state against a saved game, the locked in-cell door, the in-cell `Automatic Door`), each settled from a CS, GECK or CK page, a UESP page or an observation of the original game, or filed as an issue; `docs/engine/door-runtime.md` written, with the state, motion and swing and the choice between `TwoStateActivator` and a replacement (DRT-G-005). Decisions Q1 to Q3 taken. Exit: the census is checked in and its table is linked from §8, every verify item is closed or filed, and the design links from §3.
+**Phase 0 — Census, sources and the design (no engine code).** The DRT-REC-003 census over the five games; the verify items named in §5 (the hinge and its timing, the closing rule, the loop sound, the default state against a saved game, the locked in-cell door, the in-cell `Automatic Door`), each settled from a CS, GECK or CK page, a UESP page or an observation of the original game, or filed as an issue; `docs/engine/door-runtime.md` written, with the state, motion and swing and the choice between `TwoStateActivator` and a replacement (DRT-G-005). Decisions Q1 to Q3 taken (rev 2). Exit: the census is checked in and its table is linked from §8, every verify item is closed or filed, and the design links from §3.
 
 **Phase 1 — State, activation, scripts and saves (wave 1).** DRT-STATE-001…004, DRT-ACT-001…004, DRT-REC-001, -002, -004 and DRT-SAVE-001, -002, with the swing (DRT-MOVE-002…005) and the sound (DRT-SND-001); Oblivion, Fallout 3 and Fallout New Vegas. Milestone dependencies: M28.5 (the character controller), M44 (audio), M47.2 (scripts and the activation event). Exit: `door-runtime.sh` passes on Oblivion and FNV, `m42-oblivion-packages.sh` passes with `STRICT_FIND=1`, and every fixture test in §5.1 to §5.6 passes.
 
 **Phase 2 — Sequences and Skyrim (wave 2).** DRT-MOVE-001 for the `Sequence` and `Graph event` classes and DRT-DX-001. Exit: `door-runtime.sh skyrim_se` opens a graph door and the FNV leg opens a sequence door.
 
-**Phase 3 — Fallout 4 (wave 3).** The Fallout 4 graph doors, if decision Q3 holds. Exit: a Fallout 4 live leg opens a graph door, or the phase is withdrawn with the census figure that shows why.
+**Phase 3 — Fallout 4 (wave 3).** The Fallout 4 graph doors, which reuse the Skyrim path (decision Q3), and a Starfield census. Exit: a Fallout 4 live leg opens a graph door, or the phase is withdrawn with the census figure that shows why.
 
 ---
 
@@ -205,8 +205,11 @@ The numbers live in ROADMAP's [M42 row](../../ROADMAP.md#tier-7--deep-gameplay-s
 Each decision needs the project owner. The recommendation is the first option.
 
 1. **Q1 — Door state across a cell unload.** The CS says a door returns to its default state when its cell is unloaded and re-entered, regardless of the state it was left in (*GetDoorDefaultOpen*). Recommended: follow it for a cell re-entered in the same session, and restore the saved state when the cell comes back from a save (saved games keep what the player did). A door a quest opened then closes again on re-entry, as in the original. Alternative: keep the state across unloads. Doors stay as left, which matches how containers and other reference state already persist, and which no source says the original does.
+   **Decided** (2026-11-19): the recommendation — a door reverts to its default state on same-session re-entry, and a cell restored from a save keeps the saved state (DRT-STATE-003, DRT-SAVE-001).
 2. **Q2 — The swing before the original's timing is sourced.** Oblivion's plain doors author no motion (§3), and no source read gives the hinge, angle or speed. Recommended: ship one labelled approximation now (DRT-MOVE-002, §6 row 1) and replace it when Phase 0 settles the values; the doors then open and close with a visible swing. Alternative A: swap a door between its closed and open poses instantly, with no swing. It needs no invented numbers, and costs the visible motion and the sound's timing. Alternative B: defer plain doors until the values are sourced. Oblivion's actors and player stay behind closed doors until then.
+   **Decided** (2026-11-19): the recommendation — one labelled approximate swing now, its constants in one place, replaced when Phase 0 sources the values (DRT-MOVE-002, §6 row 1).
 3. **Q3 — Fallout 4 and Starfield.** Recommended: Fallout 4 in wave 3 (its graph doors reuse the Skyrim path) and Starfield census-only, as the cross-cell travel PRD treated it. Alternative: both out for now. The wave-3 phase disappears and Fallout 4 doors stay as they are.
+   **Decided** (2026-11-19): the recommendation — Fallout 4 in wave 3, Starfield census-only (§7.1, Phase 3).
 
 ---
 
@@ -230,3 +233,4 @@ Each decision needs the project owner. The recommendation is the first option.
 | Rev | Date | Change | Review |
 |---|---|---|---|
 | 1 | 2026-11-19 | First draft, from decision Q8 of the AI packages PRD: the HEAD state of in-cell doors, the three motion classes, seven requirement areas, three decisions | — |
+| 2 | 2026-11-19 | Owner's decisions Q1 to Q3 folded in, all as recommended: doors revert on same-session re-entry and keep saved state, one labelled approximate swing for plain doors, Fallout 4 in wave 3 and Starfield census-only | owner: revise |
