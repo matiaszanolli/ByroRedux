@@ -611,6 +611,53 @@ and `BYRO_HAZE_FLOOR` / `fog.haze` (the floor).
   cloud-shadow work (VLM-SH-004, -005), and the separate inject and integrate milliseconds (VLM-SH-008; the
   inject figure above is one pose, not the fixture set).
 
+### Haze floor after the authored fog power (Q12 re-measure, 2026-11-19)
+
+PRD VLM-SH-011 asked for the floor-off / floor-on captures to be redone once the authored fog power entered the
+ramp fit (#6776), because the shipped default (`0.0006 / m x (1 + 6 x (1 - sin e)^3)`) was chosen against the old,
+thinner extinction. Release build at HEAD `a7d4b49bb` (docs-only commits since), RTX 4070 Ti, 1280x720, TAA,
+`renderer-stepped` with the static camera, cloud seed 0, the `m-exteriors.sh` fixture cells at their default spawn.
+Two measurements: the authored extinction against the floor at thirteen clock hours (`env.health` in a held
+session, `time.set` then `env.health`: `gpu_extinction=` and `haze_floor=`), and floor-off against shipped-default
+frames (`BYRO_HAZE_FLOOR=off`, `exterior-shafts-content.sh`).
+
+**Does the floor still bind?** The floor is a maximum, so it only acts where it exceeds the authored value.
+Hours sampled: 5, 6, 7, 8, 9, 10, 12, 14, 16, 17, 18, 19, 20.
+
+| Fixture | Weather at the spawn | Authored `gpu_extinction` over the day | Floor binds | Floor / authored |
+|---|---|---|---|---|
+| FNV | `NVBlackMountainWeather` (region override) | 0.000968 to 0.001373 /m | 3 of 13: 07:00, 08:00, 19:00 | 2.00, 1.29, 1.79; 0.62 at noon |
+| FO3 | `WastelandClearMegaton` | 0.004791 to 0.007922 /m | 0 of 13 | 0.33 at most (06:00) |
+| Oblivion | `Cloudy` | 0.000432 to 0.000469 /m | 11 of 13: 06:00 to 19:00 | 1.39 (noon) to 5.06 (19:00) |
+| Skyrim | `SkyrimCloudyTU` | 0.003347 to 0.004344 /m | 0 of 13 | 0.76 at most (06:00, 20:00) |
+| FO4 | `CommonwealthClear` | 0.001129 to 0.001853 /m | 2 of 13: 06:00, 20:00 | 1.48, 1.36; 0.97 at 07:00 |
+
+Oblivion is the one title whose `WTHR` records carry no fog power (VLM-HF-002), so its authored haze is still the
+thin pre-Phase-1 value and the floor supplies its haze all day. On the other four the fitted power has made the
+authored haze thicker than the floor except near the horizon.
+
+**What it does to the frame, floor off against shipped default** (same pose and process settings; the repeat noise is
+zero in this mode, and FO3 comes out bit-identical, which is the control):
+
+| Fixture | Hour | Frame mean off to default | Mean absolute change (of 255) | Pixels changed by more than 4 levels | In-scatter mean off to default |
+|---|---|---|---|---|---|
+| Oblivion | 12:00 | 55.84 to 57.85 (+3.6 %) | 2.01 | 21.1 % | 0.0394 to 0.0518 |
+| Oblivion | 07:00 | 46.01 to 60.04 (+30.5 %) | 14.06 | 98.2 % | 0.0291 to 0.1038 |
+| Oblivion | 17:30 | 39.18 to 40.58 (+3.6 %) | 1.48 | 16.6 % | 0.0101 to 0.0211 |
+| FNV | 12:00 | 66.57 both | 0.000 | 0 % | 0.0205 both |
+| FNV | 07:00 | 23.89 to 25.97 (+8.7 %) | 2.08 | 1.4 % | 0.0222 to 0.0444 |
+| FNV | 17:30 | 28.06 both | 0.000 | 0 % | 0.0367 both |
+| FO3 | 12:00, 07:00, 17:30 | identical | 0.000 | 0 % | identical |
+
+The in-scatter ratios follow the extinction ratios (FNV 07:00 floor/authored 2.00, in-scatter x2.0; Oblivion 07:00
+5.00, x3.6), so the table is the floor acting and nothing else.
+
+**What this does not measure.** Shaft contrast on content (VLM-SH-006) still needs the depth-matched poses of
+VLM-SH-012, so no capture here says whether the floor makes a content shaft visible. Skyrim never binds, so it was
+not captured; FO4 binds only at 06:00 and 20:00, which were not captured; Oblivion and FNV were captured at three
+hours. The PRD's rev 20 figures (FNV Goodsprings noon 0.000582 to 0.002704 /m) are for a different weather than this
+fixture's, which now resolves to Black Mountain through the region table; the two are not reconciled here.
+
 ## Corpus findings
 
 - The canonical XCLL size map remains game-dispatched and corpus-verified:
