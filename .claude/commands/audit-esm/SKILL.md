@@ -5,7 +5,7 @@ argument-hint: "--focus <dimensions> --game <name> --depth shallow|deep"
 
 # ESM / Plugin Parser Audit
 
-Audit `crates/plugin/` (~85k LOC in `src/`) as a parser: GRUP walker, sub-record byte
+Audit `crates/plugin/` (~87k LOC in `src/`) as a parser: GRUP walker, sub-record byte
 accounting, per-record schema dispatch, FormID load-order remap, CELL/WRLD walkers, and
 the `EsmIndex` → ECS handoff. Per-game audits (`/audit-fnv`, `/audit-skyrim`, …) each
 sample one game's slice; this skill owns the parser itself.
@@ -24,11 +24,11 @@ shared protocol (dedup, methodology, finding format). Do not duplicate them here
 `grup_walker.rs`; per-type decoders incl. `actor/`, `items.rs`, `items/consumable.rs`,
 `container.rs`, `condition.rs`, `weather.rs`, `weather_settings.rs` + `weather_settings_instance.rs`
 (Starfield `WTHS` schema + values), `load_screen.rs`, `pkin.rs`, `misc/*.rs` incl. `story_manager.rs`,
-`location.rs` (`LCTN`), `relationship.rs` (`RELA`), `challenge.rs` (FNV `CHAL`), `music.rs` (`MUSC`; Skyrim `MUST` since `03f9d2158`, #3816 piece 1), `media_location.rs` (FNV `ALOC` media location controller, `782e23d0a`/`18d7dd331`, #6882/#6906),
+`location.rs` (`LCTN`), `relationship.rs` (`RELA`), `challenge.rs` (FNV `CHAL`), `music.rs` (`MUSC`; Skyrim `MUST` since `03f9d2158`, #3816 piece 1), `media_location.rs` (FNV `ALOC` media location controller, `782e23d0a`/`18d7dd331`, #6882/#6906), `movt.rs` (`MOVT` movement types, M65),
 `lmsw.rs` (Starfield `LMSW`/`MTPT` reflection blobs), `reflection.rs` (the BGS reflection container decoder shared by `WTHS`/`LMSW`/`MTPT`, moved out of `weather_settings.rs` by `ce5796431`, #6272; public paths unchanged via re-exports)),
 `esm/cell/` (walkers `walkers.rs`, `support.rs`, `wrld.rs`, `helpers.rs`; `spaces.rs` = the load-door `SpaceGraph` cross-cell travel routes over, `7af55a0df`; `mod.rs` is a re-export hub over the
 data tier `base_objects`/`cell_data`/`index`/`landscape`/`lighting`/`placed_ref`/`worldspace.rs`, `d7c47d741`),
-`esm/strings_table.rs`, `equip.rs`, and the Redux-native tier
+`esm/strings_table.rs`, `equip.rs`, `esm/records/oblivion_actor_values.rs` + `oblivion_population.rs` (Oblivion's executable-defined actor-value roster and record→canonical values; the CHARAL feed), and the Redux-native tier
 (`datastore`/`manifest`/`record`/`resolver`).
 
 **Not in scope**: cell-loader consumption of `CellData` (`/audit-<game>` Dim 1); VMAD
@@ -338,15 +338,15 @@ closure, like `dialogues` and `game_settings` — or a reasoned exclusion: `reco
   RACE FO4/FO76/Starfield `SRAC`/`SADD`/`SAKD`/`SGNM`/`SAPT`/`STKD`/`SRAF` subgraph data (`SubgraphRole::from_raw(raw, game)`: value 3 is *Linking Only* on FO76/Starfield and *Idle* on FO4, Starfield 5–7 are Mt/Weapon/FurnitureGeneration; `SADD` stays one-per-race, not per entry — a raw scan of all 55 Starfield masters finds 17 races authoring it once, ahead of the first entry; `40cebd21d`, #6621), `KWDA` on
   `CommonNamedFields`, PERK entry bodies (`PerkEntry`/`PerkEntryBody`, EPFT/EPFD per the
   xEdit layout), and a "Use Base Data" template chain terminal (`ResolvedNpc::base_data`). The
-  `EsmIndex::categories()` count is pinned in `records::tests` (117 on 2026-11-08) — read the live
+  `EsmIndex::categories()` count is pinned in `records::tests` (118 on 2026-11-19; `MOVT` `movement_types` is the newest row) — read the live
   number there; each new map must be a category row or a recorded exclusion. M43 added FO4 `AORU`
   attraction rules (`attraction_rules`, `parse_aoru` in `misc/world/keyword.rs`) and the `KWDA` side tables
   `furniture_keywords` (FURN) / `placed_object_keywords` (FURN, FLOR, ACTI, CONT; `kwda_keywords` in
   `common.rs`) — all three are category rows; `complex_scene_object` (the `DOBJ` `CMPX` pair, read
   by `complex_scene_object` in `dispatch_misc_stub.rs`; later plugin wins in `merge_from`) is a scalar
   and a recorded exclusion. FNV music sources (#6870/#6882, `782e23d0a`): DOBJ's five FO3/FNV default music slots (`EsmIndex::default_music`, last plugin wins in `merge_from`), Oblivion `WRLD` `SNAM` raw on `WorldspaceRecord::music_category`, `ALOC` → `MediaLocationRecord` on `media_locations` (a category row; `NAM1` flags byte = Faction Not Found / Looping / Use Defaults, `18d7dd331`, #6906), and the REFR audio-marker block `MMRK`/`CNAM`/`BNAM`/`MNAM`/`NNAM` on `PlacedRef::audio_marker`. FO3/FNV `NAVI` `NVCI` door links (`NaviRecord::door_links`, remapped, rows that do not reconcile skipped) plus `NAVM` door triangles feed `EsmIndex::navmesh_door_links` (cross-cell travel router, `7af55a0df`); FO3/FNV `INFO` `TCFU` follow-ups are `InfoRecord::follow_ups` (INFO FormIDs, not topics); a `CTDA`/`CIS1`/`CIS2` after a `SPEL`/`ENCH` effect's `EFIT` is that effect's `MagicEffectItem::conditions`; FO3/FNV `WEAP` `DNAM` offset 36 is `projectile_form`. FNV `MSET` is typed (`parse_mset` → `MediaSetRecord`, `misc/media_set.rs`;
-  `media_sets` was a `MinimalEsmRecord` stub, `9ee802d57`). Skyrim `MUSC` (remapped `TNAM`, `parse_musc`, which takes the remap — no remap-free entry point, #6788) and `MUST` (`parse_must` → `music_tracks`, a category row; `MUST` decodes for Skyrim, FO4 and FO76 (one shared layout, #6790); only Starfield lays it out differently) decode in `misc/music.rs`, and `first_playable_track` resolves REGN `RDMO` → `MUSC` → first playable `MUST` (palettes descend, depth-capped; `03f9d2158`). #3816 stays OPEN for its other two pieces (Oblivion `RDMD`; FNV `MSET` consumption) — a typed `music_tracks` map is not a finding.
-- `actor_value_derive.rs` is the CHARAL feed — formulas belong to `/audit-character`.
+  `media_sets` was a `MinimalEsmRecord` stub, `9ee802d57`). Skyrim `MUSC` (remapped `TNAM`, `parse_musc`, which takes the remap — no remap-free entry point, #6788) and `MUST` (`parse_must` → `music_tracks`, a category row; `MUST` decodes for Skyrim, FO4 and FO76 (one shared layout, #6790); only Starfield lays it out differently) decode in `misc/music.rs`, and `first_playable_track` resolves REGN `RDMO` → `MUSC` → first playable `MUST` (palettes descend, depth-capped; `03f9d2158`). #3816 is narrowed to Skyrim (the FNV `MSET` and Oblivion `RDMD` halves play through the Game Music controller, `byroredux/src/music/translate.rs`); what stays OPEN is the tracks shipping as xWMA, which the streaming path cannot decode — a typed `music_tracks` map with no player is not a finding.
+- `actor_value_derive.rs` is the CHARAL feed — formulas belong to `/audit-character`. Oblivion decodes the executable-defined stat model the feed needs: `NPC_` `DATA` (33 B: 21 skills, Health `u16`, 8 attributes → `OblivionNpcStats`), `CREA` `DATA` (20 B → `OblivionCreatureStats`), the `ACBS` pools/`calc_max` (`OblivionActorPools`), and `AIDT`'s four raw actor-value bytes (`oblivion_ai_values`, #6995); Oblivion has no AVIF records, so `EsmIndex::install_oblivion_actor_values` synthesizes the 72-row roster (`OBLIVION_ACTOR_VALUES`; indices 38/39 excluded from vanilla lookups) into a free regular slot chosen at the end of the merge in `load_order.rs` (`278886579`). A parser that treated that slot as plugin-owned, or a roster row that disagrees with xEdit's TES4 `wbActorValueEnum`, is the regression. `oblivion_population.rs` is the record → canonical translation over it (level at spawn, auto-calc, creature pools).
 - Settled decodes — verify they hold, do not re-derive: `INAM` is one FormID array (#3356);
   `CREA CNAM` is not a class (#3383); `FACT` rank ladder (#3338); `ARMO` contributes every
   race-matching `ARMA` (#3357), `MOD3` is the female mesh (#3414); a `REFR` tombstone
@@ -411,6 +411,7 @@ First step: `git log --since=<last report> --format='%h %cs %s' -- crates/plugin
   `layered_material_swaps` / `material_path_forms` maps (`17bd40f4f`, #5757).
 - A placed reference draws the base's **world** model: `ARMO`/`CLOT` `MODL`/`MOD3` are the worn biped meshes (and on Skyrim+ `MODL` is an `ARMA` FormID), so `StaticObject.model_path` takes `MOD2` for them in `cell/support.rs` (a record with no `MOD2` keeps its `MODL` before Skyrim, nothing after; the worn mesh stays on the typed item the equip path reads; `846c36bf0`, #6691 — read as `MODL`, placed armor stood in its bind pose with its gore caps on FO3/FNV and was invisible on Skyrim, 1,683 interior references). Pinned by `placed_armor_and_clothing_take_the_world_model_over_the_biped_mesh`.
 - `cell/spaces.rs` (`7af55a0df`, cross-cell actor travel): `SpaceKey` (interior by lower-cased EditorID, else the cell-map key — unnamed FO4 interiors stay distinct spaces; or worldspace) and `SpaceGraph::build(cells, navmesh_door_links)` over every placed `XTEL` load door. A non-empty door-link set restricts routes to navmesh-linked doors, empty (Oblivion, FO4's undecoded navmeshes) treats every load door as walkable; the `inspect cross-space-census` probe and the engine router read the same graph. `PlacedRef::is_persistent` = GRUP type 8 or the runtime `0xFF` marker (`group_type` must stay populated per scope, see above).
+- `DOOR` records carry `StaticObject::door` (`DoorData`: the raw `FNAM` flag byte read per game through `DoorData::flags` — Oblivion bits 0-3, FO3/FNV/Skyrim bit 0 unnamed and Automatic/Hidden/Minimal Use/Sliding at 1-4, Skyrim adds Do-Not-Open-in-Combat-Search at 5, FO4/Starfield read as Skyrim's layout until checked — plus remapped `SNAM`/`ANAM`/`BNAM` open/close/loop sounds; door-runtime DRT-REC-001/-002, `50abfd008`) and a placed door's empty `ONAM` is `PlacedRef::open_by_default` (DRT-REC-004). Only a `DOOR` record carries `door`; the loop sound's play condition is unsourced (#7062).
 - Lighting-template inheritance is per-field; "absent" and "authored zero" stay distinct.
 - CELL `XCCM` is per-game (`3b28dca71`, #5463): TES4/FO3/FNV = Climate (CLMT) →
   `CellData.climate_override`; TES5/FO4/FO76/Starfield = "Sky/Weather from Region" (REGN) → `sky_region`

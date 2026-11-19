@@ -165,7 +165,7 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
   COMPUTE_READ) and writes the correction composite samples (COMPUTE_WRITE → FRAGMENT_READ); its a-trous ping-pong
   needs a barrier per iteration. The SKYAL cloud-shadow bake (`sky_cube/cloud_shadow.rs`, recorded from
   `sky_cube.rs`) feeds scene set 1 binding 24 and a per-FIF host readback of the camera column, which needs its own
-  SHADER_WRITE → HOST_READ dependency and must be read only after that slot's fence.
+  SHADER_WRITE → HOST_READ dependency and must be read only after that slot's fence. Every host readback invalidates non-coherent memory through the one `buffer::invalidate_allocation` (screenshot, depth and linear capture, `GpuBuffer::invalidate_if_needed`; #6960, c19f345b1); `depth_and_linear_capture_readbacks_invalidate_before_mapping` (`context/resources.rs`, #7027, 091023a73) pins invalidate-before-map on the capture twins, so a new readback spelling its own invalidate (or none) is the regression.
 - **Ground-cover model tier** (`groundcover_models.rs`, #4413): its compute writes `GpuInstance`s into the
   *tail of the main instance buffer* after `build_and_upload_instances` and before the geometry pass, which
   draws them with indexed-indirect — COMPUTE_WRITE must reach both `VERTEX_SHADER` (instance read) and
@@ -194,7 +194,7 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
 
 ### Dimension 3: ECS Lock Ordering & Deadlock (system level)
 Paths: `crates/core/src/ecs/{world,lock_tracker}.rs`, `byroredux/src/systems/`, `byroredux/src/extensions/`, `.github/workflows/ci.yml`
-First step: `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux` and the same with `-p byroredux-scripting` — the binary's graph is where every recent cycle lived (#4982–#4984, #5025, #5371, #5372, #5535, #5954, #6101, #6208, #6209, #6561, #6618, and the untracked `live_body` / `live_forms` pool-before-component cycle that kept the lane red from 98aa53db9 to 4c1d54cc0; core alone stays green) — then CI's `lock-order-check` form, `cargo test --workspace --no-fail-fast --exclude byroredux-ui`. A nonzero failure count is a hard regression; the lane was red for exactly that from the XCT door-fade test (98aa53db9, 2026-11-14) until 4c1d54cc0, so a red `lock-order-check` is a real inversion, not CI noise
+First step: `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux` and the same with `-p byroredux-scripting` — the binary's graph is where every recent cycle lived (#4982–#4984, #5025, #5371, #5372, #5535, #5954, #6101, #6208, #6209, #6561, #6618, and the untracked `live_body` / `live_forms` pool-before-component cycle that kept the lane red from 98aa53db9 to 4c1d54cc0; core alone stays green) — then CI's `lock-order-check` form, `cargo test --workspace --no-fail-fast --exclude byroredux-ui`. A nonzero failure count is a hard regression; the lane was red for exactly that from the XCT door-fade test (98aa53db9, 2026-11-14) until 4c1d54cc0, so a red `lock-order-check` is a real inversion, not CI noise. Measured 2026-11-19 at a7d4b49bb: `-p byroredux --bin byroredux` records no cycle; `-p byroredux-scripting --lib` fails one, `ActorValues` → `ActorValueNames` → `ActorValues` in `obscript_effects::tests::actor_value_commands_translate_the_code_and_set_mod_damage_and_restore` (from 278886579; `reset_health` in `obscript_actor_values.rs` holds the `ActorValueNames` guard across `clear_actor_value_damage`) — re-run before reporting it again
 Machinery — TypeId-sorted pairs, tracker-scope arming, `lock_tracker` internals (check-before-insert,
 `GRAPH` poison recovery, recursive-read warning) and poison resolution — is `/audit-ecs` Dim 1; do not
 re-audit it here. This dimension owns how *systems* use it.
@@ -245,7 +245,14 @@ re-audit it here. This dimension owns how *systems* use it.
   `flee_package` read `AiCombatState` under `Transform` (ce22fcbcf — read cross-lock state before taking the guard); `live_body` / `live_forms`
   (`cell_loader/relocated.rs`, reached from the door-fade `fade_in`) took the `FormIdPool` resource before the
   `FormIdComponent` query, closing `FormIdComponent → FormIdPool → FormIdComponent` against every other holder of the pair
-  (4c1d54cc0: query first, then pool — the process-wide order). Attribution recipe: a temporary edge logger
+  (4c1d54cc0: query first, then pool — the process-wide order); and the first ECS concurrency audit since 08-12 (dfcbcafd5, 2026-11-15)
+  closed five more, all main-thread (so none could deadlock, but each panics the detector on a real world): `eat_sleep`'s diner gather
+  took `GlobalTransform` before `WalkSpeed` while escort / follow / flee / travel / guard hold `WalkSpeed` across a `GlobalTransform` read
+  (`the_diner_gather_takes_walk_speed_before_global_transform`), `submersion_system` kept a `WaterBedField` guard across the `WaterVolume` /
+  `ParticleEmitter` write (`submersion_with_a_bed_field_takes_its_locks_in_one_order`), `kf_idle_work_pending` held `ActorCinematicState`
+  over an `IdleClipCatalog` read (the reverse of `idle_clip_playback_system`), the SDK capture (`extensions/capture.rs`) held `Inventory`
+  before `InventoryCatalog` (the reverse of `encumbrance_system`), and the unload walk read `AnimatedTextureFlip` after
+  `MaterialTextureHandles` / `TerrainTileSlot` (now its own pass, as #6209). Attribution recipe: a temporary edge logger
   in `record_and_check`, `--test-threads=1 --nocapture`; fix by gathering under one guard, dropping it, then composing.
 - **`FormIdPool`'s entity index is a leaf mutex (#6338, ab3a604bf).** `FormIdPool::entity_with_local` rebuilds a lazily
   cached `local → entity` map under an interior `Mutex` keyed on `FormIdComponent`'s structural generation + pool length;
@@ -320,7 +327,8 @@ The access model and the mechanical declaration guard (`system_access_declaratio
   reads — now a `raise_kill_story_event` hop in `PARALLEL_SYSTEMS`; the cross-crate hop behind it, the scripting crate's
   `note_death` — a `KillRecords` write plus `SceneAliasCandidate` / `CreatureActor` / `FormIdComponent` / `FormIdPool` /
   `PapyrusPlayerEntity` reads — is a listed hop too, #6217 ef48dbd03; a new CTDA arm's reads must be declared on
-  `npc_dialogue_selection` the same way, 561541d6c). All three story-event
+  `npc_dialogue_selection` the same way, 561541d6c; `player_controller_system` reached `LimbEffects` through `limbs::locomotion_mult` undeclared
+  until dfcbcafd5, which declared it and made `limbs.rs` a listed cross-file hop). All three story-event
   producers (CLOC, AHEL, KILL) go through `raise_story_event` since #5647 (eca0c4709): the first event on an entity takes the
   `StoryEvent` marker, a second for the same entity appends to `PendingScriptStoryEvents` (marker guard released first, so the
   two never nest). `raise_story_event` lives in the scripting crate and has no turbofish at the call site, so #6447 (1ebb38bce)
@@ -456,10 +464,10 @@ First step: `grep -rnE 'thread::(spawn|Builder)|rayon::|mpsc::' --include='*.rs'
   M39 texture promotions read archives on `TextureStreamer`'s own 2-thread rayon pool (`texture_streamer.rs`,
   `texture-stream-N`; `step` lands finished `FinishedRead`s over an `mpsc` channel and starts at most
   `MAX_READS_IN_FLIGHT`; the registry's `queue_promotion_bytes` runs on the main thread). It owns its own
-  `TextureProvider`, so the shared archive registry's `ArchiveStamp` rule applies. The pool job calls
-  `extract_texture_from` with no `catch_unwind` / `spawn_guarded`, unlike the terrain-height and stream-parse pools: a
-  panicking read aborts the process under rayon's spawned-job rule and leaves its handle in `in_flight` — check any
-  new panic path under that call.
+  `TextureProvider`, so the shared archive registry's `ArchiveStamp` rule applies. Every pool job runs through `spawn_read`
+  under `catch_unwind` (#6810, de596fafe; `a_panicking_read_is_reported_unreadable_not_fatal`): rayon aborts the process on an
+  unhandled spawned-job panic, so a panicking read lands as an unreadable entry and still sends its `FinishedRead` (else `step`
+  would keep the handle in `in_flight` forever) — a new pool spawn that bypasses `spawn_read` is the regression.
   Streamed NIFs' textures are prefetched on the stream pool (`prefetch_textures`, `PrefetchStore`): a panicking
   read must still complete its slot, and a withdrawn key must not be waited on. Terrain-layer height maps (#6195)
   generate on their own 2-thread rayon pool (`TerrainHeightService`, `terrain_height.rs`) over a cloned
@@ -470,13 +478,14 @@ First step: `grep -rnE 'thread::(spawn|Builder)|rayon::|mpsc::' --include='*.rs'
   resolution (`merge_external_material`, which takes `&mut ImportedMaterial` + `&mut MaterialProvider` +
   `&mut StringPool`) is main-thread-only — moving it needs a real synchronisation story. The NIF import
   cache is read-only on the worker with write-back deferred to main.
-- **Movie decode (`crates/video`).** Each `Movie` owns one `movie-decode` thread (Bink 1 through `mercs2_bink`, Bink 2 through
-  `byroredux-bink2`, whose slices fan out on up to `BINK2_THREADS` = 4 `std::thread::scope` threads) feeding a
-  `sync_channel(FRAME_RING)`; `advance` drains it on the main thread, and `Drop` closes the ring (`rx = None`) before joining so a
-  reader blocked in `send` wakes. No ECS guard or `World` reference crosses into the thread. The reader runs no `catch_unwind` and
-  `Drop` ignores the join result: a panicking decoder drops the channel with no reason, which `advance` reads as
-  `Disconnected` → `Finished` rather than `Failed` (#6855's BIK-DEC-004 intent, `118afd645`, covers decode *errors* only) — no issue
-  tracks it (checked 2026-11-14), so report it as a finding if it is still true.
+- **Movie decode (`crates/video`).** Each `Movie` owns one `movie-decode` thread, spawned only by `spawn_reader` (pinned by
+  `spawn_reader_is_the_only_reader_thread`; Bink 1 through `mercs2_bink`, Bink 2 through `byroredux-bink2`, whose slices fan out
+  on up to `BINK2_THREADS` = 4 `std::thread::scope` threads) feeding a `sync_channel(FRAME_RING)`; `advance` drains it on the main
+  thread, and `Drop` closes the ring (`rx = None`) before joining so a reader blocked in `send` wakes. No ECS guard or `World`
+  reference crosses into the thread. The decode loop runs under `guard_decoder` (`catch_unwind`), so a decoder panic is sent as
+  the frame failure and the movie ends `Failed` with a reason, not `Finished` (BIK-DEC-004, aa193bd9e, #6959/#6991; pinned by
+  `a_decoder_panic_ends_the_movie_as_failed`). `Drop` still ignores the join result by design; a new reader path outside
+  `spawn_reader` would lose the guard.
 - **Debug server (thread/lock shape only; command surface is `/audit-tooling`).** Per-client TCP threads
   never touch the `World`: they enqueue into a bounded queue (`MAX_QUEUED_COMMANDS`, client cap
   `MAX_CONCURRENT_CLIENTS`, `listener.rs`) and `DebugDrainSystem` (Late exclusive) executes on the main

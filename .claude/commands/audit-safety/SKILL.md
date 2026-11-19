@@ -20,19 +20,19 @@ a dimension whose Paths have no commits since the last `AUDIT_SAFETY_*` report.
 
 Census recipe: `grep -rwo unsafe <crate>/src | wc -l` for tokens, `grep -rnE 'unsafe[[:space:]]*\{' <crate>/src`
 for blocks — **read the hits**: word counts also match prose (`byroredux` reports 5 tokens and
-only 2 real blocks). Re-measured 2026-11-14 at 8ff82d514 (933 / 684 / 117 / 45 at 88c239b35 on 2026-11-09; 936 / 688 / 116 / 45 at 66c85af80 on 2026-11-06; 900 / 669 / 102 / 44 at 8985a2e99 on 2026-10-31; 948 / 717 / 102 / 44 at eae8fd740 on 2026-10-27; 943 tokens / 716 blocks / 100 `unsafe fn` / 38 impls at 1be33af66 on 2026-10-21; 922 / 704 at f4ae42a6f on 2026-10-15; #5593 (c6d36b4e7) removed eleven; #5273 removed five earlier):
+only 2 real blocks). Re-measured 2026-11-19 at a7d4b49bb (935 / 686 / 117 / 45 at 8ff82d514 on 2026-11-14; 933 / 684 / 117 / 45 at 88c239b35 on 2026-11-09; 936 / 688 / 116 / 45 at 66c85af80 on 2026-11-06; 900 / 669 / 102 / 44 at 8985a2e99 on 2026-10-31; 948 / 717 / 102 / 44 at eae8fd740 on 2026-10-27; 943 tokens / 716 blocks / 100 `unsafe fn` / 38 impls at 1be33af66 on 2026-10-21; 922 / 704 at f4ae42a6f on 2026-10-15; #5593 (c6d36b4e7) removed eleven; #5273 removed five earlier):
 
-- `crates/renderer/src`: **935** word tokens — 686 `unsafe {`
-  blocks, 117 declared `unsafe fn` (`grep -E '^\s*(pub(\([a-z]+\))?\s+)?unsafe fn'`; the loose `grep 'unsafe fn'` reads ~165: prose and source-scan
-  strings; the newest are `texture::submit_initial_layouts`, #6146, and the local-grid / linear-capture record fns), 45 `unsafe impl` (every one a `NoUninit`, the
-  `buffer.rs` primitive macro and `[T; N]` blanket included; newest: `NoUninit for ScatterPush` / `BladePush` / `BenchPush`, #6033 02b828fff, then #6270
+- `crates/renderer/src`: **1014** word tokens — 711 `unsafe {`
+  blocks, 119 declared `unsafe fn` (`grep -E '^\s*(pub(\([a-z]+\))?\s+)?unsafe fn'`; the loose `grep 'unsafe fn'` reads ~219: prose and source-scan
+  strings; the newest are `texture::submit_initial_layouts`, #6146, and the local-grid / linear-capture record fns), 46 `unsafe impl` (every one a `NoUninit`, the
+  `buffer.rs` primitive macro and `[T; N]` blanket included; newest: `FarSunProjection` in `composite.rs`; earlier: `NoUninit for ScatterPush` / `BladePush` / `BenchPush`, #6033 02b828fff, then #6270
   dedf6c0d6 added `Push` (shadow filter), `AtrousPush`, `WaterPush`, `PresentationPushConstants` and both skin push structs
   and routed those casts plus the geometry / morph-weight / bind-inverse bulk views through `byte_view`, dropping their
-  hand-rolled `from_raw_parts` blocks), ~786 `SAFETY` mentions. Growth since 10-15 is new
+  hand-rolled `from_raw_parts` blocks), ~837 `SAFETY` mentions. Growth since 10-15 is new
   passes — `vulkan/shadow_filter.rs` (10 blocks + `unsafe fn destroy`) and the SKYAL cloud-shadow bake
-  `vulkan/sky_cube/cloud_shadow.rs` (5 + `unsafe fn record` / `destroy`, c231f5b5f); since 10-31 the world-space combustion local
-  grid `vulkan/volumetrics/local_grid.rs` (15 blocks, #6533 / d3e3acc7b) and the M-LIGHT scene-linear capture
-  `vulkan/context/linear_capture.rs` (3, 75b4024df), +5 in `context/helpers.rs`, while `screenshot.rs` / `depth_capture.rs`
+  `vulkan/sky_cube/cloud_shadow.rs` (7 now, + `unsafe fn record` / `destroy`, c231f5b5f); since 10-31 the world-space combustion local
+  grid `vulkan/volumetrics/local_grid.rs` (13 blocks now, #6533 / d3e3acc7b) and the M-LIGHT scene-linear capture
+  `vulkan/context/linear_capture.rs` (2 now, 75b4024df), +5 in `context/helpers.rs`, while `screenshot.rs` / `depth_capture.rs`
   lost four each to a shared readback helper — plus `descriptors::clamp_sampler`
   (`unsafe fn`, #5809 31f4919d5, which first spliced it between `memory_barrier`'s doc and item, leaving the wrong fn
   carrying the `# Safety`; restored by #6064 2a6f8be2b with a doc-splice guard); #5717 (d3225bb2f) removed the last
@@ -42,30 +42,33 @@ only 2 real blocks). Re-measured 2026-11-14 at 8ff82d514 (933 / 684 / 117 / 45 a
   #4599 poison-policy extraction cut `vulkan/buffer.rs` 40 → 19 blocks; #5273 (74ed66f0a) replaced the five
   `CStr::from_ptr` device/extension-name blocks in `vulkan/device.rs` with ash's bounded `*_as_c_str()` accessors
   (pinned by `device_names_read_through_bounded_accessors`); `vulkan/groundcover.rs` split into
-  `vulkan/groundcover/{construct,frame}.rs` (16 + 10 today). Since 11-09 the renderer's unsafe surface is flat: the new code (#6834 composite pair-create fix, #6629 bindless first-level table in `texture_registry/mod.rs`) added a handful of commented blocks, no new file. #6358 (0288f468d) turned `vulkan/gpu_timers.rs`'s 50 per-pass `cmd_<pass>_start/_end` methods into
+  `vulkan/groundcover/{construct,frame}.rs` (16 + 6 today). Since 11-14 the +25 blocks / +79 tokens are mostly the edition-2024 migration (153f611a7, 607e2e9a1): *unsafe_op_in_unsafe_fn* is warn-by-default in edition 2024 and CI runs clippy with `-D warnings`, so an `unsafe fn` body now wraps its operations in an `unsafe {}` block with a `// SAFETY: this is the whole body of the `unsafe fn`…` comment (`sync.rs` 3 → 7, `geometry_pass.rs` 2 → 7, `skin_compute.rs` 10 → 15, `sky_cube.rs` 6 → 10, `water.rs` 13 → 16), plus `unsafe fn dispatch_far_sun` / `descriptors::destroy_pass_object_sets`; the pass-teardown consolidation (#6371) took blocks back out (`volumetrics/init.rs` 17 → 12, `groundcover_models.rs` 14 → 10, `teardown.rs` 5 → 2). No new file with blocks. #6358 (0288f468d) turned `vulkan/gpu_timers.rs`'s 50 per-pass `cmd_<pass>_start/_end` methods into
   `cmd_start` / `cmd_end` over `TimerPass` table rows, taking it from 66 blocks (the old densest file) to 18 — the −48 block drop is that
   consolidation, not removed unsafe surface. Densest files: `vulkan/acceleration/blas_static.rs` (29), `vulkan/context/resize.rs` (28),
-  `vulkan/groundcover_bench.rs` (26), `vulkan/composite.rs` (27), `vulkan/presentation.rs` (21), `vulkan/texture.rs` / `vulkan/svgf.rs` (19 each; svgf fell 22 → 19 when #6371 b7fe116f1 routed its teardown through `descriptors::destroy_pass_objects`). Compare against the previous
+  `vulkan/groundcover_bench.rs` (26), `vulkan/composite.rs` (25), `vulkan/presentation.rs` / `context/helpers.rs` (21 each), `vulkan/svgf.rs` / `vulkan/bloom.rs` (20 each), `vulkan/texture.rs` (19; svgf fell 22 → 19 when #6371 b7fe116f1 routed its teardown through `descriptors::destroy_pass_objects`). Compare against the previous
   report, not this text.
 - Tail: `crates/fsr3-sys` 10 blocks in `src` (one is the test-only `byro_fsr3_abi_layout` probe; Dim 1) plus 20 in the
   `examples/vulkan_context_smoke.rs` harness, `crates/nif` 1
   POD-read site + 4 `unsafe impl AnyBitPattern` (Dim 2), `crates/core` 4 in `ecs/query.rs` (`/audit-ecs` Dim 3)
   + 1 in `string/mod.rs` (`from_utf8_unchecked` after an ASCII-only fold) + 1 test-only, `crates/pex` 1
-  transmute (Dim 2), `byroredux` 2 — `cell_loader/unload.rs` 1 and the NVML GPU-name probe's
+  transmute (Dim 2), `byroredux` 4 — `cell_loader/unload.rs` 1, the NVML GPU-name probe's
   `get_physical_device_properties` in `app_events.rs` (both commented since b7bc84722/#5120, which also replaced the
-  `CStr::from_ptr` block with `device_name_as_c_str`), `tools/byro-launcher/src/preflight.rs` 1 block + 1 `unsafe fn` (Vulkan loader probe; its two name reads
+  `CStr::from_ptr` block with `device_name_as_c_str`), and two `std::env::set_var` calls in `boot/cli.rs` / `boot/mod.rs` (`unsafe` since edition 2024; each
+  commented as main-thread, pre-thread argv handling — any `set_var` / `remove_var` reachable after a thread starts is the finding), `tools/byro-launcher/src/preflight.rs` 2 blocks (one is `describe`'s whole-body wrapper) + 1 `unsafe fn` (Vulkan loader probe; its two name reads
   are bounded `*_as_c_str()` since #5717),
   `crates/plugin` test-only env-var edits, `crates/cxx-bridge` one `unsafe extern "C++"`,
   and **`crates/bink2` 15 blocks, all in `src/simd.rs`** (new since 11-09, 8e11d49a4: AVX2 kernels behind a runtime
   `is_x86_feature_detected!("avx2")` dispatch; Dim 2). `crates/bink2` is outside the renderer's `deny` lint, so
-  comment presence is a by-hand check (14 of 15 carry a `// SAFETY:` within three lines; the `idct_px` store loop relies on
-  the comment seven lines above it).
+  comment presence is a by-hand check (all 15 carry a `// SAFETY:` since 1de2673b7 added one to the `idct_px` store block).
 - No `unsafe` at all (the remaining hits are prose): `crates/{audio,bgsm,binkaudio,boot-request,bsa,debug-protocol,
   debug-server,debug-ui,facegen,game-detect,hkx,menuxml,mod-runtime,papyrus,physics,platform,save,scripting,
-  sdk,settings-io,sfmaterial,spt,terrain-height,ui,video}` (`binkaudio` and `video` are new since 11-09; `video` decodes Bink 1
+  sdk,settings-io,sfmaterial,spt,terrain-height,ui,video}` (`binkaudio` and `video` are new since 11-09, `native-ui` since 11-17 (f12ac1b82); `video` decodes Bink 1
   through the safe pure-Rust `mercs2_bink` dependency) (`terrain-height` is new, 5017a64c2) and `tools/{byro-dbg,byro-detect,texture-upscale}`.
-  **Only `crates/sdk` carries `#![forbid(unsafe_code)]`** — for every other unsafe-free crate the absence is
-  unenforced, so re-run the census on each and report any newcomer.
+  **The absence is now compiler-enforced** (153f611a7): the workspace root declares `[workspace.lints.rust] unsafe_code = "forbid"` and every
+  unsafe-free crate in the list above opts in with `[lints] workspace = true` (`crates/sdk` dropped its own crate attribute for it); the ten
+  crates that carry `unsafe` — `renderer`, `core`, `nif`, `plugin`, `bink2`, `fsr3-sys`, `cxx-bridge`, `pex`, `byroredux`, `byro-launcher` — do not
+  inherit it (Cargo cannot override an inherited table, so a crate's first `unsafe` forces a visible manifest edit; `bink2`, `cxx-bridge`, `core`, `nif`
+  and `renderer` also carry `unsafe_code = "allow"`). Audit that a new crate opts in, and that none leaves `workspace = true` without an `unsafe` census row.
 
 ## Dimensions
 
@@ -204,9 +207,13 @@ First step: `cargo test -p byroredux rapier_release && grep -rn 'DeferredDestroy
   (`a_failed_pipeline_pair_create_keeps_the_pipeline_that_built`); `pipeline.rs`'s multi-info batch already destroys its
   partials, and every other pass builds one pipeline, where a failed entry is null. A new multi-info create that matches
   `Err((_, e))` is the regression.
-- **Pass teardown helper** (#6371, b7fe116f1): SVGF, TAA, SSAO and caustic destroy their pipeline / layout / pool /
-  set-layout handles through `descriptors::destroy_pass_objects` (one order, one null-guard policy, SAFETY text once); the
-  other ~19 renderer files that destroy a set layout still hand-write it, so a new pass should adopt the helper rather than add a third guard policy.
+- **Pass teardown helper** (#6371, still open as the tracker; b7fe116f1, then 54e8aeaa8 / 5f3b20d89 / dbed3ebeb / 35ab58d55): the passes
+  — SVGF, TAA, SSAO, caustic, bloom, composite, cluster cull (`compute.rs`), exposure meter, shadow filter, skin compute, water,
+  volumetrics (+ `local_grid.rs`), ground-cover frame / models and the four sky-cube passes — destroy their pipeline / layout / pool /
+  set-layout handles through `descriptors::destroy_pass_objects` / `destroy_pass_object_sets` (one order, one null-guard policy,
+  SAFETY text once; `migrated_passes_destroy_through_the_shared_helper` lists them). The files that still call
+  `destroy_descriptor_set_layout` directly (`presentation.rs`, `groundcover_bench.rs`, `scene_buffer/`, `texture_registry/mod.rs`) hand-write
+  it, so a new pass should adopt the helper rather than add a third guard policy.
 - **egui**: texture free is deferred one frame (`pending_free`) on `draw_frame`'s fence wait — freeing on the
   arriving frame is UAF. Partial deltas are promoted to full uploads from a CPU mirror (#4986), so replacing an
   existing id retires an image too; both retirements rest on the all-slots fence wait (#4988, a rider in
@@ -229,9 +236,9 @@ First step: `grep -rn undocumented_unsafe_blocks crates` (expect the one `deny` 
   `cargo build` / `cargo test`. Since #5121 (530c9e7aa) the workspace step runs `--keep-going` and a dedicated step
   (`cargo clippy -p byroredux-renderer --no-deps -- -D clippy::undocumented_unsafe_blocks`) re-lints the renderer on
   its own closure, so an upstream crate's new-toolchain clippy failure can no longer disarm the gate — confirm both survive. Confirm the `deny` is
-  present and unescaped. The lint sees `unsafe {}` blocks only: `unsafe fn` bodies and the 45 renderer `unsafe impl`s
-  need a justification found by reading. Crates outside the renderer have no such lint — sweep comment-less blocks
-  there by hand (at 2026-10-10 all commented in `fsr3-sys`, `nif`, `core`, `pex`, `byro-launcher` and `byroredux`); a
+  present and unescaped. The lint sees `unsafe {}` blocks only: the 46 renderer `unsafe impl`s need a justification found by reading; `unsafe fn` bodies are covered
+  since edition 2024 (*unsafe_op_in_unsafe_fn* forces an inner `unsafe {}`), but the fn's own `# Safety` contract is still by reading. Crates outside the renderer have no such lint — sweep comment-less blocks
+  there by hand (re-checked 2026-11-19: every block in `fsr3-sys`, `nif`, `core`, `pex`, `byro-launcher`, `byroredux` and `bink2` carries a `SAFETY:` comment, `bink2` since 1de2673b7); a
   comment-less block is MEDIUM.
 - The audit's value is therefore the *truth* of each invariant, not its presence: for each new or changed block, does the
   stated precondition (device live, handles from this device, not in flight, pointer valid for the call) hold at THIS call

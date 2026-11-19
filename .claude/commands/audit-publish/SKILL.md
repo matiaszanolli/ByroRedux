@@ -119,7 +119,7 @@ label. Map the finding's subsystem directly:
 | SpeedTree (`.spt`) | `speedtree` |
 | Character rulesets — ActorValues, perks, leveling (CHARAL) | `character` |
 | Audio (M44) | `audio` |
-| Scaleform / SWF UI (R4 + M48) | `ui` |
+| Scaleform / SWF UI, MenuXml eval / layout / raster, both HUD drivers, the M48 menu stack and native pages (R4 + M48) | `ui` |
 | Save/load (M45) | `save-load` |
 | Papyrus / ObScript / scripting runtime | `scripting` |
 | ECS storage / queries / scheduler | `ecs` |

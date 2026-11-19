@@ -18,7 +18,7 @@ for the narrative; the core types are below, alongside `hierarchy.rs`, `metrics.
 - `world.rs` — World: TypeMap of RwLock<Storage>, TypeMap of RwLock<Resource>
 - `query.rs` — QueryRead (RwLockReadGuard), QueryWrite (RwLockWriteGuard)
 - `resource.rs` — Resource trait, ResourceRead, ResourceWrite
-- `resources/mod.rs` — DeltaTime, TotalTime, EngineConfig
+- `resources/` — typed engine Resources: `mod.rs` holds the core ones (DeltaTime, TotalTime, EngineConfig, …) and each larger one gets its own module (`ls` it for the live set; e.g. `menu_registry/`, `skin_slot_pool.rs`, `ownership.rs`)
 - `system.rs` — System trait + blanket impl for Fn closures
 - `scheduler.rs` — stage-based scheduler: stages run in discriminant order, non-exclusive systems within a stage run in parallel on rayon (`parallel-scheduler`, a `default` feature of `byroredux-core`), exclusive systems run after the batch; `run_before` / `run_after` order systems
 - `access.rs` — declared per-system `Access` (runtime data checked by `analyze_pair`; the declaration guard is `system_access_declaration_tests` in `byroredux/src/boot/schedule/mod.rs`)

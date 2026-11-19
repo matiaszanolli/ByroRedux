@@ -348,7 +348,12 @@ restitution / damping from its material + motion-property rows —
 - **`BhkNPCollisionObject` is "approximated", not "decoded"**: the FO4/FO76/Starfield
   `BhkSystemBinary` blob does not resolve to a `CollisionShape`.
   `blocks::collision::havok_packfile::parse_havok_packfile` decodes the container (header,
-  sections, three fixup tables → typed object graph); what stays opaque is
+  sections, three fixup tables → typed object graph) through `byroredux_hkx::container::Container`,
+  the one container decoder shared with the Skyrim/FO4 HKX reader (nif depends on hkx since
+  68d3a834e, #6954 — nif is as strict as hkx now: section count 1..=64, version 8 / 11, ordered
+  sections; nif keeps the FO76/Starfield tagfile refusal, #6302, the `__classnames__` walk and
+  its `HavokPackfile` view; `/audit-parsers` owns the container's untrusted-input discipline);
+  what stays opaque is
   `hknpCompressedMeshShapeData`'s bit-packed layout (`docs/engine/physal.md`). Do not report
   it as decoded. The FO4 skeleton **ragdoll** blob is decoded (`blocks/collision/np_ragdoll.rs`,
   `decode_np_ragdoll`: `hknpRagdollData` capsule / sphere / `hknpConvexPolytopeShape` /
@@ -362,7 +367,14 @@ restitution / damping from its material + motion-property rows —
   measurement, not nif.xml. `summarize_collision_authoring` scans every collision block and feeds
   `CachedNifImport.collision_authoring` (`byroredux/src/cell_loader/nif_import_registry.rs`);
   `examine_collision_kind` keeps `None / Classic / NewPhysicsStub / Phantom / Unrecognised`
-  distinct (a Skyrim+ phantom must not be force-translated as a rigid body). A per-game
+  distinct (a Skyrim+ phantom must not be force-translated as a rigid body). The summary also
+  carries `classic_dialect` (`scene.bsver < FALLOUT4`; `false` in `Default`) and
+  `walk_through_by_authoring()` (classic dialect that authored no body): the cell loader's
+  `missing_collision_fallback` refuses the opaque-mesh `ArchitectureTriMesh` stand-in then —
+  in Oblivion / FO3 / FNV / Skyrim a model with no `bhk*` body has none in the original engine,
+  and the stand-in is only for authored-but-undecodable collision (FO4+ packed Havok,
+  precombines) (0c35505ba, #6549; `classic_dialect_models_that_author_no_body_get_no_stand_in`,
+  `collision_dialect_is_read_from_the_scene_bsver`). A per-game
   detail (raw `bsver`, block-type string) escaping `import/collision/` is a finding →
   cross-link `/audit-nifal`.
 - `hkMotionType` byte → canonical `MotionType` (`havok_motion_type`): `1..=5 | 8` Dynamic,

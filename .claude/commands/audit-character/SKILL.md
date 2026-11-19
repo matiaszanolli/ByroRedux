@@ -17,20 +17,24 @@ changes gameplay silently — no crash, no validation error, no failing test unl
 
 ## Scope
 
-- `crates/core/src/character/` (18 modules, `mod_docstring_indexes_every_sub_module` pins the count):
+- `crates/core/src/character/` (21 modules, `mod_docstring_indexes_every_sub_module` pins the count):
   `ruleset.rs` (`CharacterRuleset`, the per-game `Resource` seam), `profile.rs` (`CharacterRulesProfile` —
   the single per-game policy row: `NpcStatModel`, `creature_stats`, `body_condition_base`, `vital_pools`,
-  `RulesetBuilder`, and since #5921 `3162b21b8` `OverEncumberedRule`, `awards_kill_experience`,
+  `RulesetBuilder` — `Oblivion` since #7010, `None` only for FO76/Starfield — and since #5921 `3162b21b8` `OverEncumberedRule`, `awards_kill_experience`,
   `essential_death_time_secs`, `BarterModel`, `PerkEntryPointDialect`; later `radiation_gauge` `e9b7bcead`,
-  `level_cap_raises` #6227 `cafd3ccab`, `crime`, `vats`, `armor`; `PerkEntryPointDialect` has three variants — `Fallout3NV`, `Skyrim`, `Fallout4` — plus `None`, and `add_perk_raises_rank` #6619), `derived.rs` (`DerivedStatFormula`/`DerivedInput`/`DerivedOutput`/`DerivedScope`/
-  `RoundMode`), `leveling.rs`, `attribute.rs`/`skill.rs`, `fallout.rs`/`tes.rs`/`skyrim.rs` (per-family
+  `level_cap_raises` #6227 `cafd3ccab`, `crime`, `vats`, `armor`; M65's `stance`, `stealth`, `indicator` rows and Oblivion's `NpcStatModel::OblivionNpc`/`OblivionCreature`, `build_tes_pool_regen` and `build_disposition` (#7010/#7011); `PerkEntryPointDialect` has three variants — `Fallout3NV`, `Skyrim`, `Fallout4` — plus `None`, and `add_perk_raises_rank` #6619), `derived.rs` (`DerivedStatFormula`/`DerivedInput`/`DerivedOutput`/`DerivedScope`/
+  `RoundMode`), `leveling.rs`, `skill_use.rs` (`SkillUseCosts`/`SkillClass`/`OBLIVION_SKILL_USE_VALUES`/`ArmorHitSlot` — classic-TES skill-use cost + banking, #7050/#7051), `attribute.rs`/`skill.rs`, `disposition.rs` (`DispositionModel`, Oblivion starting disposition from `Oblivion.exe` `0x546260`, #7011), `stance.rs` (`StanceModel`/`SneakMovement`, M65 sneak-stance speed), `fallout.rs`/`tes.rs`/`skyrim.rs` (per-family
   ruleset builders), `regen.rs`, `affliction.rs`/`resistance.rs`, `reputation.rs`, `crime.rs` (`CrimeModel` — Oblivion and Skyrim rows; `CrimeKind`, `BountyScope`), `vats.rs` (`VatsModel`/`VatsHitInput` — the `fVATS*`/`fActionPoints*` tuning family + the to-hit chain, FO3/FNV rows, #6350), `limb_effects.rs` (`LimbEffectModel` — crippled-leg speed, crippled-arm melee/gun-spread terms, FO3/FNV; VATS-LIMB-006/-010/-011), `armor.rs` (`ArmorModel` — Skyrim's `fArmor*`/`fMaxArmorRating` row with a GMST overlay, #6567 `cb9faca7d`), `components.rs` (incl. `DismemberRecord`, VATS-LIMB-008/-009, and `CharacterIdentity` — the saved name/sex/race chargen chooses).
   Substrate: `crates/core/src/ecs/components/{actor_values,faction_ranks}.rs`.
 - CHARAL-adjacent (not submodules): `crates/core/src/combat.rs` (Oblivion damage math),
-  `crates/core/src/stealth.rs` (FO3/FNV sneak detection) — consumer-less or thin today; verify anyway.
+  `crates/core/src/stealth.rs` + `crates/core/src/stealth/{fallout,fallout4,indicator,oblivion,settings,skyrim,starfield}.rs`
+  (M65 detection: six `StealthKind` formulas — FO3, FNV, Oblivion, Skyrim, FO4, Starfield — plus the indicator table; consumed by
+  `byroredux/src/detection/` and `systems/stance.rs`, so no longer thin). Oblivion skill-use leveling runtime:
+  `crates/scripting/src/oblivion_skill_use.rs` (the one entry point: `bank_skill_use`, `raise_skill_ranks`, `pick_attribute`,
+  `apply_pending_level`) fed by `byroredux/src/skill_use_emit.rs` (hit / armor-hit / stance / jump emitters) — #7050-#7052.
 - **Population boundary**: `byroredux/src/npc_spawn/` (`build_character_ruleset`, the only ruleset
   construction site) + `npc_spawn/resumable/`, `npc_spawn/ai_package.rs`, `crates/plugin/src/esm/records/
-  actor_value_derive.rs`, `crates/plugin/src/esm/records/actor/mod.rs` (`effective_actor_level`),
+  actor_value_derive.rs` + `oblivion_population.rs` (Oblivion's NPC/creature stat translation) + `oblivion_actor_values.rs` (the engine-supplied 72-name roster), `crates/plugin/src/esm/records/actor/mod.rs` (`effective_actor_level`),
   `crates/plugin/src/equip.rs` (`resolve_inherited_*`), `byroredux/src/cell_loader/references/`,
   `byroredux/src/inventory/` (`attach_to_player` stamps the player's `ActorValues`/`ActorVitals`/`CharacterLevel`/
   `Background`/`SpellList`/`RaceSpells` and reads `CharacterRulesProfile::vital_pools`), `byroredux/src/combat.rs` (`melee_damage_charal_bonus`, `grant_experience`), `byroredux/src/{armor,limbs}.rs` (`install_armor_book` reads the profile's `armor` row; `build_limb_effects` — FO3/FNV only, gated on `body_condition_base`),
@@ -54,17 +58,20 @@ ruleset.md` — **the authority for every constant**; a coefficient no capture s
 - VATS (#6350, open umbrella; phases #6644 captures, #6645 numbers, #6646 limbs): the AP pool, its regen, the mode machine with world freeze, the targeting scan and the AP-gated
   queue/confirm (die roll per shot through the combat funnel) are live for FO3/FNV (`3dc16208e`..`1fb7e6f56`). Since the last sync: Concentrated Fire prices repeat shots at the same part when the player holds the perk (#6422 `5502c2f97`, `has_concentrated_fire` composes perk entry point 33; the scan still prices a part's first shot); VATS ends on a cell transition and on the player's death through the shared `end_vats_for_world_change` (#6625 `6186ab77e`); a confirmed volley reaches the funnel as a `HitEvent` plus transient `HitShots` and `HitParts` (one `PartStrike` per landed shot at the struck part's `BPND` damage multiplier, DT/armor applied per strike, VATS-LIMB-002/-003 `83e9c6c92`); a killing blow writes the saved `DismemberRecord` that `IsLimbGone`/`GetKillingBlowLimb` read (`d50fc1153`, nothing marks a part gone yet — `mark_gone` has no caller, so `IsLimbGone` answers 0); crippled legs slow the player and every NPC stride and a crippled arm weakens a melee swing (`byroredux/src/limbs.rs`, `bda7fab73`); `vats.limbs` reports a limb table (`532cc486f`); a VATS kill restores the Player Kill AP Reward (`9e88a183b`). Still absent, so not findings: a VATS menu, playback + camera, **routing a hit into the limb-condition actor values** (VATS-LIMB-004 — nothing lowers a limb below its seed, so no limb becomes crippled by play; it waits on its Phase 0 formula), the gun-spread consumer for the crippled-arm term (the engine has no spread computation), FO4 (`vats: None`). `vats.enter` shares the key's entry gates through `vats_entry_refusal` and `vats.scan/queue/confirm` refuse outside VATS (#6469 `9d82dc616`); a weapon's base to-hit is the `u8` at `WEAP` `DNAM`@40 and the VATS sub-record's AP is the *special* attack's (`WeaponVats::special_attack_ap`), a regular attack charges `DNAM`@68 or the engine default (#6449/#6450 `e97707b14`). The skill term reads the player's value for the weapon's own `DNAM`@104 actor-value code through its AVIF, a weapon or player without one (a carried 0 stays 0) pricing at `NEUTRAL_SKILL` 50 (`a9748e54c`, #6441 `bb60b15cf`); FNV Damage Threshold applies once per shot (#6440 `e669918ad`). The to-hit operation order is **reconstructed, not captured**; its ground-truth test is
   `#[ignore]`d and with an empty `GROUND_TRUTH` pins nothing — a placeholder, not coverage. The captures are an acceptance item of #6350 (#6403 closed that way, `2d6af0aeb`; the Phase 0 capture issue is #6644) — never let the reconstruction arbitrate itself.
-- Regen: `pool_regen_tick_system` is live for FO3/FNV **ActionPoints only** — `build_vats_model` returns a `PoolRegenConfig` carrying
-  the `ActionPointsRegen` lane, installed on the first FO3/FNV cell load (`cell_loader/references/mod.rs`; #6374 `68f200ec4`
-  retired the "zero production insertion sites" claim). The Fatigue/Magicka/Willpower lanes stay inert (`PoolRegenConfig`'s ids are `Option<u32>`, `None` today, #6430 `a10bb9764` — they were `0`, which a stray AV 0 would have armed) and every other game never inserts the config; `affliction_tick_system` still has no scheduler registration.
-  Verify both, and that prose says "AP only" rather than "inert"/"live" wholesale (Dim 5 doc sweep). Level-up is no longer absent: M47.2's
+- Regen: `pool_regen_tick_system` is live for two lane sets — FO3/FNV **ActionPoints** (`build_vats_model` returns a `PoolRegenConfig` carrying
+  the `ActionPointsRegen` lane, #6374 `68f200ec4`) and Oblivion **Fatigue/Magicka** (`CharacterRulesProfile::build_tes_pool_regen` resolves
+  Fatigue/Magicka/Willpower/`StuntedMagicka`; a positive Stunted Magicka value zeroes only Magicka regen, pin
+  `stunted_magicka_stops_only_magicka_regeneration`; Magicka's ceiling is `undamaged()`), both installed idempotently on the first cell load
+  (`cell_loader/references/mod.rs`). `PoolRegenConfig`'s ids are `Option<u32>` (#6430 `a10bb9764`): each lane is `None` on a game that does not resolve it, FO4/Skyrim/FO76/Starfield never insert the config,
+  and `affliction_tick_system` still has no scheduler registration (`AfflictionStatus` is a `registry_completeness_tests` forward-latent row).
+  Verify both, and that prose names the lanes per game rather than "inert"/"live" wholesale (Dim 5 doc sweep). Level-up is no longer absent: M47.2's
   `grant_experience` (`byroredux/src/combat.rs`, shared by Fallout kill experience, `levelup xp` and Skyrim
   `Game.AdvanceSkill` rank-ups via `xp_from_skill_rank`) rolls levels through `LevelingModel::roll_levels` up to
   `level_cap()` and banks the rewards into the saved `LevelUpPoints` (Dim 3/4) — Fallout `skill_point_reward`,
-  Skyrim a perk point + a pool pick (#5916 `612bd179e`); only classic-TES `SkillUse` has no XP-driven roll.
-- Oblivion has a runtime ruleset (`RulesetBuilder::Oblivion`, `tes::oblivion_ruleset`; engine-supplied actor values, #7008–#7010), pinned by
-  `oblivion_builds_its_runtime_ruleset`. Only FO76/Starfield: captures, no builders (`RulesetBuilder::None`).
-- Open (verified 2026-11-14) — cite, do not re-file: #4137 (two `template_flags` bits with no consumer — Script 0x0200, Def Pack List 0x0400;
+  Skyrim a perk point + a pool pick (#5916 `612bd179e`); classic-TES `SkillUse` has no XP-driven roll but a skill-use runtime since #7050-#7052 (`9ea611dec`, `7b11ebe07`, Dim 3).
+- Oblivion has a runtime ruleset (`RulesetBuilder::Oblivion`, `tes::oblivion_ruleset`; engine-supplied actor values, #7008–#7010 all closed), pinned by
+  `oblivion_builds_its_runtime_ruleset`; its player Health/Magicka/Fatigue are formulas (#7037/#7041, the record's authored pools are zeroed as `Oblivion.exe` `0x5240b2` does). Only FO76/Starfield: captures, no builders (`RulesetBuilder::None`).
+- Open (verified 2026-11-19) — cite, do not re-file: #4137 (two `template_flags` bits with no consumer — Script 0x0200, Def Pack List 0x0400;
   the other four listed gained `ResolvedNpc` terminals, `eae8fd740`), #6350 (VATS umbrella, carries the to-hit ground-truth captures; #6403 itself is closed, `2d6af0aeb`). #4232 (`effective_actor_level` returns 0 verbatim) is closed (`4fbff2c6c`, see Dim 4). #4415 (magic runtime) is closed (`9813af435`). The 2026-09-19 report's
   #4452-#4457/#4459-#4463 are all closed — regression checks now. Verify with `gh issue view` before citing.
 
@@ -118,13 +125,13 @@ First step: `grep -rn 'GameKind\|\.game ==\|game_kind' crates/core/src/character
 - **Profile rows must be sourced**: `BarterModel`'s FO4 2.5/1.5 and Skyrim 2.4/1.4 curve ends are the *executables'* setting defaults, not the masters' 3.5/2.0 and 3.3/2.0 — do not "correct" them toward the master values (#6442 `e41fb357c`). A row for an unwired family may not claim a wire format without a
   capture line (FO76/Starfield were reset to `NpcStatModel::None`, #4453); the same holds for `vital_pools`
   (per-profile roster since #4679 — a consumer-side `GameKind` pool list is the regression); the "blocked, not forgotten" comment pattern
-  (Oblivion arm) is the template; Starfield's pool roster is `("O2", "Oxygen")`, the AVIF EDID its master
+  (it was Oblivion's arm until #7010 wired it; the FO76/Starfield `RulesetBuilder::None` rows carry it now) is the template; Starfield's pool roster is `("O2", "Oxygen")`, the AVIF EDID its master
   authors (#5044 `9bac2d87b` — an unresolvable `"O2"` EDID once silently dropped the bar). Pins: `fallout_profiles_keep_roster_health_and_ruleset_in_lockstep`,
   `skyrim_profile_builds_a_ruleset_and_actually_calls_gmst`.
 **Output**: `/tmp/audit/character/dim_1.md`
 
 ### Dimension 2: Derived-Stat Formulas
-Paths: `crates/core/src/character/{derived,fallout,tes,skyrim,resistance,armor}.rs`, `crates/core/src/{combat,stealth}.rs`
+Paths: `crates/core/src/character/{derived,fallout,tes,skyrim,resistance,armor}.rs`, `crates/core/src/{combat,stealth}.rs`, `crates/core/src/stealth/`
 First step: `cargo test -p byroredux-core character::derived character::fallout character::tes character::skyrim character::armor`
 - **Every coefficient vs its capture** (bias, `c_a`, `c_b`, cross term, cap, `RoundMode`), citing the
   document line. FO4 Health `floor(77.5 + 4.5·END + 2.5·L + 0.5·L·END)` is the only cross-term row; a
@@ -148,14 +155,14 @@ First step: `cargo test -p byroredux-core character::derived character::fallout 
   (`formula_is_thirty_six_bytes_and_copy`).
 - **Siblings**: `combat.rs` (`modified_skill` Luck 0.4, `oblivion_weapon_damage_multiplier` — the condition factor is `fDamageWeaponConditionBase + ratio·fDamageWeaponConditionMult` (0.5 + 0.5·ratio), not the bare ratio, #6762 `7f5e549ec` —
   `oblivion_hand_to_hand_damage` cross-term) vs `charal-oblivion-ruleset.md` "Complete Damage Formula";
-  `stealth.rs` (`StealthRules::value` / `level`, M65 #6911) vs `charal-fnv-fo3-ruleset.md` "Sneak Detection" and `docs/engine/sneak-detection.md` §4.2; Skyrim armor skill scaling lives in `byroredux/src/armor.rs`, which reads the installed `ArmorModel` (`crates/core/src/character/armor.rs`, the profile's `armor` row + the load order's `fArmor*`/`fMaxArmorRating` GMST overlay, #6567 `cb9faca7d`; six of its seven settings are master-authored, `fArmorRatingPCBase` is a CK Settings-page default no master authors, #6761 `fc41d4818`), whose skill multipliers derive from `LIGHT_ARMOR_RATING_COEFF`/`ARMOR_SKILL_RATING_COEFF_NPC` (`skyrim.rs`, the only home of UESP's 0.4/1.5, #6568 `a858df844`) — the `DamageResist` derived row is not what feeds it, and a restated literal or a `GameKind` test in `armor.rs` is the regression (`the_consumer_holds_no_game_gate_or_armor_constants`). Perspective
+  `stealth.rs` + `stealth/` (`StealthRules::value` / `level`, M65 #6911; one `StealthKind` per formula) vs `charal-fnv-fo3-ruleset.md` "Sneak Detection" and `docs/engine/sneak-detection.md` §4.2; Skyrim armor skill scaling lives in `byroredux/src/armor.rs`, which reads the installed `ArmorModel` (`crates/core/src/character/armor.rs`, the profile's `armor` row + the load order's `fArmor*`/`fMaxArmorRating` GMST overlay, #6567 `cb9faca7d`; six of its seven settings are master-authored, `fArmorRatingPCBase` is a CK Settings-page default no master authors, #6761 `fc41d4818`), whose skill multipliers derive from `LIGHT_ARMOR_RATING_COEFF`/`ARMOR_SKILL_RATING_COEFF_NPC` (`skyrim.rs`, the only home of UESP's 0.4/1.5, #6568 `a858df844`) — the `DamageResist` derived row is not what feeds it, and a restated literal or a `GameKind` test in `armor.rs` is the regression (`the_consumer_holds_no_game_gate_or_armor_constants`). Perspective
   traps: UESP's "Opponent…" names are attacker-relative; the code reads the *wearer's* own skill (#4449).
-  Since M65 (#6911) every coefficient is a game setting read from the load order (`DetectionSettings`, each row's own
-  executable defaults behind them: `Fallout3.exe`, `Oblivion.exe`, `SkyrimSE.exe`, #6914), and the attenuation clamps at
+  Since M65 (#6911) every coefficient is a game setting read from the load order (`DetectionSettings` in `stealth/settings.rs`, each row's own
+  executable defaults behind them: `Fallout3.exe`, `Oblivion.exe`, `SkyrimSE.exe`, #6914; `Fallout4.exe`, #6996 `4870d7772`; Starfield is FO4's model re-based to metres, `stealth/starfield.rs`, `f256fd771` — #7046 is still open though the row landed), and the attenuation clamps at
   the range as `Fallout3.exe` `0x57e300` does (`max(0, …)`), so the #6433 unclamped-attenuation precondition is gone; a
   literal coefficient in `stealth/`, or a game test in the detection tick, is the regression
   (`the_fnv_row_matches_the_captured_formula`, `the_fo3_row_drops_the_level_and_armor_terms`,
-  `the_oblivion_row_matches_the_cs_formula`, `the_skyrim_row_matches_the_ck_formula`).
+  `the_oblivion_row_matches_the_cs_formula`, `the_skyrim_row_matches_the_ck_formula`, `the_fallout4_row_matches_the_decoded_formula`, `the_starfield_row_matches_the_decoded_formula` — the last two are transcriptions from the disassembly, so read them for what they pin, not as captures).
 **Output**: `/tmp/audit/character/dim_2.md`
 
 ### Dimension 3: Progression, Pools, Afflictions & Reputation
@@ -184,7 +191,18 @@ First step: `cargo test -p byroredux-core character::leveling character::regen c
   `cafd3ccab`): `CharacterRulesProfile::build_ruleset(resolve, gmst, plugin_files)` applies `LevelingModel::raise_cap` *after*
   the GMST overlay, summing `level_cap_raises` (FNV only: `DeadMoney`/`HonestHearts`/`OldWorldBlues`/`LonesomeRoad`, +5 each, matched
   on the loaded file's stem from `EsmIndex::plugin_files`; no master authors it — `iMaxCharacterLevel` is in `FalloutNV.esm` alone);
-  an uncapped model stays uncapped (`raise_cap_lifts_only_a_capped_curve`). Oblivion attribute-bonus banding + 10-major-skill-ups; Skyrim pool base 100, +10/level
+  an uncapped model stays uncapped (`raise_cap_lifts_only_a_capped_curve`). **Oblivion skill-use** (#7049-#7052, all closed; `docs/engine/skill-use.md`, `docs/prd/oblivion-skill-use-leveling.md`):
+  `LevelingModel::SkillUse` now carries `costs: SkillUseCosts` (`LevelingModel::OBLIVION`: Factor 0.35 / Exp 1.5 authored by `Oblivion.esm`, Minor 1.25 / Major 0.75 / Spec 0.75 from `Oblivion.exe`;
+  `with_gmst` overlays the five `fSkillUse*` settings, `skill_use_costs_overlay_the_load_orders_settings`). The rank cost is
+  `(factor·L)^exp · spec · (major ? major_mult : minor_mult)` (the major multiplier *replaces* the minor one), `SkillUseCosts::bank` ranks only when the
+  cost is *strictly below* the banked XP and never past `SKILL_USE_CAP` 100 (`the_cost_table_matches_uesp`, `an_equal_cost_does_not_rank`, `a_skill_never_exceeds_100_by_use`);
+  `OBLIVION_SKILL_USE_VALUES` (21 rows, Armorer 12 … Speechcraft 32) is the `SKIL` `DATA` use-value table. The saved `SkillUseLevel` counts each rank-up toward its governing attribute's tally and a
+  *major* one toward the level; the tenth major increase freezes the tallies into a `PendingLevel` (`the_tenth_major_increase_freezes_its_tallies_into_a_pending_level`), `oblivion_attribute_bonus`
+  reads that frozen tally (0 → +1, 1-4 → +2, 5-7 → +3, 8-9 → +4, 10+ → +5), the player picks three attributes (`levelup attr`, `pick_attribute`) and
+  `apply_pending_level` applies the level at a completed sleep (`oblivion_level_system`): attributes capped at 100, Health's per-level gain into `ActorValue::stored`
+  (`apply_oblivion_level_up_health`, `floor(0.1·Endurance)` read after the picks, #7044). The emitters (`byroredux/src/skill_use_emit.rs`) feed only `FED_SKILLS` — Athletics, Blade, Blunt, Hand to Hand, Heavy Armor, Acrobatics, Light Armor, Sneak;
+  Block, Marksman and the magic schools are unfed (the `levelup` report says so) — do not file those as bugs, and a skill joins `FED_SKILLS` only in the commit that adds its emitter. No game branch: the arm is the model's own,
+  and a ruleset with another leveling model drops queued uses. Skyrim pool base 100, +10/level
   (`SKYRIM_POOL_BASE`, `pool_pick_gain`); `Perks::try_set_rank` rejects out-of-range rather than clamping. A scripted `AddPerk` on a held perk raises its rank (capped at `num_ranks`, never lowered) only where `CharacterRulesProfile::add_perk_raises_rank` says so — FO3/FNV (GECK) and FO4 (CK), `false` on Skyrim (sources silent, an open question) and FO76/Starfield — read once into `PerkEntryTable` (#6619 `2d9c5802c`, `add_perk_rank_row_is_stated_on_every_profile`); a consumer-side game test is the regression.
 - **Regen tick**: fixed-60 Hz (`POOL_REGEN_DT`), backlog clamped (`MAX_REGEN_SUBSTEPS`), zero-dt cannot
   spin; the scheduler access declaration matches the body (`/audit-concurrency` Dim 4 owns the rule).
@@ -252,7 +270,7 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
   amounts to an `ActorValues` *permanent modifier* at spawn and on `AddSpell`/`RemoveSpell`. Check it never
   writes base, that add/remove are symmetric, and that no other writer *overwrites* `permanent_mod`
   (`set_permanent` replaces the whole constant-spell sum — the pre-#5412 `SetBase` reroute did exactly that).
-  Composition is `current = base + set_override + permanent + temporary − damage`. **Derived-value composition** (#5042 `c9254beb8`):
+  Composition is `current = base + set_override + stored + permanent + temporary − damage` (`stored` is Oblivion's level-up Health term, #7044, a required saved field — save v136). **Derived-value composition** (#5042 `c9254beb8`):
   `CharacterRuleset::actor_value` is the one composer — an authored carried base (`ActorValue::base_authored`,
   set only by `set_base`) wins; otherwise an actor-general `Absolute` row supplies the base and the entry's
   modifier + damage layers compose on top (a modifier-only placeholder entry once read as the bare modifier:
@@ -265,7 +283,17 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
   `attach_to_player`'s constant spells, and every frame by `player_derived_stats_system`
   (`byroredux/src/systems/character.rs`, Update) — the one documented exception to computed-on-demand
   (`docs/engine/charal.md` §6); a refresh must preserve the damage, `set_override` and modifier layers.
-- `build_character_ruleset` returns `None` for Oblivion/FO76/Starfield; every caller must treat `None` as
+- **Oblivion population** (#7009/#7010; `docs/prd/oblivion-actor-values.md`): there are no AVIF records, so `EsmIndex::install_oblivion_actor_values`
+  synthesises the 72-name roster (`OBLIVION_ACTOR_VALUES`, xEdit `wbActorValueEnum` order; indices 38/39 are excluded from script commands) into a free regular
+  slot — atomic and idempotent, a conflicting slot is an `Err` — and every resolver (`actor_value_form_id`, `oblivion_actor_value`) sees them as ordinary AVIFs; check no second roster or hard-coded index→FormID table appears
+  (`obscript_actor_values::actor_value_form` is the script-side lookup). `NpcStatModel::OblivionNpc`/`OblivionCreature` route to
+  `oblivion_population::derive`: stored NPCs (neither auto-calc nor level-offset, and the player's `Player` record) seed their authored `DATA`; auto-calc NPCs derive from race/class/level
+  (`fAttributeClassPrimaryBonus` and `fAttributeClassSecondaryBonus`, Personality left at its `DATA` byte as `Oblivion.exe` `0x522345` does), and `actor_level_at_spawn` takes the player level for a
+  level-offset NPC clamped by the record's calc min/max. `ActorValues` aliases (`set_alias` / `get_base`: a logical AV reading its current and base from different canonical entries) are how
+  Oblivion's paired values resolve; a base-view reader (`DerivedInput::a_from_base`, `chargen`'s base read) must call `get_base`, not `get`
+  (`base_derived_formula_uses_the_base_view_of_an_alias`). The player's Health/Magicka/Fatigue are `PlayerOnly` formulas refreshed per frame, so the record's authored pools are replaced
+  (`oblivion_profile_refreshes_all_three_player_pools`; the profile comment at `build_ruleset`'s Oblivion arm that says no level-up exists is stale — #7044/#7052 wired it).
+- `build_character_ruleset` returns `None` for FO76/Starfield only (Oblivion builds since #7010); every caller must treat `None` as
   "no CHARAL for this game", never "use the default ruleset" (Fallout formulas on a TES actor).
 - `resolve` = `index.actor_value_form_id(editor_id)`: an unresolved EditorID skips its formula
   (`push_derived` resolve-or-skip), never registers one keyed on `0`.
@@ -309,7 +337,7 @@ First step: `cargo test -p byroredux --bin byroredux resolve_inherited_call_site
   (`SPECIAL_CODES` 5..=11, `SKILL_CODES` 32..=45) are Fallout actor-value codes hard-wired in the module — the one
   non-table per-game constant set in the population path; verify they stay chargen-only and that retired skills
   (`OBSOLETE_MARKER`, FNV's Big Guns) are never offered.
-- **One ceiling composition**: `ActorValue::undamaged()` (base + set_override + permanent + temporary) is the
+- **One ceiling composition**: `ActorValue::undamaged()` (base + set_override + stored + permanent + temporary) is the
   single ceiling; `current()` is `undamaged() − damage`. HUD bar fractions, debug vitals and the SDK projection
   read through it (the SDK folds `set_override` into base — `ActorValueState` has no override slot); a reader that
   re-sums layers by hand is the regression (#5508 `627149b62`, `undamaged_includes_every_layer_but_damage`).
@@ -329,8 +357,8 @@ Paths: `docs/engine/charal*.md`, `crates/core/src/character/mod.rs` docstring, `
 First step: `grep -rn 'not yet reachable\|oblivion_pool_regen_config\|when a live .CharacterRuleset' crates byroredux docs ROADMAP.md`
 - **Coverage matrix** (publish even with zero findings): family × {ruleset implemented, wired, derived
   stats, leveling model, regen wired, affliction wired}. Re-derive wiring from `profile.rs` arms + workspace
-  greps, never from prose. Today: FO3/FNV/FO4/Skyrim wired, Oblivion blocked, FO76/Starfield absent; regen
-  live for FO3/FNV AP only (Fatigue/Magicka lanes inert), affliction inert everywhere; VATS runtime FO3/FNV only, limb damage routing and crippling-by-play absent (known-open list); Skyrim armor row wired (`armor`), FO4 `vats`/`armor` rows `None`; crime on
+  greps, never from prose. Today: FO3/FNV/FO4/Skyrim/Oblivion wired, FO76/Starfield absent; regen
+  live for FO3/FNV AP and Oblivion Fatigue/Magicka, affliction inert everywhere; Oblivion also has the skill-use leveling runtime (8 fed skills) and starting-disposition row; M65 detection rows on FO3/FNV/Oblivion/Skyrim/FO4/Starfield; VATS runtime FO3/FNV only, limb damage routing and crippling-by-play absent (known-open list); Skyrim armor row wired (`armor`), FO4 `vats`/`armor` rows `None`; crime on
   Oblivion/Skyrim rows (FO3/FNV crime is faction-based and unmodelled); "leveling model" is a model, not a runtime.
 - **Wiring events rot prose**: after any commit that wires/unwires a builder or resource, grep for the old
   claim in the `mod.rs` docstring, the capture Status columns (code ahead of capture is doc rot too),
