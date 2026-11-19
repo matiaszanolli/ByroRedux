@@ -158,8 +158,10 @@ impl Bk2 {
         }
     }
 
+    /// Whether frame `i` is a key frame. `false` for a frame number past the last frame: the index
+    /// carries one more entry than there are frames (the end of the last frame), which is not a frame.
     pub fn is_key(&self, i: usize) -> bool {
-        self.index[i] & 1 == 1
+        i < self.frames && self.index.get(i).is_some_and(|&entry| entry & 1 == 1)
     }
 
     /// Where frame `i` lies in the file: its start and end offsets (validated at [`Bk2::open`]).
@@ -298,6 +300,8 @@ mod tests {
         let path = file("valid", &with_index([56 | 1, 60, 64]));
         let mut bk2 = Bk2::open(&path).unwrap();
         assert!(bk2.is_key(0) && !bk2.is_key(1));
+        // Past the last frame (the index's end entry, then beyond it) is not a key frame, and not a panic (#7068).
+        assert!(!bk2.is_key(2) && !bk2.is_key(3) && !bk2.is_key(usize::MAX));
         assert_eq!(bk2.raw(0).unwrap(), [7u8; 4]);
         assert_eq!(bk2.raw(1).unwrap(), [7u8; 4]);
         assert_eq!(bk2.raw(2).unwrap_err().to_string(), "frame number past the frame index");
