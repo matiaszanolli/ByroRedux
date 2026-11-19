@@ -391,10 +391,16 @@ That fit is evidence, not a source, so 21 and 23 stay a verify item
   (`systems/script_requests.rs:203`). The midpoint of the
   range is the deterministic stand-in (§6).
 - **AIP-UW-006.** Crouch To Reload SHOULD put the actor in its sneak
-  stance for the length of each reload. **Phase 0: verify** that the
-  game's archives have a crouched reload pose to play. If none exists, the
-  package still installs and the flag stays unconsumed: that is a §6 row
-  added at the Phase 0 exit (AIP-NG-006), not a decline.
+  stance for the length of each reload. The pose exists (archive scan at
+  HEAD on 2026-11-19, `crates/nif/examples/kf_root_probe.rs`): FNV's
+  `Fallout - Meshes.bsa` ships 59 `meshes\characters\_male\sneak<class>reload<letter>.kf`
+  clips (1hp 19, 2ha 10, 2hh 6, 2hl 3, 2hr 21) and FO3's ships 26. In
+  `sneak2hrreloadg.kf` and `sneak1hpreloadg.kf` the `Bip01 NonAccum` height
+  is 25.0 for the whole clip, against 64.4–65.4 in the standing
+  `1hpreloadg.kf` and `2hrreloadd.kf`: a crouch. The clips are named per
+  weapon animation class; how the original engine picks among them is not
+  sourced (**Phase 0: verify** before the flag is consumed). The flag is
+  unconsumed until that lands.
 - **AIP-UW-007.** A UseWeapon package with no `PTD2` MUST fire along the
   actor's facing direction ("fire weapon in the air in the direction they
   are facing", GECK). Shipped in #6656 (`systems/script_requests.rs:76`).
@@ -464,10 +470,38 @@ Skyrim+ `BSFurnitureMarker` / `BSFurnitureMarkerNode` positions carry an
   checked in from a census. Today refs 1–10 resolve to Sleep and every
   other ref to Sit (`imported_furniture_marker`, `crates/nif/src/import/mod.rs`).
   The CS documents only "1 - 10 for beds, and 11 - 20 for chairs"
-  ([CS: GetFurnitureMarkerID](https://cs.uesp.net/wiki/GetFurnitureMarkerID)).
-  **Phase 0: verify** what the refs above 20 are (lean, work and
-  floor-sit markers are candidates). The census of vanilla
-  `furnituremarkerXX.nif` files and the furniture that uses them settles it.
+  ([CS: GetFurnitureMarkerID](https://cs.uesp.net/wiki/GetFurnitureMarkerID));
+  the GECK page for it is a stub that links back to the CS, and xEdit types
+  the FNV `FURN` `MNAM` marker flags as a raw byte array
+  (`wbDefinitionsFNV.pas:4769`), so no editor source names the refs above
+  14. What the archives authored, at HEAD on 2026-11-19
+  (`crates/nif/examples/furniture_marker_census.rs`, positions per
+  `position_ref_1`): Oblivion's 75 furniture NIFs use only 1–4 and 11–14;
+  FO3's 106 and FNV's 134 also use 15–23, plus 26 in FNV. The NIFs that
+  author the higher refs:
+
+  | Ref | Authored by (vanilla NIF names) |
+  |---:|---|
+  | 15 | FO3 `stool01`, `dinerstool01`; FNV `nv_blackjacktablegambler` (four positions) |
+  | 16 | `tlpodchair01` (the Tranquility Lounger pod chair), `mq04tranquilitypod01` |
+  | 17 | `floorsitmarker`; FO3 `benchsuburban02clean` |
+  | 18 | `restrainedsitmarker`; FO3 `benchsuburban02clean` |
+  | 19 | `wallmarker`, the Pitt `dlcpittweldingmark*`; FO3 `benchsuburban02clean` |
+  | 20 | `subcouchdirty01`, `childbarmarker` |
+  | 21, 23, 26 | only their own `markers\furnituremarkerNN.nif` (no vanilla furniture NIF uses them) |
+  | 22 | `useclosedwallterminalmarker`, `anvil01`, `warmupnearfire`, `floorworkmarker`, `cookingstove`, `nv_grindingwheel`, `blackboardmarker`, `nv_blackjacktabledealer` |
+
+  Three things follow from the data. Refs 19 and 22 are authored by
+  markers whose names read as wall and standing-work positions, not seats,
+  and v0 resolves every ref above 10 to Sit (`imported_furniture_marker`),
+  so a Sandbox actor can be seated at a terminal, an anvil or a stove
+  (AIP-SEAT-003). The suburban bench authors 17, 18 and 19 for three
+  positions of one piece, so a ref is not a seat *kind* on its own. And no
+  vanilla furniture uses 21, 23 or 26. **Phase 0: verify** what each ref
+  *means*: the names above are evidence, not a source. The table this
+  requirement checks in classifies from the data above only until an
+  editor source or an observation of the original game settles the
+  names.
 - **AIP-SEAT-003.** Sandbox, Eat and UseItemAt MUST NOT seat an actor on a
   `Lean` or `Sleep` marker. Today this holds by kind (`is_sit_marker`
   accepts `Sit` only, `systems/sandbox.rs:76`); it is breached only through
@@ -480,9 +514,17 @@ Skyrim+ `BSFurnitureMarker` / `BSFurnitureMarkerNode` positions carry an
   another skeleton. Today this holds: creatures never take furniture
   (#5495, test `a_creature_actor_never_takes_furniture`, gate
   `docs/smoke-tests/m42-package-procedures.sh`). A creature MAY take a
-  marker once a sit clip for its own skeleton is shown to exist.
-  **Phase 0: verify** whether any vanilla creature directory ships a
-  furniture-enter clip.
+  marker once a sit clip for its own skeleton is shown to exist. That
+  clip exists in two vanilla directories (archive scan at HEAD on
+  2026-11-19): `meshes\dlc04\creatures\hillfolk2and3\anims\idleanims\`
+  (`specialidle_chairenter.kf`, `dynamicidle_chairsit.kf`,
+  `specialidle_chairexit.kf`; FO3's `PointLookout - Main.bsa`) and
+  `meshes\dlc05\creatures\alien\idleanims\` (`specialidle_enterchair.kf`,
+  `specialidle_exitchair.kf` and the two `…chaircap.kf` variants; FO3's
+  `Zeta - Main.bsa`). FNV's `Fallout - Meshes.bsa` also holds both
+  directories. No Oblivion creature directory has one (its creature sit and
+  sleep clips are idles such as the dog's `specialidle_sit.kf`, and no
+  other Skyrim skeleton has a chair clip in `Skyrim - Animations.bsa`).
 - **AIP-SEAT-006.** A UseItemAt package whose `PTDT` names a
   non-furniture item MAY play an authored idle for that item, if one
   resolves from the package's idle collection. Otherwise the actor stands
@@ -502,13 +544,30 @@ Skyrim+ `BSFurnitureMarker` / `BSFurnitureMarkerNode` positions carry an
 - **AIP-SIT-001.** Oblivion seating MUST hold a sit-enter clip from
   `Oblivion - Meshes.bsa`, with a verified path. Today
   `sandbox_sit_enter_kf_path(Oblivion)` returns `None`, marked "deferred".
-  **Phase 0: verify** which Oblivion KF lowers the accumulation root onto
-  the seat, by a BSA scan of `meshes\characters\_male\` idle animations.
+  The clip is `meshes\characters\_male\idleanims\chair_leftenter.kf` (archive
+  scan at HEAD on 2026-11-19, `crates/nif/examples/kf_root_probe.rs`). It is
+  the counterpart of FO3/FNV's `chairskirt_leftenter.kf`: both last 1.13 s,
+  both bind `Bip01` as the accumulation root and drop it onto the seat
+  (−51.6 units against −50.7), with `Bip01 NonAccum` going from 67.4 to 38.4
+  (66.7 to 36.9). The three other enter clips (`chair_rightenter` −51.4,
+  `chair_backenter` −53.7, `chair_forwardenter` −55.4) do the same, and
+  the loop `dynamicidle_sit.kf` does not (its `Bip01` is flat, the
+  M42.0 float). Oblivion has no `_female` directory, so both genders take
+  the `_male` clip.
 - **AIP-SIT-002.** Skyrim SE seating MUST produce a seated pose from the
   game's own animation data: a furniture-enter HKX clip, or the behaviour
   graph's furniture state. Today Skyrim has no sit-enter source, so a
-  Skyrim sandboxer stands at its location. **Phase 0: verify** which of the
-  two Skyrim ships for chair entry.
+  Skyrim sandboxer stands at its location. The clip is the one Skyrim
+  ships (archive scan at HEAD on 2026-11-19, `Skyrim - Animations.bsa`,
+  `hkx` example `root_travel`):
+  `meshes\actors\character\animations\male\chair_leftenter.hkx`, with `female\`
+  twins and `chair_rightenter`, `chair_frontentervar1` and the child
+  `chair_enterchild*` clips. In the male left-enter clip `NPC COM` drops
+  from 69.08 to 39.00 over 1.77 s, and 39.00 is the seated height of the
+  loop `chair_idlebasevar2.hkx` (38.97), so the clip ends on the pose it
+  hands to. The clip path therefore serves; the behaviour graph's furniture
+  state is not needed. Skyrim LE was not scanned (not under the Steam
+  library).
 - **AIP-SIT-003.** FO4 and Starfield seating SHOULD drive the actor's
   behaviour graph into its furniture state, through the same path
   `graph_locomotion_system` uses for walking, rather than through a parked
@@ -698,11 +757,13 @@ AIP-DX-006 builds on that query rather than copying it.
   checked-in code, not from scripts. At HEAD on 2026-11-18 two pieces exist:
   `crates/plugin/tests/package_schedule_census.rs` (the `PSDT` field counts
   of §5.6) and the `real_*_esm_package_install_counts` tests (AIP-DX-004).
-  The §3.1 procedure counts per master, the §5.1 and §5.2 object-type
-  counts, the §5.4 furniture-marker counts and the number of `FURN` records
-  that author `SNAM` (AIP-SEAT-007) have no checked-in tool; until one
-  exists those tables are **Phase 0: confirm** figures (§3 census
-  provenance).
+  The legacy furniture-marker counts of AIP-SEAT-002 have one too
+  (`crates/nif/examples/furniture_marker_census.rs`, with
+  `crates/nif/examples/kf_root_probe.rs` for the clip checks). The §3.1
+  procedure counts per master, the §5.1 and §5.2 object-type counts, the
+  Skyrim and FO4 marker counts of §5.4 and the number of `FURN` records that
+  author `SNAM` (AIP-SEAT-007) have no checked-in tool; until one exists
+  those tables are **Phase 0: confirm** figures (§3 census provenance).
 - **AIP-DX-004.** Install and decline counts per procedure or leaf MUST be
   reported for each master by an ignored real-data test. Shipped in #6656
   and #6663: `real_{fnv,fo3,oblivion,skyrim,fo4,starfield}_esm_package_install_counts`
@@ -730,7 +791,7 @@ kept for the format.
 | 6 | Eat consumes food ([GECK: Eat Package](https://geck.uesp.net/wiki/Eat_Package)) | Walk and sit only | — | Food stocks never deplete. Not addressed in this PRD |
 | 7 | Sleep is in a bed ([GECK: Sleep Package](https://geck.uesp.net/wiki/Sleep_Package)) | The sit pose, parked at the bed's marker (the v0 approximation in the `systems/eat_sleep.rs` module doc). With no bed in range the actor idles at its Sleep location; the #5390 sit fallback is retired | — | Sleepers sit on their beds, and stand where no bed is in range. AIP-SEAT-004, decision Q3 |
 | 8 | A zero-length schedule window's behaviour is not documented | Never selected (#3352) | — | The FNV packages `PackSchedule::active_at` lists never run. AIP-SCHED-003 |
-| 9 | **Phase 0: verify** whether creatures use furniture (AIP-SEAT-005) | Never seated (#5495) | — | A creature furniture use, if one exists, is lost. AIP-SEAT-005 |
+| 9 | **Phase 0: verify** whether creatures use furniture. Two vanilla creature directories ship a chair-enter clip (AIP-SEAT-005), so the original data supports it for them | Never seated (#5495) | — | Those creatures stay standing where the original data would seat them. AIP-SEAT-005 |
 | 10 | A navmesh "tells an actor where it can walk" ([GECK: Bethsoft Tutorial Navmesh](https://geck.uesp.net/wiki/Bethsoft_Tutorial_Navmesh)) | Cross-tile joins by exact vertex match; the rest is straight-line ([NAVM Pathfinding §9](../engine/navmesh-pathfinding.md#9-rollout)) | — | Some walks hit walls across unjoined tiles. Owned by the navmesh design |
 | 11 | UseItemAt uses its `PTDT` item: furniture or an activator is sat in or used, an inventory item plays its animation, and *Sit Down* seats the actor in any chair in the radius ([GECK: Use Item At Package](https://geck.uesp.net/wiki/Use_Item_At_Package)) | Eat's walk-and-sit; the `PTDT` item and the *Sit Down* flag are not read | — | An actor sits where the original would use an activator or stand. AIP-SEAT-006 covers only the inventory-item idle; the rest is not addressed in this PRD |
 | 12 | The ambusher waits at its Wait Location, wanders within its radius, hides if *Hide while ambushing* is set, and detects better inside the ambush location ([GECK: Ambush Package](https://geck.uesp.net/wiki/Ambush_Package)). Oblivion's Ambush waits at its Location for the target to enter the radius, then activates it ([CS: Ambush Package](https://cs.uesp.net/wiki/Ambush_Package)) | Guard's hold at the wait location, with hostility gated to the `PLD2` zone. Oblivion authors no `PLD2`, so its ambushers fight by the ordinary hostility rules | — | Ambushers stand in the open, and Oblivion's never wait for their target. Not addressed in this PRD |
@@ -819,12 +880,12 @@ is still open at HEAD on 2026-11-18.)
 | A Find activates a flora | AIP-FIND-002 | one of FNV's seven type-10 Finds observed live |
 | Actors: Any is 28 or 29 | AIP-FIND-003 | the GECK Find "Object Type" dropdown order, or `VFSFreesideThugPackage` observed live |
 | The 21 and 23 weapon-class labels, and whether Hand to Hand counts as melee | AIP-UW-009 | the GECK Use Weapon "Weapon type" dropdown, or one 21, one 23 and `FortLegionarySparringPackage` (22) observed live |
-| A crouched reload pose exists | AIP-UW-006 | an archive scan for a crouched reload clip |
+| A crouched reload pose exists | AIP-UW-006 | closed 2026-11-19: `sneak<class>reload<letter>.kf` (AIP-UW-006) |
 | CastMagic target for a self-range spell or a non-reference location | AIP-CAST-001 | closed by withdrawal, rev 6 (§9, "Measured, found in Phase 4") |
-| Legacy marker refs above 20 | AIP-SEAT-002 | the census of vanilla `furnituremarkerXX.nif` files and the furniture that uses them |
-| A creature furniture-enter clip exists | AIP-SEAT-005 | a scan of the vanilla creature animation directories |
-| The Oblivion sit-enter KF | AIP-SIT-001 | a BSA scan of `meshes\characters\_male\` idle animations |
-| Skyrim's chair-entry source (HKX clip or graph state) | AIP-SIT-002 | the Skyrim animation archives and the humanoid behaviour graph |
+| Legacy marker refs above 20 | AIP-SEAT-002 | census done 2026-11-19 (the table in AIP-SEAT-002); what the refs *mean* stays open, no editor source names them |
+| A creature furniture-enter clip exists | AIP-SEAT-005 | closed 2026-11-19: FO3 / FNV `hillfolk2and3` and `alien` directories |
+| The Oblivion sit-enter KF | AIP-SIT-001 | closed 2026-11-19: `chair_leftenter.kf` |
+| Skyrim's chair-entry source (HKX clip or graph state) | AIP-SIT-002 | closed 2026-11-19: the `chair_leftenter.hkx` clip |
 | What a zero-duration window does | AIP-SCHED-003 | one of the Travel packages `PackSchedule::active_at` names, observed live |
 | The radius of Continue if PC near | AIP-FLG-003 | an editor or game-setting source for "nearby" |
 | FO4 / FO76 / Starfield leaf names | §3.2 | the per-leaf output of the install-count tests (AIP-DX-004) on the three masters |
@@ -1027,3 +1088,4 @@ option.
 | 6 | 2026-11-18 | Review round 3 folded in: "Today" claims re-measured at HEAD after Phases 1–5 (FIND, UW, SEAT, SCHED, CAST-004, TREE, FLG, DX, §3.1–§3.3, §6 row 7); AIP-CAST-001 / -002 withdrawn (four of five vanilla CastMagic packages name no spell); Q7 and AIP-WALK-005 added for the Starfield `.agx` reader (Related row); AIP-DX-003 rewritten to the census code that exists; Phase 4 / Phase 5 measured notes logged; Q2's FO4 / Starfield half confirmed by the owner | claude: revise |
 | 7 | 2026-11-18 | Oblivion `PGRD` pathing first slice recorded as shipped in part (AIP-WALK-003, §3.3, Related row, §7.1); its open parts and the unwritten NAVM Pathfinding section named | claude: revise |
 | 8 | 2026-11-19 | AIP-WALK-003 built: the pathgrid switch moves onto `NavPath.grid` and serves every walking mover (Travel, Follow, Escort, Guard, Wander, Patrol, `cached_walk_step`); design written as NAVM Pathfinding §11; `PGRI` inter-cell links stated as outside Q5 | claude: revise |
+| 9 | 2026-11-19 | Archive scans folded in (AIP-SIT-001 `chair_leftenter.kf`, AIP-SIT-002 `chair_leftenter.hkx`, AIP-UW-006 `sneak*reload*.kf`, AIP-SEAT-005 creature chair clips, AIP-SEAT-002 marker census with its table); verify table rows closed or narrowed; two probes checked in (`furniture_marker_census`, `kf_root_probe`) | claude: revise |
