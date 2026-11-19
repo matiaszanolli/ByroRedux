@@ -1,6 +1,6 @@
 # Door Runtime — Product Requirements
 
-**Status**: ACTIVE (2026-11-19). Revision 6 files the tracking issues and takes the Oblivion Find gate out of Phase 1's exit, which would have waited on work that waits on it. Revision 5 recorded the owner's approval. Revision 4 folded in the rest of review round 1 (findings 1 to 5 and 7). Revision 3 folded in its finding 6 (the ROADMAP home, decision Q4). Revision 2 folded in the owner's decisions Q1 to Q3, all as recommended; revision 1 was the first draft. It is the prerequisite that decision Q8 of [AI Packages Completion](ai-packages-completion.md#10-decisions-required) split out of that PRD: no in-cell door opens for anyone today. Statements about how an original engine, format or tool behaves cite external sources; a claim that could not be verified is marked **Phase 0: verify** instead of being stated as fact.
+**Status**: ACTIVE (2026-11-19). Revision 7 corrects the motion premise with the Phase 0 census: nearly every in-cell door authors `Open` and `Close` sequences in every game, the engine swing is a minority fallback and no in-cell door uses a behaviour graph; the Skyrim and Fallout 4 phases follow. Revision 6 filed the tracking issues and takes the Oblivion Find gate out of Phase 1's exit, which would have waited on work that waits on it. Revision 5 recorded the owner's approval. Revision 4 folded in the rest of review round 1 (findings 1 to 5 and 7). Revision 3 folded in its finding 6 (the ROADMAP home, decision Q4). Revision 2 folded in the owner's decisions Q1 to Q3, all as recommended; revision 1 was the first draft. It is the prerequisite that decision Q8 of [AI Packages Completion](ai-packages-completion.md#10-decisions-required) split out of that PRD: no in-cell door opens for anyone today. Statements about how an original engine, format or tool behaves cite external sources; a claim that could not be verified is marked **Phase 0: verify** instead of being stated as fact.
 
 **Tracking**: #7057 (parent). Phases: #7058 (0), #7059 (1), #7060 (2), #7061 (3).
 
@@ -12,11 +12,11 @@
 |---|---|
 | Open state, `ActivateEvent`, script effects (`SetOpenState`, `GetOpenState`) | [Scripting](../engine/scripting.md) |
 | Motion source per game, translated once at the model boundary | [NIFAL](../engine/nifal.md) |
-| Skyrim+ door motion through a behaviour graph event | [Animation](../engine/animation.md) |
+| Door motion through an authored sequence, and a behaviour graph event where a game needs one | [Animation](../engine/animation.md) |
 | Keyframed collision that follows an animated node | [Physics](../engine/physics.md) |
 | Saved state and its restore on load | [Save / load round trip](../engine/save-load-roundtrip.md) |
 | Actors opening a door in their way | [AI Packages Completion — PRD](ai-packages-completion.md) (AIP-DOOR) |
-| The door state machine, the motion translation and the swing | none yet: Phase 0 writes `docs/engine/door-runtime.md` |
+| The door state machine, the motion translation and the swing | [Door Runtime design](../engine/door-runtime.md) |
 
 Normative terms **MUST**, **SHOULD** and **MAY** have their RFC 2119 meanings, as in the related designs. Requirement IDs use the `DRT-` prefix.
 
@@ -71,7 +71,7 @@ The inventory below is the state at HEAD on 2026-11-19.
 | 9 | Reference `Open by Default` (`ONAM`) | decode | not read |
 | 10 | Saved state | save | `TwoStateActivator` is in the save registry and restored on load (`save_io/registry.rs`, `cell_loader/reference_state.rs`) |
 
-Two model measurements bear on the motion classes (`nif_stats`, 2026-11-19): Oblivion's `dungeons\caves\cdoor01.nif` and `architecture\castle\castledoor01.nif` author a collision object and no controller block; Fallout New Vegas's `dungeons\facility\doors\fachallsmdoor01.nif` and `dungeons\vaultruined\doors\vdoorslidingrr02.nif` author a `NiControllerManager` and two `NiControllerSequence`s. Two samples per game are not a census; Phase 0 takes one (DRT-REC-003).
+The Phase 0 census ([design §1](../engine/door-runtime.md#1-census-how-in-cell-doors-move), DRT-REC-003, 2026-11-19) measures the classes: in every game with a census, nine in ten or more in-cell door placements are `Sequence` doors with clips named `Open` and `Close`; the `Graph event` class holds one base, a Skyrim hinge trap that is not a door; and `None` is a minority, mostly ladders, trapdoors, hatches, elevator doors and door frames, plus a few hinged doors that author nothing (Oblivion's `ICDoorInt01`, `CastleDoor02`, `FarmHouseDoor01`). Starfield's door models name neither a sequence nor a graph in the NIF, so its motion is not read (decision Q3).
 
 ---
 
@@ -114,7 +114,7 @@ Two model measurements bear on the motion classes (`nif_stats`, 2026-11-19): Obl
 
 ### 5.3 Motion and collision (`DRT-MOVE`)
 
-- **DRT-MOVE-001.** On a transition the door MUST play the motion its model authors: the `Open` or `Close` sequence of its `NamedSequences`, or the open event of its behaviour graph. Observable: a test per class that the animation player or the graph receives the clip or the event.
+- **DRT-MOVE-001.** On a transition the door MUST play the motion its model authors: the `Open` or `Close` sequence of its `NamedSequences`, or, for a game that needs the class, the open event of its behaviour graph (no in-cell door does at rev 7: the census finds one Skyrim hinge trap and no door). Observable: a test that the animation player receives the `Open` clip and the `Close` clip, and one per additional class when a game adds it.
 - **DRT-MOVE-002.** A door model that authors neither MUST swing about its hinge. The hinge axis, the angle, the duration and the direction relative to the activator are **Phase 0: verify** (CS and GECK say only that animating doors "run their animation when activated"; a hinged door with no authored animation has no source). Until Phase 0 settles them the swing uses one labelled approximation, its constants in one place (§6 row 1, decision Q2). Observable: a test that a swing door's rotation reaches the open pose over its duration and returns.
 - **DRT-MOVE-003.** The motion class MUST be chosen once, at the model translation boundary, and the door systems MUST NOT read the game kind to pick it. Observable: a text-scan guard over the door systems, as AIP-WALK-004's guard over the walk systems.
 - **DRT-MOVE-004.** A door's collision MUST follow its motion, so that the character controller passes an open door and stops at a closed one. The keyframed-body path exists (row 6); this requirement is that the door's collider is on the moving node. Observable: a physics test that walks a controller into a closed door fixture (stopped) and through the same fixture opened (passes).
@@ -128,7 +128,7 @@ Two model measurements bear on the motion classes (`nif_stats`, 2026-11-19): Obl
 
 - **DRT-REC-001.** The `DOOR` `FNAM` flags MUST decode per game onto the door component: Oblivion bits 0 to 3 `Oblivion Gate`, `Automatic Door`, `Hidden`, `Minimal Use`; Fallout 3 and Fallout New Vegas bits 1 to 4 `Automatic Door`, `Hidden`, `Minimal Use`, `Sliding Door` (bit 0 unnamed); Skyrim bits 1 to 5 `Automatic`, `Hidden`, `Minimal Use`, `Sliding`, `Do Not Open in Combat Search` (bit 0 unnamed) (xEdit `wbDefinitionsTES4.pas:2170-2176`, `wbDefinitionsFO3.pas:4090-4098`, `wbDefinitionsFNV.pas:4584-4590`, `wbDefinitionsTES5.pas:4845-4852`). The bit positions are the ones above, translated in `crates/plugin`. Observable: a fixture test per game that each flag lands in the component.
 - **DRT-REC-002.** The `SNAM`, `ANAM` and `BNAM` sound references MUST decode onto the door component (xEdit `wbDefinitionsTES4.pas:2167-2169`, `wbDefinitionsFO3.pas:4087-4089`, `wbDefinitionsFNV.pas:4581-4583`, and `wbDefinitionsTES5.pas:4842-4844`, where they name `SNDR` sound descriptors, not `SOUN` records). Observable: a fixture test that the three form IDs reach the component.
-- **DRT-REC-003.** A census MUST report, per game and over the in-cell door bases, how many author a `Sequence`, how many a `Graph event` and how many neither, from checked-in code, not from a script (the standard AIP-DX-003 sets). Observable: the example under `crates/nif/examples` and the table it prints, linked from §8.
+- **DRT-REC-003.** A census MUST report, per game and over the in-cell door bases, how many author a `Sequence`, how many a `Graph event` and how many neither, from checked-in code, not from a script (the standard AIP-DX-003 sets). Observable: `byroredux/examples/door_motion_census.rs` and the table it prints ([design §1](../engine/door-runtime.md#1-census-how-in-cell-doors-move)), linked from §8.
 - **DRT-REC-004.** The reference's `Open by Default` (`ONAM`, an empty subrecord in the Oblivion, Fallout 3, Fallout New Vegas, Skyrim and Fallout 4 definitions: `wbDefinitionsTES4.pas:3230` and the siblings) MUST decode onto the placement. Observable: a fixture test that a placement carrying `ONAM` reads open by default.
 
 ### 5.6 Saves (`DRT-SAVE`)
@@ -160,11 +160,11 @@ Two model measurements bear on the motion classes (`nif_stats`, 2026-11-19): Obl
 
 | Game | In scope | Why / wave |
 |---|---|---|
-| Oblivion | yes | Wave 1. The largest affected share of interior cells (the [census](ai-packages-completion.md#511-door-passage-aip-door)) and the live gate that found the gap; plain doors author no motion, so it exercises the swing |
+| Oblivion | yes | Wave 1. The largest affected share of interior cells (the [census](ai-packages-completion.md#511-door-passage-aip-door)) and the live gate that found the gap; most doors author `Open` and `Close` sequences, and a fifth of its placements author nothing, so it is the game that exercises the swing |
 | Fallout 3 | yes | Wave 1. Same record shape as Oblivion's plus `Sliding Door`; authored sequences on the animated doors |
 | Fallout: New Vegas | yes | Wave 1. The reference title; its authored sequences exercise the `Sequence` class |
-| Skyrim (LE / SE / AE) | yes | Wave 2. Doors move through a behaviour graph; the graph runtime exists (row 5) |
-| Fallout 4 | yes | Wave 3 (decision Q3). Graph doors; no census yet |
+| Skyrim (LE / SE / AE) | yes | Wave 2. Its doors author the same `Open` and `Close` sequences, so the Phase 1 runtime serves them; the wave adds its record decode (`SNDR` sounds, five flags) and a live leg |
+| Fallout 4 | yes | Wave 3 (decision Q3). The census finds sequence doors, so the Phase 1 runtime serves them |
 | Fallout 76 | no | Out of the sibling PRD's scope ([AIP-NG-005](ai-packages-completion.md#42-non-goals)) |
 | Starfield | no | Census only (decision Q3): no door motion source has been read, and its animation text tables have no reader |
 
@@ -173,9 +173,9 @@ Two model measurements bear on the motion classes (`nif_stats`, 2026-11-19): Obl
 A scenario passes when:
 
 1. **Fixtures:** the `cargo test -p byroredux --bin byroredux` cases named in §5 pass, with no game data.
-2. **Oblivion live:** `docs/smoke-tests/door-runtime.sh oblivion` (written in Phase 1; data: Oblivion) boots `TempleMothCatacombs02`, activates the in-cell door nearest the point where the Moth priest's route ends (about x -190, z 155, height 788 in engine units; Phase 0 records its form ID) and finds it `open` with the controller passing, and, once the AI packages PRD's AIP-DOOR-002 lands on top of this PRD, `m42-oblivion-packages.sh` with `STRICT_FIND=1` sees the priest reach and activate a container (that gate is the AI packages PRD's Phase 4 exit).
+2. **Oblivion live:** `docs/smoke-tests/door-runtime.sh oblivion` (written in Phase 1; data: Oblivion) boots `TempleMothCatacombs02`, with the key `0009DAC6` in the player's inventory activates reference `00094D23` (the in-cell door where the Moth priest's route ends, level 10, base `0000C519`) and finds it `open`, and finds it shut without the key with the controller passing, and, once the AI packages PRD's AIP-DOOR-002 lands on top of this PRD, `m42-oblivion-packages.sh` with `STRICT_FIND=1` sees the priest reach and activate a container (that gate is the AI packages PRD's Phase 4 exit).
 3. **FNV live:** the same script with `fnv` opens one authored-sequence door and one swing door.
-4. **Skyrim live:** the same script with `skyrim_se` opens one graph door (Phase 2).
+4. **Skyrim live:** the same script with `skyrim_se` opens one sequence door and leaves a locked one shut (Phase 2).
 5. **Saves:** the round-trip test of DRT-SAVE-001 passes, and `Locked` doors stay shut in each live run.
 
 ---
@@ -194,13 +194,13 @@ The numbers live in ROADMAP's Tier 7 table, in a new row `M66 Door runtime` (dec
 
 ## 9. Delivery sequence
 
-**Phase 0 — Census, sources and the design (no engine code).** The DRT-REC-003 census over the five games; the verify items named in §5 (the hinge and its timing, the closing rule, the loop sound, the default state against a saved game, the locked in-cell door, the in-cell `Automatic Door`), each settled from a CS, GECK or CK page, a UESP page or an observation of the original game, or filed as an issue; `docs/engine/door-runtime.md` written, with the state, motion and swing and the choice between `TwoStateActivator` and a replacement (DRT-G-005). Decisions Q1 to Q3 taken (rev 2). Exit: the census is checked in and its table is linked from §8, every verify item is closed or filed, and the design links from §3.
+**Phase 0 — Census, sources and the design (no engine code).** The DRT-REC-003 census over the five games; the verify items named in §5 (the hinge and its timing, the closing rule, the loop sound, the default state against a saved game, the locked in-cell door, the in-cell `Automatic Door`), each settled from a CS, GECK or CK page, a UESP page or an observation of the original game, or filed as an issue; `docs/engine/door-runtime.md` written, with the state, motion and swing and the choice between `TwoStateActivator` and a replacement (DRT-G-005). Decisions Q1 to Q3 taken (rev 2); the verify items the sources do not settle are #7062. Exit: the census is checked in and its table is linked from §8, every verify item is closed or filed, and the design links from §3.
 
-**Phase 1 — State, activation, scripts and saves (wave 1).** DRT-STATE-001…004, DRT-ACT-001…004, DRT-REC-001, -002, -004 and DRT-SAVE-001, -002, with the authored-sequence class of DRT-MOVE-001 (the Fallout 3 and Fallout New Vegas animated doors), the swing (DRT-MOVE-002…005) and the sound (DRT-SND-001); Oblivion, Fallout 3 and Fallout New Vegas. Milestone dependencies: M28.5 (the character controller), M44 (audio), M47.2 (scripts and the activation event); the work runs under M66 (decision Q4). Exit: `door-runtime.sh` passes on Oblivion and FNV (a swing door on both, an authored-sequence door on FNV), and every fixture test in §5.1 to §5.6 passes.
+**Phase 1 — State, activation, scripts and saves (wave 1).** DRT-STATE-001…004, DRT-ACT-001…004, DRT-REC-001, -002, -004 and DRT-SAVE-001, -002, with the authored-sequence class of DRT-MOVE-001 (the doors the census finds in every game), the swing for the doors that author nothing (DRT-MOVE-002…005) and the sound (DRT-SND-001); Oblivion, Fallout 3 and Fallout New Vegas. Milestone dependencies: M28.5 (the character controller), M44 (audio), M47.2 (scripts and the activation event); the work runs under M66 (decision Q4). Exit: `door-runtime.sh` passes on Oblivion and FNV (a sequence door and a swing door on each, a locked door staying shut), and every fixture test in §5.1 to §5.6 passes.
 
-**Phase 2 — Skyrim (wave 2).** DRT-MOVE-001 for the `Graph event` class and DRT-DX-001. Exit: `door-runtime.sh skyrim_se` opens a graph door.
+**Phase 2 — Skyrim (wave 2).** Skyrim's door flags and `SNDR` sounds (DRT-REC-001, -002) and DRT-DX-001; its doors move through the Phase 1 sequence class. Exit: `door-runtime.sh skyrim_se` opens a sequence door and leaves a locked one shut.
 
-**Phase 3 — Fallout 4 (wave 3).** The Fallout 4 graph doors, which reuse the Skyrim path (decision Q3), and a Starfield census. Exit: a Fallout 4 live leg opens a graph door, or the phase is withdrawn with the census figure that shows why.
+**Phase 3 — Fallout 4 (wave 3).** The Fallout 4 `DOOR` record, flags and sounds, whose doors move through the Phase 1 sequence class (decision Q3), and the Starfield census row. Exit: a Fallout 4 live leg opens a sequence door, or the phase is withdrawn with the census figure that shows why.
 
 ---
 
@@ -212,6 +212,7 @@ Each decision needs the project owner. The recommendation is the first option.
    **Decided** (2026-11-19): the recommendation — a door reverts to its default state on same-session re-entry, and a cell restored from a save keeps the saved state (DRT-STATE-003, DRT-SAVE-001).
 2. **Q2 — The swing before the original's timing is sourced.** Oblivion's plain doors author no motion (§3), and no source read gives the hinge, angle or speed. Recommended: ship one labelled approximation now (DRT-MOVE-002, §6 row 1) and replace it when Phase 0 settles the values; the doors then open and close with a visible swing. Alternative A: swap a door between its closed and open poses instantly, with no swing. It needs no invented numbers, and costs the visible motion and the sound's timing. Alternative B: defer plain doors until the values are sourced. Oblivion's actors and player stay behind closed doors until then.
    **Decided** (2026-11-19): the recommendation — one labelled approximate swing now, its constants in one place, replaced when Phase 0 sources the values (DRT-MOVE-002, §6 row 1).
+   **Premise corrected** (rev 7, Phase 0 census): the question assumed Oblivion's plain doors author no motion. Most of them do; only about a fifth of Oblivion's placements, and far fewer elsewhere, author none, and the CS says a script cannot open a door "possibly ones without animations" without locking the game. The decision stands and now covers a minority of doors; the owner can reopen it (an instant pose swap, or no motion for those doors) at the next revision.
 3. **Q3 — Fallout 4 and Starfield.** Recommended: Fallout 4 in wave 3 (its graph doors reuse the Skyrim path) and Starfield census-only, as the cross-cell travel PRD treated it. Alternative: both out for now. The wave-3 phase disappears and Fallout 4 doors stay as they are.
    **Decided** (2026-11-19): the recommendation — Fallout 4 in wave 3, Starfield census-only (§7.1, Phase 3).
 4. **Q4 — Where the milestone lives.** A player-facing door runtime is a README §1 T1 trigger (a new milestone), and no ROADMAP row covers doors: M42 is the AI row, and the Playable vertical slice is closed and carries no metrics table. Recommended: a new Tier 7 row `M66 Door runtime` that links this PRD and holds its metrics, as M65 did for Sneak and detection, depending on M28.5, M44 and M47.2; AIP-DOOR (M42) depends on it. Alternative A: fold it into the M42 row as M42.12. There is one fewer milestone, but a player feature then lives inside an AI row that is already the longest in the table, and M42's exit waits on it. Alternative B: list it among the closed Playable vertical slice's follow-ons. That is the smallest edit, and it leaves the metrics with no table.
@@ -244,3 +245,4 @@ Each decision needs the project owner. The recommendation is the first option.
 | 4 | 2026-11-19 | Review round 1's remaining findings folded in: the `GetOpenState` mapping (3, 2, 1, 4), Skyrim's five door flags with bit positions, two engine-choice rows in §6 (activation mid-swing, closing onto a body), the authored-sequence class moved into Phase 1, census numbers linked, the Moth door selected by rule, one denominator for the door goal | claude: revise |
 | 5 | 2026-11-19 | Approved by the owner: PROPOSED → APPROVED; every decision (Q1 to Q4) decided, the gate passes; the `M66 Door runtime` row added to ROADMAP | owner: approved |
 | 6 | 2026-11-19 | Tracking issues filed (#7057, phases #7058–#7061) and the PRD moves APPROVED → ACTIVE; Phase 1's exit no longer includes the Oblivion Find gate, which needs AIP-DOOR-002 and so waits on this PRD | — |
+| 7 | 2026-11-19 | Phase 0 census folded in: sequences are the in-cell door in every game, no door uses a behaviour graph, the swing covers a minority (Q2 premise corrected, decision stands); Skyrim and Fallout 4 phases rewritten to the sequence class; the Moth door named (reference `00094D23`, locked, key `0009DAC6`); the design document written and linked | — |

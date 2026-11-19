@@ -1408,7 +1408,9 @@ fn count_example_targets(root: &std::path::Path) -> (usize, usize) {
 #[test]
 fn example_targets_hold_their_per_crate_ceilings() {
     const CEILINGS: &[(&str, usize, usize)] = &[
-        ("byroredux", 4, 699),
+        // Door Runtime Phase 0 (#7058) re-measure: +1 file / +141 LOC — `door_motion_census.rs`, the in-cell door motion
+        // census of PRD door-runtime DRT-REC-003; it needs the plugin, bsa and nif crates together, which only the binary has.
+        ("byroredux", 5, 840),
         // #5912 — +1: `fuz_census.rs`, the grounding probe for the .fuz
         // payload census (40/40 SE voice files = WMAUDIO2 in an xWMA
         // container), kept alongside the crate's other archive probes.

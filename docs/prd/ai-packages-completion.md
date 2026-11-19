@@ -885,7 +885,7 @@ these sources: **Phase 0: verify** (AIP-DOOR-005).
   Observable: a test in `systems::locomotion` (a door fixture across the
   route), and `m42-oblivion-packages.sh` reaching the Moth container with
   `STRICT_FIND=1` as its default.
-- **AIP-DOOR-003.** A mover MUST NOT open a door it could not open itself
+- **AIP-DOOR-003.** (Found live in Phase 0 of the Door Runtime PRD: in `TempleMothCatacombs02` the first door on the Find priest's route, reference `00094D23`, is locked with key `0009DAC6`, and the priest, `TG08MothPriestBossMale01`, is not one of the four actors that carry it, so the Oblivion Find gate cannot pass it unless the original rule lets him through, or the gate moves to another route.) A mover MUST NOT open a door it could not open itself
   (locked, no key, not the owner or a member of the owning faction); it
   keeps today's give-up path (`cannot reach`). Which of the three the
   original actor needs for an *in-cell* lock is **Phase 0: verify**
