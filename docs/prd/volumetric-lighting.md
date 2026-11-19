@@ -1,6 +1,6 @@
 # Volumetric Lighting — Product Requirements
 
-**Status**: ACTIVE (2026-11-19). Revision 35 records the Q12 haze-floor re-measure; revision 34 folded in review round 2 and recorded the owner's decisions Q9 to Q11. The revision history is §12. This document covers
+**Status**: ACTIVE (2026-11-19). Revision 36 records the owner's Q12 decision on the haze floor; revision 35 recorded its re-measure and revision 34 folded in review round 2. The revision history is §12. This document covers
 the remainder of ROADMAP milestone M55 after the froxel fog slice, the transported
 combustion solver and the interior godray vertical slice shipped. Statements about
 how an original engine, a record format, a paper or another engine behaves cite
@@ -501,7 +501,7 @@ The RT visibility replaces cascades (VLM-NG-006).
   noon non-shaft luminance change inside the tolerance the owner reviews in
   the capture set, so the floor makes shafts visible without washing out the
   authored look. The floor MUST be adjustable at run time through the existing
-  volumetrics settings surface and MUST report its live value on `env.health`. **Re-measured 2026-11-19** ([fog design](../engine/procedural-volumetric-fog.md#haze-floor-after-the-authored-fog-power-q12-re-measure-2026-11-19)): the floor binds on 0 of 13 sampled hours on FO3 and Skyrim, 2 on FO4, 3 on FNV and 11 on Oblivion, whose records carry no fog power. Where it binds the frame moves (Oblivion 07:00 +30.5 % frame mean, noon +3.6 %; FNV 07:00 +8.7 %); where it does not, floor-off and shipped frames are identical. §10 has no item yet: the owner decides the default from those captures (keep it, lower it, or withdraw VLM-SH-010 and this requirement); the noon tolerance is set at that point and recorded here.
+  volumetrics settings surface and MUST report its live value on `env.health`. **Re-measured 2026-11-19** ([fog design](../engine/procedural-volumetric-fog.md#haze-floor-after-the-authored-fog-power-q12-re-measure-2026-11-19)): the floor binds on 0 of 13 sampled hours on FO3 and Skyrim, 2 on FO4, 3 on FNV and 11 on Oblivion, whose records carry no fog power. Where it binds the frame moves (Oblivion 07:00 +30.5 % frame mean, noon +3.6 %; FNV 07:00 +8.7 %); where it does not, floor-off and shipped frames are identical. The owner reviewed those captures and decided at §10 Q12 (2026-11-19) to keep the floor and its default; the noon non-shaft change they accepted is the measured one (Oblivion +3.6 % frame mean, FNV, FO3 and the other fixtures none).
 
 - **VLM-SH-012.** Each exterior fixture of §7.2 MUST have one depth-matched pose, a far surface behind a named occluder, checked into `docs/smoke-tests/exterior-shafts-content.sh`, on which VLM-SH-006's shaft contrast is recorded at noon and at low sun. The owner names the poses and occluders (decided 2026-11-19); until they are named this requirement is open and A8's contrast cell is not met.
 
@@ -819,6 +819,17 @@ as VLM-NG-006 instead of being reopened.
     levels, closer to the worst case with less headroom on other hardware.
     Alternative B: keep the literal bar, which fails by construction.
     **Decided** (2026-11-19): the recommendation — the gate is 2.5 levels.
+12. **Q12 — What happens to the exterior haze floor now that the authored fog power thickens the medium (#6776)?**
+    Recommended: keep the floor and its default, `0.0006 / m x (1 + 6 x (1 - sin e)^3)`
+    faded around the horizon. It is a maximum, so since the power entered the fit it
+    binds on 0 of 13 sampled hours on FO3 and Skyrim, 2 on FO4, 3 on FNV and 11 on
+    Oblivion, whose records carry no fog power and whose exteriors it is therefore the
+    only haze for ([re-measure](../engine/procedural-volumetric-fog.md#haze-floor-after-the-authored-fog-power-q12-re-measure-2026-11-19)).
+    Alternative A: lower the horizon gain; only Oblivion and the horizon hours move, at
+    the cost of fainter low-sun shafts there, and no lower value has been measured.
+    Alternative B: withdraw VLM-SH-010 and -011, which reverses Q7 and returns Oblivion
+    to its authored 0.00043 / m (the floor-off captures show that look).
+    **Decided** (2026-11-19): the recommendation — the floor and its default stand.
 
 ---
 
@@ -885,3 +896,4 @@ as VLM-NG-006 instead of being reopened.
 | 33 | 2026-11-19 | The FNV ridge investigation found that an exterior camera more than 4,096 units above terrain could fall back to its own height for the height-fog reference, creating a large change between nearby views. The exterior ground query now reaches the camera far plane; interiors keep their prior limit. On a clear-sky diagnostic pair the corrected terrain references reduce ridge-to-sky contrast from 0.566749 to 0.481416 as distance increases. The FNV and Skyrim fog-grid seam gate passes after the change. This is not the full VLM-AP-001 sweep: the vanilla-weather band, Skyrim sweep, opening inventory and exterior named-occluder comparisons remain open. [Measurements and limits](../audits/M55_LIGHTING_GATES_2026-11-15.md#fnv-ridge-sweep-investigation-2026-11-19). | — |
 | 34 | 2026-11-19 | Review round 2 folded in: §3 inventory re-measured at HEAD and frozen to symbols, stale Today sentences and line references removed, REG-013 and HF-003 and HF-007 and SH-005 restated, tests named for REG-002, -005, -007, -008, -009, -011, -013, document map and Related rows brought current, §6 deviations 7 to 9 added and uncited mod claims turned into a Phase 0: verify item, §8 coverage denominator fixed, VLM-SH-012 added, header layout fixed. Owner decisions recorded: Q9 (merge rule), Q10 (shaft range), Q11 (seam tolerance); the haze floor default stays open behind a re-measure (VLM-SH-011, #6776) | claude: revise |
 | 35 | 2026-11-19 | Q12 haze-floor re-measure recorded (VLM-SH-011, #6776): authored extinction against the floor at thirteen hours on five fixtures, and floor-off against shipped frames on Oblivion, FNV and FO3; the default is still the owner's to decide | claude: revise |
+| 36 | 2026-11-19 | Q12 decided by the owner: the exterior haze floor and its default stand (VLM-SH-010, -011); VLM-SH-011's noon tolerance is the measured change; #6776 is answered | — |
