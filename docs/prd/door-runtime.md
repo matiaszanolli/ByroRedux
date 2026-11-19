@@ -1,6 +1,6 @@
 # Door Runtime — Product Requirements
 
-**Status**: PROPOSED (2026-11-19). Revision 2 folds in the owner's three decisions (Q1 to Q3, all as recommended); revision 1 was the first draft. It is the prerequisite that decision Q8 of [AI Packages Completion](ai-packages-completion.md#10-decisions-required) split out of that PRD: no in-cell door opens for anyone today. Statements about how an original engine, format or tool behaves cite external sources; a claim that could not be verified is marked **Phase 0: verify** instead of being stated as fact.
+**Status**: PROPOSED (2026-11-19). Revision 3 folds in review round 1's finding 6 (the ROADMAP home, decision Q4); the round's other findings are open. Revision 2 folded in the owner's decisions Q1 to Q3, all as recommended; revision 1 was the first draft. It is the prerequisite that decision Q8 of [AI Packages Completion](ai-packages-completion.md#10-decisions-required) split out of that PRD: no in-cell door opens for anyone today. Statements about how an original engine, format or tool behaves cite external sources; a claim that could not be verified is marked **Phase 0: verify** instead of being stated as fact.
 
 **Scope**: a placed door that is not a load door (a `DOOR` reference with no teleport, in any cell) gets an open state, an open and close motion, collision that follows the motion, a lock gate, its authored sounds, a prompt for the player, script parity and a saved state. Actors use the same door by raising the same activation; that behaviour is [AIP-DOOR-002…006](ai-packages-completion.md#511-door-passage-aip-door), not this document. Outside it: load doors (they work: `queue_door_transition`, [Cross-cell actor travel](cross-cell-actor-travel.md)), Oblivion-gate random teleports, door damage and destruction, lockpicking policy (`lockpick.rs` owns it), and navmesh door semantics ([NAVM Pathfinding §2](../engine/navmesh-pathfinding.md#2-scope)).
 
@@ -178,7 +178,7 @@ A scenario passes when:
 
 ## 8. Metrics
 
-The numbers live in ROADMAP's [M42 row](../../ROADMAP.md#tier-7--deep-gameplay-systems) while this PRD serves M42, and in a new row of its own if the milestone changes (decision to take at approval).
+The numbers live in ROADMAP's Tier 7 table, in a new row `M66 Door runtime` (decision Q4). The row links this PRD, depends on M28.5, M44 and M47.2, and is added to ROADMAP when the PRD is approved, so no row points at a draft; until then the §8 definitions are the only home and no number is published.
 
 | Metric | Definition | Granularity |
 |---|---|---|
@@ -192,7 +192,7 @@ The numbers live in ROADMAP's [M42 row](../../ROADMAP.md#tier-7--deep-gameplay-s
 
 **Phase 0 — Census, sources and the design (no engine code).** The DRT-REC-003 census over the five games; the verify items named in §5 (the hinge and its timing, the closing rule, the loop sound, the default state against a saved game, the locked in-cell door, the in-cell `Automatic Door`), each settled from a CS, GECK or CK page, a UESP page or an observation of the original game, or filed as an issue; `docs/engine/door-runtime.md` written, with the state, motion and swing and the choice between `TwoStateActivator` and a replacement (DRT-G-005). Decisions Q1 to Q3 taken (rev 2). Exit: the census is checked in and its table is linked from §8, every verify item is closed or filed, and the design links from §3.
 
-**Phase 1 — State, activation, scripts and saves (wave 1).** DRT-STATE-001…004, DRT-ACT-001…004, DRT-REC-001, -002, -004 and DRT-SAVE-001, -002, with the swing (DRT-MOVE-002…005) and the sound (DRT-SND-001); Oblivion, Fallout 3 and Fallout New Vegas. Milestone dependencies: M28.5 (the character controller), M44 (audio), M47.2 (scripts and the activation event). Exit: `door-runtime.sh` passes on Oblivion and FNV, `m42-oblivion-packages.sh` passes with `STRICT_FIND=1`, and every fixture test in §5.1 to §5.6 passes.
+**Phase 1 — State, activation, scripts and saves (wave 1).** DRT-STATE-001…004, DRT-ACT-001…004, DRT-REC-001, -002, -004 and DRT-SAVE-001, -002, with the swing (DRT-MOVE-002…005) and the sound (DRT-SND-001); Oblivion, Fallout 3 and Fallout New Vegas. Milestone dependencies: M28.5 (the character controller), M44 (audio), M47.2 (scripts and the activation event); the work runs under M66 (decision Q4). Exit: `door-runtime.sh` passes on Oblivion and FNV, `m42-oblivion-packages.sh` passes with `STRICT_FIND=1`, and every fixture test in §5.1 to §5.6 passes.
 
 **Phase 2 — Sequences and Skyrim (wave 2).** DRT-MOVE-001 for the `Sequence` and `Graph event` classes and DRT-DX-001. Exit: `door-runtime.sh skyrim_se` opens a graph door and the FNV leg opens a sequence door.
 
@@ -210,6 +210,8 @@ Each decision needs the project owner. The recommendation is the first option.
    **Decided** (2026-11-19): the recommendation — one labelled approximate swing now, its constants in one place, replaced when Phase 0 sources the values (DRT-MOVE-002, §6 row 1).
 3. **Q3 — Fallout 4 and Starfield.** Recommended: Fallout 4 in wave 3 (its graph doors reuse the Skyrim path) and Starfield census-only, as the cross-cell travel PRD treated it. Alternative: both out for now. The wave-3 phase disappears and Fallout 4 doors stay as they are.
    **Decided** (2026-11-19): the recommendation — Fallout 4 in wave 3, Starfield census-only (§7.1, Phase 3).
+4. **Q4 — Where the milestone lives.** A player-facing door runtime is a README §1 T1 trigger (a new milestone), and no ROADMAP row covers doors: M42 is the AI row, and the Playable vertical slice is closed and carries no metrics table. Recommended: a new Tier 7 row `M66 Door runtime` that links this PRD and holds its metrics, as M65 did for Sneak and detection, depending on M28.5, M44 and M47.2; AIP-DOOR (M42) depends on it. Alternative A: fold it into the M42 row as M42.12. There is one fewer milestone, but a player feature then lives inside an AI row that is already the longest in the table, and M42's exit waits on it. Alternative B: list it among the closed Playable vertical slice's follow-ons. That is the smallest edit, and it leaves the metrics with no table.
+   **Decided** (2026-11-19): the recommendation — a new Tier 7 row `M66 Door runtime`, added to ROADMAP when the PRD is approved (§8).
 
 ---
 
@@ -234,3 +236,4 @@ Each decision needs the project owner. The recommendation is the first option.
 |---|---|---|---|
 | 1 | 2026-11-19 | First draft, from decision Q8 of the AI packages PRD: the HEAD state of in-cell doors, the three motion classes, seven requirement areas, three decisions | — |
 | 2 | 2026-11-19 | Owner's decisions Q1 to Q3 folded in, all as recommended: doors revert on same-session re-entry and keep saved state, one labelled approximate swing for plain doors, Fallout 4 in wave 3 and Starfield census-only | owner: revise |
+| 3 | 2026-11-19 | Review round 1, finding 6 folded in: decision Q4 (the ROADMAP home) added and decided, §8 and Phase 1 name M66; the round's other six findings are open | claude: revise |
