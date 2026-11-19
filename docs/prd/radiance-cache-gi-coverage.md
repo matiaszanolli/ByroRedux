@@ -1,6 +1,6 @@
 # Radiance Cache and GI Coverage — Product Requirements
 
-**Status**: PROPOSED (2026-11-19). Revision 1 is the first draft. It takes the radiance cache out of the Path Tracing Reference Mode PRD's Phase 5 and out of reference-lighting's deferral of RLT-GI-012, at the owner's direction of 2026-11-19, and gives it one owner. Statements about how an original engine, a format, a paper or a vendor library behaves cite external sources; a claim that could not be verified is marked **Phase 0: verify** instead of being stated as fact.
+**Status**: PROPOSED (2026-11-19). Revision 2 folds in review round 1: the LOD requirements move ahead of the cache key, the Lexington cause gets a branch, the acceptance data is named, the classes are merged, a ROADMAP home is asked (Q7), and the citations and restated figures are fixed. Revision 1 was the first draft. It takes the radiance cache out of the Path Tracing Reference Mode PRD's Phase 5 and out of reference-lighting's deferral of RLT-GI-012, at the owner's direction of 2026-11-19, and gives it one owner. Statements about how an original engine, a format, a paper or a vendor library behaves cite external sources; a claim that could not be verified is marked **Phase 0: verify** instead of being stated as fact.
 
 **Scope**: Every opaque surface the player can see receives traced global illumination, at any distance from the camera and at any angle to it, on all five titles whose cells the engine loads. The promise is coverage, not a new quality term: the gate that today cuts traced GI by a surface's pixel footprint and by its distance is replaced by a world-space hash-grid radiance cache whose resolution, not its reach, varies with distance. Level of detail is therefore a property of the cache and is solved by requirement (§5.3), where today it is a cut-off. Outside this document: direct-light shadows and the direct terms (reference-lighting Phase 3; this document only measures their coverage, §9 Phase 0), the path-traced reference modes that consume the cache (M51), the neural denoiser (M54), reflection rays, and the generation of distant-LOD geometry.
 
@@ -18,6 +18,7 @@
 | Far-field sun shadows and the traced-shadow fade | [Shadow Pipeline Trade-offs](../engine/shadow-pipeline-tradeoffs.md) |
 | Distant-LOD geometry the cache must cover but does not generate | [Distant LOD Completion PRD](distant-lod-completion.md) |
 | Debug console commands | [Debug CLI](../engine/debug-cli.md) |
+| The ROADMAP home of this work (an M-LIGHT phase, a new milestone or an M51 dependency; Q7) and the table that holds its numbers | [ROADMAP](../../ROADMAP.md): the M-LIGHT row and the Lighting fidelity table |
 
 Normative terms **MUST**, **SHOULD** and **MAY** have their RFC 2119 meanings, as in the related designs. Requirement IDs use the `RCG-` prefix.
 
@@ -27,9 +28,11 @@ Normative terms **MUST**, **SHOULD** and **MAY** have their RFC 2119 meanings, a
 
 The owner's framing, 2026-11-19, on a Fallout 4 exterior (Lexington, Fallon's): "most large objects such as walls don't interact with illumination appropiately, they don't either bounce or refract rays according to the environments, and they don't occlude with the environment"; "all objects on screen should be affected by GI and light sources"; and "We'll need to solve LOD a little bit better than the original engine."
 
-At HEAD the first half is a deliberate, documented trade, not an accident. The main pass traces a bounded path only where a pixel's world footprint is under about 0.67 world units, measured with the larger screen derivative, and fades that path to nothing between 4000 and 6000 world units from the camera. Everything outside gets the sky's spherical-harmonics ambient times screen-space AO: no bounce, no ray occlusion. The owner deferred widening the gate on 2026-11-02 because it cost +3 to +11 ms on content and pushed the adaptive budget to tier 0, where GI is off entirely. A cheaper way to widen it was always the goal; this PRD is that way.
+At HEAD the first half is a deliberate, documented trade, not an accident. The main pass traces a bounded path only where a pixel's world footprint is under about 0.67 world units, measured with the larger screen derivative, and fades that path to nothing between 4000 and 6000 world units from the camera. Everything outside gets the sky's spherical-harmonics ambient times screen-space AO: no bounce, no ray occlusion. The owner deferred widening the gate on 2026-11-02 because it cost +3 to +11 ms on content and dropped settled tiers, to tier 0 (where GI is off entirely) on two scenes (the table in reference-lighting's RLT-GI-012). A cheaper way to widen it was always the goal; this PRD is that way.
 
 The corollary that shapes every requirement: **coverage must not be bought by distance or angle**. A cache keyed on world position and resolved by distance makes the cost of a pixel's GI independent of where the pixel is: one bounce ray and one cache lookup, whether the wall is two metres away or two hundred. Level of detail moves from "does this surface get GI" to "how large is the cell that answers for it". The footprint gate and the distance fade then have no job and are removed, not retuned.
+
+The feature is for the player standing in an exterior street, where the walls are far and seen at a grazing angle, and for the M-LIGHT milestone, which cannot close RLT-GI-012 or the GI energy deficit without it. After it the engine will not cut traced GI by distance or by angle, and it will not use the cache for direct light.
 
 ---
 
@@ -57,13 +60,14 @@ The corollary that shapes every requirement: **coverage must not be bought by di
 
 ## 3. Core model
 
-Each eligible pixel receives its indirect light from exactly one of three sources, chosen per frame and never by distance or angle:
+Each eligible pixel receives its indirect light from exactly one of two sources, chosen per frame and never by distance or angle:
 
 | Class | Source | When |
 |---|---|---|
-| **T — traced to a cache terminator** | One bounce ray from the primary surface; the path continues for as many segments as the ray quality tier allows, then ends in a cache lookup at the last hit | Every eligible pixel, at every tier |
+| **T — traced to a cache terminator** | One bounce ray from the primary surface; the path continues for as many segments as the ray quality tier allows (from one up to `MAX_PATH_SEGMENTS`), then ends in a cache lookup at the last hit | Every eligible pixel, at every tier |
 | **F — fallback** | The untraced share | Only on a cache miss, and only for that frame |
-| **N — near-field full path** | The same path with the tier's full segment and shaded-hit allowance before the terminator | Pixels the tier chooses to spend more on; never required for coverage |
+
+Two classes, disjoint: a pixel is T, or it is F for that frame. How many segments a T pixel spends is the tier's business (`GpuRayBudget`), not a class. Reporting: the miss count and the cache level and hit view report F (RCG-DBG-001, RCG-DBG-002); `gi.cache` reports coverage per visibility class (RCG-DBG-003); the segment allowance is the existing `GpuRayBudget` tier word.
 
 The cache is updated from a sparse subset of visible surface points, resolved every frame, and indexed by hashed (level, quantized position) of the surface point. Its level is a function of the point's distance from the camera alone. The lookup happens at the first bounce hit, not at the primary surface, so the primary surface's own radiance is never read from the cache. That is the difference from the published SHaRC usage, which typically excludes the primary hit ([SHaRC Integration guide](https://github.com/NVIDIA-RTX/SHARC/blob/main/docs/Integration.md), "SHaRC Render").
 
@@ -86,7 +90,7 @@ The inventory below is the state at HEAD on 2026-11-19.
 
 ### 4.1 Goals
 
-- **RCG-G-001.** On every Wave 1 acceptance scene (§7.2), coverage MUST be at least the §8 threshold at every ray quality tier, measured by RCG-VAL-002.
+- **RCG-G-001.** On every Wave 1 acceptance scene (§7.2), coverage MUST be at least the §8 threshold (Q6) at every ray quality tier, measured by RCG-VAL-002.
 - **RCG-G-002.** The GI cost of one eligible pixel MUST NOT depend on its distance from the camera or its angle to it (RCG-PERF-004).
 - **RCG-G-003.** Level changes of the cache MUST NOT be visible as a step or a pop on a receding surface (RCG-LOD-002).
 - **RCG-G-004.** The GI energy deficit gate A7 MUST be evaluated with the cache as terminator and meet its Q6 budget, which closes RLT-GI-003 (RCG-CACHE-005).
@@ -108,7 +112,7 @@ The inventory below is the state at HEAD on 2026-11-19.
 
 ### 5.1 Coverage (`RCG-COV`)
 
-- **RCG-COV-001.** Every eligible pixel MUST receive a traced share (class T or N) regardless of its pixel world footprint, its angle to the camera and its distance up to the far plane. Today: eligible pixels are cut by the footprint gate and the distance fade (§3 rows 1 and 2, at HEAD on 2026-11-19).
+- **RCG-COV-001.** Every eligible pixel MUST receive a traced share (class T) regardless of its pixel world footprint, its angle to the camera and its distance up to the far plane. Today: eligible pixels are cut by the footprint gate and the distance fade (§3 rows 1 and 2, at HEAD on 2026-11-19).
 - **RCG-COV-002.** The shader MUST contain no condition on `rtLOD`, on screen derivatives of world position or on camera distance that sets `tracedDiffuseWeight` to zero or skips the traced share. `phase2_gi_energy_contracts` MUST be rewritten to pin the replacement, and MUST assert that the footprint gate and `giFade` are gone.
 - **RCG-COV-003.** On a cache miss the pixel MUST fall back to the untraced share for that frame only, and the shader MUST count the miss. The steady-state miss fraction at a parked camera after 16 frames MUST be published on the bench line (RCG-DBG-002); its threshold is Q6's.
 - **RCG-COV-004.** The adaptive ray budget MUST NOT shed coverage. A lower tier MAY reduce path segments, shaded hits, the update fraction and the resolve rate, and MUST NOT remove the cache lookup. At ray quality tier 0, coverage MUST still meet the §8 threshold. Today: tier 0 turns GI off (reference-lighting Phase 2 measurement; `cold_start_uses_the_watchdog_safe_quality_floor`).
@@ -117,7 +121,7 @@ The inventory below is the state at HEAD on 2026-11-19.
 ### 5.2 The cache (`RCG-CACHE`)
 
 - **RCG-CACHE-001.** A radiance cache MUST exist as a GLSL include whose entry points (initialise a sample, update on hit, update on miss, resolve an entry, query) are shared by the main pass and the update pass, keyed by the hashed (level, quantized position) of a surface point. Today: absent (§3 row 7).
-- **RCG-CACHE-002.** The cache MUST store outgoing radiance, so a path may end at any hit, and MUST apply the same material-aware shading the main pass applies at a hit (`pathHitRadiance` and `ray_hit.glsl`), including emission.
+- **RCG-CACHE-002.** The cache MUST store outgoing radiance, so a path may end at any hit, and MUST apply the same material-aware shading the main pass applies at a hit (`pathHitRadiance` and `ray_hit.glsl`), including emission. A contract test MUST pin that the update shader calls `pathHitRadiance` with the arguments the main pass's path walk passes.
 - **RCG-CACHE-003.** The include MUST be written from Binder et al. (2019) and the published SHaRC integration description, and MUST carry no RTX SDK source (Q2). Its header MUST cite those two references and no other.
 - **RCG-CACHE-004.** A CPU reference of the hash, the level function and the quantization MUST exist as a unit test, and MUST agree with the GLSL on a fixed corpus of positions. Observable: the test, run by `cargo test -p byroredux-renderer`.
 - **RCG-CACHE-005.** With the cache as the bounded path's terminator, A7 MUST be reported at tiers 1 to 3 on the Lambertian box rung and MUST meet the budget the owner writes at Phase 2 entry (reference-lighting Q6).
@@ -125,7 +129,7 @@ The inventory below is the state at HEAD on 2026-11-19.
 
 ### 5.3 Level of detail (`RCG-LOD`)
 
-- **RCG-LOD-001.** The cache level MUST be selected from the surface point's distance to the camera on a logarithmic series, so the screen-space size of one voxel stays within the band Q3 fixes across the whole range from the near clamp to the far plane. Observable: a unit test over distances that asserts the band.
+- **RCG-LOD-001.** The cache level MUST be selected from the surface point's distance to the camera on a logarithmic series, so the screen-space size of one voxel stays within the band Phase 1 publishes (Q3 chooses the scheme, not the band) across the whole range from the near clamp to the far plane. Observable: a unit test over distances that asserts the band.
 - **RCG-LOD-002.** A receding flat Lambertian receiver, lit by a fixed sky and a fixed sun, MUST show no luminance step across a level boundary larger than the threshold Phase 1 publishes, measured as the largest adjacent-pixel difference at the boundary over the same difference one pixel away. Observable: a capture and a script.
 - **RCG-LOD-003.** Level selection MUST NOT take a screen derivative or a surface angle as input; its signature MUST be (position, camera position, level parameters). A grazing surface and a face-on surface at the same distance MUST map to the same level. Today: the gate selects by the larger screen derivative, which is why a grazing wall loses traced GI at a distance where a face-on one keeps it (reference-lighting RLT-GI-012, at HEAD on 2026-11-02).
 - **RCG-LOD-004.** The minimum voxel size near the camera MUST be stated and bounded, so contact-scale GI stays sharp, and the level scheme's three parameters (scene scale, level ratio, near bias) MUST be named constants in `shader_constants.glsl` with their generated-header test. SHaRC exposes the same three as `sceneScale`, `logarithmBase` and `levelBias` ([Integration guide](https://github.com/NVIDIA-RTX/SHARC/blob/main/docs/Integration.md), "Hash Grid Visualization"); how it maps distance to size is not stated there (**Phase 0: verify**, V4).
@@ -144,7 +148,7 @@ The inventory below is the state at HEAD on 2026-11-19.
 
 - **RCG-PERF-001.** The update and resolve passes MUST each carry a GPU timer bracket on the `bench:` line (reference-lighting RLT-PERF-001).
 - **RCG-PERF-002.** Every new per-pixel ray, update ray and cache query MUST be bounded by a `GpuRayBudget` field so the adaptive tiers can shed it (RLT-PERF-002, RLT-GI-008). The struct and its 68 B size claim in [shader-pipeline.md](../engine/shader-pipeline.md) MUST be updated together, with the contract tests that pin them.
-- **RCG-PERF-003.** The phase that removes the footprint gate MUST report its frame-time delta on the four game benchmark scenes with the tier pinned (A13), against the Q4 ceiling. Today: widening the old gate cost +3.4 to +10.9 ms on Prospector, Whiterun and Dugout (reference-lighting RLT-GI-012 table, at HEAD on 2026-11-02).
+- **RCG-PERF-003.** The phase that removes the footprint gate MUST report its frame-time delta on the four game benchmark scenes with the tier pinned (A13), against the Q4 ceiling. Today: the cost of widening the old gate is recorded in the table under RLT-GI-012 in [reference-lighting.md](reference-lighting.md), not restated here.
 - **RCG-PERF-004.** The traced-share cost per eligible pixel MUST be flat across distance and angle. Observable: `scripts/rt-lod-sweep.sh` extended to bucket the main-pass time by distance, with the spread between the cheapest and dearest bucket below the figure Phase 1 publishes.
 - **RCG-PERF-005.** No scene's settled tier MAY drop against its Phase 1b control (reference-lighting RLT-PERF-005). A tier drop that coverage forces is a Q4 decision, not a regression to absorb.
 
@@ -166,6 +170,7 @@ The inventory below is the state at HEAD on 2026-11-19.
 - **RCG-VAL-002.** Coverage MUST be measured on FO4 Lexington (Fallon's), FNV Prospector Saloon, Skyrim WhiterunBanneredMare, FO4 MedTekResearch01 and Dugout Inn at camera poses pinned in a manifest, at every tier, and MUST meet the §8 threshold. The measurement MUST use `RENDER_DEBUG_TRACED_SHARE` and the eligible-pixel mask, not a hand count.
 - **RCG-VAL-003.** A temporal-stability gate MUST hold: with the camera parked for 255 frames, the frame-to-frame luminance variance of cache-resolved pixels MUST stay within the budget Phase 1 publishes, so the cache does not boil.
 - **RCG-VAL-004.** The coverage and flatness gates MUST be runnable from `scripts/m-light-gates.sh` and MUST report SKIP, not PASS, when the data is absent.
+- **RCG-VAL-005.** A receding-plane lab MUST exist for RCG-LOD-002 and RCG-PERF-004: a flat Lambertian ground plane running from the near clamp to the far plane under a fixed sky and sun, built in the manner of the shaft lab (`byroredux/tests/golden_frames.rs`), game-data-free and capturable headless. Today: absent (at HEAD on 2026-11-19).
 
 ---
 
@@ -174,12 +179,18 @@ The inventory below is the state at HEAD on 2026-11-19.
 | # | Original behaviour | Redux behaviour | Becomes redundant | Risk and its requirement |
 |---|---|---|---|---|
 | 1 | Which lighting terms the original applies to distant objects, and how its lighting steps with distance: **Phase 0: verify** (V5), from the CK / GECK wikis and UESP | Every surface keeps traced GI at any distance; level of detail lives in the cache (RCG-COV-001, RCG-LOD-001) | The footprint gate, the distance fade, the `rtLOD` GI classification | Visible voxel steps on receding surfaces → RCG-LOD-002, RCG-VAL-003 |
-| 2 | SHaRC's documented use excludes the primary hit; this engine looks up at the first bounce hit | The primary surface's own radiance is never read from the cache (§3) | Nothing | Blocky GI where one voxel spans many pixels at far levels → RCG-LOD-001 bounds the voxel's screen size |
-| 3 | n/a: the cache is new | History-based accumulation | Per-frame stochastic GI at far range | Lag and ghosting after a light or blocker moves → RCG-UPD-002, RCG-UPD-003 |
-| 4 | n/a | Fixed-size hash table | Per-cell GI limits | Collisions and overflow on large exteriors → RCG-MEM-002, RCG-MEM-003 |
-| 5 | n/a | GLSL include needing half-float storage and 64-bit atomics if SHaRC's layout is followed | Nothing | A GPU without the features is excluded → V6 and Q2 |
-| 6 | Widening the old gate cost +3 to +11 ms | Constant per-pixel cost (RCG-PERF-004) | Nothing | The cost returns in another form → RCG-PERF-003, Q4 |
-| 7 | n/a | Surfaces outside the TLAS looked up by position (RCG-LOD-006) | Nothing | Distant geometry lit by a cache nothing wrote to → V3 and RCG-LOD-006 |
+| 2 | SHaRC's documented use typically excludes the primary hit ([Integration guide](https://github.com/NVIDIA-RTX/SHARC/blob/main/docs/Integration.md), "SHaRC Render"); this engine looks up at the first bounce hit | The primary surface's own radiance is never read from the cache (§3) | Nothing | Blocky GI where one voxel spans many pixels at far levels → RCG-LOD-001 bounds the voxel's screen size |
+
+Risks with no original-engine counterpart:
+
+| # | Risk | Handled by |
+|---|---|---|
+| 3 | History-based accumulation lags and ghosts after a light or blocker moves | RCG-UPD-002, RCG-UPD-003 |
+| 4 | A fixed-size hash table collides and overflows on large exteriors | RCG-MEM-002, RCG-MEM-003 |
+| 5 | A SHaRC-style layout needs native half-float shader types and, unless a lock buffer is used, 64-bit atomics ([Integration guide](https://github.com/NVIDIA-RTX/SHARC/blob/main/docs/Integration.md), "Shader Compiler Requirements" and "Resource Binding", `HASH_GRID_ENABLE_64_BIT_ATOMICS`); a GPU without them is excluded | V6 and Q2 |
+| 6 | The cost of widening the old gate returns in another form | RCG-PERF-003, RCG-PERF-004, Q4 |
+| 7 | Surfaces outside the TLAS are looked up in a cache nothing wrote to | V3, RCG-LOD-006 |
+| 8 | The Lexington walls are missing from the TLAS rather than culled by the gate, so the cache works and the scene is still wrong | V1 and the Phase 0 branch (§9) |
 
 ---
 
@@ -187,27 +198,27 @@ The inventory below is the state at HEAD on 2026-11-19.
 
 ### 7.1 Per-game scope
 
-Every requirement is downstream of the translation boundary. The cache is world-space and game-agnostic; no shader branches on the source game ([CLAUDE.md invariants](../../CLAUDE.md#architecture-invariants)), and a per-game difference such as the Starfield metric-unit normalisation stays at the import boundary the [backbone](../engine/physical-lighting-backbone.md) names.
+The waves are those of [reference-lighting §7.1](reference-lighting.md), linked rather than restated. Every requirement is downstream of the translation boundary. The cache is world-space and game-agnostic; no shader branches on the source game ([CLAUDE.md invariants](../../CLAUDE.md#architecture-invariants)), and a per-game difference such as the Starfield metric-unit normalisation stays at the import boundary the [backbone](../engine/physical-lighting-backbone.md) names.
 
 | Game | In scope | Why / wave |
 |---|---|---|
-| Oblivion | yes | Wave 2: interior and exterior load; exercised through the shared path |
-| Fallout 3 | yes | Wave 2: shares FNV's ESM path and inputs |
-| Fallout: New Vegas | yes | Wave 1: Prospector Saloon, the reference title and benchmark scene |
-| Skyrim (LE / SE / AE) | SE / AE yes; LE no | Wave 1 (SE): WhiterunBanneredMare. LE is parse-only at HEAD and inherits this when its cell path lands |
-| Fallout 4 | yes | Wave 1: Lexington (Fallon's) is the scene that motivated this PRD; MedTekResearch01 and Dugout Inn are benchmark scenes. Whether FO4 precombined geometry is in the TLAS is V3 |
+| Oblivion | yes | Interior and exterior load; exercised through the shared path |
+| Fallout 3 | yes | Shares FNV's ESM path and inputs |
+| Fallout: New Vegas | yes | Prospector Saloon, the reference title and benchmark scene |
+| Skyrim (LE / SE / AE) | SE / AE yes; LE no | SE: WhiterunBanneredMare. LE has no cell path (the ROADMAP compatibility matrix) and inherits this when it lands |
+| Fallout 4 | yes | Lexington (Fallon's) is the scene that motivated this PRD; MedTekResearch01 and Dugout Inn are benchmark scenes. Whether FO4 precombined geometry is in the TLAS is V3 |
 | Fallout 76 | no | No cell loader; nothing is lit |
-| Starfield | yes | Wave 2: walkable Cydonia interior |
+| Starfield | yes | Walkable Cydonia interior |
 
 ### 7.2 Acceptance
 
 A scenario passes when:
 
-1. On FO4 Lexington at the pinned pose of Fallon's, `RENDER_DEBUG_TRACED_SHARE` is non-zero on at least the §8 coverage threshold of eligible pixels at tiers 0 to 3, and the `rt-lod-telemetry:` line reports `gi_lod_culled=0`.
+1. On FO4 Lexington at the Fallon's pose and launch command that Phase 0 records in a manifest (captured with `cam.where` on a held `--bench-hold` instance), `RENDER_DEBUG_TRACED_SHARE` is non-zero on at least the §8 coverage threshold of eligible pixels at tiers 0 to 3, and the `rt-lod-telemetry:` line reports `gi_lod_culled=0`. If V1 finds the walls absent from the TLAS, this scenario is gated on the separate defect that V1 files (§9 Phase 0).
 2. On the Lambertian box rung at tiers 2 and 3, the traced-share view is non-zero on at least 99% of every L4 region (RLT-GI-012's clause) and A7 reports its deficit within the budget (RCG-VAL-001, RCG-CACHE-005).
-3. On a flat ground plane receding to the far plane under a fixed sky and sun, no level boundary shows a luminance step above the published threshold (RCG-LOD-002).
+3. On the receding-plane lab (RCG-VAL-005), no level boundary shows a luminance step above the published threshold (RCG-LOD-002).
 4. Parked for 255 frames on each acceptance scene, the cache-resolved pixels hold the flicker budget (RCG-VAL-003).
-5. On each of the four benchmark scenes with the tier pinned, the A13 frame-time delta is within the Q4 ceiling and no settled tier drops (RCG-PERF-003, RCG-PERF-005).
+5. On each of the four benchmark scenes with the tier pinned, the A13 frame-time delta (`scripts/m-light-baselines.sh --exit-cost` against a control build) is within the Q4 ceiling and no settled tier drops (RCG-PERF-003, RCG-PERF-005).
 6. With the data absent the gates exit SKIP (77), never PASS (RCG-VAL-004).
 
 ---
@@ -216,7 +227,7 @@ A scenario passes when:
 
 | Metric | Definition | Granularity |
 |---|---|---|
-| Coverage | eligible pixels with a non-zero traced share ÷ eligible pixels. Threshold: 99% (Q6) | per scene, per tier |
+| Coverage | eligible pixels with a non-zero traced share ÷ eligible pixels. Threshold: 99% (Q6 recommends it; undecided) | per scene, per tier |
 | Cache miss fraction | lookups that miss ÷ lookups, after 16 parked frames | per scene |
 | Cache occupancy | occupied entries ÷ table entries, and evictions per frame | per scene, per grid radius |
 | Cost flatness | (dearest − cheapest) ÷ cheapest main-pass time across the distance buckets of RCG-PERF-004 | per scene |
@@ -226,21 +237,21 @@ A scenario passes when:
 | Frame-time delta | the A13 exit-cost figure against the pinned-tier control | per benchmark scene |
 | Out-of-TLAS coverage | coverage restricted to each draw class RCG-LOD-006 lists | per scene, per class |
 
-The numbers live in ROADMAP and in the checked-in gate artefacts, not here.
+The numbers live in ROADMAP's Lighting fidelity (M-LIGHT) table, which reference-lighting's RLT-REF-004 generates, and in the checked-in gate artefacts, not here.
 
 ---
 
 ## 9. Delivery sequence
 
-**Phase 0 — Measure and verify (no engine code).** Settle which of three causes explains the Lexington walls, using the existing telemetry and debug views on a pinned pose: the footprint gate (the `gi_traced` against `gi_lod_culled` counters and the `RENDER_DEBUG_RT_LOD` view), absence from the TLAS (`mesh.info` on a Fallon's wall reference), or weak AO (the AO-off flag). Census which of direct sun, local lights, sky ambient and traced GI reach each visibility class on each acceptance scene, using the existing views (V2). Publish the TLAS membership of distant-LOD geometry, ground cover and FO4 precombines (V3). Close the SHaRC details this document marks (V4), the original engine's lighting LOD (V5) and the device features a half-float, 64-bit-atomic cache needs on the RT-minimum GPU (V6). Resolve Q2 to Q6. Phase 0 closes **Phase 0: verify** items V1 to V6 in `docs/audits/RCG_phase0_<date>.md`. Exit: that artefact is checked in with V1 to V6 answered, and every finding that is a defect is filed as an issue.
+**Phase 0 — Measure and verify (no engine code).** Settle which of three causes explains the Lexington walls, using the existing telemetry and debug views on a pinned pose: the footprint gate (the `gi_traced` against `gi_lod_culled` counters and the `RENDER_DEBUG_RT_LOD` view), absence from the TLAS (`mesh.info` on a Fallon's wall reference), or weak AO (the AO-off flag) (V1). Record the Fallon's pose, the launch command and the data files in a manifest, captured with `cam.where` on a held `--bench-hold` instance. Census which of direct sun, local lights, sky ambient and traced GI reach each visibility class on each acceptance scene, using the existing views (V2). Publish the TLAS membership of distant-LOD geometry, ground cover and FO4 precombines (V3). Close the SHaRC details this document marks and the cascaded-cache question of Q3 (V4), the original engine's lighting LOD (V5) and the device features a half-float, 64-bit-atomic cache needs on the RT-minimum GPU (V6). Resolve Q2 to Q7. **Branch on V1.** If the footprint gate is the cause, Phases 1 to 3 proceed as written. If the walls are absent from the TLAS, that defect is filed on its own (FO4 precombines are M49's, [Distant LOD Completion PRD](distant-lod-completion.md) lists them out of its scope), acceptance scenario 1 is gated on it, and Phases 1 to 3 still proceed, because RLT-GI-012 requires coverage independently of the Lexington scene. If AO is the cause, the AO floor is filed as a tuning issue and the same holds. Phase 0 closes **Phase 0: verify** items V1 to V6 in `docs/audits/RCG_phase0_<date>.md`. Exit: that artefact is checked in with V1 to V6 answered and the pose manifest recorded, and every finding that is a defect is filed as an issue.
 
-**Phase 1 — The cache on the Cornell harness.** RCG-CACHE-001 to -004 and -006, RCG-UPD-001, -002 and -004, RCG-MEM-001 and -002, RCG-PERF-001 and -002 and RCG-DBG-001. The cache terminates the bounded path on the box rung; the footprint gate is untouched. Exit: A7 is published at tiers 1 to 3 with the cache and the memory-budget row, the bench line carries both brackets, and the numbers Phase 1 owes (RCG-LOD-002, RCG-UPD-002, RCG-VAL-003, RCG-PERF-004) are published.
+**Phase 1 — The cache on the Cornell harness.** RCG-CACHE-001 to -004 and -006, RCG-LOD-001, -003 and -004 (the level function is part of the cache key), RCG-UPD-001, -002 and -004, RCG-MEM-001 and -002, RCG-PERF-001 and -002, RCG-DBG-001 and RCG-VAL-005. The cache terminates the bounded path on the box rung; the footprint gate is untouched, so it still removes traced GI from the grazing floor and ceiling (RLT-GI-012). Exit: A7 is published at tiers 1 to 3 on the box rung split by region, the memory-budget row and both bench brackets exist, and the numbers Phase 1 owes (the RCG-LOD-001 band, the RCG-LOD-002 threshold, the RCG-UPD-002 frame count, the RCG-VAL-003 budget and the RCG-PERF-004 figure) are published.
 
-**Phase 2 — Coverage.** RCG-COV-001 to -005, RCG-CACHE-005, RCG-VAL-001 and RCG-DBG-002. The footprint gate and the distance fade are removed and `phase2_gi_energy_contracts` is rewritten. Exit: RLT-GI-012's box-rung measurement passes, `gi_lod_culled` reads 0 on the bench line of every scene, and the A13 delta is published.
+**Phase 2 — Coverage.** RCG-COV-001 to -005, RCG-CACHE-005, RCG-VAL-001 and RCG-DBG-002. The footprint gate and the distance fade are removed and `phase2_gi_energy_contracts` is rewritten. Exit: RLT-GI-012's box-rung measurement passes, A7 meets its budget (RCG-CACHE-005), `gi_lod_culled` reads 0 on the bench line of every scene, and the A13 delta is published.
 
-**Phase 3 — LOD and content.** RCG-LOD-001 to -006, RCG-UPD-003 and -005, RCG-MEM-003, RCG-PERF-003 to -005, RCG-DBG-003 and RCG-VAL-002 to -004. Exit: acceptance scenarios 1 to 6 pass on every Wave 1 scene and the A13 delta is within the Q4 ceiling.
+**Phase 3 — LOD and content.** RCG-LOD-002, -005 and -006, RCG-UPD-003 and -005, RCG-MEM-003, RCG-PERF-003 to -005, RCG-DBG-003 and RCG-VAL-002 to -004. Exit: acceptance scenarios 1 to 6 pass on every Wave 1 scene (scenario 1 as gated by the V1 branch) and the A13 delta is within the Q4 ceiling.
 
-**Phase 4 — Close-out.** ROADMAP's M-LIGHT row, memory-budget, shader-pipeline and debug-cli are updated; reference-lighting records RLT-GI-012 and RLT-GI-003 closed; the path-tracing PRD's PTR-RT-002 links the shipped include. Exit: the gates of Phase 3 run from `scripts/m-light-gates.sh` and the PRD moves to SHIPPED with the last phase's tracking issue closed.
+**Phase 4 — Close-out.** The ROADMAP home Q7 decides is updated, with memory-budget, shader-pipeline and debug-cli; reference-lighting records RLT-GI-012 and RLT-GI-003 closed; the path-tracing PRD's PTR-RT-002 links the shipped include. This work depends on M-LIGHT (the cost ceiling and the gates it owns) and is a dependency of M51's interactive mode. Exit: the gates of Phase 3 run from `scripts/m-light-gates.sh` and the PRD moves to SHIPPED with the last phase's tracking issue closed.
 
 ---
 
@@ -248,10 +259,12 @@ The numbers live in ROADMAP and in the checked-in gate artefacts, not here.
 
 1. **Q1 — Who owns the cache.** **Decided** (2026-11-19): this PRD owns the realtime cache, its allocation rule and the replacement of the footprint gate; reference-lighting's RLT-GI-008 stays as the allocation contract this PRD satisfies, and the path-tracing PRD consumes the cache. The owner chose a separate PRD over folding into the volumetric or reference-lighting PRDs, and the cache over widening the gate.
 2. **Q2 — Cache provenance.** Recommended: a clean-room GLSL cache written from Binder et al. (2019) and the published SHaRC integration description, so no RTX SDK source enters the MIT tree. This is the decision the path-tracing PRD's Q2 held; it moves here with the cache, and V2 of that PRD (the licence clauses) must close before it is decided. Alternative A: vendor NVIDIA SHaRC; consequence: its licence clause conflicts with the MIT licence and ties the application to NVIDIA hardware interoperability, per the path-tracing PRD. Alternative B: no cache, deeper paths with Russian roulette; consequence: the cost the owner already rejected, and RCG-COV-004 cannot hold at tier 0.
-3. **Q3 — The level scheme.** Recommended: logarithmic distance levels selected by camera distance alone (RCG-LOD-003), with scene scale, level ratio and near bias as the three constants. Alternative A: camera-centred cascades (clip-map style); consequence: cheap lookups and no hashing of level, but a fixed range and a visible ring where a cascade ends, which is the cut-off this PRD removes. Alternative B: select by screen-space footprint; consequence: it is the current bug, and grazing surfaces would lose coverage again.
+3. **Q3 — The level scheme.** Recommended: logarithmic distance levels selected by camera distance alone (RCG-LOD-003), with scene scale, level ratio and near bias as the three constants. Alternative A: camera-centred cascades; consequence: cheap lookups and no hashing of level, but a fixed range, and whether a visible ring shows where a cascade ends is **Phase 0: verify** (V4), from the published cascaded-cache literature, which is the cut-off this PRD removes if it does. Alternative B: select by screen-space footprint; consequence: it is the current bug, and grazing surfaces would lose coverage again.
 4. **Q4 — The cost ceiling.** Recommended: reference-lighting Q8's rule (the larger of 5% and 0.25 ms per phase, 12% for the milestone, no settled-tier drop), measured at the pinned tier, with coverage non-negotiable: when coverage does not fit, the owner chooses between raising the ceiling and cutting the update fraction, and nothing is cut by distance. Alternative: waive Q8 for this PRD and report cost only; consequence: coverage is guaranteed but frame time is unbounded.
 5. **Q5 — Tier 0.** Recommended: no tier removes the cache lookup (RCG-COV-004); tier 0 keeps one bounce ray and the lookup and sheds only depth and update rate. Alternative: tier 0 keeps turning GI off; consequence: the safety valve is preserved and "every object on screen" is false on the slowest tier.
 6. **Q6 — Thresholds.** Recommended: coverage 99% (RLT-GI-012's own clause), the miss fraction, flicker, level-step, reconvergence and occupancy budgets written by the owner at the entry of the phase that first measures each, as reference-lighting Q6 does. Alternative: coverage 99.9% now; consequence: a stricter bar before the cache's miss behaviour has been measured.
+
+7. **Q7 — The ROADMAP home.** Recommended: a new phase of M-LIGHT, because RLT-GI-012 and RLT-GI-003 live there and M51 only consumes the cache; the M-LIGHT row and the Lighting fidelity table take the numbers. Alternative A: a new M-number under Tier 8; consequence: a second owner of the GI terms. Alternative B: a phase of M51; consequence: the cache keeps waiting on a milestone whose Phase 5 is unscheduled, which is what the owner rejected.
 
 ---
 
@@ -279,3 +292,4 @@ The numbers live in ROADMAP and in the checked-in gate artefacts, not here.
 | Rev | Date | Change | Review |
 |---|---|---|---|
 | 1 | 2026-11-19 | First draft. The cache and traced-GI coverage leave M51's Phase 5 and reference-lighting's RLT-GI-012 deferral; Q1 is the owner's decision of this date, Q2 moves here from the path-tracing PRD, and the volumetric PRD is cross-linked | — |
+| 2 | 2026-11-19 | Review round 1 folded in: LOD requirements moved ahead of the cache key; the V1 branch and the pose manifest; the receding-plane lab (RCG-VAL-005) and the A13 command named; classes T and N merged and their reporting stated; the ROADMAP home asked (Q7) and the table named; SHaRC citations and the cascade claim fixed; restated figures and waves linked; deviations split from plain risks; thesis audience and non-goal added; Q6 dependence marked | claude: revise |
