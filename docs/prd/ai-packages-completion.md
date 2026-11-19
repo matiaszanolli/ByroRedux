@@ -1,6 +1,6 @@
 # AI Packages Completion — Product Requirements
 
-**Status**: ACTIVE (2026-11-19). Revision 11 wires Skyrim's sit-enter clip (AIP-SIT-002) and revision 10 Oblivion's (AIP-SIT-001). Revision 8 records AIP-WALK-003 as built (the pathgrid switch on every walking mover) and rev 7 its first slice. Revision 6 re-measures the "Today" claims at HEAD after Phases 1–5 and folds in review round 3 (§12). Revision 5 files the tracking issues; every **Phase 0: verify** item is an acceptance criterion of the Phase 0 issue. Revision 4 recorded the owner's §10 decisions: Q2 sets Skyrim's weekday origin per edition, every other answer is the recommendation. Revision 3 folded in review round 2
+**Status**: ACTIVE (2026-11-19). Revision 12 adds the two live gates and records what they found. Revision 11 wires Skyrim's sit-enter clip (AIP-SIT-002) and revision 10 Oblivion's (AIP-SIT-001). Revision 8 records AIP-WALK-003 as built (the pathgrid switch on every walking mover) and rev 7 its first slice. Revision 6 re-measures the "Today" claims at HEAD after Phases 1–5 and folds in review round 3 (§12). Revision 5 files the tracking issues; every **Phase 0: verify** item is an acceptance criterion of the Phase 0 issue. Revision 4 recorded the owner's §10 decisions: Q2 sets Skyrim's weekday origin per edition, every other answer is the recommendation. Revision 3 folded in review round 2
 (§12 lists the topics). It covers the remainder of milestone M42: the
 procedures, package fields and per-game prerequisites that do not run yet.
 Statements about how the original engines behave cite external sources
@@ -347,7 +347,7 @@ Vanilla `PTDT` type-2 targets in Find packages (uncommitted census, §3):
   `ActivateEvent` on it with the actor as activator (CS: the actor "finds
   the target and 'activates' it", a container meaning "Open it"). Seating
   on Oblivion depends on AIP-SIT-001. The container half shipped in #6662
-  (`systems/find_package.rs:776`); the chair half is unblocked by AIP-SIT-001 and still needs its own wiring and live check.
+  (`systems/find_package.rs:776`); the chair half is unblocked by AIP-SIT-001 (Oblivion's seat runs, rev 12), but no vanilla cell can gate it live: the placed Find-a-chair packages name a base the cell does not place (`GottlefontHouse`'s bench) or a tree, so it stays unit-gated.
 
 ### 5.2 UseWeapon (`AIP-UW`)
 
@@ -545,8 +545,10 @@ Skyrim+ `BSFurnitureMarker` / `BSFurnitureMarkerNode` positions carry an
   `Oblivion - Meshes.bsa`, with a verified path. Built in rev 10:
   `sandbox_sit_enter_kf_path(Oblivion)` returns the clip (it was `None`,
   marked "deferred"), pinned by the unit test
-  `sit_enter_kf_path_covers_the_kf_era_games`; no Oblivion seat has been
-  observed live yet (the `m42-oblivion-packages.sh` gate, §8). The clip is `meshes\characters\_male\idleanims\chair_leftenter.kf` (archive
+  `sit_enter_kf_path_covers_the_kf_era_games`, and seen live (rev 12):
+  `m42-oblivion-packages.sh` seats the Bravil castle's dinner guests on
+  it at 21:00. Oblivion has no Sandbox procedure, so its seating comes
+  from Eat, not from a sandboxer. The clip is `meshes\characters\_male\idleanims\chair_leftenter.kf` (archive
   scan at HEAD on 2026-11-19, `crates/nif/examples/kf_root_probe.rs`). It is
   the counterpart of FO3/FNV's `chairskirt_leftenter.kf`: both last 1.13 s,
   both bind `Bip01` as the accumulation root and drop it onto the seat
@@ -564,8 +566,17 @@ Skyrim+ `BSFurnitureMarker` / `BSFurnitureMarkerNode` positions carry an
   no `AnimationPlayer` (Skyrim's ambient actors gain one only when
   something plays on them) is given one on its skeleton, which un-seating
   removes (`SeatedAnimationRestore::inserted_player`); before this a
-  Skyrim sandboxer stood at its location. No Skyrim seat has been
-  observed live. The clip is the one Skyrim ships (archive scan at HEAD on 2026-11-19, `Skyrim - Animations.bsa`,
+  Skyrim sandboxer stood at its location. Seen live (rev 12):
+  `m42-skyrim-ambient.sh` seats the Bannered Mare's five Sandbox actors at
+  19:00 with the player parked. The live run found one more fault: the
+  seat system put the root at the marker, and a Skyrim marker sits 32-34
+  units above the furniture origin (the seat height), so the pelvis hung
+  that far over the cushion. The root now goes to the furniture's floor
+  for a Sit marker that carries a heading (`seat_world_transform`); the
+  evidence is the clip's own COM height of 39.00 over its root against
+  those 32-34, and how the original engine reads the height is
+  **Phase 0: verify** (nif.xml says only "Offset of furniture marker").
+  The clip is the one Skyrim ships (archive scan at HEAD on 2026-11-19, `Skyrim - Animations.bsa`,
   `hkx` example `root_travel`):
   `meshes\actors\character\animations\male\chair_leftenter.hkx`, with `female\`
   twins and `chair_rightenter`, `chair_frontentervar1` and the child
@@ -728,7 +739,16 @@ script-package slot also reads Must Complete and Must Reach Location
   `a_cached_walk_step_blocked_by_a_wall_takes_the_pathgrid`, and
   `a_traveler_with_a_clear_straight_walk_never_takes_the_pathgrid`. Not
   covered by a system test: Escort, which shares Follow's and Guard's
-  pattern. Out of the requirement as decided: the `PGRI` inter-cell links,
+  pattern. Open, found live in rev 12: the first leg out of the actor's
+  position can stall at a wall. In `TempleMothCatacombs02` the priest's
+  Find walks 3,200 units to a container; the grid takes over at 1.5 s
+  and returns 37 waypoints, yet the actor keeps pressing into the wall
+  and gives the target up (`Find package: ... cannot reach`), although
+  the start and the container both snap onto the one connected
+  component of the cell's grid (points 69 and 148 units away). The
+  walker heads straight for the first grid point, which can lie behind
+  the wall it is standing at; choosing the entry point by line of sight
+  is not done. Out of the requirement as decided: the `PGRI` inter-cell links,
   whose mapping onto the `0xFFFF` edge sentinel the record's own doc calls
   unresolved (`crates/plugin/src/esm/records/pathgrid.rs:66-70`).
 - **AIP-WALK-004.** The walk-source lookup MUST stay at the asset boundary
@@ -845,8 +865,8 @@ an acceptance pass.
 | Decline reporting | `--bench-hold` on FNV `ULKitchen`, then `byro-dbg` `pack.ambient` with no argument | FNV | Every actor prints a winner or a decline reason; none prints an empty result |
 | Census | `cargo test -p byroredux-plugin --test package_schedule_census -- --ignored` and the `real_*_esm_package_install_counts` tests (AIP-DX-003, -004) | Oblivion, FO3, FNV, Skyrim SE, FO4, Starfield masters | Every procedure with authored packages maps to a §3 class; no "unknown" row |
 | Skyrim tree | `real_skyrim_esm_ambient_packages_now_resolve_for_previously_blind_npcs` (`--ignored`), extended by AIP-DX-004 | Skyrim SE | Reports per-leaf counts; every PKID-referenced package installs or declines with a reason; the skip line is absent |
-| Skyrim sit live | new script `docs/smoke-tests/m42-skyrim-ambient.sh`: `--bench-hold` into `WhiterunBanneredMare` at a sandbox hour (`time.set`) | Skyrim SE | `entities(Seated)` is non-empty |
-| Oblivion live | new script `docs/smoke-tests/m42-oblivion-packages.sh`: a cell with a placed Find-container actor and, after AIP-SIT-001, a sandboxer | Oblivion | The container receives one `ActivateEvent`; a seated sandboxer appears after AIP-SIT-001 |
+| Skyrim sit live | `docs/smoke-tests/m42-skyrim-ambient.sh` (rev 12): `--bench-hold` into `WhiterunBanneredMare`, `time.set 19` | Skyrim SE | `entities(Seated)` is non-empty, the clip is installed and the patron's player is parked on its last frame. Passes |
+| Oblivion live | `docs/smoke-tests/m42-oblivion-packages.sh` (rev 12): the Bravil castle dinner at 21:00 (Oblivion seats through Eat, not Sandbox), and the Moth priest's Find-a-container in `TempleMothCatacombs02` | Oblivion | A diner is `Seated` on `chair_leftenter.kf` (passes); the Find installs and picks a container (passes), but the container receives no `ActivateEvent` yet: see AIP-WALK-003, "Open". `STRICT_FIND=1` requires it |
 | Schedules | new tests in `crates/plugin` / `npc_spawn::ai_package` (`a_skyrim_weekday_package_selects_on_its_day`, `psdt_month_gates_the_schedule`, `a_v122_month_zero_is_any`) | none | A day- or month-constrained package wins only on its day or month; a stored 0 on a version-122 record is "any" |
 
 ---
@@ -1098,3 +1118,4 @@ option.
 | 9 | 2026-11-19 | Archive scans folded in (AIP-SIT-001 `chair_leftenter.kf`, AIP-SIT-002 `chair_leftenter.hkx`, AIP-UW-006 `sneak*reload*.kf`, AIP-SEAT-005 creature chair clips, AIP-SEAT-002 marker census with its table); verify table rows closed or narrowed; two probes checked in (`furniture_marker_census`, `kf_root_probe`) | claude: revise |
 | 10 | 2026-11-19 | AIP-SIT-001 built: `sandbox_sit_enter_kf_path(Oblivion)` returns `chair_leftenter.kf`, with a unit test; the Oblivion live gate stays open | claude: revise |
 | 11 | 2026-11-19 | AIP-SIT-002 built: Skyrim's `chair_leftenter.hkx` installs as the sit-enter clip, and a seated actor with no `AnimationPlayer` is given one that un-seating removes; the Skyrim live check stays open | claude: revise |
+| 12 | 2026-11-19 | Live gates written (`m42-oblivion-packages.sh`, `m42-skyrim-ambient.sh`, `lib/m42_live.sh`): Oblivion Eat seats on `chair_leftenter.kf`, Skyrim sandboxers on `chair_leftenter.hkx`; the Skyrim root height fixed (a headed Sit marker roots the actor on the furniture floor); the grid's first-leg stall at a wall recorded under AIP-WALK-003 | claude: revise |

@@ -89,6 +89,11 @@ pub(crate) fn is_sit_marker(m: &FurnitureMarker) -> bool {
 /// the furniture pivot — wrong for anything but a chair whose pivot is the
 /// seat.)
 ///
+/// **Skyrim+ height.** Their marker `offset` is the seat's height above the furniture's floor origin,
+/// not the actor's root (AIP-SIT-002): the sit clip lowers `NPC COM` to 39.00 over its root, so the
+/// root is placed on the floor (`offset.y = 0`) and the pose reaches the seat. The original engine's
+/// rule is not sourced; the evidence is the clip's own COM height against the markers' 32-34.
+///
 /// **Facing.** Skyrim+/FO4 markers carry a radian `heading` about +Z
 /// (`heading_z_radians`). Legacy Oblivion/FO3/FNV markers carry only an
 /// `Orientation` ushort that indexes `furnituremarkerNN.nif` (undecoded), so
@@ -102,7 +107,10 @@ pub(crate) fn is_sit_marker(m: &FurnitureMarker) -> bool {
 /// XZ (marker at the furniture pivot) → inherit furniture facing. The exact
 /// per-marker `Orientation` decode is deferred to Phase C.
 pub(crate) fn seat_world_transform(furn: &GlobalTransform, m: &FurnitureMarker) -> GlobalTransform {
-    let seat_local = Vec3::from_array(m.local_offset);
+    let mut seat_local = Vec3::from_array(m.local_offset);
+    if m.heading_z_radians.is_some() && m.kind == FurnitureMarkerKind::Sit {
+        seat_local.y = 0.0;
+    }
     let facing = match m.heading_z_radians {
         Some(h) => Quat::from_rotation_y(h),
         None if seat_local.x.abs() > 1e-3 || seat_local.z.abs() > 1e-3 => {
@@ -697,6 +705,18 @@ mod tests {
             "root should land at the marker offset, got {:?}",
             seat.translation
         );
+    }
+
+    /// AIP-SIT-002 — a Skyrim+ sit marker (it carries a heading) sits 34 units *above* the furniture origin
+    /// (live on WhiterunBanneredMare: 32-34 on every chair and bench), where a legacy marker sits below its
+    /// pivot (-30 above). The Skyrim sit clip ends with `NPC COM` 39.00 above the root, so a root left on
+    /// the marker put the pelvis 34 units over the cushion; the root goes to the furniture's floor
+    /// instead and the pose supplies the rest. How the original engine reads that height is not sourced.
+    #[test]
+    fn a_headed_sit_marker_roots_the_actor_on_the_furniture_floor() {
+        let furn = GlobalTransform::new(Vec3::new(10.0, 65.0, 0.0), Quat::IDENTITY, 1.0);
+        let seat = seat_world_transform(&furn, &marker([2.0, 34.0, -1.0], Some(0.5), 3));
+        assert!((seat.translation - Vec3::new(12.0, 65.0, -1.0)).length() < 1e-5, "{:?}", seat.translation);
     }
 
     #[test]
