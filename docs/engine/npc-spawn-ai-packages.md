@@ -221,8 +221,8 @@ piece (counter / bench / multi-chair table authored as one FURN with
 several `BSFurnitureMarker` positions) seats one actor per marker; before
 this the reservation was keyed by furniture entity alone and a six-stool
 counter seated exactly one NPC. The seat pose comes from the sit-enter
-clip (`sandbox_sit_enter_kf_path`, `npc_spawn/anim_clips.rs` — FNV/FO3 only,
-`chairskirt_leftenter.kf`), parked at its **final frame**
+clip (`sandbox_sit_enter_kf_path`, `npc_spawn/anim_clips.rs` — FNV/FO3
+`chairskirt_leftenter.kf`, Oblivion `chair_leftenter.kf`; Skyrim+ none yet), parked at its **final frame**
 (`local_time = duration`, `playing = false`).
 
 That last detail is the M42.1 fix worth calling out explicitly: the

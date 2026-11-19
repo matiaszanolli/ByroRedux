@@ -58,15 +58,20 @@ pub fn load_sit_clip(
 /// the accum root + `Bip01 NonAccum` down onto the seat; its last frame is a
 /// complete, grounded seated pose. Verified present in vanilla FNV
 /// `Fallout - Meshes.bsa` (BSA scan 2026-07-12). `None` for games whose actors
-/// animate through Havok `.hkx` (Skyrim+/FO4+) or whose furniture sit-anim path
-/// hasn't been verified (Oblivion — deferred). FO3 shares the FNV path. The
-/// enter↔furniture pairing is game-hardcoded; Phase A uses one verified chair
-/// enter for all sit markers (per-type mapping is Phase C).
+/// animate through Havok `.hkx` (Skyrim+/FO4+; Skyrim's standalone clip is
+/// AIP-SIT-002, not yet wired).
+/// FO3 shares the FNV path. Oblivion's counterpart is `chair_leftenter.kf`:
+/// same 1.13 s length, accum root `Bip01` dropping ~51.6 units onto the seat
+/// (FNV 50.7), where its `dynamicidle_sit.kf` loop is flat like the FO3/FNV
+/// ones (archive scan 2026-11-19, `crates/nif/examples/kf_root_probe.rs`).
+/// Oblivion ships no `_female` directory, so both genders take the `_male`
+/// clip. The enter↔furniture pairing is game-hardcoded; Phase A uses one
+/// verified chair enter for all sit markers (per-type mapping is Phase C).
 pub fn sandbox_sit_enter_kf_path(game: GameKind) -> Option<&'static str> {
     match game {
         GameKind::Fallout3NV => Some(r"meshes\characters\_male\idleanims\chairskirt_leftenter.kf"),
-        GameKind::Oblivion
-        | GameKind::Skyrim
+        GameKind::Oblivion => Some(r"meshes\characters\_male\idleanims\chair_leftenter.kf"),
+        GameKind::Skyrim
         | GameKind::Fallout4
         | GameKind::Fallout76
         | GameKind::Starfield => None,

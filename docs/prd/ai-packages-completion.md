@@ -1,6 +1,6 @@
 # AI Packages Completion — Product Requirements
 
-**Status**: ACTIVE (2026-11-19). Revision 8 records AIP-WALK-003 as built (the pathgrid switch on every walking mover) and rev 7 its first slice. Revision 6 re-measures the "Today" claims at HEAD after Phases 1–5 and folds in review round 3 (§12). Revision 5 files the tracking issues; every **Phase 0: verify** item is an acceptance criterion of the Phase 0 issue. Revision 4 recorded the owner's §10 decisions: Q2 sets Skyrim's weekday origin per edition, every other answer is the recommendation. Revision 3 folded in review round 2
+**Status**: ACTIVE (2026-11-19). Revision 10 wires the Oblivion sit-enter clip (AIP-SIT-001). Revision 8 records AIP-WALK-003 as built (the pathgrid switch on every walking mover) and rev 7 its first slice. Revision 6 re-measures the "Today" claims at HEAD after Phases 1–5 and folds in review round 3 (§12). Revision 5 files the tracking issues; every **Phase 0: verify** item is an acceptance criterion of the Phase 0 issue. Revision 4 recorded the owner's §10 decisions: Q2 sets Skyrim's weekday origin per edition, every other answer is the recommendation. Revision 3 folded in review round 2
 (§12 lists the topics). It covers the remainder of milestone M42: the
 procedures, package fields and per-game prerequisites that do not run yet.
 Statements about how the original engines behave cite external sources
@@ -158,7 +158,7 @@ for FO3/FNV only (`wbPackageTypeEnum`, `wbDefinitionsCommon.pas:8084-8103`).
 | 0 | Find | 741 | 78 | 81 | P / P | `make_find_package_system` (`systems/find_package.rs`). Object-type targets install through the canonical `PackObjectClass` (`find_target_for`, `npc_spawn/ai_package.rs:219-230`: Furniture, Flora and actor classes since #6656, Oblivion's own enum since #6662). A decline logs its reason and the raw number (`find_behavior`, `ai_package.rs:265-279`). Item classes with no classifier stay declined (AIP-FIND-004) |
 | 1 | Follow | 208 | 115 | 132 | R / R | `follow_system` |
 | 2 | Escort | 75 | 30 | 12 | R / R | `escort_system` |
-| 3 | Eat | 829 | 296 | 317 | P / A | `systems/eat_sleep.rs` walks and sits; food is never eaten. On Oblivion the walk runs, but there is no sit clip, so the actor never sits (`sandbox_sit_enter_kf_path` → `None`) |
+| 3 | Eat | 829 | 296 | 317 | P / A | `systems/eat_sleep.rs` walks and sits; food is never eaten. On Oblivion the walk runs and the sit clip is wired (`sandbox_sit_enter_kf_path` → `chair_leftenter.kf`, AIP-SIT-001); the seat has not been observed live |
 | 4 | Sleep | 725 | 246 | 390 | P / A | `systems/eat_sleep.rs`. A bed is taken or nothing: the #5390 sit fallback is retired (AIP-SEAT-004, `eat_sleep.rs:537-539`), and the sit pose is parked at the bed's marker (module doc). Oblivion: walk, no seat |
 | 5 | Wander | 1 820 | 42 | 31 | R / R | `wander_system` |
 | 6 | Travel | 1 924 | 907 | 1 260 | R / R | `travel_system` |
@@ -204,7 +204,7 @@ The state at HEAD on 2026-11-18 for the Oblivion pathing, Day-of-week and Starfi
 
 | Game | Package shape | Walk source Today | Sit-enter Today | Pathing Today | Day-of-week Today |
 |---|---|---|---|---|---|
-| Oblivion | flat | `handtohandforward.kf` (`humanoid_walk_kf_path`, `npc_spawn/anim_clips.rs`) | none (`sandbox_sit_enter_kf_path`, "deferred") | no `NAVM` exists. `PGRD` is resident as `PathGridTile` and routed by `systems/pathgrid_path.rs` (`0580afe57`): one cell's grid at a time. Every walking mover takes it once the character controller has blocked its straight walk for 1.5 s (`GridWalk`, `NavPath.grid`; AIP-WALK-003) | evaluated from the `GameCalendar` origin (`package_weekday`, `crates/scripting/src/globals.rs:136-139`), plus the date byte (`package_day_of_month`) |
+| Oblivion | flat | `handtohandforward.kf` (`humanoid_walk_kf_path`, `npc_spawn/anim_clips.rs`) | `chair_leftenter.kf` (`sandbox_sit_enter_kf_path`, AIP-SIT-001) | no `NAVM` exists. `PGRD` is resident as `PathGridTile` and routed by `systems/pathgrid_path.rs` (`0580afe57`): one cell's grid at a time. Every walking mover takes it once the character controller has blocked its straight walk for 1.5 s (`GridWalk`, `NavPath.grid`; AIP-WALK-003) | evaluated from the `GameCalendar` origin (`package_weekday`, `crates/scripting/src/globals.rs:136-139`), plus the date byte (`package_day_of_month`) |
 | FO3 / FNV | flat | `mtforward.kf` per gender and child | `chairskirt_leftenter.kf` | `NAVM` within and across resident tiles (`path_from_resident_tiles`, `systems/navmesh_path.rs`) | evaluated from the `GameCalendar` origin (`package_weekday`) |
 | Skyrim LE / SE | tree | `1hm_walkforward.hkx` (`SkyrimWalkClip`, `components/ai_anim.rs`) | none | `NAVM` (`NVNM` decoded, `decode_nvnm`) | evaluated, Morndas on the launch master and Sundas on SE / AE (Q2, AIP-SCHED-004) |
 | FO4 | tree | behaviour graph `MTBehavior.hkx` (`graph_locomotion_system`, `asset_provider/actor_graph.rs`) | none, and the sit positions authored on `FURN` `SNAM` are not read (AIP-SEAT-007) | none: the `NVNM` body never reconciles and its bytes are retained (`decode_nvnm`, `crates/plugin/src/esm/records/misc/world/navigation.rs`) | evaluated from the authored start date (Q2) |
@@ -347,7 +347,7 @@ Vanilla `PTDT` type-2 targets in Find packages (uncommitted census, §3):
   `ActivateEvent` on it with the actor as activator (CS: the actor "finds
   the target and 'activates' it", a container meaning "Open it"). Seating
   on Oblivion depends on AIP-SIT-001. The container half shipped in #6662
-  (`systems/find_package.rs:776`); the chair half waits on AIP-SIT-001.
+  (`systems/find_package.rs:776`); the chair half is unblocked by AIP-SIT-001 and still needs its own wiring and live check.
 
 ### 5.2 UseWeapon (`AIP-UW`)
 
@@ -542,9 +542,11 @@ Skyrim+ `BSFurnitureMarker` / `BSFurnitureMarkerNode` positions carry an
 ### 5.5 Sit-enter beyond FO3/FNV (`AIP-SIT`)
 
 - **AIP-SIT-001.** Oblivion seating MUST hold a sit-enter clip from
-  `Oblivion - Meshes.bsa`, with a verified path. Today
-  `sandbox_sit_enter_kf_path(Oblivion)` returns `None`, marked "deferred".
-  The clip is `meshes\characters\_male\idleanims\chair_leftenter.kf` (archive
+  `Oblivion - Meshes.bsa`, with a verified path. Built in rev 10:
+  `sandbox_sit_enter_kf_path(Oblivion)` returns the clip (it was `None`,
+  marked "deferred"), pinned by the unit test
+  `sit_enter_kf_path_covers_the_kf_era_games`; no Oblivion seat has been
+  observed live yet (the `m42-oblivion-packages.sh` gate, §8). The clip is `meshes\characters\_male\idleanims\chair_leftenter.kf` (archive
   scan at HEAD on 2026-11-19, `crates/nif/examples/kf_root_probe.rs`). It is
   the counterpart of FO3/FNV's `chairskirt_leftenter.kf`: both last 1.13 s,
   both bind `Bip01` as the accumulation root and drop it onto the seat
@@ -884,7 +886,7 @@ is still open at HEAD on 2026-11-18.)
 | CastMagic target for a self-range spell or a non-reference location | AIP-CAST-001 | closed by withdrawal, rev 6 (§9, "Measured, found in Phase 4") |
 | Legacy marker refs above 20 | AIP-SEAT-002 | census done 2026-11-19 (the table in AIP-SEAT-002); what the refs *mean* stays open, no editor source names them |
 | A creature furniture-enter clip exists | AIP-SEAT-005 | closed 2026-11-19: FO3 / FNV `hillfolk2and3` and `alien` directories |
-| The Oblivion sit-enter KF | AIP-SIT-001 | closed 2026-11-19: `chair_leftenter.kf` |
+| The Oblivion sit-enter KF | AIP-SIT-001 | closed 2026-11-19: `chair_leftenter.kf`; wired in rev 10 |
 | Skyrim's chair-entry source (HKX clip or graph state) | AIP-SIT-002 | closed 2026-11-19: the `chair_leftenter.hkx` clip |
 | What a zero-duration window does | AIP-SCHED-003 | one of the Travel packages `PackSchedule::active_at` names, observed live |
 | The radius of Continue if PC near | AIP-FLG-003 | an editor or game-setting source for "nearby" |
@@ -1089,3 +1091,4 @@ option.
 | 7 | 2026-11-18 | Oblivion `PGRD` pathing first slice recorded as shipped in part (AIP-WALK-003, §3.3, Related row, §7.1); its open parts and the unwritten NAVM Pathfinding section named | claude: revise |
 | 8 | 2026-11-19 | AIP-WALK-003 built: the pathgrid switch moves onto `NavPath.grid` and serves every walking mover (Travel, Follow, Escort, Guard, Wander, Patrol, `cached_walk_step`); design written as NAVM Pathfinding §11; `PGRI` inter-cell links stated as outside Q5 | claude: revise |
 | 9 | 2026-11-19 | Archive scans folded in (AIP-SIT-001 `chair_leftenter.kf`, AIP-SIT-002 `chair_leftenter.hkx`, AIP-UW-006 `sneak*reload*.kf`, AIP-SEAT-005 creature chair clips, AIP-SEAT-002 marker census with its table); verify table rows closed or narrowed; two probes checked in (`furniture_marker_census`, `kf_root_probe`) | claude: revise |
+| 10 | 2026-11-19 | AIP-SIT-001 built: `sandbox_sit_enter_kf_path(Oblivion)` returns `chair_leftenter.kf`, with a unit test; the Oblivion live gate stays open | claude: revise |

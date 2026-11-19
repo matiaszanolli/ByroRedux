@@ -1415,6 +1415,30 @@ fn idle_kf_path_only_for_kf_era_games() {
     assert!(humanoid_default_idle_kf_path(GameKind::Starfield).is_none());
 }
 
+/// AIP-SIT-001: Oblivion holds `chair_leftenter.kf` (the counterpart of
+/// FO3/FNV's `chairskirt_leftenter.kf`), not a `dynamicidle_sit` loop, which
+/// carries no root channel and leaves the body floating (the M42.0 bug).
+#[test]
+fn sit_enter_kf_path_covers_the_kf_era_games() {
+    assert_eq!(
+        sandbox_sit_enter_kf_path(GameKind::Oblivion),
+        Some(r"meshes\characters\_male\idleanims\chair_leftenter.kf"),
+    );
+    assert_eq!(
+        sandbox_sit_enter_kf_path(GameKind::Fallout3NV),
+        Some(r"meshes\characters\_male\idleanims\chairskirt_leftenter.kf"),
+    );
+    // Havok-era games have no `.kf` sit clip (Skyrim's `.hkx` is AIP-SIT-002).
+    for game in [
+        GameKind::Skyrim,
+        GameKind::Fallout4,
+        GameKind::Fallout76,
+        GameKind::Starfield,
+    ] {
+        assert!(sandbox_sit_enter_kf_path(game).is_none(), "{game:?}");
+    }
+}
+
 // ── #1658 (SKY-D3-02): prebaked equip state routes inventory through
 //    the TPLT chain, identical to the kf-era path. ──────────────────
 
