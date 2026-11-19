@@ -149,8 +149,13 @@ pub fn actor_value_code(world: &World, name: &str) -> Option<u32> {
 /// Clear Health and the limb-condition values' damage on `actor` (`ResetHealth`, and the health a
 /// resurrected actor gets back). `false` when the load order names none of them.
 pub fn reset_health(world: &World, actor: byroredux_core::ecs::storage::EntityId) -> bool {
-    let Some(names) = world.try_resource::<ActorValueNames>() else { return false; };
-    let vitals: Vec<u32> = RESET_HEALTH_CODES.iter().filter_map(|&code| fallout_actor_value_name(code as u32)).filter_map(|name| names.resolve(name)).collect();
+    // The `ActorValueNames` guard is released at the end of this block: `clear_actor_value_damage`
+    // locks `ActorValues`, and holding the names guard across it closes an
+    // `ActorValues` -> `ActorValueNames` -> `ActorValues` lock-order cycle (#7063).
+    let vitals: Vec<u32> = {
+        let Some(names) = world.try_resource::<ActorValueNames>() else { return false; };
+        RESET_HEALTH_CODES.iter().filter_map(|&code| fallout_actor_value_name(code as u32)).filter_map(|name| names.resolve(name)).collect()
+    };
     if vitals.is_empty() {
         return false;
     }
