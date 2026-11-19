@@ -1,6 +1,6 @@
 # AI Packages Completion — Product Requirements
 
-**Status**: ACTIVE (2026-11-19). Revision 13 fixes the two walking faults the Oblivion Find gate exposed. Revision 12 adds the two live gates and records what they found. Revision 11 wires Skyrim's sit-enter clip (AIP-SIT-002) and revision 10 Oblivion's (AIP-SIT-001). Revision 8 records AIP-WALK-003 as built (the pathgrid switch on every walking mover) and rev 7 its first slice. Revision 6 re-measures the "Today" claims at HEAD after Phases 1–5 and folds in review round 3 (§12). Revision 5 files the tracking issues; every **Phase 0: verify** item is an acceptance criterion of the Phase 0 issue. Revision 4 recorded the owner's §10 decisions: Q2 sets Skyrim's weekday origin per edition, every other answer is the recommendation. Revision 3 folded in review round 2
+**Status**: ACTIVE (2026-11-19). Revision 14 scopes NPC door passage (AIP-DOOR, §5.11) and records decision Q8 (the door runtime gets its own PRD). Revision 13 fixes the two walking faults the Oblivion Find gate exposed. Revision 12 adds the two live gates and records what they found. Revision 11 wires Skyrim's sit-enter clip (AIP-SIT-002) and revision 10 Oblivion's (AIP-SIT-001). Revision 8 records AIP-WALK-003 as built (the pathgrid switch on every walking mover) and rev 7 its first slice. Revision 6 re-measures the "Today" claims at HEAD after Phases 1–5 and folds in review round 3 (§12). Revision 5 files the tracking issues; every **Phase 0: verify** item is an acceptance criterion of the Phase 0 issue. Revision 4 recorded the owner's §10 decisions: Q2 sets Skyrim's weekday origin per edition, every other answer is the recommendation. Revision 3 folded in review round 2
 (§12 lists the topics). It covers the remainder of milestone M42: the
 procedures, package fields and per-game prerequisites that do not run yet.
 Statements about how the original engines behave cite external sources
@@ -19,7 +19,7 @@ and sit. The scope is the remainder of the
 [M42 row](../../ROADMAP.md#tier-7--deep-gameplay-systems), which lists what
 already ships. Out of scope: the Scene-driven package executor (PACKAL
 keeps it unchanged), combat AI, the dialogue runtime behind force-greet,
-navmesh door and cover semantics, and Fallout 76 (§7.1).
+navmesh door and cover semantics, and Fallout 76 (§7.1). Walking actors opening in-cell doors is in scope (AIP-DOOR, §5.11).
 
 **Related**: this document states the *promise*; the designs below own the
 *how*. Every mechanism promised here has an owner in this table, or Phase 0
@@ -253,7 +253,10 @@ These hand-written tables are replaced by the census code (AIP-DX-003) and
   engine".
 - **AIP-NG-004.** Navmesh door and cover semantics, triangle-flag path cost
   and dynamic obstacle avoidance. These are owned and excluded by
-  [NAVM Pathfinding §2](../engine/navmesh-pathfinding.md#2-scope).
+  [NAVM Pathfinding §2](../engine/navmesh-pathfinding.md#2-scope). A walking
+  actor opening a door in its way is not navmesh door semantics: it is
+  detected from the character controller's contact, not from a triangle
+  flag, and it is AIP-DOOR (§5.11).
 - **AIP-NG-005.** Fallout 76 (§7.1).
 - **AIP-NG-006.** New animation content. Every walk, sit and cast pose comes
   from the game's own archives. A game whose archives have no source for a
@@ -328,7 +331,7 @@ Vanilla `PTDT` type-2 targets in Find packages (uncommitted census, §3):
   the item records can classify that class. Each class SHOULD be enabled
   as soon as its classifier lands.
 - **AIP-FIND-005.** A Find package whose object type AIP-FIND-001…004 do
-  not cover (among them 0 None, 1 Activators, 5 Containers, 6 Doors,
+  not cover (among them 0 None, 1 Activators, 5 Containers, 6 Doors (AIP-DOOR-006),
   8 Lights, 24–27 Actor Effects, whichever of 28 / 29 is not Actors: Any,
   and any number outside the enum) MUST produce a decline line with reason
   `unsupported-object-type` and the raw number. Shipped in #6656
@@ -753,7 +756,7 @@ script-package slot also reads Must Complete and Must Reach Location
   tick set the actor down on the roof (595 to 916); it now starts at the
   capsule's centre (`an_airborne_npc_is_not_set_down_on_the_roof_over_its_head`).
   The priest then walks 1,600 units in 30 s. The route still ends at a
-  closed door, and NPCs do not open doors (AIP-NG-004), so the container is
+  closed door, and no actor opens an in-cell door (AIP-DOOR), so the container is
   not reached and the gate's activation check stays optional. Out of the requirement as decided: the `PGRI` inter-cell links,
   whose mapping onto the `0xFFFF` edge sentinel the record's own doc calls
   unresolved (`crates/plugin/src/esm/records/pathgrid.rs:66-70`).
@@ -806,6 +809,108 @@ AIP-DX-006 builds on that query rather than copying it.
 - **AIP-DX-006.** `pack.ambient` with no argument MUST list every actor that
   has an `AmbientPackageRuntime`, with its winning package or its decline
   reason, in interiors and exteriors alike.
+
+### 5.11 Door passage (`AIP-DOOR`)
+
+Found by the Oblivion live gate (rev 13): after the walk faults were fixed,
+the Moth priest's route to a container ends at a closed door and he stands
+against it. The cause is not the walk. No actor can open an in-cell door,
+the player included.
+
+**Today, at HEAD (2026-11-19).**
+
+- The only door the interaction layer offers is the load door:
+  `InteractionKind::Door` is built from `DoorTeleport` alone
+  (`interaction.rs:1388-1393`). A placed `DOOR` with no teleport has no
+  prompt and no open state.
+- Open and closed state exists as `TwoStateActivator`, installed only by the
+  Papyrus recogniser for `default2StateActivator`
+  (`crates/scripting/src/translate/recognizers/two_state_activator.rs`).
+  Its `TwoStateTransitionBatch`, "the presentation boundary for model
+  animation, collision, and audio" (`vm_state.rs`), has no consumer in the
+  binary: a transition changes the flag and nothing else.
+- A door model's `Open` / `Close` clips are catalogued as `NamedSequences`
+  and "wait for their consumer" (`named_sequences.rs`).
+- The character controller reports a blocked step but not what blocked it:
+  `CharacterMoveResult` carries `translation`, `grounded` and
+  `is_sliding_down_slope` (`crates/physics/src/world/queries.rs`), although
+  rapier's `move_shape` callback names every collider it hit.
+- The `DOOR` record decodes only as a model-bearing placement base. Its
+  `FNAM` flags and its `SNAM` / `ANAM` / `BNAM` sounds are not read.
+- Census (uncommitted; `Locked` is the reference's `XLOC`): in-cell doors
+  are `DOOR` placements with no teleport, over each master's interior cells.
+
+| Master | Interior `DOOR` refs | Load doors | In-cell doors | of them locked | Cells with an in-cell door | of those with a `PGRD` |
+|---|---|---|---|---|---|---|
+| Oblivion | 5,480 | 3,324 | 2,156 | 561 | 807 of 1,855 | 741 |
+| Fallout 3 | 2,773 | 723 | 2,050 | 158 | 241 of 421 | 0 (navmesh) |
+| Fallout New Vegas | 2,095 | 617 | 1,478 | 162 | 203 of 388 | 0 (navmesh) |
+| Skyrim SE | 2,557 | 973 | 1,584 | 464 | 334 of 590 | 0 (navmesh) |
+
+**What the original games do (sourced).** An animating door "runs its
+animation when activated. Usually this means swinging open" (CS and GECK
+*Door*). The `Minimal Use` door flag means "NPCs will not use this door when
+path finding through the cell" (CS *Door*); GECK words it as keeping NPCs
+from using the door as a shortcut. A Find package whose target is a door
+"opens it" and, for a load door, goes through (CS *Find Package*). An
+actor does not unlock a load door to travel through it, but must own it, be
+in the owning faction or carry the key, "otherwise their AI package will not
+start" (CK *Locking and Unlocking Doors*). The `DOOR` record's `FNAM` flags
+are `Oblivion Gate`, `Automatic Door`, `Hidden` and `Minimal Use` on
+Oblivion, and `Automatic Door`, `Hidden`, `Minimal Use` and `Sliding Door`
+on Fallout 3, with `Minimal Use` at bit 3 on both (xEdit
+`wbDefinitionsTES4.pas:2170-2176`, `wbDefinitionsFO3.pas:4090-4098`);
+Skyrim keeps `Minimal Use` in the same list (`wbDefinitionsTES5.pas:4845`).
+How an actor passes an in-cell door that is locked, whether it closes the
+door behind it, and how long it waits for the swing are not documented in
+these sources: **Phase 0: verify** (AIP-DOOR-005).
+
+- **AIP-DOOR-001.** This PRD depends on the `door-runtime` PRD (decision Q8,
+  not yet written) delivering the following: a placed in-cell door MUST have an open state, and an
+  `ActivateEvent` from any activator (the player, an actor's package, a
+  script) MUST toggle it, play the model's `Open` or `Close` sequence, and
+  move its collision with the model, so the door stops blocking the
+  character controller once open. A locked door MUST stay shut to an
+  activator with no key, as a load door does (`Locked`, `interaction.rs`).
+  Observable: a unit test that opens a door fixture and walks the
+  controller through it, and a live check that the player opens the
+  Moth catacombs door. The requirement is the contract AIP-DOOR-002 builds
+  on; the `door-runtime` PRD owns its design and its issues.
+- **AIP-DOOR-002.** The character controller's blocked step MUST report the
+  collider that blocked it (`CharacterMoveResult`), and a walking mover
+  whose blocker is a closed, unlocked in-cell door within arm's reach
+  (decided by the door's size and distance, not by a navmesh flag) MUST
+  raise one `ActivateEvent` on it with the actor as activator and resume
+  the walk once the door is open, at most once per door per blocked leg.
+  Observable: a test in `systems::locomotion` (a door fixture across the
+  route), and `m42-oblivion-packages.sh` reaching the Moth container with
+  `STRICT_FIND=1` as its default.
+- **AIP-DOOR-003.** A mover MUST NOT open a door it could not open itself
+  (locked, no key, not the owner or a member of the owning faction); it
+  keeps today's give-up path (`cannot reach`). Which of the three the
+  original actor needs for an *in-cell* lock is **Phase 0: verify**
+  (AIP-DOOR-005); the CK sentence above is about load doors.
+- **AIP-DOOR-004.** The `DOOR` record's `FNAM` flags and its three sounds
+  MUST decode onto a canonical door component (the flags as named, per game,
+  from the xEdit definitions above). `Minimal Use` MUST keep a route from
+  choosing the door as a shortcut once a router can choose between doors;
+  today's single-grid walk has no choice to make, so until then the
+  requirement is the decode and a test that the flag reaches the component.
+  The open and close sounds MUST play through the M44 audio path on the
+  transition.
+- **AIP-DOOR-005.** The unsourced behaviours MUST be settled from a CS /
+  GECK / CK page, a UESP page or an observation of the original game before
+  they are built, and until then the runtime does the least that unblocks
+  the walk: an unlocked door opens, stays open, and the mover does not wait
+  for the swing. The open items are the locked in-cell door, closing behind
+  the actor, the swing wait, and what an actor does at a locked door on its
+  route.
+- **AIP-DOOR-006.** A Find package whose object type is Doors (Oblivion
+  type 6) SHOULD, once AIP-DOOR-001 and -002 hold, install and activate the
+  nearest in-cell door (and, for a load door, go through it by the
+  cross-space route), replacing today's `unsupported-object-type` decline
+  (AIP-FIND-005) for that type. Observable: a `find_package` test beside
+  `a_container_search_activates_the_nearest_container`.
 
 ---
 
@@ -872,7 +977,7 @@ an acceptance pass.
 | Census | `cargo test -p byroredux-plugin --test package_schedule_census -- --ignored` and the `real_*_esm_package_install_counts` tests (AIP-DX-003, -004) | Oblivion, FO3, FNV, Skyrim SE, FO4, Starfield masters | Every procedure with authored packages maps to a §3 class; no "unknown" row |
 | Skyrim tree | `real_skyrim_esm_ambient_packages_now_resolve_for_previously_blind_npcs` (`--ignored`), extended by AIP-DX-004 | Skyrim SE | Reports per-leaf counts; every PKID-referenced package installs or declines with a reason; the skip line is absent |
 | Skyrim sit live | `docs/smoke-tests/m42-skyrim-ambient.sh` (rev 12): `--bench-hold` into `WhiterunBanneredMare`, `time.set 19` | Skyrim SE | `entities(Seated)` is non-empty, the clip is installed and the patron's player is parked on its last frame. Passes |
-| Oblivion live | `docs/smoke-tests/m42-oblivion-packages.sh` (rev 12): the Bravil castle dinner at 21:00 (Oblivion seats through Eat, not Sandbox), and the Moth priest's Find-a-container in `TempleMothCatacombs02` | Oblivion | A diner is `Seated` on `chair_leftenter.kf` (passes); the Find installs and picks a container (passes), and the priest walks 500+ units, but the container receives no `ActivateEvent` yet: the route ends at a closed door (AIP-NG-004). `STRICT_FIND=1` requires it |
+| Oblivion live | `docs/smoke-tests/m42-oblivion-packages.sh` (rev 12): the Bravil castle dinner at 21:00 (Oblivion seats through Eat, not Sandbox), and the Moth priest's Find-a-container in `TempleMothCatacombs02` | Oblivion | A diner is `Seated` on `chair_leftenter.kf` (passes); the Find installs and picks a container (passes), and the priest walks 500+ units, but the container receives no `ActivateEvent` yet: the route ends at a closed door (AIP-DOOR-002). `STRICT_FIND=1` requires it |
 | Schedules | new tests in `crates/plugin` / `npc_spawn::ai_package` (`a_skyrim_weekday_package_selects_on_its_day`, `psdt_month_gates_the_schedule`, `a_v122_month_zero_is_any`) | none | A day- or month-constrained package wins only on its day or month; a stored 0 on a version-122 record is "any" |
 
 ---
@@ -944,8 +1049,8 @@ with no package outside a §3 class, `m42-skyrim-ambient.sh` passes, and the
 §7.2 FO4 furniture-position test passes.
 
 **Phase 4 — Oblivion (wave 3).** AIP-FIND-006…007, AIP-SIT-001,
-AIP-WALK-003 (per Q5). AIP-CAST-001 and -002 were withdrawn in rev 6. Exit: `m42-oblivion-packages.sh` passes,
-and Oblivion's procedure coverage is published.
+AIP-WALK-003 (per Q5), AIP-DOOR-002…006 (AIP-DOOR-001 per Q8). AIP-CAST-001 and -002 were withdrawn in rev 6. Exit: `m42-oblivion-packages.sh` passes with
+`STRICT_FIND=1` (the priest reaches and activates a container), and Oblivion's procedure coverage is published.
 
 **Measured, found in Phase 4 (2026-11-09, `Oblivion.esm`).** The five vanilla CastMagic packages do not carry a
 spell in `PTDT`. Three author a `PTDT` of type 0 (Specific Reference) naming an actor or marker
@@ -1092,6 +1197,26 @@ option.
    README §1 trigger, it gets its own PRD before its first implementation
    issue.
 
+8. **Q8 — Where the door runtime lives.** AIP-DOOR-001 is not an AI
+   feature: it gives every in-cell door an open state, a swing, a
+   collision that follows it and a prompt for the player, and it touches
+   `scripting` (`TwoStateActivator` is saved and Papyrus-visible), `core`,
+   `physics`, the cell loader and the interaction layer, which meets README
+   §1 on its own. Recommended: its own PRD (`door-runtime`, prefix `DRT`),
+   written first; this PRD keeps AIP-DOOR-002 to -006 and waits on it, so
+   Phase 4's exit moves to the day that PRD's open-state lands. Alternative
+   A: build AIP-DOOR-001 here, only as far as an actor needs (activation by
+   event, swing, collision), leaving the player's prompt and the Papyrus
+   recogniser for later. That unblocks Oblivion sooner and risks a second
+   door model the player runtime must later absorb. Alternative B: make
+   in-cell doors a non-goal and have movers route around them. Oblivion
+   actors then stay behind any closed door for good (807 of its 1,855
+   interior cells hold one, 741 of them with a `PGRD`).
+   **Decided** (2026-11-19): the recommendation — the door runtime gets its
+   own PRD (`door-runtime`, prefix `DRT`, not yet written), AIP-DOOR-001
+   becomes this PRD's dependency on it, and Phase 4's exit waits for its
+   open state.
+
 ---
 
 ## 11. Document map
@@ -1126,3 +1251,4 @@ option.
 | 11 | 2026-11-19 | AIP-SIT-002 built: Skyrim's `chair_leftenter.hkx` installs as the sit-enter clip, and a seated actor with no `AnimationPlayer` is given one that un-seating removes; the Skyrim live check stays open | claude: revise |
 | 12 | 2026-11-19 | Live gates written (`m42-oblivion-packages.sh`, `m42-skyrim-ambient.sh`, `lib/m42_live.sh`): Oblivion Eat seats on `chair_leftenter.kf`, Skyrim sandboxers on `chair_leftenter.hkx`; the Skyrim root height fixed (a headed Sit marker roots the actor on the furniture floor); the Find walk's stall at a ramp recorded under AIP-WALK-003 (not the grid's entry point) | claude: revise |
 | 13 | 2026-11-19 | The two walking faults behind the Oblivion Find stall fixed in `step_toward_detailed` (the support correction cancelling an upslope climb; the ledge fallback ray setting an actor on the roof); the gate now requires the priest to walk; the closed door after that named as AIP-NG-004 | claude: revise |
+| 14 | 2026-11-19 | NPC door passage scoped as AIP-DOOR (§5.11): what exists at HEAD, a four-master census of in-cell doors, the sourced door behaviour, six requirements, the unsourced behaviours as a verify item; AIP-NG-004 clarified; AIP-FIND-005 and Phase 4 reference it; decision Q8 added and decided by the owner: the door runtime gets its own PRD | claude: revise |

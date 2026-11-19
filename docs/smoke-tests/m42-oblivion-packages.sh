@@ -15,7 +15,7 @@
 #      correction cancelling the climb) and runs under low ceilings (where one airborne tick used to
 #      set it down on the roof, 595 to 916). The gate requires the priest to be 500 units from its
 #      start after 30 s. Reaching the container and raising the `ActivateEvent` is NOT asserted: the
-#      route ends at a closed door, and NPCs do not open doors (PRD AIP-NG-004). The script prints
+#      route ends at a closed door, and no actor opens an in-cell door yet (PRD AIP-DOOR). The script prints
 #      that as a NOTE; `STRICT_FIND=1` makes the missing "activates" line a failure.
 #
 # The chair half of AIP-FIND-007 has no vanilla cell to boot into: the placed Find-a-chair packages
