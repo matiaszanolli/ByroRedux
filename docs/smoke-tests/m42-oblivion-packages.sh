@@ -11,8 +11,8 @@
 #   2. Find a container (AIP-FIND-007, type 6). TempleMothCatacombs02's priest runs
 #      `TempleMothPriestStorage20x2`: it must install `FindPackageBehavior` with a `FindProgress`,
 #      and the search must pick a container. Reaching it and raising the `ActivateEvent` is NOT
-#      asserted: in this cell the priest's first pathgrid waypoint lies behind a wall and the
-#      walk stalls ("cannot reach ... and drops it", PRD AIP-WALK-003). The script prints that as
+#      asserted: in this cell the priest's walk stalls against a 64-unit ramp of fixed geometry
+#      ("cannot reach ... and drops it", PRD AIP-WALK-003, cause not found). The script prints that as
 #      a NOTE; `STRICT_FIND=1` makes the missing "activates" line a failure, for when it lands.
 #
 # The chair half of AIP-FIND-007 has no vanilla cell to boot into: the placed Find-a-chair packages

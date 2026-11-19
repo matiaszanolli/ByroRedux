@@ -739,16 +739,19 @@ script-package slot also reads Must Complete and Must Reach Location
   `a_cached_walk_step_blocked_by_a_wall_takes_the_pathgrid`, and
   `a_traveler_with_a_clear_straight_walk_never_takes_the_pathgrid`. Not
   covered by a system test: Escort, which shares Follow's and Guard's
-  pattern. Open, found live in rev 12: the first leg out of the actor's
-  position can stall at a wall. In `TempleMothCatacombs02` the priest's
-  Find walks 3,200 units to a container; the grid takes over at 1.5 s
-  and returns 37 waypoints, yet the actor keeps pressing into the wall
-  and gives the target up (`Find package: ... cannot reach`), although
-  the start and the container both snap onto the one connected
-  component of the cell's grid (points 69 and 148 units away). The
-  walker heads straight for the first grid point, which can lie behind
-  the wall it is standing at; choosing the entry point by line of sight
-  is not done. Out of the requirement as decided: the `PGRI` inter-cell links,
+  pattern. Open, found live in rev 12: a walk can stall at the first leg
+  although the grid has a route. In `TempleMothCatacombs02` the priest's
+  Find walks 3,200 units to a container; the grid takes over at 1.5 s and
+  returns 37 waypoints, yet the actor keeps pressing against the same
+  spot and gives the target up (`Find package: ... cannot reach`). The
+  start and the container both snap onto the one connected component of
+  the cell's grid (points 69 and 148 units away). It is not the choice
+  of entry point: the first waypoint is 85 units away with a clear line
+  of sight and the ground rising to it, so the cause is where the
+  character controller meets the geometry there (a Fixed `TriMesh`,
+  form `0x092B6A`, 64 units tall over a 395 by 307 footprint, `phys.census`).
+  A trial with the autostep raised to 70 and the slope limit to 75 left
+  the log unchanged. The cause is not found. Out of the requirement as decided: the `PGRI` inter-cell links,
   whose mapping onto the `0xFFFF` edge sentinel the record's own doc calls
   unresolved (`crates/plugin/src/esm/records/pathgrid.rs:66-70`).
 - **AIP-WALK-004.** The walk-source lookup MUST stay at the asset boundary
@@ -1118,4 +1121,4 @@ option.
 | 9 | 2026-11-19 | Archive scans folded in (AIP-SIT-001 `chair_leftenter.kf`, AIP-SIT-002 `chair_leftenter.hkx`, AIP-UW-006 `sneak*reload*.kf`, AIP-SEAT-005 creature chair clips, AIP-SEAT-002 marker census with its table); verify table rows closed or narrowed; two probes checked in (`furniture_marker_census`, `kf_root_probe`) | claude: revise |
 | 10 | 2026-11-19 | AIP-SIT-001 built: `sandbox_sit_enter_kf_path(Oblivion)` returns `chair_leftenter.kf`, with a unit test; the Oblivion live gate stays open | claude: revise |
 | 11 | 2026-11-19 | AIP-SIT-002 built: Skyrim's `chair_leftenter.hkx` installs as the sit-enter clip, and a seated actor with no `AnimationPlayer` is given one that un-seating removes; the Skyrim live check stays open | claude: revise |
-| 12 | 2026-11-19 | Live gates written (`m42-oblivion-packages.sh`, `m42-skyrim-ambient.sh`, `lib/m42_live.sh`): Oblivion Eat seats on `chair_leftenter.kf`, Skyrim sandboxers on `chair_leftenter.hkx`; the Skyrim root height fixed (a headed Sit marker roots the actor on the furniture floor); the grid's first-leg stall at a wall recorded under AIP-WALK-003 | claude: revise |
+| 12 | 2026-11-19 | Live gates written (`m42-oblivion-packages.sh`, `m42-skyrim-ambient.sh`, `lib/m42_live.sh`): Oblivion Eat seats on `chair_leftenter.kf`, Skyrim sandboxers on `chair_leftenter.hkx`; the Skyrim root height fixed (a headed Sit marker roots the actor on the furniture floor); the Find walk's stall at a ramp recorded under AIP-WALK-003 (not the grid's entry point) | claude: revise |
