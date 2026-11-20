@@ -124,6 +124,20 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // `DOOR_CENSUS_LOCKED=1` lists every locked `sequence` door by cell, for choosing a live-gate fixture.
+    if std::env::var_os("DOOR_CENSUS_LOCKED").is_some() {
+        for (name, cell) in &index.cells.cells {
+            for reference in &cell.references {
+                if let (Some(lock), true) = (
+                    reference.lock.as_ref(),
+                    reference.teleport.is_none() && class_of.get(&reference.base_form_id).is_some_and(|class| *class == "sequence"),
+                ) {
+                    println!("locked: {name} ref {:08X} level {} key {:?}", reference.form_id, lock.lock_level, lock.key_form_id);
+                }
+            }
+        }
+    }
+
     let total_bases: u32 = classes.values().map(|t| t.bases).sum();
     let total_placements: u32 = classes.values().map(|t| t.placements).sum();
     println!(
