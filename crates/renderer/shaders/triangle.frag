@@ -220,6 +220,7 @@ void main() {
         || debugMode == RENDER_DEBUG_FILTERED_DIRECT
         || (legacyDebugMode && (vizFlags & DBG_VIZ_DIRECT) != 0u);
     bool viewTracedShare = debugMode == RENDER_DEBUG_TRACED_SHARE;
+    bool viewRadianceCache = debugMode == RENDER_DEBUG_RADIANCE_CACHE;
     bool viewIndirectOnly = debugMode == RENDER_DEBUG_INDIRECT_ONLY
         || (legacyDebugMode && (vizFlags & DBG_VIZ_RAW_INDIRECT) != 0u);
     bool viewMaterialLobe = debugMode == RENDER_DEBUG_MATERIAL_LOBE
@@ -5232,6 +5233,13 @@ void main() {
         // from "AO applies but nothing changes downstream", which a
         // DBG_DISABLE_AO tone-diff A/B cannot distinguish.
         outColor = vec4(vec3(ao), 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(1.0);
+    } else if (viewRadianceCache) {
+        // RCG-DBG-001 — the radiance cache's level and hit per pixel. Magenta is "no sample": the cache's
+        // lookup does not exist yet, so every fragment reports none. The include's author gives this branch
+        // the level and hit encoding once the lookup runs; nothing else needs to change for the view.
+        outColor = vec4(1.0, 0.0, 1.0, 1.0);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(1.0);
     } else if (viewTracedShare) {

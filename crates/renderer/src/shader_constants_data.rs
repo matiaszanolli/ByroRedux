@@ -2311,7 +2311,10 @@ pub const RENDER_DEBUG_FILTERED_DIRECT: u32 = 18;
 // no opacity floor, so a shaft's in-scattered light (and its absence) can be measured directly (#6727).
 pub const RENDER_DEBUG_VOLUMETRIC_RADIANCE: u32 = 19;
 pub const RENDER_DEBUG_SHADOW_FILTER_RADIUS: u32 = 20;
-pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_SHADOW_FILTER_RADIUS;
+// RCG-DBG-001 — the radiance cache's level and whether the lookup hit, per pixel. Magenta is "no sample":
+// the main pass paints it for every fragment until the cache's lookup exists.
+pub const RENDER_DEBUG_RADIANCE_CACHE: u32 = 21;
+pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_RADIANCE_CACHE;
 pub const RENDER_DEBUG_LEGACY_FLAGS: u32 = u32::MAX;
 
 pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
@@ -2339,6 +2342,7 @@ pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
     ("RENDER_DEBUG_FILTERED_DIRECT", RENDER_DEBUG_FILTERED_DIRECT),
     ("RENDER_DEBUG_VOLUMETRIC_RADIANCE", RENDER_DEBUG_VOLUMETRIC_RADIANCE),
     ("RENDER_DEBUG_SHADOW_FILTER_RADIUS", RENDER_DEBUG_SHADOW_FILTER_RADIUS),
+    ("RENDER_DEBUG_RADIANCE_CACHE", RENDER_DEBUG_RADIANCE_CACHE),
     ("RENDER_DEBUG_MODE_MAX", RENDER_DEBUG_MODE_MAX),
     ("RENDER_DEBUG_LEGACY_FLAGS", RENDER_DEBUG_LEGACY_FLAGS),
 ];
@@ -3452,6 +3456,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Uint RENDER_DEBUG_TRACED_SHARE),
     shader_define!(Uint RENDER_DEBUG_FILTERED_DIRECT),
     shader_define!(Uint RENDER_DEBUG_SHADOW_FILTER_RADIUS),
+    shader_define!(Uint RENDER_DEBUG_RADIANCE_CACHE),
     shader_define!(Uint RENDER_DEBUG_MODE_MAX),
     shader_define!(Uint RENDER_DEBUG_LEGACY_FLAGS),
     HeaderLine::Blank,

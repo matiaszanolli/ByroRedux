@@ -39,10 +39,13 @@ pub enum RenderDebugMode {
     VolumetricRadiance = crate::shader_constants::RENDER_DEBUG_VOLUMETRIC_RADIANCE,
     /// M-LIGHT PAF-011 — the direct-shadow filter's screen-space reach.
     ShadowFilterRadius = crate::shader_constants::RENDER_DEBUG_SHADOW_FILTER_RADIUS,
+    /// RCG-DBG-001 — the radiance cache's level and hit per pixel. Magenta is "no sample", which is every
+    /// fragment until the cache's lookup exists.
+    RadianceCache = crate::shader_constants::RENDER_DEBUG_RADIANCE_CACHE,
 }
 
 impl RenderDebugMode {
-    pub const USER_MODES: [Self; 21] = [
+    pub const USER_MODES: [Self; 22] = [
         Self::Final,
         Self::ShadowVisibility,
         Self::SelectedLight,
@@ -64,6 +67,7 @@ impl RenderDebugMode {
         Self::FilteredDirect,
         Self::VolumetricRadiance,
         Self::ShadowFilterRadius,
+        Self::RadianceCache,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -90,6 +94,7 @@ impl RenderDebugMode {
             Self::FilteredDirect => "filtered_direct",
             Self::VolumetricRadiance => "volumetric_radiance",
             Self::ShadowFilterRadius => "shadow_filter_radius",
+            Self::RadianceCache => "radiance_cache",
         }
     }
 
@@ -140,6 +145,7 @@ impl FromStr for RenderDebugMode {
             "traced" | "traced_share" => Ok(Self::TracedShare),
             "filtered_direct" => Ok(Self::FilteredDirect),
             "shadow_filter_radius" => Ok(Self::ShadowFilterRadius),
+            "radiance_cache" | "cache" => Ok(Self::RadianceCache),
             _ => Err(format!(
                 "unknown render debug mode '{value}' (expected {})",
                 Self::user_mode_names()
@@ -342,6 +348,26 @@ mod tests {
             RenderDebugMode::LegacyFlags.shader_value(),
             crate::shader_constants::RENDER_DEBUG_LEGACY_FLAGS
         );
+    }
+
+    /// RCG-DBG-001 — the radiance-cache view is a named, parseable, user-selectable mode and the last one,
+    /// so `RENDER_DEBUG_MODE_MAX` names it; `radiance` stays the froxel field's alias, not this view's. The
+    /// main pass owns it: a raw view `triangle.frag` does not implement would paint lit colour, which is
+    /// what the receding rule exists to prevent.
+    #[test]
+    fn the_radiance_cache_view_is_named_selectable_and_drawn_by_the_main_pass() {
+        assert_eq!("radiance_cache".parse(), Ok(RenderDebugMode::RadianceCache));
+        assert_eq!("cache".parse(), Ok(RenderDebugMode::RadianceCache));
+        assert_eq!("radiance".parse(), Ok(RenderDebugMode::VolumetricRadiance));
+        assert_eq!(RenderDebugMode::USER_MODES.last(), Some(&RenderDebugMode::RadianceCache));
+        assert_eq!(
+            RenderDebugMode::RadianceCache.shader_value(),
+            crate::shader_constants::RENDER_DEBUG_MODE_MAX
+        );
+        assert!(RenderDebugMode::user_mode_names().ends_with("|radiance_cache"));
+        let frag = include_str!("../../shaders/triangle.frag");
+        assert!(frag.contains("bool viewRadianceCache = debugMode == RENDER_DEBUG_RADIANCE_CACHE;"));
+        assert!(frag.contains("} else if (viewRadianceCache) {"), "the main pass must draw the view");
     }
 
     #[test]
