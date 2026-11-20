@@ -48,7 +48,8 @@ impl ConsoleCommand for DoorStatusCommand {
         found.sort_by(|a, b| a.0.total_cmp(&b.0));
         let mut lines = vec![format!("{} in-cell doors:", found.len())];
         for (distance, entity) in found.iter().take(200) {
-            let Some(door) = world.get::<Door>(*entity) else { continue };
+            // Everything else is read before `Door` is taken, and nothing is acquired while it is held:
+            // `door_motion_system` takes `TwoStateActivator` before `Door` (#7093).
             let state = world.get::<TwoStateActivator>(*entity).map_or("no state", |state| {
                 match (state.is_open, state.is_animating) {
                     (true, false) => "open",
@@ -63,6 +64,7 @@ impl ConsoleCommand for DoorStatusCommand {
             });
             let reference = byroredux_scripting::condition::entity_global_form_id(world, *entity)
                 .map_or("-".to_owned(), |form| format!("{form:08X}"));
+            let Some(door) = world.get::<Door>(*entity) else { continue };
             let DoorMotion::Sequence { open, close } = door.motion;
             let named = [
                 (door.flags.oblivion_gate, "oblivion-gate"),
@@ -140,5 +142,22 @@ mod tests {
         let one = DoorStatusCommand.execute(&world, &closed.to_string()).lines.join("\n");
         assert!(one.starts_with("1 in-cell doors:") && !one.contains("opening"), "{one} ({opening})");
         assert!(DoorStatusCommand.execute(&world, "nope").lines[0].contains("usage"));
+    }
+
+    /// #7093 — `door.state` and the motion tick take `Door` and `TwoStateActivator` in one order. The command used to
+    /// hold `Door` across `TwoStateActivator`, the reverse of `door_motion_system`'s sorted pair; with
+    /// `BYRO_LOCK_ORDER_CHECK=1` this test closes that cycle on its own.
+    #[test]
+    fn door_state_and_door_motion_share_the_lock_order() {
+        let mut world = World::new();
+        world.register::<Door>();
+        world.register::<Locked>();
+        world.register::<TwoStateActivator>();
+        world.insert_resource(byroredux_core::animation::AnimationClipRegistry::new());
+        door(&mut world, TwoStateActivator { is_open: true, ..Default::default() }, None);
+
+        let report = DoorStatusCommand.execute(&world, "").lines.join("\n");
+        crate::systems::door::door_motion_system(&world, 0.0);
+        assert!(report.starts_with("1 in-cell doors:"), "{report}");
     }
 }
