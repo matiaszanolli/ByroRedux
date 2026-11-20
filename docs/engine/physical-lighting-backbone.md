@@ -29,6 +29,8 @@ Legacy records are inputs to a translator, not renderer semantics.
    not summed). Four hysteretic tiers jointly bound glass/refraction claims,
    direct shadow samples, GI path depth/shaded hits, and froxel local lights.
    Downgrades react to overload; upgrades require 45 stable headroom frames.
+   The climb target is 11 ms, or the tier-0 floor plus 4.84 ms when the floor
+   alone leaves less room (#7076), so a heavy scene still leaves tier 0.
 7. **Temporal reconstruction.** Volumetrics default to one froxel per 8×8
    render pixels. World reprojection, density rejection, history-neighborhood
    variance clipping, and emission-weighted disagreement rejection prevent
