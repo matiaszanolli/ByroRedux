@@ -668,6 +668,8 @@ mod bodies {
                         duration: 0,
                         actor_value: None,
                         script_form_id: 0,
+                        range: None,
+                        script_school: None,
                         conditions: Vec::new(),
                     }],
                     ..Default::default()

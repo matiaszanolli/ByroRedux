@@ -77,20 +77,23 @@ impl SpellType {
 /// u32 @4, Type @8 (Charge Time f32 @12). Returns `(type, cost, flags)`.
 /// The pre-#4415 decoder read cost @0 and flags @12 for every game, so
 /// FO3/FNV "cost" was the type and Skyrim "flags" the charge time's bits.
-fn decode_spit(data: &[u8], game: GameKind) -> Option<(SpellType, u32, u32)> {
+fn decode_spit(data: &[u8], game: GameKind) -> Option<(SpellType, u32, u32, u8)> {
     if data.len() < 16 {
         return None;
     }
     let read = |offset: usize| u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
     match game {
+        // xEdit TES4 `SPIT`: type u8, 3 unused, cost u32, level u8 (Novice..Master), 3 unused, flags u8.
         GameKind::Oblivion => Some((
             SpellType::from_raw(read(0) & 0xFF),
             read(4),
             read(12) & 0xFF,
+            (read(8) & 0xFF) as u8,
         )),
-        GameKind::Fallout3NV => Some((SpellType::from_raw(read(0)), read(4), read(12) & 0xFF)),
+        // FO3 / FNV: `Cost (Unused)` and `Level (Unused)` (xEdit); the level stays 0.
+        GameKind::Fallout3NV => Some((SpellType::from_raw(read(0)), read(4), read(12) & 0xFF, 0)),
         GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 => {
-            Some((SpellType::from_raw(read(8)), read(0), read(4)))
+            Some((SpellType::from_raw(read(8)), read(0), read(4), 0))
         }
         GameKind::Starfield => None,
     }
@@ -772,6 +775,12 @@ pub struct MagicEffectItem {
     /// `SCIT` — the `SCPT` an ObScript *script effect* runs (its `ScriptEffectStart` / `Update` /
     /// `Finish` blocks); `0` for an effect with no script. Fallout 3 / New Vegas and Oblivion.
     pub script_form_id: u32,
+    /// Oblivion's `EFIT` range (`Type`, xEdit `wbEffectTypeEnum`): 0 Self, 1 Touch, 2 Target. `None`
+    /// on every other game, whose delivery is not decoded here.
+    pub range: Option<u32>,
+    /// Oblivion's `SCIT` "Magic school" (0 Alteration to 5 Restoration, 6 None): a script effect's own
+    /// school, which wins over its MGEF's (the executable's `0x412f20`, #7078). `None` without `SCIT`.
+    pub script_school: Option<u32>,
     /// The effect's own conditions (`CTDA` / `CIS1` / `CIS2` after its `EFIT`): the effect works only
     /// while they hold. New Vegas's `PlayerConcussed` gates its Perception -4 on
     /// `GetActorValue PerceptionCondition <= 0`, a crippled head.
@@ -792,8 +801,6 @@ struct MagicEffectAccumulator {
     game: GameKind,
     pending_efid: u32,
     items: Vec<MagicEffectItem>,
-    /// Oblivion's `EFIT` range / type (@16: 0 self, 1 touch, 2 target), one per item; 0 on every other game.
-    ranges: Vec<u32>,
 }
 
 impl MagicEffectAccumulator {
@@ -802,7 +809,6 @@ impl MagicEffectAccumulator {
             game,
             pending_efid: 0,
             items: Vec::new(),
-            ranges: Vec::new(),
         }
     }
 
@@ -854,11 +860,10 @@ impl MagicEffectAccumulator {
                             .filter(|value| *value >= 0).map(|value| ActorValueRef::Index(value as u32))
                     } else { None },
                     script_form_id: 0,
+                    range: (self.game == GameKind::Oblivion)
+                        .then(|| sub.data.get(16..20).map_or(0, |bytes| u32::from_le_bytes(bytes.try_into().unwrap()))),
+                    script_school: None,
                     conditions: Vec::new(),
-                });
-                self.ranges.push(match self.game {
-                    GameKind::Oblivion => sub.data.get(16..20).map_or(0, |bytes| u32::from_le_bytes(bytes.try_into().unwrap())),
-                    _ => 0,
                 });
                 self.pending_efid = 0;
             }
@@ -867,6 +872,10 @@ impl MagicEffectAccumulator {
             b"SCIT" if sub.data.len() >= 4 => {
                 if let Some(item) = self.items.last_mut() {
                     item.script_form_id = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
+                    // Oblivion's `SCIT` is `[script][magic school][visual effect][hostile + 3 unused]`.
+                    if self.game == GameKind::Oblivion {
+                        item.script_school = sub.data.get(4..8).map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()));
+                    }
                 }
             }
             // A condition after an effect's `EFIT` belongs to that effect (xEdit `wbEffects`:
@@ -891,7 +900,7 @@ pub(crate) fn oblivion_effect_chain(subs: &[SubRecord]) -> Option<Vec<(MagicEffe
     }
     let declared = subs.iter().filter(|sub| &sub.sub_type == b"EFID").count();
     (chain.pending_efid == 0 && declared == chain.items.len() && !chain.items.is_empty())
-        .then(|| chain.items.into_iter().zip(chain.ranges).collect())
+        .then(|| chain.items.into_iter().map(|item| { let range = item.range.unwrap_or(0); (item, range) }).collect())
 }
 
 /// `SPEL` spell / ability / power record. FO3/FNV also covers passive
@@ -909,9 +918,15 @@ pub struct SpelRecord {
     /// `SPIT` flags — the low byte on Oblivion/FO3/FNV (bit 0 Manual Cost,
     /// bit 2 PC Start Spell, bit 7 Touch Explodes), a u32 on Skyrim/FO4.
     pub spell_flags: u32,
-    /// `SPIT` cost (@4 on Oblivion/FO3/FNV, where it is unused; @0 on
-    /// Skyrim/FO4).
+    /// `SPIT` cost (@4 on Oblivion/FO3/FNV; @0 on Skyrim/FO4). On Oblivion it is the spell's
+    /// cost only when the `Manual Spell Cost` flag (bit 0 of `spell_flags`) is set: an
+    /// auto-calculated spell's stored cost is stale (UESP's in-game Magicka equals the effect-cost
+    /// equation, not this value, for 312 of 315 matched spells; #7078). Unused on FO3 / FNV.
     pub cost: u32,
+    /// Oblivion's `SPIT` mastery level, 0 Novice to 4 Master (xEdit TES4 `SPIT`); the tier a
+    /// Manual Spell Cost spell requires (an auto-calculated spell's is derived from its cost).
+    /// 0 on every other game.
+    pub level: u8,
     /// Magic effects applied by this spell. Built from EFID/EFIT pairs.
     pub effects: Vec<MagicEffectItem>,
 }
@@ -937,10 +952,11 @@ pub fn parse_spel(
     for sub in subs {
         match &sub.sub_type {
             b"SPIT" => {
-                if let Some((spell_type, cost, flags)) = decode_spit(&sub.data, game) {
+                if let Some((spell_type, cost, flags, level)) = decode_spit(&sub.data, game) {
                     out.spell_type = spell_type;
                     out.cost = cost;
                     out.spell_flags = flags;
+                    out.level = level;
                 }
             }
             b"EFID" | b"EFIT" | b"SCIT" | b"CTDA" | b"CTDT" | b"CIS1" | b"CIS2" => effects.feed(sub, remap),

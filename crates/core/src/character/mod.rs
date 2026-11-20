@@ -60,6 +60,9 @@
 //! * [`skill_use`] — [`SkillUseCosts`] / [`SkillClass`]: classic-TES skill-use
 //!   experience (Oblivion): the cost of a rank from the five `fSkillUse*`
 //!   settings, the skill's class, and banking with rollover.
+//! * [`spell_cast`] — [`SpellCastModel`] / [`EffectCostInput`]: Oblivion's spell-cast rules (effect and
+//!   actual cost, the mastery tiers, the primary school, the Fatigue a cast spends), retuned by the
+//!   `fMagic*` / `iSkill*Min` / `fFatigueCast*` settings (player-spellcasting PRD, PSC-CST-008).
 //! * **Per-game family impls** — where every per-game *number* actually
 //!   lives, one module per lineage:
 //!   * [`fallout`] — [`fallout3_ruleset`], [`falloutnv_ruleset`],
@@ -107,6 +110,7 @@ pub mod ruleset;
 pub mod skill;
 pub mod skill_use;
 pub mod skyrim;
+pub mod spell_cast;
 pub mod stance;
 pub mod tes;
 
@@ -146,6 +150,7 @@ pub use reputation::{
 };
 pub use resistance::{damage_multiplier, Affliction};
 pub use ruleset::CharacterRuleset;
+pub use spell_cast::{EffectCostInput, EffectRange, SpellCastModel, Tier as SpellTier};
 pub use stance::{SneakMovement, SneakSpeed, SneakSpeedSource, StanceModel};
 pub use skill::{ResolvedSkill, SkillDef, SkillSet};
 pub use skill_use::{
@@ -187,7 +192,7 @@ mod tests {
             .collect();
         assert_eq!(
             declared.len(),
-            21,
+            22,
             "sub-module count changed — {declared:?}"
         );
         for module in declared {

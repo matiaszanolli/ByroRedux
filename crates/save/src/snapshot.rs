@@ -671,7 +671,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v138 -> v139 (#6941): the saved `ActiveEffect` gained the required `effect_index` (its position in the spell's effect
 /// list), so a v138 save's effects lack the field and could not say which of a spell's same-`MGEF` effects they are.
-pub const FORMAT_MAJOR: u16 = 139;
+///
+/// v139 -> v140 (#7079, PSC-RDY-004): a new component column, `ReadiedSpell` (the player's readied spell, one optional
+/// spell FormID), so a v139 snapshot has no such column and the schema no longer matches.
+pub const FORMAT_MAJOR: u16 = 140;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

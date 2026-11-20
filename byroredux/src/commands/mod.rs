@@ -67,6 +67,7 @@ mod view;
 mod water;
 mod world_info;
 mod music;
+mod spell;
 mod stealth;
 mod video;
 
@@ -240,6 +241,10 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(gameplay::CraftCommand);
     registry.register(gameplay::MagicCastCommand);
     registry.register(gameplay::MagicEffectsCommand);
+    registry.register(spell::SpellReadyCommand);
+    registry.register(spell::SpellCastCommand);
+    registry.register(spell::SpellListCommand);
+    registry.register(spell::CastStatusCommand);
     registry.register(gameplay::ActorReviveCommand);
     registry.register(gameplay::ActorLookCommand);
     registry.register(SysAccessesCommand);

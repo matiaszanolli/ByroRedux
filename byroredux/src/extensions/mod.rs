@@ -450,8 +450,10 @@ fn form_ref(pair: FormIdPair) -> FormRef {
     FormRef::new(pair.plugin.0.to_be_bytes(), pair.local.0)
 }
 
-fn sdk_input_action(action: crate::interaction::InputAction) -> SdkInputAction {
-    match action {
+/// The SDK's name for an observable action; the three spell actions have none (they are not in the host contract's
+/// `input-action` enum, so they never reach an extension).
+fn sdk_input_action(action: crate::interaction::InputAction) -> Option<SdkInputAction> {
+    Some(match action {
         crate::interaction::InputAction::MoveForward => SdkInputAction::MoveForward,
         crate::interaction::InputAction::MoveBackward => SdkInputAction::MoveBackward,
         crate::interaction::InputAction::StrafeLeft => SdkInputAction::StrafeLeft,
@@ -468,7 +470,10 @@ fn sdk_input_action(action: crate::interaction::InputAction) -> SdkInputAction {
         crate::interaction::InputAction::Sneak => SdkInputAction::Sneak,
         crate::interaction::InputAction::ReadyWeapon => SdkInputAction::ReadyWeapon,
         crate::interaction::InputAction::Pause => SdkInputAction::Pause,
-    }
+        crate::interaction::InputAction::CastSpell
+        | crate::interaction::InputAction::NextSpell
+        | crate::interaction::InputAction::PreviousSpell => return None,
+    })
 }
 
 /// Every production file in this directory, concatenated, for the

@@ -554,7 +554,7 @@ mod tests {
             0x500,
             SpelRecord {
                 form_id: 0x500,
-                effects: vec![MagicEffectItem { effect_form_id: 0x77, magnitude, area: 0, duration, actor_value: None, script_form_id: 0, conditions: Vec::new() }],
+                effects: vec![MagicEffectItem { effect_form_id: 0x77, magnitude, area: 0, duration, actor_value: None, script_form_id: 0, range: None, script_school: None, conditions: Vec::new() }],
                 ..Default::default()
             },
         );
@@ -599,10 +599,10 @@ mod tests {
         const MARK: u32 = 0x78;
         let mut index = index_with_value_effect(MGEF_FLAG_DETRIMENTAL, 4.0, 315_360_000);
         index.magic_effects.insert(MARK, MgefRecord { form_id: MARK, archetype: Some(MagicArchetype::ValueModifier), ..Default::default() });
-        index.spells.get_mut(&0x500).unwrap().effects.insert(0, MagicEffectItem { effect_form_id: MARK, magnitude: 0.0, area: 0, duration: 315_360_000, actor_value: None, script_form_id: 0, conditions: Vec::new() });
+        index.spells.get_mut(&0x500).unwrap().effects.insert(0, MagicEffectItem { effect_form_id: MARK, magnitude: 0.0, area: 0, duration: 315_360_000, actor_value: None, script_form_id: 0, range: None, script_school: None, conditions: Vec::new() });
         index.spells.insert(
             0x501,
-            SpelRecord { form_id: 0x501, effects: vec![MagicEffectItem { effect_form_id: MARK, magnitude: 0.0, area: 0, duration: 0, actor_value: None, script_form_id: 0, conditions: Vec::new() }], ..Default::default() },
+            SpelRecord { form_id: 0x501, effects: vec![MagicEffectItem { effect_form_id: MARK, magnitude: 0.0, area: 0, duration: 0, actor_value: None, script_form_id: 0, range: None, script_school: None, conditions: Vec::new() }], ..Default::default() },
         );
         let (world, target) = world_with(index);
         assert!(!has_effect(&world, target, MARK));
@@ -808,7 +808,7 @@ mod tests {
             0x501,
             SpelRecord {
                 form_id: 0x501,
-                effects: vec![MagicEffectItem { effect_form_id: 0x78, magnitude: 1.0, area: 0, duration: 2, actor_value: None, script_form_id: 0x900, conditions: Vec::new() }],
+                effects: vec![MagicEffectItem { effect_form_id: 0x78, magnitude: 1.0, area: 0, duration: 2, actor_value: None, script_form_id: 0x900, range: None, script_school: None, conditions: Vec::new() }],
                 ..Default::default()
             },
         );

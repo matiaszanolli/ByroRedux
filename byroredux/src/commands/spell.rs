@@ -1,0 +1,143 @@
+//! The player's cast, from the console (player-spellcasting PRD PSC-RDY-002, PSC-DX-001 to -003): `spell.ready`,
+//! `spell.cast`, `spell.list` and `cast.status`. `spell.cast` runs the same gate and settle as the cast key, so a smoke
+//! script drives the real path; the console's `magic.cast` stays the uncharged, unfed script path.
+
+use byroredux_core::ecs::World;
+use byroredux_scripting::player_cast::{self, CastState};
+
+use super::shared::*;
+use crate::player_cast::CAST_INTERVAL_SECONDS;
+use crate::systems::PlayerEntity;
+
+/// `spell.ready <spell formid>` — ready a spell the player knows; reports its name, school and actual cost.
+pub(crate) struct SpellReadyCommand;
+
+impl ConsoleCommand for SpellReadyCommand {
+    fn name(&self) -> &str {
+        "spell.ready"
+    }
+
+    fn description(&self) -> &str {
+        "Ready a spell the player knows for the cast action: spell.ready <spell formid>"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let Some(spell) = args.split_whitespace().next().and_then(parse_console_form_id) else {
+            return CommandOutput::error("usage: spell.ready <spell formid>");
+        };
+        let Some(player) = PlayerEntity::get(world) else {
+            return CommandOutput::error("spell.ready: no player");
+        };
+        match player_cast::ready_spell(world, player, spell) {
+            Ok(preview) => CommandOutput::line(format!(
+                "readied {} ({spell:08X}): school {}, tier {}, costs {:.1} magicka",
+                preview.name,
+                player_cast::school_name(preview.school),
+                preview.tier,
+                preview.cost
+            )),
+            Err(refusal) => CommandOutput::error(format!("spell.ready: {spell:08X}: {refusal}")),
+        }
+    }
+}
+
+/// `spell.cast` — one cast action for the player, the cast key's own path.
+pub(crate) struct SpellCastCommand;
+
+impl ConsoleCommand for SpellCastCommand {
+    fn name(&self) -> &str {
+        "spell.cast"
+    }
+
+    fn description(&self) -> &str {
+        "Cast the readied spell as the cast key does (gate, Magicka and Fatigue, effects); magic.cast is the uncharged script path"
+    }
+
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        match crate::player_cast::cast_now(world) {
+            Some(report) if report.outcome.is_ok() => CommandOutput::line(report.to_string()),
+            Some(report) => CommandOutput::error(format!("spell.cast: {report}")),
+            None => CommandOutput::error("spell.cast: no player"),
+        }
+    }
+}
+
+/// `spell.list` — the player's castable spells with their school, tier and what they cost now.
+pub(crate) struct SpellListCommand;
+
+impl ConsoleCommand for SpellListCommand {
+    fn name(&self) -> &str {
+        "spell.list"
+    }
+
+    fn description(&self) -> &str {
+        "List the player's castable spells (readied marked *): school, tier and actual cost"
+    }
+
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let Some(player) = PlayerEntity::get(world) else {
+            return CommandOutput::error("spell.list: no player");
+        };
+        let readied = player_cast::readied(world, player);
+        let spells = player_cast::castable_spells(world, player);
+        if spells.is_empty() {
+            return CommandOutput::line("no castable spells (none known, or this game has no cast rules)");
+        }
+        let mut lines = vec![format!("{} castable spell(s)", spells.len())];
+        for spell in spells {
+            if let Ok(preview) = player_cast::preview(world, player, spell) {
+                lines.push(format!(
+                    "{} {spell:08X} {:28} {:11} tier {} cost {:.1}",
+                    if readied == Some(spell) { "*" } else { " " },
+                    preview.name,
+                    player_cast::school_name(preview.school),
+                    preview.tier,
+                    preview.cost
+                ));
+            }
+        }
+        CommandOutput::lines(lines)
+    }
+}
+
+/// `cast.status` — the readied spell, the last cast and the interval in force (PSC-DX-001).
+pub(crate) struct CastStatusCommand;
+
+impl ConsoleCommand for CastStatusCommand {
+    fn name(&self) -> &str {
+        "cast.status"
+    }
+
+    fn description(&self) -> &str {
+        "Report the readied spell, the last cast (started or the refusal), and the cast interval in force"
+    }
+
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let Some(player) = PlayerEntity::get(world) else {
+            return CommandOutput::error("cast.status: no player");
+        };
+        let readied = player_cast::readied(world, player);
+        let mut lines = vec![match readied {
+            Some(spell) => match player_cast::preview(world, player, spell) {
+                Ok(preview) => format!(
+                    "readied={} ({spell:08X}) school={} tier={} cost={:.1}",
+                    preview.name,
+                    player_cast::school_name(preview.school),
+                    preview.tier,
+                    preview.cost
+                ),
+                Err(refusal) => format!("readied={spell:08X} ({refusal})"),
+            },
+            None => "readied=none".to_owned(),
+        }];
+        let state = world.try_resource::<CastState>();
+        lines.push(match state.as_ref().and_then(|state| state.last.as_ref()) {
+            Some(report) => format!("last={report}"),
+            None => "last=none".to_owned(),
+        });
+        let remaining = state.as_ref().map_or(0.0, |state| state.cooldown_remaining);
+        lines.push(format!("interval={CAST_INTERVAL_SECONDS:.2}s (provisional: the original's follows the cast animation) cooldown={remaining:.2}s"));
+        lines.push("reach=Self only (Touch and Target are Phase 2)".to_owned());
+        CommandOutput::lines(lines)
+    }
+}

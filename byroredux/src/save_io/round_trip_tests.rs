@@ -69,6 +69,8 @@ fn delta_columns_carry_only_session_stable_fields() {
         "TimedRestorations",
         // #4415 — SpellList: Vec<u32> spell FormIDs, global-space.
         "SpellList",
+        // PSC-RDY-004 — ReadiedSpell: one optional spell FormID (u32), global-space.
+        "ReadiedSpell",
         // EquippedWeapon: u32 inventory index + u32 base FormID + f32
         // damage. Dead: empty marker. Neither carries session identity.
         "EquippedWeapon",
@@ -2480,7 +2482,7 @@ fn a_perk_granted_ability_survives_save_load_with_one_spell_and_one_value_change
         SpelRecord {
             form_id: SPELL,
             spell_type: SpellType::Ability,
-            effects: vec![MagicEffectItem { effect_form_id: FORTIFY, magnitude: 25.0, area: 0, duration: 0, actor_value: None, script_form_id: 0, conditions: Vec::new() }],
+            effects: vec![MagicEffectItem { effect_form_id: FORTIFY, magnitude: 25.0, area: 0, duration: 0, actor_value: None, script_form_id: 0, range: None, script_school: None, conditions: Vec::new() }],
             ..Default::default()
         },
     );
@@ -2562,6 +2564,42 @@ fn a_line_in_flight_survives_save_load_round_trip() {
     dst.insert_resource(FormIdPool::new());
     restore_world(&mut dst, &reg, &decoded).unwrap();
     assert_eq!(dst.get::<SpeakingLine>(actor).map(|l| l.clone()), Some(line));
+}
+
+/// PSC-RDY-004 (#7079): the player's readied spell survives a save and a load, and a loaded save that names a spell the
+/// player no longer knows clears it without an error (PSC-RDY-001).
+#[test]
+fn the_readied_spell_survives_save_load_round_trip_and_clears_when_the_spell_is_gone() {
+    use byroredux_scripting::magic::SpellList;
+    use byroredux_scripting::player_cast::{readied, ReadiedSpell};
+
+    let reg = build_save_registry();
+    let mut src = World::new();
+    src.insert_resource(StringPool::new());
+    src.insert_resource(FormIdPool::new());
+    src.register::<ReadiedSpell>();
+    src.register::<SpellList>();
+    let player = src.spawn();
+    src.insert(player, ReadiedSpell(Some(0x000A_97DF)));
+    src.insert(player, SpellList(vec![0x000A_97DF, 0x000A_9806]));
+
+    let snapshot = save_world(&src, &reg).unwrap();
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+    let mut dst = World::new();
+    dst.insert_resource(FormIdPool::new());
+    restore_world(&mut dst, &reg, &decoded).unwrap();
+    assert_eq!(dst.get::<ReadiedSpell>(player).map(|spell| *spell), Some(ReadiedSpell(Some(0x000A_97DF))));
+    assert_eq!(readied(&dst, player), Some(0x000A_97DF));
+    // A re-captured snapshot of the loaded state decodes equal to the one loaded.
+    let again = save_world(&dst, &reg).unwrap();
+    assert_eq!(again.components.get("ReadiedSpell"), decoded.components.get("ReadiedSpell"));
+
+    // A load whose spell list no longer holds the readied spell (a removed mod) clears it, without an error.
+    dst.query_mut::<SpellList>().unwrap().get_mut(player).unwrap().0.retain(|spell| *spell != 0x000A_97DF);
+    assert_eq!(readied(&dst, player), None);
+    assert_eq!(dst.get::<ReadiedSpell>(player).map(|spell| *spell), Some(ReadiedSpell(None)));
 }
 
 /// #7050 / #7052 (OSL-SAVE-001 / OSL-SAVE-003) — a save taken mid-level resumes it: the player's major-increase count,

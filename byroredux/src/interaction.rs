@@ -77,6 +77,15 @@ pub(crate) enum InputAction {
     ReadyWeapon,
     #[allow(dead_code, reason = "no physical input source yet")]
     Pause,
+    /// Player-spellcasting (PSC-CST-001, Q2) — cast the readied spell. `C` is the original's PC default for Cast
+    /// (UESP *Oblivion:Controls*) and the owner's choice; keyboard Block moves to `X`, the right mouse button stays
+    /// Block. The three spell actions are not observable by extensions: they would extend the host contract's
+    /// `input-action` enum (`crates/mod-runtime/wit/host.wit`), which the PRD does not promise.
+    CastSpell,
+    /// Player-spellcasting (PSC-RDY-003) — ready the next castable spell (default Right arrow).
+    NextSpell,
+    /// Player-spellcasting (PSC-RDY-003) — ready the previous castable spell (default Left arrow).
+    PreviousSpell,
 }
 
 impl InputAction {
@@ -99,11 +108,11 @@ impl InputAction {
         Self::ReadyWeapon,
     ];
 
-    const fn bit(self) -> u16 {
-        1_u16 << self as u8
+    const fn bit(self) -> u32 {
+        1_u32 << self as u8
     }
 
-    const CONFIGURABLE: [Self; 13] = [
+    const CONFIGURABLE: [Self; 16] = [
         Self::MoveForward,
         Self::MoveBackward,
         Self::StrafeLeft,
@@ -117,6 +126,9 @@ impl InputAction {
         Self::Vats,
         Self::Sneak,
         Self::ReadyWeapon,
+        Self::CastSpell,
+        Self::NextSpell,
+        Self::PreviousSpell,
     ];
 
     const fn setting_id(self) -> &'static str {
@@ -136,6 +148,9 @@ impl InputAction {
             Self::Sneak => "controls.bind.sneak",
             Self::ReadyWeapon => "controls.bind.ready_weapon",
             Self::Pause => "",
+            Self::CastSpell => "controls.bind.cast_spell",
+            Self::NextSpell => "controls.bind.next_spell",
+            Self::PreviousSpell => "controls.bind.previous_spell",
         }
     }
 
@@ -157,6 +172,9 @@ impl InputAction {
             Self::Attack => "Attack",
             Self::Block => "Block",
             Self::Pause => "Pause",
+            Self::CastSpell => "Cast spell",
+            Self::NextSpell => "Next spell",
+            Self::PreviousSpell => "Previous spell",
         }
     }
 }
@@ -185,13 +203,18 @@ impl Default for ActionBindings {
                 (KeyCode::ShiftLeft, InputAction::Sprint),
                 (KeyCode::KeyE, InputAction::Activate),
                 (KeyCode::KeyR, InputAction::Attack),
-                (KeyCode::KeyC, InputAction::Block),
+                // Keyboard Block moved off `C` (now Cast, the original's PC default); the right mouse button still blocks.
+                (KeyCode::KeyX, InputAction::Block),
                 (KeyCode::Tab, InputAction::Inventory),
                 (KeyCode::F5, InputAction::Quicksave),
                 (KeyCode::F9, InputAction::Quickload),
                 (KeyCode::KeyV, InputAction::Vats),
                 (KeyCode::ControlLeft, InputAction::Sneak),
                 (KeyCode::KeyG, InputAction::ReadyWeapon),
+                // Player-spellcasting (Q2): Cast on `C`, the spell cycle on the arrow keys.
+                (KeyCode::KeyC, InputAction::CastSpell),
+                (KeyCode::ArrowRight, InputAction::NextSpell),
+                (KeyCode::ArrowLeft, InputAction::PreviousSpell),
             ]),
             mouse: HashMap::from([
                 (MouseButton::Left, InputAction::Attack),
@@ -243,7 +266,7 @@ impl ActionBindings {
         &self,
         keys_held: &std::collections::HashSet<KeyCode>,
         mouse_buttons_held: &std::collections::HashSet<MouseButton>,
-    ) -> u16 {
+    ) -> u32 {
         let keyboard = keys_held
             .iter()
             .filter_map(|key| self.keyboard.get(key))
@@ -297,6 +320,10 @@ fn papyrus_control_name(action: InputAction) -> &'static str {
         InputAction::Sneak => "Sneak",
         InputAction::ReadyWeapon => "Ready Weapon",
         InputAction::Pause => "Pause",
+        // Not observable, so never projected into the SKSE view; named for completeness.
+        InputAction::CastSpell => "Cast Spell",
+        InputAction::NextSpell => "Next Spell",
+        InputAction::PreviousSpell => "Previous Spell",
     }
 }
 
@@ -698,12 +725,16 @@ fn debug_action(name: &str) -> Option<InputAction> {
         "sprint" | "shift" => Some(InputAction::Sprint),
         "activate" | "e" => Some(InputAction::Activate),
         "attack" | "r" => Some(InputAction::Attack),
-        "block" | "c" => Some(InputAction::Block),
+        "block" | "x" => Some(InputAction::Block),
         "inventory" | "tab" => Some(InputAction::Inventory),
         "quicksave" | "f5" => Some(InputAction::Quicksave),
         "quickload" | "f9" => Some(InputAction::Quickload),
         "sneak" | "ctrl" => Some(InputAction::Sneak),
         "ready_weapon" | "g" => Some(InputAction::ReadyWeapon),
+        // Player-spellcasting (Q2): Cast is on `C`, the cycle on the arrow keys.
+        "cast" | "cast_spell" | "c" => Some(InputAction::CastSpell),
+        "next_spell" | "next" => Some(InputAction::NextSpell),
+        "previous_spell" | "previous" | "prev" => Some(InputAction::PreviousSpell),
         _ => None,
     }
 }
@@ -731,15 +762,15 @@ pub(crate) fn injected_hold_frames_remaining(world: &World) -> u32 {
 /// Derived per-frame action state with held/pressed/released semantics.
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct ActionState {
-    held: u16,
-    pressed: u16,
-    released: u16,
+    held: u32,
+    pressed: u32,
+    released: u32,
 }
 
 impl Resource for ActionState {}
 
 impl ActionState {
-    fn refresh(&mut self, next_held: u16) {
+    fn refresh(&mut self, next_held: u32) {
         self.pressed = next_held & !self.held;
         self.released = self.held & !next_held;
         self.held = next_held;
@@ -2143,6 +2174,28 @@ mod tests {
         let input = world.resource::<InputState>();
         assert_eq!(input.look_sensitivity, DEFAULT_LOOK_SENSITIVITY * 2.5);
         assert!(input.invert_look_y);
+    }
+
+    /// Player-spellcasting (Q2): Cast is `C`, the original's PC default; keyboard Block moved to `X` and the right mouse
+    /// button still blocks; the spell cycle is on the arrow keys. The 19 actions need more than 16 mask bits.
+    #[test]
+    fn the_spell_actions_have_their_default_keys_and_the_masks_hold_them() {
+        let bindings = ActionBindings::default();
+        assert_eq!(bindings.action_for_key(KeyCode::KeyC), Some(InputAction::CastSpell));
+        assert_eq!(bindings.action_for_key(KeyCode::KeyX), Some(InputAction::Block));
+        assert_eq!(bindings.action_for_key(KeyCode::ArrowRight), Some(InputAction::NextSpell));
+        assert_eq!(bindings.action_for_key(KeyCode::ArrowLeft), Some(InputAction::PreviousSpell));
+        assert_eq!(bindings.binding_label(InputAction::CastSpell), "C");
+        let world = input_fixture();
+        world.resource_mut::<InputState>().mouse_buttons_held.insert(MouseButton::Right);
+        refresh_action_state(&world);
+        assert!(world.resource::<ActionState>().is_held(InputAction::Block), "the right mouse button still blocks");
+        world.resource_mut::<InputState>().keys_held.extend([KeyCode::KeyC, KeyCode::ArrowLeft]);
+        refresh_action_state(&world);
+        let actions = world.resource::<ActionState>();
+        assert!(actions.was_pressed(InputAction::CastSpell) && actions.was_pressed(InputAction::PreviousSpell));
+        assert!(!actions.was_pressed(InputAction::NextSpell));
+        assert!(actions.is_held(InputAction::Block), "unchanged by the other bits");
     }
 
     #[test]

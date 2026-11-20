@@ -45,4 +45,28 @@ pub(super) fn register_combat_input_systems(scheduler: &mut Scheduler) {
             .writes::<byroredux_scripting::obscript_state::WeaponDrawn>()
             .writes::<byroredux_scripting::HitEvent>(),
     );
+    // Player-spellcasting (PSC-CST-009): the one system that owns the spend. It ticks the casting interval, keeps the
+    // readied spell on the player's list, and on a `CastSpell` edge gates, applies the Magicka and Fatigue damage and
+    // starts the effects through the shared `cast_spell`; `NextSpell` / `PreviousSpell` cycle the readied spell.
+    scheduler.add_exclusive_with_access(
+        Stage::Update,
+        crate::player_cast::player_cast_system,
+        Access::new()
+            .reads_resource::<ActionState>()
+            .reads_resource::<crate::systems::PlayerEntity>()
+            .reads_resource::<crate::systems::PlayerMode>()
+            .reads_resource::<crate::components::VatsState>()
+            .reads_resource::<byroredux_core::character::SpellCastModel>()
+            .reads_resource::<byroredux_scripting::magic::SpellCatalog>()
+            .reads_resource::<byroredux_scripting::ActorValueNames>()
+            .writes_resource::<byroredux_scripting::player_cast::CastState>()
+            .reads::<byroredux_scripting::magic::SpellList>()
+            .writes::<byroredux_scripting::player_cast::ReadiedSpell>()
+            .reads::<byroredux_core::ecs::components::Dead>()
+            .reads::<byroredux_core::ecs::components::ActorValues>()
+            .writes::<byroredux_core::ecs::components::ActorValues>()
+            // `cast_spell` starts the effects and raises the Story Manager `CAST` event.
+            .writes::<byroredux_scripting::magic_effects::ActiveMagicEffects>()
+            .writes::<byroredux_scripting::story_manager::StoryEvent>(),
+    );
 }

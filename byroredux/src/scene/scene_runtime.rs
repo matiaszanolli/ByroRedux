@@ -76,6 +76,7 @@ pub(crate) fn populate_scene_runtime(
     // M43 — Skyrim `COBJ` recipes and the keywords that make a furniture a crafting bench.
     crate::lockpick::install_lockpick_item(world, index);
     crate::armor::install_armor_book(world, index);
+    crate::player_cast::install_spell_cast_model(world, index);
     crate::lockpick::install_terminal_bases(world, index);
     crate::systems::mines::install_mine_book(world, index);
     crate::systems::attraction::install_attraction_book(world, index);

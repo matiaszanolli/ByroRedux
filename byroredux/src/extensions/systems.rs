@@ -703,7 +703,7 @@ pub(crate) fn extension_input_dispatch_system(world: &World, _dt: f32) {
                     return None;
                 };
                 Some(InputActionEvent {
-                    action: sdk_input_action(action),
+                    action: sdk_input_action(action)?,
                     phase,
                 })
             })

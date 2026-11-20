@@ -77,6 +77,7 @@ pub mod misc_stats;
 pub mod location;
 pub mod magic;
 pub mod magic_effects;
+pub mod player_cast;
 pub mod magic_shaders;
 pub mod obscript;
 mod obscript_actions;

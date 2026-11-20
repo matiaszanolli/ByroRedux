@@ -2618,7 +2618,7 @@ using a NukaCola on FNV runs `NukaColaAddCapEffectScript` (`additem caps001 1`) 
 archetypes beyond script and value modifier (summons, light, paralysis ...), area and touch/target delivery,
 resistance.
 
-**Player cast (design, #7078; the [player-spellcasting PRD](../prd/player-spellcasting.md), not built).** Today only the
+**Player cast (design #7078, Phase 1 built #7079; the [player-spellcasting PRD](../prd/player-spellcasting.md)).** Phase 1 builds the ready, gate and settle stages for Self-range spells (`crates/scripting/src/player_cast.rs`, `byroredux/src/player_cast.rs`, `crates/core/src/character/spell_cast.rs`); Touch and Target resolution is Phase 2 and the skill feed Phase 3. Today only the
 console's `magic.cast`, ObScript `Cast` (`obscript_effects/presentation.rs:37`) and a perk's activate-choice
 *Apply Spell* (`perk_entry_points/activate.rs:195`) reach `cast_spell`; none of them charges Magicka or Fatigue or
 feeds a skill, and they stay that way (PSC-CST-007, PSC-USE-005). The player's cast has four stages: **ready** (a

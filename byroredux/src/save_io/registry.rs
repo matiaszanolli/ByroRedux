@@ -90,6 +90,8 @@ pub(crate) const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     "TimedRestorations",
     // #4415 — spell FormIDs (u32) only.
     "SpellList",
+    // PSC-RDY-004 (#7079) — the player's readied spell: one optional spell FormID (u32). Registered after `SpellList`.
+    "ReadiedSpell",
     // Combat state is session-stable: the weapon points into the saved
     // Inventory by u32 index and Dead is a zero-field lifecycle marker.
     // Dead's replacing registration clears a saved absence on the live

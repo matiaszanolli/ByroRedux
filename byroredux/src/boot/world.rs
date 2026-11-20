@@ -185,6 +185,9 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // M47.2 — level-up skill points and perks, banked by grant_experience.
     world.register::<byroredux_core::character::LevelUpPoints>();
     world.register::<byroredux_core::character::SkillUseLevel>();
+    // Player-spellcasting (PSC-RDY-001): the readied spell and the cast's session state.
+    world.register::<byroredux_scripting::player_cast::ReadiedSpell>();
+    world.init_resource::<byroredux_scripting::player_cast::CastState>();
     world.init_resource::<crate::skill_use_emit::StanceTimers>();
     world.init_resource::<crate::skill_use_emit::LevelNotices>();
     world.insert_resource(StringPool::new());
