@@ -18,7 +18,7 @@ fn main() {
     let mut examples: BTreeMap<u8, Vec<String>> = BTreeMap::new();
     let (mut nifs, mut with_positions) = (0, 0);
     for file in bsa.list_files() {
-        if !file.to_ascii_lowercase().ends_with(".nif") {
+        if !byroredux_nif::corpus::is_nif_entry(file) {
             continue;
         }
         nifs += 1;

@@ -186,7 +186,7 @@ using the generic `register_component::<T>()` helper, called from
 `byroredux-core`). The registry is owned by the `DebugDrainSystem`
 (`DebugDrainSystem.registry`), not stored as a World resource.
 
-### Currently registered (85 components)
+### Currently registered (86 components)
 
 | Component | Fields |
 |-----------|--------|
@@ -249,6 +249,7 @@ using the generic `register_component::<T>()` helper, called from
 | `SpellList` | 0 — the actor's spell FormIDs, in arrival order (a perk's Ability spell is one of them, PERK-DX-006) |
 | `CharacterLevel` | level, xp |
 | `LevelUpPoints` | skill_points, skill_point_fraction, perk_points |
+| `SkillUseLevel` | major_increases, attribute_tallies, pending |
 | `DismemberRecord` | gone, killing_blow — body locations recorded severed/exploded (bitmask, 0..=13) and the killing-blow location (VATS-LIMB-008) |
 | `CharacterIdentity` | name, female, race_form_id — the player's chargen choices (overrides the base record's sex and race) |
 | `FactionReputation` | entries — faction reputation values |
@@ -1434,7 +1435,7 @@ byro> components
   TextureHandle
   Transform
   WorldBound
-(85 components)
+(86 components)
 
 byro> entities Inventory
   Entity 12 "saadia"

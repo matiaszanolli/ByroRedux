@@ -149,7 +149,7 @@ fn register_faction_reputation(registry: &mut ComponentRegistry) {
 pub fn register_all(registry: &mut ComponentRegistry) {
     use byroredux_core::animation::{AnimationPlayer, AnimationStack};
     use byroredux_core::character::{
-        CharacterIdentity, CharacterLevel, DismemberRecord, LevelUpPoints, Perks,
+        CharacterIdentity, CharacterLevel, DismemberRecord, LevelUpPoints, Perks, SkillUseLevel,
     };
     use byroredux_scripting::SpellList;
     use byroredux_core::ecs::components::*;
@@ -387,6 +387,8 @@ pub fn register_all(registry: &mut ComponentRegistry) {
         "LevelUpPoints",
         vec!["skill_points", "skill_point_fraction", "perk_points"],
     );
+    // OSL-SAVE-001 (#7050) — Oblivion skill-use leveling: major-skill increases, the attribute tallies and the levels pending.
+    register_component::<SkillUseLevel>(registry, "SkillUseLevel", vec!["major_increases", "attribute_tallies", "pending"]);
     // VATS-LIMB-001 / -008 — the parts recorded gone and the killing-blow location (`vats.limbs`).
     register_component::<DismemberRecord>(registry, "DismemberRecord", vec!["gone", "killing_blow"]);
     // FNV chargen (VCG01) — the name, sex and race the player chose.
