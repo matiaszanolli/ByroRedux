@@ -61,3 +61,32 @@ What that leaves **unsettled** (each becomes a PRD decision, a declared gap or a
   exists, and every arrow flies straight meanwhile. (Skyrim's `PROJ` gravity may be that documented source for Skyrim; Oblivion has none.)
 - **Default is per game (owner, 2026-11-20):** ballistic for Oblivion, straight for Skyrim, each player free to change it. Until ballistic exists the effective trajectory is
   straight in both, and the default of the Oblivion setting resolves to straight with a visible note.
+
+## Skyrim (documented sources only, 2026-11-20)
+
+Sources: UESP *Skyrim:Archery* and *Skyrim:Leveling* (local dump), the CK wiki's *Projectile* page and its *Category:Settings* game-setting list, the UESP Mod File
+Format pages for `PROJ`, `AMMO` and `WEAP`, and a census of `Skyrim.esm` (SE). No executable was read.
+
+| Topic | What the sources give | Status |
+|---|---|---|
+| Draw timing | Nock about 0.4 s, draw `1.66 s / (weapon speed × (1 + Quick Shot 0.3))`, release and rest about 0.6 s: a Long Bow (speed 1) takes 2.66 s (UESP *Archery*, "appears to"). Bow weapon speeds are authored (0.5 Daedric to 1.0). | Documented (observational) |
+| Damage | "The sum of the quality and material of the bow and the arrow, augmented by the bow's draw length. Misfired arrows launched before fully drawing the bow result in a damage penalty"; `+0.5 %` damage per Archery skill point; the Overdraw perk +20 % per rank up to ×2; Critical Shot 10 / 15 / 20 %; Power Shot staggers 50 %; Bullseye 15 % paralysis at 100. **The draw-length scaling has no formula**; the settings `fArrowBowMinTime` 0.8, `fArrowMinPower` 0.35, `fArrowMinBowVelocity` 0.7, `fArrowMinVelocity` 0.2, `fArrowBowFastMult` 1, `fArrowBowSlowMult` 0.5 are listed with no description of how they enter. `fArrowSpeedMult` is listed "No effect". | Partly documented; the partial-draw rule is a **gap** |
+| Trajectory | The arrow leaves tilted up: `f1PArrowTiltUpAngle` 2, `f3PArrowTiltUpAngle` 2.5 (bolts 1), "shoots slightly above the crosshair"; speed and gravity come from the arrow's `PROJ` (`DATA`: gravity, speed, range); "slower bows shoot higher with less drop"; arrows are independent of the skill. Beyond `fVisibleNavmeshMoveDist` (4096) arrows "phase through targets without doing any damage". The CK wiki says only "gravity: how much gravity has an effect on the projectile": **the unit is unspecified**. | Inputs documented; **the gravity unit is a gap** |
+| `PROJ` / `AMMO` | `Skyrim.esm`: 128 `PROJ`, 20 of type Arrow; 17 of those have gravity 0.35, speed 3600 and range 60000 (the others: a quest arrow 0 / 15000 / 60000, and speeds 1000 and 2000); 35 `AMMO` (`DATA`: projectile, flags, damage, value, weight). | Census (plugin data) |
+| Skill XP | `Skill Use Mult × (base XP × skill-specific multipliers) + Skill Use Offset`, Archery use mult **9.3**, offset 0, improve mult 2; the base XP of a bow shot is "Base Weapon Damage of the Bow" with "additional multipliers may apply"; the page marks it "additional verification needed", and the Archery page calls its own equation "thought to resemble". Weapon XP needs a *damaging* hit on a valid target. | **Provisional** at best |
+| Hands and handling | The bow is equipped like any weapon; "arrows remain equipped even if you unequip the bow"; Block bashes with the bow (stamina), Eagle Eye zoom on Block, no blocking with a bow equipped. | Documented |
+
+### Skyrim: the engine today (re-measured at HEAD `2d9bfe7e9`)
+
+- A Skyrim bow in the player's hand **also falls through to the melee swing**: `fire_player_gun` needs `ammo_form != 0`, and the `WEAP` arm that sets `ammo_form` is FO3 / FNV only ("Skyrim uses ETYP for ammo type and per-arrow NAM7; not yet decoded", `items.rs`). Skyrim's ammunition is the *equipped* arrow, which has no engine concept either (`rg EquippedAmmo` is empty).
+- `resolve_shot` would take a Skyrim arrow (`PROJ` is parsed; `AMMO` carries `projectile_form`) but **refuses gravity** unless the projectile is hitscan, and all 17 common arrows have gravity 0.35: ballistic Skyrim arrows hit the same declared gap as Oblivion's, and a straight mode simply ignores the field.
+- `MELEE_ANIM_TYPES = [1, 2]` and `TWO_HANDED_ANIM_TYPES` are the **FO3 / FNV** `wbWeaponAnimTypeEnum` (1 one-hand, 2 two-hand); Skyrim's `DNAM` byte 0 is a different enum (1 sword, 2 dagger, 3 axe, 4 mace, 5 two-hand sword, 6 two-hand axe, **7 bow**, 8 staff, 9 crossbow), so the melee-or-ranged split is wrong for Skyrim weapons generally (an axe or a mace counts as not melee). A cross-game fix the bow depends on, not a bow rule.
+- No Skyrim weapon-hit skill emitter exists: `PendingSkillAdvances` is fed only by scripts and crafting, so Archery XP is a new emitter on Skyrim's XP model, with the same hit gate as Oblivion's.
+- The perks (Overdraw, Critical Shot, Power Shot, Quick Shot, Bullseye) ride the perk entry-point work ([Perk Entry Points PRD](../../docs/prd/perk-entry-points.md)); their hooks would be the places they land, not bow code.
+
+### What the two games share (the PRD's common core)
+
+An equipped-ammo concept and the arrow-per-shot spend; hold-to-draw with a release edge (`ActionState::is_held`, `was_released`); a straight-line arrow on the shared projectile
+flight with the gravity branch left as a declared gap; the trajectory setting in the settings registry; the damage handed to the existing `HitEvent`; the Marksman / Archery feed
+on a damaging hit to a living target. Per game: Oblivion's draw timer and settings (CS wiki), damage rating (UESP) and Marksman 0.8; Skyrim's draw time, `PROJ` speed, tilt angle,
+Archery use mult 9.3 (provisional) and the perk layer.
