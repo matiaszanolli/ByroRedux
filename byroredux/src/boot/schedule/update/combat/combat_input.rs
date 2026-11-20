@@ -86,6 +86,8 @@ pub(super) fn register_combat_input_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_core::character::BowModel>()
             .reads_resource::<crate::components::LoadedCellIndex>()
             .reads_resource::<byroredux_core::settings::SettingsRegistry>()
+            // BOW-DMG-001 — the shooter's Agility, Marksman / Archery, Luck and Fatigue, by name.
+            .reads_resource::<byroredux_scripting::ActorValueNames>()
             .reads_resource::<ActiveCamera>()
             .writes_resource::<crate::bow::BowState>()
             .writes_resource::<crate::systems::projectiles::ActiveProjectiles>()
@@ -94,6 +96,7 @@ pub(super) fn register_combat_input_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_physics::RapierHandles>()
             .reads::<byroredux_core::ecs::components::Dead>()
             .reads::<byroredux_core::ecs::components::EquippedWeapon>()
+            .reads::<byroredux_core::ecs::components::ActorValues>()
             .reads::<byroredux_core::ecs::components::EquippedAmmo>()
             .writes::<byroredux_core::ecs::components::EquippedAmmo>()
             // `remove_items` spends the arrow.

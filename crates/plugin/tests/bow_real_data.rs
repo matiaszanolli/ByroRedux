@@ -7,7 +7,7 @@
 //!
 //! A missing install passes with a skip line; `BYROREDUX_REQUIRE_GAME_DATA=1` fails instead.
 
-use byroredux_core::character::BowModel;
+use byroredux_core::character::{BowModel, ShotTraits};
 use byroredux_plugin::esm::parse_esm;
 use byroredux_plugin::esm::records::{EsmIndex, ItemKind};
 use byroredux_plugin::esm::test_paths;
@@ -40,10 +40,14 @@ fn oblivion_bows_and_arrows() {
         }
     }
     assert_eq!((bows, arrows), (131, 128), "the PRD's census");
-    let ItemKind::Weapon { damage, oblivion_type, .. } = &index.items[&0x0002_5231].kind else { panic!("WeapIronBow is a weapon") };
-    assert_eq!((*damage, *oblivion_type), (8, 5));
+    let ItemKind::Weapon { damage: bow_damage, oblivion_type, .. } = &index.items[&0x0002_5231].kind else { panic!("WeapIronBow is a weapon") };
+    assert_eq!((*bow_damage, *oblivion_type), (8, 5));
     let ItemKind::Ammo { damage, speed, flags, .. } = &index.items[&0x0001_7829].kind else { panic!("Arrow1Iron is ammunition") };
     assert_eq!((*damage, *speed, *flags & 1), (8.0, 1.0, 0));
+    // PRD §7.2 scenario 1: `WeapIronBow` with `Arrow1Iron` at Marksman 5, Agility 50, Luck 50 and full Fatigue.
+    let traits = ShotTraits { attribute: 50.0, skill: 5.0, luck: 50.0, fatigue_fraction: 1.0 };
+    let shot = model.shot_damage(*bow_damage as f32, *damage, traits);
+    assert!((shot - 2.2).abs() < 1e-3, "{shot}");
     // 22 arrows ignore normal weapon resistance (the decoded flag).
     let resistant = index.items.values().filter(|item| matches!(&item.kind, ItemKind::Ammo { flags, .. } if flags & 1 != 0)).count();
     assert_eq!(resistant, 22);

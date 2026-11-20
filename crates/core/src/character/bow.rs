@@ -22,6 +22,29 @@
 
 use crate::ecs::resource::Resource;
 
+/// How the shot's damage is composed (player-archery BOW-DMG-001, BOW-DMG-002). Each rule names the actor values it
+/// reads, so the host asks the model which to look up and holds no per-game name.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum DamageRule {
+    /// Oblivion (UESP *Oblivion:The Complete Damage Formula*): `(bow + arrow) * attribute-and-skill rating *
+    /// (Fatigue / MaxFatigue + 1) / 2`, the rating being [`oblivion_weapon_damage_multiplier`] at full condition
+    /// (the weapon-health term is 1 for the bow and the arrow: bow wear is BOW-NG-007, an arrow has no health).
+    Rating { attribute: &'static str, skill: &'static str },
+    /// Skyrim (UESP *Skyrim:Archery*): `(bow + arrow) * (1 + per_point * skill)`, "each skill point grants a +0.5 %
+    /// bonus". The draw-length scaling and the misfire penalty have no documented formula (Q4).
+    SkillBonus { skill: &'static str, per_point: f32 },
+}
+
+/// What the shot's damage reads from the shooter, as numbers. A missing actor value reads 0; Fatigue reads
+/// `fatigue / max_fatigue`, and a shooter with no Fatigue pool reads full (1).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShotTraits {
+    pub attribute: f32,
+    pub skill: f32,
+    pub luck: f32,
+    pub fatigue_fraction: f32,
+}
+
 /// How an arrow's flight path is chosen: the `gameplay.arrow_trajectory` setting (BOW-SET-001) picks one, and
 /// the rules row names each game's default (BOW-SET-002).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -99,6 +122,7 @@ pub struct BowModel {
     pub class: WeaponClass,
     pub draw: DrawRule,
     pub speed: SpeedRule,
+    pub damage: DamageRule,
     /// The arrow's upward tilt in degrees, first person then third (Skyrim `f1PArrowTiltUpAngle` 2,
     /// `f3PArrowTiltUpAngle` 2.5; Oblivion documents none, 0: BOW-FLT-002).
     pub tilt_degrees: [f32; 2],
@@ -119,6 +143,7 @@ impl BowModel {
         class: WeaponClass::WeaponType(5),
         draw: DrawRule::Timer { base: 0.25, mult: 0.4 },
         speed: SpeedRule::Formula { speed_mult: 1500.0, weak: 0.01 },
+        damage: DamageRule::Rating { attribute: "Agility", skill: "Marksman" },
         tilt_degrees: [0.0, 0.0],
         range_cap: f32::INFINITY,
         default_trajectory: ArrowTrajectory::Ballistic,
@@ -130,6 +155,7 @@ impl BowModel {
         class: WeaponClass::AnimType(7),
         draw: DrawRule::Duration { nock: 0.4, draw: 1.66, rest: 0.6 },
         speed: SpeedRule::Projectile,
+        damage: DamageRule::SkillBonus { skill: "Archery", per_point: 0.005 },
         tilt_degrees: [2.0, 2.5],
         range_cap: 4096.0,
         default_trajectory: ArrowTrajectory::Straight,
@@ -168,6 +194,30 @@ impl BowModel {
         match self.class {
             WeaponClass::WeaponType(bow) => weapon_type == bow,
             WeaponClass::AnimType(bow) => anim_type == bow,
+        }
+    }
+
+    /// The actor-value names the damage reads: the governing attribute (Oblivion's Agility, none for Skyrim) and the
+    /// skill (Marksman, Archery). Luck is read by the Oblivion rule under its own name.
+    #[must_use]
+    pub const fn damage_inputs(&self) -> (Option<&'static str>, &'static str) {
+        match self.damage {
+            DamageRule::Rating { attribute, skill } => (Some(attribute), skill),
+            DamageRule::SkillBonus { skill, .. } => (None, skill),
+        }
+    }
+
+    /// The damage of a shot that leaves with `bow` and `arrow` base damage from a shooter with `traits`, before the
+    /// sneak multiplier and the target's defenses, which the shared hit path applies (BOW-DMG-003, BOW-DMG-004).
+    #[must_use]
+    pub fn shot_damage(&self, bow: f32, arrow: f32, traits: ShotTraits) -> f32 {
+        let base = bow.max(0.0) + arrow.max(0.0);
+        match self.damage {
+            DamageRule::Rating { .. } => {
+                let rating = crate::combat::oblivion_weapon_damage_multiplier(traits.attribute, traits.skill, traits.luck);
+                base * rating * (traits.fatigue_fraction.clamp(0.0, 1.0) + 1.0) / 2.0
+            }
+            DamageRule::SkillBonus { per_point, .. } => base * (1.0 + per_point * traits.skill.max(0.0)),
         }
     }
 
@@ -260,6 +310,31 @@ mod tests {
         assert!(BowModel::OBLIVION.is_bow(5, 0) && !BowModel::OBLIVION.is_bow(0, 7));
         assert!(BowModel::SKYRIM.is_bow(0, 7) && !BowModel::SKYRIM.is_bow(5, 0));
         assert!(!BowModel::SKYRIM.is_bow(0, 9), "a crossbow is a later PRD (BOW-NG-001)");
+    }
+
+    /// Oblivion: `WeapIronBow` (damage 8) with `Arrow1Iron` (damage 8) at Marksman 5, Agility 50, Luck 50 and full
+    /// Fatigue is `(8 + 8) * 0.5 * (0.75 + 0.25) * (0.2 + 0.075) = 2.2`; half Fatigue scales it by `(0.5 + 1) / 2`
+    /// (`bow_damage_follows_the_rating`).
+    #[test]
+    fn bow_damage_follows_the_rating() {
+        let traits = ShotTraits { attribute: 50.0, skill: 5.0, luck: 50.0, fatigue_fraction: 1.0 };
+        let damage = BowModel::OBLIVION.shot_damage(8.0, 8.0, traits);
+        assert!((damage - 2.2).abs() < 1e-4, "{damage}");
+        let tired = BowModel::OBLIVION.shot_damage(8.0, 8.0, ShotTraits { fatigue_fraction: 0.5, ..traits });
+        assert!((tired - 2.2 * 0.75).abs() < 1e-4, "{tired}");
+        // A master marksman at full Fatigue: 16 * 0.5 * 1.25 * 1.7 = 17.
+        let master = BowModel::OBLIVION.shot_damage(8.0, 8.0, ShotTraits { attribute: 100.0, skill: 100.0, luck: 50.0, fatigue_fraction: 1.0 });
+        assert!((master - 17.0).abs() < 1e-3, "{master}");
+        assert_eq!(BowModel::OBLIVION.damage_inputs(), (Some("Agility"), "Marksman"));
+    }
+
+    /// Skyrim: the bow's damage plus the arrow's, times `1 + 0.5 % * Archery`; no attribute, no Fatigue term.
+    #[test]
+    fn skyrim_bow_damage_is_the_sum_with_an_archery_bonus() {
+        let traits = |skill| ShotTraits { attribute: 0.0, skill, luck: 0.0, fatigue_fraction: 0.2 };
+        assert_eq!(BowModel::SKYRIM.shot_damage(7.0, 8.0, traits(0.0)), 15.0);
+        assert!((BowModel::SKYRIM.shot_damage(7.0, 8.0, traits(100.0)) - 22.5).abs() < 1e-4);
+        assert_eq!(BowModel::SKYRIM.damage_inputs(), (None, "Archery"));
     }
 
     #[test]

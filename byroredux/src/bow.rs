@@ -6,11 +6,13 @@
 //! source documents (BOW-DRW-004, BOW-FLT-003). The arrow rides the shared projectile flight
 //! ([`crate::systems::projectiles`]) and its hit takes the shared damage path (BOW-G-004).
 //!
-//! **Phase 1 scope.** The arrow's damage is the bow's base damage plus the arrow's, as the gun's shot is; the
-//! Oblivion rating and the sneak multiplier are Phase 2 (BOW-DMG), and the Marksman feed is Phase 3 (BOW-USE).
+//! **Damage (Phase 2).** The arrow leaves worth the model's `shot_damage`: Oblivion's rating over the bow and the arrow
+//! at the shooter's Agility, Marksman, Luck and Fatigue, Skyrim's sum with the Archery bonus. The sneak multiplier, the
+//! target's armor and Damage Threshold and the death follow at the hit, on the shared path (BOW-DMG-003, -004). The
+//! Marksman feed is Phase 3 (BOW-USE).
 
-use byroredux_core::character::{ArrowTrajectory, BowModel};
-use byroredux_core::ecs::components::{EquippedAmmo, EquippedWeapon, Inventory};
+use byroredux_core::character::{ArrowTrajectory, BowModel, ShotTraits};
+use byroredux_core::ecs::components::{ActorValues, EquippedAmmo, EquippedWeapon, Inventory};
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
@@ -259,7 +261,7 @@ fn release(world: &World, held: f32) -> BowReport {
         .draw_fraction(held, bow.speed)
         .ok_or(Refusal::DrawIncomplete { held, needed: model.full_draw_seconds(bow.speed) })?;
     let (origin, direction) = aim(world, &model).ok_or(Refusal::NoAim)?;
-    let spec = arrow_spec(world, &model, &bow, arrow, fraction)?;
+    let spec = arrow_spec(world, player, &model, &bow, arrow, fraction)?;
     let shot = arrow_shot(world, player, spec, origin, direction).ok_or_else(|| Refusal::Failed("no aim or no speed".into()))?;
     // The spend is at the release (BOW-AMM-003: the trigger is a declared gap). The arrow is spent only once it is made.
     byroredux_scripting::fragment::remove_items(world, player, arrow, 1, None);
@@ -270,9 +272,27 @@ fn release(world: &World, held: f32) -> BowReport {
     Ok(Released { weapon: bow.weapon, arrow, held, draw_fraction: fraction, speed: spec.speed, range: spec.range })
 }
 
+/// The shooter's numbers the damage reads (BOW-DMG-001, BOW-DMG-002), by the actor-value names the model asks for.
+/// A name the load order does not define, or a shooter without the value, reads 0; a shooter with no Fatigue pool
+/// reads full Fatigue.
+pub(crate) fn shot_traits(world: &World, player: EntityId, model: &BowModel) -> ShotTraits {
+    let (attribute, skill) = model.damage_inputs();
+    let read = |name: &str| crate::detection::actor_value(world, player, name);
+    let fatigue = world
+        .try_resource::<byroredux_scripting::ActorValueNames>()
+        .and_then(|names| names.resolve("Fatigue"))
+        .and_then(|form| world.get::<ActorValues>(player).and_then(|values| values.get(form).map(|value| (value.current(), value.undamaged()))));
+    ShotTraits {
+        attribute: attribute.map_or(0.0, read),
+        skill: read(skill),
+        luck: read("Luck"),
+        fatigue_fraction: fatigue.filter(|(_, max)| *max > 0.0).map_or(1.0, |(current, max)| current / max),
+    }
+}
+
 /// What the arrow is made of: the model's speed and range over the arrow's and the projectile's records, and the
-/// damage the shared path will deal (Phase 1: the bow's base damage plus the arrow's).
-fn arrow_spec(world: &World, model: &BowModel, bow: &WieldedBow, arrow: u32, fraction: f32) -> Result<ArrowSpec, Refusal> {
+/// damage the shared path will deal (the model's rule over the bow, the arrow and the shooter).
+fn arrow_spec(world: &World, player: EntityId, model: &BowModel, bow: &WieldedBow, arrow: u32, fraction: f32) -> Result<ArrowSpec, Refusal> {
     let index = world
         .try_resource::<crate::components::LoadedCellIndex>()
         .map(|index| index.0.clone())
@@ -287,7 +307,7 @@ fn arrow_spec(world: &World, model: &BowModel, bow: &WieldedBow, arrow: u32, fra
     let speed = model.arrow_speed(ammo_speed, proj.map_or(0.0, |proj| proj.muzzle_speed), fraction);
     let range = model.range(proj.map_or(0.0, |proj| proj.range));
     Ok(ArrowSpec {
-        damage: bow.damage + ammo_damage.max(0.0),
+        damage: model.shot_damage(bow.damage, ammo_damage, shot_traits(world, player, model)),
         speed,
         range: if range.is_finite() { range } else { OBLIVION_ARROW_RANGE_BU },
         radius: proj.map_or(0.0, |proj| proj.collision_radius),
@@ -433,7 +453,9 @@ mod tests {
         assert_eq!(active.0.len(), 1);
         let arrow = &active.0[0];
         assert_eq!(arrow.shooter, player);
-        assert_eq!(arrow.damage, 16.0, "bow 8 + arrow 8 (Phase 1; the rating is Phase 2)");
+        // No actor values in this world: the rating reads 0 for Agility, Marksman and Luck, so the base of
+        // `(8 + 8) * 0.5 * 0.75 * 0.2` at full Fatigue.
+        assert!((arrow.damage - 1.2).abs() < 1e-4, "{}", arrow.damage);
         assert!((arrow.velocity - byroredux_core::math::Vec3::new(0.0, 0.0, -1500.0)).length() < 1e-2, "{:?}", arrow.velocity);
         assert_eq!(world.resource::<BowState>().shots, 1);
     }
@@ -535,6 +557,83 @@ mod tests {
         let shot = world.resource::<BowState>().last.clone().unwrap().unwrap();
         assert!((shot.held - 1.0).abs() < 1e-3, "two half-second frames of draw: {}", shot.held);
         assert!(bow_in_hand(&world));
+    }
+
+    /// A world whose player has the named actor values (Agility 50, Marksman 5, Luck 50, Fatigue 100 with `fatigue_damage`
+    /// taken off it), for the damage rule.
+    fn with_values(world: &mut World, player: EntityId, pairs: &[(&str, f32)], fatigue_damage: f32) {
+        use byroredux_plugin::esm::records::{AvifRecord, EsmIndex};
+        let mut index = EsmIndex::default();
+        let mut values = Vec::new();
+        for (n, (name, value)) in pairs.iter().chain([("Fatigue", 100.0)].iter()).enumerate() {
+            let form = 0x100 + n as u32;
+            index.actor_values.insert(form, AvifRecord { form_id: form, editor_id: format!("AV{name}"), ..Default::default() });
+            values.push((form, *value));
+        }
+        world.insert_resource(byroredux_scripting::ActorValueNames::from_index(&index));
+        let mut actor_values = ActorValues::from_pairs(values.clone());
+        if fatigue_damage > 0.0 {
+            actor_values.apply_damage(values.last().unwrap().0, fatigue_damage);
+        }
+        world.register::<ActorValues>();
+        world.insert(player, actor_values);
+    }
+
+    /// BOW-DMG-001 (`bow_damage_follows_the_rating`): the arrow leaves worth the rating over the bow and the arrow at
+    /// the player's own Agility, Marksman, Luck and Fatigue — `WeapIronBow` (8) with `Arrow1Iron` (8) at Marksman 5 and
+    /// Agility 50 is 2.2, and a half-spent Fatigue pool takes a quarter off.
+    #[test]
+    fn bow_damage_follows_the_rating() {
+        let (mut world, player) = oblivion();
+        with_values(&mut world, player, &[("Agility", 50.0), ("Marksman", 5.0), ("Luck", 50.0)], 0.0);
+        shoot_now(&world, 1.875).unwrap();
+        assert!((world.resource::<ActiveProjectiles>().0[0].damage - 2.2).abs() < 1e-3);
+        let (mut world, player) = oblivion();
+        with_values(&mut world, player, &[("Agility", 50.0), ("Marksman", 5.0), ("Luck", 50.0)], 50.0);
+        shoot_now(&world, 1.875).unwrap();
+        assert!((world.resource::<ActiveProjectiles>().0[0].damage - 1.65).abs() < 1e-3, "half Fatigue: 2.2 * 0.75");
+    }
+
+    /// BOW-DMG-002: Skyrim's arrow is worth the bow plus the arrow times `1 + 0.5 % * Archery`.
+    #[test]
+    fn a_skyrim_arrow_carries_the_archery_bonus() {
+        let proj = ProjRecord { form_id: 0x500, editor_id: "ArrowIronProjectile".into(), muzzle_speed: 3600.0, range: 5000.0, ..Default::default() };
+        let (mut world, player) = world_with(BowModel::SKYRIM, weapon(7, 0, 7, 1.0), arrow(8.0, 0.0, 0x500), Some(proj));
+        with_values(&mut world, player, &[("Archery", 40.0)], 0.0);
+        shoot_now(&world, BowModel::SKYRIM.full_draw_seconds(1.0)).unwrap();
+        assert!((world.resource::<ActiveProjectiles>().0[0].damage - 18.0).abs() < 1e-4, "(7 + 8) * 1.2");
+    }
+
+    /// BOW-DMG-003 (scenario 1): the arrow flies the shared path, queues a `HitEvent` worth its damage on the living
+    /// actor it meets (the shooter as the aggressor), and `combat_damage_system` lowers that actor's Health by it.
+    #[test]
+    fn an_arrow_lowers_a_living_actors_health() {
+        use byroredux_core::ecs::components::ActorVitals;
+        let (mut world, player) = oblivion();
+        byroredux_scripting::register(&mut world);
+        with_values(&mut world, player, &[("Agility", 100.0), ("Marksman", 100.0), ("Luck", 50.0)], 0.0);
+        world.register::<byroredux_physics::RapierHandles>();
+        world.register::<ActorVitals>();
+        world.register::<byroredux_physics::ActorColliderOwner>();
+        let mut physics = byroredux_physics::PhysicsWorld::new();
+        let handles = physics.spawn_fixed_cuboid_handles(byroredux_core::math::Vec3::splat(20.0), byroredux_core::math::Vec3::new(0.0, 0.0, -500.0));
+        world.insert_resource(physics);
+        const HEALTH: u32 = 0x3E8;
+        let target = world.spawn();
+        world.insert(target, handles);
+        world.insert(target, ActorVitals { health: HEALTH });
+        world.insert(target, ActorValues::from_pairs(vec![(HEALTH, 100.0)]));
+        let shot = shoot_now(&world, 1.875).unwrap();
+        let expected = 16.0 * 1.0625;
+        crate::systems::projectiles::projectile_flight_system(&world, 1.0);
+        byroredux_scripting::pending_trap_hit_flush_system(&world, 0.0);
+        let event = *world.query::<byroredux_scripting::HitEvent>().unwrap().get(target).expect("the actor was hit");
+        assert_eq!(event.aggressor, player);
+        assert!((event.damage - expected).abs() < 1e-3, "{} vs {expected} ({shot})", event.damage);
+        world.insert_resource(crate::combat::CombatState::default());
+        crate::combat::combat_damage_system(&world, 0.0);
+        let health = world.get::<ActorValues>(target).unwrap().current(HEALTH);
+        assert!((health - (100.0 - expected)).abs() < 1e-2, "health {health}");
     }
 
     /// BOW-SET-001: ballistic is in the list, labelled unavailable, and resolves to straight with that stated.

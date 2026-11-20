@@ -1821,6 +1821,46 @@ mod sneak_attack_tests {
         world.get_mut::<ActorValues>(player).unwrap().set_base(sneak, 100.0);
         assert_eq!(sneak_strike(&world, player, target, 10.0), (60.0, true));
     }
+
+    /// Player-archery BOW-DMG-004: a hit from the player's arrow takes the bow's sneak multiplier from the stealth rules
+    /// (Oblivion: 2 at Sneak 0 to 24, 3 from 25), not the melee ladder's 4 and 6, and not a bow-local copy.
+    #[test]
+    fn a_bow_hit_takes_the_bow_sneak_multiplier() {
+        use byroredux_core::ecs::components::{ActorValues, EquippedWeapon, InventoryIndex};
+        use byroredux_plugin::esm::records::{common::CommonItemFields, ItemKind, ItemRecord};
+        use byroredux_plugin::esm::{reader::{GameKind, GlobalSlot}, records::EsmIndex};
+        const BOW: u32 = 0x25231;
+        let (mut world, player, target) = scene(StealthKind::Oblivion, false);
+        let mut index = EsmIndex { game: GameKind::Oblivion, ..Default::default() };
+        index.install_oblivion_actor_values(GlobalSlot::Regular(1)).unwrap();
+        let mut kind = ItemKind::weapon_stub(8, 0);
+        if let ItemKind::Weapon { oblivion_type, .. } = &mut kind {
+            *oblivion_type = 5;
+        }
+        index.items.insert(BOW, ItemRecord { form_id: BOW, common: CommonItemFields::default(), kind });
+        byroredux_scripting::install_actor_value_names(&mut world, &index);
+        crate::inventory::install_catalog(&mut world, &index);
+        // `Oblivion.esm`'s authored bow ladder (2 at Novice, 3 above) over the executable's defaults.
+        world.insert_resource(
+            StealthRules::resolve(StealthKind::Oblivion, |name| match name {
+                "fPerkSneakAttackMarksmanNoviceMult" => Some(2.0),
+                "fPerkSneakAttackMarksmanApprenticeMult"
+                | "fPerkSneakAttackMarksmanJourneymanMult"
+                | "fPerkSneakAttackMarksmanExpertMult"
+                | "fPerkSneakAttackMarksmanMasterMult" => Some(3.0),
+                _ => None,
+            })
+            .0,
+        );
+        world.register::<EquippedWeapon>();
+        world.insert(player, EquippedWeapon { inventory_index: InventoryIndex(0), base_form_id: BOW, damage: 8.0, reach: 0.0, speed: 1.0 });
+        let sneak = index.actor_value_form_id("Sneak").unwrap();
+        world.insert(player, ActorValues::from_pairs([(sneak, 20.0)]));
+        world.insert(target, Awareness { terms: byroredux_core::stealth::DetectionTerms { value: -5.0, ..Default::default() }, ..Default::default() });
+        assert_eq!(sneak_strike(&world, player, target, 10.0), (20.0, true), "bow, Novice: x2");
+        world.get_mut::<ActorValues>(player).unwrap().set_base(sneak, 30.0);
+        assert_eq!(sneak_strike(&world, player, target, 10.0), (30.0, true), "bow, Apprentice: x3");
+    }
 }
 
 #[cfg(test)]

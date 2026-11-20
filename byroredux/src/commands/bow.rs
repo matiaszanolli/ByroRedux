@@ -109,8 +109,23 @@ impl ConsoleCommand for BowStatusCommand {
         } else {
             format!("range={:.0} BU (provisional: no source documents an arrow range here)", bow::OBLIVION_ARROW_RANGE_BU)
         });
+        lines.push(damage_line(&model));
         lines.push(feed_line(world));
         CommandOutput::lines(lines)
+    }
+}
+
+/// How the shot's damage is made and what is not modelled (BOW-DX-001): the rule and each declared gap.
+fn damage_line(model: &BowModel) -> String {
+    use byroredux_core::character::DamageRule;
+    match model.damage {
+        DamageRule::Rating { attribute, skill } => format!(
+            "damage=(bow + arrow) x {attribute}-and-{skill} rating x Fatigue term (documented); bow and arrow condition read as 1 (declared gap); the sneak multiplier, armor factor and weapon resistance act at the hit, and Oblivion has no armor factor or weapon resistance for any weapon yet (declared gap; the arrow's resistance flag is decoded and unused)"
+        ),
+        DamageRule::SkillBonus { skill, per_point } => format!(
+            "damage=(bow + arrow) x (1 + {:.1}% x {skill}) (documented); a release before a full draw fires nothing (a declared deviation, no partial-draw rule is documented)",
+            per_point * 100.0
+        ),
     }
 }
 
