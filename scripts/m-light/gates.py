@@ -15,6 +15,7 @@ Cornell gates on linear captures (RLT-REF-007):
   A15  calibration and materials  (RLT-REF-010, RLT-REF-014)
   A16  closure                    (RLT-REF-011, RLT-REF-018, RLT-REF-020)
   A18  apparatus cost             (RLT-REF-016)
+  RCG-COV  traced-share coverage  (RCG-VAL-002, -004; radiance-cache-gi-coverage.md)
 
 Every metric is written to manifest.tsv with its noise floor on both sides
 (RLT-REF-004, RLT-REF-006): each side is captured twice with different
@@ -35,9 +36,11 @@ import argparse
 import hashlib
 import math
 import os
+import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -657,6 +660,95 @@ def gate_traced_share_ao(engine: Engine, store: ReferenceStore, ctx: Context, sp
         row.threshold = "|change|<=floor_combined"
         row.passed = "yes" if abs(value) <= row.floor_combined else "no"
         rows.append((row, ""))
+    return rows
+
+
+# ── RCG coverage (RCG-VAL-002, RCG-VAL-004) ──────────────────────────────
+
+GAMES_ROOT = Path(os.environ.get("BYROREDUX_GAMES_ROOT", "/mnt/data/SteamLibrary/steamapps/common"))
+COVERAGE_MANIFEST = REPO / "docs" / "audits" / "RCG_coverage_manifest.tsv"
+COVERAGE_THRESHOLD = 0.99  # radiance-cache-gi-coverage.md Q6
+COVERAGE_TIERS = (0, 1, 2, 3)
+EXIT_SKIP = 77  # the repo's SKIP code (docs/smoke-tests/README.md): the data was absent, nothing was judged
+
+
+def read_coverage_manifest(path: Path = COVERAGE_MANIFEST) -> list[dict[str, str]]:
+    lines = [l for l in path.read_text().splitlines() if l and not l.startswith("#")]
+    header, *rows = [l.split("\t") for l in lines]
+    return [dict(zip(header, row)) for row in rows]
+
+
+def coverage_scene_spec(entry: dict[str, str]) -> tuple[Path, list[str]]:
+    """(working directory, load arguments) of a manifest scene."""
+    if entry["launch"] != "bench":
+        return GAMES_ROOT / entry["data_dir"], shlex.split(entry["launch"])
+    script = ('source "$REPO/scripts/bench-scenes.sh"; run_scene_args "$1"; '
+              'printf "%s\\n" "$(scene_dir "$1")"; printf "%s\\0" "${ARGS[@]}"')
+    out = subprocess.run(["bash", "-c", script, "bench-scenes", entry["scene"]],
+                         env=dict(os.environ, REPO=str(REPO), GAMES_ROOT=str(GAMES_ROOT)),
+                         capture_output=True, check=True).stdout
+    head, _, blob = out.partition(b"\n")
+    return Path(head.decode()), [a.decode() for a in blob.split(b"\0") if a]
+
+
+def coverage_from_views(traced: np.ndarray, eligible: np.ndarray) -> tuple[float, int, int]:
+    """(coverage, eligible pixels, eligible pixels with a traced share): the PRD's definition,
+    measured on `RENDER_DEBUG_TRACED_SHARE` over the `gi_eligible` mask. A traced share is non-zero
+    when any channel is (the frames of one capture are averaged, so a pixel traced in any of them
+    counts)."""
+    mask = eligible.min(axis=2) > 0.5
+    total = int(mask.sum())
+    if total == 0:
+        return 0.0, 0, 0
+    hit = int((mask & (traced.max(axis=2) > 0.0)).sum())
+    return hit / total, total, hit
+
+
+def gate_coverage(engine: Engine, ctx: Context, only: set[str] | None = None):
+    """RCG-VAL-002: coverage per scene and tier against the Q6 threshold. A scene whose data is
+    absent yields one `skip` row, never a pass (RCG-VAL-004)."""
+    rows = []
+    for entry in read_coverage_manifest():
+        scene = entry["scene"]
+        if only and scene not in only:
+            continue
+        workdir, load_args = coverage_scene_spec(entry)
+        if not workdir.is_dir():
+            log(f"RCG-COV {scene}: {workdir} is absent, skipped")
+            row = Row("RCG-COV", scene, "all", "coverage", float("nan"), 0.0, 0.0,
+                      passed="skip", threshold=f">={COVERAGE_THRESHOLD}", reference_spp=0)
+            rows.append((row, ""))
+            continue
+        for tier in COVERAGE_TIERS:
+            views = {}
+            for view in ("traced_share", "gi_eligible"):
+                exr = engine.out / "engine" / f"rcg_cov_{scene}_t{tier}_{view}.exr"
+                exr.parent.mkdir(parents=True, exist_ok=True)
+                args = [str(engine.binary), *load_args,
+                        "--upscaler", "taa", "--rt-test-no-jitter", "--rt-test-ray-quality-tier", str(tier),
+                        "--camera-pos", entry["camera_pos"], "--camera-forward", entry["camera_forward"],
+                        "--render-debug-mode", view, "--bench-frames", "30", "--bench-mode", "renderer-static",
+                        "--linear-capture", str(exr), "--linear-capture-frames", str(engine.capture_frames)]
+                log_path = exr.with_suffix(".log")
+                with tempfile.TemporaryDirectory() as settings_dir, open(log_path, "w") as log_file:
+                    env = dict(engine.env_base, RUST_LOG="error", BYRO_CLOUD_SEED="0",
+                               BYROREDUX_SETTINGS_PATH=str(Path(settings_dir) / "settings.toml"))
+                    subprocess.run(args, cwd=workdir, env=env, stdout=log_file, stderr=subprocess.STDOUT,
+                                   timeout=900)
+                text = log_path.read_text(errors="replace")
+                if "linear-capture: wrote" not in text or "nonfinite=0)" not in text:
+                    raise SystemExit(f"m-light: coverage capture {scene} tier {tier} {view} failed; see {log_path}")
+                views[view] = load_exr(exr)
+            coverage, total, hit = coverage_from_views(views["traced_share"], views["gi_eligible"])
+            ok = total > 0 and coverage >= COVERAGE_THRESHOLD
+            region = f"tier{tier}"
+            rows.append((Row("RCG-COV", scene, region, "coverage", coverage, 0.0, 0.0,
+                             passed="yes" if ok else "no", threshold=f">={COVERAGE_THRESHOLD}",
+                             reference_spp=0), ""))
+            rows.append((Row("RCG-COV", scene, region, "eligible_pixels", float(total), 0.0, 0.0,
+                             passed="report", reference_spp=0), ""))
+            rows.append((Row("RCG-COV", scene, region, "traced_pixels", float(hit), 0.0, 0.0,
+                             passed="report", reference_spp=0), ""))
     return rows
 
 
@@ -1450,6 +1542,8 @@ def main() -> int:
     parser.add_argument("--cache", type=Path, default=None,
                         help="reference cache (default: <out>/reference-cache)")
     parser.add_argument("--gates", default="A15,A16")
+    parser.add_argument("--coverage-scenes", default="",
+                        help="RCG-COV: comma-separated manifest scenes (default: all)")
     parser.add_argument("--tier", type=int, default=3)
     parser.add_argument("--spp", type=int, default=1024)
     parser.add_argument("--frames", type=int, default=64, help="engine frames averaged per capture")
@@ -1503,6 +1597,8 @@ def main() -> int:
         rows += gate_gi_deficit(engine, store, ctx, args.spp)
     if "A8" in gates:
         rows += gate_traced_share_ao(engine, store, ctx, args.spp)
+    if "RCG-COV" in gates:
+        rows += gate_coverage(engine, ctx, {s for s in args.coverage_scenes.split(",") if s} or None)
     if gates & {"A2", "A4"}:
         rows += gate_penumbra(engine, store, ctx, args.spp, gates)
     if "A5" in gates:
@@ -1541,6 +1637,7 @@ def main() -> int:
         meta.write(f"reference_render_seconds={store.timings['seconds']:.1f}\nwall_seconds={wall:.1f}\n")
 
     failed = [r for r, _ in rows if r.passed == "no"]
+    skipped = [r for r, _ in rows if r.passed == "skip"]
     for row, _ in rows:
         log(f"{row.gate} {row.case:24s} {row.region:18s} {row.metric:22s} {row.value:+.6f} "
             f"floor {row.floor_combined:.2e} {row.passed}")
@@ -1549,6 +1646,10 @@ def main() -> int:
         f"{store.timings['rendered']} rendered in {store.timings['seconds']:.1f} s, "
         f"{store.timings['cached']} cached)")
     log(f"manifest: {manifest}")
+    if skipped and len(skipped) == len(rows):
+        # RCG-VAL-004: nothing was measured, so nothing may read as a pass.
+        log(f"SKIP: the data for {len(skipped)} row(s) is absent (exit {EXIT_SKIP})")
+        return EXIT_SKIP
     if failed:
         log(f"{len(failed)} gate row(s) failed")
         return 1

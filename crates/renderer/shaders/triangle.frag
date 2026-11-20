@@ -221,6 +221,7 @@ void main() {
         || (legacyDebugMode && (vizFlags & DBG_VIZ_DIRECT) != 0u);
     bool viewTracedShare = debugMode == RENDER_DEBUG_TRACED_SHARE;
     bool viewRadianceCache = debugMode == RENDER_DEBUG_RADIANCE_CACHE;
+    bool viewGiEligible = debugMode == RENDER_DEBUG_GI_ELIGIBLE;
     bool viewIndirectOnly = debugMode == RENDER_DEBUG_INDIRECT_ONLY
         || (legacyDebugMode && (vizFlags & DBG_VIZ_RAW_INDIRECT) != 0u);
     bool viewMaterialLobe = debugMode == RENDER_DEBUG_MATERIAL_LOBE
@@ -4707,11 +4708,14 @@ void main() {
     if ((mat.materialFlags & MAT_FLAG_LAMBERTIAN_REFERENCE) != 0u) {
         primaryDiffuseWeight = vec3(1.0 - metalness);
     }
-    bool giTransportEligible = giRayEnabled
-        && rayBudget.maxPathSegments > 0u
-        && rayBudget.maxShadedHits > 0u
+    // RCG PRD §2 — the material conditions of eligibility, with no ray-budget, fade or footprint term:
+    // `render.debug gi_eligible` draws exactly this, and coverage is measured over it (RCG-VAL-002).
+    bool giMaterialEligible = giRayEnabled
         && !isWindow && !isGlass && giEmissiveLum < 0.01
         && pathLuminance(primaryDiffuseWeight) > 1e-5;
+    bool giTransportEligible = giMaterialEligible
+        && rayBudget.maxPathSegments > 0u
+        && rayBudget.maxShadedHits > 0u;
     float giDist = length(fragWorldPos - cameraPos.xyz);
     float giFade = 1.0 - smoothstep(4000.0, 6000.0, giDist);
     giTransportEligible = giTransportEligible && giFade > 0.01;
@@ -5240,6 +5244,11 @@ void main() {
         // lookup does not exist yet, so every fragment reports none. The include's author gives this branch
         // the level and hit encoding once the lookup runs; nothing else needs to change for the view.
         outColor = vec4(1.0, 0.0, 1.0, 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(1.0);
+    } else if (viewGiEligible) {
+        // RCG-VAL-002 — the eligible-pixel mask: white where the primary surface is GI-eligible.
+        outColor = vec4(vec3(giMaterialEligible ? 1.0 : 0.0), 1.0);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(1.0);
     } else if (viewTracedShare) {

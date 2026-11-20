@@ -830,7 +830,7 @@ word. Modes are `final`, `shadow_visibility`, `selected_light`, `direct_only`,
 enters `indirectLight`, M-LIGHT RLT-GI-009), `filtered_direct` (`direct_only`
 with the shadow filter's correction, RLT-SHD-009), `shadow_filter_radius`
 (the shadow filter reach from blue at one pixel to red at the tier maximum,
-PAF-011), `radiance_cache` (the radiance cache's level and hit per pixel, RCG-DBG-001; magenta is "no sample", which is every fragment until the cache's lookup exists), and `restir_history` (the direct-light
+PAF-011), `radiance_cache` (the radiance cache's level and hit per pixel, RCG-DBG-001; magenta is "no sample", which is every fragment until the cache's lookup exists), `gi_eligible` (the eligible-pixel mask coverage is measured over, RCG-VAL-002: white where the primary surface meets the material conditions of GI eligibility), and `restir_history` (the direct-light
 shadow-ratio history: grey = length over the active cap, green tint = the deep
 scene-static tail, red = rejected this frame, blue = a blended decal borrowing
 its surface's history); the legacy

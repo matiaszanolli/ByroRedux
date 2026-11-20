@@ -2314,7 +2314,10 @@ pub const RENDER_DEBUG_SHADOW_FILTER_RADIUS: u32 = 20;
 // RCG-DBG-001 — the radiance cache's level and whether the lookup hit, per pixel. Magenta is "no sample":
 // the main pass paints it for every fragment until the cache's lookup exists.
 pub const RENDER_DEBUG_RADIANCE_CACHE: u32 = 21;
-pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_RADIANCE_CACHE;
+// RCG-VAL-002 — the eligible-pixel mask: white where a pixel's primary surface meets the material
+// conditions of GI eligibility (PRD §2), black elsewhere, with no ray-budget or distance term in it.
+pub const RENDER_DEBUG_GI_ELIGIBLE: u32 = 22;
+pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_GI_ELIGIBLE;
 pub const RENDER_DEBUG_LEGACY_FLAGS: u32 = u32::MAX;
 
 pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
@@ -2343,6 +2346,7 @@ pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
     ("RENDER_DEBUG_VOLUMETRIC_RADIANCE", RENDER_DEBUG_VOLUMETRIC_RADIANCE),
     ("RENDER_DEBUG_SHADOW_FILTER_RADIUS", RENDER_DEBUG_SHADOW_FILTER_RADIUS),
     ("RENDER_DEBUG_RADIANCE_CACHE", RENDER_DEBUG_RADIANCE_CACHE),
+    ("RENDER_DEBUG_GI_ELIGIBLE", RENDER_DEBUG_GI_ELIGIBLE),
     ("RENDER_DEBUG_MODE_MAX", RENDER_DEBUG_MODE_MAX),
     ("RENDER_DEBUG_LEGACY_FLAGS", RENDER_DEBUG_LEGACY_FLAGS),
 ];
@@ -3457,6 +3461,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Uint RENDER_DEBUG_FILTERED_DIRECT),
     shader_define!(Uint RENDER_DEBUG_SHADOW_FILTER_RADIUS),
     shader_define!(Uint RENDER_DEBUG_RADIANCE_CACHE),
+    shader_define!(Uint RENDER_DEBUG_GI_ELIGIBLE),
     shader_define!(Uint RENDER_DEBUG_MODE_MAX),
     shader_define!(Uint RENDER_DEBUG_LEGACY_FLAGS),
     HeaderLine::Blank,
