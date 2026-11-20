@@ -607,6 +607,11 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
         swim.is_some(),
     );
 
+    // #7056 — the time this body has spent falling (below the height it last stood at), reported on the frame it lands.
+    let landed_fall = world
+        .try_resource_mut::<byroredux_core::character::FallTracker>()
+        .and_then(|mut tracker| tracker.step([new_pos.x, new_pos.y, new_pos.z], grounded, swim.is_some(), dt));
+
     // Diagnostic for M28.5 smoke-testing — log body state for the
     // first 5 frames + when grounded transitions + every 60 frames
     // if airborne. Surfaces "I fell into the void" / "I'm stuck in a
@@ -703,6 +708,9 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     sync_player_water_contact(world, player_entity, water_contact, current_pos.y);
     if drowning_damage.whole > 0.0 {
         apply_player_drowning_damage(world, player_entity, drowning_damage.whole);
+    }
+    if let Some(seconds) = landed_fall {
+        fall_landing(world, player_entity, seconds);
     }
     // #5548 — authored harmful-water damage is NOT applied here. The player
     // publishes its column as a `WaterContact` just above and carries
@@ -1663,6 +1671,23 @@ fn advance_breath(
             remainder: damage - whole,
         },
     )
+}
+
+/// #7056 — a landing after `seconds` of falling: Oblivion's fall damage (`FallModel`, the `fJumpFall*` rule at the
+/// player's Acrobatics) comes off Health through the same sink drowning uses, and a damaging fall feeds Acrobatics once
+/// at usage 1 (UESP: 3.0 "each time you take damage from falling ... it does not matter how much damage"). A game with
+/// no fall rules takes none. Returns the damage dealt.
+pub(crate) fn fall_landing(world: &World, player: EntityId, seconds: f32) -> f32 {
+    let Some(model) = world.try_resource::<byroredux_core::character::FallModel>().map(|model| *model) else {
+        return 0.0;
+    };
+    let damage = model.damage(seconds, crate::detection::actor_value(world, player, "Acrobatics"));
+    if damage > 0.0 {
+        log::info!("fall: landed after {seconds:.2}s of falling, {damage:.1} damage");
+        apply_player_drowning_damage(world, player, damage);
+        crate::skill_use_emit::on_fall(world);
+    }
+    damage
 }
 
 fn apply_player_drowning_damage(world: &World, player: EntityId, damage: f32) {
@@ -2907,6 +2932,57 @@ mod tests {
                 && production.contains("damage_per_second: state.damage_per_second"),
             "the player must keep publishing the damage on its WaterContact"
         );
+    }
+
+    /// #7056: a landing after a fall that hurts takes the documented damage off Health and feeds Acrobatics once at usage 1
+    /// (3.0), however much it took; a fall too short to hurt, and a game with no fall rules, do neither.
+    #[test]
+    fn a_damaging_landing_costs_health_and_feeds_acrobatics() {
+        use byroredux_core::character::{CharacterRuleset, FallModel, LevelingModel};
+        use byroredux_plugin::esm::records::{AvifRecord, EsmIndex};
+        use byroredux_scripting::oblivion_skill_use::PendingSkillUse;
+        const ACROBATICS_AV: u32 = 0x3E;
+        let build = |model: Option<FallModel>| {
+            let mut world = World::new();
+            world.register::<ActorValues>();
+            world.register::<ActorVitals>();
+            world.register::<Dead>();
+            world.register::<byroredux_scripting::story_manager::StoryEvent>();
+            world.insert_resource(crate::combat::PendingDeathReconciliations::default());
+            world.insert_resource(CharacterRuleset::new(LevelingModel::OBLIVION));
+            world.insert_resource(PendingSkillUse::default());
+            let mut index = EsmIndex::default();
+            index.actor_values.insert(ACROBATICS_AV, AvifRecord { form_id: ACROBATICS_AV, editor_id: "AVAcrobatics".into(), ..Default::default() });
+            world.insert_resource(byroredux_scripting::ActorValueNames::from_index(&index));
+            if let Some(model) = model {
+                world.insert_resource(model);
+            }
+            let player = world.spawn();
+            world.insert(player, ActorVitals { health: 7 });
+            world.insert(player, ActorValues::from_pairs([(7, 200.0), (ACROBATICS_AV, 0.0)]));
+            (world, player)
+        };
+        let acrobatics = |world: &World| -> Vec<(u32, f32)> { world.resource::<PendingSkillUse>().0.iter().map(|r| (r.skill, r.amount)).collect() };
+        // A 0.5 s fall at Acrobatics 0: 0.5 * 80 * 1.25 = 50.
+        let (world, player) = build(Some(FallModel::OBLIVION));
+        let damage = fall_landing(&world, player, 0.5);
+        assert!((damage - 50.0).abs() < 1e-3, "{damage}");
+        assert!((world.get::<ActorValues>(player).unwrap().current(7) - 150.0).abs() < 1e-3);
+        assert_eq!(acrobatics(&world), vec![(26, 3.0)], "Acrobatics, usage 1");
+        // A fall under fJumpFallTimeMin does nothing and feeds nothing.
+        let (world, player) = build(Some(FallModel::OBLIVION));
+        assert_eq!(fall_landing(&world, player, 0.1), 0.0);
+        assert_eq!(world.get::<ActorValues>(player).unwrap().current(7), 200.0);
+        assert!(acrobatics(&world).is_empty());
+        // A game with no fall rules takes no fall damage.
+        let (world, player) = build(None);
+        assert_eq!(fall_landing(&world, player, 2.0), 0.0);
+        assert_eq!(world.get::<ActorValues>(player).unwrap().current(7), 200.0);
+        assert!(acrobatics(&world).is_empty());
+        // A fall that kills still feeds (the damage counts, not the survival) and marks the death.
+        let (world, player) = build(Some(FallModel::OBLIVION));
+        fall_landing(&world, player, 3.0);
+        assert!(world.get::<Dead>(player).is_some());
     }
 
     #[test]

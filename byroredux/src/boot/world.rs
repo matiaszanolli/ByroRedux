@@ -193,6 +193,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_core::ecs::components::EquippedAmmo>();
     world.init_resource::<byroredux_scripting::player_cast::CastState>();
     world.init_resource::<crate::bow::BowState>();
+    // #7056 — the player's fall clock (transient).
+    world.init_resource::<byroredux_core::character::FallTracker>();
     world.init_resource::<crate::skill_use_emit::StanceTimers>();
     world.init_resource::<crate::skill_use_emit::LevelNotices>();
     world.insert_resource(StringPool::new());

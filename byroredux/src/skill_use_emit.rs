@@ -240,6 +240,12 @@ pub(crate) fn on_jump(world: &World) {
     byroredux_scripting::oblivion_skill_use::queue_skill_use(world, ACROBATICS, 0, 0.0);
 }
 
+/// The player landed from a fall that hurt (#7056): feed Acrobatics at usage 1, the `SKIL` second use value (3.0; UESP:
+/// "each time you take damage from falling ... it does not matter how much damage you take").
+pub(crate) fn on_fall(world: &World) {
+    byroredux_scripting::oblivion_skill_use::queue_skill_use(world, ACROBATICS, 1, 0.0);
+}
+
 /// What the level system has already told the player: the count of pending levels it announced. `None` until
 /// the first frame, so a save that loads with a level pending does not announce it again. Session state,
 /// `NOT_SAVED_BY_DESIGN`.

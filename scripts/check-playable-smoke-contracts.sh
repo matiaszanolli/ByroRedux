@@ -136,7 +136,7 @@ for name in dt1-dialogue-layers m42-eat-sleep sm1-story-manager dt2-skyrim-force
     xct-census xct-scripted-move m65-stealth-detection m65-robotics-expert \
     m48-fo4-hud-compass m48-fo4-hud-meters m48-skyrim-hud-meters m48-menu-stack \
     oblivion-actor-values oblivion-live-load-plugin-set \
-    m42-oblivion-packages m42-skyrim-ambient oblivion-level-up oblivion-spellcasting oblivion-archery skyrim-archery oblivion-block; do
+    m42-oblivion-packages m42-skyrim-ambient oblivion-level-up oblivion-spellcasting oblivion-archery skyrim-archery oblivion-block oblivion-fall; do
     smoke="$ROOT_DIR/docs/smoke-tests/$name.sh"
     set +e
     output="$(env "${DATA_NEUTRALISE[@]}" "$smoke" 2>&1)"

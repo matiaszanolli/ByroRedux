@@ -458,6 +458,8 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("SpellCastModel", "the Oblivion spell-cast rules, re-derived at load from the profile's spell_cast row and the load order's GMSTs by install_spell_cast_model; saving it would freeze a mod's tuning across loads"),
         ("BowModel", "the Oblivion / Skyrim bow rules, re-derived at load from the profile's bow row and the load order's GMSTs by install_bow_model; saving it would freeze a mod's tuning across loads"),
         ("BlockModel", "the Oblivion block rules, re-derived at load from the profile's block row by install_block_model"),
+        ("FallModel", "the Oblivion fall-damage rules, re-derived at load from the profile's fall row and the load order's fJumpFall* GMSTs by install_fall_model"),
+        ("FallTracker", "the player's fall clock (the time spent below the takeoff height); a load starts with the body unplaced and no fall in flight"),
         ("CastState", "session state of the cast (the casting interval's remaining seconds and the last report for cast.status); a load starts with no cast in flight"),
         ("BowState", "session state of the bow (the draw held so far, the interval's remaining seconds, the last report for bow.status); a load starts with no draw in flight"),
         // ── #6350 VATS session state ────────────────────────────────

@@ -8,7 +8,7 @@
 
 use super::{
     fallout3_ruleset_with_gmst, fallout4_ruleset_with_gmst, falloutnv_ruleset_with_gmst, oblivion_ruleset, skyrim_ruleset, CharacterRuleset, CrimeModel,
-    SkillSet, SpellCastModel, StanceModel, VatsModel, ArmorModel, BlockModel, BowModel,
+    SkillSet, SpellCastModel, StanceModel, VatsModel, ArmorModel, BlockModel, BowModel, FallModel,
 };
 
 /// A sourced FO3/FNV NPC Health curve (#5238): the record's `DATA` Base
@@ -338,6 +338,9 @@ pub struct CharacterRulesProfile {
     /// #7054 — the block rules (what a shield, a weapon or bare hands stops), where Block is a modelled defense
     /// (Oblivion). A row of its own so the damage path never tests the game: it reads the installed `BlockModel`.
     block: Option<BlockModel>,
+    /// #7056 — the fall-damage rules (`fJumpFall*`), where a fall hurts the player (Oblivion). A row of its own so the
+    /// controller never tests the game: it reads the installed `FallModel`.
+    fall: Option<FallModel>,
     /// M65 (SNK-STN-005) — where the speed in the sneak stance comes from.
     /// Every game has the stance (PRD Q2); a row without a source is
     /// [`StanceModel::NONE`], which leaves the speed unscaled.
@@ -380,6 +383,7 @@ impl CharacterRulesProfile {
         spell_cast: None,
         bow: None,
         block: None,
+        fall: None,
         stance: StanceModel::NONE,
         stealth: crate::stealth::StealthKind::SightOnly,
         indicator: crate::stealth::IndicatorModel::NONE,
@@ -409,6 +413,7 @@ impl CharacterRulesProfile {
         spell_cast: Some(SpellCastModel::OBLIVION),
         bow: Some(BowModel::OBLIVION),
         block: Some(BlockModel::OBLIVION),
+        fall: Some(FallModel::OBLIVION),
         stance: StanceModel::OBLIVION,
         stealth: crate::stealth::StealthKind::Oblivion,
         indicator: crate::stealth::IndicatorModel::OBLIVION,
@@ -449,6 +454,7 @@ impl CharacterRulesProfile {
         spell_cast: None,
         bow: None,
         block: None,
+        fall: None,
         stance: StanceModel::FALLOUT,
         stealth: crate::stealth::StealthKind::Fallout3,
         indicator: crate::stealth::IndicatorModel::FALLOUT,
@@ -494,6 +500,7 @@ impl CharacterRulesProfile {
         spell_cast: None,
         bow: None,
         block: None,
+        fall: None,
         stance: StanceModel::FALLOUT,
         stealth: crate::stealth::StealthKind::FalloutNv,
         indicator: crate::stealth::IndicatorModel::FALLOUT,
@@ -542,6 +549,7 @@ impl CharacterRulesProfile {
         spell_cast: None,
         bow: Some(BowModel::SKYRIM),
         block: None,
+        fall: None,
         stance: StanceModel::SKYRIM,
         stealth: crate::stealth::StealthKind::Skyrim,
         indicator: crate::stealth::IndicatorModel::SKYRIM,
@@ -588,6 +596,7 @@ impl CharacterRulesProfile {
         spell_cast: None,
         bow: None,
         block: None,
+        fall: None,
         stance: StanceModel::FALLOUT4,
         // `Fallout4.exe`'s detection (#6996).
         stealth: crate::stealth::StealthKind::Fallout4,
@@ -626,6 +635,7 @@ impl CharacterRulesProfile {
         spell_cast: None,
         bow: None,
         block: None,
+        fall: None,
         stance: StanceModel::NONE,
         stealth: crate::stealth::StealthKind::SightOnly,
         indicator: crate::stealth::IndicatorModel::NONE,
@@ -667,6 +677,7 @@ impl CharacterRulesProfile {
         spell_cast: None,
         bow: None,
         block: None,
+        fall: None,
         stance: StanceModel::NONE,
         stealth: crate::stealth::StealthKind::Starfield,
         indicator: crate::stealth::IndicatorModel::STARFIELD,
@@ -785,6 +796,13 @@ impl CharacterRulesProfile {
     #[must_use]
     pub const fn block(self) -> Option<BlockModel> {
         self.block
+    }
+
+    /// The fall-damage rules' compiled-in defaults, `None` where the engine models no fall damage (everything but
+    /// Oblivion).
+    #[must_use]
+    pub const fn fall(self) -> Option<FallModel> {
+        self.fall
     }
 
     /// M65 (SNK-STN-005) — the sneak-stance speed source.

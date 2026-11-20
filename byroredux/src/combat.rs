@@ -531,6 +531,19 @@ fn target_block(world: &World, aggressor: EntityId, target: EntityId) -> Option<
 }
 
 /// Install (or, for a game without block rules, remove) the [`BlockModel`] for a freshly loaded index.
+/// Install (or, for a game without fall damage, remove) the [`FallModel`](byroredux_core::character::FallModel) for a freshly
+/// loaded index, retuned by the load order's `fJumpFall*` settings (#7056).
+pub(crate) fn install_fall_model(world: &mut World, index: &byroredux_plugin::esm::records::EsmIndex) {
+    match index.character_rules.fall() {
+        Some(model) => {
+            world.insert_resource(model.with_gmst(|name| index.game_setting_float(name)));
+        }
+        None => {
+            world.remove_resource::<byroredux_core::character::FallModel>();
+        }
+    }
+}
+
 pub(crate) fn install_block_model(world: &mut World, index: &byroredux_plugin::esm::records::EsmIndex) {
     match index.character_rules.block() {
         Some(model) => {

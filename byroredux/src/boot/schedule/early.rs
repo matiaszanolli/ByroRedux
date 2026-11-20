@@ -36,6 +36,10 @@ pub(super) fn register_early_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::ecs::components::Sneaking>()
             // #7051 — a jump queues Acrobatics' skill use (Oblivion).
             .writes_resource::<byroredux_scripting::oblivion_skill_use::PendingSkillUse>()
+            // #7056 — a damaging landing (Oblivion): the fall clock, the fall rules and the Acrobatics skill read by name.
+            .writes_resource::<byroredux_core::character::FallTracker>()
+            .reads_resource::<byroredux_core::character::FallModel>()
+            .reads_resource::<byroredux_scripting::ActorValueNames>()
             .reads_resource::<byroredux_core::character::CharacterRuleset>()
             .reads_resource::<ActiveCamera>()
             .reads_resource::<InputState>()

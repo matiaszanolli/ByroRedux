@@ -62,6 +62,8 @@
 //!   settings, the skill's class, and banking with rollover.
 //! * [`block`] — [`BlockModel`] / [`BlockGuard`]: Oblivion's block (how much of a hit a shield, a weapon or bare hands stops
 //!   at a given Block skill; #7054).
+//! * [`fall`] — [`FallModel`] / [`FallTracker`]: Oblivion's fall damage (the `fJumpFall*` rule, and the time a body spends
+//!   below its takeoff height; #7056).
 //! * [`bow`] — [`BowModel`]: the bow's rules (Oblivion's draw timer and speed formula, Skyrim's draw time, tilt
 //!   and range cap, the default trajectory), retuned by the `fArrow*` settings (player-archery PRD, BOW-MOD-001).
 //! * [`spell_cast`] — [`SpellCastModel`] / [`EffectCostInput`]: Oblivion's spell-cast rules (effect and
@@ -104,6 +106,7 @@ pub mod vats;
 pub mod block;
 pub mod bow;
 pub mod derived;
+pub mod fall;
 pub mod disposition;
 pub mod fallout;
 pub mod leveling;
@@ -156,6 +159,7 @@ pub use reputation::{
 };
 pub use resistance::{damage_multiplier, Affliction};
 pub use ruleset::CharacterRuleset;
+pub use fall::{FallModel, FallTracker};
 pub use block::{BlockGuard, BlockModel};
 pub use bow::{ArrowTrajectory, BowModel, DamageRule, DrawRule, ShotTraits, SpeedRule, WeaponClass};
 pub use spell_cast::{EffectCostInput, EffectRange, SpellCastModel, Tier as SpellTier};
@@ -200,7 +204,7 @@ mod tests {
             .collect();
         assert_eq!(
             declared.len(),
-            24,
+            25,
             "sub-module count changed — {declared:?}"
         );
         for module in declared {
