@@ -141,12 +141,13 @@ impl ConsoleCommand for DepthSampleCommand {
 
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
         let words: Vec<_> = args.split_whitespace().collect();
-        if words.is_empty() || words.len() % 2 != 0 || words.len() > 64 {
+        let (pairs, remainder) = words.as_chunks::<2>();
+        if pairs.is_empty() || !remainder.is_empty() || pairs.len() > 32 {
             return CommandOutput::line("usage: depth.sample x y [x y ...] (at most 32 pixels)");
         }
-        let mut pixels = Vec::with_capacity(words.len() / 2);
-        for pair in words.chunks_exact(2) {
-            let (Ok(x), Ok(y)) = (pair[0].parse::<u32>(), pair[1].parse::<u32>()) else {
+        let mut pixels = Vec::with_capacity(pairs.len());
+        for [x, y] in pairs {
+            let (Ok(x), Ok(y)) = (x.parse::<u32>(), y.parse::<u32>()) else {
                 return CommandOutput::line(
                     "depth.sample coordinates must be nonnegative integers",
                 );

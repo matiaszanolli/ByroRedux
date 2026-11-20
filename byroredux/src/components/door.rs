@@ -20,10 +20,13 @@ pub(crate) enum DoorMotion {
 pub(crate) struct Door {
     pub(crate) motion: DoorMotion,
     /// The base record's flag byte and sounds (DRT-REC-001, -002).
+    #[expect(dead_code, reason = "the door sound path is tracked in #7059")]
     pub(crate) data: DoorData,
     /// The flags, translated for the game the record came from.
+    #[expect(dead_code, reason = "door motion and activation flag consumers are tracked in #7059")]
     pub(crate) flags: DoorFlags,
     /// `Open by Default` on the placement (DRT-REC-004): the state the door returns to.
+    #[expect(dead_code, reason = "door reset and restore are tracked in #7059")]
     pub(crate) default_open: bool,
     /// Seconds of the playing clip still to run; `0` when the door is at rest.
     pub(crate) remaining: f32,

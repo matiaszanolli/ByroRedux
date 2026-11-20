@@ -60,11 +60,12 @@ impl FallModel {
     /// hurt. Never negative.
     #[must_use]
     pub fn damage(&self, fall_seconds: f32, acrobatics: f32) -> f32 {
-        if !(fall_seconds >= self.time_min) || fall_seconds <= 0.0 {
-            return 0.0;
+        if fall_seconds > 0.0 && fall_seconds >= self.time_min {
+            let base = (fall_seconds * self.time_mult).max(self.time_base);
+            (base * (self.skill_base + acrobatics * self.skill_mult / 100.0)).max(0.0)
+        } else {
+            0.0
         }
-        let base = (fall_seconds * self.time_mult).max(self.time_base);
-        (base * (self.skill_base + acrobatics * self.skill_mult / 100.0)).max(0.0)
     }
 }
 
@@ -128,6 +129,8 @@ mod tests {
     fn the_documented_damage() {
         let model = FallModel::OBLIVION;
         assert_eq!(model.damage(0.1, 0.0), 0.0, "under fJumpFallTimeMin");
+        assert_eq!(model.damage(f32::NAN, 0.0), 0.0, "an unordered fall time must not deal damage");
+        assert!((model.damage(model.time_min, 0.0) - 20.0).abs() < 1e-3, "the minimum is inclusive");
         assert!((model.damage(1.0, 0.0) - 100.0).abs() < 1e-3, "80 * 1.25");
         assert!((model.damage(1.0, 100.0) - 99.2).abs() < 1e-3, "80 * 1.24");
         assert!((model.damage(0.5, 50.0) - 40.0 * 1.245).abs() < 1e-3);

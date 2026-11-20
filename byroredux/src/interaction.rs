@@ -1529,18 +1529,26 @@ fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, Inter
                 .or_insert(InteractionKind::Activate);
         }
     }
-    if let Some(query) = world.query::<byroredux_scripting::TwoStateActivator>() {
+    // Snapshot prompt eligibility before reading Door. The motion system acquires the
+    // pair in TypeId order, so nesting these reads in a fixed order can close a cycle.
+    let activators: Vec<_> = world
+        .query::<byroredux_scripting::TwoStateActivator>()
+        .map(|query| {
+            query.iter()
+                .filter(|(_, state)| !(state.is_animating || state.do_once && state.activated_once))
+                .map(|(entity, state)| (entity, state.is_open))
+                .collect()
+        })
+        .unwrap_or_default();
+    if !activators.is_empty() {
         let doors = world.query::<crate::components::Door>();
-        for (entity, state) in query.iter() {
-            if !(state.is_animating || state.do_once && state.activated_once) {
-                // M66 — a door says what activating it does.
-                let kind = match doors.as_ref().is_some_and(|doors| doors.contains(entity)) {
-                    true if state.is_open => InteractionKind::CloseDoor,
-                    true => InteractionKind::OpenDoor,
-                    false => InteractionKind::Activate,
-                };
-                candidates.entry(entity).or_insert(kind);
-            }
+        for (entity, is_open) in activators {
+            let kind = match doors.as_ref().is_some_and(|doors| doors.contains(entity)) {
+                true if is_open => InteractionKind::CloseDoor,
+                true => InteractionKind::OpenDoor,
+                false => InteractionKind::Activate,
+            };
+            candidates.entry(entity).or_insert(kind);
         }
     }
     if let Some(query) =
@@ -3144,6 +3152,33 @@ mod tests {
         }
 
         select_interaction_target(&world);
+    }
+
+    #[test]
+    fn door_prompts_and_motion_share_the_lock_order() {
+        use crate::components::{Door, DoorMotion};
+        use byroredux_scripting::TwoStateActivator;
+
+        let mut world = input_fixture();
+        let door = world.spawn();
+        world.insert(door, TwoStateActivator { is_open: true, ..Default::default() });
+        world.insert(door, Door {
+            motion: DoorMotion::Sequence { open: 0, close: 1 },
+            data: Default::default(),
+            flags: Default::default(),
+            default_open: true,
+            remaining: 0.0,
+            posed: Some(true),
+        });
+        let lever = world.spawn();
+        world.insert(lever, TwoStateActivator::default());
+
+        // The prompt and the motion tick used to acquire the same storages in opposite orders.
+        let mut candidates = FxHashMap::default();
+        populate_candidates(&world, &mut candidates);
+        crate::systems::door::door_motion_system(&world, 0.0);
+        assert_eq!(candidates.get(&door), Some(&InteractionKind::CloseDoor));
+        assert_eq!(candidates.get(&lever), Some(&InteractionKind::Activate));
     }
 
     fn physics_fixture() -> World {
