@@ -83,6 +83,10 @@ pub struct HitEvent {
     /// skill-use emitter reads, because the skill must not be guessed from the weapon the player happens to wield. `false`
     /// for a melee blow, a trap, a script's projectile, a gun's shot and every other producer.
     pub arrow: bool,
+    /// The weapon that dealt the hit ignores the target's Resist Normal Weapons (Oblivion: a silver, daedric or
+    /// enchanted weapon or arrow; UESP *Oblivion:The Complete Damage Formula*): the producer knows its weapon, the
+    /// consumer knows the target. `false` for a trap, a script and every plain weapon.
+    pub ignores_resistance: bool,
 }
 
 impl Component for HitEvent {

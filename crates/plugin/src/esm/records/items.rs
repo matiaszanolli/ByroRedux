@@ -302,6 +302,12 @@ pub enum ItemKind {
         /// 0 Loud, 1 Normal, 2 Silent): how loud an attack with the weapon is to
         /// detectors. `None` on other games and where the record authors none.
         sound_level: Option<WeaponSoundLevel>,
+        /// Oblivion: the weapon ignores an opponent's *Resist Normal Weapons* — the `DATA` flag bit 0 ("Ignores Normal
+        /// Weapon Resistance", UESP *Oblivion Mod:Mod File Format/WEAP*; silver and daedric weapons set it) or an
+        /// enchantment (`ENAM`), which UESP *Oblivion:The Complete Damage Formula* lists with them ("if using
+        /// Silver/Daedric/Enchanted weapons it is always 1"). `false` on every other game, whose resistance rules are not
+        /// read here.
+        ignores_normal_resistance: bool,
     },
 }
 
@@ -352,6 +358,7 @@ impl ItemKind {
             reload_anim: 0,
             vats: None,
             sound_level: None,
+            ignores_normal_resistance: false,
         }
     }
 
@@ -441,9 +448,12 @@ pub fn parse_weap(
     let mut reach = 0.0f32;
     let mut speed = 0.0f32;
     let mut sound_level = None;
+    let mut ignores_normal_resistance = false;
 
     for sub in subs {
         match &sub.sub_type {
+            // Oblivion `ENAM`: the weapon's enchantment, which (like the DATA flag) ignores normal weapon resistance.
+            b"ENAM" if matches!(game, GameKind::Oblivion) && sub.data.len() >= 4 => ignores_normal_resistance = true,
             b"DATA" => {
                 let mut r = SubReader::new(&sub.data);
                 match game {
@@ -475,7 +485,7 @@ pub fn parse_weap(
                         oblivion_type = r.u32_or_default().min(u32::from(u8::MAX)) as u8;
                         speed = r.f32_or_default();
                         reach = r.f32_or_default();
-                        let _flags = r.u32_or_default();
+                        ignores_normal_resistance |= r.u32_or_default() & 1 != 0;
                         common.value = r.u32_or_default();
                         let _health = r.u32_or_default();
                         common.weight = r.f32_or_default();
@@ -721,6 +731,7 @@ pub fn parse_weap(
             reload_anim,
             vats,
             sound_level,
+            ignores_normal_resistance,
         },
     }
 }
@@ -1645,7 +1656,7 @@ mod tests {
         let ItemKind::Weapon {
             ammo_form, damage, clip_size, anim_type, ap_cost, vats_base_to_hit, projectile_form, equip_type,
             skill_actor_value, min_spread, spread, crit_mult, crit_damage, reach, speed, oblivion_type, reload_anim, vats,
-            sound_level,
+            sound_level, ignores_normal_resistance,
         } = stub.clone()
         else {
             panic!("weapon_stub builds a Weapon");
@@ -1658,6 +1669,7 @@ mod tests {
         assert!(vats.is_none());
         assert_eq!(skill_actor_value, None);
         assert_eq!(sound_level, None);
+        assert!(!ignores_normal_resistance);
 
         let ItemKind::Weapon { skill_actor_value, .. } = stub.clone().with_weapon_skill(38) else {
             panic!("setters keep the variant");
@@ -2904,6 +2916,27 @@ mod tests {
             }
             _ => panic!("expected Ammo kind"),
         }
+    }
+
+    /// Oblivion armor and resistance (#7057 follow-up): a weapon whose `DATA` flag bit 0 is set (silver, daedric) or that
+    /// carries an `ENAM` enchantment ignores an opponent's Resist Normal Weapons; a plain one does not.
+    #[test]
+    fn oblivion_weapon_ignores_resistance_by_flag_or_enchantment() {
+        let data = |flags: u32| {
+            let mut data = Vec::new();
+            for word in [5u32, 1f32.to_bits(), 1f32.to_bits(), flags, 100, 50, 1f32.to_bits()] {
+                data.extend_from_slice(&word.to_le_bytes());
+            }
+            data.extend_from_slice(&8u16.to_le_bytes());
+            data
+        };
+        let ignores = |subs: Vec<SubRecord>| match parse_weap(0x1, &subs, GameKind::Oblivion, &None).kind {
+            ItemKind::Weapon { ignores_normal_resistance, .. } => ignores_normal_resistance,
+            _ => panic!("expected Weapon kind"),
+        };
+        assert!(!ignores(vec![sub(b"EDID", b"IronBow\0"), sub(b"DATA", &data(0))]), "a plain weapon");
+        assert!(ignores(vec![sub(b"EDID", b"SilverBow\0"), sub(b"DATA", &data(1))]), "the flag");
+        assert!(ignores(vec![sub(b"EDID", b"FireBow\0"), sub(b"ENAM", &0x1234u32.to_le_bytes()), sub(b"DATA", &data(0))]), "an enchantment");
     }
 
     /// player-archery BOW-DRW-003 — a Skyrim bow's authored speed (WEAP `DNAM` offset 4, after the animation type and

@@ -60,6 +60,8 @@
 //! * [`skill_use`] — [`SkillUseCosts`] / [`SkillClass`]: classic-TES skill-use
 //!   experience (Oblivion): the cost of a rank from the five `fSkillUse*`
 //!   settings, the skill's class, and banking with rollover.
+//! * [`armor_rating`] — [`ArmorRatingModel`] / [`weapon_resistance_factor`]: Oblivion's armor rating and Resist Normal
+//!   Weapons (the share of a weapon hit that gets through; the Skyrim sibling is [`armor`]).
 //! * [`block`] — [`BlockModel`] / [`BlockGuard`]: Oblivion's block (how much of a hit a shield, a weapon or bare hands stops
 //!   at a given Block skill; #7054).
 //! * [`fall`] — [`FallModel`] / [`FallTracker`]: Oblivion's fall damage (the `fJumpFall*` rule, and the time a body spends
@@ -103,6 +105,7 @@ pub mod attribute;
 pub mod components;
 pub mod crime;
 pub mod vats;
+pub mod armor_rating;
 pub mod block;
 pub mod bow;
 pub mod derived;
@@ -160,6 +163,7 @@ pub use reputation::{
 pub use resistance::{damage_multiplier, Affliction};
 pub use ruleset::CharacterRuleset;
 pub use fall::{FallModel, FallTracker};
+pub use armor_rating::{weapon_resistance_factor, ArmorRatingModel};
 pub use block::{BlockGuard, BlockModel};
 pub use bow::{ArrowTrajectory, BowModel, DamageRule, DrawRule, ShotTraits, SpeedRule, WeaponClass};
 pub use spell_cast::{EffectCostInput, EffectRange, SpellCastModel, Tier as SpellTier};
@@ -204,7 +208,7 @@ mod tests {
             .collect();
         assert_eq!(
             declared.len(),
-            25,
+            26,
             "sub-module count changed — {declared:?}"
         );
         for module in declared {

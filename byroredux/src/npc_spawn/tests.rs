@@ -323,6 +323,7 @@ fn fnv_spawned_actor_gets_derived_health_and_combat_consumes_it() {
             bash_attack: false,
             blocked: false,
             arrow: false,
+            ignores_resistance: false,
         },
     );
 

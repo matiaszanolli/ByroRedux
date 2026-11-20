@@ -344,6 +344,7 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
             // charge or bash input exists. `sneak_attack` is M65's (above).
             blocked: block_held,
             arrow: false,
+            ignores_resistance: weapon_ignores_resistance(world, aggressor),
         },
     );
     drop(events);
@@ -504,6 +505,82 @@ fn record_killing_blow(world: &World, target: EntityId, location: u8) {
     }
 }
 
+/// What the target's worn armor and Resist Normal Weapons stop of a weapon hit, as shares (0 to 1).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct WeaponDefense {
+    armor_stopped: f32,
+    resisted: f32,
+}
+
+impl WeaponDefense {
+    /// The share of the hit that gets through both.
+    fn factor(self) -> f32 {
+        (1.0 - self.armor_stopped) * (1.0 - self.resisted)
+    }
+}
+
+/// Oblivion's armor rating and Resist Normal Weapons against an actor's weapon hit (UESP *Oblivion:The Complete Damage
+/// Formula*; `ArmorRatingModel`), or `None` where the game has no such rule or the hit is not an actor's (a trap or a script's).
+/// The combined rating is the sum of the pieces the target wears, each worth its `ARMO` rating at the wearer's Light or Heavy
+/// Armor (a piece covering several slots counts once), capped; a Master Sneak attack ignores it. Not modelled: armor condition
+/// (read as full) and Shield-like boosting effects.
+fn weapon_defense(world: &World, event: &byroredux_scripting::HitEvent, target: EntityId) -> Option<WeaponDefense> {
+    use byroredux_core::character::{weapon_resistance_factor, ArmorRatingModel};
+    use byroredux_core::ecs::components::{EquipmentSlots, Inventory};
+    use byroredux_plugin::esm::records::ItemKind;
+    let model = *world.try_resource::<ArmorRatingModel>()?;
+    world.get::<ActorVitals>(event.aggressor)?;
+    let skill = |name: &str| crate::detection::actor_value(world, target, name);
+    let (light, heavy) = (skill("LightArmor"), skill("HeavyArmor"));
+    let mut combined = 0.0;
+    if let (Some(slots), Some(inventory), Some(index)) = (
+        world.get::<EquipmentSlots>(target).map(|slots| (*slots).clone()),
+        world.get::<Inventory>(target).map(|inventory| (*inventory).clone()),
+        world.try_resource::<crate::components::LoadedCellIndex>().map(|index| index.0.clone()),
+    ) {
+        let mut seen = Vec::new();
+        for row in slots.occupants.iter().flatten() {
+            if seen.contains(&row.0) {
+                continue;
+            }
+            seen.push(row.0);
+            let Some(stack) = inventory.items.get(row.0 as usize) else { continue };
+            if let Some(ItemKind::Armor { armor_rating_x100, armor_type, .. }) = index.items.get(&stack.base_form_id).map(|item| &item.kind) {
+                combined += model.piece_rating(*armor_rating_x100, if *armor_type == Some(1) { heavy } else { light });
+            }
+        }
+    }
+    let master_sneak = event.sneak_attack && model.is_master_sneak(crate::detection::actor_value(world, event.aggressor, "Sneak"));
+    let through_armor = model.armor_factor(combined, master_sneak);
+    let through_resistance = weapon_resistance_factor(skill("ResistNormalWeapons"), event.ignores_resistance);
+    Some(WeaponDefense { armor_stopped: 1.0 - through_armor, resisted: 1.0 - through_resistance })
+}
+
+/// Install (or, for a game without armor-rating rules, remove) the
+/// [`ArmorRatingModel`](byroredux_core::character::ArmorRatingModel) for a freshly loaded index, retuned by `fMaxArmorRating`.
+pub(crate) fn install_armor_rating_model(world: &mut World, index: &byroredux_plugin::esm::records::EsmIndex) {
+    match index.character_rules.armor_rating() {
+        Some(model) => {
+            world.insert_resource(model.with_gmst(|name| index.game_setting_float(name)));
+        }
+        None => {
+            world.remove_resource::<byroredux_core::character::ArmorRatingModel>();
+        }
+    }
+}
+
+/// Whether the weapon `actor` wields ignores a target's Resist Normal Weapons (Oblivion: a silver, daedric or enchanted
+/// weapon, `ItemKind::Weapon::ignores_normal_resistance`). An actor with no weapon, or a game that decodes none, reads
+/// `false`: its blows are normal ones.
+pub(crate) fn weapon_ignores_resistance(world: &World, actor: EntityId) -> bool {
+    let Some(base) = world.get::<EquippedWeapon>(actor).map(|weapon| weapon.base_form_id) else {
+        return false;
+    };
+    world.try_resource::<crate::components::LoadedCellIndex>().is_some_and(|index| {
+        matches!(index.0.items.get(&base).map(|item| &item.kind), Some(byroredux_plugin::esm::records::ItemKind::Weapon { ignores_normal_resistance: true, .. }))
+    })
+}
+
 /// #7054 — the share of a hit `target`'s guard stops (Oblivion's Block, UESP *Oblivion:Block*), or `None` where it puts
 /// up none: the game has no block rules, the target is not holding Block, the hit is not an actor's strike or shot (a trap
 /// or a script's hit is not blocked here), or the block has no effect (bare hands against an armed attacker). The guard is
@@ -614,6 +691,9 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
         // #7054 — the target's own guard (Oblivion's Block): a blocking defender stops a share of the hit.
         let guard = if event.blocked { None } else { target_block(world, event.aggressor, target) };
         let damage = guard.map_or(damage, |stopped| damage * (1.0 - stopped));
+        // Oblivion's armor rating and Resist Normal Weapons (the weapon-damage formula's last two terms).
+        let defense = weapon_defense(world, &event, target);
+        let damage = defense.map_or(damage, |defense| damage * defense.factor());
         // Judged before the strike lands: a kill clears the victim's combat state.
         let crime = crate::crime::player_strike_is_crime(world, event.aggressor, target);
         let Some((before, after)) = apply_health_damage(world, target, vitals.health, damage)
@@ -628,6 +708,14 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
         let mut outcome = format!("health {:.1} -> {:.1}", before, after);
         if let Some(stopped) = guard {
             outcome.push_str(&format!("; blocked {:.0}%", stopped * 100.0));
+        }
+        if let Some(defense) = defense {
+            if defense.armor_stopped > 0.0 {
+                outcome.push_str(&format!("; armor {:.0}%", defense.armor_stopped * 100.0));
+            }
+            if defense.resisted > 0.0 {
+                outcome.push_str(&format!("; resisted {:.0}%", defense.resisted * 100.0));
+            }
         }
         if spared {
             outcome.push_str("; bleedout");
@@ -2027,6 +2115,7 @@ mod tests {
                 bash_attack: false,
                 blocked,
                 arrow: false,
+                ignores_resistance: false,
             },
         );
         (world, aggressor, target)
@@ -2089,6 +2178,92 @@ mod tests {
         near(run(true, false, true, true, false, 40.0), 80.0, &[]); // a trap's or script's hit is not blocked
     }
 
+    /// Oblivion's armor rating and Resist Normal Weapons, from the defender's side (UESP *The Complete Damage Formula*): the
+    /// pieces worn add up at the wearer's Heavy or Light Armor and cap at 85, a piece covering two slots counts once, a
+    /// Master Sneak attack ignores the armor, Resist Normal Weapons scales the hit unless the weapon ignores it, and a hit that
+    /// is not an actor's (a trap's or a script's) is not reduced.
+    #[test]
+    fn worn_armor_and_resistance_stop_a_share_of_a_weapon_hit() {
+        use byroredux_core::character::ArmorRatingModel;
+        use byroredux_core::ecs::components::{EquipmentSlots, Inventory, ItemStack};
+        use byroredux_plugin::esm::records::{common::CommonItemFields, AvifRecord, EsmIndex, ItemKind, ItemRecord};
+        const HEAVY: u32 = 0x41;
+        const SNEAK: u32 = 0x42;
+        const RESIST: u32 = 0x43;
+        const CUIRASS: u32 = 0x900;
+        const GREAVES: u32 = 0x901;
+        let armor = |form_id: u32, stored: u32| ItemRecord {
+            form_id,
+            common: CommonItemFields::default(),
+            kind: ItemKind::Armor {
+                biped_flags: 0,
+                dt: 0.0,
+                dr: 0,
+                health: 300,
+                slot_mask: 0,
+                armor_rating_x100: stored,
+                armor_type: Some(1),
+                female_model_path: String::new(),
+                armatures: Vec::new(),
+            },
+        };
+        // (pieces worn, Heavy Armor, resist, ignores resistance, sneak attack at Sneak, actor attacker) -> health left of 100
+        let run = |worn: &[u32], heavy: f32, resist: f32, ignores: bool, sneak: Option<f32>, actor: bool| {
+            let (mut world, aggressor, target) = damage_fixture(100.0, None, false);
+            if actor {
+                world.insert(aggressor, ActorVitals { health: 0x2D4 });
+            }
+            {
+                let mut events = world.query_mut::<byroredux_scripting::HitEvent>().unwrap();
+                let event = events.get_mut(target).unwrap();
+                event.damage = 20.0;
+                event.ignores_resistance = ignores;
+                event.sneak_attack = sneak.is_some();
+            }
+            let mut index = EsmIndex::default();
+            for (form, name) in [(HEAVY, "HeavyArmor"), (SNEAK, "Sneak"), (RESIST, "ResistNormalWeapons")] {
+                index.actor_values.insert(form, AvifRecord { form_id: form, editor_id: format!("AV{name}"), ..Default::default() });
+            }
+            index.items.insert(CUIRASS, armor(CUIRASS, 1000));
+            index.items.insert(GREAVES, armor(GREAVES, 550));
+            world.insert_resource(byroredux_scripting::ActorValueNames::from_index(&index));
+            world.insert_resource(crate::components::LoadedCellIndex(std::sync::Arc::new(index)));
+            world.insert_resource(ArmorRatingModel::OBLIVION);
+            world.register::<EquipmentSlots>();
+            world.register::<Inventory>();
+            let mut inventory = Inventory::new();
+            let mut slots = EquipmentSlots::new();
+            for (row, form) in worn.iter().enumerate() {
+                inventory.push(ItemStack::new(*form, 1));
+                slots.occupants[2 + row] = Some(InventoryIndex(row as u32));
+                if *form == CUIRASS {
+                    slots.occupants[3] = Some(InventoryIndex(row as u32)); // upper and lower body: one piece
+                }
+            }
+            world.insert(target, inventory);
+            world.insert(target, slots);
+            world.get_mut::<ActorValues>(target).unwrap().set_base(HEAVY, heavy);
+            world.get_mut::<ActorValues>(target).unwrap().set_base(RESIST, resist);
+            if let Some(skill) = sneak {
+                world.insert(aggressor, ActorValues::from_pairs([(SNEAK, skill)]));
+            }
+            combat_damage_system(&world, 0.0);
+            world.get::<ActorValues>(target).unwrap().current(0x2D4)
+        };
+        let near = |got: f32, want: f32| assert!((got - want).abs() < 1e-2, "{got} vs {want}");
+        near(run(&[], 50.0, 0.0, false, None, true), 80.0); // no armor: the whole hit
+        // The cuirass at Heavy Armor 50 is 6.75, so 6.75% stopped of 20: 100 - 18.65. It covers two slots and counts once.
+        near(run(&[CUIRASS], 50.0, 0.0, false, None, true), 100.0 - 20.0 * 0.9325);
+        // Cuirass 6.75 + greaves 5.5 * 0.675 = 3.7125: 10.4625% stopped.
+        near(run(&[CUIRASS, GREAVES], 50.0, 0.0, false, None, true), 100.0 - 20.0 * (1.0 - 0.104625));
+        near(run(&[CUIRASS], 50.0, 0.0, false, None, false), 80.0); // a hit that is not an actor's
+        near(run(&[CUIRASS], 50.0, 0.0, false, Some(100.0), true), 80.0); // Master Sneak ignores armor
+        near(run(&[CUIRASS], 50.0, 0.0, false, Some(60.0), true), 100.0 - 20.0 * 0.9325); // a lesser sneaker does not
+        near(run(&[], 50.0, 100.0, false, None, true), 100.0); // a ghost takes nothing from a normal weapon
+        near(run(&[], 50.0, 100.0, true, None, true), 80.0); // but a silver, daedric or enchanted one hurts it
+        near(run(&[], 50.0, 25.0, false, None, true), 85.0); // Resist Normal Weapons 25%
+    }
+
     /// A player strike on a bystander NPC in an Oblivion-ruled world with one
     /// onlooker in sight: `(world, player, victim)`.
     fn crime_strike_fixture(health: f32, weapon_damage: f32) -> (World, EntityId, EntityId) {
@@ -2135,6 +2310,7 @@ mod tests {
                 bash_attack: false,
                 blocked: false,
                 arrow: false,
+                ignores_resistance: false,
             },
         );
         combat_damage_system(world, 0.0);
@@ -2217,6 +2393,7 @@ mod tests {
             aggressor: guard, source: guard, projectile: 0, damage: 10.0,
             power_attack: false, sneak_attack: false, bash_attack: false, blocked: false,
             arrow: false,
+            ignores_resistance: false,
         });
         combat_damage_system(&world, 0.0);
         assert_eq!(world.resource::<ObScriptLedger>().crime_gold, 0, "an NPC's strike");

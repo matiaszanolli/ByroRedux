@@ -95,6 +95,8 @@ pub(crate) struct WieldedBow {
     pub damage: f32,
     /// The bow's authored speed; 1 where the record has none.
     pub speed: f32,
+    /// The bow ignores Resist Normal Weapons (Oblivion: silver, daedric or enchanted).
+    pub ignores_resistance: bool,
 }
 
 /// The bow `player` wields, or `None` where the game has no bow row, nothing is wielded or the weapon is not one.
@@ -103,9 +105,12 @@ pub(crate) fn wielded_bow(world: &World, player: EntityId) -> Option<WieldedBow>
     let weapon = world.get::<EquippedWeapon>(player)?.base_form_id;
     let index = world.try_resource::<crate::components::LoadedCellIndex>()?;
     match &index.0.items.get(&weapon)?.kind {
-        ItemKind::Weapon { damage, speed, oblivion_type, anim_type, .. } if model.is_bow(*oblivion_type, *anim_type) => {
-            Some(WieldedBow { weapon, damage: *damage as f32, speed: if *speed > 0.0 { *speed } else { 1.0 } })
-        }
+        ItemKind::Weapon { damage, speed, oblivion_type, anim_type, ignores_normal_resistance, .. } if model.is_bow(*oblivion_type, *anim_type) => Some(WieldedBow {
+            weapon,
+            damage: *damage as f32,
+            speed: if *speed > 0.0 { *speed } else { 1.0 },
+            ignores_resistance: *ignores_normal_resistance,
+        }),
         _ => None,
     }
 }
@@ -297,8 +302,8 @@ fn arrow_spec(world: &World, player: EntityId, model: &BowModel, bow: &WieldedBo
         .try_resource::<crate::components::LoadedCellIndex>()
         .map(|index| index.0.clone())
         .ok_or_else(|| Refusal::Failed("no loaded index".into()))?;
-    let (ammo_speed, ammo_damage, projectile_form) = match index.items.get(&arrow).map(|item| &item.kind) {
-        Some(ItemKind::Ammo { speed, damage, projectile_form, .. }) => (*speed, *damage, *projectile_form),
+    let (ammo_speed, ammo_damage, projectile_form, ammo_ignores) = match index.items.get(&arrow).map(|item| &item.kind) {
+        Some(ItemKind::Ammo { speed, damage, projectile_form, flags, .. }) => (*speed, *damage, *projectile_form, *flags & 1 != 0),
         _ => return Err(Refusal::Failed(format!("{arrow:08X} is not ammunition"))),
     };
     // Skyrim's arrow names a `PROJ` (speed, range, radius, lifetime); Oblivion has none. The `PROJ` gravity field is not
@@ -312,6 +317,9 @@ fn arrow_spec(world: &World, player: EntityId, model: &BowModel, bow: &WieldedBo
         range: if range.is_finite() { range } else { OBLIVION_ARROW_RANGE_BU },
         radius: proj.map_or(0.0, |proj| proj.collision_radius),
         lifetime: proj.and_then(|proj| (proj.lifetime > 0.0).then_some(proj.lifetime)),
+        // UESP *Oblivion:Marksman*: silver, daedric or magical arrows, or any arrows from a silver, magical or daedric bow, hurt an
+        // enemy immune to normal weapons.
+        ignores_resistance: ammo_ignores || bow.ignores_resistance,
     })
 }
 
@@ -689,7 +697,7 @@ mod tests {
         world.resource_mut::<ActiveProjectiles>().0.push(crate::systems::projectiles::arrow_shot(
             &world,
             player,
-            ArrowSpec { damage: 5.0, speed: 1500.0, range: 4096.0, radius: 0.0, lifetime: None },
+            ArrowSpec { damage: 5.0, speed: 1500.0, range: 4096.0, radius: 0.0, lifetime: None, ignores_resistance: false },
             byroredux_core::math::Vec3::ZERO,
             byroredux_core::math::Vec3::NEG_Z,
         ).map(|mut shot| { shot.arrow = false; shot }).unwrap());

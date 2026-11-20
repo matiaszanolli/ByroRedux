@@ -305,6 +305,7 @@ mod tests {
             bash_attack: false,
             blocked: false,
             arrow: false,
+            ignores_resistance: false,
         }
     }
 

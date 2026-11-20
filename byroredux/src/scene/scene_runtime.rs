@@ -80,6 +80,7 @@ pub(crate) fn populate_scene_runtime(
     crate::bow::install_bow_model(world, index);
     crate::combat::install_block_model(world, index);
     crate::combat::install_fall_model(world, index);
+    crate::combat::install_armor_rating_model(world, index);
     crate::lockpick::install_terminal_bases(world, index);
     crate::systems::mines::install_mine_book(world, index);
     crate::systems::attraction::install_attraction_book(world, index);

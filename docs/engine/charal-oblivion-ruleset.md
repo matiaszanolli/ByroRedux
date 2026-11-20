@@ -447,6 +447,13 @@ each for `LightArmor`→`LightArmorRating` and `HeavyArmor`→
 source doesn't distinguish player/NPC here unlike Skyrim's). Test asserts
 both worked values (Light 50 → 0.675, Heavy 20 → 0.48).
 
+**Wired 2026-11-20 (armor rating and Resist Normal Weapons).** The per-piece rating above is applied to weapon hits: the pieces a target
+wears add up at its Light or Heavy Armor, cap at `fMaxArmorRating` (85), and `(100 - combined) / 100` scales the hit (1 for a Master
+Sneak attack); `(100 - ResistNormalWeapons) / 100` scales it too, 1 for a silver, daedric or enchanted weapon or arrow. `ArmorRatingModel`
+(`crates/core/src/character/armor_rating.rs`, the profile's `armor_rating` row, Oblivion only) holds the numbers and
+`combat::weapon_defense` applies them to an actor's hit in `combat_damage_system`, melee and arrows alike. Not modelled: armor condition
+(read as full), Shield-like boosting effects, and whether natural creature attacks count as normal weapons (they do here).
+
 **4. Sneak/power-attack multipliers, weapon condition, spell resistance** —
 all confirmed real but out of CHARAL scope, same "skill AV in, combat-formula
 out" routing as Sneak Detection/Lockpicking elsewhere in this doc:

@@ -390,6 +390,7 @@ mod tests {
                 bash_attack: false,
                 blocked: false,
                 arrow: false,
+                ignores_resistance: false,
             },
         );
         world.insert(c, TimerExpired { timer_id: 5 });

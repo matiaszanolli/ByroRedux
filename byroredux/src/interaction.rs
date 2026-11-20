@@ -2374,6 +2374,7 @@ mod tests {
                 bash_attack: false,
                 blocked: false,
                 arrow: false,
+                ignores_resistance: false,
             },
         );
         crate::combat::combat_damage_system(&world, 0.0);

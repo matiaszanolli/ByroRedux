@@ -35,6 +35,9 @@ fn register_damage_pass(scheduler: &mut Scheduler) {
             .reads::<byroredux_scripting::HitEvent>()
             // #7054 — the target's guard: the block rules, its Block stance, its Block skill and what it holds.
             .reads_resource::<byroredux_core::character::BlockModel>()
+            // Oblivion's armor rating and Resist Normal Weapons: the model, the worn pieces and the skills by name.
+            .reads_resource::<byroredux_core::character::ArmorRatingModel>()
+            .reads::<byroredux_core::ecs::components::EquipmentSlots>()
             .reads::<crate::combat::MeleeState>()
             .reads_resource::<byroredux_scripting::ActorValueNames>()
             .reads::<byroredux_core::ecs::components::EquippedWeapon>()

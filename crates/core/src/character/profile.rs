@@ -8,7 +8,7 @@
 
 use super::{
     fallout3_ruleset_with_gmst, fallout4_ruleset_with_gmst, falloutnv_ruleset_with_gmst, oblivion_ruleset, skyrim_ruleset, CharacterRuleset, CrimeModel,
-    SkillSet, SpellCastModel, StanceModel, VatsModel, ArmorModel, BlockModel, BowModel, FallModel,
+    SkillSet, SpellCastModel, StanceModel, VatsModel, ArmorModel, ArmorRatingModel, BlockModel, BowModel, FallModel,
 };
 
 /// A sourced FO3/FNV NPC Health curve (#5238): the record's `DATA` Base
@@ -341,6 +341,9 @@ pub struct CharacterRulesProfile {
     /// #7056 — the fall-damage rules (`fJumpFall*`), where a fall hurts the player (Oblivion). A row of its own so the
     /// controller never tests the game: it reads the installed `FallModel`.
     fall: Option<FallModel>,
+    /// Oblivion's armor rating and Resist Normal Weapons (the share of a weapon hit that gets through), where modelled. A row
+    /// of its own, beside Skyrim's `armor`: the damage path reads the installed `ArmorRatingModel` and never tests the game.
+    armor_rating: Option<ArmorRatingModel>,
     /// M65 (SNK-STN-005) — where the speed in the sneak stance comes from.
     /// Every game has the stance (PRD Q2); a row without a source is
     /// [`StanceModel::NONE`], which leaves the speed unscaled.
@@ -384,6 +387,7 @@ impl CharacterRulesProfile {
         bow: None,
         block: None,
         fall: None,
+        armor_rating: None,
         stance: StanceModel::NONE,
         stealth: crate::stealth::StealthKind::SightOnly,
         indicator: crate::stealth::IndicatorModel::NONE,
@@ -414,6 +418,7 @@ impl CharacterRulesProfile {
         bow: Some(BowModel::OBLIVION),
         block: Some(BlockModel::OBLIVION),
         fall: Some(FallModel::OBLIVION),
+        armor_rating: Some(ArmorRatingModel::OBLIVION),
         stance: StanceModel::OBLIVION,
         stealth: crate::stealth::StealthKind::Oblivion,
         indicator: crate::stealth::IndicatorModel::OBLIVION,
@@ -455,6 +460,7 @@ impl CharacterRulesProfile {
         bow: None,
         block: None,
         fall: None,
+        armor_rating: None,
         stance: StanceModel::FALLOUT,
         stealth: crate::stealth::StealthKind::Fallout3,
         indicator: crate::stealth::IndicatorModel::FALLOUT,
@@ -501,6 +507,7 @@ impl CharacterRulesProfile {
         bow: None,
         block: None,
         fall: None,
+        armor_rating: None,
         stance: StanceModel::FALLOUT,
         stealth: crate::stealth::StealthKind::FalloutNv,
         indicator: crate::stealth::IndicatorModel::FALLOUT,
@@ -550,6 +557,7 @@ impl CharacterRulesProfile {
         bow: Some(BowModel::SKYRIM),
         block: None,
         fall: None,
+        armor_rating: None,
         stance: StanceModel::SKYRIM,
         stealth: crate::stealth::StealthKind::Skyrim,
         indicator: crate::stealth::IndicatorModel::SKYRIM,
@@ -597,6 +605,7 @@ impl CharacterRulesProfile {
         bow: None,
         block: None,
         fall: None,
+        armor_rating: None,
         stance: StanceModel::FALLOUT4,
         // `Fallout4.exe`'s detection (#6996).
         stealth: crate::stealth::StealthKind::Fallout4,
@@ -636,6 +645,7 @@ impl CharacterRulesProfile {
         bow: None,
         block: None,
         fall: None,
+        armor_rating: None,
         stance: StanceModel::NONE,
         stealth: crate::stealth::StealthKind::SightOnly,
         indicator: crate::stealth::IndicatorModel::NONE,
@@ -678,6 +688,7 @@ impl CharacterRulesProfile {
         bow: None,
         block: None,
         fall: None,
+        armor_rating: None,
         stance: StanceModel::NONE,
         stealth: crate::stealth::StealthKind::Starfield,
         indicator: crate::stealth::IndicatorModel::STARFIELD,
@@ -803,6 +814,12 @@ impl CharacterRulesProfile {
     #[must_use]
     pub const fn fall(self) -> Option<FallModel> {
         self.fall
+    }
+
+    /// Oblivion's armor-rating rules' compiled-in defaults, `None` everywhere else (Skyrim's is [`Self::armor`]).
+    #[must_use]
+    pub const fn armor_rating(self) -> Option<ArmorRatingModel> {
+        self.armor_rating
     }
 
     /// M65 (SNK-STN-005) — the sneak-stance speed source.

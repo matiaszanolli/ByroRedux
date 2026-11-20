@@ -994,6 +994,7 @@ fn hit_events_are_registered_single_shot_and_filtered() {
                 bash_attack: false,
                 blocked: false,
                 arrow: false,
+                ignores_resistance: false,
             },
         );
         // The automatic delivery leaves it alone, the registration takes it.
@@ -2430,6 +2431,7 @@ fn on_hit_receives_the_aggressor_weapon_and_flags() {
             bash_attack: false,
             blocked: false,
             arrow: false,
+            ignores_resistance: false,
         },
     );
     // #5991 — `OnHit` is delivered by the hit pass (scheduled after every

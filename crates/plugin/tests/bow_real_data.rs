@@ -80,3 +80,27 @@ fn skyrim_bows_and_arrows() {
         .count();
     assert!(gravity > 0, "arrow projectiles carry gravity (a straight arrow must ignore it, BOW-FLT-004)");
 }
+
+/// Oblivion armor and weapon resistance, on the records the defense rules read: the iron cuirass carries a decoded
+/// rating and is heavy, silver and enchanted weapons ignore normal resistance and a plain iron one does not.
+#[test]
+#[ignore = "needs Oblivion.esm on disk"]
+fn oblivion_armor_and_resistance_records() {
+    let Some(index) = index("Oblivion.esm", test_paths::oblivion_esm()) else { return };
+    let named = |name: &str| index.items.values().find(|item| item.common.editor_id == name);
+    let cuirass = named("IronCuirass").expect("IronCuirass");
+    let ItemKind::Armor { armor_rating_x100, armor_type, health, .. } = &cuirass.kind else { panic!("armor") };
+    println!("IronCuirass {:08X}: rating x100 {armor_rating_x100}, type {armor_type:?}, health {health}", cuirass.form_id);
+    assert_eq!((*armor_rating_x100, *armor_type), (1000, Some(1)), "displayed rating 10 (x100), heavy");
+    let resistant: Vec<&str> = index
+        .items
+        .values()
+        .filter(|item| matches!(&item.kind, ItemKind::Weapon { ignores_normal_resistance: true, .. }))
+        .map(|item| item.common.editor_id.as_str())
+        .collect();
+    println!("{} weapons ignore normal resistance, e.g. {:?}", resistant.len(), &resistant[..resistant.len().min(6)]);
+    assert!(resistant.iter().any(|name| name.to_ascii_lowercase().contains("silver")), "silver weapons set the flag");
+    let iron = named("IronBow").or_else(|| named("WeapIronBow")).expect("an iron bow");
+    assert!(matches!(&iron.kind, ItemKind::Weapon { ignores_normal_resistance: false, .. }), "a plain iron bow");
+}
+
