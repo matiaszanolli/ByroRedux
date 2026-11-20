@@ -327,6 +327,7 @@ pub(super) fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
         "--combustion-lab",
         "--combustion-lab-nuclear",
         "--combustion-lab-steam",
+        "--recede-lab",
     ]
     .iter()
     .any(|f| args.iter().any(|a| a == f));

@@ -402,6 +402,7 @@ fn load_scene_content(
     let combustion_lab_nuclear = crate::cornell::combustion_lab_nuclear_mode(args);
     let combustion_lab_steam = crate::cornell::combustion_lab_steam_mode(args);
     let godray_lab = crate::cornell::godray_lab_mode(args);
+    let recede_lab = crate::cornell::recede_lab_mode(args);
     let shaft_lab = crate::cornell::shaft_lab_mode(args);
     let shaft_card_lab = crate::cornell::shaft_lab_card_mode(args);
     let cornell_glass_dragon = crate::cornell::glass_dragon_mode(args);
@@ -409,6 +410,7 @@ fn load_scene_content(
     let studio_mode = args.iter().any(|arg| arg == "--studio");
     let diagnostic_scene = combustion_lab
         || godray_lab.is_some()
+        || recede_lab
         || shaft_lab.is_some()
         || shaft_card_lab.is_some()
         || cornell_glass_dragon
@@ -427,6 +429,11 @@ fn load_scene_content(
             sealed,
             crate::cornell::godray_lab_marked(args),
         );
+        harness_cam = Some((pos, target));
+        cam_center = target;
+        has_nif_content = true;
+    } else if recede_lab {
+        let (pos, target) = crate::cornell::setup_recede_lab_scene(world, ctx);
         harness_cam = Some((pos, target));
         cam_center = target;
         has_nif_content = true;
