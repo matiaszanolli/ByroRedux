@@ -451,8 +451,10 @@ both worked values (Light 50 → 0.675, Heavy 20 → 0.48).
 wears add up at its Light or Heavy Armor, cap at `fMaxArmorRating` (85), and `(100 - combined) / 100` scales the hit (1 for a Master
 Sneak attack); `(100 - ResistNormalWeapons) / 100` scales it too, 1 for a silver, daedric or enchanted weapon or arrow. `ArmorRatingModel`
 (`crates/core/src/character/armor_rating.rs`, the profile's `armor_rating` row, Oblivion only) holds the numbers and
-`combat::weapon_defense` applies them to an actor's hit in `combat_damage_system`, melee and arrows alike. Not modelled: armor condition
-(read as full), Shield-like boosting effects, and whether natural creature attacks count as normal weapons (they do here).
+`combat::weapon_defense` applies them to an actor's hit in `combat_damage_system`, melee and arrows alike. Verified live: `oblivion-armor.sh` (the iron cuirass stops 3.8% of a patron's strike at Heavy Armor 5) and `oblivion-ghost.sh` (Perennia's ghost
+carries `ResistNormalWeapons` 100 from her ethereal-undead ability: an iron longsword reads `resisted 100%` and leaves her Health, a silver
+longsword takes her from 18 to -10). Not modelled: armor condition (read as full), Shield-like boosting effects, and whether natural creature
+attacks count as normal weapons (they do here).
 
 **4. Sneak/power-attack multipliers, weapon condition, spell resistance** —
 all confirmed real but out of CHARAL scope, same "skill AV in, combat-formula

@@ -103,4 +103,3 @@ fn oblivion_armor_and_resistance_records() {
     let iron = named("IronBow").or_else(|| named("WeapIronBow")).expect("an iron bow");
     assert!(matches!(&iron.kind, ItemKind::Weapon { ignores_normal_resistance: false, .. }), "a plain iron bow");
 }
-
