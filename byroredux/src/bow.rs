@@ -504,6 +504,14 @@ mod tests {
         world.remove_resource::<BowModel>();
         assert_eq!(shoot_now(&world, 1.0), Err(Refusal::NoBow));
         assert!(world.resource::<ActiveProjectiles>().0.is_empty());
+        // No camera to aim along; an equipped form that is not ammunition cannot be made into an arrow.
+        let (mut world, player) = oblivion();
+        world.remove_resource::<ActiveCamera>();
+        assert_eq!(shoot_now(&world, 1.0), Err(Refusal::NoAim));
+        let (world, player2) = self::world(BowModel::OBLIVION, weapon(8, 5, 0, 1.0), weapon(1, 0, 0, 1.0));
+        assert!(matches!(shoot_now(&world, 1.0), Err(Refusal::Failed(why)) if why.contains("not ammunition")));
+        assert_eq!(arrows(&world, player2, ARROW), 10, "a refusal spends nothing");
+        let _ = player;
     }
 
     /// BOW-DRW-002: the speed follows the draw timer at 0 s, 0.5 s and 1.875 s.
@@ -634,6 +642,66 @@ mod tests {
         crate::combat::combat_damage_system(&world, 0.0);
         let health = world.get::<ActorValues>(target).unwrap().current(HEALTH);
         assert!((health - (100.0 - expected)).abs() < 1e-2, "health {health}");
+    }
+
+    /// BOW-USE-001 / -002 / -005 end to end (scenario 3): the player's arrow landing on a living actor feeds Marksman once
+    /// at 0.8 through the shared hit path; the release itself, an arrow that ends on a wall or lands on a corpse, and a
+    /// projectile that is not the bow's own (the gun's shot, a script's) feed nothing even with the bow in hand.
+    #[test]
+    fn an_arrow_hit_feeds_marksman_once_and_nothing_else_does() {
+        use byroredux_core::character::{CharacterRuleset, LevelingModel};
+        use byroredux_core::ecs::components::ActorVitals;
+        use byroredux_scripting::oblivion_skill_use::PendingSkillUse;
+        const HEALTH: u32 = 0x3E8;
+        let (mut world, player) = oblivion();
+        byroredux_scripting::register(&mut world);
+        world.insert_resource(CharacterRuleset::new(LevelingModel::OBLIVION));
+        world.insert_resource(PendingSkillUse::default());
+        world.insert_resource(crate::combat::CombatState::default());
+        world.register::<byroredux_physics::RapierHandles>();
+        world.register::<ActorVitals>();
+        world.register::<byroredux_physics::ActorColliderOwner>();
+        let mut physics = byroredux_physics::PhysicsWorld::new();
+        let living = physics.spawn_fixed_cuboid_handles(byroredux_core::math::Vec3::splat(20.0), byroredux_core::math::Vec3::new(0.0, 0.0, -500.0));
+        let corpse = physics.spawn_fixed_cuboid_handles(byroredux_core::math::Vec3::splat(20.0), byroredux_core::math::Vec3::new(0.0, 0.0, -900.0));
+        world.insert_resource(physics);
+        let (target, dead) = (world.spawn(), world.spawn());
+        for (entity, handles) in [(target, living), (dead, corpse)] {
+            world.insert(entity, handles);
+            world.insert(entity, ActorVitals { health: HEALTH });
+            world.insert(entity, ActorValues::from_pairs(vec![(HEALTH, 100.0)]));
+        }
+        world.insert(dead, Dead);
+        let marksman = |world: &World| world.resource::<PendingSkillUse>().0.iter().filter(|record| record.skill == 28).count();
+        let settle = |world: &World| {
+            crate::systems::projectiles::projectile_flight_system(world, 1.0);
+            byroredux_scripting::pending_trap_hit_flush_system(world, 0.0);
+            crate::combat::combat_damage_system(world, 0.0);
+        };
+        // The release alone feeds nothing.
+        shoot_now(&world, 1.875).unwrap();
+        assert_eq!(marksman(&world), 0, "the release is no hit");
+        settle(&world);
+        assert_eq!(marksman(&world), 1);
+        assert_eq!(world.resource::<PendingSkillUse>().0[0].amount, 0.8);
+        // A non-arrow projectile (the gun's shot, a script's) from the player with the bow in hand feeds nothing.
+        world.query_mut::<byroredux_scripting::HitEvent>().unwrap().remove(target);
+        world.resource_mut::<ActiveProjectiles>().0.push(crate::systems::projectiles::arrow_shot(
+            &world,
+            player,
+            ArrowSpec { damage: 5.0, speed: 1500.0, range: 4096.0, radius: 0.0, lifetime: None },
+            byroredux_core::math::Vec3::ZERO,
+            byroredux_core::math::Vec3::NEG_Z,
+        ).map(|mut shot| { shot.arrow = false; shot }).unwrap());
+        settle(&world);
+        assert_eq!(marksman(&world), 1, "not the bow's arrow: no feed");
+        // A corpse takes the arrow and feeds nothing; a wall (nothing hit) feeds nothing.
+        world.query_mut::<byroredux_scripting::HitEvent>().unwrap().remove(target);
+        world.insert(target, Dead);
+        world.resource_mut::<BowState>().cooldown = 0.0;
+        shoot_now(&world, 1.875).unwrap();
+        settle(&world);
+        assert_eq!(marksman(&world), 1, "an arrow on a corpse feeds nothing");
     }
 
     /// BOW-SET-001: ballistic is in the list, labelled unavailable, and resolves to straight with that stated.

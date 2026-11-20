@@ -1376,6 +1376,7 @@ mod tests {
                 sneak_attack: false,
                 bash_attack: false,
                 blocked: false,
+                arrow: false,
             },
         );
     }

@@ -58,6 +58,9 @@ pub(crate) struct Projectile {
     /// A Target spell's projectile (player-spellcasting PRD PSC-TGT-003): on a live actor it starts the spell's Target
     /// effects as the shooter's cast and queues no damage; `None` for a weapon's shot.
     pub spell: Option<u32>,
+    /// The player's own arrow from the bow shot path (player-archery BOW-USE-005): its hit carries the provenance the
+    /// skill-use emitter reads. `false` for a gun's shot, a script's projectile and a spell.
+    pub arrow: bool,
     /// Bodies owned by the shooter when this projectile launched. This list is
     /// stable for the projectile's flight and avoids walking every physics
     /// entity to rebuild it each frame.
@@ -183,6 +186,7 @@ fn launch_of(
         shooter: source,
         radius: proj.collision_radius.max(0.0),
         spell: None,
+        arrow: false,
         launcher_bodies: std::sync::Arc::from([]),
     })
 }
@@ -231,6 +235,7 @@ pub(crate) fn player_shot(
         shooter: player,
         radius: proj.collision_radius.max(0.0),
         spell: None,
+        arrow: false,
         launcher_bodies: bodies_of(world, player),
     })
 }
@@ -266,6 +271,7 @@ pub(crate) fn arrow_shot(world: &World, player: EntityId, arrow: ArrowSpec, orig
         shooter: player,
         radius: arrow.radius.max(0.0),
         spell: None,
+        arrow: true,
         launcher_bodies: bodies_of(world, player),
     })
 }
@@ -303,6 +309,7 @@ pub(crate) fn spell_shot(
         shooter: player,
         radius: 0.0,
         spell: Some(launch.spell),
+        arrow: false,
         launcher_bodies: bodies_of(world, player),
     })
 }
@@ -412,7 +419,7 @@ pub(crate) fn projectile_flight_system(world: &World, dt: f32) {
         .map(|(body, _)| *body)
         .collect();
     let mut remaining = Vec::with_capacity(flying.len());
-    let mut hits: Vec<(EntityId, EntityId, f32)> = Vec::new();
+    let mut hits: Vec<(EntityId, EntityId, f32, bool)> = Vec::new();
     // A Target spell's projectile ends in a landing on a live actor or a miss (player_cast::land_target, missed_target).
     let mut landings: Vec<(EntityId, EntityId, u32)> = Vec::new();
     let mut misses: Vec<u32> = Vec::new();
@@ -471,7 +478,7 @@ pub(crate) fn projectile_flight_system(world: &World, dt: f32) {
                         landings.push((projectile.shooter, target, spell))
                     }
                     (Some(spell), _) => misses.push(spell),
-                    (None, Some(target)) => hits.push((target, projectile.shooter, projectile.damage)),
+                    (None, Some(target)) => hits.push((target, projectile.shooter, projectile.damage, projectile.arrow)),
                     (None, None) => {}
                 }
             }
@@ -488,7 +495,7 @@ pub(crate) fn projectile_flight_system(world: &World, dt: f32) {
         // the take), so the survivors simply come back.
         active.0.extend(remaining);
     }
-    hits.retain(|&(target, shooter, _)| target != shooter && world.get::<Dead>(target).is_none());
+    hits.retain(|&(target, shooter, _, _)| target != shooter && world.get::<Dead>(target).is_none());
     if hits.is_empty() {
         return;
     }
@@ -500,9 +507,9 @@ pub(crate) fn projectile_flight_system(world: &World, dt: f32) {
     // the queue's write guard is taken: the detection test takes its own locks.
     let landed: Vec<byroredux_scripting::TrapHit> = hits
         .into_iter()
-        .map(|(target, shooter, damage)| {
+        .map(|(target, shooter, damage, arrow)| {
             let (damage, sneak_attack) = crate::combat::sneak_strike(world, shooter, target, damage);
-            byroredux_scripting::TrapHit { target, trap: shooter, damage, sneak_attack }
+            byroredux_scripting::TrapHit { target, trap: shooter, damage, sneak_attack, arrow }
         })
         .collect();
     if let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingTrapHits>() {
@@ -643,6 +650,7 @@ mod tests {
             shooter: 7,
             radius: 1.0,
             spell: None,
+            arrow: false,
             launcher_bodies: std::sync::Arc::from([]),
         }
     }
@@ -921,6 +929,7 @@ mod tests {
                 sneak_attack: false,
                 bash_attack: false,
                 blocked: false,
+                arrow: false,
             },
         );
         world.resource_mut::<ActiveProjectiles>().0 = vec![Projectile { shooter, ..dart() }];

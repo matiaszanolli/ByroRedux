@@ -692,7 +692,7 @@ impl DeferredFragmentEffects {
                 pending.0.extend(
                     self.trap_hits
                         .drain(..)
-                        .map(|(target, trap, damage)| crate::TrapHit { target, trap, damage, sneak_attack: false }),
+                        .map(|(target, trap, damage)| crate::TrapHit { target, trap, damage, sneak_attack: false, arrow: false }),
                 );
             }
             self.trap_hits.clear();

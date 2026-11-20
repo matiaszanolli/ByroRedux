@@ -343,6 +343,7 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
             // `power_attack` and `bash_attack` stay `false` — no power-attack
             // charge or bash input exists. `sneak_attack` is M65's (above).
             blocked: block_held,
+            arrow: false,
         },
     );
     drop(events);
@@ -581,7 +582,9 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
             .try_resource::<CombatState>()
             .map_or(0, |state| u64::from(state.hits_landed))
             ^ (u64::from(target) << 32 | u64::from(event.aggressor));
-        crate::skill_use_emit::on_landed_hit(world, event.aggressor, target, event.blocked, seed);
+        // An arrow that dealt nothing (a ghost, a blocked shot, a harmless launch) is no hit (BOW-USE-002).
+        let arrow = event.arrow && damage > 0.0;
+        crate::skill_use_emit::on_landed_hit(world, event.aggressor, target, event.blocked, arrow, seed);
 
         if killed {
             if let Some(mut dead) = world.query_mut::<Dead>() {
@@ -1966,6 +1969,7 @@ mod tests {
                 sneak_attack: false,
                 bash_attack: false,
                 blocked,
+                arrow: false,
             },
         );
         (world, aggressor, target)
@@ -2016,6 +2020,7 @@ mod tests {
                 sneak_attack: false,
                 bash_attack: false,
                 blocked: false,
+                arrow: false,
             },
         );
         combat_damage_system(world, 0.0);
@@ -2097,6 +2102,7 @@ mod tests {
         world.insert(victim, byroredux_scripting::HitEvent {
             aggressor: guard, source: guard, projectile: 0, damage: 10.0,
             power_attack: false, sneak_attack: false, bash_attack: false, blocked: false,
+            arrow: false,
         });
         combat_damage_system(&world, 0.0);
         assert_eq!(world.resource::<ObScriptLedger>().crime_gold, 0, "an NPC's strike");

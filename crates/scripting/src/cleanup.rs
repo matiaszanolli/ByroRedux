@@ -389,6 +389,7 @@ mod tests {
                 sneak_attack: false,
                 bash_attack: false,
                 blocked: false,
+                arrow: false,
             },
         );
         world.insert(c, TimerExpired { timer_id: 5 });

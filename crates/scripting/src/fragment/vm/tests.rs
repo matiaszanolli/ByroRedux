@@ -993,6 +993,7 @@ fn hit_events_are_registered_single_shot_and_filtered() {
                 sneak_attack: sneak,
                 bash_attack: false,
                 blocked: false,
+                arrow: false,
             },
         );
         // The automatic delivery leaves it alone, the registration takes it.
@@ -2428,6 +2429,7 @@ fn on_hit_receives_the_aggressor_weapon_and_flags() {
             sneak_attack: false,
             bash_attack: false,
             blocked: false,
+            arrow: false,
         },
     );
     // #5991 — `OnHit` is delivered by the hit pass (scheduled after every

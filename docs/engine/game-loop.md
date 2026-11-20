@@ -227,11 +227,10 @@ Three launchers build a `Projectile` today:
 The player's bow is a fourth launcher on this table, not a fourth flight (Player archery PRD). It gates
 (a readied bow, an equipped arrow, the interval), spends one arrow of the equipped type at the release
 (BOW-AMM-003) and builds its `Projectile` from the per-game `BowModel` row; Oblivion has no `PROJ`, so like
-`spell_shot` it gives its own speed and range. The skill feed is not in the flight: `on_landed_hit` runs from `combat_damage_system` and reads the type of
-the weapon the player *wields* (`wielded_type`), not what struck, because `HitEvent` carries no
-projectile provenance (`projectile` names an entity, and projectiles are not entities). A bow therefore
-needs the hit to say it came from the player's arrow (BOW-USE-005), or a player holding a bow would earn
-Marksman from a spell or a script's projectile too.
+`spell_shot` it gives its own speed and range. The skill feed is not in the flight either: `on_landed_hit` runs from `combat_damage_system`. A projectile carries
+its provenance (`Projectile::arrow`, set only by `arrow_shot`) onto the `TrapHit` and the landed `HitEvent::arrow`,
+and the emitter feeds the bow's skill from that flag (BOW-USE-005), not from the weapon the player wields: a script's
+projectile, the gun's shot and a spell feed nothing even with a bow in hand, and an arrow that dealt nothing is no hit.
 
 Gravity: the flight refuses a non-hitscan projectile whose `PROJ` gravity is non-zero ("the gravity unit is
 unspecified", `projectile_flight`'s launch check). A straight arrow therefore builds its `Projectile` without

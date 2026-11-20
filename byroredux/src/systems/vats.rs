@@ -976,6 +976,7 @@ pub(crate) fn vats_confirm(world: &World) -> bool {
                 sneak_attack: *sneak_attack,
                 bash_attack: false,
                 blocked: false,
+                arrow: false,
             },
         );
     }

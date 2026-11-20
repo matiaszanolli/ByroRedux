@@ -2373,6 +2373,7 @@ mod tests {
                 sneak_attack: false,
                 bash_attack: false,
                 blocked: false,
+                arrow: false,
             },
         );
         crate::combat::combat_damage_system(&world, 0.0);

@@ -35,15 +35,21 @@ const LIGHT_ARMOR: u32 = 27;
 const ATHLETICS: u32 = 13;
 const ACROBATICS: u32 = 26;
 const SNEAK: u32 = 31;
+/// Marksman: fed by the player's arrow hits (player-archery BOW-USE-001).
+const MARKSMAN: u32 = 28;
+/// Oblivion `WEAP` `DATA` type 5: a bow.
+const BOW_TYPE: u8 = 5;
 
-/// The skill a melee weapon of Oblivion `WEAP` type `weapon_type` feeds (0 and 1 blades, 2 and 3 blunt
-/// weapons; 4, a staff, casts instead, and 5, a bow, has no melee blow), or Hand to Hand for no weapon.
+/// The skill a weapon of Oblivion `WEAP` type `weapon_type` feeds (0 and 1 blades, 2 and 3 blunt weapons, 5 a bow's
+/// Marksman; 4, a staff, casts instead), or Hand to Hand for no weapon. A bow feeds only through its arrow's hit
+/// ([`on_landed_hit`]), never through the weapon in hand.
 #[must_use]
 pub(crate) fn weapon_skill(weapon_type: Option<u8>) -> Option<u32> {
     match weapon_type {
         None => Some(HAND_TO_HAND),
         Some(0 | 1) => Some(BLADE),
         Some(2 | 3) => Some(BLUNT),
+        Some(BOW_TYPE) => Some(MARKSMAN),
         Some(_) => None,
     }
 }
@@ -97,8 +103,10 @@ fn wielded_type(world: &World, aggressor: EntityId) -> Option<Option<u8>> {
 }
 
 /// One `HitEvent` that landed on the living `target`: queue the skill uses it earns the player.
-/// `seed` varies the armor-piece roll from hit to hit.
-pub(crate) fn on_landed_hit(world: &World, aggressor: EntityId, target: EntityId, blocked: bool, seed: u64) {
+/// `seed` varies the armor-piece roll from hit to hit. `arrow` is the hit's provenance (the player's own arrow,
+/// BOW-USE-005): an arrow feeds the bow's skill, and a hit from anything else feeds nothing while a bow is wielded,
+/// so a script's projectile or a spell cannot earn Marksman.
+pub(crate) fn on_landed_hit(world: &World, aggressor: EntityId, target: EntityId, blocked: bool, arrow: bool, seed: u64) {
     let Some(player) = crate::systems::PlayerEntity::get(world) else {
         return;
     };
@@ -107,7 +115,11 @@ pub(crate) fn on_landed_hit(world: &World, aggressor: EntityId, target: EntityId
         return;
     }
     if aggressor == player {
-        let skill = wielded_type(world, player).and_then(weapon_skill);
+        let skill = match (arrow, wielded_type(world, player)) {
+            (true, _) => weapon_skill(Some(BOW_TYPE)),
+            (false, Some(Some(BOW_TYPE))) => None,
+            (false, wielded) => wielded.and_then(weapon_skill),
+        };
         if let Some(skill) = skill {
             byroredux_scripting::oblivion_skill_use::queue_skill_use(world, skill, 0, 0.0);
         }
@@ -296,7 +308,7 @@ mod tests {
     use super::*;
 
     /// UESP's weapon pages: one-handed and two-handed blades feed Blade, blunts feed Blunt, the unarmed blow
-    /// Hand to Hand; a staff and a bow feed no melee skill.
+    /// Hand to Hand, a bow Marksman (through its arrow only); a staff feeds no skill.
     #[test]
     fn a_weapon_type_names_its_skill() {
         assert_eq!(weapon_skill(None), Some(HAND_TO_HAND));
@@ -305,7 +317,7 @@ mod tests {
         assert_eq!(weapon_skill(Some(2)), Some(BLUNT));
         assert_eq!(weapon_skill(Some(3)), Some(BLUNT));
         assert_eq!(weapon_skill(Some(4)), None, "a staff casts");
-        assert_eq!(weapon_skill(Some(5)), None, "no bow shot path");
+        assert_eq!(weapon_skill(Some(5)), Some(MARKSMAN), "a bow: through its arrow's hit");
     }
 
     /// The roll source is deterministic and spreads over 0..100.
@@ -327,6 +339,7 @@ mod tests {
 
     const BLADE_WEAPON: u32 = 0x100;
     const STAFF: u32 = 0x101;
+    const BOW_WEAPON: u32 = 0x102;
     const CUIRASS: u32 = 0x200;
     const LIGHT_BOOTS: u32 = 0x201;
 
@@ -366,7 +379,7 @@ mod tests {
         world.insert_resource(CharacterRuleset::new(LevelingModel::OBLIVION));
         world.insert_resource(PendingSkillUse::default());
         let mut index = EsmIndex::default();
-        for record in [weapon(BLADE_WEAPON, 1), weapon(STAFF, 4), armor(CUIRASS, 1 << 2, true), armor(LIGHT_BOOTS, 1 << 5, false)] {
+        for record in [weapon(BLADE_WEAPON, 1), weapon(STAFF, 4), weapon(BOW_WEAPON, 5), armor(CUIRASS, 1 << 2, true), armor(LIGHT_BOOTS, 1 << 5, false)] {
             index.items.insert(record.form_id, record);
         }
         world.insert_resource(crate::components::LoadedCellIndex(std::sync::Arc::new(index)));
@@ -398,19 +411,48 @@ mod tests {
     #[test]
     fn a_landed_melee_blow_feeds_the_weapons_skill() {
         let (mut world, player, npc) = world();
-        on_landed_hit(&world, player, npc, false, 1);
+        on_landed_hit(&world, player, npc, false, false, 1);
         assert_eq!(queued(&world), vec![HAND_TO_HAND], "unarmed");
         wield(&mut world, player, BLADE_WEAPON);
-        on_landed_hit(&world, player, npc, false, 2);
+        on_landed_hit(&world, player, npc, false, false, 2);
         assert_eq!(queued(&world), vec![HAND_TO_HAND, BLADE]);
-        on_landed_hit(&world, player, npc, true, 3);
-        on_landed_hit(&world, player, player, false, 4);
+        on_landed_hit(&world, player, npc, true, false, 3);
+        on_landed_hit(&world, player, player, false, false, 4);
         wield(&mut world, player, STAFF);
-        on_landed_hit(&world, player, npc, false, 5);
+        on_landed_hit(&world, player, npc, false, false, 5);
         assert_eq!(queued(&world).len(), 2, "blocked, self-inflicted and staff blows feed nothing");
         // The amount is the SKIL value of the action: Blade 0.5, Hand to Hand 0.6.
         let amounts: Vec<f32> = world.resource::<PendingSkillUse>().0.iter().map(|r| r.amount).collect();
         assert_eq!(amounts, vec![0.6, 0.5]);
+    }
+
+    /// Player-archery BOW-USE-001 / -002 / -005 (`bow_feeds_only_a_valid_hit`): the player's own arrow landing on a living
+    /// target feeds Marksman once at usage 0 (0.8); a blocked arrow feeds nothing; and with a bow wielded, a hit that is
+    /// not the arrow (a script's projectile, a gun's shot) feeds nothing at all.
+    #[test]
+    fn bow_feeds_only_a_valid_hit() {
+        let (mut world, player, npc) = world();
+        wield(&mut world, player, BOW_WEAPON);
+        on_landed_hit(&world, player, npc, false, true, 1);
+        assert_eq!(queued(&world), vec![MARKSMAN], "the arrow's hit feeds Marksman");
+        assert_eq!(world.resource::<PendingSkillUse>().0[0].amount, 0.8, "the SKIL usage-0 value");
+        on_landed_hit(&world, player, npc, false, false, 2);
+        on_landed_hit(&world, player, npc, true, true, 3);
+        on_landed_hit(&world, player, player, false, true, 4);
+        assert_eq!(queued(&world), vec![MARKSMAN], "a non-arrow hit with a bow in hand, a blocked arrow and a self-hit feed nothing");
+        // The arrow is the provenance: it feeds the bow's skill even when something else is in hand.
+        wield(&mut world, player, BLADE_WEAPON);
+        on_landed_hit(&world, player, npc, false, true, 5);
+        assert_eq!(queued(&world), vec![MARKSMAN, MARKSMAN]);
+        // ... and a hit that lands on the player is never the player's arrow.
+        on_landed_hit(&world, npc, player, false, true, 6);
+        assert_eq!(queued(&world).iter().filter(|skill| **skill == MARKSMAN).count(), 2);
+    }
+
+    /// BOW-USE-003 (`marksman_leaves_the_unfed_list`): code 28 is fed, in the commit that adds its emitter.
+    #[test]
+    fn marksman_leaves_the_unfed_list() {
+        assert!(byroredux_scripting::oblivion_skill_use::FED_SKILLS.contains(&MARKSMAN));
     }
 
     /// OSL-USE-003: a hit on the player feeds the struck piece's skill: the heavy cuirass 25 of 100 rolls,
@@ -421,7 +463,7 @@ mod tests {
     fn a_hit_the_player_takes_feeds_the_struck_pieces_skill() {
         let (world, player, npc) = world();
         for seed in 0..400 {
-            on_landed_hit(&world, npc, player, false, seed);
+            on_landed_hit(&world, npc, player, false, false, seed);
         }
         let heavy = queued(&world).iter().filter(|&&skill| skill == HEAVY_ARMOR).count();
         let light = queued(&world).iter().filter(|&&skill| skill == LIGHT_ARMOR).count();
@@ -431,7 +473,7 @@ mod tests {
         // A blocked hit never landed.
         let before = queued(&world).len();
         for seed in 0..50 {
-            on_landed_hit(&world, npc, player, true, seed);
+            on_landed_hit(&world, npc, player, true, false, seed);
         }
         assert_eq!(queued(&world).len(), before);
     }
@@ -441,8 +483,8 @@ mod tests {
     fn another_ruleset_queues_nothing() {
         let (mut world, player, npc) = world();
         world.insert_resource(CharacterRuleset::new(LevelingModel::SKYRIM));
-        on_landed_hit(&world, player, npc, false, 1);
-        on_landed_hit(&world, npc, player, false, 1);
+        on_landed_hit(&world, player, npc, false, false, 1);
+        on_landed_hit(&world, npc, player, false, false, 1);
         assert!(queued(&world).is_empty());
     }
 

@@ -3406,6 +3406,7 @@ fn hit_adapter_delivers_live_combat_marker_before_cleanup() {
             sneak_attack: false,
             bash_attack: true,
             blocked: false,
+            arrow: false,
         },
     );
     let slot = ExtensionHostSlot::from_host(host_with_hit_package("org.example.hit-adapter"));

@@ -72,9 +72,9 @@ PY
 patron_health() { command "obscript.cmd $1 GetAV Health" "$LOG_DIR/health-$1-$2.log" || fail 'GetAV Health failed'; sed -nE 's/.*0x[0-9a-f]+ -> (-?[0-9.]+).*/\1/p' "$LOG_DIR/health-$1-$2.log" | head -1; }
 
 command 'levelup' "$LOG_DIR/before.log" || fail 'levelup failed'
-grep -Fq 'fed skills 14/21; unfed: ' "$LOG_DIR/before.log" || fail 'levelup did not report 14 of 21 skills fed'
+grep -Fq 'fed skills 15/21; unfed: ' "$LOG_DIR/before.log" || fail 'levelup did not report 15 of 21 skills fed'
 for school in Alteration Conjuration Destruction Illusion Mysticism Restoration; do
-    grep -E 'fed skills 14/21; unfed: ' "$LOG_DIR/before.log" | grep -Fq "$school" && fail "$school is still reported unfed"
+    grep -E 'fed skills 15/21; unfed: ' "$LOG_DIR/before.log" | grep -Fq "$school" && fail "$school is still reported unfed"
 done
 command 'stealth.status' "$LOG_DIR/stealth.log" || fail 'stealth.status failed'
 target="$(sed -nE 's/.*entity ([0-9]+) ref .*/\1/p' "$LOG_DIR/stealth.log" | head -1)"

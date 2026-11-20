@@ -760,6 +760,7 @@ fn combat_and_equipment_events_dispatch_in_batch_order() {
             sneak_attack: false,
             bash_attack: false,
             blocked: false,
+            arrow: false,
         },
     );
     world.insert(

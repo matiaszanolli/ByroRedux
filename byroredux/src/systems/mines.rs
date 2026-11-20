@@ -163,6 +163,7 @@ fn land_mine_hits(world: &World) {
                     sneak_attack: false,
                     bash_attack: false,
                     blocked: false,
+                    arrow: false,
                 },
             );
         }
@@ -473,6 +474,7 @@ mod tests {
                 sneak_attack: false,
                 bash_attack: false,
                 blocked: false,
+                arrow: false,
             },
         );
         let on_victim = |world: &World| world.get::<byroredux_scripting::HitEvent>(victim).map(|h| (h.aggressor, h.damage));
@@ -504,7 +506,7 @@ mod tests {
     fn a_blast_waiting_on_a_target_that_died_takes_no_hit() {
         let (mut world, mine, victim) = setup();
         world.insert(mine, ArmedMine { victim, fuse_left: 0.1 });
-        world.insert(victim, byroredux_scripting::HitEvent { aggressor: mine, source: mine, projectile: 0, damage: 1.0, power_attack: false, sneak_attack: false, bash_attack: false, blocked: false });
+        world.insert(victim, byroredux_scripting::HitEvent { aggressor: mine, source: mine, projectile: 0, damage: 1.0, power_attack: false, sneak_attack: false, bash_attack: false, blocked: false, arrow: false });
         mine_system(&world, 0.2);
         assert_eq!(world.resource::<PendingMineHits>().0.len(), 1);
         world.query_mut::<byroredux_scripting::HitEvent>().unwrap().remove(victim);

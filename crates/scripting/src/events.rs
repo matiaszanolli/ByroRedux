@@ -79,6 +79,10 @@ pub struct HitEvent {
     pub sneak_attack: bool,
     pub bash_attack: bool,
     pub blocked: bool,
+    /// The hit is the player's own arrow, from the bow shot path (player-archery BOW-USE-005): the provenance the
+    /// skill-use emitter reads, because the skill must not be guessed from the weapon the player happens to wield. `false`
+    /// for a melee blow, a trap, a script's projectile, a gun's shot and every other producer.
+    pub arrow: bool,
 }
 
 impl Component for HitEvent {
