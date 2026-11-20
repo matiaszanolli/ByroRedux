@@ -1,13 +1,18 @@
 # Reference-Quality Lighting — Product Requirements
 
-**Status**: ACTIVE (2026-11-19). Revision 38. The change history is in
+**Status**: ACTIVE (2026-11-20). Revision 40. The change history is in
 §12. Every decision in §10 is decided and every Phase 0 verify item is
 closed or filed as an issue.
 
 **Tracking**: #6595 (parent). Phases: #6596 (0), #6601 (1a), #6598 (1b),
-#6602 (2), #6603 (3), #6604 (4), #6599 (5). M51 tools built here: #6600
+#6602 (2), #6603 (3), #6604 (4), #6599 (5). Phase 3 children: #6721
+(RLT-SHD-012, closed in rev 40), #7091 (the light-animation seed, an
+RLT-OPS-004 regression). M51 tools built here: #6600
 (exporter, PTR-VAL-004), #6597 (EXR writer, PTR-OUT-001). Verify items
-filed: #6605 (V9, closed in rev 15), #6606 (V12). Statements about
+filed: #6605 (V9, closed in rev 15), #6606 (V12). The radiance cache that
+L4's exit waits on is tracked by the
+[Radiance Cache and GI Coverage PRD](radiance-cache-gi-coverage.md)
+(#7069). Statements about
 how an original engine, a published technique or an external tool behaves
 cite external sources (UESP and the Creation Kit wikis, the cited papers
 and vendor documentation); a claim that could not be verified is marked
@@ -38,7 +43,7 @@ table, or Phase 0 writes the missing design.
 | Mechanism or tool | Owner |
 |---|---|
 | Units, emitters, visibility layers, adaptive ray budget | [Physical Lighting Backbone](../engine/physical-lighting-backbone.md) |
-| ReSTIR-DI, shadow-ratio EMA, TAA clamp, RT seed trade-offs | [Shadow Pipeline Trade-offs](../engine/shadow-pipeline-tradeoffs.md) |
+| ReSTIR-DI, shadow-ratio EMA, TAA clamp, RT seed trade-offs; the far-field screen-space sun term (RLT-CON-004) | [Shadow Pipeline Trade-offs](../engine/shadow-pipeline-tradeoffs.md) |
 | Cornell L0–L5 oracle, RT debug views, ray probe; the two component views this PRD adds (RLT-SHD-009, RLT-GI-009) | [RT Lighting & Material Recovery](../engine/rt-lighting-material-recovery.md) |
 | Convergence captures, A/B workflow, real-content probe | [Renderer Evaluation](../engine/renderer-evaluation.md) |
 | Sky cubemap bake, GGX prefilter, SH irradiance, interior portal lane | [SKYAL](../engine/skyal.md) |
@@ -74,7 +79,10 @@ The owner's framing is to benchmark against modern references, not against
 the legacy look. Beating a 2006–2015 forward renderer's shadow maps lands at
 "not bad"; the reference this PRD names is a **converged, unbiased render of
 the same scene** (§3.4), and the modern real-time techniques it names
-(Heitz et al. 2018's ratio estimator, NVIDIA's SIGMA shadow denoiser as
+(the ratio estimator of Heitz, Hill and McGuire, "Combining Analytic
+Direct Illumination and Stochastic Shadows", I3D 2018,
+[doi:10.1145/3190834.3190852](https://doi.org/10.1145/3190834.3190852),
+cited below as Heitz et al. 2018; NVIDIA's SIGMA shadow denoiser as
 publicly described, Fernando's percentage-closer soft shadows, Bend
 Studio's screen-space shadows, Karis's split-sum IBL) are the yardsticks
 for *how* to approach it, not looks to copy.
@@ -100,7 +108,7 @@ gate is listed in §3 as shipped-unmeasured, never as done.
 | **Converged reference** | An image of a rung rendered by the external renderer (M51 §10 Q5) to negligible noise, from the exporter's scene (RLT-REF-001) with the mapped BSDFs (RLT-REF-008), and with every emitter's intensity scaled at export by its expected factor (RLT-REF-010). No factor is applied to the image. |
 | **Raster mode** | The shipped hybrid renderer: rasterised primary visibility, ray-query shadows, reflections and GI ([renderer.md](../engine/renderer.md)). The mode this PRD measures. |
 | **Progressive reference** / **interactive PT mode** | M51's two path-tracing modes, as [path-tracing-reference-mode.md §2](path-tracing-reference-mode.md#2-terminology) defines them. Neither exists at HEAD. "PT mode" in the ROADMAP row means the interactive one. |
-| **Hash-grid radiance cache** | M51's world-space radiance cache, defined in [path-tracing-reference-mode.md §2](path-tracing-reference-mode.md#2-terminology) and required by PTR-RT-002; the ROADMAP rows' "SHARC" names this component whatever its provenance under M51's Q2. |
+| **Hash-grid radiance cache** | The world-space radiance cache that terminates the bounded path. Since rev 38 it is specified and built by the [Radiance Cache and GI Coverage PRD](radiance-cache-gi-coverage.md); M51's PT modes consume the same cache (PTR-RT-002, [path-tracing-reference-mode.md §2](path-tracing-reference-mode.md#2-terminology)). The ROADMAP rows' "SHARC" names this component whatever its provenance. |
 | **Rung** | A Cornell scene variant built for one measurement, in the sense of the L0–L5 oracle ([R4](../engine/rt-lighting-material-recovery.md#r4---build-the-cornell-l0-l5-oracle)). A **reference rung** is one that has a converged reference and obeys RLT-REF-009. |
 | **Component view** | An engine debug view used as one side of a metric; §3.4 states what it contains and the reference recipe that produces the same quantity. |
 | **Linear capture** | A raster-mode image of scene-linear radiance taken at composite's HDR output, before bloom, exposure, grading and tone mapping, averaged over a stated number of consecutive frames and written by the EXR writer (RLT-REF-007), as opposed to the 8-bit PNG of the presented swapchain that `screenshot` writes. |
@@ -115,7 +123,7 @@ gate is listed in §3 as shipped-unmeasured, never as done.
 | **Self-consistency gate** | A gate that compares the engine with itself (two engine captures, an engine A/B, an isolated GPU unit test) rather than with the converged reference. Alone it earns state S1+, never S2. |
 | **Visibility** | Per pixel of a direct view, direct radiance ÷ unshadowed direct radiance, in [0, 1]. Engine side: the filtered direct view (RLT-SHD-009) divided by the same view captured with `DBG_DISABLE_DIRECT_SHADOWS` (`0x8000000`, `crates/renderer/src/shader_constants_data.rs`). Reference side: the direct recipe divided by the direct recipe with the rung's casters removed. Pixels whose unshadowed direct is below the rung's stated minimum are excluded and counted in the manifest. |
 | **Visibility error** | Per pixel, \|*V*<sub>raster</sub> − *V*<sub>ref</sub>\| over a region, reported as its mean and its 95th percentile. The metric for every direct-view region that is partly or fully shadowed (filter bands, contact bands), where a ratio to the reference luminance is undefined. |
-| **Temporal error** | The relative RMSE, over a region, between the engine's linear `final` capture during or after a motion and the engine's parked, converged `final` capture at the same pose and the same blocker position, normalised by the region's mean parked luminance. A self-consistency metric: both sides carry the same indirect bias, so it isolates ghosting, lag and boiling. |
+| **Temporal error** | The relative RMSE, over a region, between an engine linear capture and the engine's parked, converged capture at the same pose and the same blocker position, normalised by the region's mean parked luminance. The gated quantity is the **excess**: the moving run's temporal error minus that of a control *held* at the same pose from frame 0 (`--bench-camera-hold-at`) and sampled at the same frame age, worst across the paired sampling seeds. The view is per gate: A3 reads `direct_only` (owner decision 2026-11-16, RLT-SHD-002); A14 and the γ comparison read `final`. A self-consistency metric: the held control has the same accumulator age and the same bias, so the excess isolates what motion adds — ghosting, lag and boiling (revs 30, 32–35). |
 | **Shadow ratio** | The per-pixel ratio Σrad·V ÷ Σrad the direct term is shaded by (Heitz et al. 2018), stored in the ReSTIR reservoir as `accum` ([trade-offs §3](../engine/shadow-pipeline-tradeoffs.md#3-restir-di-replaced-the-transient-m--8-estimator)). |
 | **Shadow filter** | `shadow_filter.comp`: the edge-aware spatial filter over the shadow ratio. It writes a correction U·(filtered − raw) that `composite.frag` adds to the direct attachment. |
 | **Profile line** | A world-space segment on a receiver, perpendicular to a shadow edge, fixed in the rung's code and recorded in the manifest. |
@@ -236,8 +244,8 @@ live in the rung subsection of the exporter design (Related table).
 - **RLT-G-001 — Penumbrae match the reference, and stay stable in
   motion.** Parked penumbra width and the filter bands are within the L1
   threshold of the reference on the Cornell reference rungs; during and
-  after a camera pan and under a moving blocker, the temporal error
-  against the engine's own parked, converged capture is within its L1
+  after a camera pan and under a moving blocker, the temporal error's
+  excess over an age-matched held control (§2) is within its L1
   threshold.
 - **RLT-G-002 — Contact regions are grounded.** The contact band of every
   caster class — rigid block, thin plank, alpha-tested caster, skinned
@@ -267,8 +275,10 @@ live in the rung subsection of the exporter design (Related table).
   the ROADMAP row excludes them, and RT-first is on the keep list.
 - **RLT-NG-003.** Both PT modes and the PT-mode bounce count (T14): M51
   owns them, the bounce count as PTR-RT-007. This PRD consumes from M51 the
-  exporter and the EXR writer (its Phase 1 issues), a second reference
-  (RLT-REF-005), and, if Q5 is taken, the radiance cache (RLT-GI-008).
+  exporter and the EXR writer (its Phase 1 issues) and a second reference
+  (RLT-REF-005). The radiance cache Q5 adopts comes from the
+  [Radiance Cache and GI Coverage PRD](radiance-cache-gi-coverage.md)
+  (rev 38), under RLT-GI-008's allocation contract.
 - **RLT-NG-004.** Replacing or gating SVGF (T13): M54 (neural denoiser)
   owns the indirect spatial filter.
 - **RLT-NG-005.** Traced shadows from ground-cover blades: decided
@@ -628,9 +638,9 @@ live in the rung subsection of the exporter design (Related table).
   `direct_only`, exposing shadow-ratio history without indirect convergence
   or TAA. The post-stop control is held at the stop pose from frame zero and
   sampled at the same age; motion controls are held at each sampled pose for
-  the same frame count. Revision 35 sets direct-light limits of 2% during
-  the pan and 1% at frame +16. Both limits apply to the worst excess over
-  the age-matched control across the two seeds. A14 and the TAA gamma
+  the same frame count. Both thresholds apply to the worst excess over the
+  age-matched control across the two seeds (§2) and live in
+  `docs/audits/MLIGHT_thresholds.tsv` (rev 35). A14 and the TAA gamma
   comparison retain `final`.
 - **RLT-SHD-003.** The shadow filter's spatial reach SHOULD scale with the
   expected penumbra size rather than using a fixed kernel. The design MUST
@@ -708,12 +718,16 @@ live in the rung subsection of the exporter design (Related table).
   `triangle_early.frag.spv` (`-DBYRO_OPAQUE_EARLY_TESTS=1`), MUST be rebuilt
   from the source; opaque geometry runs the second. The A5 run MUST read its
   reference at a sample count where the reference's own noise is under the
-  band budget: one 1024-spp render leaves the plank band a mean error of
-  3.2e-3 and a p95 of 1.7e-2 from reference noise alone (rev 27). The cap and
-  the floor are Phase 3 verify items, set by the gates, not chosen here.
-  At HEAD on 2026-11-06 `triangle.frag` averages the binary hits of K
-  emitter-disk-jittered rays with equal weight and shades toward the light's
-  centre; measured effect of the weight in rev 27.
+  band budget; the runner renders A5 references at
+  `CONTACT_REFERENCE_SPP_FACTOR` times the run's sample count and records
+  the count per row (rev 28; the single-render noise that motivated it is
+  in rev 27). At HEAD on 2026-11-20 this is met: `triangle.frag` weights
+  each ray on the unnormalised vectors (the shadow-ray loop near line
+  4212), with the centre-cosine floor max(`SHADOW_COS_WEIGHT_MIN_CENTRE`,
+  twice the disk's angular reach) and the cap `SHADOW_COS_WEIGHT_MAX`
+  (`crates/renderer/src/shader_constants_data.rs`), both SPIR-V variants
+  are rebuilt, and `shadow_ray_transmission_is_cosine_weighted_on_unnormalised_vectors`
+  pins it (rev 28).
 
 ### 5.3 Contact shadows (`RLT-CON`)
 
@@ -908,14 +922,14 @@ reach.
   sparse high-energy samples"
   ([trade-offs, real-content finding](../engine/shadow-pipeline-tradeoffs.md#real-content-finding-volumetric-coordinates-are-gamebryo-units));
   Phase 1b re-captures it before any Phase 2 change.
-- **RLT-GI-008.** If Q5 adopts M51's hash-grid radiance cache as the
-  bounded path's terminator, this PRD owns the cache's realtime allocation
-  rule (the exception PTR-RT-006 hands over): its buffers MUST have a row
-  in [memory-budget.md](../engine/memory-budget.md) and its per-pixel
-  query and update work MUST be bounded by a `GpuRayBudget` field
-  (RLT-PERF-002). Rev 38: the cache itself is specified and built in the
-  [Radiance Cache and GI Coverage PRD](radiance-cache-gi-coverage.md); this requirement stays here
-  as the allocation contract that PRD MUST satisfy.
+- **RLT-GI-008.** The hash-grid radiance cache Q5 adopts as the bounded
+  path's terminator, specified and built by the
+  [Radiance Cache and GI Coverage PRD](radiance-cache-gi-coverage.md)
+  (rev 38), is held to this PRD's realtime allocation rule (the exception
+  PTR-RT-006 hands over): its buffers MUST have a row in
+  [memory-budget.md](../engine/memory-budget.md) and its per-pixel query
+  and update work MUST be bounded by a `GpuRayBudget` field
+  (RLT-PERF-002).
 - **RLT-GI-009.** A component view that outputs the traced share as it
   enters `indirectLight`, including whatever multiplies it, MUST exist,
   listed in the `RenderDebugMode` catalog. At HEAD on 2026-11-01
@@ -944,9 +958,10 @@ reach.
   specular lobe, hit emission and escaped environment radiance keep their
   physical units. At HEAD on 2026-11-02 the walk shades hits with
   `evaluatePathBsdf`'s ρ ⁄ π (`include/pbr.glsl`, `pathHitRadiance` in
-  `include/lighting.glsl`), a factor of π below the primary lobe, which
-  alone accounts for about 68 % of the A7 deficit. Added at Phase 2's entry
-  by owner decision (2026-11-02).
+  `include/lighting.glsl`), a factor of π below the primary lobe, the
+  largest single share of the A7 deficit (measured in Phase 1a, rev 11).
+  Added at Phase 2's entry by owner decision (2026-11-02); shipped at the
+  Phase 2 exit (rev 14).
 - **RLT-GI-012.** The RT-LOD gate MUST NOT remove the traced share from a
   surface in view at room scale: on the box rung at tiers 2 and 3 the
   traced-share view MUST be non-zero on at least 99 % of every L4 region's
@@ -955,14 +970,16 @@ reach.
   world footprint exceeds about 0.67 units, and its footprint is the larger
   screen derivative, so at 1280 × 720 the box's grazing floor and ceiling
   get no traced GI at any tier (A7 deficit 1.00). Added at Phase 2's entry
-  by owner decision (2026-11-02). **Deferred** to the Q5 radiance cache
-  (owner, 2026-11-02, rev 14). **Rev 38** (owner, 2026-11-19): the deferral
-  ends as a wait on M51's Phase 5. A surface in view MUST keep traced GI at
-  any distance, and the [Radiance Cache and GI Coverage PRD](radiance-cache-gi-coverage.md) owns the cache and
-  the replacement of this gate; a wider gate is not an acceptable stopgap. The isotropic-footprint gate met the
-  coverage clause on the box but not the cost clause. On content it traces
-  GI on every grazing surface in range. Against the Phase 1b control with
-  the tier pinned:
+  by owner decision (2026-11-02), deferred to the Q5 radiance cache (rev
+  14). Since rev 38 a surface in view MUST keep traced GI at any distance,
+  a wider gate is not an acceptable stopgap, and this requirement is met
+  through the [Radiance Cache and GI Coverage PRD](radiance-cache-gi-coverage.md)'s
+  RCG-G-005 (measured by RCG-VAL-001 on the box and RCG-VAL-002 on
+  content), which owns the cache and the replacement of this gate. The
+  record of why the gate was not simply widened, which that PRD cites:
+  the isotropic-footprint gate met the coverage clause on the box but not
+  the cost clause, tracing GI on every grazing surface in range. Against
+  the Phase 1b control with the tier pinned:
 
   | Scene / configuration | Delta | Settled tier |
   |---|---|---|
@@ -971,11 +988,10 @@ reach.
   | Whiterun / FSR Quality | +7.7 ms | 3 → 1 |
   | Dugout / FSR Quality | +9.2 ms | 1 → 0 |
 
-  At tier 0 the adaptive budget turns GI off altogether. A narrower gate,
-  isotropic with the old ceiling of 2, still cost +1.8 to +5.0 ms and still
-  dropped Whiterun / TAA to tier 0. The Phase 1b gate ships until the cache
-  makes GI hits cheap enough to widen it, and any later widening re-runs
-  A13.
+  At tier 0 the adaptive budget turns GI off altogether. A narrower
+  isotropic gate with the old ceiling still dropped Whiterun / TAA to tier
+  0 (rev 14). The Phase 1b gate ships until the cache replaces it, and the
+  replacement re-runs A13.
 
 ### 5.6 Cost and budget (`RLT-PERF`)
 
@@ -1061,9 +1077,12 @@ design, so content is gated against declared changes.
   change made outside M-LIGHT between phases goes through RLT-OPS-004
   before the phase's work starts instead of being charged to its exit. The tolerance is the scene's two-capture floor plus a
   per-scene margin recorded in the anchor manifest; the margin changes
-  only through a revision row, like a frozen floor (RLT-REF-006). At HEAD
-  on 2026-11-01 `scripts/check-render-anchor.sh` compares 8-bit PNGs and
-  A11 has no pass condition.
+  only through a revision row, like a frozen floor (RLT-REF-006). The
+  benchmark scenes (§2) cover Wave 1 only, so Phase 5's entry MUST name
+  one scene and pinned pose per Wave 2 title with an install, in a
+  revision row, before that title's anchor is captured; until then A11 has
+  no Wave 2 case. At HEAD on 2026-11-01 `scripts/check-render-anchor.sh`
+  compares 8-bit PNGs and A11 has no pass condition.
 - **RLT-CNT-002.** Every phase MUST check in a change declaration in a
   commit that precedes the first commit of the code it covers. Each entry
   MUST name one bounded region of one scene's anchor image as a set of
@@ -1123,13 +1142,16 @@ complete while it is unowned, and no other phase waits for it.
 
 | # | Original behaviour | Redux behaviour | Becomes redundant | Risk and its requirement |
 |---|---|---|---|---|
-| 1 | Oblivion draws shadows from shadow maps with a capped actor-shadow count and a filter level (`iShadowMapResolution`, `iActorShadowCountInt` / `Ext`, `iShadowFilter`; UESP [Oblivion:Oblivion.ini](https://en.uesp.net/wiki/Oblivion_Mod:Oblivion.ini)). Other titles (V8, partly closed in rev 8 — no UESP, GECK or CK INI reference page covers them): FO3 and FNV ship the same set (`iShadowMapResolution` 256–1024, `iActorShadowCountInt` / `Ext` 2–6, `iShadowFilter` 0–2 across their presets; Nukapedia *Fallout.ini (Gamebryo)*); Skyrim SE's presets carry `iShadowMapResolution`, `iNumFocusShadow` and `fShadowDistance`, FO4's `iShadowMapResolution`, `uiShadowFilter`, `iDirShadowSplits`, `iMaxFocusShadows` and `fShadowDistance` — names from the shipped preset INIs only; what focus shadows and splits do is unverified | Every light ray-traced against the full TLAS, no caster cap (RLT-NG-002) | Shadow-resolution and shadow-count INI tweaks and the mods that ship them | Cost grows with lights; bounded by the adaptive budget → RLT-PERF-002, RLT-PERF-004 |
+| 1 | Oblivion draws shadows from shadow maps with a capped actor-shadow count and a filter level (`iShadowMapResolution`, `iActorShadowCountInt` / `Ext`, `iShadowFilter`; UESP [Oblivion:Oblivion.ini](https://en.uesp.net/wiki/Oblivion_Mod:Oblivion.ini)). Other titles (V8, partly closed in rev 8 — no UESP, GECK or CK INI reference page covers them): FO3 and FNV ship the same set (`iShadowMapResolution` 256–1024, `iActorShadowCountInt` / `Ext` 2–6, `iShadowFilter` 0–2 across their presets; Nukapedia [*Fallout.ini (Gamebryo)*](https://fallout.fandom.com/wiki/Fallout.ini_(Gamebryo))); Skyrim SE's presets carry `iShadowMapResolution`, `iNumFocusShadow` and `fShadowDistance`, FO4's `iShadowMapResolution`, `uiShadowFilter`, `iDirShadowSplits`, `iMaxFocusShadows` and `fShadowDistance` — names from the shipped preset INIs only; what focus shadows and splits do is unverified | Every light ray-traced against the full TLAS, no caster cap (RLT-NG-002) | Shadow-resolution and shadow-count INI tweaks and the mods that ship them | Cost grows with lights; bounded by the adaptive budget → RLT-PERF-002, RLT-PERF-004 |
 | 2 | Skyrim interior lighting templates author six directional-ambient colours and one cell-wide directional light "used to simulate bounced light"; the flat ambient colour only seeds the six values and "has no impact on the actual lighting" (CK wiki [Lighting Template](https://ck.uesp.net/wiki/Lighting_Template), local dump `ck-uesp-wiki/(main)/Lighting Template.wiki`) | Authored ambient combined with traced bounce light per Q2 | None | Interiors darker or brighter than authored → RLT-GI-005, RLT-IBL-009 |
 | 3 | ROADMAP's wording: a sky probe "captured once at cell load" | Re-baked every frame on exteriors | — | None: the probe follows time of day and weather; its cost is the `sky_cube` bracket ([SKYAL reflection filtering](../engine/skyal.md#reflection-filtering-2026-09-14)) → RLT-IBL-007 |
 | 4 | — (physical) Sun radius ≈ 0.0047 rad | 0.020 rad at HEAD, Q3 | — | Penumbrae wider than the reference unless both use one value → RLT-SHD-007 |
 | 5 | — | Dielectric sky specular (RLT-IBL-001) | — | The historical "chrome" look on legacy materials with wrong translated roughness or metalness → RLT-IBL-008 |
 | 6 | — | Traced GI no longer double-occluded by SSAO (RLT-GI-004) | — | Cavities read brighter than today's look → RLT-GI-003 holds them to the reference |
 | 7 | — | Sun disc removed from the lighting the sky probe feeds (RLT-IBL-010) | — | Exterior surfaces facing the sun lose the doubled energy and read darker than today → RLT-IBL-009 reports it per scene |
+| 8 | — | Bounce light at GI hits in the primary lobe's Lambert convention, a factor of π above the pre-Phase-2 walk (RLT-GI-011) | — | Bounce-lit areas on every title read brighter than before Phase 2 → RLT-GI-003 holds the result to the reference; A11 under the Phase 2 declaration |
+| 9 | — | Shadow-ray visibility cosine-weighted over the emitter disk on every light (RLT-SHD-012) | — | Small local brightening or darkening in partly occluded pixels on every title (rev 31) → A11 under a change declaration committed before the code (RLT-CNT-002), A13 |
+| 10 | — | On-screen sun shadow beyond the traced fade from a screen-space term (RLT-CON-004, Q4) | — | Off-screen casters cast nothing there, and receivers past `SHADOW_FADE_START` darken where they were unshadowed → the CON-004 gate's off-screen control (A19), A11, A13 |
 
 ---
 
@@ -1175,29 +1197,30 @@ scenarios need the user's own installed data; nothing is checked in.
 | # | Scenario | Kind | Command | Data | Requirements |
 |---|---|---|---|---|---|
 | A1 | Parked penumbra converges (existing) | self-consistency | `cargo test -p byroredux --test cornell_rt_oracle -- --ignored cornell_parked_penumbra_converges_at_one_shadow_ray` | none | regression only |
-| A2 | Penumbra width | report pending a budget | `scripts/m-light-gates.sh --gates A2` (local-light and sun rungs) | none + reference | RLT-SHD-001, RLT-SHD-007 |
-| A3 | Penumbra under camera motion | gate (direct-light self-consistency) | `scripts/m-light-gates.sh --gates A3` (moving vs parked at the same pose, with age-matched held controls and paired sampling seeds) | none | RLT-SHD-002 |
-| A4 | Filter bands and thin rod | gate (visibility error, thin rod pending a budget) | `scripts/m-light-gates.sh --gates A4` | none + reference | RLT-SHD-004, RLT-SHD-009 |
+| A2 | Penumbra width | report pending a budget | `scripts/m-light-gates.sh --gates A2` (local-light and sun rungs) | none + reference | RLT-SHD-001, RLT-SHD-003, RLT-SHD-007 |
+| A3 | Penumbra under camera motion | gate (direct-light self-consistency) | `scripts/m-light-gates.sh --gates A3` (moving vs parked at the same pose, with age-matched held controls and paired sampling seeds); `--gates SHD-005,SHD-006` publish the reservoir-cap bias and the `final` γ = 1.5 / 1.0 pan beside it | none | RLT-SHD-002; RLT-SHD-005 and RLT-SHD-006 (reports) |
+| A4 | Filter bands and thin rod | gate (visibility error, thin rod pending a budget) | `scripts/m-light-gates.sh --gates A4` | none + reference | RLT-SHD-003, RLT-SHD-004, RLT-SHD-009 |
 | A5 | Contact bands | gate (visibility error) | `scripts/m-light-gates.sh --gates A5` (block, cube, plank, normal-mapped floor, alpha-tested caster, skinned proxy mid-animation in the RLT-REF-017 mode). The flat-floor plank is report-only (`--cornell-reference contact-flat`, RLT-SHD-012). | none + reference | RLT-CON-001…003, RLT-CON-006…008, RLT-SHD-012, RLT-REF-017 |
-| A6 | Sky IBL energy | gate | new test `cornell_sun_ibl_sweep_matches_reference` (probe-only sky rung, L5 sweep, specular-only and Lambertian probes) | none + reference | RLT-IBL-001…004, RLT-REF-021 |
-| A7 | GI deficit | report (gate once Q5's mechanism lands, RLT-GI-003) | `scripts/m-light-gates.sh --gates A7` on the Lambertian `--cornell-reference lambert-box` rung: tiers 0–3 pinned, plus the clamp off (`--rt-test-no-gi-clamp`) and the RT-LOD gate off at tier 3; deficit, mean and 95th-percentile relative error per region with both sides' floors in the RLT-REF-004 manifest | none + reference | RLT-GI-002, RLT-GI-003, RLT-GI-006, RLT-GI-010 |
+| A6 | Sky IBL energy | gate | new test `cornell_sun_ibl_sweep_matches_reference` (probe-only sky rung, L5 sweep, specular-only and Lambertian probes), plus a time-of-day step during the run after which the probe-lit probe and the visible sky agree within the SKYAL frame count | none + reference | RLT-IBL-001…004, RLT-IBL-007, RLT-REF-021 |
+| A7 | GI deficit | report (gate once Q5's mechanism lands, RLT-GI-003) | `scripts/m-light-gates.sh --gates A7` on the Lambertian `--cornell-reference lambert-box` rung: tiers 0–3 pinned, plus the clamp off (`--rt-test-no-gi-clamp`) and the RT-LOD gate off at tier 3; deficit, mean and 95th-percentile relative error per region with both sides' floors in the RLT-REF-004 manifest. The tier floor of the bounded path is pinned by `bounded_path_preserves_the_accepted_segment_and_diffuse_budgets` (`cargo test -p byroredux-renderer`); the box-rung coverage of RLT-GI-012 is the RCG PRD's RCG-VAL-001 (`--gates RCG-COV`) | none + reference | RLT-GI-001, RLT-GI-002, RLT-GI-003, RLT-GI-006, RLT-GI-010, RLT-GI-011, RLT-GI-012 |
 | A8 | Traced share free of SSAO | gate | `scripts/m-light-gates.sh --gates A8`: the `traced_share` view with and without `DBG_DISABLE_AO` (`0x800`) on the box rung | none | RLT-GI-004, RLT-GI-009 |
 | A9 | Material translation and anchor luminance | report | material-class distribution dump (Phase 1 tool) and `scripts/check-render-anchor.sh` on linear captures, HEAD vs the pre-IBL anchor | FNV, Skyrim SE, FO4 | RLT-IBL-008, RLT-IBL-009 |
 | A10 | Real-content bounce | report | `scripts/renderer-eval-fnv.sh` (`DBG_VIZ_GI_BOUNCE` view) | FNV | RLT-GI-007 |
 | A11 | Content non-regression against declared changes | gate | engine `--bench-frames 300 --bench-hold` (release with `BYRO_DEBUG_SERVER=1`) at the pinned bench pose, linear `final` capture compared with the anchor captured at step 4 of the current phase's entry (§9), under the phase's change declaration, plus the entry-time check against the previous phase's exit capture (RLT-CNT-001); the filtered-direct `r.shadowfilter off` / `on` pair and one exterior terrain-contact capture published as reports | each Wave 1–2 title's benchmark scene with an install, one exterior | RLT-CNT-001…003, RLT-SHD-009 on content, RLT-CON-009 (report), RLT-PERF-001 bracket |
 | A12 | Portal-sky escape | report | new script `docs/smoke-tests/m-light-portal-sky.sh` (an interior with Show Sky, `render.debug indirect_only` at a window) | FNV or Skyrim SE | RLT-IBL-006 |
 | A13 | Cost and settled tier | gate | benchmark-scene refresh per ROADMAP methodology | benchmark scenes' games | RLT-PERF-003…006 |
-| A14 | Moving blocker | self-consistency gate (temporal error) | new test `cornell_moving_blocker_is_temporally_stable` | none | RLT-SHD-010, RLT-SHD-011 |
+| A14 | Moving blocker | self-consistency gate (temporal error) | `scripts/m-light-gates.sh --gates A14` (`renderer-stepped`, `--bench-camera static`, the blocker on the bench clock; excess over the held control from frame 80, both seeds) | none | RLT-SHD-010, RLT-SHD-011 |
 | A15 | Calibration and materials | gate | test `cornell_calibration_and_material_rungs` in `byroredux/tests/m_light_gates.rs` (runs `scripts/m-light-gates.sh --gates A15`): calibration ratio 1 per emitter kind over the plane and a 3 × 3 constancy grid, each kind from the phase that first uses it; the Lambertian flat planes at three view angles from Phase 1a, the specular rows and the normal-mapped plane from Phases 4 and 3 | none + reference | RLT-REF-010, RLT-REF-014 |
 | A16 | Closure | gate | test `cornell_components_sum_to_total` in `byroredux/tests/m_light_gates.rs` (`--gates A16`): SVGF bypassed (`DBG_DISABLE_SVGF`), `final` unjittered (`--rt-test-no-jitter`) and read before TAA; SVGF's energy change and the B10G11R11 storage cost reported | none + reference | RLT-REF-011, RLT-REF-018, RLT-REF-020 |
 | A17 | Sun counted once | gate | new test `cornell_sun_energy_counted_once` | none + reference | RLT-IBL-010, RLT-REF-012, RLT-REF-019 |
 | A18 | Apparatus cost | report | `scripts/m-light-gates.sh` prints its wall-clock at the end of every run; `--cold` empties the reference cache first. The temporal gates' parked engine captures join when Phase 3 adds them | none | RLT-REF-015, RLT-REF-016 |
+| A19 | Far-field sun visibility | gate (engine self-consistency) | `scripts/m-light-gates.sh --gates CON-004 --profile release` on the `far-sun` rung: a near caster darkens through the traced shadow, a far caster darkens through the screen-space term without brightening any pixel by more than 2<sup>−10</sup>, an off-screen caster and `DBG_DISABLE_DIRECT_SHADOWS` change nothing; the pass's GPU bracket reported | none | RLT-CON-004, RLT-PERF-001 |
 
 ### 7.3 Where the gates run
 
 | Gates | Where | When | Cross-GPU |
 |---|---|---|---|
-| A2–A8, A14–A18 | `rt-correctness.yml`, `m-light` option, on the RT development machine until a `byroredux-rt` runner exists (RLT-OPS-001), against cached references unless a cache key changed (RLT-REF-015) | Every phase exit; before a release that changes a shader | Thresholds fixed on the reference GPU; other GPUs report-only (RLT-OPS-002) |
+| A2–A8, A14–A19 | `rt-correctness.yml`, `m-light` option, on the RT development machine until a `byroredux-rt` runner exists (RLT-OPS-001), against cached references unless a cache key changed (RLT-REF-015) | Every phase exit; before a release that changes a shader | Thresholds fixed on the reference GPU; other GPUs report-only (RLT-OPS-002) |
 | A9–A13 | Local, with the user's game data | Every phase exit | Reference GPU only |
 | A1 | `rt-correctness.yml`, `cornell` option (existing) | As today | As today |
 
@@ -1214,7 +1237,7 @@ counted.
 | Metric | Definition | Granularity |
 |---|---|---|
 | Penumbra width error | \|raster width − reference width\| ÷ reference width, §2 penumbra width, fitted on the filtered direct view's visibility | per rung, per profile line, per tier |
-| Temporal error | §2 definition (engine moving vs engine parked and converged), penumbra region; max and mean over the motion, and the values at 1, 4 and 16 frames after the stop | per rung (camera pan, moving blocker), per tier |
+| Temporal error | §2 definition: the moving run's error against the parked, converged capture, minus the age-matched held control's, worst across the paired seeds; penumbra region (A3 on `direct_only`, A14 on `final`); the worst excess over the motion, and the values at 1, 4 and 16 frames after the stop | per rung (camera pan, moving blocker), per tier |
 | Filter band error | Visibility error (§2) in the lit-side and umbra-side bands and across the thin rod's shadow | per band, per tier |
 | Contact error | Visibility error (§2) over each caster's contact band | per caster, per tier |
 | Sky IBL energy error | Sky specular and sky diffuse luminance error vs reference (§3.4) | per roughness, per dielectric / conductor, per component |
@@ -1244,9 +1267,10 @@ This PRD depends on M51 for these things only: the exporter (PTR-VAL-004)
 and the EXR writer (PTR-OUT-001), which M51 files as their own Phase 1
 issues ahead of its progressive reference and which every phase from 1a
 on needs; M51's acceptance of each RLT-EXP request before the phase that
-consumes it; its Q5 renderer choice; its progressive reference, for
-RLT-REF-005; and its radiance cache, for Q5's recommendation (M51's
-Phase 5).
+consumes it; its Q5 renderer choice; and its progressive reference, for
+RLT-REF-005. Since rev 38 the radiance cache Q5 adopts comes from the
+[Radiance Cache and GI Coverage PRD](radiance-cache-gi-coverage.md)
+(#7069), not from M51; L4's exit at S3 waits on it.
 
 **Phase entry (Phases 2–4).** Every mechanism phase opens the same way,
 before it changes the renderer:
@@ -1319,7 +1343,7 @@ term's phase entry.
 beyond Phase 1a. Entry baseline: A7 and A8. Then RLT-GI-004, RLT-GI-005
 per Q2, RLT-GI-011 and RLT-GI-012 (added at the entry, rev 13), and
 RLT-GI-007 on content; the Q5 mechanism for RLT-GI-003 (with
-RLT-GI-008 if the cache is adopted, which waits for M51's Phase 5), so
+RLT-GI-008, which waits for the cache the RCG PRD builds, rev 38), so
 RLT-GI-003 may stay open after this phase exits. At the exit (rev 14)
 RLT-GI-004 and RLT-GI-011 shipped. RLT-GI-005 waits on Q2's amended
 decision, and RLT-GI-012 waits on the Q5 cache, both by owner decision.
@@ -1352,7 +1376,10 @@ with no unresolved flag, A12 passes on one Wave 1 title, A11 passes under
 the phase's change declaration, and A13 shows the phase within its
 ceiling.
 
-**Phase 5 — Waves and cross-check.** Wave 2 titles through A9, A11 and
+**Phase 5 — Waves and cross-check.** Depends on the
+[RCG PRD](radiance-cache-gi-coverage.md) (#7069) for L4 at S3: RLT-GI-003
+and RLT-GI-012 close only with its cache. Entry names one scene per Wave 2
+title with an install (RLT-CNT-001). Wave 2 titles through A9, A11 and
 A13; RLT-REF-005 once M51's progressive reference ships. Exit: all four
 terms S3 (or L4 at S2 under Q5 Alternative B, §3), A11 passes on every
 Wave 1 title and on every Wave 2 title with an install, and A13 shows the
@@ -1439,13 +1466,14 @@ Each needs the project owner. The recommendation is the first option.
    published description only, in Phase 3. RLT-NG-008's far-field gap is
    then owned by this PRD for the sun inside the screen; geometry beyond
    the loaded grid stays M35's.
-5. **Q5 — How the GI energy tail is closed.** Recommended: publish the
+5. **Q5 — How the GI energy tail is closed.** Recommended (as written at
+   approval; rev 38 moved the build, see the decision below): publish the
    deficit at Phase 2's entry, then close the tail by reusing M51's hash-grid
-   radiance cache (§2; PTR-RT-002, built in M51's Phase 5) as the bounded
-   path's terminator, with this PRD owning its realtime allocation rule
-   (RLT-GI-008, the exception PTR-RT-006 hands over). Consequence:
-   RLT-GI-003 closes only after M51's Phase 5; if M51's Q2 takes its
-   no-cache alternative, this falls to Alternative A or B. Alternative A:
+   radiance cache (§2; PTR-RT-002, then planned for M51's Phase 5) as the
+   bounded path's terminator, with this PRD owning its realtime allocation
+   rule (RLT-GI-008, the exception PTR-RT-006 hands over). Consequence:
+   RLT-GI-003 closes only after the cache lands; if M51's Q2 had taken its
+   no-cache alternative, this would fall to Alternative A or B. Alternative A:
    raise `MAX_DIFFUSE_BOUNCES` with Russian roulette; consequence: more
    rays per pixel on top of the cost #2161 accepted, bounded by the tiers
    and the Q8 ceiling. Alternative B: accept the deficit as the
@@ -1577,12 +1605,15 @@ Each needs the project owner. The recommendation is the first option.
 | Need | Go to |
 |---|---|
 | The milestone row and its dependency on M51 | [ROADMAP Tier 8](../../ROADMAP.md#tier-8--visual-fidelity-stretch-post-tier-4-horizon) |
-| PT modes, external renderer, exporter, EXR writer, the PT-mode use of the radiance cache, PT-mode bounces | [Path Tracing Reference Mode PRD](path-tracing-reference-mode.md) (§2, §5.5, §5.6, §5.7, §10 Q2 / Q5 / Q6) |
+| PT modes, external renderer, exporter, EXR writer, the PT-mode use of the radiance cache, PT-mode bounces (the promise; the exporter's design is the next row) | [Path Tracing Reference Mode PRD](path-tracing-reference-mode.md) (§2, §5.5, §5.6, §5.7, §10 Q2 / Q5 / Q6) |
+| The exporter's rung subsection: rung content, the BSDF mapping table, *k*<sub>exp</sub>, the Mitsuba recipes | [Path Tracing design §2](../engine/path-tracing.md#2-reference-lighting-rung-subsection) |
+| The realtime radiance cache, traced GI on every surface in view, RLT-GI-012's closure | [Radiance Cache and GI Coverage PRD](radiance-cache-gi-coverage.md) |
+| Penumbra-aware shadow filter (RLT-SHD-003) | [Penumbra-Aware Shadow Filter](../engine/penumbra-aware-shadow-filter.md) |
 | The denoiser this PRD does not gate | [Neural Denoiser PRD](neural-denoiser.md) |
 | Distant geometry and its (absent) shadow promise | [Distant LOD Completion PRD](distant-lod-completion.md) |
 | Units, emitters, visibility bits, ray budget | [Physical Lighting Backbone](../engine/physical-lighting-backbone.md#runtime-contract) |
 | Backbone validation gates and the candle-room reference | [Physical Lighting Backbone § Validation gates](../engine/physical-lighting-backbone.md#validation-gates) |
-| ReSTIR, ratio EMA, W clamp, TAA γ | [Shadow Pipeline Trade-offs](../engine/shadow-pipeline-tradeoffs.md) |
+| ReSTIR, ratio EMA, W clamp, TAA γ, the far-field screen-space sun term | [Shadow Pipeline Trade-offs](../engine/shadow-pipeline-tradeoffs.md) |
 | Cornell oracle rungs, debug views, ray probe | [RT Lighting & Material Recovery](../engine/rt-lighting-material-recovery.md) |
 | Capture workflow and determinism contract | [Renderer Evaluation](../engine/renderer-evaluation.md#determinism-contract) |
 | Sky probe, prefilter, SH, interior portal lane, capture traps | [SKYAL](../engine/skyal.md) |
@@ -1639,3 +1670,5 @@ Each needs the project owner. The recommendation is the first option.
 | 36 | 2026-11-18 | RLT-CON-004 applies screen-space sun visibility to exterior receivers beyond the full traced fade. Opaque sun radiance shares attachment 7 with the FSR transparency mask. `scripts/m-light-gates.sh --gates CON-004 --profile release` checks a near caster, a far caster, the off-screen control, and the direct-shadow disable. The far scan darkened 422 pixels in the Cornell test and its median bracket was 0.018 ms. A2 reports width errors of at most 0.025% for the local light and 0.416% for the sun, and all judged A4 and A5 rows pass. A11 passes in all five scenes against the immediate control. Full-phase A11 still fails against the recovered entry anchors. All A13 settled tiers pass. Three TAA timing cases exceed the phase cost ceiling, and the isolated far-sun delta fits those three cases' ceilings. See the [Phase 3 evidence](../audits/MLIGHT_phase3_exit_2026-11-18.md). | — |
 | 37 | 2026-11-18 | Both historical builds reproduce their own A11 anchors for Prospector, Whiterun, and Dugout. The same three scenes differ between the Phase 2 exit and Phase 3 entry. Within Phase 3, `a290c755f` (#6657) shifts the unshadowed direct-light image in all three. An isolated build that retains the scratch weapon subject and restores the earlier light-animation seeds exactly reproduces the parent images. The original A11 thresholds and anchors still apply. A13 reruns reproduce the TAA cost overruns in Prospector and Dugout. Whiterun passes the rerun and exceeds budget in the original matrix. Phase 3 remains open. See the [Phase 3 evidence](../audits/MLIGHT_phase3_exit_2026-11-18.md). | — |
 | 38 | 2026-11-19 | The radiance cache and traced-GI coverage move to their own PRD (Radiance Cache and GI Coverage PRD). RLT-GI-012's deferral no longer waits on M51's Phase 5: the owner requires every surface in view to keep traced GI at any distance, and rejects a widened gate as a stopgap. RLT-GI-008 stays as the allocation contract; Q5's decision is revised to say who builds the cache. Related tables updated. | — |
+| 39 | 2026-11-20 | Review round 6 folded in: RLT-SHD-012's state at HEAD (the weighting shipped in rev 28); the A14 command; the ROADMAP M-LIGHT dependency after rev 38; the temporal-error definition as the excess over an age-matched held control, per-gate view (§2, §8, RLT-G-001, RLT-SHD-002); radiance-cache ownership moved to the RCG PRD everywhere (§2, RLT-NG-003, RLT-GI-008, §9 Phases 2 and 5, Q5); document map rows for the exporter design, the RCG PRD and the penumbra-aware filter; acceptance coverage for RLT-CON-004 (new A19), SHD-003, SHD-005, SHD-006, GI-001, GI-011, GI-012 and IBL-007; Wave 2 scenes named at Phase 5's entry (RLT-CNT-001); §6 rows 8–10 for GI-011, SHD-012 and CON-004; measurements moved out of RLT-SHD-002, RLT-SHD-012, RLT-GI-011 and RLT-GI-012; Related row for the far-field term; full Heitz et al. 2018 and Nukapedia citations; #6721 and the RCG tracking issue on the Tracking line | claude: revise |
+| 40 | 2026-11-20 | Owner decisions on Phase 3's open items (2026-11-20). (1) RLT-SHD-012's measured change declaration (`docs/audits/MLIGHT_phase3_shd012_declaration.tsv`, rev 31) is accepted as measured; it was written after the code, which RLT-CNT-002 does not allow, and this row records that exception; #6721 is closed. (2) Full-phase A11 under RLT-OPS-004: the early direct-light shift is #6657's boot-time scratch entity re-seeding every flickering light through its `EntityId` ([Phase 3 evidence](../audits/MLIGHT_phase3_exit_2026-11-18.md)). Disposition: fix, then re-anchor. Regression #7091 seeds light animation from the light's world position instead; after it lands, the Phase 3 A11 anchors are re-captured and re-frozen with a revision row naming #7091 and the pre-entry drift | owner: approved |
