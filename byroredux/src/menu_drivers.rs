@@ -289,5 +289,11 @@ mod tests {
         let new_vegas = surface_coverage(&MenuRegistry::new(MenuGame::Fallout3NV), false);
         assert_eq!(new_vegas, SurfaceCoverage { movie: 0, movie_fed: 0, document: 3, native: 7, absent: 39 });
         assert_eq!(new_vegas.covered(), (10, 49));
+        // #7095 — Oblivion is wave 2 and has no published matrix figure yet; it is pinned here because its rest
+        // documents (sleep/wait 1012, level-up 1027, #7086) count as S2 beside the HUD, dialogue and message box.
+        // It has no barter rules, so its barter page cannot open. Measured 2026-11-20.
+        let oblivion = surface_coverage(&MenuRegistry::new(MenuGame::Oblivion), false);
+        assert_eq!(oblivion, SurfaceCoverage { movie: 0, movie_fed: 0, document: 5, native: 2, absent: 47 });
+        assert_eq!(oblivion.covered(), (7, 54));
     }
 }
