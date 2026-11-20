@@ -143,13 +143,19 @@ fn a_self_cast_spends_magicka_and_fatigue_on_the_real_master() {
     assert_eq!((current(&world, player, magicka), current(&world, player, fatigue)), (200.0, 100.0));
 
     // At skill 25 the player is an Apprentice: floor(54.3 * (1.4 - 0.012 * 25)) = 59 Magicka and 1 Fatigue.
-    let (world, player, _) = world_with(&index, 25.0);
+    let (mut world, player, _) = world_with(&index, 25.0);
+    world.insert_resource(byroredux_core::character::CharacterRuleset::new(byroredux_core::character::LevelingModel::OBLIVION));
+    byroredux_scripting::oblivion_skill_use::install(&mut world);
     player_cast::ready_spell(&world, player, HEAT_SHELL).unwrap();
     let started = player_cast::cast_readied(&world, player, true, 0.45, &|| None).outcome.expect("an Apprentice casts it");
     assert_eq!((started.magicka, started.fatigue, started.school), (59.0, 1.0, Some(0)));
     assert!(started.effects_started, "Fire Shield lands on the caster");
     assert_eq!(current(&world, player, magicka), 200.0 - 59.0);
     assert_eq!(current(&world, player, fatigue), 100.0 - 1.0);
+    // The Self cast fed its school once: Alteration (code 20), the SKIL second use value, 4.0 (PSC-USE-001).
+    assert_eq!(started.fed, Some(0));
+    let queued: Vec<_> = world.resource::<byroredux_scripting::oblivion_skill_use::PendingSkillUse>().0.iter().map(|record| (record.skill, record.amount)).collect();
+    assert_eq!(queued, vec![(20, 4.0)]);
 }
 
 #[test]

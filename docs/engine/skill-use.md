@@ -130,20 +130,25 @@ unfed list; its source is `FED_SKILLS` in `oblivion_skill_use.rs`, where a skill
   (`PlayerDetection`, below Noticed). The engine's "running" is the Sprint action, as the detection tick reads it.
 - **Acrobatics** (a jump, usage 0, 0.3): the controller's `jump_fired` on land. UESP: "each jump or dodge".
 
+**Fed since #7081** (the six magic schools, 14 of 21 in all; the [player-spellcasting PRD](../prd/player-spellcasting.md)): the player's cast
+action queues one use of the spell's primary school, actor value 20 to 25, at **usage 1**, the `SKIL` second use value (Alteration 4, Conjuration 6,
+Destruction 1.2, Illusion 3, Mysticism 3, Restoration 0.6), multiplier 0, from the three sites the executable's spell routines share (`0x6994cc`,
+`0x69b9ea`, `0x69bc51`; decoded in #7078, [Oblivion ruleset](charal-oblivion-ruleset.md)). A spell with no Target-range effect awards once at the
+release when an effect applied: a Self cast always, a Touch cast only on an actor in reach. A spell with a Target-range effect awards once at impact
+(`player_cast::land_target`) and its release awards nothing; a miss awards nothing. The school is the costliest effect's. Only the player's cast
+feeds: the console's `magic.cast`, ObScript `Cast` and a perk's activate choice reach the shared effect start and feed nothing, and a Power, a
+scroll or an ability is never a cast action. Row 16's routine `0x5fca20` is the item-use path and stays unread by design.
+
 **Not fed, and why** (OSL-USE-006):
 
-- **The six schools** (row 16): the engine has no player cast action. A spell leaves the player only through the console's `magic.cast`
-  and a script's `Cast`, and a script-forced cast is not the player's own action, so feeding from it would be a stand-in. Row 16's routine `0x5fca20` was read this phase: it is the item-use path, and its spell cases pass
-  usage 0, whose value is 0 for every school, so the spell-casting site is not among the 19 vtable calls and stays unread. The
-  school of a multi-effect spell is the effect with the highest base cost (UESP *Spell Making*); that rule waits for the cast action.
 - **Block**: a blocked hit needs a target-side guard, and no producer models one (`HitEvent::blocked` is the aggressor's own stance, #4324).
 - **Marksman**: the bow (type 5) has no shot path; the engine's ranged path is the guns'.
 - **Acrobatics' fall** (rows 10 and 11): the engine has no fall damage. Row 11's gating setting (`0xb37490`) is still unnamed.
 - **Sneak's pickpocket** (row 3): no pickpocket action.
 - **Alchemy (rows 1 and 2), Armorer (7), Security (5), Speechcraft (6), Mercantile (4)**: menus and minigames the engine does not run for Oblivion.
 
-**Metrics** (PRD §8, published in the ROADMAP compatibility matrix): fed skills 8 / 21; fed actions 9 / 26 of UESP's table: combat 6 / 8
-(Athletics running and swimming, Blade, Blunt, Hand to Hand, Heavy Armor), magic 0 / 8, stealth 3 / 10 (Acrobatics' jump, Light Armor, Sneak's movement).
+**Metrics** (PRD §8, published in the ROADMAP compatibility matrix): fed skills 14 / 21; fed actions 15 / 26 of UESP's table: combat 6 / 8
+(Athletics running and swimming, Blade, Blunt, Hand to Hand, Heavy Armor), magic 6 / 8 (the six schools; Alchemy's two wait on a menu), stealth 3 / 10 (Acrobatics' jump, Light Armor, Sneak's movement).
 
 ## 4. The emitter contract (OSL-XP-007)
 

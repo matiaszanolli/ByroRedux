@@ -135,6 +135,7 @@ docs/smoke-tests/dt2-skyrim-forcegreet.sh        # Skyrim SE: ForceGreet-tree PA
 docs/smoke-tests/m47-3-obscript.sh               # FNV: ObScript object scripts (OnLoad / OnTriggerEnter / OnDeath) and an item's OnAdd+RemoveMe run live (M47.3)
 docs/smoke-tests/m65-stealth-detection.sh        # FNV: the detection tick, sneaking in the Prospector Saloon — a detector Lost behind cover, Seen beside it, and the indicator's label (M65, PRD scenarios 5 and 9)
 docs/smoke-tests/oblivion-level-up.sh            # Oblivion: `levelup` names the class; ModPCSkill / AdvancePCSkill raise base skills by ranks and feed the level count and attribute tallies (skill-use leveling scenario 3; owner-run)
+docs/smoke-tests/oblivion-spellcasting.sh        # Oblivion: the player casts Flare at a patron (projectile lands, Health drops, Destruction fed), a ceiling shot misses and feeds nothing, Heal Minor Wounds feeds Restoration, `magic.cast` feeds nothing (player-spellcasting scenario 3, #7081; owner-run)
 docs/smoke-tests/oblivion-actor-values.sh        # Oblivion: patron Sneak, detection skill term and live HUD Health after damage (OAV scenario 4; owner-run)
 docs/smoke-tests/oblivion-live-load-plugin-set.sh   # Oblivion: a save loaded live across two plugin sets, both directions, engine slot 2 <-> 3 (#7039; owner-run)
 docs/smoke-tests/oblivion-autocalc-timing.md        # Oblivion: the ORIGINAL game's NPC auto-calc timing over the four flag combinations, with a generated test plugin (#7022; owner-run, in Oblivion.exe, not the engine)

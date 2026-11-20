@@ -106,6 +106,11 @@ pub struct CastStarted {
     pub launch: Option<TargetLaunch>,
     /// How many Touch and Target effects with an area were left unapplied (PSC-TGT-005).
     pub area_ignored: usize,
+    /// The school the cast fed at the release, one use queued (PSC-USE-001, -002); `None` when the spell has a Target-range
+    /// effect (its use is awarded at impact), nothing applied, the spell has no school or the ruleset does not level by use.
+    pub fed: Option<u8>,
+    /// The spell has no school: no effect carries one, so nothing is fed (PSC-USE-003).
+    pub no_school: bool,
     /// Nothing found a target: no Self effect, no Touch actor in reach and no projectile to fly. The cost is paid
     /// (PSC-TGT-004).
     pub no_target: bool,
@@ -128,7 +133,7 @@ pub enum Impact {
     /// In flight.
     Flying,
     /// Landed on this actor; `started` is whether any effect started on it.
-    Landed { target: EntityId, started: bool },
+    Landed { target: EntityId, started: bool, fed: Option<u8> },
     /// Ended on no live actor.
     Missed,
 }
@@ -146,7 +151,7 @@ impl std::fmt::Display for CastReport {
         match &self.outcome {
             Ok(started) => write!(
                 f,
-                "started {} ({:08X}): magicka {:.1}, fatigue {:.1}, school {}, effects {}{}{}",
+                "started {} ({:08X}): magicka {:.1}, fatigue {:.1}, school {}, effects {}{}{}{}",
                 self.name,
                 self.spell,
                 started.magicka,
@@ -160,6 +165,11 @@ impl std::fmt::Display for CastReport {
                     _ => String::new(),
                 },
                 if started.area_ignored > 0 { format!(", area ignored ({} effect(s))", started.area_ignored) } else { String::new() },
+                match (started.fed, started.no_school) {
+                    (Some(school), _) => format!(", fed {}", school_name(Some(school))),
+                    (None, true) => ", no school".to_string(),
+                    _ => String::new(),
+                },
             ),
             Err(refusal) => write!(f, "refused {} ({:08X}): {refusal}", self.name, self.spell),
         }
@@ -333,6 +343,8 @@ fn lands_by_range(effect: &CastEffect, range: EffectRange) -> bool {
 struct Delivery {
     touch: bool,
     target_multiplier: Option<f32>,
+    /// Any authored effect has the Target range: the spell's use is awarded at impact, never at the release (PSC-USE-002).
+    has_target_range: bool,
     area_ignored: usize,
 }
 
@@ -341,6 +353,7 @@ fn delivery(canonical: &CanonicalSpell, data: &crate::magic::SpellCastData) -> D
     Delivery {
         touch: landing(EffectRange::Touch),
         target_multiplier: landing(EffectRange::Target).then_some(data.target_speed_multiplier),
+        has_target_range: data.effects.iter().any(|effect| effect.range == EffectRange::Target),
         // Every authored effect that asks for an area beyond Self, whether or not the runtime models what it does.
         area_ignored: data
             .effects
@@ -403,6 +416,9 @@ fn settle(world: &World, player: EntityId, spell: u32, interval: f32, touch: &dy
     if started > 0 || launch.is_some() {
         raise_cast_event(world, Some(player));
     }
+    // Feed (PSC-USE-001, -002): a spell with no Target-range effect awards once, when an effect applied; one with a Target
+    // effect awards at impact ([`land_target`]) and its release awards nothing.
+    let fed = if !delivery.has_target_range && started > 0 { feed_school(world, school) } else { None };
     if let Some(mut state) = world.try_resource_mut::<CastState>() {
         state.cooldown_remaining = interval.max(0.0);
         state.interval = interval;
@@ -415,16 +431,34 @@ fn settle(world: &World, player: EntityId, spell: u32, interval: f32, touch: &dy
         touched: touched.filter(|_| started > 0),
         launch,
         area_ignored: delivery.area_ignored,
+        fed,
+        no_school: school.is_none(),
         no_target: started == 0 && touched.is_none() && launch.is_none(),
     })
 }
 
-/// A Target spell's projectile met a live actor: start the spell's Target effects on it as the player's cast (PSC-TGT-003).
-/// Returns whether any effect started, and records the impact for `cast.status`.
+/// Queue the one skill use of a cast for `school` (the actor value 20 to 25, usage 1: the `SKIL` second use value, PSC-USE-001).
+/// Returns the school when a use was queued: `None` for a spell with no school, or a ruleset that does not level by use.
+fn feed_school(world: &World, school: Option<u8>) -> Option<u8> {
+    let school = school?;
+    crate::oblivion_skill_use::queue_skill_use(world, AV_SCHOOL_FIRST + u32::from(school), 1, 0.0).then_some(school)
+}
+
+/// A Target spell's projectile met a live actor: start the spell's Target effects on it as the player's cast (PSC-TGT-003)
+/// and, when one started, award the spell's use once (PSC-USE-002). Returns whether any effect started, and records the
+/// impact for `cast.status`.
 pub fn land_target(world: &World, caster: EntityId, target: EntityId, spell: u32) -> bool {
     let started = start_spell_effects(world, Some(caster), target, spell, |effect| lands_by_range(effect, EffectRange::Target)) > 0;
-    record_impact(world, Impact::Landed { target, started });
-    log::info!("cast: {spell:08X} landed on {target}: effects {}", if started { "applied" } else { "none applied" });
+    let fed = if started {
+        let school = world
+            .try_resource::<SpellCastModel>()
+            .and_then(|model| world.try_resource::<SpellCatalog>().and_then(|catalog| cast_data(&catalog, spell).and_then(|(_, data)| model.primary_school(&data.effects))));
+        feed_school(world, school)
+    } else {
+        None
+    };
+    record_impact(world, Impact::Landed { target, started, fed });
+    log::info!("cast: {spell:08X} landed on {target}: effects {}{}", if started { "applied" } else { "none applied" }, fed.map_or(String::new(), |school| format!(", fed {}", school_name(Some(school)))));
     started
 }
 
@@ -704,7 +738,7 @@ mod tests {
         assert_eq!(world.try_resource::<CastState>().unwrap().impact, Some(Impact::Flying));
         assert!(land_target(&world, player, actor, TARGET_SPELL));
         assert!(world.get::<ActiveMagicEffects>(actor).is_some());
-        assert_eq!(world.try_resource::<CastState>().unwrap().impact, Some(Impact::Landed { target: actor, started: true }));
+        assert_eq!(world.try_resource::<CastState>().unwrap().impact, Some(Impact::Landed { target: actor, started: true, fed: None }));
         missed_target(&world, TARGET_SPELL);
         assert_eq!(world.try_resource::<CastState>().unwrap().impact, Some(Impact::Missed));
     }
@@ -746,5 +780,98 @@ mod tests {
         assert!(world.get::<ActiveMagicEffects>(actor).is_none(), "the area effect did not land on the actor in reach");
         assert!(cast.effects_started, "the Self effect landed");
         assert!(report.to_string().contains("area ignored"), "{report}");
+    }
+
+    /// A world that levels by skill use, so a cast's feed is queued where `levelup` reads it.
+    fn feeding_world(skill: f32, magicka: f32) -> (World, EntityId) {
+        let (mut world, player) = world_with(skill, magicka);
+        world.insert_resource(byroredux_core::character::CharacterRuleset::new(byroredux_core::character::LevelingModel::OBLIVION));
+        crate::oblivion_skill_use::install(&mut world);
+        (world, player)
+    }
+
+    fn queued(world: &World) -> Vec<(u32, f32)> {
+        world.resource::<crate::oblivion_skill_use::PendingSkillUse>().0.iter().map(|record| (record.skill, record.amount)).collect()
+    }
+
+    /// PSC-USE-001, -002: a cast feeds its primary school once, at usage 1, and only for a valid target: a Self cast always,
+    /// a Touch cast only on an actor in reach, a Target spell at impact and never at the release, a refusal and a miss never.
+    #[test]
+    fn player_cast_feeds_only_a_valid_target() {
+        let (mut world, player) = feeding_world(25.0, 1000.0);
+        let actor = target_actor(&mut world);
+        // Self: Alteration (school 0), the SKIL second use value 4.0.
+        ready_spell(&world, player, SELF_SPELL).unwrap();
+        let report = cast_readied(&world, player, true, INTERVAL, &|| None);
+        assert_eq!(started(&report).fed, Some(0), "{report}");
+        assert!(report.to_string().contains("fed Alteration"), "{report}");
+        assert_eq!(queued(&world), vec![(20, 4.0)]);
+        // Touch with an actor in reach: Destruction (22), 1.2; with none, nothing.
+        world.resource_mut::<crate::oblivion_skill_use::PendingSkillUse>().0.clear();
+        ready_spell(&world, player, TOUCH_SPELL).unwrap();
+        tick_cast_state(&world, 1.0);
+        assert_eq!(started(&cast_readied(&world, player, true, INTERVAL, &|| Some(actor))).fed, Some(2));
+        assert_eq!(queued(&world), vec![(22, 1.2)]);
+        world.resource_mut::<crate::oblivion_skill_use::PendingSkillUse>().0.clear();
+        tick_cast_state(&world, 1.0);
+        assert_eq!(started(&cast_readied(&world, player, true, INTERVAL, &|| None)).fed, None);
+        assert!(queued(&world).is_empty(), "a Touch cast that found no actor feeds nothing");
+        // Target: the release awards nothing, a landing awards once, a miss nothing.
+        ready_spell(&world, player, TARGET_SPELL).unwrap();
+        tick_cast_state(&world, 1.0);
+        assert_eq!(started(&cast_readied(&world, player, true, INTERVAL, &|| None)).fed, None);
+        assert!(queued(&world).is_empty(), "the release of a Target spell awards nothing");
+        missed_target(&world, TARGET_SPELL);
+        assert!(queued(&world).is_empty(), "a miss awards nothing");
+        assert!(land_target(&world, player, actor, TARGET_SPELL));
+        assert_eq!(queued(&world), vec![(22, 1.2)]);
+        assert_eq!(world.try_resource::<CastState>().unwrap().impact, Some(Impact::Landed { target: actor, started: true, fed: Some(2) }));
+        // A spell with Self and Target effects awards at impact only, once.
+        world.resource_mut::<crate::oblivion_skill_use::PendingSkillUse>().0.clear();
+        ready_spell(&world, player, MIXED_SPELL).unwrap();
+        tick_cast_state(&world, 1.0);
+        assert_eq!(started(&cast_readied(&world, player, true, INTERVAL, &|| Some(actor))).fed, None);
+        assert!(queued(&world).is_empty(), "a spell with a Target effect awards at impact, not at the release");
+        assert!(land_target(&world, player, actor, MIXED_SPELL));
+        assert_eq!(queued(&world).len(), 1);
+        // A refused cast queues nothing.
+        world.resource_mut::<crate::oblivion_skill_use::PendingSkillUse>().0.clear();
+        ready_spell(&world, player, EXPERT_SPELL).unwrap();
+        tick_cast_state(&world, 1.0);
+        assert!(cast_readied(&world, player, true, INTERVAL, &|| None).outcome.is_err());
+        assert!(queued(&world).is_empty());
+    }
+
+    /// PSC-USE-003: a spell none of whose effects carries a school feeds nothing and says `no school`.
+    #[test]
+    fn a_spell_with_no_school_feeds_nothing() {
+        let (mut world, player) = feeding_world(25.0, 1000.0);
+        let mut input = effect(5.0, 10.0, EffectRange::SelfRange, 0);
+        input.school = None;
+        let mut catalog = world.remove_resource::<SpellCatalog>().unwrap();
+        catalog.insert_canonical(0x30, spell("Schoolless", SpellType::Spell, vec![input]));
+        world.insert_resource(catalog);
+        world.query_mut::<SpellList>().unwrap().get_mut(player).unwrap().0.push(0x30);
+        ready_spell(&world, player, 0x30).unwrap();
+        let report = cast_readied(&world, player, true, INTERVAL, &|| None);
+        assert!(started(&report).no_school && started(&report).fed.is_none() && started(&report).effects_started);
+        assert!(report.to_string().contains("no school"), "{report}");
+        assert!(queued(&world).is_empty());
+    }
+
+    /// PSC-USE-005: the console's `magic.cast`, ObScript `Cast` and a perk's activate choice reach the shared effect start and
+    /// feed nothing; neither does a game whose ruleset does not level by use.
+    #[test]
+    fn other_casters_feed_nothing() {
+        let (world, player) = feeding_world(25.0, 1000.0);
+        assert!(cast_spell(&world, Some(player), player, SELF_SPELL));
+        assert!(start_spell_effects(&world, Some(player), player, TARGET_SPELL, |_| true) > 0);
+        assert!(queued(&world).is_empty());
+        // The player's own cast on a ruleset that does not level by skill use queues nothing either.
+        let (mut world, player) = feeding_world(25.0, 1000.0);
+        world.insert_resource(byroredux_core::character::CharacterRuleset::new(byroredux_core::character::LevelingModel::SKYRIM));
+        ready_spell(&world, player, SELF_SPELL).unwrap();
+        let report = cast_readied(&world, player, true, INTERVAL, &|| None);
+        assert!(started(&report).fed.is_none() && queued(&world).is_empty());
     }
 }

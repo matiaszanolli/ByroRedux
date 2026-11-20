@@ -801,7 +801,7 @@ mod tests {
         };
         fly(&world, 0.0);
         assert!(world.get::<ActiveMagicEffects>(actor).is_some(), "the effect started on the actor the projectile hit");
-        assert_eq!(world.resource::<CastState>().impact, Some(Impact::Landed { target: actor, started: true }));
+        assert_eq!(world.resource::<CastState>().impact, Some(Impact::Landed { target: actor, started: true, fed: None }));
         byroredux_scripting::pending_trap_hit_flush_system(&world, 0.0);
         assert!(world.query::<byroredux_scripting::HitEvent>().unwrap().get(actor).is_none(), "a spell queues no weapon damage");
         assert!(world.resource::<ActiveProjectiles>().0.is_empty(), "the projectile is spent");

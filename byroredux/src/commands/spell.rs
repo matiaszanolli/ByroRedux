@@ -149,7 +149,11 @@ impl ConsoleCommand for CastStatusCommand {
         });
         lines.push(match state.as_ref().and_then(|state| state.impact) {
             Some(Impact::Flying) => "impact=flying".to_owned(),
-            Some(Impact::Landed { target, started }) => format!("impact=landed on {target} (effects {})", if started { "applied" } else { "none applied" }),
+            Some(Impact::Landed { target, started, fed }) => format!(
+                "impact=landed on {target} (effects {}{})",
+                if started { "applied" } else { "none applied" },
+                fed.map_or(String::new(), |school| format!(", fed {}", player_cast::school_name(Some(school))))
+            ),
             Some(Impact::Missed) => "impact=missed (no live actor met)".to_owned(),
             None => "impact=none".to_owned(),
         });

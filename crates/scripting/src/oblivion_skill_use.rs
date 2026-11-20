@@ -432,26 +432,30 @@ pub fn advance_level(world: &World, player: EntityId) -> bool {
 /// living target, Light and Heavy Armor by a hit the player takes (#7051 2a); Athletics by seconds of
 /// running or swimming, Sneak by seconds of moving undetected in the sneak stance, Acrobatics by a jump
 /// (2b). Block waits on a target-side guard (no producer models one: `HitEvent::blocked` is the
-/// aggressor's own stance, #4324), Marksman on a bow shot, the schools on a player cast action (the
-/// engine has only the console's `magic.cast` and a script's `Cast`), and Acrobatics' fall on fall damage.
-pub const FED_SKILLS: &[u32] = &[13, 14, 16, 17, 18, 26, 27, 31];
+/// aggressor's own stance, #4324), Marksman on a bow shot, and Acrobatics' fall on fall damage. The six
+/// magic schools (20 to 25) are fed by the player's cast action (player-spellcasting #7081): one use, usage 1,
+/// for the spell's primary school; the console's `magic.cast` and a script's `Cast` feed nothing.
+pub const FED_SKILLS: &[u32] = &[13, 14, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 27, 31];
 
 /// Queue one use of the skill `code` for the drain (OSL-XP-007): the experience is the skill's use
 /// value `usage` times `mult` (0 for none), `skill_use_amount`. An emitter calls this and nothing else;
-/// it locks nothing of the player's. A ruleset that does not level by skill use queues nothing.
-pub fn queue_skill_use(world: &World, code: u32, usage: u8, mult: f32) {
+/// it locks nothing of the player's. A ruleset that does not level by skill use queues nothing. Returns
+/// whether a use was queued.
+pub fn queue_skill_use(world: &World, code: u32, usage: u8, mult: f32) -> bool {
     let levels_by_use = world
         .try_resource::<CharacterRuleset>()
         .is_some_and(|ruleset| ruleset.leveling.skill_use_costs().is_some());
     if !levels_by_use || !FED_SKILLS.contains(&code) {
-        return;
+        return false;
     }
     let Some(amount) = byroredux_core::character::skill_use_amount(code, usage, mult) else {
-        return;
+        return false;
     };
-    if let Some(mut pending) = world.try_resource_mut::<PendingSkillUse>() {
-        pending.0.push(SkillUseRecord { skill: code, amount });
-    }
+    let Some(mut pending) = world.try_resource_mut::<PendingSkillUse>() else {
+        return false;
+    };
+    pending.0.push(SkillUseRecord { skill: code, amount });
+    true
 }
 
 /// OSL-API-003: what `levelup` reports for an Oblivion player — the class it read and its
@@ -755,11 +759,14 @@ mod tests {
             ]
         );
         let report = skill_use_report(&world, player).unwrap().join("\n");
-        assert!(report.contains("fed skills 8/21; unfed: "), "{report}");
+        assert!(report.contains("fed skills 14/21; unfed: "), "{report}");
         for unfed in ["Security", "Speechcraft", "Mercantile", "Alchemy", "Armorer", "Block", "Marksman"] {
             assert!(report.split("unfed: ").nth(1).unwrap().contains(unfed), "{unfed}: {report}");
         }
         assert!(!report.split("unfed: ").nth(1).unwrap().contains("Blade"));
+        for school in ["Alteration", "Conjuration", "Destruction", "Illusion", "Mysticism", "Restoration"] {
+            assert!(!report.split("unfed: ").nth(1).unwrap().contains(school), "{school} is fed by the cast: {report}");
+        }
         world.resource_mut::<PendingSkillUse>().0.clear();
         world.insert_resource(CharacterRuleset::new(LevelingModel::SKYRIM));
         queue_skill_use(&world, BLADE, 0, 0.0);
