@@ -29,8 +29,9 @@ pub const MGEF_NO_AREA: u32 = 0x200;
 pub const MGEF_COST_SKIPPED: u32 = 1 << 22;
 
 /// An effect's range: where it lands (`EFIT` `Type`, xEdit `wbEffectTypeEnum`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum EffectRange {
+    #[default]
     SelfRange,
     Touch,
     Target,
@@ -110,6 +111,15 @@ pub struct SpellCastModel {
     /// `fFatigueCastBase` and `fFatigueCastMult`: the Fatigue a cast costs, base plus the multiple of its Magicka.
     pub fatigue_cast_base: f32,
     pub fatigue_cast_mult: f32,
+    /// `fCombatDistance` and `fHandReachMult`: a Touch spell reaches `fCombatDistance * fHandReachMult` times at
+    /// least 1 of the caster's scale (`0x5e40a0`, #7078; medium confidence, #7082).
+    pub combat_distance: f32,
+    pub hand_reach_mult: f32,
+    /// `fMagicProjectileBaseSpeed`: the speed a spell's projectile flies at before the `MGEF`'s own multiplier (CS wiki
+    /// *fMagicProjectileBaseSpeed* 1000, *Magic Effects*: "a multiplier of the base speed for the projectile").
+    pub projectile_base_speed: f32,
+    /// `fMagicProjectileMaxDistance`: how far a spell's projectile flies without making contact (CS wiki 10000).
+    pub projectile_max_distance: f32,
 }
 
 impl Resource for SpellCastModel {}
@@ -134,6 +144,10 @@ impl SpellCastModel {
         skill_tier_min: [25.0, 50.0, 75.0, 100.0],
         fatigue_cast_base: 1.0,
         fatigue_cast_mult: 0.0,
+        combat_distance: 128.0,
+        hand_reach_mult: 0.6,
+        projectile_base_speed: 1000.0,
+        projectile_max_distance: 10000.0,
     };
 
     /// The model with each setting the load order authors replacing its default. A non-finite authored value is ignored.
@@ -165,7 +179,23 @@ impl SpellCastModel {
             ],
             fatigue_cast_base: authored("fFatigueCastBase", self.fatigue_cast_base),
             fatigue_cast_mult: authored("fFatigueCastMult", self.fatigue_cast_mult),
+            combat_distance: authored("fCombatDistance", self.combat_distance),
+            hand_reach_mult: authored("fHandReachMult", self.hand_reach_mult),
+            projectile_base_speed: authored("fMagicProjectileBaseSpeed", self.projectile_base_speed),
+            projectile_max_distance: authored("fMagicProjectileMaxDistance", self.projectile_max_distance),
         }
+    }
+
+    /// The speed a spell's projectile flies at, in units per second, for an effect whose `MGEF` carries `multiplier`.
+    #[must_use]
+    pub fn projectile_speed(&self, multiplier: f32) -> f32 {
+        self.projectile_base_speed * multiplier
+    }
+
+    /// How far a Touch spell reaches from the caster: the hand's reach, scaled by the caster's scale when it is above 1.
+    #[must_use]
+    pub fn touch_reach(&self, caster_scale: f32) -> f32 {
+        self.combat_distance * self.hand_reach_mult * caster_scale.max(1.0)
     }
 
     /// One effect's cost before the caster's skill adjusts it, a float (`0x548b50`). The MGEF flags zero the magnitude,
@@ -278,6 +308,30 @@ mod tests {
     /// Flare (`StandardFireDamageTarget1Novice`, 000A97DF): Fire Damage (base cost 7.5, Destruction), 6 pts on Target.
     fn flare() -> EffectCostInput {
         effect(7.5, 6.0, 0.0, 0.0, EffectRange::Target, 2)
+    }
+
+    /// PSC-TGT-002: the hand reaches `fCombatDistance * fHandReachMult` (76.8 BU), more only for a caster above scale 1.
+    #[test]
+    fn a_touch_spell_reaches_the_hand_and_scales_only_upward() {
+        let model = SpellCastModel::OBLIVION;
+        assert!((model.touch_reach(1.0) - 76.8).abs() < 1e-3);
+        assert!((model.touch_reach(0.5) - 76.8).abs() < 1e-3, "a small caster reaches no less");
+        assert!((model.touch_reach(2.0) - 153.6).abs() < 1e-3);
+        let retuned = model.with_gmst(|name| (name == "fHandReachMult").then_some(1.0));
+        assert!((retuned.touch_reach(1.0) - 128.0).abs() < 1e-3);
+    }
+
+    /// PSC-TGT-003: a spell's projectile flies at the base speed times its `MGEF`'s multiplier, and no further than the
+    /// maximum distance.
+    #[test]
+    fn a_spell_projectile_flies_at_the_base_speed_times_the_effects_multiplier() {
+        let model = SpellCastModel::OBLIVION;
+        assert_eq!(model.projectile_speed(1.0), 1000.0);
+        assert_eq!(model.projectile_speed(2.5), 2500.0);
+        assert_eq!(model.projectile_speed(0.0), 0.0);
+        assert_eq!(model.projectile_max_distance, 10000.0);
+        let retuned = model.with_gmst(|name| (name == "fMagicProjectileBaseSpeed").then_some(1500.0));
+        assert_eq!(retuned.projectile_speed(1.0), 1500.0);
     }
 
     #[test]

@@ -1664,7 +1664,7 @@ mod tests {
         record.refs = vec![ScriptRef::Object(MGEF_A)];
         let (mut world, target) = world_for(record);
         world.insert_resource(PendingMagicHits::default());
-        let effect = |mgef| CastEffect { mgef, script: 0x99, duration: 1.0, magnitude: 1.0, value: None, conditions: None };
+        let effect = |mgef| CastEffect { mgef, script: 0x99, duration: 1.0, magnitude: 1.0, value: None, conditions: None, range: Default::default(), area: 0.0 };
         start_effects(&world, target, None, 0x500, &[effect(MGEF_A)], false);
         magic_hit_system(&world, 0.016);
         assert_eq!(counter(&world, target), 2.0, "the block for MGEF_A and the unparameterised one");

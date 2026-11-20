@@ -6,9 +6,11 @@
 //! console's `spell.cast` runs the same [`cast_now`].
 
 use byroredux_core::character::SpellCastModel;
+use byroredux_core::ecs::components::GlobalTransform;
+use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
 use byroredux_plugin::esm::records::EsmIndex;
-use byroredux_scripting::player_cast::{self, CastReport};
+use byroredux_scripting::player_cast::{self, CastReport, TargetLaunch};
 
 use crate::interaction::{ActionState, InputAction};
 use crate::systems::{player_can_act, PlayerEntity, PlayerMode};
@@ -35,10 +37,40 @@ fn can_cast(world: &World) -> bool {
     world.try_resource::<PlayerMode>().is_some_and(|mode| *mode == PlayerMode::Character) && player_can_act(world)
 }
 
-/// One cast action for the player: the key's and `spell.cast`'s common path.
+/// The corridor a Touch spell's hand sweeps: the melee swing's (PSC-TGT-002).
+const TOUCH_CORRIDOR_BU: f32 = crate::combat::MELEE_SWING_CORRIDOR_RADIUS_BU;
+
+/// The live actor in the player's hand reach along the camera's aim (PSC-TGT-002). Reach is the model's, labelled
+/// provisional in `cast.status` (#7082).
+fn touch_target(world: &World, player: EntityId) -> Option<EntityId> {
+    let model = *world.try_resource::<SpellCastModel>()?;
+    let scale = world.get::<GlobalTransform>(player).map_or(1.0, |transform| transform.scale);
+    let (origin, direction) = crate::interaction::camera_ray(world)?;
+    crate::combat::actor_in_reach(world, player, origin, direction, model.touch_reach(scale), TOUCH_CORRIDOR_BU).ok().map(|(actor, _)| actor)
+}
+
+/// One cast action for the player: the key's and `spell.cast`'s common path. A Target spell's projectile is launched
+/// here, along the camera's aim, when the cast started (PSC-TGT-003).
 pub(crate) fn cast_now(world: &World) -> Option<CastReport> {
     let player = PlayerEntity::get(world)?;
-    Some(player_cast::cast_readied(world, player, can_cast(world), CAST_INTERVAL_SECONDS))
+    let report = player_cast::cast_readied(world, player, can_cast(world), CAST_INTERVAL_SECONDS, &|| touch_target(world, player));
+    if let Ok(started) = &report.outcome
+        && let Some(launch) = started.launch
+        && !launch_spell(world, player, launch)
+    {
+        // No aim, or no projectile storage: the Target effects cannot fly, which is a miss.
+        player_cast::missed_target(world, launch.spell);
+    }
+    Some(report)
+}
+
+/// Fly the Target effects of `launch` from the camera along its aim; `false` when nothing could be launched.
+fn launch_spell(world: &World, player: EntityId, launch: TargetLaunch) -> bool {
+    let Some((origin, direction)) = crate::interaction::camera_ray(world) else { return false };
+    let Some(shot) = crate::systems::projectiles::spell_shot(world, player, launch, origin, direction) else { return false };
+    let Some(mut active) = world.try_resource_mut::<crate::systems::projectiles::ActiveProjectiles>() else { return false };
+    active.0.push(shot);
+    true
 }
 
 /// The cast action: advance the casting interval, keep the readied spell on the player's list, and act on the three
@@ -106,7 +138,7 @@ mod tests {
 
     fn spell(name: &str) -> CanonicalSpell {
         CanonicalSpell {
-            effects: vec![CastEffect { mgef: 1, script: 0, duration: 30.0, magnitude: 1.0, value: None, conditions: None }],
+            effects: vec![CastEffect { mgef: 1, script: 0, duration: 30.0, magnitude: 1.0, value: None, conditions: None, range: Default::default(), area: 0.0 }],
             cast: Some(SpellCastData { name: name.into(), spell_type: SpellType::Spell, effects: vec![effect(0)], ..Default::default() }),
             ..Default::default()
         }
@@ -217,5 +249,80 @@ mod tests {
         player_cast_system(&world, 0.016);
         assert_eq!(player_cast::readied(&world, player), None);
         assert_eq!(magicka(&world, player), 100.0);
+    }
+
+    /// A world with a camera looking down -Z, a physics world and two actors: one inside the hand's reach (50 units
+    /// ahead) and one beyond it (120), as the cast reads them.
+    fn world_with_actors() -> (World, EntityId, EntityId, EntityId) {
+        use byroredux_core::ecs::components::ActorVitals;
+        use byroredux_core::ecs::{ActiveCamera, Transform};
+        let (mut world, player) = world();
+        world.register::<byroredux_physics::RapierHandles>();
+        world.register::<ActorVitals>();
+        world.register::<byroredux_core::ecs::components::Dead>();
+        world.register::<byroredux_physics::ActorColliderOwner>();
+        world.insert_resource(crate::systems::projectiles::ActiveProjectiles::default());
+        let camera = world.spawn();
+        world.insert(camera, Transform::IDENTITY);
+        world.insert_resource(ActiveCamera(camera));
+        let mut physics = byroredux_physics::PhysicsWorld::new();
+        let near_handles = physics.spawn_fixed_cuboid_handles(byroredux_core::math::Vec3::splat(10.0), byroredux_core::math::Vec3::new(0.0, 0.0, -50.0));
+        let far_handles = physics.spawn_fixed_cuboid_handles(byroredux_core::math::Vec3::splat(10.0), byroredux_core::math::Vec3::new(0.0, 0.0, -120.0));
+        world.insert_resource(physics);
+        let (near, far) = (world.spawn(), world.spawn());
+        world.insert(near, near_handles);
+        world.insert(far, far_handles);
+        world.insert(near, ActorVitals { health: 100 });
+        world.insert(far, ActorVitals { health: 100 });
+        (world, player, near, far)
+    }
+
+    fn add_spell(world: &mut World, id: u32, name: &str, range: byroredux_core::character::EffectRange) {
+        let mut spell = spell(name);
+        let cast = spell.cast.as_mut().unwrap();
+        cast.effects[0].range = range;
+        cast.target_speed_multiplier = 1.5;
+        spell.effects[0].range = range;
+        let mut catalog = world.remove_resource::<SpellCatalog>().unwrap();
+        catalog.insert_canonical(id, spell);
+        world.insert_resource(catalog);
+        world.query_mut::<SpellList>().unwrap().get_mut(PlayerEntity::get(world).unwrap()).unwrap().0.push(id);
+    }
+
+    /// PSC-TGT-002: a Touch cast lands on the live actor inside the hand's reach (76.8 BU along the camera) and finds
+    /// nothing beyond it.
+    #[test]
+    fn a_touch_cast_reaches_the_actor_in_the_hands_reach_and_not_beyond() {
+        use byroredux_scripting::magic_effects::ActiveMagicEffects;
+        let (mut world, player, near, far) = world_with_actors();
+        add_spell(&mut world, 0x20, "Searing Grasp", byroredux_core::character::EffectRange::Touch);
+        player_cast::ready_spell(&world, player, 0x20).unwrap();
+        let report = cast_now(&world).unwrap();
+        assert_eq!(report.outcome.as_ref().unwrap().touched, Some(near), "{report}");
+        assert!(world.get::<ActiveMagicEffects>(near).is_some() && world.get::<ActiveMagicEffects>(far).is_none());
+        // A corpse is the first obstruction and no target (the far actor is out of reach anyway): the cost is still paid.
+        world.insert(near, byroredux_core::ecs::components::Dead);
+        player_cast_system(&world, CAST_INTERVAL_SECONDS);
+        let before = magicka(&world, player);
+        let report = cast_now(&world).unwrap();
+        assert!(report.outcome.as_ref().unwrap().no_target, "{report}");
+        assert!(magicka(&world, player) < before);
+    }
+
+    /// PSC-TGT-003: a Target cast puts one spell projectile in flight along the camera's aim at the spell's speed.
+    #[test]
+    fn a_target_cast_launches_a_spell_projectile_along_the_aim() {
+        let (mut world, player, _, _) = world_with_actors();
+        add_spell(&mut world, 0x21, "Flare", byroredux_core::character::EffectRange::Target);
+        player_cast::ready_spell(&world, player, 0x21).unwrap();
+        let report = cast_now(&world).unwrap();
+        assert!(report.outcome.is_ok(), "{report}");
+        let active = world.resource::<crate::systems::projectiles::ActiveProjectiles>();
+        assert_eq!(active.0.len(), 1);
+        let shot = &active.0[0];
+        assert_eq!(shot.spell, Some(0x21));
+        assert_eq!(shot.damage, 0.0);
+        assert!((shot.velocity - byroredux_core::math::Vec3::new(0.0, 0.0, -1500.0)).length() < 1e-2, "{:?}", shot.velocity);
+        assert_eq!(shot.shooter, player);
     }
 }

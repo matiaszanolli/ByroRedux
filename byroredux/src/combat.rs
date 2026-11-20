@@ -291,51 +291,14 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
         draw_weapon(world, aggressor);
     }
 
-    // Resolve Rapier body ownership before acquiring PhysicsWorld. This keeps
-    // component/resource guards non-overlapping and follows the interaction
-    // ray's lock order.
-    let (excluded_body, owners) = match world.query::<byroredux_physics::RapierHandles>() {
-        Some(handles) => {
-            let excluded = handles.get(aggressor).map(|handles| handles.body);
-            let owners = handles
-                .iter()
-                .map(|(entity, handles)| (entity, handles.body))
-                .collect::<Vec<_>>();
-            (excluded, owners)
-        }
-        None => (None, Vec::new()),
-    };
     let reach = attack_reach_bu(world, aggressor);
-    let hit = world
-        .try_resource::<byroredux_physics::PhysicsWorld>()
-        .and_then(|physics| {
-            physics.cast_ray_corridor(
-                origin,
-                direction,
-                reach,
-                MELEE_SWING_CORRIDOR_RADIUS_BU,
-                excluded_body,
-            )
-        });
-    let Some(hit_body) = hit.and_then(|hit| hit.body) else {
-        record_miss(world, "melee swing missed");
-        return;
+    let (target, collider_entity) = match actor_in_reach(world, aggressor, origin, direction, reach, MELEE_SWING_CORRIDOR_RADIUS_BU) {
+        Ok(found) => found,
+        Err(why) => {
+            record_miss(world, why.melee_message());
+            return;
+        }
     };
-    let Some(collider_entity) = owners
-        .iter()
-        .find_map(|(entity, body)| (*body == hit_body).then_some(*entity))
-    else {
-        record_miss(world, "hit body has no ECS owner");
-        return;
-    };
-    let Some(target) = resolve_actor_root(world, collider_entity) else {
-        record_miss(world, "first obstruction is not an actor");
-        return;
-    };
-    if target == aggressor || world.get::<Dead>(target).is_some() {
-        record_miss(world, "actor target is invalid or already dead");
-        return;
-    }
 
     let damage = attack_damage_against(world, aggressor, target);
     // M65 (SNK-ATK-001, -003) — the sneaking player's strike on an unaware target.
@@ -421,6 +384,68 @@ fn draw_weapon(world: &World, player: EntityId) {
     if let Some(mut drawn) = world.query_mut::<byroredux_scripting::obscript_state::WeaponDrawn>() {
         drawn.insert(player, byroredux_scripting::obscript_state::WeaponDrawn);
     }
+}
+
+/// Why a sweep along the player's aim found no live actor ([`actor_in_reach`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReachMiss {
+    /// Nothing was hit within the reach.
+    Nothing,
+    /// The body hit has no ECS owner.
+    NoOwner,
+    /// The first obstruction is not an actor.
+    NotAnActor,
+    /// The actor is the aggressor itself or already dead.
+    InvalidActor,
+}
+
+impl ReachMiss {
+    /// The melee trace's wording for the miss.
+    fn melee_message(self) -> &'static str {
+        match self {
+            Self::Nothing => "melee swing missed",
+            Self::NoOwner => "hit body has no ECS owner",
+            Self::NotAnActor => "first obstruction is not an actor",
+            Self::InvalidActor => "actor target is invalid or already dead",
+        }
+    }
+}
+
+/// The live actor the first obstruction along `direction` from `origin` is, within `reach` and a corridor of
+/// `corridor` units: the melee swing's and the Touch spell's shared sweep, as `(actor, the collider entity struck)`.
+/// The aggressor's own bodies are skipped.
+pub(crate) fn actor_in_reach(
+    world: &World,
+    aggressor: EntityId,
+    origin: byroredux_core::math::Vec3,
+    direction: byroredux_core::math::Vec3,
+    reach: f32,
+    corridor: f32,
+) -> Result<(EntityId, EntityId), ReachMiss> {
+    // Resolve Rapier body ownership before acquiring PhysicsWorld. This keeps
+    // component/resource guards non-overlapping and follows the interaction
+    // ray's lock order.
+    let (excluded_body, owners) = match world.query::<byroredux_physics::RapierHandles>() {
+        Some(handles) => {
+            let excluded = handles.get(aggressor).map(|handles| handles.body);
+            let owners = handles.iter().map(|(entity, handles)| (entity, handles.body)).collect::<Vec<_>>();
+            (excluded, owners)
+        }
+        None => (None, Vec::new()),
+    };
+    let hit = world
+        .try_resource::<byroredux_physics::PhysicsWorld>()
+        .and_then(|physics| physics.cast_ray_corridor(origin, direction, reach, corridor, excluded_body));
+    let hit_body = hit.and_then(|hit| hit.body).ok_or(ReachMiss::Nothing)?;
+    let collider_entity = owners
+        .iter()
+        .find_map(|(entity, body)| (*body == hit_body).then_some(*entity))
+        .ok_or(ReachMiss::NoOwner)?;
+    let target = resolve_actor_root(world, collider_entity).ok_or(ReachMiss::NotAnActor)?;
+    if target == aggressor || world.get::<Dead>(target).is_some() {
+        return Err(ReachMiss::InvalidActor);
+    }
+    Ok((target, collider_entity))
 }
 
 /// Fire the player's equipped gun, if it is one: a weapon that is not a melee type and takes

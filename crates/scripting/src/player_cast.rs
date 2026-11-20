@@ -3,8 +3,9 @@
 //!
 //! A cast has four stages: **ready** (a spell is selected: [`ReadiedSpell`]), **gate** (the player may cast it now,
 //! each refusal named: [`CastRefusal`]), **resolve** (each effect finds its range), **settle** (Magicka and Fatigue
-//! applied, the one [`cast_spell`](crate::magic_effects::cast_spell) call). Phase 1 resolves Self effects only: a spell
-//! with a Touch or Target effect is refused with [`CastRefusal::Range`] until Phase 2 builds them (PSC-TGT-002, -003).
+//! applied, the shared effect start). Each effect lands by its own range (PSC-TGT-001..004): Self on the player, Touch on
+//! the live actor the caller's reach finds, Target on whatever the projectile the caller flies meets ([`TargetLaunch`],
+//! [`land_target`]); an effect with an area is reported ignored (PSC-TGT-005).
 //!
 //! The rules (cost, tier, Fatigue) are [`SpellCastModel`]'s (`crates/core/src/character/spell_cast.rs`), installed
 //! from the player's rules profile; nothing here holds a constant. Only the player's path gates and spends: the
@@ -19,7 +20,8 @@ use byroredux_core::ecs::world::World;
 use byroredux_plugin::esm::records::SpellType;
 
 use crate::magic::{CanonicalSpell, SpellCatalog, SpellList};
-use crate::magic_effects::cast_spell;
+use crate::magic_effects::CastEffect;
+use crate::magic_effects::{raise_cast_event, start_spell_effects};
 
 /// Oblivion's actor-value codes the cast reads (UESP *Oblivion:Actor Values*; the engine's
 /// `OBLIVION_ACTOR_VALUES` roster): Luck, Magicka, Fatigue, and the six magic skills (20 Alteration to 25 Restoration).
@@ -55,8 +57,6 @@ pub enum CastRefusal {
     NoRules,
     /// Not a Spell: a Power, Lesser Power, disease, ability or poison (PSC-NG-002).
     NotCastable(SpellType),
-    /// The spell has a Touch or Target effect, which Phase 1 does not resolve.
-    Range(EffectRange),
     /// The player's tier in the school is below the spell's mastery (PSC-CST-003).
     Mastery { school: Option<u8>, needs: SpellTier, has: SpellTier },
     /// The cost is greater than the player's current Magicka (PSC-CST-002).
@@ -72,7 +72,6 @@ impl std::fmt::Display for CastRefusal {
             Self::NotKnown => write!(f, "spell not in the spell list"),
             Self::NoRules => write!(f, "no cast rules for this game or spell"),
             Self::NotCastable(spell_type) => write!(f, "not castable ({spell_type:?})"),
-            Self::Range(range) => write!(f, "{} range not supported yet", range.label()),
             Self::Mastery { school, needs, has } => write!(
                 f,
                 "mastery: needs {} in {}, has {}",
@@ -98,8 +97,40 @@ pub struct CastStarted {
     /// The Fatigue applied as damage.
     pub fatigue: f32,
     pub school: Option<u8>,
-    /// Whether `cast_spell` started any effect (an effect the runtime does not model starts none).
+    /// Whether any effect started at the release, on the player or on the touched actor (an effect the runtime does not
+    /// model starts none).
     pub effects_started: bool,
+    /// The actor the Touch effects landed on, when the spell has any and one was in reach.
+    pub touched: Option<EntityId>,
+    /// The Target effects waiting on a projectile the caller flies (PSC-TGT-003).
+    pub launch: Option<TargetLaunch>,
+    /// How many Touch and Target effects with an area were left unapplied (PSC-TGT-005).
+    pub area_ignored: usize,
+    /// Nothing found a target: no Self effect, no Touch actor in reach and no projectile to fly. The cost is paid
+    /// (PSC-TGT-004).
+    pub no_target: bool,
+}
+
+/// A spell's Target effects, ready to fly: the caller launches one projectile at `speed` along the aim, and on a hit
+/// calls [`land_target`] (PSC-TGT-003).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TargetLaunch {
+    pub spell: u32,
+    /// Units per second: `fMagicProjectileBaseSpeed` times the `MGEF`'s multiplier.
+    pub speed: f32,
+    /// Units: `fMagicProjectileMaxDistance`, how far it flies without making contact.
+    pub range: f32,
+}
+
+/// What became of the projectile a Target spell launched (`cast.status`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Impact {
+    /// In flight.
+    Flying,
+    /// Landed on this actor; `started` is whether any effect started on it.
+    Landed { target: EntityId, started: bool },
+    /// Ended on no live actor.
+    Missed,
 }
 
 /// The result of one cast action, for `cast.status` and the log (PSC-DX-001, -003).
@@ -115,13 +146,20 @@ impl std::fmt::Display for CastReport {
         match &self.outcome {
             Ok(started) => write!(
                 f,
-                "started {} ({:08X}): magicka {:.1}, fatigue {:.1}, school {}, effects {}",
+                "started {} ({:08X}): magicka {:.1}, fatigue {:.1}, school {}, effects {}{}{}",
                 self.name,
                 self.spell,
                 started.magicka,
                 started.fatigue,
                 school_name(started.school),
-                if started.effects_started { "applied" } else { "none applied" }
+                if started.effects_started { "applied" } else { "none applied" },
+                match (started.touched, started.launch.is_some()) {
+                    (Some(target), _) => format!(", touched {target}"),
+                    (None, true) => ", projectile launched".to_string(),
+                    (None, false) if started.no_target => ", no target".to_string(),
+                    _ => String::new(),
+                },
+                if started.area_ignored > 0 { format!(", area ignored ({} effect(s))", started.area_ignored) } else { String::new() },
             ),
             Err(refusal) => write!(f, "refused {} ({:08X}): {refusal}", self.name, self.spell),
         }
@@ -136,6 +174,8 @@ pub struct CastState {
     /// The interval the last cast armed, for the report.
     pub interval: f32,
     pub last: Option<CastReport>,
+    /// The last Target projectile's fate (`None` before one flew).
+    pub impact: Option<Impact>,
 }
 
 impl Resource for CastState {}
@@ -263,39 +303,65 @@ pub fn cycle_spell(world: &World, player: EntityId, step: i32) -> Result<SpellPr
 }
 
 /// One cast action (PSC-CST-001..009): gate in order, then settle. `can_act` is the engine's "the player may act" verdict
-/// (alive, in character mode) and `interval` the casting interval a started cast arms (PSC-CST-006). The report is also
-/// stored in [`CastState`].
-pub fn cast_readied(world: &World, player: EntityId, can_act: bool, interval: f32) -> CastReport {
+/// (alive, in character mode) and `interval` the casting interval a started cast arms (PSC-CST-006). `touch` finds the
+/// live actor in the player's reach for a spell's Touch effects (PSC-TGT-002); it is asked only when the spell has one
+/// that can land. The report is also stored in [`CastState`].
+pub fn cast_readied(world: &World, player: EntityId, can_act: bool, interval: f32, touch: &dyn Fn() -> Option<EntityId>) -> CastReport {
     let spell = readied(world, player);
     let name = spell.and_then(|spell| world.try_resource::<SpellCatalog>().and_then(|catalog| cast_data(&catalog, spell).map(|(_, data)| data.name.clone()))).unwrap_or_default();
     let outcome = match spell {
         _ if !can_act => Err(CastRefusal::CannotAct),
         None => Err(CastRefusal::NothingReadied),
-        Some(spell) => settle(world, player, spell, interval),
+        Some(spell) => settle(world, player, spell, interval, touch),
     };
     let report = CastReport { spell: spell.unwrap_or(0), name, outcome };
     if let Some(mut state) = world.try_resource_mut::<CastState>() {
         state.last = Some(report.clone());
+        state.impact = report.outcome.as_ref().ok().and_then(|started| started.launch).map(|_| Impact::Flying);
     }
     log::info!("cast: {report}");
     report
 }
 
-fn settle(world: &World, player: EntityId, spell: u32, interval: f32) -> Result<CastStarted, CastRefusal> {
+/// An effect of the cast with its range and whether its area keeps it from landing (PSC-TGT-005).
+fn lands_by_range(effect: &CastEffect, range: EffectRange) -> bool {
+    effect.range == range && (range == EffectRange::SelfRange || effect.area <= 0.0)
+}
+
+/// What a spell's effects ask of the cast, read once from the catalog: which ranges have effects that can land, and how
+/// many carry an area (reported ignored).
+struct Delivery {
+    touch: bool,
+    target_multiplier: Option<f32>,
+    area_ignored: usize,
+}
+
+fn delivery(canonical: &CanonicalSpell, data: &crate::magic::SpellCastData) -> Delivery {
+    let landing = |range| canonical.effects.iter().any(|effect| effect.lands(false) && lands_by_range(effect, range));
+    Delivery {
+        touch: landing(EffectRange::Touch),
+        target_multiplier: landing(EffectRange::Target).then_some(data.target_speed_multiplier),
+        // Every authored effect that asks for an area beyond Self, whether or not the runtime models what it does.
+        area_ignored: data
+            .effects
+            .iter()
+            .filter(|effect| effect.range != EffectRange::SelfRange && effect.area > 0.0 && effect.mgef_flags & byroredux_core::character::spell_cast::MGEF_NO_AREA == 0)
+            .count(),
+    }
+}
+
+fn settle(world: &World, player: EntityId, spell: u32, interval: f32, touch: &dyn Fn() -> Option<EntityId>) -> Result<CastStarted, CastRefusal> {
     if let Some(state) = world.try_resource::<CastState>()
         && state.cooldown_remaining > 0.0
     {
         return Err(CastRefusal::Cooldown { remaining: state.cooldown_remaining });
     }
     let model = *world.try_resource::<SpellCastModel>().ok_or(CastRefusal::NoRules)?;
-    let (school, cost) = {
+    let (school, cost, delivery) = {
         let catalog = world.try_resource::<SpellCatalog>().ok_or(CastRefusal::NoRules)?;
-        let (_, data) = cast_data(&catalog, spell).ok_or(CastRefusal::NoRules)?;
+        let (canonical, data) = cast_data(&catalog, spell).ok_or(CastRefusal::NoRules)?;
         if data.spell_type != SpellType::Spell {
             return Err(CastRefusal::NotCastable(data.spell_type));
-        }
-        if let Some(effect) = data.effects.iter().find(|effect| effect.range != EffectRange::SelfRange) {
-            return Err(CastRefusal::Range(effect.range));
         }
         let caster = read_caster(world, player);
         let school = model.primary_school(&data.effects);
@@ -308,10 +374,10 @@ fn settle(world: &World, player: EntityId, spell: u32, interval: f32) -> Result<
         if cost > caster.magicka {
             return Err(CastRefusal::Magicka { cost, has: caster.magicka });
         }
-        (school, cost)
+        (school, cost, delivery(canonical, data))
     };
     let fatigue = model.fatigue_cost(cost);
-    // Settle: the spend first (one write, the lock released before the effect start), then the shared effect start.
+    // Settle: the spend first (one write, the lock released before the effect start), then each range's effect start.
     let (magicka_av, fatigue_av) = (av_form(world, AV_MAGICKA), av_form(world, AV_FATIGUE));
     if let Some(mut values) = world.query_mut::<ActorValues>()
         && let Some(entry) = values.get_mut(player)
@@ -323,19 +389,62 @@ fn settle(world: &World, player: EntityId, spell: u32, interval: f32) -> Result<
             entry.apply_damage(av, fatigue);
         }
     }
-    let effects_started = cast_spell(world, Some(player), player, spell);
+    // Resolve (PSC-TGT-001..004): Self lands on the player, Touch on the actor in reach, Target waits on its projectile.
+    let mut started = start_spell_effects(world, Some(player), player, spell, |effect| lands_by_range(effect, EffectRange::SelfRange));
+    let touched = if delivery.touch { touch().filter(|actor| *actor != player) } else { None };
+    if let Some(actor) = touched {
+        started += start_spell_effects(world, Some(player), actor, spell, |effect| lands_by_range(effect, EffectRange::Touch));
+    }
+    let launch = delivery
+        .target_multiplier
+        .map(|multiplier| model.projectile_speed(multiplier))
+        .filter(|speed| speed.is_finite() && *speed > 0.0)
+        .map(|speed| TargetLaunch { spell, speed, range: model.projectile_max_distance });
+    if started > 0 || launch.is_some() {
+        raise_cast_event(world, Some(player));
+    }
     if let Some(mut state) = world.try_resource_mut::<CastState>() {
         state.cooldown_remaining = interval.max(0.0);
         state.interval = interval;
     }
-    Ok(CastStarted { magicka: cost, fatigue, school, effects_started })
+    Ok(CastStarted {
+        magicka: cost,
+        fatigue,
+        school,
+        effects_started: started > 0,
+        touched: touched.filter(|_| started > 0),
+        launch,
+        area_ignored: delivery.area_ignored,
+        no_target: started == 0 && touched.is_none() && launch.is_none(),
+    })
+}
+
+/// A Target spell's projectile met a live actor: start the spell's Target effects on it as the player's cast (PSC-TGT-003).
+/// Returns whether any effect started, and records the impact for `cast.status`.
+pub fn land_target(world: &World, caster: EntityId, target: EntityId, spell: u32) -> bool {
+    let started = start_spell_effects(world, Some(caster), target, spell, |effect| lands_by_range(effect, EffectRange::Target)) > 0;
+    record_impact(world, Impact::Landed { target, started });
+    log::info!("cast: {spell:08X} landed on {target}: effects {}", if started { "applied" } else { "none applied" });
+    started
+}
+
+/// A Target spell's projectile ended on no live actor (PSC-TGT-004).
+pub fn missed_target(world: &World, spell: u32) {
+    record_impact(world, Impact::Missed);
+    log::info!("cast: {spell:08X} missed");
+}
+
+fn record_impact(world: &World, impact: Impact) {
+    if let Some(mut state) = world.try_resource_mut::<CastState>() {
+        state.impact = Some(impact);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::magic::{CanonicalSpell, SpellCastData};
-    use crate::magic_effects::{ActiveMagicEffects, CastEffect};
+    use crate::magic_effects::{cast_spell, ActiveMagicEffects, CastEffect};
     use byroredux_core::character::EffectCostInput;
     use std::collections::HashMap;
 
@@ -343,6 +452,11 @@ mod tests {
     const EXPERT_SPELL: u32 = 0x11;
     const TARGET_SPELL: u32 = 0x12;
     const POWER: u32 = 0x13;
+    const TOUCH_SPELL: u32 = 0x14;
+    const MIXED_SPELL: u32 = 0x15;
+    const AREA_SPELL: u32 = 0x16;
+    /// A Target spell whose MGEF has no projectile speed.
+    const SLOW_SPELL: u32 = 0x17;
     const INTERVAL: f32 = 0.45;
 
     fn effect(base_cost: f32, magnitude: f32, range: EffectRange, school: u8) -> EffectCostInput {
@@ -351,9 +465,22 @@ mod tests {
 
     fn spell(name: &str, spell_type: SpellType, effects: Vec<EffectCostInput>) -> CanonicalSpell {
         CanonicalSpell {
-            // A lasting effect lands, so `cast_spell` starts it on the caster.
-            effects: vec![CastEffect { mgef: 1, script: 0, duration: 30.0, magnitude: 1.0, value: None, conditions: None }],
-            cast: Some(SpellCastData { name: name.into(), spell_type, effects, ..Default::default() }),
+            // A lasting effect lands, so the effect start takes it; its range and area are the cost input's.
+            effects: effects
+                .iter()
+                .enumerate()
+                .map(|(index, input)| CastEffect {
+                    mgef: 1 + index as u32,
+                    script: 0,
+                    duration: 30.0,
+                    magnitude: 1.0,
+                    value: None,
+                    conditions: None,
+                    range: input.range,
+                    area: input.area,
+                })
+                .collect(),
+            cast: Some(SpellCastData { name: name.into(), spell_type, effects, target_speed_multiplier: 1.0, ..Default::default() }),
             ..Default::default()
         }
     }
@@ -369,6 +496,21 @@ mod tests {
         spells.insert(EXPERT_SPELL, spell("Big Shell", SpellType::Spell, vec![effect(50.0, 10.0, EffectRange::SelfRange, 3)]));
         spells.insert(TARGET_SPELL, spell("Flare", SpellType::Spell, vec![effect(7.5, 6.0, EffectRange::Target, 2)]));
         spells.insert(POWER, spell("Lover's Kiss", SpellType::Power, vec![effect(5.0, 10.0, EffectRange::SelfRange, 3)]));
+        spells.insert(TOUCH_SPELL, spell("Searing Grasp", SpellType::Spell, vec![effect(5.0, 10.0, EffectRange::Touch, 2)]));
+        spells.insert(
+            MIXED_SPELL,
+            spell(
+                "Mixed",
+                SpellType::Spell,
+                vec![effect(5.0, 10.0, EffectRange::SelfRange, 0), effect(5.0, 10.0, EffectRange::Touch, 2), effect(5.0, 10.0, EffectRange::Target, 2)],
+            ),
+        );
+        let mut area = effect(5.0, 10.0, EffectRange::Touch, 2);
+        area.area = 10.0;
+        spells.insert(AREA_SPELL, spell("Fireball", SpellType::Spell, vec![area, effect(5.0, 10.0, EffectRange::SelfRange, 2)]));
+        let mut slow = spell("Slow", SpellType::Spell, vec![effect(5.0, 10.0, EffectRange::Target, 2)]);
+        slow.cast.as_mut().unwrap().target_speed_multiplier = 0.0;
+        spells.insert(SLOW_SPELL, slow);
         world.insert_resource(SpellCatalog::from_canonical(spells));
         world.insert_resource(SpellCastModel::OBLIVION);
         world.insert_resource(CastState::default());
@@ -376,7 +518,7 @@ mod tests {
         let mut pairs = vec![(AV_LUCK, 50.0), (AV_MAGICKA, magicka), (AV_FATIGUE, 100.0)];
         pairs.extend((0..6).map(|school| (AV_SCHOOL_FIRST + school, skill)));
         world.insert(player, ActorValues::from_pairs(pairs));
-        world.insert(player, SpellList(vec![SELF_SPELL, EXPERT_SPELL, TARGET_SPELL, POWER]));
+        world.insert(player, SpellList(vec![SELF_SPELL, EXPERT_SPELL, TARGET_SPELL, POWER, TOUCH_SPELL, MIXED_SPELL, AREA_SPELL, SLOW_SPELL]));
         (world, player)
     }
 
@@ -391,22 +533,19 @@ mod tests {
     #[test]
     fn cast_refuses_each_gate_in_order() {
         let (world, player) = world_with(0.0, 50.0);
-        assert_eq!(refusal(&cast_readied(&world, player, false, INTERVAL)), &CastRefusal::CannotAct);
-        assert_eq!(refusal(&cast_readied(&world, player, true, INTERVAL)), &CastRefusal::NothingReadied);
+        assert_eq!(refusal(&cast_readied(&world, player, false, INTERVAL, &|| None)), &CastRefusal::CannotAct);
+        assert_eq!(refusal(&cast_readied(&world, player, true, INTERVAL, &|| None)), &CastRefusal::NothingReadied);
         // A spell the player does not know cannot be readied, and one that left the list clears.
         assert_eq!(ready_spell(&world, player, 0x99).unwrap_err(), CastRefusal::NotKnown);
         ready_spell(&world, player, SELF_SPELL).unwrap();
         world.query_mut::<SpellList>().unwrap().get_mut(player).unwrap().0.retain(|spell| *spell != SELF_SPELL);
         assert_eq!(readied(&world, player), None);
-        assert_eq!(refusal(&cast_readied(&world, player, true, INTERVAL)), &CastRefusal::NothingReadied);
+        assert_eq!(refusal(&cast_readied(&world, player, true, INTERVAL, &|| None)), &CastRefusal::NothingReadied);
         // A Power is not castable here.
         assert_eq!(ready_spell(&world, player, POWER).unwrap_err(), CastRefusal::NotCastable(SpellType::Power));
-        // A Target spell is refused until Phase 2.
-        ready_spell(&world, player, TARGET_SPELL).unwrap();
-        assert_eq!(refusal(&cast_readied(&world, player, true, INTERVAL)), &CastRefusal::Range(EffectRange::Target));
         // Mastery before Magicka: a Journeyman spell with skill 0.
         ready_spell(&world, player, EXPERT_SPELL).unwrap();
-        assert_eq!(refusal(&cast_readied(&world, player, true, INTERVAL)), &CastRefusal::Mastery { school: Some(3), needs: 2, has: 0 });
+        assert_eq!(refusal(&cast_readied(&world, player, true, INTERVAL, &|| None)), &CastRefusal::Mastery { school: Some(3), needs: 2, has: 0 });
         // Nothing was spent by any refusal.
         assert_eq!(magicka(&world, player), 50.0);
         assert_eq!(world.get::<ActorValues>(player).unwrap().current(AV_FATIGUE), 100.0);
@@ -416,7 +555,7 @@ mod tests {
     fn a_self_cast_spends_magicka_and_one_fatigue_and_starts_its_effect() {
         let (world, player) = world_with(0.0, 50.0);
         ready_spell(&world, player, SELF_SPELL).unwrap();
-        let report = cast_readied(&world, player, true, INTERVAL);
+        let report = cast_readied(&world, player, true, INTERVAL, &|| None);
         let started = report.outcome.clone().expect("the cast started");
         // 0.1 * 5 * 10^1.28 = 9.52, times 1.4 at skill 0 and Luck 50: floor(13.3) = 13.
         assert_eq!(started.magicka, 13.0);
@@ -433,12 +572,12 @@ mod tests {
     fn a_repeat_inside_the_interval_is_refused_with_the_seconds_left() {
         let (world, player) = world_with(0.0, 50.0);
         ready_spell(&world, player, SELF_SPELL).unwrap();
-        assert!(cast_readied(&world, player, true, INTERVAL).outcome.is_ok());
-        assert_eq!(refusal(&cast_readied(&world, player, true, INTERVAL)), &CastRefusal::Cooldown { remaining: INTERVAL });
+        assert!(cast_readied(&world, player, true, INTERVAL, &|| None).outcome.is_ok());
+        assert_eq!(refusal(&cast_readied(&world, player, true, INTERVAL, &|| None)), &CastRefusal::Cooldown { remaining: INTERVAL });
         tick_cast_state(&world, 0.3);
-        assert!(matches!(refusal(&cast_readied(&world, player, true, INTERVAL)), CastRefusal::Cooldown { remaining } if (*remaining - 0.15).abs() < 1e-5));
+        assert!(matches!(refusal(&cast_readied(&world, player, true, INTERVAL, &|| None)), CastRefusal::Cooldown { remaining } if (*remaining - 0.15).abs() < 1e-5));
         tick_cast_state(&world, 0.2);
-        assert!(cast_readied(&world, player, true, INTERVAL).outcome.is_ok());
+        assert!(cast_readied(&world, player, true, INTERVAL, &|| None).outcome.is_ok());
         assert_eq!(magicka(&world, player), 24.0, "two casts of 13");
     }
 
@@ -447,24 +586,24 @@ mod tests {
         // The Journeyman spell (base cost 95) needs skill 50; at skill 50 it costs floor(95 * (1.4 - 0.6)) = 76.
         let (world, player) = world_with(50.0, 200.0);
         ready_spell(&world, player, EXPERT_SPELL).unwrap();
-        let started = cast_readied(&world, player, true, INTERVAL).outcome.expect("a Journeyman casts it");
+        let started = cast_readied(&world, player, true, INTERVAL, &|| None).outcome.expect("a Journeyman casts it");
         assert_eq!(started.magicka, 76.0);
         // A Fortify raises the modified skill (the cost) and not the base skill (the tier).
         let (world, player) = world_with(40.0, 200.0);
         world.query_mut::<ActorValues>().unwrap().get_mut(player).unwrap().mod_temporary(AV_SCHOOL_FIRST + 3, 30.0);
         ready_spell(&world, player, EXPERT_SPELL).unwrap();
-        assert_eq!(refusal(&cast_readied(&world, player, true, INTERVAL)), &CastRefusal::Mastery { school: Some(3), needs: 2, has: 1 });
+        assert_eq!(refusal(&cast_readied(&world, player, true, INTERVAL, &|| None)), &CastRefusal::Mastery { school: Some(3), needs: 2, has: 1 });
     }
 
     #[test]
     fn a_cost_equal_to_magicka_is_allowed_and_a_greater_one_is_refused() {
         let (world, player) = world_with(0.0, 13.0);
         ready_spell(&world, player, SELF_SPELL).unwrap();
-        assert!(cast_readied(&world, player, true, INTERVAL).outcome.is_ok());
+        assert!(cast_readied(&world, player, true, INTERVAL, &|| None).outcome.is_ok());
         assert_eq!(magicka(&world, player), 0.0);
         let (world, player) = world_with(0.0, 12.9);
         ready_spell(&world, player, SELF_SPELL).unwrap();
-        assert_eq!(refusal(&cast_readied(&world, player, true, INTERVAL)), &CastRefusal::Magicka { cost: 13.0, has: 12.9 });
+        assert_eq!(refusal(&cast_readied(&world, player, true, INTERVAL, &|| None)), &CastRefusal::Magicka { cost: 13.0, has: 12.9 });
         assert_eq!(magicka(&world, player), 12.9);
     }
 
@@ -479,15 +618,19 @@ mod tests {
     #[test]
     fn next_and_previous_cycle_the_castable_spells_in_list_order_and_wrap() {
         let (world, player) = world_with(0.0, 50.0);
-        assert_eq!(castable_spells(&world, player), vec![SELF_SPELL, EXPERT_SPELL, TARGET_SPELL]);
+        assert_eq!(castable_spells(&world, player), vec![SELF_SPELL, EXPERT_SPELL, TARGET_SPELL, TOUCH_SPELL, MIXED_SPELL, AREA_SPELL, SLOW_SPELL]);
         let name = |preview: SpellPreview| preview.name;
         assert_eq!(name(cycle_spell(&world, player, 1).unwrap()), "Heat Shell");
         assert_eq!(name(cycle_spell(&world, player, 1).unwrap()), "Big Shell");
         assert_eq!(name(cycle_spell(&world, player, 1).unwrap()), "Flare");
-        assert_eq!(name(cycle_spell(&world, player, 1).unwrap()), "Heat Shell", "wraps past the last");
-        assert_eq!(name(cycle_spell(&world, player, -1).unwrap()), "Flare", "wraps before the first");
+        assert_eq!(name(cycle_spell(&world, player, -1).unwrap()), "Big Shell");
+        for _ in 0..5 {
+            cycle_spell(&world, player, 1).unwrap();
+        }
+        assert_eq!(name(cycle_spell(&world, player, 1).unwrap()), "Heat Shell", "wraps past the last of seven");
+        assert_eq!(name(cycle_spell(&world, player, -1).unwrap()), "Slow", "wraps before the first");
         let (world, player) = world_with(0.0, 50.0);
-        assert_eq!(name(cycle_spell(&world, player, -1).unwrap()), "Flare", "previous with nothing readied is the last");
+        assert_eq!(name(cycle_spell(&world, player, -1).unwrap()), "Slow", "previous with nothing readied is the last");
     }
 
     /// PSC-CST-007: the console's `magic.cast`, ObScript `Cast` and a perk's activate choice call `cast_spell` directly;
@@ -506,6 +649,102 @@ mod tests {
         let (mut world, player) = world_with(0.0, 50.0);
         ready_spell(&world, player, SELF_SPELL).unwrap();
         world.remove_resource::<SpellCastModel>();
-        assert_eq!(refusal(&cast_readied(&world, player, true, INTERVAL)), &CastRefusal::NoRules);
+        assert_eq!(refusal(&cast_readied(&world, player, true, INTERVAL, &|| None)), &CastRefusal::NoRules);
+    }
+
+
+    fn started(report: &CastReport) -> &CastStarted {
+        report.outcome.as_ref().expect("the cast started")
+    }
+
+    fn target_actor(world: &mut World) -> EntityId {
+        world.register::<ActiveMagicEffects>();
+        world.spawn()
+    }
+
+    /// PSC-TGT-002: a Touch effect lands on the actor the reach finds, and on nobody when there is none; the cost is paid
+    /// either way and a cast that found nothing says so (PSC-TGT-004).
+    #[test]
+    fn a_touch_effect_lands_on_the_actor_in_reach_and_a_miss_still_pays() {
+        let (mut world, player) = world_with(0.0, 100.0);
+        let actor = target_actor(&mut world);
+        ready_spell(&world, player, TOUCH_SPELL).unwrap();
+        let report = cast_readied(&world, player, true, INTERVAL, &|| Some(actor));
+        let cast = started(&report);
+        assert_eq!(cast.touched, Some(actor));
+        assert!(cast.effects_started && !cast.no_target);
+        assert!(world.get::<ActiveMagicEffects>(actor).is_some(), "the effect is on the touched actor");
+        assert!(world.get::<ActiveMagicEffects>(player).is_none(), "and not on the player");
+        let spent = 100.0 - magicka(&world, player);
+        assert!(spent > 0.0);
+        // Out of reach: nothing lands, the cost is paid, and the report says no target.
+        tick_cast_state(&world, 1.0);
+        let report = cast_readied(&world, player, true, INTERVAL, &|| None);
+        let cast = started(&report);
+        assert!(!cast.effects_started && cast.no_target && cast.touched.is_none());
+        assert_eq!(100.0 - magicka(&world, player), 2.0 * spent, "a miss pays the same cost");
+        assert!(report.to_string().contains("no target"), "{report}");
+        // The player is never their own touch target.
+        tick_cast_state(&world, 1.0);
+        assert!(started(&cast_readied(&world, player, true, INTERVAL, &|| Some(player))).no_target);
+    }
+
+    /// PSC-TGT-003: a Target effect launches (the caller flies it at the MGEF's speed) and starts nothing at the
+    /// release; the landing starts it on the actor the projectile met, and a miss records itself.
+    #[test]
+    fn a_target_effect_launches_and_lands_on_impact() {
+        let (mut world, player) = world_with(0.0, 100.0);
+        let actor = target_actor(&mut world);
+        ready_spell(&world, player, TARGET_SPELL).unwrap();
+        let report = cast_readied(&world, player, true, INTERVAL, &|| Some(actor));
+        let cast = started(&report);
+        assert_eq!(cast.launch, Some(TargetLaunch { spell: TARGET_SPELL, speed: 1000.0, range: 10000.0 }));
+        assert!(!cast.effects_started && !cast.no_target, "the effect waits on the projectile");
+        assert!(world.get::<ActiveMagicEffects>(actor).is_none());
+        assert_eq!(world.try_resource::<CastState>().unwrap().impact, Some(Impact::Flying));
+        assert!(land_target(&world, player, actor, TARGET_SPELL));
+        assert!(world.get::<ActiveMagicEffects>(actor).is_some());
+        assert_eq!(world.try_resource::<CastState>().unwrap().impact, Some(Impact::Landed { target: actor, started: true }));
+        missed_target(&world, TARGET_SPELL);
+        assert_eq!(world.try_resource::<CastState>().unwrap().impact, Some(Impact::Missed));
+    }
+
+    /// A spell without a projectile speed has nothing to fly: the Target effect finds no target.
+    #[test]
+    fn a_target_effect_with_no_projectile_speed_finds_no_target() {
+        let (world, player) = world_with(0.0, 100.0);
+        ready_spell(&world, player, SLOW_SPELL).unwrap();
+        let report = cast_readied(&world, player, true, INTERVAL, &|| None);
+        assert!(started(&report).no_target && started(&report).launch.is_none());
+    }
+
+    /// PSC-TGT-004: a multi-range spell resolves each effect by its own range.
+    #[test]
+    fn a_multi_range_spell_resolves_each_effect_by_its_range() {
+        let (mut world, player) = world_with(25.0, 300.0);
+        let actor = target_actor(&mut world);
+        ready_spell(&world, player, MIXED_SPELL).unwrap();
+        let report = cast_readied(&world, player, true, INTERVAL, &|| Some(actor));
+        let cast = started(&report);
+        assert!(cast.launch.is_some() && cast.touched == Some(actor));
+        let on = |entity| world.get::<ActiveMagicEffects>(entity).map(|active| active.0.iter().map(|effect| effect.effect_index).collect::<Vec<_>>());
+        assert_eq!(on(player), Some(vec![0]), "the Self effect, by its own position");
+        assert_eq!(on(actor), Some(vec![1]), "the Touch effect, by its own position");
+        assert!(land_target(&world, player, actor, MIXED_SPELL));
+        assert_eq!(on(actor), Some(vec![1, 2]), "the Target effect lands on impact");
+    }
+
+    /// PSC-TGT-005: an effect with an area does not land on one actor as though the area were 0; it is reported ignored.
+    #[test]
+    fn an_area_effect_is_reported_ignored_and_not_landed() {
+        let (mut world, player) = world_with(0.0, 200.0);
+        let actor = target_actor(&mut world);
+        ready_spell(&world, player, AREA_SPELL).unwrap();
+        let report = cast_readied(&world, player, true, INTERVAL, &|| Some(actor));
+        let cast = started(&report);
+        assert_eq!(cast.area_ignored, 1);
+        assert!(world.get::<ActiveMagicEffects>(actor).is_none(), "the area effect did not land on the actor in reach");
+        assert!(cast.effects_started, "the Self effect landed");
+        assert!(report.to_string().contains("area ignored"), "{report}");
     }
 }

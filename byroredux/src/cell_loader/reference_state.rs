@@ -2137,6 +2137,8 @@ mod tests {
                 recover: true,
             }),
             conditions: None,
+            range: Default::default(),
+            area: 0.0,
         };
         assert_eq!(start_effects(&world, npc, None, 0x99, &[buff], false), 1);
         magic_effect_system(&world, 0.0);

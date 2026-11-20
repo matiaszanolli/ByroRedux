@@ -55,6 +55,9 @@ pub(crate) struct Projectile {
     pub damage: f32,
     pub shooter: EntityId,
     pub radius: f32,
+    /// A Target spell's projectile (player-spellcasting PRD PSC-TGT-003): on a live actor it starts the spell's Target
+    /// effects as the shooter's cast and queues no damage; `None` for a weapon's shot.
+    pub spell: Option<u32>,
     /// Bodies owned by the shooter when this projectile launched. This list is
     /// stable for the projectile's flight and avoids walking every physics
     /// entity to rebuild it each frame.
@@ -179,6 +182,7 @@ fn launch_of(
         damage: if launch.harmless { 0.0 } else { weapon_damage + ammo_damage.max(0.0) },
         shooter: source,
         radius: proj.collision_radius.max(0.0),
+        spell: None,
         launcher_bodies: std::sync::Arc::from([]),
     })
 }
@@ -230,6 +234,39 @@ pub(crate) fn player_shot(
         damage: weapon_damage + ammo_damage.max(0.0),
         shooter: player,
         radius: proj.collision_radius.max(0.0),
+        spell: None,
+        launcher_bodies: std::sync::Arc::from(launcher_bodies(world, player, &owners)),
+    })
+}
+
+/// The player's Target spell in flight (PSC-TGT-003): from `origin` along `direction` (the camera's aim) at the
+/// `MGEF`'s speed, a straight line on the weapon projectile's path, ending on the first solid or actor or at the
+/// launch's range (`fMagicProjectileMaxDistance`). The projectile's gravity, model and explosion are not modelled (module docs).
+/// `None` for a launch with no aim direction.
+pub(crate) fn spell_shot(
+    world: &World,
+    player: EntityId,
+    launch: byroredux_scripting::player_cast::TargetLaunch,
+    origin: Vec3,
+    direction: Vec3,
+) -> Option<Projectile> {
+    let direction = direction.normalize_or_zero();
+    if direction == Vec3::ZERO || !(launch.speed.is_finite() && launch.speed > 0.0) {
+        return None;
+    }
+    let owners: Vec<_> = world
+        .query::<byroredux_physics::RapierHandles>()
+        .map(|handles| handles.iter().map(|(entity, handles)| (entity, handles.body)).collect())
+        .unwrap_or_default();
+    Some(Projectile {
+        position: origin + direction * MUZZLE_OFFSET_BU,
+        velocity: direction * launch.speed,
+        range_left: launch.range,
+        lifetime_left: None,
+        damage: 0.0,
+        shooter: player,
+        radius: 0.0,
+        spell: Some(launch.spell),
         launcher_bodies: std::sync::Arc::from(launcher_bodies(world, player, &owners)),
     })
 }
@@ -340,6 +377,9 @@ pub(crate) fn projectile_flight_system(world: &World, dt: f32) {
         .collect();
     let mut remaining = Vec::with_capacity(flying.len());
     let mut hits: Vec<(EntityId, EntityId, f32)> = Vec::new();
+    // A Target spell's projectile ends in a landing on a live actor or a miss (player_cast::land_target, missed_target).
+    let mut landings: Vec<(EntityId, EntityId, u32)> = Vec::new();
+    let mut misses: Vec<u32> = Vec::new();
     for projectile in flying {
         let excluded = projectile.launcher_bodies.as_ref();
         let is_actor_body = |body| actor_bodies.contains(&body);
@@ -371,7 +411,10 @@ pub(crate) fn projectile_flight_system(world: &World, dt: f32) {
         };
         match step {
             Step::Flying(next) => remaining.push(next),
-            Step::Expired => log::debug!("projectile from {} expired at {:?}", projectile.shooter, projectile.position),
+            Step::Expired => {
+                log::debug!("projectile from {} expired at {:?}", projectile.shooter, projectile.position);
+                misses.extend(projectile.spell);
+            }
             Step::Hit { distance } => {
                 let target = hit_body.and_then(|body| {
                     owners.get(&body).and_then(|collider| resolve_actor(world, *collider))
@@ -386,11 +429,23 @@ pub(crate) fn projectile_flight_system(world: &World, dt: f32) {
                 let target = target.or_else(|| {
                     hit_body.and_then(|body| owners.get(&body)).and_then(|collider| scripted_hit_target(world, *collider))
                 });
-                if let Some(target) = target {
-                    hits.push((target, projectile.shooter, projectile.damage));
+                match (projectile.spell, target) {
+                    // A spell lands its effects on a live actor it did not cast it, and is spent on anything else.
+                    (Some(spell), Some(target)) if target != projectile.shooter && world.get::<Dead>(target).is_none() => {
+                        landings.push((projectile.shooter, target, spell))
+                    }
+                    (Some(spell), _) => misses.push(spell),
+                    (None, Some(target)) => hits.push((target, projectile.shooter, projectile.damage)),
+                    (None, None) => {}
                 }
             }
         }
+    }
+    for (caster, target, spell) in landings {
+        byroredux_scripting::player_cast::land_target(world, caster, target, spell);
+    }
+    for spell in misses {
+        byroredux_scripting::player_cast::missed_target(world, spell);
     }
     if let Some(mut active) = world.try_resource_mut::<ActiveProjectiles>() {
         // New launches may have been added meanwhile (none can: this system owns
@@ -551,6 +606,7 @@ mod tests {
             damage: 12.0,
             shooter: 7,
             radius: 1.0,
+            spell: None,
             launcher_bodies: std::sync::Arc::from([]),
         }
     }
@@ -692,6 +748,73 @@ mod tests {
         let hit = events.get(actor).expect("the actor was hit");
         assert_eq!((hit.aggressor, hit.damage), (shooter, 12.0));
         assert!(events.get(wall).is_none(), "a bare wall takes no HitEvent");
+    }
+
+    /// PSC-TGT-003: a Target spell's projectile flies the weapon path; into a live actor it starts the spell's Target
+    /// effects as the shooter's cast and queues no damage, into a wall or the open it is a miss, and a corpse stops it
+    /// without landing.
+    #[test]
+    fn a_spell_projectile_lands_its_effects_on_an_actor_and_a_wall_is_a_miss() {
+        use byroredux_core::ecs::components::ActorVitals;
+        use byroredux_core::character::EffectRange;
+        use byroredux_physics::PhysicsWorld;
+        use byroredux_plugin::esm::records::SpellType;
+        use byroredux_scripting::magic::{CanonicalSpell, SpellCastData, SpellCatalog};
+        use byroredux_scripting::magic_effects::{ActiveMagicEffects, CastEffect};
+        use byroredux_scripting::player_cast::{CastState, Impact};
+        const SPELL: u32 = 0x77;
+        let mut world = World::new();
+        byroredux_scripting::register(&mut world);
+        world.register::<byroredux_physics::RapierHandles>();
+        world.register::<ActorVitals>();
+        world.register::<Dead>();
+        world.register::<ActiveMagicEffects>();
+        world.register::<byroredux_physics::ActorColliderOwner>();
+        world.insert_resource(ActiveProjectiles::default());
+        world.insert_resource(CastState::default());
+        let mut spells = std::collections::HashMap::new();
+        spells.insert(
+            SPELL,
+            CanonicalSpell {
+                effects: vec![CastEffect { mgef: 1, script: 0, duration: 30.0, magnitude: 1.0, value: None, conditions: None, range: EffectRange::Target, area: 0.0 }],
+                cast: Some(SpellCastData { name: "Flare".into(), spell_type: SpellType::Spell, ..Default::default() }),
+                ..Default::default()
+            },
+        );
+        world.insert_resource(SpellCatalog::from_canonical(spells));
+        let mut physics = PhysicsWorld::new();
+        let actor_handles = physics.spawn_fixed_cuboid_handles(Vec3::splat(20.0), Vec3::new(0.0, 0.0, -500.0));
+        let wall_handles = physics.spawn_fixed_cuboid_handles(Vec3::splat(20.0), Vec3::new(300.0, 0.0, -500.0));
+        let corpse_handles = physics.spawn_fixed_cuboid_handles(Vec3::splat(20.0), Vec3::new(-300.0, 0.0, -500.0));
+        world.insert_resource(physics);
+        let (shooter, actor, wall, corpse) = (world.spawn(), world.spawn(), world.spawn(), world.spawn());
+        world.insert(actor, actor_handles);
+        world.insert(wall, wall_handles);
+        world.insert(corpse, corpse_handles);
+        world.insert(actor, ActorVitals { health: 0x3E8 });
+        world.insert(corpse, ActorVitals { health: 0 });
+        world.insert(corpse, Dead);
+        let spell_shot = |x: f32| Projectile { position: Vec3::new(x, 0.0, 0.0), spell: Some(SPELL), damage: 0.0, shooter, ..dart() };
+        let fly = |world: &World, x: f32| {
+            world.resource_mut::<ActiveProjectiles>().0 = vec![spell_shot(x)];
+            projectile_flight_system(world, 0.5);
+        };
+        fly(&world, 0.0);
+        assert!(world.get::<ActiveMagicEffects>(actor).is_some(), "the effect started on the actor the projectile hit");
+        assert_eq!(world.resource::<CastState>().impact, Some(Impact::Landed { target: actor, started: true }));
+        byroredux_scripting::pending_trap_hit_flush_system(&world, 0.0);
+        assert!(world.query::<byroredux_scripting::HitEvent>().unwrap().get(actor).is_none(), "a spell queues no weapon damage");
+        assert!(world.resource::<ActiveProjectiles>().0.is_empty(), "the projectile is spent");
+        fly(&world, 300.0);
+        assert_eq!(world.resource::<CastState>().impact, Some(Impact::Missed), "a wall is a miss");
+        fly(&world, -300.0);
+        assert_eq!(world.resource::<CastState>().impact, Some(Impact::Missed), "a corpse stops it without landing");
+        assert!(world.get::<ActiveMagicEffects>(corpse).is_none());
+        // Open air to the end of its range: a miss too.
+        world.resource_mut::<ActiveProjectiles>().0 = vec![Projectile { range_left: 100.0, ..spell_shot(600.0) }];
+        world.resource_mut::<CastState>().impact = Some(Impact::Flying);
+        projectile_flight_system(&world, 0.5);
+        assert_eq!(world.resource::<CastState>().impact, Some(Impact::Missed));
     }
 
     #[test]

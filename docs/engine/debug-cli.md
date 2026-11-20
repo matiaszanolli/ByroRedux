@@ -562,7 +562,7 @@ magic.effects [entity]       → list the magic effects running on a reference (
 spell.ready <spell>          → ready a spell the player knows for the cast action (`C`): reports its name, school, tier and actual cost, and refuses an unknown spell or a Power (player-spellcasting PSC-RDY-002)
 spell.cast                   → one cast action for the player, the cast key's own path: the gate (can act, readied, castable, mastery, Magicka), Magicka and Fatigue damage, then the effects; `magic.cast` stays the uncharged script path (PSC-DX-002)
 spell.list                   → the player's castable spells (readied marked `*`) with school, tier and what each costs now
-cast.status                  → the readied spell, the last cast (started or its refusal), the provisional casting interval and reach (PSC-DX-001)
+cast.status                  → the readied spell, the last cast (started or its refusal), the provisional casting interval and touch reach, the projectile speed and range, and the last Target projectile's fate (PSC-DX-001)
 weather.force <WTHR|none> [lock] → force the exterior weather like ObScript ForceWeather (saved); `none` releases it
 actor.where <entity|0xREFR> → where an actor is now and its cross-cell travel state: `routing via door entity <id> toward <cell>`, `offscreen, arrives at day <d> <hh:mm> in <cell>`, `unroutable <reason>`, or `in <cell>` / `not loaded, in <cell>`, with its pose (XCT-RPT-001)
 actor.where --census          → every actor the relocation ledger or the router knows: home cell, current cell and state, under a tally line (arrived / offscreen / routing / unroutable by reason, XCT-RPT-002)

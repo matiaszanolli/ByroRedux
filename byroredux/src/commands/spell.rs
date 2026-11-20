@@ -3,7 +3,7 @@
 //! script drives the real path; the console's `magic.cast` stays the uncharged, unfed script path.
 
 use byroredux_core::ecs::World;
-use byroredux_scripting::player_cast::{self, CastState};
+use byroredux_scripting::player_cast::{self, CastState, Impact};
 
 use super::shared::*;
 use crate::player_cast::CAST_INTERVAL_SECONDS;
@@ -109,7 +109,7 @@ impl ConsoleCommand for CastStatusCommand {
     }
 
     fn description(&self) -> &str {
-        "Report the readied spell, the last cast (started or the refusal), and the cast interval in force"
+        "Report the readied spell, the last cast (started or the refusal), the interval, the touch reach and the last projectile's fate"
     }
 
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {
@@ -137,7 +137,22 @@ impl ConsoleCommand for CastStatusCommand {
         });
         let remaining = state.as_ref().map_or(0.0, |state| state.cooldown_remaining);
         lines.push(format!("interval={CAST_INTERVAL_SECONDS:.2}s (provisional: the original's follows the cast animation) cooldown={remaining:.2}s"));
-        lines.push("reach=Self only (Touch and Target are Phase 2)".to_owned());
+        let model = world.try_resource::<byroredux_core::character::SpellCastModel>().map(|model| *model);
+        lines.push(match model {
+            Some(model) => format!(
+                "touch_reach={:.1} BU (provisional, decoded at medium confidence) target_speed={:.0} BU/s x the MGEF's multiplier, target_range={:.0} BU",
+                model.touch_reach(1.0),
+                model.projectile_base_speed,
+                model.projectile_max_distance
+            ),
+            None => "touch_reach=none (this game has no cast rules)".to_owned(),
+        });
+        lines.push(match state.as_ref().and_then(|state| state.impact) {
+            Some(Impact::Flying) => "impact=flying".to_owned(),
+            Some(Impact::Landed { target, started }) => format!("impact=landed on {target} (effects {})", if started { "applied" } else { "none applied" }),
+            Some(Impact::Missed) => "impact=missed (no live actor met)".to_owned(),
+            None => "impact=none".to_owned(),
+        });
         CommandOutput::lines(lines)
     }
 }

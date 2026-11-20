@@ -69,6 +69,11 @@ pub struct CastEffect {
     pub value: Option<ValueEffect>,
     /// The effect's own conditions; it works only while they hold (`None`: always).
     pub conditions: Option<Arc<byroredux_plugin::esm::records::condition::ConditionList>>,
+    /// Where the effect lands when the player casts it (Oblivion's `EFIT` range; the other games' effects carry no
+    /// range and read Self). Only the player's cast reads it (PSC-TGT-001).
+    pub range: byroredux_core::character::EffectRange,
+    /// The effect's area in feet; above 0 the player's cast reports `area ignored` (PSC-TGT-005).
+    pub area: f32,
 }
 
 impl CastEffect {
@@ -108,7 +113,9 @@ pub fn cast_effect(index: &EsmIndex, item: &MagicEffectItem) -> CastEffect {
         Some(ValueEffect { actor_value, amount: sign * item.magnitude, recover: mgef.effect_flags & MGEF_FLAG_RECOVER != 0 })
     });
     let conditions = (!item.conditions.is_empty()).then(|| Arc::new(item.conditions.clone()));
-    CastEffect { mgef: mgef.map_or(item.effect_form_id, |mgef| mgef.form_id), script, duration: item.duration as f32, magnitude: item.magnitude, value, conditions }
+    // A `MGEF` that has no area reads 0 whatever the spell authors (the cost equation's rule too).
+    let area = if mgef.is_some_and(|mgef| mgef.effect_flags & byroredux_core::character::spell_cast::MGEF_NO_AREA != 0) { 0.0 } else { item.area as f32 };
+    CastEffect { mgef: mgef.map_or(item.effect_form_id, |mgef| mgef.form_id), script, duration: item.duration as f32, magnitude: item.magnitude, value, conditions, range: item.range.and_then(byroredux_core::character::EffectRange::from_raw).unwrap_or_default(), area }
 }
 
 /// The effects of an ingestible (`ALCH`): its authored effect list.
@@ -203,12 +210,26 @@ impl Resource for PendingMagicHits {}
 /// Put `effects` on `target`, cast by `caster`, from `source`. A constant effect (`indefinite`) has no end.
 /// Returns how many the runtime took (the modelled ones).
 pub fn start_effects(world: &World, target: EntityId, caster: Option<EntityId>, source: u32, effects: &[CastEffect], indefinite: bool) -> usize {
+    start_effects_where(world, target, caster, source, effects, indefinite, |_| true)
+}
+
+/// [`start_effects`] for the effects `keep` accepts. Each keeps its position in `effects` as its `effect_index`, so the
+/// effect's own conditions are found whichever subset started it (the player's cast starts a spell's effects by range).
+pub fn start_effects_where(
+    world: &World,
+    target: EntityId,
+    caster: Option<EntityId>,
+    source: u32,
+    effects: &[CastEffect],
+    indefinite: bool,
+    keep: impl Fn(&CastEffect) -> bool,
+) -> usize {
     let caster_form = caster.and_then(|caster| crate::obscript_state::reference_form(world, caster)).unwrap_or(0);
     let target_form = crate::obscript_state::reference_form(world, target).unwrap_or(0);
     let taken: Vec<ActiveEffect> = effects
         .iter()
         .enumerate()
-        .filter(|(_, effect)| effect.lands(indefinite))
+        .filter(|(_, effect)| effect.lands(indefinite) && keep(effect))
         .map(|(index, effect)| ActiveEffect {
             source,
             mgef: effect.mgef,
@@ -245,37 +266,49 @@ pub fn start_effects(world: &World, target: EntityId, caster: Option<EntityId>, 
     count
 }
 
+/// Start the effects of `spell` that [land](CastEffect::lands) and that `keep` accepts on `target`, cast by `caster`;
+/// the number started. No story event: [`cast_spell`] raises it for a whole cast, and the player's cast, which starts
+/// a spell's effects on several targets, raises it once ([`raise_cast_event`]).
+pub fn start_spell_effects(world: &World, caster: Option<EntityId>, target: EntityId, spell: u32, keep: impl Fn(&CastEffect) -> bool) -> usize {
+    let effects = match world.try_resource::<crate::magic::SpellCatalog>().and_then(|catalog| catalog.get(spell).map(|s| s.effects.clone())) {
+        Some(effects) => effects,
+        None => return 0,
+    };
+    start_effects_where(world, target, caster, spell, &effects, false, keep)
+}
+
 /// Cast `spell` on `target`: every effect of it that [lands](CastEffect::lands). `false` when the spell
 /// is unknown or none of its effects lands.
 pub fn cast_spell(world: &World, caster: Option<EntityId>, target: EntityId, spell: u32) -> bool {
-    let effects = match world.try_resource::<crate::magic::SpellCatalog>().and_then(|catalog| catalog.get(spell).map(|s| s.effects.clone())) {
-        Some(effects) => effects,
-        None => return false,
-    };
-    let started = start_effects(world, target, caster, spell, &effects, false) > 0;
-    // M43 — the Story Manager's `CAST` (Cast Magic Event): `OnStoryCastMagic(akCastingActor,
-    // akSpellTarget, akLocation, akSpell)`. R1 = the caster, L1 = the session location. The CK page:
-    // "akSpellTarget always returns none" — so R2 stays unset whatever the cast's target (the quests'
-    // `SpellTarget` alias is optional for the same reason). The spell is a form the event slots do not
-    // carry; the real `CAST` quests read only the caster and the location. Only a cast with a caster
-    // raises it.
-    if let (true, Some(caster)) = (started, caster) {
-        let location = world.try_resource::<crate::location::PlayerLocation>().and_then(|here| here.0);
-        log::debug!("story manager: CAST raised (caster {caster}, location {location:?})");
-        crate::story_manager::raise_story_event(
-            world,
-            caster,
-            crate::story_manager::StoryEvent {
-                mnemonic: *b"CAST",
-                reference_1: caster,
-                reference_2: None,
-                location_1: location,
-                location_2: None,
-                scripted: None,
-            },
-        );
+    let started = start_spell_effects(world, caster, target, spell, |_| true) > 0;
+    if started {
+        raise_cast_event(world, caster);
     }
     started
+}
+
+/// M43 — the Story Manager's `CAST` (Cast Magic Event): `OnStoryCastMagic(akCastingActor,
+/// akSpellTarget, akLocation, akSpell)`. R1 = the caster, L1 = the session location. The CK page:
+/// "akSpellTarget always returns none" — so R2 stays unset whatever the cast's target (the quests'
+/// `SpellTarget` alias is optional for the same reason). The spell is a form the event slots do not
+/// carry; the real `CAST` quests read only the caster and the location. Only a cast with a caster
+/// raises it.
+pub fn raise_cast_event(world: &World, caster: Option<EntityId>) {
+    let Some(caster) = caster else { return };
+    let location = world.try_resource::<crate::location::PlayerLocation>().and_then(|here| here.0);
+    log::debug!("story manager: CAST raised (caster {caster}, location {location:?})");
+    crate::story_manager::raise_story_event(
+        world,
+        caster,
+        crate::story_manager::StoryEvent {
+            mnemonic: *b"CAST",
+            reference_1: caster,
+            reference_2: None,
+            location_1: location,
+            location_2: None,
+            scripted: None,
+        },
+    );
 }
 
 /// Stop the effects `source` put on `target` (every effect when `source` is `None`): their `Finish` blocks

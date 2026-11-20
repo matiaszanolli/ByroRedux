@@ -82,6 +82,11 @@ fn the_models_settings_are_the_masters() {
     assert_eq!(model.spell_level_min, [25.5, 62.5, 149.5, 399.5]);
     assert_eq!(model.fatigue_cast_base, 1.0);
     assert_eq!(model.fatigue_cast_mult, 0.0);
+    // The hand's reach: `fCombatDistance` 128 times `fHandReachMult` 0.6.
+    assert_eq!((model.combat_distance, model.hand_reach_mult), (128.0, 0.6));
+    assert!((model.touch_reach(1.0) - 76.8).abs() < 1e-3);
+    // The spell projectile's base speed and range (CS wiki *fMagicProjectileBaseSpeed*, *fMagicProjectileMaxDistance*).
+    assert_eq!((model.projectile_base_speed, model.projectile_max_distance), (1000.0, 10000.0));
 }
 
 /// `cast_cost_follows_the_equation` (PRD §7.2 scenario 1): Flare costs 11, not its stored 9, and the cost falls with the skill.
@@ -133,14 +138,14 @@ fn a_self_cast_spends_magicka_and_fatigue_on_the_real_master() {
     let (magicka, fatigue) = (condition_actor_value_form(&world, 9).unwrap(), condition_actor_value_form(&world, 10).unwrap());
     let current = |world: &World, player, av: u32| world.get::<ActorValues>(player).unwrap().current(av);
     player_cast::ready_spell(&world, player, HEAT_SHELL).expect("Heat Shell is castable");
-    let report = player_cast::cast_readied(&world, player, true, 0.45);
+    let report = player_cast::cast_readied(&world, player, true, 0.45, &|| None);
     assert_eq!(report.outcome, Err(CastRefusal::Mastery { school: Some(0), needs: 1, has: 0 }));
     assert_eq!((current(&world, player, magicka), current(&world, player, fatigue)), (200.0, 100.0));
 
     // At skill 25 the player is an Apprentice: floor(54.3 * (1.4 - 0.012 * 25)) = 59 Magicka and 1 Fatigue.
     let (world, player, _) = world_with(&index, 25.0);
     player_cast::ready_spell(&world, player, HEAT_SHELL).unwrap();
-    let started = player_cast::cast_readied(&world, player, true, 0.45).outcome.expect("an Apprentice casts it");
+    let started = player_cast::cast_readied(&world, player, true, 0.45, &|| None).outcome.expect("an Apprentice casts it");
     assert_eq!((started.magicka, started.fatigue, started.school), (59.0, 1.0, Some(0)));
     assert!(started.effects_started, "Fire Shield lands on the caster");
     assert_eq!(current(&world, player, magicka), 200.0 - 59.0);
@@ -167,4 +172,65 @@ fn every_vanilla_spell_carries_cast_data_and_a_finite_cost() {
     }
     assert!(spells > 500, "{spells} Spell records");
     assert_eq!(ranges_known, spells, "every Oblivion Spell carries its effects' ranges");
+}
+
+/// Phase 2 exit (PRD §9): a Touch spell lands on the actor in reach and a miss still pays; a Target spell launches at the
+/// speed of its `MGEF`; an area effect is reported ignored; all on `Oblivion.esm`.
+#[test]
+#[ignore = "needs Oblivion.esm on disk"]
+fn touch_and_target_resolve_on_the_real_master() {
+    let Some(index) = data() else { return };
+    let (mut world, player, _) = world_with(&index, 100.0);
+    world.register::<byroredux_scripting::magic_effects::ActiveMagicEffects>();
+    let dummy = world.spawn();
+    let current = |world: &World, av: u32| world.get::<ActorValues>(player).unwrap().current(condition_actor_value_form(world, av).unwrap());
+    // Searing Grasp (Fire Damage 45 on Touch): lands on the dummy in reach, not on the player.
+    player_cast::ready_spell(&world, player, SEARING_GRASP).unwrap();
+    let report = player_cast::cast_readied(&world, player, true, 0.45, &|| Some(dummy));
+    let started = report.outcome.clone().expect("a Journeyman at skill 100 casts it");
+    assert_eq!(started.touched, Some(dummy), "{report}");
+    assert!(started.effects_started && !started.no_target);
+    assert!(world.get::<byroredux_scripting::magic_effects::ActiveMagicEffects>(dummy).is_some());
+    assert!(world.get::<byroredux_scripting::magic_effects::ActiveMagicEffects>(player).is_none(), "a Touch spell is not a Self spell");
+    let after_hit = current(&world, 9);
+    assert!(after_hit < 200.0);
+    // Out of reach: no target, the same cost paid.
+    player_cast::tick_cast_state(&world, 1.0);
+    let report = player_cast::cast_readied(&world, player, true, 0.45, &|| None);
+    assert!(report.outcome.as_ref().unwrap().no_target, "{report}");
+    assert_eq!(after_hit - current(&world, 9), 200.0 - after_hit, "a miss pays what a hit pays");
+    // Flare (Fire Damage 6 on Target): one projectile, at its MGEF's speed, and nothing started at the release.
+    player_cast::tick_cast_state(&world, 1.0);
+    player_cast::ready_spell(&world, player, FLARE).unwrap();
+    let report = player_cast::cast_readied(&world, player, true, 0.45, &|| Some(dummy));
+    let launch = report.outcome.as_ref().unwrap().launch.expect("a Target spell launches");
+    let speed = index.spells[&FLARE].effects[0].effect_form_id;
+    let mgef = index.resolve_magic_effect(speed).expect("Flare's effect resolves");
+    assert_eq!(launch.speed, 1000.0 * mgef.projectile_speed, "base speed times the MGEF's multiplier");
+    assert!(launch.speed > 0.0, "{}", mgef.editor_id);
+    assert_eq!(launch.range, 10000.0);
+    assert!(!report.outcome.as_ref().unwrap().effects_started);
+    // A vanilla spell with a Touch or Target effect that has an area reports it ignored and does not land it.
+    let area_spell = index
+        .spells
+        .iter()
+        .filter(|(_, record)| record.spell_type == SpellType::Spell)
+        .filter_map(|(&form_id, _)| canonical_spell(&index, form_id).cast.map(|data| (form_id, data)))
+        .find(|(_, data)| data.effects.iter().all(|effect| effect.range != byroredux_core::character::EffectRange::SelfRange) && data.effects.iter().any(|effect| effect.area > 0.0))
+        .map(|(form_id, _)| form_id)
+        .expect("Oblivion.esm has area spells");
+    let (mut world, player, _) = world_with(&index, 100.0);
+    world.register::<byroredux_scripting::magic_effects::ActiveMagicEffects>();
+    let dummy = world.spawn();
+    world.query_mut::<byroredux_scripting::magic::SpellList>().unwrap().get_mut(player).unwrap().0.push(area_spell);
+    // Mastery can stop a Master spell at skill 100 only above 399 base cost; the cast reaches the resolve step or is refused by name.
+    match player_cast::ready_spell(&world, player, area_spell) {
+        Ok(_) => {
+            let report = player_cast::cast_readied(&world, player, true, 0.45, &|| Some(dummy));
+            if let Ok(started) = &report.outcome {
+                assert!(started.area_ignored > 0, "{report}");
+            }
+        }
+        Err(refusal) => panic!("{area_spell:08X}: {refusal}"),
+    }
 }

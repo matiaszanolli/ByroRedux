@@ -238,6 +238,14 @@ The default `fMagicDefaultTouchDistance` is 256, but the player and most actors 
 #7082). With no target, a spell with the SPIT flag `0x80` (*Touch Spell Explodes w/ no Target*) and an area above 0 explodes at the caster's aim position;
 without the flag nothing is applied. What Touch does to a door, a chest or a corpse is not resolved (no actor-only test in the apply path).
 
+### The projectile of a Target spell
+
+A Target effect's projectile flies at `fMagicProjectileBaseSpeed` (1000, CS wiki) times the `MGEF`'s projectile speed (`DATA` @28), which the CS wiki
+(*Magic Effects*) calls "a multiplier of the base speed for the projectile" (1.0 on Fire Damage), and no further than `fMagicProjectileMaxDistance`
+(10000, CS wiki *fMagicProjectileMaxDistance*) without making contact. The CS wiki gives the base speed for the "ball form" only; the Bolt, Fog and Spray
+forms have their own distance settings (`fMagicBoltMaximumDistance` 2000, `fMagicFogMaximumDistance`, `fMagicSprayMaximumDistance`), and the decode did not tie
+a form to a spell, so the engine flies every Target effect as a ball (#7082). `SpellCastModel::projectile_speed` and `projectile_max_distance` hold both.
+
 ### Noise (unresolved)
 
 `fSpellCastingDetectionMod` (executable 10, `Oblivion.esm` 20) is read at `0x6778b8` inside the sound-event broadcast `0x677760`; the link from a cast to its callers

@@ -72,6 +72,10 @@ pub struct SpellCastData {
     pub manual_cost: bool,
     /// Every effect with the numbers the cost, the school and the range read.
     pub effects: Vec<byroredux_core::character::EffectCostInput>,
+    /// The projectile speed multiplier of the first Target-range effect's `MGEF` (`DATA` @28, "a multiplier of the base
+    /// speed", CS wiki *Magic Effects*), 0 for a spell with none: the speed the spell flies at is
+    /// [`SpellCastModel::projectile_speed`](byroredux_core::character::SpellCastModel::projectile_speed) of it (PSC-TGT-003).
+    pub target_speed_multiplier: f32,
 }
 
 impl SpellCastData {
@@ -113,6 +117,11 @@ impl SpellCatalog {
     /// A catalog of already-translated spells (tests and tools).
     pub fn from_canonical(spells: HashMap<u32, CanonicalSpell>) -> Self {
         Self { spells }
+    }
+
+    /// Add or replace one already-translated spell (tests and tools).
+    pub fn insert_canonical(&mut self, form_id: u32, spell: CanonicalSpell) {
+        self.spells.insert(form_id, spell);
     }
 }
 
@@ -189,6 +198,7 @@ fn spell_cast_data(index: &EsmIndex, spell: &byroredux_plugin::esm::records::Spe
     if spell.effects.is_empty() {
         return None;
     }
+    let mut target_speed = None;
     let effects = spell
         .effects
         .iter()
@@ -197,6 +207,9 @@ fn spell_cast_data(index: &EsmIndex, spell: &byroredux_plugin::esm::records::Spe
             let mgef = index.resolve_magic_effect(item.effect_form_id);
             // A script effect's `SCIT` school wins over its MGEF's (the executable's `0x412f20`).
             let school = item.script_school.or(mgef.map(|mgef| mgef.magic_school as u32));
+            if range == EffectRange::Target && target_speed.is_none() {
+                target_speed = Some(mgef.map_or(0.0, |mgef| mgef.projectile_speed));
+            }
             Some(EffectCostInput {
                 base_cost: mgef.map_or(0.0, |mgef| mgef.base_cost),
                 magnitude: item.magnitude,
@@ -215,6 +228,7 @@ fn spell_cast_data(index: &EsmIndex, spell: &byroredux_plugin::esm::records::Spe
         level: spell.level,
         manual_cost: spell.spell_flags & SPELL_FLAG_MANUAL_COST != 0,
         effects,
+        target_speed_multiplier: target_speed.unwrap_or(0.0),
     })
 }
 
