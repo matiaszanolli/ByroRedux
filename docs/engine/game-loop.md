@@ -205,6 +205,39 @@ in `window_event` / `device_event` into the `InputState` resource, which
 `fly_camera_system` (inside `player_controller_system`) consumes the next
 frame.
 
+## The projectile path (the gun, a script and the player's bow)
+
+One flight and one damage path serve every projectile (BOW-G-004, BOW-FLT-005). `Projectile` and
+`ActiveProjectiles` (`byroredux/src/systems/projectiles.rs`) are plain data in a resource, never entities
+and never saved; `projectile_launch_system` turns a script's `Weapon.Fire` request into one and
+`projectile_flight_system` advances every one in the `Update` hit-producer row above. A projectile ends on
+the first solid or actor, at its range or at its lifetime. A hit on a living actor queues a `HitEvent`, and
+`combat_damage_system` resolves it into health and death, so armor, Damage Threshold, ghosts, `OnHit` and
+the story events all follow. The damage is fixed at launch (`Projectile::damage`), so a launcher computes
+its damage terms before it builds the projectile.
+
+Three launchers build a `Projectile` today:
+
+| Launcher | Shooter | Speed, range and damage come from | Gates, spends and feeds |
+|---|---|---|---|
+| `Weapon.Fire` (`projectile_launch_system`) | any reference | the ammunition's `PROJ`; the weapon's damage plus the ammunition's | nothing |
+| `player_shot` (the gun, `fire_player_gun`) | the player | the same `PROJ`, from the camera's aim | spends a round of the first accepted ammunition the player carries (`player_ammo_for`) |
+| `spell_shot` (the player's Target spell) | the player | the `MGEF` speed and `fMagicProjectileMaxDistance`, no `PROJ` | the cast gate and cost of `player_cast_system` |
+
+The player's bow is a fourth launcher on this table, not a fourth flight (Player archery PRD). It gates
+(a readied bow, an equipped arrow, the interval), spends one arrow of the equipped type at the release
+(BOW-AMM-003) and builds its `Projectile` from the per-game `BowModel` row; Oblivion has no `PROJ`, so like
+`spell_shot` it gives its own speed and range. The skill feed is not in the flight: `on_landed_hit` runs from `combat_damage_system` and reads the type of
+the weapon the player *wields* (`wielded_type`), not what struck, because `HitEvent` carries no
+projectile provenance (`projectile` names an entity, and projectiles are not entities). A bow therefore
+needs the hit to say it came from the player's arrow (BOW-USE-005), or a player holding a bow would earn
+Marksman from a spell or a script's projectile too.
+
+Gravity: the flight refuses a non-hitscan projectile whose `PROJ` gravity is non-zero ("the gravity unit is
+unspecified", `projectile_flight`'s launch check). A straight arrow therefore builds its `Projectile` without
+reading the `PROJ` gravity field (BOW-FLT-004). The ballistic branch is added to this one flight when a
+documented gravity rule exists, so every launcher gains it at once.
+
 ## Event Flow
 
 The `App` struct implements `winit::application::ApplicationHandler`, so

@@ -443,6 +443,35 @@ run — instance-level enumeration works with no logical device.
 
 ---
 
+### 4.4 Adding a gameplay setting (the registration contract)
+
+The contract a subsystem follows to add one setting, written down because no other design owns it
+(Player archery PRD, BOW-SET; the first setting whose default differs per game and whose consumer is
+gameplay code, not a renderer). The facts are those of `crates/core/src/settings/`, `settings_io.rs` and
+`install_universal_settings`:
+
+- **One typed entry.** A `SettingEntry` built with `toggle`, `slider` or `choice` carries the id
+  (`section.name`, such as `gameplay.field_of_view`), label, description, default and control. `register`
+  validates it and rejects a duplicate id. A choice's allowed values are its `SettingChoice` list, and `set`
+  rejects any other value.
+- **Registered before load.** The owning module registers in `install_universal_settings`
+  (`interaction::register_input_settings` is the pattern), before the stored file is read, so a stored
+  value overlays the freshly registered default.
+- **A default known only at launch** is seeded with `SettingsRegistry::set_default` after registration and
+  before `settings_io::load`, as the music level is (`MUSIC_VOLUME_SETTING_ID`): a value still at the old
+  default follows the new one and a value the player moved stays. The per-game trajectory default of
+  BOW-SET-002 uses this, so it needs the game known at that point in boot.
+- **Persisted in the settings file, never in a save.** `settings.toml` (`SETTINGS_VERSION = 1`) holds
+  `(id, value)` pairs and only the ids whose value moved off the loaded baseline are written; a stale or
+  unknown key is skipped on load. A setting that changes where an arrow lands is a player preference, so it
+  rides this file and not the `BYRSAVE` snapshot.
+- **Read where it is used.** Gameplay code reads `SettingsRegistry` (`world.resource::<SettingsRegistry>()`)
+  at the point of use; it holds no copy. A choice the engine cannot honour yet (ballistic arrows) stays in
+  the list and the reader resolves it to the supported value and says so, rather than the entry being
+  withheld, so the stored choice survives until the feature exists.
+- **Shown by `settings.status`** (every registered entry and the persistence path). Whether a menu page lists a new
+  section is checked when the entry lands (§4.1: the menus render the registry snapshot, not hand-written rows).
+
 ## 5. Compatibility, surfaced honestly
 
 The project supports seven titles at genuinely different maturity. A launcher
