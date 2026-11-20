@@ -1,8 +1,8 @@
 # Player Spellcasting — Product Requirements
 
-**Status**: PROPOSED (2026-11-19). Revision 2 folds in review round 1: the three callers of `cast_spell`, the spell cost equation and the authored mastery level, script-effect schools, ownership of the Oblivion cast rules, measurable interval and reach, and the per-game citations. Revision 1 was the first draft: the player's own cast action, which Oblivion's skill-use PRD leaves open and which feeds Oblivion's six magic skills. Statements about how an original engine behaves cite the UESP *Oblivion:Magic Overview* and *Oblivion:Spell Making* pages (read as wikitext from `/mnt/data/src/reference/uesp-wiki/` on 2026-11-19) and xEdit's `wbDefinitionsTES4.pas` (`/mnt/data/tmp/`); a claim that could not be verified is marked **Phase 0: verify** instead of being stated as fact, and every such item is a row of the Phase 0 verify table (§9).
+**Status**: PROPOSED (2026-11-19). Revision 3 records the owner's decisions Q1 to Q5, each as recommended, and folds them in (the status stays PROPOSED until the owner approves). Revision 2 folds in review round 1: the three callers of `cast_spell`, the spell cost equation and the authored mastery level, script-effect schools, ownership of the Oblivion cast rules, measurable interval and reach, and the per-game citations. Revision 1 was the first draft: the player's own cast action, which Oblivion's skill-use PRD leaves open and which feeds Oblivion's six magic skills. Statements about how an original engine behaves cite the UESP *Oblivion:Magic Overview* and *Oblivion:Spell Making* pages (read as wikitext from `/mnt/data/src/reference/uesp-wiki/` on 2026-11-19) and xEdit's `wbDefinitionsTES4.pas` (`/mnt/data/tmp/`); a claim that could not be verified is marked **Phase 0: verify** instead of being stated as fact, and every such item is a row of the Phase 0 verify table (§9).
 
-**Scope**: The player casts a spell they know: choosing which spell is ready, the cast input, the checks that gate the cast, the Magicka and Fatigue it spends, the target a Self, Touch or Target spell resolves, and the one consumer that motivates it, the skill use a cast with a valid target gives its school. Wave 1 is Oblivion (the only game whose magic skills the engine does not yet feed). Skyrim's two-hand casting, Fallout and Starfield are outside it (§7.1). Cast animation, cast and impact visuals, scrolls, powers, spell making and the magic menu are explicitly not here (§4.2).
+**Scope**: The player casts a spell they know: choosing which spell is ready, the cast input, the checks that gate the cast, the Magicka and Fatigue it spends, the target a Self, Touch or Target spell resolves, and the one consumer that motivates it, the skill use a cast with a valid target gives its school. Wave 1 is Oblivion (the only game whose magic skills the engine does not yet feed). Skyrim's per-hand casting (Q1), Fallout and Starfield are outside it (§7.1). Cast animation, cast and impact visuals, scrolls, powers, spell making and the magic menu are explicitly not here (§4.2).
 
 **Related**: this document states the *promise*; the designs below own the *how*. Every mechanism promised here has an owner in this table, or Phase 0 writes the missing design.
 
@@ -84,7 +84,7 @@ The inventory below is the state at HEAD on 2026-11-19.
 - **PSC-NG-003.** Spell making and the spell-making altar, and enchanting. They create spells; this PRD casts them.
 - **PSC-NG-004.** The magic menu and its hotkeys. They are the Game UI PRD's; the readied spell is chosen through a command and a cycle action until the menu exists.
 - **PSC-NG-005.** Non-player casters. The AI casting spells at the player is the AI packages PRD's; the shared `cast_spell` path (PSC-G-004) is all this PRD asks of it.
-- **PSC-NG-006.** Spell effectiveness reduced by worn armor. It is real (UESP *Magic Overview*, "Using Armor": wearing armor lowers the magnitude, rounded down) and the formula is sourced only from a tips section, so it is a **Phase 0: verify** item and a §10 decision, not a Wave 1 requirement.
+- **PSC-NG-006.** Spell effectiveness reduced by worn armor (Q3, decided: out of Wave 1). It is real (UESP *Magic Overview*, "Using Armor": wearing armor lowers the magnitude, rounded down) and the formula is sourced only from a tips section, so it is a **Phase 0: verify** item and a §10 decision, not a Wave 1 requirement.
 - **PSC-NG-007.** Whether a cast is a sound the detection tick hears. No source says so for Oblivion, so it is a **Phase 0: verify** item (§9); the sneak design's attack-noise hook is where a verified answer would land, in a later revision.
 
 ---
@@ -96,11 +96,11 @@ The inventory below is the state at HEAD on 2026-11-19.
 - **PSC-RDY-001.** The player MUST have a readied spell, a form id of a spell in their `SpellList` or none. A readied spell that leaves the list (removed, or a load that no longer has it) MUST clear. Today: no such state exists.
 - **PSC-RDY-002.** `spell.ready <spell form id>` MUST ready a spell the player knows and report its name, its primary school and its actual cost; it MUST refuse a spell not in the list and say so.
 - **PSC-RDY-003.** An `InputAction` pair (`NextSpell`, `PreviousSpell`) SHOULD cycle the readied spell through the player's castable spells in list order and report the new one. Today: no cycle action exists.
-- **PSC-RDY-004.** The readied spell MUST survive a save and a load, and a loaded save that names a spell no longer present MUST clear it without an error (PSC-RDY-001). A save-format bump is a §10 decision (Q5).
+- **PSC-RDY-004.** The readied spell MUST survive a save and a load, and a loaded save that names a spell no longer present MUST clear it without an error (PSC-RDY-001). The readied spell is saved, which needs a save-format bump (Q5, decided): the component and its format bump land together in Phase 1, with the save round-trip test, and README T2's save-format trigger is met by this PRD.
 
 ### 5.2 The cast action (`PSC-CST`)
 
-- **PSC-CST-001.** An `InputAction::CastSpell` MUST exist, with a default binding the owner decides (Q2), and its press edge MUST be the only input that casts. Today: no such variant exists.
+- **PSC-CST-001.** An `InputAction::CastSpell` MUST exist, with a default binding the owner names from the unbound keys Phase 0 lists (Q2, decided), and its press edge MUST be the only input that casts. Today: no such variant exists.
 - **PSC-CST-002.** A cast MUST pass the gate in this order and refuse at the first failure, naming it: the player can act and is in character mode (`player_can_act`, the check `combat_input_system` already uses); a spell is readied and is still in the list; the spell is castable (§2: a Power, a Disease or an Ability is not castable here); the player's unfortified skill in the spell's primary school meets the spell's mastery (PSC-CST-003); the player's current Magicka covers the actual cost (PSC-CST-004). A refusal MUST spend nothing and queue no skill use. The order is the engine's; **Phase 0: verify** what the original does when Magicka is short (refuse, or cast anyway), which UESP does not say, and keep the refusal until it is settled.
 - **PSC-CST-003.** The mastery a spell requires MUST be its authored `SPIT` `Level`, which the decode MUST carry into the spell catalog (Today it is dropped, §3 row 10), checked against the unfortified skill. The level-to-skill mapping is Novice 0, Apprentice 25, Journeyman 50, Expert 75, Master 100 per UESP *Spell Making*, "Spell Cost", whose cost thresholds (below 26 none, 26 to 62 skill 25, 63 to 149 skill 50, 150 to 399 skill 75, 400 and up skill 100) it matches for custom spells; **Phase 0: verify** the mapping for authored spells against the executable.
 - **PSC-CST-004.** The actual cost MUST be the sum over the spell's effects of the effect cost (§2) times `fMagicCasterSkillCostBase + fMagicCasterSkillCostMult × (1 − Skill ÷ 100)`, each effect against its own school's skill (UESP *Magic Overview*; *Spell Making*: "the skill adjustment is applied to each component effect separately"); a spell with the `Manual Spell Cost` flag uses its `SPIT` `Cost` as the base cost instead. The two constants MUST be read from `GameSettings` (`crates/scripting/src/obscript_state.rs`), not hard-coded. The skill MUST first take the Luck term (UESP *Spell Making*: Luck modifies the skill, and the result is held between 0 and 100); **Phase 0: verify** that the cast applies it and not only the displayed cost.
@@ -140,7 +140,7 @@ The inventory below is the state at HEAD on 2026-11-19.
 |---|---|---|---|---|
 | 1 | The cast plays an animation whose timing sets the casting speed (UESP *Magic Overview*: blocking while casting shortens it) | A fixed interval, no animation (PSC-CST-006, PSC-NG-001) | none | A player cannot cast faster by blocking → PSC-CST-006 names the interval and `cast.status` reports it |
 | 2 | A Target spell is a projectile with its own travel and impact | The weapon projectile path, a straight line, with its declared gaps (PSC-TGT-003) | none | Arcing and exploding spells miss their original behaviour → the gaps are stated in the projectile system and PSC-TGT-005 reports an ignored area |
-| 3 | Worn armor lowers spell effectiveness (UESP *Magic Overview*) | Not applied in Wave 1 (PSC-NG-006) | none | Armored mages are stronger than the original's → Q3 decides when it lands |
+| 3 | Worn armor lowers spell effectiveness (UESP *Magic Overview*) | Not applied in Wave 1 (PSC-NG-006, Q3) | none | Armored mages are stronger than the original's → a later revision adds the requirement once Phase 0 sources the formula |
 | 4 | The magic menu readies a spell | A command and a cycle action (PSC-RDY-002, -003) | none | Not discoverable in play → the menu is the Game UI PRD's, PSC-NG-004 |
 | 5 | Whether casting is heard by actors nearby is unsourced | Casting makes no noise (PSC-NG-007) | none | A stealth mage is quieter than the original may be → a Phase 0 verify item; if the answer is yes, a later revision adds the noise through the sneak design |
 | 6 | The Touch reach and casting interval are the original's | Provisional engine constants (PSC-TGT-002, PSC-CST-006) | none | Touch spells reach and repeat differently from the original → both are labelled provisional in `cast.status` until Phase 0 measures them |
@@ -156,7 +156,7 @@ The inventory below is the state at HEAD on 2026-11-19.
 | Oblivion | yes | Wave 1. The six magic skills level only by casting and the engine feeds none of them (§3 row 9). |
 | Fallout 3 | no | No player spellcasting in the game's rules; **Phase 0: verify** against the GECK that no player-castable magic type exists. |
 | Fallout: New Vegas | no | As Fallout 3. |
-| Skyrim (LE / SE / AE) | decided in Q1 | Its cast action is a different design from Oblivion's: **Phase 0: verify**, from the Creation Kit wiki and UESP *Skyrim:Magic Overview*, that spells are cast per hand with concentration and dual casting, and, at HEAD, how the engine feeds Skyrim's magic skills today (the per-skill progress the Skyrim path saves), before a Wave 2 PRD. |
+| Skyrim (LE / SE / AE) | no (Q1) | Its cast action is a different design from Oblivion's: **Phase 0: verify**, from the Creation Kit wiki and UESP *Skyrim:Magic Overview*, that spells are cast per hand with concentration and dual casting, and, at HEAD, how the engine feeds Skyrim's magic skills today (the per-skill progress the Skyrim path saves), before a Wave 2 PRD. |
 | Fallout 4 | no | **Phase 0: verify**, from the Fallout 4 CK wiki (`/mnt/data/src/reference/falloutck-uesp-wiki/`), that no player-castable spell type exists. |
 | Fallout 76 | no | Online, out of the engine's single-player scope. |
 | Starfield | no | **Phase 0: verify** from the Starfield data (xEdit SF1 definitions) that the player's magic is powers only, which PSC-NG-002 leaves out. |
@@ -203,12 +203,12 @@ Phases are ordered by what they unblock; each ends with a measurement. The feed 
 | Casting interval | PSC-CST-006 |
 | Touch reach; what Touch does to a door, a chest, a corpse, and a `Touch Spell Explodes w/ no Target` spell with no target | PSC-TGT-002 |
 | Area rule | PSC-TGT-005 |
-| Armor effectiveness formula (Q3) | PSC-NG-006 |
+| Armor effectiveness formula (Q3, for the later requirement) | PSC-NG-006 |
 | No player-castable magic type on Fallout 3, New Vegas, Fallout 4; Starfield powers only; Skyrim's hand model and skill feed | §7.1 |
 
 Exit: each item closed with a source or filed as an issue, and the Oblivion cast site recorded in the design.
 
-**Phase 1 — Ready, gate, cost, Self.** PSC-RDY, PSC-CST, PSC-TGT-001, PSC-DX. Carry range, effect cost inputs, the `SPIT` `Level`, `Cost` and `Manual Spell Cost` flag, and the school (MGEF or `SCIT`) into `CastEffect` / `CanonicalSpell`. Exit: scenario 1 passes and a Self cast spends Magicka and Fatigue on `Oblivion.esm`.
+**Phase 1 — Ready, gate, cost, Self.** PSC-RDY (with the saved readied spell and its format bump), PSC-CST, PSC-TGT-001, PSC-DX. Carry range, effect cost inputs, the `SPIT` `Level`, `Cost` and `Manual Spell Cost` flag, and the school (MGEF or `SCIT`) into `CastEffect` / `CanonicalSpell`. Exit: scenario 1 passes and a Self cast spends Magicka and Fatigue on `Oblivion.esm`.
 
 **Phase 2 — Touch and Target.** PSC-TGT-002 to -005. Exit: the Touch and Target legs of scenario 3 land on a live actor and a missed Target cast pays its cost.
 
@@ -219,10 +219,15 @@ Exit: each item closed with a source or filed as an issue, and the Oblivion cast
 ## 10. Decisions required
 
 1. **Q1 — Which games' casting is in this PRD.** Recommended: Oblivion only (Wave 1). Skyrim's per-hand casting and Fallout's absence of it are separate designs; folding them in doubles the Phase 0 verify work for a feed that Skyrim does not need. Alternative: Oblivion and Skyrim together, which makes this a two-dialect PRD and moves Skyrim's hand model into Wave 1.
+   **Decided** (2026-11-19): as recommended: Oblivion only. Skyrim's cast action is a separate PRD (§7.1).
 2. **Q2 — The default key.** Recommended: the owner names the `CastSpell` key from the keys Phase 0 lists as unbound, with `NextSpell` / `PreviousSpell` on neighbouring keys. Alternative: the `CastSpell` key only, with `spell.ready` as the sole way to choose, which leaves a mage unable to switch spells without the console until the menu lands. (The `spell.ready` command and the cycle action are not in question: PSC-RDY-002 and -003 settle them.)
+   **Decided** (2026-11-19): as recommended: the owner names the `CastSpell` key from the unbound keys Phase 0 lists, with `NextSpell` / `PreviousSpell` on neighbouring keys. The key is an input to Phase 1, not a blocker for Phase 0.
 3. **Q3 — Spell effectiveness from armor.** Recommended: out of Wave 1; a later requirement once Phase 0 sources the armor-skill formula. Alternative: in Wave 1, which delays the cast action behind an unsourced formula.
+   **Decided** (2026-11-19): as recommended: out of Wave 1. The armor-effectiveness formula stays a Phase 0 verify item, and a later revision adds the requirement once it is sourced.
 4. **Q4 — How a Target spell flies.** Recommended: the weapon projectile path (`ActiveProjectiles`) at the MGEF's speed, a straight line. Alternative: an instant ray cast first, with no visible flight, and the projectile as a later phase; the skill use is identical either way.
+   **Decided** (2026-11-19): as recommended: the weapon projectile path at the MGEF's speed, a straight line (PSC-TGT-003).
 5. **Q5 — The saved ready spell.** Recommended: save it, with the save format bump that needs (the `FORMAT_MAJOR` rule, README T2). Alternative: do not save it, so a loaded game starts with nothing readied, no bump, and a mage re-readies after every load.
+   **Decided** (2026-11-19): as recommended: the readied spell is saved, with a save-format bump in the phase that adds the component (PSC-RDY-004).
 
 ---
 
@@ -245,3 +250,4 @@ Exit: each item closed with a source or filed as an issue, and the Oblivion cast
 |---|---|---|---|
 | 1 | 2026-11-19 | First draft, from the cast-action follow-up of the Oblivion skill-use PRD | — |
 | 2 | 2026-11-19 | Review round 1 folded in: cast callers (console, ObScript `Cast`, perk activate choice), spell cost equation and `SPIT` `Level` / `Manual Spell Cost`, script-effect school, ownership of the Oblivion cast rules and scheduler access (PSC-CST-008, -009), measurable interval and reach, §7.1 citations, scenario data, phase dependencies, term fixes (range, mastery, castable spell), detection noise (PSC-NG-007), Q2 and Q4 wording | claude: revise |
+| 3 | 2026-11-19 | Owner decisions Q1 to Q5 recorded, each as recommended (Oblivion only; the owner names the key; armor effectiveness out of Wave 1; Target spells on the projectile path; readied spell saved with a format bump), and folded into §7.1, PSC-RDY-004, PSC-CST-001, PSC-NG-006, §6 row 3 and Phase 1 | — |
