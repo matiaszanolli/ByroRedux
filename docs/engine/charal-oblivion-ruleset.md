@@ -170,12 +170,31 @@ Restoration 0.6), not a flat 3 per cast (corrected 2026-11-19, #7078). The cost 
 spell-casting economy, not a character actor value), but its functions live beside `skill_use.rs` in
 `crates/core/src/character` (PSC-CST-008) so the cast code holds no constant.
 
-## Spell casting — LOCKED from the executable (#7078)
+## Spell casting (#7078, provenance relabelled 2026-11-20)
 
 The rules the [player-spellcasting PRD](../prd/player-spellcasting.md) builds. Sources: UESP *Oblivion:Magic Overview* and
 *Spell Making*; the CS wiki (*Spell*, *Effect Item*, the `fMagic*` setting pages); xEdit `wbDefinitionsTES4.pas`; `Oblivion.esm`
 (`crates/plugin/examples/spell_cast_census.rs`, 1,137 `SPEL` and 145 `MGEF` records); and a decode of `Oblivion.exe` 1.2.0.416
 (addresses are VAs, image base `0x400000`; raw notes `.claude/issues/7078/INVESTIGATION.md`).
+
+**Provenance (relabelled 2026-11-20).** The owner ruled out decoding the executables for rules, so this section is held to documented sources. Most of what
+the 2026-11-19 decode found is documented, and each item below names its source; the `0x...` addresses in the text are the decode's evidence, **not** a source.
+
+| Rule | Source now | Status |
+|---|---|---|
+| Effect cost equation (`0.1 × base × magnitude^1.28 × duration × area×0.15 × 1.5 for Target`, each factor's minimum of 1, floor per effect, minimum 1) and the sum | CS wiki *Category:Spell Cost* (formula and rounding) with the `fMagic*` setting pages | **Documented**; matches UESP's listed costs for 312 of 315 spells |
+| Skill factor `fMagicCasterSkillCostBase + fMagicCasterSkillCostMult × (1 − skill/100)` and the Luck term (`iActorLuckSkillBase` −20, `fActorLuckSkillMult` 0.4) | CS wiki *fMagicCasterSkillCostBase*, *Effective Skill Level*; UESP *Magic Overview* ("every 5 points of Luck above 50 is 2 points of skill") | **Documented** |
+| Manual Spell Cost: `floor(stored × skill factor)`, no minimum | CS wiki *Category:Spell Cost* | **Documented; corrected 2026-11-20** (the decode's "not rounded" contradicted it; the code floors now) |
+| Mastery from the unscaled (base) cost against `fMagicSpellLevel*Min`; the stored `Level` for a Manual spell; the player's tier from the unfortified skill (25 / 50 / 75 / 100) | CS wiki *Category:Spell Cost*, *Spell*, *ISkillXXMin*; UESP *Magic Overview* ("your unfortified skill level") | **Documented** |
+| Primary school = the most expensive unscaled effect | CS wiki *Spell*, *Category:Spell Cost* | **Documented**; the `SCIT` school of a script effect winning over the `MGEF`'s is **executable-derived** (no source) |
+| Fatigue per cast `fFatigueCastBase + fFatigueCastMult × cost` (1 + 0) | CS wiki *Fatigue Game Settings*; UESP *Magic Overview* ("one point of Fatigue") | **Documented** |
+| Who is fed: a Self cast always, a Touch or Target cast only on a target that can be affected; Powers, Greater Powers and scrolls feed nothing | UESP *Magic Overview*, "Skill levels and training" | **Documented**; the *count* (once at the release for Self and Touch, once at impact for Target) and the use value (the `SKIL` second use value) are **executable-derived** where UESP's "4.0 per cast" amounts are the only documented figures |
+| Spell projectile speed and range | CS wiki *Magic Effects*, *fMagicProjectileBaseSpeed*, *fMagicProjectileMaxDistance* | **Documented** |
+| Area radius `fMagicUnitsPerFoot` 22 × area | CS wiki *fMagicUnitsPerFoot* | **Documented**; not built (area ignored) |
+| `MGEF` flag bit 22 skips an effect in the cost sum and the school choice | none | **Executable-derived**, kept, declared (#7082) |
+| Touch reach `fCombatDistance × fHandReachMult` = 76.8 BU | none for a Touch *spell*; the CS wiki gives only the hand-to-hand reach ("about 5 feet or 105 units", `fHandReachMult` 0.6) and the GECK list a default `fMagicDefaultTouchDistance` 256 for FO3 | **Executable-derived**, kept, provisional (#7082) |
+| Magicka refusal only when the cost is *greater than* current Magicka | none | **Executable-derived**, kept (the equal case allowed) |
+| Refusals for silence, underwater and bound effects; the PC-start spell level; the detection noise | none | **Executable-derived**; not built (PSC-NG-007, -008) |
 
 ### The cost
 
@@ -188,8 +207,9 @@ The rules the [player-spellcasting PRD](../prd/player-spellcasting.md) builds. S
 - **Auto-calculated spell** (`Manual Spell Cost` clear): `0x4151c0` sums `⌊effect cost × modifier⌋` (at least 1 each), the modifier taken from
   that effect's own school skill (`0x413890`). The stored `SPIT` `Cost` is **stale and unused**: of 315 UESP-listed auto-calculated spells matched to
   `Oblivion.esm`, UESP's in-game Magicka equals the equation for 312 and the stored cost for 174 (Flare: stored 9, equation 11.15, UESP 11).
-- **Manual Spell Cost spell** (bit 0): `stored Cost × modifier`, not rounded, with the primary school's skill (`0x41d38a`). Mirili's Expert Command
-  (`SE37CommandCreature4Expert`) stores 368 against an equation 491.
+- **Manual Spell Cost spell** (bit 0): `floor(stored Cost × modifier)`, no minimum (CS wiki *Category:Spell Cost*; an earlier reading of the decode left it
+  unrounded), with the primary school's skill (`0x41d38a`). Mirili's Expert Command (`SE37CommandCreature4Expert`) stores 368 against an equation 491, and
+  costs 294 at skill 50.
 - **Modifier** (`0x548c00`): `fMagicCasterSkillCostBase + fMagicCasterSkillCostMult × (1 − S ÷ 100)`, `S = clamp(skill + fActorLuckSkillMult × Luck +
   iActorLuckSkillBase, 0, 100)`. `Oblivion.esm` authors Base 0.2 and Mult 1.2 (the executable defaults 0.1 and 1.2), so the modifier is `1.4 − 0.012 × S`;
   the Luck constants are the executable's 0.4 and −20 (Luck adds `0.4 × (Luck − 50)`). Luck applies to the real cast: the can-cast check `0x5f4570` and the

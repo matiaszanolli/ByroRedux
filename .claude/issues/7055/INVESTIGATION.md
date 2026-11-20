@@ -27,14 +27,22 @@ approval, then the implementation issues. Sources below are cited; anything not 
 | `oblivion_weapon_damage_multiplier` (`crates/core/src/combat.rs`) implements UESP's rating shape and is documented BUILT, **but nothing calls it**: the player's attack uses the weapon's flat base damage plus the FO3/FNV melee bonus. A bow shot's damage rule is therefore also the melee damage rule that is not wired, an inherited gap. | `rg oblivion_weapon_damage_multiplier` has no caller outside `core/src/combat.rs` |
 | Input is ready: `ActionState` has `is_held` and `was_released`, the draw needs the held time and the release edge. `inv.add`, `inv.equip` and `inventory.status` exist for a smoke script. | `interaction.rs`, `commands/gameplay.rs` |
 
-## Open items for the executable decode (delegated, spot-check before use)
+## Executable decode: dropped by the owner (2026-11-20)
 
-The decode agent was briefed on: the Marksman skill-use site (precondition, once per hit or per shot), the draw timer and speed formula, the gravity
-integration and the lifetime, what a shot spends (arrow removed at nock or release, bow condition per shot, the Fatigue hold rate), and the damage handed
-to the hit with the perks. Results are appended below when it returns.
+A delegated decode of `Oblivion.exe` was started for this phase and **stopped before it reported; nothing from it is used**. The owner's ruling: no
+executable decode for this work, "exactly the kind of shortcuts we want to avoid". Phase 0 therefore rests on the documented sources above only.
 
-(Pending.)
+What that leaves **unsettled** (each becomes a PRD decision, a declared gap or a documented-source rule, never a guess):
 
+1. **Gravity** of a ballistic arrow: no local source gives the equation. Straight mode (owner's setting, below) needs none; ballistic stays a declared gap until a
+   documented source gives the rule.
+2. **Which draw numbers Oblivion uses**: the CS wiki says timer base 0.25 and mult 0.4, the GECK wiki's FO3 / FNV list says 0.5 and 0.6. The CS wiki is the Oblivion
+   source and the PRD should take it, labelled as documented and not measured.
+3. **The Marksman award site** (once per hit or per shot, the precondition): the documented rule is UESP's "0.8 per successful hit on a living target, regardless of
+   damage" (matches the `SKIL` usage-0 value); the engine's existing hit-on-a-living-target gate is that rule.
+4. **What a shot spends**: UESP gives the arrow (one per shot, equipped), the bow's wear (every shot) and the Novice fatigue loss while drawn; the *rates* of bow
+   wear and of the hold's Fatigue are not documented locally.
+5. **Knockdown and paralysis**: the settings (5 % each) are documented; how the roll combines with the target is only UESP's prose.
 
 ## Owner decisions taken during Phase 0
 
@@ -46,3 +54,10 @@ to the hit with the perks. Results are appended below when it returns.
   (`systems/projectiles.rs`), which refuses a non-zero gravity today, so Skyrim's later bow reuses it; (3) the default per game is still open (recommended:
   ballistic where the rule is decoded, because UESP's Oblivion *Marksman* page tells the player to aim above the target; straight otherwise); (4) the setting
   changes where an arrow lands, so the PRD's scenarios must pin the mode they run in.
+- **Scope: Oblivion and Skyrim together (owner, 2026-11-20).** One PRD covers both bows. Phase 0 therefore also needs Skyrim's documented sources (UESP *Skyrim:Archery*,
+  the CK wiki's weapon / projectile / ammunition pages, xEdit's Skyrim `PROJ`, `AMMO` and `WEAP` definitions), which Skyrim's bow needs where Oblivion has none: Skyrim has a
+  `PROJ` record (speed, gravity, range, impact data) the engine already parses for FNV. **Not yet researched.**
+- **Ballistic is a declared gap in the first release (owner, 2026-11-20).** The setting carries both values; ballistic shows as unavailable until a documented gravity rule
+  exists, and every arrow flies straight meanwhile. (Skyrim's `PROJ` gravity may be that documented source for Skyrim; Oblivion has none.)
+- **Default is per game (owner, 2026-11-20):** ballistic for Oblivion, straight for Skyrim, each player free to change it. Until ballistic exists the effective trajectory is
+  straight in both, and the default of the Oblivion setting resolves to straight with a visible note.

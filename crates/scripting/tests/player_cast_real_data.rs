@@ -108,10 +108,10 @@ fn cast_cost_follows_the_equation_not_the_stored_cost() {
         let (world, player, _) = world_with(&index, skill);
         assert_eq!(player_cast::preview(&world, player, FLARE).unwrap().cost, expected, "skill {skill}");
     }
-    // Mirili's Expert Command is Manual Spell Cost: stored 368 times the Illusion modifier, not rounded.
+    // Mirili's Expert Command is Manual Spell Cost: stored 368 times the Illusion modifier, rounded down (CS wiki *Spell Cost*).
     let (world, player, _) = world_with(&index, 50.0);
     let mirili = player_cast::preview(&world, player, MIRILI).unwrap();
-    assert!((mirili.cost - 368.0 * (1.4 - 0.012 * 50.0)).abs() < 1e-2, "{}", mirili.cost);
+    assert_eq!(mirili.cost, (368.0_f32 * (1.4 - 0.012 * 50.0)).floor(), "{}", mirili.cost);
     assert_eq!(mirili.school, Some(3), "Illusion");
 }
 

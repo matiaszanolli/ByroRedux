@@ -1,7 +1,13 @@
 //! Oblivion's spell-cast rules: what a cast costs, which tier it needs, which school it feeds, and the
 //! Fatigue it spends (player-spellcasting PRD `docs/prd/player-spellcasting.md` PSC-CST-003..005, PSC-CST-008,
-//! PSC-USE-003; decoded in `docs/engine/charal-oblivion-ruleset.md`, "Spell casting", #7078).
+//! PSC-USE-003; sourced in `docs/engine/charal-oblivion-ruleset.md`, "Spell casting", #7078).
 //!
+//! **Provenance.** Every rule here is documented except the three marked *executable-derived*: the unnamed `MGEF`
+//! flag bit 22 ([`MGEF_COST_SKIPPED`]), the touch reach ([`SpellCastModel::touch_reach`]) and the equal-Magicka
+//! boundary of the gate. The cost model is the CS wiki's *Category:Spell Cost*, the Luck term its *Effective Skill
+//! Level*, the Fatigue its *Fatigue Game Settings*, the tiers and school its *Spell* page and UESP *Magic Overview*.
+//! The owner ruled out decoding the executables for rules (2026-11-20): the three above are declared and kept until a
+//! documented source replaces them (#7082); the old `0x...` addresses in comments are that provenance, not a source.
 //! Pure data and functions: no ECS, no game branches. The host supplies each effect's authored numbers and
 //! the caster's skills; the per-game seam is the [`CharacterRulesProfile`](super::CharacterRulesProfile)
 //! `spell_cast` row (`Some` on Oblivion), and the load order's `GMST` records retune the model
@@ -12,7 +18,7 @@
 //!                                                        M = magnitude ^ 1.28 (1 if 0)   T = 1.5 for a Target effect
 //! base cost      = sum floor(effect cost), at least 1 each      (the stored SPIT cost when Manual Spell Cost)
 //! actual cost    = sum floor(effect cost * modifier(its school's skill)), at least 1 each
-//!                  (Manual Spell Cost: stored cost * modifier(primary school), not rounded)
+//!                  (Manual Spell Cost: floor(stored cost * modifier(primary school)), no minimum: CS wiki *Spell Cost*)
 //! modifier(skill)= costBase + costMult * (1 - S / 100)    S = clamp(skill + 0.4 * Luck - 20, 0, 100)
 //! ```
 
@@ -25,7 +31,7 @@ pub const MGEF_NO_MAGNITUDE: u32 = 0x100;
 /// `MGEF` flag bit 9 (`0x200`): no area, so the cost reads 0 for the area.
 pub const MGEF_NO_AREA: u32 = 0x200;
 /// `MGEF` flag bit 22, unnamed in xEdit: the executable leaves such effects out of the cost sum and of the
-/// primary-school choice (`0x4151c0`, `0x4152c0`, #7078).
+/// primary-school choice. **Executable-derived** (`0x4151c0`, `0x4152c0`, #7078): no documented source names this flag.
 pub const MGEF_COST_SKIPPED: u32 = 1 << 22;
 
 /// An effect's range: where it lands (`EFIT` `Type`, xEdit `wbEffectTypeEnum`).
@@ -112,7 +118,7 @@ pub struct SpellCastModel {
     pub fatigue_cast_base: f32,
     pub fatigue_cast_mult: f32,
     /// `fCombatDistance` and `fHandReachMult`: a Touch spell reaches `fCombatDistance * fHandReachMult` times at
-    /// least 1 of the caster's scale (`0x5e40a0`, #7078; medium confidence, #7082).
+    /// least 1 of the caster's scale. **Executable-derived** (`0x5e40a0`, #7078; medium confidence): no documented source ties a Touch spell to the hand's reach; the CS wiki gives only the hand-to-hand reach (`fHandReachMult` 0.6, "about 5 feet or 105 units"). Provisional, #7082.
     pub combat_distance: f32,
     pub hand_reach_mult: f32,
     /// `fMagicProjectileBaseSpeed`: the speed a spell's projectile flies at before the `MGEF`'s own multiplier (CS wiki
@@ -241,13 +247,14 @@ impl SpellCastModel {
 
     /// The Magicka a cast of the spell costs a caster whose skill in school `s` is `skill(s)` and whose Luck is `luck`
     /// (`0x41d320`). An auto-calculated spell sums each effect's own modified, floored cost; a Manual Spell Cost spell
-    /// is its stored cost times the modifier of its primary school, not rounded. An effect with no school reads skill 0
+    /// is its stored cost times the modifier of its primary school, rounded down with no minimum (CS wiki *Category:Spell
+    /// Cost*; an earlier executable-derived reading left it unrounded, which the documented rule contradicts). An effect with no school reads skill 0
     /// (not decoded: no vanilla Spell has one).
     #[must_use]
     pub fn actual_cost(&self, effects: &[EffectCostInput], manual_cost: Option<u32>, skill: impl Fn(u8) -> f32, luck: f32) -> f32 {
         let skill_of = |school: Option<u8>| school.map_or(0.0, &skill);
         match manual_cost {
-            Some(stored) => stored as f32 * self.modifier(skill_of(self.primary_school(effects)), luck),
+            Some(stored) => (stored as f32 * self.modifier(skill_of(self.primary_school(effects)), luck)).floor(),
             None => effects
                 .iter()
                 .filter(|effect| effect.mgef_flags & MGEF_COST_SKIPPED == 0)
@@ -386,13 +393,14 @@ mod tests {
     }
 
     #[test]
-    fn a_manual_spell_costs_its_stored_cost_times_the_primary_schools_modifier_unrounded() {
+    fn a_manual_spell_costs_its_stored_cost_times_the_primary_schools_modifier_rounded_down() {
         let model = SpellCastModel::OBLIVION;
-        // Mirili's Expert Command (SE37CommandCreature4Expert): stored 368, Illusion, Manual Spell Cost.
+        // Mirili's Expert Command (SE37CommandCreature4Expert): stored 368, Illusion, Manual Spell Cost. CS wiki
+        // *Spell Cost*: the scaled cost is the stored cost times the skill factor, rounded down, with no minimum.
         let effects = [effect(8.0, 80.0, 30.0, 0.0, EffectRange::Touch, 3)];
         let cost = model.actual_cost(&effects, Some(368), |school| if school == 3 { 50.0 } else { 0.0 }, 50.0);
-        assert!((cost - 368.0 * (1.4 - 0.012 * 50.0)).abs() < 1e-3, "{cost}");
-        assert_ne!(cost, cost.floor());
+        assert_eq!(cost, (368.0_f32 * (1.4 - 0.012 * 50.0)).floor(), "294.4 rounds down to 294");
+        assert_eq!(cost, 294.0);
     }
 
     #[test]
