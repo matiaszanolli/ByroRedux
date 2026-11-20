@@ -635,6 +635,8 @@ mod tests {
                     casing_form: 0,
                     health: 0,
                     clip_rounds: 0,
+                    speed: 0.0,
+                    flags: 0,
                 },
             },
         );

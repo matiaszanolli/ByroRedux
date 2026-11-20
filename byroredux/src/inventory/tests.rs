@@ -1773,6 +1773,8 @@ fn player_template_uses_authored_inventory_and_equipment_slots() {
                 casing_form: 0,
                 health: 0,
                 clip_rounds: 0,
+                speed: 0.0,
+                flags: 0,
             },
         },
     );

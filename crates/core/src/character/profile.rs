@@ -8,7 +8,7 @@
 
 use super::{
     fallout3_ruleset_with_gmst, fallout4_ruleset_with_gmst, falloutnv_ruleset_with_gmst, oblivion_ruleset, skyrim_ruleset, CharacterRuleset, CrimeModel,
-    SkillSet, SpellCastModel, StanceModel, VatsModel, ArmorModel,
+    SkillSet, SpellCastModel, StanceModel, VatsModel, ArmorModel, BowModel,
 };
 
 /// A sourced FO3/FNV NPC Health curve (#5238): the record's `DATA` Base
@@ -331,6 +331,10 @@ pub struct CharacterRulesProfile {
     /// where a player cast action is sourced and built (Oblivion). A row of its own so the cast code never tests
     /// the game: it reads the installed `SpellCastModel` resource, which exists only where this row does.
     spell_cast: Option<SpellCastModel>,
+    /// Player-archery PRD (BOW-MOD-001) — the bow's rules (draw, speed, range, tilt, default trajectory), where a
+    /// player bow shot is sourced and built (Oblivion and Skyrim). A row of its own so the shot code never tests the
+    /// game: it reads the installed `BowModel` resource, which exists only where this row does.
+    bow: Option<BowModel>,
     /// M65 (SNK-STN-005) — where the speed in the sneak stance comes from.
     /// Every game has the stance (PRD Q2); a row without a source is
     /// [`StanceModel::NONE`], which leaves the speed unscaled.
@@ -371,6 +375,7 @@ impl CharacterRulesProfile {
         vats: None,
         armor: None,
         spell_cast: None,
+        bow: None,
         stance: StanceModel::NONE,
         stealth: crate::stealth::StealthKind::SightOnly,
         indicator: crate::stealth::IndicatorModel::NONE,
@@ -398,6 +403,7 @@ impl CharacterRulesProfile {
         vats: None,
         armor: None,
         spell_cast: Some(SpellCastModel::OBLIVION),
+        bow: Some(BowModel::OBLIVION),
         stance: StanceModel::OBLIVION,
         stealth: crate::stealth::StealthKind::Oblivion,
         indicator: crate::stealth::IndicatorModel::OBLIVION,
@@ -436,6 +442,7 @@ impl CharacterRulesProfile {
         vats: Some(VatsModel::FALLOUT3),
         armor: None,
         spell_cast: None,
+        bow: None,
         stance: StanceModel::FALLOUT,
         stealth: crate::stealth::StealthKind::Fallout3,
         indicator: crate::stealth::IndicatorModel::FALLOUT,
@@ -479,6 +486,7 @@ impl CharacterRulesProfile {
         vats: Some(VatsModel::FALLOUT_NV),
         armor: None,
         spell_cast: None,
+        bow: None,
         stance: StanceModel::FALLOUT,
         stealth: crate::stealth::StealthKind::FalloutNv,
         indicator: crate::stealth::IndicatorModel::FALLOUT,
@@ -525,6 +533,7 @@ impl CharacterRulesProfile {
         vats: None,
         armor: Some(ArmorModel::SKYRIM),
         spell_cast: None,
+        bow: Some(BowModel::SKYRIM),
         stance: StanceModel::SKYRIM,
         stealth: crate::stealth::StealthKind::Skyrim,
         indicator: crate::stealth::IndicatorModel::SKYRIM,
@@ -569,6 +578,7 @@ impl CharacterRulesProfile {
         vats: None,
         armor: None,
         spell_cast: None,
+        bow: None,
         stance: StanceModel::FALLOUT4,
         // `Fallout4.exe`'s detection (#6996).
         stealth: crate::stealth::StealthKind::Fallout4,
@@ -605,6 +615,7 @@ impl CharacterRulesProfile {
         vats: None,
         armor: None,
         spell_cast: None,
+        bow: None,
         stance: StanceModel::NONE,
         stealth: crate::stealth::StealthKind::SightOnly,
         indicator: crate::stealth::IndicatorModel::NONE,
@@ -644,6 +655,7 @@ impl CharacterRulesProfile {
         vats: None,
         armor: None,
         spell_cast: None,
+        bow: None,
         stance: StanceModel::NONE,
         stealth: crate::stealth::StealthKind::Starfield,
         indicator: crate::stealth::IndicatorModel::STARFIELD,
@@ -749,6 +761,13 @@ impl CharacterRulesProfile {
     #[must_use]
     pub const fn spell_cast(self) -> Option<SpellCastModel> {
         self.spell_cast
+    }
+
+    /// The bow's compiled-in defaults, `None` where no player bow shot is sourced and built (everything but
+    /// Oblivion and Skyrim; PRD player-archery Q1).
+    #[must_use]
+    pub const fn bow(self) -> Option<BowModel> {
+        self.bow
     }
 
     /// M65 (SNK-STN-005) — the sneak-stance speed source.

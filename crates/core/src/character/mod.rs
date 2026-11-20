@@ -60,6 +60,8 @@
 //! * [`skill_use`] — [`SkillUseCosts`] / [`SkillClass`]: classic-TES skill-use
 //!   experience (Oblivion): the cost of a rank from the five `fSkillUse*`
 //!   settings, the skill's class, and banking with rollover.
+//! * [`bow`] — [`BowModel`]: the bow's rules (Oblivion's draw timer and speed formula, Skyrim's draw time, tilt
+//!   and range cap, the default trajectory), retuned by the `fArrow*` settings (player-archery PRD, BOW-MOD-001).
 //! * [`spell_cast`] — [`SpellCastModel`] / [`EffectCostInput`]: Oblivion's spell-cast rules (effect and
 //!   actual cost, the mastery tiers, the primary school, the Fatigue a cast spends), retuned by the
 //!   `fMagic*` / `iSkill*Min` / `fFatigueCast*` settings (player-spellcasting PRD, PSC-CST-008).
@@ -97,6 +99,7 @@ pub mod attribute;
 pub mod components;
 pub mod crime;
 pub mod vats;
+pub mod bow;
 pub mod derived;
 pub mod disposition;
 pub mod fallout;
@@ -150,6 +153,7 @@ pub use reputation::{
 };
 pub use resistance::{damage_multiplier, Affliction};
 pub use ruleset::CharacterRuleset;
+pub use bow::{ArrowTrajectory, BowModel, DrawRule, SpeedRule};
 pub use spell_cast::{EffectCostInput, EffectRange, SpellCastModel, Tier as SpellTier};
 pub use stance::{SneakMovement, SneakSpeed, SneakSpeedSource, StanceModel};
 pub use skill::{ResolvedSkill, SkillDef, SkillSet};
@@ -192,7 +196,7 @@ mod tests {
             .collect();
         assert_eq!(
             declared.len(),
-            22,
+            23,
             "sub-module count changed — {declared:?}"
         );
         for module in declared {

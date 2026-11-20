@@ -163,6 +163,13 @@ pub enum ItemKind {
         health: u32,
         /// Clip rounds (FNV: usually 0 — meaningful per WEAP).
         clip_rounds: u8,
+        /// The ammunition's own `DATA` speed multiplier (Oblivion's arrow speed: every one of the 128
+        /// vanilla arrows authors 1.0, xEdit / UESP *Oblivion Mod:Mod File Format/AMMO*; FO3 / FNV author
+        /// the same field). `0.0` where the source format has none (Skyrim's speed is its `PROJ`'s).
+        speed: f32,
+        /// Oblivion's `DATA` flags (UESP *AMMO*: bit 0 *Ignores Normal Weapon Resistance*); `0` on every other
+        /// game, whose layouts are not read here (player-archery BOW-AMM-004).
+        flags: u32,
     },
     /// ARMO: armor or clothing.
     Armor {
@@ -956,6 +963,8 @@ pub fn parse_ammo(
     let mut casing_form = 0u32;
     let mut health = 0u32;
     let mut clip_rounds = 0u8;
+    let mut speed = 0.0f32;
+    let mut flags = 0u32;
 
     for sub in subs {
         match &sub.sub_type {
@@ -971,8 +980,8 @@ pub fn parse_ammo(
                     // record's damage is the bow's, not the arrow's). No
                     // clipRounds — magazines arrived with FO3.
                     GameKind::Oblivion if sub.data.len() >= 18 => {
-                        let _speed = r.f32_or_default();
-                        let _flags = r.u32_or_default();
+                        speed = r.f32_or_default();
+                        flags = r.u32_or_default();
                         common.value = r.u32_or_default();
                         common.weight = r.f32_or_default();
                         damage = r.u16_or_default() as f32;
@@ -981,7 +990,7 @@ pub fn parse_ammo(
                     // FO3/FNV AMMO DATA (13 bytes): speed(f32), flags(u8),
                     // pad(u8)×3, value(u32), clipRounds(u8).
                     GameKind::Fallout3NV if sub.data.len() >= 13 => {
-                        let _speed = r.f32_or_default();
+                        speed = r.f32_or_default();
                         let _flags_pad = r.u32_or_default();
                         common.value = r.u32_or_default();
                         clip_rounds = r.u8_or_default();
@@ -1070,6 +1079,8 @@ pub fn parse_ammo(
             casing_form,
             health,
             clip_rounds,
+            speed,
+            flags,
         },
     }
 }
@@ -2888,6 +2899,37 @@ mod tests {
                 assert_eq!(clip_rounds, 0, "no magazine system on Oblivion");
                 assert_eq!(casing_form, 0, "no projectile/casing on Oblivion AMMO");
             }
+            _ => panic!("expected Ammo kind"),
+        }
+    }
+
+    /// player-archery BOW-AMM-004 — the arrow's speed and the "Ignores Normal Weapon Resistance" flag (UESP *Oblivion
+    /// Mod:Mod File Format/AMMO*, bit 0) are kept, not dropped.
+    #[test]
+    fn oblivion_ammo_keeps_the_speed_and_the_resistance_flag() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&1.5f32.to_le_bytes()); // speed
+        data.extend_from_slice(&1u32.to_le_bytes()); // flags: ignores normal weapon resistance
+        data.extend_from_slice(&2u32.to_le_bytes()); // value
+        data.extend_from_slice(&0.1f32.to_le_bytes()); // weight
+        data.extend_from_slice(&9u16.to_le_bytes()); // damage
+        let subs = vec![sub(b"EDID", b"SilverArrow\0"), sub(b"DATA", &data)];
+        let item = parse_ammo(0x1, &subs, GameKind::Oblivion, &None);
+        match item.kind {
+            ItemKind::Ammo { speed, flags, .. } => {
+                assert!((speed - 1.5).abs() < 1e-6);
+                assert_eq!(flags & 1, 1);
+            }
+            _ => panic!("expected Ammo kind"),
+        }
+        // A game whose speed the layout does not carry reads 0, not a made-up 1.
+        let mut skyrim = Vec::new();
+        for word in [0xC0DEu32, 0, 8f32.to_bits(), 1] {
+            skyrim.extend_from_slice(&word.to_le_bytes());
+        }
+        let subs = vec![sub(b"EDID", b"ArrowIron\0"), sub(b"DATA", &skyrim)];
+        match parse_ammo(0x2, &subs, GameKind::Skyrim, &None).kind {
+            ItemKind::Ammo { speed, flags, .. } => assert_eq!((speed, flags), (0.0, 0)),
             _ => panic!("expected Ammo kind"),
         }
     }
