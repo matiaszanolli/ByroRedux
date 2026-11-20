@@ -126,13 +126,15 @@ impl VulkanContext {
                     log::info!(
                         "rt-lod-telemetry: scale={scale:.6} fragments={} bins={:?} \
                          reflection_traced={} reflection_lod_culled={} gi_traced={} \
-                         gi_lod_culled={}",
+                         gi_lod_culled={} cache_resolved={} cache_misses={}",
                         sample.fragments,
                         sample.bins,
                         sample.reflection_traced,
                         sample.reflection_lod_culled,
                         sample.gi_traced,
                         sample.gi_lod_culled,
+                        sample.cache_resolved,
+                        sample.cache_misses,
                     );
                 }
                 Ok(_) => {}

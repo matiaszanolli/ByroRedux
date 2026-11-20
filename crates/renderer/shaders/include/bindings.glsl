@@ -695,6 +695,8 @@ layout(std430, set = 1, binding = 11) coherent buffer RayBudgetBuffer {
     uint rtReflectionLodCulled;
     uint rtGiTraced;
     uint rtGiLodCulled;
+    uint rtCacheResolved;        // RCG-DBG-002: traced-share pixels the radiance cache resolved (telemetry; 0 until a lookup exists)
+    uint rtCacheMisses;          // RCG-DBG-002 / RCG-COV-003: lookups that missed and fell back for the frame
 } rayBudget;
 
 layout(std430, set = 1, binding = 10) readonly buffer TerrainTileBuffer {

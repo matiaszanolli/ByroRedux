@@ -46,10 +46,16 @@ pub struct GpuRayBudget {
     pub reflection_lod_culled: u32,
     pub gi_traced: u32,
     pub gi_lod_culled: u32,
+    /// RCG-DBG-002: traced-share pixels the radiance cache resolved this frame. Shader-written
+    /// like the words above (telemetry only); `0` until a shader looks the cache up.
+    pub cache_resolved: u32,
+    /// RCG-DBG-002 / RCG-COV-003: lookups that missed and fell back to the untraced share for the
+    /// frame. `0` until a shader looks the cache up, so a zero here is not evidence of coverage.
+    pub cache_misses: u32,
 }
 
 impl GpuRayBudget {
-    pub const WORDS: usize = 18;
+    pub const WORDS: usize = 20;
 
     pub const fn words(self) -> [u32; Self::WORDS] {
         [
@@ -71,6 +77,8 @@ impl GpuRayBudget {
             self.reflection_lod_culled,
             self.gi_traced,
             self.gi_lod_culled,
+            self.cache_resolved,
+            self.cache_misses,
         ]
     }
 
@@ -103,6 +111,8 @@ impl GpuRayBudget {
             reflection_lod_culled: 0,
             gi_traced: 0,
             gi_lod_culled: 0,
+            cache_resolved: 0,
+            cache_misses: 0,
         }
     }
 }
@@ -116,6 +126,8 @@ pub struct RtLodTelemetry {
     pub reflection_lod_culled: u32,
     pub gi_traced: u32,
     pub gi_lod_culled: u32,
+    pub cache_resolved: u32,
+    pub cache_misses: u32,
 }
 
 impl From<GpuRayBudget> for RtLodTelemetry {
@@ -132,6 +144,8 @@ impl From<GpuRayBudget> for RtLodTelemetry {
             reflection_lod_culled: value.reflection_lod_culled,
             gi_traced: value.gi_traced,
             gi_lod_culled: value.gi_lod_culled,
+            cache_resolved: value.cache_resolved,
+            cache_misses: value.cache_misses,
         }
     }
 }
@@ -367,6 +381,23 @@ mod tests {
         );
     }
 
+    /// RCG-DBG-002: the cache's resolved and miss counts are the last two ABI words, they start every
+    /// frame at zero and they reach the `rt-lod-telemetry:` sample unchanged.
+    #[test]
+    fn the_cache_counters_are_the_last_two_words_and_reach_the_telemetry_sample() {
+        let fresh = AdaptiveRayBudget::settings_for_tier(3);
+        assert_eq!((fresh.cache_resolved, fresh.cache_misses), (0, 0));
+        let mut read_back = fresh;
+        read_back.cache_resolved = 7;
+        read_back.cache_misses = 3;
+        let words = read_back.words();
+        assert_eq!(words[GpuRayBudget::WORDS - 2..], [7, 3]);
+        let sample = RtLodTelemetry::from(read_back);
+        assert_eq!((sample.cache_resolved, sample.cache_misses), (7, 3));
+        let logger = include_str!("../context/sync_and_acquire_frame.rs");
+        assert!(logger.contains("cache_resolved={} cache_misses={}"));
+    }
+
     /// RCG-UPD-001 / RCG-COV-004: a lower tier reduces the update rate and never turns it off, so the
     /// stride is positive at every tier and never grows with the tier; the word is in the shader ABI and
     /// the CPU-written words stay one per field.
@@ -421,13 +452,15 @@ mod tests {
                 "rtReflectionLodCulled",
                 "rtGiTraced",
                 "rtGiLodCulled",
+                "rtCacheResolved",
+                "rtCacheMisses",
             ]
         );
     }
 
     #[test]
     fn shader_contract_fits_in_the_aligned_slot() {
-        assert_eq!(std::mem::size_of::<GpuRayBudget>(), 72);
+        assert_eq!(std::mem::size_of::<GpuRayBudget>(), 80);
         assert!(std::mem::size_of::<GpuRayBudget>() as u64 <= super::super::RAY_BUDGET_STRIDE);
     }
 }
