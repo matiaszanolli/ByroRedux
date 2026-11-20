@@ -1349,6 +1349,25 @@ authoritative rather than re-derived.
 
 ---
 
+## Radiance Cache (RCG-MEM-001, not allocated yet)
+
+The world-space hash-grid radiance cache of the [Radiance Cache and GI Coverage PRD](../prd/radiance-cache-gi-coverage.md).
+**At HEAD on 2026-11-19 nothing is allocated for it**: no cache buffer, pass or constant exists in the tree
+(Phase 1, #7072, is building the plumbing around the include the owner is writing). This section holds the
+rules the allocation must meet and the place its figures go, so the row exists before the memory does
+(RLT-GI-008, RCG-MEM-001). No figure is estimated here on purpose; see the note under
+[Not yet ledgered](#not-yet-ledgered).
+
+| Item | Rule |
+|---|---|
+| Size | Fixed at renderer init and independent of the framebuffer and of the exterior grid radius (RCG-MEM-003): the cache is world-space, so the 1..=12 radius clamp changes how much of it is occupied, not how much is allocated |
+| Byte math | Resident bytes = entries × the bytes one entry takes across all the cache's buffers (key, accumulation, resolved), times the number of copies (one if the passes are ordered on the queue, two if it is double-buffered per frame in flight). The entry size, the entry count and the copy count are set with the include; this row then names the function that computes them and a `memory_budget_ledgers_…` test pins the figure, as the sky and ground-cover owners do |
+| Scale, not this engine's figure | NVIDIA's published description of a cache of this kind quotes 40 bytes per entry (8 + 16 + 16) and 2^22 entries, 160 MiB ([SHaRC Integration guide](https://github.com/NVIDIA-RTX/SHARC/blob/main/docs/Integration.md), "Memory Usage") |
+| Overflow | A full table degrades to cache misses for that frame and never to wrong radiance or a device fault (RCG-MEM-002). The pass reports occupancy, evictions and overflowed inserts through `gi.cache` (RCG-DBG-003) |
+| Ceiling | Together with every row below it, inside the 6 GB RT-minimum and 4 GB whole-renderer design targets; the estimated totals below do **not** include this owner yet |
+
+---
+
 ## VRAM Rough Budget (RTX 4070 Ti, typical FNV interior)
 
 | Subsystem | Typical | Peak |
@@ -1372,6 +1391,7 @@ authoritative rather than re-derived.
 | Vertex / index pools (one global geometry SSBO generation) | ~208 MB | ~840 MB cap (`VERTEX_POOL_HARD_CAP` 7 M × 104 B + `INDEX_POOL_HARD_CAP` 28 M × 4 B, see [Mesh Registry](#mesh-registry)) |
 | Global geometry SSBO rebuild (#3298 / #3443) | — (idle) | +1× projected — the replacement generation, allocated while the old one still serves draws, so up to ~840 MB at the pool caps (~1.7 GB with the old one). Admitted only while device-local usage stays at or under 80% of the live `VK_EXT_memory_budget` budget, and under 256 MiB without a reading; see [the rebuild section](#global-geometry-ssbo-rebuild-3298--3463). Plus up to 128 MiB retained mesh-side staging (one 64 MiB vertex-chunk entry + one 64 MiB index-chunk entry, #3298's chunked path) |
 | Sky bake + cloud noise + ground cover (fixed size, see [Sky and Ground Cover](#sky-and-ground-cover-fixed-size)) | ~155 MB | ~155 MB |
+| Radiance cache (world-space hash grid, fixed size, RCG-MEM-001; see [its section](#radiance-cache-rcg-mem-001-not-allocated-yet)) | — (not allocated yet) | — (not allocated yet); not in the totals below |
 | Scaleform UI (Ruffle wgpu device + target + readback + engine image) | ~25 MB (one menu) | ~33 MB during a resize (one deferred-destroy copy of the engine image) + a second logical device |
 | MenuXml HUD overlay texture (1 × swapchain extent, RGBA8, see [its section](#menuxml-hud-overlay-texture-1--swapchain-extent-4892)) | ~8.3 MB (1080p) | ~33 MB (4K) |
 | Dynamic RGBA staging arenas (2 slots × one dirty full-viewport overlay, see [its section](#dynamic-rgba-staging-arenas-dynamicrgbauploads-e2f99ad55)) | ~16.6 MB (1080p) | ~66 MB (4K) |
