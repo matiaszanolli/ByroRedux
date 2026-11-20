@@ -2618,6 +2618,26 @@ using a NukaCola on FNV runs `NukaColaAddCapEffectScript` (`additem caps001 1`) 
 archetypes beyond script and value modifier (summons, light, paralysis ...), area and touch/target delivery,
 resistance.
 
+**Player cast (design, #7078; the [player-spellcasting PRD](../prd/player-spellcasting.md), not built).** Today only the
+console's `magic.cast`, ObScript `Cast` (`obscript_effects/presentation.rs:37`) and a perk's activate-choice
+*Apply Spell* (`perk_entry_points/activate.rs:195`) reach `cast_spell`; none of them charges Magicka or Fatigue or
+feeds a skill, and they stay that way (PSC-CST-007, PSC-USE-005). The player's cast has four stages: **ready** (a
+readied-spell component on the player, saved, cleared when the spell leaves `SpellList`), **gate** (can act, readied,
+castable, mastery, Magicka, in that order, each refusal named; PSC-CST-002), **resolve** (each effect by its range:
+Self on the player, Touch on the live actor in the hand's reach, Target on the `ActiveProjectiles` path at the
+MGEF's projectile speed), **settle** (Magicka and Fatigue applied through `ActorValues::apply_damage`, then the one
+`cast_spell`, then at most one `queue_skill_use`). One system owns the spend and declares its access as `skill_use_system`
+does (PSC-CST-009); the input path only sets the edge. The rules (cost, mastery, Fatigue) are functions in
+`crates/core/src/character` that read `GameSettings` (PSC-CST-008); what they compute and where the original does
+it is in [charal-oblivion-ruleset.md](charal-oblivion-ruleset.md#spell-casting--locked-from-the-executable-7078).
+What the catalog must carry that `CastEffect` and `CanonicalSpell` do not today: each effect's range, magnitude,
+duration, area and MGEF flags; the MGEF base cost and school (or the effect's `SCIT` school); the spell's type, stored
+`Cost`, `Level` and flags (`decode_spit` drops `Level`). Not modelled and named: silence, underwater and several-bound-effect
+refusals (PSC-NG-008), cast animation and visuals (PSC-NG-001), area casting (PSC-TGT-005), the cast interval (a
+labelled constant). Test spells, all in `Oblivion.esm`: `StandardFireShield2Apprentice` (000A9806, Self),
+`StandardFireDamageTarget1Novice` (000A97DF, Flare, Target; stored cost 9, equation 11.15), `SE37CommandCreature4Expert`
+(0007B21B, Touch, Manual Spell Cost, Expert).
+
 **Idle, look, shaders, weather.** `PlayIdle <idle>` writes the Papyrus `PlayIdle` request (the compiled argument is
 the idle's *editor ID string*, which the VM resolves through `text_argument`); the app installs the IDLE's `.kf` for
 the KF-era games (`populate_kf_idle_clips`, resolved when an actor asks) and the existing idle runtime plays it —

@@ -164,12 +164,86 @@ universal "Oblivion is affine, Skyrim is quadratic" rule, but it's a real,
 sourced contrast worth keeping distinct rather than assuming either
 game's shape carries over to the other.
 
-Skill-gated spell-tier access (Novice/Apprentice/Journeyman/Expert/Master —
-same 5-tier structure as every other Oblivion skill) and a flat 3 XP per
-successful cast are standard patterns already established elsewhere, not
-new. Not a CHARAL derived stat (spell-casting economy, not a character AV),
-same routing as every other magic-cost/persuasion/barter formula this
-session — documented for completeness, not a build target.
+The tier gate and the experience are in the next section: the tier comes from the base cost (not a per-skill table) and
+the experience from the `SKIL` use values (Alteration 4, Conjuration 6, Destruction 1.2, Illusion 3, Mysticism 3,
+Restoration 0.6), not a flat 3 per cast (corrected 2026-11-19, #7078). The cost is not a CHARAL derived stat (it is a
+spell-casting economy, not a character actor value), but its functions live beside `skill_use.rs` in
+`crates/core/src/character` (PSC-CST-008) so the cast code holds no constant.
+
+## Spell casting — LOCKED from the executable (#7078)
+
+The rules the [player-spellcasting PRD](../prd/player-spellcasting.md) builds. Sources: UESP *Oblivion:Magic Overview* and
+*Spell Making*; the CS wiki (*Spell*, *Effect Item*, the `fMagic*` setting pages); xEdit `wbDefinitionsTES4.pas`; `Oblivion.esm`
+(`crates/plugin/examples/spell_cast_census.rs`, 1,137 `SPEL` and 145 `MGEF` records); and a decode of `Oblivion.exe` 1.2.0.416
+(addresses are VAs, image base `0x400000`; raw notes `.claude/issues/7078/INVESTIGATION.md`).
+
+### The cost
+
+`GetMagickaCost` is `0x41d320(caster)`. A Power or Lesser Power (type 2 or 3) gets no caster, so no skill scaling.
+
+- **Per effect** (`0x413810` → `0x548b50`): `0.1 × MGEF base cost × D × A × M × T` with `D` the duration (1 when 0), `A = max(1, area ×
+  fMagicAreaBaseCostMult 0.15)`, `M = magnitude^fMagicCostScale` (1 when the magnitude is 0; 1.28 in `Oblivion.esm`, 1.25 the executable
+  default) and `T = fMagicRangeTargetCostMult 1.5` for a Target effect. MGEF flag `0x100` zeroes the magnitude, `0x80` the duration, `0x200` the
+  area; a Self effect has no area. Effects whose MGEF has flag bit 22 are skipped in the sum.
+- **Auto-calculated spell** (`Manual Spell Cost` clear): `0x4151c0` sums `⌊effect cost × modifier⌋` (at least 1 each), the modifier taken from
+  that effect's own school skill (`0x413890`). The stored `SPIT` `Cost` is **stale and unused**: of 315 UESP-listed auto-calculated spells matched to
+  `Oblivion.esm`, UESP's in-game Magicka equals the equation for 312 and the stored cost for 174 (Flare: stored 9, equation 11.15, UESP 11).
+- **Manual Spell Cost spell** (bit 0): `stored Cost × modifier`, not rounded, with the primary school's skill (`0x41d38a`). Mirili's Expert Command
+  (`SE37CommandCreature4Expert`) stores 368 against an equation 491.
+- **Modifier** (`0x548c00`): `fMagicCasterSkillCostBase + fMagicCasterSkillCostMult × (1 − S ÷ 100)`, `S = clamp(skill + fActorLuckSkillMult × Luck +
+  iActorLuckSkillBase, 0, 100)`. `Oblivion.esm` authors Base 0.2 and Mult 1.2 (the executable defaults 0.1 and 1.2), so the modifier is `1.4 − 0.012 × S`;
+  the Luck constants are the executable's 0.4 and −20 (Luck adds `0.4 × (Luck − 50)`). Luck applies to the real cast: the can-cast check `0x5f4570` and the
+  spender `0x5fc8fa` call the same function. (Resolved by the decode, which the CS wiki states for the base: "luck will modify the skill somewhat".)
+
+### The gates
+
+`CanCast` is `0x5f44a0`. For a Spell (type 0): Magicka — refused when the cost is **greater than** current Magicka (equal allowed), code 1; mastery
+(player only, NPCs are not gated) — the player's tier from the **base** skill (so Fortify does not help) against `iSkillApprenticeMin`, `JourneymanMin`,
+`ExpertMin`, `MasterMin` = 25 / 50 / 75 / 100 (executable defaults, not overridden), must be at least the spell's level, code 3. Other refusals: silenced 2,
+ranged underwater 6, several bound effects 5, a Power already used 4. The player sees the message through `0x5f3e00`.
+
+**The spell's level** (`0x41d3c0` → `0x548c50`): for an auto-calculated spell, the tier of its caster-less base cost against
+`fMagicSpellLevelApprenticeMin`, `JourneymanMin`, `ExpertMin`, `MasterMin` (`Oblivion.esm`: 25.5, 62.5, 149.5, 399.5, so costs 26 / 63 / 150 / 400), for a
+Manual spell the stored `SPIT` `Level`. UESP's per-level tables agree with the cost thresholds for 321 of 330 matched spells and with the authored `Level` for 286.
+The CS wiki (*Spell*): "Spell Level: sets the skill rank necessary to cast the spell. Normally spell rank is determined by" those settings.
+
+### What a cast spends
+
+`0x5fc890` (the spender): Fatigue = `fFatigueCastBase + fFatigueCastMult × the Magicka cost` (`0x548da0`; executable defaults 15 and 0, `Oblivion.esm` base 1.0,
+so **1**), applied as damage to Fatigue clamped at 0, and Magicka as damage `−cost`. The casting interval is not a number: `StartCast` `0x5f3e00` picks
+animation groups and no game setting for cast time exists.
+
+### The experience (the skill use a cast gives)
+
+The earlier census of `0x668c30`'s call sites (19, `.claude/issues/7049/`) missed three: the encoding is `add reg, 0x39c` then `call [reg]`, not a load.
+They are `0x6994cc` (in the area routine `0x6992f0`), `0x69b9ea` (the end of the release routine `0x69af30`) and `0x69bc51` (in the hit routine `0x69ba90`). Each
+pushes skill = `0x415360(item)`, the primary school's actor value, **usage 1** (the `SKIL` second use value) and multiplier 0, so the award is the school's use
+value unscaled; `0x668c30` gives nothing when the base skill is already 100.
+
+- **Item type gate:** only type 0 (Spell) and 5 (Poison). Powers, abilities, diseases, scrolls, enchantments, potions and ingredients award nothing here.
+- **Self and Touch spells** (`0x69af30`, award at `0x69b9a4`): once, when at least one effect applied (flag at `[esp+0x14]`), a caster exists and the spell has **no
+  Target-range effect** (`0x414fe0`; such a spell launches a projectile and skips this award). A Touch cast that finds no actor applies nothing: no award.
+- **Target-range spells** (`0x69ba90`): the award is at impact, only for a range-2 effect, never for Telekinesis, only when the target accepts the effect, once per call;
+  Poison awards per target.
+- **Area** (`0x6992f0`): per target actually applied, with the radius `fMagicUnitsPerFoot` (22) × scale × area, excluding the directly-hit target. The flag copy is not
+  refreshed inside the loop, so one explosion may award several times (medium confidence, #7082).
+- **Primary school** (`0x415360` → `0x4152c0`): the effect with the highest caster-less floored cost, ties to the first; its school is the `SCIT` school
+  (`EffectItem+0x18`) when it has one, else the MGEF's (`+0x64`); schools 0 to 5 map to actor values `0x14` to `0x19` (`0x41b770`). The CS wiki says the same:
+  "The school is always the same as that of the single most expensive effect."
+
+### Reach and no target
+
+The default `fMagicDefaultTouchDistance` is 256, but the player and most actors use the actor's own reach: `fCombatDistance` (128) × `fHandReachMult` (0.6 in
+`Oblivion.esm`) = 76.8 BU, times `max(1, a scale value)` (`0x5e40a0`, `0x69b06e`..`0x69b123`); a target beyond it is dropped as "no target" (medium confidence,
+#7082). With no target, a spell with the SPIT flag `0x80` (*Touch Spell Explodes w/ no Target*) and an area above 0 explodes at the caster's aim position;
+without the flag nothing is applied. What Touch does to a door, a chest or a corpse is not resolved (no actor-only test in the apply path).
+
+### Noise (unresolved)
+
+`fSpellCastingDetectionMod` (executable 10, `Oblivion.esm` 20) is read at `0x6778b8` inside the sound-event broadcast `0x677760`; the link from a cast to its callers
+(`0x60dac9`, `0x60db8c`, `0x60db26`, `0x68f8f3`, in an object-hit routine) was not established, and `fSpellCastingDetectionHitActorMod` has no code reference (#7082).
+
+Also: a spell with the PC-start flag (`0x04`) is added to the player when their skill reaches `iPCStartSpellSkillLevel` (25 in `Oblivion.esm`, `0x6646a5`).
 
 ## Acrobatics — jump height (clean, uncapped) + fall damage (buggy, near-useless in original)
 
