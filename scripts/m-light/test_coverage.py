@@ -51,6 +51,12 @@ class CoverageTests(unittest.TestCase):
         self.assertEqual(workdir, gates.GAMES_ROOT / "Fallout New Vegas" / "Data")
         self.assertIn("--esm", load_args)
 
+    def test_game_profile_launches_run_from_the_repository(self):
+        entry = next(e for e in gates.read_coverage_manifest() if e["scene"] == "fallons_downtown")
+        workdir, load_args = gates.coverage_scene_spec(entry)
+        self.assertIn("--game", load_args)
+        self.assertEqual(workdir, gates.REPO, "--game finds assets/debug_profiles.toml from the cwd")
+
     def test_absent_data_yields_skip_rows_and_never_a_pass(self):
         with patch.object(gates, "GAMES_ROOT", Path("/nonexistent/rcg-games-root")):
             rows = gates.gate_coverage(engine=None, ctx=None)

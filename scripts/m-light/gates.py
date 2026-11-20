@@ -681,7 +681,10 @@ def read_coverage_manifest(path: Path = COVERAGE_MANIFEST) -> list[dict[str, str
 def coverage_scene_spec(entry: dict[str, str]) -> tuple[Path, list[str]]:
     """(working directory, load arguments) of a manifest scene."""
     if entry["launch"] != "bench":
-        return GAMES_ROOT / entry["data_dir"], shlex.split(entry["launch"])
+        args = shlex.split(entry["launch"])
+        # `--game` looks its profile up in `assets/debug_profiles.toml` relative to the working
+        # directory, so those launches run from the repository, not from the Data folder.
+        return (REPO if "--game" in args else GAMES_ROOT / entry["data_dir"]), args
     script = ('source "$REPO/scripts/bench-scenes.sh"; run_scene_args "$1"; '
               'printf "%s\\n" "$(scene_dir "$1")"; printf "%s\\0" "${ARGS[@]}"')
     out = subprocess.run(["bash", "-c", script, "bench-scenes", entry["scene"]],
@@ -713,7 +716,7 @@ def gate_coverage(engine: Engine, ctx: Context, only: set[str] | None = None):
         if only and scene not in only:
             continue
         workdir, load_args = coverage_scene_spec(entry)
-        if not workdir.is_dir():
+        if not (GAMES_ROOT / entry["data_dir"] if entry["data_dir"] != "-" else workdir).is_dir():
             log(f"RCG-COV {scene}: {workdir} is absent, skipped")
             row = Row("RCG-COV", scene, "all", "coverage", float("nan"), 0.0, 0.0,
                       passed="skip", threshold=f">={COVERAGE_THRESHOLD}", reference_spp=0)
@@ -738,8 +741,14 @@ def gate_coverage(engine: Engine, ctx: Context, only: set[str] | None = None):
                 text = log_path.read_text(errors="replace")
                 if "linear-capture: wrote" not in text or "nonfinite=0)" not in text:
                     raise SystemExit(f"m-light: coverage capture {scene} tier {tier} {view} failed; see {log_path}")
+                if "profile not found" in text:
+                    raise SystemExit(f"m-light: coverage scene {scene} did not load (profile not found); see {log_path}")
                 views[view] = load_exr(exr)
             coverage, total, hit = coverage_from_views(views["traced_share"], views["gi_eligible"])
+            if total == 0:
+                # No eligible pixel is a scene that did not render, never 0 % coverage.
+                raise SystemExit(f"m-light: coverage scene {scene} tier {tier} has no eligible pixel; "
+                                 f"the scene did not render (see {engine.out / 'engine'})")
             ok = total > 0 and coverage >= COVERAGE_THRESHOLD
             region = f"tier{tier}"
             rows.append((Row("RCG-COV", scene, region, "coverage", coverage, 0.0, 0.0,
