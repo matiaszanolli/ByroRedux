@@ -346,7 +346,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**191**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**192**) grouped by
 purpose:
 
 ```
@@ -568,6 +568,7 @@ spell.list                   → the player's castable spells (readied marked `*
 cast.status                  → the readied spell, the last cast (started or its refusal), the provisional casting interval and touch reach, the projectile speed and range, and the last Target projectile's fate (PSC-DX-001)
 bow.status                   → the readied bow, the equipped arrow and its count, the last shot (released with its draw fraction, speed and range, or the refusal reason), the trajectory in effect (and what the setting asks for), the provisional interval, the range, and the skill feed (`Marksman unfed` / `Archery unfed`) (player-archery BOW-DX-001)
 bow.shoot [seconds]          → release the player's bow after a draw of that many seconds (default a full draw): the attack key's own gate, arrow spend and flight, so a smoke script drives the real path (BOW-DX-002)
+door.state [entity]         → every in-cell door (the ones that open in place; teleport doors stay `door.list`), nearest the camera first, or the one entity named: reference, state (`open` / `closed` / `opening` / `closing`), lock and its key, default state, `FNAM` flags and the three sounds (door-runtime DRT-DX-001)
 weather.force <WTHR|none> [lock] → force the exterior weather like ObScript ForceWeather (saved); `none` releases it
 actor.where <entity|0xREFR> → where an actor is now and its cross-cell travel state: `routing via door entity <id> toward <cell>`, `offscreen, arrives at day <d> <hh:mm> in <cell>`, `unroutable <reason>`, or `in <cell>` / `not loaded, in <cell>`, with its pose (XCT-RPT-001)
 actor.where --census          → every actor the relocation ledger or the router knows: home cell, current cell and state, under a tally line (arrived / offscreen / routing / unroutable by reason, XCT-RPT-002)

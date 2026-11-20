@@ -76,6 +76,7 @@ pub fn register(world: &mut World) {
     created_references::install(world);
     world.register::<ActivateEvent>();
     world.register::<NativeActivation>();
+    world.register::<DefaultActivation>();
     world.register::<HitEvent>();
     world.register::<HitShots>();
     world.register::<HitParts>();

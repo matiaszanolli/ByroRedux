@@ -39,6 +39,21 @@ impl Component for NativeActivation {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// An engine door's verdict on an [`ActivateEvent`] aimed at it this frame (PRD door-runtime DRT-ACT-003, -004): the door runtime
+/// knows the lock, the activator's key and the script's block, the two-state consumer knows only the toggle. `Refused`: the
+/// default activation does not run (a locked door and an activator with no key, or a script that took the default processing
+/// over), so the state stays. `Admitted`: it does run, even for a [`NativeActivation`], because for a door the default
+/// processing *is* the toggle. A one-frame marker, drained with the event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefaultActivation {
+    Refused,
+    Admitted,
+}
+
+impl Component for DefaultActivation {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// The activations a Papyrus `OnActivate` handler (or anything modelling one)
 /// receives this frame, as `(activated entity, activator)`: every
 /// [`ActivateEvent`] except the native-only ones ([`NativeActivation`]), for which

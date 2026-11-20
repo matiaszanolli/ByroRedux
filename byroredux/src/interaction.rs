@@ -1628,13 +1628,20 @@ fn activation_is_blocked(world: &World, entity: EntityId) -> bool {
 }
 
 fn carried_unlock_key(world: &World, target: EntityId) -> Option<u32> {
+    let player = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world)?;
+    key_held_by(world, target, player)
+}
+
+/// The key that opens `target`'s lock, when `holder` carries it (a positive-count stack of the lock's key form): the player's
+/// activation reads it through [`carried_unlock_key`], a door's activator (an actor, a script's reference) through this
+/// (door-runtime DRT-ACT-003).
+pub(crate) fn key_held_by(world: &World, target: EntityId, holder: EntityId) -> Option<u32> {
     let key = world
         .get::<Locked>(target)
         .and_then(|lock| lock.key_form_id)
         .filter(|key| *key != 0)?;
-    let player = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world)?;
     world
-        .get::<byroredux_core::ecs::components::Inventory>(player)?
+        .get::<byroredux_core::ecs::components::Inventory>(holder)?
         .items
         .iter()
         .any(|stack| stack.base_form_id == key && stack.count > 0)

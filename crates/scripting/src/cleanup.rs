@@ -104,6 +104,7 @@ pub fn event_cleanup_system(world: &World, _dt: f32) {
     }
     drain_component::<ActivateEvent>(world);
     drain_component::<crate::NativeActivation>(world);
+    drain_component::<crate::DefaultActivation>(world);
     drain_component::<HitEvent>(world);
     drain_component::<HitShots>(world);
     drain_component::<HitParts>(world);

@@ -68,6 +68,7 @@ mod water;
 mod world_info;
 mod music;
 mod bow;
+mod door;
 mod spell;
 mod stealth;
 mod video;
@@ -248,6 +249,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(spell::CastStatusCommand);
     registry.register(bow::BowShootCommand);
     registry.register(bow::BowStatusCommand);
+    registry.register(door::DoorStatusCommand);
     registry.register(gameplay::ActorReviveCommand);
     registry.register(gameplay::ActorLookCommand);
     registry.register(SysAccessesCommand);

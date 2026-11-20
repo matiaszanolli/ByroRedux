@@ -124,12 +124,32 @@ fn drain_transitions(world: &World) {
     }
 }
 
+/// The activated entities whose two-state toggle runs this frame. A door runtime verdict ([`crate::DefaultActivation`]) decides for
+/// the doors: `Refused` keeps the state, `Admitted` toggles even on a [`crate::NativeActivation`] (a door's default processing is
+/// the toggle). With no verdict the Papyrus rule stands: a native activation sends no `OnActivate`, so it does not toggle.
+fn default_toggle_targets(world: &World) -> Vec<EntityId> {
+    let Some(events) = world.query::<crate::ActivateEvent>() else {
+        return Vec::new();
+    };
+    let native = world.query::<crate::NativeActivation>();
+    let verdicts = world.query::<crate::DefaultActivation>();
+    events
+        .iter()
+        .filter(|(entity, _)| match verdicts.as_ref().and_then(|verdicts| verdicts.get(*entity)) {
+            Some(crate::DefaultActivation::Refused) => false,
+            Some(crate::DefaultActivation::Admitted) => true,
+            None => native.as_ref().is_none_or(|marks| marks.get(*entity).is_none()),
+        })
+        .map(|(entity, _)| entity)
+        .collect()
+}
+
 /// Consume `OnActivate` for canonical two-state activators.
 pub fn two_state_activator_system(world: &World, _dt: f32) {
     drain_transitions(world);
     // #6218 — `Activate(…, true)` is default processing only: "no OnActivate event
     // will be sent to any scripts" (CK), so a `NativeActivation` does not toggle.
-    let activated: Vec<EntityId> = crate::papyrus_activations(world).into_iter().map(|(entity, _)| entity).collect();
+    let activated = default_toggle_targets(world);
     if activated.is_empty() {
         return;
     }
