@@ -74,6 +74,8 @@ fn delta_columns_carry_only_session_stable_fields() {
         // EquippedWeapon: u32 inventory index + u32 base FormID + f32
         // damage. Dead: empty marker. Neither carries session identity.
         "EquippedWeapon",
+        // BOW-AMM-002 — EquippedAmmo: one optional AMMO FormID (u32), global-space.
+        "EquippedAmmo",
         "Dead",
         // M65 — Sneaking: empty marker, the player's sneak stance.
         "Sneaking",
@@ -2564,6 +2566,43 @@ fn a_line_in_flight_survives_save_load_round_trip() {
     dst.insert_resource(FormIdPool::new());
     restore_world(&mut dst, &reg, &decoded).unwrap();
     assert_eq!(dst.get::<SpeakingLine>(actor).map(|l| l.clone()), Some(line));
+}
+
+/// BOW-AMM-002 (#7055, `equipped_ammo_round_trips`): the player's equipped arrow type survives a save and a load, and
+/// a loaded save that names an arrow no longer carried reads as none without an error; clearing writes `None`.
+#[test]
+fn equipped_ammo_round_trips() {
+    use byroredux_core::ecs::components::{EquippedAmmo, Inventory, ItemStack};
+
+    let reg = build_save_registry();
+    let mut src = World::new();
+    src.insert_resource(StringPool::new());
+    src.insert_resource(FormIdPool::new());
+    src.register::<EquippedAmmo>();
+    src.register::<Inventory>();
+    let player = src.spawn();
+    src.insert(player, EquippedAmmo(Some(0x0001_7829)));
+    let mut inventory = Inventory::new();
+    inventory.add(ItemStack::new(0x0001_7829, 10));
+    src.insert(player, inventory);
+
+    let snapshot = save_world(&src, &reg).unwrap();
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+    let mut dst = World::new();
+    dst.insert_resource(FormIdPool::new());
+    restore_world(&mut dst, &reg, &decoded).unwrap();
+    assert_eq!(dst.get::<EquippedAmmo>(player).map(|slot| *slot), Some(EquippedAmmo(Some(0x0001_7829))));
+    assert_eq!(crate::bow::equipped_ammo(&dst, player), Some(0x0001_7829));
+    let again = save_world(&dst, &reg).unwrap();
+    assert_eq!(again.components.get("EquippedAmmo"), decoded.components.get("EquippedAmmo"));
+
+    // A load whose inventory no longer holds the arrow (a removed mod) reads as none, and the sweep writes `None`.
+    dst.query_mut::<Inventory>().unwrap().get_mut(player).unwrap().items[0].count = 0;
+    assert_eq!(crate::bow::equipped_ammo(&dst, player), None);
+    crate::bow::reconcile_equipped_ammo(&dst, player);
+    assert_eq!(dst.get::<EquippedAmmo>(player).map(|slot| *slot), Some(EquippedAmmo(None)));
 }
 
 /// PSC-RDY-004 (#7079): the player's readied spell survives a save and a load, and a loaded save that names a spell the

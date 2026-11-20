@@ -222,10 +222,6 @@ pub(crate) fn player_shot(
     if direction == Vec3::ZERO {
         return Err("no aim direction".into());
     }
-    let owners: Vec<_> = world
-        .query::<byroredux_physics::RapierHandles>()
-        .map(|handles| handles.iter().map(|(entity, handles)| (entity, handles.body)).collect())
-        .unwrap_or_default();
     Ok(Projectile {
         position: origin + direction * MUZZLE_OFFSET_BU,
         velocity: direction * proj.muzzle_speed,
@@ -235,8 +231,52 @@ pub(crate) fn player_shot(
         shooter: player,
         radius: proj.collision_radius.max(0.0),
         spell: None,
-        launcher_bodies: std::sync::Arc::from(launcher_bodies(world, player, &owners)),
+        launcher_bodies: bodies_of(world, player),
     })
+}
+
+/// What a bow's arrow is made of, as the bow rules resolved it (player-archery BOW-FLT-001 to -005): the host builds
+/// this from the `BowModel`, the draw and the records, and the shared flight takes it from here.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ArrowSpec {
+    pub damage: f32,
+    pub speed: f32,
+    pub range: f32,
+    /// The `PROJ` collision radius, 0 where the game has no `PROJ` (Oblivion).
+    pub radius: f32,
+    /// The `PROJ` lifetime in seconds, `None` to live out the range.
+    pub lifetime: Option<f32>,
+}
+
+/// The player's arrow from `origin` along `direction` (the camera's aim, tilted by the caller): the same projectile
+/// the gun's shot and a script's `Weapon.Fire` make, so it takes the shared flight and damage path (BOW-G-004). It
+/// builds from an [`ArrowSpec`] rather than through [`resolve_shot`] because that refuses a `PROJ` with gravity, and a
+/// straight arrow ignores the gravity field (BOW-FLT-004); `None` for a launch with no aim or no speed.
+pub(crate) fn arrow_shot(world: &World, player: EntityId, arrow: ArrowSpec, origin: Vec3, direction: Vec3) -> Option<Projectile> {
+    let direction = direction.normalize_or_zero();
+    if direction == Vec3::ZERO || !(arrow.speed.is_finite() && arrow.speed > 0.0) {
+        return None;
+    }
+    Some(Projectile {
+        position: origin + direction * MUZZLE_OFFSET_BU,
+        velocity: direction * arrow.speed,
+        range_left: arrow.range,
+        lifetime_left: arrow.lifetime,
+        damage: arrow.damage,
+        shooter: player,
+        radius: arrow.radius.max(0.0),
+        spell: None,
+        launcher_bodies: bodies_of(world, player),
+    })
+}
+
+/// The bodies `shooter` owns, stable for a projectile's flight (see [`Projectile::launcher_bodies`]).
+fn bodies_of(world: &World, shooter: EntityId) -> std::sync::Arc<[byroredux_physics::RigidBodyHandle]> {
+    let owners: Vec<_> = world
+        .query::<byroredux_physics::RapierHandles>()
+        .map(|handles| handles.iter().map(|(entity, handles)| (entity, handles.body)).collect())
+        .unwrap_or_default();
+    std::sync::Arc::from(launcher_bodies(world, shooter, &owners))
 }
 
 /// The player's Target spell in flight (PSC-TGT-003): from `origin` along `direction` (the camera's aim) at the
@@ -254,10 +294,6 @@ pub(crate) fn spell_shot(
     if direction == Vec3::ZERO || !(launch.speed.is_finite() && launch.speed > 0.0) {
         return None;
     }
-    let owners: Vec<_> = world
-        .query::<byroredux_physics::RapierHandles>()
-        .map(|handles| handles.iter().map(|(entity, handles)| (entity, handles.body)).collect())
-        .unwrap_or_default();
     Some(Projectile {
         position: origin + direction * MUZZLE_OFFSET_BU,
         velocity: direction * launch.speed,
@@ -267,7 +303,7 @@ pub(crate) fn spell_shot(
         shooter: player,
         radius: 0.0,
         spell: Some(launch.spell),
-        launcher_bodies: std::sync::Arc::from(launcher_bodies(world, player, &owners)),
+        launcher_bodies: bodies_of(world, player),
     })
 }
 

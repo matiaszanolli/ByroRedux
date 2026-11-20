@@ -27,6 +27,7 @@ mod capture_state;
 pub(crate) mod cell_loader;
 mod chargen;
 mod cli_args;
+mod bow;
 mod combat;
 mod player_cast;
 mod skill_use_emit;
@@ -771,6 +772,7 @@ fn install_universal_settings(
         .expect("debug-UI built-in settings must be valid and unique");
     interaction::register_input_settings(&mut settings)
         .expect("input settings must be valid and unique");
+    bow::register_settings(&mut settings).expect("bow settings must be valid and unique");
     // Q4 / MUS-MIX-001 — the music level defaults to the game's own; seeded before the stored
     // values load, so a level the user chose still wins.
     if let Err(error) = settings.set_default(

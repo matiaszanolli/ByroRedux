@@ -25,6 +25,9 @@ pub(super) fn register_combat_input_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_physics::PhysicsWorld>()
             .reads_resource::<byroredux_core::character::MeleeDamageConfig>()
             .reads_resource::<byroredux_core::character::CharacterRuleset>()
+            // BOW-DRW-001 — `bow_in_hand`: a wielded bow is not a melee swing.
+            .reads_resource::<byroredux_core::character::BowModel>()
+            .reads_resource::<crate::components::LoadedCellIndex>()
             .writes_resource::<crate::combat::CombatState>()
             .reads::<Transform>()
             .reads::<byroredux_core::ecs::GlobalTransform>()
@@ -68,5 +71,33 @@ pub(super) fn register_combat_input_systems(scheduler: &mut Scheduler) {
             // `cast_spell` starts the effects and raises the Story Manager `CAST` event.
             .writes::<byroredux_scripting::magic_effects::ActiveMagicEffects>()
             .writes::<byroredux_scripting::story_manager::StoryEvent>(),
+    );
+    // Player-archery (BOW-DRW-005): the one system that owns the draw, the release and the spend. It reads the held
+    // attack action, ticks the interval, and on the release edge gates, spends one arrow of the equipped type and
+    // launches it on the shared projectile flight.
+    scheduler.add_exclusive_with_access(
+        Stage::Update,
+        crate::bow::player_bow_system,
+        Access::new()
+            .reads_resource::<ActionState>()
+            .reads_resource::<crate::systems::PlayerEntity>()
+            .reads_resource::<crate::systems::PlayerMode>()
+            .reads_resource::<crate::components::VatsState>()
+            .reads_resource::<byroredux_core::character::BowModel>()
+            .reads_resource::<crate::components::LoadedCellIndex>()
+            .reads_resource::<byroredux_core::settings::SettingsRegistry>()
+            .reads_resource::<ActiveCamera>()
+            .writes_resource::<crate::bow::BowState>()
+            .writes_resource::<crate::systems::projectiles::ActiveProjectiles>()
+            .reads::<Transform>()
+            .reads::<byroredux_core::ecs::GlobalTransform>()
+            .reads::<byroredux_physics::RapierHandles>()
+            .reads::<byroredux_core::ecs::components::Dead>()
+            .reads::<byroredux_core::ecs::components::EquippedWeapon>()
+            .reads::<byroredux_core::ecs::components::EquippedAmmo>()
+            .writes::<byroredux_core::ecs::components::EquippedAmmo>()
+            // `remove_items` spends the arrow.
+            .reads::<byroredux_core::ecs::components::Inventory>()
+            .writes::<byroredux_core::ecs::components::Inventory>(),
     );
 }

@@ -59,6 +59,9 @@ pub(crate) enum EquipTarget {
     BipedSlots(u64),
     /// The wielded-weapon slot, outside the biped occupancy array.
     Weapon,
+    /// The player's chosen arrow type (player-archery BOW-AMM-001): a slot of its own, not a biped slot and not
+    /// the wielded weapon. Only games with a bow row make ammunition equippable.
+    Ammo,
 }
 
 /// Resolve the base `NPC_` record for the player, never the placed player

@@ -457,10 +457,12 @@ gameplay code, not a renderer). The facts are those of `crates/core/src/settings
 - **Registered before load.** The owning module registers in `install_universal_settings`
   (`interaction::register_input_settings` is the pattern), before the stored file is read, so a stored
   value overlays the freshly registered default.
-- **A default known only at launch** is seeded with `SettingsRegistry::set_default` after registration and
-  before `settings_io::load`, as the music level is (`MUSIC_VOLUME_SETTING_ID`): a value still at the old
-  default follows the new one and a value the player moved stays. The per-game trajectory default of
-  BOW-SET-002 uses this, so it needs the game known at that point in boot.
+- **A default known only at launch** is seeded with `SettingsRegistry::set_default`, as the music level is
+  (`MUSIC_VOLUME_SETTING_ID`, seeded before `settings_io::load` from the CLI arguments): a value still at the old
+  default follows the new one and a value the player moved stays. A default that needs the loaded plugin (the
+  per-game trajectory of BOW-SET-002) is only known after the index loads, so `bow::install_bow_model` seeds it
+  then, after the stored values; the same rule holds, so a stored choice that differs from the registered default
+  wins, and one equal to it follows the game's.
 - **Persisted in the settings file, never in a save.** `settings.toml` (`SETTINGS_VERSION = 1`) holds
   `(id, value)` pairs and only the ids whose value moved off the loaded baseline are written; a stale or
   unknown key is skipped on load. A setting that changes where an arrow lands is a player preference, so it

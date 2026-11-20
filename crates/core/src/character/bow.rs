@@ -81,9 +81,22 @@ pub enum SpeedRule {
     Projectile,
 }
 
+/// How the game's weapon record says a weapon is a bow: the parser decodes Oblivion's `WEAP` type and the later
+/// games' animation type into separate fields, so the row names which one to test (xEdit / UESP: Oblivion type 5,
+/// Skyrim `wbWeaponAnimTypeEnum` 7). Fallout's enum has no bow, so it has no row and no class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WeaponClass {
+    /// `WEAP` `DATA` type (Oblivion): 5 is a bow.
+    WeaponType(u8),
+    /// `WEAP` `DNAM` animation type (Skyrim): 7 is a bow.
+    AnimType(u8),
+}
+
 /// The bow's per-game numbers (BOW-MOD-001). Installed as a resource where the profile's `bow` row is `Some`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BowModel {
+    /// Which record field says a weapon is a bow.
+    pub class: WeaponClass,
     pub draw: DrawRule,
     pub speed: SpeedRule,
     /// The arrow's upward tilt in degrees, first person then third (Skyrim `f1PArrowTiltUpAngle` 2,
@@ -103,6 +116,7 @@ impl BowModel {
     /// `fArrowSpeedMult` 1500, `fArrowWeakSpeed` 0.01). `Oblivion.esm` authors none of them, so these stand
     /// unless a plugin does.
     pub const OBLIVION: Self = Self {
+        class: WeaponClass::WeaponType(5),
         draw: DrawRule::Timer { base: 0.25, mult: 0.4 },
         speed: SpeedRule::Formula { speed_mult: 1500.0, weak: 0.01 },
         tilt_degrees: [0.0, 0.0],
@@ -113,6 +127,7 @@ impl BowModel {
     /// Skyrim's: UESP *Skyrim:Archery* (draw 1.66 s at weapon speed 1, nock about 0.4 s, tilt 2 and 2.5 degrees,
     /// the 4096 range cap).
     pub const SKYRIM: Self = Self {
+        class: WeaponClass::AnimType(7),
         draw: DrawRule::Duration { nock: 0.4, draw: 1.66, rest: 0.6 },
         speed: SpeedRule::Projectile,
         tilt_degrees: [2.0, 2.5],
@@ -145,6 +160,15 @@ impl BowModel {
         };
         let range_cap = if self.range_cap.is_finite() { authored("fVisibleNavmeshMoveDist", self.range_cap) } else { self.range_cap };
         Self { draw, speed, tilt_degrees, range_cap, ..self }
+    }
+
+    /// Whether a weapon with these record fields is a bow under this game's rules.
+    #[must_use]
+    pub const fn is_bow(&self, weapon_type: u8, anim_type: u8) -> bool {
+        match self.class {
+            WeaponClass::WeaponType(bow) => weapon_type == bow,
+            WeaponClass::AnimType(bow) => anim_type == bow,
+        }
     }
 
     /// The seconds a draw has to be held before the arrow flies at full strength: Oblivion's timer reaches 1 at
@@ -228,6 +252,14 @@ mod tests {
         assert!(model.full_draw_seconds(0.0).is_finite());
         // The arrow leaves at the PROJ speed, not scaled by anything.
         assert_eq!(model.arrow_speed(0.0, 3600.0, 1.0), 3600.0);
+    }
+
+    /// The two games name a bow in different record fields, and neither field of the other game matches.
+    #[test]
+    fn a_bow_is_named_by_the_games_own_field() {
+        assert!(BowModel::OBLIVION.is_bow(5, 0) && !BowModel::OBLIVION.is_bow(0, 7));
+        assert!(BowModel::SKYRIM.is_bow(0, 7) && !BowModel::SKYRIM.is_bow(5, 0));
+        assert!(!BowModel::SKYRIM.is_bow(0, 9), "a crossbow is a later PRD (BOW-NG-001)");
     }
 
     #[test]

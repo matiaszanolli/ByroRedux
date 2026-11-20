@@ -907,7 +907,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // M48 GUI-EVT-001 (#6668) — refreshed WITH a major bump (v133 -> v134): the new
     // `MenuEventRegistrations` resource column.
     // #7044 — refreshed WITH a major bump (v135 -> v136): `ActorValue` gained the required `stored` layer.
-    const BASELINE_MAJOR: u16 = 140;
+    const BASELINE_MAJOR: u16 = 141;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1359,7 +1359,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // #6941 — v139: the saved `ActiveEffect` gained the required `effect_index`, refreshed WITH the major bump above.
     // PSC-RDY-004 (#7079) — v140: `ReadiedSpell` (one optional spell FormID) joined the saved registry as a NEW component
     // column, refreshed WITH the major bump above.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x2935_796a_4f67_bffe;
+    // BOW-AMM-002 (#7055) — v141: `EquippedAmmo` (one optional AMMO FormID) joined the saved registry as a NEW component
+    // column, refreshed WITH the major bump above.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x3f2e_9c43_27cf_bb3b;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.

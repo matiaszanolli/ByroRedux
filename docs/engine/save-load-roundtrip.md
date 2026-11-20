@@ -277,26 +277,29 @@ survive edits:
 
 ## Equipped ammo (the player's arrow slot)
 
-The player's chosen arrow type (Player archery PRD, BOW-AMM-001 and -002). Nothing carries it at HEAD:
-`EquipmentSlots` holds worn and wielded items and `EquippedWeapon` the wielded weapon, and the gun path picks
-the first accepted ammunition in the inventory (`player_ammo_for`). The design follows the wielded weapon's
-pattern, which this document already owns:
+The player's chosen arrow type (Player archery PRD, BOW-AMM-001 and -002; built in #7055). Before it, nothing
+carried it: `EquipmentSlots` holds worn and wielded items and `EquippedWeapon` the wielded weapon, and the gun
+path picks the first accepted ammunition in the inventory (`player_ammo_for`). It is deliberately not shaped like
+`EquippedWeapon`:
 
-- **A saved component on the player**, holding the `AMMO` base form id and nothing derived (the count is the
-  inventory's, never copied). It is registered in `build_save_registry()` like `EquippedWeapon`, so the
-  registry order and shape guard (`SaveRegistry::schema_fingerprint`) change with it. **That is a save-format
-  bump**: a new column makes `FORMAT_MAJOR` move, with its history paragraph in `crates/save/src/snapshot.rs`,
-  and the registry's round-trip and completeness guards cover the new type.
-- **Equipping sets it; losing the stack clears it.** `inv.equip` on an `AMMO` item sets it, and the
-  last arrow of the type leaving the inventory (spent, dropped, removed) clears it, at runtime and at load.
-- **Delta application cannot remove a row** (§ What's not covered), and clearing is a removal. The slot is
-  therefore a `MUTABLE_DELTA_COLUMNS` type that needs a load reconciler, the same way `EquippedWeapon` has
-  `reconcile_player_equipped_weapon`: one function, owned by the runtime transition, re-run after load, so a
-  save that names an arrow no longer in the inventory loads with the slot cleared and no error (BOW-AMM-002).
-  The completeness test `delta_columns_removed_at_runtime_have_a_load_reconciler` fails until the
-  reconciler is registered, which is the check that the clear is not forgotten.
-- **Not saved:** a shot in progress (the draw start, the interval timer) and every `Projectile` in flight,
-  which are transient by the projectile path's design ([game-loop.md](game-loop.md), the projectile path).
+- **A saved component on the player, `EquippedAmmo(Option<u32>)`** (`crates/core/src/ecs/components/inventory.rs`),
+  holding the `AMMO` base form id and nothing derived: the count is the inventory's, never copied. It is registered
+  in `build_save_registry()` right after `EquippedWeapon`, so the registry order and shape guard
+  (`SaveRegistry::schema_fingerprint`) moved with it. **That was a save-format bump** (v140 to v141, the history
+  paragraph in `crates/save/src/snapshot.rs`), covered by `equipped_ammo_round_trips` and the registry's
+  completeness and fingerprint guards.
+- **Clearing writes `None`; it never removes the row.** Delta application cannot remove a row (§ What's not
+  covered), and a removal would need a load reconciler like `reconcile_player_equipped_weapon`. A written `None`
+  is an ordinary overlay, so the clear survives a load with no reconciler (`ReadiedSpell` is the same shape).
+- **A slot naming an arrow the player no longer carries reads as none.** `bow::equipped_ammo` checks the
+  inventory's count, so a spent, dropped, removed or mod-removed arrow clears the slot with no hook on each path;
+  `bow::reconcile_equipped_ammo` writes the `None` (the bow system runs it every frame, the round-trip test runs it
+  after a load).
+- **Equipping goes through the one door**: `inv.equip` and the menu's equip toggle on an `AMMO` item reach
+  `toggle_equipped_ammo` (`EquipTarget::Ammo`), which exists only where the game has a bow row; equipping another
+  type replaces it and the same type puts it away.
+- **Not saved:** a shot in progress (`BowState`: the draw held so far, the interval) and every `Projectile` in
+  flight, which are transient by the projectile path's design ([game-loop.md](game-loop.md), the projectile path).
 
 ## What's not covered
 

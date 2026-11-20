@@ -212,6 +212,21 @@ impl Component for EquippedWeapon {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// The arrow type the player has chosen to shoot (player-archery PRD, BOW-AMM-001): the `AMMO` base form id, or
+/// `None`. Oblivion's "must both be equipped" (UESP *Oblivion:Marksman*) and Skyrim's arrows that "remain equipped
+/// even if you unequip the bow" (UESP *Skyrim:Archery*).
+///
+/// A slot, not a stack: the count is the [`Inventory`]'s and is never copied here, and a form id that no longer has
+/// a counted stack reads as unset (`byroredux::bow::equipped_ammo`). The slot is cleared by writing `None`, not by
+/// removing the component, so the additive save overlay can carry the clear (BOW-AMM-002).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub struct EquippedAmmo(pub Option<u32>);
+
+impl Component for EquippedAmmo {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// The number of biped-slot bits an actor's equipment can occupy.
 ///
 /// FO3 / FNV `BMDT.biped_flags` is the low 16 bits; Skyrim+ `BOD2`/`BODT`

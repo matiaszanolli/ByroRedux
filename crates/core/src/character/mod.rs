@@ -153,7 +153,7 @@ pub use reputation::{
 };
 pub use resistance::{damage_multiplier, Affliction};
 pub use ruleset::CharacterRuleset;
-pub use bow::{ArrowTrajectory, BowModel, DrawRule, SpeedRule};
+pub use bow::{ArrowTrajectory, BowModel, DrawRule, SpeedRule, WeaponClass};
 pub use spell_cast::{EffectCostInput, EffectRange, SpellCastModel, Tier as SpellTier};
 pub use stance::{SneakMovement, SneakSpeed, SneakSpeedSource, StanceModel};
 pub use skill::{ResolvedSkill, SkillDef, SkillSet};

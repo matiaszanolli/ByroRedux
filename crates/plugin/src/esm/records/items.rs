@@ -601,9 +601,12 @@ pub fn parse_weap(
             }
             // M65 (SNK-ATK-004) — Skyrim WEAP DNAM (xEdit `wbDefinitionsTES5`): byte 0 is the
             // Animation Type, the index `SkyrimSE.exe` keys the sneak-attack multiplier on
-            // (`0x14028c410`). The rest of the struct (speed, reach, …) is not decoded here.
+            // (`0x14028c410`). Player-archery BOW-DRW-003 adds the Speed at offset 4 (xEdit `Animation
+            // Type`, `unused[3]`, `Speed`, `Reach`; UESP *Skyrim Mod:Mod File Format/WEAP* `04:Speed`), which
+            // a bow's draw time divides by. The rest of the struct (reach, …) is not decoded here.
             b"DNAM" if matches!(game, GameKind::Skyrim) => {
                 anim_type = sub.data.first().copied().unwrap_or(0);
+                speed = sub.data.get(4..8).map_or(0.0, |bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
             }
             // FO4 WEAP DNAM is a packed, unaligned 132-byte structure. Keep
             // the game-specific byte layout here at the parser boundary and
@@ -2900,6 +2903,26 @@ mod tests {
                 assert_eq!(casing_form, 0, "no projectile/casing on Oblivion AMMO");
             }
             _ => panic!("expected Ammo kind"),
+        }
+    }
+
+    /// player-archery BOW-DRW-003 — a Skyrim bow's authored speed (WEAP `DNAM` offset 4, after the animation type and
+    /// three unused bytes: xEdit `wbDefinitionsTES5`, UESP *WEAP*) is kept next to its animation type 7.
+    #[test]
+    fn skyrim_weapon_dnam_keeps_the_speed() {
+        let mut dnam = vec![0u8; 100];
+        dnam[0] = 7; // bow
+        dnam[4..8].copy_from_slice(&0.9f32.to_le_bytes());
+        let subs = vec![sub(b"EDID", b"HuntingBow\0"), sub(b"DNAM", &dnam)];
+        match parse_weap(0x13985, &subs, GameKind::Skyrim, &None).kind {
+            ItemKind::Weapon { anim_type, speed, .. } => assert_eq!((anim_type, speed), (7, 0.9)),
+            _ => panic!("expected Weapon kind"),
+        }
+        // A DNAM too short to carry the speed leaves it undecoded rather than panicking.
+        let subs = vec![sub(b"EDID", b"Stub\0"), sub(b"DNAM", &[3u8])];
+        match parse_weap(0x1, &subs, GameKind::Skyrim, &None).kind {
+            ItemKind::Weapon { anim_type, speed, .. } => assert_eq!((anim_type, speed), (3, 0.0)),
+            _ => panic!("expected Weapon kind"),
         }
     }
 

@@ -371,6 +371,8 @@ pub fn register_all(registry: &mut ComponentRegistry) {
         "EquippedWeapon",
         vec!["inventory_index", "base_form_id", "damage", "reach", "speed"],
     );
+    // Player-archery BOW-AMM-001 — the equipped arrow type (`byro-dbg` reads it beside `EquippedWeapon`).
+    register_component::<EquippedAmmo>(registry, "EquippedAmmo", vec!["0"]);
     register_component::<Dead>(registry, "Dead", vec![]);
     // M65 (SNK-STN-002, #6910) — the player's sneak stance marker.
     register_component::<Sneaking>(registry, "Sneaking", vec![]);

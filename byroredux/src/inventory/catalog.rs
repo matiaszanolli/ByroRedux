@@ -565,6 +565,9 @@ pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
                 format!("Item {form_id:08X}")
             };
             let (category, mut details, equip_target) = describe_kind(&item.kind);
+            // Ammunition is equippable only where the game has a player bow (BOW-MOD-001): a Fallout gun takes the
+            // first accepted ammunition the player carries and has no arrow slot.
+            let equip_target = equip_target.filter(|target| *target != EquipTarget::Ammo || index.character_rules.bow().is_some());
             if matches!(item.kind, ItemKind::Aid { .. }) {
                 details = if let Some(plan) = restorations.get(&form_id) {
                     if plan.iter().any(|e| e.duration > 0) {
@@ -667,7 +670,7 @@ pub(super) fn describe_kind(kind: &ItemKind) -> (&'static str, String, Option<Eq
             format!("Damage {damage}"),
             Some(EquipTarget::Weapon),
         ),
-        ItemKind::Ammo { damage, .. } => ("Ammo", format!("Damage {damage:.1}"), None),
+        ItemKind::Ammo { damage, .. } => ("Ammo", format!("Damage {damage:.1}"), Some(EquipTarget::Ammo)),
         ItemKind::Aid { .. } => ("Aid", "Consumable".to_owned(), None),
         ItemKind::Ingredient { .. } => ("Ingredient", "Ingredient".to_owned(), None),
         ItemKind::Book { .. } => ("Book", "Book".to_owned(), None),

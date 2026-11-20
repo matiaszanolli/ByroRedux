@@ -189,7 +189,10 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_core::character::SkillUseLevel>();
     // Player-spellcasting (PSC-RDY-001): the readied spell and the cast's session state.
     world.register::<byroredux_scripting::player_cast::ReadiedSpell>();
+    // Player-archery (BOW-AMM-001): the equipped arrow type.
+    world.register::<byroredux_core::ecs::components::EquippedAmmo>();
     world.init_resource::<byroredux_scripting::player_cast::CastState>();
+    world.init_resource::<crate::bow::BowState>();
     world.init_resource::<crate::skill_use_emit::StanceTimers>();
     world.init_resource::<crate::skill_use_emit::LevelNotices>();
     world.insert_resource(StringPool::new());

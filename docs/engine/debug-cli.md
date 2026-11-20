@@ -186,7 +186,7 @@ using the generic `register_component::<T>()` helper, called from
 `byroredux-core`). The registry is owned by the `DebugDrainSystem`
 (`DebugDrainSystem.registry`), not stored as a World resource.
 
-### Currently registered (84 components)
+### Currently registered (85 components)
 
 | Component | Fields |
 |-----------|--------|
@@ -240,6 +240,7 @@ using the generic `register_component::<T>()` helper, called from
 | `PatrolState` | route, target, phase |
 | `ActorValues` | values — actor-value layers keyed by AVIF FormID |
 | `ActorVitals` | health — resolved per-game health AVIF FormID |
+| `EquippedAmmo` | 0 (the equipped arrow type's `AMMO` form id, or none; player-archery BOW-AMM-001) |
 | `EquippedWeapon` | inventory_index, base_form_id, damage, reach, speed |
 | `Dead` | (marker) — actor death state |
 | `Sneaking` | (marker) — the player is in the sneak stance (M65) |
@@ -344,7 +345,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**189**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**191**) grouped by
 purpose:
 
 ```
@@ -564,6 +565,8 @@ spell.ready <spell>          → ready a spell the player knows for the cast act
 spell.cast                   → one cast action for the player, the cast key's own path: the gate (can act, readied, castable, mastery, Magicka), Magicka and Fatigue damage, then the effects; `magic.cast` stays the uncharged script path (PSC-DX-002)
 spell.list                   → the player's castable spells (readied marked `*`) with school, tier and what each costs now
 cast.status                  → the readied spell, the last cast (started or its refusal), the provisional casting interval and touch reach, the projectile speed and range, and the last Target projectile's fate (PSC-DX-001)
+bow.status                   → the readied bow, the equipped arrow and its count, the last shot (released with its draw fraction, speed and range, or the refusal reason), the trajectory in effect (and what the setting asks for), the provisional interval, the range, and the skill feed (`Marksman unfed` / `Archery unfed`) (player-archery BOW-DX-001)
+bow.shoot [seconds]          → release the player's bow after a draw of that many seconds (default a full draw): the attack key's own gate, arrow spend and flight, so a smoke script drives the real path (BOW-DX-002)
 weather.force <WTHR|none> [lock] → force the exterior weather like ObScript ForceWeather (saved); `none` releases it
 actor.where <entity|0xREFR> → where an actor is now and its cross-cell travel state: `routing via door entity <id> toward <cell>`, `offscreen, arrives at day <d> <hh:mm> in <cell>`, `unroutable <reason>`, or `in <cell>` / `not loaded, in <cell>`, with its pose (XCT-RPT-001)
 actor.where --census          → every actor the relocation ledger or the router knows: home cell, current cell and state, under a tally line (arrived / offscreen / routing / unroutable by reason, XCT-RPT-002)
@@ -1431,7 +1434,7 @@ byro> components
   TextureHandle
   Transform
   WorldBound
-(84 components)
+(85 components)
 
 byro> entities Inventory
   Entity 12 "saadia"

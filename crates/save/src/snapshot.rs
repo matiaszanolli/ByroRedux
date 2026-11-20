@@ -674,7 +674,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v139 -> v140 (#7079, PSC-RDY-004): a new component column, `ReadiedSpell` (the player's readied spell, one optional
 /// spell FormID), so a v139 snapshot has no such column and the schema no longer matches.
-pub const FORMAT_MAJOR: u16 = 140;
+///
+/// v140 -> v141 (#7055, BOW-AMM-002): a new component column, `EquippedAmmo` (the player's equipped arrow type, one
+/// optional `AMMO` FormID), so a v140 snapshot has no such column and the schema no longer matches.
+pub const FORMAT_MAJOR: u16 = 141;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

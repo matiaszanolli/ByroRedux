@@ -3238,3 +3238,24 @@ fn unequipping_the_weapon_puts_it_away() {
     assert!(world.get::<EquippedWeapon>(player).is_none());
     assert!(!is_weapon_out(&world, player), "an unequipped weapon is not out");
 }
+
+/// Player-archery BOW-AMM-001: equipping an arrow type sets the player's arrow slot, choosing it again puts it away,
+/// choosing another replaces it, and a game with no bow rules refuses (`inv.equip` on an arrow reaches this).
+#[test]
+fn equipping_an_arrow_type_sets_replaces_and_clears_the_slot() {
+    use byroredux_core::ecs::components::EquippedAmmo;
+    let mut world = World::new();
+    world.register::<EquippedAmmo>();
+    world.insert_resource(byroredux_core::character::BowModel::OBLIVION);
+    let player = world.spawn();
+    const IRON: u32 = 0x17829;
+    const STEEL: u32 = 0x1782A;
+    assert_eq!(actions::toggle_equipped_ammo(&mut world, player, IRON), actions::MutationResult::Equipped);
+    assert_eq!(world.get::<EquippedAmmo>(player).map(|slot| slot.0), Some(Some(IRON)));
+    assert_eq!(actions::toggle_equipped_ammo(&mut world, player, STEEL), actions::MutationResult::Equipped);
+    assert_eq!(world.get::<EquippedAmmo>(player).map(|slot| slot.0), Some(Some(STEEL)), "another type replaces it");
+    assert_eq!(actions::toggle_equipped_ammo(&mut world, player, STEEL), actions::MutationResult::Unequipped);
+    assert_eq!(world.get::<EquippedAmmo>(player).map(|slot| slot.0), Some(None), "put away writes None, not a removal");
+    world.remove_resource::<byroredux_core::character::BowModel>();
+    assert_eq!(actions::toggle_equipped_ammo(&mut world, player, IRON), actions::MutationResult::Unavailable);
+}

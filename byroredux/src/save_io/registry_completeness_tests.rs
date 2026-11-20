@@ -456,7 +456,9 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("BenchMover", "a bench-only moving blocker (RLT-SHD-010) placed by step_bench_movers from the bench frame index; spawned only by the penumbra-moving reference rung, which has no save path"),
         // ── Player-spellcasting (PSC-CST-008, #7079) ─────────────────
         ("SpellCastModel", "the Oblivion spell-cast rules, re-derived at load from the profile's spell_cast row and the load order's GMSTs by install_spell_cast_model; saving it would freeze a mod's tuning across loads"),
+        ("BowModel", "the Oblivion / Skyrim bow rules, re-derived at load from the profile's bow row and the load order's GMSTs by install_bow_model; saving it would freeze a mod's tuning across loads"),
         ("CastState", "session state of the cast (the casting interval's remaining seconds and the last report for cast.status); a load starts with no cast in flight"),
+        ("BowState", "session state of the bow (the draw held so far, the interval's remaining seconds, the last report for bow.status); a load starts with no draw in flight"),
         // ── #6350 VATS session state ────────────────────────────────
         ("VatsModel", "re-derived at load from the load order's GMSTs by build_vats_model; saving it would freeze a mod's tuning across load-order changes"),
         ("VatsState", "transient targeting-mode state (mode + scan + queue), keyed by the session's EntityIds; an in-process load ends it in discard_outgoing_session_requests (#6508) so the loaded world is never frozen on stale ids, a cold start never has one — the AP pool persists through ActorValues"),
@@ -1350,6 +1352,10 @@ fn every_delta_column_is_parked_or_explicitly_not() {
             "player-scoped (player_cast, spell.ready and the cycle keys); the player outlives cell reloads and is never evicted",
         ),
         (
+            "EquippedAmmo",
+            "player-scoped (the bow's arrow choice, `inv.equip` on an arrow); the player outlives cell reloads and is never evicted",
+        ),
+        (
             "SkillUseLevel",
             "player progression (oblivion_skill_use, a skill rank-up); the player outlives cell reloads and is never evicted",
         ),
@@ -1504,9 +1510,11 @@ fn the_schema_fingerprint_is_pinned() {
     // (`RegisterForMenuOpenCloseEvent`), registered after `HitRegistrations`.
     // #7050 (OSL-SAVE-001) — `SkillUseLevel` joined the registry as a new replacing component column (the
     // player's Oblivion skill-use level tallies), registered after `CharacterLevel`.
+    // BOW-AMM-002 (#7055) — `EquippedAmmo` joined the registry as a new component column (the player's equipped arrow
+    // type), registered right after `EquippedWeapon`.
     // PSC-RDY-004 (#7079) — `ReadiedSpell` joined the registry as a new replacing component column (the player's
     // readied spell), registered after `SpellList`.
-    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x6091_f3e6_5b45_4bdf;
+    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x0f2c_8ad0_7aa8_16d1;
     let actual = build_save_registry().schema_fingerprint();
     assert_eq!(
         actual, BASELINE_SCHEMA_FINGERPRINT,

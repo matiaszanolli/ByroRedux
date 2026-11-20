@@ -186,6 +186,10 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
     // used for the ray cast need the equipped weapon.
     let aggressor = PlayerEntity::get(world);
 
+    // Player-archery BOW-DRW-001: a bow draws and releases through `bow::player_bow_system`; it is never a melee
+    // swing, so its attack edge arms no swing and no cooldown here.
+    let attack_pressed = attack_pressed && !crate::bow::bow_in_hand(world);
+
     // #3033 — the eligibility gate must be read BEFORE the `CombatState`
     // mutation, not after it. Pre-fix the attack edge was consumed, the
     // cooldown armed and `attacks_started` incremented, and only *then* was
@@ -3410,6 +3414,36 @@ mod tests {
         assert!(!is_weapon_out(&world, player), "putting it away is never refused");
         tap_ready_weapon(&world);
         assert!(!is_weapon_out(&world, player), "drawing waits for the character mode");
+    }
+
+    /// Player-archery BOW-DRW-001 (`a_bow_does_not_melee`): with a bow in hand the attack edge arms no swing and no
+    /// cooldown (the bow system owns the draw and the release), and the same press with a sword swings.
+    #[test]
+    fn a_bow_does_not_melee() {
+        use byroredux_plugin::esm::records::{common::CommonItemFields, EsmIndex, ItemKind, ItemRecord};
+        const WEAPON: u32 = 0x1234;
+        let weapon_of = |oblivion_type: u8| {
+            let mut kind = ItemKind::weapon_stub(8, 0);
+            if let ItemKind::Weapon { oblivion_type: slot, .. } = &mut kind {
+                *slot = oblivion_type;
+            }
+            let mut index = EsmIndex::default();
+            index.items.insert(WEAPON, ItemRecord { form_id: WEAPON, common: CommonItemFields::default(), kind });
+            index
+        };
+        for (oblivion_type, swings) in [(5u8, 0u64), (3, 1)] {
+            let (mut world, aggressor) = attack_edge_fixture(PlayerMode::Character);
+            world.insert_resource(byroredux_core::character::BowModel::OBLIVION);
+            world.insert_resource(crate::components::LoadedCellIndex(std::sync::Arc::new(weapon_of(oblivion_type))));
+            world.insert(
+                aggressor,
+                EquippedWeapon { inventory_index: InventoryIndex(0), base_form_id: WEAPON, damage: 8.0, reach: 0.0, speed: 0.0 },
+            );
+            press_attack(&world);
+            combat_input_system(&world, 1.0 / 60.0);
+            assert_eq!(world.resource::<CombatState>().attacks_started, swings, "weapon type {oblivion_type}");
+            assert_eq!(melee_state_of(&world, aggressor).cooldown_remaining > 0.0, swings == 1, "weapon type {oblivion_type}");
+        }
     }
 
     #[test]
