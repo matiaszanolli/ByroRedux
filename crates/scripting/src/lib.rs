@@ -155,7 +155,7 @@ pub use equipment::{
     emit_equipment_changes, emit_item_transfers, install_equip_item_catalog, EquipItemCatalog,
 };
 pub use events::{
-    papyrus_activations, ActivateEvent, NativeActivation, AnimationTextKeyEvent, AnimationTextKeyEvents, EquipmentChange,
+    papyrus_activations, ActivateEvent, DefaultActivation, NativeActivation, AnimationTextKeyEvent, AnimationTextKeyEvents, EquipmentChange,
     EquipmentEventBatch, HitEvent, HitParts, HitShots, ItemEventBatch, ItemTransfer, OnCellLoadEvent, OnDeathEvent, OnInitEvent,
     PartStrike,
     OnTriggerEnterEvent, OnTriggerLeaveEvent, RippleEvent, SplashEvent, TimerExpired,

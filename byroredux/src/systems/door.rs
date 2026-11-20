@@ -72,7 +72,34 @@ fn set_player(world: &World, entity: EntityId, handle: u32, duration: f32, playi
     }
 }
 
+/// The door's verdict on each activation aimed at it (DRT-ACT-003, -004), set before `two_state_activator_system` reads it.
+/// Refused: the door is still `Locked` and the activator carries no key (the player's own lock, key or pick, is settled where
+/// the activation is made and has taken the lock off by now), or a script took the default processing over
+/// (`default_activation_blocked`, which a native activation is exempt from). Admitted: otherwise, even for a native activation,
+/// whose default processing for a door is the toggle. A refusal leaves the event for the scripts: their `OnActivate` still runs.
+fn door_activation_verdicts(world: &World) {
+    let aimed: Vec<(EntityId, EntityId)> = {
+        let (Some(events), Some(doors)) = (world.query::<byroredux_scripting::ActivateEvent>(), world.query::<Door>()) else {
+            return;
+        };
+        events.iter().filter(|(entity, _)| doors.contains(*entity)).map(|(entity, event)| (entity, event.activator)).collect()
+    };
+    for (door, activator) in aimed {
+        let locked_out = world.get::<byroredux_core::ecs::components::Locked>(door).is_some()
+            && crate::interaction::key_held_by(world, door, activator).is_none();
+        let verdict = if locked_out || byroredux_scripting::default_activation_blocked(world, door) {
+            byroredux_scripting::DefaultActivation::Refused
+        } else {
+            byroredux_scripting::DefaultActivation::Admitted
+        };
+        if let Some(mut verdicts) = world.query_mut::<byroredux_scripting::DefaultActivation>() {
+            verdicts.insert(door, verdict);
+        }
+    }
+}
+
 pub(crate) fn door_motion_system(world: &World, dt: f32) {
+    door_activation_verdicts(world);
     // The transitions published since the last run, as (door, opened).
     let mut starts: Vec<(EntityId, bool)> = Vec::new();
     if let Some(batches) = world.query::<TwoStateTransitionBatch>() {
@@ -308,6 +335,118 @@ mod tests {
         let (world, door, open, _) = door_world(false);
         tick(&world, 0.016);
         assert_eq!(player_of(&world, door), (open, 0.0, false));
+    }
+
+    /// A placed door with `Open` and `Close` sequences, as the cell loader hands it to `attach_door`.
+    fn placed_door(world: &mut World, default_open: bool) -> EntityId {
+        let root = world.spawn();
+        world.insert(
+            root,
+            byroredux_core::animation::NamedSequences(std::sync::Arc::from(vec![("Open".into(), 0u32), ("Close".into(), 1u32)])),
+        );
+        assert!(attach_door(world, root, Default::default(), byroredux_plugin::esm::reader::GameKind::Oblivion, default_open));
+        root
+    }
+
+    /// DRT-STATE-003 — a door returns to its default state when its cell is unloaded and re-entered, whatever state it was left
+    /// in: the state lives on the placement's entity, which the unload despawns, and the next visit seeds a new one from the
+    /// reference's `Open by Default` flag. (A save restores the saved state over that seed through the `TwoStateActivator`
+    /// column, which the save round trip pins.)
+    #[test]
+    fn a_door_returns_to_its_default_state_on_reentry() {
+        for default_open in [false, true] {
+            let mut world = World::new();
+            world.register::<Door>();
+            let first = placed_door(&mut world, default_open);
+            assert_eq!(world.get::<TwoStateActivator>(first).unwrap().is_open, default_open);
+            // The visit leaves the door in the other state, then the cell unloads.
+            world.query_mut::<TwoStateActivator>().unwrap().get_mut(first).unwrap().is_open = !default_open;
+            world.despawn(first);
+            let second = placed_door(&mut world, default_open);
+            assert_eq!(world.get::<TwoStateActivator>(second).unwrap().is_open, default_open, "re-entry seeds the default again");
+            assert_eq!(world.get::<Door>(second).unwrap().posed, None, "and its pose is not yet shown, so the first tick snaps it");
+        }
+    }
+
+    /// An activation aimed at `door` by `activator`, as the player's press, an actor's package or a script's `Activate` raises it.
+    fn activate(world: &World, door: EntityId, activator: EntityId, native: bool) {
+        world.query_mut::<byroredux_scripting::ActivateEvent>().unwrap().insert(door, byroredux_scripting::ActivateEvent { activator });
+        if native {
+            world.query_mut::<byroredux_scripting::NativeActivation>().unwrap().insert(door, byroredux_scripting::NativeActivation);
+        }
+    }
+
+    fn is_open_after(world: &World, door: EntityId) -> bool {
+        byroredux_scripting::two_state_activator_system(world, 0.0);
+        world.get::<TwoStateActivator>(door).unwrap().is_open
+    }
+
+    /// DRT-ACT-003 — a locked door refuses an activator that carries no key and admits one that does; the key is read from the
+    /// *activator's* inventory, not the player's. The lock itself is left as it was.
+    #[test]
+    fn a_locked_door_admits_only_an_activator_that_carries_its_key() {
+        use byroredux_core::ecs::components::{Inventory, ItemStack, Locked};
+        const KEY: u32 = 0x0001_4EC0;
+        let (mut world, door, ..) = door_world(false);
+        world.register::<Locked>();
+        world.register::<Inventory>();
+        world.insert(door, Locked { lock_level: 50, key_form_id: Some(KEY) });
+        let keyless = world.spawn();
+        world.insert(keyless, Inventory::new());
+        let keyed = world.spawn();
+        let mut bag = Inventory::new();
+        bag.push(ItemStack::new(KEY, 1));
+        world.insert(keyed, bag);
+
+        door_motion_system(&world, 0.0);
+        activate(&world, door, keyless, false);
+        door_activation_verdicts(&world);
+        assert!(!is_open_after(&world, door), "a keyless activator is refused");
+
+        byroredux_scripting::event_cleanup_system(&world, 0.0);
+        activate(&world, door, keyed, false);
+        door_activation_verdicts(&world);
+        assert!(is_open_after(&world, door), "the keyed one is admitted");
+        assert!(world.get::<Locked>(door).is_some(), "an actor's key does not unlock the door for everyone");
+    }
+
+    /// DRT-ACT-004 — a script that took the door's default processing over keeps it shut; a native activation (the script's own
+    /// `Activate`, which "ignores the blocked flag") toggles it, because for a door the default processing is the toggle.
+    #[test]
+    fn a_script_blocked_door_stays_shut_but_a_native_activation_toggles_it() {
+        use byroredux_core::ecs::components::FormIdComponent;
+        use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+        let (mut world, door, ..) = door_world(false);
+        world.register::<FormIdComponent>();
+        let mut pool = FormIdPool::default();
+        let id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Oblivion.esm"), local: LocalFormId(0x6800) });
+        world.insert_resource(pool);
+        world.insert(door, FormIdComponent(id));
+        let mut blocks = byroredux_scripting::ReferenceActivationBlocks::default();
+        blocks.set_blocked(byroredux_scripting::condition::entity_global_form_id(&world, door).unwrap(), true);
+        world.insert_resource(blocks);
+        let player = world.spawn();
+
+        door_motion_system(&world, 0.0);
+        activate(&world, door, player, false);
+        door_activation_verdicts(&world);
+        assert!(!is_open_after(&world, door), "the block keeps the door shut");
+
+        byroredux_scripting::event_cleanup_system(&world, 0.0);
+        activate(&world, door, player, true);
+        door_activation_verdicts(&world);
+        assert!(is_open_after(&world, door), "the native activation ignores the block and toggles");
+    }
+
+    /// With nothing in the way a plain activation toggles the door as before.
+    #[test]
+    fn an_unlocked_unblocked_door_toggles() {
+        let (mut world, door, ..) = door_world(false);
+        let player = world.spawn();
+        door_motion_system(&world, 0.0);
+        activate(&world, door, player, false);
+        door_activation_verdicts(&world);
+        assert!(is_open_after(&world, door));
     }
 
     /// A transition on an entity with no `Door` is not this system's.
