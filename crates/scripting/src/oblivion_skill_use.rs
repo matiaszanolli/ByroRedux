@@ -436,7 +436,7 @@ pub fn advance_level(world: &World, player: EntityId) -> bool {
 /// Acrobatics' fall on fall damage. The six
 /// magic schools (20 to 25) are fed by the player's cast action (player-spellcasting #7081): one use, usage 1,
 /// for the spell's primary school; the console's `magic.cast` and a script's `Cast` feed nothing.
-pub const FED_SKILLS: &[u32] = &[13, 14, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 27, 28, 31];
+pub const FED_SKILLS: &[u32] = &[13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 27, 28, 31];
 
 /// Queue one use of the skill `code` for the drain (OSL-XP-007): the experience is the skill's use
 /// value `usage` times `mult` (0 for none), `skill_use_amount`. An emitter calls this and nothing else;
@@ -749,22 +749,24 @@ mod tests {
         install(&mut world);
         queue_skill_use(&world, BLADE, 0, 0.0);
         queue_skill_use(&world, 30, 0, 0.0); // Security: no lock-picking game
-        queue_skill_use(&world, 15, 0, 0.0); // Block: no target-side guard
+        queue_skill_use(&world, 15, 0, 0.0); // Block: a blocked hit on the player
         queue_skill_use(&world, 17, 0, 0.0); // Hand to Hand
         queue_skill_use(&world, 99, 0, 0.0);
         assert_eq!(
             world.resource::<PendingSkillUse>().0,
             vec![
                 SkillUseRecord { skill: BLADE, amount: 0.5 },
+                SkillUseRecord { skill: 15, amount: 1.25 },
                 SkillUseRecord { skill: 17, amount: 0.6 },
             ]
         );
         let report = skill_use_report(&world, player).unwrap().join("\n");
-        assert!(report.contains("fed skills 15/21; unfed: "), "{report}");
-        for unfed in ["Security", "Speechcraft", "Mercantile", "Alchemy", "Armorer", "Block"] {
+        assert!(report.contains("fed skills 16/21; unfed: "), "{report}");
+        for unfed in ["Security", "Speechcraft", "Mercantile", "Alchemy", "Armorer"] {
             assert!(report.split("unfed: ").nth(1).unwrap().contains(unfed), "{unfed}: {report}");
         }
         assert!(!report.split("unfed: ").nth(1).unwrap().contains("Blade"));
+        assert!(!report.split("unfed: ").nth(1).unwrap().contains("Block"), "Block is fed by a blocked hit on the player: {report}");
         assert!(!report.split("unfed: ").nth(1).unwrap().contains("Marksman"), "Marksman is fed by the player's arrow: {report}");
         for school in ["Alteration", "Conjuration", "Destruction", "Illusion", "Mysticism", "Restoration"] {
             assert!(!report.split("unfed: ").nth(1).unwrap().contains(school), "{school} is fed by the cast: {report}");

@@ -89,10 +89,10 @@ assert major and int(major.group(1)) == 2, text
 tallies = dict(re.findall(r"(\w+) (\d+)(?:,|$)", re.search(r"attribute tallies: (.*)", text).group(1)))
 assert tallies["Strength"] == "2" and tallies["Agility"] == "1", tallies
 PY
-# Phase 2b: the emitters. `levelup` reports its fed skills (15 of 21 with the six schools #7081 and Marksman #7055) and names what is not.
-grep -Fq 'fed skills 15/21; unfed: ' "$LOG_DIR/after.log" || fail 'levelup did not report the fed skills'
-for unfed in Security Speechcraft Mercantile Alchemy Armorer Block; do
-    grep -E 'fed skills 15/21; unfed: ' "$LOG_DIR/after.log" | grep -Fq "$unfed" || fail "$unfed is not reported unfed"
+# Phase 2b: the emitters. `levelup` reports its fed skills (16 of 21 with the six schools #7081, Marksman #7055 and Block #7054) and names what is not.
+grep -Fq 'fed skills 16/21; unfed: ' "$LOG_DIR/after.log" || fail 'levelup did not report the fed skills'
+for unfed in Security Speechcraft Mercantile Alchemy Armorer; do
+    grep -E 'fed skills 16/21; unfed: ' "$LOG_DIR/after.log" | grep -Fq "$unfed" || fail "$unfed is not reported unfed"
 done
 banked() { sed -nE "s/^.*levelup: $2 [0-9]+ banked ([0-9.]+) .*/\1/p" "$1" | head -1; }
 # Running (forward and Sprint together) cannot be held from the console: `input.hold` holds one key. The stance

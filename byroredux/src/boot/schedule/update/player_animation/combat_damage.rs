@@ -33,6 +33,11 @@ fn register_damage_pass(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_core::character::CharacterRuleset>()
             .reads_resource::<crate::components::LoadedCellIndex>()
             .reads::<byroredux_scripting::HitEvent>()
+            // #7054 — the target's guard: the block rules, its Block stance, its Block skill and what it holds.
+            .reads_resource::<byroredux_core::character::BlockModel>()
+            .reads::<crate::combat::MeleeState>()
+            .reads_resource::<byroredux_scripting::ActorValueNames>()
+            .reads::<byroredux_core::ecs::components::EquippedWeapon>()
             .reads::<byroredux_core::ecs::components::ActorVitals>()
             .reads::<crate::components::AnimationTarget>()
             .writes::<byroredux_core::ecs::components::ActorValues>()

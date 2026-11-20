@@ -81,7 +81,7 @@ target="$(sed -nE 's/.*entity ([0-9]+) ref .*/\1/p' "$LOG_DIR/stealth.log" | hea
 [[ -n "$target" ]] || fail 'no patron to shoot at in the cell'
 if [[ -n "$LEVEL_SKILL" ]]; then
     command 'levelup' "$LOG_DIR/levelup-before.log" || fail 'levelup failed'
-    grep -E 'fed skills 15/21; unfed: ' "$LOG_DIR/levelup-before.log" | grep -Fq "$LEVEL_SKILL" && fail "$LEVEL_SKILL is still reported unfed"
+    grep -E 'fed skills 16/21; unfed: ' "$LOG_DIR/levelup-before.log" | grep -Fq "$LEVEL_SKILL" && fail "$LEVEL_SKILL is still reported unfed"
 fi
 
 # Ready: the bow in hand and ten arrows equipped.

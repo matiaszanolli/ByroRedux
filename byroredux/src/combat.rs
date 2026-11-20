@@ -504,6 +504,44 @@ fn record_killing_blow(world: &World, target: EntityId, location: u8) {
     }
 }
 
+/// #7054 — the share of a hit `target`'s guard stops (Oblivion's Block, UESP *Oblivion:Block*), or `None` where it puts
+/// up none: the game has no block rules, the target is not holding Block, the hit is not an actor's strike or shot (a trap
+/// or a script's hit is not blocked here), or the block has no effect (bare hands against an armed attacker). The guard is
+/// a worn shield, else a wielded weapon, else bare hands; the skill is the target's own Block. Whether a block needs the
+/// defender to face the attacker is undocumented, so facing is not tested.
+fn target_block(world: &World, aggressor: EntityId, target: EntityId) -> Option<f32> {
+    use byroredux_core::character::{BlockGuard, BlockModel};
+    let model = *world.try_resource::<BlockModel>()?;
+    if !world.query::<MeleeState>()?.get(target)?.blocking {
+        return None;
+    }
+    world.get::<ActorVitals>(aggressor)?;
+    let skill = crate::detection::actor_value(world, target, "Block");
+    let shield = world
+        .get::<byroredux_core::ecs::components::EquipmentSlots>(target)
+        .is_some_and(|slots| slots.occupants.get(usize::from(model.shield_bit)).is_some_and(|slot| slot.is_some()));
+    let guard = if shield {
+        BlockGuard::Shield
+    } else if world.has::<EquippedWeapon>(target) {
+        BlockGuard::Weapon
+    } else {
+        BlockGuard::Hands
+    };
+    model.reduction(skill, guard, world.has::<EquippedWeapon>(aggressor))
+}
+
+/// Install (or, for a game without block rules, remove) the [`BlockModel`] for a freshly loaded index.
+pub(crate) fn install_block_model(world: &mut World, index: &byroredux_plugin::esm::records::EsmIndex) {
+    match index.character_rules.block() {
+        Some(model) => {
+            world.insert_resource(model);
+        }
+        None => {
+            world.remove_resource::<byroredux_core::character::BlockModel>();
+        }
+    }
+}
+
 /// Same-frame HitEvent → Health damage → death transition.
 pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
     let events: Vec<(EntityId, byroredux_scripting::HitEvent)> = world
@@ -560,6 +598,9 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
                 }
             }
         };
+        // #7054 — the target's own guard (Oblivion's Block): a blocking defender stops a share of the hit.
+        let guard = if event.blocked { None } else { target_block(world, event.aggressor, target) };
+        let damage = guard.map_or(damage, |stopped| damage * (1.0 - stopped));
         // Judged before the strike lands: a kill clears the victim's combat state.
         let crime = crate::crime::player_strike_is_crime(world, event.aggressor, target);
         let Some((before, after)) = apply_health_damage(world, target, vitals.health, damage)
@@ -572,6 +613,9 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
             after <= 0.0 && byroredux_scripting::spare_from_death(world, target, Some(event.aggressor));
         let killed = after <= 0.0 && !spared;
         let mut outcome = format!("health {:.1} -> {:.1}", before, after);
+        if let Some(stopped) = guard {
+            outcome.push_str(&format!("; blocked {:.0}%", stopped * 100.0));
+        }
         if spared {
             outcome.push_str("; bleedout");
         }
@@ -584,7 +628,7 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
             ^ (u64::from(target) << 32 | u64::from(event.aggressor));
         // An arrow that dealt nothing (a ghost, a blocked shot, a harmless launch) is no hit (BOW-USE-002).
         let arrow = event.arrow && damage > 0.0;
-        crate::skill_use_emit::on_landed_hit(world, event.aggressor, target, event.blocked, arrow, seed);
+        crate::skill_use_emit::on_landed_hit(world, event.aggressor, target, event.blocked, arrow, guard.is_some(), seed);
 
         if killed {
             if let Some(mut dead) = world.query_mut::<Dead>() {
@@ -1973,6 +2017,63 @@ mod tests {
             },
         );
         (world, aggressor, target)
+    }
+
+    /// #7054 — Oblivion's Block, from the defender's side: a defender holding Block stops the documented share of an actor's
+    /// hit (a shield 1% a level to 75%, a weapon 0.5%, bare hands 0.25% of an unarmed attacker and nothing of an armed one),
+    /// the blocking player earns Block once at 1.25 per blocked hit, and a defender not holding Block, or a hit that is not an
+    /// actor's strike, takes it all and earns nothing.
+    #[test]
+    fn a_blocking_defender_stops_a_share_of_the_hit_and_earns_block() {
+        use byroredux_core::character::{BlockModel, CharacterRuleset, LevelingModel};
+        use byroredux_core::ecs::components::EquipmentSlots;
+        use byroredux_plugin::esm::records::{AvifRecord, EsmIndex};
+        use byroredux_scripting::oblivion_skill_use::PendingSkillUse;
+        const BLOCK_AV: u32 = 0x3F;
+        // (blocking, shield worn, weapon wielded, attacker armed, attacker is an actor) -> (health left, Block uses queued)
+        let run = |blocking: bool, shield: bool, weapon: bool, armed: bool, actor: bool, skill: f32| {
+            let (mut world, aggressor, target) = damage_fixture(100.0, armed.then_some(20.0), false);
+            if !armed {
+                world.get_mut::<byroredux_scripting::HitEvent>(target).unwrap().damage = 20.0;
+            }
+            if actor {
+                world.insert(aggressor, ActorVitals { health: 0x2D4 });
+            }
+            let mut index = EsmIndex::default();
+            index.actor_values.insert(BLOCK_AV, AvifRecord { form_id: BLOCK_AV, editor_id: "AVBlock".into(), ..Default::default() });
+            world.insert_resource(byroredux_scripting::ActorValueNames::from_index(&index));
+            world.insert_resource(BlockModel::OBLIVION);
+            world.insert_resource(CharacterRuleset::new(LevelingModel::OBLIVION));
+            world.insert_resource(PendingSkillUse::default());
+            world.insert_resource(PlayerEntity(Some(target)));
+            world.register::<MeleeState>();
+            world.register::<EquipmentSlots>();
+            world.insert(target, MeleeState { cooldown_remaining: 0.0, blocking });
+            world.get_mut::<ActorValues>(target).unwrap().set_base(BLOCK_AV, skill);
+            if weapon {
+                world.insert(target, EquippedWeapon { inventory_index: InventoryIndex(0), base_form_id: 0x1, damage: 5.0, reach: 0.0, speed: 0.0 });
+            }
+            if shield {
+                let mut slots = EquipmentSlots::new();
+                slots.occupants[13] = Some(InventoryIndex(1));
+                world.insert(target, slots);
+            }
+            combat_damage_system(&world, 0.0);
+            let health = world.get::<ActorValues>(target).unwrap().current(0x2D4);
+            let uses: Vec<f32> = world.resource::<PendingSkillUse>().0.iter().filter(|record| record.skill == 15).map(|record| record.amount).collect();
+            (health, uses)
+        };
+        let near = |(health, uses): (f32, Vec<f32>), want_health: f32, want_uses: &[f32]| {
+            assert!((health - want_health).abs() < 1e-3, "health {health} vs {want_health}");
+            assert_eq!(uses, want_uses);
+        };
+        near(run(false, false, true, true, true, 40.0), 80.0, &[]);
+        near(run(true, false, true, true, true, 40.0), 84.0, &[1.25]); // a weapon: 0.5% x 40 = 20% of 20
+        near(run(true, true, true, true, true, 100.0), 95.0, &[1.25]); // a shield: 75% of 20 stopped
+        near(run(true, true, false, true, true, 40.0), 88.0, &[1.25]); // a shield, 40%
+        near(run(true, false, false, true, true, 40.0), 80.0, &[]); // bare hands against a weapon: no effect
+        near(run(true, false, false, false, true, 40.0), 82.0, &[1.25]); // bare hands against an unarmed attacker: 10% of 20
+        near(run(true, false, true, true, false, 40.0), 80.0, &[]); // a trap's or script's hit is not blocked
     }
 
     /// A player strike on a bystander NPC in an Oblivion-ruled world with one

@@ -130,7 +130,7 @@ unfed list; its source is `FED_SKILLS` in `oblivion_skill_use.rs`, where a skill
   (`PlayerDetection`, below Noticed). The engine's "running" is the Sprint action, as the detection tick reads it.
 - **Acrobatics** (a jump, usage 0, 0.3): the controller's `jump_fired` on land. UESP: "each jump or dodge".
 
-**Fed since #7081** (the six magic schools; with Marksman, 15 of 21 in all; the [player-spellcasting PRD](../prd/player-spellcasting.md)): the player's cast
+**Fed since #7081** (the six magic schools; with Marksman and Block, 16 of 21 in all; the [player-spellcasting PRD](../prd/player-spellcasting.md)): the player's cast
 action queues one use of the spell's primary school, actor value 20 to 25, at **usage 1**, the `SKIL` second use value (Alteration 4, Conjuration 6,
 Destruction 1.2, Illusion 3, Mysticism 3, Restoration 0.6), multiplier 0, from the three sites the executable's spell routines share (`0x6994cc`,
 `0x69b9ea`, `0x69bc51`; decoded in #7078, [Oblivion ruleset](charal-oblivion-ruleset.md)). A spell with no Target-range effect awards once at the
@@ -141,15 +141,16 @@ scroll or an ability is never a cast action. Row 16's routine `0x5fca20` is the 
 
 **Fed since #7055** (Marksman, code 28): the player's own arrow landing on a living target queues one use at **usage 0**, 0.8 (UESP *Oblivion:Marksman*: "0.8 experience points per successful hit, regardless of damage inflicted"; the `SKIL` first use value), from `on_landed_hit` with the hit's provenance (`HitEvent::arrow`, set only by the bow shot path): a script's projectile, the gun's shot, a spell and a bow merely wielded feed nothing, and an arrow that dealt nothing (a ghost, a blocked shot) or landed on a corpse is no hit. The release itself feeds nothing. See the [Player archery PRD](../prd/player-archery.md) BOW-USE.
 
+**Fed since #7054** (Block, code 15): a hit that meets a blocking player's guard queues one use at **usage 0**, 1.25 (UESP *Oblivion:Block*: "1.25 experience points each time you successfully block an attack, whether using a shield or a weapon, regardless of the amount of damage blocked"; `0x5f5bf9`). The guard is the target's own: `combat_damage_system` reads the defender's Block stance (`MeleeState::blocking`, the Block action held), and a defender holding it stops a share of the hit by the documented rule (`BlockModel`, `crates/core/src/character/block.rs`: a worn shield 1% a level of Block to 75%, a wielded weapon 0.5% a level, bare hands 0.25% a level against an unarmed attacker only and nothing against an armed one), for melee and ranged alike. A hit from a trap or a script, a hit on a defender not holding Block, and a bare-handed block against an armed attacker feed nothing. Not modelled: the Novice's Fatigue drain, shield and weapon wear, recoil, knockback, stagger and disarm, and whether a block needs the defender to face the attacker (undocumented, so not tested); NPCs never hold Block, so only the player's block is live. `HitEvent::blocked` stays the aggressor's own stance (#4324), which still negates the swing.
+
 **Not fed, and why** (OSL-USE-006):
 
-- **Block**: a blocked hit needs a target-side guard, and no producer models one (`HitEvent::blocked` is the aggressor's own stance, #4324).
 - **Acrobatics' fall** (rows 10 and 11): the engine has no fall damage. Row 11's gating setting (`0xb37490`) is still unnamed.
 - **Sneak's pickpocket** (row 3): no pickpocket action.
 - **Alchemy (rows 1 and 2), Armorer (7), Security (5), Speechcraft (6), Mercantile (4)**: menus and minigames the engine does not run for Oblivion.
 
-**Metrics** (PRD §8, published in the ROADMAP compatibility matrix): fed skills 15 / 21; fed actions 16 / 26 of UESP's table: combat 7 / 8
-(Athletics running and swimming, Blade, Blunt, Hand to Hand, Heavy Armor, Marksman), magic 6 / 8 (the six schools; Alchemy's two wait on a menu), stealth 3 / 10 (Acrobatics' jump, Light Armor, Sneak's movement).
+**Metrics** (PRD §8, published in the ROADMAP compatibility matrix): fed skills 16 / 21; fed actions 17 / 26 of UESP's table: combat 8 / 8
+(Athletics running and swimming, Blade, Blunt, Hand to Hand, Heavy Armor, Marksman, Block), magic 6 / 8 (the six schools; Alchemy's two wait on a menu), stealth 3 / 10 (Acrobatics' jump, Light Armor, Sneak's movement).
 
 ## 4. The emitter contract (OSL-XP-007)
 

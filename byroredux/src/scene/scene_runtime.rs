@@ -78,6 +78,7 @@ pub(crate) fn populate_scene_runtime(
     crate::armor::install_armor_book(world, index);
     crate::player_cast::install_spell_cast_model(world, index);
     crate::bow::install_bow_model(world, index);
+    crate::combat::install_block_model(world, index);
     crate::lockpick::install_terminal_bases(world, index);
     crate::systems::mines::install_mine_book(world, index);
     crate::systems::attraction::install_attraction_book(world, index);
