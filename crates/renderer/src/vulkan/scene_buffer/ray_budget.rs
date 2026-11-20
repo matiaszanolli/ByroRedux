@@ -90,8 +90,13 @@ impl GpuRayBudget {
         volumetric_light_cap: u32,
         quality_tier: u32,
         shadow_filter_iterations: u32,
-        cache_update_stride: u32,
     ) -> Self {
+        let last_tier = CACHE_UPDATE_STRIDE_BY_TIER.len() - 1;
+        let stride_tier = if (quality_tier as usize) < last_tier {
+            quality_tier as usize
+        } else {
+            last_tier
+        };
         Self {
             ray_count: 0,
             glass_ray_limit,
@@ -101,7 +106,7 @@ impl GpuRayBudget {
             volumetric_light_cap,
             quality_tier,
             shadow_filter_iterations,
-            cache_update_stride,
+            cache_update_stride: CACHE_UPDATE_STRIDE_BY_TIER[stride_tier],
             lod_fragments: 0,
             lod_bin_0: 0,
             lod_bin_1: 0,
@@ -327,7 +332,6 @@ impl AdaptiveRayBudget {
                 2,
                 0,
                 SHADOW_FILTER_MIN_ITERATIONS,
-                CACHE_UPDATE_STRIDE_BY_TIER[0],
             ),
             1 => GpuRayBudget::settings(
                 GLASS_RAY_BUDGET / 4,
@@ -337,7 +341,6 @@ impl AdaptiveRayBudget {
                 4,
                 1,
                 SHADOW_FILTER_MIN_ITERATIONS,
-                CACHE_UPDATE_STRIDE_BY_TIER[1],
             ),
             2 => GpuRayBudget::settings(
                 GLASS_RAY_BUDGET / 2,
@@ -347,7 +350,6 @@ impl AdaptiveRayBudget {
                 6,
                 2,
                 SHADOW_FILTER_MIN_ITERATIONS + 1,
-                CACHE_UPDATE_STRIDE_BY_TIER[2],
             ),
             // #3879 — the tier-3 arm is the shader-side ceiling. Every
             // field now reads the same constant the GLSL `#define` is
@@ -361,7 +363,6 @@ impl AdaptiveRayBudget {
                 MAX_FROXEL_LIGHTS,
                 MAX_RAY_QUALITY_TIER,
                 SHADOW_FILTER_MAX_ITERATIONS,
-                CACHE_UPDATE_STRIDE_BY_TIER[3],
             ),
         }
     }

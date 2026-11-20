@@ -108,7 +108,7 @@ impl SkillUseLevel {
             return false;
         }
         self.major_increases = self.major_increases.saturating_add(1);
-        if per_level > 0 && self.major_increases % per_level == 0 {
+        if per_level > 0 && self.major_increases.is_multiple_of(per_level) {
             self.freeze_pending();
             return true;
         }

@@ -84,10 +84,9 @@ pub(crate) fn door_motion_system(world: &World, dt: f32) {
     // Advance the playing clips and settle the doors whose clip has ended or whose pose is stale.
     let mut settled: Vec<(EntityId, bool, DoorMotion)> = Vec::new();
     let mut stale: Vec<(EntityId, bool, DoorMotion)> = Vec::new();
-    if let Some(mut doors) = world.query_mut::<Door>() {
-        let states = world.query::<TwoStateActivator>();
+    if let Some((states, mut doors)) = world.query_2_mut::<TwoStateActivator, Door>() {
         for (entity, door) in doors.iter_mut() {
-            let Some(state) = states.as_ref().and_then(|states| states.get(entity)).copied() else { continue };
+            let Some(state) = states.get(entity) else { continue };
             if door.remaining > 0.0 {
                 door.remaining -= dt;
                 if door.remaining <= 0.0 {
@@ -113,16 +112,8 @@ pub(crate) fn door_motion_system(world: &World, dt: f32) {
     // frame when closed.
     for (entity, open, motion) in stale {
         let DoorMotion::Sequence { open: open_clip, .. } = motion;
-        let duration = clip_duration(world, open_clip);
-        set_player(world, entity, open_clip, duration, false);
-        if !open {
-            if let Some(mut players) = world.query_mut::<AnimationPlayer>()
-                && let Some(player) = players.get_mut(entity)
-            {
-                player.local_time = 0.0;
-                player.prev_time = 0.0;
-            }
-        }
+        let pose_time = if open { clip_duration(world, open_clip) } else { 0.0 };
+        set_player(world, entity, open_clip, pose_time, false);
     }
 }
 

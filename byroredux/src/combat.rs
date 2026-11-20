@@ -725,7 +725,7 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
         // weapon's skill (the player's blow) or the struck armor piece's (the player's hit).
         let seed = world
             .try_resource::<CombatState>()
-            .map_or(0, |state| u64::from(state.hits_landed))
+            .map_or(0, |state| state.hits_landed)
             ^ (u64::from(target) << 32 | u64::from(event.aggressor));
         // An arrow that dealt nothing (a ghost, a blocked shot, a harmless launch) is no hit (BOW-USE-002).
         let arrow = event.arrow && damage > 0.0;
