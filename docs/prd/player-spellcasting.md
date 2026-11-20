@@ -264,7 +264,7 @@ Touch and Target resolution is built on Oblivion. Verified three ways: unit test
 
 ### 9.4 Phase 3 results (2026-11-20, #7081)
 
-The six schools are fed. Verified by unit tests (scripting `player_cast_feeds_only_a_valid_target`, `a_spell_with_no_school_feeds_nothing`, `other_casters_feed_nothing`, and the `FED_SKILLS` report test), by the real master (a Self cast of Heat Shell on `Oblivion.esm` queues Alteration, code 20, at 4.0), and by the Phase 2 live run for the landing the award hangs on. The live gate `docs/smoke-tests/oblivion-spellcasting.sh` is written and indexed but **has not run yet**: it needs an engine instance, and another session held the machine's one engine when this revision was committed. It is the owner's run, with the Phase 3 exit's scenario 3 (§7.2).
+The six schools are fed. Verified by unit tests (scripting `player_cast_feeds_only_a_valid_target`, `a_spell_with_no_school_feeds_nothing`, `other_casters_feed_nothing`, and the `FED_SKILLS` report test), by the real master (a Self cast of Heat Shell on `Oblivion.esm` queues Alteration, code 20, at 4.0), and by the Phase 2 live run for the landing the award hangs on. The live gate `docs/smoke-tests/oblivion-spellcasting.sh` passed on 2026-11-20 (Oblivion, `AnvilTheCountsArms`): Flare landed on a patron (Health 16 to 10) and fed Destruction, a ceiling shot missed and fed nothing, Heal Minor Wounds fed Restoration, `magic.cast` fed nothing and the `combat.status` counters did not move (scenarios 3 and 4 of §7.2).
 
 | Item | Result | Requirement |
 |---|---|---|
