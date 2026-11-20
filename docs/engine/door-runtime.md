@@ -69,3 +69,17 @@ Not in any source read, and so still **Phase 0: verify** (filed as #7062): the s
 | Verify items | the sourced ones recorded in §2; the rest filed as #7062 |
 | The Moth door (PRD §7.2 scenario 2) | `TempleMothCatacombs02`, reference `00094D23`, base `0000C519`, a `sequence` door, **locked** (level 10, key `0009DAC6`, `TG08AncestorMothCatacombKey`); the priest who searches for a container (`TG08MothPriestBossMale01`) is not among the four actors that carry the key |
 | This design | this document |
+
+## 5. Phase 1 status (#7059)
+
+| Requirement | State |
+|---|---|
+| DRT-REC-001, -002, -004 (the `DOOR` flags and sounds, `Open by Default`) | built: `DoorData` and the placement's `ONAM`, per game |
+| DRT-STATE-001 (the state from spawn, `Open by Default` spawns open) | built: `attach_door` seeds `TwoStateActivator::is_open` from the default; `GetOpenState` reads it |
+| DRT-MOVE-001, DRT-ACT-001 (the authored `Open` / `Close` clips; no activation mid-motion) | built: `door_motion_system` |
+| DRT-SND-001 (open sound as it starts opening, close sound as it starts closing) | built 2026-11-20: `door_sound` picks `SNAM` / `ANAM`, `scripted_sound::play_sound_record` plays it at the door through M44; the loop sound (`BNAM`) is deliberately not played, when it plays being unsourced (#7062). Unit-tested for the pick; the audible path rides the script-sound helper and is unverified live until `door-runtime.sh` |
+| DRT-STATE-003, DRT-SAVE-001, -002 (default on re-entry, saved state, open pose without a replayed swing) | partly: a stale pose snaps (`posed`), a respawned door takes its default; no test pins re-entry and no save leg is written |
+| DRT-ACT-002, -003, -004 (prompt, lock and the activator's key, `OnActivate` first) | the prompt reads `Open` / `Close`; the activator's-inventory key and the script-first order are not built |
+| DRT-MOVE-002 to -005 (the swing, collision, closing onto a body) | not built (the swing's hinge, angle and duration are unsourced, #7062) |
+| `docs/smoke-tests/door-runtime.sh` | not written |
+

@@ -28,6 +28,31 @@ fn clip_for(motion: DoorMotion, open: bool) -> u32 {
     }
 }
 
+/// The sound a door plays as it starts moving: `SNAM` when it starts opening, `ANAM` when it starts closing (DRT-SND-001). The loop
+/// sound (`BNAM`) is not played: when it plays is unsourced (#7062), so a one-shot of it would be a guess.
+fn door_sound(data: &byroredux_plugin::esm::cell::DoorData, opening: bool) -> Option<u32> {
+    if opening {
+        data.open_sound
+    } else {
+        data.close_sound
+    }
+}
+
+/// Play `sound` (a `SOUN` or `SNDR` form) at the door, through the M44 audio path.
+fn play_door_sound(world: &World, door: EntityId, sound: u32) {
+    let Some(index) = world.try_resource::<crate::components::LoadedCellIndex>().map(|index| index.0.clone()) else {
+        return;
+    };
+    let Some(record) = index.sounds.get(&sound) else {
+        log::debug!("door {door}: {sound:08X} is not a sound record");
+        return;
+    };
+    let Some(position) = world.get::<byroredux_core::ecs::components::GlobalTransform>(door).map(|transform| transform.translation) else {
+        return;
+    };
+    crate::systems::scripted_sound::play_sound_record(world, record, position, !record.non_positional, "door sound");
+}
+
 fn clip_duration(world: &World, handle: u32) -> f32 {
     world.resource::<AnimationClipRegistry>().get(handle).map_or(0.0, |clip| clip.duration)
 }
@@ -68,6 +93,10 @@ pub(crate) fn door_motion_system(world: &World, dt: f32) {
         let duration = clip_duration(world, handle);
         log::debug!("door {entity}: {} (clip {handle}, {duration:.2}s)", if open { "opening" } else { "closing" });
         set_player(world, entity, handle, duration, true);
+        // DRT-SND-001: the open sound as the door starts opening and the close sound as it starts closing, at the door.
+        if let Some(sound) = world.get::<Door>(entity).and_then(|door| door_sound(&door.data, open)) {
+            play_door_sound(world, entity, sound);
+        }
         if let Some(mut doors) = world.query_mut::<Door>()
             && let Some(door) = doors.get_mut(entity)
         {
@@ -202,6 +231,26 @@ mod tests {
         player.playing = false;
         world.insert(door, player);
         (world, door, open, close)
+    }
+
+    /// DRT-SND-001: a door opening plays `SNAM`, a door closing plays `ANAM`, a door with neither (or the loop sound only) plays
+    /// nothing; and a transition that names a sound the index does not have is dropped without a panic.
+    #[test]
+    fn a_door_plays_the_open_sound_opening_and_the_close_sound_closing() {
+        use byroredux_plugin::esm::cell::DoorData;
+        let data = DoorData { open_sound: Some(0x10), close_sound: Some(0x11), loop_sound: Some(0x12), ..Default::default() };
+        assert_eq!(door_sound(&data, true), Some(0x10));
+        assert_eq!(door_sound(&data, false), Some(0x11));
+        let loop_only = DoorData { loop_sound: Some(0x12), ..Default::default() };
+        assert_eq!((door_sound(&loop_only, true), door_sound(&loop_only, false)), (None, None), "the loop sound is not a one-shot");
+        // A transition on a door whose sounds are not in the index plays nothing and does not fail.
+        let (mut world, door, ..) = door_world(false);
+        world.insert_resource(crate::components::LoadedCellIndex(std::sync::Arc::new(byroredux_plugin::esm::records::EsmIndex::default())));
+        world.query_mut::<Door>().unwrap().get_mut(door).unwrap().data = data;
+        world.register::<byroredux_core::ecs::components::GlobalTransform>();
+        publish(&world, door, TwoStateTransition::Opened);
+        door_motion_system(&world, 0.0);
+        assert!(world.get::<TwoStateActivator>(door).unwrap().is_animating, "the door still opens: a sound that cannot play never blocks the motion");
     }
 
     /// What `two_state_activator_system` does on an activation: flip the state and publish the transition.
