@@ -178,15 +178,53 @@ The level-up the rank-ups build toward (`crates/scripting/src/oblivion_skill_use
   `AdvancePCLevel` freezes whatever the tallies are now. Saved: `FORMAT_MAJOR` 138.
 - **Picks.** `levelup attr <attribute>` picks one of a pending level's three attributes (distinct, none at 100). The offered bonus is
   `oblivion_attribute_bonus` of the frozen tally (+1 for none, up to +5 for ten; Luck, governing nothing, is always +1). The console is the
-  interim surface (PRD Q3, #7048).
+  interim surface (PRD Q3). The [Oblivion menu contract](#oblivion-sleep-and-level-up-menu-contract-7048)
+  defines the player-facing path.
 - **The sleep.** `sleep_system`, which `SetPCSleepHours` and the jail bed's rest both feed, raises a `SleepCompleted` event after the clock has
   run; `oblivion_level_system` takes the oldest pending level on each completed, uninterrupted sleep (OSL-LVL-004). Waiting raises none, and
   nothing in the engine interrupts a sleep today, so `interrupted` is always false (OSL-SLP-002). A bed outside a jail has no rest action
-  yet (the rest menu, #7048), so no other bed raises the event. A level with fewer than three picks stays pending and the sleep says so.
+  yet, so no other bed raises the event. A level with fewer than three picks stays pending and the sleep says so.
 - **Taking a level** (`0x66c3e0`, V7 to V9): each pick's base rises by its bonus, capped at 100, and an unspent tally rolls over to nothing;
   Health's **stored** term gains `floor(0.1 × Endurance)`, Endurance read after the picks (V8), and Magicka's and Fatigue's stored terms are
   untouched (V9); the level rises by one and the count falls by ten, a surplus carrying to the next level. With every attribute at 100 there
   is no level (OSL-LVL-006): "Perfection cannot be improved upon." and the level stays pending. The notification is "You are now level N."
   followed by the load order's `sLevelUp{N}` text (`Oblivion.esm` authors 2 to 20); the tenth major increase says the executable's default
   `sMeditate` (V12).
+
+### Oblivion sleep and level-up menu contract (#7048)
+
+[Game UI Integration](../prd/game-ui-integration.md#59-menuxml-menus-beyond-the-hud-gui-xml)
+owns the MenuXml surfaces and their acceptance checks. This is the contract
+for binding them to the existing skill-use and sleep systems in #7047.
+
+- **Sleep input.** The sleep/rest driver distinguishes a request from a usable
+  bed from a wait request. Confirming the duration starts the corresponding
+  time advance. Canceling the picker discards the request. The document's
+  `sleep_scroll_marker`, `sleep_button_sleep_wait` and `sleep_button_cancel`
+  are the duration, confirm and cancel controls in the shipped XML.
+- **Sleep output.** A bed request that runs to its end queues one
+  `SleepCompleted { hours, interrupted: false }` through the existing
+  `SleepCompletions` resource. If an enemy encounter cuts that sleep short,
+  the runner withholds success and may send the elapsed hours with
+  `interrupted: true`, which `oblivion_level_system` already ignores.
+  Waiting queues no sleep event. The current time-advance path has no
+  encounter interruption. The binding's interruption test can supply the
+  interruption directly to exercise the contract.
+- **Level-up input.** A successful bed sleep makes the oldest
+  `PendingLevel` available to that menu session if it can be applied.
+  Feed `levelup_template`
+  rows from the player's canonical attribute identities and base values,
+  with availability and bonuses derived from the pending level's frozen
+  tallies. Selection remains a menu draft. On acceptance, the gameplay
+  system validates three distinct eligible attribute codes against that
+  same pending level and applies them together using the existing level-up
+  rules. The session's sleep can be spent once. Keep the pending level if
+  acceptance fails. If no level is pending, close the sleep menu back to
+  play. Retain the all-attributes-capped outcome from OSL-LVL-006.
+- **State ownership.** MenuXml and the native fallback use the same sleep
+  producer and level-up consumer. The player can confirm a level after bed
+  sleep without a second sleep. The existing scripted-sleep and console
+  routes continue to use the shared gameplay rules. The open menu, draft
+  picks and unspent completion are session state. Live load clears them
+  and restores pending levels through the existing save component.
 
