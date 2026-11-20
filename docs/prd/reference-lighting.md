@@ -1,13 +1,13 @@
 # Reference-Quality Lighting — Product Requirements
 
-**Status**: ACTIVE (2026-11-20). Revision 39. The change history is in
+**Status**: ACTIVE (2026-11-20). Revision 40. The change history is in
 §12. Every decision in §10 is decided and every Phase 0 verify item is
 closed or filed as an issue.
 
 **Tracking**: #6595 (parent). Phases: #6596 (0), #6601 (1a), #6598 (1b),
-#6602 (2), #6603 (3), #6604 (4), #6599 (5). Phase 3 child: #6721
-(RLT-SHD-012; open while its rev 31 change declaration is unaccepted, rev
-33). M51 tools built here: #6600
+#6602 (2), #6603 (3), #6604 (4), #6599 (5). Phase 3 children: #6721
+(RLT-SHD-012, closed in rev 40), #7091 (the light-animation seed, an
+RLT-OPS-004 regression). M51 tools built here: #6600
 (exporter, PTR-VAL-004), #6597 (EXR writer, PTR-OUT-001). Verify items
 filed: #6605 (V9, closed in rev 15), #6606 (V12). The radiance cache that
 L4's exit waits on is tracked by the
@@ -1671,3 +1671,4 @@ Each needs the project owner. The recommendation is the first option.
 | 37 | 2026-11-18 | Both historical builds reproduce their own A11 anchors for Prospector, Whiterun, and Dugout. The same three scenes differ between the Phase 2 exit and Phase 3 entry. Within Phase 3, `a290c755f` (#6657) shifts the unshadowed direct-light image in all three. An isolated build that retains the scratch weapon subject and restores the earlier light-animation seeds exactly reproduces the parent images. The original A11 thresholds and anchors still apply. A13 reruns reproduce the TAA cost overruns in Prospector and Dugout. Whiterun passes the rerun and exceeds budget in the original matrix. Phase 3 remains open. See the [Phase 3 evidence](../audits/MLIGHT_phase3_exit_2026-11-18.md). | — |
 | 38 | 2026-11-19 | The radiance cache and traced-GI coverage move to their own PRD (Radiance Cache and GI Coverage PRD). RLT-GI-012's deferral no longer waits on M51's Phase 5: the owner requires every surface in view to keep traced GI at any distance, and rejects a widened gate as a stopgap. RLT-GI-008 stays as the allocation contract; Q5's decision is revised to say who builds the cache. Related tables updated. | — |
 | 39 | 2026-11-20 | Review round 6 folded in: RLT-SHD-012's state at HEAD (the weighting shipped in rev 28); the A14 command; the ROADMAP M-LIGHT dependency after rev 38; the temporal-error definition as the excess over an age-matched held control, per-gate view (§2, §8, RLT-G-001, RLT-SHD-002); radiance-cache ownership moved to the RCG PRD everywhere (§2, RLT-NG-003, RLT-GI-008, §9 Phases 2 and 5, Q5); document map rows for the exporter design, the RCG PRD and the penumbra-aware filter; acceptance coverage for RLT-CON-004 (new A19), SHD-003, SHD-005, SHD-006, GI-001, GI-011, GI-012 and IBL-007; Wave 2 scenes named at Phase 5's entry (RLT-CNT-001); §6 rows 8–10 for GI-011, SHD-012 and CON-004; measurements moved out of RLT-SHD-002, RLT-SHD-012, RLT-GI-011 and RLT-GI-012; Related row for the far-field term; full Heitz et al. 2018 and Nukapedia citations; #6721 and the RCG tracking issue on the Tracking line | claude: revise |
+| 40 | 2026-11-20 | Owner decisions on Phase 3's open items (2026-11-20). (1) RLT-SHD-012's measured change declaration (`docs/audits/MLIGHT_phase3_shd012_declaration.tsv`, rev 31) is accepted as measured; it was written after the code, which RLT-CNT-002 does not allow, and this row records that exception; #6721 is closed. (2) Full-phase A11 under RLT-OPS-004: the early direct-light shift is #6657's boot-time scratch entity re-seeding every flickering light through its `EntityId` ([Phase 3 evidence](../audits/MLIGHT_phase3_exit_2026-11-18.md)). Disposition: fix, then re-anchor. Regression #7091 seeds light animation from the light's world position instead; after it lands, the Phase 3 A11 anchors are re-captured and re-frozen with a revision row naming #7091 and the pre-entry drift | owner: approved |
