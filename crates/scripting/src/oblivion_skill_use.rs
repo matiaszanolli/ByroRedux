@@ -465,9 +465,8 @@ pub fn advance_level(world: &World, player: EntityId) -> bool {
 /// adds its emitter, never before. Blade, Blunt and Hand to Hand are fed by a melee hit that lands on a
 /// living target, Light and Heavy Armor by a hit the player takes (#7051 2a); Athletics by seconds of
 /// running or swimming, Sneak by seconds of moving undetected in the sneak stance, Acrobatics by a jump
-/// (2b), Marksman by the player's own arrow hitting a living target (`HitEvent::arrow`, player-archery #7055). Block
-/// waits on a target-side guard (no producer models one: `HitEvent::blocked` is the aggressor's own stance, #4324), and
-/// Acrobatics' fall on fall damage. The six
+/// (2b) and by a fall that damages the player (#7056), Marksman by the player's own arrow hitting a living target
+/// (`HitEvent::arrow`, player-archery #7055), Block by a hit the player blocks (the target-side guard, #7054). The six
 /// magic schools (20 to 25) are fed by the player's cast action (player-spellcasting #7081): one use, usage 1,
 /// for the spell's primary school; the console's `magic.cast` and a script's `Cast` feed nothing.
 pub const FED_SKILLS: &[u32] = &[13, 14, 15, 16, 17, 18, 20, 21, 22, 23, 24, 25, 26, 27, 28, 31];
