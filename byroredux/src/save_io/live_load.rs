@@ -490,6 +490,12 @@ pub(super) fn discard_outgoing_session_requests(world: &World) {
     if let Some(mut sleep) = world.try_resource_mut::<byroredux_scripting::obscript_more::PendingSleep>() {
         sleep.0 = 0.0;
     }
+    if let Some(mut sleep) = world.try_resource_mut::<byroredux_scripting::oblivion_skill_use::SleepCompletions>() {
+        sleep.0.clear();
+    }
+    if let Some(mut rest) = world.try_resource_mut::<crate::oblivion_rest::RestSession>() {
+        *rest = crate::oblivion_rest::RestSession::Closed;
+    }
     if let Some(mut music) = world.try_resource_mut::<byroredux_scripting::obscript_more::PendingMusic>() {
         music.0.clear();
     }

@@ -11,6 +11,7 @@
 mod chargen;
 mod game_menu;
 mod hud;
+mod rest;
 mod setting_control;
 mod views;
 #[cfg(test)]
@@ -24,7 +25,7 @@ pub use views::{
     BarterAction, BarterItemView, BarterSnapshot, ChargenChoice, ChargenOption, ChargenScreenView, ChargenSnapshot,
     CraftingAction, CraftingRecipeView, CraftingSnapshot, DialogueTopicEntryView, DialogueTopicSnapshot,
     DialogueUiAction, InteractionPrompt, InventoryAction, InventoryItemView, InventorySnapshot, MessageBoxView,
-    ObjectiveView, PageOutputs, PageSnapshot, StealthIndicatorLook, StealthIndicatorView, VitalBarView,
+    ObjectiveView, PageOutputs, PageSnapshot, RestAction, RestAttribute, RestView, StealthIndicatorLook, StealthIndicatorView, VitalBarView,
 };
 
 /// The egui these pages draw with, so a host can name the context type.

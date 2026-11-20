@@ -217,7 +217,7 @@ R('chargen', CG, '"{} / {max}"', '{picked} / {max}', E, 'pick counter')
 R('chargen', CG, 'ui.heading(snapshot.title.clone())', '(screen title)', E, 'passes the screen title through (the MESG / menu text the script opened) - not an engine string (listed for completeness)')
 # ---- HUD
 HI = 'byroredux/src/interaction.rs'
-for verb, needle, nth, settings, spec, note in (('Activate','Self::Activate => "Activate"',2,'sActivate','s:$Activate f:$Activate',''),('Open','Self::Door => "Open"',1,'sOpen','',''),('Take all','=> "Take all"',1,'sTakeAll','g:sTakeAll s:$Take All f:$TAKE ALL',''),('Take','Self::Pickup => "Take"',1,'sTake','s:$Take f:$TAKE',''),('Talk','Self::Npc => "Talk"',1,'sTalk','f:$TALK g:sVampireTalk','FO3/FNV sVampireTalk is a vampire-feed verb and is not read'),('Sleep','Self::Sleep => "Sleep"',1,'sFurnitureSleep, sSleep','g:sSleep','sSleep value is lower-case "sleep"'),('Sit','Self::Sit => "Sit"',1,'sSit','',''),('Craft','Self::Craft => "Craft"',1,'sCraft','f:$Craft','')):
+for verb, needle, nth, settings, spec, note in (('Activate','Self::Activate => "Activate"',2,'sActivate','s:$Activate f:$Activate',''),('Open','Self::Door | Self::OpenDoor => "Open"',1,'sOpen','',''),('Take all','=> "Take all"',1,'sTakeAll','g:sTakeAll s:$Take All f:$TAKE ALL',''),('Take','Self::Pickup => "Take"',1,'sTake','s:$Take f:$TAKE',''),('Talk','Self::Npc => "Talk"',1,'sTalk','f:$TALK g:sVampireTalk','FO3/FNV sVampireTalk is a vampire-feed verb and is not read'),('Sleep','Self::Sleep => "Sleep"',1,'sFurnitureSleep, sSleep','g:sSleep','sSleep value is lower-case "sleep"'),('Sit','Self::Sit => "Sit"',1,'sSit','',''),('Craft','Self::Craft => "Craft"',1,'sCraft','f:$Craft','')):
     R('hud prompt', HI, needle, verb, G, via(settings, 'interaction prompt verb (InteractionKind::verb)' + (('; ' + note) if note else '')), spec, nth=nth)
 R('hud prompt', HUD, '"[{}] {}"', '[{binding}] {verb}', E, 'prompt format; binding label is a PC key name (ActionBindings::binding_label, default "E")')
 R('hud prompt', 'byroredux/src/main.rs', 'unwrap_or("E")', 'E', E, 'default key label')
@@ -272,6 +272,12 @@ R('hud message', LL, 'const LOAD_FAILED', 'Load failed.', E, 'a failed quickload
 # loading tip / objectives / dialogue passthrough
 R('loading', HUD, 'tip.to_owned()', '(loading tip text)', E, 'passthrough of game data (LSCR/loading-tip text) - not an engine string; listed so a per-page test knows the draw site')
 rows_sorted = rows
+REST = 'crates/native-ui/src/rest.rs'
+R('oblivion rest', REST, 'let verb = labels.text', 'Sleep', G, via('sFurnitureSleep, sSleep', 'bed confirmation'))
+R('oblivion rest', REST, 'let verb = labels.text', 'Wait', G, via('sWait', 'wait confirmation'))
+for label, setting in (('Hours', 'sHours'), ('Level', 'sLevel'), ('Done', 'sDone'), ('Cancel', 'sCancel')):
+    R('oblivion rest', REST, f'labels.text("{label}")', label, G, via(setting, 'rest or level-up control'))
+R('oblivion rest', REST, 'labels.text("Attributes selected")', 'Attributes selected', E, 'native fallback selection count')
 with open(OUT, 'w', encoding='utf-8') as f:
     f.write('file_line\tstring\tpage\tdisposition\treason\tgame_string_candidates\tsource\n')
     for fl, s, page, disp, why, cands in rows_sorted:

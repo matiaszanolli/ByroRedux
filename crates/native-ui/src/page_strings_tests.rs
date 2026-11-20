@@ -143,6 +143,21 @@ fn menu(page: GameMenuPage) -> GameMenuState {
 }
 
 #[test]
+fn oblivion_rest_fallback_draws_listed_labels_and_attribute_data() {
+    for sleeping in [false, true] {
+        let snapshot = PageSnapshot { rest: Some(RestView::Duration { sleeping, hours: 1 }), ..Default::default() };
+        assert_page(&["oblivion rest"], &snapshot, &menu(GameMenuPage::SleepWait), &[]);
+    }
+    let names = ["Strength", "Intelligence", "Willpower", "Agility", "Speed", "Endurance", "Personality", "Luck"];
+    let attributes = names.map(|name| RestAttribute { name, base: "40".into(), bonus: 1, selected: false, enabled: true });
+    let snapshot = PageSnapshot {
+        rest: Some(RestView::LevelUp { level: 2, attributes: Box::new(attributes), selected: 0, ready: false }),
+        ..Default::default()
+    };
+    assert_page(&["oblivion rest"], &snapshot, &menu(GameMenuPage::LevelUp), &names);
+}
+
+#[test]
 fn the_inventory_keeps_no_unresolved_candidates() {
     let left: Vec<String> = rows()
         .into_iter()

@@ -154,6 +154,7 @@ pub struct MenuRenderer {
     overrides: Overrides,
     screen: ScreenTraits,
     fonts: Vec<Option<Arc<Font>>>,
+    default_font: u8,
     /// Authored `<filename>` (lowercased) → its resolved texture, or `None`
     /// once it is known missing, undecodable or over budget.
     pub(crate) tex_cache: HashMap<String, Option<Arc<Rgba8>>>,
@@ -286,6 +287,7 @@ impl MenuRenderer {
             overrides: Overrides::new(),
             screen,
             fonts,
+            default_font: 0,
             tex_cache: HashMap::new(),
             decoded: HashMap::new(),
             decoded_bytes: 0,
@@ -427,8 +429,8 @@ impl MenuRenderer {
                 Scalar::Str(s) => s,
                 Scalar::Num(_) => continue,
             };
-            let font_index = eval.trait_value(tile, "font").as_num().clamp(0.0, 255.0) as usize;
-            let Some(font) = self.fonts.get(font_index).and_then(|f| f.as_deref()) else { continue };
+            let font_index = eval.trait_value(tile, "font").as_num().clamp(0.0, 255.0) as u8;
+            let Some(font) = self.fonts.get(self.effective_font(font_index)).and_then(|f| f.as_deref()) else { continue };
             let wrap_width = eval.trait_value(tile, "wrapwidth").as_num().max(0.0);
             let wrap_lines = eval.trait_value(tile, "wraplines").as_num().max(0.0) as u32;
             let lines = crate::raster::wrap(&string, font, wrap_width, wrap_lines);
@@ -508,6 +510,16 @@ impl MenuRenderer {
         self.focus.map(|tile| self.hit(tile))
     }
 
+    /// The current pointer capture, if a target received a press.
+    pub fn pressed(&self) -> Option<TileHit> {
+        self.pressed.map(|tile| self.hit(tile))
+    }
+
+    /// Release pointer capture when the menu loses window focus.
+    pub fn cancel_pointer(&mut self) {
+        self.pressed = None;
+    }
+
     fn push_activation(&mut self, hit: TileHit) {
         if self.activations.len() >= MAX_PENDING_ACTIVATIONS {
             self.activations.remove(0);
@@ -545,6 +557,15 @@ impl MenuRenderer {
             self.texture_set = TextureSet::for_width(screen.width);
         }
         self.screen = screen;
+    }
+
+    /// Use this slot for text for which the document leaves the font unauthored.
+    pub fn set_default_font(&mut self, slot: u8) {
+        self.default_font = slot;
+    }
+
+    fn effective_font(&self, authored: u8) -> usize {
+        usize::from(if authored == 0 { self.default_font } else { authored })
     }
 
     /// The last `render_frame` raster, without re-evaluating — for callers
@@ -597,11 +618,12 @@ impl MenuRenderer {
                     }
                 }
                 DrawItem::Text { font, .. } => {
-                    let font_ref = self.fonts.get(*font as usize).and_then(|f| f.clone());
+                    let slot = self.effective_font(*font);
+                    let font_ref = self.fonts.get(slot).and_then(|f| f.clone());
                     if let Some(font) = font_ref {
                         self.frame.draw_text_item(item, &font);
-                    } else if self.missing.insert(format!("font{font}")) {
-                        log::warn!("menuxml: font {font} not loaded — text skipped");
+                    } else if self.missing.insert(format!("font{slot}")) {
+                        log::warn!("menuxml: font {slot} not loaded — text skipped");
                     }
                 }
                 DrawItem::Fill {
@@ -627,13 +649,13 @@ impl MenuRenderer {
     /// resolution-class table (`Menus\…` → `textures\menus…\…`).
     fn texture(&mut self, assets: &dyn MenuAssets, filename: &str) -> Option<Arc<Rgba8>> {
         let normalized = filename.trim().replace('/', "\\");
-        let cache_key = normalized.to_lowercase();
+        let cache_key = normalized.trim_start_matches('\\').to_lowercase();
         if let Some(cached) = self.tex_cache.get(&cache_key) {
             return cached.clone();
         }
         // Candidate archive paths: preferred set first, then the other
         // classes (not every texture ships in every set).
-        let lowered = normalized.to_lowercase();
+        let lowered = &cache_key;
         let candidates: Vec<String> = if let Some(rest) = lowered
             .strip_prefix("menus\\")
             .or_else(|| lowered.strip_prefix("menus80\\"))

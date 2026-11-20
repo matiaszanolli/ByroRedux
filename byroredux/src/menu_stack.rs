@@ -102,6 +102,8 @@ pub(crate) fn native_menus(registry: &MenuRegistry, state: &NativeMenuState) -> 
         Some(GameMenuPage::Barter) => Some(NativeMenu::Barter),
         Some(GameMenuPage::Crafting) => Some(NativeMenu::Crafting),
         Some(GameMenuPage::CharGen) => Some(NativeMenu::CharGen),
+        Some(GameMenuPage::SleepWait) => Some(NativeMenu::SleepWait),
+        Some(GameMenuPage::LevelUp) => Some(NativeMenu::LevelUp),
         None => None,
     };
     match page {
@@ -410,6 +412,19 @@ impl App {
             MenuResult::Accept => "accept",
             MenuResult::Cancel => "cancel",
         };
+        if entry.code.is_some_and(crate::menuxml_rest::is_rest_document) && crate::oblivion_rest::supports_rest(&self.world) {
+            let action = match result {
+                MenuResult::Accept => byroredux_native_ui::RestAction::Confirm,
+                MenuResult::Cancel => byroredux_native_ui::RestAction::Cancel,
+            };
+            let before = crate::oblivion_rest::snapshot(&self.world);
+            crate::oblivion_rest::apply(&self.world, action);
+            if before.is_some() && crate::oblivion_rest::snapshot(&self.world) == before {
+                return Err(format!("ui.close: {} needs three eligible attribute choices", entry.name));
+            }
+            self.close_rest_surface();
+            return Ok(format!("ui.close: {} closed result={verdict}", entry.name));
+        }
         match &entry.surface {
             MenuSurface::Movie { path, .. } => {
                 let manager = self.ui.manager.as_ref().ok_or("ui.close: no movie stack")?;

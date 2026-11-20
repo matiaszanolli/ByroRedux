@@ -86,6 +86,8 @@ pub(crate) enum InputAction {
     NextSpell,
     /// Player-spellcasting (PSC-RDY-003) — ready the previous castable spell (default Left arrow).
     PreviousSpell,
+    /// Oblivion's wait menu; consumed only by the Oblivion rest driver.
+    Wait,
 }
 
 impl InputAction {
@@ -151,6 +153,7 @@ impl InputAction {
             Self::CastSpell => "controls.bind.cast_spell",
             Self::NextSpell => "controls.bind.next_spell",
             Self::PreviousSpell => "controls.bind.previous_spell",
+            Self::Wait => "",
         }
     }
 
@@ -175,6 +178,7 @@ impl InputAction {
             Self::CastSpell => "Cast spell",
             Self::NextSpell => "Next spell",
             Self::PreviousSpell => "Previous spell",
+            Self::Wait => "Wait",
         }
     }
 }
@@ -215,6 +219,7 @@ impl Default for ActionBindings {
                 (KeyCode::KeyC, InputAction::CastSpell),
                 (KeyCode::ArrowRight, InputAction::NextSpell),
                 (KeyCode::ArrowLeft, InputAction::PreviousSpell),
+                (KeyCode::KeyT, InputAction::Wait),
             ]),
             mouse: HashMap::from([
                 (MouseButton::Left, InputAction::Attack),
@@ -324,6 +329,7 @@ fn papyrus_control_name(action: InputAction) -> &'static str {
         InputAction::CastSpell => "Cast Spell",
         InputAction::NextSpell => "Next Spell",
         InputAction::PreviousSpell => "Previous Spell",
+        InputAction::Wait => "Wait",
     }
 }
 
@@ -735,6 +741,7 @@ fn debug_action(name: &str) -> Option<InputAction> {
         "cast" | "cast_spell" | "c" => Some(InputAction::CastSpell),
         "next_spell" | "next" => Some(InputAction::NextSpell),
         "previous_spell" | "previous" | "prev" => Some(InputAction::PreviousSpell),
+        "wait" => Some(InputAction::Wait),
         _ => None,
     }
 }
@@ -788,6 +795,14 @@ impl ActionState {
 
     pub(crate) fn was_pressed(&self, action: InputAction) -> bool {
         self.pressed & action.bit() != 0
+    }
+
+    /// Consume a press handled by a modal presenter. The scheduler can be
+    /// paused across menu frames, so its next edge snapshot may not run yet.
+    pub(crate) fn take_pressed(&mut self, action: InputAction) -> bool {
+        let pressed = self.was_pressed(action);
+        self.pressed &= !action.bit();
+        pressed
     }
 
     pub(crate) fn was_released(&self, action: InputAction) -> bool {
@@ -1488,7 +1503,7 @@ fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, Inter
         candidates.entry(entity).or_insert(InteractionKind::Craft);
     }
     // A jail cell's bed: resting in it is how a sentence ends, so a bed is offered only then.
-    if byroredux_scripting::jail::player_in_jail(world) {
+    if crate::oblivion_rest::supports_rest(world) || byroredux_scripting::jail::player_in_jail(world) {
         for entity in crate::crime::bed_entities(world) {
             candidates.entry(entity).or_insert(InteractionKind::Sleep);
         }
@@ -1928,9 +1943,9 @@ mod tests {
         world
     }
 
-    /// A jail cell's bed is offered ("Sleep") only while the player serves a sentence; a chair never is.
+    /// Bed prompts cover ordinary Oblivion beds and jail beds. A chair is a seat.
     #[test]
-    fn a_bed_is_an_interaction_candidate_only_during_a_jail_sentence() {
+    fn oblivion_and_jail_beds_are_sleep_candidates() {
         use byroredux_core::ecs::components::{Furniture, FurnitureMarker, FurnitureMarkerKind};
         use byroredux_scripting::obscript_ledger::{JailSentence, ObScriptLedger};
         let marker = |kind| FurnitureMarker { local_offset: [0.0; 3], heading_z_radians: None, animation_type: 0, kind };
@@ -1951,6 +1966,12 @@ mod tests {
         assert_eq!(candidates.get(&bed), Some(&InteractionKind::Sleep));
         assert_eq!(candidates.get(&chair), Some(&InteractionKind::Sit), "a chair is a seat, sentence or not");
         assert_eq!(InteractionKind::Sleep.verb(), "Sleep");
+
+        world.resource_mut::<ObScriptLedger>().jail = None;
+        world.insert_resource(byroredux_scripting::ScriptGame(byroredux_plugin::esm::reader::GameKind::Oblivion));
+        candidates.clear();
+        populate_candidates(&world, &mut candidates);
+        assert_eq!(candidates.get(&bed), Some(&InteractionKind::Sleep), "ordinary Oblivion bed");
     }
 
     #[test]

@@ -23,15 +23,15 @@ impl App {
         self.ui.menu_documents.iter_mut().find(|document| document.code == code)
     }
 
-    /// Open the FO3 / FNV menu with `code` on its document (S2) and `prepare` it; `false` when the
+    /// Open a game's menu with `code` on its document (S2) and `prepare` it; `false` when the
     /// game targets no document for it, the session has no menu archives, or it does not load.
     /// An already open document stays.
-    pub(crate) fn open_menu_document(&mut self, code: u32, purpose: &str, prepare: fn(&mut MenuDocument) -> Result<(), String>) -> bool {
+    pub(crate) fn open_menu_document(&mut self, game: MenuGame, code: u32, purpose: &str, prepare: fn(&mut MenuDocument) -> Result<(), String>) -> bool {
         if self.menu_document_mut(code).is_some() {
             return true;
         }
         let def = self.world.try_resource::<MenuRegistry>().and_then(|registry| {
-            (registry.game() == MenuGame::Fallout3NV)
+            (registry.game() == game)
                 .then(|| registry.table().by_code(code).cloned())
                 .flatten()
                 .filter(|def| def.target == TargetSurface::MenuXml)
@@ -62,7 +62,7 @@ impl App {
         });
         match opened {
             Ok(opened) => {
-                log::info!("ui.open: {name} opened as menuxml {document} — {purpose} (GUI-PAGE-004, Q1)");
+                log::info!("ui.open: {name} opened as menuxml {document} — {purpose}");
                 self.ui.menu_documents.push(opened);
                 true
             }
@@ -91,7 +91,7 @@ impl App {
 
     /// Open the conversation on the game's dialogue document (S2, Fallout 3 / New Vegas).
     pub(crate) fn open_dialogue_document(&mut self) -> bool {
-        self.open_menu_document(crate::menuxml_dialogue::DIALOGUE_MENU_CODE, "the conversation", crate::menuxml_dialogue::prepare)
+        self.open_menu_document(MenuGame::Fallout3NV, crate::menuxml_dialogue::DIALOGUE_MENU_CODE, "the conversation", crate::menuxml_dialogue::prepare)
     }
 
     /// M48 GUI-PAGE-004 — the dialogue document's frame: apply what its input asked, then present
@@ -129,7 +129,7 @@ impl App {
             return true;
         }
         self.open_message_box_movie()
-            || self.open_menu_document(crate::menuxml_message::MESSAGE_MENU_CODE, "the message box", crate::menuxml_message::prepare)
+            || self.open_menu_document(MenuGame::Fallout3NV, crate::menuxml_message::MESSAGE_MENU_CODE, "the message box", crate::menuxml_message::prepare)
     }
 
     fn open_message_box_movie(&mut self) -> bool {
@@ -264,7 +264,8 @@ pub(crate) fn surface_coverage(registry: &MenuRegistry, barter: bool) -> Surface
                 coverage.movie += 1;
                 coverage.movie_fed += usize::from(FED_MOVIES.contains(&def.name.as_str()));
             }
-            TargetSurface::MenuXml if FED_DOCUMENTS.contains(&code) => coverage.document += 1,
+            TargetSurface::MenuXml if FED_DOCUMENTS.contains(&code)
+                || (registry.game() == MenuGame::Oblivion && crate::menuxml_rest::is_rest_document(code)) => coverage.document += 1,
             target if page_opens(target) || page_opens(&def.fallback) => coverage.native += 1,
             _ if chargen && crate::chargen::ChargenScreen::MENU_CODES.contains(&code) => coverage.native += 1,
             _ => coverage.absent += 1,

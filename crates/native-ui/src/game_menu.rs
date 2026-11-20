@@ -21,6 +21,8 @@ pub enum GameMenuPage {
     /// A character-creation screen a script opened (name, sex and race, SPECIAL, tag skills,
     /// traits).
     CharGen,
+    SleepWait,
+    LevelUp,
 }
 
 /// Persistent navigation state for the player-facing native menu.
@@ -68,6 +70,8 @@ pub fn draw_game_menu(
         GameMenuPage::Barter => "Barter",
         GameMenuPage::Crafting => "Crafting",
         GameMenuPage::CharGen => "Character",
+        GameMenuPage::SleepWait => "Rest",
+        GameMenuPage::LevelUp => "Level Up",
     };
     Window::new(title)
         .id(Id::new("game_menu_window"))
@@ -85,6 +89,8 @@ pub fn draw_game_menu(
             GameMenuPage::Barter => egui::vec2(900.0, 620.0),
             GameMenuPage::Crafting => egui::vec2(900.0, 620.0),
             GameMenuPage::CharGen => egui::vec2(620.0, 560.0),
+            GameMenuPage::SleepWait => egui::vec2(360.0, 144.0),
+            GameMenuPage::LevelUp => egui::vec2(460.0, 395.0),
         })
         .frame(
             Frame::window(&ctx.global_style())
@@ -108,6 +114,7 @@ pub fn draw_game_menu(
             GameMenuPage::Barter => draw_barter_page(ui, labels, snapshot.barter.as_ref(), state, outputs),
             GameMenuPage::Crafting => draw_crafting_page(ui, labels, snapshot.crafting.as_ref(), state, outputs),
             GameMenuPage::CharGen => super::chargen::draw_chargen_page(ui, labels, snapshot.chargen.as_ref(), &mut state.chargen, outputs),
+            GameMenuPage::SleepWait | GameMenuPage::LevelUp => super::rest::draw(ui, labels, snapshot.rest.as_ref(), outputs),
         });
 }
 

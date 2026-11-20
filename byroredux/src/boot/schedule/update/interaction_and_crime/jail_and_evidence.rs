@@ -6,6 +6,7 @@ use byroredux_core::ecs::{Access, Scheduler, Stage};
 
 /// Jail beds and evidence deposits.
 pub(super) fn register_jail_and_evidence_systems(scheduler: &mut Scheduler) {
+    scheduler.add_exclusive(Stage::Update, crate::oblivion_rest::bed_use_system);
     // Resting in a jail cell's bed ends the sentence; after the activation flush like every consumer.
     scheduler.add_exclusive_with_access(
         Stage::Update,

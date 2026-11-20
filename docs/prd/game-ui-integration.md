@@ -1,6 +1,7 @@
 # Game UI Integration — Product Requirements
 
-**Status**: ACTIVE (2026-11-20). Revision 8 specifies Oblivion's sleep/rest and level-up menus (#7048).
+**Status**: ACTIVE (2026-11-20). Revision 9 records the playable Oblivion menus (#7086).
+Revision 8 specifies Oblivion's sleep/rest and level-up menus (#7048).
 Revision 7 names an owning issue for every open Phase 0 item (§9.1).
 Revision 6 records the Phase 0 results (§9.1).
 Revision 5 files the tracking issues.
@@ -591,23 +592,22 @@ methods:
   MUST use the same registry name, code and gameplay contract. Both
   documents ship in `Oblivion - Misc.bsa` and are inventoried in
   [the Oblivion menu table](../data/game-ui/menu-inventory-oblivion.tsv).
-  At HEAD on 2026-11-20 these menus have no gameplay driver.
+  The driver is `byroredux/src/menuxml_rest.rs` (#7086).
 - **GUI-XML-005.** Activating a bed or bedroll the Oblivion player may use
   MUST open `SleepWaitMenu` in sleep mode. The menu MUST display the chosen
   duration and let the player confirm or cancel. Its wait mode MUST
   distinguish waiting from bed sleep. The document has separate sleep
   and wait prompts. Eligibility follows the original game's rules for
   [legal beds and bedrolls](https://en.uesp.net/wiki/Oblivion:Sleeping_and_Eating).
-  At HEAD the interactive bed path only serves a jail sentence.
+  `bed_use_system` handles the ordinary bed activation. `T` requests waiting.
 - **GUI-XML-006.** A confirmed bed sleep that reaches its requested end
   MUST emit exactly one `SleepCompleted` with the elapsed hours and
   `interrupted = false` to the existing level-up consumer (OSL-SLP-001).
   An enemy encounter that ends sleep early MUST withhold a successful
   completion (OSL-SLP-002, V6). The existing event can report an
   interrupted sleep with `interrupted = true`. Waiting and cancellation
-  before confirmation MUST emit no `SleepCompleted`. At HEAD the
-  scripted sleep runner advances the clock and emits the event, and
-  the engine has no encounter-driven interruption. This contract places
+  before confirmation MUST emit no `SleepCompleted`. The runner rechecks
+  combat and bed availability before the time skip. This contract places
   no requirement on encounter generation.
 - **GUI-XML-007.** When that uninterrupted sleep ends with an eligible
   pending level, `LevelUpMenu` MUST show the next level and the oldest
@@ -617,8 +617,8 @@ methods:
   to choose and revise three distinct eligible attributes before
   confirming. Confirmation MUST submit all three picks together to the
   shared level-up path for that sleep, applying exactly one level. The
-  gameplay system validates eligibility and owns stat changes. At HEAD
-  the console accepts picks ahead of the next completed sleep.
+  gameplay system validates eligibility and owns stat changes. The console
+  path accepts picks ahead of the next completed scripted sleep.
 
 ### 5.10 Observability and cost (`GUI-OPS`)
 
@@ -914,7 +914,10 @@ verify found a host contract. Exit: scenario 8 passes, and every metric of
 input/output contracts. Exit: the revision specifying GUI-XML-004…007 is
 merged. The playable bindings are a follow-up to [Oblivion Skill-Use
 Leveling Phase 3](oblivion-skill-use-leveling.md#9-delivery-sequence)
-(#7047), with scenarios 11 and 12 as their acceptance checks.
+(#7047), tracked in #7086. The live Weynon House flow exercised both the
+installed MenuXml documents and the native fallback with the menu archive
+withheld. The engine tests cover a confirmed sleep interrupted by combat
+and a sleep with no pending level.
 
 Dependencies: M43's dialogue layers (closed) for Phase 4; M47.2 / M47.3 for
 the script queries and blocks of Phase 1 (`MenuMode`, `Begin MenuMode`,
@@ -1062,3 +1065,4 @@ Each needs the project owner. The recommendation is the first option.
 | 6 | 2026-11-08 | Phase 0 results (§9.1): inventory with Q1 surfaces, flags, codes (FO3 / FNV 1004 = `HUDMainMenu`), classified catalogs, extension census, HUD feeds, `-s` strings, native-page strings, race-menu wait, Skyrim LE and Starfield; Q2's first question answered; Q5 and Q6 results; §3.1 rows 2, 6, 13, 14, 15 corrected; GUI-HOST-001 (H4), GUI-REG-006 and GUI-FONT-005 reworded; ui.md design section | — |
 | 7 | 2026-11-09 | Phase 0 exit: the open verify items each name their owning issue in §9.1 (phase issues, or #6823-#6826 filed for the five no phase issue covered); status line unchanged | — |
 | 8 | 2026-11-20 | #7048: GUI-XML-004…007 assign Oblivion's sleep/rest and level-up menus to MenuXml, specify successful and interrupted sleep, and define the frozen attribute-pick contract and acceptance scenarios for the #7047 bindings | — |
+| 9 | 2026-11-20 | #7086: implement and exercise the Oblivion MenuXml and native fallback paths for GUI-XML-004…007 in Weynon House. Test cancellation, waiting, and combat interruption without consuming a pending level | — |

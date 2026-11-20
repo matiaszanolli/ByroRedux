@@ -71,9 +71,8 @@ pub(crate) fn stamp_cell_ownership(
     world.insert_batch(targets.into_iter().map(|entity| (entity, owned)));
 }
 
-/// P3's theft rule: a transfer is theft when the source is owned and the
-/// owner is neither the player nor a faction the player holds the required
-/// rank in. The answer is the owner it steals from; what the theft costs the
+/// A reference has a foreign owner when it belongs to someone other than
+/// the player or a faction the player holds the required rank in. What theft costs the
 /// player is [`crate::crime::report_theft`]'s.
 ///
 /// #4699 — "the player" is the Player `NPC_` base (0x7), what vanilla
@@ -85,7 +84,7 @@ pub(crate) fn stamp_cell_ownership(
 /// reaches `Owned` through [`stamp_cell_ownership`].
 ///
 /// [`FactionRanks`]: byroredux_core::ecs::components::FactionRanks
-pub(super) fn theft_owner(
+pub(crate) fn foreign_owner(
     world: &World,
     player: byroredux_core::ecs::EntityId,
     source: byroredux_core::ecs::EntityId,
@@ -171,7 +170,7 @@ pub(crate) fn transfer_loot(
     {
         return None;
     }
-    let stolen_from = theft_owner(world, player, source);
+    let stolen_from = foreign_owner(world, player, source);
     let stolen = stolen_from.is_some();
     let mut outcome = LootOutcome {
         item_count: 0,
@@ -455,7 +454,7 @@ pub(crate) fn take_placed_item(
     else {
         return false;
     };
-    let stolen_from = if player_is_taker { theft_owner(world, player, target) } else { None };
+    let stolen_from = if player_is_taker { foreign_owner(world, player, target) } else { None };
     let stolen = stolen_from.is_some();
     let count = world
         .get::<PlacedItemCount>(target)

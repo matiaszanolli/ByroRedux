@@ -1033,6 +1033,7 @@ impl App {
         self.present_crafting_menu();
         self.present_script_messages();
         self.present_chargen();
+        self.present_oblivion_rest();
         self.step_player_body_rebuild();
     }
 
@@ -1135,6 +1136,9 @@ impl App {
             self.resume_from_game_menu();
         }
         if !crate::notifications::route_script_messages(&self.world) {
+            return;
+        }
+        if self.ui.menu_documents.iter().any(|document| crate::menuxml_rest::is_rest_document(document.code)) {
             return;
         }
         // M48 Q1 — the game's own message box surface when it has one (Skyrim's movie, FO3 / FNV's

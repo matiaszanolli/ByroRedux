@@ -245,6 +245,30 @@ pub enum DialogueUiAction {
     SelectTopic { npc: u32, topic_form_id: u32 },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum RestView {
+    Duration { sleeping: bool, hours: u8 },
+    LevelUp { level: u16, attributes: Box<[RestAttribute; 8]>, selected: u8, ready: bool },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RestAttribute {
+    pub name: &'static str,
+    pub base: String,
+    pub bonus: u8,
+    pub selected: bool,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestAction {
+    SetHours(u8),
+    AdjustHours(i8),
+    ToggleAttribute(u8),
+    Confirm,
+    Cancel,
+}
+
 /// The player-facing state the HUD and the native pages draw, built each frame by the binary.
 /// The operator overlay's `PanelSnapshot` carries one as its `game` field.
 #[derive(Default, Clone)]
@@ -297,6 +321,8 @@ pub struct PageSnapshot {
     pub crafting: Option<CraftingSnapshot>,
     /// The character-creation screen a script opened, populated while it is up.
     pub chargen: Option<ChargenSnapshot>,
+    /// The open Oblivion rest or level-up session.
+    pub rest: Option<RestView>,
     /// M48 GUI-PAGE-005 — the native pages' words in the load order's vocabulary (a handle;
     /// the default is the engine text).
     pub labels: byroredux_core::ui_labels::UiLabels,
@@ -341,6 +367,7 @@ pub struct PageOutputs {
     pub crafting_actions: Vec<CraftingAction>,
     /// What the player accepted on the open character-creation screen.
     pub chargen_choice: Option<ChargenChoice>,
+    pub rest_actions: Vec<RestAction>,
     /// Close the native pause menu and return input to the world.
     pub resume_game: bool,
     /// Save to the next ring slot through the binary's canonical save API.

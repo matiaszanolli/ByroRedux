@@ -76,6 +76,7 @@ pub(super) fn register_scripted_combat_systems(scheduler: &mut Scheduler) {
         Access::new()
             .writes_resource::<byroredux_scripting::oblivion_skill_use::SleepCompletions>()
             .writes_resource::<crate::skill_use_emit::LevelNotices>()
+            .writes_resource::<crate::oblivion_rest::RestSession>()
             .reads_resource::<byroredux_core::character::CharacterRuleset>()
             .reads_resource::<byroredux_scripting::ActorValueNames>()
             .reads_resource::<byroredux_scripting::ScriptGame>()
