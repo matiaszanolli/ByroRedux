@@ -85,6 +85,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(byroredux_core::ecs::PendingUpscalerSwitch::default());
     world.insert_resource(SkinCoverageStats::default());
     world.insert_resource(byroredux_core::ecs::RtIntegrityStats::default());
+    // RCG-DBG-003 — what `gi.cache` prints.
+    world.insert_resource(byroredux_core::ecs::GiCacheStats::default());
     // #3305 — shadow-mask census, published alongside RtIntegrityStats.
     world.insert_resource(byroredux_core::ecs::ShadowMaskCensus::default());
     // REND-#1451 — live attenuation tuning, read into the renderer

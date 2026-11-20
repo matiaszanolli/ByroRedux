@@ -117,25 +117,29 @@ impl VulkanContext {
                 .scene_buffers
                 .collect_rt_lod_telemetry(&self.device, frame)
             {
-                Ok(sample) if sample.fragments > 0 && self.frame_counter.is_multiple_of(60) => {
-                    let scale = self
-                        .renderer_config
-                        .rt_test_lod_scale_bits
-                        .map(f32::from_bits)
-                        .unwrap_or(6.0);
-                    log::info!(
-                        "rt-lod-telemetry: scale={scale:.6} fragments={} bins={:?} \
-                         reflection_traced={} reflection_lod_culled={} gi_traced={} \
-                         gi_lod_culled={} cache_resolved={} cache_misses={}",
-                        sample.fragments,
-                        sample.bins,
-                        sample.reflection_traced,
-                        sample.reflection_lod_culled,
-                        sample.gi_traced,
-                        sample.gi_lod_culled,
-                        sample.cache_resolved,
-                        sample.cache_misses,
-                    );
+                Ok(sample) if sample.fragments > 0 => {
+                    // `gi.cache` reads the latest sample (RCG-DBG-003); the log line is every 60th.
+                    self.diag.rt_lod_sample = Some(sample);
+                    if self.frame_counter.is_multiple_of(60) {
+                        let scale = self
+                            .renderer_config
+                            .rt_test_lod_scale_bits
+                            .map(f32::from_bits)
+                            .unwrap_or(6.0);
+                        log::info!(
+                            "rt-lod-telemetry: scale={scale:.6} fragments={} bins={:?} \
+                             reflection_traced={} reflection_lod_culled={} gi_traced={} \
+                             gi_lod_culled={} cache_resolved={} cache_misses={}",
+                            sample.fragments,
+                            sample.bins,
+                            sample.reflection_traced,
+                            sample.reflection_lod_culled,
+                            sample.gi_traced,
+                            sample.gi_lod_culled,
+                            sample.cache_resolved,
+                            sample.cache_misses,
+                        );
+                    }
                 }
                 Ok(_) => {}
                 Err(error) => log::warn!("RT-LOD telemetry readback failed: {error}"),

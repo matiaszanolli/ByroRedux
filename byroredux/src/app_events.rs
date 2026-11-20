@@ -921,6 +921,9 @@ impl App {
             let mut census = self.world.resource_mut::<ShadowMaskCensus>();
             ctx.fill_shadow_mask_census(&mut census);
         }
+        if let Some(ref ctx) = self.renderer {
+            ctx.fill_gi_cache_stats(&mut self.world.resource_mut::<byroredux_core::ecs::GiCacheStats>());
+        }
 
         // Refresh the upscaler line `ctx.upscaler` prints — the FSR provider
         // version and the SDK's own GPU reservation, which live outside

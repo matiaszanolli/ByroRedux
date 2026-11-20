@@ -927,6 +927,8 @@ impl PostPassState {
 pub(super) struct RenderDiagnostics {
     pub(super) pending_selected_ray_probe: Option<super::render_debug::SelectedRayProbeRequest>,
     pub(super) selected_ray_probe_result: Option<super::render_debug::SelectedRayProbeResult>,
+    /// The last non-empty `--rt-test-lod-telemetry` read-back, for `gi.cache` (RCG-DBG-003).
+    pub(super) rt_lod_sample: Option<super::scene_buffer::RtLodTelemetry>,
     /// #4978 — per frame slot, the SSBO→entity map a probe armed in that
     /// slot must resolve its hit against at readback.
     pub(super) selected_ray_probe_entity_maps:
@@ -957,6 +959,23 @@ pub(super) struct RenderDiagnostics {
     /// Running total since process start, so a transient NaN that appears on
     /// one frame is still visible to a gate that samples later.
     image_health_total: (u64, u64),
+}
+
+impl RenderDiagnostics {
+    /// The state at construction: the health buffers, no probe and no telemetry sample yet. Built here,
+    /// not as a literal in `build_pipelines_and_finish`, which is held to its size pin (#6143).
+    pub(super) fn new(image_health_buffers: Vec<super::buffer::GpuBuffer>) -> Self {
+        Self {
+            image_health_buffers,
+            image_health_last: (0, 0),
+            image_health_total: (0, 0),
+            pending_selected_ray_probe: None,
+            selected_ray_probe_result: None,
+            rt_lod_sample: None,
+            selected_ray_probe_entity_maps: Default::default(),
+            next_selected_ray_probe_generation: 1,
+        }
+    }
 }
 
 /// Exterior-only renderer state (#6700): the EXAL ground-cover pipeline, its
@@ -2399,6 +2418,7 @@ mod field_group_tests {
             &[
                 "pending_selected_ray_probe",
                 "selected_ray_probe_result",
+                "rt_lod_sample",
                 "selected_ray_probe_entity_maps",
                 "next_selected_ray_probe_generation",
                 "image_health_buffers",

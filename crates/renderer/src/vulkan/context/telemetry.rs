@@ -625,6 +625,23 @@ impl VulkanContext {
         }
     }
 
+    /// RCG-DBG-003: the ray budget's cache words and the last RT-LOD telemetry read-back, for `gi.cache`.
+    pub fn fill_gi_cache_stats(&self, stats: &mut byroredux_core::ecs::GiCacheStats) {
+        let budget = self
+            .scene_buffers
+            .current_ray_budget(self.renderer_config.rt_test_ray_quality_tier);
+        stats.sampled = self.frame_counter > 0;
+        stats.ray_quality_tier = budget.quality_tier;
+        stats.update_stride = budget.cache_update_stride;
+        stats.telemetry = self.diag.rt_lod_sample.map(|sample| byroredux_core::ecs::GiCacheTelemetry {
+            fragments: sample.fragments,
+            gi_traced: sample.gi_traced,
+            gi_lod_culled: sample.gi_lod_culled,
+            cache_resolved: sample.cache_resolved,
+            cache_misses: sample.cache_misses,
+        });
+    }
+
     /// Join the last frame's RT publication, TLAS membership, and clustered
     /// light capacity counters into the engine's durable integrity resource.
     pub fn fill_rt_integrity_stats(&self, stats: &mut byroredux_core::ecs::RtIntegrityStats) {

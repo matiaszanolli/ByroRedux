@@ -344,7 +344,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**188**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**189**) grouped by
 purpose:
 
 ```
@@ -511,6 +511,7 @@ tonemap                     → inspect or select the presentation tone mapper
 rt.masks                    → inspect ray-tracing shadow-mask state
 r.health                    → renderer health summary
 rt.integrity                → ray-tracing structure integrity checks
+gi.cache                    → radiance cache state (RCG-DBG-003): update stride, GI counters and miss fraction under --rt-test-lod-telemetry; occupancy, evictions, voxel edges and per-class coverage are named as not allocated until the cache exists
 lod.coverage                → current LOD coverage diagnostics
 terrain.seams               → terrain seam diagnostics
 terrain.height [all]        → per-layer height maps under the camera: source, state, raw height; `all` tallies every resident cell (#6195)
