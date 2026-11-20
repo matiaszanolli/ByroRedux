@@ -472,7 +472,8 @@ fn sdk_input_action(action: crate::interaction::InputAction) -> Option<SdkInputA
         crate::interaction::InputAction::Pause => SdkInputAction::Pause,
         crate::interaction::InputAction::CastSpell
         | crate::interaction::InputAction::NextSpell
-        | crate::interaction::InputAction::PreviousSpell => return None,
+        | crate::interaction::InputAction::PreviousSpell
+        | crate::interaction::InputAction::Wait => return None,
     })
 }
 

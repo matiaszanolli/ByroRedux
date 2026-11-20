@@ -91,7 +91,9 @@ def surface_for_movie(name, kind, stem, by_movie):
     return "S1", fb, "every host call is H1 (served) or H2 (placeholder)", summary
 
 
-def surface_for_document(name, kind):
+def surface_for_document(game, name, kind):
+    if game == "oblivion" and name in ("SleepWait", "LevelUp") and kind == "top-level menu":
+        return "S2", f"S3:{name}", "Oblivion rest driver with native fallback (GUI-XML-004)", "n/a"
     fallback = native_page(name)
     fb = f"S3:{fallback}" if fallback else "S4:recorded"
     if kind in ("top-level menu", "hud"):
@@ -112,7 +114,7 @@ def main():
             r = r[:keep]
             name, kind, doc = r[col["menu"]], r[col["kind"]], r[col["movie_or_document"]]
             if game in XML_GAMES:
-                s = surface_for_document(name, kind)
+                s = surface_for_document(game, name, kind)
             else:
                 s = surface_for_movie(name, kind, movie_stem(doc), by_movie)
             out.append(r + list(s))

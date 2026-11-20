@@ -280,7 +280,7 @@ fn level_message(world: &World, level: u16) -> String {
 /// (which raises no completion) and an interrupted sleep change nothing. A level with fewer than three attributes
 /// picked stays pending and says so.
 pub(crate) fn oblivion_level_system(world: &World, _dt: f32) {
-    use byroredux_scripting::oblivion_skill_use::{apply_pending_level, LevelUp, SleepCompletions};
+    use byroredux_scripting::oblivion_skill_use::{apply_pending_level, SleepCompletions, SleepSource};
     let Some(player) = crate::systems::PlayerEntity::get(world) else {
         return;
     };
@@ -296,22 +296,30 @@ pub(crate) fn oblivion_level_system(world: &World, _dt: f32) {
         crate::notifications::push(world, MEDITATE);
     }
     for sleep in completions.into_iter().filter(|sleep| !sleep.interrupted) {
-        match apply_pending_level(world, player) {
-            LevelUp::NoPending => {}
-            LevelUp::NotReady { picks } => crate::notifications::push(
-                world,
-                format!("A level is waiting: choose three attributes with `levelup attr <attribute>` ({picks} of 3), then sleep."),
-            ),
-            LevelUp::Perfection => crate::notifications::push(world, PERFECTION),
-            LevelUp::Applied { level, raised, health_gain } => {
-                log::info!("level up: {level}, raised {raised:?}, Health +{health_gain}");
-                crate::notifications::push(world, level_message(world, level));
-            }
+        match sleep.source {
+            SleepSource::Bed(sleeper) if sleeper == player => crate::oblivion_rest::offer_level(world, player),
+            SleepSource::Bed(_) => {}
+            SleepSource::Scripted => report_level_result(world, apply_pending_level(world, player)),
         }
-        let _ = sleep;
     }
     if let Some(mut notices) = world.try_resource_mut::<LevelNotices>() {
         notices.announced = Some(pending_now(world));
+    }
+}
+
+pub(crate) fn report_level_result(world: &World, result: byroredux_scripting::oblivion_skill_use::LevelUp) {
+    use byroredux_scripting::oblivion_skill_use::LevelUp;
+    match result {
+        LevelUp::NoPending => {}
+        LevelUp::NotReady { picks } => crate::notifications::push(
+            world,
+            format!("A level is waiting: choose three attributes with `levelup attr <attribute>` ({picks} of 3), then sleep."),
+        ),
+        LevelUp::Perfection => crate::notifications::push(world, PERFECTION),
+        LevelUp::Applied { level, raised, health_gain } => {
+            log::info!("level up: {level}, raised {raised:?}, Health +{health_gain}");
+            crate::notifications::push(world, level_message(world, level));
+        }
     }
 }
 
@@ -613,7 +621,9 @@ mod tests {
 
     fn sleep(world: &World, interrupted: bool) {
         world.resource_mut::<byroredux_scripting::oblivion_skill_use::SleepCompletions>().0.push(
-            byroredux_scripting::oblivion_skill_use::SleepCompleted { hours: 8.0, interrupted },
+            byroredux_scripting::oblivion_skill_use::SleepCompleted {
+                hours: 8.0, source: byroredux_scripting::oblivion_skill_use::SleepSource::Scripted, interrupted,
+            },
         );
     }
 
@@ -692,5 +702,116 @@ mod tests {
         raise_skill_ranks(&world, player, BLADE, 10, false);
         oblivion_level_system(&world, 0.0);
         assert!(crate::notifications::drain(&world).is_empty());
+    }
+
+    fn rest_world() -> (World, EntityId, EntityId) {
+        use byroredux_core::ecs::components::{Furniture, FurnitureMarker, FurnitureMarkerKind};
+        let (mut world, player) = level_world();
+        world.insert_resource(crate::oblivion_rest::RestSession::default());
+        world.insert_resource(crate::components::GameTimeRes::frozen_at(23.0));
+        world.insert_resource(byroredux_scripting::obscript_more::PendingSleep::default());
+        world.insert_resource(byroredux_scripting::papyrus_demo::PapyrusPlayerEntity(player));
+        let bed = world.spawn();
+        world.insert(bed, Furniture { markers: vec![FurnitureMarker {
+            local_offset: [0.0; 3], heading_z_radians: None, animation_type: 2, kind: FurnitureMarkerKind::Sleep,
+        }] });
+        world.insert(bed, byroredux_scripting::ActivateEvent { activator: player });
+        (world, player, bed)
+    }
+
+    #[test]
+    fn oblivion_bed_sleep_offers_only_the_oldest_pending_level() {
+        use byroredux_core::character::SkillUseLevel;
+        use byroredux_native_ui::{RestAction::*, RestView};
+        use byroredux_scripting::oblivion_skill_use::{SleepCompletions, SleepSource, raise_skill_ranks};
+        use crate::oblivion_rest::{apply, bed_use_system, snapshot};
+        let (world, player, _) = rest_world();
+        raise_skill_ranks(&world, player, BLADE, 10, false);
+        byroredux_scripting::oblivion_skill_use::advance_level(&world, player);
+        assert_eq!(world.get::<SkillUseLevel>(player).unwrap().pending.len(), 2);
+
+        bed_use_system(&world, 0.0);
+        assert_eq!(snapshot(&world), Some(RestView::Duration { sleeping: true, hours: 1 }));
+        apply(&world, Confirm);
+        apply(&world, Confirm);
+        crate::systems::script_requests::sleep_system(&world, 0.0);
+        {
+            let completions = world.resource::<SleepCompletions>();
+            assert_eq!(completions.0.len(), 1);
+            let sleep = completions.0[0];
+            assert_eq!((sleep.source, sleep.hours, sleep.interrupted), (SleepSource::Bed(player), 1.0, false));
+        }
+        assert_eq!(world.resource::<crate::components::GameTimeRes>().absolute_hours(), 24.0);
+        oblivion_level_system(&world, 0.0);
+        let Some(RestView::LevelUp { attributes, .. }) = snapshot(&world) else { panic!("level-up offer") };
+        assert_eq!(attributes[0].bonus, 5);
+        for code in [0, 5, 6, 6, 7] {
+            apply(&world, ToggleAttribute(code));
+        }
+        assert_eq!(level_of(&world, player), 1);
+        apply(&world, Confirm);
+        apply(&world, Confirm);
+        assert_eq!(level_of(&world, player), 2);
+        assert_eq!(world.get::<SkillUseLevel>(player).unwrap().pending.len(), 1);
+        let av = |code| byroredux_scripting::obscript_actor_values::actor_value_form(&world, code).unwrap();
+        let forms = [av(0.0), av(5.0), av(6.0), av(7.0), av(8.0)];
+        let values = world.get::<byroredux_core::ecs::components::ActorValues>(player).unwrap();
+        assert_eq!(forms[..4].iter().map(|&form| values.get_base(form).unwrap().base).collect::<Vec<_>>(), [45.0, 41.0, 40.0, 41.0]);
+        assert_eq!(values.stored(forms[4]), 4.0);
+    }
+
+    #[test]
+    fn oblivion_rest_cancel_wait_and_interrupt_keep_a_pending_level() {
+        use byroredux_native_ui::{RestAction::*, RestView};
+        use byroredux_scripting::oblivion_skill_use::{SleepCompletions, raise_skill_ranks};
+        use crate::oblivion_rest::{apply, bed_use_system, request_wait, snapshot};
+        let (mut world, player, bed) = rest_world();
+        raise_skill_ranks(&world, player, BLADE, 10, false);
+        let clock = |world: &World| world.resource::<crate::components::GameTimeRes>().absolute_hours();
+        let unchanged = |world: &World| {
+            oblivion_level_system(world, 0.0);
+            assert!(snapshot(world).is_none());
+            assert_eq!(level_of(world, player), 1);
+            assert_eq!(world.get::<byroredux_core::character::SkillUseLevel>(player).unwrap().pending.len(), 1);
+        };
+        bed_use_system(&world, 0.0);
+        apply(&world, Cancel);
+        crate::systems::script_requests::sleep_system(&world, 0.0);
+        assert_eq!(clock(&world), 23.0);
+        unchanged(&world);
+
+        request_wait(&world);
+        assert_eq!(snapshot(&world), Some(RestView::Duration { sleeping: false, hours: 1 }));
+        apply(&world, SetHours(2));
+        apply(&world, Confirm);
+        crate::systems::script_requests::sleep_system(&world, 0.0);
+        assert_eq!(clock(&world), 25.0);
+        assert!(world.resource::<SleepCompletions>().0.is_empty());
+        unchanged(&world);
+
+        bed_use_system(&world, 0.0);
+        apply(&world, Confirm);
+        let enemy = world.spawn();
+        world.insert(enemy, byroredux_scripting::AiCombatState { target: player, attack_cooldown_remaining: 0.0 });
+        crate::systems::script_requests::sleep_system(&world, 0.0);
+        assert_eq!(clock(&world), 25.0);
+        assert!(world.resource::<SleepCompletions>().0[0].interrupted);
+        unchanged(&world);
+
+        world.despawn(enemy);
+        world.insert(bed, byroredux_core::ecs::components::Owned { owner_form_id: 0x333, faction_rank: None, global_var_form_id: None });
+        bed_use_system(&world, 0.0);
+        assert!(snapshot(&world).is_none(), "third-party bed");
+
+        world.remove::<byroredux_core::ecs::components::Owned>(bed);
+        world.get_mut::<byroredux_core::character::SkillUseLevel>(player).unwrap().pending.clear();
+        bed_use_system(&world, 0.0);
+        apply(&world, Confirm);
+        crate::systems::script_requests::sleep_system(&world, 0.0);
+        assert_eq!(clock(&world), 26.0);
+        assert_eq!(world.resource::<SleepCompletions>().0.len(), 1);
+        oblivion_level_system(&world, 0.0);
+        assert!(snapshot(&world).is_none(), "bed sleep with no pending level returns to play");
+        assert_eq!(level_of(&world, player), 1);
     }
 }

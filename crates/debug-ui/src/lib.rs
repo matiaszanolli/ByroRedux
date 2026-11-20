@@ -330,6 +330,16 @@ impl DebugUiState {
         self.game_menu.visible && self.game_menu.page == GameMenuPage::CharGen
     }
 
+    pub fn open_rest_menu(&mut self, page: GameMenuPage) {
+        debug_assert!(matches!(page, GameMenuPage::SleepWait | GameMenuPage::LevelUp));
+        self.game_menu.visible = true;
+        self.game_menu.page = page;
+    }
+
+    pub fn rest_menu_visible(&self) -> bool {
+        matches!(self.open_game_menu_page(), Some(GameMenuPage::SleepWait | GameMenuPage::LevelUp))
+    }
+
     pub fn barter_menu_visible(&self) -> bool {
         self.game_menu.visible && self.game_menu.page == GameMenuPage::Barter
     }

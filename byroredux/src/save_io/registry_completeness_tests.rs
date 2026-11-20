@@ -798,6 +798,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("JailTable", "the load order's jails (linked interior / exterior PrisonMarker door pairs) for PayFine / GoToJail; rebuilt from the records every boot"),
         ("LevelNotices", "Oblivion level-up: how many pending levels the player was told of; session state, a load re-seeds it from the saved levels"),
         ("SleepCompletions", "Oblivion level-up: completed sleeps queued for the level system, drained within the frame"),
+        ("RestSession", "Oblivion bed and level-up menus: in-progress choices and sleep authorizations reset on live load"),
         ("StanceTimers", "Oblivion skill use: the one-second timers of running, swimming and sneaking; session state, a load restarts them"),
         ("PendingSkillUse", "Oblivion skill uses the emitters queue, drained by combat::skill_use_system within the frame; empty at a save"),
         ("SkillUseClasses", "the load order's CLAS specialization and major skills, and the player's class (Oblivion); rebuilt from the records every boot"),

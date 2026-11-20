@@ -67,6 +67,13 @@ fn phase0_tables_parse_with_the_flags_the_design_states() {
     assert_eq!(oblivion("MessageMenu").code, Some(1001));
     assert_eq!(oblivion("MagicMenu").class, MenuClass::BigFour);
     assert_eq!(oblivion("HUDReticleMenu").code, Some(1006));
+    for (page, code) in [(NativeMenu::SleepWait, 1012), (NativeMenu::LevelUp, 1027)] {
+        let menu = oblivion(page.menu_name(MenuGame::Oblivion));
+        assert_eq!(menu.code, Some(code));
+        assert_eq!(menu.target, TargetSurface::MenuXml);
+        assert_eq!(menu.fallback, TargetSurface::Native(page.page().into()));
+        assert!(menu.flags.contains(MenuFlags::PAUSES_GAME | MenuFlags::CLAIMS_INPUT));
+    }
 }
 
 /// Every vanilla menu code of the code tables is some menu's code (no code is dropped by the join).

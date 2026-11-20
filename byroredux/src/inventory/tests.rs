@@ -1041,9 +1041,9 @@ fn theft_rule_reads_the_player_base_cell_ownership_and_the_rank_bar() {
 
     // Below the rank bar it is theft; at the bar it is not.
     world.insert(player, FactionRanks::from_pairs([(0xF00D, 1)]));
-    assert!(theft_owner(&world, player, shop_chest).is_some());
+    assert!(foreign_owner(&world, player, shop_chest).is_some());
     world.insert(player, FactionRanks::from_pairs([(0xF00D, 2)]));
-    assert!(theft_owner(&world, player, shop_chest).is_none());
+    assert!(foreign_owner(&world, player, shop_chest).is_none());
     world.remove::<FactionRanks>(player);
     // #5866 — a script's ownership change reaches the theft rule: cleared
     // or handed to the player it is no theft; handed to someone else it is.
@@ -1058,13 +1058,13 @@ fn theft_rule_reads_the_player_base_cell_ownership_and_the_rank_bar() {
         });
         world.insert(shop_chest, byroredux_core::ecs::components::FormIdComponent(id));
     }
-    assert!(theft_owner(&world, player, shop_chest).is_some());
+    assert!(foreign_owner(&world, player, shop_chest).is_some());
     world.resource_mut::<byroredux_scripting::OwnerOverrides>().set(0xDEAD, 0);
-    assert!(theft_owner(&world, player, shop_chest).is_none(), "SetActorOwner(None) clears it");
+    assert!(foreign_owner(&world, player, shop_chest).is_none(), "SetActorOwner(None) clears it");
     world.resource_mut::<byroredux_scripting::OwnerOverrides>().set(0xDEAD, PLAYER_NPC_FORM_ID);
-    assert!(theft_owner(&world, player, shop_chest).is_none());
+    assert!(foreign_owner(&world, player, shop_chest).is_none());
     world.resource_mut::<byroredux_scripting::OwnerOverrides>().set(0xDEAD, 0xABBA);
-    assert!(theft_owner(&world, player, shop_chest).is_some());
+    assert!(foreign_owner(&world, player, shop_chest).is_some());
     transfer_loot(&world, player, shop_chest, LootSelection::All).unwrap();
     assert_eq!(
         crate::notifications::drain(&world),

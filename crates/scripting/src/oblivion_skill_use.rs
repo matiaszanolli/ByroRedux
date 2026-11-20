@@ -259,15 +259,20 @@ pub fn raise_skill_ranks(
 
 // ── Levels (#7052, Phase 3) ──────────────────────────────────────────────────────────────────────────
 
-/// A sleep that ran to its end: the one event the level-up reads (OSL-SLP-001). The script path
-/// (`SetPCSleepHours`, and the jail bed's rest) raises it through `sleep_system`; a bed activation outside
-/// a jail has no rest action to raise it yet (the sleep/rest menu has no owner, #7048). Waiting raises
-/// nothing (OSL-LVL-004). Transient.
+/// Where a sleep request started. A bed menu offers attribute choices on completion;
+/// scripted and jail sleep use the console's already-recorded choices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SleepSource {
+    Scripted,
+    Bed(EntityId),
+}
+
+/// The terminal result of a sleep. Waiting does not emit an event (OSL-LVL-004). Transient.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SleepCompleted {
     pub hours: f32,
-    /// A sleep an enemy encounter cut short does not apply a level (OSL-SLP-002). The engine has no random
-    /// encounter that interrupts a sleep, so nothing sets it today.
+    pub source: SleepSource,
+    /// An interruption never authorizes a level (OSL-SLP-002).
     pub interrupted: bool,
 }
 
@@ -349,37 +354,70 @@ pub enum LevelUp {
 /// and Fatigue's stored terms are untouched (V9). Nothing here is gated on sleeping: the caller is the system
 /// that reads a completed sleep.
 pub fn apply_pending_level(world: &World, player: EntityId) -> LevelUp {
+    apply_level(world, player, None)
+}
+
+/// Apply the confirmed menu choices to the level offered after sleep. Validation happens
+/// before mutating any attribute, and the saved console picks survive a refusal.
+pub fn apply_level_menu_picks(
+    world: &World,
+    player: EntityId,
+    level: u16,
+    tallies: [u16; 8],
+    picks: [u8; LEVEL_PICKS],
+) -> LevelUp {
+    use byroredux_core::character::CharacterLevel;
+    if world.get::<CharacterLevel>(player).map_or(1, |value| value.level) != level {
+        return LevelUp::NoPending;
+    }
+    apply_level(world, player, Some((tallies, picks)))
+}
+
+fn apply_level(world: &World, player: EntityId, selection: Option<([u16; 8], [u8; LEVEL_PICKS])>) -> LevelUp {
     let Some(per_level) = world.try_resource::<CharacterRuleset>().and_then(|r| per_level_of(&r.leveling)) else {
         return LevelUp::NoPending;
     };
-    let Some(pending) = world
-        .get::<SkillUseLevel>(player)
-        .and_then(|level| level.pending.first().cloned())
-    else {
-        return LevelUp::NoPending;
-    };
-    if pending.picks.len() < LEVEL_PICKS {
-        return LevelUp::NotReady { picks: pending.picks.len() };
-    }
-    let attribute_av = |code: usize| crate::obscript_actor_values::actor_value_form(world, code as f32);
-    let (Some(endurance), Some(health)) = (attribute_av(5), attribute_av(8)) else {
+    let attributes: [_; 8] = std::array::from_fn(|code| crate::obscript_actor_values::actor_value_form(world, code as f32));
+    let (Some(endurance), Some(health)) = (attributes[5], crate::obscript_actor_values::actor_value_form(world, 8.0)) else {
         return LevelUp::NoPending;
     };
     let mut raised = Vec::new();
     let health_gain: f32;
     {
-        let Some(mut values) = world.query_mut::<ActorValues>() else {
+        let Some((mut values, mut levels)) = world.query_2_mut_mut::<ActorValues, SkillUseLevel>() else {
             return LevelUp::NoPending;
         };
-        let Some(values) = values.get_mut(player) else {
+        let (Some(values), Some(level)) = (values.get_mut(player), levels.get_mut(player)) else {
             return LevelUp::NoPending;
         };
-        let at_max = (0..8usize).all(|code| attribute_av(code).and_then(|av| values.get_base(av)).is_none_or(|entry| entry.base >= 100.0));
+        let Some(pending) = level.pending.first() else { return LevelUp::NoPending };
+        let picks = if let Some((tallies, picks)) = selection.as_ref() {
+            if pending.tallies != *tallies {
+                return LevelUp::NoPending;
+            }
+            picks.as_slice()
+        } else {
+            &pending.picks
+        };
+        let base = |form: u32| values.get_base(form).map(|entry| entry.base);
+        let at_max = attributes.iter().all(|form| form.and_then(base).is_none_or(|value| value >= 100.0));
         if at_max {
             return LevelUp::Perfection;
         }
-        for &code in &pending.picks {
-            let Some(av) = attribute_av(code as usize) else { continue };
+        if picks.len() < LEVEL_PICKS {
+            return LevelUp::NotReady { picks: picks.len() };
+        }
+        if selection.is_some() {
+            let eligible = picks.iter().enumerate().filter(|(index, code)| {
+                !picks[..*index].contains(code)
+                    && attributes.get(**code as usize).copied().flatten().and_then(base).is_some_and(|value| value < 100.0)
+            }).count();
+            if eligible != LEVEL_PICKS {
+                return LevelUp::NotReady { picks: eligible };
+            }
+        }
+        for &code in picks {
+            let Some(av) = attributes.get(code as usize).copied().flatten() else { continue };
             let from = values.get_base(av).map_or(0.0, |entry| entry.base);
             let to = (from + f32::from(pending.bonus(code as usize))).min(100.0);
             values.set_base(av, to);
@@ -387,10 +425,6 @@ pub fn apply_pending_level(world: &World, player: EntityId) -> LevelUp {
         }
         let endurance_now = values.get_base(endurance).map_or(0.0, |entry| entry.base).max(0.0) as u16;
         health_gain = byroredux_core::character::apply_oblivion_level_up_health(values, health, endurance_now);
-    }
-    if let Some(mut levels) = world.query_mut::<SkillUseLevel>()
-        && let Some(level) = levels.get_mut(player)
-    {
         level.pending.remove(0);
         level.major_increases = level.major_increases.saturating_sub(per_level);
     }

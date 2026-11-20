@@ -197,6 +197,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.init_resource::<byroredux_core::character::FallTracker>();
     world.init_resource::<crate::skill_use_emit::StanceTimers>();
     world.init_resource::<crate::skill_use_emit::LevelNotices>();
+    world.init_resource::<crate::oblivion_rest::RestSession>();
     world.insert_resource(StringPool::new());
     // #1212 / D1-NEW-01 — FormIdPool is the intern table backing
     // `FormIdComponent` and `World::find_by_form_id`. Every

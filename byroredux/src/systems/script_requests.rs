@@ -279,22 +279,32 @@ fn release_instances(world: &World, instances: &[ItemInstanceId]) {
 
 // ── SetPCSleepHours ────────────────────────────────────────────────────────────────────────────────
 
-/// `SetPCSleepHours`: run the game clock forward by the hours a script told the player to sleep (GECK:
-/// "manually forces the player to sleep the specified number of hours"). The rest itself — healing, the
-/// sleep screen — is not modelled; the clock, and everything that follows it, moves.
+/// Run the clock for a confirmed Oblivion rest request or scripted sleep
+/// (`SetPCSleepHours`, also used to serve a jail sentence).
 pub(crate) fn sleep_system(world: &World, _dt: f32) {
+    if crate::oblivion_rest::step_request(world) {
+        return;
+    }
     let hours = match world.try_resource_mut::<PendingSleep>() {
         Some(mut pending) if pending.0 > 0.0 => std::mem::take(&mut pending.0),
         _ => return,
     };
+    finish_sleep(world, byroredux_scripting::oblivion_skill_use::SleepSource::Scripted, hours, false);
+}
+
+pub(crate) fn finish_sleep(world: &World, source: byroredux_scripting::oblivion_skill_use::SleepSource, hours: f32, interrupted: bool) {
     if let Some(mut time) = world.try_resource_mut::<crate::components::GameTimeRes>() {
         time.advance_hours(hours);
-        log::info!("SetPCSleepHours: the clock runs {hours} h to day {} {:.2}", time.day, time.hour);
+        let origin = match source {
+            byroredux_scripting::oblivion_skill_use::SleepSource::Scripted => "SetPCSleepHours",
+            byroredux_scripting::oblivion_skill_use::SleepSource::Bed(_) => "Bed sleep",
+        };
+        log::info!("{origin}: the clock runs {hours} h to day {} {:.2}", time.day, time.hour);
     }
     // #7052 (OSL-SLP-001) — a sleep that ran to its end is the one event Oblivion's level-up reads, whether a script or
-    // the jail bed asked for it. Nothing interrupts a sleep in this engine, so it always completed.
+    // the jail bed or the rest menu asked for it.
     if let Some(mut completions) = world.try_resource_mut::<byroredux_scripting::oblivion_skill_use::SleepCompletions>() {
-        completions.0.push(byroredux_scripting::oblivion_skill_use::SleepCompleted { hours, interrupted: false });
+        completions.0.push(byroredux_scripting::oblivion_skill_use::SleepCompleted { hours, source, interrupted });
     }
 }
 

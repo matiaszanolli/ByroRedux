@@ -69,6 +69,8 @@ mod menu_xml_input;
 mod menu_drivers;
 mod menuxml_dialogue;
 mod menuxml_document;
+mod menuxml_rest;
+mod oblivion_rest;
 mod menuxml_message;
 mod name_lookup;
 mod npc_spawn;
@@ -1223,7 +1225,11 @@ impl App {
         if let Some(document) = owner.map(|position| &mut self.ui.menu_documents[position]) {
             let extent = document.extent();
             let mut routed = false;
+            let mut rest_action = None;
             let dispatch = ui_input::dispatch_window_event(event, &mut self.ui.input_state, window_size, extent, |event| {
+                if crate::menuxml_rest::is_rest_document(document.code) {
+                    rest_action = crate::menuxml_rest::direct_input(document, &event).or(rest_action);
+                }
                 routed |= crate::menu_xml_input::route(&mut document.renderer, &event);
             });
             if routed {
@@ -1231,6 +1237,9 @@ impl App {
             }
             if dispatch.captured {
                 self.release_world_input_for_ui();
+            }
+            if let Some(action) = rest_action {
+                crate::oblivion_rest::apply(&self.world, action);
             }
             return dispatch.captured;
         }
@@ -1338,6 +1347,9 @@ impl App {
     }
 
     fn toggle_game_menu(&mut self) {
+        if self.debug_ui.as_ref().is_some_and(byroredux_debug_ui::DebugUiState::rest_menu_visible) {
+            crate::oblivion_rest::cancel(&self.world);
+        }
         // #5409 — closing the modal over the dialogue page (Escape routes
         // here) must end the open conversation exactly like the page's
         // Close button; the bare visibility flip used to skip OnEnd and
@@ -1357,6 +1369,9 @@ impl App {
     }
 
     fn open_inventory_menu(&mut self) {
+        if self.debug_ui.as_ref().is_some_and(byroredux_debug_ui::DebugUiState::rest_menu_visible) {
+            return;
+        }
         // #5409 — the Inventory key replaces the dialogue page outright;
         // the open line ends before the page switch, same as Escape.
         self.leave_open_dialogue();
@@ -1585,6 +1600,7 @@ fn build_debug_ui_snapshot(
             barter: crate::barter::snapshot(world),
             crafting: crate::crafting::snapshot(world),
             chargen: crate::chargen::snapshot(world),
+            rest: crate::oblivion_rest::snapshot(world),
             labels: ui_labels(world),
         },
         metrics,
@@ -1679,6 +1695,9 @@ fn apply_debug_ui_outputs(
     debug_ui: Option<&mut byroredux_debug_ui::DebugUiState>,
 ) -> (bool, bool) {
     let mut debug_ui = debug_ui;
+    for action in outputs.game.rest_actions {
+        crate::oblivion_rest::apply(world, action);
+    }
     // M47.2 — the answered message box leaves the queue; the page stays up
     // for the next one, and the last answer closes it back to the world.
     // A character-creation screen closes on its answer, or unchanged when the page is dismissed;

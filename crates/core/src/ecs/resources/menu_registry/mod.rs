@@ -177,6 +177,8 @@ pub enum NativeMenu {
     Crafting,
     /// The character-creation page; on games with menu codes the screen's own code names it.
     CharGen,
+    SleepWait,
+    LevelUp,
     /// The operator overlay, standing in for the console (`MenuMode 3`).
     Console,
     /// The loading cover.
@@ -201,6 +203,8 @@ impl NativeMenu {
             (Oblivion, Settings) => "OptionsMenu",
             (Oblivion, Barter) => "ContainerMenu",
             (Oblivion, CharGen) => "RaceSexMenu",
+            (_, SleepWait) => "SleepWaitMenu",
+            (_, LevelUp) => "LevelUpMenu",
             (Oblivion | Fallout3NV, Inventory) => "InventoryMenu",
             (Oblivion | Fallout3NV, Dialogue) => "DialogMenu",
             (Oblivion | Fallout3NV, MessageBox) => "MessageMenu",
@@ -241,6 +245,8 @@ impl NativeMenu {
             Self::Barter => "Barter",
             Self::Crafting => "Crafting",
             Self::CharGen => "CharGen",
+            Self::SleepWait => "SleepWait",
+            Self::LevelUp => "LevelUp",
             Self::Console => "OperatorOverlay",
             Self::Loading => "LoadingCover",
             Self::Hud => "Hud",
@@ -258,6 +264,8 @@ impl NativeMenu {
             Self::Barter,
             Self::Crafting,
             Self::CharGen,
+            Self::SleepWait,
+            Self::LevelUp,
         ]
         .into_iter()
         .find(|native| native.page().eq_ignore_ascii_case(page))
