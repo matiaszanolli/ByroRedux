@@ -2,13 +2,14 @@
 # Shared body of the player-archery live gates (#7055, PRD `player-archery` §7.2 scenario 4): oblivion-archery.sh and
 # skyrim-archery.sh. The caller sets GATE, PORT_DEFAULT, ENGINE_ARGS (array), BOW, ARROW (form ids), SHOOT_ARGS (the
 # draw seconds `bow.shoot` takes, empty for a full draw), FEED (the `feed=` line `bow.status` must report) and
-# LEVEL_SKILL (the skill `levelup` must show gaining 0.8 on a hit, empty where the game feeds none), then sources this
+# LEVEL_SKILL (the skill `levelup` must show gaining 0.8 on a hit, empty where the game feeds none) and optionally HEALTH_MODE
+# (`cond` where ObScript does not name the actor values), then sources this
 # file. Owner-run: it needs a Vulkan device, a display and the game's data.
 #
-# In a cell with patrons: the bow and ten arrows are added and equipped (`inv.add`, `inv.equip`), `bow.status` names the
+# In a cell with patrons: the bow and ten arrows are added and equipped (at least ten: the player may already carry some) (`inv.add`, `inv.equip`), `bow.status` names the
 # bow, the arrow and the straight trajectory; a shot at the first patron `stealth.status` lists spends one arrow and
 # lowers their Health, and the skill feed is what the game's row says; a shot at the ceiling spends one arrow, hurts
-# nobody and feeds nothing; and a shot is no melee attack (`combat.status`'s counters do not move).
+# nobody and feeds nothing; and a shot is no melee attack (`combat.status`'s `attacks` does not move).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -61,9 +62,19 @@ b0, v0, b1, v1 = float(sys.argv[1] or 0), int(sys.argv[2] or 0), float(sys.argv[
 print("yes" if (v1 > v0 or b1 > b0 + 1e-6) else "no")
 PY
 }
-patron_health() { command "obscript.cmd $1 GetAV Health" "$LOG_DIR/health-$1-$2.log" || fail 'GetAV Health failed'; sed -nE 's/.*0x[0-9a-f]+ -> (-?[0-9.]+).*/\1/p' "$LOG_DIR/health-$1-$2.log" | head -1; }
+# The patron's Health: Oblivion through the ObScript `GetAV`, Skyrim (whose actor values ObScript does not name) through `cond`
+# on the Health AVIF 0x3E8. The caller sets HEALTH_MODE (`obscript` by default, or `cond`).
+patron_health() {
+    if [[ "${HEALTH_MODE:-obscript}" == cond ]]; then
+        command "cond $1 GetActorValue 0x3E8" "$LOG_DIR/health-$1-$2.log" || fail 'cond GetActorValue failed'
+        sed -nE 's/.* on entity [0-9]+ = (-?[0-9.]+).*/\1/p' "$LOG_DIR/health-$1-$2.log" | head -1
+    else
+        command "obscript.cmd $1 GetAV Health" "$LOG_DIR/health-$1-$2.log" || fail 'GetAV Health failed'
+        sed -nE 's/.*0x[0-9a-f]+ -> (-?[0-9.]+).*/\1/p' "$LOG_DIR/health-$1-$2.log" | head -1
+    fi
+}
 arrow_count() { sed -nE 's/.*arrow=[0-9A-Fa-f]+ count=([0-9]+).*/\1/p' "$1" | head -1; }
-counters() { sed -nE 's/.*(attacks=[0-9]+ hits=[0-9]+ kills=[0-9]+).*/\1/p' "$1" | head -1; }
+attacks() { sed -nE 's/.*(attacks=[0-9]+).*/\1/p' "$1" | head -1; }
 
 command 'stealth.status' "$LOG_DIR/stealth.log" || fail 'stealth.status failed'
 target="$(sed -nE 's/.*entity ([0-9]+) ref .*/\1/p' "$LOG_DIR/stealth.log" | head -1)"
@@ -81,7 +92,9 @@ command "inv.equip $ARROW" "$LOG_DIR/equip-arrows.log" || fail 'inv.equip (arrow
 sleep 1
 command 'bow.status' "$LOG_DIR/status-ready.log" || fail 'bow.status failed'
 grep -Fq "bow=${BOW#0x}" "$LOG_DIR/status-ready.log" || fail "the bow is not readied: $(cat "$LOG_DIR/status-ready.log")"
-[[ "$(arrow_count "$LOG_DIR/status-ready.log")" == 10 ]] || fail "ten arrows are not equipped: $(cat "$LOG_DIR/status-ready.log")"
+# The player may already carry arrows of the type (Skyrim's does), so the shots are counted against the start.
+start="$(arrow_count "$LOG_DIR/status-ready.log")"
+[[ -n "$start" && "$start" -ge 10 ]] || fail "the ten added arrows are not equipped: $(cat "$LOG_DIR/status-ready.log")"
 grep -Fq 'trajectory=straight' "$LOG_DIR/status-ready.log" || fail "the trajectory is not straight: $(cat "$LOG_DIR/status-ready.log")"
 grep -Fq "$FEED" "$LOG_DIR/status-ready.log" || fail "the feed is not '$FEED': $(cat "$LOG_DIR/status-ready.log")"
 command 'combat.status' "$LOG_DIR/combat-before.log" || fail 'combat.status failed'
@@ -93,7 +106,7 @@ bow.shoot $SHOOT_ARGS" "$LOG_DIR/shoot.log" || fail 'bow.shoot failed'
 grep -Fq 'released' "$LOG_DIR/shoot.log" || fail "the shot did not leave: $(cat "$LOG_DIR/shoot.log")"
 sleep 2
 command 'bow.status' "$LOG_DIR/status-shot.log" || fail 'bow.status failed'
-[[ "$(arrow_count "$LOG_DIR/status-shot.log")" == 9 ]] || fail "the shot did not spend exactly one arrow: $(cat "$LOG_DIR/status-shot.log")"
+[[ "$(arrow_count "$LOG_DIR/status-shot.log")" == $((start - 1)) ]] || fail "the shot did not spend exactly one arrow: $(cat "$LOG_DIR/status-shot.log")"
 hp_after="$(patron_health "$target" after)"
 python3 - "$hp_before" "$hp_after" <<'PY' || fail 'the arrow did not hurt the patron'
 import sys
@@ -111,15 +124,15 @@ bow.shoot '"$SHOOT_ARGS" "$LOG_DIR/miss.log" || fail 'ceiling shot failed'
 grep -Fq 'released' "$LOG_DIR/miss.log" || fail "the ceiling shot did not leave: $(cat "$LOG_DIR/miss.log")"
 sleep 2
 command 'bow.status' "$LOG_DIR/status-miss.log" || fail 'bow.status failed'
-[[ "$(arrow_count "$LOG_DIR/status-miss.log")" == 8 ]] || fail "the ceiling shot did not spend one arrow: $(cat "$LOG_DIR/status-miss.log")"
+[[ "$(arrow_count "$LOG_DIR/status-miss.log")" == $((start - 2)) ]] || fail "the ceiling shot did not spend one arrow: $(cat "$LOG_DIR/status-miss.log")"
 if [[ -n "$LEVEL_SKILL" ]]; then
     command 'levelup' "$LOG_DIR/levelup-miss.log" || fail 'levelup failed'
     [[ "$(gained "$LOG_DIR/levelup-hit.log" "$LOG_DIR/levelup-miss.log" "$LEVEL_SKILL")" == no ]] || fail "a missed arrow fed $LEVEL_SKILL"
 fi
 
-# A shot is not a melee attack: combat.status's counters are unchanged.
+# A shot is not a melee attack: combat.status's `attacks` counter is unchanged (the arrow that landed is a hit, so `hits` rises).
 command 'combat.status' "$LOG_DIR/combat-after.log" || fail 'combat.status failed'
-[[ "$(counters "$LOG_DIR/combat-before.log")" == "$(counters "$LOG_DIR/combat-after.log")" ]] || fail 'a bow shot changed the melee counters'
+[[ -n "$(attacks "$LOG_DIR/combat-before.log")" && "$(attacks "$LOG_DIR/combat-before.log")" == "$(attacks "$LOG_DIR/combat-after.log")" ]] || fail 'a bow shot counted as a melee attack'
 
 printf 'smoke[%s]: PASS -- arrow hit entity %s (Health %s -> %s), two arrows spent, the ceiling shot hurt nobody and fed nothing; artifacts: %s\n' \
     "$GATE" "$target" "$hp_before" "$hp_after" "$LOG_DIR"

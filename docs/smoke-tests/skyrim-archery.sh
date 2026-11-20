@@ -20,4 +20,5 @@ ARROW=0x0001397D
 SHOOT_ARGS=
 FEED='feed=Archery unfed'
 LEVEL_SKILL=
+HEALTH_MODE=cond
 source "$(dirname "$0")/lib/archery.sh"
