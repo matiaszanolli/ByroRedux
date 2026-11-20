@@ -886,6 +886,38 @@ pub struct PostPassState {
     pending_volumetrics_cleared_on_skip: Option<bool>,
 }
 
+impl PostPassState {
+    /// The state a renderer starts with: every latch clear, the exposure and tone-map settings seeded
+    /// from the application-parsed config. Split out of `build_pipelines_and_finish` (#6143, its size
+    /// pin) with the field values unchanged.
+    pub(super) fn new(renderer_config: &RendererConfig) -> Self {
+        Self {
+            aperture_overflow_log: Default::default(),
+            taa_failed: false,
+            svgf_failed: false,
+            svgf_recovery_frames: 0,
+            // Stage 1 — exposure/tonemap runtime state, seeded from the
+            // application-parsed config (CLI flags) and live-mutable via the
+            // engine's ExposureTuning resource push each frame.
+            exposure_meter_failed: false,
+            exposure_auto: renderer_config.auto_exposure,
+            exposure_fixed: crate::vulkan::exposure::DEFAULT_EXPOSURE,
+            exposure_compensation_stops: 0.0,
+            // 0.5 s eye-adaptation constant: fast enough to track a door
+            // transition without strobing, slow enough that per-frame meter
+            // jitter from the MC residual doesn't pump the exposure (#5158;
+            // live-tunable via `exposure speed <sec>`).
+            exposure_adaptation_seconds: crate::vulkan::exposure::DEFAULT_ADAPTATION_SECONDS,
+            tonemap: renderer_config.tonemap,
+            caustic_failed: false,
+            caustic_cleared_on_skip: [false; MAX_FRAMES_IN_FLIGHT],
+            volumetrics_cleared_on_skip: [false; MAX_FRAMES_IN_FLIGHT],
+            pending_caustic_cleared_on_skip: None,
+            pending_volumetrics_cleared_on_skip: None,
+        }
+    }
+}
+
 /// Render diagnostics (#6699): the selected-entity ray probe's request, result and
 /// per-slot entity maps, and the per-frame image-health counter buffers with their
 /// last/total readings.
