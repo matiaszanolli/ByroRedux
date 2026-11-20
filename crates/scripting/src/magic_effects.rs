@@ -496,7 +496,8 @@ pub fn install(world: &mut World) {
 /// This subsystem's saved column. Called by the binary's `build_save_registry` in its row order.
 #[cfg(feature = "save")]
 pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
-    registry.register_replacing_component::<ActiveMagicEffects>("ActiveMagicEffects");
+    registry.register_component_codec("ActiveMagicEffects", true,
+        crate::actor_value_save::save_active_effects, crate::actor_value_save::load_active_effects);
 }
 
 #[cfg(test)]

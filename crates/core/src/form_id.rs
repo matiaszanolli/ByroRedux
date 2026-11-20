@@ -37,6 +37,13 @@ const PLUGIN_NAMESPACE: Uuid = Uuid::from_bytes([
     0x21, 0x00, // "!\0"
 ]);
 
+/// Engine-owned source for records absent from the original game plugins.
+///
+/// UUID v5 of `ByroRedux engine records` in the dedicated namespace
+/// `9bbd50ea-0f8d-54df-9384-bb7a61ef1ce1`; it is not derived from a
+/// filename. Loaders must still reject a plugin declaring this identity.
+pub const ENGINE_PLUGIN_ID: PluginId = PluginId(0xc34e6e0a_8496_5732_bb03_9af08c720ac3);
+
 // ── Runtime handle ──────────────────────────────────────────────────────
 
 /// Runtime form identifier. Integer comparison, O(1).
@@ -344,6 +351,16 @@ mod tests {
         let a = PluginId::from_filename("Skyrim.esm");
         let b = PluginId::from_filename("Dawnguard.esm");
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn engine_identity_uses_its_own_namespace_and_differs_from_master_names() {
+        let namespace = Uuid::parse_str("9bbd50ea-0f8d-54df-9384-bb7a61ef1ce1").unwrap();
+        assert_ne!(namespace, PLUGIN_NAMESPACE);
+        assert_eq!(ENGINE_PLUGIN_ID, PluginId::from_uuid(Uuid::new_v5(&namespace, b"ByroRedux engine records")));
+        for filename in ["Oblivion.esm", "Fallout3.esm", "FalloutNV.esm", "Skyrim.esm"] {
+            assert_ne!(ENGINE_PLUGIN_ID, PluginId::from_filename(filename), "{filename}");
+        }
     }
 
     #[test]

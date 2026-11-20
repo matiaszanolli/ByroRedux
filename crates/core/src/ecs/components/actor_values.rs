@@ -96,6 +96,16 @@ impl ActorValue {
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct ActorValues {
     values: HashMap<u32, ActorValue>,
+    aliases: HashMap<u32, ActorValueAlias>,
+}
+
+/// A logical actor value can read its current and base values from different
+/// canonical sources. Sources are direct keys, not chained aliases.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub struct ActorValueAlias {
+    pub current: u32,
+    pub base: u32,
 }
 
 /// Canonical keys for an actor's vital resource values.
@@ -138,24 +148,57 @@ impl ActorValues {
         out
     }
 
+    /// Restore complete layers after converting portable identities to the
+    /// active load order's keys. This preserves unauthored placeholder bases.
+    pub fn from_entries(entries: impl IntoIterator<Item = (u32, ActorValue)>) -> Self {
+        Self { values: entries.into_iter().collect(), aliases: HashMap::new() }
+    }
+
+    /// Install a direct alias after its source entries have been populated.
+    /// Reject dangling or chained sources rather than fabricating an entry.
+    pub fn set_alias(&mut self, key: u32, alias: ActorValueAlias) -> bool {
+        if key == alias.current && key == alias.base { return true; }
+        if key == alias.current || key == alias.base || self.aliases.values().any(|existing| existing.current == key || existing.base == key)
+            || self.aliases.contains_key(&alias.current)
+            || self.aliases.contains_key(&alias.base) || !self.values.contains_key(&alias.current)
+            || !self.values.contains_key(&alias.base) { return false; }
+        self.values.remove(&key);
+        self.aliases.insert(key, alias);
+        true
+    }
+
+    fn current_key(&self, key: u32) -> u32 {
+        self.aliases.get(&key).map_or(key, |alias| alias.current)
+    }
+
+    fn base_key(&self, key: u32) -> u32 {
+        self.aliases.get(&key).map_or(key, |alias| alias.base)
+    }
+
     /// Composed `current` value for the actor value identified by its
     /// global-space AVIF FormID. Returns `0.0` for an actor value this actor
     /// doesn't carry (Bethesda's absent-AV default).
     pub fn current(&self, avif_form_id: u32) -> f32 {
         self.values
-            .get(&avif_form_id)
+            .get(&self.current_key(avif_form_id))
             .map_or(0.0, ActorValue::current)
     }
 
     /// The raw layered entry for an actor value, if present.
     pub fn get(&self, avif_form_id: u32) -> Option<&ActorValue> {
-        self.values.get(&avif_form_id)
+        self.values.get(&self.current_key(avif_form_id))
+    }
+
+    /// The entry supplying the base view of this actor value.
+    pub fn get_base(&self, avif_form_id: u32) -> Option<&ActorValue> {
+        self.values.get(&self.base_key(avif_form_id))
     }
 
     /// Set the base layer, leaving any permanent/temporary/damage untouched,
     /// and mark it authored.
     pub fn set_base(&mut self, avif_form_id: u32, base: f32) {
-        let entry = self.values.entry(avif_form_id).or_default();
+        let key = self.base_key(avif_form_id);
+        let entry = self.values.entry(key).or_default();
         entry.base = base;
         entry.base_authored = true;
     }
@@ -163,7 +206,8 @@ impl ActorValues {
     /// Add to the permanent-modifier layer (perk / enchant / gear). Negative
     /// deltas remove a prior permanent bonus.
     pub fn mod_permanent(&mut self, avif_form_id: u32, delta: f32) {
-        self.values.entry(avif_form_id).or_default().permanent_mod += delta;
+        let key = self.current_key(avif_form_id);
+        self.values.entry(key).or_default().permanent_mod += delta;
     }
 
     /// Set the [`ActorValue::set_override`] layer outright — #5412's
@@ -173,7 +217,8 @@ impl ActorValues {
     /// layer — the constant-spell sum — intact ("modifiers are left
     /// intact", FO4 CK `SetValue`). Replaces any earlier override.
     pub fn set_override(&mut self, avif_form_id: u32, value: f32) {
-        self.values.entry(avif_form_id).or_default().set_override = value;
+        let key = self.base_key(avif_form_id);
+        self.values.entry(key).or_default().set_override = value;
     }
 
     /// Set the permanent-modifier layer outright — the replace-instead-of-add
@@ -184,39 +229,53 @@ impl ActorValues {
     /// private copy for the M47.2 `GetBaseValue` read in
     /// `crates/scripting/src/condition/eval.rs`.
     pub fn set_permanent(&mut self, avif_form_id: u32, value: f32) {
-        self.values.entry(avif_form_id).or_default().permanent_mod = value;
+        let key = self.current_key(avif_form_id);
+        self.values.entry(key).or_default().permanent_mod = value;
     }
 
     /// Add to the temporary-modifier layer (active effects).
     pub fn mod_temporary(&mut self, avif_form_id: u32, delta: f32) {
-        self.values.entry(avif_form_id).or_default().temporary_mod += delta;
+        let key = self.current_key(avif_form_id);
+        self.values.entry(key).or_default().temporary_mod += delta;
     }
 
     /// Apply damage (accumulates; restored separately via [`Self::restore`]).
     pub fn apply_damage(&mut self, avif_form_id: u32, amount: f32) {
-        self.values.entry(avif_form_id).or_default().damage += amount;
+        let key = self.current_key(avif_form_id);
+        self.values.entry(key).or_default().damage += amount;
     }
 
     /// Restore up to `amount` of accumulated damage (never past the base —
     /// damage floors at `0.0`).
     pub fn restore(&mut self, avif_form_id: u32, amount: f32) {
-        let e = self.values.entry(avif_form_id).or_default();
+        let key = self.current_key(avif_form_id);
+        let e = self.values.entry(key).or_default();
         e.damage = (e.damage - amount).max(0.0);
     }
 
     /// Number of distinct actor values carried.
     pub fn len(&self) -> usize {
-        self.values.len()
+        self.values.len() + self.aliases.len()
     }
 
     /// `true` when no actor values are set.
     pub fn is_empty(&self) -> bool {
-        self.values.is_empty()
+        self.values.is_empty() && self.aliases.is_empty()
     }
 
     /// Iterate canonical AVIF FormIDs and their layered values.
     pub fn iter(&self) -> impl Iterator<Item = (u32, &ActorValue)> {
         self.values.iter().map(|(&form_id, value)| (form_id, value))
+            .chain(self.aliases.iter().filter_map(|(&key, alias)| self.values.get(&alias.current).map(|value| (key, value))))
+    }
+
+    /// Physical entries and alias metadata, for the portable save codec.
+    pub fn stored_iter(&self) -> impl Iterator<Item = (u32, &ActorValue)> {
+        self.values.iter().map(|(&key, value)| (key, value))
+    }
+
+    pub fn aliases(&self) -> impl Iterator<Item = (u32, ActorValueAlias)> + '_ {
+        self.aliases.iter().map(|(&key, &alias)| (key, alias))
     }
 }
 
@@ -232,6 +291,22 @@ mod tests {
     // `EsmIndex::actor_values`; the component is agnostic to their values.
     const AV_HEALTH: u32 = 0x0000_02C9;
     const AV_SNEAK: u32 = 0x0000_02E1;
+
+    #[test]
+    fn aliases_share_current_modifiers_and_can_have_a_distinct_base_source() {
+        let mut values = ActorValues::from_pairs([(1, 30.0), (2, 50.0), (3, 50.0), (4, 50.0)]);
+        assert!(values.set_alias(3, ActorValueAlias { current: 1, base: 2 }));
+        assert!(values.set_alias(4, ActorValueAlias { current: 1, base: 1 }));
+        assert_eq!(values.current(3), 30.0);
+        assert_eq!(values.get_base(3).unwrap().base, 50.0);
+        values.mod_permanent(3, 5.0);
+        assert_eq!((values.current(1), values.current(3), values.current(4)), (35.0, 35.0, 35.0));
+        values.set_base(3, 60.0);
+        assert_eq!(values.get_base(3).unwrap().base, 60.0);
+        assert_eq!(values.current(3), 35.0);
+        assert_eq!(values.len(), 4);
+        assert!(!values.set_alias(5, ActorValueAlias { current: 3, base: 2 }));
+    }
 
     #[test]
     fn current_folds_the_four_layers() {

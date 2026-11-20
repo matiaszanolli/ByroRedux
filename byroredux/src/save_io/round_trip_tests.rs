@@ -10,6 +10,14 @@ use byroredux_core::string::StringPool;
 use byroredux_save::{decode, restore_world};
 use byroredux_scripting::ScriptTimer;
 
+fn install_fixture_identity(world: &mut World) {
+    use byroredux_core::form_id::PluginId;
+    use byroredux_plugin::esm::reader::GlobalSlot;
+    world.insert_resource(byroredux_scripting::LoadOrderIdentity::new(vec![
+        (GlobalSlot::Regular(0), PluginId::from_filename("Fixture.esm")),
+    ]));
+}
+
 /// Tripwire for the [`MUTABLE_DELTA_COLUMNS`] invariant (SAVE-D1-02 /
 /// SAVE-D6-01): the live overlay applies component *values* verbatim
 /// onto a reloaded cell without re-installing the saved `StringPool`
@@ -42,8 +50,8 @@ fn delta_columns_carry_only_session_stable_fields() {
         "TwoStateActivator",
         "ScriptVariables",
         // #1834 — ActorValues: HashMap<u32 AVIF-FormID, [f32; 4] layers>.
-        // Keys are global-space FormIDs (stable across reload); values are
-        // plain f32s. No FixedString / EntityId / session handle → delta-safe.
+        // The codec stores stable pairs and resolves them for the new load
+        // order before the component is overlaid.
         "ActorValues",
         // Perks: Vec<PerkRank { perk_form_id: u32, rank: u8 }>.
         "Perks",
@@ -421,6 +429,7 @@ fn actor_values_survive_save_load_round_trip() {
     let reg = build_save_registry();
 
     let mut src = World::new();
+    install_fixture_identity(&mut src);
     src.insert_resource(StringPool::new());
     src.insert_resource(FormIdPool::new());
     let e = src.spawn();
@@ -435,6 +444,7 @@ fn actor_values_survive_save_load_round_trip() {
     let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
 
     let mut dst = World::new();
+    install_fixture_identity(&mut dst);
     dst.insert_resource(FormIdPool::new());
     restore_world(&mut dst, &reg, &decoded).unwrap();
 
@@ -446,6 +456,133 @@ fn actor_values_survive_save_load_round_trip() {
     assert_eq!(layer.base, 100.0);
     assert_eq!(layer.permanent_mod, 25.0);
     assert_eq!(layer.damage, 40.0);
+}
+
+#[test]
+fn actor_value_save_survives_a_changed_engine_slot() {
+    use byroredux_core::ecs::components::{ActorValueAlias, ActorValues, ActorVitals, TimedRestoration, TimedRestorations};
+    use byroredux_core::form_id::{PluginId, ENGINE_PLUGIN_ID};
+    use byroredux_plugin::esm::reader::GlobalSlot;
+    use byroredux_scripting::magic_effects::{ActiveEffect, ActiveMagicEffects, ValueEffect};
+    let registry = build_save_registry();
+    let identity = |slot| {
+        let mut entries = vec![(GlobalSlot::Regular(0), PluginId::from_filename("Oblivion.esm"))];
+        if slot == 2 {
+            entries.push((GlobalSlot::Regular(1), PluginId::from_filename("added.esp")));
+        }
+        entries.push((GlobalSlot::Regular(slot), ENGINE_PLUGIN_ID));
+        byroredux_scripting::LoadOrderIdentity::new(entries)
+    };
+    let mut source = World::new();
+    source.insert_resource(identity(1));
+    source.insert_resource(byroredux_scripting::skills::SkillProgress(std::collections::BTreeMap::from([(0x0100_0020, 12.5)])));
+    let actor = source.spawn();
+    let old_key = 0x0100_0020;
+    let old_health = 0x0100_0009;
+    // Exercise the entire executable roster, including the two values that
+    // vanilla commands cannot resolve. Compare every layer by durable identity.
+    let mut values = ActorValues::from_pairs((1..=72).map(|local| (0x0100_0000 | local, local as f32)));
+    values.set_base(old_key, 50.0);
+    values.mod_permanent(old_key, 5.0);
+    values.apply_damage(old_key, 7.0);
+    values.set_base(old_health, 100.0);
+    values.apply_damage(old_health, 10.0);
+    values.set_base(0x0100_001b, 70.0);
+    assert!(values.set_alias(0x0100_001d, ActorValueAlias { current: old_key, base: 0x0100_001b }));
+    let expected: Vec<_> = (1..=72).map(|local| {
+        let key = 0x0100_0000 | local;
+        (local, *values.get(key).unwrap(), *values.get_base(key).unwrap())
+    }).collect();
+    source.insert(actor, values);
+    source.insert(actor, ActorVitals { health: old_health });
+    source.insert(actor, TimedRestorations { effects: vec![TimedRestoration { source_form_id: 8, actor_value: old_health, per_second: 2.0, remaining: 3.0 }] });
+    let active = ActiveEffect {
+        source: 1, mgef: 2, caster: 3, script: 4, duration: 5.0, indefinite: false,
+        elapsed: 1.0, started: true, ending: false,
+        value: Some(ValueEffect { actor_value: old_key, amount: 5.0, recover: true }),
+        ticks: 2, locals: vec![(3, 4.5)], ref_locals: vec![(7, 8)], suspended: false,
+    };
+    let unrelated = ActiveEffect { source: 9, value: None, indefinite: true, ..active.clone() };
+    source.insert(actor, ActiveMagicEffects(vec![active.clone(), unrelated.clone()]));
+    let mut expected_active = active;
+    expected_active.value.as_mut().unwrap().actor_value = 0x0200_0020;
+    let snapshot = save_world(&source, &registry).unwrap();
+    let bytes = encode(&snapshot, registry.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, registry.schema_fingerprint()).unwrap();
+    let mut destination = World::new();
+    destination.insert_resource(identity(2));
+    destination.insert_resource(FormIdPool::new());
+    restore_world(&mut destination, &registry, &decoded).unwrap();
+    let new_key = 0x0200_0020;
+    let new_health = 0x0200_0009;
+    {
+        let restored = destination.get::<ActorValues>(actor).unwrap();
+        for (local, current, base) in &expected {
+            let key = 0x0200_0000 | local;
+            assert_eq!(restored.get(key), Some(current), "current layers for local {local}");
+            assert_eq!(restored.get_base(key), Some(base), "base layers for local {local}");
+        }
+    }
+    assert_eq!(destination.get::<ActorValues>(actor).unwrap().current(new_key), 48.0);
+    assert_eq!(destination.get::<ActorValues>(actor).unwrap().current(0x0200_001d), 48.0);
+    assert_eq!(destination.get::<ActorValues>(actor).unwrap().get_base(0x0200_001d).unwrap().base, 70.0);
+    assert_eq!(destination.get::<ActorVitals>(actor).unwrap().health, new_health);
+    assert_eq!(destination.get::<TimedRestorations>(actor).unwrap().effects[0].actor_value, new_health);
+    assert_eq!(destination.get::<ActiveMagicEffects>(actor).unwrap().0, vec![expected_active.clone(), unrelated.clone()]);
+    assert_eq!(destination.resource::<byroredux_scripting::skills::SkillProgress>().0.get(&new_key), Some(&12.5));
+    assert_eq!(destination.get::<ActorValues>(actor).unwrap().current(old_key), 0.0);
+
+    // The live-load path remaps the entity separately from the nested keys.
+    let mut live = World::new();
+    live.insert_resource(identity(2));
+    live.spawn();
+    let live_actor = live.spawn();
+    let remap = std::collections::HashMap::from([(actor, live_actor)]);
+    byroredux_save::apply_deltas(&mut live, &registry, &decoded, &remap,
+        &["ActorValues", "TimedRestorations", "ActiveMagicEffects"]).unwrap();
+    {
+        let restored = live.get::<ActorValues>(live_actor).unwrap();
+        for (local, current, base) in &expected {
+            let key = 0x0200_0000 | local;
+            assert_eq!(restored.get(key), Some(current), "live current layers for local {local}");
+            assert_eq!(restored.get_base(key), Some(base), "live base layers for local {local}");
+        }
+    }
+    assert_eq!(live.get::<ActorValues>(live_actor).unwrap().current(new_key), 48.0);
+    assert_eq!(live.get::<ActorValues>(live_actor).unwrap().get_base(0x0200_001d).unwrap().base, 70.0);
+    assert_eq!(live.get::<TimedRestorations>(live_actor).unwrap().effects[0].actor_value, new_health);
+    assert_eq!(live.get::<ActiveMagicEffects>(live_actor).unwrap().0, vec![expected_active, unrelated]);
+}
+
+#[test]
+fn actor_value_save_drops_a_missing_plugin_without_reassigning_its_slot() {
+    use byroredux_core::ecs::components::ActorValues;
+    use byroredux_core::form_id::{PluginId, ENGINE_PLUGIN_ID};
+    use byroredux_plugin::esm::reader::GlobalSlot;
+    use byroredux_scripting::LoadOrderIdentity;
+    let registry = build_save_registry();
+    let missing = PluginId::from_filename("removed.esp");
+    let mut source = World::new();
+    source.insert_resource(LoadOrderIdentity::new(vec![
+        (GlobalSlot::Regular(0), PluginId::from_filename("Oblivion.esm")),
+        (GlobalSlot::Regular(1), missing),
+        (GlobalSlot::Regular(2), ENGINE_PLUGIN_ID),
+    ]));
+    let actor = source.spawn();
+    source.insert(actor, ActorValues::from_pairs([(0x0200_0001, 12.0), (0x0100_0001, 99.0)]));
+    let snapshot = save_world(&source, &registry).unwrap();
+    let bytes = encode(&snapshot, registry.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, registry.schema_fingerprint()).unwrap();
+    let mut destination = World::new();
+    destination.insert_resource(LoadOrderIdentity::new(vec![
+        (GlobalSlot::Regular(0), PluginId::from_filename("Oblivion.esm")),
+        (GlobalSlot::Regular(1), ENGINE_PLUGIN_ID),
+    ]));
+    destination.insert_resource(FormIdPool::new());
+    restore_world(&mut destination, &registry, &decoded).unwrap();
+    let values = destination.get::<ActorValues>(actor).unwrap();
+    assert_eq!(values.len(), 1);
+    assert_eq!(values.current(0x0100_0001), 12.0, "the removed plugin's value must not claim the engine slot");
 }
 
 /// #2014 / SAVE-D1-NEW-01 — the seven M42 AI-procedure runtime-state
@@ -687,6 +824,7 @@ fn the_obscript_runtime_state_survives_save_load_round_trip() {
 
     let reg = build_save_registry();
     let mut src = World::new();
+    install_fixture_identity(&mut src);
     src.insert_resource(StringPool::new());
     src.insert_resource(FormIdPool::new());
     let actor = src.spawn();
@@ -727,6 +865,7 @@ fn the_obscript_runtime_state_survives_save_load_round_trip() {
     let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
 
     let mut dst = World::new();
+    install_fixture_identity(&mut dst);
     dst.insert_resource(FormIdPool::new());
     dst.insert_resource(PipBoyNotes::default());
     dst.insert_resource(KillRecords::default());
@@ -2307,6 +2446,7 @@ fn a_perk_granted_ability_survives_save_load_with_one_spell_and_one_value_change
         },
     );
     let boot = |world: &mut World| {
+        install_fixture_identity(world);
         byroredux_scripting::register(world);
         world.register::<Perks>();
         world.register::<ActorValues>();

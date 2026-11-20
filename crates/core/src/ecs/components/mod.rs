@@ -52,7 +52,7 @@ pub mod world_bound;
 
 pub use actor_state::{Dead, Sneaking};
 pub use detection::Awareness;
-pub use actor_values::{ActorValue, ActorValues, ActorVitals};
+pub use actor_values::{ActorValue, ActorValueAlias, ActorValues, ActorVitals};
 pub use restoration::{TimedRestoration, TimedRestorations};
 pub use animated::{
     AnimatedAlpha, AnimatedAmbientColor, AnimatedDiffuseColor, AnimatedEmissiveColor,

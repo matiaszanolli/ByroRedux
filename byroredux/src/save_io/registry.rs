@@ -49,7 +49,9 @@ use super::*;
 /// save resource — e.g. `ItemStack.instance` (an `ItemInstancePool` index) is
 /// safe because `ItemInstancePool` round-trips as a resource.
 ///
-/// `delta_columns_carry_only_session_stable_fields` (a tripwire test below)
+/// A context-aware column codec may translate a runtime-local key to a
+/// stable save identity and back before overlay; the actor-value columns use
+/// this path. `delta_columns_carry_only_session_stable_fields` (a tripwire test below)
 /// pins the exact set so any addition forces a maintainer through this checklist.
 pub(crate) const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     "Transform",
@@ -64,8 +66,8 @@ pub(crate) const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     "ScriptVariables",
     // #1834 — runtime-mutated by the `setav`/`modav` console commands
     // (`commands/actor_value.rs`). Delta-safe: the map is keyed by
-    // global-space AVIF FormID (u32, stable across reload) with four `f32`
-    // composition layers — no FixedString / EntityId / session handle.
+    // runtime global-space AVIF FormIDs are converted to stable pairs by the
+    // save codec and resolved against the new load order on overlay.
     "ActorValues",
     // Ranked perk FormIDs (u32) and ranks (u8) are session-stable. Its
     // replacing registration also clears a saved absence on the live player.
@@ -78,7 +80,7 @@ pub(crate) const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     "FactionReputation",
     // M47.2 — unspent level-up skill points (u32 + an f32 carry) and perks.
     "LevelUpPoints",
-    // Stable source/AV FormIDs and scalar rate/remaining simulation seconds.
+    // Actor-value identities pass through the portable codec on overlay.
     "TimedRestorations",
     // #4415 — spell FormIDs (u32) only.
     "SpellList",
@@ -132,7 +134,8 @@ pub(crate) const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     "ScriptPackage",
     // M47.3 — `WeaponDrawn` / `IgnoreCrime`: unit markers, presence is the flag (ObScript `SetAlert` /
     // `IgnoreCrime`). `ActiveMagicEffects`: the effects running on an actor — FormIDs, seconds, a script's
-    // locals by slot; no session-local identity. Replacing: a saved absence clears a live one.
+    // locals by slot; the actor-value reference is converted by the portable codec. Replacing:
+    // a saved absence clears a live one.
     "WeaponDrawn",
     "IgnoreCrime",
     "ActiveMagicEffects",
@@ -260,7 +263,7 @@ impl Resource for PendingSaveLoadSlot {}
 pub fn build_save_registry() -> SaveRegistry {
     use byroredux_core::animation::{AnimationPlayer, AnimationStack};
     use byroredux_core::ecs::components::{
-        ActorValues, ActorVitals, Children, Dead, EquipmentSlots, EquippedWeapon, EscortState,
+        Children, Dead, EquipmentSlots, EquippedWeapon, EscortState,
         Escorted, FollowState, GuardState, Inventory, LightFlicker, LightSource, Material, Name,
         Parent, PatrolState, Seated, Transform, TravelState, Traveled, WanderState,
     };
@@ -289,7 +292,8 @@ pub fn build_save_registry() -> SaveRegistry {
     // mutated live by `setav`/`modav`; pre-fix a save/load silently
     // reverted every edited/permanent/temporary/damage layer to the
     // re-derived spawn base. Also a MUTABLE_DELTA_COLUMN (delta-safe).
-    r.register_component::<ActorValues>("ActorValues");
+    r.register_component_codec("ActorValues", false,
+        byroredux_scripting::actor_value_save::save_values, byroredux_scripting::actor_value_save::load_values);
     r.register_replacing_component::<byroredux_core::character::Perks>("Perks");
     // M47.2 — kill experience accumulates `xp` and rolls levels, so
     // #2947's re-derived exemption (and its `validate_progression_state`
@@ -307,7 +311,8 @@ pub fn build_save_registry() -> SaveRegistry {
     // The name, sex and race the player chose in character creation (New Vegas's opening). Nothing
     // re-derives a choice; replacing, so a saved absence clears a live identity on the player.
     r.register_replacing_component::<byroredux_core::character::CharacterIdentity>("CharacterIdentity");
-    r.register_replacing_component::<byroredux_core::ecs::components::TimedRestorations>("TimedRestorations");
+    r.register_component_codec("TimedRestorations", true,
+        byroredux_scripting::actor_value_save::save_restorations, byroredux_scripting::actor_value_save::load_restorations);
     byroredux_scripting::magic::register_saved(&mut r);
     // Core types: `byroredux-core` sits below `byroredux-save`, so they cannot register themselves (#6705).
     // #3027 (SAVE-D1-2026-08-16-02) — registered (so a hand load of an
@@ -324,7 +329,8 @@ pub fn build_save_registry() -> SaveRegistry {
     // `CharacterLevel` below, just not listed in
     // `REDERIVED_NOT_SAVED` because it's plain-registered (not the
     // save-omitted case that allowlist tracks).
-    r.register_component::<ActorVitals>("ActorVitals");
+    r.register_component_codec("ActorVitals", false,
+        byroredux_scripting::actor_value_save::save_vitals, byroredux_scripting::actor_value_save::load_vitals);
     r.register_component::<EquippedWeapon>("EquippedWeapon");
     // #5027 — replacing: the process-lifetime player outlives the cell
     // reload, so an additive overlay left a pre-load death standing on a
@@ -381,7 +387,8 @@ pub fn build_save_registry() -> SaveRegistry {
     r.register_form_id_component("FormIdComponent");
     r.register_resource::<ItemInstancePool>("ItemInstancePool");
     // Binary-crate types register here (#6705).
-    r.register_resource::<crate::cell_loader::reference_state::PersistentReferenceStates>("PersistentReferenceStates");
+    r.register_resource_codec("PersistentReferenceStates",
+        crate::cell_loader::reference_state::save_parked, crate::cell_loader::reference_state::load_parked);
     // M45.1 — the cell identity + plugin set the save was taken in,
     // so `load` knows which cell to reload before applying deltas.
     r.register_resource::<CurrentCellContext>("CurrentCellContext");

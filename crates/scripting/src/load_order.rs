@@ -10,7 +10,7 @@
 //! `GlobalFormIdResolver`, which delegates here (#4414).
 
 use byroredux_core::ecs::resource::Resource;
-use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
+use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId, ENGINE_PLUGIN_ID};
 use byroredux_plugin::esm::reader::GlobalSlot;
 use byroredux_sdk::identity::FormRef;
 
@@ -29,6 +29,35 @@ impl LoadOrderIdentity {
 
     pub fn owners(&self) -> &[(GlobalSlot, PluginId)] {
         &self.owners
+    }
+
+    /// Allocate the engine's Oblivion records after all real plugins.
+    /// The regular loader reserves 0xFC for alias owners and higher bytes
+    /// for other form spaces, so only 0x00..=0xFB can be used here.
+    pub fn allocate_engine_slot(&mut self) -> Result<GlobalSlot, String> {
+        self.allocate_engine_slot_avoiding(&[])
+    }
+
+    /// Also avoid slots occupied by preserved, unowned record IDs. Some
+    /// Oblivion masters contain out-of-range source indices; until their
+    /// provenance is resolved they must not acquire the engine's identity.
+    pub fn allocate_engine_slot_avoiding(&mut self, occupied_records: &[GlobalSlot]) -> Result<GlobalSlot, String> {
+        if self.owners.iter().any(|(_, id)| *id == ENGINE_PLUGIN_ID) {
+            return Err(format!("loaded plugin conflicts with engine identity {ENGINE_PLUGIN_ID:?}"));
+        }
+        for (i, (slot, id)) in self.owners.iter().enumerate() {
+            if self.owners[..i].iter().any(|(prior, _)| prior == slot) {
+                return Err(format!("duplicate load-order slot {slot:?} while allocating engine records"));
+            }
+            if self.owners[..i].iter().any(|(_, prior)| prior == id) {
+                return Err(format!("duplicate plugin identity {id:?} while allocating engine records"));
+            }
+        }
+        let slot = (0..=0xfb).map(GlobalSlot::Regular)
+            .find(|slot| !occupied_records.contains(slot) && !self.owners.iter().any(|(occupied, _)| occupied == slot))
+            .ok_or_else(|| "cannot allocate engine records: all 252 regular slots are occupied".to_owned())?;
+        self.owners.push((slot, ENGINE_PLUGIN_ID));
+        Ok(slot)
     }
 
     /// The owning plugin and plugin-local object id of a global FormID.
@@ -109,6 +138,47 @@ pub fn global_slot_of(form_id: u32) -> GlobalSlot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn engine_slot_round_trips_all_oblivion_identities() {
+        let mut identity = LoadOrderIdentity::new(vec![
+            (GlobalSlot::Regular(0), PluginId::from_filename("Oblivion.esm")),
+            (GlobalSlot::Regular(2), PluginId::from_filename("Example.esp")),
+        ]);
+        let slot = identity.allocate_engine_slot().unwrap();
+        assert_eq!(slot, GlobalSlot::Regular(1));
+        for index in 0..72 {
+            let pair = FormIdPair { plugin: ENGINE_PLUGIN_ID, local: LocalFormId(index + 1) };
+            let form = FormRef::new(pair.plugin.0.to_be_bytes(), pair.local.0);
+            let key = identity.global_form_id(form).unwrap();
+            assert_eq!(identity.pair(key), Some(pair));
+        }
+    }
+
+    #[test]
+    fn engine_slot_rejects_collisions_and_exhaustion() {
+        let mut collision = LoadOrderIdentity::new(vec![(GlobalSlot::Regular(0), ENGINE_PLUGIN_ID)]);
+        assert!(collision.allocate_engine_slot().unwrap_err().contains("engine identity"));
+        let mut duplicate = LoadOrderIdentity::new(vec![
+            (GlobalSlot::Regular(0), PluginId(1)),
+            (GlobalSlot::Regular(0), PluginId(2)),
+        ]);
+        assert!(duplicate.allocate_engine_slot().unwrap_err().contains("duplicate load-order slot"));
+        let mut full = LoadOrderIdentity::new((0..=0xfb).map(|slot| (GlobalSlot::Regular(slot), PluginId(u128::from(slot) + 1))).collect());
+        let error = full.allocate_engine_slot().unwrap_err();
+        assert!(error.contains("engine records") && error.contains("252"));
+        assert_eq!(full.owners().len(), 252);
+    }
+
+    #[test]
+    fn engine_slot_skips_unowned_record_slots_without_claiming_them() {
+        let master = PluginId::from_filename("Oblivion.esm");
+        let mut identity = LoadOrderIdentity::new(vec![(GlobalSlot::Regular(0), master)]);
+        let slot = identity.allocate_engine_slot_avoiding(&[GlobalSlot::Regular(1)]).unwrap();
+        assert_eq!(slot, GlobalSlot::Regular(2));
+        assert!(identity.pair(0x0100_1234).is_none());
+        assert_eq!(identity.pair(0x0200_0001).unwrap().plugin, ENGINE_PLUGIN_ID);
+    }
 
     #[test]
     fn plugin_local_object_id_strips_the_slot_bits_per_slot_kind() {

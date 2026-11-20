@@ -681,7 +681,7 @@ impl ConsoleCommand for LevelUpCommand {
                 let Some(values) = value_query.get_mut(player) else {
                     return CommandOutput::error("levelup: player has no actor values");
                 };
-                let base = values.get(avif).map_or(0.0, |value| value.base);
+                let base = values.get_base(avif).map_or(0.0, |value| value.base);
                 values.set_base(avif, base + spend as f32);
                 drop(value_query);
                 if let Some(mut stored) = world.query_mut::<LevelUpPoints>() {
@@ -776,7 +776,7 @@ impl ConsoleCommand for LevelUpCommand {
                 let Some(values) = value_query.get_mut(player) else {
                     return CommandOutput::error("levelup: player has no actor values");
                 };
-                let base = values.get(avif).map_or(0.0, |value| value.base);
+                let base = values.get_base(avif).map_or(0.0, |value| value.base);
                 values.set_base(avif, base + gain);
                 drop(value_query);
                 if let Some(mut stored) = world.query_mut::<LevelUpPoints>() {

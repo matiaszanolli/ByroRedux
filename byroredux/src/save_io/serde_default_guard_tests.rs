@@ -120,6 +120,12 @@ fn save_type_sources() -> Vec<PathBuf> {
     // Non-turbofish and nested payloads cannot be derived from the registry's
     // surface syntax. Keep these explicit edges small and asserted below.
     candidates.extend([
+        // OAI-SAVE: context-aware codecs register without a turbofish; scan
+        // both their portable shapes and the nested runtime payloads explicitly.
+        manifest.join("../crates/scripting/src/actor_value_save.rs"),
+        manifest.join("../crates/core/src/ecs/components/actor_values.rs"),
+        manifest.join("../crates/core/src/ecs/components/restoration.rs"),
+        manifest.join("src/cell_loader/reference_state.rs"),
         manifest.join("../crates/core/src/form_id.rs"),
         manifest.join("../crates/core/src/ecs/components/form_id.rs"),
         manifest.join("../crates/core/src/string/mod.rs"),
@@ -303,6 +309,25 @@ fn enclosing_declaration(source: &str, offset: usize) -> Option<&str> {
     })
 }
 
+/// Locate a declaration's body or terminating semicolon, ignoring array
+/// lengths and semicolons inside tuple fields and generic arguments.
+fn declaration_terminator(source: &str) -> Option<(usize, char)> {
+    let (mut parens, mut brackets, mut angles) = (0usize, 0usize, 0usize);
+    for (index, ch) in source.char_indices() {
+        match ch {
+            '(' => parens += 1,
+            ')' => parens = parens.saturating_sub(1),
+            '[' => brackets += 1,
+            ']' => brackets = brackets.saturating_sub(1),
+            '<' => angles += 1,
+            '>' => angles = angles.saturating_sub(1),
+            '{' | ';' if parens == 0 && brackets == 0 && angles == 0 => return Some((index, ch)),
+            _ => {}
+        }
+    }
+    None
+}
+
 fn normalized_serialized_shapes() -> Vec<String> {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut shapes = Vec::new();
@@ -355,7 +380,10 @@ fn normalized_serialized_shapes() -> Vec<String> {
             }
 
             let rest = &source[offset..];
-            let end = if let Some(open_rel) = rest.find('{') {
+            // A tuple or unit declaration ends at its semicolon. A later
+            // impl/function body must not become part of its save shape.
+            let terminator = declaration_terminator(rest);
+            let end = if let Some((open_rel, '{')) = terminator {
                 let open = offset + open_rel;
                 let mut depth = 0usize;
                 let mut in_string = false;
@@ -387,9 +415,7 @@ fn normalized_serialized_shapes() -> Vec<String> {
                 }
                 found.unwrap_or(source.len())
             } else {
-                source[offset..]
-                    .find(';')
-                    .map_or(source.len(), |i| offset + i + 1)
+                terminator.map_or(source.len(), |(i, _)| offset + i + 1)
             };
             let relative = path.strip_prefix(manifest).unwrap_or(&path);
             let normalized: String = source[offset..end]
@@ -806,7 +832,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // M65 (SNK-DET-014, #6913) — refreshed WITH a major bump (v130 -> v131): `ActorControlState`'s
     // required `not_shown_on_stealth_meter`, and the appended `Effect::SetNotShowOnStealthMeter`.
     // #6944 — refreshed WITH a major bump (v131 -> v132): the new `SpeakingLine` component column.
-    const BASELINE_MAJOR: u16 = 132;
+    const BASELINE_MAJOR: u16 = 133;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1233,7 +1259,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // #6944 — v132 is a genuine bump: `SpeakingLine` (the line an ObScript `Say` / `SayTo` made an actor
     // say) joined the saved registry as a NEW component column, so a pre-v132 snapshot has no record of
     // a line in flight.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x0bc6_83f2_c719_4eb3;
+    // OAI-SAVE: v133 stores actor-value identities as plugin/local pairs,
+    // including the portable parked-state and effect payloads.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x5aa8_e36b_31b2_a82b;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.
@@ -1534,6 +1562,10 @@ fn source_discovery_follows_registry_and_nested_save_modules() {
         "sdk/src/identity.rs",
         "sdk/src/script_function.rs",
         "core/src/ecs/components/collision.rs",
+        "core/src/ecs/components/actor_values.rs",
+        "core/src/ecs/components/restoration.rs",
+        "scripting/src/actor_value_save.rs",
+        "cell_loader/reference_state.rs",
     ] {
         assert!(
             sources.iter().any(|path| path.ends_with(suffix)),
@@ -1541,6 +1573,18 @@ fn source_discovery_follows_registry_and_nested_save_modules() {
         );
     }
     assert!(!sources.iter().any(|path| path.ends_with("settings_io.rs")));
+}
+
+#[test]
+fn tuple_save_shape_stops_before_the_following_impl() {
+    let declaration = "struct Foo([u8; 4], Vec<(u32, f32)>); impl Foo { fn f() {} }";
+    let (end, kind) = declaration_terminator(declaration).unwrap();
+    assert_eq!(kind, ';');
+    assert_eq!(&declaration[..=end], "struct Foo([u8; 4], Vec<(u32, f32)>);");
+    let shapes = normalized_serialized_shapes();
+    let shape = shapes.iter().find(|shape| shape.contains("structSavedActiveMagicEffects(")).expect("portable effects shape is scanned");
+    assert!(shape.ends_with(';'), "tuple declaration must end at its semicolon: {shape}");
+    assert!(!shape.contains("value_count"), "following impl is not part of the serialized shape");
 }
 
 /// Regression: #4141 — the shape/serde-default guards' discovery roots

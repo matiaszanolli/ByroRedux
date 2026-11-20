@@ -10,6 +10,8 @@
 //! cleanup removes it at end of frame.
 
 pub mod actor_value_names;
+#[cfg(feature = "save")]
+pub mod actor_value_save;
 pub mod alias_overrides;
 pub mod bleedout;
 pub mod cell_kind;

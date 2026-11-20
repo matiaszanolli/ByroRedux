@@ -646,7 +646,12 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v131 -> v132 (#6944): a new component column, `SpeakingLine` (the line an ObScript `Say` / `SayTo`
 /// made an actor say), so a save taken mid-line finishes the line after a load and runs its End
 /// result script; a v131 save has no such column and the schema no longer matches.
-pub const FORMAT_MAJOR: u16 = 132;
+///
+/// v132 -> v133 (OAI-SAVE-001 / OAI-SAVE-002): actor-value references in
+/// actor values, vitals, restorations, active effects, skill progress and
+/// parked references use portable plugin/local pairs instead of session slots;
+/// actor-value view aliases and both of their source keys are pairs as well.
+pub const FORMAT_MAJOR: u16 = 133;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

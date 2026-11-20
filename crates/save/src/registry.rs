@@ -225,6 +225,93 @@ impl SaveRegistry {
         self
     }
 
+    /// Register a component with a portable on-disk representation.
+    /// Conversion runs with the current world on save, restore and overlay;
+    /// validation checks the portable type without touching the world.
+    pub fn register_component_codec<T, S>(
+        &mut self,
+        name: &'static str,
+        replace_missing: bool,
+        encode: fn(&World, u32, &T) -> Result<S, SaveError>,
+        decode: fn(&World, u32, S) -> Result<Option<T>, SaveError>,
+    ) -> &mut Self
+    where
+        T: Component,
+        S: Serialize + DeserializeOwned + 'static,
+    {
+        self.components.push(Entry {
+            name,
+            save: Box::new(move |world| {
+                let Some(q) = world.query::<T>() else {
+                    return Ok(serde_json::json!([]));
+                };
+                let mut rows = q
+                    .iter()
+                    .map(|(entity, value)| encode(world, entity, value).map(|v| (entity, v)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                rows.sort_by_key(|(entity, _)| *entity);
+                serde_json::to_value(rows).map_err(|source| SaveError::Serde {
+                    column: name.into(),
+                    source,
+                })
+            }),
+            load: Box::new(move |world, value| {
+                let rows: Vec<(u32, S)> =
+                    serde_json::from_value(value).map_err(|source| SaveError::Serde {
+                        column: name.into(),
+                        source,
+                    })?;
+                let mut decoded = Vec::with_capacity(rows.len());
+                for (entity, value) in rows {
+                    if let Some(value) = decode(world, entity, value)? {
+                        decoded.push((entity, value));
+                    }
+                }
+                let count = decoded.len();
+                world.insert_batch::<T, _>(decoded);
+                Ok(count)
+            }),
+            validate: Box::new(move |value| {
+                serde_json::from_value::<Vec<(u32, S)>>(value)
+                    .map(|_| ())
+                    .map_err(|source| SaveError::Serde {
+                        column: name.into(),
+                        source,
+                    })
+            }),
+            apply: Some(Box::new(move |world, value, remap| {
+                let rows: Vec<(u32, S)> =
+                    serde_json::from_value(value).map_err(|source| SaveError::Serde {
+                        column: name.into(),
+                        source,
+                    })?;
+                let mut decoded = Vec::with_capacity(rows.len());
+                for (old, value) in rows {
+                    if let Some(&entity) = remap.get(&old) {
+                        if let Some(value) = decode(world, entity, value)? {
+                            decoded.push((entity, value));
+                        }
+                    }
+                }
+                let count = decoded.len();
+                if replace_missing {
+                    let present: std::collections::HashSet<_> =
+                        decoded.iter().map(|(entity, _)| *entity).collect();
+                    for entity in remap.values() {
+                        if !present.contains(entity) {
+                            let _ = world.remove::<T>(*entity);
+                        }
+                    }
+                }
+                world.insert_batch::<T, _>(decoded);
+                Ok(count)
+            })),
+            is_form_id: false,
+            replace_missing,
+        });
+        self
+    }
+
     /// Register a resource type for save/load.
     ///
     /// Only resources that carry *game state* belong here (e.g.
@@ -265,6 +352,53 @@ impl SaveRegistry {
             }),
             // Resources aren't entity-keyed, so they have no remap-apply
             // form — `apply_deltas` restores them wholesale via `load`.
+            apply: None,
+            is_form_id: false,
+            replace_missing: false,
+        });
+        self
+    }
+
+    /// Register a resource whose on-disk representation needs world context.
+    pub fn register_resource_codec<R, S>(
+        &mut self,
+        name: &'static str,
+        encode: fn(&World, &R) -> Result<S, SaveError>,
+        decode: fn(&World, S) -> Result<R, SaveError>,
+    ) -> &mut Self
+    where
+        R: Resource,
+        S: Serialize + DeserializeOwned + 'static,
+    {
+        self.resources.push(Entry {
+            name,
+            save: Box::new(move |world| {
+                let Some(value) = world.try_resource::<R>() else {
+                    return Ok(serde_json::Value::Null);
+                };
+                serde_json::to_value(encode(world, &value)?).map_err(|source| SaveError::Serde {
+                    column: name.into(),
+                    source,
+                })
+            }),
+            load: Box::new(move |world, value| {
+                let saved: S =
+                    serde_json::from_value(value).map_err(|source| SaveError::Serde {
+                        column: name.into(),
+                        source,
+                    })?;
+                let restored = decode(world, saved)?;
+                world.insert_resource(restored);
+                Ok(1)
+            }),
+            validate: Box::new(move |value| {
+                serde_json::from_value::<S>(value)
+                    .map(|_| ())
+                    .map_err(|source| SaveError::Serde {
+                        column: name.into(),
+                        source,
+                    })
+            }),
             apply: None,
             is_form_id: false,
             replace_missing: false,
@@ -563,8 +697,7 @@ mod tests {
             incoming.translation = live.translation;
         }
         let mut registry = SaveRegistry::new();
-        registry
-            .register_component_preserving::<Transform>("Transform", keep_live_translation);
+        registry.register_component_preserving::<Transform>("Transform", keep_live_translation);
         let mut world = World::new();
         let live_entity = world.spawn();
         let fresh_entity = world.spawn();

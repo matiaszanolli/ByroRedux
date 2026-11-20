@@ -11,7 +11,7 @@
 
 use crate::asset_provider::{extract_first, Archive};
 use byroredux_core::ecs::Resource;
-use byroredux_core::form_id::{FormIdPair, PluginId};
+use byroredux_core::form_id::{FormIdPair, PluginId, ENGINE_PLUGIN_ID};
 use byroredux_plugin::esm;
 use byroredux_scripting::load_order::global_slot_of;
 use byroredux_scripting::LoadOrderIdentity;
@@ -55,6 +55,8 @@ pub(crate) struct LoadOrder {
     /// whose body won the merge; this table is the winner. Empty for hand-
     /// built test orders (consumers then fall back to the slot owner).
     script_winners: HashMap<u32, usize>,
+    /// Slot allocated after real plugins for Oblivion's engine-owned records.
+    engine_slot: Option<esm::reader::GlobalSlot>,
 }
 
 impl LoadOrder {
@@ -84,6 +86,7 @@ impl LoadOrder {
             slots,
             dependencies,
             script_winners: HashMap::new(),
+            engine_slot: None,
         }
     }
 
@@ -134,6 +137,7 @@ impl Default for LoadOrder {
             slots: Vec::new(),
             dependencies: Vec::new(),
             script_winners: HashMap::new(),
+            engine_slot: None,
         }
     }
 }
@@ -225,8 +229,12 @@ impl GlobalFormIdResolver {
                 Arc::new(ContentCatalog::default())
             }
         };
+        let mut identity_owners = owners;
+        if let Some(slot) = load_order.engine_slot {
+            identity_owners.push((slot, ENGINE_PLUGIN_ID));
+        }
         let mut resolver = Self {
-            identity: LoadOrderIdentity::new(owners),
+            identity: LoadOrderIdentity::new(identity_owners),
             content_catalog,
             faction_relationships: Arc::new(FactionRelationshipCatalog::default()),
         };
@@ -328,6 +336,43 @@ pub(crate) fn install_form_resolver(
     world.insert_resource(byroredux_scripting::FactionCatalog(resolver.faction_relationships()));
     world.insert_resource(resolver);
     world.insert_resource(ActiveLoadOrder(load_order));
+}
+
+/// Previous load-order resources, retained while a resumable cell load is
+/// in progress so cancelling it restores the complete bridge atomically.
+pub(crate) struct PreviousFormResolver {
+    identity: Option<LoadOrderIdentity>,
+    factions: Option<byroredux_scripting::FactionCatalog>,
+    resolver: Option<GlobalFormIdResolver>,
+    order: Option<ActiveLoadOrder>,
+}
+
+impl PreviousFormResolver {
+    pub(crate) fn install(
+        world: &mut byroredux_core::ecs::World,
+        resolver: GlobalFormIdResolver,
+        order: std::sync::Arc<LoadOrder>,
+    ) -> Self {
+        let previous = Self {
+            identity: world.remove_resource::<LoadOrderIdentity>(),
+            factions: world.remove_resource::<byroredux_scripting::FactionCatalog>(),
+            resolver: world.remove_resource::<GlobalFormIdResolver>(),
+            order: world.remove_resource::<ActiveLoadOrder>(),
+        };
+        install_form_resolver(world, resolver, order);
+        previous
+    }
+
+    pub(crate) fn restore(self, world: &mut byroredux_core::ecs::World) {
+        fn restore_one<R: Resource>(world: &mut byroredux_core::ecs::World, value: Option<R>) {
+            world.remove_resource::<R>();
+            if let Some(value) = value { world.insert_resource(value); }
+        }
+        restore_one(world, self.identity);
+        restore_one(world, self.factions);
+        restore_one(world, self.resolver);
+        restore_one(world, self.order);
+    }
 }
 
 /// The load order of the cell-load entry point that ran last, published with
@@ -914,6 +959,19 @@ where
     merged.plugin_files = load_order.clone();
     let mut order = LoadOrder::with_dependencies(load_order, slots, dependencies);
     order.script_winners = script_winners;
+    if merged.game == esm::reader::GameKind::Oblivion {
+        let owners = order.slots.iter().copied().zip(order.names.iter().map(|name| PluginId::from_filename(name))).collect();
+        let mut identity = LoadOrderIdentity::new(owners);
+        let mut present = [false; 252];
+        for id in merged.record_types.keys() {
+            if let esm::reader::GlobalSlot::Regular(slot @ 0..=0xfb) = global_slot_of(*id) {
+                present[usize::from(slot)] = true;
+            }
+        }
+        let occupied: Vec<_> = present.iter().enumerate().filter_map(|(slot, &used)| used.then_some(esm::reader::GlobalSlot::Regular(slot as u8))).collect();
+        let slot = identity.allocate_engine_slot_avoiding(&occupied).map_err(anyhow::Error::msg)?;
+        order.engine_slot = Some(slot);
+    }
     Ok((merged, order))
 }
 
@@ -1028,6 +1086,42 @@ mod tests {
             "even one resolved table must NOT count as all-missing — a mod \
              that ships only .STRINGS is normal, not a localization failure"
         );
+    }
+
+    #[test]
+    fn resolver_exposes_engine_slot_without_aliasing_real_plugins() {
+        let mut order = LoadOrder::new(
+            vec!["oblivion.esm".into(), "example.esp".into()],
+            vec![esm::reader::GlobalSlot::Regular(0), esm::reader::GlobalSlot::Regular(1)],
+        );
+        order.engine_slot = Some(esm::reader::GlobalSlot::Regular(2));
+        let resolver = GlobalFormIdResolver::from_load_order(&order);
+        for index in 0..72 {
+            let key = 0x0200_0000 | (index + 1);
+            let pair = resolver.resolve(key).unwrap();
+            assert_eq!(pair.plugin, ENGINE_PLUGIN_ID);
+            assert_eq!(pair.local.0, index + 1);
+            assert_eq!(resolver.global_form_id(FormRef::new(pair.plugin.0.to_be_bytes(), pair.local.0)), Some(key));
+        }
+        assert_ne!(resolver.resolve(0x0100_0001).unwrap().plugin, ENGINE_PLUGIN_ID);
+    }
+
+    #[test]
+    fn staged_resolver_is_available_before_consumers_and_rolls_back_on_cancel() {
+        let mut world = byroredux_core::ecs::World::new();
+        let old = std::sync::Arc::new(LoadOrder::all_regular(vec!["old.esm".into()]));
+        install_form_resolver(&mut world, GlobalFormIdResolver::from_load_order(&old), old);
+        let mut next = LoadOrder::all_regular(vec!["oblivion.esm".into()]);
+        next.engine_slot = Some(esm::reader::GlobalSlot::Regular(1));
+        let next = std::sync::Arc::new(next);
+        let previous = PreviousFormResolver::install(&mut world, GlobalFormIdResolver::from_load_order(&next), next);
+        let pair = world.try_resource::<LoadOrderIdentity>().unwrap().pair(0x0100_0001).unwrap();
+        assert_eq!(pair.plugin, ENGINE_PLUGIN_ID);
+        assert_eq!(world.try_resource::<GlobalFormIdResolver>().unwrap().resolve(0x0100_0001), Some(pair));
+        previous.restore(&mut world);
+        assert!(world.try_resource::<LoadOrderIdentity>().unwrap().pair(0x0100_0001).is_none());
+        assert_eq!(world.try_resource::<GlobalFormIdResolver>().unwrap().resolve(1).unwrap().plugin, PluginId::from_filename("old.esm"));
+        assert_eq!(world.try_resource::<ActiveLoadOrder>().unwrap().0.names[0], "old.esm");
     }
 
     #[test]
