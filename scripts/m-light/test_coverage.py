@@ -64,9 +64,36 @@ class CoverageTests(unittest.TestCase):
         self.assertEqual({row.passed for row, _ in rows}, {"skip"})
         self.assertEqual(gates.EXIT_SKIP, 77)
 
+    def test_flatness_ratio_is_spread_over_the_cheapest_bucket(self):
+        spread, ratio = gates.flatness_stats([2.0, 2.2, 2.1], [0.05, 0.05, 0.05])
+        self.assertAlmostEqual(spread, 0.2)
+        self.assertAlmostEqual(ratio, 0.1)
+
+    def test_a_cheapest_bucket_below_the_noise_floor_is_taken_at_the_floor(self):
+        spread, ratio = gates.flatness_stats([2.2, 0.01, 0.0], [0.2, 0.1, 0.1])
+        self.assertAlmostEqual(spread, 2.2)
+        self.assertAlmostEqual(ratio, 2.2 / 0.2, msg="noise floor, not a near-zero denominator")
+
+    def test_a_genuinely_free_bucket_with_no_noise_gives_an_infinite_ratio(self):
+        self.assertEqual(gates.flatness_stats([2.2, 0.0], [0.0, 0.0])[1], float("inf"))
+
+    def test_a_flatness_run_log_is_parsed_and_a_bad_one_is_refused(self):
+        log = ("bench: mode=renderer-static gpu_main_render=4.299 x=1\n"
+               "rt-lod-telemetry: scale=6.000000 fragments=921600 bins=[0, 0, 1, 2] reflection_traced=0 "
+               "reflection_lod_culled=0 gi_traced=100 gi_lod_culled=900 cache_resolved=0 cache_misses=0\n")
+        self.assertEqual(gates.parse_flatness_run(log), (4.299, 921600, 100, 900))
+        with self.assertRaises(SystemExit):
+            gates.parse_flatness_run("bench: gpu_main_render=1.0\n")
+
+    def test_the_buckets_are_a_x4_series_and_the_budget_is_unset_until_phase_1_publishes_it(self):
+        heights = gates.FLATNESS_HEIGHTS_M
+        self.assertTrue(all(b == 4 * a for a, b in zip(heights, heights[1:])))
+        self.assertIsNone(gates.FLATNESS_BUDGET, "RCG-PERF-004: the figure is the owner's, written when Phase 1 publishes it")
+
     def test_the_gate_is_wired_into_the_cli(self):
         source = Path(gates.__file__).read_text()
         self.assertIn('"RCG-COV" in gates', source)
+        self.assertIn('"RCG-FLAT" in gates', source)
         self.assertIn("return EXIT_SKIP", source)
 
 

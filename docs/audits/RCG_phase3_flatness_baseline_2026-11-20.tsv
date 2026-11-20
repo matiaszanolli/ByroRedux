@@ -1,0 +1,15 @@
+gate	case	region	metric	value	floor_engine	floor_reference	floor_combined	frozen_floor	threshold	pass	tier	engine_frames	engine_seeds	reference_spp	reference_seeds	k_exp	reference_cache_key	revision	gpu
+RCG-FLAT	recede-lab	h2m	gi_cost_ms	1.05	0.279	0	0.279			report	3	64	0			point=pi		d24fafc6634c-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-FLAT	recede-lab	h2m	traced_fraction	1	0	0	0			report	3	64	0			point=pi		d24fafc6634c-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-FLAT	recede-lab	h8m	gi_cost_ms	0.002	0.164	0	0.164			report	3	64	0			point=pi		d24fafc6634c-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-FLAT	recede-lab	h8m	traced_fraction	0	0	0	0			report	3	64	0			point=pi		d24fafc6634c-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-FLAT	recede-lab	h32m	gi_cost_ms	-0.113	0.226	0	0.226			report	3	64	0			point=pi		d24fafc6634c-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-FLAT	recede-lab	h32m	traced_fraction	0	0	0	0			report	3	64	0			point=pi		d24fafc6634c-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-FLAT	recede-lab	h128m	gi_cost_ms	-0.038	0.337	0	0.337			report	3	64	0			point=pi		d24fafc6634c-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-FLAT	recede-lab	h128m	traced_fraction	0	0	0	0			report	3	64	0			point=pi		d24fafc6634c-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-FLAT	recede-lab	h512m	gi_cost_ms	0.007	0.00492	0	0.00492			report	3	64	0			point=pi		d24fafc6634c-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-FLAT	recede-lab	h512m	traced_fraction	0	0	0	0			report	3	64	0			point=pi		d24fafc6634c-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-FLAT	recede-lab	h2048m	gi_cost_ms	0.01	0.00919	0	0.00919			report	3	64	0			point=pi		d24fafc6634c-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-FLAT	recede-lab	h2048m	traced_fraction	0	0	0	0			report	3	64	0			point=pi		d24fafc6634c-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-FLAT	recede-lab	all	cost_spread_ms	1.163	0.337	0	0.337			report	3	64	0			point=pi		d24fafc6634c-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-FLAT	recede-lab	all	cost_flatness	3.45573	0.337	0	0.337			report	3	64	0			point=pi		d24fafc6634c-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04

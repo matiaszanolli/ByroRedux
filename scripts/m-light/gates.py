@@ -16,6 +16,7 @@ Cornell gates on linear captures (RLT-REF-007):
   A16  closure                    (RLT-REF-011, RLT-REF-018, RLT-REF-020)
   A18  apparatus cost             (RLT-REF-016)
   RCG-COV  traced-share coverage  (RCG-VAL-002, -004; radiance-cache-gi-coverage.md)
+  RCG-FLAT GI cost flatness       (RCG-PERF-004, RCG-VAL-004; the receding-plane lab, no game data)
 
 Every metric is written to manifest.tsv with its noise floor on both sides
 (RLT-REF-004, RLT-REF-006): each side is captured twice with different
@@ -36,6 +37,7 @@ import argparse
 import hashlib
 import math
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -716,8 +718,9 @@ def gate_coverage(engine: Engine, ctx: Context, only: set[str] | None = None):
         if only and scene not in only:
             continue
         workdir, load_args = coverage_scene_spec(entry)
-        if not (GAMES_ROOT / entry["data_dir"] if entry["data_dir"] != "-" else workdir).is_dir():
-            log(f"RCG-COV {scene}: {workdir} is absent, skipped")
+        data = GAMES_ROOT / entry["data_dir"] if entry["data_dir"] != "-" else workdir
+        if not data.is_dir():
+            log(f"RCG-COV {scene}: {data} is absent, skipped")
             row = Row("RCG-COV", scene, "all", "coverage", float("nan"), 0.0, 0.0,
                       passed="skip", threshold=f">={COVERAGE_THRESHOLD}", reference_spp=0)
             rows.append((row, ""))
@@ -758,6 +761,95 @@ def gate_coverage(engine: Engine, ctx: Context, only: set[str] | None = None):
                              passed="report", reference_spp=0), ""))
             rows.append((Row("RCG-COV", scene, region, "traced_pixels", float(hit), 0.0, 0.0,
                              passed="report", reference_spp=0), ""))
+    return rows
+
+
+# ── RCG flatness (RCG-PERF-004, RCG-VAL-004) ─────────────────────────────
+
+# Camera heights over the receding-plane lab's plane, metres: a x4 series from 2 m to 2 km. The camera
+# looks straight down, so every pixel of a frame lies at about its height and the plane fills the frame:
+# one bucket is one distance, with the same eligible pixel count in every bucket.
+FLATNESS_HEIGHTS_M = (2, 8, 32, 128, 512, 2048)
+FLATNESS_RUNS = 5  # runs per bucket and per side (GI on, GI off), interleaved
+FLATNESS_BENCH_FRAMES = 300
+FLATNESS_TIER = 3
+# The spread the cost may show, as (dearest - cheapest) / cheapest over the buckets (radiance-cache-gi-coverage.md §8).
+# `None` until Phase 1 publishes the figure (RCG-PERF-004): the gate then reports and never judges.
+FLATNESS_BUDGET: float | None = None
+FLATNESS_FILL_TOLERANCE = 0.01  # fragments per bucket may differ from the median by this fraction
+DBG_DISABLE_GI_RAYS = 0x10000000  # crates/renderer/src/shader_constants_data.rs
+WORLD_UNITS_PER_METER_ENGINE = 70.0
+
+
+def flatness_stats(deltas: list[float], floors: list[float]) -> tuple[float, float]:
+    """(spread in ms, spread ratio) of the per-bucket GI cost. The cheapest bucket is taken no lower
+    than the largest noise floor, so measurement noise cannot make the ratio spuriously huge; a
+    cheapest bucket that is genuinely zero (the footprint gate culls the far pixels) gives `inf`."""
+    cheapest = max(min(deltas), max(floors))
+    spread = max(deltas) - min(deltas)
+    return spread, (spread / cheapest if cheapest > 0 else float("inf"))
+
+
+def parse_flatness_run(text: str) -> tuple[float, int, int, int]:
+    """(main-pass ms, fragments, gi_traced, gi_lod_culled) of one lab run's log."""
+    bench = [l for l in text.splitlines() if l.startswith("bench:")]
+    main = re.search(r"gpu_main_render=([0-9.]+)", bench[-1]) if bench else None
+    sample = [l for l in text.splitlines() if "rt-lod-telemetry:" in l]
+    counts = [re.search(rf"{key}=(\d+)", sample[-1]) for key in ("fragments", "gi_traced", "gi_lod_culled")] if sample else []
+    if main is None or not counts or not all(counts):
+        raise SystemExit("m-light: a flatness run printed no bench line or no rt-lod-telemetry line")
+    return (float(main.group(1)), *(int(c.group(1)) for c in counts))
+
+
+def gate_flatness(engine: Engine, ctx: Context):
+    """RCG-PERF-004: the main-pass cost the GI rays add, per distance bucket of the receding-plane lab."""
+    results: dict[int, dict[str, list[tuple[float, int, int, int]]]] = {
+        h: {"on": [], "off": []} for h in FLATNESS_HEIGHTS_M}
+    for run in range(FLATNESS_RUNS):
+        for height in FLATNESS_HEIGHTS_M:
+            for side, flags in (("on", 0), ("off", DBG_DISABLE_GI_RAYS)):
+                log_path = engine.out / "engine" / f"rcg_flat_h{height}_{side}_r{run}.log"
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                args = [str(engine.binary), "--recede-lab",
+                        "--camera-pos", f"0,{height * WORLD_UNITS_PER_METER_ENGINE:g},0",
+                        "--camera-forward", "0,-1,-0.05",
+                        "--rt-test-ray-quality-tier", str(FLATNESS_TIER), "--rt-test-lod-telemetry",
+                        "--bench-frames", str(FLATNESS_BENCH_FRAMES), "--bench-mode", "renderer-static"]
+                env = dict(engine.env_base, BYROREDUX_RENDER_DEBUG=hex(flags),
+                           RUST_LOG="warn,byroredux_renderer::vulkan::context::sync_and_acquire_frame=info")
+                with tempfile.TemporaryDirectory() as settings_dir, open(log_path, "w") as log_file:
+                    env["BYROREDUX_SETTINGS_PATH"] = str(Path(settings_dir) / "settings.toml")
+                    subprocess.run(args, cwd=REPO, env=env, stdout=log_file, stderr=subprocess.STDOUT, timeout=300)
+                results[height][side].append(parse_flatness_run(log_path.read_text(errors="replace")))
+
+    # The plane must fill the frame in every bucket, or the buckets do not hold the same pixels.
+    fragments = sorted(r[1] for h in results.values() for r in h["on"])
+    median_fragments = fragments[len(fragments) // 2]
+    rows, deltas, floors = [], [], []
+    for height, sides in results.items():
+        for run in sides["on"]:
+            if abs(run[1] - median_fragments) > FLATNESS_FILL_TOLERANCE * median_fragments:
+                raise SystemExit(f"m-light: flatness bucket {height} m has {run[1]} fragments against a median of "
+                                 f"{median_fragments}: the plane does not fill the frame")
+        on = sorted(r[0] for r in sides["on"])
+        off = sorted(r[0] for r in sides["off"])
+        delta = on[len(on) // 2] - off[len(off) // 2]
+        floor = math.hypot(on[-1] - on[0], off[-1] - off[0]) / 2.0
+        traced = sorted(r[2] / max(r[2] + r[3], 1) for r in sides["on"])[len(on) // 2]
+        deltas.append(delta)
+        floors.append(floor)
+        region = f"h{height}m"
+        rows.append((Row("RCG-FLAT", "recede-lab", region, "gi_cost_ms", delta, floor, 0.0,
+                         passed="report", reference_spp=0), ""))
+        rows.append((Row("RCG-FLAT", "recede-lab", region, "traced_fraction", traced, 0.0, 0.0,
+                         passed="report", reference_spp=0), ""))
+    spread, ratio = flatness_stats(deltas, floors)
+    judged = FLATNESS_BUDGET is not None
+    rows.append((Row("RCG-FLAT", "recede-lab", "all", "cost_spread_ms", spread, max(floors), 0.0,
+                     passed="report", reference_spp=0), ""))
+    rows.append((Row("RCG-FLAT", "recede-lab", "all", "cost_flatness", ratio, max(floors), 0.0,
+                     passed=("yes" if ratio <= FLATNESS_BUDGET else "no") if judged else "report",
+                     threshold=f"<={FLATNESS_BUDGET}" if judged else "", reference_spp=0), ""))
     return rows
 
 
@@ -1606,6 +1698,8 @@ def main() -> int:
         rows += gate_gi_deficit(engine, store, ctx, args.spp)
     if "A8" in gates:
         rows += gate_traced_share_ao(engine, store, ctx, args.spp)
+    if "RCG-FLAT" in gates:
+        rows += gate_flatness(engine, ctx)
     if "RCG-COV" in gates:
         rows += gate_coverage(engine, ctx, {s for s in args.coverage_scenes.split(",") if s} or None)
     if gates & {"A2", "A4"}:
