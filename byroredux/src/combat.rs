@@ -417,9 +417,8 @@ impl ReachMiss {
     }
 }
 
-/// The live actor the first obstruction along `direction` from `origin` is, within `reach` and a corridor of
-/// `corridor` units: the melee swing's and the Touch spell's shared sweep, as `(actor, the collider entity struck)`.
-/// The aggressor's own bodies are skipped.
+/// Resolve the first obstruction along `direction` from `origin` to a live actor and its collider entity.
+/// Melee uses a sweep of radius `corridor`; Touch uses a ray with radius zero. The aggressor's body is skipped.
 pub(crate) fn actor_in_reach(
     world: &World,
     aggressor: EntityId,

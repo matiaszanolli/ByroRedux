@@ -2,12 +2,10 @@
 //! Fatigue it spends (player-spellcasting PRD `docs/prd/player-spellcasting.md` PSC-CST-003..005, PSC-CST-008,
 //! PSC-USE-003; sourced in `docs/engine/charal-oblivion-ruleset.md`, "Spell casting", #7078).
 //!
-//! **Provenance.** Every rule here is documented except the three marked *executable-derived*: the unnamed `MGEF`
-//! flag bit 22 ([`MGEF_COST_SKIPPED`]), the touch reach ([`SpellCastModel::touch_reach`], now the CS wiki's hand reach, no longer executable-derived) and the equal-Magicka
-//! boundary of the gate. The cost model is the CS wiki's *Category:Spell Cost*, the Luck term its *Effective Skill
-//! Level*, the Fatigue its *Fatigue Game Settings*, the tiers and school its *Spell* page and UESP *Magic Overview*.
-//! The owner ruled out decoding the executables for rules (2026-11-20): the three above are declared and kept until a
-//! documented source replaces them (#7082); the old `0x...` addresses in comments are that provenance, not a source.
+//! **Provenance.** The cost model is the CS wiki's *Category:Spell Cost*, the Luck term its *Effective Skill Level*,
+//! the Fatigue its *Fatigue Game Settings*, and the tiers and school its *Spell* page and UESP *Magic Overview*.
+//! The original game's live Touch trials establish `iActivatePickLength` (#7082). Existing executable-derived
+//! rules are marked where they appear, including [`MGEF_COST_SKIPPED`] and the equal-Magicka boundary.
 //! Pure data and functions: no ECS, no game branches. The host supplies each effect's authored numbers and
 //! the caster's skills; the per-game seam is the [`CharacterRulesProfile`](super::CharacterRulesProfile)
 //! `spell_cast` row (`Some` on Oblivion), and the load order's `GMST` records retune the model
@@ -117,12 +115,8 @@ pub struct SpellCastModel {
     /// `fFatigueCastBase` and `fFatigueCastMult`: the Fatigue a cast costs, base plus the multiple of its Magicka.
     pub fatigue_cast_base: f32,
     pub fatigue_cast_mult: f32,
-    /// The reach of the caster's hand, which a Touch spell uses, in world units: the CS wiki's *Hand to Hand Game Settings* gives
-    /// the default hand-to-hand reach (`fHandReachMult` 0.6) as "about 5 feet or 105 units". An approximation, and no documented
-    /// source says a Touch *spell* uses the hand's reach (it is the owner's reading, #7082); the earlier executable-derived
-    /// `fCombatDistance` 128 x 0.6 = 76.8 disagreed with the wiki's figure and was replaced by it (2026-11-20). Scaled up (never
-    /// down) by the caster's scale, as before ([`touch_reach`](Self::touch_reach)).
-    pub hand_reach: f32,
+    /// `iActivatePickLength`: the camera ray's length in Bethesda units for a player Touch cast (#7082).
+    pub touch_pick_length: f32,
     /// `fMagicProjectileBaseSpeed`: the speed a spell's projectile flies at before the `MGEF`'s own multiplier (CS wiki
     /// *fMagicProjectileBaseSpeed* 1000, *Magic Effects*: "a multiplier of the base speed for the projectile").
     pub projectile_base_speed: f32,
@@ -152,7 +146,7 @@ impl SpellCastModel {
         skill_tier_min: [25.0, 50.0, 75.0, 100.0],
         fatigue_cast_base: 1.0,
         fatigue_cast_mult: 0.0,
-        hand_reach: 105.0,
+        touch_pick_length: 150.0,
         projectile_base_speed: 1000.0,
         projectile_max_distance: 10000.0,
     };
@@ -188,7 +182,7 @@ impl SpellCastModel {
             fatigue_cast_mult: authored("fFatigueCastMult", self.fatigue_cast_mult),
             projectile_base_speed: authored("fMagicProjectileBaseSpeed", self.projectile_base_speed),
             projectile_max_distance: authored("fMagicProjectileMaxDistance", self.projectile_max_distance),
-            hand_reach: self.hand_reach,
+            touch_pick_length: authored("iActivatePickLength", self.touch_pick_length),
         }
     }
 
@@ -196,12 +190,6 @@ impl SpellCastModel {
     #[must_use]
     pub fn projectile_speed(&self, multiplier: f32) -> f32 {
         self.projectile_base_speed * multiplier
-    }
-
-    /// How far a Touch spell reaches from the caster: the hand's reach, scaled by the caster's scale when it is above 1.
-    #[must_use]
-    pub fn touch_reach(&self, caster_scale: f32) -> f32 {
-        self.hand_reach * caster_scale.max(1.0)
     }
 
     /// One effect's cost before the caster's skill adjusts it, a float (`0x548b50`). The MGEF flags zero the magnitude,
@@ -317,15 +305,14 @@ mod tests {
         effect(7.5, 6.0, 0.0, 0.0, EffectRange::Target, 2)
     }
 
-    /// PSC-TGT-002: the hand reaches the CS wiki's 105 BU, more only for a caster above scale 1; no load-order setting retunes it
-    /// (the wiki gives the figure, not a setting).
     #[test]
-    fn a_touch_spell_reaches_the_hand_and_scales_only_upward() {
+    fn a_touch_spell_uses_the_authored_activation_pick_length() {
         let model = SpellCastModel::OBLIVION;
-        assert!((model.touch_reach(1.0) - 105.0).abs() < 1e-3);
-        assert!((model.touch_reach(0.5) - 105.0).abs() < 1e-3, "a small caster reaches no less");
-        assert!((model.touch_reach(2.0) - 210.0).abs() < 1e-3);
-        assert_eq!(model.with_gmst(|name| (name == "fHandReachMult").then_some(1.0)).touch_reach(1.0), 105.0);
+        assert_eq!(model.touch_pick_length, 150.0);
+        let retuned = model.with_gmst(|name| (name == "iActivatePickLength").then_some(225.0));
+        assert_eq!(retuned.touch_pick_length, 225.0);
+        let fallback = model.with_gmst(|_| Some(f32::NAN));
+        assert_eq!(fallback.touch_pick_length, 150.0);
     }
 
     /// PSC-TGT-003: a spell's projectile flies at the base speed times its `MGEF`'s multiplier, and no further than the

@@ -6,7 +6,6 @@
 //! console's `spell.cast` runs the same [`cast_now`].
 
 use byroredux_core::character::SpellCastModel;
-use byroredux_core::ecs::components::GlobalTransform;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
 use byroredux_plugin::esm::records::EsmIndex;
@@ -37,16 +36,13 @@ fn can_cast(world: &World) -> bool {
     world.try_resource::<PlayerMode>().is_some_and(|mode| *mode == PlayerMode::Character) && player_can_act(world)
 }
 
-/// The corridor a Touch spell's hand sweeps: the melee swing's (PSC-TGT-002).
-const TOUCH_CORRIDOR_BU: f32 = crate::combat::MELEE_SWING_CORRIDOR_RADIUS_BU;
-
-/// The live actor in the player's hand reach along the camera's aim (PSC-TGT-002). Reach is the model's, labelled
-/// provisional in `cast.status` (#7082).
+/// The first live actor hit by the camera ray within the configured activation pick length (PSC-TGT-002).
 fn touch_target(world: &World, player: EntityId) -> Option<EntityId> {
-    let model = *world.try_resource::<SpellCastModel>()?;
-    let scale = world.get::<GlobalTransform>(player).map_or(1.0, |transform| transform.scale);
+    let reach = world.try_resource::<SpellCastModel>()?.touch_pick_length;
     let (origin, direction) = crate::interaction::camera_ray(world)?;
-    crate::combat::actor_in_reach(world, player, origin, direction, model.touch_reach(scale), TOUCH_CORRIDOR_BU).ok().map(|(actor, _)| actor)
+    crate::combat::actor_in_reach(world, player, origin, direction, reach, 0.0)
+        .ok()
+        .map(|(actor, _)| actor)
 }
 
 /// One cast action for the player: the key's and `spell.cast`'s common path. A Target spell's projectile is launched
@@ -251,8 +247,7 @@ mod tests {
         assert_eq!(magicka(&world, player), 100.0);
     }
 
-    /// A world with a camera looking down -Z, a physics world and two actors: one inside the hand's reach (50 units
-    /// ahead) and one beyond it (120), as the cast reads them.
+    /// Two collinear targets inside and outside the stock pick ray, with the nearer surface beyond the old 105 BU reach.
     fn world_with_actors() -> (World, EntityId, EntityId, EntityId) {
         use byroredux_core::ecs::components::ActorVitals;
         use byroredux_core::ecs::{ActiveCamera, Transform};
@@ -266,8 +261,8 @@ mod tests {
         world.insert(camera, Transform::IDENTITY);
         world.insert_resource(ActiveCamera(camera));
         let mut physics = byroredux_physics::PhysicsWorld::new();
-        let near_handles = physics.spawn_fixed_cuboid_handles(byroredux_core::math::Vec3::splat(10.0), byroredux_core::math::Vec3::new(0.0, 0.0, -50.0));
-        let far_handles = physics.spawn_fixed_cuboid_handles(byroredux_core::math::Vec3::splat(10.0), byroredux_core::math::Vec3::new(0.0, 0.0, -120.0));
+        let near_handles = physics.spawn_fixed_cuboid_handles(byroredux_core::math::Vec3::splat(10.0), byroredux_core::math::Vec3::new(0.0, 0.0, -140.0));
+        let far_handles = physics.spawn_fixed_cuboid_handles(byroredux_core::math::Vec3::splat(10.0), byroredux_core::math::Vec3::new(0.0, 0.0, -180.0));
         world.insert_resource(physics);
         let (near, far) = (world.spawn(), world.spawn());
         world.insert(near, near_handles);
@@ -289,10 +284,8 @@ mod tests {
         world.query_mut::<SpellList>().unwrap().get_mut(PlayerEntity::get(world).unwrap()).unwrap().0.push(id);
     }
 
-    /// PSC-TGT-002: a Touch cast lands on the live actor inside the hand's reach (105 BU along the camera) and finds
-    /// nothing beyond it.
     #[test]
-    fn a_touch_cast_reaches_the_actor_in_the_hands_reach_and_not_beyond() {
+    fn a_touch_cast_uses_pick_length_and_respects_the_first_obstruction() {
         use byroredux_scripting::magic_effects::ActiveMagicEffects;
         let (mut world, player, near, far) = world_with_actors();
         add_spell(&mut world, 0x20, "Searing Grasp", byroredux_core::character::EffectRange::Touch);
@@ -300,13 +293,22 @@ mod tests {
         let report = cast_now(&world).unwrap();
         assert_eq!(report.outcome.as_ref().unwrap().touched, Some(near), "{report}");
         assert!(world.get::<ActiveMagicEffects>(near).is_some() && world.get::<ActiveMagicEffects>(far).is_none());
-        // A corpse is the first obstruction and no target (the far actor is out of reach anyway): the cost is still paid.
-        world.insert(near, byroredux_core::ecs::components::Dead);
+        let short_pick = SpellCastModel::OBLIVION.with_gmst(|name| (name == "iActivatePickLength").then_some(75.0));
+        world.insert_resource(short_pick);
         player_cast_system(&world, CAST_INTERVAL_SECONDS);
         let before = magicka(&world, player);
         let report = cast_now(&world).unwrap();
         assert!(report.outcome.as_ref().unwrap().no_target, "{report}");
         assert!(magicka(&world, player) < before);
+
+        // The farther actor is reachable with a longer pick ray, but a corpse blocks it.
+        let long_pick = SpellCastModel::OBLIVION.with_gmst(|name| (name == "iActivatePickLength").then_some(225.0));
+        world.insert_resource(long_pick);
+        world.insert(near, byroredux_core::ecs::components::Dead);
+        player_cast_system(&world, CAST_INTERVAL_SECONDS);
+        let report = cast_now(&world).unwrap();
+        assert!(report.outcome.as_ref().unwrap().no_target, "{report}");
+        assert!(world.get::<ActiveMagicEffects>(far).is_none());
     }
 
     /// PSC-TGT-003: a Target cast puts one spell projectile in flight along the camera's aim at the spell's speed.

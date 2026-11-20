@@ -192,9 +192,10 @@ the 2026-11-19 decode found is documented, and each item below names its source;
 | Spell projectile speed and range | CS wiki *Magic Effects*, *fMagicProjectileBaseSpeed*, *fMagicProjectileMaxDistance* | **Documented** |
 | Area radius `fMagicUnitsPerFoot` 22 × area | CS wiki *fMagicUnitsPerFoot* | **Documented**; not built (area ignored) |
 | `MGEF` flag bit 22 skips an effect in the cost sum and the school choice | none | **Executable-derived**, kept, declared (#7082) |
-| Touch reach 105 BU (the hand's) | CS wiki *Hand to Hand Game Settings* (the default hand-to-hand reach, "about 5 feet or 105 units", `fHandReachMult` 0.6; an approximation); no source ties a Touch *spell* to the hand, which is the owner's reading (2026-11-20); the executable-derived 76.8 BU (`fCombatDistance` 128 × 0.6) disagreed and was replaced; the GECK lists a default `fMagicDefaultTouchDistance` 256 for FO3 | **Documented** (hand reach), provisional for Touch (#7082) |
+| Touch reach | [Original-game trial below](#touch-distance-trial-7082) | **Observed**: Cold Touch follows `iActivatePickLength` (stock ray length 150 BU). It hit a scale-one guard at 183 BU reference distance and missed at 184 BU (#7082) |
 | Magicka refusal only when the cost is *greater than* current Magicka | none | **Executable-derived**, kept (the equal case allowed) |
-| Refusals for silence, underwater and bound effects; the PC-start spell level; the detection noise | none | **Executable-derived**; not built (PSC-NG-007, -008) |
+| Refusals for silence, underwater and bound effects; the PC-start spell level | none | **Executable-derived**; not built (PSC-NG-008) |
+| Stationary casting and sound detection | Original-game trial below | **Observed**: no detection score change for the tested casts (PSC-NG-007) |
 
 ### The cost
 
@@ -230,8 +231,33 @@ The CS wiki (*Spell*): "Spell Level: sets the skill rank necessary to cast the s
 ### What a cast spends
 
 `0x5fc890` (the spender): Fatigue = `fFatigueCastBase + fFatigueCastMult × the Magicka cost` (`0x548da0`; executable defaults 15 and 0, `Oblivion.esm` base 1.0,
-so **1**), applied as damage to Fatigue clamped at 0, and Magicka as damage `−cost`. The casting interval is not a number: `StartCast` `0x5f3e00` picks
-animation groups and no game setting for cast time exists.
+so **1**), applied as damage to Fatigue clamped at 0, and Magicka as damage `−cost`. `StartCast` `0x5f3e00` picks animation groups.
+
+The stock PC `Oblivion - Meshes.bsa` supplies the following animation times in seconds. These are the `NiTextKeyExtraData` markers in
+`meshes\characters\_1stperson` and `meshes\characters\_male`, with `start` at 0 in all 24 clips. The [Construction Set animation reference](https://cs.uesp.net/wiki/Animation_Tab)
+identifies `Hit` as the frame at which the spell takes effect.
+
+| Group | `Hit` | First-person `end` | Third-person `end` |
+|---|---:|---:|---:|
+| `castself` | 0.366667 | 1.300000 | 1.400000 |
+| `casttouch` | 0.266667 | 0.866667 | 0.966667 |
+| `casttarget` | 0.400000 | 0.900000 | 0.900000 |
+
+The `onehand` and `alt` variants have the same `Hit` times and use the first-person `end` values in both views.
+
+#### Live cast repeat timing (#7082)
+
+In the original Steam PC build 1.2.0416, the test player stood in first person, empty-handed and without blocking, in `TestingHall`. The cast key was pulsed
+every 75 ms for seven seconds. A 60 fps HUD capture measured the time from one Magicka deduction to the next. A Target trial's original-game debug HUD
+reported 100 fps. Ranges include input and capture quantization.
+
+| Range | Spell | Observed time between deductions |
+|---|---|---:|
+| Self | Heal Minor Wounds (`00000136`), two trials | 2.02–2.12 s |
+| Touch | Cold Touch (`000A97EF`), aimed into empty space | 1.42–1.43 s |
+| Target | Flare (`000A97DF`) and Fire Ball (`000A97E7`) | 1.33–1.37 s |
+
+These measurements describe an unblocked cast in this setup. ByroRedux continues to use the provisional 0.45 s interval until player cast animation is wired.
 
 ### The experience (the skill use a cast gives)
 
@@ -245,20 +271,53 @@ value unscaled; `0x668c30` gives nothing when the base skill is already 100.
   Target-range effect** (`0x414fe0`; such a spell launches a projectile and skips this award). A Touch cast that finds no actor applies nothing: no award.
 - **Target-range spells** (`0x69ba90`): the award is at impact, only for a range-2 effect, never for Telekinesis, only when the target accepts the effect, once per call;
   Poison awards per target.
-- **Area** (`0x6992f0`): per target actually applied, with the radius `fMagicUnitsPerFoot` (22) × scale × area, excluding the directly-hit target. The flag copy is not
-  refreshed inside the loop, so one explosion may award several times (medium confidence, #7082).
+- **Area**: a Fire Ball that hit one target directly awarded 1.2 Destruction XP. The same spell awarded 1.2 XP when two other actors took splash damage.
+  The [original-game trial below](#area-experience-trial-7082) supersedes the per-target hypothesis from the first investigation.
 - **Primary school** (`0x415360` → `0x4152c0`): the effect with the highest caster-less floored cost, ties to the first; its school is the `SCIT` school
   (`EffectItem+0x18`) when it has one, else the MGEF's (`+0x64`); schools 0 to 5 map to actor values `0x14` to `0x19` (`0x41b770`). The CS wiki says the same:
   "The school is always the same as that of the single most expensive effect."
 
+#### Area experience trial (#7082)
+
+In the original Steam PC build 1.2.0416, the player used the cast key in `TestingHall` with AI processing paused to hold the targets in position.
+Fire Ball (`000A97E7`, 30 Fire Damage on Target in 10 feet) directly hit a test guard (`00027FCD`). The player stood 220 BU away, with
+Destruction at 60 to meet the spell's mastery requirement. In the second trial, two sheep (`000151DD`) stood 100 BU to either side of the guard at the same depth.
+Both sheep died in the blast. The [player ACHR save record](https://en.uesp.net/wiki/Oblivion_Mod:Save_File_Format/Player_Data) stores the exact
+Destruction XP in `expPoints[10]`. No skill rank changed during the trials.
+
+| Cast | Destruction XP before | After | Gain |
+|---|---:|---:|---:|
+| Fire Ball, direct hit only | 0.0 | 1.2 | 1.2 |
+| Fire Ball, direct hit and two splash victims | 1.2 | 2.4 | 1.2 |
+| Capstone Destruction (`00017A9E`), wall hit and one sheep damaged from 13 to 12 Health | 0.0 | 0.0 | 0.0 |
+
+The Fire Ball trials establish one award for a successful direct hit regardless of the splash victim count in this setup. The wall-impact control
+used a different, zero-cost test spell. It establishes that particular splash-only result.
+
 ### Reach and no target
 
-The player's Touch reach is the hand's, 105 BU (CS wiki *Hand to Hand Game Settings*; it was the executable-derived 76.8 = `fCombatDistance` 128 × `fHandReachMult` 0.6
-until 2026-11-20, when the owner chose the documented figure, #7082), times `max(1, a scale value)` (the scale rule is executable-derived, `0x69b06e`..`0x69b123`); a
-target beyond it is dropped as "no target". With no target, a spell with the SPIT flag `0x80` (*Touch Spell Explodes w/ no Target*) and an area above 0 explodes at the caster's aim position;
+ByroRedux casts a camera ray up to the load order's `iActivatePickLength`, with the original PC default of 150 BU. The first solid collider must
+belong to a live actor. The ray measures distance to the collider surface, so an actor reference can be farther away than the configured ray
+length. The rule comes from the original-game trials below (#7082).
+With no target, a spell with the SPIT flag `0x80` (*Touch Spell Explodes w/ no Target*) and an area above 0 explodes at the caster's aim position;
 without the flag nothing is applied. What Touch does to a door, a chest or a corpse: UESP *Magic Overview* documents that an effect lands only on a target it can affect (a
 fireball on a chest, an Open on an NPC do nothing and feed nothing); Open acts on a locked door or container and Reanimate on an NPC's corpse (UESP *Open*, *Reanimate*), and the
 engine builds neither, so it lands on live actors only.
+
+#### Touch distance trial (#7082)
+
+In `TestingHall` in the original Steam PC build 1.2.0416, the player aimed Cold Touch (`000A97EF`, 15 Frost Damage, zero area) straight at a
+stationary scale-one test guard (`00027FCD`) on the same floor with AI processing off. Moving only the guard's forward coordinate varied the
+reference-to-reference distance in `GetDistance`. The guard lost 15 Health at 176, 180, 182 and 183 BU. Its Health stayed constant at 184 BU and
+beyond. This brackets the cutoff for this target and aim. The fixture measures the actor reference distance, which includes the target's geometry
+between its reference position and the ray hit.
+
+The stock `iActivatePickLength` was 150. At 75 the spell missed at 128 BU. At 225 it hit at 224 BU, which missed at the stock setting. Doubling both
+the caster and target scales at stock settings still missed at 260 BU and hit at 120 BU.
+
+The console reports stock `fCombatDistance` 128, `fHandReachMult` 0.6 and `fMagicDefaultTouchDistance` 256. Lowering
+`fMagicDefaultTouchDistance` to 32 still allowed the 160 BU cast. Raising it to 512, or raising `fCombatDistance` to 256 separately, still missed
+at 224 BU. Lowering `fHandReachMult` to 0.1 still allowed the 128 BU cast. These overrides did not reproduce the observed limit.
 
 ### Armor casting penalty (sourced 2026-11-20, not built)
 
@@ -271,16 +330,24 @@ interpolation parameter is the sum over 100, and which cases take the Fatigue sc
 
 ### The projectile of a Target spell
 
-A Target effect's projectile flies at `fMagicProjectileBaseSpeed` (1000, CS wiki) times the `MGEF`'s projectile speed (`DATA` @28), which the CS wiki
-(*Magic Effects*) calls "a multiplier of the base speed for the projectile" (1.0 on Fire Damage), and no further than `fMagicProjectileMaxDistance`
-(10000, CS wiki *fMagicProjectileMaxDistance*) without making contact. The CS wiki gives the base speed for the "ball form" only; the Bolt, Fog and Spray
-forms have their own distance settings (`fMagicBoltMaximumDistance` 2000, `fMagicFogMaximumDistance`, `fMagicSprayMaximumDistance`), and the decode did not tie
-a form to a spell, so the engine flies every Target effect as a ball (#7082). `SpellCastModel::projectile_speed` and `projectile_max_distance` hold both.
+ByroRedux flies Target effects as balls at `fMagicProjectileBaseSpeed` × `MGEF.DATA`'s speed multiplier (float at offset 28), up to
+`fMagicProjectileMaxDistance`. The [Construction Set setting](https://cs.uesp.net/wiki/FMagicProjectileBaseSpeed) documents 1000 BU/s for the ball form
+and [its distance setting](https://cs.uesp.net/wiki/FMagicProjectileMaxDistance) documents 10000 BU.
 
-### Noise (unresolved)
+The [xEdit TES4 schema](https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.6/Core/wbDefinitionsTES4.pas) defines the projectile form in
+`MGEF.DATA` flag bits 25 (Spray) and 26 (Bolt). Their combinations are neither for Ball, bit 25 for Spray, bit 26 for Bolt, and both for Fog.
+Of the 72 Target-capable effects in the installed `Oblivion.esm`, 70 are Ball, `FRDG` (Frost Damage) is Fog, and `SHDG` (Shock Damage) is Bolt.
+The corresponding non-ball distance settings are `fMagicSprayMaximumDistance`, `fMagicBoltMaximumDistance` and `fMagicFogMaximumDistance`.
+The installed master authors the Fog maximum at 2000 BU. Separate flight behavior is outside the current player-cast scope (#7082).
 
-`fSpellCastingDetectionMod` (executable 10, `Oblivion.esm` 20) is read at `0x6778b8` inside the sound-event broadcast `0x677760`; the link from a cast to its callers
-(`0x60dac9`, `0x60db8c`, `0x60db26`, `0x68f8f3`, in an object-hit routine) was not established, and `fSpellCastingDetectionHitActorMod` has no code reference (#7082).
+### Casting noise trial (#7082)
+
+In the original Steam PC build 1.2.0416, a test guard stood about 240 BU behind the stationary player in `TestingHall`. The guard faced away, and
+[`GetLOS`](https://cs.uesp.net/wiki/GetLOS) reported no line of sight. The guard's [`GetDetected player`](https://cs.uesp.net/wiki/GetDetected) console output
+gave a stationary baseline of −31. Repeated queries around the start, release and end of Heal Minor Wounds returned −31 at the stock
+`fSpellCastingDetectionMod` of 20 and at the forced values 0 and 10000. Cold Touch aimed into empty space and Flare aimed at scenery also returned −31
+at 10000. The console confirmed the setting override. Moving for 0.22 s as a positive control raised the score to −12 or −13 while the guard still lacked
+line of sight. The trials support leaving stationary casting out of the detection noise feed. A spell impact on another actor was outside this trial.
 
 Also: a spell with the PC-start flag (`0x04`) is added to the player when their skill reaches `iPCStartSpellSkillLevel` (25 in `Oblivion.esm`, `0x6646a5`).
 

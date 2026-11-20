@@ -140,8 +140,8 @@ impl ConsoleCommand for CastStatusCommand {
         let model = world.try_resource::<byroredux_core::character::SpellCastModel>().map(|model| *model);
         lines.push(match model {
             Some(model) => format!(
-                "touch_reach={:.1} BU (the CS wiki's hand reach, about 5 feet; no source ties a Touch spell to it: provisional) target_speed={:.0} BU/s x the MGEF's multiplier, target_range={:.0} BU",
-                model.touch_reach(1.0),
+                "touch_reach={:.1} BU (iActivatePickLength) target_speed={:.0} BU/s x the MGEF's multiplier, target_range={:.0} BU",
+                model.touch_pick_length,
                 model.projectile_base_speed,
                 model.projectile_max_distance
             ),
