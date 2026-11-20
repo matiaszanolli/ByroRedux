@@ -6,6 +6,13 @@
 pub const SHADOW_FILTER_MIN_ITERATIONS: u32 = 2;
 pub const SHADOW_FILTER_MAX_ITERATIONS: u32 = 4;
 
+/// RCG-UPD-001 / RCG-PERF-002: the radiance cache's update-path stride per ray quality tier. One update
+/// path is traced from one pixel of each `stride x stride` block of the frame, so the update fraction is
+/// `1 / stride^2`; the block position varies between frames. A lower tier reduces this rate and never
+/// removes the cache lookup (RCG-COV-004). Initial values, set against the A7 gate in Phase 1 of the
+/// Radiance Cache and GI Coverage PRD; nothing reads the word until the cache's update pass exists.
+pub const CACHE_UPDATE_STRIDE_BY_TIER: [u32; 4] = [8, 6, 5, 4];
+
 /// Shader contract for scene set 1, binding 11.
 ///
 /// The first word remains the atomic glass-work telemetry counter. The
@@ -27,6 +34,9 @@ pub struct GpuRayBudget {
     /// (strides 1, 2, 4, 8; reach 2·(2^n − 1) px). Read by the CPU
     /// dispatch only; the shader copy keeps the word so the layout holds.
     pub shadow_filter_iterations: u32,
+    /// RCG-UPD-001: the radiance cache's update stride this frame (see [`CACHE_UPDATE_STRIDE_BY_TIER`]);
+    /// `0` traces no update paths. A policy word like the ones above, CPU-written for the whole frame.
+    pub cache_update_stride: u32,
     pub lod_fragments: u32,
     pub lod_bin_0: u32,
     pub lod_bin_1: u32,
@@ -39,7 +49,7 @@ pub struct GpuRayBudget {
 }
 
 impl GpuRayBudget {
-    pub const WORDS: usize = 17;
+    pub const WORDS: usize = 18;
 
     pub const fn words(self) -> [u32; Self::WORDS] {
         [
@@ -51,6 +61,7 @@ impl GpuRayBudget {
             self.volumetric_light_cap,
             self.quality_tier,
             self.shadow_filter_iterations,
+            self.cache_update_stride,
             self.lod_fragments,
             self.lod_bin_0,
             self.lod_bin_1,
@@ -71,6 +82,7 @@ impl GpuRayBudget {
         volumetric_light_cap: u32,
         quality_tier: u32,
         shadow_filter_iterations: u32,
+        cache_update_stride: u32,
     ) -> Self {
         Self {
             ray_count: 0,
@@ -81,6 +93,7 @@ impl GpuRayBudget {
             volumetric_light_cap,
             quality_tier,
             shadow_filter_iterations,
+            cache_update_stride,
             lod_fragments: 0,
             lod_bin_0: 0,
             lod_bin_1: 0,
@@ -220,6 +233,7 @@ impl AdaptiveRayBudget {
                 2,
                 0,
                 SHADOW_FILTER_MIN_ITERATIONS,
+                CACHE_UPDATE_STRIDE_BY_TIER[0],
             ),
             1 => GpuRayBudget::settings(
                 GLASS_RAY_BUDGET / 4,
@@ -229,6 +243,7 @@ impl AdaptiveRayBudget {
                 4,
                 1,
                 SHADOW_FILTER_MIN_ITERATIONS,
+                CACHE_UPDATE_STRIDE_BY_TIER[1],
             ),
             2 => GpuRayBudget::settings(
                 GLASS_RAY_BUDGET / 2,
@@ -238,6 +253,7 @@ impl AdaptiveRayBudget {
                 6,
                 2,
                 SHADOW_FILTER_MIN_ITERATIONS + 1,
+                CACHE_UPDATE_STRIDE_BY_TIER[2],
             ),
             // #3879 — the tier-3 arm is the shader-side ceiling. Every
             // field now reads the same constant the GLSL `#define` is
@@ -251,6 +267,7 @@ impl AdaptiveRayBudget {
                 MAX_FROXEL_LIGHTS,
                 MAX_RAY_QUALITY_TIER,
                 SHADOW_FILTER_MAX_ITERATIONS,
+                CACHE_UPDATE_STRIDE_BY_TIER[3],
             ),
         }
     }
@@ -350,9 +367,67 @@ mod tests {
         );
     }
 
+    /// RCG-UPD-001 / RCG-COV-004: a lower tier reduces the update rate and never turns it off, so the
+    /// stride is positive at every tier and never grows with the tier; the word is in the shader ABI and
+    /// the CPU-written words stay one per field.
+    #[test]
+    fn the_cache_update_stride_is_positive_and_falls_as_the_tier_rises() {
+        let strides: Vec<u32> = (0..=3)
+            .map(|t| AdaptiveRayBudget::settings_for_tier(t).cache_update_stride)
+            .collect();
+        assert_eq!(strides, CACHE_UPDATE_STRIDE_BY_TIER);
+        assert!(strides.iter().all(|&s| s > 0), "no tier may stop updating the cache");
+        assert!(strides.windows(2).all(|w| w[0] >= w[1]), "a higher tier updates at least as often");
+        let words = AdaptiveRayBudget::settings_for_tier(2).words();
+        assert_eq!(words.len(), GpuRayBudget::WORDS);
+        assert_eq!(words[8], 5, "the stride sits after shadow_filter_iterations, before the telemetry words");
+    }
+
+    /// The GLSL `RayBudgetBuffer` block is the other half of this struct's ABI (set 1, binding 11): it must
+    /// declare exactly [`GpuRayBudget::WORDS`] `uint` members, in the Rust field order. Read from
+    /// `bindings.glsl`, so a field added on one side only fails here and not as a silently shifted counter.
+    #[test]
+    fn the_glsl_block_declares_the_rust_words_in_order() {
+        let bindings = include_str!("../../../shaders/include/bindings.glsl");
+        let start = bindings
+            .find("coherent buffer RayBudgetBuffer {")
+            .expect("the ray budget block");
+        let body = &bindings[start..];
+        let body = &body[body.find('{').unwrap() + 1..body.find("} rayBudget;").unwrap()];
+        let members: Vec<&str> = body
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("uint "))
+            .map(|rest| rest.split(|c: char| c == ';' || c.is_whitespace()).next().unwrap())
+            .collect();
+        assert_eq!(members.len(), GpuRayBudget::WORDS, "block members: {members:?}");
+        assert_eq!(
+            members,
+            [
+                "rayBudgetCount",
+                "glassRayLimit",
+                "directShadowSamples",
+                "maxPathSegments",
+                "maxShadedHits",
+                "volumetricLightCap",
+                "qualityTier",
+                "shadowFilterIterations",
+                "cacheUpdateStride",
+                "rtLodFragments",
+                "rtLodBin0",
+                "rtLodBin1",
+                "rtLodBin2",
+                "rtLodBin3",
+                "rtReflectionTraced",
+                "rtReflectionLodCulled",
+                "rtGiTraced",
+                "rtGiLodCulled",
+            ]
+        );
+    }
+
     #[test]
     fn shader_contract_fits_in_the_aligned_slot() {
-        assert_eq!(std::mem::size_of::<GpuRayBudget>(), 68);
+        assert_eq!(std::mem::size_of::<GpuRayBudget>(), 72);
         assert!(std::mem::size_of::<GpuRayBudget>() as u64 <= super::super::RAY_BUDGET_STRIDE);
     }
 }

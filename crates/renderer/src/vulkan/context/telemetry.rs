@@ -509,6 +509,8 @@ impl VulkanContext {
             stats.gpu_volumetrics_local_sim_ms = snap.volumetrics_local_sim_ms;
             stats.gpu_shadow_filter_ms = snap.shadow_filter_ms;
             stats.gpu_far_sun_ms = snap.far_sun_ms;
+            stats.gpu_cache_update_ms = snap.cache_update_ms;
+            stats.gpu_cache_resolve_ms = snap.cache_resolve_ms;
             stats.gpu_cloud_shadow_ms = snap.cloud_shadow_ms;
             // #2513 / REN-D20-NEW-03 — copy the "did this bracket actually
             // run" flags too, closing the gap #2278 opened at the producer
@@ -538,6 +540,8 @@ impl VulkanContext {
             stats.gpu_volumetrics_local_sim_active = snap.volumetrics_local_sim_active;
             stats.gpu_shadow_filter_active = snap.shadow_filter_active;
             stats.gpu_far_sun_active = snap.far_sun_active;
+            stats.gpu_cache_update_active = snap.cache_update_active;
+            stats.gpu_cache_resolve_active = snap.cache_resolve_active;
             stats.gpu_cloud_shadow_active = snap.cloud_shadow_active;
         } else {
             stats.gpu_skin_dispatch_ms = 0.0;
@@ -566,6 +570,8 @@ impl VulkanContext {
             stats.gpu_volumetrics_local_sim_ms = 0.0;
             stats.gpu_shadow_filter_ms = 0.0;
             stats.gpu_far_sun_ms = 0.0;
+            stats.gpu_cache_update_ms = 0.0;
+            stats.gpu_cache_resolve_ms = 0.0;
             stats.gpu_cloud_shadow_ms = 0.0;
             // No `GpuPerFrameTimers` at all (driver lacks timestamp
             // support) — every bracket is inactive, not just zero.
@@ -594,6 +600,8 @@ impl VulkanContext {
             stats.gpu_volumetrics_local_sim_active = false;
             stats.gpu_shadow_filter_active = false;
             stats.gpu_far_sun_active = false;
+            stats.gpu_cache_update_active = false;
+            stats.gpu_cache_resolve_active = false;
             stats.gpu_cloud_shadow_active = false;
         }
         stats.slots_active = self.skin.slots.len() as u32;

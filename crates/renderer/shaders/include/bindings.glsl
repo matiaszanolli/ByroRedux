@@ -685,6 +685,7 @@ layout(std430, set = 1, binding = 11) coherent buffer RayBudgetBuffer {
     uint volumetricLightCap;
     uint qualityTier;
     uint shadowFilterIterations; // PAF-007; CPU-consumed, word kept for layout
+    uint cacheUpdateStride;      // RCG-UPD-001: one cache update path per stride x stride pixel block; 0 = none
     uint rtLodFragments;
     uint rtLodBin0;
     uint rtLodBin1;

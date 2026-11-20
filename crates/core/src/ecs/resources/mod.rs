@@ -892,6 +892,10 @@ pub struct SkinCoverageStats {
     /// SVGF runs (never sum the two).
     pub gpu_shadow_filter_ms: f32,
     pub gpu_far_sun_ms: f32,
+    /// RCG-PERF-001 — the radiance cache's update paths and its resolve pass: sibling brackets, never
+    /// nested. Inactive until the cache's passes record them.
+    pub gpu_cache_update_ms: f32,
+    pub gpu_cache_resolve_ms: f32,
     /// #6316 — the cloud-shadow bake, nested inside `gpu_sky_cube_ms`
     /// (never sum the two).
     pub gpu_cloud_shadow_ms: f32,
@@ -930,6 +934,8 @@ pub struct SkinCoverageStats {
     pub gpu_volumetrics_local_sim_active: bool,
     pub gpu_shadow_filter_active: bool,
     pub gpu_far_sun_active: bool,
+    pub gpu_cache_update_active: bool,
+    pub gpu_cache_resolve_active: bool,
     pub gpu_cloud_shadow_active: bool,
 }
 
