@@ -3,7 +3,7 @@
 //! PSC-USE-003; sourced in `docs/engine/charal-oblivion-ruleset.md`, "Spell casting", #7078).
 //!
 //! **Provenance.** Every rule here is documented except the three marked *executable-derived*: the unnamed `MGEF`
-//! flag bit 22 ([`MGEF_COST_SKIPPED`]), the touch reach ([`SpellCastModel::touch_reach`]) and the equal-Magicka
+//! flag bit 22 ([`MGEF_COST_SKIPPED`]), the touch reach ([`SpellCastModel::touch_reach`], now the CS wiki's hand reach, no longer executable-derived) and the equal-Magicka
 //! boundary of the gate. The cost model is the CS wiki's *Category:Spell Cost*, the Luck term its *Effective Skill
 //! Level*, the Fatigue its *Fatigue Game Settings*, the tiers and school its *Spell* page and UESP *Magic Overview*.
 //! The owner ruled out decoding the executables for rules (2026-11-20): the three above are declared and kept until a
@@ -117,10 +117,12 @@ pub struct SpellCastModel {
     /// `fFatigueCastBase` and `fFatigueCastMult`: the Fatigue a cast costs, base plus the multiple of its Magicka.
     pub fatigue_cast_base: f32,
     pub fatigue_cast_mult: f32,
-    /// `fCombatDistance` and `fHandReachMult`: a Touch spell reaches `fCombatDistance * fHandReachMult` times at
-    /// least 1 of the caster's scale. **Executable-derived** (`0x5e40a0`, #7078; medium confidence): no documented source ties a Touch spell to the hand's reach; the CS wiki gives only the hand-to-hand reach (`fHandReachMult` 0.6, "about 5 feet or 105 units"). Provisional, #7082.
-    pub combat_distance: f32,
-    pub hand_reach_mult: f32,
+    /// The reach of the caster's hand, which a Touch spell uses, in world units: the CS wiki's *Hand to Hand Game Settings* gives
+    /// the default hand-to-hand reach (`fHandReachMult` 0.6) as "about 5 feet or 105 units". An approximation, and no documented
+    /// source says a Touch *spell* uses the hand's reach (it is the owner's reading, #7082); the earlier executable-derived
+    /// `fCombatDistance` 128 x 0.6 = 76.8 disagreed with the wiki's figure and was replaced by it (2026-11-20). Scaled up (never
+    /// down) by the caster's scale, as before ([`touch_reach`](Self::touch_reach)).
+    pub hand_reach: f32,
     /// `fMagicProjectileBaseSpeed`: the speed a spell's projectile flies at before the `MGEF`'s own multiplier (CS wiki
     /// *fMagicProjectileBaseSpeed* 1000, *Magic Effects*: "a multiplier of the base speed for the projectile").
     pub projectile_base_speed: f32,
@@ -150,8 +152,7 @@ impl SpellCastModel {
         skill_tier_min: [25.0, 50.0, 75.0, 100.0],
         fatigue_cast_base: 1.0,
         fatigue_cast_mult: 0.0,
-        combat_distance: 128.0,
-        hand_reach_mult: 0.6,
+        hand_reach: 105.0,
         projectile_base_speed: 1000.0,
         projectile_max_distance: 10000.0,
     };
@@ -185,10 +186,9 @@ impl SpellCastModel {
             ],
             fatigue_cast_base: authored("fFatigueCastBase", self.fatigue_cast_base),
             fatigue_cast_mult: authored("fFatigueCastMult", self.fatigue_cast_mult),
-            combat_distance: authored("fCombatDistance", self.combat_distance),
-            hand_reach_mult: authored("fHandReachMult", self.hand_reach_mult),
             projectile_base_speed: authored("fMagicProjectileBaseSpeed", self.projectile_base_speed),
             projectile_max_distance: authored("fMagicProjectileMaxDistance", self.projectile_max_distance),
+            hand_reach: self.hand_reach,
         }
     }
 
@@ -201,7 +201,7 @@ impl SpellCastModel {
     /// How far a Touch spell reaches from the caster: the hand's reach, scaled by the caster's scale when it is above 1.
     #[must_use]
     pub fn touch_reach(&self, caster_scale: f32) -> f32 {
-        self.combat_distance * self.hand_reach_mult * caster_scale.max(1.0)
+        self.hand_reach * caster_scale.max(1.0)
     }
 
     /// One effect's cost before the caster's skill adjusts it, a float (`0x548b50`). The MGEF flags zero the magnitude,
@@ -317,15 +317,15 @@ mod tests {
         effect(7.5, 6.0, 0.0, 0.0, EffectRange::Target, 2)
     }
 
-    /// PSC-TGT-002: the hand reaches `fCombatDistance * fHandReachMult` (76.8 BU), more only for a caster above scale 1.
+    /// PSC-TGT-002: the hand reaches the CS wiki's 105 BU, more only for a caster above scale 1; no load-order setting retunes it
+    /// (the wiki gives the figure, not a setting).
     #[test]
     fn a_touch_spell_reaches_the_hand_and_scales_only_upward() {
         let model = SpellCastModel::OBLIVION;
-        assert!((model.touch_reach(1.0) - 76.8).abs() < 1e-3);
-        assert!((model.touch_reach(0.5) - 76.8).abs() < 1e-3, "a small caster reaches no less");
-        assert!((model.touch_reach(2.0) - 153.6).abs() < 1e-3);
-        let retuned = model.with_gmst(|name| (name == "fHandReachMult").then_some(1.0));
-        assert!((retuned.touch_reach(1.0) - 128.0).abs() < 1e-3);
+        assert!((model.touch_reach(1.0) - 105.0).abs() < 1e-3);
+        assert!((model.touch_reach(0.5) - 105.0).abs() < 1e-3, "a small caster reaches no less");
+        assert!((model.touch_reach(2.0) - 210.0).abs() < 1e-3);
+        assert_eq!(model.with_gmst(|name| (name == "fHandReachMult").then_some(1.0)).touch_reach(1.0), 105.0);
     }
 
     /// PSC-TGT-003: a spell's projectile flies at the base speed times its `MGEF`'s multiplier, and no further than the

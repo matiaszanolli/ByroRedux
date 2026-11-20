@@ -289,7 +289,7 @@ mod tests {
         world.query_mut::<SpellList>().unwrap().get_mut(PlayerEntity::get(world).unwrap()).unwrap().0.push(id);
     }
 
-    /// PSC-TGT-002: a Touch cast lands on the live actor inside the hand's reach (76.8 BU along the camera) and finds
+    /// PSC-TGT-002: a Touch cast lands on the live actor inside the hand's reach (105 BU along the camera) and finds
     /// nothing beyond it.
     #[test]
     fn a_touch_cast_reaches_the_actor_in_the_hands_reach_and_not_beyond() {

@@ -192,7 +192,7 @@ the 2026-11-19 decode found is documented, and each item below names its source;
 | Spell projectile speed and range | CS wiki *Magic Effects*, *fMagicProjectileBaseSpeed*, *fMagicProjectileMaxDistance* | **Documented** |
 | Area radius `fMagicUnitsPerFoot` 22 × area | CS wiki *fMagicUnitsPerFoot* | **Documented**; not built (area ignored) |
 | `MGEF` flag bit 22 skips an effect in the cost sum and the school choice | none | **Executable-derived**, kept, declared (#7082) |
-| Touch reach `fCombatDistance × fHandReachMult` = 76.8 BU | none for a Touch *spell*; the CS wiki gives only the hand-to-hand reach ("about 5 feet or 105 units", `fHandReachMult` 0.6) and the GECK list a default `fMagicDefaultTouchDistance` 256 for FO3 | **Executable-derived**, kept, provisional (#7082) |
+| Touch reach 105 BU (the hand's) | CS wiki *Hand to Hand Game Settings* (the default hand-to-hand reach, "about 5 feet or 105 units", `fHandReachMult` 0.6; an approximation); no source ties a Touch *spell* to the hand, which is the owner's reading (2026-11-20); the executable-derived 76.8 BU (`fCombatDistance` 128 × 0.6) disagreed and was replaced; the GECK lists a default `fMagicDefaultTouchDistance` 256 for FO3 | **Documented** (hand reach), provisional for Touch (#7082) |
 | Magicka refusal only when the cost is *greater than* current Magicka | none | **Executable-derived**, kept (the equal case allowed) |
 | Refusals for silence, underwater and bound effects; the PC-start spell level; the detection noise | none | **Executable-derived**; not built (PSC-NG-007, -008) |
 
@@ -253,10 +253,21 @@ value unscaled; `0x668c30` gives nothing when the base skill is already 100.
 
 ### Reach and no target
 
-The default `fMagicDefaultTouchDistance` is 256, but the player and most actors use the actor's own reach: `fCombatDistance` (128) × `fHandReachMult` (0.6 in
-`Oblivion.esm`) = 76.8 BU, times `max(1, a scale value)` (`0x5e40a0`, `0x69b06e`..`0x69b123`); a target beyond it is dropped as "no target" (medium confidence,
-#7082). With no target, a spell with the SPIT flag `0x80` (*Touch Spell Explodes w/ no Target*) and an area above 0 explodes at the caster's aim position;
-without the flag nothing is applied. What Touch does to a door, a chest or a corpse is not resolved (no actor-only test in the apply path).
+The player's Touch reach is the hand's, 105 BU (CS wiki *Hand to Hand Game Settings*; it was the executable-derived 76.8 = `fCombatDistance` 128 × `fHandReachMult` 0.6
+until 2026-11-20, when the owner chose the documented figure, #7082), times `max(1, a scale value)` (the scale rule is executable-derived, `0x69b06e`..`0x69b123`); a
+target beyond it is dropped as "no target". With no target, a spell with the SPIT flag `0x80` (*Touch Spell Explodes w/ no Target*) and an area above 0 explodes at the caster's aim position;
+without the flag nothing is applied. What Touch does to a door, a chest or a corpse: UESP *Magic Overview* documents that an effect lands only on a target it can affect (a
+fireball on a chest, an Open on an NPC do nothing and feed nothing); Open acts on a locked door or container and Reanimate on an NPC's corpse (UESP *Open*, *Reanimate*), and the
+engine builds neither, so it lands on live actors only.
+
+### Armor casting penalty (sourced 2026-11-20, not built)
+
+CS wiki *Casting penalty* (a community derivation, credited to a Bethsoft forum post) and the settings pages *fMagicArmorPenaltyMin* 0.05 / *fMagicArmorPenaltyMax* 0.3: for each armor
+type (light, heavy) the worn pieces add their coverage (head 10, hair 10, upper body 25, lower body 15, hand 10, foot 10, shield 30, the `iArmorDamage*Chance` settings; capped
+at 100; a shield counts only with a one-handed blade or blunt in hand), scaled by `((50 - armor skill) * 2) / 100` (0 at Journeyman 50 and above); the two types' results are added
+and "used to interpolate between `fMagicArmorPenaltyMin` and `fMagicArmorPenaltyMax`"; in some cases scaled again by `(current Fatigue / max Fatigue) * fMagicFatigueDrainMult +
+fMagicFatigueDrainBase` (`Oblivion.esm`: 0 and 1, so no effect). UESP *Magic Overview* says armor lowers the magnitude, rounded down. Two ambiguities remain: whether the
+interpolation parameter is the sum over 100, and which cases take the Fatigue scale. PSC-NG-006 keeps it out of Wave 1 (Q3).
 
 ### The projectile of a Target spell
 
