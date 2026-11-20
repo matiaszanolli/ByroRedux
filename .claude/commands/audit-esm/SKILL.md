@@ -295,6 +295,17 @@ closure, like `dialogues` and `game_settings` — or a reasoned exclusion: `reco
   carried as items; `LVLI` multi-pick (flag `0x04`) vs single-pick highest-eligible,
   pinned on the shipped FNV master. `expand_leveled_loot` retains unknown terminal ids and
   saturates counts — check it agrees with the decoder's `LeveledEntry` semantics.
+- **Oblivion magic / ranged-weapon fields** (decode only; the cast and bow rules are `/audit-gameplay` / `/audit-character`;
+  `c44ed44f3` #7055, `9feaee8c5` #7079, `fba412ebb`): `SPIT` is `decode_spit` → `(type, cost, flags, level)` — Oblivion's
+  cost is meaningful only with the Manual Spell Cost flag (bit 0), its `level` is the Novice..Master byte at @8, FO3/FNV
+  and Skyrim+ keep `level = 0`; `EFIT` @16 range and `SCIT` @4 school land on `MagicEffectItem::range` /
+  `script_school` (`None` off Oblivion; the former parallel `ranges` vec is gone — `oblivion_effect_chain` reads
+  `item.range`); `AMMO DATA` keeps speed (Oblivion, FO3/FNV) and the Oblivion flags dword on `ItemKind::Ammo`
+  (`speed`/`flags`, 0 where the layout carries none — Skyrim's speed is its `PROJ`'s); Skyrim `WEAP DNAM` @4 is the
+  speed; Oblivion `WEAP` `ignores_normal_resistance` is `DATA` flag bit 0 **or** any `ENAM`. Guards:
+  `oblivion_weapon_ignores_resistance_by_flag_or_enchantment`, `skyrim_weapon_dnam_keeps_the_speed`,
+  `oblivion_ammo_keeps_the_speed_and_the_resistance_flag` (`items.rs`); real data `crates/plugin/tests/bow_real_data.rs`
+  (ignored lane) and the `spell_cast_census` example.
 - **`LSCR`** (`parse_lscr`, header flags via `extract_records_with_flags`): `LNAM` stores
   grid **Y before X**; malformed known fields land in `malformed_fields` rather than
   producing an unrestricted screen; truncated fixed fields are safe and visible.

@@ -174,8 +174,10 @@ First step: `cargo run -p byroredux-nif --release --example nif_stats -- <archiv
   struct name (several arms parse multiple wire types into one struct — `BhkRigidBody.is_t`,
   `NiPSysBlock.original_type`); the corpus definition is shared in `corpus.rs`
   (`NIF_ENTRY_EXTENSIONS` includes `.bto`/`.btr` — renamed NIFs; a second private copy of
-  the rule is the regression; every corpus filter routes through `corpus::is_nif_entry`, pinned by
-  a source scan, #5259); the gates walk **every** mesh-bearing archive
+  the rule is the regression; every corpus filter under `tests/` and `examples/` routes through
+  `corpus::is_nif_entry`, pinned by the `corpus_filters_route_through_is_nif_entry` source scan, #5259;
+  two `.nif ∪ .kf` files are exempt by name, and b04452e54 moved the last hand-rolled filter,
+  `furniture_marker_census`, onto it); the gates walk **every** mesh-bearing archive
   (`open_all_mesh_archives` all-or-nothing, `open_optional_mesh_archives` present-only — a
   present-but-unopenable archive panics and an all-absent corpus fails, #5232;
   `run_all_meshes_gate` with a *per-archive* `limit`); `parse_real_nifs` asserts a per-archive

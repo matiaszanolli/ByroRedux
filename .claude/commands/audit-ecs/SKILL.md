@@ -57,6 +57,7 @@ detector on a real world, and the lane never saw them because no fixture registe
 `InventoryCatalog`, and the cell-unload walk taking `AnimatedTextureFlip` after the material / terrain-tile storages — fixed in
 `dfcbcafd5` (fixtures `submersion_with_a_bed_field_takes_its_locks_in_one_order`,
 `the_diner_gather_takes_walk_speed_before_global_transform`). Exclusive code needs the same order discipline as parallel code.
+Two more landed after: #7063 `4cad5d974` (`reset_health`, `crates/scripting/src/obscript_actor_values.rs`, held the `ActorValueNames` guard across `clear_actor_value_damage`, which locks `ActorValues` — every other site takes `ActorValues` first; the names guard now drops at the end of the block that resolves the owned vitals Vec, found only by the full `-p byroredux-scripting` lane) and the M66 door prompt, `populate_candidates` (`byroredux/src/interaction.rs`) nesting `Door` reads inside a `TwoStateActivator` iteration while the motion system takes the pair in `TypeId` order (`4288659fa`, pinned by `door_prompts_and_motion_share_the_lock_order`: snapshot the activators first, then read `Door`).
 
 A wrong lock order is HIGH. This dimension owns the *machinery*; system-level cycles, canonical-order
 adherence and CI detector coverage are `/audit-concurrency` Dim 3 and Dim 5.
@@ -196,7 +197,7 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/core/
   site inserting a *configured* value, such as `TerrainHeightService`, is legitimately different).
   `World::resource_count()` (#6706 `70e58334f`) exists so `register_installs_the_same_resource_set` can pin the
   scripting crate's `register` to the exact resource count it produced before it became a flat list of per-subsystem `install`
-  calls (138 then, 150 at 2026-11-19 — the assert moves with every subsystem that adds a resource; read the live value); a resource dropped from an `install` shows up there, not as a missing-resource panic at first use.
+  calls (138 then, 150 at 2026-11-20 — the assert moves with every subsystem that adds a resource; read the live value); a resource dropped from an `install` shows up there, not as a missing-resource panic at first use.
 - **Read accessors, one spelling each**: the bin reads the player entity only through `PlayerEntity::get(world)`
   (`byroredux/src/systems/character.rs`, #6362 `67722b6e4` — it replaced 66 hand-spelled reads, and
   `no_source_hand_spells_the_player_entity_read` keeps it so). It is deliberately NOT synchronised with the scripting
@@ -221,7 +222,7 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/core/
   classes, and `texture_resident_bytes` — M39 streaming promotes and evicts with what is wanted; a strictly increasing
   series must also rise past `OCCUPANCY_GROWTH_TOLERANCE_PERMILLE` of its first sample, #6058 `adaa7a263`). A leaking class reclassified `Bounded`/`Monotonic`/`Occupancy` to turn the gate
   green is the finding.
-- `MenuRegistry` (`resources/menu_registry/`, M48 #6653 `3ef0a2cb2`) is the one list of open menus that menu mode, pause and the input owner read; surfaces report into it and the app republishes it every frame, so it is presentation state, `NOT_SAVED_BY_DESIGN`.
+- `MenuRegistry` (`resources/menu_registry/`, M48 #6653 `3ef0a2cb2`) is the one list of open menus that menu mode, pause and the input owner read; surfaces report into it and the app republishes it every frame, so it is presentation state, `NOT_SAVED_BY_DESIGN`. `NativeMenu` gained `SleepWait` and `LevelUp` (`250a5ba67`, the Oblivion bed and level-up menus); a variant missing from `NativeMenu::from_page`'s list cannot be named by an `S3:<page>` target.
 - `DeltaTime` is stamped once per frame by the main loop (`byroredux/src/app_events.rs`); a system that
   writes it or `TotalTime` is a finding.
 

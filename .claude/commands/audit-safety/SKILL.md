@@ -20,7 +20,7 @@ a dimension whose Paths have no commits since the last `AUDIT_SAFETY_*` report.
 
 Census recipe: `grep -rwo unsafe <crate>/src | wc -l` for tokens, `grep -rnE 'unsafe[[:space:]]*\{' <crate>/src`
 for blocks — **read the hits**: word counts also match prose (`byroredux` reports 5 tokens and
-only 2 real blocks). Re-measured 2026-11-19 at a7d4b49bb (935 / 686 / 117 / 45 at 8ff82d514 on 2026-11-14; 933 / 684 / 117 / 45 at 88c239b35 on 2026-11-09; 936 / 688 / 116 / 45 at 66c85af80 on 2026-11-06; 900 / 669 / 102 / 44 at 8985a2e99 on 2026-10-31; 948 / 717 / 102 / 44 at eae8fd740 on 2026-10-27; 943 tokens / 716 blocks / 100 `unsafe fn` / 38 impls at 1be33af66 on 2026-10-21; 922 / 704 at f4ae42a6f on 2026-10-15; #5593 (c6d36b4e7) removed eleven; #5273 removed five earlier):
+only 2 real blocks). Re-measured 2026-11-20 at 2d857fff2, unchanged from 2026-11-19 at a7d4b49bb (the 76 commits between added no `unsafe` token anywhere; 935 / 686 / 117 / 45 at 8ff82d514 on 2026-11-14; 933 / 684 / 117 / 45 at 88c239b35 on 2026-11-09; 936 / 688 / 116 / 45 at 66c85af80 on 2026-11-06; 900 / 669 / 102 / 44 at 8985a2e99 on 2026-10-31; 948 / 717 / 102 / 44 at eae8fd740 on 2026-10-27; 943 tokens / 716 blocks / 100 `unsafe fn` / 38 impls at 1be33af66 on 2026-10-21; 922 / 704 at f4ae42a6f on 2026-10-15; #5593 (c6d36b4e7) removed eleven; #5273 removed five earlier):
 
 - `crates/renderer/src`: **1014** word tokens — 711 `unsafe {`
   blocks, 119 declared `unsafe fn` (`grep -E '^\s*(pub(\([a-z]+\))?\s+)?unsafe fn'`; the loose `grep 'unsafe fn'` reads ~219: prose and source-scan
@@ -238,7 +238,7 @@ First step: `grep -rn undocumented_unsafe_blocks crates` (expect the one `deny` 
   its own closure, so an upstream crate's new-toolchain clippy failure can no longer disarm the gate — confirm both survive. Confirm the `deny` is
   present and unescaped. The lint sees `unsafe {}` blocks only: the 46 renderer `unsafe impl`s need a justification found by reading; `unsafe fn` bodies are covered
   since edition 2024 (*unsafe_op_in_unsafe_fn* forces an inner `unsafe {}`), but the fn's own `# Safety` contract is still by reading. Crates outside the renderer have no such lint — sweep comment-less blocks
-  there by hand (re-checked 2026-11-19: every block in `fsr3-sys`, `nif`, `core`, `pex`, `byro-launcher`, `byroredux` and `bink2` carries a `SAFETY:` comment, `bink2` since 1de2673b7); a
+  there by hand (re-checked 2026-11-20: every block in `fsr3-sys`, `nif`, `core`, `pex`, `byro-launcher`, `byroredux` and `bink2` carries a `SAFETY:` comment, `bink2` since 1de2673b7); a
   comment-less block is MEDIUM.
 - The audit's value is therefore the *truth* of each invariant, not its presence: for each new or changed block, does the
   stated precondition (device live, handles from this device, not in flight, pointer valid for the call) hold at THIS call

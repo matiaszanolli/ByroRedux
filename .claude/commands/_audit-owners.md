@@ -22,6 +22,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/renderer/shaders/water.` | renderer Dim 8, exterior | HIGH |
 | `crates/renderer/src/vulkan/acceleration/` | renderer, safety, concurrency | HIGH |
 | `crates/renderer/src/vulkan/scene_buffer/terrain_height_blend_tests.rs` | exterior Dim 2, renderer | HIGH |
+| `crates/renderer/src/vulkan/scene_buffer/ray_budget.rs` | renderer Dim 2, performance | HIGH |
 | `crates/renderer/src/vulkan/scene_buffer/` | renderer, nifal | HIGH |
 | `crates/renderer/src/vulkan/material` | renderer, nifal | HIGH |
 | `crates/renderer/src/vulkan/descriptors.rs` | renderer, safety, concurrency, performance, tech-debt Dim 2 | HIGH |
@@ -37,6 +38,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/renderer/src/source_scan.rs` | renderer, tech-debt | LOW |
 | `crates/renderer/` | renderer, performance | HIGH |
 | `crates/fsr3-sys/` | renderer Dim 11, safety Dim 1 | HIGH |
+| `crates/core/src/character/{spell_cast,bow,block,fall,armor_rating}.rs` | character, gameplay; oblivion, skyrim | HIGH |
 | `crates/core/src/character/` | character | HIGH |
 | `crates/core/src/combat.rs` | character | MEDIUM |
 | `crates/core/src/stealth.rs` | character | MEDIUM |
@@ -98,6 +100,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/physics/` | physics, safety | HIGH |
 | `crates/scripting/src/fragment/{vm,budget.rs,reference.rs}` | scripting, concurrency, performance Dim 1, tech-debt Dim 1 | HIGH |
 | `crates/scripting/src/magic.rs` | scripting, gameplay, character | MEDIUM |
+| `crates/scripting/src/player_cast.rs` | scripting, gameplay, character, save Dims 1-2; oblivion | MEDIUM |
 | `crates/scripting/src/load_order.rs` | scripting, save | MEDIUM |
 | `crates/scripting/src/{crime_faction,crime_gold,crime_knowledge,guards,jail,ownership}.rs` | scripting, gameplay, save Dims 1-2 | MEDIUM |
 | `crates/scripting/src/bleedout.rs` | scripting, gameplay, character | MEDIUM |
@@ -220,6 +223,8 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/combat.rs` | gameplay, character, physics Dim 6 | MEDIUM |
 | `byroredux/src/inventory` | gameplay, character Dim 4 | MEDIUM |
 | `byroredux/src/crafting.rs` | gameplay, scripting Dim 5, save Dim 1 | MEDIUM |
+| `byroredux/src/{bow,player_cast}.rs` | gameplay, character, scripting Dim 5, save Dims 1-2, ecs; oblivion, skyrim | MEDIUM |
+| `byroredux/src/{oblivion_rest,menuxml_rest}.rs` | ui, gameplay, character, ecs; oblivion | MEDIUM |
 | `byroredux/src/{smithing,lockpick}.rs` | gameplay, scripting Dim 5, save Dim 1 | MEDIUM |
 | `byroredux/src/limbs.rs` | character, gameplay, ecs; fo3, fnv | MEDIUM |
 | `byroredux/src/static_height.rs` | exterior Dim 2, nifal, renderer, performance Dim 7, ecs | MEDIUM |
@@ -252,6 +257,8 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/commands/actor_value.rs` | character Dim 4, ecs, tooling | MEDIUM |
 | `byroredux/src/commands/{quest,condition}.rs` | scripting, ecs, tooling | MEDIUM |
 | `byroredux/src/commands/{anim_archetype,anim_event,bribe_info,cndf,script_var}.rs` | scripting, ecs, tooling | MEDIUM |
+| `byroredux/src/commands/{bow,spell}.rs` | gameplay, character, ecs, tooling | MEDIUM |
+| `byroredux/src/commands/door.rs` | gameplay Dim 2, physics Dim 2, ecs, tooling | MEDIUM |
 | `byroredux/src/commands/terrain.rs` | exterior Dim 2, ecs, tooling | MEDIUM |
 | `byroredux/src/commands/gameplay.rs` | gameplay, character Dims 3-4, ecs, tooling | MEDIUM |
 | `byroredux/src/commands/vats.rs` | character, gameplay, ecs, tooling | MEDIUM |
@@ -342,6 +349,9 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `docs/smoke-tests/music-` | runtime, audio, esm; fnv, fo3, oblivion | LOW |
 | `docs/smoke-tests/xct-` | runtime, gameplay, scripting | LOW |
 | `docs/smoke-tests/fnv-` | runtime, gameplay, character, scripting; fnv | LOW |
+| `docs/smoke-tests/{oblivion-spellcasting,oblivion-archery,oblivion-block,oblivion-fall,oblivion-armor,oblivion-ghost}.sh` | runtime, gameplay, character; oblivion | LOW |
+| `docs/smoke-tests/{skyrim-archery.sh,lib/archery.sh}` | runtime, gameplay, character; skyrim, oblivion | LOW |
+| `docs/smoke-tests/door-runtime.sh` | runtime, gameplay Dim 2; oblivion, fnv | LOW |
 | `docs/smoke-tests/` | runtime | LOW |
 | `docs/releasing.md` | tooling, tech-debt (release packaging) | LOW |
 | `docs/data/game-ui/` | ui, tooling, tech-debt (generated census data) | LOW |

@@ -29,7 +29,7 @@ Dim 2's lock rules cover both.
 
 ## Scope
 
-`crates/scripting/src/` (~129k LOC incl. tests; re-measure with `find crates/scripting/src -name '*.rs' | xargs wc -l`): `translate/` (`mod`, `source`, `archetype`, `compose`, `effects`, `tables`,
+`crates/scripting/src/` (~130k LOC incl. tests; re-measure with `find crates/scripting/src -name '*.rs' | xargs wc -l`): `translate/` (`mod`, `source`, `archetype`, `compose`, `effects`, `tables`,
 `recognizers/{quest_stage_gate,rumble,two_state_activator}`); `fragment.rs` + `fragment/{effects,populate,
 state,systems}.rs` with the per-family appliers in `fragment/effects/{resolve,deferred,inventory,placement,scene,lock,
 player_control,vehicle_cinematic,ai_combat,quest_scoped,evaluate,guards,quest_vars,actor_values,actor_lists,
@@ -43,14 +43,14 @@ event delivery), `fragment/{updates,distance,events,hits,anim_events,menu_events
 `events.rs`, `cleanup.rs`, `timer.rs`, `recurring_update.rs`, `condition/`, `trigger.rs`, `player_control.rs`,
 `equipment.rs`, `registry.rs`; `scene.rs` + `scene/{playback,quest_alias}.rs`, `package.rs`, `dialogue.rs`
 (incl. `DialogueSurfaceState`, `DialogueQuestConditions`), `cinematic.rs`, `combat.rs`
-(`FactionRelations`, `AiCombatState`), `magic.rs` (`SpellCatalog`/`SpellList`/`RaceSpells`, #4415), `story_manager.rs` (#5366 SM dispatch: `SmTree`, `StoryEvent`, `story_manager_dispatch_system`), `load_order.rs`
+(`FactionRelations`, `AiCombatState`), `magic.rs` (`SpellCatalog`/`SpellList`/`RaceSpells`, #4415; `CanonicalSpell::cast` is the Oblivion-only `SpellCastData` — every authored effect with its range, cost inputs and the Manual Spell Cost header), `player_cast.rs` (the player's cast: `ReadiedSpell` saved after `SpellList`, the gate `CastRefusal`, `settle` spending Magicka/Fatigue, `land_target`; Self/Touch/Target by `EffectRange`, an effect with an area reported ignored — the rules are `byroredux_core::character::SpellCastModel`'s; frontend `byroredux/src/player_cast.rs` + `commands/spell.rs`; started effects go through `magic_effects::{start_spell_effects,raise_cast_event}`, and the console `magic.cast`, ObScript `Cast` and a perk's activate choice still call `cast_spell` ungated, PSC-CST-007; #7079-#7081 `9feaee8c5`/`78178a558`/`e287dc77f`, pinned by `tests/player_cast_real_data.rs`), `story_manager.rs` (#5366 SM dispatch: `SmTree`, `StoryEvent`, `story_manager_dispatch_system`), `load_order.rs`
 (`LoadOrderIdentity`, slot↔`PluginId` bridge); `animation_graph.rs` (placed-object behavior graphs); the M47.2
 **native-state stores** the VM's primitives write and conditions read — one small saved module each (CK page quoted
 in its module doc; each is a `FORMAT_MAJOR` question for `/audit-save`): `quest_variables.rs`, `location.rs`,
 `bleedout.rs`, `messages.rs`, `keywords.rs`, `relationships.rs`, `faction_changes.rs`, `alias_overrides.rs`,
 `alias_collections.rs`, `created_references.rs` (the Created Object ledger **and** the XCT actor-travel ledger the engine's `cell_loader/relocated.rs` drives: `ActorRelocations`/`Journey` saved; `PendingRelocations`, `PendingActorMoves`/`ActorMoveRequest` + `queue_actor_move`, `is_logical_stub` unsaved — Dim 4), `perk_entry_points{,/{activate,bodies,catalog,gates}}.rs` (the hook catalog + gate + body split of #6654; `activate.rs` is PERK-HOOK-007/012's Activate choices, the engine side `byroredux/src/perk_activate.rs`), `destruction.rs` and the sibling
 `activate_parents`/`crime_*`/`jail`/`guards`/`followers`/`map_markers`/`menus`/`ownership`/`scanning`/`skills`/`oblivion_skill_use`/`speechcraft`/
-`*_requests`/`tempering`/`words_of_power` files (subsystems migrated by #5802 export their own `install(world)` + `register_saved(registry)`; `oblivion_skill_use.rs` is Oblivion's skill-use leveling entry point — `bank_skill_use` / `raise_skill_ranks` (ObScript `AdvancePCSkill`/`ModPCSkill`, `obscript_more/state.rs`), `PendingSkillUse` drained by the host's `skill_use_system` (`byroredux/src/combat.rs`), emitters in `byroredux/src/skill_use_emit.rs`, sleep-completed level-up; the rules are `/audit-character`'s, this skill keeps the ObScript door and the install/save seam (#7049-#7052; `docs/engine/skill-use.md`);
+`*_requests`/`tempering`/`words_of_power` files (subsystems migrated by #5802 export their own `install(world)` + `register_saved(registry)`; `oblivion_skill_use.rs` is Oblivion's skill-use leveling entry point — `bank_skill_use` / `raise_skill_ranks` (ObScript `AdvancePCSkill`/`ModPCSkill`, `obscript_more/state.rs`), `PendingSkillUse` drained by the host's `skill_use_system` (`byroredux/src/combat.rs`), emitters in `byroredux/src/skill_use_emit.rs`, sleep-completed level-up (`SleepCompleted` carries a `SleepSource`, `Scripted` or `Bed`: a bed's menu confirms its own attribute picks through `apply_level_menu_picks`, `250a5ba67`; `FED_SKILLS` is 16 of 21 — Block, Marksman and the six schools joined, #7053-#7055); the rules are `/audit-character`'s, this skill keeps the ObScript door and the install/save seam (#7049-#7052; `docs/engine/skill-use.md`);
 `build_save_registry` calls each at its old row position — the schema fingerprint is order-sensitive); the M47.3 ObScript family
 `obscript{,_runtime,_vm,_quests,_results,_objects,_cmd,_actions,_actor_values,_anim,_speech,_state,_ledger,_more}.rs`
 + `obscript_effects/` (`mod.rs` the effect table + shared helpers; `getters`/`inventory`/`combat`/`actor_state`/`world_state`/`presentation`, #6355 `aa29774ec`) + `obscript_more/` with its sibling runtimes `magic_effects.rs`
@@ -80,11 +80,11 @@ since shipped; still real gaps — world-query search across unloaded data, cond
 injected packages/spells/keywords/names/voice-type/combat overlays — don't re-file as discoveries), crate docstrings
 (`translate/mod.rs`, `fragment.rs`, `fragment/vm/`, `fragment/budget.rs`, `cleanup.rs` marker house rules).
 
-**Known-open — cite, don't re-file** (re-verified 2026-11-19 with `gh issue view`; #6657 — M24.2 Phase 3, condition subjects and the FO3/FNV/Skyrim hooks — is open too, and still collects `Refs #6657` getter commits): #5764 (interpreter deferral ~0.8 µs a delivery; a value-called function or an
+**Known-open — cite, don't re-file** (re-verified 2026-11-20 with `gh issue view`; #6657 — M24.2 Phase 3, condition subjects and the FO3/FNV/Skyrim hooks — is open too, and still collects `Refs #6657` getter commits): #5764 (interpreter deferral ~0.8 µs a delivery; a value-called function or an
 array/struct-holding frame cannot suspend — the budget-split residual; its idle-walk half shipped as `11685934d`,
 Dim 2),
 Closed since the 2026-11-14 sync: #6854 (XCT Phase 3 — offscreen arrival, multi-hop, followers, census; `4b71155ca`/`52e514b62`, Dim 4), #6899 (`PlayMusic` replaces the
-cell's music instead of mixing over it, `d8654678f`, Dim 6) and #6905 (ObScript `~` is unary minus, `ce438eb1a`, `a_tilde_negates_its_operand`, Dim 6); the Oblivion/skill-use arcs #7049-#7052 and the Message.Show / player-MoveTo
+cell's music instead of mixing over it, `d8654678f`, Dim 6) and #6905 (ObScript `~` is unary minus, `ce438eb1a`, `a_tilde_negates_its_operand`, Dim 6); the Oblivion/skill-use arcs #7049-#7052 and #7053-#7056 (player spellcasting Phases 0-3 #7078-#7081, the block guard, the bow, fall damage) and the Message.Show / player-MoveTo
 work are folded into Scope and Dims 4/6 below. Closed since the 2026-11-06 sync: #5802 (closed 2026-11-07; hub-file growth — every subsystem migrated to its own
 `install` + `register_saved` + `register_*_systems` file, `bde3478db`/`e619dbbaf`, `93bcda9bc`, and the Part-of commits #6701-#6707
 `c22a9d410`..`5c983ecd0`: `register_late_systems` is a flat 15-call list, the Update domains and `register_post_update_systems` are flat
@@ -498,7 +498,7 @@ Also `cleanup_removes_all_event_types`;
   markers must merge, not overwrite** (`SparseSetStorage` = one slot per entity): `QuestStageAdvancedBatch`
   (`push_quest_stage_advances`), `HitEvent` (one row per target: the NPC melee producer holds a strike on an
   already-hit target, #4324; projectile hits ride the `ProcessTrapHit` queue whose flush applies the same hold,
-  #5860 `ea28a35b8` — re-verify after any new producer; a VATS queue's folded shots ride the sibling `HitParts` (per-shot `PartStrike`, VATS-LIMB-002, `83e9c6c92`), a Pattern-A marker drained with the `HitEvent` it describes), `ActivateEvent` (a system running after the Update consumers must queue through `PendingFragmentActivations`, not insert — the Find package's arrival did, so Update `OnActivate` consumers missed it until #6466 `9f783b30f`; Update-stage consumer order pinned by the flush test, which now
+  #5860 `ea28a35b8` — re-verify after any new producer; every producer fills `arrow` / `ignores_resistance` — `TrapHit` carries both onto the landed event, #7055/Resist Normal Weapons, `fba412ebb`; a VATS queue's folded shots ride the sibling `HitParts` (per-shot `PartStrike`, VATS-LIMB-002, `83e9c6c92`), a Pattern-A marker drained with the `HitEvent` it describes), `ActivateEvent` (a system running after the Update consumers must queue through `PendingFragmentActivations`, not insert — the Find package's arrival did, so Update `OnActivate` consumers missed it until #6466 `9f783b30f`; Update-stage consumer order pinned by the flush test, which now
   lists `container_loot_system` and `mg07_on_activate_dispatch` (#4712/#4116), plus
   `reference_script_event_system`; the Late-stage `npc_dialogue` selection system is a further consumer — it must
   stay before `event_cleanup_system`); `NativeActivation` rides an `ActivateEvent` raised by `Activate(akActivator,
@@ -506,9 +506,9 @@ Also `cleanup_removes_all_event_types`;
   *Activate - ObjectReference*) — every script-side `OnActivate` consumer (lowered quest-advance, rumble, MG07,
   provider, WASM extension, VM) reads `papyrus_activations` (`ActivateEvent` minus `NativeActivation`, #5994
   `6f7dd2213`), so a raw `ActivateEvent` read in a script consumer is the regression (the last two,
-`two_state_activator_system` and `legacy_obscript_load_order_system`, moved over in #6218 `36d1a2c2c`; `two_state_activator_system` ignores an activation while the door's clip runs — `TwoStateActivator::is_animating`, set for the clip's length by `byroredux/src/systems/door.rs`, DRT-ACT-001, `50abfd008`); `OnDeathEvent` is Pattern B, drained at the head of
+`two_state_activator_system` and `legacy_obscript_load_order_system`, moved over in #6218 `36d1a2c2c`; `two_state_activator_system` ignores an activation while the door's clip runs — `TwoStateActivator::is_animating`, set for the clip's length by `byroredux/src/systems/door.rs`, DRT-ACT-001, `50abfd008`; a runtime door's `door_activation_verdicts` (`systems/door.rs`) first stamps the activation with a one-frame `DefaultActivation` — `Refused` for a lock the activator's inventory has no key for or a script that took the default processing, `Admitted` toggles even a `NativeActivation`, since a door's default processing is the toggle — which `default_toggle_targets` in `vm_state.rs` reads in place of the `papyrus_activations` rule, DRT-ACT-003/-004, `180080de7`, #7059 open); `OnDeathEvent` is Pattern B, drained at the head of
   `reference_script_event_system` (a Late-stage script kill is delivered next frame, not lost to cleanup).
-  `event_cleanup_system` also renews `VmFrameBudget` (Dim 2) and drains `NativeActivation`; its module-doc table
+  `event_cleanup_system` also renews `VmFrameBudget` (Dim 2) and drains `NativeActivation` and `DefaultActivation`; its module-doc table
   lists the request markers the engine-side consumers drain (e.g. `HavokImpulseRequest` →
   `scripted_havok_impulse_system`, which snapshots, drains exactly those and early-returns only when there are none —
 a missing `HavokImpulseRules` drains the snapshot before returning, #6009 `f00bfd6e5`; a resource check placed after
@@ -1116,7 +1116,9 @@ is `/audit-tooling`; audit here the runtime that consumes it.
 - **Lock/access**: `papyrus_provider_system` and `legacy_obscript_load_order_system` declare what they acquire
   (the schedule tests scan bodies to 3 call hops); `extension_*` adapters run before `event_cleanup_system`
   (`extension_event_adapters_run_before_transient_cleanup`). Any new SDK-state exposure that nests a resource
-  lock against `QuestStageState`/`Inventory`/etc. is a Dim 2-class finding.
+  lock against `QuestStageState`/`Inventory`/etc. is a Dim 2-class finding. `sdk_input_action` (`extensions/mod.rs`) returns `Option`: the engine's
+  `CastSpell`/`NextSpell`/`PreviousSpell`/`Wait` actions have no row in the host contract's `input-action` enum, so they never reach an extension (a new
+  `InputAction` variant needs an arm there or an explicit `None`).
 - **Provider resolvers/callbacks** (`set_papyrus_provider_{runtime,entity_resolver,form_resolver,
   mod_event_publisher}`, `set_extension_script_function_invoker`, `set_legacy_obscript_content_catalog`) are
   installed by boot/extension setup; an uninstalled resolver must degrade to a decline, not a panic.
