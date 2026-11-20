@@ -82,8 +82,8 @@ fn the_models_settings_are_the_masters() {
     assert_eq!(model.spell_level_min, [25.5, 62.5, 149.5, 399.5]);
     assert_eq!(model.fatigue_cast_base, 1.0);
     assert_eq!(model.fatigue_cast_mult, 0.0);
-    // The hand's reach, the CS wiki's "about 5 feet or 105 units" (no setting retunes it).
-    assert!((model.touch_reach(1.0) - 105.0).abs() < 1e-3);
+    // Stock activation pick length measured in the original game (#7082).
+    assert_eq!(model.touch_pick_length, 150.0);
     // The spell projectile's base speed and range (CS wiki *fMagicProjectileBaseSpeed*, *fMagicProjectileMaxDistance*).
     assert_eq!((model.projectile_base_speed, model.projectile_max_distance), (1000.0, 10000.0));
 }
