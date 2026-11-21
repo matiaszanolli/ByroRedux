@@ -23,6 +23,9 @@ pub enum Error {
     /// The packet's stated size is not a whole number of sample frames, or is more than its data
     /// can hold.
     BadSize(u32),
+    /// A block's bits run past the packet's data (`bits_read` of `bits`): the bits past the end
+    /// would read as zeros and decode as made-up samples (INC4, `docs/spec/probes.md` A10).
+    Overrun { bits_read: usize, bits: usize },
 }
 
 impl fmt::Display for Error {
@@ -30,6 +33,9 @@ impl fmt::Display for Error {
         match self {
             Error::Unsupported(what) => write!(f, "unsupported: {what}"),
             Error::BadSize(n) => write!(f, "packet of {n} decoded bytes is not a whole number of sample frames"),
+            Error::Overrun { bits_read, bits } => {
+                write!(f, "a block reads {bits_read} bits from a packet of {bits}")
+            }
         }
     }
 }
@@ -87,7 +93,8 @@ impl Decoder {
 
     /// One packet (its container-stated decoded size and data), appended to `out` as interleaved
     /// 16-bit samples. A8: the last packet of a stream states a size short of whole blocks; its last
-    /// block is decoded and only the stated samples are kept.
+    /// block is decoded and only the stated samples are kept. On an error nothing is appended, and
+    /// the overlap carried into the next block is the refused one's: the track ends there.
     pub fn decode(&mut self, decoded_bytes: u32, data: &[u8], out: &mut Vec<i16>) -> Result<(), Error> {
         let per_block = 2 * self.channels * self.block_samples();
         let want = out.len() + decoded_bytes as usize / 2;
@@ -102,8 +109,16 @@ impl Decoder {
             return Err(Error::BadSize(decoded_bytes));
         }
         let mut r = Bits::new(data);
+        let start = out.len();
         for _ in 0..blocks {
-            self.block(&mut r, out);
+            // A10: no block of the 236,690 packets in the installed corpus reads past its packet, so
+            // one that does is cut or not this packet's; its samples (and the packet's) are dropped
+            // rather than decoded from the zeros past the end.
+            let bits_read = self.block(&mut r, out);
+            if bits_read > data.len() * 8 {
+                out.truncate(start);
+                return Err(Error::Overrun { bits_read, bits: data.len() * 8 });
+            }
         }
         out.truncate(want);
         Ok(())
@@ -122,8 +137,9 @@ impl Decoder {
         2 + self.channels * (2 * 29 + 8 * bands + 9 * runs)
     }
 
-    /// One block (A7): 2 unused bits, every channel, padding to 32 bits.
-    fn block(&mut self, r: &mut Bits, out: &mut Vec<i16>) {
+    /// One block (A7): 2 unused bits, every channel, padding to 32 bits. Answers where the block's
+    /// bits ended, before the padding.
+    fn block(&mut self, r: &mut Bits, out: &mut Vec<i16>) -> usize {
         r.bits(2);
         self.block.clear();
         self.block.resize(N * self.channels, 0);
@@ -135,6 +151,7 @@ impl Decoder {
                 self.block[n * self.channels + c] = (v * scale).round().clamp(-32768.0, 32767.0) as i16;
             }
         }
+        let end = r.pos;
         r.align32();
         let w = OVERLAP * self.channels;
         if let Some(tail) = &self.tail {
@@ -147,6 +164,7 @@ impl Decoder {
         let keep = self.block.len() - w;
         self.tail = Some(self.block[keep..].to_vec());
         out.extend_from_slice(&self.block[..keep]);
+        end
     }
 
     /// One channel's coefficients (A2-A6) into `self.coefs`.
@@ -182,6 +200,22 @@ impl Decoder {
 
 #[cfg(test)]
 mod tests {
+
+    /// #7163 (A10): a packet whose stated size passes the lower bound but whose blocks read past its
+    /// data is refused, with nothing appended. All-zero bits code the shortest runs, so a zero packet
+    /// cut to the minimum the bound allows runs past its end in its first block.
+    #[test]
+    fn a_block_reading_past_its_packet_is_refused() {
+        let mut decoder = Decoder::new(48_000, true, true).unwrap();
+        let per_block = (2 * decoder.channels * decoder.block_samples()) as u32;
+        let data = vec![0u8; decoder.min_block_bits().div_ceil(8)];
+        let mut out = vec![7i16; 3];
+        match decoder.decode(per_block, &data, &mut out) {
+            Err(Error::Overrun { bits_read, bits }) => assert!(bits_read > bits && bits == data.len() * 8),
+            other => panic!("expected Overrun, got {other:?}"),
+        }
+        assert_eq!(out, [7, 7, 7], "nothing of the refused packet is appended");
+    }
     use super::*;
 
     /// A packet's container-stated size is untrusted: one claiming more blocks than its bytes can
@@ -193,8 +227,9 @@ mod tests {
         let huge = u32::MAX - u32::MAX % 4;
         assert!(matches!(decoder.decode(huge, &[0u8; 16], &mut out), Err(Error::BadSize(n)) if n == huge));
         assert!(out.is_empty(), "nothing decoded");
-        // One block's worth of size from one block's minimum bytes is still accepted.
-        let one_block = vec![0u8; decoder.min_block_bits().div_ceil(8)];
+        // One block's worth of size from bytes a zero block really fits in is accepted. (At the
+        // bound's minimum bytes the zero block runs past them: #7163 refuses it as an overrun.)
+        let one_block = vec![0u8; 4096];
         assert!(decoder.decode(4, &one_block, &mut out).is_ok());
         assert_eq!(out.len(), 2);
     }
@@ -212,8 +247,11 @@ mod tests {
         let old_bound = (data.len() / 8) as u32 * per_block;
         assert!(matches!(decoder.decode(old_bound, &data, &mut out), Err(Error::BadSize(_))));
         assert!(out.is_empty());
+        // The bound admits the blocks those bits could hold. Zero bits code the shortest runs, so
+        // these blocks really read more than the minimum and run past the 1 KiB: #7163 refuses
+        // that as an overrun, not as a stated size the bound turned away.
         let fits = (data.len() * 8 / decoder.min_block_bits()) as u32 * per_block;
-        assert!(decoder.decode(fits, &data, &mut out).is_ok());
-        assert_eq!(out.len(), fits as usize / 2);
+        assert!(matches!(decoder.decode(fits, &data, &mut out), Err(Error::Overrun { .. })));
+        assert!(out.is_empty());
     }
 }
