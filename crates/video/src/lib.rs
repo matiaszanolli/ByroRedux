@@ -145,6 +145,29 @@ const BIK1_HEADER_LEN: usize = 0x2c;
 const BIK1_TRACK_RECORD_LEN: usize = 12;
 const BIK1_INDEX_ENTRY_LEN: usize = 4;
 
+/// Bink 1 video flags (`+0x24`) naming a plane this build does not draw: alpha (`0x100000`) and
+/// grayscale (`0x20000`), `[wiki:Bink Container]`.
+const BIK1_FLAGS_AT: usize = 0x24;
+const BIK1_UNSUPPORTED_FLAGS: [(u32, &str); 2] = [(0x0010_0000, "an alpha plane"), (0x0002_0000, "a grayscale picture")];
+
+/// #7136: the Bink 1 header gate `probe` and `Movie::open` share — the revision (`i` only) and the
+/// planes this build does not draw are refused here as unsupported, not left to the decoder
+/// dependency, so a release of it that accepted them could not turn a skipped movie into a mis-decode.
+fn check_bink1_header(head: &[u8]) -> Result<(), VideoError> {
+    if head.get(..4) != Some(b"BIKi") {
+        return Err(container_error(head, format!("not a Bink 1 movie: magic {:02x?}", &head[..head.len().min(4)])));
+    }
+    let flags = head
+        .get(BIK1_FLAGS_AT..BIK1_FLAGS_AT + 4)
+        .map_or(0, |word| u32::from_le_bytes(word.try_into().unwrap()));
+    match BIK1_UNSUPPORTED_FLAGS.iter().find(|(bit, _)| flags & bit != 0) {
+        Some((bit, plane)) => {
+            Err(VideoError::Unsupported(format!("Bink 1 movie with {plane} (video flag {bit:#x}) has no decoder in this build")))
+        }
+        None => Ok(()),
+    }
+}
+
 /// Measure `path` from its container header alone: nothing of the picture is read.
 pub fn probe(path: &Path) -> Result<MovieInfo, VideoError> {
     guard_open(path, || probe_unguarded(path))
@@ -159,9 +182,7 @@ fn probe_unguarded(path: &Path) -> Result<MovieInfo, VideoError> {
     // The frame-offset table ends the part the parser reads.
     let mut head = [0u8; BIK1_HEADER_LEN];
     file.read_exact(&mut head).map_err(|error| VideoError::Unreadable(error.to_string()))?;
-    if &head[..4] != b"BIKi" {
-        return Err(container_error(&head, format!("not a Bink 1 movie: magic {:02x?}", &head[..4])));
-    }
+    check_bink1_header(&head)?;
     let word = |at: usize| u32::from_le_bytes([head[at], head[at + 1], head[at + 2], head[at + 3]]) as usize;
     // The counts come from an untrusted header: clamp them to the Bink 2 container's ceilings.
     let tracks = word(BIK1_TRACK_COUNT_AT).min(bink2::MAX_AUDIO_TRACKS);
@@ -559,6 +580,7 @@ impl Movie {
         }
         let name = movie_name(path);
         let bytes = std::fs::read(path).map_err(|error| VideoError::Unreadable(error.to_string()))?;
+        check_bink1_header(&bytes)?;
         let (info, audio, mut video) = {
             let movie = mercs2_bink::Movie::parse(&bytes).map_err(|detail| container_error(&bytes, detail))?;
             check_bink1_picture(&movie)?;
@@ -1019,6 +1041,37 @@ mod tests {
         let len = (bytes.len() - 8) as u32;
         put(&mut bytes, 4, len);
         bytes
+    }
+
+    /// #7136: `probe` and `Movie::open` refuse a Bink 1 revision other than `i` and the alpha and
+    /// grayscale planes as unsupported through the crate's own gate, whatever the decoder dependency
+    /// would accept; the same movie without them opens.
+    #[test]
+    fn bink_1_revisions_and_planes_without_a_decoder_are_refused_by_probe_and_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |name: &str, bytes: &[u8]| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            path
+        };
+        let plain = write("plain.bik", &bink1_movie(64, 32));
+        assert!(probe(&plain).is_ok() && Movie::open(&plain, (8, 8), true).is_ok());
+        let mut cases = Vec::new();
+        for revision in *b"bfghjkm" {
+            let mut bytes = bink1_movie(64, 32);
+            bytes[3] = revision;
+            cases.push((format!("rev-{}.bik", char::from(revision)), bytes, format!("revision '{}'", char::from(revision))));
+        }
+        for (flag, plane) in BIK1_UNSUPPORTED_FLAGS {
+            let mut bytes = bink1_movie(64, 32);
+            bytes[BIK1_FLAGS_AT..BIK1_FLAGS_AT + 4].copy_from_slice(&flag.to_le_bytes());
+            cases.push((format!("flag-{flag:x}.bik"), bytes, plane.to_string()));
+        }
+        for (name, bytes, reason) in cases {
+            let path = write(&name, &bytes);
+            assert!(matches!(probe(&path), Err(VideoError::Unsupported(r)) if r.contains(&reason)), "{name} probes");
+            assert!(matches!(Movie::open(&path, (8, 8), true), Err(VideoError::Unsupported(r)) if r.contains(&reason)), "{name} opens");
+        }
     }
 
     /// #7123: a Bink 1 header is held to the picture limits a Bink 2 header is, so a 100-byte file
