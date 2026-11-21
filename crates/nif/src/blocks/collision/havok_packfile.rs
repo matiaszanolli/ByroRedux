@@ -212,12 +212,25 @@ impl HavokPackfile {
         self.class_names.iter().any(|c| c == name)
     }
 
-    /// Resolve a [`VirtualFixup::class_name_offset`] to its class name.
+    /// Resolve a [`VirtualFixup::class_name_offset`] to its class name. One lookup scans the class
+    /// table; a caller resolving many fixups uses [`class_names_by_offset`](Self::class_names_by_offset).
     pub fn class_name_at(&self, offset: u32) -> Option<&str> {
         self.class_name_offsets
             .iter()
             .position(|&o| o == offset)
             .map(|i| self.class_names[i].as_str())
+    }
+
+    /// Every class name keyed by its [`VirtualFixup::class_name_offset`], for resolving a whole
+    /// fixup table. #7126 — resolving each fixup through [`class_name_at`](Self::class_name_at)
+    /// scanned every class record, so a blob of N fixups and N records cost N² (4.5 s for a
+    /// 2.85 MB blob). The first record at an offset wins, as `class_name_at` answers.
+    pub fn class_names_by_offset(&self) -> HashMap<u32, &str> {
+        let mut names = HashMap::with_capacity(self.class_name_offsets.len());
+        for (offset, name) in self.class_name_offsets.iter().zip(&self.class_names) {
+            names.entry(*offset).or_insert(name.as_str());
+        }
+        names
     }
 
     /// Every top-level object in `__data__`, located and typed.
@@ -238,14 +251,7 @@ impl HavokPackfile {
         let Some(data) = self.section("__data__") else {
             return Vec::new();
         };
-        // #7126 — one offset → name map for the whole table. Resolving each
-        // fixup through `class_name_at` scanned every class record, so a blob
-        // of N fixups and N records cost N² (4.5 s for a 2.85 MB blob). The
-        // first record at an offset wins, as `class_name_at` answers.
-        let mut names = HashMap::with_capacity(self.class_name_offsets.len());
-        for (offset, name) in self.class_name_offsets.iter().zip(&self.class_names) {
-            names.entry(*offset).or_insert(name.as_str());
-        }
+        let names = self.class_names_by_offset();
         data.virtual_fixups
             .iter()
             .filter_map(|vf| {
