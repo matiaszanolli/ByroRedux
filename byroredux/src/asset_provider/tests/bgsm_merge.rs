@@ -3259,3 +3259,50 @@ fn nif_first_precedence_stands_when_the_probe_cannot_flip_it() {
         "no probe evidence → keep the NIF-authored path"
     );
 }
+
+/// #7140 — every public field of the parsed sidecar structs (`BaseMaterial`, `BgsmFile`,
+/// `BgemFile`) is either read by the material code (`.field`) or named in the merge ledger
+/// (`` `field` ``), so a field the parser adds cannot land with no sink and no record (#2704,
+/// #4667, #6848, #7140). Scans production text, so a test's own mention does not count.
+#[test]
+fn every_parsed_sidecar_field_is_merged_or_in_the_ledger() {
+    use byroredux_core::source_scan::strip_test_modules;
+    let material = [
+        include_str!("../material/merge.rs"),
+        include_str!("../material/provider.rs"),
+        include_str!("../material/mod.rs"),
+    ]
+    .map(strip_test_modules)
+    .concat();
+    let parsed = [
+        (include_str!("../../../../crates/bgsm/src/base.rs"), "BaseMaterial"),
+        (include_str!("../../../../crates/bgsm/src/bgsm.rs"), "BgsmFile"),
+        (include_str!("../../../../crates/bgsm/src/bgem.rs"), "BgemFile"),
+    ];
+    // `needle` followed by a character that cannot continue an identifier.
+    let mentions = |needle: &str| {
+        material.match_indices(needle).any(|(at, _)| {
+            material[at + needle.len()..].chars().next().is_none_or(|c| !(c.is_alphanumeric() || c == '_'))
+        })
+    };
+    let mut unlisted = Vec::new();
+    for (src, name) in parsed {
+        let start = src.find(&format!("pub struct {name} {{")).unwrap_or_else(|| panic!("{name} is declared"));
+        let body = &src[start..start + src[start..].find("\n}").expect("the struct closes")];
+        let fields: Vec<&str> = body
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("pub ")?.split_once(':').map(|(field, _)| field))
+            .collect();
+        assert!(fields.len() > 20, "{name}: {} fields read; the scan lost the struct", fields.len());
+        for field in fields {
+            let named = [format!(".{field}"), format!("`{field}"), format!("`base.{field}")];
+            if !named.iter().any(|needle| mentions(needle)) {
+                unlisted.push(format!("{name}::{field}"));
+            }
+        }
+    }
+    assert!(
+        unlisted.is_empty(),
+        "parsed but neither merged nor named in the ledger in `material/merge.rs` (#7140): {unlisted:?}"
+    );
+}

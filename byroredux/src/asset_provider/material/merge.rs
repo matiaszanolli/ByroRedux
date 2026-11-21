@@ -1518,7 +1518,32 @@ fn merge_bgsm_arm(
         //     `assume_shadowmask`: 12, `enable_editor_alpha_ref`: 258
         //   * BGEM `emittance_color`; `blood_enabled` / `falloff_enabled`
         //     (read only by the glass predicate); the `adaptive_emissive_*`
-        //     tuning
+        //     tuning, `adaptive_emissive_final_exposure_min` included
+        //
+        // #7140 (PAR-D5-2026-11-20-03) — the groups #6848 still left out,
+        // counted by the parsers audit's `bgsmcount` probe over vanilla
+        // Fallout4 and SeventySix materials; no visual claim is made:
+        //   * `base.refraction` / `refraction_power` (BGSM and BGEM): FO4
+        //     `refraction_power != 0` 10 BGSM / 6 BGEM; FO76 `refraction` 53
+        //     / 44, `refraction_power != 0` 69 / 98. Not glass (#2626, see
+        //     `material/mod.rs`): a screen-space distortion (heat shimmer,
+        //     force fields) the engine has no pass for — the first
+        //     candidate here to WIRE once one exists
+        //   * `environment_mapping_window`: 13, `environment_mapping_eye`: 8
+        //     (FO4); `hide_secret`
+        //   * the tessellation scalars beside the `tessellate` flag —
+        //     `displacement_texture_bias`, `displacement_texture_scale`,
+        //     `tessellation_pn_scale`, `tessellation_base_factor`,
+        //     `tessellation_fade_distance`: non-zero on all 25,948 FO76
+        //     BGSMs, the parser's default rather than authored intent, and
+        //     the engine does not tessellate (the displacement texture slot
+        //     itself is bound above)
+        //   * FO76's terrain block: `terrain` (150 BGSM),
+        //     `terrain_unk_int1`, `terrain_threshold_falloff`,
+        //     `terrain_tiling_distance`, `terrain_rotation_angle`
+        // `bgsm_merge.rs`'s `every_parsed_sidecar_field_is_merged_or_in_the_ledger`
+        // fails when a parser field is neither read here nor named in this
+        // ledger.
     }
     // #3639 — `smoothness == 1.0` lowers `roughness` to the 0.04 clamp
     // floor above (near-mirror dielectric). `triangle.frag` only
