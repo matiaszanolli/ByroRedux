@@ -1140,32 +1140,52 @@ mod tests {
         assert_eq!(wav.len() - 44, 2 * (4 * 3840 + 1280), "every stated sample");
     }
 
+    /// #7137 — the movies each title ships, `[Bink 1, Bink 2]`, measured 2026-11-20. A count that
+    /// differs fails the sweep with a re-measure line, so a folder that stops being read or a title
+    /// whose movies stop being found cannot leave it green; Fallout 76's is a floor, since its
+    /// patches add movies (as #6482's archive censuses are).
+    const MOVIE_CENSUS: [(&str, &str, [u32; 2], bool); 7] = [
+        ("Oblivion", "Data/Video", [9, 0], true),
+        ("Fallout 3 goty", "Data/Video", [35, 0], true),
+        ("Fallout New Vegas", "Data/Video", [1, 0], true),
+        ("Skyrim Special Edition", "Data/Video", [1, 0], true),
+        ("Fallout 4", "Data/Video", [1, 14], true),
+        ("Fallout76", "Data/Video", [0, 4], false),
+        ("Starfield", "Data/video", [0, 36], true),
+    ];
+
     /// BIK-G-002, BIK-DEC-003 / acceptance scenario 1: every Bink 1 movie (`BIKi`) and every Bink 2
     /// movie (`KB2g`, `KB2j`) of every installed game decodes to its last frame, and the frame count
     /// is the header's. Also reports the decode speed. `BYROREDUX_STEAM_COMMON=<steamapps/common>
-    /// cargo test -p byroredux-video --release -- --ignored --nocapture` (needs the games).
+    /// cargo test -p byroredux-video --release -- --ignored --nocapture` (needs the games). With
+    /// `BYROREDUX_REQUIRE_GAME_DATA=1` (the real-data lane) every title's folder must be readable;
+    /// without it a missing title is skipped and says so. Each title's movie count is pinned
+    /// ([`MOVIE_CENSUS`], #7137).
     #[test]
     #[ignore = "needs the games' Data\\Video folders"]
     fn every_installed_bink_movie_decodes_to_its_last_frame() {
         let Ok(common) = std::env::var("BYROREDUX_STEAM_COMMON") else {
             panic!("set BYROREDUX_STEAM_COMMON to the Steam library's steamapps/common folder");
         };
-        let (mut decoded, mut failed) = ([0u32; 2], Vec::new());
-        for (game, folder) in [
-            ("Oblivion", "Data/Video"),
-            ("Fallout 3 goty", "Data/Video"),
-            ("Fallout New Vegas", "Data/Video"),
-            ("Skyrim Special Edition", "Data/Video"),
-            ("Fallout 4", "Data/Video"),
-            ("Fallout76", "Data/Video"),
-            ("Starfield", "Data/video"),
-        ] {
-            let Ok(entries) = std::fs::read_dir(Path::new(&common).join(game).join(folder)) else { continue };
-            let mut files: Vec<_> = entries.flatten().map(|entry| entry.path()).collect();
+        let required = std::env::var("BYROREDUX_REQUIRE_GAME_DATA").is_ok_and(|v| v != "0");
+        let (mut decoded, mut failed, mut censuses) = ([0u32; 2], Vec::new(), Vec::new());
+        for (game, folder, pinned, exact) in MOVIE_CENSUS {
+            let dir = Path::new(&common).join(game).join(folder);
+            let entries = match std::fs::read_dir(&dir) {
+                Ok(entries) => entries,
+                Err(error) if required => panic!("BYROREDUX_REQUIRE_GAME_DATA is set, but {dir:?} is unreadable: {error}"),
+                Err(error) => {
+                    println!("SKIP {game}: {dir:?} is unreadable ({error})");
+                    continue;
+                }
+            };
+            let mut files: Vec<_> = entries.flatten().map(|entry| entry.path()).filter(|path| !path.is_dir()).collect();
             files.sort();
+            let mut found = [0u32; 2];
             for file in files {
                 let mut magic = [0u8; 3];
-                if std::fs::File::open(&file).and_then(|mut f| f.read_exact(&mut magic)).is_err() {
+                if let Err(error) = std::fs::File::open(&file).and_then(|mut f| f.read_exact(&mut magic)) {
+                    failed.push(format!("{}: unreadable: {error}", file.display()));
                     continue;
                 }
                 let bink2 = match &magic {
@@ -1173,6 +1193,7 @@ mod tests {
                     b"KB2" => true,
                     _ => continue,
                 };
+                found[bink2 as usize] += 1;
                 let name = format!("{game}/{}", file.file_name().unwrap().to_string_lossy());
                 let started = std::time::Instant::now();
                 let outcome = probe(&file).and_then(|info| {
@@ -1193,9 +1214,17 @@ mod tests {
                     other => failed.push(format!("{name}: {other:?}")),
                 }
             }
+            let moved = if exact { found != pinned } else { found[0] < pinned[0] || found[1] < pinned[1] };
+            if moved || found != pinned {
+                println!("re-measure: {game} has {found:?} [Bink 1, Bink 2] movies; MOVIE_CENSUS pins {pinned:?}");
+            }
+            if moved {
+                censuses.push(format!("{game}: found {found:?}, pinned {pinned:?}{}", if exact { "" } else { " (floor)" }));
+            }
         }
         println!("{} Bink 1 and {} Bink 2 movies decoded", decoded[0], decoded[1]);
         assert!(failed.is_empty(), "movies that did not decode to their last frame: {failed:#?}");
         assert!(decoded.iter().sum::<u32>() > 0, "no Bink movie was found");
+        assert!(censuses.is_empty(), "movie counts moved; re-measure MOVIE_CENSUS: {censuses:#?}");
     }
 }
