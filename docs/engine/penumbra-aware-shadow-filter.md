@@ -127,6 +127,16 @@ region.
   penumbra estimate", applied to an edge-aware chain instead of PCF.
 - **PAF-009.** The ratio edge stop and the confidence fade stay as they
   are; the change adds a reach, it does not loosen what the filter may mix.
+- **PAF-012.** (2026-11-20, #6603) The blocker search MUST NOT run below
+  ray quality tier 1 (`SHADOW_FILTER_PENUMBRA_SEARCH_MIN_TIER`): at tier 0
+  the filter runs the pre-PAF chain, its 2-iteration floor at full reach
+  with no Gaussian (the shader's `pixelAngle` = 0 path), so the adaptive
+  budget sheds the search along with the shadow samples, as PAF-007 lets
+  it shed iterations. Measured on the Phase 3 A13 bisect: the search cost
+  +0.24 ms in Prospector and +0.31 ms in Dugout at tier 0, the tier both
+  settle at under TAA, while PAF-010 holds the filter to the Q8 ceiling.
+  The reference gates (A2, A4) read tier 3 and the contact gate (A5)
+  tiers 1-3, so no gate reads the floor.
 
 ## 4. Cost and observability
 

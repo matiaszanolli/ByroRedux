@@ -6,6 +6,15 @@
 pub const SHADOW_FILTER_MIN_ITERATIONS: u32 = 2;
 pub const SHADOW_FILTER_MAX_ITERATIONS: u32 = 4;
 
+/// PAF-012: the lowest ray quality tier that runs the penumbra-aware blocker
+/// search. Below it the filter runs the pre-PAF chain — its 2-iteration floor
+/// at full reach, no search, no Gaussian (`pixelAngle` 0) — so the adaptive
+/// budget sheds the search with the shadow samples (M-LIGHT A13, #6603: the
+/// search cost +0.24 ms in Prospector and +0.31 ms in Dugout at tier 0, the
+/// tier both settle at under TAA). The reference gates read tier 3 and the
+/// contact gate tiers 1-3, so neither sees the floor.
+pub const SHADOW_FILTER_PENUMBRA_SEARCH_MIN_TIER: u32 = 1;
+
 /// RCG-UPD-001 / RCG-PERF-002: the radiance cache's update-path stride per ray quality tier. One update
 /// path is traced from one pixel of each `stride x stride` block of the frame, so the update fraction is
 /// `1 / stride^2`; the block position varies between frames. A lower tier reduces this rate and never
@@ -382,6 +391,20 @@ mod tests {
         assert!(iters
             .iter()
             .all(|n| (SHADOW_FILTER_MIN_ITERATIONS..=SHADOW_FILTER_MAX_ITERATIONS).contains(n)));
+    }
+
+    /// PAF-012: the blocker search is off at the safe floor only. Tier 0 runs
+    /// the pre-PAF chain; every tier a gate reads (contact at 1-3, the
+    /// reference gates at 3) keeps the search.
+    #[test]
+    fn penumbra_search_is_shed_at_tier_zero_only() {
+        let searches: Vec<bool> = (0..=3)
+            .map(|t| {
+                AdaptiveRayBudget::settings_for_tier(t).quality_tier
+                    >= SHADOW_FILTER_PENUMBRA_SEARCH_MIN_TIER
+            })
+            .collect();
+        assert_eq!(searches, [false, true, true, true]);
     }
 
     /// #2686 / SAFE-D7-01 — every tier's `glass_ray_limit` must derive from

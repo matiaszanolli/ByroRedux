@@ -382,9 +382,16 @@ impl ShadowFilterPipeline {
         frame: usize,
         reservoirs: &ReservoirBuffers,
         iterations: u32,
+        penumbra_search: bool,
     ) {
         let iterations = iterations.clamp(1, SHADOW_FILTER_MAX_ITERATIONS);
-        let pixel_angle = pixel_angle(self.fov_y_radians, self.height);
+        // PAF-012: `pixelAngle` 0 is the shader's pre-PAF path (no blocker
+        // search, full reach, no Gaussian).
+        let pixel_angle = if penumbra_search {
+            pixel_angle(self.fov_y_radians, self.height)
+        } else {
+            0.0
+        };
         let reach_max = chain_reach(iterations);
         let images = &self.frames[frame];
         let reservoir_barrier = vk::BufferMemoryBarrier::default()
