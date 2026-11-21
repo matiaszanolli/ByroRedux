@@ -117,6 +117,9 @@ struct PendingDdsUpload {
     /// Lowercased path — for diagnostic logging only. The path_map
     /// entry is set up by `enqueue_dds_with_clamp_and_color_space` at queue time.
     path: String,
+    /// [`TextureRegistry::retire_stream_sources`]'s epoch when this upload was
+    /// queued, which a floor's [`StreamSource`] keeps (#7167).
+    epoch: u64,
     /// M39 — `Some` for a promotion or demotion of a live streamable
     /// texture (queued on `pending_promotions`); `None` for a first upload.
     change: Option<residency::ResidencyChange>,
@@ -158,6 +161,9 @@ struct StreamSource {
     /// No promotion is requested before this frame: the backoff after a
     /// failed image allocation (TXS-BUD-007).
     retry_after_frame: u64,
+    /// The epoch its floor was queued in. #7167 — a source from before the
+    /// last [`TextureRegistry::retire_stream_sources`] is never promoted.
+    epoch: u64,
 }
 
 impl StreamSource {
@@ -453,6 +459,9 @@ pub struct TextureRegistry {
     /// re-read the levels a promotion needs (and a demotion can be queued
     /// from the header alone). Removed with the handle's last release.
     stream_sources: rustc_hash::FxHashMap<TextureHandle, StreamSource>,
+    /// Advanced by [`Self::retire_stream_sources`]; every queued upload and
+    /// recorded floor carries the value it was queued under (#7167).
+    stream_epoch: u64,
     /// Level 0's larger edge of each streamed handle, indexed by handle (`0`
     /// = not streamed): the wanted-mip pass asks per draw per texture slot,
     /// which a hash lookup made the pass's dominant cost (1.5 ms a frame on
@@ -747,6 +756,7 @@ impl TextureRegistry {
             pending_dds_uploads: Vec::new(),
             pending_promotions: Vec::new(),
             stream_sources: Default::default(),
+            stream_epoch: 0,
             stream_widths: Vec::new(),
             promotion_requests: Vec::new(),
             streaming: false,

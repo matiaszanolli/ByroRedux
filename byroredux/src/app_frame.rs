@@ -91,7 +91,12 @@ fn push_texture_streaming(
     if let Some(streamer) = streamer.as_mut()
         && streamer.refresh_provider(crate::asset_provider::archive_replacements(), build_provider)
     {
-        log::info!("texture streamer: an archive was replaced on disk; its provider was rebuilt");
+        // #7167 — textures floored from the old file stop promoting, so none mixes two files.
+        ctx.texture_registry.retire_stream_sources();
+        log::info!(
+            "texture streamer: an archive was replaced on disk; its provider was rebuilt and the \
+             textures already streamed keep the levels they hold"
+        );
     }
     if let Some(streamer) = streamer.as_mut() {
         if streaming {

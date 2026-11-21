@@ -375,6 +375,7 @@ impl TextureRegistry {
             color_space,
             path: path.to_string(),
             change: None,
+            epoch: self.stream_epoch,
         });
         Ok(EnqueueOutcome::Reserved(handle))
     }
@@ -435,6 +436,7 @@ impl TextureRegistry {
             color_space,
             path,
             change: Some(change),
+            epoch: self.stream_epoch,
         });
         Some(change)
     }
@@ -480,6 +482,19 @@ impl TextureRegistry {
         }
         self.stream_widths[slot] = source.width;
         self.stream_sources.insert(handle, source);
+    }
+
+    /// #7167 — the host's archives changed under the textures already
+    /// floored (an archive replaced on disk, its streamer provider rebuilt):
+    /// every source floored or queued so far stops promoting. Each keeps the
+    /// levels it holds, all read from the old file, so no texture mixes mips
+    /// of two files; it can still demote, and is re-floored from the new file
+    /// once released and loaded again. Requests not yet taken by the host are
+    /// dropped (every one is for a retired source); reads already in flight
+    /// land, from the old file, on the textures they were read for.
+    pub fn retire_stream_sources(&mut self) {
+        self.stream_epoch += 1;
+        self.promotion_requests.clear();
     }
 
     /// Drop a streamed texture's source on its last release.
@@ -541,7 +556,11 @@ impl TextureRegistry {
             if target < r.first_resident {
                 stats.deficits += 1;
                 source.coarser_since = None;
-                if !queued.contains_key(&handle) && frame >= source.retry_after_frame {
+                // #7167 — a source retired by an archive replacement keeps its levels.
+                if !queued.contains_key(&handle)
+                    && frame >= source.retry_after_frame
+                    && source.epoch == self.stream_epoch
+                {
                     candidates.push((
                         w.case,
                         r.first_resident - target,
@@ -1728,6 +1747,7 @@ impl TextureRegistry {
                     level_bytes,
                     declined_target: None,
                     retry_after_frame: 0,
+                    epoch: upload.epoch,
                 },
             );
         }

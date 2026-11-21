@@ -153,6 +153,7 @@ fn make_registry_for_overflow_test(max_textures: u32, occupied: usize) -> Textur
         pending_dds_uploads: Vec::new(),
         pending_promotions: Vec::new(),
         stream_sources: Default::default(),
+        stream_epoch: 0,
         stream_widths: Vec::new(),
         promotion_requests: Vec::new(),
         streaming: false,
@@ -1416,6 +1417,7 @@ fn stream_source(path: &str) -> StreamSource {
             .collect(),
         declined_target: None,
         retry_after_frame: 0,
+        epoch: 0,
     }
 }
 
@@ -1591,6 +1593,7 @@ fn promotion_flush_takes_in_order_within_the_byte_bound() {
         color_space: TextureColorSpace::Srgb,
         path: String::new(),
         change: None,
+        epoch: 0,
     };
     let pending: Vec<PendingDdsUpload> = [300u64, 300, 500, 10].into_iter().map(queued).collect();
     assert_eq!(upload::promotion_take_count(&pending, 600, 64), 2);
@@ -1721,6 +1724,7 @@ fn cell_load_ready_records_only_when_nothing_is_queued() {
         color_space: TextureColorSpace::Srgb,
         path: String::new(),
         change: None,
+        epoch: 0,
     });
     assert_eq!(reg.record_cell_load_ready(started), None, "an upload is still queued");
     assert_eq!(reg.cell_loads_timed, 0);
@@ -2062,4 +2066,29 @@ fn both_enqueue_entry_points_pass_the_parsed_alpha_to_the_reservation() {
             "`{entry}` must pass the parsed alpha presence to `enqueue_dds_for_view` (#7034)"
         );
     }
+}
+
+/// #7167 — after `retire_stream_sources` (an archive replaced on disk), a texture floored
+/// before it is not promoted again, so its levels never mix two files, and a request still
+/// waiting for the host is dropped; a source floored after it streams as usual.
+#[test]
+fn a_retired_stream_source_is_not_promoted_again() {
+    let wanted = HashMap::from([
+        (0, residency::WantedMip { level: 0, case: WantedCase::Drawn, distance: 1.0 }),
+        (1, residency::WantedMip { level: 0, case: WantedCase::Drawn, distance: 1.0 }),
+    ]);
+    let mut reg = make_registry_for_overflow_test(64, 0);
+    reg.textures.push(streamable_entry(7, 2));
+    reg.textures.push(streamable_entry(7, 2));
+    reg.stream_sources.insert(0, stream_source("textures\\old.dds"));
+    reg.current_frame_id = 10;
+    reg.apply_wanted(&wanted);
+    assert_eq!(reg.promotion_requests.len(), 1, "wanted finer, so requested");
+    reg.retire_stream_sources();
+    assert!(reg.take_promotion_requests(8).is_empty(), "the waiting request is dropped");
+    reg.stream_sources.insert(1, StreamSource { epoch: reg.stream_epoch, ..stream_source("textures\\new.dds") });
+    reg.current_frame_id = 11;
+    reg.apply_wanted(&wanted);
+    let requests = reg.take_promotion_requests(8);
+    assert_eq!(requests.iter().map(|r| r.handle).collect::<Vec<_>>(), [1], "only the source floored after it");
 }
