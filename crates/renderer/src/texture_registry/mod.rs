@@ -218,6 +218,19 @@ pub struct PromotionRequest {
     pub target: u32,
 }
 
+/// M39 — what [`TextureRegistry::queue_promotion_bytes`] did with a read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromotionLanding {
+    /// The promotion is queued for upload.
+    Queued,
+    /// Nothing is left to do: the handle was released, or it already holds
+    /// the target.
+    NothingToDo,
+    /// The bytes cannot supply the levels the promotion uploads (a short or
+    /// undecodable read). The texture backs off like a failed read (#7129).
+    Unusable,
+}
+
 /// Outcome of [`TextureRegistry::queue_or_hit`]. Distinguishes a
 /// fresh reservation (caller must redirect the descriptor to the
 /// fallback) from a cache hit (descriptor already wired). Both

@@ -56,6 +56,13 @@ pub struct WantedMip {
 /// and A7 benches (docs/engine/texture-streaming.md §6.3).
 pub(crate) const DEMOTE_AFTER_FRAMES: u64 = 120;
 
+/// #7129 — a texture whose promotion read failed (missing or unreadable
+/// entry, or bytes too short for the target) is not asked for again for
+/// this many frames (10 s at 60 fps): a damaged archive entry fails the same
+/// way every time, and re-reading it each frame burned a pool read and a
+/// warning per frame for as long as the texture stayed wanted.
+pub(crate) const READ_FAILURE_RETRY_FRAMES: u64 = 600;
+
 /// The resident range `[first_resident, mip_count)` of one streamable
 /// texture. `first_resident` never rises above `floor_first`: the floor is
 /// always resident while the texture has a holder.

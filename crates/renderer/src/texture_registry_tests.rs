@@ -1512,10 +1512,48 @@ fn promotion_requests_round_trip_through_the_host() {
         vec![PromotionRequest { handle: 0, path: "textures\\a.dds".into(), target: 0 }]
     );
     assert!(reg.take_promotion_requests(8).is_empty(), "taken once");
-    assert!(!reg.queue_promotion_bytes(0, 0, bc1_dds_from_level(2)), "floor bytes cannot promote");
-    assert!(reg.queue_promotion_bytes(0, 0, bc1_dds_from_level(0)));
+    assert_eq!(
+        reg.queue_promotion_bytes(0, 0, bc1_dds_from_level(2)),
+        PromotionLanding::Unusable,
+        "floor bytes cannot promote"
+    );
+    assert_eq!(reg.queue_promotion_bytes(0, 0, bc1_dds_from_level(0)), PromotionLanding::Queued);
     assert_eq!(reg.pending_promotion_count(), 1);
-    assert!(!reg.queue_promotion_bytes(9, 0, bc1_dds_from_level(0)), "unknown handle");
+    assert_eq!(
+        reg.queue_promotion_bytes(9, 0, bc1_dds_from_level(0)),
+        PromotionLanding::NothingToDo,
+        "unknown handle"
+    );
+}
+
+/// #7129 — a promotion whose read failed (no bytes, or bytes that cannot
+/// supply the target) is not requested again until the read-failure backoff
+/// has passed, instead of being re-read every frame it stays wanted; then it
+/// is asked for again.
+#[test]
+fn a_failed_promotion_read_backs_off_before_it_is_requested_again() {
+    use residency::READ_FAILURE_RETRY_FRAMES;
+    let wanted = HashMap::from([(0, residency::WantedMip { level: 0, case: WantedCase::Drawn, distance: 1.0 })]);
+    for fail in ["no bytes", "short bytes"] {
+        let mut reg = make_registry_for_overflow_test(64, 0);
+        reg.textures.push(streamable_entry(7, 2));
+        reg.stream_sources.insert(0, stream_source("textures\\a.dds"));
+        reg.current_frame_id = 50;
+        reg.apply_wanted(&wanted);
+        assert_eq!(reg.take_promotion_requests(8).len(), 1, "{fail}: wanted finer, so requested");
+        match fail {
+            "no bytes" => reg.note_promotion_read_failed(0),
+            _ => assert_eq!(reg.queue_promotion_bytes(0, 0, bc1_dds_from_level(2)), PromotionLanding::Unusable),
+        }
+        for frame in [51, 50 + READ_FAILURE_RETRY_FRAMES - 1] {
+            reg.current_frame_id = frame;
+            reg.apply_wanted(&wanted);
+            assert!(reg.take_promotion_requests(8).is_empty(), "{fail}: frame {frame} is inside the backoff");
+        }
+        reg.current_frame_id = 50 + READ_FAILURE_RETRY_FRAMES;
+        reg.apply_wanted(&wanted);
+        assert_eq!(reg.take_promotion_requests(8).len(), 1, "{fail}: asked for again after the backoff");
+    }
 }
 
 /// M39 TXS-WANT-005 — a demotion of a streamed texture is queued from its

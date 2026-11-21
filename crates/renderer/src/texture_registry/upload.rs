@@ -888,26 +888,51 @@ impl TextureRegistry {
 
     /// M39 — queue the change a [`PromotionRequest`] asked for, from the
     /// bytes the host read (a DDS file whose payload starts at or above the
-    /// request's target). `false` when the handle was released or has moved
-    /// so nothing is left to do, or the bytes do not cover the target.
+    /// request's target). [`PromotionLanding::NothingToDo`] when the handle
+    /// was released or already holds the target; [`PromotionLanding::Unusable`]
+    /// when the bytes do not cover it, which backs the texture off like a
+    /// failed read ([`Self::note_promotion_read_failed`]).
     pub fn queue_promotion_bytes(
         &mut self,
         handle: TextureHandle,
         target: u32,
         dds_bytes: Vec<u8>,
-    ) -> bool {
+    ) -> PromotionLanding {
         let Some(source) = self.stream_sources.get(&handle).cloned() else {
-            return false;
+            return PromotionLanding::NothingToDo;
         };
-        self.queue_residency_change(
+        let moves = self.textures.get(handle as usize).is_some_and(|entry| {
+            entry.ref_count > 0 && entry.residency.is_some_and(|r| r.plan(target).is_some())
+        });
+        if !moves {
+            return PromotionLanding::NothingToDo;
+        }
+        match self.queue_residency_change(
             handle,
             target,
             dds_bytes,
             source.clamp_mode,
             source.color_space,
             source.path.to_string(),
-        )
-        .is_some()
+        ) {
+            Some(_) => PromotionLanding::Queued,
+            None => {
+                self.note_promotion_read_failed(handle);
+                PromotionLanding::Unusable
+            }
+        }
+    }
+
+    /// #7129 — the host's read for a promotion of `handle` failed (no entry,
+    /// an unreadable one, or bytes too short for the target): it is not
+    /// requested again for [`residency::READ_FAILURE_RETRY_FRAMES`] frames,
+    /// instead of being re-read every frame it stays wanted.
+    pub fn note_promotion_read_failed(&mut self, handle: TextureHandle) {
+        if let Some(source) = self.stream_sources.get_mut(&handle) {
+            source.retry_after_frame = self
+                .current_frame_id
+                .wrapping_add(residency::READ_FAILURE_RETRY_FRAMES);
+        }
     }
 
     /// M39 — queued promotions and demotions, for telemetry.

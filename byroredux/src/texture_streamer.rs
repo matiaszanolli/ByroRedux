@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use byroredux_core::ecs::TextureResidencyTelemetry;
 use byroredux_core::math::{Mat4, Vec3};
 use byroredux_renderer::texture_registry::{
-    TextureHandle, TextureRegistry, WantedCase, WantedMip, WantedStats,
+    PromotionLanding, TextureHandle, TextureRegistry, WantedCase, WantedMip, WantedStats,
 };
 use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::VulkanContext;
@@ -180,21 +180,32 @@ impl TextureStreamer {
         let mut landed = 0;
         while let Ok(read) = self.done_rx.try_recv() {
             self.in_flight.remove(&read.handle);
+            // #7129 — a failed read backs the texture off in the registry, so
+            // it is not re-read (and re-warned) every frame it stays wanted.
             let Some(bytes) = read.bytes else {
+                registry.note_promotion_read_failed(read.handle);
                 log::warn!(
-                    "texture promotion read for handle {} found no archive entry",
-                    read.handle
-                );
-                continue;
-            };
-            if registry.queue_promotion_bytes(read.handle, read.target, bytes) {
-                landed += 1;
-            } else {
-                log::debug!(
-                    "texture promotion for handle {} to level {} was not queued (released or already there)",
+                    "texture promotion read for handle {} (level {}) returned nothing: \
+                     no archive entry, an unreadable one (the archive layer names it), \
+                     or a panicked read; backing off",
                     read.handle,
                     read.target,
                 );
+                continue;
+            };
+            match registry.queue_promotion_bytes(read.handle, read.target, bytes) {
+                PromotionLanding::Queued => landed += 1,
+                PromotionLanding::NothingToDo => log::debug!(
+                    "texture promotion for handle {} to level {} was not queued (released or already there)",
+                    read.handle,
+                    read.target,
+                ),
+                PromotionLanding::Unusable => log::warn!(
+                    "texture promotion read for handle {} does not supply level {} \
+                     (short or undecodable payload); backing off",
+                    read.handle,
+                    read.target,
+                ),
             }
         }
         let room = MAX_READS_IN_FLIGHT.saturating_sub(self.in_flight.len());
