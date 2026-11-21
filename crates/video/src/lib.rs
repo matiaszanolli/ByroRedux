@@ -13,11 +13,12 @@
 //! frame, one that runs ahead is held back by a small bounded ring.
 
 use std::io::{Read, Seek, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError};
 use std::thread::JoinHandle;
 
 use byroredux_bink2 as bink2;
+use byroredux_core::atomic_file::TempPath;
 use mercs2_bink::{AudioDecoder, VideoDecoder};
 
 /// Decoded frames the reader thread may run ahead of playback.
@@ -290,7 +291,13 @@ struct Soundtrack {
     rate: u32,
     total_cap: usize,
     frame_cap: usize,
+    /// The temp WAV's name stem: [`SOUNDTRACK_STEM`], or a test's own, so a leak test counts only
+    /// its files (#7172).
+    stem: &'static str,
 }
+
+/// The soundtrack WAVs' temp-file stem.
+const SOUNDTRACK_STEM: &str = "byroredux-movie";
 
 impl Soundtrack {
     /// #7125, #7153 — refuse a packet stating more than one frame may hold (`decoded_bytes` of
@@ -310,15 +317,18 @@ impl Soundtrack {
             rate,
             total_cap: pcm_cap(info.duration_secs, rate, usize::from(channels)),
             frame_cap: frame_pcm_cap(info.fps, rate, usize::from(channels)),
+            stem: SOUNDTRACK_STEM,
         }
     }
 }
 
 /// A movie's decoded soundtrack: the temporary WAV, and why the movie's sound is missing or ends
-/// before its picture (#7139; `None` when it plays whole or the movie has no audio track).
+/// before its picture (#7139; `None` when it plays whole or the movie has no audio track). #7172 —
+/// the WAV stays a [`TempPath`] until the movie that plays it is dropped, so it is removed on every
+/// way out, a panic between decoding it and the movie taking it included.
 #[derive(Default)]
 struct Audio {
-    wav: Option<PathBuf>,
+    wav: Option<TempPath>,
     problem: Option<String>,
 }
 
@@ -384,7 +394,7 @@ fn decode_soundtrack(
     // on a guessable one, which followed a planted symlink and truncated its target.
     // #7158 — `temp` removes the WAV on every way out but the one that keeps it, a decoder panic
     // unwinding through here included.
-    let (file, temp) = match byroredux_core::atomic_file::create_temp_file("byroredux-movie", "wav") {
+    let (file, temp) = match byroredux_core::atomic_file::create_temp_file(soundtrack.stem, "wav") {
         Ok(created) => created,
         Err(error) => return Audio::missing(name, format!("its soundtrack could not be written: {error}")),
     };
@@ -439,7 +449,7 @@ fn decode_soundtrack(
         file.write_all(&wav_header(written, soundtrack.channels, soundtrack.rate))
     })();
     match result {
-        Ok(()) if written > 0 => Audio { wav: Some(temp.keep()), problem },
+        Ok(()) if written > 0 => Audio { wav: Some(temp), problem },
         Ok(()) => Audio { wav: None, problem: problem.or_else(|| Some("its audio track decodes to no samples".to_owned())) },
         Err(error) => Audio::missing(name, format!("its soundtrack could not be written: {error}")),
     }
@@ -575,13 +585,6 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
         .unwrap_or_else(|| "no message".to_owned())
 }
 
-/// Remove a soundtrack decoded for a movie that then failed to start, so its temp WAV is not left.
-fn discard_wav(audio: &Audio) {
-    if let Some(wav) = &audio.wav {
-        let _ = std::fs::remove_file(wav);
-    }
-}
-
 /// Start a movie's reader thread, the one place one is spawned. `decode` runs under
 /// [`guard_decoder`] (BIK-DEC-004) with the movie's name and an `emit` that hands one frame, or the
 /// reason the next did not decode, to the player's ring: a reason is logged, and `emit` answers
@@ -620,7 +623,8 @@ pub struct Movie {
     size: (u32, u32),
     rx: Option<Receiver<DecodedFrame>>,
     reader: Option<JoinHandle<()>>,
-    audio: Option<PathBuf>,
+    /// Removed when the movie is dropped (#7172).
+    audio: Option<TempPath>,
     soundtrack_problem: Option<String>,
     frame: Vec<u8>,
     index: i64,
@@ -673,8 +677,7 @@ impl Movie {
                     return;
                 }
             }
-        })
-        .inspect_err(|_| discard_wav(&audio))?;
+        })?;
         Ok(Self::streaming(info, (width, height), rx, Some(reader), audio))
     }
 
@@ -708,8 +711,7 @@ impl Movie {
                     return;
                 }
             }
-        })
-        .inspect_err(|_| discard_wav(&audio))?;
+        })?;
         Ok(Self::streaming(info, (width, height), rx, Some(reader), audio))
     }
 
@@ -762,7 +764,7 @@ impl Movie {
 
     /// The temporary WAV holding the soundtrack, if the movie has one.
     pub fn audio_path(&self) -> Option<&Path> {
-        self.audio.as_deref()
+        self.audio.as_ref().map(TempPath::path)
     }
 
     /// #7139 — why the movie's sound is missing or ends before its picture (its audio track does
@@ -841,9 +843,8 @@ impl Drop for Movie {
         if let Some(reader) = self.reader.take() {
             let _ = reader.join();
         }
-        if let Some(wav) = self.audio.take() {
-            let _ = std::fs::remove_file(wav);
-        }
+        // The soundtrack's guard removes its WAV (#7172).
+        self.audio = None;
     }
 }
 
@@ -1009,7 +1010,7 @@ mod tests {
         assert_eq!(pcm_cap(10.0, u32::MAX, 2), MAX_SOUNDTRACK_SAMPLES, "nor can the track's rate");
         assert!(MAX_SOUNDTRACK_SAMPLES * 2 <= u32::MAX as usize, "the WAV header's byte count holds it");
         // Frames of 4 samples against a 10-sample movie: the third is cut to 2 and the track stops.
-        let caps = Soundtrack { channels: 2, rate: 48_000, total_cap: 10, frame_cap: 6 };
+        let caps = Soundtrack { channels: 2, rate: 48_000, total_cap: 10, frame_cap: 6, stem: SOUNDTRACK_STEM };
         let mut asked = 0;
         let audio = decode_soundtrack("t", 100, caps, |_, pcm| {
             asked += 1;
@@ -1023,7 +1024,6 @@ mod tests {
         );
         let wav = audio.wav.expect("a soundtrack was written");
         let bytes = std::fs::read(&wav).unwrap();
-        let _ = std::fs::remove_file(&wav);
         assert_eq!(asked, 3, "decoding stops at the cap");
         assert_eq!(bytes[..44], wav_header(10, 2, 48_000), "the header counts the samples written");
         assert_eq!(bytes.len(), 44 + 20);
@@ -1042,7 +1042,7 @@ mod tests {
         assert_eq!(frame_pcm_cap(f64::NAN, 48_000, 2), frame_pcm_cap(0.0, 48_000, 2));
         assert!(slowest * 1000 < MAX_SOUNDTRACK_SAMPLES, "a frame holds seconds, not the hour");
 
-        let caps = Soundtrack { channels: 2, rate: 48_000, total_cap: MAX_SOUNDTRACK_SAMPLES, frame_cap: 8 };
+        let caps = Soundtrack { channels: 2, rate: 48_000, total_cap: MAX_SOUNDTRACK_SAMPLES, frame_cap: 8, stem: SOUNDTRACK_STEM };
         let wav = decode_soundtrack("t", 100, caps, |frame, pcm| {
             pcm.extend(std::iter::repeat_n(1i16, if frame == 2 { 9 } else { 8 }));
             Ok(())
@@ -1050,7 +1050,6 @@ mod tests {
         .wav
         .expect("the frames before the oversized one were written");
         let bytes = std::fs::read(&wav).unwrap();
-        let _ = std::fs::remove_file(&wav);
         assert_eq!(bytes.len(), 44 + 2 * 16, "frames 0 and 1 only");
         assert!(decode_soundtrack("t", 1, caps, |_, pcm| {
             pcm.extend([1i16; 9]);
@@ -1082,7 +1081,7 @@ mod tests {
     /// track decodes to nothing says that; a whole soundtrack carries no problem.
     #[test]
     fn a_soundtrack_that_ends_early_says_why() {
-        let caps = Soundtrack { channels: 2, rate: 48_000, total_cap: MAX_SOUNDTRACK_SAMPLES, frame_cap: 8 };
+        let caps = Soundtrack { channels: 2, rate: 48_000, total_cap: MAX_SOUNDTRACK_SAMPLES, frame_cap: 8, stem: SOUNDTRACK_STEM };
         let take = |audio: Audio| {
             if let Some(wav) = &audio.wav {
                 let _ = std::fs::remove_file(wav);
@@ -1112,7 +1111,7 @@ mod tests {
     /// Unix, and never `File::create` on a guessable name, which followed a planted symlink.
     #[test]
     fn the_soundtrack_temp_file_is_created_exclusively() {
-        let caps = Soundtrack { channels: 2, rate: 48_000, total_cap: MAX_SOUNDTRACK_SAMPLES, frame_cap: 8 };
+        let caps = Soundtrack { channels: 2, rate: 48_000, total_cap: MAX_SOUNDTRACK_SAMPLES, frame_cap: 8, stem: SOUNDTRACK_STEM };
         let wav = decode_soundtrack("t", 1, caps, |_, pcm| {
             pcm.extend([1i16; 4]);
             Ok(())
@@ -1121,7 +1120,6 @@ mod tests {
         .expect("a soundtrack was written");
         #[cfg(unix)]
         let mode = std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&wav).unwrap().permissions());
-        let _ = std::fs::remove_file(&wav);
         #[cfg(unix)]
         assert_eq!(mode & 0o777, 0o600);
         let production = &include_str!("lib.rs")[..include_str!("lib.rs").find(concat!("#[cfg(", "test)]")).unwrap()];
@@ -1202,6 +1200,42 @@ mod tests {
         let len = (bytes.len() - 8) as u32;
         put(&mut bytes, 4, len);
         bytes
+    }
+
+    /// #7158, #7172: a soundtrack's temp WAV is removed on every way out: a frame closure that
+    /// panics, one that fails before any sample, a track that decodes to nothing, and a whole track
+    /// whose `Audio` is dropped before a movie takes it (the window between decoding and playback).
+    /// Each case writes under its own stem, so the count is not disturbed by other tests' files.
+    #[test]
+    fn the_soundtrack_wav_is_removed_on_every_way_out() {
+        let left = |stem: &str| {
+            let prefix = format!("{stem}-{}-", std::process::id());
+            std::fs::read_dir(std::env::temp_dir())
+                .unwrap()
+                .flatten()
+                .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+                .count()
+        };
+        let caps = |stem| Soundtrack { channels: 2, rate: 48_000, total_cap: MAX_SOUNDTRACK_SAMPLES, frame_cap: 8, stem };
+        let panicked = std::panic::catch_unwind(|| {
+            decode_soundtrack("t", 4, caps("byroredux-leak-panic"), |_, _| panic!("a decoder panic"))
+        });
+        assert!(panicked.is_err());
+        assert_eq!(left("byroredux-leak-panic"), 0, "a panic leaves no WAV");
+        let failed = decode_soundtrack("t", 4, caps("byroredux-leak-err"), |_, _| Err("cut".into()));
+        assert!(failed.wav.is_none());
+        assert_eq!(left("byroredux-leak-err"), 0, "a failed first frame leaves no WAV");
+        let silent = decode_soundtrack("t", 4, caps("byroredux-leak-empty"), |_, _| Ok(()));
+        assert!(silent.wav.is_none());
+        assert_eq!(left("byroredux-leak-empty"), 0, "no samples, no WAV");
+        let whole = decode_soundtrack("t", 2, caps("byroredux-leak-kept"), |_, pcm| {
+            pcm.extend([1i16; 4]);
+            Ok(())
+        });
+        assert!(whole.wav.is_some());
+        assert_eq!(left("byroredux-leak-kept"), 1, "a whole track keeps its WAV while it is held");
+        drop(whole);
+        assert_eq!(left("byroredux-leak-kept"), 0, "dropping it before a movie takes it removes the WAV");
     }
 
     /// #7162: only the Bink 2 crate's own refusal marks a movie unsupported (skipped); an OS-level

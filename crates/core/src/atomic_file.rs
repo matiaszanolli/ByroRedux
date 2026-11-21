@@ -167,6 +167,12 @@ impl TempPath {
     }
 }
 
+impl AsRef<Path> for TempPath {
+    fn as_ref(&self) -> &Path {
+        self.path()
+    }
+}
+
 impl Drop for TempPath {
     fn drop(&mut self) {
         if let Some(path) = self.0.take() {
