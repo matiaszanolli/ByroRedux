@@ -307,6 +307,14 @@ impl Fixups<'_> {
 /// as an error.
 pub fn decode_np_ragdoll(blob: &[u8]) -> io::Result<NpRagdoll> {
     let pack = parse_havok_packfile(blob)?;
+    // #7133 — every offset below was measured on Havok 2014 (file version 11)
+    // blobs with 8-byte pointers, the only kind FO4 ships (75 of 75 ragdoll
+    // blobs). The shared container also admits version 8 and 4-byte pointers
+    // for hkx's sake, and this decoder would read those at the wrong offsets
+    // into a garbage skeleton, so it refuses them itself.
+    if pack.header.file_version != 11 || pack.header.layout_rules[0] != 8 {
+        return Err(invalid("np ragdoll: not a 64-bit Havok 2014 (file version 11) packfile"));
+    }
     let fixups = Fixups { pack: &pack };
     let section = fixups.data_section()?;
     let start = section.absolute_data_start as usize;
@@ -798,6 +806,20 @@ mod tests {
             [p[0] + pivot[0], p[1] + pivot[1], p[2] + pivot[2]]
         };
         assert_eq!(world(0, j.pivot_a), world(1, j.pivot_b));
+    }
+
+    /// #7133 — the decoder's offsets are 64-bit Havok 2014 ones, so a blob
+    /// whose header says 4-byte pointers is refused, not read at the wrong
+    /// offsets into a garbage skeleton (flipping that byte alone used to decode
+    /// a real FO4 ragdoll to the same 18 bodies).
+    #[test]
+    fn a_blob_that_is_not_64_bit_havok_2014_is_refused() {
+        let mut blob = good();
+        assert_eq!(blob[0x10], 8, "the fixture is a 64-bit packfile");
+        blob[0x10] = 4;
+        let error = decode_np_ragdoll(&blob).expect_err("a 32-bit header is not this layout");
+        assert!(error.to_string().contains("64-bit Havok 2014"), "{error}");
+        assert!(decode_np_ragdoll(&good()).is_ok());
     }
 
     /// A polytope whose vertex table is empty (here: capsule bytes under a
