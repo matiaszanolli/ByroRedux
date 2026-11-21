@@ -25,15 +25,21 @@ use serde::Deserialize;
 /// same key.
 pub const DEFAULT_PROFILES_PATH: &str = "assets/debug_profiles.toml";
 
-/// Default shared games root when neither `--games-root` CLI nor
-/// `BYROREDUX_GAMES_ROOT` env var is set. Tuned for Linux Steam
-/// installs — the most common dev box layout. Phase 20.
+/// Default shared games root when neither `--games-root`, `[defaults].games_root` nor
+/// `BYROREDUX_GAMES_ROOT` is set: one developer's Linux Steam library, so on any other machine
+/// it names a missing directory (the engine says so and points at `byro-detect --write`). Phase 20.
 pub const DEFAULT_GAMES_ROOT: &str = "/mnt/data/SteamLibrary/steamapps/common";
 
-/// Resolve the shared games root, in priority order:
-///   1. `--games-root <path>` CLI argument (caller supplies via `cli_arg`)
-///   2. `BYROREDUX_GAMES_ROOT` environment variable
-///   3. [`DEFAULT_GAMES_ROOT`]
+/// Resolve the shared games root, in priority order (#7189: four tiers, the first two folded
+/// into `cli_arg` by the caller):
+///   1. `--games-root <path>` on the command line
+///   2. `[defaults].games_root` in the profiles config (the engine passes
+///      `--games-root` or else this as `cli_arg`)
+///   3. `BYROREDUX_GAMES_ROOT` environment variable
+///   4. [`DEFAULT_GAMES_ROOT`]
+///
+/// A profile's own root (its `[roots]` override, or `byro-detect --write`'s record) is resolved
+/// separately and wins over this shared root for that game (`resolve_profile_root`).
 ///
 /// Used by `--game <key>` CLI expansion to turn a profile's
 /// `subdir` into an absolute path. Phase 20.

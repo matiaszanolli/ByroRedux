@@ -376,8 +376,9 @@ pub(super) fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
     if !data_dir.exists() {
         eprintln!(
             "--game {}: resolved data dir does not exist: {} \
-             (set --games-root, BYROREDUX_GAMES_ROOT env var, or override \
-              the profile's `root` in ~/.byroredux/profiles.toml)",
+             (run `byro-detect --write` to record where the game is installed, or set \
+              --games-root / `[defaults].games_root` / BYROREDUX_GAMES_ROOT, or override \
+              the profile's root in your profiles file)",
             game_key,
             data_dir.display(),
         );

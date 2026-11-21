@@ -258,7 +258,7 @@ Detection produces *candidates*; the user confirms. Never silently pick.
 | **Manual** | A "Browse…" button (`rfd` native dialog). Always available, never a fallback-only path. |
 
 **Landed**: Steam, and reading back what is already configured. **Not landed**: the GOG, Bethesda-registry, and Windows Steam-registry rows — each needs a Windows API that cannot be exercised from the dev box, and untested registry code is worse than an honest gap. A non-Steam install is reachable today by hand-writing a `[roots]` entry, which `byro-detect` prints instructions for when it finds nothing.
-| **Existing config** | `~/.byroredux/profiles.toml` and `BYROREDUX_GAMES_ROOT` are read first and treated as authoritative, so a developer's box keeps working unchanged. |
+| **Existing config** | The per-user profiles file (a game's `[roots]` entry, then `[defaults].games_root`) and then `BYROREDUX_GAMES_ROOT` are read first and treated as authoritative, so a developer's box keeps working unchanged. The shared games root's full order is `--games-root`, `[defaults].games_root`, `BYROREDUX_GAMES_ROOT`, then the built-in default (`resolve_games_root`, #7189). |
 
 Detection results are written back into `~/.byroredux/profiles.toml`, which
 means **detection makes the existing `--game <key>` CLI path work correctly for
