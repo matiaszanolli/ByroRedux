@@ -410,10 +410,12 @@ fn decode_soundtrack(
             let room = soundtrack.total_cap - written;
             let over = pcm.len() > room;
             if over {
-                log::warn!(
-                    "video: {name}: its audio decodes past the movie's running time; stopped at {} samples",
+                // #7157 — a cut track is a soundtrack problem like any other early end, so
+                // `video.status` and the movie sweep see it, not only the log.
+                stop(format!(
+                    "its audio decodes past the movie's running time; it stops at frame {frame}, at {} samples",
                     soundtrack.total_cap
-                );
+                ));
                 pcm.truncate(room);
             }
             for sample in &pcm {
@@ -1001,13 +1003,17 @@ mod tests {
         // Frames of 4 samples against a 10-sample movie: the third is cut to 2 and the track stops.
         let caps = Soundtrack { channels: 2, rate: 48_000, total_cap: 10, frame_cap: 6 };
         let mut asked = 0;
-        let wav = decode_soundtrack("t", 100, caps, |_, pcm| {
+        let audio = decode_soundtrack("t", 100, caps, |_, pcm| {
             asked += 1;
             pcm.extend([7i16; 4]);
             Ok(())
-        })
-        .wav
-        .expect("a soundtrack was written");
+        });
+        // #7157: the cut is the soundtrack's problem, as any early end is.
+        assert_eq!(
+            audio.problem.as_deref(),
+            Some("its audio decodes past the movie's running time; it stops at frame 2, at 10 samples")
+        );
+        let wav = audio.wav.expect("a soundtrack was written");
         let bytes = std::fs::read(&wav).unwrap();
         let _ = std::fs::remove_file(&wav);
         assert_eq!(asked, 3, "decoding stops at the cap");
