@@ -76,13 +76,19 @@ pub fn archive_mesh_path(path: &str) -> String {
     normalize_mesh_path(&path).into_owned()
 }
 
-/// [`archive_mesh_path`], lower-cased: the key a lookup table or cache shares between
-/// every producer of it. #7168 — Unicode case folding, as `byroredux_bsa::normalize_path`
-/// folds every archive key: an ASCII-only fold kept `Ä.nif` and `ä.nif` apart in the mesh caches
-/// while the archives resolved both to one file, so it was parsed and uploaded twice. (The two
-/// crates do not depend on each other; the binary pins that the folds agree.)
+/// The case fold every cache keyed by an archive path uses: Unicode lower-casing, as
+/// `byroredux_bsa::normalize_path` folds every archive key (#7168, #7180). An ASCII-only fold kept
+/// `Ä.nif` and `ä.nif` apart in a cache while the archives resolved both to one file, so it was
+/// read, parsed and uploaded twice. The two crates do not depend on each other; the binary pins
+/// that this and the archives' fold agree (through [`canonical_mesh_key`]).
+pub fn fold_case(path: &str) -> String {
+    path.to_lowercase()
+}
+
+/// [`archive_mesh_path`], case-folded ([`fold_case`]): the key a lookup table or cache shares
+/// between every producer of it.
 pub fn canonical_mesh_key(path: &str) -> String {
-    archive_mesh_path(&path.to_lowercase())
+    archive_mesh_path(&fold_case(path))
 }
 
 /// The directory holding the running executable, when it can be determined.
@@ -143,6 +149,7 @@ mod tests {
     fn mesh_keys_fold_unicode_case() {
         assert_eq!(canonical_mesh_key("Ä.NIF"), "meshes\\ä.nif");
         assert_eq!(canonical_mesh_key("Meshes/Ünter/Ä.nif"), canonical_mesh_key("meshes\\ünter\\ä.nif"));
+        assert_eq!(fold_case("ÄBC\\Straße.DDS"), "äbc\\straße.dds");
     }
 
     #[test]

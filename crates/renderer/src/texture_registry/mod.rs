@@ -1808,7 +1808,8 @@ impl TextureRegistry {
 /// fixed by #522; only the diagnostic's own display grouping still
 /// double-counted spelling variants as distinct textures).
 pub fn normalize_path(path: &str) -> String {
-    let lowered = path.to_ascii_lowercase().replace('\\', "/");
+    // #7180 — the archives' case fold, so a non-ASCII spelling variant is one cache entry.
+    let lowered = byroredux_core::paths::fold_case(path).replace('\\', "/");
     if lowered.starts_with("textures/") {
         lowered
     } else {

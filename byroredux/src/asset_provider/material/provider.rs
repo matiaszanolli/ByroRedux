@@ -456,7 +456,7 @@ impl MaterialProvider {
         //   * occasional leaf: `data\materials\…` → normalised by
         //     stripping the leading `data\`.
         // See `normalize_material_path` for the full rule set.
-        let key = normalize_material_path(path).to_ascii_lowercase();
+        let key = byroredux_core::paths::fold_case(&normalize_material_path(path));
         // Archive slice is borrowed into the ad-hoc resolver so the
         // cache's mutable borrow doesn't alias archive reads. The
         // resolver normalises on every read so recursive template-
@@ -467,7 +467,7 @@ impl MaterialProvider {
         }
         impl<'a> TemplateResolver for ArchiveReader<'a> {
             fn canonicalize(&self, path: &str) -> String {
-                normalize_material_path(path).to_ascii_lowercase()
+                byroredux_core::paths::fold_case(&normalize_material_path(path))
             }
 
             fn read(&mut self, path: &str) -> Option<Vec<u8>> {
@@ -626,7 +626,7 @@ impl MaterialProvider {
     /// archive" land in the same set). Tier 2 covers that case properly.
     pub(crate) fn peek_magic(&mut self, path: &str) -> Option<byroredux_bgsm::MaterialKind> {
         use byroredux_bgsm::MaterialKind;
-        let key = normalize_material_path(path).to_ascii_lowercase();
+        let key = byroredux_core::paths::fold_case(&normalize_material_path(path));
 
         // Tier 1 — a populated material cache already answers this.
         if self.bgem_cache.contains_key(&key) {
@@ -673,7 +673,7 @@ impl MaterialProvider {
         path: &str,
         resolved: byroredux_bgsm::template::ResolvedMaterial,
     ) {
-        let key = normalize_material_path(path).to_ascii_lowercase();
+        let key = byroredux_core::paths::fold_case(&normalize_material_path(path));
         self.bgsm_cache.insert_resolved(&key, Arc::new(resolved));
     }
 
@@ -693,7 +693,7 @@ impl MaterialProvider {
 
     #[cfg(test)]
     pub(crate) fn insert_bgem_for_test(&mut self, path: &str, bgem: BgemFile) {
-        let key = normalize_material_path(path).to_ascii_lowercase();
+        let key = byroredux_core::paths::fold_case(&normalize_material_path(path));
         self.bgem_cache.insert(key, Arc::new(bgem));
     }
 
@@ -705,7 +705,7 @@ impl MaterialProvider {
         // normalises), so this line is purely for cache-key
         // canonicalisation — two paths that differ only by which
         // non-canonical form they carry must share one cache entry.
-        let key = normalize_material_path(path).to_ascii_lowercase();
+        let key = byroredux_core::paths::fold_case(&normalize_material_path(path));
         if let Some(hit) = self.bgem_cache.get(&key) {
             return Some(Arc::clone(hit));
         }
