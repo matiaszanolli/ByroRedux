@@ -248,6 +248,9 @@ impl VulkanContext {
         // list just uploaded, so it records here: after the upload fixed the
         // list's length, before the geometry pass draws them.
         self.record_groundcover_models(cmd, frame, gpu_instances.len() as u32);
+        // #7152 — TSD-4.1 terrain patches, same window: after the upload (and
+        // its terrain-tile copy), before the geometry pass draws them.
+        self.record_terrain_patches(cmd, frame);
 
         self.scratch.frame_lights_scratch = frame_lights;
         self.scratch.gpu_instances_scratch = gpu_instances;

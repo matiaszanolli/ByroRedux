@@ -466,6 +466,8 @@ impl App {
             crate::render::update_morph_weights(&self.world, ctx);
             // #6195 — bind terrain height maps that finished generating.
             crate::terrain_height::apply_ready_heights(&self.world, ctx);
+            // #7152 — TSD-4.1 terrain patches for this frame's compute pass.
+            crate::terrain_patches::push_terrain_patches(&self.world, ctx);
 
             // #4052 — EXAL ground cover §11.1; no-ops without `--bench-groundcover-sampling`.
             drive_groundcover_bench(

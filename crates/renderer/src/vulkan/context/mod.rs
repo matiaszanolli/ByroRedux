@@ -998,6 +998,10 @@ pub struct ExteriorState {
     /// `--bench-groundcover-sampling`, because it owns ~3.5 MB of baked
     /// attribute textures and four pipelines no production path touches.
     pub groundcover_bench: Option<super::groundcover_bench::GroundcoverBench>,
+    /// TSD-4.1 terrain displacement patches (#7152): the compute pass, its
+    /// readback and the reserved patch meshes. `None` when creation failed;
+    /// terrain then simply has no patches.
+    pub terrain_patch: Option<super::terrain_patch::TerrainPatchPass>,
     /// Resident exterior terrain cells for the frame the bench is about to
     /// measure, published by the app before `draw_frame`. Empty on interiors
     /// and on every frame of a run without the flag.

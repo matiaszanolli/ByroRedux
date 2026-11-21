@@ -902,6 +902,8 @@ pub struct SkinCoverageStats {
     /// nested. Inactive until the cache's passes record them.
     pub gpu_cache_update_ms: f32,
     pub gpu_cache_resolve_ms: f32,
+    /// #7152 — TSD-4.1's terrain patch displacement pass.
+    pub gpu_terrain_patch_ms: f32,
     /// #6316 — the cloud-shadow bake, nested inside `gpu_sky_cube_ms`
     /// (never sum the two).
     pub gpu_cloud_shadow_ms: f32,
@@ -942,6 +944,7 @@ pub struct SkinCoverageStats {
     pub gpu_far_sun_active: bool,
     pub gpu_cache_update_active: bool,
     pub gpu_cache_resolve_active: bool,
+    pub gpu_terrain_patch_active: bool,
     pub gpu_cloud_shadow_active: bool,
 }
 

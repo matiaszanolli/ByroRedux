@@ -509,6 +509,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("ShadowMaskCensus", "shadow-ray visibility-mask telemetry recomputed from the current TLAS gather (#3305)"),
         ("LodCoverageStats", "LOD diagnostic telemetry recomputed from resident content (#3166)"),
         ("TerrainSeamStats", "terrain diagnostic telemetry recomputed from resident tiles"),
+        ("TerrainPatchState", "TSD-4.1 terrain patch slots reassigned from the camera every frame, plus the session-only on/off and amplitude/range of `terrain.patches` (#7152)"),
         ("SyntheticHeights", "per-session seam verdicts for the opt-in synthetic static height prototype (#6817), keyed by normal-map path; the generated maps persist in the on-disk height cache and a load re-derives each verdict on first use"),
         ("TerrainHeightService", "session cache + worker pool for generated terrain height maps (#6195); the maps themselves persist in the on-disk cache, keyed by source-texture bytes"),
         ("SelectedRef", "debug-console selection using session-local entity identity"),

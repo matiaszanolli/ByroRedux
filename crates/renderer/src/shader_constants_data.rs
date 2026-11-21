@@ -1098,6 +1098,39 @@ pub const MAX_BONES_PER_MESH: u32 = byroredux_core::ecs::components::MAX_BONES_P
 // `layout(local_size_x = SKIN_WORKGROUP_SIZE)` qualifier. #1758 / TD7-001.
 pub const SKIN_WORKGROUP_SIZE: u32 = 64;
 
+// TSD-4.1 terrain displacement patches (#7152; `docs/engine/terrain-displacement.md`
+// §3.1). A patch is a 64×64-quad lattice over one 256-unit (3.66 m) square of a
+// LAND cell, 16×16 patches per cell, so the lattice step is 4 units (5.7 cm) and
+// 32 lattice steps span one 128-unit LAND vertex spacing. `terrain_patch.comp`
+// writes `TERRAIN_PATCH_VERTEX_COUNT` vertices per slot in place into a reserved
+// mesh of the global vertex pool; `vulkan/terrain_patch.rs` reserves
+// `TERRAIN_PATCH_SLOTS` of them at start-up and builds the shared lattice
+// topology from the same constants.
+pub const TERRAIN_PATCH_QUADS: u32 = 64;
+pub const TERRAIN_PATCH_VERTS: u32 = TERRAIN_PATCH_QUADS + 1;
+pub const TERRAIN_PATCH_VERTEX_COUNT: u32 = TERRAIN_PATCH_VERTS * TERRAIN_PATCH_VERTS;
+pub const TERRAIN_PATCHES_PER_CELL_SIDE: u32 = 16;
+/// Lattice steps per LAND vertex spacing (32): the cell's 1024-step lattice
+/// over its 32 LAND quads.
+pub const TERRAIN_PATCH_LATTICE_PER_LAND_SPACING: u32 =
+    TERRAIN_PATCH_QUADS * TERRAIN_PATCHES_PER_CELL_SIDE / (LAND_GRID_VERTS - 1);
+/// World units between lattice vertices (4.0).
+pub const TERRAIN_PATCH_LATTICE_STEP: f32 =
+    LAND_VERTEX_SPACING / TERRAIN_PATCH_LATTICE_PER_LAND_SPACING as f32;
+/// The cell's lattice side, 1024 steps.
+pub const TERRAIN_PATCH_CELL_LATTICE: u32 = TERRAIN_PATCH_QUADS * TERRAIN_PATCHES_PER_CELL_SIDE;
+pub const TERRAIN_PATCH_SLOTS: u32 = 24;
+/// One invocation per patch vertex. Emitted without the `u` suffix for the
+/// `local_size_x` qualifier, like `SKIN_WORKGROUP_SIZE`.
+pub const TERRAIN_PATCH_WORKGROUP: u32 = 64;
+/// Edge readback samples per slot: the four border rows/columns, in the order
+/// row 0, row `TERRAIN_PATCH_QUADS`, column 0, column `TERRAIN_PATCH_QUADS`.
+pub const TERRAIN_PATCH_EDGE_SAMPLES: u32 = 4 * TERRAIN_PATCH_VERTS;
+/// Readback words per slot: `TERRAIN_PATCH_EDGE_SAMPLES` (world Y, displacement)
+/// pairs as float bits, then the slot's largest displacement (float bits, via
+/// `atomicMax`) and three pad words.
+pub const TERRAIN_PATCH_READBACK_WORDS: u32 = 2 * TERRAIN_PATCH_EDGE_SAMPLES + 4;
+
 // Material kind enum (GpuMaterial.materialKind).
 // Authoritative Rust-side values live in `scene_buffer/constants.rs`. #1401.
 // MULTI_LAYER_PARALLAX is the one low-range (NIF-forwarded shader_type)
@@ -3085,6 +3118,19 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     HeaderLine::Comment("Skinning"),
     shader_define!(Uint MAX_BONES_PER_MESH),
     shader_define!(UintPlain SKIN_WORKGROUP_SIZE),
+    HeaderLine::Blank,
+    HeaderLine::Comment("TSD-4.1 terrain displacement patches (#7152)"),
+    shader_define!(Uint TERRAIN_PATCH_QUADS),
+    shader_define!(Uint TERRAIN_PATCH_VERTS),
+    shader_define!(Uint TERRAIN_PATCH_VERTEX_COUNT),
+    shader_define!(Uint TERRAIN_PATCHES_PER_CELL_SIDE),
+    shader_define!(Uint TERRAIN_PATCH_LATTICE_PER_LAND_SPACING),
+    shader_define!(Uint TERRAIN_PATCH_CELL_LATTICE),
+    shader_define!(Uint TERRAIN_PATCH_SLOTS),
+    shader_define!(Float TERRAIN_PATCH_LATTICE_STEP),
+    shader_define!(UintPlain TERRAIN_PATCH_WORKGROUP),
+    shader_define!(Uint TERRAIN_PATCH_EDGE_SAMPLES),
+    shader_define!(Uint TERRAIN_PATCH_READBACK_WORDS),
     HeaderLine::Blank,
     HeaderLine::Comment("Material kind enum (`GpuMaterial.materialKind`)."),
     HeaderLine::Comment("Authoritative values: scene_buffer/constants.rs. #1401."),

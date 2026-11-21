@@ -586,6 +586,40 @@ impl VulkanContext {
         }
     }
 
+    /// #7152 — TSD-4.1: re-displace this frame's resident terrain patches in
+    /// place, after the instance upload (which also copies any dirty terrain
+    /// tiles the pass reads) and before the geometry pass that draws them.
+    pub(super) fn record_terrain_patches(&mut self, cmd: vk::CommandBuffer, frame: usize) {
+        let Some(pass) = self.exterior.terrain_patch.as_mut() else {
+            return;
+        };
+        let Some(vertex_buffer) = self.mesh_registry.global_vertex_buffer.as_ref() else {
+            return;
+        };
+        let (tile_buffer, tile_buffer_size) = self.scene_buffers.terrain_tile_buffer();
+        let buffers = crate::vulkan::terrain_patch::TerrainPatchBuffers {
+            vertex_buffer: vertex_buffer.buffer,
+            vertex_buffer_size: vertex_buffer.size,
+            vertex_generation: self.mesh_registry.geometry_generation(),
+            tile_buffer,
+            tile_buffer_size,
+        };
+        let timed = pass.has_frame();
+        if timed && let Some(timers) = self.gpu_timers.as_mut() {
+            timers.cmd_start(TimerPass::TerrainPatch, &self.device, cmd, frame);
+        }
+        let bindless_set = self.texture_registry.descriptor_set(frame);
+        // SAFETY: outside any render pass (between the instance upload and the
+        // geometry pass); the vertex and tile buffers are the ones this frame's
+        // draws bind, and the bindless set is this frame's.
+        unsafe {
+            pass.record(&self.device, cmd, frame, buffers, bindless_set, &self.mesh_registry);
+        }
+        if timed && let Some(timers) = self.gpu_timers.as_mut() {
+            timers.cmd_end(TimerPass::TerrainPatch, &self.device, cmd, frame);
+        }
+    }
+
     /// This frame's TLAS for a compute pass that ray-queries it
     /// unconditionally, or `None` when this frame's `build_tlas` failed.
     ///

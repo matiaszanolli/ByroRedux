@@ -141,6 +141,12 @@ impl VulkanContext {
                 // SAFETY: `device_wait_idle` ran at the top of `Drop`.
                 tier.destroy(&self.device, alloc);
             }
+            // #7152 — the terrain patch pass (pipeline, sets, readback buffers).
+            // Its reserved meshes live in `mesh_registry`, torn down with it.
+            if let Some(ref mut patches) = self.exterior.terrain_patch {
+                // SAFETY: `device_wait_idle` ran at the top of `Drop`.
+                patches.destroy(&self.device, alloc);
+            }
             // #4052 — the §11.1 sampling bench. Allocator-owned (three array
             // images, a raster target and its per-frame record buffers), so it
             // belongs in this block rather than the allocator-independent one.

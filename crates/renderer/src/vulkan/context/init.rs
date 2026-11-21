@@ -649,6 +649,7 @@ impl VulkanContext {
         // every other indirect consumer (#4827): without it the pipeline
         // is simply not created, mirroring the model tier below.
         let (groundcover, groundcover_models) = create_ground_cover(&device, &gpu_allocator, &device_caps, render_pass, pipeline_cache, &texture_registry, &scene_buffers);
+        let mut terrain_patch = create_terrain_patch(&device, &gpu_allocator, pipeline_cache, &texture_registry);
 
         let WaterPasses { water, placeholder_ao, placeholder_caustic_sink, water_caustic_accum } = create_water_passes(&device, &gpu_allocator, &graphics_queue, transfer_pool, render_pass, pipeline_cache, &texture_registry, &scene_buffers, render_extent);
 
@@ -687,7 +688,15 @@ impl VulkanContext {
         }
 
         // 14. Mesh registry (empty — meshes uploaded by the application)
-        let mesh_registry = MeshRegistry::new();
+        let mut mesh_registry = MeshRegistry::new();
+        // #7152 — the TSD-4 patch meshes take the first handles, so in the
+        // opaque sort (which groups by mesh handle) every patch draws before
+        // any base terrain cell and early-Z rejects the base under it.
+        if let Some(pass) = terrain_patch.as_mut()
+            && let Err(e) = pass.reserve_meshes(&mut mesh_registry)
+        {
+            log::warn!("terrain patches: {e:#} — no terrain displacement patches");
+        }
 
         let GBufferStage { gbuffer, raw_indirect_views, motion_views_seed, mesh_id_views_seed, normal_views_for_svgf, albedo_views, reactive_views, transparency_views } = create_gbuffer(&device, &gpu_allocator, &graphics_queue, transfer_pool, render_extent)?;
         let n_frames = MAX_FRAMES_IN_FLIGHT;
@@ -956,6 +965,7 @@ impl VulkanContext {
                 // view of the CLI.
                 groundcover_bench: None,
                 groundcover_bench_cells: Vec::new(),
+                terrain_patch,
             },
             mesh_registry,
             texture_registry,

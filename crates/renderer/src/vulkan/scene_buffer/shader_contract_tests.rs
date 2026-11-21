@@ -1820,6 +1820,19 @@ fn unsafe_vertex_lane_reads(src: &str, names: &[&str]) -> Vec<(usize, u32, Strin
             if !is_bit_pattern_vertex_lane(lane) {
                 continue;
             }
+            // #7152 — an assignment target is a write: the bit pattern has to
+            // go in through `uintBitsToFloat(...)` / `intBitsToFloat(...)`, or
+            // a raw float lands where readers recover integer bits.
+            let after = code[close + 1..].trim_start();
+            if after.starts_with('=') && !after.starts_with("==") {
+                let rhs = after[1..].trim_start();
+                if rhs.starts_with("uintBitsToFloat(") || rhs.starts_with("intBitsToFloat(") {
+                    continue;
+                }
+                let line = code[..at].matches('\n').count() + 1;
+                found.push((line, lane, format!("{} = <raw float write>", &code[at..=close])));
+                continue;
+            }
             let before = code[..at].trim_end();
             if before.ends_with("floatBitsToUint(") || before.ends_with("floatBitsToInt(") {
                 continue;
@@ -1851,6 +1864,9 @@ fn the_vertex_lane_scanner_recognises_the_shapes_it_exists_to_catch() {
         "float i = inputVertexData[src_base + 13u];",
         // A recovery call elsewhere on the line does not wrap THIS read.
         "uint a = floatBitsToUint(vertexData[base]) + uint(vertexData[base + 14u]);",
+        // #7152 — a raw float written into a bit-pattern lane.
+        "vertexData[o + VERTEX_BONE_INDICES_OFFSET_FLOATS + i] = 0.0;",
+        "vertexData[o + VERTEX_SPLAT0_OFFSET_FLOATS] = packed;",
     ] {
         assert_eq!(
             unsafe_vertex_lane_reads(caught, &names).len(),
@@ -1870,6 +1886,11 @@ fn the_vertex_lane_scanner_recognises_the_shapes_it_exists_to_catch() {
         "// float raw = vertexData[base + 12u];",
         // A different array whose name merely ends in `vertexData`.
         "float t = mirrorvertexData[base + 12u];",
+        // #7152 — writes that store the bit pattern, and a comparison.
+        "vertexData[o + VERTEX_BONE_INDICES_OFFSET_FLOATS + i] = uintBitsToFloat(0u);",
+        "vertexData[o + VERTEX_SPLAT1_OFFSET_FLOATS] = uintBitsToFloat(packUnorm4x8(s));",
+        "vertexData[o + 13u] = intBitsToFloat(-1);",
+        "bool same = floatBitsToUint(vertexData[o + 12u]) == 0u;",
     ] {
         assert!(
             unsafe_vertex_lane_reads(ignored, &names).is_empty(),
@@ -1987,6 +2008,8 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
     let skin_vertices_comp = include_str!("../../../shaders/skin_vertices.comp");
     let skin_palette_comp = include_str!("../../../shaders/skin_palette.comp");
     let skin_compute_rs = include_str!("../skin_compute.rs");
+    let terrain_patch_comp = include_str!("../../../shaders/terrain_patch.comp");
+    let terrain_patch_rs = include_str!("../terrain_patch.rs");
 
     const NO_ALIASES: &[NameAlias] = &[];
     for (label, glsl_src, glsl_decl, rust_src, rust_decl, aliases) in [
@@ -2081,6 +2104,15 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
             groundcover_rs,
             "struct GpuGroundCoverChunk",
             &[("active", "slotActive")],
+        ),
+        // #7152 — the terrain patch push block.
+        (
+            "TerrainPatchPush",
+            terrain_patch_comp,
+            "uniform TerrainPatchPush",
+            terrain_patch_rs,
+            "struct TerrainPatchPush",
+            NO_ALIASES,
         ),
         // The #4052 bench's records.
         (
@@ -2491,6 +2523,12 @@ fn every_shader_struct_is_classified() {
         ("ShadowFilterGuide", ShaderLocal),
         ("FarSunProjection", Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep")),
         ("TerrainSample", ShaderLocal),
+        // #7152 — `terrain_patch.comp`'s interpolated base-vertex bundle.
+        ("BaseSample", ShaderLocal),
+        (
+            "TerrainPatchPush",
+            Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
+        ),
         ("LocalMedium", ShaderLocal),
         ("DisneyDiffuseSplit", ShaderLocal),
         ("CombustionDifferential", ShaderLocal),
@@ -5238,20 +5276,22 @@ fn derive_ax_ay_clamps_anisotropic_against_nan_and_floor_escape() {
 /// its normal maps as specular and vice versa.
 #[test]
 fn gpu_terrain_tile_glsl_and_rust_fields_stay_in_lockstep() {
-    const BINDINGS_GLSL: &str = include_str!("../../../shaders/include/bindings.glsl");
+    // #7152 — the struct moved to `terrain_tile.glsl`, which `bindings.glsl`
+    // and `terrain_patch.comp` both include.
+    const TERRAIN_TILE_GLSL: &str = include_str!("../../../shaders/include/terrain_tile.glsl");
     const GPU_TYPES_RS: &str = include_str!("gpu_types.rs");
 
-    // #3564 — bindings.glsl is the only declaration today; pin that so a
+    // #3564 — terrain_tile.glsl is the only declaration today; pin that so a
     // second mirror cannot appear outside this comparison.
     assert_mirror_list_is_complete(
         "struct GpuTerrainTile",
-        &[("include/bindings.glsl", BINDINGS_GLSL)],
+        &[("include/terrain_tile.glsl", TERRAIN_TILE_GLSL)],
         "#2463 / #3564",
     );
 
     let glsl = strip_struct_body(
-        extract_struct_body(BINDINGS_GLSL, "struct GpuTerrainTile")
-            .expect("include/bindings.glsl must declare `struct GpuTerrainTile`"),
+        extract_struct_body(TERRAIN_TILE_GLSL, "struct GpuTerrainTile")
+            .expect("include/terrain_tile.glsl must declare `struct GpuTerrainTile`"),
     );
     let glsl_fields: Vec<String> = glsl
         .iter()
@@ -6174,11 +6214,11 @@ fn every_terrain_splat_sampler_uses_explicit_gradients() {
          found {checked} — the scan broke, or a loop was added/removed without \
          updating this pin"
     );
-    let bindings = include_str!("../../../shaders/include/bindings.glsl");
+    let bindings = include_str!("../../../shaders/include/terrain_tile.glsl");
     let helper = bindings
         .split("vec3 byroTerrainSplatAlbedo(")
         .nth(1)
-        .expect("the shared splat chain lives in bindings.glsl")
+        .expect("the shared splat chain lives in terrain_tile.glsl")
         .split("\n}")
         .next()
         .expect("helper body terminates");
@@ -7886,11 +7926,11 @@ fn groundcover_affinity_composes_the_base_in_diffuse_loop_order() {
 /// where paint thinned to nothing.
 #[test]
 fn blade_ground_colour_uses_the_shared_terrain_splat_chain() {
-    let bindings = include_str!("../../../shaders/include/bindings.glsl");
+    let bindings = include_str!("../../../shaders/include/terrain_tile.glsl");
     let helper = bindings
         .split("vec3 byroTerrainSplatAlbedo(")
         .nth(1)
-        .expect("byroTerrainSplatAlbedo must stay in bindings.glsl")
+        .expect("byroTerrainSplatAlbedo must stay in terrain_tile.glsl")
         .split("\n}")
         .next()
         .expect("helper body terminates");

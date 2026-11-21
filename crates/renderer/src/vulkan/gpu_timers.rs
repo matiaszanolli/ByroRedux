@@ -15,7 +15,8 @@
 //! sky-cube bracket (#6316), from 60/30 by the world-space combustion
 //! local-grid sim (#6533), from 62/31 by the far-field sun shadows, and from
 //! 64/32 by the radiance cache's update and resolve brackets (RCG-PERF-001,
-//! which also widened the active-bit mask from `u32` to `u64`):
+//! which also widened the active-bit mask from `u32` to `u64`), and from 68/34
+//! by the TSD-4 terrain patch pass (#7152):
 //!
 //! | Slot | Bracket                                |
 //! |------|----------------------------------------|
@@ -87,6 +88,8 @@
 //! | 65   | radiance cache update paths — end                    |
 //! | 66   | radiance cache resolve — start                       |
 //! | 67   | radiance cache resolve — end                         |
+//! | 68   | TSD-4 terrain patch displacement — start             |
+//! | 69   | TSD-4 terrain patch displacement — end               |
 //!
 //! The original three brackets (skin dispatch / BLAS refit / TAA) shipped
 //! with the #1194 perf-bisect work; the skin-palette bracket (slots 28/29)
@@ -146,7 +149,7 @@ use super::sync::MAX_FRAMES_IN_FLIGHT;
 
 /// Two TIMESTAMP queries per bracket (start, end); the module doc's table is
 /// the one place that counts them.
-const QUERIES_PER_FRAME: u32 = 68;
+const QUERIES_PER_FRAME: u32 = 70;
 
 const Q_SKIN_DISPATCH_START: u32 = 0;
 const Q_SKIN_DISPATCH_END: u32 = 1;
@@ -238,6 +241,11 @@ const Q_CACHE_UPDATE_START: u32 = 64;
 const Q_CACHE_UPDATE_END: u32 = 65;
 const Q_CACHE_RESOLVE_START: u32 = 66;
 const Q_CACHE_RESOLVE_END: u32 = 67;
+/// #7152 — TSD-4.1's terrain patch displacement dispatches
+/// (`terrain_patch.comp`), recorded after the instance upload and before the
+/// main render pass.
+const Q_TERRAIN_PATCH_START: u32 = 68;
+const Q_TERRAIN_PATCH_END: u32 = 69;
 
 /// Per-pass elapsed GPU time, milliseconds. Reads `0.0` for any
 /// bracket that didn't run on the snapshot frame OR before the
@@ -382,6 +390,9 @@ pub struct GpuTimerSnapshot {
     pub cache_update_ms: f32,
     /// RCG-PERF-001 — the radiance cache's resolve pass. Inactive until the pass records it.
     pub cache_resolve_ms: f32,
+    /// #7152 — the TSD-4 terrain patch displacement pass. Starts at
+    /// `COMPUTE_SHADER`. Inactive on frames with no resident patch.
+    pub terrain_patch_ms: f32,
     /// #6316 — the SKYAL cloud-shadow bake (`cloud_shadow.comp`, one
     /// invocation per texel of the camera-centred map, marching the cloud
     /// column toward the sun). Recorded inside the sky-cube bracket, so it
@@ -447,6 +458,7 @@ pub struct GpuTimerSnapshot {
     pub far_sun_active: bool,
     pub cache_update_active: bool,
     pub cache_resolve_active: bool,
+    pub terrain_patch_active: bool,
     pub cloud_shadow_active: bool,
     pub volumetrics_local_sim_active: bool,
     pub main_opaque_active: bool,
@@ -524,6 +536,7 @@ const BIT_FAR_SUN: u64 = 1 << 31;
 /// The first bracket past the old `u32` mask (RCG-PERF-001).
 const BIT_CACHE_UPDATE: u64 = 1 << 32;
 const BIT_CACHE_RESOLVE: u64 = 1 << 33;
+const BIT_TERRAIN_PATCH: u64 = 1 << 34;
 
 /// A named START/END timestamp bracket. One row of [`TimerPass::row`] holds everything the two timestamp
 /// writes vary on, so adding a pass is a variant, a row and its `Q_*` / `BIT_*` constants — not two methods.
@@ -558,6 +571,7 @@ pub enum TimerPass {
     FarSun,
     CacheUpdate,
     CacheResolve,
+    TerrainPatch,
 }
 
 /// The query slots, active bit and pipeline stages of one [`TimerPass`].
@@ -639,6 +653,7 @@ impl TimerPass {
             Self::FarSun => PassRow { start: Q_FAR_SUN_START, end: Q_FAR_SUN_END, bit: BIT_FAR_SUN, start_stage: S::COMPUTE_SHADER, end_stage: S::COMPUTE_SHADER },
             Self::CacheUpdate => PassRow { start: Q_CACHE_UPDATE_START, end: Q_CACHE_UPDATE_END, bit: BIT_CACHE_UPDATE, start_stage: S::COMPUTE_SHADER, end_stage: S::COMPUTE_SHADER },
             Self::CacheResolve => PassRow { start: Q_CACHE_RESOLVE_START, end: Q_CACHE_RESOLVE_END, bit: BIT_CACHE_RESOLVE, start_stage: S::COMPUTE_SHADER, end_stage: S::COMPUTE_SHADER },
+            Self::TerrainPatch => PassRow { start: Q_TERRAIN_PATCH_START, end: Q_TERRAIN_PATCH_END, bit: BIT_TERRAIN_PATCH, start_stage: S::COMPUTE_SHADER, end_stage: S::COMPUTE_SHADER },
         }
     }
 }
@@ -670,7 +685,7 @@ const _: () = assert!(
     Q_GEOMETRY_PHASE_BASE + 2 * GEOMETRY_TIMER_PHASE_COUNT == Q_FAR_SUN_START,
     "geometry phases must end before the far-sun bracket"
 );
-const _: () = assert!(Q_CACHE_RESOLVE_END + 1 == QUERIES_PER_FRAME);
+const _: () = assert!(Q_TERRAIN_PATCH_END + 1 == QUERIES_PER_FRAME);
 const _: () = assert!(
     GEOMETRY_PHASE_BIT_BASE + GEOMETRY_TIMER_PHASE_COUNT <= u64::BITS,
     "geometry phase active bits must fit active_bits' u64"
@@ -828,6 +843,10 @@ fn snapshot_from_bits_with_valid_bits(
     snap.cache_resolve_active = bits & BIT_CACHE_RESOLVE != 0;
     if snap.cache_resolve_active {
         snap.cache_resolve_ms = bracket_ms(Q_CACHE_RESOLVE_START);
+    }
+    snap.terrain_patch_active = bits & BIT_TERRAIN_PATCH != 0;
+    if snap.terrain_patch_active {
+        snap.terrain_patch_ms = bracket_ms(Q_TERRAIN_PATCH_START);
     }
     snap.cloud_shadow_active = bits & BIT_CLOUD_SHADOW != 0;
     if snap.cloud_shadow_active {

@@ -59,6 +59,7 @@ pub mod restir;
 pub mod shadow_filter;
 pub mod scene_buffer;
 pub mod skin_compute;
+pub mod terrain_patch;
 pub mod ssao;
 pub mod surface;
 pub mod sky_cube;

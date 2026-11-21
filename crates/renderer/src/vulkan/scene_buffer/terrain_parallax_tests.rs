@@ -341,7 +341,7 @@ fn every_parallax_march_uses_the_guarded_secant_weight() {
 /// loop is undefined behaviour. Ban the same tokens in the whole call chain.
 #[test]
 fn glsl_terrain_height_chain_uses_only_explicit_gradients() {
-    let bindings = include_str!("../../../shaders/include/bindings.glsl");
+    let bindings = include_str!("../../../shaders/include/terrain_tile.glsl");
     for header in ["float byroTerrainBlendCore(", "float byroTerrainBlendedHeight("] {
         // Comments may name the banned calls (this one explains why they are banned).
         let body = squashed(function_body(bindings, header));

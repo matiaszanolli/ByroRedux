@@ -3,7 +3,8 @@
 **Status**: REVIEWED and approved by Matías on 2026-11-21 (#6198); the decisions are in §9.
 Drafted 2026-10-22. Follows TSD-1 (#6195 height maps), TSD-2 (#6196 height blend) and
 TSD-3 (#6197 parallax), which are shipped. #7149 (BTXT-only tile slots) and the §8 spike
-(#7150, result in §8.1: go) are done; next is stage 4.1, #7152.
+(#7150, result in §8.1: go) are done. Stage 4.1 (#7152) is built (§7.1) and measured
+(§8.2); it awaits review before 4.2.
 
 **Question this answers**: if parallax (TSD-3) is not enough, how would real geometry
 displacement work in an engine whose shadows, reflections and GI are ray-traced, what would
@@ -192,6 +193,44 @@ measurement from risk 3.
 RT → **4.2** BLAS in the TLAS + refit + seam readback → **4.3** TSD-3 interplay + fades +
 settings/UI. Each stage ends with a review, as in TSD-1–3.
 
+### 7.1 Stage 4.1 as built (#7152)
+- **Pool**: `vulkan/terrain_patch.rs`. 24 slots of 65×65 vertices, reserved in
+  `VulkanContext::new` with `upload_scene_mesh_global_only` (global pool only: no per-mesh
+  buffers, no BLAS). They are the registry's first handles on purpose: the opaque sort
+  groups by mesh handle, so every patch draws before any base cell and early-Z rejects
+  the base under it. Each slot has its own copy of the lattice indices (24 × 98 KB),
+  not the single shared buffer of §3.1; sharing needs index aliasing in `MeshRegistry`,
+  which can wait for 4.2.
+- **Compute**: `terrain_patch.comp`, one dispatch per resident slot, recorded after the
+  instance upload and before the main pass (`record_terrain_patches`, GPU bracket
+  `terrain_patch`). It interpolates the base vertex on the emitted base *triangle* (the
+  `land_tile_indices` split), lifts it along the base normal by
+  `lip + amplitude · fadeDistance · fadeMissing · h`, with `h` from
+  `byroTerrainBlendedHeight` (now in `include/terrain_tile.glsl`, shared with the
+  fragment shader), and tilts the base normal by the gradient of that displacement (four
+  extra evaluations), so where the displacement is constant the normal is the base's own.
+- **Departures from §3**, all to keep the "no cracks" rule by construction:
+  - the 1 mm lip is a floor everywhere, not only at borders: a zero height would
+    otherwise put the patch exactly on the base and z-fight;
+  - the fade to the lip depends only on world position and the camera. It measures the
+    distance to the nearest square of the 3×3 neighbourhood that has no resident patch,
+    and squares across a cell border always count as missing, which is the cell-border
+    rule of §3.4. A per-side "neighbour missing" fade, as §3.4 reads, cracks shared
+    edges at a corner whose diagonal neighbour is missing;
+  - assignment covers every square whose footprint comes within the range (not only
+    squares whose centre does), so the faded disc is always covered while slots last,
+    with 1 m of hysteresis;
+  - patches still draw over XCLC-hidden quadrants (known gap; the base drops those
+    quadrants from its index buffer, the patch does not know).
+- **Raster**: the host (`byroredux/src/terrain_patches.rs`) clones each patch's base
+  cell draw command onto the patch mesh with `in_tlas = false`, before the sort, so the
+  patch carries the cell's exact material and tile.
+- **Readback**: `terrain.patches` prints, one frame-in-flight late, every border that must
+  sit at the lip and the largest |displacement − lip| on it, every border two resident
+  patches share and the largest world-Y gap between them, each slot's largest
+  displacement, and the `terrain_patch` / `main_render` GPU brackets. `terrain.patches
+  on|off` is the A/B switch; `amplitude` / `range` retune the session.
+
 ## 8. The spike, and its go/no-go bar (proposed — adjust it)
 Measure on the 4070 Ti, release build, at the five TSD positions: (a) refit time for 197 k
 triangles of a displaced grid, (b) compute displace time for 101 k vertices, (c) added raster
@@ -231,6 +270,52 @@ Projected for the §3 defaults (24 patches × 8 192 triangles = 197 k):
 ≈ 0.19–0.26 ms with one BLAS, which leaves 0.5–0.8 ms of the 1.0 ms total for raster. 4.1
 (raster only, no RT) is where (c)/(d) get measured; 4.2 should build the patches as one
 multi-geometry BLAS rather than 24.
+
+### 8.2 Stage 4.1 measurement (#7152, 2026-11-21)
+4070 Ti, release, `--bench-mode renderer-static`, radius 1, the engine's own spawn point on
+each grid, camera pitch −80° (down) / −25° (eye) / −8° (graze). Each row is 10 interleaved
+off/on rounds × 4 samples of the GPU brackets (`terrain.patches` toggled between rounds),
+medians in ms; the patches were at the §9 defaults (3 cm, 6 m), 16 of 24 slots resident.
+**Total** = the `terrain_patch` compute bracket + the `main_render` delta (raster, no RT yet).
+
+| position (grid) | pose | `main_render` off | delta | compute | **total** |
+|---|---|---|---|---|---|
+| Skyrim, Whiterun tundra (2,−4) | down | 3.66 | +0.54 | 0.21 | **0.74** |
+| | eye | 4.39 | +0.78 | 0.18 | **0.96** |
+| | graze | 8.65 | +0.48 | 0.19 | **0.67** |
+| Skyrim, Riverwood bank (4,−11) | down | 1.81 | +0.33 | 0.21 | **0.54** |
+| | eye | 1.89 | +0.47 | 0.19 | **0.66** |
+| | graze | 2.62 | +0.33 | 0.25 | **0.58** |
+| FNV, Mojave (0,0) | down | 7.86 | +1.17 | 0.28 | **1.44** |
+| | eye | 7.81 | +1.84 | 0.20 | **2.04** |
+| | graze | 7.93 | +2.18 | 0.20 | **2.38** |
+| FO4, Commonwealth (0,0) | down | 8.25 | +0.89 ± 2.3 sd | 0.19 | **1.08** |
+| | eye | 9.64 | +0.34 ± 3.0 sd | 0.19 | **0.53** |
+| | graze | 10.38 | +0.46 | 0.20 | **0.66** |
+| Oblivion, forest (0,0) | down | 7.26 | +0.24 | 0.19 | **0.43** |
+| | eye | 7.23 | +0.32 | 0.19 | **0.51** |
+| | graze | 7.51 | −0.06 | 0.18 | **0.12** |
+
+Sample spread is ≤ 0.6 ms sd except where shown (FO4 down/eye are noisy, so treat those
+deltas as ±1 ms). The FO4 grid is TSD-1's painted 0,0 cell, not a verified dirt road.
+
+- **Seams**: every run read back `max|d − lip| = 0` over 16 lip borders and a `0` gap over
+  24 shared borders; the largest displacement is 3.08–3.10 cm (lip + amplitude).
+- **Validation**: `BYRO_VALIDATION=1` (sync validation) at the Skyrim tundra and FNV
+  positions, all three poses, patches on and off: no VUID or SYNC-HAZARD message.
+- **Compute is 0.18–0.28 ms**, 2–3× the §8.1 projection (0.06–0.13 ms).
+- **Raster is the cost, and it scales with triangle density, not patch count.** At FNV (the
+  spawn faces a slope, so patch terrain fills the screen), a 3 m range (6 patches) left the
+  raster delta at 1.0 / 2.0 / 2.0 ms while halving compute to 0.10 ms; a temporary 32×32-quad
+  lattice (11.4 cm, a quarter of the triangles) roughly halved it, to 0.77 / 1.08 / 0.90 ms
+  (compute 0.12–0.17 ms). The patches draw before their base cells (first mesh handles), so
+  this is not the base shaded twice in full; it reads as the per-pixel overhead of small
+  triangles over a heavy fragment shader.
+- **Against the 1.0 ms bar** (before 4.2's ≈ 0.13 ms refit): Riverwood, Oblivion and FO4
+  graze/eye pass; the tundra passes (eye 0.96); FO4 down is at the bar within its noise; FNV
+  fails at every pose (1.4–2.4 ms).
+- Not yet in these numbers: TSD-3 parallax still runs on the patches (the §3.6 interplay is
+  4.3), and the patches are not in the TLAS (4.2).
 
 ## 9. Review decisions (Matías, 2026-11-21)
 1. **Upward-only displacement, base mesh kept (§3.3)**: accepted. No holes, no zero-mean
