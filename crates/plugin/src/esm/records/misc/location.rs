@@ -8,16 +8,22 @@
 //! Format/LCTN*: the names changed with Dawnguard):
 //!
 //! - `ACPR` / `LCPR` population refs `{ref, cell-or-world, grid y, grid x}`
-//!   (12 bytes) and `RCPR` bare refs — editor location: this location.
+//!   (12 bytes; Starfield appends a `wbUnknown(4)`, 16 bytes) and `RCPR` bare
+//!   refs — editor location: this location.
 //! - `ACUN` / `LCUN` unique actors `{actor base, ref, location}` (12 bytes) —
 //!   editor location: the struct's own location ("points to itself in most
 //!   cases"), this one when null.
 //! - `ACSR` / `LCSR` static refs `{location ref type, ref, cell-or-world,
-//!   grid}` (16 bytes) — the location's `LCRT`-tagged references (boss,
-//!   map marker, …).
+//!   grid}` (16 bytes; Starfield 20) — the location's `LCRT`-tagged
+//!   references (boss, map marker, …).
+//!
+//! Starfield's trailing `wbUnknown(4)` on both structs is
+//! `wbDefinitionsSF1.pas:13401-13470`; read at the FO4 stride, every entry
+//! after the first was misaligned and its grid / unknown words were remapped
+//! as FormIDs (#7118). FO4 and FO76 keep the shorter layout.
 
 use super::super::common::{remap_fid, CommonNamedFields};
-use crate::esm::reader::{FormIdRemap, SubRecord};
+use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
 /// One parsed `LCTN`.
@@ -37,7 +43,20 @@ pub struct LctnRecord {
     pub ref_type_refs: Vec<(u32, u32)>,
 }
 
-pub fn parse_lctn(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> LctnRecord {
+/// `ACPR` / `LCPR` entry size before Starfield: ref, cell-or-world, grid.
+const PERSIST_REF_LEN: usize = 12;
+/// `ACSR` / `LCSR` entry size before Starfield: ref type, ref, cell-or-world, grid.
+const SPECIAL_REF_LEN: usize = 16;
+/// Starfield's `wbUnknown(4)` tail on both entry kinds.
+const STARFIELD_REF_TAIL: usize = 4;
+
+pub fn parse_lctn(
+    form_id: u32,
+    subs: &[SubRecord],
+    remap: &Option<FormIdRemap>,
+    game: GameKind,
+) -> LctnRecord {
+    let tail = if game == GameKind::Starfield { STARFIELD_REF_TAIL } else { 0 };
     let common = CommonNamedFields::from_subs_with_remap(subs, remap);
     let mut out = LctnRecord {
         form_id,
@@ -59,10 +78,11 @@ pub fn parse_lctn(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
             }
             // {ref, cell/world, grid y i16, grid x i16}
             b"ACPR" | b"LCPR" => {
-                while r.remaining() >= 12 {
+                while r.remaining() >= PERSIST_REF_LEN + tail {
                     let reference = r.u32_or_default();
                     let _cell = r.u32_or_default();
                     let _grid = r.u32_or_default();
+                    r.skip_or_eof(tail);
                     if reference != 0 {
                         out.editor_location_refs
                             .push((remap_fid(reference, remap), form_id));
@@ -96,11 +116,12 @@ pub fn parse_lctn(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
             }
             // {location ref type, ref, cell/world, grid y i16, grid x i16}
             b"ACSR" | b"LCSR" => {
-                while r.remaining() >= 16 {
+                while r.remaining() >= SPECIAL_REF_LEN + tail {
                     let ref_type = r.u32_or_default();
                     let reference = r.u32_or_default();
                     let _cell = r.u32_or_default();
                     let _grid = r.u32_or_default();
+                    r.skip_or_eof(tail);
                     if ref_type != 0 && reference != 0 {
                         out.ref_type_refs
                             .push((remap_fid(ref_type, remap), remap_fid(reference, remap)));
@@ -134,7 +155,7 @@ mod tests {
             sub(b"KWDA", words(&[0x13168, 0x13166])),
             sub(b"PNAM", words(&[0x1_6772])),
         ];
-        let record = parse_lctn(0x1_8A56, &subs, &None);
+        let record = parse_lctn(0x1_8A56, &subs, &None, GameKind::Skyrim);
         assert_eq!(record.editor_id, "WhiterunLocation");
         assert_eq!(record.keywords, vec![0x13168, 0x13166]);
         assert_eq!(record.parent, Some(0x1_6772));
@@ -152,8 +173,29 @@ mod tests {
             sub(b"PNAM", words(&[0])),
             sub(b"LCPR", [1, 2, 3]),
         ];
-        let record = parse_lctn(1, &subs, &None);
+        let record = parse_lctn(1, &subs, &None, GameKind::Skyrim);
         assert_eq!(record.parent, None);
         assert!(record.editor_location_refs.is_empty());
+    }
+
+    /// Starfield appends a `wbUnknown(4)` to both entry kinds (16 / 20 bytes,
+    /// `wbDefinitionsSF1.pas:13401-13470`): two entries each must decode
+    /// their own refs, not the previous entry's tail words (#7118).
+    #[test]
+    fn starfield_ref_entries_step_over_their_unknown_tail() {
+        let subs = vec![
+            sub(b"LCPR", words(&[0xA1, 0x3C, 0x7FFF_7FFF, 0xFFFF_FFFF, 0xA2, 0x3C, 0, 0x40A0_0000])),
+            sub(
+                b"LCSR",
+                words(&[0xB1, 0xC1, 0x3C, 0x7FFF_7FFF, 0xFFFF_FFFF, 0xB2, 0xC2, 0x3C, 0, 0x42C8_0000]),
+            ),
+        ];
+        let record = parse_lctn(7, &subs, &None, GameKind::Starfield);
+        assert_eq!(record.editor_location_refs, vec![(0xA1, 7), (0xA2, 7)]);
+        assert_eq!(record.ref_type_refs, vec![(0xB1, 0xC1), (0xB2, 0xC2)]);
+
+        // The same bytes at FO4's stride misread the tail words as entries.
+        let fo4 = parse_lctn(7, &subs, &None, GameKind::Fallout4);
+        assert_ne!(fo4.ref_type_refs, record.ref_type_refs);
     }
 }

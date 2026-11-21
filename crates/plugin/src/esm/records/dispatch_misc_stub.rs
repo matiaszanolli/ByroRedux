@@ -156,7 +156,7 @@ pub(super) fn dispatch_misc_stub_group(
                 .insert(fid, parse_minimal_esm_record(fid, subs));
         })?,
         b"LCTN" => extract_records(reader, end, b"LCTN", &mut |fid, subs| {
-            index.locations.insert(fid, parse_lctn(fid, subs, &remap));
+            index.locations.insert(fid, parse_lctn(fid, subs, &remap, game));
         })?,
         b"LSCR" => {
             super::grup_walker::extract_records_with_flags(
