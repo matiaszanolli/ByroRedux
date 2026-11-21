@@ -111,6 +111,11 @@ pub(crate) enum ReferenceRung {
     /// [`SKY_PROBE_ROUGHNESS`], 5..=9 a conductor at the same roughness,
     /// 10 a unit-albedo Lambertian probe (sky diffuse).
     SkyProbe,
+    /// RLT-IBL-010 (A17): an unoccluded Lambertian plane under the same sky
+    /// with the sun ON — its directional light, and the disc the probe bakes.
+    /// The reference lights it with the sun as an emitter and the disc-free
+    /// environment (RLT-REF-012), so the sun's energy is counted once there.
+    SkySunPlane,
 }
 
 /// RLT-REF-021: the L5 sweep's five roughness values (the showcase's
@@ -235,6 +240,7 @@ impl ReferenceRung {
             Self::ContactFlat => "contact-flat",
             Self::SkyEnvironment => "sky-env",
             Self::SkyProbe => "sky-probe",
+            Self::SkySunPlane => "sky-sun-plane",
         }
     }
 }
@@ -255,6 +261,7 @@ const RUNGS: &[ReferenceRung] = &[
     ReferenceRung::ContactFlat,
     ReferenceRung::SkyEnvironment,
     ReferenceRung::SkyProbe,
+    ReferenceRung::SkySunPlane,
 ];
 
 /// Penumbra rungs: plate half-extent and height above the floor.
@@ -294,9 +301,10 @@ fn insert_reference_sun(world: &mut World, dir: Vec3) {
 /// The exterior sky of the sky rungs (RLT-REF-012, RLT-REF-019, RLT-REF-021):
 /// the procedural sky toward [`SKY_SUN_DIR`] with no cloud deck, moon or
 /// stars, so it is static and identical on both sides; the directional
-/// light is dropped ([`ReferenceSkyOnly`]). `disc: false` removes the sun
-/// disc and keeps its glow, which is sky radiance (RLT-REF-012).
-fn insert_reference_sky(world: &mut World, disc: bool) {
+/// light is dropped ([`ReferenceSkyOnly`]) unless `sun` is set. `disc:
+/// false` removes the sun disc and keeps its glow, which is sky radiance
+/// (RLT-REF-012).
+fn insert_reference_sky(world: &mut World, disc: bool, sun: bool) {
     insert_reference_sun(world, Vec3::from_array(SKY_SUN_DIR));
     {
         let mut sky = world.resource_mut::<crate::components::SkyParamsRes>();
@@ -319,7 +327,9 @@ fn insert_reference_sky(world: &mut World, disc: bool) {
     let mut weather = crate::env_translate::procedural_fallback_weather();
     weather.fog_media = [crate::fog::FogMedium::DISABLED, crate::fog::FogMedium::DISABLED];
     world.insert_resource(weather);
-    world.insert_resource(ReferenceSkyOnly);
+    if !sun {
+        world.insert_resource(ReferenceSkyOnly);
+    }
 }
 
 /// The probe of [`ReferenceRung::SkyProbe`] view `view`.
@@ -671,13 +681,13 @@ pub(crate) fn setup_reference_scene(
             (Vec3::new(0.0, 2.6 * M, 2.6 * M), Vec3::ZERO)
         }
         ReferenceRung::SkyEnvironment => {
-            insert_reference_sky(world, false);
+            insert_reference_sky(world, false, false);
             world.insert_resource(HarnessCameraFov(std::f32::consts::FRAC_PI_2));
             let face = Vec3::from_array(SKY_ENV_FACES[(view as usize).min(SKY_ENV_FACES.len() - 1)]);
             (Vec3::ZERO, face * M)
         }
         ReferenceRung::SkyProbe => {
-            insert_reference_sky(world, true);
+            insert_reference_sky(world, true, false);
             let probe = builder.sphere(SKY_PROBE_RADIUS_M * M);
             spawn_object(world, probe, neutral, Vec3::ZERO, Quat::IDENTITY,
                 sky_probe_material(view), "sky_probe");
@@ -686,6 +696,17 @@ pub(crate) fn setup_reference_scene(
                 ..RungMeasurements::default()
             });
             (Vec3::new(0.0, 0.0, SKY_PROBE_CAMERA_M * M), Vec3::ZERO)
+        }
+        ReferenceRung::SkySunPlane => {
+            insert_reference_sky(world, true, true);
+            let plane = builder.box_mesh([2.0 * M, BOX_WALL_T, 2.0 * M]);
+            spawn_object(world, plane, neutral, Vec3::new(0.0, -BOX_WALL_T, 0.0), Quat::IDENTITY,
+                lambert([0.8; 3]), "sun_plane");
+            world.insert_resource(RungMeasurements {
+                analytic_sky: true,
+                ..RungMeasurements::default()
+            });
+            (Vec3::new(0.0, 2.6 * M, 2.6 * M), Vec3::ZERO)
         }
         ReferenceRung::CalibrationSky => {
             let plane = builder.box_mesh([2.0 * M, BOX_WALL_T, 2.0 * M]);

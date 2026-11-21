@@ -1,0 +1,4 @@
+gate	case	region	metric	value	floor_engine	floor_reference	floor_combined	frozen_floor	threshold	pass	tier	engine_frames	engine_seeds	reference_spp	reference_seeds	k_exp	reference_cache_key	revision	gpu
+A17	sun-plane	sun_plane	energy_ratio	1.00224	5.99e-06	2.71e-05	2.77e-05			report	3	64	0,1	1024	0,1	point=pi	bd2c8897be4c8ba5141ece3b	d079fd404577-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A17	sun-plane	sun_plane	rel_error_mean	0.0208977	1.46e-05	4.75e-05	4.97e-05			report	3	64	0,1	1024	0,1	point=pi	bd2c8897be4c8ba5141ece3b	d079fd404577-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A17	sun-plane	sun_plane	rel_error_p95	0.0521096	3.79e-05	3.66e-05	5.27e-05			report	3	64	0,1	1024	0,1	point=pi	bd2c8897be4c8ba5141ece3b	d079fd404577-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04

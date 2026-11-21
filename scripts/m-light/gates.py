@@ -11,6 +11,7 @@ Cornell gates on linear captures (RLT-REF-007):
   A5   contact bands              (RLT-CON-001…008; gated by the threshold table at tier 3; the plank also on a flat floor, reported)
   A14  moving blocker             (RLT-SHD-010; excess over the hold control from frame 80, gated by the threshold table)
   A6   sky IBL energy             (RLT-IBL-001…004, RLT-REF-021; probe-only sky rung, report until the L3 budgets)
+  A17  sun counted once           (RLT-IBL-010; unoccluded plane, sun + disc-free environment, report)
   A7   GI deficit                 (RLT-GI-002; report until Q5's cache)
   A8   traced share free of SSAO  (RLT-GI-004)
   A15  calibration and materials  (RLT-REF-010, RLT-REF-014)
@@ -865,6 +866,7 @@ PENUMBRA_RUNGS = ("penumbra", "penumbra-sun")
 # fitted umbra band and raise the p95 floor above its frozen drift margin.
 SUN_PENUMBRA_REFERENCE_SPP = 16384
 DBG_DISABLE_DIRECT_SHADOWS = 0x8000000  # crates/renderer/src/shader_constants_data.rs
+DBG_DISABLE_SVGF = 0x20  # RLT-REF-018, same file
 PENUMBRA_MIN_PX = 10  # RLT-SHD-001: the reference penumbra spans at least 10 px
 
 
@@ -1337,6 +1339,32 @@ def gate_sky_ibl(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
         rb, _ = store.render(export, "direct", spp, 1)
         mask = region_masks(export)["sky_probe"]
         rows += [(row, key) for row in sky_energy_rows(case, load_exr(ea), load_exr(eb), ra, rb, mask)]
+    return rows
+
+
+def gate_sun_once(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
+    """A17 (RLT-IBL-010, RLT-REF-012, RLT-REF-019): the sun reaches an
+    unoccluded plane once. Engine: linear `final` with SVGF bypassed and no
+    jitter (the closure conditions, RLT-REF-018 / -020); reference: total,
+    with the sun as an emitter and the disc-free environment. A ratio above
+    1 is the disc the probe bakes on top of the directional light."""
+    env = capture_sky_env(engine, ctx)
+    export = engine.out / "scenes" / "sky-sun-plane"
+    native = ["--upscaler", "taa", "--rt-test-no-jitter"]
+    flags = hex(DBG_DISABLE_SVGF)
+    ea = engine.capture("sky_sun_plane", "sky-sun-plane", "final", 0, ctx.tier, export_dir=export,
+                        extra=native, debug_flags=flags)
+    eb = engine.capture("sky_sun_plane", "sky-sun-plane", "final", 1, ctx.tier, extra=native,
+                        debug_flags=flags)
+    shutil.copyfile(env, export / SKY_ENV_FILE)
+    ra, key = store.render(export, "total", spp, 0)
+    rb, _ = store.render(export, "total", spp, 1)
+    mask = region_masks(export)["sun_plane"]
+    rows = []
+    for row in sky_energy_rows("sun-plane", load_exr(ea), load_exr(eb), ra, rb, mask):
+        row.gate = "A17"
+        row.region = "sun_plane"
+        rows.append((row, key))
     return rows
 
 
@@ -1883,6 +1911,8 @@ def main() -> int:
         rows += gate_far_sun(engine, ctx)
     if "A6" in gates:
         rows += gate_sky_ibl(engine, store, ctx, args.spp)
+    if "A17" in gates:
+        rows += gate_sun_once(engine, store, ctx, args.spp)
     if gates & {"A3", "A14", "SHD-006"}:
         rows += gate_temporal(engine, store, ctx, args.spp, gates, args.temporal_seed, args.temporal_debug_flags)
     a3_floor_seed = None
