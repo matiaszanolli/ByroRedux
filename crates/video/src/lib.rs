@@ -114,10 +114,7 @@ fn bink2_container(path: &Path, magic: &[u8]) -> Result<bink2::Bk2, VideoError> 
     if !BINK2_REVISIONS.contains(&magic[3]) {
         return Err(container_error(magic, String::new()));
     }
-    let file = bink2::Bk2::open(path).map_err(|error| match error.kind() {
-        std::io::ErrorKind::Unsupported => VideoError::Unsupported(error.to_string()),
-        _ => VideoError::Unreadable(error.to_string()),
-    })?;
+    let file = bink2::Bk2::open(path).map_err(bink2_open_error)?;
     if file.width == 0 || file.height == 0 || file.frames == 0 || file.fps_num == 0 || file.fps_den == 0 {
         return Err(VideoError::Unreadable(format!(
             "not a playable Bink 2 movie: {}x{}, {} frames at {}/{} fps",
@@ -125,6 +122,17 @@ fn bink2_container(path: &Path, magic: &[u8]) -> Result<bink2::Bk2, VideoError> 
         )));
     }
     Ok(file)
+}
+
+/// A `Bk2::open` error as the player reports it: the crate's own refusal of a file it has no
+/// decoder for is *skipped*, anything else, an OS-level `ErrorKind::Unsupported` included, is
+/// *unreadable* (#7162: the kind alone conflated the two).
+fn bink2_open_error(error: std::io::Error) -> VideoError {
+    if bink2::is_unsupported(&error) {
+        VideoError::Unsupported(error.to_string())
+    } else {
+        VideoError::Unreadable(error.to_string())
+    }
 }
 
 fn describe_bink2(file: &bink2::Bk2) -> MovieInfo {
@@ -1194,6 +1202,23 @@ mod tests {
         let len = (bytes.len() - 8) as u32;
         put(&mut bytes, 4, len);
         bytes
+    }
+
+    /// #7162: only the Bink 2 crate's own refusal marks a movie unsupported (skipped); an OS-level
+    /// `ErrorKind::Unsupported` from opening or reading it is unreadable.
+    #[test]
+    fn only_the_decoders_refusal_marks_a_bink_2_movie_unsupported() {
+        let os = std::io::Error::new(std::io::ErrorKind::Unsupported, "operation not supported");
+        assert!(matches!(bink2_open_error(os), VideoError::Unreadable(_)));
+        // The #7135 refusal: a KB2g video flag the decoder does not model (bit 20).
+        let mut header = b"KB2g".to_vec();
+        header.resize(0x80, 0);
+        header[0x24..0x28].copy_from_slice(&(1u32 << 20).to_le_bytes());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("flags.bk2");
+        std::fs::write(&path, &header).unwrap();
+        let refusal = bink2::Bk2::open(&path).err().expect("unmodelled flags are refused");
+        assert!(matches!(bink2_open_error(refusal), VideoError::Unsupported(_)));
     }
 
     /// #7160: a cut Bink 1 file tells `probe` which part ran short: the header, or the track and

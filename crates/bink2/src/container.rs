@@ -98,9 +98,27 @@ fn bad(msg: &str) -> io::Error {
 }
 
 /// A file this crate has no decoder for, as opposed to a damaged one: `byroredux-video` reports it
-/// as unsupported.
+/// as unsupported. #7162 — carried inside the `io::Error` as its own type, so a caller tells this
+/// refusal apart from an OS-level `ErrorKind::Unsupported` (an unreadable special file) through
+/// [`is_unsupported`], not by the kind alone.
+#[derive(Debug)]
+pub struct Unsupported(String);
+
+impl std::fmt::Display for Unsupported {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Unsupported {}
+
 fn unsupported(msg: String) -> io::Error {
-    io::Error::new(io::ErrorKind::Unsupported, msg)
+    io::Error::new(io::ErrorKind::Unsupported, Unsupported(msg))
+}
+
+/// Whether `error` is this crate's refusal of a file it has no decoder for ([`Unsupported`]).
+pub fn is_unsupported(error: &io::Error) -> bool {
+    error.get_ref().is_some_and(|inner| inner.is::<Unsupported>())
 }
 
 impl Bk2 {
@@ -309,7 +327,18 @@ mod tests {
         let error = Bk2::open(&path).err().expect("refused");
         std::fs::remove_file(path).ok();
         assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert!(is_unsupported(&error), "the refusal carries its own type (#7162)");
         error.to_string()
+    }
+
+    /// #7162 — only this crate's refusal is [`is_unsupported`]; an OS-level error of the same
+    /// kind, or a damaged file, is not.
+    #[test]
+    fn only_the_crates_own_refusal_is_unsupported() {
+        assert!(is_unsupported(&super::unsupported("x".into())));
+        assert!(!is_unsupported(&io::Error::from(io::ErrorKind::Unsupported)));
+        assert!(!is_unsupported(&io::Error::new(io::ErrorKind::Unsupported, "operation not supported")));
+        assert!(!is_unsupported(&bad("damaged")));
     }
 
     /// #7135: a video-flag bit the DLL decodes differently (P34) is refused as unsupported; the
