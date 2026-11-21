@@ -244,7 +244,13 @@ impl MaterialIndex {
         // `Components[j]` describes stream instance `base + j`.
         let mut base: Option<usize> = None;
         while state_has_more_chunks(&state) {
-            let class_name = peek_top_level_class_name(&state)?;
+            // #7161 — an instance whose class cannot even be read (a type ref outside the class
+            // table, a cut first word) is named by position too.
+            let class_name = peek_top_level_class_name(&state).map_err(|source| Error::AtInstance {
+                index: pos,
+                class: "<unreadable>".to_owned(),
+                source: Box::new(source),
+            })?;
             // #7132 — an ordinary instance's error names where it is.
             let at = |source: Error| Error::AtInstance {
                 index: pos,
@@ -1753,6 +1759,25 @@ mod tests {
             other => panic!("expected AtInstance, got {other:?}"),
         }
         assert!(err.to_string().starts_with("CDB stream instance 1 (BSMaterial::LayerID): "), "{err}");
+    }
+
+    /// #7161 — an instance whose class reference is outside the class table
+    /// is named by its stream position too, its class marked unreadable.
+    #[test]
+    fn an_instance_whose_class_cannot_be_read_names_its_stream_position() {
+        let (mut chunks, dbfile) = mutable_chunks();
+        let layer = dbfile + 5;
+        assert_eq!(*chunks[layer].0, *b"OBJT", "the layer object follows the index's side chunks");
+        chunks[layer].1[..4].copy_from_slice(&0x7fff_fff0i32.to_le_bytes());
+        let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks))
+            .expect_err("an instance of an undeclared class must be rejected");
+        match &err {
+            Error::AtInstance { index, class, source } => {
+                assert_eq!((*index, class.as_str()), (1, "<unreadable>"));
+                assert!(matches!(**source, Error::UnknownTypeRef { id: 0x7fff_fff0 }), "{source:?}");
+            }
+            other => panic!("expected AtInstance, got {other:?}"),
+        }
     }
 
     /// #5320 — a DIFF-shaped DBFileIndex was "supported" but misread (its
