@@ -59,8 +59,10 @@ pub struct Bk2 {
 
 /// Bounds on a header's sizes, refused at [`Bk2::open`] before anything is sized from them `[ours]`:
 /// they are policy for untrusted input, not facts about the format. The largest movie in the corpus
-/// is 3840x2160 (`docs/spec/STATE.md`), so a side past 8192 is not a movie this crate plays. The
-/// track and frame limits are re-exported for `byroredux-video`'s Bink 1 probe, which clamps to them.
+/// is 3840x2160 (`docs/spec/STATE.md`), so a side past 8192 is not a movie this crate plays. All
+/// four are re-exported for `byroredux-video`'s Bink 1 path: its probe clamps the track and frame
+/// counts to them, and it refuses a Bink 1 picture past the size and area limits before the decoder
+/// sizes its planes (#7123).
 pub const MAX_DIMENSION: usize = 8192;
 /// See [`MAX_DIMENSION`]: a frame's area, so a header cannot ask for two 8192x8192 reference
 /// frames plus their RGBA (~0.5 GB) from a few bytes (BIK-AUD-3). Twice the corpus's largest

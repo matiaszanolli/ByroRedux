@@ -69,6 +69,22 @@ fn container_error(magic: &[u8], detail: String) -> VideoError {
     }
 }
 
+/// #7123 — a Bink 1 header must not size the decoder's planes past what a Bink 2 header may: the
+/// dependency allows 0x7fff a side, so a 100-byte file could ask for ~1 GiB planes, and a failed
+/// allocation aborts the process where no `catch_unwind` reaches. Checked after `Movie::parse`,
+/// before `VideoDecoder::new`, with the same ceilings `byroredux-bink2` applies at `Bk2::open`.
+fn check_bink1_picture(movie: &mercs2_bink::Movie) -> Result<(), VideoError> {
+    let (width, height) = (movie.width as usize, movie.height as usize);
+    if width > bink2::MAX_DIMENSION || height > bink2::MAX_DIMENSION || width * height > bink2::MAX_PIXELS {
+        return Err(VideoError::Unreadable(format!(
+            "a {width}x{height} Bink 1 picture is past the {}-a-side, {}-pixel limit",
+            bink2::MAX_DIMENSION,
+            bink2::MAX_PIXELS
+        )));
+    }
+    Ok(())
+}
+
 fn describe(movie: &mercs2_bink::Movie) -> MovieInfo {
     let fps = if movie.fps.1 > 0 { f64::from(movie.fps.0) / f64::from(movie.fps.1) } else { 0.0 };
     MovieInfo {
@@ -145,7 +161,7 @@ pub fn probe(path: &Path) -> Result<MovieInfo, VideoError> {
     bytes.resize(table_end, 0);
     file.read_exact(&mut bytes[BIK1_HEADER_LEN..]).map_err(|error| VideoError::Unreadable(error.to_string()))?;
     match mercs2_bink::Movie::parse(&bytes) {
-        Ok(movie) => Ok(describe(&movie)),
+        Ok(movie) => check_bink1_picture(&movie).map(|()| describe(&movie)),
         Err(detail) => Err(container_error(&bytes, detail)),
     }
 }
@@ -455,6 +471,7 @@ impl Movie {
         let bytes = std::fs::read(path).map_err(|error| VideoError::Unreadable(error.to_string()))?;
         let (info, audio, mut video) = {
             let movie = mercs2_bink::Movie::parse(&bytes).map_err(|detail| container_error(&bytes, detail))?;
+            check_bink1_picture(&movie)?;
             let video = VideoDecoder::new(&movie).map_err(VideoError::Unsupported)?;
             (describe(&movie), extract_audio(&movie, &name), video)
         };
@@ -816,6 +833,56 @@ mod tests {
         assert!(matches!(probe(&write("c.bik", &other)), Err(VideoError::Unsupported(reason)) if reason.contains("'b'")));
         assert!(matches!(probe(&write("d.bik", b"not a movie at all, not at all......................")), Err(VideoError::Unreadable(_))));
         assert!(matches!(probe(&dir.path().join("missing.bik")), Err(VideoError::Unreadable(_))));
+    }
+
+    /// A parseable one-frame `BIKi` movie of `width` x `height`: the header, the frame index and a
+    /// frame of three small plane records, laid out as the `BIK1_*` offsets read them.
+    fn bink1_movie(width: u32, height: u32) -> Vec<u8> {
+        let put = |bytes: &mut Vec<u8>, at: usize, value: u32| bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
+        let mut frame = Vec::new();
+        for _ in 0..3 {
+            frame.extend_from_slice(&8u32.to_le_bytes());
+            frame.extend_from_slice(&[0; 8]);
+        }
+        let mut bytes = vec![0u8; BIK1_HEADER_LEN];
+        bytes[..4].copy_from_slice(b"BIKi");
+        for (at, value) in [(0x08, 1), (BIK1_FRAME_COUNT_AT, 1), (0x14, width), (0x18, height), (0x1c, 30), (0x20, 1), (BIK1_TRACK_COUNT_AT, 0)] {
+            put(&mut bytes, at, value);
+        }
+        let first = BIK1_HEADER_LEN + BIK1_INDEX_ENTRY_LEN * 2;
+        bytes.extend_from_slice(&(first as u32 | 1).to_le_bytes());
+        bytes.extend_from_slice(&((first + frame.len()) as u32 | 1).to_le_bytes());
+        bytes.extend_from_slice(&frame);
+        let len = (bytes.len() - 8) as u32;
+        put(&mut bytes, 4, len);
+        bytes
+    }
+
+    /// #7123: a Bink 1 header is held to the picture limits a Bink 2 header is, so a 100-byte file
+    /// cannot make the decoder reserve gigabyte planes; a picture at the limits still probes.
+    #[test]
+    fn a_bink_1_picture_past_the_bink_2_limits_is_refused_before_the_decoder_sizes_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |name: &str, bytes: &[u8]| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            path
+        };
+        let small = write("small.bik", &bink1_movie(64, 32));
+        assert_eq!(probe(&small).map(|info| (info.width, info.height)).unwrap(), (64, 32));
+        let at_limit = write("limit.bik", &bink1_movie(bink2::MAX_DIMENSION as u32, (bink2::MAX_PIXELS / bink2::MAX_DIMENSION) as u32));
+        assert!(probe(&at_limit).is_ok(), "a picture exactly at the side and area limits is a movie");
+        for (name, width, height) in [("vast.bik", 32767, 32767), ("wide.bik", 8193, 16), ("area.bik", 4097, 4096)] {
+            let path = write(name, &bink1_movie(width, height));
+            assert!(
+                matches!(probe(&path), Err(VideoError::Unreadable(reason)) if reason.contains("limit")),
+                "{width}x{height} probes"
+            );
+            assert!(
+                matches!(Movie::open(&path, (8, 8), true), Err(VideoError::Unreadable(reason)) if reason.contains("limit")),
+                "{width}x{height} opens"
+            );
+        }
     }
 
     /// BIK-DEC-003: a Bink 2 movie without audio tracks (the 96x32 probe stream of
