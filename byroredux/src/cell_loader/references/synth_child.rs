@@ -336,7 +336,7 @@ fn attach_esm_light(
         ),
     );
     let animation_flags = crate::light_translate::canonical_light_animation_flags(game, ld.flags);
-    attach_light_flicker_if_needed(world, entity, ld, ref_pos, animation_flags);
+    attach_light_flicker_if_needed(world, entity, ld, ref_pos, ref_pos, animation_flags);
 }
 
 /// A synthetic child that draws nothing (no statics row, an editor marker, a disabled or

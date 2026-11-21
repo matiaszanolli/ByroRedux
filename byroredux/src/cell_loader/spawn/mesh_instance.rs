@@ -1379,11 +1379,18 @@ pub(super) fn spawn_mesh_instance(
             let light_local = world
                 .get::<Transform>(light_entity)
                 .map_or(Vec3::ZERO, |t| t.translation);
+            // The animation seed is the light's world position (stable across
+            // runs and spawn order), not the local offset every copy of the
+            // same mesh shares.
+            let light_world = world
+                .get::<GlobalTransform>(light_entity)
+                .map_or(ref_pos, |g| g.translation);
             attach_light_flicker_if_needed(
                 world,
                 light_entity,
                 ld,
                 light_local,
+                light_world,
                 light_animation_flags,
             );
         }
