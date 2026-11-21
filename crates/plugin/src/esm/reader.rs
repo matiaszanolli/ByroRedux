@@ -133,7 +133,7 @@ pub(crate) const FLAG_TES4_STARTS_DEAD: u32 = 0x0008_0000;
 /// Maximum number of nested GRUP bodies any recursive ESM walker may enter.
 /// Vanilla files stay below five levels; 64 leaves generous headroom while
 /// preventing adversarial plugins from exhausting the native stack (#3237).
-pub(crate) const MAX_GRUP_NESTING_DEPTH: u32 = 64;
+pub const MAX_GRUP_NESTING_DEPTH: u32 = 64;
 
 /// ESM format variant — determines record / group header size.
 ///
