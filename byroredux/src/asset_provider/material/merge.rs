@@ -710,13 +710,7 @@ pub(crate) fn merge_external_material(
         // explicitly instead of the generic "unsupported format" message,
         // so an operator sees one clear degradation line rather than
         // per-mesh spam disconnected from the upstream CDB failure.
-        static WARNED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-            std::sync::OnceLock::new();
-        let mut set = WARNED
-            .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if set.insert(path.to_owned()) {
+        if crate::asset_provider::report_once("unresolved-material", &path) {
             log::warn!(
                 "{}",
                 unresolved_material_warning(&path, provider.has_starfield_cdb())

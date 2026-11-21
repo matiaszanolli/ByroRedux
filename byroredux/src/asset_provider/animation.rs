@@ -108,12 +108,16 @@ pub(crate) fn populate_idle_clip_runtime(
                     break;
                 }
                 Err(error) => {
-                    log::debug!(
-                        "Skyrim IDLE {:08X} ({}): HKX '{}' is not usable: {error}",
-                        idle.form_id,
-                        idle.editor_id,
-                        path,
-                    );
+                    // #7130 — the clip is in the archive but does not decode: a
+                    // defective file, not a missing one, so warn (once per path).
+                    if super::report_once("idle-hkx-decode", &path) {
+                        log::warn!(
+                            "Skyrim IDLE {:08X} ({}): HKX '{}' is in the archive but does not decode: {error}",
+                            idle.form_id,
+                            idle.editor_id,
+                            path,
+                        );
+                    }
                 }
             }
         }

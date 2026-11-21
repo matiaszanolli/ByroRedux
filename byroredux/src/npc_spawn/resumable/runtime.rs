@@ -1191,12 +1191,17 @@ pub(super) fn spawn_runtime_head(
             .and_then(|bytes| match byroredux_facegen::EgmFile::parse(bytes) {
                 Ok(egm) => Some(egm),
                 Err(error) => {
-                    log::debug!(
-                        "NPC {:08X}: EGM parse failed for head '{}': {}",
-                        npc.form_id,
-                        head_path,
-                        error,
-                    );
+                    // #7130 — the sidecar was found, so the data is defective, not
+                    // absent: the head spawns unmorphed. Warn, once per head mesh.
+                    if crate::asset_provider::report_once("egm-parse", head_path) {
+                        log::warn!(
+                            "NPC {:08X}: head '{}' has an EGM that does not parse ({}); \
+                             heads using it spawn without FaceGen morphs",
+                            npc.form_id,
+                            head_path,
+                            error,
+                        );
+                    }
                     None
                 }
             });
