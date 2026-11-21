@@ -102,12 +102,28 @@ pub(super) fn loose_keys_bounded(data_dir: &std::path::Path, budget: usize) -> V
     keys
 }
 
-/// `dir`'s entries in name order (#7141: `read_dir`'s own order is the filesystem's, so a walk the
-/// budget cuts short would keep a different subset from run to run).
-fn sorted_entries(dir: &std::path::Path) -> Option<Vec<std::fs::DirEntry>> {
-    let mut entries: Vec<_> = std::fs::read_dir(dir).ok()?.flatten().collect();
-    entries.sort_by_key(std::fs::DirEntry::file_name);
-    Some(entries)
+/// The first `keep` of `dir`'s entries in name order, and whether it held more (#7141: `read_dir`'s
+/// own order is the filesystem's, so a walk the budget cuts short would keep a different subset
+/// from run to run). #7156 — never more than `2 * keep` entries are held while the listing streams,
+/// so a directory of millions of files costs what the budget left allows, not what it holds; each
+/// name is read once, not per comparison.
+fn sorted_entries(dir: &std::path::Path, keep: usize) -> Option<(Vec<std::fs::DirEntry>, bool)> {
+    let mut entries: Vec<(std::ffi::OsString, std::fs::DirEntry)> = Vec::new();
+    let mut dropped = false;
+    let mut trim = |entries: &mut Vec<(std::ffi::OsString, std::fs::DirEntry)>| {
+        // Names are unique within a directory, so an unstable sort is a total order.
+        entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        dropped |= entries.len() > keep;
+        entries.truncate(keep);
+    };
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        entries.push((entry.file_name(), entry));
+        if entries.len() >= keep.saturating_mul(2).max(64) {
+            trim(&mut entries);
+        }
+    }
+    trim(&mut entries);
+    Some((entries.into_iter().map(|(_, entry)| entry).collect(), dropped))
 }
 
 impl LooseDir {
@@ -120,9 +136,16 @@ impl LooseDir {
 
     fn index_bounded(data_dir: &std::path::Path, budget: usize) -> Self {
         let mut files = HashMap::new();
-        let Some(entries) = sorted_entries(data_dir) else {
+        // `Data` itself is not charged: only its asset roots are kept while it streams (#7156), so
+        // a top level of many plugin or loose files costs nothing, and they walk in name order.
+        let Ok(listing) = std::fs::read_dir(data_dir) else {
             return Self { files };
         };
+        let mut entries: Vec<_> = listing
+            .flatten()
+            .filter(|entry| LOOSE_ASSET_ROOTS.contains(&entry.file_name().to_string_lossy().to_ascii_lowercase().as_str()))
+            .collect();
+        entries.sort_by_cached_key(std::fs::DirEntry::file_name);
         let mut state =
             WalkState { ancestors: Vec::new(), examined: 0, budget, loops_cut: 0, budget_hit: false };
         let mut collisions = Vec::new();
@@ -190,9 +213,10 @@ impl LooseDir {
             state.loops_cut += 1;
             return;
         }
-        let Some(entries) = sorted_entries(dir) else {
+        let Some((entries, dropped)) = sorted_entries(dir, state.budget.saturating_sub(state.examined)) else {
             return;
         };
+        state.budget_hit |= dropped;
         state.ancestors.push(canonical);
         for entry in entries {
             if state.examined >= state.budget {
@@ -1133,6 +1157,31 @@ mod tests {
     use super::{extract_first, mark_opened, sniff_magic_from, Archive};
     use std::collections::HashSet;
     use std::io::Read;
+
+    /// #7156 — a listing keeps the first `keep` names in name order and says whether it held
+    /// more, whatever the filesystem's order; it holds at most `2 * keep` entries while it streams,
+    /// so a directory far larger than the budget left costs the budget, not the directory.
+    #[test]
+    fn a_listing_keeps_the_first_names_the_budget_allows() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in (0..300).rev() {
+            std::fs::write(dir.path().join(format!("f{i:03}")), b"").unwrap();
+        }
+        let names = |keep| {
+            let (entries, dropped) = super::sorted_entries(dir.path(), keep).unwrap();
+            let names: Vec<String> = entries.iter().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+            (names, dropped)
+        };
+        let (first, dropped) = names(10);
+        assert_eq!(first, (0..10).map(|i| format!("f{i:03}")).collect::<Vec<_>>());
+        assert!(dropped, "290 names were left out");
+        let (all, dropped) = names(300);
+        assert_eq!(all.len(), 300);
+        assert!(!dropped);
+        assert_eq!(names(0), (Vec::new(), true), "an exhausted budget keeps nothing and says so");
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(super::sorted_entries(empty.path(), 0).map(|(e, d)| (e.len(), d)), Some((0, false)));
+    }
 
     /// #2584 (SK-D5-LZ4-LOW-01) — the exact scenario the issue describes:
     /// a user who explicitly lists every series member. Simulates
