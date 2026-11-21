@@ -41,6 +41,8 @@ Review the manifest. Discovery recognizes only unambiguous companions:
 It deliberately does not guess `_d`, because that suffix is used for both
 diffuse and dark maps by different content pipelines. Explicitly add unusual
 sets and roles before running.
+Discovery refuses to replace an existing manifest, since it may hold those
+edits; pass `--overwrite` to start over from a fresh discovery.
 
 The generated external command defaults to:
 

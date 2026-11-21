@@ -188,15 +188,26 @@ pub fn load_manifest(path: &Path) -> Result<Manifest> {
     Ok(manifest)
 }
 
-pub fn save_manifest(path: &Path, manifest: &Manifest) -> Result<()> {
+/// Write `manifest` to `path`. #7192 — an existing manifest is refused unless `overwrite` (it is the
+/// file the README tells users to review and extend by hand, and `discover` used to replace it
+/// silently), and the write goes through the shared atomic writer, so a crash never leaves it torn.
+pub fn save_manifest(path: &Path, manifest: &Manifest, overwrite: bool) -> Result<()> {
     manifest.validate()?;
+    if !overwrite && path.exists() {
+        bail!(
+            "{} already exists and may hold your edits; pass --overwrite to replace it",
+            path.display()
+        );
+    }
     let text = toml::to_string_pretty(manifest).context("serialize texture manifest")?;
     space::ensure_single_path_space(path, text.len() as u64, "texture manifest")?;
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("create manifest directory {}", parent.display()))?;
     }
-    std::fs::write(path, text).with_context(|| format!("write manifest {}", path.display()))
+    let temp = byroredux_core::atomic_file::atomic_temp_path(path);
+    byroredux_core::atomic_file::atomic_write(path, &temp, text.as_bytes())
+        .with_context(|| format!("write manifest {}", path.display()))
 }
 
 /// An asset path as the source stack keys it: trimmed, `/`-separated, case-folded as the archives
@@ -341,6 +352,21 @@ fn role_rank(role: MapRole) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #7192 — an existing manifest is not replaced without `overwrite`; with it, it is replaced.
+    #[test]
+    fn an_existing_manifest_is_kept_unless_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("textures.toml");
+        let manifest = Manifest::discovered(4, Vec::<String>::new());
+        save_manifest(&path, &manifest, false).expect("a new manifest is written");
+        std::fs::write(&path, "# hand edits\n").unwrap();
+        let err = save_manifest(&path, &manifest, false).expect_err("an existing manifest is refused");
+        assert!(err.to_string().contains("--overwrite"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# hand edits\n", "the edits are kept");
+        save_manifest(&path, &manifest, true).expect("--overwrite replaces it");
+        assert!(load_manifest(&path).is_ok(), "the replacement is a whole manifest");
+    }
 
     /// #7190 — a drive-prefixed or `:`-carrying segment is refused like `..`, on every host.
     #[test]
