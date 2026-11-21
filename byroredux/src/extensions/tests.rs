@@ -3804,6 +3804,19 @@ fn sdk_set_base_on_player_derived_pool_routes_into_the_override_layer() {
         .expect("the player's Health must be projected")
         .1;
     assert_eq!(projected.current(), 605.0, "projection agrees with the live current()");
+    // #7184 — the #7044 stored layer (Oblivion level-up Health gains) folds in the same way.
+    world.get_mut::<ActorValues>(player).unwrap().add_stored(HEALTH, 25.0);
+    let live = world.get::<ActorValues>(player).unwrap().current(HEALTH);
+    let projections = capture_entity_projections(&world, &BTreeSet::from([player]));
+    let projected = projections[&player]
+        .actor_values
+        .as_ref()
+        .unwrap()
+        .iter()
+        .find(|(form, _)| *form == health_ref)
+        .expect("the player's Health must be projected")
+        .1;
+    assert_eq!((live, projected.current()), (630.0, 630.0), "the stored gain is projected");
     assert!(host.take_diagnostics().is_empty());
 }
 
