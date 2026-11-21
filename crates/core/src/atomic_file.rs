@@ -119,8 +119,9 @@ pub fn assert_no_clobber_fallback(source: &str) {
 /// name that is taken anyway is retried with a new one, up to 8 times.
 ///
 /// #7143 — the one temp-file creator, shared by the `.fuz` voice decoder (#6307) and the movie
-/// soundtrack, which had re-grown `File::create` on a predictable name.
-pub fn create_temp_file(stem: &str, extension: &str) -> std::io::Result<(fs::File, PathBuf)> {
+/// soundtrack, which had re-grown `File::create` on a predictable name. The path comes back as a
+/// [`TempPath`], so the file is removed on every way out the caller does not [`keep`](TempPath::keep).
+pub fn create_temp_file(stem: &str, extension: &str) -> std::io::Result<(fs::File, TempPath)> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let mut last = None;
@@ -139,12 +140,39 @@ pub fn create_temp_file(stem: &str, extension: &str) -> std::io::Result<(fs::Fil
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
         match options.open(&path) {
-            Ok(file) => return Ok((file, path)),
+            Ok(file) => return Ok((file, TempPath(Some(path)))),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => last = Some(error),
             Err(error) => return Err(error),
         }
     }
     Err(last.unwrap_or_else(|| std::io::Error::from(std::io::ErrorKind::AlreadyExists)))
+}
+
+/// A temp file's path that removes the file when dropped, unless [`keep`](Self::keep) hands the
+/// path on: an error return and a panic unwinding past it both clean up. #7158 — the movie
+/// soundtrack removed its WAV on its `Err` arms only, so a decoder panic left up to ~1.4 GB of PCM
+/// in the temp directory. Close the file before the guard drops (Windows refuses to remove an
+/// open file).
+#[derive(Debug)]
+pub struct TempPath(Option<PathBuf>);
+
+impl TempPath {
+    pub fn path(&self) -> &Path {
+        self.0.as_deref().expect("a TempPath holds its path until kept or dropped")
+    }
+
+    /// Keep the file: the caller owns removing it from here on.
+    pub fn keep(mut self) -> PathBuf {
+        self.0.take().expect("a TempPath holds its path until kept or dropped")
+    }
+}
+
+impl Drop for TempPath {
+    fn drop(&mut self) {
+        if let Some(path) = self.0.take() {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 /// Every [`atomic_write`] step that leaves the temp behind on failure.
@@ -182,6 +210,7 @@ mod tests {
     fn temp_files_are_new_private_and_unique() {
         let (mut first, first_path) = create_temp_file("byro-test", "bin").unwrap();
         let (_, second_path) = create_temp_file("byro-test", "bin").unwrap();
+        let (first_path, second_path) = (first_path.keep(), second_path.keep());
         assert_ne!(first_path, second_path);
         first.write_all(b"one").unwrap();
         assert_eq!(fs::read(&first_path).unwrap(), b"one");
@@ -195,6 +224,30 @@ mod tests {
         for path in [first_path, second_path] {
             let _ = fs::remove_file(path);
         }
+    }
+
+    /// #7158 — a temp file is removed when its guard drops, on an early return or a panic
+    /// unwinding past it, and stays once kept.
+    #[test]
+    fn a_temp_file_is_removed_unless_kept() {
+        let (file, dropped) = create_temp_file("byro-test", "bin").unwrap();
+        drop(file);
+        let path = dropped.path().to_path_buf();
+        assert!(path.exists());
+        drop(dropped);
+        assert!(!path.exists(), "dropping the guard removes the file");
+        let unwound = std::panic::catch_unwind(|| {
+            let (_file, guard) = create_temp_file("byro-test", "bin").unwrap();
+            let path = guard.path().to_path_buf();
+            std::panic::panic_any(path);
+        })
+        .expect_err("the closure panics");
+        let path = unwound.downcast::<PathBuf>().unwrap();
+        assert!(!path.exists(), "a panic unwinding past the guard removes the file");
+        let (_file, kept) = create_temp_file("byro-test", "bin").unwrap();
+        let kept = kept.keep();
+        assert!(kept.exists(), "a kept file stays");
+        let _ = fs::remove_file(kept);
     }
 
     /// #5143 — the shared staging-path helper must give every concurrent

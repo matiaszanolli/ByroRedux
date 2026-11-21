@@ -364,7 +364,9 @@ fn decode_soundtrack(
 ) -> Audio {
     // #7143 — the shared exclusive creator (`create_new`, `0600`, a unique name), not `File::create`
     // on a guessable one, which followed a planted symlink and truncated its target.
-    let (file, path) = match byroredux_core::atomic_file::create_temp_file("byroredux-movie", "wav") {
+    // #7158 — `temp` removes the WAV on every way out but the one that keeps it, a decoder panic
+    // unwinding through here included.
+    let (file, temp) = match byroredux_core::atomic_file::create_temp_file("byroredux-movie", "wav") {
         Ok(created) => created,
         Err(error) => return Audio::missing(name, format!("its soundtrack could not be written: {error}")),
     };
@@ -417,15 +419,9 @@ fn decode_soundtrack(
         file.write_all(&wav_header(written, soundtrack.channels, soundtrack.rate))
     })();
     match result {
-        Ok(()) if written > 0 => Audio { wav: Some(path), problem },
-        Ok(()) => {
-            let _ = std::fs::remove_file(&path);
-            Audio { wav: None, problem: problem.or_else(|| Some("its audio track decodes to no samples".to_owned())) }
-        }
-        Err(error) => {
-            let _ = std::fs::remove_file(&path);
-            Audio::missing(name, format!("its soundtrack could not be written: {error}"))
-        }
+        Ok(()) if written > 0 => Audio { wav: Some(temp.keep()), problem },
+        Ok(()) => Audio { wav: None, problem: problem.or_else(|| Some("its audio track decodes to no samples".to_owned())) },
+        Err(error) => Audio::missing(name, format!("its soundtrack could not be written: {error}")),
     }
 }
 
