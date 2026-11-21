@@ -473,6 +473,45 @@ def gate_materials(engine: Engine, store: ReferenceStore, ctx: Context, spp: int
     return rows
 
 
+def smith_recorded_difference(scene_dir: Path, shape: str, roughness: float, f0: float) -> float:
+    """RLT-REF-008's recorded difference for a conductor plane: the engine's
+    Schlick-GGX Smith term with k = (r + 1)^2 / 8 (`geometrySmith`,
+    `include/pbr.glsl`) against Mitsuba's exact separable Smith G1 for GGX with
+    alpha = r^2, over the plane's pixels, weighted by each pixel's reference
+    specular radiance under the point emitter. D and F are the same on both
+    sides, so a correctly mapped row reads exactly this ratio."""
+    masks, positions = pixel_hits(scene_dir)
+    p = positions[masks[shape]]
+    root = ET.parse(scene_dir / "scene.xml").getroot()
+    light = next(s for s in root.findall("shape") if s.get("id") == "mat_emitter")
+    centre = np.array([float(v) for v in light.find("point[@name='center']").get("value").split(",")])
+    centre = centre * WORLD_UNITS_PER_METRE
+    scene = mi.load_file(str(scene_dir / "scene.xml"), optimize=False)
+    camera = np.array(scene.sensors()[0].world_transform().translation()).ravel() * WORLD_UNITS_PER_METRE
+    to_light = centre - p
+    d2 = (to_light ** 2).sum(axis=1)
+    l = to_light / np.sqrt(d2)[:, None]
+    v = camera - p
+    v /= np.linalg.norm(v, axis=1)[:, None]
+    h = l + v
+    h /= np.linalg.norm(h, axis=1)[:, None]
+    nl, nv, nh = l[:, 1], v[:, 1], h[:, 1]      # the planes face +Y
+    a2 = roughness ** 4
+    d = a2 / (np.pi * (nh * nh * (a2 - 1.0) + 1.0) ** 2)
+    f = f0 + (1.0 - f0) * (1.0 - (h * v).sum(axis=1)) ** 5
+    k = (roughness + 1.0) ** 2 / 8.0
+    g_engine = nv / (nv * (1.0 - k) + k) * nl / (nl * (1.0 - k) + k)
+
+    def g1(c):
+        return 2.0 / (1.0 + np.sqrt(1.0 + a2 * (1.0 - c * c) / np.maximum(c * c, 1e-12)))
+
+    g_mitsuba = g1(nv) * g1(nl)
+    weight = d * f * nl / d2
+    engine = weight * g_engine / np.maximum(4.0 * nv * nl, 0.01)
+    reference = weight * g_mitsuba / (4.0 * nv * nl)
+    return float(engine.sum() / reference.sum())
+
+
 def gate_materials_specular(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
     """A15's specular rows (RLT-REF-008, RLT-REF-014; Phase 4 entry): each
     Disney-branch dielectric and conductor plane at three views, engine
@@ -495,6 +534,18 @@ def gate_materials_specular(engine: Engine, store: ReferenceStore, ctx: Context,
             row = unit_ratio_row("A15", f"materials-spec-v{view}", name, ea, eb, ra, rb, masks[name])
             row.threshold, row.passed = "recorded difference (report)", "report"
             rows.append((row, key))
+            roughness = int(name.rsplit("_", 1)[1]) / 100.0
+            if name.startswith("mat_spec_conductor_") and roughness >= 0.1:
+                # RLT-IBL-011: a conductor reads its recorded difference. The
+                # near-mirror plane is left out: its highlight is a sub-region
+                # spot whose energy depends on the source size, not on G.
+                expected = smith_recorded_difference(export, name, roughness, 0.95)
+                value = row.value / expected
+                held = Row("A15", f"materials-spec-v{view}", name, "over_recorded_difference", value,
+                           row.floor_engine / expected, row.floor_reference / expected)
+                held.threshold = "|x-1|<=0.01+floor_combined"
+                held.passed = "yes" if abs(value - 1.0) <= 0.01 + held.floor_combined else "no"
+                rows.append((held, key))
     return rows
 
 

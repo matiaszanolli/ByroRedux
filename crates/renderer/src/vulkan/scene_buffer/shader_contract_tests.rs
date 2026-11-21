@@ -230,6 +230,24 @@ fn shadow_rotation_follows_validated_receiver_history() {
 /// `triangle.frag.spv` leaves opaque geometry, which runs the early-test
 /// variant, unweighted (`scripts/check-shader-artifacts.sh` rebuilds both).
 #[test]
+/// M-LIGHT RLT-IBL-011: the light loop's specular lobe carries the factor PI
+/// that puts it in the non-/PI diffuse convention (`diffuseBrdf = kD * albedo`),
+/// so a highlight stands to diffuse as it does in the reference. Without it the
+/// `materials-spec` conductors read 1/PI (PRD rev 44).
+#[test]
+fn light_loop_specular_is_in_the_non_pi_diffuse_convention() {
+    let lighting = include_str!("../../../shaders/include/lighting.glsl");
+    assert!(
+        lighting.contains("vec3 specular = PI * (D * G * F) / max(4.0 * NdotV * NdotL, 0.01);"),
+        "the light-loop GGX lobe must be scaled by PI (RLT-IBL-011)"
+    );
+    assert!(
+        lighting.contains("diffuseBrdf = kD * albedo;"),
+        "RLT-IBL-011 is defined against the non-/PI Lambert; revisit it if that changes"
+    );
+}
+
+#[test]
 fn shadow_ray_transmission_is_cosine_weighted_on_unnormalised_vectors() {
     let triangle = include_str!("../../../shaders/triangle.frag");
     let finalize = triangle

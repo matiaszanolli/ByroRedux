@@ -331,7 +331,14 @@ vec3 shadowableLightRadiance(
     vec3 F = fresnelSchlickPower(HdotV, F0, mat.fresnelPower);
 
     vec3 kD = (1.0 - F) * (1.0 - metalness);
-    vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.01);
+    // M-LIGHT RLT-IBL-011 — the specular lobe in the primary diffuse lobe's
+    // convention. `diffuseBrdf` below is the legacy non-/PI Lambert, so a
+    // physically normalised D·G·F / (4·NdotV·NdotL) sat a factor of PI below
+    // it: against the reference's PI-scaled emitters every point- and
+    // sun-light highlight read 1/PI. Environment specular keeps physical
+    // units (it never meets `diffuseBrdf`), as `pathHitEmitterBsdf` does for
+    // the path's specular lobe (RLT-GI-011).
+    vec3 specular = PI * (D * G * F) / max(4.0 * NdotV * NdotL, 0.01);
     // Multi-scatter energy compensation (Fdez-Agüera / Filament). Restores
     // the energy the single-scatter D·G·F lobe loses to microfacet masking
     // as roughness rises — rough conductors stop darkening. Computed inside
