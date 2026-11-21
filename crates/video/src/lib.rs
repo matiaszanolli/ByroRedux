@@ -275,6 +275,17 @@ struct Soundtrack {
 }
 
 impl Soundtrack {
+    /// #7125, #7153 — refuse a packet stating more than one frame may hold (`decoded_bytes` of
+    /// 16-bit PCM) before the decoder grows its output for it: a zero-filled packet stating a
+    /// huge size would otherwise decode the whole soundtrack, or on Bink 1 ~20x its own size, in
+    /// one frame, with the cap checked only after the memory was taken.
+    fn check_stated(&self, decoded_bytes: usize) -> Result<(), String> {
+        if decoded_bytes / 2 > self.frame_cap {
+            return Err(format!("its packet states {} samples, past the {} one frame may hold", decoded_bytes / 2, self.frame_cap));
+        }
+        Ok(())
+    }
+
     fn new(info: &MovieInfo, channels: u16, rate: u32) -> Self {
         Self {
             channels,
@@ -326,6 +337,10 @@ fn extract_audio(movie: &mercs2_bink::Movie, bytes: &[u8], name: &str) -> Audio 
         // warning, as a Bink 2 packet that does not read does (#7139).
         let (records, _) = movie.split(frame as _).map_err(|error| format!("the frame does not split: {error}"))?;
         let record = records.get(index).copied().ok_or_else(|| format!("the frame has no record for audio track {index}"))?;
+        // #7153 — a record opens with the bytes it decodes to (`[wiki:Bink Container]`; measured:
+        // a claim of 8192 writes 8192 bytes of PCM), and the decoder sizes its output by it.
+        let stated = record.get(..4).map_or(0, |claim| u32::from_le_bytes(claim.try_into().unwrap()));
+        soundtrack.check_stated(stated as usize)?;
         pcm.extend(decoder.decode_record(record).map_err(|error| error.to_string())?);
         Ok(())
     });
@@ -441,15 +456,7 @@ fn bink2_audio(file: &mut bink2::Bk2, name: &str) -> Audio {
     let wav = decode_soundtrack(name, file.frames, soundtrack, |frame, pcm| {
         let packet = file.audio(frame).map_err(|error| error.to_string())?.swap_remove(index);
         let Some(packet) = packet else { return Ok(()) };
-        // #7125 — refuse a packet stating more than one frame may hold before `decode` grows the
-        // buffer for it: a zero-filled 13 MB packet could otherwise decode the whole soundtrack.
-        if packet.decoded_bytes as usize / 2 > soundtrack.frame_cap {
-            return Err(format!(
-                "its packet states {} samples, past the {} one frame may hold",
-                packet.decoded_bytes / 2,
-                soundtrack.frame_cap
-            ));
-        }
+        soundtrack.check_stated(packet.decoded_bytes as usize)?;
         decoder.decode(packet.decoded_bytes, &packet.data, pcm).map_err(|error| error.to_string())?;
         Ok(())
     });
@@ -1143,18 +1150,32 @@ mod tests {
     /// A parseable one-frame `BIKi` movie of `width` x `height`: the header, the frame index and a
     /// frame of three small plane records, laid out as the `BIK1_*` offsets read them.
     fn bink1_movie(width: u32, height: u32) -> Vec<u8> {
+        bink1_movie_with_audio(width, height, None)
+    }
+
+    /// [`bink1_movie`] with one 44.1 kHz mono audio track (ID 0) whose frame-0 record is `audio`
+    /// (`[wiki:Bink Container]`: a track's packet is its byte length, then the record).
+    fn bink1_movie_with_audio(width: u32, height: u32, audio: Option<&[u8]>) -> Vec<u8> {
         let put = |bytes: &mut Vec<u8>, at: usize, value: u32| bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
         let mut frame = Vec::new();
+        if let Some(record) = audio {
+            frame.extend_from_slice(&(record.len() as u32).to_le_bytes());
+            frame.extend_from_slice(record);
+        }
         for _ in 0..3 {
             frame.extend_from_slice(&8u32.to_le_bytes());
             frame.extend_from_slice(&[0; 8]);
         }
-        let mut bytes = vec![0u8; BIK1_HEADER_LEN];
+        let tracks = usize::from(audio.is_some());
+        let mut bytes = vec![0u8; BIK1_HEADER_LEN + BIK1_TRACK_RECORD_LEN * tracks];
         bytes[..4].copy_from_slice(b"BIKi");
-        for (at, value) in [(0x08, 1), (BIK1_FRAME_COUNT_AT, 1), (0x14, width), (0x18, height), (0x1c, 30), (0x20, 1), (BIK1_TRACK_COUNT_AT, 0)] {
+        for (at, value) in [(0x08, 1), (BIK1_FRAME_COUNT_AT, 1), (0x14, width), (0x18, height), (0x1c, 30), (0x20, 1), (BIK1_TRACK_COUNT_AT, tracks as u32)] {
             put(&mut bytes, at, value);
         }
-        let first = BIK1_HEADER_LEN + BIK1_INDEX_ENTRY_LEN * 2;
+        if tracks == 1 {
+            put(&mut bytes, BIK1_HEADER_LEN + 4, 44_100 | 0x5000 << 16);
+        }
+        let first = bytes.len() + BIK1_INDEX_ENTRY_LEN * 2;
         bytes.extend_from_slice(&(first as u32 | 1).to_le_bytes());
         bytes.extend_from_slice(&((first + frame.len()) as u32 | 1).to_le_bytes());
         bytes.extend_from_slice(&frame);
@@ -1364,5 +1385,32 @@ mod tests {
         assert!(failed.is_empty(), "movies that did not decode to their last frame: {failed:#?}");
         assert!(decoded.iter().sum::<u32>() > 0, "no Bink movie was found");
         assert!(censuses.is_empty(), "movie counts moved; re-measure MOVIE_CENSUS: {censuses:#?}");
+    }
+    /// #7153: a Bink 1 audio record stating more PCM than one frame may hold is refused before the
+    /// decoder sizes its output by it; it used to decode ~20x the record (64 MiB of zeros took
+    /// 1.36 GB) before the frame cap was compared. A record within the cap still plays.
+    #[test]
+    fn a_bink_1_audio_record_stating_past_the_frame_cap_is_refused_before_decoding() {
+        let dir = tempfile::tempdir().unwrap();
+        let soundtrack = |claim: u32| {
+            let mut record = claim.to_le_bytes().to_vec();
+            record.resize(4096, 0);
+            let path = dir.path().join("a.bik");
+            std::fs::write(&path, bink1_movie_with_audio(64, 32, Some(&record))).unwrap();
+            let bytes = std::fs::read(&path).unwrap();
+            let movie = mercs2_bink::Movie::parse(&bytes).unwrap();
+            let audio = extract_audio(&movie, &bytes, "a.bik");
+            let written = audio.wav.as_ref().map(|wav| {
+                let len = std::fs::metadata(wav).unwrap().len();
+                let _ = std::fs::remove_file(wav);
+                len
+            });
+            (written, audio.problem)
+        };
+        assert_eq!(soundtrack(8192), (Some(44 + 8192), None), "a record within the cap decodes whole");
+        let (written, problem) = soundtrack(0x7fff_fff0);
+        assert_eq!(written, None);
+        let problem = problem.expect("the refusal is the soundtrack's problem");
+        assert!(problem.contains("its packet states 1073741816 samples, past the"), "{problem}");
     }
 }
