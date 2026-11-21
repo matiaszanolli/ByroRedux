@@ -25,7 +25,7 @@ use byroredux_core::ecs::{Material, MeshHandle, World};
 /// The conductor cut (reference-lighting §2, T9).
 pub(crate) const CONDUCTOR_METALNESS: f32 = 0.3;
 
-const HEADER: &str = "route\tconductor\troughness\tmetalness\tmaterial_kind\tglossiness\tenv_map_scale\thas_gloss_map\tspecular_authored\tinstances\ttexture\n";
+const HEADER: &str = "route\tconductor\troughness\tmetalness\tmaterial_kind\tglossiness\tenv_map_scale\thas_gloss_map\tspecular_authored\tspecular_strength\tinstances\ttexture\n";
 
 /// The translation route of one material.
 pub(crate) fn material_route(material: &Material) -> &'static str {
@@ -68,7 +68,7 @@ pub(crate) fn material_rows(world: &World) -> String {
             let mut row = String::new();
             let _ = write!(
                 row,
-                "{}\t{}\t{:.4}\t{:.4}\t{}\t{:.3}\t{:.3}\t{}\t{}",
+                "{}\t{}\t{:.4}\t{:.4}\t{}\t{:.3}\t{:.3}\t{}\t{}\t{:.3}",
                 material_route(material),
                 if material.metalness > CONDUCTOR_METALNESS { "conductor" } else { "dielectric" },
                 material.roughness,
@@ -78,6 +78,11 @@ pub(crate) fn material_rows(world: &World) -> String {
                 material.env_map_scale,
                 u8::from(material.gloss_map.is_some()),
                 u8::from(material.specular_authored),
+                // A BGSM whose specular block is disabled zeroes this (#4654) and
+                // derives no roughness from its smoothness; RLT-IBL-008's F3
+                // reads it to test only the materials the `1 - smoothness`
+                // rule covers (#7151).
+                material.specular_strength,
             );
             let texture = material.texture_path.as_deref().unwrap_or("").replace('\t', " ");
             let key = format!("{row}\t{texture}");
