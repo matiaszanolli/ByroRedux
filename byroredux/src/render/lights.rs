@@ -196,7 +196,10 @@ pub(super) fn collect_lights(
         .try_resource::<SkyParamsRes>()
         .map(|sky| sky.sun_intensity)
         .unwrap_or(SUN_INTENSITY_PEAK);
-    if let Some(cell_lit) = world.try_resource::<CellLightingRes>() {
+    // RLT-REF-019: the sky-only reference rungs drop the directional light
+    // here, after `compute_directional_upload`, and leave the dome alone.
+    let sky_only = world.try_resource::<crate::cornell::ReferenceSkyOnly>().is_some();
+    if let Some(cell_lit) = world.try_resource::<CellLightingRes>().filter(|_| !sky_only) {
         let dir_color = compute_directional_upload(
             &cell_lit.directional_color,
             cell_lit.is_interior,

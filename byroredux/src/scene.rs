@@ -996,10 +996,11 @@ fn spawn_initial_camera(
     // and some of which sit at comparably small physical scale despite
     // loading real NIF content — content presence alone isn't a safe scale
     // signal. See `Camera::for_content_scale`'s doc.
-    world.insert(
-        cam,
-        Camera::for_content_scale(has_nif_content && harness_cam.is_none()),
-    );
+    let mut camera = Camera::for_content_scale(has_nif_content && harness_cam.is_none());
+    if let Some(fov) = world.try_resource::<crate::cornell::HarnessCameraFov>() {
+        camera.fov_y = fov.0;
+    }
+    world.insert(cam, camera);
     // M44 Phase 1: the camera entity doubles as the audio listener
     // ("ears at the eyes"). M28.5 character controller will likely
     // split listener onto a head joint of the player capsule, but

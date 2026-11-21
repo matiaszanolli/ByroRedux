@@ -113,7 +113,10 @@ pub(crate) use shaft_lab::{
     shaft_lab_mode,
 };
 pub(crate) use oracle::{cornell_oracle_rung, cornell_oracle_world_offset, setup_cornell_oracle_scene};
-pub(crate) use reference::{cornell_reference_rung, cornell_reference_view, setup_reference_scene};
+pub(crate) use reference::{
+    cornell_reference_rung, cornell_reference_view, setup_reference_scene, HarnessCameraFov,
+    ReferenceSkyOnly,
+};
 
 /// Build the SDK Studio's open-front Cornell room around an imported asset.
 /// Room sizing is owned by `byroredux-sdk`; this host function only uploads
