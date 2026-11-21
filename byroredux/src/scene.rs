@@ -71,6 +71,34 @@ pub(crate) fn parse_exterior_radius(s: &str) -> i32 {
 /// the sun paths are what's being bisected. Pulled out as a free
 /// function so the flag contract is unit-testable without a Vulkan
 /// device, same rationale as [`parse_exterior_radius`].
+/// `(ExplicitStartPin, NewGameStart)` for an ESM launch. A launch that names its location keeps
+/// the player there until they take control. `--new-game` with a location names the opening's
+/// location only to load it: still a new game, its opening scripts run and may move the player
+/// (`fnv-new-game.sh` launches `--cell GSDocMitchellHouse --new-game` and expects the intro quest),
+/// whether the location came from the profile's new-game target or the command line. A launch
+/// that neither pins nor restores a save is a new game (#7187 pinned this contract).
+pub(crate) fn start_intent(has_location: bool, new_game_flag: bool, restoring_save: bool) -> (bool, bool) {
+    let pin = has_location && !new_game_flag;
+    (pin, !pin && !restoring_save)
+}
+
+#[cfg(test)]
+mod start_intent_tests {
+    use super::start_intent;
+
+    /// #7187 — a named location pins; `--new-game` with a location is still a new game (the FNV
+    /// new-game gate's launch); no location is a new game; a restored save is neither.
+    #[test]
+    fn a_named_location_pins_unless_the_launch_is_a_new_game() {
+        assert_eq!(start_intent(true, false, false), (true, false), "--cell X");
+        assert_eq!(start_intent(true, true, false), (false, true), "--cell X --new-game");
+        assert_eq!(start_intent(false, false, false), (false, true), "no location");
+        assert_eq!(start_intent(false, true, false), (false, true), "--new-game, profile target");
+        assert_eq!(start_intent(false, false, true), (false, false), "--load");
+        assert_eq!(start_intent(true, false, true), (true, false), "--cell X --load");
+    }
+}
+
 pub(crate) fn cornell_sun_mode(args: &[String]) -> Option<bool> {
     let sun = args.iter().any(|a| a == "--cornell-sun");
     if sun {
@@ -496,16 +524,12 @@ fn load_scene_content(
         let esm_path = Some(esm_path);
         let cell_id = crate::cli_args::parse_string_arg(args, "--cell");
         let grid_str = crate::cli_args::parse_string_arg(args, "--grid");
-        // A launch that names its location keeps the player there until they
-        // take control (see `ExplicitStartPin`). `--new-game` names the
-        // opening's location only to load it, so it is a new game, not a pin.
         let new_game_flag = args.iter().any(|arg| arg == "--new-game");
-        let explicit_location = (cell_id.is_some() || grid_str.is_some()) && !new_game_flag;
-        world.insert_resource(crate::components::ExplicitStartPin(explicit_location));
         let restoring_save = crate::cli_args::parse_string_arg(args, "--load").is_some();
-        world.insert_resource(crate::components::NewGameStart(
-            !explicit_location && !restoring_save,
-        ));
+        let (explicit_location, new_game) =
+            start_intent(cell_id.is_some() || grid_str.is_some(), new_game_flag, restoring_save);
+        world.insert_resource(crate::components::ExplicitStartPin(explicit_location));
+        world.insert_resource(crate::components::NewGameStart(new_game));
         // #444 — explicit worldspace EDID override. Used with --grid
         // when the ESM defines multiple exterior worldspaces (e.g.
         // FO3 + DLC masters ship Wasteland, PointLookout, Zeta, Pitt,

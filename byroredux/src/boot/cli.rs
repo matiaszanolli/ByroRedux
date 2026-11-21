@@ -407,7 +407,10 @@ pub(super) fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
         if !entry.has_new_game_target() {
             eprintln!("--game {game_key} --new-game: profile has no new-game cell or worldspace/grid");
         } else if has_location {
-            eprintln!("--new-game: explicit location flags override the profile target");
+            eprintln!(
+                "--new-game: explicit location flags override the profile target; it is still a new game \
+                 (the opening's scripts run there and may move the player)"
+            );
         } else if let Some(cell) = &entry.new_game_cell {
             args.push("--cell".to_string());
             args.push(cell.clone());
