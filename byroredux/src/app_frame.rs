@@ -89,7 +89,7 @@ fn push_texture_streaming(
     // #7144 — the streamer's provider outlives cell transitions; rebuild it once an archive was
     // replaced on disk, so its promotions and the floors read the same file.
     if let Some(streamer) = streamer.as_mut()
-        && streamer.refresh_provider(build_provider)
+        && streamer.refresh_provider(crate::asset_provider::archive_replacements(), build_provider)
     {
         log::info!("texture streamer: an archive was replaced on disk; its provider was rebuilt");
     }

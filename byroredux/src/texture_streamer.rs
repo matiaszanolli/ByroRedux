@@ -156,9 +156,11 @@ impl TextureStreamer {
     /// is rebuilt and re-checks each archive (`Archive::open_shared`); without this its promotions
     /// kept reading a replaced archive through the old file table while floors came from the new
     /// one. Reads already in flight finish on the old provider. Answers whether it rebuilt.
-    pub(crate) fn refresh_provider(&mut self, build: impl FnOnce() -> TextureProvider) -> bool {
-        // Read first: a replacement the build itself notices costs one more rebuild, not a miss.
-        let generation = crate::asset_provider::archive_replacements();
+    /// `generation` is [`crate::asset_provider::archive_replacements`] read *before* `build` runs:
+    /// a replacement the build itself notices then costs one more rebuild, not a miss. It is an
+    /// argument rather than read here so a test can drive the rule without the process-wide
+    /// counter other tests move (#7164).
+    pub(crate) fn refresh_provider(&mut self, generation: u64, build: impl FnOnce() -> TextureProvider) -> bool {
         if generation == self.archive_generation {
             return false;
         }
@@ -437,23 +439,24 @@ mod tests {
     const POSE: StreamPose = ([0.0, 1.0, 2.0], [0.0, 0.0, 1.0], 1.2);
 
     /// #7144 — the provider is rebuilt only when an archive was replaced since it was built.
+    /// #7164 — driven by explicit generations: reading the process-wide counter raced the
+    /// `open_shared` tests that move it (2 failures in 200 parallel runs).
     #[test]
     fn the_provider_is_rebuilt_only_after_an_archive_replacement() {
         let mut streamer = TextureStreamer::new(TextureProvider::new()).expect("pool builds");
+        streamer.archive_generation = 5;
         let mut builds = 0;
-        assert!(!streamer.refresh_provider(|| {
-            builds += 1;
-            TextureProvider::new()
-        }));
-        assert_eq!(builds, 0, "no replacement, no rebuild");
-        // As if an archive had been replaced after the provider was built.
-        streamer.archive_generation = streamer.archive_generation.wrapping_sub(1);
-        assert!(streamer.refresh_provider(|| {
-            builds += 1;
-            TextureProvider::new()
-        }));
+        let mut refresh = |streamer: &mut TextureStreamer, generation| {
+            streamer.refresh_provider(generation, || {
+                builds += 1;
+                TextureProvider::new()
+            })
+        };
+        assert!(!refresh(&mut streamer, 5), "no replacement, no rebuild");
+        assert!(refresh(&mut streamer, 6), "a replacement since the build rebuilds");
+        assert_eq!(streamer.archive_generation, 6);
+        assert!(!refresh(&mut streamer, 6), "once per replacement");
         assert_eq!(builds, 1);
-        assert_eq!(streamer.archive_generation, crate::asset_provider::archive_replacements());
     }
 
     /// A pool read that panics must not abort the process (#6810): the job
