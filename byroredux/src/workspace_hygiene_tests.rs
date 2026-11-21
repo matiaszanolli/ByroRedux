@@ -1261,10 +1261,19 @@ fn no_source_hand_spells_the_player_entity_read() {
 #[test]
 fn no_production_code_prefixes_meshes_by_hand() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    // #7145 — every spelling of a prefix format, named (`{name}`) or positional (`{}`): an
-    // escaped backslash, a raw-string backslash, or a forward slash (the renderer's mesh
-    // cache had grown `format!("meshes/{lowered}")`, outside the old one-spelling scan).
-    let needles = [concat!("\"meshes", "\\\\{"), concat!("r\"meshes", "\\{"), concat!("\"meshes", "/{")];
+    // #7166 — a string literal (plain or raw) that opens with `meshes` and a separator (`\\`,
+    // `\` in a raw string, or `/`; any case) and then either interpolates — `{name}`, `{}`, `{:x}`,
+    // whatever follows the placeholder (`{stem}.nif`, `{dir}\\{file}`) — or ends right there, the
+    // piece a `push_str` / `concat!` / `format!("{}{}", …)` prepends. A fixed archive path
+    // (`meshes\\terrain\\…`) has a name after the separator and is not one; a bare `"meshes"` is
+    // a root name (loose roots, comparisons) and is not scanned. #7145 needed `}"` straight after
+    // a bare name, which missed every spelling with an extension or a second component.
+    let prefixes = ["\"meshes\\\\", "\"meshes/", "r\"meshes\\"];
+    // A separator-terminated literal passed to one of these tests for the prefix, never adds it.
+    let tests_for_prefix = ["strip_prefix(", "starts_with(", "trim_start_matches(", "contains(", "find("];
+    // Not archive keys: the Cornell harness writes its own Mitsuba scene, whose meshes folder is
+    // `meshes/<hash>.ply` beside the scene file.
+    let allowed = ["byroredux/src/cornell/mitsuba_export.rs"];
     let mut found = Vec::new();
     // #7145 — the binary and every library crate; the renderer cannot call the binary's helper,
     // which is why the rule now lives in `byroredux_core::paths`.
@@ -1273,15 +1282,18 @@ fn no_production_code_prefixes_meshes_by_hand() {
             // Library source only: an example or bench is a probe (`nif`'s `d5_starfield_import`
             // tries non-canonical spellings on purpose to show which ones miss).
             let probe = path.components().any(|c| c.as_os_str() == "examples" || c.as_os_str() == "benches");
-            if path.ends_with("core/src/paths.rs") || is_test_source(path) || probe {
+            let listed = allowed.iter().any(|allowed| path.to_string_lossy().replace('\\', "/").ends_with(allowed));
+            if path.ends_with("core/src/paths.rs") || is_test_source(path) || probe || listed {
                 return;
             }
-            let production = byroredux_core::source_scan::production_text_or_whole(contents);
-            let copies = needles.iter().flat_map(|needle| {
-                production.match_indices(needle).filter(|(at, _)| {
-                    let rest = &production[at + needle.len()..];
-                    let name_len = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(rest.len());
-                    rest[name_len..].starts_with("}\"")
+            // ASCII lowering keeps every byte offset, so the matches index `production` too.
+            let production = byroredux_core::source_scan::production_text_or_whole(contents).to_ascii_lowercase();
+            let copies = prefixes.iter().flat_map(|prefix| {
+                production.match_indices(prefix).filter(|(at, _)| {
+                    let rest = &production[at + prefix.len()..];
+                    let before = production[..*at].trim_end();
+                    (rest.starts_with('{') && !rest.starts_with("{{"))
+                        || (rest.starts_with('"') && !tests_for_prefix.iter().any(|call| before.ends_with(call)))
                 })
             });
             if copies.count() > 0 {
