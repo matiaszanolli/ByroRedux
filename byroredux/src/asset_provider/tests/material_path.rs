@@ -29,6 +29,28 @@ fn derive_normal_map_path_inserts_n_before_extension() {
     assert_eq!(derive_normal_map_path(r"a.b\c.dds"), r"a.b\c_n.dds");
 }
 
+/// #7168 — the mesh caches' key folds exactly as the archives' key does
+/// (`byroredux_bsa::normalize_path`, Unicode lowercase and `\`), so a spelling the archives
+/// resolve to one file is one cache entry. `byroredux-core` and `byroredux-bsa` do not depend on
+/// each other, so the agreement is pinned here, where both are visible.
+#[test]
+fn the_mesh_cache_key_folds_as_the_archive_key_does() {
+    for path in [
+        r"Armor\Ä.NIF",
+        "meshes/ÜBER/x.nif",
+        r"MESHES\Clutter\Straße.nif",
+        r"\leading\ÖL.nif",
+        r"geometries\ABC.mesh",
+        "plain.nif",
+    ] {
+        assert_eq!(
+            canonical_mesh_key(path),
+            byroredux_bsa::normalize_path(&archive_mesh_path(path)),
+            "{path}"
+        );
+    }
+}
+
 #[test]
 fn normalize_mesh_path_prepends_missing_meshes_prefix() {
     let out = normalize_mesh_path(r"armor\powdergang\powdergang03.NIF");

@@ -77,9 +77,12 @@ pub fn archive_mesh_path(path: &str) -> String {
 }
 
 /// [`archive_mesh_path`], lower-cased: the key a lookup table or cache shares between
-/// every producer of it.
+/// every producer of it. #7168 — Unicode case folding, as `byroredux_bsa::normalize_path`
+/// folds every archive key: an ASCII-only fold kept `Ä.nif` and `ä.nif` apart in the mesh caches
+/// while the archives resolved both to one file, so it was parsed and uploaded twice. (The two
+/// crates do not depend on each other; the binary pins that the folds agree.)
 pub fn canonical_mesh_key(path: &str) -> String {
-    archive_mesh_path(&path.to_ascii_lowercase())
+    archive_mesh_path(&path.to_lowercase())
 }
 
 /// The directory holding the running executable, when it can be determined.
@@ -134,6 +137,13 @@ fn cache_root_from(env: Option<OsString>, exe_dir: Option<PathBuf>) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #7168 — a mesh key folds case beyond ASCII, so two spellings of one archive file share it.
+    #[test]
+    fn mesh_keys_fold_unicode_case() {
+        assert_eq!(canonical_mesh_key("Ä.NIF"), "meshes\\ä.nif");
+        assert_eq!(canonical_mesh_key("Meshes/Ünter/Ä.nif"), canonical_mesh_key("meshes\\ünter\\ä.nif"));
+    }
 
     #[test]
     fn shipped_assets_try_the_working_directory_before_the_executable() {
