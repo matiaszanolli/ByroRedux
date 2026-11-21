@@ -72,3 +72,30 @@ L1	A14	penumbra-moving	from_frame_80	excess_over_hold_max	3	+0.0792	0.0482	0.05	
 # block, cube and panel p95 re-baselined by the done-row rule (threshold = frozen floor +
 # accepted baseline). The A5 references are now rendered at 16 x the A2 / A4 sample count:
 # the plank passes its unchanged budget (mean 1.6e-3, p95 6.5e-3).
+# Frozen 2026-11-21 at Phase 4 entry (rev 45), owner budgets for L3 (Q6): specular probes
+# |energy ratio - 1| <= 0.10 and p95 relative error <= 0.25 per roughness, conductor r 0.02 done;
+# sky diffuse and the sun plane |ratio - 1| <= 0.005 with their p95 done (SH9 order error).
+L3	A6	dielectric-r0.02	sky_probe	energy_error	3	1	0	0.1	0.1	2x frozen floor	split-sum approximation error: about 10 % of the energy is one 8-bit step at mid-grey; p95 holds the lobe's shape
+L3	A6	dielectric-r0.02	sky_probe	rel_error_p95	3	3.12079	0.0057	0.25	0.2557	2x frozen floor	split-sum approximation error: about 10 % of the energy is one 8-bit step at mid-grey; p95 holds the lobe's shape
+L3	A6	dielectric-r0.26	sky_probe	energy_error	3	1	0	0.1	0.1	2x frozen floor	split-sum approximation error: about 10 % of the energy is one 8-bit step at mid-grey; p95 holds the lobe's shape
+L3	A6	dielectric-r0.26	sky_probe	rel_error_p95	3	3.02255	0.00132	0.25	0.25132	2x frozen floor	split-sum approximation error: about 10 % of the energy is one 8-bit step at mid-grey; p95 holds the lobe's shape
+L3	A6	dielectric-r0.50	sky_probe	energy_error	3	1	0	0.1	0.1	2x frozen floor	split-sum approximation error: about 10 % of the energy is one 8-bit step at mid-grey; p95 holds the lobe's shape
+L3	A6	dielectric-r0.50	sky_probe	rel_error_p95	3	2.61938	0.00139	0.25	0.25139	2x frozen floor	split-sum approximation error: about 10 % of the energy is one 8-bit step at mid-grey; p95 holds the lobe's shape
+L3	A6	dielectric-r0.74	sky_probe	energy_error	3	1	0	0.1	0.1	2x frozen floor	split-sum approximation error: about 10 % of the energy is one 8-bit step at mid-grey; p95 holds the lobe's shape
+L3	A6	dielectric-r0.74	sky_probe	rel_error_p95	3	2.12081	0.000873	0.25	0.250873	2x frozen floor	split-sum approximation error: about 10 % of the energy is one 8-bit step at mid-grey; p95 holds the lobe's shape
+L3	A6	dielectric-r0.98	sky_probe	energy_error	3	1	0	0.1	0.1	2x frozen floor	split-sum approximation error: about 10 % of the energy is one 8-bit step at mid-grey; p95 holds the lobe's shape
+L3	A6	dielectric-r0.98	sky_probe	rel_error_p95	3	1.94738	0.000895	0.25	0.250895	2x frozen floor	split-sum approximation error: about 10 % of the energy is one 8-bit step at mid-grey; p95 holds the lobe's shape
+L3	A6	conductor-r0.02	sky_probe	energy_error	3	0.007101	9.59e-06	done	0.00711059	2x frozen floor	done: baseline accepted (0.993)
+L3	A6	conductor-r0.02	sky_probe	rel_error_p95	3	0.068881	2.49e-05	done	0.0689059	2x frozen floor	done: baseline accepted
+L3	A6	conductor-r0.26	sky_probe	energy_error	3	0.241283	1.58e-05	0.1	0.100016	2x frozen floor	split-sum approximation error: about 10 % of the energy is one 8-bit step at mid-grey; p95 holds the lobe's shape
+L3	A6	conductor-r0.26	sky_probe	rel_error_p95	3	0.636217	0.000322	0.25	0.250322	2x frozen floor	split-sum approximation error: about 10 % of the energy is one 8-bit step at mid-grey; p95 holds the lobe's shape
+L3	A6	conductor-r0.50	sky_probe	energy_error	3	0.430033	2.81e-05	0.1	0.100028	2x frozen floor	split-sum approximation error: about 10 % of the energy is one 8-bit step at mid-grey; p95 holds the lobe's shape
+L3	A6	conductor-r0.50	sky_probe	rel_error_p95	3	0.961475	0.000579	0.25	0.250579	2x frozen floor	split-sum approximation error: about 10 % of the energy is one 8-bit step at mid-grey; p95 holds the lobe's shape
+L3	A6	conductor-r0.74	sky_probe	energy_error	3	1	0	0.1	0.1	2x frozen floor	split-sum approximation error: about 10 % of the energy is one 8-bit step at mid-grey; p95 holds the lobe's shape
+L3	A6	conductor-r0.74	sky_probe	rel_error_p95	3	1.8076	0.000496	0.25	0.250496	2x frozen floor	split-sum approximation error: about 10 % of the energy is one 8-bit step at mid-grey; p95 holds the lobe's shape
+L3	A6	conductor-r0.98	sky_probe	energy_error	3	1	0	0.1	0.1	2x frozen floor	split-sum approximation error: about 10 % of the energy is one 8-bit step at mid-grey; p95 holds the lobe's shape
+L3	A6	conductor-r0.98	sky_probe	rel_error_p95	3	1.67394	0.000782	0.25	0.250782	2x frozen floor	split-sum approximation error: about 10 % of the energy is one 8-bit step at mid-grey; p95 holds the lobe's shape
+L3	A6	lambertian	sky_probe	energy_error	3	0.01047	6.02e-05	0.005	0.0050602	2x frozen floor	the sun disc the probe bakes into SH9 (RLT-IBL-010) is the remaining energy error
+L3	A6	lambertian	sky_probe	rel_error_p95	3	0.113106	0.000229	done	0.113335	2x frozen floor	done: SH9 order error, which no Phase 4 mechanism changes
+L3	A17	sun-plane	sun_plane	energy_error	3	0.00224	2.77e-05	0.005	0.0050277	2x frozen floor	owner (rev 45): the sun counted once to within 0.5 %; the baseline 0.0022 already meets it, so the row holds the term rather than measuring an improvement
+L3	A17	sun-plane	sun_plane	rel_error_p95	3	0.0521096	5.27e-05	done	0.0521623	2x frozen floor	done: SH9 order error

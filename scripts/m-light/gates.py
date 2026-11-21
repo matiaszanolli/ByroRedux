@@ -1332,8 +1332,11 @@ def sky_energy_rows(case: str, ea, eb, ra, rb, mask) -> list[Row]:
 
     rows = []
     value = ratio(ea, ra, mask)
-    rows.append(Row("A6", case, "sky_probe", "energy_ratio", value,
-                    abs(ratio(eb, ra, mask) - value), abs(ratio(ea, rb, mask) - value), passed="report"))
+    floor_e, floor_r = abs(ratio(eb, ra, mask) - value), abs(ratio(ea, rb, mask) - value)
+    rows.append(Row("A6", case, "sky_probe", "energy_ratio", value, floor_e, floor_r, passed="report"))
+    # The gated form (Q6, rev 45): the distance of the ratio from 1.
+    rows.append(Row("A6", case, "sky_probe", "energy_error", abs(value - 1.0), floor_e, floor_r,
+                    passed="report"))
     (m_a, p_a), (m_b, p_b), (m_r, p_r) = rel(ea, ra), rel(eb, ra), rel(ea, rb)
     rows.append(Row("A6", case, "sky_probe", "rel_error_mean", m_a, abs(m_b - m_a), abs(m_r - m_a),
                     passed="report"))
