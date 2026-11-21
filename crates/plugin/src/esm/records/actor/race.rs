@@ -2,6 +2,9 @@ use super::super::common::{read_lstring_field, read_zstring, remap_fid, CommonNa
 use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
+/// `RACE` `DATA` skill-boost slots on Oblivion, Fallout 3 and New Vegas (xEdit `wbArrayS(.., 7)`).
+const TES4_ERA_SKILL_BOOSTS: usize = 7;
+
 #[derive(Debug, Clone, Default)]
 pub struct RaceRecord {
     pub form_id: u32,
@@ -510,7 +513,10 @@ pub fn parse_race(
                 record.spells.push(remap_fid(raw, remap));
             }
             // DATA (TES4 / FO3 / FONV — 36 bytes total):
-            //   TES4: 7 skill/bonus pairs + 2 padding bytes; FO3/FNV: 8 pairs
+            //   7 skill/bonus pairs + 2 unused bytes (TES4, FO3 and FNV alike:
+            //   xEdit `wbArrayS('Skill Boosts', .., 7)` + `wbUnused(2)`,
+            //   `wbDefinitionsFNV.pas:7375-7386`; vanilla bytes 14..16 are
+            //   `00 00` on every Oblivion / FO3 / FNV race, #7103)
             //   heightMale + heightFemale (2 × f32) 8 B
             //   weightMale + weightFemale (2 × f32) 8 B
             //   raceFlags (u32)                     4 B
@@ -527,8 +533,7 @@ pub fn parse_race(
                     && sub.data.len() >= 36 =>
             {
                 let mut r = SubReader::new(&sub.data);
-                let bonus_count = if game == GameKind::Oblivion { 7 } else { 8 };
-                for _ in 0..bonus_count {
+                for _ in 0..TES4_ERA_SKILL_BOOSTS {
                     let skill = r.u8_or_default();
                     let bonus = r.u8_or_default() as i8;
                     // Skip 0xFF (Skill_None sentinel) — OpenMW maps
@@ -541,7 +546,7 @@ pub fn parse_race(
                         record.skill_bonuses.push((skill, bonus));
                     }
                 }
-                if game == GameKind::Oblivion { r.skip_or_eof(2); }
+                r.skip_or_eof(2);
                 let h_m = r.f32_or_default();
                 let h_f = r.f32_or_default();
                 let w_m = r.f32_or_default();

@@ -1239,10 +1239,10 @@ fn npc_fo4_face_morph_form_ids_remap_to_global_space() {
 
 // ── #967 / OBL-D3-NEW-03 — RACE Oblivion-shape DATA + subs ────────
 
-/// Build a 36-byte Oblivion DATA payload: 8 × (u8 skill_index, u8
-/// bonus) + heightM + heightF + weightM + weightF + raceFlags.
+/// Build a 36-byte TES4-era DATA payload: 7 × (u8 skill_index, u8
+/// bonus) + 2 unused bytes + heightM + heightF + weightM + weightF + raceFlags.
 fn oblivion_data(
-    pairs: [(u8, i8); 8],
+    pairs: [(u8, i8); 7],
     height: (f32, f32),
     weight: (f32, f32),
     flags: u32,
@@ -1252,6 +1252,7 @@ fn oblivion_data(
         data.push(skill);
         data.push(bonus as u8);
     }
+    data.extend_from_slice(&[0, 0]); // unused — vanilla authors `00 00`, never the 0xFF sentinel
     data.extend_from_slice(&height.0.to_le_bytes());
     data.extend_from_slice(&height.1.to_le_bytes());
     data.extend_from_slice(&weight.0.to_le_bytes());
@@ -1262,7 +1263,7 @@ fn oblivion_data(
 }
 
 #[test]
-fn race_oblivion_data_reads_8_skill_pairs_plus_heights() {
+fn race_tes4_era_data_reads_7_skill_pairs_plus_heights() {
     // Nord-like sample: bonuses on Blade(0x0E) + Block(0x0F) +
     // HeavyArmor(0x12) + Restoration(0x19) + LightArmor(0x1B);
     // remaining slots = 0xFF (Skill_None sentinel, should drop).
@@ -1274,7 +1275,6 @@ fn race_oblivion_data_reads_8_skill_pairs_plus_heights() {
         (0x1B, 5),        // LightArmor +5
         (0xFF, 0),        // Skill_None — drop
         (0xFF, 0),
-        (0xFF, 0),
     ];
     let data = oblivion_data(pairs, (1.04, 1.0), (1.0, 1.0), 0x01);
     let subs = vec![
@@ -1282,14 +1282,18 @@ fn race_oblivion_data_reads_8_skill_pairs_plus_heights() {
         sub(b"FULL", b"Nord\0"),
         sub(b"DATA", &data),
     ];
-    let r = parse_race(0x10001, &subs, GameKind::Oblivion, &None);
-    // 5 real bonuses, 3 None-sentinel slots dropped.
-    assert_eq!(r.skill_bonuses.len(), 5);
-    assert_eq!(r.skill_bonuses[0], (0x0E, 10));
-    assert_eq!(r.skill_bonuses[4], (0x1B, 5));
-    assert!((r.base_height.0 - 1.04).abs() < 1e-6);
-    assert!((r.base_height.1 - 1.0).abs() < 1e-6);
-    assert_eq!(r.race_flags, 0x01);
+    // FO3 / FNV share the layout: the unused `00 00` must not surface as an
+    // 8th `(0, 0)` boost (#7103).
+    for game in [GameKind::Oblivion, GameKind::Fallout3NV] {
+        let r = parse_race(0x10001, &subs, game, &None);
+        // 5 real bonuses, 2 None-sentinel slots dropped, no phantom 8th pair.
+        assert_eq!(r.skill_bonuses.len(), 5, "{game:?}");
+        assert_eq!(r.skill_bonuses[0], (0x0E, 10));
+        assert_eq!(r.skill_bonuses[4], (0x1B, 5));
+        assert!((r.base_height.0 - 1.04).abs() < 1e-6);
+        assert!((r.base_height.1 - 1.0).abs() < 1e-6);
+        assert_eq!(r.race_flags, 0x01);
+    }
 }
 
 #[test]
@@ -1311,7 +1315,7 @@ fn race_oblivion_subrecords_captured() {
     let mut xnam_breton = Vec::new();
     xnam_breton.extend_from_slice(&0x10001u32.to_le_bytes()); // other race
     xnam_breton.extend_from_slice(&(-5_i32).to_le_bytes());
-    let data = oblivion_data([(0xFF, 0); 8], (1.0, 1.0), (1.0, 1.0), 0);
+    let data = oblivion_data([(0xFF, 0); 7], (1.0, 1.0), (1.0, 1.0), 0);
     let subs = vec![
         sub(b"EDID", b"Breton\0"),
         sub(b"DATA", &data),
@@ -1346,7 +1350,7 @@ fn race_oblivion_subrecords_skipped_on_non_oblivion_games() {
     let mut dnam = Vec::new();
     dnam.extend_from_slice(&0x000Au32.to_le_bytes());
     dnam.extend_from_slice(&0x000Bu32.to_le_bytes());
-    let data = oblivion_data([(0xFF, 0); 8], (1.0, 1.0), (1.0, 1.0), 0);
+    let data = oblivion_data([(0xFF, 0); 7], (1.0, 1.0), (1.0, 1.0), 0);
     let subs = vec![
         sub(b"EDID", b"FnvHuman\0"),
         sub(b"DATA", &data),
@@ -1364,7 +1368,7 @@ fn race_oblivion_subrecords_skipped_on_non_oblivion_games() {
 /// `race_reactions` list in authoring order.
 #[test]
 fn race_multiple_xnam_pairs_collected() {
-    let data = oblivion_data([(0xFF, 0); 8], (1.0, 1.0), (1.0, 1.0), 0);
+    let data = oblivion_data([(0xFF, 0); 7], (1.0, 1.0), (1.0, 1.0), 0);
     let mut x1 = Vec::new();
     x1.extend_from_slice(&0x10010u32.to_le_bytes());
     x1.extend_from_slice(&5_i32.to_le_bytes());
