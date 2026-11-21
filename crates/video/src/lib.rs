@@ -35,8 +35,9 @@ const BINK2_THREADS: usize = 4;
 /// What a movie request cannot do.
 #[derive(Debug, thiserror::Error)]
 pub enum VideoError {
-    /// The movie is in a format this build has no decoder for (a Bink 1 revision other than `i`, a
-    /// Bink 2 revision other than `g` and `j`, an alpha or grayscale plane).
+    /// The movie is in a format this build has no decoder for: a Bink 1 revision other than `i` or a
+    /// Bink 1 alpha or grayscale plane, a Bink 2 revision other than `g` and `j`, or a Bink 2 video
+    /// flag `byroredux-bink2` does not model (#7135).
     #[error("{0}")]
     Unsupported(String),
     /// The file is missing or is no movie.
@@ -103,7 +104,10 @@ fn bink2_container(path: &Path, magic: &[u8]) -> Result<bink2::Bk2, VideoError> 
     if !BINK2_REVISIONS.contains(&magic[3]) {
         return Err(container_error(magic, String::new()));
     }
-    let file = bink2::Bk2::open(path).map_err(|error| VideoError::Unreadable(error.to_string()))?;
+    let file = bink2::Bk2::open(path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::Unsupported => VideoError::Unsupported(error.to_string()),
+        _ => VideoError::Unreadable(error.to_string()),
+    })?;
     if file.width == 0 || file.height == 0 || file.frames == 0 || file.fps_num == 0 || file.fps_den == 0 {
         return Err(VideoError::Unreadable(format!(
             "not a playable Bink 2 movie: {}x{}, {} frames at {}/{} fps",
@@ -983,6 +987,10 @@ mod tests {
         bink2[3] = b'g';
         assert!(matches!(probe(&write("e.bk2", &bink2)), Err(VideoError::Unreadable(_))), "no frames, no size");
         assert!(matches!(Movie::open(&write("f.bk2", &bink2), (8, 8), true), Err(VideoError::Unreadable(_))));
+        // #7135: a video flag the DLL decodes differently (bit 20 on KB2g) is unsupported, not damage.
+        bink2[0x24..0x28].copy_from_slice(&(1u32 << 20).to_le_bytes());
+        assert!(matches!(probe(&write("g.bk2", &bink2)), Err(VideoError::Unsupported(reason)) if reason.contains("video flags")));
+        assert!(matches!(Movie::open(&write("h.bk2", &bink2), (8, 8), true), Err(VideoError::Unsupported(_))));
         let mut other = b"BIKb".to_vec();
         other.resize(0x80, 0);
         assert!(matches!(probe(&write("c.bik", &other)), Err(VideoError::Unsupported(reason)) if reason.contains("'b'")));

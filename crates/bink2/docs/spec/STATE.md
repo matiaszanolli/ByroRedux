@@ -111,7 +111,9 @@ colour converter measured in P33. `container.rs`: `.bk2`.
 ## Open, in the order they block real playback
 1. **KB2j details no game file has shown wrong yet:** which header field decides 4 slices (video flags
    bit 1 or the extra word), the KB2j residual DC bound, Wolfenstein II's KB2i/KB2j files (1920x816:
-   the padding bound for filter A / MC), alpha planes. Audio is separate.
+   the padding bound for filter A / MC), alpha planes. The video-flag bits the DLL reads and this
+   decoder does not model are refused at `Bk2::open` (P34); what each one means is open. Audio is
+   separate.
 2. **Extreme values:** the DC cases are solved (P27, P28); left: keyframe AC level 30 at high
    frequencies (`nb5`), quantisers >= 37 (P29), AC level prefix 12, the intra DC upper clamp (2047
    assumed; only 0 is confirmed).

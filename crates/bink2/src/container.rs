@@ -79,8 +79,28 @@ pub const MAX_FRAMES: usize = 1_000_000;
 /// sorts other revisions as unsupported from this list too.
 pub const REVISIONS: &[u8] = b"gj";
 
+/// Video-flag bits (header `+0x24`) the games' DLL reads and this decoder does not model, per
+/// revision `[probe:P34]`: on a real file each one changes the DLL's decoded frames, its frame
+/// size, or makes it refuse the file, while this decoder's output does not change. A movie
+/// carrying one is refused at [`Bk2::open`] as [`io::ErrorKind::Unsupported`] rather than decoded
+/// with the wrong stream model (#7135). Every other bit left the DLL's output unchanged; the
+/// corpus carries only bit 4 (both revisions) and bit 1 (KB2j, the slice count).
+const UNMODELLED_VIDEO_FLAGS: [(u8, u32); 2] = [
+    // bit 20 changes the frames; bits 28-30 change the frame size the DLL reports.
+    (b'g', 1 << 20 | 0x7000_0000),
+    // bits 0, 2, 20, 24, 25 change the frames (2 also the frame-buffer layout); the DLL refuses
+    // bits 16 and 26-31 ("bad frame size data").
+    (b'j', 1 | 1 << 2 | 1 << 16 | 1 << 20 | 0xff00_0000),
+];
+
 fn bad(msg: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.to_string())
+}
+
+/// A file this crate has no decoder for, as opposed to a damaged one: `byroredux-video` reports it
+/// as unsupported.
+fn unsupported(msg: String) -> io::Error {
+    io::Error::new(io::ErrorKind::Unsupported, msg)
 }
 
 impl Bk2 {
@@ -93,9 +113,13 @@ impl Bk2 {
             return Err(bad("not a Bink 2 file"));
         }
         if !REVISIONS.contains(&h[3]) {
-            return Err(bad("unsupported Bink 2 revision"));
+            return Err(unsupported("unsupported Bink 2 revision".into()));
         }
         let u = |i: usize| u32::from_le_bytes(h[4 + 4 * i..8 + 4 * i].try_into().unwrap());
+        let unmodelled = UNMODELLED_VIDEO_FLAGS.iter().find(|(revision, _)| *revision == h[3]).map_or(0, |e| e.1);
+        if u(8) & unmodelled != 0 {
+            return Err(unsupported(format!("unsupported Bink 2 video flags {:#010x}", u(8) & unmodelled)));
+        }
         let (frames, tracks) = (u(1) as usize, u(9) as usize);
         let (width, height) = (u(4) as usize, u(5) as usize);
         if frames > MAX_FRAMES || tracks > MAX_AUDIO_TRACKS || width > MAX_DIMENSION || height > MAX_DIMENSION {
@@ -159,10 +183,11 @@ impl Bk2 {
         })
     }
 
-    /// Slices per frame. P30 (hypothesis from Starfield's files, to be pinned): 4 when video flag bit 1
-    /// (0x02) is set, else 2.
+    /// Slices per frame. P30 (hypothesis from Starfield's files, to be pinned): 4 when a KB2j's video
+    /// flag bit 1 (0x02) is set, else 2. KB2g has 2 either way: the DLL decodes a KB2g with bit 1
+    /// set exactly as without it `[probe:P34]`.
     pub fn slices(&self) -> usize {
-        if self.video_flags & 2 != 0 {
+        if self.magic[3] == b'j' && self.video_flags & 2 != 0 {
             4
         } else {
             2
@@ -278,6 +303,47 @@ mod tests {
         error.to_string()
     }
 
+    /// A refusal for a file this crate has no decoder for, which `byroredux-video` reports as such.
+    fn unsupported(name: &str, bytes: &[u8]) -> String {
+        let path = file(name, bytes);
+        let error = Bk2::open(&path).err().expect("refused");
+        std::fs::remove_file(path).ok();
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        error.to_string()
+    }
+
+    /// #7135: a video-flag bit the DLL decodes differently (P34) is refused as unsupported; the
+    /// bits the corpus carries open, and KB2g ignores the KB2j slice bit as the DLL does.
+    #[test]
+    fn video_flags_the_decoder_does_not_model_are_unsupported() {
+        let with_flags = |revision: u8, flags: u32| {
+            let mut h = header(0, 64, 64, 0);
+            h[3] = revision;
+            h[0x24..0x28].copy_from_slice(&flags.to_le_bytes());
+            if revision == b'j' {
+                h.extend_from_slice(&[0; 4]);
+            }
+            h.extend_from_slice(&44u32.to_le_bytes());
+            h
+        };
+        for (revision, bits) in [(b'g', &[20, 28, 29, 30][..]), (b'j', &[0, 2, 16, 20, 24, 25, 26, 31][..])] {
+            for bit in bits {
+                let name = format!("flag-{}-{bit}", char::from(revision));
+                let flags = 0x10 | 1 << bit;
+                assert_eq!(
+                    unsupported(&name, &with_flags(revision, flags)),
+                    format!("unsupported Bink 2 video flags {:#010x}", 1u32 << bit)
+                );
+            }
+        }
+        for (revision, flags, slices) in [(b'g', 0x10, 2), (b'g', 0x12, 2), (b'j', 0x10, 2), (b'j', 0x12, 4)] {
+            let path = file(&format!("flag-ok-{}-{flags}", char::from(revision)), &with_flags(revision, flags));
+            let opened = Bk2::open(&path);
+            std::fs::remove_file(path).ok();
+            assert_eq!(opened.expect("opens").slices(), slices, "KB2{} flags {flags:#x}", char::from(revision));
+        }
+    }
+
     /// #7134: only the revisions the decoder knows open; any other `KB2?` is refused, not decoded with
     /// the nearest layout (a `k` used to read as KB2j, an `f` or `i` as KB2g).
     #[test]
@@ -285,7 +351,7 @@ mod tests {
         for revision in *b"afikz" {
             let mut h = header(1, 64, 64, 0);
             h[3] = revision;
-            assert_eq!(refused(&format!("rev-{}", char::from(revision)), &h), "unsupported Bink 2 revision");
+            assert_eq!(unsupported(&format!("rev-{}", char::from(revision)), &h), "unsupported Bink 2 revision");
         }
         for &revision in REVISIONS {
             let mut h = header(1, 64, 64, 0);
