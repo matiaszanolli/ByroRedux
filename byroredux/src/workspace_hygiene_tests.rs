@@ -1261,19 +1261,9 @@ fn no_source_hand_spells_the_player_entity_read() {
 #[test]
 fn no_production_code_prefixes_meshes_by_hand() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    // #7166 — a string literal (plain or raw) that opens with `meshes` and a separator (`\\`,
-    // `\` in a raw string, or `/`; any case) and then either interpolates — `{name}`, `{}`, `{:x}`,
-    // whatever follows the placeholder (`{stem}.nif`, `{dir}\\{file}`) — or ends right there, the
-    // piece a `push_str` / `concat!` / `format!("{}{}", …)` prepends. A fixed archive path
-    // (`meshes\\terrain\\…`) has a name after the separator and is not one; a bare `"meshes"` is
-    // a root name (loose roots, comparisons) and is not scanned. #7145 needed `}"` straight after
-    // a bare name, which missed every spelling with an extension or a second component.
-    let prefixes = ["\"meshes\\\\", "\"meshes/", "r\"meshes\\"];
-    // A separator-terminated literal passed to one of these tests for the prefix, never adds it.
-    let tests_for_prefix = ["strip_prefix(", "starts_with(", "trim_start_matches(", "contains(", "find("];
     // Not archive keys: the Cornell harness writes its own Mitsuba scene, whose meshes folder is
-    // `meshes/<hash>.ply` beside the scene file.
-    let allowed = ["byroredux/src/cornell/mitsuba_export.rs"];
+    // `meshes/<hash>.ply` beside the scene file. Allowed by file and literal, not file-wide (#7179).
+    let allowed = [("byroredux/src/cornell/mitsuba_export.rs", "\"meshes/{:016x}.ply\"")];
     let mut found = Vec::new();
     // #7145 — the binary and every library crate; the renderer cannot call the binary's helper,
     // which is why the rule now lives in `byroredux_core::paths`.
@@ -1282,19 +1272,16 @@ fn no_production_code_prefixes_meshes_by_hand() {
             // Library source only: an example or bench is a probe (`nif`'s `d5_starfield_import`
             // tries non-canonical spellings on purpose to show which ones miss).
             let probe = path.components().any(|c| c.as_os_str() == "examples" || c.as_os_str() == "benches");
-            let listed = allowed.iter().any(|allowed| path.to_string_lossy().replace('\\', "/").ends_with(allowed));
-            if path.ends_with("core/src/paths.rs") || is_test_source(path) || probe || listed {
+            if path.ends_with("core/src/paths.rs") || is_test_source(path) || probe {
                 return;
             }
-            // ASCII lowering keeps every byte offset, so the matches index `production` too.
+            let file = path.to_string_lossy().replace('\\', "/");
+            // ASCII lowering keeps every byte offset, so the sites index `production` too.
             let production = byroredux_core::source_scan::production_text_or_whole(contents).to_ascii_lowercase();
-            let copies = prefixes.iter().flat_map(|prefix| {
-                production.match_indices(prefix).filter(|(at, _)| {
-                    let rest = &production[at + prefix.len()..];
-                    let before = production[..*at].trim_end();
-                    (rest.starts_with('{') && !rest.starts_with("{{"))
-                        || (rest.starts_with('"') && !tests_for_prefix.iter().any(|call| before.ends_with(call)))
-                })
+            let copies = meshes_prefix_sites(&production).into_iter().filter(|&(literal, _)| {
+                !allowed
+                    .iter()
+                    .any(|(allowed_file, text)| file.ends_with(allowed_file) && production[literal..].starts_with(text))
             });
             if copies.count() > 0 {
                 found.push(path.display().to_string());
@@ -1306,6 +1293,122 @@ fn no_production_code_prefixes_meshes_by_hand() {
         "hand-written `meshes\\` prefix — use `byroredux_core::paths::{{normalize_mesh_path, archive_mesh_path, canonical_mesh_key}}` (#6956, #7145):\n{}",
         found.join("\n"),
     );
+}
+
+/// Where `text` (lower-cased source) prepends the `meshes` root by hand, as `(literal start,
+/// `meshes` offset)` pairs (#7166, #7179):
+///
+/// * a string literal — plain or raw (`r"…"`, `r#"…"#`), optionally opening with a separator
+///   (`"\\meshes…"`) or a placeholder (`"{base}meshes…"`) — that has `meshes`, a separator (`\\`,
+///   `\` in a raw string, or `/`), and then interpolates (`{name}`, `{}`, `{:x}`, whatever follows
+///   the placeholder, but not an escaped `{{`) or ends right there, unless that separator-ended
+///   literal is the argument of a prefix test (`strip_prefix(` and the like);
+/// * a bare `"meshes"` that a path is built from: `Path::new("meshes").join(…)`, or a non-final
+///   argument followed by a variable in a `format!(` or a `[…].join(` on the same line.
+///
+/// A fixed archive path (`meshes\\terrain\\…`: a name after the separator) and a bare root name in a
+/// list, a comparison or a label tuple are not prefixing.
+fn meshes_prefix_sites(text: &str) -> Vec<(usize, usize)> {
+    const PREFIX_TESTS: [&str; 5] = ["strip_prefix(", "starts_with(", "trim_start_matches(", "contains(", "find("];
+    let bytes = text.as_bytes();
+    let mut sites = Vec::new();
+    for (at, _) in text.match_indices("meshes") {
+        let end = at + "meshes".len();
+        if bytes[..at].ends_with(b"\"") && bytes[end..].starts_with(b"\"") {
+            // A bare `"meshes"` literal: prefixing only where a path is built from it.
+            let literal = at - 1;
+            let after = text[end + 1..].trim_start();
+            let line_start = text[..literal].rfind('\n').map_or(0, |n| n + 1);
+            let line_end = text[end..].find('\n').map_or(text.len(), |n| end + n);
+            let next_is_variable = after
+                .strip_prefix(',')
+                .map(str::trim_start)
+                .and_then(|rest| rest.chars().next())
+                .is_some_and(|c| c.is_ascii_lowercase() || c == '&' || c == '_');
+            let joined = after.starts_with(").join(");
+            let built = next_is_variable
+                && (text[line_start..literal].contains("format!(")
+                    || (bytes[..literal].ends_with(b"[") && text[line_start..line_end].contains("].join(")));
+            if joined || built {
+                sites.push((literal, at));
+            }
+            continue;
+        }
+        // The literal's opening quote, behind an optional placeholder or leading separator.
+        let mut open = at;
+        if bytes[..open].ends_with(b"}") {
+            match text[..open].rfind('{') {
+                Some(brace) => open = brace,
+                None => continue,
+            }
+        } else if bytes[..open].ends_with(b"\\\\") {
+            open -= 2;
+        } else if bytes[..open].ends_with(b"\\") || bytes[..open].ends_with(b"/") {
+            open -= 1;
+        }
+        if !bytes[..open].ends_with(b"\"") {
+            continue;
+        }
+        let literal = open - 1;
+        let raw = text[..literal].trim_end_matches('#').ends_with('r');
+        let rest = &text[end..];
+        let separator = if rest.starts_with("\\\\") {
+            2
+        } else if rest.starts_with('/') || (raw && rest.starts_with('\\')) {
+            1
+        } else {
+            continue;
+        };
+        let after = &rest[separator..];
+        let interpolates = after.starts_with('{') && !after.starts_with("{{");
+        let ends_at_separator = after.starts_with('"')
+            && !PREFIX_TESTS.iter().any(|call| text[..literal].trim_end_matches(['r', '#']).trim_end().ends_with(call));
+        if interpolates || ends_at_separator {
+            sites.push((literal, at));
+        }
+    }
+    sites
+}
+
+/// #7179 — the matcher behind `no_production_code_prefixes_meshes_by_hand`, case by case: every
+/// spelling that prepends the root is found, and the ones that name it or test for it are not.
+#[test]
+fn the_meshes_prefix_matcher_tells_prefixing_from_naming() {
+    let prefixing = [
+        r#"format!("meshes\\{name}")"#,
+        r#"format!("meshes\\{stem}.nif")"#,
+        r#"format!("meshes\\{}.nif", x)"#,
+        r#"format!("meshes\\{dir}\\{file}")"#,
+        r#"format!("meshes/{x}.nif")"#,
+        r#"format!(r"meshes\{x}")"#,
+        r##"format!(r#"meshes\{x}"#)"##,
+        r#"format!("\\meshes\\{x}")"#,
+        r#"format!("/meshes/{x}")"#,
+        r#"format!("{base}meshes\\{x}")"#,
+        r#"s.push_str("meshes\\");"#,
+        r#"let p = "meshes\\".to_owned() + x;"#,
+        r#"format!("{}\\{}", "meshes", x)"#,
+        r#"["meshes", x].join("\\")"#,
+        r#"Path::new("meshes").join(x)"#,
+    ];
+    for code in prefixing {
+        assert!(!meshes_prefix_sites(&code.to_ascii_lowercase()).is_empty(), "missed: {code}");
+    }
+    let naming = [
+        r#"format!("meshes\\terrain\\{x}.nif")"#,
+        r#"x.strip_prefix("meshes\\")"#,
+        r#"x.starts_with("meshes/")"#,
+        r#"const ROOTS: [&str; 3] = ["textures", "meshes", "music"];"#,
+        r#"if root == "meshes" { }"#,
+        r#"("Meshes", &entry.default_bsas, Severity::Fail),"#,
+        r#"let meshes_dir = dir.join("meshes");"#,
+        r#"format!("meshes\\{{literal}}")"#,
+        r#"// prepends `meshes\{name}` by hand"#,
+        r#"starts_with_root(path, "meshes")"#,
+    ];
+    for code in naming {
+        assert!(meshes_prefix_sites(&code.to_ascii_lowercase()).is_empty(), "flagged: {code}");
+    }
 }
 
 /// #6577 — a whole-`Children` walk goes through `byroredux_core::ecs::collect_subtree`,
