@@ -199,12 +199,13 @@ pub fn save_manifest(path: &Path, manifest: &Manifest) -> Result<()> {
     std::fs::write(path, text).with_context(|| format!("write manifest {}", path.display()))
 }
 
+/// An asset path as the source stack keys it: trimmed, `/`-separated, case-folded as the archives
+/// and the engine's caches fold (`core::paths::fold_case`, #7191 — it folded ASCII only, so `Ä.dds`
+/// in one source did not override `ä.dds` in an earlier one).
 pub fn normalize_asset_path(path: &str) -> String {
-    path.trim()
-        .trim_start_matches("./")
-        .trim_start_matches(".\\")
-        .replace('\\', "/")
-        .to_ascii_lowercase()
+    byroredux_core::paths::fold_case(
+        &path.trim().trim_start_matches("./").trim_start_matches(".\\").replace('\\', "/"),
+    )
 }
 
 pub fn output_png_path(root: &Path, asset_path: &str) -> Result<PathBuf> {
