@@ -292,40 +292,75 @@ impl Soundtrack {
     }
 }
 
-/// Decode the movie's first audio track to a temporary WAV. `None` when it has no audio or the
-/// track does not decode (the picture then plays silent, with a warning).
-fn extract_audio(movie: &mercs2_bink::Movie, name: &str) -> Option<PathBuf> {
-    let track = movie.tracks.first()?;
+/// A movie's decoded soundtrack: the temporary WAV, and why the movie's sound is missing or ends
+/// before its picture (#7139; `None` when it plays whole or the movie has no audio track).
+#[derive(Default)]
+struct Audio {
+    wav: Option<PathBuf>,
+    problem: Option<String>,
+}
+
+impl Audio {
+    /// No soundtrack, for `problem` (logged here).
+    fn missing(name: &str, problem: String) -> Self {
+        log::warn!("video: {name}: {problem}");
+        Self { wav: None, problem: Some(problem) }
+    }
+}
+
+/// A Bink 1 file's track IDs, from the header `bytes` (`[wiki:Bink Container]`: after the fixed
+/// header, a word per track, then rate and flags per track, then an ID per track).
+fn bink1_track_ids(bytes: &[u8], tracks: usize) -> impl Iterator<Item = u32> + '_ {
+    let at = BIK1_HEADER_LEN + 8 * tracks;
+    (0..tracks).map_while(move |k| bytes.get(at + 4 * k..at + 4 * k + 4).map(|id| u32::from_le_bytes(id.try_into().unwrap())))
+}
+
+/// Decode a Bink 1 movie's soundtrack to a temporary WAV: the track the original plays
+/// ([`original_track_index`], BIK-DEC-002, as for Bink 2 — #7139), from the file's `bytes`.
+fn extract_audio(movie: &mercs2_bink::Movie, bytes: &[u8], name: &str) -> Audio {
+    if movie.tracks.is_empty() {
+        return Audio::default();
+    }
+    let index = original_track_index(bink1_track_ids(bytes, movie.tracks.len()));
+    let track = &movie.tracks[index];
     let mut decoder = match AudioDecoder::new(track) {
         Ok(decoder) => decoder,
-        Err(error) => {
-            log::warn!("video: {name}: its first audio track cannot be decoded: {error}");
-            return None;
-        }
+        Err(error) => return Audio::missing(name, format!("its audio track {index} cannot be decoded: {error}")),
     };
     let soundtrack = Soundtrack::new(&describe(movie), track.channels() as u16, track.rate());
-    decode_soundtrack(name, movie.frame_count as usize, soundtrack, |frame, pcm| {
-        let record = movie.split(frame as _).ok().and_then(|(records, _)| records.first().copied());
-        let Some(record) = record else { return Ok(false) };
+    let audio = decode_soundtrack(name, movie.frame_count as usize, soundtrack, |frame, pcm| {
+        // A frame that does not split, or carries no record for the track, ends the sound with a
+        // warning, as a Bink 2 packet that does not read does (#7139).
+        let (records, _) = movie.split(frame as _).map_err(|error| format!("the frame does not split: {error}"))?;
+        let record = records.get(index).copied().ok_or_else(|| format!("the frame has no record for audio track {index}"))?;
         pcm.extend(decoder.decode_record(record).map_err(|error| error.to_string())?);
-        Ok(true)
-    })
+        Ok(())
+    });
+    if movie.tracks.len() > 1 {
+        log::info!("video: {name}: sound from audio track {index} of {}", movie.tracks.len());
+    }
+    audio
 }
 
 /// Decode a soundtrack frame by frame straight into a temporary WAV the audio crate streams, for
-/// every codec: `decode_frame` appends frame `n`'s samples to an emptied buffer and answers whether
-/// to go on (`Ok(false)` ends the track quietly, an `Err` ends it with a warning). A frame past the
-/// frame cap ends the track before it is written, and the WAV never passes the movie's cap, so
-/// memory holds one frame's audio, not the soundtrack (#7125). `None` when nothing decoded or the
-/// file cannot be written (the picture then plays silent, with a warning).
+/// every codec: `decode_frame` appends frame `n`'s samples to an emptied buffer; an `Err` ends the
+/// track there, with a warning. A frame past the frame cap ends the track before it is written, and
+/// the WAV never passes the movie's cap, so memory holds one frame's audio, not the soundtrack
+/// (#7125). No WAV when nothing decoded or the file cannot be written (the picture then plays
+/// silent, with a warning); a track that ends before the movie's last frame says why (#7139).
 fn decode_soundtrack(
     name: &str,
     frames: usize,
     soundtrack: Soundtrack,
-    mut decode_frame: impl FnMut(usize, &mut Vec<i16>) -> Result<bool, String>,
-) -> Option<PathBuf> {
+    mut decode_frame: impl FnMut(usize, &mut Vec<i16>) -> Result<(), String>,
+) -> Audio {
     let path = temp_wav_path();
     let mut written = 0usize;
+    let mut problem = None;
+    let mut stop = |why: String| {
+        log::warn!("video: {name}: {why}");
+        problem = Some(why);
+    };
     let result = std::fs::File::create(&path).and_then(|file| {
         let mut out = std::io::BufWriter::new(file);
         out.write_all(&wav_header(0, soundtrack.channels, soundtrack.rate))?;
@@ -333,19 +368,18 @@ fn decode_soundtrack(
         for frame in 0..frames {
             pcm.clear();
             let go_on = match decode_frame(frame, &mut pcm) {
-                Ok(go_on) => go_on,
+                Ok(()) => true,
                 Err(error) => {
-                    log::warn!("video: {name}: its audio stops at frame {frame}: {error}");
+                    stop(format!("its audio stops at frame {frame}: {error}"));
                     false
                 }
             };
             if pcm.len() > soundtrack.frame_cap {
-                log::warn!(
-                    "video: {name}: frame {frame}'s audio decodes to {} samples, past the {} one frame may hold; \
-                     its audio stops there",
+                stop(format!(
+                    "frame {frame}'s audio decodes to {} samples, past the {} one frame may hold; its audio stops there",
                     pcm.len(),
                     soundtrack.frame_cap
-                );
+                ));
                 break;
             }
             let room = soundtrack.total_cap - written;
@@ -370,15 +404,14 @@ fn decode_soundtrack(
         file.write_all(&wav_header(written, soundtrack.channels, soundtrack.rate))
     });
     match result {
-        Ok(()) if written > 0 => Some(path),
+        Ok(()) if written > 0 => Audio { wav: Some(path), problem },
         Ok(()) => {
             let _ = std::fs::remove_file(&path);
-            None
+            Audio { wav: None, problem: problem.or_else(|| Some("its audio track decodes to no samples".to_owned())) }
         }
         Err(error) => {
-            log::warn!("video: {name}: its soundtrack could not be written: {error}");
             let _ = std::fs::remove_file(&path);
-            None
+            Audio::missing(name, format!("its soundtrack could not be written: {error}"))
         }
     }
 }
@@ -399,20 +432,17 @@ fn original_track_index(ids: impl IntoIterator<Item = u32>) -> usize {
 /// BIK-DEC-003: a Bink 2 movie's sound, one track decoded up front by `byroredux-binkaudio` into a
 /// temporary WAV: the English one ([`original_track_index`], BIK-DEC-002), else the first. `None` without
 /// tracks, or when the track does not decode (the picture then plays silent, with a warning).
-fn bink2_audio(file: &mut bink2::Bk2, name: &str) -> Option<PathBuf> {
+fn bink2_audio(file: &mut bink2::Bk2, name: &str) -> Audio {
     let index = original_track_index(file.tracks.iter().map(|track| track.id));
-    let track = *file.tracks.get(index)?;
+    let Some(&track) = file.tracks.get(index) else { return Audio::default() };
     let mut decoder = match byroredux_binkaudio::Decoder::new(track.rate, track.stereo(), track.dct()) {
         Ok(decoder) => decoder,
-        Err(error) => {
-            log::warn!("video: {name}: its first audio track cannot be decoded: {error}");
-            return None;
-        }
+        Err(error) => return Audio::missing(name, format!("its audio track ID {} cannot be decoded: {error}", track.id)),
     };
     let soundtrack = Soundtrack::new(&describe_bink2(file), track.channels() as u16, track.rate);
     let wav = decode_soundtrack(name, file.frames, soundtrack, |frame, pcm| {
         let packet = file.audio(frame).map_err(|error| error.to_string())?.swap_remove(index);
-        let Some(packet) = packet else { return Ok(true) };
+        let Some(packet) = packet else { return Ok(()) };
         // #7125 — refuse a packet stating more than one frame may hold before `decode` grows the
         // buffer for it: a zero-filled 13 MB packet could otherwise decode the whole soundtrack.
         if packet.decoded_bytes as usize / 2 > soundtrack.frame_cap {
@@ -423,7 +453,7 @@ fn bink2_audio(file: &mut bink2::Bk2, name: &str) -> Option<PathBuf> {
             ));
         }
         decoder.decode(packet.decoded_bytes, &packet.data, pcm).map_err(|error| error.to_string())?;
-        Ok(true)
+        Ok(())
     });
     if file.tracks.len() > 1 {
         log::info!("video: {name}: sound from audio track ID {} (track {index} of {})", track.id, file.tracks.len());
@@ -525,8 +555,8 @@ fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
 }
 
 /// Remove a soundtrack decoded for a movie that then failed to start, so its temp WAV is not left.
-fn discard_wav(audio: &Option<PathBuf>) {
-    if let Some(wav) = audio {
+fn discard_wav(audio: &Audio) {
+    if let Some(wav) = &audio.wav {
         let _ = std::fs::remove_file(wav);
     }
 }
@@ -570,6 +600,7 @@ pub struct Movie {
     rx: Option<Receiver<DecodedFrame>>,
     reader: Option<JoinHandle<()>>,
     audio: Option<PathBuf>,
+    soundtrack_problem: Option<String>,
     frame: Vec<u8>,
     index: i64,
     exhausted: bool,
@@ -596,7 +627,7 @@ impl Movie {
             let movie = mercs2_bink::Movie::parse(&bytes).map_err(|detail| container_error(&bytes, detail))?;
             check_bink1_movie(&movie)?;
             let video = VideoDecoder::new(&movie).map_err(VideoError::Unsupported)?;
-            (describe(&movie), extract_audio(&movie, &name), video)
+            (describe(&movie), extract_audio(&movie, &bytes, &name), video)
         };
         let (width, height) = (size.0.max(2), size.1.max(2));
         let (rx, reader) = spawn_reader(name, move |name, emit| {
@@ -667,9 +698,10 @@ impl Movie {
         size: (u32, u32),
         rx: Receiver<DecodedFrame>,
         reader: Option<JoinHandle<()>>,
-        audio: Option<PathBuf>,
+        audio: Audio,
     ) -> Self {
-        Self { info, size, rx: Some(rx), reader, audio, frame: Vec::new(), index: -1, exhausted: false, failure: None }
+        let Audio { wav: audio, problem: soundtrack_problem } = audio;
+        Self { info, size, rx: Some(rx), reader, audio, soundtrack_problem, frame: Vec::new(), index: -1, exhausted: false, failure: None }
     }
 
     /// A movie over frames that already exist (tests). `info.fps` must be positive, as every opened
@@ -690,7 +722,7 @@ impl Movie {
         for item in decoded {
             tx.send(item).expect("the ring holds every frame");
         }
-        Self::streaming(info, size, rx, None, None)
+        Self::streaming(info, size, rx, None, Audio::default())
     }
 
     /// BIK-DEC-004 — why decoding stopped before the last frame, once the reader has said so.
@@ -707,9 +739,15 @@ impl Movie {
         self.size
     }
 
-    /// The temporary WAV holding the first audio track, if the movie has one.
+    /// The temporary WAV holding the soundtrack, if the movie has one.
     pub fn audio_path(&self) -> Option<&Path> {
         self.audio.as_deref()
+    }
+
+    /// #7139 — why the movie's sound is missing or ends before its picture (its audio track does
+    /// not decode, or stops at a frame); `None` when it plays whole or the movie has no audio track.
+    pub fn soundtrack_problem(&self) -> Option<&str> {
+        self.soundtrack_problem.as_deref()
     }
 
     /// Frames shown so far (the highest index reached plus one).
@@ -864,7 +902,7 @@ mod tests {
             panic!("slice 3 out of range");
         })
         .unwrap();
-        let mut movie = Movie::streaming(info(10.0), (2, 2), rx, Some(reader), None);
+        let mut movie = Movie::streaming(info(10.0), (2, 2), rx, Some(reader), Audio::default());
         assert_eq!(movie.decode_to_end(), 1, "the frame before the panic was decoded");
         assert_eq!(movie.failure(), Some("x.bk2: the decoder panicked: slice 3 out of range"));
     }
@@ -955,8 +993,9 @@ mod tests {
         let wav = decode_soundtrack("t", 100, caps, |_, pcm| {
             asked += 1;
             pcm.extend([7i16; 4]);
-            Ok(true)
+            Ok(())
         })
+        .wav
         .expect("a soundtrack was written");
         let bytes = std::fs::read(&wav).unwrap();
         let _ = std::fs::remove_file(&wav);
@@ -981,17 +1020,67 @@ mod tests {
         let caps = Soundtrack { channels: 2, rate: 48_000, total_cap: MAX_SOUNDTRACK_SAMPLES, frame_cap: 8 };
         let wav = decode_soundtrack("t", 100, caps, |frame, pcm| {
             pcm.extend(std::iter::repeat_n(1i16, if frame == 2 { 9 } else { 8 }));
-            Ok(true)
+            Ok(())
         })
+        .wav
         .expect("the frames before the oversized one were written");
         let bytes = std::fs::read(&wav).unwrap();
         let _ = std::fs::remove_file(&wav);
         assert_eq!(bytes.len(), 44 + 2 * 16, "frames 0 and 1 only");
         assert!(decode_soundtrack("t", 1, caps, |_, pcm| {
             pcm.extend([1i16; 9]);
-            Ok(true)
+            Ok(())
         })
+        .wav
         .is_none(), "an oversized first frame leaves no soundtrack");
+    }
+
+    /// #7139: a Bink 1 file plays the track the original plays, ID 1 else the first, as a Bink 2 file
+    /// does. Fallout 4's `threeweekslater_withSound.bik` carries IDs [0, 1] and its track 0 is
+    /// silent; Skyrim's `BGS_Logo.bik` carries [1, 0].
+    #[test]
+    fn a_bink_1_file_plays_the_track_with_id_1() {
+        let header = |ids: &[u32]| {
+            let mut bytes = vec![0u8; BIK1_HEADER_LEN + 8 * ids.len()];
+            bytes.extend(ids.iter().flat_map(|id| id.to_le_bytes()));
+            bytes
+        };
+        for (ids, index) in [(&[0u32, 1][..], 1), (&[1, 0][..], 0), (&[0][..], 0), (&[3, 4][..], 0)] {
+            let bytes = header(ids);
+            assert_eq!(bink1_track_ids(&bytes, ids.len()).collect::<Vec<_>>(), ids);
+            assert_eq!(original_track_index(bink1_track_ids(&bytes, ids.len())), index, "{ids:?}");
+        }
+        assert_eq!(bink1_track_ids(&header(&[1])[..BIK1_HEADER_LEN + 9], 2).count(), 0, "a short table reads no ID");
+    }
+
+    /// #7139: a soundtrack that stops before the movie's last frame says why, and a movie whose
+    /// track decodes to nothing says that; a whole soundtrack carries no problem.
+    #[test]
+    fn a_soundtrack_that_ends_early_says_why() {
+        let caps = Soundtrack { channels: 2, rate: 48_000, total_cap: MAX_SOUNDTRACK_SAMPLES, frame_cap: 8 };
+        let take = |audio: Audio| {
+            if let Some(wav) = &audio.wav {
+                let _ = std::fs::remove_file(wav);
+            }
+            (audio.wav.is_some(), audio.problem)
+        };
+        let whole = take(decode_soundtrack("t", 4, caps, |_, pcm| {
+            pcm.extend([1i16; 4]);
+            Ok(())
+        }));
+        assert_eq!(whole, (true, None));
+        let (written, problem) = take(decode_soundtrack("t", 4, caps, |frame, pcm| {
+            if frame == 2 {
+                return Err("the frame has no record for audio track 1".into());
+            }
+            pcm.extend([1i16; 4]);
+            Ok(())
+        }));
+        assert!(written);
+        assert_eq!(problem.as_deref(), Some("its audio stops at frame 2: the frame has no record for audio track 1"));
+        let (written, problem) = take(decode_soundtrack("t", 4, caps, |_, _| Ok(())));
+        assert!(!written);
+        assert_eq!(problem.as_deref(), Some("its audio track decodes to no samples"));
     }
 
     #[test]
@@ -1229,10 +1318,12 @@ mod tests {
                     let expected = (info.duration_secs * info.fps).round() as u64;
                     Movie::open(&file, (320, 180), true).map(|mut movie| (movie.decode_to_end(), expected))
                 });
-                // BIK-DEC-003: a Bink 2 movie with tracks brings its sound
-                let outcome = outcome.and_then(|(frames, expected)| match (bink2, probe(&file)) {
-                    (true, Ok(info)) if info.audio_tracks > 0 => Movie::open(&file, (32, 32), true)
-                        .map(|movie| (if movie.audio_path().is_some() { frames } else { 0 }, expected)),
+                // BIK-DEC-003: a movie with tracks brings its whole sound (Bink 1 too since #7139)
+                let outcome = outcome.and_then(|(frames, expected)| match probe(&file) {
+                    Ok(info) if info.audio_tracks > 0 => Movie::open(&file, (32, 32), true).map(|movie| {
+                        let whole = movie.audio_path().is_some() && movie.soundtrack_problem().is_none();
+                        (if whole { frames } else { 0 }, expected)
+                    }),
                     _ => Ok((frames, expected)),
                 });
                 match outcome {

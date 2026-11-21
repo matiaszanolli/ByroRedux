@@ -34,7 +34,13 @@ by #6896). A Bink 2 file's tracks are language versions of one mix
 `sLanguage` setting to a track ID before `BinkSetSoundTrack`: `en` 1, `fr` 2,
 `it` 3, `de` 4, `es` 5, `ja` 8, any other language 1. The engine has no language
 setting, so it plays the track with ID 1 and, in a file without that ID, the
-first. Oblivion and Fallout 3 never ask Bink for a track (no import of
+first. The rule holds for a Bink 1 file too (#7139): Fallout 4's
+`threeweekslater_withSound.bik` carries IDs 0 and 1, and its track 0 is silent
+while track 1 carries the sound (it played silent while the Bink 1 path took
+the first track). A soundtrack that does not decode, or stops before the last
+frame, is warned with its reason and shown in `video.status` as
+`(soundtrack: <reason>)` beside the movie and its outcome, which stays
+**Played**. Oblivion and Fallout 3 never ask Bink for a track (no import of
 `BinkSetSoundTrack`, no `BINKSNDTRACK` open flag) and none of their movies has
 more than one; Skyrim SE imports no track call either, and the two tracks of its
 `BGS_Logo.bik` decode to identical samples (Starfield's six-track `EndingVision`
