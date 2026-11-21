@@ -1049,6 +1049,18 @@ struct ChunkSite<'a> {
     chunk: Option<usize>,
 }
 
+/// `BA2 entry '<path>'`, then ` chunk <n>` for a DX10 chunk. #7170 — a `Display`, so the label
+/// is formatted only when a read fails; it used to be built as a `String` before every read.
+impl std::fmt::Display for ChunkSite<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "BA2 entry '{}'", self.path)?;
+        match self.chunk {
+            Some(index) => write!(f, " chunk {index}"),
+            None => Ok(()),
+        }
+    }
+}
+
 fn read_chunk_payload<R: ReadAt + ?Sized>(
     reader: &R,
     offset: u64,
@@ -1060,8 +1072,7 @@ fn read_chunk_payload<R: ReadAt + ?Sized>(
     let mut buf = vec![0u8; len];
     // #7131 — a record whose offset or size runs past the file names the
     // entry and chunk (`read_exact_at_for` adds the length and offset).
-    let chunk = site.chunk.map_or(String::new(), |index| format!(" chunk {index}"));
-    reader.read_exact_at_for(&mut buf, offset, &format_args!("BA2 entry '{}'{chunk}", site.path))?;
+    reader.read_exact_at_for(&mut buf, offset, &site)?;
     Ok(if packed_size == 0 {
         ChunkPayload::Raw(buf)
     } else {
@@ -1398,6 +1409,13 @@ pub fn normalize_path(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #7170 — a chunk read's label: the entry, and the chunk index for a DX10 chunk.
+    #[test]
+    fn a_chunk_site_names_its_entry_and_chunk() {
+        assert_eq!(ChunkSite { path: "textures\\a.dds", chunk: Some(3) }.to_string(), "BA2 entry 'textures\\a.dds' chunk 3");
+        assert_eq!(ChunkSite { path: "meshes\\b.nif", chunk: None }.to_string(), "BA2 entry 'meshes\\b.nif'");
+    }
 
     /// Concurrent extracts from one archive must each read their own
     /// record's bytes. Pins the positional-read contract: with a shared
