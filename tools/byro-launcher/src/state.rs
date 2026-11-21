@@ -41,9 +41,9 @@ impl Entry {
     /// Ways to start this game, in the order the Play menu shows them.
     ///
     /// Driven entirely by what the profile actually authors: `New game` is
-    /// offered only where the profile carries a new-game placement (Skyrim
-    /// SE and New Vegas), because everywhere else the flag would resolve to
-    /// nothing. Sample cells always work, which is why they are listed.
+    /// offered only where the profile carries a new-game placement (a cell for
+    /// New Vegas, Fallout 3 and Oblivion; a worldspace grid for Skyrim SE),
+    /// because everywhere else the flag would resolve to nothing. Sample cells always work, which is why they are listed.
     pub fn play_options(&self) -> Vec<(String, Action)> {
         let Some(profile) = &self.profile else {
             return Vec::new();

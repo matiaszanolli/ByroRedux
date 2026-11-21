@@ -552,6 +552,30 @@ mod tests {
     }
 
     #[test]
+    fn shipped_profiles_name_each_new_game_target() {
+        // #7188 — the cell form (FNV, FO3, Oblivion) had no test: a typo here falls through to the
+        // empty default scene silently. Each value cites its vanilla record in the shipped file.
+        let mut parsed: ProfilesFile =
+            toml::from_str(include_str!("../../../assets/debug_profiles.toml")).expect("the shipped profiles parse");
+        let mut target = |key: &str| {
+            let entry: GameProfileEntry = parsed.profiles.remove(key).unwrap_or_else(|| panic!("{key}")).into();
+            (
+                entry.has_new_game_target(),
+                entry.new_game_cell,
+                entry.new_game_worldspace,
+                entry.new_game_grid,
+            )
+        };
+        let cell = |name: &str| (true, Some(name.to_owned()), None, None);
+        assert_eq!(target("fnv"), cell("GSDocMitchellHouse"));
+        assert_eq!(target("fo3"), cell("Vault101d"));
+        assert_eq!(target("oblivion"), cell("ImperialDungeon01"));
+        assert_eq!(target("skyrim_se"), (true, None, Some("Tamriel".to_owned()), Some("5,-24".to_owned())));
+        assert_eq!(target("fo4"), (false, None, None, None), "no new-game target authored");
+        assert_eq!(target("starfield"), (false, None, None, None), "no new-game target authored");
+    }
+
+    #[test]
     fn parses_in_memory_toml() {
         let toml = r#"
 [profiles.fnv]
