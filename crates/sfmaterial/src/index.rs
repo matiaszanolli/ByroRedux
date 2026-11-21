@@ -245,6 +245,12 @@ impl MaterialIndex {
         let mut base: Option<usize> = None;
         while state_has_more_chunks(&state) {
             let class_name = peek_top_level_class_name(&state)?;
+            // #7132 — an ordinary instance's error names where it is.
+            let at = |source: Error| Error::AtInstance {
+                index: pos,
+                class: class_name.clone().unwrap_or_else(|| "unnamed".to_owned()),
+                source: Box::new(source),
+            };
             if class_name.as_deref() == Some("BSComponentDB2::DBFileIndex") {
                 if base.is_some() {
                     // #5320 — a second index poisons the row/instance
@@ -256,15 +262,15 @@ impl MaterialIndex {
                 base = Some(pos + 1);
             } else if let (Some(name), Some(base)) = (&class_name, base) {
                 if pos >= base {
-                    let value = consume_top_level_value(&mut state)?;
+                    let value = consume_top_level_value(&mut state).map_err(at)?;
                     idx.capture_instance(pos - base, name, &value);
                 } else {
-                    skip_top_level_value(&mut state)?;
+                    skip_top_level_value(&mut state).map_err(at)?;
                 }
             } else {
                 // `CompiledDB` (48,749-entry key map on the base CDB) and
                 // any pre-index noise: skipped without materialising.
-                skip_top_level_value(&mut state)?;
+                skip_top_level_value(&mut state).map_err(at)?;
             }
             pos += 1;
         }
@@ -1702,6 +1708,27 @@ mod tests {
             matches!(err, Error::NoKeyedObjects { rows: 0 }),
             "expected NoKeyedObjects {{ rows: 0 }}, got {err:?}"
         );
+    }
+
+    /// #7132 — an error inside an ordinary stream instance names the
+    /// instance's stream position and class, with the reader's error as its
+    /// source; the layer object is the first instance after the DBFileIndex.
+    #[test]
+    fn an_instance_error_names_its_stream_position_and_class() {
+        let (mut chunks, dbfile) = mutable_chunks();
+        let layer = dbfile + 5;
+        assert_eq!(*chunks[layer].0, *b"OBJT", "the layer object follows the index's side chunks");
+        chunks[layer].1.push(0xAB);
+        let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks))
+            .expect_err("trailing bytes in an instance must be rejected");
+        match &err {
+            Error::AtInstance { index, class, source } => {
+                assert_eq!((*index, class.as_str()), (1, "BSMaterial::LayerID"));
+                assert!(matches!(**source, Error::ObjectTrailingBytes { leftover: 1 }), "{source:?}");
+            }
+            other => panic!("expected AtInstance, got {other:?}"),
+        }
+        assert!(err.to_string().starts_with("CDB stream instance 1 (BSMaterial::LayerID): "), "{err}");
     }
 
     /// #5320 — a DIFF-shaped DBFileIndex was "supported" but misread (its

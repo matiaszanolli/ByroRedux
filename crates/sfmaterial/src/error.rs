@@ -160,6 +160,17 @@ pub enum Error {
     )]
     UnsupportedDbFileIndexChunk { kind: ChunkType },
 
+    // #7132 — an error inside one of the ~1.44 M stream instances `build`
+    // walks used to surface with only a chunk-relative offset or a leftover
+    // count; it now names the instance's stream position and class. The
+    // DBFileIndex's own errors stay unwrapped (that instance names itself).
+    #[error("CDB stream instance {index} ({class}): {source}")]
+    AtInstance {
+        index: usize,
+        class: String,
+        source: Box<Error>,
+    },
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
