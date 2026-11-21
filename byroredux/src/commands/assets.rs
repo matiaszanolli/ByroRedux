@@ -503,18 +503,9 @@ fn unique_default_dump_name_in(root: &std::path::Path) -> String {
     unreachable!("u32 suffix space exhausted")
 }
 
+/// A `tex.dump` output under `texture-dumps/`, through the one confined-writer rule (#7182).
 fn safe_tex_dump_path(name: &str) -> Option<std::path::PathBuf> {
-    use std::path::{Component, Path};
-    let path = Path::new(name);
-    let mut components = path.components();
-    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
-        return None;
-    }
-    let root = Path::new("texture-dumps");
-    std::fs::create_dir_all(root).ok()?;
-    let root = root.canonicalize().ok()?;
-    let cwd = std::env::current_dir().ok()?.canonicalize().ok()?;
-    root.starts_with(cwd).then(|| root.join(path))
+    byroredux_core::atomic_file::confined_output_path("texture-dumps", name).ok()
 }
 
 /// Whitespace split honoring double-quoted segments — archive paths like

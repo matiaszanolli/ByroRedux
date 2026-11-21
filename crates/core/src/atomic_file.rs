@@ -148,6 +148,48 @@ pub fn create_temp_file(stem: &str, extension: &str) -> std::io::Result<(fs::Fil
     Err(last.unwrap_or_else(|| std::io::Error::from(std::io::ErrorKind::AlreadyExists)))
 }
 
+/// Where a console or debug command may write `name`: a single file name (one normal component —
+/// no separator, no `..`, not absolute) under the working-directory folder `dir`, which is created
+/// if missing and must still resolve inside the working directory once canonicalised, so a `dir`
+/// that is a symlink to somewhere else is refused. #7182 — the one confinement rule for the
+/// screenshot, `tex.dump` and `depth.dump` writers; `depth.dump` had re-grown its own copy without
+/// the canonical-root check.
+pub fn confined_output_path(dir: &str, name: &str) -> std::io::Result<PathBuf> {
+    confined_output_path_in(&std::env::current_dir()?, dir, name)
+}
+
+fn confined_output_path_in(base: &Path, dir: &str, name: &str) -> std::io::Result<PathBuf> {
+    use std::path::Component;
+    let refuse = |what: String| std::io::Error::new(std::io::ErrorKind::InvalidInput, what);
+    let mut components = Path::new(name).components();
+    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+        return Err(refuse(format!("'{name}' must be a file name inside {dir}/")));
+    }
+    let root = base.join(dir);
+    fs::create_dir_all(&root)?;
+    let root = root.canonicalize()?;
+    if !root.starts_with(base.canonicalize()?) {
+        return Err(refuse(format!("{dir}/ must stay inside the working directory")));
+    }
+    Ok(root.join(name))
+}
+
+/// Write `bytes` to a new file at [`confined_output_path`]: refused if one exists (`create_new`,
+/// which also refuses a planted symlink), removed again if the write fails. Answers the path.
+pub fn write_new_confined(dir: &str, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
+    write_new_at(confined_output_path(dir, name)?, bytes)
+}
+
+fn write_new_at(path: PathBuf, bytes: &[u8]) -> std::io::Result<PathBuf> {
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
+    if let Err(error) = file.write_all(bytes) {
+        drop(file);
+        let _ = fs::remove_file(&path);
+        return Err(error);
+    }
+    Ok(path)
+}
+
 /// A temp file's path that removes the file when dropped, unless [`keep`](Self::keep) hands the
 /// path on: an error return and a panic unwinding past it both clean up. #7158 — the movie
 /// soundtrack removed its WAV on its `Err` arms only, so a decoder panic left up to ~1.4 GB of PCM
@@ -230,6 +272,36 @@ mod tests {
         for path in [first_path, second_path] {
             let _ = fs::remove_file(path);
         }
+    }
+
+    /// #7182 — a confined output is one file name under its folder, and the folder must resolve
+    /// inside the working directory: a symlink out of it is refused, as are paths with a separator,
+    /// `..` or a root; a second write of one name is refused rather than clobbering the first.
+    #[test]
+    fn confined_outputs_stay_inside_their_folder() {
+        let base = std::env::temp_dir().join(format!("byro-confined-{}", std::process::id()));
+        let outside = std::env::temp_dir().join(format!("byro-confined-out-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let _ = fs::remove_dir_all(&outside);
+        fs::create_dir_all(&base).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let path = confined_output_path_in(&base, "shots", "a.png").unwrap();
+        assert_eq!(path, base.canonicalize().unwrap().join("shots").join("a.png"));
+        for bad in ["../a.png", "/tmp/a.png", "nested/a.png", "", "."] {
+            let err = confined_output_path_in(&base, "shots", bad).expect_err(bad);
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput, "{bad}");
+        }
+        assert!(write_new_at(path.clone(), b"one").is_ok());
+        assert!(write_new_at(path.clone(), b"two").is_err(), "an existing file is not clobbered");
+        assert_eq!(fs::read(&path).unwrap(), b"one");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, base.join("linked")).unwrap();
+            let err = confined_output_path_in(&base, "linked", "a.png").expect_err("a symlinked folder");
+            assert!(err.to_string().contains("must stay inside the working directory"), "{err}");
+        }
+        let _ = fs::remove_dir_all(&base);
+        let _ = fs::remove_dir_all(&outside);
     }
 
     /// #7158 — a temp file is removed when its guard drops, on an early return or a panic
