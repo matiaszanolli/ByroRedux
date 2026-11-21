@@ -149,3 +149,11 @@ zeros (A2), which decode as made-up samples, and the decoder refuses the packet 
 with nothing appended. The stated-size bound (INC3-1, `min_block_bits`) stays the cheap check before
 any decoding; it is a lower bound, so a packet of zeros at that minimum passes it and is then refused
 here, because zero bits code the shortest runs.
+
+## A11 — a packet ends where its last block's padding does (2026-11-21) `[ours]`
+Census (ByroRedux #7177), the same 158 files and 236,690 packets as A10: the bit position after a
+packet's last block and its 32-bit padding, against the packet's length in bits. Every packet has 0
+spare bits: its blocks, padded, fill it exactly, the short last packet of a stream (A8) included.
+So data past the padded end of the stated blocks belongs to no block, and the decoder refuses it
+(`Error::Surplus`) as it refuses a cut packet (A10), appending nothing and leaving its overlap as it
+was.

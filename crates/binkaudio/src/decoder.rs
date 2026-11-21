@@ -26,6 +26,10 @@ pub enum Error {
     /// A block's bits run past the packet's data (`bits_read` of `bits`): the bits past the end
     /// would read as zeros and decode as made-up samples (INC4, `docs/spec/probes.md` A10).
     Overrun { bits_read: usize, bits: usize },
+    /// The packet's blocks end, padding included, before its data does (`bits_read` of `bits`):
+    /// bytes no block accounts for, so the packet is not what its stated size says (#7177,
+    /// `docs/spec/probes.md` A11).
+    Surplus { bits_read: usize, bits: usize },
 }
 
 impl fmt::Display for Error {
@@ -35,6 +39,9 @@ impl fmt::Display for Error {
             Error::BadSize(n) => write!(f, "packet of {n} decoded bytes is not a whole number of sample frames"),
             Error::Overrun { bits_read, bits } => {
                 write!(f, "a block reads {bits_read} bits from a packet of {bits}")
+            }
+            Error::Surplus { bits_read, bits } => {
+                write!(f, "the blocks end at bit {bits_read} of a packet of {bits}")
             }
         }
     }
@@ -123,6 +130,13 @@ impl Decoder {
                 self.tail = tail;
                 return Err(Error::Overrun { bits_read, bits: data.len() * 8 });
             }
+        }
+        // A11 (#7177): every installed packet ends exactly where its last block's padding does,
+        // so bytes past that are no block's; refused like a cut packet, leaving nothing behind.
+        if r.pos != data.len() * 8 {
+            out.truncate(start);
+            self.tail = tail;
+            return Err(Error::Surplus { bits_read: r.pos, bits: data.len() * 8 });
         }
         out.truncate(want);
         Ok(())
@@ -217,13 +231,15 @@ mod tests {
                 seed ^= seed << 5;
                 seed as u8
             })
-            .collect();
+            .collect::<Vec<u8>>();
         let mut probe = Decoder::new(48_000, true, true).unwrap();
         let per_block = (2 * probe.channels * probe.block_samples()) as u32;
         let cut = vec![0u8; probe.min_block_bits().div_ceil(8)];
+        // One block of noise, exactly as long as the block (#7177 refuses bytes past it).
+        let noise = &noise[..exact_len(&mut probe, per_block, &noise)];
         let next = |decoder: &mut Decoder| {
             let mut out = Vec::new();
-            decoder.decode(per_block, &noise, &mut out).expect("a block of noise fits 16 KiB");
+            decoder.decode(per_block, noise, &mut out).expect("a block of noise, exactly");
             out
         };
         next(&mut probe);
@@ -261,11 +277,40 @@ mod tests {
         let huge = u32::MAX - u32::MAX % 4;
         assert!(matches!(decoder.decode(huge, &[0u8; 16], &mut out), Err(Error::BadSize(n)) if n == huge));
         assert!(out.is_empty(), "nothing decoded");
-        // One block's worth of size from bytes a zero block really fits in is accepted. (At the
+        // One block's worth of size from exactly the bytes a zero block fills is accepted. (At the
         // bound's minimum bytes the zero block runs past them: #7163 refuses it as an overrun.)
-        let one_block = vec![0u8; 4096];
-        assert!(decoder.decode(4, &one_block, &mut out).is_ok());
+        let zeros = vec![0u8; 4096];
+        let one_block = &zeros[..exact_len(&mut decoder, 4, &zeros)];
+        assert!(decoder.decode(4, one_block, &mut out).is_ok());
         assert_eq!(out.len(), 2);
+    }
+
+    /// The bytes one packet of `decoded_bytes` really fills when it is read out of `data`: what the
+    /// #7177 refusal reports as where its blocks end.
+    fn exact_len(decoder: &mut Decoder, decoded_bytes: u32, data: &[u8]) -> usize {
+        match decoder.decode(decoded_bytes, data, &mut Vec::new()) {
+            Err(Error::Surplus { bits_read, .. }) => bits_read / 8,
+            other => panic!("expected the blocks to end inside {} bytes, got {other:?}", data.len()),
+        }
+    }
+
+    /// #7177 (A11): a packet whose blocks end before its data does is refused, with nothing
+    /// appended and the decoder as it was; the same packet without the extra bytes decodes.
+    #[test]
+    fn a_packet_with_bytes_no_block_accounts_for_is_refused() {
+        let mut decoder = Decoder::new(48_000, true, true).unwrap();
+        let zeros = vec![0u8; 4096];
+        let exact = exact_len(&mut decoder, 4, &zeros);
+        let mut out = vec![7i16];
+        for extra in [4, 64] {
+            match decoder.decode(4, &zeros[..exact + extra], &mut out) {
+                Err(Error::Surplus { bits_read, bits }) => assert_eq!((bits_read, bits), (8 * exact, 8 * (exact + extra))),
+                other => panic!("{extra} extra bytes: expected Surplus, got {other:?}"),
+            }
+            assert_eq!(out, [7], "nothing appended");
+        }
+        assert!(decoder.decode(4, &zeros[..exact], &mut out).is_ok());
+        assert_eq!(out.len(), 3);
     }
 
     /// INC3-1: a zero-filled packet decodes as silent blocks, so the bound must be what a block
