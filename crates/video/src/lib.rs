@@ -191,7 +191,11 @@ fn probe_unguarded(path: &Path) -> Result<MovieInfo, VideoError> {
     let mut file = std::fs::File::open(path).map_err(|error| VideoError::Unreadable(error.to_string()))?;
     // The frame-offset table ends the part the parser reads.
     let mut head = [0u8; BIK1_HEADER_LEN];
-    file.read_exact(&mut head).map_err(|error| VideoError::Unreadable(error.to_string()))?;
+    // #7160 — a cut file says which part ran short, as `Movie::open` does, not a bare
+    // `failed to fill whole buffer`.
+    file.read_exact(&mut head).map_err(|error| {
+        VideoError::Unreadable(format!("the Bink 1 header ({BIK1_HEADER_LEN} bytes) is cut short: {error}"))
+    })?;
     check_bink1_header(&head)?;
     let word = |at: usize| u32::from_le_bytes([head[at], head[at + 1], head[at + 2], head[at + 3]]) as usize;
     // The counts come from an untrusted header: clamp them to the Bink 2 container's ceilings.
@@ -200,7 +204,13 @@ fn probe_unguarded(path: &Path) -> Result<MovieInfo, VideoError> {
     let table_end = BIK1_HEADER_LEN + BIK1_TRACK_RECORD_LEN * tracks + BIK1_INDEX_ENTRY_LEN * (frames + 1);
     let mut bytes = head.to_vec();
     bytes.resize(table_end, 0);
-    file.read_exact(&mut bytes[BIK1_HEADER_LEN..]).map_err(|error| VideoError::Unreadable(error.to_string()))?;
+    file.read_exact(&mut bytes[BIK1_HEADER_LEN..]).map_err(|error| {
+        VideoError::Unreadable(format!(
+            "the Bink 1 track and frame tables ({tracks} tracks, {frames} frames: {} bytes after the header) \
+             run past the file: {error}",
+            table_end - BIK1_HEADER_LEN
+        ))
+    })?;
     match mercs2_bink::Movie::parse(&bytes) {
         Ok(movie) => check_bink1_movie(&movie).map(|()| describe(&movie)),
         Err(detail) => Err(container_error(&bytes, detail)),
@@ -1178,6 +1188,29 @@ mod tests {
         let len = (bytes.len() - 8) as u32;
         put(&mut bytes, 4, len);
         bytes
+    }
+
+    /// #7160: a cut Bink 1 file tells `probe` which part ran short: the header, or the track and
+    /// frame tables its counts size.
+    #[test]
+    fn a_cut_bink_1_file_says_which_part_ran_short() {
+        let dir = tempfile::tempdir().unwrap();
+        let movie = bink1_movie(64, 32);
+        let unreadable = |name: &str, bytes: &[u8]| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, bytes).unwrap();
+            match probe(&path) {
+                Err(VideoError::Unreadable(reason)) => reason,
+                other => panic!("{name}: expected Unreadable, got {other:?}"),
+            }
+        };
+        let reason = unreadable("head.bik", &movie[..20]);
+        assert!(reason.starts_with("the Bink 1 header (44 bytes) is cut short: "), "{reason}");
+        let reason = unreadable("tables.bik", &movie[..BIK1_HEADER_LEN + 4]);
+        assert!(
+            reason.starts_with("the Bink 1 track and frame tables (0 tracks, 1 frames: 8 bytes after the header) run past the file: "),
+            "{reason}"
+        );
     }
 
     /// #7136: `probe` and `Movie::open` refuse a Bink 1 revision other than `i` and the alpha and
