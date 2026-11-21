@@ -261,13 +261,20 @@ impl MaterialIndex {
                 source: Box::new(source),
             };
             if class_name.as_deref() == Some("BSComponentDB2::DBFileIndex") {
+                // #7175 — the index's own errors name where it is too (a cut Objects row used to
+                // surface as a bare EOF), except the two whose message already says what is
+                // wrong with the index as a whole.
+                let at_index = |source: Error| match source {
+                    Error::NoKeyedObjects { .. } | Error::UnsupportedDbFileIndexChunk { .. } => source,
+                    source => at(source),
+                };
                 if base.is_some() {
                     // #5320 — a second index poisons the row/instance
                     // join; name the cause instead of the old
                     // contextless WrongChunkType { Objt, Objt }.
-                    return Err(Error::DuplicateDbFileIndex);
+                    return Err(at_index(Error::DuplicateDbFileIndex));
                 }
-                stream_db_file_index(&mut state, &mut idx)?;
+                stream_db_file_index(&mut state, &mut idx).map_err(at_index)?;
                 base = Some(pos + 1);
             } else if let (Some(name), Some(base)) = (&class_name, base) {
                 if pos >= base {
@@ -1614,6 +1621,14 @@ mod tests {
 
     /// The chunk list of the unmutated synthetic CDB, with the position
     /// of the DBFileIndex instance (the first OBJT) handy.
+    /// The error inside an `AtInstance` naming the DBFileIndex (#7175); panics on anything else.
+    fn at_the_index(err: Error) -> Error {
+        match err {
+            Error::AtInstance { class, source, .. } if class == "BSComponentDB2::DBFileIndex" => *source,
+            other => panic!("expected an error at the DBFileIndex, got {other:?}"),
+        }
+    }
+
     fn mutable_chunks() -> (SyntheticCdbChunks, usize) {
         let chunks = synthetic_cdb_chunks("Data\\Textures\\widget_color.DDS");
         let dbfile = chunks
@@ -1652,8 +1667,8 @@ mod tests {
         let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks))
             .expect_err("a duplicate DBFileIndex must be rejected");
         assert!(
-            matches!(err, Error::DuplicateDbFileIndex),
-            "expected DuplicateDbFileIndex, got {err:?}"
+            matches!(at_the_index(err), Error::DuplicateDbFileIndex),
+            "expected DuplicateDbFileIndex at the second index"
         );
     }
 
@@ -1685,8 +1700,8 @@ mod tests {
         let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks))
             .expect_err("trailing bytes past the declared fields must be rejected");
         assert!(
-            matches!(err, Error::ObjectTrailingBytes { leftover: 1 }),
-            "expected ObjectTrailingBytes {{ leftover: 1 }}, got {err:?}"
+            matches!(at_the_index(err), Error::ObjectTrailingBytes { leftover: 1 }),
+            "expected ObjectTrailingBytes {{ leftover: 1 }} at the index"
         );
     }
 
@@ -1709,8 +1724,8 @@ mod tests {
             let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks))
                 .expect_err("trailing bytes in a DBFileIndex LIST must be rejected");
             assert!(
-                matches!(err, Error::ObjectTrailingBytes { leftover: 8 }),
-                "LIST chunk {list}: expected ObjectTrailingBytes {{ leftover: 8 }}, got {err:?}"
+                matches!(at_the_index(err), Error::ObjectTrailingBytes { leftover: 8 }),
+                "LIST chunk {list}: expected ObjectTrailingBytes {{ leftover: 8 }} at the index"
             );
         }
         for list in lists {
@@ -1723,8 +1738,8 @@ mod tests {
             let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks))
                 .expect_err("a count below the elements a LIST holds must be rejected");
             assert!(
-                matches!(err, Error::ObjectTrailingBytes { .. }),
-                "LIST chunk {list}: expected ObjectTrailingBytes, got {err:?}"
+                matches!(at_the_index(err), Error::ObjectTrailingBytes { .. }),
+                "LIST chunk {list}: expected ObjectTrailingBytes at the index"
             );
         }
         let mut chunks = base.clone();
@@ -1802,6 +1817,24 @@ mod tests {
         chunks.truncate(dbfile + 5);
         let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks)).expect_err("no component rows");
         assert!(matches!(err, Error::NoComponentRows), "expected NoComponentRows, got {err:?}");
+    }
+
+    /// #7175 — an error inside the DBFileIndex's own stream (here an `Objects` row cut short)
+    /// names the index's stream position and class, as every other instance's does; the index's
+    /// whole-index verdicts (`NoKeyedObjects`, `UnsupportedDbFileIndexChunk`) stay as they are.
+    #[test]
+    fn an_error_inside_the_dbfile_index_names_where_it_is() {
+        let (mut chunks, dbfile) = mutable_chunks();
+        let objects = &mut chunks[dbfile + 1].1;
+        objects.truncate(objects.len() - 4);
+        let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks)).expect_err("a cut Objects row");
+        let message = err.to_string();
+        assert!(message.starts_with("CDB stream instance 0 (BSComponentDB2::DBFileIndex): "), "{message}");
+        assert!(!matches!(at_the_index(err), Error::AtInstance { .. }), "wrapped once");
+        let mut chunks = mutable_chunks().0;
+        chunks[dbfile].0 = b"DIFF";
+        let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks)).expect_err("a DIFF index");
+        assert!(matches!(err, Error::UnsupportedDbFileIndexChunk { .. }), "a whole-index verdict stays bare: {err:?}");
     }
 
     /// #7161 — an instance whose class reference is outside the class table

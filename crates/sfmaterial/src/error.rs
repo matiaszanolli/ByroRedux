@@ -168,8 +168,10 @@ pub enum Error {
 
     // #7132 — an error inside one of the ~1.44 M stream instances `build`
     // walks used to surface with only a chunk-relative offset or a leftover
-    // count; it now names the instance's stream position and class. The
-    // DBFileIndex's own errors stay unwrapped (that instance names itself).
+    // count; it now names the instance's stream position and class. #7175 —
+    // the DBFileIndex's own errors too (a cut row was a bare EOF), except
+    // `NoKeyedObjects` and `UnsupportedDbFileIndexChunk`, whose message is
+    // already about the index as a whole.
     #[error("CDB stream instance {index} ({class}): {source}")]
     AtInstance {
         index: usize,
