@@ -20,6 +20,19 @@ use std::path::{Path, PathBuf};
 /// Environment override for the parent of every cache this module resolves.
 pub const CACHE_DIR_ENV: &str = "BYRO_CACHE_DIR";
 
+/// Whether `name` is a single bare path component that `Path::join` keeps under its base: not
+/// empty, not `.` or `..`, and free of `\\`, `/` and `:`.
+///
+/// #5016 — checked by string, not `Path`, so the rule is the same on every host:
+/// `Path::is_absolute` is false on Windows for rooted-prefixless `\x` and prefixed-rootless
+/// `C:x`, yet `join` with either escapes the base, and on Linux `..\..\x` is one `Normal`
+/// component. A Windows file or directory name cannot contain `\`, `/` or `:`, so rejecting all
+/// three loses no real name. Shared by Steam's `installdir` check and the script path resolver
+/// (#7142), which had refused `..` but not a drive prefix.
+pub fn is_bare_component(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', ':'])
+}
+
 /// The directory holding the running executable, when it can be determined.
 pub fn exe_dir() -> Option<PathBuf> {
     std::env::current_exe()

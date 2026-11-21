@@ -432,6 +432,18 @@ mod tests {
         assert_eq!(resolve_under(&video, "..\\..\\secret.bik"), None, "one `..` at most");
         assert_eq!(resolve_under(&video, "Mymod\\..\\..\\secret.bik"), None, "no `..` inside the path");
         assert_eq!(resolve_under(&video, "..\\secret.bik"), Some(dir.path().join("secret.bik")), "the data folder itself is in reach");
+        // #7142: nor a drive prefix or any `:`, which on Windows re-roots the walk. Each target
+        // exists here under that literal name, so only the component rule refuses it on any host.
+        #[cfg(unix)]
+        {
+            std::fs::create_dir_all(video.join("C:")).unwrap();
+            for name in ["C:/x.bik", "D:x.bik", "x.bik:stream"] {
+                std::fs::write(video.join(name), b"x").unwrap();
+            }
+        }
+        for path in ["C:\\x.bik", "C:/x.bik", "D:x.bik", "x.bik:stream", "Mymod\\C:\\x.bik"] {
+            assert_eq!(resolve_under(&video, path), None, "{path:?}");
+        }
     }
 
     /// A request with nothing to decode it is reported and dropped; one that cannot start never
