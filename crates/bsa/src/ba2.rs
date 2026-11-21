@@ -467,7 +467,7 @@ impl Ba2Archive {
                 num_mips: *num_mips,
                 is_cubemap: *is_cubemap,
             },
-            read_dx10_chunk_payloads(&self.file, &chunks[keep_from..])?,
+            read_dx10_chunk_payloads(&self.file, &chunks[keep_from..], path, keep_from)?,
             self.compression,
             path,
         )?;
@@ -586,7 +586,13 @@ impl Ba2Archive {
                 packed_size,
                 unpacked_size,
             } => finish_chunk_payload(
-                read_chunk_payload(&self.file, *offset, *packed_size, *unpacked_size)?,
+                read_chunk_payload(
+                    &self.file,
+                    *offset,
+                    *packed_size,
+                    *unpacked_size,
+                    ChunkSite { path, chunk: None },
+                )?,
                 self.compression,
                 path,
             ),
@@ -605,7 +611,7 @@ impl Ba2Archive {
                     num_mips: *num_mips,
                     is_cubemap: *is_cubemap,
                 },
-                read_dx10_chunk_payloads(&self.file, chunks)?,
+                read_dx10_chunk_payloads(&self.file, chunks, path, 0)?,
                 self.compression,
                 path,
             ),
@@ -1035,24 +1041,41 @@ enum ChunkPayload {
     },
 }
 
+/// Which payload a chunk read is for, for its error: the entry, and for a
+/// DX10 texture the chunk's index in the record's table.
+#[derive(Clone, Copy)]
+struct ChunkSite<'a> {
+    path: &'a str,
+    chunk: Option<usize>,
+}
+
 fn read_chunk_payload<R: ReadAt + ?Sized>(
     reader: &R,
     offset: u64,
     packed_size: u32,
     unpacked_size: u32,
+    site: ChunkSite,
 ) -> io::Result<ChunkPayload> {
-    if packed_size == 0 {
-        let mut buf = vec![0u8; unpacked_size as usize];
-        reader.read_exact_at(&mut buf, offset)?;
-        Ok(ChunkPayload::Raw(buf))
+    let len = if packed_size == 0 { unpacked_size } else { packed_size } as usize;
+    let mut buf = vec![0u8; len];
+    // #7131 — a record whose offset or size runs past the file surfaced as
+    // the bare `failed to fill whole buffer`; name the entry, chunk, length
+    // and offset, keeping the kind callers branch on.
+    reader.read_exact_at(&mut buf, offset).map_err(|error| {
+        let chunk = site.chunk.map_or(String::new(), |index| format!(" chunk {index}"));
+        io::Error::new(
+            error.kind(),
+            format!("BA2 entry '{}'{chunk}: reading {len} bytes at offset {offset}: {error}", site.path),
+        )
+    })?;
+    Ok(if packed_size == 0 {
+        ChunkPayload::Raw(buf)
     } else {
-        let mut packed = vec![0u8; packed_size as usize];
-        reader.read_exact_at(&mut packed, offset)?;
-        Ok(ChunkPayload::Compressed {
-            bytes: packed,
+        ChunkPayload::Compressed {
+            bytes: buf,
             unpacked_size: unpacked_size as usize,
-        })
-    }
+        }
+    })
 }
 
 fn finish_chunk_payload(
@@ -1089,18 +1112,24 @@ fn extract_dx10<R: ReadAt + ?Sized>(
     compression: Ba2Compression,
     path: &str,
 ) -> io::Result<Vec<u8>> {
-    let payloads = read_dx10_chunk_payloads(reader, chunks)?;
+    let payloads = read_dx10_chunk_payloads(reader, chunks, path, 0)?;
     finish_dx10_payload(info, payloads, compression, path)
 }
 
+/// `chunks` is the record's table from index `first` on (a mip-range read
+/// skips the head chunks), so errors name each chunk's real index.
 fn read_dx10_chunk_payloads<R: ReadAt + ?Sized>(
     reader: &R,
     chunks: &[Dx10Chunk],
+    path: &str,
+    first: usize,
 ) -> io::Result<Vec<ChunkPayload>> {
     chunks
         .iter()
-        .map(|chunk| {
-            read_chunk_payload(reader, chunk.offset, chunk.packed_size, chunk.unpacked_size)
+        .enumerate()
+        .map(|(i, chunk)| {
+            let site = ChunkSite { path, chunk: Some(first + i) };
+            read_chunk_payload(reader, chunk.offset, chunk.packed_size, chunk.unpacked_size, site)
         })
         .collect()
 }
@@ -2754,6 +2783,33 @@ mod tests {
         bytes.extend_from_slice(&(name.len() as u16).to_le_bytes());
         bytes.extend_from_slice(name.as_bytes());
         bytes
+    }
+
+    /// #7131 — a chunk record running past the file names the entry and the
+    /// chunk's index in its table (also from a mip-range read, which starts
+    /// part-way through the table), and keeps `UnexpectedEof`.
+    #[test]
+    fn a_chunk_read_past_the_file_names_its_entry_and_chunk() {
+        let ranges = [(0u16, 0u16), (1, 1), (2, 6)];
+        let chunk_bytes = vec![vec![0xA0u8; 2048], vec![0xB1; 512], (0..184u8).collect()];
+        let mut bytes = build_dx10_ba2_with_payloads(&ranges, &chunk_bytes, &[], 64, 7);
+        // Chunk 2's record (after the 24-byte header and the 24-byte base
+        // record) points past the end of the file.
+        let record = 24 + 24 + 2 * 24;
+        let past = bytes.len() as u64 + 16;
+        bytes[record..record + 8].copy_from_slice(&past.to_le_bytes());
+        let path = write_temp_ba2(&bytes, "chunk_past_eof");
+        let archive = Ba2Archive::open(&path).expect("opens");
+        let _ = std::fs::remove_file(&path);
+        for error in [
+            archive.extract("textures\\probe.dds").expect_err("full extract"),
+            archive.extract_dx10_mips("textures\\probe.dds", 2).expect_err("floor extract"),
+        ] {
+            assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+            let message = error.to_string();
+            assert!(message.contains("'textures\\probe.dds' chunk 2"), "{message}");
+            assert!(message.contains(&format!("at offset {past}")), "{message}");
+        }
     }
 
     /// M39 A2 / TXS-SRC-001 — a mip-range extract inflates only the chunks
