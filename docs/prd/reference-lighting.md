@@ -1,13 +1,13 @@
 # Reference-Quality Lighting — Product Requirements
 
-**Status**: ACTIVE (2026-11-20). Revision 40. The change history is in
+**Status**: ACTIVE (2026-11-20). Revision 41. The change history is in
 §12. Every decision in §10 is decided and every Phase 0 verify item is
 closed or filed as an issue.
 
 **Tracking**: #6595 (parent). Phases: #6596 (0), #6601 (1a), #6598 (1b),
 #6602 (2), #6603 (3), #6604 (4), #6599 (5). Phase 3 children: #6721
 (RLT-SHD-012, closed in rev 40), #7091 (the light-animation seed, an
-RLT-OPS-004 regression). M51 tools built here: #6600
+RLT-OPS-004 regression, fixed in rev 41). Phase 3 closed in rev 41. M51 tools built here: #6600
 (exporter, PTR-VAL-004), #6597 (EXR writer, PTR-OUT-001). Verify items
 filed: #6605 (V9, closed in rev 15), #6606 (V12). The radiance cache that
 L4's exit waits on is tracked by the
@@ -1364,7 +1364,10 @@ RLT-SHD-006 published. Then RLT-SHD-003 (penumbra-aware reach),
 RLT-SHD-007 per Q3, RLT-SHD-004, RLT-SHD-010, RLT-SHD-012, RLT-CON-001…003 and
 RLT-CON-006…008, and RLT-CON-004 if Q4 takes Alternative A. Exit: A2–A5
 and A14 pass at their thresholds, A11 passes under the phase's change
-declaration, and A13 shows the phase within its Q8 ceiling.
+declaration, and A13 shows the phase within its Q8 ceiling. Closed in rev
+41 (owner, 2026-11-20): A11 judged against the re-anchored entry and A13 by
+the brackets the phase adds, with the outside residue accepted under
+RLT-OPS-004 ([evidence](../audits/MLIGHT_phase3_exit_2026-11-20.md)).
 
 **Phase 4 — Sky IBL.** Entry apparatus, consuming RLT-EXP-003: the
 sun-free analytic environment export (RLT-REF-012); the sky-only switch
@@ -1672,3 +1675,4 @@ Each needs the project owner. The recommendation is the first option.
 | 38 | 2026-11-19 | The radiance cache and traced-GI coverage move to their own PRD (Radiance Cache and GI Coverage PRD). RLT-GI-012's deferral no longer waits on M51's Phase 5: the owner requires every surface in view to keep traced GI at any distance, and rejects a widened gate as a stopgap. RLT-GI-008 stays as the allocation contract; Q5's decision is revised to say who builds the cache. Related tables updated. | — |
 | 39 | 2026-11-20 | Review round 6 folded in: RLT-SHD-012's state at HEAD (the weighting shipped in rev 28); the A14 command; the ROADMAP M-LIGHT dependency after rev 38; the temporal-error definition as the excess over an age-matched held control, per-gate view (§2, §8, RLT-G-001, RLT-SHD-002); radiance-cache ownership moved to the RCG PRD everywhere (§2, RLT-NG-003, RLT-GI-008, §9 Phases 2 and 5, Q5); document map rows for the exporter design, the RCG PRD and the penumbra-aware filter; acceptance coverage for RLT-CON-004 (new A19), SHD-003, SHD-005, SHD-006, GI-001, GI-011, GI-012 and IBL-007; Wave 2 scenes named at Phase 5's entry (RLT-CNT-001); §6 rows 8–10 for GI-011, SHD-012 and CON-004; measurements moved out of RLT-SHD-002, RLT-SHD-012, RLT-GI-011 and RLT-GI-012; Related row for the far-field term; full Heitz et al. 2018 and Nukapedia citations; #6721 and the RCG tracking issue on the Tracking line | claude: revise |
 | 40 | 2026-11-20 | Owner decisions on Phase 3's open items (2026-11-20). (1) RLT-SHD-012's measured change declaration (`docs/audits/MLIGHT_phase3_shd012_declaration.tsv`, rev 31) is accepted as measured; it was written after the code, which RLT-CNT-002 does not allow, and this row records that exception; #6721 is closed. (2) Full-phase A11 under RLT-OPS-004: the early direct-light shift is #6657's boot-time scratch entity re-seeding every flickering light through its `EntityId` ([Phase 3 evidence](../audits/MLIGHT_phase3_exit_2026-11-18.md)). Disposition: fix, then re-anchor. Regression #7091 seeds light animation from the light's world position instead; after it lands, the Phase 3 A11 anchors are re-captured and re-frozen with a revision row naming #7091 and the pre-entry drift | owner: approved |
+| 41 | 2026-11-20 | Phase 3 exit (#6603), [evidence](../audits/MLIGHT_phase3_exit_2026-11-20.md). A11: bisects attribute the full-phase drift to four outside changes — #6657's EntityId-seeded light animation (fixed by #7091, which seeds it from the light's world position), #7034 (first-load normal-map alpha, Prospector −13 %), #6775 (the bench pose as yaw / pitch, a sub-pixel Cornell shift) and #6725's fog power (VLM-HF-001, Prospector −4.5 %). The Phase 3 entry anchors are re-captured from the entry with those four applied; against them, under the Phase 3 declarations, Cornell 9, Prospector 84, Whiterun 29, MedTek 46 and Dugout 145 tiles stay outside, in shapes no Phase 3 mechanism makes (an NPC pose, fixture spots, uniform ±1–2 %), within the ~690 outside commits. A13: PAF-012 (no blocker search at ray quality tier 0, [design](../engine/penumbra-aware-shadow-filter.md#34-filtering)) returns the shadow filter to its entry cost where Prospector and Dugout settle (+0.240 → +0.009 ms, +0.311 → +0.008 ms); by bracket Phase 3 adds at most +0.25 ms (Whiterun FSR, ceiling 0.48), every settled tier holds, and the wall-time excess in four cases is outside `main_render` growth and run-to-run noise (1.3 ms between identical builds). Owner: A11 residuals and outside A13 growth accepted under RLT-OPS-004, A13 judged by the brackets the phase adds (Q8), #6725 recorded with #7034 and #6775 as intended outside changes; Phase 3 closed | owner: approved |

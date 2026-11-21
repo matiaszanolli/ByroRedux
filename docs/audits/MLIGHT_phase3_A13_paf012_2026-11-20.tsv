@@ -1,0 +1,11 @@
+scene	config	pinned_tier	control_ms	head_ms	delta_ms	ceiling_ms	cost_pass	settled_tier	rt_tier_hist	tier_pass
+cornell	taa	1	13.810	14.170	+0.360	0.657	yes	1	0/300/0/0	yes
+cornell	fsr-quality	2	10.130	10.590	+0.460	0.495	yes	2	0/0/300/0	yes
+prospector	taa	0	9.760	10.380	+0.620	0.488	no	0	300/0/0/0	yes
+prospector	fsr-quality	1	10.810	11.140	+0.330	0.528	yes	1	0/208/82/10	yes
+whiterun	taa	1	14.260	15.100	+0.840	0.681	no	1	0/300/0/0	yes
+whiterun	fsr-quality	3	10.440	11.090	+0.650	0.483	no	3	0/0/0/300	yes
+medtek	taa	0	31.800	30.230	-1.570	1.387	yes	0	300/0/0/0	yes
+medtek	fsr-quality	0	17.200	16.500	-0.700	0.818	yes	1	143/157/0/0	yes
+dugout	taa	0	15.350	16.180	+0.830	0.776	no	0	300/0/0/0	yes
+dugout	fsr-quality	1	12.340	12.510	+0.170	0.620	yes	2	0/4/296/0	yes

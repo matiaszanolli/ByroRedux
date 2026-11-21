@@ -550,17 +550,19 @@ impl VulkanContext {
             timers.cmd_start(TimerPass::ShadowFilter, &self.device, cmd, frame);
         }
         if let Some(filter) = self.shadow_filter_active() {
-            // PAF-007: the per-tier iteration count rides the ray budget.
-            let iterations = self
+            // PAF-007: the per-tier iteration count rides the ray budget;
+            // PAF-012: so does whether the blocker search runs.
+            let budget = self
                 .scene_buffers
-                .current_ray_budget(self.renderer_config.rt_test_ray_quality_tier)
-                .shadow_filter_iterations;
+                .current_ray_budget(self.renderer_config.rt_test_ray_quality_tier);
             filter.dispatch(
                 &self.device,
                 cmd,
                 frame,
                 &self.reservoir_buffers,
-                iterations,
+                budget.shadow_filter_iterations,
+                budget.quality_tier
+                    >= crate::vulkan::scene_buffer::SHADOW_FILTER_PENUMBRA_SEARCH_MIN_TIER,
             );
         }
         if let Some(ref mut timers) = self.gpu_timers {
