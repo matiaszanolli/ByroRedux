@@ -437,6 +437,10 @@ pub struct EsmReader<'a> {
     /// See [`FormIdRemap`] for the mapping rules.
     form_id_remap: Option<FormIdRemap>,
     record_type_trace: Option<Rc<RefCell<RecordTypeTrace>>>,
+    /// The game the file's header was detected as, once the record walk has read it
+    /// ([`EsmReader::set_game`]). `None` before that, and for a reader no walk has stamped
+    /// (tests, header-only probes).
+    game: Option<GameKind>,
 }
 
 /// Optional generic record-header trace used to build read-only metadata.
@@ -773,6 +777,7 @@ impl<'a> EsmReader<'a> {
             variant: EsmVariant::detect(data),
             form_id_remap: None,
             record_type_trace: None,
+            game: None,
         }
     }
 
@@ -785,6 +790,7 @@ impl<'a> EsmReader<'a> {
             variant,
             form_id_remap: None,
             record_type_trace: None,
+            game: None,
         }
     }
 
@@ -821,6 +827,17 @@ impl<'a> EsmReader<'a> {
 
     pub fn variant(&self) -> EsmVariant {
         self.variant
+    }
+
+    /// Record the game the file header was detected as, so a walker that builds
+    /// per-game layouts deep in a group (the `DOOR` sound tags, #7098) can read it.
+    pub fn set_game(&mut self, game: GameKind) {
+        self.game = Some(game);
+    }
+
+    /// The game [`EsmReader::set_game`] recorded, or `None` when no walk has stamped one.
+    pub fn game(&self) -> Option<GameKind> {
+        self.game
     }
 
     pub fn position(&self) -> usize {

@@ -139,6 +139,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     // (NPC spawn dispatcher) can route per-version without
     // re-deriving from a HEDR they no longer have.
     index.game = game;
+    reader.set_game(game);
     index.character_rules = character_rules_profile(game, file_header.hedr_version);
     let record_type_trace = reader.enable_record_type_trace();
     log::info!(

@@ -233,8 +233,11 @@ pub struct StaticObject {
 ///
 /// The flag byte is kept raw and read through [`DoorData::flags`], because its bit layout differs by
 /// game (xEdit `wbDefinitionsTES4.pas:2170-2176`, `wbDefinitionsFO3.pas:4090-4098`,
-/// `wbDefinitionsFNV.pas:4584-4590`, `wbDefinitionsTES5.pas:4845-4852`). The sounds are `SOUN` records
-/// on Oblivion, Fallout 3 and Fallout: New Vegas and `SNDR` descriptors on Skyrim.
+/// `wbDefinitionsFNV.pas:4584-4590`, `wbDefinitionsTES5.pas:4845-4852`; FO4 and FO76 name bits 1 to 5 as
+/// Skyrim does and add bit 6, Starfield adds bits 0, 6 and 7, none of them modelled). The sounds are `SOUN`
+/// records on Oblivion, Fallout 3 and Fallout: New Vegas and `SNDR` descriptors on Skyrim, FO4 and FO76.
+/// Starfield authors them as `DOSH` / `DCSH` / `DLSH` sound references, which are not decoded, so its three
+/// sounds stay `None` (#7098).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DoorData {
     /// The raw `FNAM` byte; `0` when the record authors none.
@@ -266,8 +269,9 @@ pub struct DoorFlags {
 impl DoorData {
     /// The flags this record's `FNAM` byte names in `game`. Oblivion's four flags sit at bits 0 to 3; Fallout 3,
     /// Fallout: New Vegas and Skyrim leave bit 0 unnamed and place `Automatic`, `Hidden`, `Minimal Use` and
-    /// `Sliding` at bits 1 to 4, Skyrim adding `Do Not Open in Combat Search` at bit 5. Fallout 4 and Starfield
-    /// are read as Skyrim's layout until their definitions are checked (PRD Phase 3).
+    /// `Sliding` at bits 1 to 4, Skyrim adding `Do Not Open in Combat Search` at bit 5. Fallout 4, Fallout 76 and
+    /// Starfield name bits 1 to 5 the same way (`wbDefinitionsFO4.pas:6496`, `wbDefinitionsFO76.pas:8533`,
+    /// `wbDefinitionsSF1.pas:11575-11626`), so they read as Skyrim's layout; their extra bits are not modelled.
     pub fn flags(&self, game: crate::esm::reader::GameKind) -> DoorFlags {
         use crate::esm::reader::GameKind;
         let bit = |n: u8| self.fnam & (1 << n) != 0;

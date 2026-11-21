@@ -39,7 +39,14 @@ fn door_group(form_id: u32, fnam: Option<u8>, sounds: [u32; 3]) -> Vec<u8> {
 }
 
 fn parse_door(group: &[u8], form_id: u32) -> StaticObject {
+    parse_door_for(group, form_id, None)
+}
+
+fn parse_door_for(group: &[u8], form_id: u32, game: Option<GameKind>) -> StaticObject {
     let mut reader = EsmReader::new(group);
+    if let Some(game) = game {
+        reader.set_game(game);
+    }
     let header = reader.read_group_header().unwrap();
     let end = reader.group_content_end(&header);
     let mut statics = std::collections::HashMap::new();
@@ -58,6 +65,21 @@ fn a_door_record_decodes_its_flags_and_sounds() {
 
     let bare = parse_door(&door_group(0x56, None, [0, 0, 0]), 0x56).door.unwrap();
     assert_eq!((bare.fnam, bare.open_sound, bare.close_sound, bare.loop_sound), (0, None, None, None));
+}
+
+/// Starfield's `ANAM` is the Facing Axis Override enum and its `BFCB` component blocks carry string
+/// `ANAM` / `BNAM`; its sounds are `DOSH` / `DCSH` / `DLSH` (`wbDefinitionsSF1.pas:11575-11626`). None of
+/// the three tags may become a sound there, while the same bytes on FO4 still do (#7098).
+#[test]
+fn starfield_door_tags_are_not_sounds() {
+    // Axis 2 ("Based on Bounds") in ANAM, an ASCII-led component string's first word in BNAM.
+    let group = door_group(0x58, Some(0b10), [0x7468_6973, 2, u32::from_le_bytes(*b"ship")]);
+    let starfield = parse_door_for(&group, 0x58, Some(GameKind::Starfield)).door.unwrap();
+    assert_eq!(starfield.fnam, 0b10, "the flag byte still decodes");
+    assert_eq!((starfield.open_sound, starfield.close_sound, starfield.loop_sound), (None, None, None));
+
+    let fo4 = parse_door_for(&group, 0x58, Some(GameKind::Fallout4)).door.unwrap();
+    assert_eq!(fo4.close_sound, Some(2), "FO4 ANAM is still the close sound");
 }
 
 /// Only a `DOOR` carries door data: the same sub-records on a `STAT` read nothing.

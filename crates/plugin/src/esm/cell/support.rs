@@ -54,6 +54,7 @@ pub(crate) fn build_static_object_from_subs(
     visible_when_distant: bool,
     subs: &[SubRecord],
     remap: &Option<crate::esm::reader::FormIdRemap>,
+    game: Option<GameKind>,
 ) -> Option<StaticObject> {
     let is_ligh = record_type == b"LIGH";
     let is_addn = record_type == b"ADDN";
@@ -87,7 +88,13 @@ pub(crate) fn build_static_object_from_subs(
                     door.fnam = sub.data[0];
                 }
             }
-            b"SNAM" | b"ANAM" | b"BNAM" if is_door && sub.data.len() >= 4 => {
+            // Oblivion through FO76 author the three sounds as `SNAM` / `ANAM` / `BNAM` FormIDs. Starfield
+            // moved them to `DOSH` / `DCSH` / `DLSH` sound references and reuses `ANAM` for the Facing Axis
+            // Override enum, while its `BFCB` component blocks carry string `ANAM` / `BNAM`
+            // (`wbDefinitionsSF1.pas:11575-11626`), so none of the three tags is a sound there (#7098).
+            b"SNAM" | b"ANAM" | b"BNAM"
+                if is_door && sub.data.len() >= 4 && game != Some(GameKind::Starfield) =>
+            {
                 let form = super::super::records::common::remap_fid(
                     crate::esm::sub_reader::SubReader::new(&sub.data).u32_or_default(),
                     remap,
@@ -498,6 +505,7 @@ fn parse_modl_group_inner(
             header.is_visible_when_distant(),
             &subs,
             &remap,
+            reader.game(),
         ) {
             statics.insert(header.form_id, stat);
         }
@@ -1233,7 +1241,7 @@ mod ligh_dat2_tests {
             sub(b"DAT2", dat2_bytes(512.0, [200, 150, 100], 0x0010)),
         ];
 
-        let obj = build_static_object_from_subs(0x000027BB, b"LIGH", false, &subs, &None)
+        let obj = build_static_object_from_subs(0x000027BB, b"LIGH", false, &subs, &None, None)
             .expect("Starfield LIGH with DAT2 must produce a StaticObject");
 
         let ld = obj.light_data.expect("DAT2 must yield light_data");
@@ -1271,7 +1279,7 @@ mod ligh_dat2_tests {
         data[9] = 200;
         data[10] = 128;
         let subs = vec![sub(b"DATA", data)];
-        let obj = build_static_object_from_subs(0x1, b"LIGH", false, &subs, &None)
+        let obj = build_static_object_from_subs(0x1, b"LIGH", false, &subs, &None, None)
             .expect("Skyrim LIGH DATA must still produce a StaticObject");
         let ld = obj.light_data.expect("DATA must yield light_data");
         assert_eq!(ld.radius, 300.0, "Skyrim radius is a u32 cast to f32");
@@ -1299,7 +1307,7 @@ mod ligh_dat2_tests {
         // value. Pre-fix this was misread as `period_secs`.
         data[28..32].copy_from_slice(&1.5f32.to_le_bytes());
         let subs = vec![sub(b"DATA", data)];
-        let obj = build_static_object_from_subs(0x3, b"LIGH", false, &subs, &None)
+        let obj = build_static_object_from_subs(0x3, b"LIGH", false, &subs, &None, None)
             .expect("pre-Skyrim LIGH DATA must still produce a StaticObject");
         let ld = obj.light_data.expect("DATA must yield light_data");
         assert_eq!(ld.falloff_exponent, 2.0, "falloff exponent is still read");
@@ -1332,7 +1340,7 @@ mod ligh_dat2_tests {
         data[32..36].copy_from_slice(&0.25f32.to_le_bytes()); // intensity amplitude
         data[36..40].copy_from_slice(&0.1f32.to_le_bytes()); // movement amplitude
         let subs = vec![sub(b"DATA", data)];
-        let obj = build_static_object_from_subs(0x4, b"LIGH", false, &subs, &None)
+        let obj = build_static_object_from_subs(0x4, b"LIGH", false, &subs, &None, None)
             .expect("Skyrim+ LIGH DATA must produce a StaticObject");
         let ld = obj.light_data.expect("DATA must yield light_data");
         assert_eq!(ld.period_secs, 2.0, "flicker period at offset 28");
@@ -1356,7 +1364,7 @@ mod ligh_dat2_tests {
         pre_skyrim[4..8].copy_from_slice(&300u32.to_le_bytes());
         pre_skyrim[20..24].copy_from_slice(&35.0f32.to_le_bytes());
         let obj =
-            build_static_object_from_subs(0x5, b"LIGH", false, &[sub(b"DATA", pre_skyrim)], &None)
+            build_static_object_from_subs(0x5, b"LIGH", false, &[sub(b"DATA", pre_skyrim)], &None, None)
                 .expect("pre-Skyrim LIGH DATA must produce a StaticObject");
         assert_eq!(
             obj.light_data.expect("must yield light_data").fov_degrees,
@@ -1368,7 +1376,7 @@ mod ligh_dat2_tests {
         skyrim_plus[4..8].copy_from_slice(&300u32.to_le_bytes());
         skyrim_plus[20..24].copy_from_slice(&35.0f32.to_le_bytes());
         let obj =
-            build_static_object_from_subs(0x6, b"LIGH", false, &[sub(b"DATA", skyrim_plus)], &None)
+            build_static_object_from_subs(0x6, b"LIGH", false, &[sub(b"DATA", skyrim_plus)], &None, None)
                 .expect("Skyrim+ LIGH DATA must produce a StaticObject");
         assert_eq!(
             obj.light_data.expect("must yield light_data").fov_degrees,
@@ -1383,7 +1391,7 @@ mod ligh_dat2_tests {
     fn non_ligh_dat2_is_not_treated_as_light() {
         let subs = vec![sub(b"DAT2", dat2_bytes(512.0, [200, 150, 100], 0))];
         // AMMO with only a DAT2 and no MODL → no light_data, no model → None.
-        let obj = build_static_object_from_subs(0x2, b"AMMO", false, &subs, &None);
+        let obj = build_static_object_from_subs(0x2, b"AMMO", false, &subs, &None, None);
         assert!(
             obj.is_none() || obj.unwrap().light_data.is_none(),
             "DAT2 on a non-LIGH record must not synthesize light_data"
@@ -1413,7 +1421,7 @@ mod starfield_armo_modl_tests {
         // ARMA table. With no world model the cell-side extractor has no
         // placement mesh, so it must simply decline the StaticObject without
         // logging the generic #1620 corrupt-path warning.
-        assert!(build_static_object_from_subs(0x42, b"ARMO", false, &subs, &None).is_none());
+        assert!(build_static_object_from_subs(0x42, b"ARMO", false, &subs, &None, None).is_none());
     }
 
     fn model_of(record_type: &[u8; 4], subs: &[(&[u8; 4], &[u8])]) -> String {
@@ -1424,7 +1432,7 @@ mod starfield_armo_modl_tests {
                 data: data.to_vec(),
             })
             .collect();
-        build_static_object_from_subs(0x42, record_type, false, &subs, &None)
+        build_static_object_from_subs(0x42, record_type, false, &subs, &None, None)
             .expect("a record with a model path")
             .model_path
     }
