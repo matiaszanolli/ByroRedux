@@ -363,10 +363,27 @@ impl Archive {
                 && let Some(evicted) = registry.keys().next().cloned() {
                     registry.remove(&evicted);
                 }
-            registry.insert(path.to_owned(), (stamp, archive.clone()));
+            // #7144 — an entry under a different stamp is a file replaced on disk: holders that
+            // never come back through here (the texture streamer's provider) watch the count.
+            if let Some((old_stamp, _)) = registry.insert(path.to_owned(), (stamp, archive.clone()))
+                && old_stamp != stamp
+            {
+                ARCHIVE_REPLACEMENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
         }
         Ok((archive, false))
     }
+}
+
+/// How many times [`Archive::open_shared`] has re-read an archive whose file changed on disk since
+/// it was cached (#7144).
+static ARCHIVE_REPLACEMENTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// [`ARCHIVE_REPLACEMENTS`]: a holder of `Archive` handles that is not rebuilt per cell transition
+/// (the texture streamer's provider) compares it with the count it was built at, and rebuilds when
+/// it moves, so it never reads a replaced archive through the old file table (#5663, #7144).
+pub(crate) fn archive_replacements() -> u64 {
+    ARCHIVE_REPLACEMENTS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 impl Archive {
@@ -1303,8 +1320,11 @@ mod tests {
         // handle must not be served.
         let path2 = write_one_entry_ba2("shared", entry, b"replacement bytes, longer", false);
         assert_eq!(path, path2, "fixture rewrites the same path");
+        let replacements = super::archive_replacements();
         let (third, reused) = Archive::open_shared(&path).expect("reopen after replace");
         assert!(!reused, "a replaced archive must be re-read");
+        // #7144 — and the replacement is counted, for holders that never re-open.
+        assert!(super::archive_replacements() > replacements, "a replaced archive moves the count");
         assert_eq!(
             third.extract(entry).expect("extract").as_slice(),
             b"replacement bytes, longer"

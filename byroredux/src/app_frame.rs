@@ -82,10 +82,16 @@ fn push_texture_streaming(
         byroredux_debug_ui::TEXTURE_STREAMING_SETTING_ID,
         false,
     );
+    let build_provider = || crate::asset_provider::build_texture_provider(&crate::cli_args::effective_args());
     if streaming && streamer.is_none() {
-        *streamer = crate::texture_streamer::TextureStreamer::new(
-            crate::asset_provider::build_texture_provider(&crate::cli_args::effective_args()),
-        );
+        *streamer = crate::texture_streamer::TextureStreamer::new(build_provider());
+    }
+    // #7144 — the streamer's provider outlives cell transitions; rebuild it once an archive was
+    // replaced on disk, so its promotions and the floors read the same file.
+    if let Some(streamer) = streamer.as_mut()
+        && streamer.refresh_provider(build_provider)
+    {
+        log::info!("texture streamer: an archive was replaced on disk; its provider was rebuilt");
     }
     if let Some(streamer) = streamer.as_mut() {
         if streaming {

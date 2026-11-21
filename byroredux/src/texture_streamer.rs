@@ -51,6 +51,8 @@ pub(crate) struct TextureStreamer {
     pub(crate) last_wanted: WantedStats,
     /// PRD §8 settle time.
     settle: SettleClock,
+    /// [`crate::asset_provider::archive_replacements`] when `provider` was built (#7144).
+    archive_generation: u64,
 }
 
 /// Camera position, forward and vertical field of view: what the wanted-mip
@@ -145,7 +147,24 @@ impl TextureStreamer {
             wanted: FxHashMap::default(),
             last_wanted: WantedStats::default(),
             settle: SettleClock::default(),
+            archive_generation: crate::asset_provider::archive_replacements(),
         })
+    }
+
+    /// #7144 — rebuild the provider with `build` when an archive was replaced on disk since it was
+    /// built. The streamer keeps its provider across cell transitions, where every other provider
+    /// is rebuilt and re-checks each archive (`Archive::open_shared`); without this its promotions
+    /// kept reading a replaced archive through the old file table while floors came from the new
+    /// one. Reads already in flight finish on the old provider. Answers whether it rebuilt.
+    pub(crate) fn refresh_provider(&mut self, build: impl FnOnce() -> TextureProvider) -> bool {
+        // Read first: a replacement the build itself notices costs one more rebuild, not a miss.
+        let generation = crate::asset_provider::archive_replacements();
+        if generation == self.archive_generation {
+            return false;
+        }
+        self.provider = Arc::new(build());
+        self.archive_generation = generation;
+        true
     }
 
     /// Advance the settle clock after this frame's reads and flush.
@@ -416,6 +435,26 @@ mod tests {
     use super::*;
 
     const POSE: StreamPose = ([0.0, 1.0, 2.0], [0.0, 0.0, 1.0], 1.2);
+
+    /// #7144 — the provider is rebuilt only when an archive was replaced since it was built.
+    #[test]
+    fn the_provider_is_rebuilt_only_after_an_archive_replacement() {
+        let mut streamer = TextureStreamer::new(TextureProvider::new()).expect("pool builds");
+        let mut builds = 0;
+        assert!(!streamer.refresh_provider(|| {
+            builds += 1;
+            TextureProvider::new()
+        }));
+        assert_eq!(builds, 0, "no replacement, no rebuild");
+        // As if an archive had been replaced after the provider was built.
+        streamer.archive_generation = streamer.archive_generation.wrapping_sub(1);
+        assert!(streamer.refresh_provider(|| {
+            builds += 1;
+            TextureProvider::new()
+        }));
+        assert_eq!(builds, 1);
+        assert_eq!(streamer.archive_generation, crate::asset_provider::archive_replacements());
+    }
 
     /// A pool read that panics must not abort the process (#6810): the job
     /// reports an unreadable entry and the `FinishedRead` still arrives, so
