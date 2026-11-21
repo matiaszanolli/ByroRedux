@@ -24,8 +24,10 @@ use mercs2_bink::{AudioDecoder, VideoDecoder};
 /// Decoded frames the reader thread may run ahead of playback.
 const FRAME_RING: usize = 6;
 
-/// The Bink 2 revisions `byroredux-bink2` decodes (the last byte of the magic).
-const BINK2_REVISIONS: &[u8] = b"gj";
+/// The Bink 2 revisions `byroredux-bink2` decodes (the last byte of the magic): its own list, which
+/// `Bk2::open` also enforces (#7134). Checked here first so another revision is reported
+/// `Unsupported`, not as a damaged file.
+const BINK2_REVISIONS: &[u8] = bink2::REVISIONS;
 
 /// Threads a Bink 2 movie's slices decode on (its frames have at most 4 slices).
 const BINK2_THREADS: usize = 4;

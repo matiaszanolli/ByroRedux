@@ -73,6 +73,12 @@ pub const MAX_AUDIO_TRACKS: usize = 0x100;
 /// See [`MAX_DIMENSION`].
 pub const MAX_FRAMES: usize = 1_000_000;
 
+/// The revisions this crate decodes, the last byte of the magic: KB2g (P29) and KB2j (P30-P32). Any
+/// other is refused at [`Bk2::open`] rather than decoded with the nearest layout (#7134): the header's
+/// extra words, the slice count and the element syntax all follow the revision. `byroredux-video`
+/// sorts other revisions as unsupported from this list too.
+pub const REVISIONS: &[u8] = b"gj";
+
 fn bad(msg: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, msg.to_string())
 }
@@ -86,6 +92,9 @@ impl Bk2 {
         if &h[..3] != b"KB2" {
             return Err(bad("not a Bink 2 file"));
         }
+        if !REVISIONS.contains(&h[3]) {
+            return Err(bad("unsupported Bink 2 revision"));
+        }
         let u = |i: usize| u32::from_le_bytes(h[4 + 4 * i..8 + 4 * i].try_into().unwrap());
         let (frames, tracks) = (u(1) as usize, u(9) as usize);
         let (width, height) = (u(4) as usize, u(5) as usize);
@@ -98,8 +107,8 @@ impl Bk2 {
         if width == 0 || height == 0 || width * height > MAX_PIXELS {
             return Err(bad("frame size out of range"));
         }
-        // KB2j and later carry 4 extra header bytes at offset 44, before the audio tables (P15)
-        let extra = if h[3] >= b'j' { 4 } else { 0 };
+        // KB2j carries 4 extra header bytes at offset 44, before the audio tables (P15)
+        let extra = if h[3] == b'j' { 4 } else { 0 };
         // The track table and the frame index are read whole: they must lie inside the file.
         if (44 + extra + 12 * tracks + 4 * (frames + 1)) as u64 > file_len {
             return Err(bad("header tables run past the end of the file"));
@@ -267,6 +276,29 @@ mod tests {
         std::fs::remove_file(path).ok();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         error.to_string()
+    }
+
+    /// #7134: only the revisions the decoder knows open; any other `KB2?` is refused, not decoded with
+    /// the nearest layout (a `k` used to read as KB2j, an `f` or `i` as KB2g).
+    #[test]
+    fn only_the_decoded_revisions_open() {
+        for revision in *b"afikz" {
+            let mut h = header(1, 64, 64, 0);
+            h[3] = revision;
+            assert_eq!(refused(&format!("rev-{}", char::from(revision)), &h), "unsupported Bink 2 revision");
+        }
+        for &revision in REVISIONS {
+            let mut h = header(1, 64, 64, 0);
+            h[3] = revision;
+            let path = file(&format!("rev-ok-{}", char::from(revision)), &h);
+            let opened = Bk2::open(&path);
+            std::fs::remove_file(path).ok();
+            assert!(
+                !matches!(&opened, Err(error) if error.to_string() == "unsupported Bink 2 revision"),
+                "KB2{} passes the revision gate",
+                char::from(revision)
+            );
+        }
     }
 
     /// Sizes a hostile header states are refused before anything is allocated from them.
