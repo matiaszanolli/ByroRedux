@@ -797,12 +797,15 @@ pub(super) fn prepare_mesh_upload_range(
         // cross-path sharing; skin/morph owners retain their existing path key.
         let shareable =
             mesh.skin.is_none() && mesh.morph_targets.as_ref().is_none_or(Vec::is_empty);
-        let vertices = super::super::lod_support::imported_mesh_to_vertices(mesh);
+        // #6116 — the vertex data comes from the geometry source: a precombine alias reaching
+        // this branch (no cache key to share through) has no arrays of its own.
+        let geometry = cached.geometry_source(sub_mesh_index);
+        let vertices = super::super::lod_support::imported_mesh_to_vertices(geometry);
         let mut geometry_fingerprint = None;
         if shareable {
             let upload = SceneMeshUpload {
                 vertices: &vertices,
-                indices: &mesh.indices,
+                indices: &geometry.indices,
                 rt_enabled: for_rt,
                 cache_key: pc.mesh_cache_key.map(|key| (key, sub_mesh_index_u32)),
             };
@@ -822,7 +825,7 @@ pub(super) fn prepare_mesh_upload_range(
                 let candidate = &fresh[index];
                 upload.same_geometry(&SceneMeshUpload {
                     vertices: &candidate.vertices,
-                    indices: &imported[candidate.sub_mesh_index].indices,
+                    indices: &cached.geometry_source(candidate.sub_mesh_index).indices,
                     rt_enabled: candidate.for_rt,
                     cache_key: None,
                 })
@@ -856,7 +859,7 @@ pub(super) fn prepare_mesh_upload_range(
     let uploads = fresh
         .iter()
         .map(|fresh_mesh| {
-            let mesh = &imported[fresh_mesh.sub_mesh_index];
+            let mesh = cached.geometry_source(fresh_mesh.sub_mesh_index);
             SceneMeshUpload {
                 vertices: &fresh_mesh.vertices,
                 indices: &mesh.indices,
@@ -913,7 +916,7 @@ pub(super) fn prepare_mesh_upload_range(
                 fresh.len(),
             );
             for fresh_mesh in &fresh {
-                let mesh = &imported[fresh_mesh.sub_mesh_index];
+                let mesh = cached.geometry_source(fresh_mesh.sub_mesh_index);
                 let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
                 let upload_result = ctx.mesh_registry.with_admission_class(byroredux_renderer::GeometryAdmissionClass::Prop, |registry| {
                     match pc.mesh_cache_key {
@@ -1052,6 +1055,9 @@ pub(super) fn spawn_mesh_instance(
     pc: &PlacementCtx,
     cached: &CachedNifImport,
     mesh: &byroredux_nif::import::ImportedMesh,
+    // `mesh`'s index in `cached.meshes`, for its vertex data
+    // ([`CachedNifImport::geometry_source`], #6116).
+    mesh_index: usize,
     paths: &ResolvedMeshPaths,
     count: usize,
     prepared: PreparedMeshUpload,
@@ -1100,11 +1106,13 @@ pub(super) fn spawn_mesh_instance(
         } => (handle, fresh_for_rt),
         PreparedMeshUpload::Failed | PreparedMeshUpload::Hidden => return false,
     };
+    // #6116 — a precombine alias carries no vertex arrays of its own.
+    let geometry = cached.geometry_source(mesh_index);
     if fresh_for_rt {
         blas_specs.push((
             mesh_handle,
-            mesh.positions.len() as u32,
-            mesh.indices.len() as u32,
+            geometry.positions.len() as u32,
+            geometry.indices.len() as u32,
         ));
     }
 
@@ -1296,8 +1304,8 @@ pub(super) fn spawn_mesh_instance(
     if collision_fallback == MissingCollisionFallback::ArchitectureTriMesh
         && mesh.skin.is_none()
         && render_geometry_can_collide(source_material, collision_authoring)
-        && mesh.positions.len() >= 3
-        && mesh.indices.len() >= 3
+        && geometry.positions.len() >= 3
+        && geometry.indices.len() >= 3
     {
         // Shared with the exterior LAND path — see
         // `spawn_trimesh_collider_ghost`. The render `entity` keeps its
@@ -1308,8 +1316,8 @@ pub(super) fn spawn_mesh_instance(
             .map(|form_id| form_id.0);
         *synthesized_collision_proxy |= spawn_trimesh_collider_ghost(
             world,
-            &mesh.positions,
-            &mesh.indices,
+            &geometry.positions,
+            &geometry.indices,
             byroredux_core::ecs::components::Transform::new(final_pos, final_rot, final_scale),
             source_form,
             None,

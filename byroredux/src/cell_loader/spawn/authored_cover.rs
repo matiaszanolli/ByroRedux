@@ -163,6 +163,7 @@ fn spawn_template(
             &pc,
             &cached,
             mesh,
+            index,
             &resolved[index],
             index,
             prepared,
