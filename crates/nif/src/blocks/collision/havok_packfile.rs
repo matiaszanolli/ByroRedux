@@ -36,6 +36,7 @@
 //! `hk_2014.1.0-r1`. This module adds the tagfile refusal, the
 //! `__classnames__` record walk and the public `HavokPackfile` view.
 
+use std::collections::HashMap;
 use std::io;
 use std::ops::Range;
 
@@ -237,10 +238,19 @@ impl HavokPackfile {
         let Some(data) = self.section("__data__") else {
             return Vec::new();
         };
+        // #7126 — one offset → name map for the whole table. Resolving each
+        // fixup through `class_name_at` scanned every class record, so a blob
+        // of N fixups and N records cost N² (4.5 s for a 2.85 MB blob). The
+        // first record at an offset wins, as `class_name_at` answers.
+        let mut names = HashMap::with_capacity(self.class_name_offsets.len());
+        for (offset, name) in self.class_name_offsets.iter().zip(&self.class_names) {
+            names.entry(*offset).or_insert(name.as_str());
+        }
         data.virtual_fixups
             .iter()
             .filter_map(|vf| {
-                self.class_name_at(vf.class_name_offset)
+                names
+                    .get(&vf.class_name_offset)
                     .map(|name| PackfileObject {
                         class_name: name.to_string(),
                         section_offset: vf.data_offset,
@@ -705,6 +715,30 @@ pub(super) mod tests {
             "the 0xFFFFFFFF pad must not decode as a sixth object"
         );
         assert_eq!(pf.objects().len(), 1);
+    }
+
+    /// #7126 — every fixup of a large table resolves to its own record's
+    /// name (the table is resolved through one map, not a scan per fixup),
+    /// including fixups that share a record.
+    #[test]
+    fn a_large_fixup_table_resolves_every_object_to_its_class() {
+        let names: Vec<String> = (0..4000).map(|i| format!("c{i}")).collect();
+        let classes: Vec<&str> = names.iter().map(String::as_str).collect();
+        let virtuals: Vec<VirtualFixup> = (0..8000u32)
+            .map(|i| VirtualFixup {
+                data_offset: i * 4,
+                class_section: 0,
+                class_name_offset: synthetic_class_name_offset(&classes, classes[(i as usize * 7) % classes.len()]),
+            })
+            .collect();
+        let blob = build_synthetic_packfile_with_fixups(&classes, &vec![0u8; 8000 * 4], &[], &[], &virtuals);
+        let pf = parse_havok_packfile(&blob).expect("parse");
+        let objects = pf.objects();
+        assert_eq!(objects.len(), virtuals.len());
+        for (i, object) in objects.iter().enumerate() {
+            assert_eq!(object.class_name, classes[(i * 7) % classes.len()]);
+            assert_eq!(object.section_offset, i as u32 * 4);
+        }
     }
 
     /// A virtual fixup naming an offset no class record starts at is
