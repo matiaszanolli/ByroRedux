@@ -1914,3 +1914,8 @@ dugout	14-14,11-11	brighter	0.0633	0.0358	RLT-IBL-001..004, RLT-IBL-010 with RLT
 dugout	17-17,14-14	brighter	0.4360	0.1290	RLT-IBL-001..004, RLT-IBL-010 with RLT-IBL-011
 dugout	17-17,15-15	brighter	0.2804	0.0901	RLT-IBL-001..004, RLT-IBL-010 with RLT-IBL-011
 dugout	18-18,15-15	brighter	0.1940	0.0685	RLT-IBL-001..004, RLT-IBL-010 with RLT-IBL-011
+# RLT-IBL-006 (portal-sky GI escape, Show Sky and bounded-aperture interiors; rev 48): measured on an uncommitted
+# spike of exactly this code together with the entries above, 2026-11-21: no Phase 4 anchor scene is a Show Sky or
+# bounded-aperture interior, and the spike's A11 against the Phase 4 anchors under this declaration reads 0 tiles
+# outside on Cornell, Prospector, MedTek and Dugout and 1 on Whiterun, a tile that differs between two captures of
+# identical code (14,17 in one run, 37,20 in the next: process-to-process scene variance). No entries are added.
