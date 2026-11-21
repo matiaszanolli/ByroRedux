@@ -1472,7 +1472,9 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // detection GMST census the PRD's §7.2 scenario 3 reads (+67 LOC).
         // #6666 (M48 GUI-PAGE-005) re-measure: +38 LOC — `menu_gmst_census gmst` parses the master as
         // the engine does, so a localized master's (Skyrim's) string settings resolve.
-        ("plugin", 76, 10703),
+        // #7099 re-measure: +16 LOC — `esm_dim8_coverage`'s recursive GRUP walk takes the shared
+        // `MAX_GRUP_NESTING_DEPTH` cap (no new target).
+        ("plugin", 76, 10719),
         // M47.3 result scripts — `obscript_tools avcodes` aligns the Fallout
         // misc-stat codes and `live` names the quests a script advanced
         // (no new target; the existing triage tool grew).
@@ -2040,4 +2042,28 @@ fn schedule_scanner_reads_the_registered_system_and_matches_whole_identifiers() 
     assert!(names_identifier("the `sleep_system` row", "sleep_system"));
     assert!(!names_identifier("`make_eat_sleep_system()`", "sleep_system"));
     assert!(!names_identifier("sleep_systems", "sleep_system"));
+}
+
+/// #7113 — `World::find_by_form_id` scans every `FormIdComponent` per call. Production code in the
+/// binary resolves a placement through the cached index (`FormIdPool::entity_with_local`, via
+/// `resolve_entity_by_global_form_id`) instead; tests may still use the scan.
+#[test]
+fn no_binary_production_source_scans_for_a_form_id() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut found = Vec::new();
+    visit_workspace_rs_files(&src, &mut |path, contents| {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let in_test_dir = path.components().any(|c| c.as_os_str() == "tests");
+        if name.ends_with("_tests.rs") || name == "tests.rs" || in_test_dir {
+            return;
+        }
+        let production = byroredux_core::source_scan::production_text_or_whole(contents);
+        for (idx, line) in production.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("");
+            if code.contains(".find_by_form_id(") {
+                found.push(format!("{}:{}  {}", path.display(), idx + 1, line.trim()));
+            }
+        }
+    });
+    assert!(found.is_empty(), "resolve through FormIdPool's index, not a scan (#7113):\n{}", found.join("\n"));
 }

@@ -572,9 +572,14 @@ fn launcher_bodies(
 /// `PhysicsSourceForm` (#1698), so that is followed first — a sarsaparilla bottle's body is one.
 fn scripted_hit_target(world: &World, collider_entity: EntityId) -> Option<EntityId> {
     use byroredux_scripting::obscript_vm::{BLOCK_ON_HIT, BLOCK_ON_HIT_WITH};
-    let mut at = world
+    // The placement resolves through the cached FormID index every other lookup uses, not a scan of
+    // every `FormIdComponent` per scenery impact (#7113). The pool guard is released before the
+    // resolver takes `FormIdComponent` then `FormIdPool`, the established order (#313).
+    let placement = world
         .get::<byroredux_core::ecs::components::PhysicsSourceForm>(collider_entity)
-        .and_then(|source| world.find_by_form_id(source.0))
+        .and_then(|source| world.try_resource::<byroredux_core::form_id::FormIdPool>()?.local_of(source.0));
+    let mut at = placement
+        .and_then(|form_id| byroredux_scripting::condition::resolve_entity_by_global_form_id(world, form_id))
         .unwrap_or(collider_entity);
     for _ in 0..MAX_LAUNCHER_HOPS {
         if let Some(script) = world.get::<byroredux_scripting::obscript_objects::ObScriptInstance>(at).map(|instance| instance.script) {
