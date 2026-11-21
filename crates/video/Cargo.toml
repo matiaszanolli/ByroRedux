@@ -11,6 +11,7 @@ rust-version.workspace = true
 [dependencies]
 mercs2_bink = "=0.1.0"
 byroredux-bink2 = { workspace = true }
+byroredux-core = { workspace = true }
 byroredux-binkaudio = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }

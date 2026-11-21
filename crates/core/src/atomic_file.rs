@@ -112,6 +112,41 @@ pub fn assert_no_clobber_fallback(source: &str) {
     }
 }
 
+/// A fresh file in the temp directory that no one else can be holding: `create_new` (`O_EXCL`)
+/// refuses an existing path, a planted symlink included, instead of following and truncating it,
+/// and on Unix the file is the owner's alone (`0600`). The name,
+/// `{stem}-{pid}-{nanos}-{counter}.{extension}`, separates processes and concurrent writers; a
+/// name that is taken anyway is retried with a new one, up to 8 times.
+///
+/// #7143 — the one temp-file creator, shared by the `.fuz` voice decoder (#6307) and the movie
+/// soundtrack, which had re-grown `File::create` on a predictable name.
+pub fn create_temp_file(stem: &str, extension: &str) -> std::io::Result<(fs::File, PathBuf)> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let mut last = None;
+    for _ in 0..8 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "{stem}-{}-{nanos}-{counter}.{extension}",
+            std::process::id()
+        ));
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        match options.open(&path) {
+            Ok(file) => return Ok((file, path)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => last = Some(error),
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::from(std::io::ErrorKind::AlreadyExists)))
+}
+
 /// Every [`atomic_write`] step that leaves the temp behind on failure.
 fn stage_and_rename(
     final_path: &Path,
@@ -140,6 +175,27 @@ fn stage_and_rename(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #7143 — the shared temp-file creator gives each caller its own new file, private to the
+    /// owner on Unix, named by stem, pid and extension.
+    #[test]
+    fn temp_files_are_new_private_and_unique() {
+        let (mut first, first_path) = create_temp_file("byro-test", "bin").unwrap();
+        let (_, second_path) = create_temp_file("byro-test", "bin").unwrap();
+        assert_ne!(first_path, second_path);
+        first.write_all(b"one").unwrap();
+        assert_eq!(fs::read(&first_path).unwrap(), b"one");
+        let name = first_path.file_name().unwrap().to_string_lossy().to_string();
+        assert!(name.starts_with(&format!("byro-test-{}-", std::process::id())) && name.ends_with(".bin"), "{name}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(&first_path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        for path in [first_path, second_path] {
+            let _ = fs::remove_file(path);
+        }
+    }
 
     /// #5143 — the shared staging-path helper must give every concurrent
     /// writer its own hidden temp beside the destination.

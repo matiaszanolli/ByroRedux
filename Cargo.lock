@@ -984,6 +984,7 @@ version = "0.1.0"
 dependencies = [
  "byroredux-bink2",
  "byroredux-binkaudio",
+ "byroredux-core",
  "log",
  "mercs2_bink",
  "tempfile",

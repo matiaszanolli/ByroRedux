@@ -291,41 +291,16 @@ pub fn fuz_to_wav_bytes(data: &[u8]) -> Result<Vec<u8>, FuzDecodeError> {
     wav_header(output.stdout, stream.channels, stream.sample_rate).ok_or(FuzDecodeError::BadXwma)
 }
 
-/// Write the xWMA image to a fresh temp file. `create_new` (`O_EXCL`) refuses an
-/// existing path, a planted symlink included, instead of following and
-/// truncating it; the name carries the pid and a per-process counter beside the
-/// clock, so concurrent decodes cannot collide (#6307).
+/// Write the xWMA image to a fresh temp file, through the shared exclusive creator
+/// (`atomic_file::create_temp_file`: `create_new`, `0600`, a unique name — #6307, #7143).
 fn write_temp_xwma(xwma: &[u8]) -> std::io::Result<std::path::PathBuf> {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let mut last = None;
-    for _ in 0..8 {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "byro-fuz-{}-{unique}-{counter}.xwma",
-            std::process::id()
-        ));
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        match options.open(&path) {
-            Ok(mut file) => {
-                if let Err(error) = file.write_all(xwma) {
-                    drop(file);
-                    let _ = std::fs::remove_file(&path);
-                    return Err(error);
-                }
-                return Ok(path);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => last = Some(error),
-            Err(error) => return Err(error),
-        }
+    let (mut file, path) = byroredux_core::atomic_file::create_temp_file("byro-fuz", "xwma")?;
+    if let Err(error) = file.write_all(xwma) {
+        drop(file);
+        let _ = std::fs::remove_file(&path);
+        return Err(error);
     }
-    Err(last.unwrap_or_else(|| std::io::Error::from(std::io::ErrorKind::AlreadyExists)))
+    Ok(path)
 }
 
 /// A finished child process: its exit status and what it wrote.

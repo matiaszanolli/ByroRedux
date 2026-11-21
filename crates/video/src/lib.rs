@@ -14,7 +14,6 @@
 
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError};
 use std::thread::JoinHandle;
 
@@ -208,12 +207,6 @@ fn probe_unguarded(path: &Path) -> Result<MovieInfo, VideoError> {
     }
 }
 
-/// Where a movie's decoded audio waits: one file per movie in the temp directory.
-fn temp_wav_path() -> PathBuf {
-    static NEXT: AtomicU32 = AtomicU32::new(0);
-    std::env::temp_dir().join(format!("byroredux-movie-{}-{}.wav", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)))
-}
-
 /// A canonical 44-byte WAV header for 16-bit PCM.
 fn wav_header(samples: usize, channels: u16, rate: u32) -> [u8; 44] {
     let data = (samples * 2) as u32;
@@ -354,14 +347,19 @@ fn decode_soundtrack(
     soundtrack: Soundtrack,
     mut decode_frame: impl FnMut(usize, &mut Vec<i16>) -> Result<(), String>,
 ) -> Audio {
-    let path = temp_wav_path();
+    // #7143 — the shared exclusive creator (`create_new`, `0600`, a unique name), not `File::create`
+    // on a guessable one, which followed a planted symlink and truncated its target.
+    let (file, path) = match byroredux_core::atomic_file::create_temp_file("byroredux-movie", "wav") {
+        Ok(created) => created,
+        Err(error) => return Audio::missing(name, format!("its soundtrack could not be written: {error}")),
+    };
     let mut written = 0usize;
     let mut problem = None;
     let mut stop = |why: String| {
         log::warn!("video: {name}: {why}");
         problem = Some(why);
     };
-    let result = std::fs::File::create(&path).and_then(|file| {
+    let result = (|| {
         let mut out = std::io::BufWriter::new(file);
         out.write_all(&wav_header(0, soundtrack.channels, soundtrack.rate))?;
         let mut pcm: Vec<i16> = Vec::new();
@@ -402,7 +400,7 @@ fn decode_soundtrack(
         let mut file = out.into_inner().map_err(|error| error.into_error())?;
         file.seek(std::io::SeekFrom::Start(0))?;
         file.write_all(&wav_header(written, soundtrack.channels, soundtrack.rate))
-    });
+    })();
     match result {
         Ok(()) if written > 0 => Audio { wav: Some(path), problem },
         Ok(()) => {
@@ -1081,6 +1079,26 @@ mod tests {
         let (written, problem) = take(decode_soundtrack("t", 4, caps, |_, _| Ok(())));
         assert!(!written);
         assert_eq!(problem.as_deref(), Some("its audio track decodes to no samples"));
+    }
+
+    /// #7143: the soundtrack WAV comes from the shared exclusive creator: private to the owner on
+    /// Unix, and never `File::create` on a guessable name, which followed a planted symlink.
+    #[test]
+    fn the_soundtrack_temp_file_is_created_exclusively() {
+        let caps = Soundtrack { channels: 2, rate: 48_000, total_cap: MAX_SOUNDTRACK_SAMPLES, frame_cap: 8 };
+        let wav = decode_soundtrack("t", 1, caps, |_, pcm| {
+            pcm.extend([1i16; 4]);
+            Ok(())
+        })
+        .wav
+        .expect("a soundtrack was written");
+        #[cfg(unix)]
+        let mode = std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&wav).unwrap().permissions());
+        let _ = std::fs::remove_file(&wav);
+        #[cfg(unix)]
+        assert_eq!(mode & 0o777, 0o600);
+        let production = &include_str!("lib.rs")[..include_str!("lib.rs").find(concat!("#[cfg(", "test)]")).unwrap()];
+        assert!(!production.contains(concat!("File::", "create(")), "temp files go through atomic_file::create_temp_file");
     }
 
     #[test]
