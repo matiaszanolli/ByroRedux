@@ -76,7 +76,17 @@ fn container_error(magic: &[u8], detail: String) -> VideoError {
 /// dependency allows 0x7fff a side, so a 100-byte file could ask for ~1 GiB planes, and a failed
 /// allocation aborts the process where no `catch_unwind` reaches. Checked after `Movie::parse`,
 /// before `VideoDecoder::new`, with the same ceilings `byroredux-bink2` applies at `Bk2::open`.
-fn check_bink1_picture(movie: &mercs2_bink::Movie) -> Result<(), VideoError> {
+///
+/// #7138 — and, as `bink2_container` does for Bink 2, a movie with no frames or a zero frame-rate
+/// dividend or divider is not playable: it used to play at an invented 25 fps, report 0 frames
+/// and cap its soundtrack at 3 s.
+fn check_bink1_movie(movie: &mercs2_bink::Movie) -> Result<(), VideoError> {
+    if movie.frame_count == 0 || movie.fps.0 == 0 || movie.fps.1 == 0 {
+        return Err(VideoError::Unreadable(format!(
+            "not a playable Bink 1 movie: {} frames at {}/{} fps",
+            movie.frame_count, movie.fps.0, movie.fps.1
+        )));
+    }
     let (width, height) = (movie.width as usize, movie.height as usize);
     if width > bink2::MAX_DIMENSION || height > bink2::MAX_DIMENSION || width * height > bink2::MAX_PIXELS {
         return Err(VideoError::Unreadable(format!(
@@ -88,13 +98,14 @@ fn check_bink1_picture(movie: &mercs2_bink::Movie) -> Result<(), VideoError> {
     Ok(())
 }
 
+/// A Bink 1 movie's [`MovieInfo`], once [`check_bink1_movie`] has passed it (its frame rate is not 0).
 fn describe(movie: &mercs2_bink::Movie) -> MovieInfo {
-    let fps = if movie.fps.1 > 0 { f64::from(movie.fps.0) / f64::from(movie.fps.1) } else { 0.0 };
+    let fps = f64::from(movie.fps.0) / f64::from(movie.fps.1);
     MovieInfo {
         width: movie.width,
         height: movie.height,
         fps,
-        duration_secs: if fps > 0.0 { f64::from(movie.frame_count) / fps } else { 0.0 },
+        duration_secs: f64::from(movie.frame_count) / fps,
         audio_tracks: movie.tracks.len() as u32,
     }
 }
@@ -192,7 +203,7 @@ fn probe_unguarded(path: &Path) -> Result<MovieInfo, VideoError> {
     bytes.resize(table_end, 0);
     file.read_exact(&mut bytes[BIK1_HEADER_LEN..]).map_err(|error| VideoError::Unreadable(error.to_string()))?;
     match mercs2_bink::Movie::parse(&bytes) {
-        Ok(movie) => check_bink1_picture(&movie).map(|()| describe(&movie)),
+        Ok(movie) => check_bink1_movie(&movie).map(|()| describe(&movie)),
         Err(detail) => Err(container_error(&bytes, detail)),
     }
 }
@@ -583,7 +594,7 @@ impl Movie {
         check_bink1_header(&bytes)?;
         let (info, audio, mut video) = {
             let movie = mercs2_bink::Movie::parse(&bytes).map_err(|detail| container_error(&bytes, detail))?;
-            check_bink1_picture(&movie)?;
+            check_bink1_movie(&movie)?;
             let video = VideoDecoder::new(&movie).map_err(VideoError::Unsupported)?;
             (describe(&movie), extract_audio(&movie, &name), video)
         };
@@ -661,8 +672,10 @@ impl Movie {
         Self { info, size, rx: Some(rx), reader, audio, frame: Vec::new(), index: -1, exhausted: false, failure: None }
     }
 
-    /// A movie over frames that already exist (tests).
+    /// A movie over frames that already exist (tests). `info.fps` must be positive, as every opened
+    /// movie's is.
     pub fn from_frames(info: MovieInfo, size: (u32, u32), frames: Vec<Vec<u8>>) -> Self {
+        assert!(info.fps > 0.0, "a movie plays at a positive frame rate");
         Self::from_decoded(info, size, frames.into_iter().map(Ok).collect())
     }
 
@@ -728,8 +741,8 @@ impl Movie {
     /// The frame that belongs `elapsed_secs` into the movie. Frames the clock has passed are
     /// dropped; a decoder that has not produced the wanted frame yet leaves the last one up.
     pub fn advance(&mut self, elapsed_secs: f64) -> Playhead<'_> {
-        let fps = if self.info.fps > 0.0 { self.info.fps } else { 25.0 };
-        let target = (elapsed_secs.max(0.0) * fps).floor() as i64;
+        // `probe` / `open` refuse a movie with no frame rate (#7138), and `from_frames` asserts one.
+        let target = (elapsed_secs.max(0.0) * self.info.fps).floor() as i64;
         let before = self.index;
         while self.index < target && !self.exhausted {
             let Some(rx) = &self.rx else {
@@ -1071,6 +1084,22 @@ mod tests {
             let path = write(&name, &bytes);
             assert!(matches!(probe(&path), Err(VideoError::Unsupported(r)) if r.contains(&reason)), "{name} probes");
             assert!(matches!(Movie::open(&path, (8, 8), true), Err(VideoError::Unsupported(r)) if r.contains(&reason)), "{name} opens");
+        }
+    }
+
+    /// #7138: a Bink 1 header with a zero frame-rate dividend or divider is unreadable, as a Bink 2
+    /// one is, instead of playing at an invented rate with a 0-frame total and a 3 s soundtrack.
+    #[test]
+    fn a_bink_1_movie_without_a_frame_rate_is_unreadable() {
+        let dir = tempfile::tempdir().unwrap();
+        for (at, name) in [(0x1c, "dividend"), (0x20, "divider")] {
+            let mut bytes = bink1_movie(64, 32);
+            bytes[at..at + 4].copy_from_slice(&0u32.to_le_bytes());
+            let path = dir.path().join(format!("{name}.bik"));
+            std::fs::write(&path, &bytes).unwrap();
+            let playable = |r: &str| r.contains("not a playable Bink 1 movie");
+            assert!(matches!(probe(&path), Err(VideoError::Unreadable(r)) if playable(&r)), "{name} 0 probes");
+            assert!(matches!(Movie::open(&path, (8, 8), true), Err(VideoError::Unreadable(r)) if playable(&r)), "{name} 0 opens");
         }
     }
 
