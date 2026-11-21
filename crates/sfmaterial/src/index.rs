@@ -767,6 +767,8 @@ fn stream_db_file_index(state: &mut State<'_>, idx: &mut MaterialIndex) -> Resul
         }
     }
 
+    // Rows the Objects table held, keyed or not (0 when it is empty or the class declares none).
+    let mut objects_rows = 0usize;
     for field in chunk_fields {
         match field.name.as_str() {
             "Components" => stream_list(state, |v| {
@@ -847,12 +849,7 @@ fn stream_db_file_index(state: &mut State<'_>, idx: &mut MaterialIndex) -> Resul
                          key(s) dropped (shape drift from {{ Dir: u32, Ext: u32 }}?)"
                     );
                 }
-                // #7124 — an Objects table that keys nothing is the same
-                // failure whether every row missed or there were no rows:
-                // every `.mat` lookup would miss with no error.
-                if pid_misses == keyable_rows {
-                    return Err(Error::NoKeyedObjects { rows: keyable_rows });
-                }
+                objects_rows = dbid_misses + keyable_rows;
             }
             // Edges encode the blend graph; lookups follow ID refs
             // directly (measured), so count these past without keeping
@@ -866,6 +863,12 @@ fn stream_db_file_index(state: &mut State<'_>, idx: &mut MaterialIndex) -> Resul
         }
     }
 
+    // #7124, #7154 — an index that keys no material path is the same failure whether every row
+    // missed, the Objects table had no rows, or the class declares no Objects table at all: every
+    // `.mat` lookup would miss with no error. Checked after every field, so the last case is too.
+    if idx.objects_by_key.is_empty() {
+        return Err(Error::NoKeyedObjects { rows: objects_rows });
+    }
     // #5320 — the inline payload must end exactly at the last declared field, or the index was
     // built against a payload whose layout doesn't match its class declaration.
     object.finish()
@@ -1704,6 +1707,27 @@ mod tests {
         chunks[dbfile + 1].1.extend_from_slice(&0i32.to_le_bytes());
         let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks))
             .expect_err("an empty Objects table must not build an index that keys nothing");
+        assert!(
+            matches!(err, Error::NoKeyedObjects { rows: 0 }),
+            "expected NoKeyedObjects {{ rows: 0 }}, got {err:?}"
+        );
+    }
+
+    /// #7154 — a DBFileIndex whose class declares no `Objects` table keys no
+    /// material path either, so it is the same typed error, not an `Ok` index
+    /// every lookup misses. The class is made to declare none by renaming the
+    /// field in the string table (same length, so every offset holds); its
+    /// LIST chunk is then consumed as an unknown collection field.
+    #[test]
+    fn build_rejects_a_dbfile_index_that_declares_no_objects_table() {
+        let (chunks, _) = mutable_chunks();
+        let mut cdb = assemble_synthetic_cdb(&chunks);
+        let name = b"Objects\0";
+        let at: Vec<usize> = cdb.windows(name.len()).enumerate().filter(|(_, w)| w == name).map(|(i, _)| i).collect();
+        assert_eq!(at.len(), 1, "the field name appears once, in the string table");
+        assert!(MaterialIndex::build(&cdb).is_ok(), "the unrenamed fixture builds");
+        cdb[at[0] + 6] = b'z';
+        let err = MaterialIndex::build(&cdb).expect_err("an index with no Objects table keys nothing");
         assert!(
             matches!(err, Error::NoKeyedObjects { rows: 0 }),
             "expected NoKeyedObjects {{ rows: 0 }}, got {err:?}"
