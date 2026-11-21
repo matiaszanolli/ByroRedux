@@ -22,11 +22,11 @@
 //! `data_offset` indexes straight into that space; [`CsgArchive::read_psg`]
 //! resolves it, decompressing (and caching) only the chunks it touches.
 
-use crate::read_at::ReadAt;
+use crate::read_at::{read_exact_for, ReadAt};
 use crate::safety::{checked_chunk_size, checked_chunk_size_usize, checked_entry_count};
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
-use std::io::{self, Read};
+use std::io;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -153,7 +153,7 @@ impl CsgArchive {
         let file_len = file.metadata()?.len();
 
         let mut head = [0u8; 12];
-        file.read_exact(&mut head)?;
+        read_exact_for(&mut file, &mut head, &"CSG header")?;
         if &head[0..4] != MAGIC {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -180,7 +180,7 @@ impl CsgArchive {
             ));
         }
         let mut table = vec![0u8; num_chunks * 8];
-        file.read_exact(&mut table)?;
+        read_exact_for(&mut file, &mut table, &format_args!("CSG chunk table ({num_chunks} chunks)"))?;
         let mut chunks = Vec::with_capacity(num_chunks);
         for i in 0..num_chunks {
             let b = &table[i * 8..i * 8 + 8];

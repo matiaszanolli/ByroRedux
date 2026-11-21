@@ -1431,3 +1431,26 @@ fn a_record_past_the_archive_end_names_its_entry_and_read() {
         assert!(err.to_string().starts_with(&want), "compressed {compressed}: got {err}");
     }
 }
+
+/// #7176 — an archive cut anywhere in its header or tables fails to open naming the table and
+/// record that ran short, never with the bare `failed to fill whole buffer`; the kind stays
+/// `UnexpectedEof` where the cut is a short read.
+#[test]
+fn a_cut_archive_names_the_table_it_ran_out_in() {
+    let whole = build_v105_archive("meshes", "cut.nif", b"0123456789", false, true);
+    let mut labels = std::collections::BTreeSet::new();
+    for cut in 1..whole.len() {
+        let path = write_temp_v105(&format!("cut-{cut}"), &whole[..cut]);
+        let result = BsaArchive::open(&path);
+        let _ = std::fs::remove_file(&path);
+        let Err(err) = result else { continue };
+        if err.kind() != io::ErrorKind::UnexpectedEof {
+            continue;
+        }
+        let message = err.to_string();
+        assert!(message.starts_with("BSA ") && message.contains(": reading "), "cut at {cut}: {message}");
+        labels.insert(message.split(':').next().unwrap().to_owned());
+    }
+    assert!(labels.contains("BSA header"), "{labels:?}");
+    assert!(labels.contains("BSA folder record 0"), "{labels:?}");
+}

@@ -57,7 +57,7 @@
 //! }
 //! ```
 
-use crate::read_at::ReadAt;
+use crate::read_at::{read_exact_for, ReadAt};
 use crate::safety::{
     capacity_hint, checked_chunk_size, checked_chunk_size_usize, checked_chunk_total,
     checked_entry_count,
@@ -195,7 +195,7 @@ impl Ba2Archive {
 
         // ── Header (24 bytes base, +8 for Starfield v2+) ────────────
         let mut hdr = [0u8; 24];
-        reader.read_exact(&mut hdr)?;
+        read_exact_for(&mut reader, &mut hdr, &"BA2 header")?;
 
         if &hdr[0..4] != MAGIC_BTDX {
             return Err(io::Error::new(
@@ -277,7 +277,7 @@ impl Ba2Archive {
             BA2_V_FO4 | BA2_V_FO4_NEXT_GEN_TEX | BA2_V_FO4_NEXT_GEN_MESH => Ba2Compression::Zlib,
             BA2_V_STARFIELD_V2 => {
                 let mut extra = [0u8; 8];
-                reader.read_exact(&mut extra)?;
+                read_exact_for(&mut reader, &mut extra, &"BA2 v2 header extension")?;
                 // #1186 — defense-in-depth: log the trailing 2×u32 the
                 // community RE'd as "compressed name-table size +
                 // reserved" so a malformed archive failure surfaces here
@@ -289,9 +289,9 @@ impl Ba2Archive {
             }
             BA2_V_STARFIELD_V3 => {
                 let mut extra = [0u8; 8];
-                reader.read_exact(&mut extra)?;
+                read_exact_for(&mut reader, &mut extra, &"BA2 v3 header extension")?;
                 let mut method_buf = [0u8; 4];
-                reader.read_exact(&mut method_buf)?;
+                read_exact_for(&mut reader, &mut method_buf, &"BA2 v3 compression method")?;
                 // #2360 / SF-BA2-02 — log AFTER the compression-method read,
                 // not before it. The point of `stream_pos` in this diagnostic
                 // is "where does the header end", to be compared against
@@ -344,12 +344,12 @@ impl Ba2Archive {
         // `file_count`: `files.len()` equals it here, but only because every
         // one of those records was really present in the file.
         let mut names = Vec::with_capacity(files.len());
-        for _ in 0..file_count {
+        for name_index in 0..file_count {
             let mut len_buf = [0u8; 2];
-            reader.read_exact(&mut len_buf)?;
+            read_exact_for(&mut reader, &mut len_buf, &format_args!("BA2 name {name_index} length"))?;
             let name_len = u16::from_le_bytes(len_buf) as usize;
             let mut name_buf = vec![0u8; name_len];
-            reader.read_exact(&mut name_buf)?;
+            read_exact_for(&mut reader, &mut name_buf, &format_args!("BA2 name {name_index}"))?;
             names.push(normalize_path(&String::from_utf8_lossy(&name_buf)));
         }
 
@@ -2510,7 +2510,7 @@ mod tests {
             .expect("the BA2_V_STARFIELD_V3 match arm must exist in this file");
         let body = prefix_up_to(arm, 2000);
         let method_read = body
-            .find("reader.read_exact(&mut method_buf)")
+            .find("read_exact_for(&mut reader, &mut method_buf")
             .expect("the v3 arm must still read the 4-byte compression method");
         let log_call = body
             .find(r#"log_v2_v3_extra_bytes("v3""#)
