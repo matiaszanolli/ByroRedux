@@ -1541,6 +1541,13 @@ fn merge_bgsm_arm(
         //   * FO76's terrain block: `terrain` (150 BGSM),
         //     `terrain_unk_int1`, `terrain_threshold_falloff`,
         //     `terrain_tiling_distance`, `terrain_rotation_angle`
+        //
+        // #7165 — two deferrals documented elsewhere in this file, named here
+        // so the ledger holds every unmerged field:
+        //   * `distance_field_alpha_texture` (#2642, beside the texture
+        //     fills): no texture role or shader consumer yet
+        //   * BGEM `environment_mapping_mask_scale` (#2608, in the BGEM arm):
+        //     left unforwarded deliberately, pending its own shading evidence
         // `bgsm_merge.rs`'s `every_parsed_sidecar_field_is_merged_or_in_the_ledger`
         // fails when a parser field is neither read here nor named in this
         // ledger.
