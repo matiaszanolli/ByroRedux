@@ -1548,6 +1548,17 @@ fn merge_bgsm_arm(
         //     fills): no texture role or shader consumer yet
         //   * BGEM `environment_mapping_mask_scale` (#2608, in the BGEM arm):
         //     left unforwarded deliberately, pending its own shading evidence
+        //
+        // #7178 — the field names BGSM and BGEM both declare, recorded per
+        // struct (one plain mention above used to clear both). Same deferred
+        // class as the entries above: parsed, no sink, no visual claim:
+        //   * BGSM `adaptive_emissive_exposure_offset`, BGSM
+        //     `adaptive_emissive_final_exposure_min`, BGSM
+        //     `adaptive_emissive_final_exposure_max`, BGSM `glowmap`
+        //   * BGEM `adaptive_emissive_exposure_offset`, BGEM
+        //     `adaptive_emissive_final_exposure_min`, BGEM `glowmap` (BGEM
+        //     `adaptive_emissive_final_exposure_max` and BGEM `emittance_color`
+        //     are named above)
         // `bgsm_merge.rs`'s `every_parsed_sidecar_field_is_merged_or_in_the_ledger`
         // fails when a parser field is neither read here nor named in this
         // ledger.

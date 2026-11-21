@@ -75,6 +75,92 @@ pub fn count_identifier(src: &str, ident: &str) -> usize {
         .count()
 }
 
+/// `src` with every comment removed (`//` to the end of the line, and `/* */`, nested), string,
+/// raw-string and char literals kept whole, so a `//` or `/*` inside one is not taken for a comment
+/// and a quote inside a comment or a char literal (`'"'`) cannot desynchronise the scan. For text
+/// scans that must not count a comment's mention as code (#7178: the BGSM ledger test once did,
+/// through a per-line stripper that tracked `"` only). A lifetime (`'a`) is told from a char
+/// literal by what follows it.
+pub fn strip_comments(src: &str) -> String {
+    let b = src.as_bytes();
+    let mut out = String::with_capacity(src.len());
+    let mut i = 0;
+    let mut kept = 0;
+    while i < b.len() {
+        match b[i] {
+            b'/' if b.get(i + 1) == Some(&b'/') => {
+                out.push_str(&src[kept..i]);
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+                kept = i;
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                out.push_str(&src[kept..i]);
+                let mut depth = 0usize;
+                while i < b.len() {
+                    if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
+                        depth += 1;
+                        i += 2;
+                    } else if b[i] == b'*' && b.get(i + 1) == Some(&b'/') {
+                        depth -= 1;
+                        i += 2;
+                        if depth == 0 {
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+                out.push(' ');
+                kept = i;
+            }
+            b'r' if matches!(b.get(i + 1), Some(b'"' | b'#'))
+                && (i == 0 || !(b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_')) =>
+            {
+                let hashes = b[i + 1..].iter().take_while(|&&c| c == b'#').count();
+                if b.get(i + 1 + hashes) != Some(&b'"') {
+                    i += 1;
+                    continue;
+                }
+                let close: Vec<u8> = std::iter::once(b'"').chain(std::iter::repeat_n(b'#', hashes)).collect();
+                let body = i + 2 + hashes;
+                i = src[body..]
+                    .as_bytes()
+                    .windows(close.len())
+                    .position(|w| w == close.as_slice())
+                    .map_or(b.len(), |at| body + at + close.len());
+            }
+            b'"' => {
+                i += 1;
+                while i < b.len() && b[i] != b'"' {
+                    i += if b[i] == b'\\' { 2 } else { 1 };
+                }
+                i += 1;
+            }
+            b'\'' => {
+                // A char literal ('x', '\n', '\'', '"', a multi-byte char) or a lifetime ('a).
+                let rest = &src[i + 1..];
+                let mut chars = rest.chars();
+                match chars.next() {
+                    Some('\\') => {
+                        // An escape: past the backslash and the escaped character (so `'\''`
+                        // does not end at its own quote), then to the closing quote.
+                        let escaped = 1 + rest[1..].chars().next().map_or(0, char::len_utf8);
+                        let close = rest[escaped..].find('\'').map_or(rest.len(), |at| escaped + at + 1);
+                        i += 1 + close;
+                    }
+                    Some(c) if chars.next() == Some('\'') => i += 1 + c.len_utf8() + 1,
+                    _ => i += 1,
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    out.push_str(&src[kept.min(src.len())..]);
+    out
+}
+
 /// A source file's production text with **every** `#[cfg(test)] mod` block
 /// removed by brace matching — for files whose test modules are interleaved
 /// with production code, where [`production_text`]'s first cut would
@@ -483,6 +569,19 @@ pub fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #7178 — comments go, literals that look like comments or hold a quote stay whole.
+    #[test]
+    fn strip_comments_keeps_code_and_literals() {
+        let src = "let a = x.f; // y.g\nlet s = \"// z.h\"; /* w.i /* nested */ still */ let c = '\"'; let e = '\\''; v.j // q\nlet r = r#\"/* k */\"#; let l: &'static str = \"\\\\\"; // m.n\nfn f<'a>(x: &'a u8) {}";
+        let code = strip_comments(src);
+        for kept in ["x.f", "\"// z.h\"", "'\"'", "v.j", "r#\"/* k */\"#", "\"\\\\\"", "&'static str", "fn f<'a>(x: &'a u8)"] {
+            assert!(code.contains(kept), "{kept} dropped from: {code}");
+        }
+        for gone in ["y.g", "w.i", "nested", "still", "q", "m.n"] {
+            assert!(!code.contains(gone), "{gone} kept in: {code}");
+        }
+    }
 
     #[test]
     fn cuts_at_the_first_test_module_and_not_at_a_test_only_import() {

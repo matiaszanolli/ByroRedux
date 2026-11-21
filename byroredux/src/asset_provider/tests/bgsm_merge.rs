@@ -3265,13 +3265,17 @@ fn nif_first_precedence_stands_when_the_probe_cannot_flip_it() {
 /// parser adds cannot land with no sink and no record (#2704, #4667, #6848, #7140). Scans
 /// production text, so a test's own mention does not count.
 ///
-/// #7165 — a read counts only through its own struct's receiver (`bgsm.f`, `bgem.f`, `.base.f`)
-/// in code, comments stripped, and a ledger entry only inside the ledger block. A flat search for
-/// `.f` anywhere let a write to the canonical material (`material.two_sided`), a read of the other
-/// struct's field (`bgsm.emittance_color` for BGEM's) or a comment stand in for the real read.
+/// #7165 — a read counts only through its own struct's receiver, in code, and a ledger entry only
+/// inside the ledger block. #7178 — the code (and the template resolver's) is comment-stripped by
+/// `source_scan::strip_comments`, not a per-line `"` tracker; a `BaseMaterial` read is one
+/// through a known receiver's `.base.`; and a field both `BgsmFile` and `BgemFile` declare is
+/// credited by the ledger only where it names the struct (`BGSM \`f\`` / `BGEM \`f\``), since one
+/// plain mention used to clear both. A field the ledger records as deliberately ignored ("Correctly
+/// NOT in this ledger: `receive_shadows=false` …") is recorded, which is the point: no field is
+/// dropped without a written decision.
 #[test]
 fn every_parsed_sidecar_field_is_merged_or_in_the_ledger() {
-    use byroredux_core::source_scan::strip_test_modules;
+    use byroredux_core::source_scan::{strip_comments, strip_test_modules};
     let merge = strip_test_modules(include_str!("../material/merge.rs"));
     let material = [
         merge.clone(),
@@ -3279,47 +3283,46 @@ fn every_parsed_sidecar_field_is_merged_or_in_the_ledger() {
         strip_test_modules(include_str!("../material/mod.rs")),
     ]
     .concat();
-    // Code only: each line up to a `//` outside a string literal.
-    let code: String = material
-        .lines()
-        .map(|line| {
-            let mut in_str = false;
-            let bytes = line.as_bytes();
-            let mut cut = line.len();
-            for k in 0..bytes.len() {
-                match bytes[k] {
-                    b'"' if k == 0 || bytes[k - 1] != b'\\' => in_str = !in_str,
-                    b'/' if !in_str && bytes.get(k + 1) == Some(&b'/') => {
-                        cut = k;
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            &line[..cut]
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let code = strip_comments(&material);
     let start = merge.find("#2704 (FO4-D7-02) — Deferred: no consumer").expect("the ledger opens");
     let end = start + merge[start..].find("neither read here nor named in this").expect("the ledger closes");
-    let ledger = &merge[start..end];
+    // The ledger's comment lines as one text, so a mention wrapped across a line still reads
+    // "BGEM `f`".
+    let ledger: String = merge[start..end]
+        .lines()
+        .map(|line| line.trim_start().trim_start_matches('/').trim())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let ident = |c: char| c.is_alphanumeric() || c == '_';
     // `needle` in `text`, not continuing an identifier on either side.
     let mentions = |text: &str, needle: &str| {
-        let ident = |c: char| c.is_alphanumeric() || c == '_';
         text.match_indices(needle).any(|(at, _)| {
             !text[..at].chars().next_back().is_some_and(ident)
                 && !text[at + needle.len()..].chars().next().is_some_and(ident)
         })
     };
-    // Each struct's receivers in the material code: `leaf` is the resolved chain's leaf BGSM.
+    let struct_fields = |src: &str, name: &str| -> Vec<String> {
+        let start = src.find(&format!("pub struct {name} {{")).unwrap_or_else(|| panic!("{name} is declared"));
+        let body = &src[start..start + src[start..].find("\n}").expect("the struct closes")];
+        body.lines()
+            .filter_map(|line| line.trim().strip_prefix("pub ")?.split_once(':').map(|(field, _)| field.to_owned()))
+            .collect()
+    };
+    let base_src = include_str!("../../../../crates/bgsm/src/base.rs");
+    let bgsm_src = include_str!("../../../../crates/bgsm/src/bgsm.rs");
+    let bgem_src = include_str!("../../../../crates/bgsm/src/bgem.rs");
+    let bgsm_fields = struct_fields(bgsm_src, "BgsmFile");
+    let bgem_fields = struct_fields(bgem_src, "BgemFile");
+    // Each struct's receivers in the material code (`leaf` is the resolved chain's leaf BGSM) and
+    // the word the ledger names it by when a field name is shared.
     let parsed = [
-        (include_str!("../../../../crates/bgsm/src/base.rs"), "BaseMaterial", &[".base."][..]),
-        (include_str!("../../../../crates/bgsm/src/bgsm.rs"), "BgsmFile", &["bgsm.", "leaf."][..]),
-        (include_str!("../../../../crates/bgsm/src/bgem.rs"), "BgemFile", &["bgem."][..]),
+        ("BaseMaterial", struct_fields(base_src, "BaseMaterial"), &["bgsm.base.", "bgem.base.", "leaf.base."][..], ""),
+        ("BgsmFile", bgsm_fields.clone(), &["bgsm.", "leaf."][..], "BGSM"),
+        ("BgemFile", bgem_fields.clone(), &["bgem."][..], "BGEM"),
     ];
     // Fields read somewhere other than as a field of their receiver, each with the call that reads
-    // it, which must be present: a version-aware accessor, or the parser crate's template resolver.
-    let template = strip_test_modules(include_str!("../../../../crates/bgsm/src/template.rs"));
+    // it, which must be present in code: a version-aware accessor, or the template resolver.
+    let template = strip_comments(&strip_test_modules(include_str!("../../../../crates/bgsm/src/template.rs")));
     let read_elsewhere = [
         ("BgemFile", "environment_mapping", code.as_str(), "bgem.env_mapping_enabled()"),
         ("BgsmFile", "root_material_path", template.as_str(), "file.root_material_path"),
@@ -3328,24 +3331,17 @@ fn every_parsed_sidecar_field_is_merged_or_in_the_ledger() {
         assert!(text.contains(call), "{name}::{field} is listed as read by `{call}`, which is gone");
     }
     let mut unlisted = Vec::new();
-    for (src, name, receivers) in parsed {
-        let start = src.find(&format!("pub struct {name} {{")).unwrap_or_else(|| panic!("{name} is declared"));
-        let body = &src[start..start + src[start..].find("\n}").expect("the struct closes")];
-        let fields: Vec<&str> = body
-            .lines()
-            .filter_map(|line| line.trim().strip_prefix("pub ")?.split_once(':').map(|(field, _)| field))
-            .collect();
+    for (name, fields, receivers, word) in parsed {
         assert!(fields.len() > 20, "{name}: {} fields read; the scan lost the struct", fields.len());
-        for field in fields {
-            // `.base.f` starts with a `.`, so its left edge is checked on the `base` it follows.
-            let read = receivers.iter().any(|receiver| {
-                code.match_indices(&format!("{receiver}{field}")).any(|(at, needle)| {
-                    let ident = |c: char| c.is_alphanumeric() || c == '_';
-                    (receiver.starts_with('.') || !code[..at].chars().next_back().is_some_and(ident))
-                        && !code[at + needle.len()..].chars().next().is_some_and(ident)
-                })
-            }) || read_elsewhere.iter().any(|&(n, f, ..)| n == name && f == field);
-            let ledgered = mentions(ledger, &format!("`{field}")) || mentions(ledger, &format!("`base.{field}"));
+        for field in &fields {
+            let read = receivers.iter().any(|receiver| mentions(&code, &format!("{receiver}{field}")))
+                || read_elsewhere.iter().any(|&(n, f, ..)| n == name && f == field);
+            let shared = !word.is_empty() && bgsm_fields.contains(field) && bgem_fields.contains(field);
+            let ledgered = if shared {
+                ledger.contains(&format!("{word} `{field}"))
+            } else {
+                mentions(&ledger, &format!("`{field}")) || mentions(&ledger, &format!("`base.{field}"))
+            };
             if !read && !ledgered {
                 unlisted.push(format!("{name}::{field}"));
             }
