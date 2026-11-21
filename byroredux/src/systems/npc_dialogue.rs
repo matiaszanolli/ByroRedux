@@ -734,6 +734,33 @@ fn npc_dialogue_goodbye_close_check(world: &World) {
     }
 }
 
+/// INFO FormID → owning `DIAL` FormID for the loaded index, built on first use and rebuilt when the
+/// index changes. Keyed by a `Weak` compared with `Weak::ptr_eq`, so a later index cannot reuse a
+/// freed one's address (#7114). `NOT_SAVED_BY_DESIGN`: derived from the records.
+#[derive(Default)]
+pub(crate) struct FollowUpTopics(
+    std::sync::Mutex<Option<(std::sync::Weak<byroredux_plugin::esm::records::EsmIndex>, std::collections::HashMap<u32, u32>)>>,
+);
+
+impl byroredux_core::ecs::Resource for FollowUpTopics {}
+
+/// The topic owning INFO `info` in `index`, from the [`FollowUpTopics`] map.
+fn follow_up_topic(world: &World, index: &std::sync::Arc<byroredux_plugin::esm::records::EsmIndex>, info: u32) -> Option<u32> {
+    let cache = world.try_resource::<FollowUpTopics>()?;
+    let mut slot = cache.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let key = std::sync::Arc::downgrade(index);
+    if !slot.as_ref().is_some_and(|(built_for, _)| std::sync::Weak::ptr_eq(built_for, &key)) {
+        let mut topic_of = std::collections::HashMap::new();
+        for (topic, record) in &index.dialogues {
+            for entry in &record.infos {
+                topic_of.entry(entry.form_id).or_insert(*topic);
+            }
+        }
+        *slot = Some((key, topic_of));
+    }
+    slot.as_ref().and_then(|(_, topic_of)| topic_of.get(&info).copied())
+}
+
 /// The open line's follow-up (`TCFU`, [`InfoRecord::follow_ups`]): once the speaker has finished a
 /// line that names follow-up INFOs, they say the first one whose gates pass — its speaker, its
 /// conditions, its quest, Say Once — as a line of its own, through the same selection a topic
@@ -770,8 +797,16 @@ fn npc_dialogue_follow_up(world: &World) {
         return;
     };
     for follow_up in follow_ups {
-        // The topic that owns the follow-up INFO; the line is gated as a topic of one INFO.
-        let Some((record, info)) = index.dialogues.values().find_map(|record| record.infos.iter().find(|info| info.form_id == follow_up).map(|info| (record, info))) else {
+        // The topic that owns the follow-up INFO; the line is gated as a topic of one INFO. Found
+        // through the per-index INFO → topic map, not a scan of every topic's INFOs each frame (#7115).
+        let Some(topic_form) = follow_up_topic(world, &index, follow_up) else {
+            continue;
+        };
+        let Some((record, info)) = index
+            .dialogues
+            .get(&topic_form)
+            .and_then(|record| record.infos.iter().find(|info| info.form_id == follow_up).map(|info| (record, info)))
+        else {
             continue;
         };
         let single = DialRecord { form_id: record.form_id, editor_id: record.editor_id.clone(), quest_refs: record.quest_refs.clone(), infos: vec![info.clone()], ..Default::default() };

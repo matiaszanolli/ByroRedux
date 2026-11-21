@@ -460,6 +460,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_core::ecs::components::AnimatedAlpha>();
     // The routing graph cache and the Unroutable reasons `actor.where` reads.
     world.init_resource::<crate::cell_loader::relocated::TravelIndex>();
+    world.init_resource::<crate::systems::npc_dialogue::FollowUpTopics>();
     world.init_resource::<crate::cell_loader::relocated::TravelReports>();
 
     // M42.5 — pre-register the Follow marker + runtime-state storages so
