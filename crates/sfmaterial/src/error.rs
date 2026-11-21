@@ -155,6 +155,11 @@ pub enum Error {
     )]
     NoKeyedObjects { rows: usize },
 
+    // #7174 — a DBFileIndex whose Components table is empty (or absent) with no instances after
+    // it passes the row/instance join at 0 == 0, yet describes no component of any material.
+    #[error("the DBFileIndex has no Components rows — no material's components can be resolved")]
+    NoComponentRows,
+
     #[error(
         "DBFileIndex instance carried as a {kind:?} chunk — only OBJT/USER are supported; \
          reading a diff payload in offset order would misparse every field"

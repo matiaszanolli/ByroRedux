@@ -166,6 +166,9 @@ pub struct MaterialIndex {
     /// (Enabled, Settings.EmissiveTint rgb, Settings.LuminousEmittance).
     emissive: EmissiveCaptureMap,
     translucency: std::collections::HashMap<u32, (Option<bool>, Option<f32>)>,
+    /// #7174 — `Objects` rows whose `PersistentID` key an earlier row already took (the later
+    /// row wins). Zero on the base CDB (500,403 rows, 500,403 keys, measured 2026-11-21).
+    key_collisions: usize,
 }
 
 /// What [`MaterialIndex::parent_graph_defects`] found in the `Parent` graph.
@@ -300,6 +303,11 @@ impl MaterialIndex {
                 instances,
             });
         }
+        // #7174 — no rows and no instances agree (0 == 0), but such an index describes no
+        // component of any object: every lookup would resolve to nothing, with no error.
+        if idx.rows.is_empty() {
+            return Err(Error::NoComponentRows);
+        }
         let defects = idx.parent_graph_defects();
         if defects.cycles > 0 || defects.over_deep > 0 {
             log::warn!(
@@ -387,6 +395,11 @@ impl MaterialIndex {
     /// texture sets are keyed too).
     pub fn material_count(&self) -> usize {
         self.objects_by_key.len()
+    }
+
+    /// `Objects` rows whose key an earlier row already took, warned at build (#7174).
+    pub fn key_collisions(&self) -> usize {
+        self.key_collisions
     }
 
     /// Resolve one material path against this index, following the
@@ -842,17 +855,23 @@ fn stream_db_file_index(state: &mut State<'_>, idx: &mut MaterialIndex) -> Resul
                     };
                     match pid {
                         Some(key) => {
-                            idx.objects_by_key.insert(key, dbid);
+                            // #7174 — last row wins, as before, but counted: rows that all
+                            // drift onto one key used to pass with one surviving key, silently.
+                            if idx.objects_by_key.insert(key, dbid).is_some() {
+                                idx.key_collisions += 1;
+                            }
                         }
                         None => pid_misses += 1,
                     }
                 })?;
-                if dbid_misses + parent_misses + pid_misses > 0 {
+                let collisions = idx.key_collisions;
+                if dbid_misses + parent_misses + pid_misses + collisions > 0 {
                     log::warn!(
                         "sfmaterial: Objects table decode degraded — {dbid_misses} row(s) \
                          dropped (no keyable DBID), {parent_misses} Parent edge(s) dropped \
                          (shape drift from {{ Value: u32 }}?), {pid_misses} PersistentID \
-                         key(s) dropped (shape drift from {{ Dir: u32, Ext: u32 }}?)"
+                         key(s) dropped (shape drift from {{ Dir: u32, Ext: u32 }}?), \
+                         {collisions} row(s) whose key an earlier row took (the later wins)"
                     );
                 }
                 objects_rows = dbid_misses + keyable_rows;
@@ -1759,6 +1778,30 @@ mod tests {
             other => panic!("expected AtInstance, got {other:?}"),
         }
         assert!(err.to_string().starts_with("CDB stream instance 1 (BSMaterial::LayerID): "), "{err}");
+    }
+
+    /// #7174 — an `Objects` row whose key an earlier row took is counted (the later still
+    /// wins), and an index with no component rows and no instances after it is refused instead
+    /// of passing the row/instance join at 0 == 0.
+    #[test]
+    fn colliding_keys_are_counted_and_an_index_without_component_rows_is_refused() {
+        let (base, dbfile) = mutable_chunks();
+        assert_eq!(MaterialIndex::build(&assemble_synthetic_cdb(&base)).unwrap().key_collisions(), 0);
+        let mut chunks = base.clone();
+        let objects = &mut chunks[dbfile + 1].1;
+        assert_eq!(i32::from_le_bytes(objects[4..8].try_into().unwrap()), 1, "one Objects row");
+        let row = objects[8..].to_vec();
+        objects.extend_from_slice(&row);
+        objects[4..8].copy_from_slice(&2i32.to_le_bytes());
+        let index = MaterialIndex::build(&assemble_synthetic_cdb(&chunks)).expect("a duplicated row still builds");
+        assert_eq!((index.material_count(), index.key_collisions()), (1, 1));
+        // Components emptied, and the instances after the index removed with them.
+        let mut chunks = base.clone();
+        chunks[dbfile + 2].1.truncate(4);
+        chunks[dbfile + 2].1.extend_from_slice(&0i32.to_le_bytes());
+        chunks.truncate(dbfile + 5);
+        let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks)).expect_err("no component rows");
+        assert!(matches!(err, Error::NoComponentRows), "expected NoComponentRows, got {err:?}");
     }
 
     /// #7161 — an instance whose class reference is outside the class table
