@@ -141,6 +141,10 @@ const BIK1_INDEX_ENTRY_LEN: usize = 4;
 
 /// Measure `path` from its container header alone: nothing of the picture is read.
 pub fn probe(path: &Path) -> Result<MovieInfo, VideoError> {
+    guard_open(path, || probe_unguarded(path))
+}
+
+fn probe_unguarded(path: &Path) -> Result<MovieInfo, VideoError> {
     let magic = magic(path)?;
     if &magic[..3] == b"KB2" {
         return bink2_container(path, &magic).map(|file| describe_bink2(&file));
@@ -456,14 +460,37 @@ fn guard_decoder(name: &str, tx: &SyncSender<DecodedFrame>, decode: impl FnOnce(
     let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(decode)) else {
         return;
     };
-    let detail = payload
+    let reason = format!("{name}: the decoder panicked: {}", panic_message(&*payload));
+    log::warn!("video: {reason}");
+    let _ = tx.send(Err(reason));
+}
+
+/// #7128 — the open path runs on the caller's thread (the engine's frame loop): the container
+/// parse, the decoder's setup and the whole soundtrack decode. A panic in any of them ends the
+/// request as [`VideoError::Decode`] with a reason, as [`guard_decoder`] ends a reader thread's, instead
+/// of unwinding into the engine. [`Movie::open`] and [`probe`] run their bodies through it.
+fn guard_open<T>(path: &Path, open: impl FnOnce() -> Result<T, VideoError>) -> Result<T, VideoError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(open)).unwrap_or_else(|payload| {
+        let reason = format!("{}: the decoder panicked while opening: {}", movie_name(path), panic_message(&*payload));
+        log::warn!("video: {reason}");
+        Err(VideoError::Decode(reason))
+    })
+}
+
+/// A panic's message, when it carries one.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
         .downcast_ref::<&str>()
         .map(|message| (*message).to_owned())
         .or_else(|| payload.downcast_ref::<String>().cloned())
-        .unwrap_or_else(|| "no message".to_owned());
-    let reason = format!("{name}: the decoder panicked: {detail}");
-    log::warn!("video: {reason}");
-    let _ = tx.send(Err(reason));
+        .unwrap_or_else(|| "no message".to_owned())
+}
+
+/// Remove a soundtrack decoded for a movie that then failed to start, so its temp WAV is not left.
+fn discard_wav(audio: &Option<PathBuf>) {
+    if let Some(wav) = audio {
+        let _ = std::fs::remove_file(wav);
+    }
 }
 
 /// Start a movie's reader thread, the one place one is spawned. `decode` runs under
@@ -516,6 +543,10 @@ impl Movie {
     /// Start decoding `path` into `size` RGBA frames: fitted inside it with black bars when
     /// `letterbox`, stretched to fill it otherwise. Blocks while the audio track is decoded.
     pub fn open(path: &Path, size: (u32, u32), letterbox: bool) -> Result<Self, VideoError> {
+        guard_open(path, || Self::open_unguarded(path, size, letterbox))
+    }
+
+    fn open_unguarded(path: &Path, size: (u32, u32), letterbox: bool) -> Result<Self, VideoError> {
         let magic = magic(path)?;
         if &magic[..3] == b"KB2" {
             return Self::open_bink2(path, &magic, size, letterbox);
@@ -551,7 +582,8 @@ impl Movie {
                     return;
                 }
             }
-        })?;
+        })
+        .inspect_err(|_| discard_wav(&audio))?;
         Ok(Self::streaming(info, (width, height), rx, Some(reader), audio))
     }
 
@@ -585,7 +617,8 @@ impl Movie {
                     return;
                 }
             }
-        })?;
+        })
+        .inspect_err(|_| discard_wav(&audio))?;
         Ok(Self::streaming(info, (width, height), rx, Some(reader), audio))
     }
 
@@ -793,6 +826,35 @@ mod tests {
         let mut movie = Movie::streaming(info(10.0), (2, 2), rx, Some(reader), None);
         assert_eq!(movie.decode_to_end(), 1, "the frame before the panic was decoded");
         assert_eq!(movie.failure(), Some("x.bk2: the decoder panicked: slice 3 out of range"));
+    }
+
+    /// #7128 — a panic on the open path (the caller's thread) is a `Decode` error naming the movie,
+    /// not an unwind into the engine; what the body returns passes through untouched.
+    #[test]
+    fn a_panic_while_opening_is_a_decode_error() {
+        let path = Path::new("/movies/x.bik");
+        let opened: Result<u32, VideoError> = guard_open(path, || panic!("track table out of range"));
+        assert!(
+            matches!(&opened, Err(VideoError::Decode(reason)) if reason == "x.bik: the decoder panicked while opening: track table out of range"),
+            "{opened:?}"
+        );
+        assert!(matches!(guard_open(path, || Ok(7)), Ok(7)));
+        assert!(matches!(guard_open::<()>(path, || Err(VideoError::Unreadable("no".into()))), Err(VideoError::Unreadable(_))));
+    }
+
+    /// #7128 — both public entry points run their whole body through `guard_open`, so nothing they
+    /// call (container parse, decoder setup, soundtrack decode) runs outside it: the statement after
+    /// each signature is the guard. The signatures are split so this test's own text cannot match
+    /// them (#5469); each is found once, in production code.
+    #[test]
+    fn the_open_path_runs_under_the_open_guard() {
+        let src = include_str!("lib.rs");
+        for entry in [concat!("pub fn ", "probe(path: &Path)"), concat!("pub fn ", "open(path: &Path,")] {
+            assert_eq!(src.matches(entry).count(), 1, "{entry} is defined once");
+            let start = src.find(entry).unwrap();
+            let first_statement = src[start..].lines().nth(1).unwrap_or("").trim();
+            assert!(first_statement.starts_with("guard_open(path, || "), "{entry} must run its body through guard_open: {first_statement}");
+        }
     }
 
     /// A solid `w`×`h` RGBA picture.
