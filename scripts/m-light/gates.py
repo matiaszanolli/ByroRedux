@@ -473,6 +473,31 @@ def gate_materials(engine: Engine, store: ReferenceStore, ctx: Context, spp: int
     return rows
 
 
+def gate_materials_specular(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
+    """A15's specular rows (RLT-REF-008, RLT-REF-014; Phase 4 entry): each
+    Disney-branch dielectric and conductor plane at three views, engine
+    multiple-scattering compensation off (V13). The ratio is the row's
+    per-roughness expected difference (the Smith remap, the Burley diffuse
+    version), recorded, not held to 1."""
+    rows = []
+    flags = hex(DBG_DISABLE_MULTISCATTER)
+    for view in (0, 1, 2):
+        export = engine.out / "scenes" / f"materials-spec-v{view}"
+        ea = engine.capture(f"materials_spec_v{view}_direct", "materials-spec", "direct_only", 0, ctx.tier,
+                            export_dir=export, reference_view=view, debug_flags=flags)
+        eb = engine.capture(f"materials_spec_v{view}_direct", "materials-spec", "direct_only", 1, ctx.tier,
+                            reference_view=view, debug_flags=flags)
+        ra, key = store.render(export, "direct", spp, 0)
+        rb, _ = store.render(export, "direct", spp, 1)
+        masks = region_masks(export)
+        ea, eb = load_exr(ea), load_exr(eb)
+        for name in sorted(n for n in masks if n.startswith("mat_spec_")):
+            row = unit_ratio_row("A15", f"materials-spec-v{view}", name, ea, eb, ra, rb, masks[name])
+            row.threshold, row.passed = "recorded difference (report)", "report"
+            rows.append((row, key))
+    return rows
+
+
 def truncate_mantissa(x: np.ndarray, bits: int) -> np.ndarray:
     """Round toward zero to a float with `bits` mantissa bits."""
     raw = np.asarray(x, dtype=np.float32).view(np.uint32)
@@ -867,6 +892,7 @@ PENUMBRA_RUNGS = ("penumbra", "penumbra-sun")
 SUN_PENUMBRA_REFERENCE_SPP = 16384
 DBG_DISABLE_DIRECT_SHADOWS = 0x8000000  # crates/renderer/src/shader_constants_data.rs
 DBG_DISABLE_SVGF = 0x20  # RLT-REF-018, same file
+DBG_DISABLE_MULTISCATTER = 0x2000  # RLT-REF-008 / V13: Mitsuba's rough BSDFs model no multiple scattering
 PENUMBRA_MIN_PX = 10  # RLT-SHD-001: the reference penumbra spans at least 10 px
 
 
@@ -1330,10 +1356,13 @@ def gate_sky_ibl(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
         # Specular probes: `direct_only` holds the environment specular alone
         # (no directional, no emitter). Lambertian: `indirect_only` x albedo 1.
         mode = "indirect_only" if view == 10 else "direct_only"
+        # RLT-REF-008: specular energy is compared with the engine's
+        # multiple-scattering compensation off (V13).
+        flags = "0" if view == 10 else hex(DBG_DISABLE_MULTISCATTER)
         ea = engine.capture(f"sky_probe_v{view}", "sky-probe", mode, 0, ctx.tier, reference_view=view,
-                            export_dir=export, extra=native)
+                            export_dir=export, extra=native, debug_flags=flags)
         eb = engine.capture(f"sky_probe_v{view}", "sky-probe", mode, 1, ctx.tier, reference_view=view,
-                            extra=native)
+                            extra=native, debug_flags=flags)
         shutil.copyfile(env, export / SKY_ENV_FILE)
         ra, key = store.render(export, "direct", spp, 0)
         rb, _ = store.render(export, "direct", spp, 1)
@@ -1893,6 +1922,8 @@ def main() -> int:
     if "A15" in gates:
         rows += gate_calibration(engine, store, ctx, args.spp)
         rows += gate_materials(engine, store, ctx, args.spp)
+    if "A15-SPEC" in gates:
+        rows += gate_materials_specular(engine, store, ctx, args.spp)
     if "A16" in gates:
         rows += gate_closure(engine, store, ctx, args.spp)
     if "A7" in gates:

@@ -116,6 +116,11 @@ pub(crate) enum ReferenceRung {
     /// The reference lights it with the sun as an emitter and the disc-free
     /// environment (RLT-REF-012), so the sun's energy is counted once there.
     SkySunPlane,
+    /// RLT-REF-008 / RLT-REF-014's specular rows, validated at Phase 4's
+    /// entry: the material rung's layout with ten planes, a Disney-branch
+    /// dielectric (ρ 0.5) and a conductor (ρ 0.95) at each of
+    /// [`SKY_PROBE_ROUGHNESS`], under one emitter at the same three views.
+    MaterialsSpecular,
 }
 
 /// RLT-REF-021: the L5 sweep's five roughness values (the showcase's
@@ -241,6 +246,7 @@ impl ReferenceRung {
             Self::SkyEnvironment => "sky-env",
             Self::SkyProbe => "sky-probe",
             Self::SkySunPlane => "sky-sun-plane",
+            Self::MaterialsSpecular => "materials-spec",
         }
     }
 }
@@ -262,6 +268,7 @@ const RUNGS: &[ReferenceRung] = &[
     ReferenceRung::SkyEnvironment,
     ReferenceRung::SkyProbe,
     ReferenceRung::SkySunPlane,
+    ReferenceRung::MaterialsSpecular,
 ];
 
 /// Penumbra rungs: plate half-extent and height above the floor.
@@ -931,6 +938,27 @@ pub(crate) fn setup_reference_scene(
             );
             spawn_reference_emitter(world, dir * distance * M, 2.0, "nm_emitter");
             (Vec3::new(0.0, 1.2 * M, 1.1 * M), Vec3::ZERO)
+        }
+        ReferenceRung::MaterialsSpecular => {
+            let floor = builder.box_mesh([3.0 * M, BOX_WALL_T, 2.0 * M]);
+            spawn_object(world, floor, neutral, Vec3::new(0.0, -BOX_WALL_T, 0.0), Quat::IDENTITY,
+                lambert([0.0; 3]), "mat_floor_black");
+            let plane = builder.box_mesh([0.3 * M, 0.005 * M, 0.3 * M]);
+            for (i, &roughness) in SKY_PROBE_ROUGHNESS.iter().enumerate() {
+                let x = (i as f32 - 2.0) * 0.8 * M;
+                let tag = (roughness * 100.0).round() as u32;
+                spawn_object(world, plane, neutral, Vec3::new(x, 0.01 * M, -0.4 * M), Quat::IDENTITY,
+                    pbr_bsdf([0.5; 3], 0.0, roughness), &format!("mat_spec_dielectric_{tag:03}"));
+                spawn_object(world, plane, neutral, Vec3::new(x, 0.01 * M, 0.4 * M), Quat::IDENTITY,
+                    pbr_bsdf([0.95; 3], 1.0, roughness), &format!("mat_spec_conductor_{tag:03}"));
+            }
+            spawn_reference_emitter(world, Vec3::new(0.0, 1.5 * M, 0.3 * M), 2.0, "mat_emitter");
+            let (height, back) = match view {
+                0 => (3.2 * M, 1.2 * M),
+                1 => (2.0 * M, 3.0 * M),
+                _ => (1.0 * M, 3.6 * M),
+            };
+            (Vec3::new(0.0, height, back), Vec3::ZERO)
         }
         ReferenceRung::Materials => {
             // Planes 0.6 m square, 0.8 m apart, 1 cm above a black floor

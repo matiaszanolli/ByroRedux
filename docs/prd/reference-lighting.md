@@ -1,6 +1,6 @@
 # Reference-Quality Lighting — Product Requirements
 
-**Status**: ACTIVE (2026-11-20). Revision 43. The change history is in
+**Status**: ACTIVE (2026-11-21). Revision 44. The change history is in
 §12. Every decision in §10 is decided and every Phase 0 verify item is
 closed or filed as an issue.
 
@@ -877,6 +877,21 @@ reach.
   as an emitter, environment without the disc). At HEAD on 2026-11-01 the
   disc is baked into the probe while the directional light also carries
   the sun (T7), so the sun's energy reaches the plane twice.
+- **RLT-IBL-011.** The light loop's specular lobe MUST be evaluated in the
+  primary diffuse lobe's convention, as RLT-GI-011 does at path hits: the
+  diffuse response is the non-/π `diffuseBrdf = kD * albedo` and the
+  specular is the physically normalised D·G·F ⁄ (4·NdotV·NdotL)
+  (`include/lighting.glsl`), so under emitters scaled by *k*<sub>exp</sub>
+  = π a highlight reads 1/π of the reference's against a diffuse that
+  matches. On the `materials-spec` rung (A15) every conductor plane MUST
+  then read engine ÷ reference within the mapping table's recorded
+  differences (the Smith remap) at each roughness and view. At HEAD on
+  2026-11-20 the conductors read 0.31 at roughness 0.26–0.98 on all three
+  views while the diffuse-dominated dielectrics read 0.98–1.00 (rev 44);
+  environment specular is in physical units on both sides and is not
+  affected (A6 near-mirror 0.993). Added at Phase 4's entry by owner
+  decision (2026-11-21); it brightens every point- and sun-light highlight
+  on every title, so it ships with its own change declaration, A11 and A13.
 
 ### 5.5 Multi-bounce diffuse GI (`RLT-GI`)
 
@@ -1152,6 +1167,7 @@ complete while it is unowned, and no other phase waits for it.
 | 8 | — | Bounce light at GI hits in the primary lobe's Lambert convention, a factor of π above the pre-Phase-2 walk (RLT-GI-011) | — | Bounce-lit areas on every title read brighter than before Phase 2 → RLT-GI-003 holds the result to the reference; A11 under the Phase 2 declaration |
 | 9 | — | Shadow-ray visibility cosine-weighted over the emitter disk on every light (RLT-SHD-012) | — | Small local brightening or darkening in partly occluded pixels on every title (rev 31) → A11 under a change declaration committed before the code (RLT-CNT-002), A13 |
 | 10 | — | On-screen sun shadow beyond the traced fade from a screen-space term (RLT-CON-004, Q4) | — | Off-screen casters cast nothing there, and receivers past `SHADOW_FADE_START` darken where they were unshadowed → the CON-004 gate's off-screen control (A19), A11, A13 |
+| 11 | — | Light-loop specular in the non-/π diffuse convention, π × today's highlights (RLT-IBL-011) | — | Every point- and sun-light highlight on every title brightens about π× → the change declaration (RLT-CNT-002), A11, A13, and RLT-IBL-008's material flags for over-glossy translations |
 
 ---
 
@@ -1210,7 +1226,7 @@ scenarios need the user's own installed data; nothing is checked in.
 | A12 | Portal-sky escape | report | new script `docs/smoke-tests/m-light-portal-sky.sh` (an interior with Show Sky, `render.debug indirect_only` at a window) | FNV or Skyrim SE | RLT-IBL-006 |
 | A13 | Cost and settled tier | gate | benchmark-scene refresh per ROADMAP methodology | benchmark scenes' games | RLT-PERF-003…006 |
 | A14 | Moving blocker | self-consistency gate (temporal error) | `scripts/m-light-gates.sh --gates A14` (`renderer-stepped`, `--bench-camera static`, the blocker on the bench clock; excess over the held control from frame 80, both seeds) | none | RLT-SHD-010, RLT-SHD-011 |
-| A15 | Calibration and materials | gate | test `cornell_calibration_and_material_rungs` in `byroredux/tests/m_light_gates.rs` (runs `scripts/m-light-gates.sh --gates A15`): calibration ratio 1 per emitter kind over the plane and a 3 × 3 constancy grid, each kind from the phase that first uses it; the Lambertian flat planes at three view angles from Phase 1a, the specular rows and the normal-mapped plane from Phases 4 and 3 | none + reference | RLT-REF-010, RLT-REF-014 |
+| A15 | Calibration and materials | gate | test `cornell_calibration_and_material_rungs` in `byroredux/tests/m_light_gates.rs` (runs `scripts/m-light-gates.sh --gates A15`): calibration ratio 1 per emitter kind over the plane and a 3 × 3 constancy grid, each kind from the phase that first uses it; the Lambertian flat planes at three view angles from Phase 1a, the normal-mapped plane from Phase 3; the specular rows (`--gates A15-SPEC`, the `materials-spec` rung, multiple-scattering compensation off) from Phase 4 | none + reference | RLT-REF-008, RLT-REF-010, RLT-REF-014, RLT-IBL-011 |
 | A16 | Closure | gate | test `cornell_components_sum_to_total` in `byroredux/tests/m_light_gates.rs` (`--gates A16`): SVGF bypassed (`DBG_DISABLE_SVGF`), `final` unjittered (`--rt-test-no-jitter`) and read before TAA; SVGF's energy change and the B10G11R11 storage cost reported | none + reference | RLT-REF-011, RLT-REF-018, RLT-REF-020 |
 | A17 | Sun counted once | gate | new test `cornell_sun_energy_counted_once` | none + reference | RLT-IBL-010, RLT-REF-012, RLT-REF-019 |
 | A18 | Apparatus cost | report | `scripts/m-light-gates.sh` prints its wall-clock at the end of every run; `--cold` empties the reference cache first. The temporal gates' parked engine captures join when Phase 3 adds them | none | RLT-REF-015, RLT-REF-016 |
@@ -1374,7 +1390,7 @@ sun-free analytic environment export (RLT-REF-012); the sky-only switch
 and the probe-only rung (RLT-REF-019, RLT-REF-021); and the environment
 calibration rung (RLT-REF-010). Entry baseline: A6 and A17. Then
 RLT-IBL-008's flagged classes resolved first, then RLT-IBL-001…004,
-RLT-IBL-010 and RLT-IBL-006. Exit: A6 and A17 pass, A9 is re-published
+RLT-IBL-010, RLT-IBL-011 (added at the entry, rev 44) and RLT-IBL-006. Exit: A6 and A17 pass, A9 is re-published
 with no unresolved flag, A12 passes on one Wave 1 title, A11 passes under
 the phase's change declaration, and A13 shows the phase within its
 ceiling.
@@ -1678,3 +1694,4 @@ Each needs the project owner. The recommendation is the first option.
 | 41 | 2026-11-20 | Phase 3 exit (#6603), [evidence](../audits/MLIGHT_phase3_exit_2026-11-20.md). A11: bisects attribute the full-phase drift to four outside changes — #6657's EntityId-seeded light animation (fixed by #7091, which seeds it from the light's world position), #7034 (first-load normal-map alpha, Prospector −13 %), #6775 (the bench pose as yaw / pitch, a sub-pixel Cornell shift) and #6725's fog power (VLM-HF-001, Prospector −4.5 %). The Phase 3 entry anchors are re-captured from the entry with those four applied; against them, under the Phase 3 declarations, Cornell 9, Prospector 84, Whiterun 29, MedTek 46 and Dugout 145 tiles stay outside, in shapes no Phase 3 mechanism makes (an NPC pose, fixture spots, uniform ±1–2 %), within the ~690 outside commits. A13: PAF-012 (no blocker search at ray quality tier 0, [design](../engine/penumbra-aware-shadow-filter.md#34-filtering)) returns the shadow filter to its entry cost where Prospector and Dugout settle (+0.240 → +0.009 ms, +0.311 → +0.008 ms); by bracket Phase 3 adds at most +0.25 ms (Whiterun FSR, ceiling 0.48), every settled tier holds, and the wall-time excess in four cases is outside `main_render` growth and run-to-run noise (1.3 ms between identical builds). Owner: A11 residuals and outside A13 growth accepted under RLT-OPS-004, A13 judged by the brackets the phase adds (Q8), #6725 recorded with #7034 and #6775 as intended outside changes; Phase 3 closed | owner: approved |
 | 42 | 2026-11-20 | Phase 4 entry, steps 1–2 for A6 (#6604), [baseline](../audits/MLIGHT_phase4_entry_A6_2026-11-20.tsv). Apparatus: the `sky-env` rung (RLT-REF-012 / RLT-EXP-003: six 90° views at 512² of the sky without its disc, glow kept, resampled by the gate runner into the lat-long `sky_env.exr` the exporter's `envmap` reads — Mitsuba 3.9.1's lookup measured, u = atan2(x, −z) / 2π, v = acos(y) / π, +Y up); the `sky-probe` rung (RLT-REF-021: one probe, nothing else, views 0–10 for the dielectric and conductor L5 sweeps and a Lambertian probe); the sky-only switch (RLT-REF-019, `ReferenceSkyOnly`); `--gates A6`. Apparatus findings: the player's FOV setting overwrote a harness camera's declared FOV (fixed), and exterior reference rungs carried the weather table's fog medium and the haze floor despite RLT-REF-009 (fixed for the sky rungs; the other exterior rungs filed as #7148). A6 at HEAD, tier 3, engine ÷ reference: dielectrics 0 at every roughness (RLT-IBL-001, T9); conductors 0.993 / 0.759 / 0.570 at r 0.02 / 0.26 / 0.50, the `(1 − roughness)` heuristic (RLT-IBL-003), and 0 at 0.74 and 0.98 (RLT-IBL-002); Lambertian sky diffuse 1.010. Every row reports. Still owed at this entry: A17, the specular rows of the RLT-REF-008 mapping table and their RLT-REF-014 validation, the owner's L3 budgets (step 3) and step 4 | — |
 | 43 | 2026-11-20 | Phase 4 entry, steps 1–2 for A17 (#6604), [baseline](../audits/MLIGHT_phase4_entry_A17_2026-11-20.tsv): the `sky-sun-plane` rung (an unoccluded Lambertian plane under the sky rungs' sky with the sun on) and `--gates A17` (linear `final`, SVGF bypassed, no jitter, against the reference with the sun as an emitter and the disc-free environment). At HEAD, tier 3, engine ÷ reference is 1.0022 with a relative error mean of 0.021 and p95 of 0.052: with the physical sun radius (RLT-SHD-007) the disc the probe bakes adds about 0.2 % to the plane, so RLT-IBL-010's change to content is expected to be small. Report-only until the L3 budgets | — |
+| 44 | 2026-11-21 | Phase 4 entry, RLT-REF-008 / RLT-REF-014 specular rows (#6604), [evidence](../audits/MLIGHT_phase4_entry_A15spec_2026-11-20.tsv): the `materials-spec` rung (Disney-branch dielectric ρ 0.5 and conductor ρ 0.95 planes at the five L5 roughnesses, the material rung's three views) and `--gates A15-SPEC`, run with `DBG_DISABLE_MULTISCATTER` as V13 requires; A6's specular probes now run with the same bit (unchanged values). Dielectric planes read 0.978–0.999. Conductor planes read 0.31 at roughness 0.26–0.98 on every view (0.05–0.09 at 0.02, where the highlight is a sub-region spot): the light loop shades diffuse non-/π and specular physically normalised, so against emitters scaled by *k*<sub>exp</sub> = π every highlight is 1/π of the reference's. Owner (2026-11-21): a requirement, RLT-IBL-011, not a recorded difference; it ships as a Phase 4 mechanism with its own change declaration, A11 and A13 (§6 row 11) | owner: approved |
