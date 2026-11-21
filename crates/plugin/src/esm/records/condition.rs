@@ -623,7 +623,8 @@ pub fn param2_is_form_id(function_index: u32) -> bool {
 /// `Use Global` comparand (a GLOB FormID); remaps `param_1` only for the
 /// [`param1_is_form_id`] catalog. Null (`0`) FormIDs are left untouched — a
 /// remap would otherwise compose them onto the owning plugin's top byte and
-/// fabricate a non-null id. A `None` remap (single standalone plugin / unit
+/// fabricate a non-null id — and so are the all-ones parameter sentinels
+/// (`is_param_sentinel`). A `None` remap (single standalone plugin / unit
 /// tests) is identity.
 pub fn remap_condition_form_ids(cond: &mut Condition, remap: &Option<FormIdRemap>) {
     let Some(remap) = remap.as_ref() else {
@@ -636,12 +637,21 @@ pub fn remap_condition_form_ids(cond: &mut Condition, remap: &Option<FormIdRemap
         && fid != 0 {
             cond.comparand = ConditionValue::Global(remap.remap(fid));
         }
-    if cond.param_1 != 0 && param1_is_form_id(cond.function_index) {
+    if !is_param_sentinel(cond.param_1) && param1_is_form_id(cond.function_index) {
         cond.param_1 = remap.remap(cond.param_1);
     }
-    if cond.param_2 != 0 && param2_is_form_id(cond.function_index) {
+    if !is_param_sentinel(cond.param_2) && param2_is_form_id(cond.function_index) {
         cond.param_2 = remap.remap(cond.param_2);
     }
+}
+
+/// A FormID-typed CTDA parameter that names no form: null (`0`), or the
+/// all-ones sentinels `0xFFFF_FFFF` / `0xFFFF_FFFE`. Every `GetDistance`
+/// (fn 1) condition in `Starfield.esm` authors `0xFFFF_FFFE` there; a `0xFF`
+/// top byte is never a plugin's master index, so remapping it only logged a
+/// pass-through warning (175 per load, #7120) and returned it unchanged.
+fn is_param_sentinel(raw: u32) -> bool {
+    matches!(raw, 0 | 0xFFFF_FFFE | 0xFFFF_FFFF)
 }
 
 #[cfg(test)]
@@ -1033,6 +1043,18 @@ mod tests {
                 cond.param_1, 0x0200_0ABC,
                 "fn {function_index}: param_1 must be promoted to global space"
             );
+        }
+    }
+
+    /// #7120: Starfield authors `0xFFFF_FFFE` in every `GetDistance` (fn 1)
+    /// target; the all-ones sentinels pass through without a remap.
+    #[test]
+    fn remap_leaves_the_all_ones_param_sentinels_alone() {
+        for sentinel in [0xFFFF_FFFEu32, 0xFFFF_FFFF] {
+            let remap = FormIdRemap::regular(2, vec![0]);
+            let mut cond = Condition { function_index: 1, param_1: sentinel, ..Default::default() };
+            remap_condition_form_ids(&mut cond, &Some(remap));
+            assert_eq!(cond.param_1, sentinel);
         }
     }
 
