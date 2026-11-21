@@ -93,8 +93,9 @@ impl Decoder {
 
     /// One packet (its container-stated decoded size and data), appended to `out` as interleaved
     /// 16-bit samples. A8: the last packet of a stream states a size short of whole blocks; its last
-    /// block is decoded and only the stated samples are kept. On an error nothing is appended, and
-    /// the overlap carried into the next block is the refused one's: the track ends there.
+    /// block is decoded and only the stated samples are kept. On an error nothing is appended and
+    /// the decoder is as it was before the packet (#7173: `Overrun` used to leave the refused
+    /// block's overlap behind, unlike `BadSize`), so a caller may go on with the next packet.
     pub fn decode(&mut self, decoded_bytes: u32, data: &[u8], out: &mut Vec<i16>) -> Result<(), Error> {
         let per_block = 2 * self.channels * self.block_samples();
         let want = out.len() + decoded_bytes as usize / 2;
@@ -110,6 +111,8 @@ impl Decoder {
         }
         let mut r = Bits::new(data);
         let start = out.len();
+        // The overlap a refused packet must not change (#7173); one block's tail, a few KB.
+        let tail = self.tail.clone();
         for _ in 0..blocks {
             // A10: no block of the 236,690 packets in the installed corpus reads past its packet, so
             // one that does is cut or not this packet's; its samples (and the packet's) are dropped
@@ -117,6 +120,7 @@ impl Decoder {
             let bits_read = self.block(&mut r, out);
             if bits_read > data.len() * 8 {
                 out.truncate(start);
+                self.tail = tail;
                 return Err(Error::Overrun { bits_read, bits: data.len() * 8 });
             }
         }
@@ -200,6 +204,36 @@ impl Decoder {
 
 #[cfg(test)]
 mod tests {
+
+    /// #7173: a refused packet leaves the decoder as it was, so the packet after it decodes as if
+    /// the refused one had never been offered. (The overlap is all that carries between packets.)
+    #[test]
+    fn a_refused_packet_leaves_the_decoder_as_it_was() {
+        let mut seed = 0x2545_f491_u32;
+        let noise: Vec<u8> = (0..16_384)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                seed as u8
+            })
+            .collect();
+        let mut probe = Decoder::new(48_000, true, true).unwrap();
+        let per_block = (2 * probe.channels * probe.block_samples()) as u32;
+        let cut = vec![0u8; probe.min_block_bits().div_ceil(8)];
+        let next = |decoder: &mut Decoder| {
+            let mut out = Vec::new();
+            decoder.decode(per_block, &noise, &mut out).expect("a block of noise fits 16 KiB");
+            out
+        };
+        next(&mut probe);
+        let mut refused = Decoder::new(48_000, true, true).unwrap();
+        let mut clean = Decoder::new(48_000, true, true).unwrap();
+        next(&mut refused);
+        next(&mut clean);
+        assert!(matches!(refused.decode(per_block, &cut, &mut Vec::new()), Err(Error::Overrun { .. })));
+        assert_eq!(next(&mut refused), next(&mut clean), "the refused packet left no trace");
+    }
 
     /// #7163 (A10): a packet whose stated size passes the lower bound but whose blocks read past its
     /// data is refused, with nothing appended. All-zero bits code the shortest runs, so a zero packet
