@@ -475,6 +475,8 @@ impl VulkanContext {
         stats.first_sight_succeeded = f.first_sight_succeeded;
         stats.refits_attempted = f.refits_attempted;
         stats.refits_succeeded = f.refits_succeeded;
+        stats.dispatch_vertices = f.dispatch_vertices;
+        stats.refit_triangles = f.refit_triangles;
         // #2803 — host-side chain cost, same-frame (not fence-lagged
         // like the GPU brackets below).
         stats.cpu_skin_chain_ms = f.cpu_skin_chain_ns as f32 / 1.0e6;

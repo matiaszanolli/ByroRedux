@@ -802,6 +802,12 @@ pub struct SkinCoverageStats {
     pub refits_attempted: u32,
     /// Refits that returned `Ok` this frame.
     pub refits_succeeded: u32,
+    /// Vertices the skin compute pass dispatched this frame (skips
+    /// excluded): `gpu_skin_dispatch_ms` per vertex (#7150).
+    pub dispatch_vertices: u64,
+    /// Triangles the successful BLAS refits covered this frame:
+    /// `gpu_skin_blas_refit_ms` per triangle (#7150).
+    pub refit_triangles: u64,
     /// Sample of entity IDs currently in `failed_skin_slots`. Bounded
     /// snapshot (first ~16 entries) so the resource stays cheap to copy
     /// out of the renderer each frame; the full count is in

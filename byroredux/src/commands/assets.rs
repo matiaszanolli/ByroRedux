@@ -1202,6 +1202,17 @@ impl ConsoleCommand for SkinCoverageCommand {
             "  refits_succeeded       = {}",
             cov.refits_succeeded,
         ));
+        // #7150 — the work the two GPU brackets below measured, so each can
+        // be read as a rate. Same frame as the counters; the brackets are
+        // fence-lagged, so take rates from a steady scene, not one frame.
+        lines.push(format!(
+            "  dispatch_vertices      = {}  (skinned this frame)",
+            cov.dispatch_vertices,
+        ));
+        lines.push(format!(
+            "  refit_triangles        = {}  (BLAS-refit this frame)",
+            cov.refit_triangles,
+        ));
         // #2803 — CPU-side cost of driving the whole skinned chain
         // (dispatch + first-sight builds + refits + eviction). Same
         // frame as the counters above, unlike the fence-lagged GPU

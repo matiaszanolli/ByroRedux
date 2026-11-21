@@ -230,6 +230,13 @@ pub struct SkinCoverageFrame {
     pub first_sight_succeeded: u32,
     pub refits_attempted: u32,
     pub refits_succeeded: u32,
+    /// Vertices the skin compute pass actually dispatched this frame
+    /// (skipped entities excluded), so `gpu_skin_dispatch_ms` can be read as
+    /// a per-vertex rate (#7150).
+    pub dispatch_vertices: u64,
+    /// Triangles the BLAS refits recorded this frame cover, so
+    /// `gpu_skin_blas_refit_ms` can be read as a per-triangle rate (#7150).
+    pub refit_triangles: u64,
     /// Wall-clock nanoseconds `record_skinned_blas_refit` spent on the
     /// CPU this frame: the dispatch loop, the first-sight build batch,
     /// the refit loop, and the eviction drain/sweep that closes it.

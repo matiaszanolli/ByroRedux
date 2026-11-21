@@ -200,6 +200,38 @@ time, (d) the extra `main_render` with patches resident.
 refit alone ≤ 0.5 ms. **Otherwise** fall back to static patches (risk 1) or drop Phase 4 and
 keep parallax.
 
+### 8.1 Spike result: proxy measurement (#7150, 2026-11-21)
+Run as a proxy, not a throwaway build (decided with Matías): the engine already refits skinned
+actor BLASes every frame, and `skin.coverage` now reports the triangles refit and the vertices
+skinned beside the two GPU brackets. 4070 Ti, release, 20 samples per scene, stable to ±2 %.
+
+| scene | refits / frame | triangles | `gpu_skin_blas_refit_ms` | vertices | `gpu_skin_dispatch_ms` |
+|---|---|---|---|---|---|
+| FNV `GSProspectorSaloonInterior` | 18 | 23 751 | 0.219–0.229 | 14 730 | 0.008–0.010 |
+| Skyrim SE `WhiterunBanneredMare` | 11 | 8 249 | 0.131–0.135 | 6 170 | 0.005–0.009 |
+| same, a busier frame | 23 | 23 731 | 0.280–0.282 | 18 156 | 0.009–0.010 |
+
+**Refit is per-BLAS overhead first, triangles second.** The FNV and busy Skyrim rows have the
+same triangle count; five more refits cost 0.058 ms, so a refit carries **≈ 11.6 µs of fixed
+cost** (each refit self-emits the shared-scratch serialize barrier, `blas_skinned.rs`). What is
+left is **≈ 0.6 µs per 1 000 triangles** (~1.7 G tri/s), and it fits all three rows.
+
+Projected for the §3 defaults (24 patches × 8 192 triangles = 197 k):
+- (a) refit, 24 BLASes: 24 × 11.6 µs + 197 × 0.6 µs ≈ **0.40 ms**, under the 0.5 ms bar with
+  ~20 % margin. With all patches as geometries of **one** BLAS (one refit, one barrier):
+  ≈ **0.13 ms**.
+- (b) compute: the skin pass is ~6 µs fixed + ~0.25 ns/vertex, so 101 k vertices of
+  skinning-equivalent work cost ~0.03 ms. Displacement does ~15 height fetches per vertex
+  instead of 4 bone reads; at 2–5× the per-vertex cost that is **≈ 0.06–0.13 ms**.
+- (c)/(d) raster and the `main_render` delta: **not measured** by the proxy. There is no depth
+  prepass, so whether the base terrain under a patch is shaded twice depends on draw order.
+  Looking down, the patches cover most of the screen; this is the open number.
+
+**Verdict (for review):** go for stage 4.1. (a) + (b) ≈ 0.46–0.53 ms with 24 BLASes, or
+≈ 0.19–0.26 ms with one BLAS, which leaves 0.5–0.8 ms of the 1.0 ms total for raster. 4.1
+(raster only, no RT) is where (c)/(d) get measured; 4.2 should build the patches as one
+multi-geometry BLAS rather than 24.
+
 ## 9. Review decisions (Matías, 2026-11-21)
 1. **Upward-only displacement, base mesh kept (§3.3)**: accepted. No holes, no zero-mean
    relief.
