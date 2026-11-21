@@ -82,22 +82,6 @@ pub(crate) fn start_intent(has_location: bool, new_game_flag: bool, restoring_sa
     (pin, !pin && !restoring_save)
 }
 
-#[cfg(test)]
-mod start_intent_tests {
-    use super::start_intent;
-
-    /// #7187 — a named location pins; `--new-game` with a location is still a new game (the FNV
-    /// new-game gate's launch); no location is a new game; a restored save is neither.
-    #[test]
-    fn a_named_location_pins_unless_the_launch_is_a_new_game() {
-        assert_eq!(start_intent(true, false, false), (true, false), "--cell X");
-        assert_eq!(start_intent(true, true, false), (false, true), "--cell X --new-game");
-        assert_eq!(start_intent(false, false, false), (false, true), "no location");
-        assert_eq!(start_intent(false, true, false), (false, true), "--new-game, profile target");
-        assert_eq!(start_intent(false, false, true), (false, false), "--load");
-        assert_eq!(start_intent(true, false, true), (true, false), "--cell X --load");
-    }
-}
 
 pub(crate) fn cornell_sun_mode(args: &[String]) -> Option<bool> {
     let sun = args.iter().any(|a| a == "--cornell-sun");
@@ -1710,5 +1694,24 @@ mod spawn_orientation_tests {
             "the yaw/pitch pose must keep the horizon level (right.y = {})",
             composed_right.y
         );
+    }
+}
+
+#[cfg(test)]
+mod start_intent_tests {
+    // At the end of the file: `production_text_or_whole` cuts at the first test module, and the
+    // #5590 spawn-site scan reads this file's production text.
+    use super::start_intent;
+
+    /// #7187 — a named location pins; `--new-game` with a location is still a new game (the FNV
+    /// new-game gate's launch); no location is a new game; a restored save is neither.
+    #[test]
+    fn a_named_location_pins_unless_the_launch_is_a_new_game() {
+        assert_eq!(start_intent(true, false, false), (true, false), "--cell X");
+        assert_eq!(start_intent(true, true, false), (false, true), "--cell X --new-game");
+        assert_eq!(start_intent(false, false, false), (false, true), "no location");
+        assert_eq!(start_intent(false, true, false), (false, true), "--new-game, profile target");
+        assert_eq!(start_intent(false, false, true), (false, false), "--load");
+        assert_eq!(start_intent(true, false, true), (true, false), "--cell X --load");
     }
 }
