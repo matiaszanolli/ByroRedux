@@ -1005,15 +1005,21 @@ fn dedup_vmad_scripts(
 /// (the `synth_child.rs` callers); `mesh_instance.rs` passes the light
 /// child's own `Transform` (c1a99c25e). The animator restores this
 /// un-jittered local position each frame and the movement amplitude
-/// doesn't accumulate. Seeds `phase_offset_secs` from the
-/// entity id so a room full of identical candles doesn't flicker in
-/// lockstep — deterministic per session, scene-stable across cell
-/// reloads since EntityIds reset on cell unload.
+/// doesn't accumulate.
+///
+/// Seeds `phase_offset_secs` — and through it the flicker noise
+/// (`light_anim::flicker_intensity`) — from `seed_position`, the light's
+/// world-space position, so a room full of identical candles doesn't
+/// flicker in lockstep. The seed is a property of the placed light, not of
+/// spawn order: it used to be the `EntityId`, so any entity spawned earlier
+/// in boot (#6657's scratch weapon subject) re-seeded every flickering light
+/// and moved every lit scene's image (#7091, M-LIGHT A11).
 pub(crate) fn attach_light_flicker_if_needed(
     world: &mut World,
     entity: byroredux_core::ecs::EntityId,
     ld: &byroredux_plugin::esm::cell::LightData,
     base_translation: byroredux_core::math::Vec3,
+    seed_position: byroredux_core::math::Vec3,
     animation_flags: u32,
 ) {
     if animation_flags == 0 {
@@ -1038,11 +1044,11 @@ pub(crate) fn attach_light_flicker_if_needed(
     } else {
         0.25
     };
-    // EntityId-derived phase offset in [0, period). The wrap-around
+    // Position-derived phase offset in [0, period). The wrap-around
     // is automatic because the animator computes `phase = (t +
     // phase_offset) / period` mod 1. Cheap, deterministic, no RNG.
     let phase_offset_secs =
-        (entity.wrapping_mul(2654435761) as f32 / u32::MAX as f32) * period_secs;
+        (light_position_seed(seed_position) as f32 / u32::MAX as f32) * period_secs;
     world.insert(
         entity,
         LightFlicker {
@@ -1054,6 +1060,38 @@ pub(crate) fn attach_light_flicker_if_needed(
             phase_offset_secs,
         },
     );
+}
+
+/// A well-mixed `u32` from a light's world-space position: the per-light
+/// animation seed. Bit-exact positions give the same seed on every run and
+/// after any change to how many entities spawn first; two lights share a
+/// seed only if they share a position.
+fn light_position_seed(position: byroredux_core::math::Vec3) -> u32 {
+    let mut h = position.x.to_bits();
+    h = h.wrapping_mul(0x9E37_79B1) ^ position.y.to_bits();
+    h = h.wrapping_mul(0x85EB_CA77) ^ position.z.to_bits();
+    // murmur3 finaliser
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x85EB_CA6B);
+    h ^= h >> 13;
+    h = h.wrapping_mul(0xC2B2_AE35);
+    h ^ (h >> 16)
+}
+
+#[cfg(test)]
+mod light_position_seed_tests {
+    use super::light_position_seed;
+    use byroredux_core::math::Vec3;
+
+    #[test]
+    fn seed_depends_on_position_only() {
+        let a = Vec3::new(1024.0, -96.5, 12.25);
+        assert_eq!(light_position_seed(a), light_position_seed(a));
+        // Neighbouring candles (one unit apart on any axis) get distinct seeds.
+        for d in [Vec3::X, Vec3::Y, Vec3::Z] {
+            assert_ne!(light_position_seed(a), light_position_seed(a + d));
+        }
+    }
 }
 
 #[cfg(test)]
