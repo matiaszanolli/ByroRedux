@@ -841,6 +841,23 @@ fn npc_fo4_decodes_prps_pairs_and_dnam_baked_stats() {
     assert_eq!(n.perks, vec![(0x1_D245, 1), (0x1_D246, 3)]);
 }
 
+/// FO76 and Starfield `PRPS` entries carry a Curve Table FormID after the
+/// value (12 bytes, xEdit `wbObjectProperty` `wbFromVersion(152)`); the
+/// second entry must not start inside the first's curve word (#7119).
+#[test]
+fn npc_fo76_and_starfield_prps_entries_are_twelve_bytes() {
+    let mut prps = Vec::new();
+    for (avif, value, curve) in [(0x2A0u32, 7.0f32, 0u32), (0x2A6, 5.0, 0x008F_5882)] {
+        prps.extend_from_slice(&avif.to_le_bytes());
+        prps.extend_from_slice(&value.to_le_bytes());
+        prps.extend_from_slice(&curve.to_le_bytes());
+    }
+    for game in [GameKind::Fallout76, GameKind::Starfield] {
+        let n = parse_npc(0x611, &[sub(b"PRPS", &prps)], game, &None);
+        assert_eq!(n.actor_value_props, vec![(0x2A0, 7.0), (0x2A6, 5.0)], "{game:?}");
+    }
+}
+
 /// The FO4 AV-property arms are gated on `uses_actor_value_properties`
 /// (FO4+ only). An FNV NPC carrying a stray `DNAM` must NOT be read as
 /// FO4 calculated stats — FNV `NPC_` `DNAM` is a different layout, and

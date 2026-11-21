@@ -602,7 +602,7 @@ pub fn parse_npc(
             parse_npc_fo4_facemorph(&mut face, &mut fmri_forms, &mut fmrs_settings, sub, remap);
         }
         if captures_av_props {
-            parse_npc_actor_values(&mut record, sub, remap);
+            parse_npc_actor_values(&mut record, sub, game, remap);
         }
         if captures_perks {
             parse_npc_perks(&mut record, sub, remap);
@@ -1146,24 +1146,45 @@ fn parse_npc_fo4_facemorph(
     }
 }
 
+/// `PRPS` entry size on FO4: AVIF FormID + f32 value.
+const PRPS_ENTRY_LEN: usize = 8;
+/// `PRPS` entry size on FO76 and Starfield: the FO4 pair plus a Curve Table FormID.
+const PRPS_CURVE_ENTRY_LEN: usize = 12;
+
 /// FO4+ actor-value model — PRPS properties and baked DNAM derived stats.
 /// Only invoked when `game.uses_actor_value_properties()`; the former
 /// per-arm `captures_av_props` guard now lives at the [`parse_npc`] call
 /// site. Perks moved out to [`parse_npc_perks`] under #3158 — they need a
 /// wider gate than this one.
-fn parse_npc_actor_values(record: &mut NpcRecord, sub: &SubRecord, remap: &Option<FormIdRemap>) {
+fn parse_npc_actor_values(
+    record: &mut NpcRecord,
+    sub: &SubRecord,
+    game: GameKind,
+    remap: &Option<FormIdRemap>,
+) {
     match &sub.sub_type {
-        // PRPS "Properties": an array of (AVIF FormID, f32) pairs —
+        // PRPS "Properties": an array of (AVIF FormID, f32) entries —
         // SPECIAL plus any authored AV overrides. Already the
         // `ActorValues::from_pairs` shape, so the FO4 arm of
-        // `derive_npc_actor_values` returns them verbatim. 8 bytes per
-        // entry (u32 FormID + f32 value); `chunks_exact` drops a
-        // malformed trailing partial rather than panicking cell load.
+        // `derive_npc_actor_values` returns them verbatim. FO4 entries are
+        // 8 bytes (u32 FormID + f32 value); FO76 and Starfield append a
+        // Curve Table FormID (xEdit `wbObjectProperty`, `wbFromVersion(152)`,
+        // `wbDefinitionsFO76.pas:7002-7009` / `wbDefinitionsSF1.pas:5679-5684`;
+        // every vanilla `SeventySix.esm` / `Starfield.esm` payload is a
+        // multiple of 12), so they step 12 (#7119). The curve has no consumer
+        // and is not stored. A malformed trailing partial is dropped rather
+        // than panicking cell load.
         b"PRPS" => {
-            record.actor_value_props.reserve(sub.data.len() / 8);
-            for chunk in sub.data.as_chunks::<8>().0 {
-                let avif = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-                let value = f32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+            let stride = if matches!(game, GameKind::Fallout76 | GameKind::Starfield) {
+                PRPS_CURVE_ENTRY_LEN
+            } else {
+                PRPS_ENTRY_LEN
+            };
+            record.actor_value_props.reserve(sub.data.len() / stride);
+            for entry in sub.data.chunks_exact(stride) {
+                let mut r = SubReader::new(entry);
+                let avif = r.u32_or_default();
+                let value = r.f32_or_default();
                 record
                     .actor_value_props
                     .push((remap_fid(avif, remap), value));
