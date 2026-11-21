@@ -893,10 +893,15 @@ impl MagicEffectAccumulator {
 
 /// An Oblivion record's complete effect chain with each effect's `EFIT` range (0 self, 1 touch, 2 target):
 /// `None` when an `EFID` has no `EFIT` (an incomplete chain is never partly used) or the chain is empty.
-pub(crate) fn oblivion_effect_chain(subs: &[SubRecord]) -> Option<Vec<(MagicEffectItem, u32)>> {
+/// `remap` is the owning plugin's: a script effect's `SCIT` script FormID is a cross-reference and must reach
+/// global load-order space like the `SPEL` / `ENCH` chains' (#7097).
+pub(crate) fn oblivion_effect_chain(
+    subs: &[SubRecord],
+    remap: &Option<FormIdRemap>,
+) -> Option<Vec<(MagicEffectItem, u32)>> {
     let mut chain = MagicEffectAccumulator::for_game(GameKind::Oblivion);
     for sub in subs {
-        chain.feed(sub, &None);
+        chain.feed(sub, remap);
     }
     let declared = subs.iter().filter(|sub| &sub.sub_type == b"EFID").count();
     (chain.pending_efid == 0 && declared == chain.items.len() && !chain.items.is_empty())

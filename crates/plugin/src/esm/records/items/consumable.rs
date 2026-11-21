@@ -29,7 +29,7 @@ pub(super) fn parse_effects(
     if game == GameKind::Oblivion {
         // Oblivion's effect codes and 24-byte `EFIT` are decoded once, for spells and ingestibles alike. An
         // ingestible has no effect conditions there.
-        return super::super::misc::oblivion_effect_chain(subs).map(|chain| {
+        return super::super::misc::oblivion_effect_chain(subs, remap).map(|chain| {
             chain
                 .into_iter()
                 .map(|(effect, range)| ConsumableEffect {
@@ -361,5 +361,23 @@ mod tests {
         assert!(matches!(item.kind, ItemKind::Aid { simple_consumption_header: false, .. }));
         let item = potion(vec![sub(b"EFID", *b"REHE"), sub(b"EFIT", oblivion_efit(1, 0, 0, -1))]);
         assert!(matches!(item.kind, ItemKind::Aid { simple_consumption_header: false, .. }), "no ENIT, no header");
+    }
+
+    /// #7097 — an Oblivion potion's script effect names its `SCPT` in `SCIT` @0, a FormID that must reach
+    /// global load-order space (the `EFID` code beside it stays verbatim).
+    #[test]
+    fn an_oblivion_potion_script_effect_remaps_its_script() {
+        let remap = Some(crate::esm::reader::FormIdRemap::regular(2, vec![0]));
+        let mut scit = 0x0100_0ABCu32.to_le_bytes().to_vec(); // the plugin's own script
+        scit.extend(2u32.to_le_bytes()); // school
+        let item = parse_alch_for_game(
+            0x9,
+            &[sub(b"ENIT", [0u8; 8]), sub(b"EFID", *b"SEFF"), sub(b"EFIT", oblivion_efit(0, 0, 0, -1)), sub(b"SCIT", scit)],
+            GameKind::Oblivion,
+            &remap,
+        );
+        let ItemKind::Aid { authored_effects: Some(effects), .. } = item.kind else { panic!("chain") };
+        assert_eq!(effects[0].effect.script_form_id, 0x0200_0ABC);
+        assert_eq!(effects[0].effect.effect_form_id, u32::from_le_bytes(*b"SEFF"));
     }
 }
