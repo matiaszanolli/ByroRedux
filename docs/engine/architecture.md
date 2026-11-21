@@ -33,7 +33,8 @@ byroredux/
 │   ├── settings-io/           Persistent user settings (profiles.toml)
 │   ├── save/                  Snapshot registry, validation, atomic disk format
 │   ├── plugin/                Plugin system, ESM/ESP parser (cell + records),
-│   │                          manifests, conflict resolution, legacy bridge
+│   │                          conflict resolution, legacy bridge (manifests:
+│   │                          designed, no production caller, #5609)
 │   ├── nif/                   NIF file parser + animation importer, scene import
 │   │                          to ECS-friendly meshes (NIFAL canonical translation)
 │   ├── hkx/                   Havok packfile/skeleton/animation reader

@@ -56,7 +56,7 @@ a working checkout and want to understand or change engine internals.
 | [Portable save reference inventory](portable-save-reference-inventory.md) | core, scripting, save, byroredux | IN PROGRESS (2026-11-15). Phase 0 field classification and pre-reload dependencies for portable saves |
 | [PACKAL — Package Abstraction Layer](packal.md) | plugin, scripting, byroredux | Unlike its `*AL` siblings, the parse-time fork is already unified (`PackRecord` carries both PACK shapes); the real gap is execution-time — Scene-driven package execution exists, ambient (non-Scene) execution didn't understand Skyrim+'s tree/template shape at all. Two slices shipped 2026-08-19: Sandbox (722 of 2,052 real `Skyrim.esm` NPCs resolve a radius, up from 0) and Patrol (514 more, 1,369 total now resolve some ambient behavior) — "Wander" was investigated as a third candidate and rejected: real content has no standalone Wander leaf (see packal.md §5). |
 | [Archives (BSA + BA2 + CSG)](archives.md) | bsa | BSA v103/104/105, BA2 v1/2/3/7/8 GNRL + DX10, FO4 `.csg` precombined geometry |
-| [Plugin Loading](plugin-loading.md) | plugin, core | `PluginManifest`, `DataStore`, `DependencyResolver`, Form ID system, ESM parser, conflict resolution |
+| [Plugin Loading](plugin-loading.md) | plugin, core | ESM parser, Form ID system, load-order remap, conflict resolution; `PluginManifest` / `DataStore` / `DependencyResolver` (designed; no production caller, #5609) |
 | [Built-in Fixes](builtin-fixes.md) | plugin, scripting, nif, byroredux | PROPOSED. Every script-extender and unofficial-patch fix for every supported game built into core: per-game fix catalog, cited and re-derived (never redistributed), guarded by vanilla preconditions, applied after official content so user plugins still win |
 | [Legacy Mod Compatibility — PRD](../prd/legacy-mod-compatibility.md) | plugin, sdk, mod-runtime, scripting, ui, save, byroredux | ACTIVE (2026-11-03). The product contract over every mod mechanism of the six target games: a five-class disposition model (works / redundant / not applicable / port / unsupported) per mechanism per game, the "wrongs righted" register with the compat risk each removal creates, a candidate conformance corpus, metrics, phases, and the nine decisions it needs |
 | [Distant LOD Completion — PRD](../prd/distant-lod-completion.md) | byroredux, renderer, nif | SHIPPED (2026-11-19). M35 remainder, every phase closed (#6633): the coverage gate over every ring, Oblivion/FO3 distant trees, no moat where the data gives a per-cell lever, authored FO3/FNV lattices, reversed-Z |
@@ -189,7 +189,7 @@ also rows in the subsystem table above.
 | BA2 reader | `byroredux_bsa::Ba2Archive` |
 | ESM cell index | `byroredux_plugin::esm::cell::parse_esm_cells` |
 | ESM record index | `byroredux_plugin::esm::records::parse_esm` |
-| Plugin manifests | `byroredux_plugin::PluginManifest` |
+| Plugin manifests (designed; no production caller, #5609) | `byroredux_plugin::PluginManifest` |
 | Sandboxed mod runtime | `byroredux_mod_runtime::{SandboxRuntime, SandboxConfig, Principal, CapabilitySet}` |
 | Physics world | `byroredux_physics::PhysicsWorld` |
 | Physics sync system | `byroredux_physics::physics_sync_system` |
