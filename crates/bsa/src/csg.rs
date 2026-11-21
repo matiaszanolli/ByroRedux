@@ -338,7 +338,7 @@ impl CsgArchive {
         // second `insert` is a no-op. That duplicate work is cheaper than
         // serialising every miss behind one lock.
         self.file
-            .read_exact_at(&mut comp, entry.file_offset as u64)?;
+            .read_exact_at_for(&mut comp, entry.file_offset as u64, &format_args!("CSG chunk {idx}"))?;
 
         // #3410 — the over-size check below used to run AFTER an unbounded
         // `read_to_end`, so a bomb chunk was fully inflated (and could abort

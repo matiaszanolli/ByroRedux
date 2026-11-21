@@ -21,6 +21,17 @@ use std::io;
 /// Read exactly `buf.len()` bytes starting at absolute byte `offset`.
 pub(crate) trait ReadAt {
     fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> io::Result<()>;
+
+    /// [`read_exact_at`](Self::read_exact_at) whose error names `what` was read, its length and
+    /// its offset, keeping the error's kind (callers branch on `UnexpectedEof` / `NotFound`).
+    /// #7131, #7159 — a record running past a truncated or replaced archive otherwise surfaces as
+    /// the bare `failed to fill whole buffer`, with no entry to look at.
+    fn read_exact_at_for(&self, buf: &mut [u8], offset: u64, what: &dyn std::fmt::Display) -> io::Result<()> {
+        let len = buf.len();
+        self.read_exact_at(buf, offset).map_err(|error| {
+            io::Error::new(error.kind(), format!("{what}: reading {len} bytes at offset {offset}: {error}"))
+        })
+    }
 }
 
 #[cfg(unix)]

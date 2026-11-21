@@ -1058,16 +1058,10 @@ fn read_chunk_payload<R: ReadAt + ?Sized>(
 ) -> io::Result<ChunkPayload> {
     let len = if packed_size == 0 { unpacked_size } else { packed_size } as usize;
     let mut buf = vec![0u8; len];
-    // #7131 — a record whose offset or size runs past the file surfaced as
-    // the bare `failed to fill whole buffer`; name the entry, chunk, length
-    // and offset, keeping the kind callers branch on.
-    reader.read_exact_at(&mut buf, offset).map_err(|error| {
-        let chunk = site.chunk.map_or(String::new(), |index| format!(" chunk {index}"));
-        io::Error::new(
-            error.kind(),
-            format!("BA2 entry '{}'{chunk}: reading {len} bytes at offset {offset}: {error}", site.path),
-        )
-    })?;
+    // #7131 — a record whose offset or size runs past the file names the
+    // entry and chunk (`read_exact_at_for` adds the length and offset).
+    let chunk = site.chunk.map_or(String::new(), |index| format!(" chunk {index}"));
+    reader.read_exact_at_for(&mut buf, offset, &format_args!("BA2 entry '{}'{chunk}", site.path))?;
     Ok(if packed_size == 0 {
         ChunkPayload::Raw(buf)
     } else {

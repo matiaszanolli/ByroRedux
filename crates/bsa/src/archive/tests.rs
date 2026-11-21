@@ -1415,3 +1415,19 @@ fn out_of_range_folder_offset_is_rejected_by_name() {
         let _ = std::fs::remove_file(&path);
     }
 }
+
+/// #7159 — a record whose body runs past the archive's end names the entry, which read failed,
+/// its length and its offset, on the stored and the compressed path, and keeps `UnexpectedEof`;
+/// it used to be the bare `failed to fill whole buffer`.
+#[test]
+fn a_record_past_the_archive_end_names_its_entry_and_read() {
+    let payload = [0u8; 8];
+    let entry = || FileEntry { offset: 0, size: 100, compression_toggle: false, unknown_size_flag: false };
+    for (compressed, read, len, offset) in [(false, "payload", 100, 0), (true, "compressed payload", 96, 4)] {
+        let archive = archive_with_payload(&payload, false, compressed, 104, "past_end.dds", entry());
+        let err = archive.extract("past_end.dds").expect_err("a body past the end must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof, "got: {err}");
+        let want = format!("BSA entry 'past_end.dds' {read}: reading {len} bytes at offset {offset}: ");
+        assert!(err.to_string().starts_with(&want), "compressed {compressed}: got {err}");
+    }
+}
