@@ -1,8 +1,9 @@
 # Terrain displacement near the camera — TSD-4 design note (#6198)
 
-**Status**: DRAFT for review — no code until this is signed off (the issue's acceptance
-criterion). 2026-10-22. Follows TSD-1 (#6195 height maps), TSD-2 (#6196 height blend) and
-TSD-3 (#6197 parallax), which are shipped.
+**Status**: REVIEWED and approved by Matías on 2026-11-21 (#6198); the decisions are in §9.
+Drafted 2026-10-22. Follows TSD-1 (#6195 height maps), TSD-2 (#6196 height blend) and
+TSD-3 (#6197 parallax), which are shipped. Next: #7149 (BTXT-only tile slots), then the
+§8 spike, #7150.
 
 **Question this answers**: if parallax (TSD-3) is not enough, how would real geometry
 displacement work in an engine whose shadows, reflections and GI are ray-traced, what would
@@ -199,11 +200,12 @@ time, (d) the extra `main_render` with patches resident.
 refit alone ≤ 0.5 ms. **Otherwise** fall back to static patches (risk 1) or drop Phase 4 and
 keep parallax.
 
-## 9. Decisions I need from you
-1. **Upward-only displacement, base mesh kept (§3.3)** — acceptable, or do you want holes /
-   zero-mean relief despite the cost?
-2. **Go ahead with the measurement spike (§8)** as the next step, with that bar?
-3. Geometry amplitude default (3 cm) and radius (6 m) — fine as starting points?
-4. Fix BTXT-only tile allocation first (risk 5), since it also repairs a TSD-3 gap?
-5. Is Phase 4 still wanted, given that you judged parallax-on to look better and the
-   remaining visual differences are silhouettes and RT shadows at centimetre scale?
+## 9. Review decisions (Matías, 2026-11-21)
+1. **Upward-only displacement, base mesh kept (§3.3)**: accepted. No holes, no zero-mean
+   relief.
+2. **Measurement spike first (§8)**: approved as written, with the 1.0 ms total / 0.5 ms
+   refit bar. Tracked as #7150.
+3. **Defaults**: 3 cm amplitude and 6 m radius as the starting points.
+4. **BTXT-only tile allocation (risk 5)**: fixed first, as its own issue, #7149.
+5. **Phase 4 is still wanted**, for the centimetre-scale silhouettes and RT shadows that
+   parallax cannot give.
