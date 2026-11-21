@@ -27,6 +27,39 @@ thread_local! {
     /// when resolving a 4-byte lstring index. See #989.
     static CURRENT_STRINGS_TABLE: RefCell<Option<Rc<StringTableSet>>> =
         const { RefCell::new(None) };
+
+    /// The detected game of the plugin currently being walked, for the
+    /// shared decoders that have no `game` parameter but whose field
+    /// semantics split by game (the CTDA FormID-parameter remap, #7109).
+    /// Set/restored by [`PluginGameGuard`]; `None` outside a walk.
+    static CURRENT_PLUGIN_GAME: Cell<Option<GameKind>> = const { Cell::new(None) };
+}
+
+/// The game [`PluginGameGuard`] installed for the walk on this thread, if any.
+pub fn current_plugin_game() -> Option<GameKind> {
+    CURRENT_PLUGIN_GAME.with(|g| g.get())
+}
+
+/// RAII guard that records the walked plugin's game in the thread-local for
+/// the duration of a parse scope and restores the previous value on drop,
+/// like [`LocalizedPluginGuard`]; installed on the walking thread, so the
+/// parallel load-order walk sees each plugin's own game.
+pub struct PluginGameGuard {
+    prev: Option<GameKind>,
+}
+
+impl PluginGameGuard {
+    pub fn new(game: GameKind) -> Self {
+        let prev = current_plugin_game();
+        CURRENT_PLUGIN_GAME.with(|g| g.set(Some(game)));
+        Self { prev }
+    }
+}
+
+impl Drop for PluginGameGuard {
+    fn drop(&mut self) {
+        CURRENT_PLUGIN_GAME.with(|g| g.set(self.prev));
+    }
 }
 
 /// Set the thread-local "this plugin uses lstring indirection" flag.
@@ -483,12 +516,12 @@ pub fn kwda_keywords(subs: &[crate::esm::reader::SubRecord], remap: &Option<Form
         .collect()
 }
 
-/// The whole FormID words of a `KWDA` body. A trailing partial word is dropped on purpose (tolerant of a
-/// padded vanilla body, pinned by `kwda_keywords_reads_every_kwda_chunk_and_furn_uses_it`); every FormID
-/// array reads through `SubReader::u32_array` rather than hand-chunking (#6782).
+/// The FormID words of a `KWDA` body, through `SubReader::u32_array` like every FormID array (#6782): a
+/// body that is not a whole number of words is a malformed array and yields none, rather than a shorter
+/// valid-looking list. No vanilla body is ragged (Skyrim.esm: 8,800+ `KWDA` over 16 record types), so the
+/// earlier "padded vanilla body" tolerance had no source (#7107).
 fn kwda_words(data: &[u8]) -> Vec<u32> {
-    let whole = &data[..data.len() - data.len() % 4];
-    crate::esm::sub_reader::SubReader::new(whole).u32_array().unwrap_or_default()
+    crate::esm::sub_reader::SubReader::new(data).u32_array().unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -812,7 +845,8 @@ mod tests {
             sub(b"KWDA", [0x03, 0, 0, 0, 0xFF, 0xEE]),
             sub(b"KSIZ", [3, 0, 0, 0]),
         ];
-        assert_eq!(kwda_keywords(&subs, &None), vec![1, 2, 3]);
+        // The ragged second body is declined whole (#7107); the first still reads.
+        assert_eq!(kwda_keywords(&subs, &None), vec![1, 2]);
         assert!(kwda_keywords(&[sub(b"EDID", b"X\0")], &None).is_empty());
 
         let furn = include_str!("dispatch_world_placement.rs");

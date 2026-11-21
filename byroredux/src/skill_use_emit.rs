@@ -380,7 +380,6 @@ mod tests {
                 dt: 0.0,
                 dr: 0,
                 health: 0,
-                slot_mask: 0,
                 armor_rating_x100: 0,
                 armor_type: Some(u32::from(heavy)),
                 female_model_path: String::new(),

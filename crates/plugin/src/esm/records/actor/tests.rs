@@ -191,7 +191,7 @@ fn oblivion_actor_stats_and_pools_decode_their_distinct_layouts() {
     acbs.extend_from_slice(&(-2i16).to_le_bytes());
     acbs.extend_from_slice(&3u16.to_le_bytes());
     acbs.extend_from_slice(&40u16.to_le_bytes());
-    let npc = parse_npc(1, &[sub(b"DATA", &npc_data), sub(b"ACBS", &acbs), sub(b"AIDT", [5, 40, 70, 90])], GameKind::Oblivion, &None);
+    let npc = parse_npc(1, &[sub(b"DATA", &npc_data), sub(b"ACBS", &acbs), sub(b"AIDT", [5, 40, 70, 90, 0, 0, 0, 0, 0xFF, 0, 0, 0])], GameKind::Oblivion, &None);
     let stats = npc.oblivion_npc_stats.unwrap();
     assert_eq!(stats.skills, std::array::from_fn(|i| i as u8 + 1));
     assert_eq!((stats.health, stats.attributes), (450, [10, 20, 30, 40, 50, 60, 70, 80]));
@@ -2194,7 +2194,7 @@ fn head_part_index_table_differs_per_game() {
 fn parse_real_fnv_race_head_parts_exclude_the_body_section() {
     let path = crate::esm::test_paths::fnv_esm();
     if !path.exists() {
-        eprintln!("Skipping: FalloutNV.esm not found at {}", path.display());
+        crate::esm::test_paths::require_or_skip(&format!("FalloutNV.esm ({})", path.display()));
         return;
     }
     let data = std::fs::read(&path).unwrap();
@@ -2245,7 +2245,7 @@ fn parse_real_fnv_race_head_parts_exclude_the_body_section() {
 fn parse_real_oblivion_race_head_part_indices() {
     let path = crate::esm::test_paths::oblivion_esm();
     if !path.exists() {
-        eprintln!("Skipping: Oblivion.esm not found at {}", path.display());
+        crate::esm::test_paths::require_or_skip(&format!("Oblivion.esm ({})", path.display()));
         return;
     }
     let data = std::fs::read(&path).unwrap();
@@ -2370,7 +2370,7 @@ fn crea_data_arm_is_gated_to_the_fallout3_fnv_era() {
 fn parse_real_fnv_creatures_derive_actor_values() {
     let path = crate::esm::test_paths::fnv_esm();
     if !path.exists() {
-        eprintln!("Skipping: FalloutNV.esm not found at {}", path.display());
+        crate::esm::test_paths::require_or_skip(&format!("FalloutNV.esm ({})", path.display()));
         return;
     }
     let data = std::fs::read(&path).unwrap();

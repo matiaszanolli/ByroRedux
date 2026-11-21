@@ -226,7 +226,6 @@ mod tests {
                     dt: 0.0,
                     dr: 0,
                     health: 0,
-                    slot_mask: 0,
                     armor_rating_x100: 4900,
                     armor_type: Some(1),
                     female_model_path: String::new(),

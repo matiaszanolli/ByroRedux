@@ -1282,7 +1282,6 @@ mod tests {
                 dt: 0.0,
                 dr: 0,
                 health: 0,
-                slot_mask: 0x0004,
                 armor_rating_x100: 0,
                 armor_type: None,
                 armatures: Vec::new(),
@@ -1376,7 +1375,6 @@ mod tests {
                 dt: 0.0,
                 dr: 0,
                 health: 0,
-                slot_mask: 0,
                 armor_rating_x100: 0,
                 armor_type: Some(1),
                 armatures,
@@ -2590,7 +2588,6 @@ mod arma_alternative_gate_tests {
                 dt: 0.0,
                 dr: 0,
                 health: 0,
-                slot_mask: 0,
                 armor_rating_x100: 0,
                 armor_type: Some(1),
                 armatures,
@@ -2739,7 +2736,7 @@ mod arma_alternative_gate_tests {
     fn real_skyrim_bleak_falls_draugr_expands_to_one_weapon_leaf() {
         let path = crate::esm::test_paths::skyrim_se_esm();
         if !path.exists() {
-            eprintln!("Skipping: Skyrim.esm not found at {}", path.display());
+            crate::esm::test_paths::require_or_skip(&format!("Skyrim.esm ({})", path.display()));
             return;
         }
         let data = std::fs::read(&path).unwrap();

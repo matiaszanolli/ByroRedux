@@ -85,7 +85,7 @@ pub(crate) fn build_static_object_from_subs(
             // DRT-REC-001, -002 — a `DOOR`'s flag byte and open / close / loop sounds.
             b"FNAM" if is_door && !sub.data.is_empty() => {
                 if let Some(door) = door.as_mut() {
-                    door.fnam = sub.data[0];
+                    door.fnam = crate::esm::sub_reader::SubReader::new(&sub.data).u8_or_default();
                 }
             }
             // Oblivion through FO76 author the three sounds as `SNAM` / `ANAM` / `BNAM` FormIDs. Starfield

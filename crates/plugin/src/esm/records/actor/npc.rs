@@ -3,7 +3,7 @@ use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 use super::{
     decode_ai_data, ActorAiData, CreatureStats, FactionMembership, NpcInventoryEntry,
-    CREATURE_DATA_LEN,
+    CREATURE_DATA_LEN, OBLIVION_AIDT_LEN,
 };
 
 /// One face-morph entry on an FO4 NPC. Built from a paired
@@ -651,6 +651,15 @@ pub fn parse_npc(
 
 /// FO4 / FO76 `ACBS` bytes through the template flags at +16 (#6120).
 const ACBS_FO4_LEN: usize = 20;
+/// Oblivion `ACBS`: flags, magicka, fatigue, barter gold, level, calc min, calc max (xEdit TES4).
+const OBLIVION_ACBS_LEN: usize = 16;
+/// Oblivion `NPC_` `DATA`: 21 skills, Health u16, 2 unused, 8 attributes (xEdit TES4).
+const OBLIVION_NPC_DATA_LEN: usize = 33;
+const OBLIVION_NPC_ATTRIBUTES_AT: usize = 25;
+/// Oblivion `CREA` `DATA`: 5 bytes, 1 unused, Health u16, 2 unused, Damage u16, 8 attributes (xEdit TES4).
+const OBLIVION_CREA_DATA_LEN: usize = 20;
+const OBLIVION_CREA_HEALTH_AT: usize = 6;
+const OBLIVION_CREA_DAMAGE_AT: usize = 10;
 /// Starfield `ACBS` length — every vanilla NPC_ is exactly this (#6120).
 const ACBS_STARFIELD_LEN: usize = 16;
 
@@ -724,22 +733,27 @@ fn parse_npc_core(
         // dispatcher afterwards). The two `DATA` structs are unambiguous by
         // size in these games: `NPC_` authors 11 bytes (`i32` Base Health +
         // 7 attributes), or 25 with the legacy unused tail. Neither is 17.
-        b"DATA" if game == GameKind::Oblivion && sub.data.len() == 33 => {
-            let mut skills = [0; 21];
-            skills.copy_from_slice(&sub.data[..21]);
-            let health = u16::from_le_bytes([sub.data[21], sub.data[22]]);
-            let mut attributes = [0; 8];
-            attributes.copy_from_slice(&sub.data[25..33]);
+        // Oblivion NPC_ DATA (xEdit TES4): 21 skills, Health u16 @21, 2 unused, 8 attributes @25.
+        b"DATA" if game == GameKind::Oblivion && sub.data.len() == OBLIVION_NPC_DATA_LEN => {
+            let mut r = SubReader::new(&sub.data);
+            let skills = r.fixed::<21>().unwrap_or_default();
+            let health = r.u16_or_default();
+            r.skip_to_or_eof(OBLIVION_NPC_ATTRIBUTES_AT);
+            let attributes = r.fixed::<8>().unwrap_or_default();
             record.oblivion_npc_stats = Some(OblivionNpcStats { skills, health, attributes });
         }
-        b"DATA" if game == GameKind::Oblivion && sub.data.len() == 20 => {
-            let data = &sub.data;
-            let mut attributes = [0; 8];
-            attributes.copy_from_slice(&data[12..20]);
+        // Oblivion CREA DATA (xEdit TES4): type, combat / magic / stealth skills, soul, 1 unused,
+        // Health u16 @6, 2 unused, Damage u16 @10, 8 attributes @12.
+        b"DATA" if game == GameKind::Oblivion && sub.data.len() == OBLIVION_CREA_DATA_LEN => {
+            let mut r = SubReader::new(&sub.data);
+            let [creature_type, combat, magic, stealth, soul] = r.fixed::<5>().unwrap_or_default();
+            r.skip_to_or_eof(OBLIVION_CREA_HEALTH_AT);
+            let health = r.u16_or_default();
+            r.skip_to_or_eof(OBLIVION_CREA_DAMAGE_AT);
+            let damage = r.u16_or_default();
+            let attributes = r.fixed::<8>().unwrap_or_default();
             record.oblivion_creature_stats = Some(OblivionCreatureStats {
-                creature_type: data[0], combat: data[1], magic: data[2], stealth: data[3], soul: data[4],
-                health: u16::from_le_bytes([data[6], data[7]]),
-                damage: u16::from_le_bytes([data[10], data[11]]), attributes,
+                creature_type, combat, magic, stealth, soul, health, damage, attributes,
             });
         }
         b"DATA" if matches!(game, GameKind::Fallout3NV) && sub.data.len() == CREATURE_DATA_LEN => {
@@ -822,8 +836,8 @@ fn parse_npc_core(
         }
         b"AIDT" => {
             record.ai_data = decode_ai_data(&sub.data, game);
-            if game == GameKind::Oblivion && sub.data.len() >= 4 {
-                record.oblivion_ai_values = Some(sub.data[..4].try_into().expect("length checked"));
+            if game == GameKind::Oblivion && sub.data.len() >= OBLIVION_AIDT_LEN {
+                record.oblivion_ai_values = SubReader::new(&sub.data).fixed::<4>().ok();
             }
         }
         // DOFT — Skyrim+ default outfit FormID. Pre-Skyrim games
@@ -900,7 +914,7 @@ fn parse_npc_core(
         // Oblivion.esm (all 914 NPC_/CREA ACBS are exactly 16 bytes).
         // Without this every Oblivion actor kept level=1 / acbs_flags=0
         // → wrong leveled-list tier + every actor resolved Male. #1650.
-        b"ACBS" if matches!(game, GameKind::Oblivion) && sub.data.len() >= 16 => {
+        b"ACBS" if matches!(game, GameKind::Oblivion) && sub.data.len() >= OBLIVION_ACBS_LEN => {
             let mut r = SubReader::new(&sub.data);
             record.acbs_flags = r.u32_or_default();
             let magicka = r.u16_or_default();

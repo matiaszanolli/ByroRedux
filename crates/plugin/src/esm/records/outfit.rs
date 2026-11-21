@@ -67,9 +67,9 @@ pub fn parse_otft(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
         // The old `len() >= 4` guard made it invisible: a 20-byte
         // 5-item array passes it and contributes one item.
         //
-        // `chunks_exact(4)` keeps the existing "short / trailing bytes
-        // are dropped" contract that `malformed_inam_short_payload_is_dropped`
-        // pins.
+        // `SubReader::u32_array` (#6782, #7107): a body that is not a whole
+        // number of words is a malformed array and contributes nothing,
+        // pinned by `malformed_inam_short_payload_is_dropped`.
         //
         // OTFT authors exactly one interesting sub-record, so this is an
         // `if` rather than a `match` (#3525 — a single-arm `match` plus
@@ -77,10 +77,8 @@ pub fn parse_otft(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
         // `-D warnings`). A second sub-record of interest turns it back
         // into a `match`.
         if &sub.sub_type == b"INAM" {
-            for chunk in sub.data.as_chunks::<4>().0 {
-                let id = u32::from_le_bytes(*chunk);
-                out.items.push(remap_fid(id, remap));
-            }
+            let ids = crate::esm::sub_reader::SubReader::new(&sub.data).u32_array().unwrap_or_default();
+            out.items.extend(ids.into_iter().map(|id| remap_fid(id, remap)));
         }
     }
     out

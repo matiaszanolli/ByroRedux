@@ -74,14 +74,21 @@ pub struct ActorAiData {
 /// Skyrim responsibility @3;
 /// FO3/FNV aggro-radius behaviour bool @15 and radius s32 @16; Skyrim/FO4
 /// flags @6 (bit 0 = aggro-radius behaviour), Attack radius u32 @16.
+/// Oblivion `AIDT`: four rated bytes, service flags, teaches, maximum training level, 2 unused (xEdit TES4).
+pub const OBLIVION_AIDT_LEN: usize = 12;
+
 pub fn decode_ai_data(data: &[u8], game: GameKind) -> Option<ActorAiData> {
     // #6995 — Oblivion's 12-byte AIDT (xEdit `wbDefinitionsTES4`): Aggression,
     // Confidence, Energy Level, Responsibility (u8 each, 0–100), service flags,
     // teaches, maximum training level. No aggro radius.
     if game == GameKind::Oblivion {
-        return (data.len() >= 2).then(|| ActorAiData {
-            aggression: Aggression::Rated(data[0]),
-            confidence: Confidence::Rated(data[1]),
+        if data.len() < OBLIVION_AIDT_LEN {
+            return None;
+        }
+        let mut r = crate::esm::sub_reader::SubReader::new(data);
+        return Some(ActorAiData {
+            aggression: Aggression::Rated(r.u8_or_default()),
+            confidence: Confidence::Rated(r.u8_or_default()),
             responsibility: None,
             attack_radius: None,
         });

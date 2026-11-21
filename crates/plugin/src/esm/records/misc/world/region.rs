@@ -151,15 +151,16 @@ pub enum RegionDataPayload {
         /// `docs/engine/music.md`) reads Oblivion's `RDMD` as an exterior's
         /// music category and FNV's `RDSB` as the region's Battle set;
         /// Fallout 3 / New Vegas location music reads no region (#6900).
-        /// Skyrim's `RDMO` music waits on xWMA playback (#3816). It replaced
+        /// Skyrim's `RDMO` is decoded but no music path reads it: Skyrim's
+        /// xWMA music waits on its own PRD (MUS-NG-001, #3816). It replaced
         /// the 2026-08-23 *dispatch_region_ambient_music* path, which looked
         /// every value up as a `SounRecord` (#6872). Census: #3787 (FNV) /
         /// #3811 (Oblivion + Skyrim, this doc), both closed doc-only.
         music: Option<u32>,
         /// Oblivion / FO3 `RDMD`, kept apart from [`Self::Sound::music`] because it is NOT a FormID: a raw
         /// `uint32` music-category enum (`0` Default, `1` Public, `2` Dungeon; xEdit
-        /// `wbDefinitionsTES4.pas:4668`, `wbDefinitionsFNV.pas:7861`). Never load-order remapped (#6787); no
-        /// consumer reads it yet (#3816).
+        /// `wbDefinitionsTES4.pas:4668`, `wbDefinitionsFNV.pas:7861`). Never load-order remapped (#6787); the
+        /// music controller reads it as an Oblivion exterior's music category (`music/translate.rs`).
         music_type: Option<u32>,
         /// `RDSI` incidental sound form (FNV). Same caveat as `music`
         /// above: census-confirmed 10 of 11 `RDSI` targets are `MSET`, not

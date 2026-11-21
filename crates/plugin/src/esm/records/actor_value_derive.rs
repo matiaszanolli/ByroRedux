@@ -1517,7 +1517,7 @@ mod tests {
         use crate::esm::records::actor::ACBS_PC_LEVEL_MULT;
         let path = crate::esm::test_paths::skyrim_se_esm();
         if !path.exists() {
-            eprintln!("Skipping skyrim_autocalc_pools_match_the_baked_dnam_pools: {} not found", path.display());
+            crate::esm::test_paths::require_or_skip(&format!("skyrim_autocalc_pools_match_the_baked_dnam_pools: {}", path.display()));
             return;
         }
         let index = crate::esm::parse_esm(&std::fs::read(&path).unwrap()).unwrap();
@@ -1939,7 +1939,7 @@ mod tests {
     fn fnv_authored_data_special_reproduces_the_wiki_hit_points() {
         let path = crate::esm::test_paths::fnv_esm();
         if !path.exists() {
-            eprintln!("Skipping: FalloutNV.esm not found at {}", path.display());
+            crate::esm::test_paths::require_or_skip(&format!("FalloutNV.esm ({})", path.display()));
             return;
         }
         let data = std::fs::read(&path).unwrap();

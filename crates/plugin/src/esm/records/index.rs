@@ -639,8 +639,8 @@ pub struct EsmIndex {
     pub media_sets: HashMap<u32, MediaSetRecord>,
     /// `MUSC` music type.
     pub music_types: HashMap<u32, MuscRecord>,
-    /// Skyrim `MUST` music track — what a Skyrim `MUSC.TNAM` lists. Typed but
-    /// unconsumed: the Skyrim half of #3816 (`docs/engine/esm-records.md`).
+    /// `MUST` music track (Skyrim, FO4, FO76; #6790) — what a `MUSC.TNAM` lists. Typed but
+    /// unconsumed: the xWMA half of #3816 (`docs/engine/esm-records.md`).
     pub music_tracks: HashMap<u32, MustRecord>,
     /// `SOUN` sound. Upgraded from the `MinimalEsmRecord` long-tail stub
     /// (#810) to a real decode of `FNAM` (file path) — EX-16 item 1's
@@ -2269,19 +2269,19 @@ mod tests {
         // NOT `HashMap`s, so before this fix the field scan below (which
         // only matched `: HashMap<`) never saw them at all: they passed
         // this guard by being invisible to it, not by being accounted for.
-        // Naming the `merge_from` line each one is actually handled at is
-        // what makes that a checked claim instead of a comment nobody
-        // re-verifies.
+        // Naming how `merge_from` handles each one (by function, not by line
+        // number, which drifted, #7106) is what makes that a checked claim
+        // instead of a comment nobody re-verifies.
         const MANUALLY_MERGED: &[(&str, &str)] = &[
             (
                 "deleted_record_metadata",
                 "merge_from — union of tombstoned FormIDs, pruning any record they \
-                 name out of every already-merged category table (index.rs:1010-1029)",
+                 name out of every already-merged category table",
             ),
             (
                 "skipped_unconsumed_groups",
                 "merge_from — plain concatenation of unconsumed GRUP type tags \
-                 across plugins (index.rs:1041-1042)",
+                 across plugins",
             ),
         ];
 
