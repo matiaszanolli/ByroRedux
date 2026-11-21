@@ -1,6 +1,6 @@
 # Reference-Quality Lighting — Product Requirements
 
-**Status**: ACTIVE (2026-11-21). Revision 47. The change history is in
+**Status**: ACTIVE (2026-11-21). Revision 48. The change history is in
 §12. Every decision in §10 is decided and every Phase 0 verify item is
 closed or filed as an issue.
 
@@ -799,15 +799,23 @@ reach.
   `a004` and the returned scale and bias match the post exactly (read
   from its December 2014 Web Archive copy; the live page refuses), so the
   fit MAY be used as the weight as written. At HEAD on 2026-11-01 an ordinary
-  exterior dielectric reflects no sky (T9).
+  exterior dielectric reflects no sky (T9). Met in rev 48: exterior
+  dielectrics reflect the probe mip for their roughness, weighted by the
+  split sum from an exactly integrated table (`include/env_brdf_lut.glsl`),
+  since the 2014 fit measured 0.83–1.16 of the exact weights on the A6
+  sweep; A6 dielectrics read 0.978–1.014 against the reference with the
+  Fresnel recorded difference applied.
 - **RLT-IBL-002.** Environment specular above `roughness 0.6` MUST come
   from the sky mip for that roughness instead of being dropped; the RT
   reflection ray MAY stay gated at 0.6. At HEAD on 2026-11-01 the whole
-  term is skipped above 0.6 (T9).
+  term is skipped above 0.6 (T9). Met in rev 48: the traced ray stays at
+  < 0.6 for metals and authored environments, and every other case reads
+  the probe mip; A6 conductors at 0.74 / 0.98 read 0.977 / 0.967.
 - **RLT-IBL-003.** The `(1.0 - roughness)` energy heuristic MUST be
   replaced by the split-sum weight, and the L5 roughness sweep, run on
   the probe-only sky rung (RLT-REF-021), MUST match the reference's sky specular (§3.4) within the L3
-  threshold at each of its five roughness values.
+  threshold at each of its five roughness values. Met in rev 48: every A6
+  energy and p95 row passes its threshold (energy error at most 0.033).
 - **RLT-IBL-004.** Sky specular MUST be occluded: in the RLT-CON-001
   contact bands under `--cornell-sun`, sky-specular luminance MUST be
   within the L3 threshold of the reference. Specular occlusion as described
@@ -815,7 +823,10 @@ reach.
   Rendering 3.0* (SIGGRAPH 2014,
   [course notes](https://seblagarde.wordpress.com/wp-content/uploads/2015/07/course_notes_moving_frostbite_to_pbr_v32.pdf)),
   is the named technique; a traced visibility term is an acceptable
-  alternative the design chooses.
+  alternative the design chooses. Implemented in rev 48 as Lagarde's
+  ambient-occlusion form on the probe's share of the environment term (a
+  traced ray already sees its occluder); its contact-band gate needs a
+  contact rung under the exterior sky, which is not built yet.
 - **RLT-IBL-005.** (withdrawn, rev 3) A mean-luminance cap would block the
   correct fix: dielectric sky specular raises mean luminance by design.
   Replaced by RLT-IBL-008 and RLT-IBL-009.
@@ -828,7 +839,14 @@ reach.
   `crates/renderer/src/vulkan/context/frame_params.rs`, bakes the
   `portal_outdoor_sky` palette, and `triangle.frag`'s window-portal escape
   reads it through `exteriorSkyRadianceOr(-V, …)`), but the GI escape
-  does not (T10).
+  does not (T10). Met in rev 48, in both modes (owner, 2026-11-21): a path
+  that misses the TLAS reads the portal sky cube when the interior shows
+  the sky (mode 1), or when it crosses one of the marked openings nearest
+  the camera (mode 2; their planes at set 1 / binding 27). A12 on FO4
+  `DBTechHighSchool01`: the control's traced share does not follow the
+  hour (noon − midnight −0.005, noise 0.005), the build's does (+0.076,
+  noise 0.013), and the build reads +0.171 above the control at noon and
+  +0.089 at midnight.
 - **RLT-IBL-007.** Lighting from the sky probe and the visible sky MUST NOT
   disagree after a time-of-day or weather change for more frames than the
   number SKYAL records, and the probe MUST NOT become a once-per-cell
@@ -860,6 +878,15 @@ reach.
     conversion, and nif.xml's description contradicts the field's name, so
     the conversion is filed as #6606 and F3 checks the engine against its
     own rule, reported as an unverified convention, until it closes.
+    Narrowed in rev 48 (#7151) to the materials that rule covers: a BGSM
+    with its specular block enabled, neither glass nor an effect material.
+    Every one of the 265 MedTek and 56 Dugout flags of rev 47 was one of
+    three intended paths
+    ([per-path table](../audits/MLIGHT_phase4_F3_paths_2026-11-21.tsv)):
+    a disabled specular block, which derives no roughness and leaves the
+    NIF side's (#4654); an effect material, which authors no smoothness;
+    and glass, whose roughness the shared glass surface sets. The dump
+    carries `specular_strength`, which a disabled block zeroes.
 
   Every flagged class MUST be fixed at the translation boundary or
   recorded as accepted with a reason, never capped in a shader; the owner
@@ -876,7 +903,10 @@ reach.
   be within the L3 threshold of the reference built per RLT-REF-012 (sun
   as an emitter, environment without the disc). At HEAD on 2026-11-01 the
   disc is baked into the probe while the directional light also carries
-  the sun (T7), so the sun's energy reaches the plane twice.
+  the sun (T7), so the sun's energy reaches the plane twice. Met in rev 48:
+  the probe bakes with the disc off (`SKY_CUBE_SUN_DISC_OFF`) while the
+  visible sky keeps it; A6 Lambertian sky diffuse moves 1.0105 → 1.0000 and
+  A17 reads 0.9977.
 - **RLT-IBL-011.** The light loop's specular lobe MUST be evaluated in the
   primary diffuse lobe's convention, as RLT-GI-011 does at path hits: the
   diffuse response is the non-/π `diffuseBrdf = kD * albedo` and the
@@ -1166,7 +1196,7 @@ complete while it is unowned, and no other phase waits for it.
 | 4 | — (physical) Sun radius ≈ 0.0047 rad | 0.020 rad at HEAD, Q3 | — | Penumbrae wider than the reference unless both use one value → RLT-SHD-007 |
 | 5 | — | Dielectric sky specular (RLT-IBL-001) | — | The historical "chrome" look on legacy materials with wrong translated roughness or metalness → RLT-IBL-008 |
 | 6 | — | Traced GI no longer double-occluded by SSAO (RLT-GI-004) | — | Cavities read brighter than today's look → RLT-GI-003 holds them to the reference |
-| 7 | — | Sun disc removed from the lighting the sky probe feeds (RLT-IBL-010) | — | Exterior surfaces facing the sun lose the doubled energy and read darker than today → RLT-IBL-009 reports it per scene |
+| 7 | — | Sun disc removed from the lighting the sky probe feeds (RLT-IBL-010) | — | Exterior surfaces facing the sun lose the doubled energy and read darker than today → RLT-IBL-009 reports it per scene. Interior window glass reads the same probe, so a pane looking at the sun no longer shows the disc through it (the visible sky outdoors keeps it) |
 | 8 | — | Bounce light at GI hits in the primary lobe's Lambert convention, a factor of π above the pre-Phase-2 walk (RLT-GI-011) | — | Bounce-lit areas on every title read brighter than before Phase 2 → RLT-GI-003 holds the result to the reference; A11 under the Phase 2 declaration |
 | 9 | — | Shadow-ray visibility cosine-weighted over the emitter disk on every light (RLT-SHD-012) | — | Small local brightening or darkening in partly occluded pixels on every title (rev 31) → A11 under a change declaration committed before the code (RLT-CNT-002), A13 |
 | 10 | — | On-screen sun shadow beyond the traced fade from a screen-space term (RLT-CON-004, Q4) | — | Off-screen casters cast nothing there, and receivers past `SHADOW_FADE_START` darken where they were unshadowed → the CON-004 gate's off-screen control (A19), A11, A13 |
@@ -1226,7 +1256,7 @@ scenarios need the user's own installed data; nothing is checked in.
 | A9 | Material translation and anchor luminance | report | material-class distribution dump (Phase 1 tool) and `scripts/check-render-anchor.sh` on linear captures, HEAD vs the pre-IBL anchor | FNV, Skyrim SE, FO4 | RLT-IBL-008, RLT-IBL-009 |
 | A10 | Real-content bounce | report | `scripts/renderer-eval-fnv.sh` (`DBG_VIZ_GI_BOUNCE` view) | FNV | RLT-GI-007 |
 | A11 | Content non-regression against declared changes | gate | engine `--bench-frames 300 --bench-hold` (release with `BYRO_DEBUG_SERVER=1`) at the pinned bench pose, linear `final` capture compared with the anchor captured at step 4 of the current phase's entry (§9), under the phase's change declaration, plus the entry-time check against the previous phase's exit capture (RLT-CNT-001); the filtered-direct `r.shadowfilter off` / `on` pair and one exterior terrain-contact capture published as reports | each Wave 1–2 title's benchmark scene with an install, one exterior | RLT-CNT-001…003, RLT-SHD-009 on content, RLT-CON-009 (report), RLT-PERF-001 bracket |
-| A12 | Portal-sky escape | report | new script `docs/smoke-tests/m-light-portal-sky.sh` (an interior with Show Sky, `render.debug indirect_only` at a window) | FNV or Skyrim SE | RLT-IBL-006 |
+| A12 | Portal-sky escape | report | `docs/smoke-tests/m-light-portal-sky.sh` (a Show Sky interior held open, the exposure pinned, `indirect_only` and `traced_share` at noon, midnight and noon again, control and build) | FO4 `DBTechHighSchool01` (rev 48: FNV has no Show Sky interior; Skyrim SE `AbandonedShackInterior` and FNV `NellisHangar1` measured and cannot discriminate) | RLT-IBL-006 |
 | A13 | Cost and settled tier | gate | benchmark-scene refresh per ROADMAP methodology | benchmark scenes' games | RLT-PERF-003…006 |
 | A14 | Moving blocker | self-consistency gate (temporal error) | `scripts/m-light-gates.sh --gates A14` (`renderer-stepped`, `--bench-camera static`, the blocker on the bench clock; excess over the held control from frame 80, both seeds) | none | RLT-SHD-010, RLT-SHD-011 |
 | A15 | Calibration and materials | gate | test `cornell_calibration_and_material_rungs` in `byroredux/tests/m_light_gates.rs` (runs `scripts/m-light-gates.sh --gates A15`): calibration ratio 1 per emitter kind over the plane and a 3 × 3 constancy grid, each kind from the phase that first uses it; the Lambertian flat planes at three view angles from Phase 1a, the normal-mapped plane from Phase 3; the specular rows (`--gates A15-SPEC`, the `materials-spec` rung, multiple-scattering compensation off) from Phase 4 | none + reference | RLT-REF-008, RLT-REF-010, RLT-REF-014, RLT-IBL-011 |
@@ -1701,3 +1731,4 @@ Each needs the project owner. The recommendation is the first option.
 | 45 | 2026-11-21 | Phase 4 entry, step 3 (#6604): the owner's L3 budgets written into `docs/audits/MLIGHT_thresholds.tsv` with the A6 and A17 floors frozen. Owner (2026-11-21): sky specular probes \|energy ratio − 1\| ≤ 0.10 and p95 relative error ≤ 0.25 per roughness, a visibility argument (about 10 % of the energy is one 8-bit step at mid-grey) and the split-sum fit's published accuracy; the conductor at roughness 0.02 declared done (0.993); Lambertian sky diffuse and the A17 sun plane \|ratio − 1\| ≤ 0.005, their p95 declared done (SH9 order error, which no Phase 4 mechanism changes); drift margin 2× the frozen floor, as revs 13 and 20. The A17 budget sits above its 0.0022 baseline, so that row holds the term rather than measuring an improvement. The runner gains an `energy_error` row; judged at HEAD ([manifest](../audits/MLIGHT_phase4_entry_A6A17_judged_2026-11-21.tsv)) every dielectric and the conductors from 0.26 fail, the Lambertian energy fails (0.0105), and the done rows and A17 pass | owner: approved |
 | 46 | 2026-11-21 | Phase 4 entry, step 4 (#6604): A11 against the Phase 3 exit capture (main + #7091 + PAF-012) reads 0 tiles outside tolerance on all five scenes, so no outside change is open; the Phase 4 anchors are captured ([manifest](../audits/MLIGHT_phase4_anchors.tsv)); the change declaration for RLT-IBL-011 is checked in before its code ([declaration](../audits/MLIGHT_phase4_declaration.tsv)), sized on an uncommitted spike of exactly that change: brighter only, frame +6.6 % (Cornell), +5.2 % (Prospector), +0.9 % (Whiterun), +0.3 % (MedTek), +6.3 % (Dugout), per tile up to +211 % on Cornell's glossy spheres; 1 520 tile entries. The remaining Phase 4 mechanisms are declared before their own commits. The entry is complete; mechanism work may start | — |
 | 47 | 2026-11-21 | RLT-IBL-011 implemented (#6604): `include/lighting.glsl` scales the light loop's GGX lobe by π, both `triangle.frag` variants rebuilt, pinned by `light_loop_specular_is_in_the_non_pi_diffuse_convention`. A15-SPEC now judges each conductor at roughness ≥ 0.26 against its recorded Smith difference, computed per pixel from the engine's k = (r + 1)² ⁄ 8 against Mitsuba's exact separable G1: all twelve read 0.998–1.000 ([manifest](../audits/MLIGHT_phase4_ibl011_A15spec_2026-11-21.tsv)); A15's Lambertian and calibration rows, A16, A6 and A17 are unmoved. A11 against the Phase 4 anchors under the declaration committed before the code: 0 tiles outside on all five scenes ([A11](../audits/MLIGHT_phase4_ibl011_A11_2026-11-21.tsv)). A13 against the entry commit: every case within its Q8 ceiling (−0.27 to +0.14 ms) and every settled tier held ([A13](../audits/MLIGHT_phase4_ibl011_A13_2026-11-21.tsv)). Owner decisions on RLT-IBL-008 (2026-11-21): F2, the keyword-route conductors without a metal signal (Prospector 147, MedTek 113, Whiterun 22), accepted as one class, since the keyword classifier is the engine's stand-in for metal data the legacy formats do not author and at roughness 0.55 the split-sum weight keeps them satin; F1, dielectrics below roughness 0.2 (MedTek 1306, Dugout 365, Prospector 10), accepted as authored gloss; F3, FO4 materials off the engine's own 1 − smoothness rule (MedTek 265, Dugout 56), to be investigated (#7151), the rule itself accepted meanwhile as an unverified convention under #6606 | owner: approved |
+| 48 | 2026-11-21 | RLT-IBL-001…004, RLT-IBL-010 and RLT-IBL-006 implemented (#6604), under the declarations committed before their code. Environment specular is the split sum from an exactly integrated table (`scripts/gen_env_brdf_lut.py`, set 1 / binding 26: a constant array cost the main pass +2 to +8.5 ms), with the probe mip above roughness 0.6, Lagarde's occlusion on the probe share, and the probe baked without the sun disc (`SKY_CUBE_SUN_DISC_OFF`); a GI path that leaves a Show Sky interior, or crosses a marked opening (binding 27, `GpuCamera` 384 B), reads the portal sky. Owner decisions (2026-11-21): the dielectric Fresnel gap as a recorded mapping difference (§6 row 7); the zero floors re-frozen at their current values; the p95 budget 0.45; RLT-IBL-006 in both interior modes. [Gates](../audits/MLIGHT_phase4_ibl001_gates_2026-11-21.tsv): every row passes except A15 `normal-plane-azimuth2` at 0.998461, its value since before Phase 4. [A11](../audits/MLIGHT_phase4_ibl001_A11_2026-11-21.tsv): 0 tiles outside on four scenes and one on Whiterun, a tile that moves between repeats of the same two binaries. [A13](../audits/MLIGHT_phase4_ibl001_A13_2026-11-21.tsv): eight of ten cases within their ceiling and every settled tier held; Prospector and Whiterun FSR read +0.75 / +0.56 ms against 0.53 / 0.48, and the [attribution](../audits/MLIGHT_phase4_ibl001_A13attr_2026-11-21.tsv) run measures them at +0.05 / +0.13 ms wall with every bracket within ±0.1 ms. [A12](../audits/MLIGHT_phase4_A12_2026-11-21.tsv) published on FO4 `DBTechHighSchool01` (the row's title corrected: FNV has no Show Sky interior, and Skyrim SE `AbandonedShackInterior` and FNV `NellisHangar1` cannot discriminate). [A9](../audits/MLIGHT_materials_2026-11-21.tsv) re-published: F3 narrowed to the materials its rule covers (#7151, [per-path table](../audits/MLIGHT_phase4_F3_paths_2026-11-21.tsv)) reads 0 on MedTek and Dugout; F1 and F2 as accepted in rev 47 | owner: approved |

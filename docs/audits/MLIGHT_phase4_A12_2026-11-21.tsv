@@ -1,0 +1,9 @@
+engine	game	cell	view	noon	midnight	noon_repeat	noon_minus_midnight	noon_repeat_noise	head_minus_control_noon	head_minus_control_midnight
+control	fo4	DBTechHighSchool01	indirect_only	83.425	83.406	83.413	+0.020	0.012	+0.000	+0.000
+control	fo4	DBTechHighSchool01	traced_share	24.089	24.095	24.084	-0.005	0.005	+0.000	+0.000
+head	fo4	DBTechHighSchool01	indirect_only	83.516	83.471	83.513	+0.045	0.004	+0.091	+0.065
+head	fo4	DBTechHighSchool01	traced_share	24.260	24.184	24.273	+0.076	0.013	+0.171	+0.089
+control	skyrim_se	AbandonedShackInterior	indirect_only	96.738	96.771	97.101	-0.033	0.364	+0.000	+0.000
+control	skyrim_se	AbandonedShackInterior	traced_share	14.054	13.655	13.080	+0.399	0.974	+0.000	+0.000
+head	skyrim_se	AbandonedShackInterior	indirect_only	96.734	96.772	97.112	-0.038	0.378	-0.004	+0.001
+head	skyrim_se	AbandonedShackInterior	traced_share	14.041	13.655	13.101	+0.386	0.940	-0.014	-0.000

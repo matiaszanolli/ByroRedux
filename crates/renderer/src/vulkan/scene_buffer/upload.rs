@@ -904,6 +904,24 @@ impl super::buffers::SceneBuffers {
         Ok(())
     }
 
+    /// M-LIGHT RLT-IBL-006: this frame's interior sky aperture planes
+    /// (binding 27), count first. At most `MAX_COMPOSITE_SKY_APERTURES` are
+    /// kept; the caller orders them nearest first.
+    pub fn upload_sky_apertures(
+        &mut self,
+        device: &ash::Device,
+        frame_index: usize,
+        planes: &[super::gpu_types::GpuSkyAperturePlane],
+    ) -> Result<()> {
+        let kept = planes.len().min(crate::shader_constants::MAX_COMPOSITE_SKY_APERTURES as usize);
+        let buffer = &mut self.sky_aperture_buffers[frame_index];
+        buffer.write_mapped_at(device, 0, &[kept as u32, 0, 0, 0])?;
+        if kept > 0 {
+            buffer.write_mapped_at(device, 16, &planes[..kept])?;
+        }
+        Ok(())
+    }
+
     /// Upload previous rigid transforms aligned with the current instance
     /// array. New entities carry their current transform, producing zero
     /// object velocity on first sight.

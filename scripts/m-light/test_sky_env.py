@@ -66,5 +66,18 @@ class Assembly(unittest.TestCase):
             gates.PinholeView.fit(dirs, np.zeros((32, 32, 3)))
 
 
+class EnvBrdfTable(unittest.TestCase):
+    def test_checked_in_table_is_the_generators_output(self):
+        import importlib.util
+        root = Path(__file__).resolve().parents[2]
+        spec = importlib.util.spec_from_file_location("gen_env_brdf_lut", root / "scripts/gen_env_brdf_lut.py")
+        gen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gen)
+        glsl, rust = gen.render()
+        hint = "regenerate with python3 scripts/gen_env_brdf_lut.py"
+        self.assertEqual(glsl, (root / "crates/renderer/shaders/include/env_brdf_lut.glsl").read_text(), hint)
+        self.assertEqual(rust, (root / "crates/renderer/src/vulkan/scene_buffer/env_brdf_lut.rs").read_text(), hint)
+
+
 if __name__ == "__main__":
     unittest.main()

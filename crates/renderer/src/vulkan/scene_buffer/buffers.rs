@@ -241,6 +241,14 @@ pub struct SceneBuffers {
     /// Rewritten every frame by `upload_moved_surface_ids` for the ReSTIR
     /// mover taint's prev-occluder arm.
     pub(super) moved_surface_buffers: Vec<GpuBuffer>,
+    /// M-LIGHT RLT-IBL-003: the exactly integrated split-sum environment
+    /// BRDF table (binding 26), shared by every frame and written once at
+    /// creation — read-only, so one buffer serves all frames in flight.
+    pub(super) env_brdf_lut_buffer: GpuBuffer,
+    /// M-LIGHT RLT-IBL-006: the interior sky aperture planes per frame in
+    /// flight (binding 27): a `uvec4` header (`x` = count) and up to
+    /// `MAX_COMPOSITE_SKY_APERTURES` planes, rewritten every frame.
+    pub(super) sky_aperture_buffers: Vec<GpuBuffer>,
     pub(super) ray_budget_controller: AdaptiveRayBudget,
     /// Descriptor pool for scene descriptor sets.
     pub(super) descriptor_pool: vk::DescriptorPool,
@@ -480,8 +488,31 @@ pub(crate) fn build_scene_descriptor_bindings() -> Vec<vk::DescriptorSetLayoutBi
         vk::DescriptorType::STORAGE_BUFFER,
         vk::ShaderStageFlags::FRAGMENT,
     ));
+    // Binding 26: the split-sum environment BRDF table (M-LIGHT RLT-IBL-003,
+    // `include/env_brdf_lut.glsl`). Always written at descriptor creation:
+    // the environment term reads it on every lit surface. A 1024-entry
+    // constant array in the shader instead cost the main pass +2 to +8.5 ms.
+    bindings.push(layout_binding(
+        26,
+        vk::DescriptorType::STORAGE_BUFFER,
+        vk::ShaderStageFlags::FRAGMENT,
+    ));
+    // Binding 27: the interior sky aperture planes (M-LIGHT RLT-IBL-006) a GI
+    // path in a bounded-aperture interior must cross to read the portal sky.
+    // Always written at descriptor creation; a zero count reads "no openings".
+    bindings.push(layout_binding(
+        27,
+        vk::DescriptorType::STORAGE_BUFFER,
+        vk::ShaderStageFlags::FRAGMENT,
+    ));
     bindings
 }
+
+/// Binding 27's size: a 16 B header and `MAX_COMPOSITE_SKY_APERTURES` planes.
+pub(super) const SKY_APERTURE_BUFFER_BYTES: vk::DeviceSize = (16
+    + crate::shader_constants::MAX_COMPOSITE_SKY_APERTURES as usize
+        * std::mem::size_of::<super::gpu_types::GpuSkyAperturePlane>())
+    as vk::DeviceSize;
 
 /// All per-frame-in-flight and shared scene render buffers, plus their sizes.
 ///
@@ -507,6 +538,8 @@ struct SceneRenderBuffers {
     bone_buf_size: vk::DeviceSize,
     instance_buffers: Vec<GpuBuffer>,
     moved_surface_buffers: Vec<GpuBuffer>,
+    env_brdf_lut_buffer: GpuBuffer,
+    sky_aperture_buffers: Vec<GpuBuffer>,
     instance_buf_size: vk::DeviceSize,
     previous_model_buffers: Vec<GpuBuffer>,
     previous_model_buf_size: vk::DeviceSize,
@@ -579,6 +612,31 @@ fn allocate_scene_render_buffers(
     let mut bone_world_device_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
     let mut instance_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
     let mut moved_surface_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+    // RLT-IBL-003 — the environment BRDF table, written once.
+    const _: () = assert!(
+        super::env_brdf_lut::ENV_BRDF_LUT.len()
+            == 2 * (crate::shader_constants::ENV_BRDF_LUT_SIZE * crate::shader_constants::ENV_BRDF_LUT_SIZE)
+                as usize
+    );
+    let mut env_brdf_lut_buffer = GpuBuffer::create_host_visible(
+        device,
+        allocator,
+        std::mem::size_of_val(&super::env_brdf_lut::ENV_BRDF_LUT) as vk::DeviceSize,
+        vk::BufferUsageFlags::STORAGE_BUFFER,
+    )?;
+    env_brdf_lut_buffer.write_mapped(device, &super::env_brdf_lut::ENV_BRDF_LUT)?;
+    // RLT-IBL-006 — the aperture planes, one buffer per frame in flight.
+    let mut sky_aperture_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+    for _ in 0..MAX_FRAMES_IN_FLIGHT {
+        let mut buffer = GpuBuffer::create_host_visible(
+            device,
+            allocator,
+            SKY_APERTURE_BUFFER_BYTES,
+            vk::BufferUsageFlags::STORAGE_BUFFER,
+        )?;
+        buffer.write_mapped(device, &[0u32; 4])?;
+        sky_aperture_buffers.push(buffer);
+    }
     // #6250 — (1 count word + the id cap) × 4 B per frame-in-flight slot.
     let moved_surface_buf_size = (1 + crate::shader_constants::RESTIR_MAX_MOVED_SURFACES)
         as vk::DeviceSize
@@ -739,6 +797,8 @@ fn allocate_scene_render_buffers(
         bone_buf_size,
         instance_buffers,
         moved_surface_buffers,
+        env_brdf_lut_buffer,
+        sky_aperture_buffers,
         instance_buf_size,
         previous_model_buffers,
         previous_model_buf_size,
@@ -945,6 +1005,16 @@ fn create_scene_descriptors(
             range: (1 + crate::shader_constants::RESTIR_MAX_MOVED_SURFACES) as vk::DeviceSize
                 * std::mem::size_of::<u32>() as vk::DeviceSize,
         }];
+        let env_brdf_lut_buf_info = [vk::DescriptorBufferInfo {
+            buffer: bufs.env_brdf_lut_buffer.buffer,
+            offset: 0,
+            range: std::mem::size_of_val(&super::env_brdf_lut::ENV_BRDF_LUT) as vk::DeviceSize,
+        }];
+        let sky_aperture_buf_info = [vk::DescriptorBufferInfo {
+            buffer: bufs.sky_aperture_buffers[i].buffer,
+            offset: 0,
+            range: SKY_APERTURE_BUFFER_BYTES,
+        }];
         let writes = [
             write_storage_buffer(set, 0, &light_buf_info),
             write_uniform_buffer(set, 1, &camera_buf_info),
@@ -958,6 +1028,8 @@ fn create_scene_descriptors(
             write_storage_buffer(set, 18, &previous_model_buf_info),
             write_storage_buffer(set, 19, &selected_ray_probe_buf_info),
             write_storage_buffer(set, 25, &moved_surface_buf_info),
+            write_storage_buffer(set, 26, &env_brdf_lut_buf_info),
+            write_storage_buffer(set, 27, &sky_aperture_buf_info),
         ];
         unsafe {
             // SAFETY: `device` is live; `set` is one of the just-allocated device-owned
@@ -1088,6 +1160,8 @@ impl SceneBuffers {
             ray_budget_buffer: bufs.ray_budget_buffer,
             selected_ray_probe_buffers: bufs.selected_ray_probe_buffers,
             moved_surface_buffers: bufs.moved_surface_buffers,
+            env_brdf_lut_buffer: bufs.env_brdf_lut_buffer,
+            sky_aperture_buffers: bufs.sky_aperture_buffers,
             ray_budget_controller: AdaptiveRayBudget::default(),
             descriptor_pool,
             descriptor_set_layout,

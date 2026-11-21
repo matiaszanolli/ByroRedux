@@ -713,6 +713,8 @@ impl VulkanContext {
                     sky_params.weather.surface_snow,
                 ),
             ],
+            // RLT-IBL-006 — the composite's own interior sky mode.
+            interior_sky: [super::sky_apertures::interior_sky_mode(sky_params), 0.0, 0.0, 0.0],
         };
         self.rt_flag_last_frame =
             match self

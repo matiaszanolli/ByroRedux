@@ -453,6 +453,8 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("CornellMeshSources", "CPU copies of a Cornell reference rung's uploaded meshes, held only for --export-mitsuba; rebuilt by the rung's scene setup and keyed by session-local mesh handles"),
         ("CornellTextureSources", "CPU copies of a Cornell reference rung's registered textures, held only for --export-mitsuba; rebuilt by the rung's scene setup and keyed by session-local texture handles"),
         ("RungMeasurements", "a Cornell reference rung's measurement geometry and optional uniform-sky radiance, rebuilt by scene setup for --export-mitsuba"),
+        ("ReferenceSkyOnly", "a Cornell sky rung's marker that the directional sun is off (M-LIGHT RLT-REF-019), inserted by the rung's scene setup each launch"),
+        ("HarnessCameraFov", "a Cornell reference rung's camera field of view (the environment rung's 90° faces), inserted by the rung's scene setup each launch"),
         ("BenchMover", "a bench-only moving blocker (RLT-SHD-010) placed by step_bench_movers from the bench frame index; spawned only by the penumbra-moving reference rung, which has no save path"),
         // ── Player-spellcasting (PSC-CST-008, #7079) ─────────────────
         ("SpellCastModel", "the Oblivion spell-cast rules, re-derived at load from the profile's spell_cast row and the load order's GMSTs by install_spell_cast_model; saving it would freeze a mod's tuning across loads"),

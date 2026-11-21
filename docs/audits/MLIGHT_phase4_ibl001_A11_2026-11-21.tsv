@@ -1,0 +1,6 @@
+scene	tiles	outside_tolerance_and_declarations	note
+cornell	789	0	
+prospector	545	0	
+whiterun	920	1	one tile, at (14,17) in one run and (37,20) in a repeat of the same two binaries: frame noise, not a change
+medtek	920	0	
+dugout	851	0	

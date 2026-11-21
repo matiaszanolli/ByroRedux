@@ -1364,6 +1364,66 @@ def capture_sky_env(engine: Engine, ctx: Context) -> Path:
     return path
 
 
+SKY_PROBE_RADIUS_M = 0.45      # reference.rs SKY_PROBE_RADIUS_M, probe centred at the origin
+DIELECTRIC_ETA = 1.5           # F0 = 0.04, the engine's dielectric and principled's specular 0.5
+
+
+def dielectric_fresnel(c: np.ndarray, eta: float = DIELECTRIC_ETA) -> np.ndarray:
+    """Exact unpolarised Fresnel reflectance of a dielectric interface."""
+    c = np.clip(c, 0.0, 1.0)
+    sin_t2 = (1.0 - c * c) / (eta * eta)
+    cos_t = np.sqrt(np.maximum(0.0, 1.0 - sin_t2))
+    rs = (c - eta * cos_t) / (c + eta * cos_t)
+    rp = (eta * c - cos_t) / (eta * c + cos_t)
+    return 0.5 * (rs * rs + rp * rp)
+
+
+def fresnel_recorded_difference(nv: np.ndarray, roughness: float, samples: int = 1024) -> np.ndarray:
+    """RLT-REF-008's recorded difference for the dielectric row's environment
+    specular (rev 48): the engine weights the prefiltered sky by the Schlick
+    split sum F0 A + B (`include/env_brdf_lut.glsl`), the reference's
+    `principled` dielectric by the exact Fresnel. Per NdotV, the ratio of the
+    two directional albedos over the same GGX lobe (alpha = r^2, separable
+    exact Smith G1); the sky radiance factors out under the split sum."""
+    grid = np.linspace(0.02, 1.0, 50)
+    i = np.arange(samples)
+    xi1 = (i + 0.5) / samples
+    xi2 = np.array([int(f"{k:032b}"[::-1], 2) for k in i], dtype=np.float64) / 2.0 ** 32
+    a2 = max(roughness * roughness, 1e-4) ** 2
+    phi = 2.0 * np.pi * xi1
+    ct = np.sqrt((1.0 - xi2) / (1.0 + (a2 - 1.0) * xi2))
+    st = np.sqrt(np.maximum(0.0, 1.0 - ct * ct))
+    h = np.stack([st * np.cos(phi), st * np.sin(phi), ct], axis=1)
+
+    def g1(c):
+        c = np.maximum(c, 1e-6)
+        return 2.0 / (1.0 + np.sqrt(1.0 + a2 * (1.0 - c * c) / (c * c)))
+
+    ratio = []
+    f0 = ((DIELECTRIC_ETA - 1.0) / (DIELECTRIC_ETA + 1.0)) ** 2
+    for c in grid:
+        v = np.array([np.sqrt(1.0 - c * c), 0.0, c])
+        vh = h @ v
+        l = 2.0 * vh[:, None] * h - v
+        ok = (l[:, 2] > 0.0) & (vh > 0.0)
+        w = np.where(ok, g1(c) * g1(l[:, 2]) * vh / (np.maximum(h[:, 2], 1e-6) * c), 0.0)
+        schlick = f0 + (1.0 - f0) * (1.0 - np.clip(vh, 0.0, 1.0)) ** 5
+        ratio.append((schlick * w).mean() / max((dielectric_fresnel(vh) * w).mean(), 1e-12))
+    return np.interp(np.clip(nv, grid[0], 1.0), grid, np.array(ratio))
+
+
+def probe_ndotv(scene_dir: Path, mask: np.ndarray) -> np.ndarray:
+    """NdotV per probe pixel: the sphere's normal at the hit, toward the camera."""
+    _, positions = pixel_hits(scene_dir)
+    p = positions / WORLD_UNITS_PER_METRE
+    scene = mi.load_file(str(scene_dir / "scene.xml"), optimize=False)
+    camera = np.array(scene.sensors()[0].world_transform().translation()).ravel()
+    n = p / SKY_PROBE_RADIUS_M
+    v = camera - p
+    v /= np.maximum(np.linalg.norm(v, axis=-1, keepdims=True), 1e-9)
+    return np.where(mask, np.clip((n * v).sum(-1), 0.0, 1.0), 1.0)
+
+
 def sky_probe_case(view: int) -> str:
     if view < 5:
         return f"dielectric-r{SKY_PROBE_ROUGHNESS[view]:.2f}"
@@ -1421,7 +1481,18 @@ def gate_sky_ibl(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
         ra, key = store.render(export, "direct", spp, 0)
         rb, _ = store.render(export, "direct", spp, 1)
         mask = region_masks(export)["sky_probe"]
-        rows += [(row, key) for row in sky_energy_rows(case, load_exr(ea), load_exr(eb), ra, rb, mask)]
+        ea, eb = load_exr(ea), load_exr(eb)
+        if view < 5:
+            # The dielectric row's recorded difference (rev 48): judge the
+            # engine against the reference times the Schlick / exact-Fresnel
+            # ratio per pixel, and report the raw ratio beside it.
+            diff = fresnel_recorded_difference(probe_ndotv(export, mask), SKY_PROBE_ROUGHNESS[view])[..., None]
+            raw = Row("A6", case, "sky_probe", "energy_ratio_raw", ratio(ea, ra, mask), 0.0, 0.0, passed="report")
+            expected = Row("A6", case, "sky_probe", "fresnel_recorded_difference",
+                           region_mean(ra * diff, mask) / region_mean(ra, mask), 0.0, 0.0, passed="report")
+            rows += [(raw, key), (expected, key)]
+            ra, rb = ra * diff, rb * diff
+        rows += [(row, key) for row in sky_energy_rows(case, ea, eb, ra, rb, mask)]
     return rows
 
 

@@ -38,3 +38,5 @@
                           // set 1 / binding 20 this frame; 0.0 if the bake is
                           // absent, e.g. it failed to initialise under VRAM
                           // pressure — consumers must fall back, see raytrace.glsl)
+    vec4 interiorSky;     // x = interior sky mode (0 none, 1 Show Sky, 2 bounded apertures; the
+                          // composite's sky_lower.w), yzw = 0. M-LIGHT RLT-IBL-006.

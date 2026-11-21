@@ -1557,6 +1557,17 @@ impl VulkanContext {
             camera_cloud_sun_transmittance: self.camera_cloud_sun_transmittance,
         };
         let composite_params = build_composite_params(composite_inputs);
+        // M-LIGHT RLT-IBL-006 — the openings a GI path must cross to read the
+        // portal sky in a bounded-aperture interior (binding 27).
+        let gi_apertures = super::sky_apertures::gi_sky_aperture_planes(
+            sky_params,
+            fog_volumes,
+            camera_pos,
+            render_origin,
+        );
+        if let Err(error) = self.scene_buffers.upload_sky_apertures(&self.device, frame, &gi_apertures) {
+            log::warn!("Failed to upload the GI sky apertures: {error}");
+        }
         self.post_state.aperture_overflow_log.note(
             interior_cell_root,
             dropped_sky_apertures.get(),

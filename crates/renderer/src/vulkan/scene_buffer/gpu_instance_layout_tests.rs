@@ -39,11 +39,11 @@ fn gpu_instance_is_160_bytes_std430_compatible() {
 }
 
 /// Regression for #1028 / R-D6-01, updated for #markarth-precision.
-/// `GpuCamera` must stay 368 B — three `mat4` (192 B) plus eleven
-/// trailing 16-byte vectors (176 B): `position`, `flags`, `screen`, `fog`,
+/// `GpuCamera` must stay 384 B (368 → 384 with `interior_sky`, M-LIGHT RLT-IBL-006) — three `mat4` (192 B) plus twelve
+/// trailing 16-byte vectors (192 B): `position`, `flags`, `screen`, `fog`,
 /// `jitter`, `sky_tint`, `sun_direction` (#1210 Phase A+B),
 /// `dof_params`, `render_origin` (#markarth-precision), `render_debug`,
-/// `exterior_sky_tint` (#3323).
+/// `exterior_sky_tint` (#3323), `interior_sky` (RLT-IBL-006).
 /// Every shader that declares `CameraUBO` (`triangle.vert`,
 /// `triangle.frag`, `water.vert`, `water.frag`, `cluster_cull.comp`,
 /// `caustic_splat.comp`) must match this size — pre-#1028 some
@@ -57,11 +57,11 @@ fn gpu_instance_is_160_bytes_std430_compatible() {
 /// declares `CameraUBO` — they use their own param blocks in
 /// origin-relative space.)
 #[test]
-fn gpu_camera_is_368_bytes() {
+fn gpu_camera_is_384_bytes() {
     assert_eq!(
             size_of::<GpuCamera>(),
-            368,
-            "GpuCamera must be 368 B (352 B + 16 B exterior_sky_tint vec4, #3323) to match \
+            384,
+            "GpuCamera must be 384 B (368 B + 16 B interior_sky vec4, RLT-IBL-006; 352 → 368 with exterior_sky_tint, #3323) to match \
              the CameraUBO declaration in every declaring shader (triangle.vert, triangle.frag, \
              water.vert, water.frag, cluster_cull.comp, caustic_splat.comp — each pinned against the \
              shipped .spv by the reflect.rs uniform_block_size_by_name check, which also covers the \

@@ -199,6 +199,9 @@ pub const SHADOW_COS_WEIGHT_MAX: f32 = 4.0;
 // The blocker search window: (2 * HALF + 1)^2 taps at this stride in pixels.
 pub const SHADOW_FILTER_SEARCH_HALF: u32 = 4;
 pub const SHADOW_FILTER_SEARCH_STRIDE: u32 = 2;
+// M-LIGHT RLT-IBL-003: the split-sum environment BRDF table's side (set 1,
+// binding 26; `scripts/gen_env_brdf_lut.py`, `include/env_brdf_lut.glsl`).
+pub const ENV_BRDF_LUT_SIZE: u32 = 32;
 
 // `GpuCamera.dof_params.w`: the history mode `restir_history_mode` encodes
 // and `triangle.frag` decodes with two thresholds only — "camera parked" is
@@ -2890,6 +2893,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float SHADOW_COS_WEIGHT_MAX),
     shader_define!(Uint SHADOW_FILTER_SEARCH_HALF),
     shader_define!(Uint SHADOW_FILTER_SEARCH_STRIDE),
+    shader_define!(UintPlain ENV_BRDF_LUT_SIZE),
     shader_define!(Float HISTORY_MODE_MOVING),
     shader_define!(Float HISTORY_MODE_PARKED),
     shader_define!(Float HISTORY_MODE_SCENE_STATIC),

@@ -1,7 +1,79 @@
 //! Sky-aperture selection for the composite pass (VLM-INT-005): which marked openings reach the GPU
 //! when a cell carries more than the composite UBO holds, and the once-per-cell log when some do not.
-//! Split out of `frame_params.rs` (#5089's file budget) with its tests.
+//! Split out of `frame_params.rs` (#5089's file budget) with its tests. Also the interior sky
+//! mode and the aperture planes the main pass's GI escape reads (M-LIGHT RLT-IBL-006).
 use super::super::composite::CompositeSkyAperture;
+
+/// A fog volume that marks an interior's sky opening: a box or cone light
+/// shaft authored as an aperture (`profile_params.w`). The composite's sky
+/// mask and the main pass's GI escape (RLT-IBL-006) select openings with this
+/// one predicate.
+pub(super) fn is_sky_aperture(volume: &super::super::volumetrics::GpuFogVolume) -> bool {
+    (volume.center_shape[3] == crate::shader_constants::FOG_VOLUME_SHAPE_BOX as f32
+        || volume.center_shape[3] == crate::shader_constants::FOG_VOLUME_SHAPE_CONE as f32)
+        && (volume.profile_params[0] - super::super::volumetrics::FOG_VOLUME_PROFILE_LIGHT_SHAFT).abs()
+            < 0.5
+        && volume.profile_params[3] >= 0.5
+}
+
+/// The aperture planes the main pass tests an escaping GI ray against
+/// (set 1 / binding 27, RLT-IBL-006): in a bounded-aperture interior, the
+/// openings nearest the camera, each its source plane relative to the render
+/// origin. Elsewhere none: a Show Sky interior's every escape sees the sky, and
+/// a sealed one's none does.
+pub(super) fn gi_sky_aperture_planes(
+    sky_params: &super::types::SkyParams,
+    volumes: &[super::super::volumetrics::GpuFogVolume],
+    camera_pos: [f32; 3],
+    render_origin: byroredux_core::math::Vec3,
+) -> Vec<super::super::scene_buffer::GpuSkyAperturePlane> {
+    use byroredux_core::math::Vec3;
+    if interior_sky_mode(sky_params) < 1.5 {
+        return Vec::new();
+    }
+    let camera = Vec3::from_array(camera_pos);
+    let mut planes: Vec<(f32, super::super::scene_buffer::GpuSkyAperturePlane)> = volumes
+        .iter()
+        .filter(|volume| is_sky_aperture(volume))
+        .filter_map(|volume| {
+            let centre = Vec3::from_slice(&volume.center_shape[..3]);
+            let half = &volume.half_extents_extinction;
+            (centre.is_finite() && half[0] > 0.0 && half[1] > 0.0).then(|| {
+                let rel = centre - render_origin;
+                (
+                    (centre - camera).length_squared(),
+                    super::super::scene_buffer::GpuSkyAperturePlane {
+                        center: [rel.x, rel.y, rel.z, 0.0],
+                        half_extents: [half[0], half[1], 0.0, 0.0],
+                        inverse_rotation: volume.inverse_rotation,
+                    },
+                )
+            })
+        })
+        .collect();
+    planes.sort_by(|a, b| a.0.total_cmp(&b.0));
+    planes.truncate(super::super::composite::MAX_SKY_APERTURES);
+    planes.into_iter().map(|(_, plane)| plane).collect()
+}
+
+/// The interior sky mode: 0 none (an exterior, or a sealed interior), 1 Show
+/// Sky (the whole cell is open to the sky), 2 bounded apertures (an outdoor
+/// palette seen only through marked openings). The composite packs it into
+/// `sky_lower.w`; the main pass reads it as `CameraUBO.interiorSky.x` so a GI
+/// path that leaves the cell reads the same sky the composite paints
+/// (M-LIGHT RLT-IBL-006). One function so the two cannot disagree.
+pub(super) fn interior_sky_mode(sky_params: &super::types::SkyParams) -> f32 {
+    if sky_params.is_exterior {
+        0.0
+    } else if sky_params.interior_show_sky {
+        1.0
+    } else if sky_params.portal_outdoor_sky.is_some() {
+        2.0
+    } else {
+        0.0
+    }
+}
+
 
 /// VLM-INT-005: keep the apertures nearest the camera, as many as `out` holds, in nearest-first order,
 /// and count how many were dropped. Each [`Self::push`] carries the aperture's squared distance to the
@@ -166,5 +238,68 @@ mod sky_aperture_overflow_tests {
         assert!(log.should_report(Some(2), 7));
         assert!(!log.should_report(None, 0));
         assert!(log.should_report(Some(2), 7));
+    }
+}
+
+#[cfg(test)]
+mod gi_sky_aperture_tests {
+    use super::*;
+    use crate::vulkan::context::types::SkyParams;
+    use crate::vulkan::volumetrics::{GpuFogVolume, FOG_VOLUME_PROFILE_LIGHT_SHAFT};
+    use byroredux_core::math::Vec3;
+
+    fn window(x: f32) -> GpuFogVolume {
+        let mut volume = GpuFogVolume {
+            center_shape: [x, 200.0, 300.0, crate::shader_constants::FOG_VOLUME_SHAPE_BOX as f32],
+            half_extents_extinction: [10.0, 20.0, 5.0, 0.0],
+            inverse_rotation: [0.0, 0.0, 0.0, 1.0],
+            ..Default::default()
+        };
+        volume.profile_params[0] = FOG_VOLUME_PROFILE_LIGHT_SHAFT;
+        volume.profile_params[3] = 1.0;
+        volume
+    }
+
+    fn outdoor() -> SkyParams {
+        SkyParams { is_exterior: true, ..SkyParams::default() }
+    }
+
+    /// RLT-IBL-006: the camera and the composite read one sky mode.
+    #[test]
+    fn interior_sky_mode_matches_the_composite_lanes() {
+        assert_eq!(interior_sky_mode(&outdoor()), 0.0);
+        let sealed = SkyParams { is_exterior: false, ..SkyParams::default() };
+        assert_eq!(interior_sky_mode(&sealed), 0.0);
+        let show_sky = SkyParams { is_exterior: false, interior_show_sky: true, ..SkyParams::default() };
+        assert_eq!(interior_sky_mode(&show_sky), 1.0);
+        let bounded = SkyParams {
+            is_exterior: false,
+            portal_outdoor_sky: Some(outdoor().into()),
+            ..SkyParams::default()
+        };
+        assert_eq!(interior_sky_mode(&bounded), 2.0);
+    }
+
+    /// Only a bounded-aperture interior uploads planes, marked openings only,
+    /// relative to the render origin and nearest the camera first.
+    #[test]
+    fn gi_planes_are_the_marked_openings_nearest_first() {
+        let bounded = SkyParams {
+            is_exterior: false,
+            portal_outdoor_sky: Some(outdoor().into()),
+            ..SkyParams::default()
+        };
+        let mut unmarked = window(0.0);
+        unmarked.profile_params[3] = 0.0;
+        let volumes = [window(500.0), unmarked, window(50.0)];
+        let origin = Vec3::new(10.0, 0.0, 0.0);
+        let planes = gi_sky_aperture_planes(&bounded, &volumes, [0.0, 200.0, 300.0], origin);
+        assert_eq!(planes.len(), 2, "the unmarked beam is not an opening");
+        assert_eq!(planes[0].center[0], 40.0, "nearest first, relative to the render origin");
+        assert_eq!(planes[1].center[0], 490.0);
+        assert_eq!(planes[0].half_extents[..2], [10.0, 20.0]);
+        let show_sky = SkyParams { is_exterior: false, interior_show_sky: true, ..SkyParams::default() };
+        assert!(gi_sky_aperture_planes(&show_sky, &volumes, [0.0; 3], origin).is_empty());
+        assert!(gi_sky_aperture_planes(&outdoor(), &volumes, [0.0; 3], origin).is_empty());
     }
 }
