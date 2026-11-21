@@ -2,8 +2,8 @@
 
 **Status**: REVIEWED and approved by Matías on 2026-11-21 (#6198); the decisions are in §9.
 Drafted 2026-10-22. Follows TSD-1 (#6195 height maps), TSD-2 (#6196 height blend) and
-TSD-3 (#6197 parallax), which are shipped. Next: #7149 (BTXT-only tile slots), then the
-§8 spike, #7150.
+TSD-3 (#6197 parallax), which are shipped. #7149 (BTXT-only tile slots) and the §8 spike
+(#7150, result in §8.1: go) are done; next is stage 4.1, #7152.
 
 **Question this answers**: if parallax (TSD-3) is not enough, how would real geometry
 displacement work in an engine whose shadows, reflections and GI are ray-traced, what would
@@ -227,7 +227,7 @@ Projected for the §3 defaults (24 patches × 8 192 triangles = 197 k):
   prepass, so whether the base terrain under a patch is shaded twice depends on draw order.
   Looking down, the patches cover most of the screen; this is the open number.
 
-**Verdict (for review):** go for stage 4.1. (a) + (b) ≈ 0.46–0.53 ms with 24 BLASes, or
+**Verdict: GO for stage 4.1** (Matías, 2026-11-21; #7150 closed, stage 4.1 is #7152). (a) + (b) ≈ 0.46–0.53 ms with 24 BLASes, or
 ≈ 0.19–0.26 ms with one BLAS, which leaves 0.5–0.8 ms of the 1.0 ms total for raster. 4.1
 (raster only, no RT) is where (c)/(d) get measured; 4.2 should build the patches as one
 multi-geometry BLAS rather than 24.
