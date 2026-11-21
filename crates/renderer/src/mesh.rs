@@ -338,6 +338,13 @@ pub struct MeshRegistry {
     /// Also distinct from `geometry_dirty`, which appends set too and which
     /// therefore cannot express "a hole exists".
     geometry_has_holes: bool,
+    /// Vertices / indices of the dropped scene meshes whose spans are still in
+    /// `pending_vertices` / `pending_indices`, waiting for the compaction that
+    /// runs only between streaming batches. Admission tests the *live* pools
+    /// (`len - dead`), so a crossing's own unload frees room for that
+    /// crossing's loads at once instead of after the batch has drained (#6106).
+    dead_vertices: usize,
+    dead_indices: usize,
     /// Number of vertices in the SSBO at last build. Used to detect
     /// whether a rebuild is needed vs. the current pending state.
     ssbo_vertex_count: usize,
@@ -467,6 +474,8 @@ impl MeshRegistry {
             pool_limits: PoolLimits::DEFAULT,
             scene_geometry_admission_rejections: 0,
             geometry_has_holes: false,
+            dead_vertices: 0,
+            dead_indices: 0,
             ssbo_vertex_count: 0,
             ssbo_index_count: 0,
             deferred_destroy: DeferredDestroyQueue::new(),
@@ -696,14 +705,36 @@ impl MeshRegistry {
         let v_offset = self.pending_vertices.len() as u32;
         let i_offset = self.pending_indices.len() as u32;
 
+        // Dropped spans awaiting compaction may push the raw pools past the
+        // caps only up to the dead-span credit (#6106).
+        let (vertex_ceiling, index_ceiling) = self.pool_limits.pool_ceiling();
+        if self.pending_vertices.len() + vertices.len() > vertex_ceiling
+            || self.pending_indices.len() + indices.len() > index_ceiling
+        {
+            latch_refusal(self);
+            self.scene_geometry_admission_rejections += 1;
+            bail!(
+                "geometry pools hold {} dead vertices / {} dead indices awaiting compaction; \
+                 appending {} / {} would pass the pool ceiling ({vertex_ceiling} / {index_ceiling})",
+                self.dead_vertices,
+                self.dead_indices,
+                vertices.len(),
+                indices.len(),
+            );
+        }
+
         // Defence-in-depth growth caps (#1016 / REN-D2-005). A correct
         // streaming session keeps `pending_vertices`/`pending_indices`
         // bounded via the cell-unload `drop_mesh` path; these caps catch
-        // a regression in that path before the allocator OOMs.
-        let new_v_len = self.pending_vertices.len() + vertices.len();
-        let new_i_len = self.pending_indices.len() + indices.len();
+        // a regression in that path before the allocator OOMs. They test the
+        // *live* pools: spans dropped since the last compaction are free room
+        // (#6106).
+        let live_vertices = self.pending_vertices.len().saturating_sub(self.dead_vertices);
+        let live_indices = self.pending_indices.len().saturating_sub(self.dead_indices);
+        let new_v_len = live_vertices + vertices.len();
+        let new_i_len = live_indices + indices.len();
         let v_warn = match check_pool_growth(
-            self.pending_vertices.len(),
+            live_vertices,
             new_v_len,
             VERTEX_POOL_SOFT_CAP.min(vertex_hard),
             vertex_hard,
@@ -717,7 +748,7 @@ impl MeshRegistry {
             }
         };
         let i_warn = match check_pool_growth(
-            self.pending_indices.len(),
+            live_indices,
             new_i_len,
             INDEX_POOL_SOFT_CAP.min(index_hard),
             index_hard,
@@ -1293,6 +1324,12 @@ impl MeshRegistry {
         if let Some(slot) = self.meshes.get_mut(idx)
             && let Some(mesh) = slot.take() {
                 was_scene_mesh = mesh.is_scene_mesh;
+                if was_scene_mesh {
+                    // #6106 — the span stays in the pools until compaction, but
+                    // it no longer counts against admission.
+                    self.dead_vertices += mesh.vertex_count as usize;
+                    self.dead_indices += mesh.index_count as usize;
+                }
                 self.deferred_destroy
                     .push((mesh.vertex_buffer, mesh.index_buffer), DEFAULT_COUNTDOWN);
             }
@@ -1711,6 +1748,56 @@ mod refcount_tests {
         assert!(upload_as(&mut reg, Essential, 30).is_err(), "the full cap still binds");
         assert!(!reg.scene_geometry_admission_open(), "now the global latch closes");
         assert!(!reg.prop_geometry_admission_open(), "and takes the prop tier with it");
+    }
+
+    /// #6106 — a crossing unloads cells and loads new ones before the
+    /// between-batch compaction runs. The unloaded spans stay in the pools, but
+    /// admission counts only live geometry, so the crossing's loads get the room
+    /// at once; the dead-span credit still bounds the raw pools, and the
+    /// compaction clears the dead count.
+    #[test]
+    fn a_crossings_unload_frees_room_for_its_loads_before_compaction() {
+        use GeometryAdmissionClass::Prop;
+        let mut reg = small_pool_registry(1000, 4000);
+        assert_eq!(PoolLimits::with_default_reserve(1000, 4000).pool_ceiling(), (1250, 5000));
+
+        let rows: Vec<u32> =
+            (0..9).map(|_| upload_as(&mut reg, Prop, 100).expect("fits")).collect();
+        upload_as(&mut reg, Prop, 30).expect("930 live, under the prop ceiling of 950");
+
+        // The crossing unloads two rows; their 200 vertices are still in the pools.
+        assert_eq!(reg.drop_meshes(&rows[..2]), 2);
+        assert_eq!(reg.pending_vertices.len(), 930, "no compaction yet");
+        assert_eq!(reg.dead_vertices, 200);
+
+        // Its loads fit in the freed room: 730 + 100 + 100 = 930 live.
+        upload_as(&mut reg, Prop, 100).expect("the freed room is admitted before compaction");
+        upload_as(&mut reg, Prop, 100).expect("second row fits too");
+        assert!(reg.prop_geometry_admission_open());
+        assert_eq!(reg.pending_vertices.len(), 1130, "raw pools past the cap, under the ceiling");
+
+        // Live 930 + 30 > 950: the live cap still binds.
+        assert!(upload_as(&mut reg, Prop, 30).is_err());
+
+        // Compaction squeezes the dead spans out and clears the count.
+        reg.compact_pending_geometry();
+        assert_eq!((reg.pending_vertices.len(), reg.dead_vertices, reg.dead_indices), (930, 0, 0));
+        assert!(reg.prop_geometry_admission_open(), "the compaction reopened the latch");
+    }
+
+    /// #6106 — dead spans may push the raw pools past the caps only up to the
+    /// dead-span credit; past it an upload is refused until a compaction.
+    #[test]
+    fn dead_spans_past_the_credit_refuse_until_compaction() {
+        use GeometryAdmissionClass::Essential;
+        let mut reg = small_pool_registry(1000, 4000);
+        let first = upload_as(&mut reg, Essential, 900).expect("fits");
+        reg.drop_meshes(&[first]);
+        upload_as(&mut reg, Essential, 300).expect("1200 raw, under the 1250 ceiling");
+        assert!(upload_as(&mut reg, Essential, 60).is_err(), "1260 raw passes the ceiling");
+        assert!(!reg.scene_geometry_admission_open(), "refused at the ceiling latches the tier");
+        reg.compact_pending_geometry();
+        upload_as(&mut reg, Essential, 60).expect("compaction reclaimed the dead spans");
     }
 
     /// A latched prop tier turns later props away without touching the pool
