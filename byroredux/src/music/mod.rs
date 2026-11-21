@@ -80,8 +80,9 @@ impl MusicOutput for AudioOutput<'_> {
 /// `NOT_SAVED_BY_DESIGN`: a translation of the load order.
 #[derive(Default)]
 pub(crate) struct MusicCatalog {
-    /// The `LoadedCellIndex` it was built from, by address.
-    index: usize,
+    /// The `LoadedCellIndex` it was built from. A `Weak`, compared by `Weak::ptr_eq`, so a later
+    /// index cannot reuse the address of a freed one and keep a stale catalog (#7114).
+    index: std::sync::Weak<byroredux_plugin::esm::records::EsmIndex>,
     catalog: Option<Arc<Catalog>>,
     /// Kept behind an `Arc`, so a frame in the same place reuses it rather than building the key
     /// again ([`current_place`], #6946).
@@ -202,8 +203,8 @@ pub(crate) fn end_script_layer(world: &World) {
 /// `MusicCatalog`, then `SoundArchiveProvider` while it builds: the order [`music_system`] keeps.
 fn current_catalog(world: &World, index: &Arc<byroredux_plugin::esm::records::EsmIndex>) -> Option<Arc<Catalog>> {
     let mut state = world.try_resource_mut::<MusicCatalog>()?;
-    let address = Arc::as_ptr(index) as usize;
-    if state.index != address || state.catalog.is_none() {
+    let built_for = Arc::downgrade(index);
+    if !std::sync::Weak::ptr_eq(&state.index, &built_for) || state.catalog.is_none() {
         let keys = world
             .try_resource::<crate::asset_provider::SoundArchiveProvider>()
             .map(|provider| provider.music_keys())
@@ -220,7 +221,7 @@ fn current_catalog(world: &World, index: &Arc<byroredux_plugin::esm::records::Es
             catalog.recovery_secs
         );
         state.catalog = Some(Arc::new(catalog));
-        state.index = address;
+        state.index = built_for;
         state.place = None;
     }
     state.catalog.clone()
