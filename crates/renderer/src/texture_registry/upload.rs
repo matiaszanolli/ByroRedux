@@ -375,7 +375,7 @@ impl TextureRegistry {
             color_space,
             path: path.to_string(),
             change: None,
-            epoch: self.stream_epoch,
+            generation: self.source_generation(),
         });
         Ok(EnqueueOutcome::Reserved(handle))
     }
@@ -436,7 +436,7 @@ impl TextureRegistry {
             color_space,
             path,
             change: Some(change),
-            epoch: self.stream_epoch,
+            generation: self.source_generation(),
         });
         Some(change)
     }
@@ -484,17 +484,35 @@ impl TextureRegistry {
         self.stream_sources.insert(handle, source);
     }
 
-    /// #7167 — the host's archives changed under the textures already
-    /// floored (an archive replaced on disk, its streamer provider rebuilt):
-    /// every source floored or queued so far stops promoting. Each keeps the
-    /// levels it holds, all read from the old file, so no texture mixes mips
-    /// of two files; it can still demote, and is re-floored from the new file
-    /// once released and loaded again. Requests not yet taken by the host are
-    /// dropped (every one is for a retired source); reads already in flight
-    /// land, from the old file, on the textures they were read for.
-    pub fn retire_stream_sources(&mut self) {
-        self.stream_epoch += 1;
-        self.promotion_requests.clear();
+    /// #7169 — the counter the host moves whenever an archive is replaced on
+    /// disk (`asset_provider::archive_replacements`), read as each upload is
+    /// queued. A cell load's provider notices a replacement while it is built,
+    /// before it reads that cell's floors, so the value at queue time says
+    /// which files a floor's bytes came from.
+    pub fn set_source_generation_counter(&mut self, counter: &'static std::sync::atomic::AtomicU64) {
+        self.generation_source = Some(counter);
+    }
+
+    pub(super) fn source_generation(&self) -> u64 {
+        self.generation_source
+            .map_or(0, |counter| counter.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// #7167, #7169 — the generation the host's promotion reads now come from
+    /// (its streamer provider's). Only sources floored under it are promoted:
+    /// one floored from a replaced file keeps the levels it holds, all from
+    /// that file, so no texture mixes mips of two files (it can still demote,
+    /// and is re-floored from the new file once released and loaded again),
+    /// while one floored from the new file promotes as soon as the reads do
+    /// too. #7169: the stamp is the generation at queue time, not a count the
+    /// host advanced afterwards, which retired the first new floors too. A
+    /// change drops the requests not yet taken (they were asked for under the
+    /// old reads); reads in flight land on the textures they were read for.
+    pub fn set_promotable_generation(&mut self, generation: u64) {
+        if generation != self.promotable_generation {
+            self.promotable_generation = generation;
+            self.promotion_requests.clear();
+        }
     }
 
     /// Drop a streamed texture's source on its last release.
@@ -556,10 +574,11 @@ impl TextureRegistry {
             if target < r.first_resident {
                 stats.deficits += 1;
                 source.coarser_since = None;
-                // #7167 — a source retired by an archive replacement keeps its levels.
+                // #7167, #7169 — a source floored from other files than the
+                // promotion reads keeps its levels.
                 if !queued.contains_key(&handle)
                     && frame >= source.retry_after_frame
-                    && source.epoch == self.stream_epoch
+                    && source.generation == self.promotable_generation
                 {
                     candidates.push((
                         w.case,
@@ -1711,7 +1730,7 @@ impl TextureRegistry {
     }
 
     /// Record each installed floor's source.
-    fn record_floor_sources(
+    pub(super) fn record_floor_sources(
         &mut self,
         pending: &[PendingDdsUpload],
         floor_sources: Vec<(TextureHandle, bool, usize, usize)>,
@@ -1747,7 +1766,7 @@ impl TextureRegistry {
                     level_bytes,
                     declined_target: None,
                     retry_after_frame: 0,
-                    epoch: upload.epoch,
+                    generation: upload.generation,
                 },
             );
         }

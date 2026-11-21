@@ -153,7 +153,8 @@ fn make_registry_for_overflow_test(max_textures: u32, occupied: usize) -> Textur
         pending_dds_uploads: Vec::new(),
         pending_promotions: Vec::new(),
         stream_sources: Default::default(),
-        stream_epoch: 0,
+        generation_source: None,
+        promotable_generation: 0,
         stream_widths: Vec::new(),
         promotion_requests: Vec::new(),
         streaming: false,
@@ -1417,7 +1418,7 @@ fn stream_source(path: &str) -> StreamSource {
             .collect(),
         declined_target: None,
         retry_after_frame: 0,
-        epoch: 0,
+        generation: 0,
     }
 }
 
@@ -1593,7 +1594,7 @@ fn promotion_flush_takes_in_order_within_the_byte_bound() {
         color_space: TextureColorSpace::Srgb,
         path: String::new(),
         change: None,
-        epoch: 0,
+        generation: 0,
     };
     let pending: Vec<PendingDdsUpload> = [300u64, 300, 500, 10].into_iter().map(queued).collect();
     assert_eq!(upload::promotion_take_count(&pending, 600, 64), 2);
@@ -1724,7 +1725,7 @@ fn cell_load_ready_records_only_when_nothing_is_queued() {
         color_space: TextureColorSpace::Srgb,
         path: String::new(),
         change: None,
-        epoch: 0,
+        generation: 0,
     });
     assert_eq!(reg.record_cell_load_ready(started), None, "an upload is still queued");
     assert_eq!(reg.cell_loads_timed, 0);
@@ -2068,27 +2069,52 @@ fn both_enqueue_entry_points_pass_the_parsed_alpha_to_the_reservation() {
     }
 }
 
-/// #7167 — after `retire_stream_sources` (an archive replaced on disk), a texture floored
-/// before it is not promoted again, so its levels never mix two files, and a request still
-/// waiting for the host is dropped; a source floored after it streams as usual.
+/// #7167, #7169 — a floor promotes only while it was queued under the generation the host's
+/// promotion reads come from. The order a replacement really takes: a cell load's provider build
+/// moves the counter, that cell's floors (read from the new file) are queued, and only then does
+/// the streamer rebuild and the host move the promotable generation. The first floors from the
+/// new file must not be retired with the old ones (#7169, which the #7167 counter did), and a
+/// floor from the old file must stop promoting once the reads come from the new file (#7167).
 #[test]
-fn a_retired_stream_source_is_not_promoted_again() {
+fn a_floor_promotes_only_under_the_generation_it_was_read_from() {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let wanted = HashMap::from([
         (0, residency::WantedMip { level: 0, case: WantedCase::Drawn, distance: 1.0 }),
         (1, residency::WantedMip { level: 0, case: WantedCase::Drawn, distance: 1.0 }),
     ]);
     let mut reg = make_registry_for_overflow_test(64, 0);
+    reg.set_source_generation_counter(&COUNTER);
     reg.textures.push(streamable_entry(7, 2));
     reg.textures.push(streamable_entry(7, 2));
-    reg.stream_sources.insert(0, stream_source("textures\\old.dds"));
-    reg.current_frame_id = 10;
-    reg.apply_wanted(&wanted);
-    assert_eq!(reg.promotion_requests.len(), 1, "wanted finer, so requested");
-    reg.retire_stream_sources();
-    assert!(reg.take_promotion_requests(8).is_empty(), "the waiting request is dropped");
-    reg.stream_sources.insert(1, StreamSource { epoch: reg.stream_epoch, ..stream_source("textures\\new.dds") });
-    reg.current_frame_id = 11;
-    reg.apply_wanted(&wanted);
-    let requests = reg.take_promotion_requests(8);
-    assert_eq!(requests.iter().map(|r| r.handle).collect::<Vec<_>>(), [1], "only the source floored after it");
+    // What enqueue records for a floor: the counter's value as it is queued.
+    let floor = |reg: &TextureRegistry, handle| PendingDdsUpload {
+        handle,
+        dds_bytes: bc1_dds_from_level(2),
+        staged_bytes: 0,
+        clamp_mode: 0,
+        view_kind: TextureViewKind::D2,
+        color_space: TextureColorSpace::Srgb,
+        path: format!("textures\\t{handle}.dds"),
+        change: None,
+        generation: reg.source_generation(),
+    };
+    let requested = |reg: &mut TextureRegistry, frame| {
+        reg.current_frame_id = frame;
+        reg.apply_wanted(&wanted);
+        let mut handles: Vec<TextureHandle> = reg.take_promotion_requests(8).into_iter().map(|r| r.handle).collect();
+        handles.sort_unstable();
+        reg.promotion_requests.clear();
+        handles
+    };
+    let old = [floor(&reg, 0)];
+    reg.record_floor_sources(&old, vec![(0, false, 0, 128)]);
+    assert_eq!(requested(&mut reg, 10), [0], "a floor promotes under the reads it was floored with");
+    // A cell load's provider build notices a replaced archive, then floors that cell's texture.
+    COUNTER.store(1, std::sync::atomic::Ordering::Relaxed);
+    let new = [floor(&reg, 1)];
+    reg.record_floor_sources(&new, vec![(1, false, 0, 128)]);
+    assert_eq!(requested(&mut reg, 11), [0], "until the reads move, only the old floor promotes");
+    // The streamer rebuilds; its reads now come from the new file.
+    reg.set_promotable_generation(1);
+    assert_eq!(requested(&mut reg, 12), [1], "the new floor promotes, the old one keeps its levels");
 }

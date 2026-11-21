@@ -88,16 +88,22 @@ fn push_texture_streaming(
     }
     // #7144 — the streamer's provider outlives cell transitions; rebuild it once an archive was
     // replaced on disk, so its promotions and the floors read the same file.
+    let generation = crate::asset_provider::archive_replacements();
     if let Some(streamer) = streamer.as_mut()
-        && streamer.refresh_provider(crate::asset_provider::archive_replacements(), build_provider)
+        && streamer.refresh_provider(generation, build_provider)
     {
-        // #7167 — textures floored from the old file stop promoting, so none mixes two files.
-        ctx.texture_registry.retire_stream_sources();
         log::info!(
-            "texture streamer: an archive was replaced on disk; its provider was rebuilt and the \
-             textures already streamed keep the levels they hold"
+            "texture streamer: an archive was replaced on disk; its provider was rebuilt, and \
+             textures floored from the old file keep the levels they hold"
         );
     }
+    // #7167, #7169 — floors are stamped with the archive generation they were queued under, and
+    // only those floored under the generation the streamer now reads from promote: a texture
+    // floored from a replaced file never mixes in the new one's mips, and one floored from the
+    // new file (by the cell load that noticed the replacement) promotes as soon as the reads do.
+    ctx.texture_registry
+        .set_source_generation_counter(crate::asset_provider::archive_replacement_counter());
+    ctx.texture_registry.set_promotable_generation(generation);
     if let Some(streamer) = streamer.as_mut() {
         if streaming {
             streamer.update_wanted(draws, ctx, frame.camera_pos, frame.camera_fov_y);

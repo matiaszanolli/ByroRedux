@@ -410,6 +410,12 @@ pub(crate) fn archive_replacements() -> u64 {
     ARCHIVE_REPLACEMENTS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// [`ARCHIVE_REPLACEMENTS`] itself, for the texture registry to stamp each queued floor with
+/// the generation its bytes were read under (#7169).
+pub(crate) fn archive_replacement_counter() -> &'static std::sync::atomic::AtomicU64 {
+    &ARCHIVE_REPLACEMENTS
+}
+
 impl Archive {
     /// The loose-file tier of the game `Data` directory `data_dir` (#6200),
     /// or `None` when it holds no loose assets — the common case for a
