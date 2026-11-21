@@ -408,16 +408,8 @@ fn load_scene_content(
     let cornell_glass_dragon = crate::cornell::glass_dragon_mode(args);
     let cornell_sun = cornell_sun_mode(args);
     let studio_mode = args.iter().any(|arg| arg == "--studio");
-    let diagnostic_scene = combustion_lab
-        || godray_lab.is_some()
-        || recede_lab
-        || shaft_lab.is_some()
-        || shaft_card_lab.is_some()
-        || cornell_glass_dragon
-        || cornell_oracle.is_some()
-        || cornell_reference.is_some()
-        || cornell_sun.is_some()
-        || studio_mode;
+    // #7186 — the one harness predicate, shared with the profile expander.
+    let diagnostic_scene = crate::cornell::is_harness_launch(args) || studio_mode;
     let mut harness_cam: Option<(Vec3, Vec3)> = None;
     let mut authored_spawn: Option<cell_loader::SpawnPose> = None;
 

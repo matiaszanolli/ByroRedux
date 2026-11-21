@@ -320,17 +320,11 @@ pub(super) fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
         "--cmd",
         "--master",
         "--studio",
-        "--cornell",
-        "--cornell-sun",
-        "--cornell-oracle",
-        "--cornell-glass-dragon",
-        "--combustion-lab",
-        "--combustion-lab-nuclear",
-        "--combustion-lab-steam",
-        "--recede-lab",
     ]
     .iter()
-    .any(|f| args.iter().any(|a| a == f));
+    .any(|f| args.iter().any(|a| a == f))
+        // #7186 — every renderer harness, through the predicate the scene dispatches by.
+        || crate::cornell::is_harness_launch(&args);
     let game_key = match parse_string_arg(&args, "--game") {
         Some(k) => k,
         None => match defaults.game.clone() {
