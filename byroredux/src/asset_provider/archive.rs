@@ -45,7 +45,7 @@ enum Backend {
 /// The asset folders a game's `Data` directory can carry loose overrides in:
 /// the same top-level roots the archives store their entries under.
 /// `geometries` is Starfield's external `.mesh` data (`geometries\<hash>.mesh`,
-/// no `meshes\` prefix — see [`normalize_mesh_path`]); without it a loose NIF
+/// no `meshes\` prefix — see [`normalize_mesh_path`](byroredux_core::paths::normalize_mesh_path)); without it a loose NIF
 /// override that names new `.mesh` bodies resolves none of them (#6330).
 /// `music` is where Oblivion, Fallout 3 and New Vegas ship all their music,
 /// loose (Game Music MUS-SRC-011): the sound provider's loose tier reads it.
@@ -686,51 +686,6 @@ impl byroredux_ui::ScaleformResourceProvider for Archive {
             Ok(None)
         }
     }
-}
-
-/// Prepend `meshes\` to a NIF path when the input doesn't already
-/// start with that segment (case-insensitive, accepts either
-/// separator). `MODL` sub-records on RACE / NPC_ / ARMO records are
-/// authored relative to the `meshes\` root; the BSA layer stores the
-/// full prefix. Allocation only fires when the prefix is missing —
-/// already-prefixed paths borrow. The single home of "prepend `meshes\`
-/// unless present" (#6956): [`archive_mesh_path`] and
-/// [`canonical_mesh_key`] are its owned forms.
-pub fn normalize_mesh_path(path: &str) -> std::borrow::Cow<'_, str> {
-    let bytes = path.as_bytes();
-    if bytes.len() >= 7 {
-        let head = &bytes[..7];
-        if head.eq_ignore_ascii_case(b"meshes\\") || head.eq_ignore_ascii_case(b"meshes/") {
-            return std::borrow::Cow::Borrowed(path);
-        }
-    }
-    // #1292 — Starfield content-addressed BSGeometry external `.mesh`
-    // companion files live at `geometries\<hash>.mesh` (NO `meshes\`
-    // prefix). The importer at `crates/nif/src/import/mesh/bs_geometry.rs`
-    // composes the canonical path before calling the resolver; without
-    // this gate the normaliser silently prepended `meshes\` and turned
-    // every Starfield poster / architecture / set-dressing lookup into
-    // a guaranteed miss → 99.7% spawn-rate failure on Cydonia.
-    if bytes.len() >= 11 {
-        let head = &bytes[..11];
-        if head.eq_ignore_ascii_case(b"geometries\\") || head.eq_ignore_ascii_case(b"geometries/") {
-            return std::borrow::Cow::Borrowed(path);
-        }
-    }
-    std::borrow::Cow::Owned(format!(r"meshes\{}", path))
-}
-
-/// `path` as an archive mesh key: leading separators trimmed, `/` turned into `\`, and
-/// `meshes\` prefixed per [`normalize_mesh_path`] (case kept).
-pub fn archive_mesh_path(path: &str) -> String {
-    let path = path.trim_start_matches(['\\', '/']).replace('/', "\\");
-    normalize_mesh_path(&path).into_owned()
-}
-
-/// [`archive_mesh_path`], lower-cased: the key a lookup table or cache shares between
-/// every producer of it.
-pub fn canonical_mesh_key(path: &str) -> String {
-    archive_mesh_path(&path.to_ascii_lowercase())
 }
 
 /// Strip the Bethesda build-server prefix from an asset path.

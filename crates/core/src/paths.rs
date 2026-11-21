@@ -33,6 +33,55 @@ pub fn is_bare_component(name: &str) -> bool {
     !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', ':'])
 }
 
+/// Prepend `meshes\` to a NIF path when the input doesn't already
+/// start with that segment (case-insensitive, accepts either
+/// separator). `MODL` sub-records on RACE / NPC_ / ARMO records are
+/// authored relative to the `meshes\` root; the BSA layer stores the
+/// full prefix. Allocation only fires when the prefix is missing —
+/// already-prefixed paths borrow. The single home of "prepend `meshes\`
+/// unless present" (#6956): [`archive_mesh_path`] and
+/// [`canonical_mesh_key`] are its owned forms. #7145 — moved here from the
+/// binary's `asset_provider/archive.rs` (which re-exports all three) so the
+/// renderer's mesh cache keys through the same rule, `geometries\` exemption
+/// included, instead of a copy of its own.
+pub fn normalize_mesh_path(path: &str) -> std::borrow::Cow<'_, str> {
+    // #1292 — Starfield content-addressed BSGeometry external `.mesh`
+    // companion files live at `geometries\<hash>.mesh` (NO `meshes\`
+    // prefix). The importer at `crates/nif/src/import/mesh/bs_geometry.rs`
+    // composes the canonical path before calling the resolver; without
+    // this gate the normaliser silently prepended `meshes\` and turned
+    // every Starfield poster / architecture / set-dressing lookup into
+    // a guaranteed miss → 99.7% spawn-rate failure on Cydonia.
+    if starts_with_root(path, "meshes") || starts_with_root(path, "geometries") {
+        return std::borrow::Cow::Borrowed(path);
+    }
+    std::borrow::Cow::Owned(format!(r"meshes\{}", path))
+}
+
+/// Whether `path` starts with the folder `root` and a separator (`\` or `/`), `root`'s case
+/// ignored. Compared as bytes, so a name whose cut would land inside a multi-byte character
+/// cannot panic (#3391). The root test [`normalize_mesh_path`] and the Starfield `geometries\`
+/// composer in `crates/nif` share (#7145).
+pub fn starts_with_root(path: &str, root: &str) -> bool {
+    let (bytes, root) = (path.as_bytes(), root.as_bytes());
+    bytes.len() > root.len()
+        && bytes[..root.len()].eq_ignore_ascii_case(root)
+        && matches!(bytes[root.len()], b'\\' | b'/')
+}
+
+/// `path` as an archive mesh key: leading separators trimmed, `/` turned into `\`, and
+/// `meshes\` prefixed per [`normalize_mesh_path`] (case kept).
+pub fn archive_mesh_path(path: &str) -> String {
+    let path = path.trim_start_matches(['\\', '/']).replace('/', "\\");
+    normalize_mesh_path(&path).into_owned()
+}
+
+/// [`archive_mesh_path`], lower-cased: the key a lookup table or cache shares between
+/// every producer of it.
+pub fn canonical_mesh_key(path: &str) -> String {
+    archive_mesh_path(&path.to_ascii_lowercase())
+}
+
 /// The directory holding the running executable, when it can be determined.
 pub fn exe_dir() -> Option<PathBuf> {
     std::env::current_exe()

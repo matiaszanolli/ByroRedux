@@ -1252,34 +1252,46 @@ fn no_source_hand_spells_the_player_entity_read() {
 }
 
 /// #6956 — "prepend `meshes\` unless present" has one home,
-/// `asset_provider::normalize_mesh_path` (with its owned forms `archive_mesh_path` and
-/// `canonical_mesh_key`). Ten hand-written copies had grown five behaviours between
+/// `byroredux_core::paths::normalize_mesh_path` (with its owned forms `archive_mesh_path` and
+/// `canonical_mesh_key`; re-exported by `asset_provider`). Ten hand-written copies had grown five behaviours between
 /// them (case, separators, a leading separator, the #1292 `geometries\` exemption
 /// none of them carried). A production `format!("meshes\\{name}")` that prefixes a
-/// whole variable outside `archive.rs` is a new copy; a fixed archive path such as
+/// whole variable outside `core/src/paths.rs` is a new copy; a fixed archive path such as
 /// `meshes\terrain\…` is not.
 #[test]
 fn no_production_code_prefixes_meshes_by_hand() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let needle = concat!("\"meshes", "\\\\{");
+    // #7145 — every spelling of a prefix format, named (`{name}`) or positional (`{}`): an
+    // escaped backslash, a raw-string backslash, or a forward slash (the renderer's mesh
+    // cache had grown `format!("meshes/{lowered}")`, outside the old one-spelling scan).
+    let needles = [concat!("\"meshes", "\\\\{"), concat!("r\"meshes", "\\{"), concat!("\"meshes", "/{")];
     let mut found = Vec::new();
-    visit_workspace_rs_files(&manifest.join("src"), &mut |path, contents| {
-        if path.ends_with("asset_provider/archive.rs") || is_test_source(path) {
-            return;
-        }
-        let production = byroredux_core::source_scan::production_text_or_whole(contents);
-        let copies = production.match_indices(needle).filter(|(at, _)| {
-            let rest = &production[at + needle.len()..];
-            let name_len = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(rest.len());
-            name_len > 0 && rest[name_len..].starts_with("}\"")
+    // #7145 — the binary and every library crate; the renderer cannot call the binary's helper,
+    // which is why the rule now lives in `byroredux_core::paths`.
+    for root in [manifest.join("src"), manifest.join("../crates")] {
+        visit_workspace_rs_files(&root, &mut |path, contents| {
+            // Library source only: an example or bench is a probe (`nif`'s `d5_starfield_import`
+            // tries non-canonical spellings on purpose to show which ones miss).
+            let probe = path.components().any(|c| c.as_os_str() == "examples" || c.as_os_str() == "benches");
+            if path.ends_with("core/src/paths.rs") || is_test_source(path) || probe {
+                return;
+            }
+            let production = byroredux_core::source_scan::production_text_or_whole(contents);
+            let copies = needles.iter().flat_map(|needle| {
+                production.match_indices(needle).filter(|(at, _)| {
+                    let rest = &production[at + needle.len()..];
+                    let name_len = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(rest.len());
+                    rest[name_len..].starts_with("}\"")
+                })
+            });
+            if copies.count() > 0 {
+                found.push(path.display().to_string());
+            }
         });
-        if copies.count() > 0 {
-            found.push(path.strip_prefix(manifest).unwrap_or(path).display().to_string());
-        }
-    });
+    }
     assert!(
         found.is_empty(),
-        "hand-written `meshes\\` prefix — use `asset_provider::{{normalize_mesh_path, archive_mesh_path, canonical_mesh_key}}` (#6956):\n{}",
+        "hand-written `meshes\\` prefix — use `byroredux_core::paths::{{normalize_mesh_path, archive_mesh_path, canonical_mesh_key}}` (#6956, #7145):\n{}",
         found.join("\n"),
     );
 }

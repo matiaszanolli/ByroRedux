@@ -23,10 +23,9 @@ pub(crate) use script::*;
 pub(crate) use texture::*;
 pub(crate) use texture_prefetch::{prefetch_textures, PrefetchStats};
 
-// `normalize_mesh_path` is `pub` (used outside the crate); re-export it at
-// that visibility explicitly — a `pub(crate) use` glob can't carry a `pub`
-// item back out (E0364).
-pub use archive::{archive_mesh_path, canonical_mesh_key, normalize_mesh_path};
+// The mesh-path prefix rule lives in `byroredux_core::paths` (#7145: the renderer's mesh
+// cache keys through it too); re-exported here, `pub` because it is used outside the crate.
+pub use byroredux_core::paths::{archive_mesh_path, canonical_mesh_key, normalize_mesh_path};
 
 /// Whether this is the first report of `key` under `scope` in this process:
 /// the one home of the "warn once per asset path" sets the providers and

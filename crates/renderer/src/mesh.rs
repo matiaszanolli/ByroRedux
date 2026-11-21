@@ -77,18 +77,13 @@ pub type MeshCacheKey = (String, u32);
 ///
 /// Gamebryo paths arrive from authored records and archive listings with
 /// mixed casing, separators, and sometimes without the conventional
-/// `meshes/` prefix. Keep this equivalent to the cell-loader's model-path
-/// identity while making the renderer cache self-normalizing. The work is
-/// intentionally limited to the cache boundary: it does not rewrite the
-/// path used for archive lookup or diagnostics.
+/// `meshes\` prefix. The cache keys by the cell loader's model-path identity,
+/// `byroredux_core::paths::canonical_mesh_key` (#7145: it used to keep its own
+/// copy of the prefix rule, without the #1292 `geometries\` exemption). The
+/// work is limited to the cache boundary: it does not rewrite the path used
+/// for archive lookup or diagnostics.
 fn mesh_cache_key(model_path: &str, sub_mesh_index: u32) -> MeshCacheKey {
-    let lowered = model_path.to_ascii_lowercase().replace('\\', "/");
-    let path = if lowered.starts_with("meshes/") {
-        lowered
-    } else {
-        format!("meshes/{lowered}")
-    };
-    (path, sub_mesh_index)
+    (byroredux_core::paths::canonical_mesh_key(model_path), sub_mesh_index)
 }
 
 /// Which engine path uploaded a mesh. Census-only diagnostic — never
@@ -1455,6 +1450,15 @@ mod uv_texel_density_tests {
             ],
             vec![0, 1, 2, 0, 2, 3],
         )
+    }
+
+    /// #7145 — the cache keys by the cell loader's mesh identity: case, separators and the
+    /// `meshes\` prefix folded, and Starfield's `geometries\` paths (#1292) left unprefixed.
+    #[test]
+    fn mesh_cache_keys_follow_the_canonical_mesh_path_rule() {
+        assert_eq!(super::mesh_cache_key(r"Architecture\Wall.NIF", 2), (r"meshes\architecture\wall.nif".to_owned(), 2));
+        assert_eq!(super::mesh_cache_key("Meshes/architecture/wall.nif", 0), super::mesh_cache_key(r"architecture\wall.nif", 0));
+        assert_eq!(super::mesh_cache_key(r"geometries\ab\cd.mesh", 0).0, r"geometries\ab\cd.mesh");
     }
 
     #[test]
