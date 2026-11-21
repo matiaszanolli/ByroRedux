@@ -26,6 +26,23 @@ Commits hold that record.
 
 ---
 
+## Session 116 — "Sliding Doors": the Oblivion player learns to cast, shoot, block and fall, sleep and level-up get their menus, doors open, lock and sound, and the radiance-cache GI PRD clears Phase 0  (2026-11-18 → 2026-11-20, `f8e0bac1a..aca40315e`, 109 commits)
+
+Session 115 left Oblivion's skill-use leveling live but fed by only 8 of 21 skills: magic, Block, Marksman and falls waited on player actions the engine did not have (#7053 to #7056). This window built those actions as two PRDs (player spellcasting, player archery) plus the combat rows around them, gave the level-up its own menus, and opened a new door-runtime PRD from census to a live gate. In parallel the M-LIGHT radiance-cache GI PRD went from first draft to a closed Phase 0. No milestone closed.
+
+- **Player spellcasting (PRD ACTIVE, #7077)** — Phase 0 decoded the cast rules (#7078); Phase 1 readies a spell and gates, costs and casts Self, saved at `FORMAT_MAJOR` 140 (#7079); Phase 2 lands Touch and Target (#7080); Phase 3 feeds the six schools (#7081). Manual Spell Cost is floored and the rules' provenance relabelled (`2d9bfe7e9`). Touch now follows the authored `iActivatePickLength` ray, settled by original-game trials that also recorded cast timing, area awards and casting noise (#7082).
+- **Player archery (PRD APPROVED, #7055 closed)** — the bow's rules row and the arrow's speed and flags (`c44ed44f3`), the equipped arrow, draw and release, saved at v141 (`e15645976`), Oblivion's and Skyrim's arrow damage (`69b74965e`), and Marksman fed by the player's own hit, with live archery gates on both games (`0d6064cd9`, `c4594ed59`).
+- **Combat rows** — a blocking defender stops a share of the hit and feeds Block (#7054); a damaging fall hurts the player and feeds Acrobatics (#7056); Oblivion's armor rating and Resist Normal Weapons sit on the shared hit path (`fba412ebb`, gate `oblivion-ghost.sh`). Oblivion now feeds 16 of 21 skills.
+- **Oblivion sleep and level-up menus** — PRD (`c078ca688`) and the playable sleep/wait and level-up documents with native fallbacks (#7048, #7086, `250a5ba67`); the menu coverage is pinned at 7 of 54 (#7095).
+- **Door runtime (M66, PRD ACTIVE, #7057)** — PRD from the AI packages' Q8 to ACTIVE; the in-cell door motion census (#7058); door state and authored-sequence motion (`50abfd008`); open and close sounds (`e5977a9c7`); a lock held against an activator without the key, script-blocked doors, `door.state` and the live `door-runtime.sh` on Oblivion and FNV (`180080de7`, `0be04d94d`). The swing and the unsourced behaviours stay in #7062. A lock-order cycle the command introduced was fixed the same day (#7093).
+- **AI packages** — every walking mover takes the Oblivion pathgrid once blocked, NPCs climb ramps and are not set down on roofs, and Oblivion and Skyrim sitters hold their enter clip on the furniture floor with live seat gates (#6662).
+- **M-LIGHT radiance-cache GI (PRD ACTIVE)** — Phase 0 measured V1 to V6 on a live engine and found a fourth cause of missing GI: the adaptive ray budget never left tier 0 on a heavy scene (#7070, fixed in #7076). The scaffolding for Phase 1 landed: debug views, `gi.cache`, telemetry counters, timer brackets, the memory-budget row, and the RCG-COV and RCG-FLAT gates with their pre-cache baselines (#7072, #7073, #7074). The volumetric-lighting and reference-lighting PRDs took review rounds and owner decisions.
+- **Fixes and audits** — the `reset_health` lock-order cycle (#7063), smoke-contract coverage (#7064), the `about_to_wait` size pin (#7065), stale docs (#7066, #7067, #7094), a Bink key-frame panic (#7068), the exterior fog height reference (`ac558feb7`), CI's door lock order and lints (`4288659fa`); the distant-LOD, sneak-and-detection and Oblivion actor-value PRDs marked SHIPPED; the audit skills re-synced (`ee9b2c400`).
+
+Net: tests 12 731 → 12 875 (+144), 0 failing (was 2). Rust source lines 966 778 → 976 185, `.rs` files 1866 → 1890. No bench was run; the bench-of-record is now 1508 commits old.
+
+---
+
 ## Session 115 — "Sleep on It": Oblivion's skill-use leveling goes from PRD to a level-up in a day, the new-game routes reach Oblivion and Fallout 3, and Oblivion actors walk their own pathgrids  (2026-11-17 → 2026-11-18, `449ea0fed..f3677b704`, 39 commits)
 
 Session 114's closeout left CI red, two Oblivion PRDs half-built and the new-game route working only on New Vegas. This window cleared the CI, then ran the Oblivion skill-use leveling PRD from first draft to a live level-up, carried the start sequence to Oblivion and Fallout 3, and gave Oblivion actors a walk graph. No milestone closed.
