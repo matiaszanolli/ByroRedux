@@ -33,9 +33,8 @@
 use crate::error::{Error, Result};
 use crate::reader::{
     consume_top_level_value, open_object, parse_schema, peek_top_level_class_name,
-    state_has_more_chunks, skip_top_level_value, Cursor, State,
+    state_has_more_chunks, skip_top_level_value, State,
 };
-use crate::types::TypeReference;
 use crate::value::Value;
 use crate::ChunkType;
 
@@ -842,7 +841,10 @@ fn stream_db_file_index(state: &mut State<'_>, idx: &mut MaterialIndex) -> Resul
                          key(s) dropped (shape drift from {{ Dir: u32, Ext: u32 }}?)"
                     );
                 }
-                if keyable_rows > 0 && pid_misses == keyable_rows {
+                // #7124 — an Objects table that keys nothing is the same
+                // failure whether every row missed or there were no rows:
+                // every `.mat` lookup would miss with no error.
+                if pid_misses == keyable_rows {
                     return Err(Error::NoKeyedObjects { rows: keyable_rows });
                 }
             }
@@ -881,23 +883,13 @@ fn id_named(o: &crate::value::ObjectInstance, name: &str) -> Option<u32> {
 }
 
 /// Consume one LIST chunk, handing each element's decoded value to `f`
-/// without retaining it. Mirrors `consume_list`'s on-disk guards.
+/// without retaining it. Walks through `reader::walk_list`, so the count
+/// check and the trailing-bytes check are the read and skip paths' own (#7124).
 fn stream_list(state: &mut State<'_>, mut f: impl FnMut(&Value)) -> Result<()> {
-    let payload = state.consume_chunk(ChunkType::List)?;
-    let mut cur = Cursor::new(payload);
-    let elem_ref = TypeReference::new(cur.read_i32()?);
-    let raw_count = cur.read_i32()?;
-    let count = usize::try_from(raw_count)
-        .map_err(|_| Error::NegativeCount {
-            what: "LIST element",
-            raw: raw_count,
-        })?
-        .min(payload.len());
-    for _ in 0..count {
-        let v = crate::reader::read_value(state, elem_ref, &mut cur, false)?;
-        f(&v);
-    }
-    Ok(())
+    crate::reader::walk_list(state, |state, elem_ref, cur| {
+        f(&crate::reader::read_value(state, elem_ref, cur, false)?);
+        Ok(())
+    })
 }
 
 
@@ -1661,6 +1653,54 @@ mod tests {
         assert!(
             matches!(err, Error::ObjectTrailingBytes { leftover: 1 }),
             "expected ObjectTrailingBytes {{ leftover: 1 }}, got {err:?}"
+        );
+    }
+
+    /// #7124 — the DBFileIndex's Objects / Components / Edges LIST chunks are
+    /// held to the read path's guards: a payload that runs past its declared
+    /// elements (trailing bytes, or a count lowered below what it holds) is
+    /// an error, and an Objects table with no rows keys nothing, so it is the
+    /// typed `NoKeyedObjects` rather than an `Ok` index every lookup misses.
+    #[test]
+    fn build_rejects_dbfile_index_lists_that_disagree_with_their_payload() {
+        let (base, dbfile) = mutable_chunks();
+        let lists = dbfile + 1..dbfile + 4;
+        assert!(
+            base[lists.clone()].iter().all(|(kind, _)| **kind == *b"LIST"),
+            "Objects, Components and Edges follow the DBFileIndex"
+        );
+        for list in lists.clone() {
+            let mut chunks = base.clone();
+            chunks[list].1.extend_from_slice(&[0xAB; 8]);
+            let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks))
+                .expect_err("trailing bytes in a DBFileIndex LIST must be rejected");
+            assert!(
+                matches!(err, Error::ObjectTrailingBytes { leftover: 8 }),
+                "LIST chunk {list}: expected ObjectTrailingBytes {{ leftover: 8 }}, got {err:?}"
+            );
+        }
+        for list in lists {
+            let mut chunks = base.clone();
+            let count = i32::from_le_bytes(chunks[list].1[4..8].try_into().unwrap());
+            if count == 0 {
+                continue;
+            }
+            chunks[list].1[4..8].copy_from_slice(&(count - 1).to_le_bytes());
+            let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks))
+                .expect_err("a count below the elements a LIST holds must be rejected");
+            assert!(
+                matches!(err, Error::ObjectTrailingBytes { .. }),
+                "LIST chunk {list}: expected ObjectTrailingBytes, got {err:?}"
+            );
+        }
+        let mut chunks = base.clone();
+        chunks[dbfile + 1].1.truncate(4);
+        chunks[dbfile + 1].1.extend_from_slice(&0i32.to_le_bytes());
+        let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks))
+            .expect_err("an empty Objects table must not build an index that keys nothing");
+        assert!(
+            matches!(err, Error::NoKeyedObjects { rows: 0 }),
+            "expected NoKeyedObjects {{ rows: 0 }}, got {err:?}"
         );
     }
 

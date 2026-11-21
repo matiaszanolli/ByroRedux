@@ -146,6 +146,8 @@ pub enum Error {
 
     // #5899 — a `PersistentID` shape drift unkeys every row; the build used
     // to return `Ok` with an empty key map, so every `.mat` lookup missed.
+    // #7124 — an Objects table with no rows at all is refused the same way
+    // (`rows` is then 0).
     #[error(
         "none of the {rows} Objects rows carries a {{ Dir: u32, Ext: u32 }} PersistentID — \
          no material path can be keyed"
