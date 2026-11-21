@@ -12,7 +12,7 @@
 //! which frame belongs at a given elapsed time; a decoder that falls behind holds the last
 //! frame, one that runs ahead is held back by a small bounded ring.
 
-use std::io::{Read, Write};
+use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TryRecvError};
@@ -210,14 +210,44 @@ fn pcm_cap(duration_secs: f64, rate: u32, channels: usize) -> usize {
     per_movie.min(MAX_SOUNDTRACK_SAMPLES)
 }
 
-/// Whether `pcm` has passed `cap`; it is truncated to the cap and the stop logged once.
-fn over_pcm_cap(pcm: &mut Vec<i16>, cap: usize, name: &str) -> bool {
-    if pcm.len() <= cap {
-        return false;
+/// How far past its own duration one frame's audio may run: Bink front-loads preroll into frame 0,
+/// 0.75 s over the frame in every installed movie with sound (58 files across the seven titles,
+/// measured 2026-11-20), so two seconds is 2.7x that `[ours]`.
+const FRAME_AUDIO_SLACK_SECS: f64 = 2.0;
+/// The longest a frame counts as lasting when sizing its audio `[ours]`: no installed movie runs
+/// below 23.976 fps, and the frame rate is a header field, so a near-zero one must not hand a single
+/// frame the whole soundtrack.
+const MAX_FRAME_SECS: f64 = 1.0;
+
+/// The most interleaved samples one frame's audio may decode to (#7125): its duration, at most
+/// [`MAX_FRAME_SECS`], plus [`FRAME_AUDIO_SLACK_SECS`], at the track's rate and channel count, never
+/// past [`MAX_SOUNDTRACK_SAMPLES`]. [`pcm_cap`] bounds the movie; this keeps one packet (a zero-filled
+/// one decodes ~100x its size) from spending that whole budget in one buffer.
+fn frame_pcm_cap(fps: f64, rate: u32, channels: usize) -> usize {
+    let frame_secs = if fps.is_finite() && fps > 0.0 { (1.0 / fps).min(MAX_FRAME_SECS) } else { 0.0 };
+    let samples = (((frame_secs + FRAME_AUDIO_SLACK_SECS) * f64::from(rate)) as usize).saturating_mul(channels);
+    samples.min(MAX_SOUNDTRACK_SAMPLES)
+}
+
+/// What a soundtrack decodes under: the format of its WAV, and the movie's ([`pcm_cap`]) and one
+/// frame's ([`frame_pcm_cap`]) sample limits.
+#[derive(Clone, Copy)]
+struct Soundtrack {
+    channels: u16,
+    rate: u32,
+    total_cap: usize,
+    frame_cap: usize,
+}
+
+impl Soundtrack {
+    fn new(info: &MovieInfo, channels: u16, rate: u32) -> Self {
+        Self {
+            channels,
+            rate,
+            total_cap: pcm_cap(info.duration_secs, rate, usize::from(channels)),
+            frame_cap: frame_pcm_cap(info.fps, rate, usize::from(channels)),
+        }
     }
-    log::warn!("video: {name}: its audio decodes past the movie's running time; stopped at {cap} samples");
-    pcm.truncate(cap);
-    true
 }
 
 /// Decode the movie's first audio track to a temporary WAV. `None` when it has no audio or the
@@ -231,62 +261,81 @@ fn extract_audio(movie: &mercs2_bink::Movie, name: &str) -> Option<PathBuf> {
             return None;
         }
     };
-    let cap = pcm_cap(describe(movie).duration_secs, track.rate(), track.channels() as usize);
-    let pcm = decode_soundtrack(name, movie.frame_count as usize, cap, |frame, pcm| {
+    let soundtrack = Soundtrack::new(&describe(movie), track.channels() as u16, track.rate());
+    decode_soundtrack(name, movie.frame_count as usize, soundtrack, |frame, pcm| {
         let record = movie.split(frame as _).ok().and_then(|(records, _)| records.first().copied());
         let Some(record) = record else { return Ok(false) };
         pcm.extend(decoder.decode_record(record).map_err(|error| error.to_string())?);
         Ok(true)
-    });
-    write_wav(&pcm, track.channels() as u16, track.rate())
+    })
 }
 
-/// Decode a soundtrack frame by frame into interleaved PCM, for every codec: `decode_frame` appends
-/// frame `n`'s samples and answers whether to go on (`Ok(false)` ends the track quietly, an `Err`
-/// ends it with a warning), and the result never passes `cap` ([`over_pcm_cap`]).
+/// Decode a soundtrack frame by frame straight into a temporary WAV the audio crate streams, for
+/// every codec: `decode_frame` appends frame `n`'s samples to an emptied buffer and answers whether
+/// to go on (`Ok(false)` ends the track quietly, an `Err` ends it with a warning). A frame past the
+/// frame cap ends the track before it is written, and the WAV never passes the movie's cap, so
+/// memory holds one frame's audio, not the soundtrack (#7125). `None` when nothing decoded or the
+/// file cannot be written (the picture then plays silent, with a warning).
 fn decode_soundtrack(
     name: &str,
     frames: usize,
-    cap: usize,
+    soundtrack: Soundtrack,
     mut decode_frame: impl FnMut(usize, &mut Vec<i16>) -> Result<bool, String>,
-) -> Vec<i16> {
-    let mut pcm: Vec<i16> = Vec::new();
-    for frame in 0..frames {
-        match decode_frame(frame, &mut pcm) {
-            Ok(true) => {}
-            Ok(false) => break,
-            Err(error) => {
-                log::warn!("video: {name}: its audio stops at frame {frame}: {error}");
+) -> Option<PathBuf> {
+    let path = temp_wav_path();
+    let mut written = 0usize;
+    let result = std::fs::File::create(&path).and_then(|file| {
+        let mut out = std::io::BufWriter::new(file);
+        out.write_all(&wav_header(0, soundtrack.channels, soundtrack.rate))?;
+        let mut pcm: Vec<i16> = Vec::new();
+        for frame in 0..frames {
+            pcm.clear();
+            let go_on = match decode_frame(frame, &mut pcm) {
+                Ok(go_on) => go_on,
+                Err(error) => {
+                    log::warn!("video: {name}: its audio stops at frame {frame}: {error}");
+                    false
+                }
+            };
+            if pcm.len() > soundtrack.frame_cap {
+                log::warn!(
+                    "video: {name}: frame {frame}'s audio decodes to {} samples, past the {} one frame may hold; \
+                     its audio stops there",
+                    pcm.len(),
+                    soundtrack.frame_cap
+                );
+                break;
+            }
+            let room = soundtrack.total_cap - written;
+            let over = pcm.len() > room;
+            if over {
+                log::warn!(
+                    "video: {name}: its audio decodes past the movie's running time; stopped at {} samples",
+                    soundtrack.total_cap
+                );
+                pcm.truncate(room);
+            }
+            for sample in &pcm {
+                out.write_all(&sample.to_le_bytes())?;
+            }
+            written += pcm.len();
+            if over || !go_on {
                 break;
             }
         }
-        if over_pcm_cap(&mut pcm, cap, name) {
-            break;
-        }
-    }
-    pcm
-}
-
-/// Interleaved 16-bit PCM into a temporary WAV the audio crate streams; `None` when there is none or
-/// it cannot be written (the picture then plays silent, with a warning).
-fn write_wav(pcm: &[i16], channels: u16, rate: u32) -> Option<PathBuf> {
-    if pcm.is_empty() {
-        return None;
-    }
-    let wav = temp_wav_path();
-    let written = std::fs::File::create(&wav).and_then(|file| {
-        let mut out = std::io::BufWriter::new(file);
-        out.write_all(&wav_header(pcm.len(), channels, rate))?;
-        for sample in pcm {
-            out.write_all(&sample.to_le_bytes())?;
-        }
-        out.flush()
+        let mut file = out.into_inner().map_err(|error| error.into_error())?;
+        file.seek(std::io::SeekFrom::Start(0))?;
+        file.write_all(&wav_header(written, soundtrack.channels, soundtrack.rate))
     });
-    match written {
-        Ok(()) => Some(wav),
+    match result {
+        Ok(()) if written > 0 => Some(path),
+        Ok(()) => {
+            let _ = std::fs::remove_file(&path);
+            None
+        }
         Err(error) => {
-            log::warn!("video: its soundtrack could not be written: {error}");
-            let _ = std::fs::remove_file(&wav);
+            log::warn!("video: {name}: its soundtrack could not be written: {error}");
+            let _ = std::fs::remove_file(&path);
             None
         }
     }
@@ -318,14 +367,18 @@ fn bink2_audio(file: &mut bink2::Bk2, name: &str) -> Option<PathBuf> {
             return None;
         }
     };
-    let cap = pcm_cap(describe_bink2(file).duration_secs, track.rate, track.channels());
-    let pcm = decode_soundtrack(name, file.frames, cap, |frame, pcm| {
+    let soundtrack = Soundtrack::new(&describe_bink2(file), track.channels() as u16, track.rate);
+    let wav = decode_soundtrack(name, file.frames, soundtrack, |frame, pcm| {
         let packet = file.audio(frame).map_err(|error| error.to_string())?.swap_remove(index);
         let Some(packet) = packet else { return Ok(true) };
-        // Refuse a packet that would pass the cap before `decode` grows the buffer for it.
-        if pcm.len().saturating_add(packet.decoded_bytes as usize / 2) > cap {
-            log::warn!("video: {name}: its audio decodes past the movie's running time; stopped at frame {frame}");
-            return Ok(false);
+        // #7125 — refuse a packet stating more than one frame may hold before `decode` grows the
+        // buffer for it: a zero-filled 13 MB packet could otherwise decode the whole soundtrack.
+        if packet.decoded_bytes as usize / 2 > soundtrack.frame_cap {
+            return Err(format!(
+                "its packet states {} samples, past the {} one frame may hold",
+                packet.decoded_bytes / 2,
+                soundtrack.frame_cap
+            ));
         }
         decoder.decode(packet.decoded_bytes, &packet.data, pcm).map_err(|error| error.to_string())?;
         Ok(true)
@@ -333,7 +386,7 @@ fn bink2_audio(file: &mut bink2::Bk2, name: &str) -> Option<PathBuf> {
     if file.tracks.len() > 1 {
         log::info!("video: {name}: sound from audio track ID {} (track {index} of {})", track.id, file.tracks.len());
     }
-    write_wav(&pcm, track.channels() as u16, track.rate)
+    wav
 }
 
 /// `rgba` (`src` pixels wide and high) fitted into a `dst` frame: centred inside it with black bars
@@ -793,11 +846,49 @@ mod tests {
         assert_eq!(pcm_cap(1_000_000.0 / 30.0, 48_000, 2), MAX_SOUNDTRACK_SAMPLES);
         assert_eq!(pcm_cap(10.0, u32::MAX, 2), MAX_SOUNDTRACK_SAMPLES, "nor can the track's rate");
         assert!(MAX_SOUNDTRACK_SAMPLES * 2 <= u32::MAX as usize, "the WAV header's byte count holds it");
-        let mut pcm = vec![0i16; 10];
-        assert!(!over_pcm_cap(&mut pcm, 10, "t"));
-        pcm.push(1);
-        assert!(over_pcm_cap(&mut pcm, 10, "t"));
-        assert_eq!(pcm.len(), 10);
+        // Frames of 4 samples against a 10-sample movie: the third is cut to 2 and the track stops.
+        let caps = Soundtrack { channels: 2, rate: 48_000, total_cap: 10, frame_cap: 6 };
+        let mut asked = 0;
+        let wav = decode_soundtrack("t", 100, caps, |_, pcm| {
+            asked += 1;
+            pcm.extend([7i16; 4]);
+            Ok(true)
+        })
+        .expect("a soundtrack was written");
+        let bytes = std::fs::read(&wav).unwrap();
+        let _ = std::fs::remove_file(&wav);
+        assert_eq!(asked, 3, "decoding stops at the cap");
+        assert_eq!(bytes[..44], wav_header(10, 2, 48_000), "the header counts the samples written");
+        assert_eq!(bytes.len(), 44 + 20);
+    }
+
+    /// #7125: one frame's audio is bounded by the frame, not only the movie, so a single packet
+    /// cannot decode the whole hour the running-time cap allows; a header frame rate cannot lift
+    /// it either. The track ends with the frames before it, which stay playable.
+    #[test]
+    fn one_frame_cannot_spend_the_soundtrack() {
+        let at_30 = frame_pcm_cap(30.0, 48_000, 2);
+        assert_eq!(at_30, (((1.0 / 30.0) + FRAME_AUDIO_SLACK_SECS) * 48_000.0) as usize * 2);
+        let slowest = frame_pcm_cap(1.0, 48_000, 2);
+        assert_eq!(frame_pcm_cap(1.0 / f64::from(u32::MAX), 48_000, 2), slowest, "a near-zero frame rate");
+        assert_eq!(frame_pcm_cap(0.0, 48_000, 2), (FRAME_AUDIO_SLACK_SECS * 48_000.0) as usize * 2);
+        assert_eq!(frame_pcm_cap(f64::NAN, 48_000, 2), frame_pcm_cap(0.0, 48_000, 2));
+        assert!(slowest * 1000 < MAX_SOUNDTRACK_SAMPLES, "a frame holds seconds, not the hour");
+
+        let caps = Soundtrack { channels: 2, rate: 48_000, total_cap: MAX_SOUNDTRACK_SAMPLES, frame_cap: 8 };
+        let wav = decode_soundtrack("t", 100, caps, |frame, pcm| {
+            pcm.extend(std::iter::repeat_n(1i16, if frame == 2 { 9 } else { 8 }));
+            Ok(true)
+        })
+        .expect("the frames before the oversized one were written");
+        let bytes = std::fs::read(&wav).unwrap();
+        let _ = std::fs::remove_file(&wav);
+        assert_eq!(bytes.len(), 44 + 2 * 16, "frames 0 and 1 only");
+        assert!(decode_soundtrack("t", 1, caps, |_, pcm| {
+            pcm.extend([1i16; 9]);
+            Ok(true)
+        })
+        .is_none(), "an oversized first frame leaves no soundtrack");
     }
 
     #[test]
