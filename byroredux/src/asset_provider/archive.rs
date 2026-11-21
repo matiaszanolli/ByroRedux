@@ -56,21 +56,23 @@ const LOOSE_ASSET_ROOTS: [&str; 5] = ["textures", "meshes", "materials", "geomet
 /// ever stops a tree no game could address (#6243).
 const MAX_LOOSE_DEPTH: usize = 32;
 
-/// How many directories one loose index walks in total, links followed. Cycles
-/// are cut by the ancestor stack ([`WalkState`]), which leaves one shape
-/// unbounded: a chain of directories that each link twice to the next walks
-/// 2^n times with no cycle in it. Real layouts (mod managers deploy by link)
-/// stay orders of magnitude under this; the budget only ends a tree built to
-/// blow it (#6243, #6483).
-const MAX_LOOSE_DIRS: usize = 262_144;
+/// How many directory entries one loose index examines in total, links followed: every file and
+/// directory a `read_dir` yields costs one, before it is stat'ed or indexed. Cycles are cut by the
+/// ancestor stack ([`WalkState`]), which leaves one shape unbounded: a chain of directories that
+/// each link twice to the next walks 2^n times with no cycle in it (#6243, #6483). The budget used
+/// to count directories, which left the files in each one as a multiplier on keys and stat calls
+/// (#7141); counting entries bounds both. The installed vanilla games carry at most 239 loose
+/// entries (New Vegas, 2026-11-21) and a deployed mod list a few hundred thousand, so the cap
+/// only ends a tree built to blow it — at ~2 M keys rather than 262,144 x the files per directory.
+const MAX_LOOSE_ENTRIES: usize = 1 << 21;
 
 /// The loose walk's cycle and work bookkeeping.
 struct WalkState {
     /// Canonical paths of the directories currently being walked, root first.
     /// A directory reached again while it is on this stack is a link loop.
     ancestors: Vec<std::path::PathBuf>,
-    /// Directories walked so far, against [`MAX_LOOSE_DIRS`] (or a test's budget).
-    walked: usize,
+    /// Entries examined so far, against [`MAX_LOOSE_ENTRIES`] (or a test's budget).
+    examined: usize,
     budget: usize,
     /// Links cut because they pointed back at an ancestor.
     loops_cut: usize,
@@ -91,8 +93,8 @@ struct LooseDir {
     files: HashMap<String, std::path::PathBuf>,
 }
 
-/// The keys a loose index of `data_dir` holds under a directory budget, sorted. Test hook for
-/// the bound, which a real tree would need 2^18 directories to reach (#6483).
+/// The keys a loose index of `data_dir` holds under an entry budget, sorted. Test hook for the
+/// bound, which a real tree would need 2^21 entries to reach (#6483, #7141).
 #[cfg(test)]
 pub(super) fn loose_keys_bounded(data_dir: &std::path::Path, budget: usize) -> Vec<String> {
     let mut keys: Vec<String> = LooseDir::index_bounded(data_dir, budget).files.into_keys().collect();
@@ -100,23 +102,31 @@ pub(super) fn loose_keys_bounded(data_dir: &std::path::Path, budget: usize) -> V
     keys
 }
 
+/// `dir`'s entries in name order (#7141: `read_dir`'s own order is the filesystem's, so a walk the
+/// budget cuts short would keep a different subset from run to run).
+fn sorted_entries(dir: &std::path::Path) -> Option<Vec<std::fs::DirEntry>> {
+    let mut entries: Vec<_> = std::fs::read_dir(dir).ok()?.flatten().collect();
+    entries.sort_by_key(std::fs::DirEntry::file_name);
+    Some(entries)
+}
+
 impl LooseDir {
     /// Index the asset roots under `data_dir`. Directory-name case is
     /// whatever the install happens to use, so the roots match
     /// case-insensitively.
     fn index(data_dir: &std::path::Path) -> Self {
-        Self::index_bounded(data_dir, MAX_LOOSE_DIRS)
+        Self::index_bounded(data_dir, MAX_LOOSE_ENTRIES)
     }
 
     fn index_bounded(data_dir: &std::path::Path, budget: usize) -> Self {
         let mut files = HashMap::new();
-        let Ok(entries) = std::fs::read_dir(data_dir) else {
+        let Some(entries) = sorted_entries(data_dir) else {
             return Self { files };
         };
         let mut state =
-            WalkState { ancestors: Vec::new(), walked: 0, budget, loops_cut: 0, budget_hit: false };
+            WalkState { ancestors: Vec::new(), examined: 0, budget, loops_cut: 0, budget_hit: false };
         let mut collisions = Vec::new();
-        for entry in entries.flatten() {
+        for entry in entries {
             let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
             if LOOSE_ASSET_ROOTS.contains(&name.as_str()) && entry.path().is_dir() {
                 Self::walk(&entry.path(), &name, 0, &mut state, &mut files, &mut collisions);
@@ -124,8 +134,8 @@ impl LooseDir {
         }
         if state.budget_hit {
             log::warn!(
-                "loose index of '{}' stopped after {} directories; links make the tree larger than \
-                 any real layout, so files past that point are not indexed",
+                "loose index of '{}' stopped after {} entries; links make the tree larger than \
+                 any real layout, so files past that point (in name order) are not indexed",
                 data_dir.display(),
                 state.budget
             );
@@ -157,10 +167,11 @@ impl LooseDir {
     /// second, legitimate link to a directory reached another way is walked
     /// again and indexed under its own key, so `textures\a` and `textures\b`
     /// both resolve when both link to one mod directory (#6483). Total work is
-    /// bounded by [`MAX_LOOSE_DIRS`]: unguarded, one looping link re-indexed
+    /// bounded by [`MAX_LOOSE_ENTRIES`]: unguarded, one looping link re-indexed
     /// its subtree ~40 times (until `ELOOP`) and two made ~2^40 `read_dir`
     /// calls at boot (#6243), and the ancestor stack alone does not bound a
-    /// chain of doubled links.
+    /// chain of doubled links. Entries are walked in name order, so an index
+    /// the budget cuts short is the same on every run (#7141).
     fn walk(
         dir: &std::path::Path,
         key: &str,
@@ -179,16 +190,16 @@ impl LooseDir {
             state.loops_cut += 1;
             return;
         }
-        if state.walked >= state.budget {
-            state.budget_hit = true;
-            return;
-        }
-        state.walked += 1;
-        let Ok(entries) = std::fs::read_dir(dir) else {
+        let Some(entries) = sorted_entries(dir) else {
             return;
         };
         state.ancestors.push(canonical);
-        for entry in entries.flatten() {
+        for entry in entries {
+            if state.examined >= state.budget {
+                state.budget_hit = true;
+                break;
+            }
+            state.examined += 1;
             let child = format!(
                 "{key}\\{}",
                 byroredux_bsa::normalize_path(&entry.file_name().to_string_lossy())
