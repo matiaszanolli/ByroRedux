@@ -39,7 +39,7 @@ an existing measurement in this repo, **[unmeasured]** = needs the spike.
 | Skinned meshes already run **compute → position buffer → per-frame BLAS refit** (`skin_vertices.comp`, `blas_skinned.rs`; rebuild after 600 refits to reset bounds). | `skin_compute.rs`, `acceleration/constants.rs` |
 | Cell crossings are a measured hot path: single-hash apply up to ~300 ms, batched BLAS submission 20–55 ms, residual frame spikes "tied to global geometry work". | `exterior-readiness-plan.md` [anchor] |
 | `terrain.seams` audits **LAND height agreement between adjacent resident cells on the CPU**; it does not look at GPU geometry. | `TerrainSeamStats`, `terrain_seam::check_seam` |
-| TSD-3 parallax and any splat tile exist only for cells **with splat layers**; BTXT-only cells have no tile slot, so their generated base height map is not bound. | `terrain.rs` ("Allocate a terrain tile slot only when…"), #6195 status comment |
+| Every drawn LAND cell has a terrain tile, BTXT-only cells included (#7149; until then they had none, so their base height map was not bound and TSD-3 parallax skipped them). | `terrain.rs` `terrain_tile_record` |
 
 ## 2. Why the obvious shapes don't work
 
@@ -175,7 +175,7 @@ freed (`unload.rs` already frees terrain tile slots; the patch release hooks in 
    rewrites it every frame, so a copy loss self-heals, but the barrier/ownership rules between
    compute-write, vertex-fetch and AS-build-read must be right: this needs RenderDoc and
    `BYRO_VALIDATION=1`, not reasoning — per the no-speculative-Vulkan-fixes rule).
-5. **BTXT-only cells** have no splat tile, so they get no patches (and, honestly, no TSD-3
+5. **BTXT-only cells** (resolved by #7149: they now get a tile) had no splat tile, so they would have got no patches (and, honestly, no TSD-3
    parallax either — #6195 deferred binding their base map "to Phase 3" and Phase 3 did not
    pick it up). Cheap to fix at the tile-allocation site; should be done before this.
 6. **Per-game**: none expected — the renderer consumes "a height map per terrain layer" only.

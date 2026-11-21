@@ -1406,8 +1406,9 @@ new SSBO because that is exactly what it is: per-LAND-tile data indexed by the
 tile slot `GpuInstance.flags` already carries, so there is no parallel array
 and no second descriptor binding to keep in step.
 
-`canopy_height == 0` disables the term, which is what a LOD tile, a BTXT-only
-cell, an interior and a worldspace with no resolved palette all arrive as. The
+`canopy_height == 0` disables the term, which is what a LOD tile, an interior
+and a worldspace with no resolved palette all arrive as. (A BTXT-only cell gets a
+tile like any other LAND cell since #7149.) The
 attenuation attaches at `shadowableLightRadiance`'s `unshadowedRadiance`
 factor, for directional lights only. Since #5192 the function has two exits —
 the reflection return and the `transmissionRadiance` out param — and both are

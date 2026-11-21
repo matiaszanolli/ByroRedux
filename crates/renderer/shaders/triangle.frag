@@ -2982,8 +2982,9 @@ void main() {
     // something a single fragment's attributes can carry.
     //
     // `terrainTile.canopyHeight == 0` disables the whole block: LOD tiles,
-    // BTXT-only cells with no allocated tile slot, interiors, and any
-    // worldspace whose ground-cover palette never resolved. `gGcCanopyHeight`
+    // interiors, and any worldspace whose ground-cover palette never
+    // resolved. (A LAND cell with no tile at all, only when the tile table is
+    // full, never reaches it: `terrainSplatActive` is false.) `gGcCanopyHeight`
     // then stays at its neutral zero and `shadowableLightRadiance` skips it.
     if (terrainSplatActive && terrainTile.canopyHeight > 0.0) {
         if (terrainTile.groundcoverDetailAtlas.x != 0u

@@ -1148,6 +1148,70 @@ struct CoverDensityInputs {
     base_grass_colour: [f32; 4],
 }
 
+/// The per-cell ground-cover constants a terrain tile carries beside its
+/// layer textures.
+struct TerrainTileCover {
+    layer_affinity: [f32; TERRAIN_SPLAT_LAYERS as usize],
+    base_affinity: f32,
+    /// The Y-up counterpart of the Bethesda Z-up row axis — the same
+    /// `(row 0, col 0)` vertex `TerrainCellOrigin` records, and the origin
+    /// `byroSampleTerrain` inverts its grid mapping against.
+    cell_origin_xz: [f32; 2],
+    water_y: f32,
+    canopy_height: f32,
+}
+
+/// The `GpuTerrainTile` a LAND cell is drawn with: its splat layers' texture
+/// indices (lanes past the layer count stay 0, unused), the base diffuse and
+/// height, and the cover constants. A cell with no splat layers yields a tile
+/// that is the base alone (#7149).
+fn terrain_tile_record(
+    splat_layers: &CellSplatLayers,
+    cover: TerrainTileCover,
+    base_diffuse_index: u32,
+    base_height_index: u32,
+    layer_height_index: [u32; TERRAIN_SPLAT_LAYERS as usize],
+) -> GpuTerrainTile {
+    let mut layer_diffuse_index = [0u32; TERRAIN_SPLAT_LAYERS as usize];
+    let mut layer_normal_index = [0u32; TERRAIN_SPLAT_LAYERS as usize];
+    let mut layer_specular_index = [0u32; TERRAIN_SPLAT_LAYERS as usize];
+    for (i, layer) in splat_layers.layers.iter().enumerate() {
+        layer_diffuse_index[i] = layer.diffuse_index;
+        layer_normal_index[i] = layer.normal_index;
+        layer_specular_index[i] = layer.specular_index;
+    }
+    let a = cover.layer_affinity;
+    GpuTerrainTile {
+        layer_diffuse_index,
+        layer_normal_index,
+        layer_specular_index,
+        cover_affinity0: [a[0], a[1], a[2], a[3]],
+        cover_affinity1: [a[4], a[5], a[6], a[7]],
+        cell_origin_xz: cover.cell_origin_xz,
+        water_y: cover.water_y,
+        canopy_height: cover.canopy_height,
+        groundcover_detail_atlas: [0; 4],
+        // #4903 — the terrain-side density evaluations start their ordered
+        // mix from the base's own affinity. #4907 — the resolved BTXT diffuse
+        // handle rides beside it so the blade's ground-colour coupling blends
+        // the same base the terrain shows (0 = unresolved, the coupling then
+        // keeps the painted-layer average).
+        base_cover_affinity: cover.base_affinity,
+        base_diffuse_index,
+        base_height_index,
+        layer_height_index,
+        // Set from the live setting every frame
+        // (`set_terrain_height_blend_band`) before this tile is drawn.
+        height_blend_band: 0.0,
+        // #6197 — likewise set every frame (`set_terrain_parallax`); depth 0
+        // keeps a tile spawned this frame flat until then.
+        parallax_depth: 0.0,
+        parallax_fade_start: 0.0,
+        parallax_fade_end: 0.0,
+        lod_soften_end: 0.0,
+    }
+}
+
 fn cover_density_inputs(
     world: &World,
     splat_layers: &CellSplatLayers,
@@ -1459,78 +1523,35 @@ pub(super) fn spawn_terrain_mesh(
     // per-cell constants; a per-frame path would be a second upload of a
     // number that cannot change while the cell is resident.
     let canopy_height = mean_palette_blade_height(world);
-    // Allocate a terrain tile slot only when the cell actually has splat
-    // layers. BTXT-only cells skip this and render with the pre-#470
-    // single-texture path for free. The slot is freed in `unload_cell`
-    // via `VulkanContext::free_terrain_tile_slot`.
-    let terrain_tile_index = if !splat_layers.layers.is_empty() {
-        let mut diffuse_indices = [0u32; TERRAIN_SPLAT_LAYERS as usize];
-        let mut normal_indices = [0u32; TERRAIN_SPLAT_LAYERS as usize];
-        let mut specular_indices = [0u32; TERRAIN_SPLAT_LAYERS as usize];
-        for (i, layer) in splat_layers.layers.iter().enumerate() {
-            diffuse_indices[i] = layer.diffuse_index;
-            normal_indices[i] = layer.normal_index;
-            specular_indices[i] = layer.specular_index;
-        }
-        // #6195 — maps already generated bind now; the rest are queued and
-        // `terrain_height::apply_ready_heights` patches them in later.
-        let (base_height_index, layer_height_index) = crate::terrain_height::acquire_spawn_heights(
-            world,
-            ctx,
-            tex_provider,
-            game,
-            &height_lanes,
-        );
-        splat_tex_indices.push(base_height_index);
-        splat_tex_indices.extend_from_slice(&layer_height_index);
-        ctx.allocate_terrain_tile(GpuTerrainTile {
-            layer_diffuse_index: diffuse_indices,
-            layer_normal_index: normal_indices,
-            layer_specular_index: specular_indices,
-            cover_affinity0: [
-                layer_affinity[0],
-                layer_affinity[1],
-                layer_affinity[2],
-                layer_affinity[3],
-            ],
-            cover_affinity1: [
-                layer_affinity[4],
-                layer_affinity[5],
-                layer_affinity[6],
-                layer_affinity[7],
-            ],
-            // The Y-up counterpart of the Bethesda Z-up row axis — the same
-            // `(row 0, col 0)` vertex `TerrainCellOrigin` records below, and
-            // the origin `byroSampleTerrain` inverts its grid mapping against.
+    // #7149 — every drawn LAND cell gets a terrain tile slot, splat layers or
+    // not. The tile is what binds the base height map (TSD-3 parallax, the
+    // TSD-2 blend core) and what `triangle.frag` gates every per-LAND effect
+    // on (weather wetness / puddles / snow, distance softening, the
+    // ground-cover detail layer and canopy receiver). A BTXT-only cell used to
+    // skip it and lose all of those; with no lanes its tile is the base alone,
+    // which composes to the same colour the single-texture path drew. The
+    // slot is freed in `unload_cell` via `VulkanContext::free_terrain_tile_slot`.
+    //
+    // #6195 — maps already generated bind now; the rest are queued and
+    // `terrain_height::apply_ready_heights` patches them in later.
+    let (base_height_index, layer_height_index) =
+        crate::terrain_height::acquire_spawn_heights(world, ctx, tex_provider, game, &height_lanes);
+    splat_tex_indices.push(base_height_index);
+    splat_tex_indices.extend_from_slice(&layer_height_index);
+    let terrain_tile_index = ctx.allocate_terrain_tile(terrain_tile_record(
+        &splat_layers,
+        TerrainTileCover {
+            layer_affinity,
+            base_affinity,
             cell_origin_xz: [origin_x, -origin_y],
             water_y: cover_water_y,
             canopy_height,
-            groundcover_detail_atlas: [0; 4],
-            // #4903 — the terrain-side density evaluations start their
-            // ordered mix from the base's own affinity. #4907 — the resolved
-            // BTXT diffuse handle rides beside it so the blade's
-            // ground-colour coupling blends the same base the terrain
-            // shows (0 = unresolved, the coupling then keeps the
-            // painted-layer average).
-            base_cover_affinity: base_affinity,
-            base_diffuse_index: tex_handle,
-            base_height_index,
-            layer_height_index,
-            // Set from the live setting every frame
-            // (`set_terrain_height_blend_band`) before this tile is drawn.
-            height_blend_band: 0.0,
-            // #6197 — likewise set every frame (`set_terrain_parallax`);
-            // depth 0 keeps a tile spawned this frame flat until then.
-            parallax_depth: 0.0,
-            parallax_fade_start: 0.0,
-            parallax_fade_end: 0.0,
-            lod_soften_end: 0.0,
-        })
-    } else {
-        crate::terrain_height::request_heights(world, tex_provider, game, &height_lanes);
-        None
-    };
-    if !splat_layers.layers.is_empty() && terrain_tile_index.is_none() {
+        },
+        tex_handle,
+        base_height_index,
+        layer_height_index,
+    ));
+    if terrain_tile_index.is_none() {
         log::warn!(
             "Terrain ({grid_x},{grid_y}): terrain material table is full; \
              rendering BTXT only"
@@ -1614,7 +1635,8 @@ pub(super) fn spawn_terrain_mesh(
             base_grass_colour,
             // #4056 — the slot §12.3's ground-colour coupling reads the
             // cell's layer diffuse indices from. The core sentinel (not 0)
-            // when there is no splat terrain: a valid slot can be 0.
+            // when the tile table was full (#7149: every drawn cell asks for
+            // one): a valid slot can be 0.
             terrain_tile_slot: terrain_tile_index.unwrap_or(
                 byroredux_core::ecs::components::groundcover::GROUNDCOVER_NO_TERRAIN_TILE,
             ),
@@ -1661,6 +1683,75 @@ pub(super) fn spawn_terrain_mesh(
 mod tests {
     use super::*;
     use byroredux_core::math::{Quat, Vec3};
+
+    fn tile_cover() -> TerrainTileCover {
+        TerrainTileCover {
+            layer_affinity: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8],
+            base_affinity: 0.9,
+            cell_origin_xz: [4096.0, -8192.0],
+            water_y: -12.5,
+            canopy_height: 0.35,
+        }
+    }
+
+    /// #7149 — a BTXT-only cell (no splat layers) gets a real tile: the base
+    /// diffuse and the base height map bound, every layer lane unused, and the
+    /// cover constants carried, so parallax, the height blend and the per-LAND
+    /// effects run on it like on any other terrain.
+    #[test]
+    fn a_cell_with_no_splat_layers_gets_a_base_only_tile() {
+        let tile = terrain_tile_record(
+            &CellSplatLayers { layers: Vec::new() },
+            tile_cover(),
+            17,
+            23,
+            [0; TERRAIN_SPLAT_LAYERS as usize],
+        );
+        assert_eq!(tile.base_diffuse_index, 17);
+        assert_eq!(tile.base_height_index, 23, "the base height map is bound");
+        assert_eq!(tile.layer_diffuse_index, [0; TERRAIN_SPLAT_LAYERS as usize]);
+        assert_eq!(tile.layer_normal_index, [0; TERRAIN_SPLAT_LAYERS as usize]);
+        assert_eq!(tile.layer_specular_index, [0; TERRAIN_SPLAT_LAYERS as usize]);
+        assert_eq!(tile.layer_height_index, [0; TERRAIN_SPLAT_LAYERS as usize]);
+        assert_eq!(tile.base_cover_affinity, 0.9);
+        assert_eq!(tile.cell_origin_xz, [4096.0, -8192.0]);
+        assert_eq!((tile.water_y, tile.canopy_height), (-12.5, 0.35));
+        // The per-frame settings start at 0 until their broadcast.
+        assert_eq!(
+            (tile.height_blend_band, tile.parallax_depth, tile.lod_soften_end),
+            (0.0, 0.0, 0.0)
+        );
+    }
+
+    /// The splat layers fill their lanes in order; lanes past the layer count
+    /// stay 0 (unused), and the affinities split across the two vec4s.
+    #[test]
+    fn a_tile_carries_each_splat_layers_textures_in_lane_order() {
+        let layer = |diffuse, normal, specular| CellSplatLayer {
+            ltex_form_id: None,
+            cover_affinity: 0.0,
+            diffuse_index: diffuse,
+            normal_index: normal,
+            specular_index: specular,
+            height_sources: None,
+            per_quadrant_alpha: Default::default(),
+        };
+        let mut heights = [0; TERRAIN_SPLAT_LAYERS as usize];
+        heights[1] = 9;
+        let tile = terrain_tile_record(
+            &CellSplatLayers { layers: vec![layer(3, 4, 5), layer(6, 7, 8)] },
+            tile_cover(),
+            1,
+            2,
+            heights,
+        );
+        assert_eq!(tile.layer_diffuse_index[..3], [3, 6, 0]);
+        assert_eq!(tile.layer_normal_index[..3], [4, 7, 0]);
+        assert_eq!(tile.layer_specular_index[..3], [5, 8, 0]);
+        assert_eq!(tile.layer_height_index[..3], [0, 9, 0]);
+        assert_eq!(tile.cover_affinity0, [0.1, 0.2, 0.3, 0.4]);
+        assert_eq!(tile.cover_affinity1, [0.5, 0.6, 0.7, 0.8]);
+    }
 
     /// #6735 - the grass colour of each splat lane is the colour of the grass THAT lane's texture lists, in the
     /// same lane order as `layer_affinity` (the shader mixes both through the same vec4-pair split): a lane
