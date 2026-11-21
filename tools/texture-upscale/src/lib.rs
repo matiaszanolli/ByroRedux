@@ -223,10 +223,11 @@ fn validate_asset_path(path: &str) -> Result<()> {
     if normalized.is_empty() {
         bail!("asset path must not be empty");
     }
+    // #7190 — every segment a bare name (`core::paths::is_bare_component`: not empty, `.` or `..`,
+    // no `/`, `\` or `:`): a `c:` or `d:x` segment passed the old shape check, and on Windows
+    // `PathBuf::push("c:")` replaces the output root.
     if Path::new(&normalized).is_absolute()
-        || normalized
-            .split('/')
-            .any(|part| part.is_empty() || part == "." || part == "..")
+        || !normalized.split('/').all(byroredux_core::paths::is_bare_component)
     {
         bail!("asset path must be a safe relative path, got {:?}", path);
     }
@@ -339,6 +340,16 @@ fn role_rank(role: MapRole) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #7190 — a drive-prefixed or `:`-carrying segment is refused like `..`, on every host.
+    #[test]
+    fn drive_prefixed_and_colon_segments_are_refused() {
+        let root = std::path::Path::new("out");
+        for bad in ["c:/x.dds", "d:x.dds", "textures/c:/x.dds", "textures/a:b.dds", "../x.dds", "textures//x.dds"] {
+            assert!(output_png_path(root, bad).is_err(), "{bad}");
+        }
+        assert!(output_png_path(root, "textures/armor/iron.dds").is_ok());
+    }
 
     #[test]
     fn discovery_groups_only_unambiguous_companions() {
