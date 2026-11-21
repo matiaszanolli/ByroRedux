@@ -108,6 +108,12 @@ pub(super) fn loose_keys_bounded(data_dir: &std::path::Path, budget: usize) -> V
 /// so a directory of millions of files costs what the budget left allows, not what it holds; each
 /// name is read once, not per comparison.
 fn sorted_entries(dir: &std::path::Path, keep: usize) -> Option<(Vec<std::fs::DirEntry>, bool)> {
+    let mut listing = std::fs::read_dir(dir).ok()?.flatten();
+    if keep == 0 {
+        // #7171 — an exhausted budget keeps nothing: one entry answers whether any were left
+        // out, where streaming the whole listing to find out cost a directory's worth of reads.
+        return Some((Vec::new(), listing.next().is_some()));
+    }
     let mut entries: Vec<(std::ffi::OsString, std::fs::DirEntry)> = Vec::new();
     let mut dropped = false;
     let mut trim = |entries: &mut Vec<(std::ffi::OsString, std::fs::DirEntry)>| {
@@ -116,7 +122,7 @@ fn sorted_entries(dir: &std::path::Path, keep: usize) -> Option<(Vec<std::fs::Di
         dropped |= entries.len() > keep;
         entries.truncate(keep);
     };
-    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+    for entry in listing {
         entries.push((entry.file_name(), entry));
         if entries.len() >= keep.saturating_mul(2).max(64) {
             trim(&mut entries);
