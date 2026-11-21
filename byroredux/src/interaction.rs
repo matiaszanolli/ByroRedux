@@ -92,8 +92,13 @@ pub(crate) enum InputAction {
 
 impl InputAction {
     /// Actions with a live normalized input producer. `Pause` joins this list
-    /// when its first physical binding is added.
-    pub(crate) const OBSERVABLE: [Self; 14] = [
+    /// when its first physical binding is added. #7181 — `Vats` (bound to V,
+    /// read by the VATS system) was missing although the SDK, the host
+    /// contract and `sdk_input_action` all name it, so no extension or
+    /// Papyrus `Input` call ever saw it; the extensions' guard
+    /// `every_engine_action_is_observable_withheld_or_unmapped` now pins the
+    /// three lists together.
+    pub(crate) const OBSERVABLE: [Self; 15] = [
         Self::MoveForward,
         Self::MoveBackward,
         Self::StrafeLeft,
@@ -108,6 +113,7 @@ impl InputAction {
         Self::Quickload,
         Self::Sneak,
         Self::ReadyWeapon,
+        Self::Vats,
     ];
 
     const fn bit(self) -> u32 {

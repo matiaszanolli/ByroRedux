@@ -4895,3 +4895,68 @@ fn empty_extension_set_still_installs_the_engine_provider_host() {
         .callback()
         .is_some());
 }
+
+/// #7181 — every engine input action is observable by extensions (and the Papyrus `Input` view), withheld for a
+/// stated reason (`Pause`: no physical binding yet), or has no SDK name (`sdk_input_action` returns `None`). `Vats`
+/// was mapped, in the host contract and parseable, yet missing from `OBSERVABLE`, so nothing ever saw it.
+#[test]
+fn every_engine_action_is_observable_withheld_or_unmapped() {
+    use crate::interaction::InputAction as A;
+    // Exhaustive, so a new action fails to compile until it is listed here and placed below.
+    let place = |action: A| match action {
+        A::MoveForward
+        | A::MoveBackward
+        | A::StrafeLeft
+        | A::StrafeRight
+        | A::Jump
+        | A::Sprint
+        | A::Activate
+        | A::Attack
+        | A::Block
+        | A::Inventory
+        | A::Quicksave
+        | A::Quickload
+        | A::Vats
+        | A::Sneak
+        | A::ReadyWeapon
+        | A::Pause
+        | A::CastSpell
+        | A::NextSpell
+        | A::PreviousSpell
+        | A::Wait => action,
+    };
+    let all = [
+        A::MoveForward,
+        A::MoveBackward,
+        A::StrafeLeft,
+        A::StrafeRight,
+        A::Jump,
+        A::Sprint,
+        A::Activate,
+        A::Attack,
+        A::Block,
+        A::Inventory,
+        A::Quicksave,
+        A::Quickload,
+        A::Vats,
+        A::Sneak,
+        A::ReadyWeapon,
+        A::Pause,
+        A::CastSpell,
+        A::NextSpell,
+        A::PreviousSpell,
+        A::Wait,
+    ]
+    .map(place);
+    for action in all {
+        let observable = A::OBSERVABLE.contains(&action);
+        let mapped = sdk_input_action(action).is_some();
+        match (observable, mapped) {
+            (true, true) => {}
+            (false, true) => assert_eq!(action, A::Pause, "{action:?} has an SDK name but no extension ever sees it"),
+            (false, false) => {}
+            (true, false) => panic!("{action:?} is observed but has no SDK name to dispatch under"),
+        }
+    }
+    assert!(A::OBSERVABLE.contains(&A::Vats));
+}

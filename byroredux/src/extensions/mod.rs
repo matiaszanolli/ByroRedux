@@ -450,8 +450,8 @@ fn form_ref(pair: FormIdPair) -> FormRef {
     FormRef::new(pair.plugin.0.to_be_bytes(), pair.local.0)
 }
 
-/// The SDK's name for an observable action; the three spell actions have none (they are not in the host contract's
-/// `input-action` enum, so they never reach an extension).
+/// The SDK's name for an observable action; the three spell actions and `Wait` have none (they are not in the host
+/// contract's `input-action` enum, so they never reach an extension).
 fn sdk_input_action(action: crate::interaction::InputAction) -> Option<SdkInputAction> {
     Some(match action {
         crate::interaction::InputAction::MoveForward => SdkInputAction::MoveForward,
