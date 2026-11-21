@@ -12,10 +12,8 @@
 //! additional skip at the end.
 
 use anyhow::{ensure, Result};
-use flate2::read::ZlibDecoder;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::io::Read;
 use std::rc::Rc;
 
 /// Record flag: data is zlib-compressed.
@@ -1023,67 +1021,20 @@ impl<'a> EsmReader<'a> {
                 compressed_len,
                 ceiling,
             );
-            let mut decompressed = Vec::with_capacity(decompressed_size);
-            // Hold the decoder to the (now validated) declared size.
-            // `+ 1`: landing on the extra byte proves the stream had
-            // more to give, so a prefix that lies *downward* is
-            // rejected rather than silently truncating the record.
-            // Cannot overflow — `decompressed_size <= ceiling`, which is
-            // `MAX_RECORD_INFLATED_BYTES` at most. A *short* decode
-            // stays `Ok`, matching `byroredux_bsa::safety::inflate_bounded`
-            // (#3410), whose contract this mirrors.
-            if let Err(zlib_err) = ZlibDecoder::new(compressed)
-                .take(decompressed_size as u64 + 1)
-                .read_to_end(&mut decompressed)
-            {
-                // Some shipped records (e.g. FalloutNV.esm LAND 0x00150FC0,
-                // The Strip exterior (-6, 26)) carry a well-formed DEFLATE
-                // stream behind a corrupt Adler-32 trailer — the checksum
-                // is wrong, not the data. flate2's `ZlibDecoder` validates
-                // that trailer and errors even though every byte inflated
-                // cleanly. Retry as raw DEFLATE (skip the 2-byte zlib
-                // header, no trailer to validate) and accept the recovery
-                // ONLY when its length exactly matches the validated
-                // declared size — a length mismatch means the stream
-                // itself is bad, not just its checksum, so the original
-                // zlib error should surface instead. Bethesda's own loader
-                // evidently tolerates this exact defect, since the tile
-                // renders in the shipped game. (#3720 / D8-01)
-                decompressed.clear();
-                ensure!(
-                    compressed.len() >= 2,
-                    "Compressed record {:08X}: zlib decompression failed ({}) and the \
-                     stream is too short for a raw-DEFLATE retry",
-                    header.form_id,
-                    zlib_err,
-                );
-                let raw_ok = flate2::read::DeflateDecoder::new(&compressed[2..])
-                    .take(decompressed_size as u64 + 1)
-                    .read_to_end(&mut decompressed)
-                    .is_ok()
-                    && decompressed.len() == decompressed_size;
-                ensure!(
-                    raw_ok,
-                    "Compressed record {:08X}: zlib decompression failed ({}), and the \
-                     raw-DEFLATE Adler-32-mismatch recovery did not reproduce the \
-                     declared {} bytes exactly",
-                    header.form_id,
-                    zlib_err,
-                    decompressed_size,
-                );
-                log::warn!(
-                    "ESM record {:08X}: zlib Adler-32 trailer mismatch on an otherwise \
-                     well-formed stream, recovered via raw DEFLATE ({decompressed_size} bytes, exact match)",
-                    header.form_id,
-                );
-            }
-            ensure!(
-                decompressed.len() <= decompressed_size,
-                "Compressed record {:08X} inflated past its declared {} bytes — plugin is corrupt or hostile (decompression bomb)",
-                header.form_id,
+            // The bounded zlib inflate is shared with the archive readers
+            // (`byroredux_bsa::inflate_bounded_zlib`, #7100): the decoder is
+            // held to `take(declared + 1)` so a prefix that lies downward is
+            // rejected, a short decode stays `Ok`, and a well-formed DEFLATE
+            // stream behind a corrupt Adler-32 trailer (FalloutNV.esm LAND
+            // 0x00150FC0, #3720) is recovered as raw DEFLATE only on an exact
+            // length match. One copy, so a change to the bomb bound or the
+            // recovery cannot reach the archives and miss the plugins.
+            byroredux_bsa::inflate_bounded_zlib(
+                compressed,
                 decompressed_size,
-            );
-            decompressed
+                &format!("ESM record {:08X}", header.form_id),
+            )
+            .map_err(|e| anyhow::anyhow!("Compressed record {:08X}: {e}", header.form_id))?
         } else {
             let size = header.data_size as usize;
             ensure!(self.remaining() >= size, "Truncated record data");

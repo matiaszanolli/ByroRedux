@@ -12,14 +12,16 @@ semver = { workspace = true }
 toml = { workspace = true }
 serde = { workspace = true }
 anyhow = { workspace = true }
-flate2 = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
 # #6048 — `bscrc32`: a Skyrim MATT's Havok material id is the BSCRC32 of its name.
+# #7100 — `inflate_bounded_zlib`: compressed records share the archives' bounded inflate.
 byroredux-bsa = { path = "../bsa" }
 
 [dev-dependencies]
 env_logger = { workspace = true }
+# Builds the compressed-record fixtures in `esm/reader.rs` tests.
+flate2 = { workspace = true }
 
 # Contains `unsafe`, so it does not inherit the workspace `unsafe_code = "forbid"`.
 [lints.rust]
