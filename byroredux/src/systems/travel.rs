@@ -158,11 +158,11 @@ pub(crate) fn resolve_destination(
         .unwrap_or_else(|| pick_wander_target(home, radius, form_id, 0))
 }
 
-/// The centre of a Travel's fallback pick: the actor's `EditorPlacement` for a Near Editor Location
-/// package (#7225, as Eat/Sleep's anchor since #5391), otherwise where the actor stands. An actor with no
-/// placement (a script-created one) keeps its current position.
-fn travel_home(world: &World, actor: EntityId, behavior: &TravelBehavior, current: Vec3) -> Vec3 {
-    if !behavior.near_editor_location {
+/// The home a package's fallback centres on: the actor's `EditorPlacement` for a Near Editor Location
+/// package (Travel and Wander #7225, Guard and Ambush #7254, as Eat/Sleep's anchor since #5391), otherwise
+/// where the actor stands. An actor with no placement (a script-created one) keeps its current position.
+pub(super) fn package_home(world: &World, actor: EntityId, near_editor_location: bool, current: Vec3) -> Vec3 {
+    if !near_editor_location {
         return current;
     }
     world
@@ -363,7 +363,7 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
                                 behavior.target_form_id,
                                 behavior.radius.unwrap_or(TRAVEL_DEFAULT_RADIUS),
                                 behavior.form_id,
-                                travel_home(world, entity, behavior, current),
+                                package_home(world, entity, behavior.near_editor_location, current),
                             )
                         }
                     }

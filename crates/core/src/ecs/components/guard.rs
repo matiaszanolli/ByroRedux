@@ -37,12 +37,17 @@ use crate::math::Vec3;
 /// `form_id` is the raw ESM FormID, captured at spawn — seeds the
 /// deterministic fallback-pick hash, same convention as
 /// `TravelBehavior::form_id`/`WanderBehavior::form_id`.
+///
+/// `near_editor_location` is a PLDT of Near Editor Location (type 3): an
+/// unresolved anchor falls back to the actor's `EditorPlacement`, not where
+/// it stands when the package starts (#7254, as Travel/Wander since #7225).
 #[derive(Clone, Copy, Debug, PartialEq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct GuardBehavior {
     pub anchor_form_id: Option<u32>,
     pub radius: Option<f32>,
     pub form_id: u32,
+    pub near_editor_location: bool,
 }
 
 impl Component for GuardBehavior {

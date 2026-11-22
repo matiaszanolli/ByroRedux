@@ -334,6 +334,8 @@ enum AmbientBehavior {
         anchor_form_id: Option<u32>,
         radius: Option<f32>,
         actor_form_id: u32,
+        /// #7254 — the PLDT is Near Editor Location: the anchor is the actor's `EditorPlacement`.
+        near_editor_location: bool,
     },
     Patrol {
         patrol_radius: Option<f32>,
@@ -368,6 +370,8 @@ enum AmbientBehavior {
         wait_radius: Option<f32>,
         ambush: AmbushBehavior,
         actor_form_id: u32,
+        /// #7254 — the wait location is Near Editor Location (as `Guard`'s).
+        near_editor_location: bool,
     },
     /// M42 — Find (procedure 0): `find_package_system` hunts the target.
     Find(FindPackageBehavior),
@@ -515,10 +519,14 @@ impl AmbientBehavior {
                 actor_form_id,
             })
         } else if package.is_guard() {
+            // GECK *Guard Package*: the location is "where the actor stands while running the guard package".
+            // Near Editor Location is the actor's editor placement, not where an earlier package left it (#7254:
+            // 67 FalloutNV.esm Guard packages, `DefaultGuardLinkedRef…StayAtEdLoc…` among them).
             Some(Self::Guard {
                 anchor_form_id: location_reference,
                 radius: location_radius,
                 actor_form_id,
+                near_editor_location: matches!(location_anchor(package.location), EatSleepLocation::NearEditorLocation),
             })
         } else if package.is_flee_not_combat() {
             // Flee and Ambush take the actor over, so like Find / UseWeapon / Dialogue they install
@@ -541,6 +549,7 @@ impl AmbientBehavior {
                     target_form_id: target_reference,
                 },
                 actor_form_id,
+                near_editor_location: matches!(location_anchor(package.location), EatSleepLocation::NearEditorLocation),
             })
         } else if package.is_find() {
             find_behavior(package, world).map(Self::Find)
@@ -704,12 +713,14 @@ impl AmbientBehavior {
                 anchor_form_id,
                 radius,
                 actor_form_id,
+                near_editor_location,
             } => {
                 sink.put(actor,
                     GuardBehavior {
                         anchor_form_id,
                         radius,
                         form_id: actor_form_id,
+                        near_editor_location,
                     },
                 );
             }
@@ -718,12 +729,14 @@ impl AmbientBehavior {
                 wait_radius,
                 ambush,
                 actor_form_id,
+                near_editor_location,
             } => {
                 sink.put(actor,
                     GuardBehavior {
                         anchor_form_id: wait_form_id,
                         radius: wait_radius,
                         form_id: actor_form_id,
+                        near_editor_location,
                     },
                 );
                 sink.put(actor, ambush);
@@ -2606,6 +2619,27 @@ mod tests {
         let behavior = world.get::<TravelBehavior>(actor).map(|behavior| *behavior).expect("Travel installs");
         assert_eq!((behavior.radius, behavior.target_form_id), (Some(128.0), Some(0x10_A201)));
         assert!(!behavior.near_editor_location);
+    }
+
+    /// #7254 — a Guard or Ambush package whose `PLDT` is Near Editor Location carries the flag that makes
+    /// `guard_system` anchor on the actor's `EditorPlacement` (67 FalloutNV.esm Guard and 15 Ambush packages);
+    /// Near Current Location and a reference do not.
+    #[test]
+    fn a_near_editor_location_guard_or_ambush_anchors_on_the_editor_placement() {
+        use byroredux_plugin::esm::records::misc::pack::{PROCEDURE_AMBUSH, PROCEDURE_GUARD};
+        let flag = |procedure: u32, location: PackLocation| {
+            let mut package = pack(0x100, procedure, None);
+            package.location = Some(location);
+            let (world, actor) = setup_actor(10.0, vec![package]);
+            world.get::<GuardBehavior>(actor).expect("Guard's runtime installs").near_editor_location
+        };
+        let editor = PackLocation { location_type: 3, target: PackLocationTarget::Other(0), radius: 400 };
+        let current = PackLocation { location_type: 2, target: PackLocationTarget::Other(0), radius: 400 };
+        let reference = PackLocation { location_type: 0, target: PackLocationTarget::NearReference(0x10_A201), radius: 128 };
+        assert!(flag(PROCEDURE_GUARD, editor), "Guard at the editor location");
+        assert!(!flag(PROCEDURE_GUARD, current));
+        assert!(!flag(PROCEDURE_GUARD, reference));
+        assert!(flag(PROCEDURE_AMBUSH, editor), "Ambush waits on Guard's runtime");
     }
 
     /// Ambush (procedure 9): wait on Guard's runtime at `PLDT`, gate the

@@ -286,6 +286,8 @@ fn leaf_behavior(
                 anchor_form_id: reference_of(location),
                 radius: radius_of(location),
                 actor_form_id,
+                // #7254 — Near Editor Location anchors on the editor placement, as the flat Guard's does.
+                near_editor_location: matches!(location_anchor(Some(location)), EatSleepLocation::NearEditorLocation),
             })
         }
         // Flee takes the actor over like the flat FleeNotCombat: only from conditions decided on modelled
@@ -480,7 +482,7 @@ mod tests {
         let (package, template) = tree(vec![leaf("Guard", &[0], vec![])], loc);
         assert_eq!(
             decide(&package, &template, None, &world),
-            Ok(AmbientBehavior::Guard { anchor_form_id: Some(0x77), radius: Some(128.0), actor_form_id: 0xAA })
+            Ok(AmbientBehavior::Guard { anchor_form_id: Some(0x77), radius: Some(128.0), actor_form_id: 0xAA, near_editor_location: false })
         );
     }
 
