@@ -1,8 +1,8 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-22). Revision 9 extends the list merge
-(LMC-REC-003) to form lists, outfits and containers; revision 8 built it
-for levelled lists. Revision 7 records the owner's ruling
+**Status**: ACTIVE (2026-11-22). Revision 10 extends the list merge
+(LMC-REC-003) to actors, races and carried items; revision 9 to form
+lists, outfits and containers; revision 8 built it for levelled lists. Revision 7 records the owner's ruling
 that `.esm` and `.esl` plugins pair with archives (LMC-AST-002). Revision 6 starts Phase 0: the mechanism
 catalog is machine-readable and §3.1 is generated from it. Revision 5 files
 the tracking issues.
@@ -154,7 +154,7 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
 | Id | Mechanism | Examples | Disp. | Games | Reason and citation | v |
 |---|---|---|---|---|---|---|
 | R1 | New records in a plugin (ESM/ESP/ESL/ESH) | every content mod | D1 | all | A plugin's new records are ordinary input to the multi-plugin fold. (§5.1 LMC-ID-003) | 1 |
-| R2 | Record overrides of a master's records | patches, overhauls | D1 | all | Last-in-order wins at the fold (the legacy policy); under the default merge policy independent overrides of a levelled list, form list, outfit or container combine per entry form (LMC-REC-003). Deletions are carried. (§5.2 LMC-REC-001; §5.2 LMC-REC-003; [`crates/plugin/src/esm/records/list_merge.rs`](../../crates/plugin/src/esm/records/list_merge.rs)) | 3 |
+| R2 | Record overrides of a master's records | patches, overhauls | D1 | all | Last-in-order wins at the fold (the legacy policy); under the default merge policy independent overrides of a levelled list, form list, outfit, container, actor, race or carried item combine per list entry form and per field (LMC-REC-003). Deletions are carried. (§5.2 LMC-REC-001; §5.2 LMC-REC-003; [`crates/plugin/src/esm/records/list_merge.rs`](../../crates/plugin/src/esm/records/list_merge.rs)) | 4 |
 | R3 | Deleted / disabled records (DELE flag, UDR tombstones) | cleaned plugins, cell edits | D1 | all | Tombstones are decoded; the engine honours the deletion. (§3.1 R3) | 1 |
 | R4 | Injected records (a plugin defines a form in a master's ID space) | AWKCR-style, Bashed Patch | D1 | all | Loaded as any record the plugin defines. (§3.1 R4) | 1 |
 | R5 | Cell / worldspace overrides, new worldspaces, REFR edits | new lands, cell overhauls | D1 | all | The cell walker runs per plugin and the fold merges the overrides. (§3.1 R5) | 1 |
@@ -227,7 +227,7 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
 |---|---|---|---|---|---|---|
 | T1 | Unofficial patches as plugins | UOP, UFO3P, YUP, USSEP, UFO4P, SCP | D2 | all | A known patch is not loaded; the engine stands in for dependents (decision Q1). (§5.8 LMC-FIX-001; §5.8 LMC-FIX-004) | 1 |
 | T2.plugin | Generated patch plugins: the plugin | Bashed Patch, Smashed Patch, Synthesis output, Reqtificator output | D1 | all | A generated plugin loads as any plugin. (§3.1 T2) | 1 |
-| T2.necessity | Generated patch plugins: the need for them where record merging covers it | Bashed Patch, Smashed Patch, Synthesis output | D2 | all | The per-form merge policy covers the case the patch exists for: levelled lists, form lists, outfits and containers today; the lists inside actor records (inventories, factions, spells) and keyword lists are still last-wins. (§5.2 LMC-REC-003; [`crates/plugin/src/esm/records/list_merge.rs`](../../crates/plugin/src/esm/records/list_merge.rs)) | 3 |
+| T2.necessity | Generated patch plugins: the need for them where record merging covers it | Bashed Patch, Smashed Patch, Synthesis output | D2 | all | The per-form merge policy covers the case the patch exists for: levelled lists, form lists, outfits, containers, the lists of actors and races, and item keywords today; the keyword lists of other records (locations, quests, activators, furniture, magic effects, spells) are still last-wins. (§5.2 LMC-REC-003; [`crates/plugin/src/esm/records/list_merge.rs`](../../crates/plugin/src/esm/records/list_merge.rs)) | 4 |
 | T3.plugin | Merged plugins, ESL-flagged plugins, 'cleaned' masters: the plugin | load-order management | D1 | all | Loads as any plugin; there is no slot ceiling in the design. (§5.1 LMC-ID-004) | 1 |
 | T3.necessity | Merged plugins, ESL-flagged plugins, 'cleaned' masters: the need for them | load-order management | D2 | all | Plugin-count workarounds are not needed. (§5.1 LMC-ID-004) | 1 |
 | T4.data | FO4 precombine / previs repair packs: the data | PRP | D1 | FO4 | Loads as data; the engine falls back to REFRs when precombines are absent (M49). (§5.2 LMC-REC-012) | 1 |
@@ -488,7 +488,11 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   every record. This makes Bashed-/Smashed-/Synthesis-style list patches
   redundant for the cases it covers.
   Built for the levelled lists (`LVLI`, `LVLN`, `LVLC`, `LVSP`), form
-  lists (`FLST`), outfits (`OTFT`) and containers (`CONT`), #6670:
+  lists (`FLST`), outfits (`OTFT`), containers (`CONT`), actors (`NPC_`,
+  `CREA`: inventory, factions, spells, perks, keywords, actor values),
+  races (`RACE`: spells, keywords, race relations) and carried items
+  (`ALCH`, `AMMO`, `ARMO`, `BOOK`, `MISC`, `WEAP` and the other item types:
+  keywords), #6670:
   `crates/plugin/src/esm/records/list_merge.rs`, selected per session with
   `--merge-policy merge|legacy` (default `merge`). "Independent" is decided
   on the transitive master closure, so a patch that masters every
@@ -499,8 +503,10 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   decoded and takes no part in the comparison. A form list's null entries
   hold a place, not a form: they are never an operation and keep their
   positions, and additions append, so the indices of untouched entries stay
-  put. The lists inside actor and race records (inventories, factions,
-  spells) and keyword lists are still last-wins. On the installed games the
+  put. A list whose order is its meaning is one scalar field: an actor's
+  AI packages (priority order) and a consumable's effects. The keyword
+  lists of other records (locations, quests, activators, furniture, magic
+  effects, spells) are still last-wins. On the installed games the
   vanilla master-plus-DLC sets merge no levelled list (their DLC extend
   shared lists by script); Skyrim's Dawnguard and Hearthfires both override
   three containers and merge to what `legacy` keeps. A Fallout 4 profile
@@ -508,7 +514,13 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   lists, where `legacy` let the mod built against vanilla undo the patch's
   fix; a Starfield profile with the community, unofficial and Resource
   Revival patches merges a container whose rename and item swap `legacy`
-  lets the vanilla-based unofficial patch undo.
+  lets the vanilla-based unofficial patch undo. With Inventory Organizer
+  added, the Fallout 4 profile merges 568 items: `legacy` lets
+  MojaveImports' record of Nuka-Cola Quantum undo Inventory Organizer's
+  rename, `merge` keeps the rename with MojaveImports' effects and keyword.
+  A Starfield companion mod raises a companion's perks and actor values
+  and adds two perks; `legacy` lets the vanilla-based unofficial patch
+  undo all of it, `merge` keeps it beside the patches' own changes.
 - **LMC-REC-004.** DELE-flagged overrides and tombstoned references MUST
   behave as the game treats them: a deleted base record disappears from the
   merged index; a deleted reference is absent from its cell. The cleaning
@@ -1304,3 +1316,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 7 | 2026-11-22 | LMC-AST-002: owner ruling on #6670 — `.esm` and `.esl` plugins pair with archives as `.esp` plugins do. The FO4 voice suffix and Starfield's automatic pairing (with `- Localization` and `- Voices_<lang>`) verified from the shipped DLC; Skyrim's `- Textures.bsa` stays unverified and unpaired; the FO4 high-resolution pack's series is a new verify item. Pairing built in `crates/plugin/src/archive_pairing.rs` | — |
 | 8 | 2026-11-22 | LMC-REC-003 built for the levelled lists (`merge` by default per Q2, `--merge-policy legacy`); the catalog's R2 and T2.necessity rows say so | — |
 | 9 | 2026-11-22 | LMC-REC-003 extended to form lists, outfits and containers (form-list null slots keep their positions); the catalog's R2 and T2.necessity rows at version 3 | — |
+| 10 | 2026-11-22 | LMC-REC-003 extended to actors (inventory, factions, spells, perks, keywords, actor values), races (spells, keywords, race relations) and carried items (keywords); AI packages and consumable effects stay one field, their order being their meaning; the catalog's R2 and T2.necessity rows at version 4 | — |

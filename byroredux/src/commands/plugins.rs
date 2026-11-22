@@ -139,8 +139,8 @@ fn slot_owner(order: &LoadOrder, form_id: u32) -> Option<usize> {
     order.slots().iter().position(|owner| *owner == slot)
 }
 
-/// One carrier chain, `A → B → C (wins)`, a deletion marked; `C (merged)` when the fold merged the form's list
-/// record rather than keeping the last record (LMC-REC-003).
+/// One carrier chain, `A → B → C (wins)`, a deletion marked; `C (merged)` when the fold merged the form's record
+/// rather than keeping the last one (LMC-REC-003).
 fn chain(order: &LoadOrder, form_id: u32, carriers: &[Carrier]) -> String {
     let last = if order.list_merge().record(form_id).is_some_and(|record| record.is_merged()) { " (merged)" } else { " (wins)" };
     carriers
@@ -171,7 +171,7 @@ fn summary_lines(order: &LoadOrder, record_type: impl Fn(u32) -> Option<[u8; 4]>
             MergePolicy::Legacy => format!("policy: {POLICY}"),
             MergePolicy::Merge => {
                 let (lists, overruled) = order.list_merge().counts();
-                format!("policy: {MERGE_POLICY}; {lists} list records merged, {overruled} operations overruled; every other record: {POLICY}")
+                format!("policy: {MERGE_POLICY}; {lists} records merged, {overruled} operations overruled; every other record: {POLICY}")
             }
         },
     ];
@@ -254,12 +254,13 @@ fn form_lines(order: &LoadOrder, form_id: u32, record_type: Option<[u8; 4]>) -> 
     lines
 }
 
-/// The policy line for a list record (levelled list, form list, outfit, container) the fold merged.
-const MERGE_POLICY: &str = "merge: independent overrides of a list record combine per entry form, the later plugin \
-                            winning a form or field both changed; a plugin that masters every contributor wins it whole \
-                            (LMC-REC-003)";
+/// The policy line for a record with lists (levelled list, form list, outfit, container, actor, race, item) the fold
+/// merged.
+const MERGE_POLICY: &str = "merge: independent overrides of a record with lists combine per list entry form and per \
+                            field, the later plugin winning a form or field both changed; a plugin that masters every \
+                            contributor wins it whole (LMC-REC-003)";
 
-/// How a merged list record came together: its contributors, and per form and field the operation that decided it
+/// How a merged record came together: its contributors, and per form and field the operation that decided it
 /// and those it overruled (LMC-REC-003's explainability).
 fn merge_lines(order: &LoadOrder, record: &ListMergeRecord) -> Vec<String> {
     let names = |plugins: &[u32]| plugins.iter().map(|&plugin| plugin_name(order, plugin as usize)).collect::<Vec<_>>().join(", ");
@@ -275,13 +276,13 @@ fn merge_lines(order: &LoadOrder, record: &ListMergeRecord) -> Vec<String> {
     let overruled = |overruled: Vec<String>| {
         if overruled.is_empty() { String::new() } else { format!(", overruling {}", overruled.join(", ")) }
     };
-    let mut entries: Vec<&(u32, Resolution<EntryOp>)> = record.entries.iter().collect();
-    entries.sort_unstable_by_key(|(form, _)| *form);
-    for (form, resolution) in entries {
+    let mut entries: Vec<&((&str, u32), Resolution<EntryOp>)> = record.entries.iter().collect();
+    entries.sort_unstable_by_key(|(key, _)| *key);
+    for ((list, form), resolution) in entries {
         let lost =
             resolution.overruled.iter().map(|(plugin, op)| format!("{}'s {}", plugin_name(order, *plugin as usize), op_text(*op))).collect();
         lines.push(format!(
-            "  entry {form:08X}: {} by {}{}",
+            "  {list} {form:08X}: {} by {}{}",
             op_text(resolution.op),
             plugin_name(order, resolution.winner as usize),
             overruled(lost)
@@ -484,6 +485,105 @@ mod tests {
         assert!(lines.iter().any(|line| line.contains("(merged)")), "{lines:?}");
     }
 
+    /// Real data (ignored: it parses `Fallout4.esm`): Inventory Organizer renames Nuka-Cola Quantum and MojaveImports,
+    /// a master of neither, changes its effects and adds a keyword. `legacy` keeps MojaveImports' record whole, under
+    /// the vanilla name; `merge` keeps both mods' changes (LMC-REC-003).
+    #[test]
+    #[ignore = "parses Fallout4.esm and the UFO4P, Inventory Organizer and MojaveImports mods; run with --ignored"]
+    fn independent_fo4_mods_merge_an_item_that_legacy_overwrites() {
+        use byroredux_plugin::esm::records::list_merge::MergePolicy;
+        let data = byroredux_plugin::esm::test_paths::fo4_data_dir();
+        let find = |name: &str| {
+            std::fs::read_dir(&data).ok()?.flatten().map(|entry| entry.path()).find(|path| {
+                path.file_name().is_some_and(|file| file.to_string_lossy().eq_ignore_ascii_case(name))
+            })
+        };
+        let names = [
+            "Fallout4.esm", "DLCRobot.esm", "DLCworkshop01.esm", "DLCCoast.esm", "DLCworkshop02.esm", "DLCworkshop03.esm",
+            "DLCNukaWorld.esm", "ccbgsfo4044-hellfirepowerarmor.esl", "ccbgsfo4115-x02.esl", "ccbgsfo4116-heavyflamer.esl",
+            "ccbgsfo4110-ws_enclave.esl", "ccbgsfo4096-as_enclave.esl", "ccfsvfo4007-halloween.esl", "ccbgsfo4046-tescan.esl",
+            "ccsbjfo4003-grenade.esl", "ccotmfo4001-remnants.esl", "unofficial fallout 4 patch.esp", "inventory organizer.esp",
+            "mojaveimports.esp",
+        ];
+        let Some(paths) = names.iter().map(|name| find(name).map(|path| path.to_string_lossy().into_owned())).collect::<Option<Vec<_>>>()
+        else {
+            byroredux_plugin::esm::test_paths::require_or_skip("Fallout 4 data with the UFO4P, Inventory Organizer and MojaveImports mods");
+            return;
+        };
+        let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+        const QUANTUM: u32 = 0x0004_835F;
+        let fold = |policy| crate::cell_loader::load_order::parse_record_indexes_in_load_order_with_policy(&refs, policy).expect("parse");
+
+        let (legacy, _) = fold(MergePolicy::Legacy);
+        assert_eq!(legacy.items[&QUANTUM].common.full_name, "Nuka-Cola Quantum", "legacy: MojaveImports' record wins whole");
+
+        let (merged, order) = fold(MergePolicy::Merge);
+        let quantum = &merged.items[&QUANTUM];
+        assert_eq!(quantum.common.full_name, "Nuka-Cola - Quantum", "Inventory Organizer's name stands");
+        let mojave = order.slots()[names.len() - 1];
+        let keyword = quantum.common.keywords.iter().copied().find(|&form| byroredux_scripting::load_order::global_slot_of(form) == mojave);
+        let keyword = keyword.expect("MojaveImports' keyword stands");
+        assert_eq!(quantum.kind, legacy.items[&QUANTUM].kind, "MojaveImports' effects stand");
+        let lines = form_lines(&order, QUANTUM, Some(*b"ALCH"));
+        assert!(lines.iter().any(|line| line == "  name: set by inventory organizer.esp"), "{lines:?}");
+        assert!(lines.iter().any(|line| line == "  type data: set by mojaveimports.esp"), "{lines:?}");
+        assert!(lines.iter().any(|line| line == &format!("  keyword {keyword:08X}: added by mojaveimports.esp")), "{lines:?}");
+    }
+
+    /// Real data (ignored: it parses `Starfield.esm`): a companion mod raises Hadrian's perks and actor values and adds
+    /// two perks; the community and unofficial patches, masters of neither, override her too. `legacy` keeps the
+    /// unofficial patch's vanilla-based record whole; `merge` keeps the companion mod's perks and values
+    /// (LMC-REC-003).
+    #[test]
+    #[ignore = "parses Starfield.esm, a companion mod and the community and unofficial patches; run with --ignored"]
+    fn independent_starfield_mods_merge_an_actor_that_legacy_reverts() {
+        use byroredux_plugin::esm::records::list_merge::MergePolicy;
+        let data = byroredux_plugin::esm::test_paths::starfield_data_dir();
+        let find = |name: &str| {
+            std::fs::read_dir(&data).ok()?.flatten().map(|entry| entry.path()).find(|path| {
+                path.file_name().is_some_and(|file| file.to_string_lossy().eq_ignore_ascii_case(name))
+            })
+        };
+        // Starfield, the masters of the patches, the companion mod, the patches.
+        let names = [
+            "Starfield.esm", "SFBGS003.esm", "SFBGS00D.esm", "SFBGS004.esm", "SFBGS008.esm", "SFBGS007.esm", "SFBGS047.esm",
+            "SFBGS006.esm", "amazing_companion_tweaks_sp0ckrates.esm", "starfieldcommunitypatch.esm",
+            "unofficial starfield patch.esm",
+        ];
+        let Some(paths) = names.iter().map(|name| find(name).map(|path| path.to_string_lossy().into_owned())).collect::<Option<Vec<_>>>()
+        else {
+            byroredux_plugin::esm::test_paths::require_or_skip("Starfield data with a companion mod and the community and unofficial patches");
+            return;
+        };
+        let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+        const HADRIAN: u32 = 0x0000_5787;
+        const PERK: u32 = 0x0021_B8C5;
+        let fold = |policy| crate::cell_loader::load_order::parse_record_indexes_in_load_order_with_policy(&refs, policy).expect("parse");
+        let rank = |index: &byroredux_plugin::esm::records::EsmIndex, perk: u32| {
+            index.npcs[&HADRIAN].perks.iter().find(|(form, _)| *form == perk).map(|(_, rank)| *rank)
+        };
+
+        let (legacy, _) = fold(MergePolicy::Legacy);
+        assert_eq!(rank(&legacy, PERK), Some(1), "legacy: the unofficial patch's vanilla-based record wins whole");
+        assert_eq!(legacy.npcs[&HADRIAN].perks.len(), 5);
+
+        let (merged, order) = fold(MergePolicy::Merge);
+        let companion = order.slots()[8];
+        assert_eq!(rank(&merged, PERK), Some(2), "the companion mod's rank stands");
+        let added: Vec<u32> = merged.npcs[&HADRIAN]
+            .perks
+            .iter()
+            .map(|(form, _)| *form)
+            .filter(|&form| byroredux_scripting::load_order::global_slot_of(form) == companion)
+            .collect();
+        assert_eq!(added.len(), 2, "the companion mod's own perks stand");
+        let lines = form_lines(&order, HADRIAN, Some(*b"NPC_"));
+        assert!(lines.iter().any(|line| line == &format!("  perk {PERK:08X}: changed by amazing_companion_tweaks_sp0ckrates.esm")), "{lines:?}");
+        assert!(lines.iter().any(|line| line == &format!("  perk {:08X}: added by amazing_companion_tweaks_sp0ckrates.esm", added[0])), "{lines:?}");
+        assert!(lines.iter().any(|line| line.starts_with("  actor value ") && line.ends_with(": changed by amazing_companion_tweaks_sp0ckrates.esm")), "{lines:?}");
+        assert!(lines.iter().any(|line| line.contains("(merged)")), "{lines:?}");
+    }
+
     /// Real data (ignored: it parses `Skyrim.esm`): Dawnguard and Hearthfires, neither a master of the other, both
     /// override three vanilla containers. Dawnguard's record changes nothing the merge reads and Hearthfires adds its
     /// own item, so `merge` gives what `legacy` does and says why (LMC-REC-003).
@@ -627,4 +727,5 @@ mod tests {
         assert_eq!(parse_form_id("1f00d"), Some(0x0001_F00D));
         assert_eq!(parse_form_id("Skyrim.esm"), None);
     }
+
 }

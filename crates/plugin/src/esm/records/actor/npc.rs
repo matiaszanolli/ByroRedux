@@ -16,7 +16,7 @@ use super::{
 /// MQ101 player duplicates) — the audit's claim that FMRS is a single
 /// `f32` slider was stale; FMRS payloads are 36 bytes everywhere they
 /// appear. See #591 / FO4-DIM6-06.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NpcFaceMorph {
     /// FMRI — morph-target FormID (HDPT or face-morph-data form).
     pub form_id: u32,
@@ -27,7 +27,7 @@ pub struct NpcFaceMorph {
 /// FO4 NPC face-morph block. Set on `NpcRecord` only when at least one
 /// of the underlying sub-records was present — most generic settler
 /// NPCs ship none and stay at `None`. See #591 / FO4-DIM6-06.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct NpcFaceMorphs {
     /// Paired FMRI + FMRS entries. The wire format alternates the two
     /// sub-records; the parser pairs them positionally and truncates
@@ -80,7 +80,7 @@ impl NpcFaceMorphs {
 /// accumulated into [`NpcFaceMorphs::head_parts`] (the FO4 semantic),
 /// which silently misclassified every FNV named NPC as having FO4
 /// face-morph data.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NpcFaceGenRecipe {
     /// FGGS — 50 symmetric morph weights (left-right mirrored sliders
     /// like nose-bridge-width, jaw-depth, eye-vertical). Indexed by
