@@ -3,23 +3,28 @@
 //! Under the `legacy` policy (LMC-REC-002) the fold keeps the last plugin's record of a form whole, so two mods that
 //! each add a sword to the same levelled list leave only the later one's sword: the reason list patches (Bashed,
 //! Smashed, Synthesis) exist. The `merge` policy, the default by decision Q2, combines them instead, for the records
-//! that are a list and a few scalar fields: the levelled lists (`LVLI`, `LVLN`, `LVLC`, `LVSP`), form lists (`FLST`),
-//! outfits (`OTFT`) and containers (`CONT`):
+//! that carry lists: the levelled lists (`LVLI`, `LVLN`, `LVLC`, `LVSP`), form lists (`FLST`), outfits (`OTFT`),
+//! containers (`CONT`), actors (`NPC_`, `CREA`: inventory, factions, spells, perks, keywords, actor values), races
+//! (`RACE`: spells, keywords, race relations) and carried items (`ALCH`, `AMMO`, `ARMO`, `BOOK`, `MISC`, `WEAP`, ...:
+//! keywords):
 //!
 //! - **Scope.** Only *independent* overrides merge: a plugin that declares, directly or through its masters, every
 //!   plugin whose changes the record holds so far (a patch) wins it whole, as under `legacy`.
 //! - **Per form.** An override is diffed against the record it overrides, its *base*: the latest earlier carrier among
-//!   its own masters (the definer at the least). The list's entries are grouped by the form they name and compared as
-//!   multisets of the rest of each entry (a levelled entry's level and count, an inventory entry's count), since lists
-//!   repeat a form on purpose: equal is kept; only in the base is a *removal*; only in the override an *addition*; in
+//!   its own masters (the definer at the least). Each list's entries are grouped by the form they name and compared as
+//!   multisets of the rest of each entry (a levelled entry's level and count, an inventory entry's count, a faction's
+//!   rank, a perk's rank, an actor value's value), since lists repeat a form on purpose: equal is kept; only in the base is a *removal*; only in the override an *addition*; in
 //!   both but different a *change*, which replaces the base's entries for that form with the override's. A re-level is
 //!   one change, never a removal plus an addition, so two plugins moving one sword to different levels cannot leave it
 //!   in the list twice.
 //! - **Last wins per form.** Operations on different forms combine; on the same form the later plugin in load order
 //!   wins and the earlier operation is recorded as overruled. Operations that would leave the list as it is are not
 //!   operations.
-//! - **Fields.** The record's other fields (a levelled list's chance none, a container's name and weight, ...) follow
-//!   the same rule: a field the override changed against its base is an operation, last wins.
+//! - **Fields.** The record's other fields (a levelled list's chance none, a container's name and weight, an actor's
+//!   level, ...) follow the same rule: a field the override changed against its base is an operation, last wins. A
+//!   list whose order is its meaning is one field: an actor's AI packages, in priority order, and a consumable's
+//!   effects, inside its type data. An item's kind is compared as its own record authored it, before the fold promoted
+//!   a `MISC` an `OMOD` names to a loose object mod.
 //! - **Explained.** [`ListMergeRecord`] keeps, per merged record, every contributor, the winner and overruled operations
 //!   of each form and field, and the last wholesale win.
 //!
@@ -27,12 +32,15 @@
 //! an added form goes at the end, so the indices of a form list's untouched entries stay put. A form list's null
 //! entries (`0xFFFFFFFF`, a slot the author left empty) hold a place, not a form: they are never an operation and keep
 //! their positions. Per-entry extra data (`COED` owner and condition) is not decoded, so it takes no part in the
-//! comparison. The lists inside larger records (an actor's inventory, factions and spells, keyword lists) still follow
-//! `legacy`.
+//! comparison. The keyword lists of other records (locations, quests, activators, furniture, magic effects, spells)
+//! still follow `legacy`, as does every record without a list.
 
 use std::collections::HashMap;
 
+use super::actor::{FactionMembership, NpcInventoryEntry, NpcRecord, RaceRecord};
+use super::common::CommonItemFields;
 use super::container::{ContainerRecord, InventoryEntry, LeveledEntry, LeveledList};
+use super::items::{ItemKind, ItemRecord};
 use super::list_record::FlstRecord;
 use super::outfit::OtftRecord;
 use super::provenance::FoldProvenance;
@@ -67,7 +75,7 @@ impl MergePolicy {
     }
 }
 
-/// The record types that merge, each with its own map in [`EsmIndex`].
+/// The record maps of [`EsmIndex`] whose records merge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ListKind {
     LeveledItems,
@@ -77,31 +85,11 @@ pub enum ListKind {
     FormList,
     Outfit,
     Container,
-}
-
-impl ListKind {
-    pub const ALL: [Self; 7] = [
-        Self::LeveledItems,
-        Self::LeveledNpcs,
-        Self::LeveledCreatures,
-        Self::LeveledSpells,
-        Self::FormList,
-        Self::Outfit,
-        Self::Container,
-    ];
-
-    /// The record type.
-    pub fn tag(self) -> &'static str {
-        match self {
-            Self::LeveledItems => "LVLI",
-            Self::LeveledNpcs => "LVLN",
-            Self::LeveledCreatures => "LVLC",
-            Self::LeveledSpells => "LVSP",
-            Self::FormList => "FLST",
-            Self::Outfit => "OTFT",
-            Self::Container => "CONT",
-        }
-    }
+    Npc,
+    Creature,
+    Race,
+    /// Every carried item type (`ALCH`, `AMMO`, `ARMO`, `BOOK`, `KEYM`, `MISC`, `WEAP`, ...), one map.
+    Item,
 }
 
 /// One entry of a list that merges: the form it names, and the rest of it, which the multiset comparison sees.
@@ -131,7 +119,60 @@ impl ListEntry for InventoryEntry {
     }
 }
 
-/// A bare form ID: a form list's or an outfit's entry.
+impl ListEntry for NpcInventoryEntry {
+    type Data = i32;
+    fn form(&self) -> u32 {
+        self.item_form_id
+    }
+    fn data(&self) -> i32 {
+        self.count
+    }
+}
+
+impl ListEntry for FactionMembership {
+    type Data = i8;
+    fn form(&self) -> u32 {
+        self.faction_form_id
+    }
+    fn data(&self) -> i8 {
+        self.rank
+    }
+}
+
+/// An actor's perk (`PRKR`): the perk and its rank.
+impl ListEntry for (u32, u8) {
+    type Data = u8;
+    fn form(&self) -> u32 {
+        self.0
+    }
+    fn data(&self) -> u8 {
+        self.1
+    }
+}
+
+/// A race's relation to another race (`XNAM`): the race and the disposition adjustment.
+impl ListEntry for (u32, i32) {
+    type Data = i32;
+    fn form(&self) -> u32 {
+        self.0
+    }
+    fn data(&self) -> i32 {
+        self.1
+    }
+}
+
+/// An actor's actor value (`PRPS`): the actor value and its value, compared by its bits.
+impl ListEntry for (u32, f32) {
+    type Data = u32;
+    fn form(&self) -> u32 {
+        self.0
+    }
+    fn data(&self) -> u32 {
+        self.1.to_bits()
+    }
+}
+
+/// A bare form ID: a form list's, an outfit's, a spell list's or a keyword list's entry.
 impl ListEntry for u32 {
     type Data = ();
     fn form(&self) -> u32 {
@@ -143,6 +184,17 @@ impl ListEntry for u32 {
 /// A form list's empty slot: it holds a place, so it is never one of the merge's operations.
 const NULL_FORM: u32 = 0xFFFF_FFFF;
 
+/// A list of a record type that merges.
+pub struct List<R> {
+    /// What one of the list's entries is called in a report.
+    pub entry: &'static str,
+    /// The per-form operations the second record makes against the first.
+    diff: fn(&R, &R) -> Vec<(u32, EntryOp)>,
+    /// Apply the operations `incoming` (the second record) makes against `base` (the first) to `current` (the third),
+    /// returning those that changed it.
+    fold: fn(&R, &R, &mut R) -> Vec<(u32, EntryOp)>,
+}
+
 /// A scalar field of a record that merges.
 pub struct Field<R> {
     /// The field's name in a report.
@@ -151,39 +203,53 @@ pub struct Field<R> {
     copy: fn(&R, &mut R),
 }
 
-/// A record type that merges: one list and its scalar fields (see the module docs), implemented by `list_record!`.
+/// A record type that merges: its lists and its scalar fields (see the module docs), implemented by `list_record!`.
 pub trait ListRecord: Clone + 'static {
-    type Entry: ListEntry;
     /// The kinds whose map holds this type.
     const KINDS: &'static [ListKind];
-    /// Every field besides the form ID and the list.
+    /// The lists that merge per form.
+    const LISTS: &'static [List<Self>];
+    /// Every other field besides the form ID.
     const FIELDS: &'static [Field<Self>];
-    fn entries(&self) -> &[Self::Entry];
-    fn entries_mut(&mut self) -> &mut Vec<Self::Entry>;
     fn records(kind: ListKind, index: &EsmIndex) -> &HashMap<u32, Self>;
     fn records_mut(kind: ListKind, index: &mut EsmIndex) -> &mut HashMap<u32, Self>;
 }
 
-/// Implement [`ListRecord`] for `$record`, whose list is `$list` and whose every other field but `form_id` is named in
-/// `fields`. The record is destructured whole, so a field added to it does not compile until it is named here.
+/// [`List::diff`] for one list of entries.
+fn list_diff<E: ListEntry>(base: &[E], incoming: &[E]) -> Vec<(u32, EntryOp)> {
+    diff_entries(base, incoming).into_iter().map(|(form, op, _)| (form, op)).collect()
+}
+
+/// [`List::fold`] for one list of entries.
+fn list_fold<E: ListEntry>(base: &[E], incoming: &[E], current: &mut Vec<E>) -> Vec<(u32, EntryOp)> {
+    diff_entries(base, incoming)
+        .into_iter()
+        .filter_map(|(form, op, entries)| replace_form(current, form, &entries).then_some((form, op)))
+        .collect()
+}
+
+/// Implement [`ListRecord`] for `$record`, whose lists are named in `lists` (by the field and what an entry is called)
+/// and whose every other field but `form_id` in `fields` (by the field and its name in a report, and optionally the
+/// function that compares it, when `==` would see a difference the record's author did not make).
+///
+/// The record is destructured whole, so a field added to it does not compile until it is named here. A record whose
+/// lists or fields are nested names them by path, after the `@impl` marker, and checks its fields itself.
 macro_rules! list_record {
-    ($record:ident, $entry:ty, $list:ident, fields [$($field:ident: $name:literal),* $(,)?],
+    (@impl $record:ident, lists [$($($list:ident).+: $entry:literal),+ $(,)?],
+     fields [$($($field:ident).+: $name:literal $(by $same:path)?),* $(,)?],
      maps [$($kind:ident => $map:ident),+ $(,)?]) => {
         impl ListRecord for $record {
-            type Entry = $entry;
             const KINDS: &'static [ListKind] = &[$(ListKind::$kind),+];
+            const LISTS: &'static [List<Self>] = &[$(List {
+                entry: $entry,
+                diff: |base, incoming| list_diff(&base.$($list).+, &incoming.$($list).+),
+                fold: |base, incoming, current| list_fold(&base.$($list).+, &incoming.$($list).+, &mut current.$($list).+),
+            }),+];
             const FIELDS: &'static [Field<Self>] = &[$(Field {
                 name: $name,
-                same: |a, b| a.$field == b.$field,
-                copy: |from, to| to.$field.clone_from(&from.$field),
+                same: |a, b| list_record!(@same a.$($field).+, b.$($field).+ $(, $same)?),
+                copy: |from, to| to.$($field).+.clone_from(&from.$($field).+),
             }),*];
-            fn entries(&self) -> &[$entry] {
-                let $record { form_id: _, $list, $($field: _),* } = self;
-                $list
-            }
-            fn entries_mut(&mut self) -> &mut Vec<$entry> {
-                &mut self.$list
-            }
             fn records(kind: ListKind, index: &EsmIndex) -> &HashMap<u32, Self> {
                 match kind {
                     $(ListKind::$kind => &index.$map,)+
@@ -198,19 +264,89 @@ macro_rules! list_record {
             }
         }
     };
+    (@same $a:expr, $b:expr) => { $a == $b };
+    (@same $a:expr, $b:expr, $same:path) => { $same(&$a, &$b) };
+    ($record:ident, lists [$($list:ident: $entry:literal),+ $(,)?],
+     fields [$($field:ident: $name:literal $(by $same:path)?),* $(,)?],
+     maps [$($kind:ident => $map:ident),+ $(,)?]) => {
+        const _: fn(&$record) = |record| {
+            let $record { form_id: _, $($list: _,)+ $($field: _),* } = record;
+        };
+        list_record!(@impl $record, lists [$($list: $entry),+], fields [$($field: $name $(by $same)?),*],
+                     maps [$($kind => $map),+]);
+    };
 }
 
-list_record!(LeveledList, LeveledEntry, entries,
+list_record!(LeveledList, lists [entries: "entry"],
     fields [editor_id: "editor ID", chance_none: "chance none", flags: "flags"],
     maps [LeveledItems => leveled_items, LeveledNpcs => leveled_npcs, LeveledCreatures => leveled_creatures,
           LeveledSpells => leveled_spells]);
-list_record!(FlstRecord, u32, entries, fields [editor_id: "editor ID"], maps [FormList => form_lists]);
-list_record!(OtftRecord, u32, items, fields [editor_id: "editor ID"], maps [Outfit => outfits]);
-list_record!(ContainerRecord, InventoryEntry, contents,
+list_record!(FlstRecord, lists [entries: "entry"], fields [editor_id: "editor ID"], maps [FormList => form_lists]);
+list_record!(OtftRecord, lists [items: "entry"], fields [editor_id: "editor ID"], maps [Outfit => outfits]);
+list_record!(ContainerRecord, lists [contents: "entry"],
     fields [editor_id: "editor ID", full_name: "name", model_path: "model", weight: "weight", flags: "flags",
             open_sound: "open sound", close_sound: "close sound", script_form_id: "script",
             script_instance: "script properties"],
     maps [Container => containers]);
+list_record!(NpcRecord,
+    lists [inventory: "inventory", factions: "faction", spells: "spell", perks: "perk", keywords: "keyword",
+           actor_value_props: "actor value"],
+    fields [crime_faction_form_id: "crime faction", editor_id: "editor ID", full_name: "name",
+            starts_dead: "starts dead", model_path: "model", body_part_models: "body part models",
+            is_creature: "creature", body_part_form: "body part data", creature_stats: "creature stats",
+            oblivion_npc_stats: "stats", oblivion_creature_stats: "creature stats (Oblivion)",
+            oblivion_pools: "health and magicka", oblivion_ai_values: "AI values", data_base_health: "base health",
+            data_attributes: "attributes", race_form_id: "race", class_form_id: "class", voice_form_id: "voice",
+            default_outfit: "default outfit", worn_skin: "skin", ai_packages: "AI packages", ai_data: "AI data",
+            death_item_form_id: "death item", level: "level", calc_min: "calc min", magicka_offset: "magicka offset",
+            stamina_offset: "stamina offset", health_offset: "health offset", disposition_base: "disposition",
+            acbs_flags: "flags", essential: "essential", protected: "protected", bleedout_override: "bleedout",
+            skill_values: "skills", skyrim_calculated_pools: "calculated pools", has_script: "has script",
+            script_form_id: "script", script_instance: "script properties", face_morphs: "face morphs",
+            runtime_facegen: "face", template_form_id: "template", template_flags: "template flags",
+            template_actors: "template actors", calculated_health: "calculated health",
+            calculated_action_points: "calculated action points"],
+    maps [Npc => npcs, Creature => creatures]);
+list_record!(RaceRecord, lists [spells: "spell", keywords: "keyword", race_reactions: "race relation"],
+    fields [editor_id: "editor ID", full_name: "name", description: "description", skill_bonuses: "skill bonuses",
+            body_models: "body models", skeleton_models: "skeletons", head_parts: "head parts",
+            base_head_parts: "base head parts", head_part_textures: "head part textures",
+            body_part_textures: "body part textures", tail_models: "tail models", base_height: "height",
+            base_weight: "weight", race_flags: "flags", starting_health: "starting health",
+            starting_magicka: "starting magicka", starting_stamina: "starting stamina",
+            base_attributes: "attributes", default_hair: "default hair", voice_forms: "voices",
+            facegen_main_clamp: "face clamp (main)", facegen_face_clamp: "face clamp (face)",
+            default_skin: "skin", subgraph_template: "subgraph template",
+            subgraph_additive: "subgraph additive race", subgraph_data: "subgraphs", bleedout: "bleedout"],
+    maps [Race => races]);
+
+// An item's keyword list sits in its shared fields, so it is named by path and the fields are checked here.
+const _: fn(&ItemRecord) = |item| {
+    let ItemRecord {
+        form_id: _,
+        common:
+            CommonItemFields {
+                editor_id: _,
+                full_name: _,
+                model_path: _,
+                icon_path: _,
+                script_form_id: _,
+                value: _,
+                weight: _,
+                has_script: _,
+                script_instance: _,
+                keywords: _,
+                enchantment: _,
+            },
+        kind: _,
+    } = item;
+};
+list_record!(@impl ItemRecord, lists [common.keywords: "keyword"],
+    fields [common.editor_id: "editor ID", common.full_name: "name", common.model_path: "model",
+            common.icon_path: "icon", common.script_form_id: "script", common.value: "value",
+            common.weight: "weight", common.has_script: "has script", common.script_instance: "script properties",
+            common.enchantment: "enchantment", kind: "type data" by ItemKind::same_authored],
+    maps [Item => items]);
 
 /// What an override did to one form's entries, against its base.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,9 +374,9 @@ pub struct ListMergeRecord {
     pub contributors: Vec<u32>,
     /// The last plugin that won the list whole, as a dependent of every contributor before it, with those contributors.
     pub wholesale: Option<(u32, Vec<u32>)>,
-    /// Per form whose entries a contributor changed: the winning operation and those it overruled. A wholesale winner's
-    /// operations are what it changed in the list it replaced.
-    pub entries: Vec<(u32, Resolution<EntryOp>)>,
+    /// Per list (by what its entries are called) and form whose entries a contributor changed: the winning operation
+    /// and those it overruled. A wholesale winner's operations are what it changed in the record it replaced.
+    pub entries: Vec<((&'static str, u32), Resolution<EntryOp>)>,
     /// Per field a contributor changed, by its name, likewise.
     pub fields: Vec<(&'static str, Resolution<()>)>,
 }
@@ -357,7 +493,7 @@ impl<R: ListRecord> ListState<R> {
     }
 
     /// Fold `incoming`, the record of the plugin at `position`. `true` when the result is a merge the fold must write
-    /// back over the plugin's own record; `false` when the plugin won the list whole.
+    /// back over the plugin's own record; `false` when the plugin won the record whole.
     fn fold(&mut self, position: u32, incoming: &R, depends_on: &dyn Fn(u32, u32) -> bool) -> bool {
         let contributors = &self.record.contributors;
         if contributors.iter().all(|&contributor| depends_on(position, contributor)) {
@@ -365,9 +501,13 @@ impl<R: ListRecord> ListState<R> {
             // a later independent override that undoes one of them overrules it in the report.
             self.record.wholesale = Some((position, contributors.clone()));
             self.record.contributors = vec![position];
-            self.record.entries = diff_entries(self.current.entries(), incoming.entries())
-                .into_iter()
-                .map(|(form, op, _)| (form, Resolution { winner: position, op, overruled: Vec::new() }))
+            self.record.entries = R::LISTS
+                .iter()
+                .flat_map(|list| {
+                    (list.diff)(&self.current, incoming).into_iter().map(|(form, op)| {
+                        ((list.entry, form), Resolution { winner: position, op, overruled: Vec::new() })
+                    })
+                })
                 .collect();
             self.record.fields = R::FIELDS
                 .iter()
@@ -386,9 +526,9 @@ impl<R: ListRecord> ListState<R> {
             .unwrap_or(&self.carriers[0])
             .1
             .clone();
-        for (form, op, entries) in diff_entries(base.entries(), incoming.entries()) {
-            if replace_form(self.current.entries_mut(), form, &entries) {
-                decide(&mut self.record.entries, form, position, op);
+        for list in R::LISTS {
+            for (form, op) in (list.fold)(&base, incoming, &mut self.current) {
+                decide(&mut self.record.entries, (list.entry, form), position, op);
             }
         }
         for field in R::FIELDS {
@@ -420,9 +560,14 @@ impl std::fmt::Debug for PendingLists {
 impl PendingLists {
     /// Write the merged records into `merged`, after the plugin's [`EsmIndex::merge_from`] put its own records there.
     pub fn apply(self, merged: &mut EsmIndex) {
+        if self.0.is_empty() {
+            return;
+        }
         for write in self.0 {
             write(merged);
         }
+        // A merged item is written after the plugin's merge classified the items, as its own record's kind.
+        merged.classify_fallout_inventory_kinds();
     }
 }
 
@@ -437,6 +582,9 @@ pub struct ListMerge {
     form_lists: States<FlstRecord>,
     outfits: States<OtftRecord>,
     containers: States<ContainerRecord>,
+    actors: States<NpcRecord>,
+    races: States<RaceRecord>,
+    items: States<ItemRecord>,
 }
 
 /// Fold the records of type `R` that `plugin` overrides into `states`, queueing the merged ones on `pending`.
@@ -514,6 +662,9 @@ impl ListMerge {
         note_records(&mut self.form_lists, position, plugin, merged, provenance, depends_on, &mut pending);
         note_records(&mut self.outfits, position, plugin, merged, provenance, depends_on, &mut pending);
         note_records(&mut self.containers, position, plugin, merged, provenance, depends_on, &mut pending);
+        note_records(&mut self.actors, position, plugin, merged, provenance, depends_on, &mut pending);
+        note_records(&mut self.races, position, plugin, merged, provenance, depends_on, &mut pending);
+        note_records(&mut self.items, position, plugin, merged, provenance, depends_on, &mut pending);
         pending
     }
 
@@ -523,6 +674,9 @@ impl ListMerge {
             .or_else(|| state_of(&self.form_lists, form))
             .or_else(|| state_of(&self.outfits, form))
             .or_else(|| state_of(&self.containers, form))
+            .or_else(|| state_of(&self.actors, form))
+            .or_else(|| state_of(&self.races, form))
+            .or_else(|| state_of(&self.items, form))
     }
 
     /// The records that hold more than one plugin's changes, in no particular order.
@@ -531,6 +685,9 @@ impl ListMerge {
             .chain(records_in(&self.form_lists))
             .chain(records_in(&self.outfits))
             .chain(records_in(&self.containers))
+            .chain(records_in(&self.actors))
+            .chain(records_in(&self.races))
+            .chain(records_in(&self.items))
             .filter(|(_, record)| record.is_merged())
     }
 

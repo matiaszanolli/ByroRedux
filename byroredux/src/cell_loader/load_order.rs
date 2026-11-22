@@ -50,8 +50,8 @@ pub(crate) struct LoadOrder {
     /// FormID's slot byte names the original *definer*, never the plugin whose body won the merge (#5428); this is the
     /// winner. Empty for hand-built test orders (consumers then fall back to the slot owner).
     provenance: esm::records::FoldProvenance,
-    /// How each list record (levelled list, form list, outfit, container) more than one plugin carried was merged
-    /// (LMC-REC-003). Empty under the `legacy` policy and for hand-built test orders.
+    /// How each record with lists (levelled list, form list, outfit, container, actor, race, item) more than one
+    /// plugin carried was merged (LMC-REC-003). Empty under the `legacy` policy and for hand-built test orders.
     list_merge: esm::records::list_merge::ListMerge,
     /// Slot allocated after real plugins for Oblivion's engine-owned records.
     engine_slot: Option<esm::reader::GlobalSlot>,
@@ -110,7 +110,7 @@ impl LoadOrder {
         &self.provenance
     }
 
-    /// The fold's levelled-list merge (LMC-REC-003).
+    /// The fold's list merge (LMC-REC-003).
     pub(crate) fn list_merge(&self) -> &esm::records::list_merge::ListMerge {
         &self.list_merge
     }
@@ -1014,7 +1014,7 @@ where
 
     let mut merged = esm::records::EsmIndex::default();
     let mut provenance = esm::records::FoldProvenance::default();
-    // LMC-REC-003 — independent overrides of a list record merge; a plugin depends on another when it declares it
+    // LMC-REC-003 — independent overrides of a record with lists merge; a plugin depends on another when it declares it
     // as a master, directly or through its masters.
     let mut list_merge = esm::records::list_merge::ListMerge::new(policy);
     let requires = transitive_masters(&dependencies);
@@ -1048,7 +1048,7 @@ where
     let (overridden, injected) = provenance.counts();
     let (merged_lists, overruled) = list_merge.counts();
     log::info!(
-        "load-order fold: {} plugins, {overridden} forms overridden, {injected} injected, {merged_lists} list records \
+        "load-order fold: {} plugins, {overridden} forms overridden, {injected} injected, {merged_lists} records \
          merged ({overruled} operations overruled, policy {}), in {:.2} s ({:.2} s of it provenance and merge)",
         plugin_paths.len(),
         list_merge.policy().name(),

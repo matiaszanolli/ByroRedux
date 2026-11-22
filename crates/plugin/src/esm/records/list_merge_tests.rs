@@ -49,7 +49,7 @@ fn fold_records<R: ListRecord>(policy: MergePolicy, kind: ListKind, plugins: Vec
     for (position, plugin) in plugins.into_iter().enumerate() {
         let mut index = EsmIndex::default();
         if let Some(list) = plugin.list {
-            index.record_types.insert(LIST, kind.tag().as_bytes().try_into().unwrap());
+            index.record_types.insert(LIST, *record_type(kind));
             R::records_mut(kind, &mut index).insert(LIST, list);
         }
         provenance.note_plugin(position, &index, &merged, |id| Some((id >> 24) as usize));
@@ -60,12 +60,34 @@ fn fold_records<R: ListRecord>(policy: MergePolicy, kind: ListKind, plugins: Vec
     (R::records(kind, &merged)[&LIST].clone(), merge)
 }
 
+/// A record type `kind`'s map holds.
+fn record_type(kind: ListKind) -> &'static [u8; 4] {
+    match kind {
+        ListKind::LeveledItems => b"LVLI",
+        ListKind::LeveledNpcs => b"LVLN",
+        ListKind::LeveledCreatures => b"LVLC",
+        ListKind::LeveledSpells => b"LVSP",
+        ListKind::FormList => b"FLST",
+        ListKind::Outfit => b"OTFT",
+        ListKind::Container => b"CONT",
+        ListKind::Npc => b"NPC_",
+        ListKind::Creature => b"CREA",
+        ListKind::Race => b"RACE",
+        ListKind::Item => b"ARMO",
+    }
+}
+
 fn forms(list: &LeveledList) -> Vec<(u32, u16, u16)> {
     list.entries.iter().map(|entry| (entry.form_id, entry.level, entry.count)).collect()
 }
 
+/// The resolution of `form` in the list whose entries are called `list`.
+fn resolution_in<'a>(merge: &'a ListMerge, list: &str, form: u32) -> &'a Resolution<EntryOp> {
+    &merge.record(LIST).unwrap().entries.iter().find(|((l, f), _)| *l == list && *f == form).unwrap().1
+}
+
 fn resolution(merge: &ListMerge, form: u32) -> &Resolution<EntryOp> {
-    &merge.record(LIST).unwrap().entries.iter().find(|(f, _)| *f == form).unwrap().1
+    resolution_in(merge, "entry", form)
 }
 
 /// Two mods that each add a form to a vanilla list both keep their addition, which `legacy` loses.
@@ -122,7 +144,7 @@ fn removals_combine_and_duplicates_are_a_multiset() {
     );
     assert_eq!(forms(&merged), [(SWORD, 1, 1), (SWORD, 1, 1), (BOW, 2, 1)]);
     assert_eq!(resolution(&merge, AXE).op, EntryOp::Remove);
-    assert!(merge.record(LIST).unwrap().entries.iter().all(|(form, _)| *form != SWORD), "reordering is no change");
+    assert!(merge.record(LIST).unwrap().entries.iter().all(|((_, form), _)| *form != SWORD), "reordering is no change");
 }
 
 /// A patch that masters every contributor wins the list whole, as under `legacy`; an ordinary dependent override
@@ -245,7 +267,7 @@ fn form_lists_append_and_keep_their_slots() {
         ],
     );
     assert_eq!(merged.entries, [SWORD, NULL, AXE, SHIELD, BOW], "a null slot is never an operation");
-    assert!(merge.record(LIST).unwrap().entries.iter().all(|(form, _)| *form != NULL));
+    assert!(merge.record(LIST).unwrap().entries.iter().all(|((_, form), _)| *form != NULL));
     assert_eq!(merge.counts(), (1, 0));
 }
 
@@ -263,6 +285,147 @@ fn outfits_merge_their_items() {
         ],
     );
     assert_eq!(merged.items, [SWORD, BOW]);
+}
+
+const GUARDS: u32 = 0x0000_0F01;
+const MERCHANTS: u32 = 0x0000_0F02;
+const FIREBALL: u32 = 0x0000_0C01;
+const HEAL: u32 = 0x0000_0C02;
+const ARMOR_HEAVY: u32 = 0x0000_0D01;
+const VENDOR_ITEM: u32 = 0x0000_0D02;
+
+fn npc(level: i16, inventory: &[(u32, i32)], factions: &[(u32, i8)], spells: &[u32]) -> NpcRecord {
+    NpcRecord {
+        form_id: LIST,
+        editor_id: "Guard".into(),
+        level,
+        inventory: inventory.iter().map(|&(item_form_id, count)| NpcInventoryEntry { item_form_id, count }).collect(),
+        factions: factions.iter().map(|&(faction_form_id, rank)| FactionMembership { faction_form_id, rank }).collect(),
+        spells: spells.to_vec(),
+        ..NpcRecord::default()
+    }
+}
+
+/// An actor merges each of its lists per form, and its scalar fields by what each override changed: one mod's
+/// equipment and promotion and another's spell and level all stand.
+#[test]
+fn actors_merge_each_list_and_their_fields() {
+    let (merged, merge) = fold_records(
+        MergePolicy::Merge,
+        ListKind::Npc,
+        vec![
+            plugin(&[], Some(npc(5, &[(SWORD, 1)], &[(GUARDS, 0)], &[]))),
+            plugin(&[0], Some(npc(5, &[(SWORD, 1), (SHIELD, 1)], &[(GUARDS, 2)], &[]))),
+            plugin(&[0], Some(npc(10, &[(SWORD, 1)], &[(GUARDS, 0), (MERCHANTS, 0)], &[FIREBALL]))),
+        ],
+    );
+    let inventory: Vec<(u32, i32)> = merged.inventory.iter().map(|entry| (entry.item_form_id, entry.count)).collect();
+    assert_eq!(inventory, [(SWORD, 1), (SHIELD, 1)]);
+    let factions: Vec<(u32, i8)> = merged.factions.iter().map(|f| (f.faction_form_id, f.rank)).collect();
+    assert_eq!(factions, [(GUARDS, 2), (MERCHANTS, 0)], "the promotion and the new membership both stand");
+    assert_eq!(merged.spells, [FIREBALL]);
+    assert_eq!(merged.level, 10);
+    assert_eq!(resolution_in(&merge, "inventory", SHIELD).op, EntryOp::Add);
+    assert_eq!(resolution_in(&merge, "faction", GUARDS), &Resolution { winner: 1, op: EntryOp::Change, overruled: vec![] });
+    assert_eq!(resolution_in(&merge, "spell", FIREBALL).winner, 2);
+    let record = merge.record(LIST).unwrap();
+    assert_eq!(record.kind, ListKind::Npc);
+    assert_eq!(record.fields, [("level", Resolution { winner: 2, op: (), overruled: vec![] })]);
+
+    let (legacy, _) = fold_records(
+        MergePolicy::Legacy,
+        ListKind::Npc,
+        vec![
+            plugin(&[], Some(npc(5, &[(SWORD, 1)], &[(GUARDS, 0)], &[]))),
+            plugin(&[0], Some(npc(5, &[(SWORD, 1), (SHIELD, 1)], &[(GUARDS, 2)], &[]))),
+            plugin(&[0], Some(npc(10, &[(SWORD, 1)], &[(GUARDS, 0), (MERCHANTS, 0)], &[FIREBALL]))),
+        ],
+    );
+    assert_eq!(legacy.inventory.len(), 1, "legacy keeps the last record whole");
+}
+
+/// A creature is an actor in its own map.
+#[test]
+fn creatures_merge_as_actors() {
+    let creature = |spells: &[u32]| NpcRecord { is_creature: true, ..npc(1, &[], &[], spells) };
+    let (merged, merge) = fold_records(
+        MergePolicy::Merge,
+        ListKind::Creature,
+        vec![
+            plugin(&[], Some(creature(&[FIREBALL]))),
+            plugin(&[0], Some(creature(&[]))),
+            plugin(&[0], Some(creature(&[FIREBALL, HEAL]))),
+        ],
+    );
+    assert_eq!(merged.spells, [HEAL], "the removal and the addition combine");
+    assert_eq!(merge.record(LIST).unwrap().kind, ListKind::Creature);
+}
+
+/// A race merges its spells and keywords; a field one mod changed holds against another that left it alone.
+#[test]
+fn races_merge_spells_and_keywords() {
+    let race = |height: f32, spells: &[u32], keywords: &[u32]| RaceRecord {
+        form_id: LIST,
+        editor_id: "NordRace".into(),
+        base_height: (height, height),
+        spells: spells.to_vec(),
+        keywords: keywords.to_vec(),
+        ..RaceRecord::default()
+    };
+    let (merged, merge) = fold_records(
+        MergePolicy::Merge,
+        ListKind::Race,
+        vec![
+            plugin(&[], Some(race(1.0, &[FIREBALL], &[ARMOR_HEAVY]))),
+            plugin(&[0], Some(race(1.1, &[FIREBALL, HEAL], &[ARMOR_HEAVY]))),
+            plugin(&[0], Some(race(1.0, &[FIREBALL], &[]))),
+        ],
+    );
+    assert_eq!(merged.spells, [FIREBALL, HEAL]);
+    assert!(merged.keywords.is_empty());
+    assert_eq!(merged.base_height, (1.1, 1.1));
+    assert_eq!(resolution_in(&merge, "keyword", ARMOR_HEAVY).op, EntryOp::Remove);
+}
+
+fn item(name: &str, weight: f32, keywords: &[u32], kind: ItemKind) -> ItemRecord {
+    ItemRecord {
+        form_id: LIST,
+        common: CommonItemFields {
+            editor_id: "Wrench".into(),
+            full_name: name.into(),
+            weight,
+            keywords: keywords.to_vec(),
+            ..CommonItemFields::default()
+        },
+        kind,
+    }
+}
+
+/// An item merges its keyword list and its fields: a rename, a weight change and a keyword added by three
+/// independent mods all stand. A loose object mod the fold promoted is the kind its record authored, so an override
+/// that carries the record's own kind changes nothing.
+#[test]
+fn items_merge_keywords_and_fields() {
+    let promoted = ItemKind::Mod { was_junk: false };
+    let (merged, merge) = fold_records(
+        MergePolicy::Merge,
+        ListKind::Item,
+        vec![
+            plugin(&[], Some(item("Wrench", 2.0, &[], promoted.clone()))),
+            plugin(&[0], Some(item("[Junk] Wrench", 2.0, &[], ItemKind::Misc))),
+            plugin(&[0], Some(item("Wrench", 0.0, &[], ItemKind::Misc))),
+            plugin(&[0], Some(item("Wrench", 2.0, &[VENDOR_ITEM], ItemKind::Misc))),
+        ],
+    );
+    assert_eq!(merged.common.full_name, "[Junk] Wrench");
+    assert_eq!(merged.common.weight, 0.0);
+    assert_eq!(merged.common.keywords, [VENDOR_ITEM]);
+    let record = merge.record(LIST).unwrap();
+    assert_eq!(record.contributors, [1, 2, 3]);
+    let fields: Vec<&str> = record.fields.iter().map(|(name, _)| *name).collect();
+    assert_eq!(fields, ["name", "weight"], "a promoted kind is not a change");
+    assert!(ItemKind::same_authored(&promoted, &ItemKind::Misc));
+    assert!(!ItemKind::same_authored(&ItemKind::Mod { was_junk: true }, &ItemKind::Misc));
 }
 
 #[test]
