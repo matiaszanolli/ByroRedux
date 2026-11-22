@@ -2523,8 +2523,10 @@ fn every_shader_struct_is_classified() {
         ("ShadowFilterGuide", ShaderLocal),
         ("FarSunProjection", Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep")),
         ("TerrainSample", ShaderLocal),
-        // #7152 — `terrain_patch.comp`'s interpolated base-vertex bundle.
+        // #7152 — `terrain_patch.comp`'s interpolated base-vertex bundle and
+        // the displaced vertex it builds from it; neither is stored as such.
         ("BaseSample", ShaderLocal),
+        ("PatchVertex", ShaderLocal),
         (
             "TerrainPatchPush",
             Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),

@@ -7,7 +7,9 @@
 //
 // One dispatch per resident patch slot, one invocation per patch vertex. The
 // patch is a 65×65 lattice over one 256-unit square of a LAND cell, 4 units
-// (5.7 cm) apart. Each invocation:
+// (5.7 cm) apart — or, for a coarse slot (`slotPatch.w` =
+// `TERRAIN_PATCH_COARSE_STEP`), the 33×33 even points of that lattice, 8 units
+// apart. Each invocation:
 //
 //   1. interpolates the base cell's vertex (position, colour, normal, uv,
 //      splat weights, tangent) on the base TRIANGLE that contains the lattice
@@ -29,7 +31,11 @@
 //
 // Every fade term is a function of world position (and the camera) only, never
 // of which slot is evaluating it: two resident patches sharing an edge compute
-// bit-identical vertices there, so interior seams cannot crack. `fadeMissing`
+// bit-identical vertices there, so interior seams cannot crack. A coarse patch's
+// vertices are the fine lattice's even points through the same function; where
+// a fine patch borders a coarse one, its odd border vertices are the midpoint
+// of their two even neighbours, so they lie on the coarse patch's edge (the
+// standard T-junction stitch) and the two levels meet without a crack. `fadeMissing`
 // reaches 0 at any square of the 3×3 neighbourhood with no resident patch, and
 // squares across the cell border always count as missing — which is the
 // design's cell-border rule (adjacent cells blend different layer lists, so
@@ -78,10 +84,12 @@ layout(push_constant) uniform TerrainPatchPush {
     /// xy = Y-up world XZ of the cell's (row 0, col 0) vertex.
     vec4 cellOrigin;
     /// x = patch vertex offset, y = base cell vertex offset, z = terrain tile
-    /// slot, w = missing-neighbour mask (bit (dr+1)*3 + (dc+1)).
+    /// slot, w = missing-neighbour mask (bit (dr+1)*3 + (dc+1)) | coarse-
+    /// neighbour mask (same bits) << TERRAIN_PATCH_COARSE_MASK_SHIFT.
     uvec4 offsets;
     /// x = slot index (edge readback), y = patch column in the cell, z = patch
-    /// row in the cell.
+    /// row in the cell, w = lattice steps between this slot's vertices (1, or
+    /// TERRAIN_PATCH_COARSE_STEP).
     uvec4 slotPatch;
 } pc;
 
@@ -195,7 +203,7 @@ vec2 latticeXZ(int lc, int lr) {
 float missingDistanceSteps(int lc, int lr) {
     int pcol = int(pc.slotPatch.y);
     int prow = int(pc.slotPatch.z);
-    uint mask = pc.offsets.w;
+    uint mask = pc.offsets.w & ((1u << TERRAIN_PATCH_COARSE_MASK_SHIFT) - 1u);
     float best = 1.0e9;
     for (int dr = -1; dr <= 1; ++dr) {
         for (int dc = -1; dc <= 1; ++dc) {
@@ -239,19 +247,23 @@ void writeEdge(uint edgeSample, float worldY, float d) {
     readbackWords[w + 1u] = floatBitsToUint(d);
 }
 
-/// Displace and write patch vertex `vid`; returns its displacement.
-float displaceVertex(uint vid) {
-    uint col = vid % TERRAIN_PATCH_VERTS;
-    uint row = vid / TERRAIN_PATCH_VERTS;
-    int lc = int(pc.slotPatch.y * TERRAIN_PATCH_QUADS + col);
-    int lr = int(pc.slotPatch.z * TERRAIN_PATCH_QUADS + row);
+/// One displaced patch vertex before it is written.
+struct PatchVertex {
+    vec3 position;
+    vec3 normal;
+    float d;
+    BaseSample s;
+};
 
-    GpuTerrainTile tile = terrainTiles[pc.offsets.z];
-    BaseSample s = sampleBase(lc, lr);
-    float d = displacement(lc, lr, s, tile);
+/// The displaced vertex at cell-lattice point (`lc`, `lr`).
+PatchVertex evalVertex(int lc, int lr, GpuTerrainTile tile) {
+    PatchVertex v;
+    v.s = sampleBase(lc, lr);
+    v.d = displacement(lc, lr, v.s, tile);
 
-    // Gradient of `d` in world XZ by central differences (taps clamped into
-    // the cell; the fade holds `d` at the lip near the cell border anyway).
+    // Gradient of `d` in world XZ by central differences one fine step apart
+    // on both levels (taps clamped into the cell; the fade holds `d` at the
+    // lip near the cell border anyway).
     int cm = max(lc - 1, 0);
     int cp = min(lc + 1, int(TERRAIN_PATCH_CELL_LATTICE));
     int rm = max(lr - 1, 0);
@@ -264,53 +276,105 @@ float displaceVertex(uint vid) {
     // +row is −Z.
     float gz = -(dRowP - dRowM) / (float(rp - rm) * TERRAIN_PATCH_LATTICE_STEP);
     vec3 g = vec3(gx, 0.0, gz);
-    vec3 gT = g - s.normal * dot(s.normal, g);
-    vec3 normal = normalize(s.normal - gT);
+    vec3 gT = g - v.s.normal * dot(v.s.normal, g);
+    v.normal = normalize(v.s.normal - gT);
 
     vec2 xz = latticeXZ(lc, lr);
-    vec3 position = vec3(xz.x, s.height, xz.y) + s.normal * d;
-
-    uint o = (pc.offsets.x + vid) * VERTEX_STRIDE_FLOATS;
-    vertexData[o + 0u] = position.x;
-    vertexData[o + 1u] = position.y;
-    vertexData[o + 2u] = position.z;
-    for (uint i = 0u; i < 4u; ++i) {
-        vertexData[o + VERTEX_COLOR_OFFSET_FLOATS + i] = s.color[i];
-        vertexData[o + VERTEX_BONE_INDICES_OFFSET_FLOATS + i] = uintBitsToFloat(0u);
-        vertexData[o + VERTEX_BONE_WEIGHTS_OFFSET_FLOATS + i] = 0.0;
-        vertexData[o + VERTEX_TANGENT_OFFSET_FLOATS + i] = s.tangent[i];
-    }
-    for (uint i = 0u; i < 3u; ++i) {
-        vertexData[o + VERTEX_NORMAL_OFFSET_FLOATS + i] = normal[i];
-    }
-    vertexData[o + VERTEX_UV_OFFSET_FLOATS] = s.uv.x;
-    vertexData[o + VERTEX_UV_OFFSET_FLOATS + 1u] = s.uv.y;
-    vertexData[o + VERTEX_SPLAT0_OFFSET_FLOATS] = uintBitsToFloat(packUnorm4x8(s.splat0));
-    vertexData[o + VERTEX_SPLAT1_OFFSET_FLOATS] = uintBitsToFloat(packUnorm4x8(s.splat1));
-
-    // Border readback: rows 0 / QUADS, then columns 0 / QUADS.
-    if (row == 0u) {
-        writeEdge(col, position.y, d);
-    }
-    if (row == TERRAIN_PATCH_QUADS) {
-        writeEdge(TERRAIN_PATCH_VERTS + col, position.y, d);
-    }
-    if (col == 0u) {
-        writeEdge(2u * TERRAIN_PATCH_VERTS + row, position.y, d);
-    }
-    if (col == TERRAIN_PATCH_QUADS) {
-        writeEdge(3u * TERRAIN_PATCH_VERTS + row, position.y, d);
-    }
-    return d;
+    v.position = vec3(xz.x, v.s.height, xz.y) + v.s.normal * v.d;
+    return v;
 }
 
+/// The midpoint of two vertices: where a fine patch's odd border vertex sits
+/// on a coarse neighbour's edge.
+PatchVertex midpoint(PatchVertex a, PatchVertex b) {
+    PatchVertex m;
+    m.position = 0.5 * (a.position + b.position);
+    m.normal = normalize(a.normal + b.normal);
+    m.d = 0.5 * (a.d + b.d);
+    m.s = a.s;
+    m.s.color = 0.5 * (a.s.color + b.s.color);
+    m.s.uv = 0.5 * (a.s.uv + b.s.uv);
+    m.s.splat0 = 0.5 * (a.s.splat0 + b.s.splat0);
+    m.s.splat1 = 0.5 * (a.s.splat1 + b.s.splat1);
+    m.s.tangent = 0.5 * (a.s.tangent + b.s.tangent);
+    return m;
+}
+
+bool coarseNeighbour(int dr, int dc) {
+    uint bit = uint((dr + 1) * 3 + (dc + 1)) + TERRAIN_PATCH_COARSE_MASK_SHIFT;
+    return (pc.offsets.w & (1u << bit)) != 0u;
+}
+
+/// Displace and write patch vertex `vid`; returns its displacement.
+float displaceVertex(uint vid, uint step) {
+    uint verts = TERRAIN_PATCH_QUADS / step + 1u;
+    // Position in the fine lattice of the patch, `0..=TERRAIN_PATCH_QUADS`.
+    uint col = (vid % verts) * step;
+    uint row = (vid / verts) * step;
+    int lc = int(pc.slotPatch.y * TERRAIN_PATCH_QUADS + col);
+    int lr = int(pc.slotPatch.z * TERRAIN_PATCH_QUADS + row);
+
+    GpuTerrainTile tile = terrainTiles[pc.offsets.z];
+    PatchVertex v;
+    // A fine patch's odd border vertex facing a coarse neighbour: on that
+    // neighbour's edge, between the two even vertices it shares. Corners are
+    // even, so at most one border applies.
+    bool rowEdge = (row == 0u && coarseNeighbour(-1, 0))
+        || (row == TERRAIN_PATCH_QUADS && coarseNeighbour(1, 0));
+    bool colEdge = (col == 0u && coarseNeighbour(0, -1))
+        || (col == TERRAIN_PATCH_QUADS && coarseNeighbour(0, 1));
+    if (step == 1u && rowEdge && (col & 1u) == 1u) {
+        v = midpoint(evalVertex(lc - 1, lr, tile), evalVertex(lc + 1, lr, tile));
+    } else if (step == 1u && colEdge && (row & 1u) == 1u) {
+        v = midpoint(evalVertex(lc, lr - 1, tile), evalVertex(lc, lr + 1, tile));
+    } else {
+        v = evalVertex(lc, lr, tile);
+    }
+
+    uint o = (pc.offsets.x + vid) * VERTEX_STRIDE_FLOATS;
+    vertexData[o + 0u] = v.position.x;
+    vertexData[o + 1u] = v.position.y;
+    vertexData[o + 2u] = v.position.z;
+    for (uint i = 0u; i < 4u; ++i) {
+        vertexData[o + VERTEX_COLOR_OFFSET_FLOATS + i] = v.s.color[i];
+        vertexData[o + VERTEX_BONE_INDICES_OFFSET_FLOATS + i] = uintBitsToFloat(0u);
+        vertexData[o + VERTEX_BONE_WEIGHTS_OFFSET_FLOATS + i] = 0.0;
+        vertexData[o + VERTEX_TANGENT_OFFSET_FLOATS + i] = v.s.tangent[i];
+    }
+    for (uint i = 0u; i < 3u; ++i) {
+        vertexData[o + VERTEX_NORMAL_OFFSET_FLOATS + i] = v.normal[i];
+    }
+    vertexData[o + VERTEX_UV_OFFSET_FLOATS] = v.s.uv.x;
+    vertexData[o + VERTEX_UV_OFFSET_FLOATS + 1u] = v.s.uv.y;
+    vertexData[o + VERTEX_SPLAT0_OFFSET_FLOATS] = uintBitsToFloat(packUnorm4x8(v.s.splat0));
+    vertexData[o + VERTEX_SPLAT1_OFFSET_FLOATS] = uintBitsToFloat(packUnorm4x8(v.s.splat1));
+
+    // Border readback, indexed by fine-lattice position so both levels land
+    // on the same samples (a coarse slot leaves the odd ones zero): rows 0 /
+    // QUADS, then columns 0 / QUADS.
+    if (row == 0u) {
+        writeEdge(col, v.position.y, v.d);
+    }
+    if (row == TERRAIN_PATCH_QUADS) {
+        writeEdge(TERRAIN_PATCH_VERTS + col, v.position.y, v.d);
+    }
+    if (col == 0u) {
+        writeEdge(2u * TERRAIN_PATCH_VERTS + row, v.position.y, v.d);
+    }
+    if (col == TERRAIN_PATCH_QUADS) {
+        writeEdge(3u * TERRAIN_PATCH_VERTS + row, v.position.y, v.d);
+    }
+    return v.d;
+}
 
 void main() {
     uint vid = gl_GlobalInvocationID.x;
-    bool valid = vid < TERRAIN_PATCH_VERTEX_COUNT;
+    uint step = max(pc.slotPatch.w, 1u);
+    uint verts = TERRAIN_PATCH_QUADS / step + 1u;
+    bool valid = vid < verts * verts;
     float d = 0.0;
     if (valid) {
-        d = displaceVertex(vid);
+        d = displaceVertex(vid, step);
     }
 
     // Workgroup max, then one atomic per workgroup. Every invocation reaches

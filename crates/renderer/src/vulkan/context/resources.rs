@@ -834,10 +834,11 @@ impl VulkanContext {
             .is_some_and(|b| b.has_samples())
     }
 
-    /// #7152 — the reserved terrain patch meshes, indexed by slot (empty when
-    /// the pass or its reservation failed).
-    pub fn terrain_patch_meshes(&self) -> &[u32] {
-        self.exterior.terrain_patch.as_ref().map_or(&[], |pass| pass.meshes())
+    /// #7152 — the reserved terrain patch meshes of both lattice levels,
+    /// indexed by slot (`None` without the pass; empty when its reservation
+    /// failed).
+    pub fn terrain_patch_meshes(&self) -> Option<&crate::vulkan::terrain_patch::TerrainPatchMeshes> {
+        self.exterior.terrain_patch.as_ref().map(|pass| pass.meshes())
     }
 
     /// #7152 — stage this frame's resident terrain patches for `draw_frame`.

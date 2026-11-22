@@ -1,9 +1,11 @@
 //! TSD-4.1 terrain displacement patches (#7152).
 //!
 //! Design: `docs/engine/terrain-displacement.md` §3. A fixed pool of
-//! [`TERRAIN_PATCH_SLOTS`] patch meshes is reserved once in the global vertex
-//! pool ([`TerrainPatchPass::reserve_meshes`], global-pool-only uploads: no
-//! per-mesh buffers, no BLAS). Every frame the host hands over the resident
+//! [`TERRAIN_PATCH_SLOTS`] slots is reserved once in the global vertex pool
+//! ([`TerrainPatchPass::reserve_meshes`], global-pool-only uploads: no per-mesh
+//! buffers, no BLAS), one mesh of each lattice level per slot: the fine 64×64
+//! lattice and the coarse 32×32 one over its even points, which the host picks
+//! by distance ([`TerrainPatchSlot::coarse`]). Every frame the host hands over the resident
 //! slots ([`TerrainPatchSlot`]) and the shared parameters
 //! ([`TerrainPatchParams`]); [`TerrainPatchPass::record`] re-displaces each
 //! resident slot in place with `terrain_patch.comp`, between the instance upload
@@ -22,9 +24,9 @@ use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use crate::mesh::MeshRegistry;
 use crate::shader_constants::{
-    TERRAIN_PATCH_EDGE_SAMPLES, TERRAIN_PATCH_LATTICE_STEP, TERRAIN_PATCH_QUADS,
-    TERRAIN_PATCH_READBACK_WORDS, TERRAIN_PATCH_SLOTS, TERRAIN_PATCH_VERTEX_COUNT,
-    TERRAIN_PATCH_VERTS, TERRAIN_PATCH_WORKGROUP,
+    TERRAIN_PATCH_COARSE_MASK_SHIFT, TERRAIN_PATCH_COARSE_STEP, TERRAIN_PATCH_EDGE_SAMPLES,
+    TERRAIN_PATCH_LATTICE_STEP, TERRAIN_PATCH_QUADS, TERRAIN_PATCH_READBACK_WORDS,
+    TERRAIN_PATCH_SLOTS, TERRAIN_PATCH_VERTS, TERRAIN_PATCH_WORKGROUP,
 };
 use crate::vertex::Vertex;
 use anyhow::{Context, Result};
@@ -57,6 +59,50 @@ pub struct TerrainPatchSlot {
     /// (`patch_row + dr`, `patch_col + dc`) has no resident patch; squares
     /// across the cell border are always flagged.
     pub missing_mask: u32,
+    /// This slot draws its coarse mesh (every second lattice point).
+    pub coarse: bool,
+    /// Same bits as `missing_mask`, set where the neighbour is resident and
+    /// coarse: a fine slot stitches its border to it.
+    pub coarse_mask: u32,
+}
+
+impl TerrainPatchSlot {
+    /// Lattice steps between this slot's vertices.
+    pub const fn step(&self) -> u32 {
+        if self.coarse {
+            TERRAIN_PATCH_COARSE_STEP
+        } else {
+            1
+        }
+    }
+
+    /// Vertices along one side of this slot's mesh.
+    pub const fn verts_per_side(&self) -> u32 {
+        TERRAIN_PATCH_QUADS / self.step() + 1
+    }
+
+    pub const fn vertex_count(&self) -> u32 {
+        self.verts_per_side() * self.verts_per_side()
+    }
+}
+
+/// The reserved patch meshes, indexed by slot: one per lattice level.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TerrainPatchMeshes {
+    pub fine: Vec<u32>,
+    pub coarse: Vec<u32>,
+}
+
+impl TerrainPatchMeshes {
+    pub fn is_empty(&self) -> bool {
+        self.fine.is_empty() || self.coarse.is_empty()
+    }
+
+    /// The mesh `slot` draws at its level.
+    pub fn get(&self, slot: u32, coarse: bool) -> Option<u32> {
+        let level = if coarse { &self.coarse } else { &self.fine };
+        level.get(slot as usize).copied()
+    }
 }
 
 /// The displacement settings shared by every slot, world units.
@@ -107,9 +153,9 @@ impl TerrainPatchPush {
                 patch_vertex_offset,
                 base_vertex_offset,
                 slot.terrain_tile,
-                slot.missing_mask,
+                slot.missing_mask | (slot.coarse_mask << TERRAIN_PATCH_COARSE_MASK_SHIFT),
             ],
-            slot_patch: [slot.slot, slot.patch_col, slot.patch_row, 0],
+            slot_patch: [slot.slot, slot.patch_col, slot.patch_row, slot.step()],
         }
     }
 }
@@ -118,21 +164,37 @@ impl TerrainPatchPush {
 /// frame's resident patches and the geometric seam check over their borders.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct TerrainPatchStats {
-    /// Patches dispatched in the harvested frame.
+    /// Patches dispatched in the harvested frame, and how many of them at the
+    /// coarse level.
     pub resident: u32,
+    pub coarse: u32,
     /// Borders that must sit at the lip (cell border or missing neighbour),
     /// and the largest |displacement − lip| over their vertices, world units.
     pub lip_edges: u32,
     pub max_lip_deviation: f32,
-    /// Borders shared by two resident patches, and the largest world-Y gap
-    /// between their coincident vertices.
+    /// Borders shared by two resident patches (`level_edges` of them between
+    /// a fine and a coarse patch), and the largest world-Y gap between their
+    /// coincident vertices — on a level border, between the fine patch's odd
+    /// vertex and the coarse edge's midpoint under it.
     pub shared_edges: u32,
+    pub level_edges: u32,
     pub max_seam_gap: f32,
     /// The largest displacement anywhere in any resident patch.
     pub max_displacement: f32,
-    /// Per slot: (slot, patch col, patch row, cell origin, largest
-    /// displacement), in dispatch order.
-    pub slots: Vec<(u32, u32, u32, [f32; 2], f32)>,
+    /// Per slot, in dispatch order.
+    pub slots: Vec<TerrainPatchSlotStats>,
+}
+
+/// One harvested slot, for the `terrain.patches` listing.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TerrainPatchSlotStats {
+    pub slot: u32,
+    pub patch_col: u32,
+    pub patch_row: u32,
+    pub cell_origin_xz: [f32; 2],
+    pub coarse: bool,
+    /// Largest displacement in the slot, world units.
+    pub max_displacement: f32,
 }
 
 /// The (dr, dc) neighbour of each readback edge, in readback order: row 0,
@@ -149,10 +211,12 @@ pub const fn neighbour_bit(dr: i32, dc: i32) -> u32 {
     1 << ((dr + 1) * 3 + (dc + 1))
 }
 
-/// (world Y, displacement) of sample `i` of `edge` in one slot's readback words.
-fn edge_sample(words: &[u32], edge: usize, i: usize) -> (f32, f32) {
+/// (world Y, displacement) of sample `i` of `edge` in one slot's readback
+/// words; `None` where the slot wrote nothing (a coarse slot's odd samples —
+/// every written displacement is at least the lip, so never zero bits).
+fn edge_sample(words: &[u32], edge: usize, i: usize) -> Option<(f32, f32)> {
     let w = 2 * (edge * TERRAIN_PATCH_VERTS as usize + i);
-    (f32::from_bits(words[w]), f32::from_bits(words[w + 1]))
+    (words[w + 1] != 0).then(|| (f32::from_bits(words[w]), f32::from_bits(words[w + 1])))
 }
 
 /// The seam check over one harvested frame. `words` holds
@@ -162,7 +226,10 @@ fn edge_sample(words: &[u32], edge: usize, i: usize) -> (f32, f32) {
 /// A border whose neighbour is flagged missing must hold every vertex at the
 /// lip; a border shared with another resident patch of the same cell must
 /// agree with that patch's facing border vertex for vertex (both evaluate the
-/// same position-only function there, so any gap is a bug).
+/// same position-only function there, so any gap is a bug). Where only one side
+/// has a vertex (a fine patch's odd vertex beside a coarse patch), it must sit
+/// at the midpoint of the other side's two neighbouring vertices — on the
+/// coarse edge the rasteriser draws.
 pub fn summarize_patch_readback(slots: &[TerrainPatchSlot], lip: f32, words: &[u32]) -> TerrainPatchStats {
     let per_slot = TERRAIN_PATCH_READBACK_WORDS as usize;
     let words_of = |slot: u32| -> Option<&[u32]> {
@@ -173,21 +240,29 @@ pub fn summarize_patch_readback(slots: &[TerrainPatchSlot], lip: f32, words: &[u
         resident: slots.len() as u32,
         ..Default::default()
     };
+    let verts = TERRAIN_PATCH_VERTS as usize;
     for slot in slots {
         let Some(own) = words_of(slot.slot) else {
             continue;
         };
         let max_d = f32::from_bits(own[2 * TERRAIN_PATCH_EDGE_SAMPLES as usize]);
         stats.max_displacement = stats.max_displacement.max(max_d);
-        stats
-            .slots
-            .push((slot.slot, slot.patch_col, slot.patch_row, slot.cell_origin_xz, max_d));
+        stats.coarse += u32::from(slot.coarse);
+        stats.slots.push(TerrainPatchSlotStats {
+            slot: slot.slot,
+            patch_col: slot.patch_col,
+            patch_row: slot.patch_row,
+            cell_origin_xz: slot.cell_origin_xz,
+            coarse: slot.coarse,
+            max_displacement: max_d,
+        });
         for (edge, &(dr, dc)) in EDGE_NEIGHBOURS.iter().enumerate() {
             if slot.missing_mask & neighbour_bit(dr, dc) != 0 {
                 stats.lip_edges += 1;
-                for i in 0..TERRAIN_PATCH_VERTS as usize {
-                    let (_, d) = edge_sample(own, edge, i);
-                    stats.max_lip_deviation = stats.max_lip_deviation.max((d - lip).abs());
+                for i in 0..verts {
+                    if let Some((_, d)) = edge_sample(own, edge, i) {
+                        stats.max_lip_deviation = stats.max_lip_deviation.max((d - lip).abs());
+                    }
                 }
                 continue;
             }
@@ -200,28 +275,45 @@ pub fn summarize_patch_readback(slots: &[TerrainPatchSlot], lip: f32, words: &[u
                     && n.patch_col as i32 == slot.patch_col as i32 + dc
                     && n.patch_row as i32 == slot.patch_row as i32 + dr
             });
-            let Some(other) = neighbour.and_then(|n| words_of(n.slot)) else {
+            let Some((other_slot, other)) =
+                neighbour.and_then(|n| words_of(n.slot).map(|w| (n, w)))
+            else {
                 continue;
             };
             stats.shared_edges += 1;
-            for i in 0..TERRAIN_PATCH_VERTS as usize {
-                let (y_own, _) = edge_sample(own, edge, i);
-                let (y_other, _) = edge_sample(other, opposite_edge(edge), i);
-                stats.max_seam_gap = stats.max_seam_gap.max((y_own - y_other).abs());
+            stats.level_edges += u32::from(other_slot.coarse != slot.coarse);
+            let facing = opposite_edge(edge);
+            let y = |words: &[u32], e: usize, i: usize| edge_sample(words, e, i).map(|s| s.0);
+            // The midpoint of `words`' samples either side of `i`.
+            let between = |words: &[u32], e: usize, i: usize| -> Option<f32> {
+                (i > 0 && i + 1 < verts)
+                    .then(|| Some(0.5 * (y(words, e, i - 1)? + y(words, e, i + 1)?)))
+                    .flatten()
+            };
+            for i in 0..verts {
+                let gap = match (y(own, edge, i), y(other, facing, i)) {
+                    (Some(a), Some(b)) => Some(a - b),
+                    (Some(a), None) => between(other, facing, i).map(|b| a - b),
+                    (None, Some(b)) => between(own, edge, i).map(|a| a - b),
+                    (None, None) => None,
+                };
+                if let Some(gap) = gap {
+                    stats.max_seam_gap = stats.max_seam_gap.max(gap.abs());
+                }
             }
         }
     }
     stats
 }
 
-/// The patch lattice's triangles, the winding `cell_loader/terrain.rs`'s
-/// `land_tile_indices` gives the base cell: per quad `tl, tr, bl` then
-/// `tr, br, bl`.
-pub fn patch_lattice_indices() -> Vec<u32> {
-    let verts = TERRAIN_PATCH_VERTS;
-    let mut indices = Vec::with_capacity((TERRAIN_PATCH_QUADS * TERRAIN_PATCH_QUADS * 6) as usize);
-    for row in 0..TERRAIN_PATCH_QUADS {
-        for col in 0..TERRAIN_PATCH_QUADS {
+/// A `quads`×`quads` patch lattice's triangles, the winding
+/// `cell_loader/terrain.rs`'s `land_tile_indices` gives the base cell: per quad
+/// `tl, tr, bl` then `tr, br, bl`.
+pub fn patch_lattice_indices(quads: u32) -> Vec<u32> {
+    let verts = quads + 1;
+    let mut indices = Vec::with_capacity((quads * quads * 6) as usize);
+    for row in 0..quads {
+        for col in 0..quads {
             let tl = row * verts + col;
             let tr = tl + 1;
             let bl = (row + 1) * verts + col;
@@ -232,20 +324,24 @@ pub fn patch_lattice_indices() -> Vec<u32> {
     indices
 }
 
-/// Placeholder vertices for a reserved patch mesh: a flat, upward-facing
-/// lattice at the origin. The compute pass overwrites every byte before any
-/// frame draws the patch, so only the topology and the count matter; the flat
-/// lattice keeps the registry's derived bound and texel density finite.
-fn placeholder_lattice() -> Vec<Vertex> {
-    (0..TERRAIN_PATCH_VERTEX_COUNT)
+/// Placeholder vertices for a reserved patch mesh with `step` lattice steps
+/// between vertices: a flat, upward-facing lattice at the origin. The compute
+/// pass overwrites every byte before any frame draws the patch, so only the
+/// topology and the count matter; the flat lattice keeps the registry's derived
+/// bound and texel density finite.
+fn placeholder_lattice(step: u32) -> Vec<Vertex> {
+    let quads = TERRAIN_PATCH_QUADS / step;
+    let verts = quads + 1;
+    let spacing = TERRAIN_PATCH_LATTICE_STEP * step as f32;
+    (0..verts * verts)
         .map(|i| {
-            let col = (i % TERRAIN_PATCH_VERTS) as f32;
-            let row = (i / TERRAIN_PATCH_VERTS) as f32;
+            let col = (i % verts) as f32;
+            let row = (i / verts) as f32;
             Vertex::new_terrain(
-                [col * TERRAIN_PATCH_LATTICE_STEP, 0.0, -row * TERRAIN_PATCH_LATTICE_STEP],
+                [col * spacing, 0.0, -row * spacing],
                 [1.0, 1.0, 1.0],
                 [0.0, 1.0, 0.0],
-                [col / TERRAIN_PATCH_QUADS as f32, row / TERRAIN_PATCH_QUADS as f32],
+                [col / quads as f32, row / quads as f32],
                 [0; 4],
                 [0; 4],
             )
@@ -289,7 +385,7 @@ pub struct TerrainPatchPass {
     pending_lip: [f32; MAX_FRAMES_IN_FLIGHT],
     /// The reserved patch meshes, indexed by slot. Empty until
     /// [`Self::reserve_meshes`] succeeds.
-    meshes: Vec<u32>,
+    meshes: TerrainPatchMeshes,
     /// This frame's input from the host; consumed by [`Self::record`].
     frame_slots: Vec<TerrainPatchSlot>,
     frame_params: Option<TerrainPatchParams>,
@@ -356,7 +452,7 @@ impl TerrainPatchPass {
             readback: Vec::new(),
             pending: std::array::from_fn(|_| Vec::new()),
             pending_lip: [0.0; MAX_FRAMES_IN_FLIGHT],
-            meshes: Vec::new(),
+            meshes: TerrainPatchMeshes::default(),
             frame_slots: Vec::new(),
             frame_params: None,
             stats: TerrainPatchStats::default(),
@@ -366,9 +462,10 @@ impl TerrainPatchPass {
             return Err(e);
         }
         log::info!(
-            "Terrain patch pass created ({} slots × {} vertices, push={} B)",
+            "Terrain patch pass created ({} slots × {}/{} vertices fine/coarse, push={} B)",
             TERRAIN_PATCH_SLOTS,
-            TERRAIN_PATCH_VERTEX_COUNT,
+            crate::shader_constants::TERRAIN_PATCH_VERTEX_COUNT,
+            crate::shader_constants::TERRAIN_PATCH_COARSE_VERTEX_COUNT,
             PUSH_CONSTANTS_SIZE,
         );
         Ok(this)
@@ -414,34 +511,36 @@ impl TerrainPatchPass {
         Ok(())
     }
 
-    /// Reserve the [`TERRAIN_PATCH_SLOTS`] patch meshes in the global pool,
-    /// once. Idempotent; a failure leaves the pool unreserved (patches stay
-    /// off) and is retried on the next call.
+    /// Reserve the [`TERRAIN_PATCH_SLOTS`] patch meshes of each level in the
+    /// global pool, once. Idempotent; a failure leaves the pool unreserved
+    /// (patches stay off) and is retried on the next call.
     pub fn reserve_meshes(&mut self, registry: &mut MeshRegistry) -> Result<()> {
         if !self.meshes.is_empty() {
             return Ok(());
         }
-        let vertices = placeholder_lattice();
-        let indices = patch_lattice_indices();
-        let mut meshes = Vec::with_capacity(TERRAIN_PATCH_SLOTS as usize);
-        for _ in 0..TERRAIN_PATCH_SLOTS {
-            match registry.upload_scene_mesh_global_only(&vertices, &indices) {
-                Ok(handle) => meshes.push(handle),
-                Err(e) => {
-                    for handle in meshes {
-                        registry.drop_mesh(handle);
+        let mut reserved: Vec<u32> = Vec::with_capacity(2 * TERRAIN_PATCH_SLOTS as usize);
+        for step in [1, TERRAIN_PATCH_COARSE_STEP] {
+            let vertices = placeholder_lattice(step);
+            let indices = patch_lattice_indices(TERRAIN_PATCH_QUADS / step);
+            for _ in 0..TERRAIN_PATCH_SLOTS {
+                match registry.upload_scene_mesh_global_only(&vertices, &indices) {
+                    Ok(handle) => reserved.push(handle),
+                    Err(e) => {
+                        for handle in reserved {
+                            registry.drop_mesh(handle);
+                        }
+                        return Err(e).context("reserve terrain patch meshes");
                     }
-                    return Err(e).context("reserve terrain patch meshes");
                 }
             }
         }
-        self.meshes = meshes;
+        let coarse = reserved.split_off(TERRAIN_PATCH_SLOTS as usize);
+        self.meshes = TerrainPatchMeshes { fine: reserved, coarse };
         Ok(())
     }
 
-    /// The reserved patch mesh handles, indexed by slot (empty before
-    /// [`Self::reserve_meshes`]).
-    pub fn meshes(&self) -> &[u32] {
+    /// The reserved patch mesh handles (empty before [`Self::reserve_meshes`]).
+    pub fn meshes(&self) -> &TerrainPatchMeshes {
         &self.meshes
     }
 
@@ -526,21 +625,24 @@ impl TerrainPatchPass {
         let mut dispatched = Vec::with_capacity(self.frame_slots.len());
         for slot in &self.frame_slots {
             let (Some(patch), Some(base)) = (
-                self.meshes.get(slot.slot as usize).and_then(|&h| registry.get(h)),
+                self.meshes.get(slot.slot, slot.coarse).and_then(|h| registry.get(h)),
                 registry.get(slot.base_mesh),
             ) else {
                 continue;
             };
             if base.vertex_count != crate::shader_constants::LAND_GRID_VERTS.pow(2)
-                || patch.vertex_count != TERRAIN_PATCH_VERTEX_COUNT
+                || patch.vertex_count != slot.vertex_count()
             {
                 continue;
             }
-            pushes.push(TerrainPatchPush::new(
-                &params,
-                slot,
-                patch.global_vertex_offset,
-                base.global_vertex_offset,
+            pushes.push((
+                TerrainPatchPush::new(
+                    &params,
+                    slot,
+                    patch.global_vertex_offset,
+                    base.global_vertex_offset,
+                ),
+                slot.vertex_count().div_ceil(TERRAIN_PATCH_WORKGROUP),
             ));
             dispatched.push(*slot);
         }
@@ -612,8 +714,7 @@ impl TerrainPatchPass {
                 &[set, bindless_set],
                 &[],
             );
-            let groups = TERRAIN_PATCH_VERTEX_COUNT.div_ceil(TERRAIN_PATCH_WORKGROUP);
-            for push in &pushes {
+            for (push, groups) in &pushes {
                 device.cmd_push_constants(
                     cmd,
                     self.pipeline_layout,
@@ -621,7 +722,7 @@ impl TerrainPatchPass {
                     0,
                     super::buffer::byte_view(std::slice::from_ref(push)),
                 );
-                device.cmd_dispatch(cmd, groups, 1, 1);
+                device.cmd_dispatch(cmd, *groups, 1, 1);
             }
 
             // After: this frame's vertex fetch and shader reads see the
@@ -696,26 +797,58 @@ mod tests {
     #[test]
     fn the_lattice_matches_the_design_numbers() {
         // §3.1: 3.66 m squares of 64×64 quads at 5.7 cm, 16×16 per cell.
-        assert_eq!(TERRAIN_PATCH_VERTEX_COUNT, 4225);
+        assert_eq!(crate::shader_constants::TERRAIN_PATCH_VERTEX_COUNT, 4225);
+        assert_eq!(crate::shader_constants::TERRAIN_PATCH_COARSE_VERTEX_COUNT, 33 * 33);
         assert_eq!(TERRAIN_PATCH_LATTICE_STEP, 4.0);
         assert_eq!(
             TERRAIN_PATCH_LATTICE_STEP * TERRAIN_PATCH_QUADS as f32
                 * crate::shader_constants::TERRAIN_PATCHES_PER_CELL_SIDE as f32,
             crate::shader_constants::EXTERIOR_CELL_UNITS
         );
-        assert_eq!(patch_lattice_indices().len(), 64 * 64 * 6);
+        assert_eq!(patch_lattice_indices(64).len(), 64 * 64 * 6);
     }
 
     #[test]
-    fn the_lattice_faces_up_like_the_base_cell() {
-        let vertices = placeholder_lattice();
-        for tri in patch_lattice_indices().as_chunks::<3>().0 {
-            let [a, b, c] = tri.map(|i| vertices[i as usize].position);
-            let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
-            let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-            let ny = ab[2] * ac[0] - ab[0] * ac[2];
-            assert!(ny > 0.0, "triangle {tri:?} faces down");
+    fn both_lattices_face_up_like_the_base_cell_and_span_one_square() {
+        for step in [1, TERRAIN_PATCH_COARSE_STEP] {
+            let vertices = placeholder_lattice(step);
+            let quads = TERRAIN_PATCH_QUADS / step;
+            assert_eq!(vertices.len() as u32, (quads + 1) * (quads + 1));
+            let far = vertices.last().unwrap().position;
+            let side = TERRAIN_PATCH_LATTICE_STEP * TERRAIN_PATCH_QUADS as f32;
+            assert_eq!([far[0], far[2]], [side, -side], "step {step}");
+            for tri in patch_lattice_indices(quads).as_chunks::<3>().0 {
+                let [a, b, c] = tri.map(|i| vertices[i as usize].position);
+                let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                let ac = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+                let ny = ab[2] * ac[0] - ab[0] * ac[2];
+                assert!(ny > 0.0, "step {step} triangle {tri:?} faces down");
+            }
         }
+    }
+
+    #[test]
+    fn the_push_carries_the_level_and_both_masks() {
+        let params = TerrainPatchParams {
+            camera_pos: [0.0; 3],
+            amplitude: 1.0,
+            lip: 0.07,
+            fade_start: 1.0,
+            fade_end: 2.0,
+            edge_ramp: 70.0,
+        };
+        let mut s = slot(3, 4, 5, neighbour_bit(-1, 0));
+        s.coarse_mask = neighbour_bit(0, 1);
+        let fine = TerrainPatchPush::new(&params, &s, 100, 200);
+        assert_eq!(fine.slot_patch, [3, 4, 5, 1]);
+        assert_eq!(
+            fine.offsets[3],
+            neighbour_bit(-1, 0) | neighbour_bit(0, 1) << TERRAIN_PATCH_COARSE_MASK_SHIFT
+        );
+        assert!(neighbour_bit(1, 1) < 1 << TERRAIN_PATCH_COARSE_MASK_SHIFT);
+        s.coarse = true;
+        assert_eq!(TerrainPatchPush::new(&params, &s, 100, 200).slot_patch[3], 2);
+        assert_eq!(s.vertex_count(), 33 * 33);
     }
 
     fn slot(slot: u32, col: u32, row: u32, missing_mask: u32) -> TerrainPatchSlot {
@@ -727,6 +860,8 @@ mod tests {
             base_mesh: 7,
             terrain_tile: 0,
             missing_mask,
+            coarse: false,
+            coarse_mask: 0,
         }
     }
 
@@ -790,5 +925,48 @@ mod tests {
         fill(&mut words, 1, 99.0, lip, 1.0);
         let stats = summarize_patch_readback(&[a, b], lip, &words);
         assert_eq!(stats.shared_edges, 0);
+    }
+
+    /// Write sample `i` of `edge` for `slot`.
+    fn put(words: &mut [u32], slot: u32, edge: usize, i: usize, y: f32, d: f32) {
+        let w = slot as usize * TERRAIN_PATCH_READBACK_WORDS as usize
+            + 2 * (edge * TERRAIN_PATCH_VERTS as usize + i);
+        words[w] = y.to_bits();
+        words[w + 1] = d.to_bits();
+    }
+
+    #[test]
+    fn a_fine_coarse_border_checks_the_stitch_against_the_coarse_edge() {
+        let lip = 0.07;
+        // Fine a at col 0, coarse b east of it at col 1.
+        let mut a = slot(0, 0, 0, ALL_BUT_SELF & !neighbour_bit(0, 1));
+        a.coarse_mask = neighbour_bit(0, 1);
+        let mut b = slot(1, 1, 0, ALL_BUT_SELF & !neighbour_bit(0, -1));
+        b.coarse = true;
+        let mut words = vec![0u32; READBACK_BYTES as usize / 4];
+        fill(&mut words, 0, 10.0, lip, 1.0);
+        fill(&mut words, 1, 10.0, lip, 1.0);
+        // b is coarse: blank its odd samples; its west edge (edge 2) rises
+        // linearly, and a's east edge (edge 3) follows it exactly — the even
+        // samples coincide, the odd ones sit on the midpoints.
+        for e in 0..4 {
+            for i in (1..TERRAIN_PATCH_VERTS as usize).step_by(2) {
+                put(&mut words, 1, e, i, 0.0, 0.0);
+            }
+        }
+        for i in 0..TERRAIN_PATCH_VERTS as usize {
+            if i % 2 == 0 {
+                put(&mut words, 1, 2, i, 10.0 + i as f32, lip);
+            }
+            put(&mut words, 0, 3, i, 10.0 + i as f32, lip);
+        }
+        let stats = summarize_patch_readback(&[a, b], lip, &words);
+        assert_eq!((stats.shared_edges, stats.level_edges, stats.coarse), (1, 1, 1));
+        assert_eq!(stats.max_seam_gap, 0.0);
+        assert_eq!(stats.max_lip_deviation, 0.0, "blank coarse samples are not lip errors");
+        // An odd fine vertex left off the coarse edge is a crack.
+        put(&mut words, 0, 3, 7, 17.5, lip);
+        let stats = summarize_patch_readback(&[a, b], lip, &words);
+        assert!((stats.max_seam_gap - 0.5).abs() < 1e-6, "{}", stats.max_seam_gap);
     }
 }

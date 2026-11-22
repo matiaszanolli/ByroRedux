@@ -247,7 +247,7 @@ impl ConsoleCommand for TerrainPatchesCommand {
     }
 
     fn description(&self) -> &str {
-        "Terrain displacement patches: terrain.patches [on | off | amplitude <m> | range <m>] (#7152)"
+        "Terrain displacement patches: terrain.patches [on | off | amplitude <m> | range <m> | fine <m>] (#7152)"
     }
 
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
@@ -256,7 +256,7 @@ impl ConsoleCommand for TerrainPatchesCommand {
         let Some(mut state) = world.try_resource_mut::<TerrainPatchState>() else {
             return CommandOutput::line("terrain.patches: not available in this session");
         };
-        let usage = "usage: terrain.patches [on | off | amplitude <m> | range <m>]";
+        let usage = "usage: terrain.patches [on | off | amplitude <m> | range <m> | fine <m>]";
         let parse = |word: &str| word.parse::<f32>().ok().filter(|v| v.is_finite() && *v >= 0.0);
         let words: Vec<&str> = args.split_whitespace().collect();
         match words.as_slice() {
@@ -271,25 +271,34 @@ impl ConsoleCommand for TerrainPatchesCommand {
                 Some(m) => state.range_m = m,
                 None => return CommandOutput::line(format!("terrain.patches: bad number\n{usage}")),
             },
+            // The fine-lattice radius: 0 = every patch coarse, >= range = every
+            // patch fine (the single-level pool).
+            ["fine", m] => match parse(m) {
+                Some(m) => state.fine_range_m = m,
+                None => return CommandOutput::line(format!("terrain.patches: bad number\n{usage}")),
+            },
             _ => return CommandOutput::line(usage),
         }
         let mut lines = vec![format!(
-            "terrain.patches: {} amplitude={:.3} m range={:.1} m lip={:.3} m pool={} assigned={}",
+            "terrain.patches: {} amplitude={:.3} m range={:.1} m fine={:.1} m lip={:.3} m pool={} assigned={}",
             if state.enabled { "on" } else { "off" },
             state.amplitude_m,
             state.range_m,
+            state.fine_range_m,
             LIP_M,
-            state.meshes.len(),
+            state.meshes.fine.len().min(state.meshes.coarse.len()),
             state.resident(),
         )];
         let s = &state.stats;
         let cm = |units: f32| units / UNITS_PER_M * 100.0;
         lines.push(format!(
-            "  readback: resident={} lip_edges={} max|d-lip|={:.4} cm shared_edges={} max_seam_gap={:.4} cm max_d={:.2} cm",
+            "  readback: resident={} coarse={} lip_edges={} max|d-lip|={:.4} cm shared_edges={} level_edges={} max_seam_gap={:.4} cm max_d={:.2} cm",
             s.resident,
+            s.coarse,
             s.lip_edges,
             cm(s.max_lip_deviation),
             s.shared_edges,
+            s.level_edges,
             cm(s.max_seam_gap),
             cm(s.max_displacement),
         ));
@@ -304,12 +313,16 @@ impl ConsoleCommand for TerrainPatchesCommand {
                 ms(cov.gpu_main_render_ms, cov.gpu_main_render_active),
             ));
         }
-        for &(slot, col, row, origin, max_d) in &s.slots {
+        for slot in &s.slots {
             lines.push(format!(
-                "  slot {slot:2}: cell ({:.0}, {:.0}) patch ({col:2}, {row:2}) max_d={:.2} cm",
-                origin[0],
-                origin[1],
-                cm(max_d),
+                "  slot {:2}: cell ({:.0}, {:.0}) patch ({:2}, {:2}) {} max_d={:.2} cm",
+                slot.slot,
+                slot.cell_origin_xz[0],
+                slot.cell_origin_xz[1],
+                slot.patch_col,
+                slot.patch_row,
+                if slot.coarse { "coarse" } else { "fine  " },
+                cm(slot.max_displacement),
             ));
         }
         CommandOutput::lines(lines)

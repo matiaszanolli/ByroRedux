@@ -19,6 +19,12 @@
 //! away. The distance fade in the shader reaches zero at `range`, so the whole
 //! faded disc is covered whenever the pool is large enough — and where it is
 //! not, the missing-neighbour fade brings the edge down to the lip.
+//!
+//! Each patch also picks its lattice level by the same distance: the fine
+//! 5.7 cm lattice within `fine range` (kept until `FINE_HYSTERESIS` past it),
+//! the coarse 11.4 cm one beyond — a quarter of the triangles where the
+//! relief is a few pixels tall. The raster cost of the single-level pool
+//! scaled with triangle density (§8.2), so this is where it goes.
 
 use byroredux_core::ecs::{EntityId, MeshHandle, Resource, World};
 use byroredux_core::lighting::BETHESDA_UNITS_PER_METER as UNITS_PER_M;
@@ -28,7 +34,7 @@ use byroredux_renderer::shader_constants::{
     TERRAIN_PATCH_SLOTS,
 };
 use byroredux_renderer::vulkan::terrain_patch::{
-    neighbour_bit, TerrainPatchParams, TerrainPatchSlot, TerrainPatchStats,
+    neighbour_bit, TerrainPatchMeshes, TerrainPatchParams, TerrainPatchSlot, TerrainPatchStats,
 };
 use byroredux_renderer::DrawCommand;
 
@@ -43,6 +49,12 @@ const PATCH_SIZE: f32 = TERRAIN_PATCH_LATTICE_STEP * TERRAIN_PATCH_QUADS as f32;
 /// `terrain.patches`; the settings/UI pass is stage 4.3.
 pub(crate) const DEFAULT_AMPLITUDE_M: f32 = 0.03;
 pub(crate) const DEFAULT_RANGE_M: f32 = 6.0;
+/// Squares within this distance draw the fine lattice, the rest the coarse
+/// one. `terrain.patches fine 0` makes every patch coarse, a fine range at or
+/// past `range` every patch fine (the single-level pool).
+pub(crate) const DEFAULT_FINE_RANGE_M: f32 = 2.0;
+/// A fine patch stays fine until its square is this much past the fine range.
+pub(crate) const FINE_HYSTERESIS_M: f32 = 0.5;
 /// The 1 mm step every patch border and every undisplaced point sits at above
 /// the base surface (§3.3–3.4).
 pub(crate) const LIP_M: f32 = 0.001;
@@ -82,6 +94,19 @@ pub(crate) struct PatchAssignment {
     pub(crate) key: PatchKey,
     pub(crate) cell: PatchCell,
     pub(crate) missing_mask: u32,
+    /// Draws the coarse lattice.
+    pub(crate) coarse: bool,
+    /// Resident neighbours drawing the coarse lattice (`missing_mask` bits).
+    pub(crate) coarse_mask: u32,
+}
+
+/// The distances `assign_patches` works to, world units.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PatchRanges {
+    pub(crate) range: f32,
+    pub(crate) hysteresis: f32,
+    pub(crate) fine_range: f32,
+    pub(crate) fine_hysteresis: f32,
 }
 
 /// The pool's host-side state.
@@ -90,9 +115,10 @@ pub(crate) struct TerrainPatchState {
     pub(crate) enabled: bool,
     pub(crate) amplitude_m: f32,
     pub(crate) range_m: f32,
+    pub(crate) fine_range_m: f32,
     /// The renderer's reserved patch meshes, indexed by slot; copied on the
     /// first frame with a renderer. Empty means no patches.
-    pub(crate) meshes: Vec<u32>,
+    pub(crate) meshes: TerrainPatchMeshes,
     pub(crate) slots: [Option<PatchAssignment>; SLOTS],
     /// The camera position the slots were assigned from, world units.
     pub(crate) camera_pos: [f32; 3],
@@ -106,7 +132,8 @@ impl Default for TerrainPatchState {
             enabled: true,
             amplitude_m: DEFAULT_AMPLITUDE_M,
             range_m: DEFAULT_RANGE_M,
-            meshes: Vec::new(),
+            fine_range_m: DEFAULT_FINE_RANGE_M,
+            meshes: TerrainPatchMeshes::default(),
             slots: [None; SLOTS],
             camera_pos: [0.0; 3],
             stats: TerrainPatchStats::default(),
@@ -119,6 +146,15 @@ impl Resource for TerrainPatchState {}
 impl TerrainPatchState {
     pub(crate) fn resident(&self) -> usize {
         self.slots.iter().flatten().count()
+    }
+
+    pub(crate) fn ranges(&self) -> PatchRanges {
+        PatchRanges {
+            range: self.range_m * UNITS_PER_M,
+            hysteresis: HYSTERESIS_M * UNITS_PER_M,
+            fine_range: self.fine_range_m * UNITS_PER_M,
+            fine_hysteresis: FINE_HYSTERESIS_M * UNITS_PER_M,
+        }
     }
 
     /// The shader parameters, in world units.
@@ -145,14 +181,15 @@ fn distance_to_square(lx: f32, lz: f32, col: i32, row: i32) -> f32 {
 }
 
 /// Reassign `slots` for a camera at `cam_xz` (world units), keeping every
-/// patch that is still wanted in the slot it already has.
+/// patch that is still wanted in the slot it already has, and pick each
+/// patch's lattice level.
 pub(crate) fn assign_patches(
     slots: &mut [Option<PatchAssignment>; SLOTS],
     cells: &[PatchCell],
     cam_xz: [f32; 2],
-    range: f32,
-    hysteresis: f32,
+    ranges: PatchRanges,
 ) {
+    let PatchRanges { range, hysteresis, fine_range, fine_hysteresis } = ranges;
     let keep_range = range + hysteresis;
     let mut candidates: Vec<(f32, PatchKey, PatchCell)> = Vec::new();
     for cell in cells {
@@ -191,17 +228,38 @@ pub(crate) fn assign_patches(
             continue;
         }
         if let Some(free) = slots.iter_mut().find(|s| s.is_none()) {
-            *free = Some(PatchAssignment { key, cell, missing_mask: 0 });
+            *free = Some(PatchAssignment {
+                key,
+                cell,
+                missing_mask: 0,
+                coarse: true,
+                coarse_mask: 0,
+            });
         }
+    }
+
+    // Level: fine within the fine range, and a fine patch stays fine until
+    // the fine hysteresis past it (a new patch starts coarse).
+    for assignment in slots.iter_mut().flatten() {
+        let lx = cam_xz[0] - assignment.cell.origin_xz[0];
+        let lz = assignment.cell.origin_xz[1] - cam_xz[1];
+        let dist =
+            distance_to_square(lx, lz, assignment.key.col as i32, assignment.key.row as i32);
+        let fine = fine_range > 0.0
+            && (dist <= fine_range
+                || (!assignment.coarse && dist <= fine_range + fine_hysteresis));
+        assignment.coarse = !fine;
     }
 
     // A neighbour square is missing unless a resident patch of the same cell
     // holds it; squares across the cell border always are (the cell-border
     // rule, §3.4).
-    let resident: Vec<PatchKey> = slots.iter().flatten().map(|a| a.key).collect();
+    let resident: Vec<(PatchKey, bool)> =
+        slots.iter().flatten().map(|a| (a.key, a.coarse)).collect();
     for assignment in slots.iter_mut().flatten() {
         let PatchKey { cell, col, row } = assignment.key;
         let mut mask = 0;
+        let mut coarse_mask = 0;
         for dr in -1..=1 {
             for dc in -1..=1 {
                 if dr == 0 && dc == 0 {
@@ -209,14 +267,16 @@ pub(crate) fn assign_patches(
                 }
                 let (c, r) = (col as i32 + dc, row as i32 + dr);
                 let inside = (0..PER_SIDE).contains(&c) && (0..PER_SIDE).contains(&r);
-                let held = inside
-                    && resident.contains(&PatchKey { cell, col: c as u32, row: r as u32 });
-                if !held {
-                    mask |= neighbour_bit(dr, dc);
+                let key = PatchKey { cell, col: c as u32, row: r as u32 };
+                match resident.iter().find(|(k, _)| inside && *k == key) {
+                    None => mask |= neighbour_bit(dr, dc),
+                    Some(&(_, true)) => coarse_mask |= neighbour_bit(dr, dc),
+                    Some(&(_, false)) => {}
                 }
             }
         }
         assignment.missing_mask = mask;
+        assignment.coarse_mask = coarse_mask;
     }
 }
 
@@ -269,14 +329,14 @@ pub(crate) fn emit_patch_draws(
     };
     let state = &mut *state;
     state.camera_pos = cam_pos.to_array();
-    if !state.enabled || state.meshes.len() < SLOTS {
+    if !state.enabled || state.meshes.fine.len() < SLOTS || state.meshes.coarse.len() < SLOTS {
         state.slots = [None; SLOTS];
         return;
     }
-    let range = state.range_m * UNITS_PER_M;
+    let ranges = state.ranges();
     let cam_xz = [cam_pos.x, cam_pos.z];
-    let cells = nearby_cells(world, cam_xz, range + HYSTERESIS_M * UNITS_PER_M);
-    assign_patches(&mut state.slots, &cells, cam_xz, range, HYSTERESIS_M * UNITS_PER_M);
+    let cells = nearby_cells(world, cam_xz, ranges.range + ranges.hysteresis);
+    assign_patches(&mut state.slots, &cells, cam_xz, ranges);
 
     let base_count = draw_commands.len();
     for (slot, assignment) in state.slots.iter().enumerate() {
@@ -291,8 +351,11 @@ pub(crate) fn emit_patch_draws(
         if !base.in_raster {
             continue;
         }
+        let Some(mesh) = state.meshes.get(slot as u32, assignment.coarse) else {
+            continue;
+        };
         let mut patch = base.clone();
-        patch.mesh_handle = state.meshes[slot];
+        patch.mesh_handle = mesh;
         patch.in_tlas = false;
         patch.entity_id = PATCH_ENTITY_ID_BASE - slot as u32;
         let centre = Vec4::new(
@@ -313,7 +376,9 @@ pub(crate) fn push_terrain_patches(world: &World, ctx: &mut byroredux_renderer::
         return;
     };
     if state.meshes.is_empty() {
-        state.meshes = ctx.terrain_patch_meshes().to_vec();
+        if let Some(meshes) = ctx.terrain_patch_meshes() {
+            state.meshes = meshes.clone();
+        }
     }
     if let Some(stats) = ctx.terrain_patch_stats() {
         state.stats = stats.clone();
@@ -331,6 +396,8 @@ pub(crate) fn push_terrain_patches(world: &World, ctx: &mut byroredux_renderer::
                 base_mesh: a.cell.base_mesh,
                 terrain_tile: a.cell.tile,
                 missing_mask: a.missing_mask,
+                coarse: a.coarse,
+                coarse_mask: a.coarse_mask,
             })
         })
         .collect();
@@ -370,12 +437,21 @@ mod tests {
     const RANGE: f32 = DEFAULT_RANGE_M * UNITS_PER_M;
     const HYST: f32 = HYSTERESIS_M * UNITS_PER_M;
 
+    fn ranges(range: f32) -> PatchRanges {
+        PatchRanges {
+            range,
+            hysteresis: HYST,
+            fine_range: DEFAULT_FINE_RANGE_M * UNITS_PER_M,
+            fine_hysteresis: FINE_HYSTERESIS_M * UNITS_PER_M,
+        }
+    }
+
     #[test]
     fn every_square_within_range_of_the_camera_gets_a_patch() {
         let c = cell(1, 0, 0);
         let cam = at(&c, 8.0 * PATCH_SIZE, 8.0 * PATCH_SIZE); // a patch corner, mid-cell
         let mut slots = [None; SLOTS];
-        assign_patches(&mut slots, &[c], cam, RANGE, HYST);
+        assign_patches(&mut slots, &[c], cam, ranges(RANGE));
         for row in 0..PER_SIDE {
             for col in 0..PER_SIDE {
                 let d = distance_to_square(8.0 * PATCH_SIZE, 8.0 * PATCH_SIZE, col, row);
@@ -392,9 +468,9 @@ mod tests {
     fn a_patch_keeps_its_slot_while_the_camera_moves() {
         let c = cell(1, 0, 0);
         let mut slots = [None; SLOTS];
-        assign_patches(&mut slots, &[c], at(&c, 2000.0, 2000.0), RANGE, HYST);
+        assign_patches(&mut slots, &[c], at(&c, 2000.0, 2000.0), ranges(RANGE));
         let before = slots;
-        assign_patches(&mut slots, &[c], at(&c, 2040.0, 2010.0), RANGE, HYST);
+        assign_patches(&mut slots, &[c], at(&c, 2040.0, 2010.0), ranges(RANGE));
         for (b, a) in before.iter().zip(slots.iter()) {
             if let (Some(b), Some(a)) = (b, a) {
                 assert_eq!(a.key, b.key, "a patch moved slot");
@@ -409,14 +485,14 @@ mod tests {
         let lx = 10.0 * PATCH_SIZE - RANGE + 10.0;
         let target = PatchKey { cell: 1, col: 10, row: 8 };
         let mut slots = [None; SLOTS];
-        assign_patches(&mut slots, &[c], at(&c, lx, 8.5 * PATCH_SIZE), RANGE, HYST);
+        assign_patches(&mut slots, &[c], at(&c, lx, 8.5 * PATCH_SIZE), ranges(RANGE));
         assert!(keys(&slots).contains(&target));
         // Back off 30 units: past the range, inside the hysteresis — kept.
-        assign_patches(&mut slots, &[c], at(&c, lx - 30.0, 8.5 * PATCH_SIZE), RANGE, HYST);
+        assign_patches(&mut slots, &[c], at(&c, lx - 30.0, 8.5 * PATCH_SIZE), ranges(RANGE));
         assert!(keys(&slots).contains(&target));
         // A fresh pool at the same spot does not take it.
         let mut fresh = [None; SLOTS];
-        assign_patches(&mut fresh, &[c], at(&c, lx - 30.0, 8.5 * PATCH_SIZE), RANGE, HYST);
+        assign_patches(&mut fresh, &[c], at(&c, lx - 30.0, 8.5 * PATCH_SIZE), ranges(RANGE));
         assert!(!keys(&fresh).contains(&target));
     }
 
@@ -426,7 +502,7 @@ mod tests {
         let west = cell(1, 0, 0);
         let east = cell(2, 1, 0);
         let mut slots = [None; SLOTS];
-        assign_patches(&mut slots, &[west, east], at(&west, CELL, 8.5 * PATCH_SIZE), RANGE, HYST);
+        assign_patches(&mut slots, &[west, east], at(&west, CELL, 8.5 * PATCH_SIZE), ranges(RANGE));
         let edge = slots
             .iter()
             .flatten()
@@ -447,7 +523,7 @@ mod tests {
         let c = cell(1, 0, 0);
         let centre = (8.5 * PATCH_SIZE, 8.5 * PATCH_SIZE);
         let mut slots = [None; SLOTS];
-        assign_patches(&mut slots, &[c], at(&c, centre.0, centre.1), 4.0 * PATCH_SIZE, HYST);
+        assign_patches(&mut slots, &[c], at(&c, centre.0, centre.1), ranges(4.0 * PATCH_SIZE));
         assert_eq!(slots.iter().flatten().count(), SLOTS);
         let worst_held = slots
             .iter()
@@ -470,9 +546,9 @@ mod tests {
     fn an_unloaded_cell_releases_its_patches() {
         let c = cell(1, 0, 0);
         let mut slots = [None; SLOTS];
-        assign_patches(&mut slots, &[c], at(&c, 2000.0, 2000.0), RANGE, HYST);
+        assign_patches(&mut slots, &[c], at(&c, 2000.0, 2000.0), ranges(RANGE));
         assert!(slots.iter().flatten().count() > 0);
-        assign_patches(&mut slots, &[], at(&c, 2000.0, 2000.0), RANGE, HYST);
+        assign_patches(&mut slots, &[], at(&c, 2000.0, 2000.0), ranges(RANGE));
         assert_eq!(slots.iter().flatten().count(), 0);
     }
 
@@ -486,5 +562,83 @@ mod tests {
         assert!((p.fade_start - 3.0 * UNITS_PER_M).abs() < 1e-4);
         // §3.4: the ramp must fit inside one patch.
         assert!(p.edge_ramp < PATCH_SIZE);
+    }
+
+    #[test]
+    fn near_squares_draw_fine_far_ones_coarse_and_fine_borders_see_coarse_neighbours() {
+        let c = cell(1, 0, 0);
+        let (lx, lz) = (8.5 * PATCH_SIZE, 8.5 * PATCH_SIZE); // mid-square
+        let mut slots = [None; SLOTS];
+        assign_patches(&mut slots, &[c], at(&c, lx, lz), ranges(RANGE));
+        let fine_range = DEFAULT_FINE_RANGE_M * UNITS_PER_M;
+        let mut fine = 0;
+        for a in slots.iter().flatten() {
+            let d = distance_to_square(lx, lz, a.key.col as i32, a.key.row as i32);
+            assert_eq!(a.coarse, d > fine_range, "square ({}, {}) at {d}", a.key.col, a.key.row);
+            fine += usize::from(!a.coarse);
+            // Every resident neighbour is either fine or flagged coarse, never both
+            // coarse and missing.
+            assert_eq!(a.coarse_mask & a.missing_mask, 0);
+        }
+        // 2 m from the centre of a 3.66 m square: it and its 4 edge neighbours.
+        assert_eq!(fine, 5);
+        let centre = slots
+            .iter()
+            .flatten()
+            .find(|a| (a.key.col, a.key.row) == (8, 8))
+            .unwrap();
+        // Its edge neighbours (1.83 m) are fine, its corner ones (2.59 m) coarse.
+        let edges = neighbour_bit(-1, 0) | neighbour_bit(1, 0) | neighbour_bit(0, -1) | neighbour_bit(0, 1);
+        assert_eq!(centre.coarse_mask & edges, 0);
+        assert_eq!(centre.coarse_mask, 0b111_101_111 & !edges);
+        let east = slots
+            .iter()
+            .flatten()
+            .find(|a| (a.key.col, a.key.row) == (9, 8))
+            .unwrap();
+        assert!(!east.coarse);
+        assert_ne!(east.coarse_mask & neighbour_bit(0, 1), 0, "(10, 8) is coarse");
+    }
+
+    #[test]
+    fn a_fine_patch_stays_fine_inside_the_fine_hysteresis() {
+        let c = cell(1, 0, 0);
+        let fine_range = DEFAULT_FINE_RANGE_M * UNITS_PER_M;
+        let target = PatchKey { cell: 1, col: 10, row: 8 };
+        let level = |slots: &[Option<PatchAssignment>; SLOTS]| {
+            slots.iter().flatten().find(|a| a.key == target).map(|a| a.coarse)
+        };
+        // Camera just inside the fine range of square (10, 8)'s west edge.
+        let lx = 10.0 * PATCH_SIZE - fine_range + 5.0;
+        let lz = 8.5 * PATCH_SIZE;
+        let mut slots = [None; SLOTS];
+        assign_patches(&mut slots, &[c], at(&c, lx, lz), ranges(RANGE));
+        assert_eq!(level(&slots), Some(false));
+        // 20 units past the fine range: still fine.
+        assign_patches(&mut slots, &[c], at(&c, lx - 25.0, lz), ranges(RANGE));
+        assert_eq!(level(&slots), Some(false));
+        // A fresh pool there starts it coarse; past the hysteresis it drops.
+        let mut fresh = [None; SLOTS];
+        assign_patches(&mut fresh, &[c], at(&c, lx - 25.0, lz), ranges(RANGE));
+        assert_eq!(level(&fresh), Some(true));
+        let past = FINE_HYSTERESIS_M * UNITS_PER_M + 10.0;
+        assign_patches(&mut slots, &[c], at(&c, lx - 5.0 - past, lz), ranges(RANGE));
+        assert_eq!(level(&slots), Some(true));
+    }
+
+    #[test]
+    fn a_zero_fine_range_makes_every_patch_coarse_and_a_full_one_every_patch_fine() {
+        let c = cell(1, 0, 0);
+        let cam = at(&c, 8.5 * PATCH_SIZE, 8.5 * PATCH_SIZE);
+        let mut all_coarse = ranges(RANGE);
+        all_coarse.fine_range = 0.0;
+        let mut slots = [None; SLOTS];
+        assign_patches(&mut slots, &[c], cam, all_coarse);
+        assert!(slots.iter().flatten().all(|a| a.coarse));
+        let mut all_fine = ranges(RANGE);
+        all_fine.fine_range = RANGE + HYST;
+        let mut slots = [None; SLOTS];
+        assign_patches(&mut slots, &[c], cam, all_fine);
+        assert!(slots.iter().flatten().all(|a| !a.coarse && a.coarse_mask == 0));
     }
 }

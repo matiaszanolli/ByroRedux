@@ -1120,6 +1120,20 @@ pub const TERRAIN_PATCH_LATTICE_STEP: f32 =
 /// The cell's lattice side, 1024 steps.
 pub const TERRAIN_PATCH_CELL_LATTICE: u32 = TERRAIN_PATCH_QUADS * TERRAIN_PATCHES_PER_CELL_SIDE;
 pub const TERRAIN_PATCH_SLOTS: u32 = 24;
+/// The two-level lattice (#7152): a patch past the host's fine range draws at
+/// every second lattice point — 32×32 quads at 8 units (11.4 cm), a quarter of
+/// the triangles. Its vertices are the fine lattice's even ones, evaluated by
+/// the same function, and a fine patch beside a coarse one snaps its odd
+/// border vertices onto the coarse edge, so the levels meet without a crack.
+/// Every slot reserves one mesh of each level.
+pub const TERRAIN_PATCH_COARSE_STEP: u32 = 2;
+pub const TERRAIN_PATCH_COARSE_QUADS: u32 = TERRAIN_PATCH_QUADS / TERRAIN_PATCH_COARSE_STEP;
+pub const TERRAIN_PATCH_COARSE_VERTS: u32 = TERRAIN_PATCH_COARSE_QUADS + 1;
+pub const TERRAIN_PATCH_COARSE_VERTEX_COUNT: u32 =
+    TERRAIN_PATCH_COARSE_VERTS * TERRAIN_PATCH_COARSE_VERTS;
+/// `TerrainPatchPush.offsets.w` packs the missing-neighbour mask in the low
+/// bits and the coarse-neighbour mask above this shift (same 3×3 bit order).
+pub const TERRAIN_PATCH_COARSE_MASK_SHIFT: u32 = 16;
 /// One invocation per patch vertex. Emitted without the `u` suffix for the
 /// `local_size_x` qualifier, like `SKIN_WORKGROUP_SIZE`.
 pub const TERRAIN_PATCH_WORKGROUP: u32 = 64;
@@ -3127,6 +3141,11 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Uint TERRAIN_PATCH_LATTICE_PER_LAND_SPACING),
     shader_define!(Uint TERRAIN_PATCH_CELL_LATTICE),
     shader_define!(Uint TERRAIN_PATCH_SLOTS),
+    shader_define!(Uint TERRAIN_PATCH_COARSE_STEP),
+    shader_define!(Uint TERRAIN_PATCH_COARSE_QUADS),
+    shader_define!(Uint TERRAIN_PATCH_COARSE_VERTS),
+    shader_define!(Uint TERRAIN_PATCH_COARSE_VERTEX_COUNT),
+    shader_define!(Uint TERRAIN_PATCH_COARSE_MASK_SHIFT),
     shader_define!(Float TERRAIN_PATCH_LATTICE_STEP),
     shader_define!(UintPlain TERRAIN_PATCH_WORKGROUP),
     shader_define!(Uint TERRAIN_PATCH_EDGE_SAMPLES),

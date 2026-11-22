@@ -525,8 +525,8 @@ terrain.blend [band]        → read/set the height-based layer blend band for t
 terrain.soften [amount]     → read/set the near-terrain distance softening toward the LOD look for this session; 0 = off
 terrain.parallax [off | <range_m> [<depth_m>]]
                             → read/set the near-camera terrain parallax (fade-out distance, relief depth, metres) for this session; off / range 0 = off (#6197)
-terrain.patches [on | off | amplitude <m> | range <m>]
-                            → TSD-4.1 terrain displacement patches (#7152): the seam readback (lip-border deviation, shared-border gap, per-slot max displacement) or the session's on/off, amplitude and range in metres
+terrain.patches [on | off | amplitude <m> | range <m> | fine <m>]
+                            → TSD-4.1 terrain displacement patches (#7152): the seam readback (lip-border deviation, shared-border gap incl. fine/coarse borders, per-slot level and max displacement) or the session's on/off, amplitude, range and fine-lattice radius in metres (`fine 0` = all coarse, `fine` ≥ range = all fine)
 render.debug                → renderer debug-mode control
 r.dbg [0xMASK|+0xB|-0xB]    → read / set / add / clear the DBG_* bit mask at runtime
 r.shadowfilter [on|off]     → read or switch the direct-shadow spatial filter

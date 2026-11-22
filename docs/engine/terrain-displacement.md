@@ -4,7 +4,8 @@
 Drafted 2026-10-22. Follows TSD-1 (#6195 height maps), TSD-2 (#6196 height blend) and
 TSD-3 (#6197 parallax), which are shipped. #7149 (BTXT-only tile slots) and the §8 spike
 (#7150, result in §8.1: go) are done. Stage 4.1 (#7152) is built (§7.1) and measured
-(§8.2); it awaits review before 4.2.
+(§8.2), now with a two-level lattice (fine within 2 m, coarse beyond); it awaits review
+before 4.2.
 
 **Question this answers**: if parallax (TSD-3) is not enough, how would real geometry
 displacement work in an engine whose shadows, reflections and GI are ray-traced, what would
@@ -194,13 +195,25 @@ RT → **4.2** BLAS in the TLAS + refit + seam readback → **4.3** TSD-3 interp
 settings/UI. Each stage ends with a review, as in TSD-1–3.
 
 ### 7.1 Stage 4.1 as built (#7152)
-- **Pool**: `vulkan/terrain_patch.rs`. 24 slots of 65×65 vertices, reserved in
+- **Pool**: `vulkan/terrain_patch.rs`. 24 slots, each with a fine mesh (65×65 vertices)
+  and a coarse one (33×33, see *Two-level lattice* below), reserved in
   `VulkanContext::new` with `upload_scene_mesh_global_only` (global pool only: no per-mesh
   buffers, no BLAS). They are the registry's first handles on purpose: the opaque sort
   groups by mesh handle, so every patch draws before any base cell and early-Z rejects
-  the base under it. Each slot has its own copy of the lattice indices (24 × 98 KB),
-  not the single shared buffer of §3.1; sharing needs index aliasing in `MeshRegistry`,
-  which can wait for 4.2.
+  the base under it. Each mesh has its own copy of the lattice indices (24 × 98 KB fine
+  + 24 × 25 KB coarse), not the single shared buffer of §3.1; sharing needs index
+  aliasing in `MeshRegistry`, which can wait for 4.2.
+- **Two-level lattice** (added after the first §8.2 run showed raster cost scaling with
+  triangle density). A square within the fine range (2 m, kept until 0.5 m past it)
+  draws the fine 5.7 cm lattice; the rest of the 6 m range draws the coarse 11.4 cm
+  lattice, a quarter of the triangles. Coarse vertices are the fine lattice's even
+  points through the same function, so the levels agree wherever both have a vertex.
+  Where a fine patch borders a coarse one (the host passes a coarse-neighbour mask beside
+  the missing-neighbour mask), its odd border vertices are the midpoint of their two
+  even neighbours, so they lie on the coarse edge: the T-junction stitch, no crack. The
+  normal's gradient taps stay one fine step apart on both levels. At the defaults 4–5
+  squares are fine, the rest coarse. `terrain.patches fine <m>` retunes it: 0 makes every
+  patch coarse, a value at or past the range every patch fine (the single-level pool).
 - **Compute**: `terrain_patch.comp`, one dispatch per resident slot, recorded after the
   instance upload and before the main pass (`record_terrain_patches`, GPU bracket
   `terrain_patch`). It interpolates the base vertex on the emitted base *triangle* (the
@@ -227,8 +240,9 @@ settings/UI. Each stage ends with a review, as in TSD-1–3.
   patch carries the cell's exact material and tile.
 - **Readback**: `terrain.patches` prints, one frame-in-flight late, every border that must
   sit at the lip and the largest |displacement − lip| on it, every border two resident
-  patches share and the largest world-Y gap between them, each slot's largest
-  displacement, and the `terrain_patch` / `main_render` GPU brackets. `terrain.patches
+  patches share and the largest world-Y gap between them (on a fine/coarse border, between
+  each odd fine vertex and the coarse edge's midpoint under it), each slot's level and
+  largest displacement, and the `terrain_patch` / `main_render` GPU brackets. `terrain.patches
   on|off` is the A/B switch; `amplitude` / `range` retune the session.
 
 ## 8. The spike, and its go/no-go bar (proposed — adjust it)
@@ -316,6 +330,34 @@ deltas as ±1 ms). The FO4 grid is TSD-1's painted 0,0 cell, not a verified dirt
   fails at every pose (1.4–2.4 ms).
 - Not yet in these numbers: TSD-3 parallax still runs on the patches (the §3.6 interplay is
   4.3), and the patches are not in the TLAS (4.2).
+
+**Two-level lattice re-run** (same build otherwise, same harness, 8 interleaved rounds of
+off / single-level (`fine 99`) / two-level (`fine 2`) × 4 samples; 16 patches resident, 12
+of them coarse at two-level). Totals are compute + `main_render` delta, ms:
+
+| position | pose | `main_render` off | single-level | **two-level** | compute single → two |
+|---|---|---|---|---|---|
+| Skyrim tundra (2,−4) | down | 3.76 | 0.81 | **0.80** | 0.20 → 0.13 |
+| | eye | 4.73 | 0.95 | **0.58** | 0.19 → 0.13 |
+| | graze | 9.37 | 0.69 | **0.27** | 0.18 → 0.13 |
+| Skyrim Riverwood (4,−11) | down | 1.81 | 0.55 | **0.47** | 0.19 → 0.13 |
+| | eye | 1.91 | 0.70 | **0.57** | 0.20 → 0.14 |
+| | graze | 2.73 | 0.52 | **0.34** | 0.21 → 0.14 |
+| FNV Mojave (0,0) | down | 5.08 | 1.01 | **0.98** | 0.18 → 0.12 |
+| | eye | 6.54 | 2.04 | **1.52** | 0.19 → 0.13 |
+| | graze | 7.06 | 1.30 | **0.79** | 0.18 → 0.12 |
+
+- **Seams**: zero gap over 24 shared borders, 8 of them fine/coarse, and zero lip deviation,
+  at every position and pose.
+- **The two-level lattice brings every Skyrim pose and FNV down/graze under the 1.0 ms bar.**
+  FNV eye (1.52 ms) is still over it: the spawn faces a slope, so the fine squares fill
+  the lower half of the frame. Looking down, the gain is small everywhere, because the
+  near fine squares are most of what is on screen.
+- The single-level numbers reproduce the first run within noise (FNV eye 2.04 both times).
+  FNV's `main_render` baseline is lower this run (5–7 ms against ~7.9 ms), so compare
+  deltas, not absolute times.
+- Screenshots of single-level against two-level at FNV show no seam and no visible level
+  boundary at 3 cm; the pixel differences are wind-animated grass.
 
 ## 9. Review decisions (Matías, 2026-11-21)
 1. **Upward-only displacement, base mesh kept (§3.3)**: accepted. No holes, no zero-mean
