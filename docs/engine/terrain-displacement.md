@@ -432,11 +432,32 @@ delta, ms. The `main_render` delta now includes ray queries traversing the patch
 - **Against the 1.0 ms bar**: every Skyrim and Oblivion pose and FO4 eye/graze pass; FO4
   down is inside its own noise; FNV fails at every pose (1.45–1.99), as in §8.2, where
   that position was shown to be noise-bound across runs.
-- **Compared with the two-level raster-only run (§8.2)** the totals are 0.1–0.7 ms
-  higher at the same positions, plausibly the patch BLAS's 57 k triangles in every
-  shadow, reflection and GI ray. Those are separate engine runs, which §8.2 showed differ
-  by up to 1 ms at FNV, so the RT share is not isolated yet: that needs patch TLAS
-  membership as a runtime switch, interleaved within one run.
+- **The RT share, isolated in one run.** `terrain.patches rt off` keeps the patch draws
+  out of the TLAS (rays then see the base terrain under them) while the raster, compute
+  and BLAS refit stay the same. The three states, patches off / raster-only / with RT,
+  ran interleaved, 8 rounds × 4 samples each. The `main_render` deltas are in ms. Each
+  cell is raster − off / RT − raster:
+
+  | position | down | eye | graze | state sd |
+  |---|---|---|---|---|
+  | Skyrim tundra | +0.54 / +0.13 | +0.40 / +0.24 | +0.06 / +0.18 | 0.16–0.50 |
+  | Skyrim Riverwood | +0.33 / +0.13 | +0.23 / +0.19 | +0.27 / −0.11 | 0.13–0.38 |
+  | FNV Mojave | +0.75 / +0.12 | +0.84 / +0.31 | +0.67 / +0.01 | 0.22–0.39 |
+  | FO4 Commonwealth | +0.81 / +0.40 | +0.16 / +0.08 | +0.36 / +0.17 | 0.5–3.1 |
+  | Oblivion forest | +1.20 / +0.32 | +0.16 / +0.07 | −0.19 / +0.12 | 0.42–0.72 |
+
+  With an sd of 0.15–0.5 ms per state and n = 32, a delta carries roughly ±0.1 ms; FO4
+  carries several times that. **Rays through the patch BLAS cost 0.0–0.3 ms, about
+  0.15 ms typically**, and the TLAS build is unchanged. **Raster is the larger part**:
+  up to 1.2 ms looking down, and 0.7–0.8 ms at FNV at every pose. That is why FNV
+  fails the 1.0 ms bar, so 4.3's savings belong in the raster. The `main_render`
+  baselines here are higher than §8.2's, so the absolute ms are not comparable across
+  runs; only the in-run deltas are.
+- **Raster-only is not a fallback.** At Riverwood (eye, on the riverbank) the raster-only
+  frame darkens the bank's crease by up to 23 levels of 8-bit luma in a band of rows:
+  rays leaving the patch surface hit the base terrain the patch covers. With the patches
+  in the TLAS, the frame matches patches off to within 1–6 levels per band. So the
+  switch stays a diagnostic, not a quality setting.
 - **Sync validation** (`BYRO_VALIDATION=1`) at the tundra and FNV positions, all poses,
   patches on and off: no VUID or SYNC-HAZARD message.
 - **Seams**: unchanged, zero gap and zero lip deviation everywhere.
