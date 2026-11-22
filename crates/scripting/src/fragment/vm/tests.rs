@@ -2639,7 +2639,10 @@ fn another_quests_members_read_by_their_declared_type() {
 
 /// `ScriptName.Fn()` calls a global function of another script (no `Self`);
 /// `Game.GetFormFromFile` resolves a plugin-local id through the load order,
-/// its top byte unused.
+/// its top byte unused. The load order registers its plugins under their
+/// case-folded basenames, so the script's `"Skyrim.esm"` must find the
+/// identity registered as `skyrim.esm` (LMC-ID-001: before the fold the two
+/// hashed apart and the call returned None).
 #[test]
 fn global_functions_and_forms_from_files() {
     let util = parsed_source(
@@ -2667,12 +2670,12 @@ fn global_functions_and_forms_from_files() {
     }
     world.insert_resource(crate::load_order::LoadOrderIdentity::new(vec![(
         byroredux_plugin::esm::reader::GlobalSlot::Regular(0),
-        PluginId::from_filename("Skyrim.esm"),
+        PluginId::from_filename("skyrim.esm"),
     )]));
     world.register::<FormIdComponent>();
     let mut pool = FormIdPool::default();
     let id = pool.intern(FormIdPair {
-        plugin: PluginId::from_filename("Skyrim.esm"),
+        plugin: PluginId::from_filename("skyrim.esm"),
         local: LocalFormId(GUARD),
     });
     world.insert_resource(pool);

@@ -680,12 +680,15 @@ fn the_platform_and_math_commands_answer_from_what_they_name() {
     assert!((value(run(&world, 0x121e, &nums(&[std::f32::consts::FRAC_PI_4]), &c)) - 1.0).abs() < 1e-5, "Tan");
 }
 
+/// The load order registers its plugins under their case-folded basenames (`honesthearts.esm`), and the GECK's DLC table
+/// names them as shipped (`HonestHearts.esm`): one identity either way (LMC-ID-001; before the fold no DLC ever read as
+/// installed in a live session).
 #[test]
 fn is_dlc_installed_reads_the_load_order() {
     use byroredux_core::form_id::PluginId;
     let (mut world, ..) = world(GameKind::Fallout3NV);
     assert_eq!(run(&world, 0x126f, &nums(&[0.0]), &ctx(None)), Action::Declined, "no load order installed");
-    world.insert_resource(crate::LoadOrderIdentity::new(vec![(byroredux_plugin::esm::reader::GlobalSlot::Regular(0), PluginId::from_filename("FalloutNV.esm")), (byroredux_plugin::esm::reader::GlobalSlot::Regular(1), PluginId::from_filename("HonestHearts.esm"))]));
+    world.insert_resource(crate::LoadOrderIdentity::new(vec![(byroredux_plugin::esm::reader::GlobalSlot::Regular(0), PluginId::from_filename("falloutnv.esm")), (byroredux_plugin::esm::reader::GlobalSlot::Regular(1), PluginId::from_filename("honesthearts.esm"))]));
     assert_eq!(value(run(&world, 0x126f, &nums(&[0.0]), &ctx(None))), 0.0, "Dead Money is not loaded");
     assert_eq!(value(run(&world, 0x126f, &nums(&[1.0]), &ctx(None))), 1.0, "Honest Hearts is");
     assert_eq!(run(&world, 0x126f, &nums(&[9.0]), &ctx(None)), Action::Declined, "no such DLC");
