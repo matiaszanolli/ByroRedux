@@ -18,6 +18,12 @@
 //! official archive list) and in load order, so that archive-versus-archive precedence is the official list first,
 //! then each plugin's archives, the later plugin's winning; loose files still outrank them all (LMC-AST-001). An
 //! archive the args already name keeps its place and its flags.
+//!
+//! The profile's mod roots ([`crate::mod_roots`], LMC-ID-012) are found first, so a plugin named by its bare file name
+//! resolves through them; after activation, each root learns which of the profile's plugins it ships, a root that lost
+//! every one of them is disabled (LMC-ID-011), and, when the profile names any root, the roots left enabled are written
+//! into the effective args as `--loose-root` flags in order, the unmanaged root first, for the asset providers' loose
+//! tier (LMC-AST-010).
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -59,6 +65,8 @@ pub(crate) struct PluginActivationReport {
     pub(crate) lines: Vec<String>,
     /// The archives each activated plugin brought (LMC-AST-002), in load order; plugins that brought none are left out.
     pub(crate) paired: Vec<PairedArchives>,
+    /// The profile's roots in order, the unmanaged root first, with what each ships (LMC-ID-012).
+    pub(crate) roots: Vec<crate::mod_roots::ModRoot>,
 }
 
 /// The archives one activated plugin pairs with, beyond those the args already listed.
@@ -109,6 +117,10 @@ pub(crate) fn log_report() {
     for line in report.paired_lines() {
         log::info!("plugin activation: {line}");
     }
+    if report.roots.iter().any(|root| !root.unmanaged) {
+        let roots: Vec<String> = report.roots.iter().map(|root| root.label()).collect();
+        log::info!("plugin activation: mod roots, lowest priority first: {}", roots.join(", "));
+    }
 }
 
 /// Activate the plugin profile `args` names and return `args` with the activated `--master` list (see the module docs).
@@ -121,12 +133,36 @@ pub(crate) fn activate_plugin_args(args: Vec<String>) -> anyhow::Result<Vec<Stri
         return Ok(args);
     };
     let masters = crate::cli_args::parse_all_string_args(&args, "--master");
+    // LMC-ID-012 — the base master's directory is the game's `Data`, the unmanaged root; the named roots follow it.
+    let given_roots = crate::mod_roots::mod_root_args(&args);
+    let unmanaged = masters.iter().chain(std::iter::once(&esm)).find(|path| Path::new(path).is_file()).map(|path| {
+        match Path::new(path).parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+            _ => PathBuf::from("."),
+        }
+    });
+    let (mut roots, root_lines) = crate::mod_roots::discover(unmanaged.as_deref(), &given_roots);
+    let masters: Vec<String> = masters.iter().map(|name| crate::mod_roots::resolve_plugin(name, &roots)).collect();
+    let resolved_esm = crate::mod_roots::resolve_plugin(&esm, &roots);
     let profile: Vec<ProfilePlugin> =
-        masters.iter().chain(std::iter::once(&esm)).map(|path| read_profile_plugin(path)).collect();
+        masters.iter().chain(std::iter::once(&resolved_esm)).map(|path| read_profile_plugin(path)).collect();
     let activation = activate(&profile);
     let mut report = session_report(&profile, &activation)?;
+    let kept: Vec<(String, bool)> = profile
+        .iter()
+        .enumerate()
+        .map(|(position, plugin)| (plugin.name.clone(), activation.disabled_entry(position).is_none()))
+        .collect();
+    report.lines.extend(root_lines);
+    report.lines.extend(crate::mod_roots::apply_activation(&mut roots, &kept));
     let activated_masters = report.order[..report.order.len() - 1].to_vec();
-    let mut args = with_masters(args, &activated_masters);
+    let mut args = with_esm(with_masters(args, &activated_masters), &esm, &resolved_esm);
+    if !given_roots.is_empty() {
+        for path in crate::mod_roots::loose_root_paths(&roots) {
+            args.extend([crate::mod_roots::LOOSE_ROOT_FLAG.to_owned(), path.to_string_lossy().into_owned()]);
+        }
+    }
+    report.roots = roots;
     // The base master names the game; every plugin of a profile is written for it.
     if let Some(game) = activation.order.first().and_then(|&position| profile[position].game) {
         report.paired = pair_archives(&report.order, game, &listed_archives(&args), list_archives_in);
@@ -177,6 +213,7 @@ fn session_report(profile: &[ProfilePlugin], activation: &Activation) -> anyhow:
         order: activation.order.iter().map(|&position| profile[position].name.clone()).collect(),
         lines,
         paired: Vec::new(),
+        roots: Vec::new(),
     })
 }
 
@@ -261,6 +298,16 @@ fn with_paired_archives(mut args: Vec<String>, paired: &[PairedArchives], game: 
         let at = args.iter().position(|arg| arg == "--scripts-bsa").unwrap_or(args.len());
         let scripts = archives.iter().rev().flat_map(|archive| ["--scripts-bsa".to_owned(), (*archive).clone()]);
         args.splice(at..at, scripts);
+    }
+    args
+}
+
+/// `args` with the `--esm` value `given` replaced by `resolved`, the path a bare plugin name resolved to.
+fn with_esm(mut args: Vec<String>, given: &str, resolved: &str) -> Vec<String> {
+    if given != resolved
+        && let Some(at) = args.windows(2).position(|pair| pair[0] == "--esm" && pair[1] == given)
+    {
+        args[at + 1] = resolved.to_owned();
     }
     args
 }
@@ -369,7 +416,7 @@ mod tests {
                 PairedArchives { plugin: order[2].clone(), archives: args(&["/mods/Junky - Assets.bsa", "/mods/Junky.bsa"]) },
             ]
         );
-        let report = PluginActivationReport { profile: order.clone(), order, lines: Vec::new(), paired };
+        let report = PluginActivationReport { profile: order.clone(), order, lines: Vec::new(), paired, roots: Vec::new() };
         assert_eq!(report.paired_lines(), ["DeadMoney.esm pairs DeadMoney - Main.bsa", "Junky.esp pairs Junky - Assets.bsa, Junky.bsa"]);
     }
 

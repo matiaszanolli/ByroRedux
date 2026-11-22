@@ -16,6 +16,11 @@
 #      it a spell, and one adds a keyword to the activator while the other drops its every keyword. Under the default
 #      `merge` policy every operation stands and the report names who made each; under `--merge-policy legacy`
 #      MergeB.esp's records win whole (LMC-REC-003).
+#   6. mod roots: three generated roots after New Vegas' Data (`--mod-root`, lowest priority first). ModA and ModB each
+#      ship a plugin and loose textures, ModB's shadowing one of ModA's; DLCPatch ships only a plugin whose master is
+#      absent. The `--esm` is a bare plugin name that resolves through the roots; the report lists each root's plugins
+#      and loose files, ModB's taking a path from ModA (LMC-ID-012, LMC-AST-010), and DLCPatch disabled with its only
+#      plugin (LMC-ID-011).
 # Requires the New Vegas data with the Dead Money and Caravan Pack DLC (BYROREDUX_FNV_DATA), python3 and a built engine
 # (BYRO_BIN, else target/release, else target/debug).
 set -euo pipefail
@@ -87,6 +92,18 @@ lists = {'ListBase.esm': ([(1, 0xA01, 1)], [0xA01, 0xA02], ([(0xA01, 1)], [(0xA0
                         [0xA07, 0xA08], ['FalloutNV.esm', 'ListBase.esm']),
          'MergeB.esp': ([(1, 0xA01, 1), (8, 0xA03, 2)], [0xA02], ([(0xA01, 1)], [(0xA05, 0)], [0xA06]), [],
                         ['FalloutNV.esm', 'ListBase.esm'])}
+# Leg 6's mod roots, each a directory as a mod manager deploys one: its plugin and its loose files.
+for root, plugin_name, masters, loose in [('ModA', 'ModA.esp', ['FalloutNV.esm'], ['textures/lmc/shared.dds', 'textures/lmc/a.dds']),
+                                          ('ModB', 'ModB.esp', ['FalloutNV.esm'], ['textures/lmc/shared.dds']),
+                                          ('DLCPatch', 'DLCPatch.esp', ['FalloutNV.esm', 'LonesomeRoad_absent.esm'],
+                                           ['textures/lmc/patch.dds'])]:
+    for rel in loose:
+        path = os.path.join(out, 'roots', root, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'wb') as f:
+            f.write(root.encode())
+    with open(os.path.join(out, 'roots', root, plugin_name), 'wb') as f:
+        f.write(plugin(masters))
 for name, (entries, forms, actor, keywords, masters) in lists.items():
     with open(os.path.join(out, name), 'wb') as f:
         records = lvli(entries) + flst(forms) + npc(*actor) + acti(keywords)
@@ -185,5 +202,20 @@ expect keywords "  keyword 00000A07: removed by mergeb.esp"
 merge_report keywords-legacy 01000803 --merge-policy legacy
 expect keywords-legacy "winner: mergeb.esp; policy: legacy"
 echo "smoke[$GATE]: PASS -- one mod's keyword on an activator and another's dropping its every keyword both stand under merge (LMC-REC-003)"
+
+set +e
+"$BIN" --master "$DATA/FalloutNV.esm" --master ModA.esp --master DLCPatch.esp --mod-root "$WORK/roots/ModA" \
+    --mod-root "$WORK/roots/DLCPatch" --mod-root "$WORK/roots/ModB" --esm ModB.esp --plugin-report >"$WORK/roots.log" 2>&1
+status=$?
+set -e
+(( status == 0 )) || fail "roots: --plugin-report exited $status (see $WORK/roots.log)"
+expect roots "    2  ModB.esp"
+expect roots "disabled: DLCPatch.esp — its master LonesomeRoad_absent.esm is not in the profile"
+expect roots "disabled root: dlcpatch — activation disabled every plugin of the profile it ships (DLCPatch.esp)"
+expect roots "mod roots (4), lowest priority first:"
+expect roots "    1  moda: 1 plugin (1 in the profile), 0 archives, 2 loose files"
+expect roots "    2  dlcpatch: 1 plugin (1 in the profile), 0 archives; disabled with its plugins, its loose files left out"
+expect roots "    3  modb: 1 plugin (1 in the profile), 0 archives, 1 loose file, 1 over moda's"
+echo "smoke[$GATE]: PASS -- mod roots own their plugins and loose files, a later root's file wins, and a root loses its loose files with its only plugin (LMC-ID-012, LMC-AST-010, LMC-ID-011)"
 
 echo "smoke[$GATE]: PASS"

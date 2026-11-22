@@ -471,6 +471,25 @@ pub(crate) fn loose_data_dir(args: &[String]) -> Option<std::path::PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
+/// The directories whose loose files an invocation layers, lowest priority first: the `--loose-root` flags boot
+/// activation writes for a profile with mod roots (the unmanaged `Data` root, then each enabled mod root, LMC-AST-010,
+/// LMC-ID-012), else the [`loose_data_dir`] alone.
+pub(crate) fn loose_dirs(args: &[String]) -> Vec<std::path::PathBuf> {
+    let roots: Vec<std::path::PathBuf> =
+        crate::cli_args::parse_all_string_args(args, crate::mod_roots::LOOSE_ROOT_FLAG)
+            .into_iter()
+            .map(std::path::PathBuf::from)
+            .filter(|dir| dir.is_dir())
+            .collect();
+    if roots.is_empty() { loose_data_dir(args).into_iter().collect() } else { roots }
+}
+
+/// The loose tiers of [`loose_dirs`], opened (each from the shared cache), lowest priority first; a root with no
+/// loose file opens none.
+pub(crate) fn open_loose_tiers(args: &[String]) -> Vec<Archive> {
+    loose_dirs(args).iter().filter_map(|dir| Archive::open_loose(dir)).collect()
+}
+
 /// What identifies an on-disk archive's content for [`Archive::open_shared`].
 ///
 /// Length and mtime alone miss a same-length rewrite that keeps the mtime

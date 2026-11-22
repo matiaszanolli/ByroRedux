@@ -21,7 +21,7 @@ impl ConsoleCommand for PluginActivationCommand {
     }
 
     fn description(&self) -> &str {
-        "Show the plugin profile, the load order it activated to, each hoisted master and disabled plugin, and each plugin's paired archives: plugins.activation"
+        "Show the plugin profile, the load order it activated to, each hoisted master and disabled plugin, each plugin's paired archives, and the mod roots with what each ships: plugins.activation"
     }
 
     fn execute(&self, _world: &World, _args: &str) -> CommandOutput {
@@ -49,6 +49,55 @@ fn activation_lines(report: &crate::plugin_activation::PluginActivationReport) -
     } else {
         lines.push(format!("paired archives ({}):", report.paired.iter().map(|entry| entry.archives.len()).sum::<usize>()));
         lines.extend(paired.iter().map(|line| format!("  {line}")));
+    }
+    lines.extend(root_lines(&report.roots));
+    lines
+}
+
+/// The profile's roots (LMC-ID-012), lowest priority first: what each ships, how many of its loose files take a path an
+/// earlier root's file held (LMC-AST-010), and whether activation disabled it (LMC-ID-011). The loose files are counted
+/// from the shared index the asset providers open, so a root is walked once per session.
+fn root_lines(roots: &[crate::mod_roots::ModRoot]) -> Vec<String> {
+    if roots.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![format!("mod roots ({}), lowest priority first:", roots.len())];
+    // Each loose key and the root whose file holds it so far.
+    let mut holder: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let count = |n: usize, what: &str| format!("{n} {what}{}", if n == 1 { "" } else { "s" });
+    for (position, root) in roots.iter().enumerate() {
+        let mut text = format!(
+            "  {position:3}  {}: {} ({} in the profile), {}",
+            root.label(),
+            count(root.plugins.len(), "plugin"),
+            root.profile_plugins.len(),
+            count(root.archives.len(), "archive")
+        );
+        if root.disabled {
+            text.push_str("; disabled with its plugins, its loose files left out");
+            lines.push(text);
+            continue;
+        }
+        let keys: Vec<String> = crate::asset_provider::Archive::open_loose(&root.path)
+            .map(|loose| loose.all_paths().into_iter().map(str::to_owned).collect())
+            .unwrap_or_default();
+        let mut shadowed: Vec<usize> = Vec::new();
+        let mut shadowing = 0;
+        for key in &keys {
+            if let Some(earlier) = holder.insert(key.clone(), position) {
+                shadowing += 1;
+                if !shadowed.contains(&earlier) {
+                    shadowed.push(earlier);
+                }
+            }
+        }
+        text.push_str(&format!(", {}", count(keys.len(), "loose file")));
+        if shadowing > 0 {
+            shadowed.sort_unstable();
+            let names: Vec<String> = shadowed.iter().map(|&earlier| roots[earlier].identity.clone()).collect();
+            text.push_str(&format!(", {shadowing} over {}'s", names.join(", ")));
+        }
+        lines.push(text);
     }
     lines
 }

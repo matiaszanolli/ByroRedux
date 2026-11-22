@@ -100,7 +100,23 @@ What the engine does today with a legacy plugin set (`--master …` `--esm`), th
    change, and the fold does not overlay a partial form on the record it overrides yet (it replaces it whole, under
    either policy).
 
-Not built yet in Phase 1: the mod profile beyond argv (discovery, mod roots, LMC-ID-012), the official/user boundary
+7. **Mod roots (LMC-ID-012, LMC-AST-010, LMC-ID-011).** A mod root is one mod's directory as a mod manager deploys it
+   (`byroredux/src/mod_roots.rs`). The profile names its roots with `--mod-root <dir>`, repeated, lowest priority
+   first; the base master's directory, the game's `Data`, is the implicit unmanaged root and sorts first. Before
+   activation, each root lists the plugins and archives at its top level, and a `--master` or `--esm` given as a bare
+   file name that names no file resolves through the roots, the highest-priority root first and the unmanaged root
+   last (the resolved path replaces it in the effective args). A root's identity is its directory name, case-folded;
+   two roots sharing one are reported (LMC-ID-010). After activation, each root learns which of the profile's plugins
+   it ships; a root whose every such plugin was disabled is disabled with them and its loose files leave the session,
+   while a root that keeps one keeps its assets with a warning. When the profile names any root, activation writes the
+   enabled roots into the effective args as `--loose-root` flags in order, and every asset provider's loose tier is
+   their loose files in that order (`asset_provider::loose_dirs`), each root's index cached and walked once, the later
+   root winning a path and the whole tier above every archive. Without `--mod-root` the loose tier is the `--esm`
+   directory, as before. `plugins.activation` and `--plugin-report` list each root with its plugins (and how many are
+   in the profile), archives and loose files, and how many of its files take a path from an earlier root.
+
+Not built yet in Phase 1: the mod profile beyond argv (discovery and the import that writes roots, LMC-ID-006; manifest
+identities for roots), the official/user boundary
 (LMC-REC-008), partial forms overlaid on the record they override and then the `merge` policy for locations and quests
 (LMC-REC-003), the merge-ownership half of
 LMC-REC-006 (the report half is item 4's verdicts), the virtual legacy index (LMC-ID-005) and the profile fingerprint in

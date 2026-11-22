@@ -87,17 +87,18 @@ pub(crate) fn sound_archive_path(sound_path: &str) -> String {
 /// `--scripts-bsa` from scratch.
 pub(crate) struct SoundArchiveProvider {
     archives: Vec<Archive>,
-    /// The loose `Data` tier (#6200's shared index, which includes the
-    /// `music` root): it wins over every archive, as loose files do for
-    /// every other asset (Game Music MUS-SRC-013).
-    loose: Option<Archive>,
+    /// The loose tiers (#6200's shared index, which includes the `music`
+    /// root): `Data`, then each mod root in root order (LMC-AST-010), the
+    /// later winning; all of them win over every archive, as loose files do
+    /// for every other asset (Game Music MUS-SRC-013).
+    loose: Vec<Archive>,
 }
 
 impl SoundArchiveProvider {
     pub(crate) fn new() -> Self {
         Self {
             archives: Vec::new(),
-            loose: None,
+            loose: Vec::new(),
         }
     }
 
@@ -135,7 +136,7 @@ impl SoundArchiveProvider {
     /// policy decision no consumer has made yet, so there is deliberately no
     /// `extract_any_in(folder)` sibling.
     pub(crate) fn extract(&self, archive_path: &str) -> Option<Vec<u8>> {
-        extract_first(self.loose.iter().chain(self.archives.iter().rev()), archive_path)
+        extract_first(self.loose.iter().rev().chain(self.archives.iter().rev()), archive_path)
     }
 
     /// Every entry under `music\` the loose tier and the archives hold, lower-cased and
@@ -160,12 +161,12 @@ impl Resource for SoundArchiveProvider {}
 /// canonical-path loads — opening the archives here again is cheap:
 /// `BsaArchive`/`Ba2Archive::open` reads only the file table, not the
 /// payload). Silently returns an empty provider when no flag is present.
-/// With an `--esm`, the loose tier of its `Data` folder is added on top
+/// With an `--esm`, the loose tiers (its `Data` folder, then each mod root) are added on top
 /// (MUS-SRC-011, -013); [`SoundArchiveProvider::is_empty`] still answers for
 /// the archives alone.
 pub(crate) fn build_sound_archive_provider(args: &[String]) -> SoundArchiveProvider {
     let mut provider = SoundArchiveProvider::new();
-    provider.loose = super::archive::loose_data_dir(args).and_then(|data| Archive::open_loose(&data));
+    provider.loose = super::archive::open_loose_tiers(args);
     let mut i = 0;
     while i < args.len() {
         if args[i] == "--sounds-bsa"
