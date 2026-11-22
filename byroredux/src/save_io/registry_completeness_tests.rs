@@ -737,6 +737,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("Dlc2Ttr4aPlayerScript", "forward-latent — no live production spawn site exists outside tests/examples"),
         ("EquipItemCatalog", "populated once at cell/plugin load, only ever read afterward"),
         ("EvaluatePackageRequest", "one-shot ingress marker, drained every tick by scene_package_system"),
+        ("ReleasePackageHold", "#7243 — one-shot companion of an explicit EvaluatePackageRequest, taken by ambient_ai_package_system on its next pass"),
         ("ExtensionScriptFunctionInvoker", "process-local authenticated host callback republished after extension activation; Arc function pointers are neither portable nor save state"),
         // FragmentExecutionQueue: FIXED — registered (#2381 /
         // SAVE-D1-16), no longer allowlisted here.

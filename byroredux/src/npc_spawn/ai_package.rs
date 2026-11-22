@@ -29,6 +29,7 @@ use byroredux_plugin::esm::records::{
     PackDataValue, PackLocation, PackLocationTarget, PackObjectClass, PackRecord, PackTargetKind,
 };
 use byroredux_scripting::condition::ConditionContext;
+use byroredux_scripting::package::ReleasePackageHold;
 use byroredux_scripting::{
     AiCombatState, EvaluatePackageRequest, PackageRegistry, QuestAliasInjectedOverlays,
 };
@@ -983,6 +984,7 @@ fn select_active_package<'a>(
     actor: EntityId,
     game_hour: f32,
     current: Option<u32>,
+    release_hold: bool,
     packages: impl IntoIterator<Item = &'a PackRecord>,
 ) -> Option<&'a PackRecord> {
     // #2671 — `ConditionContext` gained a `pending_alias_bindings` slot for
@@ -1003,7 +1005,7 @@ fn select_active_package<'a>(
         month: None,
     };
     // AIP-FLG: Once Per Day, Must Complete and Continue If PC Near bend the schedule scan; see `package_flags`.
-    package_flags::scan_with_flags(world, actor, clock, current, packages, |package| {
+    package_flags::scan_with_flags(world, actor, clock, current, release_hold, packages, |package| {
         package_conditions_pass(&package.conditions, world, &context)
             // #5499 / #5722 — skip any Dialogue package the installer
             // would decline: fail-open conditions, non-player targets, or
@@ -1204,6 +1206,7 @@ pub(super) fn apply_ai_package_behavior(
         placement_root,
         game_hour,
         None,
+        false,
         packages_npc
             .ai_packages
             .iter()
@@ -1360,6 +1363,20 @@ pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
         .query::<EvaluatePackageRequest>()
         .map(|query| query.iter().map(|(actor, _)| actor).collect())
         .unwrap_or_default();
+    // #7243 — an explicit `EvaluatePackage` also ends the running package's Must Complete hold. Its marker is
+    // this system's alone (Pattern B), so it is taken here, before any early return; it is as rare as the
+    // request, so the mutable lock is only taken when one is present.
+    let release_hold: Vec<EntityId> = world
+        .query::<ReleasePackageHold>()
+        .map(|query| query.iter().map(|(actor, _)| actor).collect())
+        .unwrap_or_default();
+    if !release_hold.is_empty()
+        && let Some(mut releases) = world.query_mut::<ReleasePackageHold>()
+    {
+        for actor in &release_hold {
+            releases.remove(*actor);
+        }
+    }
 
     // Pass 2 — the gate. Only the survivors (usually none) go on to pay for a
     // `package_candidates` clone and a `Dead` lookup.
@@ -1463,7 +1480,14 @@ pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
             .filter(|package| selectable_by_installer(package, world));
         let active =
             scripted.or_else(|| {
-                select_active_package(world, actor, game_hour, runtime.active_package_form_id, packages.iter().copied())
+                select_active_package(
+                    world,
+                    actor,
+                    game_hour,
+                    runtime.active_package_form_id,
+                    release_hold.contains(&actor),
+                    packages.iter().copied(),
+                )
             });
         let active_package_form_id = active.map(|package| package.form_id);
         if let Some(package) = active.filter(|package| Some(package.form_id) != runtime.active_package_form_id) {
@@ -1761,7 +1785,7 @@ mod tests {
             let mut time = GameTimeRes::frozen_at(9.0);
             time.day = day;
             world.insert_resource(time);
-            select_active_package(world, actor, 9.0, None, packages.iter()).map(|p| p.form_id)
+            select_active_package(world, actor, 9.0, None, false, packages.iter()).map(|p| p.form_id)
         };
         // No start date authored: day 0 falls on a Sunday.
         origin(&mut world, GameKind::Fallout3NV, 1.34, None);
@@ -1833,7 +1857,7 @@ mod tests {
             let mut time = GameTimeRes::frozen_at(13.0);
             time.day = day;
             world.insert_resource(time);
-            select_active_package(world, actor, 13.0, None, packages.iter()).map(|p| p.form_id)
+            select_active_package(world, actor, 13.0, None, false, packages.iter()).map(|p| p.form_id)
         };
         assert_eq!(winner(&mut world, 0), Some(0x1B), "27 Last Seed");
         assert_eq!(winner(&mut world, 1), Some(0xFF), "the 28th");
@@ -3036,6 +3060,36 @@ mod tests {
             "EvaluatePackageRequest must bypass the minute gate (#3353)"
         );
         assert!(!world.has::<WanderBehavior>(actor));
+    }
+
+    /// #7243 — an explicit `EvaluatePackage` ends a Must Complete package with no Done state that is holding
+    /// past its window (GECK *EvaluatePackage*: "EVP will still drop that package and force a reevaluation of
+    /// the package list"). A re-evaluation the actor's own package state queues keeps the hold (#7224).
+    #[test]
+    fn an_explicit_evaluate_package_ends_a_must_complete_hold() {
+        use crate::npc_spawn::package_flags::PKDT_MUST_COMPLETE;
+        use byroredux_scripting::package::request_package_evaluation;
+        let morning = PackSchedule { start_hour: Some(8), duration_minutes: 4 * 60, ..Default::default() };
+        let sleep = PackRecord { package_flags: PKDT_MUST_COMPLETE, ..pack(0x100, PROCEDURE_SLEEP, Some(morning)) };
+        let (world, actor) = setup_actor(9.0, vec![sleep, pack(0x200, PROCEDURE_WANDER, None)]);
+        let running = |world: &World| world.get::<AmbientPackageRuntime>(actor).unwrap().active_package_form_id;
+        assert_eq!(running(&world), Some(0x100), "the sleep wins inside its window");
+
+        // 14:00: the window has closed, and the hold keeps the sleep, on the minute tick and on a queued
+        // (non-EVP) re-evaluation alike.
+        world.resource_mut::<GameTimeRes>().hour = 14.0;
+        ambient_ai_package_system(&world, 0.0);
+        assert_eq!(running(&world), Some(0x100), "held past its window");
+        // What `queue_package_evaluation` raises for a script package added, removed or lapsed: the request alone.
+        world.query_mut::<EvaluatePackageRequest>().unwrap().insert(actor, EvaluatePackageRequest);
+        ambient_ai_package_system(&world, 0.0);
+        assert_eq!(running(&world), Some(0x100), "a queued re-evaluation keeps the hold");
+
+        assert!(request_package_evaluation(&world, actor));
+        ambient_ai_package_system(&world, 0.0);
+        assert_eq!(running(&world), Some(0x200), "EVP drops the held package");
+        assert!(world.has::<WanderBehavior>(actor));
+        assert!(!world.has::<ReleasePackageHold>(actor), "the release marker is taken by the pass that read it");
     }
 
     /// #6074 — an actor whose running package came from a quest-alias overlay
