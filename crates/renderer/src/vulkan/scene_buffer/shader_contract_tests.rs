@@ -274,6 +274,17 @@ fn environment_specular_is_the_exact_split_sum_with_probe_occlusion() {
     assert!(env.contains(
         "envColor -= probeShare * lobeWeight * exteriorSkyRadianceOr(lobeL, ambientFallback, 0.0);"
     ));
+    // #7269: the traced block removes *sky* radiance, so it runs only where
+    // `envColor` is the sky probe; an authored cubemap keeps the SSAO form.
+    let traced = env
+        .split_once("if (exteriorSkyProbe && probeShare > 0.0")
+        .expect("the traced sky-occlusion block")
+        .1;
+    let condition = &traced[..traced.find(") {").expect("the block's condition ends")];
+    assert!(
+        condition.contains("&& !hasAuthoredCubemap"),
+        "the traced sky occlusion must skip authored-cubemap materials (#7269)"
+    );
     assert!(triangle.contains("bool exteriorSkyProbe = jitter.w > 0.5 && exteriorSkyTint.w > 0.5;"),
         "RLT-IBL-001: exterior dielectrics read the probe");
     assert!(triangle.contains("&& !isEyeEnvmap && !lambertianReferenceEnv;"),

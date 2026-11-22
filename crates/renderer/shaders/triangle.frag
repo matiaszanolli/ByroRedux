@@ -3302,7 +3302,11 @@ void main() {
         // needs no ray. TAA resolves the per-frame estimate. Within the
         // reflection ray's LOD reach only; past it the SSAO form stands.
         // Helper lanes skip the ray, as they skip every ray below the hoist (#7261).
+        // A material with an authored cubemap reads that cube, not the sky
+        // probe, so removing sky radiance from it would subtract the wrong
+        // signal: it keeps the SSAO form above (#7269).
         if (exteriorSkyProbe && probeShare > 0.0 && reflectionGlassRayEnabled && !helperLane
+            && !hasAuthoredCubemap
             && rtLOD < RT_LOD_REFLECT && (dbgFlags & DBG_DISABLE_AO) == 0u) {
             vec2 lobeRand = ditheredSequence2(uvec2(gl_FragCoord.xy), uint(cameraPos.w), MAX_LIGHTS + 1u);
             vec3 lobeH = sampleVisibleGgxNormal(N_view, V, roughness, lobeRand);
