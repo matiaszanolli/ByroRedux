@@ -128,6 +128,8 @@ done
 # The Session 114 gates (the M48 HUD gates, oblivion-actor-values, oblivion-live-load-plugin-set) are the seventh.
 # #7064 — the Session 115 gates (m42-oblivion-packages, m42-skyrim-ambient, oblivion-level-up) are the eighth.
 # #7055 — the player-archery gates (oblivion-archery, skyrim-archery) join them.
+# #6604 — the M-LIGHT portal-sky report (m-light-portal-sky) is the ninth: it checks its Fallout 4 data before
+# its control binary.
 for name in dt1-dialogue-layers m42-eat-sleep sm1-story-manager dt2-skyrim-forcegreet m47-3-obscript fo4-ragdoll m41-ragdoll \
     p4-fnv-quest-route p5-fnv-quest-persistence m42-package-procedures vats-targeting m43-adia-conversations m43-item-drop m43-crafting \
     m43-armor m43-attraction m43-attraction-reaction m43-fo4-actions m43-hello m43-mines m43-node-window \
@@ -136,7 +138,8 @@ for name in dt1-dialogue-layers m42-eat-sleep sm1-story-manager dt2-skyrim-force
     xct-census xct-scripted-move m65-stealth-detection m65-robotics-expert \
     m48-fo4-hud-compass m48-fo4-hud-meters m48-skyrim-hud-meters m48-menu-stack \
     oblivion-actor-values oblivion-live-load-plugin-set \
-    m42-oblivion-packages m42-skyrim-ambient oblivion-level-up oblivion-spellcasting oblivion-archery skyrim-archery oblivion-block oblivion-fall oblivion-armor oblivion-ghost door-runtime lmc-activation; do
+    m42-oblivion-packages m42-skyrim-ambient oblivion-level-up oblivion-spellcasting oblivion-archery skyrim-archery oblivion-block oblivion-fall oblivion-armor oblivion-ghost door-runtime lmc-activation \
+    m-light-portal-sky; do
     smoke="$ROOT_DIR/docs/smoke-tests/$name.sh"
     set +e
     output="$(env "${DATA_NEUTRALISE[@]}" "$smoke" 2>&1)"

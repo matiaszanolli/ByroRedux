@@ -15,6 +15,13 @@
 
 set -euo pipefail
 
+# SKIP != PASS (#6461): a runner without the Fallout 4 data measures nothing.
+DATA="${BYROREDUX_FO4_DATA:-/mnt/data/SteamLibrary/steamapps/common/Fallout 4/Data}"
+if [ ! -f "$DATA/Fallout4.esm" ]; then
+    echo "smoke[m-light-portal-sky]: SKIP -- missing $DATA/Fallout4.esm"
+    exit 77
+fi
+
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 control="${1:?usage: m-light-portal-sky.sh CONTROL_BINARY [HEAD_BINARY]}"
 head="${2:-${ROOT}/target/release/byroredux}"
