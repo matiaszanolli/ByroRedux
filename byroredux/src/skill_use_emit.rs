@@ -327,6 +327,39 @@ pub(crate) fn report_level_result(world: &World, result: byroredux_scripting::ob
 mod tests {
     use super::*;
 
+    /// #7204 — every Oblivion actor-value code the skill-use writers hard-code names the value it means in the
+    /// engine-supplied roster (`OBLIVION_ACTOR_VALUES`, xEdit `wbActorValueEnum` order), so a roster correction or a
+    /// mistyped code fails here instead of feeding the wrong skill with every other test still green.
+    #[test]
+    fn the_hard_coded_skill_codes_name_their_roster_entries() {
+        use byroredux_plugin::esm::records::oblivion_actor_values::OBLIVION_ACTOR_VALUES;
+        let name = |code: u32| OBLIVION_ACTOR_VALUES[code as usize];
+        for (code, expected) in [
+            (BLADE, "Blade"),
+            (BLUNT, "Blunt"),
+            (HAND_TO_HAND, "HandToHand"),
+            (HEAVY_ARMOR, "HeavyArmor"),
+            (LIGHT_ARMOR, "LightArmor"),
+            (ATHLETICS, "Athletics"),
+            (ACROBATICS, "Acrobatics"),
+            (SNEAK, "Sneak"),
+            (MARKSMAN, "Marksman"),
+            (BLOCK, "Block"),
+            (byroredux_core::character::OBLIVION_SKILL_AV_FIRST, "Armorer"),
+            (byroredux_core::character::OBLIVION_SKILL_AV_LAST, "Speechcraft"),
+        ] {
+            assert_eq!(name(code), expected, "code {code}");
+        }
+        let fed: Vec<&str> = byroredux_scripting::oblivion_skill_use::FED_SKILLS.iter().map(|&code| name(code)).collect();
+        assert_eq!(
+            fed,
+            [
+                "Athletics", "Blade", "Block", "Blunt", "HandToHand", "HeavyArmor", "Alteration", "Conjuration",
+                "Destruction", "Illusion", "Mysticism", "Restoration", "Acrobatics", "LightArmor", "Marksman", "Sneak",
+            ]
+        );
+    }
+
     /// UESP's weapon pages: one-handed and two-handed blades feed Blade, blunts feed Blunt, the unarmed blow
     /// Hand to Hand, a bow Marksman (through its arrow only); a staff feeds no skill.
     #[test]

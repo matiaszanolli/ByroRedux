@@ -478,6 +478,18 @@ fn record_impact(world: &World, impact: Impact) {
 mod tests {
     use super::*;
     use crate::magic::{CanonicalSpell, SpellCastData};
+
+    /// #7204 — the actor-value codes the cast reads name the values they mean in the engine-supplied roster
+    /// (`OBLIVION_ACTOR_VALUES`), and the six schools run in `SCHOOL_NAMES` order from `AV_SCHOOL_FIRST`.
+    #[test]
+    fn the_cast_codes_name_their_roster_entries() {
+        use byroredux_plugin::esm::records::oblivion_actor_values::OBLIVION_ACTOR_VALUES;
+        let name = |code: u32| OBLIVION_ACTOR_VALUES[code as usize];
+        assert_eq!((name(AV_LUCK), name(AV_MAGICKA), name(AV_FATIGUE)), ("Luck", "Magicka", "Fatigue"));
+        for (offset, school) in SCHOOL_NAMES.iter().enumerate() {
+            assert_eq!(name(AV_SCHOOL_FIRST + offset as u32), *school);
+        }
+    }
     use crate::magic_effects::{cast_spell, ActiveMagicEffects, CastEffect};
     use byroredux_core::character::EffectCostInput;
     use std::collections::HashMap;
