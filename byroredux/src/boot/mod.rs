@@ -259,6 +259,10 @@ pub(crate) fn run() -> Result<()> {
     // `std::env::args()` and losing the synthesized flags.
     let args: Vec<String> =
         expand_game_profile_args(expand_boot_request(std::env::args().collect())?);
+    // LMC Phase 1 (#6670) — activate the plugin profile (`--master`… `--esm`) before anything reads it: masters
+    // hoisted ahead of their dependents, a plugin with a missing master left out with its dependents, both reported.
+    // The activated `--master` list replaces the given one, so every reader below sees one load order.
+    let args = crate::plugin_activation::activate_plugin_args(args)?;
     crate::cli_args::set_effective_args(args.clone());
     let debug_mode = args.iter().any(|a| a == "--debug");
 
@@ -441,6 +445,8 @@ pub(crate) fn run() -> Result<()> {
     }
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     init_tracing();
+    // The plugin profile was activated before the logger existed; report it now.
+    crate::plugin_activation::log_report();
 
     if let Some(selection) = bench_selection {
         let camera = selection
