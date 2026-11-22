@@ -14,18 +14,24 @@ fn list(entries: &[LeveledEntry]) -> LeveledList {
     LeveledList { form_id: LIST, editor_id: "LItemSwords".into(), chance_none: 0, flags: 0, entries: entries.to_vec() }
 }
 
-/// A plugin carrying `list` as its `LVLI`, declaring the plugins at `masters` as its masters.
-struct Plugin {
+/// A plugin carrying `list` as its record of form `LIST`, declaring the plugins at `masters` as its masters.
+struct Plugin<R = LeveledList> {
     masters: Vec<u32>,
-    list: Option<LeveledList>,
+    list: Option<R>,
 }
 
-fn plugin(masters: &[u32], list: Option<LeveledList>) -> Plugin {
+fn plugin<R>(masters: &[u32], list: Option<R>) -> Plugin<R> {
     Plugin { masters: masters.to_vec(), list }
 }
 
-/// Fold `plugins` in order under `policy`, the first defining `LIST`, and return the folded list and the merge.
+/// Fold levelled-list `plugins` in order under `policy`, the first defining `LIST`, and return the folded list and the
+/// merge.
 fn fold(policy: MergePolicy, plugins: Vec<Plugin>) -> (LeveledList, ListMerge) {
+    fold_records(policy, ListKind::LeveledItems, plugins)
+}
+
+/// [`fold`] for records of any type that merges, as `kind`.
+fn fold_records<R: ListRecord>(policy: MergePolicy, kind: ListKind, plugins: Vec<Plugin<R>>) -> (R, ListMerge) {
     // Each plugin's masters, transitively.
     let mut closure: Vec<std::collections::HashSet<u32>> = Vec::new();
     for plugin in &plugins {
@@ -43,15 +49,15 @@ fn fold(policy: MergePolicy, plugins: Vec<Plugin>) -> (LeveledList, ListMerge) {
     for (position, plugin) in plugins.into_iter().enumerate() {
         let mut index = EsmIndex::default();
         if let Some(list) = plugin.list {
-            index.record_types.insert(LIST, *b"LVLI");
-            index.leveled_items.insert(LIST, list);
+            index.record_types.insert(LIST, kind.tag().as_bytes().try_into().unwrap());
+            R::records_mut(kind, &mut index).insert(LIST, list);
         }
         provenance.note_plugin(position, &index, &merged, |id| Some((id >> 24) as usize));
         let pending = merge.note_plugin(position, &index, &merged, &provenance, &depends_on);
         merged.merge_from(index);
         pending.apply(&mut merged);
     }
-    (merged.leveled_items[&LIST].clone(), merge)
+    (R::records(kind, &merged)[&LIST].clone(), merge)
 }
 
 fn forms(list: &LeveledList) -> Vec<(u32, u16, u16)> {
@@ -180,7 +186,83 @@ fn fields_merge_by_what_each_override_changed() {
     assert_eq!(merged.chance_none, 50);
     assert_eq!(forms(&merged), [(SWORD, 1, 1), (BOW, 8, 1)]);
     let fields = &merge.record(LIST).unwrap().fields;
-    assert_eq!(fields, &[(ListField::ChanceNone, Resolution { winner: 1, op: (), overruled: vec![] })]);
+    assert_eq!(fields, &[("chance none", Resolution { winner: 1, op: (), overruled: vec![] })]);
+}
+
+fn container(name: &str, contents: &[(u32, i32)]) -> ContainerRecord {
+    ContainerRecord {
+        form_id: LIST,
+        editor_id: "MerchantChest".into(),
+        full_name: name.into(),
+        model_path: String::new(),
+        weight: 0.0,
+        flags: 0,
+        open_sound: 0,
+        close_sound: 0,
+        script_form_id: 0,
+        script_instance: None,
+        contents: contents.iter().map(|&(item_form_id, count)| InventoryEntry { item_form_id, count }).collect(),
+    }
+}
+
+/// Two DLC that each stock a vanilla container keep both stocks; a recount is a change, and a renamed container keeps
+/// the other plugin's stock.
+#[test]
+fn containers_merge_their_contents_and_fields() {
+    let (merged, merge) = fold_records(
+        MergePolicy::Merge,
+        ListKind::Container,
+        vec![
+            plugin(&[], Some(container("Chest", &[(SWORD, 1)]))),
+            plugin(&[0], Some(container("Chest", &[(SWORD, 3), (SHIELD, 1)]))),
+            plugin(&[0], Some(container("Strongbox", &[(SWORD, 1), (BOW, 2)]))),
+        ],
+    );
+    let contents: Vec<(u32, i32)> = merged.contents.iter().map(|entry| (entry.item_form_id, entry.count)).collect();
+    assert_eq!(contents, [(SWORD, 3), (SHIELD, 1), (BOW, 2)]);
+    assert_eq!(merged.full_name, "Strongbox");
+    let record = merge.record(LIST).unwrap();
+    assert_eq!(record.kind, ListKind::Container);
+    assert_eq!(resolution(&merge, SWORD).op, EntryOp::Change);
+    assert_eq!(record.fields, [("name", Resolution { winner: 2, op: (), overruled: vec![] })]);
+}
+
+fn form_list(entries: &[u32]) -> FlstRecord {
+    FlstRecord { form_id: LIST, editor_id: "WeapTypeList".into(), entries: entries.to_vec() }
+}
+
+/// A form list keeps its untouched entries at their indices and its empty slots where they were; additions append.
+#[test]
+fn form_lists_append_and_keep_their_slots() {
+    const NULL: u32 = 0xFFFF_FFFF;
+    let (merged, merge) = fold_records(
+        MergePolicy::Merge,
+        ListKind::FormList,
+        vec![
+            plugin(&[], Some(form_list(&[SWORD, NULL, AXE]))),
+            plugin(&[0], Some(form_list(&[SWORD, NULL, AXE, SHIELD]))),
+            plugin(&[0], Some(form_list(&[SWORD, NULL, NULL, AXE, BOW]))),
+        ],
+    );
+    assert_eq!(merged.entries, [SWORD, NULL, AXE, SHIELD, BOW], "a null slot is never an operation");
+    assert!(merge.record(LIST).unwrap().entries.iter().all(|(form, _)| *form != NULL));
+    assert_eq!(merge.counts(), (1, 0));
+}
+
+/// An outfit is a form list by another name: independent additions combine and a removal holds.
+#[test]
+fn outfits_merge_their_items() {
+    let outfit = |items: &[u32]| OtftRecord { form_id: LIST, editor_id: "GuardOutfit".into(), items: items.to_vec() };
+    let (merged, _) = fold_records(
+        MergePolicy::Merge,
+        ListKind::Outfit,
+        vec![
+            plugin(&[], Some(outfit(&[SWORD, SHIELD]))),
+            plugin(&[0], Some(outfit(&[SWORD]))),
+            plugin(&[0], Some(outfit(&[SWORD, SHIELD, BOW]))),
+        ],
+    );
+    assert_eq!(merged.items, [SWORD, BOW]);
 }
 
 #[test]
