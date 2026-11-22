@@ -59,8 +59,10 @@ impl FoldProvenance {
         }
     }
 
-    /// Record that the plugin at `position` wrote `form_id`, as [`Self::note_plugin`] would when folding it: the first
-    /// call names the definer, each later call an override. For fixtures that fold no real plugins.
+    /// Record that the plugin at `position` wrote `form_id`: the first call names the form's first carrier, each later
+    /// call an override. For fixtures that fold no real plugins. Without a slot owner to compare against, a first
+    /// carrier is kept where [`Self::note_plugin`] keeps an injected one, so [`Self::injected`] and [`Self::counts`]
+    /// list it as injected; [`Self::winner`] and [`Self::carriers`] are what fixtures read.
     pub fn note_writer(&mut self, form_id: u32, position: usize) {
         let carrier = Carrier { plugin: position as u32, deletes: false };
         match self.overridden.get_mut(&form_id) {
