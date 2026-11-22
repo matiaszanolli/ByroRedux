@@ -217,9 +217,10 @@ def capture_anchor_pair(engine: Engine, scene: str, out: Path, tier: int, pos: s
 def capture_anchors_only(engine: Engine, args, out: Path) -> int:
     header, *rows = args.anchors_only.read_text().splitlines()
     cols = header.split("\t")
+    wanted = {s.strip() for s in args.scenes.split(",") if s.strip()}
     for line in rows:
         r = dict(zip(cols, line.split("\t")))
-        if r.get("config", "taa") != "taa":
+        if r.get("config", "taa") != "taa" or r["scene"] not in wanted:
             continue
         scene = r["scene"]
         anchors = capture_anchor_pair(engine, scene, out, int(r["settled_tier"]), r["anchor_camera_pos"],

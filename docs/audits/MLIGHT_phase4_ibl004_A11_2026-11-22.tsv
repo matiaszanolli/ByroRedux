@@ -1,0 +1,6 @@
+scene	tiles	outside_tolerance_and_declarations	capture	note
+cornell	789	0	p4_ibl004 s0	
+prospector	545	0	p4_ibl004 s0	
+whiterun	920	1	p4_ibl004 s0 and its repeat	tile (37,20): mean +0.0225 against tolerance 0.0225 in every capture since rev 48 (the rev 48 build, this spike, its repeat): an undeclared rev 48 change at the tolerance edge, accepted by the owner in rev 49 (RLT-OPS-004)
+medtek	920	0	p4_ibl004 s0	
+dugout	851	0	repeat capture	tile (4,18) read +0.0159 against 0.0159 in the first capture and passes in the repeat (+0.0156 in the rev 48 build): run-to-run variance in an interior the change does not run in
