@@ -1128,6 +1128,13 @@ alone when both name one attribute, pinned by
    executable's creature path was not traced.
 3. **Flag timing.** Which trigger applies at spawn, level change and reload
    for each of the four flag combinations is [#7022](https://github.com/matiaszanolli/ByroRedux/issues/7022).
+4. **Magicka Multiplier (#7198).** The player's Magicka is `trunc(Int x (1 + fPCBaseMagickaMult))` times
+   actor value 40 / 10 (the player's pools table below), with a zero multiplier read as 1.0. The engine
+   builds the first factor (`oblivion_ruleset_with_gmst`, `fPCBaseMagickaMult` and `fPCBaseHealthMult` read
+   from the load order) but not the second: no derived row can carry a factor that is rewritten at zero, and
+   nothing reads `MagickaMultiplier` (installed in the roster, index 40). An effect that writes it changes
+   nothing here; vanilla leaves it unset, so vanilla is unaffected. How often vanilla content writes it was
+   not measured.
 
 ### The player's pools (#7037)
 

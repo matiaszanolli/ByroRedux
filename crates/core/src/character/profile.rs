@@ -7,7 +7,7 @@
 //! downstream character consumers read the same table.
 
 use super::{
-    fallout3_ruleset_with_gmst, fallout4_ruleset_with_gmst, falloutnv_ruleset_with_gmst, oblivion_ruleset, skyrim_ruleset, CharacterRuleset, CrimeModel,
+    fallout3_ruleset_with_gmst, fallout4_ruleset_with_gmst, falloutnv_ruleset_with_gmst, skyrim_ruleset, CharacterRuleset, CrimeModel,
     SkillSet, SpellCastModel, StanceModel, VatsModel, ArmorModel, ArmorRatingModel, BlockModel, BowModel, FallModel,
 };
 
@@ -886,7 +886,7 @@ impl CharacterRulesProfile {
             // a per-level Health gain to the stored term (`0x66c3e0`). The level-up is wired (#7052,
             // `oblivion_skill_use.rs`): the gain lands in `ActorValue::stored` (#7044), apart from this
             // refreshed base, so the refresh does not erase it.
-            RulesetBuilder::Oblivion => oblivion_ruleset(resolve),
+            RulesetBuilder::Oblivion => super::tes::oblivion_ruleset_with_gmst(resolve, &gmst),
             RulesetBuilder::None => return None,
         };
         ruleset.leveling = ruleset
@@ -1372,6 +1372,17 @@ mod tests {
                 .build_ruleset(|_| None, |_| None, &[])
                 .is_some(),
         );
+        // #7198 — the profile hands the load order's settings to the player's pool rows.
+        let resolve = |name: &str| match name {
+            "Magicka" => Some(0x91),
+            "Intelligence" => Some(0x09),
+            _ => None,
+        };
+        let tuned = CharacterRulesProfile::OBLIVION
+            .build_ruleset(resolve, |name| (name == "fPCBaseMagickaMult").then_some(2.0), &[])
+            .unwrap();
+        let avs = crate::ecs::components::ActorValues::from_pairs([(0x09, 40.0)]);
+        assert_eq!(tuned.derived_value(0x91, &avs, 1), Some(120.0), "40 x (1 + 2)");
     }
 
     /// #7037, #7041 — the player's Health, Magicka and Fatigue are their formulas (`Oblivion.exe` `0x5e2210`;

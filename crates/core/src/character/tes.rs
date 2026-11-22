@@ -42,18 +42,36 @@ use super::skill::SkillSet;
 /// with the capture saying the source is silent). Pinned by
 /// `oblivion_pool_rows_are_player_only_pending_a_source`; revisit with
 /// #3768, the first point at which Oblivion has a wired ruleset.
+///
+/// #7198 — the coefficient is `fPCBaseHealthMult` (`base_health_mult`; CS wiki
+/// *FPCBaseHealthMult*, "multiplied by the player's endurance to calculate
+/// starting health", default [`OBLIVION_PC_BASE_HEALTH_MULT`]), and the result
+/// is truncated (`trunc(End x fPCBaseHealthMult)`,
+/// `charal-oblivion-ruleset.md`, the player's pools); truncation is `floor` on a
+/// non-negative attribute.
 #[must_use]
-pub fn oblivion_health_formula(endurance_av: u32) -> DerivedStatFormula {
-    DerivedStatFormula::affine(DerivedInput::actor_value(endurance_av), 2.0, 0.0).player_only()
+pub fn oblivion_health_formula(endurance_av: u32, base_health_mult: f32) -> DerivedStatFormula {
+    DerivedStatFormula::affine(DerivedInput::actor_value(endurance_av), base_health_mult, 0.0).floored().player_only()
 }
 
-/// Oblivion Magicka = `2 × Intelligence`. `intelligence_av` is the resolved
-/// Intelligence AVIF FormID. Scope is `player_only` but UNsourced — see
-/// [`oblivion_health_formula`] (#6431).
+/// Oblivion Magicka = `trunc(Intelligence × (1 + fPCBaseMagickaMult))`, `2 ×
+/// Intelligence` at `Oblivion.esm`'s authored 1.0 (#7198;
+/// `base_magicka_mult` is the setting, CS wiki *FPCBaseMagickaMult*: "Used to
+/// calculate the player's magicka from the player's intelligence"). Scope is
+/// `player_only` but UNsourced — see [`oblivion_health_formula`] (#6431). The
+/// capture's Magicka Multiplier factor (actor value 40, `/ 10`) is a declared
+/// gap: no derived row can carry it (`charal-oblivion-ruleset.md`, Known gaps).
 #[must_use]
-pub fn oblivion_magicka_formula(intelligence_av: u32) -> DerivedStatFormula {
-    DerivedStatFormula::affine(DerivedInput::actor_value(intelligence_av), 2.0, 0.0).player_only()
+pub fn oblivion_magicka_formula(intelligence_av: u32, base_magicka_mult: f32) -> DerivedStatFormula {
+    DerivedStatFormula::affine(DerivedInput::actor_value(intelligence_av), 1.0 + base_magicka_mult, 0.0)
+        .floored()
+        .player_only()
 }
+
+/// `fPCBaseHealthMult`'s default (CS wiki *FPCBaseHealthMult*, 2.0; `Oblivion.esm` does not author it).
+pub const OBLIVION_PC_BASE_HEALTH_MULT: f32 = 2.0;
+/// `fPCBaseMagickaMult`'s default (`Oblivion.esm` authors 1.0).
+pub const OBLIVION_PC_BASE_MAGICKA_MULT: f32 = 1.0;
 
 /// Oblivion per-piece Armor Rating's skill-driven multiplier
 /// (`0.35 + 0.0065·ArmorSkill`). Source: UESP *Oblivion:The Complete Damage
@@ -112,17 +130,31 @@ pub fn oblivion_fatigue_formulas(
 /// its legacy engine actor-value indices at the parser boundary.
 #[must_use]
 pub fn oblivion_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRuleset {
+    oblivion_ruleset_with_gmst(resolve, |_| None)
+}
+
+/// [`oblivion_ruleset`] with the load order's `fPCBaseHealthMult` and
+/// `fPCBaseMagickaMult` overlaid on the player's pool rows (#7198, the #6756
+/// overlay the Fallout builders carry). A non-finite or negative authored value
+/// keeps its default.
+pub fn oblivion_ruleset_with_gmst<F: Fn(&str) -> Option<u32>, G: Fn(&str) -> Option<f32>>(
+    resolve: F,
+    gmst: G,
+) -> CharacterRuleset {
+    let setting = |name: &str, default: f32| gmst(name).filter(|value| value.is_finite() && *value >= 0.0).unwrap_or(default);
+    let health_mult = setting("fPCBaseHealthMult", OBLIVION_PC_BASE_HEALTH_MULT);
+    let magicka_mult = setting("fPCBaseMagickaMult", OBLIVION_PC_BASE_MAGICKA_MULT);
     let mut rs = CharacterRuleset::new(LevelingModel::OBLIVION)
         .with_attributes(AttributeSet::TES_CLASSIC)
         .with_skills(SkillSet::OBLIVION);
 
     // Health = 2·Endurance.
     if let (Some(out), Some(end)) = (resolve("Health"), resolve("Endurance")) {
-        rs.push_derived(out, oblivion_health_formula(end));
+        rs.push_derived(out, oblivion_health_formula(end, health_mult));
     }
     // Magicka = 2·Intelligence.
     if let (Some(out), Some(int)) = (resolve("Magicka"), resolve("Intelligence")) {
-        rs.push_derived(out, oblivion_magicka_formula(int));
+        rs.push_derived(out, oblivion_magicka_formula(int, magicka_mult));
     }
     // Fatigue = Strength + Willpower + Agility + Endurance (four summed rows).
     if let (Some(out), Some(s), Some(w), Some(a), Some(e)) = (
@@ -269,7 +301,7 @@ mod tests {
 
     #[test]
     fn health_is_twice_endurance() {
-        let f = oblivion_health_formula(END);
+        let f = oblivion_health_formula(END, OBLIVION_PC_BASE_HEALTH_MULT);
         let avs = ActorValues::from_pairs([(END, 40.0)]);
         // 2 × 40 = 80, level-independent.
         assert_eq!(f.eval(&avs, 1), 80.0);
@@ -277,9 +309,36 @@ mod tests {
         assert_eq!(f.scope, DerivedScope::PlayerOnly);
     }
 
+    /// #7198 — the player's pool coefficients are the load order's `fPCBaseHealthMult` and `fPCBaseMagickaMult`
+    /// (Magicka's slope is `1 + mult`), truncated; a non-finite or negative value keeps the default.
+    #[test]
+    fn the_player_pool_coefficients_follow_the_load_orders_settings() {
+        let resolve = |name: &str| match name {
+            "Health" => Some(0x90),
+            "Magicka" => Some(0x91),
+            "Endurance" => Some(END),
+            "Intelligence" => Some(INT),
+            _ => None,
+        };
+        let avs = ActorValues::from_pairs([(END, 41.0), (INT, 41.0)]);
+        let tuned = oblivion_ruleset_with_gmst(resolve, |name| match name {
+            "fPCBaseHealthMult" => Some(1.5),
+            "fPCBaseMagickaMult" => Some(0.5),
+            _ => None,
+        });
+        assert_eq!(tuned.derived_value(0x90, &avs, 1), Some(61.0), "trunc(41 x 1.5) = trunc(61.5)");
+        assert_eq!(tuned.derived_value(0x91, &avs, 1), Some(61.0), "trunc(41 x (1 + 0.5))");
+        let vanilla = oblivion_ruleset(resolve);
+        assert_eq!((vanilla.derived_value(0x90, &avs, 1), vanilla.derived_value(0x91, &avs, 1)), (Some(82.0), Some(82.0)));
+        for bad in [f32::NAN, -1.0] {
+            let kept = oblivion_ruleset_with_gmst(resolve, move |name: &str| name.starts_with("fPCBase").then_some(bad));
+            assert_eq!(kept.derived_value(0x91, &avs, 1), Some(82.0), "{bad}");
+        }
+    }
+
     #[test]
     fn magicka_is_twice_intelligence() {
-        let f = oblivion_magicka_formula(INT);
+        let f = oblivion_magicka_formula(INT, OBLIVION_PC_BASE_MAGICKA_MULT);
         let avs = ActorValues::from_pairs([(INT, 50.0)]);
         assert_eq!(f.eval(&avs, 1), 100.0);
         assert_eq!(f.scope, DerivedScope::PlayerOnly);
@@ -475,7 +534,7 @@ mod tests {
         use super::{oblivion_health_formula, oblivion_health_gain_per_level};
         // Constant Endurance 50: base 2·50 = 100, then +5/level.
         let base = {
-            let f = oblivion_health_formula(END);
+            let f = oblivion_health_formula(END, OBLIVION_PC_BASE_HEALTH_MULT);
             f.eval(&ActorValues::from_pairs([(END, 50.0)]), 1)
         };
         assert_eq!(base, 100.0);
