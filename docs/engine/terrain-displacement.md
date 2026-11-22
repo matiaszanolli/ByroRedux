@@ -4,8 +4,8 @@
 Drafted 2026-10-22. Follows TSD-1 (#6195 height maps), TSD-2 (#6196 height blend) and
 TSD-3 (#6197 parallax), which are shipped. #7149 (BTXT-only tile slots) and the §8 spike
 (#7150, result in §8.1: go) are done. Stage 4.1 (#7152) is built (§7.1) and measured
-(§8.2), now with a two-level lattice (fine within 2 m, coarse beyond); it awaits review
-before 4.2.
+(§8.2), with a two-level lattice (fine within 2 m, coarse beyond), and was approved on
+2026-11-22. Stage 4.2 (patches in the TLAS, one refit BLAS) is #7221.
 
 **Question this answers**: if parallax (TSD-3) is not enough, how would real geometry
 displacement work in an engine whose shadows, reflections and GI are ray-traced, what would
