@@ -5,7 +5,7 @@ argument-hint: "--focus <dimensions> --depth shallow|deep"
 
 # Save / Load Subsystem Audit (M45 + M45.1)
 
-Audit `crates/save` (full-ECS-snapshot format) and its sole live caller `byroredux/src/save_io/` (`save_io.rs` is a ~108-LOC re-export hub over `registry` / `player` / `commands` / `live_load`, split in `d7c47d741`)
+Audit `crates/save` (full-ECS-snapshot format) and its sole live caller `byroredux/src/save_io/` (`save_io.rs` is a ~109-LOC re-export hub over `registry` / `player` / `commands` / `live_load`, split in `d7c47d741`)
 (+ `save_io/*_tests.rs`) for **data loss and save corruption**. The subsystem exists to remove Bethesda's
 slow-corruption tail by making the live ECS the single source of truth; verify the CODE delivers that.
 A silently dropped column, a stale schema guard, a torn capture, or a botched FormId remap **loses player
@@ -26,7 +26,7 @@ progress** — frame as CRITICAL/HIGH per `_audit-severity.md` (data loss is CRI
 `validate.rs` (`validate_world` + 6 sub-checks). Tests: `crates/save/tests/round_trip.rs`.
 
 **Engine side** (`byroredux/src/save_io/`): `build_save_registry` (the curated type set — a scripting subsystem's
-saved columns live in its own module's `register_saved(&mut registry)` (`crates/scripting/src/*`: 56 files define a `register_saved*`, the hub makes 64 delegate calls into 49 modules; extracted in slices from #5802 `bde3478db` through `93bcda9bc`, then #6705 `15e498420` moved 47 more rows
+saved columns live in its own module's `register_saved(&mut registry)` (`crates/scripting/src/*`: 56 files define a `register_saved*`, the hub makes 64 delegate calls into 50 modules; extracted in slices from #5802 `bde3478db` through `93bcda9bc`, then #6705 `15e498420` moved 47 more rows
 out of the hub; umbrella #5802 closed 2026-11-07). The hub keeps 43 rows, each with a stated reason: core types and the FormId column (`byroredux-core` sits
 below `byroredux-save`; `FactionReputation` #6759 `8fc1a9ef9`, `DismemberRecord` d50fc1153, `CharacterIdentity` (v125, the New Vegas chargen name/sex/race), `Sneaking` (v130), `SkillUseLevel` (v137, #7050) and `EquippedAmmo` (v141, #7055 `e15645976`, the player's arrow type, an additive column registered right after `EquippedWeapon`) are the newest; three component codecs `ActorValues` / `TimedRestorations` / `ActorVitals` and the `PersistentReferenceStates` resource codec are registered here too), the physics `CharacterController`, and the binary crate's own state. Each delegate is called at its
 rows' former position, because `schema_fingerprint` hashes rows in registration order — moving a delegate call is a
@@ -193,7 +193,7 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
 ### Dimension 2: Format & Schema Discipline (registry fidelity + `FORMAT_MAJOR`)
 Paths: `crates/save/src/{snapshot,registry}.rs`, `save_io/serde_default_guard_tests.rs`, `crates/save/Cargo.toml`, `crates/core/Cargo.toml`
 First step: `cargo test -p byroredux --bin byroredux serde_default_guard` ; `git log --since=<last report> --format='%h %cs %s' -- crates/save/src/snapshot.rs`
-- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`: 141 as of 2026-11-20, with one `vN -> vN+1`
+- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`: 141 as of 2026-11-22, with one `vN -> vN+1`
   entry per bump from v22 on, contiguous since #5459 `a4ccf3b27` restored the v32→v33 entry (#5367 `14cff35ae`, new saved
   resource `DialogueSpokenInfoForms`) and pinned it with `the_bump_ledger_is_contiguous_and_current`. Recent anchors: v36 Wave 4 `RigidBodyData.surface_material`, v37 #5542
   widened it `u8`→`u32`, v38 #5300 re-keyed `DialogueSpokenInfoForms` to a (speaker ref, INFO) pair, and v39–v104

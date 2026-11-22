@@ -173,13 +173,25 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
 - **Exposure meter** (`exposure_meter.rs`): post-bloom composite → `exposure_meter.comp` → this frame's
   `ExposureResource` slot, sampled unconditionally by `presentation.frag` and the FSR dispatch — the slot
   write must be published before both consumers, in fixed mode too.
-- **Radiance cache (RCG, not yet a pass).** `gpu_timers.rs` reserves the update / resolve timer brackets (queries 64-67, `QUERIES_PER_FRAME` = 68) and `GpuRayBudget` carries `cache_update_stride`, but no cache compute pass records yet (nothing outside `gpu_timers.rs` names `TimerPass::CacheUpdate` / `CacheResolve`); when the update-path trace and the resolve fold land they join this dimension as a compute → compute → fragment chain over the cache buffers, with the same per-FIF and publish-before-consumer checks.
+- **Radiance cache (RCG, not yet a pass).** `gpu_timers.rs` reserves the update / resolve timer brackets (queries 64-67; `QUERIES_PER_FRAME` = 70 since the terrain-patch bracket took 68-69) and `GpuRayBudget` carries `cache_update_stride`, but no cache compute pass records yet (nothing outside `gpu_timers.rs` names `TimerPass::CacheUpdate` / `CacheResolve`); when the update-path trace and the resolve fold land they join this dimension as a compute → compute → fragment chain over the cache buffers, with the same per-FIF and publish-before-consumer checks.
 - **Combustion local grid (#6533, d3e3acc7b).** `volumetrics/local_grid.rs` `record_frame` (the `volumetrics_local_sim.comp`
   atlas sim, Stage B2 of `VolumetricsPipeline::dispatch`) runs BEFORE the froxel injection, which reads this frame's atlas
   and writes the irradiance field; Stage F's `composite_barriers` (atlas state + optical + irradiance, COMPUTE → FRAGMENT)
   and `record_publish_bricks` publish them to composite's close-range fire march. The atlas / irradiance images
   are double-buffered per FIF slot like the froxel fields. Sim → inject visibility, and what a skipped / neutral frame
   leaves in the atlas, are for a `BYRO_VALIDATION` capture, not reading.
+- **Terrain displacement patches (#7152, 84f04205f).** `terrain_patch.rs` `TerrainPatchPass::record`, called from
+  `VulkanContext::record_terrain_patches` (`context/dispatch_skin_and_cluster.rs`, `draw.rs`) between the instance upload and the
+  geometry pass, re-displaces each resident slot IN PLACE in reserved ranges of the one global vertex buffer (not per-FIF) with
+  `terrain_patch.comp`. Its barrier pair is the whole contract: before = TRANSFER write (readback zero-fill, geometry upload, tile copy) +
+  the previous frame's VERTEX_INPUT / VERTEX / FRAGMENT / COMPUTE reads of the patch ranges → COMPUTE; after = SHADER_WRITE →
+  VERTEX_ATTRIBUTE_READ | SHADER_READ | HOST_READ at VERTEX_INPUT / VERTEX / FRAGMENT / COMPUTE / HOST. The per-FIF host readback
+  (seam samples + largest displacement) is `harvest`ed one frame later behind that slot's fence with `invalidate_if_needed`, and
+  `bound[frame]` re-writes the descriptor set only when the vertex / tile buffer or its generation changed. Stage 4.1 is raster-only
+  (`in_tlas = false`, no BLAS); a stage-4.2 patch BLAS adds a vertex-write → ACCELERATION_STRUCTURE_BUILD edge that does not exist yet. The pool
+  rewrite is not in `sync.rs`'s all-slots-wait rider list (the before-barrier orders it on-queue against the last frame's fetch), so
+  re-derive it in the change that narrows the wait (#5365). Overlap with a validation capture is the evidence; the commit's own
+  measurement was sync-validation-clean at five positions.
 - **MaterialBuffer SSBO.** upload is `HOST_WRITE → VERTEX/FRAGMENT_READ`, before draw recording; flag only if it moves into a mid-frame compute path.
 - **Volumetrics skip path (#4780, fixed d213521ef).** The #3685 skip-clear latch owns only the GPU clear
   (`record_neutral_frame`), and it (with the caustic twin) is staged in `pending_*_cleared_on_skip` and promoted only
@@ -195,7 +207,7 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
 
 ### Dimension 3: ECS Lock Ordering & Deadlock (system level)
 Paths: `crates/core/src/ecs/{world,lock_tracker}.rs`, `byroredux/src/systems/`, `byroredux/src/extensions/`, `.github/workflows/ci.yml`
-First step: `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux` and the same with `-p byroredux-scripting` — the binary's graph is where every recent cycle lived (#4982–#4984, #5025, #5371, #5372, #5535, #5954, #6101, #6208, #6209, #6561, #6618, #7063, the door pair of 4288659fa, and the untracked `live_body` / `live_forms` pool-before-component cycle that kept the lane red from 98aa53db9 to 4c1d54cc0; core alone stays green) — then CI's `lock-order-check` form, `cargo test --workspace --no-fail-fast --exclude byroredux-ui`. A nonzero failure count is a hard regression; the lane was red for exactly that from the XCT door-fade test (98aa53db9, 2026-11-14) until 4c1d54cc0, so a red `lock-order-check` is a real inversion, not CI noise. Measured 2026-11-20 at 2d857fff2: `-p byroredux-scripting --lib` is green (1472 passed; the `ActorValues` → `ActorValueNames` → `ActorValues` cycle in `obscript_effects::tests::actor_value_commands_translate_the_code_and_set_mod_damage_and_restore` was #7063, fixed in 4cad5d974 — `reset_health` in `obscript_actor_values.rs` now drops the `ActorValueNames` guard before `clear_actor_value_damage`), but `-p byroredux --bin byroredux` records a cycle again, `Door` → `TwoStateActivator` → `Door`, and fails eight door tests (`systems::door::tests::*` plus `interaction::tests::door_prompts_and_motion_share_the_lock_order`; the first of them to run after `commands::door::tests` panics, alone they pass): the `door.state` command (`commands/door.rs`, 180080de7, #7059) holds a `world.get::<Door>` guard across `world.get::<TwoStateActivator>`, the reverse of the sorted `query_2_mut::<TwoStateActivator, Door>` in `door_motion_system` — re-run before reporting it again
+First step: `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux` and the same with `-p byroredux-scripting` — the binary's graph is where every recent cycle lived (#4982–#4984, #5025, #5371, #5372, #5535, #5954, #6101, #6208, #6209, #6561, #6618, #7063, #7093, the door pair of 4288659fa, and the untracked `live_body` / `live_forms` pool-before-component cycle that kept the lane red from 98aa53db9 to 4c1d54cc0; core alone stays green) — then CI's `lock-order-check` form, `cargo test --workspace --no-fail-fast --exclude byroredux-ui`. A nonzero failure count is a hard regression; the lane was red for exactly that from the XCT door-fade test (98aa53db9, 2026-11-14) until 4c1d54cc0, so a red `lock-order-check` is a real inversion, not CI noise. Measured 2026-11-20 at 2d857fff2 (the door finding below was fixed afterwards): `-p byroredux-scripting --lib` is green (1472 passed; the `ActorValues` → `ActorValueNames` → `ActorValues` cycle in `obscript_effects::tests::actor_value_commands_translate_the_code_and_set_mod_damage_and_restore` was #7063, fixed in 4cad5d974 — `reset_health` in `obscript_actor_values.rs` now drops the `ActorValueNames` guard before `clear_actor_value_damage`), but `-p byroredux --bin byroredux` recorded a cycle, `Door` → `TwoStateActivator` → `Door`, and failed eight door tests (`systems::door::tests::*` plus `interaction::tests::door_prompts_and_motion_share_the_lock_order`): the `door.state` command (`commands/door.rs`, 180080de7) held a `world.get::<Door>` guard across `world.get::<TwoStateActivator>`, the reverse of the sorted `query_2_mut::<TwoStateActivator, Door>` in `door_motion_system`. Regression guard: fixed in 04d1e99ae (#7093, the command now reads the activator, lock and form ID first and `Door` last), pinned by `door_state_and_door_motion_share_the_lock_order` (`commands/door.rs`, fails alone under the detector against the old order) — the lane is expected green on the bin again, but this sync did not re-run it
 Machinery — TypeId-sorted pairs, tracker-scope arming, `lock_tracker` internals (check-before-insert,
 `GRAPH` poison recovery, recursive-read warning) and poison resolution — is `/audit-ecs` Dim 1; do not
 re-audit it here. This dimension owns how *systems* use it.
@@ -312,7 +324,7 @@ The access model and the mechanical declaration guard (`system_access_declaratio
   within a listed file but cross-file hops only where `PARALLEL_SYSTEMS` lists them (#4994,
   `cross_file_hops_and_get_forms_reach_their_acquisitions`); closures; exclusive systems (eight have their own
   scan — `npc_combat_ai_system`, `interaction_system`, `container_loot_system` and `combat_damage_system` (#6546,
-  5129240c4: M43 made their rows under-declare), `papyrus_provider_system`, `legacy_obscript_load_order_system`,
+  5129240c4: M43 made their rows under-declare; a new read in one of these must reach its row in the same change — `supports_rest`'s `CharacterRuleset` read is declared on `interaction_system` since #7212, 188bb4535, and `combat_damage_system`'s #7195 unarmed-creature rule (2c5c264dc) adds `CreatureActor` / `EquippedWeapon` reads its row already declared), `papyrus_provider_system`, `legacy_obscript_load_order_system`,
   `equipment_appearance_system` (its mid-life import surface, #5069), and
   `npc_dialogue_selection_system`, whose scan follows the spoken-INFO fragment path into the scripting crate, #5307 (a spoken
   `EquipItem` of a weapon queues on `PendingNonArmorEquips`, undeclared until 3890897e3),
@@ -430,7 +442,7 @@ First step: `grep -n 'load-bearing' -B4 -A12 crates/renderer/src/vulkan/context/
 - **AS cleanup on shutdown.** All `BlasEntry` buffers, `TlasState` buffers and scratch released; per-entity skin outputs kept until the entity is destroyed.
 - **Other GPU cleanup.** `scene_buffer`, `MaterialBuffer`, texture registry (incl. the `dynamic_rgba` staging
   arena), `EguiPass::destroy()` (`Option<EguiPass>` taken in `Drop`; its texture retirements are a
-  frames-in-flight rider, #4988), a partially-built object's error arm (`GpuPerFrameTimers::new`, #4998),
+  frames-in-flight rider, #4988), a partially-built object's error arm (`GpuPerFrameTimers::new`, #4998), `TerrainPatchPass::destroy` (per-FIF readbacks, then pool / pipeline / layouts; the reserved patch meshes belong to the mesh registry),
   and `GpuImage` (`vulkan/image.rs`), which routes most passes' image
   create/bind/destroy through one lock rule: a poisoned allocator lock is recovered, not unwrapped (#4089).
 - **Per-frame leaks.** Any descriptor / command-buffer / staging allocation created per frame but not freed or reset is HIGH.
@@ -468,7 +480,7 @@ First step: `grep -rnE 'thread::(spawn|Builder)|rayon::|mpsc::' --include='*.rs'
   `TextureProvider`, so the shared archive registry's `ArchiveStamp` rule applies. Every pool job runs through `spawn_read`
   under `catch_unwind` (#6810, de596fafe; `a_panicking_read_is_reported_unreadable_not_fatal`): rayon aborts the process on an
   unhandled spawned-job panic, so a panicking read lands as an unreadable entry and still sends its `FinishedRead` (else `step`
-  would keep the handle in `in_flight` forever) — a new pool spawn that bypasses `spawn_read` is the regression.
+  would keep the handle in `in_flight` forever) — a new pool spawn that bypasses `spawn_read` is the regression. A read that returns nothing or `Unusable` bytes backs the texture off for `READ_FAILURE_RETRY_FRAMES` (600) through `note_promotion_read_failed` instead of re-reading every frame (#7129, 590aded9e). The streamer's `TextureProvider` is rebuilt, on the main thread in `app_frame.rs`, when `asset_provider::archive_replacements()` has moved since it was built (`refresh_provider`, one atomic load per frame; #7144 99eee822c, the test drives explicit generations since #7164); in-flight reads land from the OLD file on the textures they were read for, so the registry stamps every queued upload with that counter (`set_source_generation_counter`) and only promotes a floor whose generation is the one the streamer reads from now (`set_promotable_generation`, #7169 522793dbb; `a_floor_promotes_only_under_the_generation_it_was_read_from`) — a promotion mixing mips from two files is the finding.
   Streamed NIFs' textures are prefetched on the stream pool (`prefetch_textures`, `PrefetchStore`): a panicking
   read must still complete its slot, and a withdrawn key must not be waited on. Terrain-layer height maps (#6195)
   generate on their own 2-thread rayon pool (`TerrainHeightService`, `terrain_height.rs`) over a cloned
@@ -486,7 +498,7 @@ First step: `grep -rnE 'thread::(spawn|Builder)|rayon::|mpsc::' --include='*.rs'
   reference crosses into the thread. The decode loop runs under `guard_decoder` (`catch_unwind`), so a decoder panic is sent as
   the frame failure and the movie ends `Failed` with a reason, not `Finished` (BIK-DEC-004, aa193bd9e, #6959/#6991; pinned by
   `a_decoder_panic_ends_the_movie_as_failed`). `Drop` still ignores the join result by design; a new reader path outside
-  `spawn_reader` would lose the guard.
+  `spawn_reader` would lose the guard. `Movie::open` / `probe` run on the CALLER's thread (the frame loop) and go through `guard_open`, so a panic in the container parse, decoder setup or the whole-soundtrack decode ends the request as `VideoError::Decode` (#7128, 9e45e0261; `the_open_path_runs_under_the_open_guard`); the soundtrack WAV is a `TempPath` owned by `Audio` / `Movie`, removed on every exit including a panic (#7158, #7172 956aa1310; `the_soundtrack_wav_is_removed_on_every_way_out`).
 - **Debug server (thread/lock shape only; command surface is `/audit-tooling`).** Per-client TCP threads
   never touch the `World`: they enqueue into a bounded queue (`MAX_QUEUED_COMMANDS`, client cap
   `MAX_CONCURRENT_CLIENTS`, `listener.rs`) and `DebugDrainSystem` (Late exclusive) executes on the main

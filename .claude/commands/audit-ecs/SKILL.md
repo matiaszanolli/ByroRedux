@@ -211,7 +211,9 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/core/
   by `EntityId` is the drift (it defeats `despawn` cleanup and save capture). Every new `Resource` /
   `Component` is also subject to the save registry gate
   (`every_component_or_resource_impl_is_saved_or_explicitly_allowlisted`, `byroredux/src/save_io/`,
-  `/audit-save`) and the debug-server registry.
+  `/audit-save`) and the debug-server registry (core components by `every_inspectable_component_is_registered`; a saved
+  component in `crates/scripting` / `crates/physics` is registered or excused with a reason by
+  `every_saved_scripting_and_physics_component_is_registered_or_excused`, #7183 `27d9d768e`).
 - `SkinSlotPool` (`resources/skin_slot_pool.rs`): every collection is `FxHashMap`/`FxHashSet`
   (`_audit-common.md` hot-path hashing rule); `pose_dirty` and `drain_pending` are the renderer
   hand-off. Overflow/retry semantics are `/audit-safety` Dim 7.

@@ -113,7 +113,7 @@ to it — `EsmReader::for_each_record`, the bounded walk the census/probe exampl
 - `RecordHeader::form_version` is the `u16` at offset 20 of any 24-byte header: only Oblivion yields 0, FO3/FNV hold a small value (13–15) nothing keys on — a `form_version == 0` "pre-Skyrim" test is the regression (`74c68fb2f`, #6849, pinned by `form_version_is_read_from_every_24_byte_header_and_is_zero_on_oblivion`).
 - Missing/short HEDR falls back to `GameKind::Fallout3NV` (`Default`): confirm each call
   site is deliberate and no branch treats "defaulted" as "detected FO3". `character_rules_profile`
-  reads `hedr_version == 0.0` as defaulted, so only a real 0.85/0.94 header picks the FO3 profile (`dc771cf59`, #6780).
+  reads `hedr_version == 0.0` as defaulted, so only a real 0.85/0.94 header picks the FO3 profile (`dc771cf59`, #6780); `calendar.rs::weekday_origin` likewise yields `None` for a defaulted `Fallout3NV` header, so a failed HEDR establishes no Sunday origin for the first-wins merge (`578cf909b`, #7102).
 - **Universal GRUP bound** (#3503/#3721/#4076/#4644): every self-recursive walker takes
   `bounded_group_content_end(header, depth, parent_end, name)` and threads `depth + 1`
   into its `_inner`; **skip arms** too seek to the parent-clamped end via `seek_to` (the
@@ -128,8 +128,9 @@ to it — `EsmReader::for_each_record`, the bounded walk the census/probe exampl
   bounded by `record_inflation_ceiling` (`min(64 MiB, max(64 KiB, compressed×2048))`, from a
   seven-master census — worst real ratio 785.9:1, a Starfield `SFTR`, #4640; 512:1 rejected
   82 vanilla records and dropped the whole plugin) and the decoder is held to
-  `take(declared + 1)`; mirrors `byroredux_bsa::safety::inflate_bounded` (#3410).
-  Regression = either bound removed or the two implementations diverging.
+  `take(declared + 1)` by calling the archives' own `byroredux_bsa::inflate_bounded_zlib` — there is no plugin-local
+  copy since `970d6bb3f` (#7100; `flate2` is a plugin dev-dependency only), and `record_inflation_ceiling` stays in the plugin.
+  Regression = the ceiling removed or a hand-rolled inflate back in `read_sub_records`.
 **Output**: `/tmp/audit/esm/dim_1.md`
 
 ### Dimension 2: Sub-Record Byte Accounting (densest bug class)
@@ -146,10 +147,12 @@ any fn returning `SubRecord` built from a parameter 4-CC, not only fixed names).
   started) carry the VMAD (`script_instance.rs`), `weather_settings_instance.rs` and NVNM
   (`misc/world/`) shapes since `e04caa7e8` (#6367) — the three per-decoder cursors and the
   `from_le_bytes(..try_into().unwrap())` sites in `reflection.rs` are gone (a width that disagrees
-  with its type now declines instead of panicking); a new `Option`-returning cursor or
+  with its type now declines instead of panicking); the Oblivion `NPC_`/`CREA` `DATA`, `AIDT`, `ACBS`, `ENIT`, `EFIT`/`SCIT`, WTHR `SNAM`,
+  DOBJ music and DOOR `FNAM` reads joined them with named lengths and no slice unwraps (`2a311b378`, #7104; Oblivion `AIDT` needs its
+  12 bytes, an `EFIT` under 24 B declines the whole chain rather than defaulting its range to Self, #7105); a new `Option`-returning cursor or
   `unwrap` on a slice-to-array in a decoder is the regression. FormID arrays read through
   `SubReader::u32_array`, which declines a ragged body with the cursor unmoved (`f93b3463b`, #6782 — MUSC `TNAM`,
-  MUST `SNAM`, WTHR `HNAM`/`WGDR`); a hand-rolled `chunks_exact(4)` / `as_chunks::<4>()` that drops a tail is the regression (clippy 1.99 turned the former into the latter, `3c9949ec9` — behaviour-preserving). `SubReader::u64` / `u64_or_default` exist for Starfield `BO64` (`9405138e9`, #6778).
+  MUST `SNAM`, WTHR `HNAM`/`WGDR`, and OTFT `INAM`, CELL `XCLR`, `KWDA` since `2a311b378`, #7107); a hand-rolled `chunks_exact(4)` / `as_chunks::<4>()` that drops a tail is the regression (clippy 1.99 turned the former into the latter, `3c9949ec9` — behaviour-preserving). `SubReader::u64` / `u64_or_default` exist for Starfield `BO64` (`9405138e9`, #6778).
 - The `*_or_default` family swallows short reads: fine for optional tails, a finding
   mid-fixed-layout (silent zeros). Classify every call site.
 - Fixed-size sub-records check the declared length against the schema; version-gated tails
@@ -163,7 +166,9 @@ any fn returning `SubRecord` built from a parameter 4-CC, not only fixed names).
   decode bug.
 - `rgb_color` (3 B) vs `rgba_color` (4 B): swapped pairs shift every later byte. Colours
   are raw monitor-space floats — never flag a missing sRGB conversion (*feedback_color_space*).
-- Known offset maps — verify against the code, not older reports: `parse_race` TES5
+- Known offset maps — verify against the code, not older reports: TES4/FO3/FNV `RACE` `DATA` opens with
+  **7** skill-boost pairs + 2 unused bytes under one constant (`0becb6ced`, #7103 — FO3/FNV read the unused word as an 8th pair, a phantom
+  `(0, 0)` boost on all 22 races); `parse_race` TES5
   `DATA` starting pools at 36/40/44 (new fields land at ≥48; TES4/FO3NV and FO4/FO76 arms
   differ); the four pre-FO4 WATR decoders share one head, `decode_legacy_head` driven by a
   per-game `HeadLayout` table (`626be5d12`, #5796; parity test
@@ -215,14 +220,14 @@ plugin with masters): xEdit `wbFormIDCk([…, FFFF])` fields go through
 `magic_effects_by_code`) through the game-gated `remap_efid` (`records/common.rs`;
 `9b099b31f`, #5075/#5076); PKIN `VNAM` is xEdit's integer *Version*, stored raw as
 `PkinRecord.version` (`0d436e642`, #5422, pinned by `pkin_vnam_version_stays_raw_under_remap`).
-A new sentinel-bearing field, char4 code or plain integer calling `remap_fid` inline is the
+Oblivion `MGEF` `DATA` @8 is a FormID only under the Summon flags (xEdit `wbMGEFFAssocItemDecider`; otherwise an actor-value index, stays raw, `2a311b378`, #7108), and an Oblivion `ALCH` script effect's `SCIT` is remapped through the owning plugin's remap (`oblivion_effect_chain(.., remap)`, `f0a119f4f`, #7097). A new sentinel-bearing field, char4 code or plain integer calling `remap_fid` inline is the
 regression. SCOL/PKIN `FLTR` is a `wbString` filter path: both parsers store `filter: String`
 via `read_zstring` with no `remap_fid` (fixed in `136048a95`, #5493; pinned by
 `pkin_fltr_filter_path_stays_raw_under_remap` + `parse_scol_fltr_decodes_the_filter_path`).
 CTDA `param_1` is remapped only for functions whose first parameter is a FormID:
 `condition.rs::param1_is_form_id` mirrors the scripting catalog by raw function index (rows
 for fn 56/71/74 were missing until `722c06a76`, #5637; M47.2 added the location/keyword/
-relationship/quest-variable rows); fn 32/372/382 (GetInSameCell / IsInList / GetHasNote, FO3/FNV) joined in `102e4f5cd`, #6460; `param2_is_form_id` is the second-parameter twin (fn 605/181/
+relationship/quest-variable rows); fn 32/372/382 (GetInSameCell / IsInList / GetHasNote, FO3/FNV) joined in `102e4f5cd`, #6460; GetActorValue (fn 14) `param_1` is an AV index, not a FormID, on Oblivion/FO3/FNV/Skyrim — `remap_condition_form_ids` skips it under the per-walk `PluginGameGuard` (`actor_value_param_is_an_index`, #7109), and the all-ones sentinels `0xFFFF_FFFE`/`0xFFFF_FFFF` (Starfield `GetDistance`) skip the remap in both params (`is_param_sentinel`, `55c232f57`, #7120); `parse_condition_list` takes a remap (#7110); `param2_is_form_id` is the second-parameter twin (fn 605/181/
 576/606/608 — everywhere else `param_2` is a literal); the drift guard lives in the scripting
 crate (`param1_form_id_table_matches_the_condition_catalog`) — a new catalogued
 FormID-param function needs its row.
@@ -314,7 +319,7 @@ closure, like `dialogues` and `game_settings` — or a reasoned exclusion: `reco
   outranks a shallower record and a one-hop chain is unchanged. Check new stat fields join
   the per-field walk instead of comparing only the chain ends. "Use Model/Animation"
   (`TEMPLATE_FLAG_USE_MODEL_ANIMATION`, `ResolvedNpc::model`) resolves model-less templated
-  `CREA` shells through their `LVLC` pick (`011ad0c07`, #6075; 63% of FNV fauna placements). A terminal `level` of 0 (30/3,816 FalloutNV.esm `NPC_`) backfills from the authored entry level of the deepest `LVLN` the walk picked through (`last_pick_level`, `ResolvedNpc::level()`), so its owned leveled lists are not expanded at level 0; an authored level or a list-less chain is unchanged (`4fbff2c6c`, #4232 — `effective_actor_level` itself stays unfloored, #3081).
+  `CREA` shells through their `LVLC` pick (`011ad0c07`, #6075; 63% of FNV fauna placements). A terminal `level` of 0 (30/3,816 FalloutNV.esm `NPC_`) backfills from the authored entry level of the deepest `LVLN` the walk picked through (`last_pick_level`, `ResolvedNpc::level()`), so its owned leveled lists are not expanded at level 0; an authored level or a list-less chain is unchanged (`4fbff2c6c`, #4232 — `effective_actor_level` itself stays unfloored, #3081). `ResolvedNpc::level()` is **Oblivion-aware**: ACBS bit 7 is *PC Level Offset* there (FO3/FNV's *PC Level Mult* stand-in `calc_min.max(1)` is not a level), so a record carrying `oblivion_pools` resolves at `actor_level_at_spawn` and an NPC's (not a creature's) is held to `min(own, player)`; the spawn boundary supplies the player's level via `ResolvedNpc::with_player_level`, and a caller without one reads as before (`cc907aa92`, #7193, pinned by `oblivion_leveled_lists_resolve_at_the_actor_level_held_to_the_players`). The lineage-wide Player base `NPC_` (FormID 7) has one home, `PLAYER_NPC_FORM_ID` / `player_npc_form_id(game)` in `records/actor/mod.rs`; the binary's inventory re-exports it (`3fd30c4f1`, #7211) — a new bare `7` for the Player base in the plugin/scripting crates is the regression.
 - `EsmIndex::merge_from`: last-write-wins matches Bethesda override semantics; `game` is
   only adopted when `other.total() > 0` (a failed-parse `EsmIndex::default()` must not
   relabel the load order as FO3/FNV, #3403); `character_rules` is first-non-`NONE` wins.
@@ -357,7 +362,8 @@ closure, like `dialogues` and `game_settings` — or a reasoned exclusion: `reco
   by `complex_scene_object` in `dispatch_misc_stub.rs`; later plugin wins in `merge_from`) is a scalar
   and a recorded exclusion. FNV music sources (#6870/#6882, `782e23d0a`): DOBJ's five FO3/FNV default music slots (`EsmIndex::default_music`, last plugin wins in `merge_from`), Oblivion `WRLD` `SNAM` raw on `WorldspaceRecord::music_category`, `ALOC` → `MediaLocationRecord` on `media_locations` (a category row; `NAM1` flags byte = Faction Not Found / Looping / Use Defaults, `18d7dd331`, #6906), and the REFR audio-marker block `MMRK`/`CNAM`/`BNAM`/`MNAM`/`NNAM` on `PlacedRef::audio_marker`. FO3/FNV `NAVI` `NVCI` door links (`NaviRecord::door_links`, remapped, rows that do not reconcile skipped) plus `NAVM` door triangles feed `EsmIndex::navmesh_door_links` (cross-cell travel router, `7af55a0df`); FO3/FNV `INFO` `TCFU` follow-ups are `InfoRecord::follow_ups` (INFO FormIDs, not topics); a `CTDA`/`CIS1`/`CIS2` after a `SPEL`/`ENCH` effect's `EFIT` is that effect's `MagicEffectItem::conditions`; FO3/FNV `WEAP` `DNAM` offset 36 is `projectile_form`. FNV `MSET` is typed (`parse_mset` → `MediaSetRecord`, `misc/media_set.rs`;
   `media_sets` was a `MinimalEsmRecord` stub, `9ee802d57`). Skyrim `MUSC` (remapped `TNAM`, `parse_musc`, which takes the remap — no remap-free entry point, #6788) and `MUST` (`parse_must` → `music_tracks`, a category row; `MUST` decodes for Skyrim, FO4 and FO76 (one shared layout, #6790); only Starfield lays it out differently) decode in `misc/music.rs`, and `first_playable_track` resolves REGN `RDMO` → `MUSC` → first playable `MUST` (palettes descend, depth-capped; `03f9d2158`). #3816 is narrowed to Skyrim (the FNV `MSET` and Oblivion `RDMD` halves play through the Game Music controller, `byroredux/src/music/translate.rs`); what stays OPEN is the tracks shipping as xWMA, which the streaming path cannot decode — a typed `music_tracks` map with no player is not a finding.
-- `actor_value_derive.rs` is the CHARAL feed — formulas belong to `/audit-character`. Oblivion decodes the executable-defined stat model the feed needs: `NPC_` `DATA` (33 B: 21 skills, Health `u16`, 8 attributes → `OblivionNpcStats`), `CREA` `DATA` (20 B → `OblivionCreatureStats`), the `ACBS` pools/`calc_max` (`OblivionActorPools`), and `AIDT`'s four raw actor-value bytes (`oblivion_ai_values`, #6995); Oblivion has no AVIF records, so `EsmIndex::install_oblivion_actor_values` synthesizes the 72-row roster (`OBLIVION_ACTOR_VALUES`; indices 38/39 excluded from vanilla lookups) into a free regular slot chosen at the end of the merge in `load_order.rs` (`278886579`). A parser that treated that slot as plugin-owned, or a roster row that disagrees with xEdit's TES4 `wbActorValueEnum`, is the regression. `oblivion_population.rs` is the record → canonical translation over it (level at spawn, auto-calc, creature pools).
+- `actor_value_derive.rs` is the CHARAL feed — formulas belong to `/audit-character`. Oblivion decodes the executable-defined stat model the feed needs: `NPC_` `DATA` (33 B: 21 skills, Health `u16`, 8 attributes → `OblivionNpcStats`), `CREA` `DATA` (20 B → `OblivionCreatureStats`), the `ACBS` pools/`calc_max` (`OblivionActorPools`), and `AIDT`'s four raw actor-value bytes (`oblivion_ai_values`, #6995); Oblivion has no AVIF records, so `EsmIndex::install_oblivion_actor_values` synthesizes the 72-row roster (`OBLIVION_ACTOR_VALUES`; indices 38/39 excluded from vanilla lookups) into a free regular slot chosen at the end of the merge in `load_order.rs` (`278886579`). A parser that treated that slot as plugin-owned, or a roster row that disagrees with xEdit's TES4 `wbActorValueEnum`, is the regression. `oblivion_population.rs` is the record → canonical translation over it (level at spawn, auto-calc, creature pools). The real-master `ROSTER_CASES` test (`tests/parse_real_esm.rs`, `charal_rosters_and_derived_keys_resolve_on_every_shipped_master`, ignored lane) installs the engine roster for Oblivion and asserts the six derived rows like every other game, and records each master's `unauthored_settings` (leveling GMSTs the master never authors) as an exact set — the list can go stale either way (`6aae19a63`, #7202; the no-data half is `oblivion_ruleset_resolves_against_the_installed_engine_roster`).
+- Starfield stride facts behind the 2026-11 pass-through-warn cleanup (#7096, one `Starfield.esm` load had logged 62,576 `names a master this plugin does not list` warns): `NPC_` `PRPS` entries are **12 B** on FO76/Starfield (a Curve Table FormID from form version 152, not stored) and 8 B on FO4 (`7b0cef4d5`, #7119); `LCTN` `ACPR`/`LCPR` (16 B) and `ACSR`/`LCSR` (20 B) carry a trailing unknown word on Starfield, FO4/FO76 keep 12/16 (`parse_lctn(.., game)`, `17c21457f`, #7118); the guard is the ignored real-data `crates/plugin/tests/starfield_remap_passthrough.rs` (0 warns at HEAD; `2adc1c210`). A new decoder logging a pass-through warn on a vanilla master is a stride bug, not noise.
 - Settled decodes — verify they hold, do not re-derive: `INAM` is one FormID array (#3356);
   `CREA CNAM` is not a class (#3383); `FACT` rank ladder (#3338); `ARMO` contributes every
   race-matching `ARMA` (#3357), `MOD3` is the female mesh (#3414); a `REFR` tombstone
@@ -422,7 +428,7 @@ First step: `git log --since=<last report> --format='%h %cs %s' -- crates/plugin
   `layered_material_swaps` / `material_path_forms` maps (`17bd40f4f`, #5757).
 - A placed reference draws the base's **world** model: `ARMO`/`CLOT` `MODL`/`MOD3` are the worn biped meshes (and on Skyrim+ `MODL` is an `ARMA` FormID), so `StaticObject.model_path` takes `MOD2` for them in `cell/support.rs` (a record with no `MOD2` keeps its `MODL` before Skyrim, nothing after; the worn mesh stays on the typed item the equip path reads; `846c36bf0`, #6691 — read as `MODL`, placed armor stood in its bind pose with its gore caps on FO3/FNV and was invisible on Skyrim, 1,683 interior references). Pinned by `placed_armor_and_clothing_take_the_world_model_over_the_biped_mesh`.
 - `cell/spaces.rs` (`7af55a0df`, cross-cell actor travel): `SpaceKey` (interior by lower-cased EditorID, else the cell-map key — unnamed FO4 interiors stay distinct spaces; or worldspace) and `SpaceGraph::build(cells, navmesh_door_links)` over every placed `XTEL` load door. A non-empty door-link set restricts routes to navmesh-linked doors, empty (Oblivion, FO4's undecoded navmeshes) treats every load door as walkable; the `inspect cross-space-census` probe and the engine router read the same graph. `PlacedRef::is_persistent` = GRUP type 8 or the runtime `0xFF` marker (`group_type` must stay populated per scope, see above).
-- `DOOR` records carry `StaticObject::door` (`DoorData`: the raw `FNAM` flag byte read per game through `DoorData::flags` — Oblivion bits 0-3, FO3/FNV/Skyrim bit 0 unnamed and Automatic/Hidden/Minimal Use/Sliding at 1-4, Skyrim adds Do-Not-Open-in-Combat-Search at 5, FO4/Starfield read as Skyrim's layout until checked — plus remapped `SNAM`/`ANAM`/`BNAM` open/close/loop sounds; door-runtime DRT-REC-001/-002, `50abfd008`) and a placed door's empty `ONAM` is `PlacedRef::open_by_default` (DRT-REC-004). Only a `DOOR` record carries `door`; the loop sound's play condition is unsourced (#7062).
+- `DOOR` records carry `StaticObject::door` (`DoorData`: the raw `FNAM` flag byte read per game through `DoorData::flags` — Oblivion bits 0-3, FO3/FNV/Skyrim bit 0 unnamed and Automatic/Hidden/Minimal Use/Sliding at 1-4, Skyrim adds Do-Not-Open-in-Combat-Search at 5, FO4/Starfield read as Skyrim's layout until checked — plus remapped `SNAM`/`ANAM`/`BNAM` open/close/loop sounds on every game **except Starfield**, whose `ANAM` is the Facing Axis Override enum and `BNAM` a string in its `BFCB` blocks — the static-object builder skips the sound arm there via the `GameKind` the record walk stamps on the reader (`EsmReader::set_game`/`game`, `a8e930035`, #7098; the flag byte still decodes); door-runtime DRT-REC-001/-002, `50abfd008`) and a placed door's empty `ONAM` is `PlacedRef::open_by_default` (DRT-REC-004). Only a `DOOR` record carries `door`; the loop sound's play condition is unsourced (#7062).
 - Lighting-template inheritance is per-field; "absent" and "authored zero" stay distinct.
 - CELL `XCCM` is per-game (`3b28dca71`, #5463): TES4/FO3/FNV = Climate (CLMT) →
   `CellData.climate_override`; TES5/FO4/FO76/Starfield = "Sky/Weather from Region" (REGN) → `sky_region`
@@ -472,6 +478,7 @@ First step: `git log --since=<last report> --format='%h %cs %s' -- crates/plugin
   string (nif.xml `SkyrimHavokMaterial`; 63 of 78 vanilla MATTs land on a listed id and all 68 vanilla LTEXs
   name one of them), computed on Skyrim only — FO4/Starfield `MATT`s are routed but stay empty (`4ce5ddf2a`,
   part of #6048, which stays OPEN for applying friction/restitution and for FO4 terrain material).
+- FO76 `CELL` `XCRI` is its own shape (u64 counts, 8/16 B entries, gated on `Fallout76`; 1,132 of 1,182 `SeventySix.esm` bodies match exactly, the rest are `XXXX`-sized; `2a311b378`, #7121).
 - FO4 precombine CELL sub-records (`CellSubrecordFields::absorb`): the `XCRI` tail is
   `ref_count / 2` × (ref FormID, bake hash) pairs → `CellData.absorbed_ref_bakes` (the skip
   set); `XPRI` is the disjoint previs list, validated and **not** stored (`777351ec1`,
@@ -512,7 +519,8 @@ First step: `cargo test -p byroredux-plugin strings_table`
   English tables carry real cp1252 bytes, localized tables are real UTF-8). A flat cp1252
   decode is the regression; the fallback is not a bug.
 - Loose files are found case-insensitively before the archive fallback
-  (`load_with_archive`, #4176) — a case-mismatched mod override must beat the archive.
+  (`load_with_archive`, #4176) — a case-mismatched mod override must beat the archive; a bare `--esm Skyrim.esm`
+  (empty `parent()`) probes `.` through `plugin_directory`, not `read_dir("")` (`3b094e77b`, #7112).
 **Output**: `/tmp/audit/esm/dim_6.md`
 
 ### Dimension 7: `EsmIndex` → ECS Handoff & the Redux-Native Tier
@@ -562,7 +570,8 @@ First step: `cargo run --release -p byroredux-plugin --example esm_dim8_coverage
   boot path; door transitions reuse the resident index through `SharedParseCache` in
   `load_order.rs` unless the plugin set or a file's length/mtime changed, `588c87bc4`, #6123;
   NIF parse cost is `/audit-performance`).
-- Real-data tests resolve installs through `esm/test_paths.rs` (`*_data_dir()` + `require_or_skip`);
+- `esm_dim8_coverage`'s own recursive GRUP walk honours the shared depth cap (`4997ea2ec`, #7099).
+- Real-data tests resolve installs through `esm/test_paths.rs` (`*_data_dir()` + `require_or_skip`; the ignored lane too, `2a311b378`, #7122);
   `BYROREDUX_REQUIRE_GAME_DATA` turns an absent install into a failure on the strict lane (`3e4bfab51`, #6184) — a
   test that re-inlines a Steam root or returns `ok` on a missing master is the regression.
 - No windowed engine launch (*feedback_no_parallel_engine_launch*); example binaries and

@@ -16,6 +16,9 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/renderer/shaders/sky_cube.comp` | exterior, renderer, performance | HIGH |
 | `crates/renderer/shaders/include/sky_` | exterior, renderer, performance | HIGH |
 | `crates/renderer/shaders/include/terrain_sample.glsl` | exterior, renderer, performance | HIGH |
+| `crates/renderer/shaders/include/terrain_tile.glsl` | exterior Dim 2, renderer, performance | HIGH |
+| `crates/renderer/shaders/terrain_patch.comp` | exterior Dim 2, renderer, performance | HIGH |
+| `crates/renderer/src/vulkan/terrain_patch.rs` | exterior Dim 2, renderer, safety, concurrency, performance | HIGH |
 | `crates/renderer/src/vulkan/cloud_noise.rs` | exterior, renderer, safety, concurrency, performance | HIGH |
 | `crates/renderer/shaders/include/clouds.glsl` | exterior, renderer | HIGH |
 | `crates/renderer/src/vulkan/water` | renderer Dim 8, exterior | HIGH |
@@ -34,7 +37,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/renderer/src/vulkan/dds.rs` | renderer, parsers, safety, performance; per-game | HIGH |
 | `crates/renderer/src/vulkan/` | renderer, safety, concurrency, performance | HIGH |
 | `crates/renderer/src/texture_registry/dynamic_rgba.rs` | renderer, ui Dim 5, concurrency Dim 1 | HIGH |
-| `crates/renderer/src/texture_registry` | renderer, performance | MEDIUM |
+| `crates/renderer/src/texture_registry` | renderer, performance, parsers Dim 6 | MEDIUM |
 | `crates/renderer/src/source_scan.rs` | renderer, tech-debt | LOW |
 | `crates/renderer/` | renderer, performance | HIGH |
 | `crates/fsr3-sys/` | renderer Dim 11, safety Dim 1 | HIGH |
@@ -54,8 +57,8 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/core/src/ecs/components/{sandbox,wander,travel,follow,escort,guard,patrol,eat_sleep,ambush,find_package,flee_package,use_weapon_package,creature_attack}.rs` | gameplay | MEDIUM |
 | `crates/core/src/ecs/components/{actor_values,faction_ranks}.rs` | character, ecs, save, concurrency | HIGH |
 | `crates/core/src/lighting.rs` | renderer, nifal | MEDIUM |
-| `crates/core/src/atomic_file.rs` | save, tooling | MEDIUM |
-| `crates/core/src/paths.rs` | tooling, ecs | MEDIUM |
+| `crates/core/src/atomic_file.rs` | save, tooling, parsers, audio | MEDIUM |
+| `crates/core/src/paths.rs` | tooling, ecs, parsers, nif | MEDIUM |
 | `crates/core/src/bytes.rs` | parsers, ecs | HIGH |
 | `crates/core/src/source_scan.rs` | tech-debt, tooling | LOW |
 | `crates/core/tests/stale_line_references.rs` | tech-debt, ecs | LOW |
@@ -152,6 +155,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/groundcover_translate` | exterior | MEDIUM |
 | `byroredux/src/fog.rs` | exterior, renderer | MEDIUM |
 | `byroredux/src/terrain_height.rs` | exterior Dim 2, performance Dim 7, concurrency Dim 7 | MEDIUM |
+| `byroredux/src/terrain_patches.rs` | exterior Dim 2, ecs, performance Dim 7 | MEDIUM |
 | `byroredux/src/cell_loader/terrain` | exterior, physics; per-game | MEDIUM |
 | `byroredux/src/cell_loader/water.rs` | exterior, physics Dim 5, performance Dim 7; per-game | MEDIUM |
 | `byroredux/src/cell_loader/lod_bands.rs` | exterior, performance; fo3, fnv | MEDIUM |

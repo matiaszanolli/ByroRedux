@@ -20,19 +20,19 @@ a dimension whose Paths have no commits since the last `AUDIT_SAFETY_*` report.
 
 Census recipe: `grep -rwo unsafe <crate>/src | wc -l` for tokens, `grep -rnE 'unsafe[[:space:]]*\{' <crate>/src`
 for blocks — **read the hits**: word counts also match prose (`byroredux` reports 5 tokens and
-only 2 real blocks). Re-measured 2026-11-20 at 2d857fff2, unchanged from 2026-11-19 at a7d4b49bb (the 76 commits between added no `unsafe` token anywhere; 935 / 686 / 117 / 45 at 8ff82d514 on 2026-11-14; 933 / 684 / 117 / 45 at 88c239b35 on 2026-11-09; 936 / 688 / 116 / 45 at 66c85af80 on 2026-11-06; 900 / 669 / 102 / 44 at 8985a2e99 on 2026-10-31; 948 / 717 / 102 / 44 at eae8fd740 on 2026-10-27; 943 tokens / 716 blocks / 100 `unsafe fn` / 38 impls at 1be33af66 on 2026-10-21; 922 / 704 at f4ae42a6f on 2026-10-15; #5593 (c6d36b4e7) removed eleven; #5273 removed five earlier):
+only 2 real blocks). Re-measured 2026-11-22 at 91e91aeac (the 142 commits since 2d857fff2 added exactly one pass with `unsafe`, `vulkan/terrain_patch.rs`, #7152 84f04205f: +9 tokens / +7 blocks / +1 `unsafe fn` / +1 `NoUninit` impl, 1014 / 711 / 119 / 46 at that baseline on 2026-11-20, unchanged from 2026-11-19 at a7d4b49bb; earlier 935 / 686 / 117 / 45 at 8ff82d514 on 2026-11-14; 933 / 684 / 117 / 45 at 88c239b35 on 2026-11-09; 936 / 688 / 116 / 45 at 66c85af80 on 2026-11-06; 900 / 669 / 102 / 44 at 8985a2e99 on 2026-10-31; 948 / 717 / 102 / 44 at eae8fd740 on 2026-10-27; 943 tokens / 716 blocks / 100 `unsafe fn` / 38 impls at 1be33af66 on 2026-10-21; 922 / 704 at f4ae42a6f on 2026-10-15; #5593 (c6d36b4e7) removed eleven; #5273 removed five earlier):
 
-- `crates/renderer/src`: **1014** word tokens — 711 `unsafe {`
-  blocks, 119 declared `unsafe fn` (`grep -E '^\s*(pub(\([a-z]+\))?\s+)?unsafe fn'`; the loose `grep 'unsafe fn'` reads ~219: prose and source-scan
-  strings; the newest are `texture::submit_initial_layouts`, #6146, and the local-grid / linear-capture record fns), 46 `unsafe impl` (every one a `NoUninit`, the
-  `buffer.rs` primitive macro and `[T; N]` blanket included; newest: `FarSunProjection` in `composite.rs`; earlier: `NoUninit for ScatterPush` / `BladePush` / `BenchPush`, #6033 02b828fff, then #6270
+- `crates/renderer/src`: **1023** word tokens — 718 `unsafe {`
+  blocks, 120 declared `unsafe fn` (`grep -E '^\s*(pub(\([a-z]+\))?\s+)?unsafe fn'`; the loose `grep 'unsafe fn'` reads ~219: prose and source-scan
+  strings; the newest are `texture::submit_initial_layouts`, #6146, and the local-grid / linear-capture record fns, and `TerrainPatchPass::record`), 47 `unsafe impl` (every one a `NoUninit`, the
+  `buffer.rs` primitive macro and `[T; N]` blanket included; newest: `TerrainPatchPush` in `terrain_patch.rs`, `FarSunProjection` in `composite.rs`; earlier: `NoUninit for ScatterPush` / `BladePush` / `BenchPush`, #6033 02b828fff, then #6270
   dedf6c0d6 added `Push` (shadow filter), `AtrousPush`, `WaterPush`, `PresentationPushConstants` and both skin push structs
   and routed those casts plus the geometry / morph-weight / bind-inverse bulk views through `byte_view`, dropping their
-  hand-rolled `from_raw_parts` blocks), ~837 `SAFETY` mentions. Growth since 10-15 is new
+  hand-rolled `from_raw_parts` blocks), ~846 `SAFETY` mentions. Growth since 10-15 is new
   passes — `vulkan/shadow_filter.rs` (10 blocks + `unsafe fn destroy`) and the SKYAL cloud-shadow bake
   `vulkan/sky_cube/cloud_shadow.rs` (7 now, + `unsafe fn record` / `destroy`, c231f5b5f); since 10-31 the world-space combustion local
   grid `vulkan/volumetrics/local_grid.rs` (13 blocks now, #6533 / d3e3acc7b) and the M-LIGHT scene-linear capture
-  `vulkan/context/linear_capture.rs` (2 now, 75b4024df), +5 in `context/helpers.rs`, while `screenshot.rs` / `depth_capture.rs`
+  `vulkan/context/linear_capture.rs` (2 now, 75b4024df); since 11-20 the TSD-4.1 terrain displacement pass `vulkan/terrain_patch.rs` (6 blocks + `unsafe fn record` + `unsafe impl NoUninit for TerrainPatchPush`: pipeline / layout / descriptor-set creation, the record body, and the hand-written `destroy`; +1 block in `context/dispatch_skin_and_cluster.rs` for its recording), +5 in `context/helpers.rs`, while `screenshot.rs` / `depth_capture.rs`
   lost four each to a shared readback helper — plus `descriptors::clamp_sampler`
   (`unsafe fn`, #5809 31f4919d5, which first spliced it between `memory_barrier`'s doc and item, leaving the wrong fn
   carrying the `# Safety`; restored by #6064 2a6f8be2b with a doc-splice guard); #5717 (d3225bb2f) removed the last
@@ -42,7 +42,7 @@ only 2 real blocks). Re-measured 2026-11-20 at 2d857fff2, unchanged from 2026-11
   #4599 poison-policy extraction cut `vulkan/buffer.rs` 40 → 19 blocks; #5273 (74ed66f0a) replaced the five
   `CStr::from_ptr` device/extension-name blocks in `vulkan/device.rs` with ash's bounded `*_as_c_str()` accessors
   (pinned by `device_names_read_through_bounded_accessors`); `vulkan/groundcover.rs` split into
-  `vulkan/groundcover/{construct,frame}.rs` (16 + 6 today). Since 11-14 the +25 blocks / +79 tokens are mostly the edition-2024 migration (153f611a7, 607e2e9a1): *unsafe_op_in_unsafe_fn* is warn-by-default in edition 2024 and CI runs clippy with `-D warnings`, so an `unsafe fn` body now wraps its operations in an `unsafe {}` block with a `// SAFETY: this is the whole body of the `unsafe fn`…` comment (`sync.rs` 3 → 7, `geometry_pass.rs` 2 → 7, `skin_compute.rs` 10 → 15, `sky_cube.rs` 6 → 10, `water.rs` 13 → 16), plus `unsafe fn dispatch_far_sun` / `descriptors::destroy_pass_object_sets`; the pass-teardown consolidation (#6371) took blocks back out (`volumetrics/init.rs` 17 → 12, `groundcover_models.rs` 14 → 10, `teardown.rs` 5 → 2). No new file with blocks. #6358 (0288f468d) turned `vulkan/gpu_timers.rs`'s 50 per-pass `cmd_<pass>_start/_end` methods into
+  `vulkan/groundcover/{construct,frame}.rs` (16 + 6 today). Since 11-14 the +25 blocks / +79 tokens are mostly the edition-2024 migration (153f611a7, 607e2e9a1): *unsafe_op_in_unsafe_fn* is warn-by-default in edition 2024 and CI runs clippy with `-D warnings`, so an `unsafe fn` body now wraps its operations in an `unsafe {}` block with a `// SAFETY: this is the whole body of the `unsafe fn`…` comment (`sync.rs` 3 → 7, `geometry_pass.rs` 2 → 7, `skin_compute.rs` 10 → 15, `sky_cube.rs` 6 → 10, `water.rs` 13 → 16), plus `unsafe fn dispatch_far_sun` / `descriptors::destroy_pass_object_sets`; the pass-teardown consolidation (#6371) took blocks back out (`volumetrics/init.rs` 17 → 12, `groundcover_models.rs` 14 → 10, `teardown.rs` 5 → 2). Apart from `terrain_patch.rs` above, no new file with blocks. #6358 (0288f468d) turned `vulkan/gpu_timers.rs`'s 50 per-pass `cmd_<pass>_start/_end` methods into
   `cmd_start` / `cmd_end` over `TimerPass` table rows, taking it from 66 blocks (the old densest file) to 18 — the −48 block drop is that
   consolidation, not removed unsafe surface. Densest files: `vulkan/acceleration/blas_static.rs` (29), `vulkan/context/resize.rs` (28),
   `vulkan/groundcover_bench.rs` (26), `vulkan/composite.rs` (25), `vulkan/presentation.rs` / `context/helpers.rs` (21 each), `vulkan/svgf.rs` / `vulkan/bloom.rs` (20 each), `vulkan/texture.rs` (19; svgf fell 22 → 19 when #6371 b7fe116f1 routed its teardown through `descriptors::destroy_pass_objects`). Compare against the previous
@@ -213,14 +213,14 @@ First step: `cargo test -p byroredux rapier_release && grep -rn 'DeferredDestroy
   set-layout handles through `descriptors::destroy_pass_objects` / `destroy_pass_object_sets` (one order, one null-guard policy,
   SAFETY text once; `migrated_passes_destroy_through_the_shared_helper` lists them). The files that still call
   `destroy_descriptor_set_layout` directly (`presentation.rs`, `groundcover_bench.rs`, `scene_buffer/`, `texture_registry/mod.rs`) hand-write
-  it, so a new pass should adopt the helper rather than add a third guard policy.
+  it, and so does the newest pass, `terrain_patch.rs` (#7152, 84f04205f: `TerrainPatchPass::destroy` null-guards pool / pipeline / layout / set layout inline, and is not in `MIGRATED`), so a new pass should adopt the helper rather than add a third guard policy.
 - **egui**: texture free is deferred one frame (`pending_free`) on `draw_frame`'s fence wait — freeing on the
   arriving frame is UAF. Partial deltas are promoted to full uploads from a CPU mirror (#4986), so replacing an
   existing id retires an image too; both retirements rest on the all-slots fence wait (#4988, a rider in
   `frames_in_flight_contract_names_every_dependent_resource`). A `FullOutput` that is never drawn (shutdown, no overlay
   pass, `VulkanContext::drop`) is discarded through `drop_without_applying_deltas` — egui 0.36 debug-asserts on a dropped
   undrained `TexturesDelta` (500fcb8ca). `EguiPass` teardown ordering is `/audit-concurrency` Dim 6.
-- **GPU allocation inventory** (BLAS/TLAS + scratch, G-buffer, SVGF/TAA history, caustic accumulators, skin
+- **GPU allocation inventory** (BLAS/TLAS + scratch, terrain-patch per-FIF host readbacks, G-buffer, SVGF/TAA history, caustic accumulators, skin
   slots, MaterialBuffer, volumetric/bloom pyramids, ground-cover and sky-bake buffers): each tracked and freed;
   budgets are `docs/engine/memory-budget.md` — do not re-derive.
 - **CPU unbounded growth**: `Vec` / `HashMap` keyed by cell or path that never shrinks. `MaterialTable` is
@@ -236,9 +236,9 @@ First step: `grep -rn undocumented_unsafe_blocks crates` (expect the one `deny` 
   `cargo build` / `cargo test`. Since #5121 (530c9e7aa) the workspace step runs `--keep-going` and a dedicated step
   (`cargo clippy -p byroredux-renderer --no-deps -- -D clippy::undocumented_unsafe_blocks`) re-lints the renderer on
   its own closure, so an upstream crate's new-toolchain clippy failure can no longer disarm the gate — confirm both survive. Confirm the `deny` is
-  present and unescaped. The lint sees `unsafe {}` blocks only: the 46 renderer `unsafe impl`s need a justification found by reading; `unsafe fn` bodies are covered
+  present and unescaped. The lint sees `unsafe {}` blocks only: the 47 renderer `unsafe impl`s need a justification found by reading; `unsafe fn` bodies are covered
   since edition 2024 (*unsafe_op_in_unsafe_fn* forces an inner `unsafe {}`), but the fn's own `# Safety` contract is still by reading. Crates outside the renderer have no such lint — sweep comment-less blocks
-  there by hand (re-checked 2026-11-20: every block in `fsr3-sys`, `nif`, `core`, `pex`, `byro-launcher`, `byroredux` and `bink2` carries a `SAFETY:` comment, `bink2` since 1de2673b7); a
+  there by hand (re-checked 2026-11-22: every block in `fsr3-sys`, `nif`, `core`, `pex`, `byro-launcher`, `byroredux` and `bink2` carries a `SAFETY:` comment, `bink2` since 1de2673b7); a
   comment-less block is MEDIUM.
 - The audit's value is therefore the *truth* of each invariant, not its presence: for each new or changed block, does the
   stated precondition (device live, handles from this device, not in flight, pointer valid for the call) hold at THIS call
@@ -257,7 +257,7 @@ verification" (`/audit-concurrency` guardrail); report emitted validation errors
 - Every `vkCreate*` has a matching `vkDestroy*`; children destroyed before parents, device last.
 - **Acceleration structures**: correct geometry flags, valid device addresses, `SHADER_DEVICE_ADDRESS` on buffers;
   TLAS UPDATE count == BUILD count; skin-BLAS refit vertex/geometry count == BUILD (a bone-count change forces a
-  rebuild). Wrong AS geometry/address = CRITICAL. The TLAS resize `device_wait_idle` (#1390) is defence behind the
+  rebuild). Wrong AS geometry/address = CRITICAL. The terrain displacement patches (#7152, `vulkan/terrain_patch.rs`) are re-displaced IN PLACE every frame inside reserved ranges of the global vertex pool and stage 4.1 draws them raster-only (`in_tlas = false`, no BLAS); once a stage-4.2 patch BLAS exists it must rebuild from the same frame's compute output (device addresses re-resolved against the registry at record time, never cached), or it traces last frame's lattice. The TLAS resize `device_wait_idle` (#1390) is defence behind the
   both-slots fence wait (`/audit-concurrency` Dim 1) — verify one of the two survives.
 - **Depth-capture format (#3570)**: `depth_capture_record_copy` / `depth_capture_finish_readback` (`context/depth_capture.rs`)
   consult the live depth format; D16 devices refuse rather than misdecode as f32.
