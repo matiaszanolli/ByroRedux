@@ -93,7 +93,7 @@
 //! varying extras — and the rigs the id set cannot tell apart from a humanoid
 //! (Protectron, Handy and Assaultron match no skeleton's ids).
 //!
-//! **Placement tilt (#6070, open).** The entries are poses relative to the
+//! **Placement tilt (open, #6677).** The entries are poses relative to the
 //! reference, but 466 of the 971 posed FO4 human / ghoul corpses carry a large X
 //! or Y rotation on the reference itself (the CK writes the settled root
 //! orientation into it; the Skyrim corpses are nearly all upright). Composed

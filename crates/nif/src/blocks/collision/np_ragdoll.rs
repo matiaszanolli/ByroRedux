@@ -316,8 +316,9 @@ impl<'a> Fixups<'a> {
 
 /// Decode a `bhkRagdollSystem` payload.
 ///
-/// `Err` when the blob is not a packfile, has no `hknpRagdollData`, or its
-/// arrays disagree; individual joints or bodies the decoder cannot read are
+/// `Err` when the blob is not a packfile, is not a 64-bit Havok 2014 (file
+/// version 11) packfile (#7133), has no `hknpRagdollData`, or its arrays
+/// disagree; individual joints or bodies the decoder cannot read are
 /// reported through [`NpRagdoll::skipped_constraints`] / a `None` shape, not
 /// as an error.
 pub fn decode_np_ragdoll(blob: &[u8]) -> io::Result<NpRagdoll> {

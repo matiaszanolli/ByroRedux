@@ -444,8 +444,8 @@ and no parked body. It found three defects: RACE `ANAM` was only read on
 Skyrim (every FO4 actor spawned on the human skeleton), the one-body corpse
 template overwrote the decoded articulation, and the keyframed stand-in capsule
 that makes a shape-less actor hittable stayed behind at death, overlapping every
-limb. Open: a corpse whose reference is tilted is not posed correctly (see
-`ragdoll_pose.rs`).
+limb. Open (#6677): a corpse whose reference is tilted is not posed correctly
+(see `ragdoll_pose.rs`).
 
 **Friction, restitution and damping (#6066).** Each body takes them from the
 blob's material row (`hknpRagdollData+16`, 80 B) and motion-property row
