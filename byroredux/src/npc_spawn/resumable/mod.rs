@@ -370,7 +370,9 @@ fn spawn_placement_root<'a>(
         };
         world.insert(placement_root, Name(symbol));
     }
-    let resolved = byroredux_plugin::equip::ResolvedNpc::resolve(npc, index);
+    // #7193 — the player's level at spawn: an Oblivion actor's leveled gear and spells resolve against it.
+    let resolved = byroredux_plugin::equip::ResolvedNpc::resolve(npc, index)
+        .with_player_level(crate::npc_spawn::stamps::player_level_for_spawn(world, index));
     if player_body {
         return (placement_root, resolved);
     }

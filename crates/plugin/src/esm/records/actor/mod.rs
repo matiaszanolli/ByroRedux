@@ -195,7 +195,14 @@ pub const ACBS_PC_LEVEL_MULT: u32 = 0x0080;
 /// Skyrim class-point maths). [`ResolvedNpc::level`](crate::equip::ResolvedNpc::level)
 /// is this value of the Use-Stats terminal, except that a literal `0` reached
 /// through an `LVLN` / `LVLC` pick takes that pick's authored entry level
-/// (#4232); only the leveled-list expansions (gear, spells) read it. About 30
+/// (#4232); only the leveled-list expansions (gear, spells) read it.
+///
+/// #7193 — ACBS bit 7 is FO3/FNV's "PC Level Mult". On Oblivion the same bit
+/// is "PC Level Offset" (`level` is a signed offset from the player's level),
+/// so this answer is not an Oblivion actor's level: its stats read
+/// [`actor_level_at_spawn`](crate::esm::records::actor_level_at_spawn) and its
+/// leveled lists [`ResolvedNpc::level`](crate::equip::ResolvedNpc::level),
+/// which routes an Oblivion record there. About 30
 /// of 3,816 FNV `NPC_` records author level 0 that way, so for those the
 /// gear is expanded at level N while `CharacterLevel` reads 0. Which level
 /// such a terminal should carry for stats is unsourced, so nothing is
