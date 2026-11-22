@@ -39,7 +39,8 @@ pub enum DamageRule {
 }
 
 /// What the shot's damage reads from the shooter, as numbers. A missing actor value reads 0; Fatigue reads
-/// `fatigue / max_fatigue`, and a shooter with no Fatigue pool reads full (1).
+/// `fatigue / max_fatigue` against the **normal** maximum (the attribute sum, without Fortify Fatigue), so a fortified
+/// pool reads above 1 (#7207), and a shooter with no Fatigue pool reads full (1).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ShotTraits {
     pub attribute: f32,
@@ -223,7 +224,10 @@ impl BowModel {
         match self.damage {
             DamageRule::Rating { settings, .. } => {
                 let rating = settings.weapon_multiplier(traits.attribute, traits.skill, traits.luck);
-                base * rating * settings.fatigue_factor(traits.fatigue_fraction.clamp(0.0, 1.0))
+                // #7207 — no upper clamp: the capture records that the term is "explicitly *not* clamped to 1", so
+                // a Fatigue above its normal maximum keeps paying off (`charal-oblivion-ruleset.md`, Fatigue). The
+                // floor at 0 is a declared choice: no source states the term for a collapsed actor below 0.
+                base * rating * settings.fatigue_factor(traits.fatigue_fraction.max(0.0))
             }
             DamageRule::SkillBonus { per_point, .. } => base * (1.0 + per_point * traits.skill.max(0.0)),
         }
@@ -346,6 +350,12 @@ mod tests {
         assert!((doubled.shot_damage(8.0, 8.0, master) - 34.0).abs() < 1e-3);
         let harsh = BowModel::OBLIVION.with_gmst(|name| (name == "fFatigueMult").then_some(1.0));
         assert_eq!(harsh.shot_damage(8.0, 8.0, ShotTraits { fatigue_fraction: 0.0, ..master }), 0.0);
+        // #7207 — a Fatigue above its normal maximum keeps paying off: 1.5 of the maximum gives (1.5 + 1) / 2 = 1.25;
+        // a collapsed actor's negative Fatigue reads as 0.
+        let fortified = BowModel::OBLIVION.shot_damage(8.0, 8.0, ShotTraits { fatigue_fraction: 1.5, ..master });
+        assert!((fortified - 17.0 * 1.25).abs() < 1e-3, "{fortified}");
+        let collapsed = BowModel::OBLIVION.shot_damage(8.0, 8.0, ShotTraits { fatigue_fraction: -0.5, ..master });
+        assert!((collapsed - 17.0 * 0.5).abs() < 1e-3, "{collapsed}");
         assert_eq!(BowModel::SKYRIM.with_gmst(|_| Some(9.0)).damage, BowModel::SKYRIM.with_gmst(|_| None).damage);
     }
 

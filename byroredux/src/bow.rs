@@ -279,14 +279,16 @@ fn release(world: &World, held: f32) -> BowReport {
 
 /// The shooter's numbers the damage reads (BOW-DMG-001, BOW-DMG-002), by the actor-value names the model asks for.
 /// A name the load order does not define, or a shooter without the value, reads 0; a shooter with no Fatigue pool
-/// reads full Fatigue.
+/// reads full Fatigue. #7207 — Fatigue is measured against its normal maximum, the value's base view (the attribute
+/// sum, UESP *Oblivion:Fatigue*), not against the fortified ceiling, so a Fortify Fatigue effect lifts the fraction
+/// above 1 instead of raising the numerator and the denominator together.
 pub(crate) fn shot_traits(world: &World, player: EntityId, model: &BowModel) -> ShotTraits {
     let (attribute, skill) = model.damage_inputs();
     let read = |name: &str| crate::detection::actor_value(world, player, name);
     let fatigue = world
         .try_resource::<byroredux_scripting::ActorValueNames>()
         .and_then(|names| names.resolve("Fatigue"))
-        .and_then(|form| world.get::<ActorValues>(player).and_then(|values| values.get(form).map(|value| (value.current(), value.undamaged()))));
+        .and_then(|form| world.get::<ActorValues>(player).and_then(|values| values.get(form).map(|value| (value.current(), value.base_view()))));
     ShotTraits {
         attribute: attribute.map_or(0.0, read),
         skill: read(skill),
@@ -608,6 +610,19 @@ mod tests {
         with_values(&mut world, player, &[("Agility", 50.0), ("Marksman", 5.0), ("Luck", 50.0)], 50.0);
         shoot_now(&world, 1.875).unwrap();
         assert!((world.resource::<ActiveProjectiles>().0[0].damage - 1.65).abs() < 1e-3, "half Fatigue: 2.2 * 0.75");
+    }
+
+    /// #7207 — Fortify Fatigue pays off: a +50 fortify on a 100 pool reads 1.5 of the normal maximum, so the arrow is
+    /// worth `2.2 * (1.5 + 1) / 2`, not the full-Fatigue 2.2 a fortified ceiling would cap it at.
+    #[test]
+    fn fortified_fatigue_raises_the_arrows_damage() {
+        let (mut world, player) = oblivion();
+        with_values(&mut world, player, &[("Agility", 50.0), ("Marksman", 5.0), ("Luck", 50.0)], 0.0);
+        let fatigue = world.resource::<byroredux_scripting::ActorValueNames>().resolve("Fatigue").unwrap();
+        world.get_mut::<ActorValues>(player).unwrap().mod_temporary(fatigue, 50.0);
+        shoot_now(&world, 1.875).unwrap();
+        let damage = world.resource::<ActiveProjectiles>().0[0].damage;
+        assert!((damage - 2.2 * 1.25).abs() < 1e-3, "{damage}");
     }
 
     /// BOW-DMG-002: Skyrim's arrow is worth the bow plus the arrow times `1 + 0.5 % * Archery`.
