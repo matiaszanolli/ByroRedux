@@ -260,9 +260,9 @@ impl Resource for PlayerVitals {}
 pub(super) fn build_player_vitals(index: &EsmIndex) -> PlayerVitals {
     // #4679 — the roster is `CharacterRulesProfile` data (same move #4447
     // made for `body_condition_base`), so a pool the game does not author
-    // — or an Oblivion profile whose pre-#3768 resolver cannot resolve
-    // any AVIF yet — drops out per candidate instead of the consumer
-    // guessing per GameKind.
+    // (or an index with no actor-value records installed) drops out per
+    // candidate instead of the consumer guessing per GameKind. Oblivion's
+    // pools resolve through the engine-supplied roster (#7010).
     let mut by_editor_id = FxHashMap::default();
     let bars = index
         .character_rules

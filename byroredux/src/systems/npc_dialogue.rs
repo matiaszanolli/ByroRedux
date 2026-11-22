@@ -738,9 +738,10 @@ fn npc_dialogue_goodbye_close_check(world: &World) {
 /// index changes. Keyed by a `Weak` compared with `Weak::ptr_eq`, so a later index cannot reuse a
 /// freed one's address (#7114). `NOT_SAVED_BY_DESIGN`: derived from the records.
 #[derive(Default)]
-pub(crate) struct FollowUpTopics(
-    std::sync::Mutex<Option<(std::sync::Weak<byroredux_plugin::esm::records::EsmIndex>, std::collections::HashMap<u32, u32>)>>,
-);
+pub(crate) struct FollowUpTopics(std::sync::Mutex<Option<FollowUpMap>>);
+
+/// The index a [`FollowUpTopics`] map was built for, and the map: INFO FormID → owning `DIAL` FormID.
+type FollowUpMap = (std::sync::Weak<byroredux_plugin::esm::records::EsmIndex>, std::collections::HashMap<u32, u32>);
 
 impl byroredux_core::ecs::Resource for FollowUpTopics {}
 

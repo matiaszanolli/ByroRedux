@@ -1251,7 +1251,7 @@ fn spawn_player_body(
             body,
             byroredux_scripting::SceneAliasCandidate {
                 reference_form_id: 0x0000_0014,
-                base_form_id: 0x0000_0007,
+                base_form_id: crate::inventory::PLAYER_NPC_FORM_ID,
                 linked_refs: Vec::new(),
                 location_ref_types: Vec::new(),
             },

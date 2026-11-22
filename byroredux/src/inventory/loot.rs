@@ -192,8 +192,11 @@ pub(crate) fn transfer_loot(
             LootSelection::All => {
                 let stacks = std::mem::take(&mut source_inventory.items);
                 outcome.item_count = stacks.iter().map(|stack| u64::from(stack.count)).sum();
+                // #7231 — a row zeroed in place (a spent, sold or removed stack keeps its position) moved nothing: it
+                // reports no transfer (no OnAdd / OnDrop, no stolen row), as the one-stack arm refuses it.
                 outcome.rows = stacks
                     .iter()
+                    .filter(|stack| stack.count > 0)
                     .map(|stack| (stack.base_form_id, stack.count))
                     .collect();
                 source_form_ids = Some(
@@ -205,7 +208,9 @@ pub(crate) fn transfer_loot(
                 // Existing equipment indices stay stable and distinct
                 // instance-pool identities are never merged or discarded;
                 // plain stacks fold into the matching row (#5871).
-                for stack in stacks {
+                // An empty plain row is not handed to the player either (it would add a zero-count row for a form the
+                // player has none of); an empty row still holding an instance moves, so its pool entry stays owned.
+                for stack in stacks.into_iter().filter(|stack| stack.count > 0 || stack.instance.is_some()) {
                     destination.add(stack);
                 }
             }

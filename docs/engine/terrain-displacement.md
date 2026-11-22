@@ -4,8 +4,9 @@
 Drafted 2026-10-22. Follows TSD-1 (#6195 height maps), TSD-2 (#6196 height blend) and
 TSD-3 (#6197 parallax), which are shipped. #7149 (BTXT-only tile slots) and the §8 spike
 (#7150, result in §8.1: go) are done. Stage 4.1 (#7152) is built (§7.1) and measured
-(§8.2), now with a two-level lattice (fine within 2 m, coarse beyond); it awaits review
-before 4.2.
+(§8.2), with a two-level lattice (fine within 2 m, coarse beyond), and was approved on
+2026-11-22. Stage 4.2 (#7221, patches in the TLAS with a refit BLAS each) is built (§7.2)
+and measured (§8.3), awaiting review before 4.3.
 
 **Question this answers**: if parallax (TSD-3) is not enough, how would real geometry
 displacement work in an engine whose shadows, reflections and GI are ray-traced, what would
@@ -255,6 +256,39 @@ settings/UI. Each stage ends with a review, as in TSD-1–3.
   largest displacement, and the `terrain_patch` / `main_render` GPU brackets. `terrain.patches
   on|off` is the A/B switch; `amplitude` / `range` retune the session.
 
+### 7.2 Stage 4.2 as built (#7221)
+- **One BLAS per patch mesh, not one multi-geometry BLAS.** §8.1 recommended one BLAS
+  for all patches, to pay one refit's fixed cost. But every ray hit resolves through
+  `GpuInstance` + the primitive id (`ray_hit.glsl`) and no shader reads a geometry
+  index, so a multi-geometry BLAS would have meant changing every hit path. A BLAS per
+  patch mesh hit-shades like any rigid instance, reading the live vertices the compute
+  writes. The fixed cost §8.1 measured came from the shared-scratch serialize barrier,
+  and that is avoided another way: all of a frame's patch builds and refits go out in
+  **one** `vkCmdBuildAccelerationStructuresKHR` call over disjoint regions of the patch
+  set's own scratch buffer (`acceleration/blas_terrain_patch.rs`).
+- **Refit or build.** A mesh still showing last frame's square refits (only the
+  distance fade moved its vertices). A mesh that changed square or level, whose pool
+  addresses moved, or that reached 600 refits gets a full build, at most two a frame
+  (§3.5). A deferred one stays out of the TLAS that frame, so rays see the base terrain
+  there; it is not counted as a missing BLAS, so the TLAS integrity check stays clean.
+  The static-BLAS restore path skips patch meshes, which it would otherwise snapshot.
+- **Frame order.** The patches now record ahead of the TLAS build: the terrain-tile
+  upload (split out of the instance upload), the patch compute, the patch BLAS, then
+  `dispatch_skin_and_cluster`'s TLAS build. The compute's exit barrier adds the AS-build
+  stage (`shader-pipeline.md` steps 1e–1g).
+- **The base terrain stays in the TLAS** under the patches. Rays reaching the ground
+  from above hit the patch first. A shadow ray starts on the patch surface, which is
+  never below the base, so the 1 mm lip needs no mask.
+- **Ground cover.** The blade and model tiers trace straight down to keep plants off
+  placed geometry. The patches sit inside that span, so the first build dropped every
+  blade under a patch. Patch TLAS instances now carry `TLAS_SBT_TAG_TERRAIN_PATCH` in
+  the SBT record offset, which ray queries do not otherwise use. The shared
+  `gcRootCovered` (`include/groundcover_cover.glsl`, now the single copy of that trace)
+  skips them.
+- **Telemetry.** The `terrain_patch_blas` GPU bracket, plus a `blas:` line in
+  `terrain.patches` (ready / built / refit / deferred / failed, bytes); its GPU line also
+  prints the TLAS build bracket.
+
 ## 8. The spike, and its go/no-go bar (proposed — adjust it)
 Measure on the 4070 Ti, release build, at the five TSD positions: (a) refit time for 197 k
 triangles of a displaced grid, (b) compute displace time for 101 k vertices, (c) added raster
@@ -375,6 +409,215 @@ of them coarse at two-level). Totals are compute + `main_render` delta, ms:
   with the patches-off baseline moving between 5.7 and 7.4 ms. Only interleaved
   comparisons within one run are meaningful here, and FNV eye sits on the 1.0 ms bar
   rather than clearly over it.
+
+### 8.3 Stage 4.2 measurement (#7221, 2026-11-22)
+Same harness as §8.2, 8 interleaved off/on rounds × 4 samples. Two-level lattice, 3 cm,
+6 m, patch parallax on (the defaults), 16 patches resident. Every patch is in the TLAS
+now. **Total** = patch compute + patch BLAS + the TLAS-build delta + the `main_render`
+delta, ms. The `main_render` delta now includes ray queries traversing the patch BLAS.
+
+| position | down | eye | graze | compute | patch BLAS | TLAS Δ |
+|---|---|---|---|---|---|---|
+| Skyrim tundra (2,−4) | **0.87** | **0.95** | **0.48** | 0.13–0.14 | 0.021–0.022 | 0.000 |
+| Skyrim Riverwood (4,−11) | **0.53** | **0.78** | **0.42** | 0.12–0.14 | 0.019–0.021 | 0.000 |
+| FNV Mojave (0,0) | **1.45** | **1.99** | **1.51** | 0.12–0.14 | 0.019 | 0.000 |
+| FO4 Commonwealth (0,0) | **1.16** (sd 2.7) | **0.56** (sd 3.3) | **0.16** | 0.12–0.13 | 0.018 | 0.000 |
+| Oblivion forest (0,0) | **0.82** | **0.55** | **0.14** | 0.13 | 0.020–0.022 | 0.000 |
+
+- **The refit is not the cost.** All 16 patch BLAS refit in one batched call in
+  0.018–0.022 ms, against the 0.5 ms bar and §8.1's ≈ 0.13 ms one-BLAS projection,
+  because the batched call pays no per-BLAS serialize barrier. The TLAS-build bracket
+  moves by under 0.002 ms with 16 more instances (1276 against 1260 at FNV;
+  `rt.integrity` PASS, emitted = eligible).
+- **Against the 1.0 ms bar**: every Skyrim and Oblivion pose and FO4 eye/graze pass; FO4
+  down is inside its own noise; FNV fails at every pose (1.45–1.99), as in §8.2, where
+  that position was shown to be noise-bound across runs.
+- **The RT share, isolated in one run.** `terrain.patches rt off` keeps the patch draws
+  out of the TLAS (rays then see the base terrain under them) while the raster, compute
+  and BLAS refit stay the same. The three states, patches off / raster-only / with RT,
+  ran interleaved, 8 rounds × 4 samples each. The `main_render` deltas are in ms. Each
+  cell is raster − off / RT − raster:
+
+  | position | down | eye | graze | state sd |
+  |---|---|---|---|---|
+  | Skyrim tundra | +0.54 / +0.13 | +0.40 / +0.24 | +0.06 / +0.18 | 0.16–0.50 |
+  | Skyrim Riverwood | +0.33 / +0.13 | +0.23 / +0.19 | +0.27 / −0.11 | 0.13–0.38 |
+  | FNV Mojave | +0.75 / +0.12 | +0.84 / +0.31 | +0.67 / +0.01 | 0.22–0.39 |
+  | FO4 Commonwealth | +0.81 / +0.40 | +0.16 / +0.08 | +0.36 / +0.17 | 0.5–3.1 |
+  | Oblivion forest | +1.20 / +0.32 | +0.16 / +0.07 | −0.19 / +0.12 | 0.42–0.72 |
+
+  With an sd of 0.15–0.5 ms per state and n = 32, a delta carries roughly ±0.1 ms; FO4
+  carries several times that. **Rays through the patch BLAS cost 0.0–0.3 ms, about
+  0.15 ms typically**, and the TLAS build is unchanged. The raster-only state is the
+  larger part: up to 1.2 ms looking down, and 0.7–0.8 ms at FNV at every pose. That
+  state still fires every main-pass ray from the patch pixels, though; it only removes
+  the patches as something rays can hit. So it is not raster cost. The two-switch and
+  ray-family runs below show that rays from patch pixels carry nearly all of it. The `main_render`
+  baselines here are higher than §8.2's, so the absolute ms are not comparable across
+  runs; only the in-run deltas are.
+- **The raster, broken down at FNV.** Six interleaved states in one run, patches out of
+  the TLAS throughout, 8 rounds × 4 samples. The `main_render` deltas over patches-off
+  are in ms; the sd per state is 0.12–0.44:
+
+  | pose | defaults | amplitude 0 | parallax off | all coarse | all fine |
+  |---|---|---|---|---|---|
+  | down | +0.77 | +0.76 | +0.46 | +0.27 | +0.53 |
+  | eye | +0.92 | +0.86 | +0.72 | +0.55 | +1.20 |
+  | graze | +0.81 | +0.79 | +0.78 | +0.79 | +1.23 |
+
+  - **The relief height is free.** At amplitude 0 the cost stays within 0.06 ms.
+  - **The parallax march on patches costs 0.31 / 0.20 / 0.03 ms**, an upper bound on what
+    4.3's residual march can save.
+  - **Triangle density** is the other near-camera term. All-coarse saves 0.50 / 0.37 ms
+    looking down / at eye level, and nothing at graze, where the two-level pool is
+    already mostly coarse. All-fine adds 0.3–0.4 ms at eye and graze. All-fine coming in
+    *under* the defaults looking down (0.53 against 0.77, sd 0.23) is unexplained.
+  - **A floor of 0.3–0.8 ms remains even all-coarse**, growing toward graze. Relief,
+    parallax and triangle count do not explain it. The patches draw before the base
+    terrain they cover (lower mesh handles, same sort group), so the base is early-Z
+    rejected under them rather than shaded twice. The capture and the switch runs below
+    attribute the floor to rays fired from patch pixels.
+- **RenderDoc capture at FNV eye level** (RenderDoc 1.45, per-draw `EventGPUDuration`
+  plus pipeline statistics; patches on / off / all coarse). The patches add no pixels
+  and no overdraw. With patches off, the base cell under the camera shades 409 k
+  fragments. With patches on, the patches shade 359 k of them and the base the other
+  48 k, with fragment invocations equal to samples passed in both captures. The same
+  near-region pixels cost 1.10 ms on the patches against 0.70–0.87 ms on the base: a
+  1.25–1.6× per-pixel premium. The two near patches cost 0.314 / 0.408 ms fine and
+  0.278 / 0.375 ms coarse, so lattice density is worth only about 0.07 ms there.
+  Ground cover is unchanged.
+- **The premium is the main-pass rays.** Patches off/on were interleaved under the
+  `r.dbg` bits, 6 rounds × 4 samples. Each cell is the patch delta in ms, with the
+  patches-off `main_render` in brackets:
+
+  | pose | baseline | no main rays (`0x40000000`) | no POM (`0x1`) | neither |
+  |---|---|---|---|---|
+  | down | +1.44 (5.37) | +0.07 (0.61) | +1.35 (5.21) | +0.05 (0.54) |
+  | eye | +1.97 (7.59) | +0.06 (1.19) | +1.97 (7.37) | +0.08 (1.03) |
+  | graze | +1.20 (6.53) | +0.26 (1.27) | +0.76 (6.42) | +0.25 (1.13) |
+
+  With the main-pass rays off, the patches cost 0.05–0.08 ms (0.25 at graze), so their
+  geometry is nearly free to raster. Parallax on patches matters only at graze
+  (≈ 0.43 ms). The baseline deltas are higher than in the earlier runs; only in-run
+  comparisons hold.
+- **Split by ray family** (same harness, one family off at a time; patch delta in ms,
+  patches-off `main_render` in brackets):
+
+  | pose | baseline | no direct shadows (`0x8000000`) | no GI (`0x10000000`) | no reflection / glass (`0x20000000`) |
+  |---|---|---|---|---|
+  | down | +1.33 (5.45) | +0.52 (2.89) | +0.92 (3.31) | +1.21 (5.45) |
+  | eye | +1.51 (7.82) | +0.63 (2.70) | +1.30 (6.51) | +2.02 (7.73) |
+  | graze | +1.19 (6.33) | +0.40 (2.15) | +0.69 (5.49) | +0.82 (6.47) |
+
+  The sd per state is 0.14–0.68. **Direct shadow queries from patch pixels carry most
+  of the premium**, 0.8–0.9 ms at every pose. **The diffuse GI path is next**: about
+  0.4–0.5 ms looking down and at graze, and within noise at eye level. Reflection and
+  glass rays add nothing measurable (the eye cell's +0.5 is inside its sd), and
+  shadows plus GI account for the whole baseline delta. The next two bullets show why
+  those rays cost more from patch pixels.
+- **Per-ray causes ruled out** (code reading, plus the ReSTIR run below):
+  - *Ray count.* The shadow sample count (`rayBudget.directShadowSamples`) is
+    frame-wide, the visibility mask comes from the light rather than the pixel, and
+    the trace (`traceShadowTransmittanceDetailed`, closest-hit, opaque) is the same
+    for patch and base pixels.
+  - *The relief normal.* At amplitude 0, out of the TLAS, the patches have the base's
+    normals and keep the raster-only cost (+0.76 against +0.77 ms looking down,
+    table above).
+  - *The patch BLAS.* The raster-only state keeps most of the premium.
+  - *History.* Patch instances take the base cell's model matrix and stable surface
+    ids (`u32::MAX − 1 − slot`, no sentinel collision under the reservoir mask), so
+    they are never flagged as moved. With ReSTIR temporal reuse off (`0x40000`), or
+    temporal and spatial reuse and the direct-radiance EMA off (`0x8000`), the
+    premium does not move (same harness, patch delta in ms, sd 0.15–0.45 per state):
+
+    | pose | baseline | no temporal | no ReSTIR | no main rays |
+    |---|---|---|---|---|
+    | down | +0.70 | +0.75 | +0.72 | +0.07 |
+    | eye | +0.86 | +0.74 | +0.86 | +0.14 |
+    | graze | +0.71 | +0.69 | +0.41 | +0.14 |
+
+    The graze no-ReSTIR cell is about one sd. This run's baselines are 0.4–1.0 ms below
+    the other runs', with the same binary, position and harness, so only in-run
+    comparisons hold.
+- **The premium is per pixel rather than per ray: small triangles.** Two experiments
+  used temporary shader switches (not kept). Both were compiled into
+  `triangle.frag.spv` and `triangle_early.frag.spv`. Opaque terrain, base and patch,
+  draws with the early-test variant, so a switch compiled only into `triangle.frag.spv`
+  never reaches it. A first helper-lane run did exactly that; its null result
+  (+1.30 / +1.85 / +0.94 against +1.25 / +1.79 / +0.97) is two baselines.
+  - *Per-pixel ray latency barely differs.* A subgroup shader-clock heatmap
+    (`clock2x32ARB` around the direct-light and GI sections, 6 frames per state)
+    averaged over the pixels the patches cover:
+
+    | pose | direct, off → on | direct, flat | GI, off → on | GI, flat | rays off (direct) |
+    |---|---|---|---|---|---|
+    | down | 274 k → 290 k (+6 %) | 270 k (−2 %) | 251 k → 227 k (−9 %) | 222 k | 10 k / 8 k |
+    | eye | 274 k → 298 k (+9 %) | 290 k (+6 %) | 196 k → 184 k (−6 %) | 177 k | 6 k / 6 k |
+    | graze | 310 k → 327 k (+6 %) | 317 k (+2 %) | 134 k → 135 k (0 %) | 128 k | 6 k / 6 k |
+
+    Values are cycles per pixel. "Flat" is amplitude 0 with the patches out of the
+    TLAS. The other pixels are unchanged within 1–3 %. The rays are 97 % of the
+    per-pixel time. Their latency from a patch pixel is within −9 % to +9 % of a base
+    pixel's. That cannot account for a premium that RenderDoc measured at
+    1.25–1.6× per pixel.
+  - *Helper lanes carry a third or more.* With shadow and GI rays skipped in helper
+    invocations (`gl_HelperInvocation`), the patch delta drops (same harness, ms,
+    sd 0.22–0.59):
+
+    | pose | baseline | helper-lane skip | no main rays |
+    |---|---|---|---|
+    | down | +1.48 | +0.94 | +0.08 |
+    | eye | +1.87 | +1.06 | +0.15 |
+    | graze | +0.99 | +0.65 | +0.14 |
+
+    That is 0.35–0.81 ms, or 35–43 %. Eye-level screenshots with the skip differ from
+    baseline no more than two baseline shots differ from each other: helper lanes'
+    shading is never stored, and nothing after the ray branches takes derivatives of
+    their results. The `aaRoughness` derivative is hoisted above them, and the AO
+    fetch is screen-space. The patches-off frame also drops by 0.37–0.41 ms at eye and
+    graze, which is about one sd, so the skip may pay on every dense mesh, not only
+    the patches.
+  - *The remainder* fits the same cause, but this is inferred, not measured. Edges
+    of small triangles split 2×2 quads, so the same pixels fill more warps. Each warp
+    then waits through the same ray latency even when its helper lanes fire nothing.
+    That matches all-coarse saving 0.37–0.50 ms and all-fine adding 0.3–0.4 ms in the
+    raster breakdown above. RenderDoc's fragment invocations do not count helper
+    lanes, which is why they equal samples passed.
+
+  **For 4.3:** the lever is screen-space triangle size, not the parallax march.
+  Coarser triangles where they cover few pixels, or a lattice sized in screen space,
+  is the patch-side fix. The helper-lane skip itself shipped engine-wide in #7261:
+  `triangle.frag` and `water.frag`, plus the RT reflection ray below the
+  `aaRoughness` hoist. That A/B ran with patches on, in one binary, with 32
+  samples per state. It saved:
+
+  | location | saved (ms) |
+  |---|---|
+  | FO4 MedTek | +0.43 to +0.55 |
+  | Oblivion forest | +0.27 to +0.40 |
+  | FNV Mojave | +0.23 to +0.47 (+0.16 to +0.43 with patches off) |
+  | Skyrim Riverwood | +0.04 to +0.06 |
+  | FNV Prospector Saloon | −0.14 to +0.08 (noise) |
+
+  The skip had no visible effect on the image. Shots alternated between skip on
+  and skip off at equal spacing. Pairs one step apart in different states
+  differed no more than pairs two steps apart in the same state.
+- **Raster-only is not a fallback.** At Riverwood (eye, on the riverbank) the raster-only
+  frame darkens the bank's crease by up to 23 levels of 8-bit luma in a band of rows:
+  rays leaving the patch surface hit the base terrain the patch covers. With the patches
+  in the TLAS, the frame matches patches off to within 1–6 levels per band. So the
+  switch stays a diagnostic, not a quality setting.
+- **Sync validation** (`BYRO_VALIDATION=1`) at the tundra and FNV positions, all poses,
+  patches on and off: no VUID or SYNC-HAZARD message.
+- **Seams**: unchanged, zero gap and zero lip deviation everywhere.
+- **Risk 3 (denoiser stability)**: six still-camera screenshots per state at eye level,
+  per-pixel temporal standard deviation (8-bit luma), patches on / off: tundra
+  0.80 / 0.84, Riverwood 10.3 / 10.6, FO4 1.54 / 1.55, Oblivion 8.9 / 9.5, FNV 2.60 / 2.39
+  (p95 14.6 / 13.1). No position shows the patches raising the noise beyond FNV's
+  small rise. Six frames is a coarse probe, not the stricter still-camera measurement §6
+  asks for.
+- **Ground cover**: with the patches in the TLAS, the first build dropped every plant
+  under a patch (§7.2); with the tag the near grass is back.
 
 ## 9. Review decisions (Matías, 2026-11-21)
 1. **Upward-only displacement, base mesh kept (§3.3)**: accepted. No holes, no zero-mean

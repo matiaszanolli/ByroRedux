@@ -1981,10 +1981,20 @@ mod tests {
         assert_eq!(InteractionKind::Sleep.verb(), "Sleep");
 
         world.resource_mut::<ObScriptLedger>().jail = None;
-        world.insert_resource(byroredux_scripting::ScriptGame(byroredux_plugin::esm::reader::GameKind::Oblivion));
+        // #7212 — the bed follows the ruleset's leveling model, not the game: an Oblivion game under a Fallout
+        // ruleset offers none, a Skyrim game under the skill-use (Oblivion) ruleset does.
+        use byroredux_core::character::{CharacterRuleset, LevelingModel};
+        use byroredux_plugin::esm::reader::GameKind;
+        world.insert_resource(byroredux_scripting::ScriptGame(GameKind::Oblivion));
+        world.insert_resource(CharacterRuleset::new(LevelingModel::FNV));
         candidates.clear();
         populate_candidates(&world, &mut candidates);
-        assert_eq!(candidates.get(&bed), Some(&InteractionKind::Sleep), "ordinary Oblivion bed");
+        assert!(!candidates.contains_key(&bed), "no skill-use leveling, no rest");
+        world.insert_resource(byroredux_scripting::ScriptGame(GameKind::Skyrim));
+        world.insert_resource(CharacterRuleset::new(LevelingModel::OBLIVION));
+        candidates.clear();
+        populate_candidates(&world, &mut candidates);
+        assert_eq!(candidates.get(&bed), Some(&InteractionKind::Sleep), "ordinary bed under skill-use leveling");
     }
 
     #[test]

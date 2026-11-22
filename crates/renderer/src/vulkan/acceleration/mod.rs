@@ -25,6 +25,7 @@
 
 mod blas_skinned;
 mod blas_static;
+mod blas_terrain_patch;
 mod constants;
 mod memory;
 mod predicates;
@@ -37,6 +38,10 @@ pub use constants::{
 };
 pub use predicates::{build_instance_map, plan_static_blas_restore};
 pub use types::{BlasBuildSource, BlasEntry, SkinnedBlasGeometry, TlasState};
+pub use blas_terrain_patch::{
+    TerrainPatchBlasContent, TerrainPatchBlasRequest, TerrainPatchBlasStats,
+    MAX_TERRAIN_PATCH_BLAS_BUILDS_PER_FRAME, TERRAIN_PATCH_BLAS_REBUILD_AFTER_REFITS,
+};
 
 // Surfaces a CPU-side scratch-shrink helper to sibling modules (notably
 // `vulkan::context::draw`, which calls it on the per-frame `Vec` it
@@ -366,6 +371,9 @@ pub struct AccelerationManager {
     /// today, so the round-up is a no-op there; the headroom + round-up
     /// only do work on a future misaligning driver / mobile GPU.
     pub(super) scratch_align: u32,
+    /// TSD-4.2 (#7221) — one refit-every-frame BLAS per reserved terrain
+    /// patch mesh, with its own scratch (`blas_terrain_patch.rs`).
+    pub(super) terrain_patch_blas: blas_terrain_patch::TerrainPatchBlasSet,
 }
 
 impl AccelerationManager {
@@ -442,6 +450,7 @@ impl AccelerationManager {
             skinned_blas: rustc_hash::FxHashMap::default(),
             provisional_skinned_blas: Vec::new(),
             scratch_align,
+            terrain_patch_blas: Default::default(),
         })
     }
 
@@ -526,6 +535,7 @@ impl AccelerationManager {
             if let Some(mut scratch) = self.blas_scratch_buffer.take() {
                 scratch.destroy(device, allocator);
             }
+            self.destroy_terrain_patch_blas(device, allocator);
         }
     }
 }

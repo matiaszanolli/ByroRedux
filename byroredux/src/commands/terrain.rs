@@ -247,7 +247,7 @@ impl ConsoleCommand for TerrainPatchesCommand {
     }
 
     fn description(&self) -> &str {
-        "Terrain displacement patches: terrain.patches [on | off | amplitude <m> | range <m> | fine <m> | parallax on|off] (#7152)"
+        "Terrain displacement patches: terrain.patches [on | off | amplitude <m> | range <m> | fine <m> | parallax on|off | rt on|off] (#7152)"
     }
 
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
@@ -257,7 +257,7 @@ impl ConsoleCommand for TerrainPatchesCommand {
             return CommandOutput::line("terrain.patches: not available in this session");
         };
         let usage =
-            "usage: terrain.patches [on | off | amplitude <m> | range <m> | fine <m> | parallax on|off]";
+            "usage: terrain.patches [on | off | amplitude <m> | range <m> | fine <m> | parallax on|off | rt on|off]";
         let parse = |word: &str| word.parse::<f32>().ok().filter(|v| v.is_finite() && *v >= 0.0);
         let words: Vec<&str> = args.split_whitespace().collect();
         match words.as_slice() {
@@ -283,15 +283,20 @@ impl ConsoleCommand for TerrainPatchesCommand {
             // only the residual relief (§3.6).
             ["parallax", "on"] => state.parallax = true,
             ["parallax", "off"] => state.parallax = false,
+            // Patch draws in the TLAS: on by default; `off` keeps them
+            // raster-only so the ray share of the patch cost can be isolated.
+            ["rt", "on"] => state.rt = true,
+            ["rt", "off"] => state.rt = false,
             _ => return CommandOutput::line(usage),
         }
         let mut lines = vec![format!(
-            "terrain.patches: {} amplitude={:.3} m range={:.1} m fine={:.1} m parallax={} lip={:.3} m pool={} assigned={}",
+            "terrain.patches: {} amplitude={:.3} m range={:.1} m fine={:.1} m parallax={} rt={} lip={:.3} m pool={} assigned={}",
             if state.enabled { "on" } else { "off" },
             state.amplitude_m,
             state.range_m,
             state.fine_range_m,
             if state.parallax { "on" } else { "off" },
+            if state.rt { "on" } else { "off" },
             LIP_M,
             state.meshes.fine.len().min(state.meshes.coarse.len()),
             state.resident(),
@@ -309,14 +314,26 @@ impl ConsoleCommand for TerrainPatchesCommand {
             cm(s.max_seam_gap),
             cm(s.max_displacement),
         ));
+        // #7221 — the patch BLAS the TLAS used this frame.
+        lines.push(format!(
+            "  blas: ready={} built={} refit={} deferred={} failed={} bytes={:.1} MB",
+            s.blas.ready,
+            s.blas.built,
+            s.blas.refit,
+            s.blas.deferred,
+            s.blas.failed,
+            s.blas.bytes as f64 / (1024.0 * 1024.0),
+        ));
         // The GPU brackets the A/B harness reads (last timer snapshot).
         if let Some(cov) = world.try_resource::<byroredux_core::ecs::SkinCoverageStats>() {
             let ms = |value: f32, active: bool| {
                 byroredux_core::ecs::format_gpu_bracket_ms(value, active, 3)
             };
             lines.push(format!(
-                "  gpu: terrain_patch_ms={} main_render_ms={}",
+                "  gpu: terrain_patch_ms={} terrain_patch_blas_ms={} tlas_build_ms={} main_render_ms={}",
                 ms(cov.gpu_terrain_patch_ms, cov.gpu_terrain_patch_active),
+                ms(cov.gpu_terrain_patch_blas_ms, cov.gpu_terrain_patch_blas_active),
+                ms(cov.gpu_tlas_build_ms, cov.gpu_tlas_build_active),
                 ms(cov.gpu_main_render_ms, cov.gpu_main_render_active),
             ));
         }
@@ -493,5 +510,22 @@ mod tests {
             "a slider edit is an explicit choice:\n{}",
             stored()
         );
+    }
+
+    /// #7221 — `terrain.patches rt off|on` toggles TLAS admission of patch
+    /// draws and the status line reports it; patches start in the TLAS.
+    #[test]
+    fn terrain_patches_rt_switch_toggles_tlas_admission() {
+        use crate::terrain_patches::TerrainPatchState;
+        let mut world = World::new();
+        world.insert_resource(TerrainPatchState::default());
+        assert!(world.resource::<TerrainPatchState>().rt);
+        let out = TerrainPatchesCommand.execute(&world, "rt off").lines.join("\n");
+        assert!(out.contains("rt=off"), "{out}");
+        assert!(!world.resource::<TerrainPatchState>().rt);
+        TerrainPatchesCommand.execute(&world, "rt on");
+        assert!(world.resource::<TerrainPatchState>().rt);
+        let out = TerrainPatchesCommand.execute(&world, "rt maybe").lines.join("\n");
+        assert!(out.contains("usage:"), "{out}");
     }
 }

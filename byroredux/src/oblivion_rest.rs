@@ -5,7 +5,7 @@ use byroredux_core::ecs::components::{ActorValues, Dead, Seated};
 use byroredux_core::ecs::{EntityId, Resource, World};
 use byroredux_native_ui::{RestAction, RestAttribute, RestView};
 use byroredux_plugin::esm::{
-    reader::GameKind, records::oblivion_actor_values::OBLIVION_ACTOR_VALUES,
+    records::oblivion_actor_values::OBLIVION_ACTOR_VALUES,
 };
 use byroredux_scripting::oblivion_skill_use::{
     LEVEL_PICKS, LevelUp, SleepSource, apply_level_menu_picks,
@@ -44,10 +44,13 @@ pub(crate) enum RestSession {
 
 impl Resource for RestSession {}
 
+/// #7212 — whether sleep, wait and the bed prompt are offered: the rest route exists for classic-TES skill-use
+/// leveling (a level is taken at a completed sleep), so it follows the installed ruleset's leveling model, not the
+/// game. Which MenuXml document draws it stays the UI's concern.
 pub(crate) fn supports_rest(world: &World) -> bool {
     world
-        .try_resource::<byroredux_scripting::ScriptGame>()
-        .is_some_and(|game| game.0 == GameKind::Oblivion)
+        .try_resource::<byroredux_core::character::CharacterRuleset>()
+        .is_some_and(|rules| rules.leveling.skill_use_costs().is_some())
 }
 
 fn state(world: &World) -> RestSession {

@@ -267,9 +267,10 @@ const SKYRIM_ACTOR_VALUE_FORMS: [Option<u32>; 164] = [
 /// `AVIF`s start at `0x3E8`, and mod records sit in a plugin slot >= 1). Anything
 /// else is an index: Fallout 3 / New Vegas through the `GetAV` table verified
 /// against the masters ([`crate::obscript_actor_values`]), Skyrim through
-/// [`SKYRIM_ACTOR_VALUE_FORMS`]. Oblivion has no `AVIF` records, so it stays
-/// unreadable. No game installed (tools, unit tests) passes `param_1` through,
-/// as before.
+/// [`SKYRIM_ACTOR_VALUE_FORMS`], Oblivion through its engine-supplied roster
+/// (`oblivion_actor_values::vanilla_name`, #7010/#7009: Oblivion authors no
+/// `AVIF` records, the loader installs them). No game installed (tools, unit
+/// tests) passes `param_1` through, as before.
 pub fn condition_actor_value_form(world: &World, param_1: u32) -> Option<u32> {
     use byroredux_plugin::esm::reader::GameKind;
     let Some(game) = world.try_resource::<ScriptGame>().map(|game| game.0) else {

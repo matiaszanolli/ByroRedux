@@ -1057,6 +1057,23 @@ void main() {
         && !compileDisableReflectionGlass
         && (dbgFlags & DBG_DISABLE_REFLECTION_GLASS_RAYS) == 0u;
 
+    // #7261 — helper invocations (the lanes that fill out a 2×2 quad along a
+    // triangle edge) trace no shadow or GI rays. Their outputs, stores and
+    // atomics are discarded, so a ray they trace only costs time: on small
+    // triangles it was 35–43 % of the TSD patch premium (terrain-displacement
+    // §8.3). It is sound only because no derivative follows the ray branches:
+    // `aaRoughness` (`dFdx(N)`) is hoisted above every one of them (#3983),
+    // the RT reflection below is gated the same way, and the AO fetch is
+    // screen-space. A `dFdx`/`dFdy`/`fwidth`, implicit-LOD `texture()` on a
+    // ray-dependent value, or quad/subgroup op added after the hoist would
+    // read a helper lane's ray-less result — pinned by
+    // `helper_lanes_trace_no_main_rays_and_no_derivative_follows`.
+    // `reflectionGlassRayEnabled` keeps helper lanes: the glass branch rewrites
+    // `N` above the hoist, and `dFdx(N)` must see the same `N` in every lane.
+    bool helperLane = gl_HelperInvocation;
+    directShadowRayEnabled = directShadowRayEnabled && !helperLane;
+    giRayEnabled = giRayEnabled && !helperLane;
+
     // ── RT mipmap LOD — analogous to textureGrad mip selection ──────────
     //
     // World-space size of one screen pixel at this fragment. Larger footprint
@@ -3044,6 +3061,9 @@ void main() {
     float aaRoughness = ((dbgFlags & DBG_DISABLE_SPECULAR_AA) != 0u)
         ? roughness
         : specularAaRoughness(N, roughness);
+    // Screen UV of the SSAO target, read by the probe's specular occlusion
+    // (RLT-IBL-004) and the diffuse AO below; no ray produces it (#7261).
+    vec2 aoUV = gl_FragCoord.xy / screen.xy;
 
     vec3 Lo = vec3(0.0); // Accumulated outgoing radiance.
     uint selectedLightDebug = 0xFFFFFFFFu;
@@ -3217,7 +3237,8 @@ void main() {
         // specular occlusion (RLT-IBL-004) applies to it only, since a traced
         // ray already sees the occluder.
         float probeShare = 1.0;
-        if (reflectionGlassRayEnabled && traceEnvironmentRay && rtLOD < RT_LOD_REFLECT) {
+        // #7261 — after the `aaRoughness` hoist, so helper lanes skip it.
+        if (traceEnvironmentRay && reflectionGlassRayEnabled && !helperLane && rtLOD < RT_LOD_REFLECT) {
             // Deterministic rough reflection: a single SHARP ray, GGX-lobe
             // blur applied as a roughness-scaled mip on the hit sample
             // (`traceReflection`'s mipBias). mip ~ roughness·8 spans the
@@ -3262,7 +3283,7 @@ void main() {
         // ambient-occlusion form), from the same SSAO the diffuse reads.
         float envAO = ((dbgFlags & DBG_DISABLE_AO) != 0u)
             ? 1.0
-            : max(texture(aoTexture, gl_FragCoord.xy / screen.xy).r, 0.20);
+            : max(texture(aoTexture, aoUV).r, 0.20);
         float probeOcclusion = clamp(
             pow(NdotV + envAO, exp2(-16.0 * roughness - 1.0)) - 1.0 + envAO, 0.0, 1.0);
         // M-LIGHT RLT-IBL-004 (owner, rev 49): on an exterior, the sky probe's
@@ -5047,7 +5068,6 @@ void main() {
     // bounce light, the aggressive floor prevented AO from visibly biting
     // in crevices. 0.20 keeps a small safety margin for first-frame / edge
     // cases while letting proper contact shadows show through.
-    vec2 aoUV = gl_FragCoord.xy / screen.xy;
     float ao = max(texture(aoTexture, aoUV).r, 0.20);
 
     // Phase 3: albedo-demodulated indirect lighting for SVGF.

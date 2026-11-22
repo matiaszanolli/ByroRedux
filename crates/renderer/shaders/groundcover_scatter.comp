@@ -131,6 +131,7 @@ layout(push_constant) uniform GcScatterPush {
 // `renderOrigin`; the scatter carries it in its push block.
 #define renderOrigin pc.renderOriginEnable
 #include "include/ray_origin.glsl"
+#include "include/groundcover_cover.glsl"
 
 const uint HIST_BASE = GROUNDCOVER_MAX_CHUNKS;
 const uint OVERFLOW_SLOT = GROUNDCOVER_MAX_CHUNKS + GROUNDCOVER_HISTOGRAM_BUCKETS;
@@ -269,26 +270,12 @@ void main() {
         // and no tuned tolerance are needed. Architecture and static props
         // only: an actor walking through grass does not uproot it, and
         // cutout foliage and effect cards are not ground.
+                // `gcRootCovered` (include/groundcover_cover.glsl) traces it.
                 bool covered = false;
-                if (pc.renderOriginEnable.w > 0.5) {
-            vec3 root = vec3(worldXZ.x, s.meshHeight, worldXZ.y);
-            vec3 floorPoint = offsetRayOrigin(root, vec3(0.0, 1.0, 0.0));
-            vec3 top = root + vec3(0.0, pc.cameraPos.w, 0.0);
-            float span = top.y - floorPoint.y;
-            if (span > 0.0) {
-                rayQueryEXT coverQuery;
-                rayQueryInitializeEXT(
-                    coverQuery, gcTopLevelAS,
-                    gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
-                    VISIBILITY_LAYER_ARCHITECTURE | VISIBILITY_LAYER_STATIC_PROP,
-                    top, 0.0, vec3(0.0, -1.0, 0.0), span);
-                while (rayQueryProceedEXT(coverQuery)) {}
-                if (rayQueryGetIntersectionTypeEXT(coverQuery, true)
-                    != gl_RayQueryCommittedIntersectionNoneEXT) {
+                if (pc.renderOriginEnable.w > 0.5
+                    && gcRootCovered(vec3(worldXZ.x, s.meshHeight, worldXZ.y), pc.cameraPos.w)) {
                     atomicAdd(gcCounters[SLOT_COVERED], 1u);
                     covered = true;
-                }
-            }
                 }
 
                 if (!covered) {

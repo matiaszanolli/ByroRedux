@@ -219,11 +219,14 @@ fn leaf_behavior(
                     radius: radius_of(location),
                     target_form_id: Some(form_id),
                     actor_form_id,
+                    near_editor_location: false,
                 }),
                 PackLocationTarget::Other(_) if matches!(location.location_type, 2 | 3) => Ok(AmbientBehavior::Travel {
                     radius: radius_of(location),
                     target_form_id: None,
                     actor_form_id,
+                    // Type 3 is Near Editor Location (#7225), type 2 Near Current Location.
+                    near_editor_location: location.location_type == 3,
                 }),
                 _ => Err(LeafDecline::UnresolvedInput),
             }
@@ -283,6 +286,8 @@ fn leaf_behavior(
                 anchor_form_id: reference_of(location),
                 radius: radius_of(location),
                 actor_form_id,
+                // #7254 — Near Editor Location anchors on the editor placement, as the flat Guard's does.
+                near_editor_location: matches!(location_anchor(Some(location)), EatSleepLocation::NearEditorLocation),
             })
         }
         // Flee takes the actor over like the flat FleeNotCombat: only from conditions decided on modelled
@@ -303,6 +308,7 @@ fn leaf_behavior(
         "Wander" if whole_tree => Ok(AmbientBehavior::Wander {
             wander_radius: location.and_then(radius_of),
             actor_form_id,
+            near_editor_location: matches!(location_anchor(location), EatSleepLocation::NearEditorLocation),
         }),
         "Wander" => Err(LeafDecline::NotRootLeaf),
         // Sit / UseIdleMarker wait on the seat runtime (AIP-SIT-002, -003); the rest have none.
@@ -376,12 +382,13 @@ mod tests {
         let (package, template) = tree(vec![leaf("Travel", &[0], vec![])], vec![location(0, 0, near_ref(0x1234), 300)]);
         assert_eq!(
             decide(&package, &template, None, &world),
-            Ok(AmbientBehavior::Travel { radius: Some(300.0), target_form_id: Some(0x1234), actor_form_id: 0xAA })
+            Ok(AmbientBehavior::Travel { radius: Some(300.0), target_form_id: Some(0x1234), actor_form_id: 0xAA, near_editor_location: false })
         );
         let (package, template) = tree(vec![leaf("Travel", &[0], vec![])], vec![location(0, 3, PackLocationTarget::Other(0), 0)]);
         assert_eq!(
             decide(&package, &template, None, &world),
-            Ok(AmbientBehavior::Travel { radius: None, target_form_id: None, actor_form_id: 0xAA })
+            Ok(AmbientBehavior::Travel { radius: None, target_form_id: None, actor_form_id: 0xAA, near_editor_location: true }),
+            "#7225: type 3 is Near Editor Location"
         );
         for (location_type, target) in [(1, PackLocationTarget::InCell(0x40)), (6, PackLocationTarget::Other(0)), (12, PackLocationTarget::Other(0))] {
             let (package, template) = tree(vec![leaf("Travel", &[0], vec![])], vec![location(0, location_type, target, 0)]);
@@ -457,7 +464,7 @@ mod tests {
         let (package, template) = tree(vec![leaf("Wander", &[0], vec![])], loc.clone());
         assert_eq!(
             decide(&package, &template, None, &world),
-            Ok(AmbientBehavior::Wander { wander_radius: Some(128.0), actor_form_id: 0xAA })
+            Ok(AmbientBehavior::Wander { wander_radius: Some(128.0), actor_form_id: 0xAA, near_editor_location: false })
         );
         let (package, template) = tree(vec![leaf("Find", &[], vec![]), leaf("Wander", &[0], vec![])], loc.clone());
         assert_eq!(
@@ -475,7 +482,7 @@ mod tests {
         let (package, template) = tree(vec![leaf("Guard", &[0], vec![])], loc);
         assert_eq!(
             decide(&package, &template, None, &world),
-            Ok(AmbientBehavior::Guard { anchor_form_id: Some(0x77), radius: Some(128.0), actor_form_id: 0xAA })
+            Ok(AmbientBehavior::Guard { anchor_form_id: Some(0x77), radius: Some(128.0), actor_form_id: 0xAA, near_editor_location: false })
         );
     }
 

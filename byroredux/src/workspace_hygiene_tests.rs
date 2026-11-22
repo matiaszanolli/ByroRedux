@@ -2194,3 +2194,31 @@ fn no_binary_production_source_scans_for_a_form_id() {
     });
     assert!(found.is_empty(), "resolve through FormIdPool's index, not a scan (#7113):\n{}", found.join("\n"));
 }
+
+/// #7218 — Oblivion's actor values, ruleset and regen lanes are wired (#7010, #7197), so no production source may
+/// still name the closed #3768 "pre-AVIF resolver" as what they wait on: that wording had rotted into a dozen
+/// comments. The needles are built at run time so this test's own text cannot match.
+#[test]
+fn no_production_source_names_the_closed_pre_avif_resolver_as_a_blocker() {
+    let needles = [format!("pre-{}", "AVIF resolver"), format!("#{}", 3768)];
+    let mut found = Vec::new();
+    for root in production_scan_roots(false) {
+        visit_workspace_rs_files(&root, &mut |path, contents| {
+            if is_test_source(path) {
+                return;
+            }
+            let production = byroredux_core::source_scan::strip_test_modules(contents);
+            for (n, line) in production.lines().enumerate() {
+                if needles.iter().any(|needle| line.contains(needle.as_str())) {
+                    found.push(format!("{}:{}  {}", path.display(), n + 1, line.trim()));
+                }
+            }
+        });
+    }
+    assert!(
+        found.is_empty(),
+        "production source still names the closed #3768 pre-AVIF resolver as a blocker; Oblivion's actor values \
+         are engine-supplied and wired (#7010):\n{}",
+        found.join("\n")
+    );
+}

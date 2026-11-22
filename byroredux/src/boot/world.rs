@@ -55,8 +55,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(crate::render::SceneEffectSoftCache::default());
     // #2950 — `pool_regen_tick_system` needs BOTH `PoolRegenConfig`
     // (per-game: FO3/FNV install it with an ActionPoints lane on the first
-    // cell load, #6350; the TES Fatigue/Magicka lanes wait on Oblivion's
-    // pre-AVIF resolver, #3768) and this accumulator.
+    // cell load, #6350; Oblivion with its Fatigue/Magicka lanes through
+    // `build_tes_pool_regen`, #7010/#7197) and this accumulator.
     // `try_resource_mut` does not default-insert, so leaving the accumulator to
     // the per-game install would have left the tick returning at its second
     // line forever — registered, declared in `sys.accesses`, and silently
@@ -515,6 +515,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_core::ecs::components::PatrolBehavior>();
     world.register::<byroredux_core::ecs::components::PatrolState>();
     world.register::<crate::components::AmbientPackageRuntime>();
+    // #7233 — the leaf a running tree package installed, written by `ambient_ai_package_system`.
+    world.register::<crate::npc_spawn::ai_package::TreeLeafRun>();
     world.register::<crate::systems::random_conversation::ConversationHold>();
     world.register::<crate::systems::mines::ArmedMine>();
     world.register::<crate::systems::mines::SpentMine>();

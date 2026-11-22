@@ -46,6 +46,9 @@ use crate::math::Vec3;
 pub struct WanderBehavior {
     pub wander_radius: Option<f32>,
     pub form_id: u32,
+    /// The PLDT is *Near Editor Location*: the wander's home is the actor's
+    /// [`EditorPlacement`](super::EditorPlacement), not where it stood when the package began (#7225).
+    pub near_editor_location: bool,
 }
 
 impl Component for WanderBehavior {

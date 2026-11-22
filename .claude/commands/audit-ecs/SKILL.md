@@ -211,7 +211,9 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/core/
   by `EntityId` is the drift (it defeats `despawn` cleanup and save capture). Every new `Resource` /
   `Component` is also subject to the save registry gate
   (`every_component_or_resource_impl_is_saved_or_explicitly_allowlisted`, `byroredux/src/save_io/`,
-  `/audit-save`) and the debug-server registry.
+  `/audit-save`) and the debug-server registry (core components by `every_inspectable_component_is_registered`; a saved
+  component in `crates/scripting` / `crates/physics` is registered or excused with a reason by
+  `every_saved_scripting_and_physics_component_is_registered_or_excused`, #7183 `27d9d768e`).
 - `SkinSlotPool` (`resources/skin_slot_pool.rs`): every collection is `FxHashMap`/`FxHashSet`
   (`_audit-common.md` hot-path hashing rule); `pose_dirty` and `drain_pending` are the renderer
   hand-off. Overflow/retry semantics are `/audit-safety` Dim 7.
@@ -402,8 +404,10 @@ First step: `cargo test -p byroredux --bin byroredux -- rapier_release persisten
   `TimerExpired`, `AnimationTextKeyEvents`, the `*Batch` / command markers, …) are removed by
   `event_cleanup_system` (Late exclusive, registered after every consumer — pinned by
   `transient_cleanup_is_the_last_late_exclusive`; a second cleanup site would double-free); Pattern B markers
-  (`StoryEvent`, the scene-package batches, …) drain in their one consumer and must not also be listed in
-  the cleanup. The cleanup system also resets the Papyrus `VmFrameBudget` (#5763). Late readers
+  (`StoryEvent`, the scene-package batches, `ReleasePackageHold` — #7243 `aa15ee950`, the one-shot
+  `EvaluatePackage` raises beside `EvaluatePackageRequest`; `ambient_ai_package_system` takes it before any early
+  return, so no pass strands it, …) drain in their one consumer and must not also be listed in
+  the cleanup (the table in `cleanup.rs` names each owner). The cleanup system also resets the Papyrus `VmFrameBudget` (#5763). Late readers
   now include `equipment_appearance_system` and `npc_dialogue_selection_system`. `timer_tick_system` never accumulates negative time.
   `StoryEvent` is one slot per entity; since #5647 `eca0c4709` every engine producer (CLOC, AHEL, KILL) raises it
   through `scripting::story_manager::raise_story_event` — the first event on an entity takes the marker, a second for

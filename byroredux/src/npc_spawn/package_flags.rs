@@ -7,6 +7,10 @@
 //!   one carries on while its window is open. The block is [`PackageDayBlocks`].
 //! * **Must Complete** (AIP-FLG-002): the running package keeps winning past its schedule window until its
 //!   procedure reports done — Travel arrived, Find's count met or target dealt with, UseWeapon's bursts fired.
+//!   A procedure with no Done state (Sleep, Eat, Wander, Sandbox, Guard, …) never reports done, so it holds
+//!   until a higher-priority package or `EvaluatePackage` ends it, as the GECK describes (#7224). An explicit
+//!   `EvaluatePackage` drops the hold for that one selection (GECK *EvaluatePackage*: "EVP will still drop that
+//!   package and force a reevaluation", #7243): the package keeps running only if its own window is open.
 //! * **Continue If PC Near** (AIP-FLG-003): "will not terminate ... so long as the PC is nearby. Primarily used
 //!   to keep shops open" — the running package keeps winning past its window while the player is in the
 //!   actor's cell. The GECK gives no radius for "nearby"; the cell is the PRD's stand-in (Phase 0: verify).
@@ -31,11 +35,23 @@ const ONCE_PER_DAY_HOURS: f64 = 24.0;
 
 /// When each `(actor, package)` Once Per Day package was first selected, in game hours since the runtime
 /// began. `NOT_SAVED_BY_DESIGN`: a load restarts the 24-hour block, like the rest of the ambient runtime
-/// state (`AmbientPackageRuntime`).
+/// state (`AmbientPackageRuntime`); it is cleared before the load's cell reload, whose spawns note their own (#7252).
 #[derive(Debug, Default, Clone)]
 pub(crate) struct PackageDayBlocks(HashMap<(EntityId, u32), f64>);
 
 impl Resource for PackageDayBlocks {}
+
+#[cfg(test)]
+impl PackageDayBlocks {
+    /// Note a block directly (tests outside this module, which cannot reach [`note_selected`]).
+    pub(crate) fn note(&mut self, actor: EntityId, package: u32, at_hours: f64) {
+        self.0.insert((actor, package), at_hours);
+    }
+
+    pub(crate) fn holds(&self, actor: EntityId, package: u32) -> bool {
+        self.0.contains_key(&(actor, package))
+    }
+}
 
 /// Whether `package`'s procedure has reported done for `actor` (the Must Complete test).
 fn procedure_done(world: &World, actor: EntityId, package: &PackRecord) -> bool {
@@ -49,8 +65,14 @@ fn procedure_done(world: &World, actor: EntityId, package: &PackRecord) -> bool 
             world.has::<byroredux_core::ecs::components::UseWeaponPackageStarted>(actor)
                 && !world.has::<crate::systems::script_requests::UseWeaponRun>(actor)
         }
-        // A procedure with no completion signal never reports done, so a Must Complete one stays until
-        // something else ends it (the script-package slot's own rule).
+        // A procedure with no Done state never reports done, so a Must Complete one holds past its window
+        // until something else ends it (a higher-priority package, `EvaluatePackage`, a script package).
+        // That is the GECK's own account, not a stand-in (#7224): *OnPackageDone* says a package completes
+        // when "the duration has expired, unless the Must Reach Location or Must Complete flags are
+        // checked", and that "wanders, sleeps and eats, cannot 'complete', as they have no Done state";
+        // *Guard Package* says one marked Must Complete "can never complete, therefore the package will
+        // never reevaluate". The pages that call the flag "Invalid" (Sandbox, Accompany, Guard) warn
+        // against setting it; they do not say the engine ignores it.
         _ => false,
     }
 }
@@ -76,11 +98,13 @@ pub(super) fn now_hours(world: &World) -> f64 {
 
 /// Whether the schedule of `package` is extended past its window for `actor` right now: it is the running
 /// package and Must Complete is unmet, or Continue If PC Near holds.
-fn kept_past_window(world: &World, actor: EntityId, current: Option<u32>, package: &PackRecord) -> bool {
+/// `release_hold` is an explicit `EvaluatePackage` this pass (`ReleasePackageHold`): it ends the Must Complete
+/// hold, which is all the GECK says EVP drops; Continue If PC Near is left as it is.
+fn kept_past_window(world: &World, actor: EntityId, current: Option<u32>, release_hold: bool, package: &PackRecord) -> bool {
     if current != Some(package.form_id) {
         return false;
     }
-    (package.package_flags & PKDT_MUST_COMPLETE != 0 && !procedure_done(world, actor, package))
+    (!release_hold && package.package_flags & PKDT_MUST_COMPLETE != 0 && !procedure_done(world, actor, package))
         || (package.package_flags & PKDT_CONTINUE_IF_PC_NEAR != 0 && player_in_actors_cell(world, actor))
 }
 
@@ -95,18 +119,20 @@ fn once_per_day_blocked(world: &World, actor: EntityId, current: Option<u32>, pa
 }
 
 /// The first package, in priority order, whose (possibly extended) window is open, that is not blocked for
-/// the day and whose conditions pass — `active_package` with the three flags.
+/// the day and whose conditions pass — `active_package` with the three flags. `release_hold`: see
+/// [`kept_past_window`].
 pub(super) fn scan_with_flags<'a>(
     world: &World,
     actor: EntityId,
     clock: PackClock,
     current: Option<u32>,
+    release_hold: bool,
     packages: impl IntoIterator<Item = &'a PackRecord>,
     condition_met: impl Fn(&PackRecord) -> bool,
 ) -> Option<&'a PackRecord> {
     let now = now_hours(world);
     packages.into_iter().find(|package| {
-        (package.scheduled_active_at(clock) || kept_past_window(world, actor, current, package))
+        (package.scheduled_active_at(clock) || kept_past_window(world, actor, current, release_hold, package))
             && !once_per_day_blocked(world, actor, current, package, now)
             && condition_met(package)
     })
@@ -168,7 +194,12 @@ mod tests {
     }
 
     fn winner(world: &World, actor: EntityId, hour: f32, current: Option<u32>, packages: &[PackRecord]) -> Option<u32> {
-        scan_with_flags(world, actor, PackClock::from(hour), current, packages.iter(), |_| true).map(|p| p.form_id)
+        scan_with_flags(world, actor, PackClock::from(hour), current, false, packages.iter(), |_| true).map(|p| p.form_id)
+    }
+
+    /// The scan with an explicit `EvaluatePackage` releasing the running package's hold (#7243).
+    fn winner_after_evp(world: &World, actor: EntityId, hour: f32, current: Option<u32>, packages: &[PackRecord]) -> Option<u32> {
+        scan_with_flags(world, actor, PackClock::from(hour), current, true, packages.iter(), |_| true).map(|p| p.form_id)
     }
 
     /// INC7-6 -- an entry past its 24 hours blocks nothing, so the next selection drops it: the map does
@@ -200,6 +231,41 @@ mod tests {
         // Without the flag the window ends it.
         let plain = [morning(1, 0), always(2)];
         assert_eq!(winner(&world, actor, 14.0, Some(1), &plain), Some(2));
+    }
+
+    /// #7224 -- a Must Complete package whose procedure has no Done state (a Sleep here) holds past its window
+    /// for good: the GECK's *OnPackageDone* and *Guard Package* pages say the flag stops a package ending on
+    /// its duration and that such a package never reevaluates. It still yields to a higher-priority open one.
+    #[test]
+    fn a_must_complete_package_with_no_done_state_holds_past_its_window() {
+        let (world, actor) = world_at(0, 14.0);
+        let sleep = PackRecord { procedure_type: byroredux_plugin::esm::records::misc::pack::PROCEDURE_SLEEP, ..morning(1, PKDT_MUST_COMPLETE) };
+        let packages = [sleep.clone(), always(2)];
+        assert_eq!(winner(&world, actor, 14.0, Some(1), &packages), Some(1), "past its window, still running");
+        assert_eq!(winner(&world, actor, 14.0, None, &packages), Some(2), "not running: the closed window keeps it out");
+        let preempted = [always(9), sleep];
+        assert_eq!(winner(&world, actor, 14.0, Some(1), &preempted), Some(9), "a higher-priority open package ends it");
+    }
+
+    /// #7243 -- an explicit `EvaluatePackage` drops the Must Complete hold for that selection (GECK
+    /// *EvaluatePackage*): past its window the package loses; inside it, it wins on its own schedule. Continue If
+    /// PC Near, which the GECK does not name there, still holds.
+    #[test]
+    fn an_explicit_evaluate_package_releases_only_the_must_complete_hold() {
+        let (mut world, actor) = world_at(0, 14.0);
+        let sleep = PackRecord { procedure_type: byroredux_plugin::esm::records::misc::pack::PROCEDURE_SLEEP, ..morning(1, PKDT_MUST_COMPLETE) };
+        let packages = [sleep, always(2)];
+        assert_eq!(winner_after_evp(&world, actor, 14.0, Some(1), &packages), Some(2), "past its window: EVP ends it");
+        assert_eq!(winner_after_evp(&world, actor, 9.0, Some(1), &packages), Some(1), "inside its window it still wins");
+
+        let player = world.spawn();
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        let cell = world.spawn();
+        world.insert(cell, CellFormId(0xA));
+        world.insert(actor, CellRoot(cell));
+        world.insert(player, CellRoot(cell));
+        let shop = [morning(1, PKDT_CONTINUE_IF_PC_NEAR), always(2)];
+        assert_eq!(winner_after_evp(&world, actor, 14.0, Some(1), &shop), Some(1), "Continue If PC Near is not released");
     }
 
     /// A kept package still yields to an earlier package whose window is open.

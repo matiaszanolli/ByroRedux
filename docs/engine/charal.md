@@ -245,7 +245,9 @@ waits on that data.
 ```rust
 pub struct PoolRegenAccumulator { seconds: f32 }                                   // the fixed 60 Hz clock
 pub struct PoolRegenConfig { fatigue_avif: Option<u32>, magicka_avif: Option<u32>, willpower_avif: Option<u32>,
-                             action_points: Option<ActionPointsRegen> }                  // per-game resolved AVIF ids + the Fallout AP lane (#6350)
+                             stunted_magicka_avif: Option<u32>,                         // an active Stunted Magicka stops Magicka regen
+                             action_points: Option<ActionPointsRegen>,                  // the Fallout AP lane (#6350)
+                             tes_rates: Option<TesPoolRegen> }                          // Oblivion's rates + Endurance record (#7197)
 ```
 
 Passive Fatigue/Magicka regeneration. Every regen rate sourced so far is expressed
@@ -262,29 +264,26 @@ out of scope):
 |---|---|---|
 | Fatigue | `fFatigueReturnBase + fFatigueReturnMult × Endurance` per sec, flat `10`/sec in vanilla | `TesPoolRegen` (`fFatigueReturnBase`=10, `fFatigueReturnMult`=0 in `Oblivion.esm`; defaults `FATIGUE_REGEN_PER_SEC`) |
 | Magicka | `(Willpower × fMagickaReturnMult + fMagickaReturnBase) × (MaxMagicka / 100)`, `0.02` / `0.75` in vanilla | `TesPoolRegen` (`fMagickaReturnMult` / `fMagickaReturnBase`, authored by `Oblivion.esm`; defaults `MAGICKA_REGEN_WILLPOWER_COEFF` / `MAGICKA_REGEN_BASE`) |
+| Health | **none** — no passive regen in classic Oblivion | deliberately unmodelled |
 
 All four settings are read from the load order (#7197): `CharacterRulesProfile::build_tes_pool_regen` overlays them on
 `TesPoolRegen::OBLIVION` through `TesPoolRegen::with_gmst` (a non-finite or negative value keeps its default) and
 installs them on `PoolRegenConfig::tes_rates`, with the Endurance record the Fatigue term reads.
-| Health | **none** — no passive regen in classic Oblivion | deliberately unmodelled |
 
-**Mechanism BUILT and registered; live for FO3/FNV Action Points only.**
+**Mechanism BUILT and registered; live for FO3/FNV Action Points and Oblivion Fatigue / Magicka.**
 `pool_regen_tick_system` is registered in `Stage::Update`
 (`byroredux/src/boot/schedule/update/`) and runs every frame. Its required
 `PoolRegenConfig` is inserted by `build_vats_model` (`byroredux/src/npc_spawn/`) on the
 first FO3/FNV cell load (#6350), carrying the `ActionPointsRegen` lane: the player's
 `ActionPoints` restores at `fActionPointsRestoreRate` normalized to per-second
-(FO3 4/s; FNV 0.06 per frame × 60 Hz = 3.6/s — see `charal-fnv-fo3-ruleset.md`). Every
-other game never inserts the config, and the Fatigue/Magicka/Willpower lanes are off
-even on FO3/FNV (their ids are `None`, #6430: the lane is disabled outright, not by a sentinel
-id that no actor happens to carry). The Oblivion Fatigue/Magicka
-lanes: the `oblivion_pool_regen_config` builder that once made them was deleted under
-#3848 (`git show e13985dfc` recovers it); re-adding it is blocked on Oblivion's own
-wiring, #3768 (#4460). Same shape as §4.6 for the TES lanes — mechanism ahead of its
-wiring.
-Stunted Magicka is
-modelled in the formula (`magicka_regen_per_sec`'s `stunted` parameter) but always
-passed `false`, because no status-effect component exists to carry the flag.
+(FO3 4/s; FNV 0.06 per frame × 60 Hz = 3.6/s — see `charal-fnv-fo3-ruleset.md`); its TES lanes
+are `None` there (#6430: a lane is disabled outright, not by a sentinel id that no actor happens to
+carry). On Oblivion, `CharacterRulesProfile::build_tes_pool_regen` (since #7010, rates from the load
+order since #7197) installs the config with the Fatigue, Magicka, Willpower and `StuntedMagicka` records
+the engine-supplied roster resolves, on the first cell load (`cell_loader/references/mod.rs`). An active
+Stunted Magicka value (Atronach birthsign and its kin) stops Magicka regeneration only, read from
+`stunted_magicka_avif` each tick (`stunted_magicka_stops_only_magicka_regeneration`). FO4, Skyrim, FO76
+and Starfield never insert the config.
 
 ---
 
@@ -361,19 +360,23 @@ AV names (`Marksman`/`Speechcraft`); resolution is verified at load (resolve-or-
 now assembles the full TES ruleset end-to-end** — `AttributeSet::TES_CLASSIC` +
 `SkillSet::OBLIVION` + `LevelingModel::OBLIVION` + the three derived pools, resolve-or-skip
 like the Fallout builders. The level-up leveling-efficiency mechanics are shipped too:
-`oblivion_attribute_bonus(governed_skill_ups)` → +1/+2/+3/+4/+5 by the UESP tier table
-(0 / 1–4 / 5–7 / 8–9 / 10+), capped, no roll-over; and
-`oblivion_health_gain_per_level(endurance)` = 10 % of Endurance accrued (and stored) each
-level (path-dependent, so a per-level event, not a stateless formula). **Classic Oblivion
-(2006 Gamebryo) only** — the live UESP *Oblivion:Health* page now documents the 2024 UE5
-*Remastered* formula, which is out of scope. **The Oblivion ruleset builder is complete —
-it is unwired.** `CharacterRulesProfile::OBLIVION` carries `ruleset: RulesetBuilder::None`
-(in `crates/core/src/character/profile.rs`, cited by symbol — line ranges rot, #4455), so `build_ruleset` never constructs an
-Oblivion `CharacterRuleset` at load, and more fundamentally `Oblivion.esm` authors no `AVIF`
-records at all (the record type postdates Oblivion) — so a legacy actor-value index resolver
-is needed before wiring can even start, not just a `RulesetBuilder` arm (`docs/feature-matrix.md`'s
-"~ built, unwired" is the accurate summary). Skyrim is no longer a parallel case:
-#3848 wired `RulesetBuilder::Skyrim`.
+`oblivion_attribute_bonus(governed_skill_ups, bands)` → +1 for a tally of 0, then the
+`iLevelUp01Mult` … `iLevelUp10Mult` bands (+2/+2/+2/+2/+3/+3/+3/+4/+4/+5 by default, the UESP
+tier table), capped, no roll-over; and `oblivion_health_gain_per_level(endurance, mult)` =
+`fStatsHealthLevelMult` (10 %) of Endurance accrued (and stored) each level (path-dependent, so a
+per-level event, not a stateless formula); `LevelingModel::SkillUse` carries the bands and the
+multiplier, overlaid from the load order (#7196). **Classic Oblivion (2006 Gamebryo) only** — the
+live UESP *Oblivion:Health* page now documents the 2024 UE5 *Remastered* formula, which is out of
+scope. **The Oblivion ruleset is wired (#7010).** `CharacterRulesProfile::OBLIVION` carries
+`ruleset: RulesetBuilder::Oblivion`, and `build_ruleset` calls `oblivion_ruleset_with_gmst`.
+`Oblivion.esm` authors no `AVIF` records (the record type postdates Oblivion), so the loader
+supplies the 72 actor values itself (`EsmIndex::install_oblivion_actor_values`) and every resolver
+sees them as ordinary records. The builder's pool rows are the **player's** pools:
+`trunc(End × fPCBaseHealthMult)`, `trunc(Int × (1 + fPCBaseMagickaMult))` (#7198) and the
+four-attribute Fatigue sum, `player_only` and refreshed every frame (#7037/#7041); an NPC's pools come
+from the population model (`oblivion_population::derive`, the NPC auto-calc and creature rows of
+`charal-oblivion-ruleset.md`), not from these rows. Skyrim is wired too (#3848,
+`RulesetBuilder::Skyrim`).
 
 The user-provided per-game **data tables**, by family — each slots directly into
 the struct above; **the canonical runtime never changes**:

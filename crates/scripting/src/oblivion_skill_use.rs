@@ -24,7 +24,6 @@ use byroredux_core::ecs::components::ActorValues;
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
-use byroredux_plugin::esm::reader::GameKind;
 use byroredux_plugin::esm::records::oblivion_actor_values::OBLIVION_ACTOR_VALUES;
 use byroredux_plugin::esm::records::EsmIndex;
 
@@ -70,28 +69,30 @@ pub struct SkillUseClasses {
 
 impl Resource for SkillUseClasses {}
 
-/// The form id of the player's `NPC_` record.
-const PLAYER_NPC: u32 = 0x0000_0007;
-
-/// Build [`SkillUseClasses`] from the load order. Only Oblivion's `CLAS` carries
-/// a specialization and seven major skills; any other game installs an empty
-/// resource, so no class is ever read there.
+/// Build [`SkillUseClasses`] from the load order. A `CLAS` carries a
+/// specialization and seven major skills only where the parser decodes them
+/// (Oblivion's), so the table holds exactly those and is empty for every other
+/// game; no game test is needed (#7212), and the player's class is read only
+/// when the table has one.
 pub fn install_skill_use_classes(world: &mut World, index: &EsmIndex) {
     let mut out = SkillUseClasses::default();
-    if index.game == GameKind::Oblivion {
-        for (&form, class) in &index.classes {
-            if let Some(specialization) = class.specialization {
-                out.classes.insert(
-                    form,
-                    ClassSkills {
-                        name: class.editor_id.clone(),
-                        specialization,
-                        major_skills: class.major_skills.clone(),
-                    },
-                );
-            }
+    for (&form, class) in &index.classes {
+        if let Some(specialization) = class.specialization {
+            out.classes.insert(
+                form,
+                ClassSkills {
+                    name: class.editor_id.clone(),
+                    specialization,
+                    major_skills: class.major_skills.clone(),
+                },
+            );
         }
-        out.player_class = index.npcs.get(&PLAYER_NPC).map(|npc| npc.class_form_id);
+    }
+    if !out.classes.is_empty() {
+        out.player_class = index
+            .npcs
+            .get(&byroredux_plugin::esm::records::actor::player_npc_form_id(index.game))
+            .map(|npc| npc.class_form_id);
     }
     world.insert_resource(out);
 }
@@ -215,10 +216,18 @@ fn record_rank_up(world: &World, player: EntityId, skill: &Skill) {
 /// OSL-XP-001: bank `amount` experience against the player's skill `code` and
 /// return the values it reached, in order. Empty when the skill only banked, is
 /// at 100, is not an Oblivion skill, or the ruleset does not level by use.
+///
+/// #7210 — the "at 100" gate reads the skill's **current** value, Fortify included (`GetAV(skill) >= 100`,
+/// `docs/engine/skill-use.md` §1, owner decision 2026-11-22): a skill fortified to 100 or more banks nothing while
+/// the effect lasts, though its rank-ups still write the base layer (OSL-LVL-001).
 pub fn bank_skill_use(world: &World, player: EntityId, code: u32, amount: f32) -> Vec<u16> {
     let Some(skill) = resolve(world, player, code) else {
         return Vec::new();
     };
+    let current = world.get::<ActorValues>(player).map(|values| values.current(skill.av));
+    if current.is_some_and(|value| value >= f32::from(SKILL_USE_CAP)) {
+        return Vec::new();
+    }
     apply(world, player, &skill, |value, banked| {
         let out = skill.costs.bank(value, banked, skill.class, amount);
         (out.value, out.banked, out.ranks.len() as u16)
@@ -500,8 +509,8 @@ pub fn queue_skill_use(world: &World, code: u32, usage: u8, mult: f32) -> bool {
 
 /// OSL-API-003: what `levelup` reports for an Oblivion player — the class it read and its
 /// major skills, the level count, each attribute's tally, and per skill the value, the experience
-/// banked and its cost. `None` when the ruleset does not level by skill use. (The pending levels
-/// and the unfed skills arrive with the phases that build them.)
+/// banked and its cost, the pending levels with their offered bonuses and picks, and the skills
+/// no emitter feeds yet. `None` when the ruleset does not level by skill use.
 pub fn skill_use_report(world: &World, player: EntityId) -> Option<Vec<String>> {
     let rules = world.try_resource::<CharacterRuleset>()?.leveling;
     let byroredux_core::character::LevelingModel::SkillUse { major_skill_ups_per_level, .. } = rules else {
@@ -613,6 +622,38 @@ pub fn skill_use_system(world: &World, player: Option<EntityId>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use byroredux_plugin::esm::reader::GameKind;
+
+    /// #7212 — the class table follows the data, not the game: a `CLAS` with a decoded specialization joins it under
+    /// any game, one without (every non-Oblivion class) never does, and the player's class is read only beside it.
+    #[test]
+    fn the_class_table_holds_the_classes_with_a_specialization_whatever_the_game() {
+        use byroredux_plugin::esm::records::actor::{ClassRecord, NpcRecord};
+        let class = |form_id: u32, specialization: Option<u32>| ClassRecord {
+            form_id,
+            editor_id: format!("Class{form_id:X}"),
+            specialization,
+            major_skills: vec![14, 15],
+            ..Default::default()
+        };
+        let mut index = EsmIndex { game: GameKind::Skyrim, ..Default::default() };
+        index.classes.insert(0x10, class(0x10, Some(0)));
+        index.classes.insert(0x11, class(0x11, None));
+        index.npcs.insert(7, NpcRecord { form_id: 7, class_form_id: 0x10, ..Default::default() });
+        let mut world = World::new();
+        install_skill_use_classes(&mut world, &index);
+        let table = world.resource::<SkillUseClasses>();
+        assert_eq!(table.classes.keys().copied().collect::<Vec<_>>(), vec![0x10], "only the class with a specialization");
+        assert_eq!(table.player_class, Some(0x10));
+        drop(table);
+
+        let mut fallout = EsmIndex { game: GameKind::Oblivion, ..Default::default() };
+        fallout.classes.insert(0x11, class(0x11, None));
+        fallout.npcs.insert(7, NpcRecord { form_id: 7, class_form_id: 0x11, ..Default::default() });
+        install_skill_use_classes(&mut world, &fallout);
+        let table = world.resource::<SkillUseClasses>();
+        assert!(table.classes.is_empty() && table.player_class.is_none(), "no specialization, no table, even under Oblivion");
+    }
     use byroredux_core::character::{Background, LevelingModel};
     use byroredux_plugin::esm::reader::GlobalSlot;
 
@@ -665,6 +706,20 @@ mod tests {
         assert_eq!(level.attribute_tallies[0], 1, "Blade is governed by Strength");
         let banked = world.resource::<SkillProgress>().0[&blade];
         assert!((banked - (2.0 - 1.302)).abs() < 0.01, "{banked}");
+    }
+
+    /// #7210 — a skill whose current value, Fortify included, is at 100 or more banks nothing: base Blade 95 with
+    /// Fortify Blade 10 neither ranks nor banks, and the same skill unfortified does.
+    #[test]
+    fn a_skill_fortified_to_100_banks_nothing() {
+        let (mut world, player, blade, _) = world();
+        world.get_mut::<ActorValues>(player).unwrap().set_base(blade, 95.0);
+        world.get_mut::<ActorValues>(player).unwrap().mod_temporary(blade, 10.0);
+        assert!(bank_skill_use(&world, player, BLADE, 1000.0).is_empty());
+        assert_eq!(base(&world, player, blade), 95.0);
+        assert!(world.resource::<SkillProgress>().0.get(&blade).is_none_or(|banked| *banked == 0.0), "nothing banked");
+        world.get_mut::<ActorValues>(player).unwrap().mod_temporary(blade, -10.0);
+        assert_eq!(bank_skill_use(&world, player, BLADE, 1000.0), vec![96, 97, 98, 99, 100]);
     }
 
     /// A skill outside the class's majors ranks slower and feeds the

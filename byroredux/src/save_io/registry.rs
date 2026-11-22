@@ -97,8 +97,9 @@ pub(crate) const MUTABLE_DELTA_COLUMNS: &[&str] = &[
     // Dead's replacing registration clears a saved absence on the live
     // player (#5027).
     "EquippedWeapon",
-    // BOW-AMM-002 (#7055) — the player's chosen arrow type: one optional `AMMO` FormID (u32), global-space. Cleared
-    // by writing `None`, not by removing the row, so the additive overlay carries the clear.
+    // BOW-AMM-002 (#7055) — the player's chosen arrow type: one optional `AMMO` FormID (u32), global-space.
+    // Replacing (#7228): the row is created lazily by the first arrow equip, so a save from before it has none,
+    // and that absence must clear the live player's choice.
     "EquippedAmmo",
     "Dead",
     // M65 (SNK-SAVE-001) — the player's sneak stance, a zero-field marker. Replacing, like `Dead`:
@@ -337,7 +338,9 @@ pub fn build_save_registry() -> SaveRegistry {
     r.register_component_codec("ActorVitals", false,
         byroredux_scripting::actor_value_save::save_vitals, byroredux_scripting::actor_value_save::load_vitals);
     r.register_component::<EquippedWeapon>("EquippedWeapon");
-    r.register_component::<byroredux_core::ecs::components::EquippedAmmo>("EquippedAmmo");
+    // #7228 — replacing, like `Dead`: the row is created by the first arrow equip, so a save from before it has no
+    // row, and an additive overlay left the outgoing session's arrow equipped on the process-lifetime player.
+    r.register_replacing_component::<byroredux_core::ecs::components::EquippedAmmo>("EquippedAmmo");
     // #5027 — replacing: the process-lifetime player outlives the cell
     // reload, so an additive overlay left a pre-load death standing on a
     // save where the player was alive. Saved absence on a FormID-matched

@@ -158,6 +158,18 @@ pub(crate) fn resolve_destination(
         .unwrap_or_else(|| pick_wander_target(home, radius, form_id, 0))
 }
 
+/// The home a package's fallback centres on: the actor's `EditorPlacement` for a Near Editor Location
+/// package (Travel and Wander #7225, Guard and Ambush #7254, as Eat/Sleep's anchor since #5391), otherwise
+/// where the actor stands. An actor with no placement (a script-created one) keeps its current position.
+pub(super) fn package_home(world: &World, actor: EntityId, near_editor_location: bool, current: Vec3) -> Vec3 {
+    if !near_editor_location {
+        return current;
+    }
+    world
+        .get::<byroredux_core::ecs::components::EditorPlacement>(actor)
+        .map_or(current, |placement| placement.translation)
+}
+
 /// One actor's staged move input, collected in Pass 1a — `current`
 /// position, `rotation`, and the resolved `destination` (which may itself
 /// have required a `GlobalTransform` read via `resolve_destination`) — all
@@ -351,7 +363,7 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
                                 behavior.target_form_id,
                                 behavior.radius.unwrap_or(TRAVEL_DEFAULT_RADIUS),
                                 behavior.form_id,
-                                current,
+                                package_home(world, entity, behavior.near_editor_location, current),
                             )
                         }
                     }
@@ -661,6 +673,7 @@ mod tests {
                 radius: Some(200.0),
                 target_form_id: None,
                 form_id: 0x0003_0003,
+                near_editor_location: false,
             },
         );
 
@@ -688,6 +701,39 @@ mod tests {
             travq.get(entity).is_none(),
             "should not have arrived in one 0.5s tick from a 200-unit radius pick"
         );
+    }
+
+    /// #7225 — a Near Editor Location Travel (a `HorseGoHome` / `SE45zReturnHome`) whose actor an earlier
+    /// package walked away goes back to its editor placement, not to a point around where it stands. With no
+    /// radius the destination is the placement exactly; a plain Travel still picks around the actor.
+    #[test]
+    fn a_near_editor_location_travel_returns_to_the_editor_placement() {
+        let placement = Vec3::new(-300.0, 0.0, 40.0);
+        let away = Vec3::new(500.0, 0.0, 500.0);
+        for near_editor_location in [true, false] {
+            let mut world = World::new();
+            world.register::<TravelBehavior>();
+            world.register::<TravelState>();
+            world.register::<Traveled>();
+            world.register::<Transform>();
+            world.register::<byroredux_core::ecs::components::EditorPlacement>();
+            let actor = world.spawn();
+            world.insert(actor, Transform::from_translation(away));
+            world.insert(actor, byroredux_core::ecs::components::EditorPlacement { translation: placement });
+            world.insert(
+                actor,
+                TravelBehavior { radius: Some(0.0), target_form_id: None, form_id: 0x0009_0009, near_editor_location },
+            );
+            travel_system(&world, 0.016);
+            if near_editor_location {
+                let destination = world.get::<TravelState>(actor).expect("walking home").destination;
+                assert!((destination - placement).length() < 1e-3, "destination {destination:?}, expected the placement");
+                assert!(!world.has::<Traveled>(actor), "800 units from home, not arrived");
+            } else {
+                // A zero radius around where it stands: it has arrived (the pre-#7225 outcome for both).
+                assert!(world.has::<Traveled>(actor));
+            }
+        }
     }
 
     #[test]
@@ -722,6 +768,7 @@ mod tests {
                 radius: None,
                 target_form_id: Some(0x0001_59E2),
                 form_id: 0x0004_0004,
+                near_editor_location: false,
             },
         );
 
@@ -759,6 +806,7 @@ mod tests {
                 radius: Some(200.0),
                 target_form_id: Some(0x0001_59E2),
                 form_id: 0x0004_0004,
+                near_editor_location: false,
             },
         );
         let mut scratch = TravelScratch::default();
@@ -815,7 +863,7 @@ mod tests {
             world.insert(actor, Transform::from_translation(spot));
             world.insert(
                 actor,
-                TravelBehavior { radius: Some(100.0), target_form_id: None, form_id: 0x0005_0005 },
+                TravelBehavior { radius: Some(100.0), target_form_id: None, form_id: 0x0005_0005, near_editor_location: false },
             );
             world.insert(actor, TravelState { destination: spot });
             world.insert(
@@ -863,6 +911,7 @@ mod tests {
                 radius: Some(100.0),
                 target_form_id: None,
                 form_id: 0x0005_0005,
+                near_editor_location: false,
             },
         );
         world.insert(
@@ -923,7 +972,7 @@ mod tests {
 
         let entity = world.spawn();
         world.insert(entity, Transform::from_translation(Vec3::new(50.0, 0.0, 50.0)));
-        world.insert(entity, TravelBehavior { radius: Some(100.0), target_form_id: None, form_id: 0x0005_0005 });
+        world.insert(entity, TravelBehavior { radius: Some(100.0), target_form_id: None, form_id: 0x0005_0005, near_editor_location: false });
         world.insert(entity, TravelState { destination: Vec3::new(50.0, 0.0, 50.0) });
         let far_side = byroredux_scripting::CreatedPlacement {
             cell: byroredux_scripting::CreatedCell::Exterior { worldspace: "wastelandnv".into(), grid: (0, 0) },
@@ -975,6 +1024,7 @@ mod tests {
                 radius: None,
                 target_form_id: Some(0x000E_0001),
                 form_id: 0x000E_0002,
+                near_editor_location: false,
             },
         );
 
@@ -1021,6 +1071,7 @@ mod tests {
                 radius: Some(1.0), // irrelevant: TravelState below short-circuits resolution
                 target_form_id: None,
                 form_id: 0x0006_0006,
+                near_editor_location: false,
             },
         );
         world.insert(entity, TravelState { destination });
@@ -1079,6 +1130,7 @@ mod tests {
                 radius: Some(200.0),
                 target_form_id: None,
                 form_id: 0x0007_0007,
+                near_editor_location: false,
             },
         );
 
@@ -1118,6 +1170,7 @@ mod tests {
                 radius: Some(1.0),
                 target_form_id: None,
                 form_id: 0x0008_0008,
+                near_editor_location: false,
             },
         );
         world.insert(entity, TravelState { destination });
@@ -1177,7 +1230,7 @@ mod tests {
         world.insert(actor, Transform::from_translation(Vec3::new(-400.0, 0.0, 0.0)));
         world.insert(
             actor,
-            TravelBehavior { radius: None, target_form_id: Some(0x000E_0001), form_id: 0x000E_0002 },
+            TravelBehavior { radius: None, target_form_id: Some(0x000E_0001), form_id: 0x000E_0002, near_editor_location: false },
         );
         (world, actor)
     }

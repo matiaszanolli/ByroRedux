@@ -689,14 +689,9 @@ impl VulkanContext {
 
         // 14. Mesh registry (empty — meshes uploaded by the application)
         let mut mesh_registry = MeshRegistry::new();
-        // #7152 — the TSD-4 patch meshes take the first handles, so in the
-        // opaque sort (which groups by mesh handle) every patch draws before
-        // any base terrain cell and early-Z rejects the base under it.
-        if let Some(pass) = terrain_patch.as_mut()
-            && let Err(e) = pass.reserve_meshes(&mut mesh_registry)
-        {
-            log::warn!("terrain patches: {e:#} — no terrain displacement patches");
-        }
+        // #7152 / #7221 — the TSD-4 patch meshes take the first handles and
+        // their own refit BLAS.
+        reserve_terrain_patch_meshes(terrain_patch.as_mut(), &mut mesh_registry, accel_manager.as_mut());
 
         let GBufferStage { gbuffer, raw_indirect_views, motion_views_seed, mesh_id_views_seed, normal_views_for_svgf, albedo_views, reactive_views, transparency_views } = create_gbuffer(&device, &gpu_allocator, &graphics_queue, transfer_pool, render_extent)?;
         let n_frames = MAX_FRAMES_IN_FLIGHT;

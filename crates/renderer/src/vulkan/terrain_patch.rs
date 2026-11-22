@@ -1,17 +1,21 @@
-//! TSD-4.1 terrain displacement patches (#7152).
+//! TSD-4.1 / TSD-4.2 terrain displacement patches (#7152, #7221).
 //!
 //! Design: `docs/engine/terrain-displacement.md` §3. A fixed pool of
 //! [`TERRAIN_PATCH_SLOTS`] slots is reserved once in the global vertex pool
 //! ([`TerrainPatchPass::reserve_meshes`], global-pool-only uploads: no per-mesh
-//! buffers, no BLAS), one mesh of each lattice level per slot: the fine 64×64
+//! buffers; the patch BLAS set builds their acceleration structures, not the
+//! reservation), one mesh of each lattice level per slot: the fine 64×64
 //! lattice and the coarse 32×32 one over its even points, which the host picks
 //! by distance ([`TerrainPatchSlot::coarse`]). Every frame the host hands over the resident
 //! slots ([`TerrainPatchSlot`]) and the shared parameters
 //! ([`TerrainPatchParams`]); [`TerrainPatchPass::record`] re-displaces each
-//! resident slot in place with `terrain_patch.comp`, between the instance upload
-//! and the main render pass. The raster path draws the patches from the same
-//! bytes (the host clones the base cell's draw command onto the patch mesh with
-//! `in_tlas = false`); they do not enter the TLAS until stage 4.2.
+//! resident slot in place with `terrain_patch.comp`, after the terrain-tile
+//! upload it reads and before the patch BLAS refit and the TLAS build
+//! (`draw.rs`, ahead of `dispatch_skin_and_cluster`). The raster path draws the
+//! patches from the same bytes (the host clones the base cell's draw command
+//! onto the patch mesh, with `in_tlas` set from the base's and the
+//! `terrain.patches rt` switch); a patch draw enters the TLAS once its BLAS
+//! matches this frame (TSD-4.2).
 //!
 //! The pass also reads back every slot's border vertices and its largest
 //! displacement, one frame-in-flight later, for the `terrain.patches` console
@@ -194,6 +198,8 @@ pub struct TerrainPatchStats {
     pub max_displacement: f32,
     /// Per slot, in dispatch order.
     pub slots: Vec<TerrainPatchSlotStats>,
+    /// #7221 — this frame's patch BLAS builds / refits.
+    pub blas: crate::vulkan::acceleration::TerrainPatchBlasStats,
 }
 
 /// One harvested slot, for the `terrain.patches` listing.
@@ -315,6 +321,16 @@ pub fn summarize_patch_readback(slots: &[TerrainPatchSlot], lip: f32, words: &[u
         }
     }
     stats
+}
+
+/// Which square a slot shows, for the patch BLAS's refit-or-build decision: a
+/// mesh refits only while it keeps showing the same square of the same cell.
+pub fn patch_square_key(slot: &TerrainPatchSlot) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    slot.cell_origin_xz.map(f32::to_bits).hash(&mut hasher);
+    (slot.patch_col, slot.patch_row, slot.base_mesh, slot.coarse).hash(&mut hasher);
+    hasher.finish()
 }
 
 /// A `quads`×`quads` patch lattice's triangles, the winding
@@ -589,6 +605,12 @@ impl TerrainPatchPass {
         &self.stats
     }
 
+    /// Record this frame's patch BLAS counts (after [`Self::record`]'s
+    /// harvest replaced the rest of the report).
+    pub fn set_blas_stats(&mut self, blas: crate::vulkan::acceleration::TerrainPatchBlasStats) {
+        self.stats.blas = blas;
+    }
+
     /// Read back what `frame` dispatched last time round. Its fence has
     /// retired: `draw_frame` waits it before recording into the slot.
     fn harvest(&mut self, device: &ash::Device, frame: usize) {
@@ -746,9 +768,10 @@ impl TerrainPatchPass {
                 device.cmd_dispatch(cmd, *groups, 1, 1);
             }
 
-            // After: this frame's vertex fetch and shader reads see the
-            // patches, and the host can read the readback once the fence
-            // retires.
+            // After: this frame's vertex fetch, shader reads and patch BLAS
+            // builds (#7221: AS-build geometry reads are SHADER_READ in the
+            // AS_BUILD stage) see the patches, and the host can read the
+            // readback once the fence retires.
             let after = vk::MemoryBarrier::default()
                 .src_access_mask(vk::AccessFlags::SHADER_WRITE)
                 .dst_access_mask(
@@ -763,6 +786,7 @@ impl TerrainPatchPass {
                     | vk::PipelineStageFlags::VERTEX_SHADER
                     | vk::PipelineStageFlags::FRAGMENT_SHADER
                     | vk::PipelineStageFlags::COMPUTE_SHADER
+                    | vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR
                     | vk::PipelineStageFlags::HOST,
                 vk::DependencyFlags::empty(),
                 &[after],
@@ -774,6 +798,40 @@ impl TerrainPatchPass {
         let count = dispatched.len() as u32;
         self.pending[frame] = dispatched;
         count
+    }
+
+    /// The patch BLAS work for what [`Self::record`] just dispatched into
+    /// `frame`, appended to `out` (the acceleration manager's kept list,
+    /// #7246): one request per dispatched slot, at the mesh of its level.
+    /// `vertex_base` / `index_base` are the global vertex / index buffers'
+    /// device addresses.
+    pub fn blas_requests(
+        &self,
+        frame: usize,
+        registry: &MeshRegistry,
+        vertex_base: vk::DeviceAddress,
+        index_base: vk::DeviceAddress,
+        out: &mut Vec<crate::vulkan::acceleration::TerrainPatchBlasRequest>,
+    ) {
+        let vertex_stride = std::mem::size_of::<Vertex>() as vk::DeviceAddress;
+        out.extend(self.pending[frame]
+            .iter()
+            .filter_map(|slot| {
+                let mesh = self.meshes.get(slot.slot, slot.coarse)?;
+                let entry = registry.get(mesh)?;
+                Some(crate::vulkan::acceleration::TerrainPatchBlasRequest {
+                    mesh,
+                    content: crate::vulkan::acceleration::TerrainPatchBlasContent {
+                        square: patch_square_key(slot),
+                        vertex_address: vertex_base
+                            + vk::DeviceAddress::from(entry.global_vertex_offset) * vertex_stride,
+                        index_address: index_base
+                            + vk::DeviceAddress::from(entry.global_index_offset) * 4,
+                    },
+                    vertex_count: entry.vertex_count,
+                    index_count: entry.index_count,
+                })
+            }));
     }
 
     /// Tear down. The reserved meshes belong to the registry and go with it.

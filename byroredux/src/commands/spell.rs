@@ -136,7 +136,9 @@ impl ConsoleCommand for CastStatusCommand {
             None => "last=none".to_owned(),
         });
         let remaining = state.as_ref().map_or(0.0, |state| state.cooldown_remaining);
-        lines.push(format!("interval={CAST_INTERVAL_SECONDS:.2}s (provisional: the original's follows the cast animation) cooldown={remaining:.2}s"));
+        // #7235 — the interval the last cast armed (`CastState.interval`), the engine's default before any cast.
+        let interval = state.as_ref().map(|state| state.interval).filter(|interval| *interval > 0.0).unwrap_or(CAST_INTERVAL_SECONDS);
+        lines.push(format!("interval={interval:.2}s (provisional: the original's follows the cast animation) cooldown={remaining:.2}s"));
         let model = world.try_resource::<byroredux_core::character::SpellCastModel>().map(|model| *model);
         lines.push(match model {
             Some(model) => format!(
@@ -158,5 +160,25 @@ impl ConsoleCommand for CastStatusCommand {
             None => "impact=none".to_owned(),
         });
         CommandOutput::lines(lines)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// #7235 — `cast.status` reports the interval the last cast armed, and the engine's default before any cast.
+    #[test]
+    fn cast_status_reports_the_interval_the_last_cast_armed() {
+        let mut world = World::new();
+        let player = world.spawn();
+        world.insert_resource(PlayerEntity(Some(player)));
+        let interval_line = |world: &World| {
+            CastStatusCommand.execute(world, "").lines.into_iter().find(|line| line.starts_with("interval=")).expect("an interval line")
+        };
+        world.insert_resource(CastState::default());
+        assert!(interval_line(&world).starts_with(&format!("interval={CAST_INTERVAL_SECONDS:.2}s")), "no cast yet: the default");
+        world.insert_resource(CastState { interval: 2.75, ..CastState::default() });
+        assert!(interval_line(&world).starts_with("interval=2.75s"), "{}", interval_line(&world));
     }
 }

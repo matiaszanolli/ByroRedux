@@ -598,6 +598,23 @@ master's highest radiation-sickness stage threshold (`RADS` records). It is a
 HUD-only reading: nothing accumulates rads yet and the affliction tick is not
 registered, so the gauge reads 0 outside script/console edits.
 
+## Crippled-limb effects — BUILT (VATS-LIMB-006 / -010 / -011)
+
+`LimbEffectModel::FALLOUT` (`crates/core/src/character/limb_effects.rs`), load-order settings over these defaults. A
+limb is crippled when its condition actor value falls to 0 or below (GECK *GetVATSValue* / *Cripple Part*).
+
+| Effect | Formula | Settings (default) | Source |
+|---|---|---|---|
+| Movement | one crippled leg × `fMoveOneCrippledLegSpeedMult`, two × `fMoveTwoCrippledLegsSpeedMult` | 0.85, 0.75 | GECK *Movement Settings*; both masters author them |
+| Gun spread | `ArmPenalty = fGunSpreadArmBase + fGunSpreadArmMult × ArmCondition`, added to the spread | 0.5, −0.5 | GECK *Gun Spread Formula*; both masters author them |
+| Melee damage | `BaseWeaponDamage × (fDamageArmConditionBase − 1 + fDamageArmConditionMult × ArmCondition) / 2`, added | 0.2, 0.8 | GECK *Weapon Damage Formula*; neither master authors them |
+
+`ArmCondition` is 1 with a healthy right arm and 0 with it crippled for a one-handed weapon; for a two-handed weapon,
+1, 0.5 or 0 by the number of healthy arms. The GECK page's prose says the melee term costs "(up to) 10%" of base
+damage, but its own formula and these defaults give `(0.2 − 1) / 2 = −0.4`: the formula is implemented as written and
+the prose disagreement is open until a capture (#6646). The engine has no gun-spread computation, so that term has no
+consumer yet.
+
 ## NPC stat storage — NOTE (distinct from FO4)
 
 FO3/FNV predate FO4's `PRPS` `(AVIF, value)` array. The `NPC_ DATA` block carries base

@@ -1361,7 +1361,12 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // column, refreshed WITH the major bump above.
     // BOW-AMM-002 (#7055) — v141: `EquippedAmmo` (one optional AMMO FormID) joined the saved registry as a NEW component
     // column, refreshed WITH the major bump above.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x3f2e_9c43_27cf_bb3b;
+    // #7225 — refreshed WITHOUT a major bump, the #3332 case: `TravelBehavior` / `WanderBehavior` gained
+    // `near_editor_location`, but both are NOT_SAVED_BY_DESIGN siblings of the registered `TravelState` /
+    // `WanderState` in the same files. No on-disk column changed.
+    // #7254 — refreshed WITHOUT a major bump, the same #3332 case: `GuardBehavior` gained `near_editor_location`;
+    // it is NOT_SAVED_BY_DESIGN beside the registered `GuardState` in the same file. No on-disk column changed.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x0606_cb8f_3f7f_852c;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.

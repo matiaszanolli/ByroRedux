@@ -11,7 +11,6 @@ use byroredux_core::ecs::components::{
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::Component;
 use byroredux_core::ecs::{Resource, World};
-use byroredux_plugin::esm::reader::GameKind;
 use byroredux_plugin::esm::records::{EsmIndex, ItemKind};
 use byroredux_sdk::inventory::{ItemCategory, ItemMetadata};
 use rustc_hash::FxHashMap;
@@ -39,7 +38,9 @@ pub(crate) const SOURCES: &str = concat!(
     include_str!("actions.rs"),
 );
 
-const PLAYER_NPC_FORM_ID: u32 = 0x0000_0007;
+// #7211 — the Player base FormID and its per-game table live beside `NpcRecord` in the plugin crate, where the
+// population and scripting crates can read them too.
+pub(crate) use byroredux_plugin::esm::records::actor::{player_npc_form_id, PLAYER_NPC_FORM_ID};
 
 /// Where an equippable item goes when the player toggles it.
 ///
@@ -64,20 +65,6 @@ pub(crate) enum EquipTarget {
     Ammo,
 }
 
-/// Resolve the base `NPC_` record for the player, never the placed player
-/// reference (`0x00000014`). Every currently supported master preserves the
-/// lineage-wide `Player` base at FormID 7; keeping the exhaustive game table
-/// here makes a future variant divergence an explicit compiler-visible edit.
-pub(crate) fn player_npc_form_id(game: GameKind) -> u32 {
-    match game {
-        GameKind::Oblivion
-        | GameKind::Fallout3NV
-        | GameKind::Skyrim
-        | GameKind::Fallout4
-        | GameKind::Fallout76
-        | GameKind::Starfield => PLAYER_NPC_FORM_ID,
-    }
-}
 
 /// One-frame-plus handoff queue for inventory actions arriving off the
 /// main-thread mutation scope (the `inv.equip` debug command). Drained
@@ -115,32 +102,12 @@ pub(crate) fn add_item(
     Some(index)
 }
 
-/// Queue one [`InventoryAction::ToggleEquip`] for the row whose base form is
-/// `form_id`, to be drained through [`apply_action`] on the main thread.
-/// Returns a user-facing error when the player has no such row.
+/// Queue one [`InventoryAction::ToggleEquip`] for the player's first row carrying `form_id` (`inv.equip`), to be
+/// drained through [`apply_action`] on the main thread. Returns a user-facing error when the player has no such row.
+/// The row is [`Inventory::first_row_of`]'s, as `inv.use` and `inv.drop` take it: a row zeroed in place is skipped
+/// for a later one that holds the item (#7232).
 pub(crate) fn queue_equip_by_form_id(world: &World, form_id: u32) -> Result<String, String> {
-    let player = PlayerEntity::get(world)
-        .ok_or_else(|| "no player".to_string())?;
-    let index = world
-        .get::<Inventory>(player)
-        .and_then(|inventory| {
-            inventory
-                .items
-                .iter()
-                .position(|stack| stack.base_form_id == form_id)
-        })
-        .ok_or_else(|| format!("no inventory row with form {form_id:08X}"))?;
-    let Some(mut pending) = world.try_resource_mut::<PendingInventoryActions>() else {
-        return Err("inventory action queue unavailable".to_string());
-    };
-    pending
-        .0
-        .push(byroredux_native_ui::InventoryAction::ToggleEquip {
-            index: index as u32,
-        });
-    Ok(format!(
-        "queued equip toggle for row {index} (form {form_id:08X})"
-    ))
+    queue_by_form_id(world, form_id, "equip toggle", |index, _| byroredux_native_ui::InventoryAction::ToggleEquip { index })
 }
 
 /// Queue the menu's own `Consume` of the player's row carrying `form_id` (`inv.use`): the same door a

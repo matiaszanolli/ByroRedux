@@ -100,7 +100,7 @@ pub(super) fn stamp_spell_list(
 pub(super) fn player_level_for_spawn(world: &World, index: &EsmIndex) -> Option<u16> {
     crate::components::PlayerEntity::get(world)
         .and_then(|player| world.get::<byroredux_core::character::CharacterLevel>(player).map(|level| level.level))
-        .or_else(|| index.npcs.get(&7).and_then(|player| u16::try_from(player.level).ok()))
+        .or_else(|| index.npcs.get(&crate::inventory::player_npc_form_id(index.game)).and_then(|player| u16::try_from(player.level).ok()))
 }
 
 /// Stamp an [`ActorValues`] component from the active character rules.

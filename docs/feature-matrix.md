@@ -257,7 +257,7 @@ capability on this route takes precedence over renderer polish.
 | P0 — door / `[E]` interaction | ✓ Closed 2026-08-10 | Camera-forward XTEL target → native `[E] Open` prompt → one bound E-key edge → canonical `ActivateEvent` → deferred cell-transition arrival. Smoke: [`p0-door-interaction.sh`](smoke-tests/p0-door-interaction.sh) |
 | P1 — reliable character control | ✓ Closed 2026-10-01 | Movement/jump/sprint consumers share one once-per-frame `ActionState` snapshot; native Escape menu owns pause/focus/cursor transfer; settings-backed key rebinding. Closed by the live traversal gates; gamepad physical sources are a named follow-on (ROADMAP), not a closure blocker. Smoke: [`p1-character-traversal.sh`](smoke-tests/p1-character-traversal.sh) |
 | P2 — melee combat core | ✓ Landed 2026-08-16, closed 2026-10-01 | Skyrim race Health + signed ACBS offset → actor-owned bone ray hit → bound Attack edge → canonical `HitEvent` → layered Health damage → one `Dead`/AI-disable transition → the existing 18-body ragdoll. Deterministic weapon selection (highest authored damage, FormID tie-break); explicit 8-damage unarmed fallback. Closed by the live combat gates; the Skyrim-route rapier multi-SAP panic is tracked as #5161, not a P2 blocker. Smoke: [`p2-melee-core.sh`](smoke-tests/p2-melee-core.sh) |
-| NPC combat AI (MQ101 slice) | ~ Landed 2026-09-13 | `Faction.SetEnemy` / `Actor.StartCombat` arm `AiCombatState`; `npc_combat_ai_system` chases its target in a straight line and strikes on cooldown through the same `HitEvent` → `combat_damage_system` pipeline as the player, with creature damage from `CreatureAttack`. Ambient hostility (#4414, `systems/faction_hostility.rs`): an NPC with decoded `AIDT` aggression starts combat against the nearest actor it sees within `fSneakMaxDistance` whose faction reaction (scripted `SetEnemy` override, then authored `XNAM`, then Neutral) its aggression attacks; `FactionRelations` is directed, `FormRef`-keyed and saved. Not yet: detection meter (sound/light/sneak), warn radii, crime hostility beyond Oblivion's guard rush on a wanted player (`make_guard_rush_system`, `byroredux/src/crime.rs`), Oblivion's 0–100 aggression, ranged/magic attacks, attack animation |
+| NPC combat AI (MQ101 slice) | ~ Landed 2026-09-13 | `Faction.SetEnemy` / `Actor.StartCombat` arm `AiCombatState`; `npc_combat_ai_system` chases its target in a straight line and strikes on cooldown through the same `HitEvent` → `combat_damage_system` pipeline as the player, with creature damage from `CreatureAttack`. Ambient hostility (#4414, `systems/faction_hostility.rs`): an NPC with decoded `AIDT` aggression starts combat against the nearest actor it sees within `fSneakMaxDistance` whose faction reaction (scripted `SetEnemy` override, then authored `XNAM`, then Neutral) its aggression attacks; `FactionRelations` is directed, `FormRef`-keyed and saved. Detection is M65's (sound/light/sneak per game, `byroredux/src/detection/`, with the detection indicator); not yet: warn radii, crime hostility beyond Oblivion's guard rush on a wanted player (`make_guard_rush_system`, `byroredux/src/crime.rs`), Oblivion's 0–100 aggression, ranged/magic attacks, attack animation |
 | Authored attack/hit/death animation + sound | ~ Draugr family | `byroredux/src/systems/combat_anim.rs` (`ec3a18d2f`): attack / hit / death one-shot takes for Draugr-family actors plus the spatial swing / impact / death-voice sound family (fixture `docs/engine/p2-combat-anim-sound-fixture.md`). Other races and creatures play no combat takes yet |
 | Corpse interaction / loot transfer | ✓ Closed 2026-09-30 | Corpse = container: lethal-combat-then-physical activation loots a corpse through its collider (`lethal_combat_then_physical_activation_loots_corpse_through_its_collider`), `is_loot_source` gates container counts, loot-appearance import carries the outfit (`npc_spawn/loot_appearance.rs`); live Skyrim corpse-loot validation 2026-09-17 |
 | P3 — inventory and native game UI | ✓ Closed 2026-10-01 | Native HUD bars / crosshair / interaction prompts / notifications / objective text from canonical ECS state; container / corpse / pickup interaction with an inventory screen; equip through `Inventory` + `EquipmentSlots` + mesh attachment; pause / menu routing and settings-backed rebinding. Smoke: [`p3-hud.sh`](smoke-tests/p3-hud.sh), [`p3-player-body.sh`](smoke-tests/p3-player-body.sh) |
@@ -294,17 +294,24 @@ scheduler registration), not just present as a buildable function.
 
 | Feature | Oblivion | FO3 | FNV | Skyrim SE | FO4 | FO76 | Starfield |
 |---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| Ruleset wired (`CharacterRuleset`: derived-stat formulas + leveling model) | ~ built, unwired | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ |
-| NPC actor-value population at spawn | ✗ | ✓ class auto-calc | ✓ class auto-calc | ✓ pools + 18 skills | ✓ stored `PRPS`+`DNAM` | ✗ wire layout uncaptured (#4453) | ✗ wire layout uncaptured (#4453) |
-| Creature (`CREA`) actor-value population at spawn | ✗ `CREA.DATA` layout unsourced | ✓ SPECIAL + Health | ✓ SPECIAL + Health | n/a (no `CREA`) | n/a | n/a | n/a |
-| Runtime leveling (XP grant / level-up) | ✗ | ✓ | ✓ | ~ | ~ | ✗ | ✗ |
-| Pool regen tick (Fatigue/Magicka — Health deliberately unmodelled, Stamina has no row; #4463). FO3/FNV: ActionPoints lane live (#6350), Fatigue/Magicka lanes inert | ✗ inert | ~ AP only | ~ AP only | ✗ inert | ✗ inert | ✗ inert | ✗ inert |
+| Ruleset wired (`CharacterRuleset`: derived-stat formulas + leveling model) | ✓ (#7010, engine-supplied actor values) | ✓ | ✓ | ✓ | ✓ | ✗ | ✗ |
+| NPC actor-value population at spawn | ✓ auto-calc + stored (`OblivionNpc`) | ✓ class auto-calc | ✓ class auto-calc | ✓ pools + 18 skills | ✓ stored `PRPS`+`DNAM` | ✗ wire layout uncaptured (#4453) | ✗ wire layout uncaptured (#4453) |
+| Creature (`CREA`) actor-value population at spawn | ~ pools scale with level; skills and attack damage unscaled (#7206) | ✓ SPECIAL + Health | ✓ SPECIAL + Health | n/a (no `CREA`) | n/a | n/a | n/a |
+| Runtime leveling (XP grant / level-up) | ✓ skill use (16 of 21 skills fed), level at a completed sleep | ✓ | ✓ | ~ | ~ | ✗ | ✗ |
+| Pool regen tick (Health deliberately unmodelled, Stamina has no row; #4463). Oblivion: Fatigue/Magicka at the load order's rates (#7197); FO3/FNV: ActionPoints lane (#6350) | ✓ Fatigue/Magicka | ~ AP only | ~ AP only | ✗ inert | ✗ inert | ✗ inert | ✗ inert |
 | Affliction tick (radiation/disease/addiction) | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert | ✗ inert |
+| Detection and sneak (M65 `stealth` / `indicator` rows; FO4 and Starfield rows executable-derived) | ✓ | ✓ | ✓ | ✓ | ✓ | ~ sight only | ✓ |
+| Crime fines (`crime` row) | ✓ | ✗ faction-based, unmodelled | ✗ faction-based, unmodelled | ✓ per crime faction | ✗ | ✗ | ✗ |
+| Starting disposition (`build_disposition`, #7011; Oblivion's mechanism, Skyrim's relationship ranks are another) | ✓ | n/a | n/a | n/a | n/a | n/a | n/a |
+| Player rule rows: spell cast, block, fall, armor rating + Resist Normal Weapons (`spell_cast` / `block` / `fall` / `armor_rating`) | ✓ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| Player bow (`bow` row) | ✓ | ✗ | ✗ | ✓ | ✗ | ✗ | ✗ |
 | VATS + Action Points runtime (#6350, open). FO3/FNV: console-driven (mode machine with world freeze, targeting scan, AP-gated queue and confirm, Concentrated Fire, damage through the combat funnel, exits on cell change / death / load); no menu, per-limb damage, playback or camera | ✗ | ~ console-driven | ~ console-driven | ✗ | ✗ | ✗ | ✗ |
 
-`oblivion_ruleset()` (`crates/core/src/character/tes.rs`) builds a real
-`CharacterRuleset`, but `CharacterRulesProfile::OBLIVION` still maps to
-`RulesetBuilder::None`, so it never reaches a live actor. Skyrim's
+`oblivion_ruleset_with_gmst()` (`crates/core/src/character/tes.rs`) is wired
+since #7010 (`RulesetBuilder::Oblivion`), over the 72 actor values the loader
+supplies (Oblivion authors no `AVIF`); its player Health, Magicka and Fatigue
+are formulas (#7037/#7041) and its level-up runs through skill use
+(#7050-#7056). Skyrim's
 `skyrim_ruleset()` was wired by #3848 (`RulesetBuilder::Skyrim`), which also
 makes it the first family whose leveling model reads authored GMSTs at load. FO76/Starfield have data captures
 (`charal-fo76-ruleset.md`, `charal-starfield-ruleset.md`) but no ruleset
@@ -363,7 +370,7 @@ early-returns, and the Fatigue/Magicka lanes are inert everywhere.
 
 ---
 
-## What Doesn't Work Yet (live gaps as of 2026-10-22)
+## What Doesn't Work Yet (live gaps as of 2026-10-22; CHARAL rows 2026-11-22)
 
 <!-- TD3-002: Save/load (M45/M45.1) removed — shipped 2026-06-21. The M47.2
      row below is the *full* transpiler, which is genuinely still deferred;
@@ -380,5 +387,5 @@ early-returns, and the Fatigue/Magicka lanes are inert everywhere.
 | Script-extender compatibility layer verified against real mods | Confidence that SKSE-family mod scripts (StorageUtil / JContainers / ModEvent consumers) actually run. The layer *exists* — ~23.9k LOC, six provider families, tested in-crate — but no audit pass has exercised it against shipped mod content, so its real-world coverage is unmeasured, not zero and not proven (#3953) | M47.2 follow-up |
 | Full Scaleform menus | In-game UI (method behavior / `_global.gfx`; native menu covers Pause/Settings/Inventory in parallel) | M48 / R4 decision |
 | Per-material footsteps (FOOT) | Correct surface audio | M44 follow-up |
-| CHARAL: player actor-value seed | The player body carries `ActorValues` seeded from the base Player `NPC_` (#4458), with the ruleset's PlayerOnly rows (FO4/FO3/FNV Health + AP) evaluated for the player at stamping (#4674). Games: FO3/FNV/FO4/Skyrim yes, Oblivion no, FO76/Starfield no (NPC stat wire layout uncaptured, #4453) | CHARAL (charal.md §7) |
-| CHARAL: Oblivion ruleset built but unwired; Fatigue/Magicka regen + the affliction tick inert everywhere (FO3/FNV Action Points regen is live, #6350) | Derived Health/leveling formulas on Oblivion; passive Fatigue/Magicka regen (the built tick's only pools — Health deliberately unmodelled per charal.md §4.7, Stamina rates unsourced/with no row, #4463) and radiation/disease/addiction on all seven games | CHARAL (charal.md §8) |
+| CHARAL: player actor-value seed | The player body carries `ActorValues` seeded from the base Player `NPC_` (#4458), with the ruleset's PlayerOnly rows evaluated for the player at stamping (#4674). Games: FO3/FNV/FO4/Skyrim/Oblivion yes (Oblivion's Health, Magicka and Fatigue are formulas, #7037/#7041), FO76/Starfield no (NPC stat wire layout uncaptured, #4453) | CHARAL (charal.md §7) |
+| CHARAL: the affliction tick is inert everywhere; Stamina regen has no row | Radiation/disease/addiction on all seven games; Skyrim Stamina/Magicka regen (rates unsourced/with no row, #4463). Fatigue/Magicka regen is live on Oblivion (#7197) and Action Points regen on FO3/FNV (#6350); Health regen is deliberately unmodelled (charal.md §4.7) | CHARAL (charal.md §8) |

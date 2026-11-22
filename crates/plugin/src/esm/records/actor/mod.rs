@@ -77,6 +77,25 @@ pub struct ActorAiData {
 /// Oblivion `AIDT`: four rated bytes, service flags, teaches, maximum training level, 2 unused (xEdit TES4).
 pub const OBLIVION_AIDT_LEN: usize = 12;
 
+/// The lineage-wide `Player` base `NPC_` FormID (#7211: the one home; the binary's inventory, the Oblivion population
+/// and the skill-use class table all read it from here).
+pub const PLAYER_NPC_FORM_ID: u32 = 0x0000_0007;
+
+/// Resolve the base `NPC_` record for the player, never the placed player reference (`0x00000014`). Every currently
+/// supported master preserves the lineage-wide `Player` base at FormID 7; keeping the exhaustive game table here
+/// makes a future variant divergence an explicit compiler-visible edit.
+#[must_use]
+pub const fn player_npc_form_id(game: GameKind) -> u32 {
+    match game {
+        GameKind::Oblivion
+        | GameKind::Fallout3NV
+        | GameKind::Skyrim
+        | GameKind::Fallout4
+        | GameKind::Fallout76
+        | GameKind::Starfield => PLAYER_NPC_FORM_ID,
+    }
+}
+
 pub fn decode_ai_data(data: &[u8], game: GameKind) -> Option<ActorAiData> {
     // #6995 — Oblivion's 12-byte AIDT (xEdit `wbDefinitionsTES4`): Aggression,
     // Confidence, Energy Level, Responsibility (u8 each, 0–100), service flags,

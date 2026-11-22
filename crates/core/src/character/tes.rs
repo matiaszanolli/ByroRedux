@@ -39,8 +39,9 @@ use super::skill::SkillSet;
 /// convention where NPCs ship baked pool values — and that convention is itself
 /// FO4-evidence-specific. `charal-oblivion-ruleset.md` states no player/NPC
 /// scope for any pool formula. Pinned by
-/// `oblivion_pool_rows_are_player_only_pending_a_source`; revisit with
-/// #3768, the first point at which Oblivion has a wired ruleset.
+/// `oblivion_pool_rows_are_player_only_pending_a_source`; the choice is
+/// observable since #7010 wired the ruleset, so revisit it when a source
+/// states the scope.
 ///
 /// #7198 — the coefficient is `fPCBaseHealthMult` (`base_health_mult`; CS wiki
 /// *FPCBaseHealthMult*, "multiplied by the player's endurance to calculate
@@ -105,8 +106,9 @@ pub fn oblivion_fatigue_formulas(
 /// / Fatigue). Inputs/outputs are resolved through `resolve` (EditorID →
 /// FormID) with the same resolve-or-skip contract as the Fallout builders
 /// ([`super::fallout`]) — a pool whose EditorIDs don't resolve is simply
-/// omitted. Pre-AVIF Oblivion supplies a resolver mapping these EditorIDs to
-/// its legacy engine actor-value indices at the parser boundary.
+/// omitted. Oblivion authors no `AVIF` records, so the loader installs the
+/// engine-supplied 72-value roster (`EsmIndex::install_oblivion_actor_values`,
+/// #7010) and these EditorIDs resolve against it like any other game's.
 #[must_use]
 pub fn oblivion_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRuleset {
     oblivion_ruleset_with_gmst(resolve, |_| None)

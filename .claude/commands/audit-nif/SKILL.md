@@ -357,7 +357,7 @@ restitution / damping from its material + motion-property rows —
   its `HavokPackfile` view; `/audit-parsers` owns the container's untrusted-input discipline);
   what stays opaque is
   `hknpCompressedMeshShapeData`'s bit-packed layout (`docs/engine/physal.md`). Do not report
-  it as decoded. The FO4 skeleton **ragdoll** blob is decoded (`blocks/collision/np_ragdoll.rs`,
+  it as decoded. `HavokPackfile::class_names_by_offset` resolves a whole fixup table through one map (a per-fixup `class_name_at` scan made N fixups x N records cost 4.5 s on a 2.85 MB blob, 53a0c08b7, #7126). The FO4 skeleton **ragdoll** blob is decoded (`blocks/collision/np_ragdoll.rs`,
   `decode_np_ragdoll`: `hknpRagdollData` capsule / sphere / `hknpConvexPolytopeShape` /
   `hknpDynamicCompoundShape` bodies, ragdoll + limited-hinge joints, `hknpBreakableConstraintData`
   unwrapped, per-body friction / restitution / damping read from the material (Havok halves at
@@ -366,7 +366,7 @@ restitution / damping from its material + motion-property rows —
   (`NpBodyProperties`, 019b087e3, #6066) — e1bd40bcf, #5015 (closed); fc4a15104 + 0d775dc61, #6067 (closed: the 67 joints whose bind-pose pivots disagree stay a recorded property of the data — the body-frame pivot reading is kept, and the rigs hold together live, pinned by `fo4_bind_pose_ragdoll_holds_together_in_free_fall` in `byroredux/src/ragdoll_installed_tests.rs`)) into the classic
   `RagdollCInfo` / `LimitedHingeCInfo` records; its offsets were recovered from the corpus (no
   SDK) and are pinned by independent physical checks, so a layout claim needs a corpus
-  measurement, not nif.xml. `summarize_collision_authoring` scans every collision block and feeds
+  measurement, not nif.xml. They are 64-bit Havok 2014 offsets (75 of 75 FO4 ragdoll blobs), so the decoder refuses a packfile that is not file version 11 with 8-byte pointers instead of misreading v8 / 4-byte ones the shared container admits (e9b1a25ef, #7133, `a_blob_that_is_not_64_bit_havok_2014_is_refused`), and its `Fixups` resolve pointers and classes through maps built once per blob, the first table entry winning, since per-call scans stalled an import for seconds (27ea36216, #7155, `fixups_resolve_as_the_first_matching_table_entry`). `summarize_collision_authoring` scans every collision block and feeds
   `CachedNifImport.collision_authoring` (`byroredux/src/cell_loader/nif_import_registry.rs`);
   `examine_collision_kind` keeps `None / Classic / NewPhysicsStub / Phantom / Unrecognised`
   distinct (a Skyrim+ phantom must not be force-translated as a rigid body). The summary also

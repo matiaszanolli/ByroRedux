@@ -737,7 +737,7 @@ impl VulkanContext {
 
         finish_moved_surface_ids(&mut moved_surface_ids);
         self.upload_instance_and_draw_buffers(
-            slot,
+            slot.frame,
             InstanceUpload {
                 gpu_instances: &gpu_instances,
                 previous_models: &previous_models,
@@ -992,6 +992,30 @@ impl VulkanContext {
                 << INSTANCE_RENDER_LAYER_SHIFT;
         }
         f
+    }
+
+    /// Reupload the terrain tile SSBO when cell load mutated it.
+    /// The slab is static until the next cell transition — #497
+    /// moved it to a single DEVICE_LOCAL buffer. #3664 keeps only the
+    /// live high-water prefix, writes it into the current frame's
+    /// reusable staging buffer, and records the copy so the transfer is
+    /// ordered before its readers without a queue-fence stall.
+    /// The scratch Vec lives on self so its capacity amortizes across
+    /// cell loads — `mem::take` moves it out so the fill can run while
+    /// `&mut self.scene_buffers` consumes the slice. #496.
+    ///
+    /// #7221 — split out of the instance upload: it depends on nothing that
+    /// upload builds, and the terrain patch compute, which now runs before
+    /// the TLAS build, reads these tiles.
+    pub(super) fn upload_terrain_tiles_if_dirty(&mut self, cmd: vk::CommandBuffer, frame: usize) {
+        let mut tile_scratch: Vec<GpuTerrainTile> =
+            std::mem::take(&mut self.scratch.terrain_tile_scratch);
+        if self.fill_terrain_tile_scratch_if_dirty(&mut tile_scratch) {
+            self.scene_buffers
+                .upload_terrain_tiles(&self.device, cmd, frame, &tile_scratch)
+                .unwrap_or_else(|e| log::warn!("Failed to upload terrain tiles: {e}"));
+        }
+        self.scratch.terrain_tile_scratch = tile_scratch;
     }
 
     /// The skinned-vertex and morph-target device addresses of a draw's
@@ -1359,18 +1383,19 @@ impl VulkanContext {
         t.pipeline_compile_ns = pipeline_t0.elapsed().as_nanos() as u64;
     }
 
-    /// Upload the instance, previous-model, mover-list, material, ray-budget,
-    /// terrain-tile and indirect-draw buffers for this frame (#309 / #496 / #6250).
-    /// Runs after the frame's final instance-SSBO grow and batch clamp.
+    /// Upload the instance, previous-model, mover-list, material, ray-budget
+    /// and indirect-draw buffers for this frame (#309 / #6250). Runs after the
+    /// frame's final instance-SSBO grow and batch clamp. Host-visible writes
+    /// only — the terrain-tile copy, the one command it used to record, is
+    /// `upload_terrain_tiles_if_dirty` since #7221.
     /// (#6143, split out of `build_and_upload_instances`.)
     fn upload_instance_and_draw_buffers(
         &mut self,
-        slot: FrameSlot,
+        frame: usize,
         upload: InstanceUpload,
         materials: &[GpuMaterial],
         batches: &[DrawBatch],
     ) {
-        let FrameSlot { cmd, frame } = slot;
         let InstanceUpload { gpu_instances, previous_models, moved_surface_ids } = upload;
         // Upload all instance data (scene + UI) to the SSBO in one flush.
         if !gpu_instances.is_empty() {
@@ -1421,23 +1446,9 @@ impl VulkanContext {
             )
             .unwrap_or_else(|e| log::warn!("Failed to upload adaptive ray budget: {e}"));
 
-        // Reupload the terrain tile SSBO when cell load mutated it.
-        // The slab is static until the next cell transition — #497
-        // moved it to a single DEVICE_LOCAL buffer. #3664 keeps only the
-        // live high-water prefix, writes it into the current frame's
-        // reusable staging buffer, and records the copy here so the
-        // transfer is ordered before geometry without a queue-fence stall.
-        // The scratch Vec lives on self so its capacity amortizes across
-        // cell loads — `mem::take` moves it out so the fill can run while
-        // `&mut self.scene_buffers` consumes the slice. #496.
-        let mut tile_scratch: Vec<GpuTerrainTile> =
-            std::mem::take(&mut self.scratch.terrain_tile_scratch);
-        if self.fill_terrain_tile_scratch_if_dirty(&mut tile_scratch) {
-            self.scene_buffers
-                .upload_terrain_tiles(&self.device, cmd, frame, &tile_scratch)
-                .unwrap_or_else(|e| log::warn!("Failed to upload terrain tiles: {e}"));
-        }
-        self.scratch.terrain_tile_scratch = tile_scratch;
+        // #7221 — the terrain tile SSBO upload moved to
+        // `upload_terrain_tiles_if_dirty`, recorded before the patch compute
+        // and the TLAS build at the top of `draw_frame`.
 
         // Build + upload indirect-draw commands for this frame (#309).
         // One `VkDrawIndexedIndirectCommand` per DrawBatch, laid out in

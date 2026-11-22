@@ -1,6 +1,6 @@
 # Sneak and Detection
 
-**Status**: DESIGN (Phase 0, 2026-11-15); the stance (Phase 1, #6910), Wave 1 detection with its consumers (Phase 2, #6911), Wave 1 sneak attacks and perks (Phase 3, #6912), the indicator (Phase 4, #6913) and Wave 2 (Oblivion, Skyrim: detection, stealth points, sneak attacks, the Skyrim sneak hooks and the sneak locomotion clips; Phase 5, #6914) are BUILT (2026-11-15). Phase 6 (#6915) recorded Fallout 4 and Starfield on the sight test (Q2); Fallout 4's row, decoded from `Fallout4.exe`, is BUILT (2026-11-16, #6996), and Starfield's is BUILT (2026-11-18, #7046). The design the [Sneak and Detection
+**Status**: BUILT (PRD SHIPPED 2026-11-19); designed in Phase 0 (2026-11-15); the stance (Phase 1, #6910), Wave 1 detection with its consumers (Phase 2, #6911), Wave 1 sneak attacks and perks (Phase 3, #6912), the indicator (Phase 4, #6913) and Wave 2 (Oblivion, Skyrim: detection, stealth points, sneak attacks, the Skyrim sneak hooks and the sneak locomotion clips; Phase 5, #6914) are BUILT (2026-11-15). Phase 6 (#6915) recorded Fallout 4 and Starfield on the sight test (Q2); Fallout 4's row, decoded from `Fallout4.exe`, is BUILT (2026-11-16, #6996), and Starfield's is BUILT (2026-11-18, #7046). The design the [Sneak and Detection
 PRD](../prd/sneak-and-detection.md) names as the owner of the stance, the detection
 tick, the per-pair level and alert state, the actor-to-actor sight test (§10 Q7), the
 light input (Q3), consumer migration and FO3 / FNV sneak-attack damage (PRD
@@ -92,8 +92,8 @@ is `CharacterRulesProfile::stealth()`, a `StealthKind`, resolved per load into
 the `StealthRules` resource (`byroredux_core::stealth`; `install_stealth_rules`)
 as `VatsModel` is. It holds:
 
-- **kind**: `Fo3`, `Fnv`, `Oblivion`, `Skyrim`, `Fallout4` (#6996), or `SightOnly`
-  (Starfield, per Q2);
+- **kind** (`StealthKind`): `Fallout3`, `FalloutNv`, `Oblivion`, `Skyrim`, `Fallout4` (#6996),
+  `Starfield` (#7046), or `SightOnly` (Fallout 76 and an unsupported profile);
 - **settings**: every game setting its kind reads, each resolved by
   `EsmIndex::game_setting_float` and otherwise taken from the executable default
   censused in §13.1, with its provenance (master, executable, or FO3 executable
@@ -177,8 +177,11 @@ blindness of 1 or more zeroes sight. The engine reproduces the shape and keeps t
 integer division as authored. `sees` is the detector's line of sight *and* the view
 cone (`0x7e6430`, `0x7e4f90`, `fDetectionViewCone` × π/180).
 
-**New Vegas** is the FO3 shape plus the level terms in the target skill the Fallout
-wiki gives (CHARAL FNV ruleset *Sneak Detection*; `stealth.rs`). The FNV capture's
+**New Vegas** is the FO3 shape plus the level terms and the armor penalty in the target skill the Fallout
+wiki gives (CHARAL FNV ruleset *Sneak Detection*; `stealth.rs`). Fallout 3 has neither: the GECK wiki's
+*Category:Detection* (Target Skill) gives "In FO3, the Target Skill is simply `Sneak * IsSneaking`", and
+New Vegas's `((Sneak + iSneakLevelBonus * (TL - DL)) + max(iSneakStartBonus - iSneakStartBonusLevelPenatly * TL,
+0) - Armor Penalty) * IsSneaking` adds both halves at once (#7213; `the_fo3_row_drops_the_level_and_armor_terms`). The FNV capture's
 constants are exactly these settings' values: base −35, exponent 2, range 2500 / 5000,
 sound 1.6 and 1.6 · 0.1, boot weight 12 + 0.5·w, running 1.5, action ×2, light 1.4,
 visual movement 0.01 / 0.21 (= 0.01 + 0.2), perception 10 + 8·Per, skill ×0.5.

@@ -1,6 +1,6 @@
 # Oblivion skill use — what the original does, and the emitter contract
 
-**Status**: Phase 0 design (#7049, 2026-11-18) of the [Oblivion skill-use leveling PRD](../prd/oblivion-skill-use-leveling.md); **Phase 1 built (#7050)**: §1's arithmetic and §4's contract run (`crates/core/src/character/skill_use.rs`, `crates/scripting/src/oblivion_skill_use.rs`); **Phase 2 built (#7051)**: the emitters in `byroredux/src/skill_use_emit.rs` feed 8 of the 21 skills (§4); **Phase 3 built (#7052)**: the level-up, the attribute picks and the completed-sleep trigger (`crates/scripting/src/oblivion_skill_use.rs`).
+**Status**: Phase 0 design (#7049, 2026-11-18) of the [Oblivion skill-use leveling PRD](../prd/oblivion-skill-use-leveling.md); **Phase 1 built (#7050)**: §1's arithmetic and §4's contract run (`crates/core/src/character/skill_use.rs`, `crates/scripting/src/oblivion_skill_use.rs`); **Phase 2 built (#7051)**: the emitters in `byroredux/src/skill_use_emit.rs` feed 16 of the 21 skills (§4; 8 at Phase 2, the rest with #7053-#7056); **Phase 3 built (#7052)**: the level-up, the attribute picks and the completed-sleep trigger (`crates/scripting/src/oblivion_skill_use.rs`).
 It records what `Oblivion.exe` does when the player uses a skill (OSL-XP-007's action census, V3 and V4), and the contract every emitter in
 the engine follows. The level-up, the attribute bonus and the sleep trigger are in the PRD; the Health term is in
 [charal-oblivion-ruleset.md](charal-oblivion-ruleset.md). Addresses are `Oblivion.exe` 1.2.0.416 (sha256 `a8f31384…dc6`, image base
@@ -15,6 +15,8 @@ Three routines, one behind the other (`this` is `PlayerCharacter`, `[0xb333c4]`)
 | `0x668c30(skill, usage, mult)` (vtable slot 231, offset `0x39c`) | reads the amount from the skill's `SKIL` record, `use value[usage]` (`SKIL + 0x38 + usage · 4`), multiplies by `mult` when `mult` is not 0, drops anything not above 0, and passes the rest on |
 | `0x668b30(skill, amount, record, flag)` | **a skill at 100 or more banks nothing** (`GetAV(skill) >= 100 → return`); otherwise `exp += amount`, and when the skill's cost is **strictly below** the experience, calls the rank-up once |
 | `0x668070(record, …)` | the rank-up: `exp = max(exp − cost, 0)` (a surplus stays banked), the skill's **base** value `+ 1`, the cost recomputed, the attribute tally and the major count updated, the level made pending at the tenth major increase |
+
+The engine gates banking the same way (#7210, owner decision 2026-11-22): `bank_skill_use` reads the skill's **current** value, Fortify included, and banks nothing at 100 or more; a rank-up still writes the base.
 
 So one call ranks a skill at most once; a large amount ranks again on the next use. The engine's single entry point (OSL-XP-001) loops
 the original's step and returns the ranks it reached.

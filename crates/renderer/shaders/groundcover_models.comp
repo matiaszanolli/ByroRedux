@@ -193,6 +193,7 @@ layout(push_constant) uniform GcModelPush {
 #include "include/groundcover_wind.glsl"
 #define renderOrigin pc.renderOriginEnable
 #include "include/ray_origin.glsl"
+#include "include/groundcover_cover.glsl"
 
 /// Same mixer as the blade scatter's `gcHash`.
 uint gcModelHash(uint seed, uint index) {
@@ -233,21 +234,7 @@ bool gcCovered(TerrainSample s, vec2 worldXZ, float reach) {
     if (pc.renderOriginEnable.w < 0.5 || reach <= 0.0) {
         return false;
     }
-    vec3 root = vec3(worldXZ.x, s.meshHeight, worldXZ.y);
-    vec3 floorPoint = offsetRayOrigin(root, vec3(0.0, 1.0, 0.0));
-    vec3 top = root + vec3(0.0, reach, 0.0);
-    float span = top.y - floorPoint.y;
-    if (span <= 0.0) {
-        return false;
-    }
-    rayQueryEXT q;
-    rayQueryInitializeEXT(
-        q, gcTopLevelAS,
-        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
-        VISIBILITY_LAYER_ARCHITECTURE | VISIBILITY_LAYER_STATIC_PROP,
-        top, 0.0, vec3(0.0, -1.0, 0.0), span);
-    while (rayQueryProceedEXT(q)) {}
-    return rayQueryGetIntersectionTypeEXT(q, true) != gl_RayQueryCommittedIntersectionNoneEXT;
+    return gcRootCovered(vec3(worldXZ.x, s.meshHeight, worldXZ.y), reach);
 }
 
 /// A placeable record's selection weight, or 0.

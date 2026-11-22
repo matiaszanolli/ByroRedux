@@ -478,6 +478,30 @@ pub(super) fn discard_pending_story_events(world: &World) {
 /// music, script messages and the message boxes they opened, then (#6574) the crafting session and
 /// bench request and the dropped items still waiting to raise `REMP`.
 pub(super) fn discard_outgoing_session_requests(world: &World) {
+    // #7229 — projectiles in flight name the outgoing session's shooter and its physics world's bodies; left alone they
+    // flew on through the loaded world and landed damage, skill uses and spell effects there. A queued trap hit (a
+    // Late request waits a frame) names the outgoing session's entities too.
+    reset_resource::<crate::systems::projectiles::ActiveProjectiles>(world);
+    reset_resource::<byroredux_scripting::PendingTrapHits>(world);
+    // #7230 — process-lifetime session state whose NOT_SAVED reason promises a load restarts it. `LevelNotices` holds
+    // the outgoing session's announced level count (left alone, a save with more pending levels announced "rest and
+    // meditate" again on the first frame); `CastState` holds a stale impact target id; the bow draw, the cast interval,
+    // the stance timers and the mine scan cadence carried over too. The Once Per Day blocks are cleared before the
+    // reload instead (`reload_with_fresh_day_blocks`, #7252): the reload's own spawns note theirs.
+    reset_resource::<crate::skill_use_emit::LevelNotices>(world);
+    reset_resource::<byroredux_scripting::player_cast::CastState>(world);
+    reset_resource::<crate::bow::BowState>(world);
+    reset_resource::<crate::skill_use_emit::StanceTimers>(world);
+    reset_resource::<crate::systems::mines::MineClock>(world);
+    // #7253 — the M43 ambient schedulers and the ObScript quest cadence promise a load re-arms them as a fresh boot
+    // does; only boot ever built them, so an in-process load carried the outgoing session's timers, pair cooldowns
+    // and found bodies (keyed by its actors) over. Their systems fill them, never the reload's spawns, so resetting
+    // after the reload erases nothing the loaded session made.
+    reset_resource::<crate::systems::random_conversation::RandomConversationState>(world);
+    reset_resource::<crate::systems::dead_body::DeadBodyState>(world);
+    reset_resource::<crate::systems::attraction::AttractionState>(world);
+    reset_resource::<byroredux_scripting::jail::JailEscapeWatch>(world);
+    reset_resource::<byroredux_scripting::obscript_quests::ObScriptQuestTimers>(world);
     if let Some(mut request) = world.try_resource_mut::<byroredux_scripting::PlayerMoveRequest>() {
         request.0 = None;
     }
@@ -595,6 +619,34 @@ pub(super) fn discard_outgoing_session_requests(world: &World) {
         && let Some(mut seats) = world.query_mut::<byroredux_core::ecs::components::Seated>() {
             seats.remove(player);
         }
+}
+
+/// Run the cell reload with the Once Per Day blocks cleared (#7252). They are keyed by the outgoing session's actors
+/// and its clock, so a load restarts them (AIP-FLG-001), but the reload's own spawns note the blocks of the Once Per
+/// Day packages they select (`apply_ai_package_behavior`), and a reset after it erased those, which a cold start
+/// keeps. An aborted reload ("keeping the current session") gets the live blocks back.
+pub(super) fn reload_with_fresh_day_blocks<T>(
+    world: &mut World,
+    reload: impl FnOnce(&mut World) -> Option<T>,
+) -> Option<T> {
+    use crate::npc_spawn::package_flags::PackageDayBlocks;
+    let live = world.try_resource_mut::<PackageDayBlocks>().map(|mut blocks| std::mem::take(&mut *blocks));
+    let outcome = reload(world);
+    if outcome.is_none()
+        && let Some(live) = live
+        && let Some(mut blocks) = world.try_resource_mut::<PackageDayBlocks>()
+    {
+        *blocks = live;
+    }
+    outcome
+}
+
+/// Put a process-lifetime resource back to its default, if it is installed (the load drain's reset for session state that
+/// holds no saved value).
+fn reset_resource<R: byroredux_core::ecs::resource::Resource + Default>(world: &World) {
+    if let Some(mut resource) = world.try_resource_mut::<R>() {
+        *resource = R::default();
+    }
 }
 
 /// Drain a queued live-load: reload the saved cell or exterior worldspace
@@ -722,16 +774,18 @@ pub fn execute_pending_save_loads(
     // Resident rows arrive from the snapshot's component overlay; nonresident
     // rows arrive with the post-reload resource restore below.
     let outcome = crate::cell_loader::reference_state::without_parked_state(world, |world| {
-        if let Some(cell_ctx) = snapshot_cell_context(&snapshot) {
-            reload_interior_session(world, ctx, streaming, &args, &cell_ctx)
-        } else if let Some(ext_ctx) = snapshot_exterior_context(&snapshot) {
-            reload_exterior_session(world, ctx, streaming, &args, &ext_ctx)
-        } else {
-            let message = "save load: snapshot lost its cell/exterior context between queue and drain";
-            log::error!("{message}");
-            notify_player(world, message);
-            None
-        }
+        reload_with_fresh_day_blocks(world, |world| {
+            if let Some(cell_ctx) = snapshot_cell_context(&snapshot) {
+                reload_interior_session(world, ctx, streaming, &args, &cell_ctx)
+            } else if let Some(ext_ctx) = snapshot_exterior_context(&snapshot) {
+                reload_exterior_session(world, ctx, streaming, &args, &ext_ctx)
+            } else {
+                let message = "save load: snapshot lost its cell/exterior context between queue and drain";
+                log::error!("{message}");
+                notify_player(world, message);
+                None
+            }
+        })
     });
     let Some(ReloadOutcome {
         location_label,

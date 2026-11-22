@@ -239,7 +239,8 @@ fn authored_get_actor_value_index_translates_to_the_loaded_avif() {
     assert_eq!(check(&mut fnv, &[(0x3F5, 10.0)], 43, ComparisonOp::Ge, 25.0), (true, false));
     assert!(!check(&mut fnv, &[], 21, ComparisonOp::Ge, 0.0).0, "SpeedMult has no AVIF in the master");
 
-    // Oblivion has no AVIF records: unreadable, so the fail-closed gates decline.
+    // An Oblivion index with no actor-value roster installed (the loader installs the engine-supplied
+    // one, #7010): unreadable, so the fail-closed gates decline.
     let mut oblivion = install(GameKind::Oblivion, &[]);
     assert!(!check(&mut oblivion, &[], 43, ComparisonOp::Ge, 0.0).0);
 

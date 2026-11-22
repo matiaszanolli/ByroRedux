@@ -45,7 +45,7 @@ own citable source before it enters the computed `derived` table (CHARAL §6).
 | Hacking (dud-word reduction) | Intelligence | — | PENDING |
 | Action Points | Agility | `60 + 10·AGI` (`fAVDActionPoints{Base,Mult}`) | **LOCKED** (§below) |
 | Pickpocket chance | Agility | `+1 pp / AGI` *(additive)* | **LOCKED** (§below) |
-| Sneak detection | Agility | — | **DEAD END** — source itself says "unknown formula" |
+| Sneak detection | Agility | — | **DEAD END on the wiki** ("unknown formula"); **BUILT** as `StealthKind::Fallout4` (#6996), transcribed from `Fallout4.exe` (`docs/engine/sneak-detection.md` §4.2) |
 | Critical Hit recharge rate | Luck | — | PENDING |
 
 Routing of these once the coefficients arrive:
@@ -198,9 +198,13 @@ multiplier already in the perk chart (row 274). No GMST name given, no base valu
 given (base pickpocket chance lives elsewhere — target-guard-perception-driven, not
 SPECIAL-derived). Routes as a gameplay-system input like persuasion/barter, not the
 `derived` table (it's a percentage bonus into an existing system, not a standalone
-AV). **Sneak detection likelihood**, by contrast, is a genuine dead end: the same
+AV). **Sneak detection likelihood**, by contrast, is a dead end on this source: the same
 page states Agility is "used in an unknown formula" for it — the wiki itself doesn't
-know, so this isn't worth re-querying (§9 no-guessing scope: nothing to cite).
+know (§9 no-guessing scope: nothing to cite). **Status (M65):** the engine nonetheless
+runs a Fallout 4 detection row (`StealthKind::Fallout4`, #6996), transcribed from
+`Fallout4.exe` before the 2026-11-20 no-exe-decode ruling; its provenance is executable-
+derived, not documented, as `docs/engine/sneak-detection.md` records. Whether to keep,
+re-source or relabel it is the owner's open call.
 
 ### Max Settlement Population — LOCKED (source: Charisma (FO4) page, 2026-07-03)
 

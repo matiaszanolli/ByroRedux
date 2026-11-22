@@ -117,8 +117,10 @@ table are not given on this page — PENDING if ever needed at that precision.
 ## Open items
 
 - **Sneak / detection formulas**: GMST names listed (`fSneak*`, ~20 constants) but no
-  closed form given — same "dead end on this source" situation as FO4's sneak-
-  detection row (`charal-fo4-ruleset.md`).
+  closed form given — the same "dead end on this source" as FO4's wiki row
+  (`charal-fo4-ruleset.md`). **Status (M65):** Fallout 76 answers from the sight test
+  alone (`StealthKind::SightOnly`, no indicator); unlike FO4, no executable-derived row
+  stands in.
 - **NPC SPECIAL storage for FO76**: not researched — FO76 has no traditional NPCs in
   the FO4 sense (multiplayer, mostly hostile spawns), likely out of scope for the
   NPC-population path entirely. Not blocking (FO76 isn't in the §8 rollout order).
