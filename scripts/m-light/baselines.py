@@ -103,14 +103,21 @@ def gpu_brackets(line: str) -> dict[str, float]:
 
 
 class Engine:
-    def __init__(self, binary: Path, out: Path):
+    def __init__(self, binary: Path, out: Path, resume: bool = False):
         self.binary = binary
         self.out = out
+        # `--resume`: a run whose log already holds a bench line is not
+        # relaunched, so an interrupted report (one engine crash, a GPU
+        # slot handed to another session) re-runs only what is missing.
+        self.resume = resume
 
     def run(self, scene: str, name: str, extra: list[str]) -> tuple[str, Path]:
         workdir, args, floor = scene_spec(scene)
         log_path = self.out / "logs" / f"{scene}_{name}.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.resume and log_path.exists() and "\nbench:" in log_path.read_text(errors="replace"):
+            log(f"{scene}/{name}: reusing {log_path.name}")
+            return self._judge(scene, name, log_path, floor)
         with tempfile.TemporaryDirectory() as settings_dir:
             env = dict(os.environ, RUST_LOG="warn",
                        BYROREDUX_SETTINGS_PATH=str(Path(settings_dir) / "settings.toml"))
@@ -121,6 +128,9 @@ class Engine:
                 log_file.flush()
                 subprocess.run([str(self.binary), *args, *extra], cwd=workdir, env=env,
                                stdout=log_file, stderr=subprocess.STDOUT, timeout=1800)
+        return self._judge(scene, name, log_path, floor)
+
+    def _judge(self, scene: str, name: str, log_path: Path, floor: int) -> tuple[str, Path]:
         text = log_path.read_text(errors="replace")
         lines = [l for l in text.splitlines() if l.startswith("bench:")]
         if not lines:
@@ -320,6 +330,8 @@ def main() -> int:
     parser.add_argument("--anchors-only", type=Path, metavar="BASELINES_TSV",
                         help="re-capture only the content anchors, at the pose and TAA settled tier a "
                              "previous baselines.tsv recorded (RLT-CNT-001: a phase entry's anchors)")
+    parser.add_argument("--resume", action="store_true",
+                        help="reuse every run whose log in --out already holds a bench line")
     parser.add_argument("--materials-only", action="store_true",
                         help="re-publish only the A9 material-class report (RLT-IBL-008): one TAA adaptive "
                              "run per Wave 1 game scene with --material-dump, no timing or anchors")
@@ -332,7 +344,7 @@ def main() -> int:
 
     log("building engine (release)")
     subprocess.run(["cargo", "build", "--release", "-p", "byroredux", "--bin", "byroredux"], cwd=REPO, check=True)
-    engine = Engine(REPO / "target" / "release" / "byroredux", out)
+    engine = Engine(REPO / "target" / "release" / "byroredux", out, resume=args.resume)
     mi.set_variant("scalar_rgb")
 
     base_rows, material_rows, pending_rows = [], [], []

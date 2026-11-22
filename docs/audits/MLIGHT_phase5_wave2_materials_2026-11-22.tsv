@@ -1,0 +1,13 @@
+scene	route	class	instances	roughness_p05	roughness_median	roughness_p95	metalness_median	F1	F2	F3
+gildedcarafe	legacy_keyword	conductor	70	0.250	0.550	0.550	0.900			
+gildedcarafe	legacy_keyword	dielectric	108	0.100	0.700	0.950	0.000			
+gildedcarafe	legacy_no_signal	dielectric	178	0.850	0.850	0.850	0.000			
+gildedcarafe	FLAGS		356					F1=2/275 (roughness<0.2)	F2=70 (conductor without metal signal)	F3=0/0 (FO4 BGSM, specular on, not glass or effect, vs (1-s).clamp(0.04,1); unverified, #6606)
+moriarty	legacy_env_map	dielectric	34	0.100	0.100	0.800	0.000			
+moriarty	legacy_keyword	conductor	560	0.550	0.550	0.550	0.900			
+moriarty	legacy_keyword	dielectric	79	0.100	0.600	0.950	0.000			
+moriarty	legacy_no_signal	dielectric	252	0.100	0.850	0.850	0.000			
+moriarty	FLAGS		925					F1=0/235 (roughness<0.2)	F2=560 (conductor without metal signal)	F3=0/0 (FO4 BGSM, specular on, not glass or effect, vs (1-s).clamp(0.04,1); unverified, #6606)
+cydonia	legacy_keyword	dielectric	74168	0.850	0.850	0.850	0.000			
+cydonia	legacy_no_signal	dielectric	63596	0.850	0.850	0.850	0.000			
+cydonia	FLAGS		137764					F1=0/137763 (roughness<0.2)	F2=0 (conductor without metal signal)	F3=0/0 (FO4 BGSM, specular on, not glass or effect, vs (1-s).clamp(0.04,1); unverified, #6606)
