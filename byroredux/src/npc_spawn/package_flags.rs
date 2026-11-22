@@ -35,11 +35,23 @@ const ONCE_PER_DAY_HOURS: f64 = 24.0;
 
 /// When each `(actor, package)` Once Per Day package was first selected, in game hours since the runtime
 /// began. `NOT_SAVED_BY_DESIGN`: a load restarts the 24-hour block, like the rest of the ambient runtime
-/// state (`AmbientPackageRuntime`).
+/// state (`AmbientPackageRuntime`); it is cleared before the load's cell reload, whose spawns note their own (#7252).
 #[derive(Debug, Default, Clone)]
 pub(crate) struct PackageDayBlocks(HashMap<(EntityId, u32), f64>);
 
 impl Resource for PackageDayBlocks {}
+
+#[cfg(test)]
+impl PackageDayBlocks {
+    /// Note a block directly (tests outside this module, which cannot reach [`note_selected`]).
+    pub(crate) fn note(&mut self, actor: EntityId, package: u32, at_hours: f64) {
+        self.0.insert((actor, package), at_hours);
+    }
+
+    pub(crate) fn holds(&self, actor: EntityId, package: u32) -> bool {
+        self.0.contains_key(&(actor, package))
+    }
+}
 
 /// Whether `package`'s procedure has reported done for `actor` (the Must Complete test).
 fn procedure_done(world: &World, actor: EntityId, package: &PackRecord) -> bool {
