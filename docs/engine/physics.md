@@ -559,10 +559,15 @@ The spawn policy now has two deliberately different approximations:
   `collision_shape_to_parts` converter applies `GlobalTransform::scale`
   exactly once at the Rapier sink (#2860), so a producer that also baked it
   would emit scale² geometry (`docs/engine/physal.md` §2 states the same
-  contract; #3064/#3065 fixed this producer, #3959 the proxy below). This
-  path remains available for collision-less architecture even when the NIF
-  does not contain a packed object, preserving the terrain/legacy fallback
-  behavior.
+  contract; #3064/#3065 fixed this producer, #3959 the proxy below). It is
+  the stand-in for architecture whose authored collision the importer
+  declined, and for FO4+ or unknown-provenance models with none. A
+  classic-dialect model (BSVER below FO4's 130: Oblivion, FO3, FNV, Skyrim)
+  that authors no body gets no stand-in, because the original engine gives
+  it none: `missing_collision_fallback` returns `None` when
+  `CollisionAuthoringSummary::walk_through_by_authoring()` holds, so FNV's
+  sky planes and cave fungus stalks and Skyrim's water planes stay
+  walk-through (#6549).
 - **Clutter and actors with confirmed packed authoring:** all eligible render
   geometry is unioned after mesh-local translation/rotation/scale, producing
   one conservative placement-local AABB. The resulting cuboid is
