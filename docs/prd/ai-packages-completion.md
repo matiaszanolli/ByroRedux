@@ -1,15 +1,15 @@
 # AI Packages Completion — Product Requirements
 
-**Status**: ACTIVE (2026-11-19). Revision 15 links the Door Runtime PRD. Revision 14 scopes NPC door passage (AIP-DOOR, §5.11) and records decision Q8 (the door runtime gets its own PRD). Revision 13 fixes the two walking faults the Oblivion Find gate exposed. Revision 12 adds the two live gates and records what they found. Revision 11 wires Skyrim's sit-enter clip (AIP-SIT-002) and revision 10 Oblivion's (AIP-SIT-001). Revision 8 records AIP-WALK-003 as built (the pathgrid switch on every walking mover) and rev 7 its first slice. Revision 6 re-measures the "Today" claims at HEAD after Phases 1–5 and folds in review round 3 (§12). Revision 5 files the tracking issues; every **Phase 0: verify** item is an acceptance criterion of the Phase 0 issue. Revision 4 recorded the owner's §10 decisions: Q2 sets Skyrim's weekday origin per edition, every other answer is the recommendation. Revision 3 folded in review round 2
-(§12 lists the topics). It covers the remainder of milestone M42: the
+**Status**: ACTIVE (2026-11-22). Revision 16 folds in review round 4; the history is §12.
+
+It covers the remainder of milestone M42: the
 procedures, package fields and per-game prerequisites that do not run yet.
 Statements about how the original engines behave cite external sources
 (UESP, the CS / GECK / Creation Kit wikis, fopdoc, xEdit, nif.xml). A
 claim that could not be verified is marked **Phase 0: verify** instead of
 being stated as fact.
 
-**Tracking**: #6634 (parent). Phases: #6655 (0), #6656 (1), #6658 (2), #6660 (3),
-#6662 (4), #6663 (5).
+**Tracking**: #6634 (parent). Phases: #6655 (0), #6656 (1), #6658 (2), #6660 (3), #6662 (4), #6663 (5). Depends on: #7057 (Door Runtime, AIP-DOOR-001).
 
 **Scope**: What it means for an actor's own AI package list (`PKID`, the
 *ambient* packages) to run on ByroRedux in every target game. This covers
@@ -60,11 +60,12 @@ first listed as open (the numbers live in the
 and FNV every authored procedure has a runtime; CastMagic has none, and
 FO3/FNV author no CastMagic package (§3.1). What is left is of three kinds:
 
-1. **Data a running procedure still drops.** Find declines the item classes
-   that have no classifier (AIP-FIND-004). UseWeapon declines weapon
+1. **Data a running procedure still drops.** Find declines the FO3/FNV object
+   types that map to no class, 4, 19 and 20 (AIP-FIND-004). UseWeapon declines weapon
    classes 21 and 23, and Crouch To Reload is unconsumed (AIP-UW-006).
-2. **Per-game prerequisites.** Only FO3/FNV have a sit-enter clip
-   (AIP-SIT-001…003). Starfield has no walk source, because its `MT`
+2. **Per-game prerequisites.** FO3/FNV, Oblivion and Skyrim SE have a sit-enter
+   clip (AIP-SIT-001, -002); FO4 and Starfield have none, and FO4's seat
+   positions on `FURN` are not read (AIP-SIT-003, AIP-SEAT-007). Starfield has no walk source, because its `MT`
    subgraph entries name `.agx` tables that nothing reads (AIP-WALK-001,
    decision Q7).
 3. **Things that silently do nothing.** Closed as a rule by the corollary
@@ -141,8 +142,8 @@ install and decline counts by the `real_*_esm_package_install_counts` tests
 
 Counts are `PACK` records by `PKDT` procedure byte, per master (uncommitted
 census, see above). The **Today** column is the state at HEAD on
-2026-11-18 for the rows rev 6 re-measured (Find, Sleep, CastMagic, UseWeapon)
-and at HEAD on 2026-11-03 for the rest. Where a procedure shipped, the cell
+2026-11-22: revision 16 re-checked every row by its symbol; revision 15's §3
+is the earlier record. Where a procedure shipped, the cell
 names the issue and the design owns the detail
 ([NPC Spawn → AI Packages](../engine/npc-spawn-ai-packages.md)). The numbering matches across the three games for 0–10.
 Oblivion's enum ends at 11 = Cast magic
@@ -155,39 +156,39 @@ for FO3/FNV only (`wbPackageTypeEnum`, `wbDefinitionsCommon.pas:8084-8103`).
 
 | # | Procedure | Obl | FO3 | FNV | Class (Obl / FO3·FNV) | Today |
 |---|---|---:|---:|---:|---|---|
-| 0 | Find | 741 | 78 | 81 | P / P | `make_find_package_system` (`systems/find_package.rs`). Object-type targets install through the canonical `PackObjectClass` (`find_target_for`, `npc_spawn/ai_package.rs:219-230`: Furniture, Flora and actor classes since #6656, Oblivion's own enum since #6662). A decline logs its reason and the raw number (`find_behavior`, `ai_package.rs:265-279`). Item classes with no classifier stay declined (AIP-FIND-004) |
+| 0 | Find | 741 | 78 | 81 | P / P | `make_find_package_system` (`systems/find_package.rs`). Object-type targets install through the canonical `PackObjectClass` (`find_target_for`, `npc_spawn/ai_package.rs`: Furniture, Flora and actor classes since #6656, Oblivion's own enum since #6662). A decline logs its reason and the raw number (`find_behavior`, `ai_package.rs`). Every item class has a target except FO3/FNV object types 4, 19 and 20, which map to no class and decline (`PackObjectClass::from_object_type`, AIP-FIND-004) |
 | 1 | Follow | 208 | 115 | 132 | R / R | `follow_system` |
 | 2 | Escort | 75 | 30 | 12 | R / R | `escort_system` |
-| 3 | Eat | 829 | 296 | 317 | P / A | `systems/eat_sleep.rs` walks and sits; food is never eaten. On Oblivion the walk runs and the sit clip is wired (`sandbox_sit_enter_kf_path` → `chair_leftenter.kf`, AIP-SIT-001); the seat has not been observed live |
-| 4 | Sleep | 725 | 246 | 390 | P / A | `systems/eat_sleep.rs`. A bed is taken or nothing: the #5390 sit fallback is retired (AIP-SEAT-004, `eat_sleep.rs:537-539`), and the sit pose is parked at the bed's marker (module doc). Oblivion: walk, no seat |
+| 3 | Eat | 829 | 296 | 317 | P / A | `systems/eat_sleep.rs` walks and sits; food is never eaten. On Oblivion the walk runs and the sit clip is wired (`sandbox_sit_enter_kf_path` → `chair_leftenter.kf`, AIP-SIT-001) and seen live (`m42-oblivion-packages.sh`, rev 12) |
+| 4 | Sleep | 725 | 246 | 390 | P / A | `systems/eat_sleep.rs`. A bed is taken or nothing: the #5390 sit fallback is retired (AIP-SEAT-004, `eat_sleep.rs`), and the sit pose is parked at the bed's marker (module doc). Oblivion: walk, no seat |
 | 5 | Wander | 1 820 | 42 | 31 | R / R | `wander_system` |
 | 6 | Travel | 1 924 | 907 | 1 260 | R / R | `travel_system` |
 | 7 | Accompany | 40 | 24 | 14 | A / A | runs as Follow (`from_package`, `is_accompany` arm) |
 | 8 | UseItemAt | 751 | 20 | 26 | A / A | installs `EatBehavior`. Neither the `PTDT` item nor the *Sit Down* flag is read (§6 row 11) |
-| 9 | Ambush | 80 | 25 | 38 | A / A | Guard wait plus the hostility gate (`AmbushBehavior`). Oblivion authors no `PLD2`, so its ambushers get no gate and fight by the ordinary hostility rules (`ambush_gates`, `systems/faction_hostility.rs:351-369`) |
+| 9 | Ambush | 80 | 25 | 38 | A / A | Guard wait plus the hostility gate (`AmbushBehavior`). Oblivion authors no `PLD2`, so its ambushers get no gate and fight by the ordinary hostility rules (`ambush_gates`, `systems/faction_hostility.rs`) |
 | 10 | FleeNotCombat | 11 | 8 | 15 | R / R | `flee_package_system` |
-| 11 | CastMagic | 5 | 0 | 0 | D / N | declines as `unsourced-semantics` (`PROCEDURE_CAST_MAGIC_UNSOURCED`, `ai_package.rs:1044`, reported by `pack.ambient`, `ai_package.rs:1019`; #6656) |
-| 12 | Sandbox | n/a | 681 | 753 | — / P | `systems/sandbox.rs`: nearest free sit marker. Scored activity selection is not built (§6) |
-| 13 | Patrol | n/a | 180 | 505 | — / A | Wander's core. The route's linked references (`XLKR`) are decoded (`crates/plugin/src/esm/cell/walkers.rs:742-766`, FO3/FNV since #5223), but Patrol does not follow them; the `PROCEDURE_PATROL` doc's "decodes nowhere" is stale |
+| 11 | CastMagic | 5 | 0 | 0 | D / N | declines as `unsourced-semantics` (`PROCEDURE_CAST_MAGIC_UNSOURCED` in `npc_spawn/ai_package.rs`, reported by `pack.ambient`; #6656) |
+| 12 | Sandbox | n/a | 681 | 753 | — / P | `systems/sandbox.rs`: nearest free sit marker around the package location (`travel::package_home`, AIP-SEAT-008). Scored activity selection is not built (§6) |
+| 13 | Patrol | n/a | 180 | 505 | — / A | Wander's core. The route's linked references (`XLKR`) are decoded (`crates/plugin/src/esm/cell/walkers.rs`, FO3/FNV since #5223), but Patrol does not follow them; the `PROCEDURE_PATROL` doc's "decodes nowhere" is stale |
 | 14 | Guard | n/a | 172 | 175 | — / R | `guard_system` |
 | 15 | Dialogue | n/a | 386 | 332 | — / P | force-greet bridge, installed only for modelled player-targeted Conversations (#5376) |
-| 16 | UseWeapon | n/a | 56 | 82 | — / P | `use_weapon_package_system`. Installs a specific weapon (`PTDT` type 1), or the actor's own weapon for types 12 and 22 (decision Q1), with fully modelled conditions; 21 and 23 decline as `unsourced-semantics` (`use_weapon_behavior`, `ai_package.rs:105-138`; #6656) |
+| 16 | UseWeapon | n/a | 56 | 82 | — / P | `use_weapon_package_system`. Installs a specific weapon (`PTDT` type 1), or the actor's own weapon for types 12 and 22 (decision Q1), with fully modelled conditions; 21 and 23 decline as `unsourced-semantics` (`use_weapon_behavior`, `ai_package.rs`; #6656) |
 
 ### 3.2 Tree-shape leaves (Skyrim / FO4 / FO76 / Starfield)
 
 The Skyrim Creation Kit documents 29 procedure leaves
 ([CK: Procedures](https://ck.uesp.net/wiki/Category:Procedures), local dump
 `ck-uesp-wiki/(main)/* (Procedure).wiki`, 29 files). The ambient column is
-the state at HEAD on 2026-11-18 (`npc_spawn/ai_package/tree.rs:1-25, 308`,
-#6660); the scene column was last checked at HEAD on 2026-11-03:
+the state at HEAD on 2026-11-22 (`npc_spawn/ai_package/tree.rs`,
+#6660, re-checked in revision 16); the scene column was last checked at HEAD on 2026-11-03:
 
 | Leaf group | Ambient driver Today | Scene driver Today |
 |---|---|---|
-| Sandbox, Patrol | installs; a tree with a `Sandbox` leaf runs it, else a `Patrol` leaf, each the first in tree order whose own conditions pass (AIP-TREE-001, `tree.rs:7-14`) | Patrol as move-to |
-| Travel, Sleep, Eat, Follow, Escort, Guard, Flee, root Wander | installs the FO3/FNV counterpart's component (`tree.rs:17-20`) | Travel, Escort: move-to (`resolve_command`, `crates/scripting/src/package.rs`); the others none |
+| Sandbox, Patrol | installs; a tree with a `Sandbox` leaf runs it, else a `Patrol` leaf, each the first in tree order whose own conditions pass (AIP-TREE-001, `tree.rs`) | Patrol as move-to |
+| Travel, Sleep, Eat, Follow, Escort, Guard, Flee, root Wander | installs the FO3/FNV counterpart's component (`tree.rs`) | Travel, Escort: move-to (`resolve_command`, `crates/scripting/src/package.rs`); the others none |
 | FollowTo | none, reason `no-runtime` (AIP-TREE-007) | move-to (`resolve_command`) |
-| ForceGreet | installs the Dialogue behaviour only when every condition is modelled (AIP-TREE-005, `tree.rs:242`) | none: `resolve_command` returns `AwaitExternal` (`package.rs:550`). `PackRecord::force_greet` resolves both dialects, but only the `dialogue.forcegreet` console command calls it (`commands/quest.rs:1183`) |
-| Sit, UseIdleMarker | none: waits on the tree leaf wiring (AIP-TREE-004) and, for FO4+, AIP-SIT-003 (`tree.rs:308`) | interaction (`resolve_command`) |
+| ForceGreet | installs the Dialogue behaviour only when every condition is modelled (AIP-TREE-005, `tree.rs`) | none: `resolve_command` returns `AwaitExternal` (`package.rs`). `PackRecord::force_greet` resolves both dialects, but only the `dialogue.forcegreet` console command calls it (`commands/quest.rs`) |
+| Sit, UseIdleMarker | none: waits on the tree leaf wiring (AIP-TREE-004) and, for FO4+, AIP-SIT-003 (`tree.rs`) | interaction (`resolve_command`) |
 | Acquire, Activate, Shout, UseWeapon | none, reason `no-runtime` (AIP-TREE-007) | interaction (`resolve_command`) |
 | Find, HoldPosition, KeepAnEyeOn, LockDoors, UnlockDoors, Say, UseMagic, Wait, FlightGrab, Hover, Orbit | none, reason `no-runtime` (AIP-TREE-007) | none |
 The FO4, FO76 and Starfield leaf vocabularies are not documented locally
@@ -200,16 +201,16 @@ shapes and procedure counts, not leaf names.
 
 ### 3.3 Prerequisites by game
 
-The state at HEAD on 2026-11-18 for the Oblivion pathing, Day-of-week and Starfield walk-source cells (#6658, #6663), and at HEAD on 2026-11-03 for the rest:
+The state at HEAD on 2026-11-22 (revision 16 re-checked every cell):
 
 | Game | Package shape | Walk source Today | Sit-enter Today | Pathing Today | Day-of-week Today |
 |---|---|---|---|---|---|
-| Oblivion | flat | `handtohandforward.kf` (`humanoid_walk_kf_path`, `npc_spawn/anim_clips.rs`) | `chair_leftenter.kf` (`sandbox_sit_enter_kf_path`, AIP-SIT-001) | no `NAVM` exists. `PGRD` is resident as `PathGridTile` and routed by `systems/pathgrid_path.rs` (`0580afe57`): one cell's grid at a time. Every walking mover takes it once the character controller has blocked its straight walk for 1.5 s (`GridWalk`, `NavPath.grid`; AIP-WALK-003) | evaluated from the `GameCalendar` origin (`package_weekday`, `crates/scripting/src/globals.rs:136-139`), plus the date byte (`package_day_of_month`) |
+| Oblivion | flat | `handtohandforward.kf` (`humanoid_walk_kf_path`, `npc_spawn/anim_clips.rs`) | `chair_leftenter.kf` (`sandbox_sit_enter_kf_path`, AIP-SIT-001) | no `NAVM` exists. `PGRD` is resident as `PathGridTile` and routed by `systems/pathgrid_path.rs` (`0580afe57`): one cell's grid at a time. Every walking mover takes it once the character controller has blocked its straight walk for 1.5 s (`GridWalk`, `NavPath.grid`; AIP-WALK-003) | evaluated from the `GameCalendar` origin (`package_weekday`, `crates/scripting/src/globals.rs`), plus the date byte (`package_day_of_month`) |
 | FO3 / FNV | flat | `mtforward.kf` per gender and child | `chairskirt_leftenter.kf` | `NAVM` within and across resident tiles (`path_from_resident_tiles`, `systems/navmesh_path.rs`) | evaluated from the `GameCalendar` origin (`package_weekday`) |
-| Skyrim LE / SE | tree | `1hm_walkforward.hkx` (`SkyrimWalkClip`, `components/ai_anim.rs`) | none | `NAVM` (`NVNM` decoded, `decode_nvnm`) | evaluated, Morndas on the launch master and Sundas on SE / AE (Q2, AIP-SCHED-004) |
+| Skyrim LE / SE | tree | `1hm_walkforward.hkx` (`SkyrimWalkClip`, `components/ai_anim.rs`) | `chair_leftenter.hkx` on SE (`SKYRIM_SIT_ENTER_PATH`, `asset_provider/animation.rs`, AIP-SIT-002); LE not scanned | `NAVM` (`NVNM` decoded, `decode_nvnm`) | evaluated, Morndas on the launch master and Sundas on SE / AE (Q2, AIP-SCHED-004) |
 | FO4 | tree | behaviour graph `MTBehavior.hkx` (`graph_locomotion_system`, `asset_provider/actor_graph.rs`) | none, and the sit positions authored on `FURN` `SNAM` are not read (AIP-SEAT-007) | none: the `NVNM` body never reconciles and its bytes are retained (`decode_nvnm`, `crates/plugin/src/esm/records/misc/world/navigation.rs`) | evaluated from the authored start date (Q2) |
 | FO76 | tree | none | none | not measured | not evaluated (FO76 is out of scope, §7.1) |
-| Starfield | tree | none: `humanoid_walk_kf_path` → `None`, `populate_skyrim_walk_clip` is Skyrim only (`asset_provider/animation.rs:243`), and the graph path is gated by its data, not the game (`is_havok_graph`, `asset_provider/archetype_idle.rs:70-80`): all 43 Starfield `MT` entries name `.agx` tables, which nothing reads (AIP-WALK-001, Q7) | none, and `FURN` `SNAM` is not read (AIP-SEAT-007) | not measured: `parse_navm`'s coverage table (`world.rs`) lists no Starfield plugin | evaluated from the authored start date (Q2) |
+| Starfield | tree | none: `humanoid_walk_kf_path` → `None`, `populate_skyrim_walk_clip` is Skyrim only (`asset_provider/animation.rs`), and the graph path is gated by its data, not the game (`is_havok_graph`, `asset_provider/archetype_idle.rs`): all 43 Starfield `MT` entries name `.agx` tables, which nothing reads (AIP-WALK-001, Q7) | none, and `FURN` `SNAM` is not read (AIP-SEAT-007) | not measured: `parse_navm`'s coverage table (`world.rs`) lists no Starfield plugin | evaluated from the authored start date (Q2) |
 
 These hand-written tables are replaced by the census code (AIP-DX-003) and
 `pack.ambient` (AIP-DX-001) and regenerated at each phase exit.
@@ -303,7 +304,7 @@ Vanilla `PTDT` type-2 targets in Find packages (uncommitted census, §3):
 - **AIP-FIND-001.** A FO3/FNV Find package whose target is object type 11
   (Furniture) MUST leave the actor `Seated` on a sit marker of the nearest
   furniture reference inside the `PLDT` area, through the existing seat path
-  (`seat_at_marker`). Shipped in #6656 (`systems/find_package.rs:471`).
+  (`seat_at_marker`). Shipped in #6656 (`systems/find_package.rs`).
   **Phase 0: verify** that FO3/FNV sit in a found chair. The
   GECK Find page has no furniture case; the CS page's "Chair: Sit in it" is
   the Oblivion statement. What settles it: a vanilla FO3/FNV type-11 Find
@@ -311,7 +312,7 @@ Vanilla `PTDT` type-2 targets in Find packages (uncommitted census, §3):
 - **AIP-FIND-002.** A FO3/FNV Find package whose target is object type 10
   (Flora) MUST raise one `ActivateEvent` on the nearest flora reference in
   the area, with the actor as activator. Shipped in #6656
-  (`systems/find_package.rs:812`). **Phase 0: verify** that a Find activates a flora. The GECK Find page has no flora
+  (`systems/find_package.rs`). **Phase 0: verify** that a Find activates a flora. The GECK Find page has no flora
   case (an inventory object is picked up, an activator activated); the CS
   *Flora* page, which the GECK *Flora* page links to, says that "when
   activated, the harvested ingredient may be added to the actor's
@@ -321,7 +322,7 @@ Vanilla `PTDT` type-2 targets in Find packages (uncommitted census, §3):
   (NPCs), 15 (Creatures) or Actors: Any MUST select the nearest loaded live
   actor of that class in the area, then apply the GECK arrival rule for
   that actor (attack, or greet). Shipped in #6656
-  (`systems/find_package.rs:245, 838`). **Phase 0: verify** whether Actors: Any is 28 or 29 on each game. What settles it: the GECK
+  (`systems/find_package.rs`). **Phase 0: verify** whether Actors: Any is 28 or 29 on each game. What settles it: the GECK
   Find "Object Type" dropdown order, or `VFSFreesideThugPackage` (FNV's one
   type-28 Find) observed live.
 - **AIP-FIND-004.** A FO3/FNV Find package whose target is an item class
@@ -335,14 +336,14 @@ Vanilla `PTDT` type-2 targets in Find packages (uncommitted census, §3):
   8 Lights, 24–27 Actor Effects, whichever of 28 / 29 is not Actors: Any,
   and any number outside the enum) MUST produce a decline line with reason
   `unsupported-object-type` and the raw number. Shipped in #6656
-  (`npc_spawn/ai_package.rs:200, 2334`).
+  (`npc_spawn/ai_package.rs`).
 - **AIP-FIND-006.** Oblivion Find packages with an object-type target MUST
   be classified through Oblivion's own numbering (xEdit
   `wbDefinitionsTES4.pas`), translated into one canonical object class
   inside `crates/plugin`, so that `find_package_system` never reads the
   game. Shipped in #6662: the decode translates Oblivion's enum into
   `PackObjectClass` and the driver installs from the class
-  (`find_target_for`, `ai_package.rs:217-230`). Armor (3) and Clothing (5)
+  (`find_target_for`, `ai_package.rs`). Armor (3) and Clothing (5)
   stay declined because `CLOT` and `ARMO` share one item kind, and Soul Gems
   (17) are no item record.
 - **AIP-FIND-007.** An Oblivion Find whose target is a chair MUST seat the
@@ -350,7 +351,7 @@ Vanilla `PTDT` type-2 targets in Find packages (uncommitted census, §3):
   `ActivateEvent` on it with the actor as activator (CS: the actor "finds
   the target and 'activates' it", a container meaning "Open it"). Seating
   on Oblivion depends on AIP-SIT-001. The container half shipped in #6662
-  (`systems/find_package.rs:776`); the chair half is unblocked by AIP-SIT-001 (Oblivion's seat runs, rev 12), but no vanilla cell can gate it live: the placed Find-a-chair packages name a base the cell does not place (`GottlefontHouse`'s bench) or a tree, so it stays unit-gated.
+  (`systems/find_package.rs`); the chair half is unblocked by AIP-SIT-001 (Oblivion's seat runs, rev 12), but no vanilla cell can gate it live: the placed Find-a-chair packages name a base the cell does not place (`GottlefontHouse`'s bench) or a tree, so it stays unit-gated.
 
 ### 5.2 UseWeapon (`AIP-UW`)
 
@@ -380,10 +381,10 @@ That fit is evidence, not a source, so 21 and 23 stay a verify item
 - **AIP-UW-001.** A UseWeapon actor whose package authors a `PLDT` location
   MUST be inside that location's radius before its volley is raised
   (`UseWeaponPackageStarted`). Shipped in #6656; the actor is not walked
-  there (`systems/use_weapon_package.rs:22-25, 85-101`).
+  there (`systems/use_weapon_package.rs`).
 - **AIP-UW-002.** When the package authors a `PLD2` target location, the
   actor MUST hold fire until its target is inside that location (GECK
-  *Target Location*). Shipped in #6656 (`use_weapon_package.rs:147`).
+  *Target Location*). Shipped in #6656 (`use_weapon_package.rs`).
 - **AIP-UW-003.** With Hold Fire When Blocked set, an actor MUST NOT fire
   while a movable object blocks the line of fire to its target (GECK), as
   tested by a physics ray query.
@@ -391,7 +392,7 @@ That fit is evidence, not a source, so 21 and 23 stay a verify item
   the package target, whatever it strikes first.
 - **AIP-UW-005.** Between volleys, the wait MUST come from the `PKW3` pause
   range, not from the weapon's attack interval (as before #6656). Shipped in #6656
-  (`systems/script_requests.rs:203`). The midpoint of the
+  (`systems/script_requests.rs`). The midpoint of the
   range is the deterministic stand-in (§6).
 - **AIP-UW-006.** Crouch To Reload SHOULD put the actor in its sneak
   stance for the length of each reload. The pose exists (archive scan at
@@ -406,11 +407,11 @@ That fit is evidence, not a source, so 21 and 23 stay a verify item
   unconsumed until that lands.
 - **AIP-UW-007.** A UseWeapon package with no `PTD2` MUST fire along the
   actor's facing direction ("fire weapon in the air in the direction they
-  are facing", GECK). Shipped in #6656 (`systems/script_requests.rs:76`).
+  are facing", GECK). Shipped in #6656 (`systems/script_requests.rs`).
 - **AIP-UW-008.** A UseWeapon package whose `PTDT` is object type 12
   (Weapons: Any) MUST use the actor's equipped weapon, or else its first
   inventory weapon (a Redux choice, §6 row 14). Shipped for 12 and 22 in
-  #6656 (`use_weapon_package.rs:152`). Values 21 and 23 follow AIP-UW-009.
+  #6656 (`use_weapon_package.rs`). Values 21 and 23 follow AIP-UW-009.
 - **AIP-UW-009.** Each of object types 21, 22 and 23 MUST stay declined
   with reason `unsourced-semantics` until its label is settled (22 by
   decision Q1, 21 and 23 by Phase 0), and then run by AIP-UW-008's rule
@@ -434,7 +435,7 @@ That fit is evidence, not a source, so 21 and 23 stay a verify item
   same measurement applies.
 - **AIP-CAST-003.** A Skyrim+ `UseMagic` leaf SHOULD install a runtime that
   casts through `byroredux_scripting::magic_effects::cast_spell`
-  (`magic_effects.rs:227`), with its `CastTimeMin/Max` and `CoolDownTimeMin/Max` inputs
+  (`magic_effects.rs`), with its `CastTimeMin/Max` and `CoolDownTimeMin/Max` inputs
   bounding the cadence and `HoldWhenBlocked` withholding the cast while "an
   actor other than the target is in the way"
   ([CK: UseMagic](https://ck.uesp.net/wiki/UseMagic_(Procedure))). The CK's
@@ -444,7 +445,7 @@ That fit is evidence, not a source, so 21 and 23 stay a verify item
   A modded package that uses it produces a decline line with reason
   `unsourced-semantics`, because fopdoc lists 11 as "??" and xEdit names
   it for TES4 only (`wbPackageTypeEnum`, §3.1). Shipped in #6656
-  (`ai_package.rs:1019, 1044`); Oblivion's procedure 11 takes the same
+  (`ai_package.rs`); Oblivion's procedure 11 takes the same
   decline.
 
 ### 5.4 Furniture markers and seating (`AIP-SEAT`)
@@ -463,7 +464,7 @@ Skyrim+ `BSFurnitureMarker` / `BSFurnitureMarkerNode` positions carry an
 - **AIP-SEAT-001.** The Skyrim+ `AnimationType` value 4 MUST resolve to
   `FurnitureMarkerKind::Lean`. Shipped in #6656: 4 resolves to `Lean` and
   3 to the `Sit` default (`furniture_component`,
-  `byroredux/src/cell_loader/references/attach.rs:65-68`, test at `:1168`).
+  `byroredux/src/cell_loader/references/attach.rs`, with its test beside it).
   The fault had been latent while Skyrim had no sit-enter clip and would
   have become live with AIP-SIT-002. Only 19 FO4 NIFs carry a marker block,
   all with value 0; FO4 authors its sit positions on the `FURN` record
@@ -507,12 +508,12 @@ Skyrim+ `BSFurnitureMarker` / `BSFurnitureMarkerNode` positions carry an
   names.
 - **AIP-SEAT-003.** Sandbox, Eat and UseItemAt MUST NOT seat an actor on a
   `Lean` or `Sleep` marker. Today this holds by kind (`is_sit_marker`
-  accepts `Sit` only, `systems/sandbox.rs:76`); it is breached only through
+  accepts `Sit` only, `systems/sandbox.rs`); it is breached only through
   a misclassified marker (AIP-SEAT-001, AIP-SEAT-002).
 - **AIP-SEAT-004.** A Sleep package with no bed marker in range MUST behave
   as decision Q3 sets. Shipped in #6656: the actor idles at its Sleep
   location and the #5390 sit fallback is retired
-  (`systems/eat_sleep.rs:537-539`).
+  (`systems/eat_sleep.rs`).
 - **AIP-SEAT-005.** A creature MUST NOT be posed with a clip authored for
   another skeleton. Today this holds: creatures never take furniture
   (#5495, test `a_creature_actor_never_takes_furniture`, gate
@@ -539,8 +540,21 @@ Skyrim+ `BSFurnitureMarker` / `BSFurnitureMarkerNode` positions carry an
   `wbDefinitionsSF1.pas:6881-6892`, used by `FURN` at 12208), translated
   into `FurnitureMarker` at the plugin boundary. At HEAD on 2026-11-18 `FURN` is read for its model and its `KWDA`
   keywords, and no `SNAM` marker is decoded (`extract_records_with_modl`,
-  `crates/plugin/src/esm/records/dispatch_world_placement.rs:42-51`). The
+  `crates/plugin/src/esm/records/dispatch_world_placement.rs`). The
   observable is a unit test that decodes a `FURN` fixture into markers.
+
+- **AIP-SEAT-008.** A procedure that searches near its package location MUST
+  centre the search on that location, and a Near Editor Location on the
+  actor's editor placement (`EditorPlacement`), not on where the actor
+  stands: Travel, Wander (and so Patrol, which runs on Wander's core),
+  Guard, Ambush, Sandbox, Eat and Sleep, through `travel::package_home`
+  (#7225, #7254, #7262). The GECK gives the Sandbox package's Wander
+  Location as Standard Location data ([GECK: Sandbox Package](https://geck.uesp.net/wiki/Sandbox_Package)), whose
+  default is Near Editor Location ([GECK: Packages, Standard Location](https://geck.uesp.net/wiki/Category:Packages)); 424 FNV and 72 FO3 Sandbox packages author that type.
+  An actor with no editor placement (a script-created one) keeps its
+  current position. Observable: a test per procedure that a Near Editor
+  Location package seats or wanders around the placement after the actor
+  has moved away from it.
 
 ### 5.5 Sit-enter beyond FO3/FNV (`AIP-SIT`)
 
@@ -610,7 +624,7 @@ Skyrim+ `BSFurnitureMarker` / `BSFurnitureMarkerNode` positions carry an
 | `Fallout4.esm` | 3 828 | 4 | −1 on 1 956 (form version < 122), 0 on 1 872 (form version ≥ 122) | 0 on all |
 | `Starfield.esm` | 3 548 | 1 | 0 on all (every record form version ≥ 122) | 0 on all |
 
-Only Oblivion authors a date (`PackSchedule::date` doc, `pack.rs:556-558`),
+Only Oblivion authors a date (`PackSchedule::date` doc, `pack.rs`),
 and it is evaluated today (§3.3), so no date requirement follows. The
 Skyrim+ `PSDT` day-of-week byte uses the same enum as FO3/FNV, 0 Sunday …
 6 Saturday plus four groups (xEdit `wbPackageScheduleDayOfWeekEnum`,
@@ -619,7 +633,7 @@ Skyrim+ `PSDT` day-of-week byte uses the same enum as FO3/FNV, 0 Sunday …
 - **AIP-SCHED-001.** On Skyrim, FO4 and Starfield, the `PSDT` day of week
   MUST be tested against the game calendar once decision Q2 fixes the
   weekday of a new game's first day. Shipped in #6658: `package_weekday`
-  reads the calendar's origin (`crates/scripting/src/globals.rs:136-139`).
+  reads the calendar's origin (`crates/scripting/src/globals.rs`).
 - **AIP-SCHED-002.** The `PSDT` month byte MUST be decoded into
   `PackSchedule` as one canonical value (a month 0–11, a season 12–15, or
   "any"), with the record-version offset applied inside `crates/plugin`:
@@ -628,9 +642,9 @@ Skyrim+ `PSDT` day-of-week byte uses the same enum as FO3/FNV, 0 Sunday …
   `wbPackageScheduleMonthEnum`, `Core/wbDefinitionsCommon.pas`). The census
   agrees: every FO4 and Starfield month-0 record is version ≥ 122. No vanilla master
   authors a month constraint, so the observable is a unit test on a
-  synthetic record. Shipped in #6658 (`pack.rs:619-630`). No calendar the
+  synthetic record. Shipped in #6658 (`pack.rs`). No calendar the
   engine runs exposes the month of the year yet, so the decoded month is not
-  evaluated (`npc_spawn/ai_package.rs:981`).
+  evaluated (`npc_spawn/ai_package.rs`).
 
 - **AIP-SCHED-003.** A zero-duration window (#3352) MUST stay unselectable
   until its meaning is sourced, and each such package MUST produce a decline
@@ -642,13 +656,13 @@ Skyrim+ `PSDT` day-of-week byte uses the same enum as FO3/FNV, 0 Sunday …
   original game. Shipped in #6658: `pack.ambient` names each such package as
   `declines: unsourced-semantics`, and the debug log carries the line
   (test `a_zero_duration_window_is_declined_as_unsourced`,
-  `ai_package.rs:1604-1615`).
+  `ai_package.rs`).
 - **AIP-SCHED-004.** The weekday origin MUST be one value resolved at load
   and held on the calendar resource, and `package_weekday` MUST NOT read
   the game kind (R5, the translation boundary). Shipped in #6658: the origin
-  is held on `GameCalendar` (`crates/scripting/src/globals.rs:136-148`) and
+  is held on `GameCalendar` (`crates/scripting/src/globals.rs`) and
   `package_weekday` no longer reads the game kind; the per-game rule lives in
-  `weekday_origin` (`crates/plugin/src/esm/records/calendar.rs:52`). Skyrim's origin depends on the edition
+  `weekday_origin` (`crates/plugin/src/esm/records/calendar.rs`). Skyrim's origin depends on the edition
   (decision Q2): the loader resolves it from the master it reads, the
   2011 launch master (HEDR 0.94) giving Morndas and every later master
   (HEDR 1.71) giving Sundas; `GameKind` folds both into one kind, so the
@@ -661,14 +675,22 @@ Oblivion PACK page. Shipped in #6656 (decision Q4 took
 this area): the ambient driver reads Once Per Day, Must Complete and
 Continue If PC Near (`byroredux/src/npc_spawn/package_flags.rs`). The
 script-package slot also reads Must Complete and Must Reach Location
-(`crates/scripting/src/script_packages.rs:39-68`).
+(`crates/scripting/src/script_packages.rs`).
 
 - **AIP-FLG-001.** An ambient package with Once Per Day set MUST NOT win
   selection again within 24 game hours of the moment it was first selected
   ("a 24 hour block beginning when the package was first selected", GECK).
 - **AIP-FLG-002.** An ambient package with Must Complete set MUST keep
   winning, even after its schedule window closes, until its procedure
-  reports done: Travel arrived, Find count met, UseWeapon bursts fired.
+  reports done: Travel arrived, Find count met, UseWeapon bursts fired. A
+  procedure with no Done state (Sleep, Eat, Wander, Sandbox, Guard) holds
+  until something ends it ([GECK: OnPackageDone](https://geck.uesp.net/wiki/OnPackageDone) lists an expired duration as a
+  completion cause unless Must Complete is set, and says wanders, sleeps and eats have no Done
+  state; [GECK: Guard Package](https://geck.uesp.net/wiki/Guard_Package): a Must Complete guard package never completes; the
+  owner kept the hold, #7224). A higher-priority package whose window is
+  open still wins over a held one. An explicit `EvaluatePackage` drops the
+  held package and re-evaluates ([GECK: EvaluatePackage](https://geck.uesp.net/wiki/EvaluatePackage): it "will still drop that
+  package and force a reevaluation of the package list", #7243).
 - **AIP-FLG-003.** An ambient package with Continue if PC near set MUST
   keep winning past its window while the player is in the actor's cell
   (GECK: "will not terminate … so long as the PC is nearby. Primarily used
@@ -679,15 +701,15 @@ script-package slot also reads Must Complete and Must Reach Location
 
 - **AIP-TREE-001.** The ambient driver MUST choose a tree-shape package's
   leaf by evaluating each candidate leaf's own conditions, in tree order.
-  Shipped in #6660 (`npc_spawn/ai_package/tree.rs:7-14, 128`): the first
+  Shipped in #6660 (`npc_spawn/ai_package/tree.rs`): the first
   leaf whose own conditions pass and that has a runtime wins, and a
   `Sandbox`, then a `Patrol`, leaf keep their precedence from
   [PACKAL §5](../engine/packal.md#5-second-slice-skyrim-ambient-patrol-shipped-2026-08-19).
 - **AIP-TREE-002.** A `Travel` leaf MUST install `TravelBehavior`, with
   its destination resolved through the Scene driver's `input_destination`.
-  The `Travel` leaf shipped in #6660 (`tree.rs:213-231`), but it resolves
+  The `Travel` leaf shipped in #6660 (`tree.rs`), but it resolves
   the destination in `tree.rs` from the leaf's `Location` input.
-  `input_destination` is still private to `crates/scripting/src/package.rs:403`
+  `input_destination` is still private to `crates/scripting/src/package.rs`
   (checked at HEAD on 2026-11-18), so the sharing this requirement asks for
   is open, and an alias or keyword-link destination declines as
   `UnresolvedInput`.
@@ -697,7 +719,7 @@ script-package slot also reads Must Complete and Must Reach Location
   seat runtime. Seating needs AIP-SIT-002 / 003.
 - **AIP-TREE-005.** A `ForceGreet` leaf on an actor's own package list MUST
   install the Dialogue behaviour under the #5376 rule (fully modelled
-  conditions only). Shipped in #6660 (`tree.rs:242`).
+  conditions only). Shipped in #6660 (`tree.rs`).
 - **AIP-TREE-006.** `Follow`, `Escort`, `Guard`, `Wander` and `Flee` leaves
   SHOULD install their FO3/FNV counterparts' components. Wander installs
   only when it is the root leaf (PACKAL §5 found every vanilla Wander
@@ -715,9 +737,9 @@ script-package slot also reads Must Complete and Must Reach Location
   Starfield's own archive data. xEdit settles the record shape: Starfield's
   `RACE` carries the same Subgraph Data group as FO4, role 0 = MT
   (`wbDefinitionsSF1.pas:16748-16766`), which the `RACE` decode reads
-  (`subgraph_data`, `crates/plugin/src/esm/records/actor/race.rs:187-193`).
+  (`subgraph_data`, `crates/plugin/src/esm/records/actor/race.rs`).
   Shipped in part in #6663: the graph path is gated by its data, not the
-  game (`is_havok_graph`, `asset_provider/archetype_idle.rs:70-80`). All 43
+  game (`is_havok_graph`, `asset_provider/archetype_idle.rs`). All 43
   Starfield `MT` entries name `AnimTextData\Tables\Graphs\*.agx` tables
   (§9, "Measured, found in Phase 5"), which exist in the archives and have
   no reader, so Starfield resolves nothing through it yet. The reader is
@@ -759,7 +781,7 @@ script-package slot also reads Must Complete and Must Reach Location
   closed door, and no actor opens an in-cell door (AIP-DOOR), so the container is
   not reached and the gate's activation check stays optional. Out of the requirement as decided: the `PGRI` inter-cell links,
   whose mapping onto the `0xFFFF` edge sentinel the record's own doc calls
-  unresolved (`crates/plugin/src/esm/records/pathgrid.rs:66-70`).
+  unresolved (`crates/plugin/src/esm/records/pathgrid.rs`).
 - **AIP-WALK-004.** The walk-source lookup MUST stay at the asset boundary
   (`anim_clips.rs`, `asset_provider/`). The walk-animation systems
   (`npc_walk_animation_system`, `graph_locomotion_system`) MUST NOT read the
@@ -773,9 +795,9 @@ script-package slot also reads Must Complete and Must Reach Location
 
 ### 5.10 Explainability and measurement (`AIP-DX`)
 
-`pack.ambient` shipped in #6656 (`byroredux/src/commands/pack_ambient.rs:16`;
+`pack.ambient` shipped in #6656 (`byroredux/src/commands/pack_ambient.rs`;
 [PACKAL §8](../engine/packal.md#8-tooling) proposed it). The older reader
-`cell.owners [<gx> <gy>]` (`byroredux/src/commands/world_info.rs:897-988`)
+`cell.owners [<gx> <gy>]` (`byroredux/src/commands/world_info.rs`)
 lists, for one exterior grid cell, each actor with an `AmbientPackageRuntime`
 and its winning package, with no decline reason and no interior form.
 AIP-DX-006 builds on that query rather than copying it.
@@ -788,7 +810,7 @@ AIP-DX-006 builds on that query rather than copying it.
 - **AIP-DX-002.** Every decline MUST log one debug line with the package
   FormID, EditorID, procedure and reason. Shipped in #6656 and #6660: Find,
   UseWeapon, procedure 11 and tree leaves log their decline reason
-  (`ai_package.rs:105, 191, 1019`; `ai_package/tree.rs:22`).
+  (`ai_package.rs`; `ai_package/tree.rs`).
 - **AIP-DX-003.** The counts behind this PRD's tables MUST come from
   checked-in code, not from scripts. At HEAD on 2026-11-18 two pieces exist:
   `crates/plugin/tests/package_schedule_census.rs` (the `PSDT` field counts
@@ -803,7 +825,7 @@ AIP-DX-006 builds on that query rather than copying it.
 - **AIP-DX-004.** Install and decline counts per procedure or leaf MUST be
   reported for each master by an ignored real-data test. Shipped in #6656
   and #6663: `real_{fnv,fo3,oblivion,skyrim,fo4,starfield}_esm_package_install_counts`
-  (`npc_spawn/ai_package.rs:4016-4066`).
+  (`npc_spawn/ai_package.rs`).
 - **AIP-DX-005.** `pack.ambient <entity>` MUST also print the actor's walk
   source and its cached waypoint count.
 - **AIP-DX-006.** `pack.ambient` with no argument MUST list every actor that
@@ -817,26 +839,13 @@ the Moth priest's route to a container ends at a closed door and he stands
 against it. The cause is not the walk. No actor can open an in-cell door,
 the player included.
 
-**Today, at HEAD (2026-11-19).**
+**At HEAD (2026-11-22).**
 
-- The only door the interaction layer offers is the load door:
-  `InteractionKind::Door` is built from `DoorTeleport` alone
-  (`interaction.rs:1388-1393`). A placed `DOOR` with no teleport has no
-  prompt and no open state.
-- Open and closed state exists as `TwoStateActivator`, installed only by the
-  Papyrus recogniser for `default2StateActivator`
-  (`crates/scripting/src/translate/recognizers/two_state_activator.rs`).
-  Its `TwoStateTransitionBatch`, "the presentation boundary for model
-  animation, collision, and audio" (`vm_state.rs`), has no consumer in the
-  binary: a transition changes the flag and nothing else.
-- A door model's `Open` / `Close` clips are catalogued as `NamedSequences`
-  and "wait for their consumer" (`named_sequences.rs`).
+- The Door Runtime PRD's Phase 1 has delivered most of AIP-DOOR-001: every in-cell door carries an open state from spawn, an `ActivateEvent` from any activator plays its `Open` or `Close` clip, and a locked door refuses an activator without its own key. The [Door Runtime design's Phase 1 status](../engine/door-runtime.md#5-phase-1-status-7059) owns the detail. Not delivered: the snap for a door model that authors no motion (DRT-MOVE-002, its Q2 re-decided 2026-11-22) and the controller test of collision following the door (DRT-MOVE-004).
 - The character controller reports a blocked step but not what blocked it:
   `CharacterMoveResult` carries `translation`, `grounded` and
   `is_sliding_down_slope` (`crates/physics/src/world/queries.rs`), although
-  rapier's `move_shape` callback names every collider it hit.
-- The `DOOR` record decodes only as a model-bearing placement base. Its
-  `FNAM` flags and its `SNAM` / `ANAM` / `BNAM` sounds are not read.
+  rapier's `move_shape` callback names every collider it hit. AIP-DOOR-002 is unblocked for sequence doors.
 - Census (uncommitted; `Locked` is the reference's `XLOC`): in-cell doors
   are `DOOR` placements with no teleport, over each master's interior cells.
 
@@ -947,7 +956,7 @@ FNV leads as the engine's reference title.
 
 | Game | In scope | Why / wave |
 |---|---|---|
-| Oblivion | yes | Wave 3. Tier 3. Same flat shape, so the ambient driver already runs it. Its remainder is sit-enter; the object-type enum shipped (#6662), `PGRD` pathing shipped (AIP-WALK-003) and CastMagic is declined (AIP-CAST-004) |
+| Oblivion | yes | Wave 3. Tier 3. Same flat shape, so the ambient driver already runs it. Its remainder is door passage (AIP-DOOR-002…006); sit-enter (AIP-SIT-001), the object-type enum (#6662) and `PGRD` pathing (AIP-WALK-003) shipped, and CastMagic is declined (AIP-CAST-004) |
 | Fallout 3 | yes | Wave 1. Shares FNV's procedures and runtime |
 | Fallout: New Vegas | yes | Wave 1. Reference title. Has the live gates `m42-package-procedures.sh` and `m42-eat-sleep.sh` |
 | Skyrim (LE / SE / AE) | yes | Wave 2. Tree shape (AIP-TREE), sit (AIP-SIT-002), weekday (AIP-SCHED-001). LE shares SE's records and is counted with it |
@@ -961,7 +970,7 @@ Game data comes from local installs only (`BYROREDUX_FNV_DATA` and the
 other per-game variables that the smoke scripts read). Nothing is checked
 in, and missing data is `SKIP` (exit 77), never a pass. An ignored
 real-data `cargo test` that finds no data prints its skip line and returns
-green (the Skyrim test does, `ai_package.rs:3309-3312`); such a run is not
+green (the Skyrim test does, `ai_package.rs`); such a run is not
 an acceptance pass.
 
 | Scenario | Driven by | Data | Passes when |
@@ -1007,6 +1016,7 @@ say for each census table whether checked-in code reproduces it
 (AIP-DX-003). File the FO4 `NVNM` body decode as an issue (Related).
 Resolve Q1–Q7, and write the Oblivion `PGRD` section if Q5 takes it.
 Exit: every verify item is closed or filed as an issue; every §10 item
+**Open at HEAD (2026-11-22, #6655):** the census tool of AIP-DX-003 (`crates/plugin/examples/ambient_package_census.rs`) is not checked in, and the verify items #6655 lists are open.
 carries **Decided**; each table without a checked-in tool is marked as such
 in [NPC Spawn → AI Packages](../engine/npc-spawn-ai-packages.md). (#6655
 is still open at HEAD on 2026-11-18.)
@@ -1035,6 +1045,7 @@ AIP-DX-006, and the FNV, FO3 and Oblivion tests of AIP-DX-004. Exit: on FO3
 and FNV, procedure coverage is 100% of authored procedures, every P row's
 remaining declines carry `unsourced-semantics`, and the §7.2 FNV and
 Lean-marker scenarios pass.
+**Open at HEAD (2026-11-22, #6656):** FO3/FNV Find object types 4, 19 and 20 decline as `unsupported-object-type`, not `unsourced-semantics` (AIP-FIND-004); AIP-FIND-001…003 and AIP-UW-009 wait on their Phase 0 verify items (#6655).
 
 **Phase 2 — Schedules.** AIP-SCHED-001…004 (Skyrim+ weekday per Q2, month
 decode). Exit: the schedule tests pass, and the census shows zero
@@ -1046,10 +1057,12 @@ AIP-SEAT-007, AIP-CAST-003, and the FO4 test of AIP-DX-004. It depends on
 PACKAL. Exit: the Skyrim and FO4 real-data tests report an install rate
 with no package outside a §3 class, `m42-skyrim-ambient.sh` passes, and the
 §7.2 FO4 furniture-position test passes.
+**Open at HEAD (2026-11-22, #6660):** the `Sit` and `UseIdleMarker` leaves still decline (AIP-TREE-004), FO4's `FURN` seat positions are not read (AIP-SEAT-007), and FO4 and Starfield have no furniture state (AIP-SIT-003).
 
 **Phase 4 — Oblivion (wave 3).** AIP-FIND-006…007, AIP-SIT-001,
 AIP-WALK-003 (per Q5), AIP-DOOR-002…006 (AIP-DOOR-001 per Q8). AIP-CAST-001 and -002 were withdrawn in rev 6. Exit: `m42-oblivion-packages.sh` passes with
 `STRICT_FIND=1` (the priest reaches and activates a container), and Oblivion's procedure coverage is published.
+**Open at HEAD (2026-11-22, #6662):** door passage, AIP-DOOR-002…006: `CharacterMoveResult` names no blocker and `m42-oblivion-packages.sh` still needs `STRICT_FIND=1` to require the activation.
 
 **Measured, found in Phase 4 (2026-11-09, `Oblivion.esm`).** The five vanilla CastMagic packages do not carry a
 spell in `PTDT`. Three author a `PTDT` of type 0 (Specific Reference) naming an actor or marker
@@ -1078,6 +1091,7 @@ source (`pack.ambient <id>` through `byro-dbg` names one while the actor
 moves), the Starfield real-data test reports an install rate, and an FO4
 interior Travel walk is routed (`pack.ambient` reports a non-zero waypoint
 count).
+**Open at HEAD (2026-11-22, #6663):** the Starfield walk source waits on an `.agx` reader that no design owns (AIP-WALK-001, decision Q7), and FO4 routing waits on the `NVNM` body decode: 0 of 7,894 `Fallout4.esm` blobs reconcile (AIP-WALK-002).
 
 ---
 
@@ -1120,7 +1134,7 @@ option.
    `uesp-wiki/Lore/Calendar.wiki:55`). For FO4 and Starfield, recommended:
    the Gregorian weekday of the authored `GameYear` / `GameMonth` /
    `GameDay` start date, the rule FO3/FNV use today (`day_of_week`,
-   `globals.rs:122-139`), which has no source either; the decision adopts
+   `globals.rs`), which has no source either; the decision adopts
    it explicitly. The 53 Skyrim, 4 FO4 and 1 Starfield day-constrained
    packages then run only on their days. Alternative: Morndas for Skyrim
    (Statistics). The same packages run, each one weekday off from the
@@ -1252,3 +1266,4 @@ option.
 | 13 | 2026-11-19 | The two walking faults behind the Oblivion Find stall fixed in `step_toward_detailed` (the support correction cancelling an upslope climb; the ledge fallback ray setting an actor on the roof); the gate now requires the priest to walk; the closed door after that named as AIP-NG-004 | claude: revise |
 | 14 | 2026-11-19 | NPC door passage scoped as AIP-DOOR (§5.11): what exists at HEAD, a four-master census of in-cell doors, the sourced door behaviour, six requirements, the unsourced behaviours as a verify item; AIP-NG-004 clarified; AIP-FIND-005 and Phase 4 reference it; decision Q8 added and decided by the owner: the door runtime gets its own PRD | claude: revise |
 | 15 | 2026-11-19 | Door Runtime PRD drafted (`door-runtime.md`, prefix `DRT`): AIP-DOOR-001 and -004 now cite it; decision Q8 links it | claude: revise |
+| 16 | 2026-11-22 | Review round 4 folded in: §5.11's door block restated against the Door Runtime design's Phase 1 status (AIP-DOOR-001 mostly delivered; the snap and the collision test are not, and AIP-DOOR-002 is unblocked for sequence doors); sit-enter on Oblivion and Skyrim SE recorded in §1, §3.1, §3.3 and §7.1; §3 re-checked at HEAD by symbol, and the `.rs` line numbers outside §12 replaced by files and symbols; §1 and §3.1's Find rows name the three FO3/FNV object types still without a class; AIP-FLG-002 gains the no-Done-state hold, the higher-priority yield and EvaluatePackage's release (GECK); new AIP-SEAT-008, the package location anchor (Near Editor Location, GECK Standard Location); §9 names what keeps Phases 0, 1, 3, 4 and 5 open; the status line trimmed and the Tracking line on one line, with the Door Runtime dependency | claude: revise |
