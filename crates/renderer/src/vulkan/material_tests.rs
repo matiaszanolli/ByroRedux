@@ -1827,28 +1827,38 @@ mod gpu_material_size_claims {
         );
     }
 
+    /// Size statements the claim scanner cannot read, pinned by anchor: a
+    /// size in parentheses after the type (the scanner reads `(N B` as a
+    /// sub-component) or a table row that names the buffer, not the struct
+    /// (#7271: both `GpuCamera` rows sat at 368 B after it grew to 384 B).
     #[test]
     fn anchored_size_statements_match_the_struct() {
-        let live = std::mem::size_of::<GpuMaterial>();
+        let material = ("GpuMaterial", std::mem::size_of::<GpuMaterial>());
+        let camera = ("GpuCamera", std::mem::size_of::<crate::vulkan::scene_buffer::GpuCamera>());
         let root = workspace_root();
-        let anchors: [(&str, &str); 5] = [
+        let anchors: [(&str, &str, (&str, usize)); 7] = [
             (
                 "crates/renderer/src/vulkan/material.rs",
                 "/// std430 GPU-side material record. **",
+                material,
             ),
             (
                 "crates/renderer/src/vulkan/material.rs",
                 "back_lighting_map_index: u32,",
+                material,
             ),
-            ("docs/engine/shader-pipeline.md", "### `GpuMaterial` — "),
+            ("docs/engine/shader-pipeline.md", "### `GpuMaterial` — ", material),
             // #4422 moved the total onto the detail_neutral row (now last).
-            ("docs/engine/shader-pipeline.md", "detail-combine neutral → total **"),
+            ("docs/engine/shader-pipeline.md", "detail-combine neutral → total **", material),
             (
                 "docs/engine/memory-budget.md",
                 "| Material SSBO | `MAX_MATERIALS` = 16 384 | 16 384 | ",
+                material,
             ),
+            ("docs/engine/shader-pipeline.md", "| 1 | 1 | `UNIFORM_BUFFER` | `GpuCamera` (", camera),
+            ("docs/engine/memory-budget.md", "| Camera UBO | — | 1 | ", camera),
         ];
-        for (file, anchor) in anchors {
+        for (file, anchor, (name, live)) in anchors {
             let text = std::fs::read_to_string(root.join(file))
                 .unwrap_or_else(|e| panic!("read {file}: {e}"));
             let rest = text
@@ -1866,7 +1876,7 @@ mod gpu_material_size_claims {
             assert_eq!(
                 stated,
                 Some(live),
-                "{file}: {anchor:?} states a GpuMaterial size other than {live} B (#4114): {line}"
+                "{file}: {anchor:?} states a {name} size other than {live} B (#4114, #7271): {line}"
             );
         }
     }

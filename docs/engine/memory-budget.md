@@ -192,7 +192,7 @@ measured allocations.
 | Material SSBO | `MAX_MATERIALS` = 16 384 | 16 384 | 432 B | 7.1 MB | **14.2 MB** |
 | Terrain tile SSBO | `MAX_TERRAIN_TILES` = 1 024 | 1 024 | 224 B (`GpuTerrainTile`: 3× `[u32; 8]` texture indices + #4057's two `[f32; 4]` cover-affinity rows, `cell_origin_xz`, `water_y`, `canopy_height`, #4056's ground-cover detail-atlas `uvec4`, #4903/#4907's `base_cover_affinity` + `base_diffuse_index`, and #6195's `base_height_index` + `[u32; 8]` layer height handles, #6196's `height_blend_band`, and #6197's three parallax settings + a pad; pinned by `gpu_terrain_tile_is_224_bytes`) | — | **~224 KB** (single shared buffer, NOT FIF-doubled) |
 | Bone buffers ¹ | `MAX_TOTAL_BONES` = 196 608 | 196 608 | 64 B | 12.6 MB/buffer | **100.6 MB** |
-| Camera UBO | — | 1 | 368 B (#3323) | 368 B | **736 B** |
+| Camera UBO | — | 1 | 384 B (#3323, RLT-IBL-006) | 384 B | **768 B** |
 
 ¹ Eight 12.6 MB bone-sized allocations, not one: palette (`bone_device`),
 `bone_world` staging, and `bone_world` device-copy are each FIF-doubled
