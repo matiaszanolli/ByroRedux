@@ -809,7 +809,17 @@ mod tests {
         // portal escape: that ray has crossed out of an interior and must see
         // the outdoor sky. The remaining glass/environment sites are exterior
         // only, and the count catches new consumers that lack a guard.
-        assert_eq!(triangle.matches("exteriorSkyRadianceOr(").count(), 4);
+        assert_eq!(triangle.matches("exteriorSkyRadianceOr(").count(), 5);
+        // M-LIGHT RLT-IBL-004 (rev 49): the traced sky-specular occlusion's
+        // sky lookup runs only on an exterior sky probe.
+        let occlusion = triangle
+            .split_once("if (exteriorSkyProbe && probeShare > 0.0 && reflectionGlassRayEnabled")
+            .expect("the traced occlusion is gated on the exterior sky probe")
+            .1;
+        assert!(occlusion
+            .split_once("exteriorSkyRadianceOr(lobeL, ambientFallback, 0.0)")
+            .is_some());
+        assert!(triangle.contains("bool exteriorSkyProbe = jitter.w > 0.5 && exteriorSkyTint.w > 0.5;"));
         assert!(triangle.contains("if (!hitsInterior)"));
         assert!(triangle.contains("bool isExteriorGlass = jitter.w > 0.5;"));
         assert!(triangle.contains("vec3 reflColor = isExteriorGlass\n            ? exteriorSkyRadianceOr"));

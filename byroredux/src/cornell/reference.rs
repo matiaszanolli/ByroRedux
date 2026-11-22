@@ -95,7 +95,83 @@ pub(crate) enum ReferenceRung {
     /// no shading normal disagrees with the geometric one, so the
     /// normal-mapped plank is read against it (#6721).
     ContactFlat,
+    /// RLT-REF-012 / RLT-EXP-003: the reference environment. No geometry;
+    /// the exterior sky of the sky rungs with its sun disc removed (glow
+    /// kept), seen by one of six 90° views (`--cornell-reference-view
+    /// 0..=5`, the faces of [`SKY_ENV_FACES`]) through `--window-size
+    /// 512x512`, four times the engine cube's face resolution. The composite
+    /// background evaluates `sky_radiance` per pixel, so the six captures
+    /// are the analytic sky, not the baked cube; `scripts/m-light/gates.py`
+    /// resamples them into the lat-long map the Mitsuba scene reads.
+    SkyEnvironment,
+    /// RLT-REF-021: the probe-only sky rung — one probe sphere under the
+    /// exterior sky, nothing else, the directional light dropped
+    /// (RLT-REF-019). `--cornell-reference-view` picks the probe:
+    /// 0..=4 a specular-only dielectric (diffuse albedo 0) at
+    /// [`SKY_PROBE_ROUGHNESS`], 5..=9 a conductor at the same roughness,
+    /// 10 a unit-albedo Lambertian probe (sky diffuse).
+    SkyProbe,
+    /// RLT-IBL-010 (A17): an unoccluded Lambertian plane under the same sky
+    /// with the sun ON — its directional light, and the disc the probe bakes.
+    /// The reference lights it with the sun as an emitter and the disc-free
+    /// environment (RLT-REF-012), so the sun's energy is counted once there.
+    SkySunPlane,
+    /// RLT-REF-008 / RLT-REF-014's specular rows, validated at Phase 4's
+    /// entry: the material rung's layout with ten planes, a Disney-branch
+    /// dielectric (ρ 0.5) and a conductor (ρ 0.95) at each of
+    /// [`SKY_PROBE_ROUGHNESS`], under one emitter at the same three views.
+    MaterialsSpecular,
+    /// RLT-IBL-004: the contact rung's static casters (block, cube, plank)
+    /// and their bands on a specular-only conductor floor (ρ 0.95,
+    /// roughness 0.74, which the environment term reads from the probe
+    /// alone) under the probe-only sky (RLT-REF-019, RLT-REF-021). The
+    /// reference's `direct` integrator lights the floor with the sky times
+    /// its visibility, so each band's energy against it measures the sky
+    /// specular occlusion; an open-floor region is its control.
+    ContactSky,
 }
+
+/// RLT-REF-021: the L5 sweep's five roughness values (the showcase's
+/// `metal_rough_*` probes, `cornell.rs`).
+pub(crate) const SKY_PROBE_ROUGHNESS: [f32; 5] = [0.02, 0.26, 0.50, 0.74, 0.98];
+/// Views of [`ReferenceRung::SkyProbe`]: five dielectric, five conductor,
+/// one Lambertian.
+pub(crate) const SKY_PROBE_VIEWS: u32 = 11;
+/// The six view directions of [`ReferenceRung::SkyEnvironment`].
+pub(crate) const SKY_ENV_FACES: [[f32; 3]; 6] = [
+    [1.0, 0.0, 0.0],
+    [-1.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0],
+    [0.0, -1.0, 0.0],
+    [0.0, 0.0, 1.0],
+    [0.0, 0.0, -1.0],
+];
+/// The highest `--cornell-reference-view` any rung reads.
+const MAX_REFERENCE_VIEW: u32 = SKY_PROBE_VIEWS - 1;
+/// Toward the sun on the sky rungs: about 37° up, off every axis, so its
+/// glow falls inside one face of the environment capture and away from the
+/// probe's silhouette.
+const SKY_SUN_DIR: [f32; 3] = [0.5, 0.6, -0.62];
+/// Probe sphere radius and the camera's distance from its centre.
+const SKY_PROBE_RADIUS_M: f32 = 0.45;
+const SKY_PROBE_CAMERA_M: f32 = 1.8;
+/// `sky_radiance` draws the disc where cos(angle to the sun) exceeds
+/// `sun_size - 0.002`; past 1.002 no direction does (`include/sky.glsl`).
+const SUN_DISC_OFF: f32 = 2.0;
+
+/// RLT-REF-019: present on the sky-only rungs. `collect_lights` drops the
+/// directional light after `compute_directional_upload` and the exporter
+/// exports no sun; the sky dome, which reads the sun intensity separately
+/// (`dome.sun_dir.w`), keeps its glow and, on the probe rung, its disc.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ReferenceSkyOnly;
+impl byroredux_core::ecs::Resource for ReferenceSkyOnly {}
+
+/// A rung's vertical field of view in radians, applied to the harness camera
+/// by `spawn_initial_camera` (the environment rung's 90° faces).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct HarnessCameraFov(pub f32);
+impl byroredux_core::ecs::Resource for HarnessCameraFov {}
 
 /// A penumbra profile line (RLT-SHD-001): on `receiver`, perpendicular to a
 /// shadow edge, from the umbra side to the lit side, averaged across a strip
@@ -152,6 +228,10 @@ pub(crate) struct RungMeasurements {
     pub min_unshadowed: f32,
     /// Scene-linear radiance of a uniform sky, used by the calibration rung.
     pub constant_sky: Option<[f32; 3]>,
+    /// RLT-REF-012: the reference environment is the analytic sky without
+    /// its disc, which the gate runner writes as `sky_env.exr` beside the
+    /// scene from the [`ReferenceRung::SkyEnvironment`] captures.
+    pub analytic_sky: bool,
 }
 impl byroredux_core::ecs::Resource for RungMeasurements {}
 
@@ -171,6 +251,11 @@ impl ReferenceRung {
             Self::NormalPlane => "normal-plane",
             Self::Contact => "contact",
             Self::ContactFlat => "contact-flat",
+            Self::SkyEnvironment => "sky-env",
+            Self::SkyProbe => "sky-probe",
+            Self::SkySunPlane => "sky-sun-plane",
+            Self::MaterialsSpecular => "materials-spec",
+            Self::ContactSky => "contact-sky",
         }
     }
 }
@@ -189,6 +274,11 @@ const RUNGS: &[ReferenceRung] = &[
     ReferenceRung::NormalPlane,
     ReferenceRung::Contact,
     ReferenceRung::ContactFlat,
+    ReferenceRung::SkyEnvironment,
+    ReferenceRung::SkyProbe,
+    ReferenceRung::SkySunPlane,
+    ReferenceRung::MaterialsSpecular,
+    ReferenceRung::ContactSky,
 ];
 
 /// Penumbra rungs: plate half-extent and height above the floor.
@@ -225,6 +315,51 @@ fn insert_reference_sun(world: &mut World, dir: Vec3) {
     world.insert_resource(crate::env_translate::procedural_fallback_sky(dir));
 }
 
+/// The exterior sky of the sky rungs (RLT-REF-012, RLT-REF-019, RLT-REF-021):
+/// the procedural sky toward [`SKY_SUN_DIR`] with no cloud deck, moon or
+/// stars, so it is static and identical on both sides; the directional
+/// light is dropped ([`ReferenceSkyOnly`]) unless `sun` is set. `disc:
+/// false` removes the sun disc and keeps its glow, which is sky radiance
+/// (RLT-REF-012).
+fn insert_reference_sky(world: &mut World, disc: bool, sun: bool) {
+    insert_reference_sun(world, Vec3::from_array(SKY_SUN_DIR));
+    {
+        let mut sky = world.resource_mut::<crate::components::SkyParamsRes>();
+        sky.weather.cloud_coverage = 0.0;
+        sky.weather.moon_glare = 0.0;
+        sky.weather.stars_color = [0.0; 3];
+        if !disc {
+            sky.sun_size = SUN_DISC_OFF;
+        }
+    }
+    // RLT-REF-009: no medium. The exterior haze floor (VLM-SH-010) is an
+    // engine-supplied medium on every exterior; along a sky ray it adds
+    // in-scatter the probe's lighting never sees, so the environment
+    // capture would carry it into the reference.
+    world.insert_resource(crate::fog::ExteriorHazeFloor::OFF);
+    // `weather_system` rewrites the exterior cell's fog medium every frame
+    // from the weather table, so the rung's `FogMedium::DISABLED` holds only
+    // if the table itself carries none: the procedural weather fits a
+    // medium from its fog ramp, which fogs every sky ray toward the horizon.
+    let mut weather = crate::env_translate::procedural_fallback_weather();
+    weather.fog_media = [crate::fog::FogMedium::DISABLED, crate::fog::FogMedium::DISABLED];
+    world.insert_resource(weather);
+    if !sun {
+        world.insert_resource(ReferenceSkyOnly);
+    }
+}
+
+/// The probe of [`ReferenceRung::SkyProbe`] view `view`.
+fn sky_probe_material(view: u32) -> Material {
+    let roughness = SKY_PROBE_ROUGHNESS[(view % 5) as usize];
+    match view {
+        // Specular only: no diffuse lobe for the sky to light (§3.4).
+        0..=4 => pbr([0.0; 3], 0.0, roughness),
+        5..=9 => pbr([0.95; 3], 1.0, roughness),
+        _ => lambert([1.0; 3]),
+    }
+}
+
 /// The Lambertian materials Phase 1a maps (RLT-REF-008, RLT-REF-014), by
 /// plane name; the material rung lays them out left to right.
 pub(crate) const MATERIAL_PLANES: &[(&str, [f32; 3])] = &[
@@ -235,16 +370,16 @@ pub(crate) const MATERIAL_PLANES: &[(&str, [f32; 3])] = &[
     ("mat_lambert_green", [0.12, 0.45, 0.15]),
 ];
 
-/// Parse `--cornell-reference-view N` (0, 1 or 2; default 0): the material
-/// rung's view angle, or the box rung's close-up (1). The calibration rung
-/// has one fixed camera and ignores it.
+/// Parse `--cornell-reference-view N` (default 0): the material rung's view
+/// angle (0..=2), the box rung's close-up (1), the environment rung's face
+/// (0..=5) or the sky probe (0..=10). A rung with one fixed camera ignores it.
 pub(crate) fn cornell_reference_view(args: &[String]) -> Result<u32, String> {
     let Some(index) = args.iter().position(|a| a == "--cornell-reference-view") else {
         return Ok(0);
     };
     match args.get(index + 1).map(|v| v.parse::<u32>()) {
-        Some(Ok(view)) if view <= 2 => Ok(view),
-        _ => Err("--cornell-reference-view requires 0, 1 or 2".to_owned()),
+        Some(Ok(view)) if view <= MAX_REFERENCE_VIEW => Ok(view),
+        _ => Err(format!("--cornell-reference-view requires 0..={MAX_REFERENCE_VIEW}")),
     }
 }
 
@@ -331,33 +466,7 @@ fn setup_contact_rung(
         insert_normal_map(world, floor_entity, normal_map);
     }
 
-    // (name, half extents in metres, centre x/z, yaw, band width in metres)
-    #[allow(clippy::type_complexity)] // the comment above names each element; an alias would only move the naming
-    let casters: [(&str, [f32; 3], [f32; 2], f32, f32); 3] = [
-        // 1.2 m tall: band <= 0.12 m.
-        ("con_block", [0.15, 0.6, 0.15], [-0.55, -0.35], 0.3, 0.06),
-        // 0.3 m cube: band <= 0.03 m.
-        ("con_cube", [0.15, 0.15, 0.15], [0.5, -0.4], -0.4, 0.03),
-        // RLT-CON-006: a 2 cm plank lying flat, a fixed 3 cm band.
-        ("con_plank", [0.3, 0.01, 0.075], [-0.4, 0.45], 0.2, 0.03),
-    ];
-    let mut bands = Vec::new();
-    let mut caster_names = Vec::new();
-    for (name, half, [x, z], yaw, band) in casters {
-        let mesh = builder.box_mesh([half[0] * M, half[1] * M, half[2] * M]);
-        spawn_object(world, mesh, neutral, Vec3::new(x * M, half[1] * M, z * M), Quat::from_rotation_y(yaw),
-            lambert([0.8; 3]), name);
-        bands.push(ContactBand {
-            name: format!("{name}_band"),
-            receiver: "con_floor".into(),
-            centre: Vec3::new(x * M, 0.0, z * M),
-            half_extents: [half[0] * M, half[2] * M],
-            yaw,
-            width: band * M,
-            follow: None,
-        });
-        caster_names.push(name.to_string());
-    }
+    let (mut bands, mut caster_names) = spawn_static_contact_casters(world, builder, neutral);
 
     // RLT-CON-008: an upright 0.6 m panel, 1 cm thick, cut by a cross of
     // slots symmetric in u so its front and back faces (whose u runs
@@ -412,6 +521,75 @@ fn setup_contact_rung(
     // ~2 m from the casters: a 3 cm band is ~13 px at 720p.
     (Vec3::new(0.0, 1.6 * M, 1.2 * M), Vec3::new(0.0, 0.0, 0.05 * M))
 }
+
+/// The contact rung's three static casters resting on `con_floor` (a tall
+/// block, a small cube and RLT-CON-006's plank), each with its contact band;
+/// shared by [`ReferenceRung::Contact`] and [`ReferenceRung::ContactSky`].
+fn spawn_static_contact_casters(
+    world: &mut World,
+    builder: &mut MeshBuilder,
+    neutral: TextureHandle,
+) -> (Vec<ContactBand>, Vec<String>) {
+    // (name, half extents in metres, centre x/z, yaw, band width in metres)
+    #[allow(clippy::type_complexity)] // the comment above names each element; an alias would only move the naming
+    let casters: [(&str, [f32; 3], [f32; 2], f32, f32); 3] = [
+        // 1.2 m tall: band <= 0.12 m.
+        ("con_block", [0.15, 0.6, 0.15], [-0.55, -0.35], 0.3, 0.06),
+        // 0.3 m cube: band <= 0.03 m.
+        ("con_cube", [0.15, 0.15, 0.15], [0.5, -0.4], -0.4, 0.03),
+        // RLT-CON-006: a 2 cm plank lying flat, a fixed 3 cm band.
+        ("con_plank", [0.3, 0.01, 0.075], [-0.4, 0.45], 0.2, 0.03),
+    ];
+    let mut bands = Vec::new();
+    let mut caster_names = Vec::new();
+    for (name, half, [x, z], yaw, band) in casters {
+        let mesh = builder.box_mesh([half[0] * M, half[1] * M, half[2] * M]);
+        spawn_object(world, mesh, neutral, Vec3::new(x * M, half[1] * M, z * M), Quat::from_rotation_y(yaw),
+            lambert([0.8; 3]), name);
+        bands.push(ContactBand {
+            name: format!("{name}_band"),
+            receiver: "con_floor".into(),
+            centre: Vec3::new(x * M, 0.0, z * M),
+            half_extents: [half[0] * M, half[2] * M],
+            yaw,
+            width: band * M,
+            follow: None,
+        });
+        caster_names.push(name.to_string());
+    }
+    (bands, caster_names)
+}
+
+/// RLT-IBL-004's rung ([`ReferenceRung::ContactSky`]): the static contact
+/// casters on a specular-only conductor floor under the probe-only sky, the
+/// same camera as the contact rung.
+fn setup_contact_sky_rung(world: &mut World, builder: &mut MeshBuilder, neutral: TextureHandle) -> (Vec3, Vec3) {
+    insert_reference_sky(world, true, false);
+    let floor = builder.box_mesh([1.5 * M, BOX_WALL_T, 1.5 * M]);
+    spawn_object(world, floor, neutral, Vec3::new(0.0, -BOX_WALL_T, 0.0), Quat::IDENTITY,
+        pbr([0.95; 3], 1.0, CONTACT_SKY_FLOOR_ROUGHNESS), "con_floor");
+    let (bands, casters) = spawn_static_contact_casters(world, builder, neutral);
+    // The control: open floor 0.85 m or more from every caster.
+    let regions = vec![MeasuredRegion {
+        name: "con_open_floor".into(),
+        receiver: "con_floor".into(),
+        min: Vec3::new(0.35 * M, -0.01 * M, 0.3 * M),
+        max: Vec3::new(0.6 * M, 0.01 * M, 0.6 * M),
+    }];
+    world.insert_resource(RungMeasurements {
+        bands,
+        regions,
+        casters,
+        analytic_sky: true,
+        ..Default::default()
+    });
+    (Vec3::new(0.0, 1.6 * M, 1.2 * M), Vec3::new(0.0, 0.0, 0.05 * M))
+}
+
+/// [`ReferenceRung::ContactSky`]'s floor roughness: one of
+/// [`SKY_PROBE_ROUGHNESS`] at or above the traced-reflection cut (0.6), so a
+/// conductor's environment term is the probe's share alone.
+const CONTACT_SKY_FLOOR_ROUGHNESS: f32 = SKY_PROBE_ROUGHNESS[3];
 
 /// The contact rung's skinned proxy bone (RLT-CON-003).
 pub(crate) const PROXY_BONE: &str = "con_proxy_bone";
@@ -560,6 +738,34 @@ pub(crate) fn setup_reference_scene(
             spawn_object(world, plane, neutral, Vec3::new(0.0, -BOX_WALL_T, 0.0), Quat::IDENTITY,
                 lambert([0.8; 3]), "cal_plane");
             insert_reference_sun(world, Vec3::from_array(CALIBRATION_SUN_DIR));
+            (Vec3::new(0.0, 2.6 * M, 2.6 * M), Vec3::ZERO)
+        }
+        ReferenceRung::SkyEnvironment => {
+            insert_reference_sky(world, false, false);
+            world.insert_resource(HarnessCameraFov(std::f32::consts::FRAC_PI_2));
+            let face = Vec3::from_array(SKY_ENV_FACES[(view as usize).min(SKY_ENV_FACES.len() - 1)]);
+            (Vec3::ZERO, face * M)
+        }
+        ReferenceRung::SkyProbe => {
+            insert_reference_sky(world, true, false);
+            let probe = builder.sphere(SKY_PROBE_RADIUS_M * M);
+            spawn_object(world, probe, neutral, Vec3::ZERO, Quat::IDENTITY,
+                sky_probe_material(view), "sky_probe");
+            world.insert_resource(RungMeasurements {
+                analytic_sky: true,
+                ..RungMeasurements::default()
+            });
+            (Vec3::new(0.0, 0.0, SKY_PROBE_CAMERA_M * M), Vec3::ZERO)
+        }
+        ReferenceRung::SkySunPlane => {
+            insert_reference_sky(world, true, true);
+            let plane = builder.box_mesh([2.0 * M, BOX_WALL_T, 2.0 * M]);
+            spawn_object(world, plane, neutral, Vec3::new(0.0, -BOX_WALL_T, 0.0), Quat::IDENTITY,
+                lambert([0.8; 3]), "sun_plane");
+            world.insert_resource(RungMeasurements {
+                analytic_sky: true,
+                ..RungMeasurements::default()
+            });
             (Vec3::new(0.0, 2.6 * M, 2.6 * M), Vec3::ZERO)
         }
         ReferenceRung::CalibrationSky => {
@@ -766,6 +972,7 @@ pub(crate) fn setup_reference_scene(
         }
         ReferenceRung::Contact => setup_contact_rung(world, &mut builder, neutral, true),
         ReferenceRung::ContactFlat => setup_contact_rung(world, &mut builder, neutral, false),
+        ReferenceRung::ContactSky => setup_contact_sky_rung(world, &mut builder, neutral),
         ReferenceRung::NormalPlane => {
             let floor = builder.box_mesh([2.0 * M, BOX_WALL_T, 2.0 * M]);
             spawn_object(world, floor, neutral, Vec3::new(0.0, -BOX_WALL_T, 0.0), Quat::IDENTITY,
@@ -785,6 +992,27 @@ pub(crate) fn setup_reference_scene(
             );
             spawn_reference_emitter(world, dir * distance * M, 2.0, "nm_emitter");
             (Vec3::new(0.0, 1.2 * M, 1.1 * M), Vec3::ZERO)
+        }
+        ReferenceRung::MaterialsSpecular => {
+            let floor = builder.box_mesh([3.0 * M, BOX_WALL_T, 2.0 * M]);
+            spawn_object(world, floor, neutral, Vec3::new(0.0, -BOX_WALL_T, 0.0), Quat::IDENTITY,
+                lambert([0.0; 3]), "mat_floor_black");
+            let plane = builder.box_mesh([0.3 * M, 0.005 * M, 0.3 * M]);
+            for (i, &roughness) in SKY_PROBE_ROUGHNESS.iter().enumerate() {
+                let x = (i as f32 - 2.0) * 0.8 * M;
+                let tag = (roughness * 100.0).round() as u32;
+                spawn_object(world, plane, neutral, Vec3::new(x, 0.01 * M, -0.4 * M), Quat::IDENTITY,
+                    pbr_bsdf([0.5; 3], 0.0, roughness), &format!("mat_spec_dielectric_{tag:03}"));
+                spawn_object(world, plane, neutral, Vec3::new(x, 0.01 * M, 0.4 * M), Quat::IDENTITY,
+                    pbr_bsdf([0.95; 3], 1.0, roughness), &format!("mat_spec_conductor_{tag:03}"));
+            }
+            spawn_reference_emitter(world, Vec3::new(0.0, 1.5 * M, 0.3 * M), 2.0, "mat_emitter");
+            let (height, back) = match view {
+                0 => (3.2 * M, 1.2 * M),
+                1 => (2.0 * M, 3.0 * M),
+                _ => (1.0 * M, 3.6 * M),
+            };
+            (Vec3::new(0.0, height, back), Vec3::ZERO)
         }
         ReferenceRung::Materials => {
             // Planes 0.6 m square, 0.8 m apart, 1 cm above a black floor
@@ -859,7 +1087,11 @@ mod tests {
             cornell_reference_view(&args(&["--cornell-reference-view", "2"])).unwrap(),
             2
         );
-        assert!(cornell_reference_view(&args(&["--cornell-reference-view", "3"])).is_err());
+        assert_eq!(
+            cornell_reference_view(&args(&["--cornell-reference-view", "10"])).unwrap(),
+            10
+        );
+        assert!(cornell_reference_view(&args(&["--cornell-reference-view", "11"])).is_err());
     }
 
     #[test]

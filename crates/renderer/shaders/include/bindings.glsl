@@ -494,6 +494,21 @@ layout(std430, set = 1, binding = 25) readonly buffer MovedSurfaceSet {
     uint movedSurfaceSet[];
 };
 
+// M-LIGHT RLT-IBL-006 — the openings of a bounded-aperture interior
+// (`CameraUBO.interiorSky.x == 2`): each aperture's source plane relative to
+// the render origin, local +Z its normal. A GI path that escapes the TLAS
+// reads the portal sky only if it crosses one (`pathCrossesSkyAperture`,
+// lighting.glsl). Header x = count; written every frame, zero elsewhere.
+struct SkyAperturePlane {
+    vec4 center;           // xyz = centre relative to the render origin
+    vec4 halfExtents;      // xy = half extents in the plane
+    vec4 inverseRotation;  // world-to-aperture rotation (x, y, z, w)
+};
+layout(std430, set = 1, binding = 27) readonly buffer SkyAperturePlanes {
+    uvec4 skyApertureHeader;
+    SkyAperturePlane skyApertures[];
+};
+
 // One bounded selected-light visibility-ray record per frame-in-flight.
 // control.y is atomically claimed by the first eligible invocation at the
 // requested pixel: 0=disabled, 1=armed, 2=claimed, 3=ready.

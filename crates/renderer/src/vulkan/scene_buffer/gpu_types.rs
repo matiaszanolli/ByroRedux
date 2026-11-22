@@ -469,16 +469,35 @@ impl GpuSelectedRayProbe {
     }
 }
 
-/// GPU-side camera data (**368 bytes**, std140-compatible).
+/// One interior sky opening for the main pass's GI escape (M-LIGHT
+/// RLT-IBL-006, set 1 / binding 27, `SkyAperturePlane` in
+/// `include/bindings.glsl`): the aperture's source plane, its local +Z the
+/// plane normal. 48 B, std430.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GpuSkyAperturePlane {
+    /// xyz = plane centre relative to the render origin; w = 0.
+    pub center: [f32; 4],
+    /// xy = half extents in the plane; zw = 0.
+    pub half_extents: [f32; 4],
+    /// World-to-aperture rotation (x, y, z, w).
+    pub inverse_rotation: [f32; 4],
+}
+
+// SAFETY: three `[f32; 4]` lanes, no padding.
+unsafe impl crate::vulkan::buffer::NoUninit for GpuSkyAperturePlane {}
+
+/// GPU-side camera data (**384 bytes**, std140-compatible).
 ///
-/// Layout pinned by `gpu_camera_is_368_bytes` test — three `mat4` (3×64 = 192 B) +
-/// eleven trailing `vec4` (11×16 = 176 B: position, flags, screen, fog, jitter,
+/// Layout pinned by `gpu_camera_is_384_bytes` test — three `mat4` (3×64 = 192 B) +
+/// twelve trailing `vec4` (12×16 = 192 B: position, flags, screen, fog, jitter,
 /// sky_tint, sun_direction, dof_params, render_origin, render_debug,
-/// exterior_sky_tint) → 368 B. The size grew
+/// exterior_sky_tint, interior_sky) → 384 B. The size grew
 /// 304 → 320 B with the DOF `dof_params` field and 320 → 336 B with the
 /// `render_origin` field (#markarth-precision / #1492), then 336 → 352 B with
 /// the structured renderer-debug control, then 352 → 368 B with the appended
-/// `exterior_sky_tint` vec4 (#3323).
+/// `exterior_sky_tint` vec4 (#3323), then 368 → 384 B with the appended
+/// `interior_sky` vec4 (M-LIGHT RLT-IBL-006).
 /// Every
 /// shader that re-declares this struct
 /// MUST keep field order and field count in lockstep:
@@ -662,6 +681,13 @@ pub struct GpuCamera {
     /// the view ray (#4950) and reads this `.rgb` only as the fallback when
     /// the cube is not live (`.w`).
     pub exterior_sky_tint: [f32; 4],
+    /// M-LIGHT RLT-IBL-006: x = the interior's sky mode, the same value the
+    /// composite packs into `sky_lower.w` (`interior_sky_mode`: 0 none,
+    /// 1 Show Sky, 2 bounded apertures); yzw = 0. A GI path that escapes the
+    /// TLAS in a Show Sky interior, or through one of the aperture planes at
+    /// set 1 / binding 27 in a bounded one, reads the portal sky instead of
+    /// the authored ambient (`pathEnvironmentRadiance`, `include/lighting.glsl`).
+    pub interior_sky: [f32; 4],
 }
 
 impl Default for GpuCamera {
@@ -701,6 +727,8 @@ impl Default for GpuCamera {
             // window portal already transmitted before #3323, so an
             // unbootstrapped frame is unchanged.
             exterior_sky_tint: [0.15, 0.3, 0.6, 0.0],
+            // No interior sky: escaped GI keeps the authored ambient.
+            interior_sky: [0.0; 4],
         }
     }
 }

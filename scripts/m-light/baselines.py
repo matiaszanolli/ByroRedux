@@ -58,6 +58,8 @@ F1_ROUGHNESS = 0.2
 F3_TOLERANCE = 1e-3
 NEAR_MIRROR_ROUGHNESS_FLOOR = 0.04  # merge.rs: (1 - smoothness).clamp(0.04, 1)
 BGSM_NO_GLOSS_FALLBACK = 0.5        # merge.rs / material_translate.rs fallback
+MATERIAL_KIND_GLASS = 100           # shader_constants_data.rs: the shared glass surface
+MATERIAL_KIND_EFFECT_SHADER = 101   # shader_constants_data.rs: BGEM / effect materials
 
 
 def log(message: str) -> None:
@@ -162,8 +164,22 @@ def material_report(dump: Path, scene: str) -> list[list[str]]:
         if r["conductor"] == "conductor" and r["route"] not in ("bgsm", "legacy_env_map"):
             f2 += n
         # F3 (FO4 BGSM): roughness against the engine's own rule, the
-        # unverified convention of #6606; the 0.5 no-gloss fallback excluded.
-        if r["route"] == "bgsm" and scene in ("medtek", "dugout") and abs(rough - BGSM_NO_GLOSS_FALLBACK) > 1e-6:
+        # unverified convention of #6606, on the materials that rule covers
+        # (#7151): a BGSM whose specular block is enabled. A disabled block
+        # zeroes `specular_strength` and derives no roughness from its
+        # smoothness (#4654: the NIF side's value stands, and `glossiness`
+        # still holds the NIF's); an effect material (BGEM) has no
+        # smoothness at all; and glass takes the shared glass surface
+        # (`GLASS_SURFACE_BEHAVIOR`, `byroredux/src/helpers.rs`), which sets
+        # its roughness whatever the file authors. The 0.5 no-gloss fallback
+        # is excluded.
+        if "specular_strength" not in r:
+            raise SystemExit("baselines: the material dump predates its specular_strength column (#7151); "
+                             "re-run with a current engine")
+        if (r["route"] == "bgsm" and scene in ("medtek", "dugout")
+                and int(r["material_kind"]) not in (MATERIAL_KIND_GLASS, MATERIAL_KIND_EFFECT_SHADER)
+                and float(r["specular_strength"]) > 0.0
+                and abs(rough - BGSM_NO_GLOSS_FALLBACK) > 1e-6):
             f3_total += n
             expected = min(max(1.0 - float(r["glossiness"]) / 100.0, NEAR_MIRROR_ROUGHNESS_FLOOR), 1.0)
             if abs(rough - expected) > F3_TOLERANCE:
@@ -178,7 +194,7 @@ def material_report(dump: Path, scene: str) -> list[list[str]]:
     rows.append([scene, "FLAGS", "", str(sum(int(r["instances"]) for r in records)), "", "", "", "",
                  f"F1={f1_rough}/{f1_total} (roughness<{F1_ROUGHNESS})",
                  f"F2={f2} (conductor without metal signal)",
-                 f"F3={f3}/{f3_total} (FO4 BGSM vs (1-s).clamp(0.04,1); unverified, #6606)"])
+                 f"F3={f3}/{f3_total} (FO4 BGSM, specular on, not glass or effect, vs (1-s).clamp(0.04,1); unverified, #6606)"])
     return rows
 
 
@@ -201,9 +217,10 @@ def capture_anchor_pair(engine: Engine, scene: str, out: Path, tier: int, pos: s
 def capture_anchors_only(engine: Engine, args, out: Path) -> int:
     header, *rows = args.anchors_only.read_text().splitlines()
     cols = header.split("\t")
+    wanted = {s.strip() for s in args.scenes.split(",") if s.strip()}
     for line in rows:
         r = dict(zip(cols, line.split("\t")))
-        if r.get("config", "taa") != "taa":
+        if r.get("config", "taa") != "taa" or r["scene"] not in wanted:
             continue
         scene = r["scene"]
         anchors = capture_anchor_pair(engine, scene, out, int(r["settled_tier"]), r["anchor_camera_pos"],
@@ -252,6 +269,33 @@ def exit_cost(engine: Engine, control: Engine, args, out: Path) -> int:
     return 1 if failed else 0
 
 
+MATERIALS_HEADER = ("scene\troute\tclass\tinstances\troughness_p05\troughness_median\troughness_p95\t"
+                    "metalness_median\tF1\tF2\tF3\n")
+
+
+def materials_only(engine: "Engine", args: argparse.Namespace, out: Path) -> int:
+    """A9 alone: the dump comes from the same run the full report takes it
+    from (TAA, renderer-stepped orbit, the adaptive window)."""
+    rows = []
+    for scene in [s.strip() for s in args.scenes.split(",") if s.strip() in WAVE1_GAME_SCENES]:
+        workdir, _, _ = scene_spec(scene)
+        if not workdir.is_dir():
+            log(f"skip {scene}: {workdir} not present")
+            continue
+        dump = out / "materials" / f"{scene}.tsv"
+        engine.run(scene, "taa_adaptive_materials",
+                   dict(CONFIGS)["taa"] + ["--bench-frames", str(240 + args.window), "--bench-mode",
+                                           "renderer-stepped", "--bench-camera", "orbit",
+                                           "--material-dump", str(dump)])
+        rows += material_report(dump, scene)
+    with open(out / "materials.tsv", "w") as f:
+        f.write(MATERIALS_HEADER)
+        for row in rows:
+            f.write("\t".join(row) + "\n")
+    log(f"materials: {out / 'materials.tsv'}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     parser.add_argument("--out", type=Path, default=REPO / "target" / "m-light-baselines")
@@ -270,6 +314,9 @@ def main() -> int:
     parser.add_argument("--anchors-only", type=Path, metavar="BASELINES_TSV",
                         help="re-capture only the content anchors, at the pose and TAA settled tier a "
                              "previous baselines.tsv recorded (RLT-CNT-001: a phase entry's anchors)")
+    parser.add_argument("--materials-only", action="store_true",
+                        help="re-publish only the A9 material-class report (RLT-IBL-008): one TAA adaptive "
+                             "run per Wave 1 game scene with --material-dump, no timing or anchors")
     args = parser.parse_args()
     # Absolute: game scenes run with their Data folder as the working
     # directory, so a relative output path would land inside the install.
@@ -285,6 +332,8 @@ def main() -> int:
     base_rows, material_rows, pending_rows = [], [], []
     if args.anchors_only:
         return capture_anchors_only(engine, args, out)
+    if args.materials_only:
+        return materials_only(engine, args, out)
     if args.exit_cost:
         if not args.control_binary:
             raise SystemExit("m-light-baselines: --exit-cost needs --control-binary")
@@ -351,8 +400,7 @@ def main() -> int:
         for row in base_rows:
             f.write("\t".join(row) + "\n")
     with open(out / "materials.tsv", "w") as f:
-        f.write("scene\troute\tclass\tinstances\troughness_p05\troughness_median\troughness_p95\t"
-                "metalness_median\tF1\tF2\tF3\n")
+        f.write(MATERIALS_HEADER)
         for row in material_rows:
             f.write("\t".join(row) + "\n")
     wall = time.monotonic() - t0

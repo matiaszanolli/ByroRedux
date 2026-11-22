@@ -898,8 +898,8 @@ pub(super) fn build_composite_params(
         camera_cloud_sun_transmittance,
     } = inputs;
     let is_exterior = sky_params.is_exterior;
-    let interior_show_sky = !is_exterior && sky_params.interior_show_sky;
     let interior_portal_sky = !is_exterior && sky_params.portal_outdoor_sky.is_some();
+    let sky_mode = super::sky_apertures::interior_sky_mode(sky_params);
     let outdoor = sky_params.portal_outdoor_sky.map(|palette| palette.as_sky_params());
     let sky_params = if interior_portal_sky {
         outdoor.as_ref().unwrap_or(sky_params)
@@ -920,15 +920,7 @@ pub(super) fn build_composite_params(
         // farthest ones rather than whichever came last in iteration order.
         let mut nearest = super::sky_apertures::NearestApertures::new(&mut sky_apertures[..]);
         for volume in sky_aperture_volumes {
-            if (volume.center_shape[3] != crate::shader_constants::FOG_VOLUME_SHAPE_BOX as f32
-                && volume.center_shape[3]
-                    != crate::shader_constants::FOG_VOLUME_SHAPE_CONE as f32)
-                || (volume.profile_params[0]
-                    - super::super::volumetrics::FOG_VOLUME_PROFILE_LIGHT_SHAFT)
-                    .abs()
-                    >= 0.5
-                || volume.profile_params[3] < 0.5
-            {
+            if !super::sky_apertures::is_sky_aperture(volume) {
                 continue;
             }
             let Some(aperture) = super::super::composite::prepare_sky_aperture(
@@ -950,13 +942,7 @@ pub(super) fn build_composite_params(
     let dome = pack_sky_dome(
         sky_params,
         camera_pos,
-        if interior_show_sky {
-            1.0
-        } else if interior_portal_sky {
-            2.0
-        } else {
-            0.0
-        },
+        sky_mode,
         is_exterior,
         froxel_slice_count,
         render_debug_flags,
@@ -1226,7 +1212,7 @@ pub(super) fn build_sky_cube_params(
     inputs: CompositeParamsInputs<'_>,
     composite: &super::super::composite::CompositeParams,
 ) -> super::super::sky_cube::SkyCubeParams {
-    if let Some(outdoor) = inputs.sky_params.portal_outdoor_sky.as_ref() {
+    let mut params = if let Some(outdoor) = inputs.sky_params.portal_outdoor_sky.as_ref() {
         // Build only the sky-cube subset. Routing this through
         // `build_composite_params` also zeroed and filled its 256-entry
         // aperture array, even though the cube bake consumes only sky data.
@@ -1249,7 +1235,11 @@ pub(super) fn build_sky_cube_params(
         )
     } else {
         super::super::sky_cube::SkyCubeParams::from_composite(composite)
-    }
+    };
+    // RLT-IBL-010: the sun is counted once — as the directional light — so
+    // the probe the reflections and the SH9 irradiance read carries no disc.
+    params.sky_zenith[3] = super::super::sky_cube::SKY_CUBE_SUN_DISC_OFF;
+    params
 }
 
 /// Whether the scene contains a radiating local source worth scattering from
@@ -1393,6 +1383,7 @@ mod composite_params_tests {
         assert_eq!(cube.depth_params[0], 1.0);
         assert_eq!(cube.sky_lower[3], 0.0);
         assert_eq!(cube.sky_zenith[..3], [0.7, 0.2, 0.1]);
+        assert_eq!(cube.sky_zenith[3], crate::vulkan::sky_cube::SKY_CUBE_SUN_DISC_OFF);
         assert_eq!(cube.sky_horizon[..3], [0.9, 0.4, 0.2]);
         assert_eq!(cube.sun_dir[..3], [0.2, 0.8, 0.4]);
 
@@ -1543,7 +1534,9 @@ mod composite_params_tests {
             },
         ));
         for ((name, got), (_, want)) in lanes(&cube).into_iter().zip(lanes(&reference)) {
-            let (got, want) = if name == "sky_lower" {
+            // `sky_lower.w` is the room's sky mode; `sky_zenith.w` is the disc,
+            // which the bake always turns off (RLT-IBL-010).
+            let (got, want) = if name == "sky_lower" || name == "sky_zenith" {
                 (&got[..3], &want[..3])
             } else {
                 (&got[..], &want[..])

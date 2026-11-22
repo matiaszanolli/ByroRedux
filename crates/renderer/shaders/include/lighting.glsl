@@ -331,7 +331,14 @@ vec3 shadowableLightRadiance(
     vec3 F = fresnelSchlickPower(HdotV, F0, mat.fresnelPower);
 
     vec3 kD = (1.0 - F) * (1.0 - metalness);
-    vec3 specular = (D * G * F) / max(4.0 * NdotV * NdotL, 0.01);
+    // M-LIGHT RLT-IBL-011 — the specular lobe in the primary diffuse lobe's
+    // convention. `diffuseBrdf` below is the legacy non-/PI Lambert, so a
+    // physically normalised D·G·F / (4·NdotV·NdotL) sat a factor of PI below
+    // it: against the reference's PI-scaled emitters every point- and
+    // sun-light highlight read 1/PI. Environment specular keeps physical
+    // units (it never meets `diffuseBrdf`), as `pathHitEmitterBsdf` does for
+    // the path's specular lobe (RLT-GI-011).
+    vec3 specular = PI * (D * G * F) / max(4.0 * NdotV * NdotL, 0.01);
     // Multi-scatter energy compensation (Fdez-Agüera / Filament). Restores
     // the energy the single-scatter D·G·F lobe loses to microfacet masking
     // as roughness rises — rough conductors stop darkening. Computed inside
@@ -580,7 +587,30 @@ bool giLightSample(
 // and it was never a background write but the glass window-portal escape,
 // a branch whose own comment warns it must not be generalised. The units
 // argument holds; the citation pointed at the one special case.)
-vec3 pathEnvironmentRadiance(vec3 direction) {
+// Rotate `value` by the unit quaternion `q` (x, y, z, w) — the same form the
+// composite applies to these aperture planes (`rotateByApertureQuaternion`).
+vec3 rotateBySkyApertureQuaternion(vec3 value, vec4 q) {
+    return value + 2.0 * cross(q.xyz, cross(q.xyz, value) + q.w * value);
+}
+
+// M-LIGHT RLT-IBL-006: does the ray from `origin` (render-origin relative)
+// along `direction` cross one of the interior's sky openings?
+bool pathCrossesSkyAperture(vec3 origin, vec3 direction) {
+    uint count = min(skyApertureHeader.x, uint(MAX_COMPOSITE_SKY_APERTURES));
+    for (uint i = 0u; i < count; ++i) {
+        SkyAperturePlane aperture = skyApertures[i];
+        vec3 localOrigin = rotateBySkyApertureQuaternion(origin - aperture.center.xyz, aperture.inverseRotation);
+        vec3 localDir = rotateBySkyApertureQuaternion(direction, aperture.inverseRotation);
+        if (abs(localDir.z) < 1.0e-5) continue;
+        float t = -localOrigin.z / localDir.z;
+        if (t <= 0.0) continue;
+        vec2 hit = localOrigin.xy + localDir.xy * t;
+        if (all(lessThanEqual(abs(hit), aperture.halfExtents.xy))) return true;
+    }
+    return false;
+}
+
+vec3 pathEnvironmentRadiance(vec3 origin, vec3 direction) {
     vec3 rayDir = normalize(direction);
     if (jitter.w > 0.5) {
         // SKYAL — an exterior path that escapes the TLAS escapes into the
@@ -603,6 +633,14 @@ vec3 pathEnvironmentRadiance(vec3 direction) {
         // Keep the authored blend only as the unavailable-bake fallback.
         if (exteriorSkyTint.w > 0.5) return skyRadiance;
         return mix(sceneFlags.yzw * (1.0 / PI), skyRadiance, skyWeight);
+    }
+    // M-LIGHT RLT-IBL-006 — an interior that shows the sky: a path that leaves
+    // the cell (Show Sky), or leaves it through a marked opening (bounded
+    // apertures), sees the portal sky the cube is baked from, not the authored
+    // ambient. The cube carries that portal palette in such interiors.
+    if (exteriorSkyTint.w > 0.5 && interiorSky.x > 0.5
+        && (interiorSky.x < 1.5 || pathCrossesSkyAperture(origin, rayDir))) {
+        return exteriorSkyRadianceOr(rayDir, exteriorSkyTint.rgb);
     }
     if (dalcFlags.x > 0.5) {
         // DALC stores directional irradiance; an escaping path needs

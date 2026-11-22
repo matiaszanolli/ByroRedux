@@ -1,0 +1,75 @@
+gate	case	region	metric	value	floor_engine	floor_reference	floor_combined	frozen_floor	threshold	pass	tier	engine_frames	engine_seeds	reference_spp	reference_seeds	k_exp	reference_cache_key	revision	gpu
+A6	dielectric-r0.02	sky_probe	energy_ratio_raw	0.912604	0	0	0			report	3	64	0,1	1024	0,1	point=pi	d96c2246aabaeb67b18e8cef	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.02	sky_probe	fresnel_recorded_difference	0.911815	0	0	0			report	3	64	0,1	1024	0,1	point=pi	d96c2246aabaeb67b18e8cef	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.02	sky_probe	energy_ratio	1.00087	0	0.000296	0.000296			report	3	64	0,1	1024	0,1	point=pi	d96c2246aabaeb67b18e8cef	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.02	sky_probe	energy_error	0.000865854	0	0.000296	0.000296	0.000296	<=0.1003 and floor<=0.000889	yes	3	64	0,1	1024	0,1	point=pi	d96c2246aabaeb67b18e8cef	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.02	sky_probe	rel_error_mean	0.0353918	0	4.73e-05	4.73e-05			report	3	64	0,1	1024	0,1	point=pi	d96c2246aabaeb67b18e8cef	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.02	sky_probe	rel_error_p95	0.115218	0	0.000315	0.000315	0.0057	<=0.4557 and floor<=0.0171	yes	3	64	0,1	1024	0,1	point=pi	d96c2246aabaeb67b18e8cef	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.26	sky_probe	energy_ratio_raw	0.91255	0	0	0			report	3	64	0,1	1024	0,1	point=pi	006a665359cb20380cecb369	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.26	sky_probe	fresnel_recorded_difference	0.906471	0	0	0			report	3	64	0,1	1024	0,1	point=pi	006a665359cb20380cecb369	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.26	sky_probe	energy_ratio	1.00671	0	0.000371	0.000371			report	3	64	0,1	1024	0,1	point=pi	006a665359cb20380cecb369	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.26	sky_probe	energy_error	0.00670635	0	0.000371	0.000371	0.000371	<=0.1004 and floor<=0.00111	yes	3	64	0,1	1024	0,1	point=pi	006a665359cb20380cecb369	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.26	sky_probe	rel_error_mean	0.0553959	0	4.45e-05	4.45e-05			report	3	64	0,1	1024	0,1	point=pi	006a665359cb20380cecb369	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.26	sky_probe	rel_error_p95	0.221108	0	0.000944	0.000944	0.00132	<=0.4513 and floor<=0.00396	yes	3	64	0,1	1024	0,1	point=pi	006a665359cb20380cecb369	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.50	sky_probe	energy_ratio_raw	0.904579	0	0	0			report	3	64	0,1	1024	0,1	point=pi	8ac438c4e476dcd0ec76248f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.50	sky_probe	fresnel_recorded_difference	0.891923	0	0	0			report	3	64	0,1	1024	0,1	point=pi	8ac438c4e476dcd0ec76248f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.50	sky_probe	energy_ratio	1.01419	0	0.000205	0.000205			report	3	64	0,1	1024	0,1	point=pi	8ac438c4e476dcd0ec76248f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.50	sky_probe	energy_error	0.0141895	0	0.000205	0.000205	0.000205	<=0.1002 and floor<=0.000616	yes	3	64	0,1	1024	0,1	point=pi	8ac438c4e476dcd0ec76248f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.50	sky_probe	rel_error_mean	0.0821343	0	0.000148	0.000148			report	3	64	0,1	1024	0,1	point=pi	8ac438c4e476dcd0ec76248f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.50	sky_probe	rel_error_p95	0.340968	0	0.00193	0.00193	0.00139	<=0.4514 and floor<=0.00417	yes	3	64	0,1	1024	0,1	point=pi	8ac438c4e476dcd0ec76248f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.74	sky_probe	energy_ratio_raw	0.894647	0	0	0			report	3	64	0,1	1024	0,1	point=pi	05a0502356e5da1996b51f86	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.74	sky_probe	fresnel_recorded_difference	0.898401	0	0	0			report	3	64	0,1	1024	0,1	point=pi	05a0502356e5da1996b51f86	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.74	sky_probe	energy_ratio	0.995822	0	8.99e-05	8.99e-05			report	3	64	0,1	1024	0,1	point=pi	05a0502356e5da1996b51f86	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.74	sky_probe	energy_error	0.00417799	0	8.99e-05	8.99e-05	8.99e-05	<=0.1001 and floor<=0.000271	yes	3	64	0,1	1024	0,1	point=pi	05a0502356e5da1996b51f86	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.74	sky_probe	rel_error_mean	0.0824319	0	3.45e-05	3.45e-05			report	3	64	0,1	1024	0,1	point=pi	05a0502356e5da1996b51f86	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.74	sky_probe	rel_error_p95	0.267104	0	0.000338	0.000338	0.000873	<=0.4509 and floor<=0.00262	yes	3	64	0,1	1024	0,1	point=pi	05a0502356e5da1996b51f86	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.98	sky_probe	energy_ratio_raw	0.894297	0	0	0			report	3	64	0,1	1024	0,1	point=pi	67254aab5a7a7d62592441b6	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.98	sky_probe	fresnel_recorded_difference	0.913923	0	0	0			report	3	64	0,1	1024	0,1	point=pi	67254aab5a7a7d62592441b6	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.98	sky_probe	energy_ratio	0.978526	0	4.67e-05	4.67e-05			report	3	64	0,1	1024	0,1	point=pi	67254aab5a7a7d62592441b6	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.98	sky_probe	energy_error	0.0214743	0	4.67e-05	4.67e-05	4.67e-05	<=0.1 and floor<=0.000141	yes	3	64	0,1	1024	0,1	point=pi	67254aab5a7a7d62592441b6	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.98	sky_probe	rel_error_mean	0.0823413	0	4.38e-05	4.38e-05			report	3	64	0,1	1024	0,1	point=pi	67254aab5a7a7d62592441b6	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	dielectric-r0.98	sky_probe	rel_error_p95	0.315924	0	0.000118	0.000118	0.000895	<=0.4509 and floor<=0.00269	yes	3	64	0,1	1024	0,1	point=pi	67254aab5a7a7d62592441b6	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	conductor-r0.02	sky_probe	energy_ratio	0.999396	0	9.66e-06	9.66e-06			report	3	64	0,1	1024	0,1	point=pi	3666ddb8ad9636805dbfea74	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	conductor-r0.02	sky_probe	energy_error	0.000603706	0	9.66e-06	9.66e-06	9.59e-06	<=0.007111 and floor<=2.98e-05	yes	3	64	0,1	1024	0,1	point=pi	3666ddb8ad9636805dbfea74	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	conductor-r0.02	sky_probe	rel_error_mean	0.0130467	0	2.97e-06	2.97e-06			report	3	64	0,1	1024	0,1	point=pi	3666ddb8ad9636805dbfea74	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	conductor-r0.02	sky_probe	rel_error_p95	0.0207524	0	1.09e-05	1.09e-05	2.49e-05	<=0.06891 and floor<=7.57e-05	yes	3	64	0,1	1024	0,1	point=pi	3666ddb8ad9636805dbfea74	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	conductor-r0.26	sky_probe	energy_ratio	0.998815	0	2.08e-05	2.08e-05			report	3	64	0,1	1024	0,1	point=pi	ec242223f81eb28e18e08e43	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	conductor-r0.26	sky_probe	energy_error	0.00118488	0	2.08e-05	2.08e-05	1.58e-05	<=0.1 and floor<=4.84e-05	yes	3	64	0,1	1024	0,1	point=pi	ec242223f81eb28e18e08e43	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	conductor-r0.26	sky_probe	rel_error_mean	0.0288883	0	5.64e-06	5.64e-06			report	3	64	0,1	1024	0,1	point=pi	ec242223f81eb28e18e08e43	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	conductor-r0.26	sky_probe	rel_error_p95	0.110733	0	0.000271	0.000271	0.000322	<=0.4503 and floor<=0.000967	yes	3	64	0,1	1024	0,1	point=pi	ec242223f81eb28e18e08e43	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	conductor-r0.50	sky_probe	energy_ratio	0.988635	0	4.88e-05	4.88e-05			report	3	64	0,1	1024	0,1	point=pi	d9a963ac634636ea76d76bde	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	conductor-r0.50	sky_probe	energy_error	0.0113654	0	4.88e-05	4.88e-05	2.81e-05	<=0.1 and floor<=8.53e-05	yes	3	64	0,1	1024	0,1	point=pi	d9a963ac634636ea76d76bde	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	conductor-r0.50	sky_probe	rel_error_mean	0.0615746	0	4.55e-05	4.55e-05			report	3	64	0,1	1024	0,1	point=pi	d9a963ac634636ea76d76bde	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	conductor-r0.50	sky_probe	rel_error_p95	0.215917	0	0.00133	0.00133	0.000579	<=0.4506 and floor<=0.00174	yes	3	64	0,1	1024	0,1	point=pi	d9a963ac634636ea76d76bde	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	conductor-r0.74	sky_probe	energy_ratio	0.976626	0	8.97e-05	8.97e-05			report	3	64	0,1	1024	0,1	point=pi	48d06691f5d91ad71faa6b96	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	conductor-r0.74	sky_probe	energy_error	0.0233742	0	8.97e-05	8.97e-05	8.97e-05	<=0.1001 and floor<=0.00027	yes	3	64	0,1	1024	0,1	point=pi	48d06691f5d91ad71faa6b96	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	conductor-r0.74	sky_probe	rel_error_mean	0.0813349	0	0.000171	0.000171			report	3	64	0,1	1024	0,1	point=pi	48d06691f5d91ad71faa6b96	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	conductor-r0.74	sky_probe	rel_error_p95	0.205335	0	0.000482	0.000482	0.000496	<=0.4505 and floor<=0.00149	yes	3	64	0,1	1024	0,1	point=pi	48d06691f5d91ad71faa6b96	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	conductor-r0.98	sky_probe	energy_ratio	0.9671	0	2.52e-05	2.52e-05			report	3	64	0,1	1024	0,1	point=pi	a375d3490e38947ab8ca204b	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	conductor-r0.98	sky_probe	energy_error	0.0328996	0	2.52e-05	2.52e-05	2.52e-05	<=0.1 and floor<=7.66e-05	yes	3	64	0,1	1024	0,1	point=pi	a375d3490e38947ab8ca204b	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	conductor-r0.98	sky_probe	rel_error_mean	0.0809983	0	8.67e-05	8.67e-05			report	3	64	0,1	1024	0,1	point=pi	a375d3490e38947ab8ca204b	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	conductor-r0.98	sky_probe	rel_error_p95	0.270946	0	0.000139	0.000139	0.000782	<=0.4508 and floor<=0.00235	yes	3	64	0,1	1024	0,1	point=pi	a375d3490e38947ab8ca204b	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	lambertian	sky_probe	energy_ratio	0.999963	6.01e-05	2.62e-05	6.55e-05			report	3	64	0,1	1024	0,1	point=pi	a4f74d8ac18cd9c8d5484f3d	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	lambertian	sky_probe	energy_error	3.6659e-05	6.01e-05	2.62e-05	6.55e-05	6.02e-05	<=0.00506 and floor<=0.000182	yes	3	64	0,1	1024	0,1	point=pi	a4f74d8ac18cd9c8d5484f3d	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	lambertian	sky_probe	rel_error_mean	0.0285856	7.38e-06	6.41e-05	6.45e-05			report	3	64	0,1	1024	0,1	point=pi	a4f74d8ac18cd9c8d5484f3d	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	lambertian	sky_probe	rel_error_p95	0.0745809	7.74e-05	7.72e-05	0.000109	0.000229	<=0.1133 and floor<=0.000688	yes	3	64	0,1	1024	0,1	point=pi	a4f74d8ac18cd9c8d5484f3d	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	contact-sky	con_block_band	energy_ratio	1.41671	0	0.000206	0.000206			report	3	64	0,1	1024	0,1	point=pi	9bd3c7a7a946ca295855e03f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	contact-sky	con_block_band	energy_error	0.416711	0	0.000206	0.000206			report	3	64	0,1	1024	0,1	point=pi	9bd3c7a7a946ca295855e03f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	contact-sky	con_block_band	rel_error_mean	0.417496	0	0.000126	0.000126			report	3	64	0,1	1024	0,1	point=pi	9bd3c7a7a946ca295855e03f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	contact-sky	con_block_band	rel_error_p95	0.717443	0	0.00103	0.00103			report	3	64	0,1	1024	0,1	point=pi	9bd3c7a7a946ca295855e03f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	contact-sky	con_block_band	band_pixels	5714	0	0	0			report	3	64	0,1	1024	0,1	point=pi	9bd3c7a7a946ca295855e03f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	contact-sky	con_cube_band	energy_ratio	1.74535	0	0.000445	0.000445			report	3	64	0,1	1024	0,1	point=pi	9bd3c7a7a946ca295855e03f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	contact-sky	con_cube_band	energy_error	0.745345	0	0.000445	0.000445			report	3	64	0,1	1024	0,1	point=pi	9bd3c7a7a946ca295855e03f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	contact-sky	con_cube_band	rel_error_mean	0.745345	0	0.000445	0.000445			report	3	64	0,1	1024	0,1	point=pi	9bd3c7a7a946ca295855e03f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	contact-sky	con_cube_band	rel_error_p95	1.19246	0	0.0041	0.0041			report	3	64	0,1	1024	0,1	point=pi	9bd3c7a7a946ca295855e03f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	contact-sky	con_cube_band	band_pixels	1960	0	0	0			report	3	64	0,1	1024	0,1	point=pi	9bd3c7a7a946ca295855e03f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	contact-sky	con_plank_band	energy_ratio	1.14604	0	0.000653	0.000653			report	3	64	0,1	1024	0,1	point=pi	9bd3c7a7a946ca295855e03f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	contact-sky	con_plank_band	energy_error	0.146038	0	0.000653	0.000653			report	3	64	0,1	1024	0,1	point=pi	9bd3c7a7a946ca295855e03f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	contact-sky	con_plank_band	rel_error_mean	0.149017	0	0.000565	0.000565			report	3	64	0,1	1024	0,1	point=pi	9bd3c7a7a946ca295855e03f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	contact-sky	con_plank_band	rel_error_p95	0.326727	0	0.000353	0.000353			report	3	64	0,1	1024	0,1	point=pi	9bd3c7a7a946ca295855e03f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	contact-sky	con_plank_band	band_pixels	7270	0	0	0			report	3	64	0,1	1024	0,1	point=pi	9bd3c7a7a946ca295855e03f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	contact-sky	con_open_floor	energy_ratio	1.05387	0	5.91e-05	5.91e-05			report	3	64	0,1	1024	0,1	point=pi	9bd3c7a7a946ca295855e03f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	contact-sky	con_open_floor	energy_error	0.0538669	0	5.91e-05	5.91e-05			report	3	64	0,1	1024	0,1	point=pi	9bd3c7a7a946ca295855e03f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	contact-sky	con_open_floor	rel_error_mean	0.05393	0	9.03e-05	9.03e-05			report	3	64	0,1	1024	0,1	point=pi	9bd3c7a7a946ca295855e03f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	contact-sky	con_open_floor	rel_error_p95	0.0886527	0	0.000496	0.000496			report	3	64	0,1	1024	0,1	point=pi	9bd3c7a7a946ca295855e03f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A6	contact-sky	con_open_floor	band_pixels	17306	0	0	0			report	3	64	0,1	1024	0,1	point=pi	9bd3c7a7a946ca295855e03f	84104564e7b0-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04

@@ -83,6 +83,7 @@ layout(location = 7) out vec4 outTransparencyAndSun; // R: FSR T&C, GBA: far-fie
 #include "include/raytrace.glsl"
 #include "include/clusters.glsl"
 #include "include/pbr.glsl"
+#include "include/env_brdf_lut.glsl"
 #include "include/shadow_common.glsl"
 #include "include/shadow_transport.glsl"
 #include "include/terrain_sample.glsl"
@@ -3060,6 +3061,9 @@ void main() {
     float aaRoughness = ((dbgFlags & DBG_DISABLE_SPECULAR_AA) != 0u)
         ? roughness
         : specularAaRoughness(N, roughness);
+    // Screen UV of the SSAO target, read by the probe's specular occlusion
+    // (RLT-IBL-004) and the diffuse AO below; no ray produces it (#7261).
+    vec2 aoUV = gl_FragCoord.xy / screen.xy;
 
     vec3 Lo = vec3(0.0); // Accumulated outgoing radiance.
     uint selectedLightDebug = 0xFFFFFFFFu;
@@ -3138,10 +3142,18 @@ void main() {
     // Eyes are served exclusively by the iris-centred authored-cube branch
     // below — vanilla eye shading never scene-reflects, and letting both
     // run would stack a surface-point RT reflection on top of it.
-    bool needsEnvironmentReflection =
-        (metalness > 0.3 || hasExplicitEnvironment) && !isEyeEnvmap;
-    if (roughness < 0.6 && !isGlass
-        && needsEnvironmentReflection) {
+    // M-LIGHT RLT-IBL-001 / -002: the traced reflection ray stays with metals
+    // and authored environments below roughness 0.6; on exteriors every
+    // other surface (dielectrics, and anything rougher) still reflects the
+    // prefiltered sky from the probe mip for its roughness, instead of
+    // nothing. A Lambertian reference material carries no specular lobe.
+    bool tracedEnvironment = (metalness > 0.3 || hasExplicitEnvironment) && !isEyeEnvmap;
+    bool exteriorSkyProbe = jitter.w > 0.5 && exteriorSkyTint.w > 0.5;
+    bool lambertianReferenceEnv = (mat.materialFlags & MAT_FLAG_LAMBERTIAN_REFERENCE) != 0u;
+    bool needsEnvironmentReflection = (tracedEnvironment || exteriorSkyProbe)
+        && !isEyeEnvmap && !lambertianReferenceEnv;
+    bool traceEnvironmentRay = tracedEnvironment && roughness < 0.6;
+    if (!isGlass && needsEnvironmentReflection) {
         // V-aligned normal flip (#668). The bump map at line 638 can perturb
         // `N` such that dot(N, V) < 0 on grazing views or noisy normal maps;
         // raw `N * 0.1` would then bias the ray origin BEHIND the macro
@@ -3217,12 +3229,16 @@ void main() {
             }
         }
         vec3 envColor;
-        if (rtLodTelemetryEnabled && reflectionGlassRayEnabled) {
+        if (rtLodTelemetryEnabled && reflectionGlassRayEnabled && traceEnvironmentRay) {
             if (rtLOD < RT_LOD_REFLECT) atomicAdd(rayBudget.rtReflectionTraced, 1u);
             else atomicAdd(rayBudget.rtReflectionLodCulled, 1u);
         }
+        // The share of `envColor` that is the probe rather than a traced ray;
+        // specular occlusion (RLT-IBL-004) applies to it only, since a traced
+        // ray already sees the occluder.
+        float probeShare = 1.0;
         // #7261 — after the `aaRoughness` hoist, so helper lanes skip it.
-        if (reflectionGlassRayEnabled && !helperLane && rtLOD < RT_LOD_REFLECT) {
+        if (traceEnvironmentRay && reflectionGlassRayEnabled && !helperLane && rtLOD < RT_LOD_REFLECT) {
             // Deterministic rough reflection: a single SHARP ray, GGX-lobe
             // blur applied as a roughness-scaled mip on the hit sample
             // (`traceReflection`'s mipBias). mip ~ roughness·8 spans the
@@ -3244,19 +3260,63 @@ void main() {
             // 0.45 * 0.45 = 20% before Fresnel and tone mapping.
             float rayFade = 1.0 - smoothstep(RT_LOD_REFLECT - 1.0, RT_LOD_REFLECT, rtLOD);
             envColor = mix(ambientFallback, reflResult.rgb, rayFade);
+            probeShare = 1.0 - rayFade;
         } else {
             // Past the ray reach (far/grazing): cheap ambient-colour specular,
             // no ray — keeps the env-specular continuous, never zero.
             envColor = ambientFallback;
         }
 
-        // Attenuate the environment reflection by roughness so it reads as a
-        // brushed/satin sheen on moderately-rough metal (the env-map tableware
-        // at roughness ~0.55 → ×0.45) instead of chroming out, while polished
-        // surfaces (low roughness) keep their near-mirror reflection. The
-        // specular lobe spreads — and thus dims per-direction — as roughness
-        // rises; this is the cheap energy stand-in for that.
-        Lo += envColor * F * (1.0 - roughness)
+        // M-LIGHT RLT-IBL-003: the split-sum environment BRDF (Karis 2013),
+        // from the exactly integrated table (`include/env_brdf_lut.glsl`),
+        // replaces the old `F * (1 - roughness)` stand-in, with the same
+        // multiple-scattering compensation the light loop applies and the
+        // same debug bit (RLT-REF-008). Karis's 2014 LUT-free fit
+        // (`envBRDFApprox`) was 0.83-1.16 of the exact weights on the A6 sweep.
+        vec2 envAB = envBRDFLut(NdotV, roughness);
+        vec3 environmentWeight = F0 * envAB.x + envAB.y;
+        if ((dbgFlags & DBG_DISABLE_MULTISCATTER) == 0u) {
+            environmentWeight *= multiScatterEnergyCompensation(F0, NdotV, roughness);
+        }
+        // M-LIGHT RLT-IBL-004: specular occlusion of the probe's share
+        // (Lagarde and de Rousiers 2014, "Moving Frostbite to PBR", the
+        // ambient-occlusion form), from the same SSAO the diffuse reads.
+        float envAO = ((dbgFlags & DBG_DISABLE_AO) != 0u)
+            ? 1.0
+            : max(texture(aoTexture, aoUV).r, 0.20);
+        float probeOcclusion = clamp(
+            pow(NdotV + envAO, exp2(-16.0 * roughness - 1.0)) - 1.0 + envAO, 0.0, 1.0);
+        // M-LIGHT RLT-IBL-004 (owner, rev 49): on an exterior, the sky probe's
+        // share is occluded by a traced visibility term instead. SSAO's
+        // screen radius (at most 32 px) sees a crease but not a caster that
+        // blocks a large part of the sky, so the contact bands of the
+        // `contact-sky` rung read up to 1.75 of the reference with it. One
+        // ray per pixel and frame, drawn from the visible-normal GGX lobe
+        // around R, tests the TLAS. Under that lobe the BRDF-weighted sky
+        // the probe stands for is E[L G1(L)] / E[G1(L)], with E[G1(L)] the
+        // split sum's A + B (`envAB`, the engine's separable Smith), so a
+        // blocked sample removes its own direction's sky radiance times
+        // G1(L) / (A + B) from the probe share: the sky a caster hides is
+        // the sky in the caster's direction, not the lobe's average. A sample
+        // below the surface, which the BRDF weights zero, removes nothing and
+        // needs no ray. TAA resolves the per-frame estimate. Within the
+        // reflection ray's LOD reach only; past it the SSAO form stands.
+        if (exteriorSkyProbe && probeShare > 0.0 && reflectionGlassRayEnabled
+            && rtLOD < RT_LOD_REFLECT && (dbgFlags & DBG_DISABLE_AO) == 0u) {
+            vec2 lobeRand = ditheredSequence2(uvec2(gl_FragCoord.xy), uint(cameraPos.w), MAX_LIGHTS + 1u);
+            vec3 lobeH = sampleVisibleGgxNormal(N_view, V, roughness, lobeRand);
+            vec3 lobeL = reflect(-V, lobeH);
+            float lobeNdotL = dot(lobeL, N_view);
+            probeOcclusion = 1.0;
+            if (lobeNdotL > 0.0 && traceShadowBinary(
+                    offsetRayOriginForDirection(fragWorldPos, N_bias, lobeL), lobeL,
+                    0.0, 6000.0, VISIBILITY_MASK_ALL_OPAQUE)) {
+                float lobeWeight = ggxSmithG1(lobeNdotL, roughness) / max(envAB.x + envAB.y, 1e-3);
+                envColor -= probeShare * lobeWeight * exteriorSkyRadianceOr(lobeL, ambientFallback, 0.0);
+            }
+        }
+        float specularOcclusion = mix(1.0, probeOcclusion, probeShare);
+        Lo += envColor * environmentWeight * specularOcclusion
             * environmentReflectionMask * environmentStrength;
     }
 
@@ -4849,7 +4909,7 @@ void main() {
 
                 if (rayQueryGetIntersectionTypeEXT(giRQ, true)
                     == gl_RayQueryCommittedIntersectionNoneEXT) {
-                    pathRadiance += throughput * pathEnvironmentRadiance(pathDir);
+                    pathRadiance += throughput * pathEnvironmentRadiance(pathOrigin, pathDir);
                     break;
                 }
 
@@ -5008,7 +5068,6 @@ void main() {
     // bounce light, the aggressive floor prevented AO from visibly biting
     // in crevices. 0.20 keeps a small safety margin for first-frame / edge
     // cases while letting proper contact shadows show through.
-    vec2 aoUV = gl_FragCoord.xy / screen.xy;
     float ao = max(texture(aoTexture, aoUV).r, 0.20);
 
     // Phase 3: albedo-demodulated indirect lighting for SVGF.

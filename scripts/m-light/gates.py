@@ -10,6 +10,8 @@ Cornell gates on linear captures (RLT-REF-007):
   A3   penumbra under camera pan  (RLT-SHD-002; excess over the hold control, gated by the threshold table)
   A5   contact bands              (RLT-CON-001…008; gated by the threshold table at tier 3; the plank also on a flat floor, reported)
   A14  moving blocker             (RLT-SHD-010; excess over the hold control from frame 80, gated by the threshold table)
+  A6   sky IBL energy             (RLT-IBL-001…004, RLT-REF-021; probe-only sky rung, report until the L3 budgets)
+  A17  sun counted once           (RLT-IBL-010; unoccluded plane, sun + disc-free environment, report)
   A7   GI deficit                 (RLT-GI-002; report until Q5's cache)
   A8   traced share free of SSAO  (RLT-GI-004)
   A15  calibration and materials  (RLT-REF-010, RLT-REF-014)
@@ -106,6 +108,10 @@ def scene_digest(scene_dir: Path) -> str:
     for ply in sorted((scene_dir / "meshes").glob("*.ply")):
         h.update(ply.name.encode())
         h.update(ply.read_bytes())
+    # The reference environment (RLT-REF-012) and any baked texture.
+    for exr in sorted(scene_dir.rglob("*.exr")):
+        h.update(str(exr.relative_to(scene_dir)).encode())
+        h.update(exr.read_bytes())
     return h.hexdigest()
 
 
@@ -464,6 +470,82 @@ def gate_materials(engine: Engine, store: ReferenceStore, ctx: Context, spp: int
         mask = region_masks(export)["nm_plane"]
         rows.append((unit_ratio_row("A15", f"normal-plane-azimuth{view}", "nm_plane", load_exr(ea), load_exr(eb),
                                     ra, rb, mask), key))
+    return rows
+
+
+def smith_recorded_difference(scene_dir: Path, shape: str, roughness: float, f0: float) -> float:
+    """RLT-REF-008's recorded difference for a conductor plane: the engine's
+    Schlick-GGX Smith term with k = (r + 1)^2 / 8 (`geometrySmith`,
+    `include/pbr.glsl`) against Mitsuba's exact separable Smith G1 for GGX with
+    alpha = r^2, over the plane's pixels, weighted by each pixel's reference
+    specular radiance under the point emitter. D and F are the same on both
+    sides, so a correctly mapped row reads exactly this ratio."""
+    masks, positions = pixel_hits(scene_dir)
+    p = positions[masks[shape]]
+    root = ET.parse(scene_dir / "scene.xml").getroot()
+    light = next(s for s in root.findall("shape") if s.get("id") == "mat_emitter")
+    centre = np.array([float(v) for v in light.find("point[@name='center']").get("value").split(",")])
+    centre = centre * WORLD_UNITS_PER_METRE
+    scene = mi.load_file(str(scene_dir / "scene.xml"), optimize=False)
+    camera = np.array(scene.sensors()[0].world_transform().translation()).ravel() * WORLD_UNITS_PER_METRE
+    to_light = centre - p
+    d2 = (to_light ** 2).sum(axis=1)
+    l = to_light / np.sqrt(d2)[:, None]
+    v = camera - p
+    v /= np.linalg.norm(v, axis=1)[:, None]
+    h = l + v
+    h /= np.linalg.norm(h, axis=1)[:, None]
+    nl, nv, nh = l[:, 1], v[:, 1], h[:, 1]      # the planes face +Y
+    a2 = roughness ** 4
+    d = a2 / (np.pi * (nh * nh * (a2 - 1.0) + 1.0) ** 2)
+    f = f0 + (1.0 - f0) * (1.0 - (h * v).sum(axis=1)) ** 5
+    k = (roughness + 1.0) ** 2 / 8.0
+    g_engine = nv / (nv * (1.0 - k) + k) * nl / (nl * (1.0 - k) + k)
+
+    def g1(c):
+        return 2.0 / (1.0 + np.sqrt(1.0 + a2 * (1.0 - c * c) / np.maximum(c * c, 1e-12)))
+
+    g_mitsuba = g1(nv) * g1(nl)
+    weight = d * f * nl / d2
+    engine = weight * g_engine / np.maximum(4.0 * nv * nl, 0.01)
+    reference = weight * g_mitsuba / (4.0 * nv * nl)
+    return float(engine.sum() / reference.sum())
+
+
+def gate_materials_specular(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
+    """A15's specular rows (RLT-REF-008, RLT-REF-014; Phase 4 entry): each
+    Disney-branch dielectric and conductor plane at three views, engine
+    multiple-scattering compensation off (V13). The ratio is the row's
+    per-roughness expected difference (the Smith remap, the Burley diffuse
+    version), recorded, not held to 1."""
+    rows = []
+    flags = hex(DBG_DISABLE_MULTISCATTER)
+    for view in (0, 1, 2):
+        export = engine.out / "scenes" / f"materials-spec-v{view}"
+        ea = engine.capture(f"materials_spec_v{view}_direct", "materials-spec", "direct_only", 0, ctx.tier,
+                            export_dir=export, reference_view=view, debug_flags=flags)
+        eb = engine.capture(f"materials_spec_v{view}_direct", "materials-spec", "direct_only", 1, ctx.tier,
+                            reference_view=view, debug_flags=flags)
+        ra, key = store.render(export, "direct", spp, 0)
+        rb, _ = store.render(export, "direct", spp, 1)
+        masks = region_masks(export)
+        ea, eb = load_exr(ea), load_exr(eb)
+        for name in sorted(n for n in masks if n.startswith("mat_spec_")):
+            row = unit_ratio_row("A15", f"materials-spec-v{view}", name, ea, eb, ra, rb, masks[name])
+            row.threshold, row.passed = "recorded difference (report)", "report"
+            rows.append((row, key))
+            roughness = int(name.rsplit("_", 1)[1]) / 100.0
+            if name.startswith("mat_spec_conductor_") and roughness >= 0.1:
+                # RLT-IBL-011: a conductor reads its recorded difference. The
+                # near-mirror plane is left out: its highlight is a sub-region
+                # spot whose energy depends on the source size, not on G.
+                expected = smith_recorded_difference(export, name, roughness, 0.95)
+                value = row.value / expected
+                held = Row("A15", f"materials-spec-v{view}", name, "over_recorded_difference", value,
+                           row.floor_engine / expected, row.floor_reference / expected)
+                held.threshold = "|x-1|<=0.01+floor_combined"
+                held.passed = "yes" if abs(value - 1.0) <= 0.01 + held.floor_combined else "no"
+                rows.append((held, key))
     return rows
 
 
@@ -860,6 +942,8 @@ PENUMBRA_RUNGS = ("penumbra", "penumbra-sun")
 # fitted umbra band and raise the p95 floor above its frozen drift margin.
 SUN_PENUMBRA_REFERENCE_SPP = 16384
 DBG_DISABLE_DIRECT_SHADOWS = 0x8000000  # crates/renderer/src/shader_constants_data.rs
+DBG_DISABLE_SVGF = 0x20  # RLT-REF-018, same file
+DBG_DISABLE_MULTISCATTER = 0x2000  # RLT-REF-008 / V13: Mitsuba's rough BSDFs model no multiple scattering
 PENUMBRA_MIN_PX = 10  # RLT-SHD-001: the reference penumbra spans at least 10 px
 
 
@@ -1165,6 +1249,311 @@ def band_mask(positions: np.ndarray, receiver: np.ndarray, band) -> np.ndarray:
 # the last tier, beside the normal-mapped plank's.
 CONTROL_RUNG = "contact-flat"
 CONTROL_BAND = "con_plank_band"
+
+
+# ── Sky IBL (Phase 4: A6, RLT-IBL-001…004, RLT-REF-012, -019, -021) ──────
+
+SKY_ENV_FACES = 6
+SKY_ENV_FACE_PX = 512          # four times SKY_CUBE_FACE_SIZE (RLT-REF-012)
+SKY_ENV_LATLONG = (2048, 1024)  # the same angular resolution at the equator
+SKY_ENV_FILE = "sky_env.exr"
+SKY_PROBE_ROUGHNESS = (0.02, 0.26, 0.50, 0.74, 0.98)
+
+
+def pixel_directions(scene_dir: Path) -> np.ndarray:
+    """The world-space ray direction through each pixel centre of the
+    exported camera, shape (height, width, 3) — the rays the engine shades."""
+    import drjit as dr
+
+    scene = mi.load_file(str(scene_dir / "scene.xml"), optimize=False)
+    sensor = scene.sensors()[0]
+    width, height = sensor.film().size()
+    index = dr.arange(mi.UInt32, width * height)
+    uv = mi.Point2f((mi.Float(index % width) + 0.5) / width,
+                    (mi.Float(index // width) + 0.5) / height)
+    rays, _ = sensor.sample_ray(0.0, 0.0, uv, mi.Point2f(0.5, 0.5))
+    return np.array(rays.d).T.reshape(height, width, 3)
+
+
+@dataclass
+class PinholeView:
+    """A pinhole camera recovered from its per-pixel ray directions:
+    pixel = (a·d / f·d, b·d / f·d) + offset, exact for a perspective view."""
+    forward: np.ndarray
+    a: np.ndarray
+    b: np.ndarray
+    offset: np.ndarray
+    image: np.ndarray
+
+    @staticmethod
+    def fit(directions: np.ndarray, image: np.ndarray) -> "PinholeView":
+        h, w, _ = directions.shape
+        # The optical axis: the mean of the four corner rays, exact for the
+        # symmetric frustum both renderers use (an even-sized image has no
+        # pixel on the axis itself).
+        f = directions[[0, 0, -1, -1], [0, -1, 0, -1]].sum(axis=0)
+        f = f / np.linalg.norm(f)
+        d = directions.reshape(-1, 3)
+        proj = d / (d @ f)[:, None]            # onto the plane f·d = 1
+        ys, xs = np.mgrid[0:h, 0:w]
+        A = np.c_[proj, np.ones(len(proj))]
+        cx, *_ = np.linalg.lstsq(A, xs.ravel() + 0.5, rcond=None)
+        cy, *_ = np.linalg.lstsq(A, ys.ravel() + 0.5, rcond=None)
+        resid = max(np.abs(A @ cx - xs.ravel() - 0.5).max(), np.abs(A @ cy - ys.ravel() - 0.5).max())
+        if resid > 1e-2:
+            raise SystemExit(f"m-light: sky-env view is not a pinhole camera (residual {resid:.3g} px)")
+        return PinholeView(f, cx[:3], cy[:3], np.array([cx[3], cy[3]]), image)
+
+    def sample(self, d: np.ndarray) -> np.ndarray:
+        """Bilinear radiance along unit directions `d` (N, 3) in front of the view."""
+        h, w, _ = self.image.shape
+        z = d @ self.forward
+        x = (d @ self.a) / z + self.offset[0] - 0.5
+        y = (d @ self.b) / z + self.offset[1] - 0.5
+        x0 = np.clip(np.floor(x).astype(int), 0, w - 2)
+        y0 = np.clip(np.floor(y).astype(int), 0, h - 2)
+        # Unclamped weights: a texel within half a pixel of the view's edge
+        # lies outside the pixel-centre grid and is linearly extrapolated.
+        tx = (x - x0)[:, None]
+        ty = (y - y0)[:, None]
+        im = self.image
+        top = im[y0, x0] * (1 - tx) + im[y0, x0 + 1] * tx
+        bottom = im[y0 + 1, x0] * (1 - tx) + im[y0 + 1, x0 + 1] * tx
+        return top * (1 - ty) + bottom * ty
+
+
+def latlong_directions(width: int, height: int) -> np.ndarray:
+    """Texel-centre directions of a Mitsuba 3.9.1 `envmap`: u = atan2(x, -z) / 2π,
+    v = acos(y) / π, +Y up (measured on 3.9.1; the engine is +Y up too)."""
+    u = (np.arange(width) + 0.5) / width
+    v = (np.arange(height) + 0.5) / height
+    phi, theta = np.meshgrid(u * 2.0 * np.pi, v * np.pi)
+    sin_t = np.sin(theta)
+    return np.stack([sin_t * np.sin(phi), np.cos(theta), -sin_t * np.cos(phi)], axis=-1)
+
+
+def assemble_sky_env(views: list[PinholeView], width: int, height: int) -> np.ndarray:
+    """Resample the six 90° captures into a lat-long map: each texel from the
+    view whose axis it is nearest, which for six axis-aligned 90° views is
+    the view that contains it."""
+    dirs = latlong_directions(width, height).reshape(-1, 3)
+    axes = np.stack([v.forward for v in views])
+    pick = np.argmax(dirs @ axes.T, axis=1)
+    out = np.zeros((dirs.shape[0], 3))
+    for i, view in enumerate(views):
+        sel = pick == i
+        out[sel] = view.sample(dirs[sel])
+    return out.reshape(height, width, 3)
+
+
+def capture_sky_env(engine: Engine, ctx: Context) -> Path:
+    """RLT-REF-012 / RLT-EXP-003: the analytic sky without its disc, at four
+    times the engine cube's face resolution, as the lat-long `sky_env.exr`."""
+    path = engine.out / "scenes" / "sky-env" / SKY_ENV_FILE
+    views = []
+    for face in range(SKY_ENV_FACES):
+        export = engine.out / "scenes" / f"sky-env-f{face}"
+        exr = engine.capture(f"sky_env_f{face}", "sky-env", "final", 0, ctx.tier, reference_view=face,
+                             export_dir=export,
+                             extra=["--upscaler", "taa", "--rt-test-no-jitter",
+                                    "--window-size", f"{SKY_ENV_FACE_PX}x{SKY_ENV_FACE_PX}"])
+        views.append(PinholeView.fit(pixel_directions(export), load_exr(exr)))
+    env = assemble_sky_env(views, *SKY_ENV_LATLONG)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mi.Bitmap(env.astype(np.float32)).write(str(path))
+    return path
+
+
+SKY_PROBE_RADIUS_M = 0.45      # reference.rs SKY_PROBE_RADIUS_M, probe centred at the origin
+DIELECTRIC_ETA = 1.5           # F0 = 0.04, the engine's dielectric and principled's specular 0.5
+
+
+def dielectric_fresnel(c: np.ndarray, eta: float = DIELECTRIC_ETA) -> np.ndarray:
+    """Exact unpolarised Fresnel reflectance of a dielectric interface."""
+    c = np.clip(c, 0.0, 1.0)
+    sin_t2 = (1.0 - c * c) / (eta * eta)
+    cos_t = np.sqrt(np.maximum(0.0, 1.0 - sin_t2))
+    rs = (c - eta * cos_t) / (c + eta * cos_t)
+    rp = (eta * c - cos_t) / (eta * c + cos_t)
+    return 0.5 * (rs * rs + rp * rp)
+
+
+def fresnel_recorded_difference(nv: np.ndarray, roughness: float, samples: int = 1024) -> np.ndarray:
+    """RLT-REF-008's recorded difference for the dielectric row's environment
+    specular (rev 48): the engine weights the prefiltered sky by the Schlick
+    split sum F0 A + B (`include/env_brdf_lut.glsl`), the reference's
+    `principled` dielectric by the exact Fresnel. Per NdotV, the ratio of the
+    two directional albedos over the same GGX lobe (alpha = r^2, separable
+    exact Smith G1); the sky radiance factors out under the split sum."""
+    grid = np.linspace(0.02, 1.0, 50)
+    i = np.arange(samples)
+    xi1 = (i + 0.5) / samples
+    xi2 = np.array([int(f"{k:032b}"[::-1], 2) for k in i], dtype=np.float64) / 2.0 ** 32
+    a2 = max(roughness * roughness, 1e-4) ** 2
+    phi = 2.0 * np.pi * xi1
+    ct = np.sqrt((1.0 - xi2) / (1.0 + (a2 - 1.0) * xi2))
+    st = np.sqrt(np.maximum(0.0, 1.0 - ct * ct))
+    h = np.stack([st * np.cos(phi), st * np.sin(phi), ct], axis=1)
+
+    def g1(c):
+        c = np.maximum(c, 1e-6)
+        return 2.0 / (1.0 + np.sqrt(1.0 + a2 * (1.0 - c * c) / (c * c)))
+
+    ratio = []
+    f0 = ((DIELECTRIC_ETA - 1.0) / (DIELECTRIC_ETA + 1.0)) ** 2
+    for c in grid:
+        v = np.array([np.sqrt(1.0 - c * c), 0.0, c])
+        vh = h @ v
+        l = 2.0 * vh[:, None] * h - v
+        ok = (l[:, 2] > 0.0) & (vh > 0.0)
+        w = np.where(ok, g1(c) * g1(l[:, 2]) * vh / (np.maximum(h[:, 2], 1e-6) * c), 0.0)
+        schlick = f0 + (1.0 - f0) * (1.0 - np.clip(vh, 0.0, 1.0)) ** 5
+        ratio.append((schlick * w).mean() / max((dielectric_fresnel(vh) * w).mean(), 1e-12))
+    return np.interp(np.clip(nv, grid[0], 1.0), grid, np.array(ratio))
+
+
+def probe_ndotv(scene_dir: Path, mask: np.ndarray) -> np.ndarray:
+    """NdotV per probe pixel: the sphere's normal at the hit, toward the camera."""
+    _, positions = pixel_hits(scene_dir)
+    p = positions / WORLD_UNITS_PER_METRE
+    scene = mi.load_file(str(scene_dir / "scene.xml"), optimize=False)
+    camera = np.array(scene.sensors()[0].world_transform().translation()).ravel()
+    n = p / SKY_PROBE_RADIUS_M
+    v = camera - p
+    v /= np.maximum(np.linalg.norm(v, axis=-1, keepdims=True), 1e-9)
+    return np.where(mask, np.clip((n * v).sum(-1), 0.0, 1.0), 1.0)
+
+
+def sky_probe_case(view: int) -> str:
+    if view < 5:
+        return f"dielectric-r{SKY_PROBE_ROUGHNESS[view]:.2f}"
+    if view < 10:
+        return f"conductor-r{SKY_PROBE_ROUGHNESS[view - 5]:.2f}"
+    return "lambertian"
+
+
+def sky_energy_rows(case: str, ea, eb, ra, rb, mask, region: str = "sky_probe") -> list[Row]:
+    """§2 relative error distribution over the probe (or `region`),
+    normalised by the region's mean reference value of the same component,
+    and the energy ratio engine ÷ reference (a ratio below 1 is missing sky
+    light)."""
+    def rel(e, r):
+        norm = region_mean(r, mask)
+        err = np.abs(luminance(e)[mask] - luminance(r)[mask]) / norm
+        return float(err.mean()), float(np.percentile(err, 95))
+
+    rows = []
+    value = ratio(ea, ra, mask)
+    floor_e, floor_r = abs(ratio(eb, ra, mask) - value), abs(ratio(ea, rb, mask) - value)
+    rows.append(Row("A6", case, region, "energy_ratio", value, floor_e, floor_r, passed="report"))
+    # The gated form (Q6, rev 45): the distance of the ratio from 1.
+    rows.append(Row("A6", case, region, "energy_error", abs(value - 1.0), floor_e, floor_r,
+                    passed="report"))
+    (m_a, p_a), (m_b, p_b), (m_r, p_r) = rel(ea, ra), rel(eb, ra), rel(ea, rb)
+    rows.append(Row("A6", case, region, "rel_error_mean", m_a, abs(m_b - m_a), abs(m_r - m_a),
+                    passed="report"))
+    rows.append(Row("A6", case, region, "rel_error_p95", p_a, abs(p_b - p_a), abs(p_r - p_a),
+                    passed="report"))
+    return rows
+
+
+def gate_sky_ibl(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
+    """A6 (RLT-IBL-001…004 baseline): sky specular on the specular-only
+    probes and sky diffuse on the Lambertian one, probe alone (RLT-REF-021),
+    directional dropped (RLT-REF-019), against the analytic environment.
+    Report-only until the owner writes the L3 budgets (Q6)."""
+    env = capture_sky_env(engine, ctx)
+    rows = []
+    native = ["--upscaler", "taa", "--rt-test-no-jitter"]
+    for view in range(11):
+        case = sky_probe_case(view)
+        export = engine.out / "scenes" / f"sky-probe-v{view}"
+        # Specular probes: `direct_only` holds the environment specular alone
+        # (no directional, no emitter). Lambertian: `indirect_only` x albedo 1.
+        mode = "indirect_only" if view == 10 else "direct_only"
+        # RLT-REF-008: specular energy is compared with the engine's
+        # multiple-scattering compensation off (V13).
+        flags = "0" if view == 10 else hex(DBG_DISABLE_MULTISCATTER)
+        ea = engine.capture(f"sky_probe_v{view}", "sky-probe", mode, 0, ctx.tier, reference_view=view,
+                            export_dir=export, extra=native, debug_flags=flags)
+        eb = engine.capture(f"sky_probe_v{view}", "sky-probe", mode, 1, ctx.tier, reference_view=view,
+                            extra=native, debug_flags=flags)
+        shutil.copyfile(env, export / SKY_ENV_FILE)
+        ra, key = store.render(export, "direct", spp, 0)
+        rb, _ = store.render(export, "direct", spp, 1)
+        mask = region_masks(export)["sky_probe"]
+        ea, eb = load_exr(ea), load_exr(eb)
+        if view < 5:
+            # The dielectric row's recorded difference (rev 48): judge the
+            # engine against the reference times the Schlick / exact-Fresnel
+            # ratio per pixel, and report the raw ratio beside it.
+            diff = fresnel_recorded_difference(probe_ndotv(export, mask), SKY_PROBE_ROUGHNESS[view])[..., None]
+            raw = Row("A6", case, "sky_probe", "energy_ratio_raw", ratio(ea, ra, mask), 0.0, 0.0, passed="report")
+            expected = Row("A6", case, "sky_probe", "fresnel_recorded_difference",
+                           region_mean(ra * diff, mask) / region_mean(ra, mask), 0.0, 0.0, passed="report")
+            rows += [(raw, key), (expected, key)]
+            ra, rb = ra * diff, rb * diff
+        rows += [(row, key) for row in sky_energy_rows(case, ea, eb, ra, rb, mask)]
+    return rows
+
+
+def gate_contact_sky(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
+    """A6's contact rows (RLT-IBL-004): sky specular in the contact bands of
+    the static casters, on the specular-only conductor floor of the
+    `contact-sky` rung, probe alone, directional dropped. The reference's
+    `direct` integrator is the sky times its visibility from each floor
+    point, so a band's energy ratio below the open floor's is occlusion the
+    engine over-applies, and one above it occlusion it misses. The open-floor
+    region is the control: its ratio is the split sum's own error there."""
+    env = capture_sky_env(engine, ctx)
+    export = engine.out / "scenes" / "contact-sky"
+    native = ["--upscaler", "taa", "--rt-test-no-jitter"]
+    flags = hex(DBG_DISABLE_MULTISCATTER)  # V13, as the A6 probes
+    ea = engine.capture("contact_sky", "contact-sky", "direct_only", 0, ctx.tier, export_dir=export,
+                        extra=native, debug_flags=flags)
+    eb = engine.capture("contact_sky", "contact-sky", "direct_only", 1, ctx.tier, extra=native, debug_flags=flags)
+    shutil.copyfile(env, export / SKY_ENV_FILE)
+    ra, key = store.render(export, "direct", spp, 0)
+    rb, _ = store.render(export, "direct", spp, 1)
+    ea, eb = load_exr(ea), load_exr(eb)
+    rung = read_rung(export)
+    masks, positions = pixel_hits(export)
+    floor = erode(masks["con_floor"], ERODE_PX)
+    regions = {band[0]: band_mask(positions, floor, band) for band in rung.bands}
+    for name, _, lo, hi in rung.regions:
+        regions[name] = floor & np.all((positions >= lo) & (positions <= hi), axis=-1)
+    rows = []
+    for name, mask in regions.items():
+        rows += [(row, key) for row in sky_energy_rows("contact-sky", ea, eb, ra, rb, mask, name)]
+        rows.append((Row("A6", "contact-sky", name, "band_pixels", float(mask.sum()), 0.0, 0.0,
+                         passed="report"), key))
+    return rows
+
+
+def gate_sun_once(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
+    """A17 (RLT-IBL-010, RLT-REF-012, RLT-REF-019): the sun reaches an
+    unoccluded plane once. Engine: linear `final` with SVGF bypassed and no
+    jitter (the closure conditions, RLT-REF-018 / -020); reference: total,
+    with the sun as an emitter and the disc-free environment. A ratio above
+    1 is the disc the probe bakes on top of the directional light."""
+    env = capture_sky_env(engine, ctx)
+    export = engine.out / "scenes" / "sky-sun-plane"
+    native = ["--upscaler", "taa", "--rt-test-no-jitter"]
+    flags = hex(DBG_DISABLE_SVGF)
+    ea = engine.capture("sky_sun_plane", "sky-sun-plane", "final", 0, ctx.tier, export_dir=export,
+                        extra=native, debug_flags=flags)
+    eb = engine.capture("sky_sun_plane", "sky-sun-plane", "final", 1, ctx.tier, extra=native,
+                        debug_flags=flags)
+    shutil.copyfile(env, export / SKY_ENV_FILE)
+    ra, key = store.render(export, "total", spp, 0)
+    rb, _ = store.render(export, "total", spp, 1)
+    mask = region_masks(export)["sun_plane"]
+    rows = []
+    for row in sky_energy_rows("sun-plane", load_exr(ea), load_exr(eb), ra, rb, mask):
+        row.gate = "A17"
+        row.region = "sun_plane"
+        rows.append((row, key))
+    return rows
 
 
 def gate_far_sun(engine: Engine, ctx: Context):
@@ -1692,6 +2081,8 @@ def main() -> int:
     if "A15" in gates:
         rows += gate_calibration(engine, store, ctx, args.spp)
         rows += gate_materials(engine, store, ctx, args.spp)
+    if "A15-SPEC" in gates:
+        rows += gate_materials_specular(engine, store, ctx, args.spp)
     if "A16" in gates:
         rows += gate_closure(engine, store, ctx, args.spp)
     if "A7" in gates:
@@ -1708,6 +2099,11 @@ def main() -> int:
         rows += gate_contact(engine, store, ctx, args.spp)
     if "CON-004" in gates:
         rows += gate_far_sun(engine, ctx)
+    if "A6" in gates:
+        rows += gate_sky_ibl(engine, store, ctx, args.spp)
+        rows += gate_contact_sky(engine, store, ctx, args.spp)
+    if "A17" in gates:
+        rows += gate_sun_once(engine, store, ctx, args.spp)
     if gates & {"A3", "A14", "SHD-006"}:
         rows += gate_temporal(engine, store, ctx, args.spp, gates, args.temporal_seed, args.temporal_debug_flags)
     a3_floor_seed = None

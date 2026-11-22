@@ -174,11 +174,15 @@ material rung, rather than a unit ratio.
 | Engine material | Engine lobes | Mitsuba 3 | Known differences |
 |---|---|---|---|
 | Lambertian rung material (the RLT-GI-010 switch on) | ρ only | `diffuse`, `reflectance` = `diffuse_color` (no sRGB decode: engine colours are scene-linear floats as authored) | None by construction |
-| Dielectric, Disney branch (`MAT_FLAG_PBR_BSDF`, metalness 0) | `disneyDiffuseSplit` × π plus GGX, Schlick F0 = 0.04 | `principled`, `metallic` 0, `specular` 0.5 (F0 = 0.04), `roughness` *r*, `base_color` ρ, sheen, clearcoat and `spec_trans` 0 | Smith *k* = (*r* + 1)² ⁄ 8 remap on the engine light loop (`geometrySmith`, `include/pbr.glsl`), absent in Mitsuba (V13); Mitsuba's Burley diffuse version is recorded per roughness by the material-validation rung |
+| Dielectric, Disney branch (`MAT_FLAG_PBR_BSDF`, metalness 0) | `disneyDiffuseSplit` × π plus GGX, Schlick F0 = 0.04 | `principled`, `metallic` 0, `specular` 0.5 (F0 = 0.04), `roughness` *r*, `base_color` ρ, sheen, clearcoat and `spec_trans` 0 | Smith *k* = (*r* + 1)² ⁄ 8 remap on the engine light loop (`geometrySmith`, `include/pbr.glsl`), absent in Mitsuba (V13); Mitsuba's Burley diffuse version is recorded per roughness by the material-validation rung; the Fresnel: the engine is Schlick with F0 0.04 everywhere, `principled` the exact dielectric Fresnel for η 1.5 (equal at normal incidence, 0.070 against 0.090 at 60°), recorded per NdotV and roughness for the environment term (`fresnel_recorded_difference`, `scripts/m-light/gates.py`; PRD rev 48) |
 | Conductor (metalness 1) | GGX, Schlick F0 = ρ | `principled`, `metallic` 1, `roughness` *r*, `base_color` ρ | Same Smith remap; no multiple scattering in Mitsuba (V13), so the engine runs `DBG_DISABLE_MULTISCATTER` |
 
 Every rough lobe exports `distribution="ggx"` semantics with α =
-roughness², which `principled` uses natively. The material-validation
+roughness², which `principled` uses natively. The engine's environment term weights the
+prefiltered probe by the split sum F0·A + B from an exactly integrated table
+(`include/env_brdf_lut.glsl`, `scripts/gen_env_brdf_lut.py`: α = r², the
+separable exact Smith G1 the reference uses), not by Karis's 2014 analytic
+fit (PRD RLT-IBL-003, rev 48). The material-validation
 rung (RLT-REF-014) measures each row at three view angles; a row whose
 recorded difference does not explain the measurement is a mapping bug.
 

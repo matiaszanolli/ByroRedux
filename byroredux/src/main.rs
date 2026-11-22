@@ -1887,6 +1887,12 @@ fn apply_camera_setting(world: &World, change: &SettingChange) {
     let SettingValue::Number(degrees) = &change.value else {
         return;
     };
+    // A calibrated reference rung declares its own field of view (the
+    // environment rung's 90° faces, RLT-REF-012); the player's setting must
+    // not change what the exporter and the gate runner measure.
+    if world.try_resource::<crate::cornell::HarnessCameraFov>().is_some() {
+        return;
+    }
     let Some(active) = world.try_resource::<byroredux_core::ecs::ActiveCamera>() else {
         return;
     };

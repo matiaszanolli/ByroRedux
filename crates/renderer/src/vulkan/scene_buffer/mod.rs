@@ -20,6 +20,7 @@
 mod buffers;
 mod constants;
 mod descriptors;
+mod env_brdf_lut;
 mod gpu_types;
 mod light_history;
 mod ray_budget;
@@ -29,7 +30,7 @@ pub use buffers::SceneBuffers;
 pub use constants::*;
 pub(crate) use gpu_types::GpuSelectedRayProbe;
 pub use gpu_types::{
-    GpuCamera, GpuDalcCube, GpuInstance, GpuLight, GpuPreviousModel, GpuTerrainTile,
+    GpuCamera, GpuDalcCube, GpuInstance, GpuLight, GpuPreviousModel, GpuSkyAperturePlane, GpuTerrainTile,
 };
 pub use light_history::sort_lights_by_priority_with_ids;
 pub use ray_budget::{

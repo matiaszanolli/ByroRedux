@@ -36,6 +36,9 @@ pub(crate) const K_EXP_POINT: f32 = std::f32::consts::PI;
 /// *k*<sub>exp</sub> for the sun: the same non-/π lobe against the
 /// directional light's irradiance (design §2.1).
 pub(crate) const K_EXP_SUN: f32 = std::f32::consts::PI;
+/// The reference environment's file name beside `scene.xml` (RLT-REF-012),
+/// written by `scripts/m-light/gates.py`, not by the engine.
+pub(crate) const SKY_ENV_FILE: &str = "sky_env.exr";
 
 /// Distance, in metres, of the disk that stands in for the sun (RLT-EXP-004).
 /// Its radius is D · tan θ, so it subtends the engine's angular radius θ
@@ -311,7 +314,13 @@ pub(crate) fn gather_export_scene(world: &World, extent: (u32, u32)) -> Result<E
         .try_resource::<super::reference::RungMeasurements>()
         .map(|m| m.clone())
         .unwrap_or_default();
-    if emitters.is_empty() && sun.is_none() && measurements.constant_sky.is_none() {
+    // The probe rung is lit by the analytic environment; the environment
+    // rung has no shapes to light and exports only its camera (RLT-REF-012).
+    let lit = !emitters.is_empty()
+        || sun.is_some()
+        || measurements.constant_sky.is_some()
+        || measurements.analytic_sky;
+    if !lit && !shapes.is_empty() {
         return Err("a reference rung needs at least one emitter".into());
     }
     Ok(ExportScene {
@@ -358,6 +367,10 @@ fn follow_moving_bands(
 /// one at a time, in the order the renderer reads them (#1410 lock order).
 fn gather_sun(world: &World) -> Option<ExportSun> {
     use crate::components::{CellLightingRes, SkyParamsRes};
+    // RLT-REF-019: the sky-only rungs upload no directional light.
+    if world.try_resource::<super::reference::ReferenceSkyOnly>().is_some() {
+        return None;
+    }
     let sun_intensity = world
         .try_resource::<SkyParamsRes>()
         .map(|sky| sky.sun_intensity)
@@ -857,6 +870,15 @@ fn scene_xml_with_posed(
         let _ = writeln!(out, "        </emitter>");
         let _ = writeln!(out, "    </shape>");
     }
+    if scene.measurements.analytic_sky {
+        // RLT-REF-012 / RLT-EXP-003: the analytic sky without its disc,
+        // resampled by the gate runner from the `sky-env` captures. Mitsuba
+        // 3.9.1's lat-long lookup is u = atan2(x, -z) / 2π, v = acos(y) / π
+        // with +Y up, the engine's frame, so no `to_world` is needed.
+        let _ = writeln!(out, r#"    <emitter type="envmap" id="sky">"#);
+        let _ = writeln!(out, r#"        <string name="filename" value="{SKY_ENV_FILE}"/>"#);
+        let _ = writeln!(out, "    </emitter>");
+    }
     if let Some(color) = scene.measurements.constant_sky {
         let _ = writeln!(out, r#"    <emitter type="constant" id="sky">"#);
         let _ = writeln!(out, r#"        <rgb name="radiance" value="{}"/>"#, rgb(color));
@@ -901,6 +923,9 @@ fn rung_tsv(m: &super::reference::RungMeasurements) -> String {
         let _ = writeln!(out, "step_form\t{}", m.step_form);
     }
     let _ = writeln!(out, "min_unshadowed\t{}", num(m.min_unshadowed));
+    if m.analytic_sky {
+        let _ = writeln!(out, "analytic_sky\t{SKY_ENV_FILE}");
+    }
     for caster in &m.casters {
         let _ = writeln!(out, "caster\t{caster}");
     }
@@ -1066,9 +1091,11 @@ mod tests {
             step_form: "disk_segment",
             min_unshadowed: 0.05,
             constant_sky: None,
+            analytic_sky: true,
         });
         assert!(tsv.contains("step_form\tdisk_segment\n"), "{tsv}");
         assert!(tsv.contains("caster\tplate\n"), "{tsv}");
+        assert!(tsv.contains("analytic_sky\tsky_env.exr\n"), "{tsv}");
         assert!(tsv.contains("profile\tedge\tfloor\t1\t0\t0\t2\t0\t0\t0.5\n"), "{tsv}");
         assert!(tsv.contains("region\trod\tfloor\t-1\t-1\t-1\t1\t1\t1\n"), "{tsv}");
     }

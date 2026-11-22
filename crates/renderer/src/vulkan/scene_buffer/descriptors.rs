@@ -429,6 +429,13 @@ impl super::buffers::SceneBuffers {
                 buf.destroy(device, allocator);
             }
             self.moved_surface_buffers.clear();
+            // RLT-IBL-003 — the environment BRDF table.
+            self.env_brdf_lut_buffer.destroy(device, allocator);
+            // RLT-IBL-006 — the interior sky aperture planes.
+            for buf in &mut self.sky_aperture_buffers {
+                buf.destroy(device, allocator);
+            }
+            self.sky_aperture_buffers.clear();
             for staging in &mut self.terrain_tile_staging_buffers {
                 if let Some(staging) = staging.take() {
                     staging.destroy();

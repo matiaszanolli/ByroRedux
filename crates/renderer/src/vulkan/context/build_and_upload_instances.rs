@@ -1578,6 +1578,17 @@ impl VulkanContext {
             camera_cloud_sun_transmittance: self.camera_cloud_sun_transmittance,
         };
         let composite_params = build_composite_params(composite_inputs);
+        // M-LIGHT RLT-IBL-006 — the openings a GI path must cross to read the
+        // portal sky in a bounded-aperture interior (binding 27).
+        let gi_apertures = super::sky_apertures::gi_sky_aperture_planes(
+            sky_params,
+            fog_volumes,
+            camera_pos,
+            render_origin,
+        );
+        if let Err(error) = self.scene_buffers.upload_sky_apertures(&self.device, frame, &gi_apertures) {
+            log::warn!("Failed to upload the GI sky apertures: {error}");
+        }
         self.post_state.aperture_overflow_log.note(
             interior_cell_root,
             dropped_sky_apertures.get(),
@@ -2949,5 +2960,48 @@ mod svgf_scene_input_key_tests {
         sky.cloud_scroll[0] += 0.25;
         sky.weather_time_seconds += 5.0;
         assert_eq!(key, fold_svgf_scene_inputs(23, &[material], &sky));
+    }
+}
+
+#[cfg(test)]
+mod sky_probe_lag_tests {
+    /// M-LIGHT RLT-IBL-007 (A6's time-of-day step, owner 2026-11-21): the
+    /// probe-lit surfaces and the visible sky never disagree for a frame
+    /// after a time-of-day or weather change, because the probe is re-baked
+    /// every frame, before the geometry pass that samples it, from the very
+    /// `composite_params` the composite paints the background with that
+    /// frame. A bake stride, a skip condition or a cached parameter block
+    /// would open a lag SKYAL does not record; this pins the zero.
+    #[test]
+    fn the_sky_probe_bakes_every_frame_from_that_frames_composite_parameters() {
+        use crate::source_scan::function_text;
+        let src = crate::source_scan::production_text(include_str!("build_and_upload_instances.rs"));
+        let build = function_text(src, "pub(super) fn build_and_upload_instances(");
+        assert!(
+            build.contains("\n        self.upload_frame_parameters(\n"),
+            "every frame's instance build uploads its frame parameters, unconditionally"
+        );
+        let params = function_text(src, "fn upload_frame_parameters(");
+        let composite_upload = params
+            .find("composite.upload_params(&self.device, frame, &composite_params)")
+            .expect("the composite background's parameters are uploaded here");
+        let bake = params
+            .find(
+                "if let Some(ref mut sky_cube) = self.post.sky_cube {\n                \
+                 let sky_cube_params = build_sky_cube_params(composite_inputs, &composite_params);",
+            )
+            .expect(
+                "the probe bake must take this frame's composite parameters, with no \
+                 condition but the pipeline's presence (RLT-IBL-007)",
+            );
+        let record = params.find("sky_cube.record_bake(").expect("the bake is recorded here");
+        assert!(composite_upload < bake && bake < record);
+
+        // The geometry pass that samples the probe is recorded after this function returns.
+        let draw = crate::source_scan::production_text(include_str!("draw.rs"));
+        let draw_frame = function_text(draw, "pub fn draw_frame(");
+        let instances = draw_frame.find("self.build_and_upload_instances(").expect("instances call");
+        let geometry = draw_frame.find("self.record_geometry_pass(").expect("geometry pass call");
+        assert!(instances < geometry, "the probe must be baked before the pass that samples it");
     }
 }

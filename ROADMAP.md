@@ -121,7 +121,7 @@ all-slots fence wait that dominates GPU-bound frames (#5365, the throughput half
 - The [playable vertical slice](#playable-vertical-slice) is **complete**
   (P0–P5, closed 2026-10-01). Its follow-ons are listed there; none of them
   blocks the slice.
-- M-LIGHT (#6595) has closed Phases 0–3. Phase 3 (#6603) closed on 2026-11-20 with A2–A5, A14 and the far-sun gate passing, A11 judged against a re-anchored entry and A13 by the brackets the phase adds ([evidence](docs/audits/MLIGHT_phase3_exit_2026-11-20.md)). Phase 4 (#6604, sky IBL) is next; L4's exit waits on the RCG radiance cache (#7069).
+- M-LIGHT (#6595) has closed Phases 0–3. Phase 3 (#6603) closed on 2026-11-20 with A2–A5, A14 and the far-sun gate passing, A11 judged against a re-anchored entry and A13 by the brackets the phase adds ([evidence](docs/audits/MLIGHT_phase3_exit_2026-11-20.md)). Phase 4 (#6604, sky IBL) closed on 2026-11-22 (PRD rev 50): the split-sum sky probe from an exact table, the probe mip above roughness 0.6, traced sky-specular occlusion, the sun counted once, π-scaled light-loop specular and the portal-sky GI escape, with A6 / A17 passing and A9, A11, A12, A13 recorded. Phase 5 (#6599) is next; L4's exit waits on the RCG radiance cache (#7069).
   [Reference Lighting PRD](docs/prd/reference-lighting.md) · [Phase 3 results](docs/audits/MLIGHT_phase3_exit_2026-11-18.md).
 - Texture streaming (M39, #6626): Phases 0–1 closed 2026-11-03; Phases 2–4 (#6629–#6631) built
   and measured on five games, open on the gates in its [Tier 5 row](#tier-5--renderer-polish-quality-not-capability).

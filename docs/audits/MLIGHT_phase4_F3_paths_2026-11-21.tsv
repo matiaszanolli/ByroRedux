@@ -1,0 +1,9 @@
+scene	path	flagged_by_the_old_F3	why_the_engine_differs	verdict
+medtek	glass	107	the shared glass surface (GLASS_SURFACE_BEHAVIOR, byroredux/src/helpers.rs) sets roughness 0.1	intended; F3 skips glass
+medtek	effect	18	an effect material (BGEM) authors no smoothness; merge_bgem_arm leaves roughness to resolve_pbr	intended; F3 skips effect materials
+medtek	spec_off	140	the BGSM disables its specular block; #4654 leaves roughness to the NIF side and glossiness holds the NIF's value	intended; F3 skips specular_strength 0
+medtek	spec_on	0	none: the 1 - smoothness rule	F3 still tests these
+dugout	glass	6	the shared glass surface (GLASS_SURFACE_BEHAVIOR, byroredux/src/helpers.rs) sets roughness 0.1	intended; F3 skips glass
+dugout	effect	7	an effect material (BGEM) authors no smoothness; merge_bgem_arm leaves roughness to resolve_pbr	intended; F3 skips effect materials
+dugout	spec_off	43	the BGSM disables its specular block; #4654 leaves roughness to the NIF side and glossiness holds the NIF's value	intended; F3 skips specular_strength 0
+dugout	spec_on	0	none: the 1 - smoothness rule	F3 still tests these
