@@ -507,7 +507,7 @@ pub enum FormIdScheme {
 /// lets [`FormIdRemap::remap`] decode all kinds — and references *to* an
 /// ESL/medium master — uniformly. See the Creation Engine light-master
 /// spec / SK-D4-03 / #1554, and #4639 for the per-game flag bits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GlobalSlot {
     /// Full-byte load-order index (`0x00`–`0xFC`; `0xFD` is reserved for
     /// the medium-master space below).

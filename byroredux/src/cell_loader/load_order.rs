@@ -1019,6 +1019,12 @@ where
     let mut list_merge = esm::records::list_merge::ListMerge::new(policy);
     let requires = transitive_masters(&dependencies);
     let depends_on = |plugin: u32, master: u32| requires[plugin as usize].contains(&master);
+    // #7250 — each slot's load-order position, once, instead of a scan of `slots` per record (the fold has no plugin
+    // ceiling, LMC-ID-004). The first holder of a slot owns it, as `position` read it.
+    let mut slot_owner: HashMap<esm::reader::GlobalSlot, usize> = HashMap::with_capacity(slots.len());
+    for (position, slot) in slots.iter().enumerate() {
+        slot_owner.entry(*slot).or_insert(position);
+    }
     let fold_started = std::time::Instant::now();
     let mut provenance_time = std::time::Duration::ZERO;
     for (position, (path, plugin_records)) in plugin_paths.iter().zip(walked).enumerate() {
@@ -1032,8 +1038,7 @@ where
         // writer of a SCPT is the one whose body is live).
         let noted = std::time::Instant::now();
         provenance.note_plugin(position, &plugin_records, &merged, |form_id| {
-            let slot = global_slot_of(form_id);
-            slots.iter().position(|owner| *owner == slot)
+            slot_owner.get(&global_slot_of(form_id)).copied()
         });
         let lists = list_merge.note_plugin(position, &plugin_records, &merged, &provenance, &depends_on);
         provenance_time += noted.elapsed();
