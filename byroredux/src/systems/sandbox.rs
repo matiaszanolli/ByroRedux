@@ -352,8 +352,16 @@ fn sandbox_seat_system_inner(world: &World, _dt: f32, scratch: &mut SandboxScrat
                 continue;
             };
             let radius = behavior.search_radius.unwrap_or(SEAT_SEARCH_RADIUS);
+            // #7262 — a Near Editor Location Sandbox searches around the actor's editor placement; its
+            // `EditorPlacement` read is the leaf of this pass's locks, as in Eat/Sleep's anchor.
+            let centre = super::travel::package_home(
+                world,
+                npc,
+                behavior.near_editor_location,
+                npc_g.translation,
+            );
             if let Some((seat_id, seat)) =
-                pick_nearest_seat(npc_g.translation, &scratch.seats, &reservations.0, radius)
+                pick_nearest_seat(centre, &scratch.seats, &reservations.0, radius)
             {
                 // Record the claimant as well as the seat. Exterior streaming
                 // may despawn the actor while leaving cross-cell furniture
@@ -505,6 +513,7 @@ mod tests {
                 actor,
                 SandboxBehavior {
                     search_radius: Some(1000.0),
+                    near_editor_location: false,
                 },
             );
             if seated {
@@ -578,6 +587,7 @@ mod tests {
             creature,
             SandboxBehavior {
                 search_radius: Some(1000.0),
+                near_editor_location: false,
             },
         );
 
@@ -635,7 +645,7 @@ mod tests {
             let mut at_pose = GlobalTransform::default();
             at_pose.translation.x = at;
             world.insert(actor, at_pose);
-            world.insert(actor, SandboxBehavior { search_radius: Some(1000.0) });
+            world.insert(actor, SandboxBehavior { search_radius: Some(1000.0), near_editor_location: false });
             world.insert(actor, AnimationTarget { skeleton_root: skeleton, consumed_idle_serial: 0 });
             (actor, skeleton)
         };
@@ -657,6 +667,50 @@ mod tests {
         let kept = seated.get(animated).unwrap().animation_restore;
         assert!(!kept.player_was_inserted(), "an existing player is restored, not removed");
         assert_eq!((kept.clip_handle, kept.local_time, kept.playing), (3, 0.4, true));
+    }
+
+    /// #7262 — a Near Editor Location Sandbox searches for its seat around the actor's editor placement;
+    /// any other Sandbox searches around where the actor stands.
+    #[test]
+    fn a_near_editor_location_sandbox_seats_near_the_editor_placement() {
+        use crate::components::{SandboxSitClip, SeatReservations};
+        use byroredux_core::ecs::components::{EditorPlacement, Furniture, GlobalTransform, Seated};
+
+        let at = |x: f32| {
+            let mut pose = GlobalTransform::default();
+            pose.translation.x = x;
+            pose
+        };
+        for near_editor_location in [true, false] {
+            let mut world = World::new();
+            world.register::<SandboxBehavior>();
+            world.register::<Seated>();
+            world.register::<Furniture>();
+            world.register::<GlobalTransform>();
+            world.register::<AnimationPlayer>();
+            world.register::<EditorPlacement>();
+            world.insert_resource(SandboxSitClip(Some((7, 1.77))));
+            world.insert_resource(SeatReservations::default());
+
+            let chair_at_home = world.spawn();
+            world.insert(chair_at_home, at(-2000.0));
+            world.insert(chair_at_home, Furniture { markers: vec![marker([0.0; 3], None, 0)] });
+            let chair_here = world.spawn();
+            world.insert(chair_here, at(2000.0));
+            world.insert(chair_here, Furniture { markers: vec![marker([0.0; 3], None, 0)] });
+
+            let actor = world.spawn();
+            world.insert(actor, at(2000.0));
+            world.insert(actor, EditorPlacement { translation: Vec3::new(-2000.0, 0.0, 0.0) });
+            world.insert(actor, SandboxBehavior { search_radius: Some(500.0), near_editor_location });
+
+            sandbox_seat_system_inner(&world, 0.0, &mut SandboxScratch::default());
+
+            let claimed: Vec<EntityId> =
+                world.resource::<SeatReservations>().0.keys().map(|(furniture, _)| *furniture).collect();
+            let expected = if near_editor_location { chair_at_home } else { chair_here };
+            assert_eq!(claimed, [expected], "near_editor_location {near_editor_location}");
+        }
     }
 
     /// Mirrors `furniture_component`'s `animation_type` → `kind` resolution

@@ -276,8 +276,10 @@ phase/speed desync.
 v0 scope, mirroring Sandbox's own documented approximations: no
 animation-clip swap (no verified walk `.kf` path exists anywhere in
 this codebase — verifying one against a real archive is deferred, not
-guessed at); no target-reference resolution (center is always the
-actor's own position, same call Sandbox made and for the same reason);
+guessed at); no target-reference resolution (center is the actor's own
+position, same call Sandbox made and for the same reason — except a Near
+Editor Location package, which centres Wander, Travel, Guard, Ambush and
+Sandbox on the actor's `EditorPlacement`, #7225 / #7254 / #7262);
 no per-frame package re-evaluation (same limitation as Sandbox).
 
 ## 7. Travel locomotion (M42.4)
@@ -463,7 +465,8 @@ calling out because the more "consistent-looking" choice (reuse Travel's
 Guard actor a random point exactly `radius` away from its own spawn
 trivially satisfies the leash check below, so the actor "arrives" by
 construction and never actually walks anywhere. Guard's fallback instead
-matches Sandbox/Wander's "center is the actor's own position" convention,
+matches Sandbox/Wander's "center is the actor's own position" convention
+(the editor placement for a Near Editor Location package, #7254),
 since Guard's job is "hold a post", not "go explore."
 
 What actually distinguishes Guard from Travel isn't the resolution call,

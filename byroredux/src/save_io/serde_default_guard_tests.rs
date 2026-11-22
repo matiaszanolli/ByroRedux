@@ -1366,7 +1366,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `WanderState` in the same files. No on-disk column changed.
     // #7254 — refreshed WITHOUT a major bump, the same #3332 case: `GuardBehavior` gained `near_editor_location`;
     // it is NOT_SAVED_BY_DESIGN beside the registered `GuardState` in the same file. No on-disk column changed.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x0606_cb8f_3f7f_852c;
+    // #7262 — refreshed WITHOUT a major bump, the same #3332 case: `SandboxBehavior` gained `near_editor_location`;
+    // it is NOT_SAVED_BY_DESIGN beside the registered `Seated` in the same file. No on-disk column changed.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xbc64_9e8c_f15d_ed37;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.

@@ -198,7 +198,11 @@ fn leaf_behavior(
     let location = location_input(&inputs);
     match leaf.procedure_type.as_str() {
         // PACKAL §4: a search radius from the Location input.
-        "Sandbox" => Ok(AmbientBehavior::Sandbox { search_radius: location.and_then(radius_of) }),
+        "Sandbox" => Ok(AmbientBehavior::Sandbox {
+            search_radius: location.and_then(radius_of),
+            // #7262 — Near Editor Location centres on the editor placement, as the flat Sandbox's does.
+            near_editor_location: matches!(location_anchor(location), EatSleepLocation::NearEditorLocation),
+        }),
         // PACKAL §5: the radius is the only resolved Float, never wrapped in a Location.
         "Patrol" => Ok(AmbientBehavior::Patrol {
             patrol_radius: inputs
@@ -409,7 +413,7 @@ mod tests {
         let world = world();
         let inputs = vec![location(0, 0, near_ref(0x1234), 256)];
         let (package, template) = tree(vec![leaf("Travel", &[0], vec![]), leaf("Sandbox", &[0], vec![])], inputs.clone());
-        assert_eq!(decide(&package, &template, None, &world), Ok(AmbientBehavior::Sandbox { search_radius: Some(256.0) }));
+        assert_eq!(decide(&package, &template, None, &world), Ok(AmbientBehavior::Sandbox { search_radius: Some(256.0), near_editor_location: false }));
         let (package, template) = tree(vec![leaf("Travel", &[0], vec![]), leaf("Sleep", &[0], vec![])], inputs.clone());
         assert!(matches!(decide(&package, &template, None, &world), Ok(AmbientBehavior::Travel { .. })), "tree order");
         let (package, template) = tree(vec![leaf("Sleep", &[0], vec![]), leaf("Travel", &[0], vec![])], inputs);

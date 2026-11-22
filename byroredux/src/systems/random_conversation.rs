@@ -838,7 +838,7 @@ mod tests {
             let mut spawn = |x: f32| {
                 let actor = world.spawn();
                 world.insert(actor, GlobalTransform { translation: Vec3::new(x, 0.0, 0.0), ..Default::default() });
-                world.insert(actor, SandboxBehavior { search_radius: None });
+                world.insert(actor, SandboxBehavior { search_radius: None, near_editor_location: false });
                 world.insert(
                     actor,
                     AmbientPackageRuntime {
@@ -974,7 +974,7 @@ mod tests {
             for x in [0.0, 100.0] {
                 let actor = world.spawn();
                 world.insert(actor, GlobalTransform { translation: Vec3::new(x, 0.0, 0.0), ..Default::default() });
-                world.insert(actor, SandboxBehavior { search_radius: None });
+                world.insert(actor, SandboxBehavior { search_radius: None, near_editor_location: false });
                 world.insert(
                     actor,
                     AmbientPackageRuntime {
@@ -1030,7 +1030,7 @@ mod tests {
             let actor = world.spawn();
             world.insert(actor, GlobalTransform { translation: Vec3::new(x, 0.0, 0.0), ..Default::default() });
             if sandbox {
-                world.insert(actor, SandboxBehavior { search_radius: None });
+                world.insert(actor, SandboxBehavior { search_radius: None, near_editor_location: false });
             }
             world.insert(
                 actor,
@@ -1186,7 +1186,7 @@ mod tests {
             ..Default::default()
         }]));
         for actor in actors {
-            world.insert(actor, SandboxBehavior { search_radius: None });
+            world.insert(actor, SandboxBehavior { search_radius: None, near_editor_location: false });
             world.insert(
                 actor,
                 AmbientPackageRuntime {

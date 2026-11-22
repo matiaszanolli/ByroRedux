@@ -303,6 +303,8 @@ fn selectable_by_installer(package: &PackRecord, world: &World) -> bool {
 enum AmbientBehavior {
     Sandbox {
         search_radius: Option<f32>,
+        /// #7262 — the PLDT is Near Editor Location: the seat search centres on the `EditorPlacement`.
+        near_editor_location: bool,
     },
     Wander {
         wander_radius: Option<f32>,
@@ -456,6 +458,7 @@ impl AmbientBehavior {
         if package.is_sandbox() {
             Some(Self::Sandbox {
                 search_radius: location_radius,
+                near_editor_location: matches!(location_anchor(package.location), EatSleepLocation::NearEditorLocation),
             })
         } else if package.is_wander() {
             Some(Self::Wander {
@@ -556,6 +559,9 @@ impl AmbientBehavior {
         } else if package.is_use_weapon() {
             use_weapon_behavior(package, world).map(Self::UseWeapon)
         } else if package.is_patrol() {
+            // #7262 — no Near Editor Location here: the GECK *Patrol Package* page offers only Linked Ref and
+            // Near Reference as a Patrol's Starting Location, so the type-3 PLDT on 61 FNV / 3 FO3 Patrol
+            // packages is a value the editor never exposes for this procedure, and is not read as an anchor.
             Some(Self::Patrol {
                 patrol_radius: location_radius,
                 actor_form_id,
@@ -650,8 +656,8 @@ impl AmbientBehavior {
     /// (#6361).
     fn install(self, sink: &mut impl ComponentSink, actor: EntityId) {
         match self {
-            Self::Sandbox { search_radius } => {
-                sink.put(actor, SandboxBehavior { search_radius });
+            Self::Sandbox { search_radius, near_editor_location } => {
+                sink.put(actor, SandboxBehavior { search_radius, near_editor_location });
             }
             Self::Wander {
                 wander_radius,
@@ -2640,6 +2646,25 @@ mod tests {
         assert!(!flag(PROCEDURE_GUARD, current));
         assert!(!flag(PROCEDURE_GUARD, reference));
         assert!(flag(PROCEDURE_AMBUSH, editor), "Ambush waits on Guard's runtime");
+    }
+
+    /// #7262 — a Near Editor Location Sandbox carries the flag its seat search centres by.
+    #[test]
+    fn a_near_editor_location_sandbox_carries_the_flag() {
+        use byroredux_plugin::esm::records::misc::pack::PROCEDURE_SANDBOX;
+        let install = |procedure: u32, location: PackLocation| {
+            let mut package = pack(0x100, procedure, None);
+            package.location = Some(location);
+            setup_actor(10.0, vec![package])
+        };
+        let editor = PackLocation { location_type: 3, target: PackLocationTarget::Other(0), radius: 400 };
+        let current = PackLocation { location_type: 2, target: PackLocationTarget::Other(0), radius: 400 };
+        let sandbox = |location| {
+            let (world, actor) = install(PROCEDURE_SANDBOX, location);
+            *world.get::<SandboxBehavior>(actor).expect("Sandbox installs")
+        };
+        assert_eq!(sandbox(editor), SandboxBehavior { search_radius: Some(400.0), near_editor_location: true });
+        assert!(!sandbox(current).near_editor_location);
     }
 
     /// Ambush (procedure 9): wait on Guard's runtime at `PLDT`, gate the

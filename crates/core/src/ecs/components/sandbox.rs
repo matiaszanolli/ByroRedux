@@ -26,9 +26,11 @@ use crate::ecs::storage::{Component, EntityId};
 /// `sandbox_seat_system`'s own default otherwise (radius-0 / no-PLDT
 /// packages).
 ///
-/// v0 always derives the search *center* from the actor's own
-/// `GlobalTransform`, regardless of the authored location type. FormID
-/// center resolution (`PackLocationTarget::NearReference` → a live
+/// The search *center* is the actor's own `GlobalTransform`, except for a
+/// Near Editor Location package (`near_editor_location`, #7262), which
+/// centres on the actor's `EditorPlacement` — the GECK *Sandbox Package*
+/// page's Wander Location is Standard Location data, whose default is Near
+/// Editor Location. FormID center resolution (`PackLocationTarget::NearReference` → a live
 /// entity's position) was investigated 2026-07-14 (see `npc_spawn/ai_package.rs`)
 /// and found low-value: only ~12% of vanilla FNV NearReference packages
 /// resolve to anything spawnable, since most target either an
@@ -39,6 +41,9 @@ use crate::ecs::storage::{Component, EntityId};
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct SandboxBehavior {
     pub search_radius: Option<f32>,
+    /// #7262 — the PLDT is Near Editor Location: the seat search centres on
+    /// the actor's `EditorPlacement`, not where it stands.
+    pub near_editor_location: bool,
 }
 
 impl Component for SandboxBehavior {

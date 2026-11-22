@@ -159,7 +159,7 @@ pub(crate) fn resolve_destination(
 }
 
 /// The home a package's fallback centres on: the actor's `EditorPlacement` for a Near Editor Location
-/// package (Travel and Wander #7225, Guard and Ambush #7254, as Eat/Sleep's anchor since #5391), otherwise
+/// package (Travel and Wander #7225, Guard and Ambush #7254, Sandbox #7262, as Eat/Sleep's anchor since #5391), otherwise
 /// where the actor stands. An actor with no placement (a script-created one) keeps its current position.
 pub(super) fn package_home(world: &World, actor: EntityId, near_editor_location: bool, current: Vec3) -> Vec3 {
     if !near_editor_location {
