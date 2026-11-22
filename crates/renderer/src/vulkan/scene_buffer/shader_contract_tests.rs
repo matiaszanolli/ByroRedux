@@ -2123,6 +2123,10 @@ fn helper_lanes_trace_no_main_rays_and_no_derivative_follows() {
         after_hoist.contains("reflectionGlassRayEnabled && !helperLane && rtLOD < RT_LOD_REFLECT"),
         "the RT reflection ray below the hoist must skip helper lanes too (#7261)"
     );
+    assert!(
+        after_hoist.contains("probeShare > 0.0 && reflectionGlassRayEnabled && !helperLane"),
+        "RLT-IBL-004's sky-lobe occlusion ray below the hoist must skip helper lanes too (#7261)"
+    );
 
     for op in &derivative_ops {
         assert!(
