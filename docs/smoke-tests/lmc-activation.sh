@@ -10,9 +10,10 @@
 #   3. the session plugin itself missing a master: DeadMoney.esm alone is refused, naming the --master to pass.
 #   4. the conflict report: `--plugin-report 000000D2 fields` names the Dead Money topic's carriers in load order and the
 #      sub-records Dead Money changed against FalloutNV.esm (LMC-REC-007), after the archives Dead Money pairs with.
-#   5. levelled-list merge: the generated ListBase.esm defines a levelled list, and MergeA.esp and MergeB.esp, neither a
-#      master of the other, each add an entry to it. Under the default `merge` policy both additions stand and the report
-#      names who made each; under `--merge-policy legacy` MergeB.esp's record wins whole (LMC-REC-003).
+#   5. list merge: the generated ListBase.esm defines a levelled list and a form list, and MergeA.esp and MergeB.esp,
+#      neither a master of the other, each add an entry to the levelled list, and one adds to the form list what the other
+#      removes from it. Under the default `merge` policy every operation stands and the report names who made each; under
+#      `--merge-policy legacy` MergeB.esp's records win whole (LMC-REC-003).
 # Requires the New Vegas data with the Dead Money and Caravan Pack DLC (BYROREDUX_FNV_DATA), python3 and a built engine
 # (BYRO_BIN, else target/release, else target/debug).
 set -euo pipefail
@@ -39,7 +40,8 @@ command -v python3 >/dev/null || { echo "smoke[$GATE]: SKIP -- missing python3";
 WORK="$(mktemp -d "/tmp/byro-$GATE.XXXXXX")"
 echo "smoke[$GATE]: engine $BIN, logs in $WORK"
 # A plugin is a TES4 record with a New Vegas HEDR and its MAST list (activation reads nothing else), and for leg 5 one
-# LVLI record in an LVLI group: form 01000800, ListBase.esm's own (its one master, FalloutNV.esm, is index 00).
+# LVLI record in an LVLI group and one FLST record in an FLST group: forms 01000800 and 01000801, ListBase.esm's own (its
+# one master, FalloutNV.esm, is index 00).
 python3 -I - "$WORK" <<'EOF'
 import os, struct, sys
 out = sys.argv[1]
@@ -48,8 +50,12 @@ def lvli(entries):
     body = sub(b'EDID', b'LMCMergeList\0') + sub(b'LVLD', b'\0') + sub(b'LVLF', b'\0')
     for level, form, count in entries:
         body += sub(b'LVLO', struct.pack('<HHIHH', level, 0, form, count, 0))
-    record = b'LVLI' + struct.pack('<III', len(body), 0, 0x01000800) + b'\0' * 8 + body
-    return b'GRUP' + struct.pack('<I', 24 + len(record)) + b'LVLI' + b'\0' * 12 + record
+    return group(b'LVLI', 0x01000800, body)
+def flst(forms):
+    return group(b'FLST', 0x01000801, sub(b'EDID', b'LMCMergeFormList\0') + b''.join(sub(b'LNAM', struct.pack('<I', f)) for f in forms))
+def group(tag, form, body):
+    record = tag + struct.pack('<III', len(body), 0, form) + b'\0' * 8 + body
+    return b'GRUP' + struct.pack('<I', 24 + len(record)) + tag + b'\0' * 12 + record
 def plugin(masters, records=b'', esm=False):
     body = sub(b'HEDR', struct.pack('<fII', 1.34, 0, 0x800))
     for master in masters:
@@ -61,12 +67,12 @@ for name, masters in [('NeedsAbsentDLC.esp', ['FalloutNV.esm', 'LonesomeRoad_abs
     with open(os.path.join(out, name), 'wb') as f:
         f.write(plugin(masters))
 # Entries name FalloutNV.esm forms 00000A01.. (any form will do: the merge compares entries, it does not resolve them).
-lists = {'ListBase.esm': ([(1, 0xA01, 1)], ['FalloutNV.esm']),
-         'MergeA.esp': ([(1, 0xA01, 1), (5, 0xA02, 1)], ['FalloutNV.esm', 'ListBase.esm']),
-         'MergeB.esp': ([(1, 0xA01, 1), (8, 0xA03, 2)], ['FalloutNV.esm', 'ListBase.esm'])}
-for name, (entries, masters) in lists.items():
+lists = {'ListBase.esm': ([(1, 0xA01, 1)], [0xA01, 0xA02], ['FalloutNV.esm']),
+         'MergeA.esp': ([(1, 0xA01, 1), (5, 0xA02, 1)], [0xA01, 0xA02, 0xA04], ['FalloutNV.esm', 'ListBase.esm']),
+         'MergeB.esp': ([(1, 0xA01, 1), (8, 0xA03, 2)], [0xA02], ['FalloutNV.esm', 'ListBase.esm'])}
+for name, (entries, forms, masters) in lists.items():
     with open(os.path.join(out, name), 'wb') as f:
-        f.write(plugin(masters, lvli(entries), esm=name.endswith('.esm')))
+        f.write(plugin(masters, lvli(entries) + flst(forms), esm=name.endswith('.esm')))
 EOF
 # A paired archive beside a generated plugin (a real one no profile plugin pairs, so it would open), and a name the New
 # Vegas rule rejects. Pairing compares archives by their resolved paths: a link to an archive another plugin brought is
@@ -121,22 +127,29 @@ expect report "carriers in load order: falloutnv.esm → deadmoney.esm (wins)"
 expect report "deadmoney.esm over falloutnv.esm: QSTI added, INFC 4 dropped, INFX 4 dropped"
 echo "smoke[$GATE]: PASS -- --plugin-report names a Dead Money topic's carriers and the sub-records it changes (LMC-REC-007)"
 
-merge_report() { # merge_report <leg> <extra args...>: --plugin-report 01000800 over the generated list plugins
-    local leg="$1"; shift
+merge_report() { # merge_report <leg> <form> <extra args...>: --plugin-report <form> over the generated list plugins
+    local leg="$1" form="$2"; shift 2
     set +e
     "$BIN" "$@" --master "$DATA/FalloutNV.esm" --master "$WORK/ListBase.esm" --master "$WORK/MergeA.esp" \
-        --esm "$WORK/MergeB.esp" --plugin-report 01000800 >"$WORK/$leg.log" 2>&1
+        --esm "$WORK/MergeB.esp" --plugin-report "$form" >"$WORK/$leg.log" 2>&1
     status=$?
     set -e
     (( status == 0 )) || fail "$leg: --plugin-report exited $status (see $WORK/$leg.log)"
 }
-merge_report merge
+merge_report merge 01000800
 expect merge "carriers in load order: listbase.esm → mergea.esp → mergeb.esp (merged)"
 expect merge "merged from: mergea.esp, mergeb.esp; policy: merge"
 expect merge "  entry 00000A02: added by mergea.esp"
 expect merge "  entry 00000A03: added by mergeb.esp"
-merge_report legacy --merge-policy legacy
+merge_report legacy 01000800 --merge-policy legacy
 expect legacy "winner: mergeb.esp; policy: legacy"
 echo "smoke[$GATE]: PASS -- independent additions to one levelled list both stand under merge, the last wins under legacy (LMC-REC-003)"
+merge_report formlist 01000801
+expect formlist "carriers in load order: listbase.esm → mergea.esp → mergeb.esp (merged)"
+expect formlist "  entry 00000A04: added by mergea.esp"
+expect formlist "  entry 00000A01: removed by mergeb.esp"
+merge_report formlist-legacy 01000801 --merge-policy legacy
+expect formlist-legacy "winner: mergeb.esp; policy: legacy"
+echo "smoke[$GATE]: PASS -- one mod's addition to a form list and another's removal from it both stand under merge (LMC-REC-003)"
 
 echo "smoke[$GATE]: PASS"
