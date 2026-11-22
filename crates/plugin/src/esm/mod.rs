@@ -5,6 +5,7 @@
 //! Higher-level record extraction (CELL, REFR, STAT, etc.) builds on top.
 
 pub mod cell;
+pub mod raw_record;
 pub mod reader;
 pub mod records;
 pub mod strings_table;
