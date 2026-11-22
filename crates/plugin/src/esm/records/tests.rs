@@ -166,33 +166,32 @@ mod real_ruleset_falsifiability {
         );
     }
 
-    /// Oblivion predates the `AVIF` record type entirely — there is no
-    /// production resolver wiring `oblivion_ruleset` to real data yet
-    /// (`CharacterRulesProfile::OBLIVION` carries `RulesetBuilder::None`,
-    /// confirmed unreachable in production, a distinct gap from this
-    /// issue). `EsmIndex::actor_value_form_id` genuinely resolves nothing
-    /// against a real Oblivion.esm, so this pins that known-empty state
-    /// with real evidence instead of the doc's aspirational "a resolver
-    /// mapping these EditorIDs to its legacy engine actor-value indices at
-    /// the parser boundary" — which does not exist in the parser yet.
+    /// #7202 — Oblivion predates the `AVIF` record type, so the engine
+    /// supplies its 72 actor values (`EsmIndex::install_oblivion_actor_values`,
+    /// as the loader does) and every resolver sees them as ordinary AVIFs.
+    /// Against that installed roster, every attribute and skill the ruleset
+    /// names resolves and the builder registers its six rows (Health, Magicka,
+    /// four Fatigue): a misspelled roster name or output key fails here, with
+    /// no game data needed. The real-master half is the Oblivion `ROSTER_CASES`
+    /// entry in `tests/parse_real_esm.rs`.
     #[test]
-    #[ignore = "needs Oblivion game data on disk"]
-    fn oblivion_ruleset_resolves_nothing_against_avif_pending_a_legacy_resolver() {
-        let Some(index) = load(
-            "oblivion_ruleset_resolves_nothing_against_avif_pending_a_legacy_resolver",
-            crate::esm::test_paths::oblivion_esm(),
-        ) else {
-            return;
-        };
-        let rs = oblivion_ruleset(|id| index.actor_value_form_id(id));
-        assert_eq!(
-            rs.derived_row_len(),
-            0,
-            "Oblivion.esm has no AVIF records, so every EditorID must fail \
-             to resolve — a non-zero count here means either AVIF started \
-             appearing (surprising) or actor_value_form_id started matching \
-             something it shouldn't"
-        );
+    fn oblivion_ruleset_resolves_against_the_installed_engine_roster() {
+        use byroredux_core::character::{AttributeSet, CharacterRulesProfile, SkillSet};
+        let mut index = EsmIndex { game: crate::esm::reader::GameKind::Oblivion, ..Default::default() };
+        index.install_oblivion_actor_values(crate::esm::reader::GlobalSlot::Regular(1)).unwrap();
+        let unresolved: Vec<&str> = AttributeSet::TES_CLASSIC
+            .members()
+            .iter()
+            .map(|attribute| attribute.editor_id())
+            .chain(SkillSet::OBLIVION.skills().iter().map(|skill| skill.editor_id))
+            .filter(|name| index.actor_value_form_id(name).is_none())
+            .collect();
+        assert!(unresolved.is_empty(), "roster names with no installed actor value: {unresolved:?}");
+        assert_eq!(oblivion_ruleset(|id| index.actor_value_form_id(id)).derived_row_len(), 6);
+        let built = CharacterRulesProfile::OBLIVION
+            .build_ruleset(|id| index.actor_value_form_id(id), |_| None, &[])
+            .expect("the Oblivion profile builds its ruleset");
+        assert_eq!(built.derived_row_len(), 6);
     }
 }
 
