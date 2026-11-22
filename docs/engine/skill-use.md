@@ -16,6 +16,8 @@ Three routines, one behind the other (`this` is `PlayerCharacter`, `[0xb333c4]`)
 | `0x668b30(skill, amount, record, flag)` | **a skill at 100 or more banks nothing** (`GetAV(skill) >= 100 → return`); otherwise `exp += amount`, and when the skill's cost is **strictly below** the experience, calls the rank-up once |
 | `0x668070(record, …)` | the rank-up: `exp = max(exp − cost, 0)` (a surplus stays banked), the skill's **base** value `+ 1`, the cost recomputed, the attribute tally and the major count updated, the level made pending at the tenth major increase |
 
+The engine gates banking the same way (#7210, owner decision 2026-11-22): `bank_skill_use` reads the skill's **current** value, Fortify included, and banks nothing at 100 or more; a rank-up still writes the base.
+
 So one call ranks a skill at most once; a large amount ranks again on the next use. The engine's single entry point (OSL-XP-001) loops
 the original's step and returns the ranks it reached.
 

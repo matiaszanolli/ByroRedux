@@ -216,10 +216,18 @@ fn record_rank_up(world: &World, player: EntityId, skill: &Skill) {
 /// OSL-XP-001: bank `amount` experience against the player's skill `code` and
 /// return the values it reached, in order. Empty when the skill only banked, is
 /// at 100, is not an Oblivion skill, or the ruleset does not level by use.
+///
+/// #7210 — the "at 100" gate reads the skill's **current** value, Fortify included (`GetAV(skill) >= 100`,
+/// `docs/engine/skill-use.md` §1, owner decision 2026-11-22): a skill fortified to 100 or more banks nothing while
+/// the effect lasts, though its rank-ups still write the base layer (OSL-LVL-001).
 pub fn bank_skill_use(world: &World, player: EntityId, code: u32, amount: f32) -> Vec<u16> {
     let Some(skill) = resolve(world, player, code) else {
         return Vec::new();
     };
+    let current = world.get::<ActorValues>(player).map(|values| values.current(skill.av));
+    if current.is_some_and(|value| value >= f32::from(SKILL_USE_CAP)) {
+        return Vec::new();
+    }
     apply(world, player, &skill, |value, banked| {
         let out = skill.costs.bank(value, banked, skill.class, amount);
         (out.value, out.banked, out.ranks.len() as u16)
@@ -698,6 +706,20 @@ mod tests {
         assert_eq!(level.attribute_tallies[0], 1, "Blade is governed by Strength");
         let banked = world.resource::<SkillProgress>().0[&blade];
         assert!((banked - (2.0 - 1.302)).abs() < 0.01, "{banked}");
+    }
+
+    /// #7210 — a skill whose current value, Fortify included, is at 100 or more banks nothing: base Blade 95 with
+    /// Fortify Blade 10 neither ranks nor banks, and the same skill unfortified does.
+    #[test]
+    fn a_skill_fortified_to_100_banks_nothing() {
+        let (mut world, player, blade, _) = world();
+        world.get_mut::<ActorValues>(player).unwrap().set_base(blade, 95.0);
+        world.get_mut::<ActorValues>(player).unwrap().mod_temporary(blade, 10.0);
+        assert!(bank_skill_use(&world, player, BLADE, 1000.0).is_empty());
+        assert_eq!(base(&world, player, blade), 95.0);
+        assert!(world.resource::<SkillProgress>().0.get(&blade).is_none_or(|banked| *banked == 0.0), "nothing banked");
+        world.get_mut::<ActorValues>(player).unwrap().mod_temporary(blade, -10.0);
+        assert_eq!(bank_skill_use(&world, player, BLADE, 1000.0), vec![96, 97, 98, 99, 100]);
     }
 
     /// A skill outside the class's majors ranks slower and feeds the
