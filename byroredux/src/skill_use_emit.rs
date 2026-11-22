@@ -195,12 +195,15 @@ pub(crate) fn stance_use_system(world: &World, dt: f32) {
     let Some(player) = crate::systems::PlayerEntity::get(world) else {
         return;
     };
+    // #7281 — a held key counts only when the controller would move the body
+    // with it (not dead, not the fly camera, not restrained or in VATS).
+    let drives_body = crate::systems::player_movement_input_drives_body(world, player);
     let (moving, running) = world
         .try_resource::<crate::interaction::ActionState>()
         .map(|actions| {
             use crate::interaction::InputAction::*;
             let moving = [MoveForward, MoveBackward, StrafeLeft, StrafeRight].into_iter().any(|action| actions.is_held(action));
-            (moving, actions.is_held(Sprint))
+            (drives_body && moving, actions.is_held(Sprint))
         })
         .unwrap_or((false, false));
     let undetected = world
@@ -635,6 +638,39 @@ mod tests {
         assert_eq!(stance_of(false, true, true, true, true), None, "standing still");
     }
 
+    /// #7281 — a movement key held while the controller would not move the body
+    /// (dead, in the fly camera, restrained) banks no Athletics; the same key in
+    /// Character mode does.
+    #[test]
+    fn a_held_key_banks_no_stance_use_while_the_body_cannot_move() {
+        let (mut world, player, _) = world();
+        world.insert_resource(StanceTimers::default());
+        world.register::<byroredux_core::ecs::components::Sneaking>();
+        world.register::<byroredux_core::ecs::components::Dead>();
+        world.register::<byroredux_scripting::ActorControlState>();
+        let mut actions = crate::interaction::ActionState::default();
+        actions.press_for_test(crate::interaction::InputAction::MoveForward);
+        actions.press_for_test(crate::interaction::InputAction::Sprint);
+        world.insert_resource(actions);
+        let run_a_second = |world: &World| {
+            for _ in 0..30 {
+                stance_use_system(world, 0.05);
+            }
+            world.resource::<PendingSkillUse>().0.len()
+        };
+
+        world.insert_resource(crate::systems::PlayerMode::FlyCam);
+        assert_eq!(run_a_second(&world), 0, "fly camera");
+        world.insert_resource(crate::systems::PlayerMode::Character);
+        world.insert(player, byroredux_core::ecs::components::Dead);
+        assert_eq!(run_a_second(&world), 0, "dead");
+        world.remove::<byroredux_core::ecs::components::Dead>(player);
+        world.insert(player, byroredux_scripting::ActorControlState { restrained: true, ..Default::default() });
+        assert_eq!(run_a_second(&world), 0, "restrained");
+        world.remove::<byroredux_scripting::ActorControlState>(player);
+        assert_eq!(run_a_second(&world), 1, "a second of running in Character mode banks one use");
+    }
+
     /// OSL-USE-005 end to end: a player running for a second queues one Athletics use at 0.03 (value 1),
     /// sneaking undetected 0.75 of Sneak, and a jump 0.3 of Acrobatics; swimming would use value 2.
     #[test]
@@ -642,6 +678,7 @@ mod tests {
         use byroredux_core::ecs::components::Sneaking;
         let (mut world, player, _) = world();
         world.insert_resource(StanceTimers::default());
+        world.insert_resource(crate::systems::PlayerMode::Character);
         world.register::<Sneaking>();
         let mut actions = crate::interaction::ActionState::default();
         actions.press_for_test(crate::interaction::InputAction::MoveForward);

@@ -178,6 +178,21 @@ fn player_accepts_movement_input(world: &World, player: EntityId) -> bool {
     controls_allow_movement && !restrained && !in_vats
 }
 
+/// #7281 — whether the player's movement keys move its body this frame:
+/// Character mode, alive, and accepting input. These are the gates
+/// [`character_controller_system`] applies before it reads a key; the
+/// skill-use stance emitter reads them too, so a key held while the body
+/// cannot move (dead, fly camera, restrained, VATS) banks no skill use.
+pub(crate) fn player_movement_input_drives_body(world: &World, player: EntityId) -> bool {
+    let mode = world
+        .try_resource::<PlayerMode>()
+        .map(|r| *r)
+        .unwrap_or_default();
+    mode == PlayerMode::Character
+        && world.get::<Dead>(player).is_none()
+        && player_accepts_movement_input(world, player)
+}
+
 /// Drive the kinematic character body forward one frame.
 ///
 /// Reads:
