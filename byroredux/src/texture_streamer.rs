@@ -343,7 +343,7 @@ pub(crate) fn compute_wanted(
     out.clear();
     let registry = &ctx.texture_registry;
     let (_, viewport_height) = ctx.swapchain_extent();
-    let px_per_unit_at_unit_depth = viewport_height as f32 * 0.5 / (fov_y * 0.5).tan().max(1.0e-4);
+    let px_per_unit_at_unit_depth = crate::render::px_per_unit_at_unit_depth(viewport_height, fov_y);
     let camera = Vec3::from_array(camera_pos);
     let mut want = |handle: TextureHandle, level: u32, case: WantedCase, distance: f32| {
         if handle == 0 || registry.stream_width(handle).is_none() {

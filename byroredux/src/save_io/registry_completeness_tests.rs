@@ -1069,6 +1069,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("SubtreeCache", "lazily-rebuilt animation subtree cache, invalidated alongside NameIndex (#278)"),
         ("TerrainTileSlot", "index into the renderer's per-frame GpuTerrainTile SSBO, rebuilt by the terrain-spawn path every load (#470)"),
         ("TerrainCellOrigin", "Y-up world XZ of the LAND tile's (row 0, col 0) vertex, recomputed from grid_x/grid_y by the terrain-spawn path every load (#4052) — same posture as its TerrainTileSlot sibling"),
+        ("TerrainSquarePlanes", "per-patch-square base planes fitted from the LAND heights by the terrain-spawn path every load (TSD-4.3, §7.3) — same posture as its TerrainCellOrigin sibling"),
         ("TerrainCoverInputs", "per-cell ground-cover density inputs (LTEX affinity weights + resolved water height) recomputed by the terrain-spawn path every load (#4054) — same posture as its TerrainCellOrigin sibling"),
         ("TerrainLayerHeights", "per-lane height-map source paths, re-resolved from the LAND/LTEX/TXST records by the terrain-spawn path every load (#6195) — same posture as its TerrainTileSlot sibling"),
         ("TwoSided", "marker for backface-culling state, rederived identically from NIF material data every load"),

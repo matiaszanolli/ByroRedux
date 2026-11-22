@@ -251,13 +251,13 @@ impl ConsoleCommand for TerrainPatchesCommand {
     }
 
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
-        use crate::terrain_patches::{TerrainPatchState, LIP_M};
+        use crate::terrain_patches::{LevelSetting, TerrainPatchState, LIP_M};
         use byroredux_core::lighting::BETHESDA_UNITS_PER_METER as UNITS_PER_M;
         let Some(mut state) = world.try_resource_mut::<TerrainPatchState>() else {
             return CommandOutput::line("terrain.patches: not available in this session");
         };
         let usage =
-            "usage: terrain.patches [on | off | amplitude <m> | range <m> | fine <m> | parallax on|off | rt on|off]";
+            "usage: terrain.patches [on | off | amplitude <m> | range <m> | afine <px²> | fine <m> | parallax on|off | rt on|off]";
         let parse = |word: &str| word.parse::<f32>().ok().filter(|v| v.is_finite() && *v >= 0.0);
         let words: Vec<&str> = args.split_whitespace().collect();
         match words.as_slice() {
@@ -272,10 +272,17 @@ impl ConsoleCommand for TerrainPatchesCommand {
                 Some(m) => state.range_m = m,
                 None => return CommandOutput::line(format!("terrain.patches: bad number\n{usage}")),
             },
-            // The fine-lattice radius: 0 = every patch coarse, >= range = every
-            // patch fine (the single-level pool).
+            // §7.3's screen-space level rule (the default): a square draws fine
+            // while one fine-lattice triangle projects to at least <px²> render
+            // pixels. 0 = every patch fine.
+            ["afine", px] => match parse(px) {
+                Some(px) => state.level = LevelSetting::Screen { a_fine_px2: px },
+                None => return CommandOutput::line(format!("terrain.patches: bad number\n{usage}")),
+            },
+            // 4.1's world-distance rule, kept for A/B and as the forced modes:
+            // 0 = every patch coarse, >= range = every patch fine.
             ["fine", m] => match parse(m) {
-                Some(m) => state.fine_range_m = m,
+                Some(m) => state.level = LevelSetting::Distance { fine_range_m: m },
                 None => return CommandOutput::line(format!("terrain.patches: bad number\n{usage}")),
             },
             // Parallax on patch draws: on by default (the 3 cm patch relief
@@ -289,12 +296,24 @@ impl ConsoleCommand for TerrainPatchesCommand {
             ["rt", "off"] => state.rt = false,
             _ => return CommandOutput::line(usage),
         }
+        // The level rule in effect, with the projection inputs it reads (§7.3).
+        let level = match state.level {
+            LevelSetting::Distance { fine_range_m } => format!("level=distance fine={fine_range_m:.1} m"),
+            LevelSetting::Screen { a_fine_px2 } => match state.px_per_unit() {
+                Some(k) => format!(
+                    "level=screen afine={a_fine_px2:.0} px² (render_h={} fov_y={:.1}° k={k:.1})",
+                    state.render_height,
+                    state.fov_y.to_degrees(),
+                ),
+                None => format!("level=screen afine={a_fine_px2:.0} px² (no render extent yet: distance fallback)"),
+            },
+        };
         let mut lines = vec![format!(
-            "terrain.patches: {} amplitude={:.3} m range={:.1} m fine={:.1} m parallax={} rt={} lip={:.3} m pool={} assigned={}",
+            "terrain.patches: {} amplitude={:.3} m range={:.1} m {} parallax={} rt={} lip={:.3} m pool={} assigned={}",
             if state.enabled { "on" } else { "off" },
             state.amplitude_m,
             state.range_m,
-            state.fine_range_m,
+            level,
             if state.parallax { "on" } else { "off" },
             if state.rt { "on" } else { "off" },
             LIP_M,
@@ -527,5 +546,38 @@ mod tests {
         assert!(world.resource::<TerrainPatchState>().rt);
         let out = TerrainPatchesCommand.execute(&world, "rt maybe").lines.join("\n");
         assert!(out.contains("usage:"), "{out}");
+    }
+
+    /// TSD-4.3 (§7.3) — `afine <px²>` selects the screen-space level rule (the
+    /// default), `fine <m>` 4.1's distance rule; the status line names the one
+    /// in effect and, once known, the projection inputs it reads.
+    #[test]
+    fn terrain_patches_level_switches_between_screen_and_distance_rules() {
+        use crate::terrain_patches::{LevelSetting, TerrainPatchState, DEFAULT_A_FINE_PX2};
+        let mut world = World::new();
+        world.insert_resource(TerrainPatchState::default());
+        let out = TerrainPatchesCommand.execute(&world, "").lines.join("\n");
+        assert!(out.contains("level=screen afine=64 px²") && out.contains("distance fallback"), "{out}");
+        assert_eq!(
+            world.resource::<TerrainPatchState>().level,
+            LevelSetting::Screen { a_fine_px2: DEFAULT_A_FINE_PX2 }
+        );
+
+        let out = TerrainPatchesCommand.execute(&world, "fine 0").lines.join("\n");
+        assert!(out.contains("level=distance fine=0.0 m"), "{out}");
+        assert_eq!(
+            world.resource::<TerrainPatchState>().level,
+            LevelSetting::Distance { fine_range_m: 0.0 }
+        );
+
+        {
+            let mut state = world.resource_mut::<TerrainPatchState>();
+            state.render_height = 480;
+            state.fov_y = 45f32.to_radians();
+        }
+        let out = TerrainPatchesCommand.execute(&world, "afine 128").lines.join("\n");
+        assert!(out.contains("level=screen afine=128 px² (render_h=480 fov_y=45.0°"), "{out}");
+        let out = TerrainPatchesCommand.execute(&world, "afine -3").lines.join("\n");
+        assert!(out.contains("bad number"), "{out}");
     }
 }

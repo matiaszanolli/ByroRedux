@@ -21,14 +21,20 @@
 //! faded disc is covered whenever the pool is large enough — and where it is
 //! not, the missing-neighbour fade brings the edge down to the lip.
 //!
-//! Each patch also picks its lattice level by the same distance: the fine
-//! 5.7 cm lattice within `fine range` (kept until `FINE_HYSTERESIS` past it),
-//! the coarse 11.4 cm one beyond — a quarter of the triangles where the
-//! relief is a few pixels tall. The raster cost of the single-level pool
-//! scaled with triangle density (§8.2), so this is where it goes.
+//! Each patch also picks its lattice level, the fine 5.7 cm lattice or the
+//! coarse 11.4 cm one (a quarter of the triangles). By default (§7.3, 4.3) a
+//! square draws fine while one fine-lattice triangle at its nearest point
+//! projects to at least `a_fine` render pixels, from the render extent, the
+//! camera's `fov_y`, the 3D distance and the view angle to the square's base
+//! surface ([`SquarePlane`]). Only position enters it, so turning the camera
+//! never changes a level (each change costs a BLAS build). The cost of the
+//! patches follows that projected size, not world distance: small triangles
+//! split more 2×2 quads, and each split quad still fills a warp lane (§8.3).
+//! `terrain.patches fine <m>` switches to 4.1's world-distance rule.
 
 use byroredux_core::ecs::{EntityId, MeshHandle, Resource, World};
 use byroredux_core::lighting::BETHESDA_UNITS_PER_METER as UNITS_PER_M;
+use byroredux_core::math::coord::{LAND_GRID_VERTS, LAND_VERTEX_SPACING};
 use byroredux_core::math::{Mat4, Vec3, Vec4};
 use byroredux_renderer::shader_constants::{
     TERRAIN_PATCHES_PER_CELL_SIDE, TERRAIN_PATCH_LATTICE_STEP, TERRAIN_PATCH_QUADS,
@@ -39,7 +45,7 @@ use byroredux_renderer::vulkan::terrain_patch::{
 };
 use byroredux_renderer::DrawCommand;
 
-use crate::components::{TerrainCellOrigin, TerrainTileSlot};
+use crate::components::{TerrainCellOrigin, TerrainSquarePlanes, TerrainTileSlot};
 
 const SLOTS: usize = TERRAIN_PATCH_SLOTS as usize;
 const PER_SIDE: i32 = TERRAIN_PATCHES_PER_CELL_SIDE as i32;
@@ -56,6 +62,12 @@ pub(crate) const DEFAULT_RANGE_M: f32 = 6.0;
 pub(crate) const DEFAULT_FINE_RANGE_M: f32 = 2.0;
 /// A fine patch stays fine until its square is this much past the fine range.
 pub(crate) const FINE_HYSTERESIS_M: f32 = 0.5;
+/// The screen-space rule's threshold (§7.3): a square draws fine while one
+/// fine-lattice triangle at its nearest point projects to at least this many
+/// render pixels. A fine square drops to coarse below half of it.
+pub(crate) const DEFAULT_A_FINE_PX2: f32 = 64.0;
+/// Squares in one cell's grid.
+pub(crate) const SQUARES_PER_CELL: usize = (PER_SIDE * PER_SIDE) as usize;
 /// The 1 mm step every patch border and every undisplaced point sits at above
 /// the base surface (§3.3–3.4).
 pub(crate) const LIP_M: f32 = 0.001;
@@ -113,13 +125,134 @@ pub(crate) struct PatchAssignment {
     pub(crate) coarse_mask: u32,
 }
 
-/// The distances `assign_patches` works to, world units.
+/// How a patch picks its lattice level.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum LevelRule {
+    /// 4.1's rule: fine within `fine_range` (XZ, world units), kept until
+    /// `fine_hysteresis` past it. `fine_range` 0 makes every patch coarse.
+    Distance { fine_range: f32, fine_hysteresis: f32 },
+    /// §7.3: fine while one fine-lattice triangle at the square's nearest point
+    /// projects to at least `a_fine` px² ([`fine_triangle_area_px`]), kept until
+    /// it falls below half of that. `px_per_unit` is the projection's pixels per
+    /// world unit at unit depth ([`crate::render::px_per_unit_at_unit_depth`]).
+    Screen { px_per_unit: f32, a_fine: f32 },
+}
+
+/// The level rule as the console sets it (metres / px²); [`TerrainPatchState::ranges`]
+/// turns it into a [`LevelRule`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum LevelSetting {
+    Distance { fine_range_m: f32 },
+    Screen { a_fine_px2: f32 },
+}
+
+/// The distances (world units) and level rule `assign_patches` works to.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct PatchRanges {
     pub(crate) range: f32,
     pub(crate) hysteresis: f32,
-    pub(crate) fine_range: f32,
-    pub(crate) fine_hysteresis: f32,
+    pub(crate) level: LevelRule,
+}
+
+/// A patch square's base surface (§7.3): the least-squares plane through the
+/// nine LAND vertices it covers, in Y-up world units, and their height range.
+/// The host knows each square in XZ only otherwise; the screen-space level
+/// rule needs the 3D distance and the view angle to the ground, and a slope
+/// facing the camera (FNV's spawn) is exactly where a flat-ground guess fails.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct SquarePlane {
+    /// The plane's height at the square's centre (its centre vertex's XZ).
+    pub(crate) y_centre: f32,
+    /// dY/dX and dY/dZ (Y-up Z) of the plane.
+    pub(crate) slope: [f32; 2],
+    pub(crate) y_min: f32,
+    pub(crate) y_max: f32,
+}
+
+/// Fit every square of a LAND tile: `heights` is the 33×33 Z-up height grid,
+/// row-major, rows toward −Z in Y-up (`cell_loader::terrain`'s mapping), each
+/// value already sanitized. `None` if the grid is not 33×33. Square
+/// (`col`, `row`) covers vertices `2col..=2col+2` × `2row..=2row+2`.
+pub(crate) fn square_planes(heights: &[f32]) -> Option<Box<[SquarePlane; SQUARES_PER_CELL]>> {
+    const GRID: usize = LAND_GRID_VERTS;
+    if heights.len() != GRID * GRID {
+        return None;
+    }
+    let s = LAND_VERTEX_SPACING;
+    // Least squares on a symmetric 3×3 design: the intercept is the mean, and
+    // each slope is Σ h·d / Σ d² with Σ d² = 6 s².
+    let denom = 6.0 * s * s;
+    let mut planes = Box::new([SquarePlane::default(); SQUARES_PER_CELL]);
+    for row in 0..PER_SIDE as usize {
+        for col in 0..PER_SIDE as usize {
+            let (mut sum, mut sx, mut sz) = (0.0f32, 0.0f32, 0.0f32);
+            let (mut lo, mut hi) = (f32::INFINITY, f32::NEG_INFINITY);
+            for j in 0..3 {
+                for i in 0..3 {
+                    let h = heights[(2 * row + j) * GRID + 2 * col + i];
+                    let dx = (i as f32 - 1.0) * s;
+                    // Rows run toward −Z in Y-up.
+                    let dz = -(j as f32 - 1.0) * s;
+                    sum += h;
+                    sx += h * dx;
+                    sz += h * dz;
+                    lo = lo.min(h);
+                    hi = hi.max(h);
+                }
+            }
+            planes[row * PER_SIDE as usize + col] = SquarePlane {
+                y_centre: sum / 9.0,
+                slope: [sx / denom, sz / denom],
+                y_min: lo,
+                y_max: hi,
+            };
+        }
+    }
+    Some(planes)
+}
+
+/// Projected area, in render pixels, of one fine-lattice triangle (half a
+/// 4-unit quad) at square (`col`, `row`)'s nearest point to the camera (§7.3).
+/// `cam_local` is the camera in cell-local terms: `lx` east, `y` world height,
+/// `lz` toward −Z. The view angle to the ground comes from the square's base
+/// `plane`; without one the surface is taken as facing the camera at the XZ
+/// distance, which over-estimates the area (biased toward fine).
+fn fine_triangle_area_px(
+    cam_local: [f32; 3],
+    col: i32,
+    row: i32,
+    plane: Option<SquarePlane>,
+    px_per_unit: f32,
+) -> f32 {
+    let [lx, cam_y, lz] = cam_local;
+    let (x0, z0) = (col as f32 * PATCH_SIZE, row as f32 * PATCH_SIZE);
+    let (px, pz) = (lx.clamp(x0, x0 + PATCH_SIZE), lz.clamp(z0, z0 + PATCH_SIZE));
+    // Camera minus nearest point, Y-up (local `lz` runs toward −Z).
+    let (vx, vz) = (lx - px, -(lz - pz));
+    let (vy, sin_view) = match plane {
+        Some(p) => {
+            let half = 0.5 * PATCH_SIZE;
+            let (dx, dz) = (px - (x0 + half), -(pz - (z0 + half)));
+            let y = (p.y_centre + p.slope[0] * dx + p.slope[1] * dz).clamp(p.y_min, p.y_max);
+            let vy = cam_y - y;
+            let n = [-p.slope[0], 1.0, -p.slope[1]];
+            let n_len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            let d = (vx * vx + vy * vy + vz * vz).sqrt();
+            let sin_view = if d > 0.0 {
+                ((n[0] * vx + n[1] * vy + n[2] * vz) / (n_len * d)).abs()
+            } else {
+                1.0
+            };
+            (vy, sin_view)
+        }
+        None => (0.0, 1.0),
+    };
+    let d = (vx * vx + vy * vy + vz * vz).sqrt();
+    if d <= f32::EPSILON {
+        return f32::INFINITY;
+    }
+    let edge_px = TERRAIN_PATCH_LATTICE_STEP * px_per_unit / d;
+    0.5 * edge_px * edge_px * sin_view
 }
 
 /// The pool's host-side state.
@@ -128,7 +261,14 @@ pub(crate) struct TerrainPatchState {
     pub(crate) enabled: bool,
     pub(crate) amplitude_m: f32,
     pub(crate) range_m: f32,
-    pub(crate) fine_range_m: f32,
+    /// The lattice-level rule (`terrain.patches afine <px²>` / `fine <m>`).
+    pub(crate) level: LevelSetting,
+    /// The scene-render extent's height (`VulkanContext::render_extent`, the
+    /// pixels the main pass shades, below the output under an upscaler) and
+    /// the camera's vertical field of view, both from the last frame. Until
+    /// both are known the level falls back to the distance rule.
+    pub(crate) render_height: u32,
+    pub(crate) fov_y: f32,
     /// Keep the TSD-3 parallax march on patch draws (default on; see
     /// `TerrainPatchParams::parallax`).
     pub(crate) parallax: bool,
@@ -165,7 +305,9 @@ impl Default for TerrainPatchState {
             enabled: true,
             amplitude_m: DEFAULT_AMPLITUDE_M,
             range_m: DEFAULT_RANGE_M,
-            fine_range_m: DEFAULT_FINE_RANGE_M,
+            level: LevelSetting::Screen { a_fine_px2: DEFAULT_A_FINE_PX2 },
+            render_height: 0,
+            fov_y: 0.0,
             parallax: true,
             rt: true,
             meshes: TerrainPatchMeshes::default(),
@@ -185,12 +327,29 @@ impl TerrainPatchState {
     }
 
     pub(crate) fn ranges(&self) -> PatchRanges {
+        let distance = |fine_range_m: f32| LevelRule::Distance {
+            fine_range: fine_range_m * UNITS_PER_M,
+            fine_hysteresis: FINE_HYSTERESIS_M * UNITS_PER_M,
+        };
+        let level = match self.level {
+            LevelSetting::Distance { fine_range_m } => distance(fine_range_m),
+            LevelSetting::Screen { a_fine_px2 } => match self.px_per_unit() {
+                Some(px_per_unit) => LevelRule::Screen { px_per_unit, a_fine: a_fine_px2 },
+                None => distance(DEFAULT_FINE_RANGE_M),
+            },
+        };
         PatchRanges {
             range: self.range_m * UNITS_PER_M,
             hysteresis: HYSTERESIS_M * UNITS_PER_M,
-            fine_range: self.fine_range_m * UNITS_PER_M,
-            fine_hysteresis: FINE_HYSTERESIS_M * UNITS_PER_M,
+            level,
         }
+    }
+
+    /// The screen-space rule's projection scale, once the render height and
+    /// the camera's field of view are known.
+    pub(crate) fn px_per_unit(&self) -> Option<f32> {
+        (self.render_height > 0 && self.fov_y > 0.0)
+            .then(|| crate::render::px_per_unit_at_unit_depth(self.render_height, self.fov_y))
     }
 
     /// The shader parameters, in world units.
@@ -217,7 +376,8 @@ fn distance_to_square(lx: f32, lz: f32, col: i32, row: i32) -> f32 {
     (dx * dx + dz * dz).sqrt()
 }
 
-/// [`assign_patches_with`] on a fresh candidate list.
+/// [`assign_patches_with`] on a fresh candidate list, a camera at height 0
+/// and no base planes.
 #[cfg(test)]
 pub(crate) fn assign_patches(
     slots: &mut [Option<PatchAssignment>; SLOTS],
@@ -225,20 +385,24 @@ pub(crate) fn assign_patches(
     cam_xz: [f32; 2],
     ranges: PatchRanges,
 ) {
-    assign_patches_with(&mut Vec::new(), slots, cells, cam_xz, ranges);
+    assign_patches_with(&mut Vec::new(), slots, cells, [cam_xz[0], 0.0, cam_xz[1]], ranges, &|_, _, _| None);
 }
 
-/// Reassign `slots` for a camera at `cam_xz` (world units), keeping every
+/// Reassign `slots` for a camera at `cam` (Y-up world units), keeping every
 /// patch that is still wanted in the slot it already has, and pick each
-/// patch's lattice level. `candidates` is the caller's kept working list.
+/// patch's lattice level. `candidates` is the caller's kept working list;
+/// `plane` looks up a square's base surface (`cell`, `col`, `row`), which the
+/// screen-space level rule reads.
 fn assign_patches_with(
     candidates: &mut Vec<(f32, PatchKey, PatchCell)>,
     slots: &mut [Option<PatchAssignment>; SLOTS],
     cells: &[PatchCell],
-    cam_xz: [f32; 2],
+    cam: [f32; 3],
     ranges: PatchRanges,
+    plane: &dyn Fn(EntityId, i32, i32) -> Option<SquarePlane>,
 ) {
-    let PatchRanges { range, hysteresis, fine_range, fine_hysteresis } = ranges;
+    let PatchRanges { range, hysteresis, level } = ranges;
+    let cam_xz = [cam[0], cam[2]];
     let keep_range = range + hysteresis;
     candidates.clear();
     for cell in cells {
@@ -292,16 +456,30 @@ fn assign_patches_with(
         }
     }
 
-    // Level: fine within the fine range, and a fine patch stays fine until
-    // the fine hysteresis past it (a new patch starts coarse).
+    // Level, with hysteresis toward the current one (a new patch starts
+    // coarse). Position only: the camera's orientation never enters.
     for assignment in slots.iter_mut().flatten() {
         let lx = cam_xz[0] - assignment.cell.origin_xz[0];
         let lz = assignment.cell.origin_xz[1] - cam_xz[1];
-        let dist =
-            distance_to_square(lx, lz, assignment.key.col as i32, assignment.key.row as i32);
-        let fine = fine_range > 0.0
-            && (dist <= fine_range
-                || (!assignment.coarse && dist <= fine_range + fine_hysteresis));
+        let (col, row) = (assignment.key.col as i32, assignment.key.row as i32);
+        let was_fine = !assignment.coarse;
+        let fine = match level {
+            LevelRule::Distance { fine_range, fine_hysteresis } => {
+                let dist = distance_to_square(lx, lz, col, row);
+                fine_range > 0.0
+                    && (dist <= fine_range || (was_fine && dist <= fine_range + fine_hysteresis))
+            }
+            LevelRule::Screen { px_per_unit, a_fine } => {
+                let area = fine_triangle_area_px(
+                    [lx, cam[1], lz],
+                    col,
+                    row,
+                    plane(assignment.key.cell, col, row),
+                    px_per_unit,
+                );
+                area >= a_fine || (was_fine && area >= 0.5 * a_fine)
+            }
+        };
         assignment.coarse = !fine;
     }
 
@@ -377,6 +555,7 @@ pub(crate) fn emit_patch_draws(
     world: &World,
     cam_pos: Vec3,
     vp_mat: Mat4,
+    fov_y: f32,
     draw_commands: &mut Vec<DrawCommand>,
 ) {
     let Some(mut state) = world.try_resource_mut::<TerrainPatchState>() else {
@@ -384,6 +563,7 @@ pub(crate) fn emit_patch_draws(
     };
     let state = &mut *state;
     state.camera_pos = cam_pos.to_array();
+    state.fov_y = fov_y;
     if !state.enabled || state.meshes.fine.len() < SLOTS || state.meshes.coarse.len() < SLOTS {
         state.slots = [None; SLOTS];
         return;
@@ -392,7 +572,19 @@ pub(crate) fn emit_patch_draws(
     let cam_xz = [cam_pos.x, cam_pos.z];
     let scratch = &mut state.scratch;
     nearby_cells(world, cam_xz, ranges.range + ranges.hysteresis, &mut scratch.cells);
-    assign_patches_with(&mut scratch.candidates, &mut state.slots, &scratch.cells, cam_xz, ranges);
+    let planes = world.query::<TerrainSquarePlanes>();
+    let plane = |cell: EntityId, col: i32, row: i32| {
+        let planes = planes.as_ref()?.get(cell)?;
+        planes.0.get((row * PER_SIDE + col) as usize).copied()
+    };
+    assign_patches_with(
+        &mut scratch.candidates,
+        &mut state.slots,
+        &scratch.cells,
+        cam_pos.to_array(),
+        ranges,
+        &plane,
+    );
 
     let base_count = draw_commands.len();
     for (slot, assignment) in state.slots.iter().enumerate() {
@@ -439,6 +631,8 @@ pub(crate) fn push_terrain_patches(world: &World, ctx: &mut byroredux_renderer::
     if let Some(stats) = ctx.terrain_patch_stats() {
         state.stats = stats.clone();
     }
+    // The pixels the main pass shades, for next frame's level rule (§7.3).
+    state.render_height = ctx.render_extent().1;
     let state = &mut *state;
     let params = state.params();
     let slots = &mut state.scratch.frame_slots;
@@ -498,13 +692,14 @@ mod tests {
     const RANGE: f32 = DEFAULT_RANGE_M * UNITS_PER_M;
     const HYST: f32 = HYSTERESIS_M * UNITS_PER_M;
 
+    /// 4.1's distance rule at its defaults: the tests below that predate the
+    /// screen-space rule pin the forced `fine <m>` mode.
+    fn distance(fine_range: f32) -> LevelRule {
+        LevelRule::Distance { fine_range, fine_hysteresis: FINE_HYSTERESIS_M * UNITS_PER_M }
+    }
+
     fn ranges(range: f32) -> PatchRanges {
-        PatchRanges {
-            range,
-            hysteresis: HYST,
-            fine_range: DEFAULT_FINE_RANGE_M * UNITS_PER_M,
-            fine_hysteresis: FINE_HYSTERESIS_M * UNITS_PER_M,
-        }
+        PatchRanges { range, hysteresis: HYST, level: distance(DEFAULT_FINE_RANGE_M * UNITS_PER_M) }
     }
 
     #[test]
@@ -694,12 +889,12 @@ mod tests {
         let c = cell(1, 0, 0);
         let cam = at(&c, 8.5 * PATCH_SIZE, 8.5 * PATCH_SIZE);
         let mut all_coarse = ranges(RANGE);
-        all_coarse.fine_range = 0.0;
+        all_coarse.level = distance(0.0);
         let mut slots = [None; SLOTS];
         assign_patches(&mut slots, &[c], cam, all_coarse);
         assert!(slots.iter().flatten().all(|a| a.coarse));
         let mut all_fine = ranges(RANGE);
-        all_fine.fine_range = RANGE + HYST;
+        all_fine.level = distance(RANGE + HYST);
         let mut slots = [None; SLOTS];
         assign_patches(&mut slots, &[c], cam, all_fine);
         assert!(slots.iter().flatten().all(|a| !a.coarse && a.coarse_mask == 0));
@@ -757,11 +952,194 @@ mod tests {
 
         let mut candidates = Vec::new();
         let mut kept = [None; SLOTS];
-        assign_patches_with(&mut candidates, &mut kept, &[c], cam, ranges(RANGE));
+        let cam3 = [cam[0], 0.0, cam[1]];
+        assign_patches_with(&mut candidates, &mut kept, &[c], cam3, ranges(RANGE), &|_, _, _| None);
         assert!(!candidates.is_empty(), "the camera's own cell offers squares");
         let before = (candidates.as_ptr(), candidates.capacity());
-        assign_patches_with(&mut candidates, &mut kept, &[c], cam, ranges(RANGE));
+        assign_patches_with(&mut candidates, &mut kept, &[c], cam3, ranges(RANGE), &|_, _, _| None);
         assert_eq!((candidates.as_ptr(), candidates.capacity()), before, "the second frame reuses the list");
         assert_eq!(kept, fresh, "a kept list assigns exactly what a fresh one does");
+    }
+
+    // ── §7.3 screen-space level rule ─────────────────────────────────────
+
+    /// 480 render lines at a 45° vertical field of view: §7.3's table.
+    fn k480() -> f32 {
+        crate::render::px_per_unit_at_unit_depth(480, 45f32.to_radians())
+    }
+
+    /// A Z-up LAND height grid of the plane `y = base + gx·x + gz·z` (Y-up, cell-local).
+    fn tilted_grid(base: f32, gx: f32, gz: f32) -> Vec<f32> {
+        let s = LAND_VERTEX_SPACING;
+        let mut h = Vec::with_capacity(LAND_GRID_VERTS * LAND_GRID_VERTS);
+        for row in 0..LAND_GRID_VERTS {
+            for col in 0..LAND_GRID_VERTS {
+                // Rows run toward −Z in Y-up.
+                h.push(base + gx * col as f32 * s + gz * -(row as f32 * s));
+            }
+        }
+        h
+    }
+
+    #[test]
+    fn a_square_is_two_land_quads_across() {
+        assert_eq!(PATCH_SIZE, 2.0 * LAND_VERTEX_SPACING);
+        assert_eq!(2 * PER_SIDE as usize + 1, LAND_GRID_VERTS);
+    }
+
+    #[test]
+    fn the_square_planes_fit_a_tilted_grid_exactly() {
+        let planes = square_planes(&tilted_grid(100.0, 0.25, 0.5)).expect("33×33 grid");
+        let s = LAND_VERTEX_SPACING;
+        for (row, col) in [(0usize, 0usize), (7, 3), (15, 15)] {
+            let p = planes[row * PER_SIDE as usize + col];
+            let (cx, cz) = ((2 * col + 1) as f32 * s, -((2 * row + 1) as f32 * s));
+            assert!((p.y_centre - (100.0 + 0.25 * cx + 0.5 * cz)).abs() < 1e-2, "{p:?}");
+            assert!((p.slope[0] - 0.25).abs() < 1e-5 && (p.slope[1] - 0.5).abs() < 1e-5, "{p:?}");
+            // The range is the corners' (a plane's extremes on a square).
+            assert!((p.y_max - p.y_min - (0.25 + 0.5) * 2.0 * s).abs() < 1e-2, "{p:?}");
+        }
+        assert!(square_planes(&[0.0; 10]).is_none(), "not a 33×33 grid");
+    }
+
+    #[test]
+    fn the_projected_area_matches_the_design_note_on_flat_ground() {
+        // §7.3: eye 1.7 m over flat ground, a fine triangle 2 m away is ~51 px²
+        // at 480 lines; 6 m away, ~3.8 px².
+        let flat = SquarePlane { y_centre: 0.0, slope: [0.0, 0.0], y_min: 0.0, y_max: 0.0 };
+        let eye = 1.7 * UNITS_PER_M;
+        for (metres, expect) in [(2.0, 51.3), (6.0, 3.8)] {
+            // Camera west of square (8, 8) by `metres`, level with its centre row.
+            let lx = 8.0 * PATCH_SIZE - metres * UNITS_PER_M;
+            let area = fine_triangle_area_px([lx, eye, 8.5 * PATCH_SIZE], 8, 8, Some(flat), k480());
+            assert!((area - expect).abs() < 0.05 * expect, "{metres} m: {area} px², expected {expect}");
+        }
+        // Straight down onto the square: no foreshortening, distance = eye height.
+        let below = fine_triangle_area_px([8.5 * PATCH_SIZE, eye, 8.5 * PATCH_SIZE], 8, 8, Some(flat), k480());
+        let edge = TERRAIN_PATCH_LATTICE_STEP * k480() / eye;
+        assert!((below - 0.5 * edge * edge).abs() < 1e-3 * below);
+    }
+
+    #[test]
+    fn a_slope_facing_the_camera_projects_larger_than_flat_ground() {
+        // Camera 2 m west of square (8, 8) at eye height; the ground rising
+        // toward +X (away from the camera, so facing it) at 30°.
+        let eye = 1.7 * UNITS_PER_M;
+        let lx = 8.0 * PATCH_SIZE - 2.0 * UNITS_PER_M;
+        let near_y = 0.0;
+        let rise = 30f32.to_radians().tan();
+        // Plane through height 0 at the square's west edge.
+        let facing = SquarePlane {
+            y_centre: near_y + rise * 0.5 * PATCH_SIZE,
+            slope: [rise, 0.0],
+            y_min: near_y,
+            y_max: near_y + rise * PATCH_SIZE,
+        };
+        let flat = SquarePlane { y_centre: 0.0, slope: [0.0, 0.0], y_min: 0.0, y_max: 0.0 };
+        let cam = [lx, eye, 8.5 * PATCH_SIZE];
+        let a_facing = fine_triangle_area_px(cam, 8, 8, Some(facing), k480());
+        let a_flat = fine_triangle_area_px(cam, 8, 8, Some(flat), k480());
+        // Same nearest point and distance, so the ratio is the view-angle term:
+        // n·v̂ with n = (−sin 30°, cos 30°) and v = (−2 m, 1.7 m), against 1.7 / D.
+        let (h, w) = (1.7f32, 2.0f32);
+        let expect = (30f32.to_radians().sin() * w + 30f32.to_radians().cos() * h) / h;
+        assert!((a_facing / a_flat - expect).abs() < 1e-3, "facing {a_facing} vs flat {a_flat}, ratio {expect}");
+        assert!(a_facing > a_flat);
+        // No plane: the surface is taken as facing the camera (biased to fine).
+        let unknown = fine_triangle_area_px(cam, 8, 8, None, k480());
+        assert!(unknown >= a_facing, "{unknown} vs {a_facing}");
+    }
+
+    fn screen(a_fine: f32, px_per_unit: f32) -> PatchRanges {
+        PatchRanges { range: RANGE, hysteresis: HYST, level: LevelRule::Screen { px_per_unit, a_fine } }
+    }
+
+    fn assign_screen(
+        slots: &mut [Option<PatchAssignment>; SLOTS],
+        c: &PatchCell,
+        lx: f32,
+        lz: f32,
+        eye: f32,
+        r: PatchRanges,
+    ) {
+        let flat = SquarePlane { y_centre: 0.0, slope: [0.0, 0.0], y_min: 0.0, y_max: 0.0 };
+        let cam = at(c, lx, lz);
+        assign_patches_with(&mut Vec::new(), slots, &[*c], [cam[0], eye, cam[1]], r, &|_, _, _| Some(flat));
+    }
+
+    #[test]
+    fn the_screen_rule_draws_fine_exactly_where_the_triangles_are_large_enough() {
+        let c = cell(1, 0, 0);
+        let (lx, lz, eye) = (8.5 * PATCH_SIZE, 8.5 * PATCH_SIZE, 1.7 * UNITS_PER_M);
+        let mut slots = [None; SLOTS];
+        assign_screen(&mut slots, &c, lx, lz, eye, screen(DEFAULT_A_FINE_PX2, k480()));
+        let flat = SquarePlane { y_centre: 0.0, slope: [0.0, 0.0], y_min: 0.0, y_max: 0.0 };
+        let (mut fine, mut coarse) = (0, 0);
+        for a in slots.iter().flatten() {
+            let area =
+                fine_triangle_area_px([lx, eye, lz], a.key.col as i32, a.key.row as i32, Some(flat), k480());
+            // A fresh pool: fine exactly at or above the threshold.
+            assert_eq!(!a.coarse, area >= DEFAULT_A_FINE_PX2, "({}, {}) {area} px²", a.key.col, a.key.row);
+            assert_eq!(a.coarse_mask & a.missing_mask, 0);
+            if a.coarse { coarse += 1 } else { fine += 1 }
+        }
+        assert!(fine > 0 && coarse > 0, "{fine} fine, {coarse} coarse");
+        // Three times the render height: every triangle nine times larger, so
+        // at least as many squares fine.
+        let mut hi = [None; SLOTS];
+        assign_screen(&mut hi, &c, lx, lz, eye, screen(DEFAULT_A_FINE_PX2, 3.0 * k480()));
+        let fine_hi = hi.iter().flatten().filter(|a| !a.coarse).count();
+        assert!(fine_hi > fine, "{fine_hi} fine at 1440 lines vs {fine} at 480");
+    }
+
+    #[test]
+    fn a_fine_square_stays_fine_down_to_half_the_threshold() {
+        let c = cell(1, 0, 0);
+        let target = PatchKey { cell: 1, col: 10, row: 8 };
+        let level = |slots: &[Option<PatchAssignment>; SLOTS]| {
+            slots.iter().flatten().find(|a| a.key == target).map(|a| a.coarse)
+        };
+        let (lz, eye) = (8.5 * PATCH_SIZE, 1.7 * UNITS_PER_M);
+        let flat = SquarePlane { y_centre: 0.0, slope: [0.0, 0.0], y_min: 0.0, y_max: 0.0 };
+        let area_at = |lx: f32| fine_triangle_area_px([lx, eye, lz], 10, 8, Some(flat), k480());
+        // Walk west from the square until its area crosses each threshold.
+        let mut lx = 10.0 * PATCH_SIZE - 1.0;
+        while area_at(lx) >= DEFAULT_A_FINE_PX2 {
+            lx -= 1.0;
+        }
+        let just_under = lx; // below a_fine, above a_fine / 2
+        while area_at(lx) >= 0.5 * DEFAULT_A_FINE_PX2 {
+            lx -= 1.0;
+        }
+        let under_half = lx;
+        let r = screen(DEFAULT_A_FINE_PX2, k480());
+        let mut slots = [None; SLOTS];
+        assign_screen(&mut slots, &c, just_under + 20.0, lz, eye, r);
+        assert_eq!(level(&slots), Some(false), "above the threshold: fine");
+        assign_screen(&mut slots, &c, just_under, lz, eye, r);
+        assert_eq!(level(&slots), Some(false), "under the threshold, over half: still fine");
+        let mut fresh = [None; SLOTS];
+        assign_screen(&mut fresh, &c, just_under, lz, eye, r);
+        assert_eq!(level(&fresh), Some(true), "a new patch there starts coarse");
+        assign_screen(&mut slots, &c, under_half, lz, eye, r);
+        assert_eq!(level(&slots), Some(true), "under half the threshold: coarse");
+    }
+
+    #[test]
+    fn the_screen_rule_waits_for_the_render_height_and_field_of_view() {
+        let mut state = TerrainPatchState::default();
+        assert_eq!(state.level, LevelSetting::Screen { a_fine_px2: DEFAULT_A_FINE_PX2 });
+        assert_eq!(state.ranges().level, distance(DEFAULT_FINE_RANGE_M * UNITS_PER_M));
+        state.render_height = 480;
+        state.fov_y = 45f32.to_radians();
+        match state.ranges().level {
+            LevelRule::Screen { px_per_unit, a_fine } => {
+                assert!((px_per_unit - k480()).abs() < 1e-3);
+                assert_eq!(a_fine, DEFAULT_A_FINE_PX2);
+            }
+            other => panic!("{other:?}"),
+        }
+        state.level = LevelSetting::Distance { fine_range_m: 0.0 };
+        assert_eq!(state.ranges().level, distance(0.0));
     }
 }

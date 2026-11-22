@@ -1270,7 +1270,7 @@ pub(crate) fn build_render_data(
     let tlas_policy = static_summary.tlas_policy;
     // #7152 — TSD-4.1 terrain patches: copies of their base cells' draws,
     // appended before the sort.
-    crate::terrain_patches::emit_patch_draws(world, cam_pos, vp_mat, draw_commands);
+    crate::terrain_patches::emit_patch_draws(world, cam_pos, vp_mat, camera_fov_y, draw_commands);
 
     let n_draws = draw_commands.len();
     // Particle billboards — see `render::particles::emit_particles`.
@@ -1553,6 +1553,7 @@ pub(crate) fn update_morph_weights(world: &World, ctx: &mut byroredux_renderer::
 // orchestrator above acquires the World queries once and threads
 // references through.
 mod camera;
+pub(crate) use camera::px_per_unit_at_unit_depth;
 mod fog_volumes;
 // `pub(crate)` so the `light.atten` console command (REND-#1451) can
 // read `LIGHT_RANGE_EXTENSION` to report the effective brightness at

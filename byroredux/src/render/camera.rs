@@ -210,3 +210,12 @@ pub(super) fn assemble_camera(world: &World) -> CameraView {
         focus_dist,
     }
 }
+
+/// Pixels one world unit spans at unit depth, for a viewport `height` pixels
+/// tall with vertical field of view `fov_y` (radians): `height / (2 tan(fov_y/2))`.
+/// A length `l` at depth `d` projects to `l · this / d` pixels. Shared by the
+/// texture streamer's mip footprint (swapchain extent) and the TSD patch level
+/// rule (render extent, §7.3), so the projection is written once.
+pub(crate) fn px_per_unit_at_unit_depth(height: u32, fov_y: f32) -> f32 {
+    height as f32 * 0.5 / (fov_y * 0.5).tan().max(1.0e-4)
+}

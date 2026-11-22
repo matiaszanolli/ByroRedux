@@ -1624,6 +1624,12 @@ pub(super) fn spawn_terrain_mesh(
             hidden_quadrants,
         },
     );
+    // TSD-4.3 (§7.3) — the patch squares' base planes, from the same
+    // sanitized heights the mesh above was built from.
+    let sanitized: Vec<f32> = land.heights.iter().map(|&h| sanitize_land_height(h).0).collect();
+    if let Some(planes) = crate::terrain_patches::square_planes(&sanitized) {
+        world.insert(entity, crate::components::TerrainSquarePlanes(planes));
+    }
     world.insert(
         entity,
         crate::components::TerrainCoverInputs {

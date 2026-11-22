@@ -48,6 +48,20 @@ impl Component for TerrainCellOrigin {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// TSD-4.3 (§7.3) — each 256-unit patch square's base surface, fitted once at
+/// terrain spawn from the LAND heights the spawn path already has
+/// ([`crate::terrain_patches::square_planes`]), indexed `row * 16 + col`. The
+/// patch host's screen-space level rule reads it for the 3D distance and the
+/// view angle to the ground. A sibling of [`TerrainCellOrigin`] rather than a
+/// field of it: that one is `Copy` and read every frame by ground cover.
+#[derive(Debug, Clone)]
+pub(crate) struct TerrainSquarePlanes(
+    pub(crate) Box<[crate::terrain_patches::SquarePlane; crate::terrain_patches::SQUARES_PER_CELL]>,
+);
+impl Component for TerrainSquarePlanes {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// The two per-cell inputs the ground-cover density field needs that the
 /// terrain vertices cannot supply (#4054).
 ///
