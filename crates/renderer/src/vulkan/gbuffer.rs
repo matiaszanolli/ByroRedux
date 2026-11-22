@@ -13,7 +13,7 @@
 //! | raw_indirect  | B10G11R11_UFLOAT   | Pre-denoise indirect light (albedo-demod)     |
 //! | albedo        | B10G11R11_UFLOAT   | Surface color for composite re-multiplication |
 //! | reactive      | R8_UNORM           | FSR reactive mask (transparent coverage)      |
-//! | transparency  | R8_UNORM           | FSR transparency & composition mask           |
+//! | transparency  | RGBA16_SFLOAT      | FSR mask (R), far-field sun radiance (GBA)     |
 //!
 //! ## Per-frame-in-flight
 //!
@@ -42,15 +42,12 @@ use ash::vk;
 ///
 /// Five 4-byte attachments (normal `R16G16_SNORM`, motion `R16G16_SFLOAT`,
 /// mesh-id `R32_UINT`, raw-indirect and albedo `B10G11R11_UFLOAT_PACK32`) plus
-/// the two 1-byte FSR masks (`R8_UNORM`) = 22 B/px, doubled per frame in
+/// the 1-byte reactive mask and 8-byte transparency/sun = 29 B/px, doubled per frame in
 /// flight. Published so `screen_scaled_reservation_bytes` can bill it from the
 /// owning pass rather than a hand-copied figure, the discipline
 /// `SVGF_BYTES_PER_PIXEL` already sets. `memory-budget.md`'s roll-up row
-/// carries the same 22 B/px x 2 FIF derivation.
-// `5 * 4`: the five 4-byte attachments. `2`: the two 1-byte FSR masks
-// (written as a bare `2`, not `2 * 1`, per clippy::identity_op — the doc
-// comment above states the "two 1-byte" derivation this constant encodes).
-pub const GBUFFER_BYTES_PER_PIXEL: u32 = (5 * 4 + 2) * super::sync::MAX_FRAMES_IN_FLIGHT as u32;
+/// carries the same derivation.
+pub const GBUFFER_BYTES_PER_PIXEL: u32 = (5 * 4 + 1 + 8) * MAX_FRAMES_IN_FLIGHT as u32;
 
 pub const NORMAL_FORMAT: vk::Format = vk::Format::R16G16_SNORM;
 pub const MOTION_FORMAT: vk::Format = vk::Format::R16G16_SFLOAT;
@@ -83,29 +80,11 @@ pub const ALBEDO_FORMAT: vk::Format = vk::Format::B10G11R11_UFLOAT_PACK32;
 /// of overlapping translucent surfaces reports the most reactive one rather
 /// than the last one drawn.
 ///
-/// `R8_UNORM` is what the SDK's own samples use; the mask is a hint that
-/// biases history rejection, so 8 bits of coverage is ample.
-///
-/// # Cost under `--upscaler taa` (#4203)
-///
-/// Both masks are unconditional: attachments 6/7 of the fixed eight-attachment
-/// main render pass (cleared, then written by `triangle.frag`, `water.frag`
-/// and the ground-cover shaders, whose outputs carry no upscaler-mode
-/// specialization), and attachments 1/2 of the composite pass
-/// (loaded, fog coverage blended in, stored). Their only reader is the FSR
-/// dispatch in `record_upscale_pass` — see
-/// `fsr_masks_are_read_only_by_the_fsr_dispatch` — so under
-/// `UpscalerMode::Taa`, including the fallback when FSR fails to construct
-/// (#2480), that work is paid for nothing: 2 B/px written by two passes per
-/// frame, and 2 B/px × `MAX_FRAMES_IN_FLIGHT` of residency (≈ 14.1 MB at
-/// 2560×1440). The shipped default (`Fsr3(Quality)`) consumes them.
-///
-/// Left as is on purpose. Dropping them on the TAA path means a second main
-/// and composite render-pass variant, with every pipeline, framebuffer and
-/// fragment output location kept in lockstep across both, and that must not
-/// land without RenderDoc and `BYRO_VALIDATION=1` evidence on both upscaler
-/// modes.
+/// Both attachments are kept across upscaler modes for render-pass compatibility.
 pub const FSR_MASK_FORMAT: vk::Format = vk::Format::R8_UNORM;
+/// FSR samples the transparency mask from R. GBA carries the visible
+/// opaque fragment's RGB sunlight without consuming another color slot.
+pub const TRANSPARENCY_SUN_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 
 /// A single G-buffer attachment slot (one image per frame-in-flight).
 /// #3860 — was three parallel `Vec`s (`images`, `views`, `allocations`) whose
@@ -253,7 +232,7 @@ impl GBuffer {
         let r7 = gb.transparency.allocate(
             device,
             allocator,
-            FSR_MASK_FORMAT,
+            TRANSPARENCY_SUN_FORMAT,
             width,
             height,
             "gb_fsr_transparency",
@@ -430,7 +409,7 @@ impl GBuffer {
                 self.transparency.allocate(
                     device,
                     allocator,
-                    FSR_MASK_FORMAT,
+                    TRANSPARENCY_SUN_FORMAT,
                     width,
                     height,
                     "gb_fsr_transparency",

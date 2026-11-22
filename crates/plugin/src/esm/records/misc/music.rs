@@ -230,18 +230,20 @@ pub struct DefaultMusic {
 
 /// The `DATA` index of the first music slot.
 const DOBJ_FIRST_MUSIC_SLOT: usize = 9;
+/// Default, Battle, Death, Success and Level Up Music (`wbDefinitionsFNV.pas:6262-6266`).
+const DOBJ_MUSIC_SLOTS: usize = 5;
 
 /// Read the five music slots of a Fallout 3 / New Vegas `DOBJ` (its `DATA`, a flat array of
 /// FormIDs), load-order remapped. `None` when `DATA` is too short to reach them.
 pub fn parse_default_music(subs: &[SubRecord], remap: &Option<FormIdRemap>) -> Option<DefaultMusic> {
     let data = &subs.iter().find(|sub| &sub.sub_type == b"DATA")?.data;
-    let slot = |i: usize| {
-        let at = (DOBJ_FIRST_MUSIC_SLOT + i) * 4;
-        let raw = u32::from_le_bytes(data.get(at..at + 4)?.try_into().ok()?);
-        Some(remap_fid(raw, remap)).filter(|&form| form != 0)
-    };
-    data.get((DOBJ_FIRST_MUSIC_SLOT + 5) * 4 - 1)?;
-    Some(DefaultMusic { default: slot(0), battle: slot(1), death: slot(2), success: slot(3), level_up: slot(4) })
+    if data.len() < (DOBJ_FIRST_MUSIC_SLOT + DOBJ_MUSIC_SLOTS) * 4 {
+        return None;
+    }
+    let mut r = SubReader::new(data);
+    r.skip_to_or_eof(DOBJ_FIRST_MUSIC_SLOT * 4);
+    let mut slot = || Some(remap_fid(r.u32_or_default(), remap)).filter(|&form| form != 0);
+    Some(DefaultMusic { default: slot(), battle: slot(), death: slot(), success: slot(), level_up: slot() })
 }
 
 #[cfg(test)]

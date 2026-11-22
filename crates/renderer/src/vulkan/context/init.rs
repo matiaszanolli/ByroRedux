@@ -649,6 +649,7 @@ impl VulkanContext {
         // every other indirect consumer (#4827): without it the pipeline
         // is simply not created, mirroring the model tier below.
         let (groundcover, groundcover_models) = create_ground_cover(&device, &gpu_allocator, &device_caps, render_pass, pipeline_cache, &texture_registry, &scene_buffers);
+        let mut terrain_patch = create_terrain_patch(&device, &gpu_allocator, pipeline_cache, &texture_registry);
 
         let WaterPasses { water, placeholder_ao, placeholder_caustic_sink, water_caustic_accum } = create_water_passes(&device, &gpu_allocator, &graphics_queue, transfer_pool, render_pass, pipeline_cache, &texture_registry, &scene_buffers, render_extent);
 
@@ -687,7 +688,10 @@ impl VulkanContext {
         }
 
         // 14. Mesh registry (empty — meshes uploaded by the application)
-        let mesh_registry = MeshRegistry::new();
+        let mut mesh_registry = MeshRegistry::new();
+        // #7152 / #7221 — the TSD-4 patch meshes take the first handles and
+        // their own refit BLAS.
+        reserve_terrain_patch_meshes(terrain_patch.as_mut(), &mut mesh_registry, accel_manager.as_mut());
 
         let GBufferStage { gbuffer, raw_indirect_views, motion_views_seed, mesh_id_views_seed, normal_views_for_svgf, albedo_views, reactive_views, transparency_views } = create_gbuffer(&device, &gpu_allocator, &graphics_queue, transfer_pool, render_extent)?;
         let n_frames = MAX_FRAMES_IN_FLIGHT;
@@ -768,19 +772,21 @@ impl VulkanContext {
             &device,
             &gpu_allocator,
             pipeline_cache,
-            &composite_indirect_views,
-            indirect_is_general,
-            &albedo_views,
-            depth_image_view,
-            &caustic_views,
-            &water_caustic_views,
-            &volumetric_views,
-            &local_fire_views_required(volumetrics.as_ref())?,
-            &bloom_views,
-            &reactive_views,
-            &transparency_views,
-            shadow_correction,
-            cloud_noise.views(),
+            super::super::composite::CompositeInputs {
+                indirect_views: &composite_indirect_views,
+                indirect_is_general,
+                albedo_views: &albedo_views,
+                depth_view: depth_image_view,
+                caustic_views: &caustic_views,
+                water_caustic_views: &water_caustic_views,
+                volumetric_views: &volumetric_views,
+                local_fire: &local_fire_views_required(volumetrics.as_ref())?,
+                bloom_views: &bloom_views,
+                reactive_views: &reactive_views,
+                transparency_views: &transparency_views,
+                shadow_correction,
+                cloud_noise: cloud_noise.views(),
+            },
             texture_registry.descriptor_set_layout,
             frame_extents,
         ) {
@@ -802,11 +808,13 @@ impl VulkanContext {
 
         let frame_upscaler = FrameUpscaler::new(
             &vk_instance,
-            &device,
             physical_device,
-            &gpu_allocator,
-            &graphics_queue,
-            transfer_pool,
+            super::super::GpuUploadCtx {
+                device: &device,
+                allocator: &gpu_allocator,
+                queue: &graphics_queue,
+                command_pool: transfer_pool,
+            },
             renderer_config.upscaler,
             frame_extents,
             device_caps.shader_float16_supported,
@@ -952,6 +960,7 @@ impl VulkanContext {
                 // view of the CLI.
                 groundcover_bench: None,
                 groundcover_bench_cells: Vec::new(),
+                terrain_patch,
             },
             mesh_registry,
             texture_registry,
@@ -989,29 +998,7 @@ impl VulkanContext {
             placeholder_caustic_sink,
             reservoir_buffers,
             water,
-            post_state: PostPassState {
-                taa_failed: false,
-                svgf_failed: false,
-                svgf_recovery_frames: 0,
-                // Stage 1 — exposure/tonemap runtime state, seeded from the
-                // application-parsed config (CLI flags) and live-mutable via the
-                // engine's ExposureTuning resource push each frame.
-                exposure_meter_failed: false,
-                exposure_auto: renderer_config.auto_exposure,
-                exposure_fixed: super::super::exposure::DEFAULT_EXPOSURE,
-                exposure_compensation_stops: 0.0,
-                // 0.5 s eye-adaptation constant: fast enough to track a door
-                // transition without strobing, slow enough that per-frame meter
-                // jitter from the MC residual doesn't pump the exposure (#5158;
-                // live-tunable via `exposure speed <sec>`).
-                exposure_adaptation_seconds: super::super::exposure::DEFAULT_ADAPTATION_SECONDS,
-                tonemap: renderer_config.tonemap,
-                caustic_failed: false,
-                caustic_cleared_on_skip: [false; MAX_FRAMES_IN_FLIGHT],
-                volumetrics_cleared_on_skip: [false; MAX_FRAMES_IN_FLIGHT],
-                pending_caustic_cleared_on_skip: None,
-                pending_volumetrics_cleared_on_skip: None,
-            },
+            post_state: PostPassState::new(&renderer_config),
             shadow_filter_enabled: true,
             volumetric_fog_scratch: Vec::new(),
             command_pool,
@@ -1019,15 +1006,7 @@ impl VulkanContext {
             transfer_fence,
             command_buffers,
             frame_sync,
-            diag: RenderDiagnostics {
-                image_health_buffers,
-                image_health_last: (0, 0),
-                image_health_total: (0, 0),
-                pending_selected_ray_probe: None,
-                selected_ray_probe_result: None,
-                selected_ray_probe_entity_maps: Default::default(),
-                next_selected_ray_probe_generation: 1,
-            },
+            diag: RenderDiagnostics::new(image_health_buffers),
             current_frame: 0,
             renderer_config,
             frame_extents,

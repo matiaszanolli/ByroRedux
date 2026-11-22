@@ -38,8 +38,8 @@ impl TimedRestorations {
                 return false;
             }
             let elapsed = effect.remaining.min(f64::from(dt));
-            if let Some(value) = values.get(effect.actor_value) {
-                if value.current().is_finite() && value.damage.is_finite() {
+            if let Some(value) = values.get(effect.actor_value)
+                && value.current().is_finite() && value.damage.is_finite() {
                     // Compute in f64 and cap before converting: even a corrupt
                     // large rate/duration must not overflow the damage layer.
                     let amount = (f64::from(effect.per_second) * elapsed)
@@ -47,7 +47,6 @@ impl TimedRestorations {
                         as f32;
                     values.restore(effect.actor_value, amount);
                 }
-            }
             effect.remaining -= elapsed;
             effect.remaining > 0.0
         });

@@ -161,10 +161,11 @@ mod tests {
                 goal: Vec3::ZERO,
                 residency_generation: 0,
                 waypoints: [Vec3::X, Vec3::Y].into_iter().collect(),
+                grid: Default::default(),
             },
         );
         assert!(walk_line(&world, actor).contains("navmesh path, 2 cached waypoint(s)"));
-        world.insert(actor, NavPath { goal: Vec3::ZERO, residency_generation: 0, waypoints: Default::default() });
+        world.insert(actor, NavPath { goal: Vec3::ZERO, residency_generation: 0, waypoints: Default::default(), grid: Default::default() });
         assert!(walk_line(&world, actor).contains("straight line"));
     }
 }

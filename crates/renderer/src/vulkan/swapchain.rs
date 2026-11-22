@@ -298,14 +298,18 @@ impl SwapchainState {
     /// and that none of the swapchain images or views are still in use by an
     /// in-flight command buffer or pending present.
     pub unsafe fn destroy(&mut self, device: &ash::Device) {
-        for &view in &self.image_views {
-            device.destroy_image_view(view, None);
-        }
-        self.image_views.clear();
-        if self.swapchain != vk::SwapchainKHR::null() {
-            self.swapchain_loader
-                .destroy_swapchain(self.swapchain, None);
-            self.swapchain = vk::SwapchainKHR::null();
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            for &view in &self.image_views {
+                device.destroy_image_view(view, None);
+            }
+            self.image_views.clear();
+            if self.swapchain != vk::SwapchainKHR::null() {
+                self.swapchain_loader
+                    .destroy_swapchain(self.swapchain, None);
+                self.swapchain = vk::SwapchainKHR::null();
+            }
         }
     }
 }

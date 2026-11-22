@@ -110,9 +110,17 @@ impl LiveReloadLedgers {
     }
 }
 
-fn notify_player(world: &World, message: impl Into<String>) {
-    crate::notifications::push(world, message);
+/// A load failed. Every caller has already logged the diagnostic (`log::error!`, the cell or
+/// worldspace, the error chain); the player sees one short line instead of it (#6825: the
+/// diagnostics are operator text, not the HUD's). Neither game authors a load-failure notice
+/// to draw instead, so the line is engine text, listed in the native-page string inventory.
+fn notify_player(world: &World, diagnostic: impl Into<String>) {
+    let _logged_by_the_caller = diagnostic.into();
+    crate::notifications::push(world, LOAD_FAILED);
 }
+
+/// The player's line for a failed load (see [`notify_player`]).
+pub(crate) const LOAD_FAILED: &str = "Load failed.";
 
 /// What a `reload_*_session` helper reports back to
 /// [`execute_pending_save_loads`]'s shared tail (delta restore/apply,
@@ -470,6 +478,30 @@ pub(super) fn discard_pending_story_events(world: &World) {
 /// music, script messages and the message boxes they opened, then (#6574) the crafting session and
 /// bench request and the dropped items still waiting to raise `REMP`.
 pub(super) fn discard_outgoing_session_requests(world: &World) {
+    // #7229 — projectiles in flight name the outgoing session's shooter and its physics world's bodies; left alone they
+    // flew on through the loaded world and landed damage, skill uses and spell effects there. A queued trap hit (a
+    // Late request waits a frame) names the outgoing session's entities too.
+    reset_resource::<crate::systems::projectiles::ActiveProjectiles>(world);
+    reset_resource::<byroredux_scripting::PendingTrapHits>(world);
+    // #7230 — process-lifetime session state whose NOT_SAVED reason promises a load restarts it. `LevelNotices` holds
+    // the outgoing session's announced level count (left alone, a save with more pending levels announced "rest and
+    // meditate" again on the first frame); `CastState` holds a stale impact target id; the bow draw, the cast interval,
+    // the stance timers and the mine scan cadence carried over too. The Once Per Day blocks are cleared before the
+    // reload instead (`reload_with_fresh_day_blocks`, #7252): the reload's own spawns note theirs.
+    reset_resource::<crate::skill_use_emit::LevelNotices>(world);
+    reset_resource::<byroredux_scripting::player_cast::CastState>(world);
+    reset_resource::<crate::bow::BowState>(world);
+    reset_resource::<crate::skill_use_emit::StanceTimers>(world);
+    reset_resource::<crate::systems::mines::MineClock>(world);
+    // #7253 — the M43 ambient schedulers and the ObScript quest cadence promise a load re-arms them as a fresh boot
+    // does; only boot ever built them, so an in-process load carried the outgoing session's timers, pair cooldowns
+    // and found bodies (keyed by its actors) over. Their systems fill them, never the reload's spawns, so resetting
+    // after the reload erases nothing the loaded session made.
+    reset_resource::<crate::systems::random_conversation::RandomConversationState>(world);
+    reset_resource::<crate::systems::dead_body::DeadBodyState>(world);
+    reset_resource::<crate::systems::attraction::AttractionState>(world);
+    reset_resource::<byroredux_scripting::jail::JailEscapeWatch>(world);
+    reset_resource::<byroredux_scripting::obscript_quests::ObScriptQuestTimers>(world);
     if let Some(mut request) = world.try_resource_mut::<byroredux_scripting::PlayerMoveRequest>() {
         request.0 = None;
     }
@@ -482,6 +514,12 @@ pub(super) fn discard_outgoing_session_requests(world: &World) {
     if let Some(mut sleep) = world.try_resource_mut::<byroredux_scripting::obscript_more::PendingSleep>() {
         sleep.0 = 0.0;
     }
+    if let Some(mut sleep) = world.try_resource_mut::<byroredux_scripting::oblivion_skill_use::SleepCompletions>() {
+        sleep.0.clear();
+    }
+    if let Some(mut rest) = world.try_resource_mut::<crate::oblivion_rest::RestSession>() {
+        *rest = crate::oblivion_rest::RestSession::Closed;
+    }
     if let Some(mut music) = world.try_resource_mut::<byroredux_scripting::obscript_more::PendingMusic>() {
         music.0.clear();
     }
@@ -490,6 +528,10 @@ pub(super) fn discard_outgoing_session_requests(world: &World) {
     }
     if let Some(mut boxes) = world.try_resource_mut::<crate::notifications::MessageBoxQueue>() {
         boxes.0.clear();
+    }
+    // M48 #6667 — a loaded Papyrus run waiting on `Message.Show()` resumes with its default.
+    if let Some(mut answers) = world.try_resource_mut::<byroredux_scripting::messages::PapyrusMessageAnswers>() {
+        answers.forget_boxes();
     }
     // PERK-HOOK-007 — the activation the discarded activate-choice box held names the outgoing world's target.
     if let Some(mut pending) = world.try_resource_mut::<crate::perk_activate::PendingActivateChoice>() {
@@ -521,6 +563,15 @@ pub(super) fn discard_outgoing_session_requests(world: &World) {
     }
     if let Some(mut dropped) = world.try_resource_mut::<crate::inventory::PendingDroppedItems>() {
         dropped.0.clear();
+    }
+    // SAVE-6 — M65 detection transients of the same shape. Their producers run after the detection tick, which
+    // takes them next frame, so an F9 in between would apply the outgoing session's hearing events and
+    // attack noise to the loaded world's first tick.
+    if let Some(mut events) = world.try_resource_mut::<byroredux_scripting::PendingDetectionEvents>() {
+        events.0.clear();
+    }
+    if let Some(mut noise) = world.try_resource_mut::<crate::detection::PlayerActionNoise>() {
+        *noise = Default::default();
     }
     // #6927 — XCT transients of the same shape. A relocation (a Travel hop, a door pass) or a scripted
     // move raised earlier this frame names an actor by FormID in the outgoing timeline; the relocation
@@ -564,10 +615,37 @@ pub(super) fn discard_outgoing_session_requests(world: &World) {
     // INC4-1 — the player survives a live load but the furniture they sat on is respawned under a new
     // entity, and `Seated` (an `EntityId`) is not a delta column: the outgoing seat would name a dead
     // or recycled entity. The loaded player stands; the seat is not restored from the save.
-    if let Some(player) = crate::systems::PlayerEntity::get(world) {
-        if let Some(mut seats) = world.query_mut::<byroredux_core::ecs::components::Seated>() {
+    if let Some(player) = crate::systems::PlayerEntity::get(world)
+        && let Some(mut seats) = world.query_mut::<byroredux_core::ecs::components::Seated>() {
             seats.remove(player);
         }
+}
+
+/// Run the cell reload with the Once Per Day blocks cleared (#7252). They are keyed by the outgoing session's actors
+/// and its clock, so a load restarts them (AIP-FLG-001), but the reload's own spawns note the blocks of the Once Per
+/// Day packages they select (`apply_ai_package_behavior`), and a reset after it erased those, which a cold start
+/// keeps. An aborted reload ("keeping the current session") gets the live blocks back.
+pub(super) fn reload_with_fresh_day_blocks<T>(
+    world: &mut World,
+    reload: impl FnOnce(&mut World) -> Option<T>,
+) -> Option<T> {
+    use crate::npc_spawn::package_flags::PackageDayBlocks;
+    let live = world.try_resource_mut::<PackageDayBlocks>().map(|mut blocks| std::mem::take(&mut *blocks));
+    let outcome = reload(world);
+    if outcome.is_none()
+        && let Some(live) = live
+        && let Some(mut blocks) = world.try_resource_mut::<PackageDayBlocks>()
+    {
+        *blocks = live;
+    }
+    outcome
+}
+
+/// Put a process-lifetime resource back to its default, if it is installed (the load drain's reset for session state that
+/// holds no saved value).
+fn reset_resource<R: byroredux_core::ecs::resource::Resource + Default>(world: &World) {
+    if let Some(mut resource) = world.try_resource_mut::<R>() {
+        *resource = R::default();
     }
 }
 
@@ -696,16 +774,18 @@ pub fn execute_pending_save_loads(
     // Resident rows arrive from the snapshot's component overlay; nonresident
     // rows arrive with the post-reload resource restore below.
     let outcome = crate::cell_loader::reference_state::without_parked_state(world, |world| {
-        if let Some(cell_ctx) = snapshot_cell_context(&snapshot) {
-            reload_interior_session(world, ctx, streaming, &args, &cell_ctx)
-        } else if let Some(ext_ctx) = snapshot_exterior_context(&snapshot) {
-            reload_exterior_session(world, ctx, streaming, &args, &ext_ctx)
-        } else {
-            let message = "save load: snapshot lost its cell/exterior context between queue and drain";
-            log::error!("{message}");
-            notify_player(world, message);
-            None
-        }
+        reload_with_fresh_day_blocks(world, |world| {
+            if let Some(cell_ctx) = snapshot_cell_context(&snapshot) {
+                reload_interior_session(world, ctx, streaming, &args, &cell_ctx)
+            } else if let Some(ext_ctx) = snapshot_exterior_context(&snapshot) {
+                reload_exterior_session(world, ctx, streaming, &args, &ext_ctx)
+            } else {
+                let message = "save load: snapshot lost its cell/exterior context between queue and drain";
+                log::error!("{message}");
+                notify_player(world, message);
+                None
+            }
+        })
     });
     let Some(ReloadOutcome {
         location_label,
@@ -915,8 +995,8 @@ pub fn execute_pending_save_loads(
     crate::music::end_sting_layer(world);
     // INC4-2 — the overlay may have restored a different sex or race than the live body wears.
     crate::player_body::sync_body_after_load(world, identity_before);
-    if let Some(pose) = snapshot_player_pose(&snapshot) {
-        if apply_player_pose(world, &pose) {
+    if let Some(pose) = snapshot_player_pose(&snapshot)
+        && apply_player_pose(world, &pose) {
             log::info!(
                 "save load: restored player pose at ({:.1}, {:.1}, {:.1}) yaw={:.2} pitch={:.2} ({})",
                 pose.position[0],
@@ -931,7 +1011,6 @@ pub fn execute_pending_save_loads(
                 },
             );
         }
-    }
     if let Err(error) = crate::extensions::queue_session_event(
         world,
         byroredux_sdk::event::SessionEvent {

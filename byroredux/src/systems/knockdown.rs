@@ -183,16 +183,14 @@ pub(crate) fn get_up_system(world: &World, dt: f32) {
             .try_resource::<PhysicsWorld>()
             .and_then(|physics| physics.cast_ray_down(centre + Vec3::Y * 64.0, 512.0, None));
         let notes = crate::systems::revive::stand_up(world, actor);
-        if let Some(mut transforms) = world.query_mut::<Transform>() {
-            if let Some(transform) = transforms.get_mut(actor) {
+        if let Some(mut transforms) = world.query_mut::<Transform>()
+            && let Some(transform) = transforms.get_mut(actor) {
                 transform.translation = Vec3::new(centre.x, ground.unwrap_or(transform.translation.y), centre.z);
             }
-        }
-        if let Some(target) = state.fighting.filter(|&target| !world.has::<Dead>(target)) {
-            if let Some(mut combat) = world.query_mut::<byroredux_scripting::AiCombatState>() {
+        if let Some(target) = state.fighting.filter(|&target| !world.has::<Dead>(target))
+            && let Some(mut combat) = world.query_mut::<byroredux_scripting::AiCombatState>() {
                 combat.insert(actor, byroredux_scripting::AiCombatState { target, attack_cooldown_remaining: 0.0 });
             }
-        }
         release(world, actor);
         log::info!("actor {actor} got up: {}", notes.join("; "));
     }

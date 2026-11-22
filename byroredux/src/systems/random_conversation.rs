@@ -678,14 +678,13 @@ fn conversation_hold_inner(world: &World, dt: f32, walk_enabled: bool, stuck_sec
     // Pass 2 — apply.
     if let Some(mut transforms) = world.query_mut::<Transform>() {
         for (initiator, _, step) in &steps {
-            if let HoldStep::Walk { new_pos, rotation } = step {
-                if let Some(t) = transforms.get_mut(*initiator) {
+            if let HoldStep::Walk { new_pos, rotation } = step
+                && let Some(t) = transforms.get_mut(*initiator) {
                     t.translation = *new_pos;
                     if let Some(rotation) = rotation {
                         t.rotation = *rotation;
                     }
                 }
-            }
         }
     }
     // The partner stops and turns to face the initiator while it is held.
@@ -700,11 +699,10 @@ fn conversation_hold_inner(world: &World, dt: f32, walk_enabled: bool, stuck_sec
         .collect();
     if let Some(mut transforms) = world.query_mut::<Transform>() {
         for (partner, dx, dz) in faces {
-            if let Some(t) = transforms.get_mut(partner) {
-                if dx != 0.0 || dz != 0.0 {
+            if let Some(t) = transforms.get_mut(partner)
+                && (dx != 0.0 || dz != 0.0) {
                     t.rotation = crate::systems::script_requests::facing(dx, dz);
                 }
-            }
         }
     }
     for (initiator, hold, step) in steps {
@@ -714,30 +712,26 @@ fn conversation_hold_inner(world: &World, dt: f32, walk_enabled: bool, stuck_sec
                 release_pair(world, initiator, hold.partner);
             }
             HoldStep::Walk { .. } => {
-                if let Some(mut holds) = world.query_mut::<ConversationHold>() {
-                    if let Some(entry) = holds.get_mut(initiator) {
-                        if let HoldPhase::Approaching(elapsed) = entry.phase {
+                if let Some(mut holds) = world.query_mut::<ConversationHold>()
+                    && let Some(entry) = holds.get_mut(initiator)
+                        && let HoldPhase::Approaching(elapsed) = entry.phase {
                             entry.phase = HoldPhase::Approaching(elapsed + dt);
                         }
-                    }
-                }
             }
             HoldStep::Arrived => {
                 stuck_secs.remove(&initiator);
                 log::debug!("random conversation: {initiator:?} reached {:?}", hold.partner);
                 raise_actor_dialogue(world, initiator, hold.partner);
-                if let Some(mut holds) = world.query_mut::<ConversationHold>() {
-                    if let Some(entry) = holds.get_mut(initiator) {
+                if let Some(mut holds) = world.query_mut::<ConversationHold>()
+                    && let Some(entry) = holds.get_mut(initiator) {
                         entry.phase = HoldPhase::Waiting(0.0);
                     }
-                }
             }
             HoldStep::Phase(phase) => {
-                if let Some(mut holds) = world.query_mut::<ConversationHold>() {
-                    if let Some(entry) = holds.get_mut(initiator) {
+                if let Some(mut holds) = world.query_mut::<ConversationHold>()
+                    && let Some(entry) = holds.get_mut(initiator) {
                         entry.phase = phase;
                     }
-                }
             }
         }
     }
@@ -932,8 +926,7 @@ mod tests {
                 random_conversation_system(&world, 50.0);
             }
             assert!(world.query::<ConversationHold>().is_none_or(|holds| holds.iter().next().is_none()), "a hello holds nobody");
-            let events = world.query::<StoryEvent>().map(|events| events.iter().map(|(_, e)| *e).collect()).unwrap_or_default();
-            events
+            world.query::<StoryEvent>().map(|events| events.iter().map(|(_, e)| *e).collect()).unwrap_or_default()
         };
         let walked = run(true);
         assert_eq!(walked.len(), 1, "one hello for the one new target: {walked:?}");

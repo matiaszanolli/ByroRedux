@@ -53,6 +53,30 @@ pub fn open_archive(dir: &Path, name: &str) -> Option<BsaArchive> {
     Some(BsaArchive::open(&path).unwrap_or_else(|e| panic!("failed to open {path:?}: {e}")))
 }
 
+/// #6666 — how many of `font`'s capitals (bar the tailed `J` and `Q`) and lowercase letters
+/// without ascenders or descenders sit on the font's baseline, as `(on_baseline, letters)`: a
+/// letter is on it when its bottom (`y_offset + height`) is within 2 texels of the median bottom.
+/// Read as `point size − ascent` ([13]), every letter of every vanilla FO3 / FNV font and of the
+/// Latin Oblivion fonts is on it (the script `Handwritten` and the `Daedric` cipher are the
+/// irregular ones); read with the right kerning ([12]) as the y offset, the letters share a top
+/// instead and only one of the two heights (cap or x-height) lands on the median.
+#[allow(dead_code)] // each corpus file is its own test crate; not every one calls every helper
+pub fn letters_on_baseline(font: &byroredux_menuxml::font::Font) -> (usize, usize) {
+    let mut bottoms: Vec<f32> = (b'A'..=b'Z')
+        .filter(|ch| !matches!(ch, b'J' | b'Q'))
+        .chain(b"acemnorsuvwxz".iter().copied())
+        .map(|ch| font.glyph(ch))
+        .filter(|g| g.inked)
+        .map(|g| g.y_offset + g.height)
+        .collect();
+    if bottoms.is_empty() {
+        return (0, 0);
+    }
+    bottoms.sort_by(f32::total_cmp);
+    let median = bottoms[bottoms.len() / 2];
+    (bottoms.iter().filter(|b| (*b - median).abs() <= 2.0).count(), bottoms.len())
+}
+
 /// #6994 — how many of `font`'s printable ASCII glyphs (`!`..`~`) cut a clean
 /// rect out of the atlas, as `(clean, inked)`. Vanilla atlases pad every glyph
 /// cell, so a rect read at the right place has no ink (alpha > 64) on its edge

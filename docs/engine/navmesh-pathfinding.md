@@ -442,3 +442,67 @@ add indexing then, against real evidence.
   named in §2 and §9, but its own separate scoping effort (a fresh
   corpus investigation into `NVDP`/`NVCA`/`NVGD` and the `NVNM` door/cover
   blocks), not attempted here.
+
+## 11. Oblivion pathgrids (`PGRD`)
+
+Oblivion authors no `NAVM` (§1's table: 0 tiles). It authors one *path grid*
+per cell instead: points the level designer laid on the floor, joined by
+edges an actor may walk along ("A PGRD record defines the path grid for a
+cell", UESP *Oblivion Mod: Mod File Format/PGRD*; CS *Path Grid Generation*).
+`parse_pgrd` (`crates/plugin/src/esm/records/pathgrid.rs`) decodes it. This
+section is the design the [AI Packages Completion PRD](../prd/ai-packages-completion.md)
+asked for in decision Q5 and AIP-WALK-003, written after the first slice
+(`0580afe57`) landed.
+
+**Data.** A resident grid is a `PathGridTile` entity (`components/navmesh.rs`),
+spawned beside the NAVM tiles in the same stamped window, so it is reclaimed
+with its cell and bumps the same residency generation. `NavGraphs`
+(`systems/navmesh_path.rs`) bundles the tiles and the grids; the walking
+systems query it once per tick.
+
+**Route.** `find_path_over_grid` (`systems/pathgrid_path.rs`) snaps the start
+and the goal to the nearest grid point within `PATHGRID_SNAP_RADIUS` (256
+units), runs A\* over the authored edges, and returns the grid points in
+walking order followed by the goal itself. The radius is the measured median
+spacing of a point's nearest neighbour (257 units, p90 394, over every `PGRD`
+in `Oblivion.esm`, per the constant's doc). A start or goal farther than that
+from every point may be on another level or behind a wall, so it gets no
+route and walks straight. There is no string-pulling: the waypoints are the
+grid's own points.
+
+**When a walk takes the grid.** A grid is points, not a surface. It cannot say
+that the straight walk is blocked, and routing every walk over it sent the
+Imperial Prison's actors into the stair walls the straight walk had cleared.
+The character controller can say it. So a walk starts straight and switches
+to the grid once the controller has held it back for 1.5 s without a break
+(`GridWalk::AFTER_BLOCKED_SECS`, shorter than the 2.5 s at which the movers
+that can give up do). One clipped corner clears the clock. A walk that has
+switched stays on the grid until its `NavPath` is dropped (arrival, or
+another procedure taking over), and a new destination more than two snap
+radii from the old goal starts straight again.
+
+**Who takes it.** The switch lives on `NavPath.grid`, the cache every
+walk-to-point system already reads and writes, so no system needs a lock or a
+scratch map for it. Travel, Follow, Escort, Guard, Wander and Patrol (through
+`resolve_cached_waypoints` and their step's `blocked` flag; Wander and Patrol
+read their stuck clock) and the single-actor movers behind `cached_walk_step`
+(Eat, Sleep, Find, force-greet, random conversation) all route over a grid
+this way. NAVM tiles still come first: a tile that routes the walk wins, and
+a game whose cells carry no `PGRD` has no grid resident to take.
+
+**Not decided here.**
+
+- **`PGRI` inter-cell links.** A route is found only when the actor and the goal
+  snap onto the same cell's grid. The record's own doc says which external
+  point an edge reaches is the consumer's problem, and that the `0xFFFF`
+  sentinel count equals the `PGRI` entry count on only 538 of the 4,351 grids
+  that have both. Decision Q5 asked for walks round walls inside a cell's
+  grid; following links between cells needs that mapping settled first.
+- **Heights.** The grid's heights need not match the surfaces actors stand on
+  (the Emperor's party at the Imperial Prison hovers 100-150 units above its
+  points), so a grid route there does not reach the platform. That is a
+  placement problem recorded in [playable-vertical-slice.md](playable-vertical-slice.md),
+  not a pathing one.
+- **Door and cover semantics, triangle cost, obstacle avoidance.** The grid
+  authors none of them (§2).
+

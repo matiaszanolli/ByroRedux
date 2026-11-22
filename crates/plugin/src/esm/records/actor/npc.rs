@@ -3,7 +3,7 @@ use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 use super::{
     decode_ai_data, ActorAiData, CreatureStats, FactionMembership, NpcInventoryEntry,
-    CREATURE_DATA_LEN,
+    CREATURE_DATA_LEN, OBLIVION_AIDT_LEN,
 };
 
 /// One face-morph entry on an FO4 NPC. Built from a paired
@@ -16,7 +16,7 @@ use super::{
 /// MQ101 player duplicates) — the audit's claim that FMRS is a single
 /// `f32` slider was stale; FMRS payloads are 36 bytes everywhere they
 /// appear. See #591 / FO4-DIM6-06.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NpcFaceMorph {
     /// FMRI — morph-target FormID (HDPT or face-morph-data form).
     pub form_id: u32,
@@ -27,7 +27,7 @@ pub struct NpcFaceMorph {
 /// FO4 NPC face-morph block. Set on `NpcRecord` only when at least one
 /// of the underlying sub-records was present — most generic settler
 /// NPCs ship none and stay at `None`. See #591 / FO4-DIM6-06.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct NpcFaceMorphs {
     /// Paired FMRI + FMRS entries. The wire format alternates the two
     /// sub-records; the parser pairs them positionally and truncates
@@ -80,7 +80,7 @@ impl NpcFaceMorphs {
 /// accumulated into [`NpcFaceMorphs::head_parts`] (the FO4 semantic),
 /// which silently misclassified every FNV named NPC as having FO4
 /// face-morph data.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NpcFaceGenRecipe {
     /// FGGS — 50 symmetric morph weights (left-right mirrored sliders
     /// like nose-bridge-width, jaw-depth, eye-vertical). Indexed by
@@ -145,6 +145,35 @@ impl NpcFaceGenRecipe {
             && self.eyes_form_id.is_none()
             && self.eyebrow_form_id.is_none()
     }
+}
+
+/// Oblivion NPC_ DATA (21 skills, Health, then eight attributes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OblivionNpcStats {
+    pub skills: [u8; 21],
+    pub health: u16,
+    pub attributes: [u8; 8],
+}
+
+/// Oblivion CREA DATA; its three skills stand in for the individual skills.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OblivionCreatureStats {
+    pub creature_type: u8,
+    pub combat: u8,
+    pub magic: u8,
+    pub stealth: u8,
+    pub soul: u8,
+    pub health: u16,
+    pub damage: u16,
+    pub attributes: [u8; 8],
+}
+
+/// Values and level ceiling from an Oblivion NPC_ or CREA ACBS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OblivionActorPools {
+    pub magicka: u16,
+    pub fatigue: u16,
+    pub calc_max: u16,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -213,6 +242,11 @@ pub struct NpcRecord {
     /// `None` for `NPC_` (whose `DATA` is a different, 11-byte struct) and
     /// for every other game. See [`CreatureStats`].
     pub creature_stats: Option<CreatureStats>,
+    pub oblivion_npc_stats: Option<OblivionNpcStats>,
+    pub oblivion_creature_stats: Option<OblivionCreatureStats>,
+    pub oblivion_pools: Option<OblivionActorPools>,
+    /// TES4 AIDT's four raw actor-value bytes (Aggression through Responsibility).
+    pub oblivion_ai_values: Option<[u8; 4]>,
     /// FO3 / FNV `NPC_` `DATA` Base Health (`i32 @ 0`, #5005). `None` for
     /// `CREA` (see [`Self::creature_stats`]) and every other game. Health
     /// ≤ 0 stamps [`Self::starts_dead`] — the sourced FO3/FNV corpse rule;
@@ -500,6 +534,10 @@ pub fn parse_npc(
         is_creature: false,
         body_part_form: None,
         creature_stats: None,
+        oblivion_npc_stats: None,
+        oblivion_creature_stats: None,
+        oblivion_pools: None,
+        oblivion_ai_values: None,
         data_base_health: None,
         data_attributes: None,
         race_form_id: 0,
@@ -564,7 +602,7 @@ pub fn parse_npc(
             parse_npc_fo4_facemorph(&mut face, &mut fmri_forms, &mut fmrs_settings, sub, remap);
         }
         if captures_av_props {
-            parse_npc_actor_values(&mut record, sub, remap);
+            parse_npc_actor_values(&mut record, sub, game, remap);
         }
         if captures_perks {
             parse_npc_perks(&mut record, sub, remap);
@@ -613,6 +651,15 @@ pub fn parse_npc(
 
 /// FO4 / FO76 `ACBS` bytes through the template flags at +16 (#6120).
 const ACBS_FO4_LEN: usize = 20;
+/// Oblivion `ACBS`: flags, magicka, fatigue, barter gold, level, calc min, calc max (xEdit TES4).
+const OBLIVION_ACBS_LEN: usize = 16;
+/// Oblivion `NPC_` `DATA`: 21 skills, Health u16, 2 unused, 8 attributes (xEdit TES4).
+const OBLIVION_NPC_DATA_LEN: usize = 33;
+const OBLIVION_NPC_ATTRIBUTES_AT: usize = 25;
+/// Oblivion `CREA` `DATA`: 5 bytes, 1 unused, Health u16, 2 unused, Damage u16, 8 attributes (xEdit TES4).
+const OBLIVION_CREA_DATA_LEN: usize = 20;
+const OBLIVION_CREA_HEALTH_AT: usize = 6;
+const OBLIVION_CREA_DAMAGE_AT: usize = 10;
 /// Starfield `ACBS` length — every vanilla NPC_ is exactly this (#6120).
 const ACBS_STARFIELD_LEN: usize = 16;
 
@@ -686,6 +733,29 @@ fn parse_npc_core(
         // dispatcher afterwards). The two `DATA` structs are unambiguous by
         // size in these games: `NPC_` authors 11 bytes (`i32` Base Health +
         // 7 attributes), or 25 with the legacy unused tail. Neither is 17.
+        // Oblivion NPC_ DATA (xEdit TES4): 21 skills, Health u16 @21, 2 unused, 8 attributes @25.
+        b"DATA" if game == GameKind::Oblivion && sub.data.len() == OBLIVION_NPC_DATA_LEN => {
+            let mut r = SubReader::new(&sub.data);
+            let skills = r.fixed::<21>().unwrap_or_default();
+            let health = r.u16_or_default();
+            r.skip_to_or_eof(OBLIVION_NPC_ATTRIBUTES_AT);
+            let attributes = r.fixed::<8>().unwrap_or_default();
+            record.oblivion_npc_stats = Some(OblivionNpcStats { skills, health, attributes });
+        }
+        // Oblivion CREA DATA (xEdit TES4): type, combat / magic / stealth skills, soul, 1 unused,
+        // Health u16 @6, 2 unused, Damage u16 @10, 8 attributes @12.
+        b"DATA" if game == GameKind::Oblivion && sub.data.len() == OBLIVION_CREA_DATA_LEN => {
+            let mut r = SubReader::new(&sub.data);
+            let [creature_type, combat, magic, stealth, soul] = r.fixed::<5>().unwrap_or_default();
+            r.skip_to_or_eof(OBLIVION_CREA_HEALTH_AT);
+            let health = r.u16_or_default();
+            r.skip_to_or_eof(OBLIVION_CREA_DAMAGE_AT);
+            let damage = r.u16_or_default();
+            let attributes = r.fixed::<8>().unwrap_or_default();
+            record.oblivion_creature_stats = Some(OblivionCreatureStats {
+                creature_type, combat, magic, stealth, soul, health, damage, attributes,
+            });
+        }
         b"DATA" if matches!(game, GameKind::Fallout3NV) && sub.data.len() == CREATURE_DATA_LEN => {
             let mut r = SubReader::new(&sub.data);
             let creature_type = r.u8_or_default();
@@ -764,7 +834,12 @@ fn parse_npc_core(
             let raw = SubReader::new(&sub.data).u32_or_default();
             record.spells.push(remap_fid(raw, remap));
         }
-        b"AIDT" => record.ai_data = decode_ai_data(&sub.data, game),
+        b"AIDT" => {
+            record.ai_data = decode_ai_data(&sub.data, game);
+            if game == GameKind::Oblivion && sub.data.len() >= OBLIVION_AIDT_LEN {
+                record.oblivion_ai_values = SubReader::new(&sub.data).fixed::<4>().ok();
+            }
+        }
         // DOFT — Skyrim+ default outfit FormID. Pre-Skyrim games
         // don't emit DOFT (NPCs equip directly from inventory).
         // Stored as Option so the equip pipeline can dispatch on
@@ -839,13 +914,16 @@ fn parse_npc_core(
         // Oblivion.esm (all 914 NPC_/CREA ACBS are exactly 16 bytes).
         // Without this every Oblivion actor kept level=1 / acbs_flags=0
         // → wrong leveled-list tier + every actor resolved Male. #1650.
-        b"ACBS" if matches!(game, GameKind::Oblivion) && sub.data.len() >= 16 => {
+        b"ACBS" if matches!(game, GameKind::Oblivion) && sub.data.len() >= OBLIVION_ACBS_LEN => {
             let mut r = SubReader::new(&sub.data);
             record.acbs_flags = r.u32_or_default();
-            r.skip_or_eof(6); // baseSpell(u16) + fatigue(u16) + barterGold(u16)
+            let magicka = r.u16_or_default();
+            let fatigue = r.u16_or_default();
+            r.skip_or_eof(2); // barter gold
             record.level = r.i16_or_default();
             // calcMin@12 (#2955).
             record.calc_min = r.u16_or_default();
+            record.oblivion_pools = Some(OblivionActorPools { magicka, fatigue, calc_max: r.u16_or_default() });
             // disposition_base / template_flags stay at their
             // constructor defaults — Oblivion ACBS carries neither.
         }
@@ -1082,24 +1160,45 @@ fn parse_npc_fo4_facemorph(
     }
 }
 
+/// `PRPS` entry size on FO4: AVIF FormID + f32 value.
+const PRPS_ENTRY_LEN: usize = 8;
+/// `PRPS` entry size on FO76 and Starfield: the FO4 pair plus a Curve Table FormID.
+const PRPS_CURVE_ENTRY_LEN: usize = 12;
+
 /// FO4+ actor-value model — PRPS properties and baked DNAM derived stats.
 /// Only invoked when `game.uses_actor_value_properties()`; the former
 /// per-arm `captures_av_props` guard now lives at the [`parse_npc`] call
 /// site. Perks moved out to [`parse_npc_perks`] under #3158 — they need a
 /// wider gate than this one.
-fn parse_npc_actor_values(record: &mut NpcRecord, sub: &SubRecord, remap: &Option<FormIdRemap>) {
+fn parse_npc_actor_values(
+    record: &mut NpcRecord,
+    sub: &SubRecord,
+    game: GameKind,
+    remap: &Option<FormIdRemap>,
+) {
     match &sub.sub_type {
-        // PRPS "Properties": an array of (AVIF FormID, f32) pairs —
+        // PRPS "Properties": an array of (AVIF FormID, f32) entries —
         // SPECIAL plus any authored AV overrides. Already the
         // `ActorValues::from_pairs` shape, so the FO4 arm of
-        // `derive_npc_actor_values` returns them verbatim. 8 bytes per
-        // entry (u32 FormID + f32 value); `chunks_exact` drops a
-        // malformed trailing partial rather than panicking cell load.
+        // `derive_npc_actor_values` returns them verbatim. FO4 entries are
+        // 8 bytes (u32 FormID + f32 value); FO76 and Starfield append a
+        // Curve Table FormID (xEdit `wbObjectProperty`, `wbFromVersion(152)`,
+        // `wbDefinitionsFO76.pas:7002-7009` / `wbDefinitionsSF1.pas:5679-5684`;
+        // every vanilla `SeventySix.esm` / `Starfield.esm` payload is a
+        // multiple of 12), so they step 12 (#7119). The curve has no consumer
+        // and is not stored. A malformed trailing partial is dropped rather
+        // than panicking cell load.
         b"PRPS" => {
-            record.actor_value_props.reserve(sub.data.len() / 8);
-            for chunk in sub.data.as_chunks::<8>().0 {
-                let avif = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-                let value = f32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
+            let stride = if matches!(game, GameKind::Fallout76 | GameKind::Starfield) {
+                PRPS_CURVE_ENTRY_LEN
+            } else {
+                PRPS_ENTRY_LEN
+            };
+            record.actor_value_props.reserve(sub.data.len() / stride);
+            for entry in sub.data.chunks_exact(stride) {
+                let mut r = SubReader::new(entry);
+                let avif = r.u32_or_default();
+                let value = r.f32_or_default();
                 record
                     .actor_value_props
                     .push((remap_fid(avif, remap), value));

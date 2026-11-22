@@ -67,11 +67,10 @@ impl Selector {
         if let Some(exact) = raw.strip_prefix('=') {
             return Self::Exact(exact.to_ascii_lowercase());
         }
-        if raw.len() == 8 && raw.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            if let Ok(form_id) = u32::from_str_radix(raw, 16) {
+        if raw.len() == 8 && raw.bytes().all(|byte| byte.is_ascii_hexdigit())
+            && let Ok(form_id) = u32::from_str_radix(raw, 16) {
                 return Self::FormId(form_id);
             }
-        }
         Self::Contains(raw.to_ascii_lowercase())
     }
 

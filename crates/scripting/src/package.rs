@@ -224,15 +224,36 @@ impl Component for EvaluatePackageRequest {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// One-shot companion of an explicit [`EvaluatePackageRequest`]: the next
+/// ambient selection for the actor drops the Must Complete hold on its running
+/// package (GECK *EvaluatePackage*: "If the actor is on a package flagged as
+/// must complete or must reach location, EVP will still drop that package and
+/// force a reevaluation of the package list", #7243). Raised only by
+/// [`request_package_evaluation`]; a re-evaluation the actor's own package
+/// state queues ([`queue_package_evaluation`]) keeps the hold. Pattern B:
+/// `ambient_ai_package_system` takes it at the head of its pass.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReleasePackageHold;
+
+impl Component for ReleasePackageHold {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// `Actor.EvaluatePackage` / ObScript `EvaluatePackage` (`EVP`): "forces the
 /// actor to reevaluate its package list" (GECK) — a request the ambient AI and
-/// scene systems drain. It also ends a script package that is already running,
-/// constrained or not (GECK *EvaluatePackage*: "If the actor is on a package
+/// scene systems drain. It ends the running package even when it is flagged
+/// Must Complete (GECK *EvaluatePackage*: "If the actor is on a package
 /// flagged as must complete or must reach location, EVP will still drop that
-/// package"); one not yet installed survives, so `AddScriptPackage` followed by
-/// `EVP` starts it. Returns whether the request could be queued.
+/// package"): a script package already running is dropped here, and an ambient
+/// one loses its Must Complete hold for the next selection
+/// ([`ReleasePackageHold`]). A script package not yet installed survives, so
+/// `AddScriptPackage` followed by `EVP` starts it. Returns whether the request
+/// could be queued.
 pub fn request_package_evaluation(world: &World, actor: EntityId) -> bool {
     crate::script_packages::drop_script_package(world, actor, true);
+    if let Some(mut releases) = world.query_mut::<ReleasePackageHold>() {
+        releases.insert(actor, ReleasePackageHold);
+    }
     queue_package_evaluation(world, actor)
 }
 
@@ -254,6 +275,7 @@ pub fn register(world: &mut World) {
     world.register::<ScenePackageEventBatch>();
     world.register::<ScenePackageCompletionBatch>();
     world.register::<EvaluatePackageRequest>();
+    world.register::<ReleasePackageHold>();
     world.register::<crate::script_packages::ScriptPackage>();
     world.init_resource::<PackageRegistry>();
     world.init_resource::<PackageTargetRegistry>();

@@ -43,7 +43,7 @@
 //!   0 = ==, 1 = !=, 2 = >, 3 = >=, 4 = <, 5 = <=
 //! ```
 
-use crate::esm::reader::{FormIdRemap, SubRecord};
+use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 
 /// Comparison operator applied to (function_result, comparand).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -472,11 +472,14 @@ pub fn parse_ctda(sub: &SubRecord) -> Option<Condition> {
 ///
 /// Non-CTDA sub-records are silently ignored. Order is preserved —
 /// the OR-precedence evaluator at `byroredux_scripting::condition::evaluate`
-/// requires sequential order to correctly chunk OR groups.
-pub fn parse_condition_list(subs: &[SubRecord]) -> ConditionList {
+/// requires sequential order to correctly chunk OR groups. Every FormID-typed
+/// field goes through `remap` like the record parsers' own `push_ctda` calls
+/// (#7110: the earlier `&None` form would have handed a future caller
+/// plugin-local comparands).
+pub fn parse_condition_list(subs: &[SubRecord], remap: &Option<FormIdRemap>) -> ConditionList {
     let mut out = Vec::new();
     for sub in subs {
-        push_ctda(sub, &None, &mut out);
+        push_ctda(sub, remap, &mut out);
     }
     out
 }
@@ -623,7 +626,8 @@ pub fn param2_is_form_id(function_index: u32) -> bool {
 /// `Use Global` comparand (a GLOB FormID); remaps `param_1` only for the
 /// [`param1_is_form_id`] catalog. Null (`0`) FormIDs are left untouched — a
 /// remap would otherwise compose them onto the owning plugin's top byte and
-/// fabricate a non-null id. A `None` remap (single standalone plugin / unit
+/// fabricate a non-null id — and so are the all-ones parameter sentinels
+/// (`is_param_sentinel`). A `None` remap (single standalone plugin / unit
 /// tests) is identity.
 pub fn remap_condition_form_ids(cond: &mut Condition, remap: &Option<FormIdRemap>) {
     let Some(remap) = remap.as_ref() else {
@@ -632,17 +636,44 @@ pub fn remap_condition_form_ids(cond: &mut Condition, remap: &Option<FormIdRemap
     if cond.reference_form_id != 0 {
         cond.reference_form_id = remap.remap(cond.reference_form_id);
     }
-    if let ConditionValue::Global(fid) = cond.comparand {
-        if fid != 0 {
+    if let ConditionValue::Global(fid) = cond.comparand
+        && fid != 0 {
             cond.comparand = ConditionValue::Global(remap.remap(fid));
         }
-    }
-    if cond.param_1 != 0 && param1_is_form_id(cond.function_index) {
+    if !is_param_sentinel(cond.param_1)
+        && param1_is_form_id(cond.function_index)
+        && !(cond.function_index == GET_ACTOR_VALUE && actor_value_param_is_an_index())
+    {
         cond.param_1 = remap.remap(cond.param_1);
     }
-    if cond.param_2 != 0 && param2_is_form_id(cond.function_index) {
+    if !is_param_sentinel(cond.param_2) && param2_is_form_id(cond.function_index) {
         cond.param_2 = remap.remap(cond.param_2);
     }
+}
+
+/// `GetActorValue`, whose `param_1` is an `AVIF` FormID only from Fallout 4 on.
+const GET_ACTOR_VALUE: u32 = 14;
+
+/// `GetActorValue`'s parameter is xEdit's `ptActorValue`: a `wbActorValueEnum`
+/// index on Oblivion, Fallout 3 / New Vegas and Skyrim, an `AVIF` FormID from
+/// Fallout 4 on (`wbDefinitionsFO4.pas:270`). Remapping an index composed it
+/// onto a load-order slot whenever the plugin's first master was not at slot 0,
+/// and the evaluator then declined the condition (#7109). Decided by the walked
+/// plugin's game; outside a walk (no guard) the FormID reading is kept.
+fn actor_value_param_is_an_index() -> bool {
+    matches!(
+        super::common::current_plugin_game(),
+        Some(GameKind::Oblivion | GameKind::Fallout3NV | GameKind::Skyrim)
+    )
+}
+
+/// A FormID-typed CTDA parameter that names no form: null (`0`), or the
+/// all-ones sentinels `0xFFFF_FFFF` / `0xFFFF_FFFE`. Every `GetDistance`
+/// (fn 1) condition in `Starfield.esm` authors `0xFFFF_FFFE` there; a `0xFF`
+/// top byte is never a plugin's master index, so remapping it only logged a
+/// pass-through warning (175 per load, #7120) and returned it unchanged.
+fn is_param_sentinel(raw: u32) -> bool {
+    matches!(raw, 0 | 0xFFFF_FFFE | 0xFFFF_FFFF)
 }
 
 #[cfg(test)]
@@ -877,7 +908,7 @@ mod tests {
             data: b"::isOpen_var\0".to_vec(),
         };
 
-        let conditions = parse_condition_list(&[ctda, cis2]);
+        let conditions = parse_condition_list(&[ctda, cis2], &None);
 
         assert_eq!(conditions.len(), 1);
         assert_eq!(
@@ -1004,7 +1035,7 @@ mod tests {
             make_ctda_28(0x01, 2_f32.to_le_bytes(), 9, 0xBB, 0, 0, 0), // OR flag
             make_ctda_28(0, 3_f32.to_le_bytes(), 71, 0xCC, 0, 0, 0),
         ];
-        let list = parse_condition_list(&mixed);
+        let list = parse_condition_list(&mixed, &None);
         assert_eq!(list.len(), 3, "only the 3 CTDAs make it through");
         assert_eq!(list[0].function_index, 58);
         assert_eq!(list[1].function_index, 9);
@@ -1034,6 +1065,35 @@ mod tests {
                 cond.param_1, 0x0200_0ABC,
                 "fn {function_index}: param_1 must be promoted to global space"
             );
+        }
+    }
+
+    /// #7109: `GetActorValue` (fn 14) names an actor-value index before Fallout 4 and an AVIF FormID
+    /// from it on; only the FormID is remapped, by the walked plugin's game.
+    #[test]
+    fn get_actor_value_param_is_remapped_only_where_it_is_a_form() {
+        let remapped = |game: Option<GameKind>| {
+            let _guard = game.map(super::super::common::PluginGameGuard::new);
+            let mut cond = Condition { function_index: 14, param_1: 9, ..Default::default() };
+            remap_condition_form_ids(&mut cond, &Some(FormIdRemap::regular(3, vec![])));
+            cond.param_1
+        };
+        for game in [GameKind::Oblivion, GameKind::Fallout3NV, GameKind::Skyrim] {
+            assert_eq!(remapped(Some(game)), 9, "{game:?}: an actor-value index stays raw");
+        }
+        assert_eq!(remapped(Some(GameKind::Fallout4)), 0x0300_0009, "FO4: an AVIF FormID is remapped");
+        assert_eq!(remapped(None), 0x0300_0009, "outside a walk the FormID reading is kept");
+    }
+
+    /// #7120: Starfield authors `0xFFFF_FFFE` in every `GetDistance` (fn 1)
+    /// target; the all-ones sentinels pass through without a remap.
+    #[test]
+    fn remap_leaves_the_all_ones_param_sentinels_alone() {
+        for sentinel in [0xFFFF_FFFEu32, 0xFFFF_FFFF] {
+            let remap = FormIdRemap::regular(2, vec![0]);
+            let mut cond = Condition { function_index: 1, param_1: sentinel, ..Default::default() };
+            remap_condition_form_ids(&mut cond, &Some(remap));
+            assert_eq!(cond.param_1, sentinel);
         }
     }
 

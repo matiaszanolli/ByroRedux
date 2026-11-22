@@ -179,14 +179,13 @@ pub(super) fn prim_set_base_protection(e: &Expr, scope: &Scope) -> Option<Effect
             if alias_reference_getter(object).is_some() {
                 return None;
             }
-            if let Expr::Ident(name) = object {
-                if scope
+            if let Expr::Ident(name) = object
+                && scope
                     .per_instance_actor_properties
                     .contains(&name.0.to_ascii_lowercase())
                 {
                     return None;
                 }
-            }
             ActorBaseRef::Form(receiver_object(object, scope)?)
         }
     };

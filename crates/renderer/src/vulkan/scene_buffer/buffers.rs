@@ -471,7 +471,7 @@ pub(crate) fn build_scene_descriptor_bindings() -> Vec<vk::DescriptorSetLayoutBi
     // Binding 25: the ReSTIR mover taint's moved-surface-ID set (#6250) —
     // `[0]` = count, `[1..]` = the stable surface IDs flagged
     // `INSTANCE_FLAG_MOVED_THIS_FRAME` this build. `triangle.frag` matches
-    // last frame's recorded occluder (`Reservoir::occluderSurface`) against
+    // last frame's recorded occluder against
     // it, so a mover's first moving frame (and a teleport) taints the pixels
     // it un-occludes. Always written at descriptor creation, contents
     // rewritten per frame by `upload_moved_surface_ids`.

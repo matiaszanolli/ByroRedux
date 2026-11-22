@@ -1,0 +1,24 @@
+[package]
+name = "ruffle_common"
+authors.workspace = true
+edition.workspace = true
+homepage.workspace = true
+license.workspace = true
+repository.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+hashbrown = { workspace = true }
+fnv = { workspace = true }
+gc-arena = { workspace = true }
+quick-xml = { workspace = true }
+regress = { workspace = true }
+ruffle_macros = { path = "../macros" }
+ruffle_wstr = { git = "https://github.com/ruffle-rs/ruffle", rev = "2edfd97d11897e6cf6301c30cd87e86d774919c1" }
+swf = { git = "https://github.com/ruffle-rs/ruffle", rev = "2edfd97d11897e6cf6301c30cd87e86d774919c1" }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+url = { workspace = true }

@@ -10,7 +10,7 @@
 //! within `wander_radius` of the actor's own spawn position, pause for a few
 //! seconds on arrival, then pick a new point and repeat indefinitely. The
 //! walk is NAVM-routed within the actor's own resident tile (`navmesh_path`,
-//! via `locomotion::step_along_waypoints`) and degrades to a straight line
+//! via `locomotion::step_along_waypoints_detailed`) and degrades to a straight line
 //! for any remainder that leaves it — Phase 2 cross-tile search is blocked,
 //! not merely unscheduled (see `docs/engine/navmesh-pathfinding.md` §9). [`WanderState`] is the
 //! per-actor runtime state — lazily inserted the first tick an actor is
@@ -76,7 +76,7 @@
 
 use super::locomotion::{advance_stuck_repick, pop_reached_waypoint, step_toward_detailed};
 use super::navmesh_path::resolve_cached_waypoints;
-use crate::components::{NavPath, NavmeshTile, WalkStuckTimer};
+use crate::components::{NavPath, WalkStuckTimer};
 use byroredux_core::ecs::components::{Transform, WanderBehavior, WanderPhase, WanderState};
 use byroredux_core::ecs::{Component, EntityId, World};
 use byroredux_core::math::{Quat, Vec3};
@@ -258,6 +258,11 @@ pub(crate) trait OscillatingWalkProcedure: Component {
     fn form_id(&self) -> u32;
     fn walk_of(state: &Self::State) -> OscillateWalk;
     fn state_of(walk: OscillateWalk) -> Self::State;
+    /// Whether the walk's home is the actor's `EditorPlacement` rather than where it stood when the
+    /// procedure began (a Near Editor Location package, #7225).
+    fn homes_at_editor_placement(&self) -> bool {
+        false
+    }
 }
 
 impl OscillatingWalkProcedure for WanderBehavior {
@@ -268,6 +273,9 @@ impl OscillatingWalkProcedure for WanderBehavior {
     }
     fn form_id(&self) -> u32 {
         self.form_id
+    }
+    fn homes_at_editor_placement(&self) -> bool {
+        self.near_editor_location
     }
     fn walk_of(state: &WanderState) -> OscillateWalk {
         OscillateWalk {
@@ -305,6 +313,8 @@ pub(crate) struct OscillateDecision {
     waypoint_override: Option<Vec3>,
     effective_goal: Vec3,
     waypoints: VecDeque<Vec3>,
+    /// The leg's pathgrid switch, resolved with `waypoints`.
+    grid: crate::components::GridWalk,
     translation: Vec3,
     /// `None` when the actor didn't move enough this tick to have a
     /// meaningful facing direction (e.g. paused, or already at target).
@@ -370,7 +380,7 @@ pub(crate) fn oscillating_walk_system_inner<B: OscillatingWalkProcedure>(
             return;
         };
         let state_q = world.query::<B::State>();
-        let tile_q = world.query::<NavmeshTile>();
+        let tile_q = super::navmesh_path::NavGraphs::of(world);
         let nav_path_q = world.query::<NavPath>();
         let stuck_q = world.query::<WalkStuckTimer>();
         let walk_speed_q = world.query::<crate::components::WalkSpeed>();
@@ -385,7 +395,11 @@ pub(crate) fn oscillating_walk_system_inner<B: OscillatingWalkProcedure>(
                 .and_then(|q| q.get(entity))
                 .map(B::walk_of)
                 .unwrap_or_else(|| {
-                    let home = transform.translation;
+                    let editor_home = behavior
+                        .homes_at_editor_placement()
+                        .then(|| world.get::<byroredux_core::ecs::components::EditorPlacement>(entity).map(|p| p.translation))
+                        .flatten();
+                    let home = editor_home.unwrap_or(transform.translation);
                     OscillateWalk {
                         home,
                         target: pick_wander_target(home, radius, form_id, 0),
@@ -408,10 +422,10 @@ pub(crate) fn oscillating_walk_system_inner<B: OscillatingWalkProcedure>(
             // actually walking this leg — mirrors `guard_system`'s same
             // "skip the resident-tile scan while nothing to walk toward"
             // shape (here: while `Paused`).
-            let (waypoint_override, effective_goal, waypoints) =
+            let (waypoint_override, effective_goal, waypoints, grid) =
                 if matches!(state.phase, WanderPhase::Walking) {
                     let cached = nav_path_q.as_ref().and_then(|q| q.get(entity));
-                    let (effective_goal, waypoints) = resolve_cached_waypoints(
+                    let (effective_goal, waypoints, grid) = resolve_cached_waypoints(
                         cached,
                         tile_q.as_ref(),
                         transform.translation,
@@ -419,9 +433,9 @@ pub(crate) fn oscillating_walk_system_inner<B: OscillatingWalkProcedure>(
                         0.0,
                         residency_generation,
                     );
-                    (waypoints.front().copied(), effective_goal, waypoints)
+                    (waypoints.front().copied(), effective_goal, waypoints, grid)
                 } else {
-                    (None, state.target, VecDeque::new())
+                    (None, state.target, VecDeque::new(), Default::default())
                 };
 
             scratch.decisions.push(OscillateDecision {
@@ -434,6 +448,7 @@ pub(crate) fn oscillating_walk_system_inner<B: OscillatingWalkProcedure>(
                 waypoint_override,
                 effective_goal,
                 waypoints,
+                grid,
                 translation: transform.translation,
                 rotation: None,
                 state,
@@ -476,6 +491,9 @@ pub(crate) fn oscillating_walk_system_inner<B: OscillatingWalkProcedure>(
                 goal: d.effective_goal,
                 residency_generation,
                 waypoints: std::mem::take(&mut d.waypoints),
+                // The leg is blocked while the stuck clock runs: it is zeroed by an unblocked
+                // step and by the re-pick it triggers.
+                grid: d.grid.stepped(d.stuck_secs > 0.0, dt),
             });
         }
     }
@@ -523,6 +541,7 @@ pub(crate) fn wander_system(world: &World, dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::NavmeshTile;
     use crate::systems::navmesh_path::test_tiles::two_triangle_quad_scaled;
 
     #[test]
@@ -581,6 +600,28 @@ mod tests {
         }
     }
 
+    /// #7225 — a Near Editor Location Wander homes on the actor's editor placement, not on where it stood when
+    /// the package began; any other Wander homes where it stands.
+    #[test]
+    fn a_near_editor_location_wander_homes_on_the_editor_placement() {
+        let placement = Vec3::new(-300.0, 0.0, 40.0);
+        let away = Vec3::new(500.0, 0.0, 500.0);
+        for near_editor_location in [true, false] {
+            let mut world = World::new();
+            world.register::<WanderBehavior>();
+            world.register::<WanderState>();
+            world.register::<Transform>();
+            world.register::<byroredux_core::ecs::components::EditorPlacement>();
+            let actor = world.spawn();
+            world.insert(actor, Transform::from_translation(away));
+            world.insert(actor, byroredux_core::ecs::components::EditorPlacement { translation: placement });
+            world.insert(actor, WanderBehavior { wander_radius: Some(200.0), form_id: 0x0002_0002, near_editor_location });
+            wander_system(&world, 0.016);
+            let home = world.get::<WanderState>(actor).expect("state inserted").home;
+            assert_eq!(home, if near_editor_location { placement } else { away }, "near_editor_location {near_editor_location}");
+        }
+    }
+
     #[test]
     fn wander_system_moves_actor_toward_target_with_no_physics_world() {
         // Synthetic World with no PhysicsWorld resource — the ground-snap
@@ -598,6 +639,7 @@ mod tests {
             WanderBehavior {
                 wander_radius: Some(200.0),
                 form_id: 0x0002_0002,
+                near_editor_location: false,
             },
         );
 
@@ -637,6 +679,7 @@ mod tests {
             WanderBehavior {
                 wander_radius: Some(200.0),
                 form_id: 0x0002_3262,
+                near_editor_location: false,
             },
         );
 
@@ -675,6 +718,7 @@ mod tests {
             WanderBehavior {
                 wander_radius: Some(200.0),
                 form_id: 0x0002_0002,
+                near_editor_location: false,
             },
         );
 
@@ -727,6 +771,7 @@ mod tests {
             WanderBehavior {
                 wander_radius: Some(1.0), // irrelevant: WanderState below fixes the target
                 form_id: 0x0003_0001,
+                near_editor_location: false,
             },
         );
         // Seed directly into a Walking leg toward a known target, instead
@@ -785,6 +830,7 @@ mod tests {
             WanderBehavior {
                 wander_radius: Some(200.0),
                 form_id: 0x0003_0002,
+                near_editor_location: false,
             },
         );
         // Already paused, with a stale cached path left over from a
@@ -804,6 +850,7 @@ mod tests {
                 goal: Vec3::new(999.0, 0.0, 999.0),
                 residency_generation: 0,
                 waypoints: std::collections::VecDeque::from(vec![Vec3::new(999.0, 0.0, 999.0)]),
+                grid: Default::default(),
             },
         );
 
@@ -814,5 +861,47 @@ mod tests {
             nq.get(entity).is_none(),
             "paused — nothing to walk toward this tick, stale cache must be cleared"
         );
+    }
+
+    /// AIP-WALK-003 — a leg that grinds against a wall takes the pathgrid after the controller has
+    /// held it for 1.5 s, before the 2.5 s stuck clock re-picks the target.
+    #[test]
+    fn a_wander_leg_blocked_by_a_wall_takes_the_pathgrid_before_it_re_picks() {
+        use crate::systems::navmesh_path::test_tiles::{grid_round_the_wall, walled_physics};
+        let mut world = World::new();
+        world.register::<WanderBehavior>();
+        world.register::<WanderState>();
+        world.register::<Transform>();
+        world.register::<NavPath>();
+        world.register::<WalkStuckTimer>();
+        world.insert_resource(walled_physics());
+        crate::components::spawn_pathgrid_tiles(&mut world, [&grid_round_the_wall()]);
+        let home = Vec3::new(-100.0, 0.0, 0.0);
+        let actor = world.spawn();
+        world.insert(actor, Transform::from_translation(home));
+        world.insert(actor, WanderBehavior { wander_radius: Some(1000.0), form_id: 0x0012_0001, near_editor_location: false });
+        world.insert(
+            actor,
+            WanderState {
+                home,
+                target: Vec3::new(400.0, 0.0, 0.0),
+                phase: WanderPhase::Walking,
+                pick_count: 0,
+            },
+        );
+
+        let mut tick = make_wander_system();
+        let mut switched_at = None;
+        // 100 units from the wall at 100 units/s: held from about 0.65 s, so the 1.5 s switch comes
+        // at about 2.2 s and the 2.5 s re-pick would not come before 3.2 s.
+        for i in 0..30 {
+            tick(&world, 0.1);
+            if world.get::<NavPath>(actor).is_some_and(|p| p.grid.on_grid) {
+                switched_at = Some((i + 1) as f32 * 0.1);
+                break;
+            }
+        }
+        let t = switched_at.expect("a leg held against a wall must take the grid before the re-pick at 2.5 s");
+        assert!(t >= crate::components::GridWalk::AFTER_BLOCKED_SECS, "switched at {t}s");
     }
 }

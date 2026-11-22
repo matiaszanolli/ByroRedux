@@ -55,8 +55,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(crate::render::SceneEffectSoftCache::default());
     // #2950 — `pool_regen_tick_system` needs BOTH `PoolRegenConfig`
     // (per-game: FO3/FNV install it with an ActionPoints lane on the first
-    // cell load, #6350; the TES Fatigue/Magicka lanes wait on Oblivion's
-    // pre-AVIF resolver, #3768) and this accumulator.
+    // cell load, #6350; Oblivion with its Fatigue/Magicka lanes through
+    // `build_tes_pool_regen`, #7010/#7197) and this accumulator.
     // `try_resource_mut` does not default-insert, so leaving the accumulator to
     // the per-game install would have left the tick returning at its second
     // line forever — registered, declared in `sys.accesses`, and silently
@@ -78,6 +78,9 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // audit. Same refresh cadence and PENDING-before-first-sample posture
     // as `LodCoverageStats` immediately above.
     world.insert_resource(byroredux_core::ecs::TerrainSeamStats::default());
+    // #7152 — TSD-4.1 terrain displacement patches: slot assignment, the
+    // on/off switch and the last seam check `terrain.patches` prints.
+    world.insert_resource(crate::terrain_patches::TerrainPatchState::default());
     world.insert_resource(byroredux_core::ecs::OwnershipTelemetry::default());
     world.insert_resource(byroredux_core::ecs::OwnershipTracker::new());
     world.insert_resource(byroredux_core::ecs::UpscalerTelemetry::default());
@@ -85,6 +88,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(byroredux_core::ecs::PendingUpscalerSwitch::default());
     world.insert_resource(SkinCoverageStats::default());
     world.insert_resource(byroredux_core::ecs::RtIntegrityStats::default());
+    // RCG-DBG-003 — what `gi.cache` prints.
+    world.insert_resource(byroredux_core::ecs::GiCacheStats::default());
     // #3305 — shadow-mask census, published alongside RtIntegrityStats.
     world.insert_resource(byroredux_core::ecs::ShadowMaskCensus::default());
     // REND-#1451 — live attenuation tuning, read into the renderer
@@ -176,6 +181,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(crate::combat::CombatState::default());
     // #3709 — per-combatant melee cooldown/blocking, split out of
     // CombatState (a Resource can only ever represent one combatant).
+    world.register::<crate::components::Door>();
     world.register::<crate::combat::MeleeState>();
     // M65 (SNK-DET-001) — each detector's awareness of the player, written by the detection tick.
     world.register::<byroredux_core::ecs::components::Awareness>();
@@ -183,6 +189,18 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.insert_resource(crate::encumbrance::PlayerEncumbrance::default());
     // M47.2 — level-up skill points and perks, banked by grant_experience.
     world.register::<byroredux_core::character::LevelUpPoints>();
+    world.register::<byroredux_core::character::SkillUseLevel>();
+    // Player-spellcasting (PSC-RDY-001): the readied spell and the cast's session state.
+    world.register::<byroredux_scripting::player_cast::ReadiedSpell>();
+    // Player-archery (BOW-AMM-001): the equipped arrow type.
+    world.register::<byroredux_core::ecs::components::EquippedAmmo>();
+    world.init_resource::<byroredux_scripting::player_cast::CastState>();
+    world.init_resource::<crate::bow::BowState>();
+    // #7056 — the player's fall clock (transient).
+    world.init_resource::<byroredux_core::character::FallTracker>();
+    world.init_resource::<crate::skill_use_emit::StanceTimers>();
+    world.init_resource::<crate::skill_use_emit::LevelNotices>();
+    world.init_resource::<crate::oblivion_rest::RestSession>();
     world.insert_resource(StringPool::new());
     // #1212 / D1-NEW-01 — FormIdPool is the intern table backing
     // `FormIdComponent` and `World::find_by_form_id`. Every
@@ -445,6 +463,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_core::ecs::components::AnimatedAlpha>();
     // The routing graph cache and the Unroutable reasons `actor.where` reads.
     world.init_resource::<crate::cell_loader::relocated::TravelIndex>();
+    world.init_resource::<crate::systems::npc_dialogue::FollowUpTopics>();
     world.init_resource::<crate::cell_loader::relocated::TravelReports>();
 
     // M42.5 — pre-register the Follow marker + runtime-state storages so
@@ -496,6 +515,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_core::ecs::components::PatrolBehavior>();
     world.register::<byroredux_core::ecs::components::PatrolState>();
     world.register::<crate::components::AmbientPackageRuntime>();
+    // #7233 — the leaf a running tree package installed, written by `ambient_ai_package_system`.
+    world.register::<crate::npc_spawn::ai_package::TreeLeafRun>();
     world.register::<crate::systems::random_conversation::ConversationHold>();
     world.register::<crate::systems::mines::ArmedMine>();
     world.register::<crate::systems::mines::SpentMine>();

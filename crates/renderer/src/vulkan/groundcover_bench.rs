@@ -421,6 +421,15 @@ struct RasterTarget {
     framebuffer: vk::Framebuffer,
 }
 
+/// The four shader modules the sampling bench's pipelines are built from.
+#[derive(Clone, Copy)]
+struct BenchShaders {
+    comp_module: vk::ShaderModule,
+    vert_module: vk::ShaderModule,
+    frag_module: vk::ShaderModule,
+    bake_module: vk::ShaderModule,
+}
+
 impl GroundcoverBench {
     /// `global_vertex_buffer` may be `vk::Buffer::null()` at creation — the
     /// mesh registry's SSBO does not exist until the first upload. The
@@ -741,10 +750,7 @@ impl GroundcoverBench {
             device,
             pipeline_cache,
             &entry,
-            comp_module,
-            vert_module,
-            frag_module,
-            bake_module,
+            BenchShaders { comp_module, vert_module, frag_module, bake_module },
         );
         for module in [comp_module, vert_module, frag_module, bake_module] {
             // SAFETY: every pipeline created above has already consumed the
@@ -755,17 +761,14 @@ impl GroundcoverBench {
         result
     }
 
-    #[allow(clippy::too_many_arguments)] // One handle per shader module the pipelines are built from.
     fn build_pipelines(
         &mut self,
         device: &ash::Device,
         pipeline_cache: vk::PipelineCache,
         entry: &std::ffi::CStr,
-        comp_module: vk::ShaderModule,
-        vert_module: vk::ShaderModule,
-        frag_module: vk::ShaderModule,
-        bake_module: vk::ShaderModule,
+        shaders: BenchShaders,
     ) -> Result<()> {
+        let BenchShaders { comp_module, vert_module, frag_module, bake_module } = shaders;
         // `BENCH_PATH` — specialization constant 0 in both sampling shaders.
         // 0 = path A, 1 = path B, 2 = the no-sampling control.
         let path_values: [u32; 3] = [0, 1, 2];

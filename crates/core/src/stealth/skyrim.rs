@@ -133,6 +133,10 @@ pub struct StealthPoints {
     pub since_attacked: f32,
     /// Seconds since the player's last detection event.
     pub since_event: f32,
+    /// Fallout 4: a hostile detector has detected the player (the Lost refill rate and delay apply).
+    pub ever_detected: bool,
+    /// Fallout 4: the player has attacked (the Hostile refill rate applies).
+    pub ever_attacked: bool,
     /// Time not yet stepped (the original steps every 0.1 s).
     pending: f32,
 }
@@ -143,14 +147,22 @@ impl StealthPoints {
 
     #[must_use]
     pub fn full(max: f32) -> Self {
-        Self { points: max, since_alert: f32::MAX, since_attacked: f32::MAX, since_event: f32::MAX, pending: 0.0 }
+        Self {
+            points: max,
+            since_alert: f32::MAX,
+            since_attacked: f32::MAX,
+            since_event: f32::MAX,
+            ever_detected: false,
+            ever_attacked: false,
+            pending: 0.0,
+        }
     }
 }
 
 impl crate::ecs::resource::Resource for StealthPoints {}
 
 /// What one frame of stealth points needs.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct StealthPointInputs {
     /// The highest value an aggressive detector in range has toward the player.
     pub highest_hostile_value: Option<f32>,
@@ -162,6 +174,17 @@ pub struct StealthPointInputs {
     pub target_sneaking: bool,
     pub attacked: bool,
     pub detection_event: bool,
+    /// Fallout 4: the highest visual and sound levels of the hostile detectors in range.
+    pub highest_hostile_visual: Option<f32>,
+    pub highest_hostile_sound: Option<f32>,
+    /// Fallout 4: a hostile detector hearing the player has line of sight (a loud enough sound then drains
+    /// past the sound floor).
+    pub sound_line_of_sight: bool,
+    /// Fallout 4: a hostile detector passed the stealth-point thresholds (the points empty).
+    pub over_threshold: bool,
+    /// Fallout 4: the nearest hostile detector's distance (the refill slows with its attenuation).
+    pub nearest_hostile_distance: Option<f32>,
+    pub exterior: bool,
 }
 
 pub(super) fn step_points(s: &DetectionSettings, sp: &mut StealthPoints, i: StealthPointInputs, dt: f32) {
@@ -332,7 +355,7 @@ mod tests {
     #[test]
     fn the_level_follows_the_stealth_points() {
         let rules = rules();
-        let ctx = |hostile, points| LevelContext { hostile, target_sneaking: true, stealth_points: points };
+        let ctx = |hostile, points| LevelContext { hostile, target_sneaking: true, stealth_points: points, ..LevelContext::default() };
         assert_eq!(rules.level(0.0, ctx(true, 0.0)), DetectionLevel::Lost);
         assert_eq!(rules.level(10.0, ctx(false, 100.0)), DetectionLevel::Seen, "not aggro: no stealth points");
         assert_eq!(rules.level(10.0, ctx(true, 100.0)), DetectionLevel::Noticed);
@@ -355,6 +378,7 @@ mod tests {
             target_sneaking: true,
             attacked: false,
             detection_event: false,
+            ..StealthPointInputs::default()
         };
         rules.step_stealth_points(&mut sp, seen, 1.0);
         assert!((sp.points - 70.0).abs() < 1e-3, "10 · 3 per second: {}", sp.points);

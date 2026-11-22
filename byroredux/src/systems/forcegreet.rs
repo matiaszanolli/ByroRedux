@@ -278,14 +278,13 @@ fn forcegreet_system_inner(
     let mut opened: Vec<EntityId> = Vec::new();
     if let Some(mut transforms) = world.query_mut::<Transform>() {
         for (npc, step) in &steps {
-            if let Step::Walk { new_pos, rotation } = step {
-                if let Some(t) = transforms.get_mut(*npc) {
+            if let Step::Walk { new_pos, rotation } = step
+                && let Some(t) = transforms.get_mut(*npc) {
                     t.translation = *new_pos;
                     if let Some(rotation) = rotation {
                         t.rotation = *rotation;
                     }
                 }
-            }
         }
     }
     for (npc, step) in &steps {
@@ -325,15 +324,14 @@ fn forcegreet_system_inner(
     }
     // Consume directives whose conversation opened (or whose carrier
     // refuses one) — one greet per install.
-    if !opened.is_empty() {
-        if let Some(mut directives) = world.query_mut::<ForceGreetDirective>() {
+    if !opened.is_empty()
+        && let Some(mut directives) = world.query_mut::<ForceGreetDirective>() {
             for npc in opened {
                 directives.remove(npc);
                 stuck_secs.remove(&npc);
                 crate::systems::navmesh_path::clear_cached_path(world, npc);
             }
         }
-    }
 }
 
 #[cfg(test)]

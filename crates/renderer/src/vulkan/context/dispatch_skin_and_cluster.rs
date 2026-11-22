@@ -10,10 +10,11 @@
 
 use super::super::descriptors::memory_barrier;
 use crate::vulkan::gpu_timers::TimerPass;
-use super::frame_params::{next_clean_skin_frames, should_skip_skin_gpu_refresh};
-use super::{DrawCommand, FrameTimings, VulkanContext};
+use super::frame_params::{
+    next_clean_skin_frames, should_skip_skin_gpu_refresh, FrameInputs, FrameSlot,
+};
+use super::{FrameTimings, VulkanContext};
 use ash::vk;
-use byroredux_core::ecs::storage::EntityId;
 use std::time::Instant;
 
 impl VulkanContext {
@@ -21,20 +22,23 @@ impl VulkanContext {
     /// compute pass, refit skinned BLASes, build the TLAS, and dispatch
     /// cluster light culling. Extracted verbatim from `draw_frame` — the
     /// recording order is unchanged.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn dispatch_skin_and_cluster(
         &mut self,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-        draw_commands: &[DrawCommand],
-        bone_world: &[[[f32; 4]; 4]],
-        skin_offsets: &rustc_hash::FxHashMap<EntityId, u32>,
-        bind_inverse_pending_uploads: &[(u32, Vec<[[f32; 4]; 4]>)],
-        pose_dirty: &rustc_hash::FxHashSet<EntityId>,
+        slot: FrameSlot,
+        inputs: &FrameInputs,
         instance_map: &[Option<u32>],
         tlas_t0: Instant,
         t: &mut FrameTimings,
     ) {
+        let FrameSlot { cmd, frame } = slot;
+        let FrameInputs {
+            draw_commands,
+            bone_world,
+            skin_offsets,
+            bind_inverse_pending_uploads,
+            pose_dirty,
+            ..
+        } = *inputs;
         // D6-04 / #1811 — track how many consecutive frames had no
         // skinned-pose change and no pending first-sight bind_inverses
         // upload. Any dirty signal resets the streak so the forthcoming
@@ -77,12 +81,11 @@ impl VulkanContext {
         let mut skin_palette_timer_started = false;
         let bone_world_copy_recorded =
             !skip_skin_gpu_refresh && self.scene_buffers.bone_input_upload_bytes(frame) > 0;
-        if bone_world_copy_recorded {
-            if let Some(ref mut timers) = self.gpu_timers {
+        if bone_world_copy_recorded
+            && let Some(ref mut timers) = self.gpu_timers {
                 timers.cmd_start(TimerPass::SkinPalette, &self.device, cmd, frame);
                 skin_palette_timer_started = true;
             }
-        }
         if !skip_skin_gpu_refresh {
             self.scene_buffers
                 .record_bone_world_copy(&self.device, cmd, frame);
@@ -135,12 +138,11 @@ impl VulkanContext {
             .map(|(s, _)| *s)
             .collect();
         if pending_capped > 0 {
-            if !skin_palette_timer_started {
-                if let Some(ref mut timers) = self.gpu_timers {
+            if !skin_palette_timer_started
+                && let Some(ref mut timers) = self.gpu_timers {
                     timers.cmd_start(TimerPass::SkinPalette, &self.device, cmd, frame);
                     skin_palette_timer_started = true;
                 }
-            }
             self.scene_buffers.record_pending_bind_inverse_copies(
                 &self.device,
                 cmd,
@@ -203,12 +205,11 @@ impl VulkanContext {
                 && !palette_plan.is_empty()
                 && (bone_world_copy_recorded || pending_capped > 0)
             {
-                if !skin_palette_timer_started {
-                    if let Some(ref mut timers) = self.gpu_timers {
+                if !skin_palette_timer_started
+                    && let Some(ref mut timers) = self.gpu_timers {
                         timers.cmd_start(TimerPass::SkinPalette, &self.device, cmd, frame);
                         skin_palette_timer_started = true;
                     }
-                }
                 // #4829 — descriptor range = the whole buffer, never this
                 // frame's `bone_dispatch_bytes` (frozen by the cache).
                 let bone_world_size = self.scene_buffers.bone_world_buffers()[frame].size;
@@ -262,11 +263,10 @@ impl VulkanContext {
             self.scratch.palette_plan_scratch = palette_plan;
         }
 
-        if skin_palette_timer_started {
-            if let Some(ref mut timers) = self.gpu_timers {
+        if skin_palette_timer_started
+            && let Some(ref mut timers) = self.gpu_timers {
                 timers.cmd_end(TimerPass::SkinPalette, &self.device, cmd, frame);
             }
-        }
 
         self.record_skinned_blas_refit(cmd, frame, draw_commands, pose_dirty);
 
@@ -324,8 +324,8 @@ impl VulkanContext {
         // SAFETY: `cmd` is recording; `accel` and `alloc` are live. `build_tlas`
         // records into `cmd`; the following barrier sequences ray-query reads.
         unsafe {
-            if let Some(ref mut accel) = self.accel_manager {
-                if let Some(alloc) = self.allocator.as_ref() {
+            if let Some(ref mut accel) = self.accel_manager
+                && let Some(alloc) = self.allocator.as_ref() {
                     if let Some(ref mut timers) = self.gpu_timers {
                         timers.cmd_start(TimerPass::TlasBuild, &self.device, cmd, frame);
                     }
@@ -480,7 +480,6 @@ impl VulkanContext {
                         accel.evict_unused_blas(&self.device, alloc, 0);
                     }
                 }
-            }
         }
         t.tlas_build_ns = tlas_t0.elapsed().as_nanos() as u64;
 
@@ -585,6 +584,89 @@ impl VulkanContext {
                 self.gpu_timers.as_mut(),
             );
         }
+    }
+
+    /// #7152 — TSD-4.1: re-displace this frame's resident terrain patches in
+    /// place, after `upload_terrain_tiles_if_dirty` (the tiles the pass reads)
+    /// and before the patch BLAS refit and the TLAS build in
+    /// `dispatch_skin_and_cluster` (#7221), so the TLAS and the geometry pass
+    /// both see this frame's relief.
+    pub(super) fn record_terrain_patches(&mut self, cmd: vk::CommandBuffer, frame: usize) {
+        let Some(pass) = self.exterior.terrain_patch.as_mut() else {
+            return;
+        };
+        let Some(vertex_buffer) = self.mesh_registry.global_vertex_buffer.as_ref() else {
+            return;
+        };
+        let (tile_buffer, tile_buffer_size) = self.scene_buffers.terrain_tile_buffer();
+        let buffers = crate::vulkan::terrain_patch::TerrainPatchBuffers {
+            vertex_buffer: vertex_buffer.buffer,
+            vertex_buffer_size: vertex_buffer.size,
+            vertex_generation: self.mesh_registry.geometry_generation(),
+            tile_buffer,
+            tile_buffer_size,
+        };
+        let timed = pass.has_frame();
+        if timed && let Some(timers) = self.gpu_timers.as_mut() {
+            timers.cmd_start(TimerPass::TerrainPatch, &self.device, cmd, frame);
+        }
+        let bindless_set = self.texture_registry.descriptor_set(frame);
+        // SAFETY: outside any render pass (after the terrain-tile upload, before
+        // the patch BLAS and the TLAS build); the vertex and tile buffers are the
+        // ones this frame's draws bind, and the bindless set is this frame's.
+        unsafe {
+            pass.record(&self.device, cmd, frame, buffers, bindless_set, &self.mesh_registry);
+        }
+        if timed && let Some(timers) = self.gpu_timers.as_mut() {
+            timers.cmd_end(TimerPass::TerrainPatch, &self.device, cmd, frame);
+        }
+        self.record_terrain_patch_blas(cmd, frame);
+    }
+
+    /// #7221 — TSD-4.2: build or refit the patch BLAS over what the patch
+    /// compute just wrote, before the TLAS build. Runs every frame (with no
+    /// requests it only clears last frame's ready set, so a patch never enters
+    /// the TLAS on a stale BLAS).
+    fn record_terrain_patch_blas(&mut self, cmd: vk::CommandBuffer, frame: usize) {
+        let (Some(pass), Some(accel), Some(allocator)) = (
+            self.exterior.terrain_patch.as_mut(),
+            self.accel_manager.as_mut(),
+            self.allocator.as_ref(),
+        ) else {
+            return;
+        };
+        let (Some(vertex_buffer), Some(index_buffer)) = (
+            self.mesh_registry.global_vertex_buffer.as_ref(),
+            self.mesh_registry.global_index_buffer.as_ref(),
+        ) else {
+            return;
+        };
+        // SAFETY: both global buffers carry SHADER_DEVICE_ADDRESS usage.
+        let (vertex_base, index_base) = unsafe {
+            (
+                self.device.get_buffer_device_address(
+                    &vk::BufferDeviceAddressInfo::default().buffer(vertex_buffer.buffer),
+                ),
+                self.device.get_buffer_device_address(
+                    &vk::BufferDeviceAddressInfo::default().buffer(index_buffer.buffer),
+                ),
+            )
+        };
+        let requests = accel.terrain_patch_blas_requests();
+        pass.blas_requests(frame, &self.mesh_registry, vertex_base, index_base, requests);
+        let timed = !requests.is_empty();
+        if timed && let Some(timers) = self.gpu_timers.as_mut() {
+            timers.cmd_start(TimerPass::TerrainPatchBlas, &self.device, cmd, frame);
+        }
+        // SAFETY: recorded right after the patch compute, whose closing
+        // barrier makes its vertex writes visible to AS-build reads, outside
+        // any render pass and before this frame's TLAS build; the requests
+        // address the live global buffers.
+        let stats = unsafe { accel.record_terrain_patch_blas(&self.device, allocator, cmd) };
+        if timed && let Some(timers) = self.gpu_timers.as_mut() {
+            timers.cmd_end(TimerPass::TerrainPatchBlas, &self.device, cmd, frame);
+        }
+        pass.set_blas_stats(stats);
     }
 
     /// This frame's TLAS for a compute pass that ray-queries it

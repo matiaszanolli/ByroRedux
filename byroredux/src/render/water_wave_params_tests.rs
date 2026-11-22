@@ -430,9 +430,21 @@ fn non_unit_weather_direction_is_normalized_for_water_scroll() {
     });
 
     let params = &run_build(&world)[0].params;
-    let expected = 100.0 * 0.0015;
+    let expected = wind_drift_uv(100.0, 1.0, 1.0, WaterMaterial::default().uv_scale_a);
     assert!((params.scroll[0] - calm[0].params.scroll[0] - expected * 0.6).abs() < 1e-6);
     assert!((params.scroll[1] - calm[0].params.scroll[1] - expected * 0.8).abs() < 1e-6);
+}
+
+/// The wind term `WaterMaterial::wave_scrolls` adds to water whose motion is
+/// its own: the wind's share of the calm drift band (world units/s), times
+/// the layer weight, converted by the layer's own UV-per-BU scale.
+fn wind_drift_uv(wind_bu_per_s: f32, kind_damping: f32, weight: f32, uv_scale: f32) -> f32 {
+    use byroredux_core::ecs::components::groundcover::MAX_WIND_SPEED;
+    use byroredux_core::ecs::components::water::{
+        WATER_CALM_DRIFT_MAX_BU_PER_S, WATER_CALM_DRIFT_MIN_BU_PER_S,
+    };
+    let wind = (wind_bu_per_s * kind_damping / MAX_WIND_SPEED).clamp(0.0, 1.0);
+    (WATER_CALM_DRIFT_MAX_BU_PER_S - WATER_CALM_DRIFT_MIN_BU_PER_S) * wind * weight * uv_scale
 }
 
 #[test]
@@ -642,10 +654,11 @@ fn ripple_event_reaches_water_gpu_params() {
 
 /// Flowing kinds damp the atmospheric weather transport to
 /// `FLOWING_WATER_WEATHER_TRANSPORT` while calm water keeps it whole — the
-/// flow term owns visible transport on rivers (measured on the White River
+/// current owns visible transport on rivers (measured on the White River
 /// fixture: full-rate weather swept the surface cross-current several
 /// times faster than the authored 2.876 BU/s flow). The damping must apply
-/// to every composed layer so the aggregate surface motion keeps its shape.
+/// to every composed layer so the aggregate surface motion keeps its shape,
+/// and each layer converts the wind drift by its own UV scale.
 #[test]
 fn flowing_kinds_damp_the_weather_transport_but_calm_keeps_it() {
     let wind = WindField {
@@ -654,9 +667,8 @@ fn flowing_kinds_damp_the_weather_transport_but_calm_keeps_it() {
         gust_amplitude: 0.0,
         gust_frequency: 0.0,
     };
-    // Full-rate weather scroll for a 200 BU/s wind.
-    let weather_x = 200.0
-        * byroredux_core::ecs::components::water::WEATHER_SCROLL_PER_BU_PER_S;
+    let close = |a: f32, b: f32| (a - b).abs() < 1e-6;
+    let defaults = WaterMaterial::default();
 
     let mut calm = world_with_water_plane(
         1.5, 2.0, 73.0, 1.0 / 488.0, [0.7, 0.6, 0.5], [0.9, 0.5, 0.1, 0.2],
@@ -664,15 +676,15 @@ fn flowing_kinds_damp_the_weather_transport_but_calm_keeps_it() {
     );
     calm.insert_resource(wind);
     let params = &run_build(&calm)[0].params;
-    assert_eq!(
-        params.scroll[0],
-        weather_x + WaterMaterial::default().scroll_a[0],
-        "calm water carries the full weather transport over its authored scroll"
+    assert!(
+        close(params.scroll[0], wind_drift_uv(200.0, 1.0, 1.0, defaults.uv_scale_a) + defaults.scroll_a[0]),
+        "calm water carries the full wind drift over its authored scroll: {:?}",
+        params.scroll
     );
-    assert_eq!(
-        params.scroll_c[0],
-        weather_x * 0.45,
-        "layer C keeps its 0.45 weather share on calm water"
+    assert!(
+        close(params.scroll_c[0], wind_drift_uv(200.0, 1.0, 0.45, 1.0 / 488.0)),
+        "layer C keeps its 0.45 share of the wind drift on calm water: {:?}",
+        params.scroll_c
     );
 
     let mut river = world_with_water_plane(
@@ -690,21 +702,21 @@ fn flowing_kinds_damp_the_weather_transport_but_calm_keeps_it() {
         plane.kind = WaterKind::River;
     }
     let params = &run_build(&river)[0].params;
-    let damped = weather_x * WaterKind::FLOWING_WATER_WEATHER_TRANSPORT;
-    assert_eq!(
-        params.scroll[0],
-        damped + WaterMaterial::default().scroll_a[0],
-        "a river's layer A carries the damped weather transport"
+    let damping = WaterKind::FLOWING_WATER_WEATHER_TRANSPORT;
+    assert!(
+        close(params.scroll[0], wind_drift_uv(200.0, damping, 1.0, defaults.uv_scale_a) + defaults.scroll_a[0]),
+        "a river's layer A carries the damped wind drift: {:?}",
+        params.scroll
     );
-    assert_eq!(
-        params.scroll[2],
-        damped * 0.65 + WaterMaterial::default().scroll_b[0],
-        "layer B keeps its 0.65 share of the damped transport over its authored scroll"
+    assert!(
+        close(params.scroll[2], wind_drift_uv(200.0, damping, 0.65, defaults.uv_scale_b) + defaults.scroll_b[0]),
+        "layer B keeps its 0.65 share of the damped drift over its authored scroll: {:?}",
+        params.scroll
     );
-    assert_eq!(
-        params.scroll_c[0],
-        damped * 0.45,
-        "layer C keeps its 0.45 share of the damped transport"
+    assert!(
+        close(params.scroll_c[0], wind_drift_uv(200.0, damping, 0.45, 1.0 / 488.0)),
+        "layer C keeps its 0.45 share of the damped drift: {:?}",
+        params.scroll_c
     );
     assert_eq!(
         params.tune[3],

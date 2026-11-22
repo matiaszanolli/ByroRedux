@@ -169,8 +169,8 @@ impl BSEffectShaderProperty {
         // so editor labels with no path suffix continue through to the
         // full body parse — see #749 / SF-D3-01. This must stay in
         // lockstep with `BSLightingShaderProperty::parse_fo76_plus`.
-        if bsver >= crate::version::bsver::FO76 {
-            if let Some(name) = net.name.as_deref() {
+        if bsver >= crate::version::bsver::FO76
+            && let Some(name) = net.name.as_deref() {
                 let is_ref = if bsver >= crate::version::bsver::STARFIELD {
                     !name.is_empty()
                 } else {
@@ -180,7 +180,6 @@ impl BSEffectShaderProperty {
                     return Ok(Self::material_reference_stub(net));
                 }
             }
-        }
 
         // Shared Skyrim+ head — shader flags 1/2, the BSVER >= 132 CRC
         // arrays, then UV offset/scale. `parse_skyrim_shader_base` owns the

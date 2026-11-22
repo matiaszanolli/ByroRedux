@@ -3,7 +3,7 @@
 use super::*;
 
 /// Build the presentation snapshot only while the native inventory is visible.
-pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::InventorySnapshot> {
+pub(crate) fn snapshot(world: &World) -> Option<byroredux_native_ui::InventorySnapshot> {
     let player = PlayerEntity::get(world)?;
     // Clone each component before acquiring the next storage lock. The menu
     // is off the hot path, and this preserves the ECS invariant that callers
@@ -12,6 +12,7 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::InventorySna
     let equipment = world
         .get::<EquipmentSlots>(player)
         .map(|equipment| (*equipment).clone());
+    let equipped_ammo = crate::bow::equipped_ammo(world, player);
     let catalog = world.try_resource::<InventoryCatalog>();
     let pool = world.try_resource::<byroredux_core::ecs::resources::ItemInstancePool>();
 
@@ -31,7 +32,7 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::InventorySna
             .and_then(|instance| pool.as_ref()?.get(instance).map(|inst| inst.quality))
             .unwrap_or(0);
         let improvement = (quality > 0).then(|| crate::smithing::describe(quality, definition));
-        items.push(byroredux_debug_ui::InventoryItemView {
+        items.push(byroredux_native_ui::InventoryItemView {
             index,
             form_id: stack.base_form_id,
             name: definition.map_or_else(
@@ -52,7 +53,8 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::InventorySna
             // otherwise render as unequipped in the menu.
             equipped: equipment
                 .as_ref()
-                .is_some_and(|slots| slots.is_equipped(InventoryIndex(index))),
+                .is_some_and(|slots| slots.is_equipped(InventoryIndex(index)))
+                || equipped_ammo == Some(stack.base_form_id),
             equippable: definition.is_some_and(|definition| definition.equip_target.is_some()),
             consumable: catalog.as_ref().is_some_and(|catalog| {
                 catalog.restorations.contains_key(&stack.base_form_id) || catalog.script_effects.contains_key(&stack.base_form_id)
@@ -66,7 +68,7 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::InventorySna
             .then_with(|| left.index.cmp(&right.index))
     });
 
-    Some(byroredux_debug_ui::InventorySnapshot {
+    Some(byroredux_native_ui::InventorySnapshot {
         items,
         total_weight: catalog
             .as_ref()
@@ -380,9 +382,9 @@ pub(crate) fn dropped_item_story_event_system(world: &World, dt: f32) {
 /// of the "Used {name}" line a successful use pushes.
 pub(crate) fn apply_action(
     world: &mut World,
-    action: byroredux_debug_ui::InventoryAction,
+    action: byroredux_native_ui::InventoryAction,
 ) -> MutationResult {
-    use byroredux_debug_ui::InventoryAction;
+    use byroredux_native_ui::InventoryAction;
     let result = match action {
         InventoryAction::Consume { index, form_id } => consume_item(world, index, form_id),
         InventoryAction::ToggleEquip { index } => toggle_equip(world, index),
@@ -397,8 +399,8 @@ pub(crate) fn apply_action(
 /// The player-visible half of a refused menu action (#4707). The item is
 /// named from the catalog; the row's base form stands in when the catalog
 /// has no entry, the same fallback [`pickup_loot`] uses.
-pub(super) fn notify_refused_action(world: &World, action: byroredux_debug_ui::InventoryAction) {
-    use byroredux_debug_ui::InventoryAction;
+pub(super) fn notify_refused_action(world: &World, action: byroredux_native_ui::InventoryAction) {
+    use byroredux_native_ui::InventoryAction;
     let (verb, form_id) = match action {
         InventoryAction::Consume { form_id, .. } => ("use", Some(form_id)),
         InventoryAction::Drop { form_id, .. } => ("drop", Some(form_id)),
@@ -474,6 +476,10 @@ pub(super) fn toggle_equip(world: &mut World, index: u32) -> MutationResult {
     else {
         return MutationResult::Unavailable;
     };
+    // BOW-AMM-001 — an arrow type goes to the arrow slot, not the biped or weapon slots.
+    if equip_target == EquipTarget::Ammo {
+        return toggle_equipped_ammo(world, player, form_id);
+    }
     let Some(mut equipment_query) = world.query_mut::<EquipmentSlots>() else {
         return MutationResult::Unavailable;
     };
@@ -499,16 +505,17 @@ pub(super) fn toggle_equip(world: &mut World, index: u32) -> MutationResult {
                 .equip_weapon(inventory_index)
                 .into_iter()
                 .collect(),
+            // Taken before the equipment query above; an arrow never reaches the occupancy array.
+            EquipTarget::Ammo => Vec::new(),
         };
         for displaced in displaced {
-            if !equipment.is_equipped(displaced) {
-                if let Some(item_form_id) = inventory_form_ids.get(displaced.0 as usize).copied() {
+            if !equipment.is_equipped(displaced)
+                && let Some(item_form_id) = inventory_form_ids.get(displaced.0 as usize).copied() {
                     changes.push(byroredux_scripting::EquipmentChange {
                         item_form_id,
                         equipped: false,
                     });
                 }
-            }
         }
         changes.push(byroredux_scripting::EquipmentChange {
             item_form_id: form_id,
@@ -527,6 +534,32 @@ pub(super) fn toggle_equip(world: &mut World, index: u32) -> MutationResult {
     if weapon_changed {
         reconcile_equipped_weapon(world, player, equipped_weapon);
     }
+    byroredux_scripting::emit_equipment_changes(world, player, changes);
+    mutation
+}
+
+/// Equip or unequip an arrow type: choosing the one already equipped puts it away, any other replaces it
+/// (player-archery BOW-AMM-001). The slot holds the form, never the count (the inventory's), and equipping tells the
+/// scripts as any equip does, the replaced type's unequip first.
+pub(super) fn toggle_equipped_ammo(world: &mut World, player: byroredux_core::ecs::EntityId, form_id: u32) -> MutationResult {
+    use byroredux_core::ecs::components::EquippedAmmo;
+    if world.try_resource::<byroredux_core::character::BowModel>().is_none() {
+        return MutationResult::Unavailable;
+    }
+    let current = world.get::<EquippedAmmo>(player).and_then(|slot| slot.0);
+    let mut changes = Vec::new();
+    let (next, mutation) = if current == Some(form_id) {
+        changes.push(byroredux_scripting::EquipmentChange { item_form_id: form_id, equipped: false });
+        (None, MutationResult::Unequipped)
+    } else {
+        if let Some(old) = current {
+            changes.push(byroredux_scripting::EquipmentChange { item_form_id: old, equipped: false });
+        }
+        changes.push(byroredux_scripting::EquipmentChange { item_form_id: form_id, equipped: true });
+        (Some(form_id), MutationResult::Equipped)
+    };
+    crate::bow::set_equipped_ammo(world, player, next);
+    log::info!("inventory: player {} arrows {form_id:08X}", if next.is_some() { "equipped" } else { "unequipped" });
     byroredux_scripting::emit_equipment_changes(world, player, changes);
     mutation
 }

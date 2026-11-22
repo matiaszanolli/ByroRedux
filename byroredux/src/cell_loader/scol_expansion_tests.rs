@@ -28,6 +28,7 @@ fn mk_stat(form_id: u32, editor_id: &str, model_path: &str) -> StaticObject {
         script_form_id: 0,
         visible_when_distant: false,
         destruction: None,
+        door: None,
     }
 }
 

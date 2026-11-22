@@ -157,11 +157,10 @@ pub fn parse_imad(form_id: u32, subs: &[SubRecord], game: GameKind) -> ImadRecor
                 }
                 out.duration_seconds = le_f32_at(&sub.data, 4).unwrap_or_default();
                 // DNAM offsets 204/208 in the 244-byte Skyrim layout.
-                if let (Some(x), Some(y)) = (le_f32_at(&sub.data, 204), le_f32_at(&sub.data, 208)) {
-                    if x.is_finite() && y.is_finite() {
+                if let (Some(x), Some(y)) = (le_f32_at(&sub.data, 204), le_f32_at(&sub.data, 208))
+                    && x.is_finite() && y.is_finite() {
                         out.radial_blur_center = [x, y];
                     }
-                }
             }
             b"BNAM" => push_scalar(&mut out.blur_radius, &sub.data),
             b"VNAM" => push_scalar(&mut out.double_vision_strength, &sub.data),

@@ -336,7 +336,7 @@ fn attach_esm_light(
         ),
     );
     let animation_flags = crate::light_translate::canonical_light_animation_flags(game, ld.flags);
-    attach_light_flicker_if_needed(world, entity, ld, ref_pos, animation_flags);
+    attach_light_flicker_if_needed(world, entity, ld, ref_pos, ref_pos, animation_flags);
 }
 
 /// A synthetic child that draws nothing (no statics row, an editor marker, a disabled or
@@ -459,9 +459,9 @@ pub(super) fn spawn_synth_child(
     // attached — just through whichever ordinary per-child branch below
     // actually matches its own record kind (LIGH / static mesh / etc.,
     // #3016), not through this REFR-level trigger path.
-    if trigger_volume_should_spawn_for_synth_child(is_primary_synth, has_mesh, has_script) {
-        if let Some(prim) = placed_ref.primitive.as_ref() {
-            if let Some(volume) = trigger_volume_from_primitive(prim, ref_pos, ref_rot, ref_scale) {
+    if trigger_volume_should_spawn_for_synth_child(is_primary_synth, has_mesh, has_script)
+        && let Some(prim) = placed_ref.primitive.as_ref()
+            && let Some(volume) = trigger_volume_from_primitive(prim, ref_pos, ref_rot, ref_scale) {
                 let entity = world.spawn();
                 world.insert(entity, Transform::new(ref_pos, ref_rot, ref_scale));
                 world.insert(entity, GlobalTransform::new(ref_pos, ref_rot, ref_scale));
@@ -495,8 +495,6 @@ pub(super) fn spawn_synth_child(
                 accum.entity_count += 1;
                 return;
             }
-        }
-    }
 
     let stat = match index.statics.get(&child_form_id) {
         Some(s) => {
@@ -772,8 +770,8 @@ pub(super) fn spawn_synth_child(
                 // unique model across the process — matches
                 // the loose-NIF path's one-clip-per-NIF
                 // invariant from #261.
-                if let Some(ref cached) = parsed {
-                    if let Some(nif_clip) = cached.embedded_clip.as_ref() {
+                if let Some(ref cached) = parsed
+                    && let Some(nif_clip) = cached.embedded_clip.as_ref() {
                         let handle = {
                             let mut pool =
                                 world.resource_mut::<byroredux_core::string::StringPool>();
@@ -786,7 +784,6 @@ pub(super) fn spawn_synth_child(
                         };
                         accum.pending_clip_handles.insert(cache_key.clone(), handle);
                     }
-                }
                 accum.pending_new.insert(cache_key.clone(), parsed.clone());
                 parsed
             }
@@ -915,6 +912,10 @@ pub(super) fn spawn_synth_child(
     accum.blas_built += spawn_stats.blas_built;
     if is_primary_synth {
         stamp_quest_reference(world, placement_root, placed_ref, load_order);
+        // M66 — an in-cell door (no teleport) gets its open state and motion before any saved state is restored over it.
+        if let Some(door) = stat.door.filter(|_| placed_ref.teleport.is_none()) {
+            crate::systems::door::attach_door(world, placement_root, door, record_index.game, placed_ref.open_by_default);
+        }
         if let Some(current) = water_current_volume_from_ref(placed_ref, ref_pos, ref_scale) {
             world.insert(placement_root, current);
         }
@@ -985,6 +986,21 @@ pub(super) fn spawn_synth_child(
         true,
     ) {
         accum.scripts_recognized += 1;
+    }
+
+    // A trigger zone authored as a Havok phantom (Oblivion's `TrigZone*.NIF`): the reference has no
+    // `XPRM`, so the branch above never saw it, and its model has no mesh. Its script's
+    // `OnTrigger` block fires only with a volume, so build one from the model's phantom box.
+    // Gated on the script having a trigger block, so a water phantom or any other scripted
+    // phantom model gets none, and on the reference not being `Disable()`d (as an `XPRM` volume).
+    if !placement_disabled
+        && let Some(bounds) = cached.phantom_bounds
+        && byroredux_scripting::obscript_objects::has_trigger_block(world, placement_root)
+        && world.get::<byroredux_scripting::TriggerVolume>(placement_root).is_none()
+        && let Some(volume) = trigger_volume_from_phantom(bounds, ref_pos, ref_rot, ref_scale)
+    {
+        world.insert(placement_root, volume);
+        accum.trigger_volumes += 1;
     }
 }
 

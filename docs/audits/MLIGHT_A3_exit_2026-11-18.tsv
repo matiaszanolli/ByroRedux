@@ -1,0 +1,31 @@
+gate	case	region	metric	value	floor_engine	floor_reference	floor_combined	frozen_floor	threshold	pass	tier	engine_frames	engine_seeds	reference_spp	reference_seeds	k_exp	reference_cache_key	revision	gpu
+A14	penumbra-moving-during	frame_32	temporal_error	0.160305	0.0756	0	0.0756			report	3	1	0			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A14	penumbra-moving-during	frame_48	temporal_error	0.109225	0.0739	0	0.0739			report	3	1	0			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A14	penumbra-moving-during	frame_64	temporal_error	0.0658081	0.0573	0	0.0573			report	3	1	0			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A14	penumbra-moving-during	frame_80	temporal_error	0.0563876	0.0469	0	0.0469			report	3	1	0			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A14	penumbra-moving-during	frame_96	temporal_error	0.041102	0.0431	0	0.0431			report	3	1	0			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A14	penumbra-moving-during	frame_112	temporal_error	0.0407314	0.0419	0	0.0419			report	3	1	0			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A14	penumbra-moving-post_stop_1	frame_120	temporal_error	0.0406514	0.0408	0	0.0408			report	3	1	0			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A14	penumbra-moving-post_stop_4	frame_123	temporal_error	0.0403986	0.0408	0	0.0408			report	3	1	0			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A14	penumbra-moving-post_stop_16	frame_135	temporal_error	0.0391135	0.0408	0	0.0408			report	3	1	0			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A14	penumbra-moving	from_frame_80	excess_over_hold_max	0.00950799	0.0469	0	0.0469	0.0482	<=0.05 and floor<=0.145	yes	3	1	0			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A3	penumbra-during	frame_32	temporal_error	0.0146061	0.00687	0	0.00687			report	3	1	0			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A3	penumbra-during	frame_48	temporal_error	0.0149651	0.00616	0	0.00616			report	3	1	0			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A3	penumbra-during	frame_64	temporal_error	0.0152048	0.00478	0	0.00478			report	3	1	0			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A3	penumbra-during	frame_80	temporal_error	0.0152971	0.00401	0	0.00401			report	3	1	0			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A3	penumbra-during	frame_96	temporal_error	0.015529	0.00352	0	0.00352			report	3	1	0			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A3	penumbra-during	frame_112	temporal_error	0.015726	0.00293	0	0.00293			report	3	1	0			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A3	penumbra-post_stop_1	frame_120	temporal_error	0.0145511	0.0613	0	0.0613			report	3	1	0			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A3	penumbra-post_stop_4	frame_123	temporal_error	0.0119893	0.035	0	0.035			report	3	1	0			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A3	penumbra-post_stop_16	frame_135	temporal_error	0.00819742	0.0135	0	0.0135			report	3	1	0			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A3	penumbra-direct-pan	during_motion	excess_over_hold_max	0.0128847	8.71e-05	0	8.71e-05	6.03e-05	<=0.02 and floor<=0.000182	yes	3	1	0,1			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A3	penumbra-direct-pan	post_stop_16	excess_over_hold	-0.00532452	6.17e-06	0	6.17e-06	1.68e-05	<=0.01 and floor<=5.14e-05	yes	3	1	0,1			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A3	penumbra-during	frame_32	temporal_error	0.0146036	0.00688	0	0.00688			report	3	1	1			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A3	penumbra-during	frame_48	temporal_error	0.0149847	0.00618	0	0.00618			report	3	1	1			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A3	penumbra-during	frame_64	temporal_error	0.0151265	0.00478	0	0.00478			report	3	1	1			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A3	penumbra-during	frame_80	temporal_error	0.0152708	0.004	0	0.004			report	3	1	1			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A3	penumbra-during	frame_96	temporal_error	0.0154768	0.00351	0	0.00351			report	3	1	1			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A3	penumbra-during	frame_112	temporal_error	0.0158098	0.00293	0	0.00293			report	3	1	1			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A3	penumbra-post_stop_1	frame_120	temporal_error	0.014558	0.0613	0	0.0613			report	3	1	1			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A3	penumbra-post_stop_4	frame_123	temporal_error	0.0120056	0.0351	0	0.0351			report	3	1	1			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+A3	penumbra-post_stop_16	frame_135	temporal_error	0.00818891	0.0135	0	0.0135			report	3	1	1			point=pi		7b11ebe079b7-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04

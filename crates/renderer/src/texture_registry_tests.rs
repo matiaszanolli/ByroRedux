@@ -153,6 +153,8 @@ fn make_registry_for_overflow_test(max_textures: u32, occupied: usize) -> Textur
         pending_dds_uploads: Vec::new(),
         pending_promotions: Vec::new(),
         stream_sources: Default::default(),
+        generation_source: None,
+        promotable_generation: 0,
         stream_widths: Vec::new(),
         promotion_requests: Vec::new(),
         streaming: false,
@@ -387,6 +389,7 @@ fn cache_separates_2d_and_cubemap_views() {
             3,
             TextureViewKind::Cube,
             TextureColorSpace::Srgb,
+            false,
         )
         .unwrap();
     assert!(matches!(outcome, EnqueueOutcome::Reserved(2)));
@@ -837,6 +840,7 @@ fn a_reserved_cube_slot_is_redirected_to_the_cube_fallback() {
             3,
             TextureViewKind::Cube,
             TextureColorSpace::Srgb,
+            false,
         )
         .unwrap();
     assert!(matches!(outcome, EnqueueOutcome::Reserved(3)));
@@ -889,6 +893,7 @@ fn reserved_slots_retain_their_view_kind() {
             3,
             TextureViewKind::Cube,
             TextureColorSpace::Srgb,
+            false,
         )
         .unwrap();
     assert_eq!(
@@ -1413,6 +1418,7 @@ fn stream_source(path: &str) -> StreamSource {
             .collect(),
         declined_target: None,
         retry_after_frame: 0,
+        generation: 0,
     }
 }
 
@@ -1509,10 +1515,48 @@ fn promotion_requests_round_trip_through_the_host() {
         vec![PromotionRequest { handle: 0, path: "textures\\a.dds".into(), target: 0 }]
     );
     assert!(reg.take_promotion_requests(8).is_empty(), "taken once");
-    assert!(!reg.queue_promotion_bytes(0, 0, bc1_dds_from_level(2)), "floor bytes cannot promote");
-    assert!(reg.queue_promotion_bytes(0, 0, bc1_dds_from_level(0)));
+    assert_eq!(
+        reg.queue_promotion_bytes(0, 0, bc1_dds_from_level(2)),
+        PromotionLanding::Unusable,
+        "floor bytes cannot promote"
+    );
+    assert_eq!(reg.queue_promotion_bytes(0, 0, bc1_dds_from_level(0)), PromotionLanding::Queued);
     assert_eq!(reg.pending_promotion_count(), 1);
-    assert!(!reg.queue_promotion_bytes(9, 0, bc1_dds_from_level(0)), "unknown handle");
+    assert_eq!(
+        reg.queue_promotion_bytes(9, 0, bc1_dds_from_level(0)),
+        PromotionLanding::NothingToDo,
+        "unknown handle"
+    );
+}
+
+/// #7129 — a promotion whose read failed (no bytes, or bytes that cannot
+/// supply the target) is not requested again until the read-failure backoff
+/// has passed, instead of being re-read every frame it stays wanted; then it
+/// is asked for again.
+#[test]
+fn a_failed_promotion_read_backs_off_before_it_is_requested_again() {
+    use residency::READ_FAILURE_RETRY_FRAMES;
+    let wanted = HashMap::from([(0, residency::WantedMip { level: 0, case: WantedCase::Drawn, distance: 1.0 })]);
+    for fail in ["no bytes", "short bytes"] {
+        let mut reg = make_registry_for_overflow_test(64, 0);
+        reg.textures.push(streamable_entry(7, 2));
+        reg.stream_sources.insert(0, stream_source("textures\\a.dds"));
+        reg.current_frame_id = 50;
+        reg.apply_wanted(&wanted);
+        assert_eq!(reg.take_promotion_requests(8).len(), 1, "{fail}: wanted finer, so requested");
+        match fail {
+            "no bytes" => reg.note_promotion_read_failed(0),
+            _ => assert_eq!(reg.queue_promotion_bytes(0, 0, bc1_dds_from_level(2)), PromotionLanding::Unusable),
+        }
+        for frame in [51, 50 + READ_FAILURE_RETRY_FRAMES - 1] {
+            reg.current_frame_id = frame;
+            reg.apply_wanted(&wanted);
+            assert!(reg.take_promotion_requests(8).is_empty(), "{fail}: frame {frame} is inside the backoff");
+        }
+        reg.current_frame_id = 50 + READ_FAILURE_RETRY_FRAMES;
+        reg.apply_wanted(&wanted);
+        assert_eq!(reg.take_promotion_requests(8).len(), 1, "{fail}: asked for again after the backoff");
+    }
 }
 
 /// M39 TXS-WANT-005 — a demotion of a streamed texture is queued from its
@@ -1550,6 +1594,7 @@ fn promotion_flush_takes_in_order_within_the_byte_bound() {
         color_space: TextureColorSpace::Srgb,
         path: String::new(),
         change: None,
+        generation: 0,
     };
     let pending: Vec<PendingDdsUpload> = [300u64, 300, 500, 10].into_iter().map(queued).collect();
     assert_eq!(upload::promotion_take_count(&pending, 600, 64), 2);
@@ -1680,6 +1725,7 @@ fn cell_load_ready_records_only_when_nothing_is_queued() {
         color_space: TextureColorSpace::Srgb,
         path: String::new(),
         change: None,
+        generation: 0,
     });
     assert_eq!(reg.record_cell_load_ready(started), None, "an upload is still queued");
     assert_eq!(reg.cell_loads_timed, 0);
@@ -1917,4 +1963,158 @@ fn replayed_descriptor_writes_never_name_a_view_the_entry_no_longer_holds() {
         resolved.is_empty(),
         "no entry holds a live image and there is no fallback: nothing may replay, got {resolved:?}"
     );
+}
+
+// ── #7028 — every `Vec<GpuBuffer>` the registry owns is drained by `destroy` ──
+
+/// Names of the `Vec<GpuBuffer>` fields `TextureRegistry` declares.
+fn registry_buffer_families(src: &str) -> Vec<String> {
+    let from = src
+        .find("pub struct TextureRegistry {")
+        .expect("TextureRegistry struct");
+    let body = &src[from..from + src[from..].find("\n}\n").expect("struct end")];
+    body.lines()
+        .filter_map(|line| {
+            let (name, ty) = line.trim().strip_prefix("pub ").unwrap_or(line.trim()).split_once(':')?;
+            (ty.trim() == "Vec<GpuBuffer>,").then(|| name.trim().to_string())
+        })
+        .collect()
+}
+
+/// A missed per-frame buffer family leaks the allocator `Arc`, so shutdown's
+/// `Arc::try_unwrap` fails and the device is deliberately leaked (the #6521
+/// shape, there for `SceneBuffers`). `destroy` needs a live device, so pin the
+/// coverage at the source: each `Vec<GpuBuffer>` field must be drained.
+#[test]
+fn destroy_drains_every_per_frame_buffer_family() {
+    let src = registry_production_text(include_str!("texture_registry/mod.rs"));
+    let families = registry_buffer_families(src);
+    assert!(
+        families.contains(&"first_level_tables".to_string()),
+        "the field scan lost its footing (found {families:?}); fix `registry_buffer_families`"
+    );
+    let from = src
+        .find("pub fn destroy(&mut self, device: &ash::Device")
+        .expect("TextureRegistry::destroy");
+    let destroy = &src[from..from + src[from..].find("\n    }\n").expect("destroy end")];
+    for family in &families {
+        assert!(
+            destroy.contains(&format!("self.{family}.drain(..)"))
+                || destroy.contains(&format!("in &mut self.{family}")),
+            "`TextureRegistry::destroy` never drains `{family}` — its buffers' allocations \
+             outlive the allocator teardown (#7028)"
+        );
+    }
+}
+
+// ── #7034 — alpha presence is known at slot reservation, before the flush ──
+
+/// Spawn reads `handle_has_alpha(normal)` into `MaterialTextureHandles::
+/// normal_has_alpha` while the texture is still only queued (the flush runs at
+/// the end of the cell load), and nothing refreshes the component afterwards.
+/// A reservation that carried the `false` placeholder made the flag false for
+/// every first-seen texture. The caller's header read must land on the slot.
+#[test]
+fn a_reserved_slot_reports_alpha_before_any_flush() {
+    let mut reg = make_registry_for_overflow_test(16, 0);
+    let alpha = match reg
+        .queue_or_hit_for_view(
+            "textures/a_n.dds",
+            vec![0; 128],
+            3,
+            TextureViewKind::D2,
+            TextureColorSpace::Linear,
+            true,
+        )
+        .unwrap()
+    {
+        EnqueueOutcome::Reserved(handle) => handle,
+        other => panic!("expected a fresh reservation, got {other:?}"),
+    };
+    let opaque = match reg
+        .queue_or_hit_for_view(
+            "textures/b_n.dds",
+            vec![0; 128],
+            3,
+            TextureViewKind::D2,
+            TextureColorSpace::Linear,
+            false,
+        )
+        .unwrap()
+    {
+        EnqueueOutcome::Reserved(handle) => handle,
+        other => panic!("expected a fresh reservation, got {other:?}"),
+    };
+    assert_eq!(reg.pending_dds_upload_count(), 2, "both are still queued, none flushed");
+    assert!(reg.handle_has_alpha(alpha), "a DXT5-class texture must read alpha before the flush");
+    assert!(!reg.handle_has_alpha(opaque));
+}
+
+/// The two public enqueue entry points parse the header before reserving a
+/// slot; each must hand its `format_has_alpha(meta.format)` to the reservation
+/// (a device is needed to call them, so pin the wiring at the source).
+#[test]
+fn both_enqueue_entry_points_pass_the_parsed_alpha_to_the_reservation() {
+    let src = registry_production_text(include_str!("texture_registry/upload.rs"));
+    for entry in [
+        "pub fn enqueue_dds_with_clamp_and_color_space(",
+        "pub fn enqueue_cubemap_dds_with_clamp(",
+    ] {
+        let from = src.find(entry).unwrap_or_else(|| panic!("`{entry}` not found"));
+        let body = &src[from..from + src[from..].find("\n    }\n").expect("fn end")];
+        assert!(
+            body.contains("crate::vulkan::dds::format_has_alpha(meta.format)"),
+            "`{entry}` must pass the parsed alpha presence to `enqueue_dds_for_view` (#7034)"
+        );
+    }
+}
+
+/// #7167, #7169 — a floor promotes only while it was queued under the generation the host's
+/// promotion reads come from. The order a replacement really takes: a cell load's provider build
+/// moves the counter, that cell's floors (read from the new file) are queued, and only then does
+/// the streamer rebuild and the host move the promotable generation. The first floors from the
+/// new file must not be retired with the old ones (#7169, which the #7167 counter did), and a
+/// floor from the old file must stop promoting once the reads come from the new file (#7167).
+#[test]
+fn a_floor_promotes_only_under_the_generation_it_was_read_from() {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let wanted = HashMap::from([
+        (0, residency::WantedMip { level: 0, case: WantedCase::Drawn, distance: 1.0 }),
+        (1, residency::WantedMip { level: 0, case: WantedCase::Drawn, distance: 1.0 }),
+    ]);
+    let mut reg = make_registry_for_overflow_test(64, 0);
+    reg.set_source_generation_counter(&COUNTER);
+    reg.textures.push(streamable_entry(7, 2));
+    reg.textures.push(streamable_entry(7, 2));
+    // What enqueue records for a floor: the counter's value as it is queued.
+    let floor = |reg: &TextureRegistry, handle| PendingDdsUpload {
+        handle,
+        dds_bytes: bc1_dds_from_level(2),
+        staged_bytes: 0,
+        clamp_mode: 0,
+        view_kind: TextureViewKind::D2,
+        color_space: TextureColorSpace::Srgb,
+        path: format!("textures\\t{handle}.dds"),
+        change: None,
+        generation: reg.source_generation(),
+    };
+    let requested = |reg: &mut TextureRegistry, frame| {
+        reg.current_frame_id = frame;
+        reg.apply_wanted(&wanted);
+        let mut handles: Vec<TextureHandle> = reg.take_promotion_requests(8).into_iter().map(|r| r.handle).collect();
+        handles.sort_unstable();
+        reg.promotion_requests.clear();
+        handles
+    };
+    let old = [floor(&reg, 0)];
+    reg.record_floor_sources(&old, vec![(0, false, 0, 128)]);
+    assert_eq!(requested(&mut reg, 10), [0], "a floor promotes under the reads it was floored with");
+    // A cell load's provider build notices a replaced archive, then floors that cell's texture.
+    COUNTER.store(1, std::sync::atomic::Ordering::Relaxed);
+    let new = [floor(&reg, 1)];
+    reg.record_floor_sources(&new, vec![(1, false, 0, 128)]);
+    assert_eq!(requested(&mut reg, 11), [0], "until the reads move, only the old floor promotes");
+    // The streamer rebuilds; its reads now come from the new file.
+    reg.set_promotable_generation(1);
+    assert_eq!(requested(&mut reg, 12), [1], "the new floor promotes, the old one keeps its levels");
 }

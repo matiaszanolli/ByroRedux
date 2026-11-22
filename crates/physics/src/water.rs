@@ -513,13 +513,6 @@ pub fn local_current(kind: WaterKind, flow: WaterFlow, bed: Option<&WaterBedFiel
     }
 }
 
-/// [`authored_wave_height_with_weather`] over a known bed: the wind-driven swell
-/// (`WaterMaterial::swell`) shoals, turns toward the shore and breaks exactly
-/// as `water.vert` does, and the authored ripple pair is capped by the same
-/// breaking limit and refracted the same way. `bed` is the plane's
-/// [`WaterBedField`]; `None`, or a position outside it, is open water. The
-/// bed field and the mesh vertices come from the same LAND samples, so the
-/// visible crest and this one cannot disagree about the depth.
 /// The authored ripple's open-water amplitude: the material's amplitude times
 /// the weather's wind scale, clamped as `water.vert` clamps the uploaded
 /// `tune.w`. The crest sampler caps it further by the water under it; the
@@ -529,6 +522,13 @@ fn ripple_amplitude(material: &WaterMaterial, wind_wave_scale: f32) -> f32 {
     (material.wave_amplitude * wind_wave_scale).clamp(0.0, WATER_WAVE_AMPLITUDE_MAX)
 }
 
+/// [`authored_wave_height_with_weather`] over a known bed: the wind-driven swell
+/// (`WaterMaterial::swell`) shoals, turns toward the shore and breaks exactly
+/// as `water.vert` does, and the authored ripple pair is capped by the same
+/// breaking limit and refracted the same way. `bed` is the plane's
+/// [`WaterBedField`]; `None`, or a position outside it, is open water. The
+/// bed field and the mesh vertices come from the same LAND samples, so the
+/// visible crest and this one cannot disagree about the depth.
 pub fn authored_wave_height_over_bed(
     material: &WaterMaterial,
     position: Vec3,
@@ -806,12 +806,11 @@ fn waves_require_contact_rescan(
     let Some(contacts) = world.query::<WaterContact>() else {
         return false;
     };
-    let needs_rescan = contacts.iter().any(|(_, contact)| {
+    contacts.iter().any(|(_, contact)| {
         contact.surface_entity.is_some()
             && (contact.submerged_fraction > 0.0
                 || contact.depth.abs() <= max_amplitude + WATERLINE_HYSTERESIS)
-    });
-    needs_rescan
+    })
 }
 
 /// The furthest animated displacement can move `surface` from its rest
@@ -1493,9 +1492,9 @@ fn apply_buoyancy_with_scratch(
                 // pinned against a bank is allowed to settle and stay
                 // settled, which is the reason the force itself is applied
                 // with `wake_up = false`.
-                if in_current_prev.binary_search(&t.entity).is_err() {
-                    if let Some(b) = pw.bodies.get_mut(t.handles.body) {
-                        if b.is_sleeping() {
+                if in_current_prev.binary_search(&t.entity).is_err()
+                    && let Some(b) = pw.bodies.get_mut(t.handles.body)
+                        && b.is_sleeping() {
                             b.wake_up(true);
                             woke_any = true;
                             // #5544 — a deliberate current wake is not the
@@ -1503,8 +1502,6 @@ fn apply_buoyancy_with_scratch(
                             // off it.
                             pw.note_water_force_target(t.handles.body);
                         }
-                    }
-                }
                 let current = pw.bodies.get(t.handles.body).and_then(|b| {
                     (!b.is_sleeping()).then(|| {
                         let velocity = b.linvel();

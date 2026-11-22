@@ -188,7 +188,6 @@ impl ImportedMesh {
     /// bounds directly but shares [`ImportedMaterial::default`].
     /// `local_bound_*` is computed from `positions` via
     /// [`crate::import::mesh::extract_local_bound`].
-    #[allow(clippy::too_many_arguments)]
     pub fn from_geometry(
         positions: Vec<[f32; 3]>,
         colors: Vec<[f32; 4]>,
@@ -532,8 +531,8 @@ impl ImportedMesh {
         let old_triangle_count = self.indices.len() / 3;
         let mut hidden_triangles = vec![false; old_triangle_count];
 
-        if let Some(skin) = &self.skin {
-            if skin.triangle_body_parts.len() == old_triangle_count {
+        if let Some(skin) = &self.skin
+            && skin.triangle_body_parts.len() == old_triangle_count {
                 for (hidden, &body_part) in
                     hidden_triangles.iter_mut().zip(&skin.triangle_body_parts)
                 {
@@ -541,7 +540,6 @@ impl ImportedMesh {
                         .is_some_and(|bit| hidden_biped_mask & (1u32 << bit) != 0);
                 }
             }
-        }
 
         if let Some(segmentation) = &self.bs_sub_index {
             let mut segment_bits = vec![None; old_triangle_count];
@@ -600,8 +598,8 @@ impl ImportedMesh {
             }
         }
         self.indices = kept_indices;
-        if let Some(skin) = self.skin.as_mut() {
-            if skin.triangle_body_parts.len() == old_triangle_count {
+        if let Some(skin) = self.skin.as_mut()
+            && skin.triangle_body_parts.len() == old_triangle_count {
                 skin.triangle_body_parts = skin
                     .triangle_body_parts
                     .iter()
@@ -609,7 +607,6 @@ impl ImportedMesh {
                     .filter_map(|(&part, hidden)| (!hidden).then_some(part))
                     .collect();
             }
-        }
         old_triangle_count - self.indices.len() / 3
     }
 }

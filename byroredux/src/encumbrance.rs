@@ -131,13 +131,11 @@ pub(crate) fn encumbrance_system(world: &World, _dt: f32) {
         };
         catalog.inventory_weight(&inventory)
     };
-    if let Some(inventory_weight) = rules.inventory_weight {
-        if let Some(mut values) = world.query_mut::<ActorValues>() {
-            if let Some(values) = values.get_mut(player) {
+    if let Some(inventory_weight) = rules.inventory_weight
+        && let Some(mut values) = world.query_mut::<ActorValues>()
+            && let Some(values) = values.get_mut(player) {
                 values.set_base(inventory_weight, weight);
             }
-        }
-    }
     let carry_weight = evaluate_function(
         ConditionFunction::GetActorValue,
         &byroredux_plugin::esm::records::condition::Condition {

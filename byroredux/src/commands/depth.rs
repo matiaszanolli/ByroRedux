@@ -18,10 +18,192 @@
 use super::shared::*;
 use byroredux_core::ecs::components::camera::ACTIVE_DEPTH_MAPPING;
 use byroredux_core::ecs::components::{Camera, DepthMapping};
-use byroredux_core::ecs::{ActiveCamera, DepthCaptureBridge};
+use byroredux_core::ecs::{ActiveCamera, DepthCapture, DepthCaptureBridge};
 
 /// `depth.stats` — arm a depth capture, then report the captured field.
 pub(crate) struct DepthStatsCommand;
+
+/// Sample view-axis distance at selected pixels from the depth attachment.
+pub(crate) struct DepthSampleCommand;
+
+/// Export a full depth readback for spatial comparisons.
+pub(crate) struct DepthDumpCommand;
+
+impl ConsoleCommand for DepthDumpCommand {
+    fn name(&self) -> &str {
+        "depth.dump"
+    }
+
+    fn description(&self) -> &str {
+        "Export view-axis depth to screenshots/<name>.pfm: depth.dump <name>.pfm"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let name = args.trim();
+        if !name.ends_with(".pfm")
+            || name.len() <= 4
+            || !name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+        {
+            return CommandOutput::line("usage: depth.dump <name>.pfm (ASCII filename only)");
+        }
+        let Some(bridge) = world.try_resource::<DepthCaptureBridge>() else {
+            return CommandOutput::line("DepthCaptureBridge not present");
+        };
+        if let Some(format) = bridge.unsupported_reason() {
+            return CommandOutput::line(format!("depth capture unsupported: {format}"));
+        }
+        let Some(capture) = bridge.take_result() else {
+            bridge.request();
+            return CommandOutput::line(
+                "depth capture armed — run depth.dump again in a frame or two",
+            );
+        };
+        bridge.request();
+        let Some(camera) = world
+            .try_resource::<ActiveCamera>()
+            .and_then(|active| world.get::<Camera>(active.0).map(|camera| *camera))
+        else {
+            return CommandOutput::line("no active Camera — cannot decode depth capture");
+        };
+        let data = match depth_pfm(&capture, &camera) {
+            Ok(data) => data,
+            Err(error) => return CommandOutput::line(error),
+        };
+        // #7182 — the one confined-writer rule: a single name under `screenshots/`, which must
+        // resolve inside the working directory, written `create_new`.
+        match byroredux_core::atomic_file::write_new_confined("screenshots", name, &data) {
+            Ok(path) => CommandOutput::line(format!(
+                "depth saved: {} ({}x{}, view-axis world units; background=inf, invalid=nan)",
+                path.display(),
+                capture.width,
+                capture.height
+            )),
+            Err(error) => CommandOutput::line(format!("depth export failed: {error}")),
+        }
+    }
+}
+
+// PFM stores rows bottom-to-top; the renderer capture is top-to-bottom.
+fn depth_pfm(capture: &DepthCapture, camera: &Camera) -> Result<Vec<u8>, &'static str> {
+    if !camera.near.is_finite()
+        || !camera.far.is_finite()
+        || camera.near <= 0.0
+        || camera.far <= camera.near
+    {
+        return Err("degenerate camera — depth capture rejected");
+    }
+    let width = capture.width as usize;
+    let height = capture.height as usize;
+    if width == 0 || height == 0 || width.checked_mul(height) != Some(capture.samples.len()) {
+        return Err("invalid depth capture dimensions");
+    }
+    let mut out = format!("Pf\n{} {}\n-1.0\n", width, height).into_bytes();
+    for row in capture.samples.chunks_exact(width).rev() {
+        for &depth in row {
+            let distance = if !depth.is_finite() || !(0.0..=1.0).contains(&depth) {
+                f32::NAN
+            } else if depth == ACTIVE_DEPTH_MAPPING.clear_value() {
+                f32::INFINITY
+            } else {
+                match ACTIVE_DEPTH_MAPPING {
+                    DepthMapping::Conventional => camera.linear_distance_from_depth(depth),
+                    DepthMapping::Reversed => camera.linear_distance_from_depth_reversed(depth),
+                }
+            };
+            out.extend_from_slice(&distance.to_le_bytes());
+        }
+    }
+    Ok(out)
+}
+
+impl ConsoleCommand for DepthSampleCommand {
+    fn name(&self) -> &str {
+        "depth.sample"
+    }
+
+    fn description(&self) -> &str {
+        "Capture view-axis depth at one or more pixel coordinates: depth.sample x y [x y ...]"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        let words: Vec<_> = args.split_whitespace().collect();
+        let (pairs, remainder) = words.as_chunks::<2>();
+        if pairs.is_empty() || !remainder.is_empty() || pairs.len() > 32 {
+            return CommandOutput::line("usage: depth.sample x y [x y ...] (at most 32 pixels)");
+        }
+        let mut pixels = Vec::with_capacity(pairs.len());
+        for [x, y] in pairs {
+            let (Ok(x), Ok(y)) = (x.parse::<u32>(), y.parse::<u32>()) else {
+                return CommandOutput::line(
+                    "depth.sample coordinates must be nonnegative integers",
+                );
+            };
+            pixels.push((x, y));
+        }
+        let Some(bridge) = world.try_resource::<DepthCaptureBridge>() else {
+            return CommandOutput::line("DepthCaptureBridge not present");
+        };
+        if let Some(format) = bridge.unsupported_reason() {
+            return CommandOutput::line(format!("depth capture unsupported: {format}"));
+        }
+        let Some(capture) = bridge.take_result() else {
+            bridge.request();
+            return CommandOutput::line(
+                "depth capture armed — run depth.sample again in a frame or two",
+            );
+        };
+        bridge.request();
+        let Some(camera) = world
+            .try_resource::<ActiveCamera>()
+            .map(|active| active.0)
+            .and_then(|entity| world.get::<Camera>(entity).map(|camera| *camera))
+        else {
+            return CommandOutput::line("no active Camera — cannot decode depth samples");
+        };
+        if !camera.near.is_finite()
+            || !camera.far.is_finite()
+            || camera.near <= 0.0
+            || camera.far <= camera.near
+        {
+            return CommandOutput::line("degenerate camera — depth samples rejected");
+        }
+        let mut output = vec![format!(
+            "depth {}x{} mapping={} (view-axis world units)",
+            capture.width,
+            capture.height,
+            mapping_label(ACTIVE_DEPTH_MAPPING)
+        )];
+        for (x, y) in pixels {
+            if x >= capture.width || y >= capture.height {
+                output.push(format!("pixel {x},{y}: outside capture"));
+                continue;
+            }
+            let index = (y as usize)
+                .checked_mul(capture.width as usize)
+                .and_then(|row| row.checked_add(x as usize));
+            let Some(&depth) = index.and_then(|index| capture.samples.get(index)) else {
+                output.push(format!("pixel {x},{y}: missing sample"));
+                continue;
+            };
+            if !depth.is_finite() || !(0.0..=1.0).contains(&depth) {
+                output.push(format!("pixel {x},{y}: invalid depth"));
+            } else if depth == ACTIVE_DEPTH_MAPPING.clear_value() {
+                output.push(format!("pixel {x},{y}: background"));
+            } else {
+                let distance = match ACTIVE_DEPTH_MAPPING {
+                    DepthMapping::Conventional => camera.linear_distance_from_depth(depth),
+                    DepthMapping::Reversed => camera.linear_distance_from_depth_reversed(depth),
+                };
+                output.push(format!(
+                    "pixel {x},{y}: depth={depth:.9} distance={distance:.3}"
+                ));
+            }
+        }
+        CommandOutput::lines(output)
+    }
+}
 
 impl ConsoleCommand for DepthStatsCommand {
     fn name(&self) -> &str {
@@ -48,7 +230,7 @@ impl ConsoleCommand for DepthStatsCommand {
             other => {
                 return CommandOutput::line(format!(
                     "unknown depth mapping `{other}` — use `conventional` (default) or `reversed`"
-                ))
+                ));
             }
         };
         let Some(bridge) = world.try_resource::<DepthCaptureBridge>() else {
@@ -250,6 +432,131 @@ mod tests {
         world
     }
 
+    #[test]
+    fn depth_pfm_decodes_and_flips_rows() {
+        let camera = Camera::new(1.0, 1.0, 1.0, 100.0);
+        let surface = (1.0f32 / 10.0 - 1.0 / 100.0) / (1.0 - 1.0 / 100.0);
+        let capture = DepthCapture {
+            width: 2,
+            height: 2,
+            samples: vec![surface, 0.0, f32::NAN, 0.5],
+        };
+        let bytes = depth_pfm(&capture, &camera).unwrap();
+        let header = b"Pf\n2 2\n-1.0\n";
+        assert!(bytes.starts_with(header));
+        let values: Vec<_> = bytes[header.len()..]
+            .chunks_exact(4)
+            .map(|v| f32::from_le_bytes(v.try_into().unwrap()))
+            .collect();
+        assert!(values[0].is_nan());
+        assert!((values[2] - 10.0).abs() < 0.001);
+        assert!(values[3].is_infinite());
+        assert!(
+            depth_pfm(
+                &DepthCapture {
+                    width: 3,
+                    height: 2,
+                    samples: capture.samples
+                },
+                &camera
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn depth_dump_rejects_paths_and_unsupported_devices() {
+        let world = world_with_unsupported_depth_format();
+        for name in ["../escape.pfm", "a/b.pfm", "wrong.png", ".pfm"] {
+            assert!(
+                DepthDumpCommand
+                    .execute(&world, name)
+                    .lines
+                    .join("\n")
+                    .contains("usage")
+            );
+        }
+        assert!(
+            DepthDumpCommand
+                .execute(&world, "depth.pfm")
+                .lines
+                .join("\n")
+                .contains("unsupported")
+        );
+    }
+
+    #[test]
+    fn pixel_samples_decode_depth_and_report_background_and_bounds() {
+        let camera = Camera::new(1.0, 1.0, 1.0, 100.0);
+        let surface = (1.0f32 / 10.0 - 1.0 / 100.0) / (1.0 - 1.0 / 100.0);
+        let world = world_with_capture(camera, vec![surface, 0.0, f32::NAN, 0.5]);
+        let result = DepthSampleCommand
+            .execute(&world, "0 0 1 0 0 1 2 0")
+            .lines
+            .join("\n");
+        assert!(
+            result.contains("pixel 0,0: depth=") && result.contains("distance=10.000"),
+            "{result}"
+        );
+        assert!(result.contains("pixel 1,0: background"), "{result}");
+        assert!(result.contains("pixel 0,1: invalid depth"), "{result}");
+        assert!(result.contains("pixel 2,0: outside capture"), "{result}");
+        assert!(
+            world
+                .try_resource::<DepthCaptureBridge>()
+                .unwrap()
+                .requested
+                .load(std::sync::atomic::Ordering::Relaxed)
+        );
+    }
+
+    #[test]
+    fn pixel_samples_reject_bad_arguments_and_unsupported_format() {
+        let world = world_with_unsupported_depth_format();
+        assert!(
+            DepthSampleCommand
+                .execute(&world, "1")
+                .lines
+                .join("\n")
+                .contains("usage")
+        );
+        assert!(
+            DepthSampleCommand
+                .execute(&world, "-1 0")
+                .lines
+                .join("\n")
+                .contains("nonnegative")
+        );
+        assert!(
+            DepthSampleCommand
+                .execute(&world, "0 0")
+                .lines
+                .join("\n")
+                .contains("unsupported")
+        );
+        assert!(
+            !world
+                .try_resource::<DepthCaptureBridge>()
+                .unwrap()
+                .requested
+                .load(std::sync::atomic::Ordering::Relaxed)
+        );
+    }
+
+    #[test]
+    fn pixel_samples_arm_readback_and_report_truncated_capture() {
+        let world = world_with_capture(Camera::new(1.0, 1.0, 1.0, 100.0), vec![0.5]);
+        let result = DepthSampleCommand.execute(&world, "1 1").lines.join("\n");
+        assert!(result.contains("pixel 1,1: missing sample"), "{result}");
+        let bridge = world.try_resource::<DepthCaptureBridge>().unwrap();
+        bridge
+            .requested
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        let result = DepthSampleCommand.execute(&world, "0 0").lines.join("\n");
+        assert!(result.contains("capture armed"), "{result}");
+        assert!(bridge.requested.load(std::sync::atomic::Ordering::Relaxed));
+    }
+
     /// #3571 — the same capture read under both mappings. A reversed-Z
     /// frame clears to `0.0`, so the conventional read finds no background
     /// at all and decodes the whole sky into the bands; only the `reversed`
@@ -445,7 +752,10 @@ mod tests {
 
         // Explicitly conventional: the capture above (z >= 1.0) is background
         // under that decode, whichever mapping the build ships.
-        let output = DepthStatsCommand.execute(&world, "conventional").lines.join("\n");
+        let output = DepthStatsCommand
+            .execute(&world, "conventional")
+            .lines
+            .join("\n");
         assert!(
             !output.contains("degenerate camera"),
             "a well-formed camera must not be reported as degenerate: {output}"

@@ -89,6 +89,11 @@ pub(crate) fn is_sit_marker(m: &FurnitureMarker) -> bool {
 /// the furniture pivot — wrong for anything but a chair whose pivot is the
 /// seat.)
 ///
+/// **Skyrim+ height.** Their marker `offset` is the seat's height above the furniture's floor origin,
+/// not the actor's root (AIP-SIT-002): the sit clip lowers `NPC COM` to 39.00 over its root, so the
+/// root is placed on the floor (`offset.y = 0`) and the pose reaches the seat. The original engine's
+/// rule is not sourced; the evidence is the clip's own COM height against the markers' 32-34.
+///
 /// **Facing.** Skyrim+/FO4 markers carry a radian `heading` about +Z
 /// (`heading_z_radians`). Legacy Oblivion/FO3/FNV markers carry only an
 /// `Orientation` ushort that indexes `furnituremarkerNN.nif` (undecoded), so
@@ -102,7 +107,10 @@ pub(crate) fn is_sit_marker(m: &FurnitureMarker) -> bool {
 /// XZ (marker at the furniture pivot) → inherit furniture facing. The exact
 /// per-marker `Orientation` decode is deferred to Phase C.
 pub(crate) fn seat_world_transform(furn: &GlobalTransform, m: &FurnitureMarker) -> GlobalTransform {
-    let seat_local = Vec3::from_array(m.local_offset);
+    let mut seat_local = Vec3::from_array(m.local_offset);
+    if m.heading_z_radians.is_some() && m.kind == FurnitureMarkerKind::Sit {
+        seat_local.y = 0.0;
+    }
     let facing = match m.heading_z_radians {
         Some(h) => Quat::from_rotation_y(h),
         None if seat_local.x.abs() > 1e-3 || seat_local.z.abs() > 1e-3 => {
@@ -210,8 +218,18 @@ pub(crate) fn apply_seat_assignments(
         }
     }
     let mut restores: Vec<SeatedAnimationRestore> = Vec::with_capacity(assignments.len());
+    // AIP-SIT-002 — an animated actor with no player yet (Skyrim's ambient actors gain one only when
+    // something plays on them) is given one on its skeleton. The roots are read under their own lock,
+    // before the player storage is taken.
+    let skeleton_roots: Vec<Option<EntityId>> = match world.query::<crate::components::AnimationTarget>() {
+        Some(targets) => assignments
+            .iter()
+            .map(|(npc, _, _)| targets.get(*npc).map(|target| target.skeleton_root))
+            .collect(),
+        None => vec![None; assignments.len()],
+    };
     if let Some(mut pq) = world.query_mut::<AnimationPlayer>() {
-        for (npc, _, _) in assignments {
+        for ((npc, _, _), skeleton_root) in assignments.iter().zip(&skeleton_roots) {
             if let Some(p) = pq.get_mut(*npc) {
                 restores.push(SeatedAnimationRestore {
                     clip_handle: p.clip_handle,
@@ -225,6 +243,13 @@ pub(crate) fn apply_seat_assignments(
                 p.prev_time = hold_time;
                 p.playing = false;
                 p.speed = 1.0;
+            } else if let Some(root) = skeleton_root {
+                let mut player = AnimationPlayer::new(sit_handle).with_root(*root);
+                player.local_time = hold_time;
+                player.prev_time = hold_time;
+                player.playing = false;
+                pq.insert(*npc, player);
+                restores.push(SeatedAnimationRestore::inserted_player());
             } else {
                 restores.push(SeatedAnimationRestore::default());
             }
@@ -301,6 +326,13 @@ fn sandbox_seat_system_inner(world: &World, _dt: f32, scratch: &mut SandboxScrat
     }
 
     {
+        // #5495 — creatures never take furniture (see CreatureActor's
+        // doc): skip them before any seat scan or reservation write.
+        // Taken first: elsewhere a `CreatureActor` read is held while
+        // `ActorValues` and then `GlobalTransform` are taken, so acquiring it
+        // after `GlobalTransform` / `Seated` closed a lock-order cycle the
+        // ABBA detector (BYRO_LOCK_ORDER_CHECK) aborts on.
+        let creature_q = world.query::<CreatureActor>();
         let Some(gq) = world.query::<GlobalTransform>() else {
             return;
         };
@@ -308,9 +340,6 @@ fn sandbox_seat_system_inner(world: &World, _dt: f32, scratch: &mut SandboxScrat
             return;
         };
         let seated_q = world.query::<Seated>();
-        // #5495 — creatures never take furniture (see CreatureActor's
-        // doc): skip them before any seat scan or reservation write.
-        let creature_q = world.query::<CreatureActor>();
         let mut reservations = world.resource_mut::<SeatReservations>();
         for (npc, behavior) in sandbox_q.iter() {
             if seated_q.as_ref().is_some_and(|s| s.contains(npc)) {
@@ -576,6 +605,60 @@ mod tests {
         );
     }
 
+    /// AIP-SIT-002 — a Skyrim ambient actor has no `AnimationPlayer` until something plays on it, so
+    /// seating it on a parked clip needs one. The seat inserts it on the actor's skeleton, held on the
+    /// final frame, and records that it did (`SeatedAnimationRestore::player_was_inserted`) so un-seating
+    /// removes it instead of restoring a clip. An actor that already has a player keeps the captured
+    /// restore (#3333).
+    #[test]
+    fn an_animated_actor_without_a_player_gets_one_parked_on_the_sit_clip() {
+        use crate::components::{AnimationTarget, SandboxSitClip, SeatReservations};
+        use byroredux_core::ecs::components::{Furniture, GlobalTransform, Seated};
+
+        let mut world = World::new();
+        world.register::<SandboxBehavior>();
+        world.register::<Seated>();
+        world.register::<Furniture>();
+        world.register::<GlobalTransform>();
+        world.register::<AnimationPlayer>();
+        world.register::<AnimationTarget>();
+        world.insert_resource(SandboxSitClip(Some((7, 1.77))));
+        world.insert_resource(SeatReservations::default());
+
+        let furn = world.spawn();
+        world.insert(furn, GlobalTransform::default());
+        world.insert(furn, Furniture { markers: vec![marker([0.0, 0.0, 0.0], None, 0), marker([50.0, 0.0, 0.0], None, 0)] });
+
+        let spawn_actor = |world: &mut World, at: f32| {
+            let skeleton = world.spawn();
+            let actor = world.spawn();
+            let mut at_pose = GlobalTransform::default();
+            at_pose.translation.x = at;
+            world.insert(actor, at_pose);
+            world.insert(actor, SandboxBehavior { search_radius: Some(1000.0) });
+            world.insert(actor, AnimationTarget { skeleton_root: skeleton, consumed_idle_serial: 0 });
+            (actor, skeleton)
+        };
+        let (bare, bare_skeleton) = spawn_actor(&mut world, 0.0);
+        let (animated, animated_skeleton) = spawn_actor(&mut world, 50.0);
+        let mut idle = AnimationPlayer::new(3).with_root(animated_skeleton);
+        idle.local_time = 0.4;
+        world.insert(animated, idle);
+
+        sandbox_seat_system_inner(&world, 0.0, &mut SandboxScratch::default());
+
+        let players = world.query::<AnimationPlayer>().unwrap();
+        let inserted = players.get(bare).expect("the seat inserts a player");
+        assert_eq!((inserted.clip_handle, inserted.local_time, inserted.playing), (7, 1.77, false));
+        assert_eq!(inserted.root_entity, Some(bare_skeleton));
+        let seated = world.query::<Seated>().unwrap();
+        assert!(seated.get(bare).unwrap().animation_restore.player_was_inserted());
+
+        let kept = seated.get(animated).unwrap().animation_restore;
+        assert!(!kept.player_was_inserted(), "an existing player is restored, not removed");
+        assert_eq!((kept.clip_handle, kept.local_time, kept.playing), (3, 0.4, true));
+    }
+
     /// Mirrors `furniture_component`'s `animation_type` → `kind` resolution
     /// (attach.rs) so these unit tests exercise `is_sit_marker` against the
     /// same already-resolved `kind` production markers carry, not a
@@ -626,6 +709,18 @@ mod tests {
             "root should land at the marker offset, got {:?}",
             seat.translation
         );
+    }
+
+    /// AIP-SIT-002 — a Skyrim+ sit marker (it carries a heading) sits 34 units *above* the furniture origin
+    /// (live on WhiterunBanneredMare: 32-34 on every chair and bench), where a legacy marker sits below its
+    /// pivot (-30 above). The Skyrim sit clip ends with `NPC COM` 39.00 above the root, so a root left on
+    /// the marker put the pelvis 34 units over the cushion; the root goes to the furniture's floor
+    /// instead and the pose supplies the rest. How the original engine reads that height is not sourced.
+    #[test]
+    fn a_headed_sit_marker_roots_the_actor_on_the_furniture_floor() {
+        let furn = GlobalTransform::new(Vec3::new(10.0, 65.0, 0.0), Quat::IDENTITY, 1.0);
+        let seat = seat_world_transform(&furn, &marker([2.0, 34.0, -1.0], Some(0.5), 3));
+        assert!((seat.translation - Vec3::new(12.0, 65.0, -1.0)).length() < 1e-5, "{:?}", seat.translation);
     }
 
     #[test]

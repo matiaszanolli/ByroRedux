@@ -53,6 +53,9 @@ fn delta_columns_carry_only_session_stable_fields() {
         // The codec stores stable pairs and resolves them for the new load
         // order before the component is overlaid.
         "ActorValues",
+        // SAVE-1 — ActorVitals: one AVIF key (u32, resolved through the portable codec).
+        // No FixedString / EntityId / session handle.
+        "ActorVitals",
         // Perks: Vec<PerkRank { perk_form_id: u32, rank: u8 }>.
         "Perks",
         "CharacterLevel",
@@ -60,13 +63,19 @@ fn delta_columns_carry_only_session_stable_fields() {
         "FactionReputation",
         // M47.2 — LevelUpPoints: u32 / f32 / u32 / u32 (#5916 pool_picks).
         "LevelUpPoints",
+        // #7050 — SkillUseLevel: u16 major increases and [u16; 8] attribute tallies.
+        "SkillUseLevel",
         // TimedRestorations: source/AV u32 FormIDs, f32 rate, f64 time.
         "TimedRestorations",
         // #4415 — SpellList: Vec<u32> spell FormIDs, global-space.
         "SpellList",
+        // PSC-RDY-004 — ReadiedSpell: one optional spell FormID (u32), global-space.
+        "ReadiedSpell",
         // EquippedWeapon: u32 inventory index + u32 base FormID + f32
         // damage. Dead: empty marker. Neither carries session identity.
         "EquippedWeapon",
+        // BOW-AMM-002 — EquippedAmmo: one optional AMMO FormID (u32), global-space.
+        "EquippedAmmo",
         "Dead",
         // M65 — Sneaking: empty marker, the player's sneak stance.
         "Sneaking",
@@ -500,7 +509,7 @@ fn actor_value_save_survives_a_changed_engine_slot() {
         source: 1, mgef: 2, caster: 3, script: 4, duration: 5.0, indefinite: false,
         elapsed: 1.0, started: true, ending: false,
         value: Some(ValueEffect { actor_value: old_key, amount: 5.0, recover: true }),
-        ticks: 2, locals: vec![(3, 4.5)], ref_locals: vec![(7, 8)], suspended: false,
+        ticks: 2, locals: vec![(3, 4.5)], ref_locals: vec![(7, 8)], suspended: false, effect_index: 0,
     };
     let unrelated = ActiveEffect { source: 9, value: None, indefinite: true, ..active.clone() };
     source.insert(actor, ActiveMagicEffects(vec![active.clone(), unrelated.clone()]));
@@ -537,9 +546,14 @@ fn actor_value_save_survives_a_changed_engine_slot() {
     live.insert_resource(identity(2));
     live.spawn();
     let live_actor = live.spawn();
+    // SAVE-1: the process-lifetime player keeps the key it was stamped with under the OLD slot; the overlay
+    // must replace it with the key resolved against the new identity.
+    live.insert(live_actor, ActorVitals { health: old_health });
     let remap = std::collections::HashMap::from([(actor, live_actor)]);
     byroredux_save::apply_deltas(&mut live, &registry, &decoded, &remap,
-        &["ActorValues", "TimedRestorations", "ActiveMagicEffects"]).unwrap();
+        &["ActorValues", "ActorVitals", "TimedRestorations", "ActiveMagicEffects"]).unwrap();
+    assert_eq!(live.get::<ActorVitals>(live_actor).unwrap().health, new_health, "a live load must re-key the player's vitals");
+    assert!(MUTABLE_DELTA_COLUMNS.contains(&"ActorVitals"), "the live overlay must carry ActorVitals");
     {
         let restored = live.get::<ActorValues>(live_actor).unwrap();
         for (local, current, base) in &expected {
@@ -583,6 +597,48 @@ fn actor_value_save_drops_a_missing_plugin_without_reassigning_its_slot() {
     let values = destination.get::<ActorValues>(actor).unwrap();
     assert_eq!(values.len(), 1);
     assert_eq!(values.current(0x0100_0001), 12.0, "the removed plugin's value must not claim the engine slot");
+}
+
+#[test]
+fn actor_value_save_preserves_and_removes_a_constant_ability_after_slot_change() {
+    use byroredux_core::ecs::components::ActorValues;
+    use byroredux_core::form_id::{PluginId, ENGINE_PLUGIN_ID};
+    use byroredux_plugin::esm::{reader::{GameKind, GlobalSlot, SubRecord}, records::{ActorValueRef, EsmIndex, MagicEffectItem, SpelRecord, SpellType, MGEF_FLAG_RECOVER}};
+    use byroredux_scripting::{magic::{remove_spell, SpellCatalog}, LoadOrderIdentity, SpellList};
+
+    let master = PluginId::from_filename("Oblivion.esm");
+    let added = PluginId::from_filename("added.esp");
+    let registry = build_save_registry();
+    let mut source = World::new();
+    source.insert_resource(LoadOrderIdentity::new(vec![(GlobalSlot::Regular(0), master), (GlobalSlot::Regular(1), ENGINE_PLUGIN_ID)]));
+    let actor = source.spawn();
+    let mut values = ActorValues::from_pairs([(0x0100_0020, 25.0)]);
+    values.mod_permanent(0x0100_0020, 12.0);
+    source.insert(actor, values);
+    source.insert(actor, SpellList(vec![0x20]));
+    let bytes = encode(&save_world(&source, &registry).unwrap(), registry.schema_fingerprint()).unwrap();
+    let snapshot = decode(&bytes, registry.schema_fingerprint()).unwrap();
+
+    let mut index = EsmIndex { game: GameKind::Oblivion, ..Default::default() };
+    index.install_oblivion_actor_values(GlobalSlot::Regular(2)).unwrap();
+    let mut effect_data = vec![0; 36];
+    effect_data[..4].copy_from_slice(&(MGEF_FLAG_RECOVER | (1 << 19)).to_le_bytes());
+    let effect = byroredux_plugin::esm::records::parse_mgef_for_game(0x10, &[SubRecord { sub_type: *b"DATA", data: effect_data }], GameKind::Oblivion, &None);
+    index.magic_effects.insert(0x10, effect);
+    index.magic_effects_by_code.insert(*b"FOSK", 0x10);
+    index.spells.insert(0x20, SpelRecord { form_id: 0x20, spell_type: SpellType::Ability,
+        effects: vec![MagicEffectItem { effect_form_id: u32::from_le_bytes(*b"FOSK"), actor_value: Some(ActorValueRef::Index(31)), magnitude: 12.0, ..Default::default() }],
+        ..Default::default() });
+    let mut destination = World::new();
+    destination.insert_resource(LoadOrderIdentity::new(vec![(GlobalSlot::Regular(0), master), (GlobalSlot::Regular(1), added), (GlobalSlot::Regular(2), ENGINE_PLUGIN_ID)]));
+    destination.insert_resource(FormIdPool::new());
+    destination.insert_resource(SpellCatalog::from_index(&index));
+    restore_world(&mut destination, &registry, &snapshot).unwrap();
+    let sneak = 0x0200_0020;
+    assert_eq!(destination.get::<ActorValues>(actor).unwrap().current(sneak), 37.0);
+    assert!(remove_spell(&destination, actor, 0x20));
+    assert_eq!(destination.get::<ActorValues>(actor).unwrap().current(sneak), 25.0);
+    assert!(!remove_spell(&destination, actor, 0x20));
 }
 
 /// #2014 / SAVE-D1-NEW-01 — the seven M42 AI-procedure runtime-state
@@ -842,7 +898,7 @@ fn the_obscript_runtime_state_survives_save_load_round_trip() {
         ticks: 4,
         locals: vec![(1, 3.0)],
         ref_locals: vec![(2, 0x0100_0004)],
-        suspended: false,
+        suspended: false, effect_index: 0,
     }]);
     src.insert(actor, effects.clone());
     src.insert(actor, WeaponDrawn);
@@ -1759,9 +1815,9 @@ fn npc_spawn_stamped_components_are_saved_or_intentionally_rederived() {
         "EquipmentSlots",
         "ActorValues",
         // #3027 — registered (not re-derived), so it satisfies the XOR
-        // below via `saved`, not `REDERIVED_NOT_SAVED`. See the
-        // registration-site comment in `save_io.rs` for why it's still
-        // excluded from `MUTABLE_DELTA_COLUMNS`.
+        // below via `saved`, not `REDERIVED_NOT_SAVED`. It is a delta
+        // column since SAVE-1 (see the registration-site comment in
+        // `registry.rs`).
         "ActorVitals",
         // #3762 — CREA.DATA.Damage, stamped by `stamp_creature_attack`.
         "CreatureAttack",
@@ -2428,7 +2484,7 @@ fn a_perk_granted_ability_survives_save_load_with_one_spell_and_one_value_change
         SpelRecord {
             form_id: SPELL,
             spell_type: SpellType::Ability,
-            effects: vec![MagicEffectItem { effect_form_id: FORTIFY, magnitude: 25.0, area: 0, duration: 0, script_form_id: 0, conditions: Vec::new() }],
+            effects: vec![MagicEffectItem { effect_form_id: FORTIFY, magnitude: 25.0, area: 0, duration: 0, actor_value: None, script_form_id: 0, range: None, script_school: None, conditions: Vec::new() }],
             ..Default::default()
         },
     );
@@ -2510,4 +2566,157 @@ fn a_line_in_flight_survives_save_load_round_trip() {
     dst.insert_resource(FormIdPool::new());
     restore_world(&mut dst, &reg, &decoded).unwrap();
     assert_eq!(dst.get::<SpeakingLine>(actor).map(|l| l.clone()), Some(line));
+}
+
+/// BOW-AMM-002 (#7055, `equipped_ammo_round_trips`): the player's equipped arrow type survives a save and a load, and
+/// a loaded save that names an arrow no longer carried reads as none without an error; clearing writes `None`.
+#[test]
+fn equipped_ammo_round_trips() {
+    use byroredux_core::ecs::components::{EquippedAmmo, Inventory, ItemStack};
+
+    let reg = build_save_registry();
+    let mut src = World::new();
+    src.insert_resource(StringPool::new());
+    src.insert_resource(FormIdPool::new());
+    src.register::<EquippedAmmo>();
+    src.register::<Inventory>();
+    let player = src.spawn();
+    src.insert(player, EquippedAmmo(Some(0x0001_7829)));
+    let mut inventory = Inventory::new();
+    inventory.add(ItemStack::new(0x0001_7829, 10));
+    src.insert(player, inventory);
+
+    let snapshot = save_world(&src, &reg).unwrap();
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+    let mut dst = World::new();
+    dst.insert_resource(FormIdPool::new());
+    restore_world(&mut dst, &reg, &decoded).unwrap();
+    assert_eq!(dst.get::<EquippedAmmo>(player).map(|slot| *slot), Some(EquippedAmmo(Some(0x0001_7829))));
+    assert_eq!(crate::bow::equipped_ammo(&dst, player), Some(0x0001_7829));
+    let again = save_world(&dst, &reg).unwrap();
+    assert_eq!(again.components.get("EquippedAmmo"), decoded.components.get("EquippedAmmo"));
+
+    // A load whose inventory no longer holds the arrow (a removed mod) reads as none, and the sweep writes `None`.
+    dst.query_mut::<Inventory>().unwrap().get_mut(player).unwrap().items[0].count = 0;
+    assert_eq!(crate::bow::equipped_ammo(&dst, player), None);
+    crate::bow::reconcile_equipped_ammo(&dst, player);
+    assert_eq!(dst.get::<EquippedAmmo>(player).map(|slot| *slot), Some(EquippedAmmo(None)));
+}
+
+/// #7228 — the arrow slot is created by the first arrow equip, so a save from before it has no `EquippedAmmo` row for the
+/// player. The live player (which outlives the load's cell reload) loses the outgoing session's arrow choice on a load
+/// of that save, and a saved choice still applies.
+#[test]
+fn a_saved_absence_clears_the_live_equipped_ammo() {
+    use byroredux_core::ecs::components::{EquippedAmmo, FormIdComponent};
+    use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
+
+    fn placement(world: &mut World, local: u32) -> byroredux_core::ecs::EntityId {
+        let entity = world.spawn();
+        let fid = world.resource_mut::<FormIdPool>().intern(FormIdPair {
+            plugin: PluginId::from_filename("Oblivion.esm"),
+            local: LocalFormId(local),
+        });
+        world.insert(entity, FormIdComponent(fid));
+        entity
+    }
+
+    let registry = build_save_registry();
+    let mut saved = World::new();
+    saved.insert_resource(StringPool::new());
+    saved.insert_resource(FormIdPool::new());
+    saved.register::<EquippedAmmo>();
+    let _player = placement(&mut saved, 0x14);
+    let archer = placement(&mut saved, 0x300);
+    saved.insert(archer, EquippedAmmo(Some(0x0001_7829)));
+    let snapshot = save_world(&saved, &registry).unwrap();
+    let bytes = encode(&snapshot, registry.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, registry.schema_fingerprint()).unwrap();
+
+    let mut live = World::new();
+    live.insert_resource(FormIdPool::new());
+    live.register::<EquippedAmmo>();
+    live.spawn(); // No saved entity may match by numeric EntityId.
+    let new_archer = placement(&mut live, 0x300);
+    let new_player = placement(&mut live, 0x14);
+    live.insert(new_player, EquippedAmmo(Some(0x0001_782A)));
+
+    let remap = byroredux_save::build_form_id_remap(&live, &registry, &decoded);
+    byroredux_save::apply_deltas(&mut live, &registry, &decoded, &remap, MUTABLE_DELTA_COLUMNS).unwrap();
+
+    assert_eq!(live.get::<EquippedAmmo>(new_player).and_then(|slot| slot.0), None, "the loaded game never chose an arrow");
+    assert_eq!(live.get::<EquippedAmmo>(new_archer).map(|slot| *slot), Some(EquippedAmmo(Some(0x0001_7829))));
+}
+
+/// PSC-RDY-004 (#7079): the player's readied spell survives a save and a load, and a loaded save that names a spell the
+/// player no longer knows clears it without an error (PSC-RDY-001).
+#[test]
+fn the_readied_spell_survives_save_load_round_trip_and_clears_when_the_spell_is_gone() {
+    use byroredux_scripting::magic::SpellList;
+    use byroredux_scripting::player_cast::{readied, ReadiedSpell};
+
+    let reg = build_save_registry();
+    let mut src = World::new();
+    src.insert_resource(StringPool::new());
+    src.insert_resource(FormIdPool::new());
+    src.register::<ReadiedSpell>();
+    src.register::<SpellList>();
+    let player = src.spawn();
+    src.insert(player, ReadiedSpell(Some(0x000A_97DF)));
+    src.insert(player, SpellList(vec![0x000A_97DF, 0x000A_9806]));
+
+    let snapshot = save_world(&src, &reg).unwrap();
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+    let mut dst = World::new();
+    dst.insert_resource(FormIdPool::new());
+    restore_world(&mut dst, &reg, &decoded).unwrap();
+    assert_eq!(dst.get::<ReadiedSpell>(player).map(|spell| *spell), Some(ReadiedSpell(Some(0x000A_97DF))));
+    assert_eq!(readied(&dst, player), Some(0x000A_97DF));
+    // A re-captured snapshot of the loaded state decodes equal to the one loaded.
+    let again = save_world(&dst, &reg).unwrap();
+    assert_eq!(again.components.get("ReadiedSpell"), decoded.components.get("ReadiedSpell"));
+
+    // A load whose spell list no longer holds the readied spell (a removed mod) clears it, without an error.
+    dst.query_mut::<SpellList>().unwrap().get_mut(player).unwrap().0.retain(|spell| *spell != 0x000A_97DF);
+    assert_eq!(readied(&dst, player), None);
+    assert_eq!(dst.get::<ReadiedSpell>(player).map(|spell| *spell), Some(ReadiedSpell(None)));
+}
+
+/// #7050 / #7052 (OSL-SAVE-001 / OSL-SAVE-003) — a save taken mid-level resumes it: the player's major-increase count,
+/// each attribute's tally, and every pending level with its frozen tallies and picks read back identical.
+#[test]
+fn the_skill_use_level_tallies_survive_save_load_round_trip() {
+    use byroredux_core::character::{PendingLevel, SkillUseLevel};
+
+    let reg = build_save_registry();
+    let mut src = World::new();
+    src.insert_resource(StringPool::new());
+    src.insert_resource(FormIdPool::new());
+    src.register::<SkillUseLevel>();
+    let player = src.spawn();
+    let level = SkillUseLevel {
+        major_increases: 17,
+        attribute_tallies: [3, 0, 1, 2, 0, 4, 0, 5],
+        pending: vec![
+            PendingLevel { tallies: [10, 0, 0, 2, 0, 3, 0, 1], picks: vec![0, 5] },
+            PendingLevel { tallies: [0, 0, 0, 0, 0, 10, 0, 0], picks: Vec::new() },
+        ],
+    };
+    src.insert(player, level.clone());
+
+    let snapshot = save_world(&src, &reg).unwrap();
+    let bytes = encode(&snapshot, reg.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, reg.schema_fingerprint()).unwrap();
+
+    let mut dst = World::new();
+    dst.insert_resource(FormIdPool::new());
+    restore_world(&mut dst, &reg, &decoded).unwrap();
+    assert_eq!(dst.get::<SkillUseLevel>(player).map(|l| l.clone()), Some(level));
+    // A re-captured snapshot of the loaded state decodes equal to the one loaded.
+    let again = save_world(&dst, &reg).unwrap();
+    assert_eq!(again.components.get("SkillUseLevel"), decoded.components.get("SkillUseLevel"));
 }

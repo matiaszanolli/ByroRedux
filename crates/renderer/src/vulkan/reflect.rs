@@ -242,11 +242,10 @@ pub fn reflect_output_locations(spirv_bytes: &[u8]) -> Result<Vec<u32>> {
         if inst.operands[0].unwrap_storage_class() != StorageClass::Output {
             continue;
         }
-        if let Some(var_id) = inst.result_id {
-            if let Some(&loc) = locations.get(&var_id) {
+        if let Some(var_id) = inst.result_id
+            && let Some(&loc) = locations.get(&var_id) {
                 out.push(loc);
             }
-        }
     }
     out.sort_unstable();
     out.dedup();
@@ -425,13 +424,11 @@ pub fn max_u_greater_than_rhs_constant(spirv_bytes: &[u8]) -> Result<Option<u32>
     // calling `unwrap_literal_bit32()` on those panics.
     let mut int32_types: std::collections::HashSet<u32> = std::collections::HashSet::new();
     for inst in &module.types_global_values {
-        if inst.class.opcode == Op::TypeInt {
-            if let (Some(id), Some(width)) = (inst.result_id, inst.operands.first()) {
-                if width.unwrap_literal_bit32() == 32 {
+        if inst.class.opcode == Op::TypeInt
+            && let (Some(id), Some(width)) = (inst.result_id, inst.operands.first())
+                && width.unwrap_literal_bit32() == 32 {
                     int32_types.insert(id);
                 }
-            }
-        }
     }
     let mut constants: HashMap<u32, u32> = HashMap::new();
     for inst in &module.types_global_values {
@@ -833,8 +830,8 @@ mod tests {
     /// to a lane transposition inside `VolumetricsParams`: 13 of its 15
     /// members are same-typed vec4s whose `.w` slots are overloaded
     /// (`render_origin.w` = open-sky bit, `fog_reference.w` = simulation dt,
-    /// `wind_gust.y` = the BYRO_BFECC switch, `wind_gust.z` = the BYRO_SUN_ALPHA
-    /// switch, `wind_gust.w` = the BYRO_SUN_DUST strength), so swapping any two compiles
+    /// `wind_gust.y` = the BYRO_BFECC switch, `wind_gust.z` = the exterior sun
+    /// trace mode, `wind_gust.w` = the BYRO_SUN_DUST strength), so swapping any two compiles
     /// clean, keeps the size, and silently re-routes every lane after the
     /// swap — the exact failure mode REN-D8-01 caught in this plumbing. Pin
     /// every member's name and std140 offset in the committed `.spv` against
@@ -1102,8 +1099,10 @@ mod tests {
     /// RLT-SHD-009), measured the same way. The tail's height term became the piecewise
     /// integral that clamps at the reference height like the grid's (VLM-HF-007), which adds
     /// three branches (164); the sky-air fade of distant geometry (`sky_clear_radiance` shares the
-    /// clear-sky branches with the clouds' haze, VLM-AP-001) adds two (166). Pins the
-    /// current count so a future stale-recompile of this file fails
+    /// clear-sky branches with the clouds' haze, VLM-AP-001) adds two (166),
+    /// the penumbra-radius debug view adds three (169), and the far-sun
+    /// correction's eligibility adds three (172). Pins the current
+    /// count so a future stale-recompile of this file fails
     /// loudly instead of shipping silently, the same failure mode #1447
     /// fixed for `CameraUBO` size.
     #[test]
@@ -1111,8 +1110,8 @@ mod tests {
         let spv = include_bytes!("../../shaders/composite.frag.spv");
         let count = count_branch_conditionals(spv).expect("reflect composite.frag.spv");
         assert_eq!(
-            count, 166,
-            "composite.frag.spv has {count} OpBranchConditional instructions, expected 166 — \
+            count, 172,
+            "composite.frag.spv has {count} OpBranchConditional instructions, expected 172 — \
              the committed .spv looks stale relative to composite.frag; recompile it \
              (glslangValidator -V composite.frag -o composite.frag.spv from \
              crates/renderer/shaders). The raw correctness-debug guard is intentionally \
@@ -1397,11 +1396,17 @@ mod tests {
             crate::vulkan::composite::composite_layout_bindings(),
             "composite.vert" => crate::vulkan::composite::COMPOSITE_VERT_SPV,
             "composite.frag" => crate::vulkan::composite::COMPOSITE_FRAG_SPV,
+            "far_sun_shadow.comp" => crate::vulkan::composite::FAR_SUN_COMP_SPV,
         );
         assert_layout!(
             "skin_compute",
             crate::vulkan::skin_compute::skin_vertices_layout_bindings(),
             "skin_vertices.comp" => crate::vulkan::skin_compute::SKIN_VERTICES_COMP_SPV,
+        );
+        assert_layout!(
+            "terrain_patch",
+            crate::vulkan::terrain_patch::terrain_patch_layout_bindings(),
+            "terrain_patch.comp" => crate::vulkan::terrain_patch::TERRAIN_PATCH_COMP_SPV,
         );
         assert_layout!(
             "skin_palette",

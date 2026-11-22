@@ -39,12 +39,16 @@ impl ConsoleCommand for VideoStatusCommand {
         } else {
             playing
         };
+        // #7139 — a soundtrack that is missing or ends early, which the outcome does not say.
+        let soundtrack = |problem: Option<&String>| problem.map(|p| format!(" (soundtrack: {p})")).unwrap_or_default();
+        let playing = format!("{playing}{}", soundtrack(status.playing.as_ref().and_then(|p| p.soundtrack_problem.as_ref())));
         let last = match &status.last {
             Some((file, VideoOutcome::Played { ended_early })) => format!("last: {file} Played{}", if *ended_early { " (ended early)" } else { "" }),
             Some((file, VideoOutcome::Skipped(why))) => format!("last: {file} Skipped ({why})"),
             Some((file, VideoOutcome::Failed(why))) => format!("last: {file} Failed ({why})"),
             None => "last: none".to_owned(),
         };
+        let last = format!("{last}{}", soundtrack(status.last_soundtrack_problem.as_ref()));
         CommandOutput::line(format!("video: {playing}; {last}"))
     }
 }
@@ -65,5 +69,34 @@ impl ConsoleCommand for VideoSkipCommand {
         };
         control.skip = true;
         CommandOutput::line("video.skip: Escape sent to the movie player")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::video::PlayingVideo;
+    use byroredux_scripting::obscript_more::VideoRequest;
+
+    /// #7139 — a soundtrack that is missing or ends early shows in `video.status`, for the movie
+    /// playing and beside the last outcome, which says `Played` either way.
+    #[test]
+    fn a_soundtrack_problem_shows_beside_the_outcome() {
+        let mut world = World::new();
+        let request = VideoRequest { file: "x.bik".into(), interruptable: false, mute_audio: true, pause_music: true, letterbox: true, new_game: false };
+        let problem = "its audio stops at frame 146: the frame does not split";
+        world.insert_resource(VideoStatus {
+            playing: Some(PlayingVideo { request, frame: 3, frames: 10, soundtrack_problem: Some(problem.into()) }),
+            last: Some(("y.bik".into(), VideoOutcome::Played { ended_early: false })),
+            last_soundtrack_problem: Some(problem.into()),
+        });
+        let line = VideoStatusCommand.execute(&world, "").lines.join("\n");
+        assert!(line.contains(&format!("music_paused=false (soundtrack: {problem})")), "{line}");
+        assert!(line.contains(&format!("last: y.bik Played (soundtrack: {problem})")), "{line}");
+
+        world.resource_mut::<VideoStatus>().playing = None;
+        world.resource_mut::<VideoStatus>().last_soundtrack_problem = None;
+        let line = VideoStatusCommand.execute(&world, "").lines.join("\n");
+        assert!(line.ends_with("last: y.bik Played"), "{line}");
     }
 }

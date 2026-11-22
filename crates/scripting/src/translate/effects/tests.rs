@@ -3120,13 +3120,29 @@ fn set_in_chargen_declines_on_wrong_arg_count() {
 }
 
 #[test]
-fn show_race_menu_declines_with_args() {
+fn show_race_menu_declines_with_a_literal_where_a_reference_goes() {
     let body = first_fn_body(
         "ScriptName QF extends Quest\n\
          Function Fragment_29()\n\
          Game.ShowRaceMenu(true)\n EndFunction\n",
     );
     assert_eq!(lower_fragment(&body), None);
+}
+
+/// M48 GUI-PAGE-003 — Fallout 4's parameters lower on the literal `uiMode` (FO4 CK
+/// *ShowRaceMenu*): 0 is start-of-game chargen, the race menu (`SF_MQ101_001_MirrorScene`'s
+/// call, with the spouse actors); 1–4 (remake, barber, surgery, face paint) are the appearance
+/// modes; a mode past 4 or one that is not a literal declines.
+#[test]
+fn fallout4_show_race_menu_lowers_on_its_mode() {
+    let lower = |call: &str| {
+        lower_fragment(&first_fn_body(&format!("ScriptName QF extends Quest\nFunction Fragment_8()\n{call}\n EndFunction\n")))
+    };
+    assert_eq!(lower("Game.ShowRaceMenu(None, 0, None, None, None)"), Some(vec![Effect::ShowRaceMenu]));
+    assert_eq!(lower("Game.ShowRaceMenu(None, 1)"), Some(vec![Effect::ShowAppearanceMenu { mode: 1 }]));
+    assert_eq!(lower("Game.ShowRaceMenu(None, 3, None, None, None)"), Some(vec![Effect::ShowAppearanceMenu { mode: 3 }]));
+    assert_eq!(lower("Game.ShowRaceMenu(None, 5)"), None);
+    assert_eq!(lower("Game.ShowRaceMenu(None, 1, None, None, None, None)"), None);
 }
 
 #[test]
@@ -3143,7 +3159,9 @@ fn request_save_primitives_decline_with_args() {
 
 #[test]
 fn only_the_counter_only_primitives_are_placeholders() {
-    assert!(Effect::ShowRaceMenu.is_placeholder());
+    // M48 GUI-PAGE-002 — the race menu opens now; Fallout 4's appearance modes still only report.
+    assert!(!Effect::ShowRaceMenu.is_placeholder());
+    assert!(Effect::ShowAppearanceMenu { mode: 2 }.is_placeholder());
     // #5975 — `Achievements` has no production reader, so the arm only records.
     assert!(Effect::AddAchievement { id: 7 }.is_placeholder());
     assert!(Effect::RequestSave { auto: false }.is_placeholder());
@@ -3168,7 +3186,7 @@ fn a_nested_placeholder_is_found_and_nested_effects_are_visited() {
     let nested_in_if = Effect::Conditional {
         guards: vec![],
         then_effects: vec![stage()],
-        else_effects: vec![Effect::ShowRaceMenu],
+        else_effects: vec![Effect::ShowAppearanceMenu { mode: 2 }],
     };
     let nested_in_scope = Effect::QuestScope {
         quest: QuestRef::OwningQuest,
@@ -3192,7 +3210,7 @@ fn a_nested_placeholder_is_found_and_nested_effects_are_visited() {
 
     let mut kinds = Vec::new();
     nested_in_if.visit_nested(&mut |effect| kinds.push(effect.kind()));
-    assert_eq!(kinds, ["Conditional", "SetStage", "ShowRaceMenu"], "wrapper first, then contents");
+    assert_eq!(kinds, ["Conditional", "SetStage", "ShowAppearanceMenu"], "wrapper first, then contents");
 }
 
 #[test]
@@ -4966,11 +4984,10 @@ fn primitive_source_fns(src: &str) -> std::collections::HashMap<String, String> 
                 .take_while(|c| c.is_alphanumeric() || *c == '_')
                 .collect();
             current = Some((name, vec![line]));
-        } else if let Some((_, lines)) = current.as_mut() {
-            if !line.trim_start().starts_with("//") {
+        } else if let Some((_, lines)) = current.as_mut()
+            && !line.trim_start().starts_with("//") {
                 lines.push(line);
             }
-        }
     }
     flush(&mut current);
     out

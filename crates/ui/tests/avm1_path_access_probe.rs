@@ -67,6 +67,7 @@ impl Asm {
     const SET_VARIABLE: u8 = 0x1D;
     const RETURN: u8 = 0x3E;
     const GET_MEMBER: u8 = 0x4E;
+    const SET_MEMBER: u8 = 0x4F;
     const INIT_OBJECT: u8 = 0x43;
     const ADD2: u8 = 0x47;
     const CALL_METHOD: u8 = 0x52;
@@ -191,7 +192,11 @@ fn movie_bytes() -> Vec<u8> {
 }
 
 fn start() -> std::sync::Arc<std::sync::Mutex<ruffle_core::Player>> {
-    let movie = SwfMovieData::from_data(&movie_bytes(), "file:///probe.swf".to_string(), None, None)
+    start_movie(&movie_bytes())
+}
+
+fn start_movie(bytes: &[u8]) -> std::sync::Arc<std::sync::Mutex<ruffle_core::Player>> {
+    let movie = SwfMovieData::from_data(bytes, "file:///probe.swf".to_string(), None, None)
         .expect("probe SWF must parse");
     assert!(!movie.is_action_script_3(), "the probe is an AVM1 movie");
     let player = PlayerBuilder::new()
@@ -268,4 +273,49 @@ fn an_absent_path_reads_as_a_bare_undefined_so_the_adapter_must_add_a_presence_c
         matches!(absent, Value::Undefined | Value::Null),
         "absent path read as {absent:?}"
     );
+}
+
+/// M48 Phase 1 (#6653, GUI-REG-008, ui.md § *Resize*): the in-place resize `SwfPlayer::resize`
+/// makes reaches the movie. `Player::set_viewport_dimensions` re-lays the stage, and a movie that
+/// lays itself out against the viewport (`Stage.scaleMode = "noScale"`, the mode in which the
+/// stage size is the viewport's) hears `Stage.onResize` with the new `Stage.width`.
+#[test]
+fn a_viewport_resize_reaches_the_movie_as_stage_on_resize() {
+    let mut a = Asm::default();
+    // Stage.scaleMode = "noScale"; _root.resized = 0; _root.seenWidth = 0;
+    a.s("Stage").op(Asm::GET_VARIABLE).s("scaleMode").s("noScale").op(Asm::SET_MEMBER);
+    a.s("_root.resized").int(0).op(Asm::SET_VARIABLE);
+    a.s("_root.seenWidth").int(0).op(Asm::SET_VARIABLE);
+    // _root.listener = {}; _root.listener.onResize = function () {
+    //     _root.resized = _root.resized + 1; _root.seenWidth = Stage.width; }
+    a.s("_root.listener").int(0).op(Asm::INIT_OBJECT).op(Asm::SET_VARIABLE);
+    let mut on_resize = Asm::default();
+    on_resize.s("_root.resized").s("_root.resized").op(Asm::GET_VARIABLE).int(1).op(Asm::ADD2).op(Asm::SET_VARIABLE);
+    on_resize.s("_root.seenWidth").s("Stage").op(Asm::GET_VARIABLE).s("width").op(Asm::GET_MEMBER).op(Asm::SET_VARIABLE);
+    a.s("_root.listener.onResize").function(&[], &on_resize).op(Asm::SET_VARIABLE);
+    // Stage.addListener(_root.listener);
+    a.s("_root.listener").op(Asm::GET_VARIABLE).int(1).s("Stage").op(Asm::GET_VARIABLE).s("addListener");
+    a.op(Asm::CALL_METHOD).op(Asm::POP);
+    let mut get = Asm::default();
+    get.s("p").op(Asm::GET_VARIABLE).op(Asm::GET_VARIABLE).op(Asm::RETURN);
+    a.function(&["p"], &get).register(GET);
+    a.op(0x00);
+    let mut bytes = Vec::new();
+    let mut header = Header::default_with_swf_version(8);
+    header.frame_rate = Fixed8::from_f32(30.0);
+    header.num_frames = 1;
+    write_swf(&header, &[Tag::DoAction(&a.0), Tag::ShowFrame], &mut bytes).expect("write SWF");
+
+    let player = start_movie(&bytes);
+    let read = |path: &str| call(&player, GET, vec![Value::String(path.to_owned())]);
+    let resized_before = read("_root.resized");
+    player.lock().unwrap().set_viewport_dimensions(ruffle_core::ViewportDimensions {
+        width: 200,
+        height: 100,
+        scale_factor: 1.0,
+    });
+    player.lock().unwrap().tick(FloatDuration::from_secs(1.0 / 30.0));
+    assert_eq!(resized_before, Value::Number(0.0), "no resize before the viewport changed");
+    assert_eq!(read("_root.resized"), Value::Number(1.0), "Stage.onResize fired once");
+    assert_eq!(read("_root.seenWidth"), Value::Number(200.0), "with the new viewport width");
 }

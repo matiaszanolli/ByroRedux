@@ -474,11 +474,10 @@ fn select_info<'a>(
         // and the priority pre-emption #5271 wired is exactly what made the
         // missing gate hand every speaker to the highest-priority quest's
         // unconditioned line.
-        if let Some(quest) = context_quest {
-            if !quest_gate_passes(quest.0, &context, &mut gate_verdicts) {
+        if let Some(quest) = context_quest
+            && !quest_gate_passes(quest.0, &context, &mut gate_verdicts) {
                 return None;
             }
-        }
         // #5752 — an unmodeled INFO condition cannot be evaluated from
         // engine state. Do not let its safe-default satisfy a literal
         // comparison and select a line whose authored gate we cannot read.

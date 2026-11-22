@@ -174,13 +174,71 @@ impl App {
         // tier's reserve-reduced ceiling while the essential tier is still
         // open, and re-arming on the essential tier alone would restart them
         // every frame. It is closed whenever either tier is.
-        if cell_loader::lod_should_rearm_after_starvation(
-            state.lod_starved,
-            ctx.mesh_registry.prop_geometry_admission_open(),
-        ) {
+        // #6106 — held while a refused full-detail cell is waiting for its retry: the rings would
+        // take the reopened space first and the retry would never get it.
+        if state.refusal_retry.is_idle()
+            && cell_loader::lod_should_rearm_after_starvation(
+                state.lod_starved,
+                ctx.mesh_registry.prop_geometry_admission_open(),
+            )
+        {
             state.lod_starved = false;
             state.lod_reconcile_pending = true;
             log::info!("Geometry pool admission reopened — retrying the held-back LOD quads");
+        }
+        // #6106 — a cell whose full-detail meshes the pool refused is re-run once there is room:
+        // unloaded when admission is open and nothing is loading, queued again after the
+        // ordinary between-batch compaction has reclaimed its spans (`streaming/refusal_retry.rs`).
+        let retry_pool = streaming::PoolState {
+            batch_in_progress: state.geometry_batch_in_progress(),
+            admission_open: ctx.mesh_registry.prop_geometry_admission_open(),
+            geometry_settled: !ctx.mesh_registry.is_geometry_dirty()
+                && !ctx.mesh_registry.geometry_rebuild_in_progress(),
+        };
+        let retry_center = state.last_player_grid.unwrap_or(player_grid);
+        let retry_radius = state.radius_load;
+        let retry = state.refusal_retry.plan(
+            retry_pool,
+            |coord| state.loaded.contains_key(&coord),
+            |coord| {
+                (coord.0 - retry_center.0).abs().max((coord.1 - retry_center.1).abs()) <= retry_radius
+            },
+        );
+        match retry {
+            streaming::RefusalRetry::None => {}
+            streaming::RefusalRetry::Unload(coords) => {
+                let roots = coords
+                    .iter()
+                    .filter_map(|coord| state.loaded.remove(coord).map(|slot| slot.cell_root))
+                    .collect::<Vec<_>>();
+                if !roots.is_empty() {
+                    cell_loader::unload_cells(&mut self.world, ctx, &roots);
+                    cell_loader::ensure_persistent_actor_stubs(
+                        &mut self.world,
+                        &state.wctx,
+                        &coords,
+                        state.persistent_root,
+                    );
+                    // No LOD reconcile here: it would fill the space the reload needs and hold the
+                    // compaction off. The reload's own completion re-runs it.
+                    state.loaded_residency_changed = true;
+                    ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
+                    log::info!(
+                        "Geometry pool admission reopened — unloading {} cell(s) whose meshes it \
+                         refused, to load them again once the pool compacts: {coords:?} (#6106)",
+                        roots.len(),
+                    );
+                }
+            }
+            streaming::RefusalRetry::Reload(coords) => {
+                let cached_keys = self
+                    .world
+                    .resource::<cell_loader::NifImportRegistry>()
+                    .snapshot_keys();
+                let queued = state.queue_loads(coords.iter().copied(), cached_keys);
+                state.telemetry.record_queued_cells(queued);
+                log::info!("Reloading {queued} cell(s) the geometry pool refused: {coords:?} (#6106)");
+            }
         }
         // #6527 — the actor tier's own latch had no reader: a closed tier refuses NPC and
         // player bodies at spawn (they warn per mesh, but nothing said why or when it ended).
@@ -355,8 +413,7 @@ impl App {
         if state.pending.is_empty()
             && state.active_apply.is_none()
             && state.persistent_apply.is_none()
-        {
-            if let Some((grid, elapsed)) = state.telemetry.settle_full_detail(Instant::now()) {
+            && let Some((grid, elapsed)) = state.telemetry.settle_full_detail(Instant::now()) {
                 log::info!(
                     "Exterior full detail settled around ({}, {}) in {:.2} ms",
                     grid.0,
@@ -370,7 +427,6 @@ impl App {
                 // once per transition (#3662).
                 ctx.log_memory_usage();
             }
-        }
 
         // Distant water's hole is the resident set (#5334): follow residency
         // changes and the crossing itself, coalesced inside the call. Before
@@ -788,12 +844,11 @@ impl App {
         // populated collision world resolves the subject distance and every
         // later frame reuses it — a per-frame re-cast would make the orbit
         // radius drift as the camera moves, which is not a fixed-radius orbit.
-        if self.bench.camera_subject_distance.is_none() {
-            if let Some((distance, source)) = self.measure_bench_subject_distance(origin) {
+        if self.bench.camera_subject_distance.is_none()
+            && let Some((distance, source)) = self.measure_bench_subject_distance(origin) {
                 self.bench.camera_subject_distance = Some(distance);
                 log::info!("bench camera subject distance {distance:.1} BU ({source})");
             }
-        }
         let subject_distance = self
             .bench.camera_subject_distance
             .unwrap_or(crate::bench_camera::BenchCameraPath::FALLBACK_SUBJECT_DISTANCE_BU);
@@ -807,11 +862,10 @@ impl App {
         self.bench.camera_applied_pose = Some(pose);
         self.apply_bench_camera_pose(active, pose);
 
-        if path.is_cut_frame(frame, total_frames) {
-            if let Some(ctx) = self.renderer.as_mut() {
+        if path.is_cut_frame(frame, total_frames)
+            && let Some(ctx) = self.renderer.as_mut() {
                 ctx.signal_temporal_discontinuity(BENCH_CUT_RECOVERY_FRAMES);
             }
-        }
 
         // EX-08 / #2374 — one ownership sample per completed out-and-back.
         // Arming happens on the logical frame the camera returns to origin;
@@ -830,11 +884,10 @@ impl App {
             // boundary transaction is mid-apply reads a half-built world: the
             // reachability classes swing with whichever cells happen to have
             // their entities attached, even though residency never moved.
-            if !boundary_in_progress {
-                if let Some(cycle) = self.bench.pending_soak_cycle.take() {
+            if !boundary_in_progress
+                && let Some(cycle) = self.bench.pending_soak_cycle.take() {
                     self.record_soak_ownership_cycle(cycle);
                 }
-            }
             self.bench.camera_path_frame = crate::bench_camera::advance_grid_cross_frame(
                 self.bench.camera_path_frame,
                 total_frames,
@@ -881,9 +934,9 @@ impl App {
         }
         let frame = self.bench.frames_count;
         let pose = self.bench.camera_applied_pose;
-        if let (Some(capture), Some(ctx)) = (self.capture.linear_capture.as_mut(), self.renderer.as_mut()) {
-            if capture.advance_sequence(ctx, frame) {
-                if let Some(pose) = pose {
+        if let (Some(capture), Some(ctx)) = (self.capture.linear_capture.as_mut(), self.renderer.as_mut())
+            && capture.advance_sequence(ctx, frame)
+                && let Some(pose) = pose {
                     // Full precision: the gates rebuild this frame's view from it.
                     println!(
                         "linear-capture: frame {frame} camera pos={:?},{:?},{:?} forward={:?},{:?},{:?}",
@@ -891,8 +944,6 @@ impl App {
                         pose.forward.x, pose.forward.y, pose.forward.z
                     );
                 }
-            }
-        }
     }
 
     /// M-LIGHT RLT-SHD-010: place every [`BenchMover`] at this frame's point
@@ -917,16 +968,14 @@ impl App {
             .collect();
         drop(movers);
         for (entity, position) in placed {
-            if let Some(mut transforms) = self.world.query_mut::<byroredux_core::ecs::Transform>() {
-                if let Some(transform) = transforms.get_mut(entity) {
+            if let Some(mut transforms) = self.world.query_mut::<byroredux_core::ecs::Transform>()
+                && let Some(transform) = transforms.get_mut(entity) {
                     transform.translation = position;
                 }
-            }
-            if let Some(mut globals) = self.world.query_mut::<byroredux_core::ecs::GlobalTransform>() {
-                if let Some(global) = globals.get_mut(entity) {
+            if let Some(mut globals) = self.world.query_mut::<byroredux_core::ecs::GlobalTransform>()
+                && let Some(global) = globals.get_mut(entity) {
                     global.translation = position;
                 }
-            }
         }
     }
 
@@ -938,12 +987,11 @@ impl App {
         // #6775 — the yaw/pitch convention, not a shortest arc (see
         // `CameraPose::rotation`).
         let rotation = pose.rotation();
-        if let Some(mut transforms) = self.world.query_mut::<byroredux_core::ecs::Transform>() {
-            if let Some(transform) = transforms.get_mut(active) {
+        if let Some(mut transforms) = self.world.query_mut::<byroredux_core::ecs::Transform>()
+            && let Some(transform) = transforms.get_mut(active) {
                 transform.translation = pose.position;
                 transform.rotation = rotation;
             }
-        }
         // `restore_bench_camera_pose` runs after the scheduler's transform
         // propagation.  Rendering reads the local Transform on this path,
         // but interaction, picking, and the debug camera commands read the
@@ -954,11 +1002,9 @@ impl App {
         if let Some(mut globals) = self
             .world
             .query_mut::<byroredux_core::ecs::GlobalTransform>()
-        {
-            if let Some(global) = globals.get_mut(active) {
+            && let Some(global) = globals.get_mut(active) {
                 *global = byroredux_core::ecs::GlobalTransform::new(pose.position, rotation, 1.0);
             }
-        }
     }
 
     /// Reapply the already-selected pose after the scheduler's character
@@ -1091,7 +1137,7 @@ impl App {
                 self.interior_transition.is_some() || self.loading_screen.active(),
             ));
         for (action, output) in crate::save_io::execute_pending_player_save_actions(&self.world) {
-            crate::surface_save_load_output(self.debug_ui.as_mut(), action.context(), output);
+            crate::surface_save_load_output(self.debug_ui.as_mut(), &self.world, action, output);
         }
     }
 

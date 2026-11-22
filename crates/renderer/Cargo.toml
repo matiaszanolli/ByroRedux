@@ -2,6 +2,7 @@
 name = "byroredux-renderer"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 build = "build.rs"
 
 [dependencies]
@@ -30,3 +31,7 @@ egui-ash-renderer = { workspace = true }
 
 [build-dependencies]
 byroredux-core = { workspace = true }
+
+# Contains `unsafe`, so it does not inherit the workspace `unsafe_code = "forbid"`.
+[lints.rust]
+unsafe_code = "allow"

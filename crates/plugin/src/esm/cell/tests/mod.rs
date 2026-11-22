@@ -6,6 +6,7 @@
 //!
 //! - [`light`]       — LIGH (lights, color decode, FO4 XPWR)
 //! - [`addn_stat`]   — ADDN, STAT, MODL group walk
+//! - [`door`]        — DOOR flags and sounds, REFR `Open by Default` (PRD door-runtime)
 //! - [`refr`]        — REFR placement (XESP, XTEL, XLKR, XPRM, ownership, …)
 //! - [`cell`]        — CELL (water height, RCLR, Skyrim/FNV extended XCLL)
 //! - [`land`]        — LAND (VHGT heightmap decode, VNML/VCLR storage, BTXT/ATXT/VTXT)
@@ -18,6 +19,7 @@
 mod addn_stat;
 mod cell;
 mod cell_for_refr;
+mod door;
 mod integration;
 mod land;
 mod light;

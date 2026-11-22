@@ -305,20 +305,17 @@ impl<'g> Collector<'g> {
             };
             let name = ident.to_string();
             if let Some(after_colons) = path_sep(next) {
-                if name == PLAYER_ENTITY {
-                    if let Some((method, _)) = after_colons.ident() {
-                        if method == "get" {
+                if name == PLAYER_ENTITY
+                    && let Some((method, _)) = after_colons.ident()
+                        && method == "get" {
                             self.add(PLAYER_ENTITY.to_owned(), Mode::Read);
                         }
-                    }
-                }
                 if let (Some(mode), Some(after_lt)) = (mode_of(&name), punct(after_colons, '<')) {
                     // `$Comp` is a macro metavariable, not a type.
-                    if let Some(ty) = last_path_ident(after_lt) {
-                        if !self.generics.contains(&ty) {
+                    if let Some(ty) = last_path_ident(after_lt)
+                        && !self.generics.contains(&ty) {
                             self.add(ty, mode);
                         }
-                    }
                 }
             }
             cursor = next;
@@ -362,11 +359,10 @@ impl<'ast> Visit<'ast> for Collector<'_> {
     }
 
     fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
-        if let Expr::Path(path) = &*call.func {
-            if let Some(last) = path.path.segments.last() {
+        if let Expr::Path(path) = &*call.func
+            && let Some(last) = path.path.segments.last() {
                 self.callees.insert(last.ident.to_string());
             }
-        }
         visit::visit_expr_call(self, call);
     }
 
@@ -486,13 +482,12 @@ impl<'a, 'ast> AccessChain<'a, 'ast> {
     /// Read the body of every function named `name`, once.
     fn follow(&mut self, name: String) {
         let index = self.index;
-        if let Some(definitions) = index.fns.get(&name) {
-            if self.followed.insert(name) {
+        if let Some(definitions) = index.fns.get(&name)
+            && self.followed.insert(name) {
                 for definition in definitions {
                     self.visit_block(definition.block);
                 }
             }
-        }
     }
 }
 
@@ -502,38 +497,34 @@ impl<'ast> Visit<'ast> for AccessChain<'_, 'ast> {
         if let (Some((_, writes)), Some(args)) = (
             ACCESS_CALLS.iter().find(|(form, _)| *form == name),
             &call.turbofish,
-        ) {
-            if let Some(GenericArgument::Type(Type::Path(ty))) = args.args.first() {
-                if let Some(last) = ty.path.segments.last() {
+        )
+            && let Some(GenericArgument::Type(Type::Path(ty))) = args.args.first()
+                && let Some(last) = ty.path.segments.last() {
                     let ident = last.ident.to_string();
                     if *writes {
                         self.declared.written.insert(ident.clone());
                     }
                     self.declared.named.insert(ident);
                 }
-            }
-        }
         // #6701 — `Access::with(subsystem::access)` hands the access to a
         // function the subsystem owns. The function is passed, not called, so
         // `visit_expr_call` never sees it; follow the path argument.
         if name == ACCESS_WITH {
             for arg in &call.args {
-                if let Expr::Path(path) = arg {
-                    if let Some(last) = path.path.segments.last() {
+                if let Expr::Path(path) = arg
+                    && let Some(last) = path.path.segments.last() {
                         self.follow(last.ident.to_string());
                     }
-                }
             }
         }
         visit::visit_expr_method_call(self, call);
     }
 
     fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
-        if let Expr::Path(path) = &*call.func {
-            if let Some(last) = path.path.segments.last() {
+        if let Expr::Path(path) = &*call.func
+            && let Some(last) = path.path.segments.last() {
                 self.follow(last.ident.to_string());
             }
-        }
         visit::visit_expr_call(self, call);
     }
 }

@@ -95,6 +95,7 @@ use oracle::sun_dir;
 mod combustion_lab;
 mod glass_dragon;
 mod godray_lab;
+mod recede_lab;
 mod shaft_lab;
 mod oracle;
 pub(crate) mod mitsuba_export;
@@ -106,12 +107,29 @@ pub(crate) use combustion_lab::{
 };
 pub(crate) use glass_dragon::{glass_dragon_mode, setup_cornell_glass_dragon_scene};
 pub(crate) use godray_lab::{godray_lab_marked, godray_lab_mode, setup_godray_lab_scene};
+pub(crate) use recede_lab::{recede_lab_mode, setup_recede_lab_scene};
 pub(crate) use shaft_lab::{
     setup_shaft_card_lab_scene, setup_shaft_lab_scene, shaft_lab_card_mode, shaft_lab_distance_m,
     shaft_lab_mode,
 };
 pub(crate) use oracle::{cornell_oracle_rung, cornell_oracle_world_offset, setup_cornell_oracle_scene};
 pub(crate) use reference::{cornell_reference_rung, cornell_reference_view, setup_reference_scene};
+
+/// Whether `args` launch a renderer test harness: a lab (combustion, godray, recede, shaft, shaft
+/// card) or a Cornell scene (plain or sun, oracle, reference, glass dragon). #7186 — the one
+/// predicate for the scene's harness dispatch (`scene.rs`) and the profile expander
+/// (`boot/cli.rs`), which kept its own list, missed the godray, shaft and reference labs, and so
+/// handed a bare `--shaft-lab` a default game's ESM, archives and cell to load first.
+pub(crate) fn is_harness_launch(args: &[String]) -> bool {
+    combustion_lab_mode(args)
+        || godray_lab_mode(args).is_some()
+        || recede_lab_mode(args)
+        || shaft_lab_mode(args).is_some()
+        || shaft_lab_card_mode(args).is_some()
+        || glass_dragon_mode(args)
+        || crate::scene::cornell_sun_mode(args).is_some()
+        || args.iter().any(|arg| arg == "--cornell-oracle" || arg == "--cornell-reference")
+}
 
 /// Build the SDK Studio's open-front Cornell room around an imported asset.
 /// Room sizing is owned by `byroredux-sdk`; this host function only uploads
@@ -648,6 +666,18 @@ mod tests {
     #[test]
     fn godray_lab_open_and_sealed_modes_are_explicit() {
         assert_eq!(godray_lab_mode(&args(&[])), None);
+        // #7186 — every harness flag the scene dispatches is a harness launch; game flags are not.
+        for flag in [
+            "--combustion-lab", "--combustion-lab-nuclear", "--combustion-lab-steam", "--godray-lab",
+            "--godray-lab-sealed", "--godray-lab-marked", "--recede-lab", "--shaft-lab", "--shaft-lab-solid",
+            "--shaft-lab-card", "--shaft-lab-card-geo", "--shaft-lab-card-solid", "--cornell-glass-dragon",
+            "--cornell", "--cornell-sun", "--cornell-oracle", "--cornell-reference",
+        ] {
+            assert!(is_harness_launch(&args(&[flag])), "{flag}");
+        }
+        for flag in ["--esm", "--cell", "--godray-lab-extra", "--new-game"] {
+            assert!(!is_harness_launch(&args(&[flag])), "{flag}");
+        }
         assert_eq!(godray_lab_mode(&args(&["--godray-lab-extra"])), None);
         assert_eq!(godray_lab_mode(&args(&["--godray-lab"])), Some(false));
         assert_eq!(godray_lab_mode(&args(&["--godray-lab-sealed"])), Some(true));

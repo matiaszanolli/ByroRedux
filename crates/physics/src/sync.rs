@@ -270,7 +270,13 @@ impl EnvFlag {
 
     /// Whether the variable is set, as it was at the first call.
     fn get(&self) -> bool {
-        *self.cell.get_or_init(|| std::env::var_os(self.name).is_some())
+        self.get_with(|name| std::env::var_os(name).is_some())
+    }
+
+    /// [`get`](Self::get) with the lookup supplied, so the once-only cache can be tested
+    /// without editing the process environment (which is `unsafe` since edition 2024).
+    fn get_with(&self, is_set: impl FnOnce(&str) -> bool) -> bool {
+        *self.cell.get_or_init(|| is_set(self.name))
     }
 }
 
@@ -2655,16 +2661,22 @@ mod tick_documentation_tests {
     #[test]
     fn an_env_flag_is_read_once_and_then_cached() {
         const VAR: &str = "BYRO_TEST_ENV_FLAG_ONCE_6689";
-        std::env::remove_var(VAR);
         let flag = super::EnvFlag::new(VAR);
-        assert!(!flag.get(), "unset reads as false");
-        std::env::set_var(VAR, "1");
         assert!(
-            !flag.get(),
+            !flag.get_with(|name| {
+                assert_eq!(name, VAR, "the lookup is handed the variable the flag names");
+                false
+            }),
+            "unset reads as false"
+        );
+        assert!(
+            !flag.get_with(|_| unreachable!("a cached flag must not look the variable up again (#2881)")),
             "a flag that flipped mid-session must not be seen: the lookup is cached (#2881)"
         );
-        assert!(super::EnvFlag::new(VAR).get(), "a fresh flag reads the variable it names");
-        std::env::remove_var(VAR);
+        assert!(
+            super::EnvFlag::new(VAR).get_with(|_| true),
+            "a fresh flag reads the variable it names"
+        );
     }
 
     /// #7014 — each profile flag reads its own variable. The two are different

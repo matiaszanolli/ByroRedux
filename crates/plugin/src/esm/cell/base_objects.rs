@@ -225,6 +225,81 @@ pub struct StaticObject {
     pub visible_when_distant: bool,
     /// The record's destructible data (`DEST` + `DSTD` stages), when authored.
     pub destruction: Option<DestructionData>,
+    /// A `DOOR` record's flags and sounds (PRD door-runtime DRT-REC-001, -002); `None` for every other record.
+    pub door: Option<DoorData>,
+}
+
+/// A `DOOR` record's authored data: its `FNAM` flag byte and its three sounds.
+///
+/// The flag byte is kept raw and read through [`DoorData::flags`], because its bit layout differs by
+/// game (xEdit `wbDefinitionsTES4.pas:2170-2176`, `wbDefinitionsFO3.pas:4090-4098`,
+/// `wbDefinitionsFNV.pas:4584-4590`, `wbDefinitionsTES5.pas:4845-4852`; FO4 and FO76 name bits 1 to 5 as
+/// Skyrim does and add bit 6, Starfield adds bits 0, 6 and 7, none of them modelled). The sounds are `SOUN`
+/// records on Oblivion, Fallout 3 and Fallout: New Vegas and `SNDR` descriptors on Skyrim, FO4 and FO76.
+/// Starfield authors them as `DOSH` / `DCSH` / `DLSH` sound references, which are not decoded, so its three
+/// sounds stay `None` (#7098).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DoorData {
+    /// The raw `FNAM` byte; `0` when the record authors none.
+    pub fnam: u8,
+    /// `SNAM`, played when the door starts opening.
+    pub open_sound: Option<u32>,
+    /// `ANAM`, played when it starts closing.
+    pub close_sound: Option<u32>,
+    /// `BNAM`, the looping sound. When it plays is unsourced (PRD §5.4, #7062).
+    pub loop_sound: Option<u32>,
+}
+
+/// The named door flags, translated from [`DoorData::fnam`] for one game.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DoorFlags {
+    /// Oblivion only (bit 0).
+    pub oblivion_gate: bool,
+    /// The door activates itself as the player nears it (CS *Door*).
+    pub automatic: bool,
+    pub hidden: bool,
+    /// "NPCs will not use this door when path finding through the cell" (CS *Door*).
+    pub minimal_use: bool,
+    /// Fallout 3, Fallout: New Vegas and Skyrim.
+    pub sliding: bool,
+    /// Skyrim only (bit 5).
+    pub no_open_in_combat_search: bool,
+}
+
+impl DoorData {
+    /// The flags this record's `FNAM` byte names in `game`. Oblivion's four flags sit at bits 0 to 3; Fallout 3,
+    /// Fallout: New Vegas and Skyrim leave bit 0 unnamed and place `Automatic`, `Hidden`, `Minimal Use` and
+    /// `Sliding` at bits 1 to 4, Skyrim adding `Do Not Open in Combat Search` at bit 5. Fallout 4, Fallout 76 and
+    /// Starfield name bits 1 to 5 the same way (`wbDefinitionsFO4.pas:6496`, `wbDefinitionsFO76.pas:8533`,
+    /// `wbDefinitionsSF1.pas:11575-11626`), so they read as Skyrim's layout; their extra bits are not modelled.
+    pub fn flags(&self, game: crate::esm::reader::GameKind) -> DoorFlags {
+        use crate::esm::reader::GameKind;
+        let bit = |n: u8| self.fnam & (1 << n) != 0;
+        match game {
+            GameKind::Oblivion => DoorFlags {
+                oblivion_gate: bit(0),
+                automatic: bit(1),
+                hidden: bit(2),
+                minimal_use: bit(3),
+                ..DoorFlags::default()
+            },
+            GameKind::Fallout3NV => DoorFlags {
+                automatic: bit(1),
+                hidden: bit(2),
+                minimal_use: bit(3),
+                sliding: bit(4),
+                ..DoorFlags::default()
+            },
+            _ => DoorFlags {
+                automatic: bit(1),
+                hidden: bit(2),
+                minimal_use: bit(3),
+                sliding: bit(4),
+                no_open_in_combat_search: bit(5),
+                ..DoorFlags::default()
+            },
+        }
+    }
 }
 
 /// A base object's destructible data (xEdit `wbDEST`): its health and the

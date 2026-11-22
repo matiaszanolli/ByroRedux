@@ -347,13 +347,12 @@ mod tests {
             let mut system = make_billboard_system();
             system(&world, 0.0);
             system(&world, 0.5);
-            let rotation = world
+            world
                 .query::<GlobalTransform>()
                 .unwrap()
                 .get(tree)
                 .unwrap()
-                .rotation;
-            rotation
+                .rotation
         }
 
         let calm = rotation_after_wind(BillboardMode::BsRotateAboutUp, [1.0, 0.0], 0.0);
@@ -557,13 +556,12 @@ mod tests {
 
             let mut system = make_billboard_system();
             system(&world, 0.0);
-            let rotation = world
+            world
                 .query::<GlobalTransform>()
                 .unwrap()
                 .get(tree)
                 .unwrap()
-                .rotation;
-            rotation
+                .rotation
         }
 
         assert_ne!(

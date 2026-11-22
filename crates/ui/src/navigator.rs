@@ -258,7 +258,23 @@ fn load_archive_resource(
     resolved: Url,
     archive_path: String,
 ) -> Box<dyn SuccessResponse> {
-    let mut body = match provider.load(&archive_path) {
+    // M48 GUI-FONT-001/002 — `gfxfontlib.swf` is built from the language's font configuration;
+    // the shipped placeholder serves only an archive with no configuration.
+    let font_library = crate::fonts::is_font_library_request(&archive_path)
+        .then(|| crate::fonts::font_library(provider, &crate::fonts::text_languages()))
+        .flatten();
+    let loaded = match font_library {
+        Some(library) => {
+            log::info!(
+                "Scaleform font library {archive_path:?} built from the font configuration: {} class(es), {} unresolved",
+                library.classes.len(),
+                library.unresolved.len()
+            );
+            Ok(Some(library.swf))
+        }
+        None => provider.load(&archive_path),
+    };
+    let mut body = match loaded {
         Ok(Some(body)) => body,
         Ok(None) => {
             return record_degraded(
@@ -280,11 +296,10 @@ fn load_archive_resource(
     // #6225 — every SWF body is held to the #5966 ceiling, not only import assets: a movie a running
     // menu loads (`Loader.load`, `loadClip`, `loadMovie`) reaches Ruffle's own `SwfMovieData::from_data`,
     // which inflates to the header's claim, and no decode site in this crate sees that one.
-    if is_swf(&body) {
-        if let Err(message) = crate::prepare::ensure_declared_len_within_ceiling(&body) {
+    if is_swf(&body)
+        && let Err(message) = crate::prepare::ensure_declared_len_within_ceiling(&body) {
             return record_degraded(state, &request_url, message);
         }
-    }
     // #5480 — the shim's documented contract ("normalize … before Ruffle
     // sees it", prepare.rs) covers the movies Ruffle parses through THIS
     // response, not only the import scan: the body is normalized once

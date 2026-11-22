@@ -39,7 +39,7 @@ pub use archive::BsaArchive;
 pub use ba2::{normalize_path, Ba2Archive, Ba2Variant, Dx10ChunkInfo, Dx10Layout};
 pub use csg::{bscrc32, csg_name_hash, CsgArchive, CSG_CHUNK_SIZE};
 pub use naming::numeric_sibling_paths;
-pub use safety::{MAX_CHUNK_BYTES, MAX_ENTRY_COUNT};
+pub use safety::{inflate_bounded_zlib, MAX_CHUNK_BYTES, MAX_ENTRY_COUNT};
 pub use uvd::{parse_uvd_header, UvdHeader, UVD_MAGIC};
 /// Same quantity as `byroredux_core::math::coord::EXTERIOR_CELL_UNITS`, which
 /// this crate cannot depend on; the bin crate const-asserts the two equal

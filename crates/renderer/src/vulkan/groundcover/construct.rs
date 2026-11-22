@@ -5,6 +5,15 @@
 use crate::vulkan::descriptors::{layout_binding, DescriptorPoolBuilder};
 use super::*;
 
+/// The three shader modules the render-pass-dependent graphics pipelines are built from. The
+/// blade and debug pipelines share `vert`; each takes its own fragment shader.
+#[derive(Clone, Copy)]
+struct DrawShaders {
+    vert: vk::ShaderModule,
+    blade_frag: vk::ShaderModule,
+    debug_frag: vk::ShaderModule,
+}
+
 impl GroundCoverPipeline {
     pub fn new(
         device: &ash::Device,
@@ -495,9 +504,7 @@ impl GroundCoverPipeline {
             pipeline_cache,
             render_pass,
             &entry,
-            vert,
-            blade_frag,
-            debug_frag,
+            DrawShaders { vert, blade_frag, debug_frag },
         );
         // SAFETY: pipeline creation has completed, so the modules are no
         // longer referenced; they are owned here and destroyed exactly once.
@@ -530,9 +537,7 @@ impl GroundCoverPipeline {
                     render_pass,
                     &entry,
                     scatter,
-                    vert,
-                    blade_frag,
-                    debug_frag,
+                    DrawShaders { vert, blade_frag, debug_frag },
                 )
             });
         for module in [scatter, interaction, vert, blade_frag, debug_frag] {
@@ -568,7 +573,6 @@ impl GroundCoverPipeline {
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)] // One handle per shader module the pipelines are built from.
     fn build_pipelines(
         &mut self,
         device: &ash::Device,
@@ -576,9 +580,7 @@ impl GroundCoverPipeline {
         render_pass: vk::RenderPass,
         entry: &std::ffi::CStr,
         scatter: vk::ShaderModule,
-        vert: vk::ShaderModule,
-        blade_frag: vk::ShaderModule,
-        debug_frag: vk::ShaderModule,
+        draw: DrawShaders,
     ) -> Result<()> {
         let stage = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
@@ -596,15 +598,7 @@ impl GroundCoverPipeline {
                 .context("create ground-cover scatter pipeline")?[0]
         };
 
-        self.build_draw_pipelines(
-            device,
-            pipeline_cache,
-            render_pass,
-            entry,
-            vert,
-            blade_frag,
-            debug_frag,
-        )
+        self.build_draw_pipelines(device, pipeline_cache, render_pass, entry, draw)
     }
 
     /// Build the two render-pass-dependent graphics pipelines.
@@ -614,17 +608,15 @@ impl GroundCoverPipeline {
     /// rebuild exactly them — not the scatter/interaction compute pipelines,
     /// and not the blade arena or the §12.4 displacement field, which are
     /// several megabytes of residency with no dependency on the pass at all.
-    #[allow(clippy::too_many_arguments)]
     fn build_draw_pipelines(
         &mut self,
         device: &ash::Device,
         pipeline_cache: vk::PipelineCache,
         render_pass: vk::RenderPass,
         entry: &std::ffi::CStr,
-        vert: vk::ShaderModule,
-        blade_frag: vk::ShaderModule,
-        debug_frag: vk::ShaderModule,
+        draw: DrawShaders,
     ) -> Result<()> {
+        let DrawShaders { vert, blade_frag, debug_frag } = draw;
         // `GC_DEBUG_POINTS` — specialization constant 0 in the shared vertex
         // shader. One shader, two pipelines: the debug view renders points at
         // exactly the positions the blades will occupy, so it cannot drift
@@ -745,7 +737,7 @@ fn draw_color_write_masks(debug_points: bool) -> [vk::ColorComponentFlags; 8] {
     // `B10G11R11_UFLOAT` carries no alpha channel.
     masks[5] = C::R | C::G | C::B;
     masks[6] = C::R;
-    masks[7] = C::R;
+    masks[7] = C::RGBA;
     masks
 }
 
@@ -783,7 +775,7 @@ mod tests {
             frag.contains("layout(location = 2) out vec2 outMotion;")
                 && frag.contains("outMotion = (currNDC - prevNDC) * 0.5;")
                 && frag.contains("outFsrReactive = 0.0;")
-                && frag.contains("outFsrTransparency = 0.0;"),
+                && frag.contains("outTransparencyAndSun = vec4(0.0);"),
             "blade ribbons must write real velocity and no FSR exception: the \
              segment tiers geomorph, so there is no stochastic handoff left to flag"
         );

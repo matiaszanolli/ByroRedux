@@ -76,7 +76,7 @@ pub struct WeaponVats {
 }
 
 /// What kind of item this is, with kind-specific stats.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ItemKind {
     /// APPA alchemy equipment. TES4 uses a type byte and floating quality;
     /// TES5 uses a separate integer tier. Missing fields remain absent.
@@ -163,6 +163,13 @@ pub enum ItemKind {
         health: u32,
         /// Clip rounds (FNV: usually 0 — meaningful per WEAP).
         clip_rounds: u8,
+        /// The ammunition's own `DATA` speed multiplier (Oblivion's arrow speed: every one of the 128
+        /// vanilla arrows authors 1.0, xEdit / UESP *Oblivion Mod:Mod File Format/AMMO*; FO3 / FNV author
+        /// the same field). `0.0` where the source format has none (Skyrim's speed is its `PROJ`'s).
+        speed: f32,
+        /// Oblivion's `DATA` flags (UESP *AMMO*: bit 0 *Ignores Normal Weapon Resistance*); `0` on every other
+        /// game, whose layouts are not read here (player-archery BOW-AMM-004).
+        flags: u32,
     },
     /// ARMO: armor or clothing.
     Armor {
@@ -180,15 +187,14 @@ pub enum ItemKind {
         dr: u32,
         /// Health / condition durability (FO3/FNV/FO4; Skyrim dropped it).
         health: u32,
-        /// Equip slot mask (FO3/FNV-only biped-flag low 16 bits).
-        slot_mask: u16,
         /// Armor rating × 100. Sourced from DATA on Oblivion, FNAM on FO4,
         /// and DNAM on Skyrim+. 0 on FO3/FNV, which use `dt`/`dr` instead.
         armor_rating_x100: u32,
         /// Skyrim+: armor type from BOD2 second u32 — xEdit `wbArmorTypeEnum`:
         /// 0 = Light Armor, 1 = Heavy Armor, 2 = Clothing (an earlier comment had
         /// clothing and heavy swapped; the armor-rating code in `byroredux/src/armor.rs`
-        /// is the first consumer, and a live run caught it). `None` on pre-Skyrim games.
+        /// is the first consumer, and a live run caught it). Oblivion sets `Some(0 | 1)` from its `BMDT`
+        /// General Flags Heavy Armor bit (0x80); `None` on FO3 / FNV.
         armor_type: Option<u32>,
         /// Oblivion / FO3 / FNV female biped mesh (`MOD3`). The male mesh
         /// is `common.model_path` (`MODL`); this is the female counterpart
@@ -295,6 +301,12 @@ pub enum ItemKind {
         /// 0 Loud, 1 Normal, 2 Silent): how loud an attack with the weapon is to
         /// detectors. `None` on other games and where the record authors none.
         sound_level: Option<WeaponSoundLevel>,
+        /// Oblivion: the weapon ignores an opponent's *Resist Normal Weapons* — the `DATA` flag bit 0 ("Ignores Normal
+        /// Weapon Resistance", UESP *Oblivion Mod:Mod File Format/WEAP*; silver and daedric weapons set it) or an
+        /// enchantment (`ENAM`), which UESP *Oblivion:The Complete Damage Formula* lists with them ("if using
+        /// Silver/Daedric/Enchanted weapons it is always 1"). `false` on every other game, whose resistance rules are not
+        /// read here.
+        ignores_normal_resistance: bool,
     },
 }
 
@@ -319,6 +331,22 @@ impl WeaponSoundLevel {
 }
 
 impl ItemKind {
+    /// The kind the item's own record authored: a loose object mod (`Mod`) is a `MISC` the load-order fold promoted
+    /// from `Junk` or `Misc` because an `OMOD` names it (`EsmIndex::classify_fallout_inventory_kinds`), so it demotes
+    /// to the one it was. Every other kind is its own.
+    pub fn authored(&self) -> std::borrow::Cow<'_, Self> {
+        match self {
+            Self::Mod { was_junk: true } => std::borrow::Cow::Owned(Self::Junk),
+            Self::Mod { was_junk: false } => std::borrow::Cow::Owned(Self::Misc),
+            kind => std::borrow::Cow::Borrowed(kind),
+        }
+    }
+
+    /// Whether two kinds are the same as their records authored them (see [`Self::authored`]).
+    pub fn same_authored(a: &Self, b: &Self) -> bool {
+        a.authored() == b.authored()
+    }
+
     /// A weapon with every optional field at its "not authored" value
     /// (`0` / `None`) and a neutral `1.0` critical multiplier, for fixtures
     /// and placeholders that pin only the fields they care about (#6372).
@@ -345,6 +373,7 @@ impl ItemKind {
             reload_anim: 0,
             vats: None,
             sound_level: None,
+            ignores_normal_resistance: false,
         }
     }
 
@@ -434,9 +463,12 @@ pub fn parse_weap(
     let mut reach = 0.0f32;
     let mut speed = 0.0f32;
     let mut sound_level = None;
+    let mut ignores_normal_resistance = false;
 
     for sub in subs {
         match &sub.sub_type {
+            // Oblivion `ENAM`: the weapon's enchantment, which (like the DATA flag) ignores normal weapon resistance.
+            b"ENAM" if matches!(game, GameKind::Oblivion) && sub.data.len() >= 4 => ignores_normal_resistance = true,
             b"DATA" => {
                 let mut r = SubReader::new(&sub.data);
                 match game {
@@ -468,7 +500,7 @@ pub fn parse_weap(
                         oblivion_type = r.u32_or_default().min(u32::from(u8::MAX)) as u8;
                         speed = r.f32_or_default();
                         reach = r.f32_or_default();
-                        let _flags = r.u32_or_default();
+                        ignores_normal_resistance |= r.u32_or_default() & 1 != 0;
                         common.value = r.u32_or_default();
                         let _health = r.u32_or_default();
                         common.weight = r.f32_or_default();
@@ -594,9 +626,12 @@ pub fn parse_weap(
             }
             // M65 (SNK-ATK-004) — Skyrim WEAP DNAM (xEdit `wbDefinitionsTES5`): byte 0 is the
             // Animation Type, the index `SkyrimSE.exe` keys the sneak-attack multiplier on
-            // (`0x14028c410`). The rest of the struct (speed, reach, …) is not decoded here.
+            // (`0x14028c410`). Player-archery BOW-DRW-003 adds the Speed at offset 4 (xEdit `Animation
+            // Type`, `unused[3]`, `Speed`, `Reach`; UESP *Skyrim Mod:Mod File Format/WEAP* `04:Speed`), which
+            // a bow's draw time divides by. The rest of the struct (reach, …) is not decoded here.
             b"DNAM" if matches!(game, GameKind::Skyrim) => {
                 anim_type = sub.data.first().copied().unwrap_or(0);
+                speed = sub.data.get(4..8).map_or(0.0, |bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]));
             }
             // FO4 WEAP DNAM is a packed, unaligned 132-byte structure. Keep
             // the game-specific byte layout here at the parser boundary and
@@ -711,6 +746,7 @@ pub fn parse_weap(
             reload_anim,
             vats,
             sound_level,
+            ignores_normal_resistance,
         },
     }
 }
@@ -726,7 +762,6 @@ pub fn parse_armo(
     let mut dt = 0.0f32;
     let mut dr = 0u32;
     let mut health = 0u32;
-    let mut slot_mask = 0u16;
     let mut armor_rating_x100 = 0u32;
     let mut armor_type: Option<u32> = None;
     let mut armatures: Vec<u32> = Vec::new();
@@ -757,14 +792,20 @@ pub fn parse_armo(
                 } else {
                     r.u32_or_default()
                 });
-                slot_mask = (biped_flags & 0xFFFF) as u16;
+                // Oblivion's General Flags byte carries Heavy Armor (bit 7); every Oblivion ARMO is light or
+                // heavy (clothing is its own `CLOT` record), so the same `armor_type` the Skyrim path reads
+                // (0 light, 1 heavy) names the skill a struck piece feeds (#7051, OSL-USE-003).
+                if game == GameKind::Oblivion
+                    && let Some(general) = r.u8().ok()
+                {
+                    armor_type = Some(u32::from(general & 0x80 != 0));
+                }
             }
             // BOD2 (Skyrim+): biped_slots (u32) + armor_type (u32).
-            // armor_type: 0=light, 1=clothing, 2=heavy, 3=none, 4=gauntlets.
+            // armor_type: xEdit `wbArmorTypeEnum` — 0 Light Armor, 1 Heavy Armor, 2 Clothing.
             b"BOD2" => {
                 let mut r = SubReader::new(&sub.data);
                 biped_flags = u64::from(r.u32_or_default());
-                slot_mask = (biped_flags & 0xFFFF) as u16;
                 if let Ok(t) = r.u32() {
                     armor_type = Some(t);
                 }
@@ -779,7 +820,6 @@ pub fn parse_armo(
             b"BODT" if is_skyrim_or_later && sub.data.len() >= 8 => {
                 let mut r = SubReader::new(&sub.data);
                 biped_flags = u64::from(r.u32_or_default());
-                slot_mask = (biped_flags & 0xFFFF) as u16;
                 if sub.data.len() >= 12 {
                     r.skip_or_eof(4); // general_flags u8 + 3 pad
                     if let Ok(t) = r.u32() {
@@ -792,7 +832,6 @@ pub fn parse_armo(
             // `Spacesuit_Constellation_01` carries bit 35 "SS BODY".
             b"BO64" if game == GameKind::Starfield && sub.data.len() >= 8 => {
                 biped_flags = SubReader::new(&sub.data).u64_or_default();
-                slot_mask = (biped_flags & 0xFFFF) as u16;
             }
             b"DATA" => {
                 let mut r = SubReader::new(&sub.data);
@@ -926,7 +965,6 @@ pub fn parse_armo(
             dt,
             dr,
             health,
-            slot_mask,
             armor_rating_x100,
             armor_type,
             armatures,
@@ -948,6 +986,8 @@ pub fn parse_ammo(
     let mut casing_form = 0u32;
     let mut health = 0u32;
     let mut clip_rounds = 0u8;
+    let mut speed = 0.0f32;
+    let mut flags = 0u32;
 
     for sub in subs {
         match &sub.sub_type {
@@ -963,8 +1003,8 @@ pub fn parse_ammo(
                     // record's damage is the bow's, not the arrow's). No
                     // clipRounds — magazines arrived with FO3.
                     GameKind::Oblivion if sub.data.len() >= 18 => {
-                        let _speed = r.f32_or_default();
-                        let _flags = r.u32_or_default();
+                        speed = r.f32_or_default();
+                        flags = r.u32_or_default();
                         common.value = r.u32_or_default();
                         common.weight = r.f32_or_default();
                         damage = r.u16_or_default() as f32;
@@ -973,7 +1013,7 @@ pub fn parse_ammo(
                     // FO3/FNV AMMO DATA (13 bytes): speed(f32), flags(u8),
                     // pad(u8)×3, value(u32), clipRounds(u8).
                     GameKind::Fallout3NV if sub.data.len() >= 13 => {
-                        let _speed = r.f32_or_default();
+                        speed = r.f32_or_default();
                         let _flags_pad = r.u32_or_default();
                         common.value = r.u32_or_default();
                         clip_rounds = r.u8_or_default();
@@ -1062,6 +1102,8 @@ pub fn parse_ammo(
             casing_form,
             health,
             clip_rounds,
+            speed,
+            flags,
         },
     }
 }
@@ -1096,7 +1138,6 @@ pub fn parse_clot(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
         common,
         kind: ItemKind::Armor {
             biped_flags: u64::from(slots),
-            slot_mask: slots,
             female_model_path,
             dt: 0.0,
             dr: 0,
@@ -1229,6 +1270,12 @@ pub fn parse_alch(
 }
 
 /// Game-specific consumption data, separate from the legacy display-only parser.
+/// Oblivion `ALCH` `ENIT`: Value s32, Flags u8, 3 unused (xEdit TES4).
+const OBLIVION_ENIT_LEN: usize = 8;
+const OBLIVION_ENIT_FLAGS_AT: usize = 4;
+/// Oblivion `ENIT` Flags bit 1: Food Item.
+const OBLIVION_ENIT_FOOD_ITEM: u8 = 0x02;
+
 pub fn parse_alch_for_game(
     form_id: u32,
     subs: &[SubRecord],
@@ -1268,8 +1315,12 @@ pub fn parse_alch_for_game(
         // Oblivion's `ENIT` is Value s32 then a one-byte Flags (bit 1 Food Item, xEdit `wbDefinitionsTES4.pas`).
         GameKind::Oblivion => subs
             .iter()
-            .find(|s| &s.sub_type == b"ENIT" && s.data.len() >= 5)
-            .is_some_and(|s| s.data[4] & 2 != 0),
+            .find(|s| &s.sub_type == b"ENIT" && s.data.len() >= OBLIVION_ENIT_LEN)
+            .is_some_and(|s| {
+                let mut r = SubReader::new(&s.data);
+                r.skip_to_or_eof(OBLIVION_ENIT_FLAGS_AT);
+                r.u8_or_default() & OBLIVION_ENIT_FOOD_ITEM != 0
+            }),
         _ => false,
     };
     if let ItemKind::Aid {
@@ -1281,7 +1332,7 @@ pub fn parse_alch_for_game(
         *authored_effects = authored;
         *food = food_flag;
     }
-    if !matches!(game, GameKind::Skyrim | GameKind::Fallout3NV)
+    if !matches!(game, GameKind::Skyrim | GameKind::Fallout3NV | GameKind::Oblivion)
         || subs
             .iter()
             .any(|s| matches!(&s.sub_type, b"VMAD" | b"SCRI"))
@@ -1291,7 +1342,13 @@ pub fn parse_alch_for_game(
     let mut valid_header = false;
     let mut medicine_flag = false;
     for sub in subs {
-        if &sub.sub_type == b"ENIT" {
+        if &sub.sub_type == b"ENIT" && game == GameKind::Oblivion {
+            // Value s32 and a one-byte flags field: no addiction fields, so a present header is simple.
+            if sub.data.len() < OBLIVION_ENIT_LEN {
+                return item;
+            }
+            valid_header = true;
+        } else if &sub.sub_type == b"ENIT" {
                 if sub.data.len() < 20 {
                     return item;
                 }
@@ -1312,8 +1369,8 @@ pub fn parse_alch_for_game(
                 medicine_flag = game == GameKind::Fallout3NV && flags & 4 != 0;
             }
     }
-    if valid_header {
-        if let ItemKind::Aid {
+    if valid_header
+        && let ItemKind::Aid {
             immediate_effects,
             simple_consumption_header,
             medicine,
@@ -1324,7 +1381,6 @@ pub fn parse_alch_for_game(
             *medicine = medicine_flag;
             *simple_consumption_header = true;
         }
-    }
     item
 }
 
@@ -1421,13 +1477,12 @@ pub fn parse_carryable_light(
     }
     let duration_seconds = i32::from_le_bytes(data[..4].try_into().unwrap());
     let mut common = CommonItemFields::from_subs_with_remap(subs, remap);
-    if let Some(offset) = value_offset {
-        if let Some(economics) = data.get(offset..offset + 8) {
+    if let Some(offset) = value_offset
+        && let Some(economics) = data.get(offset..offset + 8) {
             let mut reader = SubReader::new(economics);
             common.value = reader.u32_or_default();
             common.weight = reader.f32_or_default();
         }
-    }
     Some(ItemRecord {
         form_id,
         common,
@@ -1619,7 +1674,7 @@ mod tests {
         let ItemKind::Weapon {
             ammo_form, damage, clip_size, anim_type, ap_cost, vats_base_to_hit, projectile_form, equip_type,
             skill_actor_value, min_spread, spread, crit_mult, crit_damage, reach, speed, oblivion_type, reload_anim, vats,
-            sound_level,
+            sound_level, ignores_normal_resistance,
         } = stub.clone()
         else {
             panic!("weapon_stub builds a Weapon");
@@ -1632,6 +1687,7 @@ mod tests {
         assert!(vats.is_none());
         assert_eq!(skill_actor_value, None);
         assert_eq!(sound_level, None);
+        assert!(!ignores_normal_resistance);
 
         let ItemKind::Weapon { skill_actor_value, .. } = stub.clone().with_weapon_skill(38) else {
             panic!("setters keep the variant");
@@ -2568,12 +2624,10 @@ mod tests {
         match item.kind {
             ItemKind::Armor {
                 biped_flags,
-                slot_mask,
                 armor_type,
                 ..
             } => {
                 assert_eq!(biped_flags, 0x0000_0002, "the leading u32 is the biped mask");
-                assert_eq!(slot_mask, 0x0002);
                 assert_eq!(armor_type, Some(1), "the 12-byte tail carries the armor type");
             }
             _ => panic!("expected Armor kind"),
@@ -2750,12 +2804,12 @@ mod tests {
         ];
         let item = parse_armo(0x000972BB, &subs, GameKind::Oblivion, &None);
         match &item.kind {
-            ItemKind::Armor { biped_flags, slot_mask, .. } => {
+            ItemKind::Armor { biped_flags, armor_type, .. } => {
                 assert_eq!(
                     *biped_flags, 0x3,
                     "the General Flags byte (0x80, Heavy) must not leak into bits 16-23"
                 );
-                assert_eq!(*slot_mask, 0x3);
+                assert_eq!(*armor_type, Some(1), "General Flags 0x80 is Heavy Armor");
             }
             _ => panic!("expected Armor kind"),
         }
@@ -2813,7 +2867,10 @@ mod tests {
         let subs = vec![sub(b"BMDT", bmdt), sub(b"DATA", data)];
         let item = parse_armo(0x1, &subs, GameKind::Oblivion, &None);
         match item.kind {
-            ItemKind::Armor { biped_flags, .. } => assert_eq!(biped_flags, 0x4),
+            ItemKind::Armor { biped_flags, armor_type, .. } => {
+                assert_eq!(biped_flags, 0x4);
+                assert_eq!(armor_type, Some(1), "0xC0 includes Heavy");
+            }
             _ => panic!("expected Armor kind"),
         }
     }
@@ -2872,6 +2929,78 @@ mod tests {
                 assert_eq!(clip_rounds, 0, "no magazine system on Oblivion");
                 assert_eq!(casing_form, 0, "no projectile/casing on Oblivion AMMO");
             }
+            _ => panic!("expected Ammo kind"),
+        }
+    }
+
+    /// Oblivion armor and resistance (#7057 follow-up): a weapon whose `DATA` flag bit 0 is set (silver, daedric) or that
+    /// carries an `ENAM` enchantment ignores an opponent's Resist Normal Weapons; a plain one does not.
+    #[test]
+    fn oblivion_weapon_ignores_resistance_by_flag_or_enchantment() {
+        let data = |flags: u32| {
+            let mut data = Vec::new();
+            for word in [5u32, 1f32.to_bits(), 1f32.to_bits(), flags, 100, 50, 1f32.to_bits()] {
+                data.extend_from_slice(&word.to_le_bytes());
+            }
+            data.extend_from_slice(&8u16.to_le_bytes());
+            data
+        };
+        let ignores = |subs: Vec<SubRecord>| match parse_weap(0x1, &subs, GameKind::Oblivion, &None).kind {
+            ItemKind::Weapon { ignores_normal_resistance, .. } => ignores_normal_resistance,
+            _ => panic!("expected Weapon kind"),
+        };
+        assert!(!ignores(vec![sub(b"EDID", b"IronBow\0"), sub(b"DATA", &data(0))]), "a plain weapon");
+        assert!(ignores(vec![sub(b"EDID", b"SilverBow\0"), sub(b"DATA", &data(1))]), "the flag");
+        assert!(ignores(vec![sub(b"EDID", b"FireBow\0"), sub(b"ENAM", &0x1234u32.to_le_bytes()), sub(b"DATA", &data(0))]), "an enchantment");
+    }
+
+    /// player-archery BOW-DRW-003 — a Skyrim bow's authored speed (WEAP `DNAM` offset 4, after the animation type and
+    /// three unused bytes: xEdit `wbDefinitionsTES5`, UESP *WEAP*) is kept next to its animation type 7.
+    #[test]
+    fn skyrim_weapon_dnam_keeps_the_speed() {
+        let mut dnam = vec![0u8; 100];
+        dnam[0] = 7; // bow
+        dnam[4..8].copy_from_slice(&0.9f32.to_le_bytes());
+        let subs = vec![sub(b"EDID", b"HuntingBow\0"), sub(b"DNAM", &dnam)];
+        match parse_weap(0x13985, &subs, GameKind::Skyrim, &None).kind {
+            ItemKind::Weapon { anim_type, speed, .. } => assert_eq!((anim_type, speed), (7, 0.9)),
+            _ => panic!("expected Weapon kind"),
+        }
+        // A DNAM too short to carry the speed leaves it undecoded rather than panicking.
+        let subs = vec![sub(b"EDID", b"Stub\0"), sub(b"DNAM", &[3u8])];
+        match parse_weap(0x1, &subs, GameKind::Skyrim, &None).kind {
+            ItemKind::Weapon { anim_type, speed, .. } => assert_eq!((anim_type, speed), (3, 0.0)),
+            _ => panic!("expected Weapon kind"),
+        }
+    }
+
+    /// player-archery BOW-AMM-004 — the arrow's speed and the "Ignores Normal Weapon Resistance" flag (UESP *Oblivion
+    /// Mod:Mod File Format/AMMO*, bit 0) are kept, not dropped.
+    #[test]
+    fn oblivion_ammo_keeps_the_speed_and_the_resistance_flag() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&1.5f32.to_le_bytes()); // speed
+        data.extend_from_slice(&1u32.to_le_bytes()); // flags: ignores normal weapon resistance
+        data.extend_from_slice(&2u32.to_le_bytes()); // value
+        data.extend_from_slice(&0.1f32.to_le_bytes()); // weight
+        data.extend_from_slice(&9u16.to_le_bytes()); // damage
+        let subs = vec![sub(b"EDID", b"SilverArrow\0"), sub(b"DATA", &data)];
+        let item = parse_ammo(0x1, &subs, GameKind::Oblivion, &None);
+        match item.kind {
+            ItemKind::Ammo { speed, flags, .. } => {
+                assert!((speed - 1.5).abs() < 1e-6);
+                assert_eq!(flags & 1, 1);
+            }
+            _ => panic!("expected Ammo kind"),
+        }
+        // A game whose speed the layout does not carry reads 0, not a made-up 1.
+        let mut skyrim = Vec::new();
+        for word in [0xC0DEu32, 0, 8f32.to_bits(), 1] {
+            skyrim.extend_from_slice(&word.to_le_bytes());
+        }
+        let subs = vec![sub(b"EDID", b"ArrowIron\0"), sub(b"DATA", &skyrim)];
+        match parse_ammo(0x2, &subs, GameKind::Skyrim, &None).kind {
+            ItemKind::Ammo { speed, flags, .. } => assert_eq!((speed, flags), (0.0, 0)),
             _ => panic!("expected Ammo kind"),
         }
     }

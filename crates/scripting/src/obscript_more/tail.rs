@@ -141,9 +141,11 @@ fn races_flagged(
 /// Honest Hearts, Old World Blues, Lonesome Road, Gun Runners' Arsenal, Courier's Stash.
 const DLC_MASTERS: [&str; 6] = ["DeadMoney.esm", "HonestHearts.esm", "OldWorldBlues.esm", "LonesomeRoad.esm", "GunRunnersArsenal.esm", "ClassicPack.esm"];
 
-fn menu(world: &World, name: &'static str, form: u32) -> Action {
+/// Queue `name` (with its `MenuMode` code, `None` for a screen the character-creation page owns
+/// by its own code) for the UI.
+fn menu(world: &World, name: &'static str, code: Option<u32>, form: u32) -> Action {
     if let Some(mut menus) = world.try_resource_mut::<PendingMenus>() {
-        menus.0.push(MenuRequest { menu: name, form });
+        menus.0.push(MenuRequest::coded(name, code, form));
     }
     done(format!("{name} menu requested"))
 }
@@ -157,11 +159,10 @@ fn skill_form(world: &World, skill: f32) -> Option<u32> {
 fn tag_bonus(world: &World, player: EntityId, skill: u8, sign: f32) {
     let bonus = crate::obscript_state::game_setting(world, "fAVDTagSkillBonus").unwrap_or(0.0);
     let (Some(form), true) = (skill_form(world, f32::from(skill)), bonus != 0.0) else { return };
-    if let Some(mut values) = world.query_mut::<ActorValues>() {
-        if let Some(values) = values.get_mut(player) {
+    if let Some(mut values) = world.query_mut::<ActorValues>()
+        && let Some(values) = values.get_mut(player) {
             values.mod_permanent(form, sign * bonus);
         }
-    }
 }
 
 // ── the platform ───────────────────────────────────────────────────────────────────────────
@@ -198,7 +199,7 @@ fn exit_game(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], 
     if let Some(mut exit) = world.try_resource_mut::<ExitGameRequest>() {
         exit.0 = true;
     }
-    menu(world, "credits", 0)
+    menu(world, "credits", Some(1047), 0)
 }
 
 // GECK *PlayBink "<file>" [interruptable mute pause letterbox]*: a Bink video from `data\video`, the
@@ -272,50 +273,50 @@ fn cmd_121e(_world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _
 
 // ── the character-creation screens: requests for the UI that shows them ────────────────────
 fn cmd_10d9(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
-    menu(world, "class", 0)
+    menu(world, "class", Some(1030), 0)
 }
 
 fn cmd_10ea(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
-    menu(world, "spell making", 0)
+    menu(world, "spell making", Some(1041), 0)
 }
 
 fn cmd_10eb(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
-    menu(world, "enchanting", 0)
+    menu(world, "enchanting", Some(1042), 0)
 }
 
 fn cmd_1268(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
-    menu(world, "traits", 0)
+    menu(world, "traits", None, 0)
 }
 
 fn cmd_11e1(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
-    menu(world, "name entry", 0)
+    menu(world, "name entry", None, 0)
 }
 
 // `SetSPECIALPoints <n>` / `SetTagSkills <n>` / `ShowLoveTesterMenuParams <n>` / `SSBMP <n>`: the
 // SPECIAL, tagged-skill and Vigor Tester screens with that many points to give.
 fn set_special_points(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    menu(world, "special points", num(args, 0) as u32)
+    menu(world, "special points", None, num(args, 0) as u32)
 }
 
 fn cmd_121a(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    menu(world, "tag skills", num(args, 0) as u32)
+    menu(world, "tag skills", None, num(args, 0) as u32)
 }
 
 fn cmd_1245(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    menu(world, "vigor tester", num(args, 0) as u32)
+    menu(world, "vigor tester", None, num(args, 0) as u32)
 }
 
 fn cmd_11ee(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    menu(world, "special book", num(args, 0) as u32)
+    menu(world, "special book", None, num(args, 0) as u32)
 }
 
-// CS *ShowRaceMenu*: with no race screen the call accepts the player's current appearance, as
-// `Game.ShowRaceMenu` does.
+// CS *ShowRaceMenu*: the race (and sex) menu, which the engine's character-creation page opens
+// (M48 GUI-PAGE-002); the call returns at once, as it does in the original (Phase 0).
 fn show_race_menu(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
     if let Some(mut presentation) = world.try_resource_mut::<crate::cinematic::CinematicPresentationState>() {
         presentation.show_race_menu();
     }
-    menu(world, "race", 0)
+    menu(world, "race", None, 0)
 }
 
 // GECK *SetInChargen <flag>*: "while in this state the player will not level up (XP accumulates)".
@@ -327,11 +328,10 @@ fn cmd_10e7(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ct
 fn reset_xp(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
     match player(world) {
         Some(player) => {
-            if let Some(mut levels) = world.query_mut::<byroredux_core::character::CharacterLevel>() {
-                if let Some(level) = levels.get_mut(player) {
+            if let Some(mut levels) = world.query_mut::<byroredux_core::character::CharacterLevel>()
+                && let Some(level) = levels.get_mut(player) {
                     level.xp = 0;
                 }
-            }
             done("ResetXP")
         }
         None => Action::Declined,
@@ -383,7 +383,7 @@ fn cmd_11ce(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _c
 fn get_knocked_state(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], ctx: &Context) -> Action {
     match caller(world, ctx) {
         Some((_, actor)) => {
-            let paralysed = crate::obscript_actor_values::actor_value_form(world, 47.0)
+            let paralysed = world.try_resource::<crate::ActorValueNames>().and_then(|names| names.resolve("Paralysis"))
                 .and_then(|form| world.get::<ActorValues>(actor).map(|values| values.current(form) > 0.0))
                 .unwrap_or(false);
             answer(if crate::is_unconscious(world, actor) || paralysed { 1.0 } else { 0.0 })
@@ -493,11 +493,10 @@ fn cmd_11e5(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ct
             let race = world.get::<byroredux_core::character::Background>(other).map(|background| background.race_form_id);
             match race {
                 Some(race) => {
-                    if let Some(mut backgrounds) = world.query_mut::<byroredux_core::character::Background>() {
-                        if let Some(background) = backgrounds.get_mut(actor) {
+                    if let Some(mut backgrounds) = world.query_mut::<byroredux_core::character::Background>()
+                        && let Some(background) = backgrounds.get_mut(actor) {
                             background.race_form_id = race;
                         }
-                    }
                     done(format!("MatchRace {race:08X}"))
                 }
                 None => Action::Declined,
@@ -522,11 +521,10 @@ fn cmd_11df(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx
 fn cmd_10f0(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
     match (caller_or_player(world, ctx), form_arg(args, 0)) {
         (Some((_, actor)), Some(class)) => {
-            if let Some(mut backgrounds) = world.query_mut::<byroredux_core::character::Background>() {
-                if let Some(background) = backgrounds.get_mut(actor) {
+            if let Some(mut backgrounds) = world.query_mut::<byroredux_core::character::Background>()
+                && let Some(background) = backgrounds.get_mut(actor) {
                     background.class_form_id = class;
                 }
-            }
             done(format!("SetClass {class:08X}"))
         }
         _ => Action::Declined,

@@ -23,7 +23,7 @@ use std::collections::VecDeque;
 
 use byroredux_core::character::CharacterIdentity;
 use byroredux_core::ecs::{Resource, World};
-use byroredux_debug_ui::{ChargenChoice, ChargenOption, ChargenScreenView, ChargenSnapshot};
+use byroredux_native_ui::{ChargenChoice, ChargenOption, ChargenScreenView, ChargenSnapshot};
 use byroredux_plugin::esm::records::EsmIndex;
 
 /// The SPECIAL attributes' Fallout actor-value codes, Strength (5) to Luck (11).
@@ -63,8 +63,18 @@ impl ChargenScreen {
         })
     }
 
+    /// Every screen's menu code: the FO3 / FNV menus the native character-creation page stands in
+    /// for.
+    pub(crate) const MENU_CODES: [u32; 5] = [
+        Self::Name.menu_code(),
+        Self::RaceSex.menu_code(),
+        Self::Special { points: 0 }.menu_code(),
+        Self::TagSkills { count: 1 }.menu_code(),
+        Self::Traits.menu_code(),
+    ];
+
     /// The menu code `MenuMode` blocks and the `MenuMode` function see while it is open.
-    pub(crate) fn menu_code(self) -> u32 {
+    pub(crate) const fn menu_code(self) -> u32 {
         match self {
             Self::Name => 1051,
             Self::RaceSex => 1036,
@@ -165,9 +175,40 @@ pub(crate) fn parse_answer(screen: ChargenScreen, args: &str) -> Result<Option<C
     Ok(Some(choice))
 }
 
+/// Whether `game`'s race menu also takes the name (PRD Q4: "plus name where the game's menu has
+/// it"): Skyrim's ends with the name prompt and Oblivion's has a name field, so a race menu there
+/// is the RaceSex screen then the Name screen. Fallout 3 / New Vegas name the player in a
+/// separate menu (TextEditMenu 1051).
+pub(crate) fn race_menu_has_name(game: byroredux_core::ecs::resources::menu_registry::MenuGame) -> bool {
+    use byroredux_core::ecs::resources::menu_registry::MenuGame;
+    matches!(game, MenuGame::Skyrim | MenuGame::Oblivion)
+}
+
+/// The menu code `screen` answers to on `game`: the Name screen of a race menu that takes the
+/// name is that race menu (RaceSex 1036).
+pub(crate) fn menu_code_on(game: Option<byroredux_core::ecs::resources::menu_registry::MenuGame>, screen: ChargenScreen) -> u32 {
+    match screen {
+        ChargenScreen::Name if game.is_some_and(race_menu_has_name) => ChargenScreen::RaceSex.menu_code(),
+        screen => screen.menu_code(),
+    }
+}
+
 /// The menu code of the open screen, for the `MenuMode` answer.
 pub(crate) fn open_menu_code(world: &World) -> Option<u32> {
-    world.try_resource::<ChargenSession>()?.open().map(ChargenScreen::menu_code)
+    let game = world.try_resource::<byroredux_core::ecs::resources::MenuRegistry>().map(|registry| registry.game());
+    world.try_resource::<ChargenSession>()?.open().map(|screen| menu_code_on(game, screen))
+}
+
+/// Close the open screen and every screen queued behind it that answers to the same menu code
+/// (`ui.close` closes a menu, and a race menu with a name is two screens of one menu).
+pub(crate) fn close_menu(world: &World) {
+    let game = world.try_resource::<byroredux_core::ecs::resources::MenuRegistry>().map(|registry| registry.game());
+    if let Some(mut session) = world.try_resource_mut::<ChargenSession>() {
+        let Some(open) = session.open() else { return };
+        let code = menu_code_on(game, open);
+        session.close();
+        session.queue.retain(|queued| menu_code_on(game, *queued) != code);
+    }
 }
 
 /// The player's identity as it stands: the saved choices, or the player's base record before
@@ -301,13 +342,12 @@ pub(crate) fn apply(world: &mut World, choice: ChargenChoice) -> bool {
                     Some((form, value.clamp(SPECIAL_MIN, SPECIAL_MAX) as f32))
                 })
                 .collect();
-            if let Some(mut actor_values) = world.query_mut::<byroredux_core::ecs::components::ActorValues>() {
-                if let Some(actor_values) = actor_values.get_mut(player) {
+            if let Some(mut actor_values) = world.query_mut::<byroredux_core::ecs::components::ActorValues>()
+                && let Some(actor_values) = actor_values.get_mut(player) {
                     for (form, value) in forms {
                         actor_values.set_base(form, value);
                     }
                 }
-            }
             false
         }
         ChargenChoice::TagSkills(skills) => {
@@ -391,5 +431,45 @@ mod tests {
         assert_ne!(session.open.unwrap().1, first);
         session.close();
         assert!(!session.open_next());
+    }
+}
+
+/// M48 GUI-PAGE-002 / Q4 — a race menu that takes the name (Skyrim, Oblivion) is the RaceSex
+/// screen then the Name screen, both answering to the race menu; `ui.close` of it closes both.
+/// Fallout 3 / New Vegas name the player in a separate menu.
+#[cfg(test)]
+mod race_menu_tests {
+    use super::*;
+    use byroredux_core::ecs::resources::menu_registry::{MenuGame, MenuRegistry};
+    use byroredux_scripting::obscript_more::{MenuRequest, PendingMenus};
+
+    fn requested(game: MenuGame) -> World {
+        let mut world = World::new();
+        world.insert_resource(MenuRegistry::new(game));
+        world.insert_resource(ChargenSession::default());
+        world.insert_resource(PendingMenus(vec![MenuRequest { menu: "race", code: None, function: Some("ShowRaceMenu"), form: 0, fallback: None }]));
+        crate::systems::script_requests::script_ui_request_system(&world, 0.0);
+        world
+    }
+
+    #[test]
+    fn a_race_menu_with_a_name_is_two_screens_of_one_menu() {
+        let world = requested(MenuGame::Skyrim);
+        let mut session = world.resource_mut::<ChargenSession>();
+        assert_eq!(session.queue.iter().copied().collect::<Vec<_>>(), [ChargenScreen::RaceSex, ChargenScreen::Name]);
+        assert!(session.open_next());
+        drop(session);
+        assert_eq!(open_menu_code(&world), Some(1036));
+        close_menu(&world);
+        let session = world.resource::<ChargenSession>();
+        assert_eq!((session.open(), session.queue.len()), (None, 0), "the name goes with the race menu it belongs to");
+        assert_eq!(menu_code_on(Some(MenuGame::Oblivion), ChargenScreen::Name), 1036);
+    }
+
+    #[test]
+    fn new_vegas_race_menu_is_the_race_screen_alone() {
+        let world = requested(MenuGame::Fallout3NV);
+        assert_eq!(world.resource::<ChargenSession>().queue.iter().copied().collect::<Vec<_>>(), [ChargenScreen::RaceSex]);
+        assert_eq!(menu_code_on(Some(MenuGame::Fallout3NV), ChargenScreen::Name), 1051, "TextEditMenu, its own menu");
     }
 }

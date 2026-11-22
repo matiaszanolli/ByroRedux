@@ -2,6 +2,9 @@ use super::super::common::{read_lstring_field, read_zstring, remap_fid, CommonNa
 use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
+/// `RACE` `DATA` skill-boost slots on Oblivion, Fallout 3 and New Vegas (xEdit `wbArrayS(.., 7)`).
+const TES4_ERA_SKILL_BOOSTS: usize = 7;
+
 #[derive(Debug, Clone, Default)]
 pub struct RaceRecord {
     pub form_id: u32,
@@ -9,7 +12,8 @@ pub struct RaceRecord {
     pub full_name: String,
     pub description: String,
     /// Skill bonuses: `(skill_index, bonus)` pairs, with `0xFF` (None)
-    /// slots dropped. Oblivion / FO3 / FNV author 8 pairs of the 0x0C..=0x20
+    /// slots dropped. Oblivion authors seven pairs and two padding bytes;
+    /// FO3 / FNV author eight pairs of the 0x0C..=0x20
     /// `SkillIndex` values; Skyrim authors 7 pairs of its own actor-value
     /// skill indices (6 = One-Handed … 23 = Enchanting).
     ///
@@ -395,13 +399,13 @@ pub mod head_part {
 
 /// Per-gender attribute block for `RaceRecord.base_attributes`
 /// (Oblivion `ATTR` sub-record). 8 attributes × 2 genders = 16 bytes.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct RaceAttributes {
     pub male: GenderedAttributes,
     pub female: GenderedAttributes,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct GenderedAttributes {
     pub strength: u8,
     pub intelligence: u8,
@@ -509,7 +513,10 @@ pub fn parse_race(
                 record.spells.push(remap_fid(raw, remap));
             }
             // DATA (TES4 / FO3 / FONV — 36 bytes total):
-            //   8 × (u8 skill_index, u8 bonus)    16 B
+            //   7 skill/bonus pairs + 2 unused bytes (TES4, FO3 and FNV alike:
+            //   xEdit `wbArrayS('Skill Boosts', .., 7)` + `wbUnused(2)`,
+            //   `wbDefinitionsFNV.pas:7375-7386`; vanilla bytes 14..16 are
+            //   `00 00` on every Oblivion / FO3 / FNV race, #7103)
             //   heightMale + heightFemale (2 × f32) 8 B
             //   weightMale + weightFemale (2 × f32) 8 B
             //   raceFlags (u32)                     4 B
@@ -526,7 +533,7 @@ pub fn parse_race(
                     && sub.data.len() >= 36 =>
             {
                 let mut r = SubReader::new(&sub.data);
-                for _ in 0..8 {
+                for _ in 0..TES4_ERA_SKILL_BOOSTS {
                     let skill = r.u8_or_default();
                     let bonus = r.u8_or_default() as i8;
                     // Skip 0xFF (Skill_None sentinel) — OpenMW maps
@@ -539,6 +546,7 @@ pub fn parse_race(
                         record.skill_bonuses.push((skill, bonus));
                     }
                 }
+                r.skip_or_eof(2);
                 let h_m = r.f32_or_default();
                 let h_f = r.f32_or_default();
                 let w_m = r.f32_or_default();
@@ -571,8 +579,8 @@ pub fn parse_race(
             // Both are strong evidence for the offsets *and* the skill-index
             // mapping, which a length check alone could not establish.
             //
-            // Note the pair count differs from the TES4 arm above: TES5 has 7
-            // skill slots plus two padding bytes where TES4/FO3/FNV has 8.
+            // TES5 and TES4 have seven skill slots and two padding bytes;
+            // the FO3/FNV arm above retains its eight-pair format.
             b"DATA" if matches!(game, GameKind::Skyrim) && matches!(sub.data.len(), 128 | 164) => {
                 let mut r = SubReader::new(&sub.data);
                 for _ in 0..7 {
@@ -752,11 +760,10 @@ pub fn parse_race(
             }
             b"MODL" => {
                 let path = read_zstring(&sub.data);
-                if let Some(idx) = pending_indx.take() {
-                    if in_head_section {
+                if let Some(idx) = pending_indx.take()
+                    && in_head_section {
                         record.head_parts.push((idx, path.clone(), gender_section));
                     }
-                }
                 // #5753 — Oblivion's body section authors the gender's tail as
                 // the `MODL` right after the `MNAM` / `FNAM` marker. A marker-less
                 // section (none exists in the vanilla data) is shared by both.

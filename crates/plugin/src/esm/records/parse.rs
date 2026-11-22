@@ -139,6 +139,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     // (NPC spawn dispatcher) can route per-version without
     // re-deriving from a HEDR they no longer have.
     index.game = game;
+    reader.set_game(game);
     index.character_rules = character_rules_profile(game, file_header.hedr_version);
     let record_type_trace = reader.enable_record_type_trace();
     log::info!(
@@ -179,6 +180,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     //     calls) correctly stack — the outer parse's flag is restored
     //     when the inner guard drops.
     let _localized_guard = common::LocalizedPluginGuard::new(file_header.localized);
+    let _game_guard = common::PluginGameGuard::new(game);
 
     // FO4-era record-type gate. PKIN (pack-ins), MOVS (movable statics), and
     // MSWP (material swaps) were introduced in Fallout 4 and don't exist in

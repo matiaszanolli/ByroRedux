@@ -215,14 +215,13 @@ pub fn note_cell_entered(world: &World, cell: u32, now: f64, respawn_hours: Opti
     let Some(mut visits) = world.try_resource_mut::<CellVisits>() else { return false };
     let expired = visits.enter(cell, now, respawn_hours.unwrap_or(DEFAULT_HOURS_TO_RESPAWN_CELL));
     drop(visits);
-    if expired {
-        if let Some(mut pending) = world.try_resource_mut::<PendingCellResets>() {
+    if expired
+        && let Some(mut pending) = world.try_resource_mut::<PendingCellResets>() {
             // A cell re-entered while its reset is still pending is the same reset.
             if !pending.0.iter().any(|entry| entry.cell == cell) {
                 pending.0.push(PendingCellReset::new(cell));
             }
         }
-    }
     expired
 }
 
@@ -272,21 +271,19 @@ pub fn mark_cell_reset(world: &World, _dt: f32) {
         }
         for &entity in &scripted {
             let root = world.get::<CellRoot>(entity).map_or(entity, |root| root.0);
-            if world.get::<CellFormId>(root).is_some_and(|id| id.0 == entry.cell) && entry.marked.insert(entity) {
-                if let Some(mut events) = world.query_mut::<OnResetEvent>() {
+            if world.get::<CellFormId>(root).is_some_and(|id| id.0 == entry.cell) && entry.marked.insert(entity)
+                && let Some(mut events) = world.query_mut::<OnResetEvent>() {
                     events.insert(entity, OnResetEvent);
                 }
-            }
         }
         !entry.loaded
     });
-    if !cells.is_empty() {
-        if let Some(mut pending) = world.try_resource_mut::<PendingCellResets>() {
+    if !cells.is_empty()
+        && let Some(mut pending) = world.try_resource_mut::<PendingCellResets>() {
             // Entries raised while this pass ran queue behind the ones it kept.
             cells.append(&mut pending.0);
             pending.0 = cells;
         }
-    }
 }
 
 /// `Resurrect`: the actor is to be brought back this frame. `NOT_SAVED_BY_DESIGN`: consumed the frame

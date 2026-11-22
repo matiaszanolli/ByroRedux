@@ -104,8 +104,9 @@ pub fn is_modeled(world: &World, condition: &Condition) -> bool {
             function.vm_getter_command().is_some_and(|cmd| crate::obscript_cmd::getter_answers_conditions(world, cmd))
         }
         // An authored enum index is readable once it translates to a loaded
-        // AVIF (#5989); one that cannot (Oblivion has no AVIFs, an index the
-        // record set lacks) is declined by the fail-closed gates.
+        // AVIF (#5989; Oblivion's through the engine-supplied roster); one that
+        // cannot (an index the installed records lack) is declined by the
+        // fail-closed gates.
         ConditionFunction::GetActorValue | ConditionFunction::GetPermanentActorValue => {
             crate::actor_value_names::condition_actor_value_form(world, condition.param_1).is_some()
         }
@@ -484,9 +485,11 @@ pub fn actor_value_view(world: &World, entity: EntityId, avif: u32, view: ActorV
         if let Some(value) = entry.filter(|value| value.base_authored) {
             return match view {
                 ActorValueView::Current => value.current(),
-                ActorValueView::Base => value.base + value.set_override,
+                // #7205 — through the accessors, so a layer added to the composition (`stored`, #7044) reaches
+                // every view; the hand-summed arms left it out.
+                ActorValueView::Base => value.base_view(),
                 ActorValueView::Undamaged => value.undamaged(),
-                ActorValueView::Permanent => value.base + value.set_override + value.permanent_mod,
+                ActorValueView::Permanent => value.permanent(),
             };
         }
         let mut avs = avs.clone();
@@ -790,6 +793,19 @@ pub fn first_failing_condition(conditions: &ConditionList, world: &World, ctx: &
 /// dialogue, Story Manager, perk and package gates apply term by term.
 pub fn evaluate_modeled(conditions: &ConditionList, world: &World, ctx: &ConditionContext) -> bool {
     conditions.iter().all(|condition| is_modeled(world, condition)) && evaluate(conditions, world, ctx)
+}
+
+/// Whether `conditions` could pass, for a consumer that stays open on a term the evaluator cannot
+/// honestly read ([`is_modeled`]). Every unreadable term counts as satisfied; the readable ones are
+/// evaluated as in [`evaluate`]. An OR block passes when any member is unreadable or true, and the
+/// blocks are AND-combined, so the answer is `false` only when a readable term refutes the list
+/// whatever the unreadable ones are. (The list has no negation, so this is the exact upper bound.)
+pub fn evaluate_unless_refuted(conditions: &ConditionList, world: &World, ctx: &ConditionContext) -> bool {
+    or_blocks(conditions).all(|block| {
+        conditions[block]
+            .iter()
+            .any(|condition| !is_modeled(world, condition) || evaluate_condition(condition, world, ctx))
+    })
 }
 
 /// The OR blocks of `conditions`, in order, as index ranges — the units

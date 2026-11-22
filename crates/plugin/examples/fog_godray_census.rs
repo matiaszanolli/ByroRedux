@@ -215,11 +215,10 @@ fn main() -> anyhow::Result<()> {
                     (b"NNAM", "Sampling Repartition - Range Factor"),
                 ];
                 for (tag, label) in names {
-                    if let Some(s) = subs.iter().find(|s| &s.sub_type == tag) {
-                        if let Some(&v) = f32s(s).first() {
+                    if let Some(s) = subs.iter().find(|s| &s.sub_type == tag)
+                        && let Some(&v) = f32s(s).first() {
                             voli_fields.entry(label).or_default().add(v);
                         }
-                    }
                 }
                 if verbose {
                     let vals: Vec<String> = names

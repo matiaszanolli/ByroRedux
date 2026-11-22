@@ -340,6 +340,22 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
             "cloud_shadow".to_string(),
             gpu_bracket_ms(cov.gpu_cloud_shadow_ms, cov.gpu_cloud_shadow_active),
         );
+        gpu_pass_ms.insert(
+            "cache_update".to_string(),
+            gpu_bracket_ms(cov.gpu_cache_update_ms, cov.gpu_cache_update_active),
+        );
+        gpu_pass_ms.insert(
+            "cache_resolve".to_string(),
+            gpu_bracket_ms(cov.gpu_cache_resolve_ms, cov.gpu_cache_resolve_active),
+        );
+        gpu_pass_ms.insert(
+            "terrain_patch".to_string(),
+            gpu_bracket_ms(cov.gpu_terrain_patch_ms, cov.gpu_terrain_patch_active),
+        );
+        gpu_pass_ms.insert(
+            "terrain_patch_blas".to_string(),
+            gpu_bracket_ms(cov.gpu_terrain_patch_blas_ms, cov.gpu_terrain_patch_blas_active),
+        );
     }
 
     let mut cpu_pass_ms: BTreeMap<String, f32> = BTreeMap::new();

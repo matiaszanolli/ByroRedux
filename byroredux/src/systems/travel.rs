@@ -60,10 +60,10 @@
 //!   that would be Follow's job (a different, unimplemented procedure).
 //! - **Ground-snapped, not physically simulated**, same as Wander.
 
-use super::locomotion::{step_along_waypoints, LOCOMOTION_ARRIVAL_EPSILON};
+use super::locomotion::{step_along_waypoints_detailed, LOCOMOTION_ARRIVAL_EPSILON};
 use super::navmesh_path::resolve_cached_waypoints;
 use super::wander::pick_wander_target;
-use crate::components::{NavPath, NavmeshTile};
+use crate::components::NavPath;
 use byroredux_core::ecs::components::{
     GlobalTransform, Transform, TravelBehavior, TravelState, Traveled,
 };
@@ -158,6 +158,18 @@ pub(crate) fn resolve_destination(
         .unwrap_or_else(|| pick_wander_target(home, radius, form_id, 0))
 }
 
+/// The home a package's fallback centres on: the actor's `EditorPlacement` for a Near Editor Location
+/// package (Travel and Wander #7225, Guard and Ambush #7254, as Eat/Sleep's anchor since #5391), otherwise
+/// where the actor stands. An actor with no placement (a script-created one) keeps its current position.
+pub(super) fn package_home(world: &World, actor: EntityId, near_editor_location: bool, current: Vec3) -> Vec3 {
+    if !near_editor_location {
+        return current;
+    }
+    world
+        .get::<byroredux_core::ecs::components::EditorPlacement>(actor)
+        .map_or(current, |placement| placement.translation)
+}
+
 /// One actor's staged move input, collected in Pass 1a — `current`
 /// position, `rotation`, and the resolved `destination` (which may itself
 /// have required a `GlobalTransform` read via `resolve_destination`) — all
@@ -176,6 +188,8 @@ struct TravelPending {
     /// tile path found," which falls back to walking straight at
     /// `destination`, unchanged from pre-pathing behavior.
     waypoints: VecDeque<Vec3>,
+    /// The walk's pathgrid switch, resolved with `waypoints` and advanced by this tick's step.
+    grid: crate::components::GridWalk,
     /// Authored stride speed (M42.11 `WalkSpeed`), engine default when
     /// absent.
     speed: f32,
@@ -271,7 +285,7 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
         };
         let traveled_q = world.query::<Traveled>();
         let state_q = world.query::<TravelState>();
-        let tile_q = world.query::<NavmeshTile>();
+        let tile_q = super::navmesh_path::NavGraphs::of(world);
         let nav_path_q = world.query::<NavPath>();
         let walk_speed_q = world.query::<crate::components::WalkSpeed>();
         let hop_q = world.query::<crate::cell_loader::relocated::CrossSpaceHop>();
@@ -349,7 +363,7 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
                                 behavior.target_form_id,
                                 behavior.radius.unwrap_or(TRAVEL_DEFAULT_RADIUS),
                                 behavior.form_id,
-                                current,
+                                package_home(world, entity, behavior.near_editor_location, current),
                             )
                         }
                     }
@@ -366,8 +380,10 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
             // Effective goal discarded (`_`): with a `0.0` threshold it's
             // always bit-identical to `destination`, whether reused or
             // freshly computed — see `resolve_cached_waypoints`'s own doc.
-            let cached = nav_path_q.as_ref().and_then(|q| q.get(entity));
-            let (_, waypoints) = resolve_cached_waypoints(
+            // A new destination (no `TravelState` yet) starts straight again, whatever a
+            // previous walk cached: it must not inherit that walk's pathgrid switch.
+            let cached = if state.is_some() { nav_path_q.as_ref().and_then(|q| q.get(entity)) } else { None };
+            let (_, waypoints, grid) = resolve_cached_waypoints(
                 cached,
                 tile_q.as_ref(),
                 current,
@@ -389,6 +405,7 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
                 rotation: transform.rotation,
                 destination,
                 waypoints,
+                grid,
                 speed,
                 door_hop,
             });
@@ -406,7 +423,7 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
     scratch.decisions.clear();
     {
         let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
-        // #3269 — consume `pending` by value: `step_along_waypoints` takes
+        // #3269 — consume `pending` by value: `step_along_waypoints_detailed` takes
         // ownership of the `VecDeque`, so iterating by reference forced a
         // clone of the whole waypoint list per entity per tick purely to
         // satisfy the borrow checker. Nothing reads `pending` after this
@@ -417,7 +434,7 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
             // Phase 3), falling back to the final destination directly
             // when no resident-tile path was found — unchanged straight-
             // line behavior in that case.
-            let (new_pos, rotation, waypoints) = step_along_waypoints(
+            let (new_pos, rotation, waypoints, blocked) = step_along_waypoints_detailed(
                 p.current,
                 p.rotation,
                 p.waypoints,
@@ -459,6 +476,7 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
                         goal: p.destination,
                         residency_generation,
                         waypoints,
+                        grid: p.grid.stepped(blocked && !arrived, dt),
                     })
                 },
             });
@@ -471,13 +489,12 @@ fn travel_system_inner(world: &World, dt: f32, scratch: &mut TravelScratch) {
     // ── Pass 2: apply writes (each a scoped single-type lock). The shared
     // Transform + NavPath tail (#5580), then this system's own state. ──
     super::navmesh_path::write_back_walk(world, &mut scratch.decisions);
-    if !scratch.hops.is_empty() {
-        if let Some(mut hq) = world.query_mut::<crate::cell_loader::relocated::CrossSpaceHop>() {
+    if !scratch.hops.is_empty()
+        && let Some(mut hq) = world.query_mut::<crate::cell_loader::relocated::CrossSpaceHop>() {
             for (entity, hop) in scratch.hops.drain(..) {
                 hq.insert(entity, hop);
             }
         }
-    }
     // XCT-ROUTE-002 / -008 — a traveler that reached its load door fades out
     // and passes it: the move is requested (after the fade) and carried out by
     // the app's relocation step, which needs the renderer to take the actor
@@ -603,7 +620,8 @@ pub(crate) fn travel_system(world: &World, dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::systems::navmesh_path::test_tiles::two_triangle_quad_scaled;
+    use crate::components::{GridWalk, NavmeshTile};
+    use crate::systems::navmesh_path::test_tiles::{grid_round_the_wall, two_triangle_quad_scaled, walled_physics};
     use byroredux_core::ecs::components::FormIdComponent;
     use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
 
@@ -655,6 +673,7 @@ mod tests {
                 radius: Some(200.0),
                 target_form_id: None,
                 form_id: 0x0003_0003,
+                near_editor_location: false,
             },
         );
 
@@ -682,6 +701,39 @@ mod tests {
             travq.get(entity).is_none(),
             "should not have arrived in one 0.5s tick from a 200-unit radius pick"
         );
+    }
+
+    /// #7225 — a Near Editor Location Travel (a `HorseGoHome` / `SE45zReturnHome`) whose actor an earlier
+    /// package walked away goes back to its editor placement, not to a point around where it stands. With no
+    /// radius the destination is the placement exactly; a plain Travel still picks around the actor.
+    #[test]
+    fn a_near_editor_location_travel_returns_to_the_editor_placement() {
+        let placement = Vec3::new(-300.0, 0.0, 40.0);
+        let away = Vec3::new(500.0, 0.0, 500.0);
+        for near_editor_location in [true, false] {
+            let mut world = World::new();
+            world.register::<TravelBehavior>();
+            world.register::<TravelState>();
+            world.register::<Traveled>();
+            world.register::<Transform>();
+            world.register::<byroredux_core::ecs::components::EditorPlacement>();
+            let actor = world.spawn();
+            world.insert(actor, Transform::from_translation(away));
+            world.insert(actor, byroredux_core::ecs::components::EditorPlacement { translation: placement });
+            world.insert(
+                actor,
+                TravelBehavior { radius: Some(0.0), target_form_id: None, form_id: 0x0009_0009, near_editor_location },
+            );
+            travel_system(&world, 0.016);
+            if near_editor_location {
+                let destination = world.get::<TravelState>(actor).expect("walking home").destination;
+                assert!((destination - placement).length() < 1e-3, "destination {destination:?}, expected the placement");
+                assert!(!world.has::<Traveled>(actor), "800 units from home, not arrived");
+            } else {
+                // A zero radius around where it stands: it has arrived (the pre-#7225 outcome for both).
+                assert!(world.has::<Traveled>(actor));
+            }
+        }
     }
 
     #[test]
@@ -716,6 +768,7 @@ mod tests {
                 radius: None,
                 target_form_id: Some(0x0001_59E2),
                 form_id: 0x0004_0004,
+                near_editor_location: false,
             },
         );
 
@@ -753,6 +806,7 @@ mod tests {
                 radius: Some(200.0),
                 target_form_id: Some(0x0001_59E2),
                 form_id: 0x0004_0004,
+                near_editor_location: false,
             },
         );
         let mut scratch = TravelScratch::default();
@@ -809,7 +863,7 @@ mod tests {
             world.insert(actor, Transform::from_translation(spot));
             world.insert(
                 actor,
-                TravelBehavior { radius: Some(100.0), target_form_id: None, form_id: 0x0005_0005 },
+                TravelBehavior { radius: Some(100.0), target_form_id: None, form_id: 0x0005_0005, near_editor_location: false },
             );
             world.insert(actor, TravelState { destination: spot });
             world.insert(
@@ -857,6 +911,7 @@ mod tests {
                 radius: Some(100.0),
                 target_form_id: None,
                 form_id: 0x0005_0005,
+                near_editor_location: false,
             },
         );
         world.insert(
@@ -917,7 +972,7 @@ mod tests {
 
         let entity = world.spawn();
         world.insert(entity, Transform::from_translation(Vec3::new(50.0, 0.0, 50.0)));
-        world.insert(entity, TravelBehavior { radius: Some(100.0), target_form_id: None, form_id: 0x0005_0005 });
+        world.insert(entity, TravelBehavior { radius: Some(100.0), target_form_id: None, form_id: 0x0005_0005, near_editor_location: false });
         world.insert(entity, TravelState { destination: Vec3::new(50.0, 0.0, 50.0) });
         let far_side = byroredux_scripting::CreatedPlacement {
             cell: byroredux_scripting::CreatedCell::Exterior { worldspace: "wastelandnv".into(), grid: (0, 0) },
@@ -969,6 +1024,7 @@ mod tests {
                 radius: None,
                 target_form_id: Some(0x000E_0001),
                 form_id: 0x000E_0002,
+                near_editor_location: false,
             },
         );
 
@@ -1015,6 +1071,7 @@ mod tests {
                 radius: Some(1.0), // irrelevant: TravelState below short-circuits resolution
                 target_form_id: None,
                 form_id: 0x0006_0006,
+                near_editor_location: false,
             },
         );
         world.insert(entity, TravelState { destination });
@@ -1073,6 +1130,7 @@ mod tests {
                 radius: Some(200.0),
                 target_form_id: None,
                 form_id: 0x0007_0007,
+                near_editor_location: false,
             },
         );
 
@@ -1112,6 +1170,7 @@ mod tests {
                 radius: Some(1.0),
                 target_form_id: None,
                 form_id: 0x0008_0008,
+                near_editor_location: false,
             },
         );
         world.insert(entity, TravelState { destination });
@@ -1142,5 +1201,85 @@ mod tests {
             path_after_second.waypoints.len() <= path_after_first.waypoints.len(),
             "waypoints must only be consumed (popped), never grow, across ticks"
         );
+    }
+
+    // ── AIP-WALK-003: Oblivion's pathgrid, taken once the straight walk is blocked ──
+
+    /// A traveler at (-400,0,0) bound for (400,0,0), the pathgrid resident, `physics` installed.
+    fn grid_traveler(physics: byroredux_physics::PhysicsWorld) -> (World, EntityId) {
+        let mut world = World::new();
+        world.register::<TravelBehavior>();
+        world.register::<TravelState>();
+        world.register::<Traveled>();
+        world.register::<Transform>();
+        world.register::<GlobalTransform>();
+        world.register::<FormIdComponent>();
+        world.register::<NavPath>();
+        world.insert_resource(physics);
+        let mut pool = FormIdPool::new();
+        let target_fid = pool.intern(FormIdPair {
+            plugin: PluginId::from_filename("Oblivion.esm"),
+            local: LocalFormId(0x000E_0001),
+        });
+        world.insert_resource(pool);
+        let target = world.spawn();
+        world.insert(target, FormIdComponent(target_fid));
+        world.insert(target, GlobalTransform::new(Vec3::new(400.0, 0.0, 0.0), Quat::IDENTITY, 1.0));
+        crate::components::spawn_pathgrid_tiles(&mut world, [&grid_round_the_wall()]);
+        let actor = world.spawn();
+        world.insert(actor, Transform::from_translation(Vec3::new(-400.0, 0.0, 0.0)));
+        world.insert(
+            actor,
+            TravelBehavior { radius: None, target_form_id: Some(0x000E_0001), form_id: 0x000E_0002, near_editor_location: false },
+        );
+        (world, actor)
+    }
+
+    /// A wall across the straight line: Travel walks into it, takes the grid after the controller
+    /// has held it for `GridWalk::AFTER_BLOCKED_SECS`, goes round and arrives.
+    #[test]
+    fn a_traveler_blocked_by_a_wall_takes_the_pathgrid_and_arrives() {
+        let (world, actor) = grid_traveler(walled_physics());
+        let mut tick = make_travel_system();
+        let (mut switched_at, mut arrived_at) = (None, None);
+        for i in 0..400 {
+            tick(&world, 0.1);
+            let t = (i + 1) as f32 * 0.1;
+            let on_grid = world.get::<NavPath>(actor).is_some_and(|p| p.grid.on_grid);
+            if on_grid && switched_at.is_none() {
+                switched_at = Some(t);
+            }
+            if world.get::<Traveled>(actor).is_some() {
+                arrived_at = Some(t);
+                break;
+            }
+        }
+        let switched_at = switched_at.expect("a walk held against a wall must take the pathgrid");
+        assert!(
+            switched_at >= GridWalk::AFTER_BLOCKED_SECS,
+            "not before the controller has held it for the threshold: switched at {switched_at}s"
+        );
+        assert!(arrived_at.is_some(), "the grid route must carry the traveler round the wall");
+    }
+
+    /// The Imperial Prison regression: a straight walk that is clear never takes the grid, whatever
+    /// is resident, so its route is not bent into the stairs it stands on.
+    #[test]
+    fn a_traveler_with_a_clear_straight_walk_never_takes_the_pathgrid() {
+        let mut floor_only = byroredux_physics::PhysicsWorld::new();
+        floor_only.spawn_fixed_cuboid(Vec3::new(2000.0, 20.0, 2000.0), Vec3::new(0.0, -20.0, 0.0));
+        let (world, actor) = grid_traveler(floor_only);
+        let mut tick = make_travel_system();
+        for _ in 0..200 {
+            tick(&world, 0.1);
+            assert!(
+                !world.get::<NavPath>(actor).is_some_and(|p| p.grid.on_grid),
+                "a clear walk must stay straight"
+            );
+            if world.get::<Traveled>(actor).is_some() {
+                return;
+            }
+        }
+        panic!("a clear straight walk must arrive");
     }
 }

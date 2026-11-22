@@ -2,6 +2,7 @@
 name = "byro-launcher"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 # The public-facing front end.
 #
@@ -28,3 +29,7 @@ winit = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+# Contains `unsafe`, so it does not inherit the workspace `unsafe_code = "forbid"`.
+[lints.rust]
+unsafe_code = "allow"

@@ -114,7 +114,7 @@ accounting so the plan does not re-implement any of it.
 
 | Piece | Location | State |
 |---|---|---|
-| **Game profile registry** | [`assets/debug_profiles.toml`](../../assets/debug_profiles.toml), [`byroredux/src/game_profiles.rs`](../../byroredux/src/game_profiles.rs), `GameProfileEntry` in [`crates/core/src/ecs/game_profiles.rs`](../../crates/core/src/ecs/game_profiles.rs) | **Done.** 6 profiles (`fnv`, `fo3`, `oblivion`, `skyrim_se`, `fo4`, `starfield`), each with `root`/`subdir`, `esm`, five archive categories (`default_bsas`, `_textures_`, `_scripts_`, `_sounds_`, `_materials_`), `new_game_worldspace`/`_grid`/`_radius`, and `sample_cells`. Per-user override at `~/.byroredux/profiles.toml` already layers over the shipped file. |
+| **Game profile registry** | [`assets/debug_profiles.toml`](../../assets/debug_profiles.toml), [`byroredux/src/game_profiles.rs`](../../byroredux/src/game_profiles.rs), `GameProfileEntry` in [`crates/core/src/ecs/game_profiles.rs`](../../crates/core/src/ecs/game_profiles.rs) | **Done.** 6 profiles (`fnv`, `fo3`, `oblivion`, `skyrim_se`, `fo4`, `starfield`), each with `root`/`subdir`, `esm`, five archive categories (`default_bsas`, `_textures_`, `_scripts_`, `_sounds_`, `_materials_`), `new_game_cell` (a cell) or `new_game_worldspace`/`_grid`/`_radius` (an exterior grid), and `sample_cells`. Per-user override at `~/.byroredux/profiles.toml` already layers over the shipped file. |
 | **Profile → argv expander** | [`byroredux/src/boot/cli.rs`](../../byroredux/src/boot/cli.rs) `expand_game_profile_args` | **Done.** `--game skyrim_se --new-game` already fans out to the full flag vector, with a `[defaults]` table that boots straight into a game/cell. |
 | **Settings model** | [`crates/core/src/settings/`](../../crates/core/src/settings/) | **Done, and built for this.** `SettingEntry { id, section, label, description, value, default, control, restart_required }`; `SettingControl` is `Toggle` / `Slider{min,max,step,unit}` / `Choice{options}`; `SettingsRegistry` validates on `register` and `set`. Its module doc already states it exists so that "native game menus later" need not depend on a menu implementation. |
 | **Settings persistence** | [`byroredux/src/settings_io.rs`](../../byroredux/src/settings_io.rs) | **Done.** Versioned TOML (`SETTINGS_VERSION = 1`), `(id, value)` pairs overlaid onto freshly-registered defaults, unknown/stale keys skipped individually. Path overridable via `BYROREDUX_SETTINGS_PATH`. Atomic write shared with the save container (#3472). |
@@ -258,7 +258,7 @@ Detection produces *candidates*; the user confirms. Never silently pick.
 | **Manual** | A "Browse…" button (`rfd` native dialog). Always available, never a fallback-only path. |
 
 **Landed**: Steam, and reading back what is already configured. **Not landed**: the GOG, Bethesda-registry, and Windows Steam-registry rows — each needs a Windows API that cannot be exercised from the dev box, and untested registry code is worse than an honest gap. A non-Steam install is reachable today by hand-writing a `[roots]` entry, which `byro-detect` prints instructions for when it finds nothing.
-| **Existing config** | `~/.byroredux/profiles.toml` and `BYROREDUX_GAMES_ROOT` are read first and treated as authoritative, so a developer's box keeps working unchanged. |
+| **Existing config** | The per-user profiles file (a game's `[roots]` entry, then `[defaults].games_root`) and then `BYROREDUX_GAMES_ROOT` are read first and treated as authoritative, so a developer's box keeps working unchanged. The shared games root's full order is `--games-root`, `[defaults].games_root`, `BYROREDUX_GAMES_ROOT`, then the built-in default (`resolve_games_root`, #7189). |
 
 Detection results are written back into `~/.byroredux/profiles.toml`, which
 means **detection makes the existing `--game <key>` CLI path work correctly for
@@ -442,6 +442,37 @@ the engine would run, far too slowly to play. Q5 below is answered by the same
 run — instance-level enumeration works with no logical device.
 
 ---
+
+### 4.4 Adding a gameplay setting (the registration contract)
+
+The contract a subsystem follows to add one setting, written down because no other design owns it
+(Player archery PRD, BOW-SET; the first setting whose default differs per game and whose consumer is
+gameplay code, not a renderer). The facts are those of `crates/core/src/settings/`, `settings_io.rs` and
+`install_universal_settings`:
+
+- **One typed entry.** A `SettingEntry` built with `toggle`, `slider` or `choice` carries the id
+  (`section.name`, such as `gameplay.field_of_view`), label, description, default and control. `register`
+  validates it and rejects a duplicate id. A choice's allowed values are its `SettingChoice` list, and `set`
+  rejects any other value.
+- **Registered before load.** The owning module registers in `install_universal_settings`
+  (`interaction::register_input_settings` is the pattern), before the stored file is read, so a stored
+  value overlays the freshly registered default.
+- **A default known only at launch** is seeded with `SettingsRegistry::set_default`, as the music level is
+  (`MUSIC_VOLUME_SETTING_ID`, seeded before `settings_io::load` from the CLI arguments): a value still at the old
+  default follows the new one and a value the player moved stays. A default that needs the loaded plugin (the
+  per-game trajectory of BOW-SET-002) is only known after the index loads, so `bow::install_bow_model` seeds it
+  then, after the stored values; the same rule holds, so a stored choice that differs from the registered default
+  wins, and one equal to it follows the game's.
+- **Persisted in the settings file, never in a save.** `settings.toml` (`SETTINGS_VERSION = 1`) holds
+  `(id, value)` pairs and only the ids whose value moved off the loaded baseline are written; a stale or
+  unknown key is skipped on load. A setting that changes where an arrow lands is a player preference, so it
+  rides this file and not the `BYRSAVE` snapshot.
+- **Read where it is used.** Gameplay code reads `SettingsRegistry` (`world.resource::<SettingsRegistry>()`)
+  at the point of use; it holds no copy. A choice the engine cannot honour yet (ballistic arrows) stays in
+  the list and the reader resolves it to the supported value and says so, rather than the entry being
+  withheld, so the stored choice survives until the feature exists.
+- **Shown by `settings.status`** (every registered entry and the persistence path). Whether a menu page lists a new
+  section is checked when the entry lands (§4.1: the menus render the registry snapshot, not hand-written rows).
 
 ## 5. Compatibility, surfaced honestly
 

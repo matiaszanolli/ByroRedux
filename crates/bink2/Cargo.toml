@@ -2,6 +2,7 @@
 name = "byroredux-bink2"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "Clean-room Bink Video 2 (KB2g, KB2j) decoder"
 
@@ -9,3 +10,7 @@ description = "Clean-room Bink Video 2 (KB2g, KB2j) decoder"
 # room: read CLEANROOM.md before changing anything here. No dependencies, by design.
 
 [dependencies]
+
+# Contains `unsafe`, so it does not inherit the workspace `unsafe_code = "forbid"`.
+[lints.rust]
+unsafe_code = "allow"

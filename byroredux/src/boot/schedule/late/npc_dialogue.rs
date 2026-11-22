@@ -29,6 +29,8 @@ pub(super) fn register_npc_dialogue_systems(scheduler: &mut Scheduler) {
             .writes::<crate::systems::npc_dialogue::NpcDialogueTopic>()
             .reads_resource::<crate::systems::PlayerEntity>()
             .reads_resource::<crate::cell_loader::LoadedCellIndex>()
+            // #7115 — the follow-up's INFO → topic map (interior Mutex, a leaf lock).
+            .reads_resource::<crate::systems::npc_dialogue::FollowUpTopics>()
             .reads_resource::<byroredux_scripting::SceneQuestAliasRegistry>()
             .reads_resource::<byroredux_scripting::SceneActorBindings>()
             .reads_resource::<byroredux_scripting::quest_stages::QuestStageState>()
@@ -261,6 +263,10 @@ pub(super) fn register_npc_dialogue_systems(scheduler: &mut Scheduler) {
             .writes_resource::<byroredux_scripting::LocationKeywordData>()
             // M47.2 — a spoken line's hit event registrations.
             .writes_resource::<byroredux_scripting::HitRegistrations>()
+            // M48 — a spoken line's menu open / close event registrations.
+            .writes_resource::<byroredux_scripting::MenuEventRegistrations>()
+            // M48 GUI-EVT-003 — a spoken line's Game.ShowRaceMenu, reported as a menu request.
+            .writes_resource::<byroredux_scripting::obscript_more::PendingMenus>()
             // M47.2 — a spoken line's ProcessTrapHit (queued for the next
             // Update flush, #5872) and its shake calls.
             .writes_resource::<byroredux_scripting::PendingTrapHits>()

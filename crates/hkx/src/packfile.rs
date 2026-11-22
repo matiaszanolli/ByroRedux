@@ -20,6 +20,11 @@ pub(crate) struct Packfile<'a> {
     /// size — the audit measured 322 MB of VmHWM from a 256 KB file).
     /// The name lives in `bytes` and is compared in place at lookup.
     objects: Vec<(usize, usize, u32)>,
+    /// `(object offset, index into objects)`, sorted by offset (stably, so
+    /// the first object at an offset in file order comes first): `class_at`
+    /// binary-searches it. A linear scan per lookup made a behavior walk
+    /// cost entered objects x table size (#7126's sibling of the nif view).
+    by_offset: Vec<(usize, usize)>,
 }
 
 impl<'a> Packfile<'a> {
@@ -57,6 +62,9 @@ impl<'a> Packfile<'a> {
             let name = read_cstr(bytes, name_start, "class name")?;
             objects.push((source as usize, name_start, name.len() as u32));
         }
+        let mut by_offset: Vec<(usize, usize)> =
+            objects.iter().enumerate().map(|(index, (offset, _, _))| (*offset, index)).collect();
+        by_offset.sort_by_key(|entry| entry.0);
 
         Ok(Self {
             bytes,
@@ -67,6 +75,7 @@ impl<'a> Packfile<'a> {
             local_fixups,
             global_fixups,
             objects,
+            by_offset,
         })
     }
 
@@ -116,10 +125,13 @@ impl<'a> Packfile<'a> {
 
     /// The class of the object that starts at `offset`.
     pub(crate) fn class_at(&self, offset: usize) -> Option<&'a str> {
-        self.objects
-            .iter()
-            .find(|(object, _, _)| *object == offset)
-            .and_then(|(_, start, len)| std::str::from_utf8(self.bytes.get(*start..*start + *len as usize)?).ok())
+        let first = self.by_offset.partition_point(|(object, _)| *object < offset);
+        let &(object, index) = self.by_offset.get(first)?;
+        if object != offset {
+            return None;
+        }
+        let (_, start, len) = self.objects[index];
+        std::str::from_utf8(self.bytes.get(start..start + len as usize)?).ok()
     }
 
     /// A pointer field to another object of the data section: the object's

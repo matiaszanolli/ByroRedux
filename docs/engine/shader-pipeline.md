@@ -142,6 +142,40 @@ is not named here.
                            with no eligible fragment must not keep an older
                            light index); then TRANSFER → FRAGMENT,
                            TRANSFER_WRITE → SHADER_WRITE|SHADER_READ.
+1e terrain-tile upload  ─  `upload_terrain_tiles_if_dirty` (#7221, split out of
+   [TRANSFER]               `build_and_upload_instances`): when cell load dirtied
+                           the tile slab, `upload_terrain_tiles` copies its live
+                           prefix from this slot's staging buffer and releases
+                           TRANSFER / TRANSFER_WRITE → FRAGMENT|COMPUTE /
+                           SHADER_READ. Recorded first so 1f reads this frame's
+                           tiles.
+1f terrain_patch.comp   ─  TSD-4 terrain displacement patches
+                           (`record_terrain_patches`, #7152; ahead of the TLAS
+                           since #7221): one dispatch per resident patch slot
+                           rewrites that slot's reserved range of the global
+                           vertex buffer in place from the base cell's vertices
+                           and the terrain-tile height maps. Records a zero-fill
+                           of this slot's readback buffer, then an entry barrier
+                           TRANSFER|VERTEX_INPUT|VERTEX|FRAGMENT|COMPUTE /
+                           TRANSFER_WRITE → COMPUTE / SHADER_READ|SHADER_WRITE
+                           (the tile copy lands; the previous frame's vertex
+                           fetch, shader reads and ray queries of the patch
+                           ranges finish first), and an exit barrier COMPUTE /
+                           SHADER_WRITE → VERTEX_INPUT|VERTEX|FRAGMENT|COMPUTE|
+                           ACCELERATION_STRUCTURE_BUILD|HOST / VERTEX_ATTRIBUTE_
+                           READ|SHADER_READ|HOST_READ, which also publishes the
+                           vertices to 1g's AS-build geometry reads.
+1g terrain patch BLAS   ─  `record_terrain_patch_blas` (#7221): one batched
+                           `vkCmdBuildAccelerationStructuresKHR` that refits the
+                           patch BLAS still showing last frame's square and
+                           builds at most two reassigned ones, each over its own
+                           region of the patch scratch buffer. Bracketed by
+                           AS_BUILD / AS_WRITE → AS_BUILD / AS_READ|AS_WRITE
+                           (last frame's builds of the same AS and scratch) and
+                           AS_BUILD / AS_WRITE → AS_BUILD|FRAGMENT|COMPUTE /
+                           AS_READ (the TLAS build in step 4 and every ray
+                           query). With no work it records nothing and only
+                           clears last frame's ready set.
 1d skin input copies    ─  `record_bone_world_copy` (the dirty bone-world
    [TRANSFER]               slots' staging → device `cmd_copy_buffer`) and,
                            when first-sight uploads are pending,
@@ -256,6 +290,7 @@ is not named here.
                            COMPUTE / SHADER_WRITE → DRAW_INDIRECT|VERTEX|
                            FRAGMENT|TRANSFER / INDIRECT_COMMAND_READ|
                            SHADER_READ|TRANSFER_READ.
+5e (terrain patches)    ─  moved ahead of the TLAS build as 1e-1g (#7221).
 6  [Main render pass]   ─  raster (BEGIN → END, `record_geometry_pass`), in order:
                            `record_main_batches` (`record_batch_draws` per batch),
                            `record_water_surfaces`, `record_groundcover_blades`:
@@ -358,6 +393,8 @@ is not named here.
                            pure host state, #4780)
 14 volumetrics_integrate ─┘
 15 ssao.comp             ─  SSAO texture (`record_ssao_pass`)
+   far_sun_shadow.comp    ─  Opaque screen-space sun occlusion after the traced
+                           fade, timed separately before `record_composite_pass`
 16 [Composite render pass]─ raster:
      composite.vert / .frag  HDR combine → intermediate HDR image
                            (`record_composite_pass`)
@@ -865,7 +902,7 @@ pipeline. Defined in
 | 1 | 8 | `STORAGE_BUFFER` | Global vertex SSBO (RT UV fetch) | triangle, water (via `ray_hit.glsl::resolveRayHitUV`) |
 | 1 | 9 | `STORAGE_BUFFER` | Global index SSBO (RT UV fetch) | triangle, water (via `ray_hit.glsl::resolveRayHitUV`) |
 | 1 | 10 | `STORAGE_BUFFER` | Terrain tile buffer | triangle |
-| 1 | 11 | `STORAGE_BUFFER` | `GpuRayBudget` — 17 × `u32` (68 B): `rayBudgetCount`, `glassRayLimit`, `directShadowSamples`, `maxPathSegments`, `maxShadedHits`, `volumetricLightCap`, `qualityTier`, `reserved`, plus nine RT-LOD telemetry words (`lodFragments`, `lodBin0..3`, `reflectionTraced`, `reflectionLodCulled`, `giTraced`, `giLodCulled`). Only word 0 is the CPU-zeroed atomic counter; sizing a range/flush/barrier from `u32` is 64 B short | triangle |
+| 1 | 11 | `STORAGE_BUFFER` | `GpuRayBudget` — 20 × `u32` (80 B): `rayBudgetCount`, `glassRayLimit`, `directShadowSamples`, `maxPathSegments`, `maxShadedHits`, `volumetricLightCap`, `qualityTier`, `reserved` (the shadow-filter iteration count, CPU-consumed), `cacheUpdateStride` (RCG-UPD-001: one radiance-cache update path per stride × stride pixel block, 0 = none; CPU-written per tier from `CACHE_UPDATE_STRIDE_BY_TIER`, read by no shader yet), plus eleven RT-LOD telemetry words (`lodFragments`, `lodBin0..3`, `reflectionTraced`, `reflectionLodCulled`, `giTraced`, `giLodCulled`, and RCG-DBG-002's `cacheResolved` and `cacheMisses`, which no shader increments yet). Only word 0 is the CPU-zeroed atomic counter; sizing a range/flush/barrier from `u32` is 64 B short | triangle |
 | 1 | 12 | `STORAGE_BUFFER` | Bone palette (previous frame) | triangle |
 | 1 | 13 | `STORAGE_BUFFER` | Material table (`GpuMaterial[]`) | triangle, water (`materials[inst.materialId]` in the secondary-ray hit path) |
 | 1 | 14 | `UNIFORM_BUFFER` | DALC cube (6-axis ambient) | triangle |
@@ -879,7 +916,7 @@ pipeline. Defined in
 | 1 | 22 | `STORAGE_BUFFER` | `ReservoirClaimBuffer` — one `uint` per pixel, the tail of binding 16's buffer (`ReservoirBuffers::claim_offset`). `begin_frame` fills it with `0xFFFFFFFF`; a stable opaque fragment `atomicMin`s its camera-distance bits in and stores its reservoir only if it won, so the nearest fragment owns the slot whatever the draw order (#5765) | triangle |
 | 1 | 23 | `STORAGE_BUFFER` | `DirectUnshadowedBuffer` — the claim winner's unshadowed direct radiance U (`restirUnshadowedSum`, RGB packed as two half2 words), written beside its reservoir in a third tail region of binding 16's buffer (`ReservoirBuffers::unshadowed_offset`). `shadow_filter.comp` reads it to correct direct light by U * (filtered - raw shadow ratio) | triangle |
 | 1 | 24 | `COMBINED_IMAGE_SAMPLER` | SKYAL cloud-shadow map (`sampler2D cloudShadowMap`, R16F 512² over a camera-centred 64 km square): direct-sun transmittance through the volumetric deck per world position (`cloud_shadow.comp`), one per frame in flight, written by `write_sky_cube` with the cube. Same optional ownership, `PARTIALLY_BOUND` and `exteriorSkyTint.w` gate as binding 20; read through `exteriorCloudSunTransmittance` | triangle (`lighting.glsl` directional arms), groundcover_blade, water |
-| 1 | 25 | `STORAGE_BUFFER` | `MovedSurfaceSet` — this build's moved stable surface IDs (`[0]` = count, `[1..]` = IDs capped at `RESTIR_MAX_MOVED_SURFACES`), rewritten every frame by `upload_moved_surface_ids` (#6250). The ReSTIR mover taint's prev-occluder arm matches last frame's recorded blocker (`Reservoir::occluderSurface`) against it, so a mover's first moving frame (and a teleport) taints the pixels it un-occludes instead of leaving them on the parked ~346-frame tail | triangle |
+| 1 | 25 | `STORAGE_BUFFER` | `MovedSurfaceSet` — this build's moved stable surface IDs (`[0]` = count, `[1..]` = IDs capped at `RESTIR_MAX_MOVED_SURFACES`), rewritten every frame by `upload_moved_surface_ids` (#6250). The ReSTIR mover taint's prev-occluder arm matches last frame's recorded blocker (the low bits of `Reservoir::occluderAndShadowSequence`) against it, so a mover's first moving frame (and a teleport) taints the pixels it un-occludes instead of leaving them on the parked ~346-frame tail | triangle |
 | 2 | 0 | `STORAGE_IMAGE` (`R32_UINT`) | Water caustic accumulator | water.frag (atomic add) |
 | 2 | 1 | `STORAGE_BUFFER` (std430, growable) | Unsized `GpuWaterParams[]` table, 368 B per active water draw | water.vert, water.frag |
 
@@ -970,11 +1007,14 @@ Four inject inputs carry more than their binding type suggests:
   smoke or fog, and on overflow each list keeps the nearest entries (the CPU
   input is distance-sorted).
 - **The aperture UBO lives in composite, not here.** `CompositeParams`
-  (composite set 0, binding 3) ends in `sky_aperture_count` plus up to
+  (composite set 0, binding 3) carries `sky_aperture_count` plus up to
   `MAX_COMPOSITE_SKY_APERTURES` (256) `CompositeSkyAperture` entries (48 B
   each), which `composite.frag::skyThroughAuthoredWindow` tests to show
-  outdoor sky through authored openings. Only the prefix below the count is
-  written each frame; the 12 KB tail stays allocated but unflushed.
+  outdoor sky through authored openings, and ends in `view_proj` *after* the
+  whole aperture array. The upload is two ranges (`composite_upload_ranges`):
+  the prefix through the live apertures, and the `view_proj` tail, which is
+  always written (#6836 — a prefix alone never reaches it); the unused
+  aperture tail stays allocated but unflushed.
 
 `volumetrics_integrate.comp` (3 bindings — a separate, much smaller
 descriptor set on the same `set = 0` index; do not conflate with the table

@@ -177,7 +177,7 @@ pub(super) fn reward_xp(world: &World, _fallout: bool, cmd: u16, args: &[ObScrip
 
 // `RewardKarma <points>`: karma is an actor value on the player.
 pub(super) fn reward_karma(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _context: &Context) -> Action {
-    let Some(avif) = crate::obscript_actor_values::actor_value_form(world, KARMA_CODE) else {
+    let Some(avif) = world.try_resource::<crate::ActorValueNames>().and_then(|names| names.resolve("Karma")) else {
         return Action::Declined;
     };
     let Some(player) = crate::papyrus_demo::PapyrusPlayerEntity::get(world) else {

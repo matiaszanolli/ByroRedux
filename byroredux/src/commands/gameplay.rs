@@ -79,7 +79,7 @@ impl ConsoleCommand for InvAddCommand {
 
 /// `inv.equip <form_id>` — toggle the equipment state of the player's row
 /// carrying `form_id`. Queues the native menu's own
-/// [`byroredux_debug_ui::InventoryAction::ToggleEquip`], drained through
+/// [`byroredux_native_ui::InventoryAction::ToggleEquip`], drained through
 /// `apply_action` on the main thread — one canonical mutation path, a
 /// delayed frontend.
 pub(crate) struct InvEquipCommand;
@@ -168,19 +168,36 @@ impl ConsoleCommand for CraftCommand {
     }
 
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
-        let mut parts = args.split_whitespace();
+        let mut parts = args.split_whitespace().peekable();
+        // `craft benches` answers whatever the nearest bench is, so it can say why there is none.
+        if parts.peek() == Some(&"benches") {
+            let player = crate::systems::PlayerEntity::get(world)
+                .and_then(|player| world.get::<byroredux_core::ecs::components::GlobalTransform>(player).map(|t| t.translation));
+            let benches = crate::crafting::loaded_benches(world);
+            let enabled = benches.iter().filter(|bench| bench.enabled).count();
+            let mut lines = vec![format!(
+                "{} loaded bench(es), {enabled} enabled; player at {}",
+                benches.len(),
+                player.map_or_else(|| "(no player)".to_owned(), |at| format!("({:.1}, {:.1}, {:.1})", at.x, at.y, at.z)),
+            )];
+            lines.extend(benches.iter().take(60).map(|bench| {
+                format!(
+                    "bench {} ref {:08X} base {:08X} at ({:.1}, {:.1}, {:.1}){}",
+                    bench.entity,
+                    bench.reference,
+                    bench.base,
+                    bench.at.x,
+                    bench.at.y,
+                    bench.at.z,
+                    if bench.enabled { "" } else { " disabled" },
+                )
+            }));
+            return CommandOutput::lines(lines);
+        }
         let Some(bench) = crate::crafting::nearest_bench(world) else {
             return CommandOutput::error("craft: no workbench is loaded");
         };
         match parts.next() {
-            Some("benches") => {
-                let lines = crate::crafting::loaded_benches(world)
-                    .into_iter()
-                    .take(60)
-                    .map(|(entity, base, at)| format!("bench {entity} base {base:08X} at ({:.1}, {:.1}, {:.1})", at.x, at.y, at.z))
-                    .collect::<Vec<_>>();
-                CommandOutput::lines(std::iter::once(format!("{} loaded bench(es)", lines.len())).chain(lines).collect())
-            }
             Some("list") => {
                 let recipes = crate::crafting::recipes_at(world, bench);
                 let base = world.get::<byroredux_scripting::SceneAliasCandidate>(bench).map_or(0, |identity| identity.base_form_id);
@@ -595,7 +612,7 @@ mod tests {
     }
 }
 
-/// M47.2 — `levelup` — the level-up menu's work, until a menu exists: show
+/// M47.2 — `levelup` — the Fallout/Skyrim level-up menu's work, until a menu exists for it: show
 /// the player's banked level-up rewards, spend skill points on a skill of the
 /// game's roster (one point raises it one, never past 100 — the Fallout
 /// level-up menu's cap), or spend a perk point on a perk rank (the record's playable flag, minimum level and level-up
@@ -608,7 +625,7 @@ impl ConsoleCommand for LevelUpCommand {
     }
 
     fn description(&self) -> &str {
-        "Spend level-up rewards (usage: levelup | levelup skill <Skill> <points> | levelup perk <perk_hex> | levelup pool <health|magicka|stamina> | levelup xp <n>)"
+        "Spend level-up rewards (usage: levelup | levelup attr <attribute> | levelup skill <Skill> <points> | levelup perk <perk_hex> | levelup pool <health|magicka|stamina> | levelup xp <n>)"
     }
 
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
@@ -624,6 +641,13 @@ impl ConsoleCommand for LevelUpCommand {
             .unwrap_or_default();
         match parts.next() {
             None | Some("status") => {
+                // OSL-API-003: Oblivion's skill-use leveling reports its class, tallies and skills.
+                if let Some(lines) = byroredux_scripting::oblivion_skill_use::skill_use_report(world, player) {
+                    let level = world.get::<CharacterLevel>(player).map(|level| *level).unwrap_or_default();
+                    let mut out = vec![format!("levelup: level={}", level.level)];
+                    out.extend(lines);
+                    return CommandOutput { lines: out };
+                }
                 let level = world
                     .get::<CharacterLevel>(player)
                     .map(|level| *level)
@@ -637,6 +661,39 @@ impl ConsoleCommand for LevelUpCommand {
                     rewards.perk_points,
                     rewards.pool_picks
                 ))
+            }
+            // OSL-API-005 (Q3): Oblivion's attribute picks for a scripted or jail sleep. A bed sleep offers the level-up
+            // page instead (`oblivion_rest`, #7086). Picks one of the three attributes the oldest pending level raises;
+            // the level is taken at the next completed sleep.
+            Some("attr") => {
+                use byroredux_scripting::oblivion_skill_use::{pick_attribute, PickRefusal, LEVEL_PICKS};
+                const ATTRIBUTES: [&str; 8] =
+                    ["Strength", "Intelligence", "Willpower", "Agility", "Speed", "Endurance", "Personality", "Luck"];
+                let Some(name) = parts.next() else {
+                    return CommandOutput::error("usage: levelup attr <Strength|Intelligence|Willpower|Agility|Speed|Endurance|Personality|Luck>");
+                };
+                let Some(code) = ATTRIBUTES.iter().position(|attribute| attribute.eq_ignore_ascii_case(name)) else {
+                    return CommandOutput::error(format!("levelup: `{name}` is not an attribute"));
+                };
+                match pick_attribute(world, player, code as u32) {
+                    Ok(picked) => CommandOutput::line(format!(
+                        "levelup: {} +{} picked ({}/{LEVEL_PICKS}){}",
+                        ATTRIBUTES[code],
+                        picked.bonus,
+                        picked.picks,
+                        if picked.picks == LEVEL_PICKS { "; sleep to take the level" } else { "" }
+                    )),
+                    Err(refusal) => CommandOutput::error(format!(
+                        "levelup: {}",
+                        match refusal {
+                            PickRefusal::NoPendingLevel => "no level is pending",
+                            PickRefusal::NotAnAttribute => "not an attribute",
+                            PickRefusal::AlreadyPicked => "that attribute is already picked for this level",
+                            PickRefusal::LevelFull => "three attributes are already picked; sleep to take the level",
+                            PickRefusal::AtMaximum => "that attribute is at 100",
+                        }
+                    )),
+                }
             }
             Some("skill") => {
                 let (Some(name), Some(points)) =
@@ -684,11 +741,10 @@ impl ConsoleCommand for LevelUpCommand {
                 let base = values.get_base(avif).map_or(0.0, |value| value.base);
                 values.set_base(avif, base + spend as f32);
                 drop(value_query);
-                if let Some(mut stored) = world.query_mut::<LevelUpPoints>() {
-                    if let Some(stored) = stored.get_mut(player) {
+                if let Some(mut stored) = world.query_mut::<LevelUpPoints>()
+                    && let Some(stored) = stored.get_mut(player) {
                         stored.skill_points -= spend;
                     }
-                }
                 CommandOutput::line(format!(
                     "levelup: {} {current} -> {} ({} skill points left)",
                     skill.editor_id,
@@ -731,11 +787,10 @@ impl ConsoleCommand for LevelUpCommand {
                     }
                 }
                 let (perk, rank) = (take.perk, take.rank);
-                if let Some(mut stored) = world.query_mut::<LevelUpPoints>() {
-                    if let Some(stored) = stored.get_mut(player) {
+                if let Some(mut stored) = world.query_mut::<LevelUpPoints>()
+                    && let Some(stored) = stored.get_mut(player) {
                         stored.perk_points -= 1;
                     }
-                }
                 match take.replaces {
                     Some(previous) => CommandOutput::line(format!(
                         "levelup: perk {previous:08X} -> next rank {perk:08X} (rank {rank})"
@@ -779,11 +834,10 @@ impl ConsoleCommand for LevelUpCommand {
                 let base = values.get_base(avif).map_or(0.0, |value| value.base);
                 values.set_base(avif, base + gain);
                 drop(value_query);
-                if let Some(mut stored) = world.query_mut::<LevelUpPoints>() {
-                    if let Some(stored) = stored.get_mut(player) {
+                if let Some(mut stored) = world.query_mut::<LevelUpPoints>()
+                    && let Some(stored) = stored.get_mut(player) {
                         stored.pool_picks -= 1;
                     }
-                }
                 CommandOutput::line(format!(
                     "levelup: {pool} {base} -> {} ({} pool picks left)",
                     base + gain,

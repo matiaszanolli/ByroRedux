@@ -151,6 +151,17 @@ pub mod fo4 {
     pub const MOD_WEAPON_ATTACK_DAMAGE: u8 = 35;
     /// `Mod Typed Weapon Attack Damage`: damage scoped to a damage type, not the outgoing calculation.
     pub const MOD_TYPED_WEAPON_ATTACK_DAMAGE: u8 = 93;
+    /// `Ignore Running During Detection`: `Fallout4.exe` composes it from 0 on the detection target, and a
+    /// non-zero result drops running and, while sneaking, movement (`0x140cc08cf`, #6996).
+    pub const IGNORE_RUNNING_DURING_DETECTION: u8 = 15;
+    /// `Mod Sneak Attack Mult`, over the weapon class's multiplier (`0x140e3a1d9`).
+    pub const MOD_SNEAK_ATTACK_MULT: u8 = 18;
+    /// `Mod Detection Light`, over the light level after night eye (`0x140cc095f`).
+    pub const MOD_DETECTION_LIGHT: u8 = 47;
+    /// `Mod Detection Movement`, over the light-movement term before its 1 is added (`0x1406c8a7c`).
+    pub const MOD_DETECTION_MOVEMENT: u8 = 48;
+    /// `Mod Detection Sneak Skill`, over the target's Sneak in the agility term (`0x140cc08b6`).
+    pub const MOD_DETECTION_SNEAK_SKILL: u8 = 57;
 }
 
 /// An engine calculation a perk can modify (PERK-DIA-002). A consumer names the calculation; the dialect maps it
@@ -224,10 +235,15 @@ impl PerkCalculation {
             (Self::Activate, Skyrim) => Some(skyrim::ACTIVATE),
             (Self::IgnoreRunningDuringDetection, Fallout3NV) => Some(fnv::IGNORE_RUNNING_DURING_DETECTION),
             (Self::IgnoreRunningDuringDetection, Skyrim) => Some(skyrim::IGNORE_RUNNING_DURING_DETECTION),
+            (Self::IgnoreRunningDuringDetection, Fallout4) => Some(fo4::IGNORE_RUNNING_DURING_DETECTION),
             (Self::SneakAttackMult, Skyrim) => Some(skyrim::MOD_SNEAK_ATTACK_MULT),
+            (Self::SneakAttackMult, Fallout4) => Some(fo4::MOD_SNEAK_ATTACK_MULT),
             (Self::DetectionLight, Skyrim) => Some(skyrim::MOD_DETECTION_LIGHT),
+            (Self::DetectionLight, Fallout4) => Some(fo4::MOD_DETECTION_LIGHT),
             (Self::DetectionMovement, Skyrim) => Some(skyrim::MOD_DETECTION_MOVEMENT),
+            (Self::DetectionMovement, Fallout4) => Some(fo4::MOD_DETECTION_MOVEMENT),
             (Self::DetectionSneakSkill, Skyrim) => Some(skyrim::MOD_DETECTION_SNEAK_SKILL),
+            (Self::DetectionSneakSkill, Fallout4) => Some(fo4::MOD_DETECTION_SNEAK_SKILL),
             _ => None,
         }
     }

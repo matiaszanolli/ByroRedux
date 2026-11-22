@@ -252,7 +252,6 @@ pub(super) fn prebaked_head_fallback_paths(
     paths
 }
 
-#[allow(clippy::too_many_arguments)] // Resumable step: the actor's state, world, GPU context, providers and index are separate caller-owned borrows.
 pub(super) fn advance_prebaked_unit(
     state: &mut PrebakedNpcState,
     world: &mut World,
@@ -469,14 +468,13 @@ pub(super) fn finalize_prebaked(
         // with the same authored-stride speed derivation. The player
         // body takes neither from the job — `player_body::` attaches
         // its walk/idle playback beside the assembled root.
-        if !state.player_body {
-            if let Some(handle) = world
+        if !state.player_body
+            && let Some(handle) = world
                 .try_resource::<crate::components::SkyrimWalkClip>()
                 .and_then(|r| r.0)
             {
                 super::attach_walk_animation(world, state.placement_root, handle);
             }
-        }
     }
     super::finish_actor(
         world,

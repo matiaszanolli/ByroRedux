@@ -1,0 +1,295 @@
+pub use crate::loader::Error as DialogLoaderError;
+use crate::{
+    backend::navigator::OwnedFuture,
+    font::{FontFileData, FontQuery, FontRenderer},
+};
+use chrono::{DateTime, Utc};
+pub use fluent_templates::LanguageIdentifier;
+use fluent_templates::loader::langid;
+use ruffle_macros::Avm2Enum;
+use std::{any::Any, borrow::Cow};
+use url::Url;
+
+pub type FullscreenError = Cow<'static, str>;
+pub static US_ENGLISH: LanguageIdentifier = langid!("en-US");
+
+pub enum FontDefinition<'a> {
+    /// A singular DefineFont tag extracted from a swf.
+    SwfTag(swf::Font<'a>, &'static swf::Encoding),
+
+    /// A font contained in an external file, such as a ttf.
+    FontFile {
+        name: String,
+        is_bold: bool,
+        is_italic: bool,
+        data: FontFileData,
+        index: u32,
+    },
+
+    /// Font rendered externally.
+    ExternalRenderer {
+        name: String,
+        is_bold: bool,
+        is_italic: bool,
+        font_renderer: Box<dyn FontRenderer>,
+    },
+}
+
+/// A filter specifying a category that can be selected from a file chooser dialog
+pub struct FileFilter {
+    /// The description of the category
+    pub description: String,
+    /// A semicolon ';' delimited list of acceptable windows file extensions that can be selected
+    /// in this category, with a */wildcard before each extension
+    pub extensions: String,
+    /// A semicolon ';' delimited list of acceptable MacOs file extensions that can be selected in
+    /// this category, with a */wildcard before each extension
+    /// Note that a list of file filters will either all have Some(_) mac_type or all will have None
+    pub mac_type: Option<String>,
+}
+
+impl FileFilter {
+    /// Returns extensions suitable for file dialogs.
+    /// When `is_mac` is true, uses `mac_type` if available; otherwise uses `extensions` with wildcards stripped.
+    /// `is_mac` should be true when the user uses a Mac.
+    pub fn extensions_for_dialog(&self, is_mac: bool) -> Vec<&str> {
+        if is_mac && let Some(mac_type) = &self.mac_type {
+            return mac_type.split(';').collect();
+        }
+
+        self.extensions
+            .split(';')
+            .map(|x| x.trim_start_matches("*."))
+            .collect()
+    }
+}
+
+/// Data for a single selected file.
+pub trait FileDialogSelection: Any {
+    fn creation_time(&self) -> Option<DateTime<Utc>>;
+    fn modification_time(&self) -> Option<DateTime<Utc>>;
+    fn file_name(&self) -> String;
+    fn size(&self) -> Option<u64>;
+    fn file_type(&self) -> Option<String>;
+    fn creator(&self) -> Option<String> {
+        None
+    }
+    fn contents(&self) -> &[u8];
+    /// Write the given data to the chosen file and refresh any internal metadata.
+    /// Any future calls to other functions (such as [FileDialogSelection::size]) will reflect
+    /// the state at the time of the last refresh
+    fn write_and_refresh(&mut self, data: &[u8]);
+}
+
+/// Result of a single-file dialog (open or save).
+pub enum FileDialogResult {
+    /// The user selected a file.
+    Selection(Box<dyn FileDialogSelection>),
+    /// The user canceled the dialog.
+    Canceled,
+}
+
+/// Result of a multi-file open dialog.
+pub enum MultiFileDialogResult {
+    /// The user selected one or more files.
+    Selection(Vec<Box<dyn FileDialogSelection>>),
+    /// The user canceled the dialog.
+    Canceled,
+}
+
+/// Future representing a single-file selection in process.
+pub type DialogResultFuture = OwnedFuture<FileDialogResult, DialogLoaderError>;
+
+/// Future representing a multi-file selection in process.
+pub type MultiDialogResultFuture = OwnedFuture<MultiFileDialogResult, DialogLoaderError>;
+
+pub trait UiBackend: Any {
+    fn mouse_visible(&self) -> bool;
+
+    fn set_mouse_visible(&mut self, visible: bool);
+
+    /// Changes the mouse cursor image.
+    fn set_mouse_cursor(&mut self, cursor: MouseCursor);
+
+    /// Get the clipboard content
+    fn clipboard_content(&mut self) -> String;
+
+    /// Check if the clipboard is available and not empty
+    fn clipboard_available(&mut self) -> bool {
+        !self.clipboard_content().is_empty()
+    }
+
+    /// Sets the clipboard to the given content.
+    fn set_clipboard_content(&mut self, content: String);
+
+    fn set_fullscreen(&mut self, is_full: bool) -> Result<(), FullscreenError>;
+
+    /// Displays a message about an error during root movie download.
+    /// In particular, on web this can be a CORS error, which we can sidestep
+    /// by providing a direct .swf link instead.
+    fn display_root_movie_download_failed_message(
+        &self,
+        _invalid_swf: bool,
+        _fetched_error: String,
+    );
+
+    // Unused, but kept in case we need it later.
+    fn message(&self, message: &str);
+
+    fn open_virtual_keyboard(&self);
+
+    fn close_virtual_keyboard(&self);
+
+    fn language(&self) -> LanguageIdentifier;
+
+    fn display_unsupported_video(&self, url: Url);
+
+    /// Called when a previously unknown device font is requested by a movie.
+    /// The backend is requested to call `register` with any fonts that match the given name.
+    ///
+    /// You may call `register` any amount of times with any amount of found device fonts.
+    /// If you do not call `register` with any fonts that match the request,
+    /// then the font will simply be marked as not found - this may or may not fall back to another font.
+    fn load_device_font(&self, query: &FontQuery, register: &mut dyn FnMut(FontDefinition));
+
+    fn sort_device_fonts(
+        &self,
+        query: &FontQuery,
+        register: &mut dyn FnMut(FontDefinition),
+    ) -> Vec<FontQuery>;
+
+    /// Displays a single-file selection dialog, returning None if the dialog cannot be displayed
+    /// (e.g because it is already open).
+    /// * `filters` represents a list of filters to the possible file types that can be selected
+    fn display_file_open_dialog(&mut self, filters: Vec<FileFilter>) -> Option<DialogResultFuture>;
+
+    /// Displays a multi-file selection dialog, returning None if the dialog cannot be displayed
+    /// (e.g because it is already open).
+    /// * `filters` represents a list of filters to the possible file types that can be selected
+    fn display_file_open_dialog_multiple(
+        &mut self,
+        _filters: Vec<FileFilter>,
+    ) -> Option<MultiDialogResultFuture>;
+
+    /// Display a dialog allowing a user to select a destination to save a file to
+    ///
+    /// * `file_name` is a suggestion for the file name to save the file as
+    /// * `title` is a title that should be displayed in the dialog
+    fn display_file_save_dialog(
+        &mut self,
+        file_name: String,
+        title: String,
+    ) -> Option<DialogResultFuture>;
+
+    /// Mark that any previously open dialog has been closed
+    fn close_file_dialog(&mut self);
+}
+
+/// A mouse cursor icon displayed by the Flash Player.
+/// Communicated from the core to the UI backend via `UiBackend::set_mouse_cursor`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Avm2Enum)]
+pub enum MouseCursor {
+    /// The default arrow icon.
+    /// Equivalent to AS3 `MouseCursor.ARROW`.
+    #[avm2_variant("arrow")]
+    Arrow,
+
+    /// The hand icon indicating a button or link.
+    /// Equivalent to AS3 `MouseCursor.BUTTON`.
+    #[avm2_variant("button")]
+    Hand,
+
+    /// The text I-beam.
+    /// Equivalent to AS3 `MouseCursor.IBEAM`.
+    #[avm2_variant("ibeam")]
+    IBeam,
+
+    /// The grabby-dragging hand icon.
+    /// Equivalent to AS3 `MouseCursor.HAND`.
+    #[avm2_variant("hand")]
+    Grab,
+}
+
+/// UiBackend that does nothing.
+pub struct NullUiBackend {}
+
+impl NullUiBackend {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl UiBackend for NullUiBackend {
+    fn mouse_visible(&self) -> bool {
+        true
+    }
+
+    fn set_mouse_visible(&mut self, _visible: bool) {}
+
+    fn set_mouse_cursor(&mut self, _cursor: MouseCursor) {}
+
+    fn clipboard_content(&mut self) -> String {
+        "".into()
+    }
+
+    fn set_clipboard_content(&mut self, _content: String) {}
+
+    fn set_fullscreen(&mut self, _is_full: bool) -> Result<(), FullscreenError> {
+        Ok(())
+    }
+
+    fn display_root_movie_download_failed_message(&self, _invalid_swf: bool, _fetch_error: String) {
+    }
+
+    fn message(&self, _message: &str) {}
+
+    fn display_unsupported_video(&self, _url: Url) {}
+
+    fn load_device_font(&self, _query: &FontQuery, _register: &mut dyn FnMut(FontDefinition)) {}
+
+    fn sort_device_fonts(
+        &self,
+        _query: &FontQuery,
+        _register: &mut dyn FnMut(FontDefinition),
+    ) -> Vec<FontQuery> {
+        Vec::new()
+    }
+
+    fn open_virtual_keyboard(&self) {}
+
+    fn close_virtual_keyboard(&self) {}
+
+    fn language(&self) -> LanguageIdentifier {
+        US_ENGLISH.clone()
+    }
+
+    fn display_file_open_dialog(
+        &mut self,
+        _filters: Vec<FileFilter>,
+    ) -> Option<DialogResultFuture> {
+        Some(Box::pin(async move { Ok(FileDialogResult::Canceled) }))
+    }
+
+    fn display_file_open_dialog_multiple(
+        &mut self,
+        _filters: Vec<FileFilter>,
+    ) -> Option<MultiDialogResultFuture> {
+        Some(Box::pin(async move { Ok(MultiFileDialogResult::Canceled) }))
+    }
+
+    fn close_file_dialog(&mut self) {}
+
+    fn display_file_save_dialog(
+        &mut self,
+        _file_name: String,
+        _domain: String,
+    ) -> Option<DialogResultFuture> {
+        None
+    }
+}
+
+impl Default for NullUiBackend {
+    fn default() -> Self {
+        NullUiBackend::new()
+    }
+}

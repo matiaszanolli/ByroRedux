@@ -2,6 +2,7 @@
 name = "byroredux-spt"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 # SpeedTree `.spt` parser — Oblivion / Fallout 3 / Fallout New Vegas.
 # Skyrim onward dropped `.spt` and bakes tree geometry into NIFs rooted
@@ -63,3 +64,6 @@ required-features = ["recon"]
 name = "spt_walk"
 path = "examples/spt_walk.rs"
 required-features = ["recon"]
+
+[lints]
+workspace = true

@@ -658,6 +658,8 @@ fn parse_refr_group_inner(
             // an `XLOC` sub-record (the CK/GECK only writes it when
             // "Locked" is checked), so presence alone is the lock gate.
             let mut lock: Option<LockData> = None;
+            // DRT-REC-004 — `ONAM`, "Open by Default": an empty sub-record, present or not.
+            let mut open_by_default = false;
             let mut water_velocity: Option<[f32; 3]> = None;
             // #4706 — REFR stack size (`XCNT`).
             let mut item_count: Option<u32> = None;
@@ -926,6 +928,7 @@ fn parse_refr_group_inner(
                             flags,
                         });
                     }
+                    b"ONAM" => open_by_default = true,
                     // XWCU — per-reference water current. Entry 0 of the
                     // XWCN-counted 16-byte array is the linear velocity; see
                     // `xwcu_linear_velocity` for the shipped-data evidence.
@@ -1011,6 +1014,7 @@ fn parse_refr_group_inner(
                     ownership,
                     script_instance: ref_script_instance,
                     lock,
+                    open_by_default,
                     water_velocity,
                     item_count,
                     initially_disabled: header.flags & FLAG_INITIALLY_DISABLED != 0,

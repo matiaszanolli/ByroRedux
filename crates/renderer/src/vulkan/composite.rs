@@ -27,9 +27,11 @@ use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::cloud_noise::CloudNoiseViews;
 use super::descriptors::{
-    write_combined_image_sampler, write_storage_buffer, write_uniform_buffer, DescriptorPoolBuilder,
+    image_barrier_general_write_to_read, image_barrier_undef_to_general,
+    write_combined_image_sampler, write_storage_buffer, write_storage_image, write_uniform_buffer,
+    DescriptorPoolBuilder,
 };
-use super::gbuffer::FSR_MASK_FORMAT;
+use super::gbuffer::{FSR_MASK_FORMAT, TRANSPARENCY_SUN_FORMAT};
 use super::image::{GpuImage, GpuImageDesc};
 use super::reflect::{validate_set_layout, ReflectedShader};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
@@ -52,8 +54,59 @@ pub struct ShadowCorrectionViews<'a> {
     pub layout: vk::ImageLayout,
 }
 
+/// Every image the composite shader samples, borrowed from the passes that produce them.
+///
+/// [`CompositePipeline::new`] and [`CompositePipeline::recreate_on_resize`] both take exactly this
+/// set, so the constructor and the resize rebuild cannot drift apart on which bindings they wire
+/// (REN-D10-NEW-08). `bindless_layout` and `pipeline_cache` are device-owned and survive a resize,
+/// so they are passed to `new` alone.
+#[derive(Clone, Copy)]
+pub struct CompositeInputs<'a> {
+    /// The SVGF output in `GENERAL`, or the raw G-buffer output in `SHADER_READ_ONLY_OPTIMAL`;
+    /// which one is baked into the descriptor sets, per [`Self::indirect_is_general`].
+    pub indirect_views: &'a [vk::ImageView],
+    pub indirect_is_general: bool,
+    pub albedo_views: &'a [vk::ImageView],
+    pub depth_view: vk::ImageView,
+    pub caustic_views: &'a [vk::ImageView],
+    /// #1257 / Phase E of #1210.
+    pub water_caustic_views: &'a [vk::ImageView],
+    pub volumetric_views: &'a [vk::ImageView],
+    pub local_fire: &'a super::volumetrics::LocalFireViews,
+    pub bloom_views: &'a [vk::ImageView],
+    pub reactive_views: &'a [vk::ImageView],
+    pub transparency_views: &'a [vk::ImageView],
+    pub shadow_correction: ShadowCorrectionViews<'a>,
+    pub cloud_noise: CloudNoiseViews,
+}
+
 pub(super) const COMPOSITE_VERT_SPV: &[u8] = include_bytes!("../../shaders/composite.vert.spv");
 pub(super) const COMPOSITE_FRAG_SPV: &[u8] = include_bytes!("../../shaders/composite.frag.spv");
+pub(super) const FAR_SUN_COMP_SPV: &[u8] = include_bytes!("../../shaders/far_sun_shadow.comp.spv");
+const COMPOSITE_SHADERS: &[ReflectedShader<'static>] = &[
+    ReflectedShader {
+        name: "composite.vert",
+        spirv: COMPOSITE_VERT_SPV,
+    },
+    ReflectedShader {
+        name: "composite.frag",
+        spirv: COMPOSITE_FRAG_SPV,
+    },
+    ReflectedShader {
+        name: "far_sun_shadow.comp",
+        spirv: FAR_SUN_COMP_SPV,
+    },
+];
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(super) struct FarSunProjection {
+    pub inv_view_proj: [[f32; 4]; 4],
+    pub clip_sun_direction: [f32; 4],
+}
+
+// SAFETY: five contiguous vec4 lanes matching the compute push block.
+unsafe impl super::buffer::NoUninit for FarSunProjection {}
 
 pub const MAX_SKY_APERTURES: usize = crate::shader_constants::MAX_COMPOSITE_SKY_APERTURES as usize;
 
@@ -301,6 +354,7 @@ pub const HDR_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 /// row that did not exist.
 pub const COMPOSITE_BYTES_PER_PIXEL: u32 = 2 /* hdr_images + scene_images */ * 8 /* R16G16B16A16_SFLOAT */
         * super::sync::MAX_FRAMES_IN_FLIGHT as u32;
+pub const FAR_SUN_BYTES_PER_PIXEL: u32 = 8 * MAX_FRAMES_IN_FLIGHT as u32;
 
 /// Owns the HDR intermediates + composite pipeline + composite render pass.
 pub struct CompositePipeline {
@@ -312,6 +366,8 @@ pub struct CompositePipeline {
     /// The fully composited scene, written after `record_composite_pass` and
     /// read by bloom and by the FSR upscaler.
     pub scene: Vec<GpuImage>,
+    far_sun_occlusion: Vec<GpuImage>,
+    far_sun_pipeline: vk::Pipeline,
 
     /// Dedicated render pass for the composite step. Single color attachment
     /// = RGBA16F scene output, no depth.
@@ -375,7 +431,7 @@ pub(super) fn composite_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding<
         layout_binding(
             4,
             vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-            vk::ShaderStageFlags::FRAGMENT,
+            vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::COMPUTE,
         ),
         // 5: caustic accumulator as usampler2D — R32_UINT sampled view.
         layout_binding(
@@ -471,6 +527,21 @@ pub(super) fn composite_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding<
             vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
             vk::ShaderStageFlags::FRAGMENT,
         ),
+        layout_binding(
+            18,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            vk::ShaderStageFlags::COMPUTE,
+        ),
+        layout_binding(
+            19,
+            vk::DescriptorType::STORAGE_IMAGE,
+            vk::ShaderStageFlags::COMPUTE,
+        ),
+        layout_binding(
+            20,
+            vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            vk::ShaderStageFlags::FRAGMENT,
+        ),
     ]
 }
 
@@ -533,24 +604,11 @@ impl CompositePipeline {
     /// Which layout the indirect is in is baked into the descriptor sets
     /// at write time — callers must pass `indirect_is_general=true` when
     /// wiring up the SVGF output.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &ash::Device,
         allocator: &SharedAllocator,
         pipeline_cache: vk::PipelineCache,
-        indirect_views: &[vk::ImageView],
-        indirect_is_general: bool,
-        albedo_views: &[vk::ImageView],
-        depth_view: vk::ImageView,
-        caustic_views: &[vk::ImageView],
-        water_caustic_views: &[vk::ImageView], // #1257 / Phase E of #1210
-        volumetric_views: &[vk::ImageView],
-        local_fire: &super::volumetrics::LocalFireViews,
-        bloom_views: &[vk::ImageView],
-        reactive_views: &[vk::ImageView],
-        transparency_views: &[vk::ImageView],
-        shadow_correction: ShadowCorrectionViews<'_>,
-        cloud_noise: CloudNoiseViews,
+        inputs: CompositeInputs,
         bindless_layout: vk::DescriptorSetLayout,
         extents: FrameExtentSet,
     ) -> Result<Self> {
@@ -558,19 +616,7 @@ impl CompositePipeline {
             device,
             allocator,
             pipeline_cache,
-            indirect_views,
-            indirect_is_general,
-            albedo_views,
-            depth_view,
-            caustic_views,
-            water_caustic_views,
-            volumetric_views,
-            local_fire,
-            bloom_views,
-            reactive_views,
-            transparency_views,
-            shadow_correction,
-            cloud_noise,
+            inputs,
             bindless_layout,
             extents,
         );
@@ -580,27 +626,26 @@ impl CompositePipeline {
         result
     }
 
-    #[allow(clippy::too_many_arguments)] // Descriptor inputs: one view slice per image the composite shader samples.
     fn new_inner(
         device: &ash::Device,
         allocator: &SharedAllocator,
         pipeline_cache: vk::PipelineCache,
-        indirect_views: &[vk::ImageView],
-        indirect_is_general: bool,
-        albedo_views: &[vk::ImageView],
-        depth_view: vk::ImageView,
-        caustic_views: &[vk::ImageView],
-        water_caustic_views: &[vk::ImageView], // #1257 / Phase E of #1210
-        volumetric_views: &[vk::ImageView],
-        local_fire: &super::volumetrics::LocalFireViews,
-        bloom_views: &[vk::ImageView],
-        reactive_views: &[vk::ImageView],
-        transparency_views: &[vk::ImageView],
-        shadow_correction: ShadowCorrectionViews<'_>,
-        cloud_noise: CloudNoiseViews,
+        inputs: CompositeInputs,
         bindless_layout: vk::DescriptorSetLayout,
         extents: FrameExtentSet,
     ) -> Result<Self> {
+        let CompositeInputs {
+            indirect_views,
+            albedo_views,
+            caustic_views,
+            water_caustic_views,
+            volumetric_views,
+            local_fire,
+            bloom_views,
+            reactive_views,
+            transparency_views,
+            ..
+        } = inputs;
         debug_assert_eq!(indirect_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(albedo_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(caustic_views.len(), MAX_FRAMES_IN_FLIGHT);
@@ -610,12 +655,28 @@ impl CompositePipeline {
         debug_assert_eq!(bloom_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(reactive_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(transparency_views.len(), MAX_FRAMES_IN_FLIGHT);
-        // Build a partially-valid Self so we can use destroy() for cleanup
-        // on any error. Fields that haven't been created yet use null
-        // handles — destroy() calls vkDestroy* on null (always a no-op).
-        let mut partial = Self {
+        let mut partial = Self::empty(extents.render);
+        Self::create_hdr_targets(&mut partial, device, allocator, extents)?;
+        Self::create_render_pass_and_framebuffers(&mut partial, device, allocator, reactive_views, transparency_views, extents)?;
+        Self::create_params_and_descriptors(&mut partial, device, allocator, inputs, bindless_layout)?;
+        partial.far_sun_pipeline = try_or_cleanup!(
+            partial, device, allocator,
+            super::pipeline::create_compute_pipeline(
+                device, pipeline_cache, FAR_SUN_COMP_SPV, partial.pipeline_layout, "far sun shadows",
+            )
+        );
+        Self::build_pipelines(&mut partial, device, allocator, pipeline_cache, extents)?;
+
+        Ok(partial)
+    }
+
+    /// Handles remain null until created so destroy also handles partial initialization.
+    fn empty(render_extent: vk::Extent2D) -> Self {
+        Self {
             hdr: Vec::new(),
             scene: Vec::new(),
+            far_sun_occlusion: Vec::new(),
+            far_sun_pipeline: vk::Pipeline::null(),
             composite_render_pass: vk::RenderPass::null(),
             composite_framebuffers: Vec::new(),
             pipeline: vk::Pipeline::null(),
@@ -629,15 +690,8 @@ impl CompositePipeline {
             hdr_sampler: vk::Sampler::null(),
             nearest_sampler: vk::Sampler::null(),
             param_buffers: Vec::new(),
-            render_extent: extents.render,
-        };
-
-        Self::create_hdr_targets(&mut partial, device, allocator, extents)?;
-        Self::create_render_pass_and_framebuffers(&mut partial, device, allocator, reactive_views, transparency_views, extents)?;
-        Self::create_params_and_descriptors(&mut partial, device, allocator, indirect_views, indirect_is_general, albedo_views, depth_view, caustic_views, water_caustic_views, volumetric_views, local_fire, bloom_views, shadow_correction, cloud_noise, bindless_layout)?;
-        Self::build_pipelines(&mut partial, device, allocator, pipeline_cache, extents)?;
-
-        Ok(partial)
+            render_extent,
+        }
     }
 
     /// Stages 1-2: the per-frame HDR images and their sampler. Builds into `partial`; on a failure `try_or_cleanup!` has already
@@ -704,6 +758,8 @@ impl CompositePipeline {
             );
             partial.scene.push(image);
         }
+        try_or_cleanup!(partial, device, allocator,
+            partial.create_far_sun_targets(device, allocator));
 
         // ── 2. HDR sampler (linear filter for slight bilinear smoothing) ──
         // SAFETY: `device` is live for this call; the new sampler handle is
@@ -725,6 +781,48 @@ impl CompositePipeline {
                 .context("NEAREST sampler (indirect + caustic)")
         });
         Ok(())
+    }
+
+    fn create_far_sun_targets(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+    ) -> Result<()> {
+        for i in 0..MAX_FRAMES_IN_FLIGHT {
+            self.far_sun_occlusion.push(GpuImage::create(
+                device,
+                allocator,
+                &GpuImageDesc::color_2d(
+                    &format!("far sun occlusion {i}"),
+                    self.render_extent.width,
+                    self.render_extent.height,
+                    HDR_FORMAT,
+                    vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::SAMPLED,
+                ),
+            )?);
+        }
+        Ok(())
+    }
+
+    fn write_far_sun_descriptors(
+        &self,
+        device: &ash::Device,
+        frame: usize,
+        transparency: vk::ImageView,
+    ) {
+        let set = self.descriptor_sets[frame];
+        let input = [sampled_image_info(self.nearest_sampler, transparency)];
+        let occlusion = self.far_sun_occlusion[frame].view;
+        let output = [image_info(vk::Sampler::null(), occlusion, vk::ImageLayout::GENERAL)];
+        let sampled_output = [general_sampled_image_info(self.nearest_sampler, occlusion)];
+        let writes = [
+            write_combined_image_sampler(set, 18, &input),
+            write_storage_image(set, 19, &output),
+            write_combined_image_sampler(set, 20, &sampled_output),
+        ];
+        // SAFETY: the frame is unused at init or fenced at resize, and all
+        // three descriptors name live views through the next resize.
+        unsafe { device.update_descriptor_sets(&writes, &[]) };
     }
     /// Stages 3-4: the composite render pass and its per-frame framebuffers. Builds into `partial`; on a failure `try_or_cleanup!` has already
     /// torn `partial` down, so the caller only propagates the error.
@@ -856,7 +954,11 @@ impl CompositePipeline {
             )
             .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::TRANSFER_READ);
 
-        let attachments = [composite_color, fsr_mask, fsr_mask];
+        let attachments = [
+            composite_color,
+            fsr_mask,
+            fsr_mask.format(TRANSPARENCY_SUN_FORMAT),
+        ];
         let subpasses = [composite_subpass];
         let dependencies = [composite_dep_in, composite_dep_out];
         let rp_info = vk::RenderPassCreateInfo::default()
@@ -899,24 +1001,18 @@ impl CompositePipeline {
     }
     /// Stages 5-7: the per-frame parameter UBOs, the descriptor set and pipeline layouts, the descriptor pool and the per-frame sets with their writes. Builds into `partial`; on a failure `try_or_cleanup!` has already
     /// torn `partial` down, so the caller only propagates the error.
-    #[allow(clippy::too_many_arguments)] // Construction stage: each argument is a separate caller-owned input of `new_inner`.
     fn create_params_and_descriptors(
         partial: &mut Self,
         device: &ash::Device,
         allocator: &SharedAllocator,
-        indirect_views: &[vk::ImageView],
-        indirect_is_general: bool,
-        albedo_views: &[vk::ImageView],
-        depth_view: vk::ImageView,
-        caustic_views: &[vk::ImageView],
-        water_caustic_views: &[vk::ImageView],
-        volumetric_views: &[vk::ImageView],
-        local_fire: &super::volumetrics::LocalFireViews,
-        bloom_views: &[vk::ImageView],
-        shadow_correction: ShadowCorrectionViews<'_>,
-        cloud_noise: CloudNoiseViews,
+        inputs: CompositeInputs,
         bindless_layout: vk::DescriptorSetLayout,
     ) -> Result<()> {
+        let CompositeInputs {
+            indirect_views, indirect_is_general, albedo_views, depth_view, caustic_views,
+            water_caustic_views, volumetric_views, local_fire, bloom_views, shadow_correction,
+            cloud_noise, transparency_views, ..
+        } = inputs;
         // ── 5. Per-frame parameter UBOs ──────────────────────────────
         let param_size = std::mem::size_of::<CompositeParams>() as vk::DeviceSize;
         partial.param_buffers = try_or_cleanup!(
@@ -939,16 +1035,7 @@ impl CompositePipeline {
         validate_set_layout(
             0,
             &ds_bindings,
-            &[
-                ReflectedShader {
-                    name: "composite.vert",
-                    spirv: COMPOSITE_VERT_SPV,
-                },
-                ReflectedShader {
-                    name: "composite.frag",
-                    spirv: COMPOSITE_FRAG_SPV,
-                },
-            ],
+            COMPOSITE_SHADERS,
             "composite",
             &[],
         )
@@ -970,6 +1057,9 @@ impl CompositePipeline {
         // shader samples cloud textures through the bindless array at an
         // index provided in CompositeParams.cloud_params.w.
         let set_layouts = [partial.descriptor_set_layout, bindless_layout];
+        let far_sun_push = vk::PushConstantRange::default()
+            .stage_flags(vk::ShaderStageFlags::COMPUTE)
+            .size(std::mem::size_of::<FarSunProjection>() as u32);
         // SAFETY: the create-info references local `set_layouts` holding
         // `partial.descriptor_set_layout` (live) and caller-borrowed
         // `bindless_layout` (live); the new layout is stored in
@@ -977,7 +1067,9 @@ impl CompositePipeline {
         partial.pipeline_layout = try_or_cleanup!(partial, device, allocator, unsafe {
             device
                 .create_pipeline_layout(
-                    &vk::PipelineLayoutCreateInfo::default().set_layouts(&set_layouts),
+                    &vk::PipelineLayoutCreateInfo::default()
+                        .set_layouts(&set_layouts)
+                        .push_constant_ranges(std::slice::from_ref(&far_sun_push)),
                     None,
                 )
                 .context("composite pipeline layout")
@@ -1083,6 +1175,7 @@ impl CompositePipeline {
             // bloom image views — all owned by `partial` or caller-borrowed
             // for the duration of this `new()` call.
             unsafe { device.update_descriptor_sets(&writes, &[]) };
+            partial.write_far_sun_descriptors(device, i, transparency_views[i]);
         }
         Ok(())
     }
@@ -1239,12 +1332,74 @@ impl CompositePipeline {
         Ok(())
     }
 
-    /// Compose the complete render-resolution linear-HDR scene.
-    /// Call after the main render pass ends and before submit.
+    /// Record the exterior sun occlusion pass or establish the idle output layout.
     ///
     /// # Safety
     ///
-    /// `cmd` must be a valid recording command buffer and `frame` must be
+    /// The main pass must have ended and the previous use of `frame` must be fenced.
+    pub(super) unsafe fn dispatch_far_sun(
+        &self,
+        device: &ash::Device,
+        cmd: vk::CommandBuffer,
+        frame: usize,
+        projection: Option<FarSunProjection>,
+    ) {
+        let image = self.far_sun_occlusion[frame].image;
+        // SAFETY: this frame slot is fenced before recording. Discard the
+        // old contents and establish the layout even when composite will
+        // skip reading the inactive term. The main pass's outgoing
+        // dependency covers the depth and transparency samples.
+        unsafe {
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[image_barrier_undef_to_general(image)],
+            );
+            if let Some(projection) = projection {
+                device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.far_sun_pipeline);
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::COMPUTE,
+                    self.pipeline_layout,
+                    0,
+                    &[self.descriptor_sets[frame]],
+                    &[],
+                );
+                device.cmd_push_constants(
+                    cmd,
+                    self.pipeline_layout,
+                    vk::ShaderStageFlags::COMPUTE,
+                    0,
+                    super::buffer::byte_view(std::slice::from_ref(&projection)),
+                );
+                device.cmd_dispatch(
+                    cmd,
+                    self.render_extent.width.div_ceil(crate::shader_constants::WORKGROUP_X),
+                    self.render_extent.height.div_ceil(crate::shader_constants::WORKGROUP_Y),
+                    1,
+                );
+                device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::PipelineStageFlags::FRAGMENT_SHADER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[image_barrier_general_write_to_read(image)],
+                );
+            }
+        }
+    }
+
+    /// Compose the complete render-resolution linear-HDR scene.
+    ///
+    /// # Safety
+    ///
+    /// `cmd` must be recording outside a render pass and `frame` must be
     /// smaller than `MAX_FRAMES_IN_FLIGHT`.
     pub unsafe fn dispatch(
         &self,
@@ -1337,26 +1492,28 @@ impl CompositePipeline {
     /// bindless_layout) are device-owned immutable
     /// state that survives the swapchain resize, so re-passing them
     /// would be redundant.
-    #[allow(clippy::too_many_arguments)]
     pub fn recreate_on_resize(
         &mut self,
         device: &ash::Device,
         allocator: &SharedAllocator,
-        indirect_views: &[vk::ImageView],
-        indirect_is_general: bool,
-        albedo_views: &[vk::ImageView],
-        depth_view: vk::ImageView,
-        caustic_views: &[vk::ImageView],
-        water_caustic_views: &[vk::ImageView], // #1257 / Phase E of #1210
-        volumetric_views: &[vk::ImageView],
-        local_fire: &super::volumetrics::LocalFireViews,
-        bloom_views: &[vk::ImageView],
-        reactive_views: &[vk::ImageView],
-        transparency_views: &[vk::ImageView],
-        shadow_correction: ShadowCorrectionViews<'_>,
-        cloud_noise: CloudNoiseViews,
+        inputs: CompositeInputs,
         extents: FrameExtentSet,
     ) -> Result<()> {
+        let CompositeInputs {
+            indirect_views,
+            indirect_is_general,
+            albedo_views,
+            depth_view,
+            caustic_views,
+            water_caustic_views,
+            volumetric_views,
+            local_fire,
+            bloom_views,
+            reactive_views,
+            transparency_views,
+            shadow_correction,
+            cloud_noise,
+        } = inputs;
         // Destroy old framebuffers
         // SAFETY (the three destroy loops below): `recreate_on_resize`
         // runs from the fenced swapchain-resize path
@@ -1372,7 +1529,7 @@ impl CompositePipeline {
         self.composite_framebuffers.clear();
 
         // Destroy old HDR images
-        for mut image in self.hdr.drain(..).chain(self.scene.drain(..)) {
+        for mut image in self.hdr.drain(..).chain(self.scene.drain(..)).chain(self.far_sun_occlusion.drain(..)) {
             // #3860 — view, image and slab in one call, in that order.
             image.destroy(device, allocator);
         }
@@ -1416,6 +1573,7 @@ impl CompositePipeline {
                     ),
                 )?);
             }
+            self.create_far_sun_targets(device, allocator)?;
 
             // Rewrite descriptor sets to point at the new HDR, indirect,
             // albedo views, and updated depth view. Params UBO buffers are unchanged.
@@ -1487,6 +1645,7 @@ impl CompositePipeline {
                 // and caller-borrowed indirect / albedo / depth /
                 // caustic / volumetric / bloom views.
                 unsafe { device.update_descriptor_sets(&writes, &[]) };
+                self.write_far_sun_descriptors(device, i, transparency_views[i]);
             }
 
             // Recreate per-frame scene-composition framebuffers.
@@ -1522,7 +1681,7 @@ impl CompositePipeline {
                 unsafe { device.destroy_framebuffer(fb, None) };
             }
             self.composite_framebuffers.clear();
-            for mut image in self.hdr.drain(..).chain(self.scene.drain(..)) {
+            for mut image in self.hdr.drain(..).chain(self.scene.drain(..)).chain(self.far_sun_occlusion.drain(..)) {
                 // #3860 — the resize path's four teardown loops become one.
                 // Device is idle here (fenced resize), so no in-flight command
                 // references these handles.
@@ -1603,7 +1762,11 @@ impl CompositePipeline {
             super::descriptors::destroy_pass_object_sets(
                 device,
                 super::descriptors::PassHandleSets {
-                    pipelines: &mut [&mut self.pipeline, &mut self.pipeline_sunless],
+                    pipelines: &mut [
+                        &mut self.pipeline,
+                        &mut self.pipeline_sunless,
+                        &mut self.far_sun_pipeline,
+                    ],
                     layouts: &mut [&mut self.pipeline_layout],
                     pool: &mut self.descriptor_pool,
                     set_layouts: &mut [&mut self.descriptor_set_layout],
@@ -1647,7 +1810,7 @@ impl CompositePipeline {
             // device_wait_idle), so no in-flight command buffer references it.
             unsafe { device.destroy_sampler(self.nearest_sampler, None) };
         }
-        for mut image in self.hdr.drain(..).chain(self.scene.drain(..)) {
+        for mut image in self.hdr.drain(..).chain(self.scene.drain(..)).chain(self.far_sun_occlusion.drain(..)) {
             // #3860 — the teardown path's four loops become one. Device is
             // idle here (frames-in-flight fenced / device_wait_idle), so no
             // in-flight command buffer references these handles.
@@ -2506,7 +2669,7 @@ mod composite_frag_doc_tests {
             "partial.pipeline = pipelines[0];",
             "partial.pipeline_sunless = pipelines[1];",
             // Torn down beside the sunlit one through the shared helper (#6371).
-            "pipelines: &mut [&mut self.pipeline, &mut self.pipeline_sunless]",
+            "&mut self.pipeline_sunless,",
         ] {
             assert!(
                 host.contains(needle),

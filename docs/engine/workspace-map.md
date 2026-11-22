@@ -220,6 +220,12 @@ crates/
     src/profile.rs           Per-game corpus profiles (font table, font archive, strings source)
     examples/render_hud.rs   Reference-frame + trait-probe visualizer
   mod-runtime/               WASM sandbox runtime (wasmtime 49, hostcall fuel #5718)
+  native-ui/                 The player's HUD and native pages on egui (GUI-PAGE-006)
+    src/views.rs             PageSnapshot / PageOutputs and the page views
+    src/hud.rs               Crosshair, prompt, vitals, objectives, detection indicator, messages
+    src/game_menu.rs         Pause, settings, inventory, message box, barter, crafting, dialogue pages
+    src/chargen.rs           Character-creation screens
+    src/page_strings_tests.rs  GUI-PAGE-005: every drawn word is the game's, data, or listed
   pex/                       Compiled Papyrus (.pex) reader
   physics/                   Rapier physics world, water, footstep surface probe
   save/                      Save-file serialisation (shape-guarded)
@@ -255,7 +261,7 @@ crates/
     src/registration.rs      register_component::<T>() per inspectable type (re-derive the
                              count with `grep -c 'register_component::<' crates/debug-server/src/registration.rs`
                              rather than trusting a number here — it moves with every component added)
-  debug-ui/                  Dear ImGui-style debug overlay types
+  debug-ui/                  Operator egui overlay (F3 panels); hosts the native UI's egui frame
   facegen/                   EGM/EGT FaceGen morph + texture readers
   fsr3-sys/                  FSR3 upscaler native bindings
   game-detect/               Installed-game discovery (registry / Steam library)

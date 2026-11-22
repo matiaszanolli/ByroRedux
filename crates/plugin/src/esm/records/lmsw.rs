@@ -118,7 +118,7 @@ fn parse_entry(entry: &ReflectionObject) -> LayeredMaterialSwapEntry {
 fn list_items<'a>(
     object: &'a ReflectionObject,
     name: &str,
-) -> impl Iterator<Item = &'a ReflectionValue> {
+) -> impl Iterator<Item = &'a ReflectionValue> + use<'a> {
     let items: &[ReflectionValue] = match object.field(name) {
         Some(ReflectionValue::List(items)) => items,
         _ => &[],

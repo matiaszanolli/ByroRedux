@@ -197,7 +197,7 @@ fn barter_trades_with_an_unloaded_merchant_chest_and_parks_its_stock() {
     );
     assert_eq!((view.player_gold, view.vendor_gold), (500, 1000));
 
-    use byroredux_debug_ui::BarterAction;
+    use byroredux_native_ui::BarterAction;
     apply_action(&world, BarterAction::Buy { form_id: SWORD }).unwrap();
     apply_action(&world, BarterAction::Sell { form_id: GEM }).unwrap();
     assert_eq!(count(&world, player, SWORD), 1);

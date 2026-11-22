@@ -769,6 +769,28 @@ impl ConsoleCommand for RtIntegrityCommand {
     }
 }
 
+/// `gi.cache` — the radiance cache's state and the GI coverage counters (RCG-DBG-003).
+///
+/// The cache is not allocated yet, so the command says so and prints what exists: the ray
+/// budget's update stride and, under `--rt-test-lod-telemetry`, the main pass's GI counters.
+pub(crate) struct GiCacheCommand;
+impl ConsoleCommand for GiCacheCommand {
+    fn name(&self) -> &str {
+        "gi.cache"
+    }
+
+    fn description(&self) -> &str {
+        "Radiance cache state: update stride, GI coverage counters, miss fraction (RCG-DBG-003)"
+    }
+
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let Some(stats) = world.try_resource::<byroredux_core::ecs::GiCacheStats>() else {
+            return CommandOutput::line("GiCacheStats resource not present");
+        };
+        CommandOutput::lines(stats.lines())
+    }
+}
+
 /// `rt.masks` — shadow-ray visibility-mask census over the current TLAS
 /// (#3305).
 ///

@@ -1,0 +1,11 @@
+# RCG-VAL-002 coverage manifest: the camera poses and launch commands the coverage gate measures (scripts/m-light-gates.sh --gates RCG-COV).
+# launch: `bench` takes the scene's working directory and load arguments from scripts/bench-scenes.sh; otherwise `data_dir` (under BYROREDUX_GAMES_ROOT) is the working directory and `launch` the load arguments.
+# Poses are engine Y-up world units. The four bench scenes use their Phase 1b anchor poses (docs/audits/MLIGHT_phase1b_baselines_688f42705.tsv).
+# The two Fallon's poses are the Phase 0 measurement poses (docs/audits/RCG_phase0_2026-11-19.md, runs B and A), not the owner's wall: the owner's own `cam.where` is #7083.
+scene	data_dir	launch	camera_pos	camera_forward
+prospector	-	bench	389.122,3580.000,-793.846	-0.906310,0.000000,0.422614
+whiterun	-	bench	177.223,188.000,1048.424	-0.342018,0.000000,-0.939693
+medtek	-	bench	-944.118,120.000,-872.365	-0.342020,0.000000,-0.939693
+dugout	-	bench	963.006,120.000,3349.023	-0.961532,0.000000,0.274692
+fallons_downtown	Fallout 4/Data	--game fo4 --wrld Commonwealth --grid -4,-16 --radius 1	-12500,1500,63500	0,0.05,-1
+fallons_galleria	Fallout 4/Data	--game fo4 --wrld Commonwealth --grid 2,20 --radius 1	7500,1840,-82900	0.9,0.1,0.43

@@ -14,6 +14,165 @@ use byroredux_core::ecs::components::{
     RigidBodyData, SandboxBehavior, Transform, TravelBehavior, WanderBehavior,
 };
 
+/// OAV-POP-007 (#7010) — on an Oblivion index `build_character_ruleset` returns `Some`, and the TES pool
+/// regeneration lanes resolve Fatigue and Magicka (and the Willpower and `StuntedMagicka` inputs) to the
+/// installed records. The reference loader installs both beside each other when a cell loads.
+#[test]
+fn an_oblivion_index_builds_the_ruleset_and_the_fatigue_and_magicka_regen_lanes() {
+    use byroredux_core::character::CharacterRulesProfile;
+    use byroredux_plugin::esm::reader::GlobalSlot;
+    let mut index = EsmIndex { game: GameKind::Oblivion, character_rules: CharacterRulesProfile::OBLIVION, ..Default::default() };
+    index.install_oblivion_actor_values(GlobalSlot::Regular(2)).unwrap();
+    assert!(build_character_ruleset(&index).is_some(), "the built Oblivion ruleset resolves on the installed roster");
+    let regen = index
+        .character_rules
+        .build_tes_pool_regen(|name| index.actor_value_form_id(name), |name| index.game_setting_float(name))
+        .expect("an Oblivion profile has TES regeneration lanes");
+    assert_eq!(regen.fatigue_avif, index.actor_value_form_id("Fatigue"));
+    assert_eq!(regen.magicka_avif, index.actor_value_form_id("Magicka"));
+    assert_eq!(regen.willpower_avif, index.actor_value_form_id("Willpower"));
+    assert_eq!(regen.stunted_magicka_avif, index.actor_value_form_id("StuntedMagicka"));
+    assert!(regen.fatigue_avif.is_some() && regen.magicka_avif.is_some());
+    assert!(regen.action_points.is_none(), "Action Points are the Fallout lane");
+    // #7197 — the lanes carry their rates, and the Fatigue term reads the installed Endurance.
+    let rates = regen.tes_rates.expect("the TES lanes carry their rates");
+    assert_eq!(rates.endurance_avif, index.actor_value_form_id("Endurance"));
+    // The install itself: the reference loader builds both resources behind the same `is_none()` guards, and hands
+    // the regen builder the load order's settings (#7197).
+    let loader = include_str!("../cell_loader/references/mod.rs");
+    assert!(loader.contains("build_character_ruleset(record_index)") && loader.contains("build_tes_pool_regen(|name|"));
+    assert!(loader.contains("|name| record_index.game_setting_float(name))"), "the regen rates read the load order's settings");
+    // A non-Oblivion profile carries no TES lanes.
+    assert!(CharacterRulesProfile::FALLOUT_NEW_VEGAS.build_tes_pool_regen(|_| None, |_| None).is_none());
+}
+
+#[test]
+fn oblivion_offset_creature_uses_the_live_player_level_for_stats_and_level() {
+    use byroredux_core::character::{CharacterLevel, CharacterRulesProfile};
+    use byroredux_plugin::esm::reader::GlobalSlot;
+    use byroredux_plugin::esm::records::actor::{OblivionActorPools, OblivionCreatureStats};
+    let mut index = EsmIndex { game: GameKind::Oblivion, character_rules: CharacterRulesProfile::OBLIVION, ..Default::default() };
+    index.install_oblivion_actor_values(GlobalSlot::Regular(2)).unwrap();
+    let creature = NpcRecord { is_creature: true, acbs_flags: 0x80, level: 2, calc_min: 1,
+        oblivion_pools: Some(OblivionActorPools { magicka: 8, fatigue: 9, calc_max: 20 }),
+        oblivion_creature_stats: Some(OblivionCreatureStats { creature_type: 0, combat: 30, magic: 20, stealth: 10, soul: 0, health: 30, damage: 7, attributes: [40; 8] }),
+        ..Default::default() };
+    let mut world = World::new();
+    world.register::<ActorValues>();
+    world.register::<ActorVitals>();
+    world.register::<CharacterLevel>();
+    world.register::<byroredux_core::character::Background>();
+    let player = world.spawn();
+    world.insert(player, CharacterLevel { level: 8, xp: 0 });
+    world.insert_resource(crate::components::PlayerEntity(Some(player)));
+    let actor = world.spawn();
+    let resolved = ResolvedNpc::resolve(&creature, &index);
+    stamp_actor_values(&mut world, actor, &resolved, &index);
+    stamp_character_components(&mut world, actor, &resolved, &index);
+    assert_eq!(world.get::<CharacterLevel>(actor).unwrap().level, 10);
+    let values = world.get::<ActorValues>(actor).unwrap();
+    assert_eq!(values.current(index.actor_value_form_id("Health").unwrap()), 300.0);
+    assert_eq!(values.current(index.actor_value_form_id("Magicka").unwrap()), 80.0);
+    assert_eq!(values.current(index.actor_value_form_id("Fatigue").unwrap()), 90.0);
+    let marksman = index.actor_value_form_id("Marksman").unwrap();
+    let blade = index.actor_value_form_id("Blade").unwrap();
+    assert_eq!(values.current(marksman), 30.0);
+    assert_eq!(values.get_base(marksman).unwrap().base, 10.0);
+    drop(values);
+    assert_eq!(byroredux_scripting::condition::actor_value_view(&world, actor, marksman, byroredux_scripting::condition::ActorValueView::Current), 30.0);
+    assert_eq!(byroredux_scripting::condition::actor_value_view(&world, actor, marksman, byroredux_scripting::condition::ActorValueView::Base), 10.0);
+    world.get_mut::<ActorValues>(actor).unwrap().mod_permanent(blade, 5.0);
+    assert_eq!(world.get::<ActorValues>(actor).unwrap().current(marksman), 35.0);
+}
+
+#[test]
+fn oblivion_stamps_every_stored_and_knight_actor_value() {
+    use byroredux_core::character::CharacterRulesProfile;
+    use byroredux_plugin::esm::{reader::GlobalSlot, records::actor::{ClassRecord, GenderedAttributes, OblivionActorPools, OblivionNpcStats, RaceAttributes, RaceRecord}};
+    let mut index = EsmIndex { game: GameKind::Oblivion, character_rules: CharacterRulesProfile::OBLIVION, ..Default::default() };
+    index.install_oblivion_actor_values(GlobalSlot::Regular(1)).unwrap();
+    let attrs = GenderedAttributes { strength: 40, intelligence: 40, willpower: 40, agility: 40, speed: 40, endurance: 40, personality: 40, luck: 40 };
+    index.races.insert(1, RaceRecord { base_attributes: Some(RaceAttributes { male: attrs.clone(), female: attrs }), ..Default::default() });
+    // UESP NPCs §Attributes: Knight gains 3 Strength, 2.2 Endurance,
+    // 0.6 in the other variable attributes, and no Personality or Luck.
+    index.classes.insert(2, ClassRecord { primary_attributes: Some((0, 6)), specialization: Some(0), major_skills: vec![14, 15, 16, 17, 18, 23, 32], ..Default::default() });
+    let mut npc = NpcRecord { form_id: 0x100, race_form_id: 1, class_form_id: 2, level: 1,
+        oblivion_npc_stats: Some(OblivionNpcStats { skills: [17; 21], health: 123, attributes: [40; 8] }),
+        oblivion_pools: Some(OblivionActorPools { magicka: 55, fatigue: 77, calc_max: 0 }),
+        oblivion_ai_values: Some([20, 30, 40, 50]), ..Default::default() };
+    let mut world = World::new();
+    world.register::<ActorValues>();
+    world.register::<ActorVitals>();
+    let check = |world: &mut World, npc: &NpcRecord, expected: &[f32; 33]| {
+        let actor = world.spawn();
+        let resolved = ResolvedNpc::resolve(npc, &index);
+        stamp_actor_values(world, actor, &resolved, &index);
+        let values = world.get::<ActorValues>(actor).unwrap();
+        for (code, &expected) in expected.iter().enumerate() {
+            let key = index.oblivion_actor_value(code as u32, false).unwrap();
+            assert_eq!(values.current(key), expected, "value index {code} at level {}", npc.level);
+        }
+    };
+    check(&mut world, &npc, &[
+        40., 40., 40., 40., 40., 40., 40., 40., 123., 55., 77., 200.,
+        17., 17., 17., 17., 17., 17., 17., 17., 17., 17., 17., 17., 17., 17.,
+        17., 17., 17., 17., 17., 17., 17.,
+    ]);
+    npc.acbs_flags = 0x10;
+    check(&mut world, &npc, &[
+        45., 40., 40., 40., 40., 40., 40., 40., 16., 100., 165., 225.,
+        10., 10., 30., 30., 30., 30., 30., 5., 5., 5., 5., 25., 5., 5.,
+        5., 5., 5., 5., 5., 5., 25.,
+    ]);
+    npc.level = 6;
+    check(&mut world, &npc, &[
+        60., 43., 43., 43., 43., 51., 40., 40., 80., 107., 197., 300.,
+        13., 13., 38., 38., 38., 38., 38., 6., 6., 6., 6., 30., 6., 6.,
+        6., 6., 6., 6., 6., 6., 30.,
+    ]);
+}
+
+#[test]
+fn oblivion_ability_changes_getav_on_the_spawned_actor() {
+    use byroredux_core::character::CharacterRulesProfile;
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+    use byroredux_plugin::esm::{reader::{GlobalSlot, SubRecord}, records::{ActorValueRef, MagicEffectItem, SpelRecord, SpellType, MGEF_FLAG_RECOVER}};
+    use byroredux_plugin::esm::records::actor::{OblivionActorPools, OblivionNpcStats};
+    use byroredux_scripting::obscript_vm::ObScriptValue;
+    let mut index = EsmIndex { game: GameKind::Oblivion, character_rules: CharacterRulesProfile::OBLIVION, ..Default::default() };
+    index.install_oblivion_actor_values(GlobalSlot::Regular(1)).unwrap();
+    let mut effect_data = vec![0u8; 36];
+    effect_data[..4].copy_from_slice(&(MGEF_FLAG_RECOVER | (1 << 19)).to_le_bytes());
+    let effect = byroredux_plugin::esm::records::parse_mgef_for_game(0x10, &[SubRecord { sub_type: *b"DATA", data: effect_data }], GameKind::Oblivion, &None);
+    index.magic_effects.insert(0x10, effect);
+    index.magic_effects_by_code.insert(*b"FOSK", 0x10);
+    index.spells.insert(0x20, SpelRecord { form_id: 0x20, spell_type: SpellType::Ability,
+        effects: vec![MagicEffectItem { effect_form_id: u32::from_le_bytes(*b"FOSK"), actor_value: Some(ActorValueRef::Index(31)), magnitude: 12.0, ..Default::default() }],
+        ..Default::default() });
+    let npc = NpcRecord { form_id: 0x100, spells: vec![0x20],
+        oblivion_npc_stats: Some(OblivionNpcStats { skills: [25; 21], health: 50, attributes: [40; 8] }),
+        oblivion_pools: Some(OblivionActorPools { magicka: 50, fatigue: 50, calc_max: 0 }),
+        ..Default::default() };
+    let mut world = World::new();
+    byroredux_scripting::register(&mut world);
+    world.insert_resource(byroredux_scripting::quest_stages::QuestStageState::default());
+    let mut pool = FormIdPool::new();
+    let form = pool.intern(FormIdPair { plugin: PluginId::from_filename("Oblivion.esm"), local: LocalFormId(0x1234) });
+    world.insert_resource(pool);
+    byroredux_scripting::install_actor_value_names(&mut world, &index);
+    let actor = world.spawn();
+    world.insert(actor, FormIdComponent(form));
+    let resolved = ResolvedNpc::resolve(&npc, &index);
+    stamp_actor_values(&mut world, actor, &resolved, &index);
+    stamp_spell_list(&mut world, actor, &resolved, &index);
+    let (answer, declined) = byroredux_scripting::obscript_quests::run_console_command_with_text(
+        &world, Some(0x1234), 0x100e, None, &[ObScriptValue::Num(31.0)],
+    );
+    assert_eq!(declined, 0);
+    assert!(matches!(answer, Some(ObScriptValue::Num(value)) if value == 37.0), "{answer:?}");
+}
+
 #[test]
 fn shape_less_skeleton_gets_one_torso_fallback_collider() {
     let mut world = World::new();
@@ -168,6 +327,8 @@ fn fnv_spawned_actor_gets_derived_health_and_combat_consumes_it() {
             sneak_attack: false,
             bash_attack: false,
             blocked: false,
+            arrow: false,
+            ignores_resistance: false,
         },
     );
 
@@ -1261,6 +1422,30 @@ fn idle_kf_path_only_for_kf_era_games() {
     assert!(humanoid_default_idle_kf_path(GameKind::Starfield).is_none());
 }
 
+/// AIP-SIT-001: Oblivion holds `chair_leftenter.kf` (the counterpart of
+/// FO3/FNV's `chairskirt_leftenter.kf`), not a `dynamicidle_sit` loop, which
+/// carries no root channel and leaves the body floating (the M42.0 bug).
+#[test]
+fn sit_enter_kf_path_covers_the_kf_era_games() {
+    assert_eq!(
+        sandbox_sit_enter_kf_path(GameKind::Oblivion),
+        Some(r"meshes\characters\_male\idleanims\chair_leftenter.kf"),
+    );
+    assert_eq!(
+        sandbox_sit_enter_kf_path(GameKind::Fallout3NV),
+        Some(r"meshes\characters\_male\idleanims\chairskirt_leftenter.kf"),
+    );
+    // Havok-era games have no `.kf` sit clip (Skyrim's `.hkx` is AIP-SIT-002).
+    for game in [
+        GameKind::Skyrim,
+        GameKind::Fallout4,
+        GameKind::Fallout76,
+        GameKind::Starfield,
+    ] {
+        assert!(sandbox_sit_enter_kf_path(game).is_none(), "{game:?}");
+    }
+}
+
 // ── #1658 (SKY-D3-02): prebaked equip state routes inventory through
 //    the TPLT chain, identical to the kf-era path. ──────────────────
 
@@ -1472,7 +1657,7 @@ fn stamp_character_components_follows_use_stats_and_use_traits_templates() {
     world.register::<CharacterLevel>();
     world.register::<Background>();
     let target = world.spawn();
-    stamp_character_components(&mut world, target, &ResolvedNpc::resolve(&shell, &index));
+    stamp_character_components(&mut world, target, &ResolvedNpc::resolve(&shell, &index), &index);
 
     assert_eq!(
         world.get::<CharacterLevel>(target).unwrap().level,
@@ -1519,7 +1704,7 @@ fn stamp_character_components_uses_own_values_without_template_flags() {
     world.register::<CharacterLevel>();
     world.register::<Background>();
     let target = world.spawn();
-    stamp_character_components(&mut world, target, &ResolvedNpc::resolve(&npc, &index));
+    stamp_character_components(&mut world, target, &ResolvedNpc::resolve(&npc, &index), &index);
 
     assert_eq!(world.get::<CharacterLevel>(target).unwrap().level, 7);
     let background = world.get::<Background>(target).unwrap();
@@ -1544,7 +1729,6 @@ fn skyrim_armor_item(
             dt: 0.0,
             dr: 0,
             health: 0,
-            slot_mask: 0,
             armor_rating_x100: 0,
             armor_type: Some(1),
             armatures,
@@ -1584,7 +1768,6 @@ fn legacy_armor_item(
             dt: 0.0,
             dr: 0,
             health: 0,
-            slot_mask: biped_flags as u16,
             armor_rating_x100: 0,
             armor_type: None,
             armatures: Vec::new(),
@@ -3005,7 +3188,7 @@ fn skyrim_parsed_npc_perk_reaches_the_hasperk_condition() {
     world.register::<Perks>();
     let index = EsmIndex::default();
     let actor = world.spawn();
-    stamp_character_components(&mut world, actor, &ResolvedNpc::resolve(&npc, &index));
+    stamp_character_components(&mut world, actor, &ResolvedNpc::resolve(&npc, &index), &index);
     assert!(
         world.get::<Perks>(actor).is_some(),
         "link 2: a Skyrim NPC with perks must receive the Perks component"

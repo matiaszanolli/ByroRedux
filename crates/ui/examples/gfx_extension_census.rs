@@ -558,11 +558,10 @@ fn bgs_method(abc: &AbcFile, ops: &[Op]) -> Option<String> {
                     if matches!(recv, S::Code) && call != "call" {
                         return Some(call);
                     }
-                    if call == "call" && matches!(args.first(), Some(S::Code)) {
-                        if let Some(S::Str(m)) = args.get(1) {
+                    if call == "call" && matches!(args.first(), Some(S::Code))
+                        && let Some(S::Str(m)) = args.get(1) {
                             return Some(String::from_utf8_lossy(m).into_owned());
                         }
-                    }
                     if matches!(op, Op::CallProperty { .. }) {
                         stack.push(S::Other);
                     }
@@ -624,11 +623,10 @@ fn run_as3(movie: &str, data: &[u8], strings_dump: bool) -> Result<(), String> {
         }
         // classes this ABC itself DEFINES in scaleform.gfx (a stub would hide a native class)
         for inst in &abc.instances {
-            if let Some((nss, name)) = mn(&abc, inst.name) {
-                if nss.iter().any(|n| n == "scaleform.gfx") {
+            if let Some((nss, name)) = mn(&abc, inst.name)
+                && nss.iter().any(|n| n == "scaleform.gfx") {
                     lines.insert(format!("E\t{movie}\tdefines-scaleform.gfx.{name}"));
                 }
-            }
         }
         // class-level references: every scaleform.gfx multiname in the pool
         for i in 1..=abc.constant_pool.multinames.len() {
@@ -653,11 +651,10 @@ fn run_as3(movie: &str, data: &[u8], strings_dump: bool) -> Result<(), String> {
                         if let Some(c) = gfx_class(&abc, *index) {
                             last_class = Some((c, i));
                         }
-                        if local(&abc, *index).as_deref() == Some("BGSCodeObj") {
-                            if let Some(m) = bgs_method(&abc, &ops[i + 1..]) {
+                        if local(&abc, *index).as_deref() == Some("BGSCodeObj")
+                            && let Some(m) = bgs_method(&abc, &ops[i + 1..]) {
                                 host_methods.insert(m);
                             }
-                        }
                     }
                     Op::GetProperty { index } if local(&abc, *index).as_deref() == Some("BGSCodeObj") => {
                         if let Some(m) = bgs_method(&abc, &ops[i + 1..]) {

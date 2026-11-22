@@ -76,10 +76,10 @@ pub(crate) fn message_box_waiting(world: &World) -> bool {
 }
 
 /// The box the message-box page shows.
-pub(crate) fn front_message_box(world: &World) -> Option<byroredux_debug_ui::MessageBoxView> {
+pub(crate) fn front_message_box(world: &World) -> Option<byroredux_native_ui::MessageBoxView> {
     let boxes = world.try_resource::<MessageBoxQueue>()?;
     let message = boxes.0.front()?;
-    Some(byroredux_debug_ui::MessageBoxView {
+    Some(byroredux_native_ui::MessageBoxView {
         title: message.title.clone(),
         text: message.text.clone(),
         buttons: message.buttons.clone(),
@@ -107,6 +107,10 @@ pub(crate) fn answer_message_box(world: &World, choice: Option<usize>) -> bool {
         // PERK-HOOK-007 — the player's activation waits on this answer.
         Some(byroredux_scripting::MessageAnswer::ActivateChoice) => {
             crate::perk_activate::answer_activate_choice(world, choice)
+        }
+        // M48 #6667 — a Papyrus `Message.Show()` waits on its button; dismissed is the default.
+        Some(byroredux_scripting::MessageAnswer::Papyrus(ticket)) => {
+            byroredux_scripting::messages::record_papyrus_answer(world, ticket, choice.unwrap_or(0))
         }
         Some(byroredux_scripting::MessageAnswer::Unread) | None => {}
     }

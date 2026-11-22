@@ -332,11 +332,10 @@ pub fn raise_unload_events(world: &World, victims: &[EntityId]) {
         }
     }
     drop(attached);
-    if !pending.is_empty() {
-        if let Some(mut queue) = world.try_resource_mut::<PendingUnloadDeliveries>() {
+    if !pending.is_empty()
+        && let Some(mut queue) = world.try_resource_mut::<PendingUnloadDeliveries>() {
             queue.0.append(&mut pending);
         }
-    }
     if !aliases.is_empty() {
         raise_alias_unloads(world, victims, &aliases);
     }
@@ -474,11 +473,10 @@ fn raise_alias_unloads(world: &World, victims: &[EntityId], aliases: &HashMap<En
             }
         }
     }
-    if !pending.is_empty() {
-        if let Some(mut queue) = world.try_resource_mut::<PendingUnloadDeliveries>() {
+    if !pending.is_empty()
+        && let Some(mut queue) = world.try_resource_mut::<PendingUnloadDeliveries>() {
             queue.0.append(&mut pending);
         }
-    }
 }
 
 /// Run `deliveries` in order, each as an interpreted event of its owner.
@@ -552,15 +550,14 @@ fn actor_changes(world: &World) -> ActorChanges {
             changes.combat.insert(entity, None);
         }
     }
-    if let Some(location) = location {
-        if watch.player_location != Some(location) {
+    if let Some(location) = location
+        && watch.player_location != Some(location) {
             // The first sight of the location is a baseline, not a change.
             if let Some(old) = watch.player_location {
                 changes.player_location = Some((old, location));
             }
             watch.player_location = Some(location);
         }
-    }
     watch.bleeding = bleeding;
     watch.combat = combat;
     changes

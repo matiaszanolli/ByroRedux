@@ -11,20 +11,30 @@ use byroredux_core::math::Vec3;
 /// Rec. 709 luminance weights.
 const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
 
+fn luminance(rgb: [f32; 3]) -> f32 {
+    rgb[0] * LUMA[0] + rgb[1] * LUMA[1] + rgb[2] * LUMA[2]
+}
+
+/// The cell's ambient share of [`light_level_at`], 0 to 1 (Fallout 4's interior light-level mod takes at most
+/// this much off, #6996).
+pub(crate) fn ambient_light(world: &World) -> f32 {
+    world.try_resource::<crate::components::CellLightingRes>().map_or(0.0, |cell| luminance(cell.ambient).clamp(0.0, 1.0))
+}
+
 /// The light level at `position`, 0 to 1: the cell's ambient, the directional
 /// light in an exterior (an interior's XCLL directional is a tint, not a sun),
 /// and each placed light's colour through the renderer's own distance law
 /// (`Emitter::distance_attenuation`), as luminance, clamped.
 pub(crate) fn light_level_at(world: &World, position: Vec3) -> f32 {
-    let luminance = |rgb: [f32; 3]| rgb[0] * LUMA[0] + rgb[1] * LUMA[1] + rgb[2] * LUMA[2];
-    let mut level = 0.0;
-    if let Some(cell) = world.try_resource::<crate::components::CellLightingRes>() {
-        level += luminance(cell.ambient);
-        if !cell.is_interior {
+    let mut level = ambient_light(world);
+    if let Some(cell) = world.try_resource::<crate::components::CellLightingRes>()
+        && !cell.is_interior {
             level += luminance(cell.directional_color);
         }
-    }
-    let lights: Vec<(LightSource, Vec3)> = match (world.query::<LightSource>(), world.query::<GlobalTransform>()) {
+    // `GlobalTransform` before `LightSource`, the order `render::lights::collect_lights` takes them in:
+    // the opposite order closed a lock-order cycle under the ABBA detector.
+    let (transforms, lights) = (world.query::<GlobalTransform>(), world.query::<LightSource>());
+    let lights: Vec<(LightSource, Vec3)> = match (lights, transforms) {
         (Some(lights), Some(transforms)) => lights
             .iter()
             .filter_map(|(entity, light)| transforms.get(entity).map(|t| (*light, t.translation)))

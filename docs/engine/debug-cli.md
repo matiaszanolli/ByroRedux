@@ -186,7 +186,7 @@ using the generic `register_component::<T>()` helper, called from
 `byroredux-core`). The registry is owned by the `DebugDrainSystem`
 (`DebugDrainSystem.registry`), not stored as a World resource.
 
-### Currently registered (84 components)
+### Currently registered (90 components)
 
 | Component | Fields |
 |-----------|--------|
@@ -240,14 +240,20 @@ using the generic `register_component::<T>()` helper, called from
 | `PatrolState` | route, target, phase |
 | `ActorValues` | values — actor-value layers keyed by AVIF FormID |
 | `ActorVitals` | health — resolved per-game health AVIF FormID |
+| `EquippedAmmo` | 0 (the equipped arrow type's `AMMO` form id, or none; player-archery BOW-AMM-001) |
 | `EquippedWeapon` | inventory_index, base_form_id, damage, reach, speed |
 | `Dead` | (marker) — actor death state |
 | `Sneaking` | (marker) — the player is in the sneak stance (M65) |
 | `CreatureAttack` | damage — creature attack profile |
 | `Perks` | entries — owned perk ranks |
 | `SpellList` | 0 — the actor's spell FormIDs, in arrival order (a perk's Ability spell is one of them, PERK-DX-006) |
+| `ActiveMagicEffects` | 0 — the magic effects running on the actor (#7183) |
+| `Bleedout` | remaining_secs — an actor down in bleedout; `null` stays down (#7183) |
+| `ScriptVariables` | values — a script instance's numeric variables by condition string id (#7183) |
+| `WeaponDrawn` | (marker) — the actor's weapon is drawn, `SetAlert 1` (#7183) |
 | `CharacterLevel` | level, xp |
 | `LevelUpPoints` | skill_points, skill_point_fraction, perk_points |
+| `SkillUseLevel` | major_increases, attribute_tallies, pending |
 | `DismemberRecord` | gone, killing_blow — body locations recorded severed/exploded (bitmask, 0..=13) and the killing-blow location (VATS-LIMB-008) |
 | `CharacterIdentity` | name, female, race_form_id — the player's chargen choices (overrides the base record's sex and race) |
 | `FactionReputation` | entries — faction reputation values |
@@ -344,7 +350,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**176**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**196**) grouped by
 purpose:
 
 ```
@@ -376,7 +382,10 @@ pick [count=10]             → ray-cast from camera-forward, list entities whos
 
 # Camera control (fly-camera entity, ActiveCamera resource)
 cam.where                   → print active camera position + yaw/pitch
-cam.pos <x> <y> <z>         → teleport camera to absolute world position
+cam.pos <x> <y> <z>         → teleport camera to absolute world position (Character
+                              mode carries the body, which falls to the floor)
+cam.fly [on|off]            → switch the fly camera on/off at runtime (F key);
+                              `on` before `cam.pos` to place the camera freely
 cam.tp <entity_id>          → teleport camera to over-the-shoulder framing of
                               the entity (200 back + 50 up, look-at).
                               No-arg form uses the picked ref (prid)
@@ -449,7 +458,7 @@ player.status               → report player mode, pose, and control state
 player.view [first|third]   → show or switch the player camera view (V key)
 player.body                 → report the assembled player body (root, meshes, view, equipment parts)
 inventory.status            → report the player's live inventory/equipment state
-craft benches              → list every loaded crafting bench with its base form and position (M43)
+craft benches              → list every loaded crafting bench (reference, base, position, `disabled` when its enable state rules it out, #6539) and the player position; answers even when no bench is usable (#7035)
 lock.status                 → locked references with their level and how the player could bypass each (pick / hack / none), M43
 lock.open <entity>          → open a locked reference the way activating it does (key, pick or hack); raises LOCK / HACK
 word.teach <form>           → give the player a word of power (Game.TeachWord); raises NVPE for a new word
@@ -511,6 +520,7 @@ tonemap                     → inspect or select the presentation tone mapper
 rt.masks                    → inspect ray-tracing shadow-mask state
 r.health                    → renderer health summary
 rt.integrity                → ray-tracing structure integrity checks
+gi.cache                    → radiance cache state (RCG-DBG-003): update stride, GI counters and miss fraction under --rt-test-lod-telemetry; occupancy, evictions, voxel edges and per-class coverage are named as not allocated until the cache exists
 lod.coverage                → current LOD coverage diagnostics
 terrain.seams               → terrain seam diagnostics
 terrain.height [all]        → per-layer height maps under the camera: source, state, raw height; `all` tallies every resident cell (#6195)
@@ -518,6 +528,8 @@ terrain.blend [band]        → read/set the height-based layer blend band for t
 terrain.soften [amount]     → read/set the near-terrain distance softening toward the LOD look for this session; 0 = off
 terrain.parallax [off | <range_m> [<depth_m>]]
                             → read/set the near-camera terrain parallax (fade-out distance, relief depth, metres) for this session; off / range 0 = off (#6197)
+terrain.patches [on | off | amplitude <m> | range <m> | fine <m> | parallax on|off | rt on|off]
+                            → TSD-4.1 terrain displacement patches (#7152): the seam readback (lip-border deviation, shared-border gap incl. fine/coarse borders, per-slot level and max displacement) or the session's on/off, amplitude, range and fine-lattice radius in metres (`fine 0` = all coarse, `fine` ≥ range = all fine), and whether patch draws keep the TSD-3 parallax march (default on) and enter the TLAS (default on; `rt off` keeps them raster-only, #7221)
 render.debug                → renderer debug-mode control
 r.dbg [0xMASK|+0xB|-0xB]    → read / set / add / clear the DBG_* bit mask at runtime
 r.shadowfilter [on|off]     → read or switch the direct-shadow spatial filter
@@ -547,6 +559,7 @@ script.activate <entity_id|0xREFR> → emit an `ActivateEvent` on the entity (M4
 quest.show / quest.aliases  → inspect quest state, objectives, and aliases
 scene.show                  → inspect a live scene and its phase/action state
 quest.start / quest.stop    → control quest running state
+quest.reset                 → reset an installed quest to never started, as Quest.Reset() does
 quest.setstage              → advance a quest through the canonical stage path
 perk.run                    → run a perk entry's fragment on the player (perk, entry id, optional target)
 terminal.select             → pick a terminal menu item by reference + item id, running its fragment
@@ -558,6 +571,15 @@ magic.cast <spell> [target]  → cast a spell through the caster runtime ObScrip
 actor.look <entity|.> <target|none> → force an actor's head to track a reference like ObScript Look (M47.3)
 actor.revive <entity|.>      → bring a dead or unconscious actor back like ObScript Resurrect (M47.3)
 magic.effects [entity]       → list the magic effects running on a reference (script effects, timed value changes)
+spell.ready <spell>          → ready a spell the player knows for the cast action (`C`): reports its name, school, tier and actual cost, and refuses an unknown spell or a Power (player-spellcasting PSC-RDY-002)
+spell.cast                   → one cast action for the player, the cast key's own path: the gate (can act, readied, castable, mastery, Magicka), Magicka and Fatigue damage, then the effects; `magic.cast` stays the uncharged script path (PSC-DX-002)
+spell.list                   → the player's castable spells (readied marked `*`) with school, tier and what each costs now
+cast.status                  → the readied spell, the last cast (started or its refusal), the provisional casting interval and touch reach, the projectile speed and range, and the last Target projectile's fate (PSC-DX-001)
+bow.status                   → the readied bow, the equipped arrow and its count, the last shot (released with its draw fraction, speed and range, or the refusal reason), the trajectory in effect (and what the setting asks for), the provisional interval, the range, and the skill feed (`Marksman unfed` / `Archery unfed`) (player-archery BOW-DX-001)
+bow.shoot [seconds]          → release the player's bow after a draw of that many seconds (default a full draw): the attack key's own gate, arrow spend and flight, so a smoke script drives the real path (BOW-DX-002)
+door.state [entity]         → every in-cell door (the ones that open in place; teleport doors stay `door.list`), nearest the camera first, or the one entity named: reference, state (`open` / `closed` / `opening` / `closing`), lock and its key, default state, `FNAM` flags and the three sounds (door-runtime DRT-DX-001)
+plugins.activation          → the plugin profile as given (`--master`… `--esm`), the load order boot activation turned it into, each master hoisted ahead of a dependent and each plugin left out with its reason, the chain back to a missing master included, and the archives each plugin pairs with by name (legacy-mod-compatibility LMC-ID-003, -011, LMC-AST-002)
+plugins.conflicts [formid] [fields] → with no form, how many forms more than one plugin carries and how many were injected, the wins / losses / injections per plugin and the first 40 overridden forms; with a hex form, every plugin that carried it in load order, the winner and the policy (`legacy`, LMC-REC-002), an injected form's ID space, and for a record with lists (levelled list, form list, outfit, container, actor, race, item) the fold merged (`merge`, LMC-REC-003) its contributors and, per list entry form and field, who decided it and whom they overruled; `fields` also reads each carrier's record back from its file and judges each override against the record it replaced: the sub-records it changed, added or dropped, an identical override (ITM) or a revert (LMC-REC-005, -006, -007). The headless `--plugin-report [formid] [fields]` flag prints the same without a window
 weather.force <WTHR|none> [lock] → force the exterior weather like ObScript ForceWeather (saved); `none` releases it
 actor.where <entity|0xREFR> → where an actor is now and its cross-cell travel state: `routing via door entity <id> toward <cell>`, `offscreen, arrives at day <d> <hh:mm> in <cell>`, `unroutable <reason>`, or `in <cell>` / `not loaded, in <cell>`, with its pose (XCT-RPT-001)
 actor.where --census          → every actor the relocation ledger or the router knows: home cell, current cell and state, under a tally line (arrived / offscreen / routing / unroutable by reason, XCT-RPT-002)
@@ -566,7 +588,7 @@ music.status → the music controller (`docs/engine/music.md` §8): the place an
 video.status → the movie player: the movie playing (frame/count, PlayBink flags incl. new_game, and the mute / pause-music hold the audio world applies: `holding world_muted=… music_paused=…`) and how the last request ended: Played, Skipped (a format with no decoder) or Failed (BIK-RPT-001, BIK-PRES-005)
 video.skip → Escape sent to the playing movie; it ends if its PlayBink request is interruptable (BIK-RPT-003)
 nav.path <entity|0xREFR> <entity|0xREFR> → the navmesh route the AI movers would take between two references: the resident tile and triangle each lands on, and the waypoint count
-obscript.cmd <caller|none> <id> [args] → run one ObScript command through the real host and print its answer (M47.3); the caller may also be a resident reference's `0x<FormID>` (`resolve_console_entity`, shared with `cond`, `setav`, `mesh.info`, `script.activate`)
+obscript.cmd <caller|none> <id|GetAV|GetBaseAV|SetAV|ModAV|ForceAV|DamageAV|RestoreAV> [args] → run one ObScript command through the real host and print its answer (M47.3); actor-value commands also accept names, e.g. `obscript.cmd 0x00123456 GetAV Sneak`. Numeric command IDs and arguments remain available for the complete command surface; the caller may also be an entity ID or a resident reference's `0x<FormID>`.
 jail.serve                  → serve the jail sentence GoToJail started (the same as resting in the cell bed)
 obscript.objects [limit]    → ObScript object scripts attached to placed references: blocks, run counts, declines (M47.3)
 script.requests             → the menus and videos ObScript commands asked for (no UI shows them yet)
@@ -587,7 +609,14 @@ hud.values                  → inspect current HUD trait values
 hud.heading                 → inspect the active HUD heading
 hud.status                  → report HUD profile and visibility
 hud.debug                   → toggle HUD diagnostics
+ui.menus                    → the M48 menu registry: every open menu bottom to top (name, code, surface, flags), the input owner, pause, menu mode and the movie device count
+ui.open <menu>              → open a menu by its game-facing name on its Phase 0 surface (movie, native page, or none); applied next frame
+ui.close <menu> [accept|cancel] → close an open menu with the stated result (default accept); applied next frame
+ui.host [menu]              → an open Scaleform movie's host calls since it opened, by behaviour class (H1 served, H2 placeholder, H3 unserved, H4 unknown), and its distinct H3 / H4 method names
+ui.coverage                 → menu surface coverage for this game (PRD §8): menus on the game's movie (S1, how many fed), document (S2), a native page (S3), none (S4); ROADMAP's compatibility matrix publishes it
 depth.stats                 → inspect depth-buffer precision statistics
+depth.sample <x> <y> [...]  → sample view-axis depth at up to 32 render-resolution pixels
+depth.dump <name>.pfm       → export the full depth field as a PFM file in screenshots/
 npc.appearance              → inspect NPC appearance and FaceGen state
 ragdoll.status              → report active ragdoll state
 sdk.compat                  → summarize SDK compatibility adapters
@@ -597,6 +626,20 @@ save <slot>                 → queue an atomic snapshot write
 save.info <slot>            → validate and summarize a save container
 load <slot>                 → queue a validated live reload
 ```
+
+`depth.sample` uses zero-based render-resolution coordinates with the origin
+at the top left. If no readback is ready, it arms one; call it again after
+the next frames to read the samples. It shares the latest capture with
+`depth.stats`, so keep the camera fixed and allow a fresh capture after
+changing the view. Reported distance is along the camera's view axis in
+world units.
+
+`depth.dump` uses the same two-step readback and writes a new, single-channel
+little-endian PFM file; it refuses to overwrite an existing file. Values are
+view-axis world units, with infinity for background and NaN for invalid depth.
+PFM stores rows bottom to top. The depth readback and a screenshot are not
+synchronized to the same frame, so comparisons require a fixed camera and
+stable geometry; the export itself does not guarantee either.
 
 The dispatcher (#518) only kicks in for the *first whitespace-delimited
 token* — args after the name pass through to the command's
@@ -757,7 +800,8 @@ per-frame telemetry like `skin.coverage` against a known viewpoint.
 | Command | What it does |
 |---------|-------------|
 | `cam.where` | Print `ActiveCamera` entity ID, world position, yaw/pitch in radians + degrees |
-| `cam.pos <x> <y> <z>` | Teleport to an absolute world position (renderer Y-up). Leaves rotation untouched |
+| `cam.pos <x> <y> <z>` | Teleport to an absolute world position (renderer Y-up). Leaves rotation untouched. In Character mode it carries the player body, which then falls to the floor: a lift lands back on the ground and a camera lowered into the terrain is pushed back out |
+| `cam.fly [on\|off]` | Switch between the fly camera and the character body (the F key's console form). `on` keeps the camera where it is, so `cam.pos` then places it freely, in the air or at grass height; `off` snaps the body under the camera and is refused when there is no body. No argument prints the mode |
 | `cam.tp <entity_id>` | Teleport over-the-shoulder of an entity (200 units back + 50 up, look-at). No-arg form uses the picked ref (`prid`) |
 
 ### Look-at math
@@ -1212,6 +1256,9 @@ shipping rule.
 | `BYRO_RELEASE` / `BYRO_COMMIT` | **Build-time** (`option_env!`), stamped by the release workflow; what `--version` prints. A source build reports itself as one |
 | `BYRO_FOG_NEAR` / `BYRO_FOG_FAR` | Override the authored fog ramp, in game units (finite, ≥ 0; logged when active) |
 | `BYRO_HAZE_FLOOR` | Seed the exterior haze floor (VLM-SH-010): `off`, or `<base_per_m>[,<horizon_gain>]` (0–0.05, 0–20); a bad value warns and keeps the engine default. `fog.haze` retunes it live |
+| `BYRO_DISABLE_SKY_CLOUDS` | Set to `1` for a diagnostic clear sky: disables the procedural cloud deck and authored cloud layers, including their lighting and shadows. The weather's other properties remain in effect. |
+| `BYRO_FOG_HEIGHT_REFERENCE` | Pin the fog reference altitude to a finite value in world units for diagnostics; otherwise it follows the ground below the camera. `env.health` reports the live reference. |
+| `BYRO_BENCH_HOLD_FREEZE_SIM` | Set to `1` to pause world systems after a finite benchmark while rendering and debug commands continue; fly movement is also frozen |
 | `BYRO_INTERIOR_AMBIENT_SCALE` | Replace the `INTERIOR_AMBIENT_SCALE` constant, for ambient sweeps against a reference capture (finite, ≥ 0) |
 | `BYRO_NO_CULL` | Skip the raster frustum test for static meshes (draw everything) |
 | `BYRO_RT_FRUSTUM_ONLY` | Exclude every off-frustum ray candidate from the TLAS. Off-frustum geometry can legitimately cast shadows and appear in reflections, so this changes the image; it exists to measure what the exclusion would cost and save |
@@ -1401,7 +1448,7 @@ byro> components
   TextureHandle
   Transform
   WorldBound
-(84 components)
+(90 components)
 
 byro> entities Inventory
   Entity 12 "saadia"

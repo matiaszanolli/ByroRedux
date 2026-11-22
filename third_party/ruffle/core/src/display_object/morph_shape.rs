@@ -1,0 +1,644 @@
+use crate::avm1::Object as Avm1Object;
+use crate::avm2::StageObject as Avm2StageObject;
+use crate::context::{RenderContext, UpdateContext};
+use crate::display_object::{BoundsMode, DisplayObjectBase};
+use crate::library::MovieLibrarySource;
+use crate::prelude::*;
+use crate::tag_utils::SwfMovie;
+use crate::vminterface::Instantiator;
+use core::fmt;
+use gc_arena::barrier::unlock;
+use gc_arena::lock::Lock;
+use gc_arena::{Collect, Gc, Mutation};
+use ruffle_common::utils::HasPrefixField;
+use ruffle_render::backend::ShapeHandle;
+use ruffle_render::commands::CommandHandler;
+use std::cell::{RefCell, RefMut};
+use swf::{Fixed8, Fixed16};
+
+#[derive(Clone, Collect, Copy)]
+#[collect(no_drop)]
+pub struct MorphShape<'gc>(Gc<'gc, MorphShapeData<'gc>>);
+
+impl fmt::Debug for MorphShape<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MorphShape")
+            .field("ptr", &Gc::as_ptr(self.0))
+            .finish()
+    }
+}
+
+#[derive(Clone, Collect, HasPrefixField)]
+#[collect(no_drop)]
+#[repr(C, align(8))]
+pub struct MorphShapeData<'gc> {
+    base: DisplayObjectBase<'gc>,
+    shared: Lock<Gc<'gc, MorphShapeShared<'gc>>>,
+    /// The AVM2 representation of this MorphShape.
+    object: Lock<Option<Avm2StageObject<'gc>>>,
+}
+
+impl<'gc> MorphShape<'gc> {
+    pub fn from_swf_tag(
+        gc_context: &Mutation<'gc>,
+        tag: swf::DefineMorphShape,
+        movie: SwfMovie<'gc>,
+    ) -> Self {
+        let shared = MorphShapeShared::from_swf_tag(&tag, movie);
+        MorphShape(Gc::new(
+            gc_context,
+            MorphShapeData {
+                base: Default::default(),
+                shared: Lock::new(Gc::new(gc_context, shared)),
+                object: Lock::new(None),
+            },
+        ))
+    }
+
+    pub fn instantiate(self, gc_context: &Mutation<'gc>) -> Self {
+        Self(Gc::new(gc_context, (*self.0).clone()))
+    }
+}
+
+impl<'gc> TDisplayObject<'gc> for MorphShape<'gc> {
+    fn base(self) -> Gc<'gc, DisplayObjectBase<'gc>> {
+        HasPrefixField::as_prefix_gc(self.0)
+    }
+
+    fn id(self) -> CharacterId {
+        self.0.shared.get().id
+    }
+
+    fn replace_with(self, context: &mut UpdateContext<'gc>, id: CharacterId) {
+        if let Some(new_morph_shape) = context
+            .library
+            .library_for_movie_mut(self.movie())
+            .get_morph_shape(id)
+        {
+            unlock!(Gc::write(context.gc(), self.0), MorphShapeData, shared)
+                .set(new_morph_shape.0.shared.get())
+        } else {
+            tracing::warn!("PlaceObject: expected morph shape at character ID {}", id);
+        }
+        self.invalidate_cached_bitmap();
+    }
+
+    fn object1(self) -> Option<crate::avm1::Object<'gc>> {
+        None
+    }
+
+    fn object2(self) -> Option<Avm2StageObject<'gc>> {
+        self.0.object.get()
+    }
+
+    fn set_object2(self, context: &mut UpdateContext<'gc>, to: Avm2StageObject<'gc>) {
+        let mc = context.gc();
+        unlock!(Gc::write(mc, self.0), MorphShapeData, object).set(Some(to))
+    }
+
+    /// Construct objects placed on this frame.
+    fn construct_frame(self, context: &mut UpdateContext<'gc>) {
+        if self.movie().is_action_script_3() && self.object2().is_none() {
+            let class = context.avm2.classes().morphshape;
+            let object = Avm2StageObject::for_display_object(context.gc(), self.into(), class);
+            // We don't need to call the initializer method, as AVM2 can't link
+            // a custom class to a MorphShape, and the initializer method for
+            // MorphShape itself is a no-op
+            self.set_object2(context, object);
+
+            self.on_construction_complete(context);
+        }
+    }
+
+    fn render_self(self, context: &mut RenderContext<'_, 'gc>) {
+        let ratio = self.ratio();
+        let shared = self.0.shared.get();
+        let shape_handle = shared.get_shape(context, ratio);
+        context
+            .commands
+            .render_shape(shape_handle, context.transform_stack.transform());
+    }
+
+    fn self_bounds(self, mode: BoundsMode) -> Rectangle<Twips> {
+        let shared = self.0.shared.get();
+
+        match mode {
+            // For engine bounds, use the actual interpolated ratio
+            BoundsMode::Engine => {
+                let ratio = self.ratio();
+                let frame = shared.get_frame(ratio);
+                frame.bounds
+            }
+
+            // For getBounds() or hitTestObject(), use the `shape_bounds` that
+            // were declared to be the bounds of the start shape
+            BoundsMode::Script => shared.start.shape_bounds,
+
+            // For getRect(), use the `edge_bounds` that were declared to be the
+            // bounds of the start shape
+            BoundsMode::ScriptWithoutStrokes => shared.start.edge_bounds,
+        }
+    }
+
+    fn hit_test_shape(
+        self,
+        _context: &mut UpdateContext<'gc>,
+        point: Point<Twips>,
+        options: HitTestOptions,
+    ) -> bool {
+        if (!options.contains(HitTestOptions::SKIP_INVISIBLE) || self.visible())
+            && self.world_bounds(BoundsMode::Engine).contains(point)
+        {
+            if let Some(frame) = self.0.shared.get().frames.borrow().get(&self.ratio()) {
+                let Some(local_matrix) = self.global_to_local_matrix() else {
+                    return false;
+                };
+                return ruffle_render::shape_utils::shape_hit_test(
+                    &frame.shape,
+                    local_matrix * point,
+                    &local_matrix,
+                );
+            } else {
+                tracing::warn!("Missing ratio for morph shape");
+            }
+        }
+
+        false
+    }
+
+    fn post_instantiation(
+        self,
+        context: &mut UpdateContext<'gc>,
+        _init_object: Option<Avm1Object<'gc>>,
+        _instantiated_by: Instantiator,
+        _run_frame: bool,
+    ) {
+        if self.movie().is_action_script_3() {
+            self.set_default_instance_name(context);
+        }
+    }
+
+    fn movie(self) -> SwfMovie<'gc> {
+        self.0.shared.get().movie
+    }
+}
+
+/// A precalculated intermediate frame for a morph shape.
+struct Frame {
+    shape_handle: Option<ShapeHandle>,
+    shape: swf::Shape,
+    bounds: Rectangle<Twips>,
+}
+
+/// Data shared between all instances of a morph shape.
+#[derive(Collect)]
+#[collect(no_drop)]
+pub struct MorphShapeShared<'gc> {
+    movie: SwfMovie<'gc>,
+    id: CharacterId,
+
+    #[collect(require_static)]
+    start: swf::MorphShape,
+
+    #[collect(require_static)]
+    end: swf::MorphShape,
+
+    #[collect(require_static)]
+    frames: RefCell<fnv::FnvHashMap<u16, Frame>>,
+}
+
+impl<'gc> MorphShapeShared<'gc> {
+    pub fn from_swf_tag(swf_tag: &swf::DefineMorphShape, movie: SwfMovie<'gc>) -> Self {
+        Self {
+            id: swf_tag.id,
+            start: swf_tag.start.clone(),
+            end: swf_tag.end.clone(),
+            frames: RefCell::new(fnv::FnvHashMap::default()),
+            movie,
+        }
+    }
+
+    /// Retrieves the `Frame` for the given ratio.
+    /// Lazily initializes the frame if it does not yet exist.
+    fn get_frame(&self, ratio: u16) -> RefMut<'_, Frame> {
+        let frames = self.frames.borrow_mut();
+        RefMut::map(frames, |frames| {
+            frames
+                .entry(ratio)
+                .or_insert_with(|| self.build_morph_frame(ratio))
+        })
+    }
+
+    /// Retrieves the `ShapeHandle` for the given ratio.
+    /// Lazily initializes and tessellates the shape if it does not yet exist.
+    fn get_shape(&self, context: &mut RenderContext<'_, 'gc>, ratio: u16) -> ShapeHandle {
+        let mut frame = self.get_frame(ratio);
+        if let Some(handle) = frame.shape_handle.clone() {
+            handle
+        } else {
+            let library = context.library.library_for_movie(self.movie).unwrap();
+            let handle = context
+                .renderer
+                .register_shape((&frame.shape).into(), &MovieLibrarySource { library });
+            frame.shape_handle = Some(handle.clone());
+            handle
+        }
+    }
+
+    fn build_morph_frame(&self, ratio: u16) -> Frame {
+        // Interpolate MorphShapes into a Shape.
+        use swf::{FillStyle, LineStyle, ShapeRecord, ShapeStyles};
+        // Start shape is ratio 65535, end shape is ratio 0.
+        let b = f32::from(ratio) / 65535.0;
+        let a = 1.0 - b;
+        let fill_styles: Vec<FillStyle> = self
+            .start
+            .fill_styles
+            .iter()
+            .zip(self.end.fill_styles.iter())
+            .map(|(start, end)| lerp_fill(start, end, a, b))
+            .collect();
+        let line_styles: Vec<LineStyle> = self
+            .start
+            .line_styles
+            .iter()
+            .zip(self.end.line_styles.iter())
+            .map(|(start, end)| {
+                start
+                    .clone()
+                    .with_width(lerp_twips(start.width(), end.width(), a, b))
+                    .with_fill_style(lerp_fill(start.fill_style(), end.fill_style(), a, b))
+            })
+            .collect();
+
+        let mut shape = Vec::with_capacity(self.start.shape.len());
+        let mut start_iter = self.start.shape.iter();
+        let mut end_iter = self.end.shape.iter();
+        let mut start = start_iter.next();
+        let mut end = end_iter.next();
+        let mut start_x = Twips::ZERO;
+        let mut start_y = Twips::ZERO;
+        let mut end_x = Twips::ZERO;
+        let mut end_y = Twips::ZERO;
+        // TODO: Feels like this could be cleaned up a bit.
+        // We step through both the start records and end records, interpolating edges pairwise.
+        // Fill style/line style changes should only appear in the start records.
+        // However, StyleChangeRecord move_to can appear it both start and end records,
+        // and not necessarily in matching pairs; therefore, we have to keep track of the pen position
+        // in case one side is missing a move_to; it will implicitly use the last pen position.
+        while let (Some(s), Some(e)) = (start, end) {
+            match (s, e) {
+                (ShapeRecord::StyleChange(start_change), ShapeRecord::StyleChange(end_change)) => {
+                    let mut style_change = start_change.clone();
+                    if start_change.move_to.is_some() || end_change.move_to.is_some() {
+                        if let Some(move_to) = &start_change.move_to {
+                            start_x = move_to.x;
+                            start_y = move_to.y;
+                        }
+                        if let Some(move_to) = &end_change.move_to {
+                            end_x = move_to.x;
+                            end_y = move_to.y;
+                        }
+                        style_change.move_to = Some(Point::new(
+                            lerp_twips(start_x, end_x, a, b),
+                            lerp_twips(start_y, end_y, a, b),
+                        ));
+                    }
+                    shape.push(ShapeRecord::StyleChange(style_change));
+                    start = start_iter.next();
+                    end = end_iter.next();
+                }
+                (ShapeRecord::StyleChange(start_change), _) => {
+                    let mut style_change = start_change.clone();
+                    if let Some(move_to) = &start_change.move_to {
+                        start_x = move_to.x;
+                        start_y = move_to.y;
+                        style_change.move_to = Some(Point::new(
+                            lerp_twips(start_x, end_x, a, b),
+                            lerp_twips(start_y, end_y, a, b),
+                        ));
+                    }
+                    shape.push(ShapeRecord::StyleChange(style_change));
+                    Self::update_pos(&mut start_x, &mut start_y, s);
+                    start = start_iter.next();
+                }
+                (_, ShapeRecord::StyleChange(end_change)) => {
+                    let mut style_change = end_change.clone();
+                    if let Some(move_to) = &end_change.move_to {
+                        end_x = move_to.x;
+                        end_y = move_to.y;
+                        style_change.move_to = Some(Point::new(
+                            lerp_twips(start_x, end_x, a, b),
+                            lerp_twips(start_y, end_y, a, b),
+                        ));
+                    }
+                    shape.push(ShapeRecord::StyleChange(style_change));
+                    Self::update_pos(&mut end_x, &mut end_y, s);
+                    end = end_iter.next();
+                    continue;
+                }
+                _ => {
+                    shape.push(lerp_edges(
+                        Point::new(start_x, start_y),
+                        Point::new(end_x, end_y),
+                        s,
+                        e,
+                        a,
+                        b,
+                    ));
+                    Self::update_pos(&mut start_x, &mut start_y, s);
+                    Self::update_pos(&mut end_x, &mut end_y, e);
+                    start = start_iter.next();
+                    end = end_iter.next();
+                }
+            }
+        }
+
+        let styles = ShapeStyles {
+            fill_styles,
+            line_styles,
+        };
+
+        let bounds = ruffle_render::shape_utils::calculate_shape_bounds(&shape);
+        let shape = swf::Shape {
+            version: 4,
+            id: 0,
+            shape_bounds: bounds,
+            edge_bounds: bounds,
+            flags: swf::ShapeFlag::HAS_SCALING_STROKES,
+            styles,
+            shape,
+        };
+
+        Frame {
+            shape_handle: None,
+            shape,
+            bounds,
+        }
+    }
+
+    fn update_pos(x: &mut Twips, y: &mut Twips, record: &swf::ShapeRecord) {
+        use swf::ShapeRecord;
+        match record {
+            ShapeRecord::StraightEdge { delta } => {
+                *x += delta.dx;
+                *y += delta.dy;
+            }
+            ShapeRecord::CurvedEdge {
+                control_delta,
+                anchor_delta,
+            } => {
+                *x += control_delta.dx + anchor_delta.dx;
+                *y += control_delta.dy + anchor_delta.dy;
+            }
+            ShapeRecord::StyleChange(style_change) => {
+                if let Some(move_to) = &style_change.move_to {
+                    *x = move_to.x;
+                    *y = move_to.y;
+                }
+            }
+        }
+    }
+}
+
+// Interpolation functions
+// These interpolate between two SWF shape structures.
+// a + b should = 1.0
+
+fn lerp_color(start: Color, end: Color, a: f32, b: f32) -> Color {
+    // f32 -> u8 cast is defined to saturate for out of bounds values,
+    // so we don't have to worry about clamping.
+    Color {
+        r: (a * f32::from(start.r) + b * f32::from(end.r)) as u8,
+        g: (a * f32::from(start.g) + b * f32::from(end.g)) as u8,
+        b: (a * f32::from(start.b) + b * f32::from(end.b)) as u8,
+        a: (a * f32::from(start.a) + b * f32::from(end.a)) as u8,
+    }
+}
+
+fn lerp_twips(start: Twips, end: Twips, a: f32, b: f32) -> Twips {
+    Twips::new((start.get() as f32 * a + end.get() as f32 * b).round() as i32)
+}
+
+fn lerp_point_twips(start: Point<Twips>, end: Point<Twips>, a: f32, b: f32) -> Point<Twips> {
+    Point::new(
+        lerp_twips(start.x, end.x, a, b),
+        lerp_twips(start.y, end.y, a, b),
+    )
+}
+
+fn lerp_fill(start: &swf::FillStyle, end: &swf::FillStyle, a: f32, b: f32) -> swf::FillStyle {
+    use swf::FillStyle;
+    match (start, end) {
+        // Color-to-color
+        (FillStyle::Color(start), FillStyle::Color(end)) => {
+            FillStyle::Color(lerp_color(*start, *end, a, b))
+        }
+
+        // Bitmap-to-bitmap
+        // ID should be the same.
+        (
+            FillStyle::Bitmap {
+                id: start_id,
+                matrix: start,
+                is_smoothed,
+                is_repeating,
+            },
+            FillStyle::Bitmap { matrix: end, .. },
+        ) => FillStyle::Bitmap {
+            id: *start_id,
+            matrix: lerp_matrix(start, end, a, b),
+            is_smoothed: *is_smoothed,
+            is_repeating: *is_repeating,
+        },
+
+        // Linear-to-linear
+        (FillStyle::LinearGradient(start), FillStyle::LinearGradient(end)) => {
+            FillStyle::LinearGradient(lerp_gradient(start, end, a, b))
+        }
+
+        // Radial-to-radial
+        (FillStyle::RadialGradient(start), FillStyle::RadialGradient(end)) => {
+            FillStyle::RadialGradient(lerp_gradient(start, end, a, b))
+        }
+
+        // Focal gradients also interpolate focal point.
+        (
+            FillStyle::FocalGradient {
+                gradient: start,
+                focal_point: start_focal,
+            },
+            FillStyle::FocalGradient {
+                gradient: end,
+                focal_point: end_focal,
+            },
+        ) => FillStyle::FocalGradient {
+            gradient: lerp_gradient(start, end, a, b),
+            focal_point: *start_focal * Fixed8::from_f32(a) + *end_focal * Fixed8::from_f32(b),
+        },
+
+        // All other combinations should not occur, because SWF stores the start/end fill as the same type, always.
+        // If you happened to make, say, a solid color-to-radial gradient tween in the IDE, this would get baked down into
+        // a radial-to-radial gradient on export.
+        _ => {
+            tracing::warn!(
+                "Unexpected morph shape fill style combination: {:#?}, {:#?}",
+                start,
+                end
+            );
+            start.clone()
+        }
+    }
+}
+
+fn lerp_edges(
+    start_pen: Point<Twips>,
+    end_pen: Point<Twips>,
+    start: &swf::ShapeRecord,
+    end: &swf::ShapeRecord,
+    a: f32,
+    b: f32,
+) -> swf::ShapeRecord {
+    use swf::ShapeRecord;
+    let pen = lerp_point_twips(start_pen, end_pen, a, b);
+    match (start, end) {
+        (
+            ShapeRecord::StraightEdge { delta: start_delta },
+            ShapeRecord::StraightEdge { delta: end_delta },
+        ) => {
+            let start_anchor = start_pen + *start_delta;
+            let end_anchor = end_pen + *end_delta;
+
+            let anchor = lerp_point_twips(start_anchor, end_anchor, a, b);
+
+            ShapeRecord::StraightEdge {
+                delta: anchor - pen,
+            }
+        }
+
+        (
+            ShapeRecord::CurvedEdge {
+                control_delta: start_control_delta,
+                anchor_delta: start_anchor_delta,
+            },
+            ShapeRecord::CurvedEdge {
+                control_delta: end_control_delta,
+                anchor_delta: end_anchor_delta,
+            },
+        ) => {
+            let start_control = start_pen + *start_control_delta;
+            let start_anchor = start_control + *start_anchor_delta;
+
+            let end_control = end_pen + *end_control_delta;
+            let end_anchor = end_control + *end_anchor_delta;
+
+            let control = lerp_point_twips(start_control, end_control, a, b);
+            let anchor = lerp_point_twips(start_anchor, end_anchor, a, b);
+
+            ShapeRecord::CurvedEdge {
+                control_delta: control - pen,
+                anchor_delta: anchor - control,
+            }
+        }
+
+        (
+            ShapeRecord::StraightEdge { delta: start_delta },
+            ShapeRecord::CurvedEdge {
+                control_delta: end_control_delta,
+                anchor_delta: end_anchor_delta,
+            },
+        ) => {
+            let start_control = start_pen + *start_delta / 2;
+            let start_anchor = start_pen + *start_delta;
+
+            let end_control = end_pen + *end_control_delta;
+            let end_anchor = end_control + *end_anchor_delta;
+
+            let control = lerp_point_twips(start_control, end_control, a, b);
+            let anchor = lerp_point_twips(start_anchor, end_anchor, a, b);
+
+            ShapeRecord::CurvedEdge {
+                control_delta: control - pen,
+                anchor_delta: anchor - control,
+            }
+        }
+
+        (
+            ShapeRecord::CurvedEdge {
+                control_delta: start_control_delta,
+                anchor_delta: start_anchor_delta,
+            },
+            ShapeRecord::StraightEdge { delta: end_delta },
+        ) => {
+            let start_control = start_pen + *start_control_delta;
+            let start_anchor = start_control + *start_anchor_delta;
+
+            let end_control = end_pen + *end_delta / 2;
+            let end_anchor = end_pen + *end_delta;
+
+            let control = lerp_point_twips(start_control, end_control, a, b);
+            let anchor = lerp_point_twips(start_anchor, end_anchor, a, b);
+
+            ShapeRecord::CurvedEdge {
+                control_delta: control - pen,
+                anchor_delta: anchor - control,
+            }
+        }
+        _ => unreachable!("{:?} {:?}", start, end),
+    }
+}
+
+fn lerp_matrix(start: &swf::Matrix, end: &swf::Matrix, a: f32, b: f32) -> swf::Matrix {
+    // TODO: Lerping a matrix element-wise is geometrically wrong,
+    // but I doubt Flash is decomposing the matrix into scale-rotate-translate?
+    let af = Fixed16::from_f32(a);
+    let bf = Fixed16::from_f32(b);
+    swf::Matrix {
+        a: start.a * af + end.a * bf,
+        b: start.b * af + end.b * bf,
+        c: start.c * af + end.c * bf,
+        d: start.d * af + end.d * bf,
+        tx: lerp_twips(start.tx, end.tx, a, b),
+        ty: lerp_twips(start.ty, end.ty, a, b),
+    }
+}
+
+fn lerp_gradient(start: &swf::Gradient, end: &swf::Gradient, a: f32, b: f32) -> swf::Gradient {
+    use swf::{Gradient, GradientRecord};
+    // Morph gradients are guaranteed to have the same number of records in the start/end gradient.
+    debug_assert_eq!(start.records.len(), end.records.len());
+    let records: Vec<GradientRecord> = start
+        .records
+        .iter()
+        .zip(end.records.iter())
+        .map(|(start, end)| swf::GradientRecord {
+            ratio: (f32::from(start.ratio) * a + f32::from(end.ratio) * b) as u8,
+            color: lerp_color(start.color, end.color, a, b),
+        })
+        .collect();
+
+    Gradient {
+        matrix: lerp_matrix(&start.matrix, &end.matrix, a, b),
+        spread: start.spread,
+        interpolation: start.interpolation,
+        records,
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    // Regression test for #14074
+    #[test]
+    fn test_lerp_rounding() {
+        let ratio: u16 = 17246;
+        let b = f32::from(ratio) / 65535.0;
+        let a = 1.0 - b;
+
+        assert_eq!(
+            lerp_twips(Twips::new(-7), Twips::new(-7), a, b),
+            Twips::new(-7)
+        );
+    }
+}

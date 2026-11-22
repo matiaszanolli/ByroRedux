@@ -16,7 +16,7 @@ arguments, the archive entry, or a pinned URL that produced it. Measured 2026-11
 | `gfx-extensions-{skyrim-se,fallout4,starfield}.tsv` | GUI-GFX-003 | `crates/ui/examples/gfx_extension_census.rs` |
 | `hud-feeds-{skyrim-se,fallout4}.tsv` | GUI-HUD-003 / -005 | `crates/ui/examples/hud_feed_paths.rs`, the executables' string tables, pinned external sources |
 | `menu-string-refs-{fo3,fnv}.tsv` | GUI-FONT-005 | `crates/plugin/examples/menu_gmst_census.rs strings` plus the executables' setting tables |
-| `native-page-strings.tsv` | GUI-PAGE-005 | `scripts/game-ui-data/generators/menu-inventory-and-strings/page_strings.py` over the native page sources |
+| `native-page-strings.tsv` | GUI-PAGE-005 | `scripts/game-ui-data/generators/menu-inventory-and-strings/page_strings.py` over the native page sources; runs in-tree (it reuses this file's candidate values when the Phase 0 value indexes are absent), and `crates/native-ui/src/page_strings_tests.rs` checks every page against it. Dispositions: `game-string` (drawn through `UiLabels` from the named settings, the row's string being the fallback) and `engine-text` (with its reason) |
 | `race-menu-caller-wait.tsv` | GUI-PAGE-002 | `crates/pex/examples/pex_find_call.rs`, `pex_dump_fn`, `obscript_tools` |
 
 ## Limits

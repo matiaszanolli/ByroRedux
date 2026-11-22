@@ -1,0 +1,73 @@
+gate	case	region	metric	value	floor_engine	floor_reference	floor_combined	frozen_floor	threshold	pass	tier	engine_frames	engine_seeds	reference_spp	reference_seeds	k_exp	reference_cache_key	revision	gpu
+RCG-COV	prospector	tier0	coverage	0	0	0	0		>=0.99	no	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	prospector	tier0	eligible_pixels	530216	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	prospector	tier0	traced_pixels	0	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	prospector	tier1	coverage	0.828142	0	0	0		>=0.99	no	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	prospector	tier1	eligible_pixels	530216	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	prospector	tier1	traced_pixels	439094	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	prospector	tier2	coverage	0.82899	0	0	0		>=0.99	no	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	prospector	tier2	eligible_pixels	530216	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	prospector	tier2	traced_pixels	439544	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	prospector	tier3	coverage	0.829041	0	0	0		>=0.99	no	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	prospector	tier3	eligible_pixels	530216	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	prospector	tier3	traced_pixels	439571	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	whiterun	tier0	coverage	0	0	0	0		>=0.99	no	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	whiterun	tier0	eligible_pixels	920226	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	whiterun	tier0	traced_pixels	0	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	whiterun	tier1	coverage	0.307952	0	0	0		>=0.99	no	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	whiterun	tier1	eligible_pixels	920226	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	whiterun	tier1	traced_pixels	283385	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	whiterun	tier2	coverage	0.307988	0	0	0		>=0.99	no	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	whiterun	tier2	eligible_pixels	920226	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	whiterun	tier2	traced_pixels	283419	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	whiterun	tier3	coverage	0.307988	0	0	0		>=0.99	no	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	whiterun	tier3	eligible_pixels	920226	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	whiterun	tier3	traced_pixels	283419	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	medtek	tier0	coverage	0	0	0	0		>=0.99	no	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	medtek	tier0	eligible_pixels	308852	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	medtek	tier0	traced_pixels	0	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	medtek	tier1	coverage	0.3563	0	0	0		>=0.99	no	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	medtek	tier1	eligible_pixels	308852	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	medtek	tier1	traced_pixels	110044	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	medtek	tier2	coverage	0.356313	0	0	0		>=0.99	no	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	medtek	tier2	eligible_pixels	308852	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	medtek	tier2	traced_pixels	110048	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	medtek	tier3	coverage	0.356313	0	0	0		>=0.99	no	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	medtek	tier3	eligible_pixels	308852	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	medtek	tier3	traced_pixels	110048	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	dugout	tier0	coverage	0.00136155	0	0	0		>=0.99	no	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	dugout	tier0	eligible_pixels	805697	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	dugout	tier0	traced_pixels	1097	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	dugout	tier1	coverage	0.293751	0	0	0		>=0.99	no	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	dugout	tier1	eligible_pixels	805697	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	dugout	tier1	traced_pixels	236674	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	dugout	tier2	coverage	0.309521	0	0	0		>=0.99	no	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	dugout	tier2	eligible_pixels	805697	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	dugout	tier2	traced_pixels	249380	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	dugout	tier3	coverage	0.309521	0	0	0		>=0.99	no	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	dugout	tier3	eligible_pixels	805697	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	dugout	tier3	traced_pixels	249380	0	0	0			report	3	64	0			point=pi		78178a558a47-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	fallons_downtown	tier0	coverage	8.30847e-05	0	0	0		>=0.99	no	3	64	0			point=pi		c81e6adcebaf-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	fallons_downtown	tier0	eligible_pixels	674011	0	0	0			report	3	64	0			point=pi		c81e6adcebaf-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	fallons_downtown	tier0	traced_pixels	56	0	0	0			report	3	64	0			point=pi		c81e6adcebaf-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	fallons_downtown	tier1	coverage	8.30847e-05	0	0	0		>=0.99	no	3	64	0			point=pi		c81e6adcebaf-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	fallons_downtown	tier1	eligible_pixels	674011	0	0	0			report	3	64	0			point=pi		c81e6adcebaf-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	fallons_downtown	tier1	traced_pixels	56	0	0	0			report	3	64	0			point=pi		c81e6adcebaf-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	fallons_downtown	tier2	coverage	8.30847e-05	0	0	0		>=0.99	no	3	64	0			point=pi		c81e6adcebaf-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	fallons_downtown	tier2	eligible_pixels	674011	0	0	0			report	3	64	0			point=pi		c81e6adcebaf-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	fallons_downtown	tier2	traced_pixels	56	0	0	0			report	3	64	0			point=pi		c81e6adcebaf-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	fallons_downtown	tier3	coverage	8.30847e-05	0	0	0		>=0.99	no	3	64	0			point=pi		c81e6adcebaf-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	fallons_downtown	tier3	eligible_pixels	674011	0	0	0			report	3	64	0			point=pi		c81e6adcebaf-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	fallons_downtown	tier3	traced_pixels	56	0	0	0			report	3	64	0			point=pi		c81e6adcebaf-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	fallons_galleria	tier0	coverage	0	0	0	0		>=0.99	no	3	64	0			point=pi		c81e6adcebaf-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	fallons_galleria	tier0	eligible_pixels	724567	0	0	0			report	3	64	0			point=pi		c81e6adcebaf-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	fallons_galleria	tier0	traced_pixels	0	0	0	0			report	3	64	0			point=pi		c81e6adcebaf-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	fallons_galleria	tier1	coverage	0.574052	0	0	0		>=0.99	no	3	64	0			point=pi		c81e6adcebaf-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	fallons_galleria	tier1	eligible_pixels	724567	0	0	0			report	3	64	0			point=pi		c81e6adcebaf-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	fallons_galleria	tier1	traced_pixels	415939	0	0	0			report	3	64	0			point=pi		c81e6adcebaf-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	fallons_galleria	tier2	coverage	0.574059	0	0	0		>=0.99	no	3	64	0			point=pi		c81e6adcebaf-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	fallons_galleria	tier2	eligible_pixels	724567	0	0	0			report	3	64	0			point=pi		c81e6adcebaf-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	fallons_galleria	tier2	traced_pixels	415944	0	0	0			report	3	64	0			point=pi		c81e6adcebaf-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	fallons_galleria	tier3	coverage	0.574063	0	0	0		>=0.99	no	3	64	0			point=pi		c81e6adcebaf-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	fallons_galleria	tier3	eligible_pixels	724567	0	0	0			report	3	64	0			point=pi		c81e6adcebaf-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04
+RCG-COV	fallons_galleria	tier3	traced_pixels	415947	0	0	0			report	3	64	0			point=pi		c81e6adcebaf-dirty	NVIDIA GeForce RTX 4070 Ti 580.178.04

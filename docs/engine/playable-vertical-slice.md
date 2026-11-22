@@ -1242,7 +1242,7 @@ overlay's early-return cheap when they have nothing to draw.
 Character-mode player at the Bannered Mare (its `ActorValues` proven live by a
 `modav` health bump), MS01 advanced to stage 15 through the canonical
 `quest.setstage` fragment path, and both captures pixel-verified against the
-exact colors `panels/hud.rs` paints: bars present in both, the objective title
+exact colors `native-ui/src/hud.rs` paints: bars present in both, the objective title
 appearing only after the fragment displayed objective 10. Two real defects
 the first captures exposed and closed: the bench-window HUD suppression keyed
 on `bench.frames_target` (which stays set through `--bench-hold`, so the bars
@@ -1849,6 +1849,57 @@ front door opens onto Goodsprings.
   range trigger asks twice in one frame); a Travel package to the current location
   stays where the actor is; and a script's `player.equipitem <weapon>` wields it
   (the bark hands over a Varmint Rifle). `fnv-vcg02-route.sh` gates all of it.
+
+**Fallout 3's birth (2026-11-17).** `--game fo3 --new-game` opens Vault 101 (`Vault101d`)
+and starts the quest the shipped `Fallout_default.ini` names in `SCharGenQuest`, CG00
+("Birth", `0001f388`), at stage 0: the same start as VCG00, now read from the INI for
+both games (`chargen_quest`). The new-game handler of `Fallout3.exe` enables that quest
+(`TESQuest::SetEnabled`), and nothing else starts it. CG00's own scripts then run
+(stages 0, 5, 6, 8, 9, 10, 18, 20, 22, 38, 40, 42, 60, 62, 65, 80, 85, 90, 100): the "Choose
+sex" message box (`ui.answer`), the name entry (`chargen name`), the race and sex page
+(`chargen race`), and the quest stops at 100 and CG01 ("Baby Steps") starts at its stages
+0, 5 and 10. Every stage's result script reported `Completed`. Observed in one headless
+run, driven by the console; nothing was watched on screen, and which commands inside those
+scripts had an effect (the imod fades, `addscriptpackage` for the player, the actors'
+`evp` animations, the baby's cry) was not checked.
+
+**Oblivion's prison (2026-11-18).** `--game oblivion --new-game` opens the Imperial Prison
+(`ImperialDungeon01`) and starts `Charactergen` (`0002466E`) at stage 0. `Oblivion.exe` names it as
+the compiled-in default of `sCharGenQuest` (`Oblivion_default.ini` does not set it), and its
+new-game handler (`0x5b5df0`) enables it. Stage 5 starts MQ01 (the tutorial quest) and does
+`player.moveto CGPlayerStartMarker`. Oblivion's player `MoveTo` was declined because the CS says it
+also ends the script; it now queues the move as Fallout's does and ends the script
+(`Action::Returned`).
+
+Observed in headless runs, the player standing within 610 units of `CGValenDrethTauntMarker` (the start
+marker is about 620 away, so the original player walks a few steps): stages 0, 5, 6, Valen Dreth's taunts
+(`tauntCount=4`), 9, then the Emperor conversation through `CharGenMain` (Renote's, Baurus's "Yessir."
+which sets 10, Renote's `OnPackageDone` which sets 12) to 13. Baurus's cross-cell travel was what held
+it at 9: his package `BaurusGuardMartinCloudRulerGreatHall` carries `GetStage MQ05 >= 90` (false) beside an
+uncatalogued condition function (230), and package selection passed a whole list for one unreadable term,
+so he left for the Cloud Ruler Temple and his script stopped. Selection now passes a list unless a
+readable term refutes it (`evaluate_unless_refuted`), still open on the unreadable ones.
+
+Stage 14 is set by `CGTriggerZoneCellScript`'s `OnTrigger player` on reference `00097A3B` (base
+`00097A3C`, model `meshes\Dungeons\Misc\Triggers\TrigZone02.NIF`, scale 1.3). Oblivion authors a trigger
+zone as a Havok phantom in its model (a `bhkSimpleShapePhantom` over a `bhkBoxShape`; there is no `XPRM`
+on the reference and no `BSBound`), and the engine built volumes from `XPRM` only, so the reference got
+no `TriggerVolume` and its `OnTrigger` never ran. A scripted static whose script has a trigger block
+and whose model authors a phantom now gets a volume from the cached `phantom_bounds`, oriented and scaled
+with the placement (`trigger_volume_from_phantom`, `has_trigger_block`). This zone is a strip about 54
+units wide and 534 long across a raised platform at `x ~ 810`.
+
+Observed headless: with the player moved onto that platform once the quest was at 13, stage 14 fired at
+once. It stops at 14: stage 15 is set by Glenroy's `OnPackageDone CGGlenroyToMarkerB`, whose package is a
+Travel to the player (`PLDT` type 0, target `0x14`, radius 120). The arrival event already fires; Glenroy
+never arrives. He walks straight and stalls against geometry near (24, 133, -330), and Oblivion's walk
+graph (`PGRD`, no `NAVM`) was not read at all. Travel now routes over a cell's pathgrid
+(`systems/pathgrid_path.rs`, `PathGridTile`) once the character controller has blocked its straight walk
+for 1.5 s (every walking mover does, see [navmesh-pathfinding.md §11](navmesh-pathfinding.md#11-oblivion-pathgrids-pgrd)); routing every walk over the grid from the start sent the party into the stair walls. It still
+stops at 14: the Emperor's party spawn on the prison stairs and hover 100-150 units above the grid's points
+(NPCs have no gravity), and the grid's heights do not match the surfaces they stand on, so the grid route
+from Glenroy's stall point does not reach the platform either. The next piece is why they spawn above the
+stair and hover, not more pathing. Nothing was watched on screen.
 
 **Not modelled yet.** The movies' mute and pause-music flags, Papyrus
 `Game.PlayBink`, the INI start sequences, which audio track a movie plays (PRD `bink-video-playback`,

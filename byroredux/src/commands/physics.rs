@@ -31,11 +31,9 @@ use byroredux_physics::{CharacterController, PhysicsWorld};
 fn reference_point(world: &World) -> Option<(&'static str, Vec3, Option<EntityId>)> {
     let transforms = world.query::<GlobalTransform>()?;
     if let Some(player) = crate::systems::PlayerEntity::get(world)
-    {
-        if let Some(transform) = transforms.get(player) {
+        && let Some(transform) = transforms.get(player) {
             return Some(("player", transform.translation, Some(player)));
         }
-    }
     let camera = world
         .try_resource::<ActiveCamera>()
         .map(|active| active.0)?;

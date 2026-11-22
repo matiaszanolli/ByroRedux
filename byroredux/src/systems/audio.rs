@@ -380,11 +380,10 @@ fn sync_contact_force_subscription(world: &World, enabled: bool) {
     let changed = world
         .try_resource::<byroredux_physics::PhysicsWorld>()
         .is_some_and(|pw| pw.contact_force_events_enabled() != enabled);
-    if changed {
-        if let Some(mut pw) = world.try_resource_mut::<byroredux_physics::PhysicsWorld>() {
+    if changed
+        && let Some(mut pw) = world.try_resource_mut::<byroredux_physics::PhysicsWorld>() {
             pw.set_contact_force_events_enabled(enabled);
         }
-    }
 }
 
 pub(crate) fn impact_audio_system(world: &World, _dt: f32) {
@@ -640,11 +639,10 @@ pub(crate) fn water_audio_system(world: &World, dt: f32) {
         None
     };
     drop(audio_world);
-    if let Some(surface) = played_ripple_surface {
-        if let Some(mut state) = world.try_resource_mut::<crate::components::WaterAudioState>() {
+    if let Some(surface) = played_ripple_surface
+        && let Some(mut state) = world.try_resource_mut::<crate::components::WaterAudioState>() {
             state.ripple_cooldowns.insert(surface, RIPPLE_COOLDOWN_SECS);
         }
-    }
 }
 
 // ── M44 Phase 3.5 — footstep_system regression tests ──────────────

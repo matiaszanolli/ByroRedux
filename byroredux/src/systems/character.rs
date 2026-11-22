@@ -384,6 +384,10 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     // not-already-pressed — see `wants_jump` latch on the controller).
     let jump_fired =
         want_jump_now && (controller.is_grounded || swim.is_some()) && !controller.wants_jump;
+    if jump_fired && swim.is_none() {
+        // #7051 — UESP: "each jump or dodge" feeds Acrobatics (Oblivion; other rulesets queue nothing).
+        crate::skill_use_emit::on_jump(world);
+    }
     let vertical_velocity = match swim {
         Some(state) => swim_vertical_velocity(
             controller.vertical_velocity,
@@ -603,6 +607,11 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
         swim.is_some(),
     );
 
+    // #7056 — the time this body has spent falling (below the height it last stood at), reported on the frame it lands.
+    let landed_fall = world
+        .try_resource_mut::<byroredux_core::character::FallTracker>()
+        .and_then(|mut tracker| tracker.step([new_pos.x, new_pos.y, new_pos.z], grounded, swim.is_some(), dt));
+
     // Diagnostic for M28.5 smoke-testing — log body state for the
     // first 5 frames + when grounded transitions + every 60 frames
     // if airborne. Surfaces "I fell into the void" / "I'm stuck in a
@@ -699,6 +708,9 @@ pub(crate) fn character_controller_system(world: &World, dt: f32) {
     sync_player_water_contact(world, player_entity, water_contact, current_pos.y);
     if drowning_damage.whole > 0.0 {
         apply_player_drowning_damage(world, player_entity, drowning_damage.whole);
+    }
+    if let Some(seconds) = landed_fall {
+        fall_landing(world, player_entity, seconds);
     }
     // #5548 — authored harmful-water damage is NOT applied here. The player
     // publishes its column as a `WaterContact` just above and carries
@@ -995,18 +1007,22 @@ pub(crate) fn place_character_body(
             }
         }
     }
-    if let Some(mut gq) = world.query_mut::<GlobalTransform>() {
-        if let Some(g) = gq.get_mut(body) {
+    if let Some(mut gq) = world.query_mut::<GlobalTransform>()
+        && let Some(g) = gq.get_mut(body) {
             g.translation = pos;
             if let Some(rotation) = rotation {
                 g.rotation = rotation;
             }
         }
-    }
-    if let Some(mut cq) = world.query_mut::<byroredux_physics::CharacterController>() {
-        if let Some(c) = cq.get_mut(body) {
+    if let Some(mut cq) = world.query_mut::<byroredux_physics::CharacterController>()
+        && let Some(c) = cq.get_mut(body) {
             c.clear_momentum();
         }
+    // #7227 — a placement ends any fall in flight, as it ends the momentum: the fall clock forgets a fall only on a
+    // one-frame move past `TELEPORT_DISTANCE`, so a quick-load or door arrival closer than that kept the pre-placement
+    // seconds and charged them on the first landing.
+    if let Some(mut tracker) = world.try_resource_mut::<byroredux_core::character::FallTracker>() {
+        *tracker = byroredux_core::character::FallTracker::default();
     }
     Some(byroredux_physics::set_kinematic_translation(world, body, pos))
 }
@@ -1135,16 +1151,14 @@ fn pin_camera_above_body(world: &byroredux_core::ecs::World, body_pos: Vec3, eye
         return;
     };
     let cam_pos = body_pos + Vec3::Y * eye_height;
-    if let Some(mut tq) = world.query_mut::<Transform>() {
-        if let Some(t) = tq.get_mut(cam_entity) {
+    if let Some(mut tq) = world.query_mut::<Transform>()
+        && let Some(t) = tq.get_mut(cam_entity) {
             t.translation = cam_pos;
         }
-    }
-    if let Some(mut gq) = world.query_mut::<GlobalTransform>() {
-        if let Some(g) = gq.get_mut(cam_entity) {
+    if let Some(mut gq) = world.query_mut::<GlobalTransform>()
+        && let Some(g) = gq.get_mut(cam_entity) {
             g.translation = cam_pos;
         }
-    }
 }
 
 pub fn toggle_player_mode(world: &mut byroredux_core::ecs::World) {
@@ -1156,18 +1170,33 @@ pub fn toggle_player_mode(world: &mut byroredux_core::ecs::World) {
         PlayerMode::FlyCam => PlayerMode::Character,
         PlayerMode::Character => PlayerMode::FlyCam,
     };
+    set_player_mode(world, next);
+}
 
-    // On Fly → Character, snap the character body to the active
-    // camera's position. Abort the toggle (stay in FlyCam) if the
-    // snap couldn't complete — matches the pre-extraction behavior:
-    // a body-less boot (`--mesh` / `--tree` / `--fly`) shouldn't
-    // silently flip into a PlayerMode with no body to control.
-    if matches!(next, PlayerMode::Character) && !snap_character_body_to_camera(world) {
-        return;
+/// Switch the player to `next`; returns whether the world is now in it.
+/// Shared by the F key ([`toggle_player_mode`]) and the `cam.fly` console
+/// command. Both run outside the parallel system window — the key handler
+/// holds `&mut World`, the command runs in the exclusive debug drain — which
+/// is what lets `camera_follow_system` only *read* `PlayerMode` in parallel.
+///
+/// On Fly → Character the character body snaps to the active camera's
+/// position; the switch is refused (staying in FlyCam) if the snap cannot
+/// complete, so a body-less boot (`--mesh` / `--tree` / `--fly`) never flips
+/// into a mode with no body to control. Character → Fly leaves the body
+/// where it stands and the camera where it is.
+pub fn set_player_mode(world: &byroredux_core::ecs::World, next: PlayerMode) -> bool {
+    let Some(current) = world.try_resource::<PlayerMode>().map(|r| *r) else {
+        return false;
+    };
+    if current == next {
+        return true;
     }
-
+    if matches!(next, PlayerMode::Character) && !snap_character_body_to_camera(world) {
+        return false;
+    }
     *world.resource_mut::<PlayerMode>() = next;
-    log::info!("Player mode → {:?} (F key — toggle walk/fly)", next);
+    log::info!("Player mode → {:?} (F key / cam.fly — toggle walk/fly)", next);
+    true
 }
 
 /// Compute the world-space horizontal motion vector for the character
@@ -1245,7 +1274,7 @@ pub(crate) fn player_current_drift(
 /// marker, so an absent storage means "no placed currents", never "no water".
 fn placed_current_flow_at(world: &World, pos: Vec3) -> Option<WaterFlow> {
     let current_q = world.query::<WaterCurrentVolume>()?;
-    let flow = current_q
+    current_q
         .iter()
         .find(|(_, current)| {
             let v = &current.volume;
@@ -1256,8 +1285,7 @@ fn placed_current_flow_at(world: &World, pos: Vec3) -> Option<WaterFlow> {
                 && pos.z >= v.min[2]
                 && pos.z <= v.max[2]
         })
-        .map(|(_, current)| current.flow);
-    flow
+        .map(|(_, current)| current.flow)
 }
 
 /// The nearest water column intersecting the player capsule, as sampled from
@@ -1666,6 +1694,23 @@ fn advance_breath(
     )
 }
 
+/// #7056 — a landing after `seconds` of falling: Oblivion's fall damage (`FallModel`, the `fJumpFall*` rule at the
+/// player's Acrobatics) comes off Health through the same sink drowning uses, and a damaging fall feeds Acrobatics once
+/// at usage 1 (UESP: 3.0 "each time you take damage from falling ... it does not matter how much damage"). A game with
+/// no fall rules takes none. Returns the damage dealt.
+pub(crate) fn fall_landing(world: &World, player: EntityId, seconds: f32) -> f32 {
+    let Some(model) = world.try_resource::<byroredux_core::character::FallModel>().map(|model| *model) else {
+        return 0.0;
+    };
+    let damage = model.damage(seconds, crate::detection::actor_value(world, player, "Acrobatics"));
+    if damage > 0.0 {
+        log::info!("fall: landed after {seconds:.2}s of falling, {damage:.1} damage");
+        apply_player_drowning_damage(world, player, damage);
+        crate::skill_use_emit::on_fall(world);
+    }
+    damage
+}
+
 fn apply_player_drowning_damage(world: &World, player: EntityId, damage: f32) {
     let Some(vitals) = world.get::<ActorVitals>(player).map(|v| *v) else {
         return;
@@ -1878,6 +1923,28 @@ mod tests {
         place_character_body(&world, body, pos, Some(Quat::IDENTITY));
         assert_eq!(world.get::<Transform>(body).unwrap().rotation, Quat::IDENTITY);
         assert_eq!(world.get::<GlobalTransform>(body).unwrap().rotation, Quat::IDENTITY);
+    }
+
+    /// #7227 — a placement within `TELEPORT_DISTANCE` of a fall in flight (a quick-load or door arrival a few metres from
+    /// where the player was falling) ends that fall: the first landing after it costs nothing.
+    #[test]
+    fn place_character_body_ends_a_fall_in_flight() {
+        use byroredux_core::character::FallTracker;
+        let mut world = World::new();
+        let body = world.spawn();
+        world.insert(body, Transform::from_translation(Vec3::ZERO));
+        world.insert_resource(FallTracker::default());
+        {
+            let mut tracker = world.resource_mut::<FallTracker>();
+            assert_eq!(tracker.step([0.0, 100.0, 0.0], true, false, 0.1), None, "standing on the ledge");
+            for frame in 1..=5 {
+                assert_eq!(tracker.step([0.0, 100.0 - frame as f32 * 10.0, 0.0], false, false, 0.1), None);
+            }
+        }
+        let landing = Vec3::new(0.0, 60.0, 50.0);
+        place_character_body(&world, body, landing, None);
+        let landed = world.resource_mut::<FallTracker>().step([landing.x, landing.y, landing.z], true, false, 0.1);
+        assert_eq!(landed, None, "the half second of pre-placement falling is not charged");
     }
 
     #[test]
@@ -2908,6 +2975,57 @@ mod tests {
                 && production.contains("damage_per_second: state.damage_per_second"),
             "the player must keep publishing the damage on its WaterContact"
         );
+    }
+
+    /// #7056: a landing after a fall that hurts takes the documented damage off Health and feeds Acrobatics once at usage 1
+    /// (3.0), however much it took; a fall too short to hurt, and a game with no fall rules, do neither.
+    #[test]
+    fn a_damaging_landing_costs_health_and_feeds_acrobatics() {
+        use byroredux_core::character::{CharacterRuleset, FallModel, LevelingModel};
+        use byroredux_plugin::esm::records::{AvifRecord, EsmIndex};
+        use byroredux_scripting::oblivion_skill_use::PendingSkillUse;
+        const ACROBATICS_AV: u32 = 0x3E;
+        let build = |model: Option<FallModel>| {
+            let mut world = World::new();
+            world.register::<ActorValues>();
+            world.register::<ActorVitals>();
+            world.register::<Dead>();
+            world.register::<byroredux_scripting::story_manager::StoryEvent>();
+            world.insert_resource(crate::combat::PendingDeathReconciliations::default());
+            world.insert_resource(CharacterRuleset::new(LevelingModel::OBLIVION));
+            world.insert_resource(PendingSkillUse::default());
+            let mut index = EsmIndex::default();
+            index.actor_values.insert(ACROBATICS_AV, AvifRecord { form_id: ACROBATICS_AV, editor_id: "AVAcrobatics".into(), ..Default::default() });
+            world.insert_resource(byroredux_scripting::ActorValueNames::from_index(&index));
+            if let Some(model) = model {
+                world.insert_resource(model);
+            }
+            let player = world.spawn();
+            world.insert(player, ActorVitals { health: 7 });
+            world.insert(player, ActorValues::from_pairs([(7, 200.0), (ACROBATICS_AV, 0.0)]));
+            (world, player)
+        };
+        let acrobatics = |world: &World| -> Vec<(u32, f32)> { world.resource::<PendingSkillUse>().0.iter().map(|r| (r.skill, r.amount)).collect() };
+        // A 0.5 s fall at Acrobatics 0: 0.5 * 80 * 1.25 = 50.
+        let (world, player) = build(Some(FallModel::OBLIVION));
+        let damage = fall_landing(&world, player, 0.5);
+        assert!((damage - 50.0).abs() < 1e-3, "{damage}");
+        assert!((world.get::<ActorValues>(player).unwrap().current(7) - 150.0).abs() < 1e-3);
+        assert_eq!(acrobatics(&world), vec![(26, 3.0)], "Acrobatics, usage 1");
+        // A fall under fJumpFallTimeMin does nothing and feeds nothing.
+        let (world, player) = build(Some(FallModel::OBLIVION));
+        assert_eq!(fall_landing(&world, player, 0.1), 0.0);
+        assert_eq!(world.get::<ActorValues>(player).unwrap().current(7), 200.0);
+        assert!(acrobatics(&world).is_empty());
+        // A game with no fall rules takes no fall damage.
+        let (world, player) = build(None);
+        assert_eq!(fall_landing(&world, player, 2.0), 0.0);
+        assert_eq!(world.get::<ActorValues>(player).unwrap().current(7), 200.0);
+        assert!(acrobatics(&world).is_empty());
+        // A fall that kills still feeds (the damage counts, not the survival) and marks the death.
+        let (world, player) = build(Some(FallModel::OBLIVION));
+        fall_landing(&world, player, 3.0);
+        assert!(world.get::<Dead>(player).is_some());
     }
 
     #[test]

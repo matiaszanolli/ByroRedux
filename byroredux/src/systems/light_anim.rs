@@ -24,8 +24,8 @@
 // (see the note in `animate_lights_system`). Re-enabling it means adding
 // back the `Transform` write pass and its import.
 use byroredux_core::ecs::{
-    EntityId, LightFlicker, LightSource, World, LIGHT_FLAG_FLICKER, LIGHT_FLAG_FLICKER_SLOW,
-    LIGHT_FLAG_PULSE, LIGHT_FLAG_PULSE_SLOW,
+    LightFlicker, LightSource, World, LIGHT_FLAG_FLICKER, LIGHT_FLAG_FLICKER_SLOW, LIGHT_FLAG_PULSE,
+    LIGHT_FLAG_PULSE_SLOW,
 };
 
 // #6717 — the ESM-LIGH translation lives in `light_translate`; the in-file tests read it from there.
@@ -84,12 +84,20 @@ fn hash_to_unit(seed: u32) -> f32 {
 
 /// Compute the procedural intensity multiplier for one flickering
 /// light from its shared behavior, FNAM parameters, and the global clock.
-/// Pure and deterministic in `(entity, flicker, total_time)` so it
+/// Pure and deterministic in `(noise_seed, flicker, total_time)` so it
 /// is unit-testable without a `World` (PERF-D4-NEW-04 / #1380).
+///
+/// `noise_seed` is the per-light seed of the FLICKER hash. The system
+/// passes the bits of the light's stored `phase_offset_secs`, which
+/// `attach_light_flicker_if_needed` derives from the light's world
+/// position — never its `EntityId`, whose value depends on how many
+/// entities were spawned before it (M-LIGHT A11: a scratch entity added
+/// at boot re-seeded every flickering light in every scene, #7091). The stored
+/// offset also survives a save / load, where entity ids do not.
 ///
 /// Returns the value written to `LightSource.intensity`: `1.0` when no
 /// animation bit is set, otherwise `1 + modulation · amplitude · damping`.
-fn flicker_intensity(entity: EntityId, flicker: &LightFlicker, total_time: f32) -> f32 {
+fn flicker_intensity(noise_seed: u32, flicker: &LightFlicker, total_time: f32) -> f32 {
     let flags = flicker.animation_flags;
     // Slow variants run at half rate by halving the angular velocity.
     // Cheaper than reading period at half the FNAM authored value
@@ -156,9 +164,9 @@ fn flicker_intensity(entity: EntityId, flicker: &LightFlicker, total_time: f32) 
         // still-visible cusps a pure linear lerp leaves at bucket
         // boundaries.
         let t = bucket_t * bucket_t * (3.0 - 2.0 * bucket_t);
-        let entity_seed = entity.wrapping_mul(0x9E37_79B9);
-        let n0 = hash_to_unit(entity_seed ^ bucket);
-        let n1 = hash_to_unit(entity_seed ^ bucket.wrapping_add(1));
+        let light_seed = noise_seed.wrapping_mul(0x9E37_79B9);
+        let n0 = hash_to_unit(light_seed ^ bucket);
+        let n1 = hash_to_unit(light_seed ^ bucket.wrapping_add(1));
         n0 * (1.0 - t) + n1 * t
     } else {
         0.0
@@ -192,7 +200,7 @@ pub(crate) fn animate_lights_system(world: &World, _dt: f32) {
         // writes; the renderer reads `color · dimmer · intensity` and doesn't
         // care which authored it. Source-format flags remain untouched on
         // `LightSource`; only the decoded shared behavior drives animation.
-        light.intensity = flicker_intensity(entity, flicker, total_time);
+        light.intensity = flicker_intensity(flicker.phase_offset_secs.to_bits(), flicker, total_time);
     }
 
     // Position jitter is DISABLED (Phase 19.5): pure-random hash noise at
@@ -590,10 +598,10 @@ mod tests {
             a >= 1.0 - half - 1e-6 && a <= 1.0 + half + 1e-6,
             "out of band: {a}"
         );
-        // Distinct entity seeds generally diverge → confirm the seed
+        // Distinct per-light seeds generally diverge → confirm the seed
         // actually feeds the hash (not a constant).
         let other = flicker_intensity(43, &f, 1.234);
-        assert_ne!(a, other, "entity seed must influence the noise");
+        assert_ne!(a, other, "the per-light seed must influence the noise");
     }
 
     #[test]

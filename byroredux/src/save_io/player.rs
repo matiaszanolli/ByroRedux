@@ -220,8 +220,8 @@ pub fn apply_player_pose(world: &mut World, pose: &PlayerPose) -> bool {
     // awareness a pose was just restored, so the camera-only fix was
     // visible for exactly one frame before being silently overwritten —
     // same mechanism as the door-transition case `#1874` fixed.
-    if character_now {
-        if let Some(body) = body {
+    if character_now
+        && let Some(body) = body {
             // `pos` is the saved *camera* position when the pose was
             // captured in FlyCam mode (see `capture_player_pose`'s
             // `target` selection) — convert it to the body's feet position
@@ -246,7 +246,6 @@ pub fn apply_player_pose(world: &mut World, pose: &PlayerPose) -> bool {
             crate::systems::place_character_body(world, body, body_pos, None);
             return true;
         }
-    }
 
     // FlyCam, or Character-saved with no live body: drop the camera at the
     // saved spot with a yaw/pitch-derived rotation.

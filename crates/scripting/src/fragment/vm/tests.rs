@@ -993,6 +993,8 @@ fn hit_events_are_registered_single_shot_and_filtered() {
                 sneak_attack: sneak,
                 bash_attack: false,
                 blocked: false,
+                arrow: false,
+                ignores_resistance: false,
             },
         );
         // The automatic delivery leaves it alone, the registration takes it.
@@ -2428,6 +2430,8 @@ fn on_hit_receives_the_aggressor_weapon_and_flags() {
             sneak_attack: false,
             bash_attack: false,
             blocked: false,
+            arrow: false,
+            ignores_resistance: false,
         },
     );
     // #5991 — `OnHit` is delivered by the hit pass (scheduled after every
@@ -2635,7 +2639,10 @@ fn another_quests_members_read_by_their_declared_type() {
 
 /// `ScriptName.Fn()` calls a global function of another script (no `Self`);
 /// `Game.GetFormFromFile` resolves a plugin-local id through the load order,
-/// its top byte unused.
+/// its top byte unused. The load order registers its plugins under their
+/// case-folded basenames, so the script's `"Skyrim.esm"` must find the
+/// identity registered as `skyrim.esm` (LMC-ID-001: before the fold the two
+/// hashed apart and the call returned None).
 #[test]
 fn global_functions_and_forms_from_files() {
     let util = parsed_source(
@@ -2663,12 +2670,12 @@ fn global_functions_and_forms_from_files() {
     }
     world.insert_resource(crate::load_order::LoadOrderIdentity::new(vec![(
         byroredux_plugin::esm::reader::GlobalSlot::Regular(0),
-        PluginId::from_filename("Skyrim.esm"),
+        PluginId::from_filename("skyrim.esm"),
     )]));
     world.register::<FormIdComponent>();
     let mut pool = FormIdPool::default();
     let id = pool.intern(FormIdPair {
-        plugin: PluginId::from_filename("Skyrim.esm"),
+        plugin: PluginId::from_filename("skyrim.esm"),
         local: LocalFormId(GUARD),
     });
     world.insert_resource(pool);
@@ -3917,6 +3924,37 @@ fn get_current_real_time_reads_the_engine_clock() {
     world.resource_mut::<QuestStageState>().set_stage(Q, 10);
     crate::fragment::quest_fragment_dispatch_system(&world);
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+}
+
+/// GUI-REG-011 — `Utility.IsInMenuMode` is true exactly while the menu registry holds a menu that
+/// pauses the game: the inventory does, the dialogue menu and the HUD do not.
+#[test]
+fn is_in_menu_mode_reads_the_menu_registry() {
+    use byroredux_core::ecs::resources::menu_registry::{MenuGame, MenuRegistry, MenuSurface};
+    let script = parsed_source(
+        "ScriptName QF_VmMenuMode extends Quest\n\
+         Function Fragment_1()\n\
+           If Utility.IsInMenuMode()\n\
+             Self.SetStage(20)\n\
+           Else\n\
+             Self.SetStage(30)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let page = |name: &str| (name.to_owned(), MenuSurface::Native { page: "test".into() });
+    let answer = |open: &[&str]| {
+        let mut world = world_with_fragment(Arc::clone(&script));
+        let mut registry = MenuRegistry::new(MenuGame::Skyrim);
+        registry.publish(open.iter().map(|name| page(name)));
+        world.insert_resource(registry);
+        world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+        crate::fragment::quest_fragment_dispatch_system(&world);
+        world.resource::<QuestStageState>().get_stage(Q)
+    };
+    assert_eq!(answer(&["HUD Menu", "InventoryMenu"]), 20, "the inventory pauses the game");
+    assert_eq!(answer(&["HUD Menu", "Dialogue Menu"]), 30, "the dialogue menu does not");
+    assert_eq!(answer(&["HUD Menu"]), 30, "nor the HUD alone");
 }
 
 /// `IsInDialogueWithPlayer` is true for the NPC whose response surface is open.
@@ -6216,4 +6254,183 @@ fn play_bink_freezes_the_run_until_the_movie_ends() {
     world.resource_mut::<crate::obscript_more::MoviePlaying>().0 = false;
     crate::fragment::fragment_continuation_system(&world, 0.0);
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20, "resumed after the movie");
+}
+
+/// M48 GUI-EVT-001/002 — `RegisterForMenuOpenCloseEvent` registers the calling script for a menu
+/// name; each registry opening and closing of that menu reaches its `OnMenuOpenCloseEvent(asMenuName,
+/// abOpening)` as its own run, another menu's do not; the registration stands until it is
+/// unregistered, and it ends when the owning quest stops.
+#[test]
+fn menu_open_close_events_reach_registered_scripts() {
+    use byroredux_core::ecs::resources::menu_registry::{MenuGame, MenuRegistry, MenuSurface};
+    let script = parsed_source(
+        "ScriptName QF_VmMenuEvents extends Quest\n\
+         Int Opened\n\
+         Int Closed\n\
+         Function Fragment_1()\n\
+           RegisterForMenuOpenCloseEvent(\"ContainerMenu\")\n\
+         EndFunction\n\
+         Function Fragment_2()\n\
+           UnregisterForMenuOpenCloseEvent(\"containermenu\")\n\
+         EndFunction\n\
+         Event OnMenuOpenCloseEvent(String asMenuName, Bool abOpening)\n\
+           If asMenuName == \"ContainerMenu\"\n\
+             If abOpening\n\
+               Opened += 1\n\
+             Else\n\
+               Closed += 1\n\
+             EndIf\n\
+           EndIf\n\
+         EndEvent\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.insert_resource(MenuRegistry::new(MenuGame::Fallout4));
+    world.resource_mut::<crate::QuestStageFragments>().insert(
+        Q,
+        20,
+        vec![Effect::Interpret { script: "QF_VmMenuEvents".into(), function: "Fragment_2".into(), args: Vec::new(), resume: None }],
+    );
+    let variable = |world: &World, name: &str| {
+        world.resource::<crate::QuestScriptVariables>().get(Q, crate::QuestScriptVariables::property_key(name))
+    };
+    let menu = || MenuSurface::Movie { path: "interface\\containermenu.swf".into(), profile: "Fallout 4".into() };
+    let toggle = |world: &World, name: &str, open: bool| {
+        {
+            let mut registry = world.resource_mut::<MenuRegistry>();
+            if open {
+                registry.open(name, menu());
+            } else {
+                registry.close(name);
+            }
+        }
+        crate::menu_open_close_event_system(world, 0.0);
+        crate::fragment::fragment_continuation_system(world, 0.0);
+    };
+
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<crate::MenuEventRegistrations>().entries().len(), 1);
+    toggle(&world, "ContainerMenu", true);
+    assert_eq!((variable(&world, "Opened"), variable(&world, "Closed")), (Some(1.0), None), "the opening");
+    toggle(&world, "PauseMenu", true);
+    toggle(&world, "PauseMenu", false);
+    assert_eq!((variable(&world, "Opened"), variable(&world, "Closed")), (Some(1.0), None), "another menu is not heard");
+    toggle(&world, "ContainerMenu", false);
+    assert_eq!(variable(&world, "Closed"), Some(1.0), "the closing");
+    toggle(&world, "ContainerMenu", true);
+    assert_eq!(variable(&world, "Opened"), Some(2.0), "not one-shot");
+    toggle(&world, "ContainerMenu", false);
+
+    // Unregistered (the name compared case-insensitively): nothing more arrives.
+    world.resource_mut::<QuestStageState>().set_stage(Q, 20);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert!(world.resource::<crate::MenuEventRegistrations>().entries().is_empty());
+    toggle(&world, "ContainerMenu", true);
+    toggle(&world, "ContainerMenu", false);
+    assert_eq!((variable(&world, "Opened"), variable(&world, "Closed")), (Some(2.0), Some(2.0)));
+
+    // GUI-EVT-002: registered again, then the quest stops — the registration goes with it.
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<crate::MenuEventRegistrations>().entries().len(), 1);
+    world.resource_mut::<QuestStageState>().stop(Q);
+    crate::reference_script_event_system(&world, 0.0);
+    assert!(world.resource::<crate::MenuEventRegistrations>().entries().is_empty(), "the stopped quest unregistered");
+    toggle(&world, "ContainerMenu", true);
+    assert_eq!(variable(&world, "Opened"), Some(2.0));
+}
+
+/// A menu registration on another quest is not modelled: the check declines it (the run would
+/// stop) instead of registering the wrong script.
+#[test]
+fn menu_open_close_registration_on_another_quest_is_declined() {
+    let script = parsed_source(
+        "ScriptName QF_VmMenuOther extends Quest\n\
+         Quest Property Other Auto\n\
+         Function Fragment_1()\n\
+           Other.RegisterForMenuOpenCloseEvent(\"ContainerMenu\")\n\
+         EndFunction\n",
+    );
+    let reason = check_function_reason(script, "Fragment_1", None).err().unwrap_or_default();
+    assert!(reason.contains("registerformenuopencloseevent"), "{reason}");
+}
+
+/// M48 #6667 — `Message.Show()` for its value is latent (CK *Show - Message*: "returns the
+/// button pressed"): MQ101's `If TempChooseSidesMessage.Show() == 0` raises the box, the run
+/// waits for the answer, and the statement runs again with it, taking the branch it names. A
+/// box a load took resumes with its default, button 0.
+#[test]
+fn message_show_waits_for_its_answer_and_branches_on_it() {
+    const MESSAGE: u32 = 0x0001_0F10;
+    const SOURCE: &str = "ScriptName QF_VmShow extends Quest\n\
+        Message Property TempChooseSidesMessage Auto\n\
+        Function Fragment_1()\n\
+          Utility.Wait(1.0)\n\
+          If TempChooseSidesMessage.Show() == 0\n\
+            Self.SetStage(6)\n\
+          Else\n\
+            Self.SetStage(7)\n\
+          EndIf\n\
+        EndFunction\n";
+    let run = |answer: Option<usize>| {
+        let (script, errors) = byroredux_papyrus::parse_script(SOURCE).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let script = Arc::new(script);
+        if let Err(why) = crate::fragment::vm::checker::check_function_reason(Arc::clone(&script), "Fragment_1", None) { panic!("{why}") }
+        let mut world = World::new();
+        crate::register(&mut world);
+        let player = world.spawn();
+        world.insert_resource(PapyrusPlayerEntity(player));
+        world.insert_resource(QuestStageState::default());
+        let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+        index.messages.insert(
+            MESSAGE,
+            byroredux_plugin::esm::records::MesgRecord {
+                form_id: MESSAGE,
+                description: "Who will you follow?".into(),
+                message_box: true,
+                buttons: vec!["Hadvar".into(), "Ralof".into()],
+                ..Default::default()
+            },
+        );
+        crate::install_message_catalog(&mut world, &index);
+        let mut vmad = vmad();
+        vmad.scripts[0].name = "QF_VmShow".into();
+        vmad.scripts[0].properties.push(ScriptProperty {
+            name: "TempChooseSidesMessage".into(),
+            status: 1,
+            value: PropertyValue::Object { form_id: MESSAGE, alias: -1 },
+        });
+        {
+            let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+            fragments.insert_vmad(Q, vmad);
+            fragments.insert_vm_script(Arc::clone(&script));
+            fragments.insert(
+                Q,
+                0,
+                vec![Effect::Interpret { script: "QF_VmShow".into(), function: "Fragment_1".into(), args: Vec::new(), resume: None }],
+            );
+        }
+        world.resource_mut::<QuestStageState>().set_stage(Q, 0);
+        crate::fragment::quest_fragment_dispatch_system(&world);
+        crate::fragment::fragment_continuation_system(&world, 1.0);
+        let raised = std::mem::take(&mut world.resource_mut::<crate::PendingScriptMessages>().0);
+        assert_eq!(raised.len(), 1, "the box is up");
+        let crate::MessageAnswer::Papyrus(ticket) = raised[0].answer else { panic!("{:?}", raised[0].answer) };
+        crate::fragment::fragment_continuation_system(&world, 5.0);
+        assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 0, "the run waits for the answer");
+        match answer {
+            Some(button) => crate::messages::record_papyrus_answer(&world, ticket, button),
+            // A load drops the box and its ticket.
+            None => world.resource_mut::<crate::messages::PapyrusMessageAnswers>().forget_boxes(),
+        }
+        crate::fragment::fragment_continuation_system(&world, 0.0);
+        assert!(world.resource::<crate::PendingScriptMessages>().0.is_empty(), "the replay reads the answer; no second box");
+        world.resource::<QuestStageState>().get_stage(Q)
+    };
+    assert_eq!(run(Some(0)), 6, "Hadvar");
+    assert_eq!(run(Some(1)), 7, "Ralof");
+    assert_eq!(run(None), 6, "a box a load took resumes with its default");
 }

@@ -56,7 +56,8 @@ pub fn pixel_angle(fov_y_radians: f32, height: u32) -> f32 {
 }
 
 /// Ratio ping-pong and correction images: RGBA16F. The ratio images carry
-/// the pixel's kernel radius in pixels in alpha (PAF-005).
+/// the pixel's kernel radius in pixels in alpha (PAF-005). The correction
+/// image carries the radius normalised to the active tier's reach (PAF-011).
 const FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 
 /// Screen-sized bytes per pixel this pass allocates per frame-in-flight:
@@ -381,9 +382,16 @@ impl ShadowFilterPipeline {
         frame: usize,
         reservoirs: &ReservoirBuffers,
         iterations: u32,
+        penumbra_search: bool,
     ) {
         let iterations = iterations.clamp(1, SHADOW_FILTER_MAX_ITERATIONS);
-        let pixel_angle = pixel_angle(self.fov_y_radians, self.height);
+        // PAF-012: `pixelAngle` 0 is the shader's pre-PAF path (no blocker
+        // search, full reach, no Gaussian).
+        let pixel_angle = if penumbra_search {
+            pixel_angle(self.fov_y_radians, self.height)
+        } else {
+            0.0
+        };
         let reach_max = chain_reach(iterations);
         let images = &self.frames[frame];
         let reservoir_barrier = vk::BufferMemoryBarrier::default()

@@ -16,6 +16,8 @@ pub(super) enum DeferredCinematicPresentationEffect {
         show_controls_disabled_message: bool,
     },
     ShowRaceMenu,
+    /// Fallout 4's `uiMode` 1–4 (GUI-PAGE-003).
+    ShowAppearanceMenu(u8),
     RequestSave {
         auto: bool,
     },
@@ -58,6 +60,8 @@ pub struct DeferredFragmentEffects {
     /// BIK-PRES-006 — the VM run called `Game.PlayBink`: its suspension waits for the movie, not a
     /// delay.
     pub(crate) awaits_movie: bool,
+    /// M48 #6667 — the VM run waits on the answer to this `Message.Show()` box.
+    pub(crate) awaits_message: Option<u32>,
     pub(super) quest_definitions: Option<crate::QuestDefinitionRegistry>,
     /// #2660 (SCR-D6-NEW11-03) — snapshot of `SceneActorBindings`, cloned
     /// before the quest-state guards so `resolve_object` can resolve
@@ -169,6 +173,9 @@ pub struct DeferredFragmentEffects {
     /// M47.2 — hit event registration changes, applied to
     /// [`super::HitRegistrations`] after the guards drop.
     pub(in crate::fragment) hit_requests: Vec<(u32, String, super::HitRequest)>,
+    /// M48 GUI-EVT-001 — menu open / close registration changes, applied to
+    /// [`super::MenuEventRegistrations`] after the guards drop.
+    pub(in crate::fragment) menu_event_requests: Vec<(u32, String, super::MenuEventRequest)>,
     /// `RegisterForAnimationEvent` changes, applied to
     /// [`super::AnimationEventRegistrations`] after the guards drop.
     pub(in crate::fragment) animation_event_requests: Vec<(u32, String, super::AnimationEventRequest)>,
@@ -320,6 +327,7 @@ impl DeferredFragmentEffects {
     pub fn new(world: &World) -> Self {
         Self {
             awaits_movie: false,
+            awaits_message: None,
             quest_definitions: world
                 .try_resource::<crate::QuestDefinitionRegistry>()
                 .map(|definitions| definitions.clone()),
@@ -373,6 +381,7 @@ impl DeferredFragmentEffects {
             follower_changes: Vec::new(),
             distance_requests: Vec::new(),
             hit_requests: Vec::new(),
+            menu_event_requests: Vec::new(),
             animation_event_requests: Vec::new(),
             sound_plays: Vec::new(),
             camera_shakes: Vec::new(),
@@ -459,6 +468,7 @@ impl DeferredFragmentEffects {
         self.flush_trap_hits(world);
         self.flush_sound_plays(world);
         self.flush_hit_requests(world);
+        self.flush_menu_event_requests(world);
         self.flush_animation_event_requests(world);
         self.flush_distance_requests(world);
         self.flush_follower_changes(world);
@@ -602,8 +612,8 @@ impl DeferredFragmentEffects {
     }
 
     fn flush_reference_variables(&mut self, world: &World) {
-        if !self.reference_variables.is_empty() {
-            if let Some(mut variables) = world.query_mut::<crate::vm_state::ScriptVariables>() {
+        if !self.reference_variables.is_empty()
+            && let Some(mut variables) = world.query_mut::<crate::vm_state::ScriptVariables>() {
                 for (entity, variable, value) in std::mem::take(&mut self.reference_variables) {
                     if variables.get_mut(entity).is_none() {
                         variables.insert(entity, crate::vm_state::ScriptVariables::default());
@@ -614,7 +624,6 @@ impl DeferredFragmentEffects {
                         .set_by_name(&variable, value);
                 }
             }
-        }
     }
 
     fn flush_event_requests(&mut self, world: &World) {
@@ -663,16 +672,14 @@ impl DeferredFragmentEffects {
         if !self.camera_shakes.is_empty() || !self.controller_shakes.is_empty() {
             let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world);
             if let Some(player) = player {
-                if let Some(mut shakes) = world.query_mut::<crate::papyrus_demo::CameraShakeCommand>() {
-                    if let Some(shake) = self.camera_shakes.last() {
+                if let Some(mut shakes) = world.query_mut::<crate::papyrus_demo::CameraShakeCommand>()
+                    && let Some(shake) = self.camera_shakes.last() {
                         shakes.insert(player, *shake);
                     }
-                }
-                if let Some(mut shakes) = world.query_mut::<crate::papyrus_demo::ControllerRumbleCommand>() {
-                    if let Some(shake) = self.controller_shakes.last() {
+                if let Some(mut shakes) = world.query_mut::<crate::papyrus_demo::ControllerRumbleCommand>()
+                    && let Some(shake) = self.controller_shakes.last() {
                         shakes.insert(player, *shake);
                     }
-                }
             }
             self.camera_shakes.clear();
             self.controller_shakes.clear();
@@ -685,7 +692,7 @@ impl DeferredFragmentEffects {
                 pending.0.extend(
                     self.trap_hits
                         .drain(..)
-                        .map(|(target, trap, damage)| crate::TrapHit { target, trap, damage, sneak_attack: false }),
+                        .map(|(target, trap, damage)| crate::TrapHit { target, trap, damage, sneak_attack: false, arrow: false, ignores_resistance: false }),
                 );
             }
             self.trap_hits.clear();
@@ -703,6 +710,12 @@ impl DeferredFragmentEffects {
 
     fn flush_hit_requests(&mut self, world: &World) {
         drain_into_resource::<super::HitRegistrations, _>(world, &mut self.hit_requests, |registrations, (owner, script, request)| {
+                registrations.request(owner, &script, &request);
+        });
+    }
+
+    fn flush_menu_event_requests(&mut self, world: &World) {
+        drain_into_resource::<super::MenuEventRegistrations, _>(world, &mut self.menu_event_requests, |registrations, (owner, script, request)| {
                 registrations.request(owner, &script, &request);
         });
     }
@@ -824,33 +837,30 @@ impl DeferredFragmentEffects {
     }
 
     fn flush_player_xp(&mut self, world: &World) {
-        if !self.player_xp.is_empty() {
-            if let Some(mut pending) =
+        if !self.player_xp.is_empty()
+            && let Some(mut pending) =
                 world.try_resource_mut::<crate::story_manager::PendingPlayerXp>()
             {
                 pending.0.append(&mut self.player_xp);
             }
-        }
     }
 
     fn flush_kills(&mut self, world: &World) {
-        if !self.kills.is_empty() {
-            if let Some(mut pending) =
+        if !self.kills.is_empty()
+            && let Some(mut pending) =
                 world.try_resource_mut::<crate::story_manager::PendingScriptKills>()
             {
                 pending.0.append(&mut self.kills);
             }
-        }
     }
 
     fn flush_story_events(&mut self, world: &World) {
-        if !self.story_events.is_empty() {
-            if let Some(mut pending) =
+        if !self.story_events.is_empty()
+            && let Some(mut pending) =
                 world.try_resource_mut::<crate::story_manager::PendingScriptStoryEvents>()
             {
                 pending.0.append(&mut self.story_events);
             }
-        }
     }
 
     fn flush_star_map_changes(&mut self, world: &World) {
@@ -860,23 +870,21 @@ impl DeferredFragmentEffects {
     }
 
     fn flush_map_markers(&mut self, world: &World) {
-        if !self.map_markers.is_empty() {
-            if let Some(mut markers) = world.try_resource_mut::<crate::MapMarkers>() {
+        if !self.map_markers.is_empty()
+            && let Some(mut markers) = world.try_resource_mut::<crate::MapMarkers>() {
                 for (marker, fast_travel) in std::mem::take(&mut self.map_markers) {
                     markers.add(marker, fast_travel);
                 }
             }
-        }
     }
 
     fn flush_relationship_changes(&mut self, world: &World) {
-        if !self.relationship_changes.is_empty() {
-            if let Some(mut ranks) = world.try_resource_mut::<crate::ScriptedRelationships>() {
+        if !self.relationship_changes.is_empty()
+            && let Some(mut ranks) = world.try_resource_mut::<crate::ScriptedRelationships>() {
                 for (pair, rank) in std::mem::take(&mut self.relationship_changes) {
                     ranks.0.insert(pair, rank);
                 }
             }
-        }
         // The guard on `ScriptedRelationships` is gone: the events take the Story Manager's storages.
         for (actor, other, old, new) in std::mem::take(&mut self.relationship_events) {
             crate::relationships::raise_relationship_change(world, actor, other, old, new);
@@ -884,44 +892,40 @@ impl DeferredFragmentEffects {
     }
 
     fn flush_base_protection(&mut self, world: &World) {
-        if !self.base_protection.is_empty() {
-            if let Some(mut overrides) = world.try_resource_mut::<crate::ActorBaseProtectionOverrides>()
+        if !self.base_protection.is_empty()
+            && let Some(mut overrides) = world.try_resource_mut::<crate::ActorBaseProtectionOverrides>()
             {
                 for (base, protected, value) in std::mem::take(&mut self.base_protection) {
                     overrides.set(base, protected, value);
                 }
             }
-        }
     }
 
     fn flush_location_clears(&mut self, world: &World) {
-        if !self.location_clears.is_empty() {
-            if let Some(mut state) = world.try_resource_mut::<crate::LocationClearState>() {
+        if !self.location_clears.is_empty()
+            && let Some(mut state) = world.try_resource_mut::<crate::LocationClearState>() {
                 for (location, cleared) in std::mem::take(&mut self.location_clears) {
                     state.set_cleared(location, cleared);
                 }
             }
-        }
     }
 
     fn flush_activation_blocks(&mut self, world: &World) {
-        if !self.activation_blocks.is_empty() {
-            if let Some(mut blocks) = world.try_resource_mut::<super::ReferenceActivationBlocks>() {
+        if !self.activation_blocks.is_empty()
+            && let Some(mut blocks) = world.try_resource_mut::<super::ReferenceActivationBlocks>() {
                 for (reference, blocked) in std::mem::take(&mut self.activation_blocks) {
                     blocks.set_blocked(reference, blocked);
                 }
             }
-        }
     }
 
     fn flush_alias_overrides(&mut self, world: &World) {
-        if !self.alias_overrides.is_empty() {
-            if let Some(mut overrides) = world.try_resource_mut::<crate::AliasOverrides>() {
+        if !self.alias_overrides.is_empty()
+            && let Some(mut overrides) = world.try_resource_mut::<crate::AliasOverrides>() {
                 for (quest, alias_id, value) in std::mem::take(&mut self.alias_overrides) {
                     overrides.set(quest, alias_id, value);
                 }
             }
-        }
     }
 
     fn flush_scene_actor_bindings_dirty(&mut self, world: &World) {
@@ -991,6 +995,25 @@ impl DeferredFragmentEffects {
     }
 
     fn flush_cinematic_presentation(&mut self, world: &World) {
+        // M48 GUI-PAGE-002 — `Game.ShowRaceMenu()` asks for the race menu, which the engine's
+        // character-creation page opens; Fallout 4's appearance modes (GUI-PAGE-003) are reported
+        // with no surface (S4) until the slider milestone.
+        if let Some(mut menus) = world.try_resource_mut::<crate::obscript_more::PendingMenus>() {
+            for effect in &self.cinematic_presentation {
+                let (menu, fallback) = match effect {
+                    DeferredCinematicPresentationEffect::ShowRaceMenu => ("race", None),
+                    DeferredCinematicPresentationEffect::ShowAppearanceMenu(_) => {
+                        ("appearance", Some("no appearance editor until the slider milestone (GUI-NG-005)"))
+                    }
+                    _ => continue,
+                };
+                let form = match effect {
+                    DeferredCinematicPresentationEffect::ShowAppearanceMenu(mode) => u32::from(*mode),
+                    _ => 0,
+                };
+                menus.0.push(crate::obscript_more::MenuRequest { menu, code: None, function: Some("ShowRaceMenu"), form, fallback });
+            }
+        }
         drain_into_resource::<crate::CinematicPresentationState, _>(world, &mut self.cinematic_presentation, |state, effect| {
                 match effect {
                     DeferredCinematicPresentationEffect::SetSittingRotation(degrees) => {
@@ -1021,6 +1044,8 @@ impl DeferredFragmentEffects {
                     DeferredCinematicPresentationEffect::ShowRaceMenu => {
                         state.show_race_menu();
                     }
+                    // Reported to the registry above; nothing presents it.
+                    DeferredCinematicPresentationEffect::ShowAppearanceMenu(_) => {}
                     DeferredCinematicPresentationEffect::RequestSave { auto } => {
                         state.request_save(auto);
                     }

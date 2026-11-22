@@ -452,8 +452,17 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         // ── M-LIGHT reference rungs (#6600) ─────────────────────────
         ("CornellMeshSources", "CPU copies of a Cornell reference rung's uploaded meshes, held only for --export-mitsuba; rebuilt by the rung's scene setup and keyed by session-local mesh handles"),
         ("CornellTextureSources", "CPU copies of a Cornell reference rung's registered textures, held only for --export-mitsuba; rebuilt by the rung's scene setup and keyed by session-local texture handles"),
-        ("RungMeasurements", "a reference rung's fixed measurement geometry (profile lines, bands, casters), rebuilt by the rung's scene setup and read only by --export-mitsuba"),
+        ("RungMeasurements", "a Cornell reference rung's measurement geometry and optional uniform-sky radiance, rebuilt by scene setup for --export-mitsuba"),
         ("BenchMover", "a bench-only moving blocker (RLT-SHD-010) placed by step_bench_movers from the bench frame index; spawned only by the penumbra-moving reference rung, which has no save path"),
+        // ── Player-spellcasting (PSC-CST-008, #7079) ─────────────────
+        ("SpellCastModel", "the Oblivion spell-cast rules, re-derived at load from the profile's spell_cast row and the load order's GMSTs by install_spell_cast_model; saving it would freeze a mod's tuning across loads"),
+        ("BowModel", "the Oblivion / Skyrim bow rules, re-derived at load from the profile's bow row and the load order's GMSTs by install_bow_model; saving it would freeze a mod's tuning across loads"),
+        ("BlockModel", "the Oblivion block rules, re-derived at load from the profile's block row by install_block_model"),
+        ("ArmorRatingModel", "the Oblivion armor-rating and weapon-resistance rules, re-derived at load from the profile's armor_rating row and fMaxArmorRating by install_armor_rating_model"),
+        ("FallModel", "the Oblivion fall-damage rules, re-derived at load from the profile's fall row and the load order's fJumpFall* GMSTs by install_fall_model"),
+        ("FallTracker", "the player's fall clock (the time spent below the takeoff height); `place_character_body`, which the load's pose restore and every teleport go through, resets it, so a load ends any fall in flight (#7227)"),
+        ("CastState", "session state of the cast (the casting interval's remaining seconds and the last report for cast.status); a load starts with no cast in flight (the load drain resets it, #7230)"),
+        ("BowState", "session state of the bow (the draw held so far, the interval's remaining seconds, the last report for bow.status); a load starts with no draw in flight (the load drain resets it, #7230)"),
         // ── #6350 VATS session state ────────────────────────────────
         ("VatsModel", "re-derived at load from the load order's GMSTs by build_vats_model; saving it would freeze a mod's tuning across load-order changes"),
         ("VatsState", "transient targeting-mode state (mode + scan + queue), keyed by the session's EntityIds; an in-process load ends it in discard_outgoing_session_requests (#6508) so the loaded world is never frozen on stale ids, a cold start never has one — the AP pool persists through ActorValues"),
@@ -469,12 +478,13 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("SessionEventQueue", "a single frame's pending session events, drained by extension_session_dispatch_system on the tick that enqueued them; a save taken at a frame boundary has nothing queued, and a queued event names transient entity handles anyway"),
         ("SettingsRegistry", "user preferences persist independently in settings.toml and are installed before scene setup"),
         ("AfflictionStatus", "forward-latent: affliction_tick_system has no production scheduler registration; classify as gameplay state when activated"),
-        ("CharacterRuleset", "immutable game-profile rules, idempotently constructed on first cell load (byroredux/src/cell_loader/references/mod.rs), not at boot"),
+        ("CharacterRuleset", "immutable game-profile rules, constructed on first cell load (byroredux/src/cell_loader/references/mod.rs), not at boot, and rebuilt when a live load changes the load order (`discard_stale_load_order_caches`, SAVE-2)"),
         ("ScriptKilledCorpseForms", "derived once per load order from the parsed masters over every cell (#5248), like CharacterRuleset beside it; the dead-state facts it stamps persist through the saved reference rows, and the set is rebuilt on first cell load"),
+        ("LoadOrderBasis", "names the load order the once-built load-order-resolved resources (CharacterRuleset, PoolRegenConfig, VatsModel, LimbEffects, MeleeDamageConfig, ScriptKilledCorpseForms) were built against, so a live load that re-parses different masters rebuilds them (SAVE-2); describes this process's build, never saved"),
         ("MeleeDamageConfig", "immutable Fallout combat tuning, idempotently constructed alongside CharacterRuleset on first cell load, not at boot; absent on games authoring no MeleeDamage AVIF (#3092)"),
-        ("Background", "derived character-creation metadata with no live production mutator; re-created with the actor"),
+        ("Background", "derived character-creation metadata: re-created with the actor, and on the player rewritten from the saved CharacterIdentity by player_identity_sync_system (systems/character.rs), so the saved column is the source of truth"),
         ("PoolRegenAccumulator", "fractional fixed-step carry only; canonical pool values live in saved ActorValues and carry is safely re-seeded"),
-        ("PoolRegenConfig", "immutable game-profile regeneration tuning, re-derived from the load order by build_vats_model and installed on the first FO3/FNV cell load (#6350); never saved, so a mod's restore rate follows the load order"),
+        ("PoolRegenConfig", "immutable game-profile regeneration tuning, re-derived from the current load order for Fallout AP or Oblivion pools; never saved"),
         ("CombatSoundRequests", "diagnostic per-kind count of combat feedback one-shots requested this session (#5148), surfaced by combat.status for the P2 smoke gate; meaningless across a load"),
         ("MetricsSnapshot", "diagnostic telemetry sampled from current storages each frame"),
         ("GameProfileRegistry", "static per-game profile table installed at boot"),
@@ -495,9 +505,11 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("SkinCoverageStats", "renderer coverage telemetry recomputed from current draws"),
         ("ImageHealth", "swapchain/frame health telemetry"),
         ("RtIntegrityStats", "ray-tracing integrity telemetry recomputed from renderer state"),
+        ("GiCacheStats", "radiance-cache telemetry (RCG-DBG-003) recomputed from renderer state"),
         ("ShadowMaskCensus", "shadow-ray visibility-mask telemetry recomputed from the current TLAS gather (#3305)"),
         ("LodCoverageStats", "LOD diagnostic telemetry recomputed from resident content (#3166)"),
         ("TerrainSeamStats", "terrain diagnostic telemetry recomputed from resident tiles"),
+        ("TerrainPatchState", "TSD-4.1 terrain patch slots reassigned from the camera every frame, plus the session-only on/off and amplitude/range of `terrain.patches` (#7152)"),
         ("SyntheticHeights", "per-session seam verdicts for the opt-in synthetic static height prototype (#6817), keyed by normal-map path; the generated maps persist in the on-disk height cache and a load re-derives each verdict on first use"),
         ("TerrainHeightService", "session cache + worker pool for generated terrain height maps (#6195); the maps themselves persist in the on-disk cache, keyed by source-texture bytes"),
         ("SelectedRef", "debug-console selection using session-local entity identity"),
@@ -544,9 +556,9 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("StoryLocationMemo", "the cell kind, LCTN and CLOC key last derived and the contexts they came from; re-derived on the first frame after a load"),
         ("ArchetypeIdleClips", "the idle clip of each MT subgraph entry; rebuilt from the archives at every world setup"),
         ("TrapContacts", "which trap/actor pairs touched last tick; re-derived from the physics world every tick"),
-        ("PendingDetectionEvents", "CreateDetectionEvent calls awaiting a hearing system (capped; none exists yet)"),
+        ("PendingDetectionEvents", "CreateDetectionEvent calls the detection tick drains each frame (capped); a load discards it in discard_outgoing_session_requests"),
         ("PendingProjectileLaunches", "Weapon.Fire requests awaiting the host; drained the frame they are made"),
-        ("ActiveProjectiles", "projectiles in flight; transient (a saved game restarts with none in the air, as the game resets traps on load)"),
+        ("ActiveProjectiles", "projectiles in flight; transient — a saved game restarts with none in the air, as the game resets traps on load, and a load discards the outgoing session's (#7229)"),
         ("KeywordTable", "base objects' keywords (an actor's with its race's); rebuilt from the records by install_keyword_table every boot"),
         ("PendingBarterMenu", "a script's ShowBarterMenu request, consumed by the app the frame it is raised"),
         ("BarterRules", "the load order's vendor factions, merchant containers, buy/sell lists and barter GMSTs; rebuilt by install_barter_rules every boot"),
@@ -571,6 +583,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("CrossSpaceHop", "a traveler's chosen load door toward another space (XCT-ROUTE-001); chosen again from its package after a load"),
         ("MoviePlaying", "whether the movie player has a movie on screen (BIK-PRES-006); written by the app every frame, a load starts no movie"),
         ("PendingActorMoves", "scripted MoveTo / MoveToPackageLocation moves whose ends have no body (XCT-LOC-004/006); drained by step_actor_relocations the frame they are raised; a load discards the outgoing session's (#6927)"),
+        ("FollowUpTopics", "the INFO → topic lookup a line's follow-ups resolve through (#7115); derived from the records, rebuilt per load order"),
         ("TravelIndex", "the load-door routing graph and the interior-persistent actor list (#6852); derived from the records, rebuilt per load order"),
         ("TravelReports", "why each actor last failed to route (XCT-RPT-001); routes are chosen again from the packages after a load, and a load discards the outgoing session's reasons (#6927)"),
         ("DoorFade", "an actor's fade at a load door (XCT-ROUTE-008); presentation, a load restores actors opaque"),
@@ -604,7 +617,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("ComplexSceneObject", "the base form of the DOBJ CMPX Complex Scene Object; rebuilt from the load order every boot (M43)"),
         ("MineBook", "every proximity-mine projectile of the load order (trigger distance, fuse, blast), by PROJ FormID; rebuilt from the records every boot (M43)"),
         ("PendingMineHits", "mine blast hits waiting a frame for their target's HitEvent slot (#6540); a load discards the queue (M43)"),
-        ("MineClock", "the mine trigger scan's cadence timer; a load restarts it (M43)"),
+        ("MineClock", "the mine trigger scan's cadence timer; a load restarts it (M43) (the load drain resets it, #7230)"),
         ("ArmedMine", "a placed mine that has been tripped and is burning its fuse; a load restores the mine as placed (M43)"),
         ("SpentMine", "a mine that has gone off this session; the persistent half is the enable ledger entry it writes (M43)"),
         ("AttractionBook", "the attraction keywords with their rules and the object / NPC bases that carry them; rebuilt from the records every boot (M43)"),
@@ -703,6 +716,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("WorldBound", "per-frame bound recomputed from saved LocalBound + GlobalTransform, same exclusion class as GlobalTransform"),
         // ── crates/scripting/src/ ────────────────────────────────────
         ("ActivateEvent", "one-shot event marker drained every frame by event_cleanup_system"),
+        ("DefaultActivation", "one-frame door verdict riding an ActivateEvent (door runtime), drained with it by event_cleanup_system"),
         ("NativeActivation", "one-shot flag riding an ActivateEvent (Activate(…, true)), drained with it by event_cleanup_system"),
         // ActorCinematicState: FIXED — registered (#2380 / SAVE-D1-15),
         // no longer allowlisted here.
@@ -723,6 +737,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("Dlc2Ttr4aPlayerScript", "forward-latent — no live production spawn site exists outside tests/examples"),
         ("EquipItemCatalog", "populated once at cell/plugin load, only ever read afterward"),
         ("EvaluatePackageRequest", "one-shot ingress marker, drained every tick by scene_package_system"),
+        ("ReleasePackageHold", "#7243 — one-shot companion of an explicit EvaluatePackageRequest, taken by ambient_ai_package_system on its next pass"),
         ("ExtensionScriptFunctionInvoker", "process-local authenticated host callback republished after extension activation; Arc function pointers are neither portable nor save state"),
         // FragmentExecutionQueue: FIXED — registered (#2381 /
         // SAVE-D1-16), no longer allowlisted here.
@@ -775,7 +790,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("UpdateHandlerChecks", "M47.2 — per-script cache of whether the Papyrus VM runs an OnUpdate / OnUpdateGameTime handler, re-checked against the installed scripts on demand; never gameplay state"),
         ("VmFrameBudget", "M47.2 (#5763) — the Papyrus interpreter's per-frame statement allowance, renewed by event_cleanup_system at the end of every frame; a save is taken between frames, so nothing of it is live state"),
         ("ReferenceScriptIndex", "M47.2 (#5763) — FormID → entity for the references carrying PapyrusReferenceScripts, rebuilt from those components on the first lookup after an attach; derived, never gameplay state"),
-        ("PendingTrapHits", "M47.2 — ProcessTrapHit requests a script run recorded, landed as HitEvent by pending_trap_hit_flush_system the same Update frame (a Late request waits one frame); transient"),
+        ("PendingTrapHits", "M47.2 — ProcessTrapHit requests a script run recorded, landed as HitEvent by pending_trap_hit_flush_system the same Update frame (a Late request waits one frame); transient, and a load discards the outgoing session's (#7229)"),
         ("PendingSoundPlays", "M47.2 — Sound.Play requests a script run recorded, played by scripted_sound_system the same frame or dropped; transient"),
         ("ExplicitOwner", "M47.2 — a placed reference's XOWN form, stamped by the cell loader at every spawn; authored data, re-derived"),
         ("ExplicitEncounterZone", "M47.2 — a placed reference's XEZN form, stamped by the cell loader at every spawn; authored data, re-derived"),
@@ -785,6 +800,12 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PendingEvidenceDeposits", "confiscated stolen goods (the Oblivion PayFine / GoToJail path) queued for a jail's StolenGoods chest, drained by evidence_deposit_system on the NEXT frame's Update (the INFO / stage-result producers run after the consumer, so the queue straddles the frame boundary a save or load drains on); the ObScriptLedger's saved evidence is the durable record until delivered, and a load discards the queue (#6573). Faction.SendPlayerToJail does not queue: it deposits synchronously through EvidenceChestDeposit and removes goods only once the chest took them"),
         ("EvidenceChestDeposit", "the engine's deposit-into-a-placed-reference function Faction.SendPlayerToJail calls (loaded chest directly, an unloaded one parked); installed at boot (#6573)"),
         ("JailTable", "the load order's jails (linked interior / exterior PrisonMarker door pairs) for PayFine / GoToJail; rebuilt from the records every boot"),
+        ("LevelNotices", "Oblivion level-up: how many pending levels the player was told of; session state, a load re-seeds it from the saved levels (the load drain resets it, #7230)"),
+        ("SleepCompletions", "Oblivion level-up: completed sleeps queued for the level system, drained within the frame"),
+        ("RestSession", "Oblivion bed and level-up menus: in-progress choices and sleep authorizations reset on live load"),
+        ("StanceTimers", "Oblivion skill use: the one-second timers of running, swimming and sneaking; session state, a load restarts them (the load drain resets it, #7230)"),
+        ("PendingSkillUse", "Oblivion skill uses the emitters queue, drained by combat::skill_use_system within the frame; empty at a save"),
+        ("SkillUseClasses", "the load order's CLAS specialization and major skills, and the player's class (Oblivion); rebuilt from the records every boot"),
         ("GuardClasses", "the load order's CLAS forms flagged Guard (Oblivion), for IsGuard / IsTurnArrest; rebuilt from the records every boot"),
         ("OwnerKinds", "M47.2 — which forms are factions and which actor bases, for GetFactionOwner / GetActorOwner; rebuilt from the records every boot"),
         ("FormLists", "M47.2 — every FLST record's forms for FormList.GetSize / GetAt / HasForm / Find, rebuilt from the records every boot"),
@@ -839,8 +860,9 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("UseWeaponRun", "M47.3 — a UseWeapon volley under way; it lasts seconds and a save keeps the actor standing"),
         ("ScriptAlphaApplied", "M47.3 — the SetActorAlpha values already written to meshes; rebuilt from the saved ledger on the first frame"),
         ("FleeState", "M47.3 — a ForceFlee under way; it lasts seconds and a save keeps the actor standing"),
-        ("UiMenuState", "M47.3 — which UI pages are open, republished every frame by the app"),
-        ("MenuCodes", "#6620 — the MenuMode codes that differ by game, re-selected from the load order every boot"),
+        ("MenuRegistry", "M48 GUI-EVT-005 — the open menus, republished every frame by the app from the surfaces"),
+        ("MenuRequests", "M48 GUI-OPS-005 — the console's pending ui.open / ui.close and its surface-less menus"),
+        ("ScaleformHostReports", "M48 GUI-OPS-002 — the open movies' host calls by behaviour class, mirrored each frame for ui.host"),
         ("TrapMotionSamples", "M47.3 — last positions of traps and the actors touching them, to measure relative speed"),
         ("KnockbackForceMax", "M47.3 — fKnockbackForceMax, read from the records at every content load"),
         ("KnockedDown", "M47.3 — an actor down after PushActorAway; the ragdoll it follows is not saved either"),
@@ -922,6 +944,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("ActionState", "per-frame held/pressed/released action edges derived entirely from InputState"),
         ("AlphaBlend", "spawn-time classification extracted from NiAlphaProperty flags at import, rederived identically every load"),
         ("AmbientPackageRuntime", "NPC_.PKID candidate state rebuilt at spawn and re-evaluated on the first tick against restored clock/CTDA resources"),
+        ("TreeLeafRun", "#7233 — the leaf a running tree package installed, so the tree is walked again only when that leaf's procedure reports done; session state on the actor, re-adopted by the first package pass after a spawn"),
         ("CellLightingRes", "WTHR ambient/directional CPU-side mirror, re-flowed from the plugin's parsed lighting record every cell load"),
         ("InteriorSkyExposureRes", "current CELL Show Sky flag, rederived from parsed CELL DATA on every interior cell load"),
         ("InstalledOutdoorEnvironment", "records the climate, default weather and forced weather the outdoor sky was last installed from (#6309); every environment install rewrites it, and a load re-installs the sky, so a saved copy could only go stale"),
@@ -971,6 +994,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("NameIndex", "lazily-rebuilt Name->EntityId cache, invalidated by its own generation counter (#249)"),
         ("NavPath", "cached single-tile NAVM waypoint path (EX-16 item 3 Phase 3 / #2372), rederived on demand from resident NavmeshTile data by navmesh_path::path_from_resident_tiles — same posture as NavmeshTile itself, never lossy gameplay state"),
         ("NavmeshTile", "NAVM geometry residency plumbing (EX-16 item 2 / #2372), rederived identically from the plugin's parsed NavmRecord every cell/tile load — same posture as DoorTeleport/Locked"),
+        ("PathGridTile", "Oblivion PGRD walk-graph residency plumbing, the NavmeshTile counterpart (Oblivion authors no NAVM); a clone of the plugin's parsed PathGridRecord, spawned in the cell's stamped window and rederived identically every cell/tile load — same posture as NavmeshTile"),
         ("NifImportRegistry", "process-lifetime parsed-NIF LRU cache, keyed by model path — re-populated on demand, never save-relevant"),
         ("NoSorter", "marker for NiAlphaProperty.flags bit 13 (\"No Sorter\", #3797), rederived identically from NIF material data every load — same posture as TwoSided"),
         ("NormalMapHandle", "bindless GPU texture handle for the water normal-map path, rebuilt by the texture-upload path every load"),
@@ -981,6 +1005,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PendingSaveLoadSlot", "one-shot queued-load slot (#1848/SAVE-05), empty except mid-drain — save/load plumbing itself, not save-worthy state"),
         ("PlayerNotifications", "bounded transient save/load and gameplay feedback drained into the HUD/console before the next frame"),
         ("MessageBoxQueue", "script message boxes awaiting the player's answer; presentation of fragments that already ran, like a notification"),
+        ("PapyrusMessageAnswers", "the buttons Papyrus `Message.Show()` runs wait on, by ticket (M48 #6667); UI state like MessageBoxQueue — a load forgets the boxes and the loaded run resumes with button 0"),
         ("PendingActivateChoice", "the activation waiting on the activate-choice box (PERK-HOOK-007); presentation of an activation in progress; a load discards it with the box it waits on"),
         ("PapyrusPlayerEntity", "scripting-crate sibling of PlayerEntity (#3710 renamed it off the shared short name), pointing Papyrus's Game pseudo-singleton at the same process-lifetime player body; set from the same call site as PlayerEntity, same process-local-identity posture, not gameplay state"),
         ("PlayerEntity", "points to the process-lifetime player body, which deliberately outlives cell unload; the entity remains valid across live reload and the resource is process-local identity, not gameplay state"),
@@ -1008,6 +1033,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PickedUp", "volatile pickup marker; the durable half is the saved PersistentReferenceStates tombstone row, and reference_state::restore re-stamps the marker at load"),
         ("RegionAmbientRes", "resolved REGN Sound-entry FormIDs for the resident cell/tile (EX-16 item 1 / #2372), rederived identically from the cell's XCLR list + the plugin's parsed REGN map every cell load — same posture as CellLightingRes/NavmeshTile"),
         ("SandboxSitClip", "resolved once at cell load from the archive provider, read-only afterward"),
+        ("Door", "M66 in-cell door runtime: the motion clips, record flags and sounds are re-derived from the model and the DOOR record at every spawn, and the open state it animates is the saved TwoStateActivator; `posed`/`remaining` are presentation bookkeeping that the first tick re-establishes; a saved mid-swing `is_animating` restores over `remaining == 0`, so the first tick snaps the pose and clears the flag (#7226)"),
         ("SkyrimWalkClip", "resolved once at cell load from the archive provider, read-only afterward — same posture as SandboxSitClip"),
         ("WalkAnimation", "runtime walk-clip playback state (M42.10): `walk_handle` re-derives from the spawn path lookup, `walking`/`last_pos`/`captured` are per-frame transient — same posture as NavPath"),
         ("WalkStuckTimer", "runtime blocked-leg scratch (M42.10), cleared on package handover and re-accumulated from zero against the same deterministic obstacle — same posture as NavPath"),
@@ -1029,7 +1055,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("SaveState", "save-slot directory + ring cursor, resumed from disk at startup (SaveState::new) — save/load plumbing itself, not part of the world snapshot"),
         ("SceneImportCache", "process-lifetime parsed-scene cache wrapper around the same ParsedNifCache core as NifImportRegistry"),
         ("SharedToneCache", "bounded DDS mip cache for NPC seam blending; derived from archive assets and rebuilt on demand"),
-        ("PackageDayBlocks", "AIP-FLG-001 — when each Once Per Day package was first selected; a load restarts the 24-hour block like the rest of the ambient runtime state"),
+        ("PackageDayBlocks", "AIP-FLG-001 — when each Once Per Day package was first selected; a load restarts the 24-hour block like the rest of the ambient runtime state (cleared before the load's cell reload, whose spawns note their own, #7252)"),
         ("SeatReservations", "derived sandbox occupancy, pruned on cell-reference load against live Furniture + claimant Seated state — see its own doc"),
         ("SettingsPersistence", "process-local user-config path; preferences are independently persisted in settings.toml, never inside a gameplay save"),
         ("SkyParamsRes", "WTHR sky rendering parameters, rebuilt from the parsed record every exterior cell load"),
@@ -1074,10 +1100,11 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("Awareness", "M65 (SNK-SAVE-002, Q4) — each detector's level and alert state toward the player; not saved, the first detection tick after a load re-derives them"),
         ("StealthRules", "M65 (SNK-DET-002) — the detection formula row and its settings, resolved from the load order by populate_scene_runtime on every load — derived configuration"),
         ("PlayerDetection", "M65 — the worst level toward the player, rewritten by every detection tick from `Awareness` — derived"),
-        ("PlayerActionNoise", "M65 (SNK-DET-016) — the last attack's sound, taken by the next detection tick within a frame — transient"),
+        ("PlayerActionNoise", "M65 (SNK-DET-016) — the last attack's sound, taken by the next detection tick within a frame — transient; a load discards it in discard_outgoing_session_requests"),
         ("StealthPoints", "M65 (SNK-DET-015) — the player's Skyrim stealth points, inserted full by install_stealth_rules on every load and stepped from the detection tick's Awareness; like Awareness and PlayerDetection (SNK-SAVE-002, Q4) they re-derive after a load, starting full"),
         ("StanceLocomotion", "M65 (SNK-STN-008) — the player body's standing and sneak locomotion clip handles, attached with its walk animation at body spawn — rebuilt with the body, and the stance itself (Sneaking) is saved"),
-        ("StealthIndicator", "M65 (SNK-HUD-002) — the detection indicator's table, labels (the load order's sSneak* settings) and Starfield's skill-gate perk, resolved by install_stealth_rules on every load — derived configuration"),
+("UiLabels", "M48 GUI-PAGE-005 — the native pages' words from the load order's string game settings, resolved by populate_scene_runtime on every load — derived configuration"),
+                ("StealthIndicator", "M65 (SNK-HUD-002) — the detection indicator's table, labels (the load order's sSneak* settings) and Starfield's skill-gate perk, resolved by install_stealth_rules on every load — derived configuration"),
         ("SneakMovement", "M65 (SNK-STN-005) — the sneak stance's speed multipliers, resolved from the load order's fMoveSneakMult / MOVT records by populate_scene_runtime on every load — derived configuration"),
         ("DetectionConfig", "fSneakMaxDistance / fSneakExteriorDistanceMult (#4414), installed from the load order's GMSTs by populate_scene_runtime on every load — derived configuration"),
         ("AuthoredCover", "the worldspace's authored ground-cover records (#4413), translated from its GRAS records by install_ground_cover at every worldspace entry — derived configuration"),
@@ -1239,17 +1266,24 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
     // #6574 were each a transient whose reason promised a load handled it while the drain never named it;
     // a claim the drain does not back is now a failure here, not a latent stale-state bug.
     let drain_source = include_str!("live_load.rs");
+    // Comments stripped (#7230): the drain's comments name the types they reset, so a name surviving only in a
+    // comment would otherwise pass for a reset line.
     let drain = {
         let start = drain_source
             .find("pub(super) fn discard_outgoing_session_requests(")
             .expect("the load drain's request sweep must exist");
         let body = &drain_source[start..];
-        &body[..body.find("\n}\n").expect("the sweep's closing brace")]
+        byroredux_core::source_scan::strip_comments(&body[..body.find("\n}\n").expect("the sweep's closing brace")])
+    };
+    // Types the drain resets through a call that does not name them, with that call.
+    const RESET_THROUGH_A_CALL: &[(&str, &str)] = &[("ActiveCrafting", "crate::crafting::end_crafting(world)")];
+    let drain_resets = |name: &str| {
+        drain.contains(name) || RESET_THROUGH_A_CALL.iter().any(|(listed, call)| *listed == name && drain.contains(call))
     };
     let unbacked: Vec<&str> = NOT_SAVED_BY_DESIGN
         .iter()
         .filter(|(_, reason)| reason.contains("a load discards") || reason.contains("The load drain ends"))
-        .filter(|(name, _)| !drain.contains(name))
+        .filter(|(name, _)| !drain_resets(name))
         .map(|(name, _)| *name)
         .collect();
     assert!(
@@ -1257,6 +1291,76 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         "NOT_SAVED_BY_DESIGN rows claim a load discards them but \
          discard_outgoing_session_requests never names them: {unbacked:#?}",
     );
+
+    // #7230 — the same promise in its other wordings. The check above matched two phrases only, and missed
+    // `ActiveProjectiles` (#7229) and `FallTracker` (#7227), whose cold-start-only reasons an in-process load broke. A
+    // row that promises a load resets its type is either reset by the drain or listed here with the mechanism that
+    // does it instead.
+    //
+    // #7253 — the promise is matched by its two shapes, with the verb matched by its root rather than one fixed phrase
+    // per spelling (nine exact `a load <verb>` strings missed "a load re-arms", "a load re-observes", "restarts on
+    // load" and "reset on live load"): `a load <verb…>`, and `<verb…>` within three words before `on [live] load`.
+    const LOAD_RESET_ROOTS: &[&str] = &[
+        "start", "restart", "re-seed", "reset", "forget", "end", "drop", "re-derive", "re-install", "re-arm",
+        "re-observe", "clear",
+    ];
+    const RESET_OUTSIDE_THE_DRAIN: &[(&str, &str)] = &[
+        ("FallTracker", "place_character_body, which the load's pose restore calls, resets it (#7227)"),
+        ("PackageDayBlocks", "live_load::reload_with_fresh_day_blocks clears it before the cell reload, so the reload's spawns keep theirs (#7252)"),
+        ("SyntheticHeights", "a content-addressed cache keyed by normal-map path: a kept verdict is the one re-deriving would give"),
+        ("MoviePlaying", "the app rewrites it every frame; the phrase means the load itself plays no movie"),
+        ("VideoStatus", "the movie player's telemetry; the phrase means the load itself plays no movie"),
+        ("ConversationHold", "an NPC component: the load's cell reload respawns both actors without it"),
+        ("FindProgress", "an NPC component: the load's cell reload respawns the actor without it"),
+        ("Awareness", "a detector NPC's component: the load's cell reload respawns the detector without it"),
+        ("InstalledOutdoorEnvironment", "every environment install rewrites it, and the load re-installs the sky"),
+        ("ObjectAnimationGraph", "a prop component attached in its start state at spawn: the load's cell reload respawns the prop with a fresh one"),
+        ("StealthPoints", "install_stealth_rules re-inserts it full from populate_scene_runtime, which the load's cell reload runs"),
+    ];
+    let is_reset_verb = |word: &str| LOAD_RESET_ROOTS.iter().any(|root| word.starts_with(root));
+    let claims_a_load_reset = |reason: &str| {
+        let words: Vec<String> = reason
+            .split_whitespace()
+            .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric() && c != '-').to_lowercase())
+            .collect();
+        words.iter().enumerate().any(|(i, word)| {
+            word == "load"
+                && ((i >= 1 && words[i - 1] == "a" && words.get(i + 1).is_some_and(|next| is_reset_verb(next)))
+                    || {
+                        // `<verb…> on [live] load`: the verb within three words before the `on`.
+                        let on = match (i.checked_sub(1).map(|j| words[j].as_str()), i.checked_sub(2).map(|j| words[j].as_str())) {
+                            (Some("on"), _) => Some(i - 1),
+                            (Some("live"), Some("on")) => Some(i - 2),
+                            _ => None,
+                        };
+                        on.is_some_and(|on| words[on.saturating_sub(3)..on].iter().any(|word| is_reset_verb(word)))
+                    })
+        })
+    };
+    // The matcher itself, on the wordings #7253 found it missing and on ones it must leave alone.
+    for reason in ["a load re-arms the scan", "a load re-observes", "its cadence restarts on load", "reset on live load", "a load starts it"] {
+        assert!(claims_a_load_reset(reason), "{reason:?} promises a load reset");
+    }
+    for reason in ["rebuilt from the load order every boot", "a load discards it", "loaded on demand", "the load order's GMSTs"] {
+        assert!(!claims_a_load_reset(reason), "{reason:?} promises no load reset");
+    }
+    let unaccounted: Vec<&str> = NOT_SAVED_BY_DESIGN
+        .iter()
+        .filter(|(_, reason)| claims_a_load_reset(reason))
+        .filter(|(name, _)| !drain_resets(name) && !RESET_OUTSIDE_THE_DRAIN.iter().any(|(listed, _)| listed == name))
+        .map(|(name, _)| *name)
+        .collect();
+    assert!(
+        unaccounted.is_empty(),
+        "NOT_SAVED_BY_DESIGN rows promise a load resets them, but discard_outgoing_session_requests never names them \
+         and RESET_OUTSIDE_THE_DRAIN gives no other mechanism (#7230): {unaccounted:#?}",
+    );
+    let stale: Vec<&str> = RESET_OUTSIDE_THE_DRAIN
+        .iter()
+        .filter(|(listed, _)| !NOT_SAVED_BY_DESIGN.iter().any(|(name, reason)| name == listed && claims_a_load_reset(reason)))
+        .map(|(listed, _)| *listed)
+        .collect();
+    assert!(stale.is_empty(), "RESET_OUTSIDE_THE_DRAIN lists rows that no longer promise a load reset: {stale:#?}");
 }
 
 /// #6085 — the eviction row (`cell_loader::reference_state`) is the third
@@ -1331,6 +1435,18 @@ fn every_delta_column_is_parked_or_explicitly_not() {
             "player progression; the player outlives cell reloads and is never evicted",
         ),
         (
+            "ReadiedSpell",
+            "player-scoped (player_cast, spell.ready and the cycle keys); the player outlives cell reloads and is never evicted",
+        ),
+        (
+            "EquippedAmmo",
+            "player-scoped (the bow's arrow choice, `inv.equip` on an arrow); the player outlives cell reloads and is never evicted",
+        ),
+        (
+            "SkillUseLevel",
+            "player progression (oblivion_skill_use, a skill rank-up); the player outlives cell reloads and is never evicted",
+        ),
+        (
             "FactionReputation",
             "player-scoped (obscript_effects::adjust_standing, the SDK AddFame/AddInfamy); the player outlives cell reloads and is never evicted",
         ),
@@ -1341,6 +1457,10 @@ fn every_delta_column_is_parked_or_explicitly_not() {
         (
             "TimedRestorations",
             "the only production insert is on the player (inventory/); the player is never evicted",
+        ),
+        (
+            "ActorVitals",
+            "stamped on the player once by attach_to_player (never evicted) and on an NPC at spawn from the current index, so a respawned NPC already carries the current key",
         ),
         (
             "GuardState",
@@ -1471,7 +1591,19 @@ fn the_schema_fingerprint_is_pinned() {
     // player's sneak stance), registered after `Dead`.
     // #6944 — `SpeakingLine` joined the registry as a new replacing component column (the line an ObScript
     // `Say` / `SayTo` made an actor say), registered after `ActiveMagicEffects`.
-    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0xfcd0_0f04_d111_bbd2;
+    // OAI-SAVE v133 replaces codecs in place; names and row order are unchanged,
+    // so the row-order fingerprint remains the same despite the new wire shapes.
+    // M48 GUI-EVT-001 (#6668) — `MenuEventRegistrations` joined the registry as a new resource column
+    // (`RegisterForMenuOpenCloseEvent`), registered after `HitRegistrations`.
+    // #7050 (OSL-SAVE-001) — `SkillUseLevel` joined the registry as a new replacing component column (the
+    // player's Oblivion skill-use level tallies), registered after `CharacterLevel`.
+    // BOW-AMM-002 (#7055) — `EquippedAmmo` joined the registry as a new component column (the player's equipped arrow
+    // type), registered right after `EquippedWeapon`.
+    // PSC-RDY-004 (#7079) — `ReadiedSpell` joined the registry as a new replacing component column (the player's
+    // readied spell), registered after `SpellList`.
+    // #7228 — `EquippedAmmo` became a replacing column (a saved absence clears the live arrow choice); same name and
+    // position, new policy.
+    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x1aa4_507e_f6b0_81c5;
     let actual = build_save_registry().schema_fingerprint();
     assert_eq!(
         actual, BASELINE_SCHEMA_FINGERPRINT,

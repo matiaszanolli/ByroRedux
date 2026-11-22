@@ -123,11 +123,10 @@ pub fn script_package_of(world: &World, actor: EntityId) -> Option<ScriptPackage
 
 /// The ambient system installed `actor`'s script package: start its clock.
 pub fn mark_running(world: &World, actor: EntityId) {
-    if let Some(mut slots) = world.query_mut::<ScriptPackage>() {
-        if let Some(slot) = slots.get_mut(actor) {
+    if let Some(mut slots) = world.query_mut::<ScriptPackage>()
+        && let Some(slot) = slots.get_mut(actor) {
             slot.running_secs.get_or_insert(0.0);
         }
-    }
 }
 
 /// The actors whose script package is running, for the ambient system's

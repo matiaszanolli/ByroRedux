@@ -976,6 +976,25 @@ fn overrides_win_over_authored() {
     assert_eq!(eval.trait_value(bar, "user0").as_num(), 0.25);
 }
 
+/// #6666 — `globals()` reads the FO3/FNV globals document (`_background_fill_alpha` is the
+/// dialogue menu's panel alpha); without one it reads 0.
+#[test]
+fn globals_selector_reads_the_globals_document() {
+    let mut s = src(&[]);
+    let doc = parse_document(
+        r#"<menu name="M"><image name="panel"><alpha> <copy src="globals()" trait="_background_fill_alpha"/> </alpha></image></menu>"#,
+        &mut s,
+    );
+    let strings = HashMap::new();
+    let overrides = Overrides::new();
+    let panel = doc.name_index["panel"];
+    let mut bare = EvalState::new(&doc, ScreenTraits::new(1280.0, 720.0), &strings, &overrides);
+    assert_eq!(bare.trait_value(panel, "alpha").as_num(), 0.0);
+    let globals = HashMap::from([("_background_fill_alpha".to_string(), Scalar::Num(32.0))]);
+    let mut eval = EvalState::new(&doc, ScreenTraits::new(1280.0, 720.0), &strings, &overrides).with_globals(&globals);
+    assert_eq!(eval.trait_value(panel, "alpha").as_num(), 32.0);
+}
+
 // ---------------------------------------------------------------------------
 // Layout
 // ---------------------------------------------------------------------------
@@ -1085,7 +1104,7 @@ fn nan_depth_siblings_do_not_panic_the_depth_sort() {
         .map(|item| {
             doc.name_index
                 .iter()
-                .find(|(_, &t)| t == item.tile())
+                .find(|&(_, &t)| t == item.tile())
                 .unwrap()
                 .0
         })
@@ -1265,6 +1284,7 @@ fn text_line_advances_and_tints() {
                 width: if inked { 4.0 } else { 0.0 },
                 height: if inked { 8.0 } else { 0.0 },
                 advance: if inked { 6.0 } else { 0.0 },
+                x_offset: 0.0,
                 y_offset: 0.0,
                 inked,
             }
@@ -1879,4 +1899,205 @@ fn a_parsed_font_record_reads_x_before_y() {
     assert_eq!((g.u0, g.v0, g.u1, g.v1), (0.125, 0.25, 0.375, 0.75));
     assert_eq!((g.width, g.height), (5.0, 7.0));
     assert!(g.inked);
+}
+
+/// M48 GUI-XML-002 (#6665) — pointer and keyboard input over a menu's targets: a `hotrect` parses
+/// as a tile (with its children); `hit_test` returns the topmost visible target under the point
+/// (alpha 0 still counts, a non-target or invisible tile does not, a clip window bounds a target
+/// that `clips`); a down / up pair on one target activates it once; Next / Activate walk the
+/// targets from the `xdefault` one.
+#[test]
+fn targets_take_pointer_and_keyboard_input() {
+    let assets = SynthAssets {
+        xml: br#"
+        <menu name="HUDMainMenu">
+            <locus> &true; </locus>
+            <hotrect name="List">
+                <locus> &true; </locus>
+                <clipwindow> &true; </clipwindow>
+                <x> 100 </x> <y> 100 </y> <width> 200 </width> <height> 100 </height>
+                <hotrect name="Yes">
+                    <id> 7 </id>
+                    <target> &true; </target> <alpha> 0 </alpha>
+                    <x> 0 </x> <y> 0 </y> <width> 200 </width> <height> 40 </height>
+                    <text name="YesText"> <string> Yes </string> </text>
+                </hotrect>
+                <hotrect name="No">
+                    <id> 8 </id>
+                    <target> &true; </target> <xdefault> &true; </xdefault>
+                    <clips> &true; </clips>
+                    <x> 0 </x> <y> 80 </y> <width> 200 </width> <height> 40 </height>
+                </hotrect>
+                <rect name="Hidden">
+                    <target> &true; </target> <visible> &false; </visible>
+                    <x> 0 </x> <y> 0 </y> <width> 200 </width> <height> 40 </height>
+                </rect>
+                <rect name="Plain">
+                    <x> 0 </x> <y> 40 </y> <width> 200 </width> <height> 40 </height>
+                </rect>
+            </hotrect>
+        </menu>"#
+            .to_vec(),
+        strings: b"<menu></menu>".to_vec(),
+    };
+    let mut r = MenuRenderer::load(&assets, "menus\\main\\hud_main_menu.xml", ScreenTraits::new(1280.0, 720.0)).unwrap();
+    assert!(r.tile("YesText").is_some(), "a hotrect's children are tiles");
+    let name = |hit: Option<crate::TileHit>| hit.and_then(|hit| hit.name);
+    assert_eq!(name(r.hit_test(150.0, 120.0)).as_deref(), Some("Yes"));
+    assert_eq!(r.hit_test(150.0, 120.0).and_then(|hit| hit.id), Some(7));
+    assert_eq!(r.hit_test(150.0, 160.0), None, "a plain rect takes no pointer");
+    assert_eq!(name(r.hit_test(150.0, 185.0)).as_deref(), Some("No"));
+    assert_eq!(r.hit_test(150.0, 205.0), None, "No's lower half is clipped by its list");
+    assert_eq!(r.hit_test(50.0, 50.0), None);
+
+    r.pointer_down(150.0, 120.0);
+    r.pointer_up(152.0, 125.0);
+    r.pointer_down(150.0, 120.0);
+    r.pointer_up(150.0, 185.0);
+    r.pointer_down(50.0, 50.0);
+    r.pointer_up(50.0, 50.0);
+    let activated: Vec<_> = r.take_activations().into_iter().filter_map(|hit| hit.name).collect();
+    assert_eq!(activated, ["Yes"], "one activation, only for a press released on the same target");
+
+    r.key(crate::MenuKey::Next);
+    assert_eq!(name(r.focused()).as_deref(), Some("No"), "the xdefault target first");
+    r.key(crate::MenuKey::Next);
+    assert_eq!(name(r.focused()).as_deref(), Some("Yes"));
+    r.key(crate::MenuKey::Activate);
+    assert_eq!(r.take_activations().into_iter().filter_map(|hit| hit.name).collect::<Vec<_>>(), ["Yes"]);
+}
+
+/// #6666 — `visible` propagates (CS wiki, Traits: "unlike visible, clips does not propagate to
+/// descendant tiles"): a hidden tile hides its whole subtree, so a child that is itself visible
+/// neither draws nor takes the pointer. FNV's dialogue menu hides its topic list, rows and
+/// scrollbar this way while the line shows.
+#[test]
+fn a_hidden_tile_hides_its_subtree() {
+    let assets = SynthAssets {
+        xml: br#"
+        <menu name="DialogMenu">
+            <locus> &true; </locus>
+            <_ShowingText> &true; </_ShowingText>
+            <hotrect name="List">
+                <locus> &true; </locus>
+                <visible> <not src="io()" trait="_ShowingText"/> </visible>
+                <x> 100 </x> <y> 100 </y> <width> 200 </width> <height> 100 </height>
+                <hotrect name="Row">
+                    <target> &true; </target>
+                    <x> 0 </x> <y> 0 </y> <width> 200 </width> <height> 40 </height>
+                    <text name="RowText"> <string> Who are you? </string> </text>
+                </hotrect>
+            </hotrect>
+        </menu>"#
+            .to_vec(),
+        strings: b"<menu></menu>".to_vec(),
+    };
+    let mut r = MenuRenderer::load(&assets, "menus\\main\\hud_main_menu.xml", ScreenTraits::new(1280.0, 720.0)).unwrap();
+    assert_eq!(r.hit_test(150.0, 120.0), None, "the row under a hidden list takes no pointer");
+    assert!(r.hit_targets().is_empty());
+    r.set_override("DialogMenu", "_ShowingText", 0.0);
+    assert_eq!(r.hit_test(150.0, 120.0).and_then(|hit| hit.name).as_deref(), Some("Row"), "shown, the row is a target");
+}
+
+/// One synthetic font in slot 1: every printable glyph is 10 × 20 texels with no kerning and a
+/// 16-texel ascent at point size 20, so a string's width is 10 per character and a line is 20.
+struct FontAssets {
+    xml: Vec<u8>,
+}
+
+impl FontAssets {
+    fn fnt() -> Vec<u8> {
+        let mut bytes = vec![0u8; 296 + 256 * 56];
+        bytes[0..4].copy_from_slice(&20.0f32.to_le_bytes());
+        bytes[4..8].copy_from_slice(&1u32.to_le_bytes());
+        bytes[8..12].copy_from_slice(&1u32.to_le_bytes());
+        bytes[12..17].copy_from_slice(b"synth");
+        for ch in b' '..=b'~' {
+            let base = 296 + ch as usize * 56;
+            let mut put = |i: usize, v: f32| bytes[base + i * 4..base + i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+            if ch == b' ' {
+                put(12, 10.0); // a space is all right kerning
+                continue;
+            }
+            for (i, v) in [(1, 0.0), (2, 0.0), (3, 0.5), (4, 0.0), (5, 0.0), (6, 1.0), (7, 0.5), (8, 1.0)] {
+                put(i, v);
+            }
+            put(9, 10.0);
+            put(10, 20.0);
+            put(13, 16.0);
+        }
+        bytes
+    }
+
+    fn tex() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&20u32.to_le_bytes());
+        bytes.extend_from_slice(&20u32.to_le_bytes());
+        bytes.extend(std::iter::repeat_n(255u8, 20 * 20 * 4));
+        bytes
+    }
+}
+
+impl MenuAssets for FontAssets {
+    fn menu_xml(&self, path: &str) -> Option<Vec<u8>> {
+        (path.eq_ignore_ascii_case("menus\\main\\hud_main_menu.xml")).then(|| self.xml.clone())
+    }
+    fn texture(&self, _path: &str) -> Option<Vec<u8>> {
+        None
+    }
+    fn font(&self, index: u8) -> Option<Vec<u8>> {
+        (index == 1).then(Self::fnt)
+    }
+    fn font_texture(&self, _path: &str) -> Option<Vec<u8>> {
+        Some(Self::tex())
+    }
+}
+
+/// #6666 — a text tile's `width` / `height` read the size of its displayed text (the native
+/// code sets them; CS wiki, Traits), wrapped as the raster wraps it: FNV's dialogue menu centres
+/// its line and sizes the panel behind it from the line's height. Glyphs advance by
+/// `width + right kerning` and sit `point size − ascent` below the line's top.
+#[test]
+fn text_tiles_report_their_displayed_size() {
+    let assets = FontAssets {
+        xml: br#"
+        <menu name="DialogMenu">
+            <locus> &true; </locus>
+            <text name="Line">
+                <font> 1 </font>
+                <string> ab cd </string>
+                <wrapwidth> 30 </wrapwidth>
+            </text>
+            <text name="Name"> <font> 1 </font> <string> abcde </string> </text>
+            <hotrect name="Panel">
+                <target> &true; </target>
+                <width> <copy src="Name" trait="width"/> </width>
+                <height> <copy src="Line" trait="height"/> </height>
+            </hotrect>
+        </menu>"#
+            .to_vec(),
+    };
+    let font = crate::font::Font::parse(&FontAssets::fnt(), &FontAssets::tex()).unwrap();
+    assert_eq!((font.glyph(b'a').advance, font.glyph(b'a').y_offset), (10.0, 4.0));
+    assert_eq!(font.glyph(b' ').advance, 10.0);
+    let r = MenuRenderer::load(&assets, "menus\\main\\hud_main_menu.xml", ScreenTraits::new(1280.0, 720.0)).unwrap();
+    // `abcde` is 50 wide; `ab cd` wraps at 30 into two 20-high lines.
+    let name = |x: f32, y: f32| r.hit_test(x, y).and_then(|hit| hit.name);
+    assert_eq!(name(45.0, 35.0).as_deref(), Some("Panel"));
+    assert_eq!(name(55.0, 35.0), None, "the panel is as wide as the name");
+    assert_eq!(name(45.0, 45.0), None, "and as high as the wrapped line");
+    // A driver reads the measured sizes back.
+    assert_eq!(r.value("Line", "height").map(|v| v.as_num()), Some(40.0));
+    assert_eq!(r.value("Name", "width").map(|v| v.as_num()), Some(50.0));
+    assert_eq!(r.value("Missing", "width"), None);
+}
+
+/// #6666 — a non-numeric string is true when it has text (vanilla's `onlyif` on a text tile's
+/// `string`); a numeric string keeps its number's truth.
+#[test]
+fn a_string_with_text_is_true() {
+    assert!(Scalar::Str("Rest here?".into()).truthy());
+    assert!(!Scalar::Str("  ".into()).truthy());
+    assert!(!Scalar::Str("0".into()).truthy());
+    assert!(Scalar::Str("2".into()).truthy());
 }

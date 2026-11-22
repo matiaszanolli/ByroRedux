@@ -1090,152 +1090,156 @@ impl SvgfPipeline {
         frame: usize,
         dbg_flags: u32,
     ) {
-        // Barrier: the previous use of this frame's OUT slots (writes in
-        // the previous use of this frame-in-flight index, at least two
-        // frames ago) finished long before — the both-slots
-        // both-slots `wait_for_fences` in `draw_frame` (#282) guarantees the
-        // prior-frame COMPUTE write AND the prior-frame composite
-        // FRAGMENT read of `indirect_view(frame)` have retired. We
-        // still emit an execution dependency on SHADER_WRITE so
-        // descriptor sampling of the same slot in the previous frame is
-        // ordered correctly under any future relaxation of the fence
-        // wait.
-        //
-        // #962 / REN-D10-NEW-05 — audit flagged the `FRAGMENT_SHADER`
-        // src bit as over-specified: composite's FRAGMENT consumer of
-        // this slot is already serialised by the both-slots fence wait
-        // above, so the bit is redundant under today's pin. The
-        // narrowing is deferred to a RenderDoc-validated session per
-        // the speculative-Vulkan-fix policy — cosmetic over-sync is
-        // strictly safer than a missed access-mask dep that only some
-        // IHV drivers flag. The sibling compute passes (`taa.rs`,
-        // `caustic.rs`, `volumetrics.rs`) follow the same
-        // defensive pattern and would warrant their own re-audits if
-        // this site is ever narrowed.
-        let out_ind_img = self.indirect_history[frame].image;
-        let out_mom_img = self.moments_history[frame].image;
-        let img_barrier = |img: vk::Image| {
-            vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
-                .old_layout(vk::ImageLayout::GENERAL)
-                .new_layout(vk::ImageLayout::GENERAL)
-                .image(img)
-                .subresource_range(super::descriptors::color_subresource_single_mip())
-        };
-        let img_barriers = [img_barrier(out_ind_img), img_barrier(out_mom_img)];
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &img_barriers,
-        );
-
-        device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
-        device.cmd_bind_descriptor_sets(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.pipeline_layout,
-            0,
-            &[self.descriptor_sets[frame]],
-            &[],
-        );
-
-        // #2768 — from the same constants `svgf_temporal.comp`'s
-        // `local_size` is generated from; see `taa.rs`'s dispatch.
-        let gx = self.width.div_ceil(WORKGROUP_X);
-        let gy = self.height.div_ceil(WORKGROUP_Y);
-        device.cmd_dispatch(cmd, gx, gy, 1);
-
-        // Barrier: compute write → composite's fragment shader sampling.
-        // Keeps layout in GENERAL — composite's descriptor sets use GENERAL.
-        let out_barriers = [
-            image_barrier_general_write_to_read(out_ind_img),
-            image_barrier_general_write_to_read(out_mom_img),
-        ];
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            // dst = FRAGMENT for composite's read this frame + COMPUTE for
-            // next frame's SVGF dispatch reading this slot as
-            // `prev_indirect_hist`. The per-frame fence implicitly serialises
-            // both consumers today, but if MAX_FRAMES_IN_FLIGHT goes past 2 or
-            // a future timeline-semaphore refactor relaxes the fence wait,
-            // missing the COMPUTE bit would become a real hazard. #653.
-            // The COMPUTE bit ALSO covers this frame's à-trous seed reading
-            // `indirect_history[frame]` + `moments_history[frame]` below.
-            vk::PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &out_barriers,
-        );
-
-        // ── SVGF spatial à-trous wavelet pass (Schied 2017 §4.3) ──────
-        // Iterations run serially in this command buffer; each is gated on
-        // the previous by a COMPUTE→COMPUTE barrier (execution dependency
-        // serialises the full chain, covering both the RAW on the written
-        // ping-pong slot and the WAR on the slot the next iteration
-        // overwrites). The final iteration's slot is read by composite
-        // (FRAGMENT) — `indirect_view(frame)` returns it.
-        device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.atrous_pipeline);
-        // #2768 — `svgf_atrous.comp` is generated from the same pair.
-        let agx = self.width.div_ceil(WORKGROUP_X);
-        let agy = self.height.div_ceil(WORKGROUP_Y);
-        for k in 0..ATROUS_ITERATIONS {
-            let push = AtrousPush {
-                screen: [self.width, self.height],
-                step: 1u32 << k,
-                dbg_flags,
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            // Barrier: the previous use of this frame's OUT slots (writes in
+            // the previous use of this frame-in-flight index, at least two
+            // frames ago) finished long before — the both-slots
+            // both-slots `wait_for_fences` in `draw_frame` (#282) guarantees the
+            // prior-frame COMPUTE write AND the prior-frame composite
+            // FRAGMENT read of `indirect_view(frame)` have retired. We
+            // still emit an execution dependency on SHADER_WRITE so
+            // descriptor sampling of the same slot in the previous frame is
+            // ordered correctly under any future relaxation of the fence
+            // wait.
+            //
+            // #962 / REN-D10-NEW-05 — audit flagged the `FRAGMENT_SHADER`
+            // src bit as over-specified: composite's FRAGMENT consumer of
+            // this slot is already serialised by the both-slots fence wait
+            // above, so the bit is redundant under today's pin. The
+            // narrowing is deferred to a RenderDoc-validated session per
+            // the speculative-Vulkan-fix policy — cosmetic over-sync is
+            // strictly safer than a missed access-mask dep that only some
+            // IHV drivers flag. The sibling compute passes (`taa.rs`,
+            // `caustic.rs`, `volumetrics.rs`) follow the same
+            // defensive pattern and would warrant their own re-audits if
+            // this site is ever narrowed.
+            let out_ind_img = self.indirect_history[frame].image;
+            let out_mom_img = self.moments_history[frame].image;
+            let img_barrier = |img: vk::Image| {
+                vk::ImageMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+                    .old_layout(vk::ImageLayout::GENERAL)
+                    .new_layout(vk::ImageLayout::GENERAL)
+                    .image(img)
+                    .subresource_range(super::descriptors::color_subresource_single_mip())
             };
-            // The byte view of the COMPUTE push-constant range declared in the
-            // à-trous pipeline layout.
-            let push_bytes = super::buffer::byte_view(std::slice::from_ref(&push));
-            device.cmd_push_constants(
-                cmd,
-                self.atrous_pipeline_layout,
-                vk::ShaderStageFlags::COMPUTE,
-                0,
-                push_bytes,
-            );
-            device.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::COMPUTE,
-                self.atrous_pipeline_layout,
-                0,
-                &[self.atrous_descriptor_sets[frame * ATROUS_ITERATIONS + k]],
-                &[],
-            );
-            device.cmd_dispatch(cmd, agx, agy, 1);
-
-            let written = self.atrous_color[frame * 2 + atrous_dst_pp(k)].image;
-            let is_last = k + 1 == ATROUS_ITERATIONS;
-            let dst_stage = if is_last {
-                vk::PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::COMPUTE_SHADER
-            } else {
-                vk::PipelineStageFlags::COMPUTE_SHADER
-            };
-            let bar = image_barrier_general_write_to_read(written);
+            let img_barriers = [img_barrier(out_ind_img), img_barrier(out_mom_img)];
             device.cmd_pipeline_barrier(
                 cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::FRAGMENT_SHADER,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
-                dst_stage,
                 vk::DependencyFlags::empty(),
                 &[],
                 &[],
-                &[bar],
+                &img_barriers,
             );
-        }
 
-        // #917 / REN-D10-NEW-03 — dispatch was successfully recorded
-        // into `cmd`. `mark_frame_completed` will bump
-        // `frames_since_creation` after `queue_submit` returns success;
-        // a record-time error before this point leaves the flag false
-        // and the counter doesn't advance.
-        self.dispatched_this_frame[frame] = true;
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.pipeline_layout,
+                0,
+                &[self.descriptor_sets[frame]],
+                &[],
+            );
+
+            // #2768 — from the same constants `svgf_temporal.comp`'s
+            // `local_size` is generated from; see `taa.rs`'s dispatch.
+            let gx = self.width.div_ceil(WORKGROUP_X);
+            let gy = self.height.div_ceil(WORKGROUP_Y);
+            device.cmd_dispatch(cmd, gx, gy, 1);
+
+            // Barrier: compute write → composite's fragment shader sampling.
+            // Keeps layout in GENERAL — composite's descriptor sets use GENERAL.
+            let out_barriers = [
+                image_barrier_general_write_to_read(out_ind_img),
+                image_barrier_general_write_to_read(out_mom_img),
+            ];
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                // dst = FRAGMENT for composite's read this frame + COMPUTE for
+                // next frame's SVGF dispatch reading this slot as
+                // `prev_indirect_hist`. The per-frame fence implicitly serialises
+                // both consumers today, but if MAX_FRAMES_IN_FLIGHT goes past 2 or
+                // a future timeline-semaphore refactor relaxes the fence wait,
+                // missing the COMPUTE bit would become a real hazard. #653.
+                // The COMPUTE bit ALSO covers this frame's à-trous seed reading
+                // `indirect_history[frame]` + `moments_history[frame]` below.
+                vk::PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &out_barriers,
+            );
+
+            // ── SVGF spatial à-trous wavelet pass (Schied 2017 §4.3) ──────
+            // Iterations run serially in this command buffer; each is gated on
+            // the previous by a COMPUTE→COMPUTE barrier (execution dependency
+            // serialises the full chain, covering both the RAW on the written
+            // ping-pong slot and the WAR on the slot the next iteration
+            // overwrites). The final iteration's slot is read by composite
+            // (FRAGMENT) — `indirect_view(frame)` returns it.
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.atrous_pipeline);
+            // #2768 — `svgf_atrous.comp` is generated from the same pair.
+            let agx = self.width.div_ceil(WORKGROUP_X);
+            let agy = self.height.div_ceil(WORKGROUP_Y);
+            for k in 0..ATROUS_ITERATIONS {
+                let push = AtrousPush {
+                    screen: [self.width, self.height],
+                    step: 1u32 << k,
+                    dbg_flags,
+                };
+                // The byte view of the COMPUTE push-constant range declared in the
+                // à-trous pipeline layout.
+                let push_bytes = super::buffer::byte_view(std::slice::from_ref(&push));
+                device.cmd_push_constants(
+                    cmd,
+                    self.atrous_pipeline_layout,
+                    vk::ShaderStageFlags::COMPUTE,
+                    0,
+                    push_bytes,
+                );
+                device.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::COMPUTE,
+                    self.atrous_pipeline_layout,
+                    0,
+                    &[self.atrous_descriptor_sets[frame * ATROUS_ITERATIONS + k]],
+                    &[],
+                );
+                device.cmd_dispatch(cmd, agx, agy, 1);
+
+                let written = self.atrous_color[frame * 2 + atrous_dst_pp(k)].image;
+                let is_last = k + 1 == ATROUS_ITERATIONS;
+                let dst_stage = if is_last {
+                    vk::PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::COMPUTE_SHADER
+                } else {
+                    vk::PipelineStageFlags::COMPUTE_SHADER
+                };
+                let bar = image_barrier_general_write_to_read(written);
+                device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    dst_stage,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[bar],
+                );
+            }
+
+            // #917 / REN-D10-NEW-03 — dispatch was successfully recorded
+            // into `cmd`. `mark_frame_completed` will bump
+            // `frames_since_creation` after `queue_submit` returns success;
+            // a record-time error before this point leaves the flag false
+            // and the counter doesn't advance.
+            self.dispatched_this_frame[frame] = true;
+        }
     }
 
     /// Mark the previous frame's dispatch as having reached
@@ -1662,10 +1666,10 @@ mod tests {
 
         let post = include_str!("context/post_passes.rs");
         let doc = post
-            .split_once("fn record_post_passes(")
-            .expect("record_post_passes")
+            .split_once("struct PostPassFrame<'a> {")
+            .expect("PostPassFrame")
             .1
-            .split_once("caustic_history_valid: bool")
+            .split_once("pub caustic_history_valid: bool")
             .expect("parameter")
             .0;
         assert!(doc.contains("build_and_upload_instances.rs") && !doc.contains("draw.rs"));

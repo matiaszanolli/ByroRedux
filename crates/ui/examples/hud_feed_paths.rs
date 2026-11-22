@@ -14,6 +14,9 @@
 //! cargo run -q -p byroredux-ui --example hud_feed_paths -- skyrim fed | fo4 fed       # declared but never called/written by movie code
 //! cargo run -q -p byroredux-ui --example hud_feed_paths -- fo4 strings <swf> <needle>  # constant-pool strings
 //! cargo run -q -p byroredux-ui --example hud_feed_paths -- fo4 refs <swf> <needle>     # every get/set/call site of a member name
+//! cargo run -q -p byroredux-ui --example hud_feed_paths -- fo4 layout <swf> <char>     # a character's display list: placements, matrices, bounds (px)
+//! cargo run -q -p byroredux-ui --example hud_feed_paths -- skyrim cat <entry> | skyrim fonts <swf>
+//! cargo run -q -p byroredux-ui --example hud_feed_paths -- fo4 cat <entry>              # an archive entry's raw bytes (e.g. interface\translate_en.txt)
 //! ```
 //!
 //! The AVM1 "pseudo-source" is a symbolic stack walk (no control-flow
@@ -175,11 +178,10 @@ fn walk(
                 let o = pop!();
                 let (os, ms, vs) = (o.shown_obj(), unq(&m), v.shown());
                 ctx.events.push(Event { kind: Kind::Set, func, obj: os.clone(), member: ms.clone(), value: vs.clone(), block: block.into() });
-                if let Some(id) = vs.strip_prefix("<fn#").and_then(|r| r.strip_suffix('>')).and_then(|r| r.parse::<usize>().ok()) {
-                    if ctx.funcs[id].label.is_empty() {
+                if let Some(id) = vs.strip_prefix("<fn#").and_then(|r| r.strip_suffix('>')).and_then(|r| r.parse::<usize>().ok())
+                    && ctx.funcs[id].label.is_empty() {
                         ctx.funcs[id].label = format!("{os}.{ms}");
                     }
-                }
                 emit(lines, format!("{os}.{ms} = {vs}"));
             }
             Action::SetVariable => {
@@ -187,11 +189,10 @@ fn walk(
                 let n = pop!();
                 let (ns, vs) = (unq(&n), v.shown());
                 ctx.events.push(Event { kind: Kind::Set, func, obj: String::new(), member: ns.clone(), value: vs.clone(), block: block.into() });
-                if let Some(id) = vs.strip_prefix("<fn#").and_then(|r| r.strip_suffix('>')).and_then(|r| r.parse::<usize>().ok()) {
-                    if ctx.funcs[id].label.is_empty() {
+                if let Some(id) = vs.strip_prefix("<fn#").and_then(|r| r.strip_suffix('>')).and_then(|r| r.parse::<usize>().ok())
+                    && ctx.funcs[id].label.is_empty() {
                         ctx.funcs[id].label = ns.clone();
                     }
-                }
                 emit(lines, format!("{ns} = {vs}   [SetVariable]"));
             }
             Action::DefineLocal => {
@@ -230,11 +231,10 @@ fn walk(
                 }
             }
             Action::Pop => {
-                if let Some(t) = stack.pop() {
-                    if t.s.contains('(') && !t.lit {
+                if let Some(t) = stack.pop()
+                    && t.s.contains('(') && !t.lit {
                         emit(lines, t.s.to_string());
                     }
-                }
             }
             Action::CallMethod => {
                 let m = pop!();
@@ -878,6 +878,111 @@ fn load_movie_avm2(data: &[u8]) -> Avm2Movie {
     (abcs, imports, symbols, tree)
 }
 
+/// #7036 — the movie's own fonts (DefineFont2/3 names), its imports, and which font every text
+/// field asks for (a character id, or a font class / GFx alias such as `$MAIN_Font_Bold`).
+fn print_fonts(data: &[u8]) {
+    let dec = decompress_swf(data).expect("decompress");
+    let movie = parse_swf(&dec).expect("parse");
+    fn walk(tags: &[Tag<'_>]) {
+        for t in tags {
+            match t {
+                Tag::DefineFont2(f) => println!("font {} {:?} glyphs {}", f.id, f.name.to_string_lossy(swf::UTF_8), f.glyphs.len()),
+                Tag::ImportAssets { url, imports } => {
+                    for i in imports {
+                        println!("import {} {:?} <- {}", i.id, i.name.to_string_lossy(swf::UTF_8), url.to_string_lossy(swf::UTF_8));
+                    }
+                }
+                Tag::ExportAssets(exports) => {
+                    for e in exports {
+                        println!("export {} {:?}", e.id, e.name.to_string_lossy(swf::UTF_8));
+                    }
+                }
+                Tag::DefineEditText(e) => println!(
+                    "edittext {} font {:?} outlines {} html {}",
+                    e.id(),
+                    e.font_id().map(|id| id.to_string()).or_else(|| e.font_class().map(|c| c.to_string_lossy(swf::UTF_8))),
+                    e.use_outlines(),
+                    e.is_html()
+                ),
+                Tag::DefineSprite(s) => walk(&s.tags),
+                _ => {}
+            }
+        }
+    }
+    walk(&movie.tags);
+}
+
+/// #7036 — the art geometry a native-driven widget is laid out from: every placement under
+/// `root_char`, recursively, with its matrix and the placed character's bounds, in pixels
+/// (twips / 20). Frame-by-frame placements are listed in timeline order with their frame.
+fn print_layout(data: &[u8], root_char: u16) {
+    let dec = decompress_swf(data).expect("decompress");
+    let movie = parse_swf(&dec).expect("parse");
+    let mut chars: BTreeMap<u16, &Tag<'_>> = BTreeMap::new();
+    fn collect<'a, 'b>(tags: &'b [Tag<'a>], chars: &mut BTreeMap<u16, &'b Tag<'a>>) {
+        for t in tags {
+            let id = match t {
+                Tag::DefineSprite(s) => {
+                    collect(&s.tags, chars);
+                    s.id
+                }
+                Tag::DefineShape(s) => s.id,
+                Tag::DefineEditText(e) => e.id(),
+                Tag::DefineText(t) | Tag::DefineText2(t) => t.id,
+                Tag::DefineMorphShape(m) => m.id,
+                _ => continue,
+            };
+            chars.insert(id, t);
+        }
+    }
+    collect(&movie.tags, &mut chars);
+    let px = |t: swf::Twips| t.get() as f64 / 20.0;
+    let rect = |r: &swf::Rectangle<swf::Twips>| format!("[{:.1},{:.1} .. {:.1},{:.1}]", px(r.x_min), px(r.y_min), px(r.x_max), px(r.y_max));
+    fn walk(id: u16, indent: usize, chars: &BTreeMap<u16, &Tag<'_>>, px: &dyn Fn(swf::Twips) -> f64, rect: &dyn Fn(&swf::Rectangle<swf::Twips>) -> String) {
+        let pad = "  ".repeat(indent);
+        match chars.get(&id) {
+            Some(Tag::DefineSprite(s)) => {
+                println!("{pad}sprite {id}: {} frame(s)", s.num_frames);
+                let mut frame = 1;
+                for t in &s.tags {
+                    match t {
+                        Tag::ShowFrame => frame += 1,
+                        Tag::FrameLabel(l) => println!("{pad}  frame {frame} label {:?}", l.label.to_string_lossy(swf::UTF_8)),
+                        Tag::RemoveObject(r) => println!("{pad}  frame {frame} remove depth {}", r.depth),
+                        Tag::PlaceObject(po) => {
+                            let m = po.matrix.map(|m| format!(" at ({:.1},{:.1}) scale ({:.3},{:.3}) skew ({:.3},{:.3})", px(m.tx), px(m.ty), m.a.to_f64(), m.d.to_f64(), m.b.to_f64(), m.c.to_f64())).unwrap_or_default();
+                            let name = po.name.map(|n| format!(" name {:?}", n.to_string_lossy(swf::UTF_8))).unwrap_or_default();
+                            let clip = po.clip_depth.map(|d| format!(" mask-to-depth {d}")).unwrap_or_default();
+                            let (what, child) = match po.action {
+                                PlaceObjectAction::Place(c) => (format!("place {c}"), Some(c)),
+                                PlaceObjectAction::Replace(c) => (format!("replace {c}"), Some(c)),
+                                PlaceObjectAction::Modify => ("modify".to_owned(), None),
+                            };
+                            println!("{pad}  frame {frame} depth {} {what}{name}{m}{clip}", po.depth);
+                            if let (Some(c), true) = (child, frame == 1 || !matches!(po.action, PlaceObjectAction::Modify)) {
+                                walk(c, indent + 2, chars, px, rect);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Some(Tag::DefineShape(s)) => println!("{pad}shape {id} bounds {}", rect(&s.shape_bounds)),
+            Some(Tag::DefineMorphShape(m)) => println!("{pad}morph {id} bounds {}", rect(&m.start.shape_bounds)),
+            Some(Tag::DefineEditText(e)) => println!(
+                "{pad}edittext {id} bounds {} font {:?} outlines {} text {:?}",
+                rect(e.bounds()),
+                e.font_id().map(|id| id.to_string()).or_else(|| e.font_class().map(|c| c.to_string_lossy(swf::UTF_8))),
+                e.use_outlines(),
+                e.initial_text().map(|t| t.to_string_lossy(swf::UTF_8)).unwrap_or_default()
+            ),
+            Some(Tag::DefineText(t) | Tag::DefineText2(t)) => println!("{pad}text {id} bounds {}", rect(&t.bounds)),
+            _ => println!("{pad}char {id} (not a local shape/sprite/text)"),
+        }
+    }
+    walk(root_char, 0, &chars, &px, &rect);
+}
+
 fn print_avm2_dump(abcs: &[Abc3], imports: &[String], symbols: &[(u16, String)], tree: &[String]) {
     println!("# imports");
     for i in imports {
@@ -994,6 +1099,15 @@ fn main() {
             }
             let name = name.unwrap_or_else(|| "interface\\hudmenu.swf".to_string());
             let data = a.extract(&name).expect("extract");
+            if cmd == "cat" {
+                use std::io::Write;
+                std::io::stdout().write_all(&data).expect("stdout");
+                return;
+            }
+            if cmd == "fonts" {
+                print_fonts(&data);
+                return;
+            }
             let m = load_movie_avm1(&data);
             match cmd {
                 "dump" => print_dump(&m),
@@ -1022,6 +1136,11 @@ fn main() {
             }
             let name = name.unwrap_or_else(|| "interface\\hudmenu.swf".to_string());
             let data = a.extract(&name).expect("extract");
+            if cmd == "cat" {
+                use std::io::Write;
+                std::io::stdout().write_all(&data).expect("stdout");
+                return;
+            }
             let (abcs, imports, symbols, tree) = load_movie_avm2(&data);
             let arg4 = args.get(4).cloned().unwrap_or_default();
             match cmd {
@@ -1030,7 +1149,9 @@ fn main() {
                 "fed" => print_avm2_members(&abcs, true),
                 "strings" => print_avm2_strings(&abcs, &arg4),
                 "refs" => print_avm2_refs(&abcs, &arg4),
-                _ => eprintln!("usage: hud_feed_paths fo4 listing|dump|members|strings <swf> <needle>|refs <swf> <needle>"),
+                "layout" => print_layout(&data, arg4.parse().expect("layout <swf> <char id>")),
+                "fonts" => print_fonts(&data),
+                _ => eprintln!("usage: hud_feed_paths fo4 listing|dump|members|strings <swf> <needle>|refs <swf> <needle>|layout <swf> <char>"),
             }
         }
         _ => eprintln!("usage: hud_feed_paths skyrim|fo4 <cmd>"),

@@ -11,7 +11,8 @@
 #   4. The player does what the route asks: walk into the tester's trigger, use the tester,
 #      sit on the couch for the psych test (a conversation), walk to the exit trigger.
 #   5. Doc's outro runs on its follow-up lines (TCFU): Pip-Boy, the Vault 21 jumpsuit, the
-#      starting gear; the Hardcore box is answered; VCG01 ends at 200 and VCG02 starts.
+#      starting gear; the Hardcore box is answered — on the game's own document,
+#      menus\message_menu.xml (M48 Q1, #6666); VCG01 ends at 200 and VCG02 starts.
 #   6. The choices hold (GetIsSex / GetIsRace / SPECIAL; Perception is not cut by the
 #      Concussion, whose Perception -4 waits on a crippled head), the jumpsuit is worn, the
 #      front door leads to Goodsprings, and no far-away greeter opens a conversation there.
@@ -137,6 +138,7 @@ pass "VCG00 moved the player to VCG01PlayerStartMarkerREF"
 
 # ── 2..5 — drive the opening ─────────────────────────────────────────────────
 declare -A screens=() done_steps=()
+message_document=0
 quiet=0
 deadline=$((SECONDS + TIMEOUT))
 while :; do
@@ -166,6 +168,22 @@ while :; do
         screens[$screen]=1
         sleep 1
         continue
+    fi
+    # M48 Q1 (#6666) — a waiting script message box is up on the game's own document.
+    debug_command ui.menus "$LOG_DIR/menus.log" >/dev/null 2>&1 || true
+    if grep -q 'code=1001 ' "$LOG_DIR/menus.log"; then
+        # A box raised this frame is registered before its surface opens: give it a few frames.
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            grep -Eq 'code=1001 surface=menuxml menus.+message_menu\.xml' "$LOG_DIR/menus.log" && break
+            grep -q 'code=1001 ' "$LOG_DIR/menus.log" || break
+            sleep 0.5
+            debug_command ui.menus "$LOG_DIR/menus.log" >/dev/null 2>&1 || true
+        done
+        if grep -q 'code=1001 ' "$LOG_DIR/menus.log"; then
+            grep -Eq 'code=1001 surface=menuxml menus.+message_menu\.xml' "$LOG_DIR/menus.log" \
+                || fail "a message box is not on menus\\message_menu.xml: $(grep 'code=1001 ' "$LOG_DIR/menus.log" | head -1)"
+            message_document=1
+        fi
     fi
     smoke_answer_message_boxes "$LOG_DIR/answer.log"
     # A conversation that offers topics once the speaker has finished: take the first.
@@ -243,4 +261,6 @@ if grep -q '^byro> "npc [0-9]*: topic' "$LOG_DIR/outside.status"; then
 fi
 pass "no greeter opened a conversation from afar"
 
+(( message_document )) || fail "no script message box came up on menus\\message_menu.xml (the Hardcore box)"
+pass "the script message boxes came up on menus\\message_menu.xml (M48 Q1)"
 echo "smoke[fnv-new-game]: PASS -- intro -> character creation -> the opening -> Goodsprings"

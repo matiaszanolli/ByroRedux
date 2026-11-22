@@ -24,6 +24,7 @@
 # BYRO_SHAFT_BIN overrides the engine binary; BYRO_SHAFT_OUT keeps captures in a chosen directory.
 # An X display or xvfb-run, a Vulkan device and python3 with numpy and Pillow are needed.
 # Exit 77 (SKIP, never a pass) when one of those is missing.
+# BYRO_CLOUD_SEED selects the same cloud field for every capture (default 0).
 
 set -euo pipefail
 
@@ -45,6 +46,7 @@ if ! python3 -c 'import numpy, PIL' 2>/dev/null; then
     exit 77
 fi
 mkdir -p "$OUT"
+printf '%s\n' "${BYRO_CLOUD_SEED:-0}" > "$OUT/cloud_seed.txt"
 if [[ -z "${DISPLAY:-}" ]]; then
     if ! command -v xvfb-run >/dev/null; then
         echo "SKIP: no X display or xvfb-run" >&2
@@ -58,7 +60,7 @@ fi
 capture() { # <name> <lab flag> <render debug view>
     local name="$1" lab="$2" view="$3"
     (cd "$OUT" && env -u WAYLAND_DISPLAY -u BYRO_HAZE_FLOOR XDG_SESSION_TYPE=x11 \
-        BYROREDUX_SETTINGS_PATH="$OUT/settings_$name.toml" RUST_LOG=warn \
+        BYROREDUX_SETTINGS_PATH="$OUT/settings_$name.toml" BYRO_CLOUD_SEED="${BYRO_CLOUD_SEED:-0}" RUST_LOG=warn \
         "${DISPLAY_RUNNER[@]}" timeout 180s "$BIN" \
         "$lab" --fly --window-size 1280x720 --upscaler taa \
         --bench-mode renderer-stepped --bench-camera static --bench-frames 90 \
@@ -90,7 +92,10 @@ out = Path(sys.argv[1])
 
 
 def load(name):
-    return np.asarray(Image.open(out / f"{name}.png").convert("L"), dtype=np.float32)
+    img = np.asarray(Image.open(out / f"{name}.png").convert("L"), dtype=np.float32)
+    if img.shape != (720, 1280):
+        sys.exit(f"FAIL: {name} has shape {img.shape}, expected 720x1280; capture is not comparable")
+    return img
 
 
 # The wall's body in the 1280x720 frame: below the lintel, above the ground line.
@@ -144,7 +149,10 @@ out = Path(sys.argv[1])
 
 
 def load(name):
-    return np.asarray(Image.open(out / f"{name}.png").convert("L"), dtype=np.float32)
+    img = np.asarray(Image.open(out / f"{name}.png").convert("L"), dtype=np.float32)
+    if img.shape != (720, 1280):
+        sys.exit(f"FAIL: {name} has shape {img.shape}, expected 720x1280; capture is not comparable")
+    return img
 
 
 # The card's body in the 1280x720 frame, and its hole columns (from the geometry variant's finished frame).

@@ -2,6 +2,7 @@
 name = "byroredux-fsr3-sys"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 links = "byroredux_fsr3"
 build = "build.rs"
@@ -17,3 +18,7 @@ ash = { workspace = true }
 # not read.
 [package.metadata.cargo-machete]
 ignored = ["cc"]
+
+# Contains `unsafe`, so it does not inherit the workspace `unsafe_code = "forbid"`.
+[lints.rust]
+unsafe_code = "allow"

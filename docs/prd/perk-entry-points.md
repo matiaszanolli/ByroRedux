@@ -1,6 +1,10 @@
 # Perk Entry Points — Product Requirements
 
-**Status**: ACTIVE (2026-11-05). Revision 6 settles hook 56's Target tab and
+**Status**: ACTIVE (2026-11-20). Revision 7 brings the document to HEAD after
+review round 3: §3.3 re-read at HEAD (Phases 1 and 2 shipped, Phases 3 and 4 part
+shipped), each phase's state recorded in §9, the Phase 0 verify tags that the census
+closed rewritten as sourced facts and the measured answers moved to §3.5,
+PERK-DEC-003 stated per game. Revision 6 settles hook 56's Target tab and
 records PERK-SUB-002 shipped. Revision 5 files the tracking issues.
 Revision 4 recorded the owner's §10 decisions, every one the
 recommendation. Revision 3 folded in review round 2:
@@ -17,7 +21,7 @@ about how an original engine, format or tool behaves cite external sources
 definitions); a claim that could not be verified is marked **Phase 0:
 verify** instead of being stated as fact.
 
-**Tracking**: #6635 (parent). Phases: #6651 (0), #6652 (1), #6654 (2), #6657 (3), #6659 (4).
+**Tracking**: #6635 (parent). Phases: #6651 (0, open), #6652 (1, closed 2026-11-07), #6654 (2, closed 2026-11-08), #6657 (3, open), #6659 (4, open).
 
 **Scope**: What the engine promises a `PERK` record does once an actor holds
 it, on Fallout 3, Fallout: New Vegas, Skyrim and Fallout 4: every entry body
@@ -143,45 +147,48 @@ the reporting (PERK-DX-003) and shrinks the first class (PERK-SUB).
 
 ### 3.3 Inventory at HEAD
 
-The inventory below is the state at HEAD on 2026-11-03, read from the code
-cited (every row re-read in review round 2). It is hand-written and goes
-stale; once Phase 0 checks in the hook catalog (PERK-HOOK-001), the hook rows
-are generated from it and this table keeps only the record and body rows.
+The inventory below is the state at HEAD on 2026-11-20, re-read in review round 3
+against the code cited; the 2026-11-03 version listed items Phases 1 and 2 have
+since shipped. It is hand-written and goes stale. The hook rows are not here: the
+hook catalog (`crates/scripting/src/perk_entry_points/catalog.rs`, PERK-HOOK-001)
+holds them and `perk.hooks` prints them, 272 rows of which are still
+`Pending { id: UNCLASSIFIED }` (the Phase 0 census draft, #6651, has not
+classified them).
 
 **Record and body decode** (`parse_perk`, `decode_perk_epfd` in
 `crates/plugin/src/esm/records/misc/magic.rs`)
 
-| # | Item | Today |
+| # | Item | At HEAD |
 |---|---|---|
 | D1 | `PRKE` header, three body shapes | Decoded on every game (`parse_perk`); ROADMAP's M24.2 row says the same |
-| D2 | `EPFD` per parameter type | Decoded for FO3/FNV (types 1, 2, 3) and Skyrim (1, 2, 3, 4, 5, 7) by `decode_perk_epfd`; every other game returns `PerkFunctionData::None`. ROADMAP lists this as open; for FO3/FNV/Skyrim it shipped |
-| D3 | Per-entry conditions by `PRKC` tab | Decoded into `PerkEntry.condition_tabs` (test `parse_perk_splits_conditions_by_prkc_tab`). ROADMAP lists this as open; it shipped |
-| D4 | Record-level conditions (before the first `PRKE`) | Dropped: the `CTDA` arm pushes only inside an open entry block |
-| D5 | `DATA` Level | Read and discarded (`let _level`) |
-| D6 | `DATA` playable / hidden / trait | Decoded; no reader outside the parser and its tests |
-| D7 | Quest body stage | Read as one byte (`r.u8_or_default() as u16`) |
-| D8 | `NNAM` next perk | Not read |
-| D9 | `EPF2` / `EPF3` | Kept as raw bytes (`formatter`, `extra_flags`), no reader |
-| D10 | `EPFB` entry id (FO4) | Not stored on the entry; read only by `examples/perk_fragment_census.rs`. Fragments are keyed by the `VMAD` index |
-| D11 | FO3/FNV embedded activate script | Not decoded by `parse_perk`; `embedded_script_at` (`crates/plugin/src/esm/records/script.rs`) already decodes the same sub-record layout for `QUST` stage and `INFO` result scripts |
-| D12 | Starfield layout | Parsed with the FO3/FNV field order; the Starfield `DATA` and `PRRK` rank blocks differ (§5.1) |
-| D13 | Skyrim `VMAD` perk fragments | Not decoded: `parse_perk` skips the `VMAD` on Skyrim, whose fragment section carries a file name and no script entry ([scripting.md § Perk fragments](../engine/scripting.md#perk-fragments-m472)) |
+| D2 | `EPFD` per parameter type | Decoded for FO3/FNV (types 1, 2, 3), Skyrim (1, 2, 3, 4, 5, 7) and Fallout 4 (1, 2, 3, 4, 5, 7, 8: `parse_perk_fo4_epfd_shapes`); Starfield and every other game return `PerkFunctionData::None` (§10 Q3) |
+| D3 | Per-entry conditions by `PRKC` tab | Decoded into `PerkEntry.condition_tabs` (`parse_perk_splits_conditions_by_prkc_tab`) |
+| D4 | Record-level conditions | Shipped (#6652): `PerkRecord.conditions` (`parse_perk_keeps_record_conditions`) |
+| D5 | `DATA` Level | Shipped (#6652): `PerkRecord.level` |
+| D6 | `DATA` playable / hidden / trait | Shipped; `levelup perk` reads playable (`byroredux/src/commands/gameplay.rs`, PERK-GATE-003) |
+| D7 | Quest body stage | Shipped, per game (PERK-DEC-003): `u8` on FO3, FNV and Skyrim, `u16` from Fallout 4 |
+| D8 | `NNAM` next perk | Shipped (#6652): `PerkRecord.next_perk` (`parse_perk_reads_next_perk`) |
+| D9 | `EPF2` / `EPF3` | Shipped (#6652): `PerkEntryDetails` (`run_immediately`, `replace_default`, `fragment_index`, `button_label`) |
+| D10 | `EPFB` entry id (FO4) | Shipped (#6652): `PerkEntryDetails.entry_id` |
+| D11 | FO3/FNV embedded activate script | Shipped (#6652): `PerkEntryDetails.script`, decoded by `embedded_script_at` |
+| D12 | Starfield layout | Shipped (#6652): `DATA` decodes from the Starfield layout and ranks count `PRRK` blocks (PERK-DEC-009, test at `magic.rs`); the `EPFD` shapes stay undecoded (D2) |
+| D13 | Skyrim `VMAD` perk fragments | Shipped (#6652): `PerkRecord.script_fragments` keyed by the entry's `EPF3` index (`parse_perk_skyrim_fragments_key_on_epf3`) |
 
 **Runtime**
 
-| # | Item | Today |
+| # | Item | At HEAD |
 |---|---|---|
 | R1 | Composition | `PerkEntryTable` built from `EsmIndex.perks` per load order, not saved (`registry_completeness_tests.rs`, `PerkEntryTable` row); `compose_entry_point` per [scripting.md](../engine/scripting.md#perk-entry-points-m472) |
-| R2 | Dialects | `Fallout3NV`, `Skyrim`; FO4, FO76 and Starfield rows carry `None` (`CharacterRulesProfile` in `profile.rs`), so their table is empty |
-| R3 | Consumed hooks | Weapon damage (`combat.rs`, `compose_outgoing_damage`), kill XP hook 9 and skill points hook 10 (`combat.rs`), FNV Damage Threshold 56/58 (`compose_damage_threshold`), carry weight (`encumbrance.rs`), Skyrim buy/sell 8/60 (`barter.rs`), Skyrim tempering 76 (`crates/scripting/src/tempering.rs`) |
-| R4 | Weapon and DT target tabs | Supplied since rev 6: `compose_outgoing_damage` and `compose_damage_threshold` lend the attacker's weapon to `WeaponSubject`, and FNV hooks 56/58 get their target tab. Every other hook's weapon tab is still unsupplied |
-| R5 | Ability body | No consumer: `Effect::ChangePerk` only sets the rank (`fragment/effects/actor_lists.rs`) |
-| R6 | Quest body | No consumer |
-| R7 | Value-entry fragments (FO4) | Not reported by composition; `perk.run` is the only source (`fragment/perk.rs`) |
-| R8 | Taking a perk | `levelup perk` checks perk points and `num_ranks` only ("Perk requirements are not checked here", `commands/gameplay.rs`, `LevelUpCommand`) |
+| R2 | Dialects | `Fallout3NV`, `Skyrim` and `Fallout4` (`PerkEntryPointDialect`, `profile.rs`; shipped #6657/#6659); the rows of every other game carry `None`, so their table is empty |
+| R3 | Consumed hooks | The catalog (`perk.hooks consumed`), not this table: R6 of the PRD standard |
+| R4 | Weapon and DT target tabs | Supplied since rev 6: `compose_outgoing_damage` and `compose_damage_threshold` lend the attacker's weapon to `WeaponSubject`, and FNV hooks 56/58 get their target tab. A hook's subjects are listed in its catalog row; Skyrim's and Fallout 4's are `None` until PERK-SUB-001 |
+| R5 | Ability body | Shipped (#6654): the actor's `SpellList` follows its `Perks` (PERK-BODY-001, -002, `ability_entry_spell_follows_the_perk`) |
+| R6 | Quest body | Shipped (#6654): acquiring the entry's rank starts the quest and sets its stage (PERK-BODY-003); a live save load does not re-run it (`734bcb1fa`) |
+| R7 | Value-entry fragments (FO4) | Shipped (#6659): an applied entry with a bound `EPFB` fragment reports its run (PERK-HOOK-008) |
+| R8 | Taking a perk | Shipped (#6654): `levelup perk` applies the record conditions, level, playable flag and the `NNAM` chain (`perk_entry_points/gates.rs`, PERK-GATE-001 to -004) |
 | R9 | Concentrated Fire | `vats_queue_part` prices each repeat shot (#6422); `concentrated_shot: 1` at both scan sites prices a part's first shot (`systems/vats.rs`) |
-| R10 | Composition trace | `compose_entry_point_traced` exists "for the debug console"; no command calls it |
-| R11 | Hook indices in consumers | `combat.rs` passes `fnv::ADJUST_EXPERIENCE_POINTS` and `fnv::ADJUST_GAINED_SKILL_POINTS` directly; `barter.rs` takes its hooks from the profile row (`BarterModel::perk_hooks`) |
+| R10 | Composition trace | Shipped (#6654): `perk.compose` calls `compose_entry_point_traced` (`byroredux/src/commands/perk.rs`) |
+| R11 | Hook indices in consumers | Shipped (#6657): the dialect owns the indices and the value-function set (PERK-DIA-002, -003) |
 
 ### 3.4 Dialect sizes
 
@@ -195,8 +202,57 @@ Skyrim `wbDefinitionsTES5.pas` and FO4 `wbDefinitionsFO4.pas`
 | `Fallout3NV` | FO3 | 0–36 | FNV 0–36 |
 | `Fallout3NV` | FNV | 0–73 (73 `Reserved`) | — |
 | `Skyrim` | Skyrim LE / SE | 0–91 | — (0 is *Calculate Weapon Damage*, as FNV, but the tables diverge from 3) |
-| new `Fallout4` | FO4 | 0–157 | — (0 is *Mod Breath Timer*) |
+| `Fallout4` | FO4 | 0–157 | — (0 is *Mod Breath Timer*) |
 | — | Starfield | 0–254 (`wbEntryPointsEnum` in `wbDefinitionsSF1.pas`; runtime out of scope, §10 Q3) | — (0 is *Mod Breath Timer*, as FO4) |
+
+### 3.5 Measured answers
+
+What the censuses answered for the **Phase 0: verify** items while Phases 2 to 4
+were built; the requirements cite this section. A fact here is a measurement of the
+vanilla masters, not a statement about the original engine's code; where the two
+differ, the item stays a verify item (the FO4 priority case).
+
+**Found in Phase 2** (`perk_body_census`, 2026-11-08, vanilla Fallout3/FalloutNV/Skyrim/Fallout4 masters;
+these close the Phase 0 verify rows they name):
+
+- *Skyrim Ability rank rule* (PERK-BODY-001): every Skyrim Ability entry is authored at rank 0 and no Ability
+  perk has `num_ranks` above 1, so the shared "entry rank == held rank − 1" rule and the CK's "Rank: not used"
+  agree on every vanilla perk. FO3 has 8 perks with Ability entries at ranks 0/1/2, FNV 2 (`ActionBoy`,
+  `ActionGirl`): the per-rank rule is what they need.
+- *Quest entry timing* (PERK-BODY-003): fires on acquiring the entry's rank, one entry per rank
+  (`IntenseTraining` authors ranks 0-9 with stages 101-110 of one quest). Every vanilla Quest entry has zero
+  condition tabs, so whether tabs gate it is unobservable; they are honoured (fail-closed). The stage byte of an
+  FO3/FNV Quest body is a `u8` with fill after it (PERK-DEC-003 note).
+- *Skyrim's level byte* (PERK-GATE-002): all 375 `Skyrim.esm` perks author level 0, so the level check applies
+  to Skyrim without changing any vanilla perk.
+- *`NNAM` versus `num_ranks`* (PERK-GATE-004): a chain's records each carry the total at their rank
+  (`IronFist01..05` ×1.2…×2.0, `LightFingers00..80`), so the next rank replaces the held record. Skyrim's chains
+  end at a record with no `NNAM`; Fallout 4's are rings whose wrap is the link to a lower-level record in 72 of
+  79 rings (the other seven are bounded by "already held").
+
+**Found in Phases 3 and 4** (`perk_entry_census` and `CENSUS_ENTRY_POINT=<n>` on
+`Fallout4.esm`, `Skyrim.esm`, `FalloutNV.esm`, `Fallout3.esm`, 2026-11-09):
+
+- *FO4 weapon-damage hook* (PERK-HOOK-010): 35, *Mod Weapon Attack Damage*. `Fallout4.esm` authors 154 entries on it, every
+  weapon-class perk among them (`Rifleman`, `Gunslinger`, `HeavyGunner`), with `HasKeyword` weapon-type conditions on tab 1;
+  hook 93, *Mod Typed Weapon Attack Damage*, holds four entries, all scoped by `EPIsDamageType` on tab 2 (`NuclearPhysicist`,
+  `LegendaryRadioactivePerk`, `crRangedDmgPerk`), so it is a damage-type modifier and waits on a damage-type model.
+- *FO4 tab subjects on hook 35* (PERK-SUB-001): tab 1 is the weapon (`HasKeyword`, 108 conditions) and tab 2 the target
+  (`GetIsSex`, `GetInFaction`, `GetIsID`, `GetDead`, `HasKeyword` on the target). Hook 14, *Activate*, authors tab 1 conditions on
+  the activated reference (`HasKeyword`, `GetValue`, `GetDead`). Hooks 9 and 10 have no vanilla entry in `Fallout4.esm`.
+- *FO4 actor-value operand*: Add / Set / Multiply AV Mult entries name an `AVIF` record (`EPFT` 8, `wbActorValue`; the census
+  reads `avif: 2121` = `0x849`), where FO3 / FNV and Skyrim name an index. `PerkEntryPointDialect::actor_value_is_form_id`
+  is the dialect row.
+- *FO4 priority case* (PERK-DIA-004): the census finds hooks 4, 11, 35, 36 and 58 carrying a Set Value entry beside entries at
+  other priorities, so an observable case exists, but which entry wins is the original engine's behaviour and a data census
+  cannot show it. Until an in-game count settles it, the dialect applies the FO4 CK text (the lower number applies last,
+  descending order) as Q2 decides; the verify item stays open.
+- *Hook 8, FO3 / FNV* (§10 Q6): every vanilla entry is a multiplier (`Gunslinger`, `Commando`, `Sniper` ×1.25, `Fast Shot` ×0.8,
+  `Trigger Discipline` ×1.2, `MS08RewardPerk` ×1.1), identical on both games. They compose onto the VATS chance, which the
+  scan holds to `fVATSMaxChance` again; whether the original caps after the perk is not sourced. What "Broken as of 1.1.0035"
+  means, and the community fix that addresses it, are still unfound, so the fix entry cites the GECK note alone.
+- *Concentrated Fire's repeat count* (PERK-HOOK-003): the scan cannot know which shot of a part a queue holds, so
+  `vats_queue_part` composes the flag and prices each repeat (#6422); the scan keeps the first-shot chance.
 
 ---
 
@@ -252,59 +308,58 @@ Skyrim `wbDefinitionsTES5.pas` and FO4 `wbDefinitionsFO4.pas`
   first `PRKE`, xEdit `wbConditions` on `PERK` in the FO3, FNV, TES5 and FO4
   definitions; Starfield's definition has none at record level, its
   conditions sit in each `PRRK` rank block) MUST be stored on `PerkRecord`,
-  its FormIDs passed through `remap_fid` as the entry conditions' are. Today
-  it is dropped (§3.3 D4).
+  its FormIDs passed through `remap_fid` as the entry conditions' are. Shipped
+  in #6652 (§3.3 D4).
 - **PERK-DEC-002.** The `DATA` level byte ("Min Level" in xEdit FNV, "Level" in
-  TES5 and FO4) MUST be stored on `PerkRecord`. Today it is discarded (D5).
-- **PERK-DEC-003.** A Quest body's stage MUST be read as the 16-bit field xEdit
-  declares (`Quest Stage`, `itU16`, in the FO3, FNV, TES5 and FO4
-  definitions). Today one byte is read (D7); a test with stage 300 MUST round
-  through `parse_perk` unchanged. **Measured exception** (`perk_body_census`, 2026-11-08):
-  the FO3 and FNV vanilla bodies carry fill in the byte after the stage
-  (`0xCD`, `0x61`, `0x6C`), so their 35 Quest entries read as 16-bit name no
-  stage of their quest while the low byte names one in every case; Skyrim is
-  the same (#6784). Only Fallout 4 and later read the high byte (104 of its
-  Quest entries name a stage as 16-bit, up to 1610).
+  TES5 and FO4) MUST be stored on `PerkRecord`. Shipped in #6652 (D5).
+- **PERK-DEC-003.** A Quest body's stage MUST be read per game as the data
+  carries it: one byte on Fallout 3, Fallout: New Vegas and Skyrim, and the 16-bit
+  field on Fallout 4 and later. xEdit declares `Quest Stage` as `itU16` in the FO3,
+  FNV, TES5 and FO4 definitions, and the vanilla data contradicts it on the first
+  three: `perk_body_census` (2026-11-08) finds fill in the byte after the stage
+  (`0xCD`, `0x61`, `0x6C`), so the 35 FO3 and FNV Quest entries read as 16-bit name
+  no stage of their quest while the low byte names one in every case, and Skyrim is
+  the same (#6784). Fallout 4 is the only game whose high byte is data (104 of its
+  Quest entries name a stage as 16-bit, up to 1610). Tests:
+  `parse_perk_quest_stage_is_u16` (Fallout 4, stage 300 round-trips),
+  `parse_perk_skyrim_quest_stage_is_u8_with_unused_tail` and
+  `parse_perk_fo3nv_quest_stage_is_u8_with_fill_tail`. The deviation from xEdit is
+  §6 row 10. Shipped in #6652 and #6654 (D7).
 - **PERK-DEC-004.** `NNAM` ("Next Perk", xEdit TES5 and FO4) MUST be stored on
-  `PerkRecord` as a FormID passed through `remap_fid`. Today it is not read
-  (D8).
+  `PerkRecord` as a FormID passed through `remap_fid`. Shipped in #6652 (D8).
 - **PERK-DEC-005.** `EPF3` MUST decode into typed flags: `Run Immediately` and
   `Replace Default` (a `u16` of flag bits in xEdit's TES5 and FO4 `EPF3`),
   plus Skyrim's `u16` `Fragment Index`; on FO3/FNV `EPF3` is a single `u16`
-  `Run Immediately` boolean (xEdit FO3 and FNV). Today it is raw bytes (D9).
+  `Run Immediately` boolean (xEdit FO3 and FNV). Shipped in #6652 (D9).
 - **PERK-DEC-006.** On FO4, `decode_perk_epfd` MUST decode parameter types 1,
   2, 3, 4, 5, 7 and 8 with the shapes of xEdit's FO4 `EPFD` union, where type 2
   under functions 5 / 12 / 13 / 14, and type 8 (`AVIF`, which FO4's `EPFT` enum
   adds and Skyrim's lacks), are an `AVIF` FormID plus a float (FO4
   `wbEPFDDecider` maps type 2 under those functions to case 8; FO4
   `wbActorValue` is a FormID to `AVIF`, not Skyrim's float-encoded index).
-  Today FO4 returns `None` (D2).
+  Shipped in #6652 (D2).
 - **PERK-DEC-007.** On FO4, the entry's `EPFB` ("Perk Entry ID (unique)", `u16`)
-  MUST be stored on the `EntryPoint` body. Today only the census example reads
-  it (D10).
+  MUST be stored on the `EntryPoint` body. Shipped in #6652 (D10).
 - **PERK-DEC-008.** On FO3/FNV, the embedded script of an activate entry MUST
   be decoded by `embedded_script_at` into the `ScriptRecord` the M47.3
   interpreter runs for result scripts. The block follows `EPF3` and is the
   sub-record set of a standalone script — `SCHR`, `SCDA`, `SCTX`, `SLSD` +
   `SCVR` locals, `SCRO` / `SCRV` references (xEdit `wbEmbeddedScriptPerk` in
   `wbDefinitionsFNV.pas`, `wbEmbeddedScript` in `wbDefinitionsFO3.pas`).
-  Today `parse_perk` does not decode it (D11).
+  Shipped in #6652 (D11).
 - **PERK-DEC-009.** On Starfield, `parse_perk` MUST NOT report `is_trait`,
   `num_ranks`, `playable` or `hidden` from the FO3/FNV byte order: Starfield's
   `DATA` is category, skill group, crew requirement, flags (Trait, Playable
   and Hidden are bits of the last byte), and its entries sit
   inside `PRRK`…`PRRF` rank blocks (xEdit `wbDefinitionsSF1.pas`, `PERK`).
-  Today they are read positionally (D12). The fields MUST either decode from
-  the Starfield layout or be absent.
+  Shipped in #6652 (D12): the fields decode from the Starfield layout.
 - **PERK-DEC-010.** The census harness (`examples/perk_entry_census.rs`) MUST
   accept FO4's shapes (PERK-DEC-006), and its per-master `mismatches: N` line
   MUST read zero on `Fallout3.esm`, `FalloutNV.esm`, `Skyrim.esm` (LE and SE)
   and `Fallout4.esm`. On `Starfield.esm`, whose `EPFD` shapes and `PRRK` rank
   blocks this PRD does not decode (§10 Q3), the census MUST count those
-  entries as undecoded, apart from mismatches. Today the line is printed, but
-  its shape rule knows only the FO3/FNV and Skyrim shapes, so an FO4 or
-  Starfield entry whose parameter type promises data (every one of them
-  decodes to `None`, D2) counts as a mismatch.
+  entries as undecoded, apart from mismatches. Shipped in #6652, the issue
+  whose exit is a zero-mismatch census.
 - **PERK-DEC-011.** On Skyrim, the `VMAD` fragment section (xEdit TES5
   `wbVMADFragmentedPERK`: a version byte, a file name, then per fragment a
   `u32` index, one unknown byte, the script name and the fragment name) MUST
@@ -314,37 +369,40 @@ Skyrim `wbDefinitionsTES5.pas` and FO4 `wbDefinitionsFO4.pas`
   fragments reside", CK *Perk Fragments*). xEdit names both fields
   "Fragment Index" and states no link between them; **Phase 0: verify** that
   every fragment's index equals one activate entry's `EPF3` index, by a
-  `Skyrim.esm` census like `perk_fragment_census`'s FO4 `EPFB` match. Today
-  they are not decoded (D13).
+  `Skyrim.esm` census like `perk_fragment_census`'s FO4 `EPFB` match. The decode
+  shipped in #6652 (D13); the census is still open.
 - **PERK-DEC-012.** `EPF2` MUST decode into the activate choice's button label:
   an lstring on Skyrim and FO4, a string on FO3/FNV (xEdit TES5 and FO4
-  `wbLString(EPF2, 'Button Label')`, FO3 and FNV `wbStringKC`). Today it is
-  raw bytes (D9).
+  `wbLString(EPF2, 'Button Label')`, FO3 and FNV `wbStringKC`). Shipped in
+  #6652 (D9).
 
 ### 5.2 Dialect and translation boundary (`PERK-DIA`)
 
 - **PERK-DIA-001.** `PerkEntryPointDialect` MUST gain a `Fallout4` variant set
   on `CharacterRulesProfile::FALLOUT4`, with the numbering of xEdit's FO4
-  `wbEntryPointsEnum` (§3.4). Today FO4's row is `None` (R2).
+  `wbEntryPointsEnum` (§3.4). Shipped (R2).
 - **PERK-DIA-002.** A consumer outside `perk_entry_points` MUST NOT name a
   per-dialect hook index: it names the calculation, and the dialect maps it to
   an index in one table per dialect (the `BarterModel::perk_hooks` row is the
-  existing shape). Today `combat.rs` passes `fnv::` constants (R11). This is
+  existing shape). Shipped in #6657 (R11). This is
   the translation boundary of CHARAL: the per-game difference is the dialect
   row, never a branch in combat, encumbrance or barter.
 - **PERK-DIA-003.** The value-function set MUST be a property of the dialect
   (FO3/FNV 1–7; Skyrim and FO4 1–7 and 12–14, per the function enums of their
-  xEdit definitions). Today `resolve_op` gates 12–14 on `Skyrim` alone.
+  xEdit definitions). Shipped in #6657 (R11).
 - **PERK-DIA-004.** The composition order MUST be a property of the dialect.
   The FO3/FNV and Skyrim order (ascending priority, ties by perk order then
   entry order) is decided in [scripting.md](../engine/scripting.md#perk-entry-points-m472)
   and is not reopened. The FO4 CK says "a perk entry with a lower numbered
   priority will take precedence"
   (FO4 CK *Perk*),
-  the opposite of Skyrim's CK text. **Phase 0: verify** whether any
-  `Fallout4.esm` hook carries a Set Value entry and another entry at a
-  different priority on the same hook, which is the only case where the order
-  is observable; if none does, §10 Q2 decides.
+  the opposite of Skyrim's CK text. `perk_entry_census`
+  (2026-11-09) finds `Fallout4.esm` hooks carrying a Set Value entry beside
+  entries at other priorities (4, 11, 35, 36, 58), the only case where the
+  order is observable, but which entry wins is the original engine's behaviour
+  and a data census cannot show it (§3.5). **Phase 0: verify** it with an
+  in-game count; until then the dialect applies the FO4 CK text as §10 Q2
+  decides.
 - **PERK-DIA-005.** The FNV subtract-table hooks (53, 56, 58) MUST stay a
   property of the `Fallout3NV` dialect, and the `Fallout4` dialect MUST have
   none: xEdit's FO4 definition declares one function enum and no per-hook
@@ -443,7 +501,7 @@ Skyrim `wbDefinitionsTES5.pas` and FO4 `wbDefinitionsFO4.pas`
   bound fragment, the composer MUST report the run (`report_perk_entry`), per
   the CK's "Value entries: Run whenever conditions are met"
   (FO4 CK *Perk Fragments*).
-  Today composition never reports (R7).
+  Shipped in #6659 (R7).
 - **PERK-HOOK-009.** Skyrim's spell-applying hooks (*Apply Combat Hit Spell*,
   *Apply Bashing Spell*, *Apply Sneaking Spell*, …) SHOULD cast the entry's
   spell on the subject the CK names when the triggering event happens, through
@@ -452,11 +510,12 @@ Skyrim `wbDefinitionsTES5.pas` and FO4 `wbDefinitionsFO4.pas`
 - **PERK-HOOK-010.** The FO4 dialect's carry-weight (*Set Max Carry Weight*,
   10) and weapon-damage hooks MUST be composed at the same call sites as the
   other dialects' (`encumbrance.rs`, `combat.rs`) through PERK-DIA-002.
-  **Phase 0: verify** which FO4 hook is the outgoing weapon-damage
-  calculation: xEdit FO4 names 35 *Mod Weapon Attack Damage* and 93 *Mod
-  Typed Weapon Attack Damage*, and the FO4 CK entry-point template leaves
-  both descriptions blank, so the census's per-hook entries and their perk
-  descriptions settle it.
+  xEdit FO4 names 35 *Mod Weapon Attack Damage* and 93 *Mod
+  Typed Weapon Attack Damage* and the FO4 CK entry-point template leaves both
+  descriptions blank; the census settles it: the outgoing weapon-damage
+  calculation is 35 (154 `Fallout4.esm` entries, every weapon-class perk
+  among them), and 93 is a damage-type modifier scoped by `EPIsDamageType`,
+  which waits on a damage-type model (§3.5).
 - **PERK-HOOK-011.** Skyrim's *Adjust Limb Damage* (4) and *Calculate Mine
   Explode Chance* (3), which the CK *Perk Entry Point* marks "Not Used", MUST
   be catalogued Inert on `Skyrim`, with that page as the source.
@@ -466,8 +525,8 @@ Skyrim `wbDefinitionsTES5.pas` and FO4 `wbDefinitionsFO4.pas`
   (PERK-DEC-011), reported the same way; on Skyrim and FO4 the `EPFT` 4
   spell, cast on the activated reference ("The contact spell to apply to the
   target", CK *Perk Entry Point*, *Activate*); on FO3/FNV the embedded
-  script (PERK-DEC-008). Today none of the four runs from an activation; only
-  `perk.run` reports an FO4 entry (R7).
+  script (PERK-DEC-008). Shipped for FO3/FNV and Skyrim in #6657 (`683d9a92b`, per the ROADMAP M24.2
+  row); the FO4 leg is open (#6659).
 
 ### 5.5 Quest and Ability bodies (`PERK-BODY`)
 
@@ -475,14 +534,15 @@ Skyrim `wbDefinitionsTES5.pas` and FO4 `wbDefinitionsFO4.pas`
   is authored for, the entry's spell MUST be in the actor's spell list
   (`magic::add_spell`, which applies a constant spell's value changes), and
   MUST be removed when the perk is removed ("Spells and Abilities added in
-  this way will be removed when the Perk is removed", CK *Perk*). Today
-  `Effect::ChangePerk` only sets the rank (R5). The rank rule is sourced on
+  this way will be removed when the Perk is removed", CK *Perk*). Shipped
+  in #6654 (R5). The rank rule is sourced on
   FO3/FNV ("If a specific perk entry is applicable at multiple ranks, it must
   be specified multiple times, once for each rank", GECK *Perk Entry*) and on
   FO4 ("If an entry is applicable at multiple ranks, it must be specified for
-  each rank", FO4 CK *Perk*). The Skyrim CK marks entry Rank "Not used", so
-  **Phase 0: verify** the Skyrim rule from a `Skyrim.esm` perk carrying
-  Ability entries at more than one rank (the census's multi-rank listing).
+  each rank", FO4 CK *Perk*). The Skyrim CK marks entry Rank "Not used";
+  `perk_body_census` (2026-11-08) finds every `Skyrim.esm` Ability entry
+  authored at rank 0 and no Ability perk with `num_ranks` above 1, so the
+  shared rule and the CK agree on every vanilla perk (§3.5).
 - **PERK-BODY-002.** After a save and reload, a perk-granted ability spell MUST
   be in `SpellList` exactly once, with its value changes counted once in the
   reloaded `ActorValues` (both columns are saved at HEAD,
@@ -492,12 +552,14 @@ Skyrim `wbDefinitionsTES5.pas` and FO4 `wbDefinitionsFO4.pas`
   MUST be started and set to the entry's stage through the canonical quest
   lifecycle ("A Quest Perk Entry will start a specified quest and set it to a
   specified stage", CK *Perk*).
-  Today there is no consumer (R6). **Phase 0: verify** whether it fires once at
-  acquisition or at every rank, and whether the entry's tabs gate it; none of
-  CK *Perk*, GECK *Perk Entry* or FO4 CK *Perk* says, so the settling
-  evidence is an extender source that applies the entry (xNVSE or SKSE
-  perk-entry visitors) or a vanilla quest whose stage is only ever set by a
-  perk entry.
+  Shipped in #6654 (R6). None of CK *Perk*, GECK *Perk Entry* or FO4 CK *Perk*
+  says whether it fires once at acquisition or at every rank: `perk_body_census`
+  finds one entry per rank (`IntenseTraining` authors ranks 0–9 with stages
+  101–110 of one quest), so it fires on acquiring the entry's rank (§3.5).
+  Whether the entry's tabs gate it is unobservable, since no vanilla Quest entry
+  has a condition tab; they are honoured, fail-closed. **Phase 0: verify** the
+  tab question from an extender source that applies the entry (xNVSE or SKSE
+  perk-entry visitors).
 - **PERK-BODY-004.** Perks granted from `NPC_` (`PRKR`, stamped by
   `npc_spawn/stamps.rs`; xEdit declares `PRKR` in the TES5 and FO4 `NPC_`
   definitions and in neither FO3's nor FNV's, and the parser gates it off
@@ -509,33 +571,34 @@ Skyrim `wbDefinitionsTES5.pas` and FO4 `wbDefinitionsFO4.pas`
   conditions (PERK-DEC-001) fail on the player, naming the failing condition
   function. CK: "Sets the conditions necessary to make this perk available";
   FO4 CK: "When conditions are met this perk may be available during level up".
-  Today requirements are not checked (R8).
+  Shipped in #6654 (R8).
 - **PERK-GATE-002.** `levelup perk` MUST refuse a perk whose `DATA` level
   exceeds the player's level (FO4 CK: "The minimum player level where this
-  perk becomes available"). On Skyrim the CK marks Level "Not applicable";
-  **Phase 0: verify** that every `Skyrim.esm` perk authors 0 there before the
-  check applies to Skyrim.
+  perk becomes available"). On Skyrim the CK marks Level "Not applicable",
+  and all 375 `Skyrim.esm` perks author 0 there (`perk_body_census`,
+  2026-11-08), so the check applies to Skyrim without changing a vanilla perk.
+  Shipped in #6654.
 - **PERK-GATE-003.** `levelup perk` MUST refuse a perk whose `DATA` playable
   flag is clear (CK: playable "identifies … that the perk can be chosen by the
   player when leveling up").
 - **PERK-GATE-004.** Where a perk authors `NNAM`, taking the next rank MUST
-  grant the `NNAM` perk rather than raising the held perk's rank. **Phase 0:
-  verify**, by census of `Skyrim.esm` and `Fallout4.esm`, how `NNAM` chains
-  and `num_ranks` above 1 coexist (the Skyrim CK marks Num Ranks "Not
-  applicable" and entry Rank "Not used"; the FO4 CK documents both Num Ranks
-  and Next Perk).
+  grant the `NNAM` perk rather than raising the held perk's rank. The
+  Skyrim CK marks Num Ranks "Not applicable" and entry Rank "Not used"; the FO4
+  CK documents both Num Ranks and Next Perk. `perk_body_census` (2026-11-08)
+  finds each record of a chain carrying the total at its rank, so the next rank
+  replaces the held record; Skyrim's chains end at a record with no `NNAM` and
+  Fallout 4's are rings (§3.5). Shipped in #6654.
 - **PERK-GATE-005.** Script and console grants (`AddPerk`, `Effect::ChangePerk`)
   MUST NOT be gated: the record's conditions are "Level-Up Menu Conditions"
   (FO4 CK *Perk*), and neither GECK *AddPerk* nor CK *AddPerk - Actor*
-  describes a check. Today `Effect::ChangePerk` checks nothing (R5), which
-  this ID keeps.
+  describes a check. `Effect::ChangePerk` checks nothing, which this
+  ID keeps.
 
 ### 5.7 Observability (`PERK-DX`)
 
 - **PERK-DX-001.** A console command `perk.compose <hook> <base> [entity]` MUST
   print the composed value and, per applied entry, the perk, the operation and
-  the running value (`compose_entry_point_traced`). Today no command calls the
-  traced composer (R10).
+  the running value (`compose_entry_point_traced`). Shipped in #6654 (R10).
 - **PERK-DX-002.** A console command `perk.hooks [state]` MUST print the hook
   catalog for the loaded dialect, one line per hook with its state.
 - **PERK-DX-003.** `perk.compose` MUST also list each held entry on the hook
@@ -544,17 +607,16 @@ Skyrim `wbDefinitionsTES5.pas` and FO4 `wbDefinitionsFO4.pas`
 - **PERK-DX-004.** At load-order install, the engine MUST log one line naming
   the loaded dialect with the counts of entries composed, entries on
   non-Consumed hooks by state, and entries skipped for an undecoded shape.
-  Today it logs only `Installed perk entry points: N perks`, and nothing when
-  N is 0 (`byroredux/src/asset_provider/script.rs`).
+  Shipped in #6654 (the install summary in `perk_entry_points.rs`).
 - **PERK-DX-005.** On save load, a held perk whose FormID has no `PERK` record
-  in the load order MUST be reported once and contribute nothing. Today it
-  already contributes nothing (`compose_entry_point_traced` skips a FormID
-  with no table row) and nothing reports it. (The GECK records that Fallout 3
+  in the load order MUST be reported once and contribute nothing. Shipped
+  in #6654 (`first_unknown_perk_report`, `perk_entry_points/bodies.rs`); the
+  perk already contributed nothing, `compose_entry_point_traced` skipping a
+  FormID with no table row. (The GECK records that Fallout 3
   before 1.5 crashed loading such a save, GECK *Perk Entry*, CAUTION.)
 - **PERK-DX-006.** `SpellList` MUST be registered for the debug server's
-  `inspect` command, so a perk-granted ability is visible on the actor. Today
-  `crates/debug-server/src/registration.rs` registers `Perks` and not
-  `SpellList`.
+  `inspect` command, so a perk-granted ability is visible on the actor. Shipped
+  in #6654: `crates/debug-server/src/registration.rs` registers `SpellList`.
 
 ---
 
@@ -571,6 +633,7 @@ Skyrim `wbDefinitionsTES5.pas` and FO4 `wbDefinitionsFO4.pas`
 | 7 | *Add Range To Value* adds `Random(X, Y)`, which the CK *Perk Entry Point* links to *RandomFloat - Utility* ("between the minimum and maximum values (inclusive)"); the distribution is not documented (**Phase 0: verify** by sampling the composed value of a test perk on a Consumed hook in the original game) | Draws uniformly from the seeded `StoryManagerRng` | — | A distribution that differs from the original's shifts averages, not ranges → visible in PERK-DX-001 |
 | 8 | Level-up availability enforced by the menu ("Level-Up Menu Conditions: When conditions are met this perk may be available during level up", FO4 CK *Perk*) | Enforced by the level-up path the menu will call (PERK-GATE) | — | None; script grants stay ungated (PERK-GATE-005) |
 | 9 | The activate choice appears in "the popup menu" (CK *Perk Fragments*) | Appears on an engine-native surface until M48's menus, per §10 Q5 | — | It does not look like the original's; the label and what picking it runs are the authored ones (PERK-HOOK-007, PERK-HOOK-012) |
+| 10 | xEdit declares a Quest entry's `Quest Stage` as `itU16` (FO3, FNV, TES5 and FO4 definitions) | Read as one byte on FO3, FNV and Skyrim, 16 bits on FO4 and later, as the vanilla data carries it (PERK-DEC-003, §3.5, #6784) | — | A mod authoring a stage above 255 on FO3, FNV or Skyrim reads its low byte; no vanilla entry does → the per-game rule is the parser's, tested in `parse_perk_skyrim_quest_stage_is_u8_with_unused_tail` |
 
 ---
 
@@ -614,8 +677,10 @@ path). No game file is checked in. The scenarios:
    and `ability_entry_spell_follows_the_perk`.
 3. **Parse.** `cargo test -p byroredux-plugin parse_perk` passes, including new
    `parse_perk_keeps_record_conditions`, `parse_perk_quest_stage_is_u16`,
-   `parse_perk_reads_next_perk`, `parse_perk_fo4_epfd_shapes` and
-   `parse_perk_skyrim_fragments_key_on_epf3`.
+   `parse_perk_reads_next_perk`, `parse_perk_fo4_epfd_shapes`,
+   `parse_perk_skyrim_fragments_key_on_epf3` and the per-game Quest stage tests
+   `parse_perk_skyrim_quest_stage_is_u8_with_unused_tail` and
+   `parse_perk_fo3nv_quest_stage_is_u8_with_fill_tail` (PERK-DEC-003).
 4. **Real-data composition.** The ignored
    `vanilla_fnv_perks_compose_as_their_descriptions_say` and
    `vanilla_fnv_damage_threshold_perks_compose` (`crates/scripting/tests/perk_entry_points_real_data.rs`)
@@ -676,88 +741,45 @@ PERK-DEC-006/007 and PERK-DIA-001 stand before it.
 
 **Phase 0 — Census and catalog (no engine code).** Run the census on every
 master in §7.2 scenario 1 and draft the hook catalog from its output, each
-authored hook with a state and a source. Close the **Phase 0: verify** items
-(one row each in the verify list):
+authored hook with a state and a source. Close the **Phase 0: verify** items.
+*Status 2026-11-20: open (#6651).* The Phase 2 to 4 censuses answered the verify
+items that Skyrim's Ability rank rule, Quest entry timing, Skyrim's level byte,
+`NNAM` against `num_ranks`, the FO4 weapon-damage hook and hook 56's Target tab
+named (§3.5). The catalog draft is unfinished: 272 rows are still
+`Pending { id: UNCLASSIFIED }`. What is left:
 
 | Item | Requirement |
 |---|---|
-| Skyrim fragment index ↔ `EPF3` index | PERK-DEC-011 |
-| FO4 priority case | PERK-DIA-004 |
-| Per-hook tab subjects (Skyrim, FO4) | PERK-SUB-001 |
-| Hook 56's Target tab (settled in rev 6: the attacker) | PERK-SUB-002 |
+| Skyrim fragment index ↔ `EPF3` index (the `Skyrim.esm` census) | PERK-DEC-011 |
+| FO4 priority case (an in-game count; the data shows only that the case exists) | PERK-DIA-004 |
+| Per-hook tab subjects: Skyrim, and FO4 hooks other than 14 and 35 | PERK-SUB-001 |
 | FNV hooks 39 / 40 | PERK-HOOK-005 |
 | FO4 *Run Immediately* timing | PERK-HOOK-007 |
-| FO4 weapon-damage hook | PERK-HOOK-010 |
-| Skyrim Ability rank rule | PERK-BODY-001 |
-| Quest entry timing | PERK-BODY-003 |
-| Skyrim's level byte | PERK-GATE-002 |
-| `NNAM` versus `num_ranks` | PERK-GATE-004 |
+| Whether a Quest entry's tabs gate it (an extender source) | PERK-BODY-003 |
 | Scripted removal of perk abilities | §6 row 6 |
 | *Add Range To Value* distribution | §6 row 7 |
-| FO3/FNV hook-8 status and fix source | §10 Q6 |
+| FO3/FNV hook 8: what "Broken as of 1.1.0035" means, and a community fix | §10 Q6 |
 
-Write the Ability-grant subsection of scripting.md (Related). Resolve §10.
-Exit: the catalog draft and the verify answers are checked in, every item
-closed or filed as an issue.
+Write the Ability-grant subsection of scripting.md (Related; not written at
+HEAD). Exit: the catalog classifies every hook a vanilla master authors, and the
+verify items above are closed or filed as issues.
 
 **Phase 1 — Decode residue.** PERK-DEC-001 to -012. Exit: §7.2 scenarios 1
-and 3 pass on every master scenario 1 names.
+and 3 pass on every master scenario 1 names. *Status: shipped, #6652 closed 2026-11-07.*
 
 **Phase 2 — Bodies, gates and observability.** PERK-BODY, PERK-GATE,
 PERK-DX, PERK-HOOK-001/002/011. Exit: §7.2 scenarios 2 and 6 pass; the
-catalog test passes.
-
-**Measured answers, found in Phase 2** (`perk_body_census`, 2026-11-08, vanilla Fallout3/FalloutNV/Skyrim/Fallout4 masters;
-these close the Phase 0 verify rows they name):
-
-- *Skyrim Ability rank rule* (PERK-BODY-001): every Skyrim Ability entry is authored at rank 0 and no Ability
-  perk has `num_ranks` above 1, so the shared "entry rank == held rank − 1" rule and the CK's "Rank: not used"
-  agree on every vanilla perk. FO3 has 8 perks with Ability entries at ranks 0/1/2, FNV 2 (`ActionBoy`,
-  `ActionGirl`): the per-rank rule is what they need.
-- *Quest entry timing* (PERK-BODY-003): fires on acquiring the entry's rank, one entry per rank
-  (`IntenseTraining` authors ranks 0-9 with stages 101-110 of one quest). Every vanilla Quest entry has zero
-  condition tabs, so whether tabs gate it is unobservable; they are honoured (fail-closed). The stage byte of an
-  FO3/FNV Quest body is a `u8` with fill after it (PERK-DEC-003 note).
-- *Skyrim's level byte* (PERK-GATE-002): all 375 `Skyrim.esm` perks author level 0, so the level check applies
-  to Skyrim without changing any vanilla perk.
-- *`NNAM` versus `num_ranks`* (PERK-GATE-004): a chain's records each carry the total at their rank
-  (`IronFist01..05` ×1.2…×2.0, `LightFingers00..80`), so the next rank replaces the held record. Skyrim's chains
-  end at a record with no `NNAM`; Fallout 4's are rings whose wrap is the link to a lower-level record in 72 of
-  79 rings (the other seven are bounded by "already held").
-
-**Measured answers, found in Phases 3 and 4** (`perk_entry_census` and `CENSUS_ENTRY_POINT=<n>` on
-`Fallout4.esm`, `Skyrim.esm`, `FalloutNV.esm`, `Fallout3.esm`, 2026-11-09):
-
-- *FO4 weapon-damage hook* (PERK-HOOK-010): 35, *Mod Weapon Attack Damage*. `Fallout4.esm` authors 154 entries on it, every
-  weapon-class perk among them (`Rifleman`, `Gunslinger`, `HeavyGunner`), with `HasKeyword` weapon-type conditions on tab 1;
-  hook 93, *Mod Typed Weapon Attack Damage*, holds four entries, all scoped by `EPIsDamageType` on tab 2 (`NuclearPhysicist`,
-  `LegendaryRadioactivePerk`, `crRangedDmgPerk`), so it is a damage-type modifier and waits on a damage-type model.
-- *FO4 tab subjects on hook 35* (PERK-SUB-001): tab 1 is the weapon (`HasKeyword`, 108 conditions) and tab 2 the target
-  (`GetIsSex`, `GetInFaction`, `GetIsID`, `GetDead`, `HasKeyword` on the target). Hook 14, *Activate*, authors tab 1 conditions on
-  the activated reference (`HasKeyword`, `GetValue`, `GetDead`). Hooks 9 and 10 have no vanilla entry in `Fallout4.esm`.
-- *FO4 actor-value operand*: Add / Set / Multiply AV Mult entries name an `AVIF` record (`EPFT` 8, `wbActorValue`; the census
-  reads `avif: 2121` = `0x849`), where FO3 / FNV and Skyrim name an index. `PerkEntryPointDialect::actor_value_is_form_id`
-  is the dialect row.
-- *FO4 priority case* (PERK-DIA-004): the census finds hooks 4, 11, 35, 36 and 58 carrying a Set Value entry beside entries at
-  other priorities, so an observable case exists, but which entry wins is the original engine's behaviour and a data census
-  cannot show it. Until an in-game count settles it, the dialect applies the FO4 CK text (the lower number applies last,
-  descending order) as Q2 decides; the verify item stays open.
-- *Hook 8, FO3 / FNV* (§10 Q6): every vanilla entry is a multiplier (`Gunslinger`, `Commando`, `Sniper` ×1.25, `Fast Shot` ×0.8,
-  `Trigger Discipline` ×1.2, `MS08RewardPerk` ×1.1), identical on both games. They compose onto the VATS chance, which the
-  scan holds to `fVATSMaxChance` again; whether the original caps after the perk is not sourced. What "Broken as of 1.1.0035"
-  means, and the community fix that addresses it, are still unfound, so the fix entry cites the GECK note alone.
-- *Concentrated Fire's repeat count* (PERK-HOOK-003): the scan cannot know which shot of a part a queue holds, so
-  `vats_queue_part` composes the flag and prices each repeat (#6422); the scan keeps the first-shot chance.
+catalog test passes. *Status: shipped, #6654 closed 2026-11-08.*
 
 **Phase 3 — Subjects and the FO3/FNV/Skyrim hooks.** PERK-DIA-002/003,
 PERK-SUB, PERK-HOOK-003 to -009 and -012. The activate legs need §10 Q5's
 surface; on its recommendation that is the `MessageBox` page, which exists at
 HEAD. Exit: §7.2 scenarios 4, 5, 7 and 8 pass; hook coverage and
-fireability published for FO3, FNV and Skyrim.
+fireability published for FO3, FNV and Skyrim. *Status 2026-11-20: in progress (#6657).* Shipped: PERK-DIA-002/-003, PERK-SUB-002, PERK-HOOK-004 and -006, the repeat-shot half of PERK-HOOK-003, and the activate entries of PERK-HOOK-007/-012 for FO3/FNV and Skyrim. Open: what `perk.hooks pending` lists (PERK-HOOK-005, -009 and the rest), PERK-SUB-001's Skyrim subjects, and the published coverage numbers.
 
 **Phase 4 — Fallout 4.** PERK-DIA-001/004/005, PERK-HOOK-008/010 and the FO4
 legs of PERK-HOOK-007/012. Exit: the FO4 siblings of scenarios 4 and 8 pass;
-FO4 hook coverage published.
+FO4 hook coverage published. *Status 2026-11-20: in progress (#6659).* Shipped: the `Fallout4` dialect (PERK-DIA-001), the fragment report on composition (PERK-HOOK-008) and the weapon-damage and carry-weight hooks (PERK-HOOK-010). Open: FO4's activate leg (PERK-HOOK-007/-012), the FO4 priority verify and FO4 coverage.
 
 ---
 
@@ -920,3 +942,4 @@ Each needs the project owner. The recommendation is the first option.
 | 4 | 2026-11-03 | Owner decisions Q1–Q7 recorded, every one the recommendation; ROADMAP's M24.2 row now points here (Q1) | owner: approved |
 | 5 | 2026-11-03 | → ACTIVE: parent #6635 and phase issues #6651, #6652, #6654, #6657, #6659 filed; the Phase 0 verify items are acceptance criteria of #6651 | — |
 | 6 | 2026-11-05 | PERK-SUB-002 shipped ahead of Phases 0-2 at the owner's request, for the FNV perks that had no effect: hook 56's Target tab settled from the census, `IsWeaponSkillType` modeled from the newly decoded `DNAM` skill, R4 and §3.2 updated | claude: revise |
+| 7 | 2026-11-20 | Review round 3 folded in: §3.3 re-read at HEAD after Phases 1 and 2 shipped (D4, D5, D8, D10, R2, R5, R6, R8, R10 and the matching "Today" sentences), each phase's state recorded in §9 and the Tracking line, the Phase 0 verify tags the Phase 2–4 censuses closed rewritten as sourced facts (PERK-BODY-001/-003, PERK-GATE-002/-004, PERK-HOOK-010) with the measured answers moved to §3.5 and the Phase 0 table cut to the open items, PERK-DEC-003 stated per game with §6 row 10. The log had no rows for the 2026-11-06 to 2026-11-09 edits | claude: revise |

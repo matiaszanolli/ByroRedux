@@ -393,11 +393,10 @@ mod tests {
         for _ in 0..n {
             if let Some(dir) = velocity_dir {
                 pos += dir;
-                if let Some(mut tq) = world.query_mut::<Transform>() {
-                    if let Some(t) = tq.get_mut(entity) {
+                if let Some(mut tq) = world.query_mut::<Transform>()
+                    && let Some(t) = tq.get_mut(entity) {
                         t.translation = pos;
                     }
-                }
             }
             npc_walk_animation_system(world, 1.0 / 60.0);
         }
@@ -563,19 +562,17 @@ mod tests {
 
         // An outside writer (e.g. a one-shot script idle) replaces the
         // player wholesale while the actor keeps moving.
-        if let Some(mut pq) = world.query_mut::<AnimationPlayer>() {
-            if let Some(p) = pq.get_mut(entity) {
+        if let Some(mut pq) = world.query_mut::<AnimationPlayer>()
+            && let Some(p) = pq.get_mut(entity) {
                 *p = AnimationPlayer::new(11);
             }
-        }
         // The very next tick must yield: the foreign write survives
         // untouched, and the walk state (including its stale capture) is
         // dropped rather than restored over it.
-        if let Some(mut tq) = world.query_mut::<Transform>() {
-            if let Some(t) = tq.get_mut(entity) {
+        if let Some(mut tq) = world.query_mut::<Transform>()
+            && let Some(t) = tq.get_mut(entity) {
                 t.translation += Vec3::new(1.0, 0.0, 0.0);
             }
-        }
         npc_walk_animation_system(&world, 1.0 / 60.0);
         let (clip, local, _, _, _) = player_state(&world, entity).unwrap();
         assert_eq!(clip, 11, "the outside writer's clip must survive the yield");

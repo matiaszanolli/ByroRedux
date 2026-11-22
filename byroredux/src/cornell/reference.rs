@@ -54,6 +54,9 @@ pub(crate) enum ReferenceRung {
     /// RLT-REF-010, the sun: a plane under the exterior sun alone, the
     /// sun row of A15.
     CalibrationSun,
+    /// RLT-REF-010, the environment: one unit-albedo Lambertian probe
+    /// under a uniform sky with no disc, glow or clouds.
+    CalibrationSky,
     /// RLT-SHD-001 / -004, local light: a 15 cm inverse-square source 2 m
     /// above a white floor, a plate 0.5 m up whose straight edge casts a
     /// 10 cm full penumbra, and a 1 cm rod beside it (the thin caster A4
@@ -63,6 +66,8 @@ pub(crate) enum ReferenceRung {
     /// procedural sky, its directional light and angular radius), seen by a
     /// ~0.4 m-wide close-up so even the physical 0.0047 rad sun spans 10 px.
     PenumbraSun,
+    /// RLT-CON-004: exterior geometry straddling the traced shadow fade.
+    FarSun,
     /// RLT-SHD-010: the local-light penumbra rung with a 10 cm cube carried
     /// 1 m above the floor across the plate's shadow edge by the bench clock
     /// (`BenchMover`; `--bench-camera-length` ends its motion in a hold,
@@ -145,6 +150,8 @@ pub(crate) struct RungMeasurements {
     /// Pixels whose unshadowed direct is below this fraction of the
     /// region's brightest are excluded from visibility (§2).
     pub min_unshadowed: f32,
+    /// Scene-linear radiance of a uniform sky, used by the calibration rung.
+    pub constant_sky: Option<[f32; 3]>,
 }
 impl byroredux_core::ecs::Resource for RungMeasurements {}
 
@@ -155,8 +162,10 @@ impl ReferenceRung {
             Self::LambertBox => "lambert-box",
             Self::Materials => "materials",
             Self::CalibrationSun => "cal-sun",
+            Self::CalibrationSky => "cal-sky",
             Self::Penumbra => "penumbra",
             Self::PenumbraSun => "penumbra-sun",
+            Self::FarSun => "far-sun",
             Self::PenumbraMoving => "penumbra-moving",
             Self::ReservoirClamp => "restir-clamp",
             Self::NormalPlane => "normal-plane",
@@ -171,8 +180,10 @@ const RUNGS: &[ReferenceRung] = &[
     ReferenceRung::LambertBox,
     ReferenceRung::Materials,
     ReferenceRung::CalibrationSun,
+    ReferenceRung::CalibrationSky,
     ReferenceRung::Penumbra,
     ReferenceRung::PenumbraSun,
+    ReferenceRung::FarSun,
     ReferenceRung::PenumbraMoving,
     ReferenceRung::ReservoirClamp,
     ReferenceRung::NormalPlane,
@@ -551,6 +562,37 @@ pub(crate) fn setup_reference_scene(
             insert_reference_sun(world, Vec3::from_array(CALIBRATION_SUN_DIR));
             (Vec3::new(0.0, 2.6 * M, 2.6 * M), Vec3::ZERO)
         }
+        ReferenceRung::CalibrationSky => {
+            let plane = builder.box_mesh([2.0 * M, BOX_WALL_T, 2.0 * M]);
+            spawn_object(
+                world,
+                plane,
+                neutral,
+                Vec3::new(0.0, -BOX_WALL_T, 0.0),
+                Quat::IDENTITY,
+                lambert([1.0; 3]),
+                "cal_plane",
+            );
+            insert_reference_sun(world, Vec3::Y);
+            {
+                let mut sky = world.resource_mut::<crate::components::SkyParamsRes>();
+                let color = [0.35, 0.5, 0.75];
+                sky.zenith_color = color;
+                sky.horizon_color = color;
+                sky.lower_color = color;
+                sky.sun_intensity = 0.0;
+                sky.weather.cloud_coverage = 0.0;
+                sky.weather.sun_glare = 0.0;
+                sky.weather.moon_glare = 0.0;
+                sky.weather.stars_color = [0.0; 3];
+            }
+            let sky = crate::render::sky::build_sky_params(world);
+            world.insert_resource(RungMeasurements {
+                constant_sky: Some(sky.zenith_color),
+                ..RungMeasurements::default()
+            });
+            (Vec3::new(0.0, 2.6 * M, 2.6 * M), Vec3::ZERO)
+        }
         ReferenceRung::LambertBox | ReferenceRung::ReservoirClamp => {
             let h = BOX_HALF_W;
             let floor = builder.box_mesh([h, BOX_WALL_T, h]);
@@ -690,6 +732,37 @@ pub(crate) fn setup_reference_scene(
                 ..Default::default()
             });
             camera
+        }
+        ReferenceRung::FarSun => {
+            // Low sun rakes across a matte ground plane. View 1 pulls back
+            // past the traced fade, and view 2 turns to put the caster out
+            // of frame while keeping receivers in the scene.
+            insert_reference_sun(world, Vec3::new(-1.0, 0.24, 0.15));
+            let ground = builder.box_mesh([4500.0, 20.0, 3200.0]);
+            spawn_object(world, ground, neutral, Vec3::new(0.0, -20.0, 0.0),
+                Quat::IDENTITY, lambert([0.5; 3]), "far_sun_ground");
+            let caster = builder.box_mesh([220.0, 450.0, 550.0]);
+            spawn_object(world, caster, neutral, Vec3::new(-500.0, 450.0, 0.0),
+                Quat::IDENTITY, lambert([0.7; 3]), "far_sun_caster");
+            // Blue fill overlaps the sun shadow on the side opposite the
+            // caster, making accidental attenuation of another light visible.
+            let fill = world.spawn();
+            let fill_pos = Vec3::new(1800.0, 750.0, 120.0);
+            world.insert(fill, Transform::new(fill_pos, Quat::IDENTITY, 1.0));
+            world.insert(fill, GlobalTransform::new(fill_pos, Quat::IDENTITY, 1.0));
+            world.insert(fill, LightSource {
+                emitter: Emitter::inverse_square_point(
+                    RadiantIntensityRgb::new([0.0, 0.0, 160.0]),
+                    Meters::new(80.0), Meters::new(0.0), VisibilityMask::NONE,
+                ),
+                ..Default::default()
+            });
+            name_entity(world, fill, "far_sun_fill");
+            match view {
+                0 => (Vec3::new(0.0, 2800.0, 6800.0), Vec3::ZERO),
+                1 => (Vec3::new(0.0, 3800.0, 15500.0), Vec3::ZERO),
+                _ => (Vec3::new(3000.0, 3800.0, 15500.0), Vec3::new(12500.0, 0.0, 0.0)),
+            }
         }
         ReferenceRung::Contact => setup_contact_rung(world, &mut builder, neutral, true),
         ReferenceRung::ContactFlat => setup_contact_rung(world, &mut builder, neutral, false),

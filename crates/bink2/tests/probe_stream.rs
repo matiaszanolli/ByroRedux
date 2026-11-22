@@ -20,6 +20,27 @@ fn fnv(data: &[u8]) -> u64 {
     data.iter().fold(0xcbf29ce484222325, |h, &b| (h ^ b as u64).wrapping_mul(0x100000001b3))
 }
 
+/// #7127: a packet cut short of what its macroblocks consume is refused, not decoded from the zeros
+/// the bit reader returns past the end (cut to its slice words, frame 0 used to decode `Ok` to a
+/// different picture). A packet that still holds every bit read decodes as before.
+#[test]
+fn a_packet_its_macroblocks_overrun_is_refused() {
+    let path = std::env::temp_dir().join(format!("byroredux-bink2-overrun-{}.bk2", std::process::id()));
+    std::fs::write(&path, PR).unwrap();
+    let mut bk = Bk2::open(&path).unwrap();
+    let packet = bk.video(0).unwrap();
+    let words = 4 * bk.slices();
+    for threads in [1, 4] {
+        let mut dec = Decoder::for_file(&bk);
+        dec.options.threads = threads;
+        let cut = dec.decode(&packet[..words], true);
+        assert!(matches!(cut, Err(byroredux_bink2::Error::Overrun(bits)) if bits > 0), "threads {threads}: {:?}", cut.err());
+        let frame = dec.decode(&packet, true).expect("the whole packet decodes");
+        assert_eq!(fnv(&frame.planes[0].px), ORACLE_FNV[0][0], "threads {threads}");
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 fn a_probe_stream_decodes_to_the_dlls_planes() {
     let path = std::env::temp_dir().join(format!("byroredux-bink2-pr-{}.bk2", std::process::id()));

@@ -2340,8 +2340,7 @@ fn rank_after_scripted_adds(
     world.resource_mut::<QuestStageState>().set_stage(Q, 10);
     emit_advance(&world, Q, 10);
     quest_fragment_dispatch_system(&world);
-    let rank = world.get::<Perks>(actor).map_or(0, |perks| perks.rank(PERK));
-    rank
+    world.get::<Perks>(actor).map_or(0, |perks| perks.rank(PERK))
 }
 
 /// #6619 — GECK *AddPerk* "Increments the rank of the specified perk"; FO4 CK

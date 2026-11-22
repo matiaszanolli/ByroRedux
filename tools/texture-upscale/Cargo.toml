@@ -2,6 +2,7 @@
 name = "byro-texture-upscale"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [[bin]]
 name = "byro-texture-upscale"
@@ -10,6 +11,8 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 byroredux-bsa = { workspace = true }
+# The shared path and file rules (bare components, the archives' case fold, the atomic writer).
+byroredux-core = { workspace = true }
 clap = { workspace = true }
 # Source textures come in as dds/png/tga/bmp/jpg|jpeg (see
 # `accepted_source_extension` in src/lib.rs) — the workspace base only
@@ -21,3 +24,6 @@ sysinfo = { workspace = true, features = ["disk"] }
 tempfile = { workspace = true }
 toml = { workspace = true }
 walkdir = { workspace = true }
+
+[lints]
+workspace = true

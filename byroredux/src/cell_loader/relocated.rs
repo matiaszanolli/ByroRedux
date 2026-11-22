@@ -15,7 +15,7 @@
 //! arrival time from its route's length and its walk speed (XCT-OFF-001).
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use byroredux_core::ecs::components::{
     EscortBehavior, FollowBehavior, FormIdComponent, GlobalTransform, Transform,
@@ -62,9 +62,15 @@ impl Resource for SaveReloadTeardown {}
 /// The routing data of one load order, built on first use: the load-door graph
 /// and the interior-persistent actors that need a logical identity while their
 /// cell is not loaded. Rebuilt when the load order's index changes.
+///
+/// Keyed by a `Weak` to the index it was built from, compared with
+/// `Weak::ptr_eq`: the `Weak` keeps the index's allocation block reserved (not
+/// its ~1 GB of maps), so a later index can never reuse the address and be
+/// mistaken for the old one, as a raw `Arc::as_ptr` key could after two live
+/// loads with no Travel tick between them (#7114).
 /// `NOT_SAVED_BY_DESIGN`: derived from the records.
 #[derive(Default)]
-pub(crate) struct TravelIndex(Mutex<Option<(usize, Arc<TravelData>)>>);
+pub(crate) struct TravelIndex(Mutex<Option<(Weak<EsmIndex>, Arc<TravelData>)>>);
 
 impl Resource for TravelIndex {}
 
@@ -80,12 +86,11 @@ pub(crate) fn travel_data(world: &World) -> Option<Arc<TravelData>> {
     let index = world.try_resource::<super::LoadedCellIndex>().map(|index| Arc::clone(&index.0))?;
     let cache = world.try_resource::<TravelIndex>()?;
     let mut slot = cache.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let key = Arc::as_ptr(&index) as usize;
-    if let Some((built_for, data)) = slot.as_ref() {
-        if *built_for == key {
+    let key = Arc::downgrade(&index);
+    if let Some((built_for, data)) = slot.as_ref()
+        && Weak::ptr_eq(built_for, &key) {
             return Some(Arc::clone(data));
         }
-    }
     let graph = SpaceGraph::build(&index.cells, &index.navmesh_door_links());
     let interior_actors = index
         .cells
@@ -626,11 +631,10 @@ pub(crate) fn resolve_actor_moves(world: &World) -> Vec<Relocation> {
         for (axis, delta) in offset.iter().enumerate() {
             placement.position_zup[axis] += delta;
         }
-        if let Some(cell) = index.cells.locate_refr(target).map(|(cell, _)| cell) {
-            if let CellRef::Exterior { .. } = cell {
+        if let Some(cell) = index.cells.locate_refr(target).map(|(cell, _)| cell)
+            && let CellRef::Exterior { .. } = cell {
                 placement.cell = cell_at(cell, placement.position_zup);
             }
-        }
         log::info!("MoveTo {actor:08X} -> {target:08X} in {:?}", placement.cell);
         moves.push(Relocation { actor, placement, onward: None });
     }
@@ -641,8 +645,8 @@ pub(crate) fn resolve_actor_moves(world: &World) -> Vec<Relocation> {
 /// load-order placement.
 fn placement_of_target(world: &World, index: &EsmIndex, target: u32) -> Option<CreatedPlacement> {
     let mut placement = current_placement(world, index, target)?;
-    if let Some(body) = live_body(world, target) {
-        if let Some(t) = world.get::<GlobalTransform>(body) {
+    if let Some(body) = live_body(world, target)
+        && let Some(t) = world.get::<GlobalTransform>(body) {
             placement.position_zup = yup_to_zup_pos(t.translation.to_array());
             let (x, y, z) = byroredux_core::math::coord::quat_yup_to_euler_zup(t.rotation);
             placement.rotation_zup = [x, y, z];
@@ -654,7 +658,6 @@ fn placement_of_target(world: &World, index: &EsmIndex, target: u32) -> Option<C
                 };
             }
         }
-    }
     Some(placement)
 }
 
@@ -852,11 +855,10 @@ pub(crate) fn reconcile_logical_identities(world: &mut World, loaded: &[CreatedC
         }
     }
     for form in ledgered_actors(&ledger) {
-        if let Some(placement) = current_placement(world, &index, form) {
-            if ledger.journey(form).is_some() || !is_loaded(&placement.cell, loaded) {
+        if let Some(placement) = current_placement(world, &index, form)
+            && (ledger.journey(form).is_some() || !is_loaded(&placement.cell, loaded)) {
                 wanted.insert(form, placement);
             }
-        }
     }
 
     let mut spawned = 0usize;
@@ -937,11 +939,10 @@ pub(crate) fn door_fade_system(world: &World, dt: f32) {
         if let Some(mut q) = world.query_mut::<DoorFade>() {
             q.remove(entity);
         }
-        if faded_out {
-            if let Some(hop) = world.get::<CrossSpaceHop>(entity).map(|hop| hop.clone()) {
+        if faded_out
+            && let Some(hop) = world.get::<CrossSpaceHop>(entity).map(|hop| hop.clone()) {
                 pass_door(world, entity, &hop);
             }
-        }
     }
 }
 
@@ -1059,6 +1060,21 @@ mod tests {
 
     fn saloon_placement() -> CreatedPlacement {
         CreatedPlacement { cell: interior("GSProspectorSaloonInterior"), position_zup: [10.0, 20.0, 30.0], rotation_zup: [0.0; 3] }
+    }
+
+    /// #7114 — the cache answers for the index it was built from and no other, and does not keep a
+    /// replaced index alive (its maps are freed; only the reserved allocation block outlives it).
+    #[test]
+    fn the_travel_cache_follows_the_loaded_index_without_pinning_it() {
+        let world = world_with(town());
+        let first = travel_data(&world).expect("a load order");
+        assert!(Arc::ptr_eq(&first, &travel_data(&world).unwrap()), "the same index reuses its build");
+
+        let old = Arc::clone(&world.resource::<super::super::LoadedCellIndex>().0);
+        world.resource_mut::<super::super::LoadedCellIndex>().0 = Arc::new(town());
+        let second = travel_data(&world).expect("a load order");
+        assert!(!Arc::ptr_eq(&first, &second), "a new index rebuilds");
+        assert_eq!(Arc::strong_count(&old), 1, "the cache holds no strong reference to the old index");
     }
 
     #[test]

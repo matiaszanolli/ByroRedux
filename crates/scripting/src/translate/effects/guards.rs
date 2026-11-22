@@ -325,8 +325,8 @@ pub(super) fn classify_condition(
                 return None;
             };
             // M47.2 — or two references.
-            if matches!(op, BinaryOp::Eq | BinaryOp::Ne) {
-                if let (Some(l), Some(r)) =
+            if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
+                && let (Some(l), Some(r)) =
                     (reference_side(&left.node, scope), reference_side(&right.node, scope))
                 {
                     let (left, right) = match (l, r) {
@@ -341,7 +341,6 @@ pub(super) fn classify_condition(
                     });
                     return Some(());
                 }
-            }
             let comparison = GuardComparison::from_op(*op)?;
             out.push(FragmentGuard::Compare {
                 left: classify_value(&left.node, scope)?,
@@ -687,11 +686,10 @@ fn guard_reading_quest(e: &Expr, scope: &Scope) -> Option<GuardReading> {
 fn guard_reading_member(e: &Expr, scope: &Scope) -> Option<GuardReading> {
     if let Expr::MemberAccess { object, member } = e {
         // `<global>.Value` — the GlobalVariable property spelling.
-        if member.node.0.eq_ignore_ascii_case("value") {
-            if let Some(global) = global_receiver(&object.node, scope) {
+        if member.node.0.eq_ignore_ascii_case("value")
+            && let Some(global) = global_receiver(&object.node, scope) {
                 return Some(GuardReading::Global(global));
             }
-        }
         if matches!(&object.node, Expr::Ident(name) if name.0.eq_ignore_ascii_case("self")) {
             return None;
         }

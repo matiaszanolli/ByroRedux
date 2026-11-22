@@ -1146,7 +1146,7 @@ mod tlas_commit_ordering_tests {
         );
         for (needle, what) in [
             (
-                "std::mem::swap(\n            &mut tlas.last_blas_addresses,",
+                "std::mem::swap(\n                &mut tlas.last_blas_addresses,",
                 "the last_blas_addresses promotion",
             ),
             (
@@ -1438,7 +1438,7 @@ fn blas_budget_subtracts_the_resolution_scaled_reservation() {
     {
         use crate::vulkan::bloom::BLOOM_BYTES_PER_PIXEL_X1024;
         use crate::vulkan::caustic::{CAUSTIC_BYTES_PER_PIXEL, WATER_BYTES_PER_PIXEL};
-        use crate::vulkan::composite::COMPOSITE_BYTES_PER_PIXEL;
+        use crate::vulkan::composite::{COMPOSITE_BYTES_PER_PIXEL, FAR_SUN_BYTES_PER_PIXEL};
         use crate::vulkan::context::DEPTH_BYTES_PER_PIXEL;
         use crate::vulkan::frame_upscaler::upscale_output_bytes;
         use crate::vulkan::gbuffer::GBUFFER_BYTES_PER_PIXEL;
@@ -1463,6 +1463,7 @@ fn blas_budget_subtracts_the_resolution_scaled_reservation() {
             + u64::from(TAA_BYTES_PER_PIXEL)
             + u64::from(SSAO_BYTES_PER_PIXEL)
             + u64::from(COMPOSITE_BYTES_PER_PIXEL)
+            + u64::from(FAR_SUN_BYTES_PER_PIXEL)
             + u64::from(DEPTH_BYTES_PER_PIXEL)
             + (RESERVOIR_STRIDE + CLAIM_STRIDE + UNSHADOWED_STRIDE) * MAX_FRAMES_IN_FLIGHT as u64
             + SHADOW_FILTER_BYTES_PER_PIXEL * MAX_FRAMES_IN_FLIGHT as u64)

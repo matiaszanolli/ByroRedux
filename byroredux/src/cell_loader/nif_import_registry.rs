@@ -500,16 +500,31 @@ impl CachedNifImport {
                     .filter_map(|(_, sym)| sym.and_then(|s| pool.resolve(s)))
                     .map(str::to_owned),
             );
-            if textures.normal.is_none() {
-                if let Some(base) = textures.base_color.and_then(|s| pool.resolve(s)) {
+            if textures.normal.is_none()
+                && let Some(base) = textures.base_color.and_then(|s| pool.resolve(s)) {
                     paths.extend(crate::asset_provider::derive_present_normal_map_path(
                         tex_provider,
                         base,
                     ));
                 }
-            }
         }
         paths
+    }
+
+    /// The mesh whose vertex data mesh `index` draws with: its #3510 geometry
+    /// representative when this entry deduplicates (an FO4 precombine alias
+    /// keeps only its transform, material and bounds, #6116), else the mesh
+    /// itself. Every reader of an entry's `positions` / `indices` /
+    /// vertex arrays goes through here rather than `meshes[index]`.
+    pub(crate) fn geometry_source(&self, index: usize) -> &byroredux_nif::import::ImportedMesh {
+        match self.geometry_dedup.get(index) {
+            Some(&representative)
+                if representative as usize != index && (representative as usize) < self.meshes.len() =>
+            {
+                &self.meshes[representative as usize]
+            }
+            _ => &self.meshes[index],
+        }
     }
 
     pub(super) fn beam_volumes(

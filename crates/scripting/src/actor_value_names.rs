@@ -27,10 +27,28 @@ impl ActorValueNames {
             forms.insert(avif.form_id);
             // The Papyrus spelling: the editor ID less its `AV` prefix, yielding to a record's own name.
             let editor_id = avif.editor_id.as_str();
+            let unprefixed = editor_id.get(..2).filter(|prefix| prefix.eq_ignore_ascii_case("av"))
+                .and_then(|_| editor_id.get(2..)).unwrap_or(editor_id);
+            if index.game == byroredux_plugin::esm::reader::GameKind::Oblivion
+                && (unprefixed.eq_ignore_ascii_case("Fame") || unprefixed.eq_ignore_ascii_case("Infamy")) {
+                continue;
+            }
             if editor_id.get(..2).is_some_and(|prefix| prefix.eq_ignore_ascii_case("av")) {
                 names.insert_if_absent(&editor_id[2..], avif.form_id);
             }
             names.insert(editor_id, avif.form_id);
+        }
+        if index.game == byroredux_plugin::esm::reader::GameKind::Oblivion {
+            for (i, name) in byroredux_plugin::esm::records::oblivion_actor_values::OBLIVION_ACTOR_VALUES.iter().enumerate() {
+                if let Some(form) = index.oblivion_actor_value(i as u32, false) {
+                    names.insert(name, form);
+                }
+            }
+            // The shared detection vocabulary calls this effect NightEye;
+            // Oblivion's source roster names the same value NightEyeBonus.
+            if let Some(form) = index.oblivion_actor_value_by_name("NightEyeBonus", false) {
+                names.insert_if_absent("NightEye", form);
+            }
         }
         Self(names, forms)
     }
@@ -249,9 +267,10 @@ const SKYRIM_ACTOR_VALUE_FORMS: [Option<u32>; 164] = [
 /// `AVIF`s start at `0x3E8`, and mod records sit in a plugin slot >= 1). Anything
 /// else is an index: Fallout 3 / New Vegas through the `GetAV` table verified
 /// against the masters ([`crate::obscript_actor_values`]), Skyrim through
-/// [`SKYRIM_ACTOR_VALUE_FORMS`]. Oblivion has no `AVIF` records, so it stays
-/// unreadable. No game installed (tools, unit tests) passes `param_1` through,
-/// as before.
+/// [`SKYRIM_ACTOR_VALUE_FORMS`], Oblivion through its engine-supplied roster
+/// (`oblivion_actor_values::vanilla_name`, #7010/#7009: Oblivion authors no
+/// `AVIF` records, the loader installs them). No game installed (tools, unit
+/// tests) passes `param_1` through, as before.
 pub fn condition_actor_value_form(world: &World, param_1: u32) -> Option<u32> {
     use byroredux_plugin::esm::reader::GameKind;
     let Some(game) = world.try_resource::<ScriptGame>().map(|game| game.0) else {
@@ -261,10 +280,19 @@ pub fn condition_actor_value_form(world: &World, param_1: u32) -> Option<u32> {
         return Some(param_1);
     }
     let names = world.try_resource::<ActorValueNames>()?;
+    if game == GameKind::Oblivion {
+        // Engine-built conditions can already carry a global form. Vanilla
+        // authored operands are small enum indices, never an engine-slot key.
+        if param_1 > 0x00ff_ffff && names.contains_form(param_1) {
+            return Some(param_1);
+        }
+        return byroredux_plugin::esm::records::oblivion_actor_values::vanilla_name(param_1)
+            .and_then(|name| names.resolve(name));
+    }
     if names.contains_form(param_1) {
         return Some(param_1);
     }
-    let form = match game {
+    match game {
         GameKind::Fallout3NV => {
             crate::obscript_actor_values::fallout_actor_value_name(param_1).and_then(|name| names.resolve(name))
         }
@@ -274,8 +302,7 @@ pub fn condition_actor_value_form(world: &World, param_1: u32) -> Option<u32> {
             .flatten()
             .filter(|&form| names.contains_form(form)),
         _ => None,
-    };
-    form
+    }
 }
 
 /// Install the load order's [`ActorValueNames`]. Returns how many names map.

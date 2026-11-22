@@ -195,8 +195,8 @@ fn import_nif_scene_impl(
 
     // Resolve extra data from the root node (BSXFlags, BSBound,
     // BSConnectPoint::Parents / Children).
-    if let Some(root_block) = scene.blocks.get(root_idx) {
-        if let Some(node) = root_block
+    if let Some(root_block) = scene.blocks.get(root_idx)
+        && let Some(node) = root_block
             .as_any()
             .downcast_ref::<crate::blocks::node::NiNode>()
         {
@@ -210,11 +210,9 @@ fn import_nif_scene_impl(
                     if let Some(ed) = block
                         .as_any()
                         .downcast_ref::<crate::blocks::extra_data::NiExtraData>()
-                    {
-                        if ed.type_name == "BSXFlags" {
+                        && ed.type_name == "BSXFlags" {
                             imported.bsx_flags = ed.integer_value;
                         }
-                    }
                     if let Some(bb) = block
                         .as_any()
                         .downcast_ref::<crate::blocks::extra_data::BsBound>()
@@ -247,7 +245,6 @@ fn import_nif_scene_impl(
                 }
             }
         }
-    }
 
     // #985 / #1594 — FO4+ weapon-mod attach graph. Shared with the flat
     // cell-loader import path via the public walkers below.
@@ -494,16 +491,13 @@ pub fn extract_bsx_flags(scene: &NifScene) -> u32 {
     for &ref_idx in &node.av.net.extra_data_refs {
         // BlockRef::NULL (`u32::MAX`) → `None`; non-null → `Some(usize)`.
         let Some(idx) = ref_idx.index() else { continue };
-        if let Some(block) = scene.blocks.get(idx) {
-            if let Some(ed) = block
+        if let Some(block) = scene.blocks.get(idx)
+            && let Some(ed) = block
                 .as_any()
                 .downcast_ref::<crate::blocks::extra_data::NiExtraData>()
-            {
-                if ed.type_name == "BSXFlags" {
+                && ed.type_name == "BSXFlags" {
                     return ed.integer_value.unwrap_or(0);
                 }
-            }
-        }
     }
     0
 }

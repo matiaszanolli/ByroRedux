@@ -176,9 +176,11 @@ fn fnv_menu_xml_corpus_parses_with_exact_totals() {
         spliced_tiles += included.tiles.len();
     }
 
-    assert_eq!(tiles, 1_060, "FNV un-spliced tile total changed");
-    assert_eq!(spliced_tiles, 2_206, "FNV include-spliced tile total changed");
-    assert_eq!(largest, 195, "FNV largest menu tile count changed");
+    // #6665 — `<hotrect>` parses as a tile (it used to parse as a trait, swallowing the list
+    // items and their subtrees): 1,060 / 2,206 / 195 before.
+    assert_eq!(tiles, 1_545, "FNV un-spliced tile total changed");
+    assert_eq!(spliced_tiles, 4_273, "FNV include-spliced tile total changed");
+    assert_eq!(largest, 303, "FNV largest menu tile count changed");
 }
 
 /// #5669 — header census of every DDS under `textures\interface\`: the
@@ -264,6 +266,7 @@ fn every_font_cuts_its_glyphs_from_clean_atlas_cells() {
     let Some(assets) = open_assets() else { return };
     let profile = assets.profile;
     let (mut clean, mut inked) = (0, 0);
+    let (mut on_baseline, mut baseline_letters) = (0, 0);
     for index in 1..=profile.font_paths.len() as u8 {
         let fnt = assets.font(index).expect("font slot extractable");
         let name = String::from_utf8_lossy(&fnt[12..]).split('\0').next().unwrap_or("").to_string();
@@ -280,9 +283,16 @@ fn every_font_cuts_its_glyphs_from_clean_atlas_cells() {
             0,
             "font {index} ({name}): a glyph's width / height disagree with its atlas rect"
         );
+        let (on, letters) = common::letters_on_baseline(&font);
+        on_baseline += on;
+        baseline_letters += letters;
     }
     assert!(
         clean * 10 >= inked * 7,
         "only {clean} of {inked} FNV glyph rects are clean atlas cells (#6994: axes crossed?)"
+    );
+    assert!(
+        on_baseline * 10 >= baseline_letters * 8,
+        "only {on_baseline} of {baseline_letters} FNV letters sit on their font's baseline (#6666: ascent misread?)"
     );
 }

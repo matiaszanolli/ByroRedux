@@ -304,6 +304,8 @@ mod tests {
             sneak_attack: sneak,
             bash_attack: false,
             blocked: false,
+            arrow: false,
+            ignores_resistance: false,
         }
     }
 

@@ -49,7 +49,15 @@ The lane went red again from `98aa53db9` (the door-fade test) until its fix `4c1
 closing a `FormIdComponent → FormIdPool → FormIdComponent` cycle through `fade_in` under `BYRO_LOCK_ORDER_CHECK=1`.
 The process-wide order is **`FormIdComponent` before `FormIdPool`** (core's `FormIdPool::entity_with_local`, the save
 driver and registry, condition evaluation all keep it); a new site taking the pool first is the regression, and the
-lane's red-to-green history is the reason this step is never skipped.
+lane's red-to-green history is the reason this step is never skipped. The ECS concurrency audit of 2026-11-15 (the first since 08-12)
+found five more cycles, all on the main thread (exclusive systems, app / render code), so none could deadlock but each panics the
+detector on a real world, and the lane never saw them because no fixture registered both sides: an `eat_sleep` gather taking
+`GlobalTransform` before `WalkSpeed`, `submersion_system` keeping a `WaterBedField` guard across the `WaterVolume` write,
+`kf_idle_work_pending` holding `ActorCinematicState` while reading `IdleClipCatalog`, the SDK capture taking `Inventory` before
+`InventoryCatalog`, and the cell-unload walk taking `AnimatedTextureFlip` after the material / terrain-tile storages — fixed in
+`dfcbcafd5` (fixtures `submersion_with_a_bed_field_takes_its_locks_in_one_order`,
+`the_diner_gather_takes_walk_speed_before_global_transform`). Exclusive code needs the same order discipline as parallel code.
+Two more landed after: #7063 `4cad5d974` (`reset_health`, `crates/scripting/src/obscript_actor_values.rs`, held the `ActorValueNames` guard across `clear_actor_value_damage`, which locks `ActorValues` — every other site takes `ActorValues` first; the names guard now drops at the end of the block that resolves the owned vitals Vec, found only by the full `-p byroredux-scripting` lane) and the M66 door prompt, `populate_candidates` (`byroredux/src/interaction.rs`) nesting `Door` reads inside a `TwoStateActivator` iteration while the motion system takes the pair in `TypeId` order (`4288659fa`, pinned by `door_prompts_and_motion_share_the_lock_order`: snapshot the activators first, then read `Door`).
 
 A wrong lock order is HIGH. This dimension owns the *machinery*; system-level cycles, canonical-order
 adherence and CI detector coverage are `/audit-concurrency` Dim 3 and Dim 5.
@@ -189,7 +197,7 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/core/
   site inserting a *configured* value, such as `TerrainHeightService`, is legitimately different).
   `World::resource_count()` (#6706 `70e58334f`) exists so `register_installs_the_same_resource_set` can pin the
   scripting crate's `register` to the exact resource count it produced before it became a flat list of per-subsystem `install`
-  calls (138 then, 145 at 2026-11-14 — the assert moves with every subsystem that adds a resource; read the live value); a resource dropped from an `install` shows up there, not as a missing-resource panic at first use.
+  calls (138 then, 150 at 2026-11-20 — the assert moves with every subsystem that adds a resource; read the live value); a resource dropped from an `install` shows up there, not as a missing-resource panic at first use.
 - **Read accessors, one spelling each**: the bin reads the player entity only through `PlayerEntity::get(world)`
   (`byroredux/src/systems/character.rs`, #6362 `67722b6e4` — it replaced 66 hand-spelled reads, and
   `no_source_hand_spells_the_player_entity_read` keeps it so). It is deliberately NOT synchronised with the scripting
@@ -203,7 +211,9 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/core/
   by `EntityId` is the drift (it defeats `despawn` cleanup and save capture). Every new `Resource` /
   `Component` is also subject to the save registry gate
   (`every_component_or_resource_impl_is_saved_or_explicitly_allowlisted`, `byroredux/src/save_io/`,
-  `/audit-save`) and the debug-server registry.
+  `/audit-save`) and the debug-server registry (core components by `every_inspectable_component_is_registered`; a saved
+  component in `crates/scripting` / `crates/physics` is registered or excused with a reason by
+  `every_saved_scripting_and_physics_component_is_registered_or_excused`, #7183 `27d9d768e`).
 - `SkinSlotPool` (`resources/skin_slot_pool.rs`): every collection is `FxHashMap`/`FxHashSet`
   (`_audit-common.md` hot-path hashing rule); `pose_dirty` and `drain_pending` are the renderer
   hand-off. Overflow/retry semantics are `/audit-safety` Dim 7.
@@ -214,12 +224,13 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/core/
   classes, and `texture_resident_bytes` — M39 streaming promotes and evicts with what is wanted; a strictly increasing
   series must also rise past `OCCUPANCY_GROWTH_TOLERANCE_PERMILLE` of its first sample, #6058 `adaa7a263`). A leaking class reclassified `Bounded`/`Monotonic`/`Occupancy` to turn the gate
   green is the finding.
+- `MenuRegistry` (`resources/menu_registry/`, M48 #6653 `3ef0a2cb2`) is the one list of open menus that menu mode, pause and the input owner read; surfaces report into it and the app republishes it every frame, so it is presentation state, `NOT_SAVED_BY_DESIGN`. `NativeMenu` gained `SleepWait` and `LevelUp` (`250a5ba67`, the Oblivion bed and level-up menus); a variant missing from `NativeMenu::from_page`'s list cannot be named by an `S3:<page>` target.
 - `DeltaTime` is stamped once per frame by the main loop (`byroredux/src/app_events.rs`); a system that
   writes it or `TotalTime` is a finding.
 
 ### 5. System & Scheduler Wiring, Declared Access
 
-Paths: `crates/core/src/ecs/{scheduler,access,system}.rs`, `byroredux/src/boot/schedule/` (77 files), `byroredux/src/boot/registries.rs`, `byroredux/src/scheduler_access_tests.rs`
+Paths: `crates/core/src/ecs/{scheduler,access,system}.rs`, `byroredux/src/boot/schedule/` (78 files), `byroredux/src/boot/registries.rs`, `byroredux/src/scheduler_access_tests.rs`
 First step: `cargo test -p byroredux -- system_access_declaration_tests scheduler_access` then `rg -n '^\s*scheduler\.add_to\(' byroredux/src/boot/schedule/` (must be empty)
 
 Stages: `Early → Update → PostUpdate → Physics → Late` (`Stage`, discriminants 0..=4, ordered by
@@ -241,7 +252,8 @@ unchanged; an unknown name, a stage-forbidden constraint or a cycle is an error 
 `run` fails fast on one). Audit a new constraint for the by-name coupling it adds (a renamed system now errors in `resolve_order`, not silently). `Access::with(fn(Access) -> Access)` (#6701 `c22a9d410`) lets a subsystem export its own declaration
 (`crime_faction_access`, `crime_gold_access`, `ownership_access` on the dialogue row); the acquisition scan follows a
 function passed to `.with` into the delegate files (`declaration_with_delegates`, `byroredux/src/acquisition_scan.rs`), so
-moving a claim into a delegate must not drop it from the scan's reach.
+moving a claim into a delegate must not drop it from the scan's reach. The perk entry-point composition and the fragment report are the shared
+examples (#6962 `365f6fa3e`: `perk_entry_composition_access` / `perk_fragment_report_access` in `crates/scripting/src/perk_entry_points.rs`, called through `.with` by the combat input, NPC combat AI, combat damage, VATS scan and activate rows instead of nine hand-copied blocks).
 
 - **The `Access` model**: `Access::new().reads::<T>().writes::<U>().reads_resource::<R>()…`;
   declared / declared-empty / undeclared (`None`). `AccessConflict` has exactly `None`,
@@ -277,7 +289,7 @@ moving a claim into a delegate must not drop it from the scan's reach.
   The `player_controller_system` row's cross-file hops include `raise_kill_story_event` (the drowning death's
   `StoryEvent` write + cell-context reads, #5641 `17a84f442`) and the scripting crate's `note_death`
   (`KillRecords` write plus its `SceneAliasCandidate` / `CreatureActor` / `FormIdComponent` / `FormIdPool` /
-  `PapyrusPlayerEntity` reads, #6217 `ef48dbd03`). Since #5647 `eca0c4709` `raise_kill_story_event` ends in the
+  `PapyrusPlayerEntity` reads, #6217 `ef48dbd03`) and `limbs::locomotion_mult` / `crippled_legs` (the crippled-leg speed multiplier's `LimbEffects` + `ActorValues` reads, CONC-6 `dfcbcafd5`). Since #5647 `eca0c4709` `raise_kill_story_event` ends in the
   scripting crate's `story_manager::raise_story_event`, whose collision path writes the `PendingScriptStoryEvents`
   resource — a cross-crate, non-turbofish hop. #6447 `1ebb38bce` closed the gap this left: the row now declares that
   write and `raise_story_event` is a listed `PARALLEL_SYSTEMS` hop (red without it, per the commit). The same shape —
@@ -392,8 +404,10 @@ First step: `cargo test -p byroredux --bin byroredux -- rapier_release persisten
   `TimerExpired`, `AnimationTextKeyEvents`, the `*Batch` / command markers, …) are removed by
   `event_cleanup_system` (Late exclusive, registered after every consumer — pinned by
   `transient_cleanup_is_the_last_late_exclusive`; a second cleanup site would double-free); Pattern B markers
-  (`StoryEvent`, the scene-package batches, …) drain in their one consumer and must not also be listed in
-  the cleanup. The cleanup system also resets the Papyrus `VmFrameBudget` (#5763). Late readers
+  (`StoryEvent`, the scene-package batches, `ReleasePackageHold` — #7243 `aa15ee950`, the one-shot
+  `EvaluatePackage` raises beside `EvaluatePackageRequest`; `ambient_ai_package_system` takes it before any early
+  return, so no pass strands it, …) drain in their one consumer and must not also be listed in
+  the cleanup (the table in `cleanup.rs` names each owner). The cleanup system also resets the Papyrus `VmFrameBudget` (#5763). Late readers
   now include `equipment_appearance_system` and `npc_dialogue_selection_system`. `timer_tick_system` never accumulates negative time.
   `StoryEvent` is one slot per entity; since #5647 `eca0c4709` every engine producer (CLOC, AHEL, KILL) raises it
   through `scripting::story_manager::raise_story_event` — the first event on an entity takes the marker, a second for
@@ -451,9 +465,10 @@ blending, root-motion split and text-key dispatch, driven by an ECS system.
   handle after unload is a no-op, never a panic or OOB read. Same for `NamedSequences`
   (`animation/named_sequences.rs`, M47.3 `f3380f6c8`): a placed object's sequence-name → clip-handle table,
   shared via `Arc` across every placement of the model and re-stamped at spawn (unsaved), read by ObScript
-  `PlayGroup` / `IsAnimPlaying`. A model with sequences but no Idle/SpecialIdle gets a *stopped* `AnimationPlayer` parked on
+  `PlayGroup` / `IsAnimPlaying`. A model with sequences but no playable Idle/SpecialIdle gets a *stopped* `AnimationPlayer` parked on
   the first listed sequence at spawn (#6610 `873fe3bcb`) so `PlayGroup` has a player to retarget — check that a stopped
-  player never advances or emits root motion.
+  player never advances or emits root motion (it is still sampled, so the model holds that sequence's first frame, #6543). `NamedSequences::spawn_handle(loops)`
+  starts `Idle` only when its clip loops (the legacy object-load rule; a clamped `Idle` is refused and `SpecialIdle` still starts whatever its cycle).
 - **Time advance**: `advance_time` (`player.rs`) / `advance_stack` (`stack.rs`) handle `dt == 0`,
   negative/NaN `dt` and a zero-length clip without divide-by-zero or an endless loop; `CycleType` is
   applied per clip.

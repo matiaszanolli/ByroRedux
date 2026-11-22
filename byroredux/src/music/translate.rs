@@ -48,6 +48,9 @@ pub(crate) struct Marker {
     /// The marker's own layer 2 / layer 3 triggers (`MNAM` / `NNAM`, fractions of the radius), when
     /// "Use Controller Values" is clear (#6902).
     pub(crate) triggers: Option<[f32; 2]>,
+    /// Its controller lists a Dungeon set, the only set whose track tension picks
+    /// ([`Catalog::location_set`]): without one the music system skips the tension test (#6946).
+    pub(crate) counts_tension: bool,
 }
 
 /// What a controller counts around the player (#6906): its conditional faction's relation to the
@@ -131,7 +134,14 @@ impl Catalog {
                 // fractions (0.33 / 0.67); xEdit's default is 100.
                 let fraction = |v: f32| if v > 1.0 { v / 100.0 } else { v };
                 let triggers = (!marker.use_controller_values).then(|| marker.layer_triggers.map(fraction));
-                markers.entry(space.clone()).or_default().push(Marker { form: r.form_id, center: r.position, radius, controller, triggers });
+                let counts_tension = index.media_locations.get(&controller).is_some_and(|aloc| {
+                    // The lists `Self::active_set` picks from; Battle sets play on the Battle layer.
+                    [&aloc.neutral_sets, &aloc.ally_sets, &aloc.friend_sets, &aloc.enemy_sets, &aloc.location_sets]
+                        .into_iter()
+                        .flatten()
+                        .any(|set| index.media_sets.get(set).is_some_and(|set| set.kind == MediaSetKind::Dungeon))
+                });
+                markers.entry(space.clone()).or_default().push(Marker { form: r.form_id, center: r.position, radius, controller, triggers, counts_tension });
             }
         }
         Self { game, files, fade_secs, recovery_secs, markers }
@@ -343,6 +353,17 @@ impl Catalog {
             level: 10f32.powf(-musc.decibels.abs() / 20.0),
             ..self.directive(source, self.files.resolve(&musc.file))
         }
+    }
+
+    /// Fallout 3 / New Vegas `PlayMusic <music type>` (MUS-SCR-005, MUS-CMB-004). `Fallout3.exe`
+    /// plays it on the one music stream the cell's music uses (`0x79f860` → `0x8e10b0` →
+    /// `0x8e2680`), so it replaces that music at once; combat then replaces it with the battle music
+    /// (the update `0x8e2fe0` fades to Battle over any track but a death / success sting or another
+    /// battle, `0x8e35ea`), a request while Battle plays is dropped (`0x8e2680` refuses it), and the
+    /// cell's music follows combat. So Battle ends the directive (#6946). New Vegas keeps the shared
+    /// music code; its executable is encrypted.
+    pub(crate) fn play_music(&self, index: &EsmIndex, form: u32) -> Directive {
+        Directive { ends_on_battle: true, ..self.music_type(index, form, "PlayMusic") }
     }
 
     fn cell<'a>(index: &'a EsmIndex, place: &Place) -> Option<&'a CellData> {
@@ -771,17 +792,31 @@ mod tests {
         assert_eq!(catalog.marker_location(&index, &marker, found, 0).unwrap().source.label, "musSetEnemy", "a found faction actor's relation wins");
     }
 
-    /// #6906 — a Dungeon set plays its Suspense track under the controller's tension.
+    /// #6946 — `PlayMusic` is a music type that Battle ends (Fallout3.exe `0x8e35ea`, MUS-CMB-004).
+    #[test]
+    fn play_music_is_a_music_type_battle_ends() {
+        let (mut index, catalog) = new_vegas();
+        index.music_types.insert(0x90, MuscRecord { form_id: 0x90, editor_id: "MUSDefaultBattle".into(), file: "battle\\loop.mp3".into(), ..Default::default() });
+        let played = catalog.play_music(&index, 0x90);
+        assert!(played.ends_on_battle && played.source.via == "PlayMusic", "{played:?}");
+        assert_eq!(played.content, Content::Playlist(vec!["music\\battle\\loop.mp3".into()]));
+        assert!(!catalog.music_type(&index, 0x90, "cell").ends_on_battle, "a place's music type is not a script directive");
+    }
+
+    /// #6906 — a Dungeon set plays its Suspense track under the controller's tension; #6946 — only a
+    /// controller listing one makes the music system test tension.
     #[test]
     fn a_dungeon_set_plays_suspense_under_tension() {
-        let (mut index, _) = new_vegas();
+        let (mut index, location_only) = new_vegas();
+        let place = Place::Exterior { worldspace: "wastelandnv".into(), grid: (0, 0) };
+        assert!(!location_only.marker_at(&place, [1000.0, 0.0, 0.0]).unwrap().counts_tension, "a Location set ignores tension");
         let mut tracks: [String; 6] = Default::default();
         (tracks[0], tracks[1], tracks[2]) = ("d\\battle.mp3".into(), "d\\explore.mp3".into(), "d\\suspense.mp3".into());
         index.media_sets.insert(0x53, MediaSetRecord { form_id: 0x53, editor_id: "musSetDungeon".into(), kind: MediaSetKind::Dungeon, tracks, ..Default::default() });
         index.media_locations.get_mut(&0x70).unwrap().location_sets = vec![0x53];
         let catalog = Catalog::new(&index, MusicFiles::new(["music\\d\\explore.mp3", "music\\d\\suspense.mp3"].map(String::from)), None);
-        let place = Place::Exterior { worldspace: "wastelandnv".into(), grid: (0, 0) };
         let marker = catalog.marker_at(&place, [1000.0, 0.0, 0.0]).unwrap();
+        assert!(marker.counts_tension);
         let content = |tension| catalog.marker_location(&index, &marker, Surroundings { relation: None, tension }, 0).unwrap().content;
         assert_eq!(content(false), Content::Playlist(vec!["music\\d\\explore.mp3".into()]));
         assert_eq!(content(true), Content::Playlist(vec!["music\\d\\suspense.mp3".into()]));

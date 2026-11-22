@@ -16,7 +16,8 @@
 //!   files and XML that is neither).
 //!
 //! * `gmst <master.esm>` — every `GMST` as `EditorID<TAB>value` (GUI-PAGE-005:
-//!   candidates for engine strings that have a vanilla GMST equivalent).
+//!   candidates for engine strings that have a vanilla GMST equivalent), parsed
+//!   as the engine parses it, so a localized master's strings resolve.
 //!
 //! Usage:
 //!   cargo run -p byroredux-plugin --example menu_gmst_census -- \
@@ -64,6 +65,42 @@ fn gmst_table(esm: &str) -> anyhow::Result<BTreeMap<String, (String, String)>> {
         out.insert(edid.to_ascii_lowercase(), (edid, value));
     })?;
     Ok(out)
+}
+
+/// Every `GMST` of `esm` as `(EditorID, value)`, parsed as the engine parses it: a localized
+/// master's string settings resolve through its `.STRINGS` tables, read loose or from the
+/// interface archive beside it (`Skyrim - Interface.bsa`, `Fallout4 - Interface.ba2`).
+fn resolved_gmsts(esm: &str) -> anyhow::Result<Vec<(String, String)>> {
+    use byroredux_plugin::esm::records::{parse_esm, SettingValue, StringsTableGuard};
+    use byroredux_plugin::esm::strings_table::StringTableSet;
+    let path = std::path::Path::new(esm);
+    let data_dir = path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
+    let tables = StringTableSet::load_with_archive(path, "english", |relative| {
+        if let Ok(archive) = BsaArchive::open(data_dir.join("Skyrim - Interface.bsa"))
+            && let Ok(bytes) = archive.extract(relative) {
+                return Some(bytes);
+            }
+        byroredux_bsa::Ba2Archive::open(data_dir.join("Fallout4 - Interface.ba2"))
+            .ok()
+            .and_then(|archive| archive.extract(relative).ok())
+    });
+    let _strings = StringsTableGuard::new(tables);
+    let index = parse_esm(&std::fs::read(path)?)?;
+    let mut rows: Vec<(String, String)> = index
+        .game_settings
+        .values()
+        .map(|setting| {
+            let value = match &setting.value {
+                SettingValue::String(v) => v.replace(['\t', '\n', '\r'], " "),
+                SettingValue::Float(v) => v.to_string(),
+                SettingValue::Int(v) => v.to_string(),
+                SettingValue::Short(v) => v.to_string(),
+            };
+            (setting.editor_id.clone(), value)
+        })
+        .collect();
+    rows.sort_by_key(|(edid, _)| edid.to_ascii_lowercase());
+    Ok(rows)
 }
 
 fn menu_paths(a: &BsaArchive) -> Vec<String> {
@@ -150,11 +187,10 @@ fn includes(text: &str) -> Vec<String> {
 
 fn class_entity(text: &str) -> String {
     // The menu's own `<class>` trait is the first `<class>` in the file.
-    if let Some(i) = text.find("<class>") {
-        if let Some(j) = text[i + 7..].find("</class>") {
+    if let Some(i) = text.find("<class>")
+        && let Some(j) = text[i + 7..].find("</class>") {
             return text[i + 7..i + 7 + j].trim().to_owned();
         }
-    }
     String::new()
 }
 
@@ -190,7 +226,7 @@ fn main() -> anyhow::Result<()> {
             }
         }
         "gmst" => {
-            for (_, (edid, value)) in gmst_table(&args[2])? {
+            for (edid, value) in resolved_gmsts(&args[2])? {
                 println!("{edid}\t{value}");
             }
         }

@@ -422,8 +422,8 @@ pub(crate) fn check_environment(
     // interior lighting under an exterior sky is the normal interior state.
     // The one inconsistent pair is exterior lighting under a sky that does
     // not describe an exterior.
-    if let (Some(lit), Some(sky)) = (lighting, sky) {
-        if !lit.is_interior && !sky.is_exterior {
+    if let (Some(lit), Some(sky)) = (lighting, sky)
+        && !lit.is_interior && !sky.is_exterior {
             out.push(finding(
                 "is_interior/is_exterior",
                 format!(
@@ -433,7 +433,6 @@ pub(crate) fn check_environment(
                 ),
             ));
         }
-    }
 
     out
 }
@@ -549,6 +548,16 @@ impl ConsoleCommand for EnvHealthCommand {
     }
 
     fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        // Resolve before taking the lighting guard below: the renderer's
+        // ground probe reads CellLightingRes to choose its search range.
+        let fog_height = world
+            .try_resource::<byroredux_core::ecs::ActiveCamera>()
+            .and_then(|active| {
+                world
+                    .get::<byroredux_core::ecs::components::Transform>(active.0)
+                    .map(|t| t.translation)
+            })
+            .map(|pos| (crate::render::fog_height_reference(world, pos), pos.y));
         let lighting = world.try_resource::<CellLightingRes>();
         let sky = world.try_resource::<SkyParamsRes>();
         let weather = world.try_resource::<WeatherDataRes>();
@@ -608,6 +617,12 @@ impl ConsoleCommand for EnvHealthCommand {
                 } else {
                     ""
                 },
+            ));
+        }
+        if let Some((height, camera_y)) = fog_height {
+            lines.push(format!(
+                "env: fog_height_reference={:.1} camera_y={:.1} (world units)",
+                height, camera_y,
             ));
         }
         // VLM-SH-011 — the exterior haze floor's live value: the number the frame builder applies

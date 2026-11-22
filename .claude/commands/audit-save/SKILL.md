@@ -5,7 +5,7 @@ argument-hint: "--focus <dimensions> --depth shallow|deep"
 
 # Save / Load Subsystem Audit (M45 + M45.1)
 
-Audit `crates/save` (full-ECS-snapshot format) and its sole live caller `byroredux/src/save_io/` (`save_io.rs` is a ~108-LOC re-export hub over `registry` / `player` / `commands` / `live_load`, split in `d7c47d741`)
+Audit `crates/save` (full-ECS-snapshot format) and its sole live caller `byroredux/src/save_io/` (`save_io.rs` is a ~109-LOC re-export hub over `registry` / `player` / `commands` / `live_load`, split in `d7c47d741`)
 (+ `save_io/*_tests.rs`) for **data loss and save corruption**. The subsystem exists to remove Bethesda's
 slow-corruption tail by making the live ECS the single source of truth; verify the CODE delivers that.
 A silently dropped column, a stale schema guard, a torn capture, or a botched FormId remap **loses player
@@ -17,19 +17,18 @@ progress** — frame as CRITICAL/HIGH per `_audit-severity.md` (data loss is CRI
 
 ## Scope
 
-**Crate** `crates/save/src/` (~3.3k LOC — read all): `lib.rs` (design intent docstring, `SaveError`),
+**Crate** `crates/save/src/` (~3.5k LOC — read all): `lib.rs` (design intent docstring, `SaveError`),
 `snapshot.rs` (`Snapshot`, container header, `FORMAT_MAJOR` doc = the bump ledger, `encode`/`decode`),
 `registry.rs` (`SaveRegistry`; `register_component` / `register_replacing_component` /
-`register_component_preserving` / `register_resource` / `register_form_id_component`; `ValidateFn`; `schema_fingerprint`), `driver.rs` (`save_world`,
+`register_component_preserving` / `register_resource` / `register_form_id_component`, and the context-aware portable-pair codecs `register_component_codec` / `register_resource_codec` (OAI-SAVE v133: encode / decode take the `World`, so a key is a `FormIdPair` on disk and resolves through `LoadOrderIdentity`; an unowned key is `SaveError::UnownedFormId`); `ValidateFn`; `schema_fingerprint`), `driver.rs` (`save_world`,
 `restore_world`, `validate_snapshot_types`, `restore_resources`, `restore_resources_subset`,
 `build_form_id_remap`, `apply_deltas`), `disk.rs` (`write_slot`, `slots_by_recency`, `SaveRing`),
 `validate.rs` (`validate_world` + 6 sub-checks). Tests: `crates/save/tests/round_trip.rs`.
 
 **Engine side** (`byroredux/src/save_io/`): `build_save_registry` (the curated type set — a scripting subsystem's
-saved columns live in its own module's `register_saved(&mut registry)` (`crates/scripting/src/*`, 45 modules, ~52 call
-sites in the hub; extracted in slices from #5802 `bde3478db` through `93bcda9bc`, then #6705 `15e498420` moved 47 more rows
-out of the hub; umbrella #5802 closed 2026-11-07). The hub keeps 40 rows, each with a stated reason: core types and the FormId column (`byroredux-core` sits
-below `byroredux-save`; `FactionReputation` #6759 `8fc1a9ef9`, `DismemberRecord` d50fc1153 and `CharacterIdentity` (v125, the New Vegas chargen name/sex/race) are the three newest), the physics `CharacterController`, and the binary crate's own state. Each delegate is called at its
+saved columns live in its own module's `register_saved(&mut registry)` (`crates/scripting/src/*`: 56 files define 64 `register_saved*` fns, the hub makes 52 delegate calls into 46 modules; extracted in slices from #5802 `bde3478db` through `93bcda9bc`, then #6705 `15e498420` moved 47 more rows
+out of the hub; umbrella #5802 closed 2026-11-07). The hub keeps 43 rows, each with a stated reason: core types and the FormId column (`byroredux-core` sits
+below `byroredux-save`; `FactionReputation` #6759 `8fc1a9ef9`, `DismemberRecord` d50fc1153, `CharacterIdentity` (v125, the New Vegas chargen name/sex/race), `Sneaking` (v130), `SkillUseLevel` (v137, #7050) and `EquippedAmmo` (v141, #7055 `e15645976`, the player's arrow type, registered right after `EquippedWeapon`; a *replacing* column since #7228 `c82e4f68f`) are the newest; three component codecs `ActorValues` / `TimedRestorations` / `ActorVitals` and the `PersistentReferenceStates` resource codec are registered here too), the physics `CharacterController`, and the binary crate's own state. Each delegate is called at its
 rows' former position, because `schema_fingerprint` hashes rows in registration order — moving a delegate call is a
 `SchemaMismatch` for every existing save, and `the_schema_fingerprint_is_pinned` now fails it; where a module's columns sit
 in separate runs of the order it exports `register_saved_<column>` too),
@@ -63,21 +62,25 @@ finds >0 items, and it fails when the invariant is broken.
 |---|---|
 | `registry_completeness_tests::every_component_or_resource_impl_is_saved_or_explicitly_allowlisted` | every `Component`/`Resource` impl in any `crates/*/src` (roots **discovered**, not listed) + `byroredux/src` is registered XOR in `NOT_SAVED_BY_DESIGN` with a reason; `PlayerNotifications`, `PickedUp` etc. are classified there |
 | `serde_default_guard_tests::serde_default_on_saved_struct_requires_format_major_bump` | any `#[serde(default)]` on a save-participating type (skip-only fields exempt) |
-| `serde_default_guard_tests::saved_type_shape_changes_require_format_major_bump` | hash of every `#[derive(..Serialize..)]` struct/enum body in `save_type_sources()` — discovered files that carry a `cfg_attr(feature = "save"` derive or define a registered type, plus eight explicit non-turbofish / nested-payload files (`form_id.rs` ×2, `string/mod.rs`, `script_instance.rs`; since #5059 `945be7dc6`: `lighting.rs`, `crates/sdk` `identity.rs` / `script_function.rs`; since #6509 `c72ecafad`: `collision.rs`, whose `MotionType` is the payload of the saved `ReferenceMotionTypeState` and had silently left the scan when #6237 unregistered `RigidBodyData`); registered names are read from `save_io/registry.rs` and from every scanned file that defines `fn register_saved(` (#5802) — vs `BASELINE_SHAPE_FINGERPRINT`/`BASELINE_MAJOR`; the attribute scan reads the whole contiguous attribute block, so a save derive above a plain `#[derive(..)]` is seen (#5403 `e19cb0491`) |
+| `serde_default_guard_tests::saved_type_shape_changes_require_format_major_bump` | hash of every `#[derive(..Serialize..)]` struct/enum body in `save_type_sources()` — discovered files that carry a `cfg_attr(feature = "save"` derive or define a registered type, plus every codec's wire-type module (the module of its save / load function path, derived by `codec_registrations`, and its column's type by name; D2-01) plus eight explicit non-turbofish / nested-payload files (`form_id.rs` ×2, `string/mod.rs`, `script_instance.rs`; since #5059 `945be7dc6`: `lighting.rs`, `crates/sdk` `identity.rs` / `script_function.rs`; since #6509 `c72ecafad`: `collision.rs`, whose `MotionType` is the payload of the saved `ReferenceMotionTypeState` and had silently left the scan when #6237 unregistered `RigidBodyData`); registered names are read from `save_io/registry.rs` and from every scanned file that defines `fn register_saved(` (#5802) — vs `BASELINE_SHAPE_FINGERPRINT`/`BASELINE_MAJOR`; the attribute scan reads the whole contiguous attribute block, so a save derive above a plain `#[derive(..)]` is seen (#5403 `e19cb0491`) |
+| `serde_default_guard_tests::every_codec_registration_reaches_the_scan` | the codec-derived scan (D2-01 `01d390583`) fails on a `register_*_codec` call its parser cannot read |
 | `serde_default_guard_tests::set_in_chargen_renames_still_decode_v23_keys` | `serde(alias)` rename path stays decodable |
 | `round_trip_tests::delta_columns_carry_only_session_stable_fields` | no `FixedString`/`EntityId`/session handle in a `MUTABLE_DELTA_COLUMNS` type |
 | `round_trip_tests::delta_columns_removed_at_runtime_have_a_load_reconciler` | every delta column with a production removal site has a declared reconciler or "NoReconcilerNeeded" reason |
 | `round_trip_tests::npc_spawn_stamped_components_are_saved_or_intentionally_rederived` | spawn-stamped components registered or in `REDERIVED_NOT_SAVED` |
 | `crates/save` `snapshot.rs`/`disk.rs`/`registry.rs` unit tests | header gates (`rejects_bad_magic`/`_truncated`/`_payload_truncation`/`detects_crc_corruption`/`rejects_schema_mismatch`/`rejects_major_version_skew`), atomic write, slot parsing, ring resume, recency tie-break, `form_id_column_resolves_the_flagged_entry`, replacing-column semantics |
 | `tests/round_trip.rs::typed_snapshot_preflight_rejects_bad_column_without_world_mutation` | typed preflight precedes `clear_entities` |
-| `live_reload_tests::{saved_resources_are_restored_before_the_cell_reload, pre_reload_restore_must_not_install_saved_item_instance_pool_early}` | pre-reload resource subset, #4135 |
+| `live_reload_tests::{saved_resources_are_restored_before_the_cell_reload, pre_reload_restore_must_not_install_saved_item_instance_pool_early, pre_reload_restore_installs_the_relocation_ledger}` | pre-reload resource subset, #4135; `ActorRelocations` joined it in `7250362df` (the spawn path's `skipped_at_home` reads it mid-reload) |
 | `live_reload_tests::{an_aborted_load_hands_the_live_ledgers_back, the_drain_captures_before_the_pre_reload_restore_and_reinstates_on_abort}` | `LiveReloadLedgers` (one field per `PRE_RELOAD_RESOURCES` entry, kept in step by a source guard) captured before the pre-reload restore and reinstated on every abort (#6081 `b5a205715`) |
 | `live_reload_tests::live_load_drain_discards_the_outgoing_sessions_script_events` | the teardown's queued `OnCellDetach`/`OnUnload` deliveries are discarded and `ActorWatch` re-baselined after the session replacement (#6083 `4b8e62d87`) |
-| `live_reload_tests::{live_load_drain_discards_the_cell_resets_its_reload_raised, live_load_drain_discards_the_outgoing_sessions_requests}` | the reload's own `note_player_entered_cell` must not leave `PendingCellResets` queued against the outgoing clock (#6238 `078df54e1`, `discard_pending_cell_resets`), and the value-keyed request queues (`PlayerMoveRequest`, `PendingPlayerXp`, `PendingSkillAdvances`, `PendingSleep`, `PendingMusic`, `PendingScriptMessages`, `MessageBoxQueue`, and the activate-choice box's `PendingActivateChoice`, PERK-HOOK-007) straddling the drain are cleared (#6239 `337bf25c8`, `discard_outgoing_session_requests`); the same sweep now also clears `PendingEvidenceDeposits` (#6573 `81332fc38`) and `PendingMineHits` (#6540 `bdaf75c66`), ends `VatsState` mode via `end_vats_for_world_change` (`systems/vats.rs`: `exit_all()` keeping `roll_state`; #6508 `5a423316f` — an F9 inside VATS left the loaded world frozen on despawned targets; #6625 `6186ab77e` made it the one helper shared with the player-death and cell-transition exits) and drops the crafting session, `CraftingRequest` and `PendingDroppedItems` (#6574 `375d48c6d`) |
-| `registry_completeness_tests::every_component_or_resource_impl_is_saved_or_explicitly_allowlisted` (tail) | #6574: a `NOT_SAVED_BY_DESIGN` reason that says "a load discards" / "The load drain ends" its type must be named in the body of `discard_outgoing_session_requests` — a claim the sweep does not back fails (the generic guard the earlier audits asked for) |
+| `live_reload_tests::{live_load_drain_discards_the_cell_resets_its_reload_raised, live_load_drain_discards_the_outgoing_sessions_requests}` | the reload's own `note_player_entered_cell` must not leave `PendingCellResets` queued against the outgoing clock (#6238 `078df54e1`, `discard_pending_cell_resets`), and the value-keyed request queues (`PlayerMoveRequest`, `PendingPlayerXp`, `PendingSkillAdvances`, `PendingSleep`, `SleepCompletions`, the Oblivion bed/level-up menus' `RestSession` (reset to `Closed`, `250a5ba67`), `PendingMusic`, `PendingScriptMessages`, `MessageBoxQueue`, and the activate-choice box's `PendingActivateChoice`, PERK-HOOK-007) straddling the drain are cleared (#6239 `337bf25c8`, `discard_outgoing_session_requests`); the same sweep now also clears `PendingEvidenceDeposits` (#6573 `81332fc38`) and `PendingMineHits` (#6540 `bdaf75c66`), ends `VatsState` mode via `end_vats_for_world_change` (`systems/vats.rs`: `exit_all()` keeping `roll_state`; #6508 `5a423316f` — an F9 inside VATS left the loaded world frozen on despawned targets; #6625 `6186ab77e` made it the one helper shared with the player-death and cell-transition exits) and drops the crafting session, `CraftingRequest` and `PendingDroppedItems` (#6574 `375d48c6d`); later additions to the same sweep: the M65 detection transients `PendingDetectionEvents` / `PlayerActionNoise` (SAVE-6), the XCT queues `PendingRelocations` / `PendingActorMoves` / `TravelReports` (#6927 `75d0fe6a2`), `PendingScriptStoryEvents` / `PendingNonArmorEquips`, the scripted-speech queues and any `SpeakingLine` (the loaded save's own lines come back through the delta column, #6944), and the surviving player's `Seated` (INC4-1 `a69331ded`: `Seated` holds a furniture `EntityId`, not a delta column); #7229 `9e650b5c0` `ActiveProjectiles` + `PendingTrapHits` (shots in flight named the outgoing shooter and physics bodies; the test seeds an arrow in flight and a queued hit); #7230 `LevelNotices`, `CastState`, `BowState`, `StanceTimers`, `MineClock`; #7253 `RandomConversationState`, `DeadBodyState`, `AttractionState`, `JailEscapeWatch`, `ObScriptQuestTimers` (only boot ever built them; the guard's wording check caught them) — all through the `reset_resource` helper, pinned by the NOT_SAVED-reason guard rather than per type |
+| `live_reload_tests::the_day_blocks_restart_before_the_reload_and_survive_an_aborted_one` | `PackageDayBlocks` (Once Per Day) is cleared by `reload_with_fresh_day_blocks` *before* the cell reload — the reload's spawns note their own blocks via `apply_ai_package_behavior`, which a post-reload reset in the drain erased — and an aborted reload ("keeping the current session") gets the live blocks back; source pin that the reload runs inside the wrapper (#7252 `9f31ab66f`) |
+| `registry_completeness_tests::every_component_or_resource_impl_is_saved_or_explicitly_allowlisted` (tail) | #6574: a `NOT_SAVED_BY_DESIGN` reason that says "a load discards" / "The load drain ends" its type must be named in the body of `discard_outgoing_session_requests` (scanned with comments stripped; `ActiveCrafting` is credited through `end_crafting` via `RESET_THROUGH_A_CALL`) — a claim the sweep does not back fails (the generic guard the earlier audits asked for). #7230 `48c6ea693` + #7253 `bf977bfb3`: the same promise in any wording — `a load <verb…>` or `<verb…>` within three words before `on [live] load`, the verb matched by root (`LOAD_RESET_ROOTS`; the matcher is itself asserted on wordings it must and must not catch) — is either reset by the drain or listed in `RESET_OUTSIDE_THE_DRAIN` with the mechanism that does it (`place_character_body`, `reload_with_fresh_day_blocks`, the cell reload's respawn, the sky install, ...); a listed row that no longer promises a reset fails too. A new reason with a load-reset promise whose mechanism you cannot find is the residue |
 | `registry_completeness_tests::the_schema_fingerprint_is_pinned` | `BASELINE_SCHEMA_FINGERPRINT` vs `build_save_registry().schema_fingerprint()`: a registration-row reorder (the #5802 slices' risk) or a column add/remove/rename fails CI instead of rejecting every save (#6296 `5a3f571f4`) |
 | `registry_completeness_tests::every_delta_column_is_parked_or_explicitly_not` | the **third** list: every `MUTABLE_DELTA_COLUMNS` entry is parked in a named `ReferenceState`/`ScriptState` field (`cell_loader/reference_state.rs`), carried by `ActorStreamSnapshot`, or on `NOT_PARKED` with a reason; every parked field maps to a column or `FIELDS_WITHOUT_A_COLUMN` (#6085 `3b9060701`); no `NOT_PARKED` reason may read `UNAUDITED` — the marker's last row, `Escorted`, is parked now (#6294 `f3ab49f55`) |
 | `command_queue_tests::{a_save_taken_mid_cell_transition_is_refused_not_written, a_save_taken_while_chargen_disables_saving_is_refused_not_written, quicksave_ring_cursor_does_not_advance_on_validation_abort, player_save_actions_wait_for_the_quiescent_fifo_drain, quickload_empty_errors_and_corrupt_newest_falls_back}` | save-side refusal gates, ring, quiescent drain |
+| `command_queue_tests::{a_save_with_a_non_finite_float_is_refused_not_written, quickload_falls_back_past_a_slot_whose_columns_do_not_decode, a_save_with_an_unowned_actor_value_key_is_refused_before_the_snapshot, the_console_save_refuses_in_the_tick_of_a_scripted_move, a_quicksave_waits_for_queued_actor_moves_to_reach_their_ledger}` | the 2026-11-17 audit's save-side gates: encoded bytes must decode + typed-validate before `write_slot` (SAVE-3 `8cfb70c44`), `LoadCommand` runs the same preflight so F9 falls back past an undecodable slot, `validate_actor_value_identities` (SAVE-5), console `save` refuses while `PendingRelocations`/`PendingActorMoves` are non-empty and the player drain waits at most `MAX_SAVE_DEFERRALS` (3) ticks (SAVE-4/-7 `d72e1f45e` / `110790dce`) |
+| `live_reload_tests::a_live_load_rebaselines_the_players_perk_bodies`; `app_step.rs::a_save_load_forgets_the_respawn_step_keys`; `cell_loader/load_order.rs::{a_changed_load_order_discards_the_load_order_resolved_caches, the_reference_loader_discards_stale_caches_before_building_them}` | post-overlay `PerkBodyState` removal (`734bcb1fa`, a load re-ran perk Quest entries); `step_save_loads` forgets `created_step_key` / `relocation_step_key` / `enabled_step_key` after the drain (`c4d1ea3f2`); a live load that changes the plugin set drops the load-order-resolved rulesets before the reference loader builds them (SAVE-2 `0e8053225`) |
 | `live_reload_tests::post_reload_drain_steps_keep_their_order` | source-order pin inside `execute_pending_save_loads`: `restore_resources` → `restore_resident` → `build_form_id_remap` → the `ScriptPackage` pre-seat `apply_deltas` → `reseat_ambient_packages_after_restore` → the full `apply_deltas(.. MUTABLE_DELTA_COLUMNS)` (#5060 `02fa8358c`; the remap and pre-seat moved ahead of the re-seat in #6087 `c7463c04d`; the `reconcile_worn_gear` single-call pin joined it, #5460 `bda5a1167`) |
 | `app_step.rs::the_save_drain_publishes_the_transition_flag_before_draining` | `CellTransitionInFlight` published before the drain |
 | `crates/save/src/snapshot.rs` `the_bump_ledger_is_contiguous_and_current` | the `FORMAT_MAJOR` doc ledger has every `vN -> vN+1` step with no hole and ends at the constant — a bump that edits only the constant fails (#5459 `a4ccf3b27`) |
@@ -129,7 +132,9 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
   (`Seated` is not overlaid — `restore_world`-only; restated and pinned by the `seated_without_path` check at the tail
   of the completeness guard, #5458 `0aa844dbb`) and `StoryLocationCursor` ("a load legitimately re-fires" —
   `execute_pending_save_loads` now resets it on every in-process load, #5435 `557ead21d`, pinned in
-  `live_reload_tests.rs`).
+  `live_reload_tests.rs`); the 2026-11-17 audit's SAVE-6 (detection transients) and SAVE-9 (`Background` named the wrong writer) and
+  `PendingScriptedLines` (cfff182ea). The guard also catches a *missing* row: `PathGridTile` (Oblivion PGRD residency, the `NavmeshTile` posture)
+  landed unclassified and went red until `45ad4ab69` allowlisted it with no format bump.
 - **Removed-from-allowlist stays registered**: `CharacterController` (fractional breath/drowning carry),
   `Material`, `RumbleOnActivate`, `FragmentExecutionQueue`, the cinematic trio — verify none
   regressed out of `build_save_registry`, and no re-added `NOT_SAVED_BY_DESIGN` entry re-excludes them.
@@ -137,10 +142,11 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
   `MUTABLE_DELTA_COLUMNS`. A registered mutable column absent from the overlay is captured but never
   replayed → HIGH silent-drop, unless deliberately excluded and documented at its `register_component`
   site: `Material` (blast radius), `AnimationPlayer`/`AnimationStack` (stale `root_entity`/`clip_handle`),
-  `FollowState`/`EscortState`/`Seated`/cinematic pair (`EntityId`, registry handles), `ActorVitals`
-  (write-once FormID key). A column with an `EntityId`/handle must also be covered by
+  `FollowState`/`EscortState`/`Seated`/cinematic pair (`EntityId`, registry handles). `ActorVitals`
+  is **in** the overlay since SAVE-1 `9d837aa3d` (its key is slot-composed since v133 and a live load can move the engine
+  slot under the process-lifetime player; the old "write-once FormID key" exemption is the regression to look for). A column with an `EntityId`/handle must also be covered by
   `validate_saved_entity_references` (Dim 4).
-- **Replacing columns**: `Perks`, `CharacterLevel`, `LevelUpPoints`, `FactionReputation` (#6759), `TimedRestorations`, `Dead`, `ActorControlState`, `DismemberRecord`, `CharacterIdentity` use
+- **Replacing columns**: `Perks`, `CharacterLevel`, `LevelUpPoints`, `SkillUseLevel` (v137), `ReadiedSpell` (v140, #7079 `9feaee8c5`, registered by `crates/scripting/src/magic.rs` after `SpellList`), `EquippedAmmo` (v141 column, replacing since #7228 `c82e4f68f`: the slot is created lazily by the first arrow equip, so a save from before it has no row and an additive overlay left the outgoing arrow equipped on the process-lifetime player; pinned by `round_trip_tests::a_saved_absence_clears_the_live_equipped_ammo`), `FactionReputation` (#6759), `TimedRestorations` (a codec row, `replace_missing`), `Dead`, `Sneaking` (v130), `ActorControlState`, `DismemberRecord`, `CharacterIdentity`, `SpeakingLine` (v132) use
   `register_replacing_component` (`Dead`/`ActorControlState` since #5027/#5052 `7aa1d7741` — the process-lifetime player
   outlives the reload, so an additive `Dead`/restraint row survived a load into an alive save; pinned by
   `dead_and_restraint_cleared_on_live_player_by_saved_absence`) — saved absence is
@@ -188,7 +194,7 @@ First step: `git log -p -S'register_' --since=<last report> -- byroredux/src/sav
 ### Dimension 2: Format & Schema Discipline (registry fidelity + `FORMAT_MAJOR`)
 Paths: `crates/save/src/{snapshot,registry}.rs`, `save_io/serde_default_guard_tests.rs`, `crates/save/Cargo.toml`, `crates/core/Cargo.toml`
 First step: `cargo test -p byroredux --bin byroredux serde_default_guard` ; `git log --since=<last report> --format='%h %cs %s' -- crates/save/src/snapshot.rs`
-- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`: 129 as of 2026-11-14, with one `vN -> vN+1`
+- **Bump rule** (read the `FORMAT_MAJOR` doc comment in `snapshot.rs`: 141 as of 2026-11-22, with one `vN -> vN+1`
   entry per bump from v22 on, contiguous since #5459 `a4ccf3b27` restored the v32→v33 entry (#5367 `14cff35ae`, new saved
   resource `DialogueSpokenInfoForms`) and pinned it with `the_bump_ledger_is_contiguous_and_current`. Recent anchors: v36 Wave 4 `RigidBodyData.surface_material`, v37 #5542
   widened it `u8`→`u32`, v38 #5300 re-keyed `DialogueSpokenInfoForms` to a (speaker ref, INFO) pair, and v39–v104
@@ -200,7 +206,7 @@ First step: `cargo test -p byroredux --bin byroredux serde_default_guard` ; `git
   `PersistentReferenceStates` script rows v114 #6071–#6073 `611769b16`, parked `ReferenceState` magic effects /
 `weapon_drawn` / `ignore_crime` + `ScriptState` timer / rumble v115 #6085 `3b9060701`; `RigidBodyData` out,
 `ReferenceMotionTypeState` in v116 #6237 `6765e60eb`; v117 #6190 `ObScriptLedger` lost four unread columns; v118 Oblivion
-jail — `ObScriptLedger.stolen_goods` / `evidence` / `jail`; v119 the `CrimeKnowledge` resource joined the registry; v120 the `KnownWords` resource joined it and `Effect` gained `ObtainWord`; v121 `SmNodeRuntime.last_node_fire_hours`; v122 `ItemInstance.quality`; v123 #6759 `8fc1a9ef9` the `FactionReputation` replacing column (the stale "no mutation site" exemption); v124 d50fc1153 the `DismemberRecord` replacing column plus a parked `ReferenceState.dismember` field, VATS-LIMB-008/-009; v125 the `CharacterIdentity` replacing column plus the required `ActiveEffect.suspended`; v126 the `ActorRelocations` resource, XCT-LOC-003 #6852, and v127 its required `journeys` map, #6854; v128 `Effect::PlayBink` + `FragmentResumeCondition::MovieEnded`, #6858; v129 #6778 `9405138e9` `EquipmentSlots::occupants` 32 → 64 biped slots for Starfield's `BO64` mask — `MAX_BIPED_SLOTS`, serialized as a sequence of exactly 64 because serde derives stop at 32, so a v128 save's array is refused, not padded; v130 M65 #6910 the `Sneaking` replacing column, the player's sneak stance, SNK-SAVE-001; v131 M65 #6913 the required `ActorControlState.not_shown_on_stealth_meter` plus `Effect::SetNotShowOnStealthMeter`, SNK-DET-014; v132 #6944 the `SpeakingLine` replacing column, an ObScript `Say` / `SayTo` line in flight, delta column, not parked); do not hardcode the number elsewhere). Precedent: v112
+jail — `ObScriptLedger.stolen_goods` / `evidence` / `jail`; v119 the `CrimeKnowledge` resource joined the registry; v120 the `KnownWords` resource joined it and `Effect` gained `ObtainWord`; v121 `SmNodeRuntime.last_node_fire_hours`; v122 `ItemInstance.quality`; v123 #6759 `8fc1a9ef9` the `FactionReputation` replacing column (the stale "no mutation site" exemption); v124 d50fc1153 the `DismemberRecord` replacing column plus a parked `ReferenceState.dismember` field, VATS-LIMB-008/-009; v125 the `CharacterIdentity` replacing column plus the required `ActiveEffect.suspended`; v126 the `ActorRelocations` resource, XCT-LOC-003 #6852, and v127 its required `journeys` map, #6854; v128 `Effect::PlayBink` + `FragmentResumeCondition::MovieEnded`, #6858; v129 #6778 `9405138e9` `EquipmentSlots::occupants` 32 → 64 biped slots for Starfield's `BO64` mask — `MAX_BIPED_SLOTS`, serialized as a sequence of exactly 64 because serde derives stop at 32, so a v128 save's array is refused, not padded; v130 M65 #6910 the `Sneaking` replacing column, the player's sneak stance, SNK-SAVE-001; v131 M65 #6913 the required `ActorControlState.not_shown_on_stealth_meter` plus `Effect::SetNotShowOnStealthMeter`, SNK-DET-014; v132 #6944 the `SpeakingLine` replacing column, an ObScript `Say` / `SayTo` line in flight, delta column, not parked; v133 OAI-SAVE #7021 the portable `FormIdPair` actor-value codecs, a wire-shape change to six existing columns with no registry change; v134 M48 #6668 the `MenuEventRegistrations` resource; v135 M48 #6667 `Effect::ShowAppearanceMenu`; v136 #7044 the required `ActorValue.stored` layer (Oblivion's per-level Health gain); v137 #7050 the `SkillUseLevel` replacing column; v138 #7052 its required `pending`; v139 #6941 the required `ActiveEffect.effect_index`; v140 #7079 PSC-RDY-004 the `ReadiedSpell` replacing column, the player's readied spell; v141 #7055 BOW-AMM-002 the `EquippedAmmo` column, the player's equipped arrow type; #7228 then made it replacing with no bump — the policy is hashed into `schema_fingerprint`, so older saves are refused with `SchemaMismatch` and `BASELINE_SCHEMA_FINGERPRINT` moved, the serialized shape unchanged); do not hardcode the number elsewhere). Precedent: v112
   (#6050 `5f8bbf454`) — `register_saved` columns landed after a baseline refresh with no bump and the shape guard sat
   red on main; a new registered column's defining file joins the shape scan, so it is a bump here too. Intra-type shape changes need a bump because
   `schema_fingerprint` hashes only column keys (+ replacing policy). A new required field, retyped field, or new `Option` in a saved
@@ -221,7 +227,7 @@ jail — `ObScriptLedger.stolen_goods` / `evidence` / `jail`; v119 the `CrimeKno
   types sharing it (e.g. `AnimatedTextureFlip`; inspect-only files such as `WaterMaterial`'s left the scan in
   573170e1c) — those move the hash with no snapshot impact; (b) a **tuple struct** sweeps the following `impl` block into its span (`VisibilityMask`) — method
   edits move the hash; (c) the hash includes the file-relative path, so moving a save-participating type
-  between files moves it. Verify baseline and `FORMAT_MAJOR` were updated in the same commit, and that a
+  between files moves it. Recent no-bump refreshes of class (a): #7225 (`TravelBehavior` / `WanderBehavior`) and #7254 `bfcca10be` (`GuardBehavior.near_editor_location`, `BASELINE_SHAPE_FINGERPRINT` = `0x0606_cb8f_3f7f_852c`), each a `NOT_SAVED_BY_DESIGN` sibling of a registered `*State` in the same file. Verify baseline and `FORMAT_MAJOR` were updated in the same commit, and that a
   refresh-without-bump was not hiding a real field change to a registered type.
 - **Guard blind spots**: manual `impl Serialize` (no derive) types; a nested payload type of a plain-`derive`
   registered type (the `byroredux/src` pattern) defined in another file is outside `save_type_sources()` unless
@@ -231,7 +237,7 @@ jail — `ObScriptLedger.stolen_goods` / `evidence` / `jail`; v119 the `CrimeKno
   test); the shape scan once skipped a save derive that was not the *last* `#[…]` attribute (#5403 fixed in
   `e19cb0491`, coverage markers assert `StoryManagerNodeState` / `SmNodeRuntime` contribute shapes); a new `Option<T>` field is hashed but
   looks like a routine baseline bump — confirm it got the bump; `serde(alias)` must never coexist with a
-  dropped value semantic change.
+  dropped value semantic change. Neither guard sees a change to how a saved *id* is derived: `PluginId::from_filename` now hashes `plugin_key` (case-folded basename, full Unicode `to_lowercase`; 285633f27, #7249 `6438f700a` documents that a name with a non-ASCII capital changed identity, so ids saved against the old ASCII-only key do not resolve) with no `FORMAT_MAJOR` bump — judge any such change by hand.
 - **Second payload — extension state** (`Snapshot.resources["ByroExtensionState"]`, written by
   `extensions::capture_extension_state`, type `ExtensionStateSnapshot` in `crates/sdk/src/component.rs`):
   it is outside the registry, the completeness guard, and both serde guards (sdk types carry a plain
@@ -257,7 +263,7 @@ Paths: `crates/save/src/{snapshot,disk}.rs`, `crates/core/src/atomic_file.rs`, `
 First step: `cargo test -p byroredux-save disk:: snapshot::`
 Guarded (see ledger): header gate order (length → magic → major → schema fingerprint → `payload_len`
 checked bounds → CRC over the payload only → `serde_json::from_slice`), advisory `minor`, slot-name strictness
-(`save_42.ess.tmp` rejected), `slots_by_recency` newest-first with slot-number tie-break, ring wrap/resume.
+(`save_42.ess.tmp` rejected), `slots_by_recency` newest-first with slot-number tie-break, ring wrap/resume (`SaveRing::resume` uses `slots_by_recency`'s tie-break, higher slot wins at equal mtimes — SAVE-8 `110790dce`, `resume`'s old `max_by_key` followed arbitrary `read_dir` order).
 Residual checks:
 - **`atomic_write`** (`crates/core/src/atomic_file.rs`; shared with `crates/settings-io`,
   `crates/boot-request`, `crates/game-detect/src/overrides.rs`) order is exactly: create tmp → `write_all` →
@@ -283,9 +289,11 @@ First step: `grep -n 'fn validate_\|validate_[a-z_]*(world' crates/save/src/vali
   written and permanently unloadable; `CinematicPresentationState.disable_saving` — `Game.SetInChargen`
   `abDisableSaving`; plus the context-invariant refusal #5253 `27562f8ae` — `LoadedCellIndex` present but neither
   `CurrentCellContext` nor `CurrentExteriorContext` means an unloadable snapshot even when the synced flag still
-  reads `false`, as in the console ingresses that dispatch outside the drain), then `validate_world` + `validate_form_ids` + `validate_cinematic_entity_refs`
-  (abort, up to 20 lines, nothing written), then `save_world` → `capture_extension_state` → `encode` →
-  `write_slot`; ring advance and the `SaveComplete` session event only after the commit. Any alternate save
+  reads `false`, as in the console ingresses that dispatch outside the drain), then `validate_world` + `validate_form_ids` + `validate_cinematic_entity_refs` + `validate_actor_value_identities`
+  (SAVE-5: dry-runs the portable codecs, so an unowned actor-value key aborts naming its entity / column / parked reference instead of failing inside `save_world`)
+  (abort, up to 20 lines, nothing written), then `save_world` → `capture_extension_state` → `encode` → a `decode` + `validate_snapshot_types` of the encoded bytes
+  (SAVE-3: `serde_json` writes a non-finite `f32` as `null`, which no `f32` field decodes — a NaN saved through `setav`/`modav` used to commit an unloadable slot; refuses with no write and no ring advance) →
+  `write_slot`; ring advance and the `SaveComplete` session event only after the commit. The console `save` additionally refuses (SAVE-7) while `PendingRelocations` / `PendingActorMoves` hold entries — they reach `ActorRelocations` only when `step_actor_relocations` drains later in the tick — and the queued player quicksave waits up to `MAX_SAVE_DEFERRALS` = 3 ticks for the same (SAVE-4); `LoadCommand` runs the typed preflight when it queues a slot, so `quickload_latest` falls back past one that does not decode (SAVE-3). Any alternate save
   path that bypasses the gates (console, player action, SDK) is HIGH; input adapters must enqueue through
   `queue_player_save_action` (post-scheduler drain — `save_world` takes ~30 storage + resource read locks, so
   a live scheduler lane needs the ABBA analysis re-derived; `/audit-concurrency`). Current ingresses: the
@@ -314,14 +322,16 @@ First step: read `execute_pending_save_loads` top to bottom against the sequence
 - **Strict apply sequence**: drain slot → `validate_snapshot_types` (abort, session kept) →
   `preflight_extension_state` (abort) → `restore_resources_subset(PRE_RELOAD_RESOURCES)` (only resources
   read by spawn-time code during the reload: `ReferenceEnableState`, `ReferenceLockState`, `ReferenceScriptState`,
-  `ScriptedFactionChanges` — #5919 `aa14d3e89`, replayed by `stamp_quest_reference` as NPCs respawn — and
-  `ReferenceMotionTypeState`, #6237, read by `scripted_motion_type` as each collider is built;
-  `pre_reload_restore_installs_the_scripted_faction_ledger`; **never**
+  `ScriptedFactionChanges` — #5919 `aa14d3e89`, replayed by `stamp_quest_reference` as NPCs respawn —
+  `ReferenceMotionTypeState`, #6237, read by `scripted_motion_type` as each collider is built, and `ActorRelocations`,
+  XCT-LOC-002 `7250362df`, read by `cell_loader::relocated::skipped_at_home` as each home-cell reference is placed;
+  `without_parked_state` also installs the `SaveReloadTeardown` marker so the teardown's `depart_unwatched` starts no offscreen journey in that ledger;
+  `pre_reload_restore_installs_the_scripted_faction_ledger`, `pre_reload_restore_installs_the_relocation_ledger`; **never**
   `ItemInstancePool` — teardown's `release_victim_item_instances` needs the live pool, #4135; the live values are
   captured first as `LiveReloadLedgers` and reinstated if this restore or the reload below fails/refuses, so a
   "keeping the current session" abort does not leave the other timeline's ledgers live — #6081 `b5a205715`) →
   `without_parked_state` wraps the reload (outgoing session's `PersistentReferenceStates` and
-  `StreamStateSnapshots` are set aside and restored on failure) → teardown + reload (`validate_cell_loadable`
+  `StreamStateSnapshots` are set aside and restored on failure) → teardown + reload (run inside `reload_with_fresh_day_blocks`, which takes the outgoing `PackageDayBlocks` first so the reload's own Once Per Day notes survive and restores them if the reload aborts, #7252 `9f31ab66f`; `validate_cell_loadable`
   preflight first, so a missing ESM/cell keeps the live session; then `purge_cinematic_retention_state`
   drops every `ActorCinematicState`/`HorseTetherState` row so the convoy is not retained across the teardown
   as a ghost twin sharing a `FormIdPair` — #5056 `a197e8563`, both reload arms + both debug-load paths, never
@@ -340,7 +350,7 @@ First step: read `execute_pending_save_loads` top to bottom against the sequence
   `CellVisits`/clock; the restored `CellVisits` is authoritative, #6238 `078df54e1`) → `discard_outgoing_session_requests`
   (value-keyed `PlayerMoveRequest` / XP / skill / sleep / music / message-box queues that would otherwise apply in the
   loaded world and be kept by the next save, #6239 `337bf25c8`; plus jail-evidence deposits, mine hits, VATS mode (`end_vats_for_world_change`), the crafting session
-  and pending dropped items, #6573 / #6540 / #6508 / #6574; the test pins all but the mine queue)
+  and pending dropped items, #6573 / #6540 / #6508 / #6574; the test pins all but the mine queue; plus the `reset_resource` resets of #7229 / #7230 / #7253 — projectiles in flight, trap hits, level notices, cast / bow / stance / mine timers, the M43 ambient schedulers and ObScript quest cadence; `PackageDayBlocks` is deliberately *not* here, see above)
   → `restore_extension_state` → wholesale
   `restore_resources` **again** (idempotent; re-asserts `CurrentCellContext`/`PlayerPose`; the second call is
   not redundant) → `restore_resident` (parked rows for resident placements, #4695; followed by `combat::release_held_dead_actor_reconciliations`, which hands a corpse's held reconciliation to the Late-stage sink now that its placement is resident, #6133 `1e2c1d30e`) → `drop_entity_bound_continuations` on `PapyrusProviderContinuationQueue` (session-local
@@ -354,23 +364,22 @@ First step: read `execute_pending_save_loads` top to bottom against the sequence
   `PersistentReferenceStates`, #5054 `17e720430` — the exterior reload streams only `radius_load`, so the
   save's hysteresis-band rows were dropped and their loot duplicated; `unresolved_snapshot_rows_are_parked_for_the_next_respawn`)
   → `apply_deltas(MUTABLE_DELTA_COLUMNS)` → dead/equipped-weapon reconcilers, `reconcile_worn_gear` (called
-  once; the duplicate was dropped in `a8b3d1902` and the count pinned by #5460 `bda5a1167`), `reset_player_factions_to_record` → `reapply_scripted_faction_changes` (restored scripted memberships on top) →
+  once; the duplicate was dropped in `a8b3d1902` and the count pinned by #5460 `bda5a1167`), `reset_player_factions_to_record` → `reapply_scripted_faction_changes` (restored scripted memberships on top); the player's `PerkBodyState` is dropped after the overlay so the next `perk_body_system` pass baselines on the loaded perks instead of re-running every extra rank's Quest entries (`734bcb1fa`) →
   `rebaseline_actor_watch` (outgoing bleedout/combat sets and player location must not deliver across timelines,
-  #6083) → diagnostic `validate_world` + `validate_form_ids` + `validate_cinematic_entity_refs` →
+  #6083) → diagnostic `validate_world` + `validate_form_ids` + `validate_cinematic_entity_refs` → `end_sting_layer` (a sting from the outgoing session ends, `2419fb27c`) → `sync_body_after_load` (INC4-2 `a0b255b77`: `CharacterIdentity` is a replacing delta column, so a load restoring another sex/race raises `PlayerBodyRebuildRequest`; `identity_before` is noted at the top of the drain) →
   `apply_player_pose` LAST (after the
   overlay of `CharacterController`, whose motion fields pose-restore then zeroes; a new field on either
   side needs an explicit decision). Any failure after the reload returns immediately, never falling through
-  into pose-restore on a partial overlay. Idempotency: teardown is unconditional, so a second load of the same
+  into pose-restore on a partial overlay. After the drain returns, `step_save_loads` forgets `created_step_key` / `relocation_step_key` / `enabled_step_key` (`c4d1ea3f2`: an exterior reload onto the same grid set left the keys equal, so created references and relocated-in actors stayed missing), and the load runs under the loading-screen cover (`begin_save` / `take_presented_save`). Process-lifetime *rulesets* resolved against the load order (`CharacterRuleset`, `PoolRegenConfig`, `VatsModel`, …) are dropped by `discard_stale_load_order_caches` in `load_references_budgeted` when the reload's plugin set differs (SAVE-2 `0e8053225`). Idempotency: teardown is unconditional, so a second load of the same
   slot does not stack deltas.
 - **Two restore paths**: live load uses `restore_resources` + `apply_deltas` (saved ids remapped to the
   reloaded cell's fresh ids); `restore_world` (clear + repopulate at saved ids) is test/loose only and must
   never be reachable from `execute_pending_save_loads` (id collision = CRITICAL). `clear_entities` does not
   free GPU/physics handles — the live path's `unload_current_interior`/`drain_streaming_state` must.
-- **Spawn-time ledger check (open question, 2026-11-14)**: `PRE_RELOAD_RESOURCES` holds only ledgers the spawn path reads
-  mid-reload. `ActorRelocations` (v126, XCT) is registered and restored wholesale *after* the reload, yet
-  `cell_loader::relocated::skipped_at_home` consults it as the home cell's reference list is built — so the reload may
-  see the outgoing session's ledger. Verify whether an actor the outgoing ledger holds away but the save does not
-  vanishes, or one the save relocates spawns at home first; if so it is a reference-break against the #4135/#6081 rule.
+- **Spawn-time ledger check (resolved 2026-11-17)**: `PRE_RELOAD_RESOURCES` holds only ledgers the spawn path reads
+  mid-reload; `ActorRelocations` was the open case (restored after the reload while `skipped_at_home` consults it as the home cell is
+  built) and `7250362df` moved it in, with a `LiveReloadLedgers` field and the `SaveReloadTeardown` hold-off. A *new* resource a spawn-time
+  consumer reads is the same question: check it against this list, not the post-reload restore.
 - **Remap**: `build_form_id_remap` matches saved `FormIdPair` → live entity; rows without a form id are
   skipped (respawned by the loader); unresolved pairs are logged (WARN, first 20) — a moved object vanishing
   must stay diagnosable; the player body carries `PLAYER_FORM_ID_PAIR` from spawn so it participates.
@@ -385,7 +394,7 @@ First step: read `execute_pending_save_loads` top to bottom against the sequence
 - **Pose**: yaw/pitch always to `InputState`; Character mode + live body → `place_character_body`
   (`byroredux/src/systems/character.rs`, the one teleport helper since #5591 `946310eb9`: body `Transform` +
   `GlobalTransform` + `CharacterController::clear_momentum` — `vertical_velocity`/`is_grounded`/`wants_jump` —
-  + kinematic Rapier sync, no-op without a handle); restore branches on the *live* mode (#2018), so
+  + `FallTracker` reset (#7227 `6eb1729fe`: a quick-load closer than `TELEPORT_DISTANCE` kept the pre-placement fall seconds and the first landing charged them) + kinematic Rapier sync, no-op without a handle); restore branches on the *live* mode (#2018), so
   FlyCam-saved/Character-loaded relocates the body and the reverse repositions the camera. `apply_player_pose`
   returns `bool` and refuses the whole pose (non-finite or out-of-world position — `PhysicsWorld::translation_is_sane`,
   the keyframe bound — or non-finite yaw/pitch), leaving the reloaded cell's spawn (#5530 `d28545728`,

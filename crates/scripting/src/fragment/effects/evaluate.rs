@@ -24,17 +24,9 @@ pub(super) enum PendingMessage {
 /// M47.2 — a [`ValueExpr`]'s run-time number; `None` when something it reads
 /// does not resolve (the guard then declines the conditional). Quest-variable
 /// and relationship reads see a write made earlier in the same fragment.
-/// An actor's current value of `avif` — the `GetActorValue` condition read.
+/// An actor's current value of an already-resolved AVIF FormID.
 pub(super) fn actor_value_now(world: &World, actor: EntityId, avif: u32) -> f32 {
-    crate::condition::evaluate_function(
-        crate::condition::ConditionFunction::GetActorValue,
-        &byroredux_plugin::esm::records::condition::Condition {
-            param_1: avif,
-            ..Default::default()
-        },
-        actor,
-        world,
-    )
+    crate::condition::actor_value_view(world, actor, avif, crate::condition::ActorValueView::Current)
 }
 
 /// The (quest, alias id) the script property `name` is bound to, a quest-less
@@ -288,11 +280,10 @@ pub(super) fn actor_reference_form_id(
     if matches!(actor, ActorRef::Player) {
         return Some(crate::PLAYER_REFERENCE);
     }
-    if let ActorRef::Object(object) = actor {
-        if let Some(form_id) = resolve_property_form_id(vmad, object.property_name()) {
+    if let ActorRef::Object(object) = actor
+        && let Some(form_id) = resolve_property_form_id(vmad, object.property_name()) {
             return Some(form_id);
         }
-    }
     let entity = guard_actor(actor, context, vmad, world, deferred)?;
     entity_global_form_id(world, entity).or_else(|| {
         world
@@ -413,11 +404,10 @@ pub(crate) fn queue_health_death_by(
     let lethal = world
         .get::<ActorValues>(actor)
         .is_some_and(|values| values.current(health) <= 0.0);
-    if lethal {
-        if let Some(mut pending) = world.try_resource_mut::<crate::story_manager::PendingScriptKills>() {
+    if lethal
+        && let Some(mut pending) = world.try_resource_mut::<crate::story_manager::PendingScriptKills>() {
             pending.0.push((actor, killer(), false));
         }
-    }
 }
 
 /// The `LCTN` a location-typed [`ObjectRef`] names: a direct property's

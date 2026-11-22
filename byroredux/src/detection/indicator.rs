@@ -13,7 +13,7 @@ use super::PlayerDetection;
 use byroredux_core::character::Perks;
 use byroredux_core::ecs::World;
 use byroredux_core::stealth::{IndicatorState, IndicatorStyle, StealthIndicator};
-use byroredux_debug_ui::{StealthIndicatorLook, StealthIndicatorView};
+use byroredux_native_ui::{StealthIndicatorLook, StealthIndicatorView};
 
 /// The indicator the HUDs draw this frame, or `None` when it is hidden.
 pub(crate) fn indicator_view(world: &World) -> Option<StealthIndicatorView> {

@@ -1115,6 +1115,9 @@ void main() {
         if (opaqueHit && hasOpenSky && params.wind_gust.z > 0.5) {
             opaqueHit = sunRayBlockedAlphaAware(ray_origin, ray_dir, DIRECTIONAL_SHADOW_TRACE_DISTANCE);
         }
+        // Same-binary A/B for measuring the exterior shadow contribution. This
+        // leaves interior portal visibility and all surface shadows untouched.
+        if (hasOpenSky && params.wind_gust.z < -0.5) opaqueHit = false;
         float nearestWindowReach = DIRECTIONAL_SHADOW_TRACE_DISTANCE + 1.0;
         bool authoredAperture = !hasOpenSky
             && localSkyAperture(ray_origin, ray_dir, nearestWindowReach);

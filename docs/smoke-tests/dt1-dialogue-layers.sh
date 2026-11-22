@@ -161,6 +161,10 @@ page="$(grep -E '^page: ' "$LOG_DIR/page.log" | head -1 || true)"
 grep -Fq "speaker 'Doc Mitchell'" <<<"$page" || fail "Phase P: the page does not name the speaker: $page"
 grep -Eq 'list=(replies|topics)' <<<"$page" || fail "Phase P: no list mode: $page"
 grep -Fq 'speaking=true' <<<"$page" || fail "Phase P: the speaking cue is off right after the greeting: $page"
+# M48 GUI-PAGE-004 (#6666) — Q1: the conversation runs on New Vegas's own dialogue document (S2).
+debug_command 'ui.menus' "$LOG_DIR/menus.log" >/dev/null 2>&1 || fail 'ui.menus unavailable'
+grep -Eq 'DialogMenu code=1009 surface=menuxml menus.+dialog.+dialog_menu\.xml' "$LOG_DIR/menus.log" \
+    || fail "Phase P: the conversation is not on the dialogue document: $(sed -n '1,8p' "$LOG_DIR/menus.log")"
 deadline=$((SECONDS + 90))
 # The greeting is a Goodbye line: when its presentation ends the conversation closes and the page is gone, or
 # (a line that stays open) the cue reads speaking=false. Either is the cue ending with the line.
@@ -170,7 +174,7 @@ until cue_ended; do
     sleep 2
     read_page || true
 done
-echo "smoke[dt1-dialogue-layers]: Phase P PASS — $page; the cue ended with the line"
+echo "smoke[dt1-dialogue-layers]: Phase P PASS — $page, on menus\\dialog\\dialog_menu.xml; the cue ended with the line"
 
 # ── Phase F: the force-greet package opens without activation ─────
 # End the G conversation first so the F assertion reads a fresh serial.

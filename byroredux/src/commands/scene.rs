@@ -1592,12 +1592,11 @@ impl ConsoleCommand for MatSetCommand {
         // cache is a resource, and taking a resource lock while holding a
         // storage lock is the ordering this codebase avoids.
         drop(q);
-        if result.is_ok() {
-            if let Some(mut cache) = world.try_resource_mut::<crate::render::SceneEffectSoftCache>()
+        if result.is_ok()
+            && let Some(mut cache) = world.try_resource_mut::<crate::render::SceneEffectSoftCache>()
             {
                 cache.invalidate();
             }
-        }
 
         match result {
             Ok(shown) => CommandOutput::line(format!("mat.set: entity {id} {field} = {shown}")),

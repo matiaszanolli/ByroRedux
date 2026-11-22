@@ -29,6 +29,11 @@ pub struct TrapHit {
     /// M65 (SNK-ATK-001, -005) — the player's sneak attack (a projectile from the sneaking player on a target
     /// unaware of them); carried onto the landed `HitEvent`. `false` for a trap or script.
     pub sneak_attack: bool,
+    /// The player's own arrow (player-archery BOW-USE-005), carried onto the landed `HitEvent`. `false` for a trap, a
+    /// script and every other projectile.
+    pub arrow: bool,
+    /// The shot's weapon ignores Resist Normal Weapons, carried onto the landed `HitEvent`.
+    pub ignores_resistance: bool,
 }
 
 /// The `ProcessTrapHit` calls awaiting [`pending_trap_hit_flush_system`].
@@ -53,7 +58,7 @@ pub fn pending_trap_hit_flush_system(world: &World, _dt: f32) {
             return;
         };
         for hit in hits {
-            let TrapHit { target, trap, damage, sneak_attack } = hit;
+            let TrapHit { target, trap, damage, sneak_attack, arrow, ignores_resistance } = hit;
             if events.get(target).is_some() {
                 held.push(hit);
                 continue;
@@ -69,15 +74,16 @@ pub fn pending_trap_hit_flush_system(world: &World, _dt: f32) {
                     sneak_attack,
                     bash_attack: false,
                     blocked: false,
+                    arrow,
+                    ignores_resistance,
                 },
             );
         }
     }
-    if !held.is_empty() {
-        if let Some(mut pending) = world.try_resource_mut::<PendingTrapHits>() {
+    if !held.is_empty()
+        && let Some(mut pending) = world.try_resource_mut::<PendingTrapHits>() {
             pending.0.extend(held);
         }
-    }
 }
 
 /// #6706 — this subsystem's world setup, owned here instead of the crate's `register` hub.
@@ -100,6 +106,8 @@ mod tests {
             sneak_attack: false,
             bash_attack: false,
             blocked: false,
+            arrow: false,
+            ignores_resistance: false,
         }
     }
 
@@ -113,8 +121,8 @@ mod tests {
         let (target, melee, trap_a, trap_b) = (world.spawn(), world.spawn(), world.spawn(), world.spawn());
         world.insert(target, hit(melee, 10.0));
         world.resource_mut::<PendingTrapHits>().0 = vec![
-            TrapHit { target, trap: trap_a, damage: 3.0, sneak_attack: false },
-            TrapHit { target, trap: trap_b, damage: 4.0, sneak_attack: false },
+            TrapHit { target, trap: trap_a, damage: 3.0, sneak_attack: false, arrow: false, ignores_resistance: false },
+            TrapHit { target, trap: trap_b, damage: 4.0, sneak_attack: false, arrow: false, ignores_resistance: false },
         ];
         let landed = |world: &World| {
             world
@@ -132,7 +140,7 @@ mod tests {
         world.remove::<crate::HitEvent>(target);
         pending_trap_hit_flush_system(&world, 0.0);
         assert_eq!(landed(&world), Some((trap_a, 3.0)));
-        assert_eq!(world.resource::<PendingTrapHits>().0, vec![TrapHit { target, trap: trap_b, damage: 4.0, sneak_attack: false }]);
+        assert_eq!(world.resource::<PendingTrapHits>().0, vec![TrapHit { target, trap: trap_b, damage: 4.0, sneak_attack: false, arrow: false, ignores_resistance: false }]);
 
         world.remove::<crate::HitEvent>(target);
         pending_trap_hit_flush_system(&world, 0.0);

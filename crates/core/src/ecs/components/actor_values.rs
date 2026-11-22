@@ -56,6 +56,14 @@ pub struct ActorValue {
     /// field, no `serde(default)` (#1714): saves from before the layer
     /// are rejected by the v34 format-major bump.
     pub set_override: f32,
+    /// #7044 — what a level-up has accumulated into the actor value, apart from every derived or magical layer
+    /// (Oblivion's per-level Health gain, `0.1 x Endurance`, the "stored" term the original keeps beside the
+    /// formula: `(stored + derived) x multiplier`). Its OWN layer for the same reason as
+    /// [`Self::set_override`]: the per-frame `refresh_player_only_bases` rewrites `base` from the formula, and
+    /// [`Self::permanent_mod`] is the abilities-and-gear sum, which removing an ability must leave alone.
+    /// Required field, no `serde(default)` (#1714): saves from before the layer are rejected by the v136
+    /// format-major bump.
+    pub stored: f32,
     /// Permanent offsets — perks, enchantments, equipped gear.
     pub permanent_mod: f32,
     /// Temporary offsets — active magic effects (potions, spells).
@@ -73,15 +81,29 @@ pub struct ActorValue {
 }
 
 impl ActorValue {
-    /// The undamaged ceiling: `base + set_override + permanent + temporary`.
-    /// What a "current / max" reader (HUD bar fraction, vitals panel) must
-    /// use as `max` — composing the layers by hand missed `set_override`
-    /// when #5412 added it (#5508).
-    pub fn undamaged(&self) -> f32 {
-        self.base + self.set_override + self.permanent_mod + self.temporary_mod
+    /// The base view: `base + set_override + stored`, the value with no modifier and no damage (what
+    /// `GetBaseActorValue` reads). `stored` is part of the base: the original's base of Health is
+    /// `(stored + derived) x multiplier` (#7044, #7205).
+    pub fn base_view(&self) -> f32 {
+        self.base + self.set_override + self.stored
     }
 
-    /// `base + set_override + permanent + temporary − damage`.
+    /// The permanent view: [`Self::base_view`] plus the permanent (abilities and gear) layer, without the
+    /// temporary effects or damage (what `GetPermanentActorValue` reads, #7205).
+    pub fn permanent(&self) -> f32 {
+        self.base_view() + self.permanent_mod
+    }
+
+    /// The undamaged ceiling: `base + set_override + stored + permanent + temporary`.
+    /// What a "current / max" reader (HUD bar fraction, vitals panel) must
+    /// use as `max` — composing the layers by hand missed `set_override`
+    /// when #5412 added it (#5508), and `stored` in two views when #7044 added
+    /// it (#7205), so every view builds on the one below.
+    pub fn undamaged(&self) -> f32 {
+        self.permanent() + self.temporary_mod
+    }
+
+    /// `base + set_override + stored + permanent + temporary − damage`.
     pub fn current(&self) -> f32 {
         self.undamaged() - self.damage
     }
@@ -233,6 +255,19 @@ impl ActorValues {
         self.values.entry(key).or_default().permanent_mod = value;
     }
 
+    /// The accumulated [`ActorValue::stored`] term of an actor value (`0.0` when the actor carries none).
+    pub fn stored(&self, avif_form_id: u32) -> f32 {
+        self.values.get(&self.base_key(avif_form_id)).map_or(0.0, |entry| entry.stored)
+    }
+
+    /// Add to the [`ActorValue::stored`] layer: what a level-up accumulates (#7044). Untouched by
+    /// `refresh_player_only_bases`, `set_base`, `set_override` and the permanent-modifier calls, so it is the
+    /// one layer a derived-stat refresh and an ability coming or going both leave alone.
+    pub fn add_stored(&mut self, avif_form_id: u32, delta: f32) {
+        let key = self.base_key(avif_form_id);
+        self.values.entry(key).or_default().stored += delta;
+    }
+
     /// Add to the temporary-modifier layer (active effects).
     pub fn mod_temporary(&mut self, avif_form_id: u32, delta: f32) {
         let key = self.current_key(avif_form_id);
@@ -308,6 +343,26 @@ mod tests {
         assert!(!values.set_alias(5, ActorValueAlias { current: 3, base: 2 }));
     }
 
+    /// #7044 — the stored layer is part of the ceiling and independent of every other writer.
+    #[test]
+    fn the_stored_layer_is_part_of_the_ceiling_and_independent_of_the_others() {
+        let mut av = ActorValues::new();
+        av.set_base(AV_HEALTH, 100.0);
+        av.add_stored(AV_HEALTH, 4.0);
+        av.add_stored(AV_HEALTH, 5.0);
+        assert_eq!((av.stored(AV_HEALTH), av.get(AV_HEALTH).unwrap().undamaged(), av.current(AV_HEALTH)), (9.0, 109.0, 109.0));
+        // A new base (the derived-stat refresh), an override, and a permanent modifier coming and going leave it.
+        av.set_base(AV_HEALTH, 120.0);
+        av.set_override(AV_HEALTH, 10.0);
+        av.mod_permanent(AV_HEALTH, 30.0);
+        av.mod_permanent(AV_HEALTH, -30.0);
+        av.apply_damage(AV_HEALTH, 25.0);
+        assert_eq!(av.stored(AV_HEALTH), 9.0);
+        assert_eq!((av.get(AV_HEALTH).unwrap().undamaged(), av.current(AV_HEALTH)), (139.0, 114.0));
+        // An actor value the actor does not carry has none.
+        assert_eq!(av.stored(AV_SNEAK), 0.0);
+    }
+
     #[test]
     fn current_folds_the_four_layers() {
         let mut av = ActorValues::new();
@@ -331,6 +386,21 @@ mod tests {
         let health = av.get(AV_HEALTH).unwrap();
         assert_eq!(health.undamaged(), 635.0);
         assert_eq!(health.current(), 435.0);
+    }
+
+    /// #7205 — the views stack: base view (`base + set_override + stored`), permanent (+ abilities and gear),
+    /// undamaged (+ temporary), current (− damage); `stored` reaches every one.
+    #[test]
+    fn every_view_includes_the_stored_layer() {
+        let mut av = ActorValues::new();
+        av.set_base(AV_HEALTH, 80.0);
+        av.set_override(AV_HEALTH, 1.0);
+        av.add_stored(AV_HEALTH, 9.0);
+        av.mod_permanent(AV_HEALTH, 10.0);
+        av.mod_temporary(AV_HEALTH, 5.0);
+        av.apply_damage(AV_HEALTH, 20.0);
+        let health = av.get(AV_HEALTH).unwrap();
+        assert_eq!((health.base_view(), health.permanent(), health.undamaged(), health.current()), (90.0, 100.0, 105.0, 85.0));
     }
 
     /// #5042 — only `set_base` authors the base; a modifier or damage write

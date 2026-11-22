@@ -730,11 +730,10 @@ impl Scheduler {
         // #6702 — constraints added since the schedule was last resolved. A bad
         // constraint is a bug in the registration, so fail fast like a panicking
         // system (see the policy above).
-        if self.order_dirty {
-            if let Err(error) = self.resolve_order() {
+        if self.order_dirty
+            && let Err(error) = self.resolve_order() {
                 panic!("Scheduler: {error}");
             }
-        }
         // Phase 11 — per-system wall-time tracker. Each system
         // pushes `(name, ns)` here as it completes; final list is
         // sorted desc + handed off to the

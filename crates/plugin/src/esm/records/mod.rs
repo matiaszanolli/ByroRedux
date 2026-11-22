@@ -14,6 +14,8 @@
 
 pub mod actor;
 pub mod actor_value_derive;
+pub mod oblivion_actor_values;
+mod oblivion_population;
 pub mod calendar;
 pub mod climate;
 pub mod common;
@@ -33,6 +35,8 @@ pub mod mswp;
 pub mod outfit;
 pub mod pathgrid;
 pub mod pkin;
+pub mod list_merge;
+pub mod provenance;
 pub mod scol;
 pub mod script;
 pub mod script_instance;
@@ -60,6 +64,7 @@ pub use mswp::{parse_mswp, MaterialSwapEntry, MaterialSwapRecord};
 pub use outfit::{parse_otft, OtftRecord};
 pub use pathgrid::{parse_pgrd, InterCellConnection, PathGridPoint, PathGridRecord};
 pub use pkin::{parse_pkin, PkinRecord};
+pub use provenance::{Carrier, FoldProvenance};
 pub use scol::{parse_scol, ScolPart, ScolPlacement, ScolRecord};
 pub use soun::{parse_sndr, parse_soun, SounRecord};
 
@@ -70,7 +75,8 @@ pub use actor::{
     CrimeValues, FactionCrime, FactionRecord, FactionRelation, NpcFaceMorphs, NpcInventoryEntry, NpcRecord, RaceRecord, SubgraphData, SubgraphRole,
     VendorData, ACBS_PC_LEVEL_MULT, CREATURE_DATA_LEN,
 };
-pub use actor_value_derive::{derive_npc_actor_values, derive_resolved_actor_values};
+pub use actor_value_derive::{derive_npc_actor_values, derive_resolved_actor_values, derive_resolved_actor_values_with_player_level};
+pub use oblivion_population::{actor_level_at_spawn, creature_skill_aliases};
 pub use climate::{parse_clmt, ClimateRecord, ClimateWeather};
 pub use common::{is_unresolved_lstring, StringsTableGuard};
 pub use container::{

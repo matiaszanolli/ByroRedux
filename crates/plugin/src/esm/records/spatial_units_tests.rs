@@ -104,7 +104,7 @@ fn starfield_public_index_converts_placements_and_lights_together() {
 
 #[test]
 fn legacy_index_placements_keep_authored_units() {
-    for hedr in [0.94, 1.34, 1.71, 1.0, 279.0] {
+    for hedr in [0.94, 1.34, 1.71, 1.0, 280.0, 279.0] {
         let index = parse_esm(&scene_plugin(hedr)).unwrap();
         let refr = &index.cells.cells["unitroom"].references[0];
         assert_eq!(refr.position, [2.0, 3.0, 4.0]);
@@ -233,7 +233,7 @@ fn starfield_wthr_without_fnam_keeps_the_unlifted_fog_defaults() {
 /// `normalize` (#4837 sibling rule).
 #[test]
 fn legacy_index_wthr_keeps_authored_units() {
-    for hedr in [0.94, 1.34, 1.71, 1.0, 279.0] {
+    for hedr in [0.94, 1.34, 1.71, 1.0, 280.0, 279.0] {
         let index = parse_esm(&weather_plugin(hedr)).unwrap();
         let w = &index.weathers[&0x15E];
         assert_eq!(
@@ -315,7 +315,7 @@ fn starfield_public_index_lifts_watr_dnam_distances() {
 /// author Starfield's exact 0.3 / 0.075 / 0.01) and takes the same ÷70.
 #[test]
 fn fo76_index_watr_lifts_only_the_absorption_triplet() {
-    let index = parse_esm(&water_plugin(279.0)).unwrap();
+    let index = parse_esm(&water_plugin(280.0)).unwrap();
     assert_eq!(index.game, GameKind::Fallout76);
     let p = &index.waters[&0x18].params;
     assert_eq!(p.depth_amount, 8.0);

@@ -117,9 +117,32 @@ pub(super) fn prim_set_in_chargen(e: &Expr, _scope: &Scope) -> Option<Effect> {
     })
 }
 
+/// `Game.ShowRaceMenu()`; Fallout 4's form `ShowRaceMenu(akMenuTarget, uiMode, akMenuSpouseFemale,
+/// akMenuSpouseMale, akVendor)` (FO4 CK) lowers on its literal `uiMode`: 0 (start-of-game
+/// chargen) is the race menu, 1–4 the appearance modes (GUI-PAGE-003). The target, spouse and
+/// vendor arguments name whose face the editor would show; with no editor they are not read.
 pub(super) fn prim_show_race_menu(e: &Expr, _scope: &Scope) -> Option<Effect> {
     let args = game_call(e, "ShowRaceMenu")?;
-    args.is_empty().then_some(Effect::ShowRaceMenu)
+    if args.len() > 5 {
+        return None;
+    }
+    // The target, spouse and vendor slots take a reference (or None), never a literal value.
+    let literal = |slot: usize| {
+        args.get(slot).is_some_and(|arg| matches!(arg.value.node, Expr::IntLit(_) | Expr::FloatLit(_) | Expr::BoolLit(_) | Expr::StringLit(_)))
+    };
+    if [0, 2, 3, 4].into_iter().any(literal) {
+        return None;
+    }
+    let mode = match args.get(1) {
+        None => 0.0,
+        Some(arg) => as_num(&arg.value.node)?,
+    };
+    match mode as i64 {
+        _ if mode.fract() != 0.0 => None,
+        0 => Some(Effect::ShowRaceMenu),
+        mode @ 1..=4 => Some(Effect::ShowAppearanceMenu { mode: mode as u8 }),
+        _ => None,
+    }
 }
 
 pub(super) fn prim_request_save(e: &Expr, _scope: &Scope) -> Option<Effect> {

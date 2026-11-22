@@ -1185,7 +1185,10 @@ pub(crate) const PARALLAX_ALPHA_HEIGHT_BIT: u32 =
 /// surface (`material_kind < 100`) that ships a normal map but no dedicated
 /// gloss/specular texture. Environment-mapped materials remain eligible:
 /// when no environment mask is authored, normal alpha is also the fallback
-/// reflection mask. Excludes glass/effect kinds (>= 100, own optics). The
+/// reflection mask — except MultiLayerParallax (Skyrim ice, kind 11), whose
+/// normal alpha is a local specular mask only and whose reflection is
+/// unmasked (`triangle.frag`'s `environmentReflectionMask`; kind 1 keeps the
+/// fallback). Excludes glass/effect kinds (>= 100, own optics). The
 /// inputs are the exact values both the spawn write-back and the render
 /// path read from the `Material` / [`MaterialTextureHandles`] components,
 /// so the gate cannot diverge between the two call sites.
@@ -1357,11 +1360,10 @@ pub(crate) fn resolve_normal_alpha_spec_roughness(
         gloss_map_index,
         normal_has_alpha,
         bgsm_pbr_scalars_authored,
-    ) {
-        if let Some(m) = world.get_mut::<Material>(entity) {
+    )
+        && let Some(m) = world.get_mut::<Material>(entity) {
             m.roughness = r;
         }
-    }
 }
 
 /// The roughness a near-mirror BGSM falls back to when no gloss map can
@@ -1453,11 +1455,10 @@ pub(crate) fn resolve_unresolved_gloss_neutral_roughness(
         mirror_pane_forced,
         roughness,
         gloss_map_index,
-    ) {
-        if let Some(m) = world.get_mut::<Material>(entity) {
+    )
+        && let Some(m) = world.get_mut::<Material>(entity) {
             m.roughness = r;
         }
-    }
 }
 
 /// Pure decision function backing [`resolve_msn_z_source`]: whether the
@@ -1500,12 +1501,11 @@ pub(crate) fn resolve_msn_z_source(world: &mut World, entity: EntityId) {
         .get::<MaterialTextureHandles>(entity)
         .map(|handles| handles.normal_has_alpha)
         .unwrap_or(false);
-    if msn_has_authored_z(model_space_normals, normal_has_alpha) {
-        if let Some(m) = world.get_mut::<Material>(entity) {
+    if msn_has_authored_z(model_space_normals, normal_has_alpha)
+        && let Some(m) = world.get_mut::<Material>(entity) {
             m.effect_shader_flags |=
                 byroredux_renderer::vulkan::material::material_flag::MSN_HAS_AUTHORED_Z;
         }
-    }
 }
 
 #[cfg(test)]

@@ -593,8 +593,7 @@ impl PhysicsWorld {
             filter = filter.exclude_rigid_body(body);
         }
         let queries = self.queries(filter);
-        let overlaps = queries.intersect_shape(pos, &shape).next().is_some();
-        overlaps
+        queries.intersect_shape(pos, &shape).next().is_some()
     }
 
     /// The bodies whose solid colliders overlap any collider of `body` and pass
@@ -628,11 +627,10 @@ impl PhysicsWorld {
                 .predicate(&predicate);
             let queries = self.queries(filter);
             for (_handle, other) in queries.intersect_shape(*collider.position(), collider.shape()) {
-                if let Some(parent) = other.parent() {
-                    if !found.contains(&parent) {
+                if let Some(parent) = other.parent()
+                    && !found.contains(&parent) {
                         found.push(parent);
                     }
-                }
             }
         }
         found
@@ -674,9 +672,9 @@ impl PhysicsWorld {
             if c.is_sensor() {
                 continue;
             }
-            if let Some(parent) = c.parent() {
-                if let Some(rb) = self.bodies.get(parent) {
-                    if rb.body_type() == RigidBodyType::Fixed {
+            if let Some(parent) = c.parent()
+                && let Some(rb) = self.bodies.get(parent)
+                    && rb.body_type() == RigidBodyType::Fixed {
                         let aabb = c.compute_aabb();
                         min[0] = min[0].min(aabb.mins.x);
                         min[1] = min[1].min(aabb.mins.y);
@@ -686,8 +684,6 @@ impl PhysicsWorld {
                         max[2] = max[2].max(aabb.maxs.z);
                         count += 1;
                     }
-                }
-            }
         }
         if count == 0 {
             None

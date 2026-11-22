@@ -212,13 +212,12 @@ pub fn reevaluate_affliction(
             }
         }
     }
-    if let Some(key) = new_band {
-        if let Some(band) = table.band_by_key(key) {
+    if let Some(key) = new_band
+        && let Some(band) = table.band_by_key(key) {
             for p in &band.penalties {
                 avs.mod_temporary(p.avif_form_id, p.delta);
             }
         }
-    }
     status.set_band(table.pool_avif, new_band);
 }
 

@@ -1221,8 +1221,27 @@ them apart by the handler's parameter count: the nine-parameter `OnHit` is left
 out of the automatic events (delivering seven arguments to it would mis-bind
 every one) and checked where the script registers.
 
-The delivery systems (updates, distance, custom/remote and hit events) share
-`ScriptOwners` (`fragment/owners.rs`): an owner's standing, kind and properties.
+### Menu open / close events (M48)
+
+Fallout 4's `RegisterForMenuOpenCloseEvent(asMenuName)`,
+`UnregisterForMenuOpenCloseEvent(asMenuName)` and
+`UnregisterForAllMenuOpenCloseEvents()` (CK *… - ScriptObject*) register the
+calling script, and only it, for a menu's
+`OnMenuOpenCloseEvent(asMenuName, abOpening)`; the registration stands until it
+is unregistered (`fragment/menu_events.rs`, `MenuEventRegistrations`, saved since
+v134). The menus are the menu registry's (`MenuRegistry`, [ui.md](ui.md)): each
+opening and closing it records reaches `menu_open_close_event_system`, which
+queues the handler of every registration for that name (case-insensitive) as its
+own run, a quest's or alias's while the quest runs, a reference's while it is
+loaded. A quest's or alias's registrations end when its quest stops
+(`prune_stopped_quests`, GUI-EVT-002). The CK's "active magic effects will
+automatically unregister when they are removed" has nothing to act on yet: the VM
+runs no `ActiveMagicEffect` script. A registration on another quest
+(`Quest.RegisterForMenuOpenCloseEvent`) is declined by the check.
+
+The delivery systems (updates, distance, custom/remote, hit, animation and menu
+events) share `ScriptOwners` (`fragment/owners.rs`): an owner's standing, kind and
+properties.
 
 ### Parent calls, locations and editor placement (M47.2)
 
@@ -2599,6 +2618,26 @@ using a NukaCola on FNV runs `NukaColaAddCapEffectScript` (`additem caps001 1`) 
 archetypes beyond script and value modifier (summons, light, paralysis ...), area and touch/target delivery,
 resistance.
 
+**Player cast (design #7078, Phases 1 and 2 built #7079, #7080; the [player-spellcasting PRD](../prd/player-spellcasting.md)).** Phase 1 builds the ready, gate and settle stages; Phase 2 resolves each effect by its range (`crates/scripting/src/player_cast.rs`, `byroredux/src/player_cast.rs`, `crates/core/src/character/spell_cast.rs`); Self lands on the player at the release, Touch on the live actor in the hand's reach (`combat::actor_in_reach`, the melee swing's sweep), Target on whatever the spell's projectile meets (`ActiveProjectiles`, `land_target`), an area is reported ignored; the skill feed is Phase 3. Today only the
+console's `magic.cast`, ObScript `Cast` (`obscript_effects/presentation.rs:37`) and a perk's activate-choice
+*Apply Spell* (`perk_entry_points/activate.rs:195`) reach `cast_spell`; none of them charges Magicka or Fatigue or
+feeds a skill, and they stay that way (PSC-CST-007, PSC-USE-005). The player's cast has four stages: **ready** (a
+readied-spell component on the player, saved, cleared when the spell leaves `SpellList`), **gate** (can act, readied,
+castable, mastery, Magicka, in that order, each refusal named; PSC-CST-002), **resolve** (each effect by its range:
+Self on the player, Touch on the live actor in the hand's reach, Target on the `ActiveProjectiles` path at the
+MGEF's projectile speed), **settle** (Magicka and Fatigue applied through `ActorValues::apply_damage`, then the one
+`cast_spell`, then at most one `queue_skill_use`). One system owns the spend and declares its access as `skill_use_system`
+does (PSC-CST-009); the input path only sets the edge. The rules (cost, mastery, Fatigue) are functions in
+`crates/core/src/character` that read `GameSettings` (PSC-CST-008); what they compute and where the original does
+it is in [charal-oblivion-ruleset.md](charal-oblivion-ruleset.md#spell-casting--locked-from-the-executable-7078).
+What the catalog must carry that `CastEffect` and `CanonicalSpell` do not today: each effect's range, magnitude,
+duration, area and MGEF flags; the MGEF base cost and school (or the effect's `SCIT` school); the spell's type, stored
+`Cost`, `Level` and flags (`decode_spit` drops `Level`). Not modelled and named: silence, underwater and several-bound-effect
+refusals (PSC-NG-008), cast animation and visuals (PSC-NG-001), area casting (PSC-TGT-005), the cast interval (a
+labelled constant). Test spells, all in `Oblivion.esm`: `StandardFireShield2Apprentice` (000A9806, Self),
+`StandardFireDamageTarget1Novice` (000A97DF, Flare, Target; stored cost 9, equation 11.15), `SE37CommandCreature4Expert`
+(0007B21B, Touch, Manual Spell Cost, Expert).
+
 **Idle, look, shaders, weather.** `PlayIdle <idle>` writes the Papyrus `PlayIdle` request (the compiled argument is
 the idle's *editor ID string*, which the VM resolves through `text_argument`); the app installs the IDLE's `.kf` for
 the KF-era games (`populate_kf_idle_clips`, resolved when an actor asks) and the existing idle runtime plays it —
@@ -2640,11 +2679,12 @@ smoke gate drives them.
 | Commands | Blocked on |
 |----------|-----------|
 | `PickIdle`'s idle *tree*, `GetKillingBlowLimb` ... | the IDLE tree's conditions and parents are not parsed (PickIdle restarts the generic idle instead) |
-| `EnableLinkedPathPoints` / `DisableLinkedPathPoints` (Oblivion, 71 / 69 scripts) | Oblivion path grids: the engine paths on navmeshes |
+| `EnableLinkedPathPoints` / `DisableLinkedPathPoints` (Oblivion, 71 / 69 scripts) | the flag is stored but nothing reads it: Oblivion `PGRD` grids are resident (`PathGridTile`) and routed (`find_path_over_grid`, `pathgrid_path.rs`), and that router does not consult it |
 | the crime consumers behind `GetPCFame` / `GetPCInfamy` / `ModPCFame` / `GetCrimeGold` / `ModCrimeGold` / `SetPCExpelled` / `SetPCEnemyOfFaction` / `SetFactionReaction` | these commands run: they read and write the saved `ObScriptLedger` (`obscript_ledger.rs`; `obscript_more/state.rs`). The engine raises the bounty for three crimes so far, on Oblivion (`byroredux/src/crime.rs`, `CrimeModel`): a witnessed theft (`item value × fCrimeGoldSteal`, rounded up, minimum 1), an assault on a non-hostile NPC (`iCrimeGoldAttack`, once per victim) and a murder (`iCrimeGoldMurder`, plus infamy). The Steal / Murder / Attack faction flags are set without a witness. Authored guard dialogue can read the bounty (the Oblivion condition dialect in `condition/catalog.rs`, `guards.rs`). `PayFine`, `PayFineThief` and `GoToJail` run (`jail.rs`). A sentence ends by resting in a cell bed. A witnessed crime calls the guards, and a guard who sees a wanted player (bounty at or past `iCrimeGoldAttackMin`) rushes them (`crime.rs`), Skyrim reports each witnessed crime to the witness's crime faction's bounty (`FactionCrimeGold`, fined by the faction's Crime tab), and every game records who saw a crime in `CrimeKnowledge`, which `GetCrime` (CTDA 122) and `GetCrimeKnown` read. The confiscated goods are delivered to the jail's `StolenGoods` chest. Still missing: pickpocket and trespass fines, witness disposition drops, guards that read the bounty (arrest, pay, jail), Expelled, and FO3 / FNV's faction-based crime |
+| `AdvancePCLevel` (Oblivion) | runs since #7052: it freezes the running attribute tallies as a pending level, picked with `levelup attr` and taken at the next completed sleep (`oblivion_skill_use.rs`). `SetLevel` on the player changes the level and no stat. `ModPCSkill` and `AdvancePCSkill` run since #7050: `Amount` is skill ranks, each counted toward the level and the attribute tally. `SetPCSleepHours` runs on Oblivion too (the same opcode `0x10bd`): a completed sleep is what applies a pending level |
 | `GetDisposition` / `ModDisposition`, `AddTopic`, `SetQuestObject`, `SetItemValue` | a per-NPC disposition value, a topic-known gate on the opening menu (#5350), a quest-item flag and a script-overridable base value — each has no reader in the engine, so it declines rather than store a value nothing consults |
 | `CloseCurrentOblivionGate` (Oblivion, 16 scripts) | the Oblivion-gate quest machinery: the gate's open state and the Sigil Stone it spawns have no runtime |
-| `ModPCSkill`, and every other Oblivion `GetAV` / `SetAV` / `ModAV` | Oblivion has no `AVIF` records, so its hard-coded attributes and skills have no key in `ActorValues` yet: it needs an Oblivion CHARAL ruleset first (`ModPCSkill` also moves the skill-usage counter, CS page *ModPCSkill* §Issues) |
+| Oblivion `GetAV` / `SetAV` / `ModAV` / `ForceAV` | these run: the engine supplies the 72 Oblivion actor values as `AVIF` records (#7008) and `obscript_actor_values.rs` reads and writes them |
 | `EnableFastTravel`, `UnlockChallenge`, `SetReputation` (no GECK page) | no fast-travel or challenge UI exists to honour them |
 | `PushActorAway`, `UseWeapon` / `FireWeapon`, `OnGrab` / `OnRelease` / `OnFire` | a knockdown cycle (the ragdoll teardown above is the first half), a scripted attack, and a player grab |
 | `SetCombatStyle`, `SetTalkingActivatorActor`, `PlayMusic`, `SetVATSTarget`, `ShowMap` ... | each its own missing state; none is an ObScript-layer gap |

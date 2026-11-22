@@ -327,13 +327,12 @@ pub(super) fn analyze_scene(
                 .unresolved_action_actors
                 .push(format!("{}:{} actor {}", scene.editor_id, action.index, action.actor_id));
         }
-        if let Some(topic) = action.topic_form_id {
-            if !index.dialogues.contains_key(&topic) {
+        if let Some(topic) = action.topic_form_id
+            && !index.dialogues.contains_key(&topic) {
                 inventory
                     .unresolved_topics
                     .push(format!("{}:{} DIAL {topic:08X}", scene.editor_id, action.index));
             }
-        }
         for package in &action.packages {
             if !index.packages.contains_key(package) {
                 inventory

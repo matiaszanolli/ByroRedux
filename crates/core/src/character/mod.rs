@@ -26,6 +26,8 @@
 //! * [`crime`] — the crime family: [`CrimeModel`], what a crime costs the
 //!   criminal (Oblivion's single bounty and Skyrim's per-crime-faction fines;
 //!   theft, assault and murder).
+//! * [`disposition`] — starting disposition from actor values, reputation,
+//!   directed race and faction reactions, and load-order game settings.
 //! * [`armor`] — [`ArmorModel`]: Skyrim's armor-rating tuning (the `fArmor*` /
 //!   `fMaxArmorRating` GMST family), load-order-driven (#6567).
 //! * [`vats`] — [`VatsModel`]: the `fVATS*` GMST tuning family and the
@@ -44,17 +46,32 @@
 //!   60 Hz tick** decoupled from the frame rate:
 //!   [`PoolRegenAccumulator`] (the fixed-step clock, mirrors
 //!   `crates/physics`'s accumulator) + [`PoolRegenConfig`] (per-game resolved
-//!   AVIF ids; installed for FO3/FNV only) + [`pool_regen_tick_system`] (the
+//!   AVIF ids; installed for Oblivion and FO3/FNV) + [`pool_regen_tick_system`] (the
 //!   driver).
 //! * [`components`] — [`CharacterLevel`] / [`LevelUpPoints`] / [`Perks`] /
 //!   [`Background`] / [`FactionReputation`] / [`FactionStanding`] /
-//!   [`PerkRank`], the structural per-actor ECS components.
+//!   [`PerkRank`] / [`CharacterIdentity`] / [`DismemberRecord`] /
+//!   [`SkillUseLevel`] / [`PendingLevel`], the structural per-actor ECS components.
 //! * [`attribute`] — [`Attribute`] / [`AttributeSet`]: the per-family
 //!   attribute roster (`FALLOUT` SPECIAL, `TES_CLASSIC`, and Skyrim's
 //!   deliberately empty set) plus its canonical ordering.
 //! * [`skill`] — [`SkillDef`] / [`SkillSet`] / [`ResolvedSkill`]: the
 //!   per-game skill roster and its governing-attribute map, resolved to
 //!   `AVIF` FormIDs at load (resolve-or-skip).
+//! * [`skill_use`] — [`SkillUseCosts`] / [`SkillClass`]: classic-TES skill-use
+//!   experience (Oblivion): the cost of a rank from the five `fSkillUse*`
+//!   settings, the skill's class, and banking with rollover.
+//! * [`armor_rating`] — [`ArmorRatingModel`] / [`weapon_resistance_factor`]: Oblivion's armor rating and Resist Normal
+//!   Weapons (the share of a weapon hit that gets through; the Skyrim sibling is [`armor`]).
+//! * [`block`] — [`BlockModel`] / [`BlockGuard`]: Oblivion's block (how much of a hit a shield, a weapon or bare hands stops
+//!   at a given Block skill; #7054).
+//! * [`fall`] — [`FallModel`] / [`FallTracker`]: Oblivion's fall damage (the `fJumpFall*` rule, and the time a body spends
+//!   below its takeoff height; #7056).
+//! * [`bow`] — [`BowModel`]: the bow's rules (Oblivion's draw timer and speed formula, Skyrim's draw time, tilt
+//!   and range cap, the default trajectory), retuned by the `fArrow*` settings (player-archery PRD, BOW-MOD-001).
+//! * [`spell_cast`] — [`SpellCastModel`] / [`EffectCostInput`]: Oblivion's spell-cast rules (effect and
+//!   actual cost, the mastery tiers, the primary school, the Fatigue a cast spends), retuned by the
+//!   `fMagic*` / `iSkill*Min` / `fFatigueCast*` settings (player-spellcasting PRD, PSC-CST-008).
 //! * **Per-game family impls** — where every per-game *number* actually
 //!   lives, one module per lineage:
 //!   * [`fallout`] — [`fallout3_ruleset`], [`falloutnv_ruleset`],
@@ -75,9 +92,7 @@
 //! themselves have exactly one construction site —
 //! `CharacterRulesProfile::build_ruleset`, reached from
 //! `build_character_ruleset` (`byroredux/src/npc_spawn/stamps.rs`) — so "is game X
-//! wired?" is answered there, not by whether a `*_ruleset()` builder exists
-//! (Oblivion's does and is deliberately blocked on the pre-AVIF actor-value
-//! resolver, #3768; Skyrim's is wired, #3848).
+//! wired?" is answered there, not by whether a `*_ruleset()` builder exists.
 //!
 //! See also [`crate::combat`] and [`crate::stealth`] — CHARAL-*adjacent*
 //! siblings (not submodules of this module) that read `ActorValues` as
@@ -91,7 +106,12 @@ pub mod attribute;
 pub mod components;
 pub mod crime;
 pub mod vats;
+pub mod armor_rating;
+pub mod block;
+pub mod bow;
 pub mod derived;
+pub mod fall;
+pub mod disposition;
 pub mod fallout;
 pub mod leveling;
 pub mod limb_effects;
@@ -101,7 +121,9 @@ pub mod reputation;
 pub mod resistance;
 pub mod ruleset;
 pub mod skill;
+pub mod skill_use;
 pub mod skyrim;
+pub mod spell_cast;
 pub mod stance;
 pub mod tes;
 
@@ -111,11 +133,12 @@ pub use affliction::{
 };
 pub use attribute::{Attribute, AttributeSet};
 pub use components::{
-    Background, CharacterIdentity, CharacterLevel, DismemberRecord, FactionReputation, FactionStanding, LevelUpPoints, PerkRank,
+    Background, CharacterIdentity, CharacterLevel, DismemberRecord, FactionReputation, FactionStanding, LevelUpPoints, PendingLevel, PerkRank, SkillUseLevel,
     Perks, MAX_BODY_LOCATION,
 };
 pub use armor::ArmorModel;
 pub use crime::{BountyScope, CrimeKind, CrimeModel};
+pub use disposition::{DispositionInput, DispositionModel};
 pub use limb_effects::{arm_condition, LimbEffectModel};
 pub use vats::{VatsHitInput, VatsModel};
 pub use derived::{DerivedInput, DerivedOutput, DerivedScope, DerivedStatFormula, RoundMode};
@@ -140,15 +163,24 @@ pub use reputation::{
 };
 pub use resistance::{damage_multiplier, Affliction};
 pub use ruleset::CharacterRuleset;
+pub use fall::{FallModel, FallTracker};
+pub use armor_rating::{weapon_resistance_factor, ArmorRatingModel};
+pub use block::{BlockGuard, BlockModel};
+pub use bow::{ArrowTrajectory, BowModel, DamageRule, DrawRule, ShotTraits, SpeedRule, WeaponClass};
+pub use spell_cast::{EffectCostInput, EffectRange, SpellCastModel, Tier as SpellTier};
 pub use stance::{SneakMovement, SneakSpeed, SneakSpeedSource, StanceModel};
 pub use skill::{ResolvedSkill, SkillDef, SkillSet};
+pub use skill_use::{
+    skill_use_amount, ArmorHitSlot, SkillBank, SkillClass, SkillUseCosts, ARMOR_HIT_ATTEMPTS, OBLIVION_SKILL_AV_FIRST,
+    OBLIVION_SKILL_AV_LAST, OBLIVION_SKILL_USE_VALUES, SKILL_USE_CAP,
+};
 pub use skyrim::{
     skyrim_ruleset, skyrim_skill_xp_between, skyrim_skill_xp_to_next, SKYRIM_POOL_BASE,
     SKYRIM_SKILL_USE_CURVE,
 };
 pub use tes::{
     oblivion_attribute_bonus, oblivion_fatigue_formulas, oblivion_health_formula,
-    oblivion_health_gain_per_level, oblivion_magicka_formula, oblivion_ruleset,
+    apply_oblivion_level_up_health, oblivion_health_gain_per_level, oblivion_magicka_formula, oblivion_ruleset,
 };
 
 #[cfg(test)]
@@ -177,7 +209,7 @@ mod tests {
             .collect();
         assert_eq!(
             declared.len(),
-            19,
+            26,
             "sub-module count changed — {declared:?}"
         );
         for module in declared {

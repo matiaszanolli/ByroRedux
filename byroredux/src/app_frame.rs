@@ -18,7 +18,7 @@ use byroredux_core::ecs::{DebugStats, DeltaTime, ScratchTelemetry};
 use byroredux_renderer::shader_constants::GROUNDCOVER_DETAIL_ATLAS_EDGE;
 use byroredux_renderer::vulkan::context::FrameInputs;
 use byroredux_renderer::ImageSpaceModifier;
-use byroredux_ui::{ScaleformHostDispatch, MAX_DISTINCT_HOST_METHOD_NAMES};
+use byroredux_ui::{HostClass, MAX_DISTINCT_HOST_METHOD_NAMES};
 use std::time::Instant;
 use winit::event_loop::ActiveEventLoop;
 
@@ -33,6 +33,34 @@ use crate::{
 
 fn host_method_diagnostic_key(menu_name: &str, method: &str) -> (String, String) {
     (menu_name.to_owned(), method.to_owned())
+}
+
+/// M48 GUI-HOST-004 — what an H3 / H4 diagnostic says about the call's class: H3 with the
+/// method's Phase 0 target (and the canonical API an H1 target acts through, or the H2 reason),
+/// H4 as absent from the profile's catalog.
+fn host_class_diagnostic(call: &byroredux_ui::ScaleformHostCall) -> String {
+    let catalog = byroredux_ui::ScaleformHostCatalog::for_profile(call.profile);
+    match (call.class, catalog.behaviour(&call.method)) {
+        (HostClass::Unserved, Some(behaviour)) => {
+            let why = match behaviour.target {
+                HostClass::Placeholder => behaviour.reason,
+                _ => behaviour.canonical_api,
+            };
+            format!("{} {} (Phase 0 target {}: {why})", call.class.code(), call.class.label(), behaviour.target.code())
+        }
+        (HostClass::Unknown, _) => format!("{} {}: not in the {:?} catalog", call.class.code(), call.class.label(), call.profile),
+        (class, _) => format!("{} {}", class.code(), class.label()),
+    }
+}
+
+/// M48 GUI-OPS-002 — mirror the open movies' host-call reports for `ui.host`.
+fn mirror_host_reports(
+    world: &byroredux_core::ecs::World,
+    reports: &std::collections::HashMap<String, (String, byroredux_ui::HostCallReport)>,
+) {
+    if let Some(mut mirror) = world.try_resource_mut::<crate::menu_stack::ScaleformHostReports>() {
+        mirror.0 = reports.iter().map(|(menu, (_, report))| (menu.clone(), report.clone())).collect();
+    }
 }
 
 /// #6197 — publish the terrain parallax settings to every live LAND tile:
@@ -54,11 +82,28 @@ fn push_texture_streaming(
         byroredux_debug_ui::TEXTURE_STREAMING_SETTING_ID,
         false,
     );
+    let build_provider = || crate::asset_provider::build_texture_provider(&crate::cli_args::effective_args());
     if streaming && streamer.is_none() {
-        *streamer = crate::texture_streamer::TextureStreamer::new(
-            crate::asset_provider::build_texture_provider(&crate::cli_args::effective_args()),
+        *streamer = crate::texture_streamer::TextureStreamer::new(build_provider());
+    }
+    // #7144 — the streamer's provider outlives cell transitions; rebuild it once an archive was
+    // replaced on disk, so its promotions and the floors read the same file.
+    let generation = crate::asset_provider::archive_replacements();
+    if let Some(streamer) = streamer.as_mut()
+        && streamer.refresh_provider(generation, build_provider)
+    {
+        log::info!(
+            "texture streamer: an archive was replaced on disk; its provider was rebuilt, and \
+             textures floored from the old file keep the levels they hold"
         );
     }
+    // #7167, #7169 — floors are stamped with the archive generation they were queued under, and
+    // only those floored under the generation the streamer now reads from promote: a texture
+    // floored from a replaced file never mixes in the new one's mips, and one floored from the
+    // new file (by the cell load that noticed the replacement) promotes as soon as the reads do.
+    ctx.texture_registry
+        .set_source_generation_counter(crate::asset_provider::archive_replacement_counter());
+    ctx.texture_registry.set_promotable_generation(generation);
     if let Some(streamer) = streamer.as_mut() {
         if streaming {
             streamer.update_wanted(draws, ctx, frame.camera_pos, frame.camera_fov_y);
@@ -206,12 +251,11 @@ fn publish_groundcover_detail_atlas(
     // its per-texel `powf` calls) just to compare a signature against it.
     let (signature, species_count) =
         crate::render::groundcover::groundcover_detail_atlas_signature(world);
-    if let Some((handle, cached)) = *atlas_state {
-        if cached == signature {
+    if let Some((handle, cached)) = *atlas_state
+        && cached == signature {
             ctx.set_groundcover_detail_atlas(handle, species_count);
             return;
         }
-    }
     let atlas = crate::render::groundcover::build_groundcover_detail_atlas(world);
     let edge = GROUNDCOVER_DETAIL_ATLAS_EDGE;
     let height = edge * atlas.species_count.max(1);
@@ -298,13 +342,13 @@ impl App {
         // HUD fields are populated (interaction prompt, HUD settings,
         // vitals, objectives). #4612: the objective list is lent from
         // `objective_hud_cache` and handed back after the UI pass.
-        if let Some(visible) = crate::studio_host::take_overlay_request(&self.world) {
-            if let Some(ui) = self.debug_ui.as_mut() {
+        if let Some(visible) = crate::studio_host::take_overlay_request(&self.world)
+            && let Some(ui) = self.debug_ui.as_mut() {
                 ui.set_visible(visible);
             }
-        }
         self.present_modal_pages();
-        crate::systems::script_queries::publish_ui_menus(&self.world, self.debug_ui.as_ref(), self.loading_screen.active());
+        // M48 Phase 1 — UI extent, the console's ui.open / ui.close, the registry.
+        self.step_menus();
         let mut snapshot = if self
             .debug_ui
             .as_ref()
@@ -325,33 +369,7 @@ impl App {
                 include_dialogue,
             )
         } else {
-            byroredux_debug_ui::PanelSnapshot {
-                interaction_prompt: build_interaction_prompt(&self.world),
-                show_crosshair: setting_bool(
-                    &self.world,
-                    byroredux_debug_ui::SHOW_CROSSHAIR_SETTING_ID,
-                    true,
-                ),
-                show_prompts: setting_bool(
-                    &self.world,
-                    byroredux_debug_ui::SHOW_PROMPTS_SETTING_ID,
-                    true,
-                ),
-                show_vitals: setting_bool(
-                    &self.world,
-                    byroredux_debug_ui::SHOW_VITALS_SETTING_ID,
-                    true,
-                ),
-                vitals: crate::inventory::vitals_snapshot(&self.world),
-                show_objectives: setting_bool(
-                    &self.world,
-                    byroredux_debug_ui::SHOW_OBJECTIVES_SETTING_ID,
-                    true,
-                ),
-                objectives: self.ui.objective_hud_cache.lend(&self.world),
-                stealth_indicator: crate::detection::indicator_view(&self.world),
-                ..Default::default()
-            }
+            hud_only_snapshot(&self.world, &mut self.ui.objective_hud_cache)
         };
         // Benchmark screenshots are renderer evidence rather than gameplay
         // captures, so the HUD stays out of them — but only while the
@@ -370,10 +388,10 @@ impl App {
             strip_gameplay_hud(&mut snapshot, &mut self.ui.objective_hud_cache);
         }
         self.debug_ui_refresh_entities = false;
-        snapshot.loading_tip = self.loading_screen.tip().map(str::to_owned);
-        if snapshot.loading_tip.is_some() {
+        snapshot.game.loading_tip = self.loading_screen.tip().map(str::to_owned);
+        if snapshot.game.loading_tip.is_some() {
             strip_gameplay_hud(&mut snapshot, &mut self.ui.objective_hud_cache);
-            snapshot.interaction_prompt = None;
+            snapshot.game.interaction_prompt = None;
         }
 
         // #5153 — objective journal transitions (a stage fragment's
@@ -385,11 +403,10 @@ impl App {
         if !objective_messages.is_empty() {
             player_messages.splice(..0, objective_messages);
         }
-        if let Some(ui) = self.debug_ui.as_mut() {
-            if !player_messages.is_empty() {
+        if let Some(ui) = self.debug_ui.as_mut()
+            && !player_messages.is_empty() {
                 ui.push_player_message(player_messages.join("\n"));
             }
-        }
 
         let (egui_frame, outputs) =
             if let (Some(ref mut ui), Some(win)) = (self.debug_ui.as_mut(), self.window.as_ref()) {
@@ -400,7 +417,7 @@ impl App {
                 (None, byroredux_debug_ui::PanelOutputs::default())
             };
         self.ui.objective_hud_cache
-            .give_back(snapshot.objectives.take());
+            .give_back(snapshot.game.objectives.take());
 
         let (resume_game, quit_game) = apply_debug_ui_outputs(
             &mut self.world,
@@ -449,6 +466,8 @@ impl App {
             crate::render::update_morph_weights(&self.world, ctx);
             // #6195 — bind terrain height maps that finished generating.
             crate::terrain_height::apply_ready_heights(&self.world, ctx);
+            // #7152 — TSD-4.1 terrain patches for this frame's compute pass.
+            crate::terrain_patches::push_terrain_patches(&self.world, ctx);
 
             // #4052 — EXAL ground cover §11.1; no-ops without `--bench-groundcover-sampling`.
             drive_groundcover_bench(
@@ -613,10 +632,10 @@ impl App {
             // (M48.4) owns the overlay when live; otherwise this is the
             // Ruffle SWF player.
             let ui_t0 = Instant::now();
-            let ui_tex = if let Some(movie) = self.video.tick(ctx, &self.world) {
-                Some(movie)
+            let mut ui_textures: Vec<u32> = if let Some(movie) = self.video.tick(ctx, &self.world) {
+                vec![movie]
             } else if self.loading_screen.active() {
-                self.loading_screen.texture()
+                self.loading_screen.texture().into_iter().collect()
             } else if self.ui.hud.is_some() {
                 // Read the control resource before mutably borrowing the
                 // HUD renderer (disjoint-field borrows, but the resource
@@ -628,6 +647,8 @@ impl App {
                     .unwrap_or_default();
                 let hud = self.ui.hud.as_mut().expect("is_some checked above");
                 tick_hud_overlay(hud, &self.world, ctx, frame.cam_forward, &control)
+                    .into_iter()
+                    .collect()
             } else {
                 tick_ui_overlay(
                     &self.world,
@@ -636,14 +657,17 @@ impl App {
                     frame.cam_forward,
                     self.ui.scaleform_hud.as_mut(),
                     UiOverlayState {
-                        texture_handle: self.ui.texture_handle,
                         dropped_host_calls: &mut self.ui.dropped_host_calls,
-                        dropped_host_calls_menu: &mut self.ui.dropped_host_calls_menu,
+                        host_reports: &mut self.ui.host_reports,
+                        movie_calls: &mut self.ui.movie_calls,
                         reported_host_methods: &mut self.ui.reported_host_methods,
                         reported_host_methods_capped: &mut self.ui.reported_host_methods_capped,
                     },
                 )
             };
+            // M48 GUI-PAGE-004 — the dialogue document (S2) composites over the HUD / movies.
+            let covered = self.video.active() || self.loading_screen.active();
+            crate::menuxml_document::composite(&mut self.ui.menu_documents, ctx, covered, &mut ui_textures);
             if is_benching {
                 self.bench.ui_ns += ui_t0.elapsed().as_nanos() as u64;
             }
@@ -777,6 +801,9 @@ impl App {
                 });
             let frame_before_draw = ctx.frame_counter;
             let draw_result = ctx.draw_frame(FrameInputs {
+                interior_cell_root: self.world
+                    .try_resource::<crate::cell_loader::CurrentCellRoot>()
+                    .and_then(|root| root.0),
                 clear_color,
                 view_proj: &frame.view_proj,
                 draw_commands: &self.draw_commands,
@@ -811,7 +838,7 @@ impl App {
                 fog_height_reference: frame.fog_height_reference,
                 wind_params,
                 wind_gust,
-                ui_texture_handle: ui_tex,
+                ui_texture_handles: &ui_textures,
                 sky_params: &frame.sky,
                 dof,
                 frame_time_delta_ms,
@@ -924,17 +951,15 @@ impl App {
                         }
                         self.bench.frames_count += 1;
                     }
-                    if needs_recreate {
-                        if let Some(ref win) = self.window {
+                    if needs_recreate
+                        && let Some(ref win) = self.window {
                             let size = win.inner_size();
-                            if size.width > 0 && size.height > 0 {
-                                if let Err(e) = ctx.recreate_swapchain([size.width, size.height]) {
+                            if size.width > 0 && size.height > 0
+                                && let Err(e) = ctx.recreate_swapchain([size.width, size.height]) {
                                     log::error!("Swapchain recreate failed: {e:#}");
                                     event_loop.exit();
                                 }
-                            }
                         }
-                    }
                 }
                 Err(e) => {
                     log::error!("Draw failed: {e:#}");
@@ -1017,10 +1042,17 @@ impl App {
             self.open_dialogue_menu();
         }
         self.close_dialogue_menu_if_goodbye_ended();
+        // M48 GUI-PAGE-004 — the dialogue movie's / document's requests and the conversation
+        // they present.
+        self.step_dialogue_movie();
+        self.step_dialogue_document();
+        self.step_message_box();
+        self.open_inventory_on_injected_press();
         self.present_barter_menu();
         self.present_crafting_menu();
         self.present_script_messages();
         self.present_chargen();
+        self.present_oblivion_rest();
         self.step_player_body_rebuild();
     }
 
@@ -1074,11 +1106,7 @@ impl App {
         let Some(bench) = crate::crafting::take_crafting_request(&self.world) else {
             return;
         };
-        let dialogue_page = self
-            .debug_ui
-            .as_ref()
-            .is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible);
-        Self::leave_dialogue_page(&self.world, dialogue_page);
+        self.leave_open_dialogue();
         match crate::crafting::begin_crafting(&self.world, bench) {
             Ok(()) => {
                 if let Some(ui) = self.debug_ui.as_mut() {
@@ -1098,11 +1126,7 @@ impl App {
         let Some(vendor) = byroredux_scripting::menus::take_barter_request(&self.world) else {
             return;
         };
-        let dialogue_page = self
-            .debug_ui
-            .as_ref()
-            .is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible);
-        Self::leave_dialogue_page(&self.world, dialogue_page);
+        self.leave_open_dialogue();
         match crate::barter::begin_barter(&mut self.world, vendor) {
             Ok(()) => {
                 if let Some(ui) = self.debug_ui.as_mut() {
@@ -1133,8 +1157,22 @@ impl App {
         if !crate::notifications::route_script_messages(&self.world) {
             return;
         }
+        if self.ui.menu_documents.iter().any(|document| crate::menuxml_rest::is_rest_document(document.code)) {
+            return;
+        }
+        // M48 Q1 — the game's own message box surface when it has one (Skyrim's movie, FO3 / FNV's
+        // document); the native page otherwise.
+        if self.open_message_box_surface() {
+            // One surface per box: a native page that took it on an earlier frame closes.
+            if let Some(ui) = self.debug_ui.as_mut().filter(|ui| ui.message_box_menu_visible()) {
+                ui.close_game_menu();
+            }
+            self.release_world_input_for_ui();
+            return;
+        }
         match self.debug_ui.as_mut() {
             Some(ui) if !ui.game_menu_visible() => {
+                log::info!("the message box opens on the native page (no surface of its own)");
                 ui.open_message_box_menu();
                 self.release_world_input_for_ui();
             }
@@ -1409,14 +1447,52 @@ fn collect_and_prepare_groundcover(
 }
 
 /// The Scaleform overlay's latches and diagnostic sets, as disjoint borrows
-/// of `App`'s fields. `texture_handle` is by value — it is `Option<u32>`,
-/// and the overlay only reads it.
+/// of `App`'s fields.
 struct UiOverlayState<'a> {
-    texture_handle: Option<u32>,
-    dropped_host_calls: &'a mut u64,
-    dropped_host_calls_menu: &'a mut Option<String>,
+    dropped_host_calls: &'a mut std::collections::HashMap<String, (u64, String)>,
+    host_reports: &'a mut std::collections::HashMap<String, (String, byroredux_ui::HostCallReport)>,
+    /// Per movie layer a driver serves, its drained host calls (GUI-PAGE-004, Q1).
+    movie_calls: &'a mut std::collections::HashMap<String, Vec<byroredux_ui::ScaleformHostCall>>,
     reported_host_methods: &'a mut std::collections::HashSet<(String, String)>,
     reported_host_methods_capped: &'a mut bool,
+}
+
+/// The snapshot of a frame with the overlay and the game menu hidden: only the HUD's always-live
+/// layers (the player's `game` half), built without the pages' or the operator panels' data.
+fn hud_only_snapshot(
+    world: &byroredux_core::ecs::World,
+    objective_cache: &mut crate::objectives::ObjectiveHudCache,
+) -> byroredux_debug_ui::PanelSnapshot {
+    byroredux_debug_ui::PanelSnapshot {
+        game: byroredux_native_ui::PageSnapshot {
+            interaction_prompt: build_interaction_prompt(world),
+            show_crosshair: setting_bool(
+                world,
+                byroredux_debug_ui::SHOW_CROSSHAIR_SETTING_ID,
+                true,
+            ),
+            show_prompts: setting_bool(
+                world,
+                byroredux_debug_ui::SHOW_PROMPTS_SETTING_ID,
+                true,
+            ),
+            show_vitals: setting_bool(
+                world,
+                byroredux_debug_ui::SHOW_VITALS_SETTING_ID,
+                true,
+            ),
+            vitals: crate::inventory::vitals_snapshot(world),
+            show_objectives: setting_bool(
+                world,
+                byroredux_debug_ui::SHOW_OBJECTIVES_SETTING_ID,
+                true,
+            ),
+            objectives: objective_cache.lend(world),
+            stealth_indicator: crate::detection::indicator_view(world),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
 }
 
 /// Strip the gameplay HUD layer (crosshair, vitals, detection indicator,
@@ -1426,10 +1502,10 @@ fn strip_gameplay_hud(
     snapshot: &mut byroredux_debug_ui::PanelSnapshot,
     objective_cache: &mut crate::objectives::ObjectiveHudCache,
 ) {
-    snapshot.show_crosshair = false;
-    snapshot.vitals = None;
-    snapshot.stealth_indicator = None;
-    objective_cache.give_back(snapshot.objectives.take());
+    snapshot.game.show_crosshair = false;
+    snapshot.game.vitals = None;
+    snapshot.game.stealth_indicator = None;
+    objective_cache.give_back(snapshot.game.objectives.take());
 }
 
 /// Tick the MenuXml HUD (Oblivion M48.4 / FO3-FNV M48.5): push engine
@@ -1460,10 +1536,11 @@ fn tick_hud_overlay(
     }
 }
 
-/// Tick the Ruffle overlay, drain what the menu asked of the host, and
-/// upload the frame it produced. Returns the texture handle `draw_frame`
-/// should composite, or `None` when the overlay is hidden — which is what
-/// stops the UI quad being emitted at all (#2972).
+/// Tick the Ruffle overlay, drain what each open movie asked of the host, and
+/// upload the frames they produced. Returns the texture handles `draw_frame`
+/// should composite, one per visible layer, bottom to top (M48 GUI-REG-001);
+/// empty when no movie is up — which is what stops the UI quad being emitted
+/// at all (#2972).
 ///
 /// `scaleform_hud` carries the M48.6 Skyrim `--hud` driver: when live it
 /// rides this same branch (the player must keep ticking/draining either
@@ -1477,17 +1554,31 @@ fn tick_ui_overlay(
     cam_forward: [f32; 3],
     scaleform_hud: Option<&mut crate::scaleform_hud::ScaleformHudDriver>,
     ui_state: UiOverlayState<'_>,
-) -> Option<u32> {
-    let mut ui_tex = None;
-    if let Some(ui) = ui_manager.as_mut() {
-        let dt = world
-            .try_resource::<DeltaTime>()
-            .map(|d| d.0 as f64)
-            .unwrap_or(1.0 / 60.0);
-        let ui_w = ui.width;
-        let ui_h = ui.height;
-        ui.tick(dt);
+) -> Vec<u32> {
+    let mut ui_textures = Vec::new();
+    let Some(manager) = ui_manager.as_mut() else {
+        ui_state.dropped_host_calls.clear();
+        if !ui_state.host_reports.is_empty() {
+            ui_state.host_reports.clear();
+            mirror_host_reports(world, ui_state.host_reports);
+        }
+        return ui_textures;
+    };
+    let dt = world
+        .try_resource::<DeltaTime>()
+        .map(|d| d.0 as f64)
+        .unwrap_or(1.0 / 60.0);
+    let (ui_w, ui_h) = (manager.width, manager.height);
+    manager.tick(dt);
+    // A closed movie's latch goes with it.
+    ui_state
+        .dropped_host_calls
+        .retain(|menu, _| manager.layer(menu).is_some());
+    let reports_before = ui_state.host_reports.len();
+    ui_state.host_reports.retain(|menu, _| manager.layer(menu).is_some());
+    let mut reports_changed = reports_before != ui_state.host_reports.len();
 
+    for ui in manager.layers_mut() {
         // Consume what the menu asked of the host (#2714). The bridge
         // is drain-based by design and had no consumer outside its own
         // tests, so every ActionScript call was retained for the life
@@ -1504,44 +1595,49 @@ fn tick_ui_overlay(
         let host_calls = ui.drain_host_calls();
         // #2969 — `drain_calls`' own contract: a batch must be read
         // together with the eviction counter, because it may not be
-        // contiguous. The bridge warns once at the producer when it
-        // first evicts, but that says "a call was lost", not "the
-        // batch you are about to act on has a hole in it" — and the
-        // moment this loop routes calls into quest / inventory /
-        // player state, that hole is a lost state transition with no
-        // signal. Latched, so the warning tracks increases rather
-        // than repeating every frame for the life of the menu.
+        // contiguous. Latched per movie, so the warning tracks increases
+        // rather than repeating every frame for the life of the menu.
         let dropped = ui.dropped_host_calls();
-        // #3772 — `host_call_gap_for_menu` resets the latch
-        // EXPLICITLY on a menu swap (effective latch 0 whenever
-        // `ui.menu_name` differs from what it was last latched
-        // against) rather than relying on `host_call_gap`'s
-        // decrease guard to infer one. A swap landing on a frame
-        // where the new bridge has already evicted N < the old
-        // latch would otherwise read as "un-dropped" (the same
-        // shape as same-bridge un-dropping, which cannot happen)
-        // and silently absorb the new menu's first N drops.
-        if let Some(lost) = crate::host_call_gap_for_menu(
-            *ui_state.dropped_host_calls,
-            ui_state.dropped_host_calls_menu.as_deref(),
-            &ui.menu_name,
-            dropped,
-        ) {
+        // #3772 — `host_call_gap_for_menu` resets the latch EXPLICITLY
+        // when the layer under this menu name is a different player
+        // (`menu#id`) from the one it was latched against, rather than
+        // relying on `host_call_gap`'s decrease guard to infer it.
+        let menu_name = ui.menu_name().to_owned();
+        let layer_key = format!("{menu_name}#{}", ui.id());
+        let (latched, latched_key) = ui_state
+            .dropped_host_calls
+            .get(&menu_name)
+            .map_or((0, None), |(count, key)| (*count, Some(key.as_str())));
+        if let Some(lost) = crate::host_call_gap_for_menu(latched, latched_key, &layer_key, dropped) {
             log::warn!(
                 "Scaleform menu '{}' lost {lost} host call(s) to the \
                  {}-entry bridge cap since the last drain ({dropped} \
                  total for this menu) — the {} call(s) drained this \
                  frame are not a contiguous record of what the menu \
                  asked for",
-                ui.menu_name,
+                menu_name,
                 byroredux_ui::MAX_QUEUED_CALLS,
                 host_calls.len(),
             );
         }
-        *ui_state.dropped_host_calls = dropped;
-        *ui_state.dropped_host_calls_menu = Some(ui.menu_name.clone());
+        ui_state.dropped_host_calls.insert(menu_name.clone(), (dropped, layer_key.clone()));
+
+        // M48 GUI-OPS-002 — this movie's report; a different player under the name starts afresh.
+        let report = ui_state.host_reports.entry(menu_name.clone()).or_insert_with(|| {
+            reports_changed = true;
+            (layer_key.clone(), byroredux_ui::HostCallReport::default())
+        });
+        if report.0 != layer_key {
+            *report = (layer_key.clone(), byroredux_ui::HostCallReport::default());
+            reports_changed = true;
+        }
+        reports_changed |= !host_calls.is_empty();
+        if let Some(served) = ui_state.movie_calls.get_mut(&menu_name) {
+            served.extend(host_calls.iter().cloned());
+        }
 
         for call in host_calls {
+            report.1.record(&call);
             log::debug!(
                 "Scaleform host call #{} {} -> {} ({:?}, {} arg(s))",
                 call.sequence,
@@ -1557,11 +1653,13 @@ fn tick_ui_overlay(
             // gives `unknown_methods`/`unanswered_methods` upstream,
             // or a menu calling a distinct unimplemented name every
             // frame would grow this HashSet without limit.
-            let diagnostic_key = host_method_diagnostic_key(&ui.menu_name, &call.method);
-            if matches!(
-                call.dispatch,
-                ScaleformHostDispatch::Unknown | ScaleformHostDispatch::MissingResponse
-            ) && !ui_state.reported_host_methods.contains(&diagnostic_key)
+            //
+            // M48 GUI-HOST-004 — one diagnostic per (menu, method) for an H3 (cataloged, nothing
+            // serves it) or H4 (uncataloged) call, naming the class; neither is ever answered with
+            // a made-up value.
+            let diagnostic_key = host_method_diagnostic_key(&menu_name, &call.method);
+            if matches!(call.class, HostClass::Unserved | HostClass::Unknown)
+                && !ui_state.reported_host_methods.contains(&diagnostic_key)
             {
                 if ui_state.reported_host_methods.len() >= MAX_DISTINCT_HOST_METHOD_NAMES {
                     if !*ui_state.reported_host_methods_capped {
@@ -1575,49 +1673,60 @@ fn tick_ui_overlay(
                 } else {
                     ui_state.reported_host_methods.insert(diagnostic_key);
                     log::warn!(
-                        "Scaleform menu '{}' called host method '{}' ({:?}) — \
+                        "Scaleform menu '{}' called host method '{}' ({:?}): {} — \
                          no engine handler is registered, so the menu received Null",
-                        ui.menu_name,
+                        menu_name,
                         call.method,
                         call.dispatch,
+                        host_class_diagnostic(&call),
                     );
                 }
             }
         }
+    }
 
-        // M48.6 — feed the Scaleform HUD (if live) after the drain: the
-        // driver's pushes mark the surface dirty, so the render below
-        // uploads them this frame, and any GameDelegate calls the movie
-        // makes in response are drained next tick.
-        if let Some(driver) = scaleform_hud {
-            driver.tick(world, ui, cam_forward);
-        }
+    if reports_changed {
+        mirror_host_reports(world, ui_state.host_reports);
+    }
 
+    // M48.6 — feed the Scaleform HUD (if live) after the drain: the
+    // driver's pushes mark the surface dirty, so the render below
+    // uploads them this frame, and any GameDelegate calls the movie
+    // makes in response are drained next tick.
+    if let Some(driver) = scaleform_hud {
+        let layer = manager.layer_mut(driver.menu());
+        driver.tick(world, layer, cam_forward);
+    }
+
+    for ui in manager.layers_mut() {
+        let texture = ui.texture();
         // #2972 — three-state, so "hidden" and "unchanged" no longer
-        // share one `None`. Leaving `ui_tex` at `None` is what stops
-        // `draw_frame` emitting the UI quad; previously a hidden
-        // overlay fell into the `Unchanged` arm and kept compositing
-        // its last uploaded frame over the world indefinitely.
+        // share one `None`. A hidden layer contributes no texture, which
+        // is what stops `draw_frame` compositing it; previously a hidden
+        // overlay fell into the `Unchanged` arm and kept compositing its
+        // last uploaded frame over the world indefinitely.
         match ui.render() {
             byroredux_ui::UiFrame::Fresh(pixels) => {
-                if let Some(handle) = ui_state.texture_handle {
+                if let Some(handle) = texture {
                     let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
+                    // GUI-REG-008 — the extent is the manager's current one,
+                    // so the first frame after a resize replaces the image.
                     if let Err(e) = ctx
                         .texture_registry
                         .update_rgba(upload_ctx, handle, ui_w, ui_h, pixels)
                     {
                         log::error!("UI texture update failed: {e:#}");
                     }
-                    ui_tex = Some(handle);
+                    ui_textures.push(handle);
                 }
             }
             byroredux_ui::UiFrame::Unchanged => {
-                ui_tex = ui_state.texture_handle;
+                ui_textures.extend(texture);
             }
             byroredux_ui::UiFrame::Hidden => {}
         }
     }
-    ui_tex
+    ui_textures
 }
 
 /// Drain the skin-slot pool's first-sight `bind_inverses` uploads.

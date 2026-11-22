@@ -38,6 +38,11 @@ pub struct MenuProfile {
     /// equivalent (their `-sPrefixed` strings are GMST refs, future
     /// work) — `None` reads `strings()` as 0.
     pub strings_path: Option<&'static str>,
+    /// The game's globals document feeding the `globals()` selector
+    /// (FO3/FNV `menus\globals.xml`: shared constants such as
+    /// `_background_fill_alpha`), if it has one. `None` reads `globals()`
+    /// as 0.
+    pub globals_path: Option<&'static str>,
 }
 
 fn oblivion_atlas(name: &str) -> Vec<String> {
@@ -66,6 +71,7 @@ impl MenuProfile {
             font_archive: FontArchive::Misc,
             font_atlas: oblivion_atlas,
             strings_path: Some("menus\\strings.xml"),
+            globals_path: None,
         }
     }
 
@@ -87,6 +93,7 @@ impl MenuProfile {
             font_archive: FontArchive::Textures,
             font_atlas: fallout_atlas,
             strings_path: None,
+            globals_path: Some("menus\\globals.xml"),
         }
     }
 }

@@ -341,8 +341,8 @@ impl Parser {
         self.skip_newlines();
 
         // Must be Ident followed by `=` (not `==`)
-        if self.pos < self.tokens.len() {
-            if let Token::Ident(name) = &self.tokens[self.pos].token {
+        if self.pos < self.tokens.len()
+            && let Token::Ident(name) = &self.tokens[self.pos].token {
                 let name = name.clone();
                 let name_span = self.tokens[self.pos].span;
                 let next_pos = self.pos + 1;
@@ -366,7 +366,6 @@ impl Parser {
                     }
                 }
             }
-        }
 
         self.pos = saved_pos;
         None

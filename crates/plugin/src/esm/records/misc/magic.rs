@@ -77,20 +77,23 @@ impl SpellType {
 /// u32 @4, Type @8 (Charge Time f32 @12). Returns `(type, cost, flags)`.
 /// The pre-#4415 decoder read cost @0 and flags @12 for every game, so
 /// FO3/FNV "cost" was the type and Skyrim "flags" the charge time's bits.
-fn decode_spit(data: &[u8], game: GameKind) -> Option<(SpellType, u32, u32)> {
+fn decode_spit(data: &[u8], game: GameKind) -> Option<(SpellType, u32, u32, u8)> {
     if data.len() < 16 {
         return None;
     }
     let read = |offset: usize| u32::from_le_bytes(data[offset..offset + 4].try_into().unwrap());
     match game {
+        // xEdit TES4 `SPIT`: type u8, 3 unused, cost u32, level u8 (Novice..Master), 3 unused, flags u8.
         GameKind::Oblivion => Some((
             SpellType::from_raw(read(0) & 0xFF),
             read(4),
             read(12) & 0xFF,
+            (read(8) & 0xFF) as u8,
         )),
-        GameKind::Fallout3NV => Some((SpellType::from_raw(read(0)), read(4), read(12) & 0xFF)),
+        // FO3 / FNV: `Cost (Unused)` and `Level (Unused)` (xEdit); the level stays 0.
+        GameKind::Fallout3NV => Some((SpellType::from_raw(read(0)), read(4), read(12) & 0xFF, 0)),
         GameKind::Skyrim | GameKind::Fallout4 | GameKind::Fallout76 => {
-            Some((SpellType::from_raw(read(8)), read(0), read(4)))
+            Some((SpellType::from_raw(read(8)), read(0), read(4), 0))
         }
         GameKind::Starfield => None,
     }
@@ -466,6 +469,9 @@ fn decode_perk_epfd(
     decoded.unwrap_or(PerkFunctionData::None)
 }
 
+/// `EPFT` 4 — the Add Activate Choice parameters (a script on FO3 / FNV, spell + label + flags after).
+const PERK_EPFT_ACTIVATE_CHOICE: u8 = 4;
+
 pub fn parse_perk(
     form_id: u32,
     subs: &[SubRecord],
@@ -664,14 +670,20 @@ pub fn parse_perk(
                 }
             }
             // PERK-DEC-012 -- the activate choice's button label (a string on FO3 / FNV, an lstring elsewhere).
+            // FO76's `EPF2` is a decided union (xEdit `wbEPF2Decider`, `wbDefinitionsFO76.pas:2165-2175`): a
+            // `CURV` Curve Table FormID on EPFT 1 and a small integer on EPFT 5, so only its EPFT 4 (Add Activate
+            // Choice, the entry that has a button) is a label there; the other 333 of 409 vanilla bodies read
+            // as `<lstring>` placeholders (#7111). The raw bytes stay in `formatter`.
             b"EPF2" => {
                 if let PerkBlock::Open {
-                    body: Some(PerkEntryBody::EntryPoint { formatter, details, .. }),
+                    body: Some(PerkEntryBody::EntryPoint { formatter, details, param_type, .. }),
                     ..
                 } = &mut block
                 {
                     *formatter = sub.data.clone();
-                    details.button_label = read_lstring_or_zstring(&sub.data);
+                    if game != GameKind::Fallout76 || *param_type == PERK_EPFT_ACTIVATE_CHOICE {
+                        details.button_label = read_lstring_or_zstring(&sub.data);
+                    }
                 }
             }
             // PERK-DEC-005 -- `Run Immediately` / `Replace Default` flag bits, and Skyrim's fragment index.
@@ -735,11 +747,10 @@ pub fn parse_perk(
                     ..
                 } = prev
                 {
-                    if game == GameKind::Fallout3NV && !script_subs.is_empty() {
-                        if let PerkEntryBody::EntryPoint { details, .. } = &mut body {
+                    if game == GameKind::Fallout3NV && !script_subs.is_empty()
+                        && let PerkEntryBody::EntryPoint { details, .. } = &mut body {
                             details.script = embedded_script_at(form_id, &script_subs, 0, remap).0.map(Box::new);
                         }
-                    }
                     out.entries.push(PerkEntry {
                         rank,
                         priority,
@@ -767,14 +778,33 @@ pub struct MagicEffectItem {
     pub area: u32,
     /// Duration in game seconds from EFIT offset 8 (u32).
     pub duration: u32,
+    /// TES4 EFIT's signed actor-value index, when present and nonnegative.
+    /// Skill/attribute effects select their target per effect item.
+    pub actor_value: Option<ActorValueRef>,
     /// `SCIT` — the `SCPT` an ObScript *script effect* runs (its `ScriptEffectStart` / `Update` /
     /// `Finish` blocks); `0` for an effect with no script. Fallout 3 / New Vegas and Oblivion.
     pub script_form_id: u32,
+    /// Oblivion's `EFIT` range (`Type`, xEdit `wbEffectTypeEnum`): 0 Self, 1 Touch, 2 Target. `None`
+    /// on every other game, whose delivery is not decoded here.
+    pub range: Option<u32>,
+    /// Oblivion's `SCIT` "Magic school" (0 Alteration to 5 Restoration, 6 None): a script effect's own
+    /// school, which wins over its MGEF's (the executable's `0x412f20`, #7078). `None` without `SCIT`.
+    pub script_school: Option<u32>,
     /// The effect's own conditions (`CTDA` / `CIS1` / `CIS2` after its `EFIT`): the effect works only
     /// while they hold. New Vegas's `PlayerConcussed` gates its Perception -4 on
     /// `GetActorValue PerceptionCondition <= 0`, a crippled head.
     pub conditions: ConditionList,
 }
+
+/// Oblivion `EFIT`: code, magnitude, area, duration, range, actor value (xEdit `wbDefinitionsTES4.pas:1498`).
+const OBLIVION_EFIT_LEN: usize = 24;
+/// The shortest `EFIT` the FO3/FNV and Skyrim+ layouts are read from.
+const EFIT_MIN_LEN: usize = 12;
+/// Oblivion `EFIT` Type (Self / Touch / Target) and actor value offsets.
+const OBLIVION_EFIT_RANGE_AT: usize = 16;
+const OBLIVION_EFIT_ACTOR_VALUE_AT: usize = 20;
+/// Oblivion `SCIT` magic school, after the script FormID (its tail is optional: 4, 12 or 16 bytes).
+const OBLIVION_SCIT_SCHOOL_AT: usize = 4;
 
 /// Accumulator for the EFID → EFIT pair chain shared by `parse_spel` and
 /// `parse_ench` (TD2-110 / #2069), which decoded it verbatim twice.
@@ -807,6 +837,11 @@ impl MagicEffectAccumulator {
     /// Pre-#4415 every game's magnitude was read as an `f32`, so an FO3/FNV
     /// spell magnitude of 5 decoded as ~7e-45. Returns (magnitude, area,
     /// duration).
+    /// The shortest `EFIT` body this game's layout is read from.
+    fn efit_min_len(&self) -> usize {
+        if self.game == GameKind::Oblivion { OBLIVION_EFIT_LEN } else { EFIT_MIN_LEN }
+    }
+
     fn decode_efit(&self, data: &[u8]) -> Option<(f32, u32, u32)> {
         let read = |offset: usize| {
             data.get(offset..offset + 4)
@@ -835,7 +870,10 @@ impl MagicEffectAccumulator {
                 self.pending_efid =
                     remap_efid(SubReader::new(&sub.data).u32_or_default(), self.game, remap);
             }
-            b"EFIT" if sub.data.len() >= 12 && self.pending_efid != 0 => {
+            // xEdit `wbEffects` `EFIT`: Oblivion 24 bytes (code, magnitude, area, duration, range, actor
+            // value), FO3/FNV and Skyrim+ at least 12. A shorter Oblivion body is declined, leaving the latch
+            // set so the chain is refused whole, instead of defaulting its range to Self (#7105).
+            b"EFIT" if sub.data.len() >= self.efit_min_len() && self.pending_efid != 0 => {
                 let Some((magnitude, area, duration)) = self.decode_efit(&sub.data) else {
                     return;
                 };
@@ -844,7 +882,22 @@ impl MagicEffectAccumulator {
                     magnitude,
                     area,
                     duration,
+                    // Oblivion's 24-byte EFIT (the arm's gate): range (Type) @16, actor value s32 @20.
+                    actor_value: (self.game == GameKind::Oblivion)
+                        .then(|| {
+                            let mut r = SubReader::new(&sub.data);
+                            r.skip_to_or_eof(OBLIVION_EFIT_ACTOR_VALUE_AT);
+                            r.i32_or_default()
+                        })
+                        .filter(|value| *value >= 0)
+                        .map(|value| ActorValueRef::Index(value as u32)),
                     script_form_id: 0,
+                    range: (self.game == GameKind::Oblivion).then(|| {
+                        let mut r = SubReader::new(&sub.data);
+                        r.skip_to_or_eof(OBLIVION_EFIT_RANGE_AT);
+                        r.u32_or_default()
+                    }),
+                    script_school: None,
                     conditions: Vec::new(),
                 });
                 self.pending_efid = 0;
@@ -854,6 +907,12 @@ impl MagicEffectAccumulator {
             b"SCIT" if sub.data.len() >= 4 => {
                 if let Some(item) = self.items.last_mut() {
                     item.script_form_id = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
+                    // Oblivion's `SCIT` is `[script][magic school][visual effect][hostile + 3 unused]`.
+                    if self.game == GameKind::Oblivion && sub.data.len() >= OBLIVION_SCIT_SCHOOL_AT + 4 {
+                        let mut r = SubReader::new(&sub.data);
+                        r.skip_to_or_eof(OBLIVION_SCIT_SCHOOL_AT);
+                        item.script_school = Some(r.u32_or_default());
+                    }
                 }
             }
             // A condition after an effect's `EFIT` belongs to that effect (xEdit `wbEffects`:
@@ -867,6 +926,23 @@ impl MagicEffectAccumulator {
             _ => {}
         }
     }
+}
+
+/// An Oblivion record's complete effect chain with each effect's `EFIT` range (0 self, 1 touch, 2 target):
+/// `None` when an `EFID` has no `EFIT` (an incomplete chain is never partly used) or the chain is empty.
+/// `remap` is the owning plugin's: a script effect's `SCIT` script FormID is a cross-reference and must reach
+/// global load-order space like the `SPEL` / `ENCH` chains' (#7097).
+pub(crate) fn oblivion_effect_chain(
+    subs: &[SubRecord],
+    remap: &Option<FormIdRemap>,
+) -> Option<Vec<(MagicEffectItem, u32)>> {
+    let mut chain = MagicEffectAccumulator::for_game(GameKind::Oblivion);
+    for sub in subs {
+        chain.feed(sub, remap);
+    }
+    let declared = subs.iter().filter(|sub| &sub.sub_type == b"EFID").count();
+    (chain.pending_efid == 0 && declared == chain.items.len() && !chain.items.is_empty())
+        .then(|| chain.items.into_iter().map(|item| { let range = item.range.unwrap_or(0); (item, range) }).collect())
 }
 
 /// `SPEL` spell / ability / power record. FO3/FNV also covers passive
@@ -884,9 +960,15 @@ pub struct SpelRecord {
     /// `SPIT` flags — the low byte on Oblivion/FO3/FNV (bit 0 Manual Cost,
     /// bit 2 PC Start Spell, bit 7 Touch Explodes), a u32 on Skyrim/FO4.
     pub spell_flags: u32,
-    /// `SPIT` cost (@4 on Oblivion/FO3/FNV, where it is unused; @0 on
-    /// Skyrim/FO4).
+    /// `SPIT` cost (@4 on Oblivion/FO3/FNV; @0 on Skyrim/FO4). On Oblivion it is the spell's
+    /// cost only when the `Manual Spell Cost` flag (bit 0 of `spell_flags`) is set: an
+    /// auto-calculated spell's stored cost is stale (UESP's in-game Magicka equals the effect-cost
+    /// equation, not this value, for 312 of 315 matched spells; #7078). Unused on FO3 / FNV.
     pub cost: u32,
+    /// Oblivion's `SPIT` mastery level, 0 Novice to 4 Master (xEdit TES4 `SPIT`); the tier a
+    /// Manual Spell Cost spell requires (an auto-calculated spell's is derived from its cost).
+    /// 0 on every other game.
+    pub level: u8,
     /// Magic effects applied by this spell. Built from EFID/EFIT pairs.
     pub effects: Vec<MagicEffectItem>,
 }
@@ -912,10 +994,11 @@ pub fn parse_spel(
     for sub in subs {
         match &sub.sub_type {
             b"SPIT" => {
-                if let Some((spell_type, cost, flags)) = decode_spit(&sub.data, game) {
+                if let Some((spell_type, cost, flags, level)) = decode_spit(&sub.data, game) {
                     out.spell_type = spell_type;
                     out.cost = cost;
                     out.spell_flags = flags;
+                    out.level = level;
                 }
             }
             b"EFID" | b"EFIT" | b"SCIT" | b"CTDA" | b"CTDT" | b"CIS1" | b"CIS2" => effects.feed(sub, remap),
@@ -1047,6 +1130,8 @@ impl Default for MgefRecord {
 mod mgef_data {
     // ---- offsets (u32 unless noted) ----
     pub const FLAGS: usize = 0;
+    /// Oblivion's `Assoc. Item` union (a form, an actor value or unknown bytes per the flags).
+    pub const ASSOCIATED_ITEM: usize = 8;
     /// FO3/FNV `counter_effect_count` u16 (+ pad); on TES5 the low word is
     /// always 0 (UESP "Unknown1", mask `0xffff0000`).
     pub const COUNTER_EFFECT_COUNT: usize = 20;
@@ -1135,6 +1220,17 @@ fn decode_mgef_archetype(
     let index_ref = |raw: u32| (raw as i32 >= 0).then_some(ActorValueRef::Index(raw));
     let form_ref = |raw: u32| (raw != 0).then(|| ActorValueRef::Form(remap_fid(raw, remap)));
     match game {
+        GameKind::Oblivion if data.len() >= 12 => {
+            const USE_SKILL: u32 = 1 << 19;
+            const USE_ATTRIBUTE: u32 = 1 << 20;
+            const USE_ACTOR_VALUE: u32 = 1 << 24;
+            if out.effect_flags & (USE_SKILL | USE_ATTRIBUTE | USE_ACTOR_VALUE) != 0 {
+                out.archetype = Some(MagicArchetype::ValueModifier);
+                if out.effect_flags & USE_ACTOR_VALUE != 0 {
+                    out.primary_actor_value = index_ref(read(8));
+                }
+            }
+        }
         GameKind::Fallout3NV if data.len() >= d::FO3NV_LEN => {
             out.archetype = Some(match read(d::ARCHETYPE) {
                 d::ARCHETYPE_VALUE_MODIFIER => MagicArchetype::ValueModifier,
@@ -1168,6 +1264,9 @@ fn decode_mgef_archetype(
     }
 }
 
+/// Oblivion `MGEF` flags under which DATA @8 names a form: Summon Weapon, Summon Armor, Summon Creature.
+const OBLIVION_MGEF_ASSOC_ITEM_IS_FORM: u32 = 0b111 << 16;
+
 pub fn parse_mgef_for_game(
     form_id: u32,
     subs: &[SubRecord],
@@ -1178,6 +1277,17 @@ pub fn parse_mgef_for_game(
     use crate::esm::reader::GameKind;
     if let Some(data) = subs.iter().rev().find(|s| &s.sub_type == b"DATA") {
         decode_mgef_archetype(&mut out, &data.data, game, remap);
+        // #7108 — Oblivion's DATA @8 "Assoc. Item" is a union (xEdit `wbMGEFFAssocItemDecider`,
+        // `wbDefinitionsTES4.pas:818-836`): a WEAP / ARMO / CREA FormID only under the Summon Weapon /
+        // Armor / Creature flags (bits 16-18), an actor-value index under Use Actor Value (bit 24),
+        // unknown bytes otherwise. `parse_mgef` remaps it unconditionally; keep the raw word whenever
+        // it is not a form.
+        if game == GameKind::Oblivion
+            && out.effect_flags & OBLIVION_MGEF_ASSOC_ITEM_IS_FORM == 0
+            && data.data.len() >= mgef_data::ASSOCIATED_ITEM + 4
+        {
+            out.associated_item = mgef_u32(&data.data, mgef_data::ASSOCIATED_ITEM);
+        }
     }
     if !matches!(game, GameKind::Skyrim | GameKind::Fallout3NV)
         || subs
@@ -1875,6 +1985,30 @@ mod tests {
         assert_eq!((d.run_immediately, d.replace_default), (false, false));
     }
 
+    /// #7111 -- FO76 `EPF2` is a label only on EPFT 4; on EPFT 1 it is a `CURV` FormID and on EPFT 5 an
+    /// integer, which must not surface as a button label.
+    #[test]
+    fn parse_perk_fo76_epf2_is_a_label_only_on_activate_choice() {
+        let entry = |epft: u8, epf2: &[u8]| {
+            let subs = vec![
+                sub(b"PRKE", [2u8, 0]),
+                sub(b"DATA", [0u8, 9, 1]),
+                sub(b"EPFT", [epft]),
+                sub(b"EPF2", epf2),
+                sub(b"PRKF", []),
+            ];
+            let p = parse_perk(0x4, &subs, GameKind::Fallout76, &None);
+            let PerkEntryBody::EntryPoint { details, formatter, .. } = &p.entries[0].body else { panic!() };
+            (details.button_label.clone(), formatter.clone())
+        };
+        let curve = 0x008F_5882u32.to_le_bytes();
+        let (label, raw) = entry(1, &curve);
+        assert!(label.is_empty(), "a Curve Table FormID is not a label: {label:?}");
+        assert_eq!(raw, curve.to_vec(), "the raw bytes are kept");
+        assert!(entry(5, &2u32.to_le_bytes()).0.is_empty());
+        assert_eq!(entry(4, b"Use\0").0, "Use");
+    }
+
     /// PERK-DEC-009 -- Starfield's `DATA` is category, skill group, [crew], flags with Trait / Playable / Hidden
     /// in bits 0..2 of the last byte; the rank count is the `PRRK` blocks. It is not read in the FO3 byte order.
     #[test]
@@ -2249,6 +2383,47 @@ mod tests {
     /// The old behavior round-tripped the value correctly but logged one
     /// false warning per no-item MGEF. Pin the sentinel round-trip under
     /// the same non-identity remap the remap pin above uses.
+    /// #7108 — Oblivion DATA @8 is a FormID only under the Summon Weapon / Armor / Creature flags
+    /// (bits 16-18, xEdit `wbMGEFFAssocItemDecider`); a Use Actor Value effect's AV index stays raw.
+    #[test]
+    fn oblivion_mgef_assoc_item_is_remapped_only_when_it_names_a_form() {
+        let remap = Some(FormIdRemap::regular(2, vec![0]));
+        let mgef = |flags: u32| {
+            let mut data = flags.to_le_bytes().to_vec(); // flags @0
+            data.extend(0f32.to_le_bytes()); // base cost @4
+            data.extend(0x0000_0009u32.to_le_bytes()); // assoc. item @8
+            data.resize(64, 0);
+            parse_mgef_for_game(0x1, &[sub(b"DATA", data)], crate::esm::reader::GameKind::Oblivion, &remap)
+        };
+        assert_eq!(mgef(1 << 24).associated_item, 9, "Use Actor Value: the AV index stays raw");
+        assert_eq!(mgef(0).associated_item, 9, "no form flag: unknown bytes stay raw");
+        assert_eq!(mgef(1 << 16).associated_item, 0x0000_0009, "a master-0 form keeps its slot");
+        let summon = {
+            let mut data = (1u32 << 18).to_le_bytes().to_vec();
+            data.extend(0f32.to_le_bytes());
+            data.extend(0x0100_0009u32.to_le_bytes()); // the plugin's own creature
+            data.resize(64, 0);
+            parse_mgef_for_game(0x2, &[sub(b"DATA", data)], crate::esm::reader::GameKind::Oblivion, &remap)
+        };
+        assert_eq!(summon.associated_item, 0x0200_0009, "Summon Creature: a remapped CREA");
+    }
+
+    /// #7105 — a short Oblivion `EFIT` (under its 24 bytes) declines, refusing the chain whole,
+    /// rather than defaulting its range to Self.
+    #[test]
+    fn a_short_oblivion_efit_refuses_the_chain() {
+        let mut short = b"FOAT".to_vec();
+        for word in [5u32, 0, 60] {
+            short.extend(word.to_le_bytes());
+        }
+        let subs = [sub(b"EFID", *b"FOAT"), sub(b"EFIT", short.clone())];
+        assert!(oblivion_effect_chain(&subs, &None).is_none());
+        short.extend(2u32.to_le_bytes()); // Target
+        short.extend(5i32.to_le_bytes()); // actor value
+        let chain = oblivion_effect_chain(&[sub(b"EFID", *b"FOAT"), sub(b"EFIT", short)], &None).unwrap();
+        assert_eq!(chain[0].1, 2);
+    }
+
     #[test]
     fn parse_mgef_associated_item_sentinel_bypasses_the_remap() {
         let remap = Some(FormIdRemap::regular(2, vec![0]));
@@ -2373,7 +2548,8 @@ mod tests {
         efit.extend_from_slice(&5i32.to_le_bytes()); // magnitude
         efit.extend_from_slice(&0u32.to_le_bytes()); // area
         efit.extend_from_slice(&3u32.to_le_bytes()); // duration
-        efit.extend_from_slice(&[0u8; 8]); // tail to 24
+        efit.extend_from_slice(&0u32.to_le_bytes()); // delivery
+        efit.extend_from_slice(&31i32.to_le_bytes()); // actor-value index
         assert_eq!(efit.len(), 24);
 
         let subs = vec![sub(b"EFID", b"FIDG"), sub(b"EFIT", &efit)];
@@ -2385,6 +2561,7 @@ mod tests {
             "the effect code is stored verbatim, never read as a FormID"
         );
         assert_eq!((s.effects[0].magnitude, s.effects[0].duration), (5.0, 3));
+        assert_eq!(s.effects[0].actor_value, Some(ActorValueRef::Index(31)));
 
         // The gate is per game, not global: the same accumulator with an
         // in-range FormID EFID remaps it on FO3/FNV but stores it verbatim

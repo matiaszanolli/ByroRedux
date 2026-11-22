@@ -160,6 +160,15 @@ default_materials_bsas = []
 # F6 (2026-05-26) — `Megaton01` was a phantom; vanilla ships
 # `MegatonPlayerHouse` (929 REFRs), `MegatonMoriartysSaloon`
 # (458 REFRs), and ~17 sibling Megaton interiors. Probe-verified.
+#
+# A new game opens in Vault 101's birth room: `Fallout_default.ini` sets
+# `SCharGenQuest=0001f388` (CG00, "Birth"), and the three start markers its
+# stage 0 moves the actors to (CG00DadStartMarker, CG00DoctorLiStartMarker,
+# CG00MomStartMarker) are all placed in `Vault101d` (form 00028138, 1610 REFRs;
+# FULL "Vault 101"). The engine starts CG00 at stage 0 on a new game (the same
+# `SCharGenQuest` start as New Vegas's VCG00) and its birth sequence runs from the
+# quest's own scripts; the new-game movie (`sIntroMovie`) plays first.
+new_game_cell = "Vault101d"
 sample_cells = [
     "MegatonPlayerHouse",
     "MegatonMoriartysSaloon",
@@ -214,6 +223,16 @@ optional_bsas = [
 # cell; vanilla ships `AnvilHeinrichOakenHallsHouse` (+ its second-
 # floor sibling). The Basement variant probably came from a
 # misremembered cell name. Probe-verified.
+#
+# A new game opens in the Imperial Prison cell: `Oblivion.exe`'s compiled-in
+# `sCharGenQuest` is 0002466E ("Charactergen"; `Oblivion_default.ini` does not
+# set it), and the actors its stages move and script (GlenroyRef, RenoteRef,
+# BaurusRef, UrielSeptimRef) are placed in `ImperialDungeon01` (form 0001FBB9,
+# 467 REFRs; FULL "Imperial Prison"). The engine starts Charactergen at stage 0
+# on a new game and its scripts run the prison sequence as far as the dialogue and
+# NPC packages allow (see `playable-vertical-slice.md`, "Oblivion's prison"); the
+# new-game movie (`sOblivionIntro`) plays first.
+new_game_cell = "ImperialDungeon01"
 sample_cells = [
     "ICMarketDistrictTheGildedCarafe",
     "AnvilHeinrichOakenHallsHouse",

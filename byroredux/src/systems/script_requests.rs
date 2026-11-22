@@ -103,11 +103,10 @@ pub(crate) fn use_weapon_system(world: &World, dt: f32) {
                     end_run(world, actor);
                     continue;
                 };
-                if let Some(mut transforms) = world.query_mut::<Transform>() {
-                    if let Some(transform) = transforms.get_mut(actor) {
+                if let Some(mut transforms) = world.query_mut::<Transform>()
+                    && let Some(transform) = transforms.get_mut(actor) {
                         transform.rotation = facing(to.x - from.x, to.z - from.z);
                     }
-                }
                 to
             }
             None => from,
@@ -124,6 +123,8 @@ pub(crate) fn use_weapon_system(world: &World, dt: f32) {
             continue;
         }
         let weapon = index.items.get(&run.request.weapon).map(|item| &item.kind);
+        // #7234 — the hit carries the fired weapon's Resist Normal Weapons flag, as a wielded weapon's does.
+        let ignores_resistance = crate::combat::item_ignores_resistance(weapon);
         let fired = match weapon {
             Some(ItemKind::Weapon { ammo_form, .. }) if *ammo_form != 0 => {
                 let launch = |aim_at: u32| {
@@ -133,7 +134,7 @@ pub(crate) fn use_weapon_system(world: &World, dt: f32) {
                 };
                 let land = |target: EntityId, weapon_damage: f32, ammo_damage: f32| {
                     if let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingTrapHits>() {
-                        pending.0.push(byroredux_scripting::TrapHit { target, trap: actor, damage: if run.request.harmless { 0.0 } else { weapon_damage + ammo_damage.max(0.0) }, sneak_attack: false });
+                        pending.0.push(byroredux_scripting::TrapHit { target, trap: actor, damage: if run.request.harmless { 0.0 } else { weapon_damage + ammo_damage.max(0.0) }, sneak_attack: false, arrow: false, ignores_resistance });
                     }
                 };
                 match target {
@@ -178,11 +179,10 @@ pub(crate) fn use_weapon_system(world: &World, dt: f32) {
             Some(ItemKind::Weapon { damage, .. }) => {
                 let reach = crate::combat::attack_reach_bu(world, actor);
                 let near = target.is_none() || options.always_hit || from.distance(to) <= reach;
-                if let (true, Some(target)) = (near, target) {
-                    if let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingTrapHits>() {
-                        pending.0.push(byroredux_scripting::TrapHit { target, trap: actor, damage: if run.request.harmless { 0.0 } else { *damage as f32 }, sneak_attack: false });
+                if let (true, Some(target)) = (near, target)
+                    && let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingTrapHits>() {
+                        pending.0.push(byroredux_scripting::TrapHit { target, trap: actor, damage: if run.request.harmless { 0.0 } else { *damage as f32 }, sneak_attack: false, arrow: false, ignores_resistance });
                     }
-                }
                 near
             }
             _ => {
@@ -281,17 +281,32 @@ fn release_instances(world: &World, instances: &[ItemInstanceId]) {
 
 // ── SetPCSleepHours ────────────────────────────────────────────────────────────────────────────────
 
-/// `SetPCSleepHours`: run the game clock forward by the hours a script told the player to sleep (GECK:
-/// "manually forces the player to sleep the specified number of hours"). The rest itself — healing, the
-/// sleep screen — is not modelled; the clock, and everything that follows it, moves.
+/// Run the clock for a confirmed Oblivion rest request or scripted sleep
+/// (`SetPCSleepHours`, also used to serve a jail sentence).
 pub(crate) fn sleep_system(world: &World, _dt: f32) {
+    if crate::oblivion_rest::step_request(world) {
+        return;
+    }
     let hours = match world.try_resource_mut::<PendingSleep>() {
         Some(mut pending) if pending.0 > 0.0 => std::mem::take(&mut pending.0),
         _ => return,
     };
+    finish_sleep(world, byroredux_scripting::oblivion_skill_use::SleepSource::Scripted, hours, false);
+}
+
+pub(crate) fn finish_sleep(world: &World, source: byroredux_scripting::oblivion_skill_use::SleepSource, hours: f32, interrupted: bool) {
     if let Some(mut time) = world.try_resource_mut::<crate::components::GameTimeRes>() {
         time.advance_hours(hours);
-        log::info!("SetPCSleepHours: the clock runs {hours} h to day {} {:.2}", time.day, time.hour);
+        let origin = match source {
+            byroredux_scripting::oblivion_skill_use::SleepSource::Scripted => "SetPCSleepHours",
+            byroredux_scripting::oblivion_skill_use::SleepSource::Bed(_) => "Bed sleep",
+        };
+        log::info!("{origin}: the clock runs {hours} h to day {} {:.2}", time.day, time.hour);
+    }
+    // #7052 (OSL-SLP-001) — a sleep that ran to its end is the one event Oblivion's level-up reads, whether a script or
+    // the jail bed or the rest menu asked for it.
+    if let Some(mut completions) = world.try_resource_mut::<byroredux_scripting::oblivion_skill_use::SleepCompletions>() {
+        completions.0.push(byroredux_scripting::oblivion_skill_use::SleepCompleted { hours, source, interrupted });
     }
 }
 
@@ -303,7 +318,9 @@ pub(crate) fn sleep_system(world: &World, _dt: f32) {
 pub(crate) fn find_case_insensitive(root: &std::path::Path, relative: &str) -> Option<std::path::PathBuf> {
     let mut path = root.to_path_buf();
     for component in relative.split(['\\', '/']).filter(|part| !part.is_empty()) {
-        if component == ".." || component == "." {
+        // `..` / `.`, and (#7142) a drive prefix or any `:`: on Windows `join("C:")` replaces the
+        // path walked so far, so a script's `C:\x.bik` or `D:x.bik` would leave the data folder.
+        if !byroredux_core::paths::is_bare_component(component) {
             return None;
         }
         let exact = path.join(component);
@@ -376,24 +393,53 @@ const REQUEST_LOG_CAP: usize = 64;
 /// Move the menus (the chargen screens, the casino games ...) scripts asked for into the log
 /// (videos, `PlayBink`, are the app's movie player's: `video.rs`), and carry out `ExitGame` — "plays credits and returns the game to the main
 /// menu"; there is no main menu, so the game ends through the orderly shutdown.
+/// M48 GUI-EVT-003 — the report line for a script-opened menu nothing presents: the game-facing name
+/// the registry's per-game inventory gives it (by code, else by the script function) and its S4
+/// state, with the fallback its effect used.
+pub(crate) fn script_menu_report(world: &World, menu: &byroredux_scripting::obscript_more::MenuRequest) -> String {
+    let named = world.try_resource::<byroredux_core::ecs::resources::MenuRegistry>().and_then(|registry| {
+        menu.code
+            .and_then(|code| registry.name_for_code(code))
+            .or_else(|| menu.function.and_then(|function| registry.table().by_script_function(function)).map(|def| def.name.as_str()))
+            .map(str::to_owned)
+    });
+    let name = named.unwrap_or_else(|| format!("({}: no menu in this game's inventory)", menu.menu));
+    let code = menu.code.map(|code| format!(" code {code}")).unwrap_or_default();
+    let from = menu.function.map(|function| format!(" from {function}")).unwrap_or_default();
+    let fallback = menu.fallback.unwrap_or("recorded");
+    format!("menu {name}{code} (S4, {fallback}){from} form {:08X}", menu.form)
+}
+
 pub(crate) fn script_ui_request_system(world: &World, _dt: f32) {
     use byroredux_scripting::obscript_more::{ExitGameRequest, PendingMenus};
     let mut lines = Vec::new();
     let menus: Vec<_> = world.try_resource_mut::<PendingMenus>().map(|mut menus| std::mem::take(&mut menus.0)).unwrap_or_default();
     for menu in menus {
-        // The character-creation screens have a page (`chargen.rs`); the rest are logged.
-        match crate::chargen::ChargenScreen::for_request(menu.menu, menu.form) {
+        // The character-creation screens have a page (`chargen.rs`), which publishes itself in the
+        // registry under its game-facing name; a request whose effect already stood in for the
+        // menu (`fallback`) is reported only.
+        let chargen = menu.fallback.is_none().then(|| crate::chargen::ChargenScreen::for_request(menu.menu, menu.form)).flatten();
+        match chargen {
             Some(screen) => {
+                // PRD Q4 — a race menu that takes the name (Skyrim, Oblivion) is the RaceSex
+                // screen then the Name screen.
+                let with_name = screen == crate::chargen::ChargenScreen::RaceSex
+                    && world
+                        .try_resource::<byroredux_core::ecs::resources::MenuRegistry>()
+                        .is_some_and(|registry| crate::chargen::race_menu_has_name(registry.game()));
                 if let Some(mut session) = world.try_resource_mut::<crate::chargen::ChargenSession>() {
                     session.request(screen);
+                    if with_name {
+                        session.request(crate::chargen::ChargenScreen::Name);
+                    }
                 }
                 log::info!("script request: menu {} opens the character-creation page", menu.menu);
             }
-            None => lines.push(format!("menu {} form {:08X}", menu.menu, menu.form)),
+            None => lines.push(script_menu_report(world, &menu)),
         }
     }
-    if !lines.is_empty() {
-        if let Some(mut log) = world.try_resource_mut::<ScriptRequestLog>() {
+    if !lines.is_empty()
+        && let Some(mut log) = world.try_resource_mut::<ScriptRequestLog>() {
             for line in lines {
                 log::info!("script request: {line}");
                 if log.0.len() >= REQUEST_LOG_CAP {
@@ -402,7 +448,6 @@ pub(crate) fn script_ui_request_system(world: &World, _dt: f32) {
                 log.0.push_back(line);
             }
         }
-    }
     let exit = world.try_resource_mut::<ExitGameRequest>().is_some_and(|mut request| std::mem::take(&mut request.0));
     if exit {
         log::info!("ExitGame: ending the game through the orderly shutdown");
@@ -564,6 +609,30 @@ mod tests {
         assert!(world.get::<UseWeaponRun>(actor).unwrap().cooldown < 5.0);
     }
 
+    /// #7234 -- a script's UseWeapon strike carries the fired weapon's Resist Normal Weapons flag, as a wielded weapon's
+    /// hit does; an ordinary weapon's strike does not.
+    #[test]
+    fn a_use_weapon_strike_carries_the_weapons_resistance_flag() {
+        for silver in [false, true] {
+            let near = Vec3::new(10.0, 0.0, 0.0);
+            let (world, _) = volley_world(near, 1, 3, UseWeaponOptions::default());
+            if silver {
+                use byroredux_plugin::esm::records::{common::CommonItemFields, EsmIndex, ItemRecord};
+                let mut kind = ItemKind::weapon_stub(3, 30).with_weapon_speed(1.0);
+                if let ItemKind::Weapon { ignores_normal_resistance, .. } = &mut kind {
+                    *ignores_normal_resistance = true;
+                }
+                let mut index = EsmIndex::default();
+                index.items.insert(0xA1, ItemRecord { form_id: 0xA1, common: CommonItemFields::default(), kind });
+                world.resource_mut::<crate::components::LoadedCellIndex>().0 = std::sync::Arc::new(index);
+            }
+            use_weapon_system(&world, 0.016);
+            let pending = world.resource::<byroredux_scripting::PendingTrapHits>();
+            assert_eq!(pending.0.len(), 1, "the strike lands");
+            assert_eq!(pending.0[0].ignores_resistance, silver);
+        }
+    }
+
     /// AIP-UW-004 -- Always Hit lands the shot on a target out of the weapon's reach; without it the shot misses.
     #[test]
     fn always_hit_lands_on_a_target_out_of_reach() {
@@ -709,5 +778,42 @@ mod tests {
             let body = source.split_once(teardown).and_then(|(_, rest)| rest.split_once("\n}\n")).map(|(body, _)| body).unwrap();
             assert!(body.contains("crate::music::end_script_layer(world)"), "{teardown} must end the scripted music");
         }
+    }
+}
+
+#[cfg(test)]
+mod script_menu_tests {
+    use super::*;
+    use byroredux_core::ecs::resources::menu_registry::{MenuGame, MenuRegistry};
+    use byroredux_scripting::obscript_more::MenuRequest;
+
+    /// M48 GUI-EVT-003 — a script-opened menu nothing presents is reported under the game-facing
+    /// name the per-game inventory gives it: by code on a coded game, by script function on a
+    /// name-addressed one, with the fallback its effect already used.
+    #[test]
+    fn script_opened_menus_report_their_game_facing_name() {
+        let mut world = World::new();
+        world.insert_resource(MenuRegistry::new(MenuGame::Fallout3NV));
+        let roulette = MenuRequest::coded("roulette", Some(1082), 0x0001_2345);
+        let line = script_menu_report(&world, &roulette);
+        assert!(line.starts_with("menu ") && line.contains("code 1082 (S4, recorded)") && line.ends_with("form 00012345"), "{line}");
+        assert!(!line.contains("roulette"), "the game's name, not the engine's label: {line}");
+        let subtitles = MenuRequest::coded("dialog subtitles", None, 0);
+        assert!(script_menu_report(&world, &subtitles).contains("(dialog subtitles: no menu in this game's inventory)"));
+
+        // Fallout 4's appearance modes have no surface (GUI-PAGE-003): reported under the game's
+        // race menu, with the reason.
+        world.insert_resource(MenuRegistry::new(MenuGame::Fallout4));
+        let appearance = MenuRequest {
+            menu: "appearance",
+            code: None,
+            function: Some("ShowRaceMenu"),
+            form: 3,
+            fallback: Some("no appearance editor until the slider milestone (GUI-NG-005)"),
+        };
+        assert_eq!(
+            script_menu_report(&world, &appearance),
+            "menu LooksMenu (S4, no appearance editor until the slider milestone (GUI-NG-005)) from ShowRaceMenu form 00000003"
+        );
     }
 }

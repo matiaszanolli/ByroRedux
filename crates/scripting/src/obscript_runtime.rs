@@ -106,11 +106,10 @@ pub fn set_extension_script_function_invoker(
 }
 
 pub fn set_legacy_obscript_content_catalog(world: &World, catalog: Arc<ContentCatalog>) {
-    if let Some(mut current) = world.try_resource_mut::<LegacyObscriptContentCatalog>() {
-        if !Arc::ptr_eq(&current.0, &catalog) && *current.0 != *catalog {
+    if let Some(mut current) = world.try_resource_mut::<LegacyObscriptContentCatalog>()
+        && !Arc::ptr_eq(&current.0, &catalog) && *current.0 != *catalog {
             current.0 = catalog;
         }
-    }
 }
 
 pub fn register(world: &mut World) {

@@ -72,7 +72,7 @@ const FALLOUT: &[u16] = &[
 
 /// Oblivion command ids this module runs.
 const OBLIVION: &[u16] = &[
-    0x104e, 0x1617, 0x19e5, 0x101b, 0x1024, 0x1031, 0x1032, 0x103e, 0x1040, 0x1045, 0x1053, 0x1055, 0x1058, 0x1063, 0x106e, 0x1070, 0x1074,
+    0x10d4, 0x10d5, 0x10bd, 0x110f, 0x104e, 0x1617, 0x19e5, 0x101b, 0x1024, 0x1031, 0x1032, 0x103e, 0x1040, 0x1045, 0x1053, 0x1055, 0x1058, 0x1063, 0x106e, 0x1070, 0x1074,
     0x1075, 0x1076, 0x1077, 0x1082, 0x108f, 0x10a8, 0x10ae, 0x10af, 0x10b1, 0x10b5, 0x10bb, 0x10be, 0x10c1, 0x10c2,
     0x10c3, 0x10c4, 0x10c5, 0x10c6, 0x10c7, 0x10d1, 0x10d8, 0x10df, 0x10f8, 0x10f9, 0x10fb, 0x1109, 0x110d, 0x1116,
     0x111c, 0x1122, 0x1132, 0x1134, 0x1137, 0x1145, 0x1147, 0x114e, 0x1151, 0x1156, 0x1159, 0x115a, 0x115b, 0x115c,
@@ -343,13 +343,16 @@ fn the_engine_queries_the_app_installs_answer_los_menu_and_first_person() {
     let (mut world, ..) = world(GameKind::Fallout3NV);
     let c = ctx(Some(ACTOR));
     assert_eq!(run(&world, 0x101b, &refs(&[OTHER]), &c), Action::Declined, "no sight query installed");
-    assert_eq!(run(&world, 0x1024, &[], &c), Action::Declined);
+    assert_eq!(run(&world, 0x1024, &[], &c), Action::Declined, "no menu registry published");
     world.insert_resource(EngineQueries {
         line_of_sight: Some(|_, _, _| true),
-        menu_open: Some(|_, kind| kind == 1009),
         first_person: Some(|_| true),
         ..Default::default()
     });
+    // `MenuMode` reads the menu registry the app publishes (GUI-REG-002).
+    let mut menus = byroredux_core::ecs::resources::MenuRegistry::default();
+    menus.open("DialogMenu", byroredux_core::ecs::resources::menu_registry::MenuSurface::Native { page: "Dialogue".into() });
+    world.insert_resource(menus);
     assert_eq!(value(run(&world, 0x101b, &refs(&[OTHER]), &c)), 1.0);
     assert_eq!(value(run(&world, 0x1024, &nums(&[1009.0]), &c)), 1.0);
     assert_eq!(value(run(&world, 0x1024, &nums(&[1002.0]), &c)), 0.0);
@@ -677,12 +680,15 @@ fn the_platform_and_math_commands_answer_from_what_they_name() {
     assert!((value(run(&world, 0x121e, &nums(&[std::f32::consts::FRAC_PI_4]), &c)) - 1.0).abs() < 1e-5, "Tan");
 }
 
+/// The load order registers its plugins under their case-folded basenames (`honesthearts.esm`), and the GECK's DLC table
+/// names them as shipped (`HonestHearts.esm`): one identity either way (LMC-ID-001; before the fold no DLC ever read as
+/// installed in a live session).
 #[test]
 fn is_dlc_installed_reads_the_load_order() {
     use byroredux_core::form_id::PluginId;
     let (mut world, ..) = world(GameKind::Fallout3NV);
     assert_eq!(run(&world, 0x126f, &nums(&[0.0]), &ctx(None)), Action::Declined, "no load order installed");
-    world.insert_resource(crate::LoadOrderIdentity::new(vec![(byroredux_plugin::esm::reader::GlobalSlot::Regular(0), PluginId::from_filename("FalloutNV.esm")), (byroredux_plugin::esm::reader::GlobalSlot::Regular(1), PluginId::from_filename("HonestHearts.esm"))]));
+    world.insert_resource(crate::LoadOrderIdentity::new(vec![(byroredux_plugin::esm::reader::GlobalSlot::Regular(0), PluginId::from_filename("falloutnv.esm")), (byroredux_plugin::esm::reader::GlobalSlot::Regular(1), PluginId::from_filename("honesthearts.esm"))]));
     assert_eq!(value(run(&world, 0x126f, &nums(&[0.0]), &ctx(None))), 0.0, "Dead Money is not loaded");
     assert_eq!(value(run(&world, 0x126f, &nums(&[1.0]), &ctx(None))), 1.0, "Honest Hearts is");
     assert_eq!(run(&world, 0x126f, &nums(&[9.0]), &ctx(None)), Action::Declined, "no such DLC");
@@ -1082,4 +1088,48 @@ fn a_console_play_bink_keeps_its_flags_in_their_slots() {
     let flags: Vec<(&str, bool, bool, bool, bool)> =
         queued.iter().map(|r| (r.file.as_str(), r.interruptable, r.mute_audio, r.pause_music, r.letterbox)).collect();
     assert_eq!(flags, vec![("FNVIntro.bik", true, true, false, true), ("Other.bik", false, true, true, true)]);
+}
+
+/// #7050 — `AdvancePCSkill` / `ModPCSkill` (Oblivion, `0x10d4` / `0x110f`, one handler in the executable):
+/// declined on a ruleset that does not level by skill use, and on a reference that is not the player; on
+/// Oblivion's they raise the player's base skill by `Amount` ranks.
+#[test]
+fn the_pc_skill_commands_raise_the_players_skill_by_ranks() {
+    use byroredux_core::character::{CharacterRuleset, LevelingModel};
+    use byroredux_plugin::esm::reader::GlobalSlot;
+    use byroredux_plugin::esm::records::EsmIndex;
+
+    let (mut world, _, _, player) = world(GameKind::Oblivion);
+    let mut index = EsmIndex { game: GameKind::Oblivion, ..Default::default() };
+    index.install_oblivion_actor_values(GlobalSlot::Regular(0)).unwrap();
+    crate::install_actor_value_names(&mut world, &index);
+    let blade = index.oblivion_actor_value(14, true).unwrap();
+    world.insert(player, ActorValues::from_pairs([(blade, 5.0)]));
+    world.insert_resource(crate::skills::SkillProgress::default());
+    world.register::<byroredux_core::character::SkillUseLevel>();
+    let c = ctx(None);
+    let base = |world: &World| world.get::<ActorValues>(player).unwrap().get_base(blade).unwrap().base;
+
+    // No skill-use ruleset: declined, nothing changed.
+    assert!(matches!(run(&world, 0x110f, &nums(&[14.0, 2.0]), &c), Action::Declined));
+    world.insert_resource(CharacterRuleset::new(LevelingModel::OBLIVION));
+    assert!(matches!(run(&world, 0x110f, &nums(&[14.0, 2.0]), &ctx(Some(ACTOR))), Action::Declined));
+    assert_eq!(base(&world), 5.0);
+
+    assert!(is_done(&run(&world, 0x110f, &nums(&[14.0, 2.0]), &c)));
+    assert_eq!(base(&world), 7.0, "Amount is ranks (V14)");
+    assert!(is_done(&run(&world, 0x10d4, &nums(&[14.0, 1.0]), &c)));
+    assert_eq!(base(&world), 8.0);
+    // Not a number of ranks, or not an actor-value code.
+    assert!(matches!(run(&world, 0x10d4, &nums(&[14.0, f32::NAN]), &c), Action::Declined));
+    assert!(matches!(run(&world, 0x10d4, &nums(&[14.5, 1.0]), &c), Action::Declined));
+    assert_eq!(base(&world), 8.0);
+
+    // `AdvancePCLevel` (#7052) freezes the tallies as a pending level; `SetPCSleepHours` queues its hours on Oblivion too.
+    assert!(is_done(&run(&world, 0x10d5, &[], &c)));
+    assert_eq!(world.get::<byroredux_core::character::SkillUseLevel>(player).unwrap().pending.len(), 1);
+    assert!(matches!(run(&world, 0x10d5, &[], &ctx(Some(ACTOR))), Action::Declined));
+    world.insert_resource(PendingSleep::default());
+    assert!(is_done(&run(&world, 0x10bd, &nums(&[8.0]), &c)));
+    assert_eq!(world.resource::<PendingSleep>().0, 8.0);
 }

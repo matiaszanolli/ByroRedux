@@ -93,7 +93,7 @@ wait_status() {
 
 env BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 \
     BYROREDUX_SETTINGS_PATH="$LOG_DIR/settings.toml" \
-    RUST_LOG="warn,byroredux::systems::npc_dialogue=info,byroredux::systems::dialogue_voice=info" \
+    RUST_LOG="warn,byroredux::systems::npc_dialogue=info,byroredux::systems::dialogue_voice=info,byroredux=info" \
     target/release/byroredux \
     --game skyrim_se --cell WhiterunDragonsReach \
     --sounds-bsa "$DATA/Skyrim - Voices_en0.bsa" \
@@ -147,6 +147,30 @@ echo "smoke[dt2-skyrim-forcegreet]: generic arm PASS — topic-less package reso
 debug_command 'cam.pos -250 40 -2840' "$LOG_DIR/tp.log" >/dev/null 2>&1 || true
 wait_status 'DialogueGenericHello'
 echo "smoke[dt2-skyrim-forcegreet]: open PASS — conversation opened with no activation"
+
+# ── Phase P (M48 GUI-PAGE-004, #6666): the conversation on the game's own movie ──
+# Q1: Skyrim's dialogue menu runs on `interface\dialoguemenu.swf` (S1) once its host calls are
+# served; the registry shows the menu open on that movie, and the presented line is the one the
+# native page would show — the speaker named, the list mode, the speaking cue (dt1's Phase P).
+debug_command 'ui.menus' "$LOG_DIR/menus.log" >/dev/null 2>&1 || fail 'ui.menus unavailable'
+grep -Eq 'Dialogue Menu code=- surface=movie interface.+dialoguemenu\.swf' "$LOG_DIR/menus.log" \
+    || fail "Phase P: the conversation is not on the dialogue movie: $(sed -n '1,6p' "$LOG_DIR/menus.log")"
+# The greeting voices for 0.6 s, already over by the first poll; the speaking cue is read on the
+# answer to the first topic the list offers ("What does a Housecarl do?"), selected as a click on
+# the list does.
+topic="$(sed 's/\\n/\n/g' "$LOG_DIR/status.log" | grep -oE "offers topic 0x[0-9A-Fa-f]+" | head -1 | grep -oE '0x[0-9A-Fa-f]+' || true)"
+[[ -n "$topic" ]] || fail "Phase P: the greeting offers no topic: $(sed -n '1,8p' "$LOG_DIR/status.log")"
+debug_command "dialogue.select $topic" "$LOG_DIR/select.log" >/dev/null 2>&1 || fail 'dialogue.select unavailable'
+debug_command 'dialogue.status' "$LOG_DIR/page.log" >/dev/null 2>&1 || fail 'dialogue.status unavailable'
+sed -i 's/\\n/\n/g' "$LOG_DIR/page.log"
+page="$(grep -E '^page: ' "$LOG_DIR/page.log" | head -1 || true)"
+[[ -n "$page" ]] || fail "Phase P: no page snapshot in dialogue.status: $(sed -n '1,8p' "$LOG_DIR/page.log")"
+grep -Fq "speaker 'Irileth'" <<<"$page" || fail "Phase P: the movie's speaker is not named: $page"
+grep -Eq 'list=(replies|topics)' <<<"$page" || fail "Phase P: no list mode: $page"
+grep -Fq 'speaking=true' <<<"$page" || fail "Phase P: the speaking cue is off right after the topic's answer started: $page"
+grep -Fq 'Dialogue Menu opened as movie' "$LOG_DIR/session.stderr" \
+    || fail "Phase P: no dialogue movie open line in the log"
+echo "smoke[dt2-skyrim-forcegreet]: Phase P PASS — $page, on interface\dialoguemenu.swf"
 
 # ── The #5912 voice leg ────────────────────────────────────────────
 # The open line rides play_line_voice like every conversation: the .fuz

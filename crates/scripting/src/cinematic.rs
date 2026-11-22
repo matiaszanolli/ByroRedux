@@ -214,11 +214,8 @@ pub struct CinematicPresentationState {
     pub disable_waiting: bool,
     #[cfg_attr(feature = "save", serde(alias = "chargen_stay_in_first_person"))]
     pub show_controls_disabled_message: bool,
-    /// Bumped each `Game.ShowRaceMenu()`. There is no interactive race-menu
-    /// UI yet (a full slider-based character creator is its own milestone),
-    /// so the call is treated as an instant auto-accept of the player's
-    /// current appearance — this is the observable stand-in for "the menu
-    /// opened and closed" until that UI exists.
+    /// Bumped each `Game.ShowRaceMenu()` / ObScript `ShowRaceMenu`: how many times a script asked
+    /// for the race menu, which the engine's character-creation page opens (M48 GUI-PAGE-002).
     pub race_menu_shown_count: u32,
     /// Bumped by `Game.RequestSave`/`RequestAutoSave`. Deliberately does not
     /// trigger a real save: MQ101 requests one mid-scene (stage 65/80),
@@ -340,8 +337,8 @@ impl CinematicPresentationState {
         self.show_controls_disabled_message = show_controls_disabled_message;
     }
 
-    /// `Game.ShowRaceMenu()` — see the field doc on `race_menu_shown_count`
-    /// for why this auto-accepts instead of opening real UI.
+    /// `Game.ShowRaceMenu()` / ObScript `ShowRaceMenu` asked for the race menu (the menu itself is
+    /// a `PendingMenus` request the character-creation page takes).
     pub fn show_race_menu(&mut self) {
         self.race_menu_shown_count = self.race_menu_shown_count.wrapping_add(1);
     }

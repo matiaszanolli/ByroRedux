@@ -27,6 +27,29 @@ fn trigger_volume_from_box_primitive_permutes_and_scales() {
     assert_eq!(v.half_extents, Vec3::new(20.0, 60.0, 40.0));
 }
 
+/// A trigger zone authored as a Havok phantom (Oblivion's `TrigZone*.NIF`): the NIF-root box is
+/// scaled, oriented with the placement and centred on its own centre. A box off the model origin
+/// moves the volume with it; an empty or non-finite box yields none.
+#[test]
+fn trigger_volume_from_phantom_box_scales_orients_and_centres() {
+    // NIF-root box: 100 wide (x), 40 tall (y), 60 deep (z), its centre 10 above the model origin.
+    let bounds = ([-50.0, -10.0, -30.0], [50.0, 30.0, 30.0]);
+    let v = trigger_volume_from_phantom(bounds, Vec3::new(1000.0, 0.0, 0.0), Quat::IDENTITY, 2.0)
+        .expect("a box yields a volume");
+    assert_eq!(v.shape, byroredux_scripting::TriggerShape::Box);
+    assert_eq!(v.half_extents, Vec3::new(100.0, 40.0, 60.0), "half of (100, 40, 60), times the scale");
+    assert_eq!(v.center, Vec3::new(1000.0, 20.0, 0.0), "the box centre (0, 10, 0) times the scale");
+    assert!(v.contains(Vec3::new(1000.0, 20.0, 0.0)) && v.contains(Vec3::new(1099.0, 59.0, 59.0)));
+    assert!(!v.contains(Vec3::new(1101.0, 20.0, 0.0)) && !v.contains(Vec3::new(1000.0, 61.0, 0.0)));
+    // A quarter turn about Y carries the box's offset and its long axis with it.
+    let turned = Quat::from_rotation_y(std::f32::consts::FRAC_PI_2);
+    let v = trigger_volume_from_phantom(([0.0, 0.0, 0.0], [20.0, 2.0, 2.0]), Vec3::ZERO, turned, 1.0).unwrap();
+    assert!(v.contains(turned * Vec3::new(19.0, 1.0, 1.0)), "inside along its own long axis");
+    assert!(!v.contains(Vec3::new(19.0, 1.0, 1.0)), "the unrotated spot is outside the turned box");
+    assert!(trigger_volume_from_phantom(([0.0; 3], [0.0; 3]), Vec3::ZERO, Quat::IDENTITY, 1.0).is_none());
+    assert!(trigger_volume_from_phantom(([f32::NAN; 3], [1.0; 3]), Vec3::ZERO, Quat::IDENTITY, 1.0).is_none());
+}
+
 /// Sphere primitive (shape 3): `bounds[0]` is the radius, carried in
 /// `half_extents.x` and scaled.
 #[test]

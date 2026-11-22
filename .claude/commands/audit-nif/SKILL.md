@@ -174,8 +174,10 @@ First step: `cargo run -p byroredux-nif --release --example nif_stats -- <archiv
   struct name (several arms parse multiple wire types into one struct — `BhkRigidBody.is_t`,
   `NiPSysBlock.original_type`); the corpus definition is shared in `corpus.rs`
   (`NIF_ENTRY_EXTENSIONS` includes `.bto`/`.btr` — renamed NIFs; a second private copy of
-  the rule is the regression; every corpus filter routes through `corpus::is_nif_entry`, pinned by
-  a source scan, #5259); the gates walk **every** mesh-bearing archive
+  the rule is the regression; every corpus filter under `tests/` and `examples/` routes through
+  `corpus::is_nif_entry`, pinned by the `corpus_filters_route_through_is_nif_entry` source scan, #5259;
+  two `.nif ∪ .kf` files are exempt by name, and b04452e54 moved the last hand-rolled filter,
+  `furniture_marker_census`, onto it); the gates walk **every** mesh-bearing archive
   (`open_all_mesh_archives` all-or-nothing, `open_optional_mesh_archives` present-only — a
   present-but-unopenable archive panics and an all-absent corpus fails, #5232;
   `run_all_meshes_gate` with a *per-archive* `limit`); `parse_real_nifs` asserts a per-archive
@@ -348,9 +350,14 @@ restitution / damping from its material + motion-property rows —
 - **`BhkNPCollisionObject` is "approximated", not "decoded"**: the FO4/FO76/Starfield
   `BhkSystemBinary` blob does not resolve to a `CollisionShape`.
   `blocks::collision::havok_packfile::parse_havok_packfile` decodes the container (header,
-  sections, three fixup tables → typed object graph); what stays opaque is
+  sections, three fixup tables → typed object graph) through `byroredux_hkx::container::Container`,
+  the one container decoder shared with the Skyrim/FO4 HKX reader (nif depends on hkx since
+  68d3a834e, #6954 — nif is as strict as hkx now: section count 1..=64, version 8 / 11, ordered
+  sections; nif keeps the FO76/Starfield tagfile refusal, #6302, the `__classnames__` walk and
+  its `HavokPackfile` view; `/audit-parsers` owns the container's untrusted-input discipline);
+  what stays opaque is
   `hknpCompressedMeshShapeData`'s bit-packed layout (`docs/engine/physal.md`). Do not report
-  it as decoded. The FO4 skeleton **ragdoll** blob is decoded (`blocks/collision/np_ragdoll.rs`,
+  it as decoded. `HavokPackfile::class_names_by_offset` resolves a whole fixup table through one map (a per-fixup `class_name_at` scan made N fixups x N records cost 4.5 s on a 2.85 MB blob, 53a0c08b7, #7126). The FO4 skeleton **ragdoll** blob is decoded (`blocks/collision/np_ragdoll.rs`,
   `decode_np_ragdoll`: `hknpRagdollData` capsule / sphere / `hknpConvexPolytopeShape` /
   `hknpDynamicCompoundShape` bodies, ragdoll + limited-hinge joints, `hknpBreakableConstraintData`
   unwrapped, per-body friction / restitution / damping read from the material (Havok halves at
@@ -359,10 +366,17 @@ restitution / damping from its material + motion-property rows —
   (`NpBodyProperties`, 019b087e3, #6066) — e1bd40bcf, #5015 (closed); fc4a15104 + 0d775dc61, #6067 (closed: the 67 joints whose bind-pose pivots disagree stay a recorded property of the data — the body-frame pivot reading is kept, and the rigs hold together live, pinned by `fo4_bind_pose_ragdoll_holds_together_in_free_fall` in `byroredux/src/ragdoll_installed_tests.rs`)) into the classic
   `RagdollCInfo` / `LimitedHingeCInfo` records; its offsets were recovered from the corpus (no
   SDK) and are pinned by independent physical checks, so a layout claim needs a corpus
-  measurement, not nif.xml. `summarize_collision_authoring` scans every collision block and feeds
+  measurement, not nif.xml. They are 64-bit Havok 2014 offsets (75 of 75 FO4 ragdoll blobs), so the decoder refuses a packfile that is not file version 11 with 8-byte pointers instead of misreading v8 / 4-byte ones the shared container admits (e9b1a25ef, #7133, `a_blob_that_is_not_64_bit_havok_2014_is_refused`), and its `Fixups` resolve pointers and classes through maps built once per blob, the first table entry winning, since per-call scans stalled an import for seconds (27ea36216, #7155, `fixups_resolve_as_the_first_matching_table_entry`). `summarize_collision_authoring` scans every collision block and feeds
   `CachedNifImport.collision_authoring` (`byroredux/src/cell_loader/nif_import_registry.rs`);
   `examine_collision_kind` keeps `None / Classic / NewPhysicsStub / Phantom / Unrecognised`
-  distinct (a Skyrim+ phantom must not be force-translated as a rigid body). A per-game
+  distinct (a Skyrim+ phantom must not be force-translated as a rigid body). The summary also
+  carries `classic_dialect` (`scene.bsver < FALLOUT4`; `false` in `Default`) and
+  `walk_through_by_authoring()` (classic dialect that authored no body): the cell loader's
+  `missing_collision_fallback` refuses the opaque-mesh `ArchitectureTriMesh` stand-in then —
+  in Oblivion / FO3 / FNV / Skyrim a model with no `bhk*` body has none in the original engine,
+  and the stand-in is only for authored-but-undecodable collision (FO4+ packed Havok,
+  precombines) (0c35505ba, #6549; `classic_dialect_models_that_author_no_body_get_no_stand_in`,
+  `collision_dialect_is_read_from_the_scene_bsver`). A per-game
   detail (raw `bsver`, block-type string) escaping `import/collision/` is a finding →
   cross-link `/audit-nifal`.
 - `hkMotionType` byte → canonical `MotionType` (`havok_motion_type`): `1..=5 | 8` Dynamic,

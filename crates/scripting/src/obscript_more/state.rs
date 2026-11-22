@@ -31,6 +31,46 @@ fn cmd_10f8(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _c
     done(format!("ModPCFame {}", num(args, 0)))
 }
 
+// CS *AdvancePCSkill* / *ModPCSkill* (Oblivion): "increases the player's skill by `Amount`". In the
+// executable one handler serves both (`0x50d020`, opcodes `0x10d4` and `0x110f`, both taking the skill's
+// actor-value code and an amount). `Amount` is skill **ranks**: it loops once per rank, each raising the base
+// skill by 1 and counting toward the level and the attribute tally (#7049 V14). `ModPCSkill` leaves 0.0 of the
+// skill's experience banked (the Beta Patch 1.1 behaviour, PRD Q5); `AdvancePCSkill` keeps the executable's
+// "banked - cost, clamped at 0". Only the player has these (CS: *ModPCSkill* is a player function).
+fn pc_skill(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
+    if names_other_actor(ctx) {
+        return Action::Declined;
+    }
+    let (Some(player), true) = (player(world), num(args, 1).is_finite()) else {
+        return Action::Declined;
+    };
+    let code = num(args, 0);
+    if !code.is_finite() || code < 0.0 || code.fract() != 0.0 {
+        return Action::Declined;
+    }
+    let ranks = num(args, 1).max(0.0) as u32;
+    let name = if cmd == 0x110f { "ModPCSkill" } else { "AdvancePCSkill" };
+    // A game without skill-use leveling (or a code that is no Oblivion skill) is declined, not faked.
+    if world.try_resource::<byroredux_core::character::CharacterRuleset>().and_then(|r| r.leveling.skill_use_costs()).is_none() {
+        return Action::Declined;
+    }
+    crate::oblivion_skill_use::raise_skill_ranks(world, player, code as u32, ranks, cmd != 0x110f);
+    done(format!("{name} {code} {ranks}"))
+}
+
+// CS *AdvancePCLevel* (Oblivion; opcode `0x10d5`, `Oblivion.exe` `0x5056f0`): "raises the player's level by
+// bringing up the level-up menu". The tallies as they stand become a pending level, picked with `levelup attr`
+// and taken at the next completed sleep (#7052). No vanilla script calls it (#7049 V11).
+fn advance_pc_level(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], ctx: &Context) -> Action {
+    if names_other_actor(ctx) {
+        return Action::Declined;
+    }
+    match player(world) {
+        Some(player) if crate::oblivion_skill_use::advance_level(world, player) => done("AdvancePCLevel"),
+        _ => Action::Declined,
+    }
+}
+
 /// Whether `ctx` names an actor other than the player: an explicit or defaulted `Ref.Cmd` whose reference
 /// is not the player's. No caller is the player's scope, as is the player's own reference (CS
 /// `[ActorID.]Cmd` syntax). The caller is NOT resolved to a live entity: an unloaded actor still is not
@@ -349,7 +389,9 @@ fn cmd_1189(_world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], 
 
 fn cmd_1164(world: &World, _fallout: bool, cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
     if let Some(mut menus) = world.try_resource_mut::<PendingMenus>() {
-        menus.0.push(MenuRequest { menu: if cmd == 0x1164 { "dialog subtitles" } else { "birthsign" }, form: 0 });
+        // CS *MenuTypes* 1029 BirthSign; the subtitle toggle opens no menu.
+        let (menu, code) = if cmd == 0x1164 { ("dialog subtitles", None) } else { ("birthsign", Some(1029)) };
+        menus.0.push(MenuRequest::coded(menu, code, 0));
     }
     done(format!("{cmd:#06x}"))
 }
@@ -401,8 +443,8 @@ fn cmd_1156(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx
     }
 }
 
-// Oblivion path grids: *EnableLinkedPathPoints* / *DisableLinkedPathPoints*: the engine paths on
-// navmeshes, so the flag is kept for the grid that would read it.
+// Oblivion path grids: *EnableLinkedPathPoints* / *DisableLinkedPathPoints*: the flag is stored, but
+// the grid router (`find_path_over_grid`, `pathgrid_path.rs`) does not read it yet.
 fn enable_linked_path_points(world: &World, _fallout: bool, cmd: u16, _args: &[ObScriptValue], ctx: &Context) -> Action {
     match caller(world, ctx) {
         Some((form, _)) => store(world, 0x112a, form, if cmd == 0x112a { 1.0 } else { 0.0 }),
@@ -598,7 +640,7 @@ fn cmd_1203(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ct
 fn cmd_11ef(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
     match (caller_or_player(world, ctx), crate::obscript_actor_values::actor_value_form(world, num(args, 0))) {
         (Some((_, actor)), Some(avif)) => match world.get::<byroredux_core::ecs::components::ActorValues>(actor).and_then(|v| v.get(avif).copied()) {
-            Some(value) => answer(value.base + value.set_override + value.permanent_mod),
+            Some(value) => answer(value.permanent()),
             None => Action::Declined,
         },
         _ => Action::Declined,
@@ -672,6 +714,9 @@ pub(crate) const STATE_COMMANDS: &[Command] = &[
     Command { id: 0x10f9, games: Games::Oblivion, needs_caller: false, handler: get_pc_fame },
     Command { id: 0x10fb, games: Games::Oblivion, needs_caller: false, handler: cmd_10fb },
     Command { id: 0x10f8, games: Games::Oblivion, needs_caller: false, handler: cmd_10f8 },
+    Command { id: 0x10d4, games: Games::Oblivion, needs_caller: false, handler: pc_skill },
+    Command { id: 0x10d5, games: Games::Oblivion, needs_caller: false, handler: advance_pc_level },
+    Command { id: 0x110f, games: Games::Oblivion, needs_caller: false, handler: pc_skill },
     Command { id: 0x1074, games: Games::Oblivion, needs_caller: false, handler: get_crime_gold },
     Command { id: 0x1075, games: Games::Oblivion, needs_caller: false, handler: cmd_1075 },
     Command { id: 0x1076, games: Games::Oblivion, needs_caller: false, handler: cmd_1076 },
@@ -698,7 +743,9 @@ pub(crate) const STATE_COMMANDS: &[Command] = &[
     Command { id: 0x1145, games: Games::Oblivion, needs_caller: false, handler: refresh_topic_list },
     Command { id: 0x110d, games: Games::Both, needs_caller: false, handler: set_quest_object },
     Command { id: 0x114e, games: Games::Oblivion, needs_caller: false, handler: cmd_114e },
-    Command { id: 0x10bd, games: Games::Fallout, needs_caller: false, handler: cmd_10bd },
+    // Oblivion's `SetPCSleepHours` is the same opcode (`Oblivion.exe` command table, `0x50bac0`): hours queued for the clock, and a
+    // completed sleep is what applies a pending level (#7052).
+    Command { id: 0x10bd, games: Games::Both, needs_caller: false, handler: cmd_10bd },
     Command { id: 0x10af, games: Games::Both, needs_caller: false, handler: is_pc_sleeping },
     Command { id: 0x1109, games: Games::Oblivion, needs_caller: false, handler: is_pc_sleeping },
     Command { id: 0x10ae, games: Games::Both, needs_caller: false, handler: wake_up_pc },

@@ -388,14 +388,20 @@ pub(crate) fn extension_player_entity_sync_system(world: &World, _dt: f32) {
     host.set_player_entity(player);
 }
 
-/// Publish the active engine-owned menu snapshot before provider callbacks run.
-pub(crate) fn extension_ui_menu_sync(world: &World, active_menu: Option<&str>, visible: bool) {
-    let snapshot = PapyrusUiMenuSnapshot {
-        active_menu: active_menu
-            .filter(|menu| visible && !menu.is_empty())
-            .map(str::to_owned),
-        visible,
-    };
+/// The open menus `UI.IsMenuOpen` answers from: every menu in the registry, bottom to top.
+pub(crate) fn ui_menu_snapshot(world: &World) -> PapyrusUiMenuSnapshot {
+    PapyrusUiMenuSnapshot {
+        open_menus: world
+            .try_resource::<byroredux_core::ecs::resources::MenuRegistry>()
+            .map(|registry| registry.entries().iter().map(|open| open.name.clone()).collect())
+            .unwrap_or_default(),
+    }
+}
+
+/// Publish the open menus `UI.IsMenuOpen` answers from before provider callbacks run: the menu
+/// registry's names, a native page, a MenuXml document and a movie alike (M48 GUI-REG-002).
+pub(crate) fn extension_ui_menu_sync(world: &World) {
+    let snapshot = ui_menu_snapshot(world);
     let Some(slot) = world.try_resource::<ExtensionHostSlot>() else {
         return;
     };
@@ -697,7 +703,7 @@ pub(crate) fn extension_input_dispatch_system(world: &World, _dt: f32) {
                     return None;
                 };
                 Some(InputActionEvent {
-                    action: sdk_input_action(action),
+                    action: sdk_input_action(action)?,
                     phase,
                 })
             })

@@ -109,6 +109,24 @@ pub struct SeatedAnimationRestore {
     pub speed: f32,
 }
 
+impl SeatedAnimationRestore {
+    /// `clip_handle` value no clip registry hands out: the actor had **no** `AnimationPlayer` when it
+    /// was seated, so the seat inserted one (Skyrim's ambient actors only gain a player when something
+    /// plays on them) and un-seating must remove it rather than restore a clip. Kept in the existing
+    /// field so the saved shape does not change.
+    pub const NO_PLAYER_CLIP: u32 = u32::MAX;
+
+    /// The snapshot of an actor whose `AnimationPlayer` was inserted by the seat.
+    pub const fn inserted_player() -> Self {
+        Self { clip_handle: Self::NO_PLAYER_CLIP, local_time: 0.0, prev_time: 0.0, playing: true, speed: 1.0 }
+    }
+
+    /// Whether the seat inserted the actor's `AnimationPlayer` (see [`Self::NO_PLAYER_CLIP`]).
+    pub const fn player_was_inserted(&self) -> bool {
+        self.clip_handle == Self::NO_PLAYER_CLIP
+    }
+}
+
 impl Default for SeatedAnimationRestore {
     /// A neutral *playing* idle at normal speed — deliberately not
     /// `#[derive(Default)]`, which would give `playing: false, speed: 0.0`,

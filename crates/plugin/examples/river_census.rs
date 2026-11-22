@@ -78,11 +78,10 @@ fn main() -> anyhow::Result<()> {
             let cell = &cells[&grid];
             let watr = watr_edid(cell.water_type_form);
             *watr_hist.entry(watr.clone()).or_default() += 1;
-            if cell.water_height_is_explicit {
-                if let Some(h) = cell.water_height {
+            if cell.water_height_is_explicit
+                && let Some(h) = cell.water_height {
                     explicit_heights.push(h);
                 }
-            }
 
             let mut per_cat: HashMap<&'static str, Vec<f32>> = HashMap::new();
             for r in &cell.references {

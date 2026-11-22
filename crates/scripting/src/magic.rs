@@ -52,7 +52,42 @@ pub struct CanonicalSpell {
     /// Every effect of the spell that goes on its target ([`CastEffect::lands`]), for `Cast` /
     /// `CastImmediateOnSelf` and an ability's effects (see `magic_effects`).
     pub effects: Vec<crate::magic_effects::CastEffect>,
+    /// What a player's cast needs beyond those effects: the whole authored effect list with its costs and
+    /// ranges, and the spell header. `None` where the game's effects carry no range (everything but Oblivion).
+    pub cast: Option<SpellCastData>,
 }
+
+/// A spell as the player's cast sees it (player-spellcasting PRD §3 rows 7 and 10): the spell header and every effect
+/// as authored, including the ones the runtime does not model, because the cost and the school count them all.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SpellCastData {
+    /// The spell's name for reports (its full name, else its editor id).
+    pub name: String,
+    pub spell_type: SpellType,
+    /// The stored `SPIT` cost: the spell's cost only when `manual_cost` (the original recomputes the rest).
+    pub stored_cost: u32,
+    /// The stored `SPIT` mastery level, 0 Novice to 4 Master: the tier a Manual Spell Cost spell requires.
+    pub level: u8,
+    /// `SPIT` flag bit 0, `Manual Spell Cost`.
+    pub manual_cost: bool,
+    /// Every effect with the numbers the cost, the school and the range read.
+    pub effects: Vec<byroredux_core::character::EffectCostInput>,
+    /// The projectile speed multiplier of the first Target-range effect's `MGEF` (`DATA` @28, "a multiplier of the base
+    /// speed", CS wiki *Magic Effects*), 0 for a spell with none: the speed the spell flies at is
+    /// [`SpellCastModel::projectile_speed`](byroredux_core::character::SpellCastModel::projectile_speed) of it (PSC-TGT-003).
+    pub target_speed_multiplier: f32,
+}
+
+impl SpellCastData {
+    /// The `(stored cost, level)` a [`SpellCastModel`](byroredux_core::character::SpellCastModel) reads for a Manual
+    /// Spell Cost spell, `None` for an auto-calculated one.
+    pub fn manual(&self) -> Option<(u32, u8)> {
+        self.manual_cost.then_some((self.stored_cost, self.level))
+    }
+}
+
+/// `SPIT` flag bit 0 on Oblivion (xEdit TES4 `SPIT`): the stored cost is the spell's cost.
+const SPELL_FLAG_MANUAL_COST: u32 = 1;
 
 /// Every spell of the loaded plugin set, canonical. Installed at ESM load;
 /// immutable afterwards.
@@ -83,6 +118,11 @@ impl SpellCatalog {
     pub fn from_canonical(spells: HashMap<u32, CanonicalSpell>) -> Self {
         Self { spells }
     }
+
+    /// Add or replace one already-translated spell (tests and tools).
+    pub fn insert_canonical(&mut self, form_id: u32, spell: CanonicalSpell) {
+        self.spells.insert(form_id, spell);
+    }
 }
 
 /// Translate one spell (see the module doc for what is kept).
@@ -112,7 +152,7 @@ pub fn canonical_spell(index: &EsmIndex, form_id: u32) -> CanonicalSpell {
             let resolve = |reference| index.resolve_actor_value(reference);
             match mgef.archetype {
                 Some(MagicArchetype::ValueModifier | MagicArchetype::PeakValueModifier) => {
-                    if let Some(actor_value) = mgef.primary_actor_value.and_then(resolve) {
+                    if let Some(actor_value) = index.effect_actor_value(mgef, effect).and_then(resolve) {
                         constant_modifiers.push(ConstantModifier {
                             actor_value,
                             amount,
@@ -147,7 +187,49 @@ pub fn canonical_spell(index: &EsmIndex, form_id: u32) -> CanonicalSpell {
         constant,
         constant_modifiers,
         effects,
+        cast: spell_cast_data(index, spell),
     }
+}
+
+/// The spell's cast data: `None` unless every effect carries a range (Oblivion's `EFIT`), so a game whose delivery
+/// is not decoded never answers a cost it cannot compute.
+fn spell_cast_data(index: &EsmIndex, spell: &byroredux_plugin::esm::records::SpelRecord) -> Option<SpellCastData> {
+    use byroredux_core::character::{EffectCostInput, EffectRange};
+    if spell.effects.is_empty() {
+        return None;
+    }
+    let mut target_speed = None;
+    let effects = spell
+        .effects
+        .iter()
+        .map(|item| {
+            let range = EffectRange::from_raw(item.range?)?;
+            let mgef = index.resolve_magic_effect(item.effect_form_id);
+            // A script effect's `SCIT` school wins over its MGEF's (the executable's `0x412f20`).
+            let school = item.script_school.or(mgef.map(|mgef| mgef.magic_school as u32));
+            if range == EffectRange::Target && target_speed.is_none() {
+                target_speed = Some(mgef.map_or(0.0, |mgef| mgef.projectile_speed));
+            }
+            Some(EffectCostInput {
+                base_cost: mgef.map_or(0.0, |mgef| mgef.base_cost),
+                magnitude: item.magnitude,
+                duration: item.duration as f32,
+                area: item.area as f32,
+                range,
+                mgef_flags: mgef.map_or(0, |mgef| mgef.effect_flags),
+                school: school.filter(|school| *school <= 5).map(|school| school as u8),
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(SpellCastData {
+        name: if spell.full_name.is_empty() { spell.editor_id.clone() } else { spell.full_name.clone() },
+        spell_type: spell.spell_type,
+        stored_cost: spell.cost,
+        level: spell.level,
+        manual_cost: spell.spell_flags & SPELL_FLAG_MANUAL_COST != 0,
+        effects,
+        target_speed_multiplier: target_speed.unwrap_or(0.0),
+    })
 }
 
 /// The spells an actor carries, in the order they arrived: its record's and
@@ -331,6 +413,9 @@ pub fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
     // carries the permanent changes those spells made, so the two must
     // round-trip together.
     registry.register_component::<SpellList>("SpellList");
+    // Player-spellcasting (PSC-RDY-004) — the player's readied spell (a spell form id), registered after `SpellList`.
+    // Replacing: a saved absence clears a live readied spell on the process-lifetime player.
+    registry.register_replacing_component::<crate::player_cast::ReadiedSpell>("ReadiedSpell");
 }
 
 #[cfg(test)]
@@ -391,7 +476,8 @@ mod tests {
                     magnitude,
                     area: 0,
                     duration: 0,
-                    script_form_id: 0, conditions: Vec::new(),
+                    actor_value: None,
+                    script_form_id: 0, range: None, script_school: None, conditions: Vec::new(),
                 })
                 .collect(),
             ..Default::default()
@@ -524,6 +610,28 @@ mod tests {
             "an Oblivion EFID code must resolve through magic_effects_by_code (#5084), \
              not silently no-op in the FormID-keyed map"
         );
+    }
+
+    #[test]
+    fn oblivion_fortify_skill_uses_the_effect_items_actor_value() {
+        use byroredux_plugin::esm::reader::{GlobalSlot, SubRecord};
+        let mut index = EsmIndex { game: GameKind::Oblivion, ..Default::default() };
+        index.install_oblivion_actor_values(GlobalSlot::Regular(2)).unwrap();
+        let mut data = vec![0u8; 36];
+        data[..4].copy_from_slice(&(MGEF_FLAG_RECOVER | (1 << 19)).to_le_bytes());
+        let effect = byroredux_plugin::esm::records::parse_mgef_for_game(0x10, &[SubRecord { sub_type: *b"DATA", data }], GameKind::Oblivion, &None);
+        index.magic_effects.insert(0x10, effect);
+        index.magic_effects_by_code.insert(*b"FOSK", 0x10);
+        let mut ability = spell(0x20, SpellType::Ability, &[(u32::from_le_bytes(*b"FOSK"), 12.0)]);
+        ability.effects[0].actor_value = Some(ActorValueRef::Index(31));
+        index.spells.insert(0x20, ability);
+        let sneak = index.actor_value_form_id("Sneak").unwrap();
+        let mut values = ActorValues::from_pairs([(sneak, 25.0)]);
+        let canonical = canonical_spell(&index, 0x20);
+        apply_modifiers(&mut values, &canonical.constant_modifiers, 1.0);
+        assert_eq!(values.current(sneak), 37.0);
+        apply_modifiers(&mut values, &canonical.constant_modifiers, -1.0);
+        assert_eq!(values.current(sneak), 25.0);
     }
 
     /// #4415 — AddSpell applies a constant spell's changes to the permanent

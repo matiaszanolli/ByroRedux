@@ -8,7 +8,7 @@
 
 use super::{
     fallout3_ruleset_with_gmst, fallout4_ruleset_with_gmst, falloutnv_ruleset_with_gmst, skyrim_ruleset, CharacterRuleset, CrimeModel,
-    SkillSet, StanceModel, VatsModel, ArmorModel,
+    SkillSet, SpellCastModel, StanceModel, VatsModel, ArmorModel, ArmorRatingModel, BlockModel, BowModel, FallModel,
 };
 
 /// A sourced FO3/FNV NPC Health curve (#5238): the record's `DATA` Base
@@ -106,6 +106,10 @@ pub enum NpcStatModel {
     /// [`CharacterRulesProfile::creature_stat_model`], so consumers still
     /// branch on record kind rather than on game identity.
     CreatureData,
+    /// Oblivion's stored or class-calculated NPC stats.
+    OblivionNpc,
+    /// Oblivion's creature-specific DATA and aggregate skill values.
+    OblivionCreature,
 }
 
 impl NpcStatModel {
@@ -212,13 +216,9 @@ pub struct BarterModel {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RulesetBuilder {
-    /// No runtime ruleset. Oblivion is the only *wired* game that lands
-    /// here, and deliberately: its actor values predate `AVIF`, so
-    /// `oblivion_ruleset`'s `resolve` closure has nothing to resolve
-    /// against until a legacy actor-value resolver exists (#3768). Read
-    /// this arm as blocked, not as an oversight — the Skyrim arm below was
-    /// missing for the opposite reason and that was a real gap (#3848).
+    /// No runtime ruleset has been captured for this profile.
     None,
+    Oblivion,
     Fallout3,
     FalloutNewVegas,
     Fallout4,
@@ -268,8 +268,8 @@ pub struct CharacterRulesProfile {
     /// for `body_condition_base`): a future family divergence or new game
     /// is a profile-row edit. The editor ids resolve through
     /// `EsmIndex::actor_value_form_id` — a pool the game does not author
-    /// (or a profile with no resolver yet, Oblivion pre-#3768) drops out
-    /// per candidate rather than erroring.
+    /// drops out per candidate rather than erroring (Oblivion's resolve
+    /// through the engine-supplied roster, #7010).
     vital_pools: &'static [(&'static str, &'static str)],
     /// The radiation gauge as `(HUD label, AVIF editor id)`: an accumulating
     /// value drawn against the master's highest radiation sickness stage
@@ -327,13 +327,32 @@ pub struct CharacterRulesProfile {
     /// (`byroredux/src/armor.rs`) never tests the game: it reads the installed
     /// `ArmorModel` resource, which exists only where this row does.
     armor: Option<ArmorModel>,
+    /// Player-spellcasting PRD (PSC-CST-008) — the spell-cast rules (effect cost, mastery tier, school, Fatigue),
+    /// where a player cast action is sourced and built (Oblivion). A row of its own so the cast code never tests
+    /// the game: it reads the installed `SpellCastModel` resource, which exists only where this row does.
+    spell_cast: Option<SpellCastModel>,
+    /// Player-archery PRD (BOW-MOD-001) — the bow's rules (draw, speed, range, tilt, default trajectory), where a
+    /// player bow shot is sourced and built (Oblivion and Skyrim). A row of its own so the shot code never tests the
+    /// game: it reads the installed `BowModel` resource, which exists only where this row does.
+    bow: Option<BowModel>,
+    /// #7054 — the block rules (what a shield, a weapon or bare hands stops), where Block is a modelled defense
+    /// (Oblivion). A row of its own so the damage path never tests the game: it reads the installed `BlockModel`.
+    block: Option<BlockModel>,
+    /// #7056 — the fall-damage rules (`fJumpFall*`), where a fall hurts the player (Oblivion). A row of its own so the
+    /// controller never tests the game: it reads the installed `FallModel`.
+    fall: Option<FallModel>,
+    /// Oblivion's armor rating and Resist Normal Weapons (the share of a weapon hit that gets through), where modelled. A row
+    /// of its own, beside Skyrim's `armor`: the damage path reads the installed `ArmorRatingModel` and never tests the game.
+    armor_rating: Option<ArmorRatingModel>,
     /// M65 (SNK-STN-005) — where the speed in the sneak stance comes from.
     /// Every game has the stance (PRD Q2); a row without a source is
     /// [`StanceModel::NONE`], which leaves the speed unscaled.
     stance: StanceModel,
     /// M65 (SNK-DET-002) — which detection formula the tick runs: FO3 / FNV
-    /// (Wave 1), Oblivion and Skyrim (Wave 2); Fallout 4 and Starfield wait on
-    /// a source (Q2), so they answer from the sight test.
+    /// (Wave 1), Oblivion and Skyrim (Wave 2), Fallout 4 (#6996) and Starfield
+    /// (#7046), the last two transcribed from their executables
+    /// (`docs/engine/sneak-detection.md`). Fallout 76 and the unsupported
+    /// profile answer from the sight test (`StealthKind::SightOnly`).
     stealth: crate::stealth::StealthKind,
     /// M65 (SNK-HUD-002, -005) — the detection indicator's table, its drawing
     /// and Starfield's skill gate (`crate::stealth::indicator`). Fallout 76 has
@@ -366,6 +385,11 @@ impl CharacterRulesProfile {
         crime: None,
         vats: None,
         armor: None,
+        spell_cast: None,
+        bow: None,
+        block: None,
+        fall: None,
+        armor_rating: None,
         stance: StanceModel::NONE,
         stealth: crate::stealth::StealthKind::SightOnly,
         indicator: crate::stealth::IndicatorModel::NONE,
@@ -374,15 +398,13 @@ impl CharacterRulesProfile {
     pub const OBLIVION: Self = Self {
         name: "Oblivion",
         skills: SkillSet::OBLIVION,
-        npc_stats: NpcStatModel::None,
-        creature_stats: NpcStatModel::None,
+        npc_stats: NpcStatModel::OblivionNpc,
+        creature_stats: NpcStatModel::OblivionCreature,
         body_condition_base: None,
-        // Oblivion authors no AVIF records, so every candidate drops out
-        // at resolution until #3768's pre-AVIF resolver lands — the
-        // roster states the intent, the resolver gates reality.
+        // The loader supplies Oblivion's executable-defined actor values.
         vital_pools: &[("Health", "Health"), ("Magicka", "Magicka"), ("Fatigue", "Fatigue")],
         radiation_gauge: None,
-        ruleset: RulesetBuilder::None,
+        ruleset: RulesetBuilder::Oblivion,
         over_encumbered: OverEncumberedRule::None,
         kill_experience: false,
         // Oblivion.exe loads it as a constant beside the name.
@@ -394,6 +416,11 @@ impl CharacterRulesProfile {
         crime: Some(CrimeModel::OBLIVION),
         vats: None,
         armor: None,
+        spell_cast: Some(SpellCastModel::OBLIVION),
+        bow: Some(BowModel::OBLIVION),
+        block: Some(BlockModel::OBLIVION),
+        fall: Some(FallModel::OBLIVION),
+        armor_rating: Some(ArmorRatingModel::OBLIVION),
         stance: StanceModel::OBLIVION,
         stealth: crate::stealth::StealthKind::Oblivion,
         indicator: crate::stealth::IndicatorModel::OBLIVION,
@@ -431,6 +458,11 @@ impl CharacterRulesProfile {
         crime: None,
         vats: Some(VatsModel::FALLOUT3),
         armor: None,
+        spell_cast: None,
+        bow: None,
+        block: None,
+        fall: None,
+        armor_rating: None,
         stance: StanceModel::FALLOUT,
         stealth: crate::stealth::StealthKind::Fallout3,
         indicator: crate::stealth::IndicatorModel::FALLOUT,
@@ -473,6 +505,11 @@ impl CharacterRulesProfile {
         crime: None,
         vats: Some(VatsModel::FALLOUT_NV),
         armor: None,
+        spell_cast: None,
+        bow: None,
+        block: None,
+        fall: None,
+        armor_rating: None,
         stance: StanceModel::FALLOUT,
         stealth: crate::stealth::StealthKind::FalloutNv,
         indicator: crate::stealth::IndicatorModel::FALLOUT,
@@ -489,7 +526,7 @@ impl CharacterRulesProfile {
         creature_stats: NpcStatModel::None,
         // #3170 / #3848 — Skyrim was the first family wired to
         // `LevelingModel::with_gmst` (`SkillXp`); the Fallout `XpCurve` arm
-        // followed in #5915, and Oblivion falls through `RulesetBuilder::None`.
+        // followed in #5915; Oblivion uses its skill-use model.
         body_condition_base: None,
         vital_pools: &[("Health", "Health"), ("Magicka", "Magicka"), ("Stamina", "Stamina")],
         radiation_gauge: None,
@@ -518,6 +555,11 @@ impl CharacterRulesProfile {
         crime: Some(CrimeModel::SKYRIM),
         vats: None,
         armor: Some(ArmorModel::SKYRIM),
+        spell_cast: None,
+        bow: Some(BowModel::SKYRIM),
+        block: None,
+        fall: None,
+        armor_rating: None,
         stance: StanceModel::SKYRIM,
         stealth: crate::stealth::StealthKind::Skyrim,
         indicator: crate::stealth::IndicatorModel::SKYRIM,
@@ -561,8 +603,14 @@ impl CharacterRulesProfile {
         crime: None,
         vats: None,
         armor: None,
+        spell_cast: None,
+        bow: None,
+        block: None,
+        fall: None,
+        armor_rating: None,
         stance: StanceModel::FALLOUT4,
-        stealth: crate::stealth::StealthKind::SightOnly,
+        // `Fallout4.exe`'s detection (#6996).
+        stealth: crate::stealth::StealthKind::Fallout4,
         indicator: crate::stealth::IndicatorModel::FALLOUT4,
     };
 
@@ -595,6 +643,11 @@ impl CharacterRulesProfile {
         crime: None,
         vats: None,
         armor: None,
+        spell_cast: None,
+        bow: None,
+        block: None,
+        fall: None,
+        armor_rating: None,
         stance: StanceModel::NONE,
         stealth: crate::stealth::StealthKind::SightOnly,
         indicator: crate::stealth::IndicatorModel::NONE,
@@ -633,8 +686,13 @@ impl CharacterRulesProfile {
         crime: None,
         vats: None,
         armor: None,
+        spell_cast: None,
+        bow: None,
+        block: None,
+        fall: None,
+        armor_rating: None,
         stance: StanceModel::NONE,
-        stealth: crate::stealth::StealthKind::SightOnly,
+        stealth: crate::stealth::StealthKind::Starfield,
         indicator: crate::stealth::IndicatorModel::STARFIELD,
     };
 
@@ -669,9 +727,10 @@ impl CharacterRulesProfile {
     /// How a `CREA`-family actor obtains its stats under this profile.
     ///
     /// [`NpcStatModel::None`] on every game that has no separate creature
-    /// record class (Skyrim onward folded creatures into `NPC_`), and on
-    /// Oblivion, whose `CREA` `DATA` is a different struct this has not
-    /// been sourced for.
+    /// record class (Skyrim onward folded creatures into `NPC_`). FO3/FNV read
+    /// `CREA` `DATA` through [`NpcStatModel::CreatureData`]; Oblivion's
+    /// different `CREA` `DATA` through [`NpcStatModel::OblivionCreature`]
+    /// (#7010, `oblivion_population`).
     #[must_use]
     pub const fn creature_stat_model(self) -> NpcStatModel {
         self.creature_stats
@@ -699,7 +758,8 @@ impl CharacterRulesProfile {
     }
 
     /// #5921 — the engine's `fEssentialDeathTime` default, `None` where the
-    /// game has no bleedout recovery.
+    /// executable carries no such setting. Not "no bleedout recovery": see the
+    /// field doc (#6259, Starfield authors its recovery data instead).
     #[must_use]
     pub const fn essential_death_time_secs(self) -> Option<f32> {
         self.essential_death_time_secs
@@ -712,7 +772,8 @@ impl CharacterRulesProfile {
     }
 
     /// What a crime costs the criminal, `None` where no crime model is
-    /// sourced and wired (every game but Oblivion).
+    /// sourced and wired. Oblivion and Skyrim carry one (`CrimeModel::OBLIVION`,
+    /// `CrimeModel::SKYRIM`); FO3/FNV crime is faction-based and unmodelled.
     #[must_use]
     pub const fn crime(self) -> Option<CrimeModel> {
         self.crime
@@ -725,12 +786,45 @@ impl CharacterRulesProfile {
         self.vats
     }
 
-    /// #6567 — the armor-rating model's compiled-in defaults, `None` where
-    /// the game has no sourced and wired armor rating (everything but
-    /// Skyrim; Fallout uses Damage Threshold / Resistance instead).
+    /// #6567 — Skyrim's armor-rating model's compiled-in defaults, `None` on
+    /// every other game (Fallout uses Damage Threshold / Resistance; Oblivion's
+    /// armor rating is its own [`Self::armor_rating`] row, a different model).
     #[must_use]
     pub const fn armor(self) -> Option<ArmorModel> {
         self.armor
+    }
+
+    /// The spell-cast rules' compiled-in defaults, `None` where no player cast action is sourced and built
+    /// (everything but Oblivion; PRD player-spellcasting Q1).
+    #[must_use]
+    pub const fn spell_cast(self) -> Option<SpellCastModel> {
+        self.spell_cast
+    }
+
+    /// The bow's compiled-in defaults, `None` where no player bow shot is sourced and built (everything but
+    /// Oblivion and Skyrim; PRD player-archery Q1).
+    #[must_use]
+    pub const fn bow(self) -> Option<BowModel> {
+        self.bow
+    }
+
+    /// The block rules' compiled-in defaults, `None` where Block is not a modelled defense (everything but Oblivion).
+    #[must_use]
+    pub const fn block(self) -> Option<BlockModel> {
+        self.block
+    }
+
+    /// The fall-damage rules' compiled-in defaults, `None` where the engine models no fall damage (everything but
+    /// Oblivion).
+    #[must_use]
+    pub const fn fall(self) -> Option<FallModel> {
+        self.fall
+    }
+
+    /// Oblivion's armor-rating rules' compiled-in defaults, `None` everywhere else (Skyrim's is [`Self::armor`]).
+    #[must_use]
+    pub const fn armor_rating(self) -> Option<ArmorRatingModel> {
+        self.armor_rating
     }
 
     /// M65 (SNK-STN-005) — the sneak-stance speed source.
@@ -791,6 +885,13 @@ impl CharacterRulesProfile {
             RulesetBuilder::FalloutNewVegas => falloutnv_ruleset_with_gmst(resolve, &gmst),
             RulesetBuilder::Fallout4 => fallout4_ruleset_with_gmst(resolve, &gmst),
             RulesetBuilder::Skyrim => skyrim_ruleset(resolve),
+            // The original zeroes the `Player` record's stored pools when it loads (`Oblivion.exe` `0x5240b2`), so
+            // the player's Health (`End x fPCBaseHealthMult`), Magicka (`Int x (1 + fPCBaseMagickaMult)`) and
+            // Fatigue (`Str + End + Agi + Wil`) are their formulas (#7037, #7041). The original's level-up adds
+            // a per-level Health gain to the stored term (`0x66c3e0`). The level-up is wired (#7052,
+            // `oblivion_skill_use.rs`): the gain lands in `ActorValue::stored` (#7044), apart from this
+            // refreshed base, so the refresh does not erase it.
+            RulesetBuilder::Oblivion => super::tes::oblivion_ruleset_with_gmst(resolve, &gmst),
             RulesetBuilder::None => return None,
         };
         ruleset.leveling = ruleset
@@ -798,6 +899,38 @@ impl CharacterRulesProfile {
             .with_gmst(gmst)
             .raise_cap(self.level_cap_raise(plugin_files));
         Some(ruleset)
+    }
+
+    /// Resolve this profile's TES pool-regeneration lanes from its records.
+    ///
+    /// #7197 — the lanes' rates are the load order's `fFatigueReturnBase` / `fFatigueReturnMult` /
+    /// `fMagickaReturnBase` / `fMagickaReturnMult` over the documented defaults
+    /// ([`TesPoolRegen::with_gmst`](super::regen::TesPoolRegen::with_gmst)), and the Fatigue term reads Endurance.
+    pub fn build_tes_pool_regen(
+        self,
+        resolve: impl Fn(&str) -> Option<u32>,
+        gmst: impl Fn(&str) -> Option<f32>,
+    ) -> Option<super::regen::PoolRegenConfig> {
+        if self.npc_stats != NpcStatModel::OblivionNpc { return None; }
+        Some(super::regen::PoolRegenConfig {
+            fatigue_avif: resolve("Fatigue"),
+            magicka_avif: resolve("Magicka"),
+            willpower_avif: resolve("Willpower"),
+            stunted_magicka_avif: resolve("StuntedMagicka"),
+            action_points: None,
+            tes_rates: Some(super::regen::TesPoolRegen {
+                endurance_avif: resolve("Endurance"),
+                ..super::regen::TesPoolRegen::OBLIVION.with_gmst(gmst)
+            }),
+        })
+    }
+
+    /// The starting-disposition policy selected at the character boundary.
+    pub fn build_disposition(self, gmst: impl Fn(&str) -> Option<f32>) -> Option<super::DispositionModel> {
+        match self.ruleset {
+            RulesetBuilder::Oblivion => Some(super::DispositionModel::OBLIVION.with_gmst(gmst)),
+            _ => None,
+        }
     }
 }
 
@@ -817,6 +950,46 @@ mod tests {
     /// perk entry points), pinned per profile. Each row is an exhaustive
     /// struct literal, so a new profile cannot compile without stating every
     /// one; this pin keeps the stated values from drifting.
+    /// #7203 — the player rule rows and the M65 stealth rows, pinned per profile. Each is an exhaustive struct literal,
+    /// so a profile cannot compile without stating them; this pin keeps the stated values from moving (a `block` row
+    /// moved onto the Skyrim profile, say, breaks here and nowhere else).
+    #[test]
+    fn player_and_stealth_rule_rows_are_stated_on_every_profile() {
+        use crate::stealth::{IndicatorModel, StealthKind};
+        let p = CharacterRulesProfile::OBLIVION;
+        assert_eq!(
+            (p.spell_cast(), p.bow(), p.block(), p.fall(), p.armor_rating()),
+            (
+                Some(SpellCastModel::OBLIVION),
+                Some(BowModel::OBLIVION),
+                Some(BlockModel::OBLIVION),
+                Some(FallModel::OBLIVION),
+                Some(ArmorRatingModel::OBLIVION)
+            )
+        );
+        assert_eq!((p.stance(), p.stealth(), p.indicator()), (StanceModel::OBLIVION, StealthKind::Oblivion, IndicatorModel::OBLIVION));
+        let s = CharacterRulesProfile::SKYRIM;
+        assert_eq!((s.spell_cast(), s.bow(), s.block(), s.fall(), s.armor_rating()), (None, Some(BowModel::SKYRIM), None, None, None));
+        assert_eq!((s.stance(), s.stealth(), s.indicator()), (StanceModel::SKYRIM, StealthKind::Skyrim, IndicatorModel::SKYRIM));
+        let rest = [
+            (CharacterRulesProfile::NONE, StanceModel::NONE, StealthKind::SightOnly, IndicatorModel::NONE),
+            (CharacterRulesProfile::FALLOUT3, StanceModel::FALLOUT, StealthKind::Fallout3, IndicatorModel::FALLOUT),
+            (CharacterRulesProfile::FALLOUT_NEW_VEGAS, StanceModel::FALLOUT, StealthKind::FalloutNv, IndicatorModel::FALLOUT),
+            (CharacterRulesProfile::FALLOUT4, StanceModel::FALLOUT4, StealthKind::Fallout4, IndicatorModel::FALLOUT4),
+            (CharacterRulesProfile::FALLOUT76, StanceModel::NONE, StealthKind::SightOnly, IndicatorModel::NONE),
+            (CharacterRulesProfile::STARFIELD, StanceModel::NONE, StealthKind::Starfield, IndicatorModel::STARFIELD),
+        ];
+        for (profile, stance, stealth, indicator) in rest {
+            assert_eq!(
+                (profile.spell_cast(), profile.bow(), profile.block(), profile.fall(), profile.armor_rating()),
+                (None, None, None, None, None),
+                "{}",
+                profile.name()
+            );
+            assert_eq!((profile.stance(), profile.stealth(), profile.indicator()), (stance, stealth, indicator), "{}", profile.name());
+        }
+    }
+
     #[test]
     fn per_game_rule_rows_are_stated_on_every_profile() {
         use OverEncumberedRule as E;
@@ -1237,20 +1410,128 @@ mod tests {
         }
     }
 
-    /// #3848 — Oblivion's `RulesetBuilder::None` is a blocked arm, not a
-    /// forgotten one, and the difference is worth pinning: the Skyrim arm
-    /// was missing for five weeks precisely because a reader could not tell
-    /// the two cases apart from the enum's shape. If Oblivion ever gains a
-    /// legacy actor-value resolver (#3768), this test is the thing that
-    /// should fail and be deleted.
     #[test]
-    fn oblivion_still_has_no_runtime_ruleset_and_that_is_deliberate() {
+    fn oblivion_builds_its_runtime_ruleset() {
         assert!(
             CharacterRulesProfile::OBLIVION
                 .build_ruleset(|_| None, |_| None, &[])
-                .is_none(),
-            "Oblivion is blocked on a pre-AVIF actor-value resolver (#3768); if it \
-             now builds one, wire it deliberately rather than letting this pass",
+                .is_some(),
+        );
+        // #7198 — the profile hands the load order's settings to the player's pool rows.
+        let resolve = |name: &str| match name {
+            "Magicka" => Some(0x91),
+            "Intelligence" => Some(0x09),
+            _ => None,
+        };
+        let tuned = CharacterRulesProfile::OBLIVION
+            .build_ruleset(resolve, |name| (name == "fPCBaseMagickaMult").then_some(2.0), &[])
+            .unwrap();
+        let avs = crate::ecs::components::ActorValues::from_pairs([(0x09, 40.0)]);
+        assert_eq!(tuned.derived_value(0x91, &avs, 1), Some(120.0), "40 x (1 + 2)");
+    }
+
+    /// #7037, #7041 — the player's Health, Magicka and Fatigue are their formulas (`Oblivion.exe` `0x5e2210`;
+    /// the original zeroes the record's stored pools at `0x5240b2`), so the record's authored values are
+    /// replaced and nothing is retained.
+    #[test]
+    fn oblivion_profile_refreshes_all_three_player_pools() {
+        use crate::ecs::components::ActorValues;
+        let resolve = |name: &str| match name {
+            "Health" => Some(1), "Magicka" => Some(2), "Fatigue" => Some(3), "Intelligence" => Some(4),
+            "Endurance" => Some(5), "Strength" => Some(6), "Willpower" => Some(7), "Agility" => Some(8),
+            _ => None,
+        };
+        let rules = CharacterRulesProfile::OBLIVION.build_ruleset(resolve, |_| None, &[]).unwrap();
+        let mut values = ActorValues::from_pairs([
+            (1, 45.0), (2, 0.0), (3, 999.0), (4, 50.0), (5, 40.0), (6, 50.0), (7, 30.0), (8, 30.0),
+        ]);
+        assert_eq!(rules.player_only_output_avifs(), vec![1, 2, 3]);
+        assert!((1..=3).all(|pool| rules.is_player_derived_pool(pool)));
+        assert!(rules.refresh_player_only_bases(&mut values, 5));
+        assert_eq!(values.current(1), 80.0, "Health = 2 x Endurance replaces the authored 45");
+        assert_eq!(values.current(2), 100.0, "Magicka = 2 x Intelligence");
+        assert_eq!(values.current(3), 150.0, "Fatigue = Str + End + Agi + Wil replaces the authored 999");
+        // Fatigue and Health are drained and regenerated pools like Fallout's Action Points: the refresh moves
+        // the maximum (the base) and leaves the damage layer, which regeneration restores.
+        values.apply_damage(3, 50.0);
+        values.set_base(5, 50.0);
+        assert!(rules.refresh_player_only_bases(&mut values, 5));
+        assert_eq!((values.get(3).unwrap().undamaged(), values.current(3)), (160.0, 110.0), "End 50: maximum 160, 50 damage kept");
+        assert_eq!(values.current(1), 100.0, "Health follows Endurance");
+        values.restore(3, 50.0);
+        assert_eq!(values.current(3), 160.0);
+        values.set_base(5, 40.0);
+        values.set_base(4, 50.0);
+        assert!(rules.refresh_player_only_bases(&mut values, 5));
+        // It follows the input: a Fortify Intelligence ability reaches Magicka on the next refresh.
+        values.set_base(4, 60.0);
+        assert!(rules.refresh_player_only_bases(&mut values, 5));
+        assert_eq!(values.current(2), 120.0);
+    }
+
+    /// #7044 — the per-level Health gain is its own layer: it survives the per-frame refresh, and a Fortify Health
+    /// ability added and removed leaves it intact.
+    #[test]
+    fn oblivion_level_up_health_gains_survive_the_refresh_and_an_ability_coming_and_going() {
+        use crate::character::apply_oblivion_level_up_health;
+        use crate::ecs::components::ActorValues;
+        let resolve = |name: &str| match name {
+            "Health" => Some(1), "Magicka" => Some(2), "Fatigue" => Some(3), "Intelligence" => Some(4),
+            "Endurance" => Some(5), "Strength" => Some(6), "Willpower" => Some(7), "Agility" => Some(8),
+            _ => None,
+        };
+        let rules = CharacterRulesProfile::OBLIVION.build_ruleset(resolve, |_| None, &[]).unwrap();
+        let mut values = ActorValues::from_pairs([
+            (1, 0.0), (2, 0.0), (3, 0.0), (4, 50.0), (5, 40.0), (6, 50.0), (7, 30.0), (8, 30.0),
+        ]);
+        assert!(rules.refresh_player_only_bases(&mut values, 5));
+        assert_eq!(values.current(1), 80.0, "level 1: 2 x Endurance 40");
+        // Three levels, Endurance raised by +5 each time: gains of floor(4.5), floor(4.5 + 0.5), floor(5.0).
+        let mut gains = 0.0;
+        for endurance in [45.0, 50.0, 55.0] {
+            values.set_base(5, endurance);
+            gains += apply_oblivion_level_up_health(&mut values, 1, endurance as u16, crate::character::tes::OBLIVION_HEALTH_PER_ENDURANCE);
+            assert!(rules.refresh_player_only_bases(&mut values, 5), "the per-frame refresh runs every tick");
+            assert_eq!(values.current(1), 2.0 * endurance + gains, "base 2 x Endurance plus the accumulated gains");
+        }
+        assert_eq!(gains, 4.0 + 5.0 + 5.0);
+        // A Fortify Health ability adds and removes its share without touching the gains.
+        values.mod_permanent(1, 30.0);
+        assert_eq!(values.current(1), 110.0 + 14.0 + 30.0);
+        values.mod_permanent(1, -30.0);
+        rules.refresh_player_only_bases(&mut values, 5); // nothing to rewrite: the inputs did not move
+        assert_eq!((values.current(1), values.stored(1)), (110.0 + 14.0, 14.0), "the gains stay after the ability goes");
+        // Damage is separate from all of it.
+        values.apply_damage(1, 20.0);
+        rules.refresh_player_only_bases(&mut values, 5);
+        assert_eq!(values.get(1).unwrap().undamaged(), 124.0);
+    }
+
+    #[test]
+    fn oblivion_profile_resolves_pool_regeneration_inputs() {
+        let resolve = |name: &str| match name {
+            "Fatigue" => Some(1), "Magicka" => Some(2), "Willpower" => Some(3),
+            "StuntedMagicka" => Some(4), _ => None,
+        };
+        let config = CharacterRulesProfile::OBLIVION.build_tes_pool_regen(resolve, |_| None).unwrap();
+        assert_eq!((config.fatigue_avif, config.magicka_avif, config.willpower_avif, config.stunted_magicka_avif), (Some(1), Some(2), Some(3), Some(4)));
+        assert!(config.action_points.is_none());
+        assert!(CharacterRulesProfile::FALLOUT3.build_tes_pool_regen(resolve, |_| None).is_none());
+        // #7197 — unauthored settings keep the documented rates; authored ones replace them.
+        assert_eq!(config.tes_rates.map(|rates| rates.fatigue_base), Some(10.0));
+        let retuned = CharacterRulesProfile::OBLIVION
+            .build_tes_pool_regen(resolve, |name| match name {
+                "fFatigueReturnBase" => Some(4.0),
+                "fFatigueReturnMult" => Some(0.1),
+                "fMagickaReturnBase" => Some(1.0),
+                "fMagickaReturnMult" => Some(0.05),
+                _ => None,
+            })
+            .and_then(|config| config.tes_rates)
+            .unwrap();
+        assert_eq!(
+            (retuned.fatigue_base, retuned.fatigue_endurance_mult, retuned.magicka_base, retuned.magicka_willpower_mult),
+            (4.0, 0.1, 1.0, 0.05)
         );
     }
 

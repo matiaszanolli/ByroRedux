@@ -385,6 +385,11 @@ pub const INSTANCE_FLAG_LOD_BLOCK: u32 = 1 << 9;
 /// moving NPC no longer drops the whole screen out of the parked tail.
 /// Assembled for every draw, rasterized or not: rays hit off-screen movers.
 pub const INSTANCE_FLAG_MOVED_THIS_FRAME: u32 = 1 << 10;
+/// TSD-4 terrain displacement patch (#7152): the draw of a patch mesh, whose
+/// geometry already carries the relief, so `triangle.frag` skips the TSD-3
+/// terrain parallax march on it (design §3.6: the two must not stack).
+/// Rasterizer-only; set from the reserved patch meshes, not the draw command.
+pub const INSTANCE_FLAG_TERRAIN_PATCH: u32 = 1 << 11;
 
 /// Engine-synthesized material kinds for [`GpuMaterial::material_kind`]
 /// (moved off `GpuInstance` in R1 Phase 6, #785).
@@ -638,6 +643,7 @@ mod tests {
             ("DIFFUSE_ALPHA", INSTANCE_FLAG_DIFFUSE_ALPHA),
             ("LOD_BLOCK", INSTANCE_FLAG_LOD_BLOCK),
             ("MOVED_THIS_FRAME", INSTANCE_FLAG_MOVED_THIS_FRAME),
+            ("TERRAIN_PATCH", INSTANCE_FLAG_TERRAIN_PATCH),
         ];
         for (i, (a_name, a)) in flags.iter().enumerate() {
             // Each flag is a single bit.

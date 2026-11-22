@@ -193,9 +193,9 @@ fn main() {
     // One worked example: how a level-4 quad's segments partition its triangles.
     if let Some(f) = archive.list_files().iter().find(|f| {
         f.to_ascii_lowercase().contains(".4.") && f.to_ascii_lowercase().ends_with(".bto")
-    }) {
-        if let Ok(bytes) = archive.extract(f) {
-            if let Ok(scene) = byroredux_nif::parse_nif(&bytes) {
+    })
+        && let Ok(bytes) = archive.extract(f)
+            && let Ok(scene) = byroredux_nif::parse_nif(&bytes) {
                 let mut pool = byroredux_core::string::StringPool::new();
                 println!("--- worked example: {f} ---");
                 for (i, m) in byroredux_nif::import::import_nif(&scene, &mut pool)
@@ -225,8 +225,6 @@ fn main() {
                     );
                 }
             }
-        }
-    }
     println!("--- distinct sub-mesh names ---");
     let mut rows: Vec<_> = submesh_names.into_iter().collect();
     rows.sort_by_key(|(_, c)| std::cmp::Reverse(*c));

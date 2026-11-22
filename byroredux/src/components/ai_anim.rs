@@ -45,13 +45,13 @@ impl Component for IdleResume {
 }
 
 /// M42.1 — the per-cell sit-**enter** clip `(handle, hold_time)`
-/// (`meshes\characters\_male\idleanims\chairskirt_leftenter.kf`), resolved once
+/// (FO3/FNV `meshes\characters\_male\idleanims\chairskirt_leftenter.kf`, Oblivion
+/// `chair_leftenter.kf`, Skyrim `chair_leftenter.hkx`), resolved once
 /// at cell load where the archive provider is available and read by
 /// `sandbox_seat_system` (which has no provider). `hold_time` is the clip
 /// duration; the seat system parks the player at `local_time = hold_time` with
-/// `playing = false` to hold the final seated frame. `None` for Skyrim+/Havok-
-/// animation games or when the clip isn't archived — those actors keep their
-/// idle and are not seated.
+/// `playing = false` to hold the final seated frame. `None` for FO4+ or when the
+/// clip isn't archived — those actors keep their idle and are not seated.
 #[derive(Default)]
 pub(crate) struct SandboxSitClip(pub(crate) Option<(u32, f32)>);
 impl Resource for SandboxSitClip {}

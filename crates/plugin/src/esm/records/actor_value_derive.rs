@@ -162,7 +162,8 @@ fn base_skill(governing: u8, luck: u8) -> f32 {
 /// two-endpoint comparison skipped) — see
 /// [`crate::equip::resolve_inherited_field`].
 ///
-/// Empty for every other game (Oblivion), a Skyrim NPC whose race has no
+/// Oblivion routes to `oblivion_population::derive` through its own stat
+/// models (#7010). Empty for FO76 / Starfield (no stat model), a Skyrim NPC whose race has no
 /// usable pool values, an FO4 NPC with no `PRPS`, or an FNV NPC whose class
 /// wasn't parsed. Individual missing Skyrim AVIFs are skipped independently.
 ///
@@ -195,6 +196,15 @@ pub fn derive_npc_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, f
 pub fn derive_resolved_actor_values(
     resolved: &crate::equip::ResolvedNpc<'_>,
     index: &EsmIndex,
+) -> Vec<(u32, f32)> {
+    derive_resolved_actor_values_with_player_level(resolved, index, None)
+}
+
+/// Population at spawn, with the current player level for level-offset actors.
+pub fn derive_resolved_actor_values_with_player_level(
+    resolved: &crate::equip::ResolvedNpc<'_>,
+    index: &EsmIndex,
+    player_level: Option<u16>,
 ) -> Vec<(u32, f32)> {
     let stats = resolved.stats;
     // #3480 — race is NOT a stat. It rides the independently-set "Use
@@ -229,6 +239,8 @@ pub fn derive_resolved_actor_values(
             health.with_gmst(|name| index.game_setting_float(name)),
         ),
         NpcStatModel::CreatureData => derive_creature_actor_values(stats, index),
+        NpcStatModel::OblivionNpc | NpcStatModel::OblivionCreature =>
+            super::oblivion_population::derive(resolved, index, player_level),
         NpcStatModel::None => Vec::new(),
     };
     // Skyrim's AIDT responsibility is the authored Morality AV consumed by
@@ -238,13 +250,11 @@ pub fn derive_resolved_actor_values(
     if let (Some(ai), Some(morality)) = (
         resolved.ai_data.ai_data,
         index.actor_value_form_id("Morality"),
-    ) {
-        if let Some(responsibility) = ai.responsibility {
-            if !values.iter().any(|(id, _)| *id == morality) {
+    )
+        && let Some(responsibility) = ai.responsibility
+            && !values.iter().any(|(id, _)| *id == morality) {
                 values.push((morality, responsibility as u8 as f32));
             }
-        }
-    }
     // #4447 — the body-condition seeding base is profile data
     // (`CharacterRulesProfile::body_condition_base`: FO3/FNV = 100 per the
     // GECK Stats List, every other family = none), not a `game ==` kind
@@ -254,22 +264,20 @@ pub fn derive_resolved_actor_values(
     // answer. Still gated on Health landing so the "unpopulated, not zero"
     // contract holds: a derivation that produced no Health is a shell and
     // gets no conditions either.
-    if let Some(condition_base) = index.character_rules.body_condition_base() {
-        if index
+    if let Some(condition_base) = index.character_rules.body_condition_base()
+        && index
             .health_actor_value_key()
             .is_some_and(|health| values.iter().any(|&(id, _)| id == health))
         {
             // GECK Stats List: body-condition AVs start at 100, independently of
             // actor health. Damage/restoration then use the same saved AV layers.
             for name in crate::consumables::BODY_CONDITION_VALUES {
-                if let Some(id) = index.actor_value_form_id(name) {
-                    if !values.iter().any(|&(key, _)| key == id) {
+                if let Some(id) = index.actor_value_form_id(name)
+                    && !values.iter().any(|&(key, _)| key == id) {
                         values.push((id, condition_base));
                     }
-                }
             }
         }
-    }
     values
 }
 
@@ -299,11 +307,10 @@ fn derive_creature_actor_values(npc: &NpcRecord, index: &EsmIndex) -> Vec<(u32, 
             out.push((fid, f32::from(stats.attributes[i])));
         }
     }
-    if stats.health > 0 {
-        if let Some(fid) = index.health_actor_value_key() {
+    if stats.health > 0
+        && let Some(fid) = index.health_actor_value_key() {
             out.push((fid, f32::from(stats.health)));
         }
-    }
     out
 }
 
@@ -1511,7 +1518,7 @@ mod tests {
         use crate::esm::records::actor::ACBS_PC_LEVEL_MULT;
         let path = crate::esm::test_paths::skyrim_se_esm();
         if !path.exists() {
-            eprintln!("Skipping skyrim_autocalc_pools_match_the_baked_dnam_pools: {} not found", path.display());
+            crate::esm::test_paths::require_or_skip(&format!("skyrim_autocalc_pools_match_the_baked_dnam_pools: {}", path.display()));
             return;
         }
         let index = crate::esm::parse_esm(&std::fs::read(&path).unwrap()).unwrap();
@@ -1933,7 +1940,7 @@ mod tests {
     fn fnv_authored_data_special_reproduces_the_wiki_hit_points() {
         let path = crate::esm::test_paths::fnv_esm();
         if !path.exists() {
-            eprintln!("Skipping: FalloutNV.esm not found at {}", path.display());
+            crate::esm::test_paths::require_or_skip(&format!("FalloutNV.esm ({})", path.display()));
             return;
         }
         let data = std::fs::read(&path).unwrap();
@@ -2007,14 +2014,13 @@ mod tests {
         assert!(derive_npc_actor_values(&npc, &index).is_empty());
     }
 
-    /// Oblivion's `CREA` `DATA` is a different struct that has not been
-    /// sourced, so its profile selects no creature model and the arm stays
-    /// closed rather than mis-decoding.
+    /// Oblivion uses its own sourced creature layout and must not reinterpret
+    /// an FO3/FNV creature block as if it were TES4 DATA.
     #[test]
-    fn oblivion_creatures_select_no_stat_model() {
+    fn oblivion_creatures_use_their_own_stat_model() {
         assert_eq!(
             CharacterRulesProfile::OBLIVION.creature_stat_model(),
-            byroredux_core::character::NpcStatModel::None,
+            byroredux_core::character::NpcStatModel::OblivionCreature,
         );
         let index = EsmIndex {
             character_rules: CharacterRulesProfile::OBLIVION,

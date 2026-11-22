@@ -24,7 +24,10 @@ struct StoredStack {
     instance: Option<ItemInstance>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A reference's parked state. In memory only: the saved wire shape is [`SavedReferenceState`], which differs in
+/// its actor-value fields (portable pairs); the "required: pre-vN saves are rejected" notes on the fields below
+/// describe the matching wire fields.
+#[derive(Debug, Clone)]
 struct ReferenceState {
     inventory: Option<Vec<StoredStack>>,
     equipment: Option<EquipmentSlots>,
@@ -166,14 +169,12 @@ impl ScriptState {
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+/// In memory only (O(1) lookup by pair); saved through [`SavedPersistentReferenceStates`], which writes both maps as
+/// `(pair, state)` rows because JSON cannot key an object by a struct. `scripts` is required there like the row
+/// fields: pre-v114 saves are rejected.
+#[derive(Debug, Default)]
 pub(crate) struct PersistentReferenceStates {
-    // JSON cannot encode a struct as an object key. Serialize stable pairs as
-    // rows, retaining O(1) lookup in the running engine.
-    #[serde(with = "pair_rows")]
     rows: HashMap<FormIdPair, ReferenceState>,
-    /// #6071 — required, like the row fields: pre-v114 saves are rejected.
-    #[serde(with = "pair_rows")]
     scripts: HashMap<FormIdPair, ScriptState>,
 }
 
@@ -205,6 +206,27 @@ struct SavedReferenceState {
 pub(crate) struct SavedPersistentReferenceStates {
     rows: Vec<(FormIdPair, SavedReferenceState)>,
     scripts: Vec<(FormIdPair, ScriptState)>,
+}
+
+impl PersistentReferenceStates {
+    /// SAVE-5 — dry-run the actor-value codecs over every parked row and report the rows that cannot be
+    /// saved, each with the parked reference's own pair. Inside `save_parked` the same failure surfaces from a
+    /// codec called with the placeholder entity 0, which names neither the row nor the right column.
+    pub(crate) fn actor_value_errors(&self, world: &World) -> Vec<(FormIdPair, byroredux_save::SaveError)> {
+        use byroredux_scripting::actor_value_save as codec;
+        let mut errors = Vec::new();
+        for (&pair, state) in &self.rows {
+            if let Some(values) = &state.actor_values
+                && let Err(error) = codec::save_values(world, 0, values) {
+                    errors.push((pair, error));
+                }
+            if let Some(effects) = &state.magic_effects
+                && let Err(error) = codec::save_active_effects(world, 0, effects) {
+                    errors.push((pair, error));
+                }
+        }
+        errors
+    }
 }
 
 pub(crate) fn save_parked(world: &World, store: &PersistentReferenceStates) -> Result<SavedPersistentReferenceStates, byroredux_save::SaveError> {
@@ -291,22 +313,6 @@ pub(crate) fn without_parked_state<T>(
         world.insert_resource(super::stream_snapshot::StreamStateSnapshots::default());
     }
     outcome
-}
-
-mod pair_rows {
-    use super::*;
-    pub(super) fn serialize<S: serde::Serializer, T: Serialize>(
-        rows: &HashMap<FormIdPair, T>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
-        rows.iter().collect::<Vec<_>>().serialize(serializer)
-    }
-    pub(super) fn deserialize<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
-        deserializer: D,
-    ) -> Result<HashMap<FormIdPair, T>, D::Error> {
-        let rows = Vec::<(FormIdPair, T)>::deserialize(deserializer)?;
-        Ok(rows.into_iter().collect())
-    }
 }
 
 fn identity(world: &World, entity: EntityId) -> Option<FormIdPair> {
@@ -649,9 +655,9 @@ pub(crate) fn restore(world: &mut World, entity: EntityId) -> bool {
         // reconcile seeds the ragdoll from it. Same divergence rule as the
         // stream snapshot, so a corpse that never left its placement is left
         // exactly on the authored pose.
-        if let Some((translation, rotation)) = state.corpse_pose {
-            if let Some(mut transforms) = world.query_mut::<byroredux_core::ecs::Transform>() {
-                if let Some(transform) = transforms.get_mut(entity) {
+        if let Some((translation, rotation)) = state.corpse_pose
+            && let Some(mut transforms) = world.query_mut::<byroredux_core::ecs::Transform>()
+                && let Some(transform) = transforms.get_mut(entity) {
                     if translation.distance(transform.translation)
                         > super::stream_snapshot::POSITION_DIVERGENCE_EPSILON
                     {
@@ -661,8 +667,6 @@ pub(crate) fn restore(world: &mut World, entity: EntityId) -> bool {
                         transform.rotation = rotation;
                     }
                 }
-            }
-        }
         world.insert(entity, Dead);
         // #5267 (GAME-D4-2026-10-05-01) — queue the death teardown for the
         // Late-stage sink (`reconcile_pending_dead_actors_system`) instead
@@ -804,7 +808,7 @@ const VANILLA_KILL_SCRIPT_PLUGINS: [&str; 12] = [
 /// provably-vanilla scripts.
 fn script_is_vanilla(script_form_id: u32, load_order: &LoadOrder) -> bool {
     load_order
-        .script_winner(script_form_id)
+        .record_winner(script_form_id)
         .or_else(|| super::load_order::plugin_for_form_id(script_form_id, load_order))
         .is_some_and(|plugin| VANILLA_KILL_SCRIPT_PLUGINS.contains(&plugin))
 }
@@ -927,8 +931,9 @@ pub(crate) fn script_killed_corpse_forms(
 /// editor-id strings across FNV's 4,495 `XLKR` placements on every
 /// budgeted resume).
 ///
-/// Valid for the process's load order, like `CharacterRuleset` — the
-/// order is fixed at boot, so there is nothing to invalidate.
+/// Valid for the load order it was computed under, like `CharacterRuleset`.
+/// `load_order::discard_stale_load_order_caches` drops it when a live load
+/// re-parses different masters (SAVE-2), so the next cell load recomputes it.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct ScriptKilledCorpseForms(pub std::sync::Arc<std::collections::HashSet<u32>>);
 
@@ -1308,6 +1313,7 @@ mod script_kill_tests {
             ownership: None,
             script_instance: None,
             lock: None,
+            open_by_default: false,
             water_velocity: None,
             item_count: None,
             initially_disabled: false,
@@ -1563,9 +1569,9 @@ mod script_kill_tests {
                         ..Default::default()
                     },
                 );
-                load_order.note_script_writer(form_id, 0);
+                load_order.note_record_writer(form_id, 0);
                 if patched {
-                    load_order.note_script_writer(form_id, 1);
+                    load_order.note_record_writer(form_id, 1);
                 }
             }
             for (npc, script) in [(0x0000_A001_u32, 0x0000_1111_u32), (0x0000_A003, 0x0000_4444)] {
@@ -2131,6 +2137,8 @@ mod tests {
                 recover: true,
             }),
             conditions: None,
+            range: Default::default(),
+            area: 0.0,
         };
         assert_eq!(start_effects(&world, npc, None, 0x99, &[buff], false), 1);
         magic_effect_system(&world, 0.0);
@@ -2227,7 +2235,7 @@ mod tests {
                 ticks: 0,
                 locals: Vec::new(),
                 ref_locals: Vec::new(),
-                suspended: false,
+                suspended: false, effect_index: 0,
             }]),
         );
         let trap = reference(&mut src, "Band.esm", 0x421);
@@ -2574,6 +2582,28 @@ mod tests {
     }
 
     #[test]
+    fn a_parked_row_with_an_unowned_actor_value_key_is_named_with_its_reference() {
+        use byroredux_core::form_id::ENGINE_PLUGIN_ID;
+        use byroredux_plugin::esm::reader::GlobalSlot;
+        let identity = |slot| byroredux_scripting::LoadOrderIdentity::new(vec![(GlobalSlot::Regular(slot), ENGINE_PLUGIN_ID)]);
+        let pair = FormIdPair { plugin: PluginId::from_filename("Band.esm"), local: LocalFormId(0x200) };
+        let mut store = PersistentReferenceStates::default();
+        store.rows.insert(pair, ReferenceState {
+            actor_values: Some(ActorValues::from_pairs([(0x0100_0020, 42.0)])),
+            ..ReferenceState::blank()
+        });
+        let mut w = world();
+        w.insert_resource(identity(1));
+        assert!(store.actor_value_errors(&w).is_empty(), "every key is owned");
+        // The engine slot moved after the row was parked: its key no longer has an owner.
+        w.insert_resource(identity(2));
+        let errors = store.actor_value_errors(&w);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].0, pair, "the error names the parked reference, not entity 0");
+        assert!(matches!(errors[0].1, byroredux_save::SaveError::UnownedFormId { form: 0x0100_0020, .. }));
+    }
+
+    #[test]
     fn parked_actor_values_and_effects_follow_changed_engine_slot() {
         use byroredux_core::form_id::ENGINE_PLUGIN_ID;
         use byroredux_plugin::esm::reader::GlobalSlot;
@@ -2587,7 +2617,7 @@ mod tests {
             source: 1, mgef: 2, caster: 3, script: 4, duration: 5.0, indefinite: false,
             elapsed: 1.0, started: true, ending: false,
             value: Some(ValueEffect { actor_value: 0x0100_0020, amount: 5.0, recover: true }),
-            ticks: 0, locals: vec![], ref_locals: vec![], suspended: false,
+            ticks: 0, locals: vec![], ref_locals: vec![], suspended: false, effect_index: 0,
         }]));
         evict(&mut src, &[actor]);
         let registry = crate::save_io::build_save_registry();
@@ -2762,7 +2792,7 @@ mod tests {
                 ticks: 0,
                 locals: Vec::new(),
                 ref_locals: Vec::new(),
-                suspended: false,
+                suspended: false, effect_index: 0,
             }]),
         );
         world.insert(actor, WeaponDrawn);

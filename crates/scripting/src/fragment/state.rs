@@ -777,6 +777,9 @@ pub(crate) enum FragmentResumeCondition {
     /// BIK-PRES-006 — `Game.PlayBink` froze the script: it resumes once no movie is playing or
     /// queued (CK *PlayBink - Game*: "It will not return until the movie is over").
     MovieEnded,
+    /// M48 #6667 — `Message.Show()`'s value: the run resumes once the box `ticket` is answered
+    /// (CK *Show - Message*: latent, "returns the button pressed").
+    MessageAnswered { ticket: u32 },
     Actors3DLoaded {
         actors: Vec<ActorRef>,
         poll_seconds: f32,

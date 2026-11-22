@@ -84,10 +84,17 @@ pub const MAX_DISTINCT_HOST_METHOD_NAMES: usize = 1024;
 /// Extend this list — and only with constants the engine itself
 /// registers — when a future adapter adds a lifecycle callback whose
 /// absence is functional, not just diagnostic.
-pub const RESERVED_ENGINE_CALLBACKS: [&str; 3] = [
+///
+/// M48 GUI-PATH-004 — the path adapters' callbacks (both VMs) are functional: without them the
+/// path service, and every vanilla HUD meter it feeds, goes dark.
+pub const RESERVED_ENGINE_CALLBACKS: [&str; 7] = [
     crate::avm2_host::READY_CALLBACK,
     crate::avm2_host::LOADED_CALLBACK,
     crate::avm2_host::DESTROY_CALLBACK,
+    crate::path::PATH_GET_CALLBACK,
+    crate::path::PATH_SET_CALLBACK,
+    crate::path::PATH_CALL_CALLBACK,
+    crate::path::PATH_ATTACH_CALLBACK,
 ];
 
 /// Value type shared between the engine and ActionScript.
@@ -185,6 +192,9 @@ pub struct ScaleformHostCall {
     pub arguments: Vec<ScaleformValue>,
     /// How the bridge classified and routed this call.
     pub dispatch: ScaleformHostDispatch,
+    /// What the call met (M48 GUI-HOST-001, PRD §3.2): H1 an engine handler, H2 a realized
+    /// placeholder, H3 a cataloged method with neither, H4 a method the catalog lacks.
+    pub class: crate::HostClass,
 }
 
 /// Result of routing a menu-to-host call.
@@ -465,9 +475,43 @@ impl ScaleformHostBridge {
         state.next_sequence += 1;
 
         let catalog_method = self.catalog.find(&normalized.method);
-        let response =
+        let engine_response =
             dynamic_response.or_else(|| state.responses.get(&normalized.method).cloned());
-        let is_known = catalog_method.is_some() || state.known_methods.contains(&normalized.method);
+        let engine_registered = state.known_methods.contains(&normalized.method);
+        let is_known = catalog_method.is_some() || engine_registered;
+        // GUI-HOST-001/004 — an engine handler serves (H1); without one, a realized placeholder
+        // answers or deliberately ignores (H2); a cataloged method with neither is unserved (H3,
+        // the movie gets `Null`, never a made-up value), an uncataloged one unknown (H4).
+        let placeholder = match catalog_method {
+            Some(method) if engine_response.is_none() && !engine_registered => {
+                crate::behaviour::placeholder(self.profile, &normalized.method).filter(|placeholder| {
+                    matches!(
+                        (placeholder, method.kind),
+                        (crate::Placeholder::Ignore, ScaleformHostMethodKind::Command)
+                            | (crate::Placeholder::Answer(_), ScaleformHostMethodKind::Request)
+                    )
+                })
+            }
+            _ => None,
+        };
+        let class = if engine_response.is_some() {
+            crate::HostClass::Served
+        } else if placeholder.is_some() {
+            crate::HostClass::Placeholder
+        } else if engine_registered
+            && catalog_method.is_none_or(|method| method.kind == ScaleformHostMethodKind::Command)
+        {
+            // A command the engine registered to handle from the drained queue.
+            crate::HostClass::Served
+        } else if catalog_method.is_some() {
+            crate::HostClass::Unserved
+        } else {
+            crate::HostClass::Unknown
+        };
+        let response = engine_response.or_else(|| match placeholder {
+            Some(crate::Placeholder::Answer(answer)) => Some(vec![ScaleformValue::Bool(answer)]),
+            _ => None,
+        });
         let dispatch = if response.is_some() {
             if normalized.request_id.is_some() {
                 ScaleformHostDispatch::GameDelegateResponse
@@ -524,6 +568,7 @@ impl ScaleformHostBridge {
             request_id: normalized.request_id,
             arguments: normalized.arguments,
             dispatch,
+            class,
         });
 
         let mut response = response.map(|values| {
@@ -574,9 +619,9 @@ impl ScaleformHostBridge {
         if self.profile == ScaleformProfile::SkyrimAvm1 {
             let looks_like_game_delegate_request =
                 self.catalog.find(transport_method).is_some() || self.has_callback("respond");
-            if looks_like_game_delegate_request {
-                if let Some((ScaleformValue::Number(request_id), rest)) = arguments.split_first() {
-                    if let Some(request_id) = numeric_request_id(*request_id) {
+            if looks_like_game_delegate_request
+                && let Some((ScaleformValue::Number(request_id), rest)) = arguments.split_first()
+                    && let Some(request_id) = numeric_request_id(*request_id) {
                         return NormalizedCall {
                             method: transport_method.to_string(),
                             host_object: None,
@@ -584,13 +629,11 @@ impl ScaleformHostBridge {
                             arguments: rest.to_vec(),
                         };
                     }
-                }
-            }
         }
 
-        if self.profile == ScaleformProfile::Fallout4Avm2 {
-            if let Some(object) = self.catalog.host_object() {
-                if let Some(method) = transport_method
+        if self.profile == ScaleformProfile::Fallout4Avm2
+            && let Some(object) = self.catalog.host_object()
+                && let Some(method) = transport_method
                     .strip_prefix(object.property)
                     .and_then(|method| method.strip_prefix('.'))
                 {
@@ -601,8 +644,6 @@ impl ScaleformHostBridge {
                         arguments,
                     };
                 }
-            }
-        }
 
         NormalizedCall {
             method: transport_method.to_string(),
@@ -689,11 +730,10 @@ impl ExternalInterfaceProvider for BridgeProvider {
         args: &[ExternalValue],
     ) -> ExternalValue {
         let outcome = self.bridge.record_call(name, args);
-        if let Some(arguments) = outcome.callback_response {
-            if let Some(callback) = context.external_interface.get_callback("respond") {
+        if let Some(arguments) = outcome.callback_response
+            && let Some(callback) = context.external_interface.get_callback("respond") {
                 callback.call(context, "respond", arguments);
             }
-        }
         outcome.return_value
     }
 

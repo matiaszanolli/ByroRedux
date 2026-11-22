@@ -27,12 +27,12 @@ use byroredux_plugin::esm::records::{SubgraphData, SubgraphRole};
 use std::collections::HashMap;
 
 /// A subgraph entry's identity for [`ArchetypeIdleClips`]: its behavior graph and
-/// animation folders, lower-cased.
+/// animation folders, case-folded as the archives fold them (#7180).
 pub(crate) fn idle_key(entry: &SubgraphData) -> String {
-    let mut key = entry.behavior_graph.to_ascii_lowercase();
+    let mut key = byroredux_core::paths::fold_case(&entry.behavior_graph);
     for folder in &entry.animation_paths {
         key.push('|');
-        key.push_str(&folder.to_ascii_lowercase());
+        key.push_str(&byroredux_core::paths::fold_case(folder));
     }
     key
 }
@@ -107,7 +107,7 @@ pub(crate) fn populate_archetype_idles(world: &mut World, provider: &TextureProv
         let handle = (|| {
             let directory = project_directory(&entry.behavior_graph)?;
             let name = idle_names
-                .entry(entry.behavior_graph.to_ascii_lowercase())
+                .entry(byroredux_core::paths::fold_case(&entry.behavior_graph))
                 .or_insert_with(|| {
                     let graph = load_graph(provider, &super::canonical_mesh_key(&entry.behavior_graph))?;
                     let mut loader = |reference: &str| {

@@ -239,13 +239,45 @@ fn authored_get_actor_value_index_translates_to_the_loaded_avif() {
     assert_eq!(check(&mut fnv, &[(0x3F5, 10.0)], 43, ComparisonOp::Ge, 25.0), (true, false));
     assert!(!check(&mut fnv, &[], 21, ComparisonOp::Ge, 0.0).0, "SpeedMult has no AVIF in the master");
 
-    // Oblivion has no AVIF records: unreadable, so the fail-closed gates decline.
+    // An Oblivion index with no actor-value roster installed (the loader installs the engine-supplied
+    // one, #7010): unreadable, so the fail-closed gates decline.
     let mut oblivion = install(GameKind::Oblivion, &[]);
     assert!(!check(&mut oblivion, &[], 43, ComparisonOp::Ge, 0.0).0);
 
     // Fallout 4: always a FormID.
     let mut fo4 = install(GameKind::Fallout4, &[(0x2BC, "Strength")]);
     assert_eq!(check(&mut fo4, &[(0x2BC, 7.0)], 0x2BC, ComparisonOp::Ge, 5.0), (true, true));
+}
+
+/// OAV-RES-004 (#7009) — an authored Oblivion `GetActorValue` operand is the actor-value index (xEdit's
+/// `wbActorValueEnum`); with the engine-supplied roster installed it resolves to the record and reads the
+/// actor's value. Fame and Infamy (38, 39) and an index past the table stay unresolved.
+/// `GetPermanentActorValue` (495) reads the same operand the same way.
+#[test]
+fn authored_oblivion_actor_value_operands_resolve_the_engine_supplied_roster() {
+    use byroredux_core::ecs::components::ActorValues;
+    use byroredux_plugin::esm::reader::{GameKind, GlobalSlot};
+    use byroredux_plugin::esm::records::EsmIndex;
+    const SNEAK: u32 = 31;
+    let mut index = EsmIndex { game: GameKind::Oblivion, ..Default::default() };
+    let slot = GlobalSlot::Regular(2);
+    index.install_oblivion_actor_values(slot).unwrap();
+    let mut world = World::new();
+    crate::register(&mut world);
+    crate::install_actor_value_names(&mut world, &index);
+    let actor = world.spawn();
+    world.insert(actor, ActorValues::from_pairs([(slot.compose(SNEAK + 1), 40.0)]));
+    let at_least = |function: u32, bound: f32, operand: u32| {
+        let condition = cond(function, ComparisonOp::Ge, bound, false).with_param_1(operand);
+        (is_modeled(&world, &condition), evaluate_condition(&condition, &world, &ctx(actor)))
+    };
+    for function in [14, 495] {
+        assert_eq!(at_least(function, 25.0, SNEAK), (true, true), "function {function}: Sneak 40 >= 25");
+        assert_eq!(at_least(function, 50.0, SNEAK), (true, false), "function {function}: Sneak 40 < 50");
+        for unresolved in [38, 39, 72, 9999] {
+            assert!(!at_least(function, 0.0, unresolved).0, "function {function}: operand {unresolved} resolves to no record");
+        }
+    }
 }
 
 #[test]
@@ -330,6 +362,37 @@ fn single_false_condition_returns_false() {
     // GetStage(0xAA) == 99 (actual is 42)
     let list = vec![cond(58, ComparisonOp::Eq, 99.0, false).with_param_1(0xAA)];
     assert!(!evaluate(&list, &world, &ctx(0)));
+}
+
+/// A list passes `evaluate_unless_refuted` unless a readable term refutes it: an unreadable term counts
+/// as satisfied, alone in its AND block or beside others in its OR block, and the readable terms still
+/// decide. Oblivion's `BaurusGuardMartinCloudRulerGreatHall` carries an uncatalogued function beside
+/// `GetStage MQ05 >= 90`; the whole package used to pass.
+#[test]
+fn a_readable_false_term_refutes_a_list_beside_an_unreadable_one() {
+    use crate::quest_stages::{QuestFormId, QuestStageState};
+    let mut world = World::new();
+    crate::register(&mut world);
+    let mut state = QuestStageState::default();
+    state.set_stage(QuestFormId(0xAA), 42);
+    world.insert_resource(state);
+    let unreadable = || cond(99999, ComparisonOp::Eq, 1.0, false);
+    let stage = |op, value, or_next| cond(58, op, value, or_next).with_param_1(0xAA);
+
+    // [unreadable] AND [GetStage >= 90]: refuted, where `evaluate_modeled` declines and the old
+    // whole-package rule passed.
+    let refuted = vec![unreadable(), stage(ComparisonOp::Ge, 90.0, false)];
+    assert!(!evaluate_unless_refuted(&refuted, &world, &ctx(0)));
+    // [unreadable] AND [GetStage < 90]: nothing readable refutes it.
+    let open = vec![unreadable(), stage(ComparisonOp::Lt, 90.0, false)];
+    assert!(evaluate_unless_refuted(&open, &world, &ctx(0)));
+    // [GetStage >= 90 OR unreadable]: the unreadable member may be true, so the block holds.
+    let or_block = vec![stage(ComparisonOp::Ge, 90.0, true), unreadable()];
+    assert!(evaluate_unless_refuted(&or_block, &world, &ctx(0)));
+    // [GetStage >= 90 OR GetStage >= 91]: all readable, both false: refuted.
+    let both_false = vec![stage(ComparisonOp::Ge, 90.0, true), stage(ComparisonOp::Ge, 91.0, false)];
+    assert!(!evaluate_unless_refuted(&both_false, &world, &ctx(0)));
+    assert!(evaluate_unless_refuted(&Vec::new(), &world, &ctx(0)), "no conditions: always");
 }
 
 #[test]
@@ -1295,6 +1358,27 @@ fn actor_value_views_drop_modifiers_and_damage() {
     assert_eq!(read(&world, LUCK, ActorValueView::Current), 5.0);
     assert_eq!(read(&world, LUCK, ActorValueView::Undamaged), 6.0);
     assert_eq!(read(&world, LUCK, ActorValueView::Base), 4.0);
+}
+
+/// #7205 — a level-up's `stored` gain (Oblivion's Health, #7044) is part of the base, so the Base and Permanent
+/// views of an authored value include it, as the fall-through composition and `undamaged()` already did.
+#[test]
+fn the_base_and_permanent_views_include_the_stored_layer() {
+    use byroredux_core::ecs::components::ActorValues;
+    const HEALTH: u32 = 0x08;
+    let mut world = World::new();
+    let actor = world.spawn();
+    let mut values = ActorValues::from_pairs([(HEALTH, 80.0)]);
+    values.add_stored(HEALTH, 9.0);
+    values.mod_permanent(HEALTH, 10.0);
+    values.mod_temporary(HEALTH, 5.0);
+    values.apply_damage(HEALTH, 20.0);
+    world.insert(actor, values);
+    let read = |view| actor_value_view(&world, actor, HEALTH, view);
+    assert_eq!(read(ActorValueView::Base), 89.0, "base 80 plus the stored 9");
+    assert_eq!(read(ActorValueView::Permanent), 99.0, "plus the permanent 10");
+    assert_eq!(read(ActorValueView::Undamaged), 104.0);
+    assert_eq!(read(ActorValueView::Current), 84.0);
 }
 
 /// #3441 — `pool_regen_tick_system` and `melee_damage_charal_bonus` both
@@ -2747,7 +2831,8 @@ fn script_getter_functions_are_modeled_where_their_index_aligns_and_read_the_vms
             world.insert_resource(crate::ScriptGame(game));
             // 365 on Oblivion is the dialect's GetPlayerInSEWorld, modeled in its own right; 50, 5,
             // 18 and 32 are GetTalkedToPC / GetLocked / GetCurrentTime / GetInSameCell there too
-            // (#6554). 277 is GetBaseActorValue on Oblivion but its code has no AVIF to read.
+            // (#6554). 277 is GetBaseActorValue on Oblivion; it stays declined there (#7038): no installed
+            // plugin uses it, and Oblivion's reads the base with ability fortify effects included.
             let oblivion_aligned = matches!(index, 365 | 50 | 5 | 18 | 32);
             let expected = game == Fallout3NV || (oblivion_aligned && game == Oblivion);
             assert_eq!(is_modeled(&world, &condition), expected, "{index} on {game:?}");

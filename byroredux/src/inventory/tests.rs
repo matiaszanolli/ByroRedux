@@ -1,5 +1,6 @@
 use super::*;
 use byroredux_core::ecs::components::{Children, MeshHandle, Parent};
+use byroredux_plugin::esm::reader::GameKind;
 
 /// #4571 — pickup_loot's marker must reach the placement's MESH
 /// entities, not just the root: the root never carries a MeshHandle
@@ -91,7 +92,7 @@ fn timed_consumption_ticks_partial_frames_and_stops_on_death() {
         .get_mut(&0x5678)
         .unwrap()[0]
         .duration = 3;
-    let action = byroredux_debug_ui::InventoryAction::Consume {
+    let action = byroredux_native_ui::InventoryAction::Consume {
         index: 1,
         form_id: 0x5678,
     };
@@ -154,7 +155,7 @@ fn medicine_scaling_uses_live_composed_skill_and_preflights_missing_or_invalid_v
         .get_mut(&0x5678)
         .unwrap()[0]
         .medicine = scale;
-    let action = byroredux_debug_ui::InventoryAction::Consume {
+    let action = byroredux_native_ui::InventoryAction::Consume {
         index: 1,
         form_id: 0x5678,
     };
@@ -272,7 +273,7 @@ fn real_stimpaks_restore_scaled_health_and_limbs_but_hardcore_only_health() {
                 assert_eq!(
                     apply_action(
                         &mut world,
-                        byroredux_debug_ui::InventoryAction::Consume {
+                        byroredux_native_ui::InventoryAction::Consume {
                             index: 0,
                             form_id: 0x15169
                         }
@@ -385,7 +386,7 @@ fn conditional_consumption_observes_perks_at_use_time() {
         parse_alch_for_game(0x5678, &subs, index.game, &None),
     );
     install_catalog(&mut world, &index);
-    let action = byroredux_debug_ui::InventoryAction::Consume {
+    let action = byroredux_native_ui::InventoryAction::Consume {
         index: 1,
         form_id: 0x5678,
     };
@@ -452,7 +453,7 @@ fn consuming_restores_damage_decrements_once_and_keeps_equipment_indices() {
             .unwrap()
             .consumable
     );
-    let action = byroredux_debug_ui::InventoryAction::Consume {
+    let action = byroredux_native_ui::InventoryAction::Consume {
         index: 1,
         form_id: 0x5678,
     };
@@ -513,7 +514,7 @@ fn unavailable_consumption_never_changes_health_or_count() {
         assert_eq!(
             apply_action(
                 &mut world,
-                byroredux_debug_ui::InventoryAction::Consume { index: 1, form_id }
+                byroredux_native_ui::InventoryAction::Consume { index: 1, form_id }
             ),
             MutationResult::Unavailable
         );
@@ -547,7 +548,7 @@ fn consuming_invalid_instance_is_atomic() {
             assert_eq!(
                 apply_action(
                     &mut world,
-                    byroredux_debug_ui::InventoryAction::Consume {
+                    byroredux_native_ui::InventoryAction::Consume {
                         index: 1,
                         form_id: 0x5678,
                     },
@@ -594,7 +595,7 @@ fn consuming_final_instance_releases_pool_and_never_overheals() {
     assert_eq!(
         apply_action(
             &mut world,
-            byroredux_debug_ui::InventoryAction::Consume {
+            byroredux_native_ui::InventoryAction::Consume {
                 index: 1,
                 form_id: 0x5678
             }
@@ -625,7 +626,7 @@ fn real_skyrim_healing_potion_runs_through_native_action() {
     assert_eq!(
         apply_action(
             &mut world,
-            byroredux_debug_ui::InventoryAction::Consume {
+            byroredux_native_ui::InventoryAction::Consume {
                 index: 1,
                 form_id: 0x3EADD
             }
@@ -658,7 +659,7 @@ fn real_fallout3_bloodpack_selects_live_perk_bonus() {
     values.apply_damage(health, 60.0);
     world.insert(player, values);
     world.insert(player, ActorVitals { health });
-    let action = byroredux_debug_ui::InventoryAction::Consume {
+    let action = byroredux_native_ui::InventoryAction::Consume {
         index: 1,
         form_id: 0x34051,
     };
@@ -859,6 +860,23 @@ fn activated_container(
     container
 }
 
+/// #7231 — take-all over a source with a row zeroed in place (rows keep their position) moves the live rows only: the
+/// emptied form reports no transfer, so no `OnAdd` / `OnDrop` runs for it and no stolen row is noted, and the player
+/// gains no zero-count row for it.
+#[test]
+fn take_all_reports_and_moves_only_the_rows_that_hold_items() {
+    let (mut world, player) = fixture();
+    let container = activated_container(&mut world, player);
+    world.get_mut::<Inventory>(container).unwrap().items = vec![ItemStack::new(0x4444, 0), ItemStack::new(0x5678, 7)];
+    let before = world.get::<Inventory>(player).unwrap().count_of(0x5678);
+    let outcome = transfer_loot(&world, player, container, LootSelection::All).unwrap();
+    assert_eq!(outcome.rows, vec![(0x5678, 7)], "the emptied row reports no transfer");
+    assert_eq!(outcome.item_count, 7);
+    let inventory = world.get::<Inventory>(player).unwrap();
+    assert!(!inventory.items.iter().any(|stack| stack.base_form_id == 0x4444), "no zero-count row reaches the player");
+    assert_eq!(inventory.count_of(0x5678), before + 7);
+}
+
 #[test]
 fn container_loot_preserves_stacks_instances_equipment_and_activation() {
     let (mut world, player) = fixture();
@@ -1041,9 +1059,9 @@ fn theft_rule_reads_the_player_base_cell_ownership_and_the_rank_bar() {
 
     // Below the rank bar it is theft; at the bar it is not.
     world.insert(player, FactionRanks::from_pairs([(0xF00D, 1)]));
-    assert!(theft_owner(&world, player, shop_chest).is_some());
+    assert!(foreign_owner(&world, player, shop_chest).is_some());
     world.insert(player, FactionRanks::from_pairs([(0xF00D, 2)]));
-    assert!(theft_owner(&world, player, shop_chest).is_none());
+    assert!(foreign_owner(&world, player, shop_chest).is_none());
     world.remove::<FactionRanks>(player);
     // #5866 — a script's ownership change reaches the theft rule: cleared
     // or handed to the player it is no theft; handed to someone else it is.
@@ -1058,13 +1076,13 @@ fn theft_rule_reads_the_player_base_cell_ownership_and_the_rank_bar() {
         });
         world.insert(shop_chest, byroredux_core::ecs::components::FormIdComponent(id));
     }
-    assert!(theft_owner(&world, player, shop_chest).is_some());
+    assert!(foreign_owner(&world, player, shop_chest).is_some());
     world.resource_mut::<byroredux_scripting::OwnerOverrides>().set(0xDEAD, 0);
-    assert!(theft_owner(&world, player, shop_chest).is_none(), "SetActorOwner(None) clears it");
+    assert!(foreign_owner(&world, player, shop_chest).is_none(), "SetActorOwner(None) clears it");
     world.resource_mut::<byroredux_scripting::OwnerOverrides>().set(0xDEAD, PLAYER_NPC_FORM_ID);
-    assert!(theft_owner(&world, player, shop_chest).is_none());
+    assert!(foreign_owner(&world, player, shop_chest).is_none());
     world.resource_mut::<byroredux_scripting::OwnerOverrides>().set(0xDEAD, 0xABBA);
-    assert!(theft_owner(&world, player, shop_chest).is_some());
+    assert!(foreign_owner(&world, player, shop_chest).is_some());
     transfer_loot(&world, player, shop_chest, LootSelection::All).unwrap();
     assert_eq!(
         crate::notifications::drain(&world),
@@ -1158,8 +1176,7 @@ fn a_theft_is_witnessed_only_by_a_detector_whose_level_is_seen() {
             .unwrap();
         world.insert(onlooker, Awareness { level, ..Awareness::default() });
         transfer_loot(&world, player, chest, LootSelection::All).unwrap();
-        let gold = world.resource::<ObScriptLedger>().crime_gold;
-        gold
+        world.resource::<ObScriptLedger>().crime_gold
     };
     assert_eq!(theft(DetectionLevel::Lost), 0, "every detector below Seen: no witness, no bounty");
     assert_eq!(theft(DetectionLevel::Noticed), 0, "Noticed is not Seen (Q5)");
@@ -1451,7 +1468,7 @@ fn toggle_equip_mutates_only_supported_items() {
     assert_eq!(
         apply_action(
             &mut world,
-            byroredux_debug_ui::InventoryAction::ToggleEquip { index: 0 }
+            byroredux_native_ui::InventoryAction::ToggleEquip { index: 0 }
         ),
         MutationResult::Equipped
     );
@@ -1462,7 +1479,7 @@ fn toggle_equip_mutates_only_supported_items() {
     assert_eq!(
         apply_action(
             &mut world,
-            byroredux_debug_ui::InventoryAction::ToggleEquip { index: 0 }
+            byroredux_native_ui::InventoryAction::ToggleEquip { index: 0 }
         ),
         MutationResult::Unequipped
     );
@@ -1471,14 +1488,14 @@ fn toggle_equip_mutates_only_supported_items() {
     assert_eq!(
         apply_action(
             &mut world,
-            byroredux_debug_ui::InventoryAction::ToggleEquip { index: 1 }
+            byroredux_native_ui::InventoryAction::ToggleEquip { index: 1 }
         ),
         MutationResult::Unavailable
     );
     assert_eq!(
         apply_action(
             &mut world,
-            byroredux_debug_ui::InventoryAction::ToggleEquip { index: 2 }
+            byroredux_native_ui::InventoryAction::ToggleEquip { index: 2 }
         ),
         MutationResult::Equipped
     );
@@ -1496,7 +1513,7 @@ fn toggle_equip_mutates_only_supported_items() {
     assert_eq!(
         apply_action(
             &mut world,
-            byroredux_debug_ui::InventoryAction::ToggleEquip { index: 2 }
+            byroredux_native_ui::InventoryAction::ToggleEquip { index: 2 }
         ),
         MutationResult::Unequipped
     );
@@ -1539,7 +1556,7 @@ fn refused_menu_actions_notify_and_a_dead_player_cannot_toggle_equipment() {
 
     let result = apply_action(
         &mut world,
-        byroredux_debug_ui::InventoryAction::ToggleEquip { index: 0 },
+        byroredux_native_ui::InventoryAction::ToggleEquip { index: 0 },
     );
     assert_eq!(result, MutationResult::Unavailable);
     assert!(!world
@@ -1548,7 +1565,7 @@ fn refused_menu_actions_notify_and_a_dead_player_cannot_toggle_equipment() {
         .is_equipped(InventoryIndex(0)));
     let result = apply_action(
         &mut world,
-        byroredux_debug_ui::InventoryAction::Consume {
+        byroredux_native_ui::InventoryAction::Consume {
             index: 1,
             form_id: 0x5678,
         },
@@ -1565,7 +1582,7 @@ fn refused_menu_actions_notify_and_a_dead_player_cannot_toggle_equipment() {
     world.remove::<Dead>(player);
     let result = apply_action(
         &mut world,
-        byroredux_debug_ui::InventoryAction::ToggleEquip { index: 0 },
+        byroredux_native_ui::InventoryAction::ToggleEquip { index: 0 },
     );
     assert_eq!(result, MutationResult::Equipped);
     assert!(
@@ -1605,7 +1622,7 @@ fn equipping_a_bit31_armor_does_not_unequip_the_weapon() {
     assert_eq!(
         apply_action(
             &mut world,
-            byroredux_debug_ui::InventoryAction::ToggleEquip { index: 2 }
+            byroredux_native_ui::InventoryAction::ToggleEquip { index: 2 }
         ),
         MutationResult::Equipped
     );
@@ -1615,7 +1632,7 @@ fn equipping_a_bit31_armor_does_not_unequip_the_weapon() {
     assert_eq!(
         apply_action(
             &mut world,
-            byroredux_debug_ui::InventoryAction::ToggleEquip { index: 0 }
+            byroredux_native_ui::InventoryAction::ToggleEquip { index: 0 }
         ),
         MutationResult::Equipped
     );
@@ -1648,11 +1665,11 @@ fn equipping_a_weapon_does_not_displace_a_bit31_armor() {
 
     apply_action(
         &mut world,
-        byroredux_debug_ui::InventoryAction::ToggleEquip { index: 0 },
+        byroredux_native_ui::InventoryAction::ToggleEquip { index: 0 },
     );
     apply_action(
         &mut world,
-        byroredux_debug_ui::InventoryAction::ToggleEquip { index: 2 },
+        byroredux_native_ui::InventoryAction::ToggleEquip { index: 2 },
     );
 
     let slots = world.get::<EquipmentSlots>(player).unwrap();
@@ -1676,7 +1693,6 @@ fn no_armor_describe_kind_output_can_target_the_weapon_slot() {
             dt: 0.0,
             dr: 0,
             health: 0,
-            slot_mask: 0,
             armor_rating_x100: 0,
             armor_type: None,
             armatures: Vec::new(),
@@ -1697,18 +1713,18 @@ fn armor_toggles_never_touch_the_equipped_weapon() {
     let (mut world, player) = fixture();
     apply_action(
         &mut world,
-        byroredux_debug_ui::InventoryAction::ToggleEquip { index: 2 },
+        byroredux_native_ui::InventoryAction::ToggleEquip { index: 2 },
     );
     let before = *world.get::<EquippedWeapon>(player).unwrap();
 
     // Equip then unequip the armor.
     apply_action(
         &mut world,
-        byroredux_debug_ui::InventoryAction::ToggleEquip { index: 0 },
+        byroredux_native_ui::InventoryAction::ToggleEquip { index: 0 },
     );
     apply_action(
         &mut world,
-        byroredux_debug_ui::InventoryAction::ToggleEquip { index: 0 },
+        byroredux_native_ui::InventoryAction::ToggleEquip { index: 0 },
     );
 
     let after = *world.get::<EquippedWeapon>(player).unwrap();
@@ -1754,7 +1770,6 @@ fn player_template_uses_authored_inventory_and_equipment_slots() {
                 dt: 0.0,
                 dr: 0,
                 health: 0,
-                slot_mask: 0,
                 armor_rating_x100: 0,
                 armor_type: None,
                 armatures: Vec::new(),
@@ -1774,6 +1789,8 @@ fn player_template_uses_authored_inventory_and_equipment_slots() {
                 casing_form: 0,
                 health: 0,
                 clip_rounds: 0,
+                speed: 0.0,
+                flags: 0,
             },
         },
     );
@@ -1934,6 +1951,36 @@ fn player_character_template_derives_from_the_player_npc_record() {
             class_form_id: 0x2000,
         })
     );
+}
+
+#[test]
+fn oblivion_player_template_derives_all_three_pools_from_the_formulas() {
+    use byroredux_plugin::esm::records::actor::{OblivionActorPools, OblivionNpcStats};
+    use byroredux_plugin::esm::reader::GlobalSlot;
+    let mut index = EsmIndex { game: GameKind::Oblivion, character_rules: byroredux_core::character::CharacterRulesProfile::OBLIVION, ..Default::default() };
+    index.install_oblivion_actor_values(GlobalSlot::Regular(1)).unwrap();
+    index.npcs.insert(PLAYER_NPC_FORM_ID, byroredux_plugin::esm::records::NpcRecord {
+        form_id: PLAYER_NPC_FORM_ID,
+        level: 1,
+        acbs_flags: 0x10,
+        oblivion_npc_stats: Some(OblivionNpcStats { skills: std::array::from_fn(|i| i as u8 + 10), health: 123, attributes: [31, 32, 33, 34, 35, 36, 37, 38] }),
+        oblivion_pools: Some(OblivionActorPools { magicka: 77, fatigue: 88, calc_max: 0 }),
+        ..Default::default()
+    });
+    let values = build_player_character_template(&index).values.unwrap();
+    // #7037, #7041: the player's pools are their formulas, replacing the record's placeholders (the original
+    // zeroes them at load): Health 2 x End 36 = 72 (record 123), Magicka 2 x Int 32 = 64 (77), Fatigue
+    // Str 31 + End 36 + Agi 34 + Wil 33 = 134 (88).
+    assert_eq!(values.current(index.actor_value_form_id("Health").unwrap()), 72.0);
+    assert_eq!(values.current(index.actor_value_form_id("Magicka").unwrap()), 64.0);
+    assert_eq!(values.current(index.actor_value_form_id("Fatigue").unwrap()), 134.0);
+    for code in 0..8 {
+        assert_eq!(values.current(index.oblivion_actor_value(code, false).unwrap()), (code + 31) as f32);
+    }
+    assert_eq!(values.current(index.actor_value_form_id("Encumbrance").unwrap()), 155.0);
+    for code in 12..33 {
+        assert_eq!(values.current(index.oblivion_actor_value(code, false).unwrap()), (code - 2) as f32);
+    }
 }
 
 /// #5058 — the post-load reset gives the player the authored record
@@ -2201,7 +2248,7 @@ fn vitals_snapshot_composes_layers_and_skips_absent_values() {
     let player = world.spawn();
     world.insert_resource(PlayerEntity(Some(player)));
     world.insert_resource(PlayerVitals {
-        bars: vec![("Health", 1000), ("Magicka", 1001), ("Fatigue", 1002)],
+        bars: vec![("Health", "Health", 1000), ("Magicka", "Magicka", 1001), ("Fatigue", "Fatigue", 1002)],
         by_editor_id: FxHashMap::from_iter([
             ("Health", 1000),
             ("Magicka", 1001),
@@ -2221,19 +2268,44 @@ fn vitals_snapshot_composes_layers_and_skips_absent_values() {
     assert_eq!(
         bars,
         vec![
-            byroredux_debug_ui::VitalBarView {
-                label: "Health",
+            byroredux_native_ui::VitalBarView {
+                label: "Health".into(),
+                actor_value: "Health",
                 current: 65.0,
                 max: 100.0
             },
-            byroredux_debug_ui::VitalBarView {
-                label: "Magicka",
+            byroredux_native_ui::VitalBarView {
+                label: "Magicka".into(),
+                actor_value: "Magicka",
                 current: 70.0,
                 max: 70.0
             },
         ],
         "current subtracts the damage layer; absent values drop their bar"
     );
+}
+
+/// M48 GUI-HUD-004 — while an original HUD is up it draws the vitals; the native layer draws no
+/// second copy, and draws them again once `hud.off` hides the original.
+#[test]
+fn vitals_snapshot_yields_to_a_visible_original_hud() {
+    let mut world = World::new();
+    world.register::<byroredux_core::ecs::components::ActorValues>();
+    let player = world.spawn();
+    world.insert_resource(PlayerEntity(Some(player)));
+    world.insert_resource(PlayerVitals {
+        bars: vec![("Health", "Health", 1000)],
+        by_editor_id: FxHashMap::from_iter([("Health", 1000)]),
+        radiation: None,
+    });
+    let mut values = byroredux_core::ecs::components::ActorValues::new();
+    values.set_base(1000, 100.0);
+    world.insert(player, values);
+    assert!(vitals_snapshot(&world).is_some(), "no original HUD: the native bars draw");
+    world.insert_resource(crate::hud::HudControl { visible: true, ..Default::default() });
+    assert!(vitals_snapshot(&world).is_none(), "the original HUD draws the vitals");
+    world.resource_mut::<crate::hud::HudControl>().visible = false;
+    assert!(vitals_snapshot(&world).is_some(), "hud.off brings the native bars back");
 }
 
 /// #5508 — a routed player `SetBase` lives in `set_override`; the
@@ -2246,7 +2318,7 @@ fn vitals_snapshot_max_includes_the_set_override_layer() {
     let player = world.spawn();
     world.insert_resource(PlayerEntity(Some(player)));
     world.insert_resource(PlayerVitals {
-        bars: vec![("Health", 1000)],
+        bars: vec![("Health", "Health", 1000)],
         by_editor_id: FxHashMap::from_iter([("Health", 1000)]),
         radiation: None,
     });
@@ -2259,8 +2331,9 @@ fn vitals_snapshot_max_includes_the_set_override_layer() {
     let bars = vitals_snapshot(&world).expect("a populated player must compose bars");
     assert_eq!(
         bars,
-        vec![byroredux_debug_ui::VitalBarView {
-            label: "Health",
+        vec![byroredux_native_ui::VitalBarView {
+            label: "Health".into(),
+            actor_value: "Health",
             current: 405.0,
             max: 605.0
         }],
@@ -2277,16 +2350,16 @@ fn vitals_snapshot_appends_the_rad_gauge_after_the_pools() {
     let player = world.spawn();
     world.insert_resource(PlayerEntity(Some(player)));
     world.insert_resource(PlayerVitals {
-        bars: vec![("HP", 1000), ("AP", 1001)],
+        bars: vec![("HP", "Health", 1000), ("AP", "ActionPoints", 1001)],
         by_editor_id: FxHashMap::from_iter([("Health", 1000), ("ActionPoints", 1001), ("RadiationRads", 0x5E4)]),
-        radiation: Some(("RAD", 0x5E4, 1000.0)),
+        radiation: Some(("RAD", "RadiationRads", 0x5E4, 1000.0)),
     });
     let mut values = byroredux_core::ecs::components::ActorValues::new();
     values.set_base(1000, 200.0);
     values.set_base(1001, 70.0);
     world.insert(player, values);
     let rad = |world: &World| vitals_snapshot(world).unwrap().pop().unwrap();
-    assert_eq!(rad(&world), byroredux_debug_ui::VitalBarView { label: "RAD", current: 0.0, max: 1000.0 });
+    assert_eq!(rad(&world), byroredux_native_ui::VitalBarView { label: "RAD".into(), actor_value: "RadiationRads", current: 0.0, max: 1000.0 });
 
     world.get_mut::<byroredux_core::ecs::components::ActorValues>(player).unwrap().mod_temporary(0x5E4, 250.0);
     assert_eq!(rad(&world).current, 250.0);
@@ -2305,9 +2378,9 @@ fn the_rad_gauge_and_the_affliction_pool_read_one_write() {
     let player = world.spawn();
     world.insert_resource(PlayerEntity(Some(player)));
     world.insert_resource(PlayerVitals {
-        bars: vec![("HP", 1000)],
+        bars: vec![("HP", "Health", 1000)],
         by_editor_id: FxHashMap::from_iter([("Health", 1000), ("RadiationRads", 0x5E4)]),
-        radiation: Some(("RAD", 0x5E4, 1000.0)),
+        radiation: Some(("RAD", "RadiationRads", 0x5E4, 1000.0)),
     });
     let mut values = byroredux_core::ecs::components::ActorValues::new();
     values.set_base(1000, 200.0);
@@ -2368,7 +2441,7 @@ fn install_catalog_resolves_per_game_vital_keys() {
         .unwrap()
         .bars
         .iter()
-        .map(|&(label, _)| label)
+        .map(|&(label, _, _)| label)
         .collect();
     assert_eq!(labels, vec!["Health", "Magicka", "Fatigue"]);
 
@@ -2382,7 +2455,7 @@ fn install_catalog_resolves_per_game_vital_keys() {
         .unwrap()
         .bars
         .iter()
-        .map(|&(label, _)| label)
+        .map(|&(label, _, _)| label)
         .collect();
     assert_eq!(
         labels,
@@ -2433,7 +2506,7 @@ fn install_catalog_installs_the_rad_gauge_only_where_the_profile_says() {
     let fnv = CharacterRulesProfile::FALLOUT_NEW_VEGAS;
     assert_eq!(
         radiation(&master(GameKind::Fallout3NV, fnv, true)),
-        Some(("RAD", 0x5E4, 1000.0))
+        Some(("RAD", "RadiationRads", 0x5E4, 1000.0))
     );
     // No stages authored -> no scale -> no gauge (the degraded rule).
     assert_eq!(radiation(&master(GameKind::Fallout3NV, fnv, false)), None);
@@ -2490,12 +2563,12 @@ fn real_master_player_seed_evaluates_the_player_only_rows() {
 /// #4675 — the HUD's bar keys resolve through `PlayerVitals` (real
 /// FNV AVIF ids `AVHealth 0x450` / `AVActionPoints 0x44C` here, not
 /// the fallout.rs test-fixture 0x2C9/0x2D0 the drivers used to
-/// hardcode), and `fraction` reads the PLAYER only: an NPC inserted
+/// hardcode), and `bar_reading` reads the PLAYER only: an NPC inserted
 /// first — whose values the old first-hit storage scan would have
 /// reported — must not move the bar.
 #[test]
 fn hud_bars_resolve_through_player_vitals_and_read_the_player_only() {
-    use crate::hud::fraction;
+    use crate::hud::{bar_reading, BarReading};
     use byroredux_core::character::CharacterRulesProfile;
     use byroredux_core::ecs::components::ActorValues;
     use byroredux_plugin::esm::records::AvifRecord;
@@ -2538,16 +2611,19 @@ fn hud_bars_resolve_through_player_vitals_and_read_the_player_only() {
     world.insert_resource(PlayerEntity(Some(player)));
     world.insert_resource(vitals);
 
-    let health = index.actor_value_form_id("Health").unwrap();
     assert_eq!(
-        fraction(&world, Some(health), None),
+        bar_reading(&world, Some("Health"), None).fraction,
         0.5,
         "the bar must read the player's 50/100, not the first-scanned \
          NPC's 10/10"
     );
-    // Unpinned absent key → full bar; pins still win.
-    assert_eq!(fraction(&world, Some(0x999), None), 1.0);
-    assert_eq!(fraction(&world, Some(health), Some(0.3)), 0.3);
+    // A key the table does not resolve is a pool the game does not author: hidden (#7043); pins still win.
+    assert!(!bar_reading(&world, Some("Magicka"), None).shown, "FNV authors no Magicka");
+    assert_eq!(bar_reading(&world, None, None), BarReading { fraction: 1.0, shown: true }, "no bar source wired");
+    // #7041 — a pool the player carries with no maximum is empty, not full (both HUD drivers share this).
+    world.get_mut::<ActorValues>(player).unwrap().set_base(0x44C, 0.0);
+    assert_eq!(bar_reading(&world, Some("ActionPoints"), None), BarReading { fraction: 0.0, shown: true });
+    assert_eq!(bar_reading(&world, Some("Health"), Some(0.3)), BarReading { fraction: 0.3, shown: true });
 }
 
 /// #4818 — a taken item's collision entities are standalone (never
@@ -2745,6 +2821,26 @@ fn a_script_weapon_equip_is_queued_through_the_menu_door() {
     assert_eq!(world.get::<EquipmentSlots>(player).unwrap().weapon.map(|index| index.0), Some(2));
 }
 
+/// #7232 — `inv.equip` takes the first row that holds the item, as `inv.use` and `inv.drop` do: a row of the form
+/// zeroed in place (rows keep their position) is passed over for a later live one, rather than queued and refused.
+#[test]
+fn queued_equip_skips_a_zeroed_row_for_a_live_one() {
+    let (mut world, player) = fixture();
+    world.insert_resource(PendingInventoryActions::default());
+    world.get_mut::<Inventory>(player).unwrap().items[0].count = 0;
+    let live = {
+        let inventory = world.get_mut::<Inventory>(player).unwrap();
+        inventory.items.push(ItemStack::new(0x1234, 1));
+        inventory.items.len() - 1
+    };
+    let message = queue_equip_by_form_id(&world, 0x1234).expect("a live row exists");
+    assert!(message.contains(&format!("row {live}")), "{message}");
+    assert!(matches!(
+        world.resource::<PendingInventoryActions>().0.as_slice(),
+        [byroredux_native_ui::InventoryAction::ToggleEquip { index }] if *index as usize == live
+    ));
+}
+
 #[test]
 fn queued_equip_drains_through_the_canonical_action() {
     let (mut world, player) = fixture();
@@ -2852,6 +2948,84 @@ fn caster_effects_refuse_what_the_runtime_cannot_play_whole() {
     assert_eq!(caster_effects(&partial, 10, true).map(|effects| effects.len()), Some(1));
 }
 
+/// #7045 — an Oblivion restore potion (`ALCH` with an `REHE` effect code) is admitted by the catalog and its
+/// effect is the value change the caster runtime applies to the player's installed Health, where the
+/// Fallout-only parse and header gates refused every Oblivion ingestible.
+#[test]
+fn an_oblivion_restore_potion_is_catalogued_with_its_health_effect() {
+    use byroredux_plugin::esm::reader::{GlobalSlot, SubRecord};
+    use byroredux_plugin::esm::records::{parse_alch_for_game, parse_mgef_for_game};
+    let mut index = EsmIndex { game: GameKind::Oblivion, character_rules: byroredux_core::character::CharacterRulesProfile::OBLIVION, ..Default::default() };
+    index.install_oblivion_actor_values(GlobalSlot::Regular(1)).unwrap();
+    let health = index.actor_value_form_id("Health").unwrap();
+    // REHE: a self effect on the actor value its DATA names (Health, index 8).
+    let mut mgef = vec![0u8; 36];
+    mgef[..4].copy_from_slice(&((1u32 << 24) | 0x10).to_le_bytes());
+    mgef[8..12].copy_from_slice(&8u32.to_le_bytes());
+    index.magic_effects.insert(0x10, parse_mgef_for_game(0x10, &[SubRecord { sub_type: *b"DATA", data: mgef }], GameKind::Oblivion, &None));
+    index.magic_effects_by_code.insert(*b"REHE", 0x10);
+    let mut efit = b"REHE".to_vec();
+    for word in [25u32, 0, 0, 0] {
+        efit.extend(word.to_le_bytes());
+    }
+    efit.extend((-1i32).to_le_bytes());
+    let subs = [
+        SubRecord { sub_type: *b"ENIT", data: vec![0; 8] },
+        SubRecord { sub_type: *b"EFID", data: b"REHE".to_vec() },
+        SubRecord { sub_type: *b"EFIT", data: efit },
+    ];
+    index.items.insert(0x98496, parse_alch_for_game(0x98496, &subs, GameKind::Oblivion, &None));
+
+    let effects = caster_effects(&index, 0x98496, false).expect("the potion is a simple self consumable");
+    assert_eq!(effects.len(), 1);
+    let value = effects[0].effect.value.expect("a modelled value effect");
+    assert_eq!((value.actor_value, value.amount, value.recover), (health, 25.0, false));
+    assert_eq!(effects[0].effect.duration, 0.0, "instant");
+
+    let mut world = World::new();
+    install_catalog(&mut world, &index);
+    assert!(world.resource::<InventoryCatalog>().script_effects.contains_key(&0x98496));
+}
+
+/// #7045 — the real `Oblivion.esm` ingestibles through the catalog: how many of the 253 `ALCH` are admitted, and
+/// which are refused (a touch / target / area effect, an effect the runtime does not model, a script).
+#[test]
+#[ignore = "needs installed Oblivion.esm"]
+fn real_oblivion_ingestibles_census() {
+    use byroredux_plugin::esm::reader::GlobalSlot;
+    let path = byroredux_plugin::esm::test_paths::oblivion_data_dir().join("Oblivion.esm");
+    let mut index = byroredux_plugin::esm::parse_esm(&std::fs::read(path).expect("Oblivion.esm")).unwrap();
+    let free = (0u8..=0xfb).find(|slot| !index.record_types.keys().any(|id| (id >> 24) as u8 == *slot)).unwrap();
+    index.install_oblivion_actor_values(GlobalSlot::Regular(free)).unwrap();
+    let mut world = World::new();
+    install_catalog(&mut world, &index);
+    let catalog = world.resource::<InventoryCatalog>();
+    let aids: Vec<_> = index.items.iter().filter(|(_, item)| matches!(item.kind, ItemKind::Aid { .. })).collect();
+    let admitted = aids.iter().filter(|(id, _)| catalog.script_effects.contains_key(id) || catalog.restorations.contains_key(id)).count();
+    let mut refused = std::collections::BTreeMap::<&str, Vec<String>>::new();
+    for (id, item) in &aids {
+        if catalog.script_effects.contains_key(id) || catalog.restorations.contains_key(id) {
+            continue;
+        }
+        let ItemKind::Aid { authored_effects, simple_consumption_header, .. } = &item.kind else { continue };
+        let why = match (authored_effects, simple_consumption_header) {
+            (None, _) => "no authored chain (incomplete, or none)",
+            (_, false) => "header not simple (a script)",
+            (Some(effects), true) if effects.iter().any(|e| e.delivery != Some(0)) => "touch or target delivery",
+            (Some(effects), true) if effects.iter().any(|e| e.effect.area != 0) => "an area effect",
+            _ => "an effect the runtime does not model",
+        };
+        refused.entry(why).or_default().push(format!("{:08X} {}", id, item.common.editor_id));
+    }
+    eprintln!("[Oblivion/ingestibles] {} ALCH, {admitted} admitted", aids.len());
+    for (why, items) in &refused {
+        eprintln!("  refused ({}): {why}: {:?}", items.len(), &items[..items.len().min(6)]);
+    }
+    assert_eq!((aids.len(), admitted), (253, 239), "Oblivion.esm's ingestible census moved");
+    assert_eq!(refused.values().map(Vec::len).collect::<Vec<_>>(), vec![11, 3], "the refusals moved: {refused:?}");
+    assert!(catalog.script_effects.contains_key(&0x98496), "PotionRestoreHealth is admitted");
+}
+
 /// A scripted ingestible whose one effect is gated on `condition` for the player, used from the fixture inventory.
 fn gated_script_use(condition: byroredux_plugin::esm::records::condition::Condition) -> (MutationResult, usize) {
     use byroredux_scripting::magic_effects::{ActiveMagicEffects, CastEffect};
@@ -2881,12 +3055,12 @@ fn gated_script_use(condition: byroredux_plugin::esm::records::condition::Condit
         catalog.script_effects.insert(
             0x6000,
             vec![GatedCastEffect {
-                effect: CastEffect { mgef: 20, script: 0x500, duration: 5.0, magnitude: 1.0, value: None, conditions: None },
+                effect: CastEffect { mgef: 20, script: 0x500, duration: 5.0, magnitude: 1.0, value: None, conditions: None, range: Default::default(), area: 0.0 },
                 conditions: vec![condition],
             }],
         );
     }
-    let result = apply_action(&mut world, byroredux_debug_ui::InventoryAction::Consume { index: 1, form_id: 0x6000 });
+    let result = apply_action(&mut world, byroredux_native_ui::InventoryAction::Consume { index: 1, form_id: 0x6000 });
     let active = world.get::<ActiveMagicEffects>(player).map_or(0, |effects| effects.0.len());
     (result, active)
 }
@@ -2945,7 +3119,7 @@ fn dropping_an_item_creates_a_reference_and_raises_remove_from_player() {
     });
     world.resource_mut::<InventoryCatalog>().containers.clear();
 
-    let action = byroredux_debug_ui::InventoryAction::Drop { index: 1, form_id: 0x5678 };
+    let action = byroredux_native_ui::InventoryAction::Drop { index: 1, form_id: 0x5678 };
     assert_eq!(apply_action(&mut world, action), MutationResult::Dropped);
     assert_eq!(world.get::<Inventory>(player).unwrap().items[1].count, 11);
 
@@ -2981,7 +3155,7 @@ fn dropping_an_item_creates_a_reference_and_raises_remove_from_player() {
     // An equipped row cannot be dropped, nor a base the pickup path would not take.
     world.get_mut::<EquipmentSlots>(player).unwrap().equip(1 << 12, InventoryIndex(0));
     assert_eq!(
-        apply_action(&mut world, byroredux_debug_ui::InventoryAction::Drop { index: 0, form_id: 0x1234 }),
+        apply_action(&mut world, byroredux_native_ui::InventoryAction::Drop { index: 0, form_id: 0x1234 }),
         MutationResult::Unavailable
     );
 }
@@ -3099,4 +3273,25 @@ fn unequipping_the_weapon_puts_it_away() {
     super::actions::reconcile_equipped_weapon(&mut world, player, None);
     assert!(world.get::<EquippedWeapon>(player).is_none());
     assert!(!is_weapon_out(&world, player), "an unequipped weapon is not out");
+}
+
+/// Player-archery BOW-AMM-001: equipping an arrow type sets the player's arrow slot, choosing it again puts it away,
+/// choosing another replaces it, and a game with no bow rules refuses (`inv.equip` on an arrow reaches this).
+#[test]
+fn equipping_an_arrow_type_sets_replaces_and_clears_the_slot() {
+    use byroredux_core::ecs::components::EquippedAmmo;
+    let mut world = World::new();
+    world.register::<EquippedAmmo>();
+    world.insert_resource(byroredux_core::character::BowModel::OBLIVION);
+    let player = world.spawn();
+    const IRON: u32 = 0x17829;
+    const STEEL: u32 = 0x1782A;
+    assert_eq!(actions::toggle_equipped_ammo(&mut world, player, IRON), actions::MutationResult::Equipped);
+    assert_eq!(world.get::<EquippedAmmo>(player).map(|slot| slot.0), Some(Some(IRON)));
+    assert_eq!(actions::toggle_equipped_ammo(&mut world, player, STEEL), actions::MutationResult::Equipped);
+    assert_eq!(world.get::<EquippedAmmo>(player).map(|slot| slot.0), Some(Some(STEEL)), "another type replaces it");
+    assert_eq!(actions::toggle_equipped_ammo(&mut world, player, STEEL), actions::MutationResult::Unequipped);
+    assert_eq!(world.get::<EquippedAmmo>(player).map(|slot| slot.0), Some(None), "put away writes None, not a removal");
+    world.remove_resource::<byroredux_core::character::BowModel>();
+    assert_eq!(actions::toggle_equipped_ammo(&mut world, player, IRON), actions::MutationResult::Unavailable);
 }

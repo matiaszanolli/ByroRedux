@@ -153,11 +153,10 @@ impl ModifierState {
             }
             Modifier::EventDriven { active_by_default, inner, .. } => {
                 runtime.enabled = *active_by_default;
-                if *active_by_default {
-                    if let Some(inner) = inner {
+                if *active_by_default
+                    && let Some(inner) = inner {
                         self.activate(inner, vars);
                     }
-                }
             }
             Modifier::List(items) => {
                 for item in items {

@@ -43,11 +43,10 @@ pub(super) fn prim_show_message(e: &Expr, scope: &Scope) -> Option<Effect> {
         }
         // Starfield's `GamepadMsg`: the text shown instead on a gamepad. The
         // keyboard message is the one shown here.
-        if let Some(gamepad) = args.get(6) {
-            if !matches!(gamepad.value.node, Expr::NoneLit) {
+        if let Some(gamepad) = args.get(6)
+            && !matches!(gamepad.value.node, Expr::NoneLit) {
                 receiver_object(&gamepad.value.node, scope)?;
             }
-        }
         return Some(Effect::ShowHelpMessage {
             message: receiver_object(object, scope)?,
         });
@@ -173,11 +172,10 @@ pub(super) fn prim_set_linked_ref(e: &Expr, scope: &Scope) -> Option<Effect> {
     if args.is_empty() || args.len() > 3 {
         return None;
     }
-    if let Some(promote) = args.get(2) {
-        if !matches!(promote.value.node, Expr::BoolLit(_)) {
+    if let Some(promote) = args.get(2)
+        && !matches!(promote.value.node, Expr::BoolLit(_)) {
             return None;
         }
-    }
     let optional = |index: usize| -> Option<Option<ObjectRef>> {
         match args.get(index).map(|arg| &arg.value.node) {
             None | Some(Expr::NoneLit) => Some(None),

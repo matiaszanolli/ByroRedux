@@ -3,7 +3,8 @@
 
 Compares a scene's linear capture with the anchor captured at the current
 phase's entry (scripts/m-light-baselines.sh writes both seeds of it), on a
-fixed 32 x 32-pixel tile grid. Per tile it measures the mean change of linear
+fixed 32 x 32-pixel tile grid, including partial tiles at the image edge.
+Per tile it measures the mean change of linear
 luminance relative to the anchor tile's mean, and the 95th percentile of the
 per-pixel relative change inside the tile, so a brightening and a darkening
 in one region cannot cancel.
@@ -86,10 +87,10 @@ def luminance(path: Path) -> np.ndarray:
 def tile_changes(capture: np.ndarray, anchor: np.ndarray):
     """Yield (tx, ty, anchor_mean, mean_change, p95_change) per tile."""
     h, w = anchor.shape
-    for ty in range(h // TILE):
-        for tx in range(w // TILE):
-            a = anchor[ty * TILE:(ty + 1) * TILE, tx * TILE:(tx + 1) * TILE]
-            c = capture[ty * TILE:(ty + 1) * TILE, tx * TILE:(tx + 1) * TILE]
+    for ty, y in enumerate(range(0, h, TILE)):
+        for tx, x in enumerate(range(0, w, TILE)):
+            a = anchor[y:y + TILE, x:x + TILE]
+            c = capture[y:y + TILE, x:x + TILE]
             base = float(a.mean())
             if base < DARK:
                 continue
@@ -103,6 +104,8 @@ def compare(args: argparse.Namespace) -> int:
     anchor = luminance(args.anchors / f"{args.scene}_s0.exr")
     anchor_b = luminance(args.anchors / f"{args.scene}_s1.exr")
     capture = luminance(args.capture)
+    if anchor_b.shape != anchor.shape:
+        raise SystemExit(f"content: anchor resolutions differ: {anchor.shape} and {anchor_b.shape}")
     if capture.shape != anchor.shape:
         raise SystemExit(f"content: capture {capture.shape} and anchor {anchor.shape} differ in size")
     floors = {(tx, ty): (abs(m), p) for tx, ty, _, m, p in tile_changes(anchor_b, anchor)}
@@ -121,7 +124,9 @@ def compare(args: argparse.Namespace) -> int:
         ok = False
         for d in covering:
             sign = 1.0 if d.direction == "brighter" else -1.0
-            if sign * mean_change > 0 and abs(mean_change) <= d.expected + d.tolerance + tol_mean:
+            allowance = d.expected + d.tolerance
+            if (sign * mean_change > 0 and abs(mean_change) <= allowance + tol_mean
+                    and p95 <= allowance + tol_p95):
                 ok = True
                 seen_declared[id(d)] = True
         if not ok:

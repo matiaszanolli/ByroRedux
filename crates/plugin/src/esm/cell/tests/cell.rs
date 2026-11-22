@@ -443,6 +443,49 @@ fn parse_cell_skyrim_extended_subrecords() {
 /// key). Raw self index 1 is loaded at slot 2 so an identity-only
 /// implementation fails this fixture. The XPRI sibling stays empty: XPRI
 /// is the previs participant list, not the baked-ref list (#5484).
+/// #7121 — FO76's `XCRI` has u64 counts, 8-byte meshes and 16-byte references
+/// (`wbDefinitionsFO76.pas:8069-8085`); read at FO4's shape it mismatched and
+/// was dropped on every vanilla cell.
+#[test]
+fn parse_cell_fo76_xcri_reads_its_wide_entries() {
+    let mut sub_data = Vec::new();
+    let edid = b"Fo76PrecombineInterior\0";
+    sub_data.extend_from_slice(b"EDID");
+    sub_data.extend_from_slice(&(edid.len() as u16).to_le_bytes());
+    sub_data.extend_from_slice(edid);
+    sub_data.extend_from_slice(b"DATA");
+    sub_data.extend_from_slice(&1u16.to_le_bytes());
+    sub_data.push(0x01); // interior
+    sub_data.extend_from_slice(b"XCRI");
+    sub_data.extend_from_slice(&((16 + 8 + 16) as u16).to_le_bytes());
+    sub_data.extend_from_slice(&1u64.to_le_bytes()); // mesh count
+    sub_data.extend_from_slice(&2u64.to_le_bytes()); // ref count (2 members / entry)
+    sub_data.extend_from_slice(&0x0000_0BEEu32.to_le_bytes()); // mesh hash
+    sub_data.extend_from_slice(&[0xAA; 4]); // unknown
+    sub_data.extend_from_slice(&0x0100_0101u32.to_le_bytes()); // ref form id
+    sub_data.extend_from_slice(&[0xBB; 4]); // unknown
+    sub_data.extend_from_slice(&0x0000_0BEEu32.to_le_bytes()); // its combined mesh
+    sub_data.extend_from_slice(&[0xCC; 4]); // unknown
+
+    let mut buf = Vec::new();
+    buf.extend_from_slice(b"CELL");
+    buf.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    buf.extend_from_slice(&0u32.to_le_bytes());
+    buf.extend_from_slice(&0x0100_0010u32.to_le_bytes());
+    buf.extend_from_slice(&[0u8; 8]);
+    buf.extend_from_slice(&sub_data);
+
+    let mut reader =
+        crate::esm::reader::EsmReader::with_variant(&buf, crate::esm::reader::EsmVariant::Tes5Plus);
+    reader.set_form_id_remap(crate::esm::reader::FormIdRemap::regular(2, vec![0]));
+    let mut cells = HashMap::new();
+    parse_cell_group(&mut reader, buf.len(), &mut cells, crate::esm::reader::GameKind::Fallout76).unwrap();
+
+    let cell = cells.get("fo76precombineinterior").expect("CELL indexed");
+    assert_eq!(cell.precombined_mesh_hashes, vec![0x0000_0BEE]);
+    assert_eq!(cell.absorbed_ref_bakes, vec![(0x0200_0101, 0x0000_0BEE)]);
+}
+
 #[test]
 fn parse_cell_xcri_pairs_remap_and_keep_their_bake_hash() {
     let mut sub_data = Vec::new();

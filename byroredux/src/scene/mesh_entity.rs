@@ -308,11 +308,10 @@ fn attach_mesh_components(
     // PERF-D3-NEW-02 / #1136 — classify FX-decoration meshes at spawn time so
     // build_render_data can skip them via a component query instead of running 6
     // substring scans per draw per frame.
-    if let Some(ref base_color) = textures.base_color {
-        if texture_path_is_fx_mesh(base_color, material_kind) {
+    if let Some(ref base_color) = textures.base_color
+        && texture_path_is_fx_mesh(base_color, material_kind) {
             world.insert(entity, IsFxMesh);
         }
-    }
     world.insert(entity, texture_handles);
     if mesh_water {
         crate::material_translate::attach_mesh_water(
@@ -631,8 +630,7 @@ mod tests {
                 },
                 resolved(Material::default()),
             );
-            let layer = *world.get::<RenderLayer>(entity).unwrap();
-            layer
+            *world.get::<RenderLayer>(entity).unwrap()
         };
         assert_eq!(
             layer_for(RenderLayer::Architecture, 1.0),
@@ -764,8 +762,7 @@ mod tests {
             });
             resolved.mirror_pane_forced = mirror_pane_forced;
             let (world, entity) = attach(&mesh, &authored, placement(), resolved);
-            let roughness = world.get::<Material>(entity).unwrap().roughness;
-            roughness
+            world.get::<Material>(entity).unwrap().roughness
         };
         assert_eq!(roughness_with(true), 0.04);
         assert_ne!(roughness_with(false), 0.04);

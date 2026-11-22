@@ -146,8 +146,7 @@ fn authored_decal_is_alpha_composited_without_depth_or_tlas_occlusion() {
     let mut world = world_with_mesh(false);
     let mesh_entity = {
         let meshes = world.query::<MeshHandle>().expect("mesh query");
-        let entity = meshes.iter().next().expect("test mesh").0;
-        entity
+        meshes.iter().next().expect("test mesh").0
     };
     world.insert(mesh_entity, IsDecalMesh);
     world.insert(

@@ -243,7 +243,7 @@ fn ensure_declared_len_within(swf_data: &[u8], ceiling: u64) -> Result<(), Strin
 /// Byte offset where the tag stream begins in an uncompressed SWF: skip
 /// the 8-byte file header, the stage RECT (5-bit count + 4 fields), the
 /// frame-rate and frame-count u16s.
-fn tag_stream_start(file: &[u8]) -> Option<usize> {
+pub(crate) fn tag_stream_start(file: &[u8]) -> Option<usize> {
     if file.len() < 9 {
         return None;
     }
@@ -393,21 +393,27 @@ pub(crate) fn prepare_movie(
     let decompressed =
         swf::decompress_swf(swf_data).map_err(|error| format!("Failed to parse SWF: {error}"))?;
     let profile = ScaleformProfile::from_header(&decompressed.header);
-    if let Some(expected) = expected_profile {
-        if profile != expected {
+    if let Some(expected) = expected_profile
+        && profile != expected {
             return Err(format!(
                 "Scaleform profile mismatch: requested {expected:?}, movie requires {profile:?}"
             ));
         }
-    }
 
     let catalog = ScaleformHostCatalog::for_profile(profile);
     let needs_injection = catalog.host_object().is_some();
+    // M48 GUI-PATH-001 — every AVM1 movie carries the path adapter, spliced into the stock
+    // decode's tag stream (no tag parse). AVM2 movies get theirs inside the host-object adapter.
+    let avm1_with_adapter = if profile == ScaleformProfile::SkyrimAvm1 {
+        Some(crate::avm1_path::inject(decompressed.header.swf_header(), &decompressed.data)?)
+    } else {
+        None
+    };
     if !needs_injection && movie_url.is_none() {
         return Ok(logged(PreparedMovie {
             profile,
             host_object_state: ScaleformHostObjectState::NotRequired,
-            data: swf_data.to_vec(),
+            data: avm1_with_adapter.unwrap_or_else(|| swf_data.to_vec()),
             import_asset_paths: Vec::new(),
             root_import_errors: Vec::new(),
             decode_counts: SwfDecodeCounts {
@@ -435,7 +441,7 @@ pub(crate) fn prepare_movie(
     Ok(logged(PreparedMovie {
         profile,
         host_object_state,
-        data: patched.unwrap_or_else(|| swf_data.to_vec()),
+        data: patched.or(avm1_with_adapter).unwrap_or_else(|| swf_data.to_vec()),
         import_asset_paths,
         root_import_errors,
         decode_counts: SwfDecodeCounts {
@@ -574,8 +580,18 @@ mod tests {
                 tag_parses: 0
             }
         );
-        // Untouched bytes, not a re-serialisation.
-        assert_eq!(prepared.data, data);
+        // M48 GUI-PATH-001 — the original file with the path adapter spliced in, not a
+        // re-serialisation: the original tag stream follows the adapter's `DoAction` unchanged.
+        assert_eq!(prepared.data, spliced(&data));
+    }
+
+    /// The bytes the AVM1 route hands Ruffle: the movie's own tag stream behind the path
+    /// adapter's frame-1 `DoAction` (`avm1_path::inject`).
+    fn spliced(fws: &[u8]) -> Vec<u8> {
+        let decoded = swf::decompress_swf(fws).unwrap();
+        let injected = crate::avm1_path::inject(decoded.header.swf_header(), &decoded.data).unwrap();
+        assert!(injected.ends_with(&decoded.data), "the original tag stream follows the adapter untouched");
+        injected
     }
 
     /// A movie whose profile contradicts the caller's must be rejected before
@@ -642,7 +658,7 @@ mod tests {
                 tag_parses: 0
             }
         );
-        assert_eq!(prepared.data, fws, "the shim's decode IS the original file");
+        assert_eq!(prepared.data, spliced(&fws), "the shim's decode, with the path adapter spliced in");
     }
 
     /// The counter has teeth: a shim that inflates and then declines leaves

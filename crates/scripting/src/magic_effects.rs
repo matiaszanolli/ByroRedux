@@ -69,6 +69,11 @@ pub struct CastEffect {
     pub value: Option<ValueEffect>,
     /// The effect's own conditions; it works only while they hold (`None`: always).
     pub conditions: Option<Arc<byroredux_plugin::esm::records::condition::ConditionList>>,
+    /// Where the effect lands when the player casts it (Oblivion's `EFIT` range; the other games' effects carry no
+    /// range and read Self). Only the player's cast reads it (PSC-TGT-001).
+    pub range: byroredux_core::character::EffectRange,
+    /// The effect's area in feet; above 0 the player's cast reports `area ignored` (PSC-TGT-005).
+    pub area: f32,
 }
 
 impl CastEffect {
@@ -103,12 +108,14 @@ pub fn cast_effect(index: &EsmIndex, item: &MagicEffectItem) -> CastEffect {
         if !item.magnitude.is_finite() || !matches!(mgef.archetype, Some(MagicArchetype::ValueModifier)) {
             return None;
         }
-        let actor_value = mgef.primary_actor_value.and_then(|reference| index.resolve_actor_value(reference))?;
+        let actor_value = index.effect_actor_value(mgef, item).and_then(|reference| index.resolve_actor_value(reference))?;
         let sign = if mgef.effect_flags & MGEF_FLAG_DETRIMENTAL != 0 { -1.0 } else { 1.0 };
         Some(ValueEffect { actor_value, amount: sign * item.magnitude, recover: mgef.effect_flags & MGEF_FLAG_RECOVER != 0 })
     });
     let conditions = (!item.conditions.is_empty()).then(|| Arc::new(item.conditions.clone()));
-    CastEffect { mgef: mgef.map_or(item.effect_form_id, |mgef| mgef.form_id), script, duration: item.duration as f32, magnitude: item.magnitude, value, conditions }
+    // A `MGEF` that has no area reads 0 whatever the spell authors (the cost equation's rule too).
+    let area = if mgef.is_some_and(|mgef| mgef.effect_flags & byroredux_core::character::spell_cast::MGEF_NO_AREA != 0) { 0.0 } else { item.area as f32 };
+    CastEffect { mgef: mgef.map_or(item.effect_form_id, |mgef| mgef.form_id), script, duration: item.duration as f32, magnitude: item.magnitude, value, conditions, range: item.range.and_then(byroredux_core::character::EffectRange::from_raw).unwrap_or_default(), area }
 }
 
 /// The effects of an ingestible (`ALCH`): its authored effect list.
@@ -145,6 +152,10 @@ pub struct ActiveEffect {
     /// The effect's conditions do not hold: its recovered value is given back, and no per-second
     /// change runs, until they do ([`effect_conditions`]).
     pub suspended: bool,
+    /// Its position in the effect list its source cast it from (the spell's landing effects, in order), so its own
+    /// conditions are found even when the spell lists the same `MGEF` twice with different ones
+    /// ([`effect_conditions`]). 0 for an effect with no spell behind it.
+    pub effect_index: u16,
 }
 
 /// The effects running on an actor.
@@ -199,12 +210,27 @@ impl Resource for PendingMagicHits {}
 /// Put `effects` on `target`, cast by `caster`, from `source`. A constant effect (`indefinite`) has no end.
 /// Returns how many the runtime took (the modelled ones).
 pub fn start_effects(world: &World, target: EntityId, caster: Option<EntityId>, source: u32, effects: &[CastEffect], indefinite: bool) -> usize {
+    start_effects_where(world, target, caster, source, effects, indefinite, |_| true)
+}
+
+/// [`start_effects`] for the effects `keep` accepts. Each keeps its position in `effects` as its `effect_index`, so the
+/// effect's own conditions are found whichever subset started it (the player's cast starts a spell's effects by range).
+pub fn start_effects_where(
+    world: &World,
+    target: EntityId,
+    caster: Option<EntityId>,
+    source: u32,
+    effects: &[CastEffect],
+    indefinite: bool,
+    keep: impl Fn(&CastEffect) -> bool,
+) -> usize {
     let caster_form = caster.and_then(|caster| crate::obscript_state::reference_form(world, caster)).unwrap_or(0);
     let target_form = crate::obscript_state::reference_form(world, target).unwrap_or(0);
     let taken: Vec<ActiveEffect> = effects
         .iter()
-        .filter(|effect| effect.lands(indefinite))
-        .map(|effect| ActiveEffect {
+        .enumerate()
+        .filter(|(_, effect)| effect.lands(indefinite) && keep(effect))
+        .map(|(index, effect)| ActiveEffect {
             source,
             mgef: effect.mgef,
             caster: caster_form,
@@ -219,6 +245,7 @@ pub fn start_effects(world: &World, target: EntityId, caster: Option<EntityId>, 
             locals: Vec::new(),
             ref_locals: Vec::new(),
             suspended: false,
+            effect_index: u16::try_from(index).unwrap_or(u16::MAX),
         })
         .collect();
     if taken.is_empty() {
@@ -239,37 +266,49 @@ pub fn start_effects(world: &World, target: EntityId, caster: Option<EntityId>, 
     count
 }
 
+/// Start the effects of `spell` that [land](CastEffect::lands) and that `keep` accepts on `target`, cast by `caster`;
+/// the number started. No story event: [`cast_spell`] raises it for a whole cast, and the player's cast, which starts
+/// a spell's effects on several targets, raises it once ([`raise_cast_event`]).
+pub fn start_spell_effects(world: &World, caster: Option<EntityId>, target: EntityId, spell: u32, keep: impl Fn(&CastEffect) -> bool) -> usize {
+    let effects = match world.try_resource::<crate::magic::SpellCatalog>().and_then(|catalog| catalog.get(spell).map(|s| s.effects.clone())) {
+        Some(effects) => effects,
+        None => return 0,
+    };
+    start_effects_where(world, target, caster, spell, &effects, false, keep)
+}
+
 /// Cast `spell` on `target`: every effect of it that [lands](CastEffect::lands). `false` when the spell
 /// is unknown or none of its effects lands.
 pub fn cast_spell(world: &World, caster: Option<EntityId>, target: EntityId, spell: u32) -> bool {
-    let effects = match world.try_resource::<crate::magic::SpellCatalog>().and_then(|catalog| catalog.get(spell).map(|s| s.effects.clone())) {
-        Some(effects) => effects,
-        None => return false,
-    };
-    let started = start_effects(world, target, caster, spell, &effects, false) > 0;
-    // M43 — the Story Manager's `CAST` (Cast Magic Event): `OnStoryCastMagic(akCastingActor,
-    // akSpellTarget, akLocation, akSpell)`. R1 = the caster, L1 = the session location. The CK page:
-    // "akSpellTarget always returns none" — so R2 stays unset whatever the cast's target (the quests'
-    // `SpellTarget` alias is optional for the same reason). The spell is a form the event slots do not
-    // carry; the real `CAST` quests read only the caster and the location. Only a cast with a caster
-    // raises it.
-    if let (true, Some(caster)) = (started, caster) {
-        let location = world.try_resource::<crate::location::PlayerLocation>().and_then(|here| here.0);
-        log::debug!("story manager: CAST raised (caster {caster}, location {location:?})");
-        crate::story_manager::raise_story_event(
-            world,
-            caster,
-            crate::story_manager::StoryEvent {
-                mnemonic: *b"CAST",
-                reference_1: caster,
-                reference_2: None,
-                location_1: location,
-                location_2: None,
-                scripted: None,
-            },
-        );
+    let started = start_spell_effects(world, caster, target, spell, |_| true) > 0;
+    if started {
+        raise_cast_event(world, caster);
     }
     started
+}
+
+/// M43 — the Story Manager's `CAST` (Cast Magic Event): `OnStoryCastMagic(akCastingActor,
+/// akSpellTarget, akLocation, akSpell)`. R1 = the caster, L1 = the session location. The CK page:
+/// "akSpellTarget always returns none" — so R2 stays unset whatever the cast's target (the quests'
+/// `SpellTarget` alias is optional for the same reason). The spell is a form the event slots do not
+/// carry; the real `CAST` quests read only the caster and the location. Only a cast with a caster
+/// raises it.
+pub fn raise_cast_event(world: &World, caster: Option<EntityId>) {
+    let Some(caster) = caster else { return };
+    let location = world.try_resource::<crate::location::PlayerLocation>().and_then(|here| here.0);
+    log::debug!("story manager: CAST raised (caster {caster}, location {location:?})");
+    crate::story_manager::raise_story_event(
+        world,
+        caster,
+        crate::story_manager::StoryEvent {
+            mnemonic: *b"CAST",
+            reference_1: caster,
+            reference_2: None,
+            location_1: location,
+            location_2: None,
+            scripted: None,
+        },
+    );
 }
 
 /// Stop the effects `source` put on `target` (every effect when `source` is `None`): their `Finish` blocks
@@ -292,7 +331,14 @@ pub fn dispel(world: &World, target: EntityId, source: Option<u32>) -> usize {
 /// source is not a spell (an ingestible checks its own at use).
 pub fn effect_conditions(world: &World, effect: &ActiveEffect) -> Option<Arc<byroredux_plugin::esm::records::condition::ConditionList>> {
     let catalog = world.try_resource::<crate::magic::SpellCatalog>()?;
-    catalog.get(effect.source)?.effects.iter().find(|cast| cast.mgef == effect.mgef)?.conditions.clone()
+    let effects = &catalog.get(effect.source)?.effects;
+    // The effect's own position; a record that changed under a save (a different load order) falls back to the first
+    // effect of that `MGEF`, as before.
+    let cast = effects
+        .get(usize::from(effect.effect_index))
+        .filter(|cast| cast.mgef == effect.mgef)
+        .or_else(|| effects.iter().find(|cast| cast.mgef == effect.mgef))?;
+    cast.conditions.clone()
 }
 
 /// Whether `effect`'s conditions hold on `target` (the subject). A condition this runtime cannot
@@ -313,11 +359,10 @@ pub fn has_effect(world: &World, target: EntityId, mgef: u32) -> bool {
 }
 
 fn change_value(world: &World, target: EntityId, change: impl FnOnce(&mut ActorValues)) {
-    if let Some(mut values) = world.query_mut::<ActorValues>() {
-        if let Some(values) = values.get_mut(target) {
+    if let Some(mut values) = world.query_mut::<ActorValues>()
+        && let Some(values) = values.get_mut(target) {
             change(values);
         }
-    }
 }
 
 /// Run one block of an effect script on `target`, keeping the effect's own locals.
@@ -450,8 +495,8 @@ pub fn magic_effect_system(world: &World, dt: f32) {
                 });
             }
             // Write back — unless a script changed the list under us (a Dispel), which wins.
-            if let Some(mut active) = world.query_mut::<ActiveMagicEffects>() {
-                if let Some(list) = active.get_mut(target) {
+            if let Some(mut active) = world.query_mut::<ActiveMagicEffects>()
+                && let Some(list) = active.get_mut(target) {
                     let same = list.0.get(index).is_some_and(|current| *current == original);
                     if same {
                         if finished {
@@ -461,14 +506,12 @@ pub fn magic_effect_system(world: &World, dt: f32) {
                         list.0[index] = effect;
                     }
                 }
-            }
             index += 1;
         }
-        if let Some(mut active) = world.query_mut::<ActiveMagicEffects>() {
-            if active.get(target).is_some_and(|list| list.0.is_empty()) {
+        if let Some(mut active) = world.query_mut::<ActiveMagicEffects>()
+            && active.get(target).is_some_and(|list| list.0.is_empty()) {
                 active.remove(target);
             }
-        }
     }
 }
 
@@ -544,7 +587,7 @@ mod tests {
             0x500,
             SpelRecord {
                 form_id: 0x500,
-                effects: vec![MagicEffectItem { effect_form_id: 0x77, magnitude, area: 0, duration, script_form_id: 0, conditions: Vec::new() }],
+                effects: vec![MagicEffectItem { effect_form_id: 0x77, magnitude, area: 0, duration, actor_value: None, script_form_id: 0, range: None, script_school: None, conditions: Vec::new() }],
                 ..Default::default()
             },
         );
@@ -589,10 +632,10 @@ mod tests {
         const MARK: u32 = 0x78;
         let mut index = index_with_value_effect(MGEF_FLAG_DETRIMENTAL, 4.0, 315_360_000);
         index.magic_effects.insert(MARK, MgefRecord { form_id: MARK, archetype: Some(MagicArchetype::ValueModifier), ..Default::default() });
-        index.spells.get_mut(&0x500).unwrap().effects.insert(0, MagicEffectItem { effect_form_id: MARK, magnitude: 0.0, area: 0, duration: 315_360_000, script_form_id: 0, conditions: Vec::new() });
+        index.spells.get_mut(&0x500).unwrap().effects.insert(0, MagicEffectItem { effect_form_id: MARK, magnitude: 0.0, area: 0, duration: 315_360_000, actor_value: None, script_form_id: 0, range: None, script_school: None, conditions: Vec::new() });
         index.spells.insert(
             0x501,
-            SpelRecord { form_id: 0x501, effects: vec![MagicEffectItem { effect_form_id: MARK, magnitude: 0.0, area: 0, duration: 0, script_form_id: 0, conditions: Vec::new() }], ..Default::default() },
+            SpelRecord { form_id: 0x501, effects: vec![MagicEffectItem { effect_form_id: MARK, magnitude: 0.0, area: 0, duration: 0, actor_value: None, script_form_id: 0, range: None, script_school: None, conditions: Vec::new() }], ..Default::default() },
         );
         let (world, target) = world_with(index);
         assert!(!has_effect(&world, target, MARK));
@@ -638,6 +681,46 @@ mod tests {
         magic_effect_system(&world, 20.0);
         assert_eq!(health(&world, target), base, "ending suspended owes nothing back");
         assert!(world.get::<ActiveMagicEffects>(target).is_none());
+    }
+
+    /// #6941: a spell that lists the same `MGEF` twice, each gated on its own condition, gates the two independently.
+    /// Two Fortify Health +25 effects, one waiting on quest stage 10 and the other on stage 20: stage 10 gives one bonus,
+    /// stage 20 both. (Looked up by `MGEF` alone, both read the first effect's condition and gave +50 at stage 10.)
+    #[test]
+    fn two_effects_of_one_mgef_keep_their_own_conditions() {
+        use byroredux_plugin::esm::records::condition::{ComparisonOp, Condition, ConditionValue, RunOn};
+        const QUEST: u32 = 0x00AB_0001;
+        let at_stage = |stage: f32| {
+            vec![Condition {
+                function_index: 58, // GetStage
+                comparator: ComparisonOp::Ge,
+                comparand: ConditionValue::Literal(stage),
+                param_1: QUEST,
+                run_on: RunOn::Subject,
+                ..Default::default()
+            }]
+        };
+        let mut index = index_with_value_effect(MGEF_FLAG_RECOVER, 25.0, 100);
+        let spell = index.spells.get_mut(&0x500).unwrap();
+        spell.effects[0].conditions = at_stage(10.0);
+        let mut second = spell.effects[0].clone();
+        second.conditions = at_stage(20.0);
+        spell.effects.push(second);
+        let (mut world, target) = world_with(index);
+        world.insert_resource(crate::quest_stages::QuestStageState::default());
+        let base = health(&world, target);
+        let stage = |world: &World, stage: u16| world.resource_mut::<crate::quest_stages::QuestStageState>().set_stage(crate::quest_stages::QuestFormId(QUEST), stage);
+        assert!(cast_spell(&world, None, target, 0x500));
+        let indexes: Vec<u16> = world.get::<ActiveMagicEffects>(target).unwrap().0.iter().map(|effect| effect.effect_index).collect();
+        assert_eq!(indexes, vec![0, 1], "each effect remembers its own position in the spell");
+        magic_effect_system(&world, 0.0);
+        assert_eq!(health(&world, target), base);
+        stage(&world, 10);
+        magic_effect_system(&world, 1.0);
+        assert_eq!(health(&world, target), base + 25.0, "only the first effect's condition holds");
+        stage(&world, 20);
+        magic_effect_system(&world, 1.0);
+        assert_eq!(health(&world, target), base + 50.0);
     }
 
     fn pending_kills(world: &World) -> Vec<(EntityId, Option<EntityId>, bool)> {
@@ -758,7 +841,7 @@ mod tests {
             0x501,
             SpelRecord {
                 form_id: 0x501,
-                effects: vec![MagicEffectItem { effect_form_id: 0x78, magnitude: 1.0, area: 0, duration: 2, script_form_id: 0x900, conditions: Vec::new() }],
+                effects: vec![MagicEffectItem { effect_form_id: 0x78, magnitude: 1.0, area: 0, duration: 2, actor_value: None, script_form_id: 0x900, range: None, script_school: None, conditions: Vec::new() }],
                 ..Default::default()
             },
         );

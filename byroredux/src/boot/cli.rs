@@ -60,7 +60,10 @@ pub(super) fn expand_boot_request(args: Vec<String>) -> Result<Vec<String>> {
     // setup. An explicit env var still wins — same precedence as argv.
     if let Some(settings_path) = request.settings_path() {
         if std::env::var_os(settings_io::SETTINGS_PATH_ENV).is_none() {
-            std::env::set_var(settings_io::SETTINGS_PATH_ENV, settings_path);
+            // SAFETY: argv expansion runs on the main thread at the top of `boot::run`,
+            // before this process starts any other thread, so nothing can read the
+            // environment concurrently with this write.
+            unsafe { std::env::set_var(settings_io::SETTINGS_PATH_ENV, settings_path) };
         } else {
             eprintln!(
                 "--boot {path}: settings path {settings_path:?} suppressed; \
@@ -317,16 +320,11 @@ pub(super) fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
         "--cmd",
         "--master",
         "--studio",
-        "--cornell",
-        "--cornell-sun",
-        "--cornell-oracle",
-        "--cornell-glass-dragon",
-        "--combustion-lab",
-        "--combustion-lab-nuclear",
-        "--combustion-lab-steam",
     ]
     .iter()
-    .any(|f| args.iter().any(|a| a == f));
+    .any(|f| args.iter().any(|a| a == f))
+        // #7186 — every renderer harness, through the predicate the scene dispatches by.
+        || crate::cornell::is_harness_launch(&args);
     let game_key = match parse_string_arg(&args, "--game") {
         Some(k) => k,
         None => match defaults.game.clone() {
@@ -378,8 +376,9 @@ pub(super) fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
     if !data_dir.exists() {
         eprintln!(
             "--game {}: resolved data dir does not exist: {} \
-             (set --games-root, BYROREDUX_GAMES_ROOT env var, or override \
-              the profile's `root` in ~/.byroredux/profiles.toml)",
+             (run `byro-detect --write` to record where the game is installed, or set \
+              --games-root / `[defaults].games_root` / BYROREDUX_GAMES_ROOT, or override \
+              the profile's root in your profiles file)",
             game_key,
             data_dir.display(),
         );
@@ -409,7 +408,10 @@ pub(super) fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
         if !entry.has_new_game_target() {
             eprintln!("--game {game_key} --new-game: profile has no new-game cell or worldspace/grid");
         } else if has_location {
-            eprintln!("--new-game: explicit location flags override the profile target");
+            eprintln!(
+                "--new-game: explicit location flags override the profile target; it is still a new game \
+                 (the opening's scripts run there and may move the player)"
+            );
         } else if let Some(cell) = &entry.new_game_cell {
             args.push("--cell".to_string());
             args.push(cell.clone());
@@ -418,12 +420,11 @@ pub(super) fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
             args.push(worldspace.clone());
             args.push("--grid".to_string());
             args.push(grid.clone());
-            if !args.iter().any(|arg| arg == "--radius") {
-                if let Some(radius) = entry.new_game_radius {
+            if !args.iter().any(|arg| arg == "--radius")
+                && let Some(radius) = entry.new_game_radius {
                     args.push("--radius".to_string());
                     args.push(radius.to_string());
                 }
-            }
         }
     }
 
@@ -431,8 +432,8 @@ pub(super) fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
     // resolved and no explicit location flag is present. A bare
     // `--game fnv` (or a no-arg default-game launch) then boots
     // straight into the configured cell.
-    if !args.iter().any(|arg| arg == "--studio") {
-        if let Some(cell) = &defaults.cell {
+    if !args.iter().any(|arg| arg == "--studio")
+        && let Some(cell) = &defaults.cell {
             let has_location = ["--cell", "--grid", "--wrld"]
                 .iter()
                 .any(|f| args.iter().any(|a| a == f));
@@ -442,7 +443,6 @@ pub(super) fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
                 args.push(cell.clone());
             }
         }
-    }
     args
 }
 

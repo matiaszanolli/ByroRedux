@@ -79,7 +79,9 @@ impl<'a> Bits<'a> {
     }
 
     /// The next 57 or more bits, the first in bit 0. Past the end of the packet every bit reads 0
-    /// (ours, not probed). For elements read in one go (`skip` then moves past them).
+    /// (ours, not probed), so a look-ahead near the end needs no bounds; a frame whose macroblocks
+    /// *consume* bits past the end is refused after it decodes (`Error::Overrun`, #7127). For
+    /// elements read in one go (`skip` then moves past them).
     #[inline]
     pub fn peek(&self) -> u64 {
         let i = self.pos >> 3;

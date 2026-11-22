@@ -23,6 +23,8 @@ use swf::{write_swf, DoAbc2, DoAbc2Flag, SwfStr, Tag};
 
 use crate::ScaleformHostCatalog;
 
+mod path_helpers;
+
 const HELPER_PREFIX: &str = "__byro_fallout4_host_";
 pub(crate) const INSTALL_HELPER: &str = "__byro_fallout4_install";
 const READY_HELPER: &str = "__byro_fallout4_ready";
@@ -519,11 +521,9 @@ fn method_called_with_bgs_receiver(abc: &AbcFile, ops: &[Op]) -> Option<Vec<u8>>
                     }
                     if call_name == b"call"
                         && matches!(arguments.first(), Some(InventoryStackValue::BgsCodeObj))
-                    {
-                        if let Some(InventoryStackValue::String(method)) = arguments.get(1) {
+                        && let Some(InventoryStackValue::String(method)) = arguments.get(1) {
                             return Some(method.clone());
                         }
-                    }
                     if matches!(op, Op::CallProperty { .. }) {
                         stack.push(InventoryStackValue::Other);
                     }
@@ -608,14 +608,13 @@ fn patch_root_constructor(abc_data: &[u8], root_class: &[u8]) -> Result<Vec<u8>,
             let op = reader
                 .read_op()
                 .map_err(|error| format!("scanning Fallout 4 root constructor: {error}"))?;
-            if let Op::CallPropVoid { index, .. } | Op::CallProperty { index, .. } = op {
-                if multiname_local_name(&abc, index).as_deref() == Some(INSTALL_HELPER.as_bytes()) {
+            if let Op::CallPropVoid { index, .. } | Op::CallProperty { index, .. } = op
+                && multiname_local_name(&abc, index).as_deref() == Some(INSTALL_HELPER.as_bytes()) {
                     return Err(format!(
                         "Fallout 4 root constructor already calls {INSTALL_HELPER}; \
                          these bytes are already patched (#2970)"
                     ));
                 }
-            }
         }
     }
     let insertion_offset = {
@@ -824,9 +823,14 @@ fn build_adapter_abc(
         out.traits.push(method_trait(destroy.helper, destroy_method, next_disp_id));
         next_disp_id += 1;
     }
-    let installer_method = add_installer_method(&names, &forwarders, &mut out)?;
+    // M48 GUI-PATH-001 — the path service's get / set / call: their pool entries now (the installer
+    // registers them), their methods after the fixed tail, which keeps its indices.
+    let paths = path_helpers::prepare(&mut pools, &names);
+    let installer_method = add_installer_method(&names, &forwarders, &paths.registrations, &mut out)?;
     out.traits.push(method_trait(names.install_helper, installer_method, next_disp_id));
     let init_method = add_init_method(&names, &mut out)?;
+    next_disp_id += 1;
+    path_helpers::emit(&paths, &mut out, &mut next_disp_id)?;
 
     let abc = AbcFile {
         major_version: 46,
@@ -837,7 +841,7 @@ fn build_adapter_abc(
             doubles: Vec::new(),
             strings: pools.strings,
             namespaces: pools.namespaces,
-            namespace_sets: Vec::new(),
+            namespace_sets: pools.namespace_sets,
             multinames: pools.multinames,
         },
         methods: out.methods,
@@ -861,6 +865,8 @@ fn build_adapter_abc(
 struct AdapterPools {
     strings: Vec<Vec<u8>>,
     namespaces: Vec<Namespace>,
+    /// Only the path walker's runtime-named access (`o[k]`) needs one (M48 GUI-PATH-001).
+    namespace_sets: Vec<swf::avm2::types::NamespaceSet>,
     multinames: Vec<Multiname>,
     public_namespace: Index<Namespace>,
 }
@@ -966,6 +972,7 @@ fn build_adapter_pools(object: &crate::catalog::ScaleformHostObject, has_destroy
         AdapterPools {
             strings,
             namespaces,
+            namespace_sets: Vec::new(),
             multinames,
             public_namespace,
         },
@@ -1137,6 +1144,7 @@ fn add_destroy_method(
 fn add_installer_method(
     names: &AdapterNames,
     forwarders: &[(Index<Multiname>, Index<Multiname>)],
+    paths: &path_helpers::PathHelpers,
     out: &mut AdapterMethods,
 ) -> std::io::Result<Index<Method>> {
     let mut install_ops = vec![
@@ -1193,6 +1201,20 @@ fn add_installer_method(
             Op::GetLex {
                 index: destroy.helper,
             },
+            Op::CallPropVoid {
+                index: names.add_callback,
+                num_args: 2,
+            },
+        ]);
+    }
+    // M48 GUI-PATH-001 — the path callbacks, once the root they walk from is stored.
+    for (callback, helper) in &paths.registrations {
+        install_ops.extend([
+            Op::GetLex {
+                index: names.external_interface,
+            },
+            Op::PushString { value: *callback },
+            Op::GetLex { index: *helper },
             Op::CallPropVoid {
                 index: names.add_callback,
                 num_args: 2,
@@ -1437,10 +1459,12 @@ mod tests {
         let bytes = build_adapter_abc(catalog, &[], true).unwrap();
         let abc = Reader::new(&bytes).read().unwrap();
 
+        // + the M48 path service's walker and get / set / call, after the fixed tail.
+        let path = super::path_helpers::PATH_ADAPTER_METHODS;
         assert_eq!(abc.scripts.len(), 1);
-        assert_eq!(abc.scripts[0].traits.len(), catalog.len() + 4);
-        assert_eq!(abc.methods.len(), catalog.len() + 4);
-        assert_eq!(abc.method_bodies.len(), catalog.len() + 4);
+        assert_eq!(abc.scripts[0].traits.len(), catalog.len() + 4 + path);
+        assert_eq!(abc.methods.len(), catalog.len() + 3 + path + 1);
+        assert_eq!(abc.method_bodies.len(), catalog.len() + 4 + path);
 
         let installer = &abc.method_bodies[catalog.len() + 2];
         let mut reader = Reader::new(&installer.code);
@@ -1454,7 +1478,8 @@ mod tests {
             }
         }
         assert_eq!(installed_properties, catalog.len() + 1);
-        assert_eq!(void_calls, 3);
+        // on_create + addCallback(ready) + addCallback(destroy) + the four path callbacks.
+        assert_eq!(void_calls, 3 + 4);
 
         let destroy = &abc.method_bodies[catalog.len() + 1];
         let mut reader = Reader::new(&destroy.code);
@@ -1509,9 +1534,10 @@ mod tests {
 
         // One fewer method/body/trait than the has-destroy-trait case: no
         // destroy helper.
-        assert_eq!(abc.scripts[0].traits.len(), catalog.len() + 3);
-        assert_eq!(abc.methods.len(), catalog.len() + 3);
-        assert_eq!(abc.method_bodies.len(), catalog.len() + 3);
+        let path = super::path_helpers::PATH_ADAPTER_METHODS;
+        assert_eq!(abc.scripts[0].traits.len(), catalog.len() + 3 + path);
+        assert_eq!(abc.methods.len(), catalog.len() + 3 + path);
+        assert_eq!(abc.method_bodies.len(), catalog.len() + 3 + path);
 
         for absent in [DESTROYED_EVENT, DESTROY_CALLBACK] {
             assert!(
@@ -1537,8 +1563,8 @@ mod tests {
                 add_callback_calls += 1;
             }
         }
-        // on_create + addCallback(ready) — no addCallback(destroy).
-        assert_eq!(add_callback_calls, 2);
+        // on_create + addCallback(ready) + the four path callbacks — no addCallback(destroy).
+        assert_eq!(add_callback_calls, 2 + 4);
     }
 
     fn ops(code: &[u8]) -> Vec<Op> {
@@ -1572,9 +1598,11 @@ mod tests {
             let string = |i: Index<String>| strings[i.as_u30() as usize - 1].clone();
             let script = &abc.scripts[0];
 
-            // The installer is the second-to-last body with or without the
-            // destroy helper (the ready/init body follows it).
-            let installer = ops(&abc.method_bodies[abc.method_bodies.len() - 2].code);
+            // The installer is the second-to-last body of the fixed tail with or
+            // without the destroy helper (the init body follows it); the M48 path
+            // service's bodies come after the tail.
+            let tail = abc.method_bodies.len() - super::path_helpers::PATH_ADAPTER_METHODS;
+            let installer = ops(&abc.method_bodies[tail - 2].code);
             let pairs: Vec<_> = installer
                 .windows(3)
                 .filter_map(|w| match w {
@@ -1681,8 +1709,9 @@ mod tests {
         let bytes = build_adapter_abc(catalog, &[], true).unwrap();
         let abc = Reader::new(&bytes).read().unwrap();
 
+        // `flash.display` is not here: since #7036 the path service's attach names
+        // `flash.display.DisplayObject` for its type check — none of the loader strategy below.
         for abandoned in [
-            "flash.display",
             "flash.utils",
             "LoaderInfo",
             "getLoaderInfoByDefinition",
@@ -1704,9 +1733,13 @@ mod tests {
         // 18 fixed strings + 3 per catalog method (helper name, `BGSCodeObj.X`
         // transport name, bare method name); 12 fixed multinames + 2 per method
         // (helper, installed property); public + `flash.external` namespaces.
-        assert_eq!(abc.constant_pool.strings.len(), 18 + catalog.len() * 3);
-        assert_eq!(abc.constant_pool.multinames.len(), 12 + catalog.len() * 2);
-        assert_eq!(abc.constant_pool.namespaces.len(), 2);
+        // + the M48 path service's entries, its two namespaces (#7036 attach) and its one
+        // namespace set (`o[k]`).
+        use super::path_helpers::{PATH_ADAPTER_MULTINAMES, PATH_ADAPTER_NAMESPACES, PATH_ADAPTER_STRINGS};
+        assert_eq!(abc.constant_pool.strings.len(), 18 + catalog.len() * 3 + PATH_ADAPTER_STRINGS);
+        assert_eq!(abc.constant_pool.multinames.len(), 12 + catalog.len() * 2 + PATH_ADAPTER_MULTINAMES);
+        assert_eq!(abc.constant_pool.namespaces.len(), 2 + PATH_ADAPTER_NAMESPACES);
+        assert_eq!(abc.constant_pool.namespace_sets.len(), 1);
     }
 
     /// #2718 (SAFEUI-04) — the corpus sweep the pre-fix version of this test
@@ -1935,9 +1968,10 @@ mod tests {
         let abc = Reader::new(&bytes).read().unwrap();
         let installed = catalog.len() + extra.len();
 
-        assert_eq!(abc.methods.len(), installed + 4);
-        assert_eq!(abc.method_bodies.len(), installed + 4);
-        assert_eq!(abc.scripts[0].traits.len(), installed + 4);
+        let path = super::path_helpers::PATH_ADAPTER_METHODS;
+        assert_eq!(abc.methods.len(), installed + 4 + path);
+        assert_eq!(abc.method_bodies.len(), installed + 4 + path);
+        assert_eq!(abc.scripts[0].traits.len(), installed + 4 + path);
 
         let installer = &abc.method_bodies[installed + 2];
         let mut reader = Reader::new(&installer.code);

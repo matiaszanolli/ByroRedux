@@ -158,6 +158,15 @@ pub fn compute_binding<'a>(
     layout_binding(binding, ty, vk::ShaderStageFlags::COMPUTE)
 }
 
+/// A descriptor buffer binding for the whole of `buffer` (offset 0, `size` bytes).
+///
+/// The buffer and its bound size always travel together, so the descriptor-write helpers that
+/// take several buffers take these instead of a `buffer, size` pair per binding.
+#[inline]
+pub fn whole_buffer(buffer: vk::Buffer, size: vk::DeviceSize) -> vk::DescriptorBufferInfo {
+    vk::DescriptorBufferInfo { buffer, offset: 0, range: size }
+}
+
 /// `STORAGE_BUFFER` write.
 #[inline]
 pub fn write_storage_buffer<'a>(
@@ -303,18 +312,22 @@ pub(crate) unsafe fn memory_barrier(
     dst_stage: vk::PipelineStageFlags,
     dst_access: vk::AccessFlags,
 ) {
-    let barrier = vk::MemoryBarrier::default()
-        .src_access_mask(src_access)
-        .dst_access_mask(dst_access);
-    device.cmd_pipeline_barrier(
-        cmd,
-        src_stage,
-        dst_stage,
-        vk::DependencyFlags::empty(),
-        std::slice::from_ref(&barrier),
-        &[],
-        &[],
-    );
+    // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+    // covered by the caller contract documented on the function.
+    unsafe {
+        let barrier = vk::MemoryBarrier::default()
+            .src_access_mask(src_access)
+            .dst_access_mask(dst_access);
+        device.cmd_pipeline_barrier(
+            cmd,
+            src_stage,
+            dst_stage,
+            vk::DependencyFlags::empty(),
+            std::slice::from_ref(&barrier),
+            &[],
+            &[],
+        );
+    }
 }
 
 // ── ImageMemoryBarrier helpers ───────────────────────────────────────

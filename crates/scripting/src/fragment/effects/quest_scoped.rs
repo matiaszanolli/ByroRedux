@@ -158,6 +158,7 @@ pub(super) fn apply_quest_scoped_effect(
         | Effect::SetHudCartMode { .. }
         | Effect::SetInChargen { .. }
         | Effect::ShowRaceMenu
+        | Effect::ShowAppearanceMenu { .. }
         | Effect::RequestSave { .. }
         | Effect::SetQuestVariable { .. }
         | Effect::ModQuestVariable { .. }

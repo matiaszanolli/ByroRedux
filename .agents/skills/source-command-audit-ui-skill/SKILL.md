@@ -1,6 +1,6 @@
 ---
 name: source-command-audit-ui-skill
-description: Deep audit of the ByroRedux game UI tracks — Scaleform/SWF (Ruffle host bridge, AVM1/AVM2 profiles, ABC adapter injection, catalog and AVM1 scanner, resource navigator, offscreen wgpu readback, overlay upload, input routing) and the Oblivion/FO3/FNV MenuXml track (eval, layout, raster) with both HUD drivers. Use when the user requests a UI, Scaleform, HUD, MenuXml, or Ruffle audit.
+description: Deep audit of the ByroRedux game UI tracks — Scaleform/SWF (Ruffle host bridge, AVM1/AVM2 profiles, ABC adapter injection, path service, host-call classes, catalog and AVM1 scanner, fonts, resource navigator, offscreen wgpu readback, overlay upload, input routing) and the Oblivion/FO3/FNV MenuXml track (eval, layout, raster, input) with both HUD drivers and the M48 menu-stack surfaces. Use when the user requests a UI, Scaleform, HUD, MenuXml, or Ruffle audit.
 ---
 
 # UI Audit: Scaleform (R4 + M48) and MenuXml (M48.4-M48.7)
@@ -19,7 +19,7 @@ Use the Claude Code command as the canonical workflow instead of maintaining a d
 - Resolve each `/audit-<name>` reference to that audit's `SKILL.md` under `.claude/commands/`, and load a routed sibling audit (parsers, concurrency, safety, gameplay) only when the handoff it owns needs its deeper checklist.
 - Prefer the repository's codebase-memory graph tools for host-call, guard-symbol, and route discovery; use text search for SWF/ABC bytecode, eval/layout/raster details, Vulkan upload and presentation sites, and graph gaps.
 - Interpret Claude `Task`-agent instructions as Codex sub-agent delegation only when delegation is available and allowed. Otherwise audit one dimension at a time.
-- Treat data-gated tests that silently return early without game data as unverified unless run with data, per the canonical command.
+- Treat data-gated tests (`#[ignore]`d; they fail, not skip, on a missing archive) as unverified unless run with data, per the canonical command.
 - Preserve the canonical output path and do not create GitHub issues; publishing remains a separate audit-publish action.
 
 Do not copy the canonical command body into this skill. The Claude command is the single source of truth.

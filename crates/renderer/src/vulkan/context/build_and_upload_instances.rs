@@ -20,10 +20,10 @@ use super::super::scene_buffer::{
     INSTANCE_TERRAIN_TILE_SHIFT,
 };
 use super::frame_params::{
-    CompositeParamsInputs, DrawBatch, build_composite_params, build_sky_cube_params,
+    CompositeParamsInputs, DrawBatch, FrameDerived, FrameInputs, FrameSlot, build_composite_params, build_sky_cube_params,
     is_caustic_source, is_refractive_glass, morph_gpu_fields_for_draw, morph_slot_backs_mesh,
     rebase_model_matrix, rigid_instance_set_changed, skin_slot_backs_mesh,
-    skinned_vertex_address_for_draw, uses_rigid_motion_history, UnderwaterView,
+    skinned_vertex_address_for_draw, uses_rigid_motion_history,
 };
 use super::{DrawCommand, FrameTimings, SkyParams, VulkanContext};
 use ash::vk;
@@ -217,12 +217,32 @@ fn svgf_continuous_inputs_jumped(
 /// `draw_frame`'s own tail (bookkeeping after `record_geometry_pass`) and
 /// the immediately-following `record_geometry_pass` / `record_post_passes`
 /// calls still need.
+/// The rigid-body motion history `build_and_upload_instances` has accumulated by the time it
+/// derives the scene history gates.
+struct RigidHistory<'a> {
+    /// Whether last frame's rigid transforms are a valid history (no camera cut, nothing suppressing it).
+    live: bool,
+    /// A rigid instance appeared this frame.
+    first_sight: bool,
+    /// A rigid instance moved this frame.
+    moved: bool,
+    /// This frame's rigid model matrices, keyed by instance.
+    current_models: &'a rustc_hash::FxHashMap<u32, [f32; 16]>,
+}
+
+/// The CPU-built instance arrays one frame uploads into the instance SSBOs.
+struct InstanceUpload<'a> {
+    gpu_instances: &'a [GpuInstance],
+    previous_models: &'a [[[f32; 4]; 4]],
+    moved_surface_ids: &'a [u32],
+}
+
 pub(super) struct BuildInstancesOutput {
     pub(super) gpu_instances: Vec<GpuInstance>,
     pub(super) previous_models: Vec<scene_buffer::GpuPreviousModel>,
     pub(super) current_rigid_models: rustc_hash::FxHashMap<u32, [f32; 16]>,
     pub(super) batches: Vec<DrawBatch>,
-    pub(super) ui_instance_idx: Option<u32>,
+    pub(super) ui_instance_idx: Option<UiInstanceRange>,
     pub(super) caustic_history_valid: bool,
 }
 
@@ -284,42 +304,37 @@ impl VulkanContext {
     /// TAA/water per-frame UBOs, and emit the bulk pre-render-pass barrier.
     /// Extracted verbatim from `draw_frame` — the recording order (including
     /// the final barrier and the water-caustic pre-clear) is unchanged.
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn build_and_upload_instances(
         &mut self,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-        draw_commands: &[DrawCommand],
-        render_origin: byroredux_core::math::Vec3,
-        camera_cut: bool,
-        camera_static: bool,
-        pose_dirty: &rustc_hash::FxHashSet<byroredux_core::ecs::storage::EntityId>,
-        lights: &[scene_buffer::GpuLight],
-        instance_map: &[Option<u32>],
-        ui_texture_handle: Option<u32>,
-        materials: &[GpuMaterial],
-        fog_color: [f32; 3],
-        fog_near: f32,
-        fog_far: f32,
-        fog_extinction_per_meter: f32,
-        fog_single_scatter_albedo: f32,
-        fog_scale_height_meters: f32, fog_coverage: f32,
-        fog_clip: f32,
-        fog_power: f32,
-        fog_height_reference: f32,
-        sky_params: &SkyParams,
-        camera_pos: [f32; 3],
-        inv_vp_arr: [[f32; 4]; 4],
-        fog_volumes: &[super::super::volumetrics::GpuFogVolume],
-        underwater: UnderwaterView,
-        water_commands: &[super::super::water::WaterDrawCommand],
+        slot: FrameSlot,
+        inputs: &FrameInputs,
+        derived: FrameDerived,
         armed_selected_ray_probe_generation: &mut Option<u32>,
         t: &mut FrameTimings,
-        // Stage 1 — frame delta in seconds for the exposure meter's
-        // adaptation factor (precomputed host-side; see
-        // `exposure::adaptation_alpha`).
-        frame_delta_seconds: f32,
     ) -> BuildInstancesOutput {
+        let FrameSlot { cmd, frame } = slot;
+        let FrameInputs {
+            draw_commands,
+            pose_dirty,
+            ui_texture_handles,
+            materials,
+            fog_color,
+            fog_near,
+            fog_far,
+            fog_extinction_per_meter,
+            fog_single_scatter_albedo,
+            fog_scale_height_meters,
+            fog_clip,
+            fog_power,
+            fog_height_reference,
+            ..
+        } = *inputs;
+        let FrameDerived {
+            render_origin,
+            camera_cut,
+            instance_map,
+            ..
+        } = derived;
         // ── Build instance SSBO + draw batches ────────────────────────
         //
         // Each DrawCommand becomes one GpuInstance in the SSBO. Consecutive
@@ -385,7 +400,7 @@ impl VulkanContext {
             std::mem::take(&mut self.history.suppress_rigid_history_next_build);
         let mut rigid_instance_moved = false;
         // #6250 — the moved stable surface IDs for the scene set's mover
-        // list (binding 25): `Reservoir::occluderSurface` records blockers
+        // list (binding 25): the reservoir records blockers
         // by this identity, and instance indices cannot be resolved across
         // frames (they follow the per-frame sort order), so the taint's
         // prev-occluder arm matches on the stable ID. Same `surface_id`
@@ -608,39 +623,19 @@ impl VulkanContext {
         // against here is necessary but not sufficient. The final value is
         // re-clamped against the slot's post-grow capacity after
         // `grow_instance_ssbos` runs.
-        let ui_instance_idx_candidate =
-            if let (Some(ui_tex), Some(_)) = (ui_texture_handle, self.overlay.ui_quad_handle) {
-                let idx = gpu_instances.len();
-                let instance = GpuInstance {
-                    texture_index: ui_tex,
-                    ..GpuInstance::default()
-                };
-                previous_models.push(instance.model);
-                gpu_instances.push(instance);
-                // #3601 (REN-2026-08-30-D11-01) — `upload_instances` clamps
-                // an overflowing `gpu_instances` to `instances[..MAX_
-                // INSTANCES]` (the PREFIX), and the UI instance is always
-                // pushed last, so it is exactly the entry an overflowing
-                // frame drops. Submitting its now-uploaded-nowhere index as
-                // `firstInstance` anyway would read past the SSBO's
-                // allocated capacity — an undefined read
-                // (`robust_buffer_access` is not enabled) feeding a
-                // bindless `nonuniformEXT` texture index in `ui.frag`.
-                // Skip the overlay for this frame instead; the RP-1 log
-                // below already reports the overflow that caused it.
-                ui_instance_candidate(idx)
-            } else {
-                None
-            };
+        let ui_instance_idx_candidate = if self.overlay.ui_quad_handle.is_some() {
+            push_ui_instances(&mut gpu_instances, &mut previous_models, ui_texture_handles)
+        } else {
+            None
+        };
 
         let SceneHistoryGates {
             caustic_history_valid,
             svgf_history_valid,
         } = self.update_scene_history_gates(
             caustic_scene_key,
-            lights,
-            materials,
-            sky_params,
+            inputs,
+            derived,
             &[
                 fog_color[0],
                 fog_color[1],
@@ -654,12 +649,12 @@ impl VulkanContext {
                 fog_power,
                 fog_height_reference,
             ],
-            rigid_history_live,
-            rigid_instance_first_sight,
-            rigid_instance_moved,
-            &current_rigid_models,
-            pose_dirty,
-            camera_static,
+            RigidHistory {
+                live: rigid_history_live,
+                first_sight: rigid_instance_first_sight,
+                moved: rigid_instance_moved,
+                current_models: &current_rigid_models,
+            },
         );
 
 
@@ -742,11 +737,12 @@ impl VulkanContext {
 
         finish_moved_surface_ids(&mut moved_surface_ids);
         self.upload_instance_and_draw_buffers(
-            cmd,
-            frame,
-            &gpu_instances,
-            &previous_models,
-            &moved_surface_ids,
+            slot.frame,
+            InstanceUpload {
+                gpu_instances: &gpu_instances,
+                previous_models: &previous_models,
+                moved_surface_ids: &moved_surface_ids,
+            },
             materials,
             &batches,
         );
@@ -762,26 +758,10 @@ impl VulkanContext {
         let parameter_t0 = Instant::now();
 
         self.upload_frame_parameters(
-            cmd,
-            frame,
-            render_origin,
-            fog_color,
-            fog_near,
-            fog_far,
-            fog_extinction_per_meter,
-            fog_single_scatter_albedo,
-            fog_scale_height_meters, fog_coverage,
-            fog_clip,
-            fog_power,
-            fog_height_reference,
-            sky_params,
-            camera_pos,
-            inv_vp_arr,
-            fog_volumes,
-            underwater,
-            water_commands,
+            slot,
+            inputs,
+            derived,
             armed_selected_ray_probe_generation,
-            frame_delta_seconds,
             svgf_history_valid,
         );
 
@@ -993,6 +973,16 @@ impl VulkanContext {
             if let Some(tile_idx) = draw_cmd.terrain_tile_index {
                 f |= INSTANCE_FLAG_TERRAIN_SPLAT;
                 f |= (tile_idx & INSTANCE_TERRAIN_TILE_MASK) << INSTANCE_TERRAIN_TILE_SHIFT;
+                // #7152 — a displacement patch carries its relief in the
+                // geometry: the fragment skips the parallax march on it.
+                if self
+                    .exterior
+                    .terrain_patch
+                    .as_ref()
+                    .is_some_and(|pass| pass.skips_parallax(draw_cmd.mesh_handle))
+                {
+                    f |= crate::vulkan::scene_buffer::INSTANCE_FLAG_TERRAIN_PATCH;
+                }
             }
             // #renderlayer — pack the 2-bit layer discriminant
             // into bits 4..5 for the fragment shader's debug-viz
@@ -1002,6 +992,30 @@ impl VulkanContext {
                 << INSTANCE_RENDER_LAYER_SHIFT;
         }
         f
+    }
+
+    /// Reupload the terrain tile SSBO when cell load mutated it.
+    /// The slab is static until the next cell transition — #497
+    /// moved it to a single DEVICE_LOCAL buffer. #3664 keeps only the
+    /// live high-water prefix, writes it into the current frame's
+    /// reusable staging buffer, and records the copy so the transfer is
+    /// ordered before its readers without a queue-fence stall.
+    /// The scratch Vec lives on self so its capacity amortizes across
+    /// cell loads — `mem::take` moves it out so the fill can run while
+    /// `&mut self.scene_buffers` consumes the slice. #496.
+    ///
+    /// #7221 — split out of the instance upload: it depends on nothing that
+    /// upload builds, and the terrain patch compute, which now runs before
+    /// the TLAS build, reads these tiles.
+    pub(super) fn upload_terrain_tiles_if_dirty(&mut self, cmd: vk::CommandBuffer, frame: usize) {
+        let mut tile_scratch: Vec<GpuTerrainTile> =
+            std::mem::take(&mut self.scratch.terrain_tile_scratch);
+        if self.fill_terrain_tile_scratch_if_dirty(&mut tile_scratch) {
+            self.scene_buffers
+                .upload_terrain_tiles(&self.device, cmd, frame, &tile_scratch)
+                .unwrap_or_else(|e| log::warn!("Failed to upload terrain tiles: {e}"));
+        }
+        self.scratch.terrain_tile_scratch = tile_scratch;
     }
 
     /// The skinned-vertex and morph-target device addresses of a draw's
@@ -1129,8 +1143,8 @@ impl VulkanContext {
         // glass draw and a particle draw that happen to agree on
         // every pipeline/depth axis must not fold together, or the
         // merged batch would take one population's path for both.
-        if let Some(batch) = batches.last_mut() {
-            if batch.mesh_handle == draw_cmd.mesh_handle
+        if let Some(batch) = batches.last_mut()
+            && batch.mesh_handle == draw_cmd.mesh_handle
                 && batch.pipeline_key == pipeline_key
                 && batch.two_sided == draw_cmd.two_sided
                 && batch.render_layer == render_layer
@@ -1143,7 +1157,6 @@ impl VulkanContext {
                 batch.instance_count += 1;
                 return;
             }
-        }
 
         // Start a new batch.
         batches.push(DrawBatch {
@@ -1167,21 +1180,22 @@ impl VulkanContext {
     /// caustic, SVGF and ReSTIR scene keys, and derive the history-validity gates
     /// from them (#2468 / #4046 / #5369 / #6247). Updates the `prev_*` keys on
     /// `self`. (#6143, split out of `build_and_upload_instances`.)
-    #[allow(clippy::too_many_arguments)]
     fn update_scene_history_gates(
         &mut self,
         mut caustic_scene_key: u64,
-        lights: &[scene_buffer::GpuLight],
-        materials: &[GpuMaterial],
-        sky_params: &SkyParams,
+        inputs: &FrameInputs,
+        derived: FrameDerived,
         fog_inputs: &[f32; SVGF_FOG_INPUTS],
-        rigid_history_live: bool,
-        rigid_instance_first_sight: bool,
-        rigid_instance_moved: bool,
-        current_rigid_models: &rustc_hash::FxHashMap<u32, [f32; 16]>,
-        pose_dirty: &rustc_hash::FxHashSet<byroredux_core::ecs::storage::EntityId>,
-        camera_static: bool,
+        rigid: RigidHistory,
     ) -> SceneHistoryGates {
+        let FrameInputs { materials, sky_params, pose_dirty, .. } = *inputs;
+        let FrameDerived { merged_lights: lights, camera_static, .. } = derived;
+        let RigidHistory {
+            live: rigid_history_live,
+            first_sight: rigid_instance_first_sight,
+            moved: rigid_instance_moved,
+            current_models: current_rigid_models,
+        } = rigid;
         // #2468 — finish the caustic scene key with the light rig. Every
         // splat is a refraction of a specific light through a specific
         // surface, so a lantern being carried, a light being coloured /
@@ -1369,21 +1383,20 @@ impl VulkanContext {
         t.pipeline_compile_ns = pipeline_t0.elapsed().as_nanos() as u64;
     }
 
-    /// Upload the instance, previous-model, mover-list, material, ray-budget,
-    /// terrain-tile and indirect-draw buffers for this frame (#309 / #496 / #6250).
-    /// Runs after the frame's final instance-SSBO grow and batch clamp.
+    /// Upload the instance, previous-model, mover-list, material, ray-budget
+    /// and indirect-draw buffers for this frame (#309 / #6250). Runs after the
+    /// frame's final instance-SSBO grow and batch clamp. Host-visible writes
+    /// only — the terrain-tile copy, the one command it used to record, is
+    /// `upload_terrain_tiles_if_dirty` since #7221.
     /// (#6143, split out of `build_and_upload_instances`.)
-    #[allow(clippy::too_many_arguments)]
     fn upload_instance_and_draw_buffers(
         &mut self,
-        cmd: vk::CommandBuffer,
         frame: usize,
-        gpu_instances: &[GpuInstance],
-        previous_models: &[[[f32; 4]; 4]],
-        moved_surface_ids: &[u32],
+        upload: InstanceUpload,
         materials: &[GpuMaterial],
         batches: &[DrawBatch],
     ) {
+        let InstanceUpload { gpu_instances, previous_models, moved_surface_ids } = upload;
         // Upload all instance data (scene + UI) to the SSBO in one flush.
         if !gpu_instances.is_empty() {
             debug_assert_eq!(gpu_instances.len(), previous_models.len());
@@ -1433,23 +1446,9 @@ impl VulkanContext {
             )
             .unwrap_or_else(|e| log::warn!("Failed to upload adaptive ray budget: {e}"));
 
-        // Reupload the terrain tile SSBO when cell load mutated it.
-        // The slab is static until the next cell transition — #497
-        // moved it to a single DEVICE_LOCAL buffer. #3664 keeps only the
-        // live high-water prefix, writes it into the current frame's
-        // reusable staging buffer, and records the copy here so the
-        // transfer is ordered before geometry without a queue-fence stall.
-        // The scratch Vec lives on self so its capacity amortizes across
-        // cell loads — `mem::take` moves it out so the fill can run while
-        // `&mut self.scene_buffers` consumes the slice. #496.
-        let mut tile_scratch: Vec<GpuTerrainTile> =
-            std::mem::take(&mut self.scratch.terrain_tile_scratch);
-        if self.fill_terrain_tile_scratch_if_dirty(&mut tile_scratch) {
-            self.scene_buffers
-                .upload_terrain_tiles(&self.device, cmd, frame, &tile_scratch)
-                .unwrap_or_else(|e| log::warn!("Failed to upload terrain tiles: {e}"));
-        }
-        self.scratch.terrain_tile_scratch = tile_scratch;
+        // #7221 — the terrain tile SSBO upload moved to
+        // `upload_terrain_tiles_if_dirty`, recorded before the patch compute
+        // and the TLAS build at the top of `draw_frame`.
 
         // Build + upload indirect-draw commands for this frame (#309).
         // One `VkDrawIndexedIndirectCommand` per DrawBatch, laid out in
@@ -1493,32 +1492,39 @@ impl VulkanContext {
     /// water, selected-ray probe) and record the SKYAL sky-cube bake, all ahead of
     /// the bulk HOST -> shader barrier that covers their writes (#909 / #961 /
     /// #1397). (#6143, split out of `build_and_upload_instances`.)
-    #[allow(clippy::too_many_arguments)]
     fn upload_frame_parameters(
         &mut self,
-        cmd: vk::CommandBuffer,
-        frame: usize,
-        render_origin: byroredux_core::math::Vec3,
-        fog_color: [f32; 3],
-        fog_near: f32,
-        fog_far: f32,
-        fog_extinction_per_meter: f32,
-        fog_single_scatter_albedo: f32,
-        fog_scale_height_meters: f32,
-        fog_coverage: f32,
-        fog_clip: f32,
-        fog_power: f32,
-        fog_height_reference: f32,
-        sky_params: &SkyParams,
-        camera_pos: [f32; 3],
-        inv_vp_arr: [[f32; 4]; 4],
-        fog_volumes: &[super::super::volumetrics::GpuFogVolume],
-        underwater: UnderwaterView,
-        water_commands: &[super::super::water::WaterDrawCommand],
+        slot: FrameSlot,
+        inputs: &FrameInputs,
+        derived: FrameDerived,
         armed_selected_ray_probe_generation: &mut Option<u32>,
-        frame_delta_seconds: f32,
         svgf_history_valid: bool,
     ) {
+        let FrameSlot { cmd, frame } = slot;
+        let FrameInputs {
+            interior_cell_root,
+            fog_color,
+            fog_near,
+            fog_far,
+            fog_extinction_per_meter,
+            fog_single_scatter_albedo,
+            fog_scale_height_meters,
+            fog_coverage,
+            fog_clip,
+            fog_power,
+            fog_height_reference,
+            sky_params,
+            camera_pos,
+            fog_volumes,
+            underwater,
+            water_commands,
+            frame_time_delta_ms,
+            ..
+        } = *inputs;
+        let FrameDerived { render_origin, inv_vp_arr, .. } = derived;
+        // Stage 1 — frame delta in seconds for the exposure meter's adaptation factor
+        // (precomputed host-side; see `exposure::adaptation_alpha`).
+        let frame_delta_seconds = frame_time_delta_ms / 1000.0;
         // Upload composite params (fog + sky) up-front so the bulk host
         // barrier below covers this UBO's HOST_WRITE too (#909 /
         // REN-D1-NEW-03). All inputs are available from `draw_frame`'s
@@ -1532,6 +1538,7 @@ impl VulkanContext {
         // pipeline's presence. Leaving the bake gated on `composite` would
         // make that flag lie whenever composite is absent, and the shader
         // would sample a cube still in `UNDEFINED` layout.
+        let dropped_sky_apertures = std::cell::Cell::new(0);
         let composite_inputs = CompositeParamsInputs {
             fog_color,
             fog_near,
@@ -1563,6 +1570,7 @@ impl VulkanContext {
             render_origin,
             inv_vp_arr,
             sky_aperture_volumes: fog_volumes,
+            dropped_sky_apertures: &dropped_sky_apertures,
             underwater: underwater.grade,
             underwater_surface: underwater.surface,
             water_caustic_active: self.post.water_caustic_accum.is_some(),
@@ -1570,11 +1578,15 @@ impl VulkanContext {
             camera_cloud_sun_transmittance: self.camera_cloud_sun_transmittance,
         };
         let composite_params = build_composite_params(composite_inputs);
-        if let Some(ref mut composite) = self.post.composite {
-            if let Err(e) = composite.upload_params(&self.device, frame, &composite_params) {
+        self.post_state.aperture_overflow_log.note(
+            interior_cell_root,
+            dropped_sky_apertures.get(),
+            composite_params.sky_aperture_count[0] as usize,
+        );
+        if let Some(ref mut composite) = self.post.composite
+            && let Err(e) = composite.upload_params(&self.device, frame, &composite_params) {
                 log::warn!("composite upload_params failed: {e}");
             }
-        }
 
         {
             // SKYAL — exteriors bake from the same parameters as the
@@ -1626,8 +1638,8 @@ impl VulkanContext {
         // machine is host-side and depends on `svgf_recovery_frames`
         // (advanced at end-of-tick); it does NOT depend on anything
         // produced by the render pass below.
-        if !self.post_state.svgf_failed {
-            if let Some(ref mut svgf) = self.post.svgf {
+        if !self.post_state.svgf_failed
+            && let Some(ref mut svgf) = self.post.svgf {
                 // #3995 — `scene_static` is passed in so the recovery window
                 // can veto the progressive-accumulation drop.
                 // #4046 (REN-2026-09-06-D8-02) — ANDs in `caustic_scene_static`
@@ -1672,7 +1684,6 @@ impl VulkanContext {
                     self.post_state.svgf_failed = true;
                 }
             }
-        }
 
         // TAA UBO — fold into the bulk barrier below (#1397 / NCPS-03).
         // upload_params writes the host-visible param_buffers[frame];
@@ -1746,11 +1757,10 @@ impl VulkanContext {
         // Water material UBO — upload before the shared HOST→FRAGMENT
         // barrier below. The per-draw push constant now carries only the
         // compact array index, so this is the sole material-data upload.
-        if let Some(ref mut water) = self.water {
-            if let Err(error) = water.upload_params(&self.device, frame, water_commands) {
+        if let Some(ref mut water) = self.water
+            && let Err(error) = water.upload_params(&self.device, frame, water_commands) {
                 log::warn!("water parameter upload failed: {error}; skipping water this frame");
             }
-        }
 
         // Bloom UBOs — #2037 / GPU-D5-01: every down/upsample param UBO
         // is a pure function of the (construction-time-fixed) mip
@@ -1792,16 +1802,49 @@ impl VulkanContext {
 /// the UI instance is always pushed last, so it is exactly the entry an
 /// overflowing frame drops. `None` skips the overlay for the frame instead of
 /// submitting a `firstInstance` past the SSBO's allocated capacity.
-fn ui_instance_candidate(pushed_at: usize) -> Option<u32> {
-    (pushed_at < super::super::scene_buffer::MAX_INSTANCES).then_some(pushed_at as u32)
+fn ui_instance_candidate(pushed_at: usize, count: usize) -> Option<UiInstanceRange> {
+    (count > 0 && pushed_at + count <= super::super::scene_buffer::MAX_INSTANCES)
+        .then_some(UiInstanceRange { first: pushed_at as u32, count: count as u32 })
+}
+
+/// Append one UI instance per overlay layer, bottom to top (M48 GUI-REG-001): the layers draw as
+/// consecutive instances of one quad, and Vulkan rasterizes instances in order, so each blends
+/// over the one below. Pushed before the bulk upload so they ride its single flush (#189).
+///
+/// #3601 (REN-2026-08-30-D11-01) — `upload_instances` clamps an overflowing `gpu_instances` to
+/// `instances[..MAX_INSTANCES]` (the PREFIX), and the UI instances are always pushed last, so they
+/// are exactly the entries an overflowing frame drops. Submitting their now-uploaded-nowhere index
+/// as `firstInstance` anyway would read past the SSBO's allocated capacity — an undefined read
+/// (`robust_buffer_access` is not enabled) feeding a bindless `nonuniformEXT` texture index in
+/// `ui.frag`. The candidate is `None` then, and the overlay skips the frame; the RP-1 log reports
+/// the overflow that caused it.
+fn push_ui_instances(
+    gpu_instances: &mut Vec<GpuInstance>,
+    previous_models: &mut Vec<scene_buffer::GpuPreviousModel>,
+    ui_texture_handles: &[u32],
+) -> Option<UiInstanceRange> {
+    let first = gpu_instances.len();
+    for &ui_tex in ui_texture_handles {
+        let instance = GpuInstance { texture_index: ui_tex, ..GpuInstance::default() };
+        previous_models.push(instance.model);
+        gpu_instances.push(instance);
+    }
+    ui_instance_candidate(first, ui_texture_handles.len())
+}
+
+/// The UI overlay's instances: one per layer, consecutive, drawn bottom to top.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct UiInstanceRange {
+    pub(super) first: u32,
+    pub(super) count: u32,
 }
 
 /// The UI instance's final index (#4722): the candidate re-checked against
 /// the capacity the upload actually clamped to, which is the slot's grown
 /// capacity (#4199), not `MAX_INSTANCES`. Callers read `capacity` after
 /// `grow_instance_ssbos`.
-fn ui_instance_within_capacity(candidate: Option<u32>, capacity: u32) -> Option<u32> {
-    candidate.filter(|idx| *idx < capacity)
+fn ui_instance_within_capacity(candidate: Option<UiInstanceRange>, capacity: u32) -> Option<UiInstanceRange> {
+    candidate.filter(|range| range.first + range.count <= capacity)
 }
 
 /// #4726 / UI-D5-2026-09-21-05 — clamp scene draw batches to what the slot's
@@ -2066,7 +2109,11 @@ mod batches_scratch_reserve_tests {
 
 #[cfg(test)]
 mod ui_instance_idx_overflow_tests {
-    use super::{ui_instance_candidate, ui_instance_within_capacity};
+    use super::{ui_instance_candidate, ui_instance_within_capacity, UiInstanceRange};
+
+    fn range(first: u32, count: u32) -> Option<UiInstanceRange> {
+        Some(UiInstanceRange { first, count })
+    }
     use crate::vulkan::scene_buffer::MAX_INSTANCES;
 
     /// #3601 (REN-2026-08-30-D11-01) — `upload_instances` clamps an
@@ -2078,10 +2125,15 @@ mod ui_instance_idx_overflow_tests {
     /// SSBO's allocated capacity.
     #[test]
     fn ui_instance_idx_is_clamped_to_none_past_max_instances() {
-        assert_eq!(ui_instance_candidate(0), Some(0));
-        assert_eq!(ui_instance_candidate(MAX_INSTANCES - 1), Some(MAX_INSTANCES as u32 - 1));
-        assert_eq!(ui_instance_candidate(MAX_INSTANCES), None);
-        assert_eq!(ui_instance_candidate(MAX_INSTANCES + 7), None);
+        assert_eq!(ui_instance_candidate(0, 1), range(0, 1));
+        assert_eq!(ui_instance_candidate(MAX_INSTANCES - 1, 1), range(MAX_INSTANCES as u32 - 1, 1));
+        assert_eq!(ui_instance_candidate(MAX_INSTANCES, 1), None);
+        assert_eq!(ui_instance_candidate(MAX_INSTANCES + 7, 1), None);
+        // M48 — a stack of layers is kept or dropped whole: a partly
+        // uploaded run would draw the bottom layers without the top ones.
+        assert_eq!(ui_instance_candidate(MAX_INSTANCES - 2, 2), range(MAX_INSTANCES as u32 - 2, 2));
+        assert_eq!(ui_instance_candidate(MAX_INSTANCES - 1, 2), None);
+        assert_eq!(ui_instance_candidate(0, 0), None);
     }
 
     /// #4722 (UI-D5-2026-09-21-01) — #4199 moved `upload_instances`' clamp
@@ -2095,9 +2147,11 @@ mod ui_instance_idx_overflow_tests {
     /// capacity the upload clamped to is dropped, one below it survives.
     #[test]
     fn ui_instance_idx_is_reclamped_to_the_post_grow_slot_capacity() {
-        assert_eq!(ui_instance_within_capacity(Some(9), 10), Some(9));
-        assert_eq!(ui_instance_within_capacity(Some(10), 10), None);
-        assert_eq!(ui_instance_within_capacity(Some(11), 10), None);
+        assert_eq!(ui_instance_within_capacity(range(9, 1), 10), range(9, 1));
+        assert_eq!(ui_instance_within_capacity(range(10, 1), 10), None);
+        assert_eq!(ui_instance_within_capacity(range(11, 1), 10), None);
+        assert_eq!(ui_instance_within_capacity(range(8, 2), 10), range(8, 2));
+        assert_eq!(ui_instance_within_capacity(range(9, 2), 10), None);
         assert_eq!(ui_instance_within_capacity(None, 10), None);
     }
 
@@ -2697,7 +2751,7 @@ mod instance_capacity_growth_pin {
         let acquire = include_str!("sync_and_acquire_frame.rs");
         assert!(acquire.contains(".tick_retired_instance_buffers(&self.device, alloc);"));
         let descriptors = include_str!("../scene_buffer/descriptors.rs");
-        assert!(descriptors.contains("self.retired_instance_buffers\n            .drain("));
+        assert!(descriptors.contains("self.retired_instance_buffers\n                .drain("));
     }
 }
 

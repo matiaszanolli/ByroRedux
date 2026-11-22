@@ -100,11 +100,10 @@ fn main() {
 /// Print one function's header and disassembly unless `want_fn` names a
 /// different function (case-insensitive match on `name`).
 fn dump_function(label: &str, name: &str, f: &byroredux_pex::Function, want_fn: &Option<String>) {
-    if let Some(want) = want_fn {
-        if !name.eq_ignore_ascii_case(want) {
+    if let Some(want) = want_fn
+        && !name.eq_ignore_ascii_case(want) {
             return;
         }
-    }
     println!("\n== {label} ({})", f.return_type_name);
     println!("   params: {:?}", f.params.iter().map(|p| (&p.name, &p.type_name)).collect::<Vec<_>>());
     println!("   locals: {:?}", f.locals.iter().map(|l| (&l.name, &l.type_name)).collect::<Vec<_>>());

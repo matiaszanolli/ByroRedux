@@ -165,7 +165,7 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
   COMPUTE_READ) and writes the correction composite samples (COMPUTE_WRITE → FRAGMENT_READ); its a-trous ping-pong
   needs a barrier per iteration. The SKYAL cloud-shadow bake (`sky_cube/cloud_shadow.rs`, recorded from
   `sky_cube.rs`) feeds scene set 1 binding 24 and a per-FIF host readback of the camera column, which needs its own
-  SHADER_WRITE → HOST_READ dependency and must be read only after that slot's fence.
+  SHADER_WRITE → HOST_READ dependency and must be read only after that slot's fence. Every host readback invalidates non-coherent memory through the one `buffer::invalidate_allocation` (screenshot, depth and linear capture, `GpuBuffer::invalidate_if_needed`; #6960, c19f345b1); `depth_and_linear_capture_readbacks_invalidate_before_mapping` (`context/resources.rs`, #7027, 091023a73) pins invalidate-before-map on the capture twins, so a new readback spelling its own invalidate (or none) is the regression.
 - **Ground-cover model tier** (`groundcover_models.rs`, #4413): its compute writes `GpuInstance`s into the
   *tail of the main instance buffer* after `build_and_upload_instances` and before the geometry pass, which
   draws them with indexed-indirect — COMPUTE_WRITE must reach both `VERTEX_SHADER` (instance read) and
@@ -173,12 +173,37 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
 - **Exposure meter** (`exposure_meter.rs`): post-bloom composite → `exposure_meter.comp` → this frame's
   `ExposureResource` slot, sampled unconditionally by `presentation.frag` and the FSR dispatch — the slot
   write must be published before both consumers, in fixed mode too.
+- **Radiance cache (RCG, not yet a pass).** `gpu_timers.rs` reserves the update / resolve timer brackets (queries 64-67; `QUERIES_PER_FRAME` = 72 since the terrain-patch brackets took 68-69 and the TSD-4.2 patch-BLAS bracket 70-71) and `GpuRayBudget` carries `cache_update_stride`, but no cache compute pass records yet (nothing outside `gpu_timers.rs` names `TimerPass::CacheUpdate` / `CacheResolve`); when the update-path trace and the resolve fold land they join this dimension as a compute → compute → fragment chain over the cache buffers, with the same per-FIF and publish-before-consumer checks.
 - **Combustion local grid (#6533, d3e3acc7b).** `volumetrics/local_grid.rs` `record_frame` (the `volumetrics_local_sim.comp`
   atlas sim, Stage B2 of `VolumetricsPipeline::dispatch`) runs BEFORE the froxel injection, which reads this frame's atlas
   and writes the irradiance field; Stage F's `composite_barriers` (atlas state + optical + irradiance, COMPUTE → FRAGMENT)
   and `record_publish_bricks` publish them to composite's close-range fire march. The atlas / irradiance images
   are double-buffered per FIF slot like the froxel fields. Sim → inject visibility, and what a skipped / neutral frame
   leaves in the atlas, are for a `BYRO_VALIDATION` capture, not reading.
+- **Terrain displacement patches (#7152 TSD-4.1, 84f04205f; #7221 TSD-4.2, ff339f658).** `terrain_patch.rs` `TerrainPatchPass::record`, called from
+  `VulkanContext::record_terrain_patches` (`context/dispatch_skin_and_cluster.rs`; `draw.rs` calls it right after
+  `upload_terrain_tiles_if_dirty` and BEFORE `dispatch_skin_and_cluster`, the module docs and SAFETY comment name that order since #7244, a75402b05),
+  re-displaces each resident slot IN PLACE in reserved ranges of the one global vertex buffer (not per-FIF) with
+  `terrain_patch.comp`. Its barrier pair is the compute half of the contract: before = TRANSFER write (readback zero-fill, geometry upload, tile copy) +
+  the previous frame's VERTEX_INPUT / VERTEX / FRAGMENT / COMPUTE reads of the patch ranges → COMPUTE (no AS_BUILD source stage: the previous
+  frame's patch-BLAS build read of the vertices is ordered only transitively, see rider 16); after = SHADER_WRITE →
+  VERTEX_ATTRIBUTE_READ | SHADER_READ | HOST_READ at VERTEX_INPUT / VERTEX / FRAGMENT / COMPUTE / ACCELERATION_STRUCTURE_BUILD / HOST (AS-build geometry
+  reads are SHADER_READ at the AS_BUILD stage, the 507945d8 rule). The per-FIF host readback
+  (seam samples + largest displacement) is `harvest`ed one frame later behind that slot's fence with `invalidate_if_needed`, and
+  `bound[frame]` re-writes the descriptor set only when the vertex / tile buffer or its generation changed. Stage 4.2 puts the patches in the TLAS:
+  `record_terrain_patches` ends by calling `record_terrain_patch_blas`, which fills the manager's kept request list and calls
+  `AccelerationManager::record_terrain_patch_blas` (`acceleration/blas_terrain_patch.rs`) — ONE batched
+  `cmd_build_acceleration_structures` for every build and refit of the frame, over disjoint aligned regions of the set's own
+  `scratch` buffer (so no per-BLAS serialize barrier), bracketed by an AS_BUILD write → AS_BUILD read|write barrier before and an
+  AS write → AS_BUILD | FRAGMENT | COMPUTE read barrier after, before the TLAS build in `dispatch_skin_and_cluster`. A mesh refits (`UPDATE`, `src == dst`)
+  while it shows the same square at the same pool addresses and builds otherwise (at most two builds a frame, a rebuild after 600
+  refits); a deferred or failed patch is simply absent from `ready`, and `tlas.rs` skips a patch draw whose BLAS is not `ready_address` (no stale-BLAS
+  instance; `plan_patch_blas_ops` is unit-tested). The patch meshes are skipped by the static-BLAS restore path. One `scratch`
+  buffer serves both frame slots, and only a GROWN scratch is retired through `pending_destroy_scratch`; the in-place vertex rewrite, the AS refit and the
+  shared scratch rest on the all-slots wait plus the barrier chain (`sync.rs` rider 16, #7245, cc5e64d4b; pinned by
+  `frames_in_flight_contract_names_every_dependent_resource`), so re-derive them in the change that narrows the wait (#5365). The per-frame lists live on
+  `PatchBlasFrame` (#7246, 6c293b8d6) and are `mem::take`n out of the set for the record and put back whatever the outcome. Overlap with a validation capture
+  is the evidence; the TSD-4.2 commit's own measurement was sync-validation-clean at the tundra and FNV positions.
 - **MaterialBuffer SSBO.** upload is `HOST_WRITE → VERTEX/FRAGMENT_READ`, before draw recording; flag only if it moves into a mid-frame compute path.
 - **Volumetrics skip path (#4780, fixed d213521ef).** The #3685 skip-clear latch owns only the GPU clear
   (`record_neutral_frame`), and it (with the caustic twin) is staged in `pending_*_cleared_on_skip` and promoted only
@@ -194,7 +219,7 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
 
 ### Dimension 3: ECS Lock Ordering & Deadlock (system level)
 Paths: `crates/core/src/ecs/{world,lock_tracker}.rs`, `byroredux/src/systems/`, `byroredux/src/extensions/`, `.github/workflows/ci.yml`
-First step: `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux` and the same with `-p byroredux-scripting` — the binary's graph is where every recent cycle lived (#4982–#4984, #5025, #5371, #5372, #5535, #5954, #6101, #6208, #6209, #6561, #6618, and the untracked `live_body` / `live_forms` pool-before-component cycle that kept the lane red from 98aa53db9 to 4c1d54cc0; core alone stays green) — then CI's `lock-order-check` form, `cargo test --workspace --no-fail-fast --exclude byroredux-ui`. A nonzero failure count is a hard regression; the lane was red for exactly that from the XCT door-fade test (98aa53db9, 2026-11-14) until 4c1d54cc0, so a red `lock-order-check` is a real inversion, not CI noise
+First step: `BYRO_LOCK_ORDER_CHECK=1 cargo test -p byroredux` and the same with `-p byroredux-scripting` — the binary's graph is where every recent cycle lived (#4982–#4984, #5025, #5371, #5372, #5535, #5954, #6101, #6208, #6209, #6561, #6618, #7063, #7093, the door pair of 4288659fa, and the untracked `live_body` / `live_forms` pool-before-component cycle that kept the lane red from 98aa53db9 to 4c1d54cc0; core alone stays green) — then CI's `lock-order-check` form, `cargo test --workspace --no-fail-fast --exclude byroredux-ui`. A nonzero failure count is a hard regression; the lane was red for exactly that from the XCT door-fade test (98aa53db9, 2026-11-14) until 4c1d54cc0, so a red `lock-order-check` is a real inversion, not CI noise. Measured 2026-11-20 at 2d857fff2 (the door finding below was fixed afterwards): `-p byroredux-scripting --lib` is green (1472 passed; the `ActorValues` → `ActorValueNames` → `ActorValues` cycle in `obscript_effects::tests::actor_value_commands_translate_the_code_and_set_mod_damage_and_restore` was #7063, fixed in 4cad5d974 — `reset_health` in `obscript_actor_values.rs` now drops the `ActorValueNames` guard before `clear_actor_value_damage`), but `-p byroredux --bin byroredux` recorded a cycle, `Door` → `TwoStateActivator` → `Door`, and failed eight door tests (`systems::door::tests::*` plus `interaction::tests::door_prompts_and_motion_share_the_lock_order`): the `door.state` command (`commands/door.rs`, 180080de7) held a `world.get::<Door>` guard across `world.get::<TwoStateActivator>`, the reverse of the sorted `query_2_mut::<TwoStateActivator, Door>` in `door_motion_system`. Regression guard: fixed in 04d1e99ae (#7093, the command now reads the activator, lock and form ID first and `Door` last), pinned by `door_state_and_door_motion_share_the_lock_order` (`commands/door.rs`, fails alone under the detector against the old order) — the lane is expected green on the bin again, but this sync did not re-run it
 Machinery — TypeId-sorted pairs, tracker-scope arming, `lock_tracker` internals (check-before-insert,
 `GRAPH` poison recovery, recursive-read warning) and poison resolution — is `/audit-ecs` Dim 1; do not
 re-audit it here. This dimension owns how *systems* use it.
@@ -241,11 +266,18 @@ re-audit it here. This dimension owns how *systems* use it.
   objective pair, so the raise now queues on `DeferredFragmentEffects` and fires at the flush (#6572, 076de275e);
   `select_info` held `QuestStageState` across `evaluate()`, a recursive read behind a possibly-parked writer (#6615,
   6af13ef37 — the tracker now prints the first holder's stack under `RUST_BACKTRACE`, and skips the benign
-  `CommandRegistry` re-read in `help`, #6617 bcab15f47); `find_package` held a `SceneAliasCandidate` query across `is_pickup_target` (→ `InventoryCatalog`) and
+  `CommandRegistry` re-read in `help`, #6617 bcab15f47); the door interaction prompt read `Door` under its `TwoStateActivator` query while `door_motion_system` takes the pair sorted (#7059, 4288659fa: snapshot the activators first; pinned by `door_prompts_and_motion_share_the_lock_order`); `find_package` held a `SceneAliasCandidate` query across `is_pickup_target` (→ `InventoryCatalog`) and
   `flee_package` read `AiCombatState` under `Transform` (ce22fcbcf — read cross-lock state before taking the guard); `live_body` / `live_forms`
   (`cell_loader/relocated.rs`, reached from the door-fade `fade_in`) took the `FormIdPool` resource before the
   `FormIdComponent` query, closing `FormIdComponent → FormIdPool → FormIdComponent` against every other holder of the pair
-  (4c1d54cc0: query first, then pool — the process-wide order). Attribution recipe: a temporary edge logger
+  (4c1d54cc0: query first, then pool — the process-wide order); and the first ECS concurrency audit since 08-12 (dfcbcafd5, 2026-11-15)
+  closed five more, all main-thread (so none could deadlock, but each panics the detector on a real world): `eat_sleep`'s diner gather
+  took `GlobalTransform` before `WalkSpeed` while escort / follow / flee / travel / guard hold `WalkSpeed` across a `GlobalTransform` read
+  (`the_diner_gather_takes_walk_speed_before_global_transform`), `submersion_system` kept a `WaterBedField` guard across the `WaterVolume` /
+  `ParticleEmitter` write (`submersion_with_a_bed_field_takes_its_locks_in_one_order`), `kf_idle_work_pending` held `ActorCinematicState`
+  over an `IdleClipCatalog` read (the reverse of `idle_clip_playback_system`), the SDK capture (`extensions/capture.rs`) held `Inventory`
+  before `InventoryCatalog` (the reverse of `encumbrance_system`), and the unload walk read `AnimatedTextureFlip` after
+  `MaterialTextureHandles` / `TerrainTileSlot` (now its own pass, as #6209). The sandbox seat pass read `CreatureActor` last, after `GlobalTransform` / `Furniture` / `Seated`, while other code holds a `CreatureActor` read across `ActorValues` then `GlobalTransform`; `a_creature_actor_never_takes_furniture` aborted the ABBA lane until ace99c164 took `CreatureActor` first (`sandbox_seat_system_inner`, `systems/sandbox.rs`). Attribution recipe: a temporary edge logger
   in `record_and_check`, `--test-threads=1 --nocapture`; fix by gathering under one guard, dropping it, then composing.
 - **`FormIdPool`'s entity index is a leaf mutex (#6338, ab3a604bf).** `FormIdPool::entity_with_local` rebuilds a lazily
   cached `local → entity` map under an interior `Mutex` keyed on `FormIdComponent`'s structural generation + pool length;
@@ -304,7 +336,7 @@ The access model and the mechanical declaration guard (`system_access_declaratio
   within a listed file but cross-file hops only where `PARALLEL_SYSTEMS` lists them (#4994,
   `cross_file_hops_and_get_forms_reach_their_acquisitions`); closures; exclusive systems (eight have their own
   scan — `npc_combat_ai_system`, `interaction_system`, `container_loot_system` and `combat_damage_system` (#6546,
-  5129240c4: M43 made their rows under-declare), `papyrus_provider_system`, `legacy_obscript_load_order_system`,
+  5129240c4: M43 made their rows under-declare; a new read in one of these must reach its row in the same change — `supports_rest`'s `CharacterRuleset` read is declared on `interaction_system` since #7212, 188bb4535, and `combat_damage_system`'s #7195 unarmed-creature rule (2c5c264dc) adds `CreatureActor` / `EquippedWeapon` reads its row already declared), `papyrus_provider_system`, `legacy_obscript_load_order_system`,
   `equipment_appearance_system` (its mid-life import surface, #5069), and
   `npc_dialogue_selection_system`, whose scan follows the spoken-INFO fragment path into the scripting crate, #5307 (a spoken
   `EquipItem` of a weapon queues on `PendingNonArmorEquips`, undeclared until 3890897e3),
@@ -312,7 +344,7 @@ The access model and the mechanical declaration guard (`system_access_declaratio
   evaluator `evaluate_function` — 18 acquisitions incl. the `StoryManagerRng` write, #5649 197a9e245, and the
   deferred-effects flush `apply_at_depth`, which the old over-reading text scan reached by accident and the syntax walk
   lists explicitly, exposing 13 undeclared types now carried by `fragment_effect_family_access`, #6685;
-  others only by the non-empty-access tests, e.g. `footstep_declares_its_physics_reads`, #5556). The table and these scans live in `system_access_declaration_tests`
+  others only by the non-empty-access tests, e.g. `footstep_declares_its_physics_reads`, #5556; the exclusives added since — `player_cast_system` and `player_bow_system` — carry declared rows but no scan of their own, so a row that under-declares what `cast_spell` / `remove_items` acquire has no guard; `bed_use_system` is a bare `add_exclusive`). The table and these scans live in `system_access_declaration_tests`
   (`byroredux/src/boot/schedule/mod.rs`; `PARALLEL_SYSTEMS.len()` is checked against `parallel_registration_count`, a method-call count).
   An under-declared parallel system makes `known_conflict_count() == 0` unsound (the same-session
   `fly_camera_system` `GlobalTransform` write is the precedent, commit ac1d44f5c; #5641, 17a84f442, was the drowning
@@ -320,7 +352,8 @@ The access model and the mechanical declaration guard (`system_access_declaratio
   reads — now a `raise_kill_story_event` hop in `PARALLEL_SYSTEMS`; the cross-crate hop behind it, the scripting crate's
   `note_death` — a `KillRecords` write plus `SceneAliasCandidate` / `CreatureActor` / `FormIdComponent` / `FormIdPool` /
   `PapyrusPlayerEntity` reads — is a listed hop too, #6217 ef48dbd03; a new CTDA arm's reads must be declared on
-  `npc_dialogue_selection` the same way, 561541d6c). All three story-event
+  `npc_dialogue_selection` the same way, 561541d6c; `player_controller_system` reached `LimbEffects` through `limbs::locomotion_mult` undeclared
+  until dfcbcafd5, which declared it and made `limbs.rs` a listed cross-file hop). All three story-event
   producers (CLOC, AHEL, KILL) go through `raise_story_event` since #5647 (eca0c4709): the first event on an entity takes the
   `StoryEvent` marker, a second for the same entity appends to `PendingScriptStoryEvents` (marker guard released first, so the
   two never nest). `raise_story_event` lives in the scripting crate and has no turbofish at the call site, so #6447 (1ebb38bce)
@@ -421,7 +454,7 @@ First step: `grep -n 'load-bearing' -B4 -A12 crates/renderer/src/vulkan/context/
 - **AS cleanup on shutdown.** All `BlasEntry` buffers, `TlasState` buffers and scratch released; per-entity skin outputs kept until the entity is destroyed.
 - **Other GPU cleanup.** `scene_buffer`, `MaterialBuffer`, texture registry (incl. the `dynamic_rgba` staging
   arena), `EguiPass::destroy()` (`Option<EguiPass>` taken in `Drop`; its texture retirements are a
-  frames-in-flight rider, #4988), a partially-built object's error arm (`GpuPerFrameTimers::new`, #4998),
+  frames-in-flight rider, #4988), a partially-built object's error arm (`GpuPerFrameTimers::new`, #4998), `TerrainPatchPass::destroy` (per-FIF readbacks, then pool / pipeline / layouts; the reserved patch meshes belong to the mesh registry) and `destroy_terrain_patch_blas` (every patch BLAS + the shared scratch, called from `AccelerationManager::destroy`),
   and `GpuImage` (`vulkan/image.rs`), which routes most passes' image
   create/bind/destroy through one lock rule: a poisoned allocator lock is recovered, not unwrapped (#4089).
 - **Per-frame leaks.** Any descriptor / command-buffer / staging allocation created per frame but not freed or reset is HIGH.
@@ -456,10 +489,10 @@ First step: `grep -rnE 'thread::(spawn|Builder)|rayon::|mpsc::' --include='*.rs'
   M39 texture promotions read archives on `TextureStreamer`'s own 2-thread rayon pool (`texture_streamer.rs`,
   `texture-stream-N`; `step` lands finished `FinishedRead`s over an `mpsc` channel and starts at most
   `MAX_READS_IN_FLIGHT`; the registry's `queue_promotion_bytes` runs on the main thread). It owns its own
-  `TextureProvider`, so the shared archive registry's `ArchiveStamp` rule applies. The pool job calls
-  `extract_texture_from` with no `catch_unwind` / `spawn_guarded`, unlike the terrain-height and stream-parse pools: a
-  panicking read aborts the process under rayon's spawned-job rule and leaves its handle in `in_flight` — check any
-  new panic path under that call.
+  `TextureProvider`, so the shared archive registry's `ArchiveStamp` rule applies. Every pool job runs through `spawn_read`
+  under `catch_unwind` (#6810, de596fafe; `a_panicking_read_is_reported_unreadable_not_fatal`): rayon aborts the process on an
+  unhandled spawned-job panic, so a panicking read lands as an unreadable entry and still sends its `FinishedRead` (else `step`
+  would keep the handle in `in_flight` forever) — a new pool spawn that bypasses `spawn_read` is the regression. A read that returns nothing or `Unusable` bytes backs the texture off for `READ_FAILURE_RETRY_FRAMES` (600) through `note_promotion_read_failed` instead of re-reading every frame (#7129, 590aded9e). The streamer's `TextureProvider` is rebuilt, on the main thread in `app_frame.rs`, when `asset_provider::archive_replacements()` has moved since it was built (`refresh_provider`, one atomic load per frame; #7144 99eee822c, the test drives explicit generations since #7164); in-flight reads land from the OLD file on the textures they were read for, so the registry stamps every queued upload with that counter (`set_source_generation_counter`) and only promotes a floor whose generation is the one the streamer reads from now (`set_promotable_generation`, #7169 522793dbb; `a_floor_promotes_only_under_the_generation_it_was_read_from`) — a promotion mixing mips from two files is the finding.
   Streamed NIFs' textures are prefetched on the stream pool (`prefetch_textures`, `PrefetchStore`): a panicking
   read must still complete its slot, and a withdrawn key must not be waited on. Terrain-layer height maps (#6195)
   generate on their own 2-thread rayon pool (`TerrainHeightService`, `terrain_height.rs`) over a cloned
@@ -470,13 +503,14 @@ First step: `grep -rnE 'thread::(spawn|Builder)|rayon::|mpsc::' --include='*.rs'
   resolution (`merge_external_material`, which takes `&mut ImportedMaterial` + `&mut MaterialProvider` +
   `&mut StringPool`) is main-thread-only — moving it needs a real synchronisation story. The NIF import
   cache is read-only on the worker with write-back deferred to main.
-- **Movie decode (`crates/video`).** Each `Movie` owns one `movie-decode` thread (Bink 1 through `mercs2_bink`, Bink 2 through
-  `byroredux-bink2`, whose slices fan out on up to `BINK2_THREADS` = 4 `std::thread::scope` threads) feeding a
-  `sync_channel(FRAME_RING)`; `advance` drains it on the main thread, and `Drop` closes the ring (`rx = None`) before joining so a
-  reader blocked in `send` wakes. No ECS guard or `World` reference crosses into the thread. The reader runs no `catch_unwind` and
-  `Drop` ignores the join result: a panicking decoder drops the channel with no reason, which `advance` reads as
-  `Disconnected` → `Finished` rather than `Failed` (#6855's BIK-DEC-004 intent, `118afd645`, covers decode *errors* only) — no issue
-  tracks it (checked 2026-11-14), so report it as a finding if it is still true.
+- **Movie decode (`crates/video`).** Each `Movie` owns one `movie-decode` thread, spawned only by `spawn_reader` (pinned by
+  `spawn_reader_is_the_only_reader_thread`; Bink 1 through `mercs2_bink`, Bink 2 through `byroredux-bink2`, whose slices fan out
+  on up to `BINK2_THREADS` = 4 `std::thread::scope` threads) feeding a `sync_channel(FRAME_RING)`; `advance` drains it on the main
+  thread, and `Drop` closes the ring (`rx = None`) before joining so a reader blocked in `send` wakes. No ECS guard or `World`
+  reference crosses into the thread. The decode loop runs under `guard_decoder` (`catch_unwind`), so a decoder panic is sent as
+  the frame failure and the movie ends `Failed` with a reason, not `Finished` (BIK-DEC-004, aa193bd9e, #6959/#6991; pinned by
+  `a_decoder_panic_ends_the_movie_as_failed`). `Drop` still ignores the join result by design; a new reader path outside
+  `spawn_reader` would lose the guard. `Movie::open` / `probe` run on the CALLER's thread (the frame loop) and go through `guard_open`, so a panic in the container parse, decoder setup or the whole-soundtrack decode ends the request as `VideoError::Decode` (#7128, 9e45e0261; `the_open_path_runs_under_the_open_guard`); the soundtrack WAV is a `TempPath` owned by `Audio` / `Movie`, removed on every exit including a panic (#7158, #7172 956aa1310; `the_soundtrack_wav_is_removed_on_every_way_out`).
 - **Debug server (thread/lock shape only; command surface is `/audit-tooling`).** Per-client TCP threads
   never touch the `World`: they enqueue into a bounded queue (`MAX_QUEUED_COMMANDS`, client cap
   `MAX_CONCURRENT_CLIENTS`, `listener.rs`) and `DebugDrainSystem` (Late exclusive) executes on the main

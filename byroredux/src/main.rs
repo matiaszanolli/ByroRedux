@@ -27,7 +27,10 @@ mod capture_state;
 pub(crate) mod cell_loader;
 mod chargen;
 mod cli_args;
+mod bow;
 mod combat;
+mod player_cast;
+mod skill_use_emit;
 mod commands;
 mod crime;
 mod detection;
@@ -53,6 +56,7 @@ mod inventory;
 mod music;
 mod notifications;
 mod perk_activate;
+mod plugin_activation;
 mod objectives;
 mod hud;
 mod light_translate;
@@ -61,6 +65,14 @@ mod list_cells;
 mod material_dump;
 mod material_flags;
 mod material_translate;
+mod menu_stack;
+mod menu_xml_input;
+mod menu_drivers;
+mod menuxml_dialogue;
+mod menuxml_document;
+mod menuxml_rest;
+mod oblivion_rest;
+mod menuxml_message;
 mod name_lookup;
 mod npc_spawn;
 mod ownership_sample;
@@ -75,6 +87,8 @@ mod scene;
 mod scene_import_cache;
 #[cfg(test)]
 mod scheduler_access_tests;
+mod scaleform_dialogue;
+mod scaleform_messagebox;
 mod scaleform_hud;
 mod settings_io;
 mod sf_smoke;
@@ -84,6 +98,7 @@ mod studio_host;
 mod systems;
 mod static_height;
 mod terrain_height;
+mod terrain_patches;
 mod texture_streamer;
 mod ui_input;
 mod video;
@@ -218,7 +233,7 @@ fn bench_frame_max_over_p95(distribution: [f64; 3]) -> f64 {
 
 /// Bench-line key for each GPU bracket the `bench:` summary reports, in the
 /// order `app_events` copies them out of `SkinCoverageStats`.
-const BENCH_GPU_KEYS: [&str; 25] = [
+const BENCH_GPU_KEYS: [&str; 30] = [
     "skin_disp",
     "blas_refit",
     "taa",
@@ -251,6 +266,13 @@ const BENCH_GPU_KEYS: [&str; 25] = [
     "cloud_shadow",
     // #6533 stage 1b — the world-space combustion local-grid sim; appended, same rule.
     "volumetrics_local_sim",
+    "far_sun",
+    "cache_update",
+    "cache_resolve",
+    // #7152 — TSD-4.1's terrain patch pass; appended, same rule.
+    "terrain_patch",
+    // #7221 — TSD-4.2's patch BLAS builds + refits; appended, same rule.
+    "terrain_patch_blas",
 ];
 
 /// One bench-line GPU reading: the bracket's key, its milliseconds and whether it ran this snapshot
@@ -287,6 +309,11 @@ fn bench_gpu_samples(s: &byroredux_core::ecs::SkinCoverageStats) -> [BenchGpuSam
         ("shadow_filter", s.gpu_shadow_filter_ms, s.gpu_shadow_filter_active),
         ("cloud_shadow", s.gpu_cloud_shadow_ms, s.gpu_cloud_shadow_active),
         ("volumetrics_local_sim", s.gpu_volumetrics_local_sim_ms, s.gpu_volumetrics_local_sim_active),
+        ("far_sun", s.gpu_far_sun_ms, s.gpu_far_sun_active),
+        ("cache_update", s.gpu_cache_update_ms, s.gpu_cache_update_active),
+        ("cache_resolve", s.gpu_cache_resolve_ms, s.gpu_cache_resolve_active),
+        ("terrain_patch", s.gpu_terrain_patch_ms, s.gpu_terrain_patch_active),
+        ("terrain_patch_blas", s.gpu_terrain_patch_blas_ms, s.gpu_terrain_patch_blas_active),
     ]
 }
 
@@ -497,8 +524,8 @@ mod bench_frame_distribution_tests {
     fn bench_gpu_keys_match_the_reported_bracket_order() {
         assert_eq!(
             BENCH_GPU_KEYS.len(),
-            25,
-            "the bench line reports 25 of gpu_timers.rs's 26 brackets — the \
+            30,
+            "the bench line reports 30 of gpu_timers.rs's 31 brackets — the \
              ground-cover *sampling bench* owns its own report. Note the two \
              ground-cover brackets are different passes: the production \
              interaction+scatter compute IS on the line (#4315); only the \
@@ -755,6 +782,7 @@ fn install_universal_settings(
         .expect("debug-UI built-in settings must be valid and unique");
     interaction::register_input_settings(&mut settings)
         .expect("input settings must be valid and unique");
+    bow::register_settings(&mut settings).expect("bow settings must be valid and unique");
     // Q4 / MUS-MIX-001 — the music level defaults to the game's own; seeded before the stored
     // values load, so a level the user chose still wins.
     if let Err(error) = settings.set_default(
@@ -784,8 +812,8 @@ fn install_universal_settings(
         // #4974 — the flag wins for this launch only. The menu shows it, but
         // a later unrelated settings save must not make it the default.
         settings_persistence.pin_stored(byroredux_debug_ui::UPSCALER_SETTING_ID);
-    } else if let Some(entry) = settings.get(byroredux_debug_ui::UPSCALER_SETTING_ID) {
-        if let SettingValue::Choice(spec) = &entry.value {
+    } else if let Some(entry) = settings.get(byroredux_debug_ui::UPSCALER_SETTING_ID)
+        && let SettingValue::Choice(spec) = &entry.value {
             match cli_args::parse_upscaler_spec(spec) {
                 Ok(mode) => {
                     renderer_config.upscaler = mode;
@@ -796,7 +824,6 @@ fn install_universal_settings(
                 Err(error) => log::warn!("persisted upscaler '{spec}' is invalid: {error}"),
             }
         }
-    }
     boot::log_upscaler_selection(
         renderer_config.upscaler,
         upscaler_source,
@@ -962,7 +989,7 @@ mod active_upscaler_setting_tests {
         // Needles are composed at runtime so this test's own text cannot
         // satisfy them (#3442) — this module sits above the loop it scans.
         let src = include_str!("main.rs");
-        let loop_head = ["for change in ", "outputs.setting_changes {"].concat();
+        let loop_head = ["for change in ", "outputs.game.setting_changes {"].concat();
         let mut loops = src.split(loop_head.as_str());
         let loop_body = loops.nth(1).expect("setting change loop");
         assert!(loops.next().is_none(), "exactly one setting change loop");
@@ -1084,8 +1111,8 @@ impl App {
             }
             pending_player_messages.extend(output.lines);
         }
-        if !startup_load_queued {
-            if let Err(error) = extensions::queue_session_event(
+        if !startup_load_queued
+            && let Err(error) = extensions::queue_session_event(
                 &world,
                 byroredux_sdk::event::SessionEvent {
                     phase: byroredux_sdk::event::SessionPhase::NewGame,
@@ -1094,7 +1121,6 @@ impl App {
             ) {
                 log::warn!("new-game extension lifecycle event was not queued: {error}");
             }
-        }
 
         Self {
             window: None,
@@ -1172,7 +1198,6 @@ impl App {
             &mut self.world,
             ctx,
             &mut self.ui.manager,
-            &mut self.ui.texture_handle,
             &mut self.ui.hud,
             &mut self.ui.scaleform_hud,
             self.capture.camera_pos_override,
@@ -1200,6 +1225,32 @@ impl App {
             .as_ref()
             .map(Window::inner_size)
             .unwrap_or_default();
+        // M48 GUI-PAGE-004 / GUI-XML-002 — an open menu document takes the input while it is the
+        // registry's input owner; its driver takes the activations on its next step.
+        let owner = self.world.try_resource::<byroredux_core::ecs::resources::MenuRegistry>().and_then(|registry| {
+            self.ui.menu_documents.iter().position(|document| crate::menu_xml_input::owns_input(&registry, &document.name))
+        });
+        if let Some(document) = owner.map(|position| &mut self.ui.menu_documents[position]) {
+            let extent = document.extent();
+            let mut routed = false;
+            let mut rest_action = None;
+            let dispatch = ui_input::dispatch_window_event(event, &mut self.ui.input_state, window_size, extent, |event| {
+                if crate::menuxml_rest::is_rest_document(document.code) {
+                    rest_action = crate::menuxml_rest::direct_input(document, &event).or(rest_action);
+                }
+                routed |= crate::menu_xml_input::route(&mut document.renderer, &event);
+            });
+            if routed {
+                document.touch();
+            }
+            if dispatch.captured {
+                self.release_world_input_for_ui();
+            }
+            if let Some(action) = rest_action {
+                crate::oblivion_rest::apply(&self.world, action);
+            }
+            return dispatch.captured;
+        }
         let Some(ui_manager) = self.ui.manager.as_mut() else {
             return false;
         };
@@ -1242,12 +1293,11 @@ impl App {
     fn release_world_input_for_ui(&mut self) {
         let had_mouse_capture = ui_input::release_world_input(&self.world);
 
-        if had_mouse_capture {
-            if let Some(window) = self.window.as_ref() {
+        if had_mouse_capture
+            && let Some(window) = self.window.as_ref() {
                 let _ = window.set_cursor_grab(CursorGrabMode::None);
                 window.set_cursor_visible(true);
             }
-        }
     }
 
     /// Return mouse look to gameplay after a native modal closes.
@@ -1279,6 +1329,25 @@ impl App {
     /// `dialogue_menu_visible` already reads false and the guard is
     /// dead. The page's Close button, Escape and the Inventory key all
     /// funnel through here now.
+    /// Leave the open conversation, on whichever surface it is (the native page or the dialogue
+    /// movie, GUI-PAGE-004): the shared teardown, then the movie's layer closes.
+    fn leave_open_dialogue(&mut self) {
+        let native = self.debug_ui.as_ref().is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible);
+        let code = crate::menuxml_dialogue::DIALOGUE_MENU_CODE;
+        let movie = self.ui.dialogue_movie.is_some() || self.menu_document_mut(code).is_some();
+        Self::leave_dialogue_page(&self.world, native || movie);
+        if let Some(movie) = self.ui.dialogue_movie.take() {
+            self.ui.movie_calls.remove(&movie.layer);
+            self.drop_movie_layer(&movie.layer);
+        }
+        if let Some(position) = self.ui.menu_documents.iter().position(|document| document.code == code) {
+            let document = self.ui.menu_documents.remove(position);
+            if let Some(ctx) = self.renderer.as_mut() {
+                document.close(ctx);
+            }
+        }
+    }
+
     fn leave_dialogue_page(world: &World, dialogue_page_visible: bool) {
         if dialogue_page_visible {
             crate::systems::npc_dialogue::end_open_conversation(world);
@@ -1286,15 +1355,14 @@ impl App {
     }
 
     fn toggle_game_menu(&mut self) {
+        if self.debug_ui.as_ref().is_some_and(byroredux_debug_ui::DebugUiState::rest_menu_visible) {
+            crate::oblivion_rest::cancel(&self.world);
+        }
         // #5409 — closing the modal over the dialogue page (Escape routes
         // here) must end the open conversation exactly like the page's
         // Close button; the bare visibility flip used to skip OnEnd and
         // leave the stale selection on the NPC.
-        let dialogue_page = self
-            .debug_ui
-            .as_ref()
-            .is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible);
-        Self::leave_dialogue_page(&self.world, dialogue_page);
+        self.leave_open_dialogue();
         crate::barter::end_barter(&mut self.world);
         crate::crafting::end_crafting(&self.world);
         let opened = self
@@ -1309,13 +1377,12 @@ impl App {
     }
 
     fn open_inventory_menu(&mut self) {
+        if self.debug_ui.as_ref().is_some_and(byroredux_debug_ui::DebugUiState::rest_menu_visible) {
+            return;
+        }
         // #5409 — the Inventory key replaces the dialogue page outright;
         // the open line ends before the page switch, same as Escape.
-        let dialogue_page = self
-            .debug_ui
-            .as_ref()
-            .is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible);
-        Self::leave_dialogue_page(&self.world, dialogue_page);
+        self.leave_open_dialogue();
         crate::barter::end_barter(&mut self.world);
         crate::crafting::end_crafting(&self.world);
         if let Some(ui) = self.debug_ui.as_mut() {
@@ -1328,9 +1395,93 @@ impl App {
     /// machinery as the pause/inventory pages: gameplay input released while
     /// it is open, focus recaptured by `resume_from_game_menu` on close.
     fn open_dialogue_menu(&mut self) {
+        // M48 GUI-PAGE-004 — the game's own dialogue movie when the registry names one and it loads
+        // (Skyrim), else the native page (Q1's fallback).
+        if self.open_dialogue_movie() || self.open_dialogue_document() {
+            self.release_world_input_for_ui();
+            return;
+        }
         if let Some(ui) = self.debug_ui.as_mut() {
             ui.open_dialogue_menu();
             self.release_world_input_for_ui();
+        }
+    }
+
+    /// Open the conversation on the game's dialogue movie (S1); `false` when the game has none or
+    /// it does not load. A fresh selection inside an open conversation keeps the open movie.
+    fn open_dialogue_movie(&mut self) -> bool {
+        if self.ui.dialogue_movie.is_some() {
+            return true;
+        }
+        let target = self.world.try_resource::<byroredux_core::ecs::resources::MenuRegistry>().and_then(|registry| {
+            // Wave 1 (Skyrim): the one dialogue movie whose protocol `scaleform_dialogue` serves.
+            (registry.game() == byroredux_core::ecs::resources::menu_registry::MenuGame::Skyrim)
+                .then(|| registry.table().by_name("Dialogue Menu").cloned())
+                .flatten()
+                .filter(|def| def.target == byroredux_core::ecs::resources::menu_registry::TargetSurface::Movie)
+                .map(|def| (def, registry.game()))
+        });
+        let Some((def, game)) = target else {
+            return false;
+        };
+        match self.open_movie_menu(&def.name, def.document.as_deref(), game) {
+            Ok(line) => {
+                log::info!("{line} — the conversation's surface (GUI-PAGE-004)");
+                let layer = def.document.as_deref().map(byroredux_ui::UiManager::installed_menu_name).unwrap_or(def.name);
+                if let Some(movie) = self.ui.manager.as_ref().and_then(|manager| manager.layer(&layer)) {
+                    let bridge = movie.host_bridge();
+                    for method in crate::scaleform_dialogue::SERVED_METHODS {
+                        bridge.register_method(method);
+                    }
+                }
+                self.ui.movie_calls.insert(layer.clone(), Vec::new());
+                self.ui.dialogue_movie = Some(crate::scaleform_dialogue::DialogueMovie::new(layer));
+                true
+            }
+            Err(error) => {
+                log::warn!("{error}; the conversation opens on the native page");
+                false
+            }
+        }
+    }
+
+    /// M48 GUI-PAGE-004 — the dialogue movie's frame: apply what it asked (the drained host calls),
+    /// then present the conversation's snapshot when it changed. A conversation that ended
+    /// elsewhere (a Goodbye, `dialogue.end`) closes the movie.
+    pub(crate) fn step_dialogue_movie(&mut self) {
+        let Some(movie) = self.ui.dialogue_movie.as_mut() else {
+            return;
+        };
+        let calls = self.ui.movie_calls.get_mut(&movie.layer).map(std::mem::take).unwrap_or_default();
+        let npc = self.world.try_resource::<crate::systems::npc_dialogue::DialogueSurfaceState>().and_then(|surface| surface.npc);
+        let snapshot = crate::systems::npc_dialogue::dialogue_snapshot(&self.world);
+        let mut done = false;
+        for call in calls.iter().filter_map(crate::scaleform_dialogue::decode) {
+            if call == crate::scaleform_dialogue::DialogueCall::Close {
+                movie.closing = true;
+            }
+            done |= crate::scaleform_dialogue::apply(&self.world, npc, snapshot.as_ref(), call);
+        }
+        if movie.closing {
+            movie.closing_frames += 1;
+        }
+        let ended = npc.is_none() && !movie.closing;
+        let fade_overran = movie.closing_frames > crate::scaleform_dialogue::MAX_FADE_FRAMES;
+        if done || ended || fade_overran {
+            self.close_dialogue_movie();
+            return;
+        }
+        if let (Some(snapshot), Some(layer)) = (snapshot.as_ref(), self.ui.manager.as_mut().and_then(|manager| manager.layer_mut(&movie.layer))) {
+            movie.feed(layer, snapshot);
+        }
+    }
+
+    /// Close the dialogue movie's layer and give the world its input back.
+    fn close_dialogue_movie(&mut self) {
+        if let Some(movie) = self.ui.dialogue_movie.take() {
+            self.ui.movie_calls.remove(&movie.layer);
+            self.drop_movie_layer(&movie.layer);
+            self.capture_world_input();
         }
     }
 
@@ -1339,6 +1490,13 @@ impl App {
     /// same modal teardown the page's own Close button reaches, minus the
     /// now-redundant `end_open_conversation`.
     fn close_dialogue_menu(&mut self) {
+        if self.ui.dialogue_movie.is_some() {
+            self.close_dialogue_movie();
+            return;
+        }
+        if self.close_menu_document(crate::menuxml_dialogue::DIALOGUE_MENU_CODE) {
+            return;
+        }
         if let Some(ui) = self.debug_ui.as_mut() {
             ui.close_game_menu();
         }
@@ -1351,11 +1509,7 @@ impl App {
         // [`Self::leave_dialogue_page`]) ends the open line: the OnEnd
         // fragment runs and the selection clears, before the shared
         // close/teardown.
-        let dialogue_page = self
-            .debug_ui
-            .as_ref()
-            .is_some_and(byroredux_debug_ui::DebugUiState::dialogue_menu_visible);
-        Self::leave_dialogue_page(&self.world, dialogue_page);
+        self.leave_open_dialogue();
         crate::barter::end_barter(&mut self.world);
         crate::crafting::end_crafting(&self.world);
         if let Some(ui) = self.debug_ui.as_mut() {
@@ -1428,38 +1582,48 @@ fn build_debug_ui_snapshot(
         .unwrap_or_default();
 
     byroredux_debug_ui::PanelSnapshot {
-        loading_tip: None,
-        interaction_prompt: build_interaction_prompt(world),
-        show_crosshair: setting_bool(world, byroredux_debug_ui::SHOW_CROSSHAIR_SETTING_ID, true),
-        show_prompts: setting_bool(world, byroredux_debug_ui::SHOW_PROMPTS_SETTING_ID, true),
-        show_vitals: setting_bool(world, byroredux_debug_ui::SHOW_VITALS_SETTING_ID, true),
-        vitals: inventory::vitals_snapshot(world),
-        show_objectives: setting_bool(
-            world,
-            byroredux_debug_ui::SHOW_OBJECTIVES_SETTING_ID,
-            true,
-        ),
-        objectives: objectives::snapshot(world),
-        stealth_indicator: detection::indicator_view(world),
+        game: byroredux_native_ui::PageSnapshot {
+            loading_tip: None,
+            interaction_prompt: build_interaction_prompt(world),
+            show_crosshair: setting_bool(world, byroredux_debug_ui::SHOW_CROSSHAIR_SETTING_ID, true),
+            show_prompts: setting_bool(world, byroredux_debug_ui::SHOW_PROMPTS_SETTING_ID, true),
+            show_vitals: setting_bool(world, byroredux_debug_ui::SHOW_VITALS_SETTING_ID, true),
+            vitals: inventory::vitals_snapshot(world),
+            show_objectives: setting_bool(
+                world,
+                byroredux_debug_ui::SHOW_OBJECTIVES_SETTING_ID,
+                true,
+            ),
+            objectives: objectives::snapshot(world),
+            stealth_indicator: detection::indicator_view(world),
+            settings,
+            inventory: include_inventory
+                .then(|| inventory::snapshot(world))
+                .flatten(),
+            dialogue: include_dialogue
+                .then(|| crate::systems::npc_dialogue::dialogue_snapshot(world))
+                .flatten(),
+            // Empty outside a script message box: the queue drains as answered.
+            message_box: crate::notifications::front_message_box(world),
+            barter: crate::barter::snapshot(world),
+            crafting: crate::crafting::snapshot(world),
+            chargen: crate::chargen::snapshot(world),
+            rest: crate::oblivion_rest::snapshot(world),
+            labels: ui_labels(world),
+        },
         metrics,
-        settings,
-        inventory: include_inventory
-            .then(|| inventory::snapshot(world))
-            .flatten(),
-        dialogue: include_dialogue
-            .then(|| crate::systems::npc_dialogue::dialogue_snapshot(world))
-            .flatten(),
-        // Empty outside a script message box: the queue drains as answered.
-        message_box: crate::notifications::front_message_box(world),
-        barter: crate::barter::snapshot(world),
-        crafting: crate::crafting::snapshot(world),
-        chargen: crate::chargen::snapshot(world),
         entities,
         studio: studio_host::snapshot(world),
     }
 }
 
-fn build_interaction_prompt(world: &World) -> Option<byroredux_debug_ui::InteractionPrompt> {
+/// M48 GUI-PAGE-005 — the load order's words for the native pages (a handle; the engine text
+/// when no load order resolved them).
+fn ui_labels(world: &World) -> byroredux_core::ui_labels::UiLabels {
+    world.try_resource::<byroredux_core::ui_labels::UiLabels>().map(|labels| labels.clone()).unwrap_or_default()
+}
+
+fn build_interaction_prompt(world: &World) -> Option<byroredux_native_ui::InteractionPrompt> {
     let verb = world
         .try_resource::<crate::interaction::InteractionState>()
         .and_then(|state| state.prompt_verb())?;
@@ -1467,26 +1631,40 @@ fn build_interaction_prompt(world: &World) -> Option<byroredux_debug_ui::Interac
         .try_resource::<crate::interaction::ActionBindings>()
         .map(|bindings| bindings.binding_label(crate::interaction::InputAction::Activate))
         .unwrap_or("E");
-    Some(byroredux_debug_ui::InteractionPrompt { binding, verb })
+    // GUI-PAGE-005 — the verb in the game's word (`sTakeAll`, `sTalk` …), shared with the table.
+    let verb = world.try_resource::<byroredux_core::ui_labels::UiLabels>().map_or_else(|| verb.into(), |labels| labels.shared(verb));
+    Some(byroredux_native_ui::InteractionPrompt { binding, verb })
 }
 
+/// Report a player quicksave / quickload. The command's output is operator text (the slot,
+/// the file path, a refusal's reason): it goes to the log and the console. The HUD gets the
+/// game's own line for the outcome (#6825, GUI-PAGE-005): `sQuickSaving` / `sQuickLoading`
+/// ("Quicksaving..." / "Quickloading..."), `sCantSaveNow` when a save is refused, and the
+/// engine's "Load failed." when a load is (no game authors a load-failure notice).
 fn surface_save_load_output(
     debug_ui: Option<&mut byroredux_debug_ui::DebugUiState>,
-    context: &str,
+    world: &World,
+    action: save_io::PlayerSaveAction,
     output: byroredux_core::console::CommandOutput,
 ) {
+    let context = action.context();
     let joined = output.lines.join(" | ");
-    if save_io::command_output_is_failure(&output) {
+    let failed = save_io::command_output_is_failure(&output);
+    if failed {
         log::warn!("{context}: {joined}");
     } else {
         log::info!("{context}: {joined}");
     }
+    let labels = ui_labels(world);
+    let player_line = match (action, failed) {
+        (save_io::PlayerSaveAction::Quicksave, false) => labels.text("Quicksaving..."),
+        (save_io::PlayerSaveAction::Quickload, false) => labels.text("Quickloading..."),
+        (save_io::PlayerSaveAction::Quicksave, true) => labels.text("You cannot save right now."),
+        (save_io::PlayerSaveAction::Quickload, true) => save_io::LOAD_FAILED,
+    };
     if let Some(ui) = debug_ui {
-        let mut lines = output.lines.into_iter();
-        if let Some(first) = lines.next() {
-            ui.push_player_message(first);
-        }
-        for line in lines {
+        ui.push_player_message(player_line.to_owned());
+        for line in output.lines {
             ui.push_console_line(line);
         }
     }
@@ -1525,70 +1703,73 @@ fn apply_debug_ui_outputs(
     debug_ui: Option<&mut byroredux_debug_ui::DebugUiState>,
 ) -> (bool, bool) {
     let mut debug_ui = debug_ui;
+    for action in outputs.game.rest_actions {
+        crate::oblivion_rest::apply(world, action);
+    }
     // M47.2 — the answered message box leaves the queue; the page stays up
     // for the next one, and the last answer closes it back to the world.
     // A character-creation screen closes on its answer, or unchanged when the page is dismissed;
     // the next screen asked for opens on a later frame (`App::present_chargen`).
-    let chargen_answered = outputs.chargen_choice.is_some();
-    if let Some(choice) = outputs.chargen_choice {
+    let chargen_answered = outputs.game.chargen_choice.is_some();
+    if let Some(choice) = outputs.game.chargen_choice {
         if crate::chargen::apply(world, choice) {
             world.resource_mut::<crate::player_body::PlayerBodyRebuildRequest>().0 = true;
         }
-    } else if outputs.resume_game && debug_ui.as_deref().is_some_and(byroredux_debug_ui::DebugUiState::chargen_menu_visible) {
+    } else if outputs.game.resume_game && debug_ui.as_deref().is_some_and(byroredux_debug_ui::DebugUiState::chargen_menu_visible) {
         crate::chargen::dismiss(world);
     }
-    let resume_game = outputs.resume_game
+    let resume_game = outputs.game.resume_game
         || chargen_answered
         || outputs
-            .message_box_choice
+            .game.message_box_choice
             .is_some_and(|choice| !crate::notifications::answer_message_box(world, Some(choice)));
-    let quit_game = outputs.quit_game;
+    let quit_game = outputs.game.quit_game;
     for command in outputs.studio_commands {
         studio_host::apply_command(world, command);
     }
-    if outputs.quicksave {
-        if let Err(error) =
+    if outputs.game.quicksave
+        && let Err(error) =
             save_io::queue_player_save_action(world, save_io::PlayerSaveAction::Quicksave)
         {
             surface_save_load_output(
                 debug_ui.as_deref_mut(),
-                "pause menu quicksave",
+                world,
+                save_io::PlayerSaveAction::Quicksave,
                 byroredux_core::console::CommandOutput::error(error),
             );
         }
-    }
-    if outputs.quickload {
-        if let Err(error) =
+    if outputs.game.quickload
+        && let Err(error) =
             save_io::queue_player_save_action(world, save_io::PlayerSaveAction::Quickload)
         {
             surface_save_load_output(
                 debug_ui.as_deref_mut(),
-                "pause menu quickload",
+                world,
+                save_io::PlayerSaveAction::Quickload,
                 byroredux_core::console::CommandOutput::error(error),
             );
         }
-    }
     let mut settings_changed = false;
-    for action in outputs.inventory_actions {
+    for action in outputs.game.inventory_actions {
         if inventory::apply_action(world, action) == inventory::MutationResult::Unavailable {
             log::warn!("native inventory action was unavailable for the current player/item");
         }
     }
     // M47.2 — barter trades, one unit each; a refusal is player feedback.
-    for action in outputs.barter_actions {
+    for action in outputs.game.barter_actions {
         if let Err(reason) = crate::barter::apply_action(world, action) {
             crate::notifications::push(world, reason);
         }
     }
     // M43 — crafting at the open bench; a refusal is player feedback.
-    for action in outputs.crafting_actions {
+    for action in outputs.game.crafting_actions {
         if let Err(reason) = crate::crafting::apply_action(world, action) {
             crate::notifications::push(world, reason);
         }
     }
-    for action in outputs.dialogue_actions {
+    for action in outputs.game.dialogue_actions {
         match action {
-            byroredux_debug_ui::DialogueUiAction::SelectTopic {
+            byroredux_native_ui::DialogueUiAction::SelectTopic {
                 npc,
                 topic_form_id,
             } => {
@@ -1615,7 +1796,7 @@ fn apply_debug_ui_outputs(
             }
         }
     }
-    for change in outputs.setting_changes {
+    for change in outputs.game.setting_changes {
         // The upscaler entry cannot be applied here: switching rebuilds every
         // render-resolution target and needs `&mut VulkanContext`. Stage it
         // for the frame boundary, where `step_upscaler_switch` drains it.
@@ -1711,11 +1892,10 @@ fn apply_camera_setting(world: &World, change: &SettingChange) {
     };
     let entity = active.0;
     drop(active);
-    if let Some(mut cameras) = world.query_mut::<byroredux_core::ecs::Camera>() {
-        if let Some(camera) = cameras.get_mut(entity) {
+    if let Some(mut cameras) = world.query_mut::<byroredux_core::ecs::Camera>()
+        && let Some(camera) = cameras.get_mut(entity) {
             camera.fov_y = degrees.to_radians();
         }
-    }
 }
 
 fn sync_camera_setting(world: &World) {
@@ -1803,8 +1983,9 @@ mod dialogue_page_leave_tests {
     /// (Escape's `toggle_game_menu`, the Inventory key's
     /// `open_inventory_menu`, and the Close button's
     /// `resume_from_game_menu`) each funnel through
-    /// [`App::leave_dialogue_page`] — sampled before their visibility
-    /// flip. Static by necessity (the paths need a live window + UI);
+    /// [`App::leave_open_dialogue`], which runs [`App::leave_dialogue_page`]
+    /// for either surface (the native page, or since #6666 the dialogue
+    /// movie) — sampled before their visibility flip. Static by necessity (the paths need a live window + UI);
     /// same convention as the cinematic purge's wiring pin.
     #[test]
     fn every_native_page_leave_path_routes_through_the_shared_teardown() {
@@ -1816,8 +1997,13 @@ mod dialogue_page_leave_tests {
             .next()
             .expect("this module still exists");
         assert_eq!(
+            production.matches("Self::leave_dialogue_page(&self.world, native || movie);").count(),
+            1,
+            "leave_open_dialogue runs the shared teardown for either surface"
+        );
+        assert_eq!(
             production
-                .matches("Self::leave_dialogue_page(&self.world, dialogue_page);")
+                .matches("        self.leave_open_dialogue();")
                 .count(),
             3,
             "expected toggle_game_menu, open_inventory_menu and \

@@ -28,6 +28,10 @@ pub struct GroundcoverBenchCellHandle {
 }
 
 /// A single draw command: which mesh to draw, with what texture, and what model matrix.
+///
+/// `Clone` for TSD-4.1 (#7152): a terrain patch draws as a copy of its base
+/// cell's command with the patch mesh swapped in.
+#[derive(Clone)]
 pub struct DrawCommand {
     pub mesh_handle: u32,
     pub texture_handle: u32,

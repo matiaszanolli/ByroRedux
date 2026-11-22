@@ -129,7 +129,7 @@ layout(location = 4) out vec4 outRawIndirect;
 // accumulates these, and the remaining intermediate G-buffer attachments
 // (1 normal, 2 motion, 3 mesh_id, 5 albedo) stay masked off.
 layout(location = 6) out float outFsrReactive;
-layout(location = 7) out float outFsrTransparency;
+layout(location = 7) out vec4 outTransparencyAndSun;
 
 // Water uses the same scene descriptors and secondary-hit material contract
 // as triangle.frag. The scene set already exposes the material table and
@@ -352,6 +352,17 @@ vec2 sampleFlowMap(uint flowMapIndex, vec2 uv) {
 // faint sky cast through the refraction path's miss shading (downward
 // refraction rays escaping the BLAS at cliff edges or sparse exterior
 // cells).
+// #1561 / #7261 — the one RT gate for every ray this shader traces.
+// `sceneFlags.x` is 1.0 only when ray_query is supported AND the TLAS is
+// current (draw.rs). Helper invocations (the lanes filling out a 2×2 quad
+// along a triangle edge) trace nothing: their outputs, stores and atomics are
+// discarded, and no derivative in this shader follows a ray — the only
+// implicit-LOD fetches are the normal-map samples above the first trace.
+// Pinned by `helper_lanes_trace_no_main_rays_and_no_derivative_follows`.
+bool waterRaysEnabled() {
+    return sceneFlags.x >= 0.5 && !gl_HelperInvocation;
+}
+
 vec3 traceWaterRay(
     vec3 origin,
     vec3 direction,
@@ -367,7 +378,7 @@ vec3 traceWaterRay(
     // case (binding 2 may be absent from the bound layout) and the RT first-
     // frame / TLAS-failure stale-TLAS readback. Degrades to the miss
     // fallback (sky reflection / deep-water refraction) instead of tracing.
-    if (sceneFlags.x < 0.5) {
+    if (!waterRaysEnabled()) {
         hit = false;
         hitDist = maxDist;
         return missFallback;
@@ -558,7 +569,7 @@ vec3 absorbWaterColumn(vec3 refractedRadiance, float hitDist, bool cameraUnderwa
 float foamShoreline(vec3 worldPos, vec3 surfaceNormal) {
     // #1561 — no RT / unwritten TLAS ⇒ no shoreline foam (same gate as
     // traceWaterRay / caustic_splat.comp).
-    if (sceneFlags.x < 0.5) {
+    if (!waterRaysEnabled()) {
         return 0.0;
     }
     rayQueryEXT rq;
@@ -630,7 +641,7 @@ void main() {
     // Water's wave, reflection and refraction terms are not represented by
     // the plane's surface motion; mark the full pixel as reactive/composited.
     outFsrReactive = 1.0;
-    outFsrTransparency = 1.0;
+    outTransparencyAndSun = vec4(1.0, 0.0, 0.0, 0.0);
     // Seeded here alongside the FSR masks so the attachment is never left
     // undefined; the alpha lane (water's blend coverage) is filled in once
     // `alpha` is resolved, next to the `outColor` write. See #3977.
@@ -664,17 +675,26 @@ void main() {
     vec2 flowOffset0 = vec2(0.0);
     vec2 flowOffset1 = vec2(0.0);
     float flowPhaseBlend = 0.0;
+    // The two saw-tooth advection times (seconds) and phase 1's weight: 1
+    // while phase 0 resets (phase0 at 0/1), 0 while phase 1 resets (phase0 =
+    // 0.5). Shared by the BGSM flow map and the river's bed-aware current.
+    float phase0 = fract(time / WATER_FLOW_MAP_CYCLE_SECONDS);
+    float phase1 = fract(phase0 + 0.5);
+    float advectTime0 = phase0 * WATER_FLOW_MAP_CYCLE_SECONDS;
+    float advectTime1 = phase1 * WATER_FLOW_MAP_CYCLE_SECONDS;
+    float advectBlend = abs(1.0 - 2.0 * phase0);
     if (flowMapIndex != 0xFFFFFFFFu) {
         vec2 flowDirection = sampleFlowMap(flowMapIndex, vUV);
         float flowRate = 0.02 * clamp(push.uv_offset.w, 0.05, 8.0);
-        float phase0 = fract(time / WATER_FLOW_MAP_CYCLE_SECONDS);
-        float phase1 = fract(phase0 + 0.5);
-        flowOffset0 = flowDirection * flowRate * phase0 * WATER_FLOW_MAP_CYCLE_SECONDS;
-        flowOffset1 = flowDirection * flowRate * phase1 * WATER_FLOW_MAP_CYCLE_SECONDS;
-        // Phase 1's weight: 1 while phase 0 resets (phase0 at 0/1), 0 while
-        // phase 1 resets (phase0 = 0.5).
-        flowPhaseBlend = abs(1.0 - 2.0 * phase0);
+        flowOffset0 = flowDirection * flowRate * advectTime0;
+        flowOffset1 = flowDirection * flowRate * advectTime1;
+        flowPhaseBlend = advectBlend;
     }
+    // Per-layer river advection (UV/s): the bed-aware current's departure
+    // from the plane's uniform scroll, set in the river branch below.
+    vec2 riverAdvectA = vec2(0.0);
+    vec2 riverAdvectB = vec2(0.0);
+    vec2 riverAdvectC = vec2(0.0);
 
     // Imported NIF water meshes are not guaranteed to carry a valid tangent
     // frame (old NiTriShapes commonly have a zero tangent or a tangent
@@ -787,13 +807,31 @@ void main() {
                 float c = dot(flowDirXZ, localDir);
                 float sn = flowDirXZ.x * localDir.y - flowDirXZ.y * localDir.x;
                 mat2 turn = mat2(c, sn, -sn, c);
-                normalScrollA = turn * normalScrollA;
-                normalScrollB = turn * normalScrollB;
-                normalScrollC = turn * normalScrollC;
+                riverAdvectA = turn * normalScrollA;
+                riverAdvectB = turn * normalScrollB;
+                riverAdvectC = turn * normalScrollC;
+            } else {
+                riverAdvectA = normalScrollA;
+                riverAdvectB = normalScrollB;
+                riverAdvectC = normalScrollC;
             }
-            normalScrollA *= depthSpeed;
-            normalScrollB *= depthSpeed;
-            normalScrollC *= depthSpeed;
+            // The local current varies across the surface, so it must not
+            // ride the unbounded `scroll * time` term: a scroll that differs
+            // between neighbouring fragments shears the UVs by
+            // `Δscroll × uptime`, which outgrows the texture's own UV
+            // gradient within a minute and folds at every triangle edge of
+            // the interpolated bed field — the long zigzag streaks seen under
+            // the Riverwood bridge. The plane's uniform scroll keeps the
+            // unbounded term (it shears nothing); only the departure from it
+            // advects, through the bounded dual-phase offsets #4930 gave
+            // BGSM flow maps.
+            riverAdvectA = riverAdvectA * depthSpeed - normalScrollA;
+            riverAdvectB = riverAdvectB * depthSpeed - normalScrollB;
+            riverAdvectC = riverAdvectC * depthSpeed - normalScrollC;
+            if (dot(riverAdvectA, riverAdvectA) + dot(riverAdvectB, riverAdvectB)
+                + dot(riverAdvectC, riverAdvectC) > 1.0e-12) {
+                flowPhaseBlend = advectBlend;
+            }
         }
     }
     // Two scrolling normal layers (the "movement on flat surfaces"
@@ -804,8 +842,8 @@ void main() {
     // `WaterNormalEncoding` rides `optical.y` (0 = unit tangent normal,
     // 1 = FO3/FNV offset noise).
     bool offsetNoise = push.optical.y > 0.5;
-    vec3 nA = sampleFlowAdvectedNormal(noiseMapA, uvWorld, uvOrigin, normalUvOffset, flowOffset0, flowOffset1, flowPhaseBlend, normalScrollA, push.tune.x, time, ampScale * max(push.detail.y, 0.05) * max(push.depth.z, 0.0), freqScale, offsetNoise);
-    vec3 nB = sampleFlowAdvectedNormal(noiseMapB, uvWorld, uvOrigin, normalUvOffset, flowOffset0, flowOffset1, flowPhaseBlend, normalScrollB, push.tune.y, time, ampScale * max(push.detail.z, 0.05) * max(push.depth.z, 0.0), freqScale, offsetNoise);
+    vec3 nA = sampleFlowAdvectedNormal(noiseMapA, uvWorld, uvOrigin, normalUvOffset, flowOffset0 + riverAdvectA * advectTime0, flowOffset1 + riverAdvectA * advectTime1, flowPhaseBlend, normalScrollA, push.tune.x, time, ampScale * max(push.detail.y, 0.05) * max(push.depth.z, 0.0), freqScale, offsetNoise);
+    vec3 nB = sampleFlowAdvectedNormal(noiseMapB, uvWorld, uvOrigin, normalUvOffset, flowOffset0 + riverAdvectB * advectTime0, flowOffset1 + riverAdvectB * advectTime1, flowPhaseBlend, normalScrollB, push.tune.y, time, ampScale * max(push.detail.z, 0.05) * max(push.depth.z, 0.0), freqScale, offsetNoise);
 
     // A distinct authored NAM4 layer contributes on every horizontal water
     // kind. Rapids uses the faster flow-biased path for whitewater; calm and
@@ -831,8 +869,8 @@ void main() {
             uvWorld,
             uvOrigin,
             normalUvOffset,
-            flowOffset0,
-            flowOffset1,
+            flowOffset0 + riverAdvectC * advectTime0,
+            flowOffset1 + riverAdvectC * advectTime1,
             flowPhaseBlend,
             thirdScroll,
             push.detail.x,
@@ -1005,7 +1043,16 @@ void main() {
     float fresnel = F0 + (1.0 - F0) * pow(1.0 - NdotV, 5.0);
 
     // ── Reflection ray ──
-    vec3 R = reflect(-V, Nperturbed);
+    // Reflection Magnitude (Skyrim DNAM[196]; canonical default 1.0) is how
+    // much the wave normals distort the reflection — the Creation Kit
+    // WaterType page: "At 0% you will have perfectly still reflections while
+    // at 100% you will have the full effect of distortion". It bends the
+    // reflected ray, the sibling of Refraction Magnitude's refraction-normal
+    // weight below; it is not a brightness. Both endpoints sit in the
+    // stability-clamped upper half-space, so their mix does too.
+    float reflectionNormalWeight = clamp(push.effects.z, 0.0, 1.0);
+    vec3 reflectionNormal = normalize(mix(N, Nperturbed, reflectionNormalWeight));
+    vec3 R = reflect(-V, reflectionNormal);
     float reflDist; bool reflHit;
     // Reflection miss follows the same environment contract as the main
     // material path: exterior rays see the baked sky cube along the reflected
@@ -1042,14 +1089,6 @@ void main() {
     }
     if (reflHit) {
         reflColor *= exp(-reflDist * RT_DIST_FALLOFF);
-        // WATR DATA reflection_color is a filter on *geometry-hit*
-        // radiance (#1069 / F-WAT-09 — "tints geometry-hit colour"), so it
-        // lives inside the hit arm: the sky-miss reflection keeps the
-        // environment's own colour and an authored grey tint can no longer
-        // dim the sky mirror it was never meant to touch. It still lands
-        // before the TIR capture below, which is correct — TIR energy is
-        // all reflection by definition.
-        reflColor *= push.tint_reflect.rgb;
         // The "Reflections" depth weight (Skyrim DNAM[208]) gates the
         // geometry term of the same depth-effect family as its siblings:
         // depth.y is the absorption rate, depth.z the normal amplitude,
@@ -1062,13 +1101,17 @@ void main() {
     // `mix(reflectionMiss, reflColor, reflHit ? 1.0 : 0.0)` selected
     // `reflColor` in both branches.
     //
-    // Reflection Magnitude (Skyrim DNAM[196]; canonical default 1.0) is the
-    // single authored reflection intensity. The pre-fix stack serially
-    // multiplied depth.x, effects.z, the reflection tint AND Reflectivity
-    // Amount into the ray colour, so RiverWaterFlowNE's 0.30 x 0.42 x ~0.55
-    // tint x 0.8 capped the whole mirror at ~1% of sky radiance before
-    // Fresnel even ran — water read as matte at every viewing angle.
-    reflColor *= max(push.effects.z, 0.0);
+    // Reflectivity Amount (Skyrim DNAM[20]; canonical default 0.85) blends
+    // the solid Reflection Color (WATR reflection_color, day/night resolved
+    // on the CPU) with the rendered reflection — the Creation Kit WaterType
+    // page: "Blend between the solid reflection color ... and the rendered
+    // reflection texture", and Reflection Color is "the color mixed with the
+    // reflection texture when the Reflectivity Amount is set to less than
+    // 100%". Neither is a brightness on the rendered reflection: the colour
+    // is a fill, not a filter, and Reflectivity does not scale Fresnel. The
+    // blend lands before the TIR capture below, which is correct — TIR
+    // energy is all reflection by definition.
+    reflColor = mix(push.tint_reflect.rgb, reflColor, clamp(push.tint_reflect.w, 0.0, 1.0));
 
     // ── Refraction ray (skipped for waterfalls) ──
     vec3 refrColor;
@@ -1106,7 +1149,7 @@ void main() {
         // from the water side — refract returns zero and all energy goes to
         // the already-resolved reflection.
         if (length(Tdir) > 0.001) {
-            refrTraced = sceneFlags.x >= 0.5;
+            refrTraced = waterRaysEnabled();
             // Refraction-miss: deep water tint is the right backdrop
             // (the downward ray escaped the BLAS — cliff edge / sparse
             // exterior — but conceptually it should land in the deep
@@ -1196,7 +1239,7 @@ void main() {
     if (sunDirection.w > 0.0) {
         sunDir = normalize(sunDirection.xyz);
         sunVisibility = 1.0;
-        if (sceneFlags.x >= 0.5) {
+        if (waterRaysEnabled()) {
             vec3 sunTransmission = traceShadowTransmittance(
                 offsetRayOrigin(vWorldPos, Nsurface),
                 sunDir,
@@ -1265,14 +1308,12 @@ void main() {
     refrColor = mix(refrColor, scatterColour, clamp(lightScatter, 0.0, 1.0));
 
     // ── Surface colour ──
-    // Reflectivity Amount (Skyrim DNAM[20]; canonical default 0.85) scales
-    // the Fresnel share of the mirror instead of dimming the ray colour a
-    // second time. TIR pins the mix at full energy by flag — the TIR arm's
+    // The mirror share is Fresnel alone: Reflectivity Amount already chose
+    // what the mirror shows (the colour/rendered blend above), so it does
+    // not scale this share too. TIR pins the mix at full energy by flag — the TIR arm's
     // `refrColor = reflColor` alias alone would not survive the scatter
     // rewrite above.
-    float reflMix = tirReflection
-        ? 1.0
-        : fresnel * clamp(push.tint_reflect.w, 0.0, 1.0);
+    float reflMix = tirReflection ? 1.0 : fresnel;
     vec3 surfaceColor = mix(refrColor, reflColor, reflMix);
     surfaceColor += vec3(sunSpecular);
 
@@ -1404,10 +1445,10 @@ void main() {
     // CAUSTIC_FIXED_SCALE). `clamp_max = 0xFFFFFFFFu / scale`
     // mirrors the #1099 anchor — prevents wraparound when a hot
     // sun + perpendicular surface fragment dumps a large value.
-    // #1561 — `sceneFlags.x >= 0.5` gates the caustic shadow + floor ray
+    // #1561 — `waterRaysEnabled()` gates the caustic shadow + floor ray
     // queries below (mirrors the helper gates): no RT / unwritten TLAS ⇒ no
     // caustic projection rather than a trace against an absent / stale TLAS.
-    if (sunDirection.w > 0.0 && sceneFlags.x >= 0.5) {
+    if (sunDirection.w > 0.0 && waterRaysEnabled()) {
         // INVARIANT (REG-03 / #1635, #1459): `sunDirection.xyz` points TO the
         // sun (light-incoming), matching GpuLight.direction_angle /
         // triangle.frag's directional `L` AND the caustic_splat.comp

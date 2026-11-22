@@ -67,22 +67,19 @@ pub(crate) fn live_actor_bodies(
     let mut owners = FxHashMap::default();
     if let Some(actors) = world.query::<ActorVitals>() {
         for (actor, _) in actors.iter() {
-            if world.get::<Dead>(actor).is_none() {
-                if let Some(handles) = world.get::<byroredux_physics::RapierHandles>(actor) {
+            if world.get::<Dead>(actor).is_none()
+                && let Some(handles) = world.get::<byroredux_physics::RapierHandles>(actor) {
                     owners.insert(handles.body, actor);
                 }
-            }
         }
     }
     if let Some(colliders) = world.query::<byroredux_physics::ActorColliderOwner>() {
         for (collider, owner) in colliders.iter() {
             if world.get::<ActorVitals>(owner.0).is_some()
                 && world.get::<Dead>(owner.0).is_none()
-            {
-                if let Some(handles) = world.get::<byroredux_physics::RapierHandles>(collider) {
+                && let Some(handles) = world.get::<byroredux_physics::RapierHandles>(collider) {
                     owners.insert(handles.body, owner.0);
                 }
-            }
         }
     }
     owners

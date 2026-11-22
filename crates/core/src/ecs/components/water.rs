@@ -143,7 +143,7 @@ impl WaterKind {
     /// Fraction of the atmospheric weather scroll that flowing kinds
     /// ([`Self::is_flowing`]) add to their normal-layer transport.
     ///
-    /// On flowing water the flow term owns visible transport; the wind
+    /// On flowing water the current owns visible transport; the wind
     /// keeps its full chop amplitude (`wind_wave_scale`) but a full-rate
     /// weather transport reads as a violent cross-current sweep — measured
     /// live on the Skyrim White River fixture (2026-10-04,
@@ -153,7 +153,10 @@ impl WaterKind {
     /// flowed (the live report behind this constant). Applied identically
     /// by the renderer upload and every CPU crest sampler — through
     /// [`Self::weather_scroll_for`] — so the #3207 phase-coherence contract
-    /// holds.
+    /// holds. Those UV/s figures predate the per-layer wind conversion:
+    /// [`WaterMaterial::wave_scrolls`] now turns the damped wind into a
+    /// world-unit drift (at the wind field's maximum, a flowing kind drifts
+    /// ~8.5 BU/s with the wind on layer A).
     pub const FLOWING_WATER_WEATHER_TRANSPORT: f32 = 0.35;
 
     /// The atmospheric weather scroll as THIS kind's surface sees it:
@@ -250,16 +253,15 @@ pub struct WaterMaterial {
     /// Schlick F0 at normal incidence. ~0.02 for clean water; ~0.04
     /// for muddy / chemical / Hubris Comics water. Drives fresnel.
     pub fresnel_f0: f32,
-    /// 0..1 — how much of the reflection ray colour is mixed back
-    /// (post-fresnel). 1.0 = pure mirror; 0.7 = REDengine-style
-    /// "convincing but not chrome".
+    /// 0..1 Reflectivity Amount — the blend between the solid
+    /// [`Self::reflection_tint`] colour (0) and the rendered reflection (1),
+    /// per the Creation Kit WaterType page. It chooses what the mirror shows;
+    /// it does not scale the Fresnel share or dim the rendered reflection.
     pub reflectivity: f32,
-    /// Tint applied to the reflected geometry hit colour in
-    /// `traceWaterRay`. Sourced from `WATR DATA reflection_color`
-    /// (#1069 / F-WAT-09). Allows chemically-tinted, lava, and
-    /// ocean water to show distinct reflected-geometry hues.
-    /// Default `[0.65, 0.70, 0.75]` matches the pre-fix hard-coded
-    /// neutral-grey value in `water.frag`.
+    /// Solid Reflection Color (`WATR` reflection_color, #1069 / F-WAT-09):
+    /// the colour [`Self::reflectivity`] blends with the rendered reflection
+    /// below 100%. A fill, not a filter on the reflected radiance. Default
+    /// `[0.65, 0.70, 0.75]`.
     pub reflection_tint: [f32; 3],
     /// Authored legacy reflection HDR multiplier. One is neutral.
     pub reflection_hdr_multiplier: f32,
@@ -301,13 +303,11 @@ pub struct WaterMaterial {
     /// streaks all running the same way.
     ///
     /// Composition lives at the translate boundary (`env_translate/water.rs`),
-    /// not the cell loader: for `River` / `Rapids`, vector 0 is the flow
-    /// term `flow.direction * flow.speed * WATER_SCROLL_UV_PER_BU_PER_S`
-    /// plus the record's converted layer-0 motion; vector 1 is the
-    /// perpendicular shear at half the downstream rate
-    /// (`WATER_PERPENDICULAR_SHEAR_SCROLL`) plus the converted layer-1
-    /// motion; vector 2 carries the converted layer-2 (third layer) motion
-    /// verbatim, or mirrors vector 0 when the record authors none. `Calm`
+    /// not the cell loader: for `River` / `Rapids` / `Waterfall`, vector `i`
+    /// is the flow term `flow.direction * flow.speed * |uv_scale_i|` — the
+    /// layer's pattern travelling at the current's own world speed — plus
+    /// the record's converted layer-`i` motion. No layer carries a
+    /// synthesized cross-stream term. `Calm`
     /// water — and a `River` / `Rapids` record with neither a NAM0 current
     /// nor an authored heading, which emits no physics flow (#4734) —
     /// keeps the converted authored vectors verbatim when present, with no
@@ -358,7 +358,10 @@ pub struct WaterMaterial {
     /// specular lighting. Legacy records use neutral ones.
     pub depth_weights: [f32; 4],
     /// Authored effect controls: refraction magnitude, local specular power,
-    /// reflection magnitude, and sun-specular magnitude.
+    /// reflection magnitude, and sun-specular magnitude. Both magnitudes are
+    /// normal-distortion weights (Creation Kit WaterType page), not
+    /// brightness: reflection magnitude 0..1 bends the reflection ray from
+    /// the flat plane (0) to the full wave normal (1).
     pub effect_controls: [f32; 4],
     /// Authored specular magnitude. One is neutral; zero means legacy
     /// records without a separate magnitude field.
@@ -553,11 +556,29 @@ pub struct WaterFlow {
     pub speed: f32,
 }
 
-/// Conversion from the shared atmospheric wind magnitude (BU/s) to the
-/// water normal-layer UV scroll rate. Renderer upload and CPU crest/contact
-/// sampling both use this value so visible water and gameplay stay phase
+/// Encoding of the shared atmospheric wind (BU/s) in the weather scroll
+/// vector `physics::weather_wave_adjustment` hands every water consumer. It
+/// is not a layer UV rate: [`WaterMaterial::wave_scrolls`] decodes the wind
+/// back out ([`weather_wind`]) and converts its drift per layer by the
+/// layer's own UV scale. Renderer upload and CPU crest/contact sampling go
+/// through the same decode, so visible water and gameplay stay phase
 /// coherent.
 pub const WEATHER_SCROLL_PER_BU_PER_S: f32 = 0.0015;
+
+/// Wind strength (0..1 of `MAX_WIND_SPEED`) and unit heading decoded from a
+/// weather scroll — the one decode [`WaterMaterial::wave_scrolls`] and
+/// [`WaterMaterial::swell`] share. A zero or non-finite scroll is dead calm
+/// with no heading.
+fn weather_wind(weather_scroll: [f32; 2]) -> (f32, Option<[f32; 2]>) {
+    let len = (weather_scroll[0] * weather_scroll[0] + weather_scroll[1] * weather_scroll[1]).sqrt();
+    if !len.is_finite() {
+        return (0.0, None);
+    }
+    let wind = (len / WEATHER_SCROLL_PER_BU_PER_S / crate::ecs::components::groundcover::MAX_WIND_SPEED)
+        .clamp(0.0, 1.0);
+    let heading = (len > 1.0e-9).then(|| [weather_scroll[0] / len, weather_scroll[1] / len]);
+    (wind, heading)
+}
 
 // ── Low-frequency wave + scroll-prep tuning (#5582) ─────────────────────
 //
@@ -614,10 +635,10 @@ pub const WATER_SCROLL_ANGULAR_RATE_MAX: f32 = 32.0;
 pub const WATER_FLOWMAP_SCALE_MIN: f32 = 0.05;
 /// Upper clamp on the authored flow-map tile scale.
 pub const WATER_FLOWMAP_SCALE_MAX: f32 = 8.0;
-/// Share of the (kind-damped) weather scroll layer B takes; layer A takes it
-/// whole.
+/// Share of the (kind-damped) wind drift layer B takes on water whose motion
+/// is its own; layer A takes it whole.
 pub const WATER_WEATHER_SCROLL_WEIGHT_B: f32 = 0.65;
-/// Share of the (kind-damped) weather scroll layer C takes.
+/// Share of the (kind-damped) wind drift layer C takes.
 pub const WATER_WEATHER_SCROLL_WEIGHT_C: f32 = 0.45;
 
 // ── Wind-driven calm water (2026-10-26) ─────────────────────────────────
@@ -777,18 +798,8 @@ impl WaterMaterial {
         if !self.wind_driven {
             return None;
         }
-        let len = (weather_scroll[0] * weather_scroll[0] + weather_scroll[1] * weather_scroll[1]).sqrt();
-        let wind = if len.is_finite() {
-            (len / WEATHER_SCROLL_PER_BU_PER_S / crate::ecs::components::groundcover::MAX_WIND_SPEED)
-                .clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
-        let direction = if len.is_finite() && len > 1.0e-9 {
-            [weather_scroll[0] / len, weather_scroll[1] / len]
-        } else {
-            WATER_WAVE_FALLBACK_DIR_A_UNIT
-        };
+        let (wind, heading) = weather_wind(weather_scroll);
+        let direction = heading.unwrap_or(WATER_WAVE_FALLBACK_DIR_A_UNIT);
         Some(WaterSwell {
             amplitude: WATER_SWELL_AMPLITUDE_MIN
                 + (WATER_SWELL_AMPLITUDE_MAX - WATER_SWELL_AMPLITUDE_MIN) * wind,
@@ -826,12 +837,7 @@ impl WaterMaterial {
         let (sin_angle, cos_angle) = (angular_rate * time_secs).sin_cos();
         if self.wind_driven {
             // Wind strength 0..1 from the (undamped, calm-kind) weather scroll.
-            let wind_bu_per_s = (weather_scroll[0] * weather_scroll[0]
-                + weather_scroll[1] * weather_scroll[1])
-                .sqrt()
-                / WEATHER_SCROLL_PER_BU_PER_S;
-            let wind = (wind_bu_per_s / crate::ecs::components::groundcover::MAX_WIND_SPEED)
-                .clamp(0.0, 1.0);
+            let (wind, _) = weather_wind(weather_scroll);
             let drift = WATER_CALM_DRIFT_MIN_BU_PER_S
                 + (WATER_CALM_DRIFT_MAX_BU_PER_S - WATER_CALM_DRIFT_MIN_BU_PER_S) * wind;
             let unit = |v: [f32; 2]| {
@@ -868,18 +874,31 @@ impl WaterMaterial {
                 ),
             };
         }
-        let layer = |scroll: [f32; 2], weather_weight: f32| {
+        // Water whose motion is its own (a current, or authored layers) still
+        // drifts with the wind: by the wind's share of the calm drift band
+        // above its dead-calm floor, in world units/s, converted to each
+        // layer's UV rate by that layer's own scale — the rule every other
+        // scroll term follows. `weather_scroll` arrives kind-damped, so a
+        // flowing kind sees `FLOWING_WATER_WEATHER_TRANSPORT` of the wind.
+        // The weather scroll used to be added here as a raw UV rate, which
+        // ignored the layer scale: on Skyrim's ~1/4200 BU layer B a gale
+        // swept the pattern sideways at ~6x the intended speed.
+        let (wind, wind_heading) = weather_wind(weather_scroll);
+        let wind_drift = (WATER_CALM_DRIFT_MAX_BU_PER_S - WATER_CALM_DRIFT_MIN_BU_PER_S) * wind;
+        let layer = |scroll: [f32; 2], uv_scale: f32, weather_weight: f32| {
             let x = scroll[0] * flowmap_scale;
             let y = scroll[1] * flowmap_scale;
+            let drift_uv = wind_drift * weather_weight * uv_scale.abs();
+            let [wind_x, wind_z] = wind_heading.map_or([0.0, 0.0], |d| [d[0] * drift_uv, d[1] * drift_uv]);
             [
-                x * cos_angle - y * sin_angle + weather_scroll[0] * weather_weight,
-                x * sin_angle + y * cos_angle + weather_scroll[1] * weather_weight,
+                x * cos_angle - y * sin_angle + wind_x,
+                x * sin_angle + y * cos_angle + wind_z,
             ]
         };
         WaterWaveScrolls {
-            a: layer(self.scroll_a, 1.0),
-            b: layer(self.scroll_b, WATER_WEATHER_SCROLL_WEIGHT_B),
-            c: layer(self.scroll_c, WATER_WEATHER_SCROLL_WEIGHT_C),
+            a: layer(self.scroll_a, self.uv_scale_a, 1.0),
+            b: layer(self.scroll_b, self.uv_scale_b, WATER_WEATHER_SCROLL_WEIGHT_B),
+            c: layer(self.scroll_c, self.uv_scale_c, WATER_WEATHER_SCROLL_WEIGHT_C),
         }
     }
 }
@@ -1529,10 +1548,13 @@ mod wave_tuning_tests {
         assert!((3.0..6.0).contains(&speed_m_per_s), "{speed_m_per_s} m/s");
     }
 
-    /// The prep is flow-scale → rotate → add weighted weather, the weather
-    /// term never rotated (it is a shared world-space field).
+    /// The prep is flow-scale → rotate → add the weighted wind drift, the
+    /// wind term never rotated (it is a shared world-space field). The wind
+    /// arrives as a weather scroll and leaves as a world-unit drift converted
+    /// by each layer's own UV scale.
     #[test]
     fn wave_scrolls_scale_and_rotate_only_the_authored_part() {
+        use crate::ecs::components::groundcover::MAX_WIND_SPEED;
         let m = WaterMaterial {
             scroll_a: [1.0, 0.0],
             scroll_b: [0.0, 1.0],
@@ -1541,33 +1563,34 @@ mod wave_tuning_tests {
             angular_velocity: std::f32::consts::FRAC_PI_2,
             ..WaterMaterial::default()
         };
-        let weather = [0.1, -0.2];
+        // Half the wind field's maximum, blowing along +X.
+        let weather = [0.5 * MAX_WIND_SPEED * WEATHER_SCROLL_PER_BU_PER_S, 0.0];
+        let drift = 0.5 * (WATER_CALM_DRIFT_MAX_BU_PER_S - WATER_CALM_DRIFT_MIN_BU_PER_S);
         let s = m.wave_scrolls(weather, 1.0);
         let close =
             |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-5 && (a[1] - b[1]).abs() < 1e-5;
+        let wind = |uv_scale: f32, weight: f32| drift * weight * uv_scale;
         // A quarter turn maps +X → +Y and +Y → −X.
-        assert!(close(s.a, [0.1, 2.0 - 0.2]), "{:?}", s.a);
+        assert!(close(s.a, [wind(m.uv_scale_a, 1.0), 2.0]), "{:?}", s.a);
         assert!(
-            close(
-                s.b,
-                [
-                    -2.0 + 0.1 * WATER_WEATHER_SCROLL_WEIGHT_B,
-                    -0.2 * WATER_WEATHER_SCROLL_WEIGHT_B
-                ]
-            ),
+            close(s.b, [-2.0 + wind(m.uv_scale_b, WATER_WEATHER_SCROLL_WEIGHT_B), 0.0]),
             "{:?}",
             s.b
         );
         assert!(
-            close(
-                s.c,
-                [
-                    -2.0 + 0.1 * WATER_WEATHER_SCROLL_WEIGHT_C,
-                    2.0 - 0.2 * WATER_WEATHER_SCROLL_WEIGHT_C
-                ]
-            ),
+            close(s.c, [-2.0 + wind(m.uv_scale_c, WATER_WEATHER_SCROLL_WEIGHT_C), 2.0]),
             "{:?}",
             s.c
+        );
+
+        // The wind moves every layer's pattern by the same world speed (its
+        // weight aside), whatever the layer's UV scale.
+        let still = WaterMaterial { scroll_a: [0.0; 2], scroll_b: [0.0; 2], ..m }.wave_scrolls(weather, 0.0);
+        assert!((still.a[0] / m.uv_scale_a - drift).abs() < 1e-3, "{:?}", still.a);
+        assert!(
+            (still.b[0] / m.uv_scale_b - drift * WATER_WEATHER_SCROLL_WEIGHT_B).abs() < 1e-3,
+            "{:?}",
+            still.b
         );
 
         // Legacy sentinels: a zero flow-map scale is neutral, a non-finite

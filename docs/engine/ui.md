@@ -116,7 +116,7 @@ offscreen wgpu TextureTarget (RGBA8) on Ruffle's own wgpu/Vulkan device
         ▼  downcast renderer → WgpuRenderBackend::capture_frame() → CPU RGBA into SwfPlayer.pixel_buffer
 RGBA pixel buffer (cached; only re-emitted when `dirty`)
         │
-        ▼  byroredux::app_frame → texture_registry.update_rgba(ui_texture_handle, …)
+        ▼  byroredux::app_frame → texture_registry.update_rgba(layer.texture(), …), one per open layer
 queued pixels copied into the existing VkImage by the next frame submission
         │
         ▼  presentation pass: fullscreen tone-map triangle writes the swapchain
@@ -185,6 +185,7 @@ impl SwfPlayer {
     pub fn set_mouse_in_stage(&mut self, is_in_stage: bool);
     pub fn set_stage_transparent(&mut self);
     pub fn dimensions(&self) -> (u32, u32);
+    pub fn resize(&mut self, width: u32, height: u32) -> bool; // in place, Stage.onResize (GUI-REG-008)
     pub fn host_object_state(&self) -> ScaleformHostObjectState;
     pub fn current_frame(&self) -> Option<u16>;
     pub fn resource_loads(&self) -> &[ScaleformResourceLoad];
@@ -220,7 +221,7 @@ mismatch guard, which is a real check, but a caller that obtains the value by
 extracting the archive entry and running `ScaleformProfile::detect` itself is
 spending a second archive extraction and a second whole-stream inflate to
 answer this module's own detection with itself. `--menu` did exactly that until
-#3771 and now passes `None`, reading `UiManager::menu_profile()` afterward.
+#3771 and now passes `None`, reading `UiLayer::profile()` afterward.
 `load_swf_with_profile()` is the separate explicit-profile entry and keeps a
 plain `ScaleformProfile`. `Ba2Archive` and `BsaArchive` implement
 `ScaleformResourceProvider`; other overlay/mod stacks can implement the
@@ -282,12 +283,41 @@ drops from 150 passes per 150 ticks to 26.
 
 ## UiManager
 
+The open movies, bottom to top (M48 Phase 1, #6653). Each layer is one
+`SwfPlayer` with its menu name, the path it was loaded from, its visibility and
+the engine's texture handle for it; every visible layer ticks and renders to
+its own overlay texture, and the renderer draws the layers as consecutive
+instances of the UI quad, so each blends over the one below
+(`FrameInputs::ui_texture_handles`). Which layer receives input is the menu
+registry's decision (GUI-REG-009): the app hands it over with
+`set_input_owner` every frame.
+
 ```rust
+pub struct UiLayer { /* player, menu_name, path, visible, texture, id */ }
+
+impl UiLayer {
+    pub fn menu_name(&self) -> &str;             // canonical name (#4757)
+    pub fn path(&self) -> &str;                  // archive path / loose file it was loaded as
+    pub fn id(&self) -> u64;                     // new per installed player (#3772 latches)
+    pub fn visible(&self) -> bool;               // hud.off hides without closing
+    pub fn set_visible(&mut self, visible: bool);
+    pub fn texture(&self) -> Option<u32>;        // the engine's compositor handle
+    pub fn set_texture(&mut self, texture: Option<u32>);
+    pub fn profile(&self) -> ScaleformProfile;   // resolved profile (#3771)
+    pub fn host_bridge(&self) -> ScaleformHostBridge;
+    pub fn drain_host_calls(&self) -> Vec<ScaleformHostCall>;   // once/frame per layer (#2714)
+    pub fn dropped_host_calls(&self) -> u64;     // latched per layer id by the app (#2969 / #3772)
+    pub fn invoke_callback(
+        &mut self,
+        name: &str,
+        arguments: impl IntoIterator<Item = ScaleformValue>,
+    ) -> Option<ScaleformValue>;
+    pub fn render(&mut self) -> UiFrame<'_>;     // Fresh / Unchanged / Hidden (#2972)
+}
+
 pub struct UiManager {
-    player: Option<SwfPlayer>,  // None until a menu is loaded
-    pub visible: bool,
-    input_focused: bool,
-    pub menu_name: String,      // e.g. the SWF path / "startmenu"
+    layers: Vec<UiLayer>,          // bottom to top
+    input_owner: Option<String>,   // the layer that receives UiInputEvent
     pub width: u32,
     pub height: u32,
 }
@@ -307,62 +337,38 @@ impl UiManager {
         movie_path: &str,
         name: &str,
         profile: Option<ScaleformProfile>,   // None = let prepare_movie detect (#3771)
-    ) -> anyhow::Result<()>;
-    pub fn tick(&mut self, dt: f64);             // forwards to the active player when visible
-    pub fn render(&mut self) -> UiFrame<'_>;     // Fresh / Unchanged / Hidden (#2972)
-    pub fn host_bridge(&self) -> Option<ScaleformHostBridge>;
-    pub fn drain_host_calls(&self) -> Vec<ScaleformHostCall>;   // engine-consumed ActionScript calls, once/frame beside tick (#2714)
-    pub fn dropped_host_calls(&self) -> u64;     // latches per active menu — a decrease means a menu change (#2969)
-    pub fn invoke_callback(
-        &mut self,
-        name: &str,
-        arguments: impl IntoIterator<Item = ScaleformValue>,
-    ) -> Option<ScaleformValue>;
+    ) -> anyhow::Result<()>;              // pushes a layer on top; a same-named menu is replaced in place
+    pub fn close(&mut self, name: &str) -> Option<UiLayer>;   // GUI-REG-007; caller releases the texture
+    pub fn layers(&self) -> &[UiLayer];
+    pub fn layer_mut(&mut self, name: &str) -> Option<&mut UiLayer>;
+    pub fn tick(&mut self, dt: f64);             // every visible layer
+    pub fn resize(&mut self, width: u32, height: u32) -> bool; // GUI-REG-008, every layer
+    pub fn device_count() -> u32;                // GUI-REG-005: 1 once any movie exists (#2733)
+    pub fn set_input_owner(&mut self, owner: Option<&str>) -> bool; // FocusLost / FocusGained once
     pub fn has_input_focus(&self) -> bool;
-    pub fn set_input_focus(&mut self, focused: bool) -> bool;
-    pub fn handle_input(&mut self, event: UiInputEvent) -> bool;
+    pub fn handle_input(&mut self, event: UiInputEvent) -> bool;    // to the input owner only
     pub fn set_mouse_in_stage(&mut self, is_in_stage: bool) -> bool;
 }
 ```
 
-**No `close()` method** — deleted under #2723. There is no way to
-explicitly unload a menu today short of loading a different one or
-dropping the `UiManager` (or its `Option<UiManager>` slot) entirely.
-
 `UiManager` is **deliberately not** an ECS `World` resource — Ruffle's
 `Player` owns non-`Send`/`Sync` backends (video, audio), so the manager
-is held directly on the main `App` struct (`ui_manager: Option<UiManager>`
-in `byroredux/src/main.rs`) alongside the `VulkanContext`, and ticked /
-rendered inline in the per-frame loop rather than through the scheduler.
+is held directly on the main `App` struct (`App::ui.manager`) alongside the
+`VulkanContext`, and ticked / rendered inline in the per-frame loop rather than
+through the scheduler. What the stack holds reaches the rest of the engine
+through the menu registry (below), which is a `World` resource.
 
-In the current loose-SWF demo (`--swf path.swf`) there is exactly one
-optional player sized to the swapchain extent. Future Bethesda menu
-integration will need to manage multiple active menus (one per layer);
-that compositing happens inside Ruffle, so the engine-side change is
-about which SWF(s) `UiManager` drives, not about stacking Vulkan quads.
-
-**The overlay viewport is fixed at load time, not live-resized** (#2723 /
-SAFEUI-07). `UiManager::new(w, h)` captures the swapchain extent once;
-`SwfPlayer::from_movie` bakes that size into both Ruffle's viewport and the
-offscreen `TextureTarget`. Nothing currently drives Ruffle's
-`set_viewport_dimensions` or re-registers the UI texture when
-`WindowEvent::Resized` recreates the swapchain (`app_events.rs`), so a
-window resize while a menu is loaded stretches the last-rendered frame to
-the new aspect ratio instead of re-rendering at it. This is confirmed
-visual-only, not a Vulkan hazard: `update_rgba` is always called with the
-menu's original `width`/`height`, matching both the registered texture and
-`pixel_buffer`'s size, so `Texture::from_rgba`'s length assertion cannot
-fire and no staging copy can over-read. Making the overlay track a resize
-needs a real teardown/rebuild of the `SwfPlayer`'s renderer (there is no
-in-place resize path on `TextureTarget`/`WgpuRenderBackend` today) plus a
-texture re-registration call from `main.rs`'s resize handler — tracked as
-follow-up work, not implemented here.
-
-> **Superseded premise (#6643).** At the pinned Ruffle revision
-> `Player::set_viewport_dimensions` does resize in place (it reaches
-> `TextureTarget::resize`), so no teardown is needed; see the Resize part of
-> [Menu registry, stack and path access](#menu-registry-stack-and-path-access-m48-design-phase-0).
-> The stretch described above is still the behaviour today until Phase 1 wires it.
+**Resize (GUI-REG-008).** The app reads the swapchain extent once a frame
+(`App::sync_ui_extent`, before the overlay ticks) and resizes every layer
+(`SwfPlayer::resize` → `Player::set_viewport_dimensions` → `TextureTarget::resize`,
+which re-lays the stage and raises `Stage.onResize` under `noScale`) and the
+MenuXml HUD (`MenuXmlHud::resize`: new screen traits, the engine-anchored meters
+and sneak text re-placed, its texture replaced at the new size). The next upload
+of each layer goes through `update_rgba`'s extent-change path (new image, old one
+deferred, same handle). This retires #2723's documented stretch: its premise
+("no in-place resize path") did not hold at the pinned Ruffle (#6643). Pinned by
+`a_resized_player_renders_at_the_new_extent_on_the_shared_device` (GPU) and
+`a_viewport_resize_reaches_the_movie_as_stage_on_resize` (`crates/ui/tests/avm1_path_access_probe.rs`).
 
 ## Vulkan integration
 
@@ -432,11 +438,13 @@ rebuilds — with:
 There is no bespoke *update_ui_texture* entry point; the UI texture is an
 ordinary entry in the renderer's `TextureRegistry`:
 
-- On `--swf` load (`byroredux/src/scene.rs`) a transparent-black RGBA
-  buffer is registered with `texture_registry.register_rgba(...)`, yielding
-  a `ui_texture_handle` stored on the `App`.
-- Each frame, when `UiManager::render()` returns a fresh buffer, the main
-  loop calls `texture_registry.update_rgba(handle, w, h, pixels)`.
+- When a movie layer loads (`--swf` / `--menu` in `byroredux/src/scene.rs`,
+  `--hud`, `ui.open`) a transparent-black RGBA buffer is registered with
+  `texture_registry.register_rgba(...)` and the handle is stored on the layer
+  (`UiLayer::set_texture`); `ui.close` drops it.
+- Each frame, when a layer's `render()` returns a fresh buffer, the main
+  loop calls `texture_registry.update_rgba(handle, w, h, pixels)`, and the
+  frame composites every visible layer's handle in stack order.
 
 For matching single-mip RGBA images, `update_rgba` queues the latest pixels
 in a retained CPU buffer. After the frame-slot fence wait, the renderer copies
@@ -639,6 +647,25 @@ entries are recognition
 and protocol metadata, not claims that gameplay behavior exists. The engine
 must still implement or explicitly stub each drained call.
 
+**Behaviour classes (M48 GUI-HOST-001…004, #6665).** The catalog compiles Phase
+0's per-method review in (`docs/data/game-ui/host-classes-{skyrim,fallout4}.tsv`,
+`crates/ui/src/behaviour.rs`): `ScaleformHostCatalog::behaviour(name)` gives a
+method's *target* class (H1 served, H2 placeholder, H3 unserved), the H2 reason
+and the canonical API an H1 method is to act through. Every recorded call also
+carries what it actually met (`ScaleformHostCall::class`): H1 when the engine
+registered a handler, H2 when the method's placeholder is realized (25 Skyrim
+rows: console-only features, hosted services and movie-kept state are ignored;
+`RequestIsOnPC` answers `true`, `ShouldShowKinectTunerOption` and
+`ShouldShowMod` `false`, read off the callbacks in `quest_journal.swf`), H3 for
+any other cataloged method (`Null`, whatever its target), H4 for one the catalog
+lacks. H2 rows whose answer is not established or not produced stay H3. The
+per-frame drain logs one diagnostic per (menu, method) for H3 and H4, naming the
+class and the target; `ui.host [menu]` reports an open movie's calls per class
+and its distinct H3 / H4 names (GUI-OPS-002). The corpus sweep (A7) asserts every
+method the vanilla archive calls has a class: 141 called, targets H1 76, H2 34,
+H3 31. No Skyrim method is H1 at run time yet: the H1 actions (GUI-HOST-002,
+-005, -006, GUI-EVT-004) are the rest of Phase 3.
+
 Fallout 4 does not use Skyrim's protocol. Its dynamic menu root constructs
 `BGSCodeObj`; native code fills that object with function values and invokes
 `onCodeObjCreate`, while `onCodeObjDestruction` clears the reference. The
@@ -726,10 +753,14 @@ this is a matter of connecting it to Ruffle, not building it from zero.)
 
 ### Input routing
 
-Loading a menu now grants `UiManager` input focus, and replacing it moves
-focus (`install_player` drops it from the old player before the new one takes
-it). There is no close: `UiManager::close` was deleted with no caller (#2723),
-so a menu stays loaded until another replaces it.
+Input goes to at most one menu: the menu registry's input owner, the topmost
+open menu whose flags claim input (GUI-REG-009). When that menu is a movie the
+app hands it Ruffle focus (`UiManager::set_input_owner`, once a frame after the
+registry publishes); a native page or the HUD owning (or not claiming) input
+leaves every movie unfocused. A newly loaded movie takes focus at load, and the
+same frame's registry publish confirms or moves it; closing a movie
+(`UiManager::close`, `ui.close`) hands input to the next owner in the same
+frame (GUI-REG-007).
 `byroredux/src/ui_input.rs` translates winit's physical and logical keyboard
 identity, key location, text controls, Unicode input, IME composition, pointer
 coordinates/buttons, and wheel units into `UiInputEvent`. `SwfPlayer` forwards
@@ -753,17 +784,18 @@ egui frame, avoiding simultaneous UI reads and ECS mutation. Fallout 4/76 Mods,
 Junk, and Misc are separate categories based on OMOD loose-item links and MISC
 component data.
 
-The current manager still owns one active menu. A real menu stack must define
-which visible layer receives focus and how non-modal HUD movies coexist with a
-modal pause/container/Pip-Boy layer. Gamepad translation is also a later slice;
+The HUD stays open, and drawn, under a modal (GUI-REG-003; the draw rule is the
+open runtime-measured item below). Gamepad translation is a later slice;
 the input contract intentionally starts with the native keyboard/pointer path
 used by the existing engine loop.
 
 ### Menu registry, stack and path access (M48 design, Phase 0)
 
 Design for [`docs/prd/game-ui-integration.md`](../prd/game-ui-integration.md)
-(GUI-REG, GUI-PATH, GUI-XML), written under #6643. **Nothing in this section is
-built yet** except where it says "today". Evidence is in `docs/data/game-ui/`
+(GUI-REG, GUI-PATH, GUI-XML), written under #6643. **Phase 1 (#6653) built the
+registry and stack** below (`crates/core/src/ecs/resources/menu_registry/`,
+`byroredux/src/menu_stack.rs`, `UiManager`'s layers above); the path access and
+MenuXml input parts are Phases 2 and 3. Evidence is in `docs/data/game-ui/`
 (tables named below) and `crates/ui/tests/avm1_path_access_probe.rs`.
 
 #### Registry and stack (GUI-REG-001…011)
@@ -823,7 +855,72 @@ built yet** except where it says "today". Evidence is in `docs/data/game-ui/`
   (`crates/ui/src/player.rs`) creates the wgpu device once per process (#2733);
   PRD §3.1 row 2 is stale. The registry only has to report the count.
 
+#### Phase 1 as built (#6653)
+
+- **Tables.** The flags, codes and inventory TSVs are `include_str!`'d into
+  `menu_registry/tables.rs` and parsed once per game; `phase0_tables_parse_with_the_flags_the_design_states`
+  and `every_vanilla_menu_code_names_a_menu` pin the parse. Fallout 3 and New
+  Vegas share one table (one `GameKind`, one code table; the New Vegas inventory
+  is the superset). Fallout 76 and Starfield read the Fallout 4 table until
+  Phase 6 inventories them. "Claims input" on Skyrim / Fallout 4 is any of
+  `kUsesCursor`, `kUsesMenuContext`, `kModal`, `kUpdateUsesCursor`.
+- **Engine defaults beyond the rule above, each named in the code.** The
+  Oblivion / Fallout `DialogMenu` keeps the world running (menu mode, input, no
+  pause): no source gives it a pause bit, the documented Skyrim / Fallout 4
+  dialogue menus carry none, and the engine's dialogue page plays its timed
+  responses through the scheduler (766e1746e). The operator overlay registers
+  as the console (`MenuMode 3`, `UI.IsMenuOpen("Console")`) with input only — it
+  is an engine tool and neither pauses the world it inspects (#5141) nor puts
+  the game in menu mode. A crafting page on a game with no crafting menu
+  (Oblivion, Fallout 4) registers as the engine name `Crafting Menu` with the
+  game's default flags.
+- **Publishing.** `App::step_menus` runs once a frame after the modal pages:
+  sync the UI extent, apply `ui.open` / `ui.close`, then `MenuRegistry::publish`
+  from the native layers (`native_menus`: the HUD first, the loading cover, the
+  page under its game-facing name, a barter session, a message box waiting with
+  no other page up, the overlay), the movie layers (named by the inventory's
+  movie join, `interface\hudmenu.swf` → `HUD Menu`) and the surface-less menus
+  `ui.open` opened. A menu still up keeps its place; a HUD goes to the bottom.
+- **Pause.** `menu_stack::simulation_paused`: any open menu with `PAUSES_GAME`,
+  except while the loading / movie cover holds the game, which already runs the
+  scheduler at a held clock. A paused frame runs `run_menu_mode_frame` (quest
+  and object `MenuMode` blocks, stage results) and the debug drain.
+- **Scripts.** ObScript `MenuMode` reads `menu_mode_query`; `Begin GameMode`
+  blocks (quest and object) skip menu-mode frames and `Begin MenuMode` blocks
+  run on them (`obscript_object_menu_mode_system` is new); Papyrus
+  `Utility.IsInMenuMode` is `papyrus_in_menu_mode`; the SDK `ui.menu-is-open`
+  snapshot is every registry name.
+- **Script-opened menus** (GUI-EVT-003, #6665). A script's menu request carries
+  the menu's code (Oblivion, Fallout 3, New Vegas) or its script function, and
+  the registry's tables resolve it to the game-facing name the Phase 0 inventory
+  gives (`MenuDef::script_functions`, `MenuTable::by_script_function`, read off
+  the inventory's `script_entry_points`). The character-creation screens open
+  their native page, which publishes under that name; every other request is
+  reported as S4 with its fallback (`script.requests`: `menu RouletteMenu code
+  1082 (S4, recorded)`, `menu RaceSex Menu (S4, accepts the current appearance)
+  from ShowRaceMenu`). `Game.ShowRaceMenu`'s auto-accept placeholder is that
+  fallback. Papyrus menu functions the VM does not run yet (`ShowGiftMenu`,
+  `ShowTrainingMenu`, `OpenInventory`, `ShowSPECIALMenu`) still decline their
+  script.
+- **Menu events** (GUI-EVT-001/002, #6668). Every opening and closing the
+  registry makes (`open`, `close`, and a publish that drops a menu) leaves a
+  `MenuTransition` under the table's spelling, at most 256 between drains.
+  `menu_open_close_event_system` drains them each frame and queues Fallout 4's
+  `OnMenuOpenCloseEvent(asMenuName, abOpening)` on every script registered for
+  that name through `RegisterForMenuOpenCloseEvent` (Papyrus VM;
+  `MenuEventRegistrations`, saved; details in
+  [scripting.md](scripting.md#menu-open--close-events-m48)). Scenario A8's
+  vanilla fixture waits on GUI-EVT-003 / the race menu: its handler is reached
+  through `Game.ShowSPECIALMenu` / `ShowRaceMenu`.
+- **Console.** `ui.menus`, `ui.open <menu>`, `ui.close <menu> [accept|cancel]`
+  ([debug-cli.md](debug-cli.md)). `ui.open` loads a movie target from the
+  game's interface archive, opens a bare-openable native page (Pause,
+  Inventory) or records an absent menu; a MenuXml target falls back to its
+  native page until Phase 3. Gate: `docs/smoke-tests/m48-menu-stack.sh` (A3).
+
 #### Resize (GUI-REG-008)
+
+Built in Phase 1; see [UiManager](#uimanager). The design as written:
 
 Ruffle at the pinned revision **does** resize in place, so #2723's premise
 ("no in-place resize path") no longer holds: `Player::set_viewport_dimensions`
@@ -840,86 +937,285 @@ calls `WgpuRenderBackend::set_viewport_dimensions`, which calls
 3. MenuXml: `MenuRenderer::set_screen(ScreenTraits::for_width(w))` and a fresh
    `frame_size()`.
 
-Not exercised here (no engine run). Phase 1's exit test resizes a headless
-player and asserts `dimensions()`, the pixel buffer length and that the movie
-sees `Stage.onResize`.
+Phase 1's tests resize a headless player (GPU-gated) and assert `dimensions()`
+and the next frame's length, and a Ruffle player without a renderer asserts the
+movie hears `Stage.onResize` with the new `Stage.width`. The live window-resize
+path itself is not driven by a gate yet.
 
-#### Path access (GUI-PATH-001…005, decision Q2)
+#### Path access (GUI-PATH-001…005, decision Q2) — built in Phase 2 (#6661)
 
 **Q2's first question: can an AVM1 adapter reach `_root` members through
-ExternalInterface? Yes.** `crates/ui/tests/avm1_path_access_probe.rs` builds an
-AVM1 movie by hand, registers three callbacks with
-`flash.external.ExternalInterface.addCallback`, and drives them with
-`Player::call_internal_interface` (the call `SwfPlayer::invoke_callback` makes).
-At Ruffle `2edfd97` it reads flat and nested members, reads an object's members,
-writes existing and new members, and invokes a function by path with its return
-value and side effects visible. So Skyrim does not fall back to Alternative A.
+ExternalInterface? Yes** (`crates/ui/tests/avm1_path_access_probe.rs`, Phase 0).
+Phase 2 built the path service on both VMs:
 
-What the probe fixes for the real adapter:
+- **The contract** (`crates/ui/src/path.rs`). Three ExternalInterface callbacks,
+  `__byro_path_get(p)`, `__byro_path_set(p, v)` and `__byro_path_call(p, args)`,
+  plus the AVM2 adapter's `__byro_path_attach(p, class)` (#7036), all in
+  `RESERVED_ENGINE_CALLBACKS` by exact name (GUI-PATH-004). Both adapters
+  answer `{found, type, value}`, which `decode_reply` turns into a `PathOutcome`:
+  `Found(value)`, `Absent` (GUI-PATH-002, reported once per path), `NotReady`
+  (the adapter's callbacks are not registered yet) or `Queued`. `value` crosses
+  back only for a number, string or boolean: a display object or class instance
+  would be converted member by member across the boundary.
+- **AVM1** (`crates/ui/src/avm1_path.rs`). A `DoAction` spliced into frame 1 of
+  every AVM1 movie, after a leading `FileAttributes`, on the stock decode's tag
+  stream (no tag parse, #5479). Get is `eval(p)` (`GetVariable` on the dotted
+  string). Set and call split at the last dot and act on `eval(parent)`, so a call
+  binds its parent as `this`; a bare name resolves on `_root`. A present member
+  whose value is `undefined` reads as absent — AS2 cannot tell the two apart.
+- **AVM2** (`crates/ui/src/avm2_host/path_helpers.rs`). Three more methods in the
+  `BGSCodeObj` adapter plus a walker. AS3 has no `eval`, so the walker splits the
+  path, checks `k in o` per segment (falling back to `getChildByName` for a
+  display child that is not a declared variable) and indexes from the root the
+  installer stores. The installer registers the callbacks after
+  `onCodeObjCreate`. **Only movies carrying the `BGSCodeObj` lifecycle class get
+  the AVM2 adapter**, so an AVM2 movie without it answers `NotReady`.
+- **Attach** (`PathOp::Attach`, #7036, AVM2 only). Stands in for native code that
+  instantiates a movie's exported widget classes: when the path's parent (a
+  display container) has no child of the last segment's name, the adapter
+  constructs the class from `ApplicationDomain.currentDomain` (the adapter's
+  domain is the movie's), checks it is a `DisplayObject`, names it and
+  `addChild`s it; a child already there is found as-is, so it is idempotent. An
+  AVM1 movie answers `NotReady` (its `attachMovie` is reachable through a call).
+- **Queue or refuse** (GUI-PATH-003), chosen per call: `UiLayer::path_op(op,
+  WhenAbsent::Queue)` holds an operation whose target (or adapter) is not there
+  yet and retries it after every tick, a newer operation on the same path
+  replacing it (at most 64 per movie); `WhenAbsent::Refuse` answers now.
+- **The only route** (GUI-PATH-005). `UiLayer::path_op` is the only engine code
+  that reads, writes or invokes a movie member by path. The HUD driver's older
+  SkyUI-class pushes call *registered callbacks* by name, not members by path.
+  No script surface reaches it: the extender `UI.*` functions stay unserved until
+  the Legacy Mod Compatibility PRD maps them, and then they go through it.
+- **Tests (A6).** `avm1_adapter_sets_and_reads_a_root_path` (the real
+  `prepare_movie` injection on a synthetic AVM1 movie) and
+  `avm2_adapter_reports_an_absent_path` (the real adapter ABC, installed on a
+  stand-in root by a driver script, as the patched lifecycle constructor does),
+  plus `avm2_adapter_attaches_a_named_display_instance_once` (#7036), all on
+  renderer-less Ruffle players, no GPU.
 
-- **Injection.** Prepend a `DoAction` to frame 1, the AVM1 twin of the AVM2
-  `DoAbc2` prepend in `avm2_host.rs` (`write_swf` over the parsed tags). The class
-  is reached as `flash.external.ExternalInterface` (`GetVariable "flash"`, then
-  `GetMember "external"`, `"ExternalInterface"`); a bare `ExternalInterface` is
-  compile-time sugar.
-- **Names.** `__byro_path_get(p)`, `__byro_path_set(p, v)`,
-  `__byro_path_call(p, …args)`, all in `RESERVED_ENGINE_CALLBACKS` by exact name
-  (GUI-PATH-004).
-- **Semantics.** `GetVariable` on a dotted path string resolves it, so get is
-  `return eval(p)` and set is `eval(p) = v`; `CallMethod` with an undefined
-  method name calls the function object.
-- **Not proven, the real adapter owns it.** (a) A bare `eval` reads an absent
-  path as `Undefined`/`Null`, indistinguishable from a present `undefined`
-  (pinned by the probe's last test), so the adapter returns a tagged
-  `{found, value}` using `typeof` (GUI-PATH-002). (b) The probe calls functions
-  with no `this`; the adapter must split at the last dot and `CallMethod` on the
-  parent. (c) `_root` / `_global` / `_level0` scoping as SKSE's `UI.*` takes it.
-  (d) A path used before frame 1 has run: the adapter answers `found: false`
-  and the host decides queue-or-refuse per call (GUI-PATH-003).
-- **AVM2.** The same three names exist on the shipped `__byro` adapter pattern,
-  but AS3 has no `eval`; the adapter walks the dotted path from `root` by
-  splitting and indexing. **Not probed in Phase 0.** Phase 2 adds an AVM2 twin of
-  the probe test before building on it (GUI-PATH-001 needs both VMs).
+**What the runtime measurements settled** (Phase 0 read these from bytecode):
 
-**A finding that may shrink the AVM1 work (not run).** Vanilla Skyrim
-`hudmenu.swf` registers the standard pair `call` and `respond`;
-`GameDelegate.receiveCall` dispatches the first argument through a table that
-`HUDMenu.InitExtensions` fills with 26 keys, among them
-`SetHealthMeterPercent`, `SetMagickaMeterPercent`, `SetStaminaMeterPercent`,
-`SetCompassAngle(aPlayerAngle, aCompassAngle, abShowCompass)`, the crosshair,
-subtitle and notification calls (`hud-feeds-skyrim-se.tsv`). `invoke_callback("call",
-["SetHealthMeterPercent", 35, false])` should therefore reach the same handler a
-native `root.Invoke` reaches, with no injection; `respond` is the reply channel
-for the movie's own `GameDelegate.call(…, scope, callback)` requests, not a push
-surface as the section on the Scaleform HUD says. This is **bytecode only**; Phase
-2 confirms it at runtime first. Path-only members (not in the table):
-`ShowSurvivalElements`, `ShowArrowCount`, `RefreshActivateButtonArt`,
-`RegisterComponents`, and the `CompassTargetDataA` / `ObjectivesA` arrays, so
-compass *markers* still need GUI-PATH-001. Fallout 4 is a different shape: the
-meter feed is the setter `MeterBarWidget.Percent` (0..1, Skyrim's are 0..100) on
-document-relative paths such as `LeftMeters_mc.HPMeter_mc.MeterBar_mc`, and its
-compass widget has **no code** — heading and markers are entirely native, so
-GUI-HUD-005 cannot be built for Fallout 4 from the shipped movie.
+- **Skyrim's `call` callback does not reach the HUD handlers.**
+  `invoke_callback("call", ["SetHealthMeterPercent", …])` leaves
+  `lastHealthMeterPercent` untouched; the path service calls
+  `_root.HUDMovieBaseInstance.SetHealthMeterPercent` directly instead.
+- **Skyrim's meters need `abForce = false`.** The meters sit faded out (the
+  `Health` clip on frame 1 of its 200-frame animation); only the non-forced branch
+  runs `RunMeterAnim`, which fades them in, then tweens to the target.
+- **Fallout 4's HP bar sits under its rads overlay.** `RadsBar_mc.Percent` starts
+  at 1 and is drawn over the fill, so the HP meter shows nothing until the rads
+  overlay is fed. The engine models no Fallout 4 radiation, so the driver feeds 0.
+- **Fallout 4's compass widget has no ActionScript** (#7036). `Fallout4.exe`'s
+  `HUDCompass` builds it: one `DirectionMarkerWidget` (the movie's exported
+  letter-and-tick class) per cardinal in `OtherMarkerHolder_mc`, at 0 / 90 / 180 /
+  270°, labelled from the translation table (`$Compass_North` → `N`); each update
+  sets a marker's `x = −halfW · Δ / 50°` (`Δ = wrap(heading − angle)`,
+  `halfW = (CompassBar_mc.width − 2) / 2` = 151) and hides it from `|Δ| ≥ 50°` on.
+  Nothing scrolls: `CompassBar_mc` is a static strip. The driver
+  (`Fallout4Compass`) does the same through attach and set. The labels set through
+  `htmlText` with the authored `<b>`: Ruffle's `text` setter drops to the field's
+  non-bold default format. Since #6665 the label is the key itself, as native sets
+  it, translated by the patched Ruffle text pass (GUI-FONT-004), and draws in the
+  Noto Sans fallback until Fallout 4's `$MAIN_Font_Bold` class is mapped (Phase 6).
+  Quest and location markers are not modelled.
 
-#### MenuXml input (GUI-XML-001…003)
+#### Dialogue menu on the game's movie (GUI-PAGE-004, Skyrim) — Phase 4 (#6666)
 
-`crates/menuxml` has no input handling today and must stay engine-neutral (no
-dependency on the UI or Ruffle crates). Phase 3 adds
-`MenuRenderer::hit_test(x, y) -> Option<TileHit>` and an activation event
-queue; a new binary-side adapter (a `menu_xml_input` module in the `byroredux` crate, not yet written), maps
-`UiInputEvent::{MouseMove, MouseDown, MouseUp, KeyDown}` onto them, routed by the
-registry's input owner so one rule covers both tracks. Values a document reads
-go in through `set_override`, `instantiate_template` and `graft_fragment`.
+Q1's first menu. When the registry's game is Skyrim and its `Dialogue Menu` targets
+a movie, a conversation opens `interface\dialoguemenu.swf` through the registry's
+`open_movie_menu` instead of the native page (which stays the fallback when the
+movie does not load). `byroredux/src/scaleform_dialogue.rs` stands in for native
+code on both sides, from the movie's own `InitExtensions` and `GameDelegate.call`
+sites:
 
-The corpus-gated tests the Phase 3 exit names, in that module, `#[ignore = "needs
-FNV/FO3 game data on disk"]` like `fo3_corpus.rs`:
-`fnv_menu_document_takes_pointer_input` and
+- **Engine → movie** (path service on `_root.DialogueMenu_mc`, when
+  `dialogue_snapshot` changes): `SetSpeakerName`, `ShowDialogueText` /
+  `HideDialogueText`, `PopulateDialogueLists` (`text, topicIsNew, topicIndex` per
+  topic, `topicIsNew` = not yet said, then `-1`), `DoShowDialogueList(true,
+  false)`, and `OnVoiceReady` once per line (it arms the movie's skip / pick
+  timer).
+- **Movie → engine** (H1, registered with the bridge): `TopicClicked
+  [topicIndex]` → `select_topic_by_form_id`, the native page's click path;
+  `SkipText` → the line's voice stops and its speaking cue ends; `CloseMenu` →
+  `end_open_conversation`; `FadeDone` → the layer closes (also after
+  `MAX_FADE_FRAMES` if the movie never reports it). A conversation that ends
+  elsewhere (Goodbye, `dialogue.end`, Escape, Inventory, barter, crafting) closes
+  the movie through `leave_open_dialogue` / `close_dialogue_menu`.
+
+Gate: `dt2-skyrim-forcegreet.sh` Phase P — `ui.menus` shows `Dialogue Menu …
+surface=movie interface\dialoguemenu.swf`, and the page snapshot names Irileth,
+lists topics and carries the speaking cue (sampled on a topic's answer: the 0.6 s
+greeting is over by the first poll). The movie draws the speaker, topic list and
+subtitle; the button icon glyph and the dialogue font class are not resolved yet.
+
+#### Dialogue menu on the game's document (GUI-PAGE-004, New Vegas) — Phase 4 (#6666)
+
+Q1 on the MenuXml track. When the registry's game is Fallout 3 / New Vegas and its
+`DialogMenu` (code 1009) targets a MenuXml document, a conversation opens
+`menus\dialog\dialog_menu.xml` (archives from `session_menu_assets`, no `--hud`
+needed) instead of the native page, which stays the fallback.
+`byroredux/src/menuxml_dialogue.rs` feeds what native code sets, read off the
+document's own traits:
+
+- the root's io traits `_DialogVisible` and `_ShowingText` (on while the line's
+  speaking cue is; off shows the topic list in its place);
+- `DM_SpeakerNameLabel` / `DM_SpeakerText` strings;
+- a pool of 16 `DM_TopicTemplate` rows under `DM_TopicList`, each with
+  `listindex`, `_y`, `height` (34), `string` and `_line_alpha` (128 for a topic
+  already said, the native page's said-marker).
+
+Input routes through `menu_xml_input` while the document owns it: a click on
+`DM_ClickRect` or the line skips it, a click on `DM_Topic<i>` selects that topic
+through `select_topic_by_form_id`; both reuse `scaleform_dialogue::apply`. The
+document composites over the HUD unless a video or loading screen covers the
+frame. Exits share `leave_open_dialogue` / `close_dialogue_menu` with S1.
+
+Bringing it up fixed four MenuXml dialect gaps (all in `crates/menuxml`, pinned
+by unit and corpus tests): `visible` propagates to descendants; the `.fnt`
+record's last fields are kerning-left / kerning-right / ascent (text had been
+spaced by ascent and top-aligned); `globals()` reads `menus\globals.xml`; and
+text tiles report their displayed size.
+
+Gate: `dt1-dialogue-layers.sh` Phase P — `ui.menus` shows `DialogMenu code=1009
+surface=menuxml menus\dialog\dialog_menu.xml` and the page snapshot names Doc
+Mitchell with the speaking cue. Live, the document draws the speaker and the
+wrapped line in `Glow_Monofonto_VL_dialogs` on its panel. The list's bracket art
+(`fade_to_top.dds` / `fade_to_bottom.dds`, `solid.dds`) does not resolve yet.
+
+#### Script message boxes on the game's own surfaces (Q1) — Phase 4 (#6666)
+
+After dialogue, the script message box is the one other menu the engine opens itself whose Q1
+surface is S1 / S2 with H1 host calls; it now opens there, the native page kept as the fallback
+(`App::present_script_messages` → `open_message_box_surface`, `byroredux/src/menu_drivers.rs`).
+
+- **Skyrim, `interface\messagebox.swf` (`MessageBoxMenu`, S1).** `scaleform_messagebox.rs`
+  feeds `_root.MessageMenu` through the path service, read off the movie's own `MessageBox`
+  class: `SetMessage(text, false)` (`setMessageText`), `SetIsCancellable(false, 0)`,
+  `setupButtons(true, label…)` (`setButtons`; a `" "` label is skipped, button *i* is label
+  *i*). It serves `buttonPress [index]` (H1), which answers the box. The movie shows no title
+  line.
+- **Fallout 3 / New Vegas, `menus\message_menu.xml` (code 1001, S2).** `menuxml_message.rs`
+  sets what the document marks "set in code": `MM_Title` (hidden when empty) and
+  `MM_MessageText`; a pool of 10 `MM_ButtonTemplate` rows under `MM_ButtonList` (`listindex`,
+  `_y`, `height` 51 = font 2's line + `_VerticalSpacing`, `string`) and the list's height;
+  `MM_MainRect`'s width from the measured message / title (`MenuRenderer::value`) within
+  `_MinMenuWidth` / `_MaxMenuWidth`, the list getting the inner width (its authored width is
+  only a cap). A click on row *i* answers with button *i*.
+- Both: a box with no authored buttons offers the game's "Ok" (`sOk`); the next box of a queue
+  replaces an answered one; the surface closes once no box waits (answered on it, by
+  `ui.answer` or by a perk's activate choice). A box raised during a conversation stacks over
+  the dialogue surface and takes the input until answered.
+
+The plumbing is shared with the dialogue surfaces: `menuxml_document::MenuDocument` is the open
+document (renderer, texture, raster / upload), `UiState::menu_documents` the open ones (input
+to the registry's owner; activations stay in the renderer until the driver's step), and
+`UiState::movie_calls` the drained host calls of each served movie layer. MenuXml gained
+`MenuRenderer::value` (an evaluated trait read back) and string truthiness (a non-numeric
+string is true when it has text: `message_menu.xml` places its buttons below the message only
+`onlyif … trait="string"`).
+
+Gate: `fnv-new-game.sh` checks that the route's script message boxes (the Hardcore box) come
+up on `menus\message_menu.xml`; the corpus test `fnv_message_document_presents_a_message_box`
+checks the feed and the answer on the vanilla document. Live on Skyrim, `script.exec (Game.GetForm(0x0010E294) as
+Message).Show()` (`CharGenCombatTutorial`) opens `MessageBoxMenu` on the movie with the text and
+"Ok", and `ui.answer` closes it. Open there: the movie sizes its dark panel narrower than the
+text (it reads the text field's metrics, which Ruffle reports for the fallback font), and its
+`PlaySound` focus call is reported H3 (unserved) on this layer.
+
+**Menu surface coverage** (PRD §8): `ui.coverage` measures, over the registry's table, the
+menus the engine can put up on the game's movie (S1; how many it feeds), document (S2), a
+native page (S3) or none (S4) — `menu_drivers::surface_coverage`, pinned for wave 1 by
+`wave_one_menu_surface_coverage_is_the_published_one` and published in ROADMAP's compatibility
+matrix: Skyrim SE 27 of 46 (S1 24, 3 fed; S3 3), New Vegas 10 of 49 (S2 3; S3 7, the
+character-creation screens among them). The unfed S1 / S2 menus are #7042.
+
+#### Native pages out of the operator crate (GUI-PAGE-006) — Phase 4 (#6666)
+
+The player's HUD and native pages (pause, settings, inventory, message box, barter, crafting,
+dialogue, character creation) live in `crates/native-ui` (`byroredux-native-ui`, depending on
+core and egui only), no longer beside the F3 panels in `byroredux-debug-ui`. They read only
+`PageSnapshot` (the player's state) and hand back only `PageOutputs` (the player's actions);
+the operator overlay's `PanelSnapshot` / `PanelOutputs` nest those as `game` beside the
+operator fields (metrics, entities, Studio, the load queue, console evals). The overlay crate
+still hosts the one egui context and pass both draw into (input, the frame, the render
+handoff): `DebugUiState::run` calls `byroredux_native_ui::{draw_hud, draw_game_menu, …}` with
+`&snapshot.game` / `&mut outputs.game`, and keeps the `GameMenuState` instance. The setting
+control both settings surfaces share (`draw_setting_control`) moved with the pages.
+
+#### Native page labels (GUI-PAGE-005) — Phase 4 (#6666)
+
+Where a native page stays the surface, its words come from the game's data.
+`byroredux_core::ui_labels::UiLabels` is one table, resolved per load order beside the stealth
+rules (`populate_scene_runtime`): each `LabelDef` names a word by its engine text (the key) and
+the string `GMST`s that carry the game's word, tried in order (`Use` → `sInventoryUse`, `sUse`;
+`gold` → `sInventoryCaps`, `sGold`). The load order's winning value is drawn when one is
+authored, else the key. A value may be a printf template, which `UiLabels::format` fills
+(`sNotEnoughVendorGold` takes the price and the purse; `sOpenWithKey` the key's name). The table
+is a handle (`Arc`), so the panel snapshot carries it per frame for a refcount, and views that
+outlive the frame (`InteractionPrompt::verb`, `VitalBarView::label`) hold `Arc<str>` clones.
+
+- **Coverage.** Skyrim resolves 39 of the 57 labels from `Skyrim.esm` (through its string
+  tables; the boot log prints `Native page labels: 39 of 57`). The rest are FO3 / FNV words
+  (`HP`, `AP`, `RAD`, `Aid`, `Ammo`) or exist on Skyrim only as Scaleform `$` translations,
+  which native pages do not read. **New Vegas resolves 0:** `FalloutNV.esm` authors none of
+  these settings (its 648 `GMST`s are gameplay values); the defaults are in the packed
+  executable (GUI-FONT-005's FNV source is open), so FNV draws the keys unless a plugin authors
+  the setting.
+- **Where it is used.** Every page in `crates/native-ui/src/game_menu.rs` and
+  `chargen.rs` (buttons, headings, tabs, detail rows, the settings registry's labels), the
+  interaction prompt verbs, the vitals labels, the barter refusals, the XP and key notices, and
+  the quicksave / quickload lines.
+- **#6825's residues.** Barter's currency word is the `gold` label (it was hard-coded); vitals
+  colour by actor value (`VitalBarView::actor_value`), not by the label's spelling; the
+  inventory's `Form ID` row and form-id hover text are gone; save / load diagnostics stay in
+  the log and console, and the HUD gets the game's line (`sQuickSaving`, `sQuickLoading`,
+  `sCantSaveNow`) or the engine's "Load failed.".
+- **The inventory and its test.** `docs/data/game-ui/native-page-strings.tsv` lists every word
+  the native pages draw: `game-string` (resolved through `UiLabels`; the row's string is the
+  fallback) or `engine-text` with its reason (candidates whose setting means something else,
+  such as `sLevelUp` being a menu caption, were moved here with that reason; none is left a
+  candidate). `page_strings_tests.rs` draws each page (pause, settings, inventory, message box,
+  barter, crafting, dialogue, character creation, the HUD prompt and vitals) twice: with every
+  label resolved to a marker, where anything left beyond the snapshot's data must be listed
+  engine text, and with the engine defaults, where the fallbacks must be listed too. Producer
+  text that reaches the HUD message layer (notices) is listed but not drawn by a page test.
+
+#### MenuXml input (GUI-XML-001…003) — built in Phase 3 (#6665)
+
+`crates/menuxml` stays engine-neutral (no dependency on the UI or Ruffle crates).
+The layout walk that builds the draw list also collects the **hit targets**
+(`layout::build_layout`, `HitTarget`): visible tiles whose `target` trait is true,
+whatever their alpha (vanilla's hit rects are alpha 0), with the clip window they
+are seen through when they `clips`. `MenuRenderer::hit_test(x, y) -> Option<TileHit>`
+returns the topmost (`TileHit` carries the tile, its name and its `<id>`);
+`pointer_down` / `pointer_up` activate a target pressed and released in place,
+once; `key(MenuKey::{Next, Previous, Activate})` moves a focus through the targets
+in draw order from the `xdefault` one; `take_activations` drains. The binary-side
+adapter is `byroredux/src/menu_xml_input.rs`: `route` maps
+`UiInputEvent::{MouseMove, MouseDown, MouseUp, KeyDown}` (Down / Tab, Up, Enter /
+Space) onto those, and `owns_input` is the registry's input-owner rule
+(GUI-REG-009). Values a document reads go in through `set_override`,
+`instantiate_template` and `graft_fragment` (GUI-XML-003).
+
+Two dialect fixes came with it: **`<hotrect>`** (Fallout 3 / New Vegas list items
+and the lists that hold them) is a rect tile; it used to parse as a trait, which
+swallowed the tile and its subtree (the corpus pins grew: FNV 1,060 → 1,545
+un-spliced tiles, FO3 736 → 1,054). **`io()`** reads the menu root's traits, the
+ones engine code and scripts set (`SetUIFloat "HudMainMenu\_trait"`, GECK
+*Tutorial: Understanding XML*); it used to read 0.
+
+The Phase 3 exit's corpus-gated tests, `#[ignore = "needs FNV/FO3 game data on
+disk"]`: `menu_xml_input::tests::fnv_menu_document_takes_pointer_input` and
 `fo3_menu_document_takes_pointer_input`. Each loads `menus\message_menu.xml`
-through the game's `MenuProfile` (a non-HUD document; the engine builds its
-buttons by instantiating `MM_ButtonTemplate` under `MM_ButtonList`), instantiates
-two buttons, and asserts that (1) `hit_test` at a button's centre returns that
-tile, (2) a `UiInputEvent` down / up pair on it yields exactly one activation for
-it, (3) a pair outside every tile yields none.
+through the game's `MenuProfile`, stands in for what native code sets (the
+menu's io traits, the list's size: `list_box.xml` "REQUIRED OVERRIDE" width,
+"recommended override" height; per button `listindex`, `_y`, `string` and the
+height native computes from the text), instantiates two buttons
+(`MM_ButtonTemplate` under `MM_ButtonList`), and asserts that `hit_test` at a
+button's centre returns it, a `UiInputEvent` down / up pair on it yields exactly
+one activation for it, and a pair outside every tile yields none. The first live S2
+surface for a non-HUD menu is the FNV dialogue document (Phase 4, above), which
+routes the frame's input through `route` / `owns_input`.
 
 #### Strings and fonts the design depends on
 
@@ -942,9 +1238,39 @@ it, (3) a pair outside every tile yields none.
 ### Font loading
 
 Bethesda ships custom font SWFs that menus load at startup. The archive
-navigator now delivers Fallout 4's `fonts_en.swf` through `ImportAssets`;
-per-game font mapping, fallback selection, and visual-fidelity coverage
-remain.
+navigator delivers Fallout 4's `fonts_en.swf` through `ImportAssets`.
+
+**M48 Phase 3 (#6665, `crates/ui/src/fonts.rs`, `translate.rs`):**
+
+- **Font classes (GUI-FONT-001).** A Skyrim movie imports its fonts by class
+  name from `gfxfontlib.swf`; the shipped one is a placeholder (it lacks
+  `$EverywhereMediumFont`, which `hudmenu.swf` imports), and GFx fills the import
+  from `fontconfig.txt` instead. The navigator serves a library built from it:
+  each `map "$Class" = "Face" Style` exported under its class, pointing at the
+  face of that style copied out of the `fontlib` SWFs. All 20 vanilla Skyrim
+  classes resolve (`installed_skyrim_font_configuration_builds_the_classes_the_hud_imports`).
+  Fallout 4's AVM2 movies name classes on their text fields (`$MAIN_Font_Bold`)
+  rather than importing them; mapping those is Phase 6.
+- **Language (GUI-FONT-002).** `fontconfig_<language>.txt` when the archive ships
+  one for the game-text language (`BYRO_STRINGS_LANG`, the `.STRINGS` loader's
+  token; `set_text_languages`), else `fontconfig.txt`.
+- **Fallback (GUI-FONT-003).** Noto Sans Regular and Bold (SIL OFL 1.1, Q5,
+  `assets/fonts/noto-sans/` with `OFL.txt`) are every player's device font and
+  default sans / serif / typewriter. Ruffle lays a span whose embedded face it
+  cannot find out in the default sans, so an unmapped class, a missing face or a
+  missing glyph falls back to it; each unresolved class is reported once. Before
+  this, Fallout 4 HUD text did not draw at all.
+- **`$` keys (GUI-FONT-004).** GFx shows a translation-table entry for text that
+  is a `$` key; Ruffle has no such pass. The workspace patches `ruffle_core` (vendored
+  at the pinned revision, `third_party/ruffle/PATCHES.md`): `EditText` creation,
+  `text` and `htmlText` pass through `byro_translation::translate` (whole text,
+  or each run between HTML tags), and `install_translations` gives it the
+  language's `interface\translate_<language>.txt` on the first movie load.
+- **Unfed HUD widgets.** With fonts resolving, widgets native code fills and
+  hides showed their authored sample text (Skyrim's "Dialogue Line 1 / 2",
+  Fallout 4's quest-update, XP, region, ammo, crit, stealth and enemy-health
+  widgets). `ScaleformGame::unfed_widgets` stands in once: Skyrim's own
+  `HideSubtitle()`, Fallout 4 `visible = false` on each until its feed lands.
 
 ### Menu pack
 
@@ -1044,10 +1370,17 @@ profile with a ninth font slot).
   argument chains, `&true;` = 2, comparisons yield 2/0, switch-case
   `copy` of a `_name_` string appends the numeric working value
   (`_animation_` + 23 → `_animation_23`). Selectors: `me()`, `parent()`,
-  `sibling()`, `child()`, `screen()`, `strings()`, bare tile names.
-  Only `visible` defaults true; `alpha/red/green/blue` default 255.
+  `sibling()`, `child()`, `screen()`, `strings()`, `globals()` (FO3/FNV
+  `menus\globals.xml`, e.g. `_background_fill_alpha`; #6666), bare tile names.
+  Only `visible` defaults true; `alpha/red/green/blue` default 255. A text
+  tile's `width` / `height` are the size of its displayed text (the native
+  code sets them; documents read them to centre and frame text): the
+  renderer evaluates once, measures each visible text with the raster's
+  wrap, and evaluates again with those sizes (#6666).
 - `layout.rs` — locus-chain positioning, depth sort (document order
-  tiebreak), `clipwindow` scissor accumulation. Rect tiles never paint
+  tiebreak), `clipwindow` scissor accumulation. `visible` propagates: a
+  hidden tile hides its whole subtree, hit targets included (#6666; CS
+  wiki: "unlike visible, clips does not propagate"). Rect tiles never paint
   (vanilla's screen-wide grab zones are invisible hit targets). The
   depth sort uses `f32::total_cmp` (#4716): `<depth>NaN</depth>` parses,
   and the old `partial_cmp().unwrap_or(Equal)` comparator is not a total
@@ -1074,7 +1407,11 @@ profile with a ninth font slot).
 - `tex.rs` / `font.rs` — own DDS decoder (BC1/BC2/BC3 + masked
   uncompressed; the `image` crate rejects some vanilla headers) and the
   `.fnt` + `.tex` bitmap-font pair (296-byte header, 256×56-byte glyph
-  records, white-on-transparent atlas tinted at draw time).
+  records, white-on-transparent atlas tinted at draw time). A record ends
+  `width, height, kerningLeft, kerningRight, ascent`: the pen advances
+  `kerningLeft + width + kerningRight` and a glyph's top sits
+  `point size − ascent` below the line's top (#6666, matching OpenMW's
+  reader; the corpus tests pin that letters share a baseline).
 - `menu.rs` — `MenuRenderer`: loads a menu + the game's strings
   document + font table (per `MenuProfile`), resolves menu art
   across the three shipped resolution sets (`textures\Menus`,
@@ -1153,7 +1490,14 @@ signature (bar bits + heading×10 + visibility) plus a 33 ms cadence cap
 keeps a static HUD at zero raster cost. Bar values come from pinned
 console values or the PLAYER's `ActorValues` (resolved through
 `PlayerVitals`, #4675); the playable slice stamps the player from the
-base `NPC_` with the PlayerOnly formulas evaluated (#4674). Console surface: `hud.on`, `hud.off`,
+base `NPC_` with the PlayerOnly formulas evaluated (#4674). A pool the player demonstrably does not
+carry (the game authors no such AVIF, or the player has no entry for it) is **hidden**, not drawn full
+(#7043): `hud::bar_reading` returns a fraction plus `shown`, both drivers act on it, and `hud.status`
+reports it as `hidden (auto)`. The MenuXml driver sets the bar's root tile `visible` trait (Oblivion's
+`hudmain_*_empty` ribbon, which parents the fill and the edge; FO3/FNV's grafted `hp_meter`/`ap_meter`),
+the Scaleform driver writes the meter widget's `visible` (FO4, AVM2) or `_visible` (Skyrim, AVM1) through
+the path service. Before the world can say so (no `PlayerVitals`, no player, no `ActorValues`) and for a
+pinned bar the bar stays shown. Console surface: `hud.on`, `hud.off`,
 `hud.values <f0> <f1> [<f2>]` — one fraction per the game's bars, 2 for FO3 (or `auto`), `hud.heading <deg>`, `hud.status`;
 `tex.dump <bsa-path> <texture-path> [out.png]` (in the `tex.*` family)
 extracts and decodes any archive texture — including menu sets and font
@@ -1202,8 +1546,8 @@ three HUD-grade fixes over the raw `--menu` route:
   texture carries an opaque stage clear and the rendered world is
   invisible behind the HUD. `--menu` keeps the opaque stage (modal menus
   own the screen by design).
-- **World input stays live** — `set_input_focus(false)` at launch; a HUD
-  is not a modal menu.
+- **World input stays live** — `set_input_owner(None)` at launch, and the
+  HUD's registry flags claim no input (GUI-REG-009); a HUD is not a modal menu.
 - **`hud.off` hides** — the driver mirrors `HudControl.visible` into the
   player each frame; `render()` answers `UiFrame::Hidden` and the UI
   quad stops.
@@ -1223,23 +1567,22 @@ the `hud.debug` smoke gate): vanilla hudmenu is passive chrome. Its
 bytecode calls exactly four host methods — `GetButtonFromUserEvent`,
 `PlaySound`, `RegisterHUDComponents`, `myLog` — and it registers only the
 GameDelegate pair `call`/`respond` on ExternalInterface. The vanilla
-engine feeds the meters by GFx *object-path* invocation
-(`HUDMovieBaseInstance.HealthMeter_mc…`), a surface Ruffle does not
-expose (`call_internal_interface` reaches registered ExternalInterface
-callbacks only), so the bars stay engine-empty. Driving them needs
-either AVM1 injection into the movie or SkyUI-class menus — whose poll
-protocol (`updateStats`, `RequestPlayerInfo`, 0-100 percents) the
-response handlers registered at launch already answer, and whose
-state callbacks the driver's push table already targets.
-
-> **Phase 0 note (#6643, bytecode only, not yet run).** The registered
-> `call` callback is not passive for the meters: it enters
-> `GameDelegate.receiveCall`, whose table (filled by `HUDMenu.InitExtensions`)
-> holds `SetHealthMeterPercent`, `SetMagickaMeterPercent`,
-> `SetStaminaMeterPercent` and `SetCompassAngle`, so those four may be reachable
-> through `invoke_callback("call", …)` without injection. See
-> [Menu registry, stack and path access](#menu-registry-stack-and-path-access-m48-design-phase-0);
-> Phase 2 confirms it at runtime before the paragraph above is rewritten.
+engine feeds the meters by invoking movie members by path, which Ruffle's
+ExternalInterface does not expose by itself. **Since M48 Phase 2 (#6661) the
+meters are live:** the injected path adapters reach those members, and the driver
+feeds them every changed frame through the path service
+(`ScaleformGame::meter_feeds`; see
+[Path access](#path-access-gui-path-001005-decision-q2--built-in-phase-2-6661)):
+Skyrim's `Set{Health,Magicka,Stamina}MeterPercent` (0..100, `abForce = false`) and
+`SetCompassAngle`, Fallout 4's HP and AP `MeterBarWidget.Percent` (0..1) with the
+rads overlay cleared, and Fallout 4's compass direction markers (#7036, attached and
+placed by `HUDCompass`'s rule; see the path-access notes above). The movie's own `call` callback does not reach those
+handlers (measured in Phase 2; Phase 0 had read it from bytecode). The SkyUI-class
+poll handlers (`updateStats`, `RequestPlayerInfo`) and the push table stay for
+menus that speak that protocol. `hud.debug` prints each feed path's last outcome
+and the queued count. While an original HUD is up, the native layer draws no
+second set of vitals bars (GUI-HUD-004). Gates: `m48-skyrim-hud-meters.sh` (A4),
+`m48-fo4-hud-meters.sh` (A5), `m48-fo4-hud-compass.sh` (#7036).
 
 The smoke gate (`docs/smoke-tests/m48-6-skyrim-hud.sh`) gates the boot
 line, `backend=scaleform` + 3-bar pins, the `hud.debug` callback pair +

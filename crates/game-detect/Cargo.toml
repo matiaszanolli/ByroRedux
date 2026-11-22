@@ -2,6 +2,7 @@
 name = "byroredux-game-detect"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 # Install detection + pre-launch validation for the launcher.
 #
@@ -22,3 +23,6 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[lints]
+workspace = true

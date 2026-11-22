@@ -23,7 +23,7 @@
 //!   `player.status`)
 //! - [`quest`] — quest/scene lifecycle, objectives, targets, aliases, and
 //!   playback diagnostics (`quest.show`, `quest.aliases`, `quest.start`,
-//!   `quest.stop`, `quest.setstage`, `scene.show`)
+//!   `quest.stop`, `quest.reset`, `quest.setstage`, `scene.show`)
 //! - [`time`] — persistent day/night clock inspection and controls
 //!   (`time.show`, `time.set`, `time.scale`, `time.pause`, `time.resume`, `time.advance`)
 //! - [`water`] — canonical water render/physics diagnostics
@@ -62,10 +62,15 @@ pub(crate) mod shared;
 mod studio;
 mod terrain;
 mod time;
+mod ui_menus;
 mod view;
 mod water;
 mod world_info;
 mod music;
+mod bow;
+mod door;
+pub(crate) mod plugins;
+mod spell;
 mod stealth;
 mod video;
 
@@ -92,7 +97,8 @@ use scene::*;
 use shared::*;
 use studio::*;
 use terrain::{
-    TerrainBlendCommand, TerrainHeightCommand, TerrainParallaxCommand, TerrainSoftenCommand,
+    TerrainBlendCommand, TerrainHeightCommand, TerrainParallaxCommand, TerrainPatchesCommand,
+    TerrainSoftenCommand,
 };
 use time::*;
 use view::*;
@@ -101,6 +107,7 @@ use world_info::*;
 use music::MusicStatusCommand;
 use stealth::{StealthSneakCommand, StealthStatusCommand};
 use video::{VideoSkipCommand, VideoStatusCommand};
+use ui_menus::{UiCloseCommand, UiCoverageCommand, UiHostCommand, UiMenusCommand, UiOpenCommand};
 
 pub(crate) fn build_command_registry() -> CommandRegistry {
     let mut registry = CommandRegistry::new();
@@ -111,6 +118,12 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(HudHeadingCommand);
     registry.register(HudStatusCommand);
     registry.register(HudDebugCommand);
+    // M48 GUI-OPS-001 / -005 — the menu registry.
+    registry.register(UiMenusCommand);
+    registry.register(UiOpenCommand);
+    registry.register(UiCloseCommand);
+    registry.register(UiHostCommand);
+    registry.register(UiCoverageCommand);
     // M65 (SNK-DX-002) — the sneak stance through the key's path.
     registry.register(StealthSneakCommand);
     // M65 (SNK-DX-001) — every detector's terms, value, level and alert state.
@@ -124,6 +137,8 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(VatsExitCommand);
     registry.register(CondCommand);
     registry.register(DepthStatsCommand);
+    registry.register(DepthSampleCommand);
+    registry.register(DepthDumpCommand);
     registry.register(SetAvCommand);
     registry.register(AnimArchetypeCommand);
     registry.register(CndfCommand);
@@ -153,6 +168,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(SceneShowCommand);
     registry.register(QuestStartCommand);
     registry.register(QuestStopCommand);
+    registry.register(QuestResetCommand);
     registry.register(TerminalSelectCommand);
     registry.register(PerkRunCommand);
     registry.register(QuestSetStageCommand);
@@ -182,6 +198,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(NearCommand);
     registry.register(PickCommand);
     registry.register(CamPosCommand);
+    registry.register(CamFlyCommand);
     registry.register(CamTpCommand);
     registry.register(InteractionStatusCommand);
     registry.register(CombatStatusCommand);
@@ -229,6 +246,15 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(gameplay::CraftCommand);
     registry.register(gameplay::MagicCastCommand);
     registry.register(gameplay::MagicEffectsCommand);
+    registry.register(spell::SpellReadyCommand);
+    registry.register(spell::SpellCastCommand);
+    registry.register(spell::SpellListCommand);
+    registry.register(spell::CastStatusCommand);
+    registry.register(bow::BowShootCommand);
+    registry.register(bow::BowStatusCommand);
+    registry.register(door::DoorStatusCommand);
+    registry.register(plugins::PluginActivationCommand);
+    registry.register(plugins::PluginConflictsCommand);
     registry.register(gameplay::ActorReviveCommand);
     registry.register(gameplay::ActorLookCommand);
     registry.register(SysAccessesCommand);
@@ -240,12 +266,14 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(RenderHealthCommand);
     registry.register(RtIntegrityCommand);
     registry.register(ShadowMasksCommand);
+    registry.register(GiCacheCommand);
     registry.register(LodCoverageCommand);
     registry.register(TerrainSeamsCommand);
     registry.register(TerrainHeightCommand);
     registry.register(TerrainBlendCommand);
     registry.register(TerrainSoftenCommand);
     registry.register(TerrainParallaxCommand);
+    registry.register(TerrainPatchesCommand);
     registry.register(CellOwnersCommand);
     registry.register(RenderDebugCommand);
     registry.register(RenderDebugFlagsCommand);

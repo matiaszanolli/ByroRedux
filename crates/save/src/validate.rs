@@ -51,6 +51,11 @@ pub enum ValidationKind {
     /// so the binary can reuse [`ValidationError`] for a uniform abort
     /// message. See `byroredux::save_io::validate_form_ids`.
     FormId,
+    /// A saved actor-value key (an `ActorValues` / `ActorVitals` / restoration / active-effect / `SkillProgress`
+    /// key, or one inside a parked reference row) has no load-order identity, so the portable codec cannot
+    /// name it and the save would fail inside `save_world`. Emitted by the binary-side check
+    /// `byroredux::save_io::validate_actor_value_identities` (SAVE-5).
+    ActorValueIdentity,
     /// An entity reference points past `next_entity` (never spawned).
     DanglingEntity,
     /// A `Material` carries a non-finite (NaN/Inf) scalar — see
@@ -249,8 +254,7 @@ fn validate_equipment(world: &World, errors: &mut Vec<ValidationError>) {
             );
             if let Some(base_form_id) =
                 inventory.and_then(|items| items.get(weapon.inventory_index.0 as usize))
-            {
-                if *base_form_id != weapon.base_form_id {
+                && *base_form_id != weapon.base_form_id {
                     errors.push(ValidationError {
                         entity,
                         kind: ValidationKind::Equipment,
@@ -260,7 +264,6 @@ fn validate_equipment(world: &World, errors: &mut Vec<ValidationError>) {
                         ),
                     });
                 }
-            }
         }
     }
 }
@@ -394,8 +397,8 @@ fn validate_animation(world: &World, next_entity: EntityId, errors: &mut Vec<Val
 
     if let Some(q) = world.query::<AnimationPlayer>() {
         for (entity, player) in q.iter() {
-            if let Some(reg) = registry.as_ref() {
-                if reg.get(player.clip_handle).is_none() {
+            if let Some(reg) = registry.as_ref()
+                && reg.get(player.clip_handle).is_none() {
                     errors.push(ValidationError {
                         entity,
                         kind: ValidationKind::AnimationClip,
@@ -405,16 +408,14 @@ fn validate_animation(world: &World, next_entity: EntityId, errors: &mut Vec<Val
                         ),
                     });
                 }
-            }
-            if let Some(root) = player.root_entity {
-                if root >= next_entity {
+            if let Some(root) = player.root_entity
+                && root >= next_entity {
                     errors.push(ValidationError {
                         entity,
                         kind: ValidationKind::DanglingEntity,
                         detail: format!("AnimationPlayer.root_entity {root} was never spawned"),
                     });
                 }
-            }
         }
     }
 
@@ -423,15 +424,14 @@ fn validate_animation(world: &World, next_entity: EntityId, errors: &mut Vec<Val
     // a future producer inherits this gate instead of an unguarded column.
     if let Some(q) = world.query::<AnimationStack>() {
         for (entity, stack) in q.iter() {
-            if let Some(root) = stack.root_entity {
-                if root >= next_entity {
+            if let Some(root) = stack.root_entity
+                && root >= next_entity {
                     errors.push(ValidationError {
                         entity,
                         kind: ValidationKind::DanglingEntity,
                         detail: format!("AnimationStack.root_entity {root} was never spawned"),
                     });
                 }
-            }
             if let Some(reg) = registry.as_ref() {
                 for (i, layer) in stack.layers.iter().enumerate() {
                     if reg.get(layer.clip_handle).is_none() {
@@ -457,8 +457,10 @@ fn validate_animation(world: &World, next_entity: EntityId, errors: &mut Vec<Val
     // riding to disk inside a saved column with no gate on the way out.
     if let Some(q) = world.query::<Seated>() {
         for (entity, seated) in q.iter() {
-            if let Some(reg) = registry.as_ref() {
-                if reg.get(seated.animation_restore.clip_handle).is_none() {
+            // The seat-inserted-player marker is not a registry handle.
+            if let Some(reg) = registry.as_ref()
+                && !seated.animation_restore.player_was_inserted()
+                && reg.get(seated.animation_restore.clip_handle).is_none() {
                     errors.push(ValidationError {
                         entity,
                         kind: ValidationKind::AnimationClip,
@@ -469,7 +471,6 @@ fn validate_animation(world: &World, next_entity: EntityId, errors: &mut Vec<Val
                         ),
                     });
                 }
-            }
         }
     }
 }

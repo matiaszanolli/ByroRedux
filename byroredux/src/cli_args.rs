@@ -19,6 +19,10 @@ use byroredux_renderer::{FsrQuality, RendererConfig, TonemapOp, UpscalerMode, Vo
 /// debugging journey.
 static EFFECTIVE_ARGS: OnceLock<Vec<String>> = OnceLock::new();
 
+/// Every flag that names an archive for an asset provider: meshes, textures, compiled scripts, sounds, `.bgsm`
+/// materials. Each takes one archive path and may repeat.
+pub(crate) const ARCHIVE_FLAGS: [&str; 5] = ["--bsa", "--textures-bsa", "--scripts-bsa", "--sounds-bsa", "--materials-ba2"];
+
 /// Store the post-expansion args list. Call exactly once at
 /// program start, after `--game` expansion. Re-call panics —
 /// the singleton is set-once for the lifetime of the process.
@@ -151,6 +155,11 @@ fn warn_on_equals_form(args: &[String], flag: &str) {
 pub fn parse_renderer_config(args: &[String]) -> Result<RendererConfig> {
     let option = |flag: &str| -> Result<Option<&str>> {
         let Some(index) = args.iter().position(|arg| arg == flag) else {
+            // #7185 — `--upscaler=taa` used to fall through to the default (FSR ran) with no
+            // word; this reader is strict about a missing value, so it is strict about this too.
+            if let Some(message) = equals_form_diagnostic(args, flag) {
+                bail!("{message}");
+            }
             return Ok(None);
         };
         let Some(value) = args.get(index + 1) else {
@@ -371,6 +380,18 @@ mod tests {
     /// silence: that silence is what let `p1-character-traversal.sh` pass an
     /// inert `--camera-pos=` for months and cost the W1 fixture two
     /// derivation runs against a pose the engine never applied.
+    /// #7185 — a renderer option spelled `--flag=value` is refused naming the space-separated form,
+    /// as a missing value is, instead of silently running the default.
+    #[test]
+    fn a_renderer_option_in_the_equals_form_is_refused() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let err = parse_renderer_config(&args(&["byroredux", "--upscaler=taa"])).expect_err("the equals form");
+        assert!(err.to_string().contains("`--upscaler taa`"), "{err}");
+        let err = parse_renderer_config(&args(&["byroredux", "--fsr-quality=balanced"])).expect_err("the equals form");
+        assert!(err.to_string().contains("space-separated"), "{err}");
+        assert!(parse_renderer_config(&args(&["byroredux", "--upscaler", "taa"])).is_ok());
+    }
+
     #[test]
     fn the_equals_form_is_reported_rather_than_silently_dropped() {
         let argv = args(&["byroredux", "--camera-pos=14976,-100,42000", "--player"]);
@@ -497,6 +518,32 @@ mod tests {
         let parsed = parse_renderer_config(&args(&["byroredux"])).unwrap();
         assert_eq!(parsed.upscaler, UpscalerMode::Fsr3(FsrQuality::Quality));
         assert_eq!(parsed, RendererConfig::default());
+    }
+
+    /// #7029 — on every launch without `--upscaler`, `install_universal_settings`
+    /// takes the settings registry's value over `RendererConfig::default()`.
+    /// `core` cannot depend on `renderer`, so the registry's default is a
+    /// hand-copied literal; nothing else ties it to `UpscalerMode::default()`
+    /// (`renderer_config_defaults_to_fsr_quality` covers only the bare CLI
+    /// path). Three-way agreement: registry default, type default, CLI default.
+    #[test]
+    fn settings_registry_upscaler_default_matches_the_engine_default() {
+        let mut registry = byroredux_core::settings::SettingsRegistry::default();
+        byroredux_debug_ui::register_builtin_settings(&mut registry)
+            .expect("built-in settings must register");
+        let entry = registry
+            .get(byroredux_debug_ui::UPSCALER_SETTING_ID)
+            .expect("the upscaler setting is registered");
+        let byroredux_core::settings::SettingValue::Choice(spec) = &entry.default else {
+            panic!("the upscaler setting default must be a choice, got {:?}", entry.default);
+        };
+        let from_registry = parse_upscaler_spec(spec).expect("the registry default must parse");
+        assert_eq!(from_registry, UpscalerMode::default(), "registry default `{spec}` drifted");
+        assert_eq!(
+            from_registry,
+            parse_renderer_config(&args(&["byroredux"])).unwrap().upscaler,
+            "registry default `{spec}` disagrees with the no-flag CLI default"
+        );
     }
 
     /// `--fsr-quality` composes with the implicit default, so selecting a

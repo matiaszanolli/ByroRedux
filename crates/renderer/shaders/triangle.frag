@@ -76,7 +76,7 @@ layout(location = 5) out vec4 outAlbedo;       // surface color (composite re-mu
 // is "the most reactive translucent coverage at this pixel". See the
 // attachment table in `context/helpers.rs::create_render_pass`.
 layout(location = 6) out float outFsrReactive;
-layout(location = 7) out float outFsrTransparency;
+layout(location = 7) out vec4 outTransparencyAndSun; // R: FSR T&C, GBA: far-field sun RGB
 
 #include "include/bindings.glsl"
 #include "include/math_common.glsl"
@@ -191,7 +191,7 @@ void main() {
     // REN-D11-2026-08-12-02. Surfaces that fall through to the end of
     // main get the authored-coverage policy there instead.
     outFsrReactive = 0.0;
-    outFsrTransparency = 0.0;
+    outTransparencyAndSun = vec4(0.0);
 
     // #1496 — reconstruct the ABSOLUTE world position from the
     // render-origin-relative varying. Every absolute consumer below
@@ -220,6 +220,8 @@ void main() {
         || debugMode == RENDER_DEBUG_FILTERED_DIRECT
         || (legacyDebugMode && (vizFlags & DBG_VIZ_DIRECT) != 0u);
     bool viewTracedShare = debugMode == RENDER_DEBUG_TRACED_SHARE;
+    bool viewRadianceCache = debugMode == RENDER_DEBUG_RADIANCE_CACHE;
+    bool viewGiEligible = debugMode == RENDER_DEBUG_GI_ELIGIBLE;
     bool viewIndirectOnly = debugMode == RENDER_DEBUG_INDIRECT_ONLY
         || (legacyDebugMode && (vizFlags & DBG_VIZ_RAW_INDIRECT) != 0u);
     bool viewMaterialLobe = debugMode == RENDER_DEBUG_MATERIAL_LOBE
@@ -365,7 +367,12 @@ void main() {
         // the layer composition describe the same surface. The painted
         // weights drive it (the blend has not run yet). Depth 0 — the
         // setting off, or a tile spawned before the broadcast — skips it.
-        if (terrainTile.parallaxDepth > 0.0 && (dbgFlags & DBG_BYPASS_POM) == 0u) {
+        // #7152 — the renderer flags a displacement patch draw for skipping
+        // when the host turns parallax off on patches (`terrain.patches
+        // parallax off`); by default it marches like the base until stage
+        // 4.3 marches only the relief the geometry does not carry (§3.6).
+        if (terrainTile.parallaxDepth > 0.0 && (dbgFlags & DBG_BYPASS_POM) == 0u
+            && (inst.flags & INSTANCE_FLAG_TERRAIN_PATCH) == 0u) {
             vec3 terrainView = cameraPos.xyz - fragWorldPos;
             float terrainViewDistance = length(terrainView);
             sampleUV = terrainParallaxDisplaceUV(
@@ -1049,6 +1056,23 @@ void main() {
         && !compileDisableReflectionGlass
         && (dbgFlags & DBG_DISABLE_REFLECTION_GLASS_RAYS) == 0u;
 
+    // #7261 — helper invocations (the lanes that fill out a 2×2 quad along a
+    // triangle edge) trace no shadow or GI rays. Their outputs, stores and
+    // atomics are discarded, so a ray they trace only costs time: on small
+    // triangles it was 35–43 % of the TSD patch premium (terrain-displacement
+    // §8.3). It is sound only because no derivative follows the ray branches:
+    // `aaRoughness` (`dFdx(N)`) is hoisted above every one of them (#3983),
+    // the RT reflection below is gated the same way, and the AO fetch is
+    // screen-space. A `dFdx`/`dFdy`/`fwidth`, implicit-LOD `texture()` on a
+    // ray-dependent value, or quad/subgroup op added after the hoist would
+    // read a helper lane's ray-less result — pinned by
+    // `helper_lanes_trace_no_main_rays_and_no_derivative_follows`.
+    // `reflectionGlassRayEnabled` keeps helper lanes: the glass branch rewrites
+    // `N` above the hoist, and `dFdx(N)` must see the same `N` in every lane.
+    bool helperLane = gl_HelperInvocation;
+    directShadowRayEnabled = directShadowRayEnabled && !helperLane;
+    giRayEnabled = giRayEnabled && !helperLane;
+
     // ── RT mipmap LOD — analogous to textureGrad mip selection ──────────
     //
     // World-space size of one screen pixel at this fragment. Larger footprint
@@ -1307,7 +1331,7 @@ void main() {
         // as the tail policy below.
         float fsrCoverage = min(finalAlpha, 0.9);
         outFsrReactive = alphaBlendFrag ? fsrCoverage : 0.0;
-        outFsrTransparency = alphaBlendFrag ? fsrCoverage : 0.0;
+        outTransparencyAndSun.r = alphaBlendFrag ? fsrCoverage : 0.0;
         return;
     }
 
@@ -1389,7 +1413,7 @@ void main() {
         // Its composition changes independently of that motion, so both FSR
         // masks reject the history at full strength.
         outFsrReactive = 1.0;
-        outFsrTransparency = 1.0;
+        outTransparencyAndSun.r = 1.0;
         return;
     }
 
@@ -1431,7 +1455,7 @@ void main() {
         // no reactive/transparency contribution.
         float fsrCoverage = min(texColor.a, 0.9);
         outFsrReactive = alphaBlendFrag ? fsrCoverage : 0.0;
-        outFsrTransparency = alphaBlendFrag ? fsrCoverage : 0.0;
+        outTransparencyAndSun.r = alphaBlendFrag ? fsrCoverage : 0.0;
         return;
     }
 
@@ -2837,7 +2861,7 @@ void main() {
         // mask between 1.0 (Fresnel-fallback tail) and 0.0 (this branch)
         // frame-to-frame purely from incoherent per-fragment admission.
         outFsrReactive = isAlphaBlend ? min(resolvedAlpha, 0.9) : 0.0;
-        outFsrTransparency = 1.0;
+        outTransparencyAndSun.r = 1.0;
         return;
     }
 
@@ -2861,7 +2885,7 @@ void main() {
             // rendered through the diagnostic passthru instead of the
             // normal Fresnel path.
             outFsrReactive = isAlphaBlend ? 0.9 : 0.0;
-            outFsrTransparency = 1.0;
+            outTransparencyAndSun.r = 1.0;
             return;
         }
         N = glassViewNormal;
@@ -2980,8 +3004,9 @@ void main() {
     // something a single fragment's attributes can carry.
     //
     // `terrainTile.canopyHeight == 0` disables the whole block: LOD tiles,
-    // BTXT-only cells with no allocated tile slot, interiors, and any
-    // worldspace whose ground-cover palette never resolved. `gGcCanopyHeight`
+    // interiors, and any worldspace whose ground-cover palette never
+    // resolved. (A LAND cell with no tile at all, only when the tile table is
+    // full, never reaches it: `terrainSplatActive` is false.) `gGcCanopyHeight`
     // then stays at its neutral zero and `shadowableLightRadiance` skips it.
     if (terrainSplatActive && terrainTile.canopyHeight > 0.0) {
         if (terrainTile.groundcoverDetailAtlas.x != 0u
@@ -3138,9 +3163,18 @@ void main() {
         // An explicit env mask replaces that fallback; multiplying both would
         // darken content that deliberately supplies separate local-specular
         // and reflection masks.
+        // MultiLayerParallax (Skyrim ice) authors its own cubemap and
+        // `multiLayerEnvmapStrength`, and its normal alpha is a LOCAL
+        // specular mask, not an environment mask: FrozenLake01's
+        // `icelakesurface_n` alpha averages 0.09 (max 0.51), so reusing it
+        // here scaled the authored 0.53 reflection to ~5% and left the ice
+        // a matte white sheet. With no env mask authored the reflection is
+        // unmasked, as the shader-type's own strength implies.
         float environmentReflectionMask = mat.envMaskIndex != 0u
             ? environmentMask
-            : normalAlphaSpecMask;
+            : (mat.materialKind == MATERIAL_KIND_MULTI_LAYER_PARALLAX
+                ? 1.0
+                : normalAlphaSpecMask);
         float environmentStrength = hasExplicitEnvironment
             ? max(mat.multiLayerEnvmapStrength, 0.0)
             : 1.0;
@@ -3187,7 +3221,8 @@ void main() {
             if (rtLOD < RT_LOD_REFLECT) atomicAdd(rayBudget.rtReflectionTraced, 1u);
             else atomicAdd(rayBudget.rtReflectionLodCulled, 1u);
         }
-        if (reflectionGlassRayEnabled && rtLOD < RT_LOD_REFLECT) {
+        // #7261 — after the `aaRoughness` hoist, so helper lanes skip it.
+        if (reflectionGlassRayEnabled && !helperLane && rtLOD < RT_LOD_REFLECT) {
             // Deterministic rough reflection: a single SHARP ray, GGX-lobe
             // blur applied as a roughness-scaled mip on the hit sample
             // (`traceReflection`'s mipBias). mip ~ roughness·8 spans the
@@ -3298,6 +3333,8 @@ void main() {
     // World-space distance from camera for cluster depth slicing.
     // Must match cluster_cull.comp's sliceDepth() which uses world-space distance.
     float worldDist = length(fragWorldPos - cameraPos.xyz);
+    bool farSunReceiver = jitter.w > 0.5 && sunDirection.w > 0.0 && worldDist >= SHADOW_FADE_END
+        && directShadowRayEnabled && !isAlphaBlend && !isGlass;
     uint clusterIdx = getClusterIndex(gl_FragCoord.xy, worldDist, screen.xy);
 
     // Zero submitted lights means zero direct-light transport. The old
@@ -3568,6 +3605,13 @@ void main() {
                 transmissionLobe);
             vec3 fullRadiance = shadowableRadiance + transmissionLobe;
             bool needsVisibility = visibilityMaskNeedsTrace(lights[i].params.z);
+            if (farSunReceiver && i == 0u && lightType > 1.5 && needsVisibility
+                && dot(L, sunDirection.xyz) > 0.9999) {
+                // The exterior scene key is pinned at light slot zero. Ramp
+                // up after traced visibility has completely faded.
+                float weight = smoothstep(SHADOW_FADE_END, SHADOW_FADE_END + 600.0, worldDist);
+                outTransparencyAndSun.gba = min(fullRadiance * weight, vec3(65504.0));
+            }
 
             // Accumulate as if unshadowed (legacy subtractive estimator
             // only — ReSTIR adds the single shadowed sample after the loop).
@@ -3702,6 +3746,7 @@ void main() {
             // (its stable surface ID, 0 when last frame's selected ray found
             // none). Consumed by the mover taint below.
             uint prevOccluderSid = 0u;
+            uint shadowSequenceKey = 0u;
             vec3 geomN = normalize(fragNormalEffective);
             // `fragInstanceIndex` follows the per-frame sorted SSBO order and
             // changes when animated actors move between depth buckets. Keying
@@ -3881,7 +3926,8 @@ void main() {
                     // ~1/65 no matter what the EMA constants said.
                     histPrev = clamp(abs(rpHistLen), 0.0, RESTIR_HISTORY_CAP_PARKED);
                     prevTainted = rpHistLen < 0.0;
-                    prevOccluderSid = rp.occluderSurface;
+                    prevOccluderSid = rp.occluderAndShadowSequence & RESERVOIR_SURFACE_MASK;
+                    shadowSequenceKey = rp.occluderAndShadowSequence >> (32u - RESERVOIR_LIGHT_BITS);
                 }
             }
 
@@ -4102,10 +4148,20 @@ void main() {
                     // identical to the old viewer-side one (same exit side).
                     vec3 rayOrigin = offsetRayOriginForDirection(
                         fragWorldPos, geometricNormal, L);
-                    // K shadow rays per frame, each the next element of a per-pixel
-                    // DITHERED low-discrepancy sequence (`ditheredSequence2`, #5369):
-                    // an R2 recurrence in time, rotated per pixel by a spatially
-                    // blue (IGN) mask — never IGN's per-frame offset, which crawls.
+                    // Keep one R2 rotation along a reprojected receiver's
+                    // history during a pan. Fresh or stationary history
+                    // starts with the screen-pixel rotation. The first
+                    // valid moving lookup chooses a hashed key and keeps it
+                    // until history is rejected, including after a stop.
+                    uvec2 shadowSequencePixel = uvec2(gl_FragCoord.xy);
+                    if (reprojValid && shadowSequenceKey == 0u
+                        && dofParams.w < HISTORY_MODE_PARKED - 0.5) {
+                        shadowSequenceKey = 1u + pcg2d(shadowSequencePixel).x % RESERVOIR_LIGHT_MASK;
+                    }
+                    if (shadowSequenceKey != 0u) {
+                        shadowSequencePixel = uvec2(shadowSequenceKey & 31u, shadowSequenceKey >> 5u);
+                    }
+                    // K shadow rays per frame from the dithered R2 sequence.
                     // Per pixel the EMA then converges faster than random sampling
                     // (measured ~20% lower RMSE at every parked frame count), and
                     // the residual error is anti-correlated between neighbours, so
@@ -4121,7 +4177,7 @@ void main() {
                     float occluderLightDistance = 0.0;
                     for (int sr = 0; sr < int(MAX_DIRECT_SHADOW_SAMPLES); sr++) {
                         if (sr >= shadowRayCount) break;
-                        vec2 dRand = ditheredSequence2(uvec2(gl_FragCoord.xy),
+                        vec2 dRand = ditheredSequence2(shadowSequencePixel,
                             uint(frameCount) * uint(shadowRayCount) + uint(sr), i);
                         vec2 diskSample = concentricDiskSample(dRand.x, dRand.y);
                         vec3 rayDir;
@@ -4316,20 +4372,21 @@ void main() {
             // Mover taint. The deep parked tail no longer waits for the whole
             // scene to hold still (any idling NPC cleared it every frame);
             // instead a pixel whose selected shadow ray hit an instance that
-            // moved this build is TAINTED and keeps the moving tail (cap 16,
-            // floor 0.1), as the whole screen used to. With no further hit
-            // the count keeps rising, still at the moving floor, until it
+            // moved this build is TAINTED and keeps the moving cap of 16.
+            // A14 measured a visible trail at the regular moving floor of
+            // 0.1; use the faster floor only where a blocker is implicated.
+            // With no further hit the count keeps rising until it
             // passes the moving cap by RESTIR_MOVER_SETTLE_FRAMES; then the
             // taint clears and the pixel joins the parked tail. So a shadow
-            // an occluder leaves behind fades at the moving floor, not as a
-            // ghost at the parked one. The taint is stored as the sign of the
+            // an occluder leaves behind fades at the mover-tainted floor
+            // through the settle period. The taint is stored as the sign of the
             // history length (always a positive integer otherwise).
             //
             // #6250 — two arms, because the hit alone misses the first
             // moving frame: a mover's initial step (and a teleport) uncovers
             // pixels whose rays now MISS it, and it was static the frame
             // before, so nothing ever tainted them. The second arm taints on
-            // the PREVIOUS frame's occluder: `Reservoir::occluderSurface`
+            // the PREVIOUS frame's occluder: the low bits of `occluderAndShadowSequence`
             // recorded the blocker the uncovered pixel's ray hit last frame,
             // and the CPU's moved set (binding 25, keyed by the STABLE
             // surface ID — instance indices follow the per-frame sort order
@@ -4365,10 +4422,12 @@ void main() {
                         ? RESTIR_HISTORY_CAP_PARKED : RESTIR_HISTORY_CAP_MOVING);
                 }
                 bool deep = sceneStatic && !tainted;
+                float movingAlphaFloor = tainted
+                    ? RESTIR_ALPHA_FLOOR_MOVER_TAINTED : RESTIR_ALPHA_FLOOR_MOVING;
                 float alpha = deep
                     ? max(1.0 / histLen, RESTIR_ALPHA_FLOOR_PARKED)
                     : max(1.0 / min(histLen, RESTIR_HISTORY_CAP_MOVING),
-                          RESTIR_ALPHA_FLOOR_MOVING);
+                          movingAlphaFloor);
                 accum = mix(prevAccum, ratioFrame, alpha);
             } else if (substrateValid) {
                 histLen = 1.0;
@@ -4387,6 +4446,11 @@ void main() {
             } else {
                 restirHistoryDebug = substrateValid ? vec3(0.1, 0.3, 1.0) : vec3(1.0, 0.0, 0.0);
             }
+            // Retire stale traced history continuously at the far boundary.
+            // The spatial filter scales its correction by the same weight.
+            float tailWeight = jitter.w > 0.5 && sunDirection.w > 0.0
+                ? smoothstep(0.0, 0.05, shadowFade) : 1.0;
+            if (tailWeight < 1.0) accum = mix(vec3(1.0), accum, tailWeight);
             Lo += restirUnshadowedSum * accum;
 
             // Persist selection + shadow-ratio history for next-frame reuse.
@@ -4398,10 +4462,12 @@ void main() {
             // (0 = no blocker), for the next frame's first-moving-frame /
             // teleport taint above. Masked to the reservoir's 22-bit surface
             // width so the moved-set match is exact.
-            rc.occluderSurface = selectedRayHitInstance != 0xFFFFFFFFu
+            uint occluderSurface = selectedRayHitInstance != 0xFFFFFFFFu
                 ? (instances[selectedRayHitInstance].surfaceId
                     & RESERVOIR_SURFACE_MASK)
                 : 0u;
+            rc.occluderAndShadowSequence = occluderSurface
+                | (shadowSequenceKey << (32u - RESERVOIR_LIGHT_BITS));
             rc.histLenAndDepth = uintBitsToFloat(packHalf2x16(vec2(
                 tainted ? -histLen : histLen,
                 min(worldDist, 65504.0)
@@ -4446,7 +4512,7 @@ void main() {
                     reservoirsCurr[pixelIdx] = rc;
                     // The factor `accum` multiplies above, for the shadow
                     // filter pass's U * (filteredRatio - rawRatio).
-                    vec3 unshadowedU = min(restirUnshadowedSum, vec3(65504.0));
+                    vec3 unshadowedU = min(restirUnshadowedSum, vec3(65504.0)) * tailWeight;
                     directUnshadowed[pixelIdx] = uvec2(
                         packHalf2x16(unshadowedU.rg),
                         packHalf2x16(vec2(unshadowedU.b,
@@ -4666,11 +4732,14 @@ void main() {
     if ((mat.materialFlags & MAT_FLAG_LAMBERTIAN_REFERENCE) != 0u) {
         primaryDiffuseWeight = vec3(1.0 - metalness);
     }
-    bool giTransportEligible = giRayEnabled
-        && rayBudget.maxPathSegments > 0u
-        && rayBudget.maxShadedHits > 0u
+    // RCG PRD §2 — the material conditions of eligibility, with no ray-budget, fade or footprint term:
+    // `render.debug gi_eligible` draws exactly this, and coverage is measured over it (RCG-VAL-002).
+    bool giMaterialEligible = giRayEnabled
         && !isWindow && !isGlass && giEmissiveLum < 0.01
         && pathLuminance(primaryDiffuseWeight) > 1e-5;
+    bool giTransportEligible = giMaterialEligible
+        && rayBudget.maxPathSegments > 0u
+        && rayBudget.maxShadedHits > 0u;
     float giDist = length(fragWorldPos - cameraPos.xyz);
     float giFade = 1.0 - smoothstep(4000.0, 6000.0, giDist);
     giTransportEligible = giTransportEligible && giFade > 0.01;
@@ -5194,6 +5263,18 @@ void main() {
         outColor = vec4(vec3(ao), 1.0);
         outRawIndirect = vec4(0.0);
         outAlbedo = vec4(1.0);
+    } else if (viewRadianceCache) {
+        // RCG-DBG-001 — the radiance cache's level and hit per pixel. Magenta is "no sample": the cache's
+        // lookup does not exist yet, so every fragment reports none. The include's author gives this branch
+        // the level and hit encoding once the lookup runs; nothing else needs to change for the view.
+        outColor = vec4(1.0, 0.0, 1.0, 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(1.0);
+    } else if (viewGiEligible) {
+        // RCG-VAL-002 — the eligible-pixel mask: white where the primary surface is GI-eligible.
+        outColor = vec4(vec3(giMaterialEligible ? 1.0 : 0.0), 1.0);
+        outRawIndirect = vec4(0.0);
+        outAlbedo = vec4(1.0);
     } else if (viewTracedShare) {
         // M-LIGHT RLT-GI-009 — the traced share exactly as it enters
         // `indirectLight` in every ambient branch above (`indirect`, no SSAO
@@ -5263,5 +5344,5 @@ void main() {
     // which do have coherent depth and motion — never reach here.
     float fsrCoverage = min(finalAlpha, 0.9);
     outFsrReactive = isAlphaBlend ? fsrCoverage : 0.0;
-    outFsrTransparency = isGlass ? 1.0 : (isAlphaBlend ? fsrCoverage : 0.0);
+    outTransparencyAndSun.r = isGlass ? 1.0 : (isAlphaBlend ? fsrCoverage : 0.0);
 }

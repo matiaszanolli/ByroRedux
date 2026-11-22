@@ -31,7 +31,8 @@ pub enum ConditionFunction {
     /// code; [`condition_actor_value_form`](crate::actor_value_names::condition_actor_value_form)
     /// translates it to the loaded AVIF at evaluation (#5989), and
     /// [`is_modeled`](super::is_modeled) reports it unmodeled where it cannot
-    /// (Oblivion has no AVIF records).
+    /// (an index the installed actor values lack; Oblivion's resolve through
+    /// the engine-supplied roster).
     GetActorValue,
     /// `GetQuestRunning(quest_form_id) → f32`. 1.0 while the quest is
     /// running or started in `QuestStageState`. FO3/FNV/Skyrim index
@@ -780,11 +781,10 @@ impl ConditionFunction {
     /// shared numbers ([`OBLIVION_DIALECT`]) win there; every other game, and
     /// every other index, resolves as `from_index` does.
     pub fn from_index_in(game: Option<GameKind>, index: u32) -> Self {
-        if game == Some(GameKind::Oblivion) {
-            if let Some(&(_, function)) = OBLIVION_DIALECT.iter().find(|(dialect, _)| *dialect == index) {
+        if game == Some(GameKind::Oblivion)
+            && let Some(&(_, function)) = OBLIVION_DIALECT.iter().find(|(dialect, _)| *dialect == index) {
                 return function;
             }
-        }
         Self::from_index(index)
     }
 

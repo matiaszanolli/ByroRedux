@@ -115,11 +115,10 @@ impl ConsoleCommand for PerkComposeCommand {
             lines.push("  (the owner holds no entry on this hook)".to_string());
         }
         // A hook the catalog does not call Consumed is composed by nothing in the game yet.
-        if let Some(row) = hook(dialect, entry_point) {
-            if !matches!(row.state, HookState::Consumed { .. }) {
+        if let Some(row) = hook(dialect, entry_point)
+            && !matches!(row.state, HookState::Consumed { .. }) {
                 lines.push("  note: no engine calculation composes this hook; the value is what a call site would see".to_string());
             }
-        }
         CommandOutput { lines }
     }
 }

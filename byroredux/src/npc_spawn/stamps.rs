@@ -97,27 +97,32 @@ pub(super) fn stamp_spell_list(
     world.insert(placement_root, byroredux_scripting::SpellList(spells));
 }
 
-/// Stamp an [`ActorValues`] component on the NPC's placement root, derived
-/// from the active game's authored/derived character rules, so condition and
-/// combat systems read the same values. No-op when the derivation yields
-/// nothing or the index cannot resolve the required records.
+pub(super) fn player_level_for_spawn(world: &World, index: &EsmIndex) -> Option<u16> {
+    crate::components::PlayerEntity::get(world)
+        .and_then(|player| world.get::<byroredux_core::character::CharacterLevel>(player).map(|level| level.level))
+        .or_else(|| index.npcs.get(&crate::inventory::player_npc_form_id(index.game)).and_then(|player| u16::try_from(player.level).ok()))
+}
+
+/// Stamp an [`ActorValues`] component from the active character rules.
 pub(super) fn stamp_actor_values(
     world: &mut World,
     placement_root: EntityId,
     resolved: &ResolvedNpc<'_>,
     index: &EsmIndex,
 ) {
-    let pairs = byroredux_plugin::esm::records::derive_resolved_actor_values(resolved, index);
+    let player_level = player_level_for_spawn(world, index);
+    let pairs = byroredux_plugin::esm::records::derive_resolved_actor_values_with_player_level(resolved, index, player_level);
     if pairs.is_empty() {
         return;
     }
     let health = index
         .health_actor_value_key()
         .filter(|health| pairs.iter().any(|(form_id, _)| form_id == health));
-    world.insert(
-        placement_root,
-        byroredux_core::ecs::components::ActorValues::from_pairs(pairs),
-    );
+    let mut values = byroredux_core::ecs::components::ActorValues::from_pairs(pairs);
+    for (key, alias) in byroredux_plugin::esm::records::creature_skill_aliases(resolved, index) {
+        if !values.set_alias(key, alias) { log::warn!("cannot install actor-value alias {key:#010x}: source missing or chained"); }
+    }
+    world.insert(placement_root, values);
     if let Some(health) = health {
         world.insert(
             placement_root,
@@ -169,16 +174,18 @@ pub(super) fn stamp_creature_attack(
     // SPECIAL/Health from the template and its attack damage from the
     // shell — the fifth instance of this exact defect class (#2956,
     // #3381, #3382, #3480 were the first four).
-    let Some(stats) = resolved.stats.creature_stats else {
+    let damage = resolved.stats.creature_stats.map(|stats| f32::from(stats.damage))
+        .or_else(|| resolved.stats.oblivion_creature_stats.as_ref().map(|stats| f32::from(stats.damage)));
+    let Some(damage) = damage else {
         return;
     };
-    if stats.damage <= 0 {
+    if damage <= 0.0 {
         return;
     }
     world.insert(
         placement_root,
         byroredux_core::ecs::components::CreatureAttack {
-            damage: f32::from(stats.damage),
+            damage,
         },
     );
 }
@@ -196,7 +203,7 @@ pub(super) fn stamp_creature_attack(
 /// inherit them.
 ///
 /// [`resolve_inherited_inventory`]: byroredux_plugin::equip::resolve_inherited_inventory
-pub(super) fn stamp_character_components(world: &mut World, placement_root: EntityId, resolved: &ResolvedNpc<'_>) {
+pub(super) fn stamp_character_components(world: &mut World, placement_root: EntityId, resolved: &ResolvedNpc<'_>, index: &EsmIndex) {
     use byroredux_core::character::{Background, CharacterLevel, PerkRank, Perks};
 
     // #4457 — both terminals arrive pre-resolved from the population
@@ -215,13 +222,9 @@ pub(super) fn stamp_character_components(world: &mut World, placement_root: Enti
     // the multiplier here put 268 FNV / ~190 FO3 base actors two to three
     // orders of magnitude out, and this field feeds `DerivedInput::LEVEL`,
     // the leveling model and the M45 save snapshot.
-    world.insert(
-        placement_root,
-        CharacterLevel {
-            level: effective_actor_level(stats_npc).max(0) as u16,
-            xp: 0,
-        },
-    );
+    if let Some(level) = byroredux_plugin::esm::records::actor_level_at_spawn(stats_npc, player_level_for_spawn(world, index)) {
+        world.insert(placement_root, CharacterLevel { level, xp: 0 });
+    }
     // Provenance: race (from the Use-Traits source) + class (from the
     // Use-Stats source; 0 = none), reused by runtime leveling.
     world.insert(
@@ -292,7 +295,9 @@ pub fn build_vats_model(
             fatigue_avif: None,
             magicka_avif: None,
             willpower_avif: None,
+            stunted_magicka_avif: None,
             action_points,
+            tes_rates: None,
         },
     ))
 }

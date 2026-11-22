@@ -539,6 +539,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "byroredux-bsa",
+ "byroredux-core",
  "clap",
  "image",
  "serde",
@@ -569,6 +570,7 @@ dependencies = [
  "byroredux-hkx",
  "byroredux-menuxml",
  "byroredux-mod-runtime",
+ "byroredux-native-ui",
  "byroredux-nif",
  "byroredux-papyrus",
  "byroredux-physics",
@@ -707,6 +709,7 @@ name = "byroredux-debug-ui"
 version = "0.1.0"
 dependencies = [
  "byroredux-core",
+ "byroredux-native-ui",
  "byroredux-sdk",
  "egui",
  "egui-winit",
@@ -773,6 +776,14 @@ dependencies = [
  "thiserror 2.0.18",
  "wasmtime",
  "wat",
+]
+
+[[package]]
+name = "byroredux-native-ui"
+version = "0.1.0"
+dependencies = [
+ "byroredux-core",
+ "egui",
 ]
 
 [[package]]
@@ -974,6 +985,7 @@ version = "0.1.0"
 dependencies = [
  "byroredux-bink2",
  "byroredux-binkaudio",
+ "byroredux-core",
  "log",
  "mercs2_bink",
  "tempfile",
@@ -5682,7 +5694,6 @@ checksum = "9278fb35b3e730abe136e9b395b5b81b96d06b9f5478a50f0c8430a2237b22de"
 [[package]]
 name = "ruffle_common"
 version = "0.8.0-nightly.2026.10.10"
-source = "git+https://github.com/ruffle-rs/ruffle?rev=2edfd97d11897e6cf6301c30cd87e86d774919c1#2edfd97d11897e6cf6301c30cd87e86d774919c1"
 dependencies = [
  "fnv",
  "gc-arena",
@@ -5700,7 +5711,6 @@ dependencies = [
 [[package]]
 name = "ruffle_core"
 version = "0.8.0-nightly.2026.10.10"
-source = "git+https://github.com/ruffle-rs/ruffle?rev=2edfd97d11897e6cf6301c30cd87e86d774919c1#2edfd97d11897e6cf6301c30cd87e86d774919c1"
 dependencies = [
  "async-channel",
  "bitflags 2.13.2",
@@ -5758,7 +5768,6 @@ dependencies = [
 [[package]]
 name = "ruffle_macros"
 version = "0.8.0-nightly.2026.10.10"
-source = "git+https://github.com/ruffle-rs/ruffle?rev=2edfd97d11897e6cf6301c30cd87e86d774919c1#2edfd97d11897e6cf6301c30cd87e86d774919c1"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -47,6 +47,57 @@ pub(crate) fn validate_form_ids(world: &World) -> Vec<ValidationError> {
     errors
 }
 
+/// SAVE-5 (audit 2026-11-17) — every saved actor-value key must have a load-order identity, or the portable
+/// codec cannot write it and the save fails inside `save_world` with an error that names entity 0 for the
+/// resource-shaped columns and for parked rows. Dry-run the real codecs (so the check cannot drift from them)
+/// before anything is snapshotted, and name the entity, the column and, for a parked row, its reference.
+pub(crate) fn validate_actor_value_identities(world: &World) -> Vec<ValidationError> {
+    use byroredux_core::ecs::components::{ActorValues, ActorVitals, TimedRestorations};
+    use byroredux_scripting::actor_value_save as codec;
+    let mut errors = Vec::new();
+    let mut note = |entity, detail: String| {
+        errors.push(ValidationError { entity, kind: ValidationKind::ActorValueIdentity, detail });
+    };
+    if let Some(q) = world.query::<ActorValues>() {
+        for (entity, values) in q.iter() {
+            if let Err(error) = codec::save_values(world, entity, values) {
+                note(entity, error.to_string());
+            }
+        }
+    }
+    if let Some(q) = world.query::<ActorVitals>() {
+        for (entity, vitals) in q.iter() {
+            if let Err(error) = codec::save_vitals(world, entity, vitals) {
+                note(entity, error.to_string());
+            }
+        }
+    }
+    if let Some(q) = world.query::<TimedRestorations>() {
+        for (entity, restorations) in q.iter() {
+            if let Err(error) = codec::save_restorations(world, entity, restorations) {
+                note(entity, error.to_string());
+            }
+        }
+    }
+    if let Some(q) = world.query::<byroredux_scripting::magic_effects::ActiveMagicEffects>() {
+        for (entity, effects) in q.iter() {
+            if let Err(error) = codec::save_active_effects(world, entity, effects) {
+                note(entity, error.to_string());
+            }
+        }
+    }
+    if let Some(progress) = world.try_resource::<byroredux_scripting::skills::SkillProgress>()
+        && let Err(error) = codec::save_skill_progress(world, &progress) {
+            note(0, format!("resource SkillProgress: {error}"));
+        }
+    if let Some(store) = world.try_resource::<crate::cell_loader::reference_state::PersistentReferenceStates>() {
+        for (pair, error) in store.actor_value_errors(world) {
+            note(0, format!("parked reference {pair:?}: {error}"));
+        }
+    }
+    errors
+}
+
 /// Binary-side supplement to [`validate_world`], mirroring
 /// [`validate_form_ids`]'s pattern: `validate_world`'s doc comment scopes
 /// `crates/save`'s checks to `byroredux-core` types only, deferring
@@ -116,7 +167,18 @@ pub struct SaveCommand;
 /// Execute a quicksave after the scheduler has quiesced. Player input must use
 /// [`queue_player_save_action`] instead of calling this lock-wide operation.
 pub(crate) fn quicksave(world: &World) -> CommandOutput {
-    SaveCommand.execute(world, "")
+    SaveCommand.save_now(world, "")
+}
+
+/// A relocation or scripted move raised this tick reaches `ActorRelocations` only when
+/// `step_actor_relocations` drains it, later in the same tick (SAVE-4 / SAVE-7).
+fn actor_moves_pending(world: &World) -> bool {
+    world
+        .try_resource::<byroredux_scripting::PendingRelocations>()
+        .is_some_and(|pending| !pending.0.is_empty())
+        || world
+            .try_resource::<byroredux_scripting::PendingActorMoves>()
+            .is_some_and(|pending| !pending.0.is_empty())
 }
 
 impl ConsoleCommand for SaveCommand {
@@ -127,6 +189,24 @@ impl ConsoleCommand for SaveCommand {
         "save [slot] — validate + snapshot the world to a slot (default: next ring slot)"
     }
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        // SAVE-7 — the player-action drain waits for queued actor moves to reach their ledger (SAVE-4), but
+        // this console path runs in `DebugDrainSystem`, before `step_actor_relocations`, so a save here taken
+        // in the tick of a scripted move would carry the script state that raised it without the move.
+        // A console command cannot wait a tick; refuse loudly and let the operator repeat it.
+        if actor_moves_pending(world) {
+            return CommandOutput::error(
+                "save DEFERRED: queued actor moves have not reached their ledger yet — run it again (SAVE-7)",
+            );
+        }
+        self.save_now(world, args)
+    }
+}
+
+impl SaveCommand {
+    /// The save itself, with no deferral: the player-action drain calls it after its own bounded wait for
+    /// pending actor moves (`execute_pending_player_save_actions`), and the console `execute` above calls it
+    /// once no move is pending.
+    pub(crate) fn save_now(&self, world: &World, args: &str) -> CommandOutput {
         // `registry` (SaveRegistry) stays held through `save_world`/`encode`
         // below, alongside the ~26 component-storage + ~7 resource read
         // locks `save_world`/`validate_world`/`validate_form_ids` take —
@@ -250,6 +330,7 @@ impl ConsoleCommand for SaveCommand {
         let mut issues = validate_world(world);
         issues.extend(validate_form_ids(world));
         issues.extend(validate_cinematic_entity_refs(world));
+        issues.extend(validate_actor_value_identities(world));
         if !issues.is_empty() {
             let mut lines = vec![format!(
                 "save ABORTED: {} referential-integrity issue(s) — refusing to write a poisoned save:",
@@ -289,6 +370,18 @@ impl ConsoleCommand for SaveCommand {
             Ok(b) => b,
             Err(e) => return CommandOutput::error(format!("encode failed: {e}")),
         };
+        // SAVE-3 (audit 2026-11-17) — `serde_json` writes a non-finite `f32` as `null`, which no `f32` field
+        // decodes, so such a save used to commit and then never load. The disk read-back only proves the file
+        // equals memory; prove the bytes load before they are written. Nothing is written and the ring does
+        // not advance on this refusal.
+        if let Err(error) = byroredux_save::decode(&bytes, registry.schema_fingerprint())
+            .and_then(|decoded| byroredux_save::validate_snapshot_types(&registry, &decoded))
+        {
+            return CommandOutput::lines(vec![format!(
+                "save ABORTED: the encoded snapshot does not load back (a non-finite float in a saved column \
+                 is the usual cause) — refusing to write an unloadable save: {error}"
+            )]);
+        }
         match disk::write_slot(&dir, slot, &bytes) {
             Ok(path) => {
                 // Consume quicksave rotation only after every validation,
@@ -506,12 +599,7 @@ pub(crate) fn execute_pending_player_save_actions(
     // `step_actor_relocations` drains it, later in the same tick. A save taken now would carry the
     // script state that raised the move (a quest stage, a variable) but not the move. Wait for the
     // drain, a tick at most normally; capped so a script raising moves every frame cannot starve it.
-    let moves_pending = world
-        .try_resource::<byroredux_scripting::PendingRelocations>()
-        .is_some_and(|pending| !pending.0.is_empty())
-        || world
-            .try_resource::<byroredux_scripting::PendingActorMoves>()
-            .is_some_and(|pending| !pending.0.is_empty());
+    let moves_pending = actor_moves_pending(world);
     let actions = {
         let Some(mut pending) = world.try_resource_mut::<PendingPlayerSaveActions>() else {
             return Vec::new();
@@ -563,6 +651,11 @@ impl ConsoleCommand for LoadCommand {
             Ok(s) => s,
             Err(e) => return CommandOutput::error(format!("slot {slot} INVALID: {e}")),
         };
+        // SAVE-3 — the typed preflight the drain runs, run here so `quickload_latest` falls back past a slot
+        // whose columns do not decode instead of queueing it and aborting the load with the session kept.
+        if let Err(e) = byroredux_save::validate_snapshot_types(&registry, &snapshot) {
+            return CommandOutput::error(format!("slot {slot} INVALID: {e}"));
+        }
         // EX-09/17 item 4 — a live load can reconstruct either kind of
         // session now; only reject a snapshot carrying neither.
         let destination_label = match (

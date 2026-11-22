@@ -229,6 +229,7 @@ pub(crate) fn apply_effect(
         | Effect::SetSittingRotation { .. }
         | Effect::SetInChargen { .. }
         | Effect::ShowRaceMenu
+        | Effect::ShowAppearanceMenu { .. }
         | Effect::RequestSave { .. }
         | Effect::RegisterPlayerAnimationEvent { .. } => {
             apply_player_control_effect(effect, context, vmad, world, deferred)
@@ -396,7 +397,10 @@ pub fn apply_effects(
                             effects: tail,
                             remaining_seconds: seconds,
                             // BIK-PRES-006 — a `Game.PlayBink` the run called waits for its movie.
-                            resume_when: if std::mem::take(&mut deferred.awaits_movie) {
+                            resume_when: if let Some(ticket) = deferred.awaits_message.take() {
+                                // M48 #6667 — a `Message.Show()` value waits for the answer.
+                                FragmentResumeCondition::MessageAnswered { ticket }
+                            } else if std::mem::take(&mut deferred.awaits_movie) {
                                 FragmentResumeCondition::MovieEnded
                             } else {
                                 FragmentResumeCondition::DelayElapsed

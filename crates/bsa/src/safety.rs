@@ -141,7 +141,10 @@ pub fn inflate_bounded<R: io::Read>(
     // `declared + 1`: reading the extra byte is how an over-run is detected.
     // `as u64 + 1` cannot overflow — `declared` is `usize`-bounded well below
     // `u64::MAX` by the `checked_chunk_size` call every caller makes first.
-    reader.take(declared as u64 + 1).read_to_end(&mut buf)?;
+    reader
+        .take(declared as u64 + 1)
+        .read_to_end(&mut buf)
+        .map_err(|error| labelled(error, label))?;
     if buf.len() > declared {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -152,6 +155,13 @@ pub fn inflate_bounded<R: io::Read>(
         ));
     }
     Ok(buf)
+}
+
+/// A decoder's error with the payload it was decoding named (#7131): the bare
+/// `incomplete deflate stream` said nothing about which entry or chunk. The
+/// kind is kept, since callers branch on `UnexpectedEof`.
+fn labelled(error: io::Error, label: &str) -> io::Error {
+    io::Error::new(error.kind(), format!("{label}: {error}"))
 }
 
 /// [`inflate_bounded`]'s zlib-specific sibling, for the codec that can
@@ -187,7 +197,7 @@ pub fn inflate_bounded_zlib(compressed: &[u8], declared: usize, label: &str) -> 
                 .is_ok()
             && buf.len() == declared;
         if !raw_ok {
-            return Err(zlib_err);
+            return Err(labelled(zlib_err, label));
         }
         log::warn!(
             "{label}: zlib Adler-32 trailer mismatch on an otherwise well-formed \
@@ -527,10 +537,11 @@ mod inflate_bounded_zlib_tests {
         let data: Vec<u8> = (0..=255u8).cycle().take(4000).collect();
         let compressed = zlib(&data);
         let cut = &compressed[..compressed.len() / 2];
-        assert!(
-            inflate_bounded_zlib(cut, data.len(), "test").is_err(),
-            "a stream cut mid-block must be an error, not a silent short decode"
-        );
+        let error = inflate_bounded_zlib(cut, data.len(), "BA2 zlib chunk of 'x.dds'")
+            .expect_err("a stream cut mid-block must be an error, not a silent short decode");
+        // #7131 — the error keeps its kind and names the payload.
+        assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert!(error.to_string().starts_with("BA2 zlib chunk of 'x.dds': "), "{error}");
     }
 
     /// #5660 / #5073 — the empty stream is an error at this layer under the

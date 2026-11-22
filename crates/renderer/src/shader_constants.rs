@@ -853,7 +853,7 @@ mod tests {
         let water_main = water.split_once("void main()").unwrap().1;
         assert!(water_main.contains("Water's wave, reflection and refraction"));
         assert!(water_main.contains("outFsrReactive = 1.0;"));
-        assert!(water_main.contains("outFsrTransparency = 1.0;"));
+        assert!(water_main.contains("outTransparencyAndSun = vec4(1.0, 0.0, 0.0, 0.0);"));
         let proxy = triangle
             .split_once("if (proxyCoverage < 0.01)")
             .unwrap()
@@ -862,7 +862,7 @@ mod tests {
             .unwrap()
             .0;
         assert!(proxy.contains("outFsrReactive = 1.0;"));
-        assert!(proxy.contains("outFsrTransparency = 1.0;"));
+        assert!(proxy.contains("outTransparencyAndSun.r = 1.0;"));
     }
 
     /// #5113 (TD7-2026-09-29-01) — the splat channel count and lanes-per-word
@@ -2047,6 +2047,7 @@ mod tests {
             INSTANCE_FLAG_DIFFUSE_ALPHA as SB_DIFFUSE_ALPHA,
             INSTANCE_FLAG_FLAT_SHADING as SB_FLAT_SHADING,
             INSTANCE_FLAG_NON_UNIFORM_SCALE as SB_NON_UNIFORM_SCALE,
+            INSTANCE_FLAG_TERRAIN_PATCH as SB_TERRAIN_PATCH,
             INSTANCE_FLAG_TERRAIN_SPLAT as SB_TERRAIN_SPLAT,
         };
         assert_eq!(INSTANCE_FLAG_NON_UNIFORM_SCALE, SB_NON_UNIFORM_SCALE);
@@ -2055,6 +2056,7 @@ mod tests {
         assert_eq!(INSTANCE_FLAG_TERRAIN_SPLAT, SB_TERRAIN_SPLAT);
         assert_eq!(INSTANCE_FLAG_FLAT_SHADING, SB_FLAT_SHADING);
         assert_eq!(INSTANCE_FLAG_DIFFUSE_ALPHA, SB_DIFFUSE_ALPHA);
+        assert_eq!(INSTANCE_FLAG_TERRAIN_PATCH, SB_TERRAIN_PATCH);
     }
 
     /// #2045 (TD7-101) — `INSTANCE_RENDER_LAYER_SHIFT`/`_MASK` were

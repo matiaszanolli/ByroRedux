@@ -217,9 +217,9 @@ pub(crate) fn extract_first_color_curve(
     }
 
     // 1. Legacy reference-based modifier → NiColorData keyframe stream.
-    if let Some(modifier) = find_own_modifier::<NiPSysColorModifier>(scene, modifier_refs) {
-        if let Some(data_idx) = modifier.color_data_ref.index() {
-            if let Some(data) = scene.get_as::<NiColorData>(data_idx) {
+    if let Some(modifier) = find_own_modifier::<NiPSysColorModifier>(scene, modifier_refs)
+        && let Some(data_idx) = modifier.color_data_ref.index()
+            && let Some(data) = scene.get_as::<NiColorData>(data_idx) {
                 let keys = &data.keys.keys;
                 if !keys.is_empty() {
                     let start = keys[0].value;
@@ -229,8 +229,6 @@ pub(crate) fn extract_first_color_curve(
                     }
                 }
             }
-        }
-    }
 
     // 2. #1345 — fall back to the inline BSPSysSimpleColorModifier ramp.
     if let Some(scm) = find_own_modifier::<BSPSysSimpleColorModifier>(scene, modifier_refs) {
@@ -353,8 +351,8 @@ pub(crate) fn extract_emitter_params(
 /// defensive residual for any version/shape this pass didn't measure,
 /// not the common case.
 pub(crate) fn extract_emitter_max_particles(scene: &NifScene, data_ref: BlockRef) -> Option<u32> {
-    if let Some(idx) = data_ref.index() {
-        if let Some(block) = scene.get_as::<crate::blocks::particle::NiPSysBlock>(idx) {
+    if let Some(idx) = data_ref.index()
+        && let Some(block) = scene.get_as::<crate::blocks::particle::NiPSysBlock>(idx) {
             // #4550 — the own block IS authoritative, including "authored
             // 0 → None → keep the preset". Pre-fix the `> 0` filter made
             // an authored-zero own budget fall through to the whole-scene
@@ -364,7 +362,6 @@ pub(crate) fn extract_emitter_max_particles(scene: &NifScene, data_ref: BlockRef
             // block, so a decisive downcast hit returns as-is.
             return block.max_particles;
         }
-    }
     // Find the first block that actually *carries* a budget, not the first
     // `NiPSysBlock`: 27 other `NiPSys*` types deserialise to that same marker
     // struct with `max_particles: None`, so `find_map(downcast).and_then(..)`
@@ -429,11 +426,10 @@ fn find_own_emitter_ctlr_refs(
     };
     let mut found: Option<EmitterCtlrRefs> = None;
     crate::anim::walk_controller_chain(scene, controller_ref, |idx, block, _base| {
-        if found.is_none() {
-            if let Some(ctlr) = block.as_any().downcast_ref::<NiPSysEmitterCtlr>() {
+        if found.is_none()
+            && let Some(ctlr) = block.as_any().downcast_ref::<NiPSysEmitterCtlr>() {
                 found = Some(refs(idx, ctlr));
             }
-        }
     });
     if found.is_some() {
         return found;
@@ -506,8 +502,8 @@ pub(crate) fn extract_emitter_rate(scene: &NifScene, controller_ref: BlockRef) -
         curves: CurveTier,
     ) -> Option<f32> {
         let interp = scene.get_as::<NiFloatInterpolator>(interp_idx)?;
-        if let Some(data_idx) = interp.data_ref.index() {
-            if let Some(keys) = scene.get_as::<NiFloatData>(data_idx).map(|d| &d.keys.keys) {
+        if let Some(data_idx) = interp.data_ref.index()
+            && let Some(keys) = scene.get_as::<NiFloatData>(data_idx).map(|d| &d.keys.keys) {
                 if let Some(r) = keys.first().and_then(|k| sane(k.value)) {
                     return Some(r);
                 }
@@ -518,13 +514,11 @@ pub(crate) fn extract_emitter_rate(scene: &NifScene, controller_ref: BlockRef) -
                 // data" sentinel, which `sane` also rejects, so the emitter
                 // fell all the way through to `fog.rs::particle_preset`'s
                 // name-heuristic guess.
-                if curves == CurveTier::Allowed {
-                    if let Some(r) = curve_mean_rate(keys) {
+                if curves == CurveTier::Allowed
+                    && let Some(r) = curve_mean_rate(keys) {
                         return Some(r);
                     }
-                }
             }
-        }
         sane(interp.value)
     }
 
@@ -709,16 +703,14 @@ pub(crate) fn extract_emitter_rate(scene: &NifScene, controller_ref: BlockRef) -
                 // driven externally and don't apply to a particle emitter
                 // rate anyway). Fall back to the blend interpolator's own
                 // constant `value` if no item resolves.
-                if let Some(sub_idx) = resolve_blend_interpolator_target(scene, interp_idx) {
-                    if let Some(r) = float_interpolator_rate(scene, sub_idx, curves) {
+                if let Some(sub_idx) = resolve_blend_interpolator_target(scene, interp_idx)
+                    && let Some(r) = float_interpolator_rate(scene, sub_idx, curves) {
                         return Some(r);
                     }
-                }
-                if let Some(blend) = scene.get_as::<NiBlendFloatInterpolator>(interp_idx) {
-                    if let Some(r) = sane(blend.value) {
+                if let Some(blend) = scene.get_as::<NiBlendFloatInterpolator>(interp_idx)
+                    && let Some(r) = sane(blend.value) {
                         return Some(r);
                     }
-                }
                 // #3329 — the manager-controlled residual #2548 left behind. When
                 // the controller's interpolator is a `NiBlendFloatInterpolator`
                 // with an EMPTY `items` array, tier (b) above cannot resolve a
@@ -740,11 +732,9 @@ pub(crate) fn extract_emitter_rate(scene: &NifScene, controller_ref: BlockRef) -
                 if scene
                     .get_as::<NiBlendFloatInterpolator>(interp_idx)
                     .is_some()
-                {
-                    if let Some(r) = sequence_emitter_rate(scene, refs, curves) {
+                    && let Some(r) = sequence_emitter_rate(scene, refs, curves) {
                         return Some(r);
                     }
-                }
             }
         }
         // Legacy: this controller's own NiPSysEmitterCtlrData (#4560), first

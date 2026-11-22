@@ -472,8 +472,8 @@ fn oblivion_vertex_world_check() {
         // Find target by name + walk up.
         let mut target_idx: Option<usize> = None;
         for i in 0..scene.blocks.len() {
-            if let Some(node) = scene.get_as::<NiNode>(i) {
-                if node
+            if let Some(node) = scene.get_as::<NiNode>(i)
+                && node
                     .av
                     .net
                     .name
@@ -484,7 +484,6 @@ fn oblivion_vertex_world_check() {
                     target_idx = Some(i);
                     break;
                 }
-            }
         }
         let mut cur = target_idx?;
         let mut accum = Mat4::IDENTITY;

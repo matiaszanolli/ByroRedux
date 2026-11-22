@@ -22,6 +22,23 @@ pub struct Rect {
     pub h: f32,
 }
 
+/// A tile that takes the pointer (`<target> &true;`, GUI-XML-002): its rect in UI pixels and the
+/// clip window it is seen through, if any.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HitTarget {
+    pub tile: usize,
+    pub rect: Rect,
+    pub clip: Option<Rect>,
+}
+
+impl HitTarget {
+    /// Whether `(x, y)` lands on the visible part of the target.
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        let inside = |r: &Rect| x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h;
+        inside(&self.rect) && self.clip.is_none_or(|clip| inside(&clip))
+    }
+}
+
 /// One drawable produced by the layout walk.
 #[derive(Debug, Clone)]
 pub enum DrawItem {
@@ -95,7 +112,14 @@ impl DrawItem {
 
 /// Build the depth-ordered draw list for a document.
 pub fn build_draw_list(doc: &Document, eval: &mut EvalState) -> Vec<DrawItem> {
-    let mut out = Vec::new();
+    build_layout(doc, eval).0
+}
+
+/// The draw list and the hit targets of one layout walk, both in draw order (a later target is on
+/// top). The targets are visible tiles whose `target` trait is true, whatever their alpha:
+/// vanilla's hit rects are alpha 0.
+pub fn build_layout(doc: &Document, eval: &mut EvalState) -> (Vec<DrawItem>, Vec<HitTarget>) {
+    let mut out = WalkOutput::default();
     // Root position: the menu's own x/y (usually 0,0).
     let root_x = num(eval, 0, "x");
     let root_y = num(eval, 0, "y");
@@ -106,7 +130,14 @@ pub fn build_draw_list(doc: &Document, eval: &mut EvalState) -> Vec<DrawItem> {
         h: num(eval, 0, "height").max(0.0),
     };
     walk_children(doc, eval, 0, (root_x, root_y), None, &mut out, root_rect);
-    out
+    (out.draw, out.targets)
+}
+
+/// What one layout walk produces: the draw list and the hit targets, both in draw order.
+#[derive(Default)]
+struct WalkOutput {
+    draw: Vec<DrawItem>,
+    targets: Vec<HitTarget>,
 }
 
 /// Walk one tile's children, sorting by depth (stable — document order
@@ -119,7 +150,7 @@ fn walk_children(
     parent: usize,
     origin: (f32, f32),
     clip: Option<Rect>,
-    out: &mut Vec<DrawItem>,
+    out: &mut WalkOutput,
     parent_rect: Rect,
 ) {
     // Depth is read for every child first so the sort does not interleave
@@ -145,7 +176,12 @@ fn walk_children(
         if doc.tiles[child].kind == TileKind::Template {
             continue;
         }
-        let visible = eval.trait_value(child, "visible").truthy();
+        // `visible` propagates: a hidden tile hides its whole subtree, its hit targets included
+        // (CS wiki, Traits: "unlike visible, clips does not propagate to descendant tiles").
+        // FNV's dialogue menu hides its topic list this way while the line shows (#6666).
+        if !eval.trait_value(child, "visible").truthy() {
+            continue;
+        }
         let alpha = num(eval, child, "alpha").clamp(0.0, 255.0);
         let x = origin.0 + num(eval, child, "x");
         let y = origin.1 + num(eval, child, "y");
@@ -167,7 +203,12 @@ fn walk_children(
             };
         }
 
-        if visible && alpha > 0.5 {
+        if eval.trait_value(child, "target").truthy() {
+            let seen_through = if eval.trait_value(child, "clips").truthy() { child_clip } else { clip };
+            out.targets.push(HitTarget { tile: child, rect, clip: seen_through });
+        }
+
+        if alpha > 0.5 {
             let tint = [
                 num(eval, child, "red"),
                 num(eval, child, "green"),
@@ -189,7 +230,7 @@ fn walk_children(
                         } else {
                             clip
                         };
-                        out.push(DrawItem::Image {
+                        out.draw.push(DrawItem::Image {
                             tile: child,
                             rect,
                             filename,
@@ -213,7 +254,7 @@ fn walk_children(
                         } else {
                             clip
                         };
-                        out.push(DrawItem::Text {
+                        out.draw.push(DrawItem::Text {
                             tile: child,
                             x,
                             y,

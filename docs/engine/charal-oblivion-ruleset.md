@@ -5,10 +5,9 @@ of the already-complete core ruleset (`AttributeSet::TES_CLASSIC` — shared
 with Morrowind, hence the name rather than a per-game one —
 `SkillSet::OBLIVION`, `LevelingModel::OBLIVION`, `oblivion_attribute_bonus`,
 `oblivion_health_formula` — all shipped, see `crates/core/src/character/
-tes.rs` and `charal.md` §5, which describes the Oblivion ruleset **builder**
-as complete but unwired — `CharacterRulesProfile::OBLIVION` is
-`RulesetBuilder::None`, and `Oblivion.esm` authors no `AVIF` records at all,
-so wiring needs a legacy actor-value resolver first). This doc
+tes.rs` and `charal.md` §5; the ruleset is wired since #7010
+(`RulesetBuilder::Oblivion`), over the 72 actor values the loader supplies because
+`Oblivion.esm` authors no `AVIF` records). This doc
 exists for the same reason `charal-skyrim-ruleset.md` does even though
 Skyrim's core is also done: real, sourced, downstream gameplay math that
 isn't a core derived stat but is still worth capturing precisely. LOCKED
@@ -164,12 +163,192 @@ universal "Oblivion is affine, Skyrim is quadratic" rule, but it's a real,
 sourced contrast worth keeping distinct rather than assuming either
 game's shape carries over to the other.
 
-Skill-gated spell-tier access (Novice/Apprentice/Journeyman/Expert/Master —
-same 5-tier structure as every other Oblivion skill) and a flat 3 XP per
-successful cast are standard patterns already established elsewhere, not
-new. Not a CHARAL derived stat (spell-casting economy, not a character AV),
-same routing as every other magic-cost/persuasion/barter formula this
-session — documented for completeness, not a build target.
+The tier gate and the experience are in the next section: the tier comes from the base cost (not a per-skill table) and
+the experience from the `SKIL` use values (Alteration 4, Conjuration 6, Destruction 1.2, Illusion 3, Mysticism 3,
+Restoration 0.6), not a flat 3 per cast (corrected 2026-11-19, #7078). The cost is not a CHARAL derived stat (it is a
+spell-casting economy, not a character actor value), but its functions live beside `skill_use.rs` in
+`crates/core/src/character` (PSC-CST-008) so the cast code holds no constant.
+
+## Spell casting (#7078, provenance relabelled 2026-11-20)
+
+The rules the [player-spellcasting PRD](../prd/player-spellcasting.md) builds. Sources: UESP *Oblivion:Magic Overview* and
+*Spell Making*; the CS wiki (*Spell*, *Effect Item*, the `fMagic*` setting pages); xEdit `wbDefinitionsTES4.pas`; `Oblivion.esm`
+(`crates/plugin/examples/spell_cast_census.rs`, 1,137 `SPEL` and 145 `MGEF` records); and a decode of `Oblivion.exe` 1.2.0.416
+(addresses are VAs, image base `0x400000`; raw notes `.claude/issues/7078/INVESTIGATION.md`).
+
+**Provenance (relabelled 2026-11-20).** The owner ruled out decoding the executables for rules, so this section is held to documented sources. Most of what
+the 2026-11-19 decode found is documented, and each item below names its source; the `0x...` addresses in the text are the decode's evidence, **not** a source.
+
+| Rule | Source now | Status |
+|---|---|---|
+| Effect cost equation (`0.1 × base × magnitude^1.28 × duration × area×0.15 × 1.5 for Target`, each factor's minimum of 1, floor per effect, minimum 1) and the sum | CS wiki *Category:Spell Cost* (formula and rounding) with the `fMagic*` setting pages | **Documented**; matches UESP's listed costs for 312 of 315 spells |
+| Skill factor `fMagicCasterSkillCostBase + fMagicCasterSkillCostMult × (1 − skill/100)` and the Luck term (`iActorLuckSkillBase` −20, `fActorLuckSkillMult` 0.4) | CS wiki *fMagicCasterSkillCostBase*, *Effective Skill Level*; UESP *Magic Overview* ("every 5 points of Luck above 50 is 2 points of skill") | **Documented** |
+| Manual Spell Cost: `floor(stored × skill factor)`, no minimum | CS wiki *Category:Spell Cost* | **Documented; corrected 2026-11-20** (the decode's "not rounded" contradicted it; the code floors now) |
+| Mastery from the unscaled (base) cost against `fMagicSpellLevel*Min`; the stored `Level` for a Manual spell; the player's tier from the unfortified skill (25 / 50 / 75 / 100) | CS wiki *Category:Spell Cost*, *Spell*, *ISkillXXMin*; UESP *Magic Overview* ("your unfortified skill level") | **Documented** |
+| Primary school = the most expensive unscaled effect | CS wiki *Spell*, *Category:Spell Cost* | **Documented**; the `SCIT` school of a script effect winning over the `MGEF`'s is **executable-derived** (no source) |
+| Fatigue per cast `fFatigueCastBase + fFatigueCastMult × cost` (1 + 0) | CS wiki *Fatigue Game Settings*; UESP *Magic Overview* ("one point of Fatigue") | **Documented** |
+| Who is fed: a Self cast always, a Touch or Target cast only on a target that can be affected; Powers, Greater Powers and scrolls feed nothing | UESP *Magic Overview*, "Skill levels and training" | **Documented**; the *count* (once at the release for Self and Touch, once at impact for Target) and the use value (the `SKIL` second use value) are **executable-derived** where UESP's "4.0 per cast" amounts are the only documented figures |
+| Spell projectile speed and range | CS wiki *Magic Effects*, *fMagicProjectileBaseSpeed*, *fMagicProjectileMaxDistance* | **Documented** |
+| Area radius `fMagicUnitsPerFoot` 22 × area | CS wiki *fMagicUnitsPerFoot* | **Documented**; not built (area ignored) |
+| `MGEF` flag bit 22 skips an effect in the cost sum and the school choice | none | **Executable-derived**, kept, declared (#7082) |
+| Touch reach | [Original-game trial below](#touch-distance-trial-7082) | **Observed**: Cold Touch follows `iActivatePickLength` (stock ray length 150 BU). It hit a scale-one guard at 183 BU reference distance and missed at 184 BU (#7082) |
+| Magicka refusal only when the cost is *greater than* current Magicka | none | **Executable-derived**, kept (the equal case allowed) |
+| Refusals for silence, underwater and bound effects; the PC-start spell level | none | **Executable-derived**; not built (PSC-NG-008) |
+| Stationary casting and sound detection | Original-game trial below | **Observed**: no detection score change for the tested casts (PSC-NG-007) |
+
+### The cost
+
+`GetMagickaCost` is `0x41d320(caster)`. A Power or Lesser Power (type 2 or 3) gets no caster, so no skill scaling.
+
+- **Per effect** (`0x413810` → `0x548b50`): `0.1 × MGEF base cost × D × A × M × T` with `D` the duration (1 when 0), `A = max(1, area ×
+  fMagicAreaBaseCostMult 0.15)`, `M = magnitude^fMagicCostScale` (1 when the magnitude is 0; 1.28 in `Oblivion.esm`, 1.25 the executable
+  default) and `T = fMagicRangeTargetCostMult 1.5` for a Target effect. MGEF flag `0x100` zeroes the magnitude, `0x80` the duration, `0x200` the
+  area; a Self effect has no area. Effects whose MGEF has flag bit 22 are skipped in the sum.
+- **Auto-calculated spell** (`Manual Spell Cost` clear): `0x4151c0` sums `⌊effect cost × modifier⌋` (at least 1 each), the modifier taken from
+  that effect's own school skill (`0x413890`). The stored `SPIT` `Cost` is **stale and unused**: of 315 UESP-listed auto-calculated spells matched to
+  `Oblivion.esm`, UESP's in-game Magicka equals the equation for 312 and the stored cost for 174 (Flare: stored 9, equation 11.15, UESP 11).
+- **Manual Spell Cost spell** (bit 0): `floor(stored Cost × modifier)`, no minimum (CS wiki *Category:Spell Cost*; an earlier reading of the decode left it
+  unrounded), with the primary school's skill (`0x41d38a`). Mirili's Expert Command (`SE37CommandCreature4Expert`) stores 368 against an equation 491, and
+  costs 294 at skill 50.
+- **Modifier** (`0x548c00`): `fMagicCasterSkillCostBase + fMagicCasterSkillCostMult × (1 − S ÷ 100)`, `S = clamp(skill + fActorLuckSkillMult × Luck +
+  iActorLuckSkillBase, 0, 100)`. `Oblivion.esm` authors Base 0.2 and Mult 1.2 (the executable defaults 0.1 and 1.2), so the modifier is `1.4 − 0.012 × S`;
+  the Luck constants are the executable's 0.4 and −20 (Luck adds `0.4 × (Luck − 50)`). Luck applies to the real cast: the can-cast check `0x5f4570` and the
+  spender `0x5fc8fa` call the same function. (Resolved by the decode, which the CS wiki states for the base: "luck will modify the skill somewhat".)
+
+### The gates
+
+`CanCast` is `0x5f44a0`. For a Spell (type 0): Magicka — refused when the cost is **greater than** current Magicka (equal allowed), code 1; mastery
+(player only, NPCs are not gated) — the player's tier from the **base** skill (so Fortify does not help) against `iSkillApprenticeMin`, `JourneymanMin`,
+`ExpertMin`, `MasterMin` = 25 / 50 / 75 / 100 (executable defaults, not overridden), must be at least the spell's level, code 3. Other refusals: silenced 2,
+ranged underwater 6, several bound effects 5, a Power already used 4. The player sees the message through `0x5f3e00`.
+
+**The spell's level** (`0x41d3c0` → `0x548c50`): for an auto-calculated spell, the tier of its caster-less base cost against
+`fMagicSpellLevelApprenticeMin`, `JourneymanMin`, `ExpertMin`, `MasterMin` (`Oblivion.esm`: 25.5, 62.5, 149.5, 399.5, so costs 26 / 63 / 150 / 400), for a
+Manual spell the stored `SPIT` `Level`. UESP's per-level tables agree with the cost thresholds for 321 of 330 matched spells and with the authored `Level` for 286.
+The CS wiki (*Spell*): "Spell Level: sets the skill rank necessary to cast the spell. Normally spell rank is determined by" those settings.
+
+### What a cast spends
+
+`0x5fc890` (the spender): Fatigue = `fFatigueCastBase + fFatigueCastMult × the Magicka cost` (`0x548da0`; executable defaults 15 and 0, `Oblivion.esm` base 1.0,
+so **1**), applied as damage to Fatigue clamped at 0, and Magicka as damage `−cost`. `StartCast` `0x5f3e00` picks animation groups.
+
+The stock PC `Oblivion - Meshes.bsa` supplies the following animation times in seconds. These are the `NiTextKeyExtraData` markers in
+`meshes\characters\_1stperson` and `meshes\characters\_male`, with `start` at 0 in all 24 clips. The [Construction Set animation reference](https://cs.uesp.net/wiki/Animation_Tab)
+identifies `Hit` as the frame at which the spell takes effect.
+
+| Group | `Hit` | First-person `end` | Third-person `end` |
+|---|---:|---:|---:|
+| `castself` | 0.366667 | 1.300000 | 1.400000 |
+| `casttouch` | 0.266667 | 0.866667 | 0.966667 |
+| `casttarget` | 0.400000 | 0.900000 | 0.900000 |
+
+The `onehand` and `alt` variants have the same `Hit` times and use the first-person `end` values in both views.
+
+#### Live cast repeat timing (#7082)
+
+In the original Steam PC build 1.2.0416, the test player stood in first person, empty-handed and without blocking, in `TestingHall`. The cast key was pulsed
+every 75 ms for seven seconds. A 60 fps HUD capture measured the time from one Magicka deduction to the next. A Target trial's original-game debug HUD
+reported 100 fps. Ranges include input and capture quantization.
+
+| Range | Spell | Observed time between deductions |
+|---|---|---:|
+| Self | Heal Minor Wounds (`00000136`), two trials | 2.02–2.12 s |
+| Touch | Cold Touch (`000A97EF`), aimed into empty space | 1.42–1.43 s |
+| Target | Flare (`000A97DF`) and Fire Ball (`000A97E7`) | 1.33–1.37 s |
+
+These measurements describe an unblocked cast in this setup. ByroRedux continues to use the provisional 0.45 s interval until player cast animation is wired.
+
+### The experience (the skill use a cast gives)
+
+The earlier census of `0x668c30`'s call sites (19, `.claude/issues/7049/`) missed three: the encoding is `add reg, 0x39c` then `call [reg]`, not a load.
+They are `0x6994cc` (in the area routine `0x6992f0`), `0x69b9ea` (the end of the release routine `0x69af30`) and `0x69bc51` (in the hit routine `0x69ba90`). Each
+pushes skill = `0x415360(item)`, the primary school's actor value, **usage 1** (the `SKIL` second use value) and multiplier 0, so the award is the school's use
+value unscaled; `0x668c30` gives nothing when the base skill is already 100.
+
+- **Item type gate:** only type 0 (Spell) and 5 (Poison). Powers, abilities, diseases, scrolls, enchantments, potions and ingredients award nothing here.
+- **Self and Touch spells** (`0x69af30`, award at `0x69b9a4`): once, when at least one effect applied (flag at `[esp+0x14]`), a caster exists and the spell has **no
+  Target-range effect** (`0x414fe0`; such a spell launches a projectile and skips this award). A Touch cast that finds no actor applies nothing: no award.
+- **Target-range spells** (`0x69ba90`): the award is at impact, only for a range-2 effect, never for Telekinesis, only when the target accepts the effect, once per call;
+  Poison awards per target.
+- **Area**: a Fire Ball that hit one target directly awarded 1.2 Destruction XP. The same spell awarded 1.2 XP when two other actors took splash damage.
+  The [original-game trial below](#area-experience-trial-7082) supersedes the per-target hypothesis from the first investigation.
+- **Primary school** (`0x415360` → `0x4152c0`): the effect with the highest caster-less floored cost, ties to the first; its school is the `SCIT` school
+  (`EffectItem+0x18`) when it has one, else the MGEF's (`+0x64`); schools 0 to 5 map to actor values `0x14` to `0x19` (`0x41b770`). The CS wiki says the same:
+  "The school is always the same as that of the single most expensive effect."
+
+#### Area experience trial (#7082)
+
+In the original Steam PC build 1.2.0416, the player used the cast key in `TestingHall` with AI processing paused to hold the targets in position.
+Fire Ball (`000A97E7`, 30 Fire Damage on Target in 10 feet) directly hit a test guard (`00027FCD`). The player stood 220 BU away, with
+Destruction at 60 to meet the spell's mastery requirement. In the second trial, two sheep (`000151DD`) stood 100 BU to either side of the guard at the same depth.
+Both sheep died in the blast. The [player ACHR save record](https://en.uesp.net/wiki/Oblivion_Mod:Save_File_Format/Player_Data) stores the exact
+Destruction XP in `expPoints[10]`. No skill rank changed during the trials.
+
+| Cast | Destruction XP before | After | Gain |
+|---|---:|---:|---:|
+| Fire Ball, direct hit only | 0.0 | 1.2 | 1.2 |
+| Fire Ball, direct hit and two splash victims | 1.2 | 2.4 | 1.2 |
+| Capstone Destruction (`00017A9E`), wall hit and one sheep damaged from 13 to 12 Health | 0.0 | 0.0 | 0.0 |
+
+The Fire Ball trials establish one award for a successful direct hit regardless of the splash victim count in this setup. The wall-impact control
+used a different, zero-cost test spell. It establishes that particular splash-only result.
+
+### Reach and no target
+
+ByroRedux casts a camera ray up to the load order's `iActivatePickLength`, with the original PC default of 150 BU. The first solid collider must
+belong to a live actor. The ray measures distance to the collider surface, so an actor reference can be farther away than the configured ray
+length. The rule comes from the original-game trials below (#7082).
+With no target, a spell with the SPIT flag `0x80` (*Touch Spell Explodes w/ no Target*) and an area above 0 explodes at the caster's aim position;
+without the flag nothing is applied. What Touch does to a door, a chest or a corpse: UESP *Magic Overview* documents that an effect lands only on a target it can affect (a
+fireball on a chest, an Open on an NPC do nothing and feed nothing); Open acts on a locked door or container and Reanimate on an NPC's corpse (UESP *Open*, *Reanimate*), and the
+engine builds neither, so it lands on live actors only.
+
+#### Touch distance trial (#7082)
+
+In `TestingHall` in the original Steam PC build 1.2.0416, the player aimed Cold Touch (`000A97EF`, 15 Frost Damage, zero area) straight at a
+stationary scale-one test guard (`00027FCD`) on the same floor with AI processing off. Moving only the guard's forward coordinate varied the
+reference-to-reference distance in `GetDistance`. The guard lost 15 Health at 176, 180, 182 and 183 BU. Its Health stayed constant at 184 BU and
+beyond. This brackets the cutoff for this target and aim. The fixture measures the actor reference distance, which includes the target's geometry
+between its reference position and the ray hit.
+
+The stock `iActivatePickLength` was 150. At 75 the spell missed at 128 BU. At 225 it hit at 224 BU, which missed at the stock setting. Doubling both
+the caster and target scales at stock settings still missed at 260 BU and hit at 120 BU.
+
+The console reports stock `fCombatDistance` 128, `fHandReachMult` 0.6 and `fMagicDefaultTouchDistance` 256. Lowering
+`fMagicDefaultTouchDistance` to 32 still allowed the 160 BU cast. Raising it to 512, or raising `fCombatDistance` to 256 separately, still missed
+at 224 BU. Lowering `fHandReachMult` to 0.1 still allowed the 128 BU cast. These overrides did not reproduce the observed limit.
+
+### Armor casting penalty (sourced 2026-11-20, not built)
+
+CS wiki *Casting penalty* (a community derivation, credited to a Bethsoft forum post) and the settings pages *fMagicArmorPenaltyMin* 0.05 / *fMagicArmorPenaltyMax* 0.3: for each armor
+type (light, heavy) the worn pieces add their coverage (head 10, hair 10, upper body 25, lower body 15, hand 10, foot 10, shield 30, the `iArmorDamage*Chance` settings; capped
+at 100; a shield counts only with a one-handed blade or blunt in hand), scaled by `((50 - armor skill) * 2) / 100` (0 at Journeyman 50 and above); the two types' results are added
+and "used to interpolate between `fMagicArmorPenaltyMin` and `fMagicArmorPenaltyMax`"; in some cases scaled again by `(current Fatigue / max Fatigue) * fMagicFatigueDrainMult +
+fMagicFatigueDrainBase` (`Oblivion.esm`: 0 and 1, so no effect). UESP *Magic Overview* says armor lowers the magnitude, rounded down. Two ambiguities remain: whether the
+interpolation parameter is the sum over 100, and which cases take the Fatigue scale. PSC-NG-006 keeps it out of Wave 1 (Q3).
+
+### The projectile of a Target spell
+
+ByroRedux flies Target effects as balls at `fMagicProjectileBaseSpeed` × `MGEF.DATA`'s speed multiplier (float at offset 28), up to
+`fMagicProjectileMaxDistance`. The [Construction Set setting](https://cs.uesp.net/wiki/FMagicProjectileBaseSpeed) documents 1000 BU/s for the ball form
+and [its distance setting](https://cs.uesp.net/wiki/FMagicProjectileMaxDistance) documents 10000 BU.
+
+The [xEdit TES4 schema](https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.6/Core/wbDefinitionsTES4.pas) defines the projectile form in
+`MGEF.DATA` flag bits 25 (Spray) and 26 (Bolt). Their combinations are neither for Ball, bit 25 for Spray, bit 26 for Bolt, and both for Fog.
+Of the 72 Target-capable effects in the installed `Oblivion.esm`, 70 are Ball, `FRDG` (Frost Damage) is Fog, and `SHDG` (Shock Damage) is Bolt.
+The corresponding non-ball distance settings are `fMagicSprayMaximumDistance`, `fMagicBoltMaximumDistance` and `fMagicFogMaximumDistance`.
+The installed master authors the Fog maximum at 2000 BU. Separate flight behavior is outside the current player-cast scope (#7082).
+
+### Casting noise trial (#7082)
+
+In the original Steam PC build 1.2.0416, a test guard stood about 240 BU behind the stationary player in `TestingHall`. The guard faced away, and
+[`GetLOS`](https://cs.uesp.net/wiki/GetLOS) reported no line of sight. The guard's [`GetDetected player`](https://cs.uesp.net/wiki/GetDetected) console output
+gave a stationary baseline of −31. Repeated queries around the start, release and end of Heal Minor Wounds returned −31 at the stock
+`fSpellCastingDetectionMod` of 20 and at the forced values 0 and 10000. Cold Touch aimed into empty space and Flare aimed at scenery also returned −31
+at 10000. The console confirmed the setting override. Moving for 0.22 s as a positive control raised the score to −12 or −13 while the guard still lacked
+line of sight. The trials support leaving stationary casting out of the detection noise feed. A spell impact on another actor was outside this trial.
+
+Also: a spell with the PC-start flag (`0x04`) is added to the player when their skill reaches `iPCStartSpellSkillLevel` (25 in `Oblivion.esm`, `0x6646a5`).
 
 ## Acrobatics — jump height (clean, uncapped) + fall damage (buggy, near-useless in original)
 
@@ -198,8 +377,64 @@ different, non-buggy Remastered rebalance, not a fix).
 
 Both formulas govern jump physics / fall-damage mitigation, not an
 ActorValue output — same "skill AV in, mechanic-formula out" routing as
-Lockpicking/Sneak Detection in `charal-skyrim-ruleset.md`. Documented for
-completeness, not a CHARAL build target.
+Lockpicking/Sneak Detection in `charal-skyrim-ruleset.md`.
+
+### Fall damage — BUILT (#7056)
+
+Fall damage is now a rule row, `FallModel::OBLIVION` (`crates/core/src/character/fall.rs`, the profile's `fall`
+row), read from the load order by `FallModel::with_gmst`. Its settings and their sources (CS wiki `fJumpFall*`
+setting pages; UESP *Oblivion:Acrobatics*):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `fJumpFallTimeMult` | 80 | damage per second of falling (`Oblivion.esm` authors 80) |
+| `fJumpFallTimeMin` | 0.2 | no damage at all below this many seconds of falling |
+| `fJumpFallTimeBase` | 0 | the floor of the base damage once it applies |
+| `fJumpFallSkillBase` | 1.25 | the skill factor at Acrobatics 0 |
+| `fJumpFallSkillMult` | −0.01 | per point of Acrobatics, over 100: `1.25 − Acrobatics / 10000` |
+
+```text
+base   = max(fJumpFallTimeBase, fall seconds * fJumpFallTimeMult)         (0 below fJumpFallTimeMin)
+damage = base * (fJumpFallSkillBase + Acrobatics * fJumpFallSkillMult / 100)
+```
+
+The skill is not capped at 100, and the result is never negative. **Declared gap:** what counts as falling (the CS
+wiki's *fJumpFallTimeBase* says a vertical threshold must be passed, with no setting named); `FallTracker` counts
+the time spent below the take-off height. The mounted-rider term (`fJumpFallRiderMult`) is out: no mounts.
+
+## Block — BUILT (#7054)
+
+`BlockModel::OBLIVION` (`crates/core/src/character/block.rs`, the profile's `block` row). UESP *Oblivion:Block*,
+"Blocked Melee Damage" and "Notes": a shield blocks 1% of the damage per level of Block, capped at 75%; a blade,
+blunt weapon or bow in hand blocks 0.5% per level; bare hands block 0.25% per level, "but only against unarmed
+opponents. NPC's equipped with weapons will always deal full damage"; "skill levels over 100 will not increase the
+blocked damage any further"; and the reduction is "the same for melee and ranged attacks".
+
+```text
+shield  reduction = min(0.75, 0.01   * min(Block, 100))
+weapon  reduction =           0.005  * min(Block, 100)
+hands   reduction =           0.0025 * min(Block, 100)      (an unarmed attacker only; 0 against a weapon)
+```
+
+The shield is the worn item in biped slot 13 (UESP *Biped Object Flags*, `0x2000` = Shield). **Not modelled:** the
+Novice's Fatigue drain, wear on the weapon or shield, the higher ranks' recoil, knockback, stagger and disarm, and
+whether a block needs the defender to face the attacker (the page does not say).
+
+## Archery (bow) — BUILT (#7055)
+
+`BowModel::OBLIVION` (`crates/core/src/character/bow.rs`, the profile's `bow` row), read from the load order by
+`BowModel::with_gmst`. CS wiki *fArrowSpeedMult*, *fArrowBowTimerBase*, *fArrowBowTimerMult*, *fArrowWeakSpeed*;
+`Oblivion.esm` authors none of the four:
+
+```text
+draw fraction = min(1, fArrowBowTimerBase (0.25) + fArrowBowTimerMult (0.4) * draw seconds)     (full at 1.875 s)
+arrow speed   = ammo speed * fArrowSpeedMult (1500) * (fArrowWeakSpeed (0.01) + 0.99 * draw fraction)
+damage        = (bow + arrow) * weapon rating (Agility, Marksman, Luck) * Fatigue factor
+```
+
+The damage is the weapon-damage rule of *The Complete Damage Formula* below, its settings held by
+`OblivionDamageSettings` (#7199), at full condition (bow wear is BOW-NG-007, an arrow has no health). **Declared
+gap:** Oblivion's arrow range, which no source gives; the host supplies a labelled provisional constant.
 
 ## Melee weapon damage (Blade/Blunt) — BUILT — first real bilinear (attribute × skill) multiplier, shared across weapon-type skills
 
@@ -337,13 +572,30 @@ input, same boundary as weapon condition above) and sums per-piece before the
 85-point cap (the cap and per-piece sum stay a combat-layer concern, not
 part of this formula). **BUILT 2026-07-04** — unlike the weapon-damage
 formulas above, this one *does* fit `DerivedStatFormula` cleanly (single-
-input affine, no Luck term), so it's wired the same way as Skyrim's Light
-Armor Rating: `ARMOR_RATING_SKILL_COEFF`/`ARMOR_RATING_SKILL_BIAS` in
-`crates/core/src/character/tes.rs`, two rows in `oblivion_ruleset()` (one
-each for `LightArmor`→`LightArmorRating` and `HeavyArmor`→
-`HeavyArmorRating`, both `Multiplier`-kind, `ActorGeneral` scope since the
-source doesn't distinguish player/NPC here unlike Skyrim's). Test asserts
-both worked values (Light 50 → 0.675, Heavy 20 → 0.48).
+input affine, no Luck term), and it was first built as two `Multiplier` rows in
+`oblivion_ruleset()` keyed on `LightArmorRating` / `HeavyArmorRating`. Those rows
+were removed in #7201: the engine-supplied 72-name roster has no such actor value,
+so they could never register, and they restated the coefficients. The one home of
+`0.35 + 0.0065 x ArmorSkill` is `ArmorRatingModel::OBLIVION` (below), which
+`piece_rating` applies per piece (Light 50 → 0.675, Heavy 20 → 0.48).
+
+**Wired 2026-11-20 (armor rating and Resist Normal Weapons).** The per-piece rating above is applied to weapon hits: the pieces a target
+wears add up at its Light or Heavy Armor, cap at `fMaxArmorRating` (85), and `(100 - combined) / 100` scales the hit (1 for a Master
+Sneak attack); `(100 - ResistNormalWeapons) / 100` scales it too, 1 for a silver, daedric or enchanted weapon or arrow. `ArmorRatingModel`
+(`crates/core/src/character/armor_rating.rs`, the profile's `armor_rating` row, Oblivion only) holds the numbers and
+`combat::weapon_defense` applies them to an actor's hit in `combat_damage_system`, melee and arrows alike. Verified live: `oblivion-armor.sh` (the iron cuirass stops 3.8% of a patron's strike at Heavy Armor 5) and `oblivion-ghost.sh` (Perennia's ghost
+carries `ResistNormalWeapons` 100 from her ethereal-undead ability: an iron longsword reads `resisted 100%` and leaves her Health, a silver
+longsword takes her from 18 to -10). Not modelled: armor condition (read as full) and Shield-like boosting effects.
+
+**Weakness, creature attacks and fists (#7195).** A weakness is a negative resistance: UESP *Oblivion:Magical Effects* ("Resistances and
+Weaknesses": "Total_Resistance_to_X = Resist_X - Weakness_to_X") and *Oblivion:Weakness to Normal Weapons* ("50% Weakness ... a weapon
+normally dealing 20 points of damage, your health would go down by 30"), so `weapon_resistance_factor` is `max(0, 100 - R) / 100` and rises
+above 1 for a negative `ResistNormalWeapons`. Two unweaponed blows are outside the resistance: a creature's natural attack (UESP
+*Oblivion:Resist Normal Weapons*: "creature attacks, however, are unaffected by resist normal weapons") and a fist at Journeyman Hand to Hand
+(the same page: fists are normal weapons "only if below level 50 in Hand to Hand"; UESP *Oblivion:Hand to Hand*, Journeyman: "the ability to
+damage creatures that are immune to normal weapons"; the Weakness page agrees). The tier is `iSkillJourneymanMin` (50), read from the load
+order. **Declared gap:** a creature that wields a weapon (a goblin's or a skeleton's) strikes with that weapon here, so its blow is resisted
+unless the weapon ignores the resistance; the sources speak of "creature attacks" without saying whether an armed creature's blow is one.
 
 **4. Sneak/power-attack multipliers, weapon condition, spell resistance** —
 all confirmed real but out of CHARAL scope, same "skill AV in, combat-formula
@@ -371,8 +623,14 @@ not hardcoded, per the WATAL/CHARAL split): `fDamageWeaponMult=0.5`,
 `fHandDamageSkillMult=1`/`fHandFatigueDamageMult=0.5`; sneak/power-attack
 GMSTs (`fPerkSneakAttackMelee*Mult`, `fDamagePowerAttack*Bonus`); armor
 (`fMaxArmorRating=85`). All future formula rows built for Oblivion should read
-these by name once GMST parsing lands (CHARAL §8 item 6), not re-hardcode the
-numeric constants captured here.
+these by name (CHARAL §8 item 6), not re-hardcode the numeric constants captured here.
+**Read since #7199:** `OblivionDamageSettings` (`crates/core/src/combat.rs`) holds the weapon family, the
+condition pair, the whole Hand-to-Hand family (`fHandHealthMin`/`Max`, `fHandDamageStrengthBase`/`Mult`,
+`fHandDamageSkillBase`/`Mult`, `fHandFatigueDamageBase`/`Mult`), the Luck pair of the effective skill
+(`fActorLuckSkillMult` 0.4 / `iActorLuckSkillBase` -20, CS wiki *Effective Skill Level*, which the spell-cast row
+takes its defaults from) and the Fatigue pair (`fFatigueBase` 1.0 / `fFatigueMult` 0.5, CS wiki *Fatigue Game
+Settings*), each overlaid from the load order by `OblivionDamageSettings::with_gmst`; the bow's Oblivion damage
+rule carries it (`BowModel::with_gmst`). `fMaxArmorRating` is read by `ArmorRatingModel::with_gmst`.
 
 ## Fatigue — base pool cross-checked (already BUILT), regen formula now BUILT too, Remastered divergence recorded
 
@@ -413,18 +671,12 @@ needed). `pool_regen_tick_system(world, frame_dt)` is registered in
 `Stage::Update` via `add_exclusive_with_access`
 (`byroredux/src/boot/schedule/update/` — the registration moved out of
 `main.rs` under #3170's boot split; #4109 swept the stale `main.rs`/
-`boot/` references) — on Oblivion it no-ops today because `PoolRegenConfig`
-(the per-game resolved AVIF ids) is inserted by no Oblivion path (FO3/FNV install
-it for their Action Points lane only, #6350): the
-`oblivion_pool_regen_config` constructor that once lived in `tes.rs` was
-deleted under #3848 (`git show e13985dfc` recovers it), and re-adding it
-is gated on Oblivion's ruleset actually being wired — deliberately
-blocked on the pre-AVIF actor-value resolver (#3768), not on "a live
-`CharacterRuleset` landing" (a ruleset alone never installs the config,
-because the Fatigue/Magicka lanes are Oblivion-shaped; FO3/FNV install it
-for the Action Points lane only).
-So the Oblivion lanes are wired and tested but have no live consumer until that
-resolver lands. 5
+`boot/` references). **Live on Oblivion since #7010:** `CharacterRulesProfile::build_tes_pool_regen`
+installs `PoolRegenConfig` with the Fatigue, Magicka, Willpower and `StuntedMagicka` records the
+engine-supplied roster resolves, on the first cell load (`cell_loader/references/mod.rs`), and since
+#7197 its rates are the load order's four `f*Return*` settings (`TesPoolRegen`, the Endurance term
+included) rather than the constants named above, which remain the defaults. FO3/FNV install the
+config for their Action Points lane only (#6350). 5
 new tests (formula match, 60 Hz tick counting, fractional-time carry-over
 across frames, substep cap, and a full ECS integration test proving both
 Fatigue and Magicka regen end-to-end).
@@ -466,8 +718,9 @@ applies to NPCs or only to the player. The three base-pool rows in
 Fallout convention** (NPCs ship baked pool values) — and that convention is itself
 FO4-evidence-specific (FO4 NPCs read a baked `DNAM`). It is a conservative choice,
 not a captured fact: the sibling Armor Rating rows above are `ActorGeneral` because
-the source is silent on a player/NPC split there. Oblivion has no wired ruleset
-today, so nothing observes the choice; it matters when #3768 lands. Pinned by
+the source is silent on a player/NPC split there (those rows were removed in #7201). The
+choice is observable since #7010 wired the ruleset: the rows reach the live player, and an
+NPC's pools come from the population model, not from them. Pinned by
 `oblivion_pool_rows_are_player_only_pending_a_source`. Resolve by finding a
 citation (or an in-engine NPC pool check) and update this note and the code together.
 
@@ -572,9 +825,9 @@ and one Shivering Isles item all set a flag that **zeroes regen entirely**
 regardless of Willpower/MaxMagicka. A status-effect boolean multiplying the
 regen formula to 0, same shape as a `temporary_mod` gate elsewhere in CHARAL.
 `magicka_regen_per_sec`'s `stunted` parameter makes the *formula* complete,
-but no status-effect component exists anywhere in the engine yet to carry
-this flag, so `pool_regen_tick_system` always passes `false` today — a known,
-documented gap (module docs in `regen.rs`), not a silent omission.
+and the tick reads it from the `StuntedMagicka` actor value (`PoolRegenConfig::stunted_magicka_avif`):
+a positive value stops Magicka regeneration and leaves Fatigue alone
+(`stunted_magicka_stops_only_magicka_regeneration`).
 
 **Oblivion Remastered's MagickaRegen is the first confirmed quadratic
 formula in the whole Fallout+Oblivion corpus** (Skyrim's Enchanting
@@ -808,12 +1061,401 @@ into the existing classifier shape. Not built — no per-NPC Disposition
 storage or any of these contributor formulas exist in the engine yet.
 ## Leveling — LOCKED
 
-Oblivion uses skill-use leveling rather than character XP: a level becomes
-available after 10 increases in major skills. At level-up, each selected
-attribute receives a +1 to +5 bonus based on governed major-skill increases
-(0, 1–4, 5–7, 8–9, and 10+). The engine's `fSkillUseCurve` is 1.95 for the
-skill-use progression curve. Source: [UESP Oblivion:
-Leveling](https://en.uesp.net/wiki/Oblivion:Leveling).
+Oblivion uses skill-use leveling rather than character XP: using a skill banks experience, enough experience raises the skill by one, and
+a level becomes available after 10 increases of major skills (`iLevelUpSkillCount`), applied by a night's sleep. At level-up the player
+raises three attributes; each receives a bonus from the number of governed skill increases tallied for it, **counting every governed
+skill's increase, not only major skills** (V13: the tally runs on every rank-up, the major count only on major ones): 0 increases give +1,
+1–4 give +2, 5–7 +3, 8–9 +4, 10 or more +5 (`iLevelUp01Mult` to `iLevelUp10Mult`, `0x5480a0`). The experience a skill needs from value `L` is
+`(fSkillUseFactor · L) ^ fSkillUseExp`, times `fSkillUseSpecMult` for a specialization skill, times `fSkillUseMajorMult` for a major skill
+or `fSkillUseMinorMult` otherwise (executable defaults 1, 1, 0.75, 0.75, 1.25; `Oblivion.esm` authors Factor 0.35 and Exp 1.5).
+`fSkillUseCurve` 1.95 is **Skyrim's** setting, not Oblivion's. Source: [UESP Oblivion:
+Leveling](https://en.uesp.net/wiki/Oblivion:Leveling) and the executable decode in [skill-use.md](skill-use.md) (#7049, V1, V2, V13).
+**Built (#7050-#7056):** the [Oblivion skill-use leveling PRD](../prd/oblivion-skill-use-leveling.md) and
+[skill-use.md](skill-use.md); 16 of the 21 skills are fed, the level is taken at a completed sleep, and the
+level-up settings above are read from the load order (#7196).
+
+## Engine-supplied actor values and stat models — BUILT at HEAD (#7008, OAV-RES / OAV-POP / OAI)
+
+`Oblivion.esm` authors no `AVIF` record: the executable hardcodes its 72 actor
+values. The engine therefore supplies one `AVIF` per index, so every consumer
+that resolves an actor value by record (conditions, magic effects, ObScript,
+`ActorValues`, CHARAL) reads Oblivion exactly as it reads the games whose
+masters author them. Parents: [oblivion-actor-values.md](../prd/oblivion-actor-values.md)
+(what the values are and who fills them) and
+[oblivion-actor-value-identity.md](../prd/oblivion-actor-value-identity.md)
+(identity, slot and saves). State below was read from the code at commit
+`99bf86ee4`; it says what exists, not that each path is tested or wired to
+every consumer (the PRD's Phase 2 census measures that).
+
+### The 72 records
+
+The roster is the one `const` table `OBLIVION_ACTOR_VALUES`
+(`crates/plugin/src/esm/records/oblivion_actor_values.rs`), in xEdit's TES4
+`wbActorValueEnum` order with the Construction Set's script spellings as
+EditorIDs:
+
+| Index | Values |
+|---|---|
+| 0–7 | Strength, Intelligence, Willpower, Agility, Speed, Endurance, Personality, Luck |
+| 8–11 | Health, Magicka, Fatigue, Encumbrance |
+| 12–32 | The 21 skills, seven per specialization: Combat 12–18 (Armorer … HeavyArmor), Magic 19–25 (Alchemy … Restoration), Stealth 26–32 (Acrobatics … Speechcraft) |
+| 33–36 | Aggression, Confidence, Energy, Responsibility (from `AIDT`) |
+| 37–71 | Bounty, Fame, Infamy, MagickaMultiplier, NightEyeBonus, AttackBonus, DefendBonus, CastingPenalty, Blindness, Chameleon, Invisibility, Paralysis, Silence, Confusion, … Vampirism, Darkness, ResistWaterDamage |
+
+**Index coverage: 70 / 70** vanilla-resolvable indices (0–37 and 40–71) resolve by number and by name, 72
+records installed, `None` for 38, 39 and anything above 71 (checked 2026-11-17 against UESP *Oblivion Mod:Actor
+Value Indices*: all 72 EditorIDs match its names, Fame and Infamy being its reserved rows; pinned by
+`install_and_resolve_the_roster_without_reserved_vanilla_values`).
+
+Fame and Infamy (38, 39) are installed but excluded from index and name
+resolution unless the caller asks for reserved values
+(`oblivion_actor_value(index, include_reserved)`, `vanilla_name`). That
+mirrors the executable: vanilla `GetActorValue`, `SetActorValue` and
+`ModActorValue` reject them while the dedicated player fame and infamy
+commands and OBSE accept them (see [charal.md §9](charal.md)).
+
+### Identity and slot
+
+- Durable identity: `FormIdPair { ENGINE_PLUGIN_ID, local = index + 1 }`.
+  `ENGINE_PLUGIN_ID` is a UUID v5 in the engine's own namespace
+  (`crates/core/src/form_id.rs`), so no plugin filename can derive it; the
+  `+ 1` is because `LoadOrderIdentity::global_form_id` rejects local id 0.
+- Runtime key: the engine slot composed with the local id. The slot is the
+  lowest unused `Regular` slot in `0x00..=0xFB` after every real plugin
+  (`LoadOrderIdentity::allocate_engine_slot`, `crates/scripting/src/load_order.rs`;
+  `0xFC` and above belong to alias owners and other form spaces). A loaded
+  plugin that already carries the engine identity, a duplicate slot or plugin
+  identity, and a full table (252 slots) are errors with a named message, never
+  a reuse of a plugin's slot.
+- Install: `EsmIndex::install_oblivion_actor_values(slot)` inserts the 72
+  records atomically and idempotently, and refuses a slot that already holds
+  other records.
+- Saves: `FORMAT_MAJOR` is 133 and the actor-value save codec
+  (`crates/scripting/src/actor_value_save.rs`) writes `FormIdPair` keys, never
+  the session's slot. A pair whose plugin is not loaded is dropped with a
+  diagnostic (OAI-SAVE-005).
+
+### Stat models
+
+`CharacterRulesProfile::OBLIVION` selects `NpcStatModel::OblivionNpc` for
+`NPC_` and `NpcStatModel::OblivionCreature` for `CREA`
+(`crates/core/src/character/profile.rs`); both dispatch to
+`oblivion_population::derive` (`crates/plugin/src/esm/records/oblivion_population.rs`).
+Consumers branch on the record kind, never on the game.
+
+| Record | Model | Values |
+|---|---|---|
+| `NPC_`, neither `ACBS` bit 4 nor bit 7, and the `Player` record (form id 7) | Stored | Attributes 0–7, 21 skills and Health from `DATA`; Magicka and Fatigue from `ACBS`; Encumbrance 5 × Strength |
+| `NPC_`, bit 4 or bit 7 | Class auto-calc | The rules of [NPC auto-calc stats](#npc-auto-calc-stats--locked-from-the-executable-7008-oav-pop-003) from the race (`ATTR`, `DATA`), the class (favored attributes, specialization, seven major skills) and the level; no values are stamped if the race or class record is missing or the class is malformed (the model declines, it never invents) |
+| `CREA` | Creature data | Attributes from `DATA`; each skill is its group's value (Combat for 12–18, Magic for 19–25, Stealth for 26–32); Health, Magicka and Fatigue are multiplied by the level when `ACBS` bit 7 is set (CS *Stats Tab - Creatures*); Encumbrance 5 × Strength |
+| Any actor with `AIDT` | Extra values | 33–36 from the first four bytes |
+
+The level an auto-calc or level-offset actor spawns at follows the
+executable: bit 7 adds the actor's level to the player's level, a positive
+minimum and then a positive maximum clamp it, and the floor is 1
+(`0x467807`–`0x467872`; zero bounds are disabled). Bit 7 clear uses the
+authored level.
+
+**Creature skills have two views.** The executable remaps each skill group
+onto one current-value index (Combat 12, Magic 19, Stealth 26) and routes
+Marksman (28) to Combat for the *current* value but to Stealth for the *base*
+value (`0x6253c0`–`0x625456` against `0x51d56a`–`0x51d577`). The engine models
+this with per-skill aliases (`creature_skill_aliases`): each non-group skill
+reads its current value from the group's source (28 from 12) and its base
+value from the group head, so a script or magic effect that modifies the
+group is seen by every skill that shares it. Stamping one raw number per
+skill would lose that sharing.
+
+### Known gaps against the executable
+
+These are measured differences found by reading the code against the traces
+in the next section; none of the open ones has a test that pins it yet. (Two were found
+and fixed: Magicka truncates `Int * (1 + fNPCBaseMagickaMult)` with the setting
+read from the load order, pinned by
+`auto_calc_magicka_truncates_and_follows_the_setting`; and the favored-attribute
+bonus reads `fAttributeClassPrimaryBonus` for the class's first favored
+attribute and `fAttributeClassSecondaryBonus` for the second, the primary
+alone when both name one attribute, pinned by
+`favored_attribute_bonuses_follow_their_settings_in_class_order`.)
+
+1. **Rounding.** Attribute and skill rounding is round-half-to-even, which
+   assumes the x87 default of the executable's `fistp`; the control word was
+   not measured.
+2. **Creature level scaling** rests on the Construction Set text alone; the
+   executable's creature path was not traced.
+3. **Flag timing.** Which trigger applies at spawn, level change and reload
+   for each of the four flag combinations is [#7022](https://github.com/matiaszanolli/ByroRedux/issues/7022).
+4. **Magicka Multiplier (#7198).** The player's Magicka is `trunc(Int x (1 + fPCBaseMagickaMult))` times
+   actor value 40 / 10 (the player's pools table below), with a zero multiplier read as 1.0. The engine
+   builds the first factor (`oblivion_ruleset_with_gmst`, `fPCBaseMagickaMult` and `fPCBaseHealthMult` read
+   from the load order) but not the second: no derived row can carry a factor that is rewritten at zero, and
+   nothing reads `MagickaMultiplier` (installed in the roster, index 40). An effect that writes it changes
+   nothing here; vanilla leaves it unset, so vanilla is unaffected. How often vanilla content writes it was
+   not measured.
+5. **PC-offset creature skills and attack damage (#7206).** #7040 locked the level multiply for Health,
+   Magicka and Fatigue only. A PC-offset creature's three skills and its attack damage are stamped as the
+   record authors them, with no level term:
+   - *Skills:* UESP *Oblivion:Leveled Lists* gives `CombatSkill = Combat + 2*CreatureLevel` (the same for
+     Magic and Stealth); the Construction Set's *Stats Tab - Creatures* is silent on skills, and the
+     executable's skill path was not traced for a level term (the capture decodes only the two-view remap).
+   - *Attack damage:* the CS gives "the entered value is added to 1/2 the level of the creature"; the creature
+     section's second word form (`0x51c980`) multiplies by `fCreatureCalcDamage`, which `Oblivion.esm` does not author and whose
+     executable default is 1.0. Which coefficient the game applies is unresolved.
+
+   Both wait on an observation in the original game (the #7022 smoke harness is the natural place) rather
+   than a choice here: 284 vanilla `CREA` records set the offset bit, so a PC-offset creature hits with its
+   authored base damage and carries base skills at every player level.
+
+### The player's pools (#7037)
+
+Measured on 2026-11-17 (`--player` in AnvilTheCountsArms, `obscript.cmd 0x14 GetAV`): the live player
+reads Health 45, Magicka 0, Fatigue 150 with Intelligence 50, Endurance 40, Strength 50, Agility 30,
+Willpower 30. These are the `Player` `NPC_` record's own stored values (`ACBS` flags 0, race `0x907`,
+class `CharactergenClass`, every skill 5, `DATA` Health 45, `ACBS` Magicka 0 and Fatigue 150): the
+chargen placeholder. The ruleset's player-only rows (Health `2 x End` = 80, Magicka `2 x Int` = 100,
+Fatigue `Str + End + Agi + Wil` = 150) exist but do not apply: `RulesetBuilder::Oblivion` builds the
+ruleset with `retain_player_bases`, so `player_derived_stats_system` leaves the authored bases alone.
+Two consequences: the Magicka bar read full (a zero maximum is a full bar, `hud::fraction`), and Health
+disagrees with the formula by 35.
+
+**Fixed for Magicka (#7037).** The ruleset now retains the carried base per stat
+(`CharacterRuleset::retain_player_base`): Health and Fatigue keep the record's values, Magicka follows its
+formula. Live: the player's Magicka reads 100 at Intelligence 50, 120 after `ModAV Intelligence 10`, and the
+HUD bar reads 0.75 after `DamageAV Magicka 30`. Pinned by
+`oblivion_profile_refreshes_all_three_player_pools` (it first retained Health and Fatigue per stat; both
+retains were dropped under #7041, below).
+
+**Fixed for Fatigue (#7041).** Once the load-time zeroing was found (below), Fatigue joined Magicka: it is its
+formula alone. Fatigue is a drained and regenerated pool like Fallout's Action Points, so the refresh moves
+the maximum (the base) and leaves the damage layer, which the regeneration tick (10 per second) restores.
+Live: 150 at the placeholder attributes; `DamageAV Fatigue 60` reads 0.60 on the HUD and regenerates to the
+maximum; `ModAV Endurance 10` raises the maximum to 160.
+
+**Fixed for Health (#7041).** The last retain is gone (`retain_player_base` was removed with it): Health is
+`2 x End` like the other two. Pinned by the same test and by
+`oblivion_player_template_derives_all_three_pools_from_the_formulas`. The reasoning is in the next paragraph.
+
+**What the engine's player level-up does with Health (#7041, checked 2026-11-17).** Nothing, for Oblivion.
+`LevelingModel::OBLIVION` is `SkillUse`: it has no XP curve, so `roll_levels` reaches no level, and
+`scripted_skill_system` advances skills for Skyrim's model only. The remaining writers of the player's level
+are ObScript `SetLevel` (it sets `CharacterLevel.level` and, as the GECK says, "not any of his stats") and the
+Skyrim-shaped `levelup pool` pick. No Oblivion code adds `0.1 x End` per level to Health
+(`oblivion_health_gain_per_level` is a tested helper with no caller). So the only Health the engine can
+reach today is the level-1 one, `2 x End`, and the retained record value (45) is simply wrong for it. When
+Oblivion skill-use leveling is built, the per-level gain must be kept apart from the refreshed base (the
+original adds it to the stored term, `0x66c3e0`). **Storage built (#7044):** `ActorValue::stored`, a layer of its
+own that `undamaged()` adds, and `apply_oblivion_level_up_health` (whole-number tenth of Endurance, rounded
+down) writes it. The permanent-modifier layer was the other candidate; it also carries abilities and gear, so a
+Fortify Health ability coming and going could not tell its share from the gains. Pinned by
+`oblivion_level_up_health_gains_survive_the_refresh_and_an_ability_coming_and_going`. The level-up calls the helper
+since #7052 ([skill-use.md](skill-use.md) §5): at a completed sleep, with the Endurance read after the level's attribute picks; a `FORMAT_MAJOR` bump (v136)
+rejects older saves, per the format's rule (`crates/save/src/snapshot.rs`).
+
+What `Oblivion.exe` does for the player. The base of actor values 8 to 11 is read through one function
+(`0x5ead00`, taken only when the actor is the player singleton at `0xb333c4`): `(stored + derived) x
+multiplier`, with `derived` from `0x5e2210`:
+
+| AV | derived (`0x5e2210`) | multiplier |
+|---|---|---|
+| 8 Health | `trunc(End x fPCBaseHealthMult)` (`0x548020`, `0xb37720`, exe default 2.0) | 1 |
+| 9 Magicka | `trunc(Int x (1 + fPCBaseMagickaMult))` (`0x5482b0` with the player flag set), GMST 1.0, so `2 x Int` | AV 40 (Magicka Multiplier) / 10 (`0xa3f3e8` is the double 10.0) |
+| 10 Fatigue | `Str + End + Agi + Wil` (`0x5479d0`) | 1 |
+
+`stored` is the base form's value read through its virtual at `+0x128`. **Decoded (#7041):** on `TESNPC`
+that slot is `0x5232d0`, which sends AV 8 to 11 to `TESActorBase`'s getter (`0x519d90`): Health is the
+record's stored health field (`0x519c10`), Magicka and Fatigue are the `ACBS` values (getters at `+0x48`
+and `+0x4c` of the `ACBS` sub-object at `+0x24`), and AV 11 is derived from Strength. So `stored` is the
+record's own `ACBS` / health value, as the engine already reads it. The character-creation calls of the
+calculator (`0x596ae5`, `0x5c29e6`, `0x5c2ac0`) pass 1 and skip the pools, so nothing there rewrites the
+`Player` record's pool fields. The flag-0 callers `0x50c77c` and `0x50cf9d` run the calculator on a freshly
+allocated actor, not the player. **Worked through (#7041).** The combine in `0x5ead00` is a plain `(stored + derived) x multiplier`: the
+zero test at `0x5ead3d` only rewrites a zero *multiplier* to 1.0 (the callee's two outputs are the derived
+term and the multiplier; arguments traced from the stack frame). The player level-up path (`0x66c3e0`) adds
+to the stored Health: `stored = trunc(stored + End x [0xb37708])` through the setter `0x519c50`, i.e. the
+stored term is the accumulation, and the formula term is separate. **Settled (#7041): the original zeroes the `Player` record's stored pools when it loads.** The tail of the
+`TESNPC` load function (`0x523fc0`..`0x5240f2`: vtable slot `0xe4` test, the calculator at `0x523ff4`) ends,
+for every NPC, with `cmp [esi+0xc], 7` at `0x5240b2` (form id 7, the `Player`), and then stores 0 through
+the Fatigue setter (`0x5240bc`), the Health setter (`0x5240c5`) and the Magicka setter (`0x5240ce`). The
+record's Health 45, Magicka 0 and Fatigue 150 are therefore placeholders that never reach the game; the
+player's pools start as the formula term alone (`2 x End`, `2 x Int`, `Str + End + Agi + Wil`), which is
+what UESP gives, and the level-up path (`0x66c3e0`) then accumulates into the stored Health on top. (The
+Health getter is read at `0x524096` before the zeroing, so a record Health of 0 or less still marks the
+actor dead first; the `Player`'s 45 does not.) The other callers of the pool setters: `0x5115ff` /
+`0x511617` / `0x51162c` are in a function that allocates a new actor record and, when the source actor is
+the player singleton, writes the player's computed Health, Fatigue and Magicka (through `0x5f1910` →
+`0x5ead00`) into it, which is a copy of the player, not the player's own start; `0x51a025` / `0x51a036` /
+`0x51a047` are the generic base-value setter on `TESActorBase`, whose own callers were not traced.
+Consequence for the engine: Fatigue and Magicka are stateless and take their formula; Health is the formula
+plus a separately kept accumulation, which the engine's retained total does not model.
+
+Not observed in the original game: the values a new game shows. The executable reading above predicts the
+formula values (Health `2 x End`, Magicka `2 x Int`, Fatigue the four-attribute sum) at level 1.
+
+## NPC auto-calc stats — LOCKED from the executable (#7008, OAV-POP-003)
+
+The `ClassAutoCalc` stat model of the Oblivion Actor Values PRD
+([oblivion-actor-values.md §3.4](../prd/oblivion-actor-values.md)). Source:
+the stat calculator `0x5222d0` of the local classic `Oblivion.exe` (SHA-256
+`a8f313845c1545e9a60e1e995961eef4c033115da9443f6d756341df3c2b7dc6`, `.text`
+unencrypted) and the `Oblivion.esm` GMST records, with UESP *Oblivion:NPCs*
+as the cross-check (level-1 values "identical to those for a player character
+created using the same race, gender, and class"). Static analysis only: what
+the calculator does is settled, **when** each flag combination reaches it is
+[#7022](https://github.com/matiaszanolli/ByroRedux/issues/7022).
+
+`n = level - 1`. Every rounded value is stored with x87 `fistp`
+(`0x52248d`, `0x5225c2`), a bare store of a float local, so it rounds by the
+thread's control word. **Settled from the executable (#7040): round to nearest
+even.** The calculator holds no control-word instruction. Below `0x980000`
+every `fnstcw` of the program is followed by exactly two `fldcw` (set, then
+restore): no code writes the word one way. The C runtime's math routines
+compare it with `0x027F` and reload that constant from `0xaa5098` when it
+differs; `0x027F` is round to nearest even at 53-bit precision. Direct3D 9
+uses single precision with round to nearest unless the device is created with
+`D3DCREATE_FPU_PRESERVE` ([Microsoft: D3DCREATE](https://learn.microsoft.com/en-us/windows/win32/direct3d9/d3dcreate)),
+which keeps the thread's word. Every case rounds to nearest even, and the
+operands are float locals (`fstp dword [esp+0x14]` before each store), the
+width the engine computes in: `round_ties_even` in
+`crates/plugin/src/esm/records/oblivion_population.rs` is the same rule. Not
+observed in the running game; the flag the game passes to Direct3D was not
+decoded, and it does not change the rounding mode.
+
+| Value | Rule (address) |
+|---|---|
+| Skill | minor `5 + 0.1n`; major (one of the class's 7 major skills) `25 + n`; the skill's specialization equals the class's: add `5 + 0.5n`; add the race skill bonus (7 pairs, `race+0x50`); cap 100 (`0x5224ff`–`0x5225ca`; doubles `0xa2fc80` 0.1, `0xa3f3f0` 5.0, `0xa492b0` 25.0, `0xa2faa0` 0.5). Per level this is the PRD's +0.1 / +0.6 / +1.0 / +1.5 |
+| Attribute | race base for the sex (`race+0x74` male, `+0x80` female) `+ fAttributeClassPrimaryBonus` if it is the class's first favored attribute `+ fAttributeClassSecondaryBonus` if the second (`0x5223ab`, `0x5223c2`; both exe defaults 5.0, no `Oblivion.esm` GMST) `+` for each skill it governs: `n` if the skill is major, `0.2n` otherwise (`0x5223d5`–`0x522464`, double `0xa38538`); cap 100. Each attribute has three governed skills, so the per-level step is `0.2(3 - m) + m` = 0.6 / 1.4 / 2.2 / 3 for `m` = 0 / 1 / 2 / 3 major skills |
+| Personality | Skipped for every NPC; the authored `DATA` byte stays (`0x522345`–`0x52234f`). Calculated only for form id 7, the `Player` NPC |
+| Luck | Calculated like any attribute, but no skill is governed by Luck: race base plus the favored bonus, at every level. The authored `DATA` byte is replaced |
+| Health | `base = trunc((Str + End) * fNPCAttributeHealthMult)`; `sum = base + n * (iNPCBasePerLevelHealthMult + [End is a favored attribute] + s)` with `s` = +1 Combat, -1 Magic, 0 Stealth; `factor = fLowLevelNPCBaseHealthMult + (1 - fLowLevelNPCBaseHealthMult) * n / iLowLevelNPCMaxLevel` when `n < iLowLevelNPCMaxLevel`, else 1; `Health = trunc(sum * factor)` (`0x547f80`; truncation `0x9828c0`). `Oblivion.esm` GMSTs: 0.5, 4, 0.4, 4 (the exe defaults differ: 0.5, 4, 0.25, 3). Form id 7 uses `End * fPCBaseHealthMult` (exe default 2.0, no GMST) through `0x548020` |
+| Magicka | `trunc(Int * (1 + fNPCBaseMagickaMult))`, GMST 1.5, so 2.5 x Intelligence (`0x5482b0`); the player record uses `fPCBaseMagickaMult` (GMST 1.0) |
+| Fatigue | `Str + End + Agi + Wil` (`0x5479d0`; arguments pushed at `0x5226b3`–`0x5226f5`) |
+| Encumbrance | Not in the calculator; 5 x Strength stays sourced from UESP only |
+
+Health, Magicka and Fatigue are skipped when the calculator's argument is
+nonzero (`0x522689`).
+
+**Callers (#7040).** Every call site resolved to its owner by the function's
+data references (the command table, the class vtables):
+
+| Call site | Owner | Argument |
+|---|---|---|
+| `0x44733a` | the walker `0x447300` over every NPC with ACBS bit 7; its callers are the data-load tail `0x40df80` (`0x40ebaa`, `0x40f45d`), the savegame load `0x465860` (`0x466990`), the level-up routine `0x66c3e0` (`0x66c551`) and the console command `RevertWorld` (`rw`, opcode `0x162`, `0x500c90`, call `0x500cf3`) | 0 (full) |
+| `0x523ff4` | a `TESNPC` virtual (`0x523f40`), after the bit 4 test | 0 |
+| `0x50ab73` | the script command `DuplicateNPCStats` (opcode `0x114f`, `0x50aaa0`): copies the source NPC's class (`+0x104`) and level to the destination, then recalculates it | 0 |
+| `0x50c77c` | `SetClass` (opcode `0x10f0`, `0x50c6e0`): stores the class, then recalculates | 0 |
+| `0x50cf9d` | `SetLevel` (opcode `0x1133`, `0x50cd30`): a non-player NPC base is recalculated after the level and its bounds are written; the player (`0xb333c4`) skips the whole tail, as the CS says ("will change the player's level, but not any of his/her stats", [CS: SetLevel](https://cs.uesp.net/wiki/SetLevel)) | 0 |
+| `0x596ae5` | `ClassMenu` virtual (`0x596980`, vtable offset `0x38`), the character-creation class screen | 1 (attributes and skills) |
+| `0x5c29e6`, `0x5c2ac0` | `RaceSexMenu` virtual (`0x5c2870`, vtable offset `0x28`), the race screen | 1 |
+
+The player's level-up is confirmed: `0x66c3e0` is reached from `0x5ac6a0`, then
+`0x5ac730`, then a `LevelUpMenu` virtual (`0x5ac7b0`, offset `0xc`). The
+calculator itself tests no ACBS flag: it needs a race (`+0xe8`) and a class
+(`+0x104`) and nothing else, and form id 7 (the `Player`) takes the player
+branch. The flag tests belong to the callers (bit 4 at the NPC load, bit 7 in
+the walker), so `SetLevel`, `SetClass` and `DuplicateNPCStats` recalculate
+any NPC whatever its flags, which is evidence for #7022. The engine does not
+do that: its `SetLevel` writes the level only
+(`crates/scripting/src/obscript_more/tail.rs`, `cmd_1133`) and `SetClass`
+stores the class only, so a script that retunes an NPC's level or class
+leaves its stats as spawned.
+
+**Triggers.** Two independent tests reach the calculator:
+
+- Bit 4 of `ACBS` flags ("Auto-calc stats"): the NPC load path calls the NPC
+  vtable slot `0xe4` (`0x519d40`, test at `0x519d46`) and then the calculator
+  at `0x523ff4`.
+- Bit 7 ("PC Level Offset"): the walker `0x447300` runs the calculator on
+  every NPC with the bit set (`0x44732b`–`0x44733a`). Its callers: the
+  data-load tail of the program start (`0x40df80`, calls at `0x40ebaa`,
+  `0x40f45d`), the savegame load (`0x465860`, call at `0x466990`) and
+  `0x66c3e0` (call at `0x66c551`, after a store through `0x519c50`; reached
+  from the `LevelUpMenu` virtual `0x5ac7b0`, so it is the player's level-up),
+  and the console command `RevertWorld` (`0x500cf3`).
+
+The engine therefore treats an NPC with either bit as auto-calc. Which of the
+two the editor's own controls map to, and the result of each of the four flag
+combinations over spawn, level change and reload, is the observation in #7022.
+
+### When the calculator runs — decoded, observation pending (#7022)
+
+What the executable's code paths say for each combination of ACBS bit 4 (auto-calc) and bit 7 (PC level
+offset). The in-game observation that checks it is [oblivion-autocalc-timing.md](../smoke-tests/oblivion-autocalc-timing.md)
+(a four-NPC test plugin, `scripts/oblivion-autocalc-plugin.py`); until it is run, every row is a prediction from
+static analysis, not an observed value.
+
+- **Bit 4** is tested once per NPC form in the form's init virtual, `0x523f40` (`TESNPC` vtable offset `0x6c`).
+  It returns at once when the form's flag `0x8` is set and sets it at the end (`0x46ab80`), so it runs once per
+  form; it links the race and class (`+0x104`), calls the calculator when the vtable `+0xe4` test (`0x519d40`:
+  form type `NPC_` and ACBS bit 4) holds, flags a Health of 0 or less as starts-dead (`0x46ab40`) and zeroes the
+  `Player` record's stored pools (`0x5240b2`). The calculator's level is `0x4677f0`, which for bit 7 clear is the
+  ACBS level. What calls the init pass, and so when in the session it runs, was not decoded.
+- **Bit 7** is tested in the walker `0x447300` over every NPC base form (`[0xb33a98]`, the data handler). It
+  runs at the end of the data load, on a savegame load, when the player levels up (`LevelUpMenu` to `0x66c3e0`)
+  and from the console command `RevertWorld`. With bit 7 set the level `0x4677f0` returns is the record's level
+  plus the player's current base level, within Calc Min and Max.
+- **Neither is on a cell-change path.** Every caller of the walker and of the calculator is in the lists above
+  (the data load, the savegame load, the level-up, `RevertWorld`, the three script commands, the two character
+  creation menus); none is cell-load or spawn code. A reload of a cell leaves the base form's values as the last
+  event left them, and an actor reads them from the base form on each use (`0x5ead00`).
+
+| Bits (auto-calc, offset) | Calculated | Level used | Recalculated |
+|---|---|---|---|
+| 0, 0 | never | none: the authored values | never (except by `SetLevel`, `SetClass`, `DuplicateNPCStats`, which need no flag) |
+| 1, 0 | once, in the init pass | the ACBS level | never |
+| 0, 1 | in the walker | player level + offset | data load, savegame load, level-up, `RevertWorld` |
+| 1, 1 | in the init pass, then in the walker | player level + offset | as 0, 1 |
+
+The engine stamps these values once, when an NPC spawns (`derive`, `oblivion_population.rs`), from the player's
+level at that moment (`player_level_for_spawn`). It agrees with the table for an NPC spawned after the last
+walker event, and for the auto-calc-only combination at any time; it differs for an already-spawned offset NPC
+when the player levels up (the executable recalculates every offset NPC; the engine keeps the spawn-time
+values). Oblivion has had a level-up since #7052, so the difference is reachable: this divergence is declared by the [skill-use leveling PRD](../prd/oblivion-skill-use-leveling.md) (comparison row 5, OSL-NG-003: the CS says the world follows the player's level only after a loading door or a cell change; owned by #7022 / #7040).
+
+### Creature level scaling — LOCKED from the executable (#7040)
+
+The CS says a PC-level-offset creature's Health, spell points and Fatigue are
+"multiplied by the level of the creature" ([CS: Stats Tab - Creatures](https://cs.uesp.net/wiki/Stats_Tab_-_Creatures)).
+The executable agrees, and shows where. Creatures have no calculator: the
+base form answers the value on every read.
+
+- The base value of an actor is `0x5ead00`; for every actor but the player it
+  asks the base form's virtual at `+0x128` and adds nothing (the multiplier is
+  1). For a `TESCreature` that virtual is `0x51d540`, which hands the pools
+  to `TESActorBase`'s getter `0x519d90`.
+- That getter reads Health through the form at `this+0x80` (virtual `+0x10`)
+  and spell points and Fatigue through the ACBS object at `this+0x24`
+  (virtuals `+0x48`, `+0x4c`). `TESCreature` overrides all three:
+  `0x51ca10` (Health), `0x51caa0` (spell points, ACBS word `+8`) and
+  `0x51cad0` (Fatigue, ACBS word `+0xa`).
+- Each returns the stored word unchanged when ACBS bit 7 ("PC Level Offset",
+  `acbs >> 7 & 1`) is clear. With it set, each returns `stored x max(level, 1)`
+  in 16-bit arithmetic (`imul cx, ax` then `movzx`), so a product past 65 535
+  wraps.
+- The level is the ACBS level getter `0x4677f0`: with bit 7 set it is the
+  record's level plus the player's base level (`0xb333c4`, the form's `+0x24`
+  data), then the Calc Min (`+0x10`) and Calc Max (`+0x12`) bounds; zero
+  bounds are disabled.
+
+The engine matches this (`creature_values` and `level` in
+`oblivion_population.rs`) with two differences, one fixed here:
+
+- **Fixed:** the product was an `f32` multiply, so 400 Health at level 200
+  read 80 000; the executable's is 14 464. It wraps now
+  (`creature_pools_scale_by_the_level_in_sixteen_bit_arithmetic`, which fails
+  on the old product).
+- **Open:** the executable multiplies on every read, so a PC-offset creature's
+  maxima follow the player's level while it lives; the engine stamps them once
+  at spawn (`actor_level_at_spawn`). The two agree until the player levels
+  with such a creature loaded, which is reachable since Oblivion's level-up
+  landed (#7052); the divergence is declared by the [skill-use leveling
+  PRD](../prd/oblivion-skill-use-leveling.md) (row 5, OSL-NG-003, owned by #7022 / #7040).
+- A second word form of the creature (`0x51c980`, vtable offset `0x10` of another sub-object) scales as
+  `stored + level x fCreatureCalcDamage` with the same level. The CS says the attack damage of a PC-level-offset
+  creature is "added to 1/2 the level of the creature", which is that formula at a setting of 0.5;
+  `Oblivion.esm` authors no `fCreatureCalcDamage` (byte scan, 2026-11-22), and the executable's default is 1.0,
+  so the coefficient is unadjudicated. The engine does read the attack damage (`stamp_creature_attack`,
+  `byroredux/src/npc_spawn/stamps.rs`, stamps `CreatureAttack` from the `DATA` value since 2026-11-15) but
+  stamps it **unscaled**: Known gaps, item 5 (#7206).
 
 ## Essential bleedout and encumbrance — LOCKED / NOT WIRED (#6284)
 

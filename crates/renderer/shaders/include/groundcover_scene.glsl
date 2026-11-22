@@ -35,8 +35,9 @@ struct GroundCoverCell {
     float waterY;
     /// Terrain-tile SSBO slot carrying this cell's splat layer diffuse
     /// indices — §12.3's ground-colour coupling samples them at the blade
-    /// base (#4056). `0xFFFFFFFF` when the cell has no splat terrain; a
-    /// valid slot can be 0, so "absent" cannot be 0.
+    /// base (#4056). `0xFFFFFFFF` when the cell has no tile (the tile table
+    /// was full; every drawn LAND cell asks for one, #7149); a valid slot can
+    /// be 0, so "absent" cannot be 0.
     uint terrainTileSlot;
     /// The BTXT base LTEX's own `cover_affinity` (#4903) — starts the
     /// density field's ordered mix in `byroGcAffinity`. Previously `pad1`.

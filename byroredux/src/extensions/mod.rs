@@ -203,6 +203,9 @@ pub(crate) use systems::{
     register_console_commands, register_legacy_script_principals,
     sync_extension_script_function_invoker, ExtensionHostSlot, SessionEventQueue,
 };
+/// The `UI.IsMenuOpen` snapshot the menu registry publishes (M48 A2's assertion surface).
+#[cfg(test)]
+pub(crate) use systems::ui_menu_snapshot;
 
 const EXTENSION_STATE_RESOURCE: &str = "ByroExtensionState";
 const MAX_PERSISTED_EXTENSION_ROWS: usize = 262_144;
@@ -447,8 +450,10 @@ fn form_ref(pair: FormIdPair) -> FormRef {
     FormRef::new(pair.plugin.0.to_be_bytes(), pair.local.0)
 }
 
-fn sdk_input_action(action: crate::interaction::InputAction) -> SdkInputAction {
-    match action {
+/// The SDK's name for an observable action; the three spell actions and `Wait` have none (they are not in the host
+/// contract's `input-action` enum, so they never reach an extension).
+fn sdk_input_action(action: crate::interaction::InputAction) -> Option<SdkInputAction> {
+    Some(match action {
         crate::interaction::InputAction::MoveForward => SdkInputAction::MoveForward,
         crate::interaction::InputAction::MoveBackward => SdkInputAction::MoveBackward,
         crate::interaction::InputAction::StrafeLeft => SdkInputAction::StrafeLeft,
@@ -465,7 +470,11 @@ fn sdk_input_action(action: crate::interaction::InputAction) -> SdkInputAction {
         crate::interaction::InputAction::Sneak => SdkInputAction::Sneak,
         crate::interaction::InputAction::ReadyWeapon => SdkInputAction::ReadyWeapon,
         crate::interaction::InputAction::Pause => SdkInputAction::Pause,
-    }
+        crate::interaction::InputAction::CastSpell
+        | crate::interaction::InputAction::NextSpell
+        | crate::interaction::InputAction::PreviousSpell
+        | crate::interaction::InputAction::Wait => return None,
+    })
 }
 
 /// Every production file in this directory, concatenated, for the

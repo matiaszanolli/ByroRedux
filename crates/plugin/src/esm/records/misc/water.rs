@@ -611,12 +611,11 @@ fn decode_data_oblivion(data: &[u8]) -> WaterParams {
     );
     // TES4 stores the editor's scroll speeds independently of the wind
     // direction. Preserve them as the first two visual normal-layer vectors.
-    if let (Some(x), Some(y)) = (read_f32_at(data, 28), read_f32_at(data, 32)) {
-        if x.is_finite() && y.is_finite() {
+    if let (Some(x), Some(y)) = (read_f32_at(data, 28), read_f32_at(data, 32))
+        && x.is_finite() && y.is_finite() {
             p.noise_wind_speeds[0] = (x * x + y * y).sqrt();
             p.noise_wind_directions[0] = y.atan2(x);
         }
-    }
     // The complete displacement simulator ends at byte 100. Oblivion's
     // 86-byte SwampWater/MS31Water variant contains only two three-float
     // simulator prefixes; byte 80 is their falloff, not wave amplitude.
@@ -988,19 +987,17 @@ fn apply_skyrim_dnam_tail(p: &mut WaterParams, data: &[u8]) {
     // same direct-sun lobe. Fold it into the canonical scalar so the renderer
     // does not need a new GPU field; absent/zero tails preserve the legacy
     // offset-160 value used by older fixtures.
-    if let Some(v) = read_f32_at(data, 200) {
-        if v.is_finite() && v > 0.0 {
+    if let Some(v) = read_f32_at(data, 200)
+        && v.is_finite() && v > 0.0 {
             p.specular_magnitude = (p.specular_magnitude * v).clamp(0.0, 8.0);
         }
-    }
     // Specular Brightness is the authored intensity for the same lobe. Its
     // default is one, so retain the compact canonical magnitude while
     // preserving per-water brightness variants.
-    if let Some(v) = read_f32_at(data, 168) {
-        if v.is_finite() && v > 0.0 {
+    if let Some(v) = read_f32_at(data, 168)
+        && v.is_finite() && v > 0.0 {
             p.specular_magnitude = (p.specular_magnitude * v).clamp(0.0, 8.0);
         }
-    }
     // Skyrim keeps Specular Radius separate from power and brightness. Carry
     // it through as a reflection-width control instead of dropping the tail.
     if let Some(v) = read_f32_at(data, 164) {
@@ -1010,11 +1007,10 @@ fn apply_skyrim_dnam_tail(p: &mut WaterParams, data: &[u8]) {
     // default is one, so folding it into the existing sun exponent preserves
     // older records while allowing Skyrim water variants to widen or tighten
     // the direct-sun lobe without growing the renderer ABI.
-    if let Some(v) = read_f32_at(data, 224) {
-        if v.is_finite() && v > 0.0 {
+    if let Some(v) = read_f32_at(data, 224)
+        && v.is_finite() && v > 0.0 {
             p.sun_specular_power = (p.sun_specular_power * v).clamp(1.0, 2048.0);
         }
-    }
     // Skyrim SE 232-byte records append the flow-map tile scale after the
     // common 228-byte DNAM payload. Older records retain the zero sentinel.
     if let Some(v) = read_f32_at(data, 228) {
@@ -1483,17 +1479,15 @@ pub fn parse_watr(
     // slid the layer across the current it was copied from, with a BU/s
     // speed in a UV/s slot. The translate already composes the NAM0
     // current onto every scroll layer from `linear_velocity`.
-    if let Some(sub) = subs.iter().find(|sub| sub.sub_type == *b"NAM0") {
-        if let (Some(x), Some(y)) = (read_f32_at(&sub.data, 0), read_f32_at(&sub.data, 4)) {
-            if x.hypot(y).is_finite() {
+    if let Some(sub) = subs.iter().find(|sub| sub.sub_type == *b"NAM0")
+        && let (Some(x), Some(y)) = (read_f32_at(&sub.data, 0), read_f32_at(&sub.data, 4))
+            && x.hypot(y).is_finite() {
                 // Preserve an authored all-zero NAM0 as an explicit
                 // sentinel. The translation boundary distinguishes that
                 // from a nonzero current, while retaining provenance for
                 // diagnostics and future per-game consumers.
                 out.linear_velocity = Some([x, -y]);
             }
-        }
-    }
     out
 }
 

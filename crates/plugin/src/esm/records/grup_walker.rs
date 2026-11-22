@@ -74,6 +74,7 @@ fn extract_records_with_modl_inner(
                 header.is_visible_when_distant(),
                 &subs,
                 &remap,
+                reader.game(),
             ) {
                 statics.insert(header.form_id, stat);
             }

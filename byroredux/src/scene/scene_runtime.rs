@@ -76,6 +76,11 @@ pub(crate) fn populate_scene_runtime(
     // M43 — Skyrim `COBJ` recipes and the keywords that make a furniture a crafting bench.
     crate::lockpick::install_lockpick_item(world, index);
     crate::armor::install_armor_book(world, index);
+    crate::player_cast::install_spell_cast_model(world, index);
+    crate::bow::install_bow_model(world, index);
+    crate::combat::install_block_model(world, index);
+    crate::combat::install_fall_model(world, index);
+    crate::combat::install_armor_rating_model(world, index);
     crate::lockpick::install_terminal_bases(world, index);
     crate::systems::mines::install_mine_book(world, index);
     crate::systems::attraction::install_attraction_book(world, index);
@@ -95,6 +100,14 @@ pub(crate) fn populate_scene_runtime(
     crate::systems::stance::install_sneak_movement(world, index);
     // The per-game crime fines (Oblivion's theft bounty), cleared for a game without a model.
     crate::crime::install_crime_model(world, index);
+    // M48 GUI-PAGE-005 — the native pages' words from the load order's game settings.
+    let labels = byroredux_core::ui_labels::UiLabels::resolve(|editor_id| index.game_setting_string(editor_id).map(str::to_owned));
+    log::info!(
+        "Native page labels: {} of {} from the game's settings",
+        labels.resolved_count(),
+        byroredux_core::ui_labels::LABELS.len()
+    );
+    world.insert_resource(labels);
     let imad_count = byroredux_scripting::install_image_space_modifiers(
         world,
         index.imagespace_modifiers.values().cloned(),
@@ -225,6 +238,8 @@ pub(crate) fn populate_scene_runtime(
     byroredux_scripting::install_owner_kinds(world, index);
     // Oblivion's guard classes (the `CLAS` Guard flag): `IsGuard`, `IsTurnArrest`.
     byroredux_scripting::guards::install_guard_classes(world, index);
+    // Oblivion skill-use leveling: the classes' specialization and major skills (and the player's class).
+    byroredux_scripting::oblivion_skill_use::install_skill_use_classes(world, index);
     // The jails (linked `PrisonMarker` door pairs): `PayFine`, `GoToJail`.
     byroredux_scripting::jail::install_jail_table(world, index);
     // M47.2 — Actor.GetCrimeFaction.
@@ -265,8 +280,8 @@ pub(crate) fn populate_scene_runtime(
     byroredux_scripting::install_bleedout_rules(world, index);
     // M47.3 — `PushActorAway`'s force cap (`fKnockbackForceMax`).
     crate::systems::knockdown::install_force_max(world, index);
-    // #6620 — the `MenuMode` codes that differ by game.
-    crate::systems::script_queries::install_menu_codes(world, index);
+    // #6620 / M48 GUI-REG-002 — the menu registry's per-game names, codes and flags.
+    crate::menu_stack::install_menu_registry(world, index.game);
     // M47.2 — Game.RewardPlayerXP's Intelligence modifier (FO4 GMSTs).
     crate::combat::install_xp_modifier_rules(world, index);
     // M47.2 — Fallout 3 / New Vegas kill experience (GMST level bands).
@@ -308,21 +323,29 @@ pub(crate) fn populate_scene_runtime(
             );
         }
     }
-    if index.game == byroredux_plugin::esm::reader::GameKind::Fallout3NV
+    if let Some(default_quest) = chargen_quest_default(index.game)
         && crate::components::NewGameStart::active(world)
     {
-        // New Vegas opens with VCG00 ("Welcome To Fabulous New Vegas"): its
-        // stage 0 moves the player to VCG01PlayerStartMarkerREF in Doc
-        // Mitchell's house, plays FNVIntro.bik and hands over to VCG01, the
-        // character-creation quest. The QUST is not Start Game Enabled and no
-        // record or script in the masters starts it or sets a stage on it;
-        // its own MenuMode block ("if starting at VCG00": stage 0 while the
-        // stage is below 5) runs under the original's new-game menus, which
-        // this engine does not have. So the engine starts it at stage 0, on a
-        // new game only: stage 0 takes the Pip-Boy and the controls, which
-        // would strand a session that began in a named cell or from a save.
-        const VCG00: u32 = 0x0010_2037;
-        if let Some(quest) = index.quests.get(&VCG00).filter(|quest| quest.editor_id.eq_ignore_ascii_case("VCG00")) {
+        // A Fallout 3 / New Vegas / Oblivion new game starts the quest named by
+        // the `sCharGenQuest` setting: the new-game handler of each executable
+        // looks the form up and enables the quest (Fallout3.exe
+        // `TESQuest::SetEnabled`, 0x775720; Oblivion.exe 0x5b5df0, which logs
+        // "Unable to find character generation quest '%s'." when it is absent).
+        // The shipped default INI sets it on Fallout 3 and New Vegas
+        // (`0001f388` = CG00 "Birth", `00102037` = VCG00); Oblivion's INI does
+        // not, so its compiled-in default stands (`0002466E` = Charactergen).
+        // The QUSTs are not Start Game Enabled and no record or script in the
+        // masters starts them or sets a stage on them; New Vegas's own
+        // MenuMode block ("if starting at VCG00": stage 0 while the stage is
+        // below 5) runs under the original's new-game menus, which this engine
+        // does not have. So the engine starts the quest at stage 0, on a new
+        // game only: stage 0 takes the Pip-Boy and the controls (New Vegas),
+        // the actors and the chargen flag (Fallout 3, Oblivion), which would
+        // strand a session that began in a named cell or from a save.
+        let ini = crate::game_ini::read_default_ini(&crate::cli_args::effective_args(), index.game);
+        let chargen = ini.as_deref().and_then(crate::game_ini::chargen_quest).unwrap_or(default_quest);
+        if let Some(quest) = index.quests.get(&chargen) {
+            log::info!("new game: starting chargen quest {} ({chargen:08X}) at stage 0", quest.editor_id);
             engine_start_quests += usize::from(byroredux_scripting::install_engine_start_quest(
                 world,
                 byroredux_scripting::QuestFormId(quest.form_id),
@@ -650,6 +673,20 @@ pub(crate) fn materialize_scene_actor_alias_stubs(
         );
     }
     spawned
+}
+
+
+/// The quest a new game starts when the default INI does not name one (`sCharGenQuest`'s compiled-in
+/// default): New Vegas's VCG00 (its executable is encrypted; the shipped INI sets the same form) and
+/// Oblivion's `Charactergen`, read out of `Oblivion.exe` (#6903 method). Fallout 3 and New Vegas share
+/// a game kind; Fallout 3's INI always sets it. `None` for a game without a chargen quest to start.
+fn chargen_quest_default(game: byroredux_plugin::esm::reader::GameKind) -> Option<u32> {
+    use byroredux_plugin::esm::reader::GameKind;
+    match game {
+        GameKind::Fallout3NV => Some(0x0010_2037),
+        GameKind::Oblivion => Some(0x0002_466E),
+        _ => None,
+    }
 }
 
 #[cfg(test)]

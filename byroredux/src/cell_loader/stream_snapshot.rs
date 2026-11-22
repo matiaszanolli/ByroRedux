@@ -379,11 +379,10 @@ pub(crate) fn restore_actor_snapshot(
     // #5501 — orientation is in §4's keep-set beside the position, with
     // the same divergence rule.
     let rotation_diverged = !rotation_matches(snapshot.rotation, authored_rotation);
-    if snapshot.position.distance(authored_position) > POSITION_DIVERGENCE_EPSILON
-        || rotation_diverged
-    {
-        if let Some(mut transforms) = world.query_mut::<Transform>() {
-            if let Some(transform) = transforms.get_mut(entity) {
+    if (snapshot.position.distance(authored_position) > POSITION_DIVERGENCE_EPSILON
+        || rotation_diverged)
+        && let Some(mut transforms) = world.query_mut::<Transform>()
+            && let Some(transform) = transforms.get_mut(entity) {
                 if snapshot.position.distance(authored_position)
                     > POSITION_DIVERGENCE_EPSILON
                 {
@@ -394,8 +393,6 @@ pub(crate) fn restore_actor_snapshot(
                 }
                 restored = true;
             }
-        }
-    }
 
     // #6074 — the runtime's id names the package whose behavior is
     // installed, and the first ambient tick installs nothing when its winner
@@ -433,24 +430,21 @@ pub(crate) fn restore_actor_snapshot(
         );
     }
 
-    if let Some(destination) = snapshot.travel_destination.filter(|_| package_restored) {
-        if let Some(mut travels) = world.query_mut::<TravelState>() {
+    if let Some(destination) = snapshot.travel_destination.filter(|_| package_restored)
+        && let Some(mut travels) = world.query_mut::<TravelState>() {
             travels.insert(entity, TravelState { destination });
             restored = true;
         }
-    }
-    if snapshot.traveled && package_restored {
-        if let Some(mut done) = world.query_mut::<Traveled>() {
+    if snapshot.traveled && package_restored
+        && let Some(mut done) = world.query_mut::<Traveled>() {
             done.insert(entity, Traveled);
             restored = true;
         }
-    }
-    if snapshot.escorted && package_restored {
-        if let Some(mut done) = world.query_mut::<Escorted>() {
+    if snapshot.escorted && package_restored
+        && let Some(mut done) = world.query_mut::<Escorted>() {
             done.insert(entity, Escorted);
             restored = true;
         }
-    }
 
     if let Some(furniture_form_id) = snapshot
         .seated_furniture_form_id
@@ -474,8 +468,8 @@ pub(crate) fn restore_actor_snapshot(
             && world
                 .try_resource::<crate::components::SandboxSitClip>()
                 .is_some_and(|clip| clip.0.is_some());
-        if restorable {
-            if let Some(furniture) =
+        if restorable
+            && let Some(furniture) =
                 byroredux_scripting::condition::resolve_entity_by_global_form_id(
                     world,
                     furniture_form_id,
@@ -534,16 +528,13 @@ pub(crate) fn restore_actor_snapshot(
                 {
                     reservations.0.insert((furniture, marker_idx), entity);
                 }
-                if let Some(carried) = snapshot.seated_animation_restore {
-                    if let Some(mut seats) = world.query_mut::<Seated>() {
-                        if let Some(seated) = seats.get_mut(entity) {
+                if let Some(carried) = snapshot.seated_animation_restore
+                    && let Some(mut seats) = world.query_mut::<Seated>()
+                        && let Some(seated) = seats.get_mut(entity) {
                             seated.animation_restore = carried;
                         }
-                    }
-                }
                 restored = true;
             }
-        }
     }
 
     restored

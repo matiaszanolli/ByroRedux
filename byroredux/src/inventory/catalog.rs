@@ -224,7 +224,9 @@ impl Resource for PlayerCharacterTemplate {}
 /// catalog it sits beside.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PlayerVitals {
-    pub(super) bars: Vec<(&'static str, u32)>,
+    /// `(label key, AVIF editor id, AVIF FormID)` per bar; the drawn label is the load order's
+    /// word for the key (`UiLabels`, GUI-PAGE-005).
+    pub(super) bars: Vec<(&'static str, &'static str, u32)>,
     /// #4675 — canonical AVIF editor id → resolved FormID, from the same
     /// `vital_bar_candidates` table. The HUD drivers' bar tables carry
     /// editor ids (never literal FormIDs — the old hardcoded 0x2C9/0x2D0
@@ -236,13 +238,20 @@ pub(crate) struct PlayerVitals {
     /// threshold — 1000 rads in `FalloutNV.esm`'s `Rad5`), so the gauge
     /// fills as the player nears the last stage. `None` when the profile
     /// names no radiation value or the master authors no stages.
-    pub(super) radiation: Option<(&'static str, u32, f32)>,
+    pub(super) radiation: Option<(&'static str, &'static str, u32, f32)>,
 }
 
 impl PlayerVitals {
     /// The resolved key for a canonical AVIF editor id (#4675).
     pub(crate) fn resolved(&self, editor_id: &str) -> Option<u32> {
         self.by_editor_id.get(editor_id).copied()
+    }
+
+    /// A table resolving exactly `pairs` (canonical editor id, AVIF FormID), for a test that needs the HUD
+    /// bars to resolve without building an `EsmIndex`.
+    #[cfg(test)]
+    pub(crate) fn resolving(pairs: &[(&'static str, u32)]) -> Self {
+        Self { bars: Vec::new(), by_editor_id: pairs.iter().copied().collect(), radiation: None }
     }
 }
 
@@ -251,9 +260,9 @@ impl Resource for PlayerVitals {}
 pub(super) fn build_player_vitals(index: &EsmIndex) -> PlayerVitals {
     // #4679 — the roster is `CharacterRulesProfile` data (same move #4447
     // made for `body_condition_base`), so a pool the game does not author
-    // — or an Oblivion profile whose pre-#3768 resolver cannot resolve
-    // any AVIF yet — drops out per candidate instead of the consumer
-    // guessing per GameKind.
+    // (or an index with no actor-value records installed) drops out per
+    // candidate instead of the consumer guessing per GameKind. Oblivion's
+    // pools resolve through the engine-supplied roster (#7010).
     let mut by_editor_id = FxHashMap::default();
     let bars = index
         .character_rules
@@ -262,7 +271,7 @@ pub(super) fn build_player_vitals(index: &EsmIndex) -> PlayerVitals {
         .filter_map(|&(label, editor_id)| {
             let avif = index.actor_value_form_id(editor_id)?;
             by_editor_id.insert(editor_id, avif);
-            Some((label, avif))
+            Some((label, editor_id, avif))
         })
         .collect();
     let radiation = index.character_rules.radiation_gauge().and_then(|(label, editor_id)| {
@@ -270,7 +279,7 @@ pub(super) fn build_player_vitals(index: &EsmIndex) -> PlayerVitals {
         let scale = index.radiation_stages.values().map(|stage| stage.threshold).max()?;
         (scale > 0).then(|| {
             by_editor_id.insert(editor_id, avif);
-            (label, avif, scale as f32)
+            (label, editor_id, avif, scale as f32)
         })
     });
     PlayerVitals { bars, by_editor_id, radiation }
@@ -285,22 +294,30 @@ pub(super) fn build_player_vitals(index: &EsmIndex) -> PlayerVitals {
 /// and restorative consumption read it.
 pub(crate) fn vitals_snapshot(
     world: &World,
-) -> Option<Vec<byroredux_debug_ui::VitalBarView>> {
+) -> Option<Vec<byroredux_native_ui::VitalBarView>> {
     use byroredux_core::ecs::components::ActorValues;
+    // M48 GUI-HUD-004 — an original HUD that is up draws the player's vitals itself (the vanilla
+    // meters the path service feeds, or the MenuXml bars); the native layer draws no second copy.
+    // `hud.off` hides the original, and the native bars come back.
+    if world.try_resource::<crate::hud::HudControl>().is_some_and(|control| control.visible) {
+        return None;
+    }
     let player = PlayerEntity::get(world)?;
     let vitals = world.try_resource::<PlayerVitals>()?;
     let values = world.get::<ActorValues>(player)?;
-    let mut bars: Vec<byroredux_debug_ui::VitalBarView> = vitals
+    let labels = world.try_resource::<byroredux_core::ui_labels::UiLabels>().map(|labels| labels.clone()).unwrap_or_default();
+    let mut bars: Vec<byroredux_native_ui::VitalBarView> = vitals
         .bars
         .iter()
-        .filter_map(|&(label, avif)| {
+        .filter_map(|&(label, actor_value, avif)| {
             let entry = values.get(avif)?;
             let max = entry.undamaged();
             if max <= 0.0 {
                 return None;
             }
-            Some(byroredux_debug_ui::VitalBarView {
-                label,
+            Some(byroredux_native_ui::VitalBarView {
+                label: labels.shared(label),
+                actor_value,
                 current: max - entry.damage,
                 max,
             })
@@ -309,9 +326,10 @@ pub(crate) fn vitals_snapshot(
     // The rad meter accumulates rather than depletes: it shows the current
     // rads (none yet is an empty gauge, not a missing one) against the
     // last sickness stage, and is drawn only beside real pools.
-    if let (Some((label, avif, scale)), false) = (vitals.radiation, bars.is_empty()) {
-        bars.push(byroredux_debug_ui::VitalBarView {
-            label,
+    if let (Some((label, actor_value, avif, scale)), false) = (vitals.radiation, bars.is_empty()) {
+        bars.push(byroredux_native_ui::VitalBarView {
+            label: labels.shared(label),
+            actor_value,
             current: values.current(avif).clamp(0.0, scale),
             max: scale,
         });
@@ -377,8 +395,8 @@ pub(super) fn build_player_character_template(index: &EsmIndex) -> PlayerCharact
     });
     if pairs.is_empty() {
         // #6767 — pure record provenance, independent of the derivation:
-        // Oblivion (no AVIF, `NpcStatModel::None`), FO76 and Starfield derive
-        // nothing but their Player still has a level and a race/class, as every
+        // Profiles without a population model can derive nothing, but their
+        // Player still has a level and a race/class, as every
         // NPC does (`stamp_character_components` is unconditional).
         return PlayerCharacterTemplate {
             level: Some(level.max(0) as u16),
@@ -547,6 +565,9 @@ pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
                 format!("Item {form_id:08X}")
             };
             let (category, mut details, equip_target) = describe_kind(&item.kind);
+            // Ammunition is equippable only where the game has a player bow (BOW-MOD-001): a Fallout gun takes the
+            // first accepted ammunition the player carries and has no arrow slot.
+            let equip_target = equip_target.filter(|target| *target != EquipTarget::Ammo || index.character_rules.bow().is_some());
             if matches!(item.kind, ItemKind::Aid { .. }) {
                 details = if let Some(plan) = restorations.get(&form_id) {
                     if plan.iter().any(|e| e.duration > 0) {
@@ -649,7 +670,7 @@ pub(super) fn describe_kind(kind: &ItemKind) -> (&'static str, String, Option<Eq
             format!("Damage {damage}"),
             Some(EquipTarget::Weapon),
         ),
-        ItemKind::Ammo { damage, .. } => ("Ammo", format!("Damage {damage:.1}"), None),
+        ItemKind::Ammo { damage, .. } => ("Ammo", format!("Damage {damage:.1}"), Some(EquipTarget::Ammo)),
         ItemKind::Aid { .. } => ("Aid", "Consumable".to_owned(), None),
         ItemKind::Ingredient { .. } => ("Ingredient", "Ingredient".to_owned(), None),
         ItemKind::Book { .. } => ("Book", "Book".to_owned(), None),
@@ -699,8 +720,8 @@ pub(super) fn build_player_template_for(index: &EsmIndex, player_form_id: u32) -
 
     // Skyrim+ authors initial worn gear through OTFT. Older games generally
     // equip armor directly from CNTO, so their carried armor is equipped below.
-    if let Some(outfit_id) = resolved.inventory.default_outfit {
-        if let Some(outfit) = index.outfits.get(&outfit_id) {
+    if let Some(outfit_id) = resolved.inventory.default_outfit
+        && let Some(outfit) = index.outfits.get(&outfit_id) {
             for &form_id in &outfit.items {
                 expanded.clear();
                 byroredux_plugin::equip::expand_leveled_form_id(
@@ -716,7 +737,6 @@ pub(super) fn build_player_template_for(index: &EsmIndex, player_form_id: u32) -
                 }
             }
         }
-    }
 
     let equip_carried_armor = resolved.inventory.default_outfit.is_none();
     for entry in &resolved.inventory.inventory {

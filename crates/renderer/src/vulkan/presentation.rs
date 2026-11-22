@@ -143,8 +143,10 @@ pub(crate) struct UiOverlayDraw {
     pub vertex_buffer: vk::Buffer,
     pub index_buffer: vk::Buffer,
     pub index_count: u32,
-    /// Index of the UI quad's `GpuInstance`, passed as `firstInstance`.
+    /// Index of the first UI layer's `GpuInstance`, passed as `firstInstance`.
     pub instance_index: u32,
+    /// How many layers (consecutive instances, bottom to top) to draw.
+    pub instance_count: u32,
 }
 
 /// The per-swapchain inputs [`PresentationPipeline::new`] binds: the
@@ -744,7 +746,7 @@ impl PresentationPipeline {
             );
             device.cmd_bind_vertex_buffers(cmd, 0, &[overlay.vertex_buffer], &[0]);
             device.cmd_bind_index_buffer(cmd, overlay.index_buffer, 0, vk::IndexType::UINT32);
-            device.cmd_draw_indexed(cmd, overlay.index_count, 1, 0, 0, overlay.instance_index);
+            device.cmd_draw_indexed(cmd, overlay.index_count, overlay.instance_count, 0, 0, overlay.instance_index);
         }
     }
 

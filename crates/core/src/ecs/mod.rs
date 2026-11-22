@@ -49,7 +49,7 @@ pub use query::{ComponentRef, QueryRead, QueryWrite};
 pub use resource::{Resource, ResourceRead, ResourceWrite};
 pub use resources::{
     format_gpu_bracket_ms, CpuFrameTimings, DebugStats, DeltaTime, DepthCapture,
-    DepthCaptureBridge, EngineConfig, FindingKind, ImageHealth, LodCoverageStats, OwnerClass,
+    DepthCaptureBridge, EngineConfig, FindingKind, GiCacheStats, GiCacheTelemetry, ImageHealth, LodCoverageStats, OwnerClass,
     OwnershipFinding, OwnershipSnapshot, OwnershipTelemetry, OwnershipTracker, ReclaimPolicy,
     RtIntegrityStats, SchedulerAccessReport, ScratchRow, ScratchTelemetry, ScreenshotBridge,
     SelectedRef, ShadowMaskCensus, SkinCoverageStats, SystemList, TerrainSeamStats,

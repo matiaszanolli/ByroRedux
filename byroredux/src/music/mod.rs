@@ -13,6 +13,7 @@ pub(crate) use translate::Sting;
 
 use byroredux_core::ecs::world::World;
 use controller::{Inputs, MusicOutput};
+use std::collections::HashMap;
 use std::sync::Arc;
 use translate::{Catalog, Place};
 
@@ -79,10 +80,16 @@ impl MusicOutput for AudioOutput<'_> {
 /// `NOT_SAVED_BY_DESIGN`: a translation of the load order.
 #[derive(Default)]
 pub(crate) struct MusicCatalog {
-    /// The `LoadedCellIndex` it was built from, by address.
-    index: usize,
+    /// The `LoadedCellIndex` it was built from. A `Weak`, compared by `Weak::ptr_eq`, so a later
+    /// index cannot reuse the address of a freed one and keep a stale catalog (#7114).
+    index: std::sync::Weak<byroredux_plugin::esm::records::EsmIndex>,
     catalog: Option<Arc<Catalog>>,
-    place: Option<Place>,
+    /// Kept behind an `Arc`, so a frame in the same place reuses it rather than building the key
+    /// again ([`current_place`], #6946).
+    place: Option<Arc<Place>>,
+    /// `CellMusicTypes::overrides` as of [`Self::cell_music_changes`]: copied when the count moves,
+    /// not every frame (#6946).
+    overrides: HashMap<u32, u32>,
     /// The New Vegas audio marker whose area the player is in (MUS-SRC-005).
     marker: Option<translate::Marker>,
     /// What that marker's controller counts around the player (#6904, #6906).
@@ -109,9 +116,14 @@ impl byroredux_core::ecs::Resource for MusicCatalog {}
 /// to the player while a live actor of that faction is found, and whether a live actor that would
 /// attack the player is (tension). New Vegas counts the player's compass targets, which follow
 /// detection; until the Sneak and Detection PRD lands, an actor counts while inside the marker's area.
+/// Tension is tested only under a controller that lists a Dungeon set, and the actors are not walked
+/// at all when there is neither tension nor a faction to count (#6946).
 fn surroundings(world: &World, marker: &translate::Marker, faction: Option<u32>, player: byroredux_core::ecs::EntityId) -> translate::Surroundings {
     use byroredux_core::ecs::components::{Dead, FactionRanks, GlobalTransform};
     let mut around = translate::Surroundings::default();
+    if faction.is_none() && !marker.counts_tension {
+        return around;
+    }
     // The live actors inside the area, and whether one belongs to the faction; the guards drop before
     // the hostility test takes these locks again.
     let (inside, faction_found) = {
@@ -131,7 +143,9 @@ fn surroundings(world: &World, marker: &translate::Marker, faction: Option<u32>,
             let d = [at[0] - marker.center[0], at[1] - marker.center[1], at[2] - marker.center[2]];
             if (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() <= marker.radius {
                 faction_found |= faction.is_some_and(|faction| actor_ranks.0.iter().any(|(f, rank)| *f == faction && *rank >= 0));
-                inside.push(actor);
+                if marker.counts_tension {
+                    inside.push(actor);
+                }
             }
         }
         (inside, faction_found)
@@ -143,13 +157,20 @@ fn surroundings(world: &World, marker: &translate::Marker, faction: Option<u32>,
     around
 }
 
-/// The player's place for music, from the session's cell contexts.
-fn current_place(world: &World) -> Option<Place> {
+/// The player's place for music, from the session's cell contexts: `last` again while the player is
+/// still there, so a frame in the same place builds no key (#6946).
+fn current_place(world: &World, last: Option<Arc<Place>>) -> Option<Arc<Place>> {
     if let Some(cell) = world.try_resource::<crate::components::CurrentCellContext>() {
-        return Some(Place::Interior { cell: cell.cell_editor_id.to_ascii_lowercase() });
+        let here = |last: &Arc<Place>| matches!(&**last, Place::Interior { cell: key } if key.eq_ignore_ascii_case(&cell.cell_editor_id));
+        return Some(last.filter(here).unwrap_or_else(|| Arc::new(Place::Interior { cell: cell.cell_editor_id.to_ascii_lowercase() })));
     }
     let exterior = world.try_resource::<crate::components::CurrentExteriorContext>()?;
-    Some(Place::Exterior { worldspace: exterior.worldspace_key.to_ascii_lowercase(), grid: exterior.grid })
+    let here = |last: &Arc<Place>| {
+        matches!(&**last, Place::Exterior { worldspace, grid } if *grid == exterior.grid && worldspace.eq_ignore_ascii_case(&exterior.worldspace_key))
+    };
+    Some(last.filter(here).unwrap_or_else(|| {
+        Arc::new(Place::Exterior { worldspace: exterior.worldspace_key.to_ascii_lowercase(), grid: exterior.grid })
+    }))
 }
 
 /// Queue a sting for the next frame: a level-up awards it where the level is awarded, the path
@@ -182,8 +203,8 @@ pub(crate) fn end_script_layer(world: &World) {
 /// `MusicCatalog`, then `SoundArchiveProvider` while it builds: the order [`music_system`] keeps.
 fn current_catalog(world: &World, index: &Arc<byroredux_plugin::esm::records::EsmIndex>) -> Option<Arc<Catalog>> {
     let mut state = world.try_resource_mut::<MusicCatalog>()?;
-    let address = Arc::as_ptr(index) as usize;
-    if state.index != address || state.catalog.is_none() {
+    let built_for = Arc::downgrade(index);
+    if !std::sync::Weak::ptr_eq(&state.index, &built_for) || state.catalog.is_none() {
         let keys = world
             .try_resource::<crate::asset_provider::SoundArchiveProvider>()
             .map(|provider| provider.music_keys())
@@ -200,7 +221,7 @@ fn current_catalog(world: &World, index: &Arc<byroredux_plugin::esm::records::Es
             catalog.recovery_secs
         );
         state.catalog = Some(Arc::new(catalog));
-        state.index = address;
+        state.index = built_for;
         state.place = None;
     }
     state.catalog.clone()
@@ -227,8 +248,11 @@ pub(crate) fn music_system(world: &World, dt: f32) {
         .map(|p| byroredux_core::math::coord::yup_to_zup_pos(p.to_array()));
     // Location: re-translated whenever the place or the audio-marker area changes (MUS-SEL-005 keeps
     // an equal directive playing).
-    let place = current_place(world);
-    let marker = place.as_ref().zip(player_position).and_then(|(place, at)| catalog.marker_at(place, at));
+    // What the last frame kept, read and released before the other resources (#6920).
+    let (last_place, seen_changes) =
+        world.try_resource::<MusicCatalog>().map_or((None, None), |state| (state.place.clone(), Some(state.cell_music_changes)));
+    let place = current_place(world, last_place);
+    let marker = place.as_deref().zip(player_position).and_then(|(place, at)| catalog.marker_at(place, at));
     // What the controller counts around the player, re-read each frame so a SetEnemy /
     // SetFactionReaction, or an actor arriving or dying, changes the music where the player stands
     // (#6904, #6906).
@@ -236,9 +260,10 @@ pub(crate) fn music_system(world: &World, dt: f32) {
         let faction = index.media_locations.get(&marker.controller).and_then(|aloc| aloc.conditional_faction);
         surroundings(world, &marker, faction, player)
     });
+    // The overrides are copied only when `SetCellMusicType` changed them (#6946).
     let (cell_music_changes, overrides) = world
         .try_resource::<byroredux_scripting::obscript_more::CellMusicTypes>()
-        .map_or_else(Default::default, |types| (types.changes, types.overrides.clone()));
+        .map_or((0, None), |types| (types.changes, (Some(types.changes) != seen_changes).then(|| types.overrides.clone())));
     let requests = world
         .try_resource_mut::<byroredux_scripting::obscript_more::PendingMusic>()
         .map(|mut pending| std::mem::take(&mut pending.0))
@@ -272,20 +297,23 @@ pub(crate) fn music_system(world: &World, dt: f32) {
         if marker != state.marker {
             state.roll = music.roll(u64::from(u32::MAX));
         }
+        if let Some(overrides) = overrides {
+            state.overrides = overrides;
+        }
         let mut cell_category = None;
         if place != state.place
             || marker != state.marker
             || around != state.around
             || cell_music_changes != state.cell_music_changes
         {
-            let directive = place.as_ref().map(|place| {
+            let directive = place.as_deref().map(|place| {
                 marker
                     .and_then(|marker| catalog.marker_location(&index, &marker, around, state.roll))
-                    .unwrap_or_else(|| catalog.location_with(&index, place, &overrides))
+                    .unwrap_or_else(|| catalog.location_with(&index, place, &state.overrides))
             });
             // OBSE `GetCellMusicType` answers the player's cell's own category (MUS-SCR-004),
             // written back once the music locks are released.
-            cell_category = Some(place.as_ref().map_or(0, |place| Catalog::cell_category(&index, place, &overrides)));
+            cell_category = Some(place.as_deref().map_or(0, |place| Catalog::cell_category(&index, place, &state.overrides)));
             // Oblivion: a stream outlives a place change into its own category only (#6903).
             let place_category = directive.as_ref().and_then(|d| d.category).filter(|_| place != state.place);
             music.set(Layer::Location, directive, &mut out);
@@ -308,7 +336,7 @@ pub(crate) fn music_system(world: &World, dt: f32) {
             music.set(Layer::Sting, None, &mut out);
         }
         if let Some(track) = requests.last() {
-            let directive = catalog.music_type(&index, track.form_id, "PlayMusic");
+            let directive = catalog.play_music(&index, track.form_id);
             music.set(Layer::Script, Some(directive), &mut out);
         }
         if let Some(text) = streams.last() {
@@ -349,14 +377,13 @@ pub(crate) fn music_system(world: &World, dt: f32) {
         };
         let (place, marker) = (state.place.clone(), state.marker);
         let (around, roll) = (state.around, state.roll);
-        music.step(inputs, || catalog.battle(&index, place.as_ref(), marker.as_ref(), around, roll), &mut out);
+        music.step(inputs, || catalog.battle(&index, place.as_deref(), marker.as_ref(), around, roll), &mut out);
         cell_category
     };
-    if let Some(category) = cell_category {
-        if let Some(mut types) = world.try_resource_mut::<byroredux_scripting::obscript_more::CellMusicTypes>() {
+    if let Some(category) = cell_category
+        && let Some(mut types) = world.try_resource_mut::<byroredux_scripting::obscript_more::CellMusicTypes>() {
             types.current = category;
         }
-    }
 }
 
 /// `music.status` (MUS-RPT-001).
@@ -370,7 +397,7 @@ pub(crate) fn status_lines(world: &World) -> Vec<String> {
     let out = ReadOnlyOutput(audio.as_deref());
     let mut lines = music.status(&out);
     if let Some(state) = state.as_deref() {
-        let place = match &state.place {
+        let place = match state.place.as_deref() {
             Some(Place::Interior { cell }) => format!("interior {cell}"),
             Some(Place::Exterior { worldspace, grid }) => format!("exterior {worldspace} {grid:?}"),
             None => "none".to_string(),

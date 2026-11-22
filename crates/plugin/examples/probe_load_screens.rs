@@ -27,17 +27,15 @@ fn main() -> anyhow::Result<()> {
         StringTableSet::load_with_archive(path, "english", |relative| {
             let data_dir = path.parent().unwrap_or(std::path::Path::new("."));
             let interface_bsa = data_dir.join("Skyrim - Interface.bsa");
-            if let Ok(archive) = byroredux_bsa::BsaArchive::open(&interface_bsa) {
-                if let Ok(extracted) = archive.extract(relative) {
+            if let Ok(archive) = byroredux_bsa::BsaArchive::open(&interface_bsa)
+                && let Ok(extracted) = archive.extract(relative) {
                     return Some(extracted);
                 }
-            }
             let interface_ba2 = data_dir.join("Fallout4 - Interface.ba2");
-            if let Ok(archive) = byroredux_bsa::Ba2Archive::open(&interface_ba2) {
-                if let Ok(extracted) = archive.extract(relative) {
+            if let Ok(archive) = byroredux_bsa::Ba2Archive::open(&interface_ba2)
+                && let Ok(extracted) = archive.extract(relative) {
                     return Some(extracted);
                 }
-            }
             None
         })
     } else {

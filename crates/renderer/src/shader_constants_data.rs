@@ -131,11 +131,13 @@ const _: () = {
 // - parked and scene-static (history mode >= `HISTORY_MODE_SCENE_STATIC`):
 //   a 1024-frame tail with a 0.002 floor — measured on the Cornell penumbra
 //   at one shadow ray per pixel (`cornell_parked_penumbra_converges_at_one_shadow_ray`);
-// - otherwise: a 16-frame tail with a 0.1 floor, so ghosts stay responsive.
+// - camera or scene motion: a 16-frame tail with a 0.1 floor;
+// - history touched by a moving blocker: a 0.3 floor through its settle period.
 pub const RESTIR_HISTORY_CAP_PARKED: f32 = 1024.0;
 pub const RESTIR_HISTORY_CAP_MOVING: f32 = 16.0;
 pub const RESTIR_ALPHA_FLOOR_PARKED: f32 = 0.002;
 pub const RESTIR_ALPHA_FLOOR_MOVING: f32 = 0.1;
+pub const RESTIR_ALPHA_FLOOR_MOVER_TAINTED: f32 = 0.3;
 // ReSTIR surface/plane compatibility gates shared by temporal reuse, decal
 // substrate reuse and spatial-neighbour rejection in `triangle.frag`.
 pub const RESTIR_SURFACE_NORMAL_COS: f32 = 0.906;
@@ -146,8 +148,8 @@ pub const RESTIR_VIEW_COS_FLOOR: f32 = 0.1;
 // Per-pixel mover taint: a pixel whose selected shadow ray hit an instance
 // that moved this build (`INSTANCE_FLAG_MOVED_THIS_FRAME`) keeps the moving
 // tail, and keeps it for this many hit-free frames past the moving cap before
-// rejoining the parked tail, so a shadow an occluder leaves behind fades at
-// the moving floor instead of ghosting at the parked one.
+// rejoining the parked tail, so a shadow an occluder leaves behind keeps
+// fading at the faster mover-tainted floor.
 pub const RESTIR_MOVER_SETTLE_FRAMES: f32 = 32.0;
 // #6250 — capacity of the moved-surface-ID set (scene set binding 25): the
 // per-frame list of stable surface IDs flagged `INSTANCE_FLAG_MOVED_THIS_FRAME`
@@ -215,6 +217,8 @@ const _: () = {
     assert!(RESTIR_HISTORY_CAP_PARKED <= HALF_INTEGER_EXACT_MAX);
     assert!(RESTIR_HISTORY_CAP_MOVING <= RESTIR_HISTORY_CAP_PARKED);
     assert!(RESTIR_ALPHA_FLOOR_PARKED <= RESTIR_ALPHA_FLOOR_MOVING);
+    assert!(RESTIR_ALPHA_FLOOR_MOVING <= RESTIR_ALPHA_FLOOR_MOVER_TAINTED);
+    assert!(RESTIR_ALPHA_FLOOR_MOVER_TAINTED <= 1.0);
     // The tainted count runs past the moving cap to the settle end; it must
     // stay integer-exact in the half it is stored in.
     assert!(RESTIR_HISTORY_CAP_MOVING + RESTIR_MOVER_SETTLE_FRAMES <= HALF_INTEGER_EXACT_MAX);
@@ -1094,6 +1098,58 @@ pub const MAX_BONES_PER_MESH: u32 = byroredux_core::ecs::components::MAX_BONES_P
 // `layout(local_size_x = SKIN_WORKGROUP_SIZE)` qualifier. #1758 / TD7-001.
 pub const SKIN_WORKGROUP_SIZE: u32 = 64;
 
+// TSD-4.1 terrain displacement patches (#7152; `docs/engine/terrain-displacement.md`
+// §3.1). A patch is a 64×64-quad lattice over one 256-unit (3.66 m) square of a
+// LAND cell, 16×16 patches per cell, so the lattice step is 4 units (5.7 cm) and
+// 32 lattice steps span one 128-unit LAND vertex spacing. `terrain_patch.comp`
+// writes `TERRAIN_PATCH_VERTEX_COUNT` vertices per slot in place into a reserved
+// mesh of the global vertex pool; `vulkan/terrain_patch.rs` reserves
+// `TERRAIN_PATCH_SLOTS` of them at start-up and builds the shared lattice
+// topology from the same constants.
+pub const TERRAIN_PATCH_QUADS: u32 = 64;
+pub const TERRAIN_PATCH_VERTS: u32 = TERRAIN_PATCH_QUADS + 1;
+pub const TERRAIN_PATCH_VERTEX_COUNT: u32 = TERRAIN_PATCH_VERTS * TERRAIN_PATCH_VERTS;
+pub const TERRAIN_PATCHES_PER_CELL_SIDE: u32 = 16;
+/// Lattice steps per LAND vertex spacing (32): the cell's 1024-step lattice
+/// over its 32 LAND quads.
+pub const TERRAIN_PATCH_LATTICE_PER_LAND_SPACING: u32 =
+    TERRAIN_PATCH_QUADS * TERRAIN_PATCHES_PER_CELL_SIDE / (LAND_GRID_VERTS - 1);
+/// World units between lattice vertices (4.0).
+pub const TERRAIN_PATCH_LATTICE_STEP: f32 =
+    LAND_VERTEX_SPACING / TERRAIN_PATCH_LATTICE_PER_LAND_SPACING as f32;
+/// The cell's lattice side, 1024 steps.
+pub const TERRAIN_PATCH_CELL_LATTICE: u32 = TERRAIN_PATCH_QUADS * TERRAIN_PATCHES_PER_CELL_SIDE;
+pub const TERRAIN_PATCH_SLOTS: u32 = 24;
+/// The two-level lattice (#7152): a patch past the host's fine range draws at
+/// every second lattice point — 32×32 quads at 8 units (11.4 cm), a quarter of
+/// the triangles. Its vertices are the fine lattice's even ones, evaluated by
+/// the same function, and a fine patch beside a coarse one snaps its odd
+/// border vertices onto the coarse edge, so the levels meet without a crack.
+/// Every slot reserves one mesh of each level.
+pub const TERRAIN_PATCH_COARSE_STEP: u32 = 2;
+pub const TERRAIN_PATCH_COARSE_QUADS: u32 = TERRAIN_PATCH_QUADS / TERRAIN_PATCH_COARSE_STEP;
+pub const TERRAIN_PATCH_COARSE_VERTS: u32 = TERRAIN_PATCH_COARSE_QUADS + 1;
+pub const TERRAIN_PATCH_COARSE_VERTEX_COUNT: u32 =
+    TERRAIN_PATCH_COARSE_VERTS * TERRAIN_PATCH_COARSE_VERTS;
+/// `TerrainPatchPush.offsets.w` packs the missing-neighbour mask in the low
+/// bits and the coarse-neighbour mask above this shift (same 3×3 bit order).
+pub const TERRAIN_PATCH_COARSE_MASK_SHIFT: u32 = 16;
+/// #7221 — the SBT record offset a terrain patch's TLAS instance carries. The
+/// renderer traces with ray queries only, so the field is otherwise always 0;
+/// the ground-cover cover trace (`include/groundcover_cover.glsl`) reads it to
+/// skip the patches, which are the terrain's own relief, not placed geometry.
+pub const TLAS_SBT_TAG_TERRAIN_PATCH: u32 = 1;
+/// One invocation per patch vertex. Emitted without the `u` suffix for the
+/// `local_size_x` qualifier, like `SKIN_WORKGROUP_SIZE`.
+pub const TERRAIN_PATCH_WORKGROUP: u32 = 64;
+/// Edge readback samples per slot: the four border rows/columns, in the order
+/// row 0, row `TERRAIN_PATCH_QUADS`, column 0, column `TERRAIN_PATCH_QUADS`.
+pub const TERRAIN_PATCH_EDGE_SAMPLES: u32 = 4 * TERRAIN_PATCH_VERTS;
+/// Readback words per slot: `TERRAIN_PATCH_EDGE_SAMPLES` (world Y, displacement)
+/// pairs as float bits, then the slot's largest displacement (float bits, via
+/// `atomicMax`) and three pad words.
+pub const TERRAIN_PATCH_READBACK_WORDS: u32 = 2 * TERRAIN_PATCH_EDGE_SAMPLES + 4;
+
 // Material kind enum (GpuMaterial.materialKind).
 // Authoritative Rust-side values live in `scene_buffer/constants.rs`. #1401.
 // MULTI_LAYER_PARALLAX is the one low-range (NIF-forwarded shader_type)
@@ -1795,6 +1851,9 @@ pub const INSTANCE_FLAG_LOD_BLOCK: u32 = 1 << 9;
 // direct-light history (the per-pixel replacement for the scene-wide
 // "anything moved" gate).
 pub const INSTANCE_FLAG_MOVED_THIS_FRAME: u32 = 1 << 10;
+// bit 11 — a TSD-4 terrain displacement patch (#7152): its geometry carries the
+// relief, so the fragment shader skips the TSD-3 parallax march on it.
+pub const INSTANCE_FLAG_TERRAIN_PATCH: u32 = 1 << 11;
 // bit 8 — diffuse texture carries a genuine authored alpha channel
 // (BC2/BC3/BC7/RGBA). Set CPU-side from the cached `handle_has_alpha`
 // classification (`format_has_alpha`, which excludes BC1_RGBA). When
@@ -2306,7 +2365,14 @@ pub const RENDER_DEBUG_FILTERED_DIRECT: u32 = 18;
 // so wherever a medium is dense it shows the medium's opacity, which does not depend on lighting; this view has
 // no opacity floor, so a shaft's in-scattered light (and its absence) can be measured directly (#6727).
 pub const RENDER_DEBUG_VOLUMETRIC_RADIANCE: u32 = 19;
-pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_VOLUMETRIC_RADIANCE;
+pub const RENDER_DEBUG_SHADOW_FILTER_RADIUS: u32 = 20;
+// RCG-DBG-001 — the radiance cache's level and whether the lookup hit, per pixel. Magenta is "no sample":
+// the main pass paints it for every fragment until the cache's lookup exists.
+pub const RENDER_DEBUG_RADIANCE_CACHE: u32 = 21;
+// RCG-VAL-002 — the eligible-pixel mask: white where a pixel's primary surface meets the material
+// conditions of GI eligibility (PRD §2), black elsewhere, with no ray-budget or distance term in it.
+pub const RENDER_DEBUG_GI_ELIGIBLE: u32 = 22;
+pub const RENDER_DEBUG_MODE_MAX: u32 = RENDER_DEBUG_GI_ELIGIBLE;
 pub const RENDER_DEBUG_LEGACY_FLAGS: u32 = u32::MAX;
 
 pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
@@ -2333,6 +2399,9 @@ pub const RENDER_DEBUG_MODES: &[(&str, u32)] = &[
     ("RENDER_DEBUG_TRACED_SHARE", RENDER_DEBUG_TRACED_SHARE),
     ("RENDER_DEBUG_FILTERED_DIRECT", RENDER_DEBUG_FILTERED_DIRECT),
     ("RENDER_DEBUG_VOLUMETRIC_RADIANCE", RENDER_DEBUG_VOLUMETRIC_RADIANCE),
+    ("RENDER_DEBUG_SHADOW_FILTER_RADIUS", RENDER_DEBUG_SHADOW_FILTER_RADIUS),
+    ("RENDER_DEBUG_RADIANCE_CACHE", RENDER_DEBUG_RADIANCE_CACHE),
+    ("RENDER_DEBUG_GI_ELIGIBLE", RENDER_DEBUG_GI_ELIGIBLE),
     ("RENDER_DEBUG_MODE_MAX", RENDER_DEBUG_MODE_MAX),
     ("RENDER_DEBUG_LEGACY_FLAGS", RENDER_DEBUG_LEGACY_FLAGS),
 ];
@@ -2857,6 +2926,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Float RESTIR_HISTORY_CAP_MOVING),
     shader_define!(Float RESTIR_ALPHA_FLOOR_PARKED),
     shader_define!(Float RESTIR_ALPHA_FLOOR_MOVING),
+    shader_define!(Float RESTIR_ALPHA_FLOOR_MOVER_TAINTED),
     shader_define!(Float RESTIR_SURFACE_NORMAL_COS),
     shader_define!(Float RESTIR_TEMPORAL_DEPTH_FLOOR),
     shader_define!(Float RESTIR_SUBSTRATE_DEPTH_FLOOR),
@@ -3071,6 +3141,25 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Uint MAX_BONES_PER_MESH),
     shader_define!(UintPlain SKIN_WORKGROUP_SIZE),
     HeaderLine::Blank,
+    HeaderLine::Comment("TSD-4.1 terrain displacement patches (#7152)"),
+    shader_define!(Uint TERRAIN_PATCH_QUADS),
+    shader_define!(Uint TERRAIN_PATCH_VERTS),
+    shader_define!(Uint TERRAIN_PATCH_VERTEX_COUNT),
+    shader_define!(Uint TERRAIN_PATCHES_PER_CELL_SIDE),
+    shader_define!(Uint TERRAIN_PATCH_LATTICE_PER_LAND_SPACING),
+    shader_define!(Uint TERRAIN_PATCH_CELL_LATTICE),
+    shader_define!(Uint TERRAIN_PATCH_SLOTS),
+    shader_define!(Uint TERRAIN_PATCH_COARSE_STEP),
+    shader_define!(Uint TERRAIN_PATCH_COARSE_QUADS),
+    shader_define!(Uint TERRAIN_PATCH_COARSE_VERTS),
+    shader_define!(Uint TERRAIN_PATCH_COARSE_VERTEX_COUNT),
+    shader_define!(Uint TERRAIN_PATCH_COARSE_MASK_SHIFT),
+    shader_define!(Uint TLAS_SBT_TAG_TERRAIN_PATCH),
+    shader_define!(Float TERRAIN_PATCH_LATTICE_STEP),
+    shader_define!(UintPlain TERRAIN_PATCH_WORKGROUP),
+    shader_define!(Uint TERRAIN_PATCH_EDGE_SAMPLES),
+    shader_define!(Uint TERRAIN_PATCH_READBACK_WORDS),
+    HeaderLine::Blank,
     HeaderLine::Comment("Material kind enum (`GpuMaterial.materialKind`)."),
     HeaderLine::Comment("Authoritative values: scene_buffer/constants.rs. #1401."),
     shader_define!(Uint MATERIAL_KIND_MULTI_LAYER_PARALLAX),
@@ -3276,6 +3365,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Uint INSTANCE_FLAG_DIFFUSE_ALPHA),
     shader_define!(Uint INSTANCE_FLAG_LOD_BLOCK),
     shader_define!(Uint INSTANCE_FLAG_MOVED_THIS_FRAME),
+    shader_define!(Uint INSTANCE_FLAG_TERRAIN_PATCH),
     shader_define!(Uint INSTANCE_TERRAIN_TILE_SHIFT),
     shader_define!(Uint INSTANCE_TERRAIN_TILE_MASK),
     HeaderLine::Comment("LAND splat geometry (#5113): channel count + lanes per vertex weight word."),
@@ -3444,6 +3534,9 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Uint RENDER_DEBUG_RESTIR_HISTORY),
     shader_define!(Uint RENDER_DEBUG_TRACED_SHARE),
     shader_define!(Uint RENDER_DEBUG_FILTERED_DIRECT),
+    shader_define!(Uint RENDER_DEBUG_SHADOW_FILTER_RADIUS),
+    shader_define!(Uint RENDER_DEBUG_RADIANCE_CACHE),
+    shader_define!(Uint RENDER_DEBUG_GI_ELIGIBLE),
     shader_define!(Uint RENDER_DEBUG_MODE_MAX),
     shader_define!(Uint RENDER_DEBUG_LEGACY_FLAGS),
     HeaderLine::Blank,

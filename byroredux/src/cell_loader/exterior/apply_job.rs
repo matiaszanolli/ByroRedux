@@ -254,6 +254,7 @@ impl ExteriorCellApplyJob {
         // The parser keeps a cell's NAVMs in the global map, not on the cell.
         let worldspace_form = index.worldspaces.get(&wctx.worldspace_key).map(|world| world.form_id);
         crate::components::spawn_navmesh_tiles(world, wctx.record_index.navmeshes_of_cell(cell, worldspace_form));
+        crate::components::spawn_pathgrid_tiles(world, &cell.pathgrids);
 
         let last_entity = world.next_entity_id();
         stamp_cell_root_range(world, cell_root, first_entity, last_entity);
@@ -281,7 +282,6 @@ impl ExteriorCellApplyJob {
     }
 
     /// Advance placed references until the frame budget expires.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn advance(
         mut self,
         wctx: &ExteriorWorldContext,

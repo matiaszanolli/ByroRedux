@@ -422,8 +422,8 @@ pub fn extract_bool_channel_at(scene: &NifScene, mut interp_idx: usize) -> Optio
     // NiBoolInterpolator may have inline data or reference NiBoolData.
     // For simple vis controllers, the interpolator itself has the value.
     // If it references data, extract keys from there.
-    if let Some(data_idx) = interp.data_ref.index() {
-        if let Some(data) = scene.get_as::<crate::blocks::interpolator::NiBoolData>(data_idx) {
+    if let Some(data_idx) = interp.data_ref.index()
+        && let Some(data) = scene.get_as::<crate::blocks::interpolator::NiBoolData>(data_idx) {
             let keys: Vec<AnimBoolKey> = data
                 .keys
                 .keys
@@ -437,7 +437,6 @@ pub fn extract_bool_channel_at(scene: &NifScene, mut interp_idx: usize) -> Optio
                 return Some(BoolChannel { keys });
             }
         }
-    }
 
     // Fallback: single constant value from the interpolator.
     Some(BoolChannel {

@@ -196,7 +196,7 @@ fn outdoor_sky_params(
             .map_or(0.0, |surface| surface.snow),
     };
     let zenith_color = dome_colour_radiance(sky_res.zenith_color);
-    SkyParams {
+    let mut params = SkyParams {
         zenith_color,
         // On an exterior the two are the same sky by definition; the lane
         // only diverges on interiors (#3323).
@@ -259,13 +259,57 @@ fn outdoor_sky_params(
         dalc_cube: sky_res.current_dalc_cube.map(renderer_dalc_cube),
         weather,
         weather_time_seconds: world.try_resource::<TotalTime>().map_or(0.0, |time| time.0),
+    };
+    if sky_clouds_disabled() {
+        disable_sky_clouds(&mut params);
     }
+    params
+}
+
+/// Diagnostic for measuring aerial perspective against clear sky. It is
+/// process-wide, so read it once rather than querying the environment per frame.
+fn sky_clouds_disabled() -> bool {
+    static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DISABLED.get_or_init(|| std::env::var("BYRO_DISABLE_SKY_CLOUDS").as_deref() == Ok("1"))
+}
+
+fn disable_sky_clouds(params: &mut SkyParams) {
+    params.weather.cloud_coverage = 0.0;
+    params.cloud_tile_scale = 0.0;
+    params.cloud_tile_scale_1 = 0.0;
+    params.cloud_tile_scale_2 = 0.0;
+    params.cloud_tile_scale_3 = 0.0;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::components::{GameTimeRes, WeatherSkyState};
+
+    #[test]
+    fn clear_sky_diagnostic_disables_all_cloud_layers_without_changing_sun() {
+        let mut params = SkyParams {
+            sun_direction: [0.2, 0.9, 0.3],
+            cloud_tile_scale: 1.0,
+            cloud_tile_scale_1: 2.0,
+            cloud_tile_scale_2: 3.0,
+            cloud_tile_scale_3: 4.0,
+            ..SkyParams::default()
+        };
+        params.weather.cloud_coverage = 0.7;
+        disable_sky_clouds(&mut params);
+        assert_eq!(params.weather.cloud_coverage, 0.0);
+        assert_eq!(
+            [
+                params.cloud_tile_scale,
+                params.cloud_tile_scale_1,
+                params.cloud_tile_scale_2,
+                params.cloud_tile_scale_3
+            ],
+            [0.0; 4]
+        );
+        assert_eq!(params.sun_direction, [0.2, 0.9, 0.3]);
+    }
 
     /// A direct `--cell` interior boot as the cell loader leaves it: the
     /// room's lighting plus the canonical outdoor defaults (#4902), advanced

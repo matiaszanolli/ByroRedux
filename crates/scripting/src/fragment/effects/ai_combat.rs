@@ -144,11 +144,10 @@ pub(super) fn apply_ai_combat_effect(
                 return None;
             }
             // A ghost "will not enter combat".
-            if *ghost {
-                if let Some(mut states) = world.query_mut::<crate::AiCombatState>() {
+            if *ghost
+                && let Some(mut states) = world.query_mut::<crate::AiCombatState>() {
                     states.remove(actor);
                 }
-            }
             None
         }
         Effect::SetNotShowOnStealthMeter { actor, not_shown } => {
@@ -173,11 +172,10 @@ pub(super) fn apply_ai_combat_effect(
             // An unconscious actor cannot fight (#5017). Its ambient package
             // is suspended by the engine's AI pass; waking leaves both to
             // re-derive (faction hostility, package selection).
-            if *unconscious {
-                if let Some(mut states) = world.query_mut::<crate::AiCombatState>() {
+            if *unconscious
+                && let Some(mut states) = world.query_mut::<crate::AiCombatState>() {
                     states.remove(actor);
                 }
-            }
             None
         }
         Effect::EvaluatePackage { actor } => {

@@ -36,8 +36,8 @@ mod tests;
 
 pub use eval::{Overrides, ScreenTraits};
 pub use font::{Font, FontError, Glyph};
-pub use layout::{DrawItem, Rect};
-pub use menu::{MenuAssets, MenuError, MenuRenderer, TextureSet};
+pub use layout::{DrawItem, HitTarget, Rect};
+pub use menu::{MenuAssets, MenuError, MenuKey, MenuRenderer, TextureSet, TileHit};
 pub use parse::{Document, Op, OpArg, OpKind, RawTrait, Scalar, Tile, TileKind};
 pub use profile::{FontArchive, MenuProfile};
 pub use raster::Framebuffer;

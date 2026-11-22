@@ -2,6 +2,7 @@
 name = "byroredux-save"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 
 [dependencies]
 # `save` pulls in the serde derives on every snapshot-relevant component
@@ -16,3 +17,6 @@ log = { workspace = true }
 
 [dev-dependencies]
 glam = { workspace = true }
+
+[lints]
+workspace = true

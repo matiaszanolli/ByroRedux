@@ -192,11 +192,10 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
     let Some(wq) = world.query::<WaterPlane>() else {
         // No water entities at all → clear any prior state on the
         // camera so the next frame's render reads default-above-water.
-        if let Some(mut sq) = world.query_mut::<SubmersionState>() {
-            if let Some(state) = sq.get_mut(cam_entity) {
+        if let Some(mut sq) = world.query_mut::<SubmersionState>()
+            && let Some(state) = sq.get_mut(cam_entity) {
                 *state = SubmersionState::default();
             }
-        }
         return;
     };
     let Some(vq) = world.query::<WaterVolume>() else {
@@ -209,11 +208,10 @@ pub(crate) fn submersion_system(world: &World, _dt: f32) {
         // `spawn_lod_water_plane` (#2449), a state the camera can't already
         // be submerged in — but that's an invariant of the current spawn
         // path, not something this function should assume holds forever.
-        if let Some(mut sq) = world.query_mut::<SubmersionState>() {
-            if let Some(state) = sq.get_mut(cam_entity) {
+        if let Some(mut sq) = world.query_mut::<SubmersionState>()
+            && let Some(state) = sq.get_mut(cam_entity) {
                 *state = SubmersionState::default();
             }
-        }
         return;
     };
     let surface_q = world.query::<WaterSurfaceMesh>();

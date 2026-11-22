@@ -890,15 +890,14 @@ impl BsWeakReferenceNode {
         let mut me = Self::parse_inner(stream, block_end)?;
         // Capture the trailing bytes between the parser's stop point and
         // block_size (Starfield only, when a size is known and bytes remain).
-        if bsver >= crate::version::bsver::STARFIELD {
-            if let Some(size) = block_size {
+        if bsver >= crate::version::bsver::STARFIELD
+            && let Some(size) = block_size {
                 let consumed = stream.position().saturating_sub(block_start);
                 let remaining = u64::from(size).saturating_sub(consumed);
                 if remaining > 0 {
                     me.starfield_tail = stream.read_bytes(remaining as usize)?;
                 }
             }
-        }
         Ok(me)
     }
 

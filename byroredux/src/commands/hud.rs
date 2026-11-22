@@ -166,8 +166,11 @@ impl ConsoleCommand for HudStatusCommand {
                 // #4675 — the auto arm reports the LIVE derived fraction
                 // (the driver writes `live` every frame) instead of a
                 // constant "1.00 (auto)" no observable could read.
-                let fmt = |pinned: Option<f32>, live: Option<f32>| match pinned {
+                // #7043 — a bar the driver hides (a pool the player does not carry) reads `hidden`, not the
+                // full value it would otherwise show.
+                let fmt = |pinned: Option<f32>, live: Option<f32>, shown: bool| match pinned {
                     Some(pinned) => format!("{pinned:.2} (pinned)"),
+                    None if !shown => "hidden (auto)".to_string(),
                     None => match live {
                         Some(live) => format!("{live:.2} (auto)"),
                         None => "1.00 (auto)".to_string(),
@@ -178,7 +181,7 @@ impl ConsoleCommand for HudStatusCommand {
                         format!(
                             "{}={}",
                             control.bar_labels[i],
-                            fmt(control.bars[i], control.live[i])
+                            fmt(control.bars[i], control.live[i], control.shown[i])
                         )
                     })
                     .collect::<Vec<_>>()
@@ -238,14 +241,22 @@ impl ConsoleCommand for HudDebugCommand {
                         format!("{labels} heading={deg:.1}")
                     })
                     .unwrap_or_else(|| "(never)".to_string());
+                // M48 GUI-HUD-001…003 — the path-service feed's last outcomes.
+                let feed = diag
+                    .path_feed
+                    .iter()
+                    .map(|(path, outcome)| format!("{path}={outcome}"))
+                    .collect::<Vec<_>>();
                 CommandOutput::line(format!(
-                    "hud.debug (scaleform, {}): {}\n{}\n{}\nlast_push: {}\nrender_passes: {}",
+                    "hud.debug (scaleform, {}): {}\n{}\n{}\nlast_push: {}\nrender_passes: {}\npaths (queued {}): {}",
                     diag.game,
                     list("callbacks", &diag.callbacks),
                     list("unknown_methods", &diag.unknown_methods),
                     list("unanswered_methods", &diag.unanswered_methods),
                     bars,
                     diag.render_passes,
+                    diag.queued_paths,
+                    if feed.is_empty() { "(none yet)".to_owned() } else { feed.join(", ") },
                 ))
             }
             None => {
@@ -279,6 +290,23 @@ mod tests {
             first.starts_with("Error: ") && first.contains(needle),
             "`{first}` must be an error naming {needle}"
         );
+    }
+
+    /// #7043 — `hud.status` reports a bar the driver hides distinctly from a full one, and a pinned
+    /// bar by its pin (a pin always draws).
+    #[test]
+    fn hud_status_reports_a_hidden_bar_distinctly() {
+        let world = hud_world();
+        {
+            let mut control = world.resource_mut::<HudControl>();
+            control.live = [Some(1.0), Some(1.0), Some(0.5)];
+            control.shown = [true, false, true];
+            control.bars[2] = Some(0.25);
+        }
+        let line = HudStatusCommand.execute(&world, "").lines.join("\n");
+        assert!(line.contains("health=1.00 (auto)"), "{line}");
+        assert!(line.contains("magicka=hidden (auto)"), "{line}");
+        assert!(line.contains("fatigue=0.25 (pinned)"), "{line}");
     }
 
     /// #4724 — `hud.values` parsing: correct-count pins land, `auto`

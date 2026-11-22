@@ -64,9 +64,9 @@
 //!   after resolution isn't re-tracked (unlike Follow's live target).
 //! - **Ground-snapped, not physically simulated**, same as Wander/Travel.
 
-use super::locomotion::step_along_waypoints;
+use super::locomotion::step_along_waypoints_detailed;
 use super::navmesh_path::resolve_cached_waypoints;
-use crate::components::{NavPath, NavmeshTile};
+use crate::components::NavPath;
 use byroredux_core::ecs::components::{GuardBehavior, GuardState, Transform};
 use byroredux_core::ecs::{EntityId, World};
 use byroredux_core::math::{Quat, Vec3};
@@ -83,8 +83,9 @@ const GUARD_DEFAULT_RADIUS: f32 = super::locomotion::AI_PACKAGE_DEFAULT_RADIUS;
 /// `NearReference`-type PLDT FormID resolve to
 /// `travel_system::resolve_near_reference_target` (shared with
 /// Travel/Escort — #2561, this module previously duplicated that logic
-/// inline), falling back to `home` — the actor's own spawn position — on
-/// any miss after the shared retry window. See this module's doc for why the
+/// inline), falling back to `home` on any miss after the shared retry
+/// window: the actor's `EditorPlacement` for a Near Editor Location package
+/// (#7254), otherwise where it stands (`travel::package_home`). See this module's doc for why the
 /// fallback is `home` rather than Travel's random-pick-within-radius.
 fn resolve_anchor(world: &World, behavior: &GuardBehavior, home: Vec3) -> Vec3 {
     super::travel::resolve_near_reference_target(world, behavior.anchor_form_id).unwrap_or(home)
@@ -110,6 +111,8 @@ struct GuardPending {
     /// 3 Phase 4) — empty when `walk_back_to` is `None` (nothing to walk
     /// toward this tick) or when no resident-tile path was found.
     waypoints: VecDeque<Vec3>,
+    /// The walk-back's pathgrid switch, resolved with `waypoints`.
+    grid: crate::components::GridWalk,
     state: Option<GuardState>,
 }
 
@@ -182,7 +185,7 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
             return;
         };
         let state_q = world.query::<GuardState>();
-        let tile_q = world.query::<NavmeshTile>();
+        let tile_q = super::navmesh_path::NavGraphs::of(world);
         let nav_path_q = world.query::<NavPath>();
         let walk_speed_q = world.query::<crate::components::WalkSpeed>();
 
@@ -208,7 +211,8 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
                     ) {
                         continue;
                     }
-                    let anchor = resolve_anchor(world, behavior, current);
+                    let home = super::travel::package_home(world, entity, behavior.near_editor_location, current);
+                    let anchor = resolve_anchor(world, behavior, home);
                     (anchor, Some(GuardState { anchor }))
                 }
             };
@@ -223,10 +227,10 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
             // Effective goal discarded (`_`): with a `0.0` threshold it's
             // always bit-identical to `goal` (the anchor), whether reused
             // or freshly computed — see `resolve_cached_waypoints`'s doc.
-            let waypoints = match walk_back_to {
+            let (waypoints, grid) = match walk_back_to {
                 Some(goal) => {
                     let cached = nav_path_q.as_ref().and_then(|q| q.get(entity));
-                    let (_, waypoints) = resolve_cached_waypoints(
+                    let (_, waypoints, grid) = resolve_cached_waypoints(
                         cached,
                         tile_q.as_ref(),
                         current,
@@ -234,9 +238,9 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
                         0.0,
                         residency_generation,
                     );
-                    waypoints
+                    (waypoints, grid)
                 }
-                None => VecDeque::new(),
+                None => (VecDeque::new(), Default::default()),
             };
 
             let speed = crate::components::WalkSpeed::or_default(
@@ -251,6 +255,7 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
                 rotation: transform.rotation,
                 walk_back_to,
                 waypoints,
+                grid,
                 state,
             });
         }
@@ -267,7 +272,7 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
     scratch.decisions.clear();
     {
         let physics = world.try_resource::<byroredux_physics::PhysicsWorld>();
-        // #3269 — consume `pending` by value: `step_along_waypoints` takes
+        // #3269 — consume `pending` by value: `step_along_waypoints_detailed` takes
         // ownership of the `VecDeque`, so iterating by reference forced a
         // clone of the whole waypoint list per entity per tick purely to
         // satisfy the borrow checker. Nothing reads `pending` after this
@@ -276,7 +281,7 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
         for p in scratch.pending.drain(..) {
             let (translation, rotation, nav_path) = match p.walk_back_to {
                 Some(anchor) => {
-                    let (new_pos, rotation, waypoints) = step_along_waypoints(
+                    let (new_pos, rotation, waypoints, blocked) = step_along_waypoints_detailed(
                         p.current,
                         p.rotation,
                         p.waypoints,
@@ -292,6 +297,7 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
                             goal: anchor,
                             residency_generation,
                             waypoints,
+                            grid: p.grid.stepped(blocked, dt),
                         }),
                     )
                 }
@@ -348,6 +354,7 @@ pub(crate) fn guard_system(world: &World, dt: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::NavmeshTile;
     use crate::systems::navmesh_path::test_tiles::two_triangle_quad_scaled;
     use byroredux_core::ecs::components::{FormIdComponent, GlobalTransform};
     use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
@@ -370,6 +377,7 @@ mod tests {
                 anchor_form_id: None,
                 radius: Some(200.0),
                 form_id: 0x000A_0001,
+                near_editor_location: false,
             },
         );
 
@@ -426,6 +434,7 @@ mod tests {
                 anchor_form_id: Some(0x000B_0001),
                 radius: None,
                 form_id: 0x000B_0002,
+                near_editor_location: false,
             },
         );
 
@@ -458,6 +467,7 @@ mod tests {
                 anchor_form_id: Some(0x000B_0001),
                 radius: None,
                 form_id: 0x000B_0002,
+                near_editor_location: false,
             },
         );
         let mut scratch = GuardScratch::default();
@@ -506,6 +516,7 @@ mod tests {
                 anchor_form_id: None,
                 radius: Some(20.0),
                 form_id: 0x000C_0001,
+                near_editor_location: false,
             },
         );
         world.insert(
@@ -575,6 +586,7 @@ mod tests {
                 anchor_form_id: Some(0x0010_0001),
                 radius: None,
                 form_id: 0x0010_0002,
+                near_editor_location: false,
             },
         );
 
@@ -616,6 +628,7 @@ mod tests {
                 anchor_form_id: None,
                 radius: Some(1.0), // small leash: the anchor is far beyond it
                 form_id: 0x0011_0001,
+                near_editor_location: false,
             },
         );
         world.insert(entity, GuardState { anchor });
@@ -670,6 +683,7 @@ mod tests {
                 anchor_form_id: None,
                 radius: Some(20.0),
                 form_id: 0x0012_0001,
+                near_editor_location: false,
             },
         );
         world.insert(
@@ -687,6 +701,7 @@ mod tests {
                 goal: Vec3::new(50.0, 0.0, 50.0),
                 residency_generation: 0,
                 waypoints: std::collections::VecDeque::from(vec![Vec3::new(50.0, 0.0, 50.0)]),
+                grid: Default::default(),
             },
         );
 
@@ -697,5 +712,63 @@ mod tests {
             nq.get(entity).is_none(),
             "within the leash — any stale cached path must be cleared, nothing to walk toward"
         );
+    }
+
+    /// AIP-WALK-003 — a guard sent back to its post behind a wall takes the pathgrid once the
+    /// controller has held it, and gets there.
+    #[test]
+    fn a_guard_blocked_on_its_way_back_takes_the_pathgrid() {
+        use crate::systems::navmesh_path::test_tiles::{grid_round_the_wall, walled_physics};
+        let mut world = World::new();
+        world.register::<GuardBehavior>();
+        world.register::<GuardState>();
+        world.register::<Transform>();
+        world.register::<NavPath>();
+        world.insert_resource(walled_physics());
+        crate::components::spawn_pathgrid_tiles(&mut world, [&grid_round_the_wall()]);
+        let post = Vec3::new(400.0, 0.0, 0.0);
+        let guard = world.spawn();
+        world.insert(guard, Transform::from_translation(Vec3::new(-400.0, 0.0, 0.0)));
+        world.insert(guard, GuardBehavior { anchor_form_id: None, radius: Some(20.0), form_id: 0x0012_0001, near_editor_location: false });
+        world.insert(guard, GuardState { anchor: post });
+
+        let mut switched = false;
+        let mut tick = make_guard_system();
+        for _ in 0..400 {
+            tick(&world, 0.1);
+            switched |= world.get::<NavPath>(guard).is_some_and(|p| p.grid.on_grid);
+            let at = world.get::<Transform>(guard).expect("transform").translation;
+            if (at - post).length() <= 20.0 {
+                assert!(switched, "it cannot have got round the wall on the straight walk");
+                return;
+            }
+        }
+        panic!("a guard held against a wall must take the pathgrid back to its post");
+    }
+
+    /// #7254 — a Near Editor Location Guard (FNV `DefaultGuardLinkedRef…StayAtEdLoc…`, `NovacBooneGuard`) whose
+    /// actor an earlier package walked away anchors on its editor placement, not where it stands; a Near
+    /// Current Location one still holds where it stands.
+    #[test]
+    fn a_near_editor_location_guard_anchors_on_the_editor_placement() {
+        use byroredux_core::ecs::components::EditorPlacement;
+        let placement = Vec3::new(-300.0, 0.0, 40.0);
+        let away = Vec3::new(500.0, 0.0, 500.0);
+        for near_editor_location in [true, false] {
+            let mut world = World::new();
+            world.register::<GuardBehavior>();
+            world.register::<GuardState>();
+            world.register::<Transform>();
+            world.register::<NavPath>();
+            world.register::<EditorPlacement>();
+            let guard = world.spawn();
+            world.insert(guard, Transform::from_translation(away));
+            world.insert(guard, EditorPlacement { translation: placement });
+            world.insert(guard, GuardBehavior { anchor_form_id: None, radius: Some(64.0), form_id: 0x0005_AFCB, near_editor_location });
+            make_guard_system()(&world, 0.016);
+            let anchor = world.get::<GuardState>(guard).expect("anchor resolved on first sight").anchor;
+            let expected = if near_editor_location { placement } else { away };
+            assert!((anchor - expected).length() < 1e-3, "near_editor_location {near_editor_location}: anchor {anchor:?}, expected {expected:?}");
+        }
     }
 }

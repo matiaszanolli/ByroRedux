@@ -1214,7 +1214,8 @@ one host-visible (`CpuToGpu`) `TRANSFER_SRC` arena per frame slot, sized to
 the sum of the dirty updates recorded into that slot's frame. It is
 **grow-only** — replaced only when a frame needs more — and lives until
 registry teardown. The consumers are the two HUD drivers (mutually exclusive
-per run), `--menu` Scaleform menus, and the ground-cover atlas.
+per run), `--menu` Scaleform menus, the ground-cover atlas, and the movie
+player (see [Movie overlay texture](#movie-overlay-texture-videoplayertexture-7030)).
 
 Formula: per slot, `Σ width × height × 4 B` over the updates dirty in one
 frame; × `MAX_FRAMES_IN_FLIGHT` (2) once both slots have seen a frame that
@@ -1228,6 +1229,28 @@ large. One full-viewport overlay:
 Two overlays dirty in the same frame double it. The arenas are not a
 `*_scratch` field, so the #4610 scratch-telemetry guard does not see them;
 this row is their only ledger.
+
+### Movie overlay texture (`VideoPlayer::texture`, #7030)
+
+[`byroredux/src/video.rs`](../../byroredux/src/video.rs) — the Bink movie
+player (`VideoPlayer::tick`) registers **one** RGBA8 overlay texture through
+`register_rgba` on the first decoded frame, at the *movie's* frame size (not
+the swapchain extent), and keeps the handle for the rest of the session so
+later movies reuse it: every new frame goes through `update_rgba`, which
+queues into the dynamic-RGBA path above while the size still matches (a movie
+of a different size takes the replace path, not a second texture). The handle
+is never released — `VideoPlayer::finish` leaves it in place.
+
+Formula: `width × height × 4 B` for the image, plus the same again in host RAM
+(the queued pixel copy in `DynamicRgbaUploads::updates`), plus the grow-only
+staging arena, which is two slots of one frame each:
+
+| Movie frame | Image | Host copy | Staging arena (2 slots) |
+|---|---|---|---|
+| 1920×1080 | ~8.3 MB | ~8.3 MB | up to ~16.6 MB (the shared arena above, sized to the sum of the updates dirty in one frame — the movie's frame is the only one while no HUD overlay is dirty) |
+
+The row is not in the estimated totals: a movie plays only over the start
+sequence and menu intros, and the HUD overlay and the movie rarely coexist.
 
 ### egui debug overlay (`EguiPass`) — #4986
 
@@ -1326,12 +1349,32 @@ authoritative rather than re-derived.
 
 ---
 
+## Radiance Cache (RCG-MEM-001, not allocated yet)
+
+The world-space hash-grid radiance cache of the [Radiance Cache and GI Coverage PRD](../prd/radiance-cache-gi-coverage.md).
+**At HEAD on 2026-11-19 nothing is allocated for it**: no cache buffer, pass or constant exists in the tree
+(Phase 1, #7072, is building the plumbing around the include the owner is writing). This section holds the
+rules the allocation must meet and the place its figures go, so the row exists before the memory does
+(RLT-GI-008, RCG-MEM-001). No figure is estimated here on purpose; see the note under
+[Not yet ledgered](#not-yet-ledgered).
+
+| Item | Rule |
+|---|---|
+| Size | Fixed at renderer init and independent of the framebuffer and of the exterior grid radius (RCG-MEM-003): the cache is world-space, so the 1..=12 radius clamp changes how much of it is occupied, not how much is allocated |
+| Byte math | Resident bytes = entries × the bytes one entry takes across all the cache's buffers (key, accumulation, resolved), times the number of copies (one if the passes are ordered on the queue, two if it is double-buffered per frame in flight). The entry size, the entry count and the copy count are set with the include; this row then names the function that computes them and a `memory_budget_ledgers_…` test pins the figure, as the sky and ground-cover owners do |
+| Scale, not this engine's figure | NVIDIA's published description of a cache of this kind quotes 40 bytes per entry (8 + 16 + 16) and 2^22 entries, 160 MiB ([SHaRC Integration guide](https://github.com/NVIDIA-RTX/SHARC/blob/main/docs/Integration.md), "Memory Usage") |
+| Overflow | A full table degrades to cache misses for that frame and never to wrong radiance or a device fault (RCG-MEM-002). The pass reports occupancy, evictions and overflowed inserts through `gi.cache` (RCG-DBG-003) |
+| Ceiling | Together with every row below it, inside the 6 GB RT-minimum and 4 GB whole-renderer design targets; the estimated totals below do **not** include this owner yet |
+
+---
+
 ## VRAM Rough Budget (RTX 4070 Ti, typical FNV interior)
 
 | Subsystem | Typical | Peak |
 |---|---|---|
-| G-buffer (7 attachments per [`gbuffer.rs`](../../crates/renderer/src/vulkan/gbuffer.rs)'s own table — normal/motion/mesh_id/raw_indirect/albedo at 4 B/px + FSR reactive/transparency masks at 1 B/px = 22 B/px, × 2 FIF; the separate HDR colour, depth and depth-history attachments are counted in their own row below, not here) | ~91 MB (1080p) | ~365 MB (4K) |
+| G-buffer (five attachments at 4 B/px, FSR reactive at 1 B/px and transparency/sun at 8 B/px, 2 FIF) | ~120 MB (1080p) | ~481 MB (4K) |
 | Composite HDR pair + depth / depth-history (40 B/px, #3993) | ~83 MB (1080p) | ~332 MB (4K) |
+| Far-field sun occlusion (RGBA16F, 2 FIF) | ~33 MB (1080p) | ~133 MB (4K) |
 | Cluster light-index buffers (fixed size, 2 FIF, #3993) | ~14 MB | ~14 MB |
 | Volumetric medium + sun-aperture cluster buffers (16³ clusters × (64 density + 128 aperture) indices × 4 B, 16 B entries, 512 × 96 B volumes, 2 FIF) | ~6.5 MB | ~6.5 MB |
 | Scene SSBOs (see [Scene Buffers](#scene-buffers-per-frame-ssbos--ubos); instance pair at starting capacity, peak = grown to `MAX_INSTANCES`) | ~155 MB | ~243 MB |
@@ -1348,9 +1391,11 @@ authoritative rather than re-derived.
 | Vertex / index pools (one global geometry SSBO generation) | ~208 MB | ~840 MB cap (`VERTEX_POOL_HARD_CAP` 7 M × 104 B + `INDEX_POOL_HARD_CAP` 28 M × 4 B, see [Mesh Registry](#mesh-registry)) |
 | Global geometry SSBO rebuild (#3298 / #3443) | — (idle) | +1× projected — the replacement generation, allocated while the old one still serves draws, so up to ~840 MB at the pool caps (~1.7 GB with the old one). Admitted only while device-local usage stays at or under 80% of the live `VK_EXT_memory_budget` budget, and under 256 MiB without a reading; see [the rebuild section](#global-geometry-ssbo-rebuild-3298--3463). Plus up to 128 MiB retained mesh-side staging (one 64 MiB vertex-chunk entry + one 64 MiB index-chunk entry, #3298's chunked path) |
 | Sky bake + cloud noise + ground cover (fixed size, see [Sky and Ground Cover](#sky-and-ground-cover-fixed-size)) | ~155 MB | ~155 MB |
+| Radiance cache (world-space hash grid, fixed size, RCG-MEM-001; see [its section](#radiance-cache-rcg-mem-001-not-allocated-yet)) | — (not allocated yet) | — (not allocated yet); not in the totals below |
 | Scaleform UI (Ruffle wgpu device + target + readback + engine image) | ~25 MB (one menu) | ~33 MB during a resize (one deferred-destroy copy of the engine image) + a second logical device |
 | MenuXml HUD overlay texture (1 × swapchain extent, RGBA8, see [its section](#menuxml-hud-overlay-texture-1--swapchain-extent-4892)) | ~8.3 MB (1080p) | ~33 MB (4K) |
 | Dynamic RGBA staging arenas (2 slots × one dirty full-viewport overlay, see [its section](#dynamic-rgba-staging-arenas-dynamicrgbauploads-e2f99ad55)) | ~16.6 MB (1080p) | ~66 MB (4K) |
+| Movie overlay texture (movie-frame-sized RGBA8 + host copy, only after a movie has played; not in the totals, see [its section](#movie-overlay-texture-videoplayertexture-7030)) | ~16.6 MB (1080p movie) | ~66 MB (4K movie) |
 | Textures (BC compressed) | ~400 MB | ~2 GB |
 | BLAS structures | ~300 MB | ~1 GB (heavy scene) |
 | TLAS + scratch | ~50 MB | ~256 MB |

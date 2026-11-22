@@ -651,7 +651,33 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// actor values, vitals, restorations, active effects, skill progress and
 /// parked references use portable plugin/local pairs instead of session slots;
 /// actor-value view aliases and both of their source keys are pairs as well.
-pub const FORMAT_MAJOR: u16 = 133;
+///
+/// v133 -> v134 (M48 GUI-EVT-001, #6668): the `MenuEventRegistrations` resource column
+/// (`RegisterForMenuOpenCloseEvent`), so a v133 snapshot has no record of a script's
+/// registrations and the schema no longer matches.
+///
+/// v134 -> v135 (M48 GUI-PAGE-003, #6667): `Effect::ShowAppearanceMenu`, Fallout 4's
+/// `ShowRaceMenu` appearance modes, joins the effects a saved fragment continuation serializes.
+///
+/// v135 -> v136 (#7044): `ActorValue` gained the required `stored` layer, what a level-up accumulates into an
+/// actor value (Oblivion's per-level Health gain), so every saved `ActorValues` row carries one more field.
+///
+/// v136 -> v137 (#7050, OSL-SAVE-001): a new component column, `SkillUseLevel` (the player's Oblivion
+/// skill-use level tallies: the major increases and each attribute's rank-ups since the last level-up), so a
+/// v136 snapshot has no such column and the schema no longer matches.
+///
+/// v137 -> v138 (#7052, OSL-SAVE-001): `SkillUseLevel` gained the required `pending` (the levels earned and not
+/// yet taken, each with its frozen attribute tallies and its picks), so a v137 snapshot's column lacks the field.
+///
+/// v138 -> v139 (#6941): the saved `ActiveEffect` gained the required `effect_index` (its position in the spell's effect
+/// list), so a v138 save's effects lack the field and could not say which of a spell's same-`MGEF` effects they are.
+///
+/// v139 -> v140 (#7079, PSC-RDY-004): a new component column, `ReadiedSpell` (the player's readied spell, one optional
+/// spell FormID), so a v139 snapshot has no such column and the schema no longer matches.
+///
+/// v140 -> v141 (#7055, BOW-AMM-002): a new component column, `EquippedAmmo` (the player's equipped arrow type, one
+/// optional `AMMO` FormID), so a v140 snapshot has no such column and the schema no longer matches.
+pub const FORMAT_MAJOR: u16 = 141;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

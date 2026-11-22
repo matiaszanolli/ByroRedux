@@ -60,11 +60,10 @@ pub(crate) fn ability_spells(table: &PerkEntryTable, held: &[PerkRank]) -> Vec<u
             continue;
         };
         for entry in entries {
-            if let PerkBodyKind::Ability { spell } = entry.kind {
-                if entry_applies_at(entry.rank, perk.rank) && !spells.contains(&spell) {
+            if let PerkBodyKind::Ability { spell } = entry.kind
+                && entry_applies_at(entry.rank, perk.rank) && !spells.contains(&spell) {
                     spells.push(spell);
                 }
-            }
         }
     }
     spells

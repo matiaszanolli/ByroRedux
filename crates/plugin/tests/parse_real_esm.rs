@@ -877,8 +877,16 @@ struct RosterCase {
     /// zero `AVIF` byte occurrences in `Oblivion.esm`). Its rosters therefore
     /// cannot be falsified against a master; asserting the empty AVIF set is
     /// the strongest honest claim, and it flips the moment that stops being
-    /// true.
+    /// true. Since #7202 the case installs the engine-supplied roster the
+    /// loader installs (`EsmIndex::install_oblivion_actor_values`) and asserts
+    /// the rosters and derived rows against it like every other case.
     authors_actor_values: bool,
+    /// #7202 — the settings this case's leveling overlay reads that its master
+    /// does **not** author, so the overlay keeps the sourced default for them.
+    /// Measured against the shipped master and asserted both ways: every other
+    /// setting must resolve, and each of these must not, so the list cannot
+    /// go stale in either direction.
+    unauthored_settings: &'static [&'static str],
 }
 
 const ROSTER_CASES: &[RosterCase] = &[
@@ -892,6 +900,7 @@ const ROSTER_CASES: &[RosterCase] = &[
         derived_rows: Some(8),
         leveling: byroredux_core::character::LevelingModel::FNV,
         authors_actor_values: true,
+        unauthored_settings: &["iXPBase"],
     },
     RosterCase {
         label: "FO3",
@@ -903,6 +912,7 @@ const ROSTER_CASES: &[RosterCase] = &[
         derived_rows: Some(8),
         leveling: byroredux_core::character::LevelingModel::FO3,
         authors_actor_values: true,
+        unauthored_settings: &["iXPBase", "iMaxCharacterLevel"],
     },
     RosterCase {
         label: "FO4",
@@ -916,6 +926,7 @@ const ROSTER_CASES: &[RosterCase] = &[
         derived_rows: Some(3),
         leveling: byroredux_core::character::LevelingModel::FO4,
         authors_actor_values: true,
+        unauthored_settings: &["iMaxCharacterLevel"],
     },
     RosterCase {
         label: "Skyrim",
@@ -934,6 +945,7 @@ const ROSTER_CASES: &[RosterCase] = &[
         derived_rows: Some(2),
         leveling: byroredux_core::character::LevelingModel::SKYRIM,
         authors_actor_values: true,
+        unauthored_settings: &[],
     },
     RosterCase {
         label: "Oblivion",
@@ -942,9 +954,28 @@ const ROSTER_CASES: &[RosterCase] = &[
         master: "Oblivion.esm",
         profile: byroredux_core::character::CharacterRulesProfile::OBLIVION,
         attributes: byroredux_core::character::AttributeSet::TES_CLASSIC,
-        derived_rows: None,
+        // #7202 — Health, Magicka and four Fatigue rows on the installed roster (the armor-rating rows are gone,
+        // #7201).
+        derived_rows: Some(6),
         leveling: byroredux_core::character::LevelingModel::OBLIVION,
         authors_actor_values: false,
+        unauthored_settings: &[
+            "fSkillUseMinorMult",
+            "fSkillUseMajorMult",
+            "fSkillUseSpecMult",
+            "iLevelUpSkillCount",
+            "iLevelUp01Mult",
+            "iLevelUp02Mult",
+            "iLevelUp03Mult",
+            "iLevelUp04Mult",
+            "iLevelUp05Mult",
+            "iLevelUp06Mult",
+            "iLevelUp07Mult",
+            "iLevelUp08Mult",
+            "iLevelUp09Mult",
+            "iLevelUp10Mult",
+            "fStatsHealthLevelMult",
+        ],
     },
 ];
 
@@ -956,7 +987,7 @@ fn assert_rosters_resolve(case: &RosterCase) {
     };
     let path = data.join(case.master);
     let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
-    let index = parse_esm(&bytes).unwrap_or_else(|e| panic!("parse {path:?}: {e:?}"));
+    let mut index = parse_esm(&bytes).unwrap_or_else(|e| panic!("parse {path:?}: {e:?}"));
 
     // The header→profile classification the rest of this asserts against.
     // Also the real-data half of the FO3-vs-FNV `HEDR < 1.0` split, which was
@@ -1006,17 +1037,26 @@ fn assert_rosters_resolve(case: &RosterCase) {
         None
     });
     let wanted = probe.into_inner();
-    let missing: Vec<&String> = wanted
+    let mut missing: Vec<&str> = wanted
         .iter()
         .filter(|name| index.game_setting_float(name).is_none())
+        .map(String::as_str)
         .collect();
-    assert!(
-        missing.is_empty(),
-        "[{}] {} does not resolve the GMST(s) its leveling overlay reads: \
-         {missing:?} (of {wanted:?}) — the overlay would silently keep the \
-         engine fallback constants for every one of them, which is \
-         indistinguishable from the setting being authored at exactly the \
-         fallback value (#3923)",
+    missing.sort_unstable();
+    let mut unauthored = case.unauthored_settings.to_vec();
+    unauthored.sort_unstable();
+    // #7202 — some overlay settings are engine defaults the master does not
+    // author (FNV's `iXPBase`; most of Oblivion's skill-use and level-up
+    // settings). Those are listed per case and asserted unresolved; every
+    // other setting must resolve.
+    assert_eq!(
+        missing,
+        unauthored,
+        "[{}] {} resolves a different set of its leveling overlay's GMSTs than \
+         this case records (of {wanted:?}) — an unlisted miss means the overlay \
+         silently keeps the engine fallback, indistinguishable from the setting \
+         being authored at exactly that value (#3923); a listed setting that \
+         now resolves means the master authors it and the list is stale",
         case.label,
         case.master,
     );
@@ -1030,7 +1070,16 @@ fn assert_rosters_resolve(case: &RosterCase) {
             case.label,
             case.master
         );
-        return;
+        // #7202 — the engine supplies the roster, as the loader does: install
+        // it at the lowest slot no record occupies, then assert the rosters and
+        // derived rows against it below like every other case. The early
+        // return that stood here asserted nothing about either.
+        let free = (0u8..=0xfb)
+            .find(|slot| !index.record_types.keys().any(|id| (id >> 24) as u8 == *slot))
+            .expect("a free regular slot");
+        index
+            .install_oblivion_actor_values(byroredux_plugin::esm::reader::GlobalSlot::Regular(free))
+            .unwrap_or_else(|e| panic!("[{}] install the engine roster: {e}", case.label));
     }
 
     assert!(
@@ -2999,6 +3048,70 @@ fn parse_rate_fo3_esm() {
         spt_trees,
         index.trees.len(),
     );
+}
+
+/// #7050 (OSL-XP-002, PRD §7.2 scenario 2) — the five `fSkillUse*` settings resolve against the real
+/// `Oblivion.esm`. The master authors Factor (0.35) and Exp (1.5) only (#7049 V1); the minor, major and
+/// specialization multipliers come from the executable's defaults, so the load order leaves them to the
+/// ruleset's constants. The resolved set prices a base skill at 5 at 2.89 experience (UESP *Increasing
+/// Skills*' worked example).
+#[test]
+#[ignore = "needs Oblivion game data on disk"]
+fn oblivion_skill_use_settings_resolve_against_the_real_master() {
+    use byroredux_core::character::{SkillClass, SkillUseCosts};
+    let Some(data) = data_dir(test_paths::OBLIVION_ENV, test_paths::OBLIVION_DEFAULT) else {
+        eprintln!("[OBL] skipping: BYROREDUX_OBL_DATA unset and fallback path missing");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Oblivion.esm")).expect("read Oblivion.esm");
+    let index = parse_esm(&bytes).expect("parse Oblivion.esm");
+    assert_eq!(index.game_setting_float("fSkillUseFactor"), Some(0.35));
+    assert_eq!(index.game_setting_float("fSkillUseExp"), Some(1.5));
+    for unauthored in ["fSkillUseMinorMult", "fSkillUseMajorMult", "fSkillUseSpecMult"] {
+        assert_eq!(index.game_setting_float(unauthored), None, "{unauthored}: the executable's default");
+    }
+    let ruleset = index
+        .character_rules
+        .build_ruleset(|id| index.actor_value_form_id(id), |id| index.game_setting_float(id), &index.plugin_files)
+        .expect("Oblivion builds a ruleset");
+    let costs = ruleset.leveling.skill_use_costs().expect("Oblivion levels by skill use");
+    assert_eq!(costs, SkillUseCosts::OBLIVION);
+    let base = SkillClass { specialization: false, major: false };
+    assert!((costs.cost(5, base) - 2.89).abs() < 0.005, "{}", costs.cost(5, base));
+}
+
+/// #7051 (OSL-USE-001) — `byroredux_core::character::OBLIVION_SKILL_USE_VALUES` is UESP's per-action table,
+/// held as data; `Oblivion.esm`'s 21 `SKIL` records author the same two use values (`DATA`: action, attribute,
+/// specialization, use value 1, use value 2; `INDX` is the skill's actor-value code, Armorer 12).
+#[test]
+#[ignore = "needs Oblivion game data on disk"]
+fn oblivion_skill_use_values_match_the_masters_skil_records() {
+    use byroredux_core::character::OBLIVION_SKILL_USE_VALUES;
+    use byroredux_plugin::esm::reader::EsmReader;
+    use byroredux_plugin::esm::records::oblivion_actor_values::OBLIVION_ACTOR_VALUES;
+    let Some(data) = data_dir(test_paths::OBLIVION_ENV, test_paths::OBLIVION_DEFAULT) else {
+        eprintln!("[OBL] skipping: BYROREDUX_OBL_DATA unset and fallback path missing");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Oblivion.esm")).expect("read Oblivion.esm");
+    let mut reader = EsmReader::new(&bytes);
+    reader.read_file_header().unwrap();
+    let mut authored: Vec<(String, u32, f32, f32)> = Vec::new();
+    reader
+        .for_each_record(bytes.len(), Some(b"SKIL"), |_, subs| {
+            let find = |tag: &[u8; 4]| subs.iter().find(|s| &s.sub_type == tag).map(|s| &s.data);
+            let index = u32::from_le_bytes(find(b"INDX").expect("INDX")[..4].try_into().unwrap());
+            let data = find(b"DATA").expect("DATA");
+            assert_eq!(data.len(), 20, "SKIL DATA is action, attribute, specialization, two use values");
+            let value = |at: usize| f32::from_le_bytes(data[at..at + 4].try_into().unwrap());
+            authored.push((OBLIVION_ACTOR_VALUES[index as usize].to_owned(), index, value(12), value(16)));
+        })
+        .unwrap();
+    assert_eq!(authored.len(), 21, "{authored:?}");
+    for (name, code, first, second) in &authored {
+        let row = OBLIVION_SKILL_USE_VALUES.get(code.wrapping_sub(12) as usize);
+        assert_eq!(row, Some(&(*first, *second)), "{name} ({code})");
+    }
 }
 
 /// Oblivion: the 160-byte NAM0 stride target of #533. Minimal parse
@@ -5292,6 +5405,50 @@ fn installed_masters_actor_value_indices_resolve_by_layout() {
     }
 }
 
+#[test]
+#[ignore = "needs installed Oblivion.esm"]
+fn oblivion_actor_stat_source_census() {
+    let Some(data) = data_dir(test_paths::OBLIVION_ENV, test_paths::OBLIVION_DEFAULT) else { return; };
+    let bytes = std::fs::read(data.join("Oblivion.esm")).expect("read Oblivion.esm");
+    let mut index = parse_esm(&bytes).expect("parse Oblivion.esm");
+    let npcs = index.npcs.values().filter(|npc| npc.oblivion_npc_stats.is_some()).count();
+    let creatures = index.creatures.values().filter(|npc| npc.oblivion_creature_stats.is_some()).count();
+    let npc_pools = index.npcs.values().filter(|npc| npc.oblivion_pools.is_some()).count();
+    let creature_pools = index.creatures.values().filter(|npc| npc.oblivion_pools.is_some()).count();
+    eprintln!("Oblivion.esm: authored AVIF {}; NPC DATA {npcs}/{} ACBS {npc_pools}/{}; CREA DATA {creatures}/{} ACBS {creature_pools}/{}",
+        index.actor_values.len(), index.npcs.len(), index.npcs.len(), index.creatures.len(), index.creatures.len());
+    assert!(npcs > 0 && creatures > 0);
+    assert_eq!(index.actor_values.len(), 0);
+    let occupied: Vec<_> = index.record_types.iter().filter(|(id, _)| **id >> 24 == 1).take(8).collect();
+    eprintln!("Oblivion.esm raw slot-1 record samples: {occupied:?}");
+    let raw_slot_one: Vec<_> = index.record_types.iter().filter(|(id, _)| **id >> 24 == 1).collect();
+    let aliases = raw_slot_one.iter().filter(|(id, _)| index.record_types.contains_key(&(*id & 0x00ff_ffff))).count();
+    eprintln!("Oblivion.esm raw slot-1 records: {}, matching slot-0 local ids: {aliases}", raw_slot_one.len());
+    let slot = (1..=0xfb).find(|slot| !index.record_types.keys().any(|id| *id >> 24 == *slot)).expect("free raw slot");
+    index.install_oblivion_actor_values(byroredux_plugin::esm::reader::GlobalSlot::Regular(slot as u8)).unwrap();
+    let standard = |actor: &byroredux_plugin::esm::records::NpcRecord| {
+        let resolved = byroredux_plugin::equip::ResolvedNpc::resolve(actor, &index);
+        let pairs = byroredux_plugin::esm::records::derive_resolved_actor_values_with_player_level(&resolved, &index, Some(1));
+        let mut values = byroredux_core::ecs::components::ActorValues::from_pairs(pairs);
+        for (key, alias) in byroredux_plugin::esm::records::creature_skill_aliases(&resolved, &index) {
+            assert!(values.set_alias(key, alias));
+        }
+        (0..33).filter(|code| values.get((slot << 24) + 1 + code).is_some()).count()
+    };
+    let npc_complete = index.npcs.values().filter(|npc| standard(npc) == 33).count();
+    let creature_complete = index.creatures.values().filter(|npc| standard(npc) == 33).count();
+    eprintln!("Oblivion.esm at player level 1: standard values complete NPC {npc_complete}/{}; CREA {creature_complete}/{}", index.npcs.len(), index.creatures.len());
+    assert_eq!(npc_complete, index.npcs.len());
+    assert_eq!(creature_complete, index.creatures.len());
+    let code = u32::from_le_bytes(*b"FOSK");
+    let effect = index.resolve_magic_effect(code).expect("Fortify Skill MGEF");
+    let items: Vec<_> = index.spells.values().flat_map(|spell| &spell.effects)
+        .filter(|item| item.effect_form_id == code).collect();
+    eprintln!("Oblivion.esm FOSK: flags {:#x}, archetype {:?}, spell items {}", effect.effect_flags, effect.archetype, items.len());
+    assert!(!items.is_empty());
+    assert!(items.iter().any(|item| index.effect_actor_value(effect, item).and_then(|av| index.resolve_actor_value(av)).is_some()));
+}
+
 /// #4415 — the `SPIT` / `MGEF` decodes on shipped data: abilities exist,
 /// value-modifier effects exist, and every value-modifier actor value a
 /// vanilla ability names resolves to an AVIF.
@@ -5908,14 +6065,13 @@ fn story_manager_skyrim_census_floor() {
     let mut in_tree = 0usize;
     let mut same_parent = 0usize;
     for node in &nodes {
-        if node.previous_sibling != 0 {
-            if let Some(target) = index.story_manager_nodes.get(&node.previous_sibling) {
+        if node.previous_sibling != 0
+            && let Some(target) = index.story_manager_nodes.get(&node.previous_sibling) {
                 in_tree += 1;
                 if target.parent == node.parent {
                     same_parent += 1;
                 }
             }
-        }
     }
     assert!(
         same_parent * 10 >= in_tree * 9,
@@ -7035,7 +7191,7 @@ fn fnv_music_sources_decode_against_the_census() {
 /// (the design's §13.1 census). A name with neither cannot occur: every setting a row reads has a default, so the
 /// test fails only if a row lost one. The authored values the design pins are checked.
 #[test]
-#[ignore = "needs FO3 / FNV / Oblivion / Skyrim SE game data on disk"]
+#[ignore = "needs FO3 / FNV / Oblivion / Skyrim SE / FO4 / Starfield game data on disk"]
 fn m65_detection_settings_census() {
     use byroredux_core::stealth::{StealthKind, StealthRules};
     let cases = [
@@ -7043,6 +7199,8 @@ fn m65_detection_settings_census() {
         (test_paths::FNV_ENV, test_paths::FNV_DEFAULT, "FalloutNV.esm", StealthKind::FalloutNv),
         (test_paths::OBLIVION_ENV, test_paths::OBLIVION_DEFAULT, "Oblivion.esm", StealthKind::Oblivion),
         (test_paths::SKYRIM_SE_ENV, test_paths::SKYRIM_SE_DEFAULT, "Skyrim.esm", StealthKind::Skyrim),
+        (test_paths::FO4_ENV, test_paths::FO4_DEFAULT, "Fallout4.esm", StealthKind::Fallout4),
+        (test_paths::STARFIELD_ENV, test_paths::STARFIELD_DEFAULT, "Starfield.esm", StealthKind::Starfield),
     ];
     let mut ran = 0;
     for (env, fallback, master, kind) in cases {
@@ -7078,6 +7236,23 @@ fn m65_detection_settings_census() {
                 assert_eq!((s.light_level_max, s.player_detection_sneak_mult, s.stealth_point_drain_mult), (300.0, 0.4, 3.0));
                 assert_eq!((s.sneak_dagger, s.sneak_two_hand_sword, s.sneak_bow), (3.0, 2.0, 2.0), "authored 1H / 2H, executable bow");
             }
+            // #6996: `Fallout4.esm` over `Fallout4.exe`'s defaults.
+            StealthKind::Fallout4 => {
+                assert_eq!((s.max_distance, s.sound_los_mult, s.light_level_max, s.light_level_interior_mod), (4096.0, 0.4, 150.0, 25.0), "{master}");
+                assert_eq!((s.stealth_point_sound_floor, s.stealth_point_regen_lost_mult, s.stealth_point_regen_min), (25.0, 20.0, 2.0));
+                assert_eq!((s.sneak_dagger, s.sneak_gun, s.visual_base_value), (3.0, 2.0, -20.0), "authored melee, executable gun and base");
+            }
+            // #7046: `Starfield.esm` (52 of 101 settings authored, in metres) over `Starfield.exe`'s defaults; the
+            // distances are lifted to Bethesda units by ×70 at resolve.
+            StealthKind::Starfield => {
+                assert_eq!((s.max_distance, s.exterior_distance_mult, s.sound_los_mult, s.light_level_max), (4200.0, 1.15, 0.4, 150.0), "{master}");
+                assert_eq!((s.ambient_sound_mult, s.sound_level_quiet, s.sound_level_normal, s.sound_level_loud), (0.1, 35.0, 70.0, 100.0));
+                assert_eq!((s.detection_running_mult, s.running_mult, s.detection_sprinting_mult), (1.5, 1.25, 2.0), "authored run, executable sprint");
+                assert_eq!((s.visual_min_distance_max, s.visual_min_distance_min, s.stealth_point_sound_threshold_radius), (262.5, 131.25, 560.0));
+                assert_eq!((s.sneak_dagger, s.sneak_gun, s.sneak_bow, s.visual_base_value), (3.0, 2.0, 2.0, -20.0));
+                assert_eq!(readings.len(), 101, "{master}");
+                assert_eq!(authored, 52, "{master}");
+            }
             _ => {
                 assert_eq!((s.base_value, s.max_distance, s.sound_los_mult), (-35.0, 2500.0, 0.1), "{master}");
                 assert_eq!((s.boot_weight_base, s.boot_weight_mult, s.running_mult, s.action_mult), (12.0, 0.5, 1.5, 2.0), "{master}");
@@ -7086,4 +7261,94 @@ fn m65_detection_settings_census() {
         ran += 1;
     }
     eprintln!("[M65] {ran} master(s) censused");
+}
+
+/// OAV §7.2 scenario 3 / OAV-G-002 (#7010) — the Oblivion actor-value census. Over every `NPC_` and `CREA` of
+/// `Oblivion.esm`, the population path (`derive_resolved_actor_values_with_player_level`) must stamp all 33
+/// standard values (indices 0–32). The pass is 100 % of both record kinds; the test reports, per kind, the
+/// actors populated, those that also carry the four `AIDT` extras (33–36), and the first few failures.
+///
+/// Run at player level 1 and at level 30: a PC-level-offset actor's level, and so its calculated values, move
+/// with the player.
+#[test]
+#[ignore = "needs Oblivion game data on disk"]
+fn oblivion_population_census_stamps_every_standard_value() {
+    use byroredux_plugin::equip::ResolvedNpc;
+    use byroredux_plugin::esm::reader::GlobalSlot;
+    use byroredux_plugin::esm::records::derive_resolved_actor_values_with_player_level;
+    use byroredux_plugin::esm::records::oblivion_actor_values::OBLIVION_ACTOR_VALUES;
+
+    let Some(data) = data_dir(test_paths::OBLIVION_ENV, test_paths::OBLIVION_DEFAULT) else {
+        eprintln!("[Oblivion/population] skipping: game data unavailable");
+        return;
+    };
+    let bytes = std::fs::read(data.join("Oblivion.esm")).expect("read Oblivion.esm");
+    let mut index = parse_esm(&bytes).expect("parse Oblivion.esm");
+    assert_eq!(index.game, GameKind::Oblivion);
+    // `Oblivion.esm` is slot 0; the engine's records take the lowest slot no record occupies, as the loader
+    // does (the master carries records whose top byte is not its own).
+    let free = (0u8..=0xfb)
+        .find(|slot| !index.record_types.keys().any(|id| (id >> 24) as u8 == *slot))
+        .expect("a free regular slot");
+    index.install_oblivion_actor_values(GlobalSlot::Regular(free)).expect("install the engine roster");
+    let standard: Vec<u32> = (0..33).map(|i| index.oblivion_actor_value(i, false).expect("standard value installed")).collect();
+    let extras: Vec<u32> = (33..37).map(|i| index.oblivion_actor_value(i, false).expect("AIDT value installed")).collect();
+    assert_eq!(OBLIVION_ACTOR_VALUES.len(), 72);
+
+    let mut failed_any = false;
+    for player_level in [1u16, 30] {
+        for (kind, records) in [("NPC_", &index.npcs), ("CREA", &index.creatures)] {
+            let (mut full, mut with_extras, mut failures) = (0usize, 0usize, Vec::new());
+            for (form_id, record) in records {
+                let resolved = ResolvedNpc::resolve(record, &index);
+                let values = derive_resolved_actor_values_with_player_level(&resolved, &index, Some(player_level));
+                let has = |key: &u32| values.iter().any(|(id, _)| id == key);
+                // Populated is not enough: every value is finite and >= 0. (Authored values above 100 are kept
+                // as authored: the master has stored attributes of 125 and skills of 255.)
+                let implausible = values.iter().find(|&&(_, value)| !value.is_finite() || value < 0.0);
+                if let Some(&(id, value)) = implausible {
+                    failed_any = true;
+                    if failures.len() < 8 {
+                        failures.push(format!("{form_id:08X} {} has an implausible value {value} at key {id:#010x}", record.editor_id));
+                    }
+                }
+                if standard.iter().all(has) {
+                    full += 1;
+                } else if failures.len() < 8 {
+                    let missing: Vec<_> = standard.iter().enumerate().filter(|(_, key)| !has(key)).map(|(i, _)| OBLIVION_ACTOR_VALUES[i]).collect();
+                    failures.push(format!("{form_id:08X} {} missing {missing:?}", record.editor_id));
+                }
+                if extras.iter().all(has) {
+                    with_extras += 1;
+                }
+            }
+            eprintln!(
+                "[Oblivion/population] player level {player_level}: {kind} {full}/{} with all 33 standard values, {with_extras} with the four AIDT extras",
+                records.len()
+            );
+            for line in &failures {
+                eprintln!("    {line}");
+            }
+            failed_any |= full != records.len();
+            assert!(!records.is_empty(), "{kind}: no records parsed");
+        }
+    }
+    // OAV-POP-006 (Q3): the `Player` NPC_ (form 0x7) carries the standard values exactly as the master authors them,
+    // even though its ACBS asks for auto-calc.
+    let player = index.npcs.get(&7).expect("Oblivion.esm authors the Player NPC_");
+    let stats = player.oblivion_npc_stats.as_ref().expect("the Player's DATA decodes");
+    let pools = player.oblivion_pools.expect("the Player's ACBS pools decode");
+    let resolved = ResolvedNpc::resolve(player, &index);
+    let values = derive_resolved_actor_values_with_player_level(&resolved, &index, Some(1));
+    let value = |code: u32| values.iter().find(|(id, _)| *id == standard[code as usize]).map(|(_, v)| *v);
+    for (i, authored) in stats.attributes.iter().enumerate() {
+        assert_eq!(value(i as u32), Some(f32::from(*authored)), "Player attribute {i}");
+    }
+    for (i, authored) in stats.skills.iter().enumerate() {
+        assert_eq!(value(12 + i as u32), Some(f32::from(*authored)), "Player skill {i}");
+    }
+    assert_eq!(value(8), Some(f32::from(stats.health)));
+    assert_eq!((value(9), value(10)), (Some(f32::from(pools.magicka)), Some(f32::from(pools.fatigue))));
+    eprintln!("[Oblivion/population] Player NPC_: Health {}, Magicka {}, Fatigue {}", stats.health, pools.magicka, pools.fatigue);
+    assert!(!failed_any, "OAV-G-002: every NPC_ and CREA must carry all 33 standard values");
 }

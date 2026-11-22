@@ -26,6 +26,7 @@
 //! sum is the true total.
 
 use super::attribute::AttributeSet;
+use crate::ecs::components::ActorValues;
 use super::derived::{DerivedInput, DerivedStatFormula};
 use super::leveling::LevelingModel;
 use super::ruleset::CharacterRuleset;
@@ -37,42 +38,40 @@ use super::skill::SkillSet;
 /// **Scope is UNsourced (#6431).** `player_only` is an analogy to the Fallout
 /// convention where NPCs ship baked pool values — and that convention is itself
 /// FO4-evidence-specific. `charal-oblivion-ruleset.md` states no player/NPC
-/// scope for any pool formula (contrast the Armor Rating rows, `ActorGeneral`
-/// with the capture saying the source is silent). Pinned by
-/// `oblivion_pool_rows_are_player_only_pending_a_source`; revisit with
-/// #3768, the first point at which Oblivion has a wired ruleset.
+/// scope for any pool formula. Pinned by
+/// `oblivion_pool_rows_are_player_only_pending_a_source`; the choice is
+/// observable since #7010 wired the ruleset, so revisit it when a source
+/// states the scope.
+///
+/// #7198 — the coefficient is `fPCBaseHealthMult` (`base_health_mult`; CS wiki
+/// *FPCBaseHealthMult*, "multiplied by the player's endurance to calculate
+/// starting health", default [`OBLIVION_PC_BASE_HEALTH_MULT`]), and the result
+/// is truncated (`trunc(End x fPCBaseHealthMult)`,
+/// `charal-oblivion-ruleset.md`, the player's pools); truncation is `floor` on a
+/// non-negative attribute.
 #[must_use]
-pub fn oblivion_health_formula(endurance_av: u32) -> DerivedStatFormula {
-    DerivedStatFormula::affine(DerivedInput::actor_value(endurance_av), 2.0, 0.0).player_only()
+pub fn oblivion_health_formula(endurance_av: u32, base_health_mult: f32) -> DerivedStatFormula {
+    DerivedStatFormula::affine(DerivedInput::actor_value(endurance_av), base_health_mult, 0.0).floored().player_only()
 }
 
-/// Oblivion Magicka = `2 × Intelligence`. `intelligence_av` is the resolved
-/// Intelligence AVIF FormID. Scope is `player_only` but UNsourced — see
-/// [`oblivion_health_formula`] (#6431).
+/// Oblivion Magicka = `trunc(Intelligence × (1 + fPCBaseMagickaMult))`, `2 ×
+/// Intelligence` at `Oblivion.esm`'s authored 1.0 (#7198;
+/// `base_magicka_mult` is the setting, CS wiki *FPCBaseMagickaMult*: "Used to
+/// calculate the player's magicka from the player's intelligence"). Scope is
+/// `player_only` but UNsourced — see [`oblivion_health_formula`] (#6431). The
+/// capture's Magicka Multiplier factor (actor value 40, `/ 10`) is a declared
+/// gap: no derived row can carry it (`charal-oblivion-ruleset.md`, Known gaps).
 #[must_use]
-pub fn oblivion_magicka_formula(intelligence_av: u32) -> DerivedStatFormula {
-    DerivedStatFormula::affine(DerivedInput::actor_value(intelligence_av), 2.0, 0.0).player_only()
+pub fn oblivion_magicka_formula(intelligence_av: u32, base_magicka_mult: f32) -> DerivedStatFormula {
+    DerivedStatFormula::affine(DerivedInput::actor_value(intelligence_av), 1.0 + base_magicka_mult, 0.0)
+        .floored()
+        .player_only()
 }
 
-/// Oblivion per-piece Armor Rating's skill-driven multiplier
-/// (`0.35 + 0.0065·ArmorSkill`). Source: UESP *Oblivion:The Complete Damage
-/// Formula* — `PieceArmorRating = BaseArmorRating × (0.35 + 0.0065 ×
-/// ArmorSkill) × (ArmorHealth / MaxArmorHealth)`, where `ArmorSkill` is
-/// **the wearer's own** governing armor skill (UESP writes the formula from
-/// the attacker's perspective, hence its "Opponent" naming — the capture
-/// resolves the term to the defender's own skill, and that is what the
-/// shipped code reads: the actor's own LightArmor/HeavyArmor AV,
-/// actor-general scope). CHARAL owns only the skill-driven multiplier;
-/// `BaseArmorRating` (per-piece content) and the condition ratio are
-/// equipment-layer inputs the combat system supplies, and the
-/// `Σ pieces, capped at 85` summation is a downstream combat concern, not
-/// part of this per-skill formula (`docs/engine/charal-oblivion-ruleset.md`).
-/// The source gives one shared coefficient for "whichever armor skill governs
-/// the piece" — applied identically to both Light Armor and Heavy Armor below,
-/// not a per-type constant.
-pub const ARMOR_RATING_SKILL_COEFF: f32 = 0.0065;
-/// Armor Rating multiplier's bias term — see [`ARMOR_RATING_SKILL_COEFF`].
-pub const ARMOR_RATING_SKILL_BIAS: f32 = 0.35;
+/// `fPCBaseHealthMult`'s default (CS wiki *FPCBaseHealthMult*, 2.0; `Oblivion.esm` does not author it).
+pub const OBLIVION_PC_BASE_HEALTH_MULT: f32 = 2.0;
+/// `fPCBaseMagickaMult`'s default (`Oblivion.esm` authors 1.0).
+pub const OBLIVION_PC_BASE_MAGICKA_MULT: f32 = 1.0;
 
 /// Oblivion Fatigue = `Strength + Willpower + Agility + Endurance` (UESP).
 ///
@@ -107,21 +106,36 @@ pub fn oblivion_fatigue_formulas(
 /// / Fatigue). Inputs/outputs are resolved through `resolve` (EditorID →
 /// FormID) with the same resolve-or-skip contract as the Fallout builders
 /// ([`super::fallout`]) — a pool whose EditorIDs don't resolve is simply
-/// omitted. Pre-AVIF Oblivion supplies a resolver mapping these EditorIDs to
-/// its legacy engine actor-value indices at the parser boundary.
+/// omitted. Oblivion authors no `AVIF` records, so the loader installs the
+/// engine-supplied 72-value roster (`EsmIndex::install_oblivion_actor_values`,
+/// #7010) and these EditorIDs resolve against it like any other game's.
 #[must_use]
 pub fn oblivion_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRuleset {
+    oblivion_ruleset_with_gmst(resolve, |_| None)
+}
+
+/// [`oblivion_ruleset`] with the load order's `fPCBaseHealthMult` and
+/// `fPCBaseMagickaMult` overlaid on the player's pool rows (#7198, the #6756
+/// overlay the Fallout builders carry). A non-finite or negative authored value
+/// keeps its default.
+pub fn oblivion_ruleset_with_gmst<F: Fn(&str) -> Option<u32>, G: Fn(&str) -> Option<f32>>(
+    resolve: F,
+    gmst: G,
+) -> CharacterRuleset {
+    let setting = |name: &str, default: f32| gmst(name).filter(|value| value.is_finite() && *value >= 0.0).unwrap_or(default);
+    let health_mult = setting("fPCBaseHealthMult", OBLIVION_PC_BASE_HEALTH_MULT);
+    let magicka_mult = setting("fPCBaseMagickaMult", OBLIVION_PC_BASE_MAGICKA_MULT);
     let mut rs = CharacterRuleset::new(LevelingModel::OBLIVION)
         .with_attributes(AttributeSet::TES_CLASSIC)
         .with_skills(SkillSet::OBLIVION);
 
     // Health = 2·Endurance.
     if let (Some(out), Some(end)) = (resolve("Health"), resolve("Endurance")) {
-        rs.push_derived(out, oblivion_health_formula(end));
+        rs.push_derived(out, oblivion_health_formula(end, health_mult));
     }
     // Magicka = 2·Intelligence.
     if let (Some(out), Some(int)) = (resolve("Magicka"), resolve("Intelligence")) {
-        rs.push_derived(out, oblivion_magicka_formula(int));
+        rs.push_derived(out, oblivion_magicka_formula(int, magicka_mult));
     }
     // Fatigue = Strength + Willpower + Agility + Endurance (four summed rows).
     if let (Some(out), Some(s), Some(w), Some(a), Some(e)) = (
@@ -135,30 +149,9 @@ pub fn oblivion_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRule
             rs.push_derived(out, row);
         }
     }
-    // Armor Rating multiplier ×(0.35 + 0.0065·ArmorSkill), one row per armor
-    // skill — actor-general (the source doesn't distinguish player/NPC here).
-    if let (Some(out), Some(la)) = (resolve("LightArmorRating"), resolve("LightArmor")) {
-        rs.push_derived(
-            out,
-            DerivedStatFormula::affine(
-                DerivedInput::actor_value(la),
-                ARMOR_RATING_SKILL_COEFF,
-                ARMOR_RATING_SKILL_BIAS,
-            )
-            .as_multiplier(),
-        );
-    }
-    if let (Some(out), Some(ha)) = (resolve("HeavyArmorRating"), resolve("HeavyArmor")) {
-        rs.push_derived(
-            out,
-            DerivedStatFormula::affine(
-                DerivedInput::actor_value(ha),
-                ARMOR_RATING_SKILL_COEFF,
-                ARMOR_RATING_SKILL_BIAS,
-            )
-            .as_multiplier(),
-        );
-    }
+    // #7201 — no armor-rating rows: the engine-supplied roster has no `*ArmorRating` value for them to key on,
+    // and Oblivion's armor rating is the combat-time `ArmorRatingModel` (`armor_rating.rs`, the profile's
+    // `armor_rating` row), the one home of UESP's `0.35 + 0.0065 x ArmorSkill`.
     rs
 }
 
@@ -179,19 +172,29 @@ pub fn oblivion_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRule
 /// | 8–9                | +4    |
 /// | 10+                | +5    |
 ///
-/// Capped at +5; surplus skill-ups past 10 do **not** roll over to the next
-/// level. `governed_skill_ups` is the count for one attribute; the caller
-/// tallies increases per governing attribute (via [`SkillSet::governing`]).
+/// Capped at the tenth band; surplus skill-ups past 10 do **not** roll over to
+/// the next level. `governed_skill_ups` is the count for one attribute; the
+/// caller tallies increases per governing attribute (via
+/// [`SkillSet::governing`]). `bonuses` is the band for a tally of 1 to 10, the
+/// `iLevelUp01Mult` … `iLevelUp10Mult` settings (#7196, [`OBLIVION_ATTRIBUTE_BONUSES`]
+/// by default; a load order retunes them through
+/// [`LevelingModel::with_gmst`](super::LevelingModel::with_gmst)); a tally of 0
+/// is the engine's +1, which no setting covers.
 #[must_use]
-pub fn oblivion_attribute_bonus(governed_skill_ups: u16) -> u8 {
+pub fn oblivion_attribute_bonus(governed_skill_ups: u16, bonuses: &[u8; 10]) -> u8 {
     match governed_skill_ups {
         0 => 1,
-        1..=4 => 2,
-        5..=7 => 3,
-        8..=9 => 4,
-        _ => 5,
+        n => bonuses[usize::from(n.min(10)) - 1],
     }
 }
+
+/// `iLevelUp01Mult` … `iLevelUp10Mult`: the attribute bonus at a governed tally of 1 … 10 (CS wiki
+/// *ILevelUpXXMult*, defaults 2, 2, 2, 2, 3, 3, 3, 4, 4, 5; `Oblivion.esm` authors none of them).
+pub const OBLIVION_ATTRIBUTE_BONUSES: [u8; 10] = [2, 2, 2, 2, 3, 3, 3, 4, 4, 5];
+
+/// `fStatsHealthLevelMult`: the share of Endurance a level-up adds to Health (CS wiki *FStatsHealthLevelMult*,
+/// 0.1, "rounded down"; `Oblivion.esm` does not author it).
+pub const OBLIVION_HEALTH_PER_ENDURANCE: f32 = 0.1;
 
 /// Oblivion **per-level Health gain** — the stateful half of the Health pool
 /// (leveling-efficiency mechanic, `docs/engine/charal.md` §5).
@@ -203,16 +206,33 @@ pub fn oblivion_attribute_bonus(governed_skill_ups: u16) -> u8 {
 /// path-dependent — a per-level event, not a stateless derived formula. This is
 /// why maximising Endurance early matters: every level compounds it.
 ///
-/// Returned as an exact `f32` (`0.1 × endurance`); integer HP rounding is the
-/// leveling system's concern, as with [`LevelingModel::skill_points`].
+/// Returned as an exact `f32` (`per_endurance × endurance`, `fStatsHealthLevelMult`,
+/// [`OBLIVION_HEALTH_PER_ENDURANCE`] by default, #7196); integer HP rounding is
+/// the leveling system's concern, as with [`LevelingModel::skill_points`].
 ///
 /// **Scope:** this is *classic* Oblivion (2006, Gamebryo — ByroRedux's
 /// target). The live UESP *Oblivion:Health* page now documents the 2024
 /// *Oblivion Remastered* (UE5) formula (Strength + `Endurance × 0.6666 × 2`);
 /// that engine is out of scope — do not adopt it here.
 #[must_use]
-pub fn oblivion_health_gain_per_level(endurance: u16) -> f32 {
-    0.1 * f32::from(endurance)
+pub fn oblivion_health_gain_per_level(endurance: u16, per_endurance: f32) -> f32 {
+    per_endurance * f32::from(endurance)
+}
+
+/// Apply one Oblivion level-up's Health gain to the player's [`ActorValues`] (#7044): the whole-number part of
+/// [`oblivion_health_gain_per_level`] goes into the Health actor value's [`ActorValue::stored`](crate::ecs::components::ActorValue::stored) layer, the term
+/// the original keeps beside the formula (`(stored + derived) x multiplier`, `Oblivion.exe` `0x5ead00`; the
+/// level-up adds to it at `0x66c3e0`). It is the layer the per-frame derived-stat refresh and the permanent
+/// (ability and gear) modifiers both leave alone, so the gain survives a refresh and a Fortify Health ability
+/// coming and going. Returns the gain applied.
+///
+/// UESP *Oblivion:Health*: "you gain health points equal to a tenth of your endurance, rounded down"
+/// (Endurance 98 gives +9). Which Endurance the executable reads, before or after the level's attribute bonus,
+/// is unverified (the skill-use leveling PRD's V8): the caller passes the value it settles on.
+pub fn apply_oblivion_level_up_health(values: &mut ActorValues, health: u32, endurance: u16, per_endurance: f32) -> f32 {
+    let gain = oblivion_health_gain_per_level(endurance, per_endurance).floor();
+    values.add_stored(health, gain);
+    gain
 }
 
 #[cfg(test)]
@@ -224,10 +244,24 @@ mod tests {
     // Resolved stand-in AVIF FormIDs.
     const END: u32 = 0x07;
     const INT: u32 = 0x09;
+    const HEALTH: u32 = 0x08;
+
+    /// #7044 — the whole-number tenth of Endurance lands in the stored layer and nowhere else.
+    #[test]
+    fn the_level_up_health_gain_rounds_down_into_the_stored_layer() {
+        let mut values = ActorValues::from_pairs([(HEALTH, 80.0), (END, 98.0)]);
+        // UESP *Oblivion:Health*: Endurance 98 at level-up gives +9, rounded down.
+        assert_eq!(apply_oblivion_level_up_health(&mut values, HEALTH, 98, OBLIVION_HEALTH_PER_ENDURANCE), 9.0);
+        assert_eq!(apply_oblivion_level_up_health(&mut values, HEALTH, 45, OBLIVION_HEALTH_PER_ENDURANCE), 4.0);
+        let health = values.get(HEALTH).unwrap();
+        assert_eq!((health.stored, health.base, health.permanent_mod, health.set_override), (13.0, 80.0, 0.0, 0.0));
+        assert_eq!(values.current(HEALTH), 93.0);
+        assert_eq!(values.stored(HEALTH), 13.0);
+    }
 
     #[test]
     fn health_is_twice_endurance() {
-        let f = oblivion_health_formula(END);
+        let f = oblivion_health_formula(END, OBLIVION_PC_BASE_HEALTH_MULT);
         let avs = ActorValues::from_pairs([(END, 40.0)]);
         // 2 × 40 = 80, level-independent.
         assert_eq!(f.eval(&avs, 1), 80.0);
@@ -235,9 +269,36 @@ mod tests {
         assert_eq!(f.scope, DerivedScope::PlayerOnly);
     }
 
+    /// #7198 — the player's pool coefficients are the load order's `fPCBaseHealthMult` and `fPCBaseMagickaMult`
+    /// (Magicka's slope is `1 + mult`), truncated; a non-finite or negative value keeps the default.
+    #[test]
+    fn the_player_pool_coefficients_follow_the_load_orders_settings() {
+        let resolve = |name: &str| match name {
+            "Health" => Some(0x90),
+            "Magicka" => Some(0x91),
+            "Endurance" => Some(END),
+            "Intelligence" => Some(INT),
+            _ => None,
+        };
+        let avs = ActorValues::from_pairs([(END, 41.0), (INT, 41.0)]);
+        let tuned = oblivion_ruleset_with_gmst(resolve, |name| match name {
+            "fPCBaseHealthMult" => Some(1.5),
+            "fPCBaseMagickaMult" => Some(0.5),
+            _ => None,
+        });
+        assert_eq!(tuned.derived_value(0x90, &avs, 1), Some(61.0), "trunc(41 x 1.5) = trunc(61.5)");
+        assert_eq!(tuned.derived_value(0x91, &avs, 1), Some(61.0), "trunc(41 x (1 + 0.5))");
+        let vanilla = oblivion_ruleset(resolve);
+        assert_eq!((vanilla.derived_value(0x90, &avs, 1), vanilla.derived_value(0x91, &avs, 1)), (Some(82.0), Some(82.0)));
+        for bad in [f32::NAN, -1.0] {
+            let kept = oblivion_ruleset_with_gmst(resolve, move |name: &str| name.starts_with("fPCBase").then_some(bad));
+            assert_eq!(kept.derived_value(0x91, &avs, 1), Some(82.0), "{bad}");
+        }
+    }
+
     #[test]
     fn magicka_is_twice_intelligence() {
-        let f = oblivion_magicka_formula(INT);
+        let f = oblivion_magicka_formula(INT, OBLIVION_PC_BASE_MAGICKA_MULT);
         let avs = ActorValues::from_pairs([(INT, 50.0)]);
         assert_eq!(f.eval(&avs, 1), 100.0);
         assert_eq!(f.scope, DerivedScope::PlayerOnly);
@@ -253,8 +314,7 @@ mod tests {
         for row in oblivion_fatigue_formulas(1, 2, 3, 4) {
             assert_eq!(row.scope, DerivedScope::PlayerOnly);
         }
-        // Health and Magicka are pinned beside their formulas above; the
-        // armor-rating rows are the deliberate `ActorGeneral` contrast.
+        // Health and Magicka are pinned beside their formulas above.
         let rs = oblivion_ruleset(|id| {
             Some(match id {
                 "Strength" => 0x1F,
@@ -267,8 +327,6 @@ mod tests {
                 "Fatigue" => 0x93,
                 "LightArmor" => 0x24,
                 "HeavyArmor" => 0x25,
-                "LightArmorRating" => 0x94,
-                "HeavyArmorRating" => 0x95,
                 _ => return None,
             })
         });
@@ -277,12 +335,6 @@ mod tests {
                 rs.derived_formula(pool).unwrap().scope,
                 DerivedScope::PlayerOnly,
                 "{pool:#04X}: pool scope is unsourced (#6431)"
-            );
-        }
-        for rating in [0x94, 0x95] {
-            assert_eq!(
-                rs.derived_formula(rating).unwrap().scope,
-                DerivedScope::ActorGeneral
             );
         }
     }
@@ -329,8 +381,6 @@ mod tests {
                 "Fatigue" => 0x93,
                 "LightArmor" => 0x24,
                 "HeavyArmor" => 0x25,
-                "LightArmorRating" => 0x94,
-                "HeavyArmorRating" => 0x95,
                 _ => return None,
             })
         };
@@ -353,9 +403,9 @@ mod tests {
         assert_eq!(rs.derived_value(0x90, &avs, 1), Some(90.0)); // Health 2·END
         assert_eq!(rs.derived_value(0x92, &avs, 1), Some(100.0)); // Magicka 2·INT
         assert_eq!(rs.derived_value(0x93, &avs, 1), Some(150.0)); // Fatigue STR+WIL+AGI+END
-                                                                  // Armor Rating multiplier: 0.35+0.0065·skill. Light 50 → 0.675; Heavy 20 → 0.48.
-        assert!((rs.derived_value(0x94, &avs, 1).unwrap() - 0.675).abs() < 1e-6);
-        assert!((rs.derived_value(0x95, &avs, 1).unwrap() - 0.48).abs() < 1e-6);
+        // #7201 — no armor-rating row: the armor rating is `ArmorRatingModel`'s, even when a resolver answers the
+        // names (the engine roster never does).
+        assert_eq!(rs.derived_row_len(), 6, "Health, Magicka and four Fatigue rows");
     }
 
     #[test]
@@ -383,19 +433,19 @@ mod tests {
     #[test]
     fn attribute_bonus_tiers_match_uesp() {
         use super::oblivion_attribute_bonus;
-        assert_eq!(oblivion_attribute_bonus(0), 1);
+        assert_eq!(oblivion_attribute_bonus(0, &OBLIVION_ATTRIBUTE_BONUSES), 1);
         // 1–4 → +2
-        assert_eq!(oblivion_attribute_bonus(1), 2);
-        assert_eq!(oblivion_attribute_bonus(4), 2);
+        assert_eq!(oblivion_attribute_bonus(1, &OBLIVION_ATTRIBUTE_BONUSES), 2);
+        assert_eq!(oblivion_attribute_bonus(4, &OBLIVION_ATTRIBUTE_BONUSES), 2);
         // 5–7 → +3
-        assert_eq!(oblivion_attribute_bonus(5), 3);
-        assert_eq!(oblivion_attribute_bonus(7), 3);
+        assert_eq!(oblivion_attribute_bonus(5, &OBLIVION_ATTRIBUTE_BONUSES), 3);
+        assert_eq!(oblivion_attribute_bonus(7, &OBLIVION_ATTRIBUTE_BONUSES), 3);
         // 8–9 → +4
-        assert_eq!(oblivion_attribute_bonus(8), 4);
-        assert_eq!(oblivion_attribute_bonus(9), 4);
+        assert_eq!(oblivion_attribute_bonus(8, &OBLIVION_ATTRIBUTE_BONUSES), 4);
+        assert_eq!(oblivion_attribute_bonus(9, &OBLIVION_ATTRIBUTE_BONUSES), 4);
         // 10+ → +5, capped (no roll-over)
-        assert_eq!(oblivion_attribute_bonus(10), 5);
-        assert_eq!(oblivion_attribute_bonus(30), 5);
+        assert_eq!(oblivion_attribute_bonus(10, &OBLIVION_ATTRIBUTE_BONUSES), 5);
+        assert_eq!(oblivion_attribute_bonus(30, &OBLIVION_ATTRIBUTE_BONUSES), 5);
     }
 
     #[test]
@@ -416,16 +466,16 @@ mod tests {
         }
         assert_eq!(str_ups, 5);
         assert_eq!(agi_ups, 6);
-        assert_eq!(oblivion_attribute_bonus(str_ups), 3); // 5 → +3
-        assert_eq!(oblivion_attribute_bonus(agi_ups), 3); // 6 → +3
+        assert_eq!(oblivion_attribute_bonus(str_ups, &OBLIVION_ATTRIBUTE_BONUSES), 3); // 5 → +3
+        assert_eq!(oblivion_attribute_bonus(agi_ups, &OBLIVION_ATTRIBUTE_BONUSES), 3); // 6 → +3
     }
 
     #[test]
     fn health_gain_per_level_is_ten_percent_of_endurance() {
         use super::oblivion_health_gain_per_level;
-        assert_eq!(oblivion_health_gain_per_level(100), 10.0); // UESP anchor
-        assert_eq!(oblivion_health_gain_per_level(45), 4.5); // fractional — caller rounds
-        assert_eq!(oblivion_health_gain_per_level(0), 0.0);
+        assert_eq!(oblivion_health_gain_per_level(100, OBLIVION_HEALTH_PER_ENDURANCE), 10.0); // UESP anchor
+        assert_eq!(oblivion_health_gain_per_level(45, OBLIVION_HEALTH_PER_ENDURANCE), 4.5); // fractional — caller rounds
+        assert_eq!(oblivion_health_gain_per_level(0, OBLIVION_HEALTH_PER_ENDURANCE), 0.0);
     }
 
     #[test]
@@ -433,12 +483,12 @@ mod tests {
         use super::{oblivion_health_formula, oblivion_health_gain_per_level};
         // Constant Endurance 50: base 2·50 = 100, then +5/level.
         let base = {
-            let f = oblivion_health_formula(END);
+            let f = oblivion_health_formula(END, OBLIVION_PC_BASE_HEALTH_MULT);
             f.eval(&ActorValues::from_pairs([(END, 50.0)]), 1)
         };
         assert_eq!(base, 100.0);
         // Reaching level 3 accrues two per-level gains (levels 2 and 3).
-        let total = base + 2.0 * oblivion_health_gain_per_level(50);
+        let total = base + 2.0 * oblivion_health_gain_per_level(50, OBLIVION_HEALTH_PER_ENDURANCE);
         assert_eq!(total, 110.0);
     }
 }

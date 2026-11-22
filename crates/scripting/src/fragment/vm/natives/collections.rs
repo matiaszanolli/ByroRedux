@@ -186,11 +186,10 @@ impl Vm<'_> {
                 None => -1,
             }),
             "addref" => {
-                if let Some(form) = form_of(values.first()) {
-                    if !members.contains(&form) {
+                if let Some(form) = form_of(values.first())
+                    && !members.contains(&form) {
                         members.push(form);
                     }
-                }
                 Value::None
             }
             "addarray" => {
@@ -198,11 +197,10 @@ impl Vm<'_> {
                 // collection if they are none."
                 if let Some(Value::Array(items)) = values.first() {
                     for item in items.borrow().iter() {
-                        if let Value::Form(form) = item {
-                            if *form != 0 && !members.contains(form) {
+                        if let Value::Form(form) = item
+                            && *form != 0 && !members.contains(form) {
                                 members.push(*form);
                             }
-                        }
                     }
                 }
                 Value::None

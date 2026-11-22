@@ -159,7 +159,7 @@ Same "skill AV in, minigame-timing formula out" shape as the sneak-detection
 and pickpocket formulas — Lockpicking AV is a CHARAL output, this minigame
 tuning is a downstream consumer, not a derived stat itself.
 
-## Sneak Detection (Skyrim) — LOCKED (Sound/Distance halves), PENDING (Visual/skill halves) — out of CHARAL scope
+## Sneak Detection (Skyrim) — LOCKED, BUILT as `StealthKind::Skyrim` (M65, #6914) — out of CHARAL scope
 
 Source: UESP *Skyrim:Sneak*, 2026-07-04. A **second engine's** full stealth
 detection formula — same "real, sourced, one layer downstream of CHARAL"
@@ -208,11 +208,10 @@ Backstab → ×15 with Assassin's Blade, doubled again by 4 specific Dark
 Brotherhood gloves) — a perk-effect table, not a derived-stat formula, same
 bucket as every other perk-damage-multiplier table already captured.
 
-Not wired into `stealth.rs` — that module's `DetectionInputs`/`detection_score`
-is FNV-specific by construction (its own doc comment says so); a Skyrim
-variant would be a second, parallel formula (different shape per the muffle
-note above), not a drop-in reuse. Flagging as a build candidate if/when the
-Visual/skill-factor gap closes, not building speculatively ahead of that.
+**Built (M65, #6914):** `crate::stealth::skyrim` (`crates/core/src/stealth/skyrim.rs`) runs this formula as a
+second, parallel row (`StealthKind::Skyrim`, the profile's `stealth` row), with the stealth points, sneak attacks
+and the Skyrim sneak hooks; the Visual and skill halves follow the CK *Category:Detection* page, the settings the
+load order's (`docs/engine/sneak-detection.md` §4.2).
 
 ## Light Armor Rating Bonus — LOCKED, BUILT (player only)
 
@@ -834,6 +833,21 @@ here so the row can be checked against a document.
 - **`perk_entry_points` = `Skyrim`.** The `PERK` entry-point numbering decoded by
   `wbDefinitionsTES5.pas`, which the value-math composition and the barter price
   hooks read.
+
+## Archery (bow) — BUILT (#7055)
+
+`BowModel::SKYRIM` (`crates/core/src/character/bow.rs`, the profile's `bow` row), read from the load order by
+`BowModel::with_gmst`. UESP *Skyrim:Archery*:
+
+```text
+draw complete = 0.4 s (nock) + 1.66 s / (weapon speed * (1 + Quick Shot)) + 0.6 s     (2.66 s at speed 1, no perk)
+arrow speed   = the arrow's PROJ speed, at a full draw only
+damage        = (bow + arrow) * (1 + 0.005 * Archery)                                   ("+0.5% per skill point")
+```
+
+The arrow tilts up 2 degrees first-person and 2.5 third-person (`f1PArrowTiltUpAngle`, `f3PArrowTiltUpAngle`) and
+stops doing damage past `fVisibleNavmeshMoveDist` 4096 ("phase through targets"). **Declared gaps:** a partial draw's
+damage and speed (no documented formula, Q4: an early release fires nothing) and the Quick Shot perk (no perk yet, 1).
 
 ## Crime — fines per crime faction (built), guards and jail (not built)
 

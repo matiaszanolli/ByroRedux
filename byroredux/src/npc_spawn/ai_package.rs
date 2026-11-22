@@ -29,6 +29,7 @@ use byroredux_plugin::esm::records::{
     PackDataValue, PackLocation, PackLocationTarget, PackObjectClass, PackRecord, PackTargetKind,
 };
 use byroredux_scripting::condition::ConditionContext;
+use byroredux_scripting::package::ReleasePackageHold;
 use byroredux_scripting::{
     AiCombatState, EvaluatePackageRequest, PackageRegistry, QuestAliasInjectedOverlays,
 };
@@ -36,26 +37,20 @@ use byroredux_scripting::{
 /// Whether an AI package's CTDA conditions permit it to be selected for this
 /// actor (M42.2), evaluated through the M47.1 condition evaluator.
 ///
-/// Unknown condition functions retain the established fail-open policy. The
-/// evaluator cannot soundly preserve the authored OR/AND blocks when one leaf
-/// is unknown, so rejecting the entire package would regress pre-CTDA behavior.
+/// A condition function the evaluator cannot read keeps the established
+/// fail-open policy: that one term counts as satisfied. The readable terms
+/// still decide: a package whose list a readable term refutes is not selected
+/// however many unreadable terms sit beside it (`evaluate_unless_refuted`). The
+/// old rule passed the whole package for one unreadable term, which sent
+/// Oblivion's Baurus to the Cloud Ruler Temple during the prison sequence
+/// (`BaurusGuardMartinCloudRulerGreatHall`: `GetStage MQ05 >= 90` is false, an
+/// uncatalogued function 230 sits beside it).
 fn package_conditions_pass(
     conditions: &byroredux_plugin::esm::records::condition::ConditionList,
     world: &World,
     ctx: &ConditionContext,
 ) -> bool {
-    use byroredux_scripting::condition::evaluate;
-
-    if conditions.is_empty() {
-        return true;
-    }
-    let all_known = conditions
-        .iter()
-        .all(|condition| byroredux_scripting::condition::is_modeled(world, condition));
-    if !all_known {
-        return true;
-    }
-    evaluate(conditions, world, ctx)
+    byroredux_scripting::condition::evaluate_unless_refuted(conditions, world, ctx)
 }
 
 /// #5376 — whether a package's whole condition list could be evaluated
@@ -312,11 +307,15 @@ enum AmbientBehavior {
     Wander {
         wander_radius: Option<f32>,
         actor_form_id: u32,
+        /// #7225 — the PLDT is Near Editor Location: home is the actor's `EditorPlacement`.
+        near_editor_location: bool,
     },
     Travel {
         radius: Option<f32>,
         target_form_id: Option<u32>,
         actor_form_id: u32,
+        /// #7225 — the PLDT is Near Editor Location: the pick centres on the actor's `EditorPlacement`.
+        near_editor_location: bool,
     },
     Follow {
         target_form_id: Option<u32>,
@@ -335,6 +334,8 @@ enum AmbientBehavior {
         anchor_form_id: Option<u32>,
         radius: Option<f32>,
         actor_form_id: u32,
+        /// #7254 — the PLDT is Near Editor Location: the anchor is the actor's `EditorPlacement`.
+        near_editor_location: bool,
     },
     Patrol {
         patrol_radius: Option<f32>,
@@ -369,6 +370,8 @@ enum AmbientBehavior {
         wait_radius: Option<f32>,
         ambush: AmbushBehavior,
         actor_form_id: u32,
+        /// #7254 — the wait location is Near Editor Location (as `Guard`'s).
+        near_editor_location: bool,
     },
     /// M42 — Find (procedure 0): `find_package_system` hunts the target.
     Find(FindPackageBehavior),
@@ -458,6 +461,7 @@ impl AmbientBehavior {
             Some(Self::Wander {
                 wander_radius: location_radius,
                 actor_form_id,
+                near_editor_location: matches!(location_anchor(package.location), EatSleepLocation::NearEditorLocation),
             })
         } else if package.is_travel() {
             // GECK *Travel Package*: "NPCs stop at the edge of the destination
@@ -466,14 +470,27 @@ impl AmbientBehavior {
             // position, not the hash-picked point around it that an
             // unresolvable location falls back to (which walked VCG02's Sunny
             // out of the shooting-range trigger she is told to stay in).
-            let radius = match location_anchor(package.location) {
+            //
+            // Near Editor Location with no radius is a walk back to exactly the
+            // editor placement: a zero radius around it. Oblivion's
+            // `CGBladesWaitToMove` (the Emperor's party, waiting on the prison stair
+            // for the sequence to start) is one; the hash-picked point walked them
+            // off the stair's edge, and with no gravity under an NPC they hovered
+            // over the void for the rest of the sequence. The point is centred on
+            // the actor's `EditorPlacement`, not where it stands (#7225): a
+            // `HorseGoHome` / `SE45zReturnHome` actor an earlier package walked away
+            // has to come back, as Eat/Sleep's anchor does (#5391).
+            let anchor = location_anchor(package.location);
+            let radius = match anchor {
                 EatSleepLocation::NearCurrentLocation if location_reference.is_none() => Some(0.0),
+                EatSleepLocation::NearEditorLocation if location_radius.is_none() => Some(0.0),
                 _ => location_radius,
             };
             Some(Self::Travel {
                 radius,
                 target_form_id: location_reference,
                 actor_form_id,
+                near_editor_location: matches!(anchor, EatSleepLocation::NearEditorLocation),
             })
         } else if package.is_follow() || package.is_accompany() {
             // Accompany authors Follow's data (PTDT reference + distance) and
@@ -502,10 +519,14 @@ impl AmbientBehavior {
                 actor_form_id,
             })
         } else if package.is_guard() {
+            // GECK *Guard Package*: the location is "where the actor stands while running the guard package".
+            // Near Editor Location is the actor's editor placement, not where an earlier package left it (#7254:
+            // 67 FalloutNV.esm Guard packages, `DefaultGuardLinkedRef…StayAtEdLoc…` among them).
             Some(Self::Guard {
                 anchor_form_id: location_reference,
                 radius: location_radius,
                 actor_form_id,
+                near_editor_location: matches!(location_anchor(package.location), EatSleepLocation::NearEditorLocation),
             })
         } else if package.is_flee_not_combat() {
             // Flee and Ambush take the actor over, so like Find / UseWeapon / Dialogue they install
@@ -528,6 +549,7 @@ impl AmbientBehavior {
                     target_form_id: target_reference,
                 },
                 actor_form_id,
+                near_editor_location: matches!(location_anchor(package.location), EatSleepLocation::NearEditorLocation),
             })
         } else if package.is_find() {
             find_behavior(package, world).map(Self::Find)
@@ -634,11 +656,13 @@ impl AmbientBehavior {
             Self::Wander {
                 wander_radius,
                 actor_form_id,
+                near_editor_location,
             } => {
                 sink.put(actor,
                     WanderBehavior {
                         wander_radius,
                         form_id: actor_form_id,
+                        near_editor_location,
                     },
                 );
             }
@@ -646,12 +670,14 @@ impl AmbientBehavior {
                 radius,
                 target_form_id,
                 actor_form_id,
+                near_editor_location,
             } => {
                 sink.put(actor,
                     TravelBehavior {
                         radius,
                         target_form_id,
                         form_id: actor_form_id,
+                        near_editor_location,
                     },
                 );
             }
@@ -687,12 +713,14 @@ impl AmbientBehavior {
                 anchor_form_id,
                 radius,
                 actor_form_id,
+                near_editor_location,
             } => {
                 sink.put(actor,
                     GuardBehavior {
                         anchor_form_id,
                         radius,
                         form_id: actor_form_id,
+                        near_editor_location,
                     },
                 );
             }
@@ -701,12 +729,14 @@ impl AmbientBehavior {
                 wait_radius,
                 ambush,
                 actor_form_id,
+                near_editor_location,
             } => {
                 sink.put(actor,
                     GuardBehavior {
                         anchor_form_id: wait_form_id,
                         radius: wait_radius,
                         form_id: actor_form_id,
+                        near_editor_location,
                     },
                 );
                 sink.put(actor, ambush);
@@ -848,16 +878,20 @@ pub(crate) fn clear_ambient_behavior(world: &World, actor: EntityId) {
     // marker is removed, for the same reason `SeatReservations` is retained
     // above it: this function is the only place that knows the actor was
     // seated at all.
-    if let Some(seated) = world.get::<Seated>(actor).map(|s| *s) {
-        if let Some(mut players) = world.query_mut::<AnimationPlayer>() {
-            if let Some(player) = players.get_mut(actor) {
-                let restore = seated.animation_restore;
-                player.clip_handle = restore.clip_handle;
-                player.local_time = restore.local_time;
-                player.prev_time = restore.prev_time;
-                player.playing = restore.playing;
-                player.speed = restore.speed;
-            }
+    if let Some(seated) = world.get::<Seated>(actor).map(|s| *s)
+        && let Some(mut players) = world.query_mut::<AnimationPlayer>()
+    {
+        let restore = seated.animation_restore;
+        if restore.player_was_inserted() {
+            // AIP-SIT-002 — the seat inserted this player (a Skyrim ambient actor has none until
+            // something plays on it): there is no clip to go back to, so it goes.
+            players.remove(actor);
+        } else if let Some(player) = players.get_mut(actor) {
+            player.clip_handle = restore.clip_handle;
+            player.local_time = restore.local_time;
+            player.prev_time = restore.prev_time;
+            player.playing = restore.playing;
+            player.speed = restore.speed;
         }
     }
 
@@ -951,12 +985,11 @@ pub(crate) fn suspend_ambient_behavior_for_combat(world: &World, actor: EntityId
         .and_then(|runtime| runtime.active_package_form_id);
     byroredux_scripting::report_package_transition(world, actor, previous, None);
     clear_ambient_behavior(world, actor);
-    if let Some(mut runtimes) = world.query_mut::<AmbientPackageRuntime>() {
-        if let Some(runtime) = runtimes.get_mut(actor) {
+    if let Some(mut runtimes) = world.query_mut::<AmbientPackageRuntime>()
+        && let Some(runtime) = runtimes.get_mut(actor) {
             runtime.active_package_form_id = None;
             runtime.last_evaluated_game_minute = None;
         }
-    }
 }
 
 fn select_active_package<'a>(
@@ -964,6 +997,7 @@ fn select_active_package<'a>(
     actor: EntityId,
     game_hour: f32,
     current: Option<u32>,
+    release_hold: bool,
     packages: impl IntoIterator<Item = &'a PackRecord>,
 ) -> Option<&'a PackRecord> {
     // #2671 — `ConditionContext` gained a `pending_alias_bindings` slot for
@@ -984,7 +1018,7 @@ fn select_active_package<'a>(
         month: None,
     };
     // AIP-FLG: Once Per Day, Must Complete and Continue If PC Near bend the schedule scan; see `package_flags`.
-    package_flags::scan_with_flags(world, actor, clock, current, packages, |package| {
+    package_flags::scan_with_flags(world, actor, clock, current, release_hold, packages, |package| {
         package_conditions_pass(&package.conditions, world, &context)
             // #5499 / #5722 — skip any Dialogue package the installer
             // would decline: fail-open conditions, non-player targets, or
@@ -1185,6 +1219,7 @@ pub(super) fn apply_ai_package_behavior(
         placement_root,
         game_hour,
         None,
+        false,
         packages_npc
             .ai_packages
             .iter()
@@ -1269,11 +1304,10 @@ pub(crate) fn install_package_now(world: &World, actor: EntityId, package_form_i
     if let Some(behavior) = behavior {
         behavior.insert_at_runtime(world, actor);
     }
-    if let Some(mut query) = world.query_mut::<AmbientPackageRuntime>() {
-        if let Some(runtime) = query.get_mut(actor) {
+    if let Some(mut query) = world.query_mut::<AmbientPackageRuntime>()
+        && let Some(runtime) = query.get_mut(actor) {
             runtime.active_package_form_id = Some(package_form_id);
         }
-    }
     true
 }
 
@@ -1342,6 +1376,20 @@ pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
         .query::<EvaluatePackageRequest>()
         .map(|query| query.iter().map(|(actor, _)| actor).collect())
         .unwrap_or_default();
+    // #7243 — an explicit `EvaluatePackage` also ends the running package's Must Complete hold. Its marker is
+    // this system's alone (Pattern B), so it is taken here, before any early return; it is as rare as the
+    // request, so the mutable lock is only taken when one is present.
+    let release_hold: Vec<EntityId> = world
+        .query::<ReleasePackageHold>()
+        .map(|query| query.iter().map(|(actor, _)| actor).collect())
+        .unwrap_or_default();
+    if !release_hold.is_empty()
+        && let Some(mut releases) = world.query_mut::<ReleasePackageHold>()
+    {
+        for actor in &release_hold {
+            releases.remove(*actor);
+        }
+    }
 
     // Pass 2 — the gate. Only the survivors (usually none) go on to pay for a
     // `package_candidates` clone and a `Dead` lookup.
@@ -1445,19 +1493,30 @@ pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
             .filter(|package| selectable_by_installer(package, world));
         let active =
             scripted.or_else(|| {
-                select_active_package(world, actor, game_hour, runtime.active_package_form_id, packages.iter().copied())
+                select_active_package(
+                    world,
+                    actor,
+                    game_hour,
+                    runtime.active_package_form_id,
+                    release_hold.contains(&actor),
+                    packages.iter().copied(),
+                )
             });
         let active_package_form_id = active.map(|package| package.form_id);
         if let Some(package) = active.filter(|package| Some(package.form_id) != runtime.active_package_form_id) {
             newly_selected.push((actor, package.package_flags, package.form_id));
         }
-        let behavior = active.and_then(|package| {
-            let template = package
+        let template = active.map(|package| {
+            package
                 .package_template_form_id
                 .and_then(|form_id| registry.package(form_id))
-                .unwrap_or(package);
-            AmbientBehavior::from_package(package, template, runtime.actor_form_id, Some(actor), world)
+                .unwrap_or(package)
         });
+        let behavior = active
+            .zip(template)
+            .and_then(|(package, template)| AmbientBehavior::from_package(package, template, runtime.actor_form_id, Some(actor), world));
+        // #7233 — a Skyrim+ package whose template carries a procedure tree.
+        let tree = template.is_some_and(|template| !template.procedures.is_empty());
         // AIP-DX-002: the winner that installs nothing says why, once per (re)selection.
         if let Some(package) = active.filter(|package| behavior.is_none() && !package.is_find()) {
             log::debug!(
@@ -1481,6 +1540,7 @@ pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
             active_package_form_id,
             behavior,
             active_package_form_id != runtime.active_package_form_id,
+            tree,
         ));
     }
     drop(registry);
@@ -1488,7 +1548,7 @@ pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
         package_flags::note_selected(world, actor, flags, package);
     }
 
-    for &(actor, active_id, behavior, changed) in &updates {
+    for &(actor, active_id, behavior, changed, tree) in &updates {
         // M47.2 — the package fragments: the old package changed, the new
         // one began. #5864 — `from` is what was last REPORTED running, so the
         // first tick after spawn (nothing reported yet) reports `None -> A`
@@ -1501,6 +1561,9 @@ pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
         let previous = byroredux_scripting::reported_package(world, actor).unwrap_or(runtime_active);
         byroredux_scripting::report_package_transition(world, actor, previous, active_id);
         if !changed {
+            if tree {
+                rerun_tree_leaf(world, actor, behavior);
+            }
             // Already the running package: start the script package's clock.
             if byroredux_scripting::script_packages::script_package_of(world, actor)
                 .is_some_and(|slot| Some(slot.package) == active_id)
@@ -1517,6 +1580,7 @@ pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
         if let Some(behavior) = behavior {
             behavior.insert_at_runtime(world, actor);
         }
+        record_tree_leaf(world, actor, tree.then_some(behavior));
         // Installed after the handover cleared the old procedure's markers, so a
         // stale `Traveled` cannot read as this package completing.
         if byroredux_scripting::script_packages::script_package_of(world, actor)
@@ -1527,13 +1591,79 @@ pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
     }
 
     if let Some(mut query) = world.query_mut::<AmbientPackageRuntime>() {
-        for (actor, active_package_form_id, _, _) in updates {
+        for (actor, active_package_form_id, _, _, _) in updates {
             if let Some(runtime) = query.get_mut(actor) {
                 runtime.active_package_form_id = active_package_form_id;
                 runtime.last_evaluated_game_minute = Some(minute);
             }
         }
     }
+}
+
+/// #7233 — the leaf a running tree package installed (`None`: no leaf was valid when the tree ran). The CK runs a tree's
+/// branch once and the whole package again when it completes (*Package Templates*, Branches: a Stacked branch "picks the
+/// first valid branch or procedure ... After that, the stacked branch is considered complete"; "The package runs again
+/// as long as it remains the top-most package"), so the leaf is kept while its procedure runs and the tree is walked
+/// again only when that procedure reports done or nothing was installed. Session state on the actor, re-derived by the
+/// first pass after a spawn; not saved.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TreeLeafRun(Option<AmbientBehavior>);
+
+impl Component for TreeLeafRun {
+    type Storage = byroredux_core::ecs::SparseSetStorage<Self>;
+}
+
+/// Note what a (re)selected package installed: `Some(leaf)` for a tree package, `None` to forget a tree run when the
+/// new winner is a flat package.
+fn record_tree_leaf(world: &World, actor: EntityId, leaf: Option<Option<AmbientBehavior>>) {
+    if let Some(mut runs) = world.query_mut::<TreeLeafRun>() {
+        match leaf {
+            Some(leaf) => {
+                runs.insert(actor, TreeLeafRun(leaf));
+            }
+            None => {
+                runs.remove(actor);
+            }
+        }
+    }
+}
+
+/// Whether `leaf`'s procedure has reported done on `actor`: Travel arrived, Find's count met, UseWeapon's bursts fired.
+/// The other procedures have no Done state.
+fn tree_leaf_done(world: &World, actor: EntityId, leaf: AmbientBehavior) -> bool {
+    match leaf {
+        AmbientBehavior::Travel { .. } => world.has::<Traveled>(actor),
+        AmbientBehavior::Find(_) => world.get::<FindProgress>(actor).is_some_and(|progress| progress.done),
+        AmbientBehavior::UseWeapon(_) => {
+            world.has::<byroredux_core::ecs::components::UseWeaponPackageStarted>(actor)
+                && !world.has::<crate::systems::script_requests::UseWeaponRun>(actor)
+        }
+        _ => false,
+    }
+}
+
+/// #7233 — the running tree package, still the winner, runs its tree again when its leaf is done or none was valid:
+/// `chosen` is this pass's walk. A different leaf replaces the installed one; the same leaf stays as it is (a finished
+/// Travel keeps standing at its destination rather than re-arriving every minute). A run spawn installed with no record
+/// yet is adopted as it stands.
+fn rerun_tree_leaf(world: &World, actor: EntityId, chosen: Option<AmbientBehavior>) {
+    let installed = world.get::<TreeLeafRun>(actor).map(|run| run.0);
+    let rerun = match installed {
+        None => {
+            record_tree_leaf(world, actor, Some(chosen));
+            return;
+        }
+        Some(None) => chosen.is_some(),
+        Some(Some(leaf)) => tree_leaf_done(world, actor, leaf) && chosen != Some(leaf),
+    };
+    if !rerun {
+        return;
+    }
+    clear_ambient_behavior(world, actor);
+    if let Some(leaf) = chosen {
+        leaf.insert_at_runtime(world, actor);
+    }
+    record_tree_leaf(world, actor, Some(chosen));
 }
 
 #[cfg(test)]
@@ -1561,6 +1691,7 @@ mod tests {
     fn register_runtime(world: &mut World, hour: f32) {
         byroredux_scripting::register(world);
         world.register::<AmbientPackageRuntime>();
+        world.register::<TreeLeafRun>();
         world.register::<Dead>();
         world.register::<SandboxBehavior>();
         world.register::<Seated>();
@@ -1667,7 +1798,7 @@ mod tests {
             let mut time = GameTimeRes::frozen_at(9.0);
             time.day = day;
             world.insert_resource(time);
-            select_active_package(world, actor, 9.0, None, packages.iter()).map(|p| p.form_id)
+            select_active_package(world, actor, 9.0, None, false, packages.iter()).map(|p| p.form_id)
         };
         // No start date authored: day 0 falls on a Sunday.
         origin(&mut world, GameKind::Fallout3NV, 1.34, None);
@@ -1739,7 +1870,7 @@ mod tests {
             let mut time = GameTimeRes::frozen_at(13.0);
             time.day = day;
             world.insert_resource(time);
-            select_active_package(world, actor, 13.0, None, packages.iter()).map(|p| p.form_id)
+            select_active_package(world, actor, 13.0, None, false, packages.iter()).map(|p| p.form_id)
         };
         assert_eq!(winner(&mut world, 0), Some(0x1B), "27 Last Seed");
         assert_eq!(winner(&mut world, 1), Some(0xFF), "the 28th");
@@ -1827,6 +1958,40 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    /// #7233 — a running tree package keeps its leaf while the leaf's procedure runs, and walks the tree again when it
+    /// reports done (the CK: the package "runs again as long as it remains the top-most package") or when no leaf was
+    /// valid at install. A different leaf replaces the installed one; the same finished leaf is left standing.
+    #[test]
+    fn a_running_tree_package_reruns_its_tree_when_the_leaf_is_done() {
+        let travel = AmbientBehavior::Travel { radius: Some(0.0), target_form_id: None, actor_form_id: 0xAA, near_editor_location: false };
+        let wander = AmbientBehavior::Wander { wander_radius: Some(256.0), actor_form_id: 0xAA, near_editor_location: false };
+        let mut world = World::new();
+        register_runtime(&mut world, 12.0);
+        let actor = world.spawn();
+        travel.insert_at_runtime(&world, actor);
+        record_tree_leaf(&world, actor, Some(Some(travel)));
+
+        rerun_tree_leaf(&world, actor, Some(wander));
+        assert!(world.has::<TravelBehavior>(actor), "the Travel leaf is still running: kept, whatever this walk picks");
+
+        world.query_mut::<Traveled>().unwrap().insert(actor, Traveled);
+        rerun_tree_leaf(&world, actor, Some(travel));
+        assert!(world.has::<Traveled>(actor), "done, and the walk picks the same leaf: it stays standing, not re-arriving");
+
+        rerun_tree_leaf(&world, actor, Some(wander));
+        assert!(!world.has::<TravelBehavior>(actor) && !world.has::<Traveled>(actor), "done: the finished leaf goes");
+        assert!(world.has::<WanderBehavior>(actor), "and the leaf this walk picked runs");
+        assert_eq!(world.get::<TreeLeafRun>(actor).map(|run| *run), Some(TreeLeafRun(Some(wander))));
+
+        // No leaf was valid at install: the next walk that finds one installs it.
+        let idle = world.spawn();
+        record_tree_leaf(&world, idle, Some(None));
+        rerun_tree_leaf(&world, idle, None);
+        assert!(!world.has::<WanderBehavior>(idle));
+        rerun_tree_leaf(&world, idle, Some(wander));
+        assert!(world.has::<WanderBehavior>(idle), "a leaf whose conditions now pass is installed");
     }
 
     fn setup_actor(hour: f32, packages: Vec<PackRecord>) -> (World, EntityId) {
@@ -2418,19 +2583,63 @@ mod tests {
     /// that walked Sunny out of her trigger; a reference destination keeps
     /// its authored radius.
     #[test]
-    fn a_travel_to_the_current_location_stays_where_it_is() {
+    fn a_travel_to_the_current_or_editor_location_stays_where_it_is() {
         use byroredux_plugin::esm::records::misc::pack::PROCEDURE_TRAVEL;
         let mut stay = pack(0x100, PROCEDURE_TRAVEL, None);
         stay.location = Some(PackLocation { location_type: 2, target: PackLocationTarget::Other(0), radius: 0 });
         let (world, actor) = setup_actor(10.0, vec![stay]);
         let behavior = world.get::<TravelBehavior>(actor).map(|behavior| *behavior).expect("Travel installs");
         assert_eq!((behavior.radius, behavior.target_form_id), (Some(0.0), None));
+        assert!(!behavior.near_editor_location, "Near Current Location centres on the actor");
+
+        // Near Editor Location with no radius (Oblivion `CGBladesWaitToMove`) stays too; one
+        // with a radius keeps it, as the walk's v0 pick area.
+        let mut wait = pack(0x300, PROCEDURE_TRAVEL, None);
+        wait.location = Some(PackLocation { location_type: 3, target: PackLocationTarget::Other(0), radius: 0 });
+        let (world, actor) = setup_actor(10.0, vec![wait]);
+        let behavior = world.get::<TravelBehavior>(actor).map(|behavior| *behavior).expect("Travel installs");
+        assert_eq!((behavior.radius, behavior.target_form_id), (Some(0.0), None));
+        assert!(behavior.near_editor_location, "#7225: the stay is at the editor placement, not where the actor stands");
+        let mut near = pack(0x400, PROCEDURE_TRAVEL, None);
+        near.location = Some(PackLocation { location_type: 3, target: PackLocationTarget::Other(0), radius: 256 });
+        let (world, actor) = setup_actor(10.0, vec![near]);
+        let behavior = world.get::<TravelBehavior>(actor).map(|behavior| *behavior).expect("Travel installs");
+        assert_eq!(behavior.radius, Some(256.0));
+        assert!(behavior.near_editor_location, "#7225: Oblivion `HorseGoHome`'s shape");
+        // A Near Editor Location Wander homes on the placement as well (#7225).
+        let mut roam = pack(0x500, byroredux_plugin::esm::records::misc::pack::PROCEDURE_WANDER, None);
+        roam.location = Some(PackLocation { location_type: 3, target: PackLocationTarget::Other(0), radius: 512 });
+        let (world, actor) = setup_actor(10.0, vec![roam]);
+        let wander = world.get::<WanderBehavior>(actor).map(|behavior| *behavior).expect("Wander installs");
+        assert!(wander.near_editor_location);
 
         let mut go = pack(0x200, PROCEDURE_TRAVEL, None);
         go.location = Some(PackLocation { location_type: 0, target: PackLocationTarget::NearReference(0x10_A201), radius: 128 });
         let (world, actor) = setup_actor(10.0, vec![go]);
         let behavior = world.get::<TravelBehavior>(actor).map(|behavior| *behavior).expect("Travel installs");
         assert_eq!((behavior.radius, behavior.target_form_id), (Some(128.0), Some(0x10_A201)));
+        assert!(!behavior.near_editor_location);
+    }
+
+    /// #7254 — a Guard or Ambush package whose `PLDT` is Near Editor Location carries the flag that makes
+    /// `guard_system` anchor on the actor's `EditorPlacement` (67 FalloutNV.esm Guard and 15 Ambush packages);
+    /// Near Current Location and a reference do not.
+    #[test]
+    fn a_near_editor_location_guard_or_ambush_anchors_on_the_editor_placement() {
+        use byroredux_plugin::esm::records::misc::pack::{PROCEDURE_AMBUSH, PROCEDURE_GUARD};
+        let flag = |procedure: u32, location: PackLocation| {
+            let mut package = pack(0x100, procedure, None);
+            package.location = Some(location);
+            let (world, actor) = setup_actor(10.0, vec![package]);
+            world.get::<GuardBehavior>(actor).expect("Guard's runtime installs").near_editor_location
+        };
+        let editor = PackLocation { location_type: 3, target: PackLocationTarget::Other(0), radius: 400 };
+        let current = PackLocation { location_type: 2, target: PackLocationTarget::Other(0), radius: 400 };
+        let reference = PackLocation { location_type: 0, target: PackLocationTarget::NearReference(0x10_A201), radius: 128 };
+        assert!(flag(PROCEDURE_GUARD, editor), "Guard at the editor location");
+        assert!(!flag(PROCEDURE_GUARD, current));
+        assert!(!flag(PROCEDURE_GUARD, reference));
+        assert!(flag(PROCEDURE_AMBUSH, editor), "Ambush waits on Guard's runtime");
     }
 
     /// Ambush (procedure 9): wait on Guard's runtime at `PLDT`, gate the
@@ -2887,6 +3096,36 @@ mod tests {
         assert!(!world.has::<WanderBehavior>(actor));
     }
 
+    /// #7243 — an explicit `EvaluatePackage` ends a Must Complete package with no Done state that is holding
+    /// past its window (GECK *EvaluatePackage*: "EVP will still drop that package and force a reevaluation of
+    /// the package list"). A re-evaluation the actor's own package state queues keeps the hold (#7224).
+    #[test]
+    fn an_explicit_evaluate_package_ends_a_must_complete_hold() {
+        use crate::npc_spawn::package_flags::PKDT_MUST_COMPLETE;
+        use byroredux_scripting::package::request_package_evaluation;
+        let morning = PackSchedule { start_hour: Some(8), duration_minutes: 4 * 60, ..Default::default() };
+        let sleep = PackRecord { package_flags: PKDT_MUST_COMPLETE, ..pack(0x100, PROCEDURE_SLEEP, Some(morning)) };
+        let (world, actor) = setup_actor(9.0, vec![sleep, pack(0x200, PROCEDURE_WANDER, None)]);
+        let running = |world: &World| world.get::<AmbientPackageRuntime>(actor).unwrap().active_package_form_id;
+        assert_eq!(running(&world), Some(0x100), "the sleep wins inside its window");
+
+        // 14:00: the window has closed, and the hold keeps the sleep, on the minute tick and on a queued
+        // (non-EVP) re-evaluation alike.
+        world.resource_mut::<GameTimeRes>().hour = 14.0;
+        ambient_ai_package_system(&world, 0.0);
+        assert_eq!(running(&world), Some(0x100), "held past its window");
+        // What `queue_package_evaluation` raises for a script package added, removed or lapsed: the request alone.
+        world.query_mut::<EvaluatePackageRequest>().unwrap().insert(actor, EvaluatePackageRequest);
+        ambient_ai_package_system(&world, 0.0);
+        assert_eq!(running(&world), Some(0x100), "a queued re-evaluation keeps the hold");
+
+        assert!(request_package_evaluation(&world, actor));
+        ambient_ai_package_system(&world, 0.0);
+        assert_eq!(running(&world), Some(0x200), "EVP drops the held package");
+        assert!(world.has::<WanderBehavior>(actor));
+        assert!(!world.has::<ReleasePackageHold>(actor), "the release marker is taken by the pass that read it");
+    }
+
     /// #6074 — an actor whose running package came from a quest-alias overlay
     /// comes back from a stream round trip running that package, not the
     /// spawn winner. Respawn selects over the actor's own stack (the overlay is
@@ -3035,6 +3274,32 @@ mod tests {
         assert!(!world.has::<Seated>(actor));
     }
 
+    /// AIP-SIT-002 — a player the seat itself inserted (Skyrim ambient actors have none) has no clip to go
+    /// back to: un-seating removes it, so the actor does not stand up frozen on the seated pose.
+    #[test]
+    fn unseating_removes_a_player_the_seat_inserted() {
+        use byroredux_core::animation::AnimationPlayer;
+        use byroredux_core::ecs::components::SeatedAnimationRestore;
+
+        let mut world = World::new();
+        world.insert_resource(SeatReservations::default());
+        world.register::<AnimationPlayer>();
+        world.register::<Seated>();
+        world.register::<SandboxBehavior>();
+        let actor = world.spawn();
+        let furniture = world.spawn();
+        let mut parked = AnimationPlayer::new(42);
+        parked.local_time = 1.77;
+        parked.playing = false;
+        world.insert(actor, parked);
+        world.insert(actor, Seated { furniture, animation_restore: SeatedAnimationRestore::inserted_player() });
+
+        clear_ambient_behavior(&world, actor);
+
+        assert!(!world.has::<AnimationPlayer>(actor), "the seat's own player must go");
+        assert!(!world.has::<Seated>(actor));
+    }
+
     /// The restore must be scoped to actors that were actually seated —
     /// `clear_ambient_behavior` runs on every package handover, including for
     /// the six locomotion procedures that never touch `AnimationPlayer`.
@@ -3088,6 +3353,7 @@ mod tests {
                 goal: Vec3::new(10.0, 0.0, 0.0),
                 residency_generation: 1,
                 waypoints: std::collections::VecDeque::from(vec![Vec3::new(10.0, 0.0, 0.0)]),
+                grid: Default::default(),
             },
         );
         assert!(world.has::<NavPath>(actor));

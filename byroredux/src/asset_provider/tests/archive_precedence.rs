@@ -342,3 +342,60 @@ fn rebuilding_the_same_pool_does_not_rewalk_the_file_tables() {
         "a reused handle in an already-counted pool must come from the memo (#5288)"
     );
 }
+
+// ── Plugin-paired archives (LMC-AST-002, #6670) ─────────────────────────
+
+/// The args boot activation produces for `masters` then `esm`, all in `data`, after the listed `archives` (`--bsa`).
+fn activated_args(data: &std::path::Path, archives: &[&str], masters: &[&str], esm: &str) -> Vec<String> {
+    let mut args = vec!["byroredux".to_owned()];
+    for archive in archives {
+        args.extend(["--bsa".to_owned(), data.join(archive).to_string_lossy().into_owned()]);
+    }
+    for master in masters {
+        args.extend(["--master".to_owned(), data.join(master).to_string_lossy().into_owned()]);
+    }
+    args.extend(["--esm".to_owned(), data.join(esm).to_string_lossy().into_owned()]);
+    crate::plugin_activation::activate_plugin_args(args).expect("the profile activates")
+}
+
+/// LMC-AST-002 — a New Vegas DLC `.esm` brings its `- Main` and `- Sounds` archives with no archive flag naming them,
+/// and its meshes, textures and sounds (all three ship in `DeadMoney - Main.bsa`) resolve through every provider.
+#[test]
+#[ignore = "requires installed Fallout New Vegas Data/"]
+fn an_esm_brings_its_paired_archives_to_every_provider() {
+    let data = fnv_data_dir();
+    if !data.join("DeadMoney.esm").is_file() {
+        return;
+    }
+    let args = activated_args(&data, &["Fallout - Meshes.bsa"], &["FalloutNV.esm"], "DeadMoney.esm");
+    let textures = build_texture_provider(&args);
+    assert!(textures.has_mesh(r"meshes\nvdlc01\dungeons\casino\lobby\nvdlc01caslobbyrmwallonly.nif"));
+    assert!(textures.extract(r"textures\nvdlc01\clutter\constructiontape\constructiontape_n.dds").is_some());
+    let sounds = build_sound_archive_provider(&args);
+    assert!(sounds.extract(r"sound\fx\drs\~dlc01\drs_dlc01_gate_close.wav").is_some());
+}
+
+/// LMC-AST-002 — archive-versus-archive precedence: the listed (official) archives first, then the paired ones, so a
+/// Fallout 4 DLC's `- Main.ba2` precombine re-bake wins over the base game's `MeshesExtra` copy of the same path, with
+/// only the base archive named on the command line (the #3637 collision, now reached through pairing).
+#[test]
+#[ignore = "needs Fallout 4 game data on disk"]
+fn a_paired_archive_outranks_the_listed_archives() {
+    let data = fo4_data_dir();
+    let base_path = data.join("Fallout4 - MeshesExtra.ba2");
+    let dlc_path = data.join("DLCCoast - Main.ba2");
+    if !base_path.is_file() || !dlc_path.is_file() {
+        return;
+    }
+    let base = byroredux_bsa::Ba2Archive::open(&base_path).expect("open base MeshesExtra.ba2");
+    let dlc = byroredux_bsa::Ba2Archive::open(&dlc_path).expect("open DLCCoast - Main.ba2");
+    let dlc_files = dlc.list_files();
+    let Some(&collision) = dlc_files.iter().find(|&&f| {
+        f.ends_with("_oc.nif") && base.contains(f) && base.extract(f).ok() != dlc.extract(f).ok()
+    }) else {
+        return;
+    };
+    let args = activated_args(&data, &["Fallout4 - MeshesExtra.ba2"], &["Fallout4.esm"], "DLCCoast.esm");
+    let resolved = build_texture_provider(&args).extract_mesh(collision).expect("the collision path resolves");
+    assert_eq!(resolved, dlc.extract(collision).unwrap(), "the DLC's paired archive must win over the listed base archive");
+}

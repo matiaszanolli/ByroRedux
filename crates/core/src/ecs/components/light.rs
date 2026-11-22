@@ -184,9 +184,10 @@ pub struct LightFlicker {
     /// The animator computes `transform.translation =
     /// base_translation + noise * movement_amplitude` each frame.
     pub base_translation: [f32; 3],
-    /// Per-entity phase offset in seconds so a roomful of identical
-    /// candles don't flicker in lockstep. Seeded from the light's
-    /// EntityId at spawn (cheap, deterministic per session).
+    /// Per-light phase offset in seconds so a roomful of identical
+    /// candles don't flicker in lockstep. Seeded from the light's world
+    /// position at spawn (stable across runs and spawn order); its bits
+    /// also seed the flicker noise.
     pub phase_offset_secs: f32,
 }
 

@@ -16,8 +16,9 @@ use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{Resource, World};
 use byroredux_plugin::esm::records::EsmIndex;
 
-/// The player's `NPC_` base in every supported game.
-pub const PLAYER_BASE: u32 = 0x0000_0007;
+/// The player's `NPC_` base in every supported game (#7211: the plugin crate's
+/// `PLAYER_NPC_FORM_ID`, the one home of the value).
+pub const PLAYER_BASE: u32 = byroredux_plugin::esm::records::actor::PLAYER_NPC_FORM_ID;
 
 pub(crate) fn pair(a: u32, b: u32) -> (u32, u32) {
     (a.min(b), a.max(b))

@@ -852,8 +852,8 @@ fn advance_hair(
     tex_provider: &TextureProvider,
     mat_provider: Option<&mut MaterialProvider>,
 ) -> UnitOutcome {
-        if state.skel_root.is_some() {
-            if let Some(path) = state.hair_path.as_deref() {
+        if state.skel_root.is_some()
+            && let Some(path) = state.hair_path.as_deref() {
                 let tint = state.hair_tint;
                 let fallout_mask = state.hair_uses_fallout_tint_mask;
                 let mut apply_hair_tint = |scene: &mut byroredux_nif::import::ImportedScene| {
@@ -881,7 +881,6 @@ fn advance_hair(
                     (fallout_mask || tint.is_some()).then_some(&mut apply_hair_tint),
                 );
             }
-        }
         state.phase = RuntimePhase::Brow;
         UnitOutcome::Continue
 }
@@ -895,8 +894,8 @@ fn advance_brow(
     tex_provider: &TextureProvider,
     mat_provider: Option<&mut MaterialProvider>,
 ) -> UnitOutcome {
-        if state.skel_root.is_some() {
-            if let Some(path) = state.brow_path.as_deref() {
+        if state.skel_root.is_some()
+            && let Some(path) = state.brow_path.as_deref() {
                 spawn_shared_skeleton_part(
                     state,
                     world,
@@ -909,7 +908,6 @@ fn advance_brow(
                     None,
                 );
             }
-        }
         state.phase = RuntimePhase::Eye(0);
         UnitOutcome::Continue
 }
@@ -1174,7 +1172,6 @@ fn advance_finalize(
         UnitOutcome::Complete(Some(state.placement_root))
 }
 
-#[allow(clippy::too_many_arguments)] // One head part: the actor's state, world, GPU context, record, path and providers are separate caller-owned borrows.
 pub(super) fn spawn_runtime_head(
     state: &RuntimeNpcState,
     world: &mut World,
@@ -1194,12 +1191,17 @@ pub(super) fn spawn_runtime_head(
             .and_then(|bytes| match byroredux_facegen::EgmFile::parse(bytes) {
                 Ok(egm) => Some(egm),
                 Err(error) => {
-                    log::debug!(
-                        "NPC {:08X}: EGM parse failed for head '{}': {}",
-                        npc.form_id,
-                        head_path,
-                        error,
-                    );
+                    // #7130 — the sidecar was found, so the data is defective, not
+                    // absent: the head spawns unmorphed. Warn, once per head mesh.
+                    if crate::asset_provider::report_once("egm-parse", head_path) {
+                        log::warn!(
+                            "NPC {:08X}: head '{}' has an EGM that does not parse ({}); \
+                             heads using it spawn without FaceGen morphs",
+                            npc.form_id,
+                            head_path,
+                            error,
+                        );
+                    }
                     None
                 }
             });
@@ -1583,15 +1585,14 @@ pub(super) fn align_part_root_to_actor_axes(world: &mut World, part_root: Entity
             (!is_identity(shape) && is_identity(root * shape)).then_some(shape)
         });
     let root_rotation = cancelled_shape.map_or(inverse_rotation, |shape| inverse_rotation * shape.inverse());
-    if let Some(mut transforms) = world.query_mut::<Transform>() {
-        if let Some(local) = transforms.get_mut(part_root) {
+    if let Some(mut transforms) = world.query_mut::<Transform>()
+        && let Some(local) = transforms.get_mut(part_root) {
             *local = Transform::new(
                 inverse_rotation * (local.translation * inverse_scale),
                 root_rotation,
                 inverse_scale * local.scale,
             );
         }
-    }
 }
 
 /// The FO3 / FNV `HairTint` lighting-shader tint factor for one vertex.

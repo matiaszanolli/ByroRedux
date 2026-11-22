@@ -123,15 +123,20 @@ fixed size, so one wrong size desyncs everything after it.
 Paths: `crates/spt/src/import/mod.rs`, `byroredux/src/systems/billboard.rs`
 First step: `cargo test -p byroredux-spt placeholder`
 **Guards**: `import/mod.rs` tests: `placeholder_normals_point_negative_z_for_billboard_arc`,
-`placeholder_index_winding_produces_negative_z_geometric_normal`, `placeholder_uses_obnd_bounds_when_present`,
+`placeholder_index_winding_produces_negative_z_geometric_normal`, `placeholder_uses_obnd_bounds_when_present`, `fallback_texture_is_the_last_resort`,
 `non_finite_bnam_falls_through_instead_of_producing_a_nan_quad`, `leaf_texture_override_wins_over_spt_tag`,
 `empty_texture_leaves_path_unset_for_renderer_placeholder`.
 **Checklist**:
 - `import_spt_scene` **always** returns a one-node / one-mesh `ImportedScene`; the cell loader only
   gets `None` when `parse_spt` returns `Err`, and that path must log + skip the REFR without
   aborting the cell.
-- Leaf-texture precedence: TREE.ICON override → `.spt` tag 4003 (first wins) → unset (renderer
-  placeholder).
+- Leaf-texture precedence: TREE.ICON override → `.spt` tag 4003 (first wins, relative paths only) →
+  `SptImportParams::fallback_texture` → unset (renderer placeholder). The fallback is the tree's own
+  distant imposter `textures\trees\billboards\<stem>.dds` (`tree_lod_legacy::billboard_texture_path`),
+  supplied by `parse_and_import_spt` only when no ICON resolved and the archives hold the file — for the
+  6 of 142 Oblivion.esm TREEs authored without an ICON (`ShrubDeadBush`), which drew the default white
+  card before (9bbc76bc8; `fallback_texture_is_the_last_resort`,
+  `oblivion_trees_without_icon_get_their_billboard_texture`).
 - Size precedence in `compute_billboard_size`: **OBND → BNAM → MODB → 256×512 default**, each
   through `clamp_billboard_extent` (returns `Option`, so a non-finite field falls through to the
   next tier; a bare `f32::clamp` is NaN-transparent and lets a NaN BNAM reach the quad, bounds and
@@ -139,7 +144,7 @@ First step: `cargo test -p byroredux-spt placeholder`
   Oblivion has BNAM on 142/142 TREE records and no OBND, so the MODB tier is reached by 0 vanilla
   records; whether Oblivion should size from BNAM or MODB is an unanswered format question with
   no tracking issue (#3740 closed 2026-08-31 for its comment half only; still unanswered as of the
-  2026-10-05 audit) — a finding needs a source, not a re-file.
+  2026-11-18 audit) — a finding needs a source, not a re-file.
 - Winding: front-face normal is `-Z`, indices `[0, 3, 2, 2, 1, 0]`, because the billboard system
   rotates via `Quat::from_rotation_arc(-Z, look_dir)`; `bs_bound` Z-up→Y-up swap uses
   `zup_to_yup_pos` with half-extents `(hx, hz, hy)`.

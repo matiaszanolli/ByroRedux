@@ -172,11 +172,10 @@ fn raise_alarm(world: &World, model: CrimeModel, player: EntityId, kind: CrimeKi
     guards.sort_by(|a, b| a.0.total_cmp(&b.0));
     for (_, guard) in guards.into_iter().take(model.guards_responding as usize) {
         byroredux_scripting::crime_knowledge::note_known(world, guard, byroredux_scripting::PLAYER_REFERENCE, kind, victim);
-        if let Some(mut directives) = world.query_mut::<ForceGreetDirective>() {
-            if directives.get(guard).is_none() {
+        if let Some(mut directives) = world.query_mut::<ForceGreetDirective>()
+            && directives.get(guard).is_none() {
                 directives.insert(guard, ForceGreetDirective { topic: None, radius: FORCE_GREET_RADIUS, trigger: None });
             }
-        }
     }
 }
 
@@ -209,11 +208,10 @@ pub(crate) fn report_theft(world: &World, player: EntityId, owner: u32, rows: &[
         }
     }
     // The faction flag does not need a witness.
-    if byroredux_scripting::is_faction(world, owner) {
-        if let Some(mut ledger) = world.try_resource_mut::<ObScriptLedger>() {
+    if byroredux_scripting::is_faction(world, owner)
+        && let Some(mut ledger) = world.try_resource_mut::<ObScriptLedger>() {
             ledger.set_flag(FactionFlag::Steal, owner, true);
         }
-    }
     if seen_by.is_empty() {
         return 0;
     }
@@ -835,12 +833,11 @@ fn rush_wanted_player(world: &World, waiting: &mut std::collections::HashMap<Ent
         {
             continue;
         }
-        if let Some(mut directives) = world.query_mut::<ForceGreetDirective>() {
-            if directives.get(guard).is_none() {
+        if let Some(mut directives) = world.query_mut::<ForceGreetDirective>()
+            && directives.get(guard).is_none() {
                 directives.insert(guard, ForceGreetDirective { topic: None, radius: FORCE_GREET_RADIUS, trigger: None });
                 waiting.insert(guard, RUSH_RETRY_SECS);
             }
-        }
     }
 }
 
@@ -992,11 +989,12 @@ mod install_tests {
     /// #6426 — the profile row picks the model and the load order's GMSTs
     /// overlay it: Oblivion installs its fines with an authored
     /// `iCrimeGoldAttackMin` replacing the default, and Skyrim installs the
-    /// per-crime-faction dialect.
+    /// per-crime-faction dialect. #7203 — each index carries a game that
+    /// disagrees with its profile, so the profile, not the game, is what decides.
     #[test]
     fn the_profile_row_installs_the_model_and_the_load_order_overlays_it() {
         let mut world = World::new();
-        let mut oblivion = index(GameKind::Oblivion, CharacterRulesProfile::OBLIVION);
+        let mut oblivion = index(GameKind::Skyrim, CharacterRulesProfile::OBLIVION);
         oblivion.insert_game_setting(GameSetting {
             form_id: 0x1,
             editor_id: "iCrimeGoldAttackMin".to_string(),
@@ -1011,7 +1009,7 @@ mod install_tests {
             "nothing else moved"
         );
 
-        install_crime_model(&mut world, &index(GameKind::Skyrim, CharacterRulesProfile::SKYRIM));
+        install_crime_model(&mut world, &index(GameKind::Oblivion, CharacterRulesProfile::SKYRIM));
         assert_eq!(*world.resource::<CrimeModel>(), CrimeModel::SKYRIM);
     }
 
@@ -1019,10 +1017,11 @@ mod install_tests {
     /// installed, so a stale Oblivion/Skyrim model never survives a switch.
     #[test]
     fn a_profile_without_a_crime_model_clears_the_previous_one() {
+        // #7203 — under games that do have crime models, so only the profile can clear them.
         for (game, profile) in [
-            (GameKind::Fallout3NV, CharacterRulesProfile::FALLOUT3),
-            (GameKind::Fallout3NV, CharacterRulesProfile::FALLOUT_NEW_VEGAS),
-            (GameKind::Fallout4, CharacterRulesProfile::FALLOUT4),
+            (GameKind::Oblivion, CharacterRulesProfile::FALLOUT3),
+            (GameKind::Skyrim, CharacterRulesProfile::FALLOUT_NEW_VEGAS),
+            (GameKind::Oblivion, CharacterRulesProfile::FALLOUT4),
         ] {
             let mut world = World::new();
             world.insert_resource(CrimeModel::OBLIVION);

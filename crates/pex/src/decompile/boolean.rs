@@ -89,7 +89,7 @@ struct BoolPass<'a> {
 
 /// The distinct successor keys of a block (`next`, and `on_false` when it
 /// differs) — the edges [`BoolPass::in_edges`] counts.
-fn successors(b: &CodeBlock) -> impl Iterator<Item = usize> {
+fn successors(b: &CodeBlock) -> impl Iterator<Item = usize> + use<> {
     [Some(b.next), (b.on_false != b.next).then_some(b.on_false)]
         .into_iter()
         .flatten()
@@ -100,11 +100,10 @@ fn successors(b: &CodeBlock) -> impl Iterator<Item = usize> {
 /// node's own result.
 fn last_result(scope: &[Node]) -> Option<String> {
     let last = scope.last()?;
-    if let NodeKind::Assign { dest, .. } = &last.kind {
-        if let NodeKind::Constant(Value::Identifier(id)) = &dest.kind {
+    if let NodeKind::Assign { dest, .. } = &last.kind
+        && let NodeKind::Constant(Value::Identifier(id)) = &dest.kind {
             return Some(id.clone());
         }
-    }
     last.result.clone()
 }
 
@@ -215,8 +214,8 @@ impl<'a> BoolPass<'a> {
             // #5877 — where the walk resumes if a nested range was recursed
             // over and the collapse declined. `None` ⇒ the next block.
             let mut resume_after_range: Option<usize> = None;
-            if block.is_conditional() {
-                if let Some(cond) = block.condition.clone() {
+            if block.is_conditional()
+                && let Some(cond) = block.condition.clone() {
                     // #3783 — test the block shape and read the scope by
                     // REFERENCE. This used to be a `.cloned()` lookup on
                     // `self.scopes`, hoisted above the
@@ -248,7 +247,6 @@ impl<'a> BoolPass<'a> {
                         }
                     }
                 }
-            }
 
             it = if reprocess {
                 current

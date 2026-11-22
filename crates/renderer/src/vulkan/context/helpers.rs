@@ -1,6 +1,7 @@
 //! Stateless helper functions used by VulkanContext::new(), recreate_swapchain(), and Drop.
 
 use super::super::allocator::{free_allocation_recovering, lock_recovering, SharedAllocator};
+use super::super::gbuffer::TRANSPARENCY_SUN_FORMAT;
 use anyhow::{Context, Result};
 use ash::vk;
 use gpu_allocator::vulkan as vk_alloc;
@@ -197,11 +198,8 @@ pub(super) fn check_gbuffer_color_formats(
         (formats.mesh_id_format, "mesh_id", false),
         (formats.raw_indirect_format, "raw_indirect", true),
         (formats.albedo_format, "albedo", true),
-        (
-            formats.fsr_mask_format,
-            "fsr mask (reactive/transparency)",
-            true,
-        ),
+        (formats.fsr_mask_format, "fsr reactive mask", true),
+        (TRANSPARENCY_SUN_FORMAT, "fsr transparency / far sun", true),
     ];
 
     for (format, name, needs_blend) in checks {
@@ -320,11 +318,8 @@ pub(super) fn create_render_pass(
     //                                       so overlapping translucents report
     //                                       the most reactive coverage, not the
     //                                       last one drawn.
-    //   7 — transparency (R8_UNORM)       — FSR transparency & composition mask,
-    //                                       same blend rule. Flags shading whose
-    //                                       color evolution depth+motion cannot
-    //                                       describe (refraction, water, animated
-    //                                       UV/emissive layers).
+    //   7 — transparency (RGBA16F)       — FSR transparency mask in R and
+    //                                       opaque far-field sun radiance in GBA.
     //   8 — depth        (D32)
     //
     // All color attachments use final_layout SHADER_READ_ONLY_OPTIMAL so
@@ -347,7 +342,7 @@ pub(super) fn create_render_pass(
     let raw_indirect_attachment = make_color(raw_indirect_format);
     let albedo_attachment = make_color(albedo_format);
     let reactive_attachment = make_color(fsr_mask_format);
-    let transparency_attachment = make_color(fsr_mask_format);
+    let transparency_attachment = make_color(TRANSPARENCY_SUN_FORMAT);
 
     // Depth is STORED (not DONT_CARE) so the SSAO compute pass can read it
     // after the render pass. Final layout is READ_ONLY for shader sampling.
@@ -628,10 +623,14 @@ pub(super) unsafe fn destroy_main_framebuffers(
     device: &ash::Device,
     framebuffers: &mut Vec<vk::Framebuffer>,
 ) {
-    for &fb in framebuffers.iter() {
-        device.destroy_framebuffer(fb, None);
+    // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+    // covered by the caller contract documented on the function.
+    unsafe {
+        for &fb in framebuffers.iter() {
+            device.destroy_framebuffer(fb, None);
+        }
+        framebuffers.clear();
     }
-    framebuffers.clear();
 }
 
 /// Destroy the depth attachment in the order Vulkan requires:
@@ -650,15 +649,19 @@ pub(super) unsafe fn destroy_depth_resources(
     image: &mut vk::Image,
     allocation: &mut Option<vk_alloc::Allocation>,
 ) {
-    device.destroy_image_view(*view, None);
-    *view = vk::ImageView::null();
-    device.destroy_image(*image, None);
-    *image = vk::Image::null();
-    if let Some(alloc) = allocation.take() {
-        // #4599 — teardown path: poison-recovered + logged, not `expect`ed,
-        // so a poisoned allocator cannot abort here and skip the rest of
-        // `VulkanContext::drop`.
-        free_allocation_recovering(allocator, alloc, "destroy_depth_resources");
+    // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+    // covered by the caller contract documented on the function.
+    unsafe {
+        device.destroy_image_view(*view, None);
+        *view = vk::ImageView::null();
+        device.destroy_image(*image, None);
+        *image = vk::Image::null();
+        if let Some(alloc) = allocation.take() {
+            // #4599 — teardown path: poison-recovered + logged, not `expect`ed,
+            // so a poisoned allocator cannot abort here and skip the rest of
+            // `VulkanContext::drop`.
+            free_allocation_recovering(allocator, alloc, "destroy_depth_resources");
+        }
     }
 }
 
@@ -776,19 +779,23 @@ pub(super) unsafe fn destroy_render_pass_pipelines(
     pipeline_wireframe: &mut Option<vk::Pipeline>,
     blend_pipeline_cache: &mut rustc_hash::FxHashMap<(u8, u8, bool, bool), vk::Pipeline>,
 ) {
-    device.destroy_pipeline(*pipeline, None);
-    *pipeline = vk::Pipeline::null();
-    device.destroy_pipeline(*pipeline_early, None);
-    *pipeline_early = vk::Pipeline::null();
-    if let Some(wf) = pipeline_wireframe.take() {
-        device.destroy_pipeline(wf, None);
+    // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+    // covered by the caller contract documented on the function.
+    unsafe {
+        device.destroy_pipeline(*pipeline, None);
+        *pipeline = vk::Pipeline::null();
+        device.destroy_pipeline(*pipeline_early, None);
+        *pipeline_early = vk::Pipeline::null();
+        if let Some(wf) = pipeline_wireframe.take() {
+            device.destroy_pipeline(wf, None);
+        }
+        for (_, pipe) in blend_pipeline_cache.drain() {
+            device.destroy_pipeline(pipe, None);
+        }
+        // The UI overlay pipeline is NOT here: #3426 moved it into the
+        // presentation pass, so `PresentationPipeline::destroy` owns it and a
+        // swapchain recreate rebuilds it along with that pass.
     }
-    for (_, pipe) in blend_pipeline_cache.drain() {
-        device.destroy_pipeline(pipe, None);
-    }
-    // The UI overlay pipeline is NOT here: #3426 moved it into the
-    // presentation pass, so `PresentationPipeline::destroy` owns it and a
-    // swapchain recreate rebuilds it along with that pass.
 }
 
 pub(super) fn create_command_pool(

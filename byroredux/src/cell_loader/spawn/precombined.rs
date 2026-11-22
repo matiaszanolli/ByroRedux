@@ -31,9 +31,7 @@ impl PrecombinedPlacement {
         let (root, _) = spawn_placement_root(
             world,
             &cached,
-            origin,
-            Quat::IDENTITY,
-            1.0,
+            byroredux_core::ecs::components::Transform::new(origin, Quat::IDENTITY, 1.0),
             None,
             None,
             None,
@@ -105,7 +103,8 @@ impl PrecombinedPlacement {
                 end = self.next_mesh;
                 let mut bytes = 0usize;
                 while end < self.cached.meshes.len() && end - self.next_mesh < 8 {
-                    let mesh = &self.cached.meshes[end];
+                    // #6116 — an alias's vertex arrays live on its representative.
+                    let mesh = self.cached.geometry_source(end);
                     let size = mesh
                         .positions
                         .len()
@@ -140,6 +139,7 @@ impl PrecombinedPlacement {
                     &pc,
                     &self.cached,
                     &self.cached.meshes[index],
+                    index,
                     &self.paths[index],
                     self.count,
                     prepared,

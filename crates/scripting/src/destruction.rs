@@ -187,11 +187,10 @@ pub fn damage_object(world: &World, entity: EntityId, form: u32, amount: f32) ->
     let state = states.0.entry(form).or_default();
     let outcome = apply_damage(&data, state, amount);
     drop(states);
-    if outcome.old_stage != outcome.new_stage {
-        if let Some(mut changed) = world.try_resource_mut::<PendingStageChanges>() {
+    if outcome.old_stage != outcome.new_stage
+        && let Some(mut changed) = world.try_resource_mut::<PendingStageChanges>() {
             changed.0.push(entity);
         }
-    }
     Some(outcome)
 }
 

@@ -212,44 +212,48 @@ pub fn probe() -> Result<Capabilities, Blocker> {
 
 /// Read one adapter's properties. Caller holds the instance.
 unsafe fn describe(instance: &ash::Instance, device: ash::vk::PhysicalDevice) -> Capabilities {
-    let properties = instance.get_physical_device_properties(device);
-    let memory = instance.get_physical_device_memory_properties(device);
+    // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+    // covered by the caller contract documented on the function.
+    unsafe {
+        let properties = instance.get_physical_device_properties(device);
+        let memory = instance.get_physical_device_memory_properties(device);
 
-    let device_local_bytes = memory.memory_heaps[..memory.memory_heap_count as usize]
-        .iter()
-        .filter(|heap| heap.flags.contains(ash::vk::MemoryHeapFlags::DEVICE_LOCAL))
-        .map(|heap| heap.size)
-        .sum();
+        let device_local_bytes = memory.memory_heaps[..memory.memory_heap_count as usize]
+            .iter()
+            .filter(|heap| heap.flags.contains(ash::vk::MemoryHeapFlags::DEVICE_LOCAL))
+            .map(|heap| heap.size)
+            .sum();
 
-    let extensions = instance
-        .enumerate_device_extension_properties(device)
-        .unwrap_or_default();
-    // #5717 — ash's bounded accessors (`from_bytes_until_nul` over the
-    // fixed arrays, no unsafe). The launcher runs on arbitrary user
-    // machines before the engine and its own checks; soundness here must
-    // not rest on the driver NUL-terminating its strings.
-    let has = |wanted: &str| {
-        extensions.iter().any(|extension| {
-            extension
-                .extension_name_as_c_str()
-                .is_ok_and(|name| name.to_str() == Ok(wanted))
-        })
-    };
+        let extensions = instance
+            .enumerate_device_extension_properties(device)
+            .unwrap_or_default();
+        // #5717 — ash's bounded accessors (`from_bytes_until_nul` over the
+        // fixed arrays, no unsafe). The launcher runs on arbitrary user
+        // machines before the engine and its own checks; soundness here must
+        // not rest on the driver NUL-terminating its strings.
+        let has = |wanted: &str| {
+            extensions.iter().any(|extension| {
+                extension
+                    .extension_name_as_c_str()
+                    .is_ok_and(|name| name.to_str() == Ok(wanted))
+            })
+        };
 
-    Capabilities {
-        device_name: properties
-            .device_name_as_c_str()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned(),
-        kind: DeviceKind::from_vk(properties.device_type),
-        api_version: (
-            ash::vk::api_version_major(properties.api_version),
-            ash::vk::api_version_minor(properties.api_version),
-        ),
-        device_local_bytes,
-        ray_query: has("VK_KHR_ray_query"),
-        acceleration_structure: has("VK_KHR_acceleration_structure"),
+        Capabilities {
+            device_name: properties
+                .device_name_as_c_str()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned(),
+            kind: DeviceKind::from_vk(properties.device_type),
+            api_version: (
+                ash::vk::api_version_major(properties.api_version),
+                ash::vk::api_version_minor(properties.api_version),
+            ),
+            device_local_bytes,
+            ray_query: has("VK_KHR_ray_query"),
+            acceleration_structure: has("VK_KHR_acceleration_structure"),
+        }
     }
 }
 

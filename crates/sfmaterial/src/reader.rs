@@ -656,16 +656,30 @@ fn consume_object(state: &mut State) -> Result<Value> {
     Ok(value)
 }
 
-fn consume_list(state: &mut State, is_diff: bool) -> Result<Value> {
+/// One LIST chunk, element by element: its count goes through `checked_container_count` and its
+/// payload must end at the last element. Reading, skipping and the DBFileIndex stream
+/// (`index::stream_list`) all walk a LIST through here, so their guards cannot drift apart (#7124,
+/// the third copy #6957 missed).
+pub(crate) fn walk_list<'a>(
+    state: &mut State<'a>,
+    mut each: impl FnMut(&mut State<'a>, TypeReference, &mut Cursor<'a>) -> Result<()>,
+) -> Result<()> {
     let payload = state.consume_chunk(ChunkType::List)?;
     let mut cur = Cursor::new(payload);
     let elem_ref = TypeReference::new(cur.read_i32()?);
     let count = checked_container_count(cur.read_i32()?, payload.len(), "LIST element")?;
-    let mut items = Vec::new();
     for _ in 0..count {
-        items.push(read_value(state, elem_ref, &mut cur, is_diff)?);
+        each(state, elem_ref, &mut cur)?;
     }
-    expect_consumed(&cur)?;
+    expect_consumed(&cur)
+}
+
+fn consume_list(state: &mut State, is_diff: bool) -> Result<Value> {
+    let mut items = Vec::new();
+    walk_list(state, |state, elem_ref, cur| {
+        items.push(read_value(state, elem_ref, cur, is_diff)?);
+        Ok(())
+    })?;
     Ok(Value::List(items))
 }
 
@@ -692,14 +706,7 @@ fn skip_object(state: &mut State) -> Result<()> {
 }
 
 fn skip_list(state: &mut State, is_diff: bool) -> Result<()> {
-    let payload = state.consume_chunk(ChunkType::List)?;
-    let mut cur = Cursor::new(payload);
-    let elem_ref = TypeReference::new(cur.read_i32()?);
-    let count = checked_container_count(cur.read_i32()?, payload.len(), "LIST element")?;
-    for _ in 0..count {
-        skip_value(state, elem_ref, &mut cur, is_diff)?;
-    }
-    expect_consumed(&cur)
+    walk_list(state, |state, elem_ref, cur| skip_value(state, elem_ref, cur, is_diff))
 }
 
 fn skip_map(state: &mut State, is_diff: bool) -> Result<()> {

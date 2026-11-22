@@ -791,6 +791,7 @@ pub struct SkinningState {
 /// survives a pipeline rebuild (its own docs call that out). Nothing here owns a
 /// Vulkan handle, so `teardown.rs` never names it.
 pub struct PostPassState {
+    aperture_overflow_log: sky_apertures::ApertureOverflowLog,
     /// Permanent-failure latch for the TAA compute pass. Set on the
     /// first `taa.upload_params` error in a session, through
     /// `latch_taa_failure` (#3981) — `TaaPipeline::dispatch` records
@@ -885,6 +886,38 @@ pub struct PostPassState {
     pending_volumetrics_cleared_on_skip: Option<bool>,
 }
 
+impl PostPassState {
+    /// The state a renderer starts with: every latch clear, the exposure and tone-map settings seeded
+    /// from the application-parsed config. Split out of `build_pipelines_and_finish` (#6143, its size
+    /// pin) with the field values unchanged.
+    pub(super) fn new(renderer_config: &RendererConfig) -> Self {
+        Self {
+            aperture_overflow_log: Default::default(),
+            taa_failed: false,
+            svgf_failed: false,
+            svgf_recovery_frames: 0,
+            // Stage 1 — exposure/tonemap runtime state, seeded from the
+            // application-parsed config (CLI flags) and live-mutable via the
+            // engine's ExposureTuning resource push each frame.
+            exposure_meter_failed: false,
+            exposure_auto: renderer_config.auto_exposure,
+            exposure_fixed: crate::vulkan::exposure::DEFAULT_EXPOSURE,
+            exposure_compensation_stops: 0.0,
+            // 0.5 s eye-adaptation constant: fast enough to track a door
+            // transition without strobing, slow enough that per-frame meter
+            // jitter from the MC residual doesn't pump the exposure (#5158;
+            // live-tunable via `exposure speed <sec>`).
+            exposure_adaptation_seconds: crate::vulkan::exposure::DEFAULT_ADAPTATION_SECONDS,
+            tonemap: renderer_config.tonemap,
+            caustic_failed: false,
+            caustic_cleared_on_skip: [false; MAX_FRAMES_IN_FLIGHT],
+            volumetrics_cleared_on_skip: [false; MAX_FRAMES_IN_FLIGHT],
+            pending_caustic_cleared_on_skip: None,
+            pending_volumetrics_cleared_on_skip: None,
+        }
+    }
+}
+
 /// Render diagnostics (#6699): the selected-entity ray probe's request, result and
 /// per-slot entity maps, and the per-frame image-health counter buffers with their
 /// last/total readings.
@@ -894,6 +927,8 @@ pub struct PostPassState {
 pub(super) struct RenderDiagnostics {
     pub(super) pending_selected_ray_probe: Option<super::render_debug::SelectedRayProbeRequest>,
     pub(super) selected_ray_probe_result: Option<super::render_debug::SelectedRayProbeResult>,
+    /// The last non-empty `--rt-test-lod-telemetry` read-back, for `gi.cache` (RCG-DBG-003).
+    pub(super) rt_lod_sample: Option<super::scene_buffer::RtLodTelemetry>,
     /// #4978 — per frame slot, the SSBO→entity map a probe armed in that
     /// slot must resolve its hit against at readback.
     pub(super) selected_ray_probe_entity_maps:
@@ -926,6 +961,23 @@ pub(super) struct RenderDiagnostics {
     image_health_total: (u64, u64),
 }
 
+impl RenderDiagnostics {
+    /// The state at construction: the health buffers, no probe and no telemetry sample yet. Built here,
+    /// not as a literal in `build_pipelines_and_finish`, which is held to its size pin (#6143).
+    pub(super) fn new(image_health_buffers: Vec<super::buffer::GpuBuffer>) -> Self {
+        Self {
+            image_health_buffers,
+            image_health_last: (0, 0),
+            image_health_total: (0, 0),
+            pending_selected_ray_probe: None,
+            selected_ray_probe_result: None,
+            rt_lod_sample: None,
+            selected_ray_probe_entity_maps: Default::default(),
+            next_selected_ray_probe_generation: 1,
+        }
+    }
+}
+
 /// Exterior-only renderer state (#6700): the EXAL ground-cover pipeline, its
 /// authored-model tier and its sampling bench, and the resident terrain-tile slots.
 ///
@@ -946,6 +998,10 @@ pub struct ExteriorState {
     /// `--bench-groundcover-sampling`, because it owns ~3.5 MB of baked
     /// attribute textures and four pipelines no production path touches.
     pub groundcover_bench: Option<super::groundcover_bench::GroundcoverBench>,
+    /// TSD-4.1 terrain displacement patches (#7152): the compute pass, its
+    /// readback and the reserved patch meshes. `None` when creation failed;
+    /// terrain then simply has no patches.
+    pub terrain_patch: Option<super::terrain_patch::TerrainPatchPass>,
     /// Resident exterior terrain cells for the frame the bench is about to
     /// measure, published by the app before `draw_frame`. Empty on interiors
     /// and on every frame of a run without the flag.
@@ -2366,6 +2422,7 @@ mod field_group_tests {
             &[
                 "pending_selected_ray_probe",
                 "selected_ray_probe_result",
+                "rt_lod_sample",
                 "selected_ray_probe_entity_maps",
                 "next_selected_ray_probe_generation",
                 "image_health_buffers",

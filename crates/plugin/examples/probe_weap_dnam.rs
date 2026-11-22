@@ -88,8 +88,8 @@ fn main() -> anyhow::Result<()> {
                 .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         };
         let vats_ap = vats.as_deref().and_then(|v| f32_at(v, 12)).unwrap_or(0.0);
-        if vats_ap > 0.0 {
-            if let Some(d) = dnam {
+        if vats_ap > 0.0
+            && let Some(d) = dnam {
                 let parsed_damage = parsed
                     .items
                     .get(&header.form_id)
@@ -110,7 +110,6 @@ fn main() -> anyhow::Result<()> {
                 );
                 printed += 1;
             }
-        }
     })?;
 
     println!("{path}");

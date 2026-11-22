@@ -393,111 +393,115 @@ impl SsaoPipeline {
         inv_view_proj: &[[f32; 4]; 4],
         camera_pos: [f32; 3],
     ) -> Result<()> {
-        let params = SsaoParams {
-            view_proj: *view_proj,
-            inv_view_proj: *inv_view_proj,
-            // radius=16px, normal-bias=0.05 (cosine), intensity=2.2.
-            // bias/intensity re-tuned for the world-space hemisphere AO test
-            // (ssao.comp): bias now rejects coplanar self-occlusion by normal
-            // cosine (was a raw non-linear-depth delta), intensity dropped
-            // 2.0→1.5 since the hemisphere estimate no longer double-counts
-            // flat-surface depth slope. Starting values — tune visually.
-            //
-            // #ao-kernel-2026-09-20 — second retune, driven by measuring the
-            // raw AO texture through the DBG_VIZ_AO view on the Cornell box
-            // instead of eyeballing the tonemapped frame: with the falloff
-            // extension and the relative min-distance reject in ssao.comp,
-            // bias 0.1 / intensity 1.5 left flats at ao≈0.89 (noise tax) and
-            // the wall-floor junction band at only ≈0.79. Halving the bias
-            // (the near-ring reject now does the coplanar rejection work the
-            // bias was doing) and raising the intensity restores the junction
-            // bite while flats stay ≈1.0.
-            params: [16.0, 0.05, 2.2, 0.0],
-            screen_size: [
-                self.width as f32,
-                self.height as f32,
-                1.0 / self.width as f32,
-                1.0 / self.height as f32,
-            ],
-            camera_pos: [camera_pos[0], camera_pos[1], camera_pos[2], 0.0],
-        };
-        self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&params))?;
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            let params = SsaoParams {
+                view_proj: *view_proj,
+                inv_view_proj: *inv_view_proj,
+                // radius=16px, normal-bias=0.05 (cosine), intensity=2.2.
+                // bias/intensity re-tuned for the world-space hemisphere AO test
+                // (ssao.comp): bias now rejects coplanar self-occlusion by normal
+                // cosine (was a raw non-linear-depth delta), intensity dropped
+                // 2.0→1.5 since the hemisphere estimate no longer double-counts
+                // flat-surface depth slope. Starting values — tune visually.
+                //
+                // #ao-kernel-2026-09-20 — second retune, driven by measuring the
+                // raw AO texture through the DBG_VIZ_AO view on the Cornell box
+                // instead of eyeballing the tonemapped frame: with the falloff
+                // extension and the relative min-distance reject in ssao.comp,
+                // bias 0.1 / intensity 1.5 left flats at ao≈0.89 (noise tax) and
+                // the wall-floor junction band at only ≈0.79. Halving the bias
+                // (the near-ring reject now does the coplanar rejection work the
+                // bias was doing) and raising the intensity restores the junction
+                // bite while flats stay ≈1.0.
+                params: [16.0, 0.05, 2.2, 0.0],
+                screen_size: [
+                    self.width as f32,
+                    self.height as f32,
+                    1.0 / self.width as f32,
+                    1.0 / self.height as f32,
+                ],
+                camera_pos: [camera_pos[0], camera_pos[1], camera_pos[2], 0.0],
+            };
+            self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&params))?;
 
-        // HOST → COMPUTE_SHADER (UBO flush before dispatch). Defense-in-depth,
-        // not a spec requirement (#4182): mapped writes before `queue_submit`
-        // are already visible per Vulkan 1.3 §7.9 host-write ordering — the
-        // barrier guards a future non-coherent memory type or a
-        // post-recording host write.
-        memory_barrier(
-            device,
-            cmd,
-            vk::PipelineStageFlags::HOST,
-            vk::AccessFlags::HOST_WRITE,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::AccessFlags::UNIFORM_READ,
-        );
+            // HOST → COMPUTE_SHADER (UBO flush before dispatch). Defense-in-depth,
+            // not a spec requirement (#4182): mapped writes before `queue_submit`
+            // are already visible per Vulkan 1.3 §7.9 host-write ordering — the
+            // barrier guards a future non-coherent memory type or a
+            // post-recording host write.
+            memory_barrier(
+                device,
+                cmd,
+                vk::PipelineStageFlags::HOST,
+                vk::AccessFlags::HOST_WRITE,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::AccessFlags::UNIFORM_READ,
+            );
 
-        // Transition this frame's AO image to GENERAL for compute write.
-        // The actual layout coming in is always SHADER_READ_ONLY_OPTIMAL:
-        // `initialize_ao_images` leaves it that way after the clear-to-1.0,
-        // and the post-dispatch barrier below restores it at end of every
-        // frame. The pre-#673 form used `UNDEFINED` which the spec defines
-        // as "discard contents" — the cleared 1.0 (no-occlusion) value
-        // initialize_ao_images sets up was being formally discarded on
-        // frame 1 before the dispatch ever wrote it. Invisible in the
-        // common case (compute writes every pixel) but UB on a partial
-        // dispatch (early-out bounds check, lost device). Match the
-        // steady-state pattern svgf.rs:746 / taa.rs:617 already use.
-        let ao_image = self.ao[frame].image;
-        let ao_barrier = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_READ)
-            .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(ao_image)
-            .subresource_range(super::descriptors::color_subresource_single_mip());
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::FRAGMENT_SHADER,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[ao_barrier],
-        );
+            // Transition this frame's AO image to GENERAL for compute write.
+            // The actual layout coming in is always SHADER_READ_ONLY_OPTIMAL:
+            // `initialize_ao_images` leaves it that way after the clear-to-1.0,
+            // and the post-dispatch barrier below restores it at end of every
+            // frame. The pre-#673 form used `UNDEFINED` which the spec defines
+            // as "discard contents" — the cleared 1.0 (no-occlusion) value
+            // initialize_ao_images sets up was being formally discarded on
+            // frame 1 before the dispatch ever wrote it. Invisible in the
+            // common case (compute writes every pixel) but UB on a partial
+            // dispatch (early-out bounds check, lost device). Match the
+            // steady-state pattern svgf.rs:746 / taa.rs:617 already use.
+            let ao_image = self.ao[frame].image;
+            let ao_barrier = vk::ImageMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::SHADER_READ)
+                .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+                .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                .new_layout(vk::ImageLayout::GENERAL)
+                .image(ao_image)
+                .subresource_range(super::descriptors::color_subresource_single_mip());
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[ao_barrier],
+            );
 
-        // Bind and dispatch.
-        device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
-        device.cmd_bind_descriptor_sets(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.pipeline_layout,
-            0,
-            &[self.descriptor_sets[frame]],
-            &[],
-        );
+            // Bind and dispatch.
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.pipeline_layout,
+                0,
+                &[self.descriptor_sets[frame]],
+                &[],
+            );
 
-        // #2768 — from the same constants `ssao.comp`'s `local_size` is
-        // generated from; see `taa.rs`'s dispatch.
-        let groups_x = self.width.div_ceil(WORKGROUP_X);
-        let groups_y = self.height.div_ceil(WORKGROUP_Y);
-        device.cmd_dispatch(cmd, groups_x, groups_y, 1);
+            // #2768 — from the same constants `ssao.comp`'s `local_size` is
+            // generated from; see `taa.rs`'s dispatch.
+            let groups_x = self.width.div_ceil(WORKGROUP_X);
+            let groups_y = self.height.div_ceil(WORKGROUP_Y);
+            device.cmd_dispatch(cmd, groups_x, groups_y, 1);
 
-        // Transition AO image to SHADER_READ_ONLY for fragment shader
-        // sampling. #4220 — field-for-field identical to the shared
-        // helper; use it instead of a second hand-rolled copy.
-        let ao_barrier_read = super::descriptors::image_barrier_general_to_shader_read(ao_image);
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::PipelineStageFlags::FRAGMENT_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[ao_barrier_read],
-        );
+            // Transition AO image to SHADER_READ_ONLY for fragment shader
+            // sampling. #4220 — field-for-field identical to the shared
+            // helper; use it instead of a second hand-rolled copy.
+            let ao_barrier_read = super::descriptors::image_barrier_general_to_shader_read(ao_image);
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[ao_barrier_read],
+            );
 
-        Ok(())
+            Ok(())
+        }
     }
 
     /// Destroy all SSAO images, views, and allocations.
@@ -508,24 +512,26 @@ impl SsaoPipeline {
     /// device is not lost, and that none of the SSAO resources are still in
     /// use by an in-flight command buffer.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
-        for mut ao in self.ao.drain(..) {
-            // #3860 — view, image and slab in one call, in that order.
-            ao.destroy(device, allocator);
-        }
-        for buf in &mut self.param_buffers {
-            buf.destroy(device, allocator);
-        }
-        // #732 LIFE-N1 — drop the `GpuBuffer` structs after their GPU
-        // allocations are freed so each one's `Arc<Mutex<Allocator>>`
-        // clone releases now, not when `SsaoPipeline` itself naturally
-        // drops at the tail of `VulkanContext::Drop` (after
-        // `Arc::try_unwrap` has already given up).
-        self.param_buffers.clear();
-        device.destroy_sampler(self.ao_sampler, None);
-        device.destroy_sampler(self.depth_sampler, None);
-        // SAFETY: the function's contract (no in-flight work references the pass's pipeline or pool);
-        // `destroy_pass_objects` is the same pipeline, layout, pool, set-layout order, now guarded.
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
         unsafe {
+            for mut ao in self.ao.drain(..) {
+                // #3860 — view, image and slab in one call, in that order.
+                ao.destroy(device, allocator);
+            }
+            for buf in &mut self.param_buffers {
+                buf.destroy(device, allocator);
+            }
+            // #732 LIFE-N1 — drop the `GpuBuffer` structs after their GPU
+            // allocations are freed so each one's `Arc<Mutex<Allocator>>`
+            // clone releases now, not when `SsaoPipeline` itself naturally
+            // drops at the tail of `VulkanContext::Drop` (after
+            // `Arc::try_unwrap` has already given up).
+            self.param_buffers.clear();
+            device.destroy_sampler(self.ao_sampler, None);
+            device.destroy_sampler(self.depth_sampler, None);
+            // SAFETY: the function's contract (no in-flight work references the pass's pipeline or pool);
+            // `destroy_pass_objects` is the same pipeline, layout, pool, set-layout order, now guarded.
             super::descriptors::destroy_pass_objects(
                 device,
                 super::descriptors::PassHandles {
@@ -534,7 +540,7 @@ impl SsaoPipeline {
                     pool: &mut self.descriptor_pool,
                     set_layout: &mut self.descriptor_set_layout,
                 },
-            )
-        };
+            );
+        }
     }
 }

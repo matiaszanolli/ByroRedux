@@ -189,11 +189,10 @@ pub(crate) fn attraction_system(world: &World, dt: f32) {
             if let Some(keywords) = is_object {
                 objects.push((entity, at, keywords));
             }
-            if let Some(keywords) = is_actor {
-                if world.get::<Dead>(entity).is_none() {
+            if let Some(keywords) = is_actor
+                && world.get::<Dead>(entity).is_none() {
                     actors.push((entity, at, keywords));
                 }
-            }
         }
     }
     let eye = Vec3::Y * crate::npc_spawn::FALLBACK_ACTOR_CAPSULE_CENTRE_HEIGHT;

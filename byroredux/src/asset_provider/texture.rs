@@ -179,32 +179,44 @@ impl TextureProvider {
         registry_streaming && self.registry_namespace.is_none()
     }
 
+    /// The one archive a streamed texture's floor and promotions are read from: the last-listed
+    /// archive that carries it (#3637's precedence). #7144 — each read used to search the
+    /// archives on its own and fall through on a failure, so a floor and a promotion that failed
+    /// in different archives gave one resident texture mips from two files.
+    fn streaming_source(&self, normalized: &str) -> Option<&Archive> {
+        self.texture_archives.iter().rev().find(|archive| archive.contains(normalized))
+    }
+
     /// M39 — [`Self::extract`] for a texture registry upload: with
     /// `floors`, the floor read the archive allows
-    /// ([`Archive::extract_texture_floor_or_warn`]); same precedence.
+    /// ([`Archive::extract_texture_floor_or_warn`]), from
+    /// [`Self::streaming_source`] only. When that read fails the texture is
+    /// read whole ([`Self::extract`]): every level from one file, so nothing
+    /// is left for a promotion to fetch from another.
     pub(crate) fn extract_for_registry(&self, path: &str, floors: bool) -> Option<Vec<u8>> {
         if !floors {
             return self.extract(path);
         }
         let normalized = normalize_texture_path(path);
-        self.texture_archives
-            .iter()
-            .rev()
-            .find_map(|archive| archive.extract_texture_floor_or_warn(normalized.as_ref()))
+        self.streaming_source(normalized.as_ref())
+            .and_then(|archive| archive.extract_texture_floor_or_warn(normalized.as_ref()))
             .or_else(|| self.extract(path))
     }
 
     /// M39 — a promotion's re-read of a registry texture from chain level
     /// `first` down ([`Archive::extract_texture_from_or_warn`]): a BA2 DX10
     /// record inflates only the chunks that reach `first`, anything else
-    /// reads whole. Same precedence as [`Self::extract`].
+    /// reads whole. Read from [`Self::streaming_source`] only, the archive
+    /// the floor came from: a failure there leaves the floor (warned once;
+    /// the streamer backs off, #7129) rather than taking a lower-precedence
+    /// copy's levels (#7144). A path no archive lists (the FaceGen tool-path
+    /// fallback) was uploaded whole, and reads whole.
     pub(crate) fn extract_texture_from(&self, path: &str, first: u32) -> Option<Vec<u8>> {
         let normalized = normalize_texture_path(path);
-        self.texture_archives
-            .iter()
-            .rev()
-            .find_map(|archive| archive.extract_texture_from_or_warn(normalized.as_ref(), first))
-            .or_else(|| self.extract(path))
+        match self.streaming_source(normalized.as_ref()) {
+            Some(archive) => archive.extract_texture_from_or_warn(normalized.as_ref(), first),
+            None => self.extract(path),
+        }
     }
 
     /// Whether a texture exists, without extracting or decompressing it.
@@ -1148,22 +1160,45 @@ pub(crate) fn apply_texture_swap(
         if let Some(displaced) = displaced_texture(previous, fallback) {
             ctx.texture_registry.drop_texture(&ctx.device, displaced);
         }
-        if let Some(mut materials) = world.query_mut::<Material>() {
-            if let Some(material) = materials.get_mut(mesh) {
+        if let Some(mut materials) = world.query_mut::<Material>()
+            && let Some(material) = materials.get_mut(mesh) {
                 material.texture_path = Some(path.clone());
             }
-        }
-        if let Some(mut infos) = world.query_mut::<crate::components::MaterialTextureDebugInfo>() {
-            if let Some(info) = infos.get_mut(mesh) {
+        if let Some(mut infos) = world.query_mut::<crate::components::MaterialTextureDebugInfo>()
+            && let Some(info) = infos.get_mut(mesh) {
                 mark_base_color_swapped(info, &path);
             }
-        }
     }
     meshes.len()
 }
 
 #[cfg(test)]
 mod tests {
+    /// #7144 - a streamed texture's floor and promotions come from one archive, the last-listed
+    /// one that carries it: a promotion that fails there leaves the floor instead of reading a
+    /// lower-precedence copy's levels, and a floor that fails there reads the texture whole.
+    #[test]
+    fn streamed_reads_stay_in_the_archive_the_floor_came_from() {
+        let (lower, winner) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        for (dir, bytes) in [(&lower, b"lower"), (&winner, b"upper")] {
+            std::fs::create_dir_all(dir.path().join("textures")).unwrap();
+            std::fs::write(dir.path().join("textures/x.dds"), bytes).unwrap();
+        }
+        let open = |dir: &tempfile::TempDir| super::Archive::open_loose(dir.path()).expect("loose tier");
+        let provider = super::TextureProvider { texture_archives: vec![open(&lower), open(&winner)], ..super::TextureProvider::new() };
+        assert_eq!(provider.extract_for_registry(r"textures\x.dds", true).as_deref(), Some(&b"upper"[..]));
+        assert_eq!(provider.extract_texture_from(r"textures\x.dds", 1).as_deref(), Some(&b"upper"[..]));
+
+        // The winner still lists the file but can no longer read it.
+        std::fs::remove_file(winner.path().join("textures/x.dds")).unwrap();
+        assert_eq!(provider.extract_texture_from(r"textures\x.dds", 1), None, "no levels from the lower archive");
+        assert_eq!(
+            provider.extract_for_registry(r"textures\x.dds", true).as_deref(),
+            Some(&b"lower"[..]),
+            "a floor the winner cannot give is read whole"
+        );
+    }
+
     /// #6110 - the displaced original goes back unless it is a handle unload
     /// never releases (none, `0`, the fallback checkerboard).
     #[test]

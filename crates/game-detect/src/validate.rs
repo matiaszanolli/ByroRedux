@@ -103,15 +103,14 @@ fn archive_opens(path: &Path) -> Result<(), String> {
         .extension()
         .map(|ext| ext.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
-    let result = match extension.as_str() {
+    match extension.as_str() {
         "ba2" => Ba2Archive::open(path)
             .map(|_| ())
             .map_err(|e| e.to_string()),
         _ => BsaArchive::open(path)
             .map(|_| ())
             .map_err(|e| e.to_string()),
-    };
-    result
+    }
 }
 
 /// Upper bound on the prefix `esm_opens` reads to validate a main plugin

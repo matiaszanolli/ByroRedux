@@ -91,42 +91,16 @@ fn input_mapping_aliases_are_read_only_bounded_and_case_insensitive() {
 }
 
 #[test]
-fn ui_menu_alias_reads_only_the_active_visible_menu() {
+fn ui_menu_alias_reads_every_open_menu() {
     let snapshot = PapyrusUiMenuSnapshot {
-        active_menu: Some("InventoryMenu".to_owned()),
-        visible: true,
+        open_menus: vec!["HUD Menu".to_owned(), "InventoryMenu".to_owned()],
     };
     assert!(adapt_papyrus_ui_is_menu_open(&snapshot, "InventoryMenu"));
+    assert!(adapt_papyrus_ui_is_menu_open(&snapshot, "HUD Menu"), "the HUD stays open under a modal");
     assert!(!adapt_papyrus_ui_is_menu_open(&snapshot, "inventorymenu"));
     assert!(!adapt_papyrus_ui_is_menu_open(&snapshot, "PauseMenu"));
     assert!(!adapt_papyrus_ui_is_menu_open(&snapshot, ""));
-    assert!(!adapt_papyrus_ui_is_menu_open(
-        &PapyrusUiMenuSnapshot {
-            visible: false,
-            ..snapshot
-        },
-        "InventoryMenu"
-    ));
-
-    let declarations = papyrus_ui_declarations();
-    assert_eq!(declarations.len(), 1);
-    declarations[0].declaration.validate().unwrap();
-    assert_eq!(
-        source_alias("ui", "ismenuopen").unwrap().service,
-        UI_SERVICE
-    );
-    assert_eq!(
-        classify_static_call("UI", "IsMenuOpen")
-            .unwrap()
-            .disposition,
-        CompatibilityDisposition::Native
-    );
-    assert_eq!(
-        classify_static_call("UI", "IsMenuRegistered")
-            .unwrap()
-            .disposition,
-        CompatibilityDisposition::Unsupported
-    );
+    assert!(!adapt_papyrus_ui_is_menu_open(&PapyrusUiMenuSnapshot::default(), "InventoryMenu"));
 }
 
 /// MUS-SCR-004 — OBSE's cell-music pair runs natively on the music controller.

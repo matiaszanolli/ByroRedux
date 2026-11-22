@@ -1,6 +1,8 @@
 # Game Music — Product Requirements
 
-**Status**: SHIPPED (2026-11-14). Revision 15 decodes New Vegas's
+**Status**: SHIPPED (2026-11-16). Revision 16 settles `PlayMusic`
+on Fallout 3 from `Fallout3.exe`: it replaces the cell's music, and Battle
+ends it; `ENAM` is recorded as a deviation (#6946). Revision 15 decodes New Vegas's
 controller options (#6906). Revision 14 settles New Vegas's marker
 triggers, `ANAM` and Dungeon sets from the GECK wiki (#6902). Revision 13 settles the stings from
 the executables (#6901). Revision 12 settles Oblivion's
@@ -8,7 +10,7 @@ precedence, fades, battle recovery and `StreamMusic` from `Oblivion.exe`
 (#6903). Revision 11 settles MUS-SRC-002 from
 `Fallout3.exe`: cell, then an exterior's worldspace, then Default Music; no
 region (#6900). Revision 10 settles MUS-SCR-005: a
-scripted track replaces Battle and Location (#6899). Revision 9 records Q3's follow-up done:
+scripted track replaces Battle and Location (#6899; since revision 16 Battle ends it). Revision 9 records Q3's follow-up done:
 the faction-relation media sets play by the conditional faction's relation
 to the player (#6904). Revision 8 records every phase closed
 (#6861–#6864, parent #6860) with the §8 metrics in ROADMAP; the PRD is kept
@@ -121,7 +123,7 @@ what is audible is the highest active layer plus any layer it mixes with.
 |---|---|---|---|
 | **Hold** | A movie whose pause-music flag is set | Pauses all of them: "the game's music will continue to play while the movie is running, otherwise it will be paused" ([GECK: PlayBink](https://geck.uesp.net/wiki/PlayBink), Notes) | The movie ends; every layer below resumes where it was |
 | **Sting** | Player death; player level-up (MUS-STG) | Pauses Battle and Location (MUS-STG-004) | The track ends |
-| **Script** | `PlayMusic` (Fallout 3 / New Vegas), `StreamMusic` (Oblivion) | Replaces Battle and Location (MUS-SCR-005, settled by #6899); Battle ends an Oblivion stream (MUS-CMB-004, #6903) | The track ends or a load (MUS-SCR, MUS-SAV); a cell change per MUS-SCR-003 and MUS-SCR-005 |
+| **Script** | `PlayMusic` (Fallout 3 / New Vegas), `StreamMusic` (Oblivion) | Replaces Location (MUS-SCR-005, settled by #6899 and #6946); Battle ends it (MUS-CMB-004, #6903, #6946) | The track ends or a load (MUS-SCR, MUS-SAV); a cell change per MUS-SCR-003 and MUS-SCR-005 |
 | **Battle** | The player in combat (Q2) | Replaces Location, crossfading (MUS-SEL-004) | Combat ends and the recovery time passes (MUS-CMB) |
 | **Location** | The player's cell, worldspace, region or audio marker (MUS-SRC) | — | Never; it changes as the player moves |
 
@@ -329,6 +331,10 @@ shipped behaviour is [music.md](../engine/music.md) and `music.status`.
   `iMusicTransitionInMS`; Oblivion 0.85 s out and 0.85 s in, and none on a
   cell change, which switches at once (`Oblivion.exe`, #6903). The default
   INIs' `fASFadeInTime` / `fRegionLoopFadeInTime` do not govern music.
+  A Location or Dungeon set's fade is its `FNAM` (xEdit "Layer Crossfade
+  Time (D,L)", 6 or 9 s on the vanilla sets); its `ENAM` ("Looping/Random
+  Crossfade Overlap", 10 or 15 s) is not read (§6 row 6, #6946). A Battle
+  set's fade is its `ENAM` ("Loop Fade Out (B)", 3 s).
 - **MUS-SEL-005.** Moving between two places with the same Location
   directive MUST NOT restart the track. Today region music meets this by
   FormID (`load.rs:782-785`).
@@ -356,7 +362,12 @@ shipped behaviour is [music.md](../engine/music.md) and `music.status`.
   ([CS: StreamMusic](https://cs.uesp.net/wiki/StreamMusic), Notes): combat
   switches the music to Battle and, when it ends, to the place's music, not
   back to the stream (`Oblivion.exe`, #6903). Fallout 3 and New Vegas
-  `PlayMusic` leave it unset (#6899).
+  `PlayMusic` set it too (#6946): `Fallout3.exe` plays the scripted type on
+  the one stream the cell's music uses, its music update fades to the
+  battle music over any track but a death or success sting (`0x8e35ea`),
+  a request while the battle music plays is refused (`0x8e2680`), and the
+  cell's music follows combat. New Vegas is taken to follow: it keeps the
+  shared music code, and its executable is encrypted.
 
 ### 5.4 Stings (`MUS-STG`)
 
@@ -397,15 +408,24 @@ shipped behaviour is [music.md](../engine/music.md) and `music.status`.
 - **MUS-SCR-004.** OBSE `GetCellMusicType` and `SetCellMusicType` MAY get
   catalog entries under LMC-SCR-004, reading and writing the cell's
   category ([CS: SetCellMusicType](https://cs.uesp.net/wiki/SetCellMusicType)).
-- **MUS-SCR-005.** The Script layer MUST replace the Battle and Location
-  layers while it holds a track or a silence (settled by #6899 from the
-  vanilla scripts that rely on it: Fallout 3's `MQ05Script` / `MQ11Script`,
-  New Vegas's `VVault11ExterminationChairSCRIPT` and `VCG00`; the layer mixed
-  over them until then). On New Vegas it MUST NOT suspend an audio
+- **MUS-SCR-005.** The Script layer MUST replace the Location layer while
+  it holds a track or a silence (settled by #6899 from the vanilla scripts
+  that rely on it: Fallout 3's `MQ05Script` / `MQ11Script`, New Vegas's
+  `VVault11ExterminationChairSCRIPT` and `VCG00`; the layer mixed over them
+  until then). Battle ends it rather than being replaced (MUS-CMB-004);
+  a Script directive Battle does not end would replace Battle too. On
+  Fallout 3, `Fallout3.exe` settles the GECK 1.1 page's "Will non stop the
+  currently playing music of the cell" (`geck-uesp-wiki` *PlayMusic*) as a
+  stop (#6946): `PlayMusic` (`0x79f860`) calls the play-music-type entry
+  (`0x8e10b0`), a no-op only while that same type plays, and the music
+  routine (`0x8e2680`) tears down the playing stream and opens the scripted
+  file on it. The cell's music plays on that same stream, so it stops at
+  once. On New Vegas it MUST NOT suspend an audio
   marker's Location music: the GECK wiki's later PlayMusic page says "Will
   not stop the currently playing music of a music marker. NV Only." (the
-  2022 dump, #6902). That a cell change ends the layer is the engine's
-  rule.
+  2022 dump, #6902). A cell change ends the layer: `Fallout3.exe`'s
+  cell-change handlers (`0x6e2d06`, `0x8bfc37`) play the new cell's music
+  type on that stream (#6946).
 
 ### 5.6 Mix (`MUS-MIX`)
 
@@ -454,6 +474,7 @@ shipped behaviour is [music.md](../engine/music.md) and `music.status`.
 | 3 | Music read from loose `Data\Music` | Loose first, then archives (MUS-SRC-011, MUS-SRC-013) | Mods' "extract music from the BSA" instructions | None: the archives hold no music in vanilla (§3.4) |
 | 4 | Unknown what a save keeps of playing music | Q5's choice | — | A quest's scripted track does not resume after a load (MUS-SAV-002) |
 | 5 | Oblivion `StreamMusic` with a file that does not exist "causes the game to restart the song that is currently playing", and in a Default cell it "only restarts the current track" ([CS: StreamMusic](https://cs.uesp.net/wiki/StreamMusic), Notes) | A missing file is reported **Missing** and the current track keeps playing (MUS-SRC-012); a named file plays in any cell | The documented workaround of calling `StreamMusic random` first in a Default cell; it still works, as two requests | A mod that relied on a bad path to restart its track no longer restarts it (MUS-SCR-003) |
+| 6 | A New Vegas Location or Dungeon set's `ENAM`, "Looping/Random Crossfade Overlap" (xEdit; the GECK wiki's "Crossfade Overlap Time: The crossfade time for this Battle set in seconds"), 10 or 15 s on the vanilla sets; its runtime use is unverified (`FalloutNV.exe` is encrypted; JohnnyGuitar NVSE's `MediaSet` names the field only) | Not read: a set's stems loop, and every change of its directive or stems fades over `FNAM`, "Layer Crossfade Time", 6 or 9 s (MUS-SEL-004) | — | Small: if the original overlaps a set's consecutive tracks or sets for `ENAM`, a change between sets fades over 6–9 s rather than 10–15 s (#6946) |
 
 ---
 
@@ -665,3 +686,4 @@ and Oblivion's source coverage is published.
 | 13 | 2026-11-14 | MUS-STG-001 to MUS-STG-004 settled from the executables (#6901): Fallout 3 / New Vegas's stings are the `MUSDeath` / `MUSSuccess` sounds, the level-up one over the music; the Death, Success and Level Up Music objects are never read; every other sting stops the music until the place changes, combat starts or a script plays | — |
 | 14 | 2026-11-14 | New Vegas items settled from the GECK wiki dump (#6902): MUS-SRC-007 (the marker's own triggers), MUS-SEL-003 (positive `ANAM` is the Loop flag; the magnitude attenuates), MUS-CMB-001 (a Dungeon set's Battle track in combat); MUS-SRC-005's overlap, the battle order, `NAM1`'s packing and Suspense's trigger moved to #6906 | — |
 | 15 | 2026-11-14 | `NAM1` decoded from JohnnyGuitar NVSE's reverse-engineered `MediaLocationController` and OpenMW's ESM4 reader (#6906): a controller's relation list plays only while an actor of its conditional faction is found, else its Faction Not Found list (None: no music); Random controllers roll a set; a Dungeon set plays Suspense under the controller's tension. Actors count inside the marker's area until detection exists | — |
+| 16 | 2026-11-16 | Fallout 3's `PlayMusic` settled from `Fallout3.exe` (#6946): it replaces the cell's music on the one music stream (MUS-SCR-005), and Battle ends it (MUS-CMB-004, now set for Fallout 3 / New Vegas `PlayMusic`), so the Script layer replaces Location only; a New Vegas set's unread `ENAM` crossfade overlap recorded as §6 row 6, with the vanilla `ENAM` / `FNAM` values in MUS-SEL-004 | — |

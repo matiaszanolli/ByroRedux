@@ -274,11 +274,10 @@ pub(crate) fn resolve_cell_weather<'a>(
             })
         })
     };
-    if cell_pinned {
-        if let Some(resolved) = climate_default(WeatherSourceClass::CellClimate) {
+    if cell_pinned
+        && let Some(resolved) = climate_default(WeatherSourceClass::CellClimate) {
             return resolved;
         }
-    }
     if let Some(choice) = resolve_region_weather(
         inputs.regions,
         inputs.weathers,

@@ -1442,12 +1442,11 @@ fn apply_operator(stack: &mut Vec<ObScriptValue>, token: &str) {
             // zero to keep the stack walk going, but say so once per token: a silent zero is what
             // hid the missing `%` (SCR-2026-11-15-01).
             static REPORTED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-            if let Ok(mut reported) = REPORTED.lock() {
-                if !reported.iter().any(|seen| seen == token) {
+            if let Ok(mut reported) = REPORTED.lock()
+                && !reported.iter().any(|seen| seen == token) {
                     reported.push(token.to_string());
                     log::warn!("ObScript expression uses an operator the VM does not know: {token:?} (read as 0)");
                 }
-            }
             ObScriptValue::Num(0.0)
         }
     };

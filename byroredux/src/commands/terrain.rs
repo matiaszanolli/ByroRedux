@@ -218,11 +218,10 @@ impl ConsoleCommand for TerrainParallaxCommand {
             _ => return CommandOutput::line(usage),
         };
         for (id, value) in [(RANGE, range), (DEPTH, depth)] {
-            if let Some(value) = value {
-                if let Err(error) = set_session_number(world, id, value) {
+            if let Some(value) = value
+                && let Err(error) = set_session_number(world, id, value) {
                     return CommandOutput::line(format!("terrain.parallax: {error}"));
                 }
-            }
         }
         let range = crate::setting_number(world, RANGE, f32::NAN);
         let depth = crate::setting_number(world, DEPTH, f32::NAN);
@@ -230,6 +229,127 @@ impl ConsoleCommand for TerrainParallaxCommand {
             "terrain.parallax: range={range:.1} m depth={depth:.3} m{}",
             if range > 0.0 && depth > 0.0 { "" } else { " (off)" }
         ))
+    }
+}
+
+/// `terrain.patches [on | off | amplitude <m> | range <m>]` — TSD-4.1's
+/// terrain displacement patches (#7152). With no argument, the geometric seam
+/// check the renderer read back one frame-in-flight ago (§3.4): every patch
+/// border that must sit at the 1 mm lip (a cell border or a missing
+/// neighbour) and the largest deviation from it, every border two resident
+/// patches share and the largest height gap between them, and each slot's
+/// largest displacement. `on` / `off` is the A/B switch; `amplitude` and
+/// `range` retune the session (metres), until stage 4.3's settings.
+pub(crate) struct TerrainPatchesCommand;
+impl ConsoleCommand for TerrainPatchesCommand {
+    fn name(&self) -> &str {
+        "terrain.patches"
+    }
+
+    fn description(&self) -> &str {
+        "Terrain displacement patches: terrain.patches [on | off | amplitude <m> | range <m> | fine <m> | parallax on|off | rt on|off] (#7152)"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        use crate::terrain_patches::{TerrainPatchState, LIP_M};
+        use byroredux_core::lighting::BETHESDA_UNITS_PER_METER as UNITS_PER_M;
+        let Some(mut state) = world.try_resource_mut::<TerrainPatchState>() else {
+            return CommandOutput::line("terrain.patches: not available in this session");
+        };
+        let usage =
+            "usage: terrain.patches [on | off | amplitude <m> | range <m> | fine <m> | parallax on|off | rt on|off]";
+        let parse = |word: &str| word.parse::<f32>().ok().filter(|v| v.is_finite() && *v >= 0.0);
+        let words: Vec<&str> = args.split_whitespace().collect();
+        match words.as_slice() {
+            [] => {}
+            ["on"] => state.enabled = true,
+            ["off"] => state.enabled = false,
+            ["amplitude", m] => match parse(m) {
+                Some(m) => state.amplitude_m = m,
+                None => return CommandOutput::line(format!("terrain.patches: bad number\n{usage}")),
+            },
+            ["range", m] => match parse(m).filter(|m| *m > 0.0) {
+                Some(m) => state.range_m = m,
+                None => return CommandOutput::line(format!("terrain.patches: bad number\n{usage}")),
+            },
+            // The fine-lattice radius: 0 = every patch coarse, >= range = every
+            // patch fine (the single-level pool).
+            ["fine", m] => match parse(m) {
+                Some(m) => state.fine_range_m = m,
+                None => return CommandOutput::line(format!("terrain.patches: bad number\n{usage}")),
+            },
+            // Parallax on patch draws: on by default (the 3 cm patch relief
+            // alone reads flat); `off` is the A/B switch until 4.3 marches
+            // only the residual relief (§3.6).
+            ["parallax", "on"] => state.parallax = true,
+            ["parallax", "off"] => state.parallax = false,
+            // Patch draws in the TLAS: on by default; `off` keeps them
+            // raster-only so the ray share of the patch cost can be isolated.
+            ["rt", "on"] => state.rt = true,
+            ["rt", "off"] => state.rt = false,
+            _ => return CommandOutput::line(usage),
+        }
+        let mut lines = vec![format!(
+            "terrain.patches: {} amplitude={:.3} m range={:.1} m fine={:.1} m parallax={} rt={} lip={:.3} m pool={} assigned={}",
+            if state.enabled { "on" } else { "off" },
+            state.amplitude_m,
+            state.range_m,
+            state.fine_range_m,
+            if state.parallax { "on" } else { "off" },
+            if state.rt { "on" } else { "off" },
+            LIP_M,
+            state.meshes.fine.len().min(state.meshes.coarse.len()),
+            state.resident(),
+        )];
+        let s = &state.stats;
+        let cm = |units: f32| units / UNITS_PER_M * 100.0;
+        lines.push(format!(
+            "  readback: resident={} coarse={} lip_edges={} max|d-lip|={:.4} cm shared_edges={} level_edges={} max_seam_gap={:.4} cm max_d={:.2} cm",
+            s.resident,
+            s.coarse,
+            s.lip_edges,
+            cm(s.max_lip_deviation),
+            s.shared_edges,
+            s.level_edges,
+            cm(s.max_seam_gap),
+            cm(s.max_displacement),
+        ));
+        // #7221 — the patch BLAS the TLAS used this frame.
+        lines.push(format!(
+            "  blas: ready={} built={} refit={} deferred={} failed={} bytes={:.1} MB",
+            s.blas.ready,
+            s.blas.built,
+            s.blas.refit,
+            s.blas.deferred,
+            s.blas.failed,
+            s.blas.bytes as f64 / (1024.0 * 1024.0),
+        ));
+        // The GPU brackets the A/B harness reads (last timer snapshot).
+        if let Some(cov) = world.try_resource::<byroredux_core::ecs::SkinCoverageStats>() {
+            let ms = |value: f32, active: bool| {
+                byroredux_core::ecs::format_gpu_bracket_ms(value, active, 3)
+            };
+            lines.push(format!(
+                "  gpu: terrain_patch_ms={} terrain_patch_blas_ms={} tlas_build_ms={} main_render_ms={}",
+                ms(cov.gpu_terrain_patch_ms, cov.gpu_terrain_patch_active),
+                ms(cov.gpu_terrain_patch_blas_ms, cov.gpu_terrain_patch_blas_active),
+                ms(cov.gpu_tlas_build_ms, cov.gpu_tlas_build_active),
+                ms(cov.gpu_main_render_ms, cov.gpu_main_render_active),
+            ));
+        }
+        for slot in &s.slots {
+            lines.push(format!(
+                "  slot {:2}: cell ({:.0}, {:.0}) patch ({:2}, {:2}) {} max_d={:.2} cm",
+                slot.slot,
+                slot.cell_origin_xz[0],
+                slot.cell_origin_xz[1],
+                slot.patch_col,
+                slot.patch_row,
+                if slot.coarse { "coarse" } else { "fine  " },
+                cm(slot.max_displacement),
+            ));
+        }
+        CommandOutput::lines(lines)
     }
 }
 
@@ -367,7 +487,7 @@ mod tests {
         let stored = || std::fs::read_to_string(&path).unwrap_or_default();
         let menu_edit = |world: &mut World, id: &str, value: SettingValue| {
             let mut outputs = byroredux_debug_ui::PanelOutputs::default();
-            outputs.setting_changes.push(SettingChange::new(id, value));
+            outputs.game.setting_changes.push(SettingChange::new(id, value));
             crate::apply_debug_ui_outputs(world, outputs, &mut false, None);
         };
 
@@ -390,5 +510,22 @@ mod tests {
             "a slider edit is an explicit choice:\n{}",
             stored()
         );
+    }
+
+    /// #7221 — `terrain.patches rt off|on` toggles TLAS admission of patch
+    /// draws and the status line reports it; patches start in the TLAS.
+    #[test]
+    fn terrain_patches_rt_switch_toggles_tlas_admission() {
+        use crate::terrain_patches::TerrainPatchState;
+        let mut world = World::new();
+        world.insert_resource(TerrainPatchState::default());
+        assert!(world.resource::<TerrainPatchState>().rt);
+        let out = TerrainPatchesCommand.execute(&world, "rt off").lines.join("\n");
+        assert!(out.contains("rt=off"), "{out}");
+        assert!(!world.resource::<TerrainPatchState>().rt);
+        TerrainPatchesCommand.execute(&world, "rt on");
+        assert!(world.resource::<TerrainPatchState>().rt);
+        let out = TerrainPatchesCommand.execute(&world, "rt maybe").lines.join("\n");
+        assert!(out.contains("usage:"), "{out}");
     }
 }

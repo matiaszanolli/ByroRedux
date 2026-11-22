@@ -318,17 +318,15 @@ fn synthesize_packed_collision_proxy(
     Some((center, CollisionShape::Cuboid { half_extents }))
 }
 
-#[allow(clippy::too_many_arguments)] // The proxy's placement (position, rotation, scale, form id, layer) is Copy scalars beside the world and the cached import.
 fn spawn_packed_collision_proxy(
     world: &mut World,
     cached: &CachedNifImport,
     placement_root: byroredux_core::ecs::EntityId,
-    ref_pos: Vec3,
-    ref_rot: Quat,
-    ref_scale: f32,
+    placement: Transform,
     placement_fid: Option<byroredux_core::form_id::FormId>,
     base_layer: byroredux_core::ecs::components::RenderLayer,
 ) -> bool {
+    let Transform { translation: ref_pos, rotation: ref_rot, scale: ref_scale } = placement;
     use byroredux_core::ecs::components::{MotionType, PhysicsSourceForm, RigidBodyData};
     use byroredux_core::ecs::Parent;
 
@@ -460,17 +458,15 @@ fn synthesize_static_trimesh(
 /// `surface_material` is the authored Havok material when the source names
 /// one the geometry itself cannot carry — a LAND tile's ground texture
 /// (#6048); `None` keeps the static default.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_trimesh_collider_ghost(
     world: &mut World,
     positions: &[[f32; 3]],
     mesh_indices: &[u32],
-    pos: Vec3,
-    rot: Quat,
-    scale: f32,
+    placement: Transform,
     source_form: Option<byroredux_core::form_id::FormId>,
     surface_material: Option<u32>,
 ) -> bool {
+    let Transform { translation: pos, rotation: rot, scale } = placement;
     let Some((shape, mut body)) = synthesize_static_trimesh(positions, mesh_indices) else {
         return false;
     };
@@ -779,9 +775,7 @@ pub(super) fn spawn_placed_instances(
     let (placement_root, placement_fid) = spawn_placement_root(
         world,
         cached,
-        ref_pos,
-        ref_rot,
-        ref_scale,
+        byroredux_core::ecs::components::Transform::new(ref_pos, ref_rot, ref_scale),
         placement_form_id_pair,
         teleport,
         lock,
@@ -862,9 +856,7 @@ pub(super) fn spawn_placed_instances(
         world,
         collisions,
         node_owned,
-        ref_pos,
-        ref_rot,
-        ref_scale,
+        byroredux_core::ecs::components::Transform::new(ref_pos, ref_rot, ref_scale),
         placement_fid,
         base_layer,
     );
@@ -880,9 +872,7 @@ pub(super) fn spawn_placed_instances(
             world,
             cached,
             placement_root,
-            ref_pos,
-            ref_rot,
-            ref_scale,
+            byroredux_core::ecs::components::Transform::new(ref_pos, ref_rot, ref_scale),
             placement_fid,
             base_layer,
         );
@@ -927,7 +917,7 @@ pub(super) fn spawn_placed_instances(
     });
     // The colliders that are their animated nodes' own bodies ride the nodes.
     if let Some((graph, spawned)) = &graph_nodes {
-        spawn_node_collisions(world, graph, spawned, collisions, ref_pos, ref_rot, ref_scale, placement_fid, base_layer);
+        spawn_node_collisions(world, graph, spawned, collisions, byroredux_core::ecs::components::Transform::new(ref_pos, ref_rot, ref_scale), placement_fid, base_layer);
     }
     for (sub_mesh_index, (mesh, prepared)) in imported.iter().zip(prepared_meshes).enumerate() {
         let node_parent = graph_nodes
@@ -939,6 +929,7 @@ pub(super) fn spawn_placed_instances(
             &pc,
             cached,
             mesh,
+            sub_mesh_index,
             &resolved_paths[sub_mesh_index],
             count,
             prepared,
@@ -999,8 +990,8 @@ pub(super) fn spawn_placed_instances(
     let mut spawn_sequence = None;
     // #6610 — with no idle to play, a stopped player is parked on a sequence so `PlayGroup` has one to retarget.
     let mut parked_sequence = None;
-    if let Some(key) = mesh_cache_key {
-        if let Some(sequences) = super::object_sequences::named_sequences_for(world, key, &cached.object_sequences) {
+    if let Some(key) = mesh_cache_key
+        && let Some(sequences) = super::object_sequences::named_sequences_for(world, key, &cached.object_sequences) {
             let handles: Vec<u32> = sequences.0.iter().map(|(_, handle)| *handle).collect();
             // #6543 — the legacy load starts an `Idle` only when it loops.
             spawn_sequence = {
@@ -1016,7 +1007,6 @@ pub(super) fn spawn_placed_instances(
                 crate::anim_convert::attach_clip_sinks(world, handle, ctx, tex_provider, placement_root);
             }
         }
-    }
     for handle in clip_handle.into_iter().chain(spawn_sequence) {
         // #2221 — attach the `Animated*` sinks this clip's non-transform
         // channels write into, BEFORE the player starts ticking.
@@ -1033,11 +1023,10 @@ pub(super) fn spawn_placed_instances(
         // Its sinks were attached with the other non-playing sequences above. Stopped but still sampled:
         // the object holds the sequence's first frame until a script plays a group (#6543).
         let player = spawn_placement_player(world, placement_root, handle);
-        if let Some(mut players) = world.query_mut::<byroredux_core::animation::AnimationPlayer>() {
-            if let Some(player) = players.get_mut(player) {
+        if let Some(mut players) = world.query_mut::<byroredux_core::animation::AnimationPlayer>()
+            && let Some(player) = players.get_mut(player) {
                 player.playing = false;
             }
-        }
     }
 
     // M47.0 Phase 3b — return the placement_root alongside the
@@ -1090,13 +1079,10 @@ pub(super) fn spawn_placement_player(
 /// plus the interned placement `FormId` (when the REFR carried one) so
 /// the standalone collision entities can share it. Split out of
 /// `spawn_placed_instances` (#2057).
-#[allow(clippy::too_many_arguments)] // Mirrors the placement record boundary.
 fn spawn_placement_root(
     world: &mut World,
     cached: &CachedNifImport,
-    ref_pos: Vec3,
-    ref_rot: Quat,
-    ref_scale: f32,
+    placement: Transform,
     placement_form_id_pair: Option<FormIdPair>,
     teleport: Option<esm::cell::TeleportDest>,
     // #3098 — XLOC lock payload from `PlacedRef.lock`. `Some` on any
@@ -1107,6 +1093,7 @@ fn spawn_placement_root(
     byroredux_core::ecs::EntityId,
     Option<byroredux_core::form_id::FormId>,
 ) {
+    let Transform { translation: ref_pos, rotation: ref_rot, scale: ref_scale } = placement;
     // #1212 / D1-NEW-01 — the placement's form id (stamped as
     // `FormIdComponent` below). The FormIdPool intern is a single write-lock
     // per REFR; for cell loads measuring at 800–1000 REFRs (Megaton /
@@ -1593,18 +1580,16 @@ fn spawn_particle_emitters(
 /// the node entities, so a keyframed body follows the node as the behavior graph
 /// moves it (a swinging blade's body swings with it). Each is at the pose of its
 /// node, so its local transform is the identity.
-#[allow(clippy::too_many_arguments)]
 fn spawn_node_collisions(
     world: &mut World,
     graph: &super::graph_nodes::GraphNodes,
     spawned: &super::graph_nodes::SpawnedNodes,
     collisions: &[byroredux_nif::import::ImportedCollision],
-    ref_pos: Vec3,
-    ref_rot: Quat,
-    ref_scale: f32,
+    placement: Transform,
     placement_fid: Option<byroredux_core::form_id::FormId>,
     base_layer: byroredux_core::ecs::components::RenderLayer,
 ) {
+    let Transform { translation: ref_pos, rotation: ref_rot, scale: ref_scale } = placement;
     use byroredux_core::ecs::Parent;
     for (index, coll) in collisions.iter().enumerate() {
         let Some(node) = graph.collision_nodes.get(index).copied().flatten() else { continue };
@@ -1652,17 +1637,15 @@ fn spawn_node_collisions(
 /// Split out of `spawn_placed_instances` (#2057). The argument list is the
 /// caller's placement frame (position/rotation/scale + the two ids) in the
 /// order `spawn_placed_instances` already holds them.
-#[allow(clippy::too_many_arguments)]
 fn spawn_collision_shapes(
     world: &mut World,
     collisions: &[byroredux_nif::import::ImportedCollision],
     node_owned: &[Option<usize>],
-    ref_pos: Vec3,
-    ref_rot: Quat,
-    ref_scale: f32,
+    placement: Transform,
     placement_fid: Option<byroredux_core::form_id::FormId>,
     base_layer: byroredux_core::ecs::components::RenderLayer,
 ) {
+    let Transform { translation: ref_pos, rotation: ref_rot, scale: ref_scale } = placement;
     for (index, coll) in collisions.iter().enumerate() {
         if node_owned.get(index).copied().flatten().is_some() {
             continue;
@@ -1778,10 +1761,10 @@ mod node_collision_tests {
         };
         // The flat spawn leaves it to the node...
         let before = shaped(&world).len();
-        spawn_collision_shapes(&mut world, std::slice::from_ref(&collision), &graph.collision_nodes, ref_pos, Quat::IDENTITY, 1.0, None, RenderLayer::Architecture);
+        spawn_collision_shapes(&mut world, std::slice::from_ref(&collision), &graph.collision_nodes, byroredux_core::ecs::components::Transform::new(ref_pos, Quat::IDENTITY, 1.0), None, RenderLayer::Architecture);
         assert_eq!(shaped(&world).len(), before, "no detached copy");
         // ...which spawns it beneath the node.
-        spawn_node_collisions(&mut world, &graph, &spawned, std::slice::from_ref(&collision), ref_pos, Quat::IDENTITY, 1.0, None, RenderLayer::Architecture);
+        spawn_node_collisions(&mut world, &graph, &spawned, std::slice::from_ref(&collision), byroredux_core::ecs::components::Transform::new(ref_pos, Quat::IDENTITY, 1.0), None, RenderLayer::Architecture);
         let collider = *shaped(&world).first().expect("the node's collider");
         assert_eq!(world.get::<Parent>(collider).map(|p| p.0), Some(node));
         assert_eq!(world.get::<RigidBodyData>(collider).unwrap().motion_type, MotionType::Keyframed);
@@ -1822,7 +1805,7 @@ mod node_collision_tests {
             body: RigidBodyData::static_body(),
         };
         for fid in [moved, untouched] {
-            spawn_collision_shapes(&mut world, std::slice::from_ref(&collision), &[None], Vec3::ZERO, Quat::IDENTITY, 1.0, Some(fid), RenderLayer::Clutter);
+            spawn_collision_shapes(&mut world, std::slice::from_ref(&collision), &[None], byroredux_core::ecs::components::Transform::IDENTITY, Some(fid), RenderLayer::Clutter);
         }
         let motion_of = |fid| {
             let colliders = world.query::<byroredux_core::ecs::components::PhysicsSourceForm>().unwrap();

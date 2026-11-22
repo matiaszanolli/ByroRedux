@@ -120,6 +120,18 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 //      separately, by the global COMPUTE SHADER_WRITE → SHADER_READ
 //      `memory_barrier` in `record_volumetrics_pass` — documented at
 //      Stage B in `volumetrics.rs::dispatch`, not by a dedicated barrier.
+//  16. The terrain-patch set (#7221, TSD-4.2): `TerrainPatchPass` rewrites the
+//      reserved patch vertices in place every frame, and
+//      `acceleration/blas_terrain_patch.rs`'s `TerrainPatchBlasSet` refits
+//      each patch BLAS in place (`src == dst`) out of ONE `scratch` buffer
+//      shared by both slots — riders 10 and 11's shape, not per-FIF. Frame
+//      N-1's raster draws, ray queries and BLAS build may still read the
+//      vertices and the AS. On the one queue the ordering is held today by a
+//      transitive barrier chain (the patch compute's entry barrier from
+//      FRAGMENT|COMPUTE, its exit barrier into AS build, the set's AS-build →
+//      AS-build barrier), derived by reading rather than by validation, plus
+//      this all-slots wait. A grown scratch is already deferred-destroyed; the
+//      in-place rewrites are not.
 //
 // #4601 — the wait's own argument is now pinned: the all-slots spelling
 // `wait_for_fences(&self.frame_sync.in_flight, true, u64::MAX)` is
@@ -150,8 +162,9 @@ const _: () = assert!(
      the skinned BLAS scratch free, the depth-capture/screenshot \
      staging destroys, the terrain tile buffer, mapped morph weights, \
      ground-cover model buffers/readback, and the skinned output/BLAS/ \
-     bind-inverse staging/immediate unload frees all rest on the same \
-     both-slots wait (#3643, #4851, #4852). \
+     bind-inverse staging/immediate unload frees, and the in-place \
+     terrain-patch vertices/BLAS/scratch all rest on the same \
+     both-slots wait (#3643, #4851, #4852, #7245). \
      The HUD rotation dependency was removed by #3429."
 );
 
@@ -335,54 +348,58 @@ impl FrameSync {
         device: &ash::Device,
         swapchain_image_count: usize,
     ) -> Result<()> {
-        self.images_in_flight = vec![vk::Fence::null(); swapchain_image_count];
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            self.images_in_flight = vec![vk::Fence::null(); swapchain_image_count];
 
-        // Per-image render_finished — destroy old, create N fresh ones
-        // for the new image count. device_wait_idle (caller-side, before
-        // entering this function) guarantees no present is still using
-        // any of the old handles.
-        let sem_info = vk::SemaphoreCreateInfo::default();
-        for sem in &self.render_finished {
-            device.destroy_semaphore(*sem, None);
-        }
-        self.render_finished.clear();
-        self.render_finished.reserve(swapchain_image_count);
-        for _ in 0..swapchain_image_count {
-            self.render_finished.push(
-                device
-                    .create_semaphore(&sem_info, None)
-                    .context("Failed to recreate render_finished semaphore after resize")?,
+            // Per-image render_finished — destroy old, create N fresh ones
+            // for the new image count. device_wait_idle (caller-side, before
+            // entering this function) guarantees no present is still using
+            // any of the old handles.
+            let sem_info = vk::SemaphoreCreateInfo::default();
+            for sem in &self.render_finished {
+                device.destroy_semaphore(*sem, None);
+            }
+            self.render_finished.clear();
+            self.render_finished.reserve(swapchain_image_count);
+            for _ in 0..swapchain_image_count {
+                self.render_finished.push(
+                    device
+                        .create_semaphore(&sem_info, None)
+                        .context("Failed to recreate render_finished semaphore after resize")?,
+                );
+            }
+
+            // `in_flight` is fixed-size (per frame-in-flight slot, not per
+            // swapchain image), so unlike `render_finished` above it can't be
+            // `clear()`d and rebuilt with `push`. Mirror the same destroy-
+            // before-fallible-recreate safety instead: null out every handle
+            // in its own pass first, so if `create_fence` fails partway
+            // through the second pass, no `in_flight` entry can be left
+            // pointing at an already-destroyed fence. `destroy_fence` on
+            // `vk::Fence::null()` is a spec-defined no-op, so the null'd
+            // entries are safe to destroy again (e.g. from `Drop`) even if
+            // this function returns early.
+            let fence_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
+            for fence in &mut self.in_flight {
+                device.destroy_fence(*fence, None);
+                *fence = vk::Fence::null();
+            }
+            for fence in &mut self.in_flight {
+                *fence = device
+                    .create_fence(&fence_info, None)
+                    .context("Failed to recreate in_flight fence after resize")?;
+            }
+
+            log::info!(
+                "Sync objects recreated for {} swapchain images ({} render_finished semaphores, {} in_flight fences re-signaled)",
+                swapchain_image_count,
+                self.render_finished.len(),
+                self.in_flight.len(),
             );
+            Ok(())
         }
-
-        // `in_flight` is fixed-size (per frame-in-flight slot, not per
-        // swapchain image), so unlike `render_finished` above it can't be
-        // `clear()`d and rebuilt with `push`. Mirror the same destroy-
-        // before-fallible-recreate safety instead: null out every handle
-        // in its own pass first, so if `create_fence` fails partway
-        // through the second pass, no `in_flight` entry can be left
-        // pointing at an already-destroyed fence. `destroy_fence` on
-        // `vk::Fence::null()` is a spec-defined no-op, so the null'd
-        // entries are safe to destroy again (e.g. from `Drop`) even if
-        // this function returns early.
-        let fence_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
-        for fence in &mut self.in_flight {
-            device.destroy_fence(*fence, None);
-            *fence = vk::Fence::null();
-        }
-        for fence in &mut self.in_flight {
-            *fence = device
-                .create_fence(&fence_info, None)
-                .context("Failed to recreate in_flight fence after resize")?;
-        }
-
-        log::info!(
-            "Sync objects recreated for {} swapchain images ({} render_finished semaphores, {} in_flight fences re-signaled)",
-            swapchain_image_count,
-            self.render_finished.len(),
-            self.in_flight.len(),
-        );
-        Ok(())
     }
 
     /// Destroy + recreate the `image_available[frame]` semaphore in
@@ -413,17 +430,21 @@ impl FrameSync {
         device: &ash::Device,
         frame: usize,
     ) -> Result<()> {
-        let info = vk::SemaphoreCreateInfo::default();
-        let new_sem = device
-            .create_semaphore(&info, None)
-            .context("Failed to recreate image_available semaphore on error path")?;
-        let old = std::mem::replace(&mut self.image_available[frame], new_sem);
-        device.destroy_semaphore(old, None);
-        log::warn!(
-            "draw_frame error-recovery: recreated image_available[{}] to clear leaked acquire signal",
-            frame,
-        );
-        Ok(())
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            let info = vk::SemaphoreCreateInfo::default();
+            let new_sem = device
+                .create_semaphore(&info, None)
+                .context("Failed to recreate image_available semaphore on error path")?;
+            let old = std::mem::replace(&mut self.image_available[frame], new_sem);
+            device.destroy_semaphore(old, None);
+            log::warn!(
+                "draw_frame error-recovery: recreated image_available[{}] to clear leaked acquire signal",
+                frame,
+            );
+            Ok(())
+        }
     }
 
     /// Destroy + recreate the `in_flight[frame]` fence in place. Used by
@@ -453,27 +474,31 @@ impl FrameSync {
         device: &ash::Device,
         frame: usize,
     ) -> Result<()> {
-        let info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
-        let new_fence = device
-            .create_fence(&info, None)
-            .context("Failed to recreate in_flight fence on submit-failure path")?;
-        let old = std::mem::replace(&mut self.in_flight[frame], new_fence);
-        // #1188 / REN-D1-NEW-05 — `draw_frame` writes
-        // `images_in_flight[img] = in_flight[frame]` BEFORE the submit
-        // that can fail. After we destroy `old` below, any matching
-        // `images_in_flight` slot would point at a destroyed handle;
-        // the next acquire returning the same image index then calls
-        // `wait_for_fences` on a dangling fence. Null those entries
-        // here — same shape as `recreate_for_swapchain`'s line-182
-        // whole-table wipe, scaled to the single-frame case.
-        invalidate_images_in_flight_for_fence(&mut self.images_in_flight, old);
-        device.destroy_fence(old, None);
-        log::warn!(
-            "draw_frame error-recovery: recreated in_flight[{}] after reset_fences \
-             left the fence unsignaled with no pending submit",
-            frame,
-        );
-        Ok(())
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            let info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
+            let new_fence = device
+                .create_fence(&info, None)
+                .context("Failed to recreate in_flight fence on submit-failure path")?;
+            let old = std::mem::replace(&mut self.in_flight[frame], new_fence);
+            // #1188 / REN-D1-NEW-05 — `draw_frame` writes
+            // `images_in_flight[img] = in_flight[frame]` BEFORE the submit
+            // that can fail. After we destroy `old` below, any matching
+            // `images_in_flight` slot would point at a destroyed handle;
+            // the next acquire returning the same image index then calls
+            // `wait_for_fences` on a dangling fence. Null those entries
+            // here — same shape as `recreate_for_swapchain`'s line-182
+            // whole-table wipe, scaled to the single-frame case.
+            invalidate_images_in_flight_for_fence(&mut self.images_in_flight, old);
+            device.destroy_fence(old, None);
+            log::warn!(
+                "draw_frame error-recovery: recreated in_flight[{}] after reset_fences \
+                 left the fence unsignaled with no pending submit",
+                frame,
+            );
+            Ok(())
+        }
     }
 
     /// Destroy all semaphores and fences.
@@ -484,14 +509,18 @@ impl FrameSync {
     /// and that none of the semaphores or fences are still in use by an
     /// in-flight command buffer or pending present.
     pub unsafe fn destroy(&self, device: &ash::Device) {
-        for &sem in &self.image_available {
-            device.destroy_semaphore(sem, None);
-        }
-        for &sem in &self.render_finished {
-            device.destroy_semaphore(sem, None);
-        }
-        for &fence in &self.in_flight {
-            device.destroy_fence(fence, None);
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            for &sem in &self.image_available {
+                device.destroy_semaphore(sem, None);
+            }
+            for &sem in &self.render_finished {
+                device.destroy_semaphore(sem, None);
+            }
+            for &fence in &self.in_flight {
+                device.destroy_fence(fence, None);
+            }
         }
     }
 }
@@ -743,6 +772,16 @@ mod tests {
             (
                 "combustion_occupancy_buffers",
                 crate::source_scan::production_text(include_str!("volumetrics.rs")),
+            ),
+            // #7245 — rider 16: the terrain-patch vertices rewritten in place, and
+            // the patch BLAS set refit in place out of one shared scratch.
+            (
+                "TerrainPatchPass",
+                crate::source_scan::production_text(include_str!("terrain_patch.rs")),
+            ),
+            (
+                "TerrainPatchBlasSet",
+                crate::source_scan::production_text(include_str!("acceleration/blas_terrain_patch.rs")),
             ),
         ] {
             assert!(

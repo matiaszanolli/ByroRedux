@@ -479,6 +479,8 @@ pub struct EsmIndex {
     /// the whole top-level group fell through to the catch-all skip.
     /// See #519.
     pub actor_values: HashMap<u32, AvifRecord>,
+    /// Slot of the engine's synthetic Oblivion AVIFs, installed after plugin merging.
+    pub oblivion_actor_value_slot: Option<crate::esm::reader::GlobalSlot>,
     // ── Activators / terminals (#521) ───────────────────────────────
     /// `ACTI` activator records — wall switches, vending machines,
     /// lever-activated doors, anything "use"-able that isn't a
@@ -637,8 +639,8 @@ pub struct EsmIndex {
     pub media_sets: HashMap<u32, MediaSetRecord>,
     /// `MUSC` music type.
     pub music_types: HashMap<u32, MuscRecord>,
-    /// Skyrim `MUST` music track — what a Skyrim `MUSC.TNAM` lists. Typed but
-    /// unconsumed: the Skyrim half of #3816 (`docs/engine/esm-records.md`).
+    /// `MUST` music track (Skyrim, FO4, FO76; #6790) — what a `MUSC.TNAM` lists. Typed but
+    /// unconsumed: the xWMA half of #3816 (`docs/engine/esm-records.md`).
     pub music_tracks: HashMap<u32, MustRecord>,
     /// `SOUN` sound. Upgraded from the `MinimalEsmRecord` long-tail stub
     /// (#810) to a real decode of `FNAM` (file path) — EX-16 item 1's
@@ -861,12 +863,8 @@ impl EsmIndex {
         // make it unrecoverable once the loop below no longer re-promotes it
         // (e.g. a later plugin's OMOD override drops the `LNAM` reference).
         for item in self.items.values_mut() {
-            if let super::ItemKind::Mod { was_junk } = item.kind {
-                item.kind = if was_junk {
-                    super::ItemKind::Junk
-                } else {
-                    super::ItemKind::Misc
-                };
+            if let super::ItemKind::Mod { .. } = item.kind {
+                item.kind = item.kind.authored().into_owned();
             }
         }
         for &loose_item in self.object_mod_loose_items.values() {
@@ -1171,6 +1169,11 @@ impl EsmIndex {
     /// Linear over `actor_values` (~100 records) — cheap enough to call
     /// per-stat at spawn.
     pub fn actor_value_form_id(&self, editor_id: &str) -> Option<u32> {
+        if self.game == GameKind::Oblivion && self.oblivion_actor_value_slot.is_some()
+            && super::oblivion_actor_values::OBLIVION_ACTOR_VALUES.iter().any(|name| name.eq_ignore_ascii_case(editor_id))
+        {
+            return self.oblivion_actor_value_by_name(editor_id, false);
+        }
         let usable = |avif: &AvifRecord| avif.form_id != 0 && avif.form_id != u32::MAX;
         self.actor_values
             .values()
@@ -1218,6 +1221,17 @@ impl EsmIndex {
         }
     }
 
+    /// The value selected by an effect item, in the source game's vocabulary.
+    /// TES4 skill/attribute targets live on EFIT; other effects use MGEF.
+    pub fn effect_actor_value(&self, effect: &MgefRecord, item: &super::MagicEffectItem) -> Option<super::ActorValueRef> {
+        const TES4_ITEM_ACTOR_VALUE: u32 = (1 << 19) | (1 << 20);
+        if self.game == GameKind::Oblivion && effect.effect_flags & TES4_ITEM_ACTOR_VALUE != 0 {
+            item.actor_value
+        } else {
+            effect.primary_actor_value
+        }
+    }
+
     /// #4415 — resolve a magic effect's actor value to the AVIF FormID that
     /// keys `ActorValues`. FO4+ effects already name the AVIF; FO3/FNV and
     /// Skyrim name a game-local actor-value *index*, mapped here through
@@ -1240,12 +1254,15 @@ impl EsmIndex {
     /// | rest | 46..=76 @ `0x5DC` | 39..=163 @ `0x5CE` |
     ///
     /// An index whose slot has no AVIF record (several engine-only values)
-    /// resolves to `None`, as does Oblivion (no AVIF records).
+    /// resolves to `None`. Oblivion's indices name its engine-supplied records.
     pub fn resolve_actor_value(&self, reference: super::ActorValueRef) -> Option<u32> {
         use crate::esm::reader::GameKind;
         let form_id = match reference {
             super::ActorValueRef::Form(form_id) => form_id,
             super::ActorValueRef::Index(index) => {
+                if self.game == GameKind::Oblivion {
+                    return self.oblivion_actor_value(index, false);
+                }
                 let (first, base) = match (self.game, index) {
                     (GameKind::Fallout3NV, 0..=4) => (0, 0x514),
                     (GameKind::Fallout3NV, 5..=11) => (5, 0x3E8),
@@ -2227,6 +2244,10 @@ mod tests {
                 "default_music",
                 "scalar read from the FO3/FNV DOBJ `DATA` music slots; the DOBJ record itself is counted in `default_objects`",
             ),
+            (
+                "oblivion_actor_value_slot",
+                "scalar installation metadata set after plugin merging; the records are counted in actor_values",
+            ),
             // #6350 — a resolution side-table, not an independent record
             // map: lower-cased EditorID → winning FormID, maintained by
             // `insert_game_setting` and the `game_settings` category row's
@@ -2244,19 +2265,19 @@ mod tests {
         // NOT `HashMap`s, so before this fix the field scan below (which
         // only matched `: HashMap<`) never saw them at all: they passed
         // this guard by being invisible to it, not by being accounted for.
-        // Naming the `merge_from` line each one is actually handled at is
-        // what makes that a checked claim instead of a comment nobody
-        // re-verifies.
+        // Naming how `merge_from` handles each one (by function, not by line
+        // number, which drifted, #7106) is what makes that a checked claim
+        // instead of a comment nobody re-verifies.
         const MANUALLY_MERGED: &[(&str, &str)] = &[
             (
                 "deleted_record_metadata",
                 "merge_from — union of tombstoned FormIDs, pruning any record they \
-                 name out of every already-merged category table (index.rs:1010-1029)",
+                 name out of every already-merged category table",
             ),
             (
                 "skipped_unconsumed_groups",
                 "merge_from — plain concatenation of unconsumed GRUP type tags \
-                 across plugins (index.rs:1041-1042)",
+                 across plugins",
             ),
         ];
 
@@ -2722,6 +2743,7 @@ mod tests {
                 script_form_id: 0,
                 visible_when_distant: false,
                 destruction: None,
+                door: None,
             },
         );
 
@@ -2754,6 +2776,7 @@ mod tests {
                 script_form_id: 0,
                 visible_when_distant: false,
                 destruction: None,
+                door: None,
             },
         );
         assert!(idx.base_record_script_instance(PLAIN).is_none());
@@ -2793,6 +2816,7 @@ mod tests {
                 script_form_id: SCPT,
                 visible_when_distant: false,
                 destruction: None,
+                door: None,
             },
         );
 
@@ -2829,6 +2853,7 @@ mod tests {
                 script_form_id: 0,
                 visible_when_distant: false,
                 destruction: None,
+                door: None,
             },
         );
 

@@ -243,14 +243,13 @@ impl ServiceCatalog {
 
     /// Register a semantic service and verify its capability metadata.
     pub fn register_service(&mut self, descriptor: ServiceDescriptor) -> Result<(), CatalogError> {
-        if let Some(capability) = &descriptor.required_capability {
-            if !self.capabilities.contains_key(capability) {
+        if let Some(capability) = &descriptor.required_capability
+            && !self.capabilities.contains_key(capability) {
                 return Err(CatalogError::UnknownServiceCapability {
                     service: descriptor.id,
                     capability: capability.clone(),
                 });
             }
-        }
         let id = descriptor.id.clone();
         if self.services.contains_key(&id) {
             return Err(CatalogError::Duplicate {

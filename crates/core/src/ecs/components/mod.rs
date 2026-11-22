@@ -88,7 +88,7 @@ pub use use_weapon_package::{
 };
 pub use hierarchy::{Children, Parent};
 pub use inventory::{
-    EquipmentSlots, EquippedWeapon, Inventory, InventoryIndex, ItemInstanceId, ItemStack,
+    EquipmentSlots, EquippedAmmo, EquippedWeapon, Inventory, InventoryIndex, ItemInstanceId, ItemStack,
     MAX_BIPED_SLOTS,
 };
 pub use light::{

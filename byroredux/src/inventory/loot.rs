@@ -71,9 +71,8 @@ pub(crate) fn stamp_cell_ownership(
     world.insert_batch(targets.into_iter().map(|entity| (entity, owned)));
 }
 
-/// P3's theft rule: a transfer is theft when the source is owned and the
-/// owner is neither the player nor a faction the player holds the required
-/// rank in. The answer is the owner it steals from; what the theft costs the
+/// A reference has a foreign owner when it belongs to someone other than
+/// the player or a faction the player holds the required rank in. What theft costs the
 /// player is [`crate::crime::report_theft`]'s.
 ///
 /// #4699 — "the player" is the Player `NPC_` base (0x7), what vanilla
@@ -85,7 +84,7 @@ pub(crate) fn stamp_cell_ownership(
 /// reaches `Owned` through [`stamp_cell_ownership`].
 ///
 /// [`FactionRanks`]: byroredux_core::ecs::components::FactionRanks
-pub(super) fn theft_owner(
+pub(crate) fn foreign_owner(
     world: &World,
     player: byroredux_core::ecs::EntityId,
     source: byroredux_core::ecs::EntityId,
@@ -171,7 +170,7 @@ pub(crate) fn transfer_loot(
     {
         return None;
     }
-    let stolen_from = theft_owner(world, player, source);
+    let stolen_from = foreign_owner(world, player, source);
     let stolen = stolen_from.is_some();
     let mut outcome = LootOutcome {
         item_count: 0,
@@ -193,8 +192,11 @@ pub(crate) fn transfer_loot(
             LootSelection::All => {
                 let stacks = std::mem::take(&mut source_inventory.items);
                 outcome.item_count = stacks.iter().map(|stack| u64::from(stack.count)).sum();
+                // #7231 — a row zeroed in place (a spent, sold or removed stack keeps its position) moved nothing: it
+                // reports no transfer (no OnAdd / OnDrop, no stolen row), as the one-stack arm refuses it.
                 outcome.rows = stacks
                     .iter()
+                    .filter(|stack| stack.count > 0)
                     .map(|stack| (stack.base_form_id, stack.count))
                     .collect();
                 source_form_ids = Some(
@@ -206,7 +208,9 @@ pub(crate) fn transfer_loot(
                 // Existing equipment indices stay stable and distinct
                 // instance-pool identities are never merged or discarded;
                 // plain stacks fold into the matching row (#5871).
-                for stack in stacks {
+                // An empty plain row is not handed to the player either (it would add a zero-count row for a form the
+                // player has none of); an empty row still holding an instance moves, so its pool entry stays owned.
+                for stack in stacks.into_iter().filter(|stack| stack.count > 0 || stack.instance.is_some()) {
                     destination.add(stack);
                 }
             }
@@ -281,12 +285,11 @@ pub(crate) fn transfer_loot(
     // acquiring the next one or publishing the script event batch.
     if matches!(selection, LootSelection::All) {
         let mut equipped = Vec::new();
-        if let Some(mut equipment) = world.query_mut::<EquipmentSlots>() {
-            if let Some(slots) = equipment.get_mut(source) {
+        if let Some(mut equipment) = world.query_mut::<EquipmentSlots>()
+            && let Some(slots) = equipment.get_mut(source) {
                 equipped.extend(slots.equipped_indices());
                 *slots = EquipmentSlots::new();
             }
-        }
         if let Some(mut weapons) = world.query_mut::<EquippedWeapon>() {
             weapons.remove(source);
         }
@@ -311,23 +314,21 @@ pub(crate) fn transfer_loot(
         // that index so a partially looted corpse's other slots survive.
         for (index, item_form_id) in cleared_source_indices {
             let mut was_equipped = false;
-            if let Some(mut equipment) = world.query_mut::<EquipmentSlots>() {
-                if let Some(slots) = equipment.get_mut(source) {
+            if let Some(mut equipment) = world.query_mut::<EquipmentSlots>()
+                && let Some(slots) = equipment.get_mut(source) {
                     was_equipped = slots.is_equipped(index);
                     if was_equipped {
                         slots.release(index);
                     }
                 }
-            }
-            if let Some(mut weapons) = world.query_mut::<EquippedWeapon>() {
-                if weapons
+            if let Some(mut weapons) = world.query_mut::<EquippedWeapon>()
+                && weapons
                     .get(source)
                     .is_some_and(|weapon| weapon.inventory_index == index)
                 {
                     weapons.remove(source);
                     was_equipped = true;
                 }
-            }
             if was_equipped {
                 byroredux_scripting::emit_equipment_changes(
                     world,
@@ -458,7 +459,7 @@ pub(crate) fn take_placed_item(
     else {
         return false;
     };
-    let stolen_from = if player_is_taker { theft_owner(world, player, target) } else { None };
+    let stolen_from = if player_is_taker { foreign_owner(world, player, target) } else { None };
     let stolen = stolen_from.is_some();
     let count = world
         .get::<PlacedItemCount>(target)

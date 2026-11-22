@@ -245,7 +245,9 @@ waits on that data.
 ```rust
 pub struct PoolRegenAccumulator { seconds: f32 }                                   // the fixed 60 Hz clock
 pub struct PoolRegenConfig { fatigue_avif: Option<u32>, magicka_avif: Option<u32>, willpower_avif: Option<u32>,
-                             action_points: Option<ActionPointsRegen> }                  // per-game resolved AVIF ids + the Fallout AP lane (#6350)
+                             stunted_magicka_avif: Option<u32>,                         // an active Stunted Magicka stops Magicka regen
+                             action_points: Option<ActionPointsRegen>,                  // the Fallout AP lane (#6350)
+                             tes_rates: Option<TesPoolRegen> }                          // Oblivion's rates + Endurance record (#7197)
 ```
 
 Passive Fatigue/Magicka regeneration. Every regen rate sourced so far is expressed
@@ -260,27 +262,28 @@ out of scope):
 
 | Pool | Rate | Constants |
 |---|---|---|
-| Fatigue | flat `10`/sec | `FATIGUE_REGEN_PER_SEC` (`fFatigueReturnBase`=10, `fFatigureReturnMult`=0 in vanilla) |
-| Magicka | `(Willpower × 0.02 + 0.75) × (MaxMagicka / 100)` | `MAGICKA_REGEN_WILLPOWER_COEFF` / `MAGICKA_REGEN_BASE`, via `magicka_regen_per_sec` |
+| Fatigue | `fFatigueReturnBase + fFatigueReturnMult × Endurance` per sec, flat `10`/sec in vanilla | `TesPoolRegen` (`fFatigueReturnBase`=10, `fFatigueReturnMult`=0 in `Oblivion.esm`; defaults `FATIGUE_REGEN_PER_SEC`) |
+| Magicka | `(Willpower × fMagickaReturnMult + fMagickaReturnBase) × (MaxMagicka / 100)`, `0.02` / `0.75` in vanilla | `TesPoolRegen` (`fMagickaReturnMult` / `fMagickaReturnBase`, authored by `Oblivion.esm`; defaults `MAGICKA_REGEN_WILLPOWER_COEFF` / `MAGICKA_REGEN_BASE`) |
 | Health | **none** — no passive regen in classic Oblivion | deliberately unmodelled |
 
-**Mechanism BUILT and registered; live for FO3/FNV Action Points only.**
+All four settings are read from the load order (#7197): `CharacterRulesProfile::build_tes_pool_regen` overlays them on
+`TesPoolRegen::OBLIVION` through `TesPoolRegen::with_gmst` (a non-finite or negative value keeps its default) and
+installs them on `PoolRegenConfig::tes_rates`, with the Endurance record the Fatigue term reads.
+
+**Mechanism BUILT and registered; live for FO3/FNV Action Points and Oblivion Fatigue / Magicka.**
 `pool_regen_tick_system` is registered in `Stage::Update`
 (`byroredux/src/boot/schedule/update/`) and runs every frame. Its required
 `PoolRegenConfig` is inserted by `build_vats_model` (`byroredux/src/npc_spawn/`) on the
 first FO3/FNV cell load (#6350), carrying the `ActionPointsRegen` lane: the player's
 `ActionPoints` restores at `fActionPointsRestoreRate` normalized to per-second
-(FO3 4/s; FNV 0.06 per frame × 60 Hz = 3.6/s — see `charal-fnv-fo3-ruleset.md`). Every
-other game never inserts the config, and the Fatigue/Magicka/Willpower lanes are off
-even on FO3/FNV (their ids are `None`, #6430: the lane is disabled outright, not by a sentinel
-id that no actor happens to carry). The Oblivion Fatigue/Magicka
-lanes: the `oblivion_pool_regen_config` builder that once made them was deleted under
-#3848 (`git show e13985dfc` recovers it); re-adding it is blocked on Oblivion's own
-wiring, #3768 (#4460). Same shape as §4.6 for the TES lanes — mechanism ahead of its
-wiring.
-Stunted Magicka is
-modelled in the formula (`magicka_regen_per_sec`'s `stunted` parameter) but always
-passed `false`, because no status-effect component exists to carry the flag.
+(FO3 4/s; FNV 0.06 per frame × 60 Hz = 3.6/s — see `charal-fnv-fo3-ruleset.md`); its TES lanes
+are `None` there (#6430: a lane is disabled outright, not by a sentinel id that no actor happens to
+carry). On Oblivion, `CharacterRulesProfile::build_tes_pool_regen` (since #7010, rates from the load
+order since #7197) installs the config with the Fatigue, Magicka, Willpower and `StuntedMagicka` records
+the engine-supplied roster resolves, on the first cell load (`cell_loader/references/mod.rs`). An active
+Stunted Magicka value (Atronach birthsign and its kin) stops Magicka regeneration only, read from
+`stunted_magicka_avif` each tick (`stunted_magicka_stops_only_magicka_regeneration`). FO4, Skyrim, FO76
+and Starfield never insert the config.
 
 ---
 
@@ -347,8 +350,7 @@ rank, +10 pool pick + perk/level; UESP-sourced). Skyrim helpers: `xp_from_skill_
 `actor_value` never composes a `PlayerOnly` `Multiplier` row. The Skyrim armor model is the
 `ArmorModel` row of the Skyrim `CharacterRulesProfile` (`character/armor.rs`, #6567), which
 `byroredux/src/armor.rs` reads and which builds its skill multipliers from this constant and
-`ARMOR_SKILL_RATING_COEFF_NPC` 0.015). Oblivion's `LightArmorRating` / `HeavyArmorRating` rows
-(`tes.rs`) are equally unread: Oblivion has no runtime ruleset yet and Carry Weight
+`ARMOR_SKILL_RATING_COEFF_NPC` 0.015) and Carry Weight
 (`CARRY_WEIGHT_BIAS` 250 + `CARRY_WEIGHT_STAMINA_COEFF` 0.5 × base Stamina). The
 *pools* really are underived: Health/Magicka/Stamina start at `SKYRIM_POOL_BASE` 100
 and grow only by the level pick, which is why Skyrim has no SPECIAL-style
@@ -358,19 +360,23 @@ AV names (`Marksman`/`Speechcraft`); resolution is verified at load (resolve-or-
 now assembles the full TES ruleset end-to-end** — `AttributeSet::TES_CLASSIC` +
 `SkillSet::OBLIVION` + `LevelingModel::OBLIVION` + the three derived pools, resolve-or-skip
 like the Fallout builders. The level-up leveling-efficiency mechanics are shipped too:
-`oblivion_attribute_bonus(governed_skill_ups)` → +1/+2/+3/+4/+5 by the UESP tier table
-(0 / 1–4 / 5–7 / 8–9 / 10+), capped, no roll-over; and
-`oblivion_health_gain_per_level(endurance)` = 10 % of Endurance accrued (and stored) each
-level (path-dependent, so a per-level event, not a stateless formula). **Classic Oblivion
-(2006 Gamebryo) only** — the live UESP *Oblivion:Health* page now documents the 2024 UE5
-*Remastered* formula, which is out of scope. **The Oblivion ruleset builder is complete —
-it is unwired.** `CharacterRulesProfile::OBLIVION` carries `ruleset: RulesetBuilder::None`
-(in `crates/core/src/character/profile.rs`, cited by symbol — line ranges rot, #4455), so `build_ruleset` never constructs an
-Oblivion `CharacterRuleset` at load, and more fundamentally `Oblivion.esm` authors no `AVIF`
-records at all (the record type postdates Oblivion) — so a legacy actor-value index resolver
-is needed before wiring can even start, not just a `RulesetBuilder` arm (`docs/feature-matrix.md`'s
-"~ built, unwired" is the accurate summary). Skyrim is no longer a parallel case:
-#3848 wired `RulesetBuilder::Skyrim`.
+`oblivion_attribute_bonus(governed_skill_ups, bands)` → +1 for a tally of 0, then the
+`iLevelUp01Mult` … `iLevelUp10Mult` bands (+2/+2/+2/+2/+3/+3/+3/+4/+4/+5 by default, the UESP
+tier table), capped, no roll-over; and `oblivion_health_gain_per_level(endurance, mult)` =
+`fStatsHealthLevelMult` (10 %) of Endurance accrued (and stored) each level (path-dependent, so a
+per-level event, not a stateless formula); `LevelingModel::SkillUse` carries the bands and the
+multiplier, overlaid from the load order (#7196). **Classic Oblivion (2006 Gamebryo) only** — the
+live UESP *Oblivion:Health* page now documents the 2024 UE5 *Remastered* formula, which is out of
+scope. **The Oblivion ruleset is wired (#7010).** `CharacterRulesProfile::OBLIVION` carries
+`ruleset: RulesetBuilder::Oblivion`, and `build_ruleset` calls `oblivion_ruleset_with_gmst`.
+`Oblivion.esm` authors no `AVIF` records (the record type postdates Oblivion), so the loader
+supplies the 72 actor values itself (`EsmIndex::install_oblivion_actor_values`) and every resolver
+sees them as ordinary records. The builder's pool rows are the **player's** pools:
+`trunc(End × fPCBaseHealthMult)`, `trunc(Int × (1 + fPCBaseMagickaMult))` (#7198) and the
+four-attribute Fatigue sum, `player_only` and refreshed every frame (#7037/#7041); an NPC's pools come
+from the population model (`oblivion_population::derive`, the NPC auto-calc and creature rows of
+`charal-oblivion-ruleset.md`), not from these rows. Skyrim is wired too (#3848,
+`RulesetBuilder::Skyrim`).
 
 The user-provided per-game **data tables**, by family — each slots directly into
 the struct above; **the canonical runtime never changes**:
@@ -723,52 +729,12 @@ follows the smoke-test pattern).
   sources and independently resolved base views, with portable identities
   for every alias in saves. Independent per-skill snapshots lose that sharing
   when a script or magic effect modifies one of them.
-- The editor has an Auto-Calc Stats control independently of PC Level Offset;
-  PC Level Offset also forces recalculation ([Construction Set: NPC](https://cs.uesp.net/wiki/Category:NPC),
-  [NPC discussion](https://cs.uesp.net/wiki/Category_talk:NPC)). This does not
-  by itself establish the runtime flag precedence for every combination.
-  The [NPC record format](https://en.uesp.net/wiki/Oblivion_Mod:Mod_File_Format/NPC)
-  assigns Auto-calc Stats `0x10` and PC Level Offset `0x80`.
-  The executable provides two independent recalculation triggers. In the
-  NPC load path, `0x523fea` calls the NPC vtable slot `0xe4`, which resolves
-  to `0x519d40`; that method tests bit 4 at `0x519d46`–`0x519d4e`.
-  A true result calls the stat calculator `0x5222d0` at `0x523ff4`.
-  Separately, the NPC iteration at `0x447310`–`0x44734a` tests bit 7
-  (`0x44732b`–`0x447334`) and calls the same calculator at `0x44733a`.
-  The calculator reads race, sex, class and level and writes attributes and
-  skills (`0x522355`–`0x5225d7`). These traces establish both triggers;
-  the exact timing and interaction of subsequent recalculations are tracked
-  as an original-game observation in [#7022](https://github.com/matiaszanolli/ByroRedux/issues/7022).
-- [UESP NPC statistics](https://en.uesp.net/wiki/Oblivion:NPCs#NPC_Statistics)
-  fixes both Personality and Luck across levels. At level 1, attributes and
-  skills match a player of the same race, gender and class. Starting skills
-  have base 5, plus racial bonuses, 20 for a major skill and 5 for a skill in
-  the specialization; favored attributes gain 5
-  ([character creation](https://en.uesp.net/wiki/Oblivion:Character_Creation),
-  [classes](https://en.uesp.net/wiki/Oblivion:Classes#Custom_Classes)).
-  The executable's skill calculation corroborates the constants: for
-  `n = level - 1`, `0x5224ff`–`0x52251e` starts a minor skill at
-  `5 + 0.1*n` or a major at `25 + n`; the specialization arm at
-  `0x522529`–`0x522567` adds `5 + 0.5*n`. The racial bonus is added at
-  `0x52256b`–`0x522597` and the result is capped and converted at
-  `0x5225a3`–`0x5225ca` using x87 `fistp`. NPC Personality is skipped by
-  the calculator at `0x522345`–`0x52234f`, leaving its authored DATA byte.
-  Level offsets use the player level at `0x467807`–`0x46782b`; the bounds at
-  `0x467832`–`0x467864` apply only when nonzero, followed by a minimum of 1.
-- NPC auto-calculated health uses `0x547f80` in the executable identified
-  below. With `n = level - 1`, first convert
-  `(Strength + Endurance) * fNPCAttributeHealthMult` to an integer at
-  `0x547f80`–`0x547f98`; add `n * (iNPCBasePerLevelHealthMult +
-  is_endurance_favored + is_combat - is_magic)` at `0x547f9d`–`0x547fd0`.
-  If `n < iLowLevelNPCMaxLevel`, multiply by
-  `fLowLevelNPCBaseHealthMult + (1 - fLowLevelNPCBaseHealthMult) *
-  n / iLowLevelNPCMaxLevel`; otherwise multiply by 1. The code computes
-  that factor at `0x547fd2`–`0x54800c`, multiplies and converts at
-  `0x54800c`–`0x548014`. Setting initializers at `0x9ed910`, `0x9ed940`,
-  `0x9ed960` and `0x9ed980` associate those four names with the addresses
-  read by the calculation. The conversion helper is `0x9828c0`; its SSE
-  path uses `cvttsd2si` at `0x9828d5` (truncation). Values are read from
-  the active game settings, not the executable initializer defaults.
+- **Auto-calc stats are answered** (flag triggers, level-1 and per-level skill and
+  attribute values, Luck, Personality, Health, Magicka, Fatigue): see
+  [NPC auto-calc stats](charal-oblivion-ruleset.md#npc-auto-calc-stats--locked-from-the-executable-7008-oav-pop-003).
+  The one open part is the timing of each flag combination, observed in
+  [#7022](https://github.com/matiaszanolli/ByroRedux/issues/7022).
+
 - The [Aggression](https://cs.uesp.net/wiki/Aggression) page documents
   `SetActorValue Aggression` and the disposition comparison; it does not
   independently prove the initial `GetAV` value equals the AIDT byte.
@@ -857,7 +823,7 @@ including nested copies:
 | Saved column or resource | Actor-value reference |
 |---|---|
 | `ActorValues` | Map keys and each view-specific alias's key and source keys; all layers travel with their source key. |
-| `ActorVitals` | `health`; registered for full restore, re-derived on live cell reload. |
+| `ActorVitals` | `health`; registered for full restore and overlaid on a live load (the player body is stamped once and outlives the reload, so its Health key must follow the load order). |
 | `TimedRestorations` | Each effect's `actor_value`. |
 | `ActiveMagicEffects` | Each `ActiveEffect.value.actor_value`, when present. |
 | `SkillProgress` | Map keys, even though the resource is not named as an actor-value component. |

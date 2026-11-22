@@ -49,204 +49,214 @@ impl VulkanContext {
     /// of these objects, and `alloc` must be the allocator these resources
     /// were allocated from.
     unsafe fn destroy_allocator_owned_resources(&mut self, alloc: &SharedAllocator) {
-        self.texture_registry.destroy(&self.device, alloc);
-        self.scene_buffers.destroy(&self.device, alloc);
-        // EX-05 / #2736 — the image-health counter buffers. `GpuBuffer::Drop`
-        // is a safety net only; the canonical path destroys explicitly here so
-        // the allocation is returned while the allocator is still live.
-        // SAFETY: device idle by this fn's contract, and `alloc` is the
-        // allocator these buffers were created from.
-        for mut buffer in self.diag.image_health_buffers.drain(..) {
-            buffer.destroy(&self.device, alloc);
-        }
-        // M29 — destroy SkinSlots BEFORE the SkinComputePipeline
-        // because slots own descriptor sets allocated from the
-        // pipeline's descriptor pool. Pool destruction implicitly
-        // frees the sets but the FREE_DESCRIPTOR_SET flag means
-        // we should explicitly free them through the pipeline
-        // first to keep the validation layer quiet. The ordering
-        // also matches the static `accel_manager` teardown
-        // pattern (skinned_blas before pipeline scratch buffers).
-        //
-        // #3657 — the *drain* is unconditional; only the descriptor-set
-        // free is gated on the pipeline, because only that half needs it.
-        // This is the same shape #3374 un-nested for `morph_slots` below,
-        // and here the consequence of skipping was worse than a plain leak:
-        // each `SkinSlot::output_buffer` holds its own
-        // `Arc<Mutex<Allocator>>` clone, so leaving the slots in place
-        // released those clones only in the natural `Drop` pass that runs
-        // *after* the `Arc::try_unwrap` at the end of this destructor has
-        // already given up — taking the #665 leak-guard branch that
-        // deliberately leaks the device, surface, instance and debug
-        // messenger. Not reachable at HEAD (`skin_compute` is assigned once
-        // and every `skin_slots.insert` sits inside a `skin_compute` guard);
-        // pinned by `skin_slot_drain_is_not_nested_under_skin_compute_tests`
-        // so a device-lost recovery or RT-optional path cannot reintroduce it.
-        for (_eid, mut slot) in std::mem::take(&mut self.skin.slots) {
-            if let Some(ref skin) = self.skin.compute {
-                skin.destroy_slot(&self.device, alloc, slot);
-            } else {
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            self.texture_registry.destroy(&self.device, alloc);
+            self.scene_buffers.destroy(&self.device, alloc);
+            // EX-05 / #2736 — the image-health counter buffers. `GpuBuffer::Drop`
+            // is a safety net only; the canonical path destroys explicitly here so
+            // the allocation is returned while the allocator is still live.
+            // SAFETY: device idle by this fn's contract, and `alloc` is the
+            // allocator these buffers were created from.
+            for mut buffer in self.diag.image_health_buffers.drain(..) {
+                buffer.destroy(&self.device, alloc);
+            }
+            // M29 — destroy SkinSlots BEFORE the SkinComputePipeline
+            // because slots own descriptor sets allocated from the
+            // pipeline's descriptor pool. Pool destruction implicitly
+            // frees the sets but the FREE_DESCRIPTOR_SET flag means
+            // we should explicitly free them through the pipeline
+            // first to keep the validation layer quiet. The ordering
+            // also matches the static `accel_manager` teardown
+            // pattern (skinned_blas before pipeline scratch buffers).
+            //
+            // #3657 — the *drain* is unconditional; only the descriptor-set
+            // free is gated on the pipeline, because only that half needs it.
+            // This is the same shape #3374 un-nested for `morph_slots` below,
+            // and here the consequence of skipping was worse than a plain leak:
+            // each `SkinSlot::output_buffer` holds its own
+            // `Arc<Mutex<Allocator>>` clone, so leaving the slots in place
+            // released those clones only in the natural `Drop` pass that runs
+            // *after* the `Arc::try_unwrap` at the end of this destructor has
+            // already given up — taking the #665 leak-guard branch that
+            // deliberately leaks the device, surface, instance and debug
+            // messenger. Not reachable at HEAD (`skin_compute` is assigned once
+            // and every `skin_slots.insert` sits inside a `skin_compute` guard);
+            // pinned by `skin_slot_drain_is_not_nested_under_skin_compute_tests`
+            // so a device-lost recovery or RT-optional path cannot reintroduce it.
+            for (_eid, mut slot) in std::mem::take(&mut self.skin.slots) {
+                if let Some(ref skin) = self.skin.compute {
+                    skin.destroy_slot(&self.device, alloc, slot);
+                } else {
+                    slot.destroy(&self.device, alloc);
+                }
+            }
+            // #3231 — MorphSlot owns its private weight buffer and an Arc to a
+            // mesh-shared delta. Destroying every slot destroys the delta with the
+            // last one, even though the weak cache still indexes it (#4838); the
+            // cache is only an index and is cleared after its owners are gone.
+            for (_eid, slot) in std::mem::take(&mut self.skin.morph_slots) {
                 slot.destroy(&self.device, alloc);
             }
-        }
-        // #3231 — MorphSlot owns its private weight buffer and an Arc to a
-        // mesh-shared delta. Destroying every slot destroys the delta with the
-        // last one, even though the weak cache still indexes it (#4838); the
-        // cache is only an index and is cleared after its owners are gone.
-        for (_eid, slot) in std::mem::take(&mut self.skin.morph_slots) {
-            slot.destroy(&self.device, alloc);
-        }
-        self.skin.morph_delta_cache.clear();
-        if let Some(ref mut accel) = self.accel_manager {
-            // Pre-drain per-skinned-entity BLAS via the
-            // `pending_destroy_blas` queue so the
-            // `MAX_FRAMES_IN_FLIGHT` countdown lets any in-flight
-            // refit settle before destruction. Post-#1138 /
-            // CONC-D3-NEW-01 `manager.destroy()` also drains
-            // `skinned_blas` directly, so this pre-drain is now
-            // an optimization (countdown-aware destruction)
-            // rather than a correctness requirement — the
-            // `device_wait_idle` above already covers any
-            // in-flight reference.
-            for eid in accel.skinned_blas_entities() {
-                accel.drop_skinned_blas(eid);
+            self.skin.morph_delta_cache.clear();
+            if let Some(ref mut accel) = self.accel_manager {
+                // Pre-drain per-skinned-entity BLAS via the
+                // `pending_destroy_blas` queue so the
+                // `MAX_FRAMES_IN_FLIGHT` countdown lets any in-flight
+                // refit settle before destruction. Post-#1138 /
+                // CONC-D3-NEW-01 `manager.destroy()` also drains
+                // `skinned_blas` directly, so this pre-drain is now
+                // an optimization (countdown-aware destruction)
+                // rather than a correctness requirement — the
+                // `device_wait_idle` above already covers any
+                // in-flight reference.
+                for eid in accel.skinned_blas_entities() {
+                    accel.drop_skinned_blas(eid);
+                }
+                // `destroy()` calls `drain_pending_destroys`
+                // internally (#732) so we do NOT need a separate
+                // `tick_deferred_destroy` here even though
+                // `draw_frame` won't run another tick after
+                // shutdown. REN-D7-NEW-05 (audit 2026-05-09)
+                // flagged the missing tick; the structural fix
+                // already landed via #732's factor-out of the
+                // drain into `destroy()`.
+                accel.destroy(&self.device, alloc);
             }
-            // `destroy()` calls `drain_pending_destroys`
-            // internally (#732) so we do NOT need a separate
-            // `tick_deferred_destroy` here even though
-            // `draw_frame` won't run another tick after
-            // shutdown. REN-D7-NEW-05 (audit 2026-05-09)
-            // flagged the missing tick; the structural fix
-            // already landed via #732's factor-out of the
-            // drain into `destroy()`.
-            accel.destroy(&self.device, alloc);
-        }
-        if let Some(ref mut cc) = self.cluster_cull {
-            cc.destroy(&self.device, alloc);
-        }
-        // #4054 / #4055 — the ground-cover scatter + draw pipelines and
-        // their buffers (chunk/cell/species per frame slot, plus the shared
-        // blade / indirect / counter allocations).
-        if let Some(ref mut gc) = self.exterior.groundcover {
-            // SAFETY: same contract as every sibling here — `device_wait_idle`
-            // ran at the top of `Drop`.
-            unsafe { gc.destroy(&self.device, alloc) };
-        }
-        // #4413 — the authored-model tier: pipeline, per-slot uploads and the
-        // shared placement slab / counters / indirect draws.
-        if let Some(ref mut tier) = self.exterior.groundcover_models {
-            // SAFETY: `device_wait_idle` ran at the top of `Drop`.
-            unsafe { tier.destroy(&self.device, alloc) };
-        }
-        // #4052 — the §11.1 sampling bench. Allocator-owned (three array
-        // images, a raster target and its per-frame record buffers), so it
-        // belongs in this block rather than the allocator-independent one.
-        if let Some(ref mut bench) = self.exterior.groundcover_bench {
-            // SAFETY: same contract as every sibling here — `device_wait_idle`
-            // ran at the top of `Drop`, so nothing in flight references the
-            // bench's pipelines, sets, images or buffers.
-            unsafe { bench.destroy(&self.device, alloc) };
-        }
-        if let Some(ref mut sc) = self.skin.compute {
-            sc.destroy(&self.device);
-        }
-        // NOTE: `skin_palette` + `gpu_timers` teardown was
-        // hoisted to the allocator-independent block near the top
-        // of Drop (#1483) — they need no allocator and must run on
-        // the allocator-`None` path too. `skin_compute` above
-        // stays here: its descriptor pool must outlive the
-        // allocator-dependent per-slot teardown earlier in this
-        // guard.
-        if let Some(ref mut sky_cube) = self.post.sky_cube {
-            sky_cube.destroy(&self.device, alloc);
-        }
-        if let Some(ref mut ssao) = self.post.ssao {
-            ssao.destroy(&self.device, alloc);
-        }
-        // #2141 / #2142 — the 1×1 placeholders. Both are
-        // allocator-backed, so they must be destroyed before the
-        // `self.allocator.take()` + `Arc::try_unwrap` below. Their
-        // position relative to the passes whose descriptors name them
-        // is unconstrained: the device_wait_idle at the top of Drop
-        // guarantees nothing is in flight, and Vulkan imposes no
-        // cross-subsystem ordering past that point (#4188 — this is
-        // why the header does not list the placeholders as a
-        // load-bearing ordering).
-        // SAFETY (both `destroy` calls): `device_wait_idle` ran at
-        // the top of Drop, so no in-flight command buffer still
-        // references these handles.
-        if let Some(ref mut p) = self.placeholder_ao {
-            p.destroy(&self.device, alloc);
-        }
-        if let Some(ref mut p) = self.placeholder_caustic_sink {
-            p.destroy(&self.device, alloc);
-        }
-        // The exposure meter is destroyed BEFORE the exposure resource it
-        // writes each frame (reverse of construction order). Allocator-backed
-        // UBOs, so it must precede the `Arc::try_unwrap` below as well.
-        if let Some(ref mut meter) = self.post.exposure_meter {
-            // SAFETY: `device_wait_idle` ran at the top of Drop; no in-flight
-            // command buffer references the meter's handles.
-            unsafe { meter.destroy(&self.device, alloc) };
-        }
-        // The exposure resource owns its own device + allocator (an
-        // `Arc` clone of the shared allocator), so it self-frees via
-        // stored handles rather than the `alloc` local. It MUST be
-        // destroyed here — before the `self.allocator.take()` +
-        // `Arc::try_unwrap` below — or its lingering allocator clone
-        // trips the outstanding-reference leak guard (#665). `destroy`
-        // is idempotent, so the field's own `Drop` later is a no-op.
-        self.post.exposure.destroy();
-        // The output views must be retired after presentation
-        // descriptors and before composed-scene inputs. The SDK
-        // context half already ran in the allocator-independent block
-        // above (#2158) — do not move it back down here.
-        if let Some(ref mut upscaler) = self.post.frame_upscaler {
-            upscaler.destroy_allocations(&self.device, alloc);
-        }
-        if let Some(ref mut composite) = self.post.composite {
-            composite.destroy(&self.device, alloc);
-        }
-        // SKYAL cloud density volumes — after BOTH pipelines that bind their
-        // views: `sky_cube` (destroyed above) and `composite` (just here).
-        // Allocator-backed, so before the `Arc::try_unwrap` below too.
-        self.post.cloud_noise.destroy(&self.device, alloc);
-        if let Some(ref mut caustic) = self.post.caustic {
-            caustic.destroy(&self.device, alloc);
-        }
-        if let Some(ref mut vol) = self.post.volumetrics {
-            vol.destroy(&self.device, alloc);
-        }
-        if let Some(ref mut b) = self.post.bloom {
-            b.destroy(&self.device, alloc);
-        }
-        // `self.water` teardown is hoisted above because WaterPipeline owns
-        // the SharedAllocator clone needed to free its parameter SSBOs. Its
-        // destroy must stay before the Arc::try_unwrap below; the per-FIF
-        // accumulator images still use the context allocator here (#3140).
-        if let Some(ref mut wca) = self.post.water_caustic_accum {
-            // SAFETY: parent Drop runs after `device_wait_idle`
-            // earlier in the teardown sequence; no in-flight
-            // command buffer references the per-FIF accumulator
-            // images. #1255 / Phase C of #1210.
-            wca.destroy(&self.device, alloc);
-        }
-        if let Some(ref mut svgf) = self.post.svgf {
-            svgf.destroy(&self.device, alloc);
-        }
-        // Reads the reservoir buffers, so it goes before them.
-        if let Some(ref mut shadow_filter) = self.post.shadow_filter {
-            shadow_filter.destroy(&self.device, alloc);
-        }
-        // SAFETY: Drop runs after device_wait_idle; no in-flight
-        // command references the reservoir buffers. (Already inside an
-        // `unsafe` block, so no inner `unsafe` wrap needed.)
-        self.reservoir_buffers.destroy(&self.device, alloc);
-        if let Some(ref mut taa) = self.post.taa {
-            taa.destroy(&self.device, alloc);
-        }
-        if let Some(ref mut gbuffer) = self.post.gbuffer {
-            gbuffer.destroy(&self.device, alloc);
+            if let Some(ref mut cc) = self.cluster_cull {
+                cc.destroy(&self.device, alloc);
+            }
+            // #4054 / #4055 — the ground-cover scatter + draw pipelines and
+            // their buffers (chunk/cell/species per frame slot, plus the shared
+            // blade / indirect / counter allocations).
+            if let Some(ref mut gc) = self.exterior.groundcover {
+                // SAFETY: same contract as every sibling here — `device_wait_idle`
+                // ran at the top of `Drop`.
+                gc.destroy(&self.device, alloc);
+            }
+            // #4413 — the authored-model tier: pipeline, per-slot uploads and the
+            // shared placement slab / counters / indirect draws.
+            if let Some(ref mut tier) = self.exterior.groundcover_models {
+                // SAFETY: `device_wait_idle` ran at the top of `Drop`.
+                tier.destroy(&self.device, alloc);
+            }
+            // #7152 — the terrain patch pass (pipeline, sets, readback buffers).
+            // Its reserved meshes live in `mesh_registry`, torn down with it.
+            if let Some(ref mut patches) = self.exterior.terrain_patch {
+                // SAFETY: `device_wait_idle` ran at the top of `Drop`.
+                patches.destroy(&self.device, alloc);
+            }
+            // #4052 — the §11.1 sampling bench. Allocator-owned (three array
+            // images, a raster target and its per-frame record buffers), so it
+            // belongs in this block rather than the allocator-independent one.
+            if let Some(ref mut bench) = self.exterior.groundcover_bench {
+                // SAFETY: same contract as every sibling here — `device_wait_idle`
+                // ran at the top of `Drop`, so nothing in flight references the
+                // bench's pipelines, sets, images or buffers.
+                bench.destroy(&self.device, alloc);
+            }
+            if let Some(ref mut sc) = self.skin.compute {
+                sc.destroy(&self.device);
+            }
+            // NOTE: `skin_palette` + `gpu_timers` teardown was
+            // hoisted to the allocator-independent block near the top
+            // of Drop (#1483) — they need no allocator and must run on
+            // the allocator-`None` path too. `skin_compute` above
+            // stays here: its descriptor pool must outlive the
+            // allocator-dependent per-slot teardown earlier in this
+            // guard.
+            if let Some(ref mut sky_cube) = self.post.sky_cube {
+                sky_cube.destroy(&self.device, alloc);
+            }
+            if let Some(ref mut ssao) = self.post.ssao {
+                ssao.destroy(&self.device, alloc);
+            }
+            // #2141 / #2142 — the 1×1 placeholders. Both are
+            // allocator-backed, so they must be destroyed before the
+            // `self.allocator.take()` + `Arc::try_unwrap` below. Their
+            // position relative to the passes whose descriptors name them
+            // is unconstrained: the device_wait_idle at the top of Drop
+            // guarantees nothing is in flight, and Vulkan imposes no
+            // cross-subsystem ordering past that point (#4188 — this is
+            // why the header does not list the placeholders as a
+            // load-bearing ordering).
+            // SAFETY (both `destroy` calls): `device_wait_idle` ran at
+            // the top of Drop, so no in-flight command buffer still
+            // references these handles.
+            if let Some(ref mut p) = self.placeholder_ao {
+                p.destroy(&self.device, alloc);
+            }
+            if let Some(ref mut p) = self.placeholder_caustic_sink {
+                p.destroy(&self.device, alloc);
+            }
+            // The exposure meter is destroyed BEFORE the exposure resource it
+            // writes each frame (reverse of construction order). Allocator-backed
+            // UBOs, so it must precede the `Arc::try_unwrap` below as well.
+            if let Some(ref mut meter) = self.post.exposure_meter {
+                // SAFETY: `device_wait_idle` ran at the top of Drop; no in-flight
+                // command buffer references the meter's handles.
+                meter.destroy(&self.device, alloc);
+            }
+            // The exposure resource owns its own device + allocator (an
+            // `Arc` clone of the shared allocator), so it self-frees via
+            // stored handles rather than the `alloc` local. It MUST be
+            // destroyed here — before the `self.allocator.take()` +
+            // `Arc::try_unwrap` below — or its lingering allocator clone
+            // trips the outstanding-reference leak guard (#665). `destroy`
+            // is idempotent, so the field's own `Drop` later is a no-op.
+            self.post.exposure.destroy();
+            // The output views must be retired after presentation
+            // descriptors and before composed-scene inputs. The SDK
+            // context half already ran in the allocator-independent block
+            // above (#2158) — do not move it back down here.
+            if let Some(ref mut upscaler) = self.post.frame_upscaler {
+                upscaler.destroy_allocations(&self.device, alloc);
+            }
+            if let Some(ref mut composite) = self.post.composite {
+                composite.destroy(&self.device, alloc);
+            }
+            // SKYAL cloud density volumes — after BOTH pipelines that bind their
+            // views: `sky_cube` (destroyed above) and `composite` (just here).
+            // Allocator-backed, so before the `Arc::try_unwrap` below too.
+            self.post.cloud_noise.destroy(&self.device, alloc);
+            if let Some(ref mut caustic) = self.post.caustic {
+                caustic.destroy(&self.device, alloc);
+            }
+            if let Some(ref mut vol) = self.post.volumetrics {
+                vol.destroy(&self.device, alloc);
+            }
+            if let Some(ref mut b) = self.post.bloom {
+                b.destroy(&self.device, alloc);
+            }
+            // `self.water` teardown is hoisted above because WaterPipeline owns
+            // the SharedAllocator clone needed to free its parameter SSBOs. Its
+            // destroy must stay before the Arc::try_unwrap below; the per-FIF
+            // accumulator images still use the context allocator here (#3140).
+            if let Some(ref mut wca) = self.post.water_caustic_accum {
+                // SAFETY: parent Drop runs after `device_wait_idle`
+                // earlier in the teardown sequence; no in-flight
+                // command buffer references the per-FIF accumulator
+                // images. #1255 / Phase C of #1210.
+                wca.destroy(&self.device, alloc);
+            }
+            if let Some(ref mut svgf) = self.post.svgf {
+                svgf.destroy(&self.device, alloc);
+            }
+            // Reads the reservoir buffers, so it goes before them.
+            if let Some(ref mut shadow_filter) = self.post.shadow_filter {
+                shadow_filter.destroy(&self.device, alloc);
+            }
+            // SAFETY: Drop runs after device_wait_idle; no in-flight
+            // command references the reservoir buffers. (Already inside an
+            // `unsafe` block, so no inner `unsafe` wrap needed.)
+            self.reservoir_buffers.destroy(&self.device, alloc);
+            if let Some(ref mut taa) = self.post.taa {
+                taa.destroy(&self.device, alloc);
+            }
+            if let Some(ref mut gbuffer) = self.post.gbuffer {
+                gbuffer.destroy(&self.device, alloc);
+            }
         }
     }
 }
@@ -566,7 +576,7 @@ mod skin_slot_drain_is_not_nested_under_skin_compute_tests {
         // free_descriptor_sets above is a
         // VUID-vkFreeDescriptorSets-descriptorPool-parameter violation.
         let pipeline_destroy_pos = src
-            .find("if let Some(ref mut sc) = self.skin.compute {\n            sc.destroy(&self.device);")
+            .find("if let Some(ref mut sc) = self.skin.compute {\n                sc.destroy(&self.device);")
             .expect("the SkinComputePipeline destroy must exist");
         assert!(
             drain_pos < pipeline_destroy_pos,

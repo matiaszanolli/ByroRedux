@@ -155,6 +155,14 @@ impl Vm<'_> {
                 let seconds = self.world.try_resource::<byroredux_core::ecs::TotalTime>().map_or(0.0, |t| t.0);
                 Some(Value::Float(seconds))
             }
+            // CK / FO4 CK *IsInMenuMode - Utility*: true while a menu that pauses the game is
+            // open, so the dialogue menu answers false (GUI-REG-011). The menu registry the app
+            // publishes answers; with none, no menu is open.
+            ("utility", "isinmenumode") => Some(Value::Bool(
+                self.world
+                    .try_resource::<byroredux_core::ecs::resources::MenuRegistry>()
+                    .is_some_and(|registry| registry.papyrus_in_menu_mode()),
+            )),
             ("utility", "getcurrentgametime") => {
                 let hours = self
                     .world
@@ -261,6 +269,9 @@ impl Checker<'_> {
         }
         if class == "utility" && matches!(name, "getcurrentgametime" | "getcurrentrealtime") && arg_kinds.is_empty() {
             return Some(Kind::Num);
+        }
+        if class == "utility" && name == "isinmenumode" && arg_kinds.is_empty() {
+            return Some(Kind::Bool);
         }
         if class == "utility" && name == "wait" {
             if statement && matches!(arg_kinds, [Arg::Literal(_)] | [Arg::Kind(Kind::Num)]) {

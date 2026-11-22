@@ -529,8 +529,8 @@ pub(super) fn decode_instances(
     };
 
     let mut diff = None;
-    if let Some((diff_payload, class_ref)) = diff_chunk {
-        if let Some(class) = classes.iter().find(|c| c.name_offset == class_ref) {
+    if let Some((diff_payload, class_ref)) = diff_chunk
+        && let Some(class) = classes.iter().find(|c| c.name_offset == class_ref) {
             let mut cur = SubReader::new(diff_payload);
             let mut overrides = Vec::new();
             let ok = reader.nested(|reader| {
@@ -557,7 +557,6 @@ pub(super) fn decode_instances(
                 diff = Some(overrides);
             }
         }
-    }
 
     DecodedInstances {
         root,

@@ -320,6 +320,7 @@ fn expand_pkin_with_cached_scol_child_does_not_recurse() {
             script_form_id: 0,
             visible_when_distant: false,
             destruction: None,
+            door: None,
         },
     );
     index.scols.insert(

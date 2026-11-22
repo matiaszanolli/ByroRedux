@@ -12,7 +12,7 @@ use super::super::*;
 fn parse_real_fnv_esm() {
     let path = crate::esm::test_paths::fnv_esm();
     if !path.exists() {
-        eprintln!("Skipping: FalloutNV.esm not found at {}", path.display());
+        crate::esm::test_paths::require_or_skip(&format!("FalloutNV.esm ({})", path.display()));
         return;
     }
     let data = std::fs::read(&path).unwrap();
@@ -74,7 +74,7 @@ fn fnv_xcll_direction_population_oracle() {
 
     let path = crate::esm::test_paths::fnv_esm();
     if !path.exists() {
-        eprintln!("Skipping: FalloutNV.esm not found at {}", path.display());
+        crate::esm::test_paths::require_or_skip(&format!("FalloutNV.esm ({})", path.display()));
         return;
     }
     let data = std::fs::read(&path).unwrap();
@@ -139,7 +139,7 @@ fn fnv_xcll_direction_population_oracle() {
 fn oblivion_cells_populate_xcll_lighting() {
     let path = crate::esm::test_paths::oblivion_esm();
     if !path.exists() {
-        eprintln!("Skipping: Oblivion.esm not found at {}", path.display());
+        crate::esm::test_paths::require_or_skip(&format!("Oblivion.esm ({})", path.display()));
         return;
     }
     let data = std::fs::read(&path).unwrap();
@@ -225,7 +225,7 @@ fn oblivion_cells_populate_xcll_lighting() {
 fn parse_real_oblivion_esm_walker_survives() {
     let path = crate::esm::test_paths::oblivion_esm();
     if !path.exists() {
-        eprintln!("Skipping: Oblivion.esm not found at {}", path.display());
+        crate::esm::test_paths::require_or_skip(&format!("Oblivion.esm ({})", path.display()));
         return;
     }
     let data = std::fs::read(&path).unwrap();
@@ -280,7 +280,7 @@ fn parse_real_oblivion_esm_walker_survives() {
 fn parse_real_fo3_megaton_cell_baseline() {
     let path = crate::esm::test_paths::fo3_esm();
     if !path.exists() {
-        eprintln!("Skipping: Fallout3.esm not found at {}", path.display());
+        crate::esm::test_paths::require_or_skip(&format!("Fallout3.esm ({})", path.display()));
         return;
     }
     let data = std::fs::read(&path).unwrap();
@@ -309,7 +309,7 @@ fn parse_real_fo3_megaton_cell_baseline() {
 fn parse_real_skyrim_esm() {
     let path = crate::esm::test_paths::skyrim_se_esm();
     if !path.exists() {
-        eprintln!("Skipping: Skyrim.esm not found at {}", path.display());
+        crate::esm::test_paths::require_or_skip(&format!("Skyrim.esm ({})", path.display()));
         return;
     }
     let data = std::fs::read(&path).unwrap();
@@ -388,10 +388,10 @@ fn merge_real_dawnguard_partial_cells_preserves_skyrim_landscape() {
     let skyrim_path = data_dir.join("Skyrim.esm");
     let dawnguard_path = data_dir.join("Dawnguard.esm");
     if !skyrim_path.exists() || !dawnguard_path.exists() {
-        eprintln!(
-            "Skipping: Skyrim.esm or Dawnguard.esm not found under {}",
+        crate::esm::test_paths::require_or_skip(&format!(
+            "Skyrim.esm or Dawnguard.esm under {}",
             data_dir.display(),
-        );
+        ));
         return;
     }
 
@@ -448,7 +448,7 @@ fn read_zstring_handles_null_terminator() {
 fn parse_real_fo4_esm_surfaces_scol_placements() {
     let path = crate::esm::test_paths::fo4_esm();
     if !path.exists() {
-        eprintln!("Skipping: Fallout4.esm not found at {}", path.display());
+        crate::esm::test_paths::require_or_skip(&format!("Fallout4.esm ({})", path.display()));
         return;
     }
     let data = std::fs::read(&path).unwrap();
@@ -499,7 +499,7 @@ fn parse_real_fo4_esm_surfaces_scol_placements() {
 fn parse_real_fo4_esm_surfaces_pkin_contents() {
     let path = crate::esm::test_paths::fo4_esm();
     if !path.exists() {
-        eprintln!("Skipping: Fallout4.esm not found at {}", path.display());
+        crate::esm::test_paths::require_or_skip(&format!("Fallout4.esm ({})", path.display()));
         return;
     }
     let data = std::fs::read(&path).unwrap();
@@ -541,7 +541,7 @@ fn parse_real_fo4_esm_surfaces_pkin_contents() {
 fn parse_real_oblivion_esm_surfaces_tamriel_worldspace() {
     let path = crate::esm::test_paths::oblivion_esm();
     if !path.exists() {
-        eprintln!("Skipping: Oblivion.esm not found at {}", path.display());
+        crate::esm::test_paths::require_or_skip(&format!("Oblivion.esm ({})", path.display()));
         return;
     }
     let data = std::fs::read(&path).unwrap();
@@ -593,7 +593,7 @@ fn parse_real_oblivion_esm_surfaces_tamriel_worldspace() {
 fn parse_real_fo3_esm_surfaces_wasteland_worldspace() {
     let path = crate::esm::test_paths::fo3_esm();
     if !path.exists() {
-        eprintln!("Skipping: Fallout3.esm not found at {}", path.display());
+        crate::esm::test_paths::require_or_skip(&format!("Fallout3.esm ({})", path.display()));
         return;
     }
     let data = std::fs::read(&path).unwrap();
@@ -632,7 +632,7 @@ fn parse_real_fo3_esm_surfaces_wasteland_worldspace() {
 fn fnv_xloc_locks_are_parsed_from_real_data() {
     let path = crate::esm::test_paths::fnv_esm();
     if !path.exists() {
-        eprintln!("Skipping: FalloutNV.esm not found at {}", path.display());
+        crate::esm::test_paths::require_or_skip(&format!("FalloutNV.esm ({})", path.display()));
         return;
     }
     let data = std::fs::read(&path).unwrap();

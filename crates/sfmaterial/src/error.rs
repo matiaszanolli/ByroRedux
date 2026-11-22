@@ -146,17 +146,38 @@ pub enum Error {
 
     // #5899 — a `PersistentID` shape drift unkeys every row; the build used
     // to return `Ok` with an empty key map, so every `.mat` lookup missed.
+    // #7124 — an Objects table with no rows at all is refused the same way
+    // (`rows` is then 0), and #7154 — so is a DBFileIndex that declares no
+    // Objects table. `rows` counts every row, keyed or not.
     #[error(
-        "none of the {rows} Objects rows carries a {{ Dir: u32, Ext: u32 }} PersistentID — \
-         no material path can be keyed"
+        "the DBFileIndex keys no material path: none of its {rows} Objects rows carries both a DBID \
+         and a {{ Dir: u32, Ext: u32 }} PersistentID"
     )]
     NoKeyedObjects { rows: usize },
+
+    // #7174 — a DBFileIndex whose Components table is empty (or absent) with no instances after
+    // it passes the row/instance join at 0 == 0, yet describes no component of any material.
+    #[error("the DBFileIndex has no Components rows — no material's components can be resolved")]
+    NoComponentRows,
 
     #[error(
         "DBFileIndex instance carried as a {kind:?} chunk — only OBJT/USER are supported; \
          reading a diff payload in offset order would misparse every field"
     )]
     UnsupportedDbFileIndexChunk { kind: ChunkType },
+
+    // #7132 — an error inside one of the ~1.44 M stream instances `build`
+    // walks used to surface with only a chunk-relative offset or a leftover
+    // count; it now names the instance's stream position and class. #7175 —
+    // the DBFileIndex's own errors too (a cut row was a bare EOF), except
+    // `NoKeyedObjects` and `UnsupportedDbFileIndexChunk`, whose message is
+    // already about the index as a whole.
+    #[error("CDB stream instance {index} ({class}): {source}")]
+    AtInstance {
+        index: usize,
+        class: String,
+        source: Box<Error>,
+    },
 
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

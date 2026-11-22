@@ -1415,3 +1415,42 @@ fn out_of_range_folder_offset_is_rejected_by_name() {
         let _ = std::fs::remove_file(&path);
     }
 }
+
+/// #7159 — a record whose body runs past the archive's end names the entry, which read failed,
+/// its length and its offset, on the stored and the compressed path, and keeps `UnexpectedEof`;
+/// it used to be the bare `failed to fill whole buffer`.
+#[test]
+fn a_record_past_the_archive_end_names_its_entry_and_read() {
+    let payload = [0u8; 8];
+    let entry = || FileEntry { offset: 0, size: 100, compression_toggle: false, unknown_size_flag: false };
+    for (compressed, read, len, offset) in [(false, "payload", 100, 0), (true, "compressed payload", 96, 4)] {
+        let archive = archive_with_payload(&payload, false, compressed, 104, "past_end.dds", entry());
+        let err = archive.extract("past_end.dds").expect_err("a body past the end must be rejected");
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof, "got: {err}");
+        let want = format!("BSA entry 'past_end.dds' {read}: reading {len} bytes at offset {offset}: ");
+        assert!(err.to_string().starts_with(&want), "compressed {compressed}: got {err}");
+    }
+}
+
+/// #7176 — an archive cut anywhere in its header or tables fails to open naming the table and
+/// record that ran short, never with the bare `failed to fill whole buffer`; the kind stays
+/// `UnexpectedEof` where the cut is a short read.
+#[test]
+fn a_cut_archive_names_the_table_it_ran_out_in() {
+    let whole = build_v105_archive("meshes", "cut.nif", b"0123456789", false, true);
+    let mut labels = std::collections::BTreeSet::new();
+    for cut in 1..whole.len() {
+        let path = write_temp_v105(&format!("cut-{cut}"), &whole[..cut]);
+        let result = BsaArchive::open(&path);
+        let _ = std::fs::remove_file(&path);
+        let Err(err) = result else { continue };
+        if err.kind() != io::ErrorKind::UnexpectedEof {
+            continue;
+        }
+        let message = err.to_string();
+        assert!(message.starts_with("BSA ") && message.contains(": reading "), "cut at {cut}: {message}");
+        labels.insert(message.split(':').next().unwrap().to_owned());
+    }
+    assert!(labels.contains("BSA header"), "{labels:?}");
+    assert!(labels.contains("BSA folder record 0"), "{labels:?}");
+}

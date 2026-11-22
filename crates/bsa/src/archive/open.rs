@@ -6,10 +6,11 @@
 //! Result: a `HashMap<normalized_path, FileEntry>` ready for `extract`.
 
 use super::{BsaArchive, FileEntry, BSA_V_FO3_SKYRIM, BSA_V_OBLIVION, BSA_V_SKYRIM_SE};
+use crate::read_at::read_exact_for;
 use crate::safety::{capacity_hint, checked_entry_count};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, BufReader, Read, Seek, SeekFrom};
+use std::io::{self, BufReader, Seek, SeekFrom};
 use std::path::Path;
 
 impl BsaArchive {
@@ -20,7 +21,7 @@ impl BsaArchive {
 
         // -- Header (36 bytes) --------------------------------------------------
         let mut header = [0u8; 36];
-        reader.read_exact(&mut header)?;
+        read_exact_for(&mut reader, &mut header, &"BSA header")?;
 
         let magic = &header[0..4];
         if magic != b"BSA\0" {
@@ -157,9 +158,9 @@ impl BsaArchive {
             file_len.saturating_sub(folders_offset),
             folder_record_size,
         ));
-        for _ in 0..folder_count {
+        for folder_index in 0..folder_count {
             let mut rec = [0u8; 24];
-            reader.read_exact(&mut rec[..folder_record_size])?;
+            read_exact_for(&mut reader, &mut rec[..folder_record_size], &format_args!("BSA folder record {folder_index}"))?;
             #[cfg(debug_assertions)]
             let hash = u64::from_le_bytes(rec[0..8].try_into().unwrap());
             // Per-folder file count: also attacker-controlled, and the
@@ -239,7 +240,7 @@ impl BsaArchive {
         #[cfg(debug_assertions)]
         let mut file_names_consumed: u64 = 0;
 
-        for folder in &folder_records {
+        for (folder_index, folder) in folder_records.iter().enumerate() {
             // B2-04 (#362): verify the folder offset in the header matches
             // where we actually are. The on-disk offset is biased by
             // `total_file_name_length`, so we subtract it back out.
@@ -260,10 +261,10 @@ impl BsaArchive {
 
             // Read folder name (u8 length + null-terminated string)
             let mut len_buf = [0u8; 1];
-            reader.read_exact(&mut len_buf)?;
+            read_exact_for(&mut reader, &mut len_buf, &format_args!("BSA folder {folder_index} name length"))?;
             let name_len = len_buf[0] as usize;
             let mut name_buf = vec![0u8; name_len];
-            reader.read_exact(&mut name_buf)?;
+            read_exact_for(&mut reader, &mut name_buf, &format_args!("BSA folder {folder_index} name"))?;
             // SK-D2-05 (#622): per UESP, `total_folder_name_length`
             // counts the name + trailing NUL but NOT the 1-byte length
             // prefix. `name_len` here already includes the NUL, so
@@ -297,9 +298,9 @@ impl BsaArchive {
             }
 
             // Read file records (16 bytes each)
-            for _ in 0..folder.count {
+            for file_index in 0..folder.count {
                 let mut frec = [0u8; 16];
-                reader.read_exact(&mut frec)?;
+                read_exact_for(&mut reader, &mut frec, &format_args!("BSA folder {folder_index} file record {file_index}"))?;
                 let hash = u64::from_le_bytes(frec[0..8].try_into().unwrap());
                 let size_raw = u32::from_le_bytes(frec[8..12].try_into().unwrap());
                 let offset = u32::from_le_bytes(frec[12..16].try_into().unwrap());
@@ -352,12 +353,12 @@ impl BsaArchive {
         // once per archive below (the #3637 shadow-count precedent).
         let mut duplicate_keys = 0usize;
 
-        for raw in &raw_files {
+        for (file_index, raw) in raw_files.iter().enumerate() {
             // Read null-terminated file name
             let mut name = Vec::new();
             loop {
                 let mut byte = [0u8; 1];
-                reader.read_exact(&mut byte)?;
+                read_exact_for(&mut reader, &mut byte, &format_args!("BSA file name {file_index}"))?;
                 if byte[0] == 0 {
                     break;
                 }

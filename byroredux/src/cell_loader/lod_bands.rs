@@ -870,7 +870,7 @@ mod tests {
         assert!(
             calls.values().all(|&n| n == 1),
             "a memoised probe was evaluated more than once for some quad: {:?}",
-            calls.iter().filter(|(_, &n)| n > 1).collect::<Vec<_>>()
+            calls.iter().filter(|&(_, &n)| n > 1).collect::<Vec<_>>()
         );
     }
 

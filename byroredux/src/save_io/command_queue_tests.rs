@@ -513,6 +513,113 @@ fn a_quicksave_waits_for_queued_actor_moves_to_reach_their_ledger() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// SAVE-3 — a non-finite `f32` in a saved column encodes as JSON `null`, which does not decode back. The save
+/// must be refused before anything is written (and without advancing the ring), not committed and then
+/// unloadable.
+#[test]
+fn a_save_with_a_non_finite_float_is_refused_not_written() {
+    let dir = std::env::temp_dir().join(format!("byro_nan_save_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut world = quicksave_test_world(dir.clone());
+    let entity = world.spawn();
+    world.insert(entity, Transform::from_translation(Vec3::new(f32::NAN, 0.0, 0.0)));
+
+    let out = SaveCommand.execute(&world, "");
+    assert!(command_output_is_failure(&out), "{:?}", out.lines);
+    assert!(out.lines.join(" ").contains("does not load back"), "{:?}", out.lines);
+    assert!(
+        disk::slots_by_recency(&dir).is_empty(),
+        "an unloadable save must not reach the disk"
+    );
+    assert_eq!(world.resource::<SaveState>().ring.peek(), 0, "a refused save must not advance the ring");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// SAVE-3 — a slot that decodes at the container level but whose columns do not decode is rejected when it is
+/// queued, so `quickload_latest` falls back to the older good slot instead of queueing it and aborting the load.
+#[test]
+fn quickload_falls_back_past_a_slot_whose_columns_do_not_decode() {
+    let dir = std::env::temp_dir().join(format!("byro_typed_fallback_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut world = quicksave_test_world(dir.clone());
+    let entity = world.spawn();
+    world.insert(entity, Transform::from_translation(Vec3::new(1.0, 2.0, 3.0)));
+    assert!(!command_output_is_failure(&SaveCommand.execute(&world, "0")));
+
+    // Slot 1: a valid container whose Transform column holds `null` where an f32 belongs — what an
+    // older build wrote for a NaN.
+    let registry = world.resource::<SaveRegistry>();
+    let mut snapshot = byroredux_save::save_world(&world, &registry).unwrap();
+    let rows = snapshot.components.get_mut("Transform").expect("Transform column");
+    let text = serde_json::to_string(&rows).unwrap().replacen("1.0", "null", 1);
+    *rows = serde_json::from_str(&text).unwrap();
+    let bytes = byroredux_save::encode(&snapshot, registry.schema_fingerprint()).unwrap();
+    drop(registry);
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(disk::slot_path(&dir, 1), &bytes).unwrap();
+
+    let output = quickload_latest(&world);
+    assert!(!command_output_is_failure(&output), "{:?}", output.lines);
+    assert!(output.lines.iter().any(|line| line.contains("skipped invalid quickload slot 1")), "{:?}", output.lines);
+    assert_eq!(world.resource::<PendingSaveLoadSlot>().slot, 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// SAVE-5 — a saved actor-value key with no load-order identity is refused before the snapshot, with the
+/// entity and column named, instead of failing inside `save_world`.
+#[test]
+fn a_save_with_an_unowned_actor_value_key_is_refused_before_the_snapshot() {
+    use byroredux_core::ecs::components::ActorValues;
+    use byroredux_core::form_id::ENGINE_PLUGIN_ID;
+    use byroredux_plugin::esm::reader::GlobalSlot;
+    let dir = std::env::temp_dir().join(format!("byro_av_identity_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut world = quicksave_test_world(dir.clone());
+    world.insert_resource(byroredux_scripting::LoadOrderIdentity::new(vec![(GlobalSlot::Regular(1), ENGINE_PLUGIN_ID)]));
+    let entity = world.spawn();
+    world.insert(entity, ActorValues::from_pairs([(0x0100_0001, 5.0)]));
+    assert!(!command_output_is_failure(&SaveCommand.execute(&world, "0")), "an owned key saves");
+    let _ = std::fs::remove_file(disk::slot_path(&dir, 0));
+
+    // A key from a slot no plugin owns (a stale session key, a stray `setav`).
+    world.insert(entity, ActorValues::from_pairs([(0x0100_0001, 5.0), (0x0700_0001, 1.0)]));
+    let out = SaveCommand.execute(&world, "");
+    assert!(command_output_is_failure(&out), "{:?}", out.lines);
+    let text = out.lines.join("\n");
+    // The gate's own abort (before any snapshot), not `save_world`'s late "snapshot failed".
+    assert!(text.contains("save ABORTED") && text.contains("ActorValueIdentity"), "{text}");
+    assert!(text.contains(&format!("entity {entity}")) && text.contains("ActorValues"), "{text}");
+    assert!(disk::slots_by_recency(&dir).is_empty(), "nothing is written");
+    assert_eq!(world.resource::<SaveState>().ring.peek(), 0, "the ring does not advance");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// SAVE-7 — the console `save` runs before `step_actor_relocations`, so it cannot save in the tick of a scripted
+/// move: it refuses (loudly, nothing written, ring untouched) and succeeds once the move reaches its ledger. The
+/// player-action drain's own capped wait still ends in a save.
+#[test]
+fn the_console_save_refuses_in_the_tick_of_a_scripted_move() {
+    let dir = std::env::temp_dir().join(format!("byro_console_move_save_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut world = quicksave_test_world(dir.clone());
+    let request = byroredux_scripting::ActorMoveRequest::ToPackageLocation { actor: 0x104C1C };
+    world.insert_resource(byroredux_scripting::PendingActorMoves(vec![request]));
+
+    let out = SaveCommand.execute(&world, "");
+    assert!(command_output_is_failure(&out), "{:?}", out.lines);
+    assert!(out.lines.join(" ").contains("save DEFERRED"), "{:?}", out.lines);
+    let out = SaveCommand.execute(&world, "2");
+    assert!(command_output_is_failure(&out), "an explicit slot waits too: {:?}", out.lines);
+    assert!(disk::slots_by_recency(&dir).is_empty(), "nothing is written");
+    assert_eq!(world.resource::<SaveState>().ring.peek(), 0, "the ring does not advance");
+
+    // The drain's quicksave path is the bounded wait's last resort and must still save.
+    assert!(!command_output_is_failure(&quicksave(&world)));
+    world.resource_mut::<byroredux_scripting::PendingActorMoves>().0.clear();
+    assert!(!command_output_is_failure(&SaveCommand.execute(&world, "2")), "the move reached its ledger");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn quickload_empty_errors_and_corrupt_newest_falls_back() {
     let dir = std::env::temp_dir().join(format!("byro_quickload_fallback_{}", std::process::id()));

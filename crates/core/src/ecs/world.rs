@@ -434,8 +434,7 @@ impl World {
         drop(pool);
 
         let names = self.query::<Name>()?;
-        let result = names.iter().find(|(_, n)| n.0 == sym).map(|(id, _)| id);
-        result
+        names.iter().find(|(_, n)| n.0 == sym).map(|(id, _)| id)
     }
 
     /// Find the first entity with the given [`FormId`](crate::form_id::FormId).
@@ -446,8 +445,7 @@ impl World {
         use super::components::FormIdComponent;
 
         let q = self.query::<FormIdComponent>()?;
-        let result = q.iter().find(|(_, fid)| fid.0 == id).map(|(eid, _)| eid);
-        result
+        q.iter().find(|(_, fid)| fid.0 == id).map(|(eid, _)| eid)
     }
 
     // ── Query API (takes &self — RwLock provides interior mutability) ───

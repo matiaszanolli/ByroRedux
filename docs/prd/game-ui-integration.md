@@ -1,6 +1,8 @@
 # Game UI Integration — Product Requirements
 
-**Status**: ACTIVE (2026-11-09). Revision 7 names an owning issue for every open Phase 0 item (§9.1).
+**Status**: ACTIVE (2026-11-20). Revision 9 records the playable Oblivion menus (#7086).
+Revision 8 specifies Oblivion's sleep/rest and level-up menus (#7048).
+Revision 7 names an owning issue for every open Phase 0 item (§9.1).
 Revision 6 records the Phase 0 results (§9.1).
 Revision 5 files the tracking issues.
 Revision 4 recorded the owner's §10 decisions, every one the
@@ -20,7 +22,7 @@ Scaleform documentation, the Ruffle project); a claim that could not be
 verified is marked **Phase 0: verify** instead of being stated as fact.
 
 **Tracking**: #6641 (parent). Phases: #6643 (0), #6653 (1), #6661 (2),
-#6665 (3), #6666 (4), #6667 (5), #6668 (6).
+#6665 (3), #6666 (4), #6667 (5), #6668 (6). Oblivion's sleep/rest and level-up menu contract: #7048.
 
 **Scope**: The player-facing user interface of the six single-player
 target titles: which surface renders each of a game's menus (the game's own
@@ -28,7 +30,8 @@ Scaleform movie, its own MenuXml document, or an engine-native page), how
 open menus stack and own input, what the engine does when a menu calls the
 host, how the engine and scripts read and drive menu state, fonts and
 text, and the residues other milestones handed to M48 (vanilla Skyrim /
-Fallout 4 HUD meters, the race menu, the dialogue page's presentation).
+Fallout 4 HUD meters, the race menu, the dialogue page's presentation,
+and Oblivion's sleep/rest and level-up menus).
 Out of scope: UI *mod* compatibility as a promise (owned by the
 [Legacy Mod Compatibility PRD](legacy-mod-compatibility.md#56-ui-lmc-ui),
 `LMC-UI-*`, which this document serves), the Mod Configuration Menu host
@@ -46,6 +49,7 @@ writes the missing design.
 | Ruffle host bridge, host profiles, catalogs, AVM2 adapter, navigator, input routing | [UI System](../engine/ui.md) |
 | Scaleform HUD route (`--hud`, Skyrim / Fallout 4) | [UI System § Scaleform HUD](../engine/ui.md#scaleform-hud-m486-skyrim--m487-fallout-4) |
 | MenuXml track (Oblivion / FO3 / FNV) | [UI System § MenuXml legacy UI](../engine/ui.md#menuxml-legacy-ui-m484-oblivion--m485-fo3) |
+| Oblivion sleep completion and level application | [Skill Use § Levels](../engine/skill-use.md#5-levels-7052) |
 | Menu registry, menu stack, path-addressed access | none today — Phase 0 writes it as a section of [ui.md](../engine/ui.md#input-routing) |
 | Loading screens | [UI System § loading screens](../engine/ui.md#original-game-loading-screens-during-scene-transitions) |
 | Native dialogue page and the dialogue layers behind it | [Dialogue Trees](../engine/dialogue-trees.md#3-scope) |
@@ -581,6 +585,40 @@ methods:
   through the override API the HUD uses (`MenuRenderer::set_override`,
   `instantiate_template`, `graft_fragment` in `crates/menuxml/src/menu.rs`),
   so that the per-game difference stays in the profile.
+- **GUI-XML-004.** Oblivion's sleep/rest and level-up driver MUST serve
+  `SleepWaitMenu` (1012, `menus\sleep_wait_menu.xml`) and `LevelUpMenu`
+  (1027, `menus\levelup_menu.xml`) as S2 through Oblivion's `MenuProfile`.
+  A native page MAY serve either menu as the S3 fallback under Q1 and
+  MUST use the same registry name, code and gameplay contract. Both
+  documents ship in `Oblivion - Misc.bsa` and are inventoried in
+  [the Oblivion menu table](../data/game-ui/menu-inventory-oblivion.tsv).
+  The driver is `byroredux/src/menuxml_rest.rs` (#7086).
+- **GUI-XML-005.** Activating a bed or bedroll the Oblivion player may use
+  MUST open `SleepWaitMenu` in sleep mode. The menu MUST display the chosen
+  duration and let the player confirm or cancel. Its wait mode MUST
+  distinguish waiting from bed sleep. The document has separate sleep
+  and wait prompts. Eligibility follows the original game's rules for
+  [legal beds and bedrolls](https://en.uesp.net/wiki/Oblivion:Sleeping_and_Eating).
+  `bed_use_system` handles the ordinary bed activation. `T` requests waiting.
+- **GUI-XML-006.** A confirmed bed sleep that reaches its requested end
+  MUST emit exactly one `SleepCompleted` with the elapsed hours and
+  `interrupted = false` to the existing level-up consumer (OSL-SLP-001).
+  An enemy encounter that ends sleep early MUST withhold a successful
+  completion (OSL-SLP-002, V6). The existing event can report an
+  interrupted sleep with `interrupted = true`. Waiting and cancellation
+  before confirmation MUST emit no `SleepCompleted`. The runner rechecks
+  combat and bed availability before the time skip. This contract places
+  no requirement on encounter generation.
+- **GUI-XML-007.** When that uninterrupted sleep ends with an eligible
+  pending level, `LevelUpMenu` MUST show the next level and the oldest
+  pending level's attribute choices and earned bonuses. Each row takes
+  its attribute identity, current base value, eligibility and frozen
+  bonus from the leveling system (OSL-ATT-001). The player MUST be able
+  to choose and revise three distinct eligible attributes before
+  confirming. Confirmation MUST submit all three picks together to the
+  shared level-up path for that sleep, applying exactly one level. The
+  gameplay system validates eligibility and owns stat changes. The console
+  path accepts picks ahead of the next completed scripted sleep.
 
 ### 5.10 Observability and cost (`GUI-OPS`)
 
@@ -641,7 +679,7 @@ because the machinery is per track.
 
 | Game | In scope | Why / wave |
 |---|---|---|
-| Oblivion | yes | Wave 2, ahead of its engine Tier 3 because it shares FNV's MenuXml machinery and its HUD already ships (M48.4) |
+| Oblivion | yes | Wave 2, ahead of its engine Tier 3 because it shares FNV's MenuXml machinery and its HUD already ships (M48.4). Sleep/rest and level-up use the Oblivion MenuXml driver (GUI-XML-004…007). |
 | Fallout 3 | yes | Wave 2. MenuXml track, HUD shipped (M48.5); shares FNV's profile, so its MenuXml menus (GUI-XML) land with FNV's in Phase 3, which the [VATS PRD](vats.md) depends on |
 | Fallout: New Vegas | yes | Wave 1. Reference title and second playable route; MenuXml track |
 | Skyrim (LE / SE / AE) | yes | Wave 1. First playable route; AVM1 profile and the SkyUI-class protocols, measured on SE. LE is parse-only in the [compatibility matrix](../../ROADMAP.md#compatibility-matrix), so its live scenarios wait for LE cells to load; **Phase 0: verify** that LE's interface archive needs no profile change, settled by running the existing AVM1 sweep on the LE install and diffing its host-call inventory against SE's |
@@ -720,6 +758,27 @@ A scenario passes when:
     MenuMode block runs and the GameMode block does not; with only the HUD
     entry, the simulation advances, the GameMode block runs and the
     MenuMode block does not (GUI-REG-010, GUI-EVT-006).
+11. **Oblivion bed sleep and level-up.** Load `Oblivion.esm` and
+    `Oblivion - Misc.bsa` in `WeynonPrioryHouse`, with a usable upstairs
+    bed ([UESP: Weynon House](https://en.uesp.net/wiki/Oblivion:Weynon_House)).
+    Bank two pending levels with different frozen bonuses and activate the bed
+    through gameplay. Check `ui.menus` for code 1012 on the MenuXml
+    document. Choose and confirm one hour. Check for one hour of game
+    time, one successful sleep completion and code 1027 on its MenuXml
+    document. Check that the level is unchanged while the player edits
+    their three picks. Confirm and assert that only those attributes
+    rise by their earned bonuses up to 100, the level rises by one, and
+    only the oldest pending level is consumed (GUI-XML-004…007).
+12. **Oblivion sleep refusals and fallback.** Reset the pending-level
+    fixture for each leg. Cancel the duration picker, confirm a wait, and
+    have a deterministic test interruption end a confirmed sleep before
+    its requested duration. Each yields zero successful sleep completions,
+    leaves the pending level and attributes unchanged, and keeps
+    `LevelUpMenu` closed. An uninterrupted sleep
+    with no pending level produces a completion and returns to play.
+    Repeat the successful menu actions with the corresponding MenuXml
+    document withheld and the native fallback installed. Check the same
+    menu codes and leveling results (GUI-XML-004…007).
 
 ---
 
@@ -777,7 +836,7 @@ re-run. Data tables are in `docs/data/game-ui/`; the design is the [ui.md sectio
 | GUI-HUD-006 | The default is `[Interface] iSystemColorHUDMainRed` / `Green` / `Blue` = **26 / 255 / 128**, identical in the shipped `Fallout_default.ini` of FO3 and FNV. Siblings: `HUDAlt` 255 / 67 / 42, `Pipboy` 26 / 255 / 128, `System` 26 / 255 / 128, `Terminal` 33 / 231 / 121, `MainMenu` 199 / 255 / 165. | `Fallout_default.ini` of both installs |
 | GUI-FONT-001 | Skyrim's font configuration is **`interface\fontconfig.txt`** in `Skyrim - Interface.bsa`, plus `fontconfig_cn` / `_ja` / `_pl` / `_ru`. CRLF text: `fontlib "Interface\fonts_en.swf"` lines (console, en, cclub) then `map "$ConsoleFont" = "Consolas" Normal` lines mapping a `$`-font class to a face and a weight (`Normal` / `Bold`). Fallout 4 ships the same name (`fontconfig.txt`, `_cn`, `_ja`) in `Fallout4 - Interface.ba2`. | archive listing and extraction of `fontconfig.txt` |
 | GUI-FONT-004 | Skyrim: **`interface\translate_<language>.txt`** with the language spelled out (`english`, `german`, `french`, `italian`, `spanish`, `polish`, `russian`, `chinese`, `japanese`). Fallout 4: the same file with short tags (`en`, `de`, `es`, `esmx`, `fr`, `it`, `ja`, `pl`, `ptbr`, `ru`, `cn`). Format: **UTF-16 little-endian with a BOM, CRLF lines, `$KEY<TAB>value`** (`$10 Mins<TAB>10 Mins`). `Fallout - Misc.bsa` of FO3 and FNV holds no translation or font file; their menu strings are inline in the MenuXml. | `Skyrim - Interface.bsa`, `Fallout4 - Interface.ba2`, both `Fallout - Misc.bsa` listings |
-| A8 fixture | FO4 scripts that call `RegisterForMenuOpenCloseEvent` (and define `OnMenuOpenCloseEvent`) in `Fallout4 - Misc.ba2`: `vaultexitelevatorscript` (also references `RaceMenu`, so it exercises both), `surgeonscript`, `mysteriousstrangerscript`, `tutorialscript`, `audiocontainernoanimscript`, `scriptobject`, and the VR / Hardcore ones `hc_managerscript`, `vftplayerscript`, `vrworkshopparentscript`. **The fixture is `vaultexitelevatorscript`.** | extraction of 7,870 `.pex` with `r5_extract_pex_ba2`, binary string grep |
+| A8 fixture | FO4 scripts that call `RegisterForMenuOpenCloseEvent` (and define `OnMenuOpenCloseEvent`) in `Fallout4 - Misc.ba2`: `vaultexitelevatorscript` (also references `RaceMenu`, so it exercises both), `surgeonscript`, `mysteriousstrangerscript`, `tutorialscript`, `audiocontainernoanimscript`, `scriptobject`, and the VR / Hardcore ones `hc_managerscript`, `vftplayerscript`, `vrworkshopparentscript`. **The fixture is `vaultexitelevatorscript`.** Its `OnMenuOpenCloseEvent` is reached only after its `OnTriggerEnter` opens `SPECIALMenu` / `LooksMenu` through `Game.ShowSPECIALMenu` / `ShowRaceMenu` (GUI-EVT-003, Phase 3; the race menu, Phase 5), so A8 runs once those route through the registry; the event machinery (GUI-EVT-001/002) is built (#6668). Of the others only `audiocontainernoanimscript` (`ContainerMenu`) is small, and it calls `Sound.PlayAndWait`, which the VM does not model. | extraction of 7,870 `.pex` with `r5_extract_pex_ba2`, binary string grep |
 | A9 fixtures | **FNV:** `VCG04ActivatorScript` (`SCPT 001164A4`), the character-revision activator, is the only script in FNV's `SCPT`, quest and `INFO` result scripts that calls `ShowRaceMenu` (`Button == 1`, then `SetSPECIALPoints`, `SetTagSkills`, `ShowTraitMenu` through a `MenuMode == 0 && MessageBoxPending` poll). **FO3:** `Vault101ExitScript` (`SCPT 0005CF93`) is the only one. **Skyrim:** `QF_MQ101_0003372B.pex` (`Skyrim - Misc.bsa`) calls `Game.ShowRaceMenu()` from `Fragment_13`, `Fragment_27` and `Fragment_156`, plus `TriggerRaceMenuScript::OnLoad`. Bindings: `Fragment_156` and `Fragment_27` are MQ101 stage 0 (log entries 4 and 3; each gated by `MQQuickstart` 4 and 3, the developer quickstarts, not the ordinary start), `Fragment_13` is stage 75. The shape `SetInChargen; DisablePlayerControls; RemoveAllItems; EquipItem x2; MoveTo; Wait; ShowRaceMenu; Wait; message box; SetStage` is `Fragment_156`'s; `Fragment_27` is `SetInChargen; MoveTo; FadeOutGame; Wait; ShowRaceMenu; Wait; AddRaceSpells; message box`. **Fallout 4** also ships `SF_MQ101_001_MirrorScene_000A7D3C`. | `info_result_census`, `obscript_tools dump`, `mq101_conformance`, `pex_dump_fn` |
 | GUI-REG-006 inventory | Per-game inventory checked in with the Q1 target surface derived from the host classes: Oblivion 98 rows, FO3 110, FNV 131, Skyrim SE 64, Fallout 4 75 (Starfield not inventoried, see below). MenuXml documents take S2; a movie whose every host call is H1 or H2 takes S1; one H3 call sends the menu to its native page (S3) or to S4 `recorded`. Skyrim SE: 24 S1, 3 S3, 16 S4; Fallout 4: 34 S1, 2 S3, 16 S4 (counts include HUD and support rows). Menu-to-movie joins on Skyrim / Fallout 4 are by file name only. | `menu-inventory-*.tsv`; `scripts/game-ui-data/join_surfaces.py`; `crates/bsa/examples/archive_list_all.rs`; `crates/plugin/examples/menu_gmst_census.rs inventory` |
 | GUI-REG-006 code 1004 | **`HUDMainMenu`.** GECK is right; xEdit's `MainMenu` is the title screen (`menus\options\main_menu.xml`, no code of its own) mislabelled for FO3 / FNV. xNVSE `kMenuType_HUDMain` = 1004, `s_menuNameToID` has `HUDMainMenu`, `hud_main_menu.xml` is `<menu name="HUDMainMenu">`, both executables carry the entity `&HUDMainMenu;`. 1026 is vanilla (`BookMenu`) although xEdit credits it to a mod. Codes no source names stay unknown: FO3 / FNV 1005, 1006, 1010, 1011, 1015, 1017-1022, 1024, 1025, 1028-1034, 1037-1046, 1049, 1050, 1052, 1062-1073, 1078, 1079 (and Audio / Video / Gameplay); Oblivion 1031, 1033, 1050 unknown whether vanilla. | `menu-codes-fnv-fo3.tsv`, `menu-codes-oblivion.tsv`; xNVSE `GameUI.h` @ `0ccd23ad`, xOBSE `GameMenus.h` @ `99930e16`, xEdit `wbMenuModeEnum` @ `dev-4.1.6` |
@@ -850,6 +909,15 @@ on Skyrim SE and FNV, and the MQ101 Known Issue is closed in ROADMAP.
 Fallout 3, Oblivion; then Starfield's profile and catalog if Phase 0's
 verify found a host contract. Exit: scenario 8 passes, and every metric of
 §8 is published for every in-scope game.
+
+**Oblivion menu follow-up (#7048).** This PRD revision owns the surface and
+input/output contracts. Exit: the revision specifying GUI-XML-004…007 is
+merged. The playable bindings are a follow-up to [Oblivion Skill-Use
+Leveling Phase 3](oblivion-skill-use-leveling.md#9-delivery-sequence)
+(#7047), tracked in #7086. The live Weynon House flow exercised both the
+installed MenuXml documents and the native fallback with the menu archive
+withheld. The engine tests cover a confirmed sleep interrupted by combat
+and a sleep with no pending level.
 
 Dependencies: M43's dialogue layers (closed) for Phase 4; M47.2 / M47.3 for
 the script queries and blocks of Phase 1 (`MenuMode`, `Begin MenuMode`,
@@ -970,6 +1038,7 @@ Each needs the project owner. The recommendation is the first option.
 | Host bridge, profiles, catalogs, adapter, navigator, tests | [ui.md](../engine/ui.md) |
 | What the vanilla HUDs call and why the meters are empty | [ui.md § Scaleform HUD](../engine/ui.md#scaleform-hud-m486-skyrim--m487-fallout-4) |
 | MenuXml evaluator, layout, raster, `MenuProfile` | [ui.md § MenuXml](../engine/ui.md#menuxml-legacy-ui-m484-oblivion--m485-fo3) |
+| Oblivion's bed sleep event and frozen attribute picks | [Skill Use § Levels](../engine/skill-use.md#5-levels-7052) and [Oblivion Skill-Use Leveling § Requirements](oblivion-skill-use-leveling.md#5-requirements-by-area) |
 | Input focus and modal capture today | [ui.md § Input routing](../engine/ui.md#input-routing) |
 | Loading screens | [ui.md § loading screens](../engine/ui.md#original-game-loading-screens-during-scene-transitions) |
 | The native dialogue page's behaviour | [dialogue-trees.md §3](../engine/dialogue-trees.md#3-scope) |
@@ -995,3 +1064,5 @@ Each needs the project owner. The recommendation is the first option.
 | 5 | 2026-11-03 | → ACTIVE: parent #6641 and phase issues #6643, #6653, #6661, #6665, #6666, #6667, #6668 filed; the Phase 0 verify items are acceptance criteria of #6643 | — |
 | 6 | 2026-11-08 | Phase 0 results (§9.1): inventory with Q1 surfaces, flags, codes (FO3 / FNV 1004 = `HUDMainMenu`), classified catalogs, extension census, HUD feeds, `-s` strings, native-page strings, race-menu wait, Skyrim LE and Starfield; Q2's first question answered; Q5 and Q6 results; §3.1 rows 2, 6, 13, 14, 15 corrected; GUI-HOST-001 (H4), GUI-REG-006 and GUI-FONT-005 reworded; ui.md design section | — |
 | 7 | 2026-11-09 | Phase 0 exit: the open verify items each name their owning issue in §9.1 (phase issues, or #6823-#6826 filed for the five no phase issue covered); status line unchanged | — |
+| 8 | 2026-11-20 | #7048: GUI-XML-004…007 assign Oblivion's sleep/rest and level-up menus to MenuXml, specify successful and interrupted sleep, and define the frozen attribute-pick contract and acceptance scenarios for the #7047 bindings | — |
+| 9 | 2026-11-20 | #7086: implement and exercise the Oblivion MenuXml and native fallback paths for GUI-XML-004…007 in Weynon House. Test cancellation, waiting, and combat interruption without consuming a pending level | — |

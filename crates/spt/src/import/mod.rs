@@ -73,6 +73,13 @@ pub struct SptImportParams<'a> {
     /// the `.spt` itself (mods retexture trees by re-pointing TREE
     /// ICON without rewriting the `.spt`).
     pub leaf_texture_override: Option<&'a str>,
+    /// Last-resort texture, used only when neither `leaf_texture_override`
+    /// nor a relative leaf path inside the `.spt` supplies one. The cell
+    /// loader passes the tree's own `textures\trees\billboards\<stem>.dds`
+    /// imposter here, for TREE records authored without an `ICON` (6 of 142
+    /// in Oblivion.esm, e.g. `ShrubDeadBush`), so the placeholder shows the
+    /// original tree's silhouette instead of the engine's default white.
+    pub fallback_texture: Option<&'a str>,
     /// Object bounds from the TREE record's `OBND` sub-record.
     /// `(min, max)` in Bethesda Z-up game units. This is the preferred
     /// placeholder-size source; when absent, sizing falls through to
@@ -195,7 +202,8 @@ pub fn import_spt_scene(
                     .copied()
                     .filter(|path| is_relative_texture_path(path))
                     .map(str::to_string)
-            });
+            })
+            .or_else(|| params.fallback_texture.map(str::to_string));
 
     let texture_handle: Option<FixedString> = leaf_texture
         .as_deref()
@@ -292,27 +300,24 @@ fn compute_billboard_size(params: &SptImportParams) -> (f32, f32) {
     // field falls through instead of poisoning the quad (#3529). OBND
     // reaches the cell route as `i16`→`f32` and cannot be NaN today, but
     // `SptImportParams` is public and the guard costs nothing.
-    if let Some((min, max)) = params.bounds {
-        if let (Some(width), Some(height)) = (
+    if let Some((min, max)) = params.bounds
+        && let (Some(width), Some(height)) = (
             clamp_billboard_extent(max[0] - min[0]),
             clamp_billboard_extent(max[2] - min[2]),
         ) {
             return (width, height);
         }
-    }
-    if let Some((w, h)) = params.billboard_size {
-        if let (Some(width), Some(height)) = (clamp_billboard_extent(w), clamp_billboard_extent(h))
+    if let Some((w, h)) = params.billboard_size
+        && let (Some(width), Some(height)) = (clamp_billboard_extent(w), clamp_billboard_extent(h))
         {
             return (width, height);
         }
-    }
-    if let Some(r) = params.bound_radius.filter(|r| *r > 0.0) {
-        if let (Some(width), Some(height)) =
+    if let Some(r) = params.bound_radius.filter(|r| *r > 0.0)
+        && let (Some(width), Some(height)) =
             (clamp_billboard_extent(r), clamp_billboard_extent(2.0 * r))
         {
             return (width, height);
         }
-    }
     (DEFAULT_BILLBOARD_WIDTH, DEFAULT_BILLBOARD_HEIGHT)
 }
 
@@ -558,6 +563,43 @@ mod tests {
         // axis lives on Y, matching the placeholder mesh's Y-vertical.
         assert_eq!(center, [0.0, 400.0, 0.0]);
         assert_eq!(half, [50.0, 400.0, 50.0]);
+    }
+
+    #[test]
+    fn fallback_texture_is_the_last_resort() {
+        let tex = |imported: &ImportedScene, pool: &StringPool| {
+            imported.meshes[0]
+                .material
+                .textures
+                .base_color
+                .and_then(|h| pool.resolve(h).map(|s| s.to_string()))
+        };
+        let fallback = Some("textures\\trees\\billboards\\shrubdeadbush.dds");
+
+        // Nothing else authored: the fallback is the texture.
+        let mut pool = StringPool::new();
+        let params = SptImportParams {
+            fallback_texture: fallback,
+            ..Default::default()
+        };
+        let imported = import_spt_scene(&empty_scene(), &params, &mut pool);
+        assert_eq!(tex(&imported, &pool).as_deref(), fallback);
+
+        // A relative leaf path inside the .spt outranks it.
+        let mut pool = StringPool::new();
+        let scene = scene_with_tag(4003, SptValue::String("trees\\insidespt.dds".to_string()));
+        let imported = import_spt_scene(&scene, &params, &mut pool);
+        assert_eq!(tex(&imported, &pool).as_deref(), Some("trees\\insidespt.dds"));
+
+        // So does the TREE.ICON override.
+        let mut pool = StringPool::new();
+        let params = SptImportParams {
+            leaf_texture_override: Some("trees\\leaves\\icon.dds"),
+            fallback_texture: fallback,
+            ..Default::default()
+        };
+        let imported = import_spt_scene(&empty_scene(), &params, &mut pool);
+        assert_eq!(tex(&imported, &pool).as_deref(), Some("trees\\leaves\\icon.dds"));
     }
 
     #[test]

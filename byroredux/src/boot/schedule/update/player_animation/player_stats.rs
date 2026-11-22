@@ -36,9 +36,10 @@ pub(super) fn register_player_stats_systems(scheduler: &mut Scheduler) {
     // Gated on TWO resources (#2950): `PoolRegenAccumulator`, inserted
     // unconditionally in `build_world`, and `PoolRegenConfig`, which is
     // per-game. FO3/FNV install it with an `ActionPoints` lane (#6350,
-    // `build_vats_model`), so the tick restores the player's AP there; every
-    // other game never inserts it and the system returns at its second line
-    // (Oblivion's Fatigue/Magicka lanes wait on a pre-AVIF resolver, #3768).
+    // `build_vats_model`), so the tick restores the player's AP there; Oblivion
+    // installs its Fatigue/Magicka lanes (`build_tes_pool_regen`, #7010/#7197).
+    // FO4, Skyrim, FO76 and Starfield never insert it, and the system returns at
+    // its second line there.
     // #2391 / ECS-D5B-03 — declared via `add_exclusive_with_access` (the
     // #1236 channel, previously unused in production). This system is
     // #2153's site: it builds a 3-deep hold stack (`PoolRegenConfig` read

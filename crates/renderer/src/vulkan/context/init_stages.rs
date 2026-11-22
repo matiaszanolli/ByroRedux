@@ -186,6 +186,53 @@ pub(super) fn create_compute_passes(
     ComputePasses { cluster_cull, skin_compute, skin_palette, gpu_timers }
 }
 
+/// TSD-4.1 (#7152) — the terrain patch pass. `VulkanContext::new` reserves its
+/// meshes as the registry's first handles ([`reserve_terrain_patch_meshes`]).
+pub(super) fn create_terrain_patch(
+    device: &ash::Device,
+    gpu_allocator: &SharedAllocator,
+    pipeline_cache: vk::PipelineCache,
+    texture_registry: &TextureRegistry,
+) -> Option<super::super::terrain_patch::TerrainPatchPass> {
+    match super::super::terrain_patch::TerrainPatchPass::new(
+        device,
+        gpu_allocator,
+        pipeline_cache,
+        texture_registry.descriptor_set_layout,
+    ) {
+        Ok(pass) => Some(pass),
+        Err(e) => {
+            log::warn!("Terrain patch pass creation failed: {e:#} — no terrain displacement patches");
+            None
+        }
+    }
+}
+
+/// Reserve the terrain patch meshes in the empty registry, so they take its
+/// first handles (#7152: the opaque sort groups by mesh handle, so every patch
+/// draws before any base terrain cell and early-Z rejects the base under it),
+/// and declare them to the acceleration manager, which gives each its own
+/// refit BLAS in the TLAS (#7221). A failed reservation leaves patches off.
+pub(super) fn reserve_terrain_patch_meshes(
+    terrain_patch: Option<&mut super::super::terrain_patch::TerrainPatchPass>,
+    mesh_registry: &mut MeshRegistry,
+    accel_manager: Option<&mut AccelerationManager>,
+) {
+    let Some(pass) = terrain_patch else {
+        return;
+    };
+    if let Err(e) = pass.reserve_meshes(mesh_registry) {
+        log::warn!("terrain patches: {e:#} — no terrain displacement patches");
+        return;
+    }
+    if let Some(accel) = accel_manager {
+        let meshes = pass.meshes();
+        accel.register_terrain_patch_meshes(
+            &meshes.fine.iter().chain(&meshes.coarse).copied().collect::<Vec<_>>(),
+        );
+    }
+}
+
 /// The EXAL ground-cover blade pipeline and its authored-model tier (#4054 / #4413 / #4888). Both are gated on the combined indirect-draw predicate (#4827).
 pub(super) fn create_ground_cover(
     device: &ash::Device,
@@ -429,7 +476,7 @@ pub(super) fn create_ssao(
     placeholder_ao: &Option<super::super::placeholder::PlaceholderImage>,
 ) -> Option<SsaoPipeline> {
     // 14a. SSAO pipeline (reads depth buffer after render pass)
-    let ssao = match SsaoPipeline::new(
+    match SsaoPipeline::new(
         device,
         gpu_allocator,
         pipeline_cache,
@@ -470,8 +517,7 @@ pub(super) fn create_ssao(
             }
             None
         }
-    };
-    ssao
+    }
 }
 
 /// The SKYAL cloud-noise volumes and sky-cube bake, the exposure resource and its metering pass (steps 14a-noise – 14b-bis). Cloud noise and exposure are hard requirements.
@@ -618,8 +664,8 @@ pub(super) fn create_volumetrics(
             None
         }
     };
-    if let Some(ref mut v) = volumetrics {
-        if let Err(e) = unsafe {
+    if let Some(ref mut v) = volumetrics
+        && let Err(e) = unsafe {
             // SAFETY: `device` + `graphics_queue` are live and
             // `transfer_pool` is a command pool from this device; the
             // volumetrics pipeline `v`'s froxel images were just created
@@ -646,7 +692,6 @@ pub(super) fn create_volumetrics(
                 }
             }
         }
-    }
     volumetrics
 }
 
@@ -769,8 +814,8 @@ pub(super) fn create_svgf_and_restir(
     };
     // Transition history images UNDEFINED → GENERAL so first dispatch
     // and first descriptor sampling see a valid layout.
-    if let Some(ref s) = svgf {
-        if let Err(e) = unsafe {
+    if let Some(ref s) = svgf
+        && let Err(e) = unsafe {
             // SAFETY: `device` + `graphics_queue` are live and
             // `transfer_pool` is a command pool from this device; the SVGF
             // pipeline `s`'s history images were just created above by the
@@ -788,7 +833,6 @@ pub(super) fn create_svgf_and_restir(
                 });
             }
         }
-    }
 
     // ReSTIR-DI reservoir buffers (screen-sized, ping-pong per FIF).
     // Written into the scene descriptor set (bindings 16/17) here and
@@ -858,15 +902,17 @@ pub(super) fn create_caustic(
         device,
         gpu_allocator,
         pipeline_cache,
-        depth_image_view,
-        &normal_views_seed,
-        mesh_id_views_seed,
-        scene_buffers.light_buffers(),
-        scene_buffers.light_buffer_size(),
-        scene_buffers.camera_buffers(),
-        scene_buffers.camera_buffer_size(),
-        scene_buffers.instance_buffers(),
-        &scene_buffers.instance_buffer_sizes(),
+        crate::vulkan::caustic::CausticInputs {
+            depth_view: depth_image_view,
+            normal_views: &normal_views_seed,
+            mesh_id_views: mesh_id_views_seed,
+            light_buffers: scene_buffers.light_buffers(),
+            light_buffer_size: scene_buffers.light_buffer_size(),
+            camera_buffers: scene_buffers.camera_buffers(),
+            camera_buffer_size: scene_buffers.camera_buffer_size(),
+            instance_buffers: scene_buffers.instance_buffers(),
+            instance_buffer_sizes: &scene_buffers.instance_buffer_sizes(),
+        },
         render_extent.width,
         render_extent.height,
     ) {
@@ -875,8 +921,8 @@ pub(super) fn create_caustic(
             return Err(anyhow::anyhow!("Caustic pipeline creation failed: {e}"));
         }
     };
-    if let Some(ref c) = caustic {
-        if let Err(e) = unsafe {
+    if let Some(ref c) = caustic
+        && let Err(e) = unsafe {
             // SAFETY: `device` + `graphics_queue` are live and
             // `transfer_pool` is a command pool from this device; the
             // caustic pipeline `c`'s images were just created above by the
@@ -896,7 +942,6 @@ pub(super) fn create_caustic(
                 "Caustic layout init failed: {e} — composite binding 5 requires the RGB array"
             ));
         }
-    }
     // Composite binding 5 is a `usampler2DArray`; only the RGB caustic
     // views have the required dimensionality. Pipeline creation and
     // layout transition are therefore hard requirements above.
@@ -1035,8 +1080,8 @@ pub(super) fn create_taa(
         );
         None
     };
-    if let Some(ref t) = taa {
-        if let Err(e) = unsafe {
+    if let Some(ref t) = taa
+        && let Err(e) = unsafe {
             // SAFETY: `device` + `graphics_queue` are live and
             // `transfer_pool` is a command pool from this device; the TAA
             // pipeline `t`'s history/output images were just created above
@@ -1054,7 +1099,6 @@ pub(super) fn create_taa(
                 });
             }
         }
-    }
     taa
 }
 

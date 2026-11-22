@@ -10,7 +10,7 @@
 //! the thin ECS bridge Phase 3 needed to reach real streamed data. Phase 3
 //! shipped 2026-08-23 and it is now consumed by all six locomotion
 //! procedures — travel / wander / patrol / follow / escort / guard — through
-//! `locomotion::step_along_waypoints`, not by `travel_system` alone.
+//! `locomotion::step_along_waypoints_detailed`, not by `travel_system` alone.
 //!
 //! **Cross-tile (Phase 2, #3802)**: `external_connections` itself is still
 //! not walked — `NavmExternalConnection` has no confirmed source-triangle
@@ -697,6 +697,45 @@ pub(crate) fn path_from_resident_tiles(
     Some(waypoints.into_iter().skip(1).collect())
 }
 
+/// The walk graphs resident now, as one thing to path over: the NAVM tiles every
+/// game but Oblivion ships, and the `PGRD` pathgrids Oblivion ships instead
+/// ([`super::pathgrid_path`]). The locomotion systems query it once per tick and
+/// hand it to [`resolve_cached_waypoints`].
+pub(crate) struct NavGraphs<'a> {
+    tiles: Option<byroredux_core::ecs::QueryRead<'a, crate::components::NavmeshTile>>,
+    grids: Option<byroredux_core::ecs::QueryRead<'a, crate::components::PathGridTile>>,
+}
+
+impl<'a> NavGraphs<'a> {
+    /// `None` when neither storage exists (a world no cell was ever loaded into).
+    pub(crate) fn of(world: &'a World) -> Option<Self> {
+        let tiles = world.query::<crate::components::NavmeshTile>();
+        let grids = world.query::<crate::components::PathGridTile>();
+        if tiles.is_none() && grids.is_none() {
+            return None;
+        }
+        Some(Self { tiles, grids })
+    }
+
+    /// The remaining waypoints from `current` to `goal` (never including `current`,
+    /// always ending with `goal`): over the NAVM tiles when they route it, else, for a
+    /// walk that has switched to the grid (`use_grids`, [`crate::components::GridWalk`]),
+    /// over the first pathgrid both points snap onto. `None` means walk straight.
+    pub(crate) fn path(&self, current: Vec3, goal: Vec3, use_grids: bool) -> Option<Vec<Vec3>> {
+        self.tiles
+            .as_ref()
+            .and_then(|tiles| path_from_resident_tiles(tiles, current, goal))
+            .or_else(|| {
+                if !use_grids {
+                    return None;
+                }
+                self.grids.as_ref()?.iter().find_map(|(_, grid)| {
+                    super::pathgrid_path::find_path_over_grid(&grid.0, current, goal)
+                })
+            })
+    }
+}
+
 /// What [`path_from_resident_tiles`] sees for one pair of points: the tile and
 /// triangle each lands on, how many tiles are resident, and the path's
 /// waypoint count. Diagnostic (`nav.path`).
@@ -756,14 +795,22 @@ pub(crate) fn probe_path(
 /// caught by `follow_system`'s own regression test for this). Only a
 /// genuine recompute (cache miss) advances `effective_goal` to this
 /// call's `goal`.
+///
+/// The third element is the walk's [`crate::components::GridWalk`], to be advanced
+/// with [`GridWalk::stepped`] once the step is taken and stored back on the new
+/// `NavPath`. A walk that has switched to the pathgrid keeps its switch across a
+/// recompute for a goal that has not moved far (a live target's jitter, a residency
+/// change) and starts straight again for a new destination, more than
+/// [`SAME_WALK_GOAL_DRIFT`] away. A cache hit under `repath` (the switch has just
+/// happened) is a miss: its waypoints were routed without the grid.
 pub(crate) fn resolve_cached_waypoints(
     cached: Option<&crate::components::NavPath>,
-    tiles: Option<&byroredux_core::ecs::QueryRead<'_, crate::components::NavmeshTile>>,
+    graphs: Option<&NavGraphs<'_>>,
     current: Vec3,
     goal: Vec3,
     repath_threshold: f32,
     residency_generation: u64,
-) -> (Vec3, std::collections::VecDeque<Vec3>) {
+) -> (Vec3, std::collections::VecDeque<Vec3>, crate::components::GridWalk) {
     match cached {
         // #3256 — the generation check is what makes the *negative* cache
         // (a deliberately-stored empty path) recoverable. Goal distance
@@ -773,19 +820,29 @@ pub(crate) fn resolve_cached_waypoints(
         // retried, even once the relevant tile streamed in.
         Some(path)
             if path.residency_generation == residency_generation
-                && path.goal.distance(goal) <= repath_threshold =>
+                && path.goal.distance(goal) <= repath_threshold
+                && !path.grid.repath =>
         {
-            (path.goal, path.waypoints.clone())
+            (path.goal, path.waypoints.clone(), path.grid)
         }
         _ => {
-            let waypoints = tiles
-                .and_then(|tiles| path_from_resident_tiles(tiles, current, goal))
+            let grid = cached
+                .filter(|path| path.goal.distance(goal) <= SAME_WALK_GOAL_DRIFT)
+                .map(|path| path.grid)
+                .unwrap_or_default();
+            let waypoints = graphs
+                .and_then(|graphs| graphs.path(current, goal, grid.on_grid))
                 .map(std::collections::VecDeque::from)
                 .unwrap_or_default();
-            (goal, waypoints)
+            (goal, waypoints, crate::components::GridWalk { repath: false, ..grid })
         }
     }
 }
+
+/// How far a walk's goal may move and still be the same walk, for the pathgrid
+/// switch: two snap radii, so a live target's drift keeps it and a new
+/// destination does not.
+const SAME_WALK_GOAL_DRIFT: f32 = 2.0 * super::pathgrid_path::PATHGRID_SNAP_RADIUS;
 
 /// Result of [`cached_walk_step`]; the caller applies it to the actor.
 pub(crate) struct CachedWalkStep {
@@ -819,15 +876,15 @@ pub(crate) fn cached_walk_step(
     dt: f32,
     speed: f32,
 ) -> CachedWalkStep {
-    use crate::components::{navmesh_residency_generation, NavPath, NavmeshTile};
+    use crate::components::{navmesh_residency_generation, NavPath};
     let residency_generation = navmesh_residency_generation(world);
-    let (effective_goal, waypoints) = {
-        let tiles = world.query::<NavmeshTile>();
+    let (effective_goal, waypoints, grid) = {
+        let graphs = NavGraphs::of(world);
         let cached_q = world.query::<NavPath>();
         let cached = cached_q.as_ref().and_then(|q| q.get(npc));
         resolve_cached_waypoints(
             cached,
-            tiles.as_ref(),
+            graphs.as_ref(),
             current,
             goal,
             repath_threshold,
@@ -855,6 +912,7 @@ pub(crate) fn cached_walk_step(
                 goal: effective_goal,
                 residency_generation,
                 waypoints,
+                grid: grid.stepped(blocked, dt),
             },
         );
     }
@@ -954,6 +1012,34 @@ pub(crate) fn clear_cached_path(world: &World, npc: EntityId) {
 /// unconnected tiles instead of a boundary crossing.
 #[cfg(test)]
 pub(crate) mod test_tiles {
+    /// A floor topped at y=0 and a wall across x=0 that spans z in [-300, 300]: a straight walk
+    /// from x<0 to x>0 along z=0 hits it, and one that goes round by z=400 does not.
+    pub(crate) fn walled_physics() -> byroredux_physics::PhysicsWorld {
+        let mut pw = byroredux_physics::PhysicsWorld::new();
+        pw.spawn_fixed_cuboid(byroredux_core::math::Vec3::new(2000.0, 20.0, 2000.0), byroredux_core::math::Vec3::new(0.0, -20.0, 0.0));
+        pw.spawn_fixed_cuboid(byroredux_core::math::Vec3::new(10.0, 300.0, 300.0), byroredux_core::math::Vec3::new(0.0, 300.0, 0.0));
+        pw
+    }
+
+    /// The grid round the wall: (-150,0,0) → (-150,0,400) → (150,0,400) → (150,0,0), in the
+    /// file's Z-up `(x, -z, y)`. Its end points lie within the snap radius of where a traveler
+    /// held at the wall stands and of the goal.
+    pub(crate) fn grid_round_the_wall() -> byroredux_plugin::esm::records::PathGridRecord {
+        use byroredux_plugin::esm::records::{PathGridPoint, PathGridRecord};
+        let ends = [[-150.0, 0.0, 0.0], [-150.0, 0.0, 400.0], [150.0, 0.0, 400.0], [150.0, 0.0, 0.0]];
+        let links: [&[u16]; 4] = [&[1], &[0, 2], &[1, 3], &[2]];
+        PathGridRecord {
+            declared_point_count: 4,
+            points: ends
+                .iter()
+                .zip(links)
+                .map(|(p, l)| PathGridPoint { position: [p[0], -p[2], p[1]], connection_count: l.len() as u8 })
+                .collect(),
+            edges: links.iter().map(|l| l.iter().map(|&i| Some(i)).collect()).collect(),
+            ..Default::default()
+        }
+    }
+
     use byroredux_plugin::esm::records::{NavmRecord, NavmTriangle};
 
     use byroredux_core::math::coord::yup_to_zup_pos;
@@ -1039,7 +1125,7 @@ mod tests {
     use byroredux_plugin::esm::records::NavmTriangle;
 
     /// #3269 — every NAVM-pathed procedure used to clone its waypoint list a
-    /// second time on the way into `step_along_waypoints`, purely because the
+    /// second time on the way into `step_along_waypoints_detailed`, purely because the
     /// per-tick scratch was iterated by reference while the callee takes the
     /// `VecDeque` by value. Three of the four now drain their `pending`
     /// buffer; `follow_system` cannot (Pass 2 still needs its decisions) and
@@ -1493,12 +1579,13 @@ mod tests {
             goal: original_goal,
             residency_generation: 0,
             waypoints: VecDeque::from(vec![Vec3::new(50.0, 0.0, 50.0), original_goal]),
+            grid: Default::default(),
         };
         // New goal is close (within threshold) but NOT identical — this is
         // exactly follow_system's per-tick live-target-jitter case.
         let new_goal = Vec3::new(105.0, 0.0, 100.0);
 
-        let (effective_goal, waypoints) =
+        let (effective_goal, waypoints, _) =
             resolve_cached_waypoints(Some(&cached), None, Vec3::ZERO, new_goal, 10.0, 0);
 
         assert_eq!(
@@ -1516,17 +1603,165 @@ mod tests {
             goal: Vec3::new(100.0, 0.0, 100.0),
             residency_generation: 0,
             waypoints: VecDeque::from(vec![Vec3::new(100.0, 0.0, 100.0)]),
+            grid: Default::default(),
         };
         let new_goal = Vec3::new(500.0, 0.0, 500.0); // far beyond any reasonable threshold
 
         // No tiles (`None`) — recompute finds nothing, so this also pins
         // the "cache the negative result" contract: effective_goal still
         // advances to the new goal even though waypoints comes back empty.
-        let (effective_goal, waypoints) =
+        let (effective_goal, waypoints, _) =
             resolve_cached_waypoints(Some(&cached), None, Vec3::ZERO, new_goal, 10.0, 0);
 
         assert_eq!(effective_goal, new_goal);
         assert!(waypoints.is_empty());
+    }
+
+    /// The L-shaped grid the pathgrid tests route over: engine points
+    /// (0,0,0) → (0,0,200) → (200,0,200) → (200,0,0), file Z-up (x, -z, y).
+    fn l_shaped_pathgrid() -> byroredux_plugin::esm::records::PathGridRecord {
+        use byroredux_plugin::esm::records::{PathGridPoint, PathGridRecord};
+        let ends = [[0.0, 0.0, 0.0], [0.0, 0.0, 200.0], [200.0, 0.0, 200.0], [200.0, 0.0, 0.0]];
+        let links: [&[u16]; 4] = [&[1], &[0, 2], &[1, 3], &[2]];
+        PathGridRecord {
+            declared_point_count: 4,
+            points: ends
+                .iter()
+                .zip(links)
+                .map(|(p, l)| PathGridPoint { position: [p[0], -p[2], p[1]], connection_count: l.len() as u8 })
+                .collect(),
+            edges: links.iter().map(|l| l.iter().map(|&i| Some(i)).collect()).collect(),
+            ..Default::default()
+        }
+    }
+
+    fn walk_on_grid(on_grid: bool, repath: bool) -> NavPath {
+        NavPath {
+            goal: Vec3::new(190.0, 0.0, 0.0),
+            residency_generation: 1,
+            waypoints: Default::default(),
+            grid: crate::components::GridWalk { blocked_secs: 0.0, on_grid, repath },
+        }
+    }
+
+    /// Oblivion ships no NAVM, only `PGRD`: with a resident pathgrid and no tile a walk that
+    /// has switched to the grid is routed along its edges, round the gap between its two arms.
+    #[test]
+    fn a_resident_pathgrid_routes_an_actor_when_no_navmesh_tile_exists() {
+        let grid = l_shaped_pathgrid();
+        let mut world = byroredux_core::ecs::World::new();
+        crate::components::spawn_pathgrid_tiles(&mut world, [&grid]);
+
+        let graphs = NavGraphs::of(&world).expect("a pathgrid is resident");
+        let goal = Vec3::new(190.0, 0.0, 0.0);
+        let start = Vec3::new(0.0, 0.0, 50.0);
+        let (_, off, _) = resolve_cached_waypoints(None, Some(&graphs), start, goal, 0.0, 1);
+        assert!(off.is_empty(), "a walk starts straight: the grid is not asked for until the controller blocks it");
+
+        let cached = walk_on_grid(true, false);
+        let (effective_goal, waypoints, grid) =
+            resolve_cached_waypoints(Some(&cached), Some(&graphs), start, goal, 0.0, 2);
+
+        assert_eq!(effective_goal, goal);
+        assert!(grid.on_grid, "the switch survives a recompute for the same destination");
+        assert_eq!(
+            waypoints.iter().copied().collect::<Vec<_>>(),
+            vec![Vec3::new(0.0, 0.0, 200.0), Vec3::new(200.0, 0.0, 200.0), Vec3::new(200.0, 0.0, 0.0), goal],
+            "round the L over the grid, not straight through the gap"
+        );
+    }
+
+    /// AIP-WALK-003 — a straight walk takes the grid only after the controller has held it for
+    /// `GridWalk::AFTER_BLOCKED_SECS` without a break, and keeps it.
+    #[test]
+    fn a_walk_switches_to_the_grid_after_being_blocked_long_enough_and_stays() {
+        use crate::components::GridWalk;
+        let mut walk = GridWalk::default();
+        let tick = 0.25;
+        for _ in 0..5 {
+            walk = walk.stepped(true, tick);
+            assert!(!walk.on_grid, "1.25 s blocked is not enough: {walk:?}");
+        }
+        walk = walk.stepped(false, tick);
+        assert_eq!(walk, GridWalk::default(), "an unblocked step clears the clock: one clipped corner is not a wall");
+        for _ in 0..5 {
+            walk = walk.stepped(true, tick);
+        }
+        assert!(!walk.on_grid);
+        walk = walk.stepped(true, tick);
+        assert!(walk.on_grid && walk.repath, "1.5 s blocked switches and asks for a new route: {walk:?}");
+        walk = walk.stepped(true, tick);
+        assert!(walk.on_grid && !walk.repath, "the request is made once");
+        walk = walk.stepped(false, tick);
+        assert!(walk.on_grid, "an unblocked step does not undo the switch");
+    }
+
+    /// The switch is why the cached (straight, empty) path is stale: a cache hit under `repath`
+    /// is a miss, so the next tick routes over the grid it just switched to.
+    #[test]
+    fn a_switch_to_the_grid_drops_the_cached_straight_path() {
+        let grid = l_shaped_pathgrid();
+        let mut world = byroredux_core::ecs::World::new();
+        crate::components::spawn_pathgrid_tiles(&mut world, [&grid]);
+        let graphs = NavGraphs::of(&world).unwrap();
+        let goal = Vec3::new(190.0, 0.0, 0.0);
+        let start = Vec3::new(0.0, 0.0, 50.0);
+
+        let straight = walk_on_grid(false, false);
+        let (_, hit, _) = resolve_cached_waypoints(Some(&straight), Some(&graphs), start, goal, 0.0, 1);
+        assert!(hit.is_empty(), "the cached straight path is reused until the walk switches");
+
+        let switched = walk_on_grid(true, true);
+        let (_, routed, now) = resolve_cached_waypoints(Some(&switched), Some(&graphs), start, goal, 0.0, 1);
+        assert_eq!(routed.len(), 4, "the switch recomputes over the grid");
+        assert!(now.on_grid && !now.repath);
+    }
+
+    /// A new destination starts straight: the switch belongs to the walk it was made on, and
+    /// only a goal that has hardly moved (a live target's drift) is the same walk.
+    #[test]
+    fn a_new_destination_does_not_inherit_the_previous_walks_grid_switch() {
+        let grid = l_shaped_pathgrid();
+        let mut world = byroredux_core::ecs::World::new();
+        crate::components::spawn_pathgrid_tiles(&mut world, [&grid]);
+        let graphs = NavGraphs::of(&world).unwrap();
+        let start = Vec3::new(0.0, 0.0, 50.0);
+        let cached = walk_on_grid(true, false);
+
+        let near = Vec3::new(150.0, 0.0, 0.0);
+        let (_, _, same) = resolve_cached_waypoints(Some(&cached), Some(&graphs), start, near, 0.0, 1);
+        assert!(same.on_grid, "a goal 40 units away is the same walk");
+
+        let far = Vec3::new(190.0, 0.0, 4000.0);
+        let (_, waypoints, fresh) = resolve_cached_waypoints(Some(&cached), Some(&graphs), start, far, 0.0, 1);
+        assert!(!fresh.on_grid && waypoints.is_empty(), "a goal thousands of units away is a new walk");
+    }
+
+    /// The single-actor movers (Eat, Sleep, Find, force-greet, random conversation) walk through
+    /// `cached_walk_step`: held against a wall they take the grid too, and get round it.
+    #[test]
+    fn a_cached_walk_step_blocked_by_a_wall_takes_the_pathgrid() {
+        use test_tiles::{grid_round_the_wall, walled_physics};
+        let mut world = byroredux_core::ecs::World::new();
+        world.register::<NavPath>();
+        world.insert_resource(walled_physics());
+        crate::components::spawn_pathgrid_tiles(&mut world, [&grid_round_the_wall()]);
+        let npc = world.spawn();
+        let goal = Vec3::new(400.0, 0.0, 0.0);
+        let mut at = Vec3::new(-400.0, 0.0, 0.0);
+        let mut rotation = Quat::IDENTITY;
+        let mut switched = false;
+        for _ in 0..400 {
+            let step = cached_walk_step(&world, npc, at, rotation, goal, 0.0, 0.1, 100.0);
+            at = step.position;
+            rotation = step.rotation.unwrap_or(rotation);
+            switched |= world.get::<NavPath>(npc).is_some_and(|p| p.grid.on_grid);
+            if (at - goal).length() <= 20.0 {
+                assert!(switched, "it cannot have got round the wall on the straight walk");
+                return;
+            }
+        }
+        panic!("a walk held against a wall must take the pathgrid, ended at {at:?}");
     }
 
     /// #3256 (ECS-2026-08-24-08) regression — the negative cache must be
@@ -1556,22 +1791,21 @@ mod tests {
             tile_entity,
             crate::components::NavmeshTile(two_triangle_quad()),
         );
-        let tiles = world
-            .query::<crate::components::NavmeshTile>()
-            .expect("NavmeshTile registered");
+        let tiles = NavGraphs::of(&world).expect("NavmeshTile registered");
         let inside_goal = Vec3::new(9.0, 0.0, 9.0);
         let start = Vec3::new(1.0, 0.0, 1.0);
         let cached = NavPath {
             goal: inside_goal,
             residency_generation: 7,
             waypoints: VecDeque::new(),
+            grid: Default::default(),
         };
 
         // Same generation, frozen goal (`0.0` threshold): still a hit, so the
         // negative cache keeps doing its job and an off-navmesh actor does not
         // re-run the search every tick — even though a tile is now resident
         // and a search WOULD succeed.
-        let (effective_goal, waypoints) =
+        let (effective_goal, waypoints, _) =
             resolve_cached_waypoints(Some(&cached), Some(&tiles), start, inside_goal, 0.0, 7);
         assert_eq!(effective_goal, inside_goal);
         assert!(
@@ -1582,7 +1816,7 @@ mod tests {
 
         // The tile streamed in: same goal, bit-identical, but the generation
         // moved, so the cache must MISS and the search must actually re-run.
-        let (effective_goal, waypoints) =
+        let (effective_goal, waypoints, _) =
             resolve_cached_waypoints(Some(&cached), Some(&tiles), start, inside_goal, 0.0, 8);
         assert_eq!(
             effective_goal, inside_goal,
@@ -1612,12 +1846,13 @@ mod tests {
             goal,
             residency_generation: 3,
             waypoints: VecDeque::from(vec![Vec3::new(50.0, 0.0, 50.0), goal]),
+            grid: Default::default(),
         };
 
-        let (_, reused) = resolve_cached_waypoints(Some(&cached), None, Vec3::ZERO, goal, 10.0, 3);
+        let (_, reused, _) = resolve_cached_waypoints(Some(&cached), None, Vec3::ZERO, goal, 10.0, 3);
         assert_eq!(reused, cached.waypoints, "same generation → reuse");
 
-        let (_, recomputed) =
+        let (_, recomputed, _) =
             resolve_cached_waypoints(Some(&cached), None, Vec3::ZERO, goal, 10.0, 4);
         assert!(
             recomputed.is_empty(),
@@ -1628,7 +1863,7 @@ mod tests {
 
     #[test]
     fn resolve_cached_waypoints_with_no_cache_at_all_recomputes() {
-        let (effective_goal, waypoints) =
+        let (effective_goal, waypoints, _) =
             resolve_cached_waypoints(None, None, Vec3::ZERO, Vec3::new(1.0, 0.0, 1.0), 10.0, 0);
         assert_eq!(effective_goal, Vec3::new(1.0, 0.0, 1.0));
         assert!(waypoints.is_empty());

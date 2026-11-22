@@ -48,7 +48,6 @@ impl EdgeLines {
 /// coefficient counts; `edge` filters one block edge: 8 positions from q0 index `o`, `along` apart, the
 /// pixels across it `across` apart. Inside a direction the edges touch disjoint pixels, so their order
 /// does not matter; across directions it does.
-#[allow(clippy::too_many_arguments)]
 fn filter_edges<T>(
     px: &mut [T],
     (w, y0): (usize, usize),

@@ -39,6 +39,21 @@ impl Component for NativeActivation {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// An engine door's verdict on an [`ActivateEvent`] aimed at it this frame (PRD door-runtime DRT-ACT-003, -004): the door runtime
+/// knows the lock, the activator's key and the script's block, the two-state consumer knows only the toggle. `Refused`: the
+/// default activation does not run (a locked door and an activator with no key, or a script that took the default processing
+/// over), so the state stays. `Admitted`: it does run, even for a [`NativeActivation`], because for a door the default
+/// processing *is* the toggle. A one-frame marker, drained with the event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DefaultActivation {
+    Refused,
+    Admitted,
+}
+
+impl Component for DefaultActivation {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// The activations a Papyrus `OnActivate` handler (or anything modelling one)
 /// receives this frame, as `(activated entity, activator)`: every
 /// [`ActivateEvent`] except the native-only ones ([`NativeActivation`]), for which
@@ -79,6 +94,14 @@ pub struct HitEvent {
     pub sneak_attack: bool,
     pub bash_attack: bool,
     pub blocked: bool,
+    /// The hit is the player's own arrow, from the bow shot path (player-archery BOW-USE-005): the provenance the
+    /// skill-use emitter reads, because the skill must not be guessed from the weapon the player happens to wield. `false`
+    /// for a melee blow, a trap, a script's projectile, a gun's shot and every other producer.
+    pub arrow: bool,
+    /// The weapon that dealt the hit ignores the target's Resist Normal Weapons (Oblivion: a silver, daedric or
+    /// enchanted weapon or arrow; UESP *Oblivion:The Complete Damage Formula*): the producer knows its weapon, the
+    /// consumer knows the target. `false` for a trap, a script and every plain weapon.
+    pub ignores_resistance: bool,
 }
 
 impl Component for HitEvent {
@@ -422,6 +445,9 @@ mod doc_ground_truth_tests {
             "the declaration scan found only {declared:?} — the extraction \
              broke, not the docs"
         );
+        // Papyrus events the VM delivers by name, not engine marker types: their names read like
+        // markers but are the CK's, held as constants where they are delivered.
+        declared.push(crate::fragment::MENU_OPEN_CLOSE_EVENT);
 
         // Names that read like this module's markers. `Batch`/`Events`
         // suffixes included: they are the shapes a marker gets replaced BY,

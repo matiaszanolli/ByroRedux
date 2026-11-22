@@ -560,8 +560,12 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
                     })
                 }
                 _ => uncompressed_expand_meta(
-                    data, width, height, mip_count, legacy_cubemap, bpp,
-                    r_mask, g_mask, b_mask, a_mask,
+                    data,
+                    width,
+                    height,
+                    mip_count,
+                    legacy_cubemap,
+                    RgbExpand { src_bpp: bpp, r_mask, g_mask, b_mask, a_mask },
                 ),
             }
         } else if bpp == 16 || bpp == 24 {
@@ -575,8 +579,12 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
             let b_mask = read_u32(data, 100)?;
             let a_mask = read_u32(data, 104)?;
             uncompressed_expand_meta(
-                data, width, height, mip_count, legacy_cubemap, bpp,
-                r_mask, g_mask, b_mask, a_mask,
+                data,
+                width,
+                height,
+                mip_count,
+                legacy_cubemap,
+                RgbExpand { src_bpp: bpp, r_mask, g_mask, b_mask, a_mask },
             )
         } else {
             bail!("Unsupported uncompressed DDS: {bpp} bpp (RGB masks; expected 16/24/32)");
@@ -596,8 +604,18 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
         let luminance_mask = read_u32(data, 92)?;
         let a_mask = read_u32(data, 104)?;
         uncompressed_expand_meta(
-            data, width, height, mip_count, legacy_cubemap, bpp,
-            luminance_mask, luminance_mask, luminance_mask, a_mask,
+            data,
+            width,
+            height,
+            mip_count,
+            legacy_cubemap,
+            RgbExpand {
+                src_bpp: bpp,
+                r_mask: luminance_mask,
+                g_mask: luminance_mask,
+                b_mask: luminance_mask,
+                a_mask,
+            },
         )
     } else {
         bail!("Unsupported DDS pixel format (flags={:#x})", pf_flags);
@@ -609,19 +627,15 @@ pub fn parse_dds(data: &[u8]) -> Result<DdsMetadata> {
 /// (#1542) and non-canonical 32-bpp layouts — X8R8G8B8's absent alpha
 /// mask, X8B8G8R8, exotic splits (#5378). Shared by both `parse_dds`
 /// arms so the mask validation and the #4835 payload check cannot drift.
-#[allow(clippy::too_many_arguments)]
 fn uncompressed_expand_meta(
     data: &[u8],
     width: u32,
     height: u32,
     mip_count: u32,
     legacy_cubemap: bool,
-    bpp: u32,
-    r_mask: u32,
-    g_mask: u32,
-    b_mask: u32,
-    a_mask: u32,
+    expand: RgbExpand,
 ) -> Result<DdsMetadata> {
+    let RgbExpand { src_bpp: bpp, r_mask, g_mask, b_mask, a_mask } = expand;
     ensure!(
         r_mask | g_mask | b_mask != 0,
         "Uncompressed {bpp}-bpp DDS has empty RGB channel masks — cannot decode",
@@ -639,13 +653,7 @@ fn uncompressed_expand_meta(
         array_layers: if legacy_cubemap { 6 } else { 1 },
         is_cubemap: legacy_cubemap,
         data_offset: HEADER_SIZE,
-        expand: Some(RgbExpand {
-            src_bpp: bpp,
-            r_mask,
-            g_mask,
-            b_mask,
-            a_mask,
-        }),
+        expand: Some(expand),
     };
     // #4835 — every other format is length-checked at upload
     // (`record_dds_upload` compares the raw file tail against

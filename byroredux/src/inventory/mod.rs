@@ -11,7 +11,6 @@ use byroredux_core::ecs::components::{
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::Component;
 use byroredux_core::ecs::{Resource, World};
-use byroredux_plugin::esm::reader::GameKind;
 use byroredux_plugin::esm::records::{EsmIndex, ItemKind};
 use byroredux_sdk::inventory::{ItemCategory, ItemMetadata};
 use rustc_hash::FxHashMap;
@@ -39,7 +38,9 @@ pub(crate) const SOURCES: &str = concat!(
     include_str!("actions.rs"),
 );
 
-const PLAYER_NPC_FORM_ID: u32 = 0x0000_0007;
+// #7211 — the Player base FormID and its per-game table live beside `NpcRecord` in the plugin crate, where the
+// population and scripting crates can read them too.
+pub(crate) use byroredux_plugin::esm::records::actor::{player_npc_form_id, PLAYER_NPC_FORM_ID};
 
 /// Where an equippable item goes when the player toggles it.
 ///
@@ -59,22 +60,11 @@ pub(crate) enum EquipTarget {
     BipedSlots(u64),
     /// The wielded-weapon slot, outside the biped occupancy array.
     Weapon,
+    /// The player's chosen arrow type (player-archery BOW-AMM-001): a slot of its own, not a biped slot and not
+    /// the wielded weapon. Only games with a bow row make ammunition equippable.
+    Ammo,
 }
 
-/// Resolve the base `NPC_` record for the player, never the placed player
-/// reference (`0x00000014`). Every currently supported master preserves the
-/// lineage-wide `Player` base at FormID 7; keeping the exhaustive game table
-/// here makes a future variant divergence an explicit compiler-visible edit.
-pub(crate) fn player_npc_form_id(game: GameKind) -> u32 {
-    match game {
-        GameKind::Oblivion
-        | GameKind::Fallout3NV
-        | GameKind::Skyrim
-        | GameKind::Fallout4
-        | GameKind::Fallout76
-        | GameKind::Starfield => PLAYER_NPC_FORM_ID,
-    }
-}
 
 /// One-frame-plus handoff queue for inventory actions arriving off the
 /// main-thread mutation scope (the `inv.equip` debug command). Drained
@@ -82,7 +72,7 @@ pub(crate) fn player_npc_form_id(game: GameKind) -> u32 {
 /// beside the other per-frame player actions. Runtime plumbing, never
 /// serialized.
 #[derive(Debug, Default)]
-pub(crate) struct PendingInventoryActions(pub(crate) Vec<byroredux_debug_ui::InventoryAction>);
+pub(crate) struct PendingInventoryActions(pub(crate) Vec<byroredux_native_ui::InventoryAction>);
 
 impl Resource for PendingInventoryActions {}
 
@@ -112,43 +102,23 @@ pub(crate) fn add_item(
     Some(index)
 }
 
-/// Queue one [`InventoryAction::ToggleEquip`] for the row whose base form is
-/// `form_id`, to be drained through [`apply_action`] on the main thread.
-/// Returns a user-facing error when the player has no such row.
+/// Queue one [`InventoryAction::ToggleEquip`] for the player's first row carrying `form_id` (`inv.equip`), to be
+/// drained through [`apply_action`] on the main thread. Returns a user-facing error when the player has no such row.
+/// The row is [`Inventory::first_row_of`]'s, as `inv.use` and `inv.drop` take it: a row zeroed in place is skipped
+/// for a later one that holds the item (#7232).
 pub(crate) fn queue_equip_by_form_id(world: &World, form_id: u32) -> Result<String, String> {
-    let player = PlayerEntity::get(world)
-        .ok_or_else(|| "no player".to_string())?;
-    let index = world
-        .get::<Inventory>(player)
-        .and_then(|inventory| {
-            inventory
-                .items
-                .iter()
-                .position(|stack| stack.base_form_id == form_id)
-        })
-        .ok_or_else(|| format!("no inventory row with form {form_id:08X}"))?;
-    let Some(mut pending) = world.try_resource_mut::<PendingInventoryActions>() else {
-        return Err("inventory action queue unavailable".to_string());
-    };
-    pending
-        .0
-        .push(byroredux_debug_ui::InventoryAction::ToggleEquip {
-            index: index as u32,
-        });
-    Ok(format!(
-        "queued equip toggle for row {index} (form {form_id:08X})"
-    ))
+    queue_by_form_id(world, form_id, "equip toggle", |index, _| byroredux_native_ui::InventoryAction::ToggleEquip { index })
 }
 
 /// Queue the menu's own `Consume` of the player's row carrying `form_id` (`inv.use`): the same door a
 /// click on "use" takes, drained by [`drain_pending_inventory_actions`].
 pub(crate) fn queue_consume_by_form_id(world: &World, form_id: u32) -> Result<String, String> {
-    queue_by_form_id(world, form_id, "use", |index, form_id| byroredux_debug_ui::InventoryAction::Consume { index, form_id })
+    queue_by_form_id(world, form_id, "use", |index, form_id| byroredux_native_ui::InventoryAction::Consume { index, form_id })
 }
 
 /// Queue the menu's own `Drop` of one item of the player's row carrying `form_id` (`inv.drop`).
 pub(crate) fn queue_drop_by_form_id(world: &World, form_id: u32) -> Result<String, String> {
-    queue_by_form_id(world, form_id, "drop", |index, form_id| byroredux_debug_ui::InventoryAction::Drop { index, form_id })
+    queue_by_form_id(world, form_id, "drop", |index, form_id| byroredux_native_ui::InventoryAction::Drop { index, form_id })
 }
 
 /// Queue `action` for the player's first row carrying `form_id`; `verb` names it in the reply.
@@ -156,7 +126,7 @@ fn queue_by_form_id(
     world: &World,
     form_id: u32,
     verb: &str,
-    action: impl FnOnce(u32, u32) -> byroredux_debug_ui::InventoryAction,
+    action: impl FnOnce(u32, u32) -> byroredux_native_ui::InventoryAction,
 ) -> Result<String, String> {
     let player = PlayerEntity::get(world).ok_or_else(|| "no player".to_string())?;
     let index = world
@@ -203,11 +173,10 @@ fn drain_script_weapon_equips(world: &mut World) {
             continue;
         };
         let wielded = world.get::<EquipmentSlots>(actor).is_some_and(|slots| slots.is_equipped(InventoryIndex(row as u32)));
-        if !wielded {
-            if let Some(mut pending) = world.try_resource_mut::<PendingInventoryActions>() {
-                pending.0.push(byroredux_debug_ui::InventoryAction::ToggleEquip { index: row as u32 });
+        if !wielded
+            && let Some(mut pending) = world.try_resource_mut::<PendingInventoryActions>() {
+                pending.0.push(byroredux_native_ui::InventoryAction::ToggleEquip { index: row as u32 });
             }
-        }
     }
 }
 

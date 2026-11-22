@@ -68,6 +68,9 @@ enum Selector<'a> {
     Child(&'a str),
     /// `screen()` / `strings()` pseudo-tiles.
     Pseudo(&'a str),
+    /// `io()`: the menu's input / output traits — the root tile's, which engine code and scripts
+    /// set (`SetUIFloat "HudMainMenu\_MyModVisible" 1`, GECK *Tutorial: Understanding XML*).
+    Io,
     /// Bare tile name, resolved through the document's name index.
     Named(&'a str),
 }
@@ -80,19 +83,19 @@ fn parse_selector(src: &str) -> Selector<'_> {
             "parent" => return Selector::Parent,
             "screen" => return Selector::Pseudo("screen"),
             "strings" => return Selector::Pseudo("strings"),
+            "globals" => return Selector::Pseudo("globals"),
+            "io" => return Selector::Io,
             _ => {}
         }
     }
-    if let Some(rest) = trimmed.strip_prefix("sibling(") {
-        if let Some(name) = rest.strip_suffix(')') {
+    if let Some(rest) = trimmed.strip_prefix("sibling(")
+        && let Some(name) = rest.strip_suffix(')') {
             return Selector::Sibling(name.trim());
         }
-    }
-    if let Some(rest) = trimmed.strip_prefix("child(") {
-        if let Some(name) = rest.strip_suffix(')') {
+    if let Some(rest) = trimmed.strip_prefix("child(")
+        && let Some(name) = rest.strip_suffix(')') {
             return Selector::Child(name.trim());
         }
-    }
     // `screen`/`strings` also appear without parens in some menus.
     match trimmed {
         "screen" => Selector::Pseudo("screen"),
@@ -108,6 +111,11 @@ pub struct EvalState<'a> {
     pub screen: ScreenTraits,
     /// `strings.xml` traits (`_name` → string), the `strings()` source.
     pub strings: &'a HashMap<String, Scalar>,
+    /// `globals.xml` traits, the `globals()` source (FO3/FNV).
+    globals: Option<&'a HashMap<String, Scalar>>,
+    /// Text tiles' displayed `(width, height)`, measured by the renderer: what a text tile's
+    /// `width` / `height` read (the native code sets them; documents cannot author them).
+    text_sizes: HashMap<usize, (f32, f32)>,
     /// Engine overrides, keyed `(tile-name-lower, trait-lower)`; the
     /// empty tile name addresses the menu root.
     overrides: &'a Overrides,
@@ -133,10 +141,24 @@ impl<'a> EvalState<'a> {
             doc,
             screen,
             strings,
+            globals: None,
+            text_sizes: HashMap::new(),
             overrides,
             memo: HashMap::new(),
             depth: 0,
         }
+    }
+
+    /// Answer text tiles' `width` / `height` from `sizes` (tile → displayed size).
+    pub fn with_text_sizes(mut self, sizes: HashMap<usize, (f32, f32)>) -> Self {
+        self.text_sizes = sizes;
+        self
+    }
+
+    /// Feed `globals()` selections from `globals`.
+    pub fn with_globals(mut self, globals: &'a HashMap<String, Scalar>) -> Self {
+        self.globals = Some(globals);
+        self
     }
 
     /// Evaluate every trait of every tile, in arena (document) order.
@@ -161,10 +183,20 @@ impl<'a> EvalState<'a> {
             return v.clone();
         }
         // Engine override wins over anything authored.
-        if let Some(owner) = self.doc.tiles[tile].name.as_deref() {
-            if let Some(v) = self.overrides.get(&(owner.to_lowercase(), key.clone())) {
+        if let Some(owner) = self.doc.tiles[tile].name.as_deref()
+            && let Some(v) = self.overrides.get(&(owner.to_lowercase(), key.clone())) {
                 self.memo.insert((tile, key), v.clone());
                 return v.clone();
+            }
+        if let Some(&(width, height)) = self.text_sizes.get(&tile) {
+            let measured = match key.as_str() {
+                "width" => Some(width),
+                "height" => Some(height),
+                _ => None,
+            };
+            if let Some(value) = measured {
+                self.memo.insert((tile, key), Scalar::Num(value));
+                return Scalar::Num(value);
             }
         }
         let raw = self.doc.tiles[tile].traits.get(&key).cloned();
@@ -223,6 +255,7 @@ impl<'a> EvalState<'a> {
     fn read_selected(&mut self, tile: usize, src: &str, trait_name: &str) -> Scalar {
         match parse_selector(src) {
             Selector::Me => self.trait_value(tile, trait_name),
+            Selector::Io => self.trait_value(0, trait_name),
             Selector::Parent => match self.doc.tiles[tile].parent {
                 Some(p) => self.trait_value(p, trait_name),
                 // Root's parent: read against the root itself (harmless
@@ -283,6 +316,13 @@ impl<'a> EvalState<'a> {
                         Scalar::Num(0.0)
                     })
             }
+            Selector::Pseudo("globals") => {
+                let key = trait_name.to_lowercase();
+                self.globals.and_then(|globals| globals.get(&key)).cloned().unwrap_or_else(|| {
+                    log::debug!("menuxml: globals() trait '{trait_name}' missing");
+                    Scalar::Num(0.0)
+                })
+            }
             Selector::Pseudo(other) => {
                 log::debug!("menuxml: unknown pseudo-selector {other}()");
                 Scalar::Num(0.0)
@@ -306,11 +346,10 @@ impl<'a> EvalState<'a> {
         use OpKind::*;
         // String flow: `copy` passes strings through untouched (region
         // text, filenames). Everything else coerces to numbers.
-        if matches!(kind, Copy) {
-            if let Scalar::Str(_) = arg {
+        if matches!(kind, Copy)
+            && let Scalar::Str(_) = arg {
                 return arg;
             }
-        }
         let w = working.as_ref().map(|s| s.as_num()).unwrap_or(0.0);
         let a = arg.as_num();
         let truthy_2 = |b: bool| Scalar::Num(if b { 2.0 } else { 0.0 });

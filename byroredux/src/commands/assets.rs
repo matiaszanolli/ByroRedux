@@ -474,10 +474,8 @@ fn configured_debug_archive(path: &str) -> bool {
     let requested = std::path::Path::new(path).canonicalize().ok();
     let args = crate::cli_args::effective_args();
     args.windows(2).any(|pair| {
-        matches!(
-            pair[0].as_str(),
-            "--bsa" | "--textures-bsa" | "--scripts-bsa" | "--sounds-bsa" | "--materials-bsa"
-        ) && std::path::Path::new(&pair[1]).canonicalize().ok() == requested
+        crate::cli_args::ARCHIVE_FLAGS.contains(&pair[0].as_str())
+            && std::path::Path::new(&pair[1]).canonicalize().ok() == requested
             && requested.is_some()
     })
 }
@@ -503,18 +501,9 @@ fn unique_default_dump_name_in(root: &std::path::Path) -> String {
     unreachable!("u32 suffix space exhausted")
 }
 
+/// A `tex.dump` output under `texture-dumps/`, through the one confined-writer rule (#7182).
 fn safe_tex_dump_path(name: &str) -> Option<std::path::PathBuf> {
-    use std::path::{Component, Path};
-    let path = Path::new(name);
-    let mut components = path.components();
-    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
-        return None;
-    }
-    let root = Path::new("texture-dumps");
-    std::fs::create_dir_all(root).ok()?;
-    let root = root.canonicalize().ok()?;
-    let cwd = std::env::current_dir().ok()?.canonicalize().ok()?;
-    root.starts_with(cwd).then(|| root.join(path))
+    byroredux_core::atomic_file::confined_output_path("texture-dumps", name).ok()
 }
 
 /// Whitespace split honoring double-quoted segments — archive paths like
@@ -848,11 +837,10 @@ impl ConsoleCommand for MeshInfoCommand {
                 break;
             };
             chain.push(parent);
-            if found_form.is_none() {
-                if let Some(fid) = world.get::<FormIdComponent>(parent) {
+            if found_form.is_none()
+                && let Some(fid) = world.get::<FormIdComponent>(parent) {
                     found_form = Some(fid.0);
                 }
-            }
             current = parent;
         }
         if chain.len() > 1 {
@@ -1202,6 +1190,17 @@ impl ConsoleCommand for SkinCoverageCommand {
         lines.push(format!(
             "  refits_succeeded       = {}",
             cov.refits_succeeded,
+        ));
+        // #7150 — the work the two GPU brackets below measured, so each can
+        // be read as a rate. Same frame as the counters; the brackets are
+        // fence-lagged, so take rates from a steady scene, not one frame.
+        lines.push(format!(
+            "  dispatch_vertices      = {}  (skinned this frame)",
+            cov.dispatch_vertices,
+        ));
+        lines.push(format!(
+            "  refit_triangles        = {}  (BLAS-refit this frame)",
+            cov.refit_triangles,
         ));
         // #2803 — CPU-side cost of driving the whole skinned chain
         // (dispatch + first-sight builds + refits + eviction). Same

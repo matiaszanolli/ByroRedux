@@ -405,22 +405,18 @@ fn improve_item(world: &World, player: EntityId, recipe: &Recipe, enchanted: boo
         }
     }
     // The equipped weapon follows its row when that very row was improved in place.
-    if in_place {
-        if let Some(mut equipped) = world.query_mut::<byroredux_core::ecs::components::EquippedWeapon>() {
-            if let Some(weapon) = equipped.get_mut(player) {
-                if weapon.inventory_index == InventoryIndex(plan.stack as u32) {
+    if in_place
+        && let Some(mut equipped) = world.query_mut::<byroredux_core::ecs::components::EquippedWeapon>()
+            && let Some(weapon) = equipped.get_mut(player)
+                && weapon.inventory_index == InventoryIndex(plan.stack as u32) {
                     weapon.damage += crate::smithing::weapon_bonus(plan.to) - crate::smithing::weapon_bonus(plan.from);
                 }
-            }
-        }
-    }
     let base_value = world.try_resource::<InventoryCatalog>().map_or(0, |catalog| catalog.item_value(recipe.output));
     let xp = crate::smithing::improvement_xp(base_value, plan.from, plan.to);
-    if xp > 0.0 {
-        if let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingSkillAdvances>() {
+    if xp > 0.0
+        && let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingSkillAdvances>() {
             pending.0.push((SMITHING_SKILL.to_owned(), xp));
         }
-    }
     let line = format!("Improved {} to {}", item_name(world, recipe.output), crate::smithing::quality_name(plan.to));
     crate::notifications::push(world, line.clone());
     Ok(line)
@@ -466,7 +462,7 @@ pub(crate) fn end_crafting(world: &World) {
 }
 
 /// The page's snapshot while a session is open.
-pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::CraftingSnapshot> {
+pub(crate) fn snapshot(world: &World) -> Option<byroredux_native_ui::CraftingSnapshot> {
     let bench = world.try_resource::<ActiveCrafting>()?.0?;
     let bench_name = base_of(world, bench)
         .and_then(|base| {
@@ -479,7 +475,7 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::CraftingSnap
         .unwrap_or_else(|| "Workbench".to_owned());
     let recipes = recipes_at(world, bench)
         .into_iter()
-        .map(|recipe| byroredux_debug_ui::CraftingRecipeView {
+        .map(|recipe| byroredux_native_ui::CraftingRecipeView {
             form_id: recipe.form_id,
             name: recipe.name,
             count: recipe.output_count,
@@ -487,7 +483,7 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_debug_ui::CraftingSnap
             craftable: recipe.craftable,
         })
         .collect();
-    Some(byroredux_debug_ui::CraftingSnapshot { bench_name, recipes })
+    Some(byroredux_native_ui::CraftingSnapshot { bench_name, recipes })
 }
 
 /// A bench's editor id as a heading: `CraftingTanningRackMarker` -> `Tanning Rack` (the `Crafting`
@@ -506,8 +502,8 @@ fn bench_display_name(editor_id: &str) -> String {
 }
 
 /// Apply the page's action at the open bench.
-pub(crate) fn apply_action(world: &World, action: byroredux_debug_ui::CraftingAction) -> Result<String, String> {
-    let byroredux_debug_ui::CraftingAction::Craft { recipe } = action;
+pub(crate) fn apply_action(world: &World, action: byroredux_native_ui::CraftingAction) -> Result<String, String> {
+    let byroredux_native_ui::CraftingAction::Craft { recipe } = action;
     let bench = world
         .try_resource::<ActiveCrafting>()
         .and_then(|active| active.0)
@@ -515,9 +511,20 @@ pub(crate) fn apply_action(world: &World, action: byroredux_debug_ui::CraftingAc
     craft(world, recipe, bench)
 }
 
-/// The placed bench nearest the player, for the console door.
-/// Every loaded bench with its base form and position, for the console.
-pub(crate) fn loaded_benches(world: &World) -> Vec<(EntityId, u32, byroredux_core::math::Vec3)> {
+
+/// A placed bench in the loaded cells: a reference whose base carries a crafting keyword.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct LoadedBench {
+    pub(crate) entity: EntityId,
+    pub(crate) base: u32,
+    pub(crate) reference: u32,
+    pub(crate) at: byroredux_core::math::Vec3,
+    /// A disabled bench keeps a content-less placement root and is never used (#6539).
+    pub(crate) enabled: bool,
+}
+
+/// Every bench in the loaded cells, disabled ones included (`craft benches` reports both).
+pub(crate) fn loaded_benches(world: &World) -> Vec<LoadedBench> {
     let Some(book) = world.try_resource::<CraftingBook>() else {
         return Vec::new();
     };
@@ -528,32 +535,23 @@ pub(crate) fn loaded_benches(world: &World) -> Vec<(EntityId, u32, byroredux_cor
     drop(book);
     found
         .into_iter()
-        .filter(|(_, _, form)| byroredux_scripting::SceneAliasCandidate::placement_enabled(world, *form))
-        .filter_map(|(entity, base, _)| Some((entity, base, world.get::<byroredux_core::ecs::components::GlobalTransform>(entity)?.translation)))
+        .filter_map(|(entity, base, reference)| {
+            let at = world.get::<byroredux_core::ecs::components::GlobalTransform>(entity)?.translation;
+            let enabled = byroredux_scripting::SceneAliasCandidate::placement_enabled(world, reference);
+            Some(LoadedBench { entity, base, reference, at, enabled })
+        })
         .collect()
 }
 
+/// The enabled bench nearest the player.
 pub(crate) fn nearest_bench(world: &World) -> Option<EntityId> {
     let player = PlayerEntity::get(world)?;
     let here = world.get::<byroredux_core::ecs::components::GlobalTransform>(player)?.translation;
-    let book = world.try_resource::<CraftingBook>()?;
-    let candidates: Vec<(EntityId, u32)> = world
-        .query::<byroredux_scripting::SceneAliasCandidate>()?
-        .iter()
-        .filter(|(_, identity)| book.is_bench_base(identity.base_form_id))
-        .map(|(entity, identity)| (entity, identity.reference_form_id))
-        .collect();
-    drop(book);
-    candidates
+    loaded_benches(world)
         .into_iter()
-        // A disabled bench keeps a content-less placement root (#6539).
-        .filter(|(_, form)| byroredux_scripting::SceneAliasCandidate::placement_enabled(world, *form))
-        .filter_map(|(entity, _)| {
-            let at = world.get::<byroredux_core::ecs::components::GlobalTransform>(entity)?.translation;
-            Some((entity, (at - here).length()))
-        })
-        .min_by(|a, b| a.1.total_cmp(&b.1))
-        .map(|(entity, _)| entity)
+        .filter(|bench| bench.enabled)
+        .min_by(|a, b| (a.at - here).length().total_cmp(&(b.at - here).length()))
+        .map(|bench| bench.entity)
 }
 
 #[cfg(test)]
@@ -637,8 +635,9 @@ mod tests {
         authored.initially_disabled.insert(0x9000 + FORGE);
         world.insert_resource(authored);
         assert_eq!(nearest_bench(&world), Some(far_forge), "the disabled forge is passed over");
-        let listed: Vec<EntityId> = loaded_benches(&world).into_iter().map(|(entity, ..)| entity).collect();
-        assert_eq!(listed, vec![far_forge]);
+        let enabled: Vec<EntityId> = loaded_benches(&world).into_iter().filter(|bench| bench.enabled).map(|bench| bench.entity).collect();
+        assert_eq!(enabled, vec![far_forge]);
+        assert_eq!(loaded_benches(&world).len(), 2, "`craft benches` still lists the disabled one");
     }
 
     #[test]
@@ -655,7 +654,7 @@ mod tests {
         world.insert_resource(ActiveCrafting::default());
         give(&mut world, player, IRON_INGOT, 1);
         give(&mut world, player, LEATHER, 1);
-        let action = byroredux_debug_ui::CraftingAction::Craft { recipe: RECIPE };
+        let action = byroredux_native_ui::CraftingAction::Craft { recipe: RECIPE };
         assert!(apply_action(&world, action).is_err(), "no bench open");
         begin_crafting(&world, forge).unwrap();
         assert!(apply_action(&world, action).is_ok());

@@ -147,6 +147,13 @@ impl ScaleformHostCatalog {
             .map(|index| &self.methods()[index])
     }
 
+    /// The Phase 0 behaviour class of a catalog method (M48 GUI-HOST-001): its target class,
+    /// the H2 reason and the canonical API (see [`crate::behaviour`]). `None` for a method the
+    /// catalog lacks (H4).
+    pub fn behaviour(self, name: &str) -> Option<&'static crate::HostBehaviour> {
+        self.find(name).and_then(|_| crate::behaviour::behaviour(self.profile, name))
+    }
+
     pub fn contains(self, name: &str) -> bool {
         self.find(name).is_some()
     }

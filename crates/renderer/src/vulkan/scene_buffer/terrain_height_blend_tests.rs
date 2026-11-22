@@ -202,12 +202,12 @@ fn shares_sum_to_one_and_heightless_lanes_are_untouched() {
 /// The GLSL carries the lines the mirror above stands for.
 #[test]
 fn glsl_blend_fades_each_lane_with_its_share() {
-    let src = include_str!("../../../shaders/include/bindings.glsl");
+    let src = include_str!("../../../shaders/include/terrain_tile.glsl");
     // #6197 — the arithmetic moved into the core the blend and the parallax's
     // height query share; the pins follow it there.
     let body = src
         .split_once("float byroTerrainBlendCore(")
-        .expect("byroTerrainBlendCore must stay in bindings.glsl")
+        .expect("byroTerrainBlendCore must stay in terrain_tile.glsl")
         .1;
     let body = &body[..body.find("\n}\n").expect("function end")];
     for line in [

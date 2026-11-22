@@ -44,6 +44,7 @@ mod media_set;
 mod music;
 mod relationship;
 mod magic;
+pub(crate) use magic::oblivion_effect_chain;
 pub mod pack;
 mod quest;
 mod scene;

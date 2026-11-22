@@ -33,12 +33,16 @@ pub fn load_idle_clip(
 /// registry. Returns `(handle, duration)`: the seat system holds the clip at
 /// `local_time = duration` with `playing = false`, which yields the seated end
 /// pose (see the M42.1 diagnosis in `systems::sandbox`). Path-keyed memoised
-/// (#790). `None` for Skyrim+/Havok games or when the clip isn't archived.
+/// (#790). Skyrim's is a decoded `.hkx` (AIP-SIT-002); `None` for FO4+ or when
+/// the clip isn't archived.
 pub fn load_sit_clip(
     world: &mut World,
     tex_provider: &TextureProvider,
     game: GameKind,
 ) -> Option<(u32, f32)> {
+    if game == GameKind::Skyrim {
+        return crate::asset_provider::load_skyrim_sit_clip(world, tex_provider);
+    }
     let kf_path = sandbox_sit_enter_kf_path(game)?;
     let handle = load_kf_clip_by_path(world, tex_provider, kf_path)?;
     // The held-frame time is the clip duration; fetch it once now so the seat
@@ -58,15 +62,20 @@ pub fn load_sit_clip(
 /// the accum root + `Bip01 NonAccum` down onto the seat; its last frame is a
 /// complete, grounded seated pose. Verified present in vanilla FNV
 /// `Fallout - Meshes.bsa` (BSA scan 2026-07-12). `None` for games whose actors
-/// animate through Havok `.hkx` (Skyrim+/FO4+) or whose furniture sit-anim path
-/// hasn't been verified (Oblivion — deferred). FO3 shares the FNV path. The
-/// enter↔furniture pairing is game-hardcoded; Phase A uses one verified chair
-/// enter for all sit markers (per-type mapping is Phase C).
+/// animate through Havok `.hkx` (Skyrim+/FO4+; Skyrim's standalone clip is
+/// `asset_provider::load_skyrim_sit_clip`, AIP-SIT-002).
+/// FO3 shares the FNV path. Oblivion's counterpart is `chair_leftenter.kf`:
+/// same 1.13 s length, accum root `Bip01` dropping ~51.6 units onto the seat
+/// (FNV 50.7), where its `dynamicidle_sit.kf` loop is flat like the FO3/FNV
+/// ones (archive scan 2026-11-19, `crates/nif/examples/kf_root_probe.rs`).
+/// Oblivion ships no `_female` directory, so both genders take the `_male`
+/// clip. The enter↔furniture pairing is game-hardcoded; Phase A uses one
+/// verified chair enter for all sit markers (per-type mapping is Phase C).
 pub fn sandbox_sit_enter_kf_path(game: GameKind) -> Option<&'static str> {
     match game {
         GameKind::Fallout3NV => Some(r"meshes\characters\_male\idleanims\chairskirt_leftenter.kf"),
-        GameKind::Oblivion
-        | GameKind::Skyrim
+        GameKind::Oblivion => Some(r"meshes\characters\_male\idleanims\chair_leftenter.kf"),
+        GameKind::Skyrim
         | GameKind::Fallout4
         | GameKind::Fallout76
         | GameKind::Starfield => None,

@@ -336,8 +336,8 @@ fn apply_cdb_material(
     // texture kinds (#4429 table) — pre-fix the first walked replacement
     // tinted the albedo whatever slot it sat on (a flat-normal became a
     // blue tint).
-    if material.textures.base_color.is_none() {
-        if let Some((_, [r, g, b, _a])) = cdb_mat
+    if material.textures.base_color.is_none()
+        && let Some((_, [r, g, b, _a])) = cdb_mat
             .flat_color_slots
             .iter()
             .find(|(slot, _)| *slot == byroredux_sfmaterial::SLOT_COLOR)
@@ -345,7 +345,6 @@ fn apply_cdb_material(
             material.diffuse_color = [*r, *g, *b];
             *touched = true;
         }
-    }
 
     if let Some(threshold) = cdb_mat.alpha_test_threshold {
         // #5196 / #5661 — the threshold applies only where an opacity
@@ -614,14 +613,13 @@ pub(crate) fn merge_external_material(
         // lookup. Vanilla ships none; four Creation archives carry 20 —
         // this is the mod path. #5396 — a file that does not decode no
         // longer pre-empts the CDB: it falls through to the lookup below.
-        if let Some(bytes) = provider.extract_from_archives(&path) {
-            if let Some(outcome) =
+        if let Some(bytes) = provider.extract_from_archives(&path)
+            && let Some(outcome) =
                 apply_loose_mat(material, &bytes, pool, &mut touched, texture_exists)
             {
                 trace_merge_outcome(&path, outcome);
                 return outcome;
             }
-        }
         // #3398 Phase 2 — resolve through the CDB material index next;
         // the Phase-1 PBR-routing flip is now the lookup-MISS fallback.
         // #5284 — the shared tail; this arm records its fill as a `.mat`
@@ -657,8 +655,8 @@ pub(crate) fn merge_external_material(
         None
     };
     let magic_kind = provider.peek_magic(&path);
-    if let (Some(ext), Some(magic)) = (ext_kind, magic_kind) {
-        if ext != magic {
+    if let (Some(ext), Some(magic)) = (ext_kind, magic_kind)
+        && ext != magic {
             log::warn!(
                 "material '{}': extension implies {:?} but file magic implies {:?}; \
                  dispatching on magic to avoid wrong override semantics",
@@ -667,7 +665,6 @@ pub(crate) fn merge_external_material(
                 magic
             );
         }
-    }
     // Magic wins when present; extension is the fallback for files not (yet)
     // in any loaded archive (caller already got None from peek_magic).
     let dispatch_kind = magic_kind.or(ext_kind);
@@ -713,13 +710,7 @@ pub(crate) fn merge_external_material(
         // explicitly instead of the generic "unsupported format" message,
         // so an operator sees one clear degradation line rather than
         // per-mesh spam disconnected from the upstream CDB failure.
-        static WARNED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-            std::sync::OnceLock::new();
-        let mut set = WARNED
-            .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if set.insert(path.to_owned()) {
+        if crate::asset_provider::report_once("unresolved-material", &path) {
             log::warn!(
                 "{}",
                 unresolved_material_warning(&path, provider.has_starfield_cdb())
@@ -781,7 +772,6 @@ struct BgsmTextureSlotState {
     nif_supplied_greyscale_lut: bool,
 }
 
-#[allow(clippy::too_many_arguments)] // One BGSM slot pass: the file, its slot state, the target material, the pool and the exists-probe are separate borrows of the caller's frame.
 fn apply_bgsm_texture_slots(
     bgsm: &BgsmFile,
     state: &mut BgsmTextureSlotState,
@@ -1528,7 +1518,50 @@ fn merge_bgsm_arm(
         //     `assume_shadowmask`: 12, `enable_editor_alpha_ref`: 258
         //   * BGEM `emittance_color`; `blood_enabled` / `falloff_enabled`
         //     (read only by the glass predicate); the `adaptive_emissive_*`
-        //     tuning
+        //     tuning, `adaptive_emissive_final_exposure_min` included
+        //
+        // #7140 (PAR-D5-2026-11-20-03) — the groups #6848 still left out,
+        // counted by the parsers audit's `bgsmcount` probe over vanilla
+        // Fallout4 and SeventySix materials; no visual claim is made:
+        //   * `base.refraction` / `refraction_power` (BGSM and BGEM): FO4
+        //     `refraction_power != 0` 10 BGSM / 6 BGEM; FO76 `refraction` 53
+        //     / 44, `refraction_power != 0` 69 / 98. Not glass (#2626, see
+        //     `material/mod.rs`): a screen-space distortion (heat shimmer,
+        //     force fields) the engine has no pass for — the first
+        //     candidate here to WIRE once one exists
+        //   * `environment_mapping_window`: 13, `environment_mapping_eye`: 8
+        //     (FO4); `hide_secret`
+        //   * the tessellation scalars beside the `tessellate` flag —
+        //     `displacement_texture_bias`, `displacement_texture_scale`,
+        //     `tessellation_pn_scale`, `tessellation_base_factor`,
+        //     `tessellation_fade_distance`: non-zero on all 25,948 FO76
+        //     BGSMs, the parser's default rather than authored intent, and
+        //     the engine does not tessellate (the displacement texture slot
+        //     itself is bound above)
+        //   * FO76's terrain block: `terrain` (150 BGSM),
+        //     `terrain_unk_int1`, `terrain_threshold_falloff`,
+        //     `terrain_tiling_distance`, `terrain_rotation_angle`
+        //
+        // #7165 — two deferrals documented elsewhere in this file, named here
+        // so the ledger holds every unmerged field:
+        //   * `distance_field_alpha_texture` (#2642, beside the texture
+        //     fills): no texture role or shader consumer yet
+        //   * BGEM `environment_mapping_mask_scale` (#2608, in the BGEM arm):
+        //     left unforwarded deliberately, pending its own shading evidence
+        //
+        // #7178 — the field names BGSM and BGEM both declare, recorded per
+        // struct (one plain mention above used to clear both). Same deferred
+        // class as the entries above: parsed, no sink, no visual claim:
+        //   * BGSM `adaptive_emissive_exposure_offset`, BGSM
+        //     `adaptive_emissive_final_exposure_min`, BGSM
+        //     `adaptive_emissive_final_exposure_max`, BGSM `glowmap`
+        //   * BGEM `adaptive_emissive_exposure_offset`, BGEM
+        //     `adaptive_emissive_final_exposure_min`, BGEM `glowmap` (BGEM
+        //     `adaptive_emissive_final_exposure_max` and BGEM `emittance_color`
+        //     are named above)
+        // `bgsm_merge.rs`'s `every_parsed_sidecar_field_is_merged_or_in_the_ledger`
+        // fails when a parser field is neither read here nor named in this
+        // ledger.
     }
     // #3639 — `smoothness == 1.0` lowers `roughness` to the 0.04 clamp
     // floor above (near-mirror dielectric). `triangle.frag` only

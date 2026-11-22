@@ -149,9 +149,11 @@ fn register_faction_reputation(registry: &mut ComponentRegistry) {
 pub fn register_all(registry: &mut ComponentRegistry) {
     use byroredux_core::animation::{AnimationPlayer, AnimationStack};
     use byroredux_core::character::{
-        CharacterIdentity, CharacterLevel, DismemberRecord, LevelUpPoints, Perks,
+        CharacterIdentity, CharacterLevel, DismemberRecord, LevelUpPoints, Perks, SkillUseLevel,
     };
-    use byroredux_scripting::SpellList;
+    use byroredux_scripting::magic_effects::ActiveMagicEffects;
+    use byroredux_scripting::obscript_state::WeaponDrawn;
+    use byroredux_scripting::{Bleedout, ScriptVariables, SpellList};
     use byroredux_core::ecs::components::*;
     use byroredux_core::ecs::components::water::WaterCurrentVolume;
 
@@ -371,6 +373,8 @@ pub fn register_all(registry: &mut ComponentRegistry) {
         "EquippedWeapon",
         vec!["inventory_index", "base_form_id", "damage", "reach", "speed"],
     );
+    // Player-archery BOW-AMM-001 — the equipped arrow type (`byro-dbg` reads it beside `EquippedWeapon`).
+    register_component::<EquippedAmmo>(registry, "EquippedAmmo", vec!["0"]);
     register_component::<Dead>(registry, "Dead", vec![]);
     // M65 (SNK-STN-002, #6910) — the player's sneak stance marker.
     register_component::<Sneaking>(registry, "Sneaking", vec![]);
@@ -378,6 +382,12 @@ pub fn register_all(registry: &mut ComponentRegistry) {
     register_component::<Perks>(registry, "Perks", vec!["entries"]);
     // PERK-DX-006 — a perk-granted ability is visible on the actor as a spell in its list.
     register_component::<SpellList>(registry, "SpellList", vec!["0"]);
+    // #7183 — scripting-crate state a developer inspects: the magic effects running on an actor, an
+    // actor down in bleedout, a script instance's numeric variables, and the drawn-weapon flag.
+    register_component::<ActiveMagicEffects>(registry, "ActiveMagicEffects", vec!["0"]);
+    register_component::<Bleedout>(registry, "Bleedout", vec!["remaining_secs"]);
+    register_component::<ScriptVariables>(registry, "ScriptVariables", vec!["values"]);
+    register_component::<WeaponDrawn>(registry, "WeaponDrawn", vec![]);
     register_component::<CharacterLevel>(registry, "CharacterLevel", vec!["level", "xp"]);
     // M47.2 — banked level-up skill points and perks (the `levelup` command).
     register_component::<LevelUpPoints>(
@@ -385,6 +395,8 @@ pub fn register_all(registry: &mut ComponentRegistry) {
         "LevelUpPoints",
         vec!["skill_points", "skill_point_fraction", "perk_points"],
     );
+    // OSL-SAVE-001 (#7050) — Oblivion skill-use leveling: major-skill increases, the attribute tallies and the levels pending.
+    register_component::<SkillUseLevel>(registry, "SkillUseLevel", vec!["major_increases", "attribute_tallies", "pending"]);
     // VATS-LIMB-001 / -008 — the parts recorded gone and the killing-blow location (`vats.limbs`).
     register_component::<DismemberRecord>(registry, "DismemberRecord", vec!["gone", "killing_blow"]);
     // FNV chargen (VCG01) — the name, sex and race the player chose.
@@ -581,6 +593,81 @@ mod roster_tests {
     /// (not part of the save surface) and registers through the
     /// hand-rolled read-only descriptor above, pinned separately by
     /// `requested_gameplay_components_are_registered`.
+    /// #7183 — components outside `crates/core` carry no `inspect` derive; the ones a save stores
+    /// carry a serde derive instead (`SpellList` reached registration that way). Every such component
+    /// in `crates/scripting` and `crates/physics` is registered or named below with why it is not,
+    /// so a new one cannot land uninspectable unnoticed (the core-only walk above cannot see it).
+    #[test]
+    fn every_saved_scripting_and_physics_component_is_registered_or_excused() {
+        const EXCUSED: &[(&str, &str)] = &[
+            ("ReadiedSpell", "`cast.status` reads it"),
+            ("TwoStateActivator", "`door.state` reads it"),
+            ("ActorControlState", "script-runtime bookkeeping, no inspection need yet"),
+            ("ScriptTimer", "script-runtime bookkeeping, no inspection need yet"),
+            ("ActorCinematicState", "script-runtime bookkeeping, no inspection need yet"),
+            ("HorseTetherState", "script-runtime bookkeeping, no inspection need yet"),
+            ("SpeakingLine", "script-runtime bookkeeping, no inspection need yet"),
+            ("IgnoreCrime", "a presence flag `IgnoreCrime` scripts set; no inspection need yet"),
+            ("ScriptPackage", "script-runtime bookkeeping, no inspection need yet"),
+            ("RumbleOnActivate", "the Papyrus demo recognizer's component"),
+            ("CharacterController", "`byroredux-physics` is not a debug-server dependency"),
+        ];
+        let registrations = byroredux_core::source_scan::production_text(include_str!("registration.rs"));
+        let mut saved = Vec::new();
+        for crate_dir in ["scripting", "physics"] {
+            let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(crate_dir).join("src");
+            let mut stack = vec![root];
+            while let Some(dir) = stack.pop() {
+                for entry in std::fs::read_dir(&dir).expect("crate src is readable") {
+                    let path = entry.expect("readable dir entry").path();
+                    if path.is_dir() {
+                        stack.push(path);
+                        continue;
+                    }
+                    if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                        continue;
+                    }
+                    let src = std::fs::read_to_string(&path).expect("readable source file");
+                    let src = byroredux_core::source_scan::production_text_or_whole(&src);
+                    let lines: Vec<&str> = src.lines().collect();
+                    for (i, line) in lines.iter().enumerate() {
+                        let Some(rest) = ["pub struct ", "pub enum ", "pub(crate) struct ", "struct "]
+                            .iter()
+                            .find_map(|prefix| line.trim_start().strip_prefix(prefix))
+                        else {
+                            continue;
+                        };
+                        let name: String =
+                            rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+                        let window = lines[i.saturating_sub(4)..i].join("\n");
+                        let component = format!("impl Component for {name} ");
+                        if !name.is_empty() && window.contains("serde::Serialize") && src.contains(&component) {
+                            saved.push(name);
+                        }
+                    }
+                }
+            }
+        }
+        saved.sort();
+        saved.dedup();
+        assert!(saved.len() >= 10, "the scan found only {saved:?} — the extraction broke, not the registry");
+        let unplaced: Vec<&String> = saved
+            .iter()
+            .filter(|name| {
+                let needle = format!("{}{}{}>", "register_component", "::<", name);
+                !registrations.contains(&needle) && !EXCUSED.iter().any(|(excused, _)| excused == name)
+            })
+            .collect();
+        assert!(
+            unplaced.is_empty(),
+            "{unplaced:?} are saved components outside core with no debug registration and no stated reason — \
+             register them beside `SpellList`, or add them to EXCUSED with why (#7183)"
+        );
+        for (excused, _) in EXCUSED {
+            assert!(saved.iter().any(|name| name == excused), "{excused} is excused but no longer found by the scan");
+        }
+    }
+
     #[test]
     fn every_inspectable_component_is_registered() {
         let registrations = byroredux_core::source_scan::production_text(include_str!("registration.rs"));

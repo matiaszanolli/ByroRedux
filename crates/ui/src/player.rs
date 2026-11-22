@@ -118,10 +118,11 @@ pub(crate) fn vulkan_adapter_available() -> bool {
 /// doesn't permanently disable the UI. First creation is serialized: wgpu
 /// device construction is process-wide work, and racing several Vulkan
 /// device requests from parallel menu/test loads can crash some drivers.
-fn shared_descriptors() -> Result<Arc<Descriptors>> {
-    static SHARED: OnceLock<Arc<Descriptors>> = OnceLock::new();
+/// The process's one Ruffle wgpu device (#2733); empty until the first movie is created.
+static SHARED_DESCRIPTORS: OnceLock<Arc<Descriptors>> = OnceLock::new();
 
-    get_or_try_init(&SHARED, || {
+fn shared_descriptors() -> Result<Arc<Descriptors>> {
+    get_or_try_init(&SHARED_DESCRIPTORS, || {
         let instance = create_wgpu_instance(
             wgpu::Backends::VULKAN,
             wgpu::BackendOptions::default(),
@@ -137,6 +138,12 @@ fn shared_descriptors() -> Result<Arc<Descriptors>> {
         log::info!("Scaleform UI: created the shared Ruffle wgpu device (once per process, #2733)");
         Ok(Arc::new(Descriptors::new(instance, adapter, device, queue)))
     })
+}
+
+/// How many wgpu devices the movies render through (GUI-REG-005): 1 once any movie was created,
+/// 0 before — never one per movie (#2733).
+pub(crate) fn shared_device_count() -> u32 {
+    u32::from(SHARED_DESCRIPTORS.get().is_some())
 }
 
 /// The caching rule [`shared_descriptors`] implements, extracted so it can be
@@ -372,6 +379,8 @@ impl SwfPlayer {
             None
         };
         let player = player_builder.build();
+        // M48 GUI-FONT-003 — the bundled fallback face, before the first frame lays text out.
+        crate::fonts::install_fallback_fonts(&mut player.lock().unwrap());
 
         // Start playback.
         player.lock().unwrap().set_is_playing(true);
@@ -612,6 +621,29 @@ impl SwfPlayer {
         (self.width, self.height)
     }
 
+    /// Re-render at a new viewport extent (GUI-REG-008). Ruffle resizes in place at the pinned
+    /// revision: `Player::set_viewport_dimensions` replaces the render target
+    /// (`TextureTarget::resize`) and re-lays the stage (`Stage::build_matrices`, which raises
+    /// `Stage.onResize`). The pixel buffer follows, and the next [`Self::render`] hands over a
+    /// frame at the new size even if the movie drew the same picture. `false` when the extent did
+    /// not change or is empty.
+    pub fn resize(&mut self, width: u32, height: u32) -> bool {
+        if (width, height) == (self.width, self.height) || width == 0 || height == 0 {
+            return false;
+        }
+        self.player.lock().unwrap().set_viewport_dimensions(ruffle_core::ViewportDimensions {
+            width,
+            height,
+            scale_factor: 1.0,
+        });
+        self.width = width;
+        self.height = height;
+        self.pixel_buffer = vec![0u8; (width * height * 4) as usize];
+        self.uploaded_once = false;
+        self.dirty = true;
+        true
+    }
+
     pub fn profile(&self) -> ScaleformProfile {
         self.host_bridge.profile()
     }
@@ -726,6 +758,13 @@ impl SwfPlayer {
     ///
     /// `None` distinguishes an unknown callback from a registered callback
     /// whose valid return value is `ScaleformValue::Null`.
+    /// One path operation through the movie's injected adapter (M48 GUI-PATH-001/002):
+    /// [`PathOutcome::NotReady`] while the adapter's callbacks are not registered.
+    pub fn path_op(&mut self, op: &crate::path::PathOp) -> crate::path::PathOutcome {
+        let (callback, arguments) = op.callback();
+        crate::path::decode_reply(self.invoke_callback(callback, arguments))
+    }
+
     pub fn invoke_callback(
         &mut self,
         name: &str,
@@ -794,11 +833,10 @@ impl SwfPlayer {
 
 impl Drop for SwfPlayer {
     fn drop(&mut self) {
-        if self.host_bridge.has_callback(DESTROY_CALLBACK) {
-            if let Ok(mut player) = self.player.lock() {
+        if self.host_bridge.has_callback(DESTROY_CALLBACK)
+            && let Ok(mut player) = self.player.lock() {
                 let _ = player.call_internal_interface(DESTROY_CALLBACK, []);
             }
-        }
     }
 }
 
@@ -912,13 +950,10 @@ mod shared_descriptor_tests {
 }
 
 #[cfg(test)]
-mod resource_loads_tests {
-    use super::{ScaleformResourceLoad, SwfPlayer, MAX_RECORDED_RESOURCE_LOADS};
-
-    /// A minimal, valid, single-frame AVM1 SWF — enough for `SwfPlayer::new`
-    /// (which doesn't need a navigator/archive at all) so these tests can
-    /// exercise `record_resource_loads` directly without one.
-    fn minimal_swf() -> Vec<u8> {
+mod tests_support {
+    /// A minimal, valid, single-frame AVM1 SWF — enough for `SwfPlayer::new`, which needs no
+    /// navigator or archive.
+    pub(super) fn minimal_swf() -> Vec<u8> {
         let mut header = swf::Header::default_with_swf_version(6);
         header.num_frames = 1;
         let mut bytes = Vec::new();
@@ -926,6 +961,13 @@ mod resource_loads_tests {
             .expect("writing a fixed, minimal in-memory SWF cannot fail");
         bytes
     }
+}
+
+#[cfg(test)]
+mod resource_loads_tests {
+    use super::{ScaleformResourceLoad, SwfPlayer, MAX_RECORDED_RESOURCE_LOADS};
+
+    use super::tests_support::minimal_swf;
 
     fn load(archive_path: &str) -> ScaleformResourceLoad {
         ScaleformResourceLoad {
@@ -983,16 +1025,7 @@ mod resource_loads_tests {
 mod render_failure_tests {
     use super::SwfPlayer;
 
-    /// A minimal, valid, single-frame AVM1 SWF — mirrors
-    /// `resource_loads_tests::minimal_swf`.
-    fn minimal_swf() -> Vec<u8> {
-        let mut header = swf::Header::default_with_swf_version(6);
-        header.num_frames = 1;
-        let mut bytes = Vec::new();
-        swf::write_swf(&header, &[swf::Tag::ShowFrame], &mut bytes)
-            .expect("writing a fixed, minimal in-memory SWF cannot fail");
-        bytes
-    }
+    use super::tests_support::minimal_swf;
 
     /// #2722 (SAFEUI-05) — a capture failure (forced here via the size-
     /// mismatch branch: `pixel_buffer` no longer matches the real captured
@@ -1023,6 +1056,30 @@ mod render_failure_tests {
             player.dirty,
             "a failed capture must leave dirty set so the next tick retries (#2722)"
         );
+    }
+}
+
+#[cfg(test)]
+mod resize_tests {
+    use super::{shared_device_count, SwfPlayer};
+
+    /// GUI-REG-008 — a resize re-renders at the new extent instead of stretching: the player's
+    /// dimensions and pixel buffer follow, and the next render hands over a full frame at the new
+    /// size even though the movie's picture did not change. GUI-REG-005: two players, one device.
+    #[test]
+    fn a_resized_player_renders_at_the_new_extent_on_the_shared_device() {
+        if !super::vulkan_adapter_available() {
+            eprintln!("skipped: no Vulkan adapter (headless CI) — #4595");
+            return;
+        }
+        let mut player = SwfPlayer::new(&super::tests_support::minimal_swf(), 4, 4).unwrap();
+        let _second = SwfPlayer::new(&super::tests_support::minimal_swf(), 4, 4).unwrap();
+        assert_eq!(shared_device_count(), 1, "every player renders through the one process device");
+        assert_eq!(player.render().map(<[u8]>::len), Some(4 * 4 * 4));
+        assert!(!player.resize(4, 4), "same extent: no resize");
+        assert!(player.resize(8, 6));
+        assert_eq!(player.dimensions(), (8, 6));
+        assert_eq!(player.render().map(<[u8]>::len), Some(8 * 6 * 4), "a full frame at the new extent");
     }
 }
 

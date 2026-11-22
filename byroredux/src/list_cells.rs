@@ -119,11 +119,10 @@ pub fn run(plugin_paths: &[&str], filter: Option<&str>) -> Result<()> {
         );
     }
 
-    if interiors.is_empty() && worlds.is_empty() {
-        if let Some(f) = filter {
+    if interiors.is_empty() && worlds.is_empty()
+        && let Some(f) = filter {
             println!("\nNothing matched '{f}'. Re-run without a filter for the full list.");
         }
-    }
     Ok(())
 }
 

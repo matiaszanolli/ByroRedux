@@ -340,15 +340,14 @@ impl VulkanContext {
             return None;
         }
         let extent = self.frame_extents.render;
-        if let Some(first) = job.extent {
-            if first != extent {
+        if let Some(first) = job.extent
+            && first != extent {
                 self.fail_linear_capture(format!(
                     "render extent changed mid-capture: {}x{} → {}x{}",
                     first.width, first.height, extent.width, extent.height
                 ));
                 return None;
             }
-        }
         let buffer_size = extent.width as vk::DeviceSize
             * extent.height as vk::DeviceSize
             * SCENE_TEXEL_BYTES as vk::DeviceSize;

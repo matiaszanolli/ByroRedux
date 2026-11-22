@@ -91,11 +91,10 @@ fn context_identity(world: &World) -> u64 {
 /// `LoadedCellIndex` (#5372).
 pub(crate) fn derive_location(world: &World) -> DerivedLocation {
     let identity = context_identity(world);
-    if let Some(memo) = world.try_resource::<StoryLocationMemo>() {
-        if memo.identity == Some(identity) {
+    if let Some(memo) = world.try_resource::<StoryLocationMemo>()
+        && memo.identity == Some(identity) {
             return memo.derived;
         }
-    }
     let location = resolve_current_lctn(world);
     let derived = DerivedLocation { kind: player_cell_kind(world), location, key: location_key(world, location) };
     if let Some(mut memo) = world.try_resource_mut::<StoryLocationMemo>() {
@@ -113,11 +112,10 @@ pub(crate) fn derive_location(world: &World) -> DerivedLocation {
 pub fn story_change_location_system(world: &World) {
     let derived = derive_location(world);
     // Publish the kind of cell the player occupies; only written when it changes.
-    if let Some(mut published) = world.try_resource_mut::<byroredux_scripting::cell_kind::PlayerCellKind>() {
-        if published.0 != derived.kind {
+    if let Some(mut published) = world.try_resource_mut::<byroredux_scripting::cell_kind::PlayerCellKind>()
+        && published.0 != derived.kind {
             published.0 = derived.kind;
         }
-    }
     // M47.2 — publish the player's current location for the location
     // conditions (the player is not cell-owned, so it has no `CellRoot` to
     // follow). Only where the load order authors locations: FO3/FNV/Oblivion
@@ -125,15 +123,11 @@ pub fn story_change_location_system(world: &World) {
     if world
         .try_resource::<byroredux_scripting::LocationTable>()
         .is_some_and(|table| !table.is_empty())
-    {
-        if let Some(mut published) =
+        && let Some(mut published) =
             world.try_resource_mut::<byroredux_scripting::PlayerLocation>()
-        {
-            if published.0 != derived.location {
+            && published.0 != derived.location {
                 published.0 = derived.location;
             }
-        }
-    }
     // #5447 — a load order that authors no Story Manager nodes (FO3, FNV,
     // Oblivion; `install_story_manager` still installs an empty tree and
     // cursor on them) has nothing to dispatch a CLOC to, so skip the key

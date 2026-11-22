@@ -248,20 +248,17 @@ fn main() {
                 .as_ref()
                 .and_then(|f| pool.resolve(*f).map(str::to_string));
             let mut msn = mesh.material.model_space_normals;
-            if normal_path.is_none() {
-                if let Some(mp) = mesh.material.material_path {
-                    if let Some(bgsm_bytes) = resources.extract(
+            if normal_path.is_none()
+                && let Some(mp) = mesh.material.material_path
+                    && let Some(bgsm_bytes) = resources.extract(
                         &pool.resolve(mp).map(str::to_string).unwrap_or_default(),
-                    ) {
-                        if let Ok(bgsm) = byroredux_bgsm::parse_bgsm(&bgsm_bytes) {
+                    )
+                        && let Ok(bgsm) = byroredux_bgsm::parse_bgsm(&bgsm_bytes) {
                             msn = msn || bgsm.model_space_normals;
                             if !bgsm.normal_texture.is_empty() {
                                 normal_path = Some(bgsm.normal_texture.replace('/', "\\"));
                             }
                         }
-                    }
-                }
-            }
             let Some(normal_path) = normal_path else {
                 println!("  {name}: no normal map — skipped");
                 continue;

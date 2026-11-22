@@ -1,0 +1,55 @@
+# #7049 Phase 0 investigation: Oblivion skill-use leveling (2026-11-18)
+
+`Oblivion.exe` (sha256 `a8f31384…dc6`, image base `0x400000`, unencrypted `.text`), `Oblivion.esm` and the DLC plugins.
+`this` below is `PlayerCharacter` (`[0xb333c4]` is the player singleton). Tools: `pexo.py` helpers (capstone), `obscript_tools dump … grep:`.
+
+## Answered
+
+| V | Answer | Source |
+|---|---|---|
+| V1 | The setting is **`fSkillUseMinorMult`** (the CS name), not `fSkillUseMinor`. The executable holds `fSkillUseMinorMult` 1.25, `fSkillUseMajorMult` 0.75, `fSkillUseSpecMult` 0.75, `fSkillUseFactor` 1, `fSkillUseExp` 1 (`scripts/exe-setting-defaults.py`); `Oblivion.esm` authors only `fSkillUseFactor` 0.35 and `fSkillUseExp` 1.5. The resolved set is 1.25, 0.35, 1.5, 0.75, 0.75 (the PRD's list). | initializers `0x9ebab0` (Spec), `0x9ebae0` (Major), `0x9ebb10` (Minor), `0x9ee177` (Exp), `0x9ee1a7` (Factor); GMST census of `Oblivion.esm` |
+| cost | `cost(L, specialization, major) = (fSkillUseFactor · L) ^ fSkillUseExp · (specialization ? fSkillUseSpecMult : 1) · (major ? fSkillUseMajorMult : fSkillUseMinorMult)`. **The major multiplier replaces the minor one**, as the PRD's `fSkillUseMajorMult / fSkillUseMinor` factor says. At skill 5, minor, non-specialized: 1.75^1.5 · 1.25 = 2.894 (PRD scenario 2). | `0x548030(L, spec, major)`, called only from `0x663c50` |
+| store | `0x663c50(skill)` writes the cost to `this + 0x7a4 + idx·4` (`idx` from `0x565c50(2, skillAV)`), 1.0 when the cost is 0. `0x65fad0` reads it back (default 1.0). The banked experience is `this + 0x130 + idx·4` (a float, clamped at 0 by the setter `0x65fa40`). | `0x663c50`, `0x65fa40`, `0x65fad0` |
+| V2 | **A skill at 100 or more banks nothing.** `0x668b30` (the experience entry: `this`, skill AV, amount, skill record, flag) opens with `GetAV(skill) >= 100 → return` (`0x668b41`). | `0x668b30` |
+| bank | `exp += amount`; the rank-up fires when **the needed cost is strictly below the experience** (`0x668bc8..0x668bd5`, `fcomp` then `test ah, 5`; an equal value does not rank). One call ranks at most once; surplus stays banked (`exp − needed`, clamped at 0, in the rank-up `0x668070`), so the engine's "returns the ranks reached" is a loop over the original's one-per-call. A tracking array (`this+0x5b0`, when `+0x6e5` is set) adds the amount for the skills screen. | `0x668b30`, `0x668070` (`0x66808a..0x668127`) |
+| V5 | **A rank-up writes the base skill**: `0x65d1e0(skill, value + 1)` calls vtable `+0x134` on the base container `0x5e02e0(this, 0)`; no separate stored value. It then recomputes the cost (`0x663c50`), counts the increase (`this + skill·4 + 0x158`), and tallies the attribute. | `0x668070` (`0x66812f..0x668185`), `0x65d1e0` |
+| V13 | **The tenth major increase counts toward its attribute's tally.** In `0x668070` the attribute tally `0x6648d0([struct+0x30])` runs (`0x6681b2`) **before** the major count `[this+0x184] += 1` (`0x6681e5`) and the boundary `0x65fb30` (`0x6681f3`), which, when the count is a multiple of `iLevelUpSkillCount` (10, `0xb37618`), appends a fresh empty node to the list at `this+0x5b4`. The list holds one node of attribute indices per level cycle; `0x6648d0` rejects an index above 7. **Every governed skill's rank-up is tallied, not only major skills** (the ruleset's "UESP counts all governed skills" correction). | `0x668070`, `0x6648d0`, `0x65fb30` |
+| pending | At the tenth major increase (`[this+0x184] >= iLevelUpSkillCount`) the routine sets the level-pending byte `this+0x1dc = 1` and shows the message `"%s %s %s.  %s"` (`sYour`, the skill's name, `sSkillIncreased`, `sMeditate`); other rank-ups show `"%s %s %s."` | `0x668070` (`0x668229..0x668309`) |
+| V12 | The level-up hint is the setting **`sMeditate`** ("You should rest and meditate on what you've learned."), and `sYour` ("Your"), `sSkillIncreased` ("skill increased") are the other two pieces: all three are **executable defaults**; `Oblivion.esm` authors none of them (and the level-up flavour texts `sLevelUp*` are authored). The sound is `UIStatsSkillUp`. | `0xa5d46c`, `0xa5d42c`, `0xa60fbc`; GMST census |
+| V14 | **`Amount` is skill ranks (points)**: the shared handler `0x50d020` of `AdvancePCSkill` and `ModPCSkill` loops `Amount` times, each iteration raising the skill by 1 (`0x65d1e0(skill, GetAV + 1)`), setting its banked experience to `exp − needed` (clamped at 0 by `0x65fa40`), counting the increase, tallying the attribute and the major count, and showing the level message once after the loop. The one vanilla caller says so: "Your Blade and Block skills have both been raised by 2 points" (`ModPCSkill Blade 2`). | `0x50d020`; `Oblivion.esm` SCPT |
+| V11 | In the three masters and the DLC plugins (Oblivion.esm, the Shivering Isles, Knights, the other `DLC*.esp`): **`ModPCSkill` 2 calls (one script, Blade 2 and Block 2), `AdvancePCSkill` 0, `AdvancePCLevel` 0, `SetLevel` 0** on the player. | `obscript_tools dump <plugin> grep:<command>` |
+| V10 | `Player` (`NPC_ 0x00000007`) has class **`CharactergenClass` (`CLAS 0x000230E6`)**: specialization Combat, primary attributes Strength and Intelligence, major skills **Armorer, Athletics, Blade, Block, Blunt, Hand to Hand, Heavy Armor** (AVs 12 to 18). | `Oblivion.esm` `NPC_`, `CLAS` `DATA` |
+
+| V7 | **The executable truncates the stored sum**, not the gain: the level-up (`0x66c3e0`, `0x66c4fb..0x66c546`) computes `trunc(storedHealth + fStatsHealthLevelMult · Endurance)` (`_ftol` at `0x66c53e`) and stores it with `0x519c50`. The stored term is an integer, so the result equals `stored + floor(0.1 · Endurance)`, UESP's "rounded down". `fStatsHealthLevelMult` is 0.1 in the executable; `Oblivion.esm` does not author it. | `0x66c3e0`, `0x9ebdca` (setting) |
+| V8 | **The gain reads Endurance after the level's attribute bonuses**: the three picks `0x668440(attr)` run first (`0x66c3e9..0x66c401`) and write the base container; the Health block reads attribute 5 afterwards (`0x66c513`, `0x468ad0(NPC + 0x88, 5)`), from the same base NPC (`vtable + 0x170`). A level that raises Endurance by its bonus therefore gains Health from the raised value. | `0x66c3e0`, `0x668440` |
+| V9 | **The level-up writes only the stored Health term** (`0x519c50` = `[NPC + 0x84]`), no stored Magicka or Fatigue. **The load path zeroes the `Player` record's three stored pools**: at `0x5240b2` (`cmp [esi+0xc], 7`) the init calls `0x4672b0(0)`, `0x519c50(0)` and `0x467290(0)`. | `0x66c3e0`, `0x523f40` (`0x5240b2..0x5240d3`) |
+| attr | The attribute pick `0x668440(attr)` adds the bonus for the tally count (`0x664970`) to the attribute and caps it at 100: `0x5480a0(count)` reads `iLevelUp01Mult` to `iLevelUp10Mult` (executable defaults 2, 2, 2, 2, 3, 3, 3, 4, 4, 5; **count 0 is 1**; not authored by `Oblivion.esm`). By tally count the bonus is **0 → 1, 1 to 4 → 2, 5 to 7 → 3, 8 and 9 → 4, 10 → 5**, which is UESP's table and the PRD's OSL-ATT-001 (1 / 2 / 3 / 4 / 5). | `0x5480a0`, `0xb37620..0xb37668` |
+| level | The level-up also: increments the level (`0x4677f0` + 1 → `0x467270`), consumes the level's tally node (`0x65fbb0`), subtracts `iLevelUpSkillCount` from the major count (`[this+0x184] -= 10`; a surplus carries to the next level), zeroes the per-skill increase counters (`0x65d560`, `this+0x188..0x1d8`) and clears the pending byte (`[this+0x1dc] = 0`) when the count falls below 10. | `0x66c3e0` |
+| V3 | **UESP's experience per action are the `SKIL` records' two use values**: `0x668c30(skillAV, usage 0 or 1, mult)` (`PlayerCharacter` vtable slot 231, offset `0x39c`) reads `SKIL + 0x38 + usage·4`, multiplies by `mult` when it is not 0, drops the result unless it is above 0, and banks it through `0x668b30`. `Oblivion.esm` authors them (`DATA`: action, attribute, specialization, use value 1, use value 2). The CS's `GetSkillUseIncrement` is **not a command of this executable** (no string, no table entry). | `0x668c30`, `SKIL` census |
+
+The `SKIL` use values (value 1 / value 2): Alchemy 5 / 0.5, Alteration 0 / 4, Conjuration 0 / 6, Destruction 0 / 1.2, Illusion 0 / 3,
+Mysticism 0 / 3, Restoration 0 / 0.6, Acrobatics 0.3 / 3, Light Armor 1.5 / 1, Marksman 0.8 / 1, Mercantile 0.4 / 1, Security 1.5 / 1,
+Sneak 0.75 / 2, Speechcraft 2.4 / 1, Armorer 1.5 / 1, Athletics 0.03 / 0.04, Blade 0.5 / 1, Block 1.25 / 1, Blunt 0.5 / 1,
+Hand to Hand 0.6 / 1, Heavy Armor 1.25 / 1.
+
+| V | Answer | Source |
+|---|---|---|
+| V6 | **A pending level is applied by a completed sleep, not by waiting.** The rest-menu update `0x5d7090` sets the "open the level-up menu" request (`[0xb3a6d1] = 1`, `0x5d7218`) only when the menu is the *sleep* variant (`[menu+0x4c]`), the player's level-pending byte `[player+0x1dc]` is set, the interrupted flag `[0xb3b72b]` is 0 (set at `0x5d7139` when the menu is left with no sleep queued) and `bInstantLevelUp` (`[GamePlay]`, flag `0xb14e88`) is off; the menu opener `0x5ace20` runs from the main loop (`0x5822f5`). **With `bInstantLevelUp` on, the per-frame player update `0x671951` opens it as soon as the level is pending** (`0x671c1c..0x671c36`). `SetPCSleepHours` (`0x50bac0`) only queues the hours (`[player+0x590] = hours`, `[player+0x594] = 1`); the rest-menu code drains them, so the script path applies a level only through the same menu. | `0x5d7090`, `0x5822f5`, `0x671951`, `0x50bac0` |
+| V15 | **The live UESP *Oblivion:Health* page (revision 2026-02-22) documents a second formula, but it is Oblivion Remastered's** (Strength 0.3333 · 2 + Endurance 0.6666 · 2 + a level term, with passive regeneration), under its own heading *Oblivion Remastered*; *Original Oblivion* keeps the 2006 rule (a tenth of Endurance at each level, not retroactive; its worked table: Endurance 30 gives 60, Endurance 35 at level 2 gives 73). The 2006 rule stands (OSL-NG-005 keeps Remastered out of scope). | `https://en.uesp.net/w/api.php?action=query&prop=revisions&titles=Oblivion:Health` (the page's HTML is blocked; the API answers) |
+
+**The call sites of `0x668c30`** (19 calls in 15 routines, all through the vtable): `0x594cd1`, `0x5983d5`, `0x59abad`, `0x5b0378`, `0x5b0c0c`,
+`0x5c0036`, `0x5d287c`, `0x5d985a`, `0x5e58d9` (a forwarder), `0x5efe4d`, `0x5efea3`, `0x5f5bf9`, `0x5fca20`, `0x5fd83c`, `0x5ffc90`,
+`0x671866`, `0x6718c8`, `0x671922`, `0x672ad2`. Which game action each is (V4) is not yet read.
+
+## V4 and the rest (2026-11-18, later)
+
+The action census is `docs/engine/skill-use.md` §2 (18 rows). Left to Phase 2 (#7051), each needing its system: the usage rows 13 and 15 select
+(`edi`), the second Acrobatics site (`0x5efea3`, gated by a setting at `0xb37490` whose name did not resolve), whether the swing loop
+(`0x5fd816`) feeds per swing or per landed hit, and the spell-school usage (school skills' value 1 is 0). Corrected: the ruleset's
+"Leveling — LOCKED" paragraph, the `ModPCSkill` / `GetAV` row of `scripting.md`, OSL-XP-002 (PRD revision 9). The menu request #7048 was
+filed with the PRD's activation.
+
+## Open
+
+The four Phase 2 items above, and the in-game confirmations the decode cannot give (that a sleep applies the level, the Block and
+armor triggers).

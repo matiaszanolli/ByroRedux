@@ -104,18 +104,6 @@ pub(crate) fn scripted_sound_system(world: &World, _dt: f32) {
             log::debug!("Sound.Play {:08X}: not a sound descriptor", play.sound);
             continue;
         };
-        if record.looping {
-            log::debug!("Sound.Play {:08X}: a looping sound is not played as a one-shot", play.sound);
-            continue;
-        }
-        let file = match record.variants.len() {
-            0 => record.sound_path.as_str(),
-            n => record.variants[VARIANT_TURN.fetch_add(1, Ordering::Relaxed) % n].as_str(),
-        };
-        if file.is_empty() || file.ends_with('\\') || file.ends_with('/') {
-            log::debug!("Sound.Play {:08X}: no file to play", play.sound);
-            continue;
-        }
         let translation = |entity: Option<byroredux_core::ecs::EntityId>| {
             entity
                 .and_then(|entity| world.get::<GlobalTransform>(entity))
@@ -138,18 +126,39 @@ pub(crate) fn scripted_sound_system(world: &World, _dt: f32) {
             log::debug!("Sound.Play {:08X}: the source has no 3D", play.sound);
             continue;
         };
-        let path = crate::asset_provider::sound_archive_path(file);
-        if crate::systems::play_oneshot_bounded(
-            world,
-            &path,
-            position,
-            attenuation_for(record),
-            positional,
-            "script sound",
-        ) {
-            log::debug!("Sound.Play {:08X}: {path}", play.sound);
-        }
+        play_sound_record(world, record, position, positional, "script sound");
     }
+}
+
+/// Play one `SOUN` / `SNDR` record once at `position` (the shared tail of a script's `Sound.Play` and a door's open and close
+/// sounds, DRT-SND-001): a looping record is not played as a one-shot (it would be a different sound), a record with several
+/// files takes them in turn, and a record with no file plays nothing. `positional` places it in the world; otherwise it plays
+/// at `position` without the ear model. Returns whether a sound was queued.
+pub(crate) fn play_sound_record(
+    world: &World,
+    record: &SounRecord,
+    position: byroredux_core::math::Vec3,
+    positional: bool,
+    role: &str,
+) -> bool {
+    if record.looping {
+        log::debug!("{role} {:08X}: a looping sound is not played as a one-shot", record.form_id);
+        return false;
+    }
+    let file = match record.variants.len() {
+        0 => record.sound_path.as_str(),
+        n => record.variants[VARIANT_TURN.fetch_add(1, Ordering::Relaxed) % n].as_str(),
+    };
+    if file.is_empty() || file.ends_with('\\') || file.ends_with('/') {
+        log::debug!("{role} {:08X}: no file to play", record.form_id);
+        return false;
+    }
+    let path = crate::asset_provider::sound_archive_path(file);
+    let played = crate::systems::play_oneshot_bounded(world, &path, position, attenuation_for(record), positional, role);
+    if played {
+        log::debug!("{role} {:08X}: {path}", record.form_id);
+    }
+    played
 }
 
 #[cfg(test)]

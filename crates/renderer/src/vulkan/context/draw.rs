@@ -6,7 +6,8 @@ use super::super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::assemble_camera_and_lights::CameraAssemblyOutput;
 use super::begin_frame_recording::BeginFrameOutput;
 use super::build_and_upload_instances::BuildInstancesOutput;
-use super::frame_params::{FrameInputs, has_radiating_local_emitter};
+use super::frame_params::{FrameDerived, FrameInputs, FrameSlot, has_radiating_local_emitter};
+use super::post_passes::PostPassFrame;
 use super::{FrameTimings, VulkanContext};
 use anyhow::{Context, Result};
 use ash::vk;
@@ -74,44 +75,20 @@ impl VulkanContext {
             )
     }
 
-    pub fn draw_frame(&mut self, inputs: FrameInputs) -> Result<bool> {
+    pub fn draw_frame(&mut self, mut inputs: FrameInputs) -> Result<bool> {
+        // The timing sink is the one `&mut` in the inputs. Taking it out leaves the rest
+        // shareable, so the phases below receive `&FrameInputs` rather than a dozen of its
+        // fields each.
+        let timings = inputs.timings.take();
+        let inputs = &inputs;
         let FrameInputs {
             clear_color,
-            view_proj,
             draw_commands,
-            lights,
-            light_ids,
-            fog_volumes,
-            bone_world,
-            skin_offsets,
-            bind_inverse_pending_uploads,
-            materials,
             has_effect_soft_material,
-            camera_pos,
-            render_origin: input_render_origin,
-            ambient_color,
-            fog_color,
-            fog_near,
-            fog_far,
-            fog_extinction_per_meter,
-            fog_single_scatter_albedo,
-            fog_coverage,
-            fog_scale_height_meters,
-            fog_clip,
-            fog_power,
-            fog_height_reference,
-            wind_params,
-            wind_gust,
-            ui_texture_handle,
             sky_params,
-            dof,
             frame_time_delta_ms,
-            timings,
-            water_commands,
-            underwater,
-            image_space_modifier,
-            pose_dirty,
-        } = inputs;
+            ..
+        } = *inputs;
         // #1796 / D6-02 — reset before either early-return guard below so
         // a bailed frame reads `false`; see the field doc on `skin.dispatch_ran`.
         self.skin.dispatch_ran = false;
@@ -200,23 +177,7 @@ impl VulkanContext {
             render_origin,
             previous_camera_position,
             fsr_frame,
-        } = self.assemble_camera_and_lights(
-            frame,
-            lights,
-            light_ids,
-            fog_volumes,
-            view_proj,
-            camera_pos,
-            input_render_origin,
-            ambient_color,
-            fog_color,
-            fog_near,
-            fog_far,
-            fog_extinction_per_meter,
-            sky_params,
-            dof,
-            frame_time_delta_ms,
-        )?;
+        } = self.assemble_camera_and_lights(frame, inputs)?;
         let vp = &effective_vp;
         // #4007 — the `reset` flag this frame actually hands FSR, captured
         // before `fsr_frame` is consumed by `record_post_passes`. It is
@@ -226,14 +187,16 @@ impl VulkanContext {
         // later in the frame must survive to the next one.
         let fsr_reset_delivered = fsr_frame.is_some_and(|params| params.reset);
 
+        // #7221 — the terrain patches go ahead of the TLAS build inside
+        // `dispatch_skin_and_cluster`: the tile upload their compute reads,
+        // the compute, then the patch BLAS over its output, so the TLAS
+        // references this frame's relief.
+        self.upload_terrain_tiles_if_dirty(cmd, frame);
+        self.record_terrain_patches(cmd, frame);
+
         self.dispatch_skin_and_cluster(
-            cmd,
-            frame,
-            draw_commands,
-            bone_world,
-            skin_offsets,
-            bind_inverse_pending_uploads,
-            pose_dirty,
+            FrameSlot { cmd, frame },
+            inputs,
             &instance_map,
             tlas_t0,
             &mut t,
@@ -254,37 +217,18 @@ impl VulkanContext {
             ui_instance_idx,
             caustic_history_valid,
         } = self.build_and_upload_instances(
-            cmd,
-            frame,
-            draw_commands,
-            render_origin,
-            camera_cut,
-            camera_static,
-            pose_dirty,
-            merged_lights,
-            &instance_map,
-            ui_texture_handle,
-            materials,
-            fog_color,
-            fog_near,
-            fog_far,
-            fog_extinction_per_meter,
-            fog_single_scatter_albedo,
-            fog_scale_height_meters, fog_coverage,
-            fog_clip,
-            fog_power,
-            fog_height_reference,
-            sky_params,
-            camera_pos,
-            inv_vp_arr,
-            fog_volumes,
-            underwater,
-            water_commands,
+            FrameSlot { cmd, frame },
+            inputs,
+            FrameDerived {
+                render_origin,
+                camera_cut,
+                camera_static,
+                inv_vp_arr,
+                merged_lights,
+                instance_map: &instance_map,
+            },
             &mut armed_selected_ray_probe_generation,
             &mut t,
-            // Stage 1 — seconds form of `frame_time_delta_ms` for the
-            // exposure meter's adaptation factor.
-            frame_time_delta_ms / 1000.0,
         );
 
         // #3837 — hand the lights Vec back to its field as soon as the borrow
@@ -318,12 +262,10 @@ impl VulkanContext {
 
         let cmd_t0 = Instant::now();
         self.record_geometry_pass(
-            cmd,
-            frame,
+            FrameSlot { cmd, frame },
             &render_pass_begin,
             &batches,
-            draw_commands,
-            water_commands,
+            inputs,
             &instance_map,
         );
         // #3837 — last use of `batches`; hand it back before the three
@@ -398,34 +340,21 @@ impl VulkanContext {
             // atomic writes need an explicit barrier. Skipped when
             // the accumulator failed init.
             self.record_post_passes(
-                cmd,
-                frame,
+                FrameSlot { cmd, frame },
                 img,
-                caustic_history_valid,
-                camera_pos,
-                render_origin,
-                vp,
-                &pvp,
-                inv_vp_arr,
-                previous_camera_position,
-                self.frame_counter,
-                volumetric_time_seconds,
-                sky_params,
-                fog_color,
-                fog_far,
-                fog_extinction_per_meter,
-                local_emitters_present,
-                fog_single_scatter_albedo,
-                fog_scale_height_meters,
-                fog_coverage,
-                fog_height_reference,
-                wind_params,
-                wind_gust,
-                fog_volumes,
-                fsr_frame,
-                underwater.grade,
-                image_space_modifier,
-                ui_instance_idx,
+                inputs,
+                PostPassFrame {
+                    caustic_history_valid,
+                    render_origin,
+                    vp,
+                    prev_view_proj: &pvp,
+                    inv_vp_arr,
+                    previous_camera_pos: previous_camera_position,
+                    volumetric_time_seconds,
+                    local_emitters_present,
+                    fsr_frame,
+                    ui_instance_idx,
+                },
                 &mut t.fog_cluster_ns,
             );
 
@@ -438,8 +367,8 @@ impl VulkanContext {
             // the same command buffer. Skipped unless both
             // `init_egui` ran AND a frame was submitted via
             // `submit_egui_frame` this iteration.
-            if let Some(pass) = self.overlay.egui_pass.as_mut() {
-                if let Some((egui_ctx, output)) = self.overlay.egui_pending_output.take() {
+            if let Some(pass) = self.overlay.egui_pass.as_mut()
+                && let Some((egui_ctx, output)) = self.overlay.egui_pending_output.take() {
                     // Pass the queue Mutex by reference: `dispatch` locks it
                     // only around the internal `set_textures` upload, not
                     // across tessellate + cmd_draw (which just record into
@@ -459,7 +388,6 @@ impl VulkanContext {
                         log::error!("egui overlay dispatch failed: {e:#}");
                     }
                 }
-            }
 
             // Screenshot capture: copy swapchain image to staging buffer
             // if requested. Must happen after composite (image has content)
@@ -758,8 +686,8 @@ impl VulkanContext {
         // we reach this line its previous use has completed by
         // construction. Same justification used by `#504` for the
         // CPU-side scratch shrink above.
-        if let Some(accel) = self.accel_manager.as_mut() {
-            if let Some(allocator) = self.allocator.as_ref() {
+        if let Some(accel) = self.accel_manager.as_mut()
+            && let Some(allocator) = self.allocator.as_ref() {
                 let slot_to_shrink = self.current_frame;
                 unsafe {
                     // SAFETY: `accel`, `device` and `allocator` are live; the
@@ -786,7 +714,6 @@ impl VulkanContext {
                     accel.shrink_tlas_scratch_to_fit(slot_to_shrink, &self.device, allocator);
                 }
             }
-        }
 
         t.post_present_ns = post_present_t0.elapsed().as_nanos() as u64;
         if let Some(out) = timings {
@@ -1036,7 +963,7 @@ mod merged_lights_tests {
         // slice, which still lexically scopes over the call) would compile
         // and pass every behaviour test while dropping the renderer-appended
         // combustion lights from every scene-static fold.
-        let arg = ["\n            merged_lights,\n"].concat();
+        let arg = ["\n                merged_lights,\n"].concat();
         assert!(
             body[call_pos..].contains(&arg),
             "build_and_upload_instances must receive `merged_lights` — the frame's \

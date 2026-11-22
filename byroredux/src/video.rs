@@ -36,6 +36,8 @@ pub(crate) struct PlayingVideo {
     pub(crate) request: VideoRequest,
     pub(crate) frame: u64,
     pub(crate) frames: u64,
+    /// #7139 — why its sound is missing or ends before its picture (`Movie::soundtrack_problem`).
+    pub(crate) soundtrack_problem: Option<String>,
 }
 
 /// What the player is doing and how the last request ended (BIK-RPT-001). `NOT_SAVED_BY_DESIGN`:
@@ -44,6 +46,9 @@ pub(crate) struct PlayingVideo {
 pub(crate) struct VideoStatus {
     pub(crate) playing: Option<PlayingVideo>,
     pub(crate) last: Option<(String, VideoOutcome)>,
+    /// #7139 — the last movie's soundtrack problem, beside its outcome: a movie whose sound never
+    /// started or stopped early still ends `Played`.
+    pub(crate) last_soundtrack_problem: Option<String>,
 }
 
 impl Resource for VideoStatus {}
@@ -131,6 +136,24 @@ pub(crate) fn start_sequence(game: byroredux_plugin::esm::reader::GameKind, ini_
         .collect()
 }
 
+/// BIK-REQ-004 (#6897) — the movie the original plays at a new game, if `game` has one: Oblivion's
+/// `sOblivionIntro` (compiled-in `OblivionIntro.bik`; `Oblivion_default.ini` does not set it) and
+/// Fallout 3's `sIntroMovie` (compiled-in empty; `Fallout_default.ini` sets `Fallout INTRO Vsk.bik`).
+/// Both executables play it once, after the new-game starter and not at launch
+/// (`docs/engine/video-playback.md` §5). An INI key that is present, even empty, overrides the
+/// compiled-in value. `ini_text` is the install's default INI.
+pub(crate) fn new_game_movie(game: byroredux_plugin::esm::reader::GameKind, ini_text: Option<&str>) -> Option<String> {
+    use byroredux_plugin::esm::reader::GameKind;
+    let (key, compiled) = match game {
+        GameKind::Oblivion => ("sOblivionIntro", "OblivionIntro.bik"),
+        GameKind::Fallout3NV => ("sIntroMovie", ""),
+        _ => return None,
+    };
+    let value = ini_text.and_then(|text| crate::game_ini::ini_value(text, "General", key)).unwrap_or_else(|| compiled.to_string());
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
 /// BIK-REQ-005 — whether this run plays the start sequence: not with `--skip-movies`, and not in a
 /// benchmark (`--bench-frames`, which measures the world, as every headless gate does) unless
 /// `--start-movies` asks for it.
@@ -160,22 +183,38 @@ impl VideoPlayer {
         let args = crate::cli_args::effective_args();
         let ini = crate::game_ini::read_default_ini(&args, game);
         let movies = start_sequence(game, ini.as_deref());
-        if movies.is_empty() {
+        // #6897 — a new game also plays the game's new-game movie, after the start sequence. Fallout
+        // 3 and New Vegas share a game kind and an INI, and New Vegas does not ship `sIntroMovie`'s
+        // file (its VCG00 plays its own intro), so a file that is not installed is not queued.
+        let new_game = crate::components::NewGameStart::active(world)
+            .then(|| new_game_movie(game, ini.as_deref()))
+            .flatten()
+            .filter(|file| {
+                let installed = movie_path(file).is_some();
+                if !installed {
+                    log::info!("video: new-game movie '{file}' is not installed; not queued");
+                }
+                installed
+            });
+        if movies.is_empty() && new_game.is_none() {
             return;
         }
         if !start_movies_wanted(&args) {
-            log::info!("video: start sequence skipped ({} movie(s); --skip-movies, or a benchmark without --start-movies)", movies.len());
+            log::info!(
+                "video: start sequence skipped ({} movie(s); --skip-movies, or a benchmark without --start-movies)",
+                movies.len() + usize::from(new_game.is_some())
+            );
             return;
         }
-        log::info!("video: start sequence {movies:?}");
+        log::info!("video: start sequence {movies:?}, new-game movie {new_game:?}");
         if let Some(mut pending) = world.try_resource_mut::<PendingVideos>() {
-            let requests = movies.into_iter().map(|file| VideoRequest {
+            let requests = movies.into_iter().map(|file| (file, false)).chain(new_game.map(|file| (file, true))).map(|(file, new_game)| VideoRequest {
                 file,
                 interruptable: true,
                 mute_audio: true,
                 pause_music: true,
                 letterbox: true,
-                new_game: false,
+                new_game,
             });
             let queued: Vec<VideoRequest> = requests.chain(pending.0.drain(..)).collect();
             pending.0 = queued;
@@ -218,6 +257,7 @@ impl VideoPlayer {
             log::info!("video: '{}' {outcome:?}", request.file);
             if let Some(mut status) = world.try_resource_mut::<VideoStatus>() {
                 status.last = Some((request.file.clone(), outcome));
+                status.last_soundtrack_problem = None;
             }
         };
         let Some(window) = window else {
@@ -241,7 +281,11 @@ impl VideoPlayer {
             info.fps,
             info.duration_secs,
             info.audio_tracks,
-            if movie.audio_path().is_some() { "yes" } else { "no" },
+            match (movie.audio_path().is_some(), movie.soundtrack_problem()) {
+                (true, None) => "yes".to_owned(),
+                (false, None) => "no".to_owned(),
+                (has, Some(problem)) => format!("{} ({problem})", if has { "partial" } else { "no" }),
+            },
             request.interruptable,
             request.mute_audio,
             request.pause_music,
@@ -249,7 +293,8 @@ impl VideoPlayer {
             request.new_game
         );
         if let Some(mut status) = world.try_resource_mut::<VideoStatus>() {
-            status.playing = Some(PlayingVideo { request: request.clone(), frame: 0, frames });
+            let soundtrack_problem = movie.soundtrack_problem().map(str::to_owned);
+            status.playing = Some(PlayingVideo { request: request.clone(), frame: 0, frames, soundtrack_problem });
         }
         // BIK-PRES-005 — the flags hold the world's sound and the music for the movie's length.
         if let Some(mut audio) = world.try_resource_mut::<byroredux_audio::AudioWorld>() {
@@ -270,6 +315,7 @@ impl VideoPlayer {
         if let Some(mut status) = world.try_resource_mut::<VideoStatus>() {
             status.playing = None;
             status.last = Some((active.request.file.clone(), outcome));
+            status.last_soundtrack_problem = active.movie.soundtrack_problem().map(str::to_owned);
         }
     }
 
@@ -308,11 +354,10 @@ impl VideoPlayer {
                         Ok(handle) => *texture = Some(handle),
                         Err(error) => log::error!("video: frame {index} upload failed: {error:#}"),
                     }
-                    if let Some(mut status) = world.try_resource_mut::<VideoStatus>() {
-                        if let Some(playing) = &mut status.playing {
+                    if let Some(mut status) = world.try_resource_mut::<VideoStatus>()
+                        && let Some(playing) = &mut status.playing {
                             playing.frame = index;
                         }
-                    }
                 }
                 *texture
             }
@@ -387,6 +432,18 @@ mod tests {
         assert_eq!(resolve_under(&video, "..\\..\\secret.bik"), None, "one `..` at most");
         assert_eq!(resolve_under(&video, "Mymod\\..\\..\\secret.bik"), None, "no `..` inside the path");
         assert_eq!(resolve_under(&video, "..\\secret.bik"), Some(dir.path().join("secret.bik")), "the data folder itself is in reach");
+        // #7142: nor a drive prefix or any `:`, which on Windows re-roots the walk. Each target
+        // exists here under that literal name, so only the component rule refuses it on any host.
+        #[cfg(unix)]
+        {
+            std::fs::create_dir_all(video.join("C:")).unwrap();
+            for name in ["C:/x.bik", "D:x.bik", "x.bik:stream"] {
+                std::fs::write(video.join(name), b"x").unwrap();
+            }
+        }
+        for path in ["C:\\x.bik", "C:/x.bik", "D:x.bik", "x.bik:stream", "Mymod\\C:\\x.bik"] {
+            assert_eq!(resolve_under(&video, path), None, "{path:?}");
+        }
     }
 
     /// A request with nothing to decode it is reported and dropped; one that cannot start never
@@ -474,6 +531,22 @@ mod tests {
         assert!(start_sequence(GameKind::Fallout3NV, Some("[General]\nSIntroSequence=\nsIntroMovie=Fallout INTRO Vsk.bik\n")).is_empty());
         assert_eq!(start_sequence(GameKind::Fallout4, None), ["GameIntro_V3_B.bk2"]);
         assert_eq!(start_sequence(GameKind::Starfield, None), ["BGS_LOGO_1080p_BinkVersion.bk2"]);
+    }
+
+    /// BIK-REQ-004 (#6897) — Oblivion's new-game movie is its compiled-in `sOblivionIntro`, Fallout 3's
+    /// is `sIntroMovie` from the shipped INI (empty compiled-in), and the other games have none.
+    #[test]
+    fn the_new_game_movie_comes_from_the_setting_the_executable_reads() {
+        use byroredux_plugin::esm::reader::GameKind;
+        assert_eq!(new_game_movie(GameKind::Oblivion, None).as_deref(), Some("OblivionIntro.bik"));
+        assert_eq!(new_game_movie(GameKind::Oblivion, Some("[General]\nSIntroSequence=\n")).as_deref(), Some("OblivionIntro.bik"));
+        assert_eq!(new_game_movie(GameKind::Oblivion, Some("[General]\nsOblivionIntro=Mine.bik\n")).as_deref(), Some("Mine.bik"));
+        assert_eq!(new_game_movie(GameKind::Oblivion, Some("[General]\nsOblivionIntro=\n")), None, "set to nothing: none");
+        assert_eq!(new_game_movie(GameKind::Fallout3NV, None), None, "compiled-in empty");
+        let fallout = "[General]\nsIntroMovie=Fallout INTRO Vsk.bik\n";
+        assert_eq!(new_game_movie(GameKind::Fallout3NV, Some(fallout)).as_deref(), Some("Fallout INTRO Vsk.bik"));
+        assert_eq!(new_game_movie(GameKind::Skyrim, Some(fallout)), None);
+        assert_eq!(new_game_movie(GameKind::Fallout4, None), None);
     }
 
     /// BIK-REQ-005 — `--skip-movies` skips the start sequence; a benchmark skips it unless

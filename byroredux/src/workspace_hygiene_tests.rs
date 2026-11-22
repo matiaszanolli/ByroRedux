@@ -121,7 +121,9 @@ fn visit_workspace_rs_files(dir: &std::path::Path, visit: &mut dyn FnMut(&std::p
             .path();
         if path.is_dir() {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if name == "target" || name == ".git" {
+            // `third_party` holds vendored upstream code (the patched `ruffle_core`, #6665): its
+            // conventions are upstream's, not this workspace's.
+            if name == "target" || name == ".git" || name == "third_party" {
                 continue;
             }
             visit_workspace_rs_files(&path, visit);
@@ -597,11 +599,10 @@ fn no_string_literal_embeds_a_space_run() {
             let path = entry.path();
             if path.is_dir() {
                 visit_workspace_rs_files(&path, &mut visit);
-            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-                if let Ok(contents) = std::fs::read_to_string(&path) {
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs")
+                && let Ok(contents) = std::fs::read_to_string(&path) {
                     visit(&path, &contents);
                 }
-            }
         }
     }
 
@@ -1251,36 +1252,163 @@ fn no_source_hand_spells_the_player_entity_read() {
 }
 
 /// #6956 — "prepend `meshes\` unless present" has one home,
-/// `asset_provider::normalize_mesh_path` (with its owned forms `archive_mesh_path` and
-/// `canonical_mesh_key`). Ten hand-written copies had grown five behaviours between
+/// `byroredux_core::paths::normalize_mesh_path` (with its owned forms `archive_mesh_path` and
+/// `canonical_mesh_key`; re-exported by `asset_provider`). Ten hand-written copies had grown five behaviours between
 /// them (case, separators, a leading separator, the #1292 `geometries\` exemption
 /// none of them carried). A production `format!("meshes\\{name}")` that prefixes a
-/// whole variable outside `archive.rs` is a new copy; a fixed archive path such as
+/// whole variable outside `core/src/paths.rs` is a new copy; a fixed archive path such as
 /// `meshes\terrain\…` is not.
 #[test]
 fn no_production_code_prefixes_meshes_by_hand() {
     let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let needle = concat!("\"meshes", "\\\\{");
+    // Not archive keys: the Cornell harness writes its own Mitsuba scene, whose meshes folder is
+    // `meshes/<hash>.ply` beside the scene file. Allowed by file and literal, not file-wide (#7179).
+    let allowed = [("byroredux/src/cornell/mitsuba_export.rs", "\"meshes/{:016x}.ply\"")];
     let mut found = Vec::new();
-    visit_workspace_rs_files(&manifest.join("src"), &mut |path, contents| {
-        if path.ends_with("asset_provider/archive.rs") || is_test_source(path) {
-            return;
-        }
-        let production = byroredux_core::source_scan::production_text_or_whole(contents);
-        let copies = production.match_indices(needle).filter(|(at, _)| {
-            let rest = &production[at + needle.len()..];
-            let name_len = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(rest.len());
-            name_len > 0 && rest[name_len..].starts_with("}\"")
+    // #7145 — the binary and every library crate; the renderer cannot call the binary's helper,
+    // which is why the rule now lives in `byroredux_core::paths`.
+    for root in [manifest.join("src"), manifest.join("../crates")] {
+        visit_workspace_rs_files(&root, &mut |path, contents| {
+            // Library source only: an example or bench is a probe (`nif`'s `d5_starfield_import`
+            // tries non-canonical spellings on purpose to show which ones miss).
+            let probe = path.components().any(|c| c.as_os_str() == "examples" || c.as_os_str() == "benches");
+            if path.ends_with("core/src/paths.rs") || is_test_source(path) || probe {
+                return;
+            }
+            let file = path.to_string_lossy().replace('\\', "/");
+            // ASCII lowering keeps every byte offset, so the sites index `production` too.
+            let production = byroredux_core::source_scan::production_text_or_whole(contents).to_ascii_lowercase();
+            let copies = meshes_prefix_sites(&production).into_iter().filter(|&(literal, _)| {
+                !allowed
+                    .iter()
+                    .any(|(allowed_file, text)| file.ends_with(allowed_file) && production[literal..].starts_with(text))
+            });
+            if copies.count() > 0 {
+                found.push(path.display().to_string());
+            }
         });
-        if copies.count() > 0 {
-            found.push(path.strip_prefix(manifest).unwrap_or(path).display().to_string());
-        }
-    });
+    }
     assert!(
         found.is_empty(),
-        "hand-written `meshes\\` prefix — use `asset_provider::{{normalize_mesh_path, archive_mesh_path, canonical_mesh_key}}` (#6956):\n{}",
+        "hand-written `meshes\\` prefix — use `byroredux_core::paths::{{normalize_mesh_path, archive_mesh_path, canonical_mesh_key}}` (#6956, #7145):\n{}",
         found.join("\n"),
     );
+}
+
+/// Where `text` (lower-cased source) prepends the `meshes` root by hand, as `(literal start,
+/// `meshes` offset)` pairs (#7166, #7179):
+///
+/// * a string literal — plain or raw (`r"…"`, `r#"…"#`), optionally opening with a separator
+///   (`"\\meshes…"`) or a placeholder (`"{base}meshes…"`) — that has `meshes`, a separator (`\\`,
+///   `\` in a raw string, or `/`), and then interpolates (`{name}`, `{}`, `{:x}`, whatever follows
+///   the placeholder, but not an escaped `{{`) or ends right there, unless that separator-ended
+///   literal is the argument of a prefix test (`strip_prefix(` and the like);
+/// * a bare `"meshes"` that a path is built from: `Path::new("meshes").join(…)`, or a non-final
+///   argument followed by a variable in a `format!(` or a `[…].join(` on the same line.
+///
+/// A fixed archive path (`meshes\\terrain\\…`: a name after the separator) and a bare root name in a
+/// list, a comparison or a label tuple are not prefixing.
+fn meshes_prefix_sites(text: &str) -> Vec<(usize, usize)> {
+    const PREFIX_TESTS: [&str; 5] = ["strip_prefix(", "starts_with(", "trim_start_matches(", "contains(", "find("];
+    let bytes = text.as_bytes();
+    let mut sites = Vec::new();
+    for (at, _) in text.match_indices("meshes") {
+        let end = at + "meshes".len();
+        if bytes[..at].ends_with(b"\"") && bytes[end..].starts_with(b"\"") {
+            // A bare `"meshes"` literal: prefixing only where a path is built from it.
+            let literal = at - 1;
+            let after = text[end + 1..].trim_start();
+            let line_start = text[..literal].rfind('\n').map_or(0, |n| n + 1);
+            let line_end = text[end..].find('\n').map_or(text.len(), |n| end + n);
+            let next_is_variable = after
+                .strip_prefix(',')
+                .map(str::trim_start)
+                .and_then(|rest| rest.chars().next())
+                .is_some_and(|c| c.is_ascii_lowercase() || c == '&' || c == '_');
+            let joined = after.starts_with(").join(");
+            let built = next_is_variable
+                && (text[line_start..literal].contains("format!(")
+                    || (bytes[..literal].ends_with(b"[") && text[line_start..line_end].contains("].join(")));
+            if joined || built {
+                sites.push((literal, at));
+            }
+            continue;
+        }
+        // The literal's opening quote, behind an optional placeholder or leading separator.
+        let mut open = at;
+        if bytes[..open].ends_with(b"}") {
+            match text[..open].rfind('{') {
+                Some(brace) => open = brace,
+                None => continue,
+            }
+        } else if bytes[..open].ends_with(b"\\\\") {
+            open -= 2;
+        } else if bytes[..open].ends_with(b"\\") || bytes[..open].ends_with(b"/") {
+            open -= 1;
+        }
+        if !bytes[..open].ends_with(b"\"") {
+            continue;
+        }
+        let literal = open - 1;
+        let raw = text[..literal].trim_end_matches('#').ends_with('r');
+        let rest = &text[end..];
+        let separator = if rest.starts_with("\\\\") {
+            2
+        } else if rest.starts_with('/') || (raw && rest.starts_with('\\')) {
+            1
+        } else {
+            continue;
+        };
+        let after = &rest[separator..];
+        let interpolates = after.starts_with('{') && !after.starts_with("{{");
+        let ends_at_separator = after.starts_with('"')
+            && !PREFIX_TESTS.iter().any(|call| text[..literal].trim_end_matches(['r', '#']).trim_end().ends_with(call));
+        if interpolates || ends_at_separator {
+            sites.push((literal, at));
+        }
+    }
+    sites
+}
+
+/// #7179 — the matcher behind `no_production_code_prefixes_meshes_by_hand`, case by case: every
+/// spelling that prepends the root is found, and the ones that name it or test for it are not.
+#[test]
+fn the_meshes_prefix_matcher_tells_prefixing_from_naming() {
+    let prefixing = [
+        r#"format!("meshes\\{name}")"#,
+        r#"format!("meshes\\{stem}.nif")"#,
+        r#"format!("meshes\\{}.nif", x)"#,
+        r#"format!("meshes\\{dir}\\{file}")"#,
+        r#"format!("meshes/{x}.nif")"#,
+        r#"format!(r"meshes\{x}")"#,
+        r##"format!(r#"meshes\{x}"#)"##,
+        r#"format!("\\meshes\\{x}")"#,
+        r#"format!("/meshes/{x}")"#,
+        r#"format!("{base}meshes\\{x}")"#,
+        r#"s.push_str("meshes\\");"#,
+        r#"let p = "meshes\\".to_owned() + x;"#,
+        r#"format!("{}\\{}", "meshes", x)"#,
+        r#"["meshes", x].join("\\")"#,
+        r#"Path::new("meshes").join(x)"#,
+    ];
+    for code in prefixing {
+        assert!(!meshes_prefix_sites(&code.to_ascii_lowercase()).is_empty(), "missed: {code}");
+    }
+    let naming = [
+        r#"format!("meshes\\terrain\\{x}.nif")"#,
+        r#"x.strip_prefix("meshes\\")"#,
+        r#"x.starts_with("meshes/")"#,
+        r#"const ROOTS: [&str; 3] = ["textures", "meshes", "music"];"#,
+        r#"if root == "meshes" { }"#,
+        r#"("Meshes", &entry.default_bsas, Severity::Fail),"#,
+        r#"let meshes_dir = dir.join("meshes");"#,
+        r#"format!("meshes\\{{literal}}")"#,
+        r#"// prepends `meshes\{name}` by hand"#,
+        r#"starts_with_root(path, "meshes")"#,
+    ];
+    for code in naming {
+        assert!(meshes_prefix_sites(&code.to_ascii_lowercase()).is_empty(), "flagged: {code}");
+    }
 }
 
 /// #6577 — a whole-`Children` walk goes through `byroredux_core::ecs::collect_subtree`,
@@ -1407,7 +1535,10 @@ fn count_example_targets(root: &std::path::Path) -> (usize, usize) {
 #[test]
 fn example_targets_hold_their_per_crate_ceilings() {
     const CEILINGS: &[(&str, usize, usize)] = &[
-        ("byroredux", 4, 699),
+        // Door Runtime Phase 0 (#7058) re-measure: +1 file / +141 LOC — `door_motion_census.rs`, the in-cell door motion
+        // census of PRD door-runtime DRT-REC-003; it needs the plugin, bsa and nif crates together, which only the binary has.
+        // Door Runtime Phase 1 (#7059) re-measure: +14 LOC for the locked-door rows in the existing census.
+        ("byroredux", 5, 854),
         // #5912 — +1: `fuz_census.rs`, the grounding probe for the .fuz
         // payload census (40/40 SE voice files = WMAUDIO2 in an xWMA
         // container), kept alongside the crate's other archive probes.
@@ -1426,7 +1557,10 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // NIFAL synthetic-height census (2026-11-08) re-measure: +1 — `synthetic_height_census.rs`, the static-mesh
         // population a normal-integrated height map could displace (docs/audits/AUDIT_NIFAL_2026-11-08.md);
         // its `--emit-normals` TSV feeds terrain-height's `tileability_census`. #6065: `skeleton_tree_dump` grew.
-        ("nif", 39, 4763),
+        // AIP-DX-003 re-measure: +2 files / +110 LOC — `furniture_marker_census.rs` (legacy `BsFurnitureMarker` refs,
+        // AIP-SEAT-002) and `kf_root_probe.rs` (an enter clip's accumulation root, AIP-SIT-001), the probes behind
+        // the figures in docs/prd/ai-packages-completion.md; each states its re-run command.
+        ("nif", 41, 4873),
         // M43 — +1: `pex_list_fns.rs`, which prints a script's typed function signatures; it read the
         // FO4 `OnStory*` event payloads out of `Quest.pex` (docs/engine/story-manager.md §6.4).
         // M48 Phase 0 (#6643) re-measure: +1 — `pex_find_call.rs`, which lists every call site of a
@@ -1463,7 +1597,11 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // `SpaceGraph` (-44 LOC).
         // #6909 (M65 Phase 0) re-measure: +1 — `stealth_gmst_census.rs`, the per-master stealth /
         // detection GMST census the PRD's §7.2 scenario 3 reads (+67 LOC).
-        ("plugin", 75, 10209),
+        // #6666 (M48 GUI-PAGE-005) re-measure: +38 LOC — `menu_gmst_census gmst` parses the master as
+        // the engine does, so a localized master's (Skyrim's) string settings resolve.
+        // #7099 re-measure: +16 LOC — `esm_dim8_coverage`'s recursive GRUP walk takes the shared
+        // `MAX_GRUP_NESTING_DEPTH` cap (no new target).
+        ("plugin", 76, 10719),
         // M47.3 result scripts — `obscript_tools avcodes` aligns the Fallout
         // misc-stat codes and `live` names the quests a script advanced
         // (no new target; the existing triage tool grew).
@@ -1480,7 +1618,12 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // (GUI-GFX-003) and `hud_feed_paths.rs` (GUI-HUD-003); each states its re-run command.
         // Rust 1.100 clippy re-measure: +3 — `type_complexity` aliases and reasoned allows in `host_call_sites.rs` and
         // `hud_feed_paths.rs`, net of a collapsed `if_same_then_else`.
-        ("ui", 3, 2279),
+        // #7036 re-measure: +109 — `hud_feed_paths` `layout` / `fonts` / `cat` subcommands (a widget's
+        // display list with bounds, the text fields' font classes, an archive entry's bytes), the
+        // evidence for the Fallout 4 compass driver and its TSV row (no new target; the tool grew).
+        // #6665 re-measure: +15 — `hud_feed_paths` `skyrim cat` / `skyrim fonts` and the font
+        // census's `ExportAssets` rows (the evidence for the fontconfig-built font library).
+        ("ui", 3, 2403),
     ];
     let by_entry = |root: &std::path::Path| {
         // `crates/<name>/examples` or `byroredux/examples` → crate name.
@@ -2026,4 +2169,56 @@ fn schedule_scanner_reads_the_registered_system_and_matches_whole_identifiers() 
     assert!(names_identifier("the `sleep_system` row", "sleep_system"));
     assert!(!names_identifier("`make_eat_sleep_system()`", "sleep_system"));
     assert!(!names_identifier("sleep_systems", "sleep_system"));
+}
+
+/// #7113 — `World::find_by_form_id` scans every `FormIdComponent` per call. Production code in the
+/// binary resolves a placement through the cached index (`FormIdPool::entity_with_local`, via
+/// `resolve_entity_by_global_form_id`) instead; tests may still use the scan.
+#[test]
+fn no_binary_production_source_scans_for_a_form_id() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut found = Vec::new();
+    visit_workspace_rs_files(&src, &mut |path, contents| {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let in_test_dir = path.components().any(|c| c.as_os_str() == "tests");
+        if name.ends_with("_tests.rs") || name == "tests.rs" || in_test_dir {
+            return;
+        }
+        let production = byroredux_core::source_scan::production_text_or_whole(contents);
+        for (idx, line) in production.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("");
+            if code.contains(".find_by_form_id(") {
+                found.push(format!("{}:{}  {}", path.display(), idx + 1, line.trim()));
+            }
+        }
+    });
+    assert!(found.is_empty(), "resolve through FormIdPool's index, not a scan (#7113):\n{}", found.join("\n"));
+}
+
+/// #7218 — Oblivion's actor values, ruleset and regen lanes are wired (#7010, #7197), so no production source may
+/// still name the closed #3768 "pre-AVIF resolver" as what they wait on: that wording had rotted into a dozen
+/// comments. The needles are built at run time so this test's own text cannot match.
+#[test]
+fn no_production_source_names_the_closed_pre_avif_resolver_as_a_blocker() {
+    let needles = [format!("pre-{}", "AVIF resolver"), format!("#{}", 3768)];
+    let mut found = Vec::new();
+    for root in production_scan_roots(false) {
+        visit_workspace_rs_files(&root, &mut |path, contents| {
+            if is_test_source(path) {
+                return;
+            }
+            let production = byroredux_core::source_scan::strip_test_modules(contents);
+            for (n, line) in production.lines().enumerate() {
+                if needles.iter().any(|needle| line.contains(needle.as_str())) {
+                    found.push(format!("{}:{}  {}", path.display(), n + 1, line.trim()));
+                }
+            }
+        });
+    }
+    assert!(
+        found.is_empty(),
+        "production source still names the closed #3768 pre-AVIF resolver as a blocker; Oblivion's actor values \
+         are engine-supplied and wired (#7010):\n{}",
+        found.join("\n")
+    );
 }

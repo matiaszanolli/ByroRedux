@@ -146,8 +146,8 @@ The live schedule built in `App::new` is:
 | `Update` | `detection_tick_system` | exclusive + declared | M65 (SNK-DET-001): the first Update exclusive (`byroredux/src/boot/schedule/update/interaction_and_crime/detection.rs`). Each detector in range of the player is re-evaluated on its own timer (`fDetectionTimerSetting`): the value by the load order's formula row, the level toward the player, the alert state, and `PlayerDetection`. Every later consumer (witnesses, the strike's sneak flag, hostility, guard rush, dead-body discovery, flee) reads this frame's levels |
 | `Update` | vitals upkeep (`restoration_system`, `bleedout_system`, `encumbrance_system`) | exclusive + declared | First Update exclusives (`update/interaction_and_crime.rs`): `TimedRestorations` onto `ActorValues`, essential actors back up when their bleedout runs out (M47.2), the player's carried weight against Carry Weight (the movement effect reads it next frame) |
 | `Update` | activation producers (`interaction_system`, `fragment_activation_flush_system`, `door_activation_system`, `container_loot_system`) | exclusive | Emits canonical activation/loot state before scripting consumers; the flush delivers fragment-queued `Activate` targets the following frame (#2654), ahead of the loot consumer (#4712); a scripted or relayed activation of a load door opens it (#5868) |
-| `Update` | jail, seats and evidence (`jail_bed_system`, `player_seat_system`, `evidence_deposit_system`) | exclusive + declared | Resting in a jail cell's bed ends the sentence (after the activation flush, like every consumer); a seat the player activated seats them (`Seated`, read by `IsCurrentFurnitureRef`) until they move; confiscated goods reach the jail's `StolenGoods` chest, loaded or parked |
-| `Update` | combat chain (`combat_input_system` → `make_faction_hostility_system` → `make_guard_rush_system` → `make_npc_combat_ai_system`) | exclusive + declared | `update/combat.rs`: player attack input, ambient faction hostility (#4414), guards who see a wanted player stamp the force-greet directive (before the force-greet system), then NPC combat-AI chase/strike. These are `HitEvent` producers; `combat_damage_system` resolves them at the head of the player/animation segment below |
+| `Update` | beds, jail, seats and evidence (`bed_use_system`, `jail_bed_system`, `player_seat_system`, `evidence_deposit_system`) | exclusive, jail/seats/evidence declared | After the activation flush, an ordinary usable Oblivion bed opens the rest picker. A jail bed ends the sentence. An activated seat seats the player (`Seated`, read by `IsCurrentFurnitureRef`) until they move. Confiscated goods reach the jail's `StolenGoods` chest, loaded or parked |
+| `Update` | combat chain (`combat_input_system` → `player_cast_system` → `player_bow_system` → `make_faction_hostility_system` → `make_guard_rush_system` → `make_npc_combat_ai_system`) | exclusive + declared | `update/combat.rs`: player attack input, the player's cast action (`player_cast_system`, the one system that owns the Magicka and Fatigue spend; PSC-CST-009), the player's bow (`player_bow_system`, the one owner of the draw, the release and the arrow's spend; BOW-DRW-005; a wielded bow never swings), ambient faction hostility (#4414), guards who see a wanted player stamp the force-greet directive (before the force-greet system), then NPC combat-AI chase/strike. These are `HitEvent` producers; `combat_damage_system` resolves them at the head of the player/animation segment below |
 | `Update` | Papyrus-demo and trigger dispatchers (`rumble_on_activate_dispatch`, `rumble_tick_system`, `trigger_detection_dispatch`, `make_scene_trigger_actor_approach_system`, `quest_advance_dispatch`) | exclusive | `update/quest_scene.rs`: the M47.0 R5 demo dispatchers (event-driven, idle without scripted activity) and trigger detection, ahead of `quest_advance_dispatch` so an `OnTriggerEnter` raised this frame (offscreen scene actors included) is consumed this frame |
 | `Update` | quest start and the Story Manager (`quest_startup_system`, `story_change_location_dispatch`, the story producers below, `story_manager_dispatch`) | exclusive | Start Game Enabled quests bootstrap, `CLOC` is raised on a location change, and the dispatch walks every raised event the same frame, before the alias refresh, so an SM-started quest looks like a Start Game Enabled one downstream (#5366) |
 | `Update` | M43 story producers (`dropped_item_story_event_system`, `dead_body_discovery_system`, `iron_sights_system`, `mine_system`, `attraction_system`, `random_conversation_system`, `make_conversation_hold_system`) | exclusive | Raise `REMP`, `DEAD`, `IRON`, `TMEE`, `AOBJ` and `ADIA` between the `CLOC` producer and `story_manager_dispatch`, so each is walked the frame it is raised; each idles without its SM root. `BYRO_NO_RANDOM_CONVERSATIONS=1` leaves the two conversation systems out, and the hold honours `BYRO_NO_AI_LOCOMOTION`. `mine_system` is also a `HitEvent` producer |
@@ -155,9 +155,9 @@ The live schedule built in `App::new` is:
 | `Update` | packages and their fragments (`ambient_ai_package_system`, `package_fragment_system`, `perk_body_system`, `perk_fragment_system`, `terminal_fragment_system`) | exclusive | M42 ambient package evaluation (time checks bounded to one pass per in-game minute), then the `PF_` / `PRKF_` / `TERM_` fragments of the transitions the host reported (M47.2); `perk_body_system` keeps each perk holder's Ability spells and the player's Quest entries in line with its `Perks` (PERK-BODY) |
 | `Update` | force-greet (`scripted_conversation_system`, `make_forcegreet_system`) | exclusive | `StartConversation` requests become directives; Dialogue-procedure packages walk their NPCs to the player and open the conversation (#5367; the approach honours `BYRO_NO_AI_LOCOMOTION`) |
 | `Update` | ObScript quests (`obscript_quest_tick_system`, `obscript_quest_menu_mode_system`, `obscript_stage_result_system`) | exclusive | M47.3: running legacy quest scripts' `GameMode` blocks on the vanilla 5 s cadence, their `Begin MenuMode [code]` blocks on the frames a matching menu is open (GUI-EVT-006; the paused frames of a native page run this one and the stage results by hand), then the result scripts of the stages set since the last run |
-| `Update` | scene packages and dialogue (`scene_package_system`, `two_state_activator_system`, `scene_dialogue_system`) | exclusive | PACK actions resolve and move actors and queue Done completions; the two-state activator consumes the flushed `OnActivate` (#3936); dialogue consumes the ActionStarted batch and exposes INFO subtitle state for the rest of the frame |
+| `Update` | scene packages, doors and dialogue (`scene_package_system`, `door_motion_system`, `two_state_activator_system`, `scene_dialogue_system`) | exclusive | PACK actions resolve and move actors and queue Done completions; the two-state activator consumes the flushed `OnActivate` (#3936); dialogue consumes the ActionStarted batch and exposes INFO subtitle state for the rest of the frame |
 | `Update` | ObScript objects and speech (`mark_cell_reset`, `obscript_object_system`, `scripted_line_voice_system`, `obscript_speech_system`) | exclusive | M47.3: `OnReset` for a cell that reset on entry, the placed references' `SCRI` `GameMode` / `OnLoad` / `OnDeath` blocks (before `reference_script_event_system` drains `OnDeathEvent`), then `Say` / `SayTo` voice and their `SayToDone` blocks |
-| `Update` | reference and alias scripts (`check_alias_scripts_dispatch`, `alias_script_event_system`, `reference_script_event_system`, `activate_parent_relay_system`, `animation_event_system`, `scripted_sound_system`) | exclusive | `update/script_runtime.rs`, M47.2: alias scripts start once their aliases fill and stop with their quest; reference and alias scripts receive this frame's events; activate parents relay to their children; object-graph events reach `OnAnimationEvent`; `Sound.Play` requests play |
+| `Update` | reference and alias scripts (`check_alias_scripts_dispatch`, `alias_script_event_system`, `reference_script_event_system`, `activate_parent_relay_system`, `animation_event_system`, `menu_open_close_event_system`, `scripted_sound_system`) | exclusive | `update/script_runtime.rs`, M47.2: alias scripts start once their aliases fill and stop with their quest; reference and alias scripts receive this frame's events; activate parents relay to their children; object-graph events reach `OnAnimationEvent`; the menu registry's openings and closings reach `OnMenuOpenCloseEvent` (M48 GUI-EVT-001); `Sound.Play` requests play |
 | `Update` | quest fragments and latent clocks (`quest_fragment_dispatch`, `quest_terminal_stage_system`, `fragment_continuation_system`, `script_update_dispatch`, `distance_event_system`) | exclusive | Quest fragments right after the advance that emits `QuestStageAdvanced` (before cleanup drains it), then QSDT complete/fail flags and successor quests; `Utility.Wait` tails resume; `OnUpdate` / `OnUpdateGameTime`; distance events |
 | `Update` | idles and scripted motion (`idle_clip_playback_system`, `idle_resume_system`, `pick_idle_system`, `scripted_motion_type_system`, `scripted_havok_impulse_system`, `archetype_idle_system`) | exclusive | `PlayIdle` requests become decoded HKX players (the animation batch sees them no later than next frame), a finished one-shot idle hands back the earlier animation, `PickIdle`; `SetMotionType` then `ApplyHavokImpulse` before Physics; Fallout 4 archetype idles |
 | `Update` | the last hit producers, then the script hit consumers (`trap_contact_system`, `projectile_launch_system`, `projectile_flight_system`, `pending_trap_hit_flush_system`, `reference_script_hit_system`, `hit_event_system`, `obscript_hit_system`, `obscript_combat_system`) | exclusive | Trap contact, `Weapon.Fire` projectiles and the `ProcessTrapHit` flush (#5872) land their `HitEvent`s, then reference/alias `OnHit` (#5991), `RegisterForHitEvent`, and the ObScript `OnHit` / `OnHitWith` blocks and combat transitions read them. Pinned by `hit_event_consumers_run_after_every_producer` |
@@ -182,7 +182,7 @@ The live schedule built in `App::new` is:
 | `Late` | `camera_follow_system` | declared | M28.5 — runs after physics settle |
 | `Late` | `make_billboard_system()` | exclusive + declared | Overwrites computed world rotation (#225); moved from PostUpdate (#3652) to read this frame's camera pose |
 | `Late` | `footstep_system` + `impact_audio_system` | exclusive + declared | Fires stride-crossing footsteps from each emitter's propagated `GlobalTransform` (#848); since #5146 the character-mode emitter rides the player body, while the FlyCam camera emitter keeps the original mover role; moved from PostUpdate (#3652) for the same pose-staleness reason. Clutter impact sounds from the contact-force crossings Physics collected run right after, so the two audio consumers never interleave |
-| `Late` | ragdoll, submersion, water and the death reconciler (`ragdoll_writeback_system`, `submersion_system`, `water_damage_system`, `scripted_experience_system`, `scripted_skill_system`, `scripted_kill_system`, `reconcile_pending_dead_actors_system`, `make_water_interaction_system()`, `water_audio_system`) | exclusive (+ declared) | Applies the final physics pose and bridges water contacts into gameplay/presentation events; script XP grants, `AdvanceSkill` and `Kill` requests (M47.2) land before the shared dead-actor reconciler that combat and save-load also use (#3119) |
+| `Late` | ragdoll, submersion, water and the death reconciler (`ragdoll_writeback_system`, `submersion_system`, `water_damage_system`, `scripted_experience_system`, `scripted_skill_system`, `stance_use_system`, `skill_use_system`, `oblivion_level_system`, `scripted_kill_system`, `reconcile_pending_dead_actors_system`, `make_water_interaction_system()`, `water_audio_system`) | exclusive (+ declared) | Applies the final physics pose and bridges water contacts into gameplay/presentation events; script XP grants, `AdvanceSkill` and `Kill` requests (M47.2) and Oblivion's queued skill uses (`skill_use_system`, #7050) land before the shared dead-actor reconciler that combat and save-load also use (#3119) |
 | `Late` | `reverb_zone_system` | declared | Cell-acoustics → audio reverb send (M44 Phase 6) |
 | `Late` | `audio_system` | exclusive | Listener pose / emitter update (M44) |
 | `Late` | `log_stats_system` + `metrics_sample_system` | declared | Periodic stats log; ~2 Hz CPU/RAM/VRAM/GPU snapshot for the debug UI |
@@ -204,6 +204,38 @@ There is **no standalone *input_system***: raw input is captured directly
 in `window_event` / `device_event` into the `InputState` resource, which
 `fly_camera_system` (inside `player_controller_system`) consumes the next
 frame.
+
+## The projectile path (the gun, a script and the player's bow)
+
+One flight and one damage path serve every projectile (BOW-G-004, BOW-FLT-005). `Projectile` and
+`ActiveProjectiles` (`byroredux/src/systems/projectiles.rs`) are plain data in a resource, never entities
+and never saved; `projectile_launch_system` turns a script's `Weapon.Fire` request into one and
+`projectile_flight_system` advances every one in the `Update` hit-producer row above. A projectile ends on
+the first solid or actor, at its range or at its lifetime. A hit on a living actor queues a `HitEvent`, and
+`combat_damage_system` resolves it into health and death, so armor, Damage Threshold, ghosts, `OnHit` and
+the story events all follow. The damage is fixed at launch (`Projectile::damage`), so a launcher computes
+its damage terms before it builds the projectile.
+
+Three launchers build a `Projectile` today:
+
+| Launcher | Shooter | Speed, range and damage come from | Gates, spends and feeds |
+|---|---|---|---|
+| `Weapon.Fire` (`projectile_launch_system`) | any reference | the ammunition's `PROJ`; the weapon's damage plus the ammunition's | nothing |
+| `player_shot` (the gun, `fire_player_gun`) | the player | the same `PROJ`, from the camera's aim | spends a round of the first accepted ammunition the player carries (`player_ammo_for`) |
+| `spell_shot` (the player's Target spell) | the player | the `MGEF` speed and `fMagicProjectileMaxDistance`, no `PROJ` | the cast gate and cost of `player_cast_system` |
+
+The player's bow is a fourth launcher on this table, not a fourth flight (Player archery PRD). It gates
+(a readied bow, an equipped arrow, the interval), spends one arrow of the equipped type at the release
+(BOW-AMM-003) and builds its `Projectile` from the per-game `BowModel` row; Oblivion has no `PROJ`, so like
+`spell_shot` it gives its own speed and range. The skill feed is not in the flight either: `on_landed_hit` runs from `combat_damage_system`. A projectile carries
+its provenance (`Projectile::arrow`, set only by `arrow_shot`) onto the `TrapHit` and the landed `HitEvent::arrow`,
+and the emitter feeds the bow's skill from that flag (BOW-USE-005), not from the weapon the player wields: a script's
+projectile, the gun's shot and a spell feed nothing even with a bow in hand, and an arrow that dealt nothing is no hit.
+
+Gravity: the flight refuses a non-hitscan projectile whose `PROJ` gravity is non-zero ("the gravity unit is
+unspecified", `projectile_flight`'s launch check). A straight arrow therefore builds its `Projectile` without
+reading the `PROJ` gravity field (BOW-FLT-004). The ballistic branch is added to this one flight when a
+documented gravity rule exists, so every launcher gains it at once.
 
 ## Event Flow
 
@@ -379,8 +411,7 @@ struct App {
     world: World,
     scheduler: Scheduler,
     last_frame: Instant,
-    ui_manager: Option<UiManager>,          // Ruffle SWF overlay
-    ui_texture_handle: Option<u32>,
+    ui: UiState,                            // Ruffle movie stack (each layer owns its texture), HUD drivers
     draw_commands: Vec<DrawCommand>,         // reused per-frame scratch
     water_commands: Vec<WaterDrawCommand>,   // reused per-frame scratch
     gpu_lights: Vec<GpuLight>,               // reused per-frame scratch

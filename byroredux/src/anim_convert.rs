@@ -30,11 +30,10 @@ pub(crate) fn build_subtree_name_map(
     let mut map = FxHashMap::default();
 
     // Include the root itself.
-    if let Some(nq) = world.query::<Name>() {
-        if let Some(name) = nq.get(root) {
+    if let Some(nq) = world.query::<Name>()
+        && let Some(name) = nq.get(root) {
             map.insert(name.0, root);
         }
-    }
 
     // BFS through children.
     let children_q = world.query::<Children>();
@@ -56,11 +55,10 @@ pub(crate) fn build_subtree_name_map(
         }
         if let Some(children) = cq.get(entity) {
             for &child in &children.0 {
-                if let Some(ref nq) = name_q {
-                    if let Some(name) = nq.get(child) {
+                if let Some(ref nq) = name_q
+                    && let Some(name) = nq.get(child) {
                         map.insert(name.0, child);
                     }
-                }
                 queue.push(child);
             }
         }

@@ -130,24 +130,22 @@ pub(crate) fn head_look_system(world: &World, dt: f32) {
         let step = TURN_RATE * dt;
         let yaw = look.yaw + (want_yaw - look.yaw).clamp(-step, step);
         let pitch = look.pitch + (want_pitch - look.pitch).clamp(-step, step);
-        if let Some(mut looks) = world.query_mut::<HeadLook>() {
-            if let Some(stored) = looks.get_mut(actor) {
+        if let Some(mut looks) = world.query_mut::<HeadLook>()
+            && let Some(stored) = looks.get_mut(actor) {
                 stored.yaw = yaw;
                 stored.pitch = pitch;
                 stored.head = Some(head);
             }
-        }
         // Turn about the vertical by the yaw, nod about the body's (turned) right axis by the pitch.
         let turn = Quat::from_rotation_y(yaw);
         let right = (turn * forward_flat).cross(Vec3::Y).normalize_or_zero();
         let nod = Quat::from_axis_angle(right, pitch);
         let new_world = nod * turn * head_world_rotation;
         let new_local = parent_global.rotation.inverse() * new_world;
-        if let Some(mut transforms) = world.query_mut::<Transform>() {
-            if let Some(transform) = transforms.get_mut(head) {
+        if let Some(mut transforms) = world.query_mut::<Transform>()
+            && let Some(transform) = transforms.get_mut(head) {
                 transform.rotation = new_local.normalize();
             }
-        }
     }
 }
 

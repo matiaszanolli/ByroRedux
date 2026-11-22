@@ -1,0 +1,12 @@
+context-menu-play = Oynat
+context-menu-rewind = Geri sar
+context-menu-forward = İleri
+context-menu-back = Geri
+context-menu-quality-low = Kalite: düşük
+context-menu-quality-medium = Kalite: orta
+context-menu-quality-high = Kalite: yüksek
+context-menu-cut = Kes
+context-menu-copy = Kopyala
+context-menu-paste = Yapıştır
+context-menu-delete = Sil
+context-menu-select-all = Hepsini seç

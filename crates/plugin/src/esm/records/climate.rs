@@ -94,8 +94,8 @@ pub fn parse_clmt(
                 let trailing_pad = entry_size - 8;
                 let mut r = SubReader::new(&sub.data);
                 for _ in 0..count {
-                    if let (Ok(fid), Ok(chance_bits)) = (r.u32(), r.u32()) {
-                        if fid != 0 {
+                    if let (Ok(fid), Ok(chance_bits)) = (r.u32(), r.u32())
+                        && fid != 0 {
                             record.weathers.push(ClimateWeather {
                                 // #4066 — WLST weather ids are cross-record
                                 // references and must land in the same global
@@ -110,7 +110,6 @@ pub fn parse_clmt(
                                 chance: chance_bits as i32,
                             });
                         }
-                    }
                     r.skip_or_eof(trailing_pad);
                 }
             }

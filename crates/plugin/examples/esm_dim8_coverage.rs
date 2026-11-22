@@ -9,7 +9,7 @@
 //!
 //! Usage: cargo run --release -p byroredux-plugin --example esm_dim8_coverage -- <file.esm> [--no-subs]
 
-use byroredux_plugin::esm::reader::{EsmReader, GameKind};
+use byroredux_plugin::esm::reader::{EsmReader, GameKind, MAX_GRUP_NESTING_DEPTH};
 use std::collections::HashMap;
 
 struct Census {
@@ -80,7 +80,7 @@ fn main() -> anyhow::Result<()> {
             census.cur_top = group.label;
         }
         let before: u64 = census.records.values().sum();
-        walk(&mut reader, inner_end, &mut census);
+        walk(&mut reader, inner_end, &mut census, 0);
         let after: u64 = census.records.values().sum();
         if group.group_type == 0 {
             census.top.push((group.label, after - before));
@@ -125,7 +125,11 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn walk(reader: &mut EsmReader<'_>, end: usize, census: &mut Census) {
+/// Census walk of one group's content. `depth` is the shared GRUP nesting cap
+/// the engine's walkers honour (#7099, the walker #5819 left recursive): a
+/// group nested past [`MAX_GRUP_NESTING_DEPTH`] is counted as an error and
+/// skipped to its parent-clamped end instead of recursing.
+fn walk(reader: &mut EsmReader<'_>, end: usize, census: &mut Census, depth: u32) {
     while reader.position() < end && reader.remaining() > 0 {
         if reader.is_group() {
             let group = match reader.read_group_header() {
@@ -150,7 +154,19 @@ fn walk(reader: &mut EsmReader<'_>, end: usize, census: &mut Census) {
                 );
                 return;
             }
-            walk(reader, inner_end, census);
+            if depth + 1 >= MAX_GRUP_NESTING_DEPTH {
+                census.errors += 1;
+                eprintln!(
+                    "ERR grup-depth label={} type={} pos={} depth={}",
+                    fourcc(&group.label),
+                    group.group_type,
+                    reader.position(),
+                    depth + 1
+                );
+                reader.skip(inner_end - reader.position());
+                continue;
+            }
+            walk(reader, inner_end, census, depth + 1);
             continue;
         }
         let header = match reader.read_record_header() {

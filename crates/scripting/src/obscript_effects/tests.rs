@@ -160,6 +160,24 @@ fn actor_value_commands_translate_the_code_and_set_mod_damage_and_restore() {
 }
 
 #[test]
+fn oblivion_actor_value_commands_use_the_engine_roster() {
+    let (mut world, actor, _) = world();
+    let mut index = EsmIndex { game: GameKind::Oblivion, ..Default::default() };
+    index.install_oblivion_actor_values(byroredux_plugin::esm::reader::GlobalSlot::Regular(1)).unwrap();
+    crate::install_actor_value_names(&mut world, &index);
+    world.query_mut::<ActorValues>().unwrap().insert(actor, ActorValues::new());
+    let ctx = context(Some(ACTOR));
+    let av = |code, value| [ObScriptValue::Num(code), ObScriptValue::Num(value)];
+    assert!(done(&run(&world, CMD_SET_AV, &av(31.0, 25.0), &ctx)));
+    assert_eq!(world.get::<ActorValues>(actor).unwrap().current(0x0100_0020), 25.0);
+    assert!(done(&run(&world, CMD_MOD_AV, &av(31.0, 5.0), &ctx)));
+    assert_eq!(getter(&world, CMD_GET_AV, &[ObScriptValue::Num(31.0)], &ctx), Action::number(30.0));
+    assert!(done(&run(&world, CMD_FORCE_AV, &av(31.0, 40.0), &ctx)));
+    assert_eq!(getter(&world, CMD_GET_AV, &[ObScriptValue::Num(31.0)], &ctx), Action::number(40.0));
+    assert_eq!(getter(&world, CMD_GET_AV, &[ObScriptValue::Num(38.0)], &ctx), Action::Declined);
+}
+
+#[test]
 fn an_actor_value_code_with_no_avif_is_declined_not_invented() {
     let (world, _, _) = world();
     let ctx = context(Some(ACTOR));
@@ -664,6 +682,8 @@ fn cast_dispel_shader_look_and_resurrect_commands_reach_their_runtimes() {
                 magnitude: 25.0,
                 value: Some(ValueEffect { actor_value: HEALTH, amount: 25.0, recover: true }),
                 conditions: None,
+                range: Default::default(),
+                area: 0.0,
             }],
             ..Default::default()
         },

@@ -287,6 +287,8 @@ fn npc_combat_ai_system_inner(world: &World, dt: f32, scratch: &mut CombatAiScra
                     sneak_attack: false,
                     bash_attack: false,
                     blocked: false,
+                    arrow: false,
+                    ignores_resistance: crate::combat::weapon_ignores_resistance(world, decision.entity),
                 },
             );
         }
@@ -593,6 +595,8 @@ mod tests {
             sneak_attack: false,
             bash_attack: false,
             blocked: false,
+            arrow: false,
+            ignores_resistance: false,
         }
     }
 

@@ -44,11 +44,10 @@ pub(super) fn set_open_state(world: &World, _fallout: bool, cmd: u16, args: &[Ob
     let Some((caller, caller_entity)) = live_caller(world, context) else { return Action::Declined };
     let mut bind = Binder::default();
     let effects: Vec<Effect> = {
-        if let (entity, Some(mut states)) = (caller_entity, world.query_mut::<crate::vm_state::TwoStateActivator>()) {
-            if states.get(entity).is_none() {
+        if let (entity, Some(mut states)) = (caller_entity, world.query_mut::<crate::vm_state::TwoStateActivator>())
+            && states.get(entity).is_none() {
                 states.insert(entity, crate::vm_state::TwoStateActivator::default());
             }
-        }
         vec![Effect::SetOpen { target: bind.object(caller), open: num(args, 0) != 0.0 }]
     };
     finish_effects(world, cmd, context, caller, &bind, effects)
@@ -93,11 +92,10 @@ pub(super) fn mark_for_delete(world: &World, _fallout: bool, _cmd: u16, _args: &
     let created = world
         .try_resource_mut::<crate::CreatedReferences>()
         .is_some_and(|mut created| created.delete_when_able(caller));
-    if !created {
-        if let Some(mut instances) = world.query_mut::<crate::obscript_objects::ObScriptInstance>() {
+    if !created
+        && let Some(mut instances) = world.query_mut::<crate::obscript_objects::ObScriptInstance>() {
             instances.remove(caller_entity);
         }
-    }
     Action::Done { value: None, effect: format!("MarkForDelete {caller:08X}") }
 }
 

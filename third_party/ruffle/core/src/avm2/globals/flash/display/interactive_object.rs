@@ -1,0 +1,226 @@
+//! `flash.display.InteractiveObject` builtin/prototype
+
+use crate::avm2::Error;
+use crate::avm2::activation::Activation;
+use crate::avm2::error::make_error_2027;
+use crate::avm2::function::FunctionArgs;
+use crate::avm2::parameters::ParametersExt;
+use crate::avm2::value::Value;
+use crate::display_object::TInteractiveObject;
+
+/// Implements `InteractiveObject.mouseEnabled`'s getter.
+pub fn get_mouse_enabled<'gc>(
+    _activation: &mut Activation<'_, 'gc>,
+    this: Value<'gc>,
+    _args: FunctionArgs<'_, 'gc>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    let this = this.as_object().unwrap();
+
+    if let Some(int) = this
+        .as_display_object()
+        .and_then(|dobj| dobj.as_interactive())
+    {
+        return Ok(int.mouse_enabled().into());
+    }
+
+    Ok(Value::Undefined)
+}
+
+/// Implements `InteractiveObject.mouseEnabled`'s setter.
+pub fn set_mouse_enabled<'gc>(
+    _activation: &mut Activation<'_, 'gc>,
+    this: Value<'gc>,
+    args: FunctionArgs<'_, 'gc>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    let this = this.as_object().unwrap();
+
+    if let Some(int) = this
+        .as_display_object()
+        .and_then(|dobj| dobj.as_interactive())
+    {
+        let value = args.get_bool(0);
+        int.set_mouse_enabled(value);
+    }
+
+    Ok(Value::Undefined)
+}
+
+/// Implements `InteractiveObject.doubleClickEnabled`'s getter.
+pub fn get_double_click_enabled<'gc>(
+    _activation: &mut Activation<'_, 'gc>,
+    this: Value<'gc>,
+    _args: FunctionArgs<'_, 'gc>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    let this = this.as_object().unwrap();
+
+    if let Some(int) = this
+        .as_display_object()
+        .and_then(|dobj| dobj.as_interactive())
+    {
+        return Ok(int.double_click_enabled().into());
+    }
+
+    Ok(Value::Undefined)
+}
+
+/// Implements `InteractiveObject.doubleClickEnabled`'s setter.
+pub fn set_double_click_enabled<'gc>(
+    _activation: &mut Activation<'_, 'gc>,
+    this: Value<'gc>,
+    args: FunctionArgs<'_, 'gc>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    let this = this.as_object().unwrap();
+
+    if let Some(int) = this
+        .as_display_object()
+        .and_then(|dobj| dobj.as_interactive())
+    {
+        let value = args.get_bool(0);
+        int.set_double_click_enabled(value);
+    }
+
+    Ok(Value::Undefined)
+}
+
+/// Implements `InteractiveObject.contextMenu`'s getter.
+pub fn get_context_menu<'gc>(
+    _activation: &mut Activation<'_, 'gc>,
+    this: Value<'gc>,
+    _args: FunctionArgs<'_, 'gc>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    let this = this.as_object().unwrap();
+
+    if let Some(int) = this
+        .as_display_object()
+        .and_then(|dobj| dobj.as_interactive())
+    {
+        return Ok(int.context_menu());
+    }
+
+    Ok(Value::Undefined)
+}
+
+/// Implements `InteractiveObject.contextMenu`'s setter.
+pub fn set_context_menu<'gc>(
+    activation: &mut Activation<'_, 'gc>,
+    this: Value<'gc>,
+    args: FunctionArgs<'_, 'gc>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    let this = this.as_object().unwrap();
+
+    if let Some(int) = this
+        .as_display_object()
+        .and_then(|dobj| dobj.as_interactive())
+    {
+        let value = args.get_value(0);
+        int.set_context_menu(activation.gc(), value);
+    }
+
+    Ok(Value::Undefined)
+}
+
+pub fn get_tab_enabled<'gc>(
+    activation: &mut Activation<'_, 'gc>,
+    this: Value<'gc>,
+    _args: FunctionArgs<'_, 'gc>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    let this = this.as_object().unwrap();
+
+    if let Some(obj) = this.as_display_object().and_then(|o| o.as_interactive()) {
+        Ok(Value::Bool(obj.tab_enabled(activation.context)))
+    } else {
+        Ok(Value::Undefined)
+    }
+}
+
+pub fn set_tab_enabled<'gc>(
+    activation: &mut Activation<'_, 'gc>,
+    this: Value<'gc>,
+    args: FunctionArgs<'_, 'gc>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    let this = this.as_object().unwrap();
+
+    if let Some(obj) = this
+        .as_display_object()
+        .and_then(|this| this.as_interactive())
+    {
+        let value = args.get_bool(0);
+        obj.set_tab_enabled(activation.context, value);
+    }
+
+    Ok(Value::Undefined)
+}
+
+pub fn get_tab_index<'gc>(
+    _activation: &mut Activation<'_, 'gc>,
+    this: Value<'gc>,
+    _args: FunctionArgs<'_, 'gc>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    let this = this.as_object().unwrap();
+
+    if let Some(obj) = this
+        .as_display_object()
+        .and_then(|this| this.as_interactive())
+    {
+        Ok(Value::Number(obj.tab_index().unwrap_or(-1) as f64))
+    } else {
+        Ok(Value::Undefined)
+    }
+}
+
+pub fn set_tab_index<'gc>(
+    activation: &mut Activation<'_, 'gc>,
+    this: Value<'gc>,
+    args: FunctionArgs<'_, 'gc>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    let this = this.as_object().unwrap();
+
+    if let Some(obj) = this.as_display_object().and_then(|o| o.as_interactive()) {
+        let value = args.get_i32(0);
+        // Despite throwing an error that tabIndex cannot be negative,
+        // the value of -1 is allowed, and it means that tabIndex is unset.
+        if value < -1 {
+            return Err(make_error_2027(activation, "tabIndex", value));
+        }
+        obj.set_tab_index(Some(value));
+    }
+
+    Ok(Value::Undefined)
+}
+
+pub fn get_focus_rect<'gc>(
+    _activation: &mut Activation<'_, 'gc>,
+    this: Value<'gc>,
+    _args: FunctionArgs<'_, 'gc>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    let this = this.as_object().unwrap();
+
+    if let Some(obj) = this.as_display_object().and_then(|o| o.as_interactive()) {
+        Ok(obj.focus_rect().map(Value::Bool).unwrap_or(Value::Null))
+    } else {
+        Ok(Value::Null)
+    }
+}
+
+pub fn set_focus_rect<'gc>(
+    _activation: &mut Activation<'_, 'gc>,
+    this: Value<'gc>,
+    args: FunctionArgs<'_, 'gc>,
+) -> Result<Value<'gc>, Error<'gc>> {
+    let this = this.as_object().unwrap();
+
+    if let Some(obj) = this
+        .as_display_object()
+        .and_then(|this| this.as_interactive())
+    {
+        let value = match args.get_value(0) {
+            Value::Bool(true) => Some(true),
+            Value::Null => None,
+            // everything else sets focusRect to false
+            _ => Some(false),
+        };
+        obj.set_focus_rect(value);
+    }
+
+    Ok(Value::Null)
+}

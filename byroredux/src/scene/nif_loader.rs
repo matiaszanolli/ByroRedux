@@ -249,7 +249,8 @@ fn cached_scene_lazy<'a>(
     tex_provider: &TextureProvider,
     mat_provider: Option<&mut MaterialProvider>,
 ) -> Option<std::sync::Arc<byroredux_nif::import::ImportedScene>> {
-    let key = path.to_ascii_lowercase();
+    // #7180 — the archives' case fold.
+    let key = byroredux_core::paths::fold_case(path);
     let cached = world.resource_mut::<crate::scene_import_cache::SceneImportCache>().get(&key);
     if let Some(cached) = cached {
         return cached;
@@ -659,8 +660,8 @@ fn load_nif_with_skeleton_from<'a>(
         // traps) that legitimately author a small constraint articulation.
         // Ordinary architecture/props with zero or one rigid body and no
         // constraint block still correctly get `ragdoll: None`.
-        if let Some(ragdoll) = imported.ragdoll.as_ref() {
-            if let Some(template) =
+        if let Some(ragdoll) = imported.ragdoll.as_ref()
+            && let Some(template) =
                 crate::ragdoll::template_from_imported(ragdoll, &node_by_name, &rest_pose_by_name)
             {
                 let bodies = template.bodies.len();
@@ -672,7 +673,6 @@ fn load_nif_with_skeleton_from<'a>(
                     label,
                 );
             }
-        }
     }
 
     // #2530 / NIFAL-D3-NEW-01 — spawn a `LightSource` per authored NIF
@@ -1462,7 +1462,6 @@ fn spawn_nif_mesh(
 /// Phase 3 resolves skinning bone names through, and the per-node rest poses.
 /// Skeleton nodes are the only reliably-unique names in a typical NIF, so on
 /// a collision the first (root-most, depth-first) spawn wins.
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::type_complexity)] // the doc comment above names each element; a type alias would just move the naming, not reduce it
 fn spawn_nif_nodes(
     world: &mut World,
@@ -1587,7 +1586,6 @@ fn spawn_nif_nodes(
 
 /// Phase 2.5 of [`load_nif_bytes_with_skeleton`] (#3858): spawn the particle
 /// emitters the importer tagged with a host node index.
-#[allow(clippy::too_many_arguments)]
 fn spawn_nif_particle_emitters(
     world: &mut World,
     ctx: &mut VulkanContext,

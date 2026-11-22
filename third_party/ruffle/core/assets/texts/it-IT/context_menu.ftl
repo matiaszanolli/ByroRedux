@@ -1,0 +1,12 @@
+context-menu-play = Riproduci
+context-menu-rewind = Riavvolgi
+context-menu-forward = Avanti
+context-menu-back = Indietro
+context-menu-quality-low = Qualità: bassa
+context-menu-quality-medium = Qualità: media
+context-menu-quality-high = Qualità: alta
+context-menu-cut = Taglia
+context-menu-copy = Copia
+context-menu-paste = Incolla
+context-menu-delete = Elimina
+context-menu-select-all = Seleziona tutto

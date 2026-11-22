@@ -23,10 +23,24 @@ fn register_damage_pass(scheduler: &mut Scheduler) {
         crate::combat::combat_damage_system,
         Access::new()
             .reads::<byroredux_core::ecs::components::Inventory>()
+            // GUI-PAGE-005 — the XP notice in the game's word (`sStatsXP`).
+            .reads_resource::<byroredux_core::ui_labels::UiLabels>()
             .writes::<byroredux_core::ecs::components::EquipmentSlots>()
             .writes::<byroredux_core::ecs::components::EquippedWeapon>()
             .writes_resource::<crate::combat::CombatState>()
+            // #7051 — the skill uses a landed hit queues for `skill_use_system`, and what it reads to name them.
+            .writes_resource::<byroredux_scripting::oblivion_skill_use::PendingSkillUse>()
+            .reads_resource::<byroredux_core::character::CharacterRuleset>()
+            .reads_resource::<crate::components::LoadedCellIndex>()
             .reads::<byroredux_scripting::HitEvent>()
+            // #7054 — the target's guard: the block rules, its Block stance, its Block skill and what it holds.
+            .reads_resource::<byroredux_core::character::BlockModel>()
+            // Oblivion's armor rating and Resist Normal Weapons: the model, the worn pieces and the skills by name.
+            .reads_resource::<byroredux_core::character::ArmorRatingModel>()
+            .reads::<byroredux_core::ecs::components::EquipmentSlots>()
+            .reads::<crate::combat::MeleeState>()
+            .reads_resource::<byroredux_scripting::ActorValueNames>()
+            .reads::<byroredux_core::ecs::components::EquippedWeapon>()
             .reads::<byroredux_core::ecs::components::ActorVitals>()
             .reads::<crate::components::AnimationTarget>()
             .writes::<byroredux_core::ecs::components::ActorValues>()

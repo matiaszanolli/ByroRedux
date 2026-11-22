@@ -359,21 +359,19 @@ fn import_embedded_controller(
             let interp_idx = any
                 .downcast_ref::<NiPreSplitDataController>()
                 .and_then(|c| c.base.interpolator_ref.index());
-            if let Some(idx) = interp_idx {
-                if let Some(ch) = extract_float_channel_at(scene, idx, FloatTarget::Alpha, sampling) {
+            if let Some(idx) = interp_idx
+                && let Some(ch) = extract_float_channel_at(scene, idx, FloatTarget::Alpha, sampling) {
                     clip.float_channels.push((Arc::clone(node_name), ch));
                 }
-            }
         }
         "NiVisController" => {
             let interp_idx = any
                 .downcast_ref::<NiPreSplitDataController>()
                 .and_then(|c| c.base.interpolator_ref.index());
-            if let Some(idx) = interp_idx {
-                if let Some(ch) = extract_bool_channel_at(scene, idx) {
+            if let Some(idx) = interp_idx
+                && let Some(ch) = extract_bool_channel_at(scene, idx) {
                     clip.bool_channels.push((Arc::clone(node_name), ch));
                 }
-            }
         }
         // #1440 (LC-D5-01) — an inline transform controller hung
         // directly off a node (animated scenery: fans, doors, lifts,
@@ -455,16 +453,15 @@ fn import_embedded_controller(
         "NiTextureTransformController" => {
             if let Some(c) = any.downcast_ref::<NiTextureTransformController>() {
                 let target = float_target_from_operation(c.operation);
-                if let Some(idx) = c.interpolator_ref.index() {
-                    if let Some(ch) = extract_float_channel_at(scene, idx, target, sampling) {
+                if let Some(idx) = c.interpolator_ref.index()
+                    && let Some(ch) = extract_float_channel_at(scene, idx, target, sampling) {
                         clip.float_channels.push((Arc::clone(node_name), ch));
                     }
-                }
             }
         }
         "NiMaterialColorController" => {
-            if let Some(c) = any.downcast_ref::<NiMaterialColorController>() {
-                if let Some(idx) = c.interpolator_ref.index() {
+            if let Some(c) = any.downcast_ref::<NiMaterialColorController>()
+                && let Some(idx) = c.interpolator_ref.index() {
                     let keys = resolve_color_keys_at(scene, idx, sampling);
                     if !keys.is_empty() {
                         let target = color_target_from_target_color(c.target_color);
@@ -472,17 +469,15 @@ fn import_embedded_controller(
                             .push((Arc::clone(node_name), ColorChannel { target, keys }));
                     }
                 }
-            }
         }
         "BSEffectShaderPropertyFloatController"
         | "BSLightingShaderPropertyFloatController" => {
             if let Some(c) = any.downcast_ref::<BsShaderController>() {
                 let target = float_target_from_shader_controller(c.kind);
-                if let Some(idx) = c.base.interpolator_ref.index() {
-                    if let Some(ch) = extract_float_channel_at(scene, idx, target, sampling) {
+                if let Some(idx) = c.base.interpolator_ref.index()
+                    && let Some(ch) = extract_float_channel_at(scene, idx, target, sampling) {
                         clip.float_channels.push((Arc::clone(node_name), ch));
                     }
-                }
             }
         }
         "BSEffectShaderPropertyColorController"
@@ -547,8 +542,8 @@ fn import_embedded_controller(
         // and the FloatTarget::Light* / ColorTarget::Light*
         // sinks in `core/src/animation/types.rs`.
         "NiLightColorController" => {
-            if let Some(c) = any.downcast_ref::<NiLightColorController>() {
-                if let Some(idx) = c.interpolator_ref.index() {
+            if let Some(c) = any.downcast_ref::<NiLightColorController>()
+                && let Some(idx) = c.interpolator_ref.index() {
                     let keys = resolve_color_keys_at(scene, idx, sampling);
                     if !keys.is_empty() {
                         // target_color: 0 = Diffuse, 1 = Ambient
@@ -562,7 +557,6 @@ fn import_embedded_controller(
                             .push((Arc::clone(node_name), ColorChannel { target, keys }));
                     }
                 }
-            }
         }
         "NiLightDimmerController"
         | "NiLightIntensityController"
@@ -574,11 +568,10 @@ fn import_embedded_controller(
                     "NiLightRadiusController" => FloatTarget::LightRadius,
                     _ => unreachable!(),
                 };
-                if let Some(idx) = c.base.interpolator_ref.index() {
-                    if let Some(ch) = extract_float_channel_at(scene, idx, target, sampling) {
+                if let Some(idx) = c.base.interpolator_ref.index()
+                    && let Some(ch) = extract_float_channel_at(scene, idx, target, sampling) {
                         clip.float_channels.push((Arc::clone(node_name), ch));
                     }
-                }
             }
         }
         "NiUVController" => {
@@ -588,9 +581,8 @@ fn import_embedded_controller(
             // scaleU, scaleV). Emit up to four channels per host
             // node, each with its own target. See #154.
             if let Some(c) = any.downcast_ref::<crate::blocks::controller::NiUVController>()
-            {
-                if let Some(data_idx) = c.data_ref.index() {
-                    if let Some(data) =
+                && let Some(data_idx) = c.data_ref.index()
+                    && let Some(data) =
                         scene.get_as::<crate::blocks::interpolator::NiUVData>(data_idx)
                     {
                         // NiUVData.groups = [offset_u, offset_v, tiling_u, tiling_v].
@@ -617,8 +609,6 @@ fn import_embedded_controller(
                             ));
                         }
                     }
-                }
-            }
         }
         other => {
             log::debug!(
@@ -737,8 +727,8 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
             if !seen_controllers.insert(ctrl_idx) {
                 return;
             }
-            if !envelope_taken {
-                if let Some(b) = base {
+            if !envelope_taken
+                && let Some(b) = base {
                     // Cycle Type: bits 1-2 of `flags` (nif.xml
                     // `NiTimeController::flags`, mask 0x0006).
                     // `duration` is deliberately NOT taken from
@@ -753,7 +743,6 @@ pub fn import_embedded_animations(scene: &NifScene) -> Option<AnimationClip> {
                     clip.phase = b.phase;
                     envelope_taken = true;
                 }
-            }
             import_embedded_controller(scene, ctrl_block, &node_name, &mut clip, &mut sampling);
         });
 

@@ -77,12 +77,28 @@ pub(crate) enum InputAction {
     ReadyWeapon,
     #[allow(dead_code, reason = "no physical input source yet")]
     Pause,
+    /// Player-spellcasting (PSC-CST-001, Q2) — cast the readied spell. `C` is the original's PC default for Cast
+    /// (UESP *Oblivion:Controls*) and the owner's choice; keyboard Block moves to `X`, the right mouse button stays
+    /// Block. The three spell actions are not observable by extensions: they would extend the host contract's
+    /// `input-action` enum (`crates/mod-runtime/wit/host.wit`), which the PRD does not promise.
+    CastSpell,
+    /// Player-spellcasting (PSC-RDY-003) — ready the next castable spell (default Right arrow).
+    NextSpell,
+    /// Player-spellcasting (PSC-RDY-003) — ready the previous castable spell (default Left arrow).
+    PreviousSpell,
+    /// Oblivion's wait menu; consumed only by the Oblivion rest driver.
+    Wait,
 }
 
 impl InputAction {
     /// Actions with a live normalized input producer. `Pause` joins this list
-    /// when its first physical binding is added.
-    pub(crate) const OBSERVABLE: [Self; 14] = [
+    /// when its first physical binding is added. #7181 — `Vats` (bound to V,
+    /// read by the VATS system) was missing although the SDK, the host
+    /// contract and `sdk_input_action` all name it, so no extension or
+    /// Papyrus `Input` call ever saw it; the extensions' guard
+    /// `every_engine_action_is_observable_withheld_or_unmapped` now pins the
+    /// three lists together.
+    pub(crate) const OBSERVABLE: [Self; 15] = [
         Self::MoveForward,
         Self::MoveBackward,
         Self::StrafeLeft,
@@ -97,13 +113,14 @@ impl InputAction {
         Self::Quickload,
         Self::Sneak,
         Self::ReadyWeapon,
+        Self::Vats,
     ];
 
-    const fn bit(self) -> u16 {
-        1_u16 << self as u8
+    const fn bit(self) -> u32 {
+        1_u32 << self as u8
     }
 
-    const CONFIGURABLE: [Self; 13] = [
+    const CONFIGURABLE: [Self; 16] = [
         Self::MoveForward,
         Self::MoveBackward,
         Self::StrafeLeft,
@@ -117,6 +134,9 @@ impl InputAction {
         Self::Vats,
         Self::Sneak,
         Self::ReadyWeapon,
+        Self::CastSpell,
+        Self::NextSpell,
+        Self::PreviousSpell,
     ];
 
     const fn setting_id(self) -> &'static str {
@@ -136,6 +156,10 @@ impl InputAction {
             Self::Sneak => "controls.bind.sneak",
             Self::ReadyWeapon => "controls.bind.ready_weapon",
             Self::Pause => "",
+            Self::CastSpell => "controls.bind.cast_spell",
+            Self::NextSpell => "controls.bind.next_spell",
+            Self::PreviousSpell => "controls.bind.previous_spell",
+            Self::Wait => "",
         }
     }
 
@@ -157,6 +181,10 @@ impl InputAction {
             Self::Attack => "Attack",
             Self::Block => "Block",
             Self::Pause => "Pause",
+            Self::CastSpell => "Cast spell",
+            Self::NextSpell => "Next spell",
+            Self::PreviousSpell => "Previous spell",
+            Self::Wait => "Wait",
         }
     }
 }
@@ -185,13 +213,19 @@ impl Default for ActionBindings {
                 (KeyCode::ShiftLeft, InputAction::Sprint),
                 (KeyCode::KeyE, InputAction::Activate),
                 (KeyCode::KeyR, InputAction::Attack),
-                (KeyCode::KeyC, InputAction::Block),
+                // Keyboard Block moved off `C` (now Cast, the original's PC default); the right mouse button still blocks.
+                (KeyCode::KeyX, InputAction::Block),
                 (KeyCode::Tab, InputAction::Inventory),
                 (KeyCode::F5, InputAction::Quicksave),
                 (KeyCode::F9, InputAction::Quickload),
                 (KeyCode::KeyV, InputAction::Vats),
                 (KeyCode::ControlLeft, InputAction::Sneak),
                 (KeyCode::KeyG, InputAction::ReadyWeapon),
+                // Player-spellcasting (Q2): Cast on `C`, the spell cycle on the arrow keys.
+                (KeyCode::KeyC, InputAction::CastSpell),
+                (KeyCode::ArrowRight, InputAction::NextSpell),
+                (KeyCode::ArrowLeft, InputAction::PreviousSpell),
+                (KeyCode::KeyT, InputAction::Wait),
             ]),
             mouse: HashMap::from([
                 (MouseButton::Left, InputAction::Attack),
@@ -243,7 +277,7 @@ impl ActionBindings {
         &self,
         keys_held: &std::collections::HashSet<KeyCode>,
         mouse_buttons_held: &std::collections::HashSet<MouseButton>,
-    ) -> u16 {
+    ) -> u32 {
         let keyboard = keys_held
             .iter()
             .filter_map(|key| self.keyboard.get(key))
@@ -297,6 +331,11 @@ fn papyrus_control_name(action: InputAction) -> &'static str {
         InputAction::Sneak => "Sneak",
         InputAction::ReadyWeapon => "Ready Weapon",
         InputAction::Pause => "Pause",
+        // Not observable, so never projected into the SKSE view; named for completeness.
+        InputAction::CastSpell => "Cast Spell",
+        InputAction::NextSpell => "Next Spell",
+        InputAction::PreviousSpell => "Previous Spell",
+        InputAction::Wait => "Wait",
     }
 }
 
@@ -431,14 +470,13 @@ pub(crate) fn sync_registered_settings(world: &World) {
         .collect();
 
     for change in changes {
-        if let Some(companion) = apply_control_setting(world, &change) {
-            if let Err(error) = world
+        if let Some(companion) = apply_control_setting(world, &change)
+            && let Err(error) = world
                 .resource_mut::<SettingsRegistry>()
                 .set(&companion.id, companion.value)
             {
                 log::warn!("could not synchronize swapped binding: {error}");
             }
-        }
     }
 }
 
@@ -699,12 +737,17 @@ fn debug_action(name: &str) -> Option<InputAction> {
         "sprint" | "shift" => Some(InputAction::Sprint),
         "activate" | "e" => Some(InputAction::Activate),
         "attack" | "r" => Some(InputAction::Attack),
-        "block" | "c" => Some(InputAction::Block),
+        "block" | "x" => Some(InputAction::Block),
         "inventory" | "tab" => Some(InputAction::Inventory),
         "quicksave" | "f5" => Some(InputAction::Quicksave),
         "quickload" | "f9" => Some(InputAction::Quickload),
         "sneak" | "ctrl" => Some(InputAction::Sneak),
         "ready_weapon" | "g" => Some(InputAction::ReadyWeapon),
+        // Player-spellcasting (Q2): Cast is on `C`, the cycle on the arrow keys.
+        "cast" | "cast_spell" | "c" => Some(InputAction::CastSpell),
+        "next_spell" | "next" => Some(InputAction::NextSpell),
+        "previous_spell" | "previous" | "prev" => Some(InputAction::PreviousSpell),
+        "wait" => Some(InputAction::Wait),
         _ => None,
     }
 }
@@ -732,15 +775,15 @@ pub(crate) fn injected_hold_frames_remaining(world: &World) -> u32 {
 /// Derived per-frame action state with held/pressed/released semantics.
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct ActionState {
-    held: u16,
-    pressed: u16,
-    released: u16,
+    held: u32,
+    pressed: u32,
+    released: u32,
 }
 
 impl Resource for ActionState {}
 
 impl ActionState {
-    fn refresh(&mut self, next_held: u16) {
+    fn refresh(&mut self, next_held: u32) {
         self.pressed = next_held & !self.held;
         self.released = self.held & !next_held;
         self.held = next_held;
@@ -760,6 +803,14 @@ impl ActionState {
         self.pressed & action.bit() != 0
     }
 
+    /// Consume a press handled by a modal presenter. The scheduler can be
+    /// paused across menu frames, so its next edge snapshot may not run yet.
+    pub(crate) fn take_pressed(&mut self, action: InputAction) -> bool {
+        let pressed = self.was_pressed(action);
+        self.pressed &= !action.bit();
+        pressed
+    }
+
     pub(crate) fn was_released(&self, action: InputAction) -> bool {
         self.released & action.bit() != 0
     }
@@ -770,6 +821,10 @@ impl ActionState {
 pub(crate) enum InteractionKind {
     Activate,
     Door,
+    /// M66 — an in-cell door that is shut: activation opens it.
+    OpenDoor,
+    /// M66 — an in-cell door that is open: activation closes it.
+    CloseDoor,
     Container,
     Corpse,
     /// #4697 — a loose world item ([`crate::inventory::is_pickup_target`]);
@@ -795,7 +850,8 @@ impl InteractionKind {
     pub(crate) const fn verb(self) -> &'static str {
         match self {
             Self::Activate => "Activate",
-            Self::Door => "Open",
+            Self::Door | Self::OpenDoor => "Open",
+            Self::CloseDoor => "Close",
             Self::Container | Self::Corpse => "Take all",
             Self::Pickup => "Take",
             Self::Npc => "Talk",
@@ -891,11 +947,10 @@ pub(crate) fn interaction_system(world: &World, _dt: f32) {
         state.target = target;
     }
 
-    if activate_pressed {
-        if let Some(target) = target {
+    if activate_pressed
+        && let Some(target) = target {
             activate_target(world, target, true);
         }
-    }
 }
 
 /// Refresh the physical-input → gameplay-action snapshot once per frame.
@@ -983,16 +1038,13 @@ fn select_interaction_target(world: &World) -> Option<InteractionTarget> {
     // M65 (#6912) — a living actor too: the placement root's fallback sphere sits at the feet, so a ray aimed
     // at a robot's chest misses it while hitting the robot's own body.
     let by_body = |kind: InteractionKind| matches!(kind, InteractionKind::Corpse | InteractionKind::Npc);
-    if candidates.values().any(|kind| by_body(*kind)) {
-        if let Some((entity, distance)) = ray_hit_actor(world, origin, direction, &candidates) {
-            if let Some(kind) = candidates.get(&entity).copied().filter(|kind| by_body(*kind)) {
-                if rows.iter().any(|row| row.entity == entity && !row.blocked) {
+    if candidates.values().any(|kind| by_body(*kind))
+        && let Some((entity, distance)) = ray_hit_actor(world, origin, direction, &candidates)
+            && let Some(kind) = candidates.get(&entity).copied().filter(|kind| by_body(*kind))
+                && rows.iter().any(|row| row.entity == entity && !row.blocked) {
                     targets.retain(|target| target.entity != entity);
                     targets.push(InteractionTarget { entity, kind, distance });
                 }
-            }
-        }
-    }
     targets.sort_by(|a, b| a.distance.total_cmp(&b.distance));
     let selected = targets.iter().copied()
         .find(|target| target_has_line_of_sight(world, *target, origin, direction));
@@ -1457,7 +1509,7 @@ fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, Inter
         candidates.entry(entity).or_insert(InteractionKind::Craft);
     }
     // A jail cell's bed: resting in it is how a sentence ends, so a bed is offered only then.
-    if byroredux_scripting::jail::player_in_jail(world) {
+    if crate::oblivion_rest::supports_rest(world) || byroredux_scripting::jail::player_in_jail(world) {
         for entity in crate::crime::bed_entities(world) {
             candidates.entry(entity).or_insert(InteractionKind::Sleep);
         }
@@ -1498,13 +1550,26 @@ fn populate_candidates(world: &World, candidates: &mut FxHashMap<EntityId, Inter
                 .or_insert(InteractionKind::Activate);
         }
     }
-    if let Some(query) = world.query::<byroredux_scripting::TwoStateActivator>() {
-        for (entity, state) in query.iter() {
-            if !(state.is_animating || state.do_once && state.activated_once) {
-                candidates
-                    .entry(entity)
-                    .or_insert(InteractionKind::Activate);
-            }
+    // Snapshot prompt eligibility before reading Door. The motion system acquires the
+    // pair in TypeId order, so nesting these reads in a fixed order can close a cycle.
+    let activators: Vec<_> = world
+        .query::<byroredux_scripting::TwoStateActivator>()
+        .map(|query| {
+            query.iter()
+                .filter(|(_, state)| !(state.is_animating || state.do_once && state.activated_once))
+                .map(|(entity, state)| (entity, state.is_open))
+                .collect()
+        })
+        .unwrap_or_default();
+    if !activators.is_empty() {
+        let doors = world.query::<crate::components::Door>();
+        for (entity, is_open) in activators {
+            let kind = match doors.as_ref().is_some_and(|doors| doors.contains(entity)) {
+                true if is_open => InteractionKind::CloseDoor,
+                true => InteractionKind::OpenDoor,
+                false => InteractionKind::Activate,
+            };
+            candidates.entry(entity).or_insert(kind);
         }
     }
     if let Some(query) =
@@ -1569,13 +1634,20 @@ fn activation_is_blocked(world: &World, entity: EntityId) -> bool {
 }
 
 fn carried_unlock_key(world: &World, target: EntityId) -> Option<u32> {
+    let player = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world)?;
+    key_held_by(world, target, player)
+}
+
+/// The key that opens `target`'s lock, when `holder` carries it (a positive-count stack of the lock's key form): the player's
+/// activation reads it through [`carried_unlock_key`], a door's activator (an actor, a script's reference) through this
+/// (door-runtime DRT-ACT-003).
+pub(crate) fn key_held_by(world: &World, target: EntityId, holder: EntityId) -> Option<u32> {
     let key = world
         .get::<Locked>(target)
         .and_then(|lock| lock.key_form_id)
         .filter(|key| *key != 0)?;
-    let player = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world)?;
     world
-        .get::<byroredux_core::ecs::components::Inventory>(player)?
+        .get::<byroredux_core::ecs::components::Inventory>(holder)?
         .items
         .iter()
         .any(|stack| stack.base_form_id == key && stack.count > 0)
@@ -1593,7 +1665,8 @@ fn unlock_with_carried_key(world: &World, target: EntityId, commit: bool) -> boo
         return true;
     }
     // M43 — no key: a pick may open it (engine policy, see `lockpick.rs`).
-    let keyless = carried_unlock_key(world, target).is_none();
+    let key = carried_unlock_key(world, target);
+    let keyless = key.is_none();
     let bypass = if keyless { crate::lockpick::bypass_of(world, target) } else { None };
     if keyless && bypass.is_none() {
         return false;
@@ -1634,7 +1707,14 @@ fn unlock_with_carried_key(world: &World, target: EntityId, commit: bool) -> boo
             }
         }
     } else {
-        crate::notifications::push(world, "Unlocked with key");
+        // GUI-PAGE-005 — the game's `sOpenWithKey` ("Unlocked with %s.") names the key.
+        let key_name = key
+            .and_then(|key| world.try_resource::<crate::inventory::InventoryCatalog>()?.item_name(key).map(str::to_owned))
+            .unwrap_or_default();
+        let message = world
+            .try_resource::<byroredux_core::ui_labels::UiLabels>()
+            .map_or_else(|| "Unlocked with key".to_owned(), |labels| labels.format("Unlocked with key", &[&key_name]));
+        crate::notifications::push(world, message);
     }
     true
 }
@@ -1685,8 +1765,8 @@ pub(crate) fn activate_target(world: &World, target: InteractionTarget, compose_
     }
     // PERK-HOOK-007 — before the lock gate: an activate entry may be what opens a lock the player cannot
     // (Skyrim's `doomTowerPerk` conditions its choice on the target's lock and lock level).
-    if compose_perks {
-        if let Some(player) = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world) {
+    if compose_perks
+        && let Some(player) = byroredux_scripting::papyrus_demo::PapyrusPlayerEntity::get(world) {
             match crate::perk_activate::compose_player_activation(world, player, target) {
                 crate::perk_activate::PerkActivation::Default => {}
                 crate::perk_activate::PerkActivation::Replaced => {
@@ -1699,7 +1779,6 @@ pub(crate) fn activate_target(world: &World, target: InteractionTarget, compose_
                 }
             }
         }
-    }
     if activation_is_blocked(world, target.entity) {
         return;
     }
@@ -1877,9 +1956,9 @@ mod tests {
         world
     }
 
-    /// A jail cell's bed is offered ("Sleep") only while the player serves a sentence; a chair never is.
+    /// Bed prompts cover ordinary Oblivion beds and jail beds. A chair is a seat.
     #[test]
-    fn a_bed_is_an_interaction_candidate_only_during_a_jail_sentence() {
+    fn oblivion_and_jail_beds_are_sleep_candidates() {
         use byroredux_core::ecs::components::{Furniture, FurnitureMarker, FurnitureMarkerKind};
         use byroredux_scripting::obscript_ledger::{JailSentence, ObScriptLedger};
         let marker = |kind| FurnitureMarker { local_offset: [0.0; 3], heading_z_radians: None, animation_type: 0, kind };
@@ -1900,6 +1979,22 @@ mod tests {
         assert_eq!(candidates.get(&bed), Some(&InteractionKind::Sleep));
         assert_eq!(candidates.get(&chair), Some(&InteractionKind::Sit), "a chair is a seat, sentence or not");
         assert_eq!(InteractionKind::Sleep.verb(), "Sleep");
+
+        world.resource_mut::<ObScriptLedger>().jail = None;
+        // #7212 — the bed follows the ruleset's leveling model, not the game: an Oblivion game under a Fallout
+        // ruleset offers none, a Skyrim game under the skill-use (Oblivion) ruleset does.
+        use byroredux_core::character::{CharacterRuleset, LevelingModel};
+        use byroredux_plugin::esm::reader::GameKind;
+        world.insert_resource(byroredux_scripting::ScriptGame(GameKind::Oblivion));
+        world.insert_resource(CharacterRuleset::new(LevelingModel::FNV));
+        candidates.clear();
+        populate_candidates(&world, &mut candidates);
+        assert!(!candidates.contains_key(&bed), "no skill-use leveling, no rest");
+        world.insert_resource(byroredux_scripting::ScriptGame(GameKind::Skyrim));
+        world.insert_resource(CharacterRuleset::new(LevelingModel::OBLIVION));
+        candidates.clear();
+        populate_candidates(&world, &mut candidates);
+        assert_eq!(candidates.get(&bed), Some(&InteractionKind::Sleep), "ordinary bed under skill-use leveling");
     }
 
     #[test]
@@ -2133,6 +2228,28 @@ mod tests {
         assert!(input.invert_look_y);
     }
 
+    /// Player-spellcasting (Q2): Cast is `C`, the original's PC default; keyboard Block moved to `X` and the right mouse
+    /// button still blocks; the spell cycle is on the arrow keys. The 19 actions need more than 16 mask bits.
+    #[test]
+    fn the_spell_actions_have_their_default_keys_and_the_masks_hold_them() {
+        let bindings = ActionBindings::default();
+        assert_eq!(bindings.action_for_key(KeyCode::KeyC), Some(InputAction::CastSpell));
+        assert_eq!(bindings.action_for_key(KeyCode::KeyX), Some(InputAction::Block));
+        assert_eq!(bindings.action_for_key(KeyCode::ArrowRight), Some(InputAction::NextSpell));
+        assert_eq!(bindings.action_for_key(KeyCode::ArrowLeft), Some(InputAction::PreviousSpell));
+        assert_eq!(bindings.binding_label(InputAction::CastSpell), "C");
+        let world = input_fixture();
+        world.resource_mut::<InputState>().mouse_buttons_held.insert(MouseButton::Right);
+        refresh_action_state(&world);
+        assert!(world.resource::<ActionState>().is_held(InputAction::Block), "the right mouse button still blocks");
+        world.resource_mut::<InputState>().keys_held.extend([KeyCode::KeyC, KeyCode::ArrowLeft]);
+        refresh_action_state(&world);
+        let actions = world.resource::<ActionState>();
+        assert!(actions.was_pressed(InputAction::CastSpell) && actions.was_pressed(InputAction::PreviousSpell));
+        assert!(!actions.was_pressed(InputAction::NextSpell));
+        assert!(actions.is_held(InputAction::Block), "unchanged by the other bits");
+    }
+
     #[test]
     fn every_configurable_action_registers_a_valid_binding_setting() {
         let mut registry = SettingsRegistry::default();
@@ -2308,6 +2425,8 @@ mod tests {
                 sneak_attack: false,
                 bash_attack: false,
                 blocked: false,
+                arrow: false,
+                ignores_resistance: false,
             },
         );
         crate::combat::combat_damage_system(&world, 0.0);
@@ -3077,6 +3196,33 @@ mod tests {
         }
 
         select_interaction_target(&world);
+    }
+
+    #[test]
+    fn door_prompts_and_motion_share_the_lock_order() {
+        use crate::components::{Door, DoorMotion};
+        use byroredux_scripting::TwoStateActivator;
+
+        let mut world = input_fixture();
+        let door = world.spawn();
+        world.insert(door, TwoStateActivator { is_open: true, ..Default::default() });
+        world.insert(door, Door {
+            motion: DoorMotion::Sequence { open: 0, close: 1 },
+            data: Default::default(),
+            flags: Default::default(),
+            default_open: true,
+            remaining: 0.0,
+            posed: Some(true),
+        });
+        let lever = world.spawn();
+        world.insert(lever, TwoStateActivator::default());
+
+        // The prompt and the motion tick used to acquire the same storages in opposite orders.
+        let mut candidates = FxHashMap::default();
+        populate_candidates(&world, &mut candidates);
+        crate::systems::door::door_motion_system(&world, 0.0);
+        assert_eq!(candidates.get(&door), Some(&InteractionKind::CloseDoor));
+        assert_eq!(candidates.get(&lever), Some(&InteractionKind::Activate));
     }
 
     fn physics_fixture() -> World {

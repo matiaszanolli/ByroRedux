@@ -68,6 +68,7 @@ pub mod location_keyword_data;
 pub mod messages;
 pub mod name_table;
 pub mod scanning;
+pub mod oblivion_skill_use;
 pub mod skills;
 pub mod tempering;
 pub mod words_of_power;
@@ -76,6 +77,7 @@ pub mod misc_stats;
 pub mod location;
 pub mod magic;
 pub mod magic_effects;
+pub mod player_cast;
 pub mod magic_shaders;
 pub mod obscript;
 mod obscript_actions;
@@ -153,7 +155,7 @@ pub use equipment::{
     emit_equipment_changes, emit_item_transfers, install_equip_item_catalog, EquipItemCatalog,
 };
 pub use events::{
-    papyrus_activations, ActivateEvent, NativeActivation, AnimationTextKeyEvent, AnimationTextKeyEvents, EquipmentChange,
+    papyrus_activations, ActivateEvent, DefaultActivation, NativeActivation, AnimationTextKeyEvent, AnimationTextKeyEvents, EquipmentChange,
     EquipmentEventBatch, HitEvent, HitParts, HitShots, ItemEventBatch, ItemTransfer, OnCellLoadEvent, OnDeathEvent, OnInitEvent,
     PartStrike,
     OnTriggerEnterEvent, OnTriggerLeaveEvent, RippleEvent, SplashEvent, TimerExpired,
@@ -181,6 +183,7 @@ pub use fragment::{
     script_update_system, ScriptUpdates, UpdateClock, UpdateRegistration, UpdateRequest,
     EventRegistration, EventRegistrations, EventRequest, REMOTE_EVENTS, distance_event_system, DistanceRequest, DistanceTarget, DistanceWatch, DistanceWatches,
     hit_event_system, HitFilter, HitRegistration, HitRegistrations, HitRequest,
+    menu_open_close_event_system, MenuEventRegistration, MenuEventRegistrations, MenuEventRequest, MENU_OPEN_CLOSE_EVENT,
     animation_event_system, AnimationEventRegistration, AnimationEventRegistrations, AnimationEventRequest,
     raise_unload_events, raise_reference_call, run_debug_statement, run_quest_script_function, raise_reference_event, ActorWatch, PendingUnloadDeliveries, discard_pending_unload_deliveries, rebaseline_actor_watch,
     alias_script_event_system, check_alias_script, install_quest_alias_scripts, is_alias_owner, AliasScript,

@@ -18,19 +18,23 @@ enum Commands {
         /// Loose directory, BSA, or BA2 source. Repeat in load order; later wins.
         #[arg(long = "source", required = true)]
         sources: Vec<PathBuf>,
-        /// Manifest to create.
+        /// Manifest to create. An existing one is refused unless --overwrite is given.
         #[arg(long)]
         manifest: PathBuf,
         /// Learned reference upscale factor.
         #[arg(long, default_value_t = 4)]
         scale: u32,
+        /// Replace an existing manifest (it may hold your edits).
+        #[arg(long)]
+        overwrite: bool,
     },
     /// Run the learned reference upscale and guided companion-map pass.
     Run {
         /// Loose directory, BSA, or BA2 source. Repeat in load order; later wins.
         #[arg(long = "source", required = true)]
         sources: Vec<PathBuf>,
-        /// Reviewed texture-set manifest.
+        /// Reviewed texture-set manifest. It names the program this tool executes
+        /// (`[upscaler].program`): run only manifests you wrote or reviewed.
         #[arg(long)]
         manifest: PathBuf,
         /// Output root. Assets are written as lossless PNG intermediates.
@@ -58,10 +62,11 @@ where
             sources,
             manifest,
             scale,
+            overwrite,
         } => {
             let sources = SourceStack::open(&sources)?;
             let manifest_data = Manifest::discovered(scale, sources.list_files());
-            save_manifest(&manifest, &manifest_data)?;
+            save_manifest(&manifest, &manifest_data, overwrite)?;
             println!(
                 "wrote {} texture sets to {}",
                 manifest_data.sets.len(),

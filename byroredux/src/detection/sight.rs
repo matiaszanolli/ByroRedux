@@ -142,17 +142,22 @@ pub(crate) fn in_view_cone(world: &World, observer: EntityId, direction: Vec3) -
     else {
         return true;
     };
-    let Some(rotation) = world.get::<GlobalTransform>(observer).map(|t| t.rotation) else {
-        return true;
-    };
+    view_angles(world, observer, direction).is_none_or(|(angle, _)| angle.to_degrees() <= cone * 0.5)
+}
+
+/// Where `direction` lies from `observer`'s facing: the horizontal angle off its forward axis (0 to π) and the
+/// elevation (positive above), in radians. `None` when the observer has no transform or either direction is
+/// vertical.
+pub(crate) fn view_angles(world: &World, observer: EntityId, direction: Vec3) -> Option<(f32, f32)> {
+    let rotation = world.get::<GlobalTransform>(observer)?.rotation;
     let forward = rotation * Vec3::NEG_Z;
     let forward = Vec3::new(forward.x, 0.0, forward.z);
-    let direction = Vec3::new(direction.x, 0.0, direction.z);
-    if forward.length_squared() < 1e-8 || direction.length_squared() < 1e-8 {
-        return true;
+    let flat = Vec3::new(direction.x, 0.0, direction.z);
+    if forward.length_squared() < 1e-8 || flat.length_squared() < 1e-8 {
+        return None;
     }
-    let angle = forward.normalize().dot(direction.normalize()).clamp(-1.0, 1.0).acos();
-    angle.to_degrees() <= cone * 0.5
+    let angle = forward.normalize().dot(flat.normalize()).clamp(-1.0, 1.0).acos();
+    Some((angle, direction.y.atan2(flat.length())))
 }
 
 /// Whether nothing solid stands between two points (the player's own body

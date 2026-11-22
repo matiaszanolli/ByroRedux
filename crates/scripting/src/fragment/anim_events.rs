@@ -157,11 +157,10 @@ pub fn animation_event_system(world: &World, _dt: f32) {
             }
         }
         drop(sounds);
-        if !plays.is_empty() {
-            if let Some(mut pending) = world.try_resource_mut::<crate::PendingSoundPlays>() {
+        if !plays.is_empty()
+            && let Some(mut pending) = world.try_resource_mut::<crate::PendingSoundPlays>() {
                 pending.0.extend(plays);
             }
-        }
     }
     let registered: Vec<AnimationEventRegistration> = match world.try_resource::<AnimationEventRegistrations>() {
         Some(registrations) if !registrations.entries.is_empty() => registrations.entries.clone(),

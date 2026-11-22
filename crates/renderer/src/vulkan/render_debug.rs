@@ -37,10 +37,18 @@ pub enum RenderDebugMode {
     FilteredDirect = crate::shader_constants::RENDER_DEBUG_FILTERED_DIRECT,
     /// The froxel field's radiance with no opacity floor (#6727).
     VolumetricRadiance = crate::shader_constants::RENDER_DEBUG_VOLUMETRIC_RADIANCE,
+    /// M-LIGHT PAF-011 — the direct-shadow filter's screen-space reach.
+    ShadowFilterRadius = crate::shader_constants::RENDER_DEBUG_SHADOW_FILTER_RADIUS,
+    /// RCG-DBG-001 — the radiance cache's level and hit per pixel. Magenta is "no sample", which is every
+    /// fragment until the cache's lookup exists.
+    RadianceCache = crate::shader_constants::RENDER_DEBUG_RADIANCE_CACHE,
+    /// RCG-VAL-002 — the eligible-pixel mask coverage is measured over: white where the primary surface
+    /// meets the material conditions of GI eligibility, black elsewhere.
+    GiEligible = crate::shader_constants::RENDER_DEBUG_GI_ELIGIBLE,
 }
 
 impl RenderDebugMode {
-    pub const USER_MODES: [Self; 20] = [
+    pub const USER_MODES: [Self; 23] = [
         Self::Final,
         Self::ShadowVisibility,
         Self::SelectedLight,
@@ -61,6 +69,9 @@ impl RenderDebugMode {
         Self::TracedShare,
         Self::FilteredDirect,
         Self::VolumetricRadiance,
+        Self::ShadowFilterRadius,
+        Self::RadianceCache,
+        Self::GiEligible,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -86,6 +97,9 @@ impl RenderDebugMode {
             Self::TracedShare => "traced_share",
             Self::FilteredDirect => "filtered_direct",
             Self::VolumetricRadiance => "volumetric_radiance",
+            Self::ShadowFilterRadius => "shadow_filter_radius",
+            Self::RadianceCache => "radiance_cache",
+            Self::GiEligible => "gi_eligible",
         }
     }
 
@@ -135,6 +149,9 @@ impl FromStr for RenderDebugMode {
             "history" | "restir_history" => Ok(Self::RestirHistory),
             "traced" | "traced_share" => Ok(Self::TracedShare),
             "filtered_direct" => Ok(Self::FilteredDirect),
+            "shadow_filter_radius" => Ok(Self::ShadowFilterRadius),
+            "radiance_cache" | "cache" => Ok(Self::RadianceCache),
+            "gi_eligible" | "eligible" => Ok(Self::GiEligible),
             _ => Err(format!(
                 "unknown render debug mode '{value}' (expected {})",
                 Self::user_mode_names()
@@ -331,11 +348,56 @@ mod tests {
     fn user_mode_values_match_the_dense_shader_contract() {
         for (index, mode) in RenderDebugMode::USER_MODES.iter().enumerate() {
             assert_eq!(mode.shader_value(), index as u32);
+            assert_eq!(mode.as_str().parse(), Ok(*mode));
         }
         assert_eq!(
             RenderDebugMode::LegacyFlags.shader_value(),
             crate::shader_constants::RENDER_DEBUG_LEGACY_FLAGS
         );
+    }
+
+    /// RCG-DBG-001 — the radiance-cache view is a named, parseable, user-selectable mode and the last one,
+    /// so `RENDER_DEBUG_MODE_MAX` names it; `radiance` stays the froxel field's alias, not this view's. The
+    /// main pass owns it: a raw view `triangle.frag` does not implement would paint lit colour, which is
+    /// what the receding rule exists to prevent.
+    #[test]
+    fn the_radiance_cache_view_is_named_selectable_and_drawn_by_the_main_pass() {
+        assert_eq!("radiance_cache".parse(), Ok(RenderDebugMode::RadianceCache));
+        assert_eq!("cache".parse(), Ok(RenderDebugMode::RadianceCache));
+        assert_eq!("radiance".parse(), Ok(RenderDebugMode::VolumetricRadiance));
+        assert_eq!(RenderDebugMode::RadianceCache.shader_value(), 21);
+        let frag = include_str!("../../shaders/triangle.frag");
+        assert!(frag.contains("bool viewRadianceCache = debugMode == RENDER_DEBUG_RADIANCE_CACHE;"));
+        assert!(frag.contains("} else if (viewRadianceCache) {"), "the main pass must draw the view");
+    }
+
+    /// RCG-VAL-002 — the eligible-pixel mask view is named, parseable, user-selectable, the last mode (so
+    /// `RENDER_DEBUG_MODE_MAX` names it) and drawn by the main pass from the same predicate that gates GI
+    /// transport, so the mask and the gate cannot drift.
+    #[test]
+    fn the_gi_eligible_view_is_the_last_mode_and_shares_the_gate_predicate() {
+        assert_eq!("gi_eligible".parse(), Ok(RenderDebugMode::GiEligible));
+        assert_eq!("eligible".parse(), Ok(RenderDebugMode::GiEligible));
+        assert_eq!(RenderDebugMode::USER_MODES.last(), Some(&RenderDebugMode::GiEligible));
+        assert_eq!(
+            RenderDebugMode::GiEligible.shader_value(),
+            crate::shader_constants::RENDER_DEBUG_MODE_MAX
+        );
+        assert!(RenderDebugMode::user_mode_names().ends_with("|gi_eligible"));
+        let frag = include_str!("../../shaders/triangle.frag");
+        assert!(frag.contains("bool viewGiEligible = debugMode == RENDER_DEBUG_GI_ELIGIBLE;"));
+        assert!(frag.contains("} else if (viewGiEligible) {"), "the main pass must draw the view");
+        assert!(
+            frag.contains("bool giMaterialEligible = giRayEnabled")
+                && frag.contains("bool giTransportEligible = giMaterialEligible")
+                && frag.contains("outColor = vec4(vec3(giMaterialEligible ? 1.0 : 0.0), 1.0);"),
+            "the view and the gate must read one predicate"
+        );
+        // The mask is the material conditions only: no budget, fade or footprint term.
+        let predicate = frag.split("bool giMaterialEligible").nth(1).unwrap().split(';').next().unwrap();
+        for forbidden in ["rayBudget", "giFade", "rtLOD", "giDist"] {
+            assert!(!predicate.contains(forbidden), "eligibility must not depend on {forbidden}");
+        }
     }
 
     #[test]

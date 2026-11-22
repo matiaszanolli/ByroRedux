@@ -2,8 +2,8 @@
 //!
 //! Bracketing GPU hot spots with `vkCmdWriteTimestamp` so per-pass
 //! cost can be measured rather than guessed. Owns one `VkQueryPool`
-//! per frame-in-flight slot, `QUERIES_PER_FRAME` (62) TIMESTAMP queries
-//! each — 31 start/end brackets, bumped from 32/16 by #4052's
+//! per frame-in-flight slot, `QUERIES_PER_FRAME` TIMESTAMP queries
+//! each — 34 start/end brackets, bumped from 32/16 by #4052's
 //! ground-cover-bench bracket (#4210), again from 34/17 by the SKYAL
 //! sky-cubemap bake, again from 36/18 by the production ground-cover
 //! scatter (#4315), again from 38/19 by the exposure meter (#4618), again
@@ -12,8 +12,11 @@
 //! 46/23 by the five main-pass geometry phases (`0925f7926`), again
 //! from 56/28 by the direct-shadow filter nested in the SVGF bracket
 //! (#5959), again from 58/29 by the cloud-shadow bake nested in the
-//! sky-cube bracket (#6316), and from 60/30 by the world-space combustion
-//! local-grid sim (#6533):
+//! sky-cube bracket (#6316), from 60/30 by the world-space combustion
+//! local-grid sim (#6533), from 62/31 by the far-field sun shadows, and from
+//! 64/32 by the radiance cache's update and resolve brackets (RCG-PERF-001,
+//! which also widened the active-bit mask from `u32` to `u64`), and from 68/34
+//! by the TSD-4 terrain patch pass (#7152):
 //!
 //! | Slot | Bracket                                |
 //! |------|----------------------------------------|
@@ -79,6 +82,16 @@
 //! | 59   | main pass, ground-cover model draw (profile only) — end   |
 //! | 60   | main pass, ground-cover blade draw (profile only) — start |
 //! | 61   | main pass, ground-cover blade draw (profile only) — end   |
+//! | 62   | far-field sun shadows — start                        |
+//! | 63   | far-field sun shadows — end                          |
+//! | 64   | radiance cache update paths — start                  |
+//! | 65   | radiance cache update paths — end                    |
+//! | 66   | radiance cache resolve — start                       |
+//! | 67   | radiance cache resolve — end                         |
+//! | 68   | TSD-4 terrain patch displacement — start             |
+//! | 69   | TSD-4 terrain patch displacement — end               |
+//! | 70   | TSD-4.2 terrain patch BLAS build/refit — start       |
+//! | 71   | TSD-4.2 terrain patch BLAS build/refit — end         |
 //!
 //! The original three brackets (skin dispatch / BLAS refit / TAA) shipped
 //! with the #1194 perf-bisect work; the skin-palette bracket (slots 28/29)
@@ -138,7 +151,7 @@ use super::sync::MAX_FRAMES_IN_FLIGHT;
 
 /// Two TIMESTAMP queries per bracket (start, end); the module doc's table is
 /// the one place that counts them.
-const QUERIES_PER_FRAME: u32 = 62;
+const QUERIES_PER_FRAME: u32 = 72;
 
 const Q_SKIN_DISPATCH_START: u32 = 0;
 const Q_SKIN_DISPATCH_END: u32 = 1;
@@ -220,6 +233,26 @@ const Q_CLOUD_SHADOW_END: u32 = 49;
 /// reads this frame's atlas).
 const Q_VOLUMETRICS_LOCAL_SIM_START: u32 = 50;
 const Q_VOLUMETRICS_LOCAL_SIM_END: u32 = 51;
+const Q_FAR_SUN_START: u32 = 62;
+const Q_FAR_SUN_END: u32 = 63;
+/// RCG-PERF-001 — the radiance cache's update paths (the sparse paths traced from visible surface points
+/// each frame whose hits feed the cache) and its resolve pass (the fold of this frame's accumulation into
+/// the entries, with stale-entry eviction). Two sibling brackets, never nested. Nothing records them until
+/// the cache's passes exist; the bench line prints them as inactive until then.
+const Q_CACHE_UPDATE_START: u32 = 64;
+const Q_CACHE_UPDATE_END: u32 = 65;
+const Q_CACHE_RESOLVE_START: u32 = 66;
+const Q_CACHE_RESOLVE_END: u32 = 67;
+/// #7152 — TSD-4.1's terrain patch displacement dispatches
+/// (`terrain_patch.comp`), recorded after the terrain-tile upload and before
+/// the patch BLAS and the TLAS build (#7221).
+const Q_TERRAIN_PATCH_START: u32 = 68;
+const Q_TERRAIN_PATCH_END: u32 = 69;
+/// #7221 — TSD-4.2's patch BLAS builds and refits, one batched
+/// `vkCmdBuildAccelerationStructuresKHR` between the patch compute and the
+/// TLAS build.
+const Q_TERRAIN_PATCH_BLAS_START: u32 = 70;
+const Q_TERRAIN_PATCH_BLAS_END: u32 = 71;
 
 /// Per-pass elapsed GPU time, milliseconds. Reads `0.0` for any
 /// bracket that didn't run on the snapshot frame OR before the
@@ -358,6 +391,18 @@ pub struct GpuTimerSnapshot {
     /// `COMPUTE_SHADER`. Inactive on any frame the filter is off or failed
     /// to initialise.
     pub shadow_filter_ms: f32,
+    pub far_sun_ms: f32,
+    /// RCG-PERF-001 — the radiance cache's update paths. A sibling of `cache_resolve_ms`, not nested in
+    /// it. Starts at `COMPUTE_SHADER`. Inactive until the cache's update pass records it.
+    pub cache_update_ms: f32,
+    /// RCG-PERF-001 — the radiance cache's resolve pass. Inactive until the pass records it.
+    pub cache_resolve_ms: f32,
+    /// #7152 — the TSD-4 terrain patch displacement pass. Starts at
+    /// `COMPUTE_SHADER`. Inactive on frames with no resident patch.
+    pub terrain_patch_ms: f32,
+    /// #7221 — the TSD-4.2 patch BLAS builds + refits. Inactive on frames
+    /// with no patch BLAS work.
+    pub terrain_patch_blas_ms: f32,
     /// #6316 — the SKYAL cloud-shadow bake (`cloud_shadow.comp`, one
     /// invocation per texel of the camera-centred map, marching the cloud
     /// column toward the sun). Recorded inside the sky-cube bracket, so it
@@ -420,6 +465,11 @@ pub struct GpuTimerSnapshot {
     pub volumetrics_inject_active: bool,
     pub volumetrics_integrate_active: bool,
     pub shadow_filter_active: bool,
+    pub far_sun_active: bool,
+    pub cache_update_active: bool,
+    pub cache_resolve_active: bool,
+    pub terrain_patch_active: bool,
+    pub terrain_patch_blas_active: bool,
     pub cloud_shadow_active: bool,
     pub volumetrics_local_sim_active: bool,
     pub main_opaque_active: bool,
@@ -455,44 +505,50 @@ pub struct GpuPerFrameTimers {
     ///
     /// Widened `u16` → `u32` by #4052: the original sixteen brackets had
     /// filled every bit of the `u16`, so the seventeenth had nowhere to go.
-    active_bits: [u32; MAX_FRAMES_IN_FLIGHT],
+    active_bits: [u64; MAX_FRAMES_IN_FLIGHT],
     /// Stash for the previous frame's snapshot. Console / bench
     /// consumers read this; the writer pipeline updates it at the
     /// top of `draw_frame`.
     last_snapshot: GpuTimerSnapshot,
 }
 
-const BIT_SKIN_DISPATCH: u32 = 0x0001;
-const BIT_SKIN_PALETTE: u32 = 0x4000;
-const BIT_BLAS_REFIT: u32 = 0x0002;
-const BIT_TAA: u32 = 0x0004;
-const BIT_MAIN_RENDER: u32 = 0x0008;
-const BIT_TLAS_BUILD: u32 = 0x0010;
-const BIT_CLUSTER_CULL: u32 = 0x0020;
-const BIT_SVGF: u32 = 0x0040;
-const BIT_COMPOSITE: u32 = 0x0080;
-const BIT_SSAO: u32 = 0x0100;
-const BIT_BLOOM: u32 = 0x0200;
-const BIT_CAUSTIC_SPLAT: u32 = 0x0400;
-const BIT_VOLUMETRICS: u32 = 0x0800;
-const BIT_UPSCALE: u32 = 0x1000;
-const BIT_PRESENTATION: u32 = 0x2000;
-const BIT_DEPTH_HISTORY_COPY: u32 = 0x8000;
+const BIT_SKIN_DISPATCH: u64 = 0x0001;
+const BIT_SKIN_PALETTE: u64 = 0x4000;
+const BIT_BLAS_REFIT: u64 = 0x0002;
+const BIT_TAA: u64 = 0x0004;
+const BIT_MAIN_RENDER: u64 = 0x0008;
+const BIT_TLAS_BUILD: u64 = 0x0010;
+const BIT_CLUSTER_CULL: u64 = 0x0020;
+const BIT_SVGF: u64 = 0x0040;
+const BIT_COMPOSITE: u64 = 0x0080;
+const BIT_SSAO: u64 = 0x0100;
+const BIT_BLOOM: u64 = 0x0200;
+const BIT_CAUSTIC_SPLAT: u64 = 0x0400;
+const BIT_VOLUMETRICS: u64 = 0x0800;
+const BIT_UPSCALE: u64 = 0x1000;
+const BIT_PRESENTATION: u64 = 0x2000;
+const BIT_DEPTH_HISTORY_COPY: u64 = 0x8000;
 /// #4052. The first bracket past the old `u16`'s width.
-const BIT_GROUNDCOVER_BENCH: u32 = 0x0001_0000;
-const BIT_SKY_CUBE: u32 = 0x0002_0000;
+const BIT_GROUNDCOVER_BENCH: u64 = 0x0001_0000;
+const BIT_SKY_CUBE: u64 = 0x0002_0000;
 /// #4315 — the production ground-cover scatter.
-const BIT_GROUNDCOVER_SCATTER: u32 = 0x0004_0000;
+const BIT_GROUNDCOVER_SCATTER: u64 = 0x0004_0000;
 /// #4618 — the exposure meter.
-const BIT_EXPOSURE_METER: u32 = 0x0008_0000;
-const BIT_GROUNDCOVER_MODELS: u32 = 1 << 20;
-const BIT_VOLUMETRICS_INJECT: u32 = 1 << 21;
-const BIT_VOLUMETRICS_INTEGRATE: u32 = 1 << 22;
-const BIT_SHADOW_FILTER: u32 = 1 << 23;
-const BIT_CLOUD_SHADOW: u32 = 1 << 24;
+const BIT_EXPOSURE_METER: u64 = 0x0008_0000;
+const BIT_GROUNDCOVER_MODELS: u64 = 1 << 20;
+const BIT_VOLUMETRICS_INJECT: u64 = 1 << 21;
+const BIT_VOLUMETRICS_INTEGRATE: u64 = 1 << 22;
+const BIT_SHADOW_FILTER: u64 = 1 << 23;
+const BIT_CLOUD_SHADOW: u64 = 1 << 24;
 /// Bits 25..=29 belong to the geometry phases (`GEOMETRY_PHASE_BIT_BASE`), so
 /// the next named bracket takes bit 30.
-const BIT_VOLUMETRICS_LOCAL_SIM: u32 = 1 << 30;
+const BIT_VOLUMETRICS_LOCAL_SIM: u64 = 1 << 30;
+const BIT_FAR_SUN: u64 = 1 << 31;
+/// The first bracket past the old `u32` mask (RCG-PERF-001).
+const BIT_CACHE_UPDATE: u64 = 1 << 32;
+const BIT_CACHE_RESOLVE: u64 = 1 << 33;
+const BIT_TERRAIN_PATCH: u64 = 1 << 34;
+const BIT_TERRAIN_PATCH_BLAS: u64 = 1 << 35;
 
 /// A named START/END timestamp bracket. One row of [`TimerPass::row`] holds everything the two timestamp
 /// writes vary on, so adding a pass is a variant, a row and its `Q_*` / `BIT_*` constants — not two methods.
@@ -524,6 +580,11 @@ pub enum TimerPass {
     CloudShadow,
     VolumetricsIntegrate,
     VolumetricsLocalSim,
+    FarSun,
+    CacheUpdate,
+    CacheResolve,
+    TerrainPatch,
+    TerrainPatchBlas,
 }
 
 /// The query slots, active bit and pipeline stages of one [`TimerPass`].
@@ -531,7 +592,7 @@ pub enum TimerPass {
 struct PassRow {
     start: u32,
     end: u32,
-    bit: u32,
+    bit: u64,
     start_stage: vk::PipelineStageFlags,
     end_stage: vk::PipelineStageFlags,
 }
@@ -602,6 +663,11 @@ impl TimerPass {
             Self::VolumetricsIntegrate => PassRow { start: Q_VOLUMETRICS_INTEGRATE_START, end: Q_VOLUMETRICS_INTEGRATE_END, bit: BIT_VOLUMETRICS_INTEGRATE, start_stage: S::COMPUTE_SHADER, end_stage: S::COMPUTE_SHADER },
             // #6533 stage 1b — opens after an execution barrier that retires the compute work recorded before it; the inject dispatch is recorded after the sim.
             Self::VolumetricsLocalSim => PassRow { start: Q_VOLUMETRICS_LOCAL_SIM_START, end: Q_VOLUMETRICS_LOCAL_SIM_END, bit: BIT_VOLUMETRICS_LOCAL_SIM, start_stage: S::COMPUTE_SHADER, end_stage: S::COMPUTE_SHADER },
+            Self::FarSun => PassRow { start: Q_FAR_SUN_START, end: Q_FAR_SUN_END, bit: BIT_FAR_SUN, start_stage: S::COMPUTE_SHADER, end_stage: S::COMPUTE_SHADER },
+            Self::CacheUpdate => PassRow { start: Q_CACHE_UPDATE_START, end: Q_CACHE_UPDATE_END, bit: BIT_CACHE_UPDATE, start_stage: S::COMPUTE_SHADER, end_stage: S::COMPUTE_SHADER },
+            Self::CacheResolve => PassRow { start: Q_CACHE_RESOLVE_START, end: Q_CACHE_RESOLVE_END, bit: BIT_CACHE_RESOLVE, start_stage: S::COMPUTE_SHADER, end_stage: S::COMPUTE_SHADER },
+            Self::TerrainPatch => PassRow { start: Q_TERRAIN_PATCH_START, end: Q_TERRAIN_PATCH_END, bit: BIT_TERRAIN_PATCH, start_stage: S::COMPUTE_SHADER, end_stage: S::COMPUTE_SHADER },
+            Self::TerrainPatchBlas => PassRow { start: Q_TERRAIN_PATCH_BLAS_START, end: Q_TERRAIN_PATCH_BLAS_END, bit: BIT_TERRAIN_PATCH_BLAS, start_stage: S::ACCELERATION_STRUCTURE_BUILD_KHR, end_stage: S::ACCELERATION_STRUCTURE_BUILD_KHR },
         }
     }
 }
@@ -630,12 +696,13 @@ const Q_GEOMETRY_PHASE_BASE: u32 = Q_VOLUMETRICS_LOCAL_SIM_END + 1;
 const GEOMETRY_PHASE_BIT_BASE: u32 = BIT_CLOUD_SHADOW.trailing_zeros() + 1;
 const GEOMETRY_TIMER_PHASE_COUNT: u32 = 5;
 const _: () = assert!(
-    Q_GEOMETRY_PHASE_BASE + 2 * GEOMETRY_TIMER_PHASE_COUNT == QUERIES_PER_FRAME,
-    "geometry phases must end exactly at QUERIES_PER_FRAME"
+    Q_GEOMETRY_PHASE_BASE + 2 * GEOMETRY_TIMER_PHASE_COUNT == Q_FAR_SUN_START,
+    "geometry phases must end before the far-sun bracket"
 );
+const _: () = assert!(Q_TERRAIN_PATCH_BLAS_END + 1 == QUERIES_PER_FRAME);
 const _: () = assert!(
-    GEOMETRY_PHASE_BIT_BASE + GEOMETRY_TIMER_PHASE_COUNT <= u32::BITS,
-    "geometry phase active bits must fit active_bits' u32"
+    GEOMETRY_PHASE_BIT_BASE + GEOMETRY_TIMER_PHASE_COUNT <= u64::BITS,
+    "geometry phase active bits must fit active_bits' u64"
 );
 
 impl GeometryTimerPhase {
@@ -643,7 +710,7 @@ impl GeometryTimerPhase {
         Q_GEOMETRY_PHASE_BASE + 2 * self as u32
     }
 
-    fn active_bit(self) -> u32 {
+    fn active_bit(self) -> u64 {
         1 << (GEOMETRY_PHASE_BIT_BASE + self as u32)
     }
 }
@@ -656,7 +723,7 @@ impl GeometryTimerPhase {
 /// [`snapshot_from_bits_with_valid_bits`] with the device's valid-bit count.
 #[cfg(test)]
 fn snapshot_from_bits(
-    bits: u32,
+    bits: u64,
     ticks: &[u64; QUERIES_PER_FRAME as usize],
     ticks_to_ms: f32,
 ) -> GpuTimerSnapshot {
@@ -664,7 +731,7 @@ fn snapshot_from_bits(
 }
 
 fn snapshot_from_bits_with_valid_bits(
-    bits: u32,
+    bits: u64,
     ticks: &[u64; QUERIES_PER_FRAME as usize],
     ticks_to_ms: f32,
     timestamp_valid_bits: u32,
@@ -778,6 +845,26 @@ fn snapshot_from_bits_with_valid_bits(
     snap.shadow_filter_active = bits & BIT_SHADOW_FILTER != 0;
     if snap.shadow_filter_active {
         snap.shadow_filter_ms = bracket_ms(Q_SHADOW_FILTER_START);
+    }
+    snap.far_sun_active = bits & BIT_FAR_SUN != 0;
+    if snap.far_sun_active {
+        snap.far_sun_ms = bracket_ms(Q_FAR_SUN_START);
+    }
+    snap.cache_update_active = bits & BIT_CACHE_UPDATE != 0;
+    if snap.cache_update_active {
+        snap.cache_update_ms = bracket_ms(Q_CACHE_UPDATE_START);
+    }
+    snap.cache_resolve_active = bits & BIT_CACHE_RESOLVE != 0;
+    if snap.cache_resolve_active {
+        snap.cache_resolve_ms = bracket_ms(Q_CACHE_RESOLVE_START);
+    }
+    snap.terrain_patch_active = bits & BIT_TERRAIN_PATCH != 0;
+    if snap.terrain_patch_active {
+        snap.terrain_patch_ms = bracket_ms(Q_TERRAIN_PATCH_START);
+    }
+    snap.terrain_patch_blas_active = bits & BIT_TERRAIN_PATCH_BLAS != 0;
+    if snap.terrain_patch_blas_active {
+        snap.terrain_patch_blas_ms = bracket_ms(Q_TERRAIN_PATCH_BLAS_START);
     }
     snap.cloud_shadow_active = bits & BIT_CLOUD_SHADOW != 0;
     if snap.cloud_shadow_active {
@@ -969,11 +1056,10 @@ impl GpuPerFrameTimers {
         let read = unsafe {
             device.get_query_pool_results(pool, 0, &mut ticks, vk::QueryResultFlags::TYPE_64)
         };
-        if let Err(e) = read {
-            if e != vk::Result::NOT_READY {
+        if let Err(e) = read
+            && e != vk::Result::NOT_READY {
                 log::warn!("GPU TIMESTAMP batched read failed: {e}");
             }
-        }
 
         self.last_snapshot = snapshot_from_bits_with_valid_bits(
             bits,
@@ -1469,6 +1555,33 @@ mod tests {
         assert_eq!(snap.cloud_shadow_ms, 0.0);
     }
 
+    /// RCG-PERF-001 — the radiance cache's update and resolve brackets are siblings on bits 32 and 33,
+    /// past the old `u32` mask: each reads back on its own bit, neither contains the other, and an
+    /// inactive one reads `0.0` and not active. A mask still `u32` would drop both bits.
+    #[test]
+    fn cache_update_and_resolve_brackets_are_siblings_past_the_u32_mask() {
+        assert!(BIT_CACHE_UPDATE > u64::from(u32::MAX) && BIT_CACHE_RESOLVE > u64::from(u32::MAX));
+        let mut ticks = [0_u64; QUERIES_PER_FRAME as usize];
+        ticks[Q_CACHE_UPDATE_START as usize] = 1_000;
+        ticks[Q_CACHE_UPDATE_END as usize] = 3_000;
+        ticks[Q_CACHE_RESOLVE_START as usize] = 3_500;
+        ticks[Q_CACHE_RESOLVE_END as usize] = 4_500;
+
+        let snap = snapshot_from_bits(BIT_CACHE_UPDATE | BIT_CACHE_RESOLVE, &ticks, 0.5);
+        assert!(snap.cache_update_active && snap.cache_resolve_active);
+        assert_eq!(snap.cache_update_ms, 2_000.0 * 0.5);
+        assert_eq!(snap.cache_resolve_ms, 1_000.0 * 0.5);
+
+        let snap = snapshot_from_bits(BIT_CACHE_UPDATE, &ticks, 0.5);
+        assert!(snap.cache_update_active && !snap.cache_resolve_active);
+        assert_eq!(snap.cache_resolve_ms, 0.0);
+
+        // The geometry phases and the oldest bracket still decode in the same widened mask.
+        let snap = snapshot_from_bits(BIT_SKIN_DISPATCH | BIT_FAR_SUN | BIT_CACHE_RESOLVE, &ticks, 0.5);
+        assert!(snap.skin_dispatch_active && snap.far_sun_active && snap.cache_resolve_active);
+        assert!(!snap.cache_update_active);
+    }
+
     #[test]
     fn volumetrics_integrate_bracket_reports_measured_duration() {
         let mut ticks = [0_u64; QUERIES_PER_FRAME as usize];
@@ -1513,7 +1626,8 @@ mod tests {
             src.lines()
                 .filter_map(|line| {
                     let rest = line.trim().strip_prefix("const ")?;
-                    let (name, value) = rest.split_once(": u32 = ")?;
+                    // Slots are `u32`; the active bits are `u64` since the mask was widened (RCG-PERF-001).
+                    let (name, value) = rest.split_once(": u32 = ").or_else(|| rest.split_once(": u64 = "))?;
                     name.starts_with(prefix).then(|| {
                         (name.to_string(), value.trim_end_matches(';').to_string())
                     })
@@ -1565,11 +1679,11 @@ mod tests {
         }
         assert_eq!(slots.len() as u32 * 2, QUERIES_PER_FRAME);
 
-        let mut bits: Vec<u32> = consts("BIT_")
+        let mut bits: Vec<u64> = consts("BIT_")
             .into_iter()
             .map(|(name, v)| {
                 if let Some(hex) = v.strip_prefix("0x") {
-                    u32::from_str_radix(&hex.replace('_', ""), 16)
+                    u64::from_str_radix(&hex.replace('_', ""), 16)
                         .unwrap_or_else(|_| panic!("{name} = {v}"))
                 } else if let Some(shift) = v.strip_prefix("1 << ") {
                     1 << shift.parse::<u32>().unwrap_or_else(|_| panic!("{name} = {v}"))
@@ -1580,7 +1694,7 @@ mod tests {
             .collect();
         assert_eq!(bits.len(), starts.len(), "one active bit per named bracket");
         bits.extend(phases.iter().map(|p| p.active_bit()));
-        let mut union = 0u32;
+        let mut union = 0u64;
         for bit in bits {
             assert_eq!(bit.count_ones(), 1, "active bit {bit:#x} must be one bit");
             assert_eq!(union & bit, 0, "active bit {bit:#x} used twice");
@@ -1682,6 +1796,10 @@ mod tests {
             format!("currently {}", 29),
             format!("{}-query", 58),
             format!("full {}", 58),
+            format!("currently {}", 31),
+            format!("{}-query", 64),
+            format!("full {}", 64),
+            format!("currently {}", 32),
         ];
         for pattern in &rotted {
             assert!(

@@ -15,12 +15,14 @@ use crate::components::CellLightingRes;
 
 static FRAME_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Downward-raycast distance (world units) for the height-fog ground
-/// reference below — same order of magnitude as
-/// `systems::locomotion::LOCOMOTION_GROUND_RAY_MAX_DISTANCE`, kept as its
-/// own constant since that one is private to the locomotion module and the
-/// two rays serve unrelated purposes (foot-placement vs. fog altitude).
+/// Interior ground probes stay local to avoid finding unrelated distant floors.
 const FOG_HEIGHT_REFERENCE_RAY_MAX_DISTANCE: f32 = 4096.0;
+
+/// Outdoors, a fly camera can be far above terrain. Search to the camera's
+/// normal far plane so the reference does not jump to eye height merely
+/// because the ground is farther away than an indoor floor probe.
+const EXTERIOR_FOG_HEIGHT_REFERENCE_RAY_MAX_DISTANCE: f32 =
+    byroredux_core::ecs::components::camera::DEFAULT_RENDER_DISTANCE;
 
 /// #5158 — scale applied to an interior's authored XCLL ambient before it
 /// reaches the scene UBO. Pass-through strength lifts every unlit surface
@@ -91,11 +93,10 @@ fn scene_has_effect_soft_material(world: &World) -> bool {
         (materials, emitters)
     };
 
-    if let Some(cache) = world.try_resource::<SceneEffectSoftCache>() {
-        if cache.key == Some(key) {
+    if let Some(cache) = world.try_resource::<SceneEffectSoftCache>()
+        && cache.key == Some(key) {
             return cache.value;
         }
-    }
 
     let value = scene_has_effect_soft_material_uncached(world);
 
@@ -271,7 +272,20 @@ mod scene_effect_feature_tests {
 /// tracks the slope's own height rather than the camera's eye height.
 /// Falls back to the camera's own Y — the pre-fix behavior — when no
 /// ground is found below (open sky, no `PhysicsWorld` resource yet).
-fn fog_height_reference(world: &World, cam_pos: Vec3) -> f32 {
+pub(crate) fn fog_height_reference(world: &World, cam_pos: Vec3) -> f32 {
+    // Diagnostic only: hold the reference altitude fixed for comparisons
+    // across camera positions. Normal rendering uses the ground query below.
+    static OVERRIDE: std::sync::OnceLock<Option<f32>> = std::sync::OnceLock::new();
+    if let Some(height) = *OVERRIDE.get_or_init(|| {
+        let value = std::env::var("BYRO_FOG_HEIGHT_REFERENCE").ok()?;
+        let parsed = parse_fog_height_override(&value);
+        if parsed.is_none() {
+            log::warn!("invalid BYRO_FOG_HEIGHT_REFERENCE; using terrain reference");
+        }
+        parsed
+    }) {
+        return height;
+    }
     // The player capsule must be excluded (#2859). In `PlayerMode::Character`
     // the camera is pinned to `body_pos + eye_height*Y` at the body's own XZ,
     // and `CharacterController::HUMAN` is deliberately sized so the eye sits
@@ -287,21 +301,37 @@ fn fog_height_reference(world: &World, cam_pos: Vec3) -> f32 {
                 .query::<byroredux_physics::RapierHandles>()
                 .and_then(|handles| handles.get(entity).map(|h| h.body))
         });
+    let max_distance = if world
+        .try_resource::<CellLightingRes>()
+        .is_some_and(|lighting| !lighting.is_interior)
+    {
+        EXTERIOR_FOG_HEIGHT_REFERENCE_RAY_MAX_DISTANCE
+    } else {
+        FOG_HEIGHT_REFERENCE_RAY_MAX_DISTANCE
+    };
     world
         .try_resource::<PhysicsWorld>()
         .and_then(|pw| {
-            pw.cast_ray_down(
-                cam_pos,
-                FOG_HEIGHT_REFERENCE_RAY_MAX_DISTANCE,
-                excluded_body,
-            )
+            pw.cast_ray_down(cam_pos, max_distance, excluded_body)
         })
         .unwrap_or(cam_pos.y)
+}
+
+fn parse_fog_height_override(value: &str) -> Option<f32> {
+    value.parse::<f32>().ok().filter(|v| v.is_finite())
 }
 
 #[cfg(test)]
 mod fog_height_reference_tests {
     use super::*;
+
+    #[test]
+    fn fog_height_override_accepts_finite_world_coordinates() {
+        assert_eq!(parse_fog_height_override("-123.5"), Some(-123.5));
+        assert_eq!(parse_fog_height_override("NaN"), None);
+        assert_eq!(parse_fog_height_override("inf"), None);
+        assert_eq!(parse_fog_height_override("bad"), None);
+    }
     use byroredux_core::ecs::components::collision::CollisionShape;
     use byroredux_core::ecs::components::{GlobalTransform, RigidBodyData};
     use byroredux_core::math::Quat;
@@ -363,6 +393,30 @@ mod fog_height_reference_tests {
             reference, cam_pos.y,
             "must not fall back to camera Y when a floor exists"
         );
+    }
+
+    #[test]
+    fn exterior_probe_finds_terrain_beyond_the_interior_limit() {
+        let mut world = World::new();
+        world.insert_resource(PhysicsWorld::new());
+        world.register::<RapierHandles>();
+        let floor = world.spawn();
+        world.insert(floor, CollisionShape::Ball { radius: 16.0 });
+        world.insert(floor, RigidBodyData::static_body());
+        world.insert(
+            floor,
+            GlobalTransform::new(Vec3::new(0.0, 100.0, 0.0), Quat::IDENTITY, 1.0),
+        );
+        physics_sync_system(&world, 0.0);
+        world.resource_mut::<PhysicsWorld>().update_query_pipeline();
+        world.insert_resource(CellLightingRes::bare(
+            [0.0; 3], [0.0; 3], [0.0, -1.0, 0.0], false, [0.0; 3], 0.0, 1000.0,
+        ));
+
+        let camera = Vec3::new(0.0, 6000.0, 0.0);
+        assert!((fog_height_reference(&world, camera) - 116.0).abs() < 0.1);
+        world.resource_mut::<CellLightingRes>().is_interior = true;
+        assert_eq!(fog_height_reference(&world, camera), camera.y);
     }
 
     /// #2859 — in `PlayerMode::Character` the camera sits INSIDE the player
@@ -1214,6 +1268,9 @@ pub(crate) fn build_render_data(
         },
     );
     let tlas_policy = static_summary.tlas_policy;
+    // #7152 — TSD-4.1 terrain patches: copies of their base cells' draws,
+    // appended before the sort.
+    crate::terrain_patches::emit_patch_draws(world, cam_pos, vp_mat, draw_commands);
 
     let n_draws = draw_commands.len();
     // Particle billboards — see `render::particles::emit_particles`.

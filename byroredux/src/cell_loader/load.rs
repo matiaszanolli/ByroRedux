@@ -500,6 +500,25 @@ fn find_interior_cell<'a>(
     })
 }
 
+// Save the old load-order table alongside the staged resolver until the
+// interior transition commits.
+struct PreviousAuthoredEnableTable(Option<byroredux_scripting::AuthoredDisabledReferences>);
+
+impl PreviousAuthoredEnableTable {
+    fn install(world: &mut World, index: &esm::records::EsmIndex) -> Self {
+        let previous = world.remove_resource::<byroredux_scripting::AuthoredDisabledReferences>();
+        byroredux_scripting::install_authored_disabled_references(world, index);
+        Self(previous)
+    }
+
+    fn restore(self, world: &mut World) {
+        world.remove_resource::<byroredux_scripting::AuthoredDisabledReferences>();
+        if let Some(previous) = self.0 {
+            world.insert_resource(previous);
+        }
+    }
+}
+
 /// Resumable main-thread application of one interior cell.
 ///
 /// The existing public [`load_cell_with_masters`] path remains synchronous,
@@ -518,6 +537,7 @@ pub(crate) struct InteriorCellApplyJob {
     index: std::sync::Arc<esm::records::EsmIndex>,
     load_order: std::sync::Arc<LoadOrder>,
     previous_resolver: super::load_order::PreviousFormResolver,
+    previous_authored_enable_table: PreviousAuthoredEnableTable,
     cell_root: EntityId,
     /// #5484 — hashes whose `_oc.nif` bake drew geometry. Keys
     /// `CellData::absorbed_ref_bakes` at the reference gate.
@@ -542,7 +562,6 @@ pub(crate) enum InteriorCellApplyProgress {
 
 impl InteriorCellApplyJob {
     /// Parse and install the atomic prefix of an interior load.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn begin(
         masters: &[String],
         esm_path: &str,
@@ -567,7 +586,7 @@ impl InteriorCellApplyJob {
         let cell = find_interior_cell(&index, cell_editor_id)?;
         let resolver = super::load_order::GlobalFormIdResolver::from_load_order_with_records_and_factions(
             &load_order, &index.record_types, &index.factions,
-        );
+        ).with_disposition(&index);
         let previous_resolver = super::load_order::PreviousFormResolver::install(
             world, resolver, std::sync::Arc::clone(&load_order),
         );
@@ -575,6 +594,10 @@ impl InteriorCellApplyJob {
         // M47.3 — the references below attach their ObScript object scripts as they
         // spawn, so the tables must exist first (`populate_scene_runtime` is too late).
         crate::asset_provider::ensure_obscript_tables(world, &index);
+        // XESP parent chains can point outside this cell. Install the whole
+        // load order's authored states before any REFR is expanded; the
+        // general scene runtime is populated only after the reference pass.
+        let previous_authored_enable_table = PreviousAuthoredEnableTable::install(world, &index);
 
         log::info!(
             "Loading cell '{}' (form {:08X}): {} placed references",
@@ -645,6 +668,7 @@ impl InteriorCellApplyJob {
             index,
             load_order,
             previous_resolver,
+            previous_authored_enable_table,
             cell_root,
             baked_hashes,
             absorbed: None,
@@ -655,7 +679,6 @@ impl InteriorCellApplyJob {
     }
 
     /// Advance the REFR phase against the caller's frame deadline.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn advance(
         mut self,
         world: &mut World,
@@ -724,6 +747,7 @@ impl InteriorCellApplyJob {
             references.cancel(world);
         }
         super::unload_cell(world, ctx, self.cell_root);
+        self.previous_authored_enable_table.restore(world);
         self.previous_resolver.restore(world);
     }
 
@@ -769,6 +793,8 @@ impl InteriorCellApplyJob {
         let navmesh_first = world.next_entity_id();
         // The parser keeps a cell's NAVMs in the global map, not on the cell.
         crate::components::spawn_navmesh_tiles(world, index.navmeshes_of_cell(cell, None));
+        // Oblivion's walk graph: it authors `PGRD` pathgrids on the cell, no NAVM.
+        crate::components::spawn_pathgrid_tiles(world, &cell.pathgrids);
         stamp_cell_root_range(world, cell_root, navmesh_first, world.next_entity_id());
         crate::scene::populate_scene_runtime(world, &index);
         crate::asset_provider::populate_idle_clip_runtime(world, &index, tex_provider);
@@ -952,14 +978,13 @@ pub(crate) fn resolve_cell_lighting(
 ) -> Option<esm::cell::CellLighting> {
     if let Some(mut lit) = cell.lighting.clone() {
         let flags = lit.inheritance_flags.unwrap_or(0);
-        if flags != 0 {
-            if let Some(template) = cell
+        if flags != 0
+            && let Some(template) = cell
                 .lighting_template_form
                 .and_then(|form| index.lighting_templates.get(&form))
             {
                 inherit_lighting_fields(&mut lit, template, flags);
             }
-        }
         return Some(lit);
     }
     let template_form = cell.lighting_template_form?;
@@ -1146,9 +1171,49 @@ mod tests {
         let production = byroredux_core::source_scan::production_text(source);
         let install = production.find("PreviousFormResolver::install(").expect("stage the load-order identity");
         let consumers = production.find("ensure_obscript_tables(world, &index)").expect("install script tables");
+        let authored = production.find("PreviousAuthoredEnableTable::install(world, &index)").expect("stage authored enable parents");
         let references = production.find("load_references_budgeted(").expect("spawn references");
         assert!(install < consumers && consumers < references, "identity and records must precede script tables and actors");
+        assert!(authored < references, "authored enable parents must precede the first reference pass");
         assert!(production.contains("self.previous_resolver.restore(world)"), "cancel must restore the prior identity bridge");
+        assert!(production.contains("self.previous_authored_enable_table.restore(world)"), "cancel must restore authored enable parents");
+    }
+
+    #[test]
+    fn staged_authored_enable_table_gates_first_load_and_restores_on_cancel() {
+        use byroredux_plugin::esm::cell::{CellData, EnableParent, PlacedRef};
+        const PARENT: u32 = 0x100;
+        const CHILD: u32 = 0x101;
+        const OLD_PARENT: u32 = 0x200;
+        let mut index = esm::records::EsmIndex::default();
+        let mut parent = PlacedRef::at(PARENT, 1, [0.0; 3], [0.0; 3]);
+        parent.initially_disabled = true;
+        let mut child = PlacedRef::at(CHILD, 2, [0.0; 3], [0.0; 3]);
+        child.enable_parent = Some(EnableParent { form_id: PARENT, inverted: false });
+        index.cells.cells.insert("parent".into(), CellData {
+            references: vec![parent], ..Default::default()
+        });
+        index.cells.cells.insert("child".into(), CellData {
+            references: vec![child], ..Default::default()
+        });
+        let mut world = World::new();
+        world.insert_resource(byroredux_scripting::AuthoredDisabledReferences {
+            initially_disabled: [OLD_PARENT].into(),
+            ..Default::default()
+        });
+        let previous = PreviousAuthoredEnableTable::install(&mut world, &index);
+        assert!(super::super::spawn::reference_is_disabled(
+            &world, CHILD, false, Some(EnableParent { form_id: PARENT, inverted: false })
+        ));
+        previous.restore(&mut world);
+        let restored = world.resource::<byroredux_scripting::AuthoredDisabledReferences>();
+        assert!(restored.initially_disabled.contains(&OLD_PARENT));
+        assert!(!restored.initially_disabled.contains(&PARENT));
+        drop(restored);
+        world.remove_resource::<byroredux_scripting::AuthoredDisabledReferences>();
+        let previous = PreviousAuthoredEnableTable::install(&mut world, &index);
+        previous.restore(&mut world);
+        assert!(world.try_resource::<byroredux_scripting::AuthoredDisabledReferences>().is_none());
     }
 
     /// #3320 — pin the load-order invariant that makes interior water render.

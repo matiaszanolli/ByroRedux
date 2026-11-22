@@ -368,13 +368,12 @@ fn open_conversation<'a>(
     let menu = top_level_menu(index, owned, world, npc, player, None);
     // FO3 / FNV open on GREETING — the NPC's first line — followed by its
     // choices or, when it links nowhere, the default Top-level topics.
-    if index.game == byroredux_plugin::esm::reader::GameKind::Fallout3NV {
-        if let Some((greeting, info)) = generic_greeting_record(index).and_then(|greeting| {
+    if index.game == byroredux_plugin::esm::reader::GameKind::Fallout3NV
+        && let Some((greeting, info)) = generic_greeting_record(index).and_then(|greeting| {
             select_first_info(greeting, world, Some(npc), Some(player)).map(|info| (greeting, info))
         }) {
             return select_on_topic(index, greeting, info, world, npc, player, &menu);
         }
-    }
     if let Some((first, info)) = menu.first().copied() {
         return select_on_topic(index, first, info, world, npc, player, &menu);
     }
@@ -390,11 +389,10 @@ fn open_conversation<'a>(
 /// Shared by the activation path and the UI's re-selection door.
 fn apply_selection(world: &World, npc: EntityId, topic: NpcDialogueTopic, record: &DialRecord) {
     // #6190 — the NPC has now spoken to the player: `GetTalkedToPC` reads this.
-    if let Some(form) = byroredux_scripting::condition::entity_global_form_id(world, npc) {
-        if let Some(mut ledger) = world.try_resource_mut::<byroredux_scripting::obscript_ledger::ObScriptLedger>() {
+    if let Some(form) = byroredux_scripting::condition::entity_global_form_id(world, npc)
+        && let Some(mut ledger) = world.try_resource_mut::<byroredux_scripting::obscript_ledger::ObScriptLedger>() {
             ledger.note_talked_to_player(form);
         }
-    }
     // The outgoing line ends before the new one begins (vanilla's OnEnd
     // ordering). One live selection (#5038) means every existing stamp IS
     // the outgoing line.
@@ -736,6 +734,34 @@ fn npc_dialogue_goodbye_close_check(world: &World) {
     }
 }
 
+/// INFO FormID → owning `DIAL` FormID for the loaded index, built on first use and rebuilt when the
+/// index changes. Keyed by a `Weak` compared with `Weak::ptr_eq`, so a later index cannot reuse a
+/// freed one's address (#7114). `NOT_SAVED_BY_DESIGN`: derived from the records.
+#[derive(Default)]
+pub(crate) struct FollowUpTopics(std::sync::Mutex<Option<FollowUpMap>>);
+
+/// The index a [`FollowUpTopics`] map was built for, and the map: INFO FormID → owning `DIAL` FormID.
+type FollowUpMap = (std::sync::Weak<byroredux_plugin::esm::records::EsmIndex>, std::collections::HashMap<u32, u32>);
+
+impl byroredux_core::ecs::Resource for FollowUpTopics {}
+
+/// The topic owning INFO `info` in `index`, from the [`FollowUpTopics`] map.
+fn follow_up_topic(world: &World, index: &std::sync::Arc<byroredux_plugin::esm::records::EsmIndex>, info: u32) -> Option<u32> {
+    let cache = world.try_resource::<FollowUpTopics>()?;
+    let mut slot = cache.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let key = std::sync::Arc::downgrade(index);
+    if !slot.as_ref().is_some_and(|(built_for, _)| std::sync::Weak::ptr_eq(built_for, &key)) {
+        let mut topic_of = std::collections::HashMap::new();
+        for (topic, record) in &index.dialogues {
+            for entry in &record.infos {
+                topic_of.entry(entry.form_id).or_insert(*topic);
+            }
+        }
+        *slot = Some((key, topic_of));
+    }
+    slot.as_ref().and_then(|(_, topic_of)| topic_of.get(&info).copied())
+}
+
 /// The open line's follow-up (`TCFU`, [`InfoRecord::follow_ups`]): once the speaker has finished a
 /// line that names follow-up INFOs, they say the first one whose gates pass — its speaker, its
 /// conditions, its quest, Say Once — as a line of its own, through the same selection a topic
@@ -772,8 +798,16 @@ fn npc_dialogue_follow_up(world: &World) {
         return;
     };
     for follow_up in follow_ups {
-        // The topic that owns the follow-up INFO; the line is gated as a topic of one INFO.
-        let Some((record, info)) = index.dialogues.values().find_map(|record| record.infos.iter().find(|info| info.form_id == follow_up).map(|info| (record, info))) else {
+        // The topic that owns the follow-up INFO; the line is gated as a topic of one INFO. Found
+        // through the per-index INFO → topic map, not a scan of every topic's INFOs each frame (#7115).
+        let Some(topic_form) = follow_up_topic(world, &index, follow_up) else {
+            continue;
+        };
+        let Some((record, info)) = index
+            .dialogues
+            .get(&topic_form)
+            .and_then(|record| record.infos.iter().find(|info| info.form_id == follow_up).map(|info| (record, info)))
+        else {
             continue;
         };
         let single = DialRecord { form_id: record.form_id, editor_id: record.editor_id.clone(), quest_refs: record.quest_refs.clone(), infos: vec![info.clone()], ..Default::default() };
@@ -1066,7 +1100,7 @@ fn speaker_full_name(world: &World, npc: EntityId) -> String {
 /// happens to yield first.
 pub(crate) fn dialogue_snapshot(
     world: &World,
-) -> Option<byroredux_debug_ui::DialogueTopicSnapshot> {
+) -> Option<byroredux_native_ui::DialogueTopicSnapshot> {
     let surface = *world.try_resource::<DialogueSurfaceState>()?;
     let npc = surface.npc?;
     let topic = world.get::<NpcDialogueTopic>(npc)?.clone();
@@ -1074,7 +1108,7 @@ pub(crate) fn dialogue_snapshot(
         .try_resource::<byroredux_core::ecs::resources::TotalTime>()
         .map(|time| time.0)
         .unwrap_or_default();
-    Some(byroredux_debug_ui::DialogueTopicSnapshot {
+    Some(byroredux_native_ui::DialogueTopicSnapshot {
         speaking: surface.line_ends_at.is_some_and(|ends| now < ends),
         voiced: surface.line_voiced,
         choices: topic.choices,
@@ -1087,7 +1121,7 @@ pub(crate) fn dialogue_snapshot(
         topics: topic
             .topics
             .iter()
-            .map(|entry| byroredux_debug_ui::DialogueTopicEntryView {
+            .map(|entry| byroredux_native_ui::DialogueTopicEntryView {
                 topic_form_id: entry.topic_form_id,
                 name: entry.name.clone(),
                 said: byroredux_scripting::info_spoken(world, npc, entry.info_form_id),

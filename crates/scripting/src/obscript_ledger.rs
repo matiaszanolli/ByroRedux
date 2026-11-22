@@ -20,7 +20,7 @@
 //!
 //! A command whose value nothing in the engine would read back is not stored here: it declines
 //! (*AddTopic*, *ModDisposition*, *SetQuestObject*, *SetItemValue* — no topic gate, disposition
-//! term, quest-item marker or barter value consumes one) rather than report a no-op as done.
+//! adjustment ledger, quest-item marker or barter value consumes one) rather than report a no-op as done.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -210,6 +210,11 @@ impl ObScriptLedger {
     /// The numeric reaction `faction` has toward `other` that scripts set; 0 when none did.
     pub fn reaction(&self, faction: u32, other: u32) -> f32 {
         self.reactions.get(&(faction, other)).copied().unwrap_or(0.0)
+    }
+
+    /// A scripted override, including an explicitly set zero.
+    pub fn reaction_override(&self, faction: u32, other: u32) -> Option<f32> {
+        self.reactions.get(&(faction, other)).copied()
     }
 
     pub fn set_reaction(&mut self, faction: u32, other: u32, value: f32) {

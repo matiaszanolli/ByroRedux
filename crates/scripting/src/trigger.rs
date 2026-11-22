@@ -396,8 +396,8 @@ pub fn trigger_detection_system(world: &World) {
     // Phase 2 (write): emit the leave and enter markers. Separate borrow so the
     // TriggerVolume write lock is released first. Leaves go first: the early
     // return below is for a frame with no enter.
-    if !left.is_empty() {
-        if let Some(mut events) = world.query_mut::<OnTriggerLeaveEvent>() {
+    if !left.is_empty()
+        && let Some(mut events) = world.query_mut::<OnTriggerLeaveEvent>() {
             for &(entity, triggerer) in left.iter() {
                 log::debug!("trigger {entity} emitted OnTriggerLeave for actor {triggerer}");
                 match events.get_mut(entity) {
@@ -409,7 +409,6 @@ pub fn trigger_detection_system(world: &World) {
                 }
             }
         }
-    }
     if entered.is_empty() {
         return;
     }

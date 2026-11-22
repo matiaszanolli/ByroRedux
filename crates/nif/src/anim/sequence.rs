@@ -156,8 +156,8 @@ pub fn import_sequence(
                 // pick up `texture_slot` + the `sources` array; the
                 // float keys come from `cb.interpolator_ref`. Skip
                 // silently if either ref fails to resolve.
-                if let Some(ctrl_idx) = cb.controller_ref.index() {
-                    if let Some(ctrl) =
+                if let Some(ctrl_idx) = cb.controller_ref.index()
+                    && let Some(ctrl) =
                         scene.get_as::<crate::blocks::controller::NiFlipController>(ctrl_idx)
                     {
                         let source_paths = resolve_flip_source_paths(scene, &ctrl.sources);
@@ -176,7 +176,6 @@ pub fn import_sequence(
                             },
                         ));
                     }
-                }
             }
             _ => {
                 log::debug!(

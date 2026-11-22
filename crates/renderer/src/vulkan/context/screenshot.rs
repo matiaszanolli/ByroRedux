@@ -138,107 +138,111 @@ impl VulkanContext {
         cmd: vk::CommandBuffer,
         swapchain_image: vk::Image,
     ) {
-        if !self
-            .overlay
-            .screenshot_requested
-            .swap(false, Ordering::AcqRel)
-        {
-            return;
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            if !self
+                .overlay
+                .screenshot_requested
+                .swap(false, Ordering::AcqRel)
+            {
+                return;
+            }
+
+            let width = self.swapchain.state.extent.width;
+            let height = self.swapchain.state.extent.height;
+            let pixel_size: vk::DeviceSize = 4; // B8G8R8A8
+            let buffer_size = width as vk::DeviceSize * height as vk::DeviceSize * pixel_size;
+
+            // Ensure staging buffer exists and is large enough.
+            self.ensure_screenshot_staging(buffer_size);
+
+            let Some((staging_buffer, _, _)) = self.overlay.screenshot_staging.as_ref() else {
+                log::warn!("Screenshot staging buffer creation failed");
+                return;
+            };
+            let staging_buffer = *staging_buffer;
+
+            // Transition swapchain image: PRESENT_SRC_KHR → TRANSFER_SRC_OPTIMAL
+            let barrier_to_transfer = vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+                .image(swapchain_image)
+                .subresource_range(color_subresource_single_mip());
+
+            self.device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[barrier_to_transfer],
+            );
+
+            // Copy image → buffer.
+            let region = vk::BufferImageCopy::default()
+                .buffer_offset(0)
+                .buffer_row_length(0) // tightly packed
+                .buffer_image_height(0)
+                .image_subresource(
+                    vk::ImageSubresourceLayers::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .mip_level(0)
+                        .base_array_layer(0)
+                        .layer_count(1),
+                )
+                .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                .image_extent(vk::Extent3D {
+                    width,
+                    height,
+                    depth: 1,
+                });
+
+            self.device.cmd_copy_image_to_buffer(
+                cmd,
+                swapchain_image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                staging_buffer,
+                &[region],
+            );
+
+            // Transition back: TRANSFER_SRC_OPTIMAL → PRESENT_SRC_KHR
+            let barrier_to_present = vk::ImageMemoryBarrier::default()
+                .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+                .src_access_mask(vk::AccessFlags::TRANSFER_READ)
+                .dst_access_mask(vk::AccessFlags::empty())
+                .image(swapchain_image)
+                .subresource_range(color_subresource_single_mip());
+
+            // #1160 / REN-D10-NEW-13 — DST-side `NONE` is the Vulkan 1.3
+            // canonical form for "no further synchronization required",
+            // paired with an empty `dst_access_mask` (per the barrier
+            // configured above at line ~157). Matches the SRC-side
+            // migrations under #949 / #1100 / #1121 / #1122.
+            self.device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::NONE,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[barrier_to_present],
+            );
+
+            // #1603 — tag the recorded copy with the capture generation at
+            // record time. If a `cancel()` bumps the shared generation before
+            // the readback completes (client timed out during an engine
+            // stall), `screenshot_finish_readback` sees the mismatch and
+            // discards the straggler instead of publishing it to a later
+            // claimant.
+            let generation = self.overlay.screenshot_generation.load(Ordering::Acquire);
+            self.overlay.screenshot_pending_readback =
+                Some((vk::Extent2D { width, height }, generation));
         }
-
-        let width = self.swapchain.state.extent.width;
-        let height = self.swapchain.state.extent.height;
-        let pixel_size: vk::DeviceSize = 4; // B8G8R8A8
-        let buffer_size = width as vk::DeviceSize * height as vk::DeviceSize * pixel_size;
-
-        // Ensure staging buffer exists and is large enough.
-        self.ensure_screenshot_staging(buffer_size);
-
-        let Some((staging_buffer, _, _)) = self.overlay.screenshot_staging.as_ref() else {
-            log::warn!("Screenshot staging buffer creation failed");
-            return;
-        };
-        let staging_buffer = *staging_buffer;
-
-        // Transition swapchain image: PRESENT_SRC_KHR → TRANSFER_SRC_OPTIMAL
-        let barrier_to_transfer = vk::ImageMemoryBarrier::default()
-            .old_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-            .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
-            .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
-            .image(swapchain_image)
-            .subresource_range(color_subresource_single_mip());
-
-        self.device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[barrier_to_transfer],
-        );
-
-        // Copy image → buffer.
-        let region = vk::BufferImageCopy::default()
-            .buffer_offset(0)
-            .buffer_row_length(0) // tightly packed
-            .buffer_image_height(0)
-            .image_subresource(
-                vk::ImageSubresourceLayers::default()
-                    .aspect_mask(vk::ImageAspectFlags::COLOR)
-                    .mip_level(0)
-                    .base_array_layer(0)
-                    .layer_count(1),
-            )
-            .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
-            .image_extent(vk::Extent3D {
-                width,
-                height,
-                depth: 1,
-            });
-
-        self.device.cmd_copy_image_to_buffer(
-            cmd,
-            swapchain_image,
-            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-            staging_buffer,
-            &[region],
-        );
-
-        // Transition back: TRANSFER_SRC_OPTIMAL → PRESENT_SRC_KHR
-        let barrier_to_present = vk::ImageMemoryBarrier::default()
-            .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-            .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-            .src_access_mask(vk::AccessFlags::TRANSFER_READ)
-            .dst_access_mask(vk::AccessFlags::empty())
-            .image(swapchain_image)
-            .subresource_range(color_subresource_single_mip());
-
-        // #1160 / REN-D10-NEW-13 — DST-side `NONE` is the Vulkan 1.3
-        // canonical form for "no further synchronization required",
-        // paired with an empty `dst_access_mask` (per the barrier
-        // configured above at line ~157). Matches the SRC-side
-        // migrations under #949 / #1100 / #1121 / #1122.
-        self.device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::TRANSFER,
-            vk::PipelineStageFlags::NONE,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[barrier_to_present],
-        );
-
-        // #1603 — tag the recorded copy with the capture generation at
-        // record time. If a `cancel()` bumps the shared generation before
-        // the readback completes (client timed out during an engine
-        // stall), `screenshot_finish_readback` sees the mismatch and
-        // discards the straggler instead of publishing it to a later
-        // claimant.
-        let generation = self.overlay.screenshot_generation.load(Ordering::Acquire);
-        self.overlay.screenshot_pending_readback =
-            Some((vk::Extent2D { width, height }, generation));
     }
 
     /// Ensure a host-visible staging buffer exists for screenshot readback.

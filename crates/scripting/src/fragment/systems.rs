@@ -87,6 +87,16 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
                     still_pending.push(pending);
                 }
             }
+            FragmentResumeCondition::MessageAnswered { ticket } => match crate::messages::take_papyrus_answer(world, *ticket) {
+                Some(button) => {
+                    // The run's own continuation carries the answer to the statement it replays.
+                    if let Some(crate::Effect::Interpret { resume: Some(state), .. }) = pending.effects.first_mut() {
+                        state.answer = Some(button);
+                    }
+                    ready.push(pending);
+                }
+                None => still_pending.push(pending),
+            },
             FragmentResumeCondition::Actors3DLoaded {
                 actors,
                 poll_seconds,
@@ -141,8 +151,8 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
         // The interpreter's frame budget is spent: what is still ready waits
         // for the next frame, untouched and in order, without paying the
         // scheduler snapshot each run costs just to be deferred again.
-        if super::budget::exhausted(world) {
-            if let Some(mut queue) = world.try_resource_mut::<FragmentExecutionQueue>() {
+        if super::budget::exhausted(world)
+            && let Some(mut queue) = world.try_resource_mut::<FragmentExecutionQueue>() {
                 let mut waiting = vec![PendingFragmentExecution {
                     remaining_seconds: 0.0,
                     ..pending
@@ -154,7 +164,6 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
                 queue.extend_capped(waiting);
                 break;
             }
-        }
         emitted.extend(apply_fragment_guard_free(
             world,
             &pending.effects,
@@ -217,6 +226,7 @@ pub fn register(world: &mut World) {
     reference::install_reference(world);
     anim_events::install_anim_events(world);
     hits::install_hits(world);
+    menu_events::install_menu_events(world);
     budget::install_budget(world);
 }
 
@@ -363,12 +373,11 @@ pub fn quest_fragment_dispatch_system(world: &World) {
         }
         for event in legacy_events {
             let key = (event.quest, event.previous_stage, event.new_stage);
-            if let Some(mirrors) = journal_mirrors.get_mut(&key) {
-                if *mirrors > 0 {
+            if let Some(mirrors) = journal_mirrors.get_mut(&key)
+                && *mirrors > 0 {
                     *mirrors -= 1;
                     continue;
                 }
-            }
             if event.stage_set {
                 queue.push_back((event.quest, event.new_stage, false));
             }

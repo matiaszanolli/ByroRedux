@@ -483,7 +483,12 @@ let allocator = self.allocator.as_ref().expect("allocator missing");
         let mut handles: Vec<u32> = draw_commands
             .iter()
             .filter_map(|cmd| {
-                if cmd.bone_offset != 0 || !draw_command_eligible_for_tlas(cmd) {
+                // #7221 — terrain patch meshes take their own refit BLAS; a
+                // static one would snapshot vertices the compute rewrites.
+                if cmd.bone_offset != 0
+                    || !draw_command_eligible_for_tlas(cmd)
+                    || accel.is_terrain_patch_mesh(cmd.mesh_handle)
+                {
                     return None;
                 }
                 Some(cmd.mesh_handle)
@@ -832,6 +837,29 @@ impl VulkanContext {
         self.exterior.groundcover_bench
             .as_ref()
             .is_some_and(|b| b.has_samples())
+    }
+
+    /// #7152 — the reserved terrain patch meshes of both lattice levels,
+    /// indexed by slot (`None` without the pass; empty when its reservation
+    /// failed).
+    pub fn terrain_patch_meshes(&self) -> Option<&crate::vulkan::terrain_patch::TerrainPatchMeshes> {
+        self.exterior.terrain_patch.as_ref().map(|pass| pass.meshes())
+    }
+
+    /// #7152 — stage this frame's resident terrain patches for `draw_frame`.
+    pub fn set_terrain_patch_frame(
+        &mut self,
+        slots: &[crate::vulkan::terrain_patch::TerrainPatchSlot],
+        params: crate::vulkan::terrain_patch::TerrainPatchParams,
+    ) {
+        if let Some(pass) = self.exterior.terrain_patch.as_mut() {
+            pass.set_frame(slots, params);
+        }
+    }
+
+    /// #7152 — the terrain patch seam check from the last harvested frame.
+    pub fn terrain_patch_stats(&self) -> Option<&crate::vulkan::terrain_patch::TerrainPatchStats> {
+        self.exterior.terrain_patch.as_ref().map(|pass| pass.stats())
     }
 }
 
@@ -1334,5 +1362,31 @@ mod tests {
             invalidate < read,
             "the invalidate must precede the staging-buffer read"
         );
+    }
+
+    /// #7027 — the depth and linear-radiance captures read the same `GpuToCpu`
+    /// staging kind as the screenshot, and after #6960 each invalidate is one
+    /// `invalidate_allocation(...)` line whose deletion compiles and passes
+    /// everything. Stale reads would corrupt the depth / linear-radiance
+    /// samples on non-coherent memory (the M-LIGHT linear-capture gates read
+    /// them). Both files carry test modules, so scan their production text.
+    #[test]
+    fn depth_and_linear_capture_readbacks_invalidate_before_mapping() {
+        for (name, src) in [
+            ("depth_capture.rs", include_str!("depth_capture.rs")),
+            ("linear_capture.rs", include_str!("linear_capture.rs")),
+        ] {
+            let production = crate::source_scan::production_text_or_whole(src);
+            let invalidate = production
+                .find("invalidate_allocation(")
+                .unwrap_or_else(|| panic!("{name}: readback must invalidate through the shared helper (#7027)"));
+            let read = production
+                .find("allocation.mapped_slice()")
+                .unwrap_or_else(|| panic!("{name}: readback must still read the staging mapping"));
+            assert!(
+                invalidate < read,
+                "{name}: the invalidate must precede the staging-buffer read (#7027)"
+            );
+        }
     }
 }

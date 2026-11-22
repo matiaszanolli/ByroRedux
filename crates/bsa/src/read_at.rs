@@ -21,6 +21,17 @@ use std::io;
 /// Read exactly `buf.len()` bytes starting at absolute byte `offset`.
 pub(crate) trait ReadAt {
     fn read_exact_at(&self, buf: &mut [u8], offset: u64) -> io::Result<()>;
+
+    /// [`read_exact_at`](Self::read_exact_at) whose error names `what` was read, its length and
+    /// its offset, keeping the error's kind (callers branch on `UnexpectedEof` / `NotFound`).
+    /// #7131, #7159 — a record running past a truncated or replaced archive otherwise surfaces as
+    /// the bare `failed to fill whole buffer`, with no entry to look at.
+    fn read_exact_at_for(&self, buf: &mut [u8], offset: u64, what: &dyn std::fmt::Display) -> io::Result<()> {
+        let len = buf.len();
+        self.read_exact_at(buf, offset).map_err(|error| {
+            io::Error::new(error.kind(), format!("{what}: reading {len} bytes at offset {offset}: {error}"))
+        })
+    }
 }
 
 #[cfg(unix)]
@@ -54,6 +65,21 @@ impl ReadAt for File {
         }
         Ok(())
     }
+}
+
+/// [`std::io::Read::read_exact`] whose error names `what` was read and its length, keeping the
+/// error's kind. #7176 — the sequential readers that walk an archive's header and tables at open
+/// time (BSA, BA2, CSG) surfaced a truncated table as the bare `failed to fill whole buffer`; the
+/// label names the table and the record, so a cut archive says where it is cut.
+pub(crate) fn read_exact_for<R: std::io::Read + ?Sized>(
+    reader: &mut R,
+    buf: &mut [u8],
+    what: &dyn std::fmt::Display,
+) -> io::Result<()> {
+    let len = buf.len();
+    reader
+        .read_exact(buf)
+        .map_err(|error| io::Error::new(error.kind(), format!("{what}: reading {len} bytes: {error}")))
 }
 
 /// In-memory source for unit tests that build archive bodies as byte vectors.

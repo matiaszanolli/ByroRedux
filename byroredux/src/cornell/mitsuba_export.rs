@@ -37,10 +37,9 @@ pub(crate) const K_EXP_POINT: f32 = std::f32::consts::PI;
 /// directional light's irradiance (design §2.1).
 pub(crate) const K_EXP_SUN: f32 = std::f32::consts::PI;
 
-/// Distance, in metres, of the sphere that stands in for the sun (RLT-EXP-004,
-/// V1): far enough that its parallax across a Cornell rung is nil, close
-/// enough that f32 keeps its radius exact. Its radius is D · sin θ, so it
-/// subtends exactly the engine's angular radius θ.
+/// Distance, in metres, of the disk that stands in for the sun (RLT-EXP-004).
+/// Its radius is D · tan θ, so it subtends the engine's angular radius θ
+/// at the rung origin with negligible parallax across the room.
 const SUN_DISTANCE_M: f32 = 10_000.0;
 
 /// CPU copy of one uploaded Cornell mesh (PTX-003).
@@ -308,7 +307,11 @@ pub(crate) fn gather_export_scene(world: &World, extent: (u32, u32)) -> Result<E
     shapes.sort_by(|a, b| a.name.cmp(&b.name).then(a.mesh.cmp(&b.mesh)));
     emitters.sort_by(|a, b| a.name.cmp(&b.name));
     let sun = gather_sun(world);
-    if emitters.is_empty() && sun.is_none() {
+    let measurements = world
+        .try_resource::<super::reference::RungMeasurements>()
+        .map(|m| m.clone())
+        .unwrap_or_default();
+    if emitters.is_empty() && sun.is_none() && measurements.constant_sky.is_none() {
         return Err("a reference rung needs at least one emitter".into());
     }
     Ok(ExportScene {
@@ -316,14 +319,7 @@ pub(crate) fn gather_export_scene(world: &World, extent: (u32, u32)) -> Result<E
         emitters,
         sun,
         camera,
-        measurements: follow_moving_bands(
-            world,
-            &names,
-            world
-                .try_resource::<super::reference::RungMeasurements>()
-                .map(|m| m.clone())
-                .unwrap_or_default(),
-        ),
+        measurements: follow_moving_bands(world, &names, measurements),
     })
 }
 
@@ -529,7 +525,9 @@ pub(crate) fn export_mitsuba(
     Ok(ExportReport {
         scene_xml,
         shapes: scene.shapes.len(),
-        emitters: scene.emitters.len(),
+        emitters: scene.emitters.len()
+            + usize::from(scene.sun.is_some())
+            + usize::from(scene.measurements.constant_sky.is_some()),
     })
 }
 
@@ -829,15 +827,17 @@ fn scene_xml_with_posed(
         let _ = writeln!(out, "    </shape>");
     }
     if let Some(sun) = &scene.sun {
-        // A sphere of radius D·sin θ at distance D subtends exactly θ; its
-        // radiance L gives a facing receiver π·L·sin²θ, which must equal
-        // k_exp · E (design §2.1, RLT-EXP-004).
+        // A facing disk's cosine-projected solid angle is π·sin²θ, so
+        // radiance L gives irradiance π·L·sin²θ = k_exp · E. The disk uses
+        // area sampling and avoids Mitsuba 3.9.1's loss of precision in
+        // the sphere solid-angle PDF at the physical sun angle.
         let sin_t = sun.angular_radius.sin().max(1e-6);
-        let radius = SUN_DISTANCE_M * sin_t;
+        let radius = SUN_DISTANCE_M * sin_t / sun.angular_radius.cos();
         let radiance = sun
             .irradiance
             .map(|e| K_EXP_SUN * e / (std::f32::consts::PI * sin_t * sin_t));
         let center = sun.direction * SUN_DISTANCE_M;
+        let up = if sun.direction.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
         let _ = writeln!(
             out,
             "    <!-- sun: engine irradiance {} , k_exp {} (sun), angular radius {} rad -->",
@@ -845,14 +845,22 @@ fn scene_xml_with_posed(
             num(K_EXP_SUN),
             num(sun.angular_radius)
         );
-        let _ = writeln!(out, r#"    <shape type="sphere" id="sun">"#);
-        let _ = writeln!(out, r#"        <point name="center" value="{}"/>"#, rgb(center.to_array()));
-        let _ = writeln!(out, r#"        <float name="radius" value="{}"/>"#, num(radius));
+        let _ = writeln!(out, r#"    <shape type="disk" id="sun">"#);
+        let _ = writeln!(out, r#"        <transform name="to_world">"#);
+        let _ = writeln!(out, r#"            <scale value="{}"/>"#, num(radius));
+        let _ = writeln!(out, r#"            <lookat origin="{}" target="0, 0, 0" up="{}"/>"#,
+            rgb(center.to_array()), rgb(up.to_array()));
+        let _ = writeln!(out, "        </transform>");
         let _ = writeln!(out, r#"        <bsdf type="diffuse"><rgb name="reflectance" value="0, 0, 0"/></bsdf>"#);
         let _ = writeln!(out, r#"        <emitter type="area">"#);
         let _ = writeln!(out, r#"            <rgb name="radiance" value="{}"/>"#, rgb(radiance));
         let _ = writeln!(out, "        </emitter>");
         let _ = writeln!(out, "    </shape>");
+    }
+    if let Some(color) = scene.measurements.constant_sky {
+        let _ = writeln!(out, r#"    <emitter type="constant" id="sky">"#);
+        let _ = writeln!(out, r#"        <rgb name="radiance" value="{}"/>"#, rgb(color));
+        let _ = writeln!(out, "    </emitter>");
     }
     let _ = writeln!(out, "</scene>");
     out
@@ -860,6 +868,9 @@ fn scene_xml_with_posed(
 
 fn export_tsv(scene: &ExportScene) -> String {
     let mut out = String::from("emitter\tkind\tk_exp\tintensity_engine\tradius_m\n");
+    if let Some(color) = scene.measurements.constant_sky {
+        let _ = writeln!(out, "sky\tenvironment\t1\t{}\t", rgb(color));
+    }
     if let Some(sun) = &scene.sun {
         let _ = writeln!(
             out,
@@ -1054,6 +1065,7 @@ mod tests {
             casters: vec!["plate".into()],
             step_form: "disk_segment",
             min_unshadowed: 0.05,
+            constant_sky: None,
         });
         assert!(tsv.contains("step_form\tdisk_segment\n"), "{tsv}");
         assert!(tsv.contains("caster\tplate\n"), "{tsv}");
@@ -1088,7 +1100,7 @@ mod tests {
     }
 
     #[test]
-    fn sun_is_a_distant_sphere_subtending_its_angular_radius() {
+    fn sun_is_a_distant_disk_subtending_its_angular_radius() {
         let mut sc = scene();
         sc.sun = Some(ExportSun {
             direction: Vec3::Y,
@@ -1097,7 +1109,10 @@ mod tests {
         });
         let xml = scene_xml(&sc, &[(7, "m.ply".to_string())].into(), &BTreeMap::new());
         let sin_t = 0.02f32.sin();
-        assert!(xml.contains(&format!(r#"<float name="radius" value="{}"/>"#, SUN_DISTANCE_M * sin_t)), "{xml}");
+        let radius = SUN_DISTANCE_M * sin_t / 0.02f32.cos();
+        assert!(xml.contains(r#"<shape type="disk" id="sun">"#), "{xml}");
+        assert!(xml.contains(&format!(r#"<scale value="{radius}"/>"#)), "{xml}");
+        assert!(xml.contains(r#"<lookat origin="0, 10000, 0" target="0, 0, 0" up="0, 0, 1"/>"#), "{xml}");
         // pi * L * sin^2 = k_exp * E  =>  L = E / sin^2 for k_exp = pi.
         let radiance = K_EXP_SUN / (std::f32::consts::PI * sin_t * sin_t);
         assert!(xml.contains(&format!("value=\"{}, {}, {}\"", radiance, radiance, radiance)), "{xml}");

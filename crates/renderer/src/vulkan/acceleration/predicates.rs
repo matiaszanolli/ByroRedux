@@ -12,7 +12,7 @@ use super::constants::{
 };
 use crate::vulkan::bloom::BLOOM_BYTES_PER_PIXEL_X1024;
 use crate::vulkan::caustic::{CAUSTIC_BYTES_PER_PIXEL, WATER_BYTES_PER_PIXEL};
-use crate::vulkan::composite::COMPOSITE_BYTES_PER_PIXEL;
+use crate::vulkan::composite::{COMPOSITE_BYTES_PER_PIXEL, FAR_SUN_BYTES_PER_PIXEL};
 use crate::vulkan::context::DEPTH_BYTES_PER_PIXEL;
 use crate::vulkan::context::DrawCommand;
 use crate::vulkan::frame_upscaler::upscale_output_bytes;
@@ -913,6 +913,7 @@ pub(super) const fn render_extent_bytes_per_pixel_x1024() -> u64 {
         + TAA_BYTES_PER_PIXEL as u64
         + SSAO_BYTES_PER_PIXEL as u64
         + COMPOSITE_BYTES_PER_PIXEL as u64
+        + FAR_SUN_BYTES_PER_PIXEL as u64
         + DEPTH_BYTES_PER_PIXEL as u64
         // #6035 — the reservoir, claim and unshadowed-radiance regions, and
         // the shadow filter's three images, are each per frame in flight.

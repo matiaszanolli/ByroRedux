@@ -167,11 +167,10 @@ fn apply_legacy_alpha_property(scene: &NifScene, idx: usize, info: &mut Material
     // alpha_flags` marks consumption — so the cascade gate must
     // honour the intent, not just the resulting bit values.
     // #982 added the data plumbing but the consumer was missed.
-    if !info.alpha_property_consumed {
-        if let Some(alpha) = scene.get_as::<NiAlphaProperty>(idx) {
+    if !info.alpha_property_consumed
+        && let Some(alpha) = scene.get_as::<NiAlphaProperty>(idx) {
             apply_alpha_flags(info, alpha);
         }
-    }
 }
 
 /// `NiZBufferProperty` — depth test/write mode + comparison function.
@@ -193,8 +192,8 @@ fn apply_zbuffer_property(scene: &NifScene, idx: usize, info: &mut MaterialInfo)
 /// pre-Skyrim content that has no BSLightingShaderProperty.
 fn apply_material_property(scene: &NifScene, idx: usize, info: &mut MaterialInfo) {
     // NiMaterialProperty — capture specular/emissive/shininess/alpha.
-    if !info.has_material_data {
-        if let Some(mat) = scene.get_as::<NiMaterialProperty>(idx) {
+    if !info.has_material_data
+        && let Some(mat) = scene.get_as::<NiMaterialProperty>(idx) {
             info.diffuse_color = [mat.diffuse.r, mat.diffuse.g, mat.diffuse.b];
             // #221 — `NiMaterialProperty.ambient` was previously
             // discarded; the renderer now consumes it as a
@@ -218,7 +217,6 @@ fn apply_material_property(scene: &NifScene, idx: usize, info: &mut MaterialInfo
             }
             info.has_material_data = true;
         }
-    }
 }
 
 /// `NiTexturingProperty` — up to 8 legacy texture slots (base, normal/
@@ -456,21 +454,18 @@ fn apply_texturing_property(
         // FO3/FNV meshes mixing the two families across the
         // shape/parent-node boundary (FNV ships 58,706
         // `BSShaderPPLightingProperty` and 3,018 `NiTexturingProperty`).
-        if !info.texture_clamp_mode_consumed {
-            if let Some(base) = tex_prop.base_texture.as_ref() {
+        if !info.texture_clamp_mode_consumed
+            && let Some(base) = tex_prop.base_texture.as_ref() {
                 info.texture_clamp_mode = base.clamp_mode;
                 info.texture_clamp_mode_consumed = true;
             }
-        }
-        if !info.has_uv_transform {
-            if let Some(base) = tex_prop.base_texture.as_ref() {
-                if let Some(tx) = base.transform {
+        if !info.has_uv_transform
+            && let Some(base) = tex_prop.base_texture.as_ref()
+                && let Some(tx) = base.transform {
                     info.uv_offset = tx.translation;
                     info.uv_scale = tx.scale;
                     info.has_uv_transform = true;
                 }
-            }
-        }
     }
 }
 
@@ -502,8 +497,8 @@ fn apply_pp_lighting_property(
         // and parallax-scalar writes further down.
         let mut base_displaced_legacy = false;
         let mut parallax_displaced_legacy = false;
-        if let Some(ts_idx) = shader.texture_set_ref.index() {
-            if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
+        if let Some(ts_idx) = shader.texture_set_ref.index()
+            && let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
                 // #4235 — slots 0-2 outrank an `NiTexturingProperty`'s base,
                 // normal-or-bump and glow (`claim_shader_texture`). Before,
                 // whichever property came first in the chain won, so a
@@ -558,8 +553,8 @@ fn apply_pp_lighting_property(
                 // the normal/height pair could come from different
                 // sources).
                 let mut shader_parallax_displaced_legacy = false;
-                if parallax_authored {
-                    if let Some(px) = tex_set.textures.get(3) {
+                if parallax_authored
+                    && let Some(px) = tex_set.textures.get(3) {
                         let px = intern_texture_path(pool, px);
                         if info.texturing_property_roles & TEXTURING_PARALLAX != 0
                             && px.is_some()
@@ -571,25 +566,21 @@ fn apply_pp_lighting_property(
                             info.parallax_map = px;
                         }
                     }
-                }
                 parallax_displaced_legacy |= shader_parallax_displaced_legacy;
                 // Environment cubemap is textures[4]. Glass bottles,
                 // power armor, polished metal — pre-#452 the path was
                 // read and thrown away. env_map_scale was captured
                 // but had no texture to route to.
-                if info.env_map.is_none() {
-                    if let Some(env) = tex_set.textures.get(4) {
+                if info.env_map.is_none()
+                    && let Some(env) = tex_set.textures.get(4) {
                         info.env_map = intern_texture_path(pool, env);
                     }
-                }
                 // Environment-reflection mask is textures[5]. #452.
-                if info.env_mask.is_none() {
-                    if let Some(mask) = tex_set.textures.get(5) {
+                if info.env_mask.is_none()
+                    && let Some(mask) = tex_set.textures.get(5) {
                         info.env_mask = intern_texture_path(pool, mask);
                     }
-                }
             }
-        }
         // `BSShaderPPLightingProperty.parallax_max_passes` /
         // `parallax_scale` (parsed since BSVER >= 24 per
         // `BSShaderPPLightingProperty::parse` in
@@ -1122,12 +1113,11 @@ fn apply_vertex_color_property(scene: &NifScene, idx: usize, info: &mut Material
     // `has_bs_lighting_shader` is set ONLY by the actual Skyrim+ arm
     // #1208 meant to protect, so a `NiMaterialProperty` anywhere in
     // the chain no longer suppresses this write.
-    if !info.has_bs_lighting_shader {
-        if let Some(vcol) = scene.get_as::<NiVertexColorProperty>(idx) {
+    if !info.has_bs_lighting_shader
+        && let Some(vcol) = scene.get_as::<NiVertexColorProperty>(idx) {
             info.vertex_color_mode =
                 VertexColorMode::from_property(vcol.vertex_mode, vcol.lighting_mode);
         }
-    }
 }
 
 #[cfg(test)]

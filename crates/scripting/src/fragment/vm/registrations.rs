@@ -1,5 +1,5 @@
-//! Update, custom-event, distance and hit registrations: the run-time
-//! registration and its ahead-of-time check (#5800).
+//! Update, custom-event, distance, hit and menu open / close registrations: the
+//! run-time registration and its ahead-of-time check (#5800).
 
 use super::*;
 
@@ -21,6 +21,7 @@ pub(super) fn registration_handler(name: &str) -> Option<&'static str> {
     crate::fragment::UpdateRequest::handler(name)
         .or_else(|| crate::fragment::DistanceRequest::handler(name))
         .or_else(|| crate::fragment::HitRequest::handler(name))
+        .or_else(|| crate::fragment::MenuEventRequest::handler(name))
         .or_else(|| crate::fragment::EventRequest::is_call(name).then_some(""))
 }
 
@@ -47,6 +48,12 @@ pub(super) fn target_of_aggressor(value: &Value) -> Option<crate::fragment::Dist
 /// An update or timer call's arguments: numbers, at most as many as it
 /// takes, and the interval when it starts one.
 pub(super) fn update_args_ok(name: &str, args: &[Arg]) -> bool {
+    // A menu open / close registration: the menu's name (a string), or nothing for the
+    // unregister-all call.
+    if crate::fragment::MenuEventRequest::handler(name).is_some() {
+        let text = |arg: &Arg| matches!(arg, Arg::Literal(Expr::StringLit(_)) | Arg::Kind(Kind::Str));
+        return args.len() == crate::fragment::MenuEventRequest::arity(name) && args.iter().all(text);
+    }
     // A hit registration: the target (a reference, the player or an alias), an
     // aggressor filter that is `None`, the player or an alias, `None` source and
     // projectile filters, four numbers and the `abMatch` Bool.
@@ -93,6 +100,10 @@ impl Vm<'_> {
         }
         if crate::fragment::DistanceRequest::handler(name).is_some() {
             return self.distance_registration(frame, Some(quest), name, args);
+        }
+        if crate::fragment::MenuEventRequest::handler(name).is_some() {
+            // The check declines it (only the registering script hears the event).
+            return stop(format!("{name} on another quest"));
         }
         let mut numbers = Vec::with_capacity(args.len());
         for arg in args {
@@ -228,6 +239,23 @@ impl Vm<'_> {
         for script in scripts {
             self.deferred.distance_requests.push((owner, script, request));
         }
+        Ok(())
+    }
+
+    /// `RegisterForMenuOpenCloseEvent` / `UnregisterForMenuOpenCloseEvent` /
+    /// `UnregisterForAllMenuOpenCloseEvents` on the script itself (see
+    /// [`crate::fragment::MenuEventRegistrations`]).
+    pub(super) fn menu_event_registration(&mut self, frame: &mut Frame, name: &str, args: &[CallArg]) -> Run<()> {
+        let values = self.eval_args(frame, args)?;
+        let menu = match values.first() {
+            Some(Value::Str(menu)) => Some(menu.clone()),
+            _ => None,
+        };
+        let Some(request) = crate::fragment::MenuEventRequest::of_call(name, menu) else {
+            return stop(format!("{name} without a menu name"));
+        };
+        let script = frame.script.name.node.0.clone();
+        self.deferred.menu_event_requests.push((frame.owner.0, script, request));
         Ok(())
     }
 

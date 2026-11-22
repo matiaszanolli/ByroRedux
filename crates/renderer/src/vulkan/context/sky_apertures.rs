@@ -1,5 +1,5 @@
 //! Sky-aperture selection for the composite pass (VLM-INT-005): which marked openings reach the GPU
-//! when a cell carries more than the composite UBO holds, and the once-per-episode log when some do not.
+//! when a cell carries more than the composite UBO holds, and the once-per-cell log when some do not.
 //! Split out of `frame_params.rs` (#5089's file budget) with its tests.
 use super::super::composite::CompositeSkyAperture;
 
@@ -50,20 +50,32 @@ impl<'a> NearestApertures<'a> {
     }
 }
 
-/// The dropped-aperture count last reported, so a cell that stays over the cap logs once instead of every
-/// frame. Re-armed when the count falls back to zero or changes (a different cell, a different overflow).
-static LAST_REPORTED_APERTURE_OVERFLOW: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
-/// Whether an overflow of `dropped` apertures starts a new logging episode against `last_reported`,
-/// which this updates. A zero re-arms the latch; the same non-zero count is the same episode.
-fn overflow_episode_starts(last_reported: &std::sync::atomic::AtomicUsize, dropped: usize) -> bool {
-    last_reported.swap(dropped, std::sync::atomic::Ordering::Relaxed) != dropped && dropped > 0
+/// Per-renderer state keyed by the current cell root, not the number dropped.
+/// A root changes on a cell load; `None` also separates interior visits across
+/// exterior or loading frames. Count changes within one cell do not re-log.
+#[derive(Default)]
+pub(super) struct ApertureOverflowLog {
+    cell: Option<u32>,
+    reported: bool,
 }
 
-/// Log the overflow once per episode (VLM-INT-005). `dropped == 0` re-arms the latch.
-pub(super) fn note_sky_aperture_overflow(dropped: usize, kept: usize) {
-    if overflow_episode_starts(&LAST_REPORTED_APERTURE_OVERFLOW, dropped) {
+impl ApertureOverflowLog {
+    fn should_report(&mut self, cell: Option<u32>, dropped: usize) -> bool {
+        if self.cell != cell {
+            self.cell = cell;
+            self.reported = false;
+        }
+        if dropped == 0 || self.reported {
+            return false;
+        }
+        self.reported = true;
+        true
+    }
+
+    pub(super) fn note(&mut self, cell: Option<u32>, dropped: usize, kept: usize) {
+        if !self.should_report(cell, dropped) {
+            return;
+        }
         log::warn!(
             "sky apertures over capacity: {dropped} marked opening(s) dropped, kept the {kept} nearest \
              the camera (MAX_COMPOSITE_SKY_APERTURES, VLM-INT-005)"
@@ -74,7 +86,6 @@ pub(super) fn note_sky_aperture_overflow(dropped: usize, kept: usize) {
 #[cfg(test)]
 mod sky_aperture_overflow_tests {
         use super::*;
-    use std::sync::atomic::AtomicUsize;
 
     /// An aperture tagged by `id` in a field the selection never touches.
     fn tagged(distance_sq: f32, id: f32) -> (f32, CompositeSkyAperture) {
@@ -143,16 +154,17 @@ mod sky_aperture_overflow_tests {
         }
     }
 
-    /// VLM-INT-005: logged once per overflow episode, re-armed when the cell is back under the cap.
+    /// A new cell with the same overflow logs, while changes inside one cell do not.
     #[test]
-    fn an_overflow_logs_once_per_episode_and_rearms() {
-        let last = AtomicUsize::new(0);
-        assert!(!overflow_episode_starts(&last, 0), "no overflow, no log");
-        assert!(overflow_episode_starts(&last, 7), "the first frame over the cap logs");
-        assert!(!overflow_episode_starts(&last, 7), "the same overflow does not log every frame");
-        assert!(!overflow_episode_starts(&last, 7));
-        assert!(overflow_episode_starts(&last, 9), "a different overflow (another cell) logs again");
-        assert!(!overflow_episode_starts(&last, 0), "back under the cap");
-        assert!(overflow_episode_starts(&last, 9), "and a later overflow logs again");
+    fn an_overflow_logs_once_per_cell_even_when_counts_match() {
+        let mut log = ApertureOverflowLog::default();
+        assert!(!log.should_report(Some(1), 0));
+        assert!(log.should_report(Some(1), 7));
+        assert!(!log.should_report(Some(1), 9));
+        assert!(!log.should_report(Some(1), 0));
+        assert!(!log.should_report(Some(1), 7));
+        assert!(log.should_report(Some(2), 7));
+        assert!(!log.should_report(None, 0));
+        assert!(log.should_report(Some(2), 7));
     }
 }

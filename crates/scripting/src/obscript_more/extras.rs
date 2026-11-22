@@ -225,14 +225,15 @@ fn get_casino_winnings_level(world: &World, _fallout: bool, _cmd: u16, args: &[O
 
 // The blackjack, roulette and slot-machine screens: asked of the UI that shows them.
 fn cmd_1254(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    let menu = match cmd {
-        0x1254 => "blackjack",
-        0x1256 => "roulette",
-        _ => "slot machine",
+    // GECK *MenuTypes*: 1081 Blackjack, 1082 Roulette, 1080 Slot Machine.
+    let (menu, code) = match cmd {
+        0x1254 => ("blackjack", 1081),
+        0x1256 => ("roulette", 1082),
+        _ => ("slot machine", 1080),
     };
     let casino = form_arg(args, 0).unwrap_or(0);
     if let Some(mut menus) = world.try_resource_mut::<PendingMenus>() {
-        menus.0.push(MenuRequest { menu, form: casino });
+        menus.0.push(MenuRequest::coded(menu, Some(code), casino));
     }
     done(format!("Show{menu}Menu {casino:08X}"))
 }
@@ -451,16 +452,14 @@ fn trap_update(world: &World, args: &[ObScriptValue], ctx: &Context) -> Action {
         }
         let level = world.get::<byroredux_core::character::CharacterLevel>(contact.actor).map_or(0.0, |level| f32::from(level.level));
         let total = damage + levelled * level;
-        if total > 0.0 {
-            if let Some(mut pending) = world.try_resource_mut::<crate::PendingTrapHits>() {
-                pending.0.push(crate::TrapHit { target: contact.actor, trap, damage: total, sneak_attack: false });
+        if total > 0.0
+            && let Some(mut pending) = world.try_resource_mut::<crate::PendingTrapHits>() {
+                pending.0.push(crate::TrapHit { target: contact.actor, trap, damage: total, sneak_attack: false, arrow: false, ignores_resistance: false });
             }
-        }
-        if push > 0.0 {
-            if let Some(mut requests) = world.query_mut::<super::PushActorRequest>() {
+        if push > 0.0
+            && let Some(mut requests) = world.query_mut::<super::PushActorRequest>() {
                 requests.insert(contact.actor, super::PushActorRequest { from: trap, force: push });
             }
-        }
     }
     if let Some(mut seen) = world.try_resource_mut::<super::ObTrapContacts>() {
         seen.0.insert(trap_form, touching);

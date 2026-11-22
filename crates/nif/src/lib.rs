@@ -431,9 +431,9 @@ fn dispatch_blocks(
         let start_pos = stream.position();
 
         // Skip animation blocks when geometry-only parsing is requested.
-        if options.skip_animation && is_animation_block(type_name) {
-            if let Some(size) = block_size {
-                if stream.skip(size as u64).is_ok() {
+        if options.skip_animation && is_animation_block(type_name)
+            && let Some(size) = block_size
+                && stream.skip(size as u64).is_ok() {
                     blocks.push(Box::new(blocks::NiUnknown {
                         type_name: Arc::clone(&type_name_arc),
                         data: Vec::new(), // Don't store data — just a placeholder
@@ -448,9 +448,7 @@ fn dispatch_blocks(
                 // a few lines down) handles this exact truncated-block
                 // case uniformly, whether or not `skip_animation` was
                 // requested.
-            }
             // No block_size (Oblivion) — must parse, can't skip
-        }
 
         // #1261 — pass the already-built `type_name_arc` so the unknown-
         // block fallback inside `parse_block_inner` refcount-clones it
@@ -532,8 +530,8 @@ fn dispatch_blocks(
                     // without this hook the first symptom is a much
                     // later block surfacing garbage enum values.
                     #[cfg(debug_assertions)]
-                    if let Some(prior) = parsed_size_cache.get(type_name) {
-                        if let Some(msg) = drift_warning(type_name, final_consumed, prior) {
+                    if let Some(prior) = parsed_size_cache.get(type_name)
+                        && let Some(msg) = drift_warning(type_name, final_consumed, prior) {
                             log::warn!(
                                 "Stream drift suspect: block {} '{}' (offset {}) {} \
                                  — a previous block likely under- or over-consumed; \
@@ -545,7 +543,6 @@ fn dispatch_blocks(
                                 msg
                             );
                         }
-                    }
                     // #832 — same allocation-on-every-block bug as the
                     // drifted_by_type bump above. This site fires on
                     // EVERY successful parse on Oblivion-no-block-sizes
@@ -650,8 +647,8 @@ fn dispatch_blocks(
                 //    for rare types that only appear once per NIF. #224.
                 //
                 // 3. Truncation: discard remaining blocks.
-                if let Some(sizes) = parsed_size_cache.get(type_name) {
-                    if !sizes.is_empty() {
+                if let Some(sizes) = parsed_size_cache.get(type_name)
+                    && !sizes.is_empty() {
                         let mut sorted = sizes.clone();
                         sorted.sort_unstable();
                         let median_size = sorted[sorted.len() / 2];
@@ -716,7 +713,6 @@ fn dispatch_blocks(
                             }
                         }
                     }
-                }
                 if let Some(&skip_size) = options.oblivion_skip_sizes.get(type_name) {
                     // Rewind whatever the failed parse consumed, then skip
                     // the full registered size. `set_position` is safe; the

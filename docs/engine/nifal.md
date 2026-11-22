@@ -909,6 +909,21 @@ lands; the soft variants and `TakeSmaller` have no local source at all.
 Visible effect until then: ship engine flames, weapon projectile glows,
 space-mine glows and the New Atlantis MAST waterfall.
 
+**Skyrim MultiLayerParallax (kind 11) `inner_layer_thickness` — saturated, not
+mapped (#7024).** `nif.xml` defines the field as a *distance* ("how far from the
+surface the inner layer appears to be", authored 5..500; all 662 vanilla kind-11
+meshes author 5..500, median 22.9), but the shader consumes it as a 0..1 weight
+(`clamp(multiLayerInnerThickness, 0, 1)` in `triangle.frag`: the inner-layer
+blend weight and the refraction UV offset). For vanilla content the clamp is
+therefore always exactly 1.0 — 22.9 and 500 shade identically, the blend weight
+is the inner layer's own alpha, and only `refraction_scale` varies the primary
+path. **Not guessed:** nifly and OpenMW parse the field and never consume it, so
+no shipped reference pins a transfer function. The secondary-ray path
+(`ray_hit.glsl`) applies the inner layer without the refraction UV offset the
+primary path uses (≤ ~0.066 × the tangent-space view at ice values), also
+undocumented until now. If a transfer function is ever measured, resolve it to a
+weight at `translate_material`, not in the shader.
+
 ### Synthetic static height — opt-in role written AFTER the boundary (prototype, #6817)
 
 `static_height::bind_synthetic_height` (51ce1c2f9, 997dc05cd) is the one place a

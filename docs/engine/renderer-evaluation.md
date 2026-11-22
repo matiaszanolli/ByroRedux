@@ -211,23 +211,24 @@ V9 (#6605): `renderer-stepped` is the RLT-REF-017 mode.
 
 A14 (RLT-SHD-010, `penumbra-moving`) and A3 (RLT-SHD-002, a `pan` of the
 `penumbra` rung) are temporal gates. They compare the engine with itself,
-taking `final` after TAA (`--linear-capture-tap post-taa`) along a
-120-frame path that ends in a hold (`--bench-camera-length`):
+along a 120-frame path that ends in a hold (`--bench-camera-length`).
+A14 captures `final` after TAA. A3 captures `direct_only` before TAA:
 
 - **Samples.** Every 16 frames from frame 32 (`--linear-capture-at`), then
   1, 4 and 16 frames after the stop.
 - **Parked reference.** Each sample is compared with the same path frozen
   at that frame (`--bench-camera-freeze-at`) and converged for 256 frames.
-- **Floor.** For a sample during the motion: the same single frame of a
-  run held at that frame's pose from frame 0, against the same parked
-  reference. The run's temporal accumulators are still filling at frame
-  32, so this floor carries the cold start as well as sampling noise. The
-  excess over it is what the motion adds. After the stop: the post-stop
-  frames of a run parked at the stop pose from frame 0.
+- **Held control.** Compare each moving sample with a run held at the
+  same pose from frame 0. Its error against the same parked reference
+  accounts for cold start and sampling noise. For A3, post-stop controls
+  use only the elapsed frames since the stop.
+- **A3 limits.** Gate on the worst excess over the control across both
+  seeds during the pan (2%) and at frame +16 (1%). The measured noise
+  floor is the largest change in excess between seeds at matching frames.
 
 `SHD-005` publishes `direct_only`'s luminance integral on the `restir-clamp`
-rung with the reservoir cap on and off. RLT-SHD-006 re-runs A3 with
-`--rt-test-taa-gamma 1.0` beside the shipped 1.5.
+rung with the reservoir cap on and off. RLT-SHD-006 compares the `final`
+pan with `--rt-test-taa-gamma 1.0` beside the shipped 1.5.
 
 Game content is held by declared changes, not a reference (RLT-CNT).
 `scripts/m-light-baselines.sh` records, per benchmark scene, the settled

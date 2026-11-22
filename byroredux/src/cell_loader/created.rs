@@ -256,14 +256,13 @@ pub(crate) fn unspawned_in(world: &World, cell: &CreatedCell) -> Vec<PlacedRef> 
         .into_iter()
         .filter(|form_id| !live.contains(form_id))
         .collect();
-    if !deleted.is_empty() {
-        if let Some(mut created) = world.try_resource_mut::<CreatedReferences>() {
+    if !deleted.is_empty()
+        && let Some(mut created) = world.try_resource_mut::<CreatedReferences>() {
             for &form_id in &deleted {
                 created.mark_deleted(form_id);
                 log::info!("Deleted created reference {form_id:08X} (DeleteWhenAble)");
             }
         }
-    }
     wanted
         .into_iter()
         .filter(|placed| !live.contains(&placed.form_id) && !deleted.contains(&placed.form_id))

@@ -24,8 +24,6 @@ pub(crate) struct UiState {
     pub(crate) scaleform_hud: Option<crate::scaleform_hud::ScaleformHudDriver>,
     /// Window-system state used to translate events into Scaleform space.
     pub(crate) input_state: crate::ui_input::UiInputState,
-    /// Texture handle for the UI overlay (registered in the texture registry).
-    pub(crate) texture_handle: Option<u32>,
     /// `(menu, host method)` pairs already reported by the per-frame Scaleform
     /// drain, so repeated calls report once without suppressing the same
     /// missing handler when a second menu needs it (#2714 / #3155). Bounded by
@@ -36,26 +34,26 @@ pub(crate) struct UiState {
     pub(crate) reported_host_methods: std::collections::HashSet<(String, String)>,
     /// One-shot latch for the `reported_host_methods` cap warning.
     pub(crate) reported_host_methods_capped: bool,
-    /// Last `UiManager::dropped_host_calls()` reading the per-frame Scaleform
-    /// drain observed (#2969). `drain_calls`' contract is that a full batch
-    /// must be read together with the drop counter — the batch may not be
-    /// contiguous — and nothing outside `crates/ui` read it. Latched rather
-    /// than compared against zero so the warning fires on each *increase*,
-    /// not every frame after the first eviction; a decrease means a new menu
-    /// brought a fresh bridge, not that calls were un-dropped.
-    ///
-    /// #3772 — this latches a bare number, not the *identity* of the bridge
-    /// that produced it, so a swap landing on a frame where the new bridge
-    /// has already evicted N < the old latch reads as "un-dropped" (a
-    /// decrease) instead of "different menu" — the new menu's first N drops
-    /// are silently absorbed. [`Self::dropped_host_calls_menu`] pairs the
-    /// latch with the menu name that produced it so a swap is an *explicit*
-    /// reset (`app_frame.rs`), not an inferred one.
-    pub(crate) dropped_host_calls: u64,
-    /// The menu name [`Self::dropped_host_calls`] was last latched
-    /// against. `None` before the first Scaleform drain. See
-    /// `dropped_host_calls`'s doc (#3772).
-    pub(crate) dropped_host_calls_menu: Option<String>,
+    /// M48 GUI-OPS-002 — per open movie (by `menu_name`), its host calls by behaviour class since
+    /// it opened, keyed to the layer (`menu#id`) so a replaced movie starts a fresh report.
+    pub(crate) host_reports: std::collections::HashMap<String, (String, byroredux_ui::HostCallReport)>,
+    /// M48 GUI-PAGE-004 — the conversation on the game's own dialogue movie (S1), when open.
+    pub(crate) dialogue_movie: Option<crate::scaleform_dialogue::DialogueMovie>,
+    /// M48 Q1 — the script message box on the game's own movie (S1, Skyrim), when open.
+    pub(crate) message_box_movie: Option<crate::scaleform_messagebox::MessageBoxMovie>,
+    /// Per movie layer a driver serves (the dialogue and message box movies), the host calls the
+    /// frame's drain took, for that driver's next step. A layer is a key while its driver is open.
+    pub(crate) movie_calls: std::collections::HashMap<String, Vec<byroredux_ui::ScaleformHostCall>>,
+    /// M48 Q1 — the menus open on the game's own MenuXml documents (S2, FO3 / FNV), in opening
+    /// order (the last on top): the dialogue document, a script message box.
+    pub(crate) menu_documents: Vec<crate::menuxml_document::MenuDocument>,
+    /// Per open movie (by `menu_name`), the last `dropped_host_calls()` reading the per-frame
+    /// Scaleform drain observed (#2969), paired with the layer it came from (`menu#id`, #3772):
+    /// `drain_calls`' contract is that a full batch must be read together with the drop counter
+    /// — the batch may not be contiguous. Latched rather than compared against zero so the warning
+    /// fires on each *increase*; a menu replaced under the same name is a new layer id, so its
+    /// counter resets explicitly instead of reading as "un-dropped".
+    pub(crate) dropped_host_calls: std::collections::HashMap<String, (u64, String)>,
     /// #4612 — the always-on HUD's objective list, rebuilt only when quest
     /// state changes; lent to each frame's `PanelSnapshot`.
     pub(crate) objective_hud_cache: crate::objectives::ObjectiveHudCache,

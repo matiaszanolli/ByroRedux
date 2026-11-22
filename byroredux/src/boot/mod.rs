@@ -259,6 +259,10 @@ pub(crate) fn run() -> Result<()> {
     // `std::env::args()` and losing the synthesized flags.
     let args: Vec<String> =
         expand_game_profile_args(expand_boot_request(std::env::args().collect())?);
+    // LMC Phase 1 (#6670) — activate the plugin profile (`--master`… `--esm`) before anything reads it: masters
+    // hoisted ahead of their dependents, a plugin with a missing master left out with its dependents, both reported.
+    // The activated `--master` list replaces the given one, so every reader below sees one load order.
+    let args = crate::plugin_activation::activate_plugin_args(args)?;
     crate::cli_args::set_effective_args(args.clone());
     let debug_mode = args.iter().any(|a| a == "--debug");
 
@@ -429,13 +433,20 @@ pub(crate) fn run() -> Result<()> {
 
     // Set up logging. --debug forces debug level.
     if debug_mode {
-        std::env::set_var(
-            "RUST_LOG",
-            std::env::var("RUST_LOG").unwrap_or("debug".into()),
-        );
+        // SAFETY: still on the main thread in `boot::run`'s argv handling, before the
+        // logger is installed and before this process starts any other thread, so
+        // nothing can read the environment concurrently with this write.
+        unsafe {
+            std::env::set_var(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("debug".into()),
+            )
+        };
     }
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     init_tracing();
+    // The plugin profile was activated before the logger existed; report it now.
+    crate::plugin_activation::log_report();
 
     if let Some(selection) = bench_selection {
         let camera = selection
@@ -522,6 +533,20 @@ pub(crate) fn run() -> Result<()> {
             .chain(std::iter::once(esm_path.as_str()))
             .collect();
         return crate::list_cells::run(&plugin_paths, filter);
+    }
+
+    // --plugin-report [FORMID] [fields]: what activation did to the plugin profile and what the fold did with the
+    // forms more than one plugin carries (or one form's carriers, winner and changed sub-records), then exit. The
+    // console's `plugins.activation` / `plugins.conflicts` without a window (LMC-REC-007, #6670).
+    if let Some(idx) = args.iter().position(|a| a == "--plugin-report") {
+        let esm_path = parse_string_arg(&args, "--esm").ok_or_else(|| {
+            anyhow::anyhow!("--plugin-report requires --esm <PATH> or --game <KEY> to name a plugin")
+        })?;
+        let plugin_paths: Vec<String> = crate::cli_args::parse_all_string_args(&args, "--master")
+            .into_iter()
+            .chain(std::iter::once(esm_path))
+            .collect();
+        return crate::commands::plugins::run_report(&plugin_paths, &args[idx + 1..]);
     }
 
     // Headless --cmd mode: execute command and exit without creating a window.

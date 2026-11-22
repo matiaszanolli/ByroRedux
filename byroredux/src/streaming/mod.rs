@@ -194,6 +194,9 @@ pub(crate) struct StreamingCellApplyJob {
     pub(crate) coord: (i32, i32),
     pub(crate) generation: u64,
     pub(crate) phase: StreamingCellApplyPhase,
+    /// #6106 — scene-geometry uploads the pool refused during this cell's own apply work,
+    /// accumulated across its slices (not other systems' uploads between them).
+    pub(crate) geometry_refusals: u64,
 }
 
 // One instance at most (the single `active_apply` slot), so the size gap
@@ -214,6 +217,7 @@ impl StreamingCellApplyJob {
             coord: (payload.gx, payload.gy),
             generation: payload.generation,
             phase: StreamingCellApplyPhase::FinishImports(payload.parsed.into_iter()),
+            geometry_refusals: 0,
         }
     }
 }
@@ -509,6 +513,8 @@ pub struct WorldStreamingState {
     /// live until this completes, suppressing duplicate requests and making a
     /// boundary-crossing removal an immediate cancellation signal.
     pub(crate) active_apply: Option<StreamingCellApplyJob>,
+    /// #6106 — full-detail cells that came in with refused geometry, and their retry progress.
+    pub(crate) refusal_retry: RefusalRetryState,
     /// #5715 — parsed imports of stale-dropped payloads and cancelled applies
     /// still owed to the `NifImportRegistry` (#5512's residency premise for the
     /// worker's skip filters). Finished one per frame-budget unit by
@@ -619,6 +625,7 @@ impl WorldStreamingState {
             cancel,
             payload_rx,
             active_apply: None,
+            refusal_retry: RefusalRetryState::default(),
             stale_salvage: std::collections::VecDeque::new(),
         }
     }
@@ -1070,6 +1077,8 @@ pub fn classify_payload(
 // historical `crate::streaming::*` path — `streaming_tests.rs`'s import
 // list and the App driver both consume them unchanged.
 mod pre_parse;
+mod refusal_retry;
+pub(crate) use refusal_retry::{PoolState, RefusalRetry, RefusalRetryState};
 mod telemetry;
 
 pub use pre_parse::*;

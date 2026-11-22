@@ -275,11 +275,9 @@ pub(crate) fn resolve_default_weather<'a>(
         .iter()
         .filter(|w| w.chance >= 0)
         .max_by_key(|w| w.chance)
-    {
-        if let Some(wthr) = weathers.get(&best.weather_form_id) {
+        && let Some(wthr) = weathers.get(&best.weather_form_id) {
             return Some((wthr, best.chance));
         }
-    }
     if let Some((wthr, chance)) = climate
         .seasonal_weathers
         .iter()
@@ -296,8 +294,8 @@ pub(crate) fn resolve_default_weather<'a>(
         );
         return Some((wthr, chance));
     }
-    if !climate.seasonal_weathers.is_empty() {
-        if let Some(wthr) =
+    if !climate.seasonal_weathers.is_empty()
+        && let Some(wthr) =
             byroredux_plugin::esm::records::weather::default_weather_by_edid(weathers)
         {
             log::info!(
@@ -311,7 +309,6 @@ pub(crate) fn resolve_default_weather<'a>(
             );
             return Some((wthr, i32::MAX));
         }
-    }
     None
 }
 

@@ -157,6 +157,7 @@ layout(std430, set = 0, binding = 16) readonly buffer LocalFireBricks {
 // 17: the species phase lobes tabulated over the scattering angle
 // (`combustion_phase_bake.comp`): row 0 soot, row 1 steam, x/y/z = octave 0/1/2.
 layout(set = 0, binding = 17) uniform sampler2D combustionPhaseTable;
+layout(set = 0, binding = 20) uniform sampler2D farSunOcclusionTex;
 
 // The octave lobes of the medium at table coordinate `u`
 // (`combustionPhaseTableCoord`): one fetch per species, blended by the steam
@@ -692,16 +693,18 @@ vec3 weather_precipitation(vec3 color, vec2 uv) {
     // authored wind direction, while a perpendicular term gives the slanted
     // fall seen in gusts. It is a presentation overlay for distant rain;
     // authored/local particle emitters remain responsible for close impacts.
-    vec2 rain_grid = uv * vec2(150.0, 90.0);
+    // Move the whole grid so streaks cross cell boundaries continuously.
+    vec2 rain_grid = uv * vec2(150.0, 90.0)
+        - vec2(wind.x * time * (0.11 + wind_speed * 0.23),
+               time * (0.42 + wind_speed * 0.8));
     vec2 rain_cell = floor(rain_grid);
     vec2 rain_local = fract(rain_grid);
     float rain_seed = weather_hash21(rain_cell);
-    vec2 rain_drift = wind * time * (0.11 + wind_speed * 0.23);
-    float rain_y = fract(rain_seed + time * (0.42 + wind_speed * 0.8));
-    float rain_x = fract(rain_seed * 7.13 + rain_drift.x + rain_local.y * 0.18);
-    float rain_line = 1.0 - smoothstep(0.012, 0.0,
+    float rain_x = fract(rain_seed * 7.13 + rain_local.y * 0.18);
+    float rain_line = 1.0 - smoothstep(0.0, 0.012,
         abs(rain_local.x - rain_x + wind.x * 0.018));
-    float rain_mask = smoothstep(0.52, 0.96, rain_seed);
+    float rain_mask = smoothstep(0.52, 0.96, rain_seed)
+        * (1.0 - smoothstep(0.30, 0.48, abs(rain_local.y - 0.5)));
     float rain = rain_line * rain_mask * params.weather_params.x;
 
     // Snow uses larger, slower, round flakes and only a small wind-driven
@@ -1005,7 +1008,21 @@ void main() {
             && debugMode != RENDER_DEBUG_COMPOSITE_TERM
             && debugMode != RENDER_DEBUG_VOLUMETRIC_TERM
             && debugMode != RENDER_DEBUG_VOLUMETRIC_RADIANCE);
+    if (params.depth_params.x > 0.5 && params.sun_dir.w > 0.0
+        && (!rawDebug || debugMode == RENDER_DEBUG_FILTERED_DIRECT)) {
+        vec3 occludedSun = texelFetch(farSunOcclusionTex, ivec2(gl_FragCoord.xy), 0).rgb;
+        direct = max(direct - occludedSun, vec3(0.0));
+    }
     if (rawDebug) {
+        if (debugMode == RENDER_DEBUG_SHADOW_FILTER_RADIUS) {
+            float code = params.caustic_flags.y > 0.5
+                ? texelFetch(shadowCorrectionTex, ivec2(gl_FragCoord.xy), 0).a
+                : 0.0;
+            float radius = clamp(code - 1.0, 0.0, 1.0);
+            outColor = code >= 1.0 ? vec4(radius, 0.0, 1.0 - radius, 1.0)
+                                   : vec4(0.0, 0.0, 0.0, 1.0);
+            return;
+        }
         // RLT-SHD-009 — the filtered-direct oracle is the one raw view that
         // keeps the shadow filter's correction applied above.
         outColor = debugMode == RENDER_DEBUG_FILTERED_DIRECT

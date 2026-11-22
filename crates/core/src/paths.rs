@@ -20,6 +20,77 @@ use std::path::{Path, PathBuf};
 /// Environment override for the parent of every cache this module resolves.
 pub const CACHE_DIR_ENV: &str = "BYRO_CACHE_DIR";
 
+/// Whether `name` is a single bare path component that `Path::join` keeps under its base: not
+/// empty, not `.` or `..`, and free of `\\`, `/` and `:`.
+///
+/// #5016 — checked by string, not `Path`, so the rule is the same on every host:
+/// `Path::is_absolute` is false on Windows for rooted-prefixless `\x` and prefixed-rootless
+/// `C:x`, yet `join` with either escapes the base, and on Linux `..\..\x` is one `Normal`
+/// component. A Windows file or directory name cannot contain `\`, `/` or `:`, so rejecting all
+/// three loses no real name. Shared by Steam's `installdir` check and the script path resolver
+/// (#7142), which had refused `..` but not a drive prefix.
+pub fn is_bare_component(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', ':'])
+}
+
+/// Prepend `meshes\` to a NIF path when the input doesn't already
+/// start with that segment (case-insensitive, accepts either
+/// separator). `MODL` sub-records on RACE / NPC_ / ARMO records are
+/// authored relative to the `meshes\` root; the BSA layer stores the
+/// full prefix. Allocation only fires when the prefix is missing —
+/// already-prefixed paths borrow. The single home of "prepend `meshes\`
+/// unless present" (#6956): [`archive_mesh_path`] and
+/// [`canonical_mesh_key`] are its owned forms. #7145 — moved here from the
+/// binary's `asset_provider/archive.rs` (which re-exports all three) so the
+/// renderer's mesh cache keys through the same rule, `geometries\` exemption
+/// included, instead of a copy of its own.
+pub fn normalize_mesh_path(path: &str) -> std::borrow::Cow<'_, str> {
+    // #1292 — Starfield content-addressed BSGeometry external `.mesh`
+    // companion files live at `geometries\<hash>.mesh` (NO `meshes\`
+    // prefix). The importer at `crates/nif/src/import/mesh/bs_geometry.rs`
+    // composes the canonical path before calling the resolver; without
+    // this gate the normaliser silently prepended `meshes\` and turned
+    // every Starfield poster / architecture / set-dressing lookup into
+    // a guaranteed miss → 99.7% spawn-rate failure on Cydonia.
+    if starts_with_root(path, "meshes") || starts_with_root(path, "geometries") {
+        return std::borrow::Cow::Borrowed(path);
+    }
+    std::borrow::Cow::Owned(format!(r"meshes\{}", path))
+}
+
+/// Whether `path` starts with the folder `root` and a separator (`\` or `/`), `root`'s case
+/// ignored. Compared as bytes, so a name whose cut would land inside a multi-byte character
+/// cannot panic (#3391). The root test [`normalize_mesh_path`] and the Starfield `geometries\`
+/// composer in `crates/nif` share (#7145).
+pub fn starts_with_root(path: &str, root: &str) -> bool {
+    let (bytes, root) = (path.as_bytes(), root.as_bytes());
+    bytes.len() > root.len()
+        && bytes[..root.len()].eq_ignore_ascii_case(root)
+        && matches!(bytes[root.len()], b'\\' | b'/')
+}
+
+/// `path` as an archive mesh key: leading separators trimmed, `/` turned into `\`, and
+/// `meshes\` prefixed per [`normalize_mesh_path`] (case kept).
+pub fn archive_mesh_path(path: &str) -> String {
+    let path = path.trim_start_matches(['\\', '/']).replace('/', "\\");
+    normalize_mesh_path(&path).into_owned()
+}
+
+/// The case fold every cache keyed by an archive path uses: Unicode lower-casing, as
+/// `byroredux_bsa::normalize_path` folds every archive key (#7168, #7180). An ASCII-only fold kept
+/// `Ä.nif` and `ä.nif` apart in a cache while the archives resolved both to one file, so it was
+/// read, parsed and uploaded twice. The two crates do not depend on each other; the binary pins
+/// that this and the archives' fold agree (through [`canonical_mesh_key`]).
+pub fn fold_case(path: &str) -> String {
+    path.to_lowercase()
+}
+
+/// [`archive_mesh_path`], case-folded ([`fold_case`]): the key a lookup table or cache shares
+/// between every producer of it.
+pub fn canonical_mesh_key(path: &str) -> String {
+    archive_mesh_path(&fold_case(path))
+}
+
 /// The directory holding the running executable, when it can be determined.
 pub fn exe_dir() -> Option<PathBuf> {
     std::env::current_exe()
@@ -72,6 +143,14 @@ fn cache_root_from(env: Option<OsString>, exe_dir: Option<PathBuf>) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #7168 — a mesh key folds case beyond ASCII, so two spellings of one archive file share it.
+    #[test]
+    fn mesh_keys_fold_unicode_case() {
+        assert_eq!(canonical_mesh_key("Ä.NIF"), "meshes\\ä.nif");
+        assert_eq!(canonical_mesh_key("Meshes/Ünter/Ä.nif"), canonical_mesh_key("meshes\\ünter\\ä.nif"));
+        assert_eq!(fold_case("ÄBC\\Straße.DDS"), "äbc\\straße.dds");
+    }
 
     #[test]
     fn shipped_assets_try_the_working_directory_before_the_executable() {

@@ -178,6 +178,40 @@ fn oblivion_16byte_acbs_parses_level_and_gender() {
     );
 }
 
+#[test]
+fn oblivion_actor_stats_and_pools_decode_their_distinct_layouts() {
+    let mut npc_data: Vec<u8> = (1..=21).collect();
+    npc_data.extend_from_slice(&450u16.to_le_bytes());
+    npc_data.extend_from_slice(&[0xaa, 0xbb]);
+    npc_data.extend_from_slice(&[10, 20, 30, 40, 50, 60, 70, 80]);
+    let mut acbs = 0x90u32.to_le_bytes().to_vec();
+    acbs.extend_from_slice(&120u16.to_le_bytes());
+    acbs.extend_from_slice(&130u16.to_le_bytes());
+    acbs.extend_from_slice(&5u16.to_le_bytes());
+    acbs.extend_from_slice(&(-2i16).to_le_bytes());
+    acbs.extend_from_slice(&3u16.to_le_bytes());
+    acbs.extend_from_slice(&40u16.to_le_bytes());
+    let npc = parse_npc(1, &[sub(b"DATA", &npc_data), sub(b"ACBS", &acbs), sub(b"AIDT", [5, 40, 70, 90, 0, 0, 0, 0, 0xFF, 0, 0, 0])], GameKind::Oblivion, &None);
+    let stats = npc.oblivion_npc_stats.unwrap();
+    assert_eq!(stats.skills, std::array::from_fn(|i| i as u8 + 1));
+    assert_eq!((stats.health, stats.attributes), (450, [10, 20, 30, 40, 50, 60, 70, 80]));
+    assert_eq!(npc.oblivion_pools, Some(OblivionActorPools { magicka: 120, fatigue: 130, calc_max: 40 }));
+    assert_eq!(npc.oblivion_ai_values, Some([5, 40, 70, 90]));
+    assert_eq!((npc.level, npc.calc_min), (-2, 3));
+    assert!(npc.oblivion_creature_stats.is_none());
+
+    let creature_data = [2, 65, 45, 35, 3, 0, 0x2c, 1, 0, 0, 0x34, 0x12, 1, 2, 3, 4, 5, 6, 7, 8];
+    let creature = parse_npc(2, &[sub(b"DATA", creature_data)], GameKind::Oblivion, &None);
+    let stats = creature.oblivion_creature_stats.unwrap();
+    assert_eq!((stats.creature_type, stats.combat, stats.magic, stats.stealth, stats.soul), (2, 65, 45, 35, 3));
+    assert_eq!((stats.health, stats.damage, stats.attributes), (300, 0x1234, [1, 2, 3, 4, 5, 6, 7, 8]));
+    assert!(creature.oblivion_npc_stats.is_none());
+    let short = parse_npc(3, &[sub(b"DATA", &npc_data[..32]), sub(b"ACBS", &acbs[..15])], GameKind::Oblivion, &None);
+    assert!(short.oblivion_npc_stats.is_none() && short.oblivion_pools.is_none());
+    let other = parse_npc(4, &[sub(b"DATA", &npc_data), sub(b"ACBS", &acbs)], GameKind::Fallout3NV, &None);
+    assert!(other.oblivion_npc_stats.is_none() && other.oblivion_pools.is_none());
+}
+
 /// The 16-byte ACBS layout is Oblivion-only: under FNV/FO3 the same
 /// payload must NOT be mis-decoded — that arm requires `>= 24` bytes,
 /// so a stray 16-byte ACBS is ignored and the defaults stand. Guards
@@ -807,6 +841,23 @@ fn npc_fo4_decodes_prps_pairs_and_dnam_baked_stats() {
     assert_eq!(n.perks, vec![(0x1_D245, 1), (0x1_D246, 3)]);
 }
 
+/// FO76 and Starfield `PRPS` entries carry a Curve Table FormID after the
+/// value (12 bytes, xEdit `wbObjectProperty` `wbFromVersion(152)`); the
+/// second entry must not start inside the first's curve word (#7119).
+#[test]
+fn npc_fo76_and_starfield_prps_entries_are_twelve_bytes() {
+    let mut prps = Vec::new();
+    for (avif, value, curve) in [(0x2A0u32, 7.0f32, 0u32), (0x2A6, 5.0, 0x008F_5882)] {
+        prps.extend_from_slice(&avif.to_le_bytes());
+        prps.extend_from_slice(&value.to_le_bytes());
+        prps.extend_from_slice(&curve.to_le_bytes());
+    }
+    for game in [GameKind::Fallout76, GameKind::Starfield] {
+        let n = parse_npc(0x611, &[sub(b"PRPS", &prps)], game, &None);
+        assert_eq!(n.actor_value_props, vec![(0x2A0, 7.0), (0x2A6, 5.0)], "{game:?}");
+    }
+}
+
 /// The FO4 AV-property arms are gated on `uses_actor_value_properties`
 /// (FO4+ only). An FNV NPC carrying a stray `DNAM` must NOT be read as
 /// FO4 calculated stats — FNV `NPC_` `DNAM` is a different layout, and
@@ -1188,10 +1239,10 @@ fn npc_fo4_face_morph_form_ids_remap_to_global_space() {
 
 // ── #967 / OBL-D3-NEW-03 — RACE Oblivion-shape DATA + subs ────────
 
-/// Build a 36-byte Oblivion DATA payload: 8 × (u8 skill_index, u8
-/// bonus) + heightM + heightF + weightM + weightF + raceFlags.
+/// Build a 36-byte TES4-era DATA payload: 7 × (u8 skill_index, u8
+/// bonus) + 2 unused bytes + heightM + heightF + weightM + weightF + raceFlags.
 fn oblivion_data(
-    pairs: [(u8, i8); 8],
+    pairs: [(u8, i8); 7],
     height: (f32, f32),
     weight: (f32, f32),
     flags: u32,
@@ -1201,6 +1252,7 @@ fn oblivion_data(
         data.push(skill);
         data.push(bonus as u8);
     }
+    data.extend_from_slice(&[0, 0]); // unused — vanilla authors `00 00`, never the 0xFF sentinel
     data.extend_from_slice(&height.0.to_le_bytes());
     data.extend_from_slice(&height.1.to_le_bytes());
     data.extend_from_slice(&weight.0.to_le_bytes());
@@ -1211,7 +1263,7 @@ fn oblivion_data(
 }
 
 #[test]
-fn race_oblivion_data_reads_8_skill_pairs_plus_heights() {
+fn race_tes4_era_data_reads_7_skill_pairs_plus_heights() {
     // Nord-like sample: bonuses on Blade(0x0E) + Block(0x0F) +
     // HeavyArmor(0x12) + Restoration(0x19) + LightArmor(0x1B);
     // remaining slots = 0xFF (Skill_None sentinel, should drop).
@@ -1223,7 +1275,6 @@ fn race_oblivion_data_reads_8_skill_pairs_plus_heights() {
         (0x1B, 5),        // LightArmor +5
         (0xFF, 0),        // Skill_None — drop
         (0xFF, 0),
-        (0xFF, 0),
     ];
     let data = oblivion_data(pairs, (1.04, 1.0), (1.0, 1.0), 0x01);
     let subs = vec![
@@ -1231,14 +1282,18 @@ fn race_oblivion_data_reads_8_skill_pairs_plus_heights() {
         sub(b"FULL", b"Nord\0"),
         sub(b"DATA", &data),
     ];
-    let r = parse_race(0x10001, &subs, GameKind::Oblivion, &None);
-    // 5 real bonuses, 3 None-sentinel slots dropped.
-    assert_eq!(r.skill_bonuses.len(), 5);
-    assert_eq!(r.skill_bonuses[0], (0x0E, 10));
-    assert_eq!(r.skill_bonuses[4], (0x1B, 5));
-    assert!((r.base_height.0 - 1.04).abs() < 1e-6);
-    assert!((r.base_height.1 - 1.0).abs() < 1e-6);
-    assert_eq!(r.race_flags, 0x01);
+    // FO3 / FNV share the layout: the unused `00 00` must not surface as an
+    // 8th `(0, 0)` boost (#7103).
+    for game in [GameKind::Oblivion, GameKind::Fallout3NV] {
+        let r = parse_race(0x10001, &subs, game, &None);
+        // 5 real bonuses, 2 None-sentinel slots dropped, no phantom 8th pair.
+        assert_eq!(r.skill_bonuses.len(), 5, "{game:?}");
+        assert_eq!(r.skill_bonuses[0], (0x0E, 10));
+        assert_eq!(r.skill_bonuses[4], (0x1B, 5));
+        assert!((r.base_height.0 - 1.04).abs() < 1e-6);
+        assert!((r.base_height.1 - 1.0).abs() < 1e-6);
+        assert_eq!(r.race_flags, 0x01);
+    }
 }
 
 #[test]
@@ -1260,7 +1315,7 @@ fn race_oblivion_subrecords_captured() {
     let mut xnam_breton = Vec::new();
     xnam_breton.extend_from_slice(&0x10001u32.to_le_bytes()); // other race
     xnam_breton.extend_from_slice(&(-5_i32).to_le_bytes());
-    let data = oblivion_data([(0xFF, 0); 8], (1.0, 1.0), (1.0, 1.0), 0);
+    let data = oblivion_data([(0xFF, 0); 7], (1.0, 1.0), (1.0, 1.0), 0);
     let subs = vec![
         sub(b"EDID", b"Breton\0"),
         sub(b"DATA", &data),
@@ -1295,7 +1350,7 @@ fn race_oblivion_subrecords_skipped_on_non_oblivion_games() {
     let mut dnam = Vec::new();
     dnam.extend_from_slice(&0x000Au32.to_le_bytes());
     dnam.extend_from_slice(&0x000Bu32.to_le_bytes());
-    let data = oblivion_data([(0xFF, 0); 8], (1.0, 1.0), (1.0, 1.0), 0);
+    let data = oblivion_data([(0xFF, 0); 7], (1.0, 1.0), (1.0, 1.0), 0);
     let subs = vec![
         sub(b"EDID", b"FnvHuman\0"),
         sub(b"DATA", &data),
@@ -1313,7 +1368,7 @@ fn race_oblivion_subrecords_skipped_on_non_oblivion_games() {
 /// `race_reactions` list in authoring order.
 #[test]
 fn race_multiple_xnam_pairs_collected() {
-    let data = oblivion_data([(0xFF, 0); 8], (1.0, 1.0), (1.0, 1.0), 0);
+    let data = oblivion_data([(0xFF, 0); 7], (1.0, 1.0), (1.0, 1.0), 0);
     let mut x1 = Vec::new();
     x1.extend_from_slice(&0x10010u32.to_le_bytes());
     x1.extend_from_slice(&5_i32.to_le_bytes());
@@ -2139,7 +2194,7 @@ fn head_part_index_table_differs_per_game() {
 fn parse_real_fnv_race_head_parts_exclude_the_body_section() {
     let path = crate::esm::test_paths::fnv_esm();
     if !path.exists() {
-        eprintln!("Skipping: FalloutNV.esm not found at {}", path.display());
+        crate::esm::test_paths::require_or_skip(&format!("FalloutNV.esm ({})", path.display()));
         return;
     }
     let data = std::fs::read(&path).unwrap();
@@ -2171,11 +2226,10 @@ fn parse_real_fnv_race_head_parts_exclude_the_body_section() {
                 })
                 .map(|(_, path, _)| path.to_ascii_lowercase())
         };
-        if let (Some(male), Some(female)) = (head_for(0), head_for(1)) {
-            if male != female {
+        if let (Some(male), Some(female)) = (head_for(0), head_for(1))
+            && male != female {
                 gendered_heads += 1;
             }
-        }
     }
     assert!(
         gendered_heads >= 20,
@@ -2191,7 +2245,7 @@ fn parse_real_fnv_race_head_parts_exclude_the_body_section() {
 fn parse_real_oblivion_race_head_part_indices() {
     let path = crate::esm::test_paths::oblivion_esm();
     if !path.exists() {
-        eprintln!("Skipping: Oblivion.esm not found at {}", path.display());
+        crate::esm::test_paths::require_or_skip(&format!("Oblivion.esm ({})", path.display()));
         return;
     }
     let data = std::fs::read(&path).unwrap();
@@ -2316,7 +2370,7 @@ fn crea_data_arm_is_gated_to_the_fallout3_fnv_era() {
 fn parse_real_fnv_creatures_derive_actor_values() {
     let path = crate::esm::test_paths::fnv_esm();
     if !path.exists() {
-        eprintln!("Skipping: FalloutNV.esm not found at {}", path.display());
+        crate::esm::test_paths::require_or_skip(&format!("FalloutNV.esm ({})", path.display()));
         return;
     }
     let data = std::fs::read(&path).unwrap();
@@ -2762,7 +2816,7 @@ fn race_subgraph_role_enum_follows_the_game() {
 #[test]
 fn oblivion_aidt_keeps_its_rated_aggression_and_confidence() {
     let aidt = [70u8, 50, 50, 50, 0, 0, 0, 0, 0xFF, 0, 0, 0];
-    let npc = parse_npc(0x1234, &[sub(b"AIDT", &aidt)], GameKind::Oblivion, &None);
+    let npc = parse_npc(0x1234, &[sub(b"AIDT", aidt)], GameKind::Oblivion, &None);
     let ai = npc.ai_data.expect("Oblivion AIDT decodes");
     assert_eq!(ai.aggression, Aggression::Rated(70));
     assert_eq!(ai.confidence, Confidence::Rated(50));

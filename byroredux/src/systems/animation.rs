@@ -82,22 +82,20 @@ fn subtree_cache(world: &World, root: Option<EntityId>) -> Option<ResourceRead<'
 /// delta from an entity's *previous* motion window.
 #[inline]
 fn write_root_motion(world: &World, entity: EntityId, motion: Vec3) {
-    if let Some(mut rmq) = world.query_mut::<RootMotionDelta>() {
-        if let Some(rm) = rmq.get_mut(entity) {
+    if let Some(mut rmq) = world.query_mut::<RootMotionDelta>()
+        && let Some(rm) = rmq.get_mut(entity) {
             rm.0 = motion;
         }
-    }
 }
 
 /// Write this tick's extracted root yaw into `RootMotionYaw`, the same
 /// assignment-sink contract as [`write_root_motion`] (#6241).
 #[inline]
 fn write_root_yaw(world: &World, entity: EntityId, yaw: f32) {
-    if let Some(mut yq) = world.query_mut::<RootMotionYaw>() {
-        if let Some(y) = yq.get_mut(entity) {
+    if let Some(mut yq) = world.query_mut::<RootMotionYaw>()
+        && let Some(y) = yq.get_mut(entity) {
             y.0 = yaw;
         }
-    }
 }
 
 /// Convert an accumulation root's absolute sampled translation into the
@@ -293,8 +291,7 @@ pub(crate) fn apply_float_channels(
     if float_channels
         .iter()
         .any(|(_, c)| matches!(c.target, FloatTarget::Alpha))
-    {
-        if let Some(mut q) = world.query_mut::<AnimatedAlpha>() {
+        && let Some(mut q) = world.query_mut::<AnimatedAlpha>() {
             for (channel_name, channel) in float_channels {
                 if !matches!(channel.target, FloatTarget::Alpha) {
                     continue;
@@ -308,7 +305,6 @@ pub(crate) fn apply_float_channels(
                 }
             }
         }
-    }
 
     // UV offset/scale/rotation — five sub-targets, one shared component.
     let is_uv_target = |target: FloatTarget| {
@@ -321,8 +317,8 @@ pub(crate) fn apply_float_channels(
                 | FloatTarget::UvRotation
         )
     };
-    if float_channels.iter().any(|(_, c)| is_uv_target(c.target)) {
-        if let Some(mut q) = world.query_mut::<AnimatedUvTransform>() {
+    if float_channels.iter().any(|(_, c)| is_uv_target(c.target))
+        && let Some(mut q) = world.query_mut::<AnimatedUvTransform>() {
             for (channel_name, channel) in float_channels {
                 if !is_uv_target(channel.target) {
                     continue;
@@ -343,14 +339,12 @@ pub(crate) fn apply_float_channels(
                 }
             }
         }
-    }
 
     // ShaderFloat.
     if float_channels
         .iter()
         .any(|(_, c)| matches!(c.target, FloatTarget::ShaderFloat))
-    {
-        if let Some(mut q) = world.query_mut::<AnimatedShaderFloat>() {
+        && let Some(mut q) = world.query_mut::<AnimatedShaderFloat>() {
             for (channel_name, channel) in float_channels {
                 if !matches!(channel.target, FloatTarget::ShaderFloat) {
                     continue;
@@ -364,14 +358,12 @@ pub(crate) fn apply_float_channels(
                 }
             }
         }
-    }
 
     // MorphWeight(idx).
     if float_channels
         .iter()
         .any(|(_, c)| matches!(c.target, FloatTarget::MorphWeight(_)))
-    {
-        if let Some(mut q) = world.query_mut::<AnimatedMorphWeights>() {
+        && let Some(mut q) = world.query_mut::<AnimatedMorphWeights>() {
             for (channel_name, channel) in float_channels {
                 let FloatTarget::MorphWeight(idx) = channel.target else {
                     continue;
@@ -385,7 +377,6 @@ pub(crate) fn apply_float_channels(
                 }
             }
         }
-    }
 
     // #983 — NiLight float controllers (Dimmer, Intensity, Radius) all
     // mutate `LightSource` on the target entity.
@@ -398,8 +389,7 @@ pub(crate) fn apply_float_channels(
     if float_channels
         .iter()
         .any(|(_, c)| is_light_target(c.target))
-    {
-        if let Some(mut q) = world.query_mut::<byroredux_core::ecs::LightSource>() {
+        && let Some(mut q) = world.query_mut::<byroredux_core::ecs::LightSource>() {
             for (channel_name, channel) in float_channels {
                 if !is_light_target(channel.target) {
                     continue;
@@ -421,7 +411,6 @@ pub(crate) fn apply_float_channels(
                 }
             }
         }
-    }
 }
 
 /// #2221 — texture-flip (`NiFlipController`) cycle position. Only picks
@@ -768,14 +757,11 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
             // hazards #313 / #827 / #1410 guard against. `write_root_motion`
             // now runs after the guard drops, so `RootMotionDelta` is still
             // taken with nothing else held — no new lock edge either way.
-            if !accum_root_animated {
-                if let Some(accum_entity) = clip.accum_root_name.as_ref().and_then(&resolve_entity)
-                {
-                    if let Some(t) = transform_query.get_mut(accum_entity) {
+            if !accum_root_animated
+                && let Some(accum_entity) = clip.accum_root_name.as_ref().and_then(&resolve_entity)
+                    && let Some(t) = transform_query.get_mut(accum_entity) {
                         t.translation = Vec3::ZERO;
                     }
-                }
-            }
             drop(transform_query);
 
             // Write root motion delta to the player entity.
@@ -937,8 +923,8 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
             // (clip weight, layer mask — #6235).
             let mut best: Option<(FixedString, f32, u32, f32, f32)> = None;
             for layer in &stack.layers {
-                if let Some(clip) = registry.get(layer.clip_handle) {
-                    if let Some(name) = clip.accum_root_name {
+                if let Some(clip) = registry.get(layer.clip_handle)
+                    && let Some(name) = clip.accum_root_name {
                         let ew = bone_layer_weight(stack, layer, clip.weight, name);
                         if ew < 0.001 {
                             continue;
@@ -953,7 +939,6 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
                             ));
                         }
                     }
-                }
             }
             accum_root = best.as_ref().map(|(n, ..)| *n);
             if let Some(name) = accum_root {
@@ -1053,8 +1038,8 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
             }
         };
 
-        if let Some((clip_handle, time)) = dominant_info {
-            if let Some(clip) = registry.get(clip_handle) {
+        if let Some((clip_handle, time)) = dominant_info
+            && let Some(clip) = registry.get(clip_handle) {
                 if !clip.float_channels.is_empty() {
                     apply_float_channels(world, &clip.float_channels, time, &stack_resolve);
                 }
@@ -1073,7 +1058,6 @@ fn animation_system_inner(world: &World, dt: f32, scratch: &mut AnimScratch) {
                     );
                 }
             }
-        }
     }
 }
 

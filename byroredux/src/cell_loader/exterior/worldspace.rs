@@ -30,8 +30,7 @@ pub(super) fn summarize_foreground_cells<T>(
     if requested
         .as_ref()
         .is_none_or(|requested| !requested.is_content_backed())
-    {
-        if let Some(cells) = cells {
+        && let Some(cells) = cells {
             nearest_viable.extend(cells.iter().filter_map(|(&coord, cell)| {
                 let content = content(coord, cell);
                 content.is_content_backed().then_some(content)
@@ -43,7 +42,6 @@ pub(super) fn summarize_foreground_cells<T>(
             });
             nearest_viable.truncate(suggestion_limit);
         }
-    }
 
     ExteriorForegroundReadiness {
         requested_coord,

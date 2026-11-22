@@ -25,15 +25,21 @@ use serde::Deserialize;
 /// same key.
 pub const DEFAULT_PROFILES_PATH: &str = "assets/debug_profiles.toml";
 
-/// Default shared games root when neither `--games-root` CLI nor
-/// `BYROREDUX_GAMES_ROOT` env var is set. Tuned for Linux Steam
-/// installs — the most common dev box layout. Phase 20.
+/// Default shared games root when neither `--games-root`, `[defaults].games_root` nor
+/// `BYROREDUX_GAMES_ROOT` is set: one developer's Linux Steam library, so on any other machine
+/// it names a missing directory (the engine says so and points at `byro-detect --write`). Phase 20.
 pub const DEFAULT_GAMES_ROOT: &str = "/mnt/data/SteamLibrary/steamapps/common";
 
-/// Resolve the shared games root, in priority order:
-///   1. `--games-root <path>` CLI argument (caller supplies via `cli_arg`)
-///   2. `BYROREDUX_GAMES_ROOT` environment variable
-///   3. [`DEFAULT_GAMES_ROOT`]
+/// Resolve the shared games root, in priority order (#7189: four tiers, the first two folded
+/// into `cli_arg` by the caller):
+///   1. `--games-root <path>` on the command line
+///   2. `[defaults].games_root` in the profiles config (the engine passes
+///      `--games-root` or else this as `cli_arg`)
+///   3. `BYROREDUX_GAMES_ROOT` environment variable
+///   4. [`DEFAULT_GAMES_ROOT`]
+///
+/// A profile's own root (its `[roots]` override, or `byro-detect --write`'s record) is resolved
+/// separately and wins over this shared root for that game (`resolve_profile_root`).
 ///
 /// Used by `--game <key>` CLI expansion to turn a profile's
 /// `subdir` into an absolute path. Phase 20.
@@ -41,11 +47,10 @@ pub fn resolve_games_root(cli_arg: Option<&str>) -> PathBuf {
     if let Some(path) = cli_arg {
         return PathBuf::from(path);
     }
-    if let Ok(env) = std::env::var("BYROREDUX_GAMES_ROOT") {
-        if !env.is_empty() {
+    if let Ok(env) = std::env::var("BYROREDUX_GAMES_ROOT")
+        && !env.is_empty() {
             return PathBuf::from(env);
         }
-    }
     PathBuf::from(DEFAULT_GAMES_ROOT)
 }
 
@@ -317,11 +322,10 @@ fn load_default_from(user_path: Option<&std::path::Path>) -> GameProfileRegistry
     // Per-user override (#5294 — $BYRO_PROFILES when the launcher pointed
     // the engine at a different file, else the home default; #5476 —
     // this is the layer `load_with_user_path` names explicitly).
-    if let Some(user_path) = user_path {
-        if user_path.exists() {
+    if let Some(user_path) = user_path
+        && user_path.exists() {
             merge_from(user_path, &mut out);
         }
-    }
 
     // Root overrides from the selected user file. An explicit path is the
     // file the caller was pointed at; only the default loader falls back to
@@ -341,11 +345,10 @@ fn load_default_from(user_path: Option<&std::path::Path>) -> GameProfileRegistry
     // Expand `~/...` prefixes on roots so the registry's consumers
     // get a ready-to-use absolute path.
     for entry in out.values_mut() {
-        if let Some(stripped) = entry.root.strip_prefix("~/") {
-            if let Some(home) = home_dir() {
+        if let Some(stripped) = entry.root.strip_prefix("~/")
+            && let Some(home) = home_dir() {
                 entry.root = home.join(stripped).to_string_lossy().into_owned();
             }
-        }
     }
 
     GameProfileRegistry::new(out)
@@ -397,11 +400,10 @@ fn merge_from(path: &Path, out: &mut BTreeMap<String, GameProfileEntry>) {
 fn ordered_config_paths_with(user_path: Option<&std::path::Path>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     paths.extend(byroredux_core::paths::shipped_asset(DEFAULT_PROFILES_PATH));
-    if let Some(user_path) = user_path {
-        if user_path.exists() {
+    if let Some(user_path) = user_path
+        && user_path.exists() {
             paths.push(user_path.to_path_buf());
         }
-    }
     paths
 }
 
@@ -435,11 +437,10 @@ fn load_launch_defaults_from(user_path: Option<&std::path::Path>) -> LaunchDefau
     }
     // Expand a leading `~/` on games_root so callers get an absolute
     // path (mirrors the profile-root expansion in `load_default`).
-    if let Some(root) = out.games_root.as_ref().and_then(|r| r.strip_prefix("~/")) {
-        if let Some(home) = home_dir() {
+    if let Some(root) = out.games_root.as_ref().and_then(|r| r.strip_prefix("~/"))
+        && let Some(home) = home_dir() {
             out.games_root = Some(home.join(root).to_string_lossy().into_owned());
         }
-    }
     out
 }
 
@@ -554,6 +555,30 @@ mod tests {
             "the default loader falls back to the selected user file"
         );
         assert_eq!(root_overrides_path(None, None), None);
+    }
+
+    #[test]
+    fn shipped_profiles_name_each_new_game_target() {
+        // #7188 — the cell form (FNV, FO3, Oblivion) had no test: a typo here falls through to the
+        // empty default scene silently. Each value cites its vanilla record in the shipped file.
+        let mut parsed: ProfilesFile =
+            toml::from_str(include_str!("../../../assets/debug_profiles.toml")).expect("the shipped profiles parse");
+        let mut target = |key: &str| {
+            let entry: GameProfileEntry = parsed.profiles.remove(key).unwrap_or_else(|| panic!("{key}")).into();
+            (
+                entry.has_new_game_target(),
+                entry.new_game_cell,
+                entry.new_game_worldspace,
+                entry.new_game_grid,
+            )
+        };
+        let cell = |name: &str| (true, Some(name.to_owned()), None, None);
+        assert_eq!(target("fnv"), cell("GSDocMitchellHouse"));
+        assert_eq!(target("fo3"), cell("Vault101d"));
+        assert_eq!(target("oblivion"), cell("ImperialDungeon01"));
+        assert_eq!(target("skyrim_se"), (true, None, Some("Tamriel".to_owned()), Some("5,-24".to_owned())));
+        assert_eq!(target("fo4"), (false, None, None, None), "no new-game target authored");
+        assert_eq!(target("starfield"), (false, None, None, None), "no new-game target authored");
     }
 
     #[test]

@@ -33,7 +33,14 @@ pub(super) struct Vm<'a> {
     /// The members of the script-filled reference collections this run has
     /// read or changed, written back when it ends.
     pub(super) collections: std::cell::RefCell<HashMap<crate::alias_collections::CollectionKey, Vec<u32>>>,
+    /// M48 #6667 — the answer to the `Message.Show()` the resumed statement waited on: its
+    /// value, once (the statement replays from its start).
+    pub(super) answer: Option<i32>,
 }
+
+/// M48 #6667 — the `Stop` a `Message.Show()` raises to unwind its expression to the statement
+/// that waits on it (`Vm::exec_block` turns it into a suspension).
+const AWAITS_MESSAGE: &str = "a Message.Show() awaiting its answer";
 
 /// Run `script`'s `function` attached to `context` — a quest's fragment, or
 /// a reference script's event with its `args` — its properties bound by
@@ -78,6 +85,7 @@ pub(in crate::fragment) fn run_fragment(
         for_effect: false,
         aggregates: Default::default(),
         collections: Default::default(),
+        answer: resume.and_then(|state| state.answer),
     };
     let frame = Frame {
         script: Arc::clone(&script),
@@ -120,7 +128,7 @@ pub(in crate::fragment) fn run_fragment(
     .map(|flow| match flow {
         Flow::Suspend(seconds, _, frames) => {
             let carried_steps = if vm.yielded { vm.steps as u32 } else { 0 };
-            Some((seconds, VmResume { frames, carried_steps }))
+            Some((seconds, VmResume { frames, carried_steps, answer: None }))
         }
         _ => None,
     });
@@ -356,7 +364,10 @@ impl Vm<'_> {
         ends_function: bool,
     ) -> Run<Flow> {
         let mut start = 0;
-        if let Some(path) = resume {
+        // M48 #6667 — a statement whose `Message.Show()` was answered runs again from its start.
+        if let Some([VmStep::Replay(index)]) = resume {
+            start = *index as usize;
+        } else if let Some(path) = resume {
             let Some((VmStep::Statement(index), rest)) = path.split_first() else {
                 return stop("a malformed resume path");
             };
@@ -377,7 +388,15 @@ impl Vm<'_> {
             start = index + 1;
         }
         for (index, statement) in body.iter().enumerate().skip(start) {
-            match self.exec(frame, &statement.node)? {
+            let flow = match self.exec(frame, &statement.node) {
+                // M48 #6667 — the statement's expression asked for a box's answer: suspend here,
+                // to run the statement again with it.
+                Err(Stop(why)) if why == AWAITS_MESSAGE && self.deferred.awaits_message.is_some() => {
+                    return Ok(Flow::Suspend(0.0, vec![VmStep::Replay(index as u32)], Vec::new()));
+                }
+                flow => flow?,
+            };
+            match flow {
                 Flow::Normal => {
                     // The frame budget ran out: suspend after this statement,
                     // as a zero-second `Utility.Wait` here would.
@@ -772,11 +791,10 @@ impl Vm<'_> {
             Expr::MemberAccess { object, member } => {
                 let owner = self.eval(frame, &object.node)?;
                 let name = &member.node.0;
-                if name.eq_ignore_ascii_case("length") {
-                    if let Value::Array(array) = &owner {
+                if name.eq_ignore_ascii_case("length")
+                    && let Value::Array(array) = &owner {
                         return Ok(Value::Int(array.borrow().len() as i32));
                     }
-                }
                 if let Value::Struct(members) = &owner {
                     let members = members.borrow();
                     return match Value::member(&members, name) {
@@ -836,15 +854,14 @@ impl Vm<'_> {
     ) -> Option<Value> {
         if let Some(value) = Self::property(vmad, name) {
             // A numeric property a script wrote reads the written value.
-            if value.number().is_some() {
-                if let Some(written) = self.read_quest_variable(owner, name) {
+            if value.number().is_some()
+                && let Some(written) = self.read_quest_variable(owner, name) {
                     return Some(if value.is_float() {
                         Value::Float(written)
                     } else {
                         Value::Int(written as i32)
                     });
                 }
-            }
             // An object property a script re-pointed reads the new object; an
             // array or struct property is one shared value across the run,
             // starting from what a script last wrote or else the VMAD's.
@@ -887,11 +904,10 @@ impl Vm<'_> {
     /// shared value, else what a script last wrote, else `default`.
     pub(super) fn aggregate(&self, owner: QuestFormId, name: &str, default: Value) -> Value {
         let key = crate::QuestScriptVariables::property_key(name);
-        if let Some(held) = self.written_object(owner, key) {
-            if matches!(held, Value::Array(_) | Value::Struct(_)) {
+        if let Some(held) = self.written_object(owner, key)
+            && matches!(held, Value::Array(_) | Value::Struct(_)) {
                 return held;
             }
-        }
         self.aggregates.borrow_mut().insert((owner.0, key), default.clone());
         default
     }
@@ -1142,6 +1158,9 @@ impl Vm<'_> {
             let script = Arc::clone(&frame.script);
             return Ok(Value::Str(self.script_state(frame.owner, &script)));
         }
+        if let Some(button) = self.message_show(frame, callee, args)? {
+            return Ok(Value::Int(button));
+        }
         let (call, bindings, vmad) = self.synthesize(frame, callee, args)?;
         if let Some((value, int)) = classify_native_number(&call, &bindings) {
             let number = evaluate_value(&value, self.context, Some(&vmad), self.world, self.stages, self.deferred);
@@ -1166,6 +1185,44 @@ impl Vm<'_> {
         stop(format!("unsupported call {}", callee_name(callee)))
     }
 
+    /// M48 #6667 — `<message>.Show(afArg1 … afArg9)` for its value: CK *Show - Message* is latent
+    /// and "returns the button pressed". The first time, the box is raised under a ticket and the
+    /// run unwinds to its statement ([`AWAITS_MESSAGE`]), which suspends until the answer and then
+    /// runs again; this time the call is the answer. `None` when the call is not a message box's
+    /// `Show`.
+    fn message_show(&mut self, frame: &mut Frame, callee: &Expr, args: &[CallArg]) -> Run<Option<i32>> {
+        let Expr::MemberAccess { object, member } = callee else {
+            return Ok(None);
+        };
+        if !member.node.0.eq_ignore_ascii_case("show") || static_class(&object.node).is_some() {
+            return Ok(None);
+        }
+        let Value::Form(form) = self.eval(frame, &object.node)? else {
+            return Ok(None);
+        };
+        let is_box = self
+            .world
+            .try_resource::<crate::messages::MessageCatalog>()
+            .is_some_and(|catalog| catalog.message(form).is_some_and(|message| message.message_box));
+        if !is_box {
+            return Ok(None);
+        }
+        if let Some(button) = self.answer.take() {
+            return Ok(Some(button));
+        }
+        let mut numbers = Vec::with_capacity(args.len());
+        for arg in args {
+            numbers.push(self.eval(frame, &arg.value.node)?.number().unwrap_or(0.0));
+        }
+        match crate::messages::show_message_awaiting(self.world, form, &numbers) {
+            Some(ticket) => {
+                self.deferred.awaits_message = Some(ticket);
+                stop(AWAITS_MESSAGE)
+            }
+            None => stop("Message.Show could not raise its box"),
+        }
+    }
+
     pub(super) fn call_statement(&mut self, frame: &mut Frame, expression: &Expr) -> Run<Flow> {
         let Expr::Call { callee, args } = expression else {
             // A bare expression statement has no effect.
@@ -1173,8 +1230,8 @@ impl Vm<'_> {
             return Ok(Flow::Normal);
         };
         // `Utility.Wait(seconds)` suspends the run, every frame of it.
-        if let Expr::MemberAccess { object, member } = &callee.node {
-            if static_class(&object.node) == Some("utility") && member.node.0.eq_ignore_ascii_case("wait") {
+        if let Expr::MemberAccess { object, member } = &callee.node
+            && static_class(&object.node) == Some("utility") && member.node.0.eq_ignore_ascii_case("wait") {
                 let seconds = match args.first() {
                     Some(arg) => self.eval(frame, &arg.value.node)?.number().unwrap_or(0.0),
                     None => 0.0,
@@ -1190,18 +1247,16 @@ impl Vm<'_> {
                 }
                 return Ok(Flow::Suspend(seconds.max(0.0), Vec::new(), Vec::new()));
             }
-        }
         // CK *WaitForAnimationEvent*: "waits for the specified animation event from
         // this object to happen before returning". The graph's schedule is
         // deterministic, so the wait is computed now; with no graph (or an event it
         // never raises) the call returns false at once, which the CK gives as "the
         // animation graph unloaded before the event was sent".
-        if let Expr::MemberAccess { object, member } = &callee.node {
-            if member.node.0.eq_ignore_ascii_case("waitforanimationevent")
+        if let Expr::MemberAccess { object, member } = &callee.node
+            && member.node.0.eq_ignore_ascii_case("waitforanimationevent")
                 && args.len() == 1
                 && static_class(&object.node).is_none()
-            {
-                if let Value::Form(reference) = self.eval(frame, &object.node)? {
+                && let Value::Form(reference) = self.eval(frame, &object.node)? {
                     let values = self.eval_args(frame, args)?;
                     let event = values[0].text();
                     let seconds = self
@@ -1215,18 +1270,15 @@ impl Vm<'_> {
                         None => Ok(Flow::Normal),
                     };
                 }
-            }
-        }
         // CK *PlayAnimationAndWait*: send the event and wait until the graph raises
         // the named one (the schedule is deterministic, so the wait is computed
         // now). A graph that rejects the event, or never raises the other, makes
         // the call return false at once: no wait.
-        if let Expr::MemberAccess { object, member } = &callee.node {
-            if member.node.0.eq_ignore_ascii_case("playanimationandwait")
+        if let Expr::MemberAccess { object, member } = &callee.node
+            && member.node.0.eq_ignore_ascii_case("playanimationandwait")
                 && args.len() == 2
                 && static_class(&object.node).is_none()
-            {
-                if let Value::Form(reference) = self.eval(frame, &object.node)? {
+                && let Value::Form(reference) = self.eval(frame, &object.node)? {
                     let values = self.eval_args(frame, args)?;
                     let (event, wait_event) = (values[0].text(), values[1].text());
                     let seconds = self.entity_of(reference).and_then(|entity| {
@@ -1240,8 +1292,6 @@ impl Vm<'_> {
                         None => Ok(Flow::Normal),
                     };
                 }
-            }
-        }
         self.call_statement_no_ops(frame, callee, args)
     }
 
@@ -1269,12 +1319,11 @@ impl Vm<'_> {
         // CK *StopDialogueCamera - Game*: "Stops all dialogue cameras". The
         // engine never starts one (a conversation here has no camera of its
         // own), so there is nothing to stop.
-        if let Expr::MemberAccess { object, member } = &callee.node {
-            if static_class(&object.node) == Some("game") && member.node.0.eq_ignore_ascii_case("stopdialoguecamera") {
+        if let Expr::MemberAccess { object, member } = &callee.node
+            && static_class(&object.node) == Some("game") && member.node.0.eq_ignore_ascii_case("stopdialoguecamera") {
                 self.eval_args(frame, args)?;
                 return Ok(Flow::Normal);
             }
-        }
         if help_message_housekeeping(&callee.node).is_some() {
             self.eval_args(frame, args)?;
             return Ok(Flow::Normal);
@@ -1301,18 +1350,14 @@ impl Vm<'_> {
         // the statement has nothing to refresh; only the Bool result (failure
         // with no active instance) is unmodelled, and the checker only lets
         // the call through with that result unused.
-        if let Expr::MemberAccess { object, member } = &callee.node {
-            if member.node.0.eq_ignore_ascii_case("updatecurrentinstanceglobal")
+        if let Expr::MemberAccess { object, member } = &callee.node
+            && member.node.0.eq_ignore_ascii_case("updatecurrentinstanceglobal")
                 && static_class(&object.node).is_none()
-            {
-                if let Value::Form(quest) = self.eval(frame, &object.node)? {
-                    if self.is_quest(quest) {
+                && let Value::Form(quest) = self.eval(frame, &object.node)?
+                    && self.is_quest(quest) {
                         self.eval_args(frame, args)?;
                         return Ok(Flow::Normal);
                     }
-                }
-            }
-        }
         self.call_statement_script(frame, callee, args)
     }
 
@@ -1334,24 +1379,21 @@ impl Vm<'_> {
         }
         // `Parent.OnInit()` and the like past the scripts to an engine class:
         // its events have no body, so the call does nothing.
-        if let Expr::MemberAccess { object, member } = &callee.node {
-            if matches!(object.node, Expr::ParentAccess) && is_event_name(&member.node.0) {
+        if let Expr::MemberAccess { object, member } = &callee.node
+            && matches!(object.node, Expr::ParentAccess) && is_event_name(&member.node.0) {
                 self.eval_args(frame, args)?;
                 return Ok(Flow::Normal);
             }
-        }
         // `GotoState`'s `OnEndState` / `OnBeginState` the script does not
         // handle: the empty events every script inherits.
         if is_state_event(&callee.node) {
             return Ok(Flow::Normal);
         }
-        if let Some((object, name)) = quest_update_call(&callee.node) {
-            if let Value::Form(quest) = self.eval(frame, object)? {
-                if self.is_quest(quest) {
+        if let Some((object, name)) = quest_update_call(&callee.node)
+            && let Value::Form(quest) = self.eval(frame, object)?
+                && self.is_quest(quest) {
                     return self.quest_update(frame, quest, &name, args).map(|_| Flow::Normal);
                 }
-            }
-        }
         if self_call_named(&callee.node, "sendcustomevent") {
             return self.send_custom_event(frame, args).map(|_| Flow::Normal);
         }
@@ -1364,6 +1406,9 @@ impl Vm<'_> {
             }
             if crate::fragment::HitRequest::handler(&name).is_some() {
                 return self.hit_registration(frame, &name, args).map(|_| Flow::Normal);
+            }
+            if crate::fragment::MenuEventRequest::handler(&name).is_some() {
+                return self.menu_event_registration(frame, &name, args).map(|_| Flow::Normal);
             }
             let mut numbers = Vec::with_capacity(args.len());
             for arg in args {

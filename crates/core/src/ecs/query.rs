@@ -175,7 +175,7 @@ impl<'w, T: Component> QueryWrite<'w, T> {
         self.storage().iter()
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = (EntityId, &mut T)> {
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (EntityId, &mut T)> + use<'_, T> {
         self.storage_mut().iter_mut()
     }
 }

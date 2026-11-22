@@ -1,6 +1,9 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-04). Revision 6 starts Phase 0: the mechanism
+**Status**: ACTIVE (2026-11-22). Revision 10 extends the list merge
+(LMC-REC-003) to actors, races and carried items; revision 9 to form
+lists, outfits and containers; revision 8 built it for levelled lists. Revision 7 records the owner's ruling
+that `.esm` and `.esl` plugins pair with archives (LMC-AST-002). Revision 6 starts Phase 0: the mechanism
 catalog is machine-readable and §3.1 is generated from it. Revision 5 files
 the tracking issues.
 Revision 4 recorded the owner's §10 decisions; every one is decided. Q1
@@ -151,7 +154,7 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
 | Id | Mechanism | Examples | Disp. | Games | Reason and citation | v |
 |---|---|---|---|---|---|---|
 | R1 | New records in a plugin (ESM/ESP/ESL/ESH) | every content mod | D1 | all | A plugin's new records are ordinary input to the multi-plugin fold. (§5.1 LMC-ID-003) | 1 |
-| R2 | Record overrides of a master's records | patches, overhauls | D1 | all | Last-in-order wins at the fold; deletions are carried. (§5.2 LMC-REC-001) | 1 |
+| R2 | Record overrides of a master's records | patches, overhauls | D1 | all | Last-in-order wins at the fold (the legacy policy); under the default merge policy independent overrides of a levelled list, form list, outfit, container, actor, race or carried item combine per list entry form and per field (LMC-REC-003). Deletions are carried. (§5.2 LMC-REC-001; §5.2 LMC-REC-003; [`crates/plugin/src/esm/records/list_merge.rs`](../../crates/plugin/src/esm/records/list_merge.rs)) | 4 |
 | R3 | Deleted / disabled records (DELE flag, UDR tombstones) | cleaned plugins, cell edits | D1 | all | Tombstones are decoded; the engine honours the deletion. (§3.1 R3) | 1 |
 | R4 | Injected records (a plugin defines a form in a master's ID space) | AWKCR-style, Bashed Patch | D1 | all | Loaded as any record the plugin defines. (§3.1 R4) | 1 |
 | R5 | Cell / worldspace overrides, new worldspaces, REFR edits | new lands, cell overhauls | D1 | all | The cell walker runs per plugin and the fold merges the overrides. (§3.1 R5) | 1 |
@@ -167,7 +170,7 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
 | Id | Mechanism | Examples | Disp. | Games | Reason and citation | v |
 |---|---|---|---|---|---|---|
 | A1 | Loose files under Data\ shadowing archives | texture packs, mesh fixes | D1 | all | Loose files outrank every archive. (§5.3 LMC-AST-001; #6200) | 1 |
-| A2 | Plugin-paired archives (per-game naming rules) | most archived mods | D1 | all | The engine opens the archives the game would pair with a plugin by name, in profile order. (§5.3 LMC-AST-002; [geck.uesp.net](https://geck.uesp.net/wiki/BSA_Files); [falloutck.uesp.net](https://falloutck.uesp.net/wiki/Archive_File)) | 1 |
+| A2 | Plugin-paired archives (per-game naming rules) | most archived mods | D1 | all | The engine opens the archives the game would pair with a plugin by name, in profile order. (§5.3 LMC-AST-002; [geck.uesp.net](https://geck.uesp.net/wiki/BSA_Files); [falloutck.uesp.net](https://falloutck.uesp.net/wiki/Archive_File); [`crates/plugin/src/archive_pairing.rs`](../../crates/plugin/src/archive_pairing.rs)) | 2 |
 | A3 | Archive list order (sResourceArchiveList, sArchiveList, .ccc) | official + CC content | D1 | all | Order semantics are imported into the profile and reproduced by profile order; the files are not read at runtime. (§5.3 LMC-AST-003) | 1 |
 | A4 | Archive invalidation (bInvalidateOlderFiles, redirection archives) | FO3/FNV/Oblivion texture mods | D2 | Obl, FO3, FNV | Loose files always win in this engine, so the INI flag and the redirection archive are ignored with a note. ([geck.uesp.net](https://geck.uesp.net/wiki/BSA_Files); [en.uesp.net](https://en.uesp.net/wiki/Oblivion_Mod:BSAs_and_Archive_Invalidation); §5.3 LMC-AST-004) | 1 |
 | A5 | DDS textures from mod tooling | all texture mods | D1 | all | Formats are decoded in crates/renderer/src/vulkan/dds.rs; the mod corpus gates the rest. (§3.1 A5) | 1 |
@@ -224,7 +227,7 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
 |---|---|---|---|---|---|---|
 | T1 | Unofficial patches as plugins | UOP, UFO3P, YUP, USSEP, UFO4P, SCP | D2 | all | A known patch is not loaded; the engine stands in for dependents (decision Q1). (§5.8 LMC-FIX-001; §5.8 LMC-FIX-004) | 1 |
 | T2.plugin | Generated patch plugins: the plugin | Bashed Patch, Smashed Patch, Synthesis output, Reqtificator output | D1 | all | A generated plugin loads as any plugin. (§3.1 T2) | 1 |
-| T2.necessity | Generated patch plugins: the need for them where record merging covers it | Bashed Patch, Smashed Patch, Synthesis output | D2 | all | The per-form merge policy covers the case the patch exists for. (§5.2 LMC-REC-003) | 1 |
+| T2.necessity | Generated patch plugins: the need for them where record merging covers it | Bashed Patch, Smashed Patch, Synthesis output | D2 | all | The per-form merge policy covers the case the patch exists for: levelled lists, form lists, outfits, containers, the lists of actors and races, and item keywords today; the keyword lists of other records (locations, quests, activators, furniture, magic effects, spells) are still last-wins. (§5.2 LMC-REC-003; [`crates/plugin/src/esm/records/list_merge.rs`](../../crates/plugin/src/esm/records/list_merge.rs)) | 4 |
 | T3.plugin | Merged plugins, ESL-flagged plugins, 'cleaned' masters: the plugin | load-order management | D1 | all | Loads as any plugin; there is no slot ceiling in the design. (§5.1 LMC-ID-004) | 1 |
 | T3.necessity | Merged plugins, ESL-flagged plugins, 'cleaned' masters: the need for them | load-order management | D2 | all | Plugin-count workarounds are not needed. (§5.1 LMC-ID-004) | 1 |
 | T4.data | FO4 precombine / previs repair packs: the data | PRP | D1 | FO4 | Loads as data; the engine falls back to REFRs when precombines are absent (M49). (§5.2 LMC-REC-012) | 1 |
@@ -249,8 +252,7 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
 - R11: every load path starts Start Game Enabled quests without a SEQ file
 - R11: the SEQ requirement on Fallout 4 and Starfield (the cited CK page states it for Skyrim 1.7+)
 - A2: Skyrim LE / SE: the paired name '<stem> - Textures.bsa' (only '<stem>.bsa' is confirmed, by the Creation Kit wiki)
-- A2: FO4: the localised voice-archive suffix
-- A2: Starfield: voice and localisation suffixes, and whether pairing is automatic or needs a same-named plugin
+- A2: FO4: how the high-resolution texture pack's 'DLCUltraHighResolution - Textures01'..'16' archives are opened (no '- Textures' archive heads the series)
 - A9: override of FaceGen data by loose path
 - S4.uncovered: per-function 'introduced in' API level of every extender and library family, from changelogs
 - S5: probe functions of MCM Helper, Fallout 4 MCM, ConsoleUtil, UIExtensions, HUDFramework, Workshop Framework and SFSE
@@ -485,6 +487,40 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   The recommended default is `merge`; `legacy` restores LMC-REC-002 for
   every record. This makes Bashed-/Smashed-/Synthesis-style list patches
   redundant for the cases it covers.
+  Built for the levelled lists (`LVLI`, `LVLN`, `LVLC`, `LVSP`), form
+  lists (`FLST`), outfits (`OTFT`), containers (`CONT`), actors (`NPC_`,
+  `CREA`: inventory, factions, spells, perks, keywords, actor values),
+  races (`RACE`: spells, keywords, race relations) and carried items
+  (`ALCH`, `AMMO`, `ARMO`, `BOOK`, `MISC`, `WEAP` and the other item types:
+  keywords), #6670:
+  `crates/plugin/src/esm/records/list_merge.rs`, selected per session with
+  `--merge-policy merge|legacy` (default `merge`). "Independent" is decided
+  on the transitive master closure, so a patch that masters every
+  contributor wins whole; an override's base is its latest earlier carrier
+  among its own masters. A wholesale winner's changes against the list it
+  replaced count as its operations, so a later independent override that
+  undoes one overrules it in the report. Per-entry `COED` data is not
+  decoded and takes no part in the comparison. A form list's null entries
+  hold a place, not a form: they are never an operation and keep their
+  positions, and additions append, so the indices of untouched entries stay
+  put. A list whose order is its meaning is one scalar field: an actor's
+  AI packages (priority order) and a consumable's effects. The keyword
+  lists of other records (locations, quests, activators, furniture, magic
+  effects, spells) are still last-wins. On the installed games the
+  vanilla master-plus-DLC sets merge no levelled list (their DLC extend
+  shared lists by script); Skyrim's Dawnguard and Hearthfires both override
+  three containers and merge to what `legacy` keeps. A Fallout 4 profile
+  with the Unofficial Fallout 4 Patch and MojaveImports merges two levelled
+  lists, where `legacy` let the mod built against vanilla undo the patch's
+  fix; a Starfield profile with the community, unofficial and Resource
+  Revival patches merges a container whose rename and item swap `legacy`
+  lets the vanilla-based unofficial patch undo. With Inventory Organizer
+  added, the Fallout 4 profile merges 568 items: `legacy` lets
+  MojaveImports' record of Nuka-Cola Quantum undo Inventory Organizer's
+  rename, `merge` keeps the rename with MojaveImports' effects and keyword.
+  A Starfield companion mod raises a companion's perks and actor values
+  and adds two perks; `legacy` lets the vanilla-based unofficial patch
+  undo all of it, `merge` keeps it beside the patches' own changes.
 - **LMC-REC-004.** DELE-flagged overrides and tombstoned references MUST
   behave as the game treats them: a deleted base record disappears from the
   merged index; a deleted reference is absent from its cell. The cleaning
@@ -538,42 +574,62 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
 - **LMC-AST-001.** Loose files outrank every archive (shipped, #6200).
 - **LMC-AST-002 — Paired archives.** For each enabled legacy plugin the
   engine MUST open the archives the game would pair with it by name, in
-  profile order. The per-game rules, with their verification state:
+  profile order, whatever the plugin's extension: `.esm` and `.esl` plugins
+  pair exactly as `.esp` plugins do (owner ruling on #6670, 2026-11-22). The
+  sources below speak of `.esp` files, but the shipped data pairs masters
+  too: every FO3 / FNV DLC `.esm` ships `<Stem> - Main.bsa` (and most a
+  `- Sounds.bsa`), every Skyrim SE Creation Club `.esm` / `.esl` its
+  `<stem>.bsa`, and no shipped INI or `.ccc` lists any of them. The
+  per-game rules, with their verification state:
   - *Oblivion* (verified): `<PluginName><anything>.bsa`, where `<anything>`
-    is empty or starts with a space, hyphen or underscore, and the plugin
-    "must be an ESP file"
+    is empty or starts with a space, hyphen or underscore
     ([UESP: BSAs and Archive Invalidation](https://en.uesp.net/wiki/Oblivion_Mod:BSAs_and_Archive_Invalidation)).
     Vanilla archives come from the INI `sArchiveList`.
-  - *FO3 / FNV* (verified, Phase 0): `JunkyMod.esp` loads `JunkyMod.bsa`,
-    and "the above method doesn't work for .esm files"; the GECK's second
-    method names the archive `JunkyMod - Assets.bsa` ("You can change Assets
-    to whatever you like") beside a stub `.esp` whose name starts the
-    archive's name ([GECK: BSA Files](https://geck.uesp.net/wiki/BSA_Files)).
-    So the rule is `<stem>.bsa` or `<stem> - <anything>.bsa`, paired with a
-    plugin that is an `.esp`; `Foo - Main.bsa` and `Foo - Sounds.bsa` are
-    instances of the second form. An `.esm` is paired through such a stub.
+  - *FO3 / FNV* (verified, Phase 0): `JunkyMod.esp` loads `JunkyMod.bsa`;
+    the GECK's second method names the archive `JunkyMod - Assets.bsa`
+    ("You can change Assets to whatever you like")
+    ([GECK: BSA Files](https://geck.uesp.net/wiki/BSA_Files)). So the rule
+    is `<stem>.bsa` or `<stem> - <anything>.bsa`; `Foo - Main.bsa` and
+    `Foo - Sounds.bsa` are instances of the second form. The GECK's "the
+    above method doesn't work for .esm files" is superseded by the ruling
+    above.
   - *Skyrim LE / SE* (`<stem>.bsa` confirmed, Phase 0; the rest **Phase 0:
     verify**): the Creation Kit wiki's archive instructions say to "name
     your bsa the same name as your .esp file" and speak of "an archive
     already associated with your plugin" ([CK: Archive.exe](https://ck.uesp.net/wiki/Archive.exe)).
     Community sources describe `<stem> - Textures.bsa` as a second paired
     name; the Creation Kit wiki page for Bethesda archives returned 403 to
-    the Phase 0 fetch and no primary source for that form was found. Vanilla archives come from
+    the Phase 0 fetch and no primary source for that form was found, so it
+    is not paired. Vanilla archives come from
     `sResourceArchiveList` / `sResourceArchiveList2`, "a list of BSAs to be
     loaded without a plugin"
     ([STEP: Skyrim INI](https://stepmodifications.org/wiki/Guide:Skyrim_INI/Archive)).
   - *FO4* (verified): `<stem> - Main.ba2` and `<stem> - Textures.ba2`;
     "Archive files require a Data File of the same name to be activated"
     ([FO4 CK: Archive File](https://falloutck.uesp.net/wiki/Archive_File)).
-    **Phase 0: verify** the localised voice-archive suffix.
-  - *Starfield* (suffixes verified): `- Main`, `- Main_Xbox`, `- Textures`,
-    `- Textures_Xbox` ([Archive2](https://starfieldwiki.net/wiki/Starfield_Mod:Archive2)).
-    **Phase 0: verify** voice and localisation suffixes, and whether pairing
-    is automatic or needs a plugin of the same name.
-  Numeric siblings the engine already pairs stay paired. Archive-versus-
-  archive precedence: the game's official archive list first, then paired
-  archives in profile plugin order. Loose files outrank all of them
-  (LMC-AST-001, LMC-AST-010). Not implemented today.
+    The voice archive is `<stem> - Voices_<sLanguage>.ba2`: each voiced DLC
+    ships `DLC<Name> - Voices_en.ba2`, which `Fallout4_Default.ini` does not
+    list. **Phase 0: verify** how the high-resolution texture pack's
+    `DLCUltraHighResolution - Textures01`..`16` open (no `- Textures`
+    archive heads the series); they are not paired.
+  - *Starfield* (verified): `- Main`, `- Textures`
+    ([Archive2](https://starfieldwiki.net/wiki/Starfield_Mod:Archive2)),
+    `- Localization` and `- Voices_<sLanguage>`. Pairing is automatic: the
+    shipped `SFBGS003.esm` (Shattered Space) brings `- Main`, `- Textures`
+    and five `- Voices_<lang>` archives, and `Constellation.esm` /
+    `OldMars.esm` a `- Localization` archive, none of them in
+    `Starfield.ini`'s archive lists. The `_Xbox` variants are console
+    archives and are not paired.
+  The engine has no language setting: voice archives pair in English, the
+  language the profiles' voice archives already are. Numeric siblings the
+  engine already pairs stay paired. Archive-versus-archive precedence: the
+  game's official archive list first, then paired archives in profile
+  plugin order. Loose files outrank all of them (LMC-AST-001, LMC-AST-010).
+  Built for the session profile (#6670): `crates/plugin/src/archive_pairing.rs`
+  holds the rules, and boot activation appends each activated plugin's
+  archives from its own directory to the mesh, texture, sound, script and
+  material providers, an archive the profile already lists keeping its
+  place (see [Plugin Loading](../engine/plugin-loading.md)).
 - **LMC-AST-003.** Archive-list semantics the games read from INI and `.ccc`
   are imported into the profile (LMC-ID-006) and reproduced by profile
   order; the files themselves are not read at runtime.
@@ -1257,3 +1313,7 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 4 | 2026-11-03 | Owner decisions Q1–Q9 recorded; Q1 amended: known unofficial patches are not loaded and the engine stands in for them (thesis 3, T1, LMC-G-002, LMC-FIX-001, new LMC-FIX-004, LMC-ID-011, Phase 0 design item); Q2–Q9 take the recommendation | owner: approved |
 | 5 | 2026-11-03 | → ACTIVE: parent #6664 and phase issues #6669, #6670, #6671, #6672, #6673, #6674, #6675, #6676 filed; the Phase 0 verify items are acceptance criteria of #6669 | — |
 | 6 | 2026-11-04 | Phase 0 started (#6669): §3.1 is generated from `assets/legacy_mod_compat/mechanisms.toml` (65 rows, composite rows split, one disposition per game, versioned, cited; `scripts/check-lmc-catalog.py`, CI); the hand-written "Today" column is removed. Verified: the FO3 / FNV `<stem> - <anything>.bsa` pairing form (GECK) and Skyrim's `<stem>.bsa` (CK wiki). Still open, no primary source reachable: the rest of the Phase 0 verify list, corpus verification and scenarios, the honoured-INI table | — |
+| 7 | 2026-11-22 | LMC-AST-002: owner ruling on #6670 — `.esm` and `.esl` plugins pair with archives as `.esp` plugins do. The FO4 voice suffix and Starfield's automatic pairing (with `- Localization` and `- Voices_<lang>`) verified from the shipped DLC; Skyrim's `- Textures.bsa` stays unverified and unpaired; the FO4 high-resolution pack's series is a new verify item. Pairing built in `crates/plugin/src/archive_pairing.rs` | — |
+| 8 | 2026-11-22 | LMC-REC-003 built for the levelled lists (`merge` by default per Q2, `--merge-policy legacy`); the catalog's R2 and T2.necessity rows say so | — |
+| 9 | 2026-11-22 | LMC-REC-003 extended to form lists, outfits and containers (form-list null slots keep their positions); the catalog's R2 and T2.necessity rows at version 3 | — |
+| 10 | 2026-11-22 | LMC-REC-003 extended to actors (inventory, factions, spells, perks, keywords, actor values), races (spells, keywords, race relations) and carried items (keywords); AI packages and consumable effects stay one field, their order being their meaning; the catalog's R2 and T2.necessity rows at version 4 | — |

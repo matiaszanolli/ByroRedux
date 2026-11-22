@@ -7,19 +7,26 @@
 //! It lives in the main loop alongside VulkanContext.
 
 pub mod avm1_host;
+mod avm1_path;
 mod avm2_host;
+mod behaviour;
 mod catalog;
+mod fonts;
 mod host;
 mod input;
 mod navigator;
 mod pacing;
+pub mod path;
 mod player;
 mod prepare;
 mod profile;
+mod translate;
 
 use std::sync::Arc;
 
 pub use avm2_host::ScaleformHostObjectState;
+pub use behaviour::{HostBehaviour, HostCallReport, HostClass, Placeholder};
+pub use fonts::{set_text_languages, text_languages, FALLBACK_FONT_NAME};
 pub use catalog::{
     ScaleformHostCatalog, ScaleformHostMethod, ScaleformHostMethodKind, ScaleformHostObject,
 };
@@ -33,8 +40,10 @@ pub use input::{
 };
 pub use navigator::{ScaleformResourceLoad, ScaleformResourceProvider};
 pub use pacing::RenderPacing;
+pub use path::{PathOp, PathOutcome, WhenAbsent};
 pub use player::SwfPlayer;
 pub use profile::ScaleformProfile;
+pub use translate::parse_translation_table;
 /// What [`UiManager::render`] wants the compositor to do this frame.
 ///
 /// #2972 — three states, because `Option` only has two and the overlay has
@@ -50,42 +59,182 @@ pub enum UiFrame<'a> {
     Hidden,
 }
 
-/// Global UI manager. Owns the active Ruffle player and UI state.
-///
-/// Managed directly by the main loop (not ECS) because Ruffle's Player
-/// contains non-Send backends (video, audio).
-pub struct UiManager {
-    /// Active SWF player (None if no menu is loaded).
-    player: Option<SwfPlayer>,
-    /// Whether the UI overlay is visible.
-    pub visible: bool,
-    /// Whether the active menu owns keyboard and pointer input.
-    input_focused: bool,
-    /// Name of the currently loaded menu (e.g. "startmenu").
-    pub menu_name: String,
-    /// Viewport dimensions for the UI overlay.
+/// One open movie: a Ruffle player, the menu name it reports, the path it was loaded from, and the
+/// compositor texture the engine uploads it to.
+pub struct UiLayer {
+    player: SwfPlayer,
+    /// Name of the menu (e.g. `MessageBoxMenu`), canonicalized by
+    /// [`UiManager::installed_menu_name`].
+    menu_name: String,
+    /// What the menu was loaded as: the archive path or the loose file.
+    path: String,
+    /// Whether the layer is drawn and ticked (`hud.off` hides a HUD without closing it).
+    visible: bool,
+    /// The engine's texture handle for this layer's frames, if it registered one.
+    texture: Option<u32>,
+    /// Unique per installed player: a menu replaced under the same name gets a new id, so per-layer
+    /// latches (the host-call drop counter, #3772) can tell the two apart.
+    id: u64,
+    /// Path operations held for a retry, and the absent paths already reported (GUI-PATH-003).
+    paths: path::PathQueue,
+}
+
+impl UiLayer {
+    pub fn menu_name(&self) -> &str {
+        &self.menu_name
+    }
+
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub fn visible(&self) -> bool {
+        self.visible
+    }
+
+    pub fn set_visible(&mut self, visible: bool) {
+        self.visible = visible;
+    }
+
+    pub fn texture(&self) -> Option<u32> {
+        self.texture
+    }
+
+    pub fn set_texture(&mut self, texture: Option<u32>) {
+        self.texture = texture;
+    }
+
+    /// The menu's resolved Scaleform profile (#3771).
+    pub fn profile(&self) -> ScaleformProfile {
+        self.player.profile()
+    }
+
+    pub fn dimensions(&self) -> (u32, u32) {
+        self.player.dimensions()
+    }
+
+    /// Host bridge for draining ActionScript calls and inspecting callbacks.
+    pub fn host_bridge(&self) -> ScaleformHostBridge {
+        self.player.host_bridge()
+    }
+
+    /// The menu's native-object adapter state (#3427).
+    pub fn host_object_state(&self) -> ScaleformHostObjectState {
+        self.player.host_object_state()
+    }
+
+    /// Take the ActionScript→engine calls recorded since the previous drain (#2714).
+    pub fn drain_host_calls(&self) -> Vec<ScaleformHostCall> {
+        self.player.host_bridge().drain_calls()
+    }
+
+    /// Calls this menu's bridge evicted under [`MAX_QUEUED_CALLS`] since it was loaded (#2969);
+    /// read beside [`Self::drain_host_calls`].
+    pub fn dropped_host_calls(&self) -> u64 {
+        self.player.host_bridge().dropped_calls()
+    }
+
+    /// Get, set or invoke a member by its dotted path from the movie root (M48 GUI-PATH-001):
+    /// the path service, the only engine route to a movie member by path (GUI-PATH-005).
+    /// `when_absent` decides, per call, what happens when the target is not there yet
+    /// (GUI-PATH-003): [`WhenAbsent::Queue`] holds the operation and retries it after every tick
+    /// until it lands ([`PathOutcome::Queued`]); [`WhenAbsent::Refuse`] answers
+    /// [`PathOutcome::Absent`] (reported once per path, GUI-PATH-002) or
+    /// [`PathOutcome::NotReady`] now.
+    pub fn path_op(&mut self, op: PathOp, when_absent: WhenAbsent) -> PathOutcome {
+        let outcome = self.player.path_op(&op);
+        match (outcome, when_absent) {
+            (PathOutcome::Absent | PathOutcome::NotReady, WhenAbsent::Queue) => {
+                self.paths.hold(op);
+                PathOutcome::Queued
+            }
+            (PathOutcome::Absent, WhenAbsent::Refuse) => {
+                self.paths.report_absent(&self.menu_name, &op);
+                PathOutcome::Absent
+            }
+            (outcome, _) => outcome,
+        }
+    }
+
+    /// Path operations waiting for their target.
+    pub fn queued_paths(&self) -> usize {
+        self.paths.len()
+    }
+
+    /// Retry the held path operations; the ones whose target is still missing stay held.
+    fn retry_queued_paths(&mut self) {
+        for op in self.paths.take() {
+            if !matches!(self.player.path_op(&op), PathOutcome::Found(_)) {
+                self.paths.hold(op);
+            }
+        }
+    }
+
+    /// Invoke a callback registered by the menu's ActionScript.
+    pub fn invoke_callback(
+        &mut self,
+        name: &str,
+        arguments: impl IntoIterator<Item = ScaleformValue>,
+    ) -> Option<ScaleformValue> {
+        self.player.invoke_callback(name, arguments)
+    }
+
+    /// Clear the stage to transparent (see [`SwfPlayer::set_stage_transparent`]) — the HUD route
+    /// opts in so the world shows through wherever the movie drew nothing.
+    pub fn set_stage_transparent(&mut self) {
+        self.player.set_stage_transparent();
+    }
+
+    /// Pace the render-and-readback (see [`RenderPacing`], #4717).
+    pub fn set_render_pacing(&mut self, pacing: RenderPacing) {
+        self.player.set_render_pacing(pacing);
+    }
+
+    /// Render-and-readback passes run so far; `hud.debug` mirrors it.
+    pub fn render_passes(&self) -> u64 {
+        self.player.render_passes()
+    }
+
+    /// Render the current frame and report what the compositor should do with this layer.
     ///
-    /// #2723 (SAFEUI-07) — fixed at [`Self::new`] time, not live-updated on
-    /// a window resize. Nothing currently drives Ruffle's
-    /// `set_viewport_dimensions` or re-registers the UI texture when the
-    /// swapchain is recreated, so the overlay stretches to the new aspect
-    /// ratio instead of re-rendering at it (visual only — see
-    /// `docs/engine/ui.md`'s "overlay viewport is fixed at load time" note
-    /// for why this cannot over-read the texture upload).
+    /// #2972 — three states, so "hidden" and "unchanged" never share one answer: a hidden layer
+    /// stops compositing instead of keeping its last upload over the world.
+    pub fn render(&mut self) -> UiFrame<'_> {
+        if !self.visible {
+            return UiFrame::Hidden;
+        }
+        match self.player.render() {
+            Some(pixels) => UiFrame::Fresh(pixels),
+            None => UiFrame::Unchanged,
+        }
+    }
+}
+
+/// The open Scaleform movies, bottom to top (M48 GUI-REG-001, design Q3).
+///
+/// Every visible layer ticks and renders to its own overlay texture, composited in stack order;
+/// only the input owner receives `UiInputEvent`. Which layer owns input is the menu registry's
+/// decision (GUI-REG-009): the engine hands it over with [`Self::set_input_owner`] every frame.
+/// Managed directly by the main loop (not ECS) because Ruffle's Player contains non-Send backends
+/// (video, audio).
+pub struct UiManager {
+    layers: Vec<UiLayer>,
+    /// The `menu_name` of the layer that owns keyboard and pointer input.
+    input_owner: Option<String>,
+    /// Viewport dimensions every layer renders at; [`Self::resize`] follows the swapchain
+    /// (GUI-REG-008).
     pub width: u32,
     pub height: u32,
+    next_id: u64,
 }
 
 impl UiManager {
     pub fn new(width: u32, height: u32) -> Self {
-        Self {
-            player: None,
-            visible: false,
-            input_focused: false,
-            menu_name: String::new(),
-            width,
-            height,
-        }
+        Self { layers: Vec::new(), input_owner: None, width, height, next_id: 0 }
     }
 
     /// Load a SWF file and create a Ruffle player for it.
@@ -113,7 +262,7 @@ impl UiManager {
     /// doc for when a caller would legitimately pass `Some(..)` (an
     /// independent cross-check source) versus `None` (trust the single
     /// detect `prepare_movie` already performs). The resolved profile is
-    /// always readable afterward via [`Self::menu_profile`], whichever way
+    /// always readable afterward via [`UiLayer::profile`], whichever way
     /// it was reached.
     pub fn load_swf_from_resource_provider(
         &mut self,
@@ -122,6 +271,8 @@ impl UiManager {
         name: &str,
         profile: Option<ScaleformProfile>,
     ) -> anyhow::Result<()> {
+        // M48 GUI-FONT-004 — the language's `$`-key table, before the movie lays any text out.
+        translate::install_translations(provider.as_ref(), &fonts::text_languages());
         let player = SwfPlayer::from_resource_provider(
             provider,
             movie_path,
@@ -133,12 +284,6 @@ impl UiManager {
         Ok(())
     }
 
-    /// The currently-loaded menu's resolved Scaleform profile, or `None`
-    /// when no menu is loaded. #3771.
-    pub fn menu_profile(&self) -> Option<ScaleformProfile> {
-        self.player.as_ref().map(SwfPlayer::profile)
-    }
-
     /// The `menu_name` a menu loaded as `name` reports. Both load routes
     /// hand `install_player` an on-disk movie path (`interface\hudmenu.swf`),
     /// while `UI.IsMenuOpen` compares real Bethesda menu names — the path's
@@ -148,149 +293,134 @@ impl UiManager {
         canonical_menu_name(name).unwrap_or_else(|| name.to_string())
     }
 
+    /// Put `player` on top as `name`. A menu already open under that name is replaced in place
+    /// (its texture handle carries over). The new layer takes input; the engine's next registry
+    /// sync confirms or moves it.
     fn install_player(&mut self, player: SwfPlayer, name: &str) {
-        self.set_input_focus(false);
-        self.player = Some(player);
-        self.menu_name = Self::installed_menu_name(name);
-        self.visible = true;
-        self.set_input_focus(true);
+        let menu_name = Self::installed_menu_name(name);
+        self.next_id += 1;
+        let layer = UiLayer {
+            player,
+            menu_name: menu_name.clone(),
+            path: name.to_owned(),
+            visible: true,
+            texture: None,
+            id: self.next_id,
+            paths: path::PathQueue::default(),
+        };
+        self.set_input_owner(None);
+        match self.layers.iter().position(|open| open.menu_name == menu_name) {
+            Some(at) => {
+                let texture = self.layers[at].texture;
+                self.layers[at] = UiLayer { texture, ..layer };
+            }
+            None => self.layers.push(layer),
+        }
+        self.set_input_owner(Some(&menu_name));
         log::info!(
-            "Loaded SWF menu '{}' ({}x{})",
+            "Loaded SWF menu '{}' ({}x{}, {} layer(s))",
             name,
             self.width,
-            self.height
+            self.height,
+            self.layers.len()
         );
     }
 
-    /// Advance the Ruffle player by dt seconds.
+    /// Close the menu `name` (GUI-REG-007): its player is dropped, and if it owned input nothing
+    /// does until the engine hands input to the next owner — in the same frame, from the registry.
+    /// The closed layer comes back so the caller can release its texture.
+    pub fn close(&mut self, name: &str) -> Option<UiLayer> {
+        let at = self.layers.iter().position(|open| open.menu_name.eq_ignore_ascii_case(name))?;
+        if self.input_owner.as_deref().is_some_and(|owner| owner.eq_ignore_ascii_case(name)) {
+            self.set_input_owner(None);
+        }
+        Some(self.layers.remove(at))
+    }
+
+    /// The open movies, bottom to top.
+    pub fn layers(&self) -> &[UiLayer] {
+        &self.layers
+    }
+
+    pub fn layers_mut(&mut self) -> &mut [UiLayer] {
+        &mut self.layers
+    }
+
+    pub fn layer(&self, name: &str) -> Option<&UiLayer> {
+        self.layers.iter().find(|open| open.menu_name.eq_ignore_ascii_case(name))
+    }
+
+    pub fn layer_mut(&mut self, name: &str) -> Option<&mut UiLayer> {
+        self.layers.iter_mut().find(|open| open.menu_name.eq_ignore_ascii_case(name))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.layers.is_empty()
+    }
+
+    /// Advance every visible movie by dt seconds.
     pub fn tick(&mut self, dt: f64) {
-        if let Some(ref mut player) = self.player {
-            if self.visible {
-                player.tick(dt);
-            }
+        for layer in self.layers.iter_mut().filter(|layer| layer.visible) {
+            layer.player.tick(dt);
+            layer.retry_queued_paths();
         }
     }
 
-    /// Render the current frame and report what the compositor should do.
-    ///
-    /// #2972 — this returned `Option<&[u8]>`, and since #2719 the frame driver
-    /// reads `None` as "keep showing the texture you already have". That
-    /// conflated two opposite meanings: *nothing changed, reuse the last
-    /// upload* and *the overlay is hidden, stop drawing*. Setting
-    /// `visible = false` therefore froze Ruffle but left the last uploaded
-    /// frame composited over the world forever.
-    ///
-    /// The three-state return makes the ambiguity unrepresentable rather than
-    /// relying on the caller to remember to check `visible` as a second field.
-    pub fn render(&mut self) -> UiFrame<'_> {
-        if !self.visible {
-            return UiFrame::Hidden;
-        }
-        let Some(player) = self.player.as_mut() else {
-            // No live player: there is nothing to composite, and a stale
-            // texture from a closed menu must not survive.
-            return UiFrame::Hidden;
-        };
-        match player.render() {
-            Some(pixels) => UiFrame::Fresh(pixels),
-            None => UiFrame::Unchanged,
-        }
-    }
-
-    /// Host bridge for draining ActionScript calls and inspecting callbacks.
-    pub fn host_bridge(&self) -> Option<ScaleformHostBridge> {
-        self.player.as_ref().map(SwfPlayer::host_bridge)
-    }
-
-    /// The active menu's native-object adapter state (#3427).
-    ///
-    /// [`SwfPlayer::host_object_state`] had no caller outside `crates/ui` —
-    /// an AVM2 movie that reaches [`ScaleformHostObjectState::NotPresent`]
-    /// logged identically to one that injected cleanly, since there was no
-    /// accessor through which the engine could tell them apart. `None` when
-    /// no menu is loaded.
-    pub fn host_object_state(&self) -> Option<ScaleformHostObjectState> {
-        self.player.as_ref().map(SwfPlayer::host_object_state)
-    }
-
-    /// Take the ActionScript→engine calls recorded since the previous drain.
-    ///
-    /// The main loop calls this once per frame beside [`Self::tick`]. Keeping
-    /// the accessor here rather than making every caller go through
-    /// [`Self::host_bridge`] is what makes "the engine consumes what the menu
-    /// asked for" a single, greppable call site (#2714) — the bridge was
-    /// designed drain-based and had no non-test consumer at all.
-    ///
-    /// Returns an empty vector when no menu is loaded.
-    pub fn drain_host_calls(&self) -> Vec<ScaleformHostCall> {
-        self.player
-            .as_ref()
-            .map(|player| player.host_bridge().drain_calls())
-            .unwrap_or_default()
-    }
-
-    /// Calls the active menu's bridge evicted under [`MAX_QUEUED_CALLS`] since
-    /// that menu was loaded.
-    ///
-    /// #2969 — `drain_calls`' contract says a full batch "should be read
-    /// together with `dropped_calls` — the batch may not be contiguous", and
-    /// nothing outside this crate read it. The bridge warns once at the
-    /// producer when it first evicts, but that says a call was lost, not that
-    /// *the batch the engine is holding* has a hole in it. Exposed beside
-    /// [`Self::drain_host_calls`] so the consumer can honour the contract
-    /// through the same handle rather than reaching for
-    /// [`Self::host_bridge`].
-    ///
-    /// Counts from the active menu's bridge, so loading a new menu resets it —
-    /// the caller latches, and must treat a decrease as a menu change rather
-    /// than as calls being un-dropped.
-    pub fn dropped_host_calls(&self) -> u64 {
-        self.player
-            .as_ref()
-            .map(|player| player.host_bridge().dropped_calls())
-            .unwrap_or(0)
-    }
-
-    /// Invoke a callback registered by the active ActionScript movie.
-    pub fn invoke_callback(
-        &mut self,
-        name: &str,
-        arguments: impl IntoIterator<Item = ScaleformValue>,
-    ) -> Option<ScaleformValue> {
-        self.player
-            .as_mut()
-            .and_then(|player| player.invoke_callback(name, arguments))
-    }
-
-    /// Whether the visible menu currently owns keyboard and pointer input.
-    pub fn has_input_focus(&self) -> bool {
-        self.input_focused && self.visible && self.player.is_some()
-    }
-
-    /// Transfer keyboard and pointer focus to or from the active menu.
-    ///
-    /// Focus cannot be granted without a visible player. A transition is
-    /// forwarded to Ruffle exactly once and the return value reports whether
-    /// the effective focus state changed.
-    pub fn set_input_focus(&mut self, focused: bool) -> bool {
-        let focused = focused && self.visible && self.player.is_some();
-        if self.input_focused == focused {
+    /// Re-render every movie at a new viewport extent (GUI-REG-008, design § *Resize*): the
+    /// engine calls this after it recreates the swapchain, and the next upload of each layer
+    /// replaces its texture at the new size. `false` when the extent did not change.
+    pub fn resize(&mut self, width: u32, height: u32) -> bool {
+        if (width, height) == (self.width, self.height) || width == 0 || height == 0 {
             return false;
         }
-
-        self.input_focused = focused;
-        if let Some(player) = self.player.as_mut() {
-            let event = if focused {
-                UiInputEvent::FocusGained
-            } else {
-                UiInputEvent::FocusLost
-            };
-            player.handle_input(event);
+        self.width = width;
+        self.height = height;
+        for layer in &mut self.layers {
+            layer.player.resize(width, height);
         }
         true
     }
 
-    /// Dispatch an input event to the focused menu.
+    /// The wgpu devices the open movies render through (GUI-REG-005): one per process once any
+    /// movie was created (#2733), never one per movie.
+    pub fn device_count() -> u32 {
+        player::shared_device_count()
+    }
+
+    /// The `menu_name` of the movie that owns input, if a movie does.
+    pub fn input_owner(&self) -> Option<&str> {
+        self.input_owner.as_deref()
+    }
+
+    /// Whether a visible movie currently owns keyboard and pointer input.
+    pub fn has_input_focus(&self) -> bool {
+        self.input_owner.as_deref().and_then(|owner| self.layer(owner)).is_some_and(|layer| layer.visible)
+    }
+
+    /// Hand keyboard and pointer input to the movie `owner` (`None`: to no movie). Each change is
+    /// forwarded to Ruffle exactly once (`FocusLost` to the old owner, `FocusGained` to the new);
+    /// an owner that is not an open, visible movie owns nothing. Returns whether it changed.
+    pub fn set_input_owner(&mut self, owner: Option<&str>) -> bool {
+        let owner = owner
+            .and_then(|name| self.layer(name))
+            .filter(|layer| layer.visible)
+            .map(|layer| layer.menu_name.clone());
+        if owner == self.input_owner {
+            return false;
+        }
+        if let Some(old) = self.input_owner.take()
+            && let Some(layer) = self.layer_mut(&old) {
+                layer.player.handle_input(UiInputEvent::FocusLost);
+            }
+        if let Some(new) = owner.as_deref()
+            && let Some(layer) = self.layer_mut(new) {
+                layer.player.handle_input(UiInputEvent::FocusGained);
+            }
+        self.input_owner = owner;
+        true
+    }
+
+    /// Dispatch an input event to the movie that owns input.
     ///
     /// `true` means the menu captured the event. Capture is based on focus,
     /// not on whether an individual ActionScript listener returned handled:
@@ -299,70 +429,30 @@ impl UiManager {
         if !self.has_input_focus() {
             return false;
         }
-        if let Some(player) = self.player.as_mut() {
-            player.handle_input(event);
-            true
-        } else {
-            false
+        let owner = self.input_owner.clone().unwrap_or_default();
+        match self.layer_mut(&owner) {
+            Some(layer) => {
+                layer.player.handle_input(event);
+                true
+            }
+            None => false,
         }
     }
 
-    /// Update Ruffle's native-pointer stage state for the visible menu.
+    /// Update Ruffle's native-pointer stage state for the movie that owns input.
     pub fn set_mouse_in_stage(&mut self, is_in_stage: bool) -> bool {
-        if !self.visible {
+        if !self.has_input_focus() {
             return false;
         }
-        if let Some(player) = self.player.as_mut() {
-            player.set_mouse_in_stage(is_in_stage);
-            true
-        } else {
-            false
-        }
-    }
-
-    /// Clear the active menu's stage to transparent (see
-    /// [`SwfPlayer::set_stage_transparent`]) — the HUD route opts in so
-    /// the world shows through wherever the movie drew nothing. No-op
-    /// without a loaded menu.
-    pub fn set_stage_transparent(&mut self) -> bool {
-        match self.player.as_mut() {
-            Some(player) => {
-                player.set_stage_transparent();
+        let owner = self.input_owner.clone().unwrap_or_default();
+        match self.layer_mut(&owner) {
+            Some(layer) => {
+                layer.player.set_mouse_in_stage(is_in_stage);
                 true
             }
             None => false,
         }
     }
-
-    /// Pace the active menu's render-and-readback (see [`RenderPacing`],
-    /// #4717) — the always-on HUD route opts in so a static movie stops
-    /// paying a full-target readback at its own frame rate. Modal menus
-    /// leave it off. No-op without a loaded menu.
-    pub fn set_render_pacing(&mut self, pacing: RenderPacing) -> bool {
-        match self.player.as_mut() {
-            Some(player) => {
-                player.set_render_pacing(pacing);
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// Render-and-readback passes the active menu has run (0 without one).
-    /// Telemetry for [`Self::set_render_pacing`] — `hud.debug` mirrors it.
-    pub fn render_passes(&self) -> u64 {
-        self.player.as_ref().map_or(0, SwfPlayer::render_passes)
-    }
-
-    // #2723 (SAFEUI-07) — a `close()` unloading the active menu
-    // (`set_input_focus(false)` + `player = None` + `visible = false` +
-    // `menu_name.clear()`) used to live here. It had zero callers: nothing
-    // in the engine currently drives an interactive menu-dismissal flow
-    // (no Escape-closes-menu handler, no menu-switch trigger) — see
-    // `docs/engine/ui.md`'s "current manager still owns one active menu...
-    // a real menu stack must define which visible layer receives focus"
-    // note. Deleted rather than left as unreachable API surface; trivial
-    // to re-add once that policy exists and needs it.
 }
 
 /// Convert known Bethesda movie filenames to the menu identifiers exposed to
@@ -420,18 +510,48 @@ mod menu_name_tests {
 mod tests {
     use super::*;
 
-    /// #2714 — the engine's per-frame drain runs whether or not a menu is
-    /// loaded, so the no-player case has to be a cheap empty answer rather
-    /// than a panic or an `Option` the caller has to unwrap every frame.
+    /// #2714 — the engine's per-frame drain walks the open layers, so an
+    /// empty manager is simply no layers: nothing to drain, nothing to
+    /// composite, no input owner.
+    /// M48 GUI-PATH-003 — a path operation issued before its target exists, with
+    /// `WhenAbsent::Queue`, is held (the adapter registers on frame 1, which has not run yet)
+    /// and lands after the next tick; with `WhenAbsent::Refuse` the same call answers now.
     #[test]
-    fn draining_host_calls_without_a_menu_is_empty() {
-        let manager = UiManager::new(1280, 720);
-        assert!(manager.host_bridge().is_none());
-        assert!(manager.drain_host_calls().is_empty());
-        // #2969 — the drop counter is read on the same frames, so it needs
-        // the same cheap no-player answer. Zero, not a panic: "no menu" and
-        // "no menu has lost anything" are the same statement.
-        assert_eq!(manager.dropped_host_calls(), 0);
+    fn a_queued_path_lands_once_the_movie_runs_its_first_frame() {
+        if !crate::player::vulkan_adapter_available() {
+            eprintln!("skipped: no Vulkan adapter (headless CI) — #4595");
+            return;
+        }
+        let mut manager = UiManager::new(64, 64);
+        manager.load_swf(&crate::avm1_path::test_movie::movie(), "test.swf").unwrap();
+        let layer = manager.layer_mut("test.swf").unwrap();
+        let set = PathOp::Set("_root.meter.value".into(), ScaleformValue::Number(31.0));
+        assert_eq!(layer.path_op(set.clone(), WhenAbsent::Refuse), PathOutcome::NotReady);
+        assert_eq!(layer.path_op(set, WhenAbsent::Queue), PathOutcome::Queued);
+        assert_eq!(layer.queued_paths(), 1);
+        manager.tick(1.0 / 30.0);
+        let layer = manager.layer_mut("test.swf").unwrap();
+        assert_eq!(layer.queued_paths(), 0, "the held set landed after the tick");
+        assert_eq!(
+            layer.path_op(PathOp::Get("_root.meter.value".into()), WhenAbsent::Refuse),
+            PathOutcome::Found(ScaleformValue::Number(31.0))
+        );
+        assert_eq!(layer.path_op(PathOp::Get("_root.nope".into()), WhenAbsent::Refuse), PathOutcome::Absent);
+    }
+
+    #[test]
+    fn an_empty_manager_has_nothing_to_drain_or_focus() {
+        let mut manager = UiManager::new(1280, 720);
+        assert!(manager.is_empty() && manager.layers().is_empty());
+        assert!(!manager.has_input_focus());
+        // An owner that is not an open movie owns nothing.
+        assert!(!manager.set_input_owner(Some("InventoryMenu")));
+        assert_eq!(manager.input_owner(), None);
+        assert!(manager.close("InventoryMenu").is_none());
+        assert!(!manager.handle_input(UiInputEvent::FocusGained));
+        assert!(manager.resize(1920, 1080) && (manager.width, manager.height) == (1920, 1080));
+        assert!(!manager.resize(1920, 1080), "same extent: nothing to do");
+        assert!(!manager.resize(0, 1080), "an empty extent is refused");
     }
 
     /// #2969 — `drain_calls`' doc says a batch "should be read together with
@@ -454,24 +574,6 @@ mod tests {
             "the per-frame drain stopped reading the eviction counter, so a \
              non-contiguous batch is silent again (#2969)"
         );
-    }
-
-    /// #2972 — `render()` returned `Option<&[u8]>`, and since #2719 the frame
-    /// driver reads `None` as "keep showing the texture you already have". So
-    /// `visible = false` froze Ruffle but kept the last uploaded frame
-    /// composited over the world forever: "unchanged" and "hidden" shared one
-    /// `None`. Three states make that unrepresentable.
-    #[test]
-    fn hiding_the_overlay_is_distinguishable_from_an_unchanged_frame() {
-        let mut manager = UiManager::new(1280, 720);
-
-        // No player: nothing to composite. Must be Hidden, not Unchanged —
-        // otherwise a stale texture from a closed menu would survive.
-        assert!(matches!(manager.render(), UiFrame::Hidden));
-
-        // And explicitly hidden is Hidden regardless of player state.
-        manager.visible = false;
-        assert!(matches!(manager.render(), UiFrame::Hidden));
     }
 
     /// #2972 SIBLING — the frame driver is the only consumer of

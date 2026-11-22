@@ -470,20 +470,26 @@ combine bounded raster-side vertex displacement with fragment normal
 perturbation. Reflection rays now shade their material-aware hit and apply the
 per-WATR tint.
 
-**Reflection intensity contract (#4543, 2026-09-20):** exactly one authored
-scalar multiplies the reflected ray colour — Reflection Magnitude (Skyrim
-DNAM[196], canonical default 1.0). The pre-fix stack serially applied the
-reflection tint, the "Reflections" depth weight (DNAM[208]), the magnitude AND
-Reflectivity Amount, capping `RiverWaterFlowNE`'s mirror at ~1% of sky radiance
-(matte water at every angle — the live report that opened the bug). Now: the
-tint and depth weight gate the geometry-hit arm only (the sky-miss mirror keeps
-the environment's own colour, matching the reflection_color "tints geometry-hit
-colour" rule this doc has always stated); Reflectivity Amount (DNAM[20]) scales
-the Fresnel share of the surface mix; TIR pins the mix at full energy. The
-`water_refl` render-debug oracle exposes the term alone (non-water surfaces
-paint flat 0.08 grey) and `m-exteriors.sh water` floors its capture mean —
-`reflection_intensity_contract_tests` in `vulkan/water.rs` pins the GLSL source
-shape.
+**Reflection contract (#4543, 2026-09-20; CK semantics 2026-11-16):** the
+pre-#4543 stack serially multiplied the reflection tint, the "Reflections"
+depth weight (DNAM[208]), Reflection Magnitude (DNAM[196]) and Reflectivity
+Amount (DNAM[20]) into the ray colour, capping `RiverWaterFlowNE`'s mirror at
+~1% of sky radiance. #4543 kept Reflection Magnitude as the intensity and
+Reflectivity as a Fresnel-share scale, which still left that mirror at ~3% of
+the sky at a downward look. Both readings contradict the Creation Kit
+WaterType page, which the contract now follows: **Reflection Magnitude** is
+how much the wave normals distort the reflection (0% still, 100% full) — it
+bends the reflection ray, the sibling of Refraction Magnitude, and never
+scales its colour; **Reflectivity Amount** blends the solid **Reflection
+Color** with the rendered reflection (the colour is a fill, not a filter on
+geometry hits); the surface mix is Fresnel alone, with TIR pinned at full
+energy. The "Reflections" depth weight still gates the geometry-hit arm — the
+CK page lists the four Depth Properties without describing them, so that
+reading (and the flat Normals weight) stays unverified. The `water_refl`
+render-debug oracle exposes the term alone (non-water surfaces paint flat 0.08
+grey) and `m-exteriors.sh water` floors its capture mean —
+`reflection_intensity_contract_tests` in `vulkan/water.rs` pins the GLSL
+source shape.
 
 **Flowing-water transport composition (#5245, 2026-10-04):** on flowing kinds
 (River/Rapids/Waterfall) the canonical flow term owns visible transport and
@@ -496,7 +502,16 @@ several times faster than the authored ~0.13 UV/s downstream flow. The
 wind's chop amplitude stays full strength — only transport is damped. The
 Rapids third normal layer also now scrolls at the CPU-baked authored rate
 (#4929): its former arm read the current's BU/s directly as UV/s (44x too
-fast), strobing the whitewater.
+fast), strobing the whitewater. Since 2026-11-16 the flow term moves the pattern at
+the physics current's own speed (see the directional-scroll paragraph below),
+so on Skyrim rivers the authored layer rates carry nearly all visible
+transport. The wind term follows the same rule: `wave_scrolls` decodes
+the (kind-damped) weather scroll back to a wind strength and adds the wind's
+share of the calm drift band above its dead-calm floor, in BU/s, converted by
+each layer's own UV scale. It used to add the weather scroll as a raw UV rate,
+which on Skyrim's finest layer swept the pattern sideways ~6× faster than
+intended; at the wind field's maximum a river now drifts ~8.5 BU/s with the
+wind on layer A.
 
 **Directional-scroll frame (#4544 superseded by #4727, 2026-09-24; scoped per
 game by #4910, 2026-10-01):** WATR's per-layer wind angles are wind-FROM
@@ -509,8 +524,15 @@ measurement as authoring: it confined each layer to the flow axis
 (`WATER_CROSS_STREAM_SCROLL = 0.25`) and halved the perpendicular shear —
 masking the ~90° frame error by discarding ~70% of the authored speed
 profile while what survived still pointed mostly sideways. With the frame
-corrected the confinement is gone and the shear returns to the documented
-0.5× (`WATER_PERPENDICULAR_SHEAR_SCROLL`). Census: Skyrim's 51 non-zero
+corrected the confinement is gone. **The perpendicular shear itself is gone
+too (2026-11-16):** no game authors it (the CK scrolls each layer along its
+own wind direction only), and on the White River fixture it made layer B the
+fastest pattern on the surface — ~400 BU/s across a 2.9 BU/s current, read as
+water sloshing between the banks. The flow term is now per layer,
+`flow.speed × |uv_scale_i|` UV/s, so each layer's flow share moves at the
+physics current's own world speed; the former single
+`WATER_SCROLL_UV_PER_BU_PER_S` constant ignored the layer scale and ran the
+Skyrim flow term ~75× faster than the current. Census: Skyrim's 51 non-zero
 layers sit −84.1° off their own NAM0 raw (R = 0.72, Rayleigh p ≈ 6e-12),
 +5.9° under the fix; FO4's 108 layers −87.7° → +2.3°. The physics current
 fallback for NAM0-less records reads the same field through the same

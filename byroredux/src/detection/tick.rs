@@ -7,7 +7,7 @@
 //! Registered as the first `Stage::Update` segment, so every consumer reads
 //! this frame's levels.
 
-use super::{light_level_at, sight};
+use super::{light, light_level_at, sight};
 use byroredux_core::character::CharacterLevel;
 use byroredux_core::ecs::components::{ActorValues, Awareness, GlobalTransform, SleepBehavior, Sneaking};
 use byroredux_core::ecs::resource::Resource;
@@ -20,14 +20,19 @@ use byroredux_core::stealth::{
 use byroredux_plugin::esm::records::EsmIndex;
 
 /// The actor values the formulas read, by their `AVIF` name (`ActorValueNames`): the same records the GECK's
-/// codes 6, 42, 48, 49 and 50 name on FO3 / FNV, and Skyrim's of those names. Oblivion has no `AVIF` records
-/// (its legacy actor-value resolver is open CHARAL work), so these read 0 there.
+/// codes 6, 42, 48, 49 and 50 name on FO3 / FNV, and Skyrim's of those names. Oblivion authors none; its
+/// engine-supplied records answer to the same names (`NightEye` is `NightEyeBonus` there), so they read the
+/// actor's values on every game (OAV-USE-001).
 const AV_PERCEPTION: &str = "Perception";
 const AV_SNEAK: &str = "Sneak";
 const AV_INVISIBILITY: &str = "Invisibility";
 const AV_CHAMELEON: &str = "Chameleon";
 const AV_NIGHT_EYE: &str = "NightEye";
 const AV_BLINDNESS: &str = "Blindness";
+/// Fallout 4's (#6996): `Fallout4.esm` authors `Agility` and `Invisibility`; `Deafness` is an engine value no
+/// master authors, so it reads 0, its default.
+const AV_AGILITY: &str = "Agility";
+const AV_DEAFNESS: &str = "Deafness";
 /// Oblivion's Foot biped slot (`ARMO` `BMDT`): the boots whose weight is the CS formula's movement noise.
 const OBLIVION_FOOT_SLOT: u8 = 5;
 
@@ -183,7 +188,7 @@ pub(crate) fn detection_tick_system(world: &World, dt: f32) {
             continue;
         };
         let previous = world.get::<Awareness>(detector).map(|a| *a);
-        let distance = detector_at.distance(player_at);
+        let distance = pair_distance(&rules, player_at - detector_at);
         if distance > range {
             // Out of range: level Lost; the alert state keeps winding down.
             if let Some(previous) = previous {
@@ -200,7 +205,7 @@ pub(crate) fn detection_tick_system(world: &World, dt: f32) {
         if previous.is_some() && awareness.timer > 0.0 {
             write(world, detector, awareness);
             fold(world, &indicator, &mut summary, detector, &awareness);
-            hostile_values.add(&awareness);
+            hostile_values.add(&rules, &awareness, target.target_sneaking);
             continue;
         }
         evaluate(world, &rules, detector, player, target, noise, &events, exterior, &mut awareness);
@@ -209,7 +214,7 @@ pub(crate) fn detection_tick_system(world: &World, dt: f32) {
         awareness.timer = (awareness.timer + rules.period(period_roll(detector, awareness.since_noticed))).max(0.0);
         write(world, detector, awareness);
         fold(world, &indicator, &mut summary, detector, &awareness);
-        hostile_values.add(&awareness);
+        hostile_values.add(&rules, &awareness, target.target_sneaking);
     }
     if let Some(mut detection) = world.try_resource_mut::<PlayerDetection>() {
         *detection = summary;
@@ -222,6 +227,12 @@ pub(crate) fn detection_tick_system(world: &World, dt: f32) {
             target_sneaking: target.target_sneaking,
             attacked: noise > 0.0,
             detection_event: !events.is_empty(),
+            highest_hostile_visual: hostile_values.highest_visual,
+            highest_hostile_sound: hostile_values.highest_sound,
+            sound_line_of_sight: hostile_values.sound_line_of_sight,
+            over_threshold: hostile_values.over_threshold,
+            nearest_hostile_distance: hostile_values.nearest,
+            exterior,
         };
         rules.step_stealth_points(&mut points, inputs, dt);
     }
@@ -241,9 +252,10 @@ fn evaluate(
     awareness: &mut Awareness,
 ) {
     let points = sight::sight_points(world, detector, player);
-    let distance = points.map_or(f32::MAX, |(from, to)| from.distance(to));
+    let distance = points.map_or(f32::MAX, |(from, to)| pair_distance(rules, to - from));
     let line_of_sight = points.is_some_and(|_| sight::has_line_of_sight(world, detector, player));
     let in_cone = points.is_some_and(|(from, to)| sight::in_view_cone(world, detector, to - from));
+    let (view_angle, view_pitch) = points.and_then(|(from, to)| sight::view_angles(world, detector, to - from)).unwrap_or((0.0, 0.0));
     let hostile = crate::systems::faction_hostility::actor_would_attack(world, detector, player);
     let fighting = world.get::<byroredux_scripting::AiCombatState>(detector).map(|state| state.target);
     let inputs = DetectionInputs {
@@ -259,13 +271,23 @@ fn evaluate(
         detector_not_combat_target: fighting.is_some_and(|target| target != player),
         detector_level: world.get::<CharacterLevel>(detector).map_or(1, |level| level.level),
         detector_night_eye: actor_value(world, detector, AV_NIGHT_EYE) > 0.0,
+        detector_deafness: actor_value(world, detector, AV_DEAFNESS),
+        detector_fighting_target: fighting == Some(player),
+        view_angle,
+        view_pitch,
         action: noise,
         ..target
     };
-    let context = LevelContext { hostile, target_sneaking: inputs.target_sneaking, stealth_points: stealth_points(world) };
+    let context = LevelContext {
+        hostile,
+        target_sneaking: inputs.target_sneaking,
+        stealth_points: stealth_points(world),
+        distance,
+        ..LevelContext::default()
+    };
     let perks = |hook, value| detection_perks(world, player, detector, hook, value);
     let (terms, level, mut noticed) = match rules.value_with(&inputs, &perks) {
-        Some(terms) => (terms, rules.level(terms.value, context), rules.noticed(terms.value)),
+        Some(terms) => (terms, rules.level(terms.value, LevelContext { terms, ..context }), rules.noticed(terms.value)),
         // A row without a sourced formula answers from the sight test (Q2).
         None => {
             let seen = sight::sees(world, detector, player);
@@ -312,7 +334,9 @@ fn player_inputs(world: &World, player: EntityId, at: Vec3) -> DetectionInputs {
         })
         .unwrap_or((false, false));
     // SNK-PERK-003 — Silent Running: "If the value is modified to be non-zero, running will be ignored" (GECK).
-    let running = running && !byroredux_scripting::perk_entry_points::ignores_running_during_detection(world, player);
+    // Fallout 4's row also silences movement while sneaking (#6996).
+    let silent = byroredux_scripting::perk_entry_points::ignores_running_during_detection(world, player);
+    let running = running && !silent;
     let light_level = light_level_at(world, at) * 100.0;
     DetectionInputs {
         target_sneaking: world.has::<Sneaking>(player),
@@ -325,10 +349,16 @@ fn player_inputs(world: &World, player: EntityId, at: Vec3) -> DetectionInputs {
         target_weight: crate::inventory::equipped_weight(world, player),
         target_moving: moving,
         target_running: running,
+        // The engine has walk and sprint: Starfield's sprint is a run that is also a sprint (`0x1419418ea`).
+        target_sprinting: running,
         target_stealth_boy: actor_value(world, player, AV_CHAMELEON) > 0.0
             || actor_value(world, player, AV_INVISIBILITY) > 0.0,
         target_invisible: actor_value(world, player, AV_INVISIBILITY) > 0.0,
+        target_invisibility: actor_value(world, player, AV_INVISIBILITY),
+        target_agility: actor_value(world, player, AV_AGILITY),
+        target_silent_movement: silent,
         light_level,
+        light_ambient: light::ambient_light(world) * 100.0,
         ..DetectionInputs::default()
     }
 }
@@ -361,8 +391,13 @@ pub(crate) fn actor_value(world: &World, actor: EntityId, name: &str) -> f32 {
     world.get::<ActorValues>(actor).map_or(0.0, |values| values.current(form))
 }
 
-/// SNK-PERK-004 — Skyrim's detection entry points (47 light, 48 movement, 57 sneak skill) on the player's
-/// perks, the detector on tab 1; the identity on a dialect without them.
+/// The row's pair distance for the offset from detector to target (Y-up: `y` is the height).
+fn pair_distance(rules: &StealthRules, offset: Vec3) -> f32 {
+    rules.pair_distance(offset.x.hypot(offset.z), offset.y)
+}
+
+/// SNK-PERK-004 — Skyrim's and Fallout 4's detection entry points (47 light, 48 movement, 57 sneak skill) on
+/// the player's perks, the detector on tab 1; the identity on a dialect without them.
 fn detection_perks(world: &World, player: EntityId, detector: EntityId, hook: SneakPerkHook, value: f32) -> f32 {
     use byroredux_scripting::perk_entry_points::{compose_detection, PerkCalculation};
     let calculation = match hook {
@@ -388,20 +423,32 @@ fn period_roll(detector: EntityId, clock: f32) -> f32 {
 }
 
 /// The aggressive detectors' summary the stealth points step on (CK *Stealth Points*: "the current MAXIMUM
-/// detection level of all AGGRESSIVE actors").
+/// detection level of all AGGRESSIVE actors"); Fallout 4 steps on the visual and sound levels apart (#6996).
 #[derive(Default)]
 struct HostileValues {
     highest: Option<f32>,
     in_combat: bool,
     searching: bool,
+    highest_visual: Option<f32>,
+    highest_sound: Option<f32>,
+    sound_line_of_sight: bool,
+    over_threshold: bool,
+    nearest: Option<f32>,
 }
 
 impl HostileValues {
-    fn add(&mut self, awareness: &Awareness) {
+    fn add(&mut self, rules: &StealthRules, awareness: &Awareness, target_sneaking: bool) {
         if !awareness.hostile {
             return;
         }
-        self.highest = Some(self.highest.map_or(awareness.terms.value, |v| v.max(awareness.terms.value)));
+        let max = |slot: Option<f32>, value: f32| Some(slot.map_or(value, |v| v.max(value)));
+        let terms = awareness.terms;
+        self.highest = max(self.highest, terms.value);
+        self.highest_visual = max(self.highest_visual, terms.visual);
+        self.highest_sound = max(self.highest_sound, terms.sound);
+        self.sound_line_of_sight |= awareness.line_of_sight && terms.sound >= 0.0;
+        self.over_threshold |= terms.value > 0.0 && rules.exceeds_stealth_thresholds(&terms, awareness.distance, target_sneaking);
+        self.nearest = Some(self.nearest.map_or(awareness.distance, |d| d.min(awareness.distance)));
         self.in_combat |= awareness.alert == AlertState::Combat;
         self.searching |= awareness.alert == AlertState::Lost;
     }
@@ -543,6 +590,45 @@ mod tests {
         assert!(!detects(&world, detector, player));
     }
 
+    #[test]
+    fn oblivion_detection_reads_the_installed_actor_values() {
+        use byroredux_plugin::esm::{reader::{GameKind, GlobalSlot}, records::EsmIndex};
+        let (mut world, player, detector) = scene(StealthKind::Oblivion);
+        let mut index = EsmIndex { game: GameKind::Oblivion, ..Default::default() };
+        index.install_oblivion_actor_values(GlobalSlot::Regular(1)).unwrap();
+        byroredux_scripting::install_actor_value_names(&mut world, &index);
+        let key = |name| index.actor_value_form_id(name).unwrap();
+        let sneak = key("Sneak");
+        let chameleon = key("Chameleon");
+        let blindness = key("Blindness");
+        let night_eye = key("NightEyeBonus");
+        world.insert(player, Sneaking);
+        world.insert(player, ActorValues::from_pairs([(sneak, 20.0), (chameleon, 0.0)]));
+        world.insert(detector, ActorValues::from_pairs([(sneak, 50.0), (blindness, 0.0), (night_eye, 0.0)]));
+        detection_tick_system(&world, 1.0);
+        let before = world.get::<Awareness>(detector).unwrap().terms;
+        assert!(before.visual > 0.0 && before.skill != 0.0, "{before:?}");
+
+        world.get_mut::<ActorValues>(player).unwrap().set_base(sneak, 40.0);
+        detection_tick_system(&world, 1.0);
+        let sneak_changed = world.get::<Awareness>(detector).unwrap().terms;
+        assert!(sneak_changed.skill < before.skill);
+
+        world.get_mut::<ActorValues>(detector).unwrap().set_base(night_eye, 1.0);
+        detection_tick_system(&world, 1.0);
+        let night = world.get::<Awareness>(detector).unwrap().terms;
+        assert!(night.visual > sneak_changed.visual, "NightEyeBonus must feed the NightEye input");
+
+        world.get_mut::<ActorValues>(player).unwrap().set_base(chameleon, 50.0);
+        detection_tick_system(&world, 1.0);
+        let camouflaged = world.get::<Awareness>(detector).unwrap().terms;
+        assert!(camouflaged.visual < night.visual);
+        world.get_mut::<ActorValues>(detector).unwrap().set_base(blindness, 50.0);
+        detection_tick_system(&world, 1.0);
+        let blinded = world.get::<Awareness>(detector).unwrap().terms;
+        assert!(blinded.visual < camouflaged.visual);
+    }
+
     /// SNK-USE-010 (`detection.getdetectionlevel-player-target`): `GetDetectionLevel` / `GetDetected`
     /// toward the player answer the caller's real level through `SightQuery`, where the original
     /// answered 0. Boot installs `detects` as the query.
@@ -557,6 +643,25 @@ mod tests {
         assert!(!(query.0)(&world, detector, player), "level Lost answers 0");
         let boot = include_str!("../boot/world.rs");
         assert!(boot.contains("byroredux_scripting::SightQuery(crate::detection::detects)"));
+    }
+
+    /// #6996 — the Fallout 4 row levels from its own sound and visual values: facing the lit player, seen;
+    /// turned away, the visual term drops to its base and the quiet sound level stays below 0.
+    #[test]
+    fn the_fallout4_row_levels_from_its_split_values() {
+        let (world, _, detector) = scene(StealthKind::Fallout4);
+        detection_tick_system(&world, 0.016);
+        let facing = *world.get::<Awareness>(detector).unwrap();
+        assert_eq!(facing.level, DetectionLevel::Seen, "{:?}", facing.terms);
+        assert!(facing.terms.visual > 0.0 && facing.terms.sound < 0.0, "{:?}", facing.terms);
+        assert!(facing.timer >= 1.0 && facing.timer <= 2.0, "fDetectionUpdateTime 1-2 s");
+        world.query_mut::<GlobalTransform>().unwrap().insert(
+            detector,
+            GlobalTransform::new(Vec3::ZERO, Quat::from_rotation_y(std::f32::consts::PI), 1.0),
+        );
+        detection_tick_system(&world, 2.0);
+        let away = *world.get::<Awareness>(detector).unwrap();
+        assert_eq!((away.level, away.terms.visual), (DetectionLevel::Lost, -20.0), "{:?}", away.terms);
     }
 
     /// A sight-only row (Oblivion and Skyrim until Phase 5) answers the level from the sight test.

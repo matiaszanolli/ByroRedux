@@ -27,9 +27,9 @@
 //! - *MoveTo*: "Moves the object to the specified reference's location with
 //!   optional axis offset parameters"; neither wiki says the rotation follows,
 //!   so the rotation is left alone. Moving the player "will queue up a movement
-//!   request" (Fallout), but on Oblivion it "also act[s] as a Return function",
-//!   which this host cannot do, so the player's `MoveTo` is declined there. The
-//!   player's request carries no offset, so an offset on it is declined too
+//!   request" (Fallout), and on Oblivion it "also act[s] as a Return function":
+//!   the move is queued the same way and the script ends ([`Action::Returned`]).
+//!   The player's request carries no offset, so an offset on it is declined
 //!   rather than dropped.
 //!
 //! Every action whose reference or target cannot be resolved (a cell that is not
@@ -69,6 +69,9 @@ pub(crate) enum Action {
     Unhandled,
     /// Ran; the value it answers with (getters) and a line for the effect log.
     Done { value: Option<ObScriptValue>, effect: String },
+    /// Ran, and the calling script ends as a `Return` does: the lines after it are not executed
+    /// (Oblivion's player `MoveTo`; the CS says it "also act[s] as a Return function").
+    Returned { effect: String },
     /// An action command whose target could not be acted on.
     Declined,
 }
@@ -264,14 +267,20 @@ fn move_to(world: &World, args: &[ObScriptValue], caller: u32, known: Option<(u3
     let effect = format!("MoveTo {caller:08X} -> {target:08X}");
     let moved = entity_of(world, caller, known);
     if moved.is_some() && PapyrusPlayerEntity::get(world) == moved {
-        // Fallout queues the player's move; Oblivion's also ends the script.
-        if !ScriptGame::is_fallout3_nv(world) || offset != [0.0; 3] {
+        // Both games queue the player's move (the engine applies it); Oblivion's also ends the
+        // script, as a `Return` does. A move with an offset is not modelled.
+        if offset != [0.0; 3] {
             return Action::Declined;
         }
+        let ends_script = !ScriptGame::is_fallout3_nv(world);
         return match world.try_resource_mut::<PlayerMoveRequest>() {
             Some(mut request) => {
                 request.0 = Some(target);
-                Action::Done { value: None, effect }
+                if ends_script {
+                    Action::Returned { effect }
+                } else {
+                    Action::Done { value: None, effect }
+                }
             }
             None => Action::Declined,
         };
@@ -490,14 +499,19 @@ mod tests {
         assert_eq!(world.get::<Transform>(moved).unwrap().translation, Vec3::ZERO, "the engine moves the player, not the script");
     }
 
-    /// Oblivion's player `MoveTo` also ends the script, which this host cannot
-    /// do, so it is declined rather than half-run.
+    /// Oblivion's player `MoveTo` queues the move like Fallout's and also ends the script (the CS:
+    /// it "also act[s] as a Return function"); an offset is not modelled, so it is declined.
     #[test]
-    fn the_players_move_is_declined_on_oblivion() {
+    fn the_players_move_queues_and_ends_the_script_on_oblivion() {
         let (world, moved, _) = world(GameKind::Oblivion);
         let world = with_player(world, moved);
-        assert_eq!(run(&world, CMD_MOVE_TO, &[ObScriptValue::Ref(MARKER)], Some(PLAYER_REF)), Action::Declined);
-        assert_eq!(world.resource::<PlayerMoveRequest>().0, None);
+        assert_eq!(
+            run(&world, CMD_MOVE_TO, &[ObScriptValue::Ref(MARKER)], Some(PLAYER_REF)),
+            Action::Returned { effect: "MoveTo 00000014 -> 00010002".to_owned() }
+        );
+        assert_eq!(world.resource::<PlayerMoveRequest>().0, Some(MARKER));
+        let offset = [ObScriptValue::Ref(MARKER), ObScriptValue::Num(1.0)];
+        assert_eq!(run(&world, CMD_MOVE_TO, &offset, Some(PLAYER_REF)), Action::Declined);
     }
 
     /// `AddScriptPackage` fills the actor's one script-package slot and queues a

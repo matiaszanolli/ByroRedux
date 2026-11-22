@@ -555,11 +555,10 @@ fn dtl_corpus_parses_and_resolves_every_species() {
         .collect();
     let mut models: std::collections::BTreeMap<String, usize> = Default::default();
     for (refr, n) in &by_base {
-        if let Some(base) = ref_base.get(refr) {
-            if let Some(stat) = index.cells.statics.get(base) {
+        if let Some(base) = ref_base.get(refr)
+            && let Some(stat) = index.cells.statics.get(base) {
                 *models.entry(stat.model_path.to_ascii_lowercase()).or_default() += n;
             }
-        }
     }
     let tree_models: Vec<(&String, &usize)> = models.iter().filter(|(m, _)| m.starts_with("landscape\\trees\\")).collect();
     let with_flat: usize = tree_models

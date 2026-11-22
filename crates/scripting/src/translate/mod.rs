@@ -233,8 +233,8 @@ pub fn translate_decompiled_with_providers(
         // program would execute the script half-way (and the Papyrus VM
         // attach is suppressed once a provider program is attached). Decline
         // the whole script instead, per the decline-on-unmodeled contract.
-        if recognized.is_none() {
-            if let Some(unlowered) = provider_program
+        if recognized.is_none()
+            && let Some(unlowered) = provider_program
                 .as_ref()
                 .map(|program| program.unlowered_handlers())
                 .filter(|unlowered| !unlowered.is_empty())
@@ -244,7 +244,6 @@ pub fn translate_decompiled_with_providers(
                 ));
                 provider_program = None;
             }
-        }
         PexTranslation {
             recognized,
             provider_program,

@@ -167,7 +167,7 @@ fn disk_round_trip_with_perk(index: &EsmIndex, potion: u32, restoration: f32, pe
             assert_eq!(
                 crate::inventory::apply_action(
                     &mut source,
-                    byroredux_debug_ui::InventoryAction::Consume {
+                    byroredux_native_ui::InventoryAction::Consume {
                         index: 0,
                         form_id: potion
                     }
@@ -291,7 +291,7 @@ fn disk_round_trip_with_perk(index: &EsmIndex, potion: u32, restoration: f32, pe
         assert!(crate::notifications::drain(&live).is_empty());
         let result = crate::inventory::apply_action(
             &mut live,
-            byroredux_debug_ui::InventoryAction::Consume {
+            byroredux_native_ui::InventoryAction::Consume {
                 index: 0,
                 form_id: potion,
             },
@@ -425,7 +425,7 @@ fn timed_disk_round_trip(
     assert_eq!(
         crate::inventory::apply_action(
             &mut source,
-            byroredux_debug_ui::InventoryAction::Consume {
+            byroredux_native_ui::InventoryAction::Consume {
                 index: 0,
                 form_id: potion
             }
@@ -517,7 +517,7 @@ fn timed_disk_round_trip(
             assert_eq!(
                 crate::inventory::apply_action(
                     &mut live,
-                    byroredux_debug_ui::InventoryAction::Consume {
+                    byroredux_native_ui::InventoryAction::Consume {
                         index: 0,
                         form_id: potion
                     }

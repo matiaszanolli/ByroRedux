@@ -203,10 +203,22 @@ fn shadow_ray_disk_samples_are_dithered_low_discrepancy() {
         .1;
     let finalize = &finalize[..finalize.find("transmissionSum += sampleTransmission").expect("loop tail")];
     assert!(
-        finalize.contains("ditheredSequence2(")
+        finalize.contains("ditheredSequence2(shadowSequencePixel,")
             && !finalize.contains("hash2_pixel_frame("),
         "the finalize shadow rays must draw dithered samples, not the white hash"
     );
+}
+
+#[test]
+fn shadow_rotation_follows_validated_receiver_history() {
+    let src = include_str!("../../../shaders/triangle.frag");
+    let validated = src.split_once("reprojValid = true;").unwrap().1;
+    assert!(validated.contains(
+        "shadowSequenceKey = rp.occluderAndShadowSequence >> (32u - RESERVOIR_LIGHT_BITS);"
+    ));
+    assert!(src.contains("reprojValid && shadowSequenceKey == 0u"));
+    assert!(src.contains("dofParams.w < HISTORY_MODE_PARKED - 0.5"));
+    assert!(src.contains("| (shadowSequenceKey << (32u - RESERVOIR_LIGHT_BITS));"));
 }
 
 /// RLT-SHD-012: each shadow ray's transmission is weighted by the receiver's
@@ -1065,9 +1077,39 @@ fn normal_alpha_masks_specular_intensity_not_roughness() {
         !normal_alpha_branch.contains("roughness"),
         "normal alpha must not be reinterpreted as gloss/roughness"
     );
-    assert!(triangle.contains(
-        "mat.envMaskIndex != 0u\n            ? environmentMask\n            : normalAlphaSpecMask"
-    ));
+    // Normal alpha is the env-reflection fallback mask for every kind
+    // except MultiLayerParallax (kind 11, Skyrim ice) only: that kind
+    // reflects unmasked, its normal alpha being a local specular mask
+    // (FrozenLake01's averages 0.09). Kind 1 authors a strength too but
+    // keeps the fallback (#7023).
+    // Token-level, not whitespace-exact (#7023): scope to the initializer
+    // and pin (a) an authored mask wins, (b) the fallback arm still reads
+    // normal alpha, (c) kind 11 is the one exemption — any other
+    // `MATERIAL_KIND_*` token here means another kind lost the fallback.
+    let init_start = triangle
+        .find("float environmentReflectionMask =")
+        .expect("environment reflection mask initializer");
+    let init_end = triangle[init_start..]
+        .find(';')
+        .map(|offset| init_start + offset)
+        .expect("initializer terminator");
+    let init: String = triangle[init_start..init_end]
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        init.contains("mat.envMaskIndex != 0u ? environmentMask"),
+        "an authored environment mask must win: {init}"
+    );
+    assert!(
+        init.contains("MATERIAL_KIND_MULTI_LAYER_PARALLAX ? 1.0 : normalAlphaSpecMask"),
+        "kind 11 reflects unmasked and every other kind keeps the normal-alpha fallback: {init}"
+    );
+    assert_eq!(
+        init.matches("MATERIAL_KIND_").count(),
+        1,
+        "only MultiLayerParallax is exempt from the normal-alpha fallback: {init}"
+    );
     assert!(triangle.contains("* environmentReflectionMask * environmentStrength"));
 }
 
@@ -1123,7 +1165,7 @@ fn secondary_ray_material_hits_resolve_parallax_uvs() {
     }
 }
 
-/// Reflection tint belongs only to reflected radiance, and transmitted rays
+/// Reflection colour belongs only to reflected radiance, and transmitted rays
 /// must start on the opposite side of the view-facing water surface. These
 /// source pins catch the exact coupling and self-intersection bugs that made
 /// water render as a pale, flat slab.
@@ -1142,8 +1184,11 @@ fn water_reflection_and_refraction_keep_distinct_two_sided_semantics() {
         "the shared water-ray terminus must not apply a reflection-only tint."
     );
     assert!(
-        frag.contains("reflColor *= push.tint_reflect.rgb;"),
-        "WATR reflection colour must filter reflected radiance explicitly."
+        frag.contains(
+            "reflColor = mix(push.tint_reflect.rgb, reflColor, clamp(push.tint_reflect.w, 0.0, 1.0));"
+        ),
+        "WATR reflection colour must be blended into reflected radiance explicitly, \
+         by Reflectivity Amount (Creation Kit WaterType semantics)."
     );
     assert!(
         frag.contains("vec3 reflectionMiss = sceneFlags.yzw;")
@@ -1775,6 +1820,19 @@ fn unsafe_vertex_lane_reads(src: &str, names: &[&str]) -> Vec<(usize, u32, Strin
             if !is_bit_pattern_vertex_lane(lane) {
                 continue;
             }
+            // #7152 — an assignment target is a write: the bit pattern has to
+            // go in through `uintBitsToFloat(...)` / `intBitsToFloat(...)`, or
+            // a raw float lands where readers recover integer bits.
+            let after = code[close + 1..].trim_start();
+            if after.starts_with('=') && !after.starts_with("==") {
+                let rhs = after[1..].trim_start();
+                if rhs.starts_with("uintBitsToFloat(") || rhs.starts_with("intBitsToFloat(") {
+                    continue;
+                }
+                let line = code[..at].matches('\n').count() + 1;
+                found.push((line, lane, format!("{} = <raw float write>", &code[at..=close])));
+                continue;
+            }
             let before = code[..at].trim_end();
             if before.ends_with("floatBitsToUint(") || before.ends_with("floatBitsToInt(") {
                 continue;
@@ -1806,6 +1864,9 @@ fn the_vertex_lane_scanner_recognises_the_shapes_it_exists_to_catch() {
         "float i = inputVertexData[src_base + 13u];",
         // A recovery call elsewhere on the line does not wrap THIS read.
         "uint a = floatBitsToUint(vertexData[base]) + uint(vertexData[base + 14u]);",
+        // #7152 — a raw float written into a bit-pattern lane.
+        "vertexData[o + VERTEX_BONE_INDICES_OFFSET_FLOATS + i] = 0.0;",
+        "vertexData[o + VERTEX_SPLAT0_OFFSET_FLOATS] = packed;",
     ] {
         assert_eq!(
             unsafe_vertex_lane_reads(caught, &names).len(),
@@ -1825,6 +1886,11 @@ fn the_vertex_lane_scanner_recognises_the_shapes_it_exists_to_catch() {
         "// float raw = vertexData[base + 12u];",
         // A different array whose name merely ends in `vertexData`.
         "float t = mirrorvertexData[base + 12u];",
+        // #7152 — writes that store the bit pattern, and a comparison.
+        "vertexData[o + VERTEX_BONE_INDICES_OFFSET_FLOATS + i] = uintBitsToFloat(0u);",
+        "vertexData[o + VERTEX_SPLAT1_OFFSET_FLOATS] = uintBitsToFloat(packUnorm4x8(s));",
+        "vertexData[o + 13u] = intBitsToFloat(-1);",
+        "bool same = floatBitsToUint(vertexData[o + 12u]) == 0u;",
     ] {
         assert!(
             unsafe_vertex_lane_reads(ignored, &names).is_empty(),
@@ -1893,6 +1959,181 @@ fn the_specular_aa_filter_is_evaluated_outside_the_per_light_loop() {
     );
 }
 
+/// #7261 — helper invocations trace no main-pass rays, and nothing that could
+/// see the difference follows the ray branches.
+///
+/// A helper lane's outputs, stores and atomics are discarded; its values reach
+/// a real lane only through a quad derivative (`dFdx`/`dFdy`/`fwidth`, an
+/// implicit-LOD `texture()`) or a subgroup op. So skipping its rays is free
+/// exactly while every such read sits above the first ray: in `triangle.frag`
+/// that is the `aaRoughness` hoist (#3983), in `water.frag` the normal-map
+/// fetches. On small triangles the skipped rays were 35–43 % of the TSD patch
+/// premium (`docs/engine/terrain-displacement.md` §8.3).
+///
+/// Legs: the gate exists and lands above the hoist; after the hoist, `main`
+/// calls no derivative op and no include function whose body takes one, and
+/// every implicit-LOD fetch reads a coordinate no ray produced; `water.frag`
+/// funnels every RT gate through `waterRaysEnabled()` and takes no derivative
+/// after its first trace.
+#[test]
+fn helper_lanes_trace_no_main_rays_and_no_derivative_follows() {
+    use crate::source_scan::strip_glsl_comments;
+    // Composed at runtime so this test's own source cannot satisfy a scan.
+    let derivative_ops = [
+        format!("dF{}", "dx"),
+        format!("dF{}", "dy"),
+        format!("fwi{}", "dth"),
+        format!("sub{}", "group"),
+        format!("interpolate{}", "At"),
+    ];
+
+    // Include functions whose bodies take a derivative: calling one after the
+    // hoist is the same breach as writing the op inline.
+    let include_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders/include");
+    let mut derivative_fns: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&include_dir).expect("shaders/include must exist") {
+        let path = entry.expect("readable include entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("glsl") {
+            continue;
+        }
+        let code = strip_glsl_comments(&std::fs::read_to_string(&path).expect("readable include"));
+        let mut current_fn: Option<String> = None;
+        for line in code.lines() {
+            let top_level = !line.starts_with(char::is_whitespace) && !line.starts_with('}');
+            if top_level && line.contains('(') && !line.starts_with('#') {
+                let head = &line[..line.find('(').unwrap()];
+                current_fn = head.split_whitespace().last().map(str::to_owned);
+            }
+            if let Some(name) = &current_fn {
+                if derivative_ops.iter().any(|op| line.contains(op.as_str()))
+                    && !derivative_fns.contains(name)
+                {
+                    derivative_fns.push(name.clone());
+                }
+            }
+        }
+    }
+    let aa = format!("specularAa{}", "Roughness");
+    assert!(
+        derivative_fns.contains(&aa),
+        "the include scan must find {aa} (it takes dFdx(N)) — if it does not, the \
+         function finder is broken and the call leg below is vacuous: {derivative_fns:?}"
+    );
+
+    let frag = strip_glsl_comments(include_str!("../../../shaders/triangle.frag"));
+    let main = glsl_fn_body(&frag, "void main(");
+    let hoist = main
+        .find("float aaRoughness =")
+        .expect("triangle.frag must still hoist aaRoughness (#3983)");
+    let after_hoist = &main[hoist + main[hoist..].find(';').unwrap() + 1..];
+
+    for gate in [
+        "bool helperLane = gl_HelperInvocation;",
+        "directShadowRayEnabled = directShadowRayEnabled && !helperLane;",
+        "giRayEnabled = giRayEnabled && !helperLane;",
+    ] {
+        let at = main
+            .find(gate)
+            .unwrap_or_else(|| panic!("triangle.frag lost the helper-lane gate `{gate}` (#7261)"));
+        assert!(at < hoist, "`{gate}` must sit above the aaRoughness hoist (#7261)");
+    }
+    assert!(
+        after_hoist.contains("reflectionGlassRayEnabled && !helperLane && rtLOD < RT_LOD_REFLECT"),
+        "the RT reflection ray below the hoist must skip helper lanes too (#7261)"
+    );
+
+    for op in &derivative_ops {
+        assert!(
+            !after_hoist.contains(op.as_str()),
+            "triangle.frag main uses `{op}` after the aaRoughness hoist: helper lanes \
+             trace no rays there (#7261), so a quad derivative or subgroup op would \
+             read a ray-less neighbour — move it above the hoist or drop the skip"
+        );
+    }
+    for f in &derivative_fns {
+        assert!(
+            !after_hoist.contains(format!("{f}(").as_str()),
+            "triangle.frag main calls `{f}` (it takes a derivative) after the \
+             aaRoughness hoist, where helper lanes trace no rays (#7261)"
+        );
+    }
+
+    // Implicit-LOD fetches derive their LOD from the quad, so their coordinate
+    // must not depend on a ray. `sampleUV` is the interpolated (parallaxed)
+    // UV and `aoUV` is `gl_FragCoord.xy / screen.xy`; a new coordinate needs a
+    // reviewer to confirm no ray produced it, then a row here.
+    let fetch = format!("{}(", "texture");
+    let mut rest = after_hoist;
+    while let Some(at) = rest.find(fetch.as_str()) {
+        let preceded_by_ident = rest[..at]
+            .chars()
+            .last()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+        let args_start = at + fetch.len();
+        let args = &rest[args_start..];
+        let mut depth = 1usize;
+        let mut end = 0;
+        for (i, c) in args.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !preceded_by_ident {
+            let call = &args[..end];
+            let coord = call.rsplit(',').next().unwrap().trim();
+            assert!(
+                ["sampleUV", "aoUV"].contains(&coord),
+                "implicit-LOD texture() after the aaRoughness hoist reads `{coord}`: \
+                 helper lanes trace no rays there (#7261), so confirm no ray \
+                 produced it and allow it here, or use textureLod"
+            );
+        }
+        rest = &args[end..];
+    }
+
+    let water = strip_glsl_comments(include_str!("../../../shaders/water.frag"));
+    assert_eq!(
+        water.matches("sceneFlags.x").count(),
+        1,
+        "every RT gate in water.frag must go through waterRaysEnabled(), which \
+         also skips helper lanes (#7261)"
+    );
+    assert!(
+        water.contains("return sceneFlags.x >= 0.5 && !gl_HelperInvocation;"),
+        "waterRaysEnabled() must skip helper invocations (#7261)"
+    );
+    let water_main = glsl_fn_body(&water, "void main(");
+    let first_trace = water_main
+        .find("traceWaterRay(")
+        .expect("water.frag main must still trace its reflection");
+    for op in &derivative_ops {
+        assert!(
+            !water.contains(op.as_str()),
+            "water.frag uses `{op}`, but its helper lanes trace no rays (#7261)"
+        );
+    }
+    for f in &derivative_fns {
+        assert!(
+            !water.contains(format!("{f}(").as_str()),
+            "water.frag calls `{f}` (it takes a derivative), but its helper lanes \
+             trace no rays (#7261)"
+        );
+    }
+    assert!(
+        !water_main[first_trace..].contains(fetch.as_str()),
+        "water.frag main takes an implicit-LOD texture() after its first ray, \
+         where helper lanes trace nothing (#7261)"
+    );
+}
+
 /// #3982 (REN-2026-09-06-D16-01) — the three name-diverging GLSL↔Rust mirrors
 /// that had no lockstep coverage at all.
 ///
@@ -1942,6 +2183,8 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
     let skin_vertices_comp = include_str!("../../../shaders/skin_vertices.comp");
     let skin_palette_comp = include_str!("../../../shaders/skin_palette.comp");
     let skin_compute_rs = include_str!("../skin_compute.rs");
+    let terrain_patch_comp = include_str!("../../../shaders/terrain_patch.comp");
+    let terrain_patch_rs = include_str!("../terrain_patch.rs");
 
     const NO_ALIASES: &[NameAlias] = &[];
     for (label, glsl_src, glsl_decl, rust_src, rust_decl, aliases) in [
@@ -2037,6 +2280,15 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
             "struct GpuGroundCoverChunk",
             &[("active", "slotActive")],
         ),
+        // #7152 — the terrain patch push block.
+        (
+            "TerrainPatchPush",
+            terrain_patch_comp,
+            "uniform TerrainPatchPush",
+            terrain_patch_rs,
+            "struct TerrainPatchPush",
+            NO_ALIASES,
+        ),
         // The #4052 bench's records.
         (
             "BenchCell",
@@ -2118,6 +2370,14 @@ fn name_diverging_glsl_rust_mirrors_stay_in_lockstep() {
             "uniform Push",
             svgf_rs,
             "struct AtrousPush",
+            NO_ALIASES,
+        ),
+        (
+            "FarSunProjection",
+            include_str!("../../../shaders/far_sun_shadow.comp"),
+            "uniform FarSunProjection",
+            include_str!("../composite.rs"),
+            "struct FarSunProjection",
             NO_ALIASES,
         ),
         (
@@ -2436,7 +2696,16 @@ fn every_shader_struct_is_classified() {
         // #4906 — `gcPickLocalRecord`'s return bundle, never stored or uploaded.
         ("GcLocalPick", ShaderLocal),
         ("ShadowFilterGuide", ShaderLocal),
+        ("FarSunProjection", Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep")),
         ("TerrainSample", ShaderLocal),
+        // #7152 — `terrain_patch.comp`'s interpolated base-vertex bundle and
+        // the displaced vertex it builds from it; neither is stored as such.
+        ("BaseSample", ShaderLocal),
+        ("PatchVertex", ShaderLocal),
+        (
+            "TerrainPatchPush",
+            Guarded("name_diverging_glsl_rust_mirrors_stay_in_lockstep"),
+        ),
         ("LocalMedium", ShaderLocal),
         ("DisneyDiffuseSplit", ShaderLocal),
         ("CombustionDifferential", ShaderLocal),
@@ -2510,12 +2779,11 @@ fn every_shader_struct_is_classified() {
             let path = entry.expect("src dir entry").path();
             if path.is_dir() {
                 stack.push(path);
-            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
-                if let Ok(src) = std::fs::read_to_string(&path) {
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs")
+                && let Ok(src) = std::fs::read_to_string(&path) {
                     rust_sources.push_str(&src);
                     rust_sources.push('\n');
                 }
-            }
         }
     }
     let declares_rust_struct = |name: &str| {
@@ -3342,7 +3610,7 @@ fn bloom_dispatches_after_composite_and_applies_itself_downstream() {
         .find("\n    }\n")
         .expect("record_post_passes must close at impl indentation")];
     let composite_call = body
-        .find("self.record_composite_pass(cmd, frame)")
+        .find("self.record_composite_pass(cmd, frame, far_sun)")
         .expect("record_post_passes must call record_composite_pass");
     let bloom_call = body
         .find("self.record_bloom_pass(cmd, frame)")
@@ -5185,20 +5453,22 @@ fn derive_ax_ay_clamps_anisotropic_against_nan_and_floor_escape() {
 /// its normal maps as specular and vice versa.
 #[test]
 fn gpu_terrain_tile_glsl_and_rust_fields_stay_in_lockstep() {
-    const BINDINGS_GLSL: &str = include_str!("../../../shaders/include/bindings.glsl");
+    // #7152 — the struct moved to `terrain_tile.glsl`, which `bindings.glsl`
+    // and `terrain_patch.comp` both include.
+    const TERRAIN_TILE_GLSL: &str = include_str!("../../../shaders/include/terrain_tile.glsl");
     const GPU_TYPES_RS: &str = include_str!("gpu_types.rs");
 
-    // #3564 — bindings.glsl is the only declaration today; pin that so a
+    // #3564 — terrain_tile.glsl is the only declaration today; pin that so a
     // second mirror cannot appear outside this comparison.
     assert_mirror_list_is_complete(
         "struct GpuTerrainTile",
-        &[("include/bindings.glsl", BINDINGS_GLSL)],
+        &[("include/terrain_tile.glsl", TERRAIN_TILE_GLSL)],
         "#2463 / #3564",
     );
 
     let glsl = strip_struct_body(
-        extract_struct_body(BINDINGS_GLSL, "struct GpuTerrainTile")
-            .expect("include/bindings.glsl must declare `struct GpuTerrainTile`"),
+        extract_struct_body(TERRAIN_TILE_GLSL, "struct GpuTerrainTile")
+            .expect("include/terrain_tile.glsl must declare `struct GpuTerrainTile`"),
     );
     let glsl_fields: Vec<String> = glsl
         .iter()
@@ -6121,11 +6391,11 @@ fn every_terrain_splat_sampler_uses_explicit_gradients() {
          found {checked} — the scan broke, or a loop was added/removed without \
          updating this pin"
     );
-    let bindings = include_str!("../../../shaders/include/bindings.glsl");
+    let bindings = include_str!("../../../shaders/include/terrain_tile.glsl");
     let helper = bindings
         .split("vec3 byroTerrainSplatAlbedo(")
         .nth(1)
-        .expect("the shared splat chain lives in bindings.glsl")
+        .expect("the shared splat chain lives in terrain_tile.glsl")
         .split("\n}")
         .next()
         .expect("helper body terminates");
@@ -7690,14 +7960,12 @@ fn local_gust_rust_and_glsl_mirrors_use_the_same_numbers_in_the_same_order() {
             let bytes = src.as_bytes();
             let mut i = 0;
             while i < bytes.len() {
-                if bytes[i] == b'[' {
-                    if let Some(end) = src[i..].find(']') {
-                        if src[i + 1..i + end].chars().all(|c| c.is_ascii_digit()) {
+                if bytes[i] == b'['
+                    && let Some(end) = src[i..].find(']')
+                        && src[i + 1..i + end].chars().all(|c| c.is_ascii_digit()) {
                             i += end + 1;
                             continue;
                         }
-                    }
-                }
                 out.push(bytes[i] as char);
                 i += 1;
             }
@@ -7835,11 +8103,11 @@ fn groundcover_affinity_composes_the_base_in_diffuse_loop_order() {
 /// where paint thinned to nothing.
 #[test]
 fn blade_ground_colour_uses_the_shared_terrain_splat_chain() {
-    let bindings = include_str!("../../../shaders/include/bindings.glsl");
+    let bindings = include_str!("../../../shaders/include/terrain_tile.glsl");
     let helper = bindings
         .split("vec3 byroTerrainSplatAlbedo(")
         .nth(1)
-        .expect("byroTerrainSplatAlbedo must stay in bindings.glsl")
+        .expect("byroTerrainSplatAlbedo must stay in terrain_tile.glsl")
         .split("\n}")
         .next()
         .expect("helper body terminates");

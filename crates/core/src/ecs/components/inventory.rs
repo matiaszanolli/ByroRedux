@@ -121,8 +121,8 @@ impl Inventory {
     /// the same as a live one. A stack carrying an `instance` is its own
     /// identity and is always appended unchanged.
     pub fn add(&mut self, stack: ItemStack) -> InventoryIndex {
-        if stack.instance.is_none() {
-            if let Some(index) = self
+        if stack.instance.is_none()
+            && let Some(index) = self
                 .items
                 .iter()
                 .position(|row| row.base_form_id == stack.base_form_id && row.instance.is_none())
@@ -131,7 +131,6 @@ impl Inventory {
                 row.count = row.count.saturating_add(stack.count);
                 return InventoryIndex(index as u32);
             }
-        }
         self.push(stack)
     }
 
@@ -210,6 +209,21 @@ pub struct EquippedWeapon {
 }
 
 impl Component for EquippedWeapon {
+    type Storage = SparseSetStorage<Self>;
+}
+
+/// The arrow type the player has chosen to shoot (player-archery PRD, BOW-AMM-001): the `AMMO` base form id, or
+/// `None`. Oblivion's "must both be equipped" (UESP *Oblivion:Marksman*) and Skyrim's arrows that "remain equipped
+/// even if you unequip the bow" (UESP *Skyrim:Archery*).
+///
+/// A slot, not a stack: the count is the [`Inventory`]'s and is never copied here, and a form id that no longer has
+/// a counted stack reads as unset (`byroredux::bow::equipped_ammo`). The slot is cleared by writing `None`; the save
+/// column is replacing, so a save with no row clears it too (BOW-AMM-002, #7228).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
+pub struct EquippedAmmo(pub Option<u32>);
+
+impl Component for EquippedAmmo {
     type Storage = SparseSetStorage<Self>;
 }
 
@@ -304,11 +318,10 @@ impl EquipmentSlots {
             if slot_mask & (1u64 << bit) == 0 {
                 continue;
             }
-            if let Some(prev) = occupant.replace(idx) {
-                if prev != idx && !displaced.contains(&prev) {
+            if let Some(prev) = occupant.replace(idx)
+                && prev != idx && !displaced.contains(&prev) {
                     displaced.push(prev);
                 }
-            }
         }
         displaced
     }
@@ -321,11 +334,10 @@ impl EquipmentSlots {
             if slot_mask & (1u64 << bit) == 0 {
                 continue;
             }
-            if let Some(prev) = occupant.take() {
-                if !released.contains(&prev) {
+            if let Some(prev) = occupant.take()
+                && !released.contains(&prev) {
                     released.push(prev);
                 }
-            }
         }
         released
     }

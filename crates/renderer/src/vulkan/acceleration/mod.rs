@@ -25,6 +25,7 @@
 
 mod blas_skinned;
 mod blas_static;
+mod blas_terrain_patch;
 mod constants;
 mod memory;
 mod predicates;
@@ -37,6 +38,10 @@ pub use constants::{
 };
 pub use predicates::{build_instance_map, plan_static_blas_restore};
 pub use types::{BlasBuildSource, BlasEntry, SkinnedBlasGeometry, TlasState};
+pub use blas_terrain_patch::{
+    TerrainPatchBlasContent, TerrainPatchBlasRequest, TerrainPatchBlasStats,
+    MAX_TERRAIN_PATCH_BLAS_BUILDS_PER_FRAME, TERRAIN_PATCH_BLAS_REBUILD_AFTER_REFITS,
+};
 
 // Surfaces a CPU-side scratch-shrink helper to sibling modules (notably
 // `vulkan::context::draw`, which calls it on the per-frame `Vec` it
@@ -366,6 +371,9 @@ pub struct AccelerationManager {
     /// today, so the round-up is a no-op there; the headroom + round-up
     /// only do work on a future misaligning driver / mobile GPU.
     pub(super) scratch_align: u32,
+    /// TSD-4.2 (#7221) — one refit-every-frame BLAS per reserved terrain
+    /// patch mesh, with its own scratch (`blas_terrain_patch.rs`).
+    pub(super) terrain_patch_blas: blas_terrain_patch::TerrainPatchBlasSet,
 }
 
 impl AccelerationManager {
@@ -442,6 +450,7 @@ impl AccelerationManager {
             skinned_blas: rustc_hash::FxHashMap::default(),
             provisional_skinned_blas: Vec::new(),
             scratch_align,
+            terrain_patch_blas: Default::default(),
         })
     }
 
@@ -453,75 +462,80 @@ impl AccelerationManager {
     /// device is not lost, and that no acceleration structure or buffer owned
     /// by this manager is still in use by an in-flight command buffer.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
-        // #639 / LIFE-H1: drain `pending_destroy_blas` first.
-        // `drop_blas` queues entries with a 2-frame countdown that only
-        // ticks down inside `tick_deferred_destroy` (called from
-        // `draw_frame`); on shutdown the renderer skips the next draw,
-        // so any entry whose countdown was still > 0 would leak its
-        // VkAccelerationStructureKHR + GpuBuffer. The parent Drop's
-        // `device_wait_idle` (`context/mod.rs::Drop::drop`; #1789 /
-        // CONC-D6-01 — cited by name, not line number, since this is
-        // `destroy()`'s only call site) already covers any in-flight
-        // command-buffer reference, so it is safe to
-        // destroy these immediately regardless of the residual
-        // countdown. Same drain shape as `tick_deferred_destroy`
-        // above, minus the countdown branch. Sibling fixes already
-        // landed in `mesh.rs::MeshRegistry::destroy` (#deferred_destroy
-        // drain) and `texture_registry.rs::TextureRegistry::destroy`
-        // (per-entry pending_destroy drain). #732 factored the body
-        // into `drain_pending_destroys` so the App-level shutdown
-        // sweep can call the same drain explicitly before `Drop`.
-        self.drain_pending_destroys(device, allocator);
-        for mut e in self.blas_entries.drain(..).flatten() {
-            self.accel_loader
-                .destroy_acceleration_structure(e.accel, None);
-            e.buffer.destroy(device, allocator);
-        }
-        for slot in &mut self.tlas {
-            if let Some(mut tlas) = slot.take() {
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            // #639 / LIFE-H1: drain `pending_destroy_blas` first.
+            // `drop_blas` queues entries with a 2-frame countdown that only
+            // ticks down inside `tick_deferred_destroy` (called from
+            // `draw_frame`); on shutdown the renderer skips the next draw,
+            // so any entry whose countdown was still > 0 would leak its
+            // VkAccelerationStructureKHR + GpuBuffer. The parent Drop's
+            // `device_wait_idle` (`context/mod.rs::Drop::drop`; #1789 /
+            // CONC-D6-01 — cited by name, not line number, since this is
+            // `destroy()`'s only call site) already covers any in-flight
+            // command-buffer reference, so it is safe to
+            // destroy these immediately regardless of the residual
+            // countdown. Same drain shape as `tick_deferred_destroy`
+            // above, minus the countdown branch. Sibling fixes already
+            // landed in `mesh.rs::MeshRegistry::destroy` (#deferred_destroy
+            // drain) and `texture_registry.rs::TextureRegistry::destroy`
+            // (per-entry pending_destroy drain). #732 factored the body
+            // into `drain_pending_destroys` so the App-level shutdown
+            // sweep can call the same drain explicitly before `Drop`.
+            self.drain_pending_destroys(device, allocator);
+            for mut e in self.blas_entries.drain(..).flatten() {
                 self.accel_loader
-                    .destroy_acceleration_structure(tlas.accel, None);
-                tlas.buffer.destroy(device, allocator);
-                tlas.instance_buffer.destroy(device, allocator);
-                tlas.instance_buffer_device.destroy(device, allocator);
+                    .destroy_acceleration_structure(e.accel, None);
+                e.buffer.destroy(device, allocator);
             }
-        }
-        // #1138 / CONC-D3-NEW-01 — drain `skinned_blas` here so
-        // `destroy()` is self-contained regardless of whether the
-        // caller pre-drained via `skinned_blas_entities` →
-        // `drop_skinned_blas`. Pre-fix the only correct shutdown path
-        // routed each entry through `pending_destroy_blas` first
-        // (`context/mod.rs::Drop`), and any caller that skipped that
-        // dance — a future test constructing `AccelerationManager`
-        // directly, or an error-path refactor in `App::shutdown` that
-        // bypasses the pre-drain — silently leaked every still-
-        // resident per-entity `VkAccelerationStructureKHR` + buffer
-        // because the `HashMap` drops as plain memory without the
-        // explicit `destroy_acceleration_structure` call. The App-
-        // level pre-drain remains in place as an optimization (it
-        // routes through `pending_destroy_blas` so the
-        // `MAX_FRAMES_IN_FLIGHT` countdown lets a still-flight refit
-        // finish), but is no longer a correctness requirement: the
-        // parent `device_wait_idle` (`context/mod.rs::Drop::drop`;
-        // #1789 / CONC-D6-01 — `destroy()`'s only call site, cited by
-        // name rather than line number) already settles every
-        // in-flight command-buffer reference, so destruction here is
-        // safe.
-        // SAFETY: caller of `destroy()` (unsafe fn) guarantees no
-        // command buffer is still referencing these resources — every
-        // production caller pairs the call with `device_wait_idle`.
-        for (_eid, mut entry) in self.skinned_blas.drain() {
-            self.accel_loader
-                .destroy_acceleration_structure(entry.accel, None);
-            entry.buffer.destroy(device, allocator);
-        }
-        for scratch in &mut self.scratch_buffers {
-            if let Some(mut s) = scratch.take() {
-                s.destroy(device, allocator);
+            for slot in &mut self.tlas {
+                if let Some(mut tlas) = slot.take() {
+                    self.accel_loader
+                        .destroy_acceleration_structure(tlas.accel, None);
+                    tlas.buffer.destroy(device, allocator);
+                    tlas.instance_buffer.destroy(device, allocator);
+                    tlas.instance_buffer_device.destroy(device, allocator);
+                }
             }
-        }
-        if let Some(mut scratch) = self.blas_scratch_buffer.take() {
-            scratch.destroy(device, allocator);
+            // #1138 / CONC-D3-NEW-01 — drain `skinned_blas` here so
+            // `destroy()` is self-contained regardless of whether the
+            // caller pre-drained via `skinned_blas_entities` →
+            // `drop_skinned_blas`. Pre-fix the only correct shutdown path
+            // routed each entry through `pending_destroy_blas` first
+            // (`context/mod.rs::Drop`), and any caller that skipped that
+            // dance — a future test constructing `AccelerationManager`
+            // directly, or an error-path refactor in `App::shutdown` that
+            // bypasses the pre-drain — silently leaked every still-
+            // resident per-entity `VkAccelerationStructureKHR` + buffer
+            // because the `HashMap` drops as plain memory without the
+            // explicit `destroy_acceleration_structure` call. The App-
+            // level pre-drain remains in place as an optimization (it
+            // routes through `pending_destroy_blas` so the
+            // `MAX_FRAMES_IN_FLIGHT` countdown lets a still-flight refit
+            // finish), but is no longer a correctness requirement: the
+            // parent `device_wait_idle` (`context/mod.rs::Drop::drop`;
+            // #1789 / CONC-D6-01 — `destroy()`'s only call site, cited by
+            // name rather than line number) already settles every
+            // in-flight command-buffer reference, so destruction here is
+            // safe.
+            // SAFETY: caller of `destroy()` (unsafe fn) guarantees no
+            // command buffer is still referencing these resources — every
+            // production caller pairs the call with `device_wait_idle`.
+            for (_eid, mut entry) in self.skinned_blas.drain() {
+                self.accel_loader
+                    .destroy_acceleration_structure(entry.accel, None);
+                entry.buffer.destroy(device, allocator);
+            }
+            for scratch in &mut self.scratch_buffers {
+                if let Some(mut s) = scratch.take() {
+                    s.destroy(device, allocator);
+                }
+            }
+            if let Some(mut scratch) = self.blas_scratch_buffer.take() {
+                scratch.destroy(device, allocator);
+            }
+            self.destroy_terrain_patch_blas(device, allocator);
         }
     }
 }

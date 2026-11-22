@@ -6,6 +6,8 @@ use std::num::NonZeroU32;
 
 mod hardcore;
 pub use hardcore::HardcoreMode;
+pub mod menu_registry;
+pub use menu_registry::{MenuRegistry, MenuTransition};
 
 /// System names stored as a resource for debug and console queries.
 pub struct SystemList(pub Vec<String>);
@@ -56,12 +58,11 @@ pub struct ScreenshotBridge {
 /// Renderer-side depth-capture request/result channel (#3308).
 ///
 /// Sibling of [`ScreenshotBridge`], deliberately thinner: the depth capture
-/// has exactly one consumer (the `depth.stats` console command), so there is
-/// no second claimant for a straggler result to be served to and neither an
-/// owner tag nor a capture generation is needed. A stale result is simply an
-/// older frame's depth, which for a diagnostic is a meaningful answer rather
-/// than a correctness hazard — the opposite of the golden-frame comparison
-/// `ScreenshotBridge` feeds, where #1006 and #1603 both mattered.
+/// has a shared result slot for the `depth.stats` and `depth.sample`
+/// console diagnostics. Either command consumes the latest result and arms
+/// the next capture. Keep the camera fixed while sampling because a result
+/// can belong to an earlier frame. This is separate from the golden-frame
+/// comparison `ScreenshotBridge` feeds, where capture ownership matters.
 ///
 /// `samples` are raw `D32_SFLOAT` values; hand them to
 /// [`crate::ecs::components::Camera::analyze_depth_field`] rather than
@@ -801,6 +802,12 @@ pub struct SkinCoverageStats {
     pub refits_attempted: u32,
     /// Refits that returned `Ok` this frame.
     pub refits_succeeded: u32,
+    /// Vertices the skin compute pass dispatched this frame (skips
+    /// excluded): `gpu_skin_dispatch_ms` per vertex (#7150).
+    pub dispatch_vertices: u64,
+    /// Triangles the successful BLAS refits covered this frame:
+    /// `gpu_skin_blas_refit_ms` per triangle (#7150).
+    pub refit_triangles: u64,
     /// Sample of entity IDs currently in `failed_skin_slots`. Bounded
     /// snapshot (first ~16 entries) so the resource stays cheap to copy
     /// out of the renderer each frame; the full count is in
@@ -890,6 +897,15 @@ pub struct SkinCoverageStats {
     /// #5959 — the direct-shadow filter, nested inside `gpu_svgf_ms` when
     /// SVGF runs (never sum the two).
     pub gpu_shadow_filter_ms: f32,
+    pub gpu_far_sun_ms: f32,
+    /// RCG-PERF-001 — the radiance cache's update paths and its resolve pass: sibling brackets, never
+    /// nested. Inactive until the cache's passes record them.
+    pub gpu_cache_update_ms: f32,
+    pub gpu_cache_resolve_ms: f32,
+    /// #7152 — TSD-4.1's terrain patch displacement pass.
+    pub gpu_terrain_patch_ms: f32,
+    /// #7221 — TSD-4.2's patch BLAS builds + refits (one batched AS build).
+    pub gpu_terrain_patch_blas_ms: f32,
     /// #6316 — the cloud-shadow bake, nested inside `gpu_sky_cube_ms`
     /// (never sum the two).
     pub gpu_cloud_shadow_ms: f32,
@@ -927,6 +943,11 @@ pub struct SkinCoverageStats {
     pub gpu_volumetrics_integrate_active: bool,
     pub gpu_volumetrics_local_sim_active: bool,
     pub gpu_shadow_filter_active: bool,
+    pub gpu_far_sun_active: bool,
+    pub gpu_cache_update_active: bool,
+    pub gpu_cache_resolve_active: bool,
+    pub gpu_terrain_patch_active: bool,
+    pub gpu_terrain_patch_blas_active: bool,
     pub gpu_cloud_shadow_active: bool,
 }
 
@@ -1247,6 +1268,81 @@ impl RtIntegrityStats {
 }
 
 impl Resource for RtIntegrityStats {}
+
+/// One `--rt-test-lod-telemetry` read-back of the main pass's GI counters (RCG-DBG-002).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct GiCacheTelemetry {
+    /// Fragments that reached the RT-LOD stage.
+    pub fragments: u32,
+    /// Fragments that took the traced share this frame.
+    pub gi_traced: u32,
+    /// Fragments the footprint gate cut from the traced share.
+    pub gi_lod_culled: u32,
+    /// Traced-share pixels the radiance cache resolved. 0 until a shader looks the cache up.
+    pub cache_resolved: u32,
+    /// Cache lookups that missed. 0 until a shader looks the cache up.
+    pub cache_misses: u32,
+}
+
+/// What `gi.cache` prints (RCG-DBG-003): the radiance cache's state and the GI coverage counters.
+///
+/// The renderer fills it once per frame. The cache is not allocated yet (RCG-CACHE-001), so its
+/// occupancy, evictions, voxel edges and per-visibility-class coverage have no source and
+/// [`GiCacheStats::lines`] says so instead of printing zeros; the update stride and the counters
+/// are real.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct GiCacheStats {
+    /// A renderer frame has populated this resource.
+    pub sampled: bool,
+    /// The ray quality tier in force this frame.
+    pub ray_quality_tier: u32,
+    /// One update path per `stride x stride` pixel block; 0 traces none (RCG-UPD-001).
+    pub update_stride: u32,
+    /// The last telemetry sample, present only when the engine runs with `--rt-test-lod-telemetry`.
+    pub telemetry: Option<GiCacheTelemetry>,
+}
+
+impl GiCacheStats {
+    /// The `gi.cache` output, one line per fact.
+    pub fn lines(&self) -> Vec<String> {
+        if !self.sampled {
+            return vec!["gi.cache: no frame has been rendered yet".to_string()];
+        }
+        let mut lines = vec![
+            "gi.cache: the radiance cache is not allocated (RCG-CACHE-001); occupancy, evictions, voxel edge per level and coverage per visibility class have no source yet".to_string(),
+            format!(
+                "  ray_quality_tier={} update_stride={} ({})",
+                self.ray_quality_tier,
+                self.update_stride,
+                if self.update_stride == 0 {
+                    "no update paths".to_string()
+                } else {
+                    format!("one update path per {0}x{0} pixel block", self.update_stride)
+                }
+            ),
+        ];
+        match self.telemetry {
+            None => lines.push(
+                "  telemetry: off (start the engine with --rt-test-lod-telemetry for the GI counters)".to_string(),
+            ),
+            Some(t) => {
+                lines.push(format!(
+                    "  fragments={} gi_traced={} gi_lod_culled={} cache_resolved={} cache_misses={}",
+                    t.fragments, t.gi_traced, t.gi_lod_culled, t.cache_resolved, t.cache_misses
+                ));
+                let lookups = u64::from(t.cache_resolved) + u64::from(t.cache_misses);
+                lines.push(if lookups == 0 {
+                    "  miss_fraction: n/a (no cache lookups; a zero here is not evidence of coverage)".to_string()
+                } else {
+                    format!("  miss_fraction={:.4}", f64::from(t.cache_misses) / lookups as f64)
+                });
+            }
+        }
+        lines
+    }
+}
+
+impl Resource for GiCacheStats {}
 
 /// Live-residency LOD coverage audit (EX-10/11 / #2371).
 ///
@@ -1784,6 +1880,31 @@ impl ItemInstancePool {
 
 #[cfg(test)]
 mod tests {
+    /// RCG-DBG-003: `gi.cache` says the cache is absent instead of printing zeros for it, prints the
+    /// update stride, and reports the miss fraction only when a lookup happened.
+    #[test]
+    fn gi_cache_lines_name_what_has_no_source_and_never_invent_a_miss_fraction() {
+        assert_eq!(
+            GiCacheStats::default().lines(),
+            ["gi.cache: no frame has been rendered yet"]
+        );
+        let mut stats = GiCacheStats { sampled: true, ray_quality_tier: 2, update_stride: 5, telemetry: None };
+        let off = stats.lines().join("\n");
+        assert!(off.contains("not allocated"), "{off}");
+        assert!(off.contains("update_stride=5 (one update path per 5x5 pixel block)"), "{off}");
+        assert!(off.contains("telemetry: off"), "{off}");
+        stats.update_stride = 0;
+        assert!(stats.lines().join("\n").contains("no update paths"));
+
+        stats.telemetry = Some(GiCacheTelemetry { fragments: 100, gi_traced: 0, gi_lod_culled: 90, ..Default::default() });
+        let none = stats.lines().join("\n");
+        assert!(none.contains("gi_lod_culled=90"), "{none}");
+        assert!(none.contains("miss_fraction: n/a"), "no lookups, no fraction: {none}");
+
+        stats.telemetry = Some(GiCacheTelemetry { cache_resolved: 75, cache_misses: 25, ..Default::default() });
+        assert!(stats.lines().join("\n").contains("miss_fraction=0.2500"));
+    }
+
     /// DLOD-GATE-001..005 -- the `lod-coverage:` line carries the tree, placement and moat fields the
     /// smoke gate parses, and only churn (not the moat counts, which Phase 3 drives to zero) fails the verdict.
     #[test]

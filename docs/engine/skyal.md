@@ -421,6 +421,14 @@ after 30 minutes, past the 12.5 km base period. `advance_deck_drift`
 the two free lanes, so no struct layout changed; `cloud_wind_offset` reads them.
 Pinned by `deck_drift_tests` and `sky_dome::tests::wind_consumers_match_the_host_packing`.
 
+The deck starts at a session-seeded position in that periodic field, rather
+than always showing the same formation at a given location. Set
+`BYRO_CLOUD_SEED` to an unsigned integer for repeatable captures. The state
+survives cell transitions. Cloud-altitude drift is 3 m/s in calm surface
+weather, rising linearly to 20 m/s at full authored wind; it follows the
+resolved worldspace wind direction, including the legacy fallback. This is an
+engine choice, not a measurement of the game's authored upper-air wind.
+
 ### 2.4.1 The game's temperature and mood are the base (2026-10-20)
 
 The per-world colour temperature — FO3/FNV and every DLC author their own: the

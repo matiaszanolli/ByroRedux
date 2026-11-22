@@ -101,6 +101,14 @@ spatial candidates are re-evaluated at the current surface, normal-rejected,
 and the selected sample is visibility-tested again. Screen-sized reservoir
 SSBOs at scene-set bindings 16/17 persist history across frames.
 
+**A3 shadow rotation.** A pixel with validated history acquires a fixed
+10-bit sampling key during camera motion. It carries that key across
+reprojection and through the stop while its history remains valid. Fresh
+history in a stationary view reads the existing screen-pixel rotation.
+The key shares the reservoir word with the masked 22-bit blocker ID.
+The R2 frame index advances as before and the reservoir stride stays
+36 bytes.
+
 **Remaining trade-off:** Spatial reuse reads fenced previous-frame neighbours
 rather than a dedicated current-frame resample pass. This avoids an extra
 dispatch and read-after-write hazard but makes the estimator a deliberate
@@ -213,3 +221,40 @@ authored ambient, but the isolated stochastic GI bounce is nearly black apart
 from sparse high-energy samples around window/cutout geometry. The next GI
 work should target hit-surface light evaluation and firefly rejection rather
 than increasing SVGF strength or exposure.
+
+## Far-field sun shadows (RLT-CON-004)
+
+The Phase 3 pass projects the sun and each receiver into
+the same coordinate space as the depth texture. The ray projects to a
+line, so the pass can interpolate screen coordinates and projected depth
+along that line. Their implementation groups near-collinear rays to
+share edge-aware depth samples in workgroup memory. ByroRedux's
+directional light projects as the homogeneous vector
+`viewProj * vec4(towardSun, 0)`. Its sign and zero-`w` case determine the
+screen direction without dividing by a near-zero value. [Bend Studio,
+Screen Space Shadows, slides 13–27](https://www.bendstudio.com/blog/inside-bend-screen-space-shadows).
+
+`far_sun_shadow.comp` reads the current frame's depth after the main pass.
+It samples along the projected ray at up to 47 pixel positions, with the
+reversed-Z convention's depth comparison and a depth-dependent slab to
+reject receivers hitting themselves and unrelated foreground geometry.
+The correction fades at the screen edge and at the end of the search.
+Off-screen casters contribute no screen-space occlusion.
+
+Exterior receivers use the same distance as the ReSTIR shadow fade.
+The main pass retires traced history and its spatial correction at
+`SHADOW_FADE_END`, then ramps in the screen term over 600 world units.
+The visible opaque receiver's unshadowed sun RGB is carried in the last
+three channels of attachment 7. Its first channel remains the FSR
+transparency mask, which suppresses the correction behind transparency.
+The compute pass converts the occlusion fraction into occluded sun RGB.
+Composite subtracts it before adding other lighting and atmosphere, for
+the final image and `filtered_direct`. `direct_only` remains the raw
+geometry-pass output. `DBG_DISABLE_DIRECT_SHADOWS` disables both traces.
+
+`--cornell-reference far-sun` puts a shallow sun and a separate blue fill
+over a ground plane. `--cornell-reference-view 0`, `1`, and `2` place the
+caster respectively inside the traced interval, beyond it, and outside
+the frame. The standalone timer is `gpu_far_sun`.
+Run `scripts/m-light-gates.sh --gates CON-004 --profile release` to check
+these cases and direct-shadow disable under the same fixture.

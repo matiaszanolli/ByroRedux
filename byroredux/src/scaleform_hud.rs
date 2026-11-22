@@ -36,11 +36,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use byroredux_core::ecs::World;
-use byroredux_ui::{RenderPacing, ScaleformHostBridge, ScaleformValue, UiManager};
+use byroredux_ui::path::PATH_CALLBACKS;
+use byroredux_ui::{PathOp, PathOutcome, RenderPacing, ScaleformHostBridge, ScaleformValue, UiLayer, UiManager, WhenAbsent};
 
 use crate::asset_provider::Archive;
-use crate::hud::{fraction, HudBackend, HudControl, HUD_REFRESH_INTERVAL};
-use crate::inventory::PlayerVitals;
+use crate::hud::{bar_reading, publish_readings, shown_bits, BarReading, HudBackend, HudControl, HUD_REFRESH_INTERVAL};
 
 /// #4717 — how often the always-on HUD may render and read back its Ruffle
 /// target. A live movie asks for a render at its own frame rate (24–30 Hz)
@@ -114,6 +114,113 @@ impl ScaleformGame {
         }
     }
 
+    /// The path-service operations that feed the vanilla HUD this frame's vitals and heading
+    /// (M48 GUI-HUD-001…003, -005): the members Phase 0 found the original engine drives
+    /// (`docs/data/game-ui/hud-feeds-*.tsv`), confirmed live by driving them.
+    ///
+    /// - **Skyrim** (AVM1): `_root.HUDMovieBaseInstance.Set{Health,Magicka,Stamina}MeterPercent
+    ///   (aPercent 0..100, abForce)` with `abForce = false`, the movie's own path: it runs the
+    ///   meter's fade-in (`RunMeterAnim`) and sets the tween target (`true` sets the bar of a meter
+    ///   that stays faded out). Each is followed by the meter object's own `SetPercent` (on
+    ///   `HealthMeterLeft`, `MagickaMeter`, `StaminaMeter`), which floors the frame it jumps to:
+    ///   the tween (`Components.Meter.Update`) calls `gotoAndStop` with a fractional frame, which
+    ///   Ruffle ignores, so without it the bar would never move. Survival penalties are not
+    ///   modelled, so the penalty-scaled value the handler computes equals the percent.
+    ///   `SetCompassAngle(aPlayerAngle, aCompassAngle, abShowCompass)`, both angles the heading in
+    ///   degrees. The movie's own `GameDelegate` `call` callback does not reach these handlers at
+    ///   runtime (Phase 0 read that from bytecode; Phase 2 measured it).
+    /// - **Fallout 4** (AVM2): the `MeterBarWidget.Percent` setters (0..1) of
+    ///   `LeftMeters_mc.HPMeter_mc.MeterBar_mc` and
+    ///   `RightMeters_mc.ActionPointMeter_mc.MeterBar_mc`, plus the HP meter's rads overlay
+    ///   `RadsBar_mc`, which the movie initialises full and draws over the HP fill. The engine
+    ///   models no Fallout 4 radiation (`PlayerVitals` carries FO3 / FNV rads only), so the overlay
+    ///   is 0: the state of a player with no rads. The compass widget has no ActionScript at all:
+    ///   [`Fallout4Compass`] builds and moves it as native code does (#7036).
+    fn meter_feeds(self, fractions: [f32; 3], heading: f32) -> Vec<PathOp> {
+        let number = |value: f32| ScaleformValue::Number(value as f64);
+        match self {
+            Self::Skyrim => {
+                let mut feeds = Vec::with_capacity(7);
+                for ((name, object), fraction) in
+                    [("Health", "HealthMeterLeft"), ("Magicka", "MagickaMeter"), ("Stamina", "StaminaMeter")]
+                        .into_iter()
+                        .zip(fractions)
+                {
+                    let percent = number(fraction * 100.0);
+                    feeds.push(PathOp::Call(
+                        format!("_root.HUDMovieBaseInstance.Set{name}MeterPercent"),
+                        vec![percent.clone(), ScaleformValue::Bool(false)],
+                    ));
+                    feeds.push(PathOp::Call(format!("_root.HUDMovieBaseInstance.{object}.SetPercent"), vec![percent]));
+                }
+                feeds.push(PathOp::Call(
+                        "_root.HUDMovieBaseInstance.SetCompassAngle".into(),
+                        vec![number(heading), number(heading), ScaleformValue::Bool(true)],
+                ));
+                feeds
+            }
+            Self::Fallout4 => vec![
+                PathOp::Set("LeftMeters_mc.HPMeter_mc.MeterBar_mc.Percent".into(), number(fractions[0])),
+                PathOp::Set("LeftMeters_mc.HPMeter_mc.RadsBar_mc.Percent".into(), number(0.0)),
+                PathOp::Set("RightMeters_mc.ActionPointMeter_mc.MeterBar_mc.Percent".into(), number(fractions[1])),
+            ],
+        }
+    }
+
+    /// The operations that show or hide each driven bar's widget (#7043): hidden for a pool the player
+    /// does not carry, shown again when it appears. The same widgets [`Self::meter_feeds`] drives, through
+    /// the property each movie's runtime owns: `visible` (AVM2, Fallout 4) and `_visible` (AVM1, Skyrim).
+    /// Skyrim's `HealthMeterLeft` is the left half of the health meter; a vanilla Skyrim player carries all
+    /// three pools, so this channel only ever writes `true` there.
+    fn bar_visibility(self, shown: [bool; 3]) -> Vec<PathOp> {
+        let widgets: &[&str] = match self {
+            Self::Skyrim => &[
+                "_root.HUDMovieBaseInstance.HealthMeterLeft._visible",
+                "_root.HUDMovieBaseInstance.MagickaMeter._visible",
+                "_root.HUDMovieBaseInstance.StaminaMeter._visible",
+            ],
+            Self::Fallout4 => &["LeftMeters_mc.HPMeter_mc.visible", "RightMeters_mc.ActionPointMeter_mc.visible"],
+        };
+        widgets
+            .iter()
+            .zip(shown)
+            .map(|(path, shown)| PathOp::Set((*path).to_owned(), ScaleformValue::Bool(shown)))
+            .collect()
+    }
+
+    /// The operations that stand in, once, for native writes the engine does not model yet, so
+    /// a HUD widget nothing feeds shows nothing rather than its authored sample text (#6665: the
+    /// sample text drew once GUI-FONT-001/003 gave the movies their fonts).
+    ///
+    /// - **Skyrim**: `_root.HUDMovieBaseInstance.HideSubtitle()`, the native call that clears the
+    ///   subtitle (`hud-feeds-skyrim-se.tsv`; `ShowSubtitle` is its pair), whose authored text is
+    ///   "Dialogue Line 1 / 2".
+    /// - **Fallout 4**: `visible = false` on each widget native code feeds and the engine does
+    ///   not yet (`hud-feeds-fallout4.tsv`): the XP gain bar, quest updates, the rads counter, the
+    ///   region text, the ammo counts, the VATS crit meter, the subtitle, the stealth meter and the
+    ///   enemy health bar. This is the engine's policy for an unfed widget, not a claim about how
+    ///   native hides them; each comes back when its feed lands (M48 Phase 6).
+    fn unfed_widgets(self) -> Vec<PathOp> {
+        match self {
+            Self::Skyrim => vec![PathOp::Call("_root.HUDMovieBaseInstance.HideSubtitle".into(), Vec::new())],
+            Self::Fallout4 => [
+                "HUDNotificationsGroup_mc.XPMeter_mc",
+                "HUDNotificationsGroup_mc.QuestUpdates_mc",
+                "LeftMeters_mc.RadsMeter_mc",
+                "LeftMeters_mc.LocationText_mc",
+                "RightMeters_mc.AmmoCount_mc",
+                "RightMeters_mc.ExplosiveAmmoCount_mc",
+                "BottomCenterGroup_mc.CritMeter_mc",
+                "BottomCenterGroup_mc.SubtitleText_mc",
+                "TopCenterGroup_mc.StealthMeter_mc",
+                "TopCenterGroup_mc.EnemyHealthMeter_mc",
+            ]
+            .into_iter()
+            .map(|widget| PathOp::Set(format!("{widget}.visible"), ScaleformValue::Bool(false)))
+            .collect(),
+        }
+    }
+
     /// The vanilla HUD movie, archive-relative.
     fn menu_path(self) -> &'static str {
         "interface\\hudmenu.swf"
@@ -139,6 +246,133 @@ impl ScaleformGame {
     }
 }
 
+/// #7036 — Fallout 4's compass (GUI-HUD-005). `BottomCenterGroup_mc.CompassWidget_mc` has no
+/// ActionScript: native `HUDCompass` builds and moves it. Measured from `Fallout4.exe` (RVAs):
+///
+/// - construction (`0x9b8240`) keeps `halfW = (CompassBar_mc.width − 2) · 0.5` (151 px on the
+///   vanilla 304 px bar) and instantiates one `DirectionMarkerWidget` (the movie's exported
+///   letter-and-tick class) per cardinal into `OtherMarkerHolder_mc`, at 0, π/2, π and 3π/2 rad;
+///   each sets `Direction_tf.text` to `$Compass_North` / `East` / `South` / `West` and
+///   `Direction_tf.autoSize` to `"center"` (`0x9bb800`);
+/// - every update (`0x9b88d1`, half field of view `0x252e960` = 0.872665 rad = 50°) places each
+///   marker through `0x9bb5d0`: `Δ = wrap(heading − angle)` into ±π; a direction marker
+///   (never clamped to the edge) is hidden once `|Δ| ≥ halfFov`, otherwise shown at
+///   `x = −halfW · Δ / halfFov`.
+///
+/// The engine stands in for that construction through the path service's attach
+/// ([`PathOp::Attach`]) and feeds `x` / `visible` from the camera heading. The quest and
+/// other location markers the native compass also places are not modelled. Each label is set
+/// to its key, as native does, and Ruffle's `$`-key pass translates it (GUI-FONT-004). The letters
+/// draw in the bundled fallback face until Fallout 4's font classes (`$MAIN_Font_Bold`) are
+/// mapped from its `fontconfig.txt` (GUI-FONT-001, M48 Phase 6).
+#[derive(Default)]
+struct Fallout4Compass {
+    /// `halfW`, read from the movie once its adapter answers.
+    half_width: Option<f32>,
+    /// The markers are attached and labelled.
+    built: bool,
+    /// The movie cannot carry the compass (no `DirectionMarkerWidget`, no holder): stop asking.
+    disabled: bool,
+}
+
+const FALLOUT4_COMPASS: &str = "BottomCenterGroup_mc.CompassWidget_mc";
+/// `HUDCompass`'s half field of view, `0x252e960` (0.872665 rad).
+const FALLOUT4_COMPASS_HALF_FOV_DEGREES: f32 = 50.0;
+/// The direction markers: the child name the engine gives each, its translation key, its angle
+/// (degrees clockwise from north, as the heading).
+const FALLOUT4_COMPASS_DIRECTIONS: [(&str, &str, f32); 4] = [
+    ("ByroCompassNorth", "$Compass_North", 0.0),
+    ("ByroCompassEast", "$Compass_East", 90.0),
+    ("ByroCompassSouth", "$Compass_South", 180.0),
+    ("ByroCompassWest", "$Compass_West", 270.0),
+];
+
+impl Fallout4Compass {
+    fn marker(name: &str) -> String {
+        format!("{FALLOUT4_COMPASS}.OtherMarkerHolder_mc.{name}")
+    }
+
+    /// The markers' placement for `heading` (degrees): `(x, visible)` per direction, by the
+    /// native rule.
+    fn placement(half_width: f32, heading: f32) -> [(f32, bool); 4] {
+        FALLOUT4_COMPASS_DIRECTIONS.map(|(_, _, angle)| {
+            let delta = (heading - angle + 180.0).rem_euclid(360.0) - 180.0;
+            let visible = delta.abs() < FALLOUT4_COMPASS_HALF_FOV_DEGREES;
+            (-half_width * delta / FALLOUT4_COMPASS_HALF_FOV_DEGREES, visible)
+        })
+    }
+
+    /// One push: build the markers once the adapter answers, then place them. Each operation's
+    /// path and outcome goes to `hud.debug`'s paths line. `false` while the compass still waits on
+    /// the movie, so the driver pushes again on its cadence even with a still heading.
+    fn feed(&mut self, layer: &mut UiLayer, heading: f32, feed: &mut Vec<(String, String)>) -> bool {
+        if self.disabled {
+            return true;
+        }
+        let mut run = |op: PathOp, when_absent: WhenAbsent, feed: &mut Vec<(String, String)>| {
+            let path = op.path().to_owned();
+            let outcome = layer.path_op(op, when_absent);
+            feed.push((path, outcome_name(&outcome).to_owned()));
+            outcome
+        };
+        if self.half_width.is_none() {
+            let width = format!("{FALLOUT4_COMPASS}.CompassBar_mc.width");
+            match run(PathOp::Get(width), WhenAbsent::Refuse, feed) {
+                PathOutcome::Found(ScaleformValue::Number(width)) => self.half_width = Some(((width - 2.0) * 0.5) as f32),
+                PathOutcome::NotReady => return false,
+                _ => return self.disable("its CompassBar_mc has no width"),
+            }
+        }
+        if !self.built {
+            for (name, key, _) in FALLOUT4_COMPASS_DIRECTIONS {
+                let marker = Self::marker(name);
+                let text = format!("{marker}.Direction_tf");
+                let steps = [
+                    PathOp::Attach(marker, "DirectionMarkerWidget".to_owned()),
+                    PathOp::Set(format!("{text}.autoSize"), ScaleformValue::String("center".to_owned())),
+                    // Through `htmlText` with the authored `<b>` (the tag's placeholder is
+                    // `<b>NSEW</b>`): Ruffle's `text` setter drops to the field's non-bold default
+                    // format, which no `$MAIN_Font_Bold` face matches once fonts resolve. The key
+                    // is translated by Ruffle's `$`-key pass, per HTML run.
+                    PathOp::Set(format!("{text}.htmlText"), ScaleformValue::String(format!("<b>{key}</b>"))),
+                ];
+                for op in steps {
+                    match run(op, WhenAbsent::Refuse, feed) {
+                        PathOutcome::Found(_) => {}
+                        PathOutcome::NotReady => return false,
+                        _ => return self.disable("a DirectionMarkerWidget could not be attached and labelled"),
+                    }
+                }
+            }
+            self.built = true;
+        }
+        let half_width = self.half_width.unwrap_or_default();
+        for ((name, _, _), (x, visible)) in FALLOUT4_COMPASS_DIRECTIONS.iter().zip(Self::placement(half_width, heading)) {
+            let marker = Self::marker(name);
+            run(PathOp::Set(format!("{marker}.visible"), ScaleformValue::Bool(visible)), WhenAbsent::Queue, feed);
+            if visible {
+                run(PathOp::Set(format!("{marker}.x"), ScaleformValue::Number(x as f64)), WhenAbsent::Queue, feed);
+            }
+        }
+        true
+    }
+
+    fn disable(&mut self, why: &str) -> bool {
+        log::warn!("hud: the Fallout 4 compass stays static: {why}");
+        self.disabled = true;
+        true
+    }
+}
+
+fn outcome_name(outcome: &PathOutcome) -> &'static str {
+    match outcome {
+        PathOutcome::Found(_) => "found",
+        PathOutcome::Absent => "absent",
+        PathOutcome::NotReady => "not-ready",
+        PathOutcome::Queued => "queued",
+    }
+}
+
 /// The bar state the response handlers answer requests from. `Rc`
 /// shared between the driver (frame loop, refreshed from the World) and
 /// the handler closures (Ruffle's thread during `ExternalInterface.call`
@@ -154,6 +388,8 @@ pub(crate) struct HudSnapshot {
 /// in `scene.rs`), ticked from the Ruffle overlay branch.
 pub(crate) struct ScaleformHudDriver {
     game: ScaleformGame,
+    /// The HUD movie's layer in the [`UiManager`] stack (its `menu_name`).
+    menu: String,
     /// Handle into the live player's bridge — used to register response
     /// handlers (launch) and to read the movie's registered callbacks /
     /// unanswered-method sets (per-tick diagnostics mirror).
@@ -166,6 +402,10 @@ pub(crate) struct ScaleformHudDriver {
     last_signature: u64,
     last_push: std::time::Instant,
     last_diag_refresh: std::time::Instant,
+    /// Fallout 4's compass (#7036); `None` on Skyrim, whose movie drives its own.
+    compass: Option<Fallout4Compass>,
+    /// [`ScaleformGame::unfed_widgets`] were queued.
+    unfed_hidden: bool,
 }
 
 /// World-resource mirror of the Scaleform HUD's bridge diagnostics —
@@ -195,6 +435,10 @@ pub struct ScaleformHudDiag {
     /// Ruffle render-and-readback passes run so far (#4717) — a static HUD
     /// should grow this at the idle probe rate, not the movie's frame rate.
     pub render_passes: u64,
+    /// The last meter / compass feed through the path service: each path and its outcome
+    /// (M48 GUI-HUD-001…003), and the operations still queued for their target.
+    pub path_feed: Vec<(String, String)>,
+    pub queued_paths: usize,
 }
 
 impl byroredux_core::ecs::Resource for ScaleformHudDiag {}
@@ -206,6 +450,13 @@ fn hud_scaleform_args(args: &[String]) -> Result<Option<(ScaleformGame, String)>
     if !args.iter().any(|arg| arg == "--hud") {
         return Ok(None);
     }
+    interface_archive(args)
+}
+
+/// The Scaleform game and its vanilla interface archive beside `--esm` (Skyrim probed before
+/// Fallout 4), or `None` on a pre-Scaleform install. The HUD and `ui.open` (M48 GUI-OPS-005)
+/// load their movies from it.
+pub(crate) fn interface_archive(args: &[String]) -> Result<Option<(ScaleformGame, String)>, String> {
     let (_esm, esm_dir) = crate::cli_args::esm_discovery_root(args)?;
     for game in [ScaleformGame::Skyrim, ScaleformGame::Fallout4] {
         let archive = esm_dir.join(game.menu_archive());
@@ -228,7 +479,6 @@ pub(crate) fn launch(
     ctx: &mut byroredux_renderer::vulkan::context::VulkanContext,
     world: &mut World,
     ui_manager: &mut Option<UiManager>,
-    ui_texture_handle: &mut Option<u32>,
     args: &[String],
 ) -> Option<ScaleformHudDriver> {
     let (game, archive_path) = match hud_scaleform_args(args) {
@@ -253,6 +503,7 @@ pub(crate) fn launch(
         }
     };
 
+    let compass = (game == ScaleformGame::Fallout4).then(Fallout4Compass::default);
     let menu_path = game.menu_path();
     let mut ui = UiManager::new(w, h);
     if let Err(e) =
@@ -261,18 +512,22 @@ pub(crate) fn launch(
         log::error!("hud: failed to load {menu_path}: {e}");
         return None;
     }
+    let menu = UiManager::installed_menu_name(menu_path);
+    // A HUD is not a modal menu: world input (fly camera, console) must
+    // keep working. `install_player` grabbed focus at load; the menu
+    // registry would hand it back to the world on the next frame (the HUD's
+    // flags claim no input, GUI-REG-009), but not before this one.
+    ui.set_input_owner(None);
+    let layer = ui.layer_mut(&menu).expect("menu loaded above");
     // The overlay texture is full-screen: with Ruffle's default opaque
     // stage the movie's background clear washes the rendered world out
     // entirely. A HUD composites over the frame, so the stage clears to
     // transparent wherever the movie drew nothing. (`--menu` keeps the
     // opaque stage — modal menus own the whole screen by design.)
-    ui.set_stage_transparent();
+    layer.set_stage_transparent();
     // #4717 — the HUD is up all session, so its render + full-target readback
     // is paced instead of running at the movie's own frame rate.
-    ui.set_render_pacing(HUD_RENDER_PACING);
-    // A HUD is not a modal menu: world input (fly camera, console) must
-    // keep working. `install_player` grabbed focus at load.
-    ui.set_input_focus(false);
+    layer.set_render_pacing(HUD_RENDER_PACING);
 
     let handle = {
         let upload_ctx = byroredux_renderer::upload_ctx!(ctx);
@@ -286,9 +541,8 @@ pub(crate) fn launch(
             return None;
         }
     };
-    *ui_texture_handle = Some(handle);
-
-    let bridge = ui.host_bridge().expect("menu loaded above");
+    layer.set_texture(Some(handle));
+    let bridge = layer.host_bridge();
 
     // Response handlers — the menu→engine channel. The per-game set is
     // [`ScaleformGame::poll_handlers`] data (#4725), not an inline `if`.
@@ -309,16 +563,21 @@ pub(crate) fn launch(
         });
     }
 
+    // `Some(..)`: the boot-line tokens kept their pre-stack shape (`state=Some(AdapterInjected)`
+    // is m48-7's gate), from when the manager held at most one optional movie.
+    let (profile, state) = (Some(layer.profile()), Some(layer.host_object_state()));
     let driver = ScaleformHudDriver {
         game,
+        menu,
         callbacks: bridge.available_callbacks(),
         bridge,
         snapshot,
         last_signature: 0,
         last_push: std::time::Instant::now(),
         last_diag_refresh: std::time::Instant::now(),
+        compass,
+        unfed_hidden: false,
     };
-    let (profile, state) = (ui.menu_profile(), ui.host_object_state());
     log::info!(
         "hud: loaded {menu_path} archive='{archive_path}' backend={} \
          profile={profile:?} state={state:?} texture={handle} ({w}x{h}) \
@@ -351,7 +610,14 @@ impl ScaleformHudDriver {
     /// One frame: refresh the shared snapshot from the World, mirror
     /// bridge diagnostics to the console resource, and (on change, at
     /// the shared HUD cadence) push state into the movie.
-    pub(crate) fn tick(&mut self, world: &World, ui: &mut UiManager, cam_forward: [f32; 3]) {
+    /// The HUD movie's layer name in the [`UiManager`] stack.
+    pub(crate) fn menu(&self) -> &str {
+        &self.menu
+    }
+
+    /// `layer` is the HUD movie's layer; `None` (closed) still refreshes the snapshot the
+    /// response handlers read.
+    pub(crate) fn tick(&mut self, world: &World, mut layer: Option<&mut UiLayer>, cam_forward: [f32; 3]) {
         // Copy the control out and drop its read guard here: `let control =
         // *control;` shadows the guard without releasing it, and the `live`
         // write below then takes a write lock on the same resource while
@@ -365,22 +631,20 @@ impl ScaleformHudDriver {
         // answers `UiFrame::Hidden` while this is false, which stops the
         // UI quad entirely — `hud.off` really hides a Scaleform HUD (the
         // MenuXml driver's equivalent is its own early return).
-        if ui.visible != control.visible {
-            ui.visible = control.visible;
-        }
+        if let Some(layer) = layer.as_deref_mut()
+            && layer.visible() != control.visible {
+                layer.set_visible(control.visible);
+            }
 
         // The shared snapshot the response handlers read. #4675 — editor
         // ids resolve through the per-load `PlayerVitals` table.
-        let vitals = world.try_resource::<PlayerVitals>();
         let bars = self.game.bars();
-        let mut fractions = [1.0f32; 3];
+        let mut readings = [BarReading { fraction: 1.0, shown: true }; 3];
         for (i, bar) in bars.iter().enumerate() {
-            let key = vitals.as_ref().and_then(|v| v.resolved(bar.av));
-            fractions[i] = fraction(world, key, control.bars[i]);
+            readings[i] = bar_reading(world, Some(bar.av), control.bars[i]);
         }
-        if let Some(mut control_mut) = world.try_resource_mut::<HudControl>() {
-            control_mut.live = fractions.map(Some);
-        }
+        publish_readings(world, &readings);
+        let fractions = readings.map(|r| r.fraction);
         let heading = control.heading.unwrap_or_else(|| {
             f32::atan2(cam_forward[0], -cam_forward[2])
                 .to_degrees()
@@ -401,12 +665,45 @@ impl ScaleformHudDriver {
             (heading * 10.0) as i32,
             u8::from(control.visible),
         ));
+        let hash = crate::hud::mix_signature(hash, shown_bits(&readings));
         let changed = hash != self.last_signature;
         let cadence_ok = self.last_push.elapsed() >= HUD_REFRESH_INTERVAL;
         if changed && cadence_ok && control.visible {
             self.last_signature = hash;
             self.last_push = std::time::Instant::now();
-            self.push(ui, fractions, heading);
+            if let Some(layer) = layer.as_deref_mut() {
+                self.push(layer, fractions, heading);
+                // M48 GUI-HUD-001…003 — the vanilla meters and compass through the path service.
+                // Queued: the movie's adapter registers on its first frame (AVM1) or when the
+                // lifecycle class is constructed (AVM2); a newer value replaces a held one.
+                let mut feed: Vec<(String, String)> = self
+                    .game
+                    .meter_feeds(fractions, heading)
+                    .into_iter()
+                    .chain(self.game.bar_visibility(readings.map(|r| r.shown)))
+                    .map(|op| {
+                        let path = op.path().to_owned();
+                        let outcome = layer.path_op(op, WhenAbsent::Queue);
+                        (path, outcome_name(&outcome).to_owned())
+                    })
+                    .collect();
+                if !std::mem::replace(&mut self.unfed_hidden, true) {
+                    // Queued: they land once the adapter answers, like the meter feeds.
+                    for op in self.game.unfed_widgets() {
+                        let path = op.path().to_owned();
+                        let outcome = layer.path_op(op, WhenAbsent::Queue);
+                        feed.push((path, outcome_name(&outcome).to_owned()));
+                    }
+                }
+                if let Some(compass) = self.compass.as_mut()
+                    && !compass.feed(layer, heading, &mut feed) {
+                        // Still waiting on the movie: push again next cadence, heading or not.
+                        self.last_signature = 0;
+                    }
+                if let Some(mut diag) = world.try_resource_mut::<ScaleformHudDiag>() {
+                    diag.path_feed = feed;
+                }
+            }
             if let Some(mut diag) = world.try_resource_mut::<ScaleformHudDiag>() {
                 diag.last_push = Some((fractions[0], fractions[1], fractions[2], heading));
             }
@@ -419,10 +716,19 @@ impl ScaleformHudDriver {
             self.last_diag_refresh = std::time::Instant::now();
             self.callbacks = self.bridge.available_callbacks();
             if let Some(mut diag) = world.try_resource_mut::<ScaleformHudDiag>() {
-                diag.callbacks = self.callbacks.clone();
+                // The path adapters' own callbacks are the path service's surface, reported on
+                // `hud.debug`'s paths line; this list stays the movie's push targets (and FO4's
+                // adapter lifecycle hooks, m48-7's AdapterInjected observable).
+                diag.callbacks = self
+                    .callbacks
+                    .iter()
+                    .filter(|name| !PATH_CALLBACKS.contains(&name.as_str()))
+                    .cloned()
+                    .collect();
                 diag.unknown_methods = self.bridge.unknown_methods();
                 diag.unanswered_methods = self.bridge.unanswered_methods();
-                diag.render_passes = ui.render_passes();
+                diag.render_passes = layer.as_deref().map_or(0, UiLayer::render_passes);
+                diag.queued_paths = layer.as_deref().map_or(0, UiLayer::queued_paths);
             }
         }
     }
@@ -442,7 +748,7 @@ impl ScaleformHudDriver {
     /// `_ => continue` arm already declines every reserved lifecycle hook.
     /// An arm that ever names one fails that test and the guard must come
     /// back.
-    fn push(&mut self, ui: &mut UiManager, fractions: [f32; 3], heading: f32) {
+    fn push(&mut self, ui: &mut UiLayer, fractions: [f32; 3], heading: f32) {
         for name in &self.callbacks {
             let args: Vec<ScaleformValue> = match name.as_str() {
                 // SkyUI-class meter pushes (shapes are the working
@@ -465,18 +771,73 @@ impl ScaleformHudDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inventory::PlayerVitals;
     use byroredux_ui::ScaleformProfile;
 
     fn driver() -> ScaleformHudDriver {
         ScaleformHudDriver {
             game: ScaleformGame::Skyrim,
+            menu: "HUD Menu".to_owned(),
             bridge: ScaleformHostBridge::new(ScaleformProfile::SkyrimAvm1),
             snapshot: Rc::new(RefCell::new(HudSnapshot::default())),
             callbacks: Vec::new(),
             last_signature: 0,
             last_push: std::time::Instant::now(),
             last_diag_refresh: std::time::Instant::now(),
+            compass: None,
+            unfed_hidden: false,
         }
+    }
+
+    /// #7043 — the bar-visibility channel names each driven bar's own widget, hides it for a pool the
+    /// player does not carry and shows it again, one write per bar and in `hud.values` order.
+    #[test]
+    fn bar_visibility_writes_each_bars_widget_in_order() {
+        let ops = |game: ScaleformGame, shown| {
+            game.bar_visibility(shown)
+                .into_iter()
+                .map(|op| match op {
+                    PathOp::Set(path, ScaleformValue::Bool(visible)) => (path, visible),
+                    other => panic!("a bar's visibility is a boolean property write, got {other:?}"),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            ops(ScaleformGame::Fallout4, [true, false, true]),
+            [
+                ("LeftMeters_mc.HPMeter_mc.visible".to_owned(), true),
+                ("RightMeters_mc.ActionPointMeter_mc.visible".to_owned(), false),
+            ],
+            "FO4 drives two bars; the third slot is unused"
+        );
+        let skyrim = ops(ScaleformGame::Skyrim, [false, true, false]);
+        assert_eq!(skyrim.len(), 3);
+        assert_eq!(skyrim.iter().map(|(_, visible)| *visible).collect::<Vec<_>>(), [false, true, false]);
+        assert!(skyrim.iter().all(|(path, _)| path.starts_with("_root.HUDMovieBaseInstance.") && path.ends_with("._visible")));
+        // Every widget it addresses is one the meter feed already drives, so a bar the feed moves is the
+        // bar the channel hides.
+        let fed = ScaleformGame::Skyrim.meter_feeds([0.0; 3], 0.0);
+        for (path, _) in &skyrim {
+            let object = path.trim_end_matches("._visible");
+            assert!(fed.iter().any(|op| op.path() == format!("{object}.SetPercent")), "{object} is not fed");
+        }
+    }
+
+    /// #7043 — a tick publishes which bars are shown, `HudControl::shown`, for `hud.status`: a player
+    /// carrying no pool the game authors reads hidden, one carrying it reads shown.
+    #[test]
+    fn tick_publishes_which_bars_are_shown() {
+        let mut world = World::new();
+        world.insert_resource(HudControl::default());
+        world.insert_resource(PlayerVitals::resolving(&[("Health", 1), ("Magicka", 2)]));
+        let player = world.spawn();
+        let mut values = byroredux_core::ecs::components::ActorValues::new();
+        values.set_base(1, 100.0);
+        world.insert(player, values);
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        driver().tick(&world, None, [0.0, 0.0, -1.0]);
+        let control = world.resource::<HudControl>();
+        assert_eq!(control.shown, [true, false, false], "Health carried; Magicka resolves but is not carried; Stamina is not authored");
     }
 
     /// `tick` reads `HudControl` and writes its `live` bars back in the same
@@ -489,15 +850,86 @@ mod tests {
     fn tick_publishes_live_bars_without_deadlocking_on_hud_control() {
         let mut world = World::new();
         world.insert_resource(HudControl::default());
-        let mut ui = UiManager::new(4, 4);
-
-        driver().tick(&world, &mut ui, [0.0, 0.0, -1.0]);
+        driver().tick(&world, None, [0.0, 0.0, -1.0]);
 
         assert_eq!(
             world.resource::<HudControl>().live[0],
             Some(1.0),
             "the driver publishes the live bar fractions each tick"
         );
+    }
+
+    /// M48 GUI-HUD-001…003, -005 — the vanilla meters are fed through the paths Phase 0 listed:
+    /// Skyrim's percent setters on 0..100 with `abForce = false` (the movie's own fade-in) and
+    /// its compass, Fallout 4's `Percent` setters on 0..1 with the rads overlay cleared; no path
+    /// drives Fallout 4's code-less compass.
+    #[test]
+    fn meter_feeds_follow_the_phase0_paths() {
+        let skyrim = ScaleformGame::Skyrim.meter_feeds([0.35, 1.0, 0.5], 90.0);
+        assert_eq!(
+            skyrim[0],
+            PathOp::Call(
+                "_root.HUDMovieBaseInstance.SetHealthMeterPercent".into(),
+                vec![ScaleformValue::Number(35.0), ScaleformValue::Bool(false)]
+            )
+        );
+        // The movie's handler, then the meter's own flooring `SetPercent` (Ruffle drops the tween's
+        // fractional frames).
+        assert_eq!(
+            skyrim[1],
+            PathOp::Call("_root.HUDMovieBaseInstance.HealthMeterLeft.SetPercent".into(), vec![ScaleformValue::Number(35.0)])
+        );
+        assert_eq!(skyrim[4].path(), "_root.HUDMovieBaseInstance.SetStaminaMeterPercent");
+        assert_eq!(skyrim[5].path(), "_root.HUDMovieBaseInstance.StaminaMeter.SetPercent");
+        assert_eq!(
+            skyrim[6],
+            PathOp::Call(
+                "_root.HUDMovieBaseInstance.SetCompassAngle".into(),
+                vec![ScaleformValue::Number(90.0), ScaleformValue::Number(90.0), ScaleformValue::Bool(true)]
+            )
+        );
+        let fallout4 = ScaleformGame::Fallout4.meter_feeds([0.35, 0.8, 1.0], 90.0);
+        let paths: Vec<&str> = fallout4.iter().map(PathOp::path).collect();
+        assert_eq!(
+            paths,
+            [
+                "LeftMeters_mc.HPMeter_mc.MeterBar_mc.Percent",
+                "LeftMeters_mc.HPMeter_mc.RadsBar_mc.Percent",
+                "RightMeters_mc.ActionPointMeter_mc.MeterBar_mc.Percent"
+            ]
+        );
+        assert_eq!(fallout4[0], PathOp::Set(paths[0].into(), ScaleformValue::Number(0.35f32 as f64)));
+        assert_eq!(fallout4[1], PathOp::Set(paths[1].into(), ScaleformValue::Number(0.0)));
+        assert!(!paths.iter().any(|path| path.contains("Compass")), "Fallout 4's compass is Fallout4Compass's (#7036)");
+    }
+
+    /// #7036 — the Fallout 4 compass places its direction markers by `HUDCompass`'s rule: each at
+    /// `x = −halfW · Δ / 50°` with `Δ = wrap(heading − angle)`, hidden from `|Δ| ≥ 50°` on.
+    #[test]
+    fn fallout4_compass_markers_follow_the_native_placement() {
+        let half_width = 151.0;
+        let near = |(x, visible): (f32, bool), want: f32| visible && (x - want).abs() < 1e-3;
+        // Facing north: N centred, E and W out of the 100° window, S behind.
+        let [n, e, s, w] = Fallout4Compass::placement(half_width, 0.0);
+        assert!(near(n, 0.0), "{n:?}");
+        assert!(!e.1 && !s.1 && !w.1);
+        // Facing 20° (east of north): N sits left, 20/50 of the half width.
+        let [n, e, ..] = Fallout4Compass::placement(half_width, 20.0);
+        assert!(near(n, -half_width * 0.4), "{n:?}");
+        assert!(!e.1, "E is 70° away");
+        // Facing 70°: E to the left of centre by 20°, N out.
+        let [n, e, ..] = Fallout4Compass::placement(half_width, 70.0);
+        assert!(near(e, half_width * 0.4), "{e:?}");
+        assert!(!n.1);
+        // Wrap: facing 350°, N is 10° to the right; W at 280° is out (70°).
+        let [n, _, _, w] = Fallout4Compass::placement(half_width, 350.0);
+        assert!(near(n, half_width * 0.2), "{n:?}");
+        assert!(!w.1);
+        // The window edge is exclusive, as the native `comiss`/`jb` pair.
+        assert!(!Fallout4Compass::placement(half_width, 50.0)[0].1);
+        // hud.heading 90 vs 270: the visible marker changes, which the smoke diffs.
+        assert!(Fallout4Compass::placement(half_width, 90.0)[1].1 && !Fallout4Compass::placement(half_width, 90.0)[3].1);
+        assert!(Fallout4Compass::placement(half_width, 270.0)[3].1 && !Fallout4Compass::placement(half_width, 270.0)[1].1);
     }
 
     /// #4725 — the per-game poll-handler set is table data on

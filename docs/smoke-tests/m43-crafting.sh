@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # M43 gate — crafting at a workbench raises CRFT (Craft Item), live.
 #
-#   1. Boot the Skyrim SE profile onto the Whiterun exterior grid with a player
+#   1. Boot the Skyrim SE profile into Whiterun city (`WhiterunWorld`, grid 4,-2) with the
+#      player beside the tanning rack by Warmaiden's (REFR 0002056A, base
+#      `CraftingTanningRackMarker`, enabled from the start)
 #      (`Installed N crafting recipes`: Skyrim's COBJ recipes and the FURN bench keywords).
+#      #7035 — the gate used to boot onto the Tamriel grid 2,-4, whose only bench is the
+#      Khajiit caravan camp's rack (REFR 00103711, enable parent `CaravanWhiterunCampEnable`,
+#      authored disabled until a caravan arrives). Since #6539 a disabled bench is never
+#      used, so that launch had no bench at all.
 #   2. `craft list` names the recipes the placed bench nearest the player offers;
 #      `inv.add` gives the player leather and `craft make` crafts leather strips
 #      through the crafting page's own action: the ingredient leaves the inventory,
@@ -72,9 +78,10 @@ EOF2
 
 env BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 \
     BYROREDUX_SETTINGS_PATH="$LOG_DIR/settings.toml" \
-    RUST_LOG="warn,byroredux_scripting=info,byroredux::asset_provider=info,byroredux::cell_loader::created=info" \
+    RUST_LOG="warn,byroredux_scripting=info,byroredux::asset_provider=info,byroredux::scene::scene_runtime=info,byroredux::cell_loader::created=info" \
     target/release/byroredux \
-    --game skyrim_se --grid 2,-4 --radius 2 \
+    --game skyrim_se --wrld WhiterunWorld --grid 4,-2 --radius 1 \
+    --camera-pos 20380,-3540,8040 \
     --player --bench-frames 30 --bench-hold \
     >"$LOG_DIR/session.stdout" 2>"$LOG_DIR/session.stderr" &
 engine_pid=$!

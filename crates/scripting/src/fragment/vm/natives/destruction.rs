@@ -27,8 +27,8 @@ impl Vm<'_> {
             (Value::Form(reference), "damageobject") if args.len() == 1 => {
                 let values = self.eval_args(frame, args)?;
                 let amount = values.first().and_then(Value::number).unwrap_or(0.0);
-                if let Some(entity) = self.entity_of(*reference) {
-                    if let Some(outcome) = crate::destruction::damage_object(self.world, entity, *reference, amount) {
+                if let Some(entity) = self.entity_of(*reference)
+                    && let Some(outcome) = crate::destruction::damage_object(self.world, entity, *reference, amount) {
                         if outcome.new_stage != outcome.old_stage {
                             crate::fragment::raise_reference_event(
                                 self.world,
@@ -41,7 +41,6 @@ impl Vm<'_> {
                             self.deferred.reference_enable_changes.push((*reference, false));
                         }
                     }
-                }
                 Some(Value::None)
             }
             (Value::Form(reference), "getcurrentdestructionstage") if args.is_empty() => {

@@ -163,8 +163,8 @@ pub struct VolumetricsParams {
     /// x = gust cycles per second. y = BFECC advection error-correction
     /// multiplier — 0.0 when `BYRO_BFECC=0` (see
     /// [`bfecc_error_correction_multiplier`]), 1.0 otherwise. z = the
-    /// alpha-aware sun trace switch ([`sun_alpha_trace_enabled`], VLM-SH-009),
-    /// 1.0 on. w = the open-sky sun dust strength per metre
+    /// sun trace mode: 1.0 alpha-aware, 0.0 opaque, -1.0 unoccluded for
+    /// exterior comparison captures. w = the open-sky sun dust strength per metre
     /// ([`open_sky_sun_dust_per_meter`], the `BYRO_SUN_DUST` experiment; 0 = off).
     /// All four lanes are now in use: a new parameter needs a new vec4, not a
     /// lane here.
@@ -189,6 +189,29 @@ pub fn bfecc_error_correction_multiplier() -> f32 {
 pub fn sun_alpha_trace_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| !matches!(std::env::var("BYRO_SUN_ALPHA"), Ok(value) if value == "0"))
+}
+
+/// Diagnostic control for isolating the contribution of exterior sun occlusion.
+/// It does not change interior visibility or surface shadows.
+pub fn exterior_sun_occlusion_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        !matches!(std::env::var("BYRO_FROXEL_SUN_OCCLUSION"), Ok(value) if value == "0")
+    })
+}
+
+/// Diagnostic control for isolating the froxel sun term from local lights and emission.
+pub fn froxel_sun_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| !matches!(std::env::var("BYRO_FROXEL_SUN"), Ok(value) if value == "0"))
+}
+
+/// Diagnostic control for holding procedural density noise at its initial phase.
+pub fn freeze_froxel_pattern() -> bool {
+    static FREEZE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *FREEZE.get_or_init(|| {
+        matches!(std::env::var("BYRO_FREEZE_FROXEL_PATTERN"), Ok(value) if value == "1")
+    })
 }
 
 /// `BYRO_SUN_DUST=<per metre>` experiment: extra scattering that rides the sun term only under open sky
@@ -810,434 +833,438 @@ impl VolumetricsPipeline {
         fog_cluster_ns: &mut u64,
         bindless_set: vk::DescriptorSet,
     ) -> Result<()> {
-        // #1105 / REN-D18-003 — injection descriptor binding 2 (TLAS) is
-        // not written at construction; caller is required to call
-        // write_tlas() each frame before dispatch. Without this latch
-        // the validation layer reports "descriptor not updated" noise in
-        // debug, and the injection shader's shadow ray would read an
-        // undefined acceleration structure.
-        debug_assert!(
-            self.tlas_written[frame],
-            "VolumetricsPipeline::dispatch called without prior write_tlas() for frame {}",
-            frame,
-        );
-        // Reset latch so the assert fires if write_tlas() is skipped next frame.
-        self.tlas_written[frame] = false;
-        // Same shape for bindings 3/4/5 (Phase 2b lights/clusters) —
-        // see `write_lights_and_clusters`.
-        debug_assert!(
-            self.lights_written[frame],
-            "VolumetricsPipeline::dispatch called without prior write_lights_and_clusters() for frame {}",
-            frame,
-        );
-        self.lights_written[frame] = false;
-        debug_assert!(
-            self.boundary_geometry_written[frame],
-            "VolumetricsPipeline::dispatch called without prior write_boundary_geometry() for frame {}",
-            frame,
-        );
-        self.boundary_geometry_written[frame] = false;
-        // ── Stage A: write injection-pass UBO ────────────────────────
-        // The buffer is HOST_VISIBLE + HOST_COHERENT via
-        // `GpuBuffer::create_host_visible`, but the execution
-        // dependency (HOST → COMPUTE) is still required by the spec
-        // to make the write visible to the compute stage.
-        let mut frame_params = *params;
-        frame_params.prev_camera_pos[3] = if self.history_valid { 1.0 } else { 0.0 };
-        let simulation_time = if frame_params.temporal_params[2].is_finite() {
-            frame_params.temporal_params[2].max(0.0)
-        } else {
-            self.last_simulation_time_seconds.unwrap_or(0.0)
-        };
-        let simulation_dt = if self.history_valid {
-            self.last_simulation_time_seconds
-                .map(|previous| (simulation_time - previous).clamp(0.0, 1.0 / 15.0))
-                .unwrap_or(1.0 / 60.0)
-        } else {
-            // Seed a newly created/reset field with one nominal frame of
-            // source input so a flame is visible immediately.
-            1.0 / 60.0
-        };
-        // #3131 (PERF-D5-01) — `transportCombustion`'s whole RK2 advection
-        // block (source/midpoint/destination probes, 18-fetch neighbour
-        // gather) is gated in-shader on `dt > 0.0`. Without a scene-level
-        // gate here, every froxel of every fog-bearing cell pays it even
-        // when nothing is burning: `combustionActivity(...) < 0.08` is the
-        // *quiet* case, so the expensive neighbour gather fires precisely
-        // on the froxels with no combustion. `combustion_active_until_seconds`
-        // is exactly the CPU-side "combustion is (or was recently) active"
-        // signal `requires_dispatch` already maintains — reuse it to skip
-        // the stencil outright when nothing is transporting, and (#4775) to
-        // drop the lapsed residual rather than freeze it.
-        let combustion_active = combustion_transport_active(
-            fog_volumes,
-            simulation_time,
-            self.combustion_active_until_seconds,
-        );
-        frame_params.fog_reference[3] = if self.transport_fields.prepare(frame, combustion_active) {
-            TRANSPORT_KNOWN_EMPTY_DT
-        } else {
-            transport_simulation_dt(combustion_active, simulation_dt)
-        };
-        self.pending_simulation_time_seconds = Some(simulation_time);
-        let camera_position = [
-            frame_params.camera_pos[0],
-            frame_params.camera_pos[1],
-            frame_params.camera_pos[2],
-        ];
-        self.combustion_light_grid_centers[frame] = camera_position;
-        self.combustion_light_grid_valid[frame] = true;
-        // #3835 / #4786 — only a live transport source can contribute a
-        // luminous moment. With no emitter and no linger, transport receives
-        // the expiry sentinel and writes an empty field, so this slot's moment
-        // buffer remains zero and does not need a host drain.
-        self.combustion_moment_dirty[frame] |= combustion_active;
-        let fog_far = self.far_distance_world().max(1.0);
-        if let Some(grid) = self.local_grid.as_mut() {
-            grid.begin_frame(
-                device,
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            // #1105 / REN-D18-003 — injection descriptor binding 2 (TLAS) is
+            // not written at construction; caller is required to call
+            // write_tlas() each frame before dispatch. Without this latch
+            // the validation layer reports "descriptor not updated" noise in
+            // debug, and the injection shader's shadow ray would read an
+            // undefined acceleration structure.
+            debug_assert!(
+                self.tlas_written[frame],
+                "VolumetricsPipeline::dispatch called without prior write_tlas() for frame {}",
                 frame,
+            );
+            // Reset latch so the assert fires if write_tlas() is skipped next frame.
+            self.tlas_written[frame] = false;
+            // Same shape for bindings 3/4/5 (Phase 2b lights/clusters) —
+            // see `write_lights_and_clusters`.
+            debug_assert!(
+                self.lights_written[frame],
+                "VolumetricsPipeline::dispatch called without prior write_lights_and_clusters() for frame {}",
+                frame,
+            );
+            self.lights_written[frame] = false;
+            debug_assert!(
+                self.boundary_geometry_written[frame],
+                "VolumetricsPipeline::dispatch called without prior write_boundary_geometry() for frame {}",
+                frame,
+            );
+            self.boundary_geometry_written[frame] = false;
+            // ── Stage A: write injection-pass UBO ────────────────────────
+            // The buffer is HOST_VISIBLE + HOST_COHERENT via
+            // `GpuBuffer::create_host_visible`, but the execution
+            // dependency (HOST → COMPUTE) is still required by the spec
+            // to make the write visible to the compute stage.
+            let mut frame_params = *params;
+            frame_params.prev_camera_pos[3] = if self.history_valid { 1.0 } else { 0.0 };
+            let simulation_time = if frame_params.temporal_params[2].is_finite() {
+                frame_params.temporal_params[2].max(0.0)
+            } else {
+                self.last_simulation_time_seconds.unwrap_or(0.0)
+            };
+            let simulation_dt = if self.history_valid {
+                self.last_simulation_time_seconds
+                    .map(|previous| (simulation_time - previous).clamp(0.0, 1.0 / 15.0))
+                    .unwrap_or(1.0 / 60.0)
+            } else {
+                // Seed a newly created/reset field with one nominal frame of
+                // source input so a flame is visible immediately.
+                1.0 / 60.0
+            };
+            // #3131 (PERF-D5-01) — `transportCombustion`'s whole RK2 advection
+            // block (source/midpoint/destination probes, 18-fetch neighbour
+            // gather) is gated in-shader on `dt > 0.0`. Without a scene-level
+            // gate here, every froxel of every fog-bearing cell pays it even
+            // when nothing is burning: `combustionActivity(...) < 0.08` is the
+            // *quiet* case, so the expensive neighbour gather fires precisely
+            // on the froxels with no combustion. `combustion_active_until_seconds`
+            // is exactly the CPU-side "combustion is (or was recently) active"
+            // signal `requires_dispatch` already maintains — reuse it to skip
+            // the stencil outright when nothing is transporting, and (#4775) to
+            // drop the lapsed residual rather than freeze it.
+            let combustion_active = combustion_transport_active(
                 fog_volumes,
-                camera_position,
-                fog_far.min(local_grid::LOCAL_GRID_REACH_METERS * WORLD_UNITS_PER_METER),
                 simulation_time,
-                COMBUSTION_HISTORY_LINGER_SECONDS,
-            )?;
-        }
-        let fog_cluster_t0 = std::time::Instant::now();
-        // #2242 (REN-D16-04) — `fog_volume_upload.count` (the shader's
-        // `fogVolumeCount`) is rewritten unconditionally in BOTH branches
-        // below, even though the cluster/index GPU buffer writes further
-        // down are skipped in this empty branch as a pure optimisation
-        // (nothing to cluster). That's what makes it safe to skip them:
-        // `localFogCluster`'s `fogVolumeCount == 0u` early-out always
-        // gates the exact case where the cluster/index buffers weren't
-        // touched this frame, so their contents (which could be a
-        // previous frame's, or a previous cell's) are never read.
-        let mut cluster_hi = 0usize;
-        let mut cluster_lo = FOG_VOLUME_CLUSTER_COUNT;
-        let mut index_len = 0usize;
-        frame_params.local_volume_grid = if fog_volumes.is_empty() {
-            self.fog_volume_upload.count = [0; 4];
-            // #4784 — no volumes means no CPU seed marks; the uploaded mask
-            // is all zeroes (GPU marks from the inject pass still accumulate
-            // on top for next frame's gate).
-            self.fog_cluster_occupancy.fill(0);
-            let cell_size = (2.0 * fog_far) / FOG_VOLUME_CLUSTER_DIM as f32;
-            [
-                camera_position[0] - fog_far,
-                camera_position[1] - fog_far,
-                camera_position[2] - fog_far,
-                cell_size.recip(),
-            ]
-        } else {
-            // #4792 — mirrors the shader: `localSkyAperture` runs only when
-            // `render_origin.w` does not permit open-sky misses, and its visibility only
-            // scales `sun_color.rgb`.
-            let sealed_interior = frame_params.render_origin[3] <= 0.5;
-            let sun_radiates = frame_params.sun_color[..3].iter().any(|c| *c > 0.0);
-            let build = build_fog_volume_clusters(
-                fog_volumes,
-                camera_position,
-                fog_far,
-                [frame_params.sun_dir[0], frame_params.sun_dir[1], frame_params.sun_dir[2]],
-                sealed_interior && sun_radiates,
-                &mut self.fog_volume_upload,
-                &mut self.fog_cluster_entries,
-                &mut self.fog_cluster_indices,
-                &mut self.fog_cluster_refs_scratch,
-                &mut self.fog_cluster_occupancy,
+                self.combustion_active_until_seconds,
             );
-            cluster_hi = build.cluster_hi;
-            cluster_lo = build.cluster_lo;
-            index_len = build.index_len;
-            build.grid
-        };
-        // Header lane 1 was padding. Publish the actual adaptive/pinned tier
-        // even with zero local volumes: global interior dust can use rim rays.
-        self.fog_volume_upload.count[1] = rt_tier;
-        let local_stats = self
-            .local_grid
-            .as_ref()
-            .map(local_grid::LocalGrid::stats)
-            .unwrap_or_default();
-        if let Some(timers) = timers.as_deref_mut() {
-            let (max_density_count, max_portal_count) = self.fog_cluster_entries[..cluster_hi]
-                .iter().fold((0, 0), |(density, portal), entry| {
-                    (density.max(entry.count), portal.max(entry.portal_count))
-                });
-            timers.note_volumetrics_state(frame, byroredux_core::ecs::resources::VolumetricsFrameState {
-                rt_tier,
-                light_cap: frame_params.fog_reference[2].max(0.0) as u32,
-                froxel_extent: [self.extent.width, self.extent.height, self.extent.depth],
-                transport_armed: combustion_active && simulation_dt > 0.0,
-                fog_volume_count: self.fog_volume_upload.count[0],
-                max_density_count,
-                max_portal_count,
-                local_grid_boxes: local_stats.boxes,
-                local_grid_cells: local_stats.active_cells,
-                local_grid_hash: local_stats.state_hash,
-            });
-        }
-        self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&frame_params))?;
-        if let Some(grid) = self.local_grid.as_mut() {
-            grid.write_params(device, frame, &frame_params)?;
-        }
-        // #3834 — bound to the header plus the volumes actually populated.
-        // The shader early-outs on `fogVolumeCount == 0u` and otherwise reads
-        // `volumes[i]` only for `i < count`, and `count` is rewritten in BOTH
-        // branches above (#2242), so the untouched tail is never read. This is
-        // the one write that must stay unconditional: the empty branch still
-        // has to publish `count = 0`.
-        self.fog_volume_buffers[frame].write_mapped_prefix(
-            device,
-            std::slice::from_ref(self.fog_volume_upload.as_ref()),
-            fog_volume_upload_bytes(self.fog_volume_upload.count[0] as usize),
-        )?;
-        if !fog_volumes.is_empty() {
-            // Only entry counts need a stale-range union. The packed index
-            // array still uploads its live prefix because zero-count entries
-            // never dereference old indices.
-            let (write_lo, write_hi) = fog_cluster_write_range(
-                (cluster_lo, cluster_hi), self.fog_cluster_dirty_range[frame],
-            );
-            // #5958 — widen the slot's dirty range to everything this frame
-            // may touch BEFORE the fallible uploads. If the entry write
-            // flushes (or the index write fails) after copying bytes, the
-            // early return leaves counts in the mapped slice that the
-            // narrowed range would not cover; the union keeps them inside the
-            // next frame's rewrite. Narrowed to this frame's range only once
-            // both writes have succeeded.
-            self.fog_cluster_dirty_range[frame] = (write_lo, write_hi);
-            if write_lo < write_hi {
-                self.fog_cluster_buffers[frame].write_mapped_at(
+            frame_params.fog_reference[3] = if self.transport_fields.prepare(frame, combustion_active) {
+                TRANSPORT_KNOWN_EMPTY_DT
+            } else {
+                transport_simulation_dt(combustion_active, simulation_dt)
+            };
+            self.pending_simulation_time_seconds = Some(simulation_time);
+            let camera_position = [
+                frame_params.camera_pos[0],
+                frame_params.camera_pos[1],
+                frame_params.camera_pos[2],
+            ];
+            self.combustion_light_grid_centers[frame] = camera_position;
+            self.combustion_light_grid_valid[frame] = true;
+            // #3835 / #4786 — only a live transport source can contribute a
+            // luminous moment. With no emitter and no linger, transport receives
+            // the expiry sentinel and writes an empty field, so this slot's moment
+            // buffer remains zero and does not need a host drain.
+            self.combustion_moment_dirty[frame] |= combustion_active;
+            let fog_far = self.far_distance_world().max(1.0);
+            if let Some(grid) = self.local_grid.as_mut() {
+                grid.begin_frame(
                     device,
-                    write_lo * std::mem::size_of::<GpuFogClusterEntry>(),
-                    &self.fog_cluster_entries[write_lo..write_hi],
+                    frame,
+                    fog_volumes,
+                    camera_position,
+                    fog_far.min(local_grid::LOCAL_GRID_REACH_METERS * WORLD_UNITS_PER_METER),
+                    simulation_time,
+                    COMBUSTION_HISTORY_LINGER_SECONDS,
                 )?;
             }
-            if index_len > 0 {
-                self.fog_cluster_index_buffers[frame]
-                    .write_mapped(device, &self.fog_cluster_indices[..index_len])?;
+            let fog_cluster_t0 = std::time::Instant::now();
+            // #2242 (REN-D16-04) — `fog_volume_upload.count` (the shader's
+            // `fogVolumeCount`) is rewritten unconditionally in BOTH branches
+            // below, even though the cluster/index GPU buffer writes further
+            // down are skipped in this empty branch as a pure optimisation
+            // (nothing to cluster). That's what makes it safe to skip them:
+            // `localFogCluster`'s `fogVolumeCount == 0u` early-out always
+            // gates the exact case where the cluster/index buffers weren't
+            // touched this frame, so their contents (which could be a
+            // previous frame's, or a previous cell's) are never read.
+            let mut cluster_hi = 0usize;
+            let mut cluster_lo = FOG_VOLUME_CLUSTER_COUNT;
+            let mut index_len = 0usize;
+            frame_params.local_volume_grid = if fog_volumes.is_empty() {
+                self.fog_volume_upload.count = [0; 4];
+                // #4784 — no volumes means no CPU seed marks; the uploaded mask
+                // is all zeroes (GPU marks from the inject pass still accumulate
+                // on top for next frame's gate).
+                self.fog_cluster_occupancy.fill(0);
+                let cell_size = (2.0 * fog_far) / FOG_VOLUME_CLUSTER_DIM as f32;
+                [
+                    camera_position[0] - fog_far,
+                    camera_position[1] - fog_far,
+                    camera_position[2] - fog_far,
+                    cell_size.recip(),
+                ]
+            } else {
+                // #4792 — mirrors the shader: `localSkyAperture` runs only when
+                // `render_origin.w` does not permit open-sky misses, and its visibility only
+                // scales `sun_color.rgb`.
+                let sealed_interior = frame_params.render_origin[3] <= 0.5;
+                let sun_radiates = frame_params.sun_color[..3].iter().any(|c| *c > 0.0);
+                let build = build_fog_volume_clusters(
+                    fog_volumes,
+                    camera_position,
+                    fog_far,
+                    [frame_params.sun_dir[0], frame_params.sun_dir[1], frame_params.sun_dir[2]],
+                    sealed_interior && sun_radiates,
+                    &mut self.fog_volume_upload,
+                    &mut self.fog_cluster_entries,
+                    &mut self.fog_cluster_indices,
+                    &mut self.fog_cluster_refs_scratch,
+                    &mut self.fog_cluster_occupancy,
+                );
+                cluster_hi = build.cluster_hi;
+                cluster_lo = build.cluster_lo;
+                index_len = build.index_len;
+                build.grid
+            };
+            // Header lane 1 was padding. Publish the actual adaptive/pinned tier
+            // even with zero local volumes: global interior dust can use rim rays.
+            self.fog_volume_upload.count[1] = rt_tier;
+            let local_stats = self
+                .local_grid
+                .as_ref()
+                .map(local_grid::LocalGrid::stats)
+                .unwrap_or_default();
+            if let Some(timers) = timers.as_deref_mut() {
+                let (max_density_count, max_portal_count) = self.fog_cluster_entries[..cluster_hi]
+                    .iter().fold((0, 0), |(density, portal), entry| {
+                        (density.max(entry.count), portal.max(entry.portal_count))
+                    });
+                timers.note_volumetrics_state(frame, byroredux_core::ecs::resources::VolumetricsFrameState {
+                    rt_tier,
+                    light_cap: frame_params.fog_reference[2].max(0.0) as u32,
+                    froxel_extent: [self.extent.width, self.extent.height, self.extent.depth],
+                    transport_armed: combustion_active && simulation_dt > 0.0,
+                    fog_volume_count: self.fog_volume_upload.count[0],
+                    max_density_count,
+                    max_portal_count,
+                    local_grid_boxes: local_stats.boxes,
+                    local_grid_cells: local_stats.active_cells,
+                    local_grid_hash: local_stats.state_hash,
+                });
             }
-            self.fog_cluster_dirty_range[frame] = (cluster_lo, cluster_hi);
-        }
-        // #4784 — publish this frame's occupancy mask: zeroed + CPU
-        // seed-marked above (build or the empty branch), GPU atomic marks
-        // accumulate on top during injection. Rewritten unconditionally so a
-        // slot can never carry marks older than one frame; the all-slots
-        // fence wait at the top of `draw_frame` has retired the previous
-        // frame (the slot's last reader) before this host write.
-        self.combustion_occupancy_buffers[frame]
-            .write_mapped(device, &self.fog_cluster_occupancy[..])?;
-        *fog_cluster_ns = fog_cluster_t0.elapsed().as_nanos() as u64;
-        // HOST → COMPUTE_SHADER (UBO flush). Defense-in-depth, not a spec
-        // requirement (#4182): mapped writes made before `queue_submit` are
-        // already visible per Vulkan 1.3 §7.9 host-write ordering; the
-        // barrier guards a future non-coherent memory type or a
-        // post-recording host write.
-        memory_barrier(
-            device,
-            cmd,
-            vk::PipelineStageFlags::HOST,
-            vk::AccessFlags::HOST_WRITE,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::AccessFlags::UNIFORM_READ
-                | vk::AccessFlags::SHADER_READ
-                | vk::AccessFlags::SHADER_WRITE,
-        );
-
-        let subresource = super::descriptors::color_subresource_single_mip();
-
-        // ── Stage B: pre-injection history barriers ─────────────────
-        // The raw lighting volumes, scalar emission-provenance sidecars, and
-        // transported chemistry/velocity/optical fields
-        // live in GENERAL across their lifetime (set by
-        // `initialize_layouts`), so no layout transitions occur. Sequence
-        // the slot being recycled from last frame's history READ to this
-        // frame's WRITE, and publish the previous slot's WRITE to both
-        // reprojected history reads.
-        let previous = (frame + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
-        // One pair per history field: this frame's slot READ → WRITE, the
-        // previous slot WRITE → READ.
-        //
-        // #5215 — the previous slot's combustion-occupancy mask has the same
-        // WRITE→READ edge (frame N-1's inject `atomicOr` marks on binding 24
-        // → this frame's inject read of the previous slot on binding 25), but
-        // deliberately carries NO buffer barrier here: it is ordered by the
-        // global COMPUTE `SHADER_WRITE` → `SHADER_READ` `memory_barrier` in
-        // `record_volumetrics_pass` (the cluster_cull buffers' barrier — its
-        // source scope reaches back across the submission boundary to the
-        // previous frame's inject). If that barrier is ever narrowed to a
-        // buffer barrier, add the mask to ITS destination scope (or a
-        // dedicated buffer barrier here); any barrier edit is a
-        // needs-syncval change. The mask's host-write half rests on the
-        // all-slots fence wait instead — rider 15 in `sync.rs`.
-        let history_barriers = [
-            &self.lighting_volumes,
-            &self.emission_history_volumes,
-            &self.combustion_state_volumes,
-            &self.combustion_dynamics_volumes,
-            &self.combustion_optical_volumes,
-        ]
-        .map(|slots| {
-            [
-                image_barrier_general_read_to_write(slots[frame].image),
-                image_barrier_general_write_to_read(slots[previous].image),
-            ]
-        });
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            history_barriers.as_flattened(),
-        );
-
-        // ── Stage B2: world-space local grid (#6533) ─────────────────────
-        // Simulate the boxes BEFORE the injection: the injection hands the
-        // fire inside a box off to the grid (it reads this frame's atlas), and
-        // writes the irradiance field the composite march lights it with.
-        // Reads the same set 0 as the injection and writes only its own atlas.
-        if let Some(grid) = self.local_grid.as_mut() {
-            grid.record_frame(
+            self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&frame_params))?;
+            if let Some(grid) = self.local_grid.as_mut() {
+                grid.write_params(device, frame, &frame_params)?;
+            }
+            // #3834 — bound to the header plus the volumes actually populated.
+            // The shader early-outs on `fogVolumeCount == 0u` and otherwise reads
+            // `volumes[i]` only for `i < count`, and `count` is rewritten in BOTH
+            // branches above (#2242), so the untouched tail is never read. This is
+            // the one write that must stay unconditional: the empty branch still
+            // has to publish `count = 0`.
+            self.fog_volume_buffers[frame].write_mapped_prefix(
+                device,
+                std::slice::from_ref(self.fog_volume_upload.as_ref()),
+                fog_volume_upload_bytes(self.fog_volume_upload.count[0] as usize),
+            )?;
+            if !fog_volumes.is_empty() {
+                // Only entry counts need a stale-range union. The packed index
+                // array still uploads its live prefix because zero-count entries
+                // never dereference old indices.
+                let (write_lo, write_hi) = fog_cluster_write_range(
+                    (cluster_lo, cluster_hi), self.fog_cluster_dirty_range[frame],
+                );
+                // #5958 — widen the slot's dirty range to everything this frame
+                // may touch BEFORE the fallible uploads. If the entry write
+                // flushes (or the index write fails) after copying bytes, the
+                // early return leaves counts in the mapped slice that the
+                // narrowed range would not cover; the union keeps them inside the
+                // next frame's rewrite. Narrowed to this frame's range only once
+                // both writes have succeeded.
+                self.fog_cluster_dirty_range[frame] = (write_lo, write_hi);
+                if write_lo < write_hi {
+                    self.fog_cluster_buffers[frame].write_mapped_at(
+                        device,
+                        write_lo * std::mem::size_of::<GpuFogClusterEntry>(),
+                        &self.fog_cluster_entries[write_lo..write_hi],
+                    )?;
+                }
+                if index_len > 0 {
+                    self.fog_cluster_index_buffers[frame]
+                        .write_mapped(device, &self.fog_cluster_indices[..index_len])?;
+                }
+                self.fog_cluster_dirty_range[frame] = (cluster_lo, cluster_hi);
+            }
+            // #4784 — publish this frame's occupancy mask: zeroed + CPU
+            // seed-marked above (build or the empty branch), GPU atomic marks
+            // accumulate on top during injection. Rewritten unconditionally so a
+            // slot can never carry marks older than one frame; the all-slots
+            // fence wait at the top of `draw_frame` has retired the previous
+            // frame (the slot's last reader) before this host write.
+            self.combustion_occupancy_buffers[frame]
+                .write_mapped(device, &self.fog_cluster_occupancy[..])?;
+            *fog_cluster_ns = fog_cluster_t0.elapsed().as_nanos() as u64;
+            // HOST → COMPUTE_SHADER (UBO flush). Defense-in-depth, not a spec
+            // requirement (#4182): mapped writes made before `queue_submit` are
+            // already visible per Vulkan 1.3 §7.9 host-write ordering; the
+            // barrier guards a future non-coherent memory type or a
+            // post-recording host write.
+            memory_barrier(
                 device,
                 cmd,
-                frame,
-                self.descriptor_sets[frame],
-                timers.as_deref_mut(),
+                vk::PipelineStageFlags::HOST,
+                vk::AccessFlags::HOST_WRITE,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::AccessFlags::UNIFORM_READ
+                    | vk::AccessFlags::SHADER_READ
+                    | vk::AccessFlags::SHADER_WRITE,
             );
-        }
 
-        if let Some(timers) = timers.as_deref_mut() {
-            timers.cmd_start(TimerPass::VolumetricsInject, device, cmd, frame);
-        }
-        // ── Stage C: dispatch injection ──────────────────────────────
-        device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
-        device.cmd_bind_descriptor_sets(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.pipeline_layout,
-            0,
-            // set 1 = the TextureRegistry's bindless array (alpha-aware sun trace, VLM-SH-009).
-            &[self.descriptor_sets[frame], bindless_set],
-            &[],
-        );
-        let inj_groups_x = self.extent.width.div_ceil(WORKGROUP_X);
-        let inj_groups_y = self.extent.height.div_ceil(WORKGROUP_Y);
-        let inj_groups_z = self.extent.depth.div_ceil(WORKGROUP_Z);
-        device.cmd_dispatch(cmd, inj_groups_x, inj_groups_y, inj_groups_z);
-        if let Some(timers) = timers.as_deref_mut() {
-            timers.cmd_end(TimerPass::VolumetricsInject, device, cmd, frame);
-        }
-        // ── Stage D: barrier between injection and integration ──────
-        // Sequence the injection WRITE on the lighting volume against
-        // the integration READ of the same image. The integration
-        // shader reads every froxel of the lighting volume; without
-        // this barrier the recurrence reads stale (or partially-
-        // written) data.
-        let inj_to_int = image_barrier_general_write_to_read(self.lighting_volumes[frame].image);
-        // Plus a barrier on the integrated volume so last frame's
-        // composite READ (sampler3D in fragment shader) is sequenced
-        // against this frame's integration WRITE. #3647 — the slot's
-        // prior use may instead have been `record_neutral_frame`'s
-        // `vkCmdClearColorImage` (a TRANSFER_WRITE), which is always the
-        // case at scene load while no TLAS exists yet; without TRANSFER
-        // in the source scope that clear has no dependency chain into
-        // this write.
-        let pre_int_write = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::TRANSFER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(self.integrated_volumes[frame].image)
-            .subresource_range(subresource);
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::COMPUTE_SHADER
-                | vk::PipelineStageFlags::FRAGMENT_SHADER
-                | vk::PipelineStageFlags::TRANSFER,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[inj_to_int, pre_int_write],
-        );
+            let subresource = super::descriptors::color_subresource_single_mip();
 
-        if let Some(timers) = timers.as_deref_mut() {
-            timers.cmd_start(TimerPass::VolumetricsIntegrate, device, cmd, frame);
-        }
-        // ── Stage E: dispatch integration ────────────────────────────
-        device.cmd_bind_pipeline(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.integration_pipeline,
-        );
-        device.cmd_bind_descriptor_sets(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.integration_pipeline_layout,
-            0,
-            &[self.integration_descriptor_sets[frame]],
-            &[],
-        );
-        // 2D dispatch: one thread per (x, y) column; each thread Z-marches
-        // all depth slices internally.
-        let int_groups_x = self.extent.width.div_ceil(WORKGROUP_X);
-        let int_groups_y = self.extent.height.div_ceil(WORKGROUP_Y);
-        device.cmd_dispatch(cmd, int_groups_x, int_groups_y, 1);
-        if let Some(timers) = timers {
-            timers.cmd_end(TimerPass::VolumetricsIntegrate, device, cmd, frame);
-        }
+            // ── Stage B: pre-injection history barriers ─────────────────
+            // The raw lighting volumes, scalar emission-provenance sidecars, and
+            // transported chemistry/velocity/optical fields
+            // live in GENERAL across their lifetime (set by
+            // `initialize_layouts`), so no layout transitions occur. Sequence
+            // the slot being recycled from last frame's history READ to this
+            // frame's WRITE, and publish the previous slot's WRITE to both
+            // reprojected history reads.
+            let previous = (frame + MAX_FRAMES_IN_FLIGHT - 1) % MAX_FRAMES_IN_FLIGHT;
+            // One pair per history field: this frame's slot READ → WRITE, the
+            // previous slot WRITE → READ.
+            //
+            // #5215 — the previous slot's combustion-occupancy mask has the same
+            // WRITE→READ edge (frame N-1's inject `atomicOr` marks on binding 24
+            // → this frame's inject read of the previous slot on binding 25), but
+            // deliberately carries NO buffer barrier here: it is ordered by the
+            // global COMPUTE `SHADER_WRITE` → `SHADER_READ` `memory_barrier` in
+            // `record_volumetrics_pass` (the cluster_cull buffers' barrier — its
+            // source scope reaches back across the submission boundary to the
+            // previous frame's inject). If that barrier is ever narrowed to a
+            // buffer barrier, add the mask to ITS destination scope (or a
+            // dedicated buffer barrier here); any barrier edit is a
+            // needs-syncval change. The mask's host-write half rests on the
+            // all-slots fence wait instead — rider 15 in `sync.rs`.
+            let history_barriers = [
+                &self.lighting_volumes,
+                &self.emission_history_volumes,
+                &self.combustion_state_volumes,
+                &self.combustion_dynamics_volumes,
+                &self.combustion_optical_volumes,
+            ]
+            .map(|slots| {
+                [
+                    image_barrier_general_read_to_write(slots[frame].image),
+                    image_barrier_general_write_to_read(slots[previous].image),
+                ]
+            });
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                history_barriers.as_flattened(),
+            );
 
-        // ── Stage F: post-integration barrier ────────────────────────
-        // Make the integrated-volume WRITE visible to the composite
-        // fragment shader's sampler3D READ.
-        let post_int = image_barrier_general_write_to_read(self.integrated_volumes[frame].image);
-        // Plus the local grid's atlas and irradiance field, which composite's
-        // close-range fire march samples (#6533).
-        let local_published = self
-            .local_grid
-            .as_ref()
-            .map(|grid| grid.composite_barriers(frame));
-        if let Some(grid) = self.local_grid.as_ref() {
-            grid.record_publish_bricks(device, cmd);
-        }
-        // One barrier, or four with the grid: a stack array, not a per-frame Vec (#6841).
-        let mut published = [post_int; 4];
-        let published_len = match local_published {
-            Some(grid) => {
-                published[1..].copy_from_slice(&grid);
-                4
+            // ── Stage B2: world-space local grid (#6533) ─────────────────────
+            // Simulate the boxes BEFORE the injection: the injection hands the
+            // fire inside a box off to the grid (it reads this frame's atlas), and
+            // writes the irradiance field the composite march lights it with.
+            // Reads the same set 0 as the injection and writes only its own atlas.
+            if let Some(grid) = self.local_grid.as_mut() {
+                grid.record_frame(
+                    device,
+                    cmd,
+                    frame,
+                    self.descriptor_sets[frame],
+                    timers.as_deref_mut(),
+                );
             }
-            None => 1,
-        };
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::PipelineStageFlags::FRAGMENT_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &published[..published_len],
-        );
-        // Publish binding 18's atomic writes to the host. The actual read is
-        // deferred until this slot's fence is waited on at its next reuse;
-        // the barrier supplies the device->host memory dependency that the
-        // fence's device-only access scope does not create by itself.
-        memory_barrier(
-            device,
-            cmd,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::AccessFlags::SHADER_WRITE,
-            vk::PipelineStageFlags::HOST,
-            vk::AccessFlags::HOST_READ,
-        );
 
-        self.dispatched_this_frame = true;
-        Ok(())
+            if let Some(timers) = timers.as_deref_mut() {
+                timers.cmd_start(TimerPass::VolumetricsInject, device, cmd, frame);
+            }
+            // ── Stage C: dispatch injection ──────────────────────────────
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.pipeline_layout,
+                0,
+                // set 1 = the TextureRegistry's bindless array (alpha-aware sun trace, VLM-SH-009).
+                &[self.descriptor_sets[frame], bindless_set],
+                &[],
+            );
+            let inj_groups_x = self.extent.width.div_ceil(WORKGROUP_X);
+            let inj_groups_y = self.extent.height.div_ceil(WORKGROUP_Y);
+            let inj_groups_z = self.extent.depth.div_ceil(WORKGROUP_Z);
+            device.cmd_dispatch(cmd, inj_groups_x, inj_groups_y, inj_groups_z);
+            if let Some(timers) = timers.as_deref_mut() {
+                timers.cmd_end(TimerPass::VolumetricsInject, device, cmd, frame);
+            }
+            // ── Stage D: barrier between injection and integration ──────
+            // Sequence the injection WRITE on the lighting volume against
+            // the integration READ of the same image. The integration
+            // shader reads every froxel of the lighting volume; without
+            // this barrier the recurrence reads stale (or partially-
+            // written) data.
+            let inj_to_int = image_barrier_general_write_to_read(self.lighting_volumes[frame].image);
+            // Plus a barrier on the integrated volume so last frame's
+            // composite READ (sampler3D in fragment shader) is sequenced
+            // against this frame's integration WRITE. #3647 — the slot's
+            // prior use may instead have been `record_neutral_frame`'s
+            // `vkCmdClearColorImage` (a TRANSFER_WRITE), which is always the
+            // case at scene load while no TLAS exists yet; without TRANSFER
+            // in the source scope that clear has no dependency chain into
+            // this write.
+            let pre_int_write = vk::ImageMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::TRANSFER_WRITE)
+                .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+                .old_layout(vk::ImageLayout::GENERAL)
+                .new_layout(vk::ImageLayout::GENERAL)
+                .image(self.integrated_volumes[frame].image)
+                .subresource_range(subresource);
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER
+                    | vk::PipelineStageFlags::FRAGMENT_SHADER
+                    | vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[inj_to_int, pre_int_write],
+            );
+
+            if let Some(timers) = timers.as_deref_mut() {
+                timers.cmd_start(TimerPass::VolumetricsIntegrate, device, cmd, frame);
+            }
+            // ── Stage E: dispatch integration ────────────────────────────
+            device.cmd_bind_pipeline(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.integration_pipeline,
+            );
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.integration_pipeline_layout,
+                0,
+                &[self.integration_descriptor_sets[frame]],
+                &[],
+            );
+            // 2D dispatch: one thread per (x, y) column; each thread Z-marches
+            // all depth slices internally.
+            let int_groups_x = self.extent.width.div_ceil(WORKGROUP_X);
+            let int_groups_y = self.extent.height.div_ceil(WORKGROUP_Y);
+            device.cmd_dispatch(cmd, int_groups_x, int_groups_y, 1);
+            if let Some(timers) = timers {
+                timers.cmd_end(TimerPass::VolumetricsIntegrate, device, cmd, frame);
+            }
+
+            // ── Stage F: post-integration barrier ────────────────────────
+            // Make the integrated-volume WRITE visible to the composite
+            // fragment shader's sampler3D READ.
+            let post_int = image_barrier_general_write_to_read(self.integrated_volumes[frame].image);
+            // Plus the local grid's atlas and irradiance field, which composite's
+            // close-range fire march samples (#6533).
+            let local_published = self
+                .local_grid
+                .as_ref()
+                .map(|grid| grid.composite_barriers(frame));
+            if let Some(grid) = self.local_grid.as_ref() {
+                grid.record_publish_bricks(device, cmd);
+            }
+            // One barrier, or four with the grid: a stack array, not a per-frame Vec (#6841).
+            let mut published = [post_int; 4];
+            let published_len = match local_published {
+                Some(grid) => {
+                    published[1..].copy_from_slice(&grid);
+                    4
+                }
+                None => 1,
+            };
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &published[..published_len],
+            );
+            // Publish binding 18's atomic writes to the host. The actual read is
+            // deferred until this slot's fence is waited on at its next reuse;
+            // the barrier supplies the device->host memory dependency that the
+            // fence's device-only access scope does not create by itself.
+            memory_barrier(
+                device,
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::AccessFlags::SHADER_WRITE,
+                vk::PipelineStageFlags::HOST,
+                vk::AccessFlags::HOST_READ,
+            );
+
+            self.dispatched_this_frame = true;
+            Ok(())
+        }
     }
 
     pub fn signal_history_reset(&mut self) {
@@ -1678,33 +1705,17 @@ impl VolumetricsPipeline {
     /// `draw.rs` before `dispatch`, after `cluster_cull.dispatch()`
     /// has recorded and after the compute→compute barrier that makes
     /// its writes visible (see the barrier note in `draw.rs`).
-    #[allow(clippy::too_many_arguments)]
     pub fn write_lights_and_clusters(
         &mut self,
         device: &ash::Device,
         frame: usize,
-        light_buffer: vk::Buffer,
-        light_buffer_size: vk::DeviceSize,
-        cluster_grid_buffer: vk::Buffer,
-        cluster_grid_size: vk::DeviceSize,
-        light_index_buffer: vk::Buffer,
-        light_index_size: vk::DeviceSize,
+        light: vk::DescriptorBufferInfo,
+        cluster_grid: vk::DescriptorBufferInfo,
+        light_index: vk::DescriptorBufferInfo,
     ) {
-        let light_info = [vk::DescriptorBufferInfo {
-            buffer: light_buffer,
-            offset: 0,
-            range: light_buffer_size,
-        }];
-        let cluster_info = [vk::DescriptorBufferInfo {
-            buffer: cluster_grid_buffer,
-            offset: 0,
-            range: cluster_grid_size,
-        }];
-        let index_info = [vk::DescriptorBufferInfo {
-            buffer: light_index_buffer,
-            offset: 0,
-            range: light_index_size,
-        }];
+        let light_info = [light];
+        let cluster_info = [cluster_grid];
+        let index_info = [light_index];
         let set = self.descriptor_sets[frame];
         let writes = [
             write_storage_buffer(set, 3, &light_info),
@@ -1725,40 +1736,19 @@ impl VolumetricsPipeline {
     /// two global geometry buffers. This keeps combustion collision response
     /// on the renderer's canonical scene representation rather than building
     /// a parallel obstacle grid or importing source-game rules into runtime.
-    #[allow(clippy::too_many_arguments)]
     pub fn write_boundary_geometry(
         &mut self,
         device: &ash::Device,
         frame: usize,
-        instance_buffer: vk::Buffer,
-        instance_buffer_size: vk::DeviceSize,
-        vertex_buffer: vk::Buffer,
-        vertex_buffer_size: vk::DeviceSize,
-        index_buffer: vk::Buffer,
-        index_buffer_size: vk::DeviceSize,
-        material_buffer: vk::Buffer,
-        material_buffer_size: vk::DeviceSize,
+        instance: vk::DescriptorBufferInfo,
+        vertex: vk::DescriptorBufferInfo,
+        index: vk::DescriptorBufferInfo,
+        material: vk::DescriptorBufferInfo,
     ) {
-        let material_info = [vk::DescriptorBufferInfo {
-            buffer: material_buffer,
-            offset: 0,
-            range: material_buffer_size,
-        }];
-        let instance_info = [vk::DescriptorBufferInfo {
-            buffer: instance_buffer,
-            offset: 0,
-            range: instance_buffer_size,
-        }];
-        let vertex_info = [vk::DescriptorBufferInfo {
-            buffer: vertex_buffer,
-            offset: 0,
-            range: vertex_buffer_size,
-        }];
-        let index_info = [vk::DescriptorBufferInfo {
-            buffer: index_buffer,
-            offset: 0,
-            range: index_buffer_size,
-        }];
+        let material_info = [material];
+        let instance_info = [instance];
+        let vertex_info = [vertex];
+        let index_info = [index];
         let set = self.descriptor_sets[frame];
         let writes = [
             write_storage_buffer(set, 19, &instance_info),
@@ -1780,61 +1770,63 @@ impl VolumetricsPipeline {
     /// device is not lost, and that no object owned by `self` is still in use
     /// by an in-flight command buffer.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
-        if let Some(mut grid) = self.local_grid.take() {
-            // SAFETY: same contract as this function — the GPU is done with
-            // every resource of the pipeline.
-            unsafe { grid.destroy(device, allocator) };
-        }
-        for slot in self
-            .lighting_volumes
-            .drain(..)
-            .chain(self.emission_history_volumes.drain(..))
-            .chain(self.combustion_state_volumes.drain(..))
-            .chain(self.combustion_dynamics_volumes.drain(..))
-            .chain(self.combustion_optical_volumes.drain(..))
-            .chain(self.integrated_volumes.drain(..))
-            .chain(self.base_noise_volume.take())
-            .chain(self.detail_noise_volume.take())
-        {
-            // #3860 — view, image and slab in one call, in that order.
-            let mut slot = slot;
-            slot.destroy(device, allocator);
-        }
-        for buf in &mut self.param_buffers {
-            buf.destroy(device, allocator);
-        }
-        // #732 LIFE-N1 pattern — drop the GpuBuffer structs after
-        // their GPU allocations are freed so each one's
-        // `Arc<Mutex<Allocator>>` clone releases now, not when
-        // VulkanContext::Drop's `Arc::try_unwrap` has already given up.
-        self.param_buffers.clear();
-        for buf in &mut self.fog_volume_buffers {
-            buf.destroy(device, allocator);
-        }
-        self.fog_volume_buffers.clear();
-        for buf in &mut self.fog_cluster_buffers {
-            buf.destroy(device, allocator);
-        }
-        self.fog_cluster_buffers.clear();
-        for buf in &mut self.fog_cluster_index_buffers {
-            buf.destroy(device, allocator);
-        }
-        self.fog_cluster_index_buffers.clear();
-        for buf in &mut self.combustion_light_moment_buffers {
-            buf.destroy(device, allocator);
-        }
-        self.combustion_light_moment_buffers.clear();
-        for buf in &mut self.combustion_occupancy_buffers {
-            buf.destroy(device, allocator);
-        }
-        self.combustion_occupancy_buffers.clear();
-        for buf in &mut self.integration_param_buffers {
-            buf.destroy(device, allocator);
-        }
-        self.integration_param_buffers.clear();
-        // SAFETY: the caller's contract (no in-flight work references the pass's pipeline or pool);
-        // `destroy_pass_objects` skips null handles and nulls what it destroys (#6371).
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
         unsafe {
+            if let Some(mut grid) = self.local_grid.take() {
+                // SAFETY: same contract as this function — the GPU is done with
+                // every resource of the pipeline.
+                grid.destroy(device, allocator);
+            }
+            for slot in self
+                .lighting_volumes
+                .drain(..)
+                .chain(self.emission_history_volumes.drain(..))
+                .chain(self.combustion_state_volumes.drain(..))
+                .chain(self.combustion_dynamics_volumes.drain(..))
+                .chain(self.combustion_optical_volumes.drain(..))
+                .chain(self.integrated_volumes.drain(..))
+                .chain(self.base_noise_volume.take())
+                .chain(self.detail_noise_volume.take())
+            {
+                // #3860 — view, image and slab in one call, in that order.
+                let mut slot = slot;
+                slot.destroy(device, allocator);
+            }
+            for buf in &mut self.param_buffers {
+                buf.destroy(device, allocator);
+            }
+            // #732 LIFE-N1 pattern — drop the GpuBuffer structs after
+            // their GPU allocations are freed so each one's
+            // `Arc<Mutex<Allocator>>` clone releases now, not when
+            // VulkanContext::Drop's `Arc::try_unwrap` has already given up.
+            self.param_buffers.clear();
+            for buf in &mut self.fog_volume_buffers {
+                buf.destroy(device, allocator);
+            }
+            self.fog_volume_buffers.clear();
+            for buf in &mut self.fog_cluster_buffers {
+                buf.destroy(device, allocator);
+            }
+            self.fog_cluster_buffers.clear();
+            for buf in &mut self.fog_cluster_index_buffers {
+                buf.destroy(device, allocator);
+            }
+            self.fog_cluster_index_buffers.clear();
+            for buf in &mut self.combustion_light_moment_buffers {
+                buf.destroy(device, allocator);
+            }
+            self.combustion_light_moment_buffers.clear();
+            for buf in &mut self.combustion_occupancy_buffers {
+                buf.destroy(device, allocator);
+            }
+            self.combustion_occupancy_buffers.clear();
+            for buf in &mut self.integration_param_buffers {
+                buf.destroy(device, allocator);
+            }
+            self.integration_param_buffers.clear();
+            // SAFETY: the caller's contract (no in-flight work references the pass's pipeline or pool);
+            // `destroy_pass_objects` skips null handles and nulls what it destroys (#6371).
             super::descriptors::destroy_pass_objects(
                 device,
                 super::descriptors::PassHandles {
@@ -1843,11 +1835,9 @@ impl VolumetricsPipeline {
                     pool: &mut self.integration_descriptor_pool,
                     set_layout: &mut self.integration_descriptor_set_layout,
                 },
-            )
-        };
-        // SAFETY: the caller's contract (no in-flight work references the pass's pipeline or pool);
-        // `destroy_pass_objects` skips null handles and nulls what it destroys (#6371).
-        unsafe {
+            );
+            // SAFETY: the caller's contract (no in-flight work references the pass's pipeline or pool);
+            // `destroy_pass_objects` skips null handles and nulls what it destroys (#6371).
             super::descriptors::destroy_pass_objects(
                 device,
                 super::descriptors::PassHandles {
@@ -1856,19 +1846,19 @@ impl VolumetricsPipeline {
                     pool: &mut self.descriptor_pool,
                     set_layout: &mut self.descriptor_set_layout,
                 },
-            )
-        };
-        if self.history_sampler != vk::Sampler::null() {
-            device.destroy_sampler(self.history_sampler, None);
-            self.history_sampler = vk::Sampler::null();
-        }
-        if self.transport_sampler != vk::Sampler::null() {
-            device.destroy_sampler(self.transport_sampler, None);
-            self.transport_sampler = vk::Sampler::null();
-        }
-        if self.density_noise_sampler != vk::Sampler::null() {
-            device.destroy_sampler(self.density_noise_sampler, None);
-            self.density_noise_sampler = vk::Sampler::null();
+            );
+            if self.history_sampler != vk::Sampler::null() {
+                device.destroy_sampler(self.history_sampler, None);
+                self.history_sampler = vk::Sampler::null();
+            }
+            if self.transport_sampler != vk::Sampler::null() {
+                device.destroy_sampler(self.transport_sampler, None);
+                self.transport_sampler = vk::Sampler::null();
+            }
+            if self.density_noise_sampler != vk::Sampler::null() {
+                device.destroy_sampler(self.density_noise_sampler, None);
+                self.density_noise_sampler = vk::Sampler::null();
+            }
         }
     }
 }

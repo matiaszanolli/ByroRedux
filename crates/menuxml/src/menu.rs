@@ -99,15 +99,62 @@ pub enum MenuError {
 /// so 1 GiB cannot refuse vanilla art in any supported game.
 const MAX_DECODED_TEXTURE_BYTES: usize = 1 << 30;
 
+/// A target tile the pointer or the keyboard reached (GUI-XML-002): its arena index, its
+/// document name and its `<id>`, the handle the engine's menu code keys a control by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TileHit {
+    pub tile: usize,
+    pub name: Option<String>,
+    pub id: Option<i32>,
+}
+
+/// A navigation key, as the input adapter maps the platform's keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuKey {
+    /// Focus the next target in draw order (Down / Tab).
+    Next,
+    /// Focus the previous target (Up / Shift+Tab).
+    Previous,
+    /// Activate the focused target (Enter / Space).
+    Activate,
+}
+
+/// Activations held for a drain at most; the oldest goes past it.
+const MAX_PENDING_ACTIVATIONS: usize = 64;
+
+/// A flat document's traits (`strings.xml`, `globals.xml`: one `<rect name="Strings">` of `_name`
+/// traits), literal values only — an operator-built trait in one reads as absent (0).
+fn flat_document(assets: &dyn MenuAssets, path: &str) -> Option<HashMap<String, Scalar>> {
+    let text = String::from_utf8(assets.menu_xml(path)?).ok()?;
+    let mut src = AssetsAsFileSource { assets };
+    let doc = parse_document(&text, &mut src);
+    let mut map = HashMap::new();
+    for (k, v) in &doc.tiles[0].traits {
+        match v {
+            crate::parse::RawTrait::Str(s) => {
+                map.insert(k.clone(), Scalar::Str(s.clone()));
+            }
+            crate::parse::RawTrait::Num(n) => {
+                map.insert(k.clone(), Scalar::Num(*n));
+            }
+            crate::parse::RawTrait::Ops(_) => {}
+        }
+    }
+    Some(map)
+}
+
 /// A loaded, renderable menu.
 pub struct MenuRenderer {
     doc: Document,
     /// `strings.xml` traits (`_name` → string).
     strings: HashMap<String, Scalar>,
+    /// `globals.xml` traits, the `globals()` source.
+    globals: HashMap<String, Scalar>,
     /// Engine-driven trait overrides, `(tile-name-lower, trait-lower)`.
     overrides: Overrides,
     screen: ScreenTraits,
     fonts: Vec<Option<Arc<Font>>>,
+    default_font: u8,
     /// Authored `<filename>` (lowercased) → its resolved texture, or `None`
     /// once it is known missing, undecodable or over budget.
     pub(crate) tex_cache: HashMap<String, Option<Arc<Rgba8>>>,
@@ -135,6 +182,12 @@ pub struct MenuRenderer {
     texture_set: TextureSet,
     /// nif tiles encountered (diagnostic, logged once at load).
     pub nif_tiles: usize,
+    /// The target the pointer went down on, until it comes up.
+    pressed: Option<usize>,
+    /// The keyboard-focused target.
+    focus: Option<usize>,
+    /// Activations since the last [`Self::take_activations`].
+    activations: Vec<TileHit>,
 }
 
 struct AssetsAsFileSource<'a> {
@@ -174,31 +227,14 @@ impl MenuRenderer {
         let text = String::from_utf8(xml)
             .map_err(|_| MenuError::BadUtf8(menu_path.to_string()))?;
 
-        let strings = profile.strings_path.and_then(|path| {
-            assets.menu_xml(path).and_then(|b| {
-                String::from_utf8(b).ok().map(|s| {
-                    let mut src = AssetsAsFileSource { assets };
-                    let doc = parse_document(&s, &mut src);
-                    let mut map = HashMap::new();
-                    // A strings document is a flat `<rect name="Strings">`
-                    // of `_name` text traits.
-                    for (k, v) in &doc.tiles[0].traits {
-                        if let crate::parse::RawTrait::Str(s) = v {
-                            map.insert(k.clone(), Scalar::Str(s.clone()));
-                        } else if let crate::parse::RawTrait::Num(n) = v {
-                            map.insert(k.clone(), Scalar::Num(*n));
-                        }
-                    }
-                    map
-                })
-            })
-        });
+        let strings = profile.strings_path.and_then(|path| flat_document(assets, path));
         if strings.is_none() {
             log::debug!(
                 "menuxml: no strings document for the {} corpus — strings() reads 0",
                 profile.label
             );
         }
+        let globals = profile.globals_path.and_then(|path| flat_document(assets, path));
 
         let mut src = AssetsAsFileSource { assets };
         let doc = parse_document(&text, &mut src);
@@ -247,9 +283,11 @@ impl MenuRenderer {
         Ok(Self {
             doc,
             strings: strings.unwrap_or_default(),
+            globals: globals.unwrap_or_default(),
             overrides: Overrides::new(),
             screen,
             fonts,
+            default_font: 0,
             tex_cache: HashMap::new(),
             decoded: HashMap::new(),
             decoded_bytes: 0,
@@ -260,6 +298,9 @@ impl MenuRenderer {
             frame: Framebuffer::new(screen.width as u32, screen.height as u32),
             texture_set,
             nif_tiles,
+            pressed: None,
+            focus: None,
+            activations: Vec::new(),
         })
     }
 
@@ -357,6 +398,148 @@ impl MenuRenderer {
         Ok(self.doc.graft_subtree(&fragment, 0, parent, Some(new_name)))
     }
 
+    /// Evaluate every trait for this frame. A text tile's `width` / `height` are the size of its
+    /// displayed text, which the native code sets and documents read (CS wiki, Traits: "these
+    /// traits cannot be set on Text tiles; instead, the executable sets them to the size of the
+    /// displayed text if the text is visible") — FNV's dialogue menu centres the line and sizes
+    /// its panel from them (#6666). A first pass resolves each text's string, font and wrap; a
+    /// second answers the measured sizes.
+    fn evaluate(&self) -> EvalState<'_> {
+        let fresh = || EvalState::new(&self.doc, self.screen, &self.strings, &self.overrides).with_globals(&self.globals);
+        let mut first = fresh();
+        first.resolve_all();
+        let sizes = self.measure_texts(&mut first);
+        if sizes.is_empty() {
+            return first;
+        }
+        let mut eval = fresh().with_text_sizes(sizes);
+        eval.resolve_all();
+        eval
+    }
+
+    /// The displayed size of every visible text tile with a loaded font, wrapped as the raster
+    /// wraps it.
+    fn measure_texts(&self, eval: &mut EvalState) -> HashMap<usize, (f32, f32)> {
+        let mut sizes = HashMap::new();
+        for (tile, data) in self.doc.tiles.iter().enumerate() {
+            if data.kind != crate::parse::TileKind::Text || !eval.trait_value(tile, "visible").truthy() {
+                continue;
+            }
+            let string = match eval.trait_value(tile, "string") {
+                Scalar::Str(s) => s,
+                Scalar::Num(_) => continue,
+            };
+            let font_index = eval.trait_value(tile, "font").as_num().clamp(0.0, 255.0) as u8;
+            let Some(font) = self.fonts.get(self.effective_font(font_index)).and_then(|f| f.as_deref()) else { continue };
+            let wrap_width = eval.trait_value(tile, "wrapwidth").as_num().max(0.0);
+            let wrap_lines = eval.trait_value(tile, "wraplines").as_num().max(0.0) as u32;
+            let lines = crate::raster::wrap(&string, font, wrap_width, wrap_lines);
+            let width = lines.iter().map(|line| font.measure_width(line)).fold(0.0, f32::max);
+            sizes.insert(tile, (width, lines.len() as f32 * font.line_height()));
+        }
+        sizes
+    }
+
+    /// The tiles that take the pointer this frame, in draw order (later is on top).
+    pub fn hit_targets(&self) -> Vec<crate::layout::HitTarget> {
+        let mut eval = self.evaluate();
+        crate::layout::build_layout(&self.doc, &mut eval).1
+    }
+
+    fn hit(&self, tile: usize) -> TileHit {
+        let tile_data = &self.doc.tiles[tile];
+        TileHit { tile, name: tile_data.name.clone(), id: tile_data.id }
+    }
+
+    /// The topmost target under `(x, y)` (UI pixels), if any (GUI-XML-002).
+    pub fn hit_test(&self, x: f32, y: f32) -> Option<TileHit> {
+        self.hit_targets().iter().rev().find(|target| target.contains(x, y)).map(|target| self.hit(target.tile))
+    }
+
+    /// The pointer went down at `(x, y)`: the target there is pressed (and focused).
+    pub fn pointer_down(&mut self, x: f32, y: f32) {
+        self.pressed = self.hit_test(x, y).map(|hit| hit.tile);
+        if self.pressed.is_some() {
+            self.focus = self.pressed;
+        }
+    }
+
+    /// The pointer came up at `(x, y)`: a target pressed and released in place is activated once.
+    pub fn pointer_up(&mut self, x: f32, y: f32) {
+        let pressed = self.pressed.take();
+        if let Some(hit) = self.hit_test(x, y).filter(|hit| Some(hit.tile) == pressed) {
+            self.push_activation(hit);
+        }
+    }
+
+    /// A navigation key: move the focus through the targets in draw order (starting from the one
+    /// whose `xdefault` is set), or activate the focused one.
+    pub fn key(&mut self, key: MenuKey) {
+        let targets: Vec<usize> = self.hit_targets().iter().map(|target| target.tile).collect();
+        if targets.is_empty() {
+            self.focus = None;
+            return;
+        }
+        let position = self.focus.and_then(|focus| targets.iter().position(|tile| *tile == focus));
+        match key {
+            MenuKey::Activate => {
+                if let Some(tile) = position.map(|at| targets[at]) {
+                    let hit = self.hit(tile);
+                    self.push_activation(hit);
+                }
+            }
+            MenuKey::Next | MenuKey::Previous => {
+                let next = match (position, key) {
+                    (None, _) => self.default_target(&targets).unwrap_or(0),
+                    (Some(at), MenuKey::Next) => (at + 1) % targets.len(),
+                    (Some(at), _) => (at + targets.len() - 1) % targets.len(),
+                };
+                self.focus = Some(targets[next]);
+            }
+        }
+    }
+
+    /// The first target whose `xdefault` trait is set (the list items' default focus).
+    fn default_target(&self, targets: &[usize]) -> Option<usize> {
+        let mut eval = self.evaluate();
+        targets.iter().position(|tile| eval.trait_value(*tile, "xdefault").truthy())
+    }
+
+    /// The keyboard-focused target, if any.
+    pub fn focused(&self) -> Option<TileHit> {
+        self.focus.map(|tile| self.hit(tile))
+    }
+
+    /// The current pointer capture, if a target received a press.
+    pub fn pressed(&self) -> Option<TileHit> {
+        self.pressed.map(|tile| self.hit(tile))
+    }
+
+    /// Release pointer capture when the menu loses window focus.
+    pub fn cancel_pointer(&mut self) {
+        self.pressed = None;
+    }
+
+    fn push_activation(&mut self, hit: TileHit) {
+        if self.activations.len() >= MAX_PENDING_ACTIVATIONS {
+            self.activations.remove(0);
+        }
+        self.activations.push(hit);
+    }
+
+    /// The targets activated since the last call, in order.
+    pub fn take_activations(&mut self) -> Vec<TileHit> {
+        std::mem::take(&mut self.activations)
+    }
+
+    /// The evaluated value of `tile`'s `trait_name` this frame (overrides, `io()`, measured
+    /// text sizes included), as native code reads a menu back to size it (a message box's width
+    /// from its text, #6666). `None` when no tile has the name.
+    pub fn value(&self, tile: &str, trait_name: &str) -> Option<Scalar> {
+        let index = self.tile(tile)?;
+        Some(self.evaluate().trait_value(index, trait_name))
+    }
+
     /// Tile index by name, for drivers that want to probe traits.
     pub fn tile(&self, name: &str) -> Option<usize> {
         self.doc.name_index.get(&name.to_lowercase()).copied()
@@ -376,6 +559,15 @@ impl MenuRenderer {
         self.screen = screen;
     }
 
+    /// Use this slot for text for which the document leaves the font unauthored.
+    pub fn set_default_font(&mut self, slot: u8) {
+        self.default_font = slot;
+    }
+
+    fn effective_font(&self, authored: u8) -> usize {
+        usize::from(if authored == 0 { self.default_font } else { authored })
+    }
+
     /// The last `render_frame` raster, without re-evaluating — for callers
     /// that need the pixels after the `&mut self` render call has returned
     /// (#4608's HUD handoff).
@@ -386,8 +578,7 @@ impl MenuRenderer {
     /// Evaluate, lay out, and rasterize one frame. Returns the RGBA
     /// pixels (`width * height * 4`, top-down).
     pub fn render_frame(&mut self, assets: &dyn MenuAssets) -> &[u8] {
-        let mut eval = EvalState::new(&self.doc, self.screen, &self.strings, &self.overrides);
-        eval.resolve_all();
+        let mut eval = self.evaluate();
         let items = build_draw_list(&self.doc, &mut eval);
         log::debug!(
             "menuxml frame: {} tiles -> {} draw items ({} textures cached)",
@@ -427,11 +618,12 @@ impl MenuRenderer {
                     }
                 }
                 DrawItem::Text { font, .. } => {
-                    let font_ref = self.fonts.get(*font as usize).and_then(|f| f.clone());
+                    let slot = self.effective_font(*font);
+                    let font_ref = self.fonts.get(slot).and_then(|f| f.clone());
                     if let Some(font) = font_ref {
                         self.frame.draw_text_item(item, &font);
-                    } else if self.missing.insert(format!("font{font}")) {
-                        log::warn!("menuxml: font {font} not loaded — text skipped");
+                    } else if self.missing.insert(format!("font{slot}")) {
+                        log::warn!("menuxml: font {slot} not loaded — text skipped");
                     }
                 }
                 DrawItem::Fill {
@@ -457,13 +649,13 @@ impl MenuRenderer {
     /// resolution-class table (`Menus\…` → `textures\menus…\…`).
     fn texture(&mut self, assets: &dyn MenuAssets, filename: &str) -> Option<Arc<Rgba8>> {
         let normalized = filename.trim().replace('/', "\\");
-        let cache_key = normalized.to_lowercase();
+        let cache_key = normalized.trim_start_matches('\\').to_lowercase();
         if let Some(cached) = self.tex_cache.get(&cache_key) {
             return cached.clone();
         }
         // Candidate archive paths: preferred set first, then the other
         // classes (not every texture ships in every set).
-        let lowered = normalized.to_lowercase();
+        let lowered = &cache_key;
         let candidates: Vec<String> = if let Some(rest) = lowered
             .strip_prefix("menus\\")
             .or_else(|| lowered.strip_prefix("menus80\\"))
@@ -513,8 +705,8 @@ impl MenuRenderer {
             // this candidate resolves to nothing and is remembered; a
             // smaller sibling in another resolution set may still serve,
             // and already-decoded images keep being served.
-            if let Some(len) = Rgba8::decoded_len(&bytes) {
-                if self.decoded_bytes.saturating_add(len) > self.texture_budget {
+            if let Some(len) = Rgba8::decoded_len(&bytes)
+                && self.decoded_bytes.saturating_add(len) > self.texture_budget {
                     if !self.budget_warned {
                         self.budget_warned = true;
                         log::warn!(
@@ -529,7 +721,6 @@ impl MenuRenderer {
                     refused_any = true;
                     continue;
                 }
-            }
             match Rgba8::decode_dds(&bytes) {
                 Some(img) => {
                     let img = Arc::new(img);

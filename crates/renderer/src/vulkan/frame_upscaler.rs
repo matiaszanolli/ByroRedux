@@ -20,11 +20,12 @@
 //! would need re-benching per #2520's own note not to conflate this with the
 //! FSR path. Revisit if `Taa` mode's perf ever matters again.
 
+use super::GpuUploadCtx;
 use super::allocator::SharedAllocator;
 use super::composite::HDR_FORMAT;
 use super::descriptors::color_subresource_single_mip;
 use super::exposure::EXPOSURE_FORMAT;
-use super::gbuffer::{FSR_MASK_FORMAT, MOTION_FORMAT};
+use super::gbuffer::{FSR_MASK_FORMAT, MOTION_FORMAT, TRANSPARENCY_SUN_FORMAT};
 use super::image::{GpuImage, GpuImageDesc};
 use super::sync::MAX_FRAMES_IN_FLIGHT;
 use super::upscaling::{fsr_motion_vector_scale, FrameExtentSet, UpscalerMode};
@@ -193,18 +194,15 @@ pub struct FrameUpscaler {
 }
 
 impl FrameUpscaler {
-    #[allow(clippy::too_many_arguments)] // Vulkan handles the upscaler backend needs: instance, device, queue, pool and allocator, plus the mode and extents.
     pub fn new(
         instance: &ash::Instance,
-        device: &ash::Device,
         physical_device: vk::PhysicalDevice,
-        allocator: &SharedAllocator,
-        queue: &std::sync::Mutex<vk::Queue>,
-        command_pool: vk::CommandPool,
+        ctx: GpuUploadCtx,
         mode: UpscalerMode,
         extents: FrameExtentSet,
         shader_float16: bool,
     ) -> Result<Self> {
+        let GpuUploadCtx { device, allocator, queue, command_pool } = ctx;
         let mut upscaler = Self {
             mode,
             shader_float16,
@@ -566,7 +564,7 @@ impl FrameUpscaler {
                 )),
                 transparency_and_composition: Some(vulkan_image(
                     inputs.transparency,
-                    FSR_MASK_FORMAT,
+                    TRANSPARENCY_SUN_FORMAT,
                     vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
                     render_size,
                 )),
@@ -1057,15 +1055,11 @@ impl FrameUpscaler {
         std::mem::take(&mut self.dispatched_this_frame)
     }
 
-    #[allow(clippy::too_many_arguments)] // Vulkan handles the upscaler backend needs: instance, device, queue, pool and allocator, plus the mode and extents.
     pub fn recreate(
         &mut self,
         instance: &ash::Instance,
-        device: &ash::Device,
         physical_device: vk::PhysicalDevice,
-        allocator: &SharedAllocator,
-        queue: &std::sync::Mutex<vk::Queue>,
-        command_pool: vk::CommandPool,
+        ctx: GpuUploadCtx,
         mode: UpscalerMode,
         extents: FrameExtentSet,
     ) -> Result<()> {
@@ -1076,18 +1070,8 @@ impl FrameUpscaler {
         // the FSR context uncreated (or stale), which reads as "the switch
         // resized the frame but never engaged the new upscaler".
         // SAFETY: resize calls this only after `device_wait_idle`.
-        unsafe { self.destroy(device, allocator) };
-        *self = Self::new(
-            instance,
-            device,
-            physical_device,
-            allocator,
-            queue,
-            command_pool,
-            mode,
-            extents,
-            shader_float16,
-        )?;
+        unsafe { self.destroy(ctx.device, ctx.allocator) };
+        *self = Self::new(instance, physical_device, ctx, mode, extents, shader_float16)?;
         Ok(())
     }
 

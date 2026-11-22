@@ -239,6 +239,7 @@ fn parallel_walk_matches_the_inline_walk_on_a_localized_master_chain() {
             &paths,
             |_, relative| archive.get(relative).cloned(),
             schedule,
+            byroredux_plugin::esm::records::list_merge::MergePolicy::default(),
         )
         .unwrap();
         let digest = digest(&(&index, &order[..]));
@@ -383,6 +384,7 @@ fn parallel_walk_matches_the_inline_walk_on_real_load_orders() {
                 &paths,
                 |plugin, relative| archive_source.read(plugin, relative),
                 schedule,
+                byroredux_plugin::esm::records::list_merge::MergePolicy::default(),
             )
             .unwrap();
             let secs = started.elapsed().as_secs_f64();

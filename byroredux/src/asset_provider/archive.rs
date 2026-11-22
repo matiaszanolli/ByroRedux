@@ -45,7 +45,7 @@ enum Backend {
 /// The asset folders a game's `Data` directory can carry loose overrides in:
 /// the same top-level roots the archives store their entries under.
 /// `geometries` is Starfield's external `.mesh` data (`geometries\<hash>.mesh`,
-/// no `meshes\` prefix — see [`normalize_mesh_path`]); without it a loose NIF
+/// no `meshes\` prefix — see [`normalize_mesh_path`](byroredux_core::paths::normalize_mesh_path)); without it a loose NIF
 /// override that names new `.mesh` bodies resolves none of them (#6330).
 /// `music` is where Oblivion, Fallout 3 and New Vegas ship all their music,
 /// loose (Game Music MUS-SRC-011): the sound provider's loose tier reads it.
@@ -56,21 +56,23 @@ const LOOSE_ASSET_ROOTS: [&str; 5] = ["textures", "meshes", "materials", "geomet
 /// ever stops a tree no game could address (#6243).
 const MAX_LOOSE_DEPTH: usize = 32;
 
-/// How many directories one loose index walks in total, links followed. Cycles
-/// are cut by the ancestor stack ([`WalkState`]), which leaves one shape
-/// unbounded: a chain of directories that each link twice to the next walks
-/// 2^n times with no cycle in it. Real layouts (mod managers deploy by link)
-/// stay orders of magnitude under this; the budget only ends a tree built to
-/// blow it (#6243, #6483).
-const MAX_LOOSE_DIRS: usize = 262_144;
+/// How many directory entries one loose index examines in total, links followed: every file and
+/// directory a `read_dir` yields costs one, before it is stat'ed or indexed. Cycles are cut by the
+/// ancestor stack ([`WalkState`]), which leaves one shape unbounded: a chain of directories that
+/// each link twice to the next walks 2^n times with no cycle in it (#6243, #6483). The budget used
+/// to count directories, which left the files in each one as a multiplier on keys and stat calls
+/// (#7141); counting entries bounds both. The installed vanilla games carry at most 239 loose
+/// entries (New Vegas, 2026-11-21) and a deployed mod list a few hundred thousand, so the cap
+/// only ends a tree built to blow it — at ~2 M keys rather than 262,144 x the files per directory.
+const MAX_LOOSE_ENTRIES: usize = 1 << 21;
 
 /// The loose walk's cycle and work bookkeeping.
 struct WalkState {
     /// Canonical paths of the directories currently being walked, root first.
     /// A directory reached again while it is on this stack is a link loop.
     ancestors: Vec<std::path::PathBuf>,
-    /// Directories walked so far, against [`MAX_LOOSE_DIRS`] (or a test's budget).
-    walked: usize,
+    /// Entries examined so far, against [`MAX_LOOSE_ENTRIES`] (or a test's budget).
+    examined: usize,
     budget: usize,
     /// Links cut because they pointed back at an ancestor.
     loops_cut: usize,
@@ -91,8 +93,8 @@ struct LooseDir {
     files: HashMap<String, std::path::PathBuf>,
 }
 
-/// The keys a loose index of `data_dir` holds under a directory budget, sorted. Test hook for
-/// the bound, which a real tree would need 2^18 directories to reach (#6483).
+/// The keys a loose index of `data_dir` holds under an entry budget, sorted. Test hook for the
+/// bound, which a real tree would need 2^21 entries to reach (#6483, #7141).
 #[cfg(test)]
 pub(super) fn loose_keys_bounded(data_dir: &std::path::Path, budget: usize) -> Vec<String> {
     let mut keys: Vec<String> = LooseDir::index_bounded(data_dir, budget).files.into_keys().collect();
@@ -100,23 +102,60 @@ pub(super) fn loose_keys_bounded(data_dir: &std::path::Path, budget: usize) -> V
     keys
 }
 
+/// The first `keep` of `dir`'s entries in name order, and whether it held more (#7141: `read_dir`'s
+/// own order is the filesystem's, so a walk the budget cuts short would keep a different subset
+/// from run to run). #7156 — never more than `2 * keep` entries are held while the listing streams,
+/// so a directory of millions of files costs what the budget left allows, not what it holds; each
+/// name is read once, not per comparison.
+fn sorted_entries(dir: &std::path::Path, keep: usize) -> Option<(Vec<std::fs::DirEntry>, bool)> {
+    let mut listing = std::fs::read_dir(dir).ok()?.flatten();
+    if keep == 0 {
+        // #7171 — an exhausted budget keeps nothing: one entry answers whether any were left
+        // out, where streaming the whole listing to find out cost a directory's worth of reads.
+        return Some((Vec::new(), listing.next().is_some()));
+    }
+    let mut entries: Vec<(std::ffi::OsString, std::fs::DirEntry)> = Vec::new();
+    let mut dropped = false;
+    let mut trim = |entries: &mut Vec<(std::ffi::OsString, std::fs::DirEntry)>| {
+        // Names are unique within a directory, so an unstable sort is a total order.
+        entries.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        dropped |= entries.len() > keep;
+        entries.truncate(keep);
+    };
+    for entry in listing {
+        entries.push((entry.file_name(), entry));
+        if entries.len() >= keep.saturating_mul(2).max(64) {
+            trim(&mut entries);
+        }
+    }
+    trim(&mut entries);
+    Some((entries.into_iter().map(|(_, entry)| entry).collect(), dropped))
+}
+
 impl LooseDir {
     /// Index the asset roots under `data_dir`. Directory-name case is
     /// whatever the install happens to use, so the roots match
     /// case-insensitively.
     fn index(data_dir: &std::path::Path) -> Self {
-        Self::index_bounded(data_dir, MAX_LOOSE_DIRS)
+        Self::index_bounded(data_dir, MAX_LOOSE_ENTRIES)
     }
 
     fn index_bounded(data_dir: &std::path::Path, budget: usize) -> Self {
         let mut files = HashMap::new();
-        let Ok(entries) = std::fs::read_dir(data_dir) else {
+        // `Data` itself is not charged: only its asset roots are kept while it streams (#7156), so
+        // a top level of many plugin or loose files costs nothing, and they walk in name order.
+        let Ok(listing) = std::fs::read_dir(data_dir) else {
             return Self { files };
         };
+        let mut entries: Vec<_> = listing
+            .flatten()
+            .filter(|entry| LOOSE_ASSET_ROOTS.contains(&entry.file_name().to_string_lossy().to_ascii_lowercase().as_str()))
+            .collect();
+        entries.sort_by_cached_key(std::fs::DirEntry::file_name);
         let mut state =
-            WalkState { ancestors: Vec::new(), walked: 0, budget, loops_cut: 0, budget_hit: false };
+            WalkState { ancestors: Vec::new(), examined: 0, budget, loops_cut: 0, budget_hit: false };
         let mut collisions = Vec::new();
-        for entry in entries.flatten() {
+        for entry in entries {
             let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
             if LOOSE_ASSET_ROOTS.contains(&name.as_str()) && entry.path().is_dir() {
                 Self::walk(&entry.path(), &name, 0, &mut state, &mut files, &mut collisions);
@@ -124,8 +163,8 @@ impl LooseDir {
         }
         if state.budget_hit {
             log::warn!(
-                "loose index of '{}' stopped after {} directories; links make the tree larger than \
-                 any real layout, so files past that point are not indexed",
+                "loose index of '{}' stopped after {} entries; links make the tree larger than \
+                 any real layout, so files past that point (in name order) are not indexed",
                 data_dir.display(),
                 state.budget
             );
@@ -157,10 +196,11 @@ impl LooseDir {
     /// second, legitimate link to a directory reached another way is walked
     /// again and indexed under its own key, so `textures\a` and `textures\b`
     /// both resolve when both link to one mod directory (#6483). Total work is
-    /// bounded by [`MAX_LOOSE_DIRS`]: unguarded, one looping link re-indexed
+    /// bounded by [`MAX_LOOSE_ENTRIES`]: unguarded, one looping link re-indexed
     /// its subtree ~40 times (until `ELOOP`) and two made ~2^40 `read_dir`
     /// calls at boot (#6243), and the ancestor stack alone does not bound a
-    /// chain of doubled links.
+    /// chain of doubled links. Entries are walked in name order, so an index
+    /// the budget cuts short is the same on every run (#7141).
     fn walk(
         dir: &std::path::Path,
         key: &str,
@@ -179,16 +219,17 @@ impl LooseDir {
             state.loops_cut += 1;
             return;
         }
-        if state.walked >= state.budget {
-            state.budget_hit = true;
-            return;
-        }
-        state.walked += 1;
-        let Ok(entries) = std::fs::read_dir(dir) else {
+        let Some((entries, dropped)) = sorted_entries(dir, state.budget.saturating_sub(state.examined)) else {
             return;
         };
+        state.budget_hit |= dropped;
         state.ancestors.push(canonical);
-        for entry in entries.flatten() {
+        for entry in entries {
+            if state.examined >= state.budget {
+                state.budget_hit = true;
+                break;
+            }
+            state.examined += 1;
             let child = format!(
                 "{key}\\{}",
                 byroredux_bsa::normalize_path(&entry.file_name().to_string_lossy())
@@ -340,24 +381,45 @@ impl Archive {
         let stamp = ArchiveStamp::of(path);
         if let Some(stamp) = stamp {
             let registry = shared_archives().lock().unwrap_or_else(|e| e.into_inner());
-            if let Some((cached_stamp, archive)) = registry.get(path) {
-                if *cached_stamp == stamp {
+            if let Some((cached_stamp, archive)) = registry.get(path)
+                && *cached_stamp == stamp {
                     return Ok((archive.clone(), true));
                 }
-            }
         }
         let archive = Self::open(path)?;
         if let Some(stamp) = stamp {
             let mut registry = shared_archives().lock().unwrap_or_else(|e| e.into_inner());
-            if !registry.contains_key(path) && registry.len() >= SHARED_ARCHIVE_MAX {
-                if let Some(evicted) = registry.keys().next().cloned() {
+            if !registry.contains_key(path) && registry.len() >= SHARED_ARCHIVE_MAX
+                && let Some(evicted) = registry.keys().next().cloned() {
                     registry.remove(&evicted);
                 }
+            // #7144 — an entry under a different stamp is a file replaced on disk: holders that
+            // never come back through here (the texture streamer's provider) watch the count.
+            if let Some((old_stamp, _)) = registry.insert(path.to_owned(), (stamp, archive.clone()))
+                && old_stamp != stamp
+            {
+                ARCHIVE_REPLACEMENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
-            registry.insert(path.to_owned(), (stamp, archive.clone()));
         }
         Ok((archive, false))
     }
+}
+
+/// How many times [`Archive::open_shared`] has re-read an archive whose file changed on disk since
+/// it was cached (#7144).
+static ARCHIVE_REPLACEMENTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// [`ARCHIVE_REPLACEMENTS`]: a holder of `Archive` handles that is not rebuilt per cell transition
+/// (the texture streamer's provider) compares it with the count it was built at, and rebuilds when
+/// it moves, so it never reads a replaced archive through the old file table (#5663, #7144).
+pub(crate) fn archive_replacements() -> u64 {
+    ARCHIVE_REPLACEMENTS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// [`ARCHIVE_REPLACEMENTS`] itself, for the texture registry to stamp each queued floor with
+/// the generation its bytes were read under (#7169).
+pub(crate) fn archive_replacement_counter() -> &'static std::sync::atomic::AtomicU64 {
+    &ARCHIVE_REPLACEMENTS
 }
 
 impl Archive {
@@ -500,16 +562,14 @@ impl ArchiveInner {
     /// from its length); a cubemap, a single-chunk record, a BSA or a loose
     /// file reads whole. Warns like [`Self::extract_or_warn`].
     pub(crate) fn extract_texture_floor_or_warn(&self, path: &str) -> Option<Vec<u8>> {
-        if let Backend::Ba2(archive) = &self.backend {
-            if let Some(layout) = archive.dx10_layout(path) {
-                if let (false, [_, .., last]) = (layout.is_cubemap, layout.chunks.as_slice()) {
+        if let Backend::Ba2(archive) = &self.backend
+            && let Some(layout) = archive.dx10_layout(path)
+                && let (false, [_, .., last]) = (layout.is_cubemap, layout.chunks.as_slice()) {
                     let read = archive
                         .extract_dx10_mips(path, u32::from(last.start_mip))
                         .map(|(dds, _)| dds);
                     return self.or_warn(path, read);
                 }
-            }
-        }
         self.extract_or_warn(path)
     }
 
@@ -679,51 +739,6 @@ impl byroredux_ui::ScaleformResourceProvider for Archive {
             Ok(None)
         }
     }
-}
-
-/// Prepend `meshes\` to a NIF path when the input doesn't already
-/// start with that segment (case-insensitive, accepts either
-/// separator). `MODL` sub-records on RACE / NPC_ / ARMO records are
-/// authored relative to the `meshes\` root; the BSA layer stores the
-/// full prefix. Allocation only fires when the prefix is missing —
-/// already-prefixed paths borrow. The single home of "prepend `meshes\`
-/// unless present" (#6956): [`archive_mesh_path`] and
-/// [`canonical_mesh_key`] are its owned forms.
-pub fn normalize_mesh_path(path: &str) -> std::borrow::Cow<'_, str> {
-    let bytes = path.as_bytes();
-    if bytes.len() >= 7 {
-        let head = &bytes[..7];
-        if head.eq_ignore_ascii_case(b"meshes\\") || head.eq_ignore_ascii_case(b"meshes/") {
-            return std::borrow::Cow::Borrowed(path);
-        }
-    }
-    // #1292 — Starfield content-addressed BSGeometry external `.mesh`
-    // companion files live at `geometries\<hash>.mesh` (NO `meshes\`
-    // prefix). The importer at `crates/nif/src/import/mesh/bs_geometry.rs`
-    // composes the canonical path before calling the resolver; without
-    // this gate the normaliser silently prepended `meshes\` and turned
-    // every Starfield poster / architecture / set-dressing lookup into
-    // a guaranteed miss → 99.7% spawn-rate failure on Cydonia.
-    if bytes.len() >= 11 {
-        let head = &bytes[..11];
-        if head.eq_ignore_ascii_case(b"geometries\\") || head.eq_ignore_ascii_case(b"geometries/") {
-            return std::borrow::Cow::Borrowed(path);
-        }
-    }
-    std::borrow::Cow::Owned(format!(r"meshes\{}", path))
-}
-
-/// `path` as an archive mesh key: leading separators trimmed, `/` turned into `\`, and
-/// `meshes\` prefixed per [`normalize_mesh_path`] (case kept).
-pub fn archive_mesh_path(path: &str) -> String {
-    let path = path.trim_start_matches(['\\', '/']).replace('/', "\\");
-    normalize_mesh_path(&path).into_owned()
-}
-
-/// [`archive_mesh_path`], lower-cased: the key a lookup table or cache shares between
-/// every producer of it.
-pub fn canonical_mesh_key(path: &str) -> String {
-    archive_mesh_path(&path.to_ascii_lowercase())
 }
 
 /// Strip the Bethesda build-server prefix from an asset path.
@@ -1075,15 +1090,14 @@ pub(crate) fn shadow_count_for_open(new: &Archive, archives: &[Archive], reused:
         key.push('\0');
         key.push_str(a.path());
     }
-    if reused {
-        if let Some(&n) = shadow_count_cache()
+    if reused
+        && let Some(&n) = shadow_count_cache()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&key)
         {
             return n;
         }
-    }
     #[cfg(test)]
     SHADOW_COUNT_WALKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let n = count_shadowed_entries(new, archives);
@@ -1155,6 +1169,31 @@ mod tests {
     use super::{extract_first, mark_opened, sniff_magic_from, Archive};
     use std::collections::HashSet;
     use std::io::Read;
+
+    /// #7156 — a listing keeps the first `keep` names in name order and says whether it held
+    /// more, whatever the filesystem's order; it holds at most `2 * keep` entries while it streams,
+    /// so a directory far larger than the budget left costs the budget, not the directory.
+    #[test]
+    fn a_listing_keeps_the_first_names_the_budget_allows() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in (0..300).rev() {
+            std::fs::write(dir.path().join(format!("f{i:03}")), b"").unwrap();
+        }
+        let names = |keep| {
+            let (entries, dropped) = super::sorted_entries(dir.path(), keep).unwrap();
+            let names: Vec<String> = entries.iter().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+            (names, dropped)
+        };
+        let (first, dropped) = names(10);
+        assert_eq!(first, (0..10).map(|i| format!("f{i:03}")).collect::<Vec<_>>());
+        assert!(dropped, "290 names were left out");
+        let (all, dropped) = names(300);
+        assert_eq!(all.len(), 300);
+        assert!(!dropped);
+        assert_eq!(names(0), (Vec::new(), true), "an exhausted budget keeps nothing and says so");
+        let empty = tempfile::tempdir().unwrap();
+        assert_eq!(super::sorted_entries(empty.path(), 0).map(|(e, d)| (e.len(), d)), Some((0, false)));
+    }
 
     /// #2584 (SK-D5-LZ4-LOW-01) — the exact scenario the issue describes:
     /// a user who explicitly lists every series member. Simulates
@@ -1342,8 +1381,11 @@ mod tests {
         // handle must not be served.
         let path2 = write_one_entry_ba2("shared", entry, b"replacement bytes, longer", false);
         assert_eq!(path, path2, "fixture rewrites the same path");
+        let replacements = super::archive_replacements();
         let (third, reused) = Archive::open_shared(&path).expect("reopen after replace");
         assert!(!reused, "a replaced archive must be re-read");
+        // #7144 — and the replacement is counted, for holders that never re-open.
+        assert!(super::archive_replacements() > replacements, "a replaced archive moves the count");
         assert_eq!(
             third.extract(entry).expect("extract").as_slice(),
             b"replacement bytes, longer"

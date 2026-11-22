@@ -19,8 +19,10 @@ use byroredux_core::source_scan::function_line_count;
 #[test]
 fn construction_and_recording_drivers_stay_within_their_size_pins() {
     for (source, declaration, pin) in [
-        // 1373 before #6143; the per-pass construction is `init_stages.rs`.
-        (include_str!("init.rs"), "fn build_pipelines_and_finish(", 395),
+        // 1373 before #6143; the per-pass construction is `init_stages.rs`. 396 against a 395 pin after the
+        // sky-aperture overflow latch added a field (`0c61c4e7c`); the `PostPassState` literal moved into
+        // `PostPassState::new` (`context/mod.rs`), which brought it to 380.
+        (include_str!("init.rs"), "fn build_pipelines_and_finish(", 380),
         // 1339 before #6143; the flag word, skin/morph fields, batch merge,
         // history gates, blend prewarm and the upload / parameter blocks are
         // helpers in the same file.

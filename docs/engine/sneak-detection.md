@@ -1,6 +1,6 @@
 # Sneak and Detection
 
-**Status**: DESIGN (Phase 0, 2026-11-15); the stance (Phase 1, #6910), Wave 1 detection with its consumers (Phase 2, #6911), Wave 1 sneak attacks and perks (Phase 3, #6912), the indicator (Phase 4, #6913) and Wave 2 (Oblivion, Skyrim: detection, stealth points, sneak attacks, the Skyrim sneak hooks and the sneak locomotion clips; Phase 5, #6914) are BUILT (2026-11-15). Phase 6 (#6915) recorded Fallout 4 and Starfield on the sight test (Q2); their formulas are #6996. The design the [Sneak and Detection
+**Status**: BUILT (PRD SHIPPED 2026-11-19); designed in Phase 0 (2026-11-15); the stance (Phase 1, #6910), Wave 1 detection with its consumers (Phase 2, #6911), Wave 1 sneak attacks and perks (Phase 3, #6912), the indicator (Phase 4, #6913) and Wave 2 (Oblivion, Skyrim: detection, stealth points, sneak attacks, the Skyrim sneak hooks and the sneak locomotion clips; Phase 5, #6914) are BUILT (2026-11-15). Phase 6 (#6915) recorded Fallout 4 and Starfield on the sight test (Q2); Fallout 4's row, decoded from `Fallout4.exe`, is BUILT (2026-11-16, #6996), and Starfield's is BUILT (2026-11-18, #7046). The design the [Sneak and Detection
 PRD](../prd/sneak-and-detection.md) names as the owner of the stance, the detection
 tick, the per-pair level and alert state, the actor-to-actor sight test (§10 Q7), the
 light input (Q3), consumer migration and FO3 / FNV sneak-attack damage (PRD
@@ -26,7 +26,7 @@ those defaults one for one.
 | Stance path | `byroredux_scripting::stance` (`set_sneaking`, `toggle_sneaking`, the `sneaking_enabled` gate) behind the binary's `set_player_sneaking` | The one write of `Sneaking`: the key, `stealth.sneak` and Papyrus `StartSneaking` (SNK-DX-002) |
 | Stance speed | `StanceModel` profile row (`crates/core/src/character/stance.rs`) resolved per load into the `SneakMovement` resource; `MOVT` decoded into `EsmIndex::movement_types` | SNK-STN-005 |
 | Ruleset row | `StealthRules` built by `CharacterRulesProfile` from the load order's game settings (`crates/core/src/character/`) | Which formula, which settings, thresholds, cadence, view cone, indicator table. The only per-game data (SNK-DET-002) |
-| Formulas | `crates/core/src/stealth.rs` | Pure functions, one per ruleset kind: `fo3_value`, `fnv_value`, `oblivion_value`, `skyrim_value`. No ECS. Today's `detection_score` becomes `fnv_value` with its constants turned into `StealthRules` fields |
+| Formulas | `crates/core/src/stealth.rs` and `crates/core/src/stealth/` | Pure functions behind `StealthRules::value`, one module per ruleset kind: `fallout` (FO3 and FNV, `fallout::value`), `oblivion`, `skyrim`, `fallout4`, `starfield`. No ECS. Every coefficient is a `StealthRules` field |
 | Detection module | `byroredux/src/detection/` (`byroredux/src/detection/sight.rs`, `byroredux/src/detection/light.rs`, `byroredux/src/detection/tick.rs`) | The tick, the light level, the actor-to-actor sight test and the line test. The only caller of `PhysicsWorld::line_of_sight_blocked` and of the range from `DetectionConfig` (SNK-USE-007) |
 | Awareness | `Awareness` component on each detector (`crates/core/src/ecs/components/detection.rs`, `SparseSetStorage`): value, level toward the player, alert state, per-detector timer, last terms | Produced by the tick only; read by every consumer (SNK-DET-001) |
 | Summary | `PlayerDetection` resource: worst counted level, its detector's alert state and hostility | What the indicator draws (SNK-HUD-001) |
@@ -92,18 +92,18 @@ is `CharacterRulesProfile::stealth()`, a `StealthKind`, resolved per load into
 the `StealthRules` resource (`byroredux_core::stealth`; `install_stealth_rules`)
 as `VatsModel` is. It holds:
 
-- **kind**: `Fo3`, `Fnv`, `Oblivion`, `Skyrim`, or `SightOnly` (Fallout 4 and
-  Starfield, per Q2);
+- **kind** (`StealthKind`): `Fallout3`, `FalloutNv`, `Oblivion`, `Skyrim`, `Fallout4` (#6996),
+  `Starfield` (#7046), or `SightOnly` (Fallout 76 and an unsupported profile);
 - **settings**: every game setting its kind reads, each resolved by
   `EsmIndex::game_setting_float` and otherwise taken from the executable default
   censused in §13.1, with its provenance (master, executable, or FO3 executable
   standing in for FNV) kept for the install log (SNK-DX-003);
 - **levels**: which thresholds produce which levels (§4.3);
 - **cadence**: a fixed period (Oblivion, FO3, FNV `fDetectionTimerSetting` 0.3 s)
-  or a range (Skyrim `fDetectionUpdateTimeMin` / `Max`, 1–2 s; the `Complex` pair
+  or a range (Skyrim and Fallout 4 `fDetectionUpdateTimeMin` / `Max`, 1–2 s; the `Complex` pair
   when a loaded cell holds ComplexSceneMarkers);
 - **view cone**: `fDetectionViewCone` in degrees where the game authors one (FO3,
-  FNV, Skyrim: 190). None for Oblivion until #6936 rules out a hardcoded one;
+  FNV, Skyrim, Fallout 4: 190). None for Oblivion until #6936 rules out a hardcoded one;
 - **indicator** (`CharacterRulesProfile::indicator`, an `IndicatorModel`): the table of §10,
   how it is drawn, and Starfield's Stealth-rank gate (SNK-HUD-005). It is resolved per
   load into the `StealthIndicator` resource with its labels.
@@ -113,7 +113,7 @@ heard without line of sight by `fSneakSoundLosMult`: the CS formula does too, an
 `Oblivion.esm` authors it as 1, so Oblivion's "not blocked by walls" is the data
 (FO3, FNV 0.1; Skyrim 0.3).
 
-No consumer, system or HUD code names a game. The four formula kinds are the only
+No consumer, system or HUD code names a game. The five formula kinds are the only
 branch, and they live inside `stealth.rs`.
 
 ## 4. Detection
@@ -177,12 +177,15 @@ blindness of 1 or more zeroes sight. The engine reproduces the shape and keeps t
 integer division as authored. `sees` is the detector's line of sight *and* the view
 cone (`0x7e6430`, `0x7e4f90`, `fDetectionViewCone` × π/180).
 
-**New Vegas** is the FO3 shape plus the level terms in the target skill the Fallout
-wiki gives (CHARAL FNV ruleset *Sneak Detection*; `stealth.rs`). The FNV capture's
+**New Vegas** is the FO3 shape plus the level terms and the armor penalty in the target skill the Fallout
+wiki gives (CHARAL FNV ruleset *Sneak Detection*; `stealth.rs`). Fallout 3 has neither: the GECK wiki's
+*Category:Detection* (Target Skill) gives "In FO3, the Target Skill is simply `Sneak * IsSneaking`", and
+New Vegas's `((Sneak + iSneakLevelBonus * (TL - DL)) + max(iSneakStartBonus - iSneakStartBonusLevelPenatly * TL,
+0) - Armor Penalty) * IsSneaking` adds both halves at once (#7213; `the_fo3_row_drops_the_level_and_armor_terms`). The FNV capture's
 constants are exactly these settings' values: base −35, exponent 2, range 2500 / 5000,
 sound 1.6 and 1.6 · 0.1, boot weight 12 + 0.5·w, running 1.5, action ×2, light 1.4,
 visual movement 0.01 / 0.21 (= 0.01 + 0.2), perception 10 + 8·Per, skill ×0.5.
-`fnv_value` therefore reads every coefficient from `StealthRules`. One term
+`fallout::value` therefore reads every coefficient from `StealthRules`. One term
 disagrees: the capture's `DetectorState` (0.8 asleep or fighting this target, 1.2
 alert, lost or fighting another). The FO3 code instead computes 1 + alert·0.2 +
 sleeping·(−0.2) + notCombatTarget·(−0.4) + ambush. Phase 2 uses the settings form,
@@ -217,15 +220,61 @@ player as target has skill `fPlayerDetectionSneakMult` · Sneak +
 `fPlayerDetectionSneakBase` (0.4 · Sneak + 10 in `Skyrim.esm`). Entry points 48 and
 57 run inside the formula on the target's perks with the detector on tab 1
 (`0x14041d0af`, `0x14041ce35`; §9). The value is truncated to an integer, and
-0 < value < 1 becomes 1. **Fallout 4 and Starfield** keep the actor-to-actor sight
-test (§5) as their level source, Seen or Lost (Q2; Phase 6, #6915). A source now
-exists for Fallout 4: `Fallout4.exe`'s `.text` is readable and its settings are
-static `{value, name}` objects. Its detection is its own model: split sound and
-visual stealth-point drains and thresholds, cover (`fDetectionCover*`), object
-visibility, angular visual distance, an Agility skill term and sound / visual base
-values and ratings (~130 settings; formula routines at `0x1406c8580` and
-`0x1406c89f4`). `Starfield.exe` names its settings but does not keep them as static
-`{value, name}` objects. Decoding and building both rows is #6996.
+0 < value < 1 becomes 1.
+
+**Fallout 4** (`stealth::fallout4`, #6996) is `Fallout4.exe`'s own model, read in
+full: `0x1406c8770` computes a sound value and a visual value from a pair context
+that `0x140cc00c0` fills, and `0x140c98900` rounds each up to an integer (0 counting
+as −1); the pair's value is the higher. The module docs write the formula out. In
+short: the detector term is `fSneakPerceptionSkillMin` + (Max − Min) · Perception /
+10, scaled by the in-combat, asleep and not-combat-target mods; a sneaking target
+subtracts an agility term, `fSneakAgilitySkillMin` + Sneak (entry 57) + (Max − Min) ·
+Agility / 10, from both values (from sound through `fSneakSkillMovementMult`, from
+sight in proportion to the darkness, (`iLightLevelMax` − light) / `iLightLevelMax`).
+Each value starts from its own base (`fSneakSoundBaseValue`, `fSneakVisualBaseValue`,
+−20). Sound uses the full range and `fSneakSoundLosMult` without line of sight, and
+Deafness scales it. Sight uses a shorter visual range: the range falls off beyond
+`fDetectionVisualDistanceAngle` (30°) off the detector's facing to
+`…VisualDistanceMult` at 90°, beyond ±15° of elevation to `…Up/DownMult` at 45° /
+−60°, and with the target's visibility (Invisibility, occluding objects, cover). Line
+of sight is tested only inside a range that falls off beyond
+`fDetectionLOSDistanceAngle` (45°) to `…LOSDistanceMult` behind. The pair distance
+weights the height by `fDetectionDistanceHeightMult` (0.25). Within
+`fSneakVisualMinDistanceMax` and `fSneakVisualMinAngle` the visual level is raised
+toward `fSneakVisualMinValue`. A Stealth Boy (Invisibility ≥ 100) zeroes the light
+term only. Entries 47, 48 and 57 run on the target's perks with the detector on tab
+1 (`0x140cc095f`, `0x1406c8a7c`, `0x140cc08b6`); 48 runs over the movement term before
+its 1 is added. The engine has no ambush package, combat-group "observed" target,
+flight, cover rays or occluder count yet, so those inputs stay neutral.
+
+**Starfield** (`Starfield.exe`, #7046; `crates/core/src/stealth/starfield.rs`) is Fallout 4's model
+re-based to metres, read from the pair `0x140d7e2a0`, its filler `0x141940c10`, the
+rounding caller `0x141942618` and the stealth-point routine `0x141ba6ac0`. Each setting is built
+by its own initializer (`vmovss xmm2, [default]` or `vxorps`, `lea rdx, name`, `lea rcx, object`, a
+float registrar; integers load `r8d` and use a second one), which
+`scripts/exe-setting-defaults.py` reads. Its distances are metres, lifted by 70 to Bethesda
+units at resolve, as the scene data is. What differs from Fallout 4:
+
+- **Ambient sound.** The sound term subtracts `trunc(fSneakAmbientSoundMult · iSoundLevel{Silent, Quiet, Normal,
+  Loud, VeryLoud}[class])` for the detector's ambient class 1 to 5, and is not clamped at 0.
+- **Movement.** Sprinting is `fDetectionSprintingMult`; running is `fSneakRunningMult` while sneaking and
+  `fDetectionRunningMult` otherwise; the skill-movement term applies only while moving.
+- **Visual range.** `fSneakMaxDistanceVisualMult` (1.5) over the sound range; the angle falloff runs from
+  `fDetectionVisualDistanceAngleMin` to `…Max`; the pitch falloffs are Fallout 4's; a Stealth Boy skips the
+  whole visual term; nothing farther than the visual range is detected.
+- **Light.** `iLightLevelMax` 150, no interior or exterior light-level mod (Starfield has neither setting).
+- Entry points 57, 15, 47 and 48 run at the same places as Fallout 4's (`0x1419419a1`, `0x1419419b9`,
+  `0x141941a76`, `0x140d7e6dd`); the stealth points, their thresholds and the sneak-attack classes are Fallout 4's code over
+  Starfield's defaults.
+
+`Starfield.esm` authors 52 of the row's 101 settings (the census, `m65_detection_settings_census`).
+
+Not identified, so neutral in the engine: the detector's ambient sound class (read from a `+0x1a0` field of
+the detector's and the target's parent cells; the record field is not named), the sky / weather factor the
+filler multiplies into the visibility, the *combat* set of the visual-range falloffs (which pair selects it),
+the ambush mode, the observed-target and flying range multipliers and the 0.75 non-target range factor, and
+`fSneakStealthiness*` (read at `0x141a32ffe`). Starfield's `PERK` records run no entry-point dialect in the
+engine (`PerkEntryPointDialect::None`), so the four hooks above receive their unmodified values.
 
 ### 4.3 Levels
 
@@ -262,6 +311,23 @@ a ruleset field:
   its value passes the threshold, Noticed until then. The engine keeps one pool
   against all aggressive detectors (the original keeps it per combat group's
   target), and counts an attack as the player's attack start.
+- **Fallout 4.** Stealth points split by sense (`0x140e94420`, `0x140e9f170`). A
+  hostile detector with a level above 0 is held at Noticed while the player has
+  points, unless its visual level passes `iCombatStealthPointDetectionVisualThreshold`
+  (25; sneaking `…SneakDetectionVisualThreshold`, 70) or, within
+  `fCombatStealthPointDetectionSoundThresholdRadius` (512), its sound level passes
+  `…DetectionSoundThreshold` (30; sneaking 40): that empties the points. They drain by
+  max(sound · `…DrainSoundMult`, visual · `…DrainVisualMult`) per second while any
+  level is 0 or more, but not below `fCombatStealthPointSoundThreshold` (`Fallout4.esm`
+  25) from sound alone unless the sound reaches `…LOSSoundValueThreshold` (50) with
+  line of sight. They refill at max((1 − the nearest hostile's attenuation) · the
+  Lost, Hostile or Alert mult, `…RegenMin`) per second, the Lost rate once the player
+  has been detected and the Hostile one once it has attacked, eased in over the
+  longest outstanding of the alert-or-lost, attacked and detected-event delays by the
+  executable's closed form (`0x140e9f583`). An attack caps them at `…AttackedMaxValue`
+  (65), a detection event at `…DetectedEventMaxValue` (80). The level is otherwise
+  Skyrim's: Lost at or below 0, Seen for a non-hostile detector. One pool for the
+  player, as on Skyrim; the search-location delay is not modelled.
 
 ### 4.4 Alert state
 
@@ -296,6 +362,9 @@ search (SNK-NG-002).
 | Perception, sleeping, levels | actor values; the detector's sit / sleep state; `CharacterLevel` (FNV only) |
 | stealth boy, blindness, night eye | actor values Chameleon / Invisibility, Blindness, Night Eye |
 | ambush | not modelled: no package marks an ambush target yet. The term stays 0 |
+| Fallout 4: facing angle, elevation | the detector's facing against the direction to the player (`sight::view_angles`) |
+| Fallout 4: Agility, Invisibility, Deafness | actor values; `Fallout4.esm` authors no `Deafness`, so it reads 0 |
+| Fallout 4: ambient light | the cell's ambient luminance (`light::ambient_light`), which an interior's light-level mod takes off |
 
 ## 5. The actor-to-actor sight test (Q7)
 
@@ -323,6 +392,9 @@ range:
 - FO3 / FNV 0–100 (no documented range; the FNV capture clamps at 100);
 - Skyrim 0–`iLightLevelMax` (300 in `Skyrim.esm`; `GetLightLevel` "between 0 and
   150", CK), plus `iLightLevelInteriorMod` (25) indoors.
+- Fallout 4 0–100, less `iLightLevelExteriorMod` outdoors and, indoors, the smaller
+  of the ambient share and `iLightLevelInteriorMod` (`Fallout4.exe` `0x140d38f49`),
+  then night eye, clamped to `iLightLevelMax` (150 in `Fallout4.esm`).
 
 It is blind to RT shadowing (PRD §6 row 1); `stealth.status` prints it.
 
@@ -396,6 +468,12 @@ the VATS shot; `detection::unaware_of_player` re-runs the formula;
   target's stored value toward the attacker at most 0 (`0x1406a2520`).
   `fCombatSneakAttackBonusMult` has no RIP-relative reader. The parser now decodes
   Skyrim's `WEAP DNAM` animation type (byte 0).
+- **Fallout 4** (#6996). The same mechanism (`0x140e3a1ae`): the weapon's animation
+  type indexes twelve classes (`0x140479660`), Skyrim's first nine and then Gun,
+  Grenade and Mine (`fCombatSneakGunMult` and the others, ×2), 1 otherwise; entry
+  18 runs over it (`0x140e3a1d9`), and the hit is flagged above 1. `Fallout4.esm`
+  authors hand-to-hand, one-handed and two-handed melee ×3. The animation type is FO4
+  `WEAP DNAM` byte 54. The bar is the stored value.
 
 `fVATSStealthMult` (V16) is not a sneak-attack term. `Fallout3.exe` `0x5bfc16`
 multiplies the player's VATS hit chance by it ("Stealth bonus: %f becomes %f") when
@@ -431,6 +509,8 @@ above 0. SNK-ATK-006 holds: it stays with the VATS model (#6350).
   and 48 `MQ101IncreaseDetection` (×2); 57 the Stealth tree `Stealth00`–`Stealth80`
   (+20 to +40) and `VampireSkillsPerk02` (+20).
 - **Skyrim 18 (SNK-PERK-005).** Consumed at `combat.rs::sneak_strike` (§8).
+- **Fallout 4 15, 18, 47, 48, 57 (SNK-PERK-008, #6996).** Consumed at the same sites as
+  Skyrim's. 15 also drops the target's movement while it sneaks (`0x140cc08cf`).
 - **Skyrim 69 (SNK-PERK-007).** *Apply Sneaking Spell* stays Pending on the Perk Entry
   Points PRD's PERK-HOOK-009, which owns every spell-applying hook; the stance it
   reads is `Sneaking` (Phase 1).
@@ -544,12 +624,14 @@ slot. That is a menuxml font decode fault, separate from the indicator (#6994).
 
 ### 13.1 Settings census (PRD §7.2 scenario 3, A3 baseline)
 
-Run once on 2026-11-15 against the owner's installs. Master values come from the
+Run once on 2026-11-15 against the owner's installs, and on 2026-11-16 for
+`Fallout4.esm` (the row reads 93 settings, 33 authored; the census test
+`m65_detection_settings_census` pins them). Master values come from the
 `menu_gmst_census gmst` mode (`crates/plugin/examples/menu_gmst_census.rs`) on
 `Fallout3.esm`, `FalloutNV.esm`, `Oblivion.esm` and `Skyrim.esm` (SE).
 Executable defaults were read statically:
 
-- `Fallout3.exe` and `SkyrimSE.exe` keep each setting as a static object: the
+- `Fallout3.exe`, `SkyrimSE.exe` and `Fallout4.exe` keep each setting as a static object: the
   value sits immediately before the pointer to its name, 4 bytes (32-bit) or 8
   (64-bit).
 - `Oblivion.exe` builds each setting in code (`fld` constant, or `fld1` / `fldz`,

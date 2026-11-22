@@ -39,6 +39,8 @@ fn register_interaction_system(scheduler: &mut Scheduler) {
         crate::interaction::interaction_system,
         Access::new()
             .writes_resource::<crate::notifications::PlayerNotifications>()
+            // GUI-PAGE-005 — the key notice in the game's words (`sOpenWithKey`).
+            .reads_resource::<byroredux_core::ui_labels::UiLabels>()
             .reads_resource::<byroredux_core::form_id::FormIdPool>()
             .reads::<byroredux_core::ecs::components::FormIdComponent>()
             // M65 (#6912) — a hit bone collider walks its parent chain to the actor it belongs to.
@@ -92,6 +94,11 @@ fn register_interaction_system(scheduler: &mut Scheduler) {
             .reads::<crate::components::DoorTeleport>()
             .reads::<byroredux_core::ecs::components::Locked>()
             .reads::<byroredux_scripting::TwoStateActivator>()
+            .reads_resource::<byroredux_scripting::ScriptGame>()
+            // #7212 — a bed is offered for sleep where the ruleset levels by skill use (`supports_rest`).
+            .reads_resource::<byroredux_core::character::CharacterRuleset>()
+            // M66 — an in-cell door's prompt says Open or Close.
+            .reads::<crate::components::Door>()
             .reads::<byroredux_scripting::papyrus_demo::RumbleOnActivate>()
             .reads::<byroredux_scripting::papyrus_demo::quest_advance::QuestAdvanceOnActivate>()
             .reads::<byroredux_scripting::papyrus_demo::mg07_door::MG07LabyrinthianDoor>()

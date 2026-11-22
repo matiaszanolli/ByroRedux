@@ -365,77 +365,81 @@ impl super::buffers::SceneBuffers {
     /// use by an in-flight command buffer. The buffers must not be used
     /// after this call.
     pub unsafe fn destroy(&mut self, device: &ash::Device, allocator: &SharedAllocator) {
-        for buf in &mut self.light_buffers {
-            buf.destroy(device, allocator);
-        }
-        self.light_buffers.clear();
-        for buf in &mut self.camera_buffers {
-            buf.destroy(device, allocator);
-        }
-        self.camera_buffers.clear();
-        for buf in &mut self.bone_device_buffers {
-            buf.destroy(device, allocator);
-        }
-        self.bone_device_buffers.clear();
-        // M29.5 — bone-world + bind-inverse pairs for the palette
-        // compute pass. Destroy in the same group as the palette pair.
-        for buf in &mut self.bone_world_staging_buffers {
-            buf.destroy(device, allocator);
-        }
-        self.bone_world_staging_buffers.clear();
-        for buf in &mut self.bone_world_device_buffers {
-            buf.destroy(device, allocator);
-        }
-        self.bone_world_device_buffers.clear();
-        // M29.6 — single persistent SSBO + small staging.
-        self.bind_inverses_persistent.destroy(device, allocator);
-        self.bind_inverse_upload_staging.destroy(device, allocator);
-        for buf in &mut self.instance_buffers {
-            buf.destroy(device, allocator);
-        }
-        self.instance_buffers.clear();
-        for buf in &mut self.previous_model_buffers {
-            buf.destroy(device, allocator);
-        }
-        self.previous_model_buffers.clear();
-        // #4199 — buffers a grow replaced but whose countdown had not run out.
-        self.retired_instance_buffers
-            .drain(|mut buffer| buffer.destroy(device, allocator));
-        for buf in &mut self.material_buffers {
-            buf.destroy(device, allocator);
-        }
-        self.material_buffers.clear();
-        for buf in &mut self.dalc_buffers {
-            buf.destroy(device, allocator);
-        }
-        self.dalc_buffers.clear();
-        for buf in &mut self.indirect_buffers {
-            buf.destroy(device, allocator);
-        }
-        self.indirect_buffers.clear();
-        // #683 / MEM-2-8 — single shared buffer, single destroy.
-        self.ray_budget_buffer.destroy(device, allocator);
-        for buf in &mut self.selected_ray_probe_buffers {
-            buf.destroy(device, allocator);
-        }
-        self.selected_ray_probe_buffers.clear();
-        // #6250 / #6521 — the ReSTIR moved-surface lists. Missed here when they
-        // were added, which leaked the allocator `Arc` and failed the teardown
-        // `unwrap` (SAFE-2026-10-27-01).
-        for buf in &mut self.moved_surface_buffers {
-            buf.destroy(device, allocator);
-        }
-        self.moved_surface_buffers.clear();
-        for staging in &mut self.terrain_tile_staging_buffers {
-            if let Some(staging) = staging.take() {
-                staging.destroy();
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            for buf in &mut self.light_buffers {
+                buf.destroy(device, allocator);
             }
+            self.light_buffers.clear();
+            for buf in &mut self.camera_buffers {
+                buf.destroy(device, allocator);
+            }
+            self.camera_buffers.clear();
+            for buf in &mut self.bone_device_buffers {
+                buf.destroy(device, allocator);
+            }
+            self.bone_device_buffers.clear();
+            // M29.5 — bone-world + bind-inverse pairs for the palette
+            // compute pass. Destroy in the same group as the palette pair.
+            for buf in &mut self.bone_world_staging_buffers {
+                buf.destroy(device, allocator);
+            }
+            self.bone_world_staging_buffers.clear();
+            for buf in &mut self.bone_world_device_buffers {
+                buf.destroy(device, allocator);
+            }
+            self.bone_world_device_buffers.clear();
+            // M29.6 — single persistent SSBO + small staging.
+            self.bind_inverses_persistent.destroy(device, allocator);
+            self.bind_inverse_upload_staging.destroy(device, allocator);
+            for buf in &mut self.instance_buffers {
+                buf.destroy(device, allocator);
+            }
+            self.instance_buffers.clear();
+            for buf in &mut self.previous_model_buffers {
+                buf.destroy(device, allocator);
+            }
+            self.previous_model_buffers.clear();
+            // #4199 — buffers a grow replaced but whose countdown had not run out.
+            self.retired_instance_buffers
+                .drain(|mut buffer| buffer.destroy(device, allocator));
+            for buf in &mut self.material_buffers {
+                buf.destroy(device, allocator);
+            }
+            self.material_buffers.clear();
+            for buf in &mut self.dalc_buffers {
+                buf.destroy(device, allocator);
+            }
+            self.dalc_buffers.clear();
+            for buf in &mut self.indirect_buffers {
+                buf.destroy(device, allocator);
+            }
+            self.indirect_buffers.clear();
+            // #683 / MEM-2-8 — single shared buffer, single destroy.
+            self.ray_budget_buffer.destroy(device, allocator);
+            for buf in &mut self.selected_ray_probe_buffers {
+                buf.destroy(device, allocator);
+            }
+            self.selected_ray_probe_buffers.clear();
+            // #6250 / #6521 — the ReSTIR moved-surface lists. Missed here when they
+            // were added, which leaked the allocator `Arc` and failed the teardown
+            // `unwrap` (SAFE-2026-10-27-01).
+            for buf in &mut self.moved_surface_buffers {
+                buf.destroy(device, allocator);
+            }
+            self.moved_surface_buffers.clear();
+            for staging in &mut self.terrain_tile_staging_buffers {
+                if let Some(staging) = staging.take() {
+                    staging.destroy();
+                }
+            }
+            self.terrain_tile_staging_buffers.clear();
+            self.terrain_tile_staging_pool.destroy();
+            self.terrain_tile_buffer.destroy(device, allocator);
+            device.destroy_descriptor_pool(self.descriptor_pool, None);
+            device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
         }
-        self.terrain_tile_staging_buffers.clear();
-        self.terrain_tile_staging_pool.destroy();
-        self.terrain_tile_buffer.destroy(device, allocator);
-        device.destroy_descriptor_pool(self.descriptor_pool, None);
-        device.destroy_descriptor_set_layout(self.descriptor_set_layout, None);
     }
 }
 

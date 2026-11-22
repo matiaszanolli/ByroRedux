@@ -229,13 +229,12 @@ fn search(
             }
             // An item search is for loose items; a base search takes whatever the base is, and a flora or
             // furniture search takes the placed object itself.
-            if let FindTarget::Kind(kind) = behavior.target {
-                if !matches!(kind, FindItemKind::Flora | FindItemKind::Furniture | FindItemKind::Container)
+            if let FindTarget::Kind(kind) = behavior.target
+                && !matches!(kind, FindItemKind::Flora | FindItemKind::Furniture | FindItemKind::Container)
                     && !crate::inventory::is_pickup_target(world, entity)
                 {
                     return None;
                 }
-            }
             let at = world.get::<GlobalTransform>(entity)?.translation;
             (at.distance(centre) <= radius).then(|| (entity, here.distance(at)))
         })
@@ -556,6 +555,8 @@ mod tests {
                 casing_form: 0,
                 health: 0,
                 clip_rounds: 0,
+                speed: 0.0,
+                flags: 0,
             }),
         );
         index
@@ -742,6 +743,7 @@ mod tests {
             script_form_id: 0,
             visible_when_distant: false,
             destruction: None,
+            door: None,
         }
     }
 

@@ -198,10 +198,13 @@ def diff_count(x0, x1, y0, y1, eps):
                 n += 1
     return n
 
-# FO4 HUD chrome bands (calibrated against the first M48.7 run):
-# health/rads bar bottom-left, compass + markers top-center.
+# FO4 HUD chrome bands: health/rads bar bottom-left, compass bottom-centre (the bar, its
+# direction-marker tick and letter, below the engine's own activation prompt, which draws in both
+# captures). #6665 — the band used to sit top-centre, on the enemy health meter's authored
+# sample state ("RAIDER" and its bar); with nothing targeted that widget is hidden now
+# (`ScaleformGame::unfed_widgets`), and the compass is at the bottom.
 health = diff_count(85, 360, 645, 665, 60)
-compass = diff_count(500, 780, 28, 75, 60)
+compass = diff_count(488, 792, 656, 690, 60)
 control = diff_count(400, 480, 250, 300, 60)
 assert health > 200, f"FAIL: health bar chrome did not draw ({health} changed px)"
 assert compass > 100, f"FAIL: compass chrome did not draw ({compass} changed px)"

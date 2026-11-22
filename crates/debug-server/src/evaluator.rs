@@ -477,12 +477,11 @@ fn eval_request(world: &World, registry: &ComponentRegistry, expr: &str) -> Debu
     if !first_word.is_empty() {
         // CONC-D3-04 / #1786 — `reg` stays held (read) across `execute`;
         // see the lock contract on `ConsoleCommand::execute`.
-        if let Some(reg) = world.try_resource::<CommandRegistry>() {
-            if reg.list().iter().any(|(name, _)| *name == first_word) {
+        if let Some(reg) = world.try_resource::<CommandRegistry>()
+            && reg.list().iter().any(|(name, _)| *name == first_word) {
                 let output = reg.execute(world, expr);
                 return DebugResponse::value(serde_json::Value::String(output.lines.join("\n")));
             }
-        }
     }
     eval_expr(world, registry, expr)
 }
@@ -774,12 +773,11 @@ fn eval_member_access(
             "w" | "a" => Some(3),
             _ => None,
         };
-        if let Some(idx) = idx {
-            if let Some(val) = current.get(idx) {
+        if let Some(idx) = idx
+            && let Some(val) = current.get(idx) {
                 current = val;
                 continue;
             }
-        }
 
         // Field not found.
         let path_so_far = chain[..=i + 1].join(".");

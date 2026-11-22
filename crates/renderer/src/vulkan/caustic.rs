@@ -44,6 +44,7 @@
 
 use crate::vulkan::descriptors::clamp_sampler;
 use crate::vulkan::descriptors::compute_binding;
+use super::GpuUploadCtx;
 use super::allocator::SharedAllocator;
 use super::buffer::GpuBuffer;
 use super::descriptors::{
@@ -367,65 +368,56 @@ pub(super) fn caustic_layout_bindings() -> Vec<vk::DescriptorSetLayoutBinding<'s
     ]
 }
 
+/// The views and buffers the caustic splat shader binds: one view or buffer slice per resource,
+/// borrowed from the passes that own them. Shared by construction, the resize rebuild and the
+/// descriptor writes, which all take exactly this set.
+#[derive(Clone, Copy)]
+pub struct CausticInputs<'a> {
+    pub depth_view: vk::ImageView,
+    pub normal_views: &'a [vk::ImageView],
+    pub mesh_id_views: &'a [vk::ImageView],
+    pub light_buffers: &'a [GpuBuffer],
+    pub light_buffer_size: vk::DeviceSize,
+    pub camera_buffers: &'a [GpuBuffer],
+    pub camera_buffer_size: vk::DeviceSize,
+    pub instance_buffers: &'a [GpuBuffer],
+    /// #4199 — one size per slot: instance buffers grow independently.
+    pub instance_buffer_sizes: &'a [vk::DeviceSize],
+}
+
 impl CausticPipeline {
-    #[allow(clippy::too_many_arguments)] // Descriptor inputs: one view or buffer slice per resource the shader binds.
     pub fn new(
         device: &ash::Device,
         allocator: &SharedAllocator,
         pipeline_cache: vk::PipelineCache,
-        depth_view: vk::ImageView,
-        normal_views: &[vk::ImageView],
-        mesh_id_views: &[vk::ImageView],
-        light_buffers: &[GpuBuffer],
-        light_buffer_size: vk::DeviceSize,
-        camera_buffers: &[GpuBuffer],
-        camera_buffer_size: vk::DeviceSize,
-        instance_buffers: &[GpuBuffer],
-        // #4199 — one size per slot: instance buffers grow independently.
-        instance_buffer_sizes: &[vk::DeviceSize],
+        inputs: CausticInputs,
         width: u32,
         height: u32,
     ) -> Result<Self> {
-        let result = Self::new_inner(
-            device,
-            allocator,
-            pipeline_cache,
-            depth_view,
-            normal_views,
-            mesh_id_views,
-            light_buffers,
-            light_buffer_size,
-            camera_buffers,
-            camera_buffer_size,
-            instance_buffers,
-            instance_buffer_sizes,
-            width,
-            height,
-        );
+        let result = Self::new_inner(device, allocator, pipeline_cache, inputs, width, height);
         if let Err(ref e) = result {
             log::debug!("Caustic pipeline creation failed at: {e}");
         }
         result
     }
 
-    #[allow(clippy::too_many_arguments)] // Descriptor inputs: one view or buffer slice per resource the shader binds.
     fn new_inner(
         device: &ash::Device,
         allocator: &SharedAllocator,
         pipeline_cache: vk::PipelineCache,
-        depth_view: vk::ImageView,
-        normal_views: &[vk::ImageView],
-        mesh_id_views: &[vk::ImageView],
-        light_buffers: &[GpuBuffer],
-        light_buffer_size: vk::DeviceSize,
-        camera_buffers: &[GpuBuffer],
-        camera_buffer_size: vk::DeviceSize,
-        instance_buffers: &[GpuBuffer],
-        // #4199 — one size per slot: instance buffers grow independently.
-        instance_buffer_sizes: &[vk::DeviceSize],
+        inputs: CausticInputs,
         width: u32,
         height: u32,
     ) -> Result<Self> {
+        let CausticInputs {
+            normal_views,
+            mesh_id_views,
+            light_buffers,
+            camera_buffers,
+            instance_buffers,
+            instance_buffer_sizes,
+            ..
+        } = inputs;
         debug_assert_eq!(normal_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(mesh_id_views.len(), MAX_FRAMES_IN_FLIGHT);
         debug_assert_eq!(light_buffers.len(), MAX_FRAMES_IN_FLIGHT);
@@ -556,18 +548,7 @@ impl CausticPipeline {
         });
 
         // ── 7. Write non-TLAS descriptors (TLAS is written per-frame) ─
-        partial.write_descriptor_sets(
-            device,
-            depth_view,
-            normal_views,
-            mesh_id_views,
-            light_buffers,
-            light_buffer_size,
-            camera_buffers,
-            camera_buffer_size,
-            instance_buffers,
-            instance_buffer_sizes,
-        );
+        partial.write_descriptor_sets(device, inputs);
 
         // #2679 / PERF-D3-03 — attributing telemetry, same mechanism #1814
         // established for the ReSTIR reservoirs: the accumulator is
@@ -611,21 +592,18 @@ impl CausticPipeline {
         )
     }
 
-    #[allow(clippy::too_many_arguments)] // Descriptor inputs: one view or buffer slice per resource the shader binds.
-    fn write_descriptor_sets(
-        &self,
-        device: &ash::Device,
-        depth_view: vk::ImageView,
-        normal_views: &[vk::ImageView],
-        mesh_id_views: &[vk::ImageView],
-        light_buffers: &[GpuBuffer],
-        light_buffer_size: vk::DeviceSize,
-        camera_buffers: &[GpuBuffer],
-        camera_buffer_size: vk::DeviceSize,
-        instance_buffers: &[GpuBuffer],
-        // #4199 — one size per slot: instance buffers grow independently.
-        instance_buffer_sizes: &[vk::DeviceSize],
-    ) {
+    fn write_descriptor_sets(&self, device: &ash::Device, inputs: CausticInputs) {
+        let CausticInputs {
+            depth_view,
+            normal_views,
+            mesh_id_views,
+            light_buffers,
+            light_buffer_size,
+            camera_buffers,
+            camera_buffer_size,
+            instance_buffers,
+            instance_buffer_sizes,
+        } = inputs;
         let param_size = std::mem::size_of::<CausticParams>() as vk::DeviceSize;
         for f in 0..MAX_FRAMES_IN_FLIGHT {
             let depth_info = [depth_read_only_image_info(self.point_sampler, depth_view)];
@@ -835,160 +813,162 @@ impl CausticPipeline {
         frame: usize,
         history_valid: bool,
     ) -> Result<()> {
-        // ── Upload params ─────────────────────────────────────────────
-        let params = CausticParams {
-            screen: [
-                self.width as f32,
-                self.height as f32,
-                1.0 / self.width as f32,
-                1.0 / self.height as f32,
-            ],
-            tune: [
-                CAUSTIC_FIXED_SCALE,
-                self.ior,
-                self.max_lights as f32,
-                self.strength,
-            ],
-            sun: [self.sun_transmittance, 0.0, 0.0, 0.0],
-        };
-        self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&params))?;
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            // ── Upload params ─────────────────────────────────────────────
+            let params = CausticParams {
+                screen: [
+                    self.width as f32,
+                    self.height as f32,
+                    1.0 / self.width as f32,
+                    1.0 / self.height as f32,
+                ],
+                tune: [
+                    CAUSTIC_FIXED_SCALE,
+                    self.ior,
+                    self.max_lights as f32,
+                    self.strength,
+                ],
+                sun: [self.sun_transmittance, 0.0, 0.0, 0.0],
+            };
+            self.param_buffers[frame].write_mapped(device, std::slice::from_ref(&params))?;
 
-        // HOST → COMPUTE_SHADER (UBO flush before dispatch).
-        memory_barrier(
-            device,
-            cmd,
-            vk::PipelineStageFlags::HOST,
-            vk::AccessFlags::HOST_WRITE,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::AccessFlags::UNIFORM_READ,
-        );
-
-        // ── Decay (parked) or clear (moving), then splat ──────────────
-        // The caustic is summed in by composite, which runs BEFORE TAA, but
-        // TAA's history blend does not remove the per-frame flicker of its
-        // TAA-jittered landing point: a parked Cornell floor caustic measured
-        // a temporal frame-diff of 37.8 with single-pixel deposits
-        // (afaa2fe49). With a parked camera we therefore replace the per-frame
-        // clear with an exponential moving average: run the splat pipeline
-        // in *decay* mode first (accum *= DECAY), then splat only
-        // (1 - DECAY) of this frame's energy on top. The focused caustic
-        // spot — whose landing point jitters frame to frame — converges to
-        // a stable pool instead of stippling. On camera motion we clear
-        // and deposit full energy, so a stale, mis-registered pool from the
-        // old viewpoint can never smear across the screen.
-        //
-        // Cross-frame safety: each FIF slot is its own image and the
-        // per-frame fence guarantees the slot is idle before this command
-        // buffer runs, so the decay→splat read-modify-write chain only
-        // needs the intra-frame barriers below — exactly as the old
-        // clear→splat path did. (Steady state: previous use of this slot
-        // was compute-write in the prior splat → fragment-read in
-        // composite; frame 0 the slot is GENERAL from initialize_layouts,
-        // so the wait stages are merely over-specified, not wrong — see
-        // REN-D13-NEW-03, audit 2026-05-09.)
-        // Parked-camera EMA. Progressive 1/N convergence (matches the SVGF
-        // GI path) instead of a fixed-window decay: a constant decay (e.g.
-        // 0.96) plateaus at a fixed noise floor (~1/√25) and never resolves
-        // the per-deposit white-noise jitter; `decay = N/(N+1)` makes the
-        // accumulator a true running average that converges to ground truth
-        // the longer the camera stays parked. Capped at 0.995 so it never
-        // freezes (a true 1.0 would stop admitting new energy). Resets on
-        // motion (decay 0 → single-frame clear, no smear) — camera motion
-        // *or* scene motion (#2468); see `advance_parked_visits`.
-        let decay_factor = advance_parked_visits(&mut self.parked_frames, frame, history_valid);
-        let slot_img = self.slots[frame].image;
-        let clear_range = caustic_subresource_range();
-
-        // Bind pipeline + descriptor once; the decay and splat passes share
-        // them and differ only by push constant.
-        device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
-        device.cmd_bind_descriptor_sets(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.pipeline_layout,
-            0,
-            &[self.descriptor_sets[frame]],
-            &[],
-        );
-        // #2768 — from the same constants `caustic_splat.comp`'s
-        // `local_size` is generated from; see `taa.rs`'s dispatch.
-        let gx = self.width.div_ceil(WORKGROUP_X);
-        let gy = self.height.div_ceil(WORKGROUP_Y);
-        let push_bytes = |decay_only: u32, factor: f32| -> [u8; 8] {
-            let mut b = [0u8; 8];
-            b[0..4].copy_from_slice(&decay_only.to_ne_bytes());
-            b[4..8].copy_from_slice(&factor.to_ne_bytes());
-            b
-        };
-
-        if history_valid {
-            // Wait for the slot's previous use before the decay pass scales
-            // it. That prior use is one of three, not two: the steady-state
-            // splat compute-write + composite fragment-read, OR — #3646 —
-            // `clear_for_skip`'s `vkCmdClearColorImage` from an earlier
-            // visit to this slot, which is a TRANSFER_WRITE. The decay pass
-            // `imageLoad`s the accumulator, so leaving TRANSFER out of the
-            // source scope left the skip-clear's write with no dependency
-            // chain into this read.
-            let pre_decay = vk::ImageMemoryBarrier::default()
-                .src_access_mask(
-                    vk::AccessFlags::SHADER_READ
-                        | vk::AccessFlags::SHADER_WRITE
-                        | vk::AccessFlags::TRANSFER_WRITE,
-                )
-                .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
-                .old_layout(vk::ImageLayout::GENERAL)
-                .new_layout(vk::ImageLayout::GENERAL)
-                .image(slot_img)
-                .subresource_range(clear_range);
-            device.cmd_pipeline_barrier(
+            // HOST → COMPUTE_SHADER (UBO flush before dispatch).
+            memory_barrier(
+                device,
                 cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER
-                    | vk::PipelineStageFlags::FRAGMENT_SHADER
-                    | vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::HOST,
+                vk::AccessFlags::HOST_WRITE,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[pre_decay],
+                vk::AccessFlags::UNIFORM_READ,
             );
-            // Decay pass: every pixel multiplies its accumulator by DECAY.
-            device.cmd_push_constants(
+
+            // ── Decay (parked) or clear (moving), then splat ──────────────
+            // The caustic is summed in by composite, which runs BEFORE TAA, but
+            // TAA's history blend does not remove the per-frame flicker of its
+            // TAA-jittered landing point: a parked Cornell floor caustic measured
+            // a temporal frame-diff of 37.8 with single-pixel deposits
+            // (afaa2fe49). With a parked camera we therefore replace the per-frame
+            // clear with an exponential moving average: run the splat pipeline
+            // in *decay* mode first (accum *= DECAY), then splat only
+            // (1 - DECAY) of this frame's energy on top. The focused caustic
+            // spot — whose landing point jitters frame to frame — converges to
+            // a stable pool instead of stippling. On camera motion we clear
+            // and deposit full energy, so a stale, mis-registered pool from the
+            // old viewpoint can never smear across the screen.
+            //
+            // Cross-frame safety: each FIF slot is its own image and the
+            // per-frame fence guarantees the slot is idle before this command
+            // buffer runs, so the decay→splat read-modify-write chain only
+            // needs the intra-frame barriers below — exactly as the old
+            // clear→splat path did. (Steady state: previous use of this slot
+            // was compute-write in the prior splat → fragment-read in
+            // composite; frame 0 the slot is GENERAL from initialize_layouts,
+            // so the wait stages are merely over-specified, not wrong — see
+            // REN-D13-NEW-03, audit 2026-05-09.)
+            // Parked-camera EMA. Progressive 1/N convergence (matches the SVGF
+            // GI path) instead of a fixed-window decay: a constant decay (e.g.
+            // 0.96) plateaus at a fixed noise floor (~1/√25) and never resolves
+            // the per-deposit white-noise jitter; `decay = N/(N+1)` makes the
+            // accumulator a true running average that converges to ground truth
+            // the longer the camera stays parked. Capped at 0.995 so it never
+            // freezes (a true 1.0 would stop admitting new energy). Resets on
+            // motion (decay 0 → single-frame clear, no smear) — camera motion
+            // *or* scene motion (#2468); see `advance_parked_visits`.
+            let decay_factor = advance_parked_visits(&mut self.parked_frames, frame, history_valid);
+            let slot_img = self.slots[frame].image;
+            let clear_range = caustic_subresource_range();
+
+            // Bind pipeline + descriptor once; the decay and splat passes share
+            // them and differ only by push constant.
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+            device.cmd_bind_descriptor_sets(
                 cmd,
+                vk::PipelineBindPoint::COMPUTE,
                 self.pipeline_layout,
-                vk::ShaderStageFlags::COMPUTE,
                 0,
-                &push_bytes(1, decay_factor),
-            );
-            device.cmd_dispatch(cmd, gx, gy, 1);
-            // Decay-write → splat read-modify-write (atomicAdd).
-            let mid = vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
-                .old_layout(vk::ImageLayout::GENERAL)
-                .new_layout(vk::ImageLayout::GENERAL)
-                .image(slot_img)
-                .subresource_range(clear_range);
-            device.cmd_pipeline_barrier(
-                cmd,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
+                &[self.descriptor_sets[frame]],
                 &[],
-                &[],
-                &[mid],
             );
-        } else {
-            // Moving camera: clear the slot so an old-viewpoint pool can't
-            // smear, then deposit full energy (decay_factor == 0).
-            // The splat's atomic adds must see zeros; the slot's prior use
-            // may itself have been `clear_for_skip`'s clear, which is why
-            // the source scope has to reach TRANSFER (#3646).
-            // SAFETY: `clear_general_accumulator` (#3844) supplies that
-            // barrier half; `device`/`cmd`/`slot_img` are all live and owned
-            // by this frame's recording. Consumers are the splat compute and
-            // composite's fragment read.
-            unsafe {
+            // #2768 — from the same constants `caustic_splat.comp`'s
+            // `local_size` is generated from; see `taa.rs`'s dispatch.
+            let gx = self.width.div_ceil(WORKGROUP_X);
+            let gy = self.height.div_ceil(WORKGROUP_Y);
+            let push_bytes = |decay_only: u32, factor: f32| -> [u8; 8] {
+                let mut b = [0u8; 8];
+                b[0..4].copy_from_slice(&decay_only.to_ne_bytes());
+                b[4..8].copy_from_slice(&factor.to_ne_bytes());
+                b
+            };
+
+            if history_valid {
+                // Wait for the slot's previous use before the decay pass scales
+                // it. That prior use is one of three, not two: the steady-state
+                // splat compute-write + composite fragment-read, OR — #3646 —
+                // `clear_for_skip`'s `vkCmdClearColorImage` from an earlier
+                // visit to this slot, which is a TRANSFER_WRITE. The decay pass
+                // `imageLoad`s the accumulator, so leaving TRANSFER out of the
+                // source scope left the skip-clear's write with no dependency
+                // chain into this read.
+                let pre_decay = vk::ImageMemoryBarrier::default()
+                    .src_access_mask(
+                        vk::AccessFlags::SHADER_READ
+                            | vk::AccessFlags::SHADER_WRITE
+                            | vk::AccessFlags::TRANSFER_WRITE,
+                    )
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
+                    .old_layout(vk::ImageLayout::GENERAL)
+                    .new_layout(vk::ImageLayout::GENERAL)
+                    .image(slot_img)
+                    .subresource_range(clear_range);
+                device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::COMPUTE_SHADER
+                        | vk::PipelineStageFlags::FRAGMENT_SHADER
+                        | vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[pre_decay],
+                );
+                // Decay pass: every pixel multiplies its accumulator by DECAY.
+                device.cmd_push_constants(
+                    cmd,
+                    self.pipeline_layout,
+                    vk::ShaderStageFlags::COMPUTE,
+                    0,
+                    &push_bytes(1, decay_factor),
+                );
+                device.cmd_dispatch(cmd, gx, gy, 1);
+                // Decay-write → splat read-modify-write (atomicAdd).
+                let mid = vk::ImageMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
+                    .old_layout(vk::ImageLayout::GENERAL)
+                    .new_layout(vk::ImageLayout::GENERAL)
+                    .image(slot_img)
+                    .subresource_range(clear_range);
+                device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[mid],
+                );
+            } else {
+                // Moving camera: clear the slot so an old-viewpoint pool can't
+                // smear, then deposit full energy (decay_factor == 0).
+                // The splat's atomic adds must see zeros; the slot's prior use
+                // may itself have been `clear_for_skip`'s clear, which is why
+                // the source scope has to reach TRANSFER (#3646).
+                // SAFETY: `clear_general_accumulator` (#3844) supplies that
+                // barrier half; `device`/`cmd`/`slot_img` are all live and owned
+                // by this frame's recording. Consumers are the splat compute and
+                // composite's fragment read.
                 super::descriptors::clear_general_accumulator(
                     device,
                     cmd,
@@ -1001,44 +981,44 @@ impl CausticPipeline {
                         | vk::PipelineStageFlags::FRAGMENT_SHADER,
                 );
             }
+
+            // ── Splat dispatch ────────────────────────────────────────────
+            // decay_factor drives the EMA new-sample weight (1 - decay_factor)
+            // in the shader: while parked the weight is `1/(N+1)` of this
+            // frame (0.5 on the first parked visit, falling to a floor of
+            // `1 - CAUSTIC_DECAY_MAX` = 0.005 — a running average over the
+            // parked visit count, not a fixed 0.15; see
+            // `advance_parked_visits`), and full energy while moving
+            // (decay_factor == 0).
+            device.cmd_push_constants(
+                cmd,
+                self.pipeline_layout,
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                &push_bytes(0, decay_factor),
+            );
+            device.cmd_dispatch(cmd, gx, gy, 1);
+
+            // ── COMPUTE → FRAGMENT barrier for composite sample ───────────
+            let out_barrier = vk::ImageMemoryBarrier::default()
+                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                .dst_access_mask(vk::AccessFlags::SHADER_READ)
+                .old_layout(vk::ImageLayout::GENERAL)
+                .new_layout(vk::ImageLayout::GENERAL)
+                .image(slot_img)
+                .subresource_range(caustic_subresource_range());
+            device.cmd_pipeline_barrier(
+                cmd,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[out_barrier],
+            );
+
+            Ok(())
         }
-
-        // ── Splat dispatch ────────────────────────────────────────────
-        // decay_factor drives the EMA new-sample weight (1 - decay_factor)
-        // in the shader: while parked the weight is `1/(N+1)` of this
-        // frame (0.5 on the first parked visit, falling to a floor of
-        // `1 - CAUSTIC_DECAY_MAX` = 0.005 — a running average over the
-        // parked visit count, not a fixed 0.15; see
-        // `advance_parked_visits`), and full energy while moving
-        // (decay_factor == 0).
-        device.cmd_push_constants(
-            cmd,
-            self.pipeline_layout,
-            vk::ShaderStageFlags::COMPUTE,
-            0,
-            &push_bytes(0, decay_factor),
-        );
-        device.cmd_dispatch(cmd, gx, gy, 1);
-
-        // ── COMPUTE → FRAGMENT barrier for composite sample ───────────
-        let out_barrier = vk::ImageMemoryBarrier::default()
-            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .dst_access_mask(vk::AccessFlags::SHADER_READ)
-            .old_layout(vk::ImageLayout::GENERAL)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .image(slot_img)
-            .subresource_range(caustic_subresource_range());
-        device.cmd_pipeline_barrier(
-            cmd,
-            vk::PipelineStageFlags::COMPUTE_SHADER,
-            vk::PipelineStageFlags::FRAGMENT_SHADER,
-            vk::DependencyFlags::empty(),
-            &[],
-            &[],
-            &[out_barrier],
-        );
-
-        Ok(())
     }
 
     /// One-shot clear of `slots[frame]` to zero for a frame where
@@ -1102,26 +1082,14 @@ impl CausticPipeline {
     /// are created at `initial_layout: UNDEFINED` and walked to
     /// GENERAL via [`Self::initialize_layouts`] internally, so
     /// post-resize first dispatches see a valid storage layout.
-    #[allow(clippy::too_many_arguments)]
     pub fn recreate_on_resize(
         &mut self,
-        device: &ash::Device,
-        allocator: &SharedAllocator,
-        queue: &std::sync::Mutex<vk::Queue>,
-        command_pool: vk::CommandPool,
-        depth_view: vk::ImageView,
-        normal_views: &[vk::ImageView],
-        mesh_id_views: &[vk::ImageView],
-        light_buffers: &[GpuBuffer],
-        light_buffer_size: vk::DeviceSize,
-        camera_buffers: &[GpuBuffer],
-        camera_buffer_size: vk::DeviceSize,
-        instance_buffers: &[GpuBuffer],
-        // #4199 — one size per slot: instance buffers grow independently.
-        instance_buffer_sizes: &[vk::DeviceSize],
+        ctx: GpuUploadCtx,
+        inputs: CausticInputs,
         width: u32,
         height: u32,
     ) -> Result<()> {
+        let GpuUploadCtx { device, allocator, queue, command_pool } = ctx;
         for mut slot in self.slots.drain(..) {
             // SAFETY: `recreate_on_resize` runs from the fenced
             // swapchain-resize path (`VulkanContext::recreate_swapchain`
@@ -1152,18 +1120,7 @@ impl CausticPipeline {
             return res;
         }
 
-        self.write_descriptor_sets(
-            device,
-            depth_view,
-            normal_views,
-            mesh_id_views,
-            light_buffers,
-            light_buffer_size,
-            camera_buffers,
-            camera_buffer_size,
-            instance_buffers,
-            instance_buffer_sizes,
-        );
+        self.write_descriptor_sets(device, inputs);
 
         // #1031 — walk fresh slot images from UNDEFINED to GENERAL.
         // SAFETY: fenced-resize contract — no concurrent reader on

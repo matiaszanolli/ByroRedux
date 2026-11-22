@@ -230,6 +230,13 @@ pub struct SkinCoverageFrame {
     pub first_sight_succeeded: u32,
     pub refits_attempted: u32,
     pub refits_succeeded: u32,
+    /// Vertices the skin compute pass actually dispatched this frame
+    /// (skipped entities excluded), so `gpu_skin_dispatch_ms` can be read as
+    /// a per-vertex rate (#7150).
+    pub dispatch_vertices: u64,
+    /// Triangles the BLAS refits recorded this frame cover, so
+    /// `gpu_skin_blas_refit_ms` can be read as a per-triangle rate (#7150).
+    pub refit_triangles: u64,
     /// Wall-clock nanoseconds `record_skinned_blas_refit` spent on the
     /// CPU this frame: the dispatch loop, the first-sight build batch,
     /// the refit loop, and the eviction drain/sweep that closes it.
@@ -700,9 +707,13 @@ impl SkinComputePipeline {
         device: &ash::Device,
         cmd: vk::CommandBuffer,
     ) -> SkinPipelineBound<'_> {
-        device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
-        SkinPipelineBound {
-            _pipeline: std::marker::PhantomData,
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+            SkinPipelineBound {
+                _pipeline: std::marker::PhantomData,
+            }
         }
     }
 
@@ -739,75 +750,79 @@ impl SkinComputePipeline {
         buffers: SkinDispatchBuffers,
         push: SkinPushConstants,
     ) {
-        let SkinDispatchBuffers {
-            input_buffer,
-            input_buffer_size,
-            input_generation,
-            bone_buffer,
-            bone_buffer_size,
-        } = buffers;
-        let descriptor_set = slot.descriptor_sets[frame_index];
-        // #1197 — only the (input, palette) pair varies across the
-        // slot's lifetime. `output` is a function of the slot itself
-        // and cannot change without destroying the slot, so a cached
-        // hit on `(input, palette)` is sufficient to prove all three
-        // descriptors are still correct.
-        //
-        // #2743 — `input_generation` rides along so a destroy-then-
-        // recycle of `input_buffer`'s raw handle (same value, different
-        // underlying allocation) can't be mistaken for "unchanged".
-        let live_key = (input_buffer, bone_buffer, input_generation);
-        let needs_write = slot.descriptor_bindings[frame_index] != Some(live_key);
-        if needs_write {
-            let input_info = [vk::DescriptorBufferInfo {
-                buffer: input_buffer,
-                offset: 0,
-                range: input_buffer_size,
-            }];
-            let bone_info = [vk::DescriptorBufferInfo {
-                buffer: bone_buffer,
-                offset: 0,
-                range: bone_buffer_size,
-            }];
-            let output_info = [vk::DescriptorBufferInfo {
-                buffer: slot.output_buffer.buffer,
-                offset: 0,
-                range: slot.output_size,
-            }];
-            let writes = [
-                write_storage_buffer(descriptor_set, 0, &input_info),
-                write_storage_buffer(descriptor_set, 1, &bone_info),
-                write_storage_buffer(descriptor_set, 2, &output_info),
-            ];
-            device.update_descriptor_sets(&writes, &[]);
-            slot.descriptor_bindings[frame_index] = Some(live_key);
-            self.descriptor_writes_this_frame
-                .set(self.descriptor_writes_this_frame.get() + 1);
-        }
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            let SkinDispatchBuffers {
+                input_buffer,
+                input_buffer_size,
+                input_generation,
+                bone_buffer,
+                bone_buffer_size,
+            } = buffers;
+            let descriptor_set = slot.descriptor_sets[frame_index];
+            // #1197 — only the (input, palette) pair varies across the
+            // slot's lifetime. `output` is a function of the slot itself
+            // and cannot change without destroying the slot, so a cached
+            // hit on `(input, palette)` is sufficient to prove all three
+            // descriptors are still correct.
+            //
+            // #2743 — `input_generation` rides along so a destroy-then-
+            // recycle of `input_buffer`'s raw handle (same value, different
+            // underlying allocation) can't be mistaken for "unchanged".
+            let live_key = (input_buffer, bone_buffer, input_generation);
+            let needs_write = slot.descriptor_bindings[frame_index] != Some(live_key);
+            if needs_write {
+                let input_info = [vk::DescriptorBufferInfo {
+                    buffer: input_buffer,
+                    offset: 0,
+                    range: input_buffer_size,
+                }];
+                let bone_info = [vk::DescriptorBufferInfo {
+                    buffer: bone_buffer,
+                    offset: 0,
+                    range: bone_buffer_size,
+                }];
+                let output_info = [vk::DescriptorBufferInfo {
+                    buffer: slot.output_buffer.buffer,
+                    offset: 0,
+                    range: slot.output_size,
+                }];
+                let writes = [
+                    write_storage_buffer(descriptor_set, 0, &input_info),
+                    write_storage_buffer(descriptor_set, 1, &bone_info),
+                    write_storage_buffer(descriptor_set, 2, &output_info),
+                ];
+                device.update_descriptor_sets(&writes, &[]);
+                slot.descriptor_bindings[frame_index] = Some(live_key);
+                self.descriptor_writes_this_frame
+                    .set(self.descriptor_writes_this_frame.get() + 1);
+            }
 
-        // The pipeline itself was bound once for the batch — see `bind` and
-        // the `_bound` token (#4205).
-        device.cmd_bind_descriptor_sets(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.pipeline_layout,
-            0,
-            &[descriptor_set],
-            &[],
-        );
-        // `size_of::<SkinPushConstants>()` matches the shader-side
-        // `PushConstants` block byte-for-byte; mismatched shape is caught
-        // by the `push_constants_size_is_32_bytes` test.
-        let bytes = super::buffer::byte_view(std::slice::from_ref(&push));
-        device.cmd_push_constants(
-            cmd,
-            self.pipeline_layout,
-            vk::ShaderStageFlags::COMPUTE,
-            0,
-            bytes,
-        );
-        let groups = push.vertex_count.div_ceil(WORKGROUP_SIZE);
-        device.cmd_dispatch(cmd, groups, 1, 1);
+            // The pipeline itself was bound once for the batch — see `bind` and
+            // the `_bound` token (#4205).
+            device.cmd_bind_descriptor_sets(
+                cmd,
+                vk::PipelineBindPoint::COMPUTE,
+                self.pipeline_layout,
+                0,
+                &[descriptor_set],
+                &[],
+            );
+            // `size_of::<SkinPushConstants>()` matches the shader-side
+            // `PushConstants` block byte-for-byte; mismatched shape is caught
+            // by the `push_constants_size_is_32_bytes` test.
+            let bytes = super::buffer::byte_view(std::slice::from_ref(&push));
+            device.cmd_push_constants(
+                cmd,
+                self.pipeline_layout,
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                bytes,
+            );
+            let groups = push.vertex_count.div_ceil(WORKGROUP_SIZE);
+            device.cmd_dispatch(cmd, groups, 1, 1);
+        }
     }
 
     /// #1197 / PERF-DIM7-03 — how many `vkUpdateDescriptorSets` calls
@@ -1207,78 +1222,82 @@ impl SkinPaletteComputePipeline {
         buffers: PaletteDispatchBuffers,
         ranges: &[SkinPalettePushConstants],
     ) {
-        if ranges.is_empty() {
-            return;
-        }
-        // #1197 — compare against the cached binding key. Steady-state hits
-        // this cache every frame post-warm-up because all three buffer
-        // handles AND their descriptor ranges are renderer-lifetime
-        // constants. The comparison is still required for correctness in
-        // case a future refactor rotates a handle. #4829 — the ranges are
-        // part of the key: with handles alone, a range that changed after
-        // the first dispatch of a frame slot was never rewritten.
-        let live_key = buffers.descriptor_key();
-        let PaletteDispatchBuffers {
-            bone_world_buffer,
-            bone_world_buffer_size,
-            bind_inverse_buffer,
-            bind_inverse_buffer_size,
-            palette_buffer,
-            palette_buffer_size,
-        } = buffers;
-        let descriptor_set = self.descriptor_sets[frame_index];
-        let needs_write = self.descriptor_bindings[frame_index] != Some(live_key);
-        if needs_write {
-            let world_info = [vk::DescriptorBufferInfo {
-                buffer: bone_world_buffer,
-                offset: 0,
-                range: bone_world_buffer_size,
-            }];
-            let bind_info = [vk::DescriptorBufferInfo {
-                buffer: bind_inverse_buffer,
-                offset: 0,
-                range: bind_inverse_buffer_size,
-            }];
-            let palette_info = [vk::DescriptorBufferInfo {
-                buffer: palette_buffer,
-                offset: 0,
-                range: palette_buffer_size,
-            }];
-            let writes = [
-                write_storage_buffer(descriptor_set, 0, &world_info),
-                write_storage_buffer(descriptor_set, 1, &bind_info),
-                write_storage_buffer(descriptor_set, 2, &palette_info),
-            ];
-            device.update_descriptor_sets(&writes, &[]);
-            self.descriptor_bindings[frame_index] = Some(live_key);
-            self.descriptor_writes_this_frame
-                .set(self.descriptor_writes_this_frame.get() + 1);
-        }
+        // SAFETY: this is the whole body of the `unsafe fn`; each operation in it is
+        // covered by the caller contract documented on the function.
+        unsafe {
+            if ranges.is_empty() {
+                return;
+            }
+            // #1197 — compare against the cached binding key. Steady-state hits
+            // this cache every frame post-warm-up because all three buffer
+            // handles AND their descriptor ranges are renderer-lifetime
+            // constants. The comparison is still required for correctness in
+            // case a future refactor rotates a handle. #4829 — the ranges are
+            // part of the key: with handles alone, a range that changed after
+            // the first dispatch of a frame slot was never rewritten.
+            let live_key = buffers.descriptor_key();
+            let PaletteDispatchBuffers {
+                bone_world_buffer,
+                bone_world_buffer_size,
+                bind_inverse_buffer,
+                bind_inverse_buffer_size,
+                palette_buffer,
+                palette_buffer_size,
+            } = buffers;
+            let descriptor_set = self.descriptor_sets[frame_index];
+            let needs_write = self.descriptor_bindings[frame_index] != Some(live_key);
+            if needs_write {
+                let world_info = [vk::DescriptorBufferInfo {
+                    buffer: bone_world_buffer,
+                    offset: 0,
+                    range: bone_world_buffer_size,
+                }];
+                let bind_info = [vk::DescriptorBufferInfo {
+                    buffer: bind_inverse_buffer,
+                    offset: 0,
+                    range: bind_inverse_buffer_size,
+                }];
+                let palette_info = [vk::DescriptorBufferInfo {
+                    buffer: palette_buffer,
+                    offset: 0,
+                    range: palette_buffer_size,
+                }];
+                let writes = [
+                    write_storage_buffer(descriptor_set, 0, &world_info),
+                    write_storage_buffer(descriptor_set, 1, &bind_info),
+                    write_storage_buffer(descriptor_set, 2, &palette_info),
+                ];
+                device.update_descriptor_sets(&writes, &[]);
+                self.descriptor_bindings[frame_index] = Some(live_key);
+                self.descriptor_writes_this_frame
+                    .set(self.descriptor_writes_this_frame.get() + 1);
+            }
 
-        // Pipeline and set are bound once for the whole batch; only the range
-        // varies per dispatch. Rebinding per range is the redundancy #4205
-        // removed from the skin vertex pass, not repeated here.
-        device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
-        device.cmd_bind_descriptor_sets(
-            cmd,
-            vk::PipelineBindPoint::COMPUTE,
-            self.pipeline_layout,
-            0,
-            &[descriptor_set],
-            &[],
-        );
-        for push in ranges {
-            // Push-constant size pinned by
-            // `skin_palette_push_constants_size_is_8_bytes`.
-            let bytes = super::buffer::byte_view(std::slice::from_ref(push));
-            device.cmd_push_constants(
+            // Pipeline and set are bound once for the whole batch; only the range
+            // varies per dispatch. Rebinding per range is the redundancy #4205
+            // removed from the skin vertex pass, not repeated here.
+            device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+            device.cmd_bind_descriptor_sets(
                 cmd,
+                vk::PipelineBindPoint::COMPUTE,
                 self.pipeline_layout,
-                vk::ShaderStageFlags::COMPUTE,
                 0,
-                bytes,
+                &[descriptor_set],
+                &[],
             );
-            device.cmd_dispatch(cmd, push.workgroups(), 1, 1);
+            for push in ranges {
+                // Push-constant size pinned by
+                // `skin_palette_push_constants_size_is_8_bytes`.
+                let bytes = super::buffer::byte_view(std::slice::from_ref(push));
+                device.cmd_push_constants(
+                    cmd,
+                    self.pipeline_layout,
+                    vk::ShaderStageFlags::COMPUTE,
+                    0,
+                    bytes,
+                );
+                device.cmd_dispatch(cmd, push.workgroups(), 1, 1);
+            }
         }
     }
 

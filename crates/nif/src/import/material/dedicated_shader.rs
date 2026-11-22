@@ -49,11 +49,10 @@ pub(super) fn apply_dedicated_alpha_property(
     // (#1202) can consult `alpha_property_consumed`. A `flags=0`
     // NiAlphaProperty here records the explicit-opaque intent and
     // keeps the implicit blend in `apply_bs_effect_shader` from firing.
-    if let Some(idx) = alpha_property_ref.index() {
-        if let Some(alpha) = scene.get_as::<NiAlphaProperty>(idx) {
+    if let Some(idx) = alpha_property_ref.index()
+        && let Some(alpha) = scene.get_as::<NiAlphaProperty>(idx) {
             apply_alpha_flags(info, alpha);
         }
-    }
 }
 
 /// Effective `BSLightingShaderType` for slot→role resolution (#2695).
@@ -229,8 +228,8 @@ fn apply_bs_lighting_shader(
             &shader.sf1_crcs,
             &shader.sf2_crcs,
         );
-        if let Some(ts_idx) = shader.texture_set_ref.index() {
-            if let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
+        if let Some(ts_idx) = shader.texture_set_ref.index()
+            && let Some(tex_set) = scene.get_as::<BSShaderTextureSet>(ts_idx) {
                 // #2695 — slot→role resolution now goes through the single
                 // shared table in `super::slot_role`, which the REFR texture
                 // overlay also calls. Before this, the overlay resolved the
@@ -321,7 +320,6 @@ fn apply_bs_lighting_shader(
                     }
                 }
             }
-        }
         // Skyrim/FO4 Double_Sided lives on flags2 bit 4 on
         // `BSLightingShaderProperty` per nif.xml `SkyrimShaderPropertyFlags2`
         // / `Fallout4ShaderPropertyFlags2`. See #441 for why this
