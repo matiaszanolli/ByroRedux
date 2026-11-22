@@ -1,5 +1,6 @@
 //! The session's plugin profile from the console (PRD legacy-mod-compatibility Phase 1, #6670): `plugins.activation`
-//! shows what activation did to the profile (LMC-ID-003, -011), `plugins.conflicts` what the fold did with the forms
+//! shows what activation did to the profile (LMC-ID-003, -011) and the archives each plugin brought (LMC-AST-002),
+//! `plugins.conflicts` what the fold did with the forms
 //! more than one plugin carries (LMC-REC-005, -007). `--plugin-report` prints the same without a window ([`run_report`]).
 
 use super::shared::*;
@@ -9,8 +10,8 @@ use byroredux_plugin::esm::records::Carrier;
 /// The override rule the fold applies: the only policy built (LMC-REC-002; `merge`, LMC-REC-003, is not).
 const POLICY: &str = "legacy: the last plugin in load order that carries a record wins it whole (LMC-REC-002)";
 
-/// `plugins.activation` — the profile as given, the load order it activated to, and every hoisted master and disabled
-/// plugin with its reason.
+/// `plugins.activation` — the profile as given, the load order it activated to, every hoisted master and disabled
+/// plugin with its reason, and the archives each plugin pairs with.
 pub(crate) struct PluginActivationCommand;
 
 impl ConsoleCommand for PluginActivationCommand {
@@ -19,7 +20,7 @@ impl ConsoleCommand for PluginActivationCommand {
     }
 
     fn description(&self) -> &str {
-        "Show the plugin profile, the load order it activated to, and each hoisted master and disabled plugin: plugins.activation"
+        "Show the plugin profile, the load order it activated to, each hoisted master and disabled plugin, and each plugin's paired archives: plugins.activation"
     }
 
     fn execute(&self, _world: &World, _args: &str) -> CommandOutput {
@@ -40,6 +41,13 @@ fn activation_lines(report: &crate::plugin_activation::PluginActivationReport) -
         lines.push("the profile loads as given: no master hoisted, no plugin disabled".to_owned());
     } else {
         lines.extend(report.lines.iter().cloned());
+    }
+    let paired = report.paired_lines();
+    if paired.is_empty() {
+        lines.push("paired archives: none beyond the listed archives".to_owned());
+    } else {
+        lines.push(format!("paired archives ({}):", report.paired.iter().map(|entry| entry.archives.len()).sum::<usize>()));
+        lines.extend(paired.iter().map(|line| format!("  {line}")));
     }
     lines
 }

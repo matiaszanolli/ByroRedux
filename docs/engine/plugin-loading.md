@@ -47,15 +47,30 @@ What the engine does today with a legacy plugin set (`--master …` `--esm`), th
    injections per plugin; `plugins.conflicts <formid>` one form's carriers in load order, its winner and the policy;
    and `plugins.conflicts <formid> fields` reads each carrier's record back from its file
    (`crates/plugin/src/esm/raw_record.rs`, which loads only the top-level groups the record type can sit in) and names
-   the sub-records the winner changed, added or dropped against it. A repeated sub-record is compared as a multiset,
+   the sub-records the winner changed, added or dropped against it. Each override is judged against the record it
+   replaced (LMC-REC-006): it changes it, is identical to it (an ITM), or reverts an earlier plugin's change back to the
+   definer's record. A repeated sub-record is compared as a multiset,
    so one entry added to a list is one addition. The comparison is of bytes, so when two files index a shared master
    differently a form-ID field can differ in bytes only, and the line says so. `--plugin-report [formid] [fields]`
    prints the same (with the activation report) without a window: `byroredux --game fnv --master … --plugin-report`.
 
+5. **Paired archives (LMC-AST-002).** After activation, each activated plugin brings the archives the game pairs with
+   it by name, found in the plugin's own directory, whatever its extension (`.esm` and `.esl` too, an owner ruling on
+   #6670). The rules are per game, from the base master's header (`crates/plugin/src/archive_pairing.rs`): Oblivion
+   `<stem>` then nothing or a space, `-` or `_`; Fallout 3 / New Vegas `<stem>.bsa` or `<stem> - <anything>.bsa`;
+   Skyrim `<stem>.bsa`; Fallout 4 `- Main`, `- Textures`, `- Voices_en` `.ba2`; Starfield `- Main`, `- Textures`,
+   `- Localization`, `- Voices_en` `.ba2`. A paired archive is a mod bundle (`DeadMoney - Main.bsa` carries meshes,
+   textures and sounds), so it is written into the effective args for the mesh, texture and sound providers, the script
+   provider where the game archives its compiled scripts, and the material provider where its materials are `.bgsm`
+   files. The last-wins providers get them after the listed archives in load order; the first-wins script provider
+   gets them ahead, reversed, so the same archive wins everywhere: the listed (official) archives first, then each
+   plugin's, the later plugin's winning, and loose files over all of them. An archive the args already name keeps its
+   place and its flags. What each plugin brought is logged and shown by `plugins.activation` and `--plugin-report`:
+   `DeadMoney.esm pairs DeadMoney - Main.bsa, DeadMoney - Sounds.bsa`.
+
 Not built yet in Phase 1: the mod profile beyond argv (discovery, mod roots, LMC-ID-012), the official/user boundary
-(LMC-REC-008), archive pairing by the verified naming rules (LMC-AST-002), the `merge` policy (LMC-REC-003), the
-identical-override and revert report (LMC-REC-006), the virtual legacy index (LMC-ID-005) and the profile fingerprint in
-saves (LMC-ID-007, LMC-SAV-001).
+(LMC-REC-008), the `merge` policy (LMC-REC-003), the merge-ownership half of LMC-REC-006 (the report half is item 4's
+verdicts), the virtual legacy index (LMC-ID-005) and the profile fingerprint in saves (LMC-ID-007, LMC-SAV-001).
 
 ## Overview
 

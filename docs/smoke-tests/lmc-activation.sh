@@ -2,20 +2,22 @@
 # Headless live gate for plugin-profile activation (PRD legacy-mod-compatibility Phase 1, #6670): `lmc-activation.sh`.
 # No window and no Vulkan: each leg runs `--list-cells` (the last `--plugin-report`) over New Vegas masters plus small generated plugins and reads
 # the activation report the engine logs.
-#   1. masters out of order: DeadMoney.esm listed before FalloutNV.esm is hoisted behind it (LMC-ID-003) and loads.
+#   1. masters out of order: DeadMoney.esm listed before FalloutNV.esm is hoisted behind it (LMC-ID-003) and loads; the
+#      generated OtherCase.esp brings the `OtherCase - Assets.bsa` beside it, not `OtherCase_Assets.bsa`, and the
+#      DeadMoney.esm master its two archives (LMC-AST-002).
 #   2. a missing master: a plugin naming LonesomeRoad_absent.esm is disabled with the patch that depends on it, a plugin
 #      naming its master in another case (FALLOUTNV.ESM) is kept (LMC-ID-001, -009, -011), and the session loads.
 #   3. the session plugin itself missing a master: DeadMoney.esm alone is refused, naming the --master to pass.
 #   4. the conflict report: `--plugin-report 000000D2 fields` names the Dead Money topic's carriers in load order and the
-#      sub-records Dead Money changed against FalloutNV.esm (LMC-REC-007).
-# Requires the New Vegas data (BYROREDUX_FNV_DATA), python3 and a built engine (BYRO_BIN, else target/release, else
-# target/debug).
+#      sub-records Dead Money changed against FalloutNV.esm (LMC-REC-007), after the archives Dead Money pairs with.
+# Requires the New Vegas data with the Dead Money and Caravan Pack DLC (BYROREDUX_FNV_DATA), python3 and a built engine
+# (BYRO_BIN, else target/release, else target/debug).
 set -euo pipefail
 
 GATE=lmc-activation
 DATA="${BYROREDUX_FNV_DATA:-/mnt/data/SteamLibrary/steamapps/common/Fallout New Vegas/Data}"
-if [[ -z "$DATA" || ! -f "$DATA/FalloutNV.esm" || ! -f "$DATA/DeadMoney.esm" ]]; then
-    echo "smoke[$GATE]: SKIP -- missing BYROREDUX_FNV_DATA (set it to the New Vegas Data directory)"
+if [[ -z "$DATA" || ! -f "$DATA/FalloutNV.esm" || ! -f "$DATA/DeadMoney.esm" || ! -f "$DATA/CaravanPack - Main.bsa" ]]; then
+    echo "smoke[$GATE]: SKIP -- missing BYROREDUX_FNV_DATA with Dead Money and Caravan Pack (set it to the New Vegas Data directory)"
     exit 77
 fi
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -49,6 +51,11 @@ for name, masters in [('NeedsAbsentDLC.esp', ['FalloutNV.esm', 'LonesomeRoad_abs
     with open(os.path.join(out, name), 'wb') as f:
         f.write(plugin(masters))
 EOF
+# A paired archive beside a generated plugin (a real one no profile plugin pairs, so it would open), and a name the New
+# Vegas rule rejects. Pairing compares archives by their resolved paths: a link to an archive another plugin brought is
+# that archive, already paired.
+ln -s "$DATA/CaravanPack - Main.bsa" "$WORK/OtherCase - Assets.bsa"
+ln -s "$DATA/CaravanPack - Main.bsa" "$WORK/OtherCase_Assets.bsa"
 
 fail() { echo "smoke[$GATE]: FAIL -- $*" >&2; exit 1; }
 run() { # run <leg> <args...>: the engine's combined output in $WORK/<leg>.log, its exit status in $status
@@ -66,7 +73,11 @@ run hoist --master "$DATA/DeadMoney.esm" --master "$DATA/FalloutNV.esm" --esm "$
 expect hoist "hoisted: FalloutNV.esm now loads ahead of DeadMoney.esm"
 expect hoist "Load order: falloutnv.esm → deadmoney.esm → othercase.esp"
 expect hoist "NVDLC01Casino"
+expect hoist "DeadMoney.esm pairs DeadMoney - Main.bsa, DeadMoney - Sounds.bsa"
+expect hoist "OtherCase.esp pairs OtherCase - Assets.bsa"
+! grep -Fq "OtherCase_Assets.bsa" "$WORK/hoist.log" || fail "hoist: OtherCase_Assets.bsa was paired (see $WORK/hoist.log)"
 echo "smoke[$GATE]: PASS -- a late master is hoisted and the order loads (LMC-ID-003); a master named in another case matches"
+echo "smoke[$GATE]: PASS -- an .esm and an .esp bring the archives the New Vegas rule pairs with them (LMC-AST-002)"
 
 run missing --master "$DATA/FalloutNV.esm" --master "$WORK/NeedsAbsentDLC.esp" --master "$WORK/PatchForIt.esp" \
     --master "$WORK/OtherCase.esp" --esm "$DATA/DeadMoney.esm"
@@ -88,6 +99,7 @@ set +e
 status=$?
 set -e
 (( status == 0 )) || fail "report: --plugin-report exited $status (see $WORK/report.log)"
+expect report "DeadMoney.esm pairs DeadMoney - Main.bsa, DeadMoney - Sounds.bsa"
 expect report "carriers in load order: falloutnv.esm → deadmoney.esm (wins)"
 expect report "deadmoney.esm over falloutnv.esm: QSTI added, INFC 4 dropped, INFX 4 dropped"
 echo "smoke[$GATE]: PASS -- --plugin-report names a Dead Money topic's carriers and the sub-records it changes (LMC-REC-007)"

@@ -168,9 +168,9 @@ examples = "most archived mods"
 disposition = "D1"
 games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
 reason = "The engine opens the archives the game would pair with a plugin by name, in profile order."
-citations = ["docs/prd/legacy-mod-compatibility.md §5.3 LMC-AST-002", "https://geck.uesp.net/wiki/BSA_Files", "https://falloutck.uesp.net/wiki/Archive_File"]
-verify = ["Skyrim LE / SE: the paired name '<stem> - Textures.bsa' (only '<stem>.bsa' is confirmed, by the Creation Kit wiki)", "FO4: the localised voice-archive suffix", "Starfield: voice and localisation suffixes, and whether pairing is automatic or needs a same-named plugin"]
-version = 1
+citations = ["docs/prd/legacy-mod-compatibility.md §5.3 LMC-AST-002", "https://geck.uesp.net/wiki/BSA_Files", "https://falloutck.uesp.net/wiki/Archive_File", "crates/plugin/src/archive_pairing.rs"]
+verify = ["Skyrim LE / SE: the paired name '<stem> - Textures.bsa' (only '<stem>.bsa' is confirmed, by the Creation Kit wiki)", "FO4: how the high-resolution texture pack's 'DLCUltraHighResolution - Textures01'..'16' archives are opened (no '- Textures' archive heads the series)"]
+version = 2
 
 [[mechanism]]
 id = "A3"

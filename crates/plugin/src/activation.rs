@@ -35,17 +35,25 @@ pub struct ProfilePlugin {
     pub masters: Option<Vec<String>>,
     /// Why the header could not be read, when it could not.
     pub unreadable: Option<String>,
+    /// The game its header was written for, when the header was read from a file; it picks the archive-pairing rule
+    /// (LMC-AST-002, [`crate::archive_pairing`]).
+    pub game: Option<GameKind>,
 }
 
 impl ProfilePlugin {
     /// A plugin whose header has been read.
     pub fn new(name: impl Into<String>, masters: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        Self { name: name.into(), masters: Some(masters.into_iter().map(Into::into).collect()), unreadable: None }
+        Self {
+            name: name.into(),
+            masters: Some(masters.into_iter().map(Into::into).collect()),
+            unreadable: None,
+            game: None,
+        }
     }
 
     /// A plugin whose header could not be read.
     pub fn unreadable(name: impl Into<String>, error: impl Into<String>) -> Self {
-        Self { name: name.into(), masters: None, unreadable: Some(error.into()) }
+        Self { name: name.into(), masters: None, unreadable: Some(error.into()), game: None }
     }
 }
 
@@ -304,7 +312,7 @@ pub fn activate(profile: &[ProfilePlugin]) -> Activation {
 /// and carry on.
 pub fn read_profile_plugin(path: &str) -> ProfilePlugin {
     match read_plugin_header(Path::new(path)) {
-        Ok((header, _)) => ProfilePlugin::new(path, header.master_files),
+        Ok((header, game)) => ProfilePlugin { game: Some(game), ..ProfilePlugin::new(path, header.master_files) },
         Err(error) => ProfilePlugin::unreadable(path, format!("{error:#}")),
     }
 }

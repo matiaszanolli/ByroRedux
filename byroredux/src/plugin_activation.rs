@@ -11,10 +11,23 @@
 //! The `--esm` plugin must activate and must stay last: it is the session's own plugin, and the loaders treat the last
 //! plugin as the one whose cells the session opens. A profile that would disable or move it is refused, with the
 //! report.
+//!
+//! Each activated plugin then brings its paired archives (LMC-AST-002, [`byroredux_plugin::archive_pairing`]): the
+//! archives in its own directory that the game pairs with it by name, `.esm` and `.esl` included. They are written into
+//! the effective args as provider flags, after the archives already listed (the profile's, standing for the game's
+//! official archive list) and in load order, so that archive-versus-archive precedence is the official list first,
+//! then each plugin's archives, the later plugin's winning; loose files still outrank them all (LMC-AST-001). An
+//! archive the args already name keeps its place and its flags.
 
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use byroredux_plugin::activation::{activate, read_profile_plugin, Activation, ProfilePlugin};
+use byroredux_plugin::archive_pairing::{
+    archives_hold_bgsm_materials, archives_hold_compiled_scripts, paired_archives,
+};
+use byroredux_plugin::esm::reader::GameKind;
 
 /// What activation did to the session's profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +38,35 @@ pub(crate) struct PluginActivationReport {
     pub(crate) order: Vec<String>,
     /// One line per hoisted master and per disabled plugin; empty when the profile loads as given.
     pub(crate) lines: Vec<String>,
+    /// The archives each activated plugin brought (LMC-AST-002), in load order; plugins that brought none are left out.
+    pub(crate) paired: Vec<PairedArchives>,
+}
+
+/// The archives one activated plugin pairs with, beyond those the args already listed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PairedArchives {
+    /// The plugin, as the profile names it.
+    pub(crate) plugin: String,
+    /// The archives' paths, in the order they open.
+    pub(crate) archives: Vec<String>,
+}
+
+impl PluginActivationReport {
+    /// One line per plugin that brought archives: `DeadMoney.esm pairs DeadMoney - Main.bsa, DeadMoney - Sounds.bsa`.
+    pub(crate) fn paired_lines(&self) -> Vec<String> {
+        self.paired
+            .iter()
+            .map(|entry| {
+                let archives: Vec<&str> = entry.archives.iter().map(|path| file_name(path)).collect();
+                format!("{} pairs {}", file_name(&entry.plugin), archives.join(", "))
+            })
+            .collect()
+    }
+}
+
+/// The file name of a path as the profile or the args spell it.
+fn file_name(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
 static REPORT: OnceLock<PluginActivationReport> = OnceLock::new();
@@ -42,8 +84,11 @@ pub(crate) fn log_report() {
         log::warn!("plugin activation: {line}");
     }
     if !report.lines.is_empty() {
-        let names: Vec<&str> = report.order.iter().map(|path| path.rsplit(['/', '\\']).next().unwrap_or(path)).collect();
+        let names: Vec<&str> = report.order.iter().map(|path| file_name(path)).collect();
         log::warn!("plugin activation: load order {}", names.join(", "));
+    }
+    for line in report.paired_lines() {
+        log::info!("plugin activation: {line}");
     }
 }
 
@@ -58,9 +103,14 @@ pub(crate) fn activate_plugin_args(args: Vec<String>) -> anyhow::Result<Vec<Stri
     let profile: Vec<ProfilePlugin> =
         masters.iter().chain(std::iter::once(&esm)).map(|path| read_profile_plugin(path)).collect();
     let activation = activate(&profile);
-    let report = session_report(&profile, &activation)?;
+    let mut report = session_report(&profile, &activation)?;
     let activated_masters = report.order[..report.order.len() - 1].to_vec();
-    let args = with_masters(args, &activated_masters);
+    let mut args = with_masters(args, &activated_masters);
+    // The base master names the game; every plugin of a profile is written for it.
+    if let Some(game) = activation.order.first().and_then(|&position| profile[position].game) {
+        report.paired = pair_archives(&report.order, game, &listed_archives(&args), list_archives_in);
+        args = with_paired_archives(args, &report.paired, game);
+    }
     // A second boot path in one process (a test) keeps the first report; the args it returns are still its own.
     let _ = REPORT.set(report);
     Ok(args)
@@ -72,7 +122,7 @@ fn session_report(profile: &[ProfilePlugin], activation: &Activation) -> anyhow:
     let esm = profile.len() - 1;
     let lines = activation.report(profile);
     if let Some(entry) = activation.disabled_entry(esm) {
-        let own = lines.iter().find(|line| line.starts_with(&format!("disabled: {} ", profile[esm].name)));
+        let own = lines.iter().find(|line| line.starts_with(&format!("disabled: {} ", file_name(&profile[esm].name))));
         anyhow::bail!(
             "the session plugin '{}' (--esm) cannot be activated: {}{}\nfull activation report:\n  {}",
             profile[esm].name,
@@ -105,7 +155,93 @@ fn session_report(profile: &[ProfilePlugin], activation: &Activation) -> anyhow:
         profile: profile.iter().map(|plugin| plugin.name.clone()).collect(),
         order: activation.order.iter().map(|&position| profile[position].name.clone()).collect(),
         lines,
+        paired: Vec::new(),
     })
+}
+
+/// The identity of an archive path: its canonical path when it exists, else its spelling with `\` as `/`, both
+/// case-folded as the games' file systems are.
+fn archive_identity(path: &str) -> String {
+    std::fs::canonicalize(path)
+        .map(|canonical| canonical.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path.replace('\\', "/"))
+        .to_lowercase()
+}
+
+/// Every archive the args name with an archive flag, by [`archive_identity`].
+fn listed_archives(args: &[String]) -> HashSet<String> {
+    args.windows(2)
+        .filter(|pair| crate::cli_args::ARCHIVE_FLAGS.contains(&pair[0].as_str()) && !pair[1].starts_with("--"))
+        .map(|pair| archive_identity(&pair[1]))
+        .collect()
+}
+
+/// The `.bsa` / `.ba2` file names in `dir`, unordered; empty when it cannot be read.
+fn list_archives_in(dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
+    entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file() || kind.is_symlink()))
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| {
+            let lower = name.to_lowercase();
+            lower.ends_with(".bsa") || lower.ends_with(".ba2")
+        })
+        .collect()
+}
+
+/// The archives each plugin of `order` pairs with in `game`, found in the plugin's own directory by `list_dir` (read
+/// once per directory), leaving out those `listed` already names. An archive two plugins pair with (a Fallout
+/// `Foo - Bar.bsa` beside both `Foo.esp` and `Foo - Bar.esp`) is the first one's.
+fn pair_archives(
+    order: &[String],
+    game: GameKind,
+    listed: &HashSet<String>,
+    mut list_dir: impl FnMut(&Path) -> Vec<String>,
+) -> Vec<PairedArchives> {
+    let mut listings: HashMap<PathBuf, Vec<String>> = HashMap::new();
+    let mut taken: HashSet<String> = listed.clone();
+    let mut paired = Vec::new();
+    for plugin in order {
+        let dir = match Path::new(plugin).parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+            _ => PathBuf::from("."),
+        };
+        let names = listings.entry(dir.clone()).or_insert_with(|| list_dir(&dir));
+        let archives: Vec<String> = paired_archives(game, plugin, names.iter().map(String::as_str))
+            .into_iter()
+            .map(|name| dir.join(name).to_string_lossy().into_owned())
+            .filter(|path| taken.insert(archive_identity(path)))
+            .collect();
+        if !archives.is_empty() {
+            paired.push(PairedArchives { plugin: plugin.clone(), archives });
+        }
+    }
+    paired
+}
+
+/// `args` with each paired archive given to every provider that can read it. A paired archive is a mod bundle, not a
+/// category archive, so it feeds the mesh, texture and sound providers, the script provider where the game archives
+/// its compiled scripts, and the material provider where its materials are `.bgsm` files. The last-wins providers get
+/// the archives appended in load order; the script provider, whose first-listed archive wins, gets them ahead of the
+/// archives already listed, in reverse, so the same archive wins in every provider.
+fn with_paired_archives(mut args: Vec<String>, paired: &[PairedArchives], game: GameKind) -> Vec<String> {
+    let archives: Vec<&String> = paired.iter().flat_map(|entry| &entry.archives).collect();
+    let mut flags = vec!["--bsa", "--textures-bsa", "--sounds-bsa"];
+    if archives_hold_bgsm_materials(game) {
+        flags.push("--materials-ba2");
+    }
+    for archive in &archives {
+        for flag in &flags {
+            args.extend([(*flag).to_owned(), (*archive).clone()]);
+        }
+    }
+    if archives_hold_compiled_scripts(game) {
+        let at = args.iter().position(|arg| arg == "--scripts-bsa").unwrap_or(args.len());
+        let scripts = archives.iter().rev().flat_map(|archive| ["--scripts-bsa".to_owned(), (*archive).clone()]);
+        args.splice(at..at, scripts);
+    }
+    args
 }
 
 /// `args` with every `--master <value>` pair replaced by `masters`, at the place the first one stood (or before the
@@ -180,6 +316,57 @@ mod tests {
         assert!(report.lines[0].contains("Patch.esp — its master LonesomeRoad.esm is not in the profile"));
     }
 
+    /// LMC-AST-002 — each plugin brings the archives in its own directory that pair with it, `.esm` included, in load
+    /// order; an archive the args already list stays theirs, and one listing is read per directory.
+    #[test]
+    fn each_plugin_brings_its_paired_archives_in_load_order() {
+        let order = args(&["/fnv/Data/FalloutNV.esm", "/fnv/Data/DeadMoney.esm", "/mods/Junky.esp"]);
+        let listed: HashSet<String> = [archive_identity("/fnv/Data/DeadMoney - Sounds.bsa")].into();
+        let mut reads = Vec::new();
+        let paired = pair_archives(&order, GameKind::Fallout3NV, &listed, |dir| {
+            reads.push(dir.to_path_buf());
+            match dir.to_str() {
+                Some("/fnv/Data") => args(&["Fallout - Meshes.bsa", "DeadMoney - Sounds.bsa", "DeadMoney - Main.bsa"]),
+                _ => args(&["Junky.bsa", "Junky - Assets.bsa"]),
+            }
+        });
+        assert_eq!(reads, [PathBuf::from("/fnv/Data"), PathBuf::from("/mods")]);
+        assert_eq!(
+            paired,
+            [
+                PairedArchives { plugin: order[1].clone(), archives: args(&["/fnv/Data/DeadMoney - Main.bsa"]) },
+                PairedArchives { plugin: order[2].clone(), archives: args(&["/mods/Junky - Assets.bsa", "/mods/Junky.bsa"]) },
+            ]
+        );
+        let report = PluginActivationReport { profile: order.clone(), order, lines: Vec::new(), paired };
+        assert_eq!(report.paired_lines(), ["DeadMoney.esm pairs DeadMoney - Main.bsa", "Junky.esp pairs Junky - Assets.bsa, Junky.bsa"]);
+    }
+
+    /// A paired archive feeds every provider that can read it: after the listed archives where the last wins, ahead of
+    /// them in reverse for the first-wins script provider; scripts and materials only where the game archives them.
+    #[test]
+    fn paired_archives_feed_every_provider_with_the_later_plugin_winning() {
+        let paired = [
+            PairedArchives { plugin: "A.esm".into(), archives: args(&["a.ba2"]) },
+            PairedArchives { plugin: "B.esp".into(), archives: args(&["b.ba2"]) },
+        ];
+        let given = args(&["byroredux", "--bsa", "v.ba2", "--scripts-bsa", "vs.ba2", "--esm", "B.esp"]);
+        let out = with_paired_archives(given.clone(), &paired, GameKind::Fallout4);
+        let mut expected = args(&["byroredux", "--bsa", "v.ba2", "--scripts-bsa", "b.ba2", "--scripts-bsa", "a.ba2"]);
+        expected.extend(args(&["--scripts-bsa", "vs.ba2", "--esm", "B.esp"]));
+        for archive in ["a.ba2", "b.ba2"] {
+            for flag in ["--bsa", "--textures-bsa", "--sounds-bsa", "--materials-ba2"] {
+                expected.extend(args(&[flag, archive]));
+            }
+        }
+        assert_eq!(out, expected);
+
+        let out = with_paired_archives(given.clone(), &paired, GameKind::Fallout3NV);
+        assert_eq!(out.iter().filter(|arg| *arg == "--scripts-bsa").count(), 1, "New Vegas compiles its scripts into the plugin");
+        assert!(!out.iter().any(|arg| arg == "--materials-ba2"), "New Vegas has no .bgsm materials");
+        assert_eq!(&out[..given.len()], &given[..], "the listed archives keep their place");
+    }
+
     /// The `--esm` plugin must activate and load last: a missing master of its own names the flag to add, and a
     /// `--master` that depends on it is refused.
     #[test]
@@ -188,6 +375,10 @@ mod tests {
         let error = session_report(&profile, &activate(&profile)).unwrap_err().to_string();
         assert!(error.contains("'Dawnguard.esm' (--esm) cannot be activated"), "{error}");
         assert!(error.contains("pass `--master Update.esm` before `--esm`"), "{error}");
+        // Given by path, as every real launch does, it still quotes its own report line.
+        let profile = [plugin("/d/Skyrim.esm", &[]), plugin("/d/Dawnguard.esm", &["Skyrim.esm", "Update.esm"])];
+        let error = session_report(&profile, &activate(&profile)).unwrap_err().to_string();
+        assert!(error.contains("cannot be activated: disabled: Dawnguard.esm — its master Update.esm is not in the profile"), "{error}");
 
         let profile = [plugin("Skyrim.esm", &[]), plugin("Mod.esp", &["Skyrim.esm", "Main.esm"]), plugin("Main.esm", &["Skyrim.esm"])];
         let error = session_report(&profile, &activate(&profile)).unwrap_err().to_string();

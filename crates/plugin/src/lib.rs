@@ -32,6 +32,7 @@
 //! per-record modules whenever a non-obvious decode lands.
 
 pub mod activation;
+pub mod archive_pairing;
 pub mod datastore;
 pub mod consumables;
 pub mod equip;
