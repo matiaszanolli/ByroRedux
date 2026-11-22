@@ -260,8 +260,12 @@ out of scope):
 
 | Pool | Rate | Constants |
 |---|---|---|
-| Fatigue | flat `10`/sec | `FATIGUE_REGEN_PER_SEC` (`fFatigueReturnBase`=10, `fFatigureReturnMult`=0 in vanilla) |
-| Magicka | `(Willpower × 0.02 + 0.75) × (MaxMagicka / 100)` | `MAGICKA_REGEN_WILLPOWER_COEFF` / `MAGICKA_REGEN_BASE`, via `magicka_regen_per_sec` |
+| Fatigue | `fFatigueReturnBase + fFatigueReturnMult × Endurance` per sec, flat `10`/sec in vanilla | `TesPoolRegen` (`fFatigueReturnBase`=10, `fFatigueReturnMult`=0 in `Oblivion.esm`; defaults `FATIGUE_REGEN_PER_SEC`) |
+| Magicka | `(Willpower × fMagickaReturnMult + fMagickaReturnBase) × (MaxMagicka / 100)`, `0.02` / `0.75` in vanilla | `TesPoolRegen` (`fMagickaReturnMult` / `fMagickaReturnBase`, authored by `Oblivion.esm`; defaults `MAGICKA_REGEN_WILLPOWER_COEFF` / `MAGICKA_REGEN_BASE`) |
+
+All four settings are read from the load order (#7197): `CharacterRulesProfile::build_tes_pool_regen` overlays them on
+`TesPoolRegen::OBLIVION` through `TesPoolRegen::with_gmst` (a non-finite or negative value keeps its default) and
+installs them on `PoolRegenConfig::tes_rates`, with the Endurance record the Fatigue term reads.
 | Health | **none** — no passive regen in classic Oblivion | deliberately unmodelled |
 
 **Mechanism BUILT and registered; live for FO3/FNV Action Points only.**

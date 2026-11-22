@@ -297,6 +297,7 @@ pub fn build_vats_model(
             willpower_avif: None,
             stunted_magicka_avif: None,
             action_points,
+            tes_rates: None,
         },
     ))
 }

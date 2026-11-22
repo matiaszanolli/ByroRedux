@@ -897,7 +897,15 @@ impl CharacterRulesProfile {
     }
 
     /// Resolve this profile's TES pool-regeneration lanes from its records.
-    pub fn build_tes_pool_regen(self, resolve: impl Fn(&str) -> Option<u32>) -> Option<super::regen::PoolRegenConfig> {
+    ///
+    /// #7197 — the lanes' rates are the load order's `fFatigueReturnBase` / `fFatigueReturnMult` /
+    /// `fMagickaReturnBase` / `fMagickaReturnMult` over the documented defaults
+    /// ([`TesPoolRegen::with_gmst`](super::regen::TesPoolRegen::with_gmst)), and the Fatigue term reads Endurance.
+    pub fn build_tes_pool_regen(
+        self,
+        resolve: impl Fn(&str) -> Option<u32>,
+        gmst: impl Fn(&str) -> Option<f32>,
+    ) -> Option<super::regen::PoolRegenConfig> {
         if self.npc_stats != NpcStatModel::OblivionNpc { return None; }
         Some(super::regen::PoolRegenConfig {
             fatigue_avif: resolve("Fatigue"),
@@ -905,6 +913,10 @@ impl CharacterRulesProfile {
             willpower_avif: resolve("Willpower"),
             stunted_magicka_avif: resolve("StuntedMagicka"),
             action_points: None,
+            tes_rates: Some(super::regen::TesPoolRegen {
+                endurance_avif: resolve("Endurance"),
+                ..super::regen::TesPoolRegen::OBLIVION.with_gmst(gmst)
+            }),
         })
     }
 
@@ -1445,10 +1457,26 @@ mod tests {
             "Fatigue" => Some(1), "Magicka" => Some(2), "Willpower" => Some(3),
             "StuntedMagicka" => Some(4), _ => None,
         };
-        let config = CharacterRulesProfile::OBLIVION.build_tes_pool_regen(resolve).unwrap();
+        let config = CharacterRulesProfile::OBLIVION.build_tes_pool_regen(resolve, |_| None).unwrap();
         assert_eq!((config.fatigue_avif, config.magicka_avif, config.willpower_avif, config.stunted_magicka_avif), (Some(1), Some(2), Some(3), Some(4)));
         assert!(config.action_points.is_none());
-        assert!(CharacterRulesProfile::FALLOUT3.build_tes_pool_regen(resolve).is_none());
+        assert!(CharacterRulesProfile::FALLOUT3.build_tes_pool_regen(resolve, |_| None).is_none());
+        // #7197 — unauthored settings keep the documented rates; authored ones replace them.
+        assert_eq!(config.tes_rates.map(|rates| rates.fatigue_base), Some(10.0));
+        let retuned = CharacterRulesProfile::OBLIVION
+            .build_tes_pool_regen(resolve, |name| match name {
+                "fFatigueReturnBase" => Some(4.0),
+                "fFatigueReturnMult" => Some(0.1),
+                "fMagickaReturnBase" => Some(1.0),
+                "fMagickaReturnMult" => Some(0.05),
+                _ => None,
+            })
+            .and_then(|config| config.tes_rates)
+            .unwrap();
+        assert_eq!(
+            (retuned.fatigue_base, retuned.fatigue_endurance_mult, retuned.magicka_base, retuned.magicka_willpower_mult),
+            (4.0, 0.1, 1.0, 0.05)
+        );
     }
 
     /// #4453 — FO76 and Starfield claim no NPC stat model until a capture
