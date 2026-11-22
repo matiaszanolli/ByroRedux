@@ -2605,6 +2605,51 @@ fn equipped_ammo_round_trips() {
     assert_eq!(dst.get::<EquippedAmmo>(player).map(|slot| *slot), Some(EquippedAmmo(None)));
 }
 
+/// #7228 — the arrow slot is created by the first arrow equip, so a save from before it has no `EquippedAmmo` row for the
+/// player. The live player (which outlives the load's cell reload) loses the outgoing session's arrow choice on a load
+/// of that save, and a saved choice still applies.
+#[test]
+fn a_saved_absence_clears_the_live_equipped_ammo() {
+    use byroredux_core::ecs::components::{EquippedAmmo, FormIdComponent};
+    use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
+
+    fn placement(world: &mut World, local: u32) -> byroredux_core::ecs::EntityId {
+        let entity = world.spawn();
+        let fid = world.resource_mut::<FormIdPool>().intern(FormIdPair {
+            plugin: PluginId::from_filename("Oblivion.esm"),
+            local: LocalFormId(local),
+        });
+        world.insert(entity, FormIdComponent(fid));
+        entity
+    }
+
+    let registry = build_save_registry();
+    let mut saved = World::new();
+    saved.insert_resource(StringPool::new());
+    saved.insert_resource(FormIdPool::new());
+    saved.register::<EquippedAmmo>();
+    let _player = placement(&mut saved, 0x14);
+    let archer = placement(&mut saved, 0x300);
+    saved.insert(archer, EquippedAmmo(Some(0x0001_7829)));
+    let snapshot = save_world(&saved, &registry).unwrap();
+    let bytes = encode(&snapshot, registry.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, registry.schema_fingerprint()).unwrap();
+
+    let mut live = World::new();
+    live.insert_resource(FormIdPool::new());
+    live.register::<EquippedAmmo>();
+    live.spawn(); // No saved entity may match by numeric EntityId.
+    let new_archer = placement(&mut live, 0x300);
+    let new_player = placement(&mut live, 0x14);
+    live.insert(new_player, EquippedAmmo(Some(0x0001_782A)));
+
+    let remap = byroredux_save::build_form_id_remap(&live, &registry, &decoded);
+    byroredux_save::apply_deltas(&mut live, &registry, &decoded, &remap, MUTABLE_DELTA_COLUMNS).unwrap();
+
+    assert_eq!(live.get::<EquippedAmmo>(new_player).and_then(|slot| slot.0), None, "the loaded game never chose an arrow");
+    assert_eq!(live.get::<EquippedAmmo>(new_archer).map(|slot| *slot), Some(EquippedAmmo(Some(0x0001_7829))));
+}
+
 /// PSC-RDY-004 (#7079): the player's readied spell survives a save and a load, and a loaded save that names a spell the
 /// player no longer knows clears it without an error (PSC-RDY-001).
 #[test]

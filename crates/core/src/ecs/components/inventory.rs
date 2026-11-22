@@ -217,8 +217,8 @@ impl Component for EquippedWeapon {
 /// even if you unequip the bow" (UESP *Skyrim:Archery*).
 ///
 /// A slot, not a stack: the count is the [`Inventory`]'s and is never copied here, and a form id that no longer has
-/// a counted stack reads as unset (`byroredux::bow::equipped_ammo`). The slot is cleared by writing `None`, not by
-/// removing the component, so the additive save overlay can carry the clear (BOW-AMM-002).
+/// a counted stack reads as unset (`byroredux::bow::equipped_ammo`). The slot is cleared by writing `None`; the save
+/// column is replacing, so a save with no row clears it too (BOW-AMM-002, #7228).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct EquippedAmmo(pub Option<u32>);

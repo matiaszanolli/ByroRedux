@@ -1522,7 +1522,9 @@ fn the_schema_fingerprint_is_pinned() {
     // type), registered right after `EquippedWeapon`.
     // PSC-RDY-004 (#7079) — `ReadiedSpell` joined the registry as a new replacing component column (the player's
     // readied spell), registered after `SpellList`.
-    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x0f2c_8ad0_7aa8_16d1;
+    // #7228 — `EquippedAmmo` became a replacing column (a saved absence clears the live arrow choice); same name and
+    // position, new policy.
+    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x1aa4_507e_f6b0_81c5;
     let actual = build_save_registry().schema_fingerprint();
     assert_eq!(
         actual, BASELINE_SCHEMA_FINGERPRINT,
