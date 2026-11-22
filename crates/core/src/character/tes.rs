@@ -38,8 +38,7 @@ use super::skill::SkillSet;
 /// **Scope is UNsourced (#6431).** `player_only` is an analogy to the Fallout
 /// convention where NPCs ship baked pool values — and that convention is itself
 /// FO4-evidence-specific. `charal-oblivion-ruleset.md` states no player/NPC
-/// scope for any pool formula (contrast the Armor Rating rows, `ActorGeneral`
-/// with the capture saying the source is silent). Pinned by
+/// scope for any pool formula. Pinned by
 /// `oblivion_pool_rows_are_player_only_pending_a_source`; revisit with
 /// #3768, the first point at which Oblivion has a wired ruleset.
 ///
@@ -72,26 +71,6 @@ pub fn oblivion_magicka_formula(intelligence_av: u32, base_magicka_mult: f32) ->
 pub const OBLIVION_PC_BASE_HEALTH_MULT: f32 = 2.0;
 /// `fPCBaseMagickaMult`'s default (`Oblivion.esm` authors 1.0).
 pub const OBLIVION_PC_BASE_MAGICKA_MULT: f32 = 1.0;
-
-/// Oblivion per-piece Armor Rating's skill-driven multiplier
-/// (`0.35 + 0.0065·ArmorSkill`). Source: UESP *Oblivion:The Complete Damage
-/// Formula* — `PieceArmorRating = BaseArmorRating × (0.35 + 0.0065 ×
-/// ArmorSkill) × (ArmorHealth / MaxArmorHealth)`, where `ArmorSkill` is
-/// **the wearer's own** governing armor skill (UESP writes the formula from
-/// the attacker's perspective, hence its "Opponent" naming — the capture
-/// resolves the term to the defender's own skill, and that is what the
-/// shipped code reads: the actor's own LightArmor/HeavyArmor AV,
-/// actor-general scope). CHARAL owns only the skill-driven multiplier;
-/// `BaseArmorRating` (per-piece content) and the condition ratio are
-/// equipment-layer inputs the combat system supplies, and the
-/// `Σ pieces, capped at 85` summation is a downstream combat concern, not
-/// part of this per-skill formula (`docs/engine/charal-oblivion-ruleset.md`).
-/// The source gives one shared coefficient for "whichever armor skill governs
-/// the piece" — applied identically to both Light Armor and Heavy Armor below,
-/// not a per-type constant.
-pub const ARMOR_RATING_SKILL_COEFF: f32 = 0.0065;
-/// Armor Rating multiplier's bias term — see [`ARMOR_RATING_SKILL_COEFF`].
-pub const ARMOR_RATING_SKILL_BIAS: f32 = 0.35;
 
 /// Oblivion Fatigue = `Strength + Willpower + Agility + Endurance` (UESP).
 ///
@@ -168,30 +147,9 @@ pub fn oblivion_ruleset_with_gmst<F: Fn(&str) -> Option<u32>, G: Fn(&str) -> Opt
             rs.push_derived(out, row);
         }
     }
-    // Armor Rating multiplier ×(0.35 + 0.0065·ArmorSkill), one row per armor
-    // skill — actor-general (the source doesn't distinguish player/NPC here).
-    if let (Some(out), Some(la)) = (resolve("LightArmorRating"), resolve("LightArmor")) {
-        rs.push_derived(
-            out,
-            DerivedStatFormula::affine(
-                DerivedInput::actor_value(la),
-                ARMOR_RATING_SKILL_COEFF,
-                ARMOR_RATING_SKILL_BIAS,
-            )
-            .as_multiplier(),
-        );
-    }
-    if let (Some(out), Some(ha)) = (resolve("HeavyArmorRating"), resolve("HeavyArmor")) {
-        rs.push_derived(
-            out,
-            DerivedStatFormula::affine(
-                DerivedInput::actor_value(ha),
-                ARMOR_RATING_SKILL_COEFF,
-                ARMOR_RATING_SKILL_BIAS,
-            )
-            .as_multiplier(),
-        );
-    }
+    // #7201 — no armor-rating rows: the engine-supplied roster has no `*ArmorRating` value for them to key on,
+    // and Oblivion's armor rating is the combat-time `ArmorRatingModel` (`armor_rating.rs`, the profile's
+    // `armor_rating` row), the one home of UESP's `0.35 + 0.0065 x ArmorSkill`.
     rs
 }
 
@@ -354,8 +312,7 @@ mod tests {
         for row in oblivion_fatigue_formulas(1, 2, 3, 4) {
             assert_eq!(row.scope, DerivedScope::PlayerOnly);
         }
-        // Health and Magicka are pinned beside their formulas above; the
-        // armor-rating rows are the deliberate `ActorGeneral` contrast.
+        // Health and Magicka are pinned beside their formulas above.
         let rs = oblivion_ruleset(|id| {
             Some(match id {
                 "Strength" => 0x1F,
@@ -368,8 +325,6 @@ mod tests {
                 "Fatigue" => 0x93,
                 "LightArmor" => 0x24,
                 "HeavyArmor" => 0x25,
-                "LightArmorRating" => 0x94,
-                "HeavyArmorRating" => 0x95,
                 _ => return None,
             })
         });
@@ -378,12 +333,6 @@ mod tests {
                 rs.derived_formula(pool).unwrap().scope,
                 DerivedScope::PlayerOnly,
                 "{pool:#04X}: pool scope is unsourced (#6431)"
-            );
-        }
-        for rating in [0x94, 0x95] {
-            assert_eq!(
-                rs.derived_formula(rating).unwrap().scope,
-                DerivedScope::ActorGeneral
             );
         }
     }
@@ -430,8 +379,6 @@ mod tests {
                 "Fatigue" => 0x93,
                 "LightArmor" => 0x24,
                 "HeavyArmor" => 0x25,
-                "LightArmorRating" => 0x94,
-                "HeavyArmorRating" => 0x95,
                 _ => return None,
             })
         };
@@ -454,9 +401,9 @@ mod tests {
         assert_eq!(rs.derived_value(0x90, &avs, 1), Some(90.0)); // Health 2·END
         assert_eq!(rs.derived_value(0x92, &avs, 1), Some(100.0)); // Magicka 2·INT
         assert_eq!(rs.derived_value(0x93, &avs, 1), Some(150.0)); // Fatigue STR+WIL+AGI+END
-                                                                  // Armor Rating multiplier: 0.35+0.0065·skill. Light 50 → 0.675; Heavy 20 → 0.48.
-        assert!((rs.derived_value(0x94, &avs, 1).unwrap() - 0.675).abs() < 1e-6);
-        assert!((rs.derived_value(0x95, &avs, 1).unwrap() - 0.48).abs() < 1e-6);
+        // #7201 — no armor-rating row: the armor rating is `ArmorRatingModel`'s, even when a resolver answers the
+        // names (the engine roster never does).
+        assert_eq!(rs.derived_row_len(), 6, "Health, Magicka and four Fatigue rows");
     }
 
     #[test]

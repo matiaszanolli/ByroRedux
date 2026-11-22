@@ -517,13 +517,12 @@ input, same boundary as weapon condition above) and sums per-piece before the
 85-point cap (the cap and per-piece sum stay a combat-layer concern, not
 part of this formula). **BUILT 2026-07-04** — unlike the weapon-damage
 formulas above, this one *does* fit `DerivedStatFormula` cleanly (single-
-input affine, no Luck term), so it's wired the same way as Skyrim's Light
-Armor Rating: `ARMOR_RATING_SKILL_COEFF`/`ARMOR_RATING_SKILL_BIAS` in
-`crates/core/src/character/tes.rs`, two rows in `oblivion_ruleset()` (one
-each for `LightArmor`→`LightArmorRating` and `HeavyArmor`→
-`HeavyArmorRating`, both `Multiplier`-kind, `ActorGeneral` scope since the
-source doesn't distinguish player/NPC here unlike Skyrim's). Test asserts
-both worked values (Light 50 → 0.675, Heavy 20 → 0.48).
+input affine, no Luck term), and it was first built as two `Multiplier` rows in
+`oblivion_ruleset()` keyed on `LightArmorRating` / `HeavyArmorRating`. Those rows
+were removed in #7201: the engine-supplied 72-name roster has no such actor value,
+so they could never register, and they restated the coefficients. The one home of
+`0.35 + 0.0065 x ArmorSkill` is `ArmorRatingModel::OBLIVION` (below), which
+`piece_rating` applies per piece (Light 50 → 0.675, Heavy 20 → 0.48).
 
 **Wired 2026-11-20 (armor rating and Resist Normal Weapons).** The per-piece rating above is applied to weapon hits: the pieces a target
 wears add up at its Light or Heavy Armor, cap at `fMaxArmorRating` (85), and `(100 - combined) / 100` scales the hit (1 for a Master
