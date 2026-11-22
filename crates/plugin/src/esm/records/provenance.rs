@@ -45,8 +45,10 @@ impl FoldProvenance {
             }
             let owner = owner_of(form_id).map(|owner| owner as u32);
             if merged.record_types.contains_key(&form_id) || merged.deleted_record_metadata.contains(&form_id) {
-                // An earlier plugin carried it: the definer is the injecting plugin, else the slot owner.
-                let definer = self.injected.get(&form_id).copied().or(owner);
+                // An earlier plugin carried it: the definer is the injecting plugin, else the slot owner. An injected
+                // form a later plugin overrides leaves `injected`, which lists only those no later plugin overrode
+                // (`note_writer` does the same, #7247).
+                let definer = self.injected.remove(&form_id).or(owner);
                 let mut carriers = Vec::with_capacity(2);
                 if let Some(definer) = definer.filter(|&definer| definer != position) {
                     carriers.push(Carrier { plugin: definer, deletes: false });
@@ -169,6 +171,9 @@ mod tests {
             fold(vec![plugin(&[0x0000_0001], &[]), plugin(&[0x0000_0F00], &[]), plugin(&[0x0000_0F00], &[])]);
         assert_eq!(provenance.carriers(0x0000_0F00), [carrier(1), carrier(2)], "the injector is the definer");
         assert_eq!(provenance.winner(0x0000_0F00), Some(2));
+        // #7247 — overridden, it is no longer counted as injected (the fold log and `plugins.conflicts` columns).
+        assert_eq!(provenance.injected().count(), 0, "an overridden injected form leaves `injected`");
+        assert_eq!(provenance.counts(), (1, 0));
     }
 
     /// LMC-REC-004 — a deletion is a carrier like any other, marked as one, and it is the last word on the form.
