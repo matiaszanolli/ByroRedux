@@ -493,6 +493,15 @@ pub(super) fn discard_outgoing_session_requests(world: &World) {
     reset_resource::<crate::bow::BowState>(world);
     reset_resource::<crate::skill_use_emit::StanceTimers>(world);
     reset_resource::<crate::systems::mines::MineClock>(world);
+    // #7253 — the M43 ambient schedulers and the ObScript quest cadence promise a load re-arms them as a fresh boot
+    // does; only boot ever built them, so an in-process load carried the outgoing session's timers, pair cooldowns
+    // and found bodies (keyed by its actors) over. Their systems fill them, never the reload's spawns, so resetting
+    // after the reload erases nothing the loaded session made.
+    reset_resource::<crate::systems::random_conversation::RandomConversationState>(world);
+    reset_resource::<crate::systems::dead_body::DeadBodyState>(world);
+    reset_resource::<crate::systems::attraction::AttractionState>(world);
+    reset_resource::<byroredux_scripting::jail::JailEscapeWatch>(world);
+    reset_resource::<byroredux_scripting::obscript_quests::ObScriptQuestTimers>(world);
     if let Some(mut request) = world.try_resource_mut::<byroredux_scripting::PlayerMoveRequest>() {
         request.0 = None;
     }

@@ -1294,18 +1294,15 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
 
     // #7230 — the same promise in its other wordings. The check above matched two phrases only, and missed
     // `ActiveProjectiles` (#7229) and `FallTracker` (#7227), whose cold-start-only reasons an in-process load broke. A
-    // row that says a load starts, restarts, re-seeds, resets, forgets, ends, drops, re-derives or re-installs its type
-    // is either reset by the drain or listed here with the mechanism that does it instead.
-    const LOAD_RESET_PHRASES: &[&str] = &[
-        "a load starts",
-        "a load restarts",
-        "a load re-seeds",
-        "a load resets",
-        "a load forgets",
-        "a load ends",
-        "a load drops",
-        "a load re-derives",
-        "a load re-installs",
+    // row that promises a load resets its type is either reset by the drain or listed here with the mechanism that
+    // does it instead.
+    //
+    // #7253 — the promise is matched by its two shapes, with the verb matched by its root rather than one fixed phrase
+    // per spelling (nine exact `a load <verb>` strings missed "a load re-arms", "a load re-observes", "restarts on
+    // load" and "reset on live load"): `a load <verb…>`, and `<verb…>` within three words before `on [live] load`.
+    const LOAD_RESET_ROOTS: &[&str] = &[
+        "start", "restart", "re-seed", "reset", "forget", "end", "drop", "re-derive", "re-install", "re-arm",
+        "re-observe", "clear",
     ];
     const RESET_OUTSIDE_THE_DRAIN: &[(&str, &str)] = &[
         ("FallTracker", "place_character_body, which the load's pose restore calls, resets it (#7227)"),
@@ -1317,8 +1314,36 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("FindProgress", "an NPC component: the load's cell reload respawns the actor without it"),
         ("Awareness", "a detector NPC's component: the load's cell reload respawns the detector without it"),
         ("InstalledOutdoorEnvironment", "every environment install rewrites it, and the load re-installs the sky"),
+        ("ObjectAnimationGraph", "a prop component attached in its start state at spawn: the load's cell reload respawns the prop with a fresh one"),
+        ("StealthPoints", "install_stealth_rules re-inserts it full from populate_scene_runtime, which the load's cell reload runs"),
     ];
-    let claims_a_load_reset = |reason: &str| LOAD_RESET_PHRASES.iter().any(|phrase| reason.contains(phrase));
+    let is_reset_verb = |word: &str| LOAD_RESET_ROOTS.iter().any(|root| word.starts_with(root));
+    let claims_a_load_reset = |reason: &str| {
+        let words: Vec<String> = reason
+            .split_whitespace()
+            .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric() && c != '-').to_lowercase())
+            .collect();
+        words.iter().enumerate().any(|(i, word)| {
+            word == "load"
+                && ((i >= 1 && words[i - 1] == "a" && words.get(i + 1).is_some_and(|next| is_reset_verb(next)))
+                    || {
+                        // `<verb…> on [live] load`: the verb within three words before the `on`.
+                        let on = match (i.checked_sub(1).map(|j| words[j].as_str()), i.checked_sub(2).map(|j| words[j].as_str())) {
+                            (Some("on"), _) => Some(i - 1),
+                            (Some("live"), Some("on")) => Some(i - 2),
+                            _ => None,
+                        };
+                        on.is_some_and(|on| words[on.saturating_sub(3)..on].iter().any(|word| is_reset_verb(word)))
+                    })
+        })
+    };
+    // The matcher itself, on the wordings #7253 found it missing and on ones it must leave alone.
+    for reason in ["a load re-arms the scan", "a load re-observes", "its cadence restarts on load", "reset on live load", "a load starts it"] {
+        assert!(claims_a_load_reset(reason), "{reason:?} promises a load reset");
+    }
+    for reason in ["rebuilt from the load order every boot", "a load discards it", "loaded on demand", "the load order's GMSTs"] {
+        assert!(!claims_a_load_reset(reason), "{reason:?} promises no load reset");
+    }
     let unaccounted: Vec<&str> = NOT_SAVED_BY_DESIGN
         .iter()
         .filter(|(_, reason)| claims_a_load_reset(reason))
