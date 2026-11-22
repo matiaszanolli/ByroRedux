@@ -513,13 +513,44 @@ delta, ms. The `main_render` delta now includes ray queries traversing the patch
   of the premium**, 0.8–0.9 ms at every pose. **The diffuse GI path is next**: about
   0.4–0.5 ms looking down and at graze, and within noise at eye level. Reflection and
   glass rays add nothing measurable (the eye cell's +0.5 is inside its sd), and
-  shadows plus GI account for the whole baseline delta. What makes a shadow query
-  dearer from a patch pixel than from a base pixel is not measured. Candidates are the
-  origin offset or traversal next to the dense patch triangles, and the relief normal
-  diverging from the base's. The raster-only state kept most of the premium although
-  the patches were not in the TLAS, which argues against traversal of the patch BLAS
-  alone. **4.3 should target the shadow and GI query setup on patch pixels**, not the
-  raster or the lattice.
+  shadows plus GI account for the whole baseline delta. **4.3 should target the shadow
+  and GI query setup on patch pixels**, not the raster or the lattice. Why those queries
+  cost more from a patch pixel is still open; the next bullet lists what is ruled out.
+- **What does not explain the per-ray premium** (code reading plus two FNV runs, 8
+  interleaved rounds × 4 samples each):
+  - *Ray count.* The shadow sample count (`rayBudget.directShadowSamples`) is
+    frame-wide, the visibility mask comes from the light rather than the pixel, and
+    the trace (`traceShadowTransmittanceDetailed`, closest-hit, opaque) is the same
+    for patch and base pixels.
+  - *The relief normal.* At amplitude 0, out of the TLAS, the patches have the base's
+    normals and keep the raster-only cost (+0.76 against +0.77 ms looking down,
+    table above).
+  - *The patch BLAS.* The raster-only state keeps most of the premium.
+  - *History.* Patch instances take the base cell's model matrix and stable surface
+    ids (`u32::MAX − 1 − slot`, no sentinel collision under the reservoir mask), so
+    they are never flagged as moved.
+  - *Helper lanes.* A temporary switch (not kept) turned shadow and GI rays off in
+    helper invocations (`gl_HelperInvocation`), which small triangles produce along
+    every edge. Eye-level screenshots differed from baseline no more than two baseline
+    shots did from each other.
+  - *ReSTIR reuse.* `0x40000` turns off temporal reuse; `0x8000` turns off temporal
+    and spatial reuse and the direct-radiance EMA.
+
+  | pose | baseline | helper-lane skip | no main rays | baseline | no temporal (`0x40000`) | no ReSTIR (`0x8000`) | no main rays |
+  |---|---|---|---|---|---|---|---|
+  | down | +1.30 | +1.25 | +0.07 | +0.70 | +0.75 | +0.72 | +0.07 |
+  | eye | +1.85 | +1.79 | +0.14 | +0.86 | +0.74 | +0.86 | +0.14 |
+  | graze | +0.94 | +0.97 | +0.12 | +0.71 | +0.69 | +0.41 | +0.14 |
+
+  The first four columns are run 1; the last four are run 2. Each cell is a patch delta
+  in ms, and the sd per state is 0.15–0.58. Neither switch moves the premium beyond
+  noise; only turning the main-pass rays off removes it. The ReSTIR-off graze cell
+  (−0.3 ms) is about one sd. With the same binary, the same position and the same
+  harness, run 2's baselines are 0.4–1.0 ms lower than run 1's, and so are its
+  patches-off `main_render` (4.9–5.5 ms against 5.4–7.5). Only in-run comparisons
+  hold. What remains is a per-ray traversal or hit-shading difference
+  that code reading does not show. The direct measurement is a per-pixel shader-clock
+  heatmap around the shadow and GI traces, patches on against off.
 - **Raster-only is not a fallback.** At Riverwood (eye, on the riverbank) the raster-only
   frame darkens the bank's crease by up to 23 levels of 8-bit luma in a band of rows:
   rays leaving the patch surface hit the base terrain the patch covers. With the patches
