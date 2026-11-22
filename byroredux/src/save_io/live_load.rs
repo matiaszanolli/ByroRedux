@@ -478,6 +478,11 @@ pub(super) fn discard_pending_story_events(world: &World) {
 /// music, script messages and the message boxes they opened, then (#6574) the crafting session and
 /// bench request and the dropped items still waiting to raise `REMP`.
 pub(super) fn discard_outgoing_session_requests(world: &World) {
+    // #7229 — projectiles in flight name the outgoing session's shooter and its physics world's bodies; left alone they
+    // flew on through the loaded world and landed damage, skill uses and spell effects there. A queued trap hit (a
+    // Late request waits a frame) names the outgoing session's entities too.
+    reset_resource::<crate::systems::projectiles::ActiveProjectiles>(world);
+    reset_resource::<byroredux_scripting::PendingTrapHits>(world);
     if let Some(mut request) = world.try_resource_mut::<byroredux_scripting::PlayerMoveRequest>() {
         request.0 = None;
     }
@@ -595,6 +600,14 @@ pub(super) fn discard_outgoing_session_requests(world: &World) {
         && let Some(mut seats) = world.query_mut::<byroredux_core::ecs::components::Seated>() {
             seats.remove(player);
         }
+}
+
+/// Put a process-lifetime resource back to its default, if it is installed (the load drain's reset for session state that
+/// holds no saved value).
+fn reset_resource<R: byroredux_core::ecs::resource::Resource + Default>(world: &World) {
+    if let Some(mut resource) = world.try_resource_mut::<R>() {
+        *resource = R::default();
+    }
 }
 
 /// Drain a queued live-load: reload the saved cell or exterior worldspace

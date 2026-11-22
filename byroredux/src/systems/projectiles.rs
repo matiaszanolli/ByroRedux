@@ -605,6 +605,26 @@ fn resolve_actor(world: &World, collider_entity: EntityId) -> Option<EntityId> {
         .filter(|actor| world.get::<byroredux_core::ecs::components::ActorVitals>(*actor).is_some())
 }
 
+/// A projectile in flight from `shooter`, for tests outside this module (the launcher bodies are private).
+#[cfg(test)]
+impl Projectile {
+    pub(crate) fn in_flight_from(shooter: EntityId) -> Self {
+        Self {
+            position: Vec3::ZERO,
+            velocity: Vec3::new(0.0, 0.0, -1300.0),
+            range_left: 10000.0,
+            lifetime_left: None,
+            damage: 12.0,
+            shooter,
+            radius: 1.0,
+            spell: None,
+            arrow: true,
+            ignores_resistance: false,
+            launcher_bodies: std::sync::Arc::from([]),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

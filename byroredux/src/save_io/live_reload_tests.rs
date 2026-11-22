@@ -1016,7 +1016,21 @@ fn live_load_drain_discards_the_outgoing_sessions_requests() {
         seated_player,
         byroredux_scripting::obscript_speech::SpeakingLine { topic_form_id: 0x10, info_form_id: None, remaining: 2.0, started: true },
     );
+    // #7229 — an arrow in flight and a queued trap hit name the outgoing session's shooter and target.
+    world.insert_resource(crate::systems::projectiles::ActiveProjectiles(vec![
+        crate::systems::projectiles::Projectile::in_flight_from(seated_player),
+    ]));
+    world.insert_resource(byroredux_scripting::PendingTrapHits(vec![byroredux_scripting::TrapHit {
+        target: old_couch,
+        trap: seated_player,
+        damage: 5.0,
+        sneak_attack: false,
+        arrow: true,
+        ignores_resistance: false,
+    }]));
     discard_outgoing_session_requests(&world);
+    assert!(world.resource::<crate::systems::projectiles::ActiveProjectiles>().0.is_empty(), "#7229: no shot flies on");
+    assert!(world.resource::<byroredux_scripting::PendingTrapHits>().0.is_empty(), "#7229: no queued hit lands");
     assert!(
         world.get::<byroredux_scripting::obscript_speech::SpeakingLine>(seated_player).is_none(),
         "SCR-2026-11-15-02: a line in flight from the outgoing session is dropped"
