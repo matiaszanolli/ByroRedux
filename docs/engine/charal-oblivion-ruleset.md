@@ -1140,6 +1140,19 @@ alone when both name one attribute, pinned by
    nothing reads `MagickaMultiplier` (installed in the roster, index 40). An effect that writes it changes
    nothing here; vanilla leaves it unset, so vanilla is unaffected. How often vanilla content writes it was
    not measured.
+5. **PC-offset creature skills and attack damage (#7206).** #7040 locked the level multiply for Health,
+   Magicka and Fatigue only. A PC-offset creature's three skills and its attack damage are stamped as the
+   record authors them, with no level term:
+   - *Skills:* UESP *Oblivion:Leveled Lists* gives `CombatSkill = Combat + 2*CreatureLevel` (the same for
+     Magic and Stealth); the Construction Set's *Stats Tab - Creatures* is silent on skills, and the
+     executable's skill path was not traced for a level term (the capture decodes only the two-view remap).
+   - *Attack damage:* the CS gives "the entered value is added to 1/2 the level of the creature"; the creature
+     section's second word form (`0x51c980`) multiplies by `fCreatureCalcDamage`, which `Oblivion.esm` does not author and whose
+     executable default is 1.0. Which coefficient the game applies is unresolved.
+
+   Both wait on an observation in the original game (the #7022 smoke harness is the natural place) rather
+   than a choice here: 284 vanilla `CREA` records set the offset bit, so a PC-offset creature hits with its
+   authored base damage and carries base skills at every player level.
 
 ### The player's pools (#7037)
 
@@ -1386,9 +1399,11 @@ The engine matches this (`creature_values` and `level` in
   level-up ([skill-use leveling PRD](../prd/oblivion-skill-use-leveling.md)).
 - A second word form of the creature (`0x51c980`, vtable offset `0x10` of another sub-object) scales as
   `stored + level x fCreatureCalcDamage` with the same level. The CS says the attack damage of a PC-level-offset
-  creature is "added to 1/2 the level of the creature", which is that formula at a setting of 0.5; the value
-  `Oblivion.esm` authors was not read (the executable's default is 1.0). Not decoded further, and the engine
-  reads no attack damage from this model.
+  creature is "added to 1/2 the level of the creature", which is that formula at a setting of 0.5;
+  `Oblivion.esm` authors no `fCreatureCalcDamage` (byte scan, 2026-11-22), and the executable's default is 1.0,
+  so the coefficient is unadjudicated. The engine does read the attack damage (`stamp_creature_attack`,
+  `byroredux/src/npc_spawn/stamps.rs`, stamps `CreatureAttack` from the `DATA` value since 2026-11-15) but
+  stamps it **unscaled**: Known gaps, item 5 (#7206).
 
 ## Essential bleedout and encumbrance — LOCKED / NOT WIRED (#6284)
 
