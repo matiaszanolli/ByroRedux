@@ -1,6 +1,8 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-22). Revision 11 extends the list merge
+**Status**: ACTIVE (2026-11-22). Revision 12 builds mod roots and their
+ownership (LMC-ID-012), root-ordered loose files (LMC-AST-010) and the
+root half of missing-master disabling (LMC-ID-011). Revision 11 extends the list merge
 (LMC-REC-003) to the keyword lists of activators, flora, furniture and
 containers, and records that locations and quests wait on partial forms;
 revision 10 extended it to actors, races and carried items; revision 9 to
@@ -171,7 +173,7 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
 
 | Id | Mechanism | Examples | Disp. | Games | Reason and citation | v |
 |---|---|---|---|---|---|---|
-| A1 | Loose files under Data\ shadowing archives | texture packs, mesh fixes | D1 | all | Loose files outrank every archive. (§5.3 LMC-AST-001; #6200) | 1 |
+| A1 | Loose files under Data\ shadowing archives | texture packs, mesh fixes | D1 | all | Loose files outrank every archive. With mod roots they layer in root order, the later root winning a path (LMC-AST-010). (§5.3 LMC-AST-001; §5.3 LMC-AST-010; #6200; byroredux/src/mod_roots.rs) | 2 |
 | A2 | Plugin-paired archives (per-game naming rules) | most archived mods | D1 | all | The engine opens the archives the game would pair with a plugin by name, in profile order. (§5.3 LMC-AST-002; [geck.uesp.net](https://geck.uesp.net/wiki/BSA_Files); [falloutck.uesp.net](https://falloutck.uesp.net/wiki/Archive_File); [`crates/plugin/src/archive_pairing.rs`](../../crates/plugin/src/archive_pairing.rs)) | 2 |
 | A3 | Archive list order (sResourceArchiveList, sArchiveList, .ccc) | official + CC content | D1 | all | Order semantics are imported into the profile and reproduced by profile order; the files are not read at runtime. (§5.3 LMC-AST-003) | 1 |
 | A4 | Archive invalidation (bInvalidateOlderFiles, redirection archives) | FO3/FNV/Oblivion texture mods | D2 | Obl, FO3, FNV | Loose files always win in this engine, so the INI flag and the redirection archive are ignored with a note. ([geck.uesp.net](https://geck.uesp.net/wiki/BSA_Files); [en.uesp.net](https://en.uesp.net/wiki/Oblivion_Mod:BSAs_and_Archive_Invalidation); §5.3 LMC-AST-004) | 1 |
@@ -240,8 +242,8 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
 | T7.other | Game INI edits for gameplay-visible values the settings registry does not have | difficulty tweaks, fXP... | D5 | all | Reported with a note, tracked. (§5.7 LMC-SET-001) | 1 |
 | T8 | Mod-provided INIs / JSON (Data/SKSE/Plugins/*.ini, MCM/Settings/*.json, NVSE/Plugins/*.ini) | configurable DLL mods | D4 | all | Readable by a ported extension through scoped content read (SEC-018). ([sandboxed-linked-mods.md](../engine/sandboxed-linked-mods.md#102-requirements); §5.7 LMC-SET-003) | 1 |
 | T9 | Cosaves (.skse, .f4se, .nvse) and save editors | ReSaver, FallrimTools | D3 | all | There is no legacy save format (ROADMAP anti-scope). (§3.1 T9) | 1 |
-| T10.vfs | Mod-manager virtual filesystems | MO2 USVFS | D3 | all | The engine reads a profile, not a virtual filesystem. (§5.1 LMC-ID-006) | 1 |
-| T10.outputs | Mod-manager deployment layouts and profiles | Vortex, MO2 profiles | D1 | all | Imported once into a profile (LMC-ID-006). (§5.1 LMC-ID-006) | 1 |
+| T10.vfs | Mod-manager virtual filesystems | MO2 USVFS | D3 | all | The engine reads a profile, not a virtual filesystem: each mod directory is a mod root (--mod-root, in priority order) whose plugins resolve by name and whose loose files layer in root order, as the virtual filesystem presents them (LMC-ID-012, LMC-AST-010). (§5.1 LMC-ID-006; §5.1 LMC-ID-012; byroredux/src/mod_roots.rs) | 2 |
+| T10.outputs | Mod-manager deployment layouts and profiles | Vortex, MO2 profiles | D1 | all | Imported once into a profile (LMC-ID-006, not built); a deployed mod directory can be given as a mod root today (--mod-root, LMC-ID-012). (§5.1 LMC-ID-006; §5.1 LMC-ID-012; byroredux/src/mod_roots.rs) | 2 |
 | T11.plugin-enablers | Plugin-limit and plugins.txt enablers | Plugins.txt Enabler | D2 | SF | The engine has no plugin gate to open. (§3.1 T11) | 1 |
 | T11.achievement-enablers | Achievement enablers | Achievement Enabler | D3 | SF | Targets the original executable's achievement lock. (§3.1 T11) | 1 |
 | T12 | Total conversions | Tale of Two Wastelands, Enderal | D1 | all | Content loads as content; not attempted, corpus tier is decision Q6. (§10 Q6) | 1 |
@@ -413,7 +415,10 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   **Phase 0: verify** the equivalent behaviour on Skyrim SE, FO4 and
   Starfield from a primary source; community reports describe the same
   startup crash. A disabled dependent is reported under LMC-CLS-004 for
-  that session, never silently omitted.
+  that session, never silently omitted. The root half is built with
+  LMC-ID-012: a root whose every profile plugin is disabled loses its loose
+  files for the session, and one that keeps a plugin keeps them with a
+  warning.
 - **LMC-ID-012 — Ownership.** The profile MUST record, for every mod root,
   its package identity and the plugins, archives and loose files it ships;
   content found directly in the game's `Data` directory belongs to an
@@ -423,6 +428,16 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   LMC-DX-005 attribute a diagnostic to the root whose file actually won,
   and LMC-SCR-010 answer probes per mod from the scripts that actually run.
   LMC-ID-006 populates it on import.
+  Built for the session profile (#6670): `byroredux/src/mod_roots.rs`. The
+  profile names its roots with `--mod-root <dir>`, repeated, lowest
+  priority first, after the unmanaged root, the base master's directory.
+  Each root owns the plugins and archives at its top level and the loose
+  files under it; its identity is its directory name, case-folded, and two
+  roots sharing one are reported (LMC-ID-010). A plugin named by its bare
+  file name resolves through the roots, the highest-priority root first and
+  the unmanaged root last. `plugins.activation` and `--plugin-report` list
+  each root with its plugins, archives and loose files. Manifest identities
+  and the import that writes roots (LMC-ID-006) are not built.
 
 ### 5.2 Records (`LMC-REC`)
 
@@ -686,7 +701,10 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   contents are known from LMC-ID-012, so a loose file that shadows another
   root's script or asset is attributed to the winning root (LMC-DX-005).
   LMC-ID-006 populates the root order and ownership on import; LMC-DX-001
-  explains every winner.
+  explains every winner. Built with LMC-ID-012: every asset provider's
+  loose tier is the roots' loose files in root order, above every archive,
+  and the report counts each root's files that take a path from an earlier
+  root.
 
 ### 5.4 Scripts (`LMC-SCR`)
 
@@ -1331,3 +1349,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 9 | 2026-11-22 | LMC-REC-003 extended to form lists, outfits and containers (form-list null slots keep their positions); the catalog's R2 and T2.necessity rows at version 3 | — |
 | 10 | 2026-11-22 | LMC-REC-003 extended to actors (inventory, factions, spells, perks, keywords, actor values), races (spells, keywords, race relations) and carried items (keywords); AI packages and consumable effects stay one field, their order being their meaning; the catalog's R2 and T2.necessity rows at version 4 | — |
 | 11 | 2026-11-22 | LMC-REC-003 extended to the keyword lists of activator, flora, furniture and container bases; an override that drops every keyword now clears them under both policies; locations and quests recorded as waiting on partial-form support; the catalog's R2 and T2.necessity rows at version 5 | — |
+| 12 | 2026-11-22 | LMC-ID-012 built for the session profile (`--mod-root`, ownership, bare plugin names resolve through the roots); LMC-AST-010's root-ordered loose tier and LMC-ID-011's root half built with it; the catalog's A1, T10.vfs and T10.outputs rows at version 2 | — |

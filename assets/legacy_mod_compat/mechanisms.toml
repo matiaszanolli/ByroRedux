@@ -156,9 +156,9 @@ name = "Loose files under Data\\ shadowing archives"
 examples = "texture packs, mesh fixes"
 disposition = "D1"
 games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
-reason = "Loose files outrank every archive."
-citations = ["docs/prd/legacy-mod-compatibility.md §5.3 LMC-AST-001", "#6200"]
-version = 1
+reason = "Loose files outrank every archive. With mod roots they layer in root order, the later root winning a path (LMC-AST-010)."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.3 LMC-AST-001", "docs/prd/legacy-mod-compatibility.md §5.3 LMC-AST-010", "#6200", "byroredux/src/mod_roots.rs"]
+version = 2
 
 [[mechanism]]
 id = "A2"
@@ -703,9 +703,9 @@ name = "Mod-manager virtual filesystems"
 examples = "MO2 USVFS"
 disposition = "D3"
 games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
-reason = "The engine reads a profile, not a virtual filesystem."
-citations = ["docs/prd/legacy-mod-compatibility.md §5.1 LMC-ID-006"]
-version = 1
+reason = "The engine reads a profile, not a virtual filesystem: each mod directory is a mod root (--mod-root, in priority order) whose plugins resolve by name and whose loose files layer in root order, as the virtual filesystem presents them (LMC-ID-012, LMC-AST-010)."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.1 LMC-ID-006", "docs/prd/legacy-mod-compatibility.md §5.1 LMC-ID-012", "byroredux/src/mod_roots.rs"]
+version = 2
 
 [[mechanism]]
 id = "T10.outputs"
@@ -714,9 +714,9 @@ name = "Mod-manager deployment layouts and profiles"
 examples = "Vortex, MO2 profiles"
 disposition = "D1"
 games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
-reason = "Imported once into a profile (LMC-ID-006)."
-citations = ["docs/prd/legacy-mod-compatibility.md §5.1 LMC-ID-006"]
-version = 1
+reason = "Imported once into a profile (LMC-ID-006, not built); a deployed mod directory can be given as a mod root today (--mod-root, LMC-ID-012)."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.1 LMC-ID-006", "docs/prd/legacy-mod-compatibility.md §5.1 LMC-ID-012", "byroredux/src/mod_roots.rs"]
+version = 2
 
 [[mechanism]]
 id = "T11.plugin-enablers"

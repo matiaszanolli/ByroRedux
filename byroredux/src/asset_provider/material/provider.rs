@@ -97,8 +97,9 @@ pub(crate) fn build_material_provider(args: &[String]) -> MaterialProvider {
         }
         i += 1;
     }
-    // #6200 — loose `Data\materials` files override every material archive.
-    if let Some(loose) = loose_data_dir(args).and_then(|dir| Archive::open_loose(&dir)) {
+    // #6200 — loose `Data\materials` files override every material archive, each mod root's in root order
+    // (LMC-AST-010).
+    for loose in open_loose_tiers(args) {
         log_opened_archive("loose materials", loose.path(), &loose, &provider.archives, false);
         // #6330 — registered last, so a loose CDB overlays the archived ones
         // (`lookup_cdb_material` is last-registered-wins).

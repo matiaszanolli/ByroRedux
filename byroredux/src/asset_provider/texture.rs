@@ -589,8 +589,9 @@ pub(crate) fn build_texture_provider(args: &[String]) -> TextureProvider {
         i += 1;
     }
     // #6200 — mod/user assets win: the `Data` directory's loose files go on
-    // top of every archive in both pools.
-    if let Some(loose) = loose_data_dir(args).and_then(|dir| Archive::open_loose(&dir)) {
+    // top of every archive in both pools, then each mod root's in root order
+    // (LMC-AST-010), so a later root wins a path.
+    for loose in open_loose_tiers(args) {
         for (kind, pool) in [
             ("loose texture", &mut provider.texture_archives),
             ("loose mesh", &mut provider.mesh_archives),

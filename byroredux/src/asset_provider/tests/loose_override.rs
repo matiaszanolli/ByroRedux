@@ -264,6 +264,40 @@ fn providers_serve_loose_assets() {
     );
 }
 
+/// LMC-AST-010, LMC-ID-012 — with mod roots, boot activation writes one `--loose-root` per enabled root, the unmanaged
+/// `Data` first; every provider layers them in that order, so the later root wins a path and an earlier root still
+/// serves the paths it alone holds.
+#[test]
+fn providers_layer_the_loose_roots_the_later_winning() {
+    let data = tempfile::tempdir().unwrap();
+    let low = tempfile::tempdir().unwrap();
+    let high = tempfile::tempdir().unwrap();
+    write(data.path(), "textures/a.dds", b"data a");
+    write(data.path(), "textures/only_data.dds", b"data only");
+    write(low.path(), "textures/a.dds", b"low a");
+    write(low.path(), "materials/m.bgsm", b"low m");
+    write(low.path(), "music/theme.xwm", b"low theme");
+    write(high.path(), "textures/a.dds", b"high a");
+    write(high.path(), "materials/m.bgsm", b"high m");
+    write(high.path(), "music/theme.xwm", b"high theme");
+    let mut args = esm_args(data.path());
+    for root in [data.path(), low.path(), high.path()] {
+        args.extend(["--loose-root".to_owned(), root.to_string_lossy().into_owned()]);
+    }
+    assert_eq!(loose_dirs(&args), [data.path(), low.path(), high.path()]);
+
+    let textures = build_texture_provider(&args);
+    assert_eq!(textures.extract("a.dds").unwrap(), b"high a");
+    assert_eq!(textures.extract("only_data.dds").unwrap(), b"data only");
+    let materials = build_material_provider(&args);
+    assert_eq!(materials.extract_from_archives(r"materials\m.bgsm").unwrap(), b"high m");
+    let sounds = build_sound_archive_provider(&args);
+    assert_eq!(sounds.extract(r"music\theme.xwm").unwrap(), b"high theme");
+
+    // Without `--loose-root`, the `--esm` directory alone, as before.
+    assert_eq!(loose_dirs(&esm_args(data.path())), [data.path()]);
+}
+
 /// #6330 — Starfield's `geometries\<hash>.mesh` external mesh data is a loose
 /// asset root too, and the mesh provider serves it unprefixed.
 #[test]
