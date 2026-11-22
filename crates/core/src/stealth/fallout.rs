@@ -4,7 +4,10 @@
 use super::{DetectionInputs, DetectionSettings, DetectionTerms, SneakWeapon};
 
 /// The GECK-shaped value; `level_terms` adds New Vegas's target-skill level and
-/// armor terms.
+/// armor terms. #7213 — Fallout 3's target skill has neither: the GECK wiki's
+/// *Category:Detection* (Target Skill) gives "In FO3, the Target Skill is simply
+/// `Sneak * IsSneaking`", and New Vegas's form adds the level terms *and* the
+/// armor penalty together.
 pub(super) fn value(s: &DetectionSettings, i: &DetectionInputs, level_terms: bool) -> DetectionTerms {
     let flag = |b: bool| if b { 1.0 } else { 0.0 };
     let attenuation = super::attenuation(s, i, s.attenuation_exponent);

@@ -177,8 +177,11 @@ blindness of 1 or more zeroes sight. The engine reproduces the shape and keeps t
 integer division as authored. `sees` is the detector's line of sight *and* the view
 cone (`0x7e6430`, `0x7e4f90`, `fDetectionViewCone` × π/180).
 
-**New Vegas** is the FO3 shape plus the level terms in the target skill the Fallout
-wiki gives (CHARAL FNV ruleset *Sneak Detection*; `stealth.rs`). The FNV capture's
+**New Vegas** is the FO3 shape plus the level terms and the armor penalty in the target skill the Fallout
+wiki gives (CHARAL FNV ruleset *Sneak Detection*; `stealth.rs`). Fallout 3 has neither: the GECK wiki's
+*Category:Detection* (Target Skill) gives "In FO3, the Target Skill is simply `Sneak * IsSneaking`", and
+New Vegas's `((Sneak + iSneakLevelBonus * (TL - DL)) + max(iSneakStartBonus - iSneakStartBonusLevelPenatly * TL,
+0) - Armor Penalty) * IsSneaking` adds both halves at once (#7213; `the_fo3_row_drops_the_level_and_armor_terms`). The FNV capture's
 constants are exactly these settings' values: base −35, exponent 2, range 2500 / 5000,
 sound 1.6 and 1.6 · 0.1, boot weight 12 + 0.5·w, running 1.5, action ×2, light 1.4,
 visual movement 0.01 / 0.21 (= 0.01 + 0.2), perception 10 + 8·Per, skill ×0.5.
