@@ -116,6 +116,9 @@ pub(crate) struct TerrainPatchState {
     pub(crate) amplitude_m: f32,
     pub(crate) range_m: f32,
     pub(crate) fine_range_m: f32,
+    /// Keep the TSD-3 parallax march on patch draws (default on; see
+    /// `TerrainPatchParams::parallax`).
+    pub(crate) parallax: bool,
     /// The renderer's reserved patch meshes, indexed by slot; copied on the
     /// first frame with a renderer. Empty means no patches.
     pub(crate) meshes: TerrainPatchMeshes,
@@ -133,6 +136,7 @@ impl Default for TerrainPatchState {
             amplitude_m: DEFAULT_AMPLITUDE_M,
             range_m: DEFAULT_RANGE_M,
             fine_range_m: DEFAULT_FINE_RANGE_M,
+            parallax: true,
             meshes: TerrainPatchMeshes::default(),
             slots: [None; SLOTS],
             camera_pos: [0.0; 3],
@@ -167,6 +171,7 @@ impl TerrainPatchState {
             fade_start: FADE_START_FRACTION * range,
             fade_end: range,
             edge_ramp: EDGE_RAMP_M * UNITS_PER_M,
+            parallax: self.parallax,
         }
     }
 }
@@ -562,6 +567,8 @@ mod tests {
         assert!((p.fade_start - 3.0 * UNITS_PER_M).abs() < 1e-4);
         // §3.4: the ramp must fit inside one patch.
         assert!(p.edge_ramp < PATCH_SIZE);
+        // Patches keep the parallax march until 4.3 splits the relief.
+        assert!(p.parallax);
     }
 
     #[test]

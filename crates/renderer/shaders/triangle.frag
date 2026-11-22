@@ -367,7 +367,12 @@ void main() {
         // the layer composition describe the same surface. The painted
         // weights drive it (the blend has not run yet). Depth 0 — the
         // setting off, or a tile spawned before the broadcast — skips it.
-        if (terrainTile.parallaxDepth > 0.0 && (dbgFlags & DBG_BYPASS_POM) == 0u) {
+        // #7152 — the renderer flags a displacement patch draw for skipping
+        // when the host turns parallax off on patches (`terrain.patches
+        // parallax off`); by default it marches like the base until stage
+        // 4.3 marches only the relief the geometry does not carry (§3.6).
+        if (terrainTile.parallaxDepth > 0.0 && (dbgFlags & DBG_BYPASS_POM) == 0u
+            && (inst.flags & INSTANCE_FLAG_TERRAIN_PATCH) == 0u) {
             vec3 terrainView = cameraPos.xyz - fragWorldPos;
             float terrainViewDistance = length(terrainView);
             sampleUV = terrainParallaxDisplaceUV(

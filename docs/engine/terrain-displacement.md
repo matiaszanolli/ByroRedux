@@ -234,7 +234,15 @@ settings/UI. Each stage ends with a review, as in TSD-1–3.
     squares whose centre does), so the faded disc is always covered while slots last,
     with 1 m of hysteresis;
   - patches still draw over XCLC-hidden quadrants (known gap; the base drops those
-    quadrants from its index buffer, the patch does not know).
+    quadrants from its index buffer, the patch does not know);
+  - the TSD-3 parallax march still runs on patch draws by default (§3.6 is 4.3). A patch
+    draw carries `INSTANCE_FLAG_TERRAIN_PATCH` (bit 11, set by the renderer from the
+    reserved patch meshes), and `terrain.patches parallax off` makes `triangle.frag` skip
+    the march on it. Measured at FNV eye level in one engine run (10 interleaved rounds):
+    0.92 ms with the march, 0.78 ms without, a 0.13 ms saving. Without it the near
+    stones read much flatter, because 3 cm of real relief replaces 8 cm of parallax depth.
+    So the default stays on, and 4.3 should march only the residual relief on patches,
+    not none.
 - **Raster**: the host (`byroredux/src/terrain_patches.rs`) clones each patch's base
   cell draw command onto the patch mesh with `in_tlas = false`, before the sort, so the
   patch carries the cell's exact material and tile.
@@ -358,6 +366,13 @@ of them coarse at two-level). Totals are compute + `main_render` delta, ms:
   deltas, not absolute times.
 - Screenshots of single-level against two-level at FNV show no seam and no visible level
   boundary at 3 cm; the pixel differences are wind-animated grass.
+- **FNV eye is noise-bound.** A fine radius of 1, 1.5 or 2 m picks the same 4 fine squares
+  at this spawn, which sits on a patch column boundary, and all three read the same within
+  noise; all-coarse (`fine 0`) read 1.28 ms against 1.86 ms in the same run. Across
+  separate engine runs the identical two-level setting read 1.52, 1.64, 1.86 and 0.92 ms,
+  with the patches-off baseline moving between 5.7 and 7.4 ms. Only interleaved
+  comparisons within one run are meaningful here, and FNV eye sits on the 1.0 ms bar
+  rather than clearly over it.
 
 ## 9. Review decisions (Matías, 2026-11-21)
 1. **Upward-only displacement, base mesh kept (§3.3)**: accepted. No holes, no zero-mean

@@ -98,6 +98,11 @@ impl TerrainPatchMeshes {
         self.fine.is_empty() || self.coarse.is_empty()
     }
 
+    /// Whether `mesh` is one of the reserved patch meshes.
+    pub fn contains(&self, mesh: u32) -> bool {
+        self.fine.contains(&mesh) || self.coarse.contains(&mesh)
+    }
+
     /// The mesh `slot` draws at its level.
     pub fn get(&self, slot: u32, coarse: bool) -> Option<u32> {
         let level = if coarse { &self.coarse } else { &self.fine };
@@ -114,6 +119,12 @@ pub struct TerrainPatchParams {
     pub fade_start: f32,
     pub fade_end: f32,
     pub edge_ramp: f32,
+    /// Keep the TSD-3 parallax march on patch draws. On by default: the 3 cm
+    /// patch relief alone reads flatter than the 8 cm parallax depth, so
+    /// dropping the march flattens the ground nearest the camera; marching
+    /// only the residual relief is stage 4.3 (design §3.6). `false` is the
+    /// A/B switch.
+    pub parallax: bool,
 }
 
 /// Push constants — mirrors `terrain_patch.comp`'s `TerrainPatchPush`
@@ -389,6 +400,8 @@ pub struct TerrainPatchPass {
     /// This frame's input from the host; consumed by [`Self::record`].
     frame_slots: Vec<TerrainPatchSlot>,
     frame_params: Option<TerrainPatchParams>,
+    /// The last staged `TerrainPatchParams::parallax`.
+    parallax: bool,
     stats: TerrainPatchStats,
 }
 
@@ -455,6 +468,7 @@ impl TerrainPatchPass {
             meshes: TerrainPatchMeshes::default(),
             frame_slots: Vec::new(),
             frame_params: None,
+            parallax: true,
             stats: TerrainPatchStats::default(),
         };
         if let Err(e) = this.create_resources(device, allocator, pipeline_cache, &bindings) {
@@ -555,7 +569,14 @@ impl TerrainPatchPass {
                 self.frame_slots.push(*slot);
             }
         }
+        self.parallax = params.parallax;
         self.frame_params = Some(params);
+    }
+
+    /// Whether a draw of `mesh` skips the TSD-3 parallax march: a patch mesh,
+    /// when the host turned parallax off on patches.
+    pub fn skips_parallax(&self, mesh: u32) -> bool {
+        !self.parallax && self.meshes.contains(mesh)
     }
 
     /// Whether [`Self::record`] has anything to dispatch this frame.
@@ -828,6 +849,18 @@ mod tests {
     }
 
     #[test]
+    fn the_patch_mesh_lookup_covers_both_levels_and_nothing_else() {
+        let meshes = TerrainPatchMeshes { fine: vec![1, 2], coarse: vec![3, 4] };
+        for mesh in 1..=4 {
+            assert!(meshes.contains(mesh), "mesh {mesh}");
+        }
+        assert!(!meshes.contains(0) && !meshes.contains(5));
+        assert_eq!(meshes.get(1, false), Some(2));
+        assert_eq!(meshes.get(1, true), Some(4));
+        assert!(TerrainPatchMeshes::default().is_empty());
+    }
+
+    #[test]
     fn the_push_carries_the_level_and_both_masks() {
         let params = TerrainPatchParams {
             camera_pos: [0.0; 3],
@@ -836,6 +869,7 @@ mod tests {
             fade_start: 1.0,
             fade_end: 2.0,
             edge_ramp: 70.0,
+            parallax: false,
         };
         let mut s = slot(3, 4, 5, neighbour_bit(-1, 0));
         s.coarse_mask = neighbour_bit(0, 1);

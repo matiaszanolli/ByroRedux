@@ -247,7 +247,7 @@ impl ConsoleCommand for TerrainPatchesCommand {
     }
 
     fn description(&self) -> &str {
-        "Terrain displacement patches: terrain.patches [on | off | amplitude <m> | range <m> | fine <m>] (#7152)"
+        "Terrain displacement patches: terrain.patches [on | off | amplitude <m> | range <m> | fine <m> | parallax on|off] (#7152)"
     }
 
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
@@ -256,7 +256,8 @@ impl ConsoleCommand for TerrainPatchesCommand {
         let Some(mut state) = world.try_resource_mut::<TerrainPatchState>() else {
             return CommandOutput::line("terrain.patches: not available in this session");
         };
-        let usage = "usage: terrain.patches [on | off | amplitude <m> | range <m> | fine <m>]";
+        let usage =
+            "usage: terrain.patches [on | off | amplitude <m> | range <m> | fine <m> | parallax on|off]";
         let parse = |word: &str| word.parse::<f32>().ok().filter(|v| v.is_finite() && *v >= 0.0);
         let words: Vec<&str> = args.split_whitespace().collect();
         match words.as_slice() {
@@ -277,14 +278,20 @@ impl ConsoleCommand for TerrainPatchesCommand {
                 Some(m) => state.fine_range_m = m,
                 None => return CommandOutput::line(format!("terrain.patches: bad number\n{usage}")),
             },
+            // Parallax on patch draws: on by default (the 3 cm patch relief
+            // alone reads flat); `off` is the A/B switch until 4.3 marches
+            // only the residual relief (§3.6).
+            ["parallax", "on"] => state.parallax = true,
+            ["parallax", "off"] => state.parallax = false,
             _ => return CommandOutput::line(usage),
         }
         let mut lines = vec![format!(
-            "terrain.patches: {} amplitude={:.3} m range={:.1} m fine={:.1} m lip={:.3} m pool={} assigned={}",
+            "terrain.patches: {} amplitude={:.3} m range={:.1} m fine={:.1} m parallax={} lip={:.3} m pool={} assigned={}",
             if state.enabled { "on" } else { "off" },
             state.amplitude_m,
             state.range_m,
             state.fine_range_m,
+            if state.parallax { "on" } else { "off" },
             LIP_M,
             state.meshes.fine.len().min(state.meshes.coarse.len()),
             state.resident(),
