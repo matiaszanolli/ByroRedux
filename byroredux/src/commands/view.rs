@@ -1212,13 +1212,54 @@ impl ConsoleCommand for CamPosCommand {
         if crate::systems::carry_player_body_to_camera(world) {
             CommandOutput::line(format!(
                 "Camera + player body teleported to ({x:.2}, {y:.2}, {z:.2}) \
-                 (Character mode — the body falls to the floor beneath it)"
+                 (Character mode — the body falls to the floor beneath it; \
+                 `cam.fly on` first to place the camera freely)"
             ))
         } else {
             CommandOutput::line(format!("Camera teleported to ({x:.2}, {y:.2}, {z:.2})"))
         }
     }
 }
+/// `cam.fly [on|off]` — switch between the fly camera and the character
+/// body at runtime, the console form of the F key. In `Character` mode
+/// `cam.pos` carries the body, which falls back to the floor (and a
+/// camera lowered into the ground is pushed back out), so a capture that
+/// needs the camera in the air, or at grass height, turns the fly camera
+/// on first. `off` snaps the body under the camera and is refused when
+/// there is no body (a `--fly` / `--mesh` boot). No argument reports the
+/// mode.
+pub(crate) struct CamFlyCommand;
+impl ConsoleCommand for CamFlyCommand {
+    fn name(&self) -> &str {
+        "cam.fly"
+    }
+    fn description(&self) -> &str {
+        "Switch the fly camera on or off (usage: cam.fly [on|off])"
+    }
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        use crate::systems::PlayerMode;
+        let want = match args.trim() {
+            "" => None,
+            "on" => Some(PlayerMode::FlyCam),
+            "off" => Some(PlayerMode::Character),
+            _ => return CommandOutput::line("usage: cam.fly [on|off]"),
+        };
+        if let Some(want) = want
+            && !crate::systems::set_player_mode(world, want)
+        {
+            return CommandOutput::error(format!(
+                "cam.fly: could not switch to {want:?} (no PlayerMode, or no player body to snap)"
+            ));
+        }
+        let mode = world.try_resource::<PlayerMode>().map(|m| *m);
+        CommandOutput::line(match mode {
+            Some(PlayerMode::FlyCam) => "cam.fly: on (FlyCam — cam.pos places the camera freely)",
+            Some(PlayerMode::Character) => "cam.fly: off (Character — the camera follows the body)",
+            None => "cam.fly: no PlayerMode in this session",
+        })
+    }
+}
+
 /// `cam.tp <entity_id>` — teleport the active camera to look at the
 /// given entity. The camera lands ~200 units back along the target's
 /// -Z axis at +50 Y for a reasonable over-the-shoulder framing on
@@ -1340,6 +1381,32 @@ impl ConsoleCommand for CamTpCommand {
 #[cfg(test)]
 mod combat_status_tests {
     use super::*;
+
+    #[test]
+    fn cam_fly_switches_to_the_fly_camera_and_reports_the_mode() {
+        use crate::systems::PlayerMode;
+        let world = World::new();
+        assert!(CamFlyCommand.execute(&world, "").lines.join("\n").contains("no PlayerMode"));
+
+        let mut world = World::new();
+        world.insert_resource(PlayerMode::Character);
+        let out = CamFlyCommand.execute(&world, "on").lines.join("\n");
+        assert!(out.contains("cam.fly: on"), "{out}");
+        assert_eq!(*world.resource::<PlayerMode>(), PlayerMode::FlyCam);
+        // Already on: a no-op that still reports.
+        assert!(CamFlyCommand.execute(&world, "on").lines.join("\n").contains("cam.fly: on"));
+        assert!(CamFlyCommand.execute(&world, "sideways").lines.join("\n").contains("usage"));
+    }
+
+    #[test]
+    fn cam_fly_off_without_a_body_stays_in_the_fly_camera() {
+        use crate::systems::PlayerMode;
+        let mut world = World::new();
+        world.insert_resource(PlayerMode::FlyCam);
+        let out = CamFlyCommand.execute(&world, "off").lines.join("\n");
+        assert!(out.contains("could not switch"), "{out}");
+        assert_eq!(*world.resource::<PlayerMode>(), PlayerMode::FlyCam);
+    }
 
     #[test]
     fn cam_pos_rejects_non_finite_coordinates_without_moving_camera() {

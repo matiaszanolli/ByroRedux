@@ -39,10 +39,11 @@ pub(super) fn register_camera_systems(scheduler: &mut Scheduler) {
             // parallel batch's `known_conflict_count() == 0` invariant
             // — the thing that makes cross-thread ABBA structurally
             // unreachable among parallel systems — was computed from an
-            // incomplete declaration. No live race today (the only
-            // writer, `toggle_player_mode`, takes `&mut World` and so
-            // can't run inside the parallel window), but this system
-            // writes the camera pose the renderer, audio listener, and
+            // incomplete declaration. No live race today (both writers
+            // go through `set_player_mode` outside the parallel window:
+            // `toggle_player_mode` holds `&mut World`, and `cam.fly` runs
+            // in the exclusive debug drain), but this system writes the
+            // camera pose the renderer, audio listener, and
             // `submersion_system` all consume. Same shape of fix as
             // #1787's `ContactConfig` on `physics_sync_system`.
             .reads_resource::<crate::systems::PlayerMode>()

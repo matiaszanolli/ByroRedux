@@ -197,6 +197,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(NearCommand);
     registry.register(PickCommand);
     registry.register(CamPosCommand);
+    registry.register(CamFlyCommand);
     registry.register(CamTpCommand);
     registry.register(InteractionStatusCommand);
     registry.register(CombatStatusCommand);

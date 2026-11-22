@@ -350,7 +350,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**193**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**194**) grouped by
 purpose:
 
 ```
@@ -382,7 +382,10 @@ pick [count=10]             → ray-cast from camera-forward, list entities whos
 
 # Camera control (fly-camera entity, ActiveCamera resource)
 cam.where                   → print active camera position + yaw/pitch
-cam.pos <x> <y> <z>         → teleport camera to absolute world position
+cam.pos <x> <y> <z>         → teleport camera to absolute world position (Character
+                              mode carries the body, which falls to the floor)
+cam.fly [on|off]            → switch the fly camera on/off at runtime (F key);
+                              `on` before `cam.pos` to place the camera freely
 cam.tp <entity_id>          → teleport camera to over-the-shoulder framing of
                               the entity (200 back + 50 up, look-at).
                               No-arg form uses the picked ref (prid)
@@ -795,7 +798,8 @@ per-frame telemetry like `skin.coverage` against a known viewpoint.
 | Command | What it does |
 |---------|-------------|
 | `cam.where` | Print `ActiveCamera` entity ID, world position, yaw/pitch in radians + degrees |
-| `cam.pos <x> <y> <z>` | Teleport to an absolute world position (renderer Y-up). Leaves rotation untouched |
+| `cam.pos <x> <y> <z>` | Teleport to an absolute world position (renderer Y-up). Leaves rotation untouched. In Character mode it carries the player body, which then falls to the floor: a lift lands back on the ground and a camera lowered into the terrain is pushed back out |
+| `cam.fly [on\|off]` | Switch between the fly camera and the character body (the F key's console form). `on` keeps the camera where it is, so `cam.pos` then places it freely, in the air or at grass height; `off` snaps the body under the camera and is refused when there is no body. No argument prints the mode |
 | `cam.tp <entity_id>` | Teleport over-the-shoulder of an entity (200 units back + 50 up, look-at). No-arg form uses the picked ref (`prid`) |
 
 ### Look-at math
