@@ -77,6 +77,13 @@ pub enum LevelingModel {
         /// The five `fSkillUse*` settings of a rank's cost
         /// ([`SkillUseCosts`]), overlaid by [`LevelingModel::with_gmst`].
         costs: SkillUseCosts,
+        /// #7196 — `iLevelUp01Mult` … `iLevelUp10Mult`: the attribute bonus a
+        /// level offers at a governed tally of 1 … 10
+        /// ([`super::tes::oblivion_attribute_bonus`]).
+        attribute_bonuses: [u8; 10],
+        /// #7196 — `fStatsHealthLevelMult`: the share of Endurance a level-up
+        /// adds to Health ([`super::tes::apply_oblivion_level_up_health`]).
+        health_per_endurance: f32,
     },
     /// Skyrim — a character-XP system fed by skill advancement. Raising a
     /// skill to rank `R` grants `R · xp_per_skill_rank` character XP; a level
@@ -118,13 +125,32 @@ impl LevelingModel {
             // `Oblivion.esm` authors Factor and Exp; Minor, Major and Spec
             // come from the executable's defaults, so a setting the load
             // order does not author keeps the sourced constant.
+            //
+            // #7196 — and the level-up's own settings (CS wiki
+            // *ILevelUpSkillCount*, *ILevelUpXXMult*, *FStatsHealthLevelMult*;
+            // `Oblivion.esm` authors none of them): a non-finite or negative
+            // value is ignored, a skill count below 1 too (a level must take
+            // at least one major increase), and the integer settings saturate
+            // at their `u8` field.
             Self::SkillUse {
                 major_skill_ups_per_level,
                 level_cap,
                 costs,
+                attribute_bonuses,
+                health_per_endurance,
             } => Self::SkillUse {
-                major_skill_ups_per_level,
+                major_skill_ups_per_level: gmst("iLevelUpSkillCount")
+                    .filter(|value| value.is_finite() && *value >= 1.0)
+                    .map_or(major_skill_ups_per_level, |value| value.min(f32::from(u8::MAX)) as u8),
                 level_cap,
+                attribute_bonuses: std::array::from_fn(|i| {
+                    gmst(&format!("iLevelUp{:02}Mult", i + 1))
+                        .filter(|value| value.is_finite() && *value >= 0.0)
+                        .map_or(attribute_bonuses[i], |value| value.min(f32::from(u8::MAX)) as u8)
+                }),
+                health_per_endurance: gmst("fStatsHealthLevelMult")
+                    .filter(|value| value.is_finite() && *value >= 0.0)
+                    .unwrap_or(health_per_endurance),
                 costs: SkillUseCosts {
                     factor: gmst("fSkillUseFactor").unwrap_or(costs.factor),
                     exp: gmst("fSkillUseExp").unwrap_or(costs.exp),
@@ -220,6 +246,8 @@ impl LevelingModel {
         major_skill_ups_per_level: 10,
         level_cap: 0,
         costs: SkillUseCosts::OBLIVION,
+        attribute_bonuses: super::tes::OBLIVION_ATTRIBUTE_BONUSES,
+        health_per_endurance: super::tes::OBLIVION_HEALTH_PER_ENDURANCE,
     };
 
     /// Skyrim — `25·L + 75` XP per level, `1` character XP per skill rank
@@ -356,6 +384,30 @@ impl LevelingModel {
     pub fn skill_use_costs(&self) -> Option<SkillUseCosts> {
         match self {
             Self::SkillUse { costs, .. } => Some(*costs),
+            _ => None,
+        }
+    }
+
+    /// #7196 — the attribute bonus a level offers an attribute whose governed
+    /// skills ranked up `governed` times (the model's `iLevelUpXXMult` bands),
+    /// or `None` for a model that does not level by skill use.
+    #[inline]
+    pub fn attribute_bonus(&self, governed: u16) -> Option<u8> {
+        match self {
+            Self::SkillUse { attribute_bonuses, .. } => {
+                Some(super::tes::oblivion_attribute_bonus(governed, attribute_bonuses))
+            }
+            _ => None,
+        }
+    }
+
+    /// #7196 — the share of Endurance a level-up adds to Health
+    /// (`fStatsHealthLevelMult`), or `None` for a model that does not level by
+    /// skill use.
+    #[inline]
+    pub fn level_up_health_per_endurance(&self) -> Option<f32> {
+        match self {
+            Self::SkillUse { health_per_endurance, .. } => Some(*health_per_endurance),
             _ => None,
         }
     }
@@ -514,6 +566,45 @@ mod tests {
         assert!(LevelingModel::FNV.skill_use_costs().is_none());
     }
 
+    /// #7196 — the level-up's own settings overlay the sourced defaults:
+    /// `iLevelUpSkillCount`, the ten `iLevelUpXXMult` bands and
+    /// `fStatsHealthLevelMult`. An unauthored setting keeps its default; a
+    /// non-finite or negative value, or a skill count below 1, is ignored.
+    #[test]
+    fn oblivion_level_up_settings_overlay_the_load_orders_settings() {
+        let untouched = LevelingModel::OBLIVION.with_gmst(|_| None);
+        assert_eq!(untouched.attribute_bonus(0), Some(1));
+        assert_eq!(untouched.attribute_bonus(4), Some(2));
+        assert_eq!(untouched.attribute_bonus(10), Some(5));
+        assert_eq!(untouched.attribute_bonus(30), Some(5), "no roll-over past the tenth band");
+        assert_eq!(untouched.level_up_health_per_endurance(), Some(0.1));
+
+        // A flat-+5 leveling mod, a shorter level and a doubled Health gain.
+        let tuned = LevelingModel::OBLIVION.with_gmst(|name| match name {
+            "iLevelUpSkillCount" => Some(5.0),
+            name if name.starts_with("iLevelUp") && name.ends_with("Mult") => Some(5.0),
+            "fStatsHealthLevelMult" => Some(0.2),
+            _ => None,
+        });
+        assert!(matches!(tuned, LevelingModel::SkillUse { major_skill_ups_per_level: 5, .. }));
+        assert_eq!(tuned.attribute_bonus(1), Some(5));
+        assert_eq!(tuned.attribute_bonus(0), Some(1), "a tally of 0 is the engine's +1, no setting covers it");
+        assert_eq!(tuned.level_up_health_per_endurance(), Some(0.2));
+        // One band alone: iLevelUp07Mult is the bonus at a tally of 7.
+        let seventh = LevelingModel::OBLIVION.with_gmst(|name| (name == "iLevelUp07Mult").then_some(4.0));
+        assert_eq!((seventh.attribute_bonus(6), seventh.attribute_bonus(7), seventh.attribute_bonus(8)), (Some(3), Some(4), Some(4)));
+
+        for bad in [f32::NAN, -1.0] {
+            let kept = LevelingModel::OBLIVION.with_gmst(move |_| Some(bad));
+            assert!(matches!(kept, LevelingModel::SkillUse { major_skill_ups_per_level: 10, .. }), "{bad}");
+            assert_eq!(kept.attribute_bonus(10), Some(5), "{bad}");
+            assert_eq!(kept.level_up_health_per_endurance(), Some(0.1), "{bad}");
+        }
+        let zero = LevelingModel::OBLIVION.with_gmst(|name| (name == "iLevelUpSkillCount").then_some(0.0));
+        assert!(matches!(zero, LevelingModel::SkillUse { major_skill_ups_per_level: 10, .. }), "a level takes at least one");
+        assert!(LevelingModel::SKYRIM.attribute_bonus(3).is_none() && LevelingModel::FNV.level_up_health_per_endurance().is_none());
+    }
+
     /// #6227 — a raise lifts a capped curve and leaves an uncapped or
     /// skill-driven model alone.
     #[test]
@@ -627,7 +718,10 @@ mod tests {
     fn leveling_model_is_copy_and_small() {
         fn assert_copy<T: Copy>() {}
         assert_copy::<LevelingModel>();
-        // Enum tag + widest variant (XpCurve) — stays within half a cache line.
-        assert!(std::mem::size_of::<LevelingModel>() <= 32);
+        // Enum tag + widest variant (SkillUse since #7196, which carries the
+        // level-up's ten bonus bands and Health share beside the rank costs).
+        // The model is held once, by the `CharacterRuleset` resource, not per
+        // actor, so the ceiling only keeps it from growing unnoticed.
+        assert!(std::mem::size_of::<LevelingModel>() <= 48);
     }
 }

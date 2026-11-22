@@ -301,7 +301,7 @@ pub enum PickRefusal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PickAccepted {
     pub attribute: u8,
-    /// The bonus the level will give it (`oblivion_attribute_bonus` of its frozen tally).
+    /// The bonus the level will give it (the ruleset's band for its frozen tally, #7196).
     pub bonus: u8,
     /// Picks the oldest pending level now holds, of three.
     pub picks: usize,
@@ -322,6 +322,7 @@ pub fn pick_attribute(world: &World, player: EntityId, attribute: u32) -> Result
     if base.is_some_and(|base| base >= 100.0) {
         return Err(PickRefusal::AtMaximum);
     }
+    let leveling = world.try_resource::<CharacterRuleset>().ok_or(PickRefusal::NoPendingLevel)?.leveling;
     let mut levels = world.query_mut::<SkillUseLevel>().ok_or(PickRefusal::NoPendingLevel)?;
     let level = levels.get_mut(player).and_then(|level| level.pending.first_mut()).ok_or(PickRefusal::NoPendingLevel)?;
     if level.picks.contains(&(attribute as u8)) {
@@ -331,7 +332,7 @@ pub fn pick_attribute(world: &World, player: EntityId, attribute: u32) -> Result
         return Err(PickRefusal::LevelFull);
     }
     level.picks.push(attribute as u8);
-    Ok(PickAccepted { attribute: attribute as u8, bonus: level.bonus(attribute as usize), picks: level.picks.len() })
+    Ok(PickAccepted { attribute: attribute as u8, bonus: level.bonus(attribute as usize, &leveling), picks: level.picks.len() })
 }
 
 /// What a completed sleep did with the pending levels.
@@ -374,7 +375,12 @@ pub fn apply_level_menu_picks(
 }
 
 fn apply_level(world: &World, player: EntityId, selection: Option<([u16; 8], [u8; LEVEL_PICKS])>) -> LevelUp {
-    let Some(per_level) = world.try_resource::<CharacterRuleset>().and_then(|r| per_level_of(&r.leveling)) else {
+    let Some(leveling) = world.try_resource::<CharacterRuleset>().map(|rules| rules.leveling) else {
+        return LevelUp::NoPending;
+    };
+    // #7196 — the level's settings (`iLevelUpSkillCount`, the `iLevelUpXXMult` bands, `fStatsHealthLevelMult`)
+    // as the load order authors them, through the ruleset's model.
+    let (Some(per_level), Some(health_per_endurance)) = (per_level_of(&leveling), leveling.level_up_health_per_endurance()) else {
         return LevelUp::NoPending;
     };
     let attributes: [_; 8] = std::array::from_fn(|code| crate::obscript_actor_values::actor_value_form(world, code as f32));
@@ -419,12 +425,12 @@ fn apply_level(world: &World, player: EntityId, selection: Option<([u16; 8], [u8
         for &code in picks {
             let Some(av) = attributes.get(code as usize).copied().flatten() else { continue };
             let from = values.get_base(av).map_or(0.0, |entry| entry.base);
-            let to = (from + f32::from(pending.bonus(code as usize))).min(100.0);
+            let to = (from + f32::from(pending.bonus(code as usize, &leveling))).min(100.0);
             values.set_base(av, to);
             raised.push((code, from, to));
         }
         let endurance_now = values.get_base(endurance).map_or(0.0, |entry| entry.base).max(0.0) as u16;
-        health_gain = byroredux_core::character::apply_oblivion_level_up_health(values, health, endurance_now);
+        health_gain = byroredux_core::character::apply_oblivion_level_up_health(values, health, endurance_now, health_per_endurance);
         level.pending.remove(0);
         level.major_increases = level.major_increases.saturating_sub(per_level);
     }
@@ -536,7 +542,7 @@ pub fn skill_use_report(world: &World, player: EntityId) -> Option<Vec<String>> 
         let offered = ATTRIBUTES
             .iter()
             .enumerate()
-            .map(|(code, name)| format!("{name} +{}", pending.bonus(code)))
+            .map(|(code, name)| format!("{name} +{}", pending.bonus(code, &rules)))
             .collect::<Vec<_>>()
             .join(", ");
         let picked = pending

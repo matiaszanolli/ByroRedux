@@ -671,6 +671,37 @@ mod tests {
         assert_eq!(level_of(&world, player), 2);
     }
 
+    /// #7196 — a load order's level-up settings reach the level taken: `iLevelUpSkillCount` 5 makes five major
+    /// increases a level, `iLevelUp05Mult` 4 is the bonus for Blade's five rank-ups, and `fStatsHealthLevelMult` 0.2
+    /// is the Health share of the Endurance after the picks.
+    #[test]
+    fn a_retuned_level_up_follows_the_load_orders_settings() {
+        use byroredux_core::character::{CharacterRuleset, LevelingModel};
+        use byroredux_scripting::oblivion_skill_use::{pick_attribute, raise_skill_ranks};
+        let (mut world, player) = level_world();
+        world.insert_resource(CharacterRuleset::new(LevelingModel::OBLIVION.with_gmst(|name| match name {
+            "iLevelUpSkillCount" => Some(5.0),
+            "iLevelUp05Mult" => Some(4.0),
+            "fStatsHealthLevelMult" => Some(0.2),
+            _ => None,
+        })));
+        oblivion_level_system(&world, 0.0);
+        raise_skill_ranks(&world, player, BLADE, 5, false);
+        assert_eq!(pick_attribute(&world, player, 0).unwrap().bonus, 4, "Strength's five rank-ups: iLevelUp05Mult");
+        for attribute in [5, 7] {
+            pick_attribute(&world, player, attribute).unwrap();
+        }
+        sleep(&world, false);
+        oblivion_level_system(&world, 0.0);
+        assert_eq!(level_of(&world, player), 2, "five major increases made the level");
+        let names = world.resource::<byroredux_scripting::ActorValueNames>();
+        let (health, strength) = (names.resolve("Health").unwrap(), names.resolve("Strength").unwrap());
+        drop(names);
+        let values = world.get::<byroredux_core::ecs::components::ActorValues>(player).unwrap();
+        assert_eq!(values.get_base(strength).unwrap().base, 44.0);
+        assert_eq!(values.stored(health), 8.0, "0.2 of Endurance 41, rounded down");
+    }
+
     /// A level whose attributes are not all picked stays pending and the sleep says what to do; another sleep after
     /// the picks takes it.
     #[test]

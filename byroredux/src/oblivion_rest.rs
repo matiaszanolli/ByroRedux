@@ -231,6 +231,8 @@ pub(crate) fn snapshot(world: &World) -> Option<RestView> {
         }),
         RestSession::LevelUp(offer) => {
             let bases = attribute_bases(world, offer.player)?;
+            // #7196 — the bonus bands are the ruleset's (the load order's `iLevelUpXXMult` settings).
+            let leveling = world.try_resource::<byroredux_core::character::CharacterRuleset>()?.leveling;
             let selected = offer
                 .picks
                 .iter()
@@ -244,7 +246,7 @@ pub(crate) fn snapshot(world: &World) -> Option<RestView> {
                     name: OBLIVION_ACTOR_VALUES[code],
                     base: bases[code]
                         .map_or_else(|| String::from("—"), |base| format!("{base:.0}")),
-                    bonus: byroredux_core::character::oblivion_attribute_bonus(offer.tallies[code]),
+                    bonus: leveling.attribute_bonus(offer.tallies[code]).unwrap_or(0),
                     selected: selected_row,
                     enabled: available && (selected_row || selected < LEVEL_PICKS),
                 }

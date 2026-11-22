@@ -180,19 +180,29 @@ pub fn oblivion_ruleset<F: Fn(&str) -> Option<u32>>(resolve: F) -> CharacterRule
 /// | 8–9                | +4    |
 /// | 10+                | +5    |
 ///
-/// Capped at +5; surplus skill-ups past 10 do **not** roll over to the next
-/// level. `governed_skill_ups` is the count for one attribute; the caller
-/// tallies increases per governing attribute (via [`SkillSet::governing`]).
+/// Capped at the tenth band; surplus skill-ups past 10 do **not** roll over to
+/// the next level. `governed_skill_ups` is the count for one attribute; the
+/// caller tallies increases per governing attribute (via
+/// [`SkillSet::governing`]). `bonuses` is the band for a tally of 1 to 10, the
+/// `iLevelUp01Mult` … `iLevelUp10Mult` settings (#7196, [`OBLIVION_ATTRIBUTE_BONUSES`]
+/// by default; a load order retunes them through
+/// [`LevelingModel::with_gmst`](super::LevelingModel::with_gmst)); a tally of 0
+/// is the engine's +1, which no setting covers.
 #[must_use]
-pub fn oblivion_attribute_bonus(governed_skill_ups: u16) -> u8 {
+pub fn oblivion_attribute_bonus(governed_skill_ups: u16, bonuses: &[u8; 10]) -> u8 {
     match governed_skill_ups {
         0 => 1,
-        1..=4 => 2,
-        5..=7 => 3,
-        8..=9 => 4,
-        _ => 5,
+        n => bonuses[usize::from(n.min(10)) - 1],
     }
 }
+
+/// `iLevelUp01Mult` … `iLevelUp10Mult`: the attribute bonus at a governed tally of 1 … 10 (CS wiki
+/// *ILevelUpXXMult*, defaults 2, 2, 2, 2, 3, 3, 3, 4, 4, 5; `Oblivion.esm` authors none of them).
+pub const OBLIVION_ATTRIBUTE_BONUSES: [u8; 10] = [2, 2, 2, 2, 3, 3, 3, 4, 4, 5];
+
+/// `fStatsHealthLevelMult`: the share of Endurance a level-up adds to Health (CS wiki *FStatsHealthLevelMult*,
+/// 0.1, "rounded down"; `Oblivion.esm` does not author it).
+pub const OBLIVION_HEALTH_PER_ENDURANCE: f32 = 0.1;
 
 /// Oblivion **per-level Health gain** — the stateful half of the Health pool
 /// (leveling-efficiency mechanic, `docs/engine/charal.md` §5).
@@ -204,16 +214,17 @@ pub fn oblivion_attribute_bonus(governed_skill_ups: u16) -> u8 {
 /// path-dependent — a per-level event, not a stateless derived formula. This is
 /// why maximising Endurance early matters: every level compounds it.
 ///
-/// Returned as an exact `f32` (`0.1 × endurance`); integer HP rounding is the
-/// leveling system's concern, as with [`LevelingModel::skill_points`].
+/// Returned as an exact `f32` (`per_endurance × endurance`, `fStatsHealthLevelMult`,
+/// [`OBLIVION_HEALTH_PER_ENDURANCE`] by default, #7196); integer HP rounding is
+/// the leveling system's concern, as with [`LevelingModel::skill_points`].
 ///
 /// **Scope:** this is *classic* Oblivion (2006, Gamebryo — ByroRedux's
 /// target). The live UESP *Oblivion:Health* page now documents the 2024
 /// *Oblivion Remastered* (UE5) formula (Strength + `Endurance × 0.6666 × 2`);
 /// that engine is out of scope — do not adopt it here.
 #[must_use]
-pub fn oblivion_health_gain_per_level(endurance: u16) -> f32 {
-    0.1 * f32::from(endurance)
+pub fn oblivion_health_gain_per_level(endurance: u16, per_endurance: f32) -> f32 {
+    per_endurance * f32::from(endurance)
 }
 
 /// Apply one Oblivion level-up's Health gain to the player's [`ActorValues`] (#7044): the whole-number part of
@@ -226,8 +237,8 @@ pub fn oblivion_health_gain_per_level(endurance: u16) -> f32 {
 /// UESP *Oblivion:Health*: "you gain health points equal to a tenth of your endurance, rounded down"
 /// (Endurance 98 gives +9). Which Endurance the executable reads, before or after the level's attribute bonus,
 /// is unverified (the skill-use leveling PRD's V8): the caller passes the value it settles on.
-pub fn apply_oblivion_level_up_health(values: &mut ActorValues, health: u32, endurance: u16) -> f32 {
-    let gain = oblivion_health_gain_per_level(endurance).floor();
+pub fn apply_oblivion_level_up_health(values: &mut ActorValues, health: u32, endurance: u16, per_endurance: f32) -> f32 {
+    let gain = oblivion_health_gain_per_level(endurance, per_endurance).floor();
     values.add_stored(health, gain);
     gain
 }
@@ -248,8 +259,8 @@ mod tests {
     fn the_level_up_health_gain_rounds_down_into_the_stored_layer() {
         let mut values = ActorValues::from_pairs([(HEALTH, 80.0), (END, 98.0)]);
         // UESP *Oblivion:Health*: Endurance 98 at level-up gives +9, rounded down.
-        assert_eq!(apply_oblivion_level_up_health(&mut values, HEALTH, 98), 9.0);
-        assert_eq!(apply_oblivion_level_up_health(&mut values, HEALTH, 45), 4.0);
+        assert_eq!(apply_oblivion_level_up_health(&mut values, HEALTH, 98, OBLIVION_HEALTH_PER_ENDURANCE), 9.0);
+        assert_eq!(apply_oblivion_level_up_health(&mut values, HEALTH, 45, OBLIVION_HEALTH_PER_ENDURANCE), 4.0);
         let health = values.get(HEALTH).unwrap();
         assert_eq!((health.stored, health.base, health.permanent_mod, health.set_override), (13.0, 80.0, 0.0, 0.0));
         assert_eq!(values.current(HEALTH), 93.0);
@@ -414,19 +425,19 @@ mod tests {
     #[test]
     fn attribute_bonus_tiers_match_uesp() {
         use super::oblivion_attribute_bonus;
-        assert_eq!(oblivion_attribute_bonus(0), 1);
+        assert_eq!(oblivion_attribute_bonus(0, &OBLIVION_ATTRIBUTE_BONUSES), 1);
         // 1–4 → +2
-        assert_eq!(oblivion_attribute_bonus(1), 2);
-        assert_eq!(oblivion_attribute_bonus(4), 2);
+        assert_eq!(oblivion_attribute_bonus(1, &OBLIVION_ATTRIBUTE_BONUSES), 2);
+        assert_eq!(oblivion_attribute_bonus(4, &OBLIVION_ATTRIBUTE_BONUSES), 2);
         // 5–7 → +3
-        assert_eq!(oblivion_attribute_bonus(5), 3);
-        assert_eq!(oblivion_attribute_bonus(7), 3);
+        assert_eq!(oblivion_attribute_bonus(5, &OBLIVION_ATTRIBUTE_BONUSES), 3);
+        assert_eq!(oblivion_attribute_bonus(7, &OBLIVION_ATTRIBUTE_BONUSES), 3);
         // 8–9 → +4
-        assert_eq!(oblivion_attribute_bonus(8), 4);
-        assert_eq!(oblivion_attribute_bonus(9), 4);
+        assert_eq!(oblivion_attribute_bonus(8, &OBLIVION_ATTRIBUTE_BONUSES), 4);
+        assert_eq!(oblivion_attribute_bonus(9, &OBLIVION_ATTRIBUTE_BONUSES), 4);
         // 10+ → +5, capped (no roll-over)
-        assert_eq!(oblivion_attribute_bonus(10), 5);
-        assert_eq!(oblivion_attribute_bonus(30), 5);
+        assert_eq!(oblivion_attribute_bonus(10, &OBLIVION_ATTRIBUTE_BONUSES), 5);
+        assert_eq!(oblivion_attribute_bonus(30, &OBLIVION_ATTRIBUTE_BONUSES), 5);
     }
 
     #[test]
@@ -447,16 +458,16 @@ mod tests {
         }
         assert_eq!(str_ups, 5);
         assert_eq!(agi_ups, 6);
-        assert_eq!(oblivion_attribute_bonus(str_ups), 3); // 5 → +3
-        assert_eq!(oblivion_attribute_bonus(agi_ups), 3); // 6 → +3
+        assert_eq!(oblivion_attribute_bonus(str_ups, &OBLIVION_ATTRIBUTE_BONUSES), 3); // 5 → +3
+        assert_eq!(oblivion_attribute_bonus(agi_ups, &OBLIVION_ATTRIBUTE_BONUSES), 3); // 6 → +3
     }
 
     #[test]
     fn health_gain_per_level_is_ten_percent_of_endurance() {
         use super::oblivion_health_gain_per_level;
-        assert_eq!(oblivion_health_gain_per_level(100), 10.0); // UESP anchor
-        assert_eq!(oblivion_health_gain_per_level(45), 4.5); // fractional — caller rounds
-        assert_eq!(oblivion_health_gain_per_level(0), 0.0);
+        assert_eq!(oblivion_health_gain_per_level(100, OBLIVION_HEALTH_PER_ENDURANCE), 10.0); // UESP anchor
+        assert_eq!(oblivion_health_gain_per_level(45, OBLIVION_HEALTH_PER_ENDURANCE), 4.5); // fractional — caller rounds
+        assert_eq!(oblivion_health_gain_per_level(0, OBLIVION_HEALTH_PER_ENDURANCE), 0.0);
     }
 
     #[test]
@@ -469,7 +480,7 @@ mod tests {
         };
         assert_eq!(base, 100.0);
         // Reaching level 3 accrues two per-level gains (levels 2 and 3).
-        let total = base + 2.0 * oblivion_health_gain_per_level(50);
+        let total = base + 2.0 * oblivion_health_gain_per_level(50, OBLIVION_HEALTH_PER_ENDURANCE);
         assert_eq!(total, 110.0);
     }
 }

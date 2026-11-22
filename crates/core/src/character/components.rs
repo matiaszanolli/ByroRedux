@@ -41,10 +41,12 @@ pub struct PendingLevel {
 }
 
 impl PendingLevel {
-    /// The bonus the level offers attribute code `attribute` (`oblivion_attribute_bonus` of its tally).
+    /// The bonus the level offers attribute code `attribute`: `leveling`'s band for its frozen tally
+    /// ([`LevelingModel::attribute_bonus`](crate::character::LevelingModel::attribute_bonus), the load order's
+    /// `iLevelUpXXMult` settings, #7196), or 0 under a model that does not level by skill use.
     #[must_use]
-    pub fn bonus(&self, attribute: usize) -> u8 {
-        crate::character::oblivion_attribute_bonus(self.tallies.get(attribute).copied().unwrap_or(0))
+    pub fn bonus(&self, attribute: usize, leveling: &crate::character::LevelingModel) -> u8 {
+        leveling.attribute_bonus(self.tallies.get(attribute).copied().unwrap_or(0)).unwrap_or(0)
     }
 }
 
@@ -665,7 +667,7 @@ mod skill_use_level_tests {
         assert_eq!(level.pending[1].tallies[5], 10);
         assert_eq!(level.pending[0].tallies[3], 0, "each level keeps its own tallies");
         // The offered bonuses read the frozen tallies: 10 gives +5, none +1.
-        assert_eq!(level.pending[0].bonus(0), 5);
-        assert_eq!(level.pending[0].bonus(7), 1);
+        assert_eq!(level.pending[0].bonus(0, &crate::character::LevelingModel::OBLIVION), 5);
+        assert_eq!(level.pending[0].bonus(7, &crate::character::LevelingModel::OBLIVION), 1);
     }
 }

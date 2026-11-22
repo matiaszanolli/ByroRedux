@@ -1422,7 +1422,7 @@ mod tests {
         let mut gains = 0.0;
         for endurance in [45.0, 50.0, 55.0] {
             values.set_base(5, endurance);
-            gains += apply_oblivion_level_up_health(&mut values, 1, endurance as u16);
+            gains += apply_oblivion_level_up_health(&mut values, 1, endurance as u16, crate::character::tes::OBLIVION_HEALTH_PER_ENDURANCE);
             assert!(rules.refresh_player_only_bases(&mut values, 5), "the per-frame refresh runs every tick");
             assert_eq!(values.current(1), 2.0 * endurance + gains, "base 2 x Endurance plus the accumulated gains");
         }
