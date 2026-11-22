@@ -368,8 +368,8 @@ compute `D` or `h`. Options:
    a square not yet assigned.
 
 **Order within 4.3:**
-1. **Re-baseline after #7261.** The §8.3 totals predate it, so re-run the five
-   positions first. Possibly some already pass the bar.
+1. **Re-baseline after #7261.** Done in §8.4: three poses are still over the bar, by
+   0.08–0.18 ms (FNV down and eye, tundra eye).
 2. **The selector, with option 1 heights.** CPU mirror tests:
    - the area formula against hand values;
    - rotation invariance (a yaw/pitch sweep changes no level);
@@ -718,6 +718,40 @@ delta, ms. The `main_render` delta now includes ray queries traversing the patch
   asks for.
 - **Ground cover**: with the patches in the TLAS, the first build dropped every plant
   under a patch (§7.2); with the tag the near grass is back.
+
+### 8.4 Re-baseline after #7261 (2026-11-22)
+#7261 stopped helper lanes tracing shadow, GI and reflection rays. This re-run uses the
+§8.3 harness: release build of main at 0cbde6b5a, 8 interleaved off/on rounds × 4
+samples, with the defaults (two-level lattice, 3 cm, 6 m, patch parallax on, patches in
+the TLAS) and 16 patches resident. **Total** is defined as in §8.3. Cells are ms, with
+§8.3 in brackets:
+
+| position | down | eye | graze |
+|---|---|---|---|
+| Skyrim tundra (2,−4) | **0.76** (0.87) | **1.09** (0.95) | **0.32** (0.48) |
+| Skyrim Riverwood (4,−11) | **0.52** (0.53) | **0.57** (0.78) | **0.39** (0.42) |
+| FNV Mojave (0,0) | **1.08** (1.45) | **1.18** (1.99) | **0.91** (1.51) |
+| FO4 Commonwealth (0,0) | **1.15**, sd 2.6–2.9 (1.16) | **0.33** (0.56) | **0.25**, sd 2.2 (0.16) |
+| Oblivion forest (0,0) | **0.73**, sd 2.0–2.8 (0.82) | **0.51** (0.55) | **0.25**, sd 1.3–1.7 (0.14) |
+
+The per-state sd is 0.10–0.49 ms except where shown. Compute is 0.12–0.17 ms, the
+patch BLAS 0.019–0.023 ms, and the TLAS build changes by under 0.004 ms. Seams are zero
+gap and zero lip deviation at every position and pose. No engine log has a validation
+line.
+
+- **The gain is where the triangles are densest.** FNV, whose spawn faces a slope,
+  drops by 0.37–0.81 ms, as much as or more than the helper-lane share §8.3 measured.
+  Skyrim and Oblivion move within noise, matching #7261's ~0.05 ms at Riverwood.
+  These are separate runs and FNV's baseline drifts 0.4–1.0 ms between runs, so read
+  the brackets as a rough comparison, not an in-run delta.
+- **Against the 1.0 ms bar**, three poses are still over: FNV down (1.08), FNV eye
+  (1.18) and tundra eye (1.09). Each is about one sd or less from the bar. Tundra eye
+  is 0.14 ms above its §8.3 value, inside the sd of 0.25–0.42. FO4 down is noise-bound
+  as before (±1 ms). Every other pose passes.
+- **For 4.3** (§7.3): the selector now has to save about 0.1–0.2 ms at FNV and tundra
+  eye level, not 0.5–1.0 ms. In §8.3, all-coarse saved 0.37–0.50 ms at FNV. That
+  number predates #7261, so it may now be smaller; the `A_FINE` sweep measures it
+  again.
 
 ## 9. Review decisions (Matías, 2026-11-21)
 1. **Upward-only displacement, base mesh kept (§3.3)**: accepted. No holes, no zero-mean
