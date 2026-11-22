@@ -61,6 +61,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/core/src/paths.rs` | tooling, ecs, parsers, nif | MEDIUM |
 | `crates/core/src/bytes.rs` | parsers, ecs | HIGH |
 | `crates/core/src/source_scan.rs` | tech-debt, tooling | LOW |
+| `crates/core/src/form_id.rs` | ecs, save Dim 2, esm, concurrency | HIGH |
 | `crates/core/tests/stale_line_references.rs` | tech-debt, ecs | LOW |
 | `crates/core/` | ecs, concurrency | HIGH |
 | `crates/nif/src/import/attach_light.rs` | nif, nifal; per-game | HIGH |
@@ -86,6 +87,8 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/plugin/tests/lod_family_census.rs` | esm, exterior; oblivion, fo3, fnv | MEDIUM |
 | `crates/plugin/src/esm/records/god_rays.rs` | esm, exterior, renderer, performance Dim 7; skyrim, fo4 | MEDIUM |
 | `crates/plugin/src/esm/records/calendar.rs` | esm, gameplay Dim 5, scripting, performance Dim 7; per-game | MEDIUM |
+| `crates/plugin/src/{activation,archive_pairing}.rs` | esm, tooling Dim 4, performance Dim 7; per-game | HIGH |
+| `crates/plugin/src/esm/{raw_record.rs,records/provenance.rs,records/list_merge}` | esm, performance Dim 7; per-game | HIGH |
 | `crates/plugin/` | esm, performance Dim 7; per-game | HIGH |
 | `crates/bsa/src/lod_family.rs` | parsers, exterior; oblivion, fo3, fnv | MEDIUM |
 | `crates/bsa/src/read_at.rs` | parsers, concurrency Dim 7 | MEDIUM |
@@ -167,6 +170,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/cell_loader/stream_snapshot.rs` | save, performance | MEDIUM |
 | `byroredux/src/cell_loader/interior_spawn.rs` | gameplay; per-game | MEDIUM |
 | `byroredux/src/cell_loader/load_order.rs` | esm, save Dim 1-2, concurrency Dim 7, performance Dim 7; per-game | HIGH |
+| `byroredux/src/plugin_activation` | esm, tooling Dim 4, ecs; per-game | MEDIUM |
 | `byroredux/src/cell_loader/precombined` | fo4; performance | HIGH |
 | `byroredux/src/cell_loader/spawn.rs` | physics, per-game, performance | MEDIUM |
 | `byroredux/src/cell_loader/spawn/precombined.rs` | fo4, performance | MEDIUM |
@@ -254,6 +258,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/streaming` | performance Dim 7, concurrency Dim 7, exterior; fo4 | MEDIUM |
 | `byroredux/src/extensions/` | safety Dim 8, tooling | MEDIUM |
 | `byroredux/src/studio_host.rs` | tooling | MEDIUM |
+| `byroredux/src/commands/plugins.rs` | esm, ecs, tooling | MEDIUM |
 | `byroredux/src/commands/hud.rs` | ui, tooling | MEDIUM |
 | `byroredux/src/commands/music.rs` | audio, ecs, tooling | MEDIUM |
 | `byroredux/src/commands/video.rs` | ui, audio, ecs, tooling | MEDIUM |
