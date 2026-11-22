@@ -50,7 +50,8 @@
 //!   driver).
 //! * [`components`] — [`CharacterLevel`] / [`LevelUpPoints`] / [`Perks`] /
 //!   [`Background`] / [`FactionReputation`] / [`FactionStanding`] /
-//!   [`PerkRank`], the structural per-actor ECS components.
+//!   [`PerkRank`] / [`CharacterIdentity`] / [`DismemberRecord`] /
+//!   [`SkillUseLevel`] / [`PendingLevel`], the structural per-actor ECS components.
 //! * [`attribute`] — [`Attribute`] / [`AttributeSet`]: the per-family
 //!   attribute roster (`FALLOUT` SPECIAL, `TES_CLASSIC`, and Skyrim's
 //!   deliberately empty set) plus its canonical ordering.

@@ -159,7 +159,7 @@ Same "skill AV in, minigame-timing formula out" shape as the sneak-detection
 and pickpocket formulas — Lockpicking AV is a CHARAL output, this minigame
 tuning is a downstream consumer, not a derived stat itself.
 
-## Sneak Detection (Skyrim) — LOCKED (Sound/Distance halves), PENDING (Visual/skill halves) — out of CHARAL scope
+## Sneak Detection (Skyrim) — LOCKED, BUILT as `StealthKind::Skyrim` (M65, #6914) — out of CHARAL scope
 
 Source: UESP *Skyrim:Sneak*, 2026-07-04. A **second engine's** full stealth
 detection formula — same "real, sourced, one layer downstream of CHARAL"
@@ -208,11 +208,10 @@ Backstab → ×15 with Assassin's Blade, doubled again by 4 specific Dark
 Brotherhood gloves) — a perk-effect table, not a derived-stat formula, same
 bucket as every other perk-damage-multiplier table already captured.
 
-Not wired into `stealth.rs` — that module's `DetectionInputs`/`detection_score`
-is FNV-specific by construction (its own doc comment says so); a Skyrim
-variant would be a second, parallel formula (different shape per the muffle
-note above), not a drop-in reuse. Flagging as a build candidate if/when the
-Visual/skill-factor gap closes, not building speculatively ahead of that.
+**Built (M65, #6914):** `crate::stealth::skyrim` (`crates/core/src/stealth/skyrim.rs`) runs this formula as a
+second, parallel row (`StealthKind::Skyrim`, the profile's `stealth` row), with the stealth points, sneak attacks
+and the Skyrim sneak hooks; the Visual and skill halves follow the CK *Category:Detection* page, the settings the
+load order's (`docs/engine/sneak-detection.md` §4.2).
 
 ## Light Armor Rating Bonus — LOCKED, BUILT (player only)
 

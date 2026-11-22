@@ -184,6 +184,16 @@ formula or a governance rule, same "too granular, belongs in a quest/dialogue
 data table, not a ruleset doc" bucket as Skyrim's Persuasion Options list. Not
 transcribed here.
 
+## Sneak detection — BUILT as `StealthKind::Starfield` (M65, #7046), executable-derived
+
+No wiki source captures Starfield's detection formula. The engine runs Fallout 4's model re-based to
+metres (`crate::stealth::starfield`, `crates/core/src/stealth/starfield.rs`, the profile's `stealth` and
+`indicator` rows), transcribed from `Starfield.exe` before the 2026-11-20 no-exe-decode ruling, so its
+provenance is executable-derived, not documented (`docs/engine/sneak-detection.md` §4.2); whether to keep,
+re-source or relabel it is the owner's open call. The sneak stance leaves Starfield's speed unscaled
+(`StanceModel::NONE`, no source read), and Starfield has no perk entry-point dialect, so its sneak hooks
+take unmodified values.
+
 ## Crew skills — out of CHARAL scope
 
 The same page lists ~30 "crew skills" (a **different mechanic**: passive
