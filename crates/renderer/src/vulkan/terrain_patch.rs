@@ -1,17 +1,21 @@
-//! TSD-4.1 terrain displacement patches (#7152).
+//! TSD-4.1 / TSD-4.2 terrain displacement patches (#7152, #7221).
 //!
 //! Design: `docs/engine/terrain-displacement.md` §3. A fixed pool of
 //! [`TERRAIN_PATCH_SLOTS`] slots is reserved once in the global vertex pool
 //! ([`TerrainPatchPass::reserve_meshes`], global-pool-only uploads: no per-mesh
-//! buffers, no BLAS), one mesh of each lattice level per slot: the fine 64×64
+//! buffers; the patch BLAS set builds their acceleration structures, not the
+//! reservation), one mesh of each lattice level per slot: the fine 64×64
 //! lattice and the coarse 32×32 one over its even points, which the host picks
 //! by distance ([`TerrainPatchSlot::coarse`]). Every frame the host hands over the resident
 //! slots ([`TerrainPatchSlot`]) and the shared parameters
 //! ([`TerrainPatchParams`]); [`TerrainPatchPass::record`] re-displaces each
-//! resident slot in place with `terrain_patch.comp`, between the instance upload
-//! and the main render pass. The raster path draws the patches from the same
-//! bytes (the host clones the base cell's draw command onto the patch mesh with
-//! `in_tlas = false`); they do not enter the TLAS until stage 4.2.
+//! resident slot in place with `terrain_patch.comp`, after the terrain-tile
+//! upload it reads and before the patch BLAS refit and the TLAS build
+//! (`draw.rs`, ahead of `dispatch_skin_and_cluster`). The raster path draws the
+//! patches from the same bytes (the host clones the base cell's draw command
+//! onto the patch mesh, with `in_tlas` set from the base's and the
+//! `terrain.patches rt` switch); a patch draw enters the TLAS once its BLAS
+//! matches this frame (TSD-4.2).
 //!
 //! The pass also reads back every slot's border vertices and its largest
 //! displacement, one frame-in-flight later, for the `terrain.patches` console
