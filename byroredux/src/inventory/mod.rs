@@ -11,7 +11,6 @@ use byroredux_core::ecs::components::{
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::Component;
 use byroredux_core::ecs::{Resource, World};
-use byroredux_plugin::esm::reader::GameKind;
 use byroredux_plugin::esm::records::{EsmIndex, ItemKind};
 use byroredux_sdk::inventory::{ItemCategory, ItemMetadata};
 use rustc_hash::FxHashMap;

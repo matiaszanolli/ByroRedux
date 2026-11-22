@@ -125,8 +125,7 @@ pub fn strip_comments(src: &str) -> String {
                 }
                 let close: Vec<u8> = std::iter::once(b'"').chain(std::iter::repeat_n(b'#', hashes)).collect();
                 let body = i + 2 + hashes;
-                i = src[body..]
-                    .as_bytes()
+                i = b[body..]
                     .windows(close.len())
                     .position(|w| w == close.as_slice())
                     .map_or(b.len(), |at| body + at + close.len());
