@@ -6,7 +6,8 @@ TSD-3 (#6197 parallax), which are shipped. #7149 (BTXT-only tile slots) and the 
 (#7150, result in §8.1: go) are done. Stage 4.1 (#7152) is built (§7.1) and measured
 (§8.2), with a two-level lattice (fine within 2 m, coarse beyond), and was approved on
 2026-11-22. Stage 4.2 (#7221, patches in the TLAS with a refit BLAS each) is built (§7.2)
-and measured (§8.3), awaiting review before 4.3.
+and measured (§8.3), awaiting review before 4.3. The 4.3 design is drafted in §7.3, also
+for review.
 
 **Question this answers**: if parallax (TSD-3) is not enough, how would real geometry
 displacement work in an engine whose shadows, reflections and GI are ray-traced, what would
@@ -288,6 +289,105 @@ settings/UI. Each stage ends with a review, as in TSD-1–3.
 - **Telemetry.** The `terrain_patch_blas` GPU bracket, plus a `blas:` line in
   `terrain.patches` (ready / built / refit / deferred / failed, bytes); its GPU line also
   prints the TLAS build bracket.
+
+### 7.3 Stage 4.3 design (draft, 2026-11-22, for review)
+§7 listed 4.3 as TSD-3 interplay, fades and settings/UI. §8.3 adds a fourth item that
+comes first, because it is where the cost is: **the lattice level is chosen by world
+distance, but the cost follows the projected triangle size.**
+
+**What 4.3 is answering.** At FNV the patches still cost 1.45–1.99 ms against the
+1.0 ms bar (§8.3). Rays fired from the patch pixels carry nearly all of it, and per ray
+they cost about the same as from base pixels. What differs is how many warps the same
+pixels fill. #7261 stopped helper lanes tracing rays, which removed 35–43 % of the
+premium. But a quad split by a triangle edge still costs a warp slot whose lane does
+no work, and that warp still waits on its real lanes' rays. So what is left scales with
+how many quads the triangle edges split.
+
+**How small the triangles are** — **[derived]**, assuming the `Camera` default
+`fov_y` of 45° (`camera.rs`; the bench camera's own value still needs confirming) and
+an eye 1.7 m above flat ground. Each cell is the projected edge of one lattice quad
+and the area of one of its triangles (half the quad, foreshortened by the view angle
+to the ground), in render pixels:
+
+| distance | fine 5.7 cm @ 480 lines | coarse 11.4 cm @ 480 | fine @ 1440 lines | coarse @ 1440 |
+|---|---|---|---|---|
+| 1 m | 16.7 px / 121 px² | 33.5 px / 483 px² | 50 px / 1088 px² | 100 px / 4350 px² |
+| 2 m | 12.6 / 51 | 25.2 / 205 | 38 / 461 | 75 / 1846 |
+| 4 m | 7.6 / 11 | 15.2 / 45 | 23 / 102 | 46 / 407 |
+| 6 m | 5.3 / 4 | 10.6 / 15 | 16 / 34 | 32 / 138 |
+
+Two things follow:
+- **At the bench's render height, patch triangles are small.** A 50 px² triangle has
+  about 43 px of perimeter, which splits about 20 quads, so roughly 40 % of its lanes
+  are helpers. That is the share #7261 measured. The coarse lattice at 4–6 m is
+  15–45 px², the worst of the pool.
+- **The same distance rule is wrong at another resolution.** At 1440 render lines
+  every triangle is nine times larger. The 2 m fine cut-off is then too timid: fine
+  triangles at 6 m are as large as they are at 2 m at 480 lines. And with an
+  upscaler, it is the render extent that matters (`FrameExtentSet::render`), not the
+  output. The texture streamer's footprint uses the swapchain extent instead, which
+  suits mip choice but not raster cost.
+
+**Proposed selector.** Each square picks its level from the projected area of the fine
+lattice's triangles at the square's nearest point (the same footprint point
+`distance_to_square` uses now):
+
+- `area_fine = 0.5 · (step · k / D)² · sin θ`. Here `k = render_height / (2 tan(fov_y/2))`,
+  `D` is the 3D distance from the camera to that point, and `sin θ = h / D` with `h` the
+  camera's height above it. Fine if `area_fine ≥ A_FINE`, otherwise coarse.
+- **Distance and height only, never view direction.** Turning the camera must not
+  change a level, because every level change costs a BLAS build, and those are capped
+  at two a frame (§7.2).
+- **Hysteresis in level terms**: a fine square drops to coarse only once its area is
+  under `A_FINE / 2`, the analogue of today's 0.5 m.
+- **`A_FINE` is a measured default, not a guess.** Sweep 32 / 64 / 128 / 256 px² at
+  two render heights, with the interleaved harness and screenshots. Pick the knee
+  where the premium flattens but the relief still reads (§8.2 showed that all-coarse
+  reads flatter at eye level).
+- **Shared projection helper.** `texture_streamer::compute_wanted` computes
+  `viewport_height · 0.5 / tan(fov_y/2)` inline. Factor it into one helper that both
+  call, each with its own extent.
+
+**A third, coarser level (option, decided by measurement).** At 480 lines the coarse
+squares at 4–6 m are the smallest triangles drawn. A 22.8 cm level (17×17 vertices,
+289 per slot, 61–181 px² at 4–6 m) would cover them. There, 3 cm of relief projects to
+only about 3–4 px. The fine-to-coarse stitch (odd border vertices on the even
+neighbours' midpoint) works between any two adjacent power-of-two levels. So it holds
+only if neighbouring squares differ by at most one level, which is a 2:1 balance
+constraint the assignment would have to enforce. Add it only if the sweep shows the
+coarse squares still carry a measurable share.
+
+**Open input: the ground height.** The host knows each square in XZ only
+(`TerrainCellOrigin` holds the origin and the hidden quadrants), so it cannot yet
+compute `D` or `h`. Options:
+1. Store each square's base-height range when the cell spawns: 16×16 pairs per cell,
+   from the LAND heights `spawn_terrain_mesh` already has. **Recommended:** exact,
+   cheap, no per-frame work.
+2. Use a fixed eye height. This is wrong on slopes, which is exactly FNV's spawn.
+3. Read it back from the GPU patch compute. That is a frame late and has no value for
+   a square not yet assigned.
+
+**Order within 4.3:**
+1. **Re-baseline after #7261.** The §8.3 totals predate it, so re-run the five
+   positions first. Possibly some already pass the bar.
+2. **The selector, with option 1 heights.** CPU mirror tests:
+   - the area formula against hand values;
+   - rotation invariance (a yaw/pitch sweep changes no level);
+   - hysteresis;
+   - the existing `fine 0` / full-fine overrides, kept as forced modes.
+
+   Then the `A_FINE` sweep at 480 and 1080 render lines.
+3. **The third level and 2:1 balance**, only if step 2's data asks for it.
+4. **§3.6 residual parallax on patches**: march `depth_pom − amplitude_geo`. Its cost
+   bound is small (0.31 / 0.20 / 0.03 ms, §8.3), but it keeps the near relief from
+   reading flat.
+5. **Settings/UI**: amplitude, range and `A_FINE` (or a quality preset that maps to
+   it), each one registry entry, through the settings pass.
+
+**Not in 4.3.** A visibility-buffer or deferred lighting pass would trace rays per
+covered pixel with no quad overhead at all. It is the structural fix for every dense
+mesh, not just the patches. It is far outside a TSD stage and is noted here only
+because the patches are where the quad overhead was first measured.
 
 ## 8. The spike, and its go/no-go bar (proposed — adjust it)
 Measure on the 4070 Ti, release build, at the five TSD positions: (a) refit time for 197 k
