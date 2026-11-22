@@ -303,6 +303,37 @@ fn sky_aperture_plane_glsl_matches_gpu_sky_aperture_plane() {
     ));
 }
 
+/// #7268 — the aperture planes are uploaded relative to the render origin
+/// (`upload_sky_apertures`: `centre - render_origin`), and the GI path that
+/// reaches `pathEnvironmentRadiance` is traced from the absolute
+/// `fragWorldPos`. The aperture test must therefore take the path origin back
+/// into render-origin space; testing the absolute origin displaced every plane
+/// by the render origin, which is non-zero for any camera outside
+/// `[0, RENDER_ORIGIN_SNAP)` on an axis.
+#[test]
+fn the_gi_aperture_test_takes_the_path_origin_into_render_origin_space() {
+    let lighting = include_str!("../../../shaders/include/lighting.glsl");
+    let radiance = lighting
+        .split_once("vec3 pathEnvironmentRadiance(vec3 origin, vec3 direction) {")
+        .expect("pathEnvironmentRadiance is declared in lighting.glsl")
+        .1;
+    let radiance = &radiance[..radiance.find("\n}\n").expect("function body ends")];
+    assert!(
+        radiance.contains("pathCrossesSkyAperture(origin - renderOrigin.xyz, rayDir)"),
+        "the GI escape must test apertures in their own render-origin-relative space"
+    );
+    assert!(
+        lighting.contains("does the ray from `origin` (render-origin relative)"),
+        "pathCrossesSkyAperture documents the space it expects"
+    );
+    let triangle = include_str!("../../../shaders/triangle.frag");
+    assert!(
+        triangle.contains("vec3 fragWorldPos = fragWorldPosRel + renderOrigin.xyz;")
+            && triangle.contains("pathEnvironmentRadiance(pathOrigin, pathDir)"),
+        "the GI path still starts from the absolute world position this conversion assumes"
+    );
+}
+
 /// RLT-SHD-012: each shadow ray's transmission is weighted by the receiver's
 /// cosine at its emitter sample over the centre's, taken on the UNNORMALISED
 /// offset vectors. Linear in the disk offset, the weight's mean over the disk

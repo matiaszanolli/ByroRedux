@@ -610,6 +610,9 @@ bool pathCrossesSkyAperture(vec3 origin, vec3 direction) {
     return false;
 }
 
+// `origin` is the path's absolute world position (the GI path is traced from
+// `fragWorldPos`); the aperture planes are render-origin relative, so the
+// aperture test below takes `origin - renderOrigin.xyz` (#7268).
 vec3 pathEnvironmentRadiance(vec3 origin, vec3 direction) {
     vec3 rayDir = normalize(direction);
     if (jitter.w > 0.5) {
@@ -639,7 +642,7 @@ vec3 pathEnvironmentRadiance(vec3 origin, vec3 direction) {
     // apertures), sees the portal sky the cube is baked from, not the authored
     // ambient. The cube carries that portal palette in such interiors.
     if (exteriorSkyTint.w > 0.5 && interiorSky.x > 0.5
-        && (interiorSky.x < 1.5 || pathCrossesSkyAperture(origin, rayDir))) {
+        && (interiorSky.x < 1.5 || pathCrossesSkyAperture(origin - renderOrigin.xyz, rayDir))) {
         return exteriorSkyRadianceOr(rayDir, exteriorSkyTint.rgb);
     }
     if (dalcFlags.x > 0.5) {
