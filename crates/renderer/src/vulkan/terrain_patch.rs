@@ -801,7 +801,8 @@ impl TerrainPatchPass {
     }
 
     /// The patch BLAS work for what [`Self::record`] just dispatched into
-    /// `frame`: one request per dispatched slot, at the mesh of its level.
+    /// `frame`, appended to `out` (the acceleration manager's kept list,
+    /// #7246): one request per dispatched slot, at the mesh of its level.
     /// `vertex_base` / `index_base` are the global vertex / index buffers'
     /// device addresses.
     pub fn blas_requests(
@@ -810,9 +811,10 @@ impl TerrainPatchPass {
         registry: &MeshRegistry,
         vertex_base: vk::DeviceAddress,
         index_base: vk::DeviceAddress,
-    ) -> Vec<crate::vulkan::acceleration::TerrainPatchBlasRequest> {
+        out: &mut Vec<crate::vulkan::acceleration::TerrainPatchBlasRequest>,
+    ) {
         let vertex_stride = std::mem::size_of::<Vertex>() as vk::DeviceAddress;
-        self.pending[frame]
+        out.extend(self.pending[frame]
             .iter()
             .filter_map(|slot| {
                 let mesh = self.meshes.get(slot.slot, slot.coarse)?;
@@ -829,8 +831,7 @@ impl TerrainPatchPass {
                     vertex_count: entry.vertex_count,
                     index_count: entry.index_count,
                 })
-            })
-            .collect()
+            }));
     }
 
     /// Tear down. The reserved meshes belong to the registry and go with it.

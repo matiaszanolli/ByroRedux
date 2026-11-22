@@ -652,7 +652,8 @@ impl VulkanContext {
                 ),
             )
         };
-        let requests = pass.blas_requests(frame, &self.mesh_registry, vertex_base, index_base);
+        let requests = accel.terrain_patch_blas_requests();
+        pass.blas_requests(frame, &self.mesh_registry, vertex_base, index_base, requests);
         let timed = !requests.is_empty();
         if timed && let Some(timers) = self.gpu_timers.as_mut() {
             timers.cmd_start(TimerPass::TerrainPatchBlas, &self.device, cmd, frame);
@@ -661,8 +662,7 @@ impl VulkanContext {
         // barrier makes its vertex writes visible to AS-build reads, outside
         // any render pass and before this frame's TLAS build; the requests
         // address the live global buffers.
-        let stats =
-            unsafe { accel.record_terrain_patch_blas(&self.device, allocator, cmd, &requests) };
+        let stats = unsafe { accel.record_terrain_patch_blas(&self.device, allocator, cmd) };
         if timed && let Some(timers) = self.gpu_timers.as_mut() {
             timers.cmd_end(TimerPass::TerrainPatchBlas, &self.device, cmd, frame);
         }
