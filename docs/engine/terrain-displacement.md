@@ -448,9 +448,11 @@ delta, ms. The `main_render` delta now includes ray queries traversing the patch
 
   With an sd of 0.15–0.5 ms per state and n = 32, a delta carries roughly ±0.1 ms; FO4
   carries several times that. **Rays through the patch BLAS cost 0.0–0.3 ms, about
-  0.15 ms typically**, and the TLAS build is unchanged. **Raster is the larger part**:
-  up to 1.2 ms looking down, and 0.7–0.8 ms at FNV at every pose. That is why FNV
-  fails the 1.0 ms bar, so 4.3's savings belong in the raster. The `main_render`
+  0.15 ms typically**, and the TLAS build is unchanged. The raster-only state is the
+  larger part: up to 1.2 ms looking down, and 0.7–0.8 ms at FNV at every pose. That
+  state still fires every main-pass ray from the patch pixels, though; it only removes
+  the patches as something rays can hit. So it is not raster cost. The two-switch and
+  ray-family runs below show that rays from patch pixels carry nearly all of it. The `main_render`
   baselines here are higher than §8.2's, so the absolute ms are not comparable across
   runs; only the in-run deltas are.
 - **The raster, broken down at FNV.** Six interleaved states in one run, patches out of
@@ -473,9 +475,51 @@ delta, ms. The `main_render` delta now includes ray queries traversing the patch
   - **A floor of 0.3–0.8 ms remains even all-coarse**, growing toward graze. Relief,
     parallax and triangle count do not explain it. The patches draw before the base
     terrain they cover (lower mesh handles, same sort group), so the base is early-Z
-    rejected under them rather than shaded twice. A GPU capture is needed to attribute
-    the floor (small-triangle raster efficiency, the base's rejected coverage) before
-    4.3 commits to a fix for it.
+    rejected under them rather than shaded twice. The capture and the switch runs below
+    attribute the floor to rays fired from patch pixels.
+- **RenderDoc capture at FNV eye level** (RenderDoc 1.45, per-draw `EventGPUDuration`
+  plus pipeline statistics; patches on / off / all coarse). The patches add no pixels
+  and no overdraw. With patches off, the base cell under the camera shades 409 k
+  fragments. With patches on, the patches shade 359 k of them and the base the other
+  48 k, with fragment invocations equal to samples passed in both captures. The same
+  near-region pixels cost 1.10 ms on the patches against 0.70–0.87 ms on the base: a
+  1.25–1.6× per-pixel premium. The two near patches cost 0.314 / 0.408 ms fine and
+  0.278 / 0.375 ms coarse, so lattice density is worth only about 0.07 ms there.
+  Ground cover is unchanged.
+- **The premium is the main-pass rays.** Patches off/on were interleaved under the
+  `r.dbg` bits, 6 rounds × 4 samples. Each cell is the patch delta in ms, with the
+  patches-off `main_render` in brackets:
+
+  | pose | baseline | no main rays (`0x40000000`) | no POM (`0x1`) | neither |
+  |---|---|---|---|---|
+  | down | +1.44 (5.37) | +0.07 (0.61) | +1.35 (5.21) | +0.05 (0.54) |
+  | eye | +1.97 (7.59) | +0.06 (1.19) | +1.97 (7.37) | +0.08 (1.03) |
+  | graze | +1.20 (6.53) | +0.26 (1.27) | +0.76 (6.42) | +0.25 (1.13) |
+
+  With the main-pass rays off, the patches cost 0.05–0.08 ms (0.25 at graze), so their
+  geometry is nearly free to raster. Parallax on patches matters only at graze
+  (≈ 0.43 ms). The baseline deltas are higher than in the earlier runs; only in-run
+  comparisons hold.
+- **Split by ray family** (same harness, one family off at a time; patch delta in ms,
+  patches-off `main_render` in brackets):
+
+  | pose | baseline | no direct shadows (`0x8000000`) | no GI (`0x10000000`) | no reflection / glass (`0x20000000`) |
+  |---|---|---|---|---|
+  | down | +1.33 (5.45) | +0.52 (2.89) | +0.92 (3.31) | +1.21 (5.45) |
+  | eye | +1.51 (7.82) | +0.63 (2.70) | +1.30 (6.51) | +2.02 (7.73) |
+  | graze | +1.19 (6.33) | +0.40 (2.15) | +0.69 (5.49) | +0.82 (6.47) |
+
+  The sd per state is 0.14–0.68. **Direct shadow queries from patch pixels carry most
+  of the premium**, 0.8–0.9 ms at every pose. **The diffuse GI path is next**: about
+  0.4–0.5 ms looking down and at graze, and within noise at eye level. Reflection and
+  glass rays add nothing measurable (the eye cell's +0.5 is inside its sd), and
+  shadows plus GI account for the whole baseline delta. What makes a shadow query
+  dearer from a patch pixel than from a base pixel is not measured. Candidates are the
+  origin offset or traversal next to the dense patch triangles, and the relief normal
+  diverging from the base's. The raster-only state kept most of the premium although
+  the patches were not in the TLAS, which argues against traversal of the patch BLAS
+  alone. **4.3 should target the shadow and GI query setup on patch pixels**, not the
+  raster or the lattice.
 - **Raster-only is not a fallback.** At Riverwood (eye, on the riverbank) the raster-only
   frame darkens the bank's crease by up to 23 levels of 8-bit luma in a band of rows:
   rays leaving the patch surface hit the base terrain the patch covers. With the patches
