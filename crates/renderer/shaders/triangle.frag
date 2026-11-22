@@ -3301,7 +3301,8 @@ void main() {
         // below the surface, which the BRDF weights zero, removes nothing and
         // needs no ray. TAA resolves the per-frame estimate. Within the
         // reflection ray's LOD reach only; past it the SSAO form stands.
-        if (exteriorSkyProbe && probeShare > 0.0 && reflectionGlassRayEnabled
+        // Helper lanes skip the ray, as they skip every ray below the hoist (#7261).
+        if (exteriorSkyProbe && probeShare > 0.0 && reflectionGlassRayEnabled && !helperLane
             && rtLOD < RT_LOD_REFLECT && (dbgFlags & DBG_DISABLE_AO) == 0u) {
             vec2 lobeRand = ditheredSequence2(uvec2(gl_FragCoord.xy), uint(cameraPos.w), MAX_LIGHTS + 1u);
             vec3 lobeH = sampleVisibleGgxNormal(N_view, V, roughness, lobeRand);
