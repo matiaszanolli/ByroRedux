@@ -14,6 +14,64 @@ lives in [`crates/plugin/`](../../crates/plugin/).
 > grows into (ROADMAP's Owed list tracks it).**
 
 
+## The live legacy load order: activation and the fold
+
+What the engine does today with a legacy plugin set (`--master …` `--esm`), the Phase 1 slice of the
+[Legacy Mod Compatibility PRD](../prd/legacy-mod-compatibility.md) (#6670) built on the M46.0 path:
+
+1. **Identity (LMC-ID-001, -009).** A legacy plugin is known by `byroredux_core::form_id::plugin_key`: its basename,
+   case-folded, `\` and `/` equivalent. The load-order key (`plugin_basename_lc`), a `MAST` entry, a script's
+   `GetFormFromFile` / `IsDLCInstalled` file name and `PluginId::from_filename` all go through it, so `Skyrim.esm`,
+   `skyrim.esm` and `Data\Skyrim.esm` are one plugin. (Before the fold a script's `"Skyrim.esm"` hashed apart from the
+   load order's `skyrim.esm`, so `GetFormFromFile` returned `None` and no New Vegas DLC read as installed.)
+2. **Activation (LMC-ID-003, -011)**, once at boot, before anything reads argv
+   (`byroredux/src/plugin_activation.rs` over `crates/plugin/src/activation.rs`). The profile is the `--master` plugins
+   in argv order, then the `--esm`. Each plugin's `TES4` record alone is read for its masters. A master the profile
+   lists after one of its dependents is hoisted to just ahead of the first dependent that needs it; nothing else moves,
+   so profile order decides among unrelated plugins. A plugin whose master is not in the profile is disabled with every
+   plugin that transitively depends on it, and activation continues; so are a duplicate identity, a master cycle and an
+   unreadable header. The activated `--master` list replaces the given one in the effective args, so the cell loader,
+   the exterior context, the HUD probes, `--list-cells` and the plugin set a save records all see one order. Every move
+   and every disabled plugin (with the chain back to the missing master) is logged as a warning and kept for
+   `plugins.activation`. The `--esm` must activate and stay last, or boot stops with the report: a missing master of
+   its own names the `--master` to add.
+3. **The fold (LMC-REC-002, -005, -007).** `parse_record_indexes_in_load_order` walks the plugins in parallel and folds
+   them in load order with `EsmIndex::merge_from`, the last carrier of a record winning it whole (the `legacy` policy;
+   `merge`, LMC-REC-003, is not built). Before each plugin's merge, `FoldProvenance::note_plugin`
+   (`crates/plugin/src/esm/records/provenance.rs`) notes, from the record headers the walk traced, every form that
+   plugin carries that an earlier one already did (an override, or a `DELE` deletion), and every form it defines in an
+   ID space it does not own (an injected record). Only those forms are stored; the rest cost one lookup each. The
+   provenance rides on the `LoadOrder` (it replaced #5428's SCPT-only last-writer table, `record_winner`), and the log
+   line `load-order fold: N plugins, … forms overridden, … injected, in … s (… s of it provenance)` reports it.
+4. **The conflict report (LMC-REC-007).** `plugins.conflicts` lists the overridden forms with wins, losses and
+   injections per plugin; `plugins.conflicts <formid>` one form's carriers in load order, its winner and the policy;
+   and `plugins.conflicts <formid> fields` reads each carrier's record back from its file
+   (`crates/plugin/src/esm/raw_record.rs`, which loads only the top-level groups the record type can sit in) and names
+   the sub-records the winner changed, added or dropped against it. Each override is judged against the record it
+   replaced (LMC-REC-006): it changes it, is identical to it (an ITM), or reverts an earlier plugin's change back to the
+   definer's record. A repeated sub-record is compared as a multiset,
+   so one entry added to a list is one addition. The comparison is of bytes, so when two files index a shared master
+   differently a form-ID field can differ in bytes only, and the line says so. `--plugin-report [formid] [fields]`
+   prints the same (with the activation report) without a window: `byroredux --game fnv --master … --plugin-report`.
+
+5. **Paired archives (LMC-AST-002).** After activation, each activated plugin brings the archives the game pairs with
+   it by name, found in the plugin's own directory, whatever its extension (`.esm` and `.esl` too, an owner ruling on
+   #6670). The rules are per game, from the base master's header (`crates/plugin/src/archive_pairing.rs`): Oblivion
+   `<stem>` then nothing or a space, `-` or `_`; Fallout 3 / New Vegas `<stem>.bsa` or `<stem> - <anything>.bsa`;
+   Skyrim `<stem>.bsa`; Fallout 4 `- Main`, `- Textures`, `- Voices_en` `.ba2`; Starfield `- Main`, `- Textures`,
+   `- Localization`, `- Voices_en` `.ba2`. A paired archive is a mod bundle (`DeadMoney - Main.bsa` carries meshes,
+   textures and sounds), so it is written into the effective args for the mesh, texture and sound providers, the script
+   provider where the game archives its compiled scripts, and the material provider where its materials are `.bgsm`
+   files. The last-wins providers get them after the listed archives in load order; the first-wins script provider
+   gets them ahead, reversed, so the same archive wins everywhere: the listed (official) archives first, then each
+   plugin's, the later plugin's winning, and loose files over all of them. An archive the args already name keeps its
+   place and its flags. What each plugin brought is logged and shown by `plugins.activation` and `--plugin-report`:
+   `DeadMoney.esm pairs DeadMoney - Main.bsa, DeadMoney - Sounds.bsa`.
+
+Not built yet in Phase 1: the mod profile beyond argv (discovery, mod roots, LMC-ID-012), the official/user boundary
+(LMC-REC-008), the `merge` policy (LMC-REC-003), the merge-ownership half of LMC-REC-006 (the report half is item 4's
+verdicts), the virtual legacy index (LMC-ID-005) and the profile fingerprint in saves (LMC-ID-007, LMC-SAV-001).
+
 ## Overview
 
 ```
@@ -95,10 +153,10 @@ legacy format.
 ```rust
 pub struct PluginId(pub u128);   // 128-bit UUID stored as u128
 
-// For legacy ESM files: UUID v5 derived from filename (deterministic)
+// For legacy ESM files: UUID v5 derived from the plugin key (deterministic)
 PluginId::from_filename("FalloutNV.esm")
-// → UUID v5(PLUGIN_NAMESPACE, b"FalloutNV.esm")
-// → always the same hash regardless of load-order position
+// → UUID v5(PLUGIN_NAMESPACE, plugin_key("FalloutNV.esm")) = UUID v5(PLUGIN_NAMESPACE, b"falloutnv.esm")
+// → always the same hash regardless of load-order position, case or path (LMC-ID-001)
 
 // For Redux-native plugins: declared in plugin.toml
 PluginId::from_uuid(uuid)

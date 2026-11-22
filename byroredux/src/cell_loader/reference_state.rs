@@ -808,7 +808,7 @@ const VANILLA_KILL_SCRIPT_PLUGINS: [&str; 12] = [
 /// provably-vanilla scripts.
 fn script_is_vanilla(script_form_id: u32, load_order: &LoadOrder) -> bool {
     load_order
-        .script_winner(script_form_id)
+        .record_winner(script_form_id)
         .or_else(|| super::load_order::plugin_for_form_id(script_form_id, load_order))
         .is_some_and(|plugin| VANILLA_KILL_SCRIPT_PLUGINS.contains(&plugin))
 }
@@ -1569,9 +1569,9 @@ mod script_kill_tests {
                         ..Default::default()
                     },
                 );
-                load_order.note_script_writer(form_id, 0);
+                load_order.note_record_writer(form_id, 0);
                 if patched {
-                    load_order.note_script_writer(form_id, 1);
+                    load_order.note_record_writer(form_id, 1);
                 }
             }
             for (npc, script) in [(0x0000_A001_u32, 0x0000_1111_u32), (0x0000_A003, 0x0000_4444)] {

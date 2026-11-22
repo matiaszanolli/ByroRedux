@@ -311,6 +311,14 @@ provider is an ordered list of them. Lookups walk the list from the **end**:
 the **last-listed archive wins** (#3637). `<stem>N.bsa` siblings of a listed
 archive (`Textures.bsa` → `Textures2.bsa`) are appended automatically.
 
+**Plugin-paired archives** (LMC-AST-002, #6670). Each plugin of the session's
+profile brings the archives the game pairs with it by name (`DeadMoney.esm` →
+`DeadMoney - Main.bsa`, `DeadMoney - Sounds.bsa`; `.esm`, `.esp` and `.esl`
+alike), appended after the archives the command line or the game profile lists,
+in load order, so the listed (official) archives come first and a later
+plugin's archive wins. The per-game naming rules and how they reach every
+provider are in [Plugin Loading](plugin-loading.md#the-live-legacy-load-order-activation-and-the-fold).
+
 **Loose files outrank every archive** (#6200). Every Bethesda title this engine
 loads lets a file under `Data\` shadow the archived copy at the same path, so
 the loose tier is appended after all the archives and wins by the rule above.

@@ -35,6 +35,7 @@ pub mod mswp;
 pub mod outfit;
 pub mod pathgrid;
 pub mod pkin;
+pub mod provenance;
 pub mod scol;
 pub mod script;
 pub mod script_instance;
@@ -62,6 +63,7 @@ pub use mswp::{parse_mswp, MaterialSwapEntry, MaterialSwapRecord};
 pub use outfit::{parse_otft, OtftRecord};
 pub use pathgrid::{parse_pgrd, InterCellConnection, PathGridPoint, PathGridRecord};
 pub use pkin::{parse_pkin, PkinRecord};
+pub use provenance::{Carrier, FoldProvenance};
 pub use scol::{parse_scol, ScolPart, ScolPlacement, ScolRecord};
 pub use soun::{parse_sndr, parse_soun, SounRecord};
 

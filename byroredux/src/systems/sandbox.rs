@@ -326,6 +326,13 @@ fn sandbox_seat_system_inner(world: &World, _dt: f32, scratch: &mut SandboxScrat
     }
 
     {
+        // #5495 — creatures never take furniture (see CreatureActor's
+        // doc): skip them before any seat scan or reservation write.
+        // Taken first: elsewhere a `CreatureActor` read is held while
+        // `ActorValues` and then `GlobalTransform` are taken, so acquiring it
+        // after `GlobalTransform` / `Seated` closed a lock-order cycle the
+        // ABBA detector (BYRO_LOCK_ORDER_CHECK) aborts on.
+        let creature_q = world.query::<CreatureActor>();
         let Some(gq) = world.query::<GlobalTransform>() else {
             return;
         };
@@ -333,9 +340,6 @@ fn sandbox_seat_system_inner(world: &World, _dt: f32, scratch: &mut SandboxScrat
             return;
         };
         let seated_q = world.query::<Seated>();
-        // #5495 — creatures never take furniture (see CreatureActor's
-        // doc): skip them before any seat scan or reservation write.
-        let creature_q = world.query::<CreatureActor>();
         let mut reservations = world.resource_mut::<SeatReservations>();
         for (npc, behavior) in sandbox_q.iter() {
             if seated_q.as_ref().is_some_and(|s| s.contains(npc)) {

@@ -87,23 +87,38 @@ impl<'de> serde::Deserialize<'de> for PluginId {
     }
 }
 
+/// The one key a legacy plugin is known by (PRD legacy-mod-compatibility LMC-ID-001, -009): its basename, case-folded,
+/// with `\` and `/` equivalent, so `Skyrim.esm`, `skyrim.esm`, `Data\Skyrim.esm` and `data/SKYRIM.ESM` are one plugin on
+/// every host filesystem. The load-order key, a master named in a `MAST` sub-record, a script's `GetFormFromFile` file
+/// and [`PluginId::from_filename`] all go through it.
+///
+/// ```
+/// # use byroredux_core::form_id::plugin_key;
+/// assert_eq!(plugin_key("Data\\Skyrim.esm"), "skyrim.esm");
+/// assert_eq!(plugin_key("/games/fnv/Data/FalloutNV.esm"), "falloutnv.esm");
+/// ```
+pub fn plugin_key(name: &str) -> String {
+    let basename = name.rsplit(['/', '\\']).next().unwrap_or(name);
+    basename.to_lowercase()
+}
+
 impl PluginId {
     /// Derive a deterministic `PluginId` from a legacy plugin filename.
     ///
-    /// Uses UUID v5 with a fixed engine namespace so the same filename
-    /// always produces the same identity.
+    /// Uses UUID v5 with a fixed engine namespace over the plugin's [`plugin_key`], so the same plugin always produces
+    /// the same identity whatever the case or path it is named with (LMC-ID-001).
     ///
     /// ```
     /// # use byroredux_core::form_id::PluginId;
     /// let a = PluginId::from_filename("Skyrim.esm");
-    /// let b = PluginId::from_filename("Skyrim.esm");
+    /// let b = PluginId::from_filename("skyrim.esm");
     /// assert_eq!(a, b);
     ///
     /// let c = PluginId::from_filename("Dawnguard.esm");
     /// assert_ne!(a, c);
     /// ```
     pub fn from_filename(name: &str) -> Self {
-        let uuid = Uuid::new_v5(&PLUGIN_NAMESPACE, name.as_bytes());
+        let uuid = Uuid::new_v5(&PLUGIN_NAMESPACE, plugin_key(name).as_bytes());
         Self(uuid.as_u128())
     }
 
@@ -344,6 +359,23 @@ mod tests {
         let a = PluginId::from_filename("Skyrim.esm");
         let b = PluginId::from_filename("Skyrim.esm");
         assert_eq!(a, b);
+    }
+
+    /// LMC-ID-001 / -009 — one plugin whatever its case or the path it is named with: the identity hashes the
+    /// case-folded basename, and that hash is the one the lowercase load-order key always produced.
+    #[test]
+    fn plugin_identity_folds_case_and_path() {
+        let canonical = PluginId::from_filename("skyrim.esm");
+        for name in ["Skyrim.esm", "SKYRIM.ESM", "Data\\Skyrim.esm", "/games/skyrim/Data/skyrim.esm", "data/SkYrIm.EsM"] {
+            assert_eq!(PluginId::from_filename(name), canonical, "{name}");
+            assert_eq!(plugin_key(name), "skyrim.esm", "{name}");
+        }
+        assert_eq!(
+            canonical,
+            PluginId::from_uuid(Uuid::new_v5(&PLUGIN_NAMESPACE, b"skyrim.esm")),
+            "a lowercase name keeps the identity it always had, so saved lowercase-keyed ids still resolve"
+        );
+        assert_eq!(plugin_key("Ünïcödé.esp"), "ünïcödé.esp", "the fold is not ASCII-only");
     }
 
     #[test]
