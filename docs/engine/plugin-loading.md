@@ -23,7 +23,11 @@ What the engine does today with a legacy plugin set (`--master …` `--esm`), th
    case-folded, `\` and `/` equivalent. The load-order key (`plugin_basename_lc`), a `MAST` entry, a script's
    `GetFormFromFile` / `IsDLCInstalled` file name and `PluginId::from_filename` all go through it, so `Skyrim.esm`,
    `skyrim.esm` and `Data\Skyrim.esm` are one plugin. (Before the fold a script's `"Skyrim.esm"` hashed apart from the
-   load order's `skyrim.esm`, so `GetFormFromFile` returned `None` and no New Vegas DLC read as installed.)
+   load order's `skyrim.esm`, so `GetFormFromFile` returned `None` and no New Vegas DLC read as installed.) The fold is
+   Rust's full Unicode `to_lowercase`. The load-order key used to be ASCII-only, so a plugin named with a non-ASCII
+   capital changed identity, and ids saved against it no longer resolve. The fold is also not any filesystem's case
+   rule: final sigma and `İ` fold differently from NTFS's per-character table. Which host rule to match is an open
+   LMC-ID-009 decision (#7249).
 2. **Activation (LMC-ID-003, -011)**, once at boot, before anything reads argv
    (`byroredux/src/plugin_activation.rs` over `crates/plugin/src/activation.rs`). The profile is the `--master` plugins
    in argv order, then the `--esm`. Each plugin's `TES4` record alone is read for its masters. A master the profile
