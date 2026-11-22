@@ -63,6 +63,14 @@ const SKY_CUBE_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 /// that need it (image layers, view layers, dispatch depth, face switch).
 const CUBE_FACES: u32 = 6;
 
+/// M-LIGHT RLT-IBL-010: the `sun_size` (`sky_zenith.w`, cos of the disc's
+/// half-angle) the bake packs. `sky_radiance` draws the disc where the cosine
+/// to the sun exceeds `sun_size - 0.002`, so past 1.002 no direction does.
+/// The sun reaches lit surfaces as the directional light; a disc baked into
+/// the probe counted its energy a second time through the reflections and
+/// the SH9 irradiance. The visible sky (`composite.frag`) keeps the disc.
+pub const SKY_CUBE_SUN_DISC_OFF: f32 = 2.0;
+
 /// Host mirror of `include/sky.glsl`'s `SkyDome`.
 ///
 /// Field-for-field, same order, same names. `sky_dome.rs` pins the GLSL
@@ -73,14 +81,6 @@ const CUBE_FACES: u32 = 6;
 /// A `vec4` per field with no scalars means std140 and `#[repr(C)]` agree
 /// trivially: every member is 16-byte aligned and 16 bytes wide, so there
 /// is no padding to get wrong.
-/// M-LIGHT RLT-IBL-010: the `sun_size` (`sky_zenith.w`, cos of the disc's
-/// half-angle) the bake packs. `sky_radiance` draws the disc where the cosine
-/// to the sun exceeds `sun_size - 0.002`, so past 1.002 no direction does.
-/// The sun reaches lit surfaces as the directional light; a disc baked into
-/// the probe counted its energy a second time through the reflections and
-/// the SH9 irradiance. The visible sky (`composite.frag`) keeps the disc.
-pub const SKY_CUBE_SUN_DISC_OFF: f32 = 2.0;
-
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 pub struct SkyCubeParams {
