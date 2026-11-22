@@ -58,8 +58,9 @@ use byroredux_core::math::{Quat, Vec3};
 
 use crate::components::{SandboxSitClip, SeatReservations};
 
-/// Fallback max distance (world units) an actor claims a seat from its
-/// current position, used when `SandboxBehavior.search_radius` is `None`
+/// Fallback max distance (world units) an actor claims a seat from the
+/// centre of its search (its current position, or its `EditorPlacement` for
+/// a Near Editor Location package, #7262), used when `SandboxBehavior.search_radius` is `None`
 /// (no PLDT / radius 0 / a location type the parser doesn't resolve a
 /// center for). Most sandboxing actors carry a real authored radius from
 /// PLDT (`npc_spawn/ai_package.rs`); 512 was the estimate before that landed — still a

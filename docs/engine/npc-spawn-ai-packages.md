@@ -237,8 +237,9 @@ needed. Full detail and v0-scope caveats (nearest-chair-only, no
 scoring/scheduling/wander/ownership, one enter clip for all sit
 markers) live in `systems/sandbox.rs`'s module doc.
 
-Search *center* is always the actor's own spawn position, not a
-resolved `PLDT` target reference — a same-day investigation
+Search *center* is the actor's own position (its `EditorPlacement` for a
+Near Editor Location package, #7262), not a resolved `PLDT` target
+reference — a same-day investigation
 (2026-07-14, see `SandboxBehavior`'s doc comment and `npc_spawn/ai_package.rs`)
 found only ~12% of vanilla FNV `NearReference`-type packages resolve to
 anything spawnable, so FormID-based center resolution isn't planned as
