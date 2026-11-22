@@ -1,6 +1,6 @@
 # Player Spellcasting — Product Requirements
 
-**Status**: ACTIVE (2026-11-22). Revision 16 records the two tests review round 2 left before SHIPPED; revision 15 the owner's cycle keys; the history is §12.
+**Status**: SHIPPED (2026-11-22). Revision 17 ships it: every phase exit is met, the metrics are in the ROADMAP Oblivion row, and #7077 closes with it; the history is §12.
 
 **Tracking**: #7077 (parent). Phases: #7078 (0), #7079 (1), #7080 (2), #7081 (3). Phase 0 residuals: #7082. Follow-up it closes: #7053.
 
@@ -289,7 +289,7 @@ The six schools are fed. Verified by unit tests (scripting `player_cast_feeds_on
 | Fed list | 20 to 25 joined `FED_SKILLS` in the same commit: on 2026-11-20 `levelup` reported 14 of 21 fed and no longer listed the schools, and `oblivion-level-up.sh` expected 14/21 (later emitters have moved both; the current count is the ROADMAP's). | PSC-USE-004 |
 | Other casters | `magic.cast`, ObScript `Cast` and a perk's activate choice call the shared effect start, which queues nothing. | PSC-USE-005 |
 | Report | `cast.status` and the cast report name the school fed (`fed Destruction`), `no school`, and the impact's award. | PSC-DX-001 |
-| Metrics | Published in the [ROADMAP Oblivion row](../../ROADMAP.md#compatibility-matrix), which holds the current numbers; on 2026-11-20: 6 of 6 schools fed, 8 of 8 refusals with a named test, magic 6 / 8 UESP actions. | §8 |
+| Metrics | Published in the [ROADMAP Oblivion row](../../ROADMAP.md#compatibility-matrix), which holds the current numbers; on 2026-11-20: 6 of 6 schools fed, 8 of 8 refusals with a named test, magic 6 / 8 UESP actions. Re-checked at SHIPPED (2026-11-22): the eight `CastRefusal` variants each have a named test, and the live gate's `levelup` reports 16 of 21 skills fed with all six schools fed. | §8 |
 | Not built | Telekinesis's exemption (a projectile lands on actors only, so no Telekinesis effect lands). Review round 2's two items before SHIPPED are built (revision 16): scenario 3's container leg in `oblivion-spellcasting.sh` (two passing runs on 2026-11-22) and scenario 1's real-data `SCIT` test. | PSC-USE-002, PSC-TGT-002, PSC-USE-003 |
 
 ---
@@ -342,3 +342,4 @@ The six schools are fed. Verified by unit tests (scripting `player_cast_feeds_on
 | 14 | 2026-11-22 | Review round 2 folded in: §3 and the "Today" clauses restated as built (symbols, not lines); the Related rows link the written designs; scenario 1's test names corrected and its `SCIT` case, with scenario 3's container leg, listed as the work left before SHIPPED; UESP's fixed casting speed set against the trial (§6 row 6); the Fatigue citation; the 105 BU row marked superseded; §6 rows for armor (sourced) and ball-only flight (row 7); Q2's cycle keys recorded as awaiting the owner; phase definitions moved before §9.1; status line trimmed, its source note moved to §9.1; §9.4 metrics dated | claude: revise |
 | 15 | 2026-11-22 | The owner confirmed the Right and Left arrows for `NextSpell` and `PreviousSpell` (Q2, §9.2); that SHIPPED blocker is closed | — |
 | 16 | 2026-11-22 | The two tests review round 2 left before SHIPPED are written: scenario 1's `SCIT` school test on `SE13LpJyggalag8AreaTouch` and `SE09FakeSummonFleshAtronach` (the first's script effect costs nothing, so a second spell shows the `SCIT` school deciding the cast), and scenario 3's container leg with Burning Touch at the middle cupboard | — |
+| 17 | 2026-11-22 | ACTIVE → SHIPPED: Phases 0–3 and the Phase 0 residuals closed (#7078–#7082); review round 2's SHIPPED items done (revisions 15, 16); the real-data cast tests (7 of 7) and `oblivion-spellcasting.sh` (two runs) pass; metrics re-checked in the ROADMAP Oblivion row; #7077 closes with this revision | — |
