@@ -24,7 +24,6 @@ use byroredux_core::ecs::components::ActorValues;
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::world::World;
-use byroredux_plugin::esm::reader::GameKind;
 use byroredux_plugin::esm::records::oblivion_actor_values::OBLIVION_ACTOR_VALUES;
 use byroredux_plugin::esm::records::EsmIndex;
 
@@ -70,24 +69,26 @@ pub struct SkillUseClasses {
 
 impl Resource for SkillUseClasses {}
 
-/// Build [`SkillUseClasses`] from the load order. Only Oblivion's `CLAS` carries
-/// a specialization and seven major skills; any other game installs an empty
-/// resource, so no class is ever read there.
+/// Build [`SkillUseClasses`] from the load order. A `CLAS` carries a
+/// specialization and seven major skills only where the parser decodes them
+/// (Oblivion's), so the table holds exactly those and is empty for every other
+/// game; no game test is needed (#7212), and the player's class is read only
+/// when the table has one.
 pub fn install_skill_use_classes(world: &mut World, index: &EsmIndex) {
     let mut out = SkillUseClasses::default();
-    if index.game == GameKind::Oblivion {
-        for (&form, class) in &index.classes {
-            if let Some(specialization) = class.specialization {
-                out.classes.insert(
-                    form,
-                    ClassSkills {
-                        name: class.editor_id.clone(),
-                        specialization,
-                        major_skills: class.major_skills.clone(),
-                    },
-                );
-            }
+    for (&form, class) in &index.classes {
+        if let Some(specialization) = class.specialization {
+            out.classes.insert(
+                form,
+                ClassSkills {
+                    name: class.editor_id.clone(),
+                    specialization,
+                    major_skills: class.major_skills.clone(),
+                },
+            );
         }
+    }
+    if !out.classes.is_empty() {
         out.player_class = index
             .npcs
             .get(&byroredux_plugin::esm::records::actor::player_npc_form_id(index.game))
@@ -613,6 +614,38 @@ pub fn skill_use_system(world: &World, player: Option<EntityId>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use byroredux_plugin::esm::reader::GameKind;
+
+    /// #7212 — the class table follows the data, not the game: a `CLAS` with a decoded specialization joins it under
+    /// any game, one without (every non-Oblivion class) never does, and the player's class is read only beside it.
+    #[test]
+    fn the_class_table_holds_the_classes_with_a_specialization_whatever_the_game() {
+        use byroredux_plugin::esm::records::actor::{ClassRecord, NpcRecord};
+        let class = |form_id: u32, specialization: Option<u32>| ClassRecord {
+            form_id,
+            editor_id: format!("Class{form_id:X}"),
+            specialization,
+            major_skills: vec![14, 15],
+            ..Default::default()
+        };
+        let mut index = EsmIndex { game: GameKind::Skyrim, ..Default::default() };
+        index.classes.insert(0x10, class(0x10, Some(0)));
+        index.classes.insert(0x11, class(0x11, None));
+        index.npcs.insert(7, NpcRecord { form_id: 7, class_form_id: 0x10, ..Default::default() });
+        let mut world = World::new();
+        install_skill_use_classes(&mut world, &index);
+        let table = world.resource::<SkillUseClasses>();
+        assert_eq!(table.classes.keys().copied().collect::<Vec<_>>(), vec![0x10], "only the class with a specialization");
+        assert_eq!(table.player_class, Some(0x10));
+        drop(table);
+
+        let mut fallout = EsmIndex { game: GameKind::Oblivion, ..Default::default() };
+        fallout.classes.insert(0x11, class(0x11, None));
+        fallout.npcs.insert(7, NpcRecord { form_id: 7, class_form_id: 0x11, ..Default::default() });
+        install_skill_use_classes(&mut world, &fallout);
+        let table = world.resource::<SkillUseClasses>();
+        assert!(table.classes.is_empty() && table.player_class.is_none(), "no specialization, no table, even under Oblivion");
+    }
     use byroredux_core::character::{Background, LevelingModel};
     use byroredux_plugin::esm::reader::GlobalSlot;
 

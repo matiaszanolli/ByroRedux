@@ -95,6 +95,8 @@ fn register_interaction_system(scheduler: &mut Scheduler) {
             .reads::<byroredux_core::ecs::components::Locked>()
             .reads::<byroredux_scripting::TwoStateActivator>()
             .reads_resource::<byroredux_scripting::ScriptGame>()
+            // #7212 — a bed is offered for sleep where the ruleset levels by skill use (`supports_rest`).
+            .reads_resource::<byroredux_core::character::CharacterRuleset>()
             // M66 — an in-cell door's prompt says Open or Close.
             .reads::<crate::components::Door>()
             .reads::<byroredux_scripting::papyrus_demo::RumbleOnActivate>()
