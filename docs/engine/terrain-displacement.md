@@ -7,7 +7,8 @@ TSD-3 (#6197 parallax), which are shipped. #7149 (BTXT-only tile slots) and the 
 (§8.2), with a two-level lattice (fine within 2 m, coarse beyond), and was approved on
 2026-11-22. Stage 4.2 (#7221, patches in the TLAS with a refit BLAS each) is built (§7.2)
 and measured (§8.3), awaiting review before 4.3. The 4.3 design is drafted in §7.3, also
-for review.
+for review. Its step 2, the screen-space level selector, is built with a 128 px² default
+and measured in §8.5.
 
 **Question this answers**: if parallax (TSD-3) is not enough, how would real geometry
 displacement work in an engine whose shadows, reflections and GI are ray-traced, what would
@@ -335,6 +336,11 @@ lattice's triangles at the square's nearest point (the same footprint point
 - `area_fine = 0.5 · (step · k / D)² · sin θ`. Here `k = render_height / (2 tan(fov_y/2))`,
   `D` is the 3D distance from the camera to that point, and `sin θ = h / D` with `h` the
   camera's height above it. Fine if `area_fine ≥ A_FINE`, otherwise coarse.
+  *As built*, `sin θ` is `|n · v̂|`, where `n` is the normal of a plane fitted to the
+  square's nine LAND vertices and `v̂` points from that point to the camera. That is
+  `h / D` on flat ground, but it also credits a slope that faces the camera (FNV's
+  spawn), which the flat form undercounts. The bench camera's `fov_y` is 45°, which
+  `terrain.patches` now prints. So the table above holds as derived.
 - **Distance and height only, never view direction.** Turning the camera must not
   change a level, because every level change costs a BLAS build, and those are capped
   at two a frame (§7.2).
@@ -362,7 +368,9 @@ coarse squares still carry a measurable share.
 compute `D` or `h`. Options:
 1. Store each square's base-height range when the cell spawns: 16×16 pairs per cell,
    from the LAND heights `spawn_terrain_mesh` already has. **Recommended:** exact,
-   cheap, no per-frame work.
+   cheap, no per-frame work. *Built* as `TerrainSquarePlanes` (`components/terrain.rs`):
+   each square's least-squares plane and height range, rebuilt at every load and not
+   saved.
 2. Use a fixed eye height. This is wrong on slopes, which is exactly FNV's spawn.
 3. Read it back from the GPU patch compute. That is a frame late and has no value for
    a square not yet assigned.
@@ -376,7 +384,8 @@ compute `D` or `h`. Options:
    - hysteresis;
    - the existing `fine 0` / full-fine overrides, kept as forced modes.
 
-   Then the `A_FINE` sweep at 480 and 1080 render lines.
+   Then the `A_FINE` sweep at 480 and 1080 render lines. **Done**, at 480 and 960 lines
+   (§8.5). The default is 128 px².
 3. **The third level and 2:1 balance**, only if step 2's data asks for it.
 4. **§3.6 residual parallax on patches**: march `depth_pom − amplitude_geo`. Its cost
    bound is small (0.31 / 0.20 / 0.03 ms, §8.3), but it keeps the near relief from
@@ -752,6 +761,60 @@ line.
   eye level, not 0.5–1.0 ms. In §8.3, all-coarse saved 0.37–0.50 ms at FNV. That
   number predates #7261, so it may now be smaller; the `A_FINE` sweep measures it
   again.
+
+### 8.5 Screen-space level selector sweep (2026-11-22)
+The 4.3 selector (§7.3, step 2) compared against 4.1's distance rule. Same harness as
+§8.4, interleaved in one run per position. The states were:
+- patches off;
+- the distance rule (`fine 2`);
+- all coarse (`fine 0`);
+- `afine` at 32, 64, 128 and 256 px².
+
+The two render heights are the default 1280×720 window under FSR Quality (853×480) and
+a 2560×1440 window (1707×960). The camera's `fov_y` is 45°, so `k` is 579.4 px at 480
+lines. Each cell is the §8.3 total in ms, with the fine/coarse square split of the 16
+resident in brackets:
+
+| lines | position | pose | distance | all coarse | 32 px² | 64 px² | **128 px²** | 256 px² |
+|---|---|---|---|---|---|---|---|---|
+| 480 | FNV Mojave | down | 0.88 [4/12] | 0.67 | 0.83 [4/12] | 0.79 [4/12] | **0.80** [4/12] | 0.78 [2/14] |
+| | | eye | 1.02 | 0.71 | 1.05 | 1.04 | **0.98** | 0.91 |
+| | | graze | 0.95 | 0.63 | 0.90 | 0.86 | **0.86** | 1.07 |
+| 480 | Skyrim tundra | down | 0.75 [4/12] | 0.42 | 0.77 [4/12] | 0.75 [4/12] | **0.78** [4/12] | 0.75 [4/12] |
+| | | eye | 0.69 | 0.57 | 0.77 | 0.73 | **0.66** | 0.62 |
+| | | graze | 0.58 | 0.58 | 0.54 | 0.62 | **0.59** | 0.60 |
+| 960 | FNV Mojave | down | 1.87 [4/12] | 1.50 | 1.82 [8/8] | 1.91 [8/8] | **1.86** [4/12] | 1.89 [4/12] |
+| | | eye | 1.57 | 1.09 | 1.23 | 1.18 | **0.75** | 0.80 |
+| | | graze | 1.19 | 0.83 | 1.97 | 2.12 | **1.29** | 1.32 |
+| 960 | Skyrim tundra | down | 1.56 [4/12] | 0.92 | 1.11 [7/9] | 1.33 [7/9] | **1.17** [4/12] | 1.19 [4/12] |
+| | | eye | 1.38 | 1.35 | 1.45 | 1.40 | **1.38** | 1.17 |
+| | | graze | 0.57 | 0.60 | 0.76 | 0.82 | **0.39** | 0.81 |
+
+The per-state sd is 0.06–0.50 ms, except FNV at 960, where it is 0.6–1.07 ms. A cell
+there is only good to about ±0.25 ms. No run logged a validation line.
+
+- **Levels switch per whole 3.66 m square, so thresholds group into steps.** At 480
+  lines, 32–128 px² pick the same squares as the 2 m rule: the 2×2 block around the
+  camera. Only 256 px² at FNV drops two of them. At 960 lines, 32–64 px² add three or
+  four squares and 128–256 px² match the 2 m rule again.
+- **More fine squares cost and buy nothing measurable here.** At 960 lines the extra
+  squares from 32–64 px² cost up to 0.9 ms (FNV graze). **128 px²** reproduces 4.1's
+  selection at the bench resolution and is the default. Unlike the 2 m rule, it scales
+  with the render height and `fov_y`. A lower render height or a wider field of view
+  drops squares to coarse by itself.
+- **All coarse is the floor**: 0.1–0.35 ms below the 2-level pool at 480 lines. That
+  is the price of the fine lattice near the camera, and only screenshots, not timing,
+  can say whether it is worth paying.
+- **At 960 lines even all-coarse costs 0.6–1.5 ms**, against 0.4–0.7 ms at 480. The
+  patches-off frame itself grows by half (FNV 5.3 → 7.8 ms looking down). The
+  remaining cost follows the patch pixels, and a lattice selector cannot remove it.
+  §8.3 traced it to the shadow and GI rays those pixels fire. That puts the 1.0 ms
+  bar, set at the bench's 480 lines, in question: a per-resolution bar or a fraction
+  of the frame would hold across resolutions. **Decision for review.**
+- This data does not justify the third, coarser level (§7.3). The only lattice saving
+  measured is the near squares going fine → coarse (the all-coarse column). What is
+  left follows the patch pixels, not lattice density. Not measured: a coarser lattice
+  on the far squares themselves.
 
 ## 9. Review decisions (Matías, 2026-11-21)
 1. **Upward-only displacement, base mesh kept (§3.3)**: accepted. No holes, no zero-mean

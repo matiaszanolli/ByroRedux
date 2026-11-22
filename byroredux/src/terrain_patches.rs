@@ -64,8 +64,11 @@ pub(crate) const DEFAULT_FINE_RANGE_M: f32 = 2.0;
 pub(crate) const FINE_HYSTERESIS_M: f32 = 0.5;
 /// The screen-space rule's threshold (§7.3): a square draws fine while one
 /// fine-lattice triangle at its nearest point projects to at least this many
-/// render pixels. A fine square drops to coarse below half of it.
-pub(crate) const DEFAULT_A_FINE_PX2: f32 = 64.0;
+/// render pixels. A fine square drops to coarse below half of it. 128 is the
+/// sweep's pick (§8.5): at the bench's 480 render lines it selects the squares
+/// 4.1's 2 m rule did, and at 960 lines 32–64 px² added fine squares for up to
+/// 0.9 ms with nothing measured in return.
+pub(crate) const DEFAULT_A_FINE_PX2: f32 = 128.0;
 /// Squares in one cell's grid.
 pub(crate) const SQUARES_PER_CELL: usize = (PER_SIDE * PER_SIDE) as usize;
 /// The 1 mm step every patch border and every undisplaced point sits at above

@@ -557,7 +557,7 @@ mod tests {
         let mut world = World::new();
         world.insert_resource(TerrainPatchState::default());
         let out = TerrainPatchesCommand.execute(&world, "").lines.join("\n");
-        assert!(out.contains("level=screen afine=64 px²") && out.contains("distance fallback"), "{out}");
+        assert!(out.contains("level=screen afine=128 px²") && out.contains("distance fallback"), "{out}");
         assert_eq!(
             world.resource::<TerrainPatchState>().level,
             LevelSetting::Screen { a_fine_px2: DEFAULT_A_FINE_PX2 }
