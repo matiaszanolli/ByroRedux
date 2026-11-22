@@ -803,11 +803,23 @@ fn waves_require_contact_rescan(
     if max_amplitude <= 1.0e-4 {
         return false;
     }
+    // #7279 — only the scan's own targets keep it armed: Dynamic bodies and
+    // ragdoll bones (which carry no `RigidBodyData` row). A contact on a
+    // body of another motion type is someone else's — the kinematic player
+    // capsule's, written by its controller — and re-running the per-body scan
+    // for it buys nothing. Same `RigidBodyData` → `WaterContact` order as the
+    // scan.
+    let bodies = world.query::<RigidBodyData>();
     let Some(contacts) = world.query::<WaterContact>() else {
         return false;
     };
-    contacts.iter().any(|(_, contact)| {
-        contact.surface_entity.is_some()
+    contacts.iter().any(|(entity, contact)| {
+        let scan_target = !bodies
+            .as_ref()
+            .and_then(|q| q.get(entity))
+            .is_some_and(|body| body.motion_type != MotionType::Dynamic);
+        scan_target
+            && contact.surface_entity.is_some()
             && (contact.submerged_fraction > 0.0
                 || contact.depth.abs() <= max_amplitude + WATERLINE_HYSTERESIS)
     })
@@ -1843,6 +1855,51 @@ mod tests {
                 "amplitude {amplitude} x {wind_wave_scale}: a contact beyond the sampled crest is not"
             );
         }
+    }
+
+    /// #7279 — a wet contact on a body the scan does not own (the kinematic
+    /// player capsule's, written by its controller) does not keep the
+    /// per-body rescan armed; a Dynamic body's, or a bone's with no
+    /// `RigidBodyData` row, does.
+    #[test]
+    fn only_the_scans_own_targets_keep_the_rescan_armed() {
+        let mut world = World::new();
+        world.register::<WaterContact>();
+        world.register::<RigidBodyData>();
+        let surface_entity = world.spawn();
+        let surfaces = [WaterSurface {
+            entity: surface_entity,
+            kind: WaterKind::Calm,
+            volume: WaterVolume { min: [-10.0, -10.0, -10.0], max: [10.0, 0.0, 10.0] },
+            surface: None,
+            material: WaterMaterial { wave_amplitude: 10.0, wind_driven: false, ..WaterMaterial::default() },
+            flow: None,
+            damage_per_second: 0.0,
+            bed: None,
+        }];
+        let wet = WaterContact { surface_entity: Some(surface_entity), depth: 30.0, submerged_fraction: 0.5, ..WaterContact::default() };
+        let body_of = |motion_type| RigidBodyData { motion_type, ..RigidBodyData::default() };
+
+        let player = world.spawn();
+        world.insert(player, body_of(MotionType::CharacterKinematic));
+        world.insert(player, wet);
+        assert!(
+            !waves_require_contact_rescan(&world, &surfaces, [0.0; 2], 1.0),
+            "the wading player's contact alone must not arm the per-body rescan"
+        );
+
+        let float = world.spawn();
+        world.insert(float, body_of(MotionType::Dynamic));
+        world.insert(float, wet);
+        assert!(waves_require_contact_rescan(&world, &surfaces, [0.0; 2], 1.0), "a wet Dynamic body does");
+
+        world.remove::<WaterContact>(float);
+        let bone = world.spawn();
+        world.insert(bone, wet);
+        assert!(
+            waves_require_contact_rescan(&world, &surfaces, [0.0; 2], 1.0),
+            "a ragdoll bone has no RigidBodyData row and stays a target"
+        );
     }
 
     /// #5562 — a wet contact publishes the waterline under the collider AABB
