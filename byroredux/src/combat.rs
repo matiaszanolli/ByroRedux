@@ -625,7 +625,6 @@ fn target_block(world: &World, aggressor: EntityId, target: EntityId) -> Option<
     model.reduction(skill, guard, world.has::<EquippedWeapon>(aggressor))
 }
 
-/// Install (or, for a game without block rules, remove) the [`BlockModel`] for a freshly loaded index.
 /// Install (or, for a game without fall damage, remove) the [`FallModel`](byroredux_core::character::FallModel) for a freshly
 /// loaded index, retuned by the load order's `fJumpFall*` settings (#7056).
 pub(crate) fn install_fall_model(world: &mut World, index: &byroredux_plugin::esm::records::EsmIndex) {
@@ -639,6 +638,8 @@ pub(crate) fn install_fall_model(world: &mut World, index: &byroredux_plugin::es
     }
 }
 
+/// Install (or, for a game without block rules, remove) the [`BlockModel`](byroredux_core::character::BlockModel) for a
+/// freshly loaded index.
 pub(crate) fn install_block_model(world: &mut World, index: &byroredux_plugin::esm::records::EsmIndex) {
     match index.character_rules.block() {
         Some(model) => {
@@ -4079,5 +4080,35 @@ mod held_death_reconciliation_tests {
         let pending = world.resource::<PendingDeathReconciliations>();
         assert!(pending.held().is_empty());
         assert_eq!(pending.queued(), &[combat_kill, late_static_corpse]);
+    }
+}
+
+/// #7236 — each player rule-row installer carries its own doc, naming the model it installs. One was inserted between
+/// `install_block_model` and its doc, which then read as the first paragraph of `install_fall_model`'s.
+#[cfg(test)]
+mod installer_doc_source_tests {
+    #[test]
+    fn every_rule_row_installer_documents_its_own_model() {
+        let src = include_str!("combat.rs");
+        let lines: Vec<&str> = src.lines().collect();
+        let mut seen = 0;
+        for (at, line) in lines.iter().enumerate() {
+            let Some(rest) = line.strip_prefix("pub(crate) fn install_") else { continue };
+            let Some(row) = rest.split('(').next().and_then(|name| name.strip_suffix("_model")) else { continue };
+            seen += 1;
+            let model: String = row
+                .split('_')
+                .map(|word| word[..1].to_uppercase() + &word[1..])
+                .chain(std::iter::once("Model".to_owned()))
+                .collect();
+            let doc: Vec<&str> = lines[..at].iter().rev().take_while(|line| line.starts_with("///")).copied().collect();
+            let doc = doc.into_iter().rev().collect::<Vec<_>>().join(" ");
+            assert!(doc.contains(&model), "install_{row}_model's doc must name {model}: {doc:?}");
+            let others = ["BlockModel", "FallModel", "ArmorRatingModel"].into_iter().filter(|other| *other != model);
+            for other in others {
+                assert!(!doc.contains(&format!("[`{other}`]")), "install_{row}_model's doc names {other}: {doc:?}");
+            }
+        }
+        assert!(seen >= 3, "the armor-rating, block and fall installers are scanned");
     }
 }
