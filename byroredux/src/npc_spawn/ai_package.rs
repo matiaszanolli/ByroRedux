@@ -1469,13 +1469,17 @@ pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
         if let Some(package) = active.filter(|package| Some(package.form_id) != runtime.active_package_form_id) {
             newly_selected.push((actor, package.package_flags, package.form_id));
         }
-        let behavior = active.and_then(|package| {
-            let template = package
+        let template = active.map(|package| {
+            package
                 .package_template_form_id
                 .and_then(|form_id| registry.package(form_id))
-                .unwrap_or(package);
-            AmbientBehavior::from_package(package, template, runtime.actor_form_id, Some(actor), world)
+                .unwrap_or(package)
         });
+        let behavior = active
+            .zip(template)
+            .and_then(|(package, template)| AmbientBehavior::from_package(package, template, runtime.actor_form_id, Some(actor), world));
+        // #7233 — a Skyrim+ package whose template carries a procedure tree.
+        let tree = template.is_some_and(|template| !template.procedures.is_empty());
         // AIP-DX-002: the winner that installs nothing says why, once per (re)selection.
         if let Some(package) = active.filter(|package| behavior.is_none() && !package.is_find()) {
             log::debug!(
@@ -1499,6 +1503,7 @@ pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
             active_package_form_id,
             behavior,
             active_package_form_id != runtime.active_package_form_id,
+            tree,
         ));
     }
     drop(registry);
@@ -1506,7 +1511,7 @@ pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
         package_flags::note_selected(world, actor, flags, package);
     }
 
-    for &(actor, active_id, behavior, changed) in &updates {
+    for &(actor, active_id, behavior, changed, tree) in &updates {
         // M47.2 — the package fragments: the old package changed, the new
         // one began. #5864 — `from` is what was last REPORTED running, so the
         // first tick after spawn (nothing reported yet) reports `None -> A`
@@ -1519,6 +1524,9 @@ pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
         let previous = byroredux_scripting::reported_package(world, actor).unwrap_or(runtime_active);
         byroredux_scripting::report_package_transition(world, actor, previous, active_id);
         if !changed {
+            if tree {
+                rerun_tree_leaf(world, actor, behavior);
+            }
             // Already the running package: start the script package's clock.
             if byroredux_scripting::script_packages::script_package_of(world, actor)
                 .is_some_and(|slot| Some(slot.package) == active_id)
@@ -1535,6 +1543,7 @@ pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
         if let Some(behavior) = behavior {
             behavior.insert_at_runtime(world, actor);
         }
+        record_tree_leaf(world, actor, tree.then_some(behavior));
         // Installed after the handover cleared the old procedure's markers, so a
         // stale `Traveled` cannot read as this package completing.
         if byroredux_scripting::script_packages::script_package_of(world, actor)
@@ -1545,13 +1554,79 @@ pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
     }
 
     if let Some(mut query) = world.query_mut::<AmbientPackageRuntime>() {
-        for (actor, active_package_form_id, _, _) in updates {
+        for (actor, active_package_form_id, _, _, _) in updates {
             if let Some(runtime) = query.get_mut(actor) {
                 runtime.active_package_form_id = active_package_form_id;
                 runtime.last_evaluated_game_minute = Some(minute);
             }
         }
     }
+}
+
+/// #7233 — the leaf a running tree package installed (`None`: no leaf was valid when the tree ran). The CK runs a tree's
+/// branch once and the whole package again when it completes (*Package Templates*, Branches: a Stacked branch "picks the
+/// first valid branch or procedure ... After that, the stacked branch is considered complete"; "The package runs again
+/// as long as it remains the top-most package"), so the leaf is kept while its procedure runs and the tree is walked
+/// again only when that procedure reports done or nothing was installed. Session state on the actor, re-derived by the
+/// first pass after a spawn; not saved.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TreeLeafRun(Option<AmbientBehavior>);
+
+impl Component for TreeLeafRun {
+    type Storage = byroredux_core::ecs::SparseSetStorage<Self>;
+}
+
+/// Note what a (re)selected package installed: `Some(leaf)` for a tree package, `None` to forget a tree run when the
+/// new winner is a flat package.
+fn record_tree_leaf(world: &World, actor: EntityId, leaf: Option<Option<AmbientBehavior>>) {
+    if let Some(mut runs) = world.query_mut::<TreeLeafRun>() {
+        match leaf {
+            Some(leaf) => {
+                runs.insert(actor, TreeLeafRun(leaf));
+            }
+            None => {
+                runs.remove(actor);
+            }
+        }
+    }
+}
+
+/// Whether `leaf`'s procedure has reported done on `actor`: Travel arrived, Find's count met, UseWeapon's bursts fired.
+/// The other procedures have no Done state.
+fn tree_leaf_done(world: &World, actor: EntityId, leaf: AmbientBehavior) -> bool {
+    match leaf {
+        AmbientBehavior::Travel { .. } => world.has::<Traveled>(actor),
+        AmbientBehavior::Find(_) => world.get::<FindProgress>(actor).is_some_and(|progress| progress.done),
+        AmbientBehavior::UseWeapon(_) => {
+            world.has::<byroredux_core::ecs::components::UseWeaponPackageStarted>(actor)
+                && !world.has::<crate::systems::script_requests::UseWeaponRun>(actor)
+        }
+        _ => false,
+    }
+}
+
+/// #7233 — the running tree package, still the winner, runs its tree again when its leaf is done or none was valid:
+/// `chosen` is this pass's walk. A different leaf replaces the installed one; the same leaf stays as it is (a finished
+/// Travel keeps standing at its destination rather than re-arriving every minute). A run spawn installed with no record
+/// yet is adopted as it stands.
+fn rerun_tree_leaf(world: &World, actor: EntityId, chosen: Option<AmbientBehavior>) {
+    let installed = world.get::<TreeLeafRun>(actor).map(|run| run.0);
+    let rerun = match installed {
+        None => {
+            record_tree_leaf(world, actor, Some(chosen));
+            return;
+        }
+        Some(None) => chosen.is_some(),
+        Some(Some(leaf)) => tree_leaf_done(world, actor, leaf) && chosen != Some(leaf),
+    };
+    if !rerun {
+        return;
+    }
+    clear_ambient_behavior(world, actor);
+    if let Some(leaf) = chosen {
+        leaf.insert_at_runtime(world, actor);
+    }
+    record_tree_leaf(world, actor, Some(chosen));
 }
 
 #[cfg(test)]
@@ -1579,6 +1654,7 @@ mod tests {
     fn register_runtime(world: &mut World, hour: f32) {
         byroredux_scripting::register(world);
         world.register::<AmbientPackageRuntime>();
+        world.register::<TreeLeafRun>();
         world.register::<Dead>();
         world.register::<SandboxBehavior>();
         world.register::<Seated>();
@@ -1845,6 +1921,40 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    /// #7233 — a running tree package keeps its leaf while the leaf's procedure runs, and walks the tree again when it
+    /// reports done (the CK: the package "runs again as long as it remains the top-most package") or when no leaf was
+    /// valid at install. A different leaf replaces the installed one; the same finished leaf is left standing.
+    #[test]
+    fn a_running_tree_package_reruns_its_tree_when_the_leaf_is_done() {
+        let travel = AmbientBehavior::Travel { radius: Some(0.0), target_form_id: None, actor_form_id: 0xAA, near_editor_location: false };
+        let wander = AmbientBehavior::Wander { wander_radius: Some(256.0), actor_form_id: 0xAA, near_editor_location: false };
+        let mut world = World::new();
+        register_runtime(&mut world, 12.0);
+        let actor = world.spawn();
+        travel.insert_at_runtime(&world, actor);
+        record_tree_leaf(&world, actor, Some(Some(travel)));
+
+        rerun_tree_leaf(&world, actor, Some(wander));
+        assert!(world.has::<TravelBehavior>(actor), "the Travel leaf is still running: kept, whatever this walk picks");
+
+        world.query_mut::<Traveled>().unwrap().insert(actor, Traveled);
+        rerun_tree_leaf(&world, actor, Some(travel));
+        assert!(world.has::<Traveled>(actor), "done, and the walk picks the same leaf: it stays standing, not re-arriving");
+
+        rerun_tree_leaf(&world, actor, Some(wander));
+        assert!(!world.has::<TravelBehavior>(actor) && !world.has::<Traveled>(actor), "done: the finished leaf goes");
+        assert!(world.has::<WanderBehavior>(actor), "and the leaf this walk picked runs");
+        assert_eq!(world.get::<TreeLeafRun>(actor).map(|run| *run), Some(TreeLeafRun(Some(wander))));
+
+        // No leaf was valid at install: the next walk that finds one installs it.
+        let idle = world.spawn();
+        record_tree_leaf(&world, idle, Some(None));
+        rerun_tree_leaf(&world, idle, None);
+        assert!(!world.has::<WanderBehavior>(idle));
+        rerun_tree_leaf(&world, idle, Some(wander));
+        assert!(world.has::<WanderBehavior>(idle), "a leaf whose conditions now pass is installed");
     }
 
     fn setup_actor(hour: f32, packages: Vec<PackRecord>) -> (World, EntityId) {

@@ -943,6 +943,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("ActionState", "per-frame held/pressed/released action edges derived entirely from InputState"),
         ("AlphaBlend", "spawn-time classification extracted from NiAlphaProperty flags at import, rederived identically every load"),
         ("AmbientPackageRuntime", "NPC_.PKID candidate state rebuilt at spawn and re-evaluated on the first tick against restored clock/CTDA resources"),
+        ("TreeLeafRun", "#7233 — the leaf a running tree package installed, so the tree is walked again only when that leaf's procedure reports done; session state on the actor, re-adopted by the first package pass after a spawn"),
         ("CellLightingRes", "WTHR ambient/directional CPU-side mirror, re-flowed from the plugin's parsed lighting record every cell load"),
         ("InteriorSkyExposureRes", "current CELL Show Sky flag, rederived from parsed CELL DATA on every interior cell load"),
         ("InstalledOutdoorEnvironment", "records the climate, default weather and forced weather the outdoor sky was last installed from (#6309); every environment install rewrites it, and a load re-installs the sky, so a saved copy could only go stale"),
