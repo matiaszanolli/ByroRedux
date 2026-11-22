@@ -352,6 +352,10 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
             "terrain_patch".to_string(),
             gpu_bracket_ms(cov.gpu_terrain_patch_ms, cov.gpu_terrain_patch_active),
         );
+        gpu_pass_ms.insert(
+            "terrain_patch_blas".to_string(),
+            gpu_bracket_ms(cov.gpu_terrain_patch_blas_ms, cov.gpu_terrain_patch_blas_active),
+        );
     }
 
     let mut cpu_pass_ms: BTreeMap<String, f32> = BTreeMap::new();

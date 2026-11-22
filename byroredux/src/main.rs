@@ -232,7 +232,7 @@ fn bench_frame_max_over_p95(distribution: [f64; 3]) -> f64 {
 
 /// Bench-line key for each GPU bracket the `bench:` summary reports, in the
 /// order `app_events` copies them out of `SkinCoverageStats`.
-const BENCH_GPU_KEYS: [&str; 29] = [
+const BENCH_GPU_KEYS: [&str; 30] = [
     "skin_disp",
     "blas_refit",
     "taa",
@@ -270,6 +270,8 @@ const BENCH_GPU_KEYS: [&str; 29] = [
     "cache_resolve",
     // #7152 — TSD-4.1's terrain patch pass; appended, same rule.
     "terrain_patch",
+    // #7221 — TSD-4.2's patch BLAS builds + refits; appended, same rule.
+    "terrain_patch_blas",
 ];
 
 /// One bench-line GPU reading: the bracket's key, its milliseconds and whether it ran this snapshot
@@ -310,6 +312,7 @@ fn bench_gpu_samples(s: &byroredux_core::ecs::SkinCoverageStats) -> [BenchGpuSam
         ("cache_update", s.gpu_cache_update_ms, s.gpu_cache_update_active),
         ("cache_resolve", s.gpu_cache_resolve_ms, s.gpu_cache_resolve_active),
         ("terrain_patch", s.gpu_terrain_patch_ms, s.gpu_terrain_patch_active),
+        ("terrain_patch_blas", s.gpu_terrain_patch_blas_ms, s.gpu_terrain_patch_blas_active),
     ]
 }
 
@@ -520,8 +523,8 @@ mod bench_frame_distribution_tests {
     fn bench_gpu_keys_match_the_reported_bracket_order() {
         assert_eq!(
             BENCH_GPU_KEYS.len(),
-            29,
-            "the bench line reports 29 of gpu_timers.rs's 30 brackets — the \
+            30,
+            "the bench line reports 30 of gpu_timers.rs's 31 brackets — the \
              ground-cover *sampling bench* owns its own report. Note the two \
              ground-cover brackets are different passes: the production \
              interaction+scatter compute IS on the line (#4315); only the \

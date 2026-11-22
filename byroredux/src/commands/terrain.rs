@@ -309,14 +309,26 @@ impl ConsoleCommand for TerrainPatchesCommand {
             cm(s.max_seam_gap),
             cm(s.max_displacement),
         ));
+        // #7221 — the patch BLAS the TLAS used this frame.
+        lines.push(format!(
+            "  blas: ready={} built={} refit={} deferred={} failed={} bytes={:.1} MB",
+            s.blas.ready,
+            s.blas.built,
+            s.blas.refit,
+            s.blas.deferred,
+            s.blas.failed,
+            s.blas.bytes as f64 / (1024.0 * 1024.0),
+        ));
         // The GPU brackets the A/B harness reads (last timer snapshot).
         if let Some(cov) = world.try_resource::<byroredux_core::ecs::SkinCoverageStats>() {
             let ms = |value: f32, active: bool| {
                 byroredux_core::ecs::format_gpu_bracket_ms(value, active, 3)
             };
             lines.push(format!(
-                "  gpu: terrain_patch_ms={} main_render_ms={}",
+                "  gpu: terrain_patch_ms={} terrain_patch_blas_ms={} tlas_build_ms={} main_render_ms={}",
                 ms(cov.gpu_terrain_patch_ms, cov.gpu_terrain_patch_active),
+                ms(cov.gpu_terrain_patch_blas_ms, cov.gpu_terrain_patch_blas_active),
+                ms(cov.gpu_tlas_build_ms, cov.gpu_tlas_build_active),
                 ms(cov.gpu_main_render_ms, cov.gpu_main_render_active),
             ));
         }

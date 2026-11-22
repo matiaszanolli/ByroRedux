@@ -5,7 +5,8 @@ Drafted 2026-10-22. Follows TSD-1 (#6195 height maps), TSD-2 (#6196 height blend
 TSD-3 (#6197 parallax), which are shipped. #7149 (BTXT-only tile slots) and the §8 spike
 (#7150, result in §8.1: go) are done. Stage 4.1 (#7152) is built (§7.1) and measured
 (§8.2), with a two-level lattice (fine within 2 m, coarse beyond), and was approved on
-2026-11-22. Stage 4.2 (patches in the TLAS, one refit BLAS) is #7221.
+2026-11-22. Stage 4.2 (#7221, patches in the TLAS with a refit BLAS each) is built (§7.2)
+and measured (§8.3), awaiting review before 4.3.
 
 **Question this answers**: if parallax (TSD-3) is not enough, how would real geometry
 displacement work in an engine whose shadows, reflections and GI are ray-traced, what would
@@ -255,6 +256,39 @@ settings/UI. Each stage ends with a review, as in TSD-1–3.
   largest displacement, and the `terrain_patch` / `main_render` GPU brackets. `terrain.patches
   on|off` is the A/B switch; `amplitude` / `range` retune the session.
 
+### 7.2 Stage 4.2 as built (#7221)
+- **One BLAS per patch mesh, not one multi-geometry BLAS.** §8.1 recommended one BLAS
+  for all patches, to pay one refit's fixed cost. But every ray hit resolves through
+  `GpuInstance` + the primitive id (`ray_hit.glsl`) and no shader reads a geometry
+  index, so a multi-geometry BLAS would have meant changing every hit path. A BLAS per
+  patch mesh hit-shades like any rigid instance, reading the live vertices the compute
+  writes. The fixed cost §8.1 measured came from the shared-scratch serialize barrier,
+  and that is avoided another way: all of a frame's patch builds and refits go out in
+  **one** `vkCmdBuildAccelerationStructuresKHR` call over disjoint regions of the patch
+  set's own scratch buffer (`acceleration/blas_terrain_patch.rs`).
+- **Refit or build.** A mesh still showing last frame's square refits (only the
+  distance fade moved its vertices). A mesh that changed square or level, whose pool
+  addresses moved, or that reached 600 refits gets a full build, at most two a frame
+  (§3.5). A deferred one stays out of the TLAS that frame, so rays see the base terrain
+  there; it is not counted as a missing BLAS, so the TLAS integrity check stays clean.
+  The static-BLAS restore path skips patch meshes, which it would otherwise snapshot.
+- **Frame order.** The patches now record ahead of the TLAS build: the terrain-tile
+  upload (split out of the instance upload), the patch compute, the patch BLAS, then
+  `dispatch_skin_and_cluster`'s TLAS build. The compute's exit barrier adds the AS-build
+  stage (`shader-pipeline.md` steps 1e–1g).
+- **The base terrain stays in the TLAS** under the patches. Rays reaching the ground
+  from above hit the patch first. A shadow ray starts on the patch surface, which is
+  never below the base, so the 1 mm lip needs no mask.
+- **Ground cover.** The blade and model tiers trace straight down to keep plants off
+  placed geometry. The patches sit inside that span, so the first build dropped every
+  blade under a patch. Patch TLAS instances now carry `TLAS_SBT_TAG_TERRAIN_PATCH` in
+  the SBT record offset, which ray queries do not otherwise use. The shared
+  `gcRootCovered` (`include/groundcover_cover.glsl`, now the single copy of that trace)
+  skips them.
+- **Telemetry.** The `terrain_patch_blas` GPU bracket, plus a `blas:` line in
+  `terrain.patches` (ready / built / refit / deferred / failed, bytes); its GPU line also
+  prints the TLAS build bracket.
+
 ## 8. The spike, and its go/no-go bar (proposed — adjust it)
 Measure on the 4070 Ti, release build, at the five TSD positions: (a) refit time for 197 k
 triangles of a displaced grid, (b) compute displace time for 101 k vertices, (c) added raster
@@ -375,6 +409,45 @@ of them coarse at two-level). Totals are compute + `main_render` delta, ms:
   with the patches-off baseline moving between 5.7 and 7.4 ms. Only interleaved
   comparisons within one run are meaningful here, and FNV eye sits on the 1.0 ms bar
   rather than clearly over it.
+
+### 8.3 Stage 4.2 measurement (#7221, 2026-11-22)
+Same harness as §8.2, 8 interleaved off/on rounds × 4 samples. Two-level lattice, 3 cm,
+6 m, patch parallax on (the defaults), 16 patches resident. Every patch is in the TLAS
+now. **Total** = patch compute + patch BLAS + the TLAS-build delta + the `main_render`
+delta, ms. The `main_render` delta now includes ray queries traversing the patch BLAS.
+
+| position | down | eye | graze | compute | patch BLAS | TLAS Δ |
+|---|---|---|---|---|---|---|
+| Skyrim tundra (2,−4) | **0.87** | **0.95** | **0.48** | 0.13–0.14 | 0.021–0.022 | 0.000 |
+| Skyrim Riverwood (4,−11) | **0.53** | **0.78** | **0.42** | 0.12–0.14 | 0.019–0.021 | 0.000 |
+| FNV Mojave (0,0) | **1.45** | **1.99** | **1.51** | 0.12–0.14 | 0.019 | 0.000 |
+| FO4 Commonwealth (0,0) | **1.16** (sd 2.7) | **0.56** (sd 3.3) | **0.16** | 0.12–0.13 | 0.018 | 0.000 |
+| Oblivion forest (0,0) | **0.82** | **0.55** | **0.14** | 0.13 | 0.020–0.022 | 0.000 |
+
+- **The refit is not the cost.** All 16 patch BLAS refit in one batched call in
+  0.018–0.022 ms, against the 0.5 ms bar and §8.1's ≈ 0.13 ms one-BLAS projection,
+  because the batched call pays no per-BLAS serialize barrier. The TLAS-build bracket
+  moves by under 0.002 ms with 16 more instances (1276 against 1260 at FNV;
+  `rt.integrity` PASS, emitted = eligible).
+- **Against the 1.0 ms bar**: every Skyrim and Oblivion pose and FO4 eye/graze pass; FO4
+  down is inside its own noise; FNV fails at every pose (1.45–1.99), as in §8.2, where
+  that position was shown to be noise-bound across runs.
+- **Compared with the two-level raster-only run (§8.2)** the totals are 0.1–0.7 ms
+  higher at the same positions, plausibly the patch BLAS's 57 k triangles in every
+  shadow, reflection and GI ray. Those are separate engine runs, which §8.2 showed differ
+  by up to 1 ms at FNV, so the RT share is not isolated yet: that needs patch TLAS
+  membership as a runtime switch, interleaved within one run.
+- **Sync validation** (`BYRO_VALIDATION=1`) at the tundra and FNV positions, all poses,
+  patches on and off: no VUID or SYNC-HAZARD message.
+- **Seams**: unchanged, zero gap and zero lip deviation everywhere.
+- **Risk 3 (denoiser stability)**: six still-camera screenshots per state at eye level,
+  per-pixel temporal standard deviation (8-bit luma), patches on / off: tundra
+  0.80 / 0.84, Riverwood 10.3 / 10.6, FO4 1.54 / 1.55, Oblivion 8.9 / 9.5, FNV 2.60 / 2.39
+  (p95 14.6 / 13.1). No position shows the patches raising the noise beyond FNV's
+  small rise. Six frames is a coarse probe, not the stricter still-camera measurement §6
+  asks for.
+- **Ground cover**: with the patches in the TLAS, the first build dropped every plant
+  under a patch (§7.2); with the tag the near grass is back.
 
 ## 9. Review decisions (Matías, 2026-11-21)
 1. **Upward-only displacement, base mesh kept (§3.3)**: accepted. No holes, no zero-mean

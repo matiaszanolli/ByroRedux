@@ -7,8 +7,9 @@
 //! hands that to the two consumers:
 //!
 //! - [`emit_patch_draws`] (inside `build_render_data`, before the sort) clones
-//!   each patch's base cell draw command onto the patch mesh, with
-//!   `in_tlas = false` — 4.1 is raster only;
+//!   each patch's base cell draw command onto the patch mesh. It keeps the
+//!   base's `in_tlas`: the renderer gives each patch mesh its own refit BLAS
+//!   and admits the draw to the TLAS once that BLAS matches the frame (#7221);
 //! - [`push_terrain_patches`] (after it, with the renderer) stages the slots
 //!   and the shared parameters for `draw_frame`'s compute pass, and publishes
 //!   the last seam check for the `terrain.patches` console command.
@@ -336,8 +337,9 @@ fn nearby_cells(world: &World, cam_xz: [f32; 2], reach: f32) -> Vec<PatchCell> {
 }
 
 /// Assign this frame's patches and append their draws: each patch draws as a
-/// copy of its base cell's command with the patch mesh swapped in, kept out of
-/// the TLAS (stage 4.1 is raster only). Called before the draw sort; the patch
+/// copy of its base cell's command with the patch mesh swapped in, TLAS
+/// membership included (the renderer resolves the patch BLAS, #7221). Called
+/// before the draw sort; the patch
 /// meshes are the registry's first handles, so in the opaque sort (grouped by
 /// mesh) every patch draws before any base cell and early-Z rejects the base
 /// under it.
@@ -379,7 +381,6 @@ pub(crate) fn emit_patch_draws(
         };
         let mut patch = base.clone();
         patch.mesh_handle = mesh;
-        patch.in_tlas = false;
         patch.entity_id = PATCH_ENTITY_ID_BASE - slot as u32;
         let centre = Vec4::new(
             assignment.cell.origin_xz[0] + (assignment.key.col as f32 + 0.5) * PATCH_SIZE,

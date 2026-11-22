@@ -1005,6 +1005,37 @@ mod tests {
         );
     }
 
+    /// #7221 — both tiers test placed geometry over a root through the one
+    /// shared trace, and that trace skips the TSD-4 terrain patches (the
+    /// terrain's own relief, in the TLAS since 4.2) by their SBT-offset tag. A
+    /// copy of the trace that forgot the tag would drop every plant under a
+    /// patch, which is exactly what the first 4.2 build did.
+    #[test]
+    fn both_tiers_share_the_cover_trace_and_it_skips_terrain_patches() {
+        let cover = include_str!("../../shaders/include/groundcover_cover.glsl");
+        assert!(
+            cover.contains("bool gcRootCovered(vec3 root, float reach)")
+                && cover.contains("rayQueryGetIntersectionInstanceShaderBindingTableRecordOffsetEXT(q, false)")
+                && cover.contains("!= TLAS_SBT_TAG_TERRAIN_PATCH")
+                && cover.contains("rayQueryConfirmIntersectionEXT(q);"),
+            "the cover trace must confirm every candidate except a terrain patch"
+        );
+        for (name, src) in [
+            ("groundcover_scatter.comp", include_str!("../../shaders/groundcover_scatter.comp")),
+            ("groundcover_models.comp", include_str!("../../shaders/groundcover_models.comp")),
+        ] {
+            assert!(
+                src.contains("#include \"include/groundcover_cover.glsl\"")
+                    && src.contains("gcRootCovered("),
+                "{name} must test cover through the shared trace"
+            );
+            assert!(
+                !src.contains("rayQueryInitializeEXT"),
+                "{name} carries its own ray query again; route it through gcRootCovered"
+            );
+        }
+    }
+
     /// §4's overflow policy: ordered workgroup compaction saturates, it does
     /// not wrap, and candidate order remains reproducible for card clusters.
     #[test]

@@ -483,7 +483,12 @@ let allocator = self.allocator.as_ref().expect("allocator missing");
         let mut handles: Vec<u32> = draw_commands
             .iter()
             .filter_map(|cmd| {
-                if cmd.bone_offset != 0 || !draw_command_eligible_for_tlas(cmd) {
+                // #7221 — terrain patch meshes take their own refit BLAS; a
+                // static one would snapshot vertices the compute rewrites.
+                if cmd.bone_offset != 0
+                    || !draw_command_eligible_for_tlas(cmd)
+                    || accel.is_terrain_patch_mesh(cmd.mesh_handle)
+                {
                     return None;
                 }
                 Some(cmd.mesh_handle)

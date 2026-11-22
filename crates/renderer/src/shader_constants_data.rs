@@ -1134,6 +1134,11 @@ pub const TERRAIN_PATCH_COARSE_VERTEX_COUNT: u32 =
 /// `TerrainPatchPush.offsets.w` packs the missing-neighbour mask in the low
 /// bits and the coarse-neighbour mask above this shift (same 3×3 bit order).
 pub const TERRAIN_PATCH_COARSE_MASK_SHIFT: u32 = 16;
+/// #7221 — the SBT record offset a terrain patch's TLAS instance carries. The
+/// renderer traces with ray queries only, so the field is otherwise always 0;
+/// the ground-cover cover trace (`include/groundcover_cover.glsl`) reads it to
+/// skip the patches, which are the terrain's own relief, not placed geometry.
+pub const TLAS_SBT_TAG_TERRAIN_PATCH: u32 = 1;
 /// One invocation per patch vertex. Emitted without the `u` suffix for the
 /// `local_size_x` qualifier, like `SKIN_WORKGROUP_SIZE`.
 pub const TERRAIN_PATCH_WORKGROUP: u32 = 64;
@@ -3149,6 +3154,7 @@ pub const SHADER_DEFINES: &[HeaderLine] = &[
     shader_define!(Uint TERRAIN_PATCH_COARSE_VERTS),
     shader_define!(Uint TERRAIN_PATCH_COARSE_VERTEX_COUNT),
     shader_define!(Uint TERRAIN_PATCH_COARSE_MASK_SHIFT),
+    shader_define!(Uint TLAS_SBT_TAG_TERRAIN_PATCH),
     shader_define!(Float TERRAIN_PATCH_LATTICE_STEP),
     shader_define!(UintPlain TERRAIN_PATCH_WORKGROUP),
     shader_define!(Uint TERRAIN_PATCH_EDGE_SAMPLES),

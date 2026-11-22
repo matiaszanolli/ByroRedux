@@ -142,6 +142,40 @@ is not named here.
                            with no eligible fragment must not keep an older
                            light index); then TRANSFER → FRAGMENT,
                            TRANSFER_WRITE → SHADER_WRITE|SHADER_READ.
+1e terrain-tile upload  ─  `upload_terrain_tiles_if_dirty` (#7221, split out of
+   [TRANSFER]               `build_and_upload_instances`): when cell load dirtied
+                           the tile slab, `upload_terrain_tiles` copies its live
+                           prefix from this slot's staging buffer and releases
+                           TRANSFER / TRANSFER_WRITE → FRAGMENT|COMPUTE /
+                           SHADER_READ. Recorded first so 1f reads this frame's
+                           tiles.
+1f terrain_patch.comp   ─  TSD-4 terrain displacement patches
+                           (`record_terrain_patches`, #7152; ahead of the TLAS
+                           since #7221): one dispatch per resident patch slot
+                           rewrites that slot's reserved range of the global
+                           vertex buffer in place from the base cell's vertices
+                           and the terrain-tile height maps. Records a zero-fill
+                           of this slot's readback buffer, then an entry barrier
+                           TRANSFER|VERTEX_INPUT|VERTEX|FRAGMENT|COMPUTE /
+                           TRANSFER_WRITE → COMPUTE / SHADER_READ|SHADER_WRITE
+                           (the tile copy lands; the previous frame's vertex
+                           fetch, shader reads and ray queries of the patch
+                           ranges finish first), and an exit barrier COMPUTE /
+                           SHADER_WRITE → VERTEX_INPUT|VERTEX|FRAGMENT|COMPUTE|
+                           ACCELERATION_STRUCTURE_BUILD|HOST / VERTEX_ATTRIBUTE_
+                           READ|SHADER_READ|HOST_READ, which also publishes the
+                           vertices to 1g's AS-build geometry reads.
+1g terrain patch BLAS   ─  `record_terrain_patch_blas` (#7221): one batched
+                           `vkCmdBuildAccelerationStructuresKHR` that refits the
+                           patch BLAS still showing last frame's square and
+                           builds at most two reassigned ones, each over its own
+                           region of the patch scratch buffer. Bracketed by
+                           AS_BUILD / AS_WRITE → AS_BUILD / AS_READ|AS_WRITE
+                           (last frame's builds of the same AS and scratch) and
+                           AS_BUILD / AS_WRITE → AS_BUILD|FRAGMENT|COMPUTE /
+                           AS_READ (the TLAS build in step 4 and every ray
+                           query). With no work it records nothing and only
+                           clears last frame's ready set.
 1d skin input copies    ─  `record_bone_world_copy` (the dirty bone-world
    [TRANSFER]               slots' staging → device `cmd_copy_buffer`) and,
                            when first-sight uploads are pending,
@@ -256,23 +290,7 @@ is not named here.
                            COMPUTE / SHADER_WRITE → DRAW_INDIRECT|VERTEX|
                            FRAGMENT|TRANSFER / INDIRECT_COMMAND_READ|
                            SHADER_READ|TRANSFER_READ.
-5e terrain_patch.comp ───  TSD-4.1 terrain displacement patches
-                           (`record_terrain_patches`, #7152) after 5d and
-                           before step 6: one dispatch per resident patch
-                           slot rewrites that slot's reserved range of the
-                           global vertex buffer in place from the base cell's
-                           vertices and the terrain-tile height maps. Records
-                           a zero-fill of this slot's readback buffer, then an
-                           entry barrier TRANSFER|VERTEX_INPUT|VERTEX|
-                           FRAGMENT|COMPUTE / TRANSFER_WRITE → COMPUTE /
-                           SHADER_READ|SHADER_WRITE (earlier geometry and tile
-                           copies land; the previous frame's vertex fetch of
-                           the patch ranges finishes first), and an exit
-                           barrier COMPUTE / SHADER_WRITE → VERTEX_INPUT|
-                           VERTEX|FRAGMENT|COMPUTE|HOST / VERTEX_ATTRIBUTE_
-                           READ|SHADER_READ|HOST_READ. The terrain-tile copy
-                           (`upload_terrain_tiles`) releases to COMPUTE as
-                           well as FRAGMENT for this pass.
+5e (terrain patches)    ─  moved ahead of the TLAS build as 1e-1g (#7221).
 6  [Main render pass]   ─  raster (BEGIN → END, `record_geometry_pass`), in order:
                            `record_main_batches` (`record_batch_draws` per batch),
                            `record_water_surfaces`, `record_groundcover_blades`:

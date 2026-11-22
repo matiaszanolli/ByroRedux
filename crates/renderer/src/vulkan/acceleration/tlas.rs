@@ -548,6 +548,18 @@ impl AccelerationManager {
             if !draw_command_eligible_for_tlas(draw_cmd) {
                 continue;
             }
+            // #7221 — a terrain patch draw takes its own refit BLAS, and only
+            // in a frame whose BLAS matches the vertices the patch compute
+            // wrote. A deferred one (reassigned, waiting for the build budget)
+            // is not eligible rather than missing: rays see the base terrain.
+            let patch_blas = if self.terrain_patch_blas.is_patch_mesh(draw_cmd.mesh_handle) {
+                match self.terrain_patch_blas.ready_address(draw_cmd.mesh_handle) {
+                    Some(address) => Some(address),
+                    None => continue,
+                }
+            } else {
+                None
+            };
             eligible_instances += 1;
             // M29 Phase 2 — skinned draws (`bone_offset != 0`) reference
             // a per-entity BLAS that's refit each frame against the
@@ -557,7 +569,9 @@ impl AccelerationManager {
             // same `last_used_frame` LRU bump as the static path so a
             // skinned NPC dropped from the draw list ages out
             // alongside its mesh.
-            let blas_address: vk::DeviceAddress = if draw_cmd.bone_offset != 0 {
+            let blas_address: vk::DeviceAddress = if let Some(address) = patch_blas {
+                address
+            } else if draw_cmd.bone_offset != 0 {
                 let Some(entry) = self.skinned_blas.get_mut(&draw_cmd.entity_id) else {
                     // Skinned entity hasn't had its BLAS built yet
                     // (first sight is processed earlier in the same
@@ -758,8 +772,15 @@ impl AccelerationManager {
                 // `instances[ssbo_idx]` position the shader reads via
                 // `rayQueryGetIntersectionInstanceCustomIndexEXT`.
                 instance_custom_index_and_mask: vk::Packed24_8::new(ssbo_idx, shadow_mask),
+                // #7221 — the SBT offset is unused by ray queries; a terrain
+                // patch instance carries a tag there so the ground-cover cover
+                // trace can tell the terrain's own relief from placed geometry.
                 instance_shader_binding_table_record_offset_and_flags: vk::Packed24_8::new(
-                    0,
+                    if patch_blas.is_some() {
+                        crate::shader_constants::TLAS_SBT_TAG_TERRAIN_PATCH
+                    } else {
+                        0
+                    },
                     instance_flags as u8,
                 ),
                 acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {

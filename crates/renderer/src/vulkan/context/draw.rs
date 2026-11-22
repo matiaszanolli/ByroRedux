@@ -187,6 +187,13 @@ impl VulkanContext {
         // later in the frame must survive to the next one.
         let fsr_reset_delivered = fsr_frame.is_some_and(|params| params.reset);
 
+        // #7221 — the terrain patches go ahead of the TLAS build inside
+        // `dispatch_skin_and_cluster`: the tile upload their compute reads,
+        // the compute, then the patch BLAS over its output, so the TLAS
+        // references this frame's relief.
+        self.upload_terrain_tiles_if_dirty(cmd, frame);
+        self.record_terrain_patches(cmd, frame);
+
         self.dispatch_skin_and_cluster(
             FrameSlot { cmd, frame },
             inputs,
@@ -248,9 +255,6 @@ impl VulkanContext {
         // list just uploaded, so it records here: after the upload fixed the
         // list's length, before the geometry pass draws them.
         self.record_groundcover_models(cmd, frame, gpu_instances.len() as u32);
-        // #7152 — TSD-4.1 terrain patches, same window: after the upload (and
-        // its terrain-tile copy), before the geometry pass draws them.
-        self.record_terrain_patches(cmd, frame);
 
         self.scratch.frame_lights_scratch = frame_lights;
         self.scratch.gpu_instances_scratch = gpu_instances;

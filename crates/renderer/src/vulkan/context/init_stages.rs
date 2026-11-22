@@ -186,9 +186,8 @@ pub(super) fn create_compute_passes(
     ComputePasses { cluster_cull, skin_compute, skin_palette, gpu_timers }
 }
 
-/// The EXAL ground-cover blade pipeline and its authored-model tier (#4054 / #4413 / #4888). Both are gated on the combined indirect-draw predicate (#4827).
 /// TSD-4.1 (#7152) — the terrain patch pass. `VulkanContext::new` reserves its
-/// meshes as the registry's first handles.
+/// meshes as the registry's first handles ([`reserve_terrain_patch_meshes`]).
 pub(super) fn create_terrain_patch(
     device: &ash::Device,
     gpu_allocator: &SharedAllocator,
@@ -209,6 +208,32 @@ pub(super) fn create_terrain_patch(
     }
 }
 
+/// Reserve the terrain patch meshes in the empty registry, so they take its
+/// first handles (#7152: the opaque sort groups by mesh handle, so every patch
+/// draws before any base terrain cell and early-Z rejects the base under it),
+/// and declare them to the acceleration manager, which gives each its own
+/// refit BLAS in the TLAS (#7221). A failed reservation leaves patches off.
+pub(super) fn reserve_terrain_patch_meshes(
+    terrain_patch: Option<&mut super::super::terrain_patch::TerrainPatchPass>,
+    mesh_registry: &mut MeshRegistry,
+    accel_manager: Option<&mut AccelerationManager>,
+) {
+    let Some(pass) = terrain_patch else {
+        return;
+    };
+    if let Err(e) = pass.reserve_meshes(mesh_registry) {
+        log::warn!("terrain patches: {e:#} — no terrain displacement patches");
+        return;
+    }
+    if let Some(accel) = accel_manager {
+        let meshes = pass.meshes();
+        accel.register_terrain_patch_meshes(
+            &meshes.fine.iter().chain(&meshes.coarse).copied().collect::<Vec<_>>(),
+        );
+    }
+}
+
+/// The EXAL ground-cover blade pipeline and its authored-model tier (#4054 / #4413 / #4888). Both are gated on the combined indirect-draw predicate (#4827).
 pub(super) fn create_ground_cover(
     device: &ash::Device,
     gpu_allocator: &SharedAllocator,

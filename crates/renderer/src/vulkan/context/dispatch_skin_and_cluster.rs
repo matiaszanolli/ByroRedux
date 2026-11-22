@@ -618,6 +618,53 @@ impl VulkanContext {
         if timed && let Some(timers) = self.gpu_timers.as_mut() {
             timers.cmd_end(TimerPass::TerrainPatch, &self.device, cmd, frame);
         }
+        self.record_terrain_patch_blas(cmd, frame);
+    }
+
+    /// #7221 — TSD-4.2: build or refit the patch BLAS over what the patch
+    /// compute just wrote, before the TLAS build. Runs every frame (with no
+    /// requests it only clears last frame's ready set, so a patch never enters
+    /// the TLAS on a stale BLAS).
+    fn record_terrain_patch_blas(&mut self, cmd: vk::CommandBuffer, frame: usize) {
+        let (Some(pass), Some(accel), Some(allocator)) = (
+            self.exterior.terrain_patch.as_mut(),
+            self.accel_manager.as_mut(),
+            self.allocator.as_ref(),
+        ) else {
+            return;
+        };
+        let (Some(vertex_buffer), Some(index_buffer)) = (
+            self.mesh_registry.global_vertex_buffer.as_ref(),
+            self.mesh_registry.global_index_buffer.as_ref(),
+        ) else {
+            return;
+        };
+        // SAFETY: both global buffers carry SHADER_DEVICE_ADDRESS usage.
+        let (vertex_base, index_base) = unsafe {
+            (
+                self.device.get_buffer_device_address(
+                    &vk::BufferDeviceAddressInfo::default().buffer(vertex_buffer.buffer),
+                ),
+                self.device.get_buffer_device_address(
+                    &vk::BufferDeviceAddressInfo::default().buffer(index_buffer.buffer),
+                ),
+            )
+        };
+        let requests = pass.blas_requests(frame, &self.mesh_registry, vertex_base, index_base);
+        let timed = !requests.is_empty();
+        if timed && let Some(timers) = self.gpu_timers.as_mut() {
+            timers.cmd_start(TimerPass::TerrainPatchBlas, &self.device, cmd, frame);
+        }
+        // SAFETY: recorded right after the patch compute, whose closing
+        // barrier makes its vertex writes visible to AS-build reads, outside
+        // any render pass and before this frame's TLAS build; the requests
+        // address the live global buffers.
+        let stats =
+            unsafe { accel.record_terrain_patch_blas(&self.device, allocator, cmd, &requests) };
+        if timed && let Some(timers) = self.gpu_timers.as_mut() {
+            timers.cmd_end(TimerPass::TerrainPatchBlas, &self.device, cmd, frame);
+        }
+        pass.set_blas_stats(stats);
     }
 
     /// This frame's TLAS for a compute pass that ray-queries it
