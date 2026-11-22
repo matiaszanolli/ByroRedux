@@ -2820,6 +2820,26 @@ fn a_script_weapon_equip_is_queued_through_the_menu_door() {
     assert_eq!(world.get::<EquipmentSlots>(player).unwrap().weapon.map(|index| index.0), Some(2));
 }
 
+/// #7232 — `inv.equip` takes the first row that holds the item, as `inv.use` and `inv.drop` do: a row of the form
+/// zeroed in place (rows keep their position) is passed over for a later live one, rather than queued and refused.
+#[test]
+fn queued_equip_skips_a_zeroed_row_for_a_live_one() {
+    let (mut world, player) = fixture();
+    world.insert_resource(PendingInventoryActions::default());
+    world.get_mut::<Inventory>(player).unwrap().items[0].count = 0;
+    let live = {
+        let inventory = world.get_mut::<Inventory>(player).unwrap();
+        inventory.items.push(ItemStack::new(0x1234, 1));
+        inventory.items.len() - 1
+    };
+    let message = queue_equip_by_form_id(&world, 0x1234).expect("a live row exists");
+    assert!(message.contains(&format!("row {live}")), "{message}");
+    assert!(matches!(
+        world.resource::<PendingInventoryActions>().0.as_slice(),
+        [byroredux_native_ui::InventoryAction::ToggleEquip { index }] if *index as usize == live
+    ));
+}
+
 #[test]
 fn queued_equip_drains_through_the_canonical_action() {
     let (mut world, player) = fixture();
