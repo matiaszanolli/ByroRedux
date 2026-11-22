@@ -531,8 +531,17 @@ Sneak attack); `(100 - ResistNormalWeapons) / 100` scales it too, 1 for a silver
 (`crates/core/src/character/armor_rating.rs`, the profile's `armor_rating` row, Oblivion only) holds the numbers and
 `combat::weapon_defense` applies them to an actor's hit in `combat_damage_system`, melee and arrows alike. Verified live: `oblivion-armor.sh` (the iron cuirass stops 3.8% of a patron's strike at Heavy Armor 5) and `oblivion-ghost.sh` (Perennia's ghost
 carries `ResistNormalWeapons` 100 from her ethereal-undead ability: an iron longsword reads `resisted 100%` and leaves her Health, a silver
-longsword takes her from 18 to -10). Not modelled: armor condition (read as full), Shield-like boosting effects, and whether natural creature
-attacks count as normal weapons (they do here).
+longsword takes her from 18 to -10). Not modelled: armor condition (read as full) and Shield-like boosting effects.
+
+**Weakness, creature attacks and fists (#7195).** A weakness is a negative resistance: UESP *Oblivion:Magical Effects* ("Resistances and
+Weaknesses": "Total_Resistance_to_X = Resist_X - Weakness_to_X") and *Oblivion:Weakness to Normal Weapons* ("50% Weakness ... a weapon
+normally dealing 20 points of damage, your health would go down by 30"), so `weapon_resistance_factor` is `max(0, 100 - R) / 100` and rises
+above 1 for a negative `ResistNormalWeapons`. Two unweaponed blows are outside the resistance: a creature's natural attack (UESP
+*Oblivion:Resist Normal Weapons*: "creature attacks, however, are unaffected by resist normal weapons") and a fist at Journeyman Hand to Hand
+(the same page: fists are normal weapons "only if below level 50 in Hand to Hand"; UESP *Oblivion:Hand to Hand*, Journeyman: "the ability to
+damage creatures that are immune to normal weapons"; the Weakness page agrees). The tier is `iSkillJourneymanMin` (50), read from the load
+order. **Declared gap:** a creature that wields a weapon (a goblin's or a skeleton's) strikes with that weapon here, so its blow is resisted
+unless the weapon ignores the resistance; the sources speak of "creature attacks" without saying whether an armed creature's blow is one.
 
 **4. Sneak/power-attack multipliers, weapon condition, spell resistance** —
 all confirmed real but out of CHARAL scope, same "skill AV in, combat-formula
