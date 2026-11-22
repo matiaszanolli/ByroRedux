@@ -349,8 +349,10 @@ pub struct CharacterRulesProfile {
     /// [`StanceModel::NONE`], which leaves the speed unscaled.
     stance: StanceModel,
     /// M65 (SNK-DET-002) — which detection formula the tick runs: FO3 / FNV
-    /// (Wave 1), Oblivion and Skyrim (Wave 2); Fallout 4 and Starfield wait on
-    /// a source (Q2), so they answer from the sight test.
+    /// (Wave 1), Oblivion and Skyrim (Wave 2), Fallout 4 (#6996) and Starfield
+    /// (#7046), the last two transcribed from their executables
+    /// (`docs/engine/sneak-detection.md`). Fallout 76 and the unsupported
+    /// profile answer from the sight test (`StealthKind::SightOnly`).
     stealth: crate::stealth::StealthKind,
     /// M65 (SNK-HUD-002, -005) — the detection indicator's table, its drawing
     /// and Starfield's skill gate (`crate::stealth::indicator`). Fallout 76 has
@@ -725,9 +727,10 @@ impl CharacterRulesProfile {
     /// How a `CREA`-family actor obtains its stats under this profile.
     ///
     /// [`NpcStatModel::None`] on every game that has no separate creature
-    /// record class (Skyrim onward folded creatures into `NPC_`), and on
-    /// Oblivion, whose `CREA` `DATA` is a different struct this has not
-    /// been sourced for.
+    /// record class (Skyrim onward folded creatures into `NPC_`). FO3/FNV read
+    /// `CREA` `DATA` through [`NpcStatModel::CreatureData`]; Oblivion's
+    /// different `CREA` `DATA` through [`NpcStatModel::OblivionCreature`]
+    /// (#7010, `oblivion_population`).
     #[must_use]
     pub const fn creature_stat_model(self) -> NpcStatModel {
         self.creature_stats
@@ -755,7 +758,8 @@ impl CharacterRulesProfile {
     }
 
     /// #5921 — the engine's `fEssentialDeathTime` default, `None` where the
-    /// game has no bleedout recovery.
+    /// executable carries no such setting. Not "no bleedout recovery": see the
+    /// field doc (#6259, Starfield authors its recovery data instead).
     #[must_use]
     pub const fn essential_death_time_secs(self) -> Option<f32> {
         self.essential_death_time_secs
@@ -768,7 +772,8 @@ impl CharacterRulesProfile {
     }
 
     /// What a crime costs the criminal, `None` where no crime model is
-    /// sourced and wired (every game but Oblivion).
+    /// sourced and wired. Oblivion and Skyrim carry one (`CrimeModel::OBLIVION`,
+    /// `CrimeModel::SKYRIM`); FO3/FNV crime is faction-based and unmodelled.
     #[must_use]
     pub const fn crime(self) -> Option<CrimeModel> {
         self.crime
@@ -781,9 +786,9 @@ impl CharacterRulesProfile {
         self.vats
     }
 
-    /// #6567 — the armor-rating model's compiled-in defaults, `None` where
-    /// the game has no sourced and wired armor rating (everything but
-    /// Skyrim; Fallout uses Damage Threshold / Resistance instead).
+    /// #6567 — Skyrim's armor-rating model's compiled-in defaults, `None` on
+    /// every other game (Fallout uses Damage Threshold / Resistance; Oblivion's
+    /// armor rating is its own [`Self::armor_rating`] row, a different model).
     #[must_use]
     pub const fn armor(self) -> Option<ArmorModel> {
         self.armor
