@@ -258,6 +258,11 @@ pub(crate) trait OscillatingWalkProcedure: Component {
     fn form_id(&self) -> u32;
     fn walk_of(state: &Self::State) -> OscillateWalk;
     fn state_of(walk: OscillateWalk) -> Self::State;
+    /// Whether the walk's home is the actor's `EditorPlacement` rather than where it stood when the
+    /// procedure began (a Near Editor Location package, #7225).
+    fn homes_at_editor_placement(&self) -> bool {
+        false
+    }
 }
 
 impl OscillatingWalkProcedure for WanderBehavior {
@@ -268,6 +273,9 @@ impl OscillatingWalkProcedure for WanderBehavior {
     }
     fn form_id(&self) -> u32 {
         self.form_id
+    }
+    fn homes_at_editor_placement(&self) -> bool {
+        self.near_editor_location
     }
     fn walk_of(state: &WanderState) -> OscillateWalk {
         OscillateWalk {
@@ -387,7 +395,11 @@ pub(crate) fn oscillating_walk_system_inner<B: OscillatingWalkProcedure>(
                 .and_then(|q| q.get(entity))
                 .map(B::walk_of)
                 .unwrap_or_else(|| {
-                    let home = transform.translation;
+                    let editor_home = behavior
+                        .homes_at_editor_placement()
+                        .then(|| world.get::<byroredux_core::ecs::components::EditorPlacement>(entity).map(|p| p.translation))
+                        .flatten();
+                    let home = editor_home.unwrap_or(transform.translation);
                     OscillateWalk {
                         home,
                         target: pick_wander_target(home, radius, form_id, 0),
@@ -588,6 +600,28 @@ mod tests {
         }
     }
 
+    /// #7225 — a Near Editor Location Wander homes on the actor's editor placement, not on where it stood when
+    /// the package began; any other Wander homes where it stands.
+    #[test]
+    fn a_near_editor_location_wander_homes_on_the_editor_placement() {
+        let placement = Vec3::new(-300.0, 0.0, 40.0);
+        let away = Vec3::new(500.0, 0.0, 500.0);
+        for near_editor_location in [true, false] {
+            let mut world = World::new();
+            world.register::<WanderBehavior>();
+            world.register::<WanderState>();
+            world.register::<Transform>();
+            world.register::<byroredux_core::ecs::components::EditorPlacement>();
+            let actor = world.spawn();
+            world.insert(actor, Transform::from_translation(away));
+            world.insert(actor, byroredux_core::ecs::components::EditorPlacement { translation: placement });
+            world.insert(actor, WanderBehavior { wander_radius: Some(200.0), form_id: 0x0002_0002, near_editor_location });
+            wander_system(&world, 0.016);
+            let home = world.get::<WanderState>(actor).expect("state inserted").home;
+            assert_eq!(home, if near_editor_location { placement } else { away }, "near_editor_location {near_editor_location}");
+        }
+    }
+
     #[test]
     fn wander_system_moves_actor_toward_target_with_no_physics_world() {
         // Synthetic World with no PhysicsWorld resource — the ground-snap
@@ -605,6 +639,7 @@ mod tests {
             WanderBehavior {
                 wander_radius: Some(200.0),
                 form_id: 0x0002_0002,
+                near_editor_location: false,
             },
         );
 
@@ -644,6 +679,7 @@ mod tests {
             WanderBehavior {
                 wander_radius: Some(200.0),
                 form_id: 0x0002_3262,
+                near_editor_location: false,
             },
         );
 
@@ -682,6 +718,7 @@ mod tests {
             WanderBehavior {
                 wander_radius: Some(200.0),
                 form_id: 0x0002_0002,
+                near_editor_location: false,
             },
         );
 
@@ -734,6 +771,7 @@ mod tests {
             WanderBehavior {
                 wander_radius: Some(1.0), // irrelevant: WanderState below fixes the target
                 form_id: 0x0003_0001,
+                near_editor_location: false,
             },
         );
         // Seed directly into a Walking leg toward a known target, instead
@@ -792,6 +830,7 @@ mod tests {
             WanderBehavior {
                 wander_radius: Some(200.0),
                 form_id: 0x0003_0002,
+                near_editor_location: false,
             },
         );
         // Already paused, with a stale cached path left over from a
@@ -840,7 +879,7 @@ mod tests {
         let home = Vec3::new(-100.0, 0.0, 0.0);
         let actor = world.spawn();
         world.insert(actor, Transform::from_translation(home));
-        world.insert(actor, WanderBehavior { wander_radius: Some(1000.0), form_id: 0x0012_0001 });
+        world.insert(actor, WanderBehavior { wander_radius: Some(1000.0), form_id: 0x0012_0001, near_editor_location: false });
         world.insert(
             actor,
             WanderState {

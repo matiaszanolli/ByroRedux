@@ -306,11 +306,15 @@ enum AmbientBehavior {
     Wander {
         wander_radius: Option<f32>,
         actor_form_id: u32,
+        /// #7225 — the PLDT is Near Editor Location: home is the actor's `EditorPlacement`.
+        near_editor_location: bool,
     },
     Travel {
         radius: Option<f32>,
         target_form_id: Option<u32>,
         actor_form_id: u32,
+        /// #7225 — the PLDT is Near Editor Location: the pick centres on the actor's `EditorPlacement`.
+        near_editor_location: bool,
     },
     Follow {
         target_form_id: Option<u32>,
@@ -452,6 +456,7 @@ impl AmbientBehavior {
             Some(Self::Wander {
                 wander_radius: location_radius,
                 actor_form_id,
+                near_editor_location: matches!(location_anchor(package.location), EatSleepLocation::NearEditorLocation),
             })
         } else if package.is_travel() {
             // GECK *Travel Package*: "NPCs stop at the edge of the destination
@@ -461,13 +466,17 @@ impl AmbientBehavior {
             // unresolvable location falls back to (which walked VCG02's Sunny
             // out of the shooting-range trigger she is told to stay in).
             //
-            // Near Editor Location with no radius is the same stay: the actor is
-            // placed at its editor location, and a zero radius around it is where it
-            // stands. Oblivion's `CGBladesWaitToMove` (the Emperor's party, waiting on
-            // the prison stair for the sequence to start) is one; the hash-picked
-            // point walked them off the stair's edge, and with no gravity under an
-            // NPC they hovered over the void for the rest of the sequence.
-            let radius = match location_anchor(package.location) {
+            // Near Editor Location with no radius is a walk back to exactly the
+            // editor placement: a zero radius around it. Oblivion's
+            // `CGBladesWaitToMove` (the Emperor's party, waiting on the prison stair
+            // for the sequence to start) is one; the hash-picked point walked them
+            // off the stair's edge, and with no gravity under an NPC they hovered
+            // over the void for the rest of the sequence. The point is centred on
+            // the actor's `EditorPlacement`, not where it stands (#7225): a
+            // `HorseGoHome` / `SE45zReturnHome` actor an earlier package walked away
+            // has to come back, as Eat/Sleep's anchor does (#5391).
+            let anchor = location_anchor(package.location);
+            let radius = match anchor {
                 EatSleepLocation::NearCurrentLocation if location_reference.is_none() => Some(0.0),
                 EatSleepLocation::NearEditorLocation if location_radius.is_none() => Some(0.0),
                 _ => location_radius,
@@ -476,6 +485,7 @@ impl AmbientBehavior {
                 radius,
                 target_form_id: location_reference,
                 actor_form_id,
+                near_editor_location: matches!(anchor, EatSleepLocation::NearEditorLocation),
             })
         } else if package.is_follow() || package.is_accompany() {
             // Accompany authors Follow's data (PTDT reference + distance) and
@@ -636,11 +646,13 @@ impl AmbientBehavior {
             Self::Wander {
                 wander_radius,
                 actor_form_id,
+                near_editor_location,
             } => {
                 sink.put(actor,
                     WanderBehavior {
                         wander_radius,
                         form_id: actor_form_id,
+                        near_editor_location,
                     },
                 );
             }
@@ -648,12 +660,14 @@ impl AmbientBehavior {
                 radius,
                 target_form_id,
                 actor_form_id,
+                near_editor_location,
             } => {
                 sink.put(actor,
                     TravelBehavior {
                         radius,
                         target_form_id,
                         form_id: actor_form_id,
+                        near_editor_location,
                     },
                 );
             }
@@ -2429,6 +2443,7 @@ mod tests {
         let (world, actor) = setup_actor(10.0, vec![stay]);
         let behavior = world.get::<TravelBehavior>(actor).map(|behavior| *behavior).expect("Travel installs");
         assert_eq!((behavior.radius, behavior.target_form_id), (Some(0.0), None));
+        assert!(!behavior.near_editor_location, "Near Current Location centres on the actor");
 
         // Near Editor Location with no radius (Oblivion `CGBladesWaitToMove`) stays too; one
         // with a radius keeps it, as the walk's v0 pick area.
@@ -2437,17 +2452,26 @@ mod tests {
         let (world, actor) = setup_actor(10.0, vec![wait]);
         let behavior = world.get::<TravelBehavior>(actor).map(|behavior| *behavior).expect("Travel installs");
         assert_eq!((behavior.radius, behavior.target_form_id), (Some(0.0), None));
+        assert!(behavior.near_editor_location, "#7225: the stay is at the editor placement, not where the actor stands");
         let mut near = pack(0x400, PROCEDURE_TRAVEL, None);
         near.location = Some(PackLocation { location_type: 3, target: PackLocationTarget::Other(0), radius: 256 });
         let (world, actor) = setup_actor(10.0, vec![near]);
         let behavior = world.get::<TravelBehavior>(actor).map(|behavior| *behavior).expect("Travel installs");
         assert_eq!(behavior.radius, Some(256.0));
+        assert!(behavior.near_editor_location, "#7225: Oblivion `HorseGoHome`'s shape");
+        // A Near Editor Location Wander homes on the placement as well (#7225).
+        let mut roam = pack(0x500, byroredux_plugin::esm::records::misc::pack::PROCEDURE_WANDER, None);
+        roam.location = Some(PackLocation { location_type: 3, target: PackLocationTarget::Other(0), radius: 512 });
+        let (world, actor) = setup_actor(10.0, vec![roam]);
+        let wander = world.get::<WanderBehavior>(actor).map(|behavior| *behavior).expect("Wander installs");
+        assert!(wander.near_editor_location);
 
         let mut go = pack(0x200, PROCEDURE_TRAVEL, None);
         go.location = Some(PackLocation { location_type: 0, target: PackLocationTarget::NearReference(0x10_A201), radius: 128 });
         let (world, actor) = setup_actor(10.0, vec![go]);
         let behavior = world.get::<TravelBehavior>(actor).map(|behavior| *behavior).expect("Travel installs");
         assert_eq!((behavior.radius, behavior.target_form_id), (Some(128.0), Some(0x10_A201)));
+        assert!(!behavior.near_editor_location);
     }
 
     /// Ambush (procedure 9): wait on Guard's runtime at `PLDT`, gate the

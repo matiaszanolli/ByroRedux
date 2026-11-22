@@ -52,6 +52,9 @@ pub struct TravelBehavior {
     pub radius: Option<f32>,
     pub target_form_id: Option<u32>,
     pub form_id: u32,
+    /// The PLDT is *Near Editor Location*: the fallback pick centres on the actor's
+    /// [`EditorPlacement`](super::EditorPlacement), not on wherever an earlier package walked it (#7225).
+    pub near_editor_location: bool,
 }
 
 impl Component for TravelBehavior {
