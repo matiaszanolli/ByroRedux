@@ -642,8 +642,8 @@ performance finding. The measured knob table is in
   constants with zero mismatch at that HEAD; #5238 later falsified the
   then-current NPC Health row (fixed, and the capture's Health rows are now
   split player/NPC — #5342), so treat that "zero mismatch" as dated, not
-  standing. FO3, FNV, Skyrim and FO4 reach actors. Still open:
-  - `regen` was live for FO3/FNV Action Points only (#6350); the Oblivion Fatigue / Magicka lanes are now installed with the engine-supplied records (#7010), their effect on the HUD and pools being #7011.
+  standing. FO3, FNV, Skyrim, FO4 and Oblivion reach actors (Oblivion since #7010). Still open:
+  - `regen` is live for FO3/FNV Action Points (#6350) and Oblivion Fatigue / Magicka at the load order's rates (#7197); Skyrim has no Stamina row.
   - `affliction_tick_system` is never registered.
   - FO76's capture is locked with no builder; Starfield waits on pending data.
 - [ ] **MQ101 residue.** The quest plays end-to-end (live-verified
