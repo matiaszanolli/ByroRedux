@@ -586,9 +586,22 @@ delta, ms. The `main_render` delta now includes ray queries traversing the patch
 
   **For 4.3:** the lever is screen-space triangle size, not the parallax march.
   Coarser triangles where they cover few pixels, or a lattice sized in screen space,
-  is the patch-side fix. Skipping shadow and GI rays in helper lanes is an
-  engine-wide change and belongs in its own issue. It needs image-parity checks
-  beyond this one FNV pose before it ships.
+  is the patch-side fix. The helper-lane skip itself shipped engine-wide in #7261:
+  `triangle.frag` and `water.frag`, plus the RT reflection ray below the
+  `aaRoughness` hoist. That A/B ran with patches on, in one binary, with 32
+  samples per state. It saved:
+
+  | location | saved (ms) |
+  |---|---|
+  | FO4 MedTek | +0.43 to +0.55 |
+  | Oblivion forest | +0.27 to +0.40 |
+  | FNV Mojave | +0.23 to +0.47 (+0.16 to +0.43 with patches off) |
+  | Skyrim Riverwood | +0.04 to +0.06 |
+  | FNV Prospector Saloon | −0.14 to +0.08 (noise) |
+
+  The skip had no visible effect on the image. Shots alternated between skip on
+  and skip off at equal spacing. Pairs one step apart in different states
+  differed no more than pairs two steps apart in the same state.
 - **Raster-only is not a fallback.** At Riverwood (eye, on the riverbank) the raster-only
   frame darkens the bank's crease by up to 23 levels of 8-bit luma in a band of rows:
   rays leaving the patch surface hit the base terrain the patch covers. With the patches

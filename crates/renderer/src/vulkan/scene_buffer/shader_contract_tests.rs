@@ -1959,6 +1959,181 @@ fn the_specular_aa_filter_is_evaluated_outside_the_per_light_loop() {
     );
 }
 
+/// #7261 — helper invocations trace no main-pass rays, and nothing that could
+/// see the difference follows the ray branches.
+///
+/// A helper lane's outputs, stores and atomics are discarded; its values reach
+/// a real lane only through a quad derivative (`dFdx`/`dFdy`/`fwidth`, an
+/// implicit-LOD `texture()`) or a subgroup op. So skipping its rays is free
+/// exactly while every such read sits above the first ray: in `triangle.frag`
+/// that is the `aaRoughness` hoist (#3983), in `water.frag` the normal-map
+/// fetches. On small triangles the skipped rays were 35–43 % of the TSD patch
+/// premium (`docs/engine/terrain-displacement.md` §8.3).
+///
+/// Legs: the gate exists and lands above the hoist; after the hoist, `main`
+/// calls no derivative op and no include function whose body takes one, and
+/// every implicit-LOD fetch reads a coordinate no ray produced; `water.frag`
+/// funnels every RT gate through `waterRaysEnabled()` and takes no derivative
+/// after its first trace.
+#[test]
+fn helper_lanes_trace_no_main_rays_and_no_derivative_follows() {
+    use crate::source_scan::strip_glsl_comments;
+    // Composed at runtime so this test's own source cannot satisfy a scan.
+    let derivative_ops = [
+        format!("dF{}", "dx"),
+        format!("dF{}", "dy"),
+        format!("fwi{}", "dth"),
+        format!("sub{}", "group"),
+        format!("interpolate{}", "At"),
+    ];
+
+    // Include functions whose bodies take a derivative: calling one after the
+    // hoist is the same breach as writing the op inline.
+    let include_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("shaders/include");
+    let mut derivative_fns: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&include_dir).expect("shaders/include must exist") {
+        let path = entry.expect("readable include entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("glsl") {
+            continue;
+        }
+        let code = strip_glsl_comments(&std::fs::read_to_string(&path).expect("readable include"));
+        let mut current_fn: Option<String> = None;
+        for line in code.lines() {
+            let top_level = !line.starts_with(char::is_whitespace) && !line.starts_with('}');
+            if top_level && line.contains('(') && !line.starts_with('#') {
+                let head = &line[..line.find('(').unwrap()];
+                current_fn = head.split_whitespace().last().map(str::to_owned);
+            }
+            if let Some(name) = &current_fn {
+                if derivative_ops.iter().any(|op| line.contains(op.as_str()))
+                    && !derivative_fns.contains(name)
+                {
+                    derivative_fns.push(name.clone());
+                }
+            }
+        }
+    }
+    let aa = format!("specularAa{}", "Roughness");
+    assert!(
+        derivative_fns.contains(&aa),
+        "the include scan must find {aa} (it takes dFdx(N)) — if it does not, the \
+         function finder is broken and the call leg below is vacuous: {derivative_fns:?}"
+    );
+
+    let frag = strip_glsl_comments(include_str!("../../../shaders/triangle.frag"));
+    let main = glsl_fn_body(&frag, "void main(");
+    let hoist = main
+        .find("float aaRoughness =")
+        .expect("triangle.frag must still hoist aaRoughness (#3983)");
+    let after_hoist = &main[hoist + main[hoist..].find(';').unwrap() + 1..];
+
+    for gate in [
+        "bool helperLane = gl_HelperInvocation;",
+        "directShadowRayEnabled = directShadowRayEnabled && !helperLane;",
+        "giRayEnabled = giRayEnabled && !helperLane;",
+    ] {
+        let at = main
+            .find(gate)
+            .unwrap_or_else(|| panic!("triangle.frag lost the helper-lane gate `{gate}` (#7261)"));
+        assert!(at < hoist, "`{gate}` must sit above the aaRoughness hoist (#7261)");
+    }
+    assert!(
+        after_hoist.contains("reflectionGlassRayEnabled && !helperLane && rtLOD < RT_LOD_REFLECT"),
+        "the RT reflection ray below the hoist must skip helper lanes too (#7261)"
+    );
+
+    for op in &derivative_ops {
+        assert!(
+            !after_hoist.contains(op.as_str()),
+            "triangle.frag main uses `{op}` after the aaRoughness hoist: helper lanes \
+             trace no rays there (#7261), so a quad derivative or subgroup op would \
+             read a ray-less neighbour — move it above the hoist or drop the skip"
+        );
+    }
+    for f in &derivative_fns {
+        assert!(
+            !after_hoist.contains(format!("{f}(").as_str()),
+            "triangle.frag main calls `{f}` (it takes a derivative) after the \
+             aaRoughness hoist, where helper lanes trace no rays (#7261)"
+        );
+    }
+
+    // Implicit-LOD fetches derive their LOD from the quad, so their coordinate
+    // must not depend on a ray. `sampleUV` is the interpolated (parallaxed)
+    // UV and `aoUV` is `gl_FragCoord.xy / screen.xy`; a new coordinate needs a
+    // reviewer to confirm no ray produced it, then a row here.
+    let fetch = format!("{}(", "texture");
+    let mut rest = after_hoist;
+    while let Some(at) = rest.find(fetch.as_str()) {
+        let preceded_by_ident = rest[..at]
+            .chars()
+            .last()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+        let args_start = at + fetch.len();
+        let args = &rest[args_start..];
+        let mut depth = 1usize;
+        let mut end = 0;
+        for (i, c) in args.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = i;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !preceded_by_ident {
+            let call = &args[..end];
+            let coord = call.rsplit(',').next().unwrap().trim();
+            assert!(
+                ["sampleUV", "aoUV"].contains(&coord),
+                "implicit-LOD texture() after the aaRoughness hoist reads `{coord}`: \
+                 helper lanes trace no rays there (#7261), so confirm no ray \
+                 produced it and allow it here, or use textureLod"
+            );
+        }
+        rest = &args[end..];
+    }
+
+    let water = strip_glsl_comments(include_str!("../../../shaders/water.frag"));
+    assert_eq!(
+        water.matches("sceneFlags.x").count(),
+        1,
+        "every RT gate in water.frag must go through waterRaysEnabled(), which \
+         also skips helper lanes (#7261)"
+    );
+    assert!(
+        water.contains("return sceneFlags.x >= 0.5 && !gl_HelperInvocation;"),
+        "waterRaysEnabled() must skip helper invocations (#7261)"
+    );
+    let water_main = glsl_fn_body(&water, "void main(");
+    let first_trace = water_main
+        .find("traceWaterRay(")
+        .expect("water.frag main must still trace its reflection");
+    for op in &derivative_ops {
+        assert!(
+            !water.contains(op.as_str()),
+            "water.frag uses `{op}`, but its helper lanes trace no rays (#7261)"
+        );
+    }
+    for f in &derivative_fns {
+        assert!(
+            !water.contains(format!("{f}(").as_str()),
+            "water.frag calls `{f}` (it takes a derivative), but its helper lanes \
+             trace no rays (#7261)"
+        );
+    }
+    assert!(
+        !water_main[first_trace..].contains(fetch.as_str()),
+        "water.frag main takes an implicit-LOD texture() after its first ray, \
+         where helper lanes trace nothing (#7261)"
+    );
+}
+
 /// #3982 (REN-2026-09-06-D16-01) — the three name-diverging GLSL↔Rust mirrors
 /// that had no lockstep coverage at all.
 ///
