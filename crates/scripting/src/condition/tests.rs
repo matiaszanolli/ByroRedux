@@ -1359,6 +1359,27 @@ fn actor_value_views_drop_modifiers_and_damage() {
     assert_eq!(read(&world, LUCK, ActorValueView::Base), 4.0);
 }
 
+/// #7205 — a level-up's `stored` gain (Oblivion's Health, #7044) is part of the base, so the Base and Permanent
+/// views of an authored value include it, as the fall-through composition and `undamaged()` already did.
+#[test]
+fn the_base_and_permanent_views_include_the_stored_layer() {
+    use byroredux_core::ecs::components::ActorValues;
+    const HEALTH: u32 = 0x08;
+    let mut world = World::new();
+    let actor = world.spawn();
+    let mut values = ActorValues::from_pairs([(HEALTH, 80.0)]);
+    values.add_stored(HEALTH, 9.0);
+    values.mod_permanent(HEALTH, 10.0);
+    values.mod_temporary(HEALTH, 5.0);
+    values.apply_damage(HEALTH, 20.0);
+    world.insert(actor, values);
+    let read = |view| actor_value_view(&world, actor, HEALTH, view);
+    assert_eq!(read(ActorValueView::Base), 89.0, "base 80 plus the stored 9");
+    assert_eq!(read(ActorValueView::Permanent), 99.0, "plus the permanent 10");
+    assert_eq!(read(ActorValueView::Undamaged), 104.0);
+    assert_eq!(read(ActorValueView::Current), 84.0);
+}
+
 /// #3441 — `pool_regen_tick_system` and `melee_damage_charal_bonus` both
 /// acquire `CharacterRuleset` → `ActorValues` (the former for write), so
 /// the `GetActorValue` read must not hold its `ActorValues` guard across
