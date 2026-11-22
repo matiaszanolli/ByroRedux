@@ -1203,6 +1203,11 @@ pub(crate) fn advance_streaming_apply(
             continue;
         }
 
+        // #6106 — charge this cell only for the refusals its own apply work causes.
+        let rejections_before = ctx.mesh_registry.scene_geometry_admission_rejections();
+        let refused_since = |ctx: &byroredux_renderer::VulkanContext| {
+            ctx.mesh_registry.scene_geometry_admission_rejections().saturating_sub(rejections_before)
+        };
         match job.phase {
             streaming::StreamingCellApplyPhase::FinishImports(mut imports) => {
                 if let Some((model_path, partial)) = imports.next() {
@@ -1217,6 +1222,7 @@ pub(crate) fn advance_streaming_apply(
                     prefetch_import_textures(world, ctx, state, &cache_key);
                     budget.complete_unit();
                     job.phase = streaming::StreamingCellApplyPhase::FinishImports(imports);
+                    job.geometry_refusals += refused_since(ctx);
                     state.active_apply = Some(job);
                 } else {
                     job.phase = streaming::StreamingCellApplyPhase::BeginExterior;
@@ -1238,6 +1244,7 @@ pub(crate) fn advance_streaming_apply(
                 ) {
                     Ok(Some(cell_job)) => {
                         job.phase = streaming::StreamingCellApplyPhase::Spawn(cell_job);
+                        job.geometry_refusals += refused_since(ctx);
                         state.active_apply = Some(job);
                     }
                     Ok(None) => {
@@ -1268,9 +1275,13 @@ pub(crate) fn advance_streaming_apply(
                 ) {
                     cell_loader::ExteriorCellApplyProgress::Pending(cell_job) => {
                         job.phase = streaming::StreamingCellApplyPhase::Spawn(cell_job);
+                        job.geometry_refusals += refused_since(ctx);
                         state.active_apply = Some(job);
                     }
                     cell_loader::ExteriorCellApplyProgress::Complete(info) => {
+                        state
+                            .refusal_retry
+                            .note_applied(job.coord, job.geometry_refusals + refused_since(ctx));
                         state.pending.remove(&job.coord);
                         end_apply_texture_prefetch(state);
                         state.loaded.insert(
@@ -1359,6 +1370,7 @@ pub fn consume_streaming_payload(
     }
 
     // Spawn pass — every NIF lookup hits cache (slow parse path skipped).
+    let rejections_before = ctx.mesh_registry.scene_geometry_admission_rejections();
     let center = match cell_loader::load_one_exterior_cell(
         wctx.as_ref(),
         payload.gx,
@@ -1370,6 +1382,10 @@ pub fn consume_streaming_payload(
         None,
     ) {
         Ok(Some(info)) => {
+            state.refusal_retry.note_applied(
+                coord,
+                ctx.mesh_registry.scene_geometry_admission_rejections().saturating_sub(rejections_before),
+            );
             state.loaded.insert(
                 coord,
                 streaming::LoadedCell {

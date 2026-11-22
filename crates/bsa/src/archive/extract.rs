@@ -58,7 +58,7 @@ impl BsaArchive {
         let file_embeds_name = self.embed_file_names;
         let name_prefix_len = if file_embeds_name {
             let mut len_buf = [0u8; 1];
-            file.read_exact_at(&mut len_buf, pos)?;
+            file.read_exact_at_for(&mut len_buf, pos, &format_args!("BSA entry '{path}' name prefix"))?;
             let name_len = len_buf[0] as usize;
             pos += 1 + name_len as u64;
             1 + name_len
@@ -103,7 +103,7 @@ impl BsaArchive {
         let body = self.stored_body(path)?;
         if body.compressed {
             let mut size_buf = [0u8; 4];
-            self.file.read_exact_at(&mut size_buf, body.pos)?;
+            self.file.read_exact_at_for(&mut size_buf, body.pos, &format_args!("BSA entry '{path}' size header"))?;
             checked_chunk_size(u32::from_le_bytes(size_buf), "BSA original_size")
         } else {
             checked_chunk_size_usize(body.data_size, "BSA data_size")
@@ -123,7 +123,7 @@ impl BsaArchive {
         if is_compressed {
             // First 4 bytes are the original uncompressed size
             let mut size_buf = [0u8; 4];
-            file.read_exact_at(&mut size_buf, pos)?;
+            file.read_exact_at_for(&mut size_buf, pos, &format_args!("BSA entry '{path}' size header"))?;
             pos += 4;
             // Cap the decompression target buffer. BSA compressed files
             // top out at vanilla mesh LODs around ~30 MB uncompressed;
@@ -176,7 +176,7 @@ impl BsaArchive {
                 ));
             }
             let mut compressed = vec![0u8; compressed_len];
-            file.read_exact_at(&mut compressed, pos)?;
+            file.read_exact_at_for(&mut compressed, pos, &format_args!("BSA entry '{path}' compressed payload"))?;
 
             // v103/v104 uses zlib, v105 uses LZ4 frame format.
             //
@@ -239,7 +239,7 @@ impl BsaArchive {
             // constant rather than relying on the mask alone. #586.
             let data_size = checked_chunk_size_usize(data_size, "BSA data_size")?;
             let mut data = vec![0u8; data_size];
-            file.read_exact_at(&mut data, pos)?;
+            file.read_exact_at_for(&mut data, pos, &format_args!("BSA entry '{path}' payload"))?;
             Ok(data)
         }
     }

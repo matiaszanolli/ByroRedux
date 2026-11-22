@@ -468,23 +468,15 @@ pub(super) fn apply_cdb_pbr_fallback(material: &mut ImportedMaterial, path: &str
     // identical authoring does, instead of being locked out by the FO4
     // convention the flag now exclusively carries.
     material.external_material_resolved = true;
-    if !path.ends_with(".mat") {
-        static WARNED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-            std::sync::OnceLock::new();
-        let mut warned = WARNED
-            .get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if warned.insert(path.to_owned()) {
-            // #3230 — the message can now state the miss as fact. Pre-fix it
-            // claimed "has no external BGSM/BGEM payload" without ever having
-            // looked, which was actively wrong for the case this fix restores.
-            log::warn!(
-                "Starfield shader material '{}': no BGSM/BGEM sidecar resolved; \
-                 falling back to CDB-gated PBR routing",
-                path
-            );
-        }
+    // #3230 — the message can now state the miss as fact. Pre-fix it
+    // claimed "has no external BGSM/BGEM payload" without ever having
+    // looked, which was actively wrong for the case this fix restores.
+    if !path.ends_with(".mat") && crate::asset_provider::report_once("starfield-no-sidecar", path) {
+        log::warn!(
+            "Starfield shader material '{}': no BGSM/BGEM sidecar resolved; \
+             falling back to CDB-gated PBR routing",
+            path
+        );
     }
     MergeOutcome::PresenceOnly
 }

@@ -36,6 +36,14 @@ pub const INDEX_POOL_HARD_CAP: usize = INDEX_POOL_SOFT_CAP;
 pub const DEFAULT_GROUND_RESERVE_PERCENT: usize = 3;
 pub const DEFAULT_ACTOR_RESERVE_PERCENT: usize = 2;
 
+/// How far past the hard caps dropped-but-uncompacted spans may push the raw
+/// pools, in percent (#6106). Compaction runs only between streaming batches,
+/// so a crossing's unloaded cells stay in the pools while its loads append;
+/// admission counts live geometry, and this credit is what lets those loads
+/// use the freed room. One or two rows of a radius-12 grid are 4-8% of the
+/// resident set; 25% covers several crossings before a compaction.
+pub const DEAD_SPAN_CREDIT_PERCENT: usize = 25;
+
 /// Who is asking for pool space. The class decides which ceiling and which
 /// refusal latch an upload meets. Priority is ground > actors > props: when
 /// the pool is full the horizon's props go first, then people, and the ground
@@ -97,6 +105,17 @@ impl PoolLimits {
             index_hard,
             reserve: Self::default_reserve(vertex_hard, index_hard),
         }
+    }
+
+    /// Ceiling on the raw pool lengths, dead spans included: the hard caps plus
+    /// [`DEAD_SPAN_CREDIT_PERCENT`]. Admission tests live geometry against
+    /// [`Self::for_class`]; this bounds how far dropped-but-uncompacted spans
+    /// may push the pools (and a first SSBO build that copies them) past it.
+    pub(crate) fn pool_ceiling(self) -> (usize, usize) {
+        (
+            self.vertex_hard + self.vertex_hard / 100 * DEAD_SPAN_CREDIT_PERCENT,
+            self.index_hard + self.index_hard / 100 * DEAD_SPAN_CREDIT_PERCENT,
+        )
     }
 
     pub(crate) const DEFAULT: Self =

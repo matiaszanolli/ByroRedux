@@ -186,6 +186,19 @@ frame the pool admits uploads again re-arms the reconcile
 unload frees space. At radius 12 on FNV the pool saturates during the cold
 load (live `lod.coverage`: `held_back=240`); lowering the radius leaves it room.
 
+**Admission counts live geometry; a refused full-detail cell is retried (#6106).**
+A dropped mesh's span stays in the pools until the compaction inside
+`rebuild_geometry_ssbo`, which runs only between streaming batches. Admission
+subtracts those dead spans (`dead_vertices` / `dead_indices`, cleared by the
+compaction), so the room a crossing's unload frees is available to that same
+crossing's loads. The raw pools may run past the caps by at most
+`DEAD_SPAN_CREDIT_PERCENT` (25%) before uploads are refused until a compaction.
+A cell whose own apply still had uploads refused is noted in
+`RefusalRetryState` (`streaming/refusal_retry.rs`): once both admission tiers
+are open and no batch is in flight it is unloaded, and once the compaction has
+settled it is queued again, at most twice per residency. The LOD rings' re-arm
+waits while a retry is open, so the reopened room goes to full-detail cells first.
+
 ## 5. Streaming Phase 2: door teleport
 
 The interior↔exterior (and interior↔interior) cell swap is triggered by

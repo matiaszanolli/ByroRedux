@@ -517,13 +517,12 @@ input, same boundary as weapon condition above) and sums per-piece before the
 85-point cap (the cap and per-piece sum stay a combat-layer concern, not
 part of this formula). **BUILT 2026-07-04** — unlike the weapon-damage
 formulas above, this one *does* fit `DerivedStatFormula` cleanly (single-
-input affine, no Luck term), so it's wired the same way as Skyrim's Light
-Armor Rating: `ARMOR_RATING_SKILL_COEFF`/`ARMOR_RATING_SKILL_BIAS` in
-`crates/core/src/character/tes.rs`, two rows in `oblivion_ruleset()` (one
-each for `LightArmor`→`LightArmorRating` and `HeavyArmor`→
-`HeavyArmorRating`, both `Multiplier`-kind, `ActorGeneral` scope since the
-source doesn't distinguish player/NPC here unlike Skyrim's). Test asserts
-both worked values (Light 50 → 0.675, Heavy 20 → 0.48).
+input affine, no Luck term), and it was first built as two `Multiplier` rows in
+`oblivion_ruleset()` keyed on `LightArmorRating` / `HeavyArmorRating`. Those rows
+were removed in #7201: the engine-supplied 72-name roster has no such actor value,
+so they could never register, and they restated the coefficients. The one home of
+`0.35 + 0.0065 x ArmorSkill` is `ArmorRatingModel::OBLIVION` (below), which
+`piece_rating` applies per piece (Light 50 → 0.675, Heavy 20 → 0.48).
 
 **Wired 2026-11-20 (armor rating and Resist Normal Weapons).** The per-piece rating above is applied to weapon hits: the pieces a target
 wears add up at its Light or Heavy Armor, cap at `fMaxArmorRating` (85), and `(100 - combined) / 100` scales the hit (1 for a Master
@@ -531,8 +530,17 @@ Sneak attack); `(100 - ResistNormalWeapons) / 100` scales it too, 1 for a silver
 (`crates/core/src/character/armor_rating.rs`, the profile's `armor_rating` row, Oblivion only) holds the numbers and
 `combat::weapon_defense` applies them to an actor's hit in `combat_damage_system`, melee and arrows alike. Verified live: `oblivion-armor.sh` (the iron cuirass stops 3.8% of a patron's strike at Heavy Armor 5) and `oblivion-ghost.sh` (Perennia's ghost
 carries `ResistNormalWeapons` 100 from her ethereal-undead ability: an iron longsword reads `resisted 100%` and leaves her Health, a silver
-longsword takes her from 18 to -10). Not modelled: armor condition (read as full), Shield-like boosting effects, and whether natural creature
-attacks count as normal weapons (they do here).
+longsword takes her from 18 to -10). Not modelled: armor condition (read as full) and Shield-like boosting effects.
+
+**Weakness, creature attacks and fists (#7195).** A weakness is a negative resistance: UESP *Oblivion:Magical Effects* ("Resistances and
+Weaknesses": "Total_Resistance_to_X = Resist_X - Weakness_to_X") and *Oblivion:Weakness to Normal Weapons* ("50% Weakness ... a weapon
+normally dealing 20 points of damage, your health would go down by 30"), so `weapon_resistance_factor` is `max(0, 100 - R) / 100` and rises
+above 1 for a negative `ResistNormalWeapons`. Two unweaponed blows are outside the resistance: a creature's natural attack (UESP
+*Oblivion:Resist Normal Weapons*: "creature attacks, however, are unaffected by resist normal weapons") and a fist at Journeyman Hand to Hand
+(the same page: fists are normal weapons "only if below level 50 in Hand to Hand"; UESP *Oblivion:Hand to Hand*, Journeyman: "the ability to
+damage creatures that are immune to normal weapons"; the Weakness page agrees). The tier is `iSkillJourneymanMin` (50), read from the load
+order. **Declared gap:** a creature that wields a weapon (a goblin's or a skeleton's) strikes with that weapon here, so its blow is resisted
+unless the weapon ignores the resistance; the sources speak of "creature attacks" without saying whether an armed creature's blow is one.
 
 **4. Sneak/power-attack multipliers, weapon condition, spell resistance** —
 all confirmed real but out of CHARAL scope, same "skill AV in, combat-formula
@@ -560,8 +568,14 @@ not hardcoded, per the WATAL/CHARAL split): `fDamageWeaponMult=0.5`,
 `fHandDamageSkillMult=1`/`fHandFatigueDamageMult=0.5`; sneak/power-attack
 GMSTs (`fPerkSneakAttackMelee*Mult`, `fDamagePowerAttack*Bonus`); armor
 (`fMaxArmorRating=85`). All future formula rows built for Oblivion should read
-these by name once GMST parsing lands (CHARAL §8 item 6), not re-hardcode the
-numeric constants captured here.
+these by name (CHARAL §8 item 6), not re-hardcode the numeric constants captured here.
+**Read since #7199:** `OblivionDamageSettings` (`crates/core/src/combat.rs`) holds the weapon family, the
+condition pair, the whole Hand-to-Hand family (`fHandHealthMin`/`Max`, `fHandDamageStrengthBase`/`Mult`,
+`fHandDamageSkillBase`/`Mult`, `fHandFatigueDamageBase`/`Mult`), the Luck pair of the effective skill
+(`fActorLuckSkillMult` 0.4 / `iActorLuckSkillBase` -20, CS wiki *Effective Skill Level*, which the spell-cast row
+takes its defaults from) and the Fatigue pair (`fFatigueBase` 1.0 / `fFatigueMult` 0.5, CS wiki *Fatigue Game
+Settings*), each overlaid from the load order by `OblivionDamageSettings::with_gmst`; the bow's Oblivion damage
+rule carries it (`BowModel::with_gmst`). `fMaxArmorRating` is read by `ArmorRatingModel::with_gmst`.
 
 ## Fatigue — base pool cross-checked (already BUILT), regen formula now BUILT too, Remastered divergence recorded
 
@@ -1119,6 +1133,26 @@ alone when both name one attribute, pinned by
    executable's creature path was not traced.
 3. **Flag timing.** Which trigger applies at spawn, level change and reload
    for each of the four flag combinations is [#7022](https://github.com/matiaszanolli/ByroRedux/issues/7022).
+4. **Magicka Multiplier (#7198).** The player's Magicka is `trunc(Int x (1 + fPCBaseMagickaMult))` times
+   actor value 40 / 10 (the player's pools table below), with a zero multiplier read as 1.0. The engine
+   builds the first factor (`oblivion_ruleset_with_gmst`, `fPCBaseMagickaMult` and `fPCBaseHealthMult` read
+   from the load order) but not the second: no derived row can carry a factor that is rewritten at zero, and
+   nothing reads `MagickaMultiplier` (installed in the roster, index 40). An effect that writes it changes
+   nothing here; vanilla leaves it unset, so vanilla is unaffected. How often vanilla content writes it was
+   not measured.
+5. **PC-offset creature skills and attack damage (#7206).** #7040 locked the level multiply for Health,
+   Magicka and Fatigue only. A PC-offset creature's three skills and its attack damage are stamped as the
+   record authors them, with no level term:
+   - *Skills:* UESP *Oblivion:Leveled Lists* gives `CombatSkill = Combat + 2*CreatureLevel` (the same for
+     Magic and Stealth); the Construction Set's *Stats Tab - Creatures* is silent on skills, and the
+     executable's skill path was not traced for a level term (the capture decodes only the two-view remap).
+   - *Attack damage:* the CS gives "the entered value is added to 1/2 the level of the creature"; the creature
+     section's second word form (`0x51c980`) multiplies by `fCreatureCalcDamage`, which `Oblivion.esm` does not author and whose
+     executable default is 1.0. Which coefficient the game applies is unresolved.
+
+   Both wait on an observation in the original game (the #7022 smoke harness is the natural place) rather
+   than a choice here: 284 vanilla `CREA` records set the offset bit, so a PC-offset creature hits with its
+   authored base damage and carries base skills at every player level.
 
 ### The player's pools (#7037)
 
@@ -1365,9 +1399,11 @@ The engine matches this (`creature_values` and `level` in
   level-up ([skill-use leveling PRD](../prd/oblivion-skill-use-leveling.md)).
 - A second word form of the creature (`0x51c980`, vtable offset `0x10` of another sub-object) scales as
   `stored + level x fCreatureCalcDamage` with the same level. The CS says the attack damage of a PC-level-offset
-  creature is "added to 1/2 the level of the creature", which is that formula at a setting of 0.5; the value
-  `Oblivion.esm` authors was not read (the executable's default is 1.0). Not decoded further, and the engine
-  reads no attack damage from this model.
+  creature is "added to 1/2 the level of the creature", which is that formula at a setting of 0.5;
+  `Oblivion.esm` authors no `fCreatureCalcDamage` (byte scan, 2026-11-22), and the executable's default is 1.0,
+  so the coefficient is unadjudicated. The engine does read the attack damage (`stamp_creature_attack`,
+  `byroredux/src/npc_spawn/stamps.rs`, stamps `CreatureAttack` from the `DATA` value since 2026-11-15) but
+  stamps it **unscaled**: Known gaps, item 5 (#7206).
 
 ## Essential bleedout and encumbrance — LOCKED / NOT WIRED (#6284)
 

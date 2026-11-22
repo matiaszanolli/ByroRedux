@@ -152,6 +152,45 @@ impl CellSubrecordFields {
             // the 60 hashes, and every ref's DATA position coincides
             // (< 0.01 u) with a decoded bake instance (#5484 probe).
             // These are the refs to skip: the bake already draws them.
+            // FO76 widens the counts to u64 and both entry kinds (xEdit `wbDefinitionsFO76.pas:8069-8085`):
+            // a mesh is its hash + 4 unknown bytes, a reference its FormID, 4 unknown, its combined mesh, 4
+            // unknown; the reference count still counts both members (`wbCELLCombinedRefsCounter`, entries =
+            // count / 2). Read at FO4's u32 shape all 1,182 `SeventySix.esm` bodies mismatched and were
+            // dropped with a warn each (#7121); 1,132 of them match this shape exactly, the rest are
+            // `XXXX`-sized bodies the same rule covers.
+            b"XCRI" if game == GameKind::Fallout76 => {
+                let mut r = crate::esm::sub_reader::SubReader::new(&sub.data);
+                let mesh_count = r.u64_or_default() as usize;
+                let ref_count = r.u64_or_default() as usize;
+                let entries = ref_count / 2;
+                let expected = FO76_XCRI_HEADER_LEN
+                    .saturating_add(mesh_count.saturating_mul(FO76_XCRI_MESH_LEN))
+                    .saturating_add(entries.saturating_mul(FO76_XCRI_REF_LEN));
+                if expected != sub.data.len() || ref_count % 2 != 0 {
+                    log::warn!(
+                        "CELL {:08X} FO76 XCRI size mismatch: meshes={} refs={} expected={} actual={} — skipping",
+                        cell_form_id,
+                        mesh_count,
+                        ref_count,
+                        expected,
+                        sub.data.len(),
+                    );
+                } else {
+                    self.precombined_mesh_hashes.reserve(mesh_count);
+                    for _ in 0..mesh_count {
+                        self.precombined_mesh_hashes.push(r.u32_or_default());
+                        r.skip_or_eof(4);
+                    }
+                    self.absorbed_ref_bakes.reserve(entries);
+                    for _ in 0..entries {
+                        let fid = r.u32_or_default();
+                        r.skip_or_eof(4);
+                        let hash = r.u32_or_default();
+                        r.skip_or_eof(4);
+                        self.absorbed_ref_bakes.push((reader.remap_form_id(fid), hash));
+                    }
+                }
+            }
             b"XCRI" if sub.data.len() >= 8 => {
                 let mesh_count = u32::from_le_bytes(sub.data[0..4].try_into().unwrap()) as usize;
                 let ref_count = u32::from_le_bytes(sub.data[4..8].try_into().unwrap()) as usize;
@@ -357,15 +396,25 @@ pub(super) fn read_form_id(reader: &EsmReader, data: &[u8]) -> Option<u32> {
         .map(|raw| reader.remap_form_id(raw))
 }
 
-/// Read an array of 4-byte FormIDs packed back-to-back. Used for XCLR
-/// (region list) and any other list-of-FormIDs sub-record. Trailing
-/// bytes that don't make a full FormID are silently dropped — they're
-/// always alignment padding rather than a partial entry.
+/// FO76 `XCRI`: two u64 counts.
+const FO76_XCRI_HEADER_LEN: usize = 16;
+/// FO76 `XCRI` mesh entry: hash + 4 unknown bytes.
+const FO76_XCRI_MESH_LEN: usize = 8;
+/// FO76 `XCRI` reference entry: FormID, 4 unknown, combined mesh, 4 unknown.
+const FO76_XCRI_REF_LEN: usize = 16;
+
+/// Read an array of 4-byte FormIDs packed back-to-back (CELL `XCLR`, the
+/// region list), through `SubReader::u32_array` like every FormID array
+/// (#6782): a body that is not a whole number of words is malformed and
+/// yields no regions rather than a shorter list. No vanilla `XCLR` is
+/// ragged (Skyrim.esm: 8,441); the earlier "alignment padding" reading had
+/// no source (#7107).
 pub(super) fn read_form_id_array(reader: &EsmReader, data: &[u8]) -> Vec<u32> {
-    data.as_chunks::<4>()
-        .0
-        .iter()
-        .map(|c| reader.remap_form_id(u32::from_le_bytes([c[0], c[1], c[2], c[3]])))
+    crate::esm::sub_reader::SubReader::new(data)
+        .u32_array()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|raw| reader.remap_form_id(raw))
         .collect()
 }
 

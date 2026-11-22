@@ -263,15 +263,46 @@ const MEDITATE: &str = "You should rest and meditate on what you've learned.";
 /// UESP *Oblivion: Leveling*, Notes: what an attempt to level with every attribute at 100 says.
 const PERFECTION: &str = "Perfection cannot be improved upon. Your attributes are as high as they can go.";
 
-/// The level-up message of the level just reached: the load order's `sLevelUp{N}` flavour text when it authors
-/// one (`Oblivion.esm` authors levels 2 to 20; a higher level reuses the last), after the line that names the level.
+/// #7209 — the level-up flavour text UESP *Oblivion:Leveling* documents (Messages): levels 2 to 20, then one message for
+/// every level from 21 on. `Oblivion.esm` authors only nine of them as `sLevelUp{N}` settings (4, 6, 11, 12, 15, 17,
+/// 18, 19, 20, the same text); the rest are executable defaults no file in the load order carries, so the documented
+/// table stands in for them, as [`PERFECTION`] and [`MEDITATE`] do.
+const LEVEL_UP_MESSAGES: [&str; 20] = [
+    "You realize that all your life you have been coasting along as if you were in a dream. Suddenly, facing the trials of the last few days, you have come alive.",
+    "You realize that you are catching on to the secret of success. It's just a matter of concentration.",
+    "You've done things the hard way. But without taking risks, taking responsibility for failure... how could you have understood?",
+    "Everything you do is just a bit easier, more instinctive, more satisfying. It is as though you had suddenly developed keen senses and instincts.",
+    "You've learned a lot about Cyrodiil... and about yourself. It's hard to believe how ignorant you were, but now you have so much more to learn.",
+    "You resolve to continue pushing yourself. Perhaps there's more to you than you thought.",
+    "The secret does seem to be hard work, yes, but it's also a kind of blind passion, an inspiration.",
+    "So that's how it works. You plod along, putting one foot before the other, look up, and suddenly, there you are. Right where you wanted to be all along.",
+    "You woke today with a new sense of purpose. You're no longer afraid of failure. Failure is just an opportunity to learn something new.",
+    "Being smart doesn't hurt. And a little luck now and then is nice. But the key is patience and hard work.",
+    "You can't believe how easy it is. You just have to go... a little crazy. And then, suddenly, it all makes sense, and everything you do turns to gold.",
+    "It's the most amazing thing. Yesterday it was hard, and today it is easy. Just a good night's sleep, and yesterday's mysteries are today's masteries.",
+    "Today you wake up, full of energy and ideas, and you know, somehow, that overnight everything has changed. What a difference a day makes.",
+    "Now you just stay at your peak as long as you can. There's no one stronger in Tamriel, but there's always someone younger... a new challenger.",
+    "You've been trying too hard, thinking too much. Relax. Trust your instincts. Just be yourself. Do the little things, and the big things take care of themselves.",
+    "Life isn't over. You can still get smarter, or cleverer, or more experienced, or meaner... but your body and soul just aren't going to get any younger.",
+    "With the life you've been living, the punishment your body has taken... there are limits, and maybe you've reached them. Is this what it's like to grow old?",
+    "You're really good. Maybe the best. And that's why it's so hard to get better. But you just keep trying, because that's the way you are.",
+    "By superhuman effort, you can avoid slipping backwards for a while. But one day, you'll lose a step, or drop a beat, or miss a detail... and you'll be gone forever.",
+    "The results of hard work and dedication always look like luck. But you know you've earned every ounce of your success.",
+];
+
+/// The level-up message of the level just reached, after the line that names the level: for levels 2 to 20 the load
+/// order's `sLevelUp{N}` flavour text when it authors one, else the documented message ([`LEVEL_UP_MESSAGES`]); from
+/// level 21 on, the documented 21+ message (no setting for it is documented, so none is read).
 fn level_message(world: &World, level: u16) -> String {
-    let flavour = world.try_resource::<crate::components::LoadedCellIndex>().and_then(|index| {
-        index.0.game_setting_string(&format!("sLevelUp{}", level.clamp(2, 20))).map(str::to_owned)
+    let authored = (2..=20).contains(&level).then(|| {
+        world
+            .try_resource::<crate::components::LoadedCellIndex>()
+            .and_then(|index| index.0.game_setting_string(&format!("sLevelUp{level}")).map(str::to_owned))
     });
-    match flavour {
+    let documented = LEVEL_UP_MESSAGES[usize::from(level.clamp(2, 21)) - 2];
+    match authored.flatten() {
         Some(text) if !text.is_empty() => format!("You are now level {level}. {text}"),
-        _ => format!("You are now level {level}."),
+        _ => format!("You are now level {level}. {documented}"),
     }
 }
 
@@ -327,6 +358,60 @@ pub(crate) fn report_level_result(world: &World, result: byroredux_scripting::ob
 mod tests {
     use super::*;
 
+    /// #7204 — every Oblivion actor-value code the skill-use writers hard-code names the value it means in the
+    /// engine-supplied roster (`OBLIVION_ACTOR_VALUES`, xEdit `wbActorValueEnum` order), so a roster correction or a
+    /// mistyped code fails here instead of feeding the wrong skill with every other test still green.
+    #[test]
+    fn the_hard_coded_skill_codes_name_their_roster_entries() {
+        use byroredux_plugin::esm::records::oblivion_actor_values::OBLIVION_ACTOR_VALUES;
+        let name = |code: u32| OBLIVION_ACTOR_VALUES[code as usize];
+        for (code, expected) in [
+            (BLADE, "Blade"),
+            (BLUNT, "Blunt"),
+            (HAND_TO_HAND, "HandToHand"),
+            (HEAVY_ARMOR, "HeavyArmor"),
+            (LIGHT_ARMOR, "LightArmor"),
+            (ATHLETICS, "Athletics"),
+            (ACROBATICS, "Acrobatics"),
+            (SNEAK, "Sneak"),
+            (MARKSMAN, "Marksman"),
+            (BLOCK, "Block"),
+            (byroredux_core::character::OBLIVION_SKILL_AV_FIRST, "Armorer"),
+            (byroredux_core::character::OBLIVION_SKILL_AV_LAST, "Speechcraft"),
+        ] {
+            assert_eq!(name(code), expected, "code {code}");
+        }
+        let fed: Vec<&str> = byroredux_scripting::oblivion_skill_use::FED_SKILLS.iter().map(|&code| name(code)).collect();
+        assert_eq!(
+            fed,
+            [
+                "Athletics", "Blade", "Block", "Blunt", "HandToHand", "HeavyArmor", "Alteration", "Conjuration",
+                "Destruction", "Illusion", "Mysticism", "Restoration", "Acrobatics", "LightArmor", "Marksman", "Sneak",
+            ]
+        );
+    }
+
+    /// #7209 — every level-up has its flavour text: the load order's `sLevelUp{N}` where it authors one, the documented
+    /// message where it does not (the master authors nine of the nineteen), and the 21+ message from level 21 on.
+    #[test]
+    fn every_level_up_has_its_flavour_text() {
+        use byroredux_plugin::esm::records::{EsmIndex, GameSetting, SettingValue};
+        let mut world = World::new();
+        let mut index = EsmIndex::default();
+        index.insert_game_setting(GameSetting { form_id: 1, editor_id: "sLevelUp4".into(), value: SettingValue::String("Authored four.".into()) });
+        world.insert_resource(crate::components::LoadedCellIndex(std::sync::Arc::new(index)));
+        assert_eq!(level_message(&world, 4), "You are now level 4. Authored four.");
+        assert!(level_message(&world, 2).ends_with("you have come alive."), "an unauthored level reads the documented text");
+        assert!(level_message(&world, 20).ends_with("gone forever."));
+        assert!(level_message(&world, 21).ends_with("every ounce of your success."));
+        assert_eq!(
+            level_message(&world, 35).replace("level 35", "level 21"),
+            level_message(&world, 21),
+            "every level past 20 says the 21+ message"
+        );
+        assert_eq!(LEVEL_UP_MESSAGES.len(), 20, "levels 2 to 20 and 21+");
+    }
+
     /// UESP's weapon pages: one-handed and two-handed blades feed Blade, blunts feed Blunt, the unarmed blow
     /// Hand to Hand, a bow Marksman (through its arrow only); a staff feeds no skill.
     #[test]
@@ -380,7 +465,6 @@ mod tests {
                 dt: 0.0,
                 dr: 0,
                 health: 0,
-                slot_mask: 0,
                 armor_rating_x100: 0,
                 armor_type: Some(u32::from(heavy)),
                 female_model_path: String::new(),
@@ -670,6 +754,37 @@ mod tests {
         sleep(&world, false);
         oblivion_level_system(&world, 0.0);
         assert_eq!(level_of(&world, player), 2);
+    }
+
+    /// #7196 — a load order's level-up settings reach the level taken: `iLevelUpSkillCount` 5 makes five major
+    /// increases a level, `iLevelUp05Mult` 4 is the bonus for Blade's five rank-ups, and `fStatsHealthLevelMult` 0.2
+    /// is the Health share of the Endurance after the picks.
+    #[test]
+    fn a_retuned_level_up_follows_the_load_orders_settings() {
+        use byroredux_core::character::{CharacterRuleset, LevelingModel};
+        use byroredux_scripting::oblivion_skill_use::{pick_attribute, raise_skill_ranks};
+        let (mut world, player) = level_world();
+        world.insert_resource(CharacterRuleset::new(LevelingModel::OBLIVION.with_gmst(|name| match name {
+            "iLevelUpSkillCount" => Some(5.0),
+            "iLevelUp05Mult" => Some(4.0),
+            "fStatsHealthLevelMult" => Some(0.2),
+            _ => None,
+        })));
+        oblivion_level_system(&world, 0.0);
+        raise_skill_ranks(&world, player, BLADE, 5, false);
+        assert_eq!(pick_attribute(&world, player, 0).unwrap().bonus, 4, "Strength's five rank-ups: iLevelUp05Mult");
+        for attribute in [5, 7] {
+            pick_attribute(&world, player, attribute).unwrap();
+        }
+        sleep(&world, false);
+        oblivion_level_system(&world, 0.0);
+        assert_eq!(level_of(&world, player), 2, "five major increases made the level");
+        let names = world.resource::<byroredux_scripting::ActorValueNames>();
+        let (health, strength) = (names.resolve("Health").unwrap(), names.resolve("Strength").unwrap());
+        drop(names);
+        let values = world.get::<byroredux_core::ecs::components::ActorValues>(player).unwrap();
+        assert_eq!(values.get_base(strength).unwrap().base, 44.0);
+        assert_eq!(values.stored(health), 8.0, "0.2 of Endurance 41, rounded down");
     }
 
     /// A level whose attributes are not all picked stays pending and the sleep says what to do; another sleep after

@@ -260,8 +260,12 @@ out of scope):
 
 | Pool | Rate | Constants |
 |---|---|---|
-| Fatigue | flat `10`/sec | `FATIGUE_REGEN_PER_SEC` (`fFatigueReturnBase`=10, `fFatigureReturnMult`=0 in vanilla) |
-| Magicka | `(Willpower × 0.02 + 0.75) × (MaxMagicka / 100)` | `MAGICKA_REGEN_WILLPOWER_COEFF` / `MAGICKA_REGEN_BASE`, via `magicka_regen_per_sec` |
+| Fatigue | `fFatigueReturnBase + fFatigueReturnMult × Endurance` per sec, flat `10`/sec in vanilla | `TesPoolRegen` (`fFatigueReturnBase`=10, `fFatigueReturnMult`=0 in `Oblivion.esm`; defaults `FATIGUE_REGEN_PER_SEC`) |
+| Magicka | `(Willpower × fMagickaReturnMult + fMagickaReturnBase) × (MaxMagicka / 100)`, `0.02` / `0.75` in vanilla | `TesPoolRegen` (`fMagickaReturnMult` / `fMagickaReturnBase`, authored by `Oblivion.esm`; defaults `MAGICKA_REGEN_WILLPOWER_COEFF` / `MAGICKA_REGEN_BASE`) |
+
+All four settings are read from the load order (#7197): `CharacterRulesProfile::build_tes_pool_regen` overlays them on
+`TesPoolRegen::OBLIVION` through `TesPoolRegen::with_gmst` (a non-finite or negative value keeps its default) and
+installs them on `PoolRegenConfig::tes_rates`, with the Endurance record the Fatigue term reads.
 | Health | **none** — no passive regen in classic Oblivion | deliberately unmodelled |
 
 **Mechanism BUILT and registered; live for FO3/FNV Action Points only.**
@@ -347,8 +351,7 @@ rank, +10 pool pick + perk/level; UESP-sourced). Skyrim helpers: `xp_from_skill_
 `actor_value` never composes a `PlayerOnly` `Multiplier` row. The Skyrim armor model is the
 `ArmorModel` row of the Skyrim `CharacterRulesProfile` (`character/armor.rs`, #6567), which
 `byroredux/src/armor.rs` reads and which builds its skill multipliers from this constant and
-`ARMOR_SKILL_RATING_COEFF_NPC` 0.015). Oblivion's `LightArmorRating` / `HeavyArmorRating` rows
-(`tes.rs`) are equally unread: Oblivion has no runtime ruleset yet and Carry Weight
+`ARMOR_SKILL_RATING_COEFF_NPC` 0.015) and Carry Weight
 (`CARRY_WEIGHT_BIAS` 250 + `CARRY_WEIGHT_STAMINA_COEFF` 0.5 × base Stamina). The
 *pools* really are underived: Health/Magicka/Stamina start at `SKYRIM_POOL_BASE` 100
 and grow only by the level pick, which is why Skyrim has no SPECIAL-style

@@ -187,15 +187,14 @@ pub enum ItemKind {
         dr: u32,
         /// Health / condition durability (FO3/FNV/FO4; Skyrim dropped it).
         health: u32,
-        /// Equip slot mask (FO3/FNV-only biped-flag low 16 bits).
-        slot_mask: u16,
         /// Armor rating × 100. Sourced from DATA on Oblivion, FNAM on FO4,
         /// and DNAM on Skyrim+. 0 on FO3/FNV, which use `dt`/`dr` instead.
         armor_rating_x100: u32,
         /// Skyrim+: armor type from BOD2 second u32 — xEdit `wbArmorTypeEnum`:
         /// 0 = Light Armor, 1 = Heavy Armor, 2 = Clothing (an earlier comment had
         /// clothing and heavy swapped; the armor-rating code in `byroredux/src/armor.rs`
-        /// is the first consumer, and a live run caught it). `None` on pre-Skyrim games.
+        /// is the first consumer, and a live run caught it). Oblivion sets `Some(0 | 1)` from its `BMDT`
+        /// General Flags Heavy Armor bit (0x80); `None` on FO3 / FNV.
         armor_type: Option<u32>,
         /// Oblivion / FO3 / FNV female biped mesh (`MOD3`). The male mesh
         /// is `common.model_path` (`MODL`); this is the female counterpart
@@ -747,7 +746,6 @@ pub fn parse_armo(
     let mut dt = 0.0f32;
     let mut dr = 0u32;
     let mut health = 0u32;
-    let mut slot_mask = 0u16;
     let mut armor_rating_x100 = 0u32;
     let mut armor_type: Option<u32> = None;
     let mut armatures: Vec<u32> = Vec::new();
@@ -778,7 +776,6 @@ pub fn parse_armo(
                 } else {
                     r.u32_or_default()
                 });
-                slot_mask = (biped_flags & 0xFFFF) as u16;
                 // Oblivion's General Flags byte carries Heavy Armor (bit 7); every Oblivion ARMO is light or
                 // heavy (clothing is its own `CLOT` record), so the same `armor_type` the Skyrim path reads
                 // (0 light, 1 heavy) names the skill a struck piece feeds (#7051, OSL-USE-003).
@@ -789,11 +786,10 @@ pub fn parse_armo(
                 }
             }
             // BOD2 (Skyrim+): biped_slots (u32) + armor_type (u32).
-            // armor_type: 0=light, 1=clothing, 2=heavy, 3=none, 4=gauntlets.
+            // armor_type: xEdit `wbArmorTypeEnum` — 0 Light Armor, 1 Heavy Armor, 2 Clothing.
             b"BOD2" => {
                 let mut r = SubReader::new(&sub.data);
                 biped_flags = u64::from(r.u32_or_default());
-                slot_mask = (biped_flags & 0xFFFF) as u16;
                 if let Ok(t) = r.u32() {
                     armor_type = Some(t);
                 }
@@ -808,7 +804,6 @@ pub fn parse_armo(
             b"BODT" if is_skyrim_or_later && sub.data.len() >= 8 => {
                 let mut r = SubReader::new(&sub.data);
                 biped_flags = u64::from(r.u32_or_default());
-                slot_mask = (biped_flags & 0xFFFF) as u16;
                 if sub.data.len() >= 12 {
                     r.skip_or_eof(4); // general_flags u8 + 3 pad
                     if let Ok(t) = r.u32() {
@@ -821,7 +816,6 @@ pub fn parse_armo(
             // `Spacesuit_Constellation_01` carries bit 35 "SS BODY".
             b"BO64" if game == GameKind::Starfield && sub.data.len() >= 8 => {
                 biped_flags = SubReader::new(&sub.data).u64_or_default();
-                slot_mask = (biped_flags & 0xFFFF) as u16;
             }
             b"DATA" => {
                 let mut r = SubReader::new(&sub.data);
@@ -955,7 +949,6 @@ pub fn parse_armo(
             dt,
             dr,
             health,
-            slot_mask,
             armor_rating_x100,
             armor_type,
             armatures,
@@ -1129,7 +1122,6 @@ pub fn parse_clot(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
         common,
         kind: ItemKind::Armor {
             biped_flags: u64::from(slots),
-            slot_mask: slots,
             female_model_path,
             dt: 0.0,
             dr: 0,
@@ -1262,6 +1254,12 @@ pub fn parse_alch(
 }
 
 /// Game-specific consumption data, separate from the legacy display-only parser.
+/// Oblivion `ALCH` `ENIT`: Value s32, Flags u8, 3 unused (xEdit TES4).
+const OBLIVION_ENIT_LEN: usize = 8;
+const OBLIVION_ENIT_FLAGS_AT: usize = 4;
+/// Oblivion `ENIT` Flags bit 1: Food Item.
+const OBLIVION_ENIT_FOOD_ITEM: u8 = 0x02;
+
 pub fn parse_alch_for_game(
     form_id: u32,
     subs: &[SubRecord],
@@ -1301,8 +1299,12 @@ pub fn parse_alch_for_game(
         // Oblivion's `ENIT` is Value s32 then a one-byte Flags (bit 1 Food Item, xEdit `wbDefinitionsTES4.pas`).
         GameKind::Oblivion => subs
             .iter()
-            .find(|s| &s.sub_type == b"ENIT" && s.data.len() >= 5)
-            .is_some_and(|s| s.data[4] & 2 != 0),
+            .find(|s| &s.sub_type == b"ENIT" && s.data.len() >= OBLIVION_ENIT_LEN)
+            .is_some_and(|s| {
+                let mut r = SubReader::new(&s.data);
+                r.skip_to_or_eof(OBLIVION_ENIT_FLAGS_AT);
+                r.u8_or_default() & OBLIVION_ENIT_FOOD_ITEM != 0
+            }),
         _ => false,
     };
     if let ItemKind::Aid {
@@ -1326,7 +1328,7 @@ pub fn parse_alch_for_game(
     for sub in subs {
         if &sub.sub_type == b"ENIT" && game == GameKind::Oblivion {
             // Value s32 and a one-byte flags field: no addiction fields, so a present header is simple.
-            if sub.data.len() < 5 {
+            if sub.data.len() < OBLIVION_ENIT_LEN {
                 return item;
             }
             valid_header = true;
@@ -2606,12 +2608,10 @@ mod tests {
         match item.kind {
             ItemKind::Armor {
                 biped_flags,
-                slot_mask,
                 armor_type,
                 ..
             } => {
                 assert_eq!(biped_flags, 0x0000_0002, "the leading u32 is the biped mask");
-                assert_eq!(slot_mask, 0x0002);
                 assert_eq!(armor_type, Some(1), "the 12-byte tail carries the armor type");
             }
             _ => panic!("expected Armor kind"),
@@ -2788,12 +2788,11 @@ mod tests {
         ];
         let item = parse_armo(0x000972BB, &subs, GameKind::Oblivion, &None);
         match &item.kind {
-            ItemKind::Armor { biped_flags, slot_mask, armor_type, .. } => {
+            ItemKind::Armor { biped_flags, armor_type, .. } => {
                 assert_eq!(
                     *biped_flags, 0x3,
                     "the General Flags byte (0x80, Heavy) must not leak into bits 16-23"
                 );
-                assert_eq!(*slot_mask, 0x3);
                 assert_eq!(*armor_type, Some(1), "General Flags 0x80 is Heavy Armor");
             }
             _ => panic!("expected Armor kind"),

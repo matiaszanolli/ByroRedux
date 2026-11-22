@@ -96,7 +96,8 @@ use scene::*;
 use shared::*;
 use studio::*;
 use terrain::{
-    TerrainBlendCommand, TerrainHeightCommand, TerrainParallaxCommand, TerrainSoftenCommand,
+    TerrainBlendCommand, TerrainHeightCommand, TerrainParallaxCommand, TerrainPatchesCommand,
+    TerrainSoftenCommand,
 };
 use time::*;
 use view::*;
@@ -196,6 +197,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(NearCommand);
     registry.register(PickCommand);
     registry.register(CamPosCommand);
+    registry.register(CamFlyCommand);
     registry.register(CamTpCommand);
     registry.register(InteractionStatusCommand);
     registry.register(CombatStatusCommand);
@@ -268,6 +270,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(TerrainBlendCommand);
     registry.register(TerrainSoftenCommand);
     registry.register(TerrainParallaxCommand);
+    registry.register(TerrainPatchesCommand);
     registry.register(CellOwnersCommand);
     registry.register(RenderDebugCommand);
     registry.register(RenderDebugFlagsCommand);

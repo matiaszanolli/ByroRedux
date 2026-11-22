@@ -877,10 +877,12 @@ const WTHR_SOUND_TYPE_OFFSET: usize = 4;
 /// signal `env_translate::sky_weather` uses to tell a weather that has
 /// lightning from one that only carries a frequency byte.
 fn read_weather_sound(record: &mut WeatherRecord, data: &[u8]) {
-    let Some(bytes) = data.get(WTHR_SOUND_TYPE_OFFSET..WTHR_SOUND_TYPE_OFFSET + 4) else {
+    if data.len() < WTHR_SOUND_TYPE_OFFSET + 4 {
         return;
-    };
-    if u32::from_le_bytes(bytes.try_into().unwrap()) == WTHR_SOUND_TYPE_THUNDER {
+    }
+    let mut r = SubReader::new(data);
+    r.skip_to_or_eof(WTHR_SOUND_TYPE_OFFSET);
+    if r.u32_or_default() == WTHR_SOUND_TYPE_THUNDER {
         record.thunder_sound_authored = true;
     }
 }

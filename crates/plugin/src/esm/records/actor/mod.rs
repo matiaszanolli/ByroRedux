@@ -74,14 +74,21 @@ pub struct ActorAiData {
 /// Skyrim responsibility @3;
 /// FO3/FNV aggro-radius behaviour bool @15 and radius s32 @16; Skyrim/FO4
 /// flags @6 (bit 0 = aggro-radius behaviour), Attack radius u32 @16.
+/// Oblivion `AIDT`: four rated bytes, service flags, teaches, maximum training level, 2 unused (xEdit TES4).
+pub const OBLIVION_AIDT_LEN: usize = 12;
+
 pub fn decode_ai_data(data: &[u8], game: GameKind) -> Option<ActorAiData> {
     // #6995 — Oblivion's 12-byte AIDT (xEdit `wbDefinitionsTES4`): Aggression,
     // Confidence, Energy Level, Responsibility (u8 each, 0–100), service flags,
     // teaches, maximum training level. No aggro radius.
     if game == GameKind::Oblivion {
-        return (data.len() >= 2).then(|| ActorAiData {
-            aggression: Aggression::Rated(data[0]),
-            confidence: Confidence::Rated(data[1]),
+        if data.len() < OBLIVION_AIDT_LEN {
+            return None;
+        }
+        let mut r = crate::esm::sub_reader::SubReader::new(data);
+        return Some(ActorAiData {
+            aggression: Aggression::Rated(r.u8_or_default()),
+            confidence: Confidence::Rated(r.u8_or_default()),
             responsibility: None,
             attack_radius: None,
         });
@@ -188,7 +195,14 @@ pub const ACBS_PC_LEVEL_MULT: u32 = 0x0080;
 /// Skyrim class-point maths). [`ResolvedNpc::level`](crate::equip::ResolvedNpc::level)
 /// is this value of the Use-Stats terminal, except that a literal `0` reached
 /// through an `LVLN` / `LVLC` pick takes that pick's authored entry level
-/// (#4232); only the leveled-list expansions (gear, spells) read it. About 30
+/// (#4232); only the leveled-list expansions (gear, spells) read it.
+///
+/// #7193 — ACBS bit 7 is FO3/FNV's "PC Level Mult". On Oblivion the same bit
+/// is "PC Level Offset" (`level` is a signed offset from the player's level),
+/// so this answer is not an Oblivion actor's level: its stats read
+/// [`actor_level_at_spawn`](crate::esm::records::actor_level_at_spawn) and its
+/// leveled lists [`ResolvedNpc::level`](crate::equip::ResolvedNpc::level),
+/// which routes an Oblivion record there. About 30
 /// of 3,816 FNV `NPC_` records author level 0 that way, so for those the
 /// gear is expanded at level N while `CharacterLevel` reads 0. Which level
 /// such a terminal should carry for stats is unsourced, so nothing is

@@ -320,17 +320,11 @@ pub(super) fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
         "--cmd",
         "--master",
         "--studio",
-        "--cornell",
-        "--cornell-sun",
-        "--cornell-oracle",
-        "--cornell-glass-dragon",
-        "--combustion-lab",
-        "--combustion-lab-nuclear",
-        "--combustion-lab-steam",
-        "--recede-lab",
     ]
     .iter()
-    .any(|f| args.iter().any(|a| a == f));
+    .any(|f| args.iter().any(|a| a == f))
+        // #7186 — every renderer harness, through the predicate the scene dispatches by.
+        || crate::cornell::is_harness_launch(&args);
     let game_key = match parse_string_arg(&args, "--game") {
         Some(k) => k,
         None => match defaults.game.clone() {
@@ -382,8 +376,9 @@ pub(super) fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
     if !data_dir.exists() {
         eprintln!(
             "--game {}: resolved data dir does not exist: {} \
-             (set --games-root, BYROREDUX_GAMES_ROOT env var, or override \
-              the profile's `root` in ~/.byroredux/profiles.toml)",
+             (run `byro-detect --write` to record where the game is installed, or set \
+              --games-root / `[defaults].games_root` / BYROREDUX_GAMES_ROOT, or override \
+              the profile's root in your profiles file)",
             game_key,
             data_dir.display(),
         );
@@ -413,7 +408,10 @@ pub(super) fn expand_game_profile_args(mut args: Vec<String>) -> Vec<String> {
         if !entry.has_new_game_target() {
             eprintln!("--game {game_key} --new-game: profile has no new-game cell or worldspace/grid");
         } else if has_location {
-            eprintln!("--new-game: explicit location flags override the profile target");
+            eprintln!(
+                "--new-game: explicit location flags override the profile target; it is still a new game \
+                 (the opening's scripts run there and may move the player)"
+            );
         } else if let Some(cell) = &entry.new_game_cell {
             args.push("--cell".to_string());
             args.push(cell.clone());

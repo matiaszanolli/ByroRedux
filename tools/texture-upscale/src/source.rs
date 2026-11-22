@@ -165,4 +165,20 @@ mod tests {
         assert_eq!(sources.extract("textures\\a.dds").unwrap(), b"second");
         assert_eq!(sources.list_files(), vec!["textures/a.dds"]);
     }
+
+    /// #7191 — a non-ASCII spelling variant in a later source overrides the earlier one, as the
+    /// archives fold it; it used to stay a second entry.
+    #[test]
+    fn a_later_source_overrides_a_non_ascii_case_variant() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        fs::create_dir_all(first.path().join("textures")).unwrap();
+        fs::create_dir_all(second.path().join("textures")).unwrap();
+        fs::write(first.path().join("textures/ä.dds"), b"first").unwrap();
+        fs::write(second.path().join("textures/Ä.dds"), b"second").unwrap();
+        let sources =
+            SourceStack::open(&[first.path().to_path_buf(), second.path().to_path_buf()]).unwrap();
+        assert_eq!(sources.list_files(), vec!["textures/ä.dds"]);
+        assert_eq!(sources.extract("Textures\\Ä.DDS").unwrap(), b"second");
+    }
 }

@@ -151,6 +151,11 @@ fn warn_on_equals_form(args: &[String], flag: &str) {
 pub fn parse_renderer_config(args: &[String]) -> Result<RendererConfig> {
     let option = |flag: &str| -> Result<Option<&str>> {
         let Some(index) = args.iter().position(|arg| arg == flag) else {
+            // #7185 — `--upscaler=taa` used to fall through to the default (FSR ran) with no
+            // word; this reader is strict about a missing value, so it is strict about this too.
+            if let Some(message) = equals_form_diagnostic(args, flag) {
+                bail!("{message}");
+            }
             return Ok(None);
         };
         let Some(value) = args.get(index + 1) else {
@@ -371,6 +376,18 @@ mod tests {
     /// silence: that silence is what let `p1-character-traversal.sh` pass an
     /// inert `--camera-pos=` for months and cost the W1 fixture two
     /// derivation runs against a pose the engine never applied.
+    /// #7185 — a renderer option spelled `--flag=value` is refused naming the space-separated form,
+    /// as a missing value is, instead of silently running the default.
+    #[test]
+    fn a_renderer_option_in_the_equals_form_is_refused() {
+        let args = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let err = parse_renderer_config(&args(&["byroredux", "--upscaler=taa"])).expect_err("the equals form");
+        assert!(err.to_string().contains("`--upscaler taa`"), "{err}");
+        let err = parse_renderer_config(&args(&["byroredux", "--fsr-quality=balanced"])).expect_err("the equals form");
+        assert!(err.to_string().contains("space-separated"), "{err}");
+        assert!(parse_renderer_config(&args(&["byroredux", "--upscaler", "taa"])).is_ok());
+    }
+
     #[test]
     fn the_equals_form_is_reported_rather_than_silently_dropped() {
         let argv = args(&["byroredux", "--camera-pos=14976,-100,42000", "--player"]);

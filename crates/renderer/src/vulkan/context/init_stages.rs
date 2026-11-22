@@ -187,6 +187,28 @@ pub(super) fn create_compute_passes(
 }
 
 /// The EXAL ground-cover blade pipeline and its authored-model tier (#4054 / #4413 / #4888). Both are gated on the combined indirect-draw predicate (#4827).
+/// TSD-4.1 (#7152) — the terrain patch pass. `VulkanContext::new` reserves its
+/// meshes as the registry's first handles.
+pub(super) fn create_terrain_patch(
+    device: &ash::Device,
+    gpu_allocator: &SharedAllocator,
+    pipeline_cache: vk::PipelineCache,
+    texture_registry: &TextureRegistry,
+) -> Option<super::super::terrain_patch::TerrainPatchPass> {
+    match super::super::terrain_patch::TerrainPatchPass::new(
+        device,
+        gpu_allocator,
+        pipeline_cache,
+        texture_registry.descriptor_set_layout,
+    ) {
+        Ok(pass) => Some(pass),
+        Err(e) => {
+            log::warn!("Terrain patch pass creation failed: {e:#} — no terrain displacement patches");
+            None
+        }
+    }
+}
+
 pub(super) fn create_ground_cover(
     device: &ash::Device,
     gpu_allocator: &SharedAllocator,

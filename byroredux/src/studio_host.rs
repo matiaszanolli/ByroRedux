@@ -160,7 +160,8 @@ pub(crate) fn open(
     });
 
     if let Some(boot) = boot {
-        let cache_key = boot.label.to_ascii_lowercase();
+        // #7180 — the scene import cache's key (`nif_loader::cached_scene_lazy`), folded the same way.
+        let cache_key = byroredux_core::paths::fold_case(&boot.label);
         adopt_asset(
             world,
             BOOT_GAME,
@@ -689,7 +690,7 @@ fn import_asset(
         world,
         game,
         path,
-        &label.to_ascii_lowercase(),
+        &byroredux_core::paths::fold_case(&label),
         first,
         last,
     ))

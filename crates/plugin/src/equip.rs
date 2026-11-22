@@ -751,6 +751,9 @@ pub struct ResolvedNpc<'a> {
     /// #4232 — the authored entry level of the deepest leveled-actor list the
     /// Use-Stats walk picked through, when it crossed one. See [`Self::level`].
     stats_pick_level: Option<u16>,
+    /// #7193 — the player's level at this spawn, when the caller knows it ([`Self::with_player_level`]). An Oblivion
+    /// actor's leveled lists need it; nothing else reads it.
+    player_level: Option<u16>,
 }
 
 impl<'a> ResolvedNpc<'a> {
@@ -839,7 +842,28 @@ impl<'a> ResolvedNpc<'a> {
             ),
             stats_chain,
             stats_pick_level,
+            player_level: None,
         }
+    }
+
+    /// #7193 — this resolution with the player's level at spawn, so [`Self::level`] can resolve an Oblivion actor's
+    /// leveled lists. The spawn boundary (`npc_spawn::resumable`) sets it once; a caller with no player leaves it unset.
+    #[must_use]
+    pub fn with_player_level(mut self, player_level: Option<u16>) -> Self {
+        self.player_level = player_level;
+        self
+    }
+
+    /// #7193 — an Oblivion actor's leveled-list level, or `None` for another game's record or a PC-offset record with
+    /// no player level to offset. See [`Self::level`].
+    fn oblivion_level(&self) -> Option<i16> {
+        self.stats.oblivion_pools?;
+        let own = crate::esm::records::actor_level_at_spawn(self.stats, self.player_level)?;
+        let held = match (self.stats.oblivion_npc_stats.is_some(), self.player_level) {
+            (true, Some(player)) => own.min(player),
+            _ => own,
+        };
+        Some(i16::try_from(held).unwrap_or(i16::MAX))
     }
 
     /// #4232 — the level this spawn's leveled lists (gear, spells) resolve at.
@@ -853,9 +877,23 @@ impl<'a> ResolvedNpc<'a> {
     /// nothing is invented, and `effective_actor_level` itself stays unfloored
     /// (#3081 rejected `.max(1)` there). A terminal reached with no list on the
     /// way, or one that authors a real level, is unchanged.
+    ///
+    /// #7193 — an Oblivion record (one carrying `oblivion_pools`) is not read
+    /// through `effective_actor_level`: its ACBS bit 7 is "PC Level Offset", not
+    /// FO3/FNV's multiplier, so `calc_min` is no level at all. Its level is the
+    /// spawn level [`actor_level_at_spawn`](crate::esm::records::actor_level_at_spawn)
+    /// computes for its stats (player level + offset, clamped), and an NPC's
+    /// equipment is then held to the player's level: "The equipment carried by
+    /// NPCs is determined by the lowest level between the NPC in question and
+    /// the player" (UESP *Oblivion:Leveled Lists*, Items; the CS wiki article
+    /// *How Oblivion engine deals with NPC leveled equipment* reproduces it with
+    /// an offset, a maximum and a minimum). The sources speak of NPCs, so a
+    /// creature keeps its own level. With no player level set (a caller outside
+    /// the spawn boundary), a PC-offset record has no level to compute and reads
+    /// as before.
     #[must_use]
     pub fn level(&self) -> i16 {
-        let own = crate::esm::records::effective_actor_level(self.stats);
+        let own = self.oblivion_level().unwrap_or_else(|| crate::esm::records::effective_actor_level(self.stats));
         match (own, self.stats_pick_level) {
             (0, Some(pick)) => i16::try_from(pick).unwrap_or(i16::MAX),
             _ => own,
@@ -1282,7 +1320,6 @@ mod tests {
                 dt: 0.0,
                 dr: 0,
                 health: 0,
-                slot_mask: 0x0004,
                 armor_rating_x100: 0,
                 armor_type: None,
                 armatures: Vec::new(),
@@ -1376,7 +1413,6 @@ mod tests {
                 dt: 0.0,
                 dr: 0,
                 health: 0,
-                slot_mask: 0,
                 armor_rating_x100: 0,
                 armor_type: Some(1),
                 armatures,
@@ -2386,6 +2422,52 @@ mod tests {
         assert_eq!(ResolvedNpc::resolve(&plain, &idx).level(), 0);
     }
 
+    /// #7193 — an Oblivion actor's leveled gear and spells resolve at its own spawn level (player level + its PC Level
+    /// Offset, clamped by calc min/max), and an NPC's is held to the player's level (UESP *Oblivion:Leveled Lists*: "the
+    /// lowest level between the NPC in question and the player"), not at FO3/FNV's `calc_min` multiplier stand-in.
+    #[test]
+    fn oblivion_leveled_lists_resolve_at_the_actor_level_held_to_the_players() {
+        use crate::esm::records::actor::{OblivionActorPools, OblivionNpcStats};
+        let idx = empty_index();
+        let oblivion = |form_id: u32, level: i16, offset: bool, calc_min: u16, calc_max: u16, npc: bool| {
+            let mut record = npc_with(form_id, "Oblivion");
+            record.level = level;
+            record.calc_min = calc_min;
+            record.acbs_flags = if offset { 0x80 } else { 0 };
+            record.oblivion_pools = Some(OblivionActorPools { magicka: 0, fatigue: 0, calc_max });
+            if npc {
+                record.oblivion_npc_stats = Some(OblivionNpcStats { skills: [0; 21], health: 0, attributes: [0; 8] });
+            }
+            record
+        };
+        let at = |record: &crate::esm::records::actor::NpcRecord, player: Option<u16>| {
+            ResolvedNpc::resolve(record, &idx).with_player_level(player).level()
+        };
+        // A marauder at offset -3 with no bounds: player 31 -> 28 (below the player), player 10 -> 7.
+        let marauder = oblivion(0x0020_0001, -3, true, 0, 0, true);
+        assert_eq!(at(&marauder, Some(31)), 28);
+        assert_eq!(at(&marauder, Some(10)), 7);
+        // calc_min 0 used to read as level 1 at every player level.
+        assert_ne!(at(&marauder, Some(31)), 1);
+        // The CS wiki's cases: offset +20 at player 10 is level 30, but its gear is the player's 10; a calc max of 10 at
+        // player 31 holds it to 10; a calc min of 30 at player 10 still carries level-10 gear.
+        assert_eq!(at(&oblivion(0x0020_0002, 20, true, 0, 0, true), Some(10)), 10);
+        assert_eq!(at(&oblivion(0x0020_0003, 0, true, 0, 10, true), Some(31)), 10);
+        assert_eq!(at(&oblivion(0x0020_0004, 0, true, 30, 0, true), Some(10)), 10);
+        // A fixed-level NPC above the player carries the player's tier ("boss-level NPCs will not carry better equipment").
+        assert_eq!(at(&oblivion(0x0020_0005, 25, false, 0, 0, true), Some(15)), 15);
+        assert_eq!(at(&oblivion(0x0020_0006, 5, false, 0, 0, true), Some(15)), 5);
+        // A creature keeps its own level; the sources state the cap for NPCs.
+        assert_eq!(at(&oblivion(0x0020_0007, 20, true, 0, 0, false), Some(10)), 30);
+        // With no player level known, a PC-offset record reads as before, and a non-Oblivion record is untouched.
+        assert_eq!(at(&marauder, None), 1);
+        let mut fallout = npc_with(0x0020_0008, "Fallout");
+        fallout.level = 1000;
+        fallout.calc_min = 6;
+        fallout.acbs_flags = 0x80;
+        assert_eq!(at(&fallout, Some(30)), 6, "FO3/FNV's PC Level Mult keeps its calc_min stand-in");
+    }
+
     #[test]
     fn template_chain_breaks_on_cycle_via_depth_cap() {
         // A → B → A self-cycle via TPLT. Must terminate at the cap
@@ -2590,7 +2672,6 @@ mod arma_alternative_gate_tests {
                 dt: 0.0,
                 dr: 0,
                 health: 0,
-                slot_mask: 0,
                 armor_rating_x100: 0,
                 armor_type: Some(1),
                 armatures,
@@ -2739,7 +2820,7 @@ mod arma_alternative_gate_tests {
     fn real_skyrim_bleak_falls_draugr_expands_to_one_weapon_leaf() {
         let path = crate::esm::test_paths::skyrim_se_esm();
         if !path.exists() {
-            eprintln!("Skipping: Skyrim.esm not found at {}", path.display());
+            crate::esm::test_paths::require_or_skip(&format!("Skyrim.esm ({})", path.display()));
             return;
         }
         let data = std::fs::read(&path).unwrap();

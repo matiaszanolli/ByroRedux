@@ -27,16 +27,20 @@ use crate::ecs::resource::Resource;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DamageRule {
     /// Oblivion (UESP *Oblivion:The Complete Damage Formula*): `(bow + arrow) * attribute-and-skill rating *
-    /// (Fatigue / MaxFatigue + 1) / 2`, the rating being [`oblivion_weapon_damage_multiplier`] at full condition
-    /// (the weapon-health term is 1 for the bow and the arrow: bow wear is BOW-NG-007, an arrow has no health).
-    Rating { attribute: &'static str, skill: &'static str },
+    /// Fatigue factor`, the rating being
+    /// [`OblivionDamageSettings::weapon_multiplier`](crate::combat::OblivionDamageSettings::weapon_multiplier) at
+    /// full condition (the weapon-health term is 1 for the bow and the arrow: bow wear is BOW-NG-007, an arrow has no
+    /// health) and the Fatigue factor its `(Fatigue / MaxFatigue + 1) / 2` at the defaults. `settings` are the
+    /// load order's damage settings (#7199), overlaid by [`BowModel::with_gmst`].
+    Rating { attribute: &'static str, skill: &'static str, settings: crate::combat::OblivionDamageSettings },
     /// Skyrim (UESP *Skyrim:Archery*): `(bow + arrow) * (1 + per_point * skill)`, "each skill point grants a +0.5 %
     /// bonus". The draw-length scaling and the misfire penalty have no documented formula (Q4).
     SkillBonus { skill: &'static str, per_point: f32 },
 }
 
 /// What the shot's damage reads from the shooter, as numbers. A missing actor value reads 0; Fatigue reads
-/// `fatigue / max_fatigue`, and a shooter with no Fatigue pool reads full (1).
+/// `fatigue / max_fatigue` against the **normal** maximum (the attribute sum, without Fortify Fatigue), so a fortified
+/// pool reads above 1 (#7207), and a shooter with no Fatigue pool reads full (1).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ShotTraits {
     pub attribute: f32,
@@ -143,7 +147,7 @@ impl BowModel {
         class: WeaponClass::WeaponType(5),
         draw: DrawRule::Timer { base: 0.25, mult: 0.4 },
         speed: SpeedRule::Formula { speed_mult: 1500.0, weak: 0.01 },
-        damage: DamageRule::Rating { attribute: "Agility", skill: "Marksman" },
+        damage: DamageRule::Rating { attribute: "Agility", skill: "Marksman", settings: crate::combat::OblivionDamageSettings::OBLIVION },
         tilt_degrees: [0.0, 0.0],
         range_cap: f32::INFINITY,
         default_trajectory: ArrowTrajectory::Ballistic,
@@ -185,7 +189,12 @@ impl BowModel {
             [authored("f1PArrowTiltUpAngle", self.tilt_degrees[0]), authored("f3PArrowTiltUpAngle", self.tilt_degrees[1])]
         };
         let range_cap = if self.range_cap.is_finite() { authored("fVisibleNavmeshMoveDist", self.range_cap) } else { self.range_cap };
-        Self { draw, speed, tilt_degrees, range_cap, ..self }
+        // #7199 — Oblivion's damage settings (`fDamage*`, `fActorLuckSkill*`, `fFatigue*`), authored by its master.
+        let damage = match self.damage {
+            DamageRule::Rating { attribute, skill, settings } => DamageRule::Rating { attribute, skill, settings: settings.with_gmst(&gmst) },
+            bonus @ DamageRule::SkillBonus { .. } => bonus,
+        };
+        Self { draw, speed, damage, tilt_degrees, range_cap, ..self }
     }
 
     /// Whether a weapon with these record fields is a bow under this game's rules.
@@ -202,7 +211,7 @@ impl BowModel {
     #[must_use]
     pub const fn damage_inputs(&self) -> (Option<&'static str>, &'static str) {
         match self.damage {
-            DamageRule::Rating { attribute, skill } => (Some(attribute), skill),
+            DamageRule::Rating { attribute, skill, .. } => (Some(attribute), skill),
             DamageRule::SkillBonus { skill, .. } => (None, skill),
         }
     }
@@ -213,9 +222,12 @@ impl BowModel {
     pub fn shot_damage(&self, bow: f32, arrow: f32, traits: ShotTraits) -> f32 {
         let base = bow.max(0.0) + arrow.max(0.0);
         match self.damage {
-            DamageRule::Rating { .. } => {
-                let rating = crate::combat::oblivion_weapon_damage_multiplier(traits.attribute, traits.skill, traits.luck);
-                base * rating * (traits.fatigue_fraction.clamp(0.0, 1.0) + 1.0) / 2.0
+            DamageRule::Rating { settings, .. } => {
+                let rating = settings.weapon_multiplier(traits.attribute, traits.skill, traits.luck);
+                // #7207 — no upper clamp: the capture records that the term is "explicitly *not* clamped to 1", so
+                // a Fatigue above its normal maximum keeps paying off (`charal-oblivion-ruleset.md`, Fatigue). The
+                // floor at 0 is a declared choice: no source states the term for a collapsed actor below 0.
+                base * rating * settings.fatigue_factor(traits.fatigue_fraction.max(0.0))
             }
             DamageRule::SkillBonus { per_point, .. } => base * (1.0 + per_point * traits.skill.max(0.0)),
         }
@@ -326,6 +338,25 @@ mod tests {
         let master = BowModel::OBLIVION.shot_damage(8.0, 8.0, ShotTraits { attribute: 100.0, skill: 100.0, luck: 50.0, fatigue_fraction: 1.0 });
         assert!((master - 17.0).abs() < 1e-3, "{master}");
         assert_eq!(BowModel::OBLIVION.damage_inputs(), (Some("Agility"), "Marksman"));
+    }
+
+    /// #7199 — the arrow's damage follows the load order's damage settings: a rebalance that doubles
+    /// `fDamageWeaponMult` doubles it, and `fFatigueMult` 1.0 makes an exhausted archer deal nothing. Skyrim's rule
+    /// reads none of them.
+    #[test]
+    fn bow_damage_follows_the_load_orders_damage_settings() {
+        let master = ShotTraits { attribute: 100.0, skill: 100.0, luck: 50.0, fatigue_fraction: 1.0 };
+        let doubled = BowModel::OBLIVION.with_gmst(|name| (name == "fDamageWeaponMult").then_some(1.0));
+        assert!((doubled.shot_damage(8.0, 8.0, master) - 34.0).abs() < 1e-3);
+        let harsh = BowModel::OBLIVION.with_gmst(|name| (name == "fFatigueMult").then_some(1.0));
+        assert_eq!(harsh.shot_damage(8.0, 8.0, ShotTraits { fatigue_fraction: 0.0, ..master }), 0.0);
+        // #7207 — a Fatigue above its normal maximum keeps paying off: 1.5 of the maximum gives (1.5 + 1) / 2 = 1.25;
+        // a collapsed actor's negative Fatigue reads as 0.
+        let fortified = BowModel::OBLIVION.shot_damage(8.0, 8.0, ShotTraits { fatigue_fraction: 1.5, ..master });
+        assert!((fortified - 17.0 * 1.25).abs() < 1e-3, "{fortified}");
+        let collapsed = BowModel::OBLIVION.shot_damage(8.0, 8.0, ShotTraits { fatigue_fraction: -0.5, ..master });
+        assert!((collapsed - 17.0 * 0.5).abs() < 1e-3, "{collapsed}");
+        assert_eq!(BowModel::SKYRIM.with_gmst(|_| Some(9.0)).damage, BowModel::SKYRIM.with_gmst(|_| None).damage);
     }
 
     /// Skyrim: the bow's damage plus the arrow's, times `1 + 0.5 % * Archery`; no attribute, no Fatigue term.

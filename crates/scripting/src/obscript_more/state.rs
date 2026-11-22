@@ -640,7 +640,7 @@ fn cmd_1203(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ct
 fn cmd_11ef(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
     match (caller_or_player(world, ctx), crate::obscript_actor_values::actor_value_form(world, num(args, 0))) {
         (Some((_, actor)), Some(avif)) => match world.get::<byroredux_core::ecs::components::ActorValues>(actor).and_then(|v| v.get(avif).copied()) {
-            Some(value) => answer(value.base + value.set_override + value.permanent_mod),
+            Some(value) => answer(value.permanent()),
             None => Action::Declined,
         },
         _ => Action::Declined,

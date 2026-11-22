@@ -1268,6 +1268,9 @@ pub(crate) fn build_render_data(
         },
     );
     let tlas_policy = static_summary.tlas_policy;
+    // #7152 — TSD-4.1 terrain patches: copies of their base cells' draws,
+    // appended before the sort.
+    crate::terrain_patches::emit_patch_draws(world, cam_pos, vp_mat, draw_commands);
 
     let n_draws = draw_commands.len();
     // Particle billboards — see `render::particles::emit_particles`.

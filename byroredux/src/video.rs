@@ -36,6 +36,8 @@ pub(crate) struct PlayingVideo {
     pub(crate) request: VideoRequest,
     pub(crate) frame: u64,
     pub(crate) frames: u64,
+    /// #7139 — why its sound is missing or ends before its picture (`Movie::soundtrack_problem`).
+    pub(crate) soundtrack_problem: Option<String>,
 }
 
 /// What the player is doing and how the last request ended (BIK-RPT-001). `NOT_SAVED_BY_DESIGN`:
@@ -44,6 +46,9 @@ pub(crate) struct PlayingVideo {
 pub(crate) struct VideoStatus {
     pub(crate) playing: Option<PlayingVideo>,
     pub(crate) last: Option<(String, VideoOutcome)>,
+    /// #7139 — the last movie's soundtrack problem, beside its outcome: a movie whose sound never
+    /// started or stopped early still ends `Played`.
+    pub(crate) last_soundtrack_problem: Option<String>,
 }
 
 impl Resource for VideoStatus {}
@@ -252,6 +257,7 @@ impl VideoPlayer {
             log::info!("video: '{}' {outcome:?}", request.file);
             if let Some(mut status) = world.try_resource_mut::<VideoStatus>() {
                 status.last = Some((request.file.clone(), outcome));
+                status.last_soundtrack_problem = None;
             }
         };
         let Some(window) = window else {
@@ -275,7 +281,11 @@ impl VideoPlayer {
             info.fps,
             info.duration_secs,
             info.audio_tracks,
-            if movie.audio_path().is_some() { "yes" } else { "no" },
+            match (movie.audio_path().is_some(), movie.soundtrack_problem()) {
+                (true, None) => "yes".to_owned(),
+                (false, None) => "no".to_owned(),
+                (has, Some(problem)) => format!("{} ({problem})", if has { "partial" } else { "no" }),
+            },
             request.interruptable,
             request.mute_audio,
             request.pause_music,
@@ -283,7 +293,8 @@ impl VideoPlayer {
             request.new_game
         );
         if let Some(mut status) = world.try_resource_mut::<VideoStatus>() {
-            status.playing = Some(PlayingVideo { request: request.clone(), frame: 0, frames });
+            let soundtrack_problem = movie.soundtrack_problem().map(str::to_owned);
+            status.playing = Some(PlayingVideo { request: request.clone(), frame: 0, frames, soundtrack_problem });
         }
         // BIK-PRES-005 — the flags hold the world's sound and the music for the movie's length.
         if let Some(mut audio) = world.try_resource_mut::<byroredux_audio::AudioWorld>() {
@@ -304,6 +315,7 @@ impl VideoPlayer {
         if let Some(mut status) = world.try_resource_mut::<VideoStatus>() {
             status.playing = None;
             status.last = Some((active.request.file.clone(), outcome));
+            status.last_soundtrack_problem = active.movie.soundtrack_problem().map(str::to_owned);
         }
     }
 
@@ -420,6 +432,18 @@ mod tests {
         assert_eq!(resolve_under(&video, "..\\..\\secret.bik"), None, "one `..` at most");
         assert_eq!(resolve_under(&video, "Mymod\\..\\..\\secret.bik"), None, "no `..` inside the path");
         assert_eq!(resolve_under(&video, "..\\secret.bik"), Some(dir.path().join("secret.bik")), "the data folder itself is in reach");
+        // #7142: nor a drive prefix or any `:`, which on Windows re-roots the walk. Each target
+        // exists here under that literal name, so only the component rule refuses it on any host.
+        #[cfg(unix)]
+        {
+            std::fs::create_dir_all(video.join("C:")).unwrap();
+            for name in ["C:/x.bik", "D:x.bik", "x.bik:stream"] {
+                std::fs::write(video.join(name), b"x").unwrap();
+            }
+        }
+        for path in ["C:\\x.bik", "C:/x.bik", "D:x.bik", "x.bik:stream", "Mymod\\C:\\x.bik"] {
+            assert_eq!(resolve_under(&video, path), None, "{path:?}");
+        }
     }
 
     /// A request with nothing to decode it is reported and dropped; one that cannot start never

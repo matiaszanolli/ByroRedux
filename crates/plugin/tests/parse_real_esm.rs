@@ -877,8 +877,16 @@ struct RosterCase {
     /// zero `AVIF` byte occurrences in `Oblivion.esm`). Its rosters therefore
     /// cannot be falsified against a master; asserting the empty AVIF set is
     /// the strongest honest claim, and it flips the moment that stops being
-    /// true.
+    /// true. Since #7202 the case installs the engine-supplied roster the
+    /// loader installs (`EsmIndex::install_oblivion_actor_values`) and asserts
+    /// the rosters and derived rows against it like every other case.
     authors_actor_values: bool,
+    /// #7202 — the settings this case's leveling overlay reads that its master
+    /// does **not** author, so the overlay keeps the sourced default for them.
+    /// Measured against the shipped master and asserted both ways: every other
+    /// setting must resolve, and each of these must not, so the list cannot
+    /// go stale in either direction.
+    unauthored_settings: &'static [&'static str],
 }
 
 const ROSTER_CASES: &[RosterCase] = &[
@@ -892,6 +900,7 @@ const ROSTER_CASES: &[RosterCase] = &[
         derived_rows: Some(8),
         leveling: byroredux_core::character::LevelingModel::FNV,
         authors_actor_values: true,
+        unauthored_settings: &["iXPBase"],
     },
     RosterCase {
         label: "FO3",
@@ -903,6 +912,7 @@ const ROSTER_CASES: &[RosterCase] = &[
         derived_rows: Some(8),
         leveling: byroredux_core::character::LevelingModel::FO3,
         authors_actor_values: true,
+        unauthored_settings: &["iXPBase", "iMaxCharacterLevel"],
     },
     RosterCase {
         label: "FO4",
@@ -916,6 +926,7 @@ const ROSTER_CASES: &[RosterCase] = &[
         derived_rows: Some(3),
         leveling: byroredux_core::character::LevelingModel::FO4,
         authors_actor_values: true,
+        unauthored_settings: &["iMaxCharacterLevel"],
     },
     RosterCase {
         label: "Skyrim",
@@ -934,6 +945,7 @@ const ROSTER_CASES: &[RosterCase] = &[
         derived_rows: Some(2),
         leveling: byroredux_core::character::LevelingModel::SKYRIM,
         authors_actor_values: true,
+        unauthored_settings: &[],
     },
     RosterCase {
         label: "Oblivion",
@@ -942,9 +954,28 @@ const ROSTER_CASES: &[RosterCase] = &[
         master: "Oblivion.esm",
         profile: byroredux_core::character::CharacterRulesProfile::OBLIVION,
         attributes: byroredux_core::character::AttributeSet::TES_CLASSIC,
-        derived_rows: None,
+        // #7202 — Health, Magicka and four Fatigue rows on the installed roster (the armor-rating rows are gone,
+        // #7201).
+        derived_rows: Some(6),
         leveling: byroredux_core::character::LevelingModel::OBLIVION,
         authors_actor_values: false,
+        unauthored_settings: &[
+            "fSkillUseMinorMult",
+            "fSkillUseMajorMult",
+            "fSkillUseSpecMult",
+            "iLevelUpSkillCount",
+            "iLevelUp01Mult",
+            "iLevelUp02Mult",
+            "iLevelUp03Mult",
+            "iLevelUp04Mult",
+            "iLevelUp05Mult",
+            "iLevelUp06Mult",
+            "iLevelUp07Mult",
+            "iLevelUp08Mult",
+            "iLevelUp09Mult",
+            "iLevelUp10Mult",
+            "fStatsHealthLevelMult",
+        ],
     },
 ];
 
@@ -956,7 +987,7 @@ fn assert_rosters_resolve(case: &RosterCase) {
     };
     let path = data.join(case.master);
     let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
-    let index = parse_esm(&bytes).unwrap_or_else(|e| panic!("parse {path:?}: {e:?}"));
+    let mut index = parse_esm(&bytes).unwrap_or_else(|e| panic!("parse {path:?}: {e:?}"));
 
     // The header→profile classification the rest of this asserts against.
     // Also the real-data half of the FO3-vs-FNV `HEDR < 1.0` split, which was
@@ -1006,17 +1037,26 @@ fn assert_rosters_resolve(case: &RosterCase) {
         None
     });
     let wanted = probe.into_inner();
-    let missing: Vec<&String> = wanted
+    let mut missing: Vec<&str> = wanted
         .iter()
         .filter(|name| index.game_setting_float(name).is_none())
+        .map(String::as_str)
         .collect();
-    assert!(
-        missing.is_empty(),
-        "[{}] {} does not resolve the GMST(s) its leveling overlay reads: \
-         {missing:?} (of {wanted:?}) — the overlay would silently keep the \
-         engine fallback constants for every one of them, which is \
-         indistinguishable from the setting being authored at exactly the \
-         fallback value (#3923)",
+    missing.sort_unstable();
+    let mut unauthored = case.unauthored_settings.to_vec();
+    unauthored.sort_unstable();
+    // #7202 — some overlay settings are engine defaults the master does not
+    // author (FNV's `iXPBase`; most of Oblivion's skill-use and level-up
+    // settings). Those are listed per case and asserted unresolved; every
+    // other setting must resolve.
+    assert_eq!(
+        missing,
+        unauthored,
+        "[{}] {} resolves a different set of its leveling overlay's GMSTs than \
+         this case records (of {wanted:?}) — an unlisted miss means the overlay \
+         silently keeps the engine fallback, indistinguishable from the setting \
+         being authored at exactly that value (#3923); a listed setting that \
+         now resolves means the master authors it and the list is stale",
         case.label,
         case.master,
     );
@@ -1030,7 +1070,16 @@ fn assert_rosters_resolve(case: &RosterCase) {
             case.label,
             case.master
         );
-        return;
+        // #7202 — the engine supplies the roster, as the loader does: install
+        // it at the lowest slot no record occupies, then assert the rosters and
+        // derived rows against it below like every other case. The early
+        // return that stood here asserted nothing about either.
+        let free = (0u8..=0xfb)
+            .find(|slot| !index.record_types.keys().any(|id| (id >> 24) as u8 == *slot))
+            .expect("a free regular slot");
+        index
+            .install_oblivion_actor_values(byroredux_plugin::esm::reader::GlobalSlot::Regular(free))
+            .unwrap_or_else(|e| panic!("[{}] install the engine roster: {e}", case.label));
     }
 
     assert!(

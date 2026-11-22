@@ -270,6 +270,8 @@ impl MeshRegistry {
         self.actor_admission_closed = false;
         // Pools are hole-free again until the next scene-mesh drop.
         self.geometry_has_holes = false;
+        self.dead_vertices = 0;
+        self.dead_indices = 0;
 
         Some(CompactionPlan {
             offsets,

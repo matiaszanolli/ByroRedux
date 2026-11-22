@@ -38,6 +38,11 @@ impl Component for TerrainTileSlot {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TerrainCellOrigin {
     pub(crate) origin_xz: [f32; 2],
+    /// #6043 — the XCLC Hide Quad bits the render mesh dropped (bit `q` =
+    /// quadrant `q`, `[SW, SE, NW, NE]`, see `land_tile_indices`). Kept so
+    /// anything drawn over the tile — the TSD-4 displacement patches (#7152)
+    /// — can leave those quadrants empty too.
+    pub(crate) hidden_quadrants: u8,
 }
 impl Component for TerrainCellOrigin {
     type Storage = SparseSetStorage<Self>;

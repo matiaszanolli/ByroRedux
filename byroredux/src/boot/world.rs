@@ -78,6 +78,9 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // audit. Same refresh cadence and PENDING-before-first-sample posture
     // as `LodCoverageStats` immediately above.
     world.insert_resource(byroredux_core::ecs::TerrainSeamStats::default());
+    // #7152 — TSD-4.1 terrain displacement patches: slot assignment, the
+    // on/off switch and the last seam check `terrain.patches` prints.
+    world.insert_resource(crate::terrain_patches::TerrainPatchState::default());
     world.insert_resource(byroredux_core::ecs::OwnershipTelemetry::default());
     world.insert_resource(byroredux_core::ecs::OwnershipTracker::new());
     world.insert_resource(byroredux_core::ecs::UpscalerTelemetry::default());
@@ -460,6 +463,7 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_core::ecs::components::AnimatedAlpha>();
     // The routing graph cache and the Unroutable reasons `actor.where` reads.
     world.init_resource::<crate::cell_loader::relocated::TravelIndex>();
+    world.init_resource::<crate::systems::npc_dialogue::FollowUpTopics>();
     world.init_resource::<crate::cell_loader::relocated::TravelReports>();
 
     // M42.5 — pre-register the Follow marker + runtime-state storages so

@@ -348,6 +348,10 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
             "cache_resolve".to_string(),
             gpu_bracket_ms(cov.gpu_cache_resolve_ms, cov.gpu_cache_resolve_active),
         );
+        gpu_pass_ms.insert(
+            "terrain_patch".to_string(),
+            gpu_bracket_ms(cov.gpu_terrain_patch_ms, cov.gpu_terrain_patch_active),
+        );
     }
 
     let mut cpu_pass_ms: BTreeMap<String, f32> = BTreeMap::new();

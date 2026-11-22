@@ -929,6 +929,7 @@ pub(super) fn spawn_placed_instances(
             &pc,
             cached,
             mesh,
+            sub_mesh_index,
             &resolved_paths[sub_mesh_index],
             count,
             prepared,

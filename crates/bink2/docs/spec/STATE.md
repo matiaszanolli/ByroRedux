@@ -21,6 +21,11 @@ builds against this crate.
   - KB2j (P30-P32): Starfield's 36 files (15,942 frames at 1080p, 1440p and 4K) and Fallout 76's
     `AtomShop`, `Intro` and 4K `MainMenuLoop` — keyframes, two and four slices, MV clamping, filters
     per direction, and the filter line maps of flag bit 16 (keyframes and inter frames).
+- **No frame reads past its packet** `[ours]` (2026-11-20, #7127): over the same 54 files and 74,680
+  frames, the bit position after each frame's last macroblock (`Frame::mb_bits`) never passes
+  `8 * (packet bytes - 4 * slices)`; 0 frames over by even one bit. So a frame that does is a short
+  packet, and `decode` refuses it (`Error::Overrun`) instead of decoding the zeros the bit reader
+  returns past the end into a picture.
 - Every probe file of P20-P31 except the experiments below.
 - Not exact, by design: the experiment files (bit flips `flip`/`fz`/`f2`/`rf`, appended random tails
   `l2`/`lb`/`as`, consumption probes `cons`, the invalid pre-P22 slice probes `sl`/`sl4`, the
@@ -106,7 +111,9 @@ colour converter measured in P33. `container.rs`: `.bk2`.
 ## Open, in the order they block real playback
 1. **KB2j details no game file has shown wrong yet:** which header field decides 4 slices (video flags
    bit 1 or the extra word), the KB2j residual DC bound, Wolfenstein II's KB2i/KB2j files (1920x816:
-   the padding bound for filter A / MC), alpha planes. Audio is separate.
+   the padding bound for filter A / MC), alpha planes. The video-flag bits the DLL reads and this
+   decoder does not model are refused at `Bk2::open` (P34); what each one means is open. Audio is
+   separate.
 2. **Extreme values:** the DC cases are solved (P27, P28); left: keyframe AC level 30 at high
    frequencies (`nb5`), quantisers >= 37 (P29), AC level prefix 12, the intra DC upper clamp (2047
    assumed; only 0 is confirmed).

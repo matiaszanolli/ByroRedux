@@ -81,12 +81,26 @@ pub struct ActorValue {
 }
 
 impl ActorValue {
+    /// The base view: `base + set_override + stored`, the value with no modifier and no damage (what
+    /// `GetBaseActorValue` reads). `stored` is part of the base: the original's base of Health is
+    /// `(stored + derived) x multiplier` (#7044, #7205).
+    pub fn base_view(&self) -> f32 {
+        self.base + self.set_override + self.stored
+    }
+
+    /// The permanent view: [`Self::base_view`] plus the permanent (abilities and gear) layer, without the
+    /// temporary effects or damage (what `GetPermanentActorValue` reads, #7205).
+    pub fn permanent(&self) -> f32 {
+        self.base_view() + self.permanent_mod
+    }
+
     /// The undamaged ceiling: `base + set_override + stored + permanent + temporary`.
     /// What a "current / max" reader (HUD bar fraction, vitals panel) must
     /// use as `max` — composing the layers by hand missed `set_override`
-    /// when #5412 added it (#5508).
+    /// when #5412 added it (#5508), and `stored` in two views when #7044 added
+    /// it (#7205), so every view builds on the one below.
     pub fn undamaged(&self) -> f32 {
-        self.base + self.set_override + self.stored + self.permanent_mod + self.temporary_mod
+        self.permanent() + self.temporary_mod
     }
 
     /// `base + set_override + stored + permanent + temporary − damage`.
@@ -372,6 +386,21 @@ mod tests {
         let health = av.get(AV_HEALTH).unwrap();
         assert_eq!(health.undamaged(), 635.0);
         assert_eq!(health.current(), 435.0);
+    }
+
+    /// #7205 — the views stack: base view (`base + set_override + stored`), permanent (+ abilities and gear),
+    /// undamaged (+ temporary), current (− damage); `stored` reaches every one.
+    #[test]
+    fn every_view_includes_the_stored_layer() {
+        let mut av = ActorValues::new();
+        av.set_base(AV_HEALTH, 80.0);
+        av.set_override(AV_HEALTH, 1.0);
+        av.add_stored(AV_HEALTH, 9.0);
+        av.mod_permanent(AV_HEALTH, 10.0);
+        av.mod_temporary(AV_HEALTH, 5.0);
+        av.apply_damage(AV_HEALTH, 20.0);
+        let health = av.get(AV_HEALTH).unwrap();
+        assert_eq!((health.base_view(), health.permanent(), health.undamaged(), health.current()), (90.0, 100.0, 105.0, 85.0));
     }
 
     /// #5042 — only `set_base` authors the base; a modifier or damage write

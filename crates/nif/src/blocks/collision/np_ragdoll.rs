@@ -64,6 +64,7 @@
 //! frame as three column vectors plus a pivot (A: `+48/+64/+80` and `+96`,
 //! B: `+112/+128/+144` and `+160`). The limits follow as typed atoms.
 
+use std::collections::HashMap;
 use std::io;
 
 use byroredux_core::bytes::{le_f32_at, le_u16_at, le_u32_at};
@@ -253,12 +254,48 @@ impl Data<'_> {
     }
 }
 
-/// The resolved targets of a section's fixups, indexed by source offset.
+/// The resolved targets of `__data__`'s fixups, indexed by source offset.
+///
+/// #7155 — built once per blob: `pointer` and `class_at` used to scan the
+/// whole fixup table per call, and a decode makes tens of thousands of calls
+/// (256 bodies x a compound's 64 children), so a few MB of fixups stalled the
+/// import for seconds.
 struct Fixups<'a> {
     pack: &'a HavokPackfile,
+    /// Source offset → target offset, local fixups first, then the global
+    /// ones that land back in `__data__`; the first entry at an offset wins.
+    pointers: HashMap<u32, u32>,
+    /// Object offset → its class name, from the first virtual fixup at that
+    /// offset (`None` when that fixup names no class record).
+    classes: HashMap<u32, Option<&'a str>>,
 }
 
-impl Fixups<'_> {
+impl<'a> Fixups<'a> {
+    fn new(pack: &'a HavokPackfile) -> io::Result<Self> {
+        let index = pack
+            .sections
+            .iter()
+            .position(|s| s.name == "__data__")
+            .ok_or_else(|| invalid("np ragdoll: no __data__ section"))? as u32;
+        let data = &pack.sections[index as usize];
+        let mut pointers = HashMap::with_capacity(data.local_fixups.len());
+        let local = data.local_fixups.iter().map(|f| (f.src_offset, f.dst_offset));
+        let global = data
+            .global_fixups
+            .iter()
+            .filter(|f| f.dst_section == index)
+            .map(|f| (f.src_offset, f.dst_offset));
+        for (src, dst) in local.chain(global) {
+            pointers.entry(src).or_insert(dst);
+        }
+        let names = pack.class_names_by_offset();
+        let mut classes = HashMap::with_capacity(data.virtual_fixups.len());
+        for v in &data.virtual_fixups {
+            classes.entry(v.data_offset).or_insert_with(|| names.get(&v.class_name_offset).copied());
+        }
+        Ok(Self { pack, pointers, classes })
+    }
+
     fn data_section(&self) -> io::Result<&super::havok_packfile::PackfileSection> {
         self.pack
             .section("__data__")
@@ -267,35 +304,13 @@ impl Fixups<'_> {
 
     /// Where the pointer stored at `src` points inside `__data__`.
     fn pointer(&self, src: usize) -> Option<usize> {
-        let data = self.data_section().ok()?;
         let src = u32::try_from(src).ok()?;
-        data.local_fixups
-            .iter()
-            .find(|f| f.src_offset == src)
-            .map(|f| f.dst_offset as usize)
-            .or_else(|| {
-                data.global_fixups
-                    .iter()
-                    .find(|f| f.src_offset == src && f.dst_section == self.section_index())
-                    .map(|f| f.dst_offset as usize)
-            })
-    }
-
-    fn section_index(&self) -> u32 {
-        self.pack
-            .sections
-            .iter()
-            .position(|s| s.name == "__data__")
-            .unwrap_or(0) as u32
+        self.pointers.get(&src).map(|&dst| dst as usize)
     }
 
     /// The class name of the object that starts at `offset`.
     fn class_at(&self, offset: usize) -> Option<&str> {
-        let data = self.data_section().ok()?;
-        data.virtual_fixups
-            .iter()
-            .find(|v| v.data_offset as usize == offset)
-            .and_then(|v| self.pack.class_name_at(v.class_name_offset))
+        self.classes.get(&u32::try_from(offset).ok()?).copied().flatten()
     }
 }
 
@@ -307,7 +322,15 @@ impl Fixups<'_> {
 /// as an error.
 pub fn decode_np_ragdoll(blob: &[u8]) -> io::Result<NpRagdoll> {
     let pack = parse_havok_packfile(blob)?;
-    let fixups = Fixups { pack: &pack };
+    // #7133 — every offset below was measured on Havok 2014 (file version 11)
+    // blobs with 8-byte pointers, the only kind FO4 ships (75 of 75 ragdoll
+    // blobs). The shared container also admits version 8 and 4-byte pointers
+    // for hkx's sake, and this decoder would read those at the wrong offsets
+    // into a garbage skeleton, so it refuses them itself.
+    if pack.header.file_version != 11 || pack.header.layout_rules[0] != 8 {
+        return Err(invalid("np ragdoll: not a 64-bit Havok 2014 (file version 11) packfile"));
+    }
+    let fixups = Fixups::new(&pack)?;
     let section = fixups.data_section()?;
     let start = section.absolute_data_start as usize;
     let bytes = blob
@@ -800,6 +823,20 @@ mod tests {
         assert_eq!(world(0, j.pivot_a), world(1, j.pivot_b));
     }
 
+    /// #7133 — the decoder's offsets are 64-bit Havok 2014 ones, so a blob
+    /// whose header says 4-byte pointers is refused, not read at the wrong
+    /// offsets into a garbage skeleton (flipping that byte alone used to decode
+    /// a real FO4 ragdoll to the same 18 bodies).
+    #[test]
+    fn a_blob_that_is_not_64_bit_havok_2014_is_refused() {
+        let mut blob = good();
+        assert_eq!(blob[0x10], 8, "the fixture is a 64-bit packfile");
+        blob[0x10] = 4;
+        let error = decode_np_ragdoll(&blob).expect_err("a 32-bit header is not this layout");
+        assert!(error.to_string().contains("64-bit Havok 2014"), "{error}");
+        assert!(decode_np_ragdoll(&good()).is_ok());
+    }
+
     /// A polytope whose vertex table is empty (here: capsule bytes under a
     /// polytope class) leaves the body decoded with `shape: None` (the extractor
     /// then drops it), never a misread shape.
@@ -1044,6 +1081,43 @@ mod tests {
         let r = decode_np_ragdoll(&breakable_blob(true)).expect("decodes");
         assert!(r.constraints.is_empty());
         assert_eq!(r.skipped_constraints, 1);
+    }
+
+    /// #7155 — `Fixups` resolves through maps built once per blob, keeping
+    /// the scans' answers: a local fixup wins over a global one at the same
+    /// source, a global one landing in another section is no pointer, and the
+    /// first virtual fixup at an offset decides its class, even when that
+    /// fixup names no class record.
+    #[test]
+    fn fixups_resolve_as_the_first_matching_table_entry() {
+        let classes = ["hknpRagdollData", "hknpCapsuleShape"];
+        let name = |class| synthetic_class_name_offset(&classes, class);
+        let pack = parse_havok_packfile(&build_synthetic_packfile_with_fixups(
+            &classes,
+            &[0u8; 128],
+            &[LocalFixup { src_offset: 8, dst_offset: 16 }, LocalFixup { src_offset: 8, dst_offset: 24 }],
+            &[
+                GlobalFixup { src_offset: 8, dst_section: 2, dst_offset: 96 },
+                GlobalFixup { src_offset: 40, dst_section: 2, dst_offset: 48 },
+                GlobalFixup { src_offset: 56, dst_section: 0, dst_offset: 0 },
+            ],
+            &[
+                VirtualFixup { data_offset: 0, class_section: 0, class_name_offset: name("hknpRagdollData") },
+                VirtualFixup { data_offset: 0, class_section: 0, class_name_offset: name("hknpCapsuleShape") },
+                VirtualFixup { data_offset: 64, class_section: 0, class_name_offset: 9999 },
+                VirtualFixup { data_offset: 64, class_section: 0, class_name_offset: name("hknpCapsuleShape") },
+            ],
+        ))
+        .expect("parse");
+        assert_eq!(pack.sections[2].name, "__data__", "global fixups above name __data__ as section 2");
+        let fixups = Fixups::new(&pack).expect("a __data__ section");
+        assert_eq!(fixups.pointer(8), Some(16), "the first local fixup wins");
+        assert_eq!(fixups.pointer(40), Some(48), "a global fixup into __data__");
+        assert_eq!(fixups.pointer(56), None, "a global fixup into another section");
+        assert_eq!(fixups.pointer(72), None);
+        assert_eq!(fixups.class_at(0), Some("hknpRagdollData"));
+        assert_eq!(fixups.class_at(64), None, "the first fixup at 64 names no class");
+        assert_eq!(fixups.class_at(4), None);
     }
 
     #[test]

@@ -138,3 +138,22 @@ the correlation).
   passed to `BinkSetSoundTrack`: `en` 1, `fr` 2, `it` 3, `de` 4, `es` 5, `ja` 8, any other language 1.
   Skyrim SE's `BGS_Logo.bik` (IDs 1, 0) and Fallout 4's `GameIntro_V3_B` (IDs 0-5) have identical tracks.
 - Speed (`examples/speed.rs`): about 490 times real time per stereo track on one core.
+
+## A10 — a packet's blocks end inside it (2026-11-21) `[ours]`
+Census (ByroRedux #7163): every audio packet of every `.bk2` under the installed Steam games (158 files,
+236,690 packets), decoded with the bit position recorded where each block's bits end (before its
+32-bit padding) and after the padding. No packet's blocks read past its data, before or after the
+padding; the tightest packets end exactly on their last bit; every packet is a whole number of 4-byte
+words. So a block whose bits end past its packet is not a real stream: past the end the reader yields
+zeros (A2), which decode as made-up samples, and the decoder refuses the packet (`Error::Overrun`)
+with nothing appended. The stated-size bound (INC3-1, `min_block_bits`) stays the cheap check before
+any decoding; it is a lower bound, so a packet of zeros at that minimum passes it and is then refused
+here, because zero bits code the shortest runs.
+
+## A11 — a packet ends where its last block's padding does (2026-11-21) `[ours]`
+Census (ByroRedux #7177), the same 158 files and 236,690 packets as A10: the bit position after a
+packet's last block and its 32-bit padding, against the packet's length in bits. Every packet has 0
+spare bits: its blocks, padded, fill it exactly, the short last packet of a stream (A8) included.
+So data past the padded end of the stated blocks belongs to no block, and the decoder refuses it
+(`Error::Surplus`) as it refuses a cut packet (A10), appending nothing and leaving its overlap as it
+was.

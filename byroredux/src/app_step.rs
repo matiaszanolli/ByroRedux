@@ -174,13 +174,71 @@ impl App {
         // tier's reserve-reduced ceiling while the essential tier is still
         // open, and re-arming on the essential tier alone would restart them
         // every frame. It is closed whenever either tier is.
-        if cell_loader::lod_should_rearm_after_starvation(
-            state.lod_starved,
-            ctx.mesh_registry.prop_geometry_admission_open(),
-        ) {
+        // #6106 — held while a refused full-detail cell is waiting for its retry: the rings would
+        // take the reopened space first and the retry would never get it.
+        if state.refusal_retry.is_idle()
+            && cell_loader::lod_should_rearm_after_starvation(
+                state.lod_starved,
+                ctx.mesh_registry.prop_geometry_admission_open(),
+            )
+        {
             state.lod_starved = false;
             state.lod_reconcile_pending = true;
             log::info!("Geometry pool admission reopened — retrying the held-back LOD quads");
+        }
+        // #6106 — a cell whose full-detail meshes the pool refused is re-run once there is room:
+        // unloaded when admission is open and nothing is loading, queued again after the
+        // ordinary between-batch compaction has reclaimed its spans (`streaming/refusal_retry.rs`).
+        let retry_pool = streaming::PoolState {
+            batch_in_progress: state.geometry_batch_in_progress(),
+            admission_open: ctx.mesh_registry.prop_geometry_admission_open(),
+            geometry_settled: !ctx.mesh_registry.is_geometry_dirty()
+                && !ctx.mesh_registry.geometry_rebuild_in_progress(),
+        };
+        let retry_center = state.last_player_grid.unwrap_or(player_grid);
+        let retry_radius = state.radius_load;
+        let retry = state.refusal_retry.plan(
+            retry_pool,
+            |coord| state.loaded.contains_key(&coord),
+            |coord| {
+                (coord.0 - retry_center.0).abs().max((coord.1 - retry_center.1).abs()) <= retry_radius
+            },
+        );
+        match retry {
+            streaming::RefusalRetry::None => {}
+            streaming::RefusalRetry::Unload(coords) => {
+                let roots = coords
+                    .iter()
+                    .filter_map(|coord| state.loaded.remove(coord).map(|slot| slot.cell_root))
+                    .collect::<Vec<_>>();
+                if !roots.is_empty() {
+                    cell_loader::unload_cells(&mut self.world, ctx, &roots);
+                    cell_loader::ensure_persistent_actor_stubs(
+                        &mut self.world,
+                        &state.wctx,
+                        &coords,
+                        state.persistent_root,
+                    );
+                    // No LOD reconcile here: it would fill the space the reload needs and hold the
+                    // compaction off. The reload's own completion re-runs it.
+                    state.loaded_residency_changed = true;
+                    ctx.signal_temporal_discontinuity(SVGF_TAA_STREAMING_RECOVERY_FRAMES);
+                    log::info!(
+                        "Geometry pool admission reopened — unloading {} cell(s) whose meshes it \
+                         refused, to load them again once the pool compacts: {coords:?} (#6106)",
+                        roots.len(),
+                    );
+                }
+            }
+            streaming::RefusalRetry::Reload(coords) => {
+                let cached_keys = self
+                    .world
+                    .resource::<cell_loader::NifImportRegistry>()
+                    .snapshot_keys();
+                let queued = state.queue_loads(coords.iter().copied(), cached_keys);
+                state.telemetry.record_queued_cells(queued);
+                log::info!("Reloading {queued} cell(s) the geometry pool refused: {coords:?} (#6106)");
+            }
         }
         // #6527 — the actor tier's own latch had no reader: a closed tier refuses NPC and
         // player bodies at spawn (they warn per mesh, but nothing said why or when it ended).

@@ -665,6 +665,23 @@ frame 20 (2560x1440, `KB2j`), its planes (`yuv:20`) against its RGB for surface 
 - `Frame::to_rgba` implements the measured converter in fixed point (`[probe:P33]`): the float
   model, within 2 of the DLL on every pixel of the frame measured.
 
+## P34 — which video-flag bits the DLL reads `[probe:P34]`
+Tools: `oracle.exe … info` and `… 6 fnv`. A copy of Fallout 4 `AGILITY` (`KB2g`, flags `0x10`, the
+Fallout 4 DLL) and Starfield `BGS_LOGO_1080p_BinkVersion` (`KB2j`, flags `0x12`, Starfield's DLL),
+with each bit of the video-flags word (`+0x24`) flipped in turn; for each, the frame-buffer info and
+the plane hashes of the first 6 frames against the unmodified file's (2026-11-21, #7135).
+- **KB2g:** bit 20 changes the frames (frame-buffer info unchanged). Bits 28 and 29 make the DLL
+  report a frame of twice the height (1920x2160), bit 30 twice both sides (3840x2160). Every other
+  bit, including bit 1 and clearing bit 4, leaves the frames unchanged: KB2g's slice count does not
+  follow bit 1.
+- **KB2j:** bits 0, 20, 24 and 25 change the frames, bit 2 the frames and the frame-buffer layout,
+  clearing bit 1 the frames (the slice count, P30). The DLL refuses bits 16 and 26-31 at `BinkOpen`
+  ("This file has bad frame size data"). Every other bit, including clearing bit 4, changes nothing.
+- This decoder's output does not change for any bit but 1 (the parsers audit's probe3, 2026-11-20).
+  `Bk2::open` therefore refuses the bits listed above as unsupported, and `slices()` reads bit 1 on
+  KB2j only. What each bit means is not probed; the corpus (54 files) carries only `0x10` (both
+  revisions) and `0x12` (KB2j).
+
 ## Method notes
 - `tools/flipmap.py <hex>` flips every bit of a base payload and prints a summary per flip: shows the
   extent of a macroblock (bits beyond the last consumed one change nothing) and which bits steer

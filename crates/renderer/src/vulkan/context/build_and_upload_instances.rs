@@ -973,6 +973,16 @@ impl VulkanContext {
             if let Some(tile_idx) = draw_cmd.terrain_tile_index {
                 f |= INSTANCE_FLAG_TERRAIN_SPLAT;
                 f |= (tile_idx & INSTANCE_TERRAIN_TILE_MASK) << INSTANCE_TERRAIN_TILE_SHIFT;
+                // #7152 — a displacement patch carries its relief in the
+                // geometry: the fragment skips the parallax march on it.
+                if self
+                    .exterior
+                    .terrain_patch
+                    .as_ref()
+                    .is_some_and(|pass| pass.skips_parallax(draw_cmd.mesh_handle))
+                {
+                    f |= crate::vulkan::scene_buffer::INSTANCE_FLAG_TERRAIN_PATCH;
+                }
             }
             // #renderlayer — pack the 2-bit layer discriminant
             // into bits 4..5 for the fragment shader's debug-viz

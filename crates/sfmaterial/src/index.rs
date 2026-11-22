@@ -166,6 +166,9 @@ pub struct MaterialIndex {
     /// (Enabled, Settings.EmissiveTint rgb, Settings.LuminousEmittance).
     emissive: EmissiveCaptureMap,
     translucency: std::collections::HashMap<u32, (Option<bool>, Option<f32>)>,
+    /// #7174 — `Objects` rows whose `PersistentID` key an earlier row already took (the later
+    /// row wins). Zero on the base CDB (500,403 rows, 500,403 keys, measured 2026-11-21).
+    key_collisions: usize,
 }
 
 /// What [`MaterialIndex::parent_graph_defects`] found in the `Parent` graph.
@@ -244,27 +247,46 @@ impl MaterialIndex {
         // `Components[j]` describes stream instance `base + j`.
         let mut base: Option<usize> = None;
         while state_has_more_chunks(&state) {
-            let class_name = peek_top_level_class_name(&state)?;
+            // #7161 — an instance whose class cannot even be read (a type ref outside the class
+            // table, a cut first word) is named by position too.
+            let class_name = peek_top_level_class_name(&state).map_err(|source| Error::AtInstance {
+                index: pos,
+                class: "<unreadable>".to_owned(),
+                source: Box::new(source),
+            })?;
+            // #7132 — an ordinary instance's error names where it is.
+            let at = |source: Error| Error::AtInstance {
+                index: pos,
+                class: class_name.clone().unwrap_or_else(|| "unnamed".to_owned()),
+                source: Box::new(source),
+            };
             if class_name.as_deref() == Some("BSComponentDB2::DBFileIndex") {
+                // #7175 — the index's own errors name where it is too (a cut Objects row used to
+                // surface as a bare EOF), except the two whose message already says what is
+                // wrong with the index as a whole.
+                let at_index = |source: Error| match source {
+                    Error::NoKeyedObjects { .. } | Error::UnsupportedDbFileIndexChunk { .. } => source,
+                    source => at(source),
+                };
                 if base.is_some() {
                     // #5320 — a second index poisons the row/instance
                     // join; name the cause instead of the old
                     // contextless WrongChunkType { Objt, Objt }.
-                    return Err(Error::DuplicateDbFileIndex);
+                    return Err(at_index(Error::DuplicateDbFileIndex));
                 }
-                stream_db_file_index(&mut state, &mut idx)?;
+                stream_db_file_index(&mut state, &mut idx).map_err(at_index)?;
                 base = Some(pos + 1);
             } else if let (Some(name), Some(base)) = (&class_name, base) {
                 if pos >= base {
-                    let value = consume_top_level_value(&mut state)?;
+                    let value = consume_top_level_value(&mut state).map_err(at)?;
                     idx.capture_instance(pos - base, name, &value);
                 } else {
-                    skip_top_level_value(&mut state)?;
+                    skip_top_level_value(&mut state).map_err(at)?;
                 }
             } else {
                 // `CompiledDB` (48,749-entry key map on the base CDB) and
                 // any pre-index noise: skipped without materialising.
-                skip_top_level_value(&mut state)?;
+                skip_top_level_value(&mut state).map_err(at)?;
             }
             pos += 1;
         }
@@ -287,6 +309,11 @@ impl MaterialIndex {
                 rows: idx.rows.len(),
                 instances,
             });
+        }
+        // #7174 — no rows and no instances agree (0 == 0), but such an index describes no
+        // component of any object: every lookup would resolve to nothing, with no error.
+        if idx.rows.is_empty() {
+            return Err(Error::NoComponentRows);
         }
         let defects = idx.parent_graph_defects();
         if defects.cycles > 0 || defects.over_deep > 0 {
@@ -375,6 +402,11 @@ impl MaterialIndex {
     /// texture sets are keyed too).
     pub fn material_count(&self) -> usize {
         self.objects_by_key.len()
+    }
+
+    /// `Objects` rows whose key an earlier row already took, warned at build (#7174).
+    pub fn key_collisions(&self) -> usize {
+        self.key_collisions
     }
 
     /// Resolve one material path against this index, following the
@@ -761,6 +793,8 @@ fn stream_db_file_index(state: &mut State<'_>, idx: &mut MaterialIndex) -> Resul
         }
     }
 
+    // Rows the Objects table held, keyed or not (0 when it is empty or the class declares none).
+    let mut objects_rows = 0usize;
     for field in chunk_fields {
         match field.name.as_str() {
             "Components" => stream_list(state, |v| {
@@ -828,25 +862,26 @@ fn stream_db_file_index(state: &mut State<'_>, idx: &mut MaterialIndex) -> Resul
                     };
                     match pid {
                         Some(key) => {
-                            idx.objects_by_key.insert(key, dbid);
+                            // #7174 — last row wins, as before, but counted: rows that all
+                            // drift onto one key used to pass with one surviving key, silently.
+                            if idx.objects_by_key.insert(key, dbid).is_some() {
+                                idx.key_collisions += 1;
+                            }
                         }
                         None => pid_misses += 1,
                     }
                 })?;
-                if dbid_misses + parent_misses + pid_misses > 0 {
+                let collisions = idx.key_collisions;
+                if dbid_misses + parent_misses + pid_misses + collisions > 0 {
                     log::warn!(
                         "sfmaterial: Objects table decode degraded — {dbid_misses} row(s) \
                          dropped (no keyable DBID), {parent_misses} Parent edge(s) dropped \
                          (shape drift from {{ Value: u32 }}?), {pid_misses} PersistentID \
-                         key(s) dropped (shape drift from {{ Dir: u32, Ext: u32 }}?)"
+                         key(s) dropped (shape drift from {{ Dir: u32, Ext: u32 }}?), \
+                         {collisions} row(s) whose key an earlier row took (the later wins)"
                     );
                 }
-                // #7124 — an Objects table that keys nothing is the same
-                // failure whether every row missed or there were no rows:
-                // every `.mat` lookup would miss with no error.
-                if pid_misses == keyable_rows {
-                    return Err(Error::NoKeyedObjects { rows: keyable_rows });
-                }
+                objects_rows = dbid_misses + keyable_rows;
             }
             // Edges encode the blend graph; lookups follow ID refs
             // directly (measured), so count these past without keeping
@@ -860,6 +895,12 @@ fn stream_db_file_index(state: &mut State<'_>, idx: &mut MaterialIndex) -> Resul
         }
     }
 
+    // #7124, #7154 — an index that keys no material path is the same failure whether every row
+    // missed, the Objects table had no rows, or the class declares no Objects table at all: every
+    // `.mat` lookup would miss with no error. Checked after every field, so the last case is too.
+    if idx.objects_by_key.is_empty() {
+        return Err(Error::NoKeyedObjects { rows: objects_rows });
+    }
     // #5320 — the inline payload must end exactly at the last declared field, or the index was
     // built against a payload whose layout doesn't match its class declaration.
     object.finish()
@@ -1580,6 +1621,14 @@ mod tests {
 
     /// The chunk list of the unmutated synthetic CDB, with the position
     /// of the DBFileIndex instance (the first OBJT) handy.
+    /// The error inside an `AtInstance` naming the DBFileIndex (#7175); panics on anything else.
+    fn at_the_index(err: Error) -> Error {
+        match err {
+            Error::AtInstance { class, source, .. } if class == "BSComponentDB2::DBFileIndex" => *source,
+            other => panic!("expected an error at the DBFileIndex, got {other:?}"),
+        }
+    }
+
     fn mutable_chunks() -> (SyntheticCdbChunks, usize) {
         let chunks = synthetic_cdb_chunks("Data\\Textures\\widget_color.DDS");
         let dbfile = chunks
@@ -1618,8 +1667,8 @@ mod tests {
         let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks))
             .expect_err("a duplicate DBFileIndex must be rejected");
         assert!(
-            matches!(err, Error::DuplicateDbFileIndex),
-            "expected DuplicateDbFileIndex, got {err:?}"
+            matches!(at_the_index(err), Error::DuplicateDbFileIndex),
+            "expected DuplicateDbFileIndex at the second index"
         );
     }
 
@@ -1651,8 +1700,8 @@ mod tests {
         let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks))
             .expect_err("trailing bytes past the declared fields must be rejected");
         assert!(
-            matches!(err, Error::ObjectTrailingBytes { leftover: 1 }),
-            "expected ObjectTrailingBytes {{ leftover: 1 }}, got {err:?}"
+            matches!(at_the_index(err), Error::ObjectTrailingBytes { leftover: 1 }),
+            "expected ObjectTrailingBytes {{ leftover: 1 }} at the index"
         );
     }
 
@@ -1675,8 +1724,8 @@ mod tests {
             let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks))
                 .expect_err("trailing bytes in a DBFileIndex LIST must be rejected");
             assert!(
-                matches!(err, Error::ObjectTrailingBytes { leftover: 8 }),
-                "LIST chunk {list}: expected ObjectTrailingBytes {{ leftover: 8 }}, got {err:?}"
+                matches!(at_the_index(err), Error::ObjectTrailingBytes { leftover: 8 }),
+                "LIST chunk {list}: expected ObjectTrailingBytes {{ leftover: 8 }} at the index"
             );
         }
         for list in lists {
@@ -1689,8 +1738,8 @@ mod tests {
             let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks))
                 .expect_err("a count below the elements a LIST holds must be rejected");
             assert!(
-                matches!(err, Error::ObjectTrailingBytes { .. }),
-                "LIST chunk {list}: expected ObjectTrailingBytes, got {err:?}"
+                matches!(at_the_index(err), Error::ObjectTrailingBytes { .. }),
+                "LIST chunk {list}: expected ObjectTrailingBytes at the index"
             );
         }
         let mut chunks = base.clone();
@@ -1702,6 +1751,109 @@ mod tests {
             matches!(err, Error::NoKeyedObjects { rows: 0 }),
             "expected NoKeyedObjects {{ rows: 0 }}, got {err:?}"
         );
+    }
+
+    /// #7154 — a DBFileIndex whose class declares no `Objects` table keys no
+    /// material path either, so it is the same typed error, not an `Ok` index
+    /// every lookup misses. The class is made to declare none by renaming the
+    /// field in the string table (same length, so every offset holds); its
+    /// LIST chunk is then consumed as an unknown collection field.
+    #[test]
+    fn build_rejects_a_dbfile_index_that_declares_no_objects_table() {
+        let (chunks, _) = mutable_chunks();
+        let mut cdb = assemble_synthetic_cdb(&chunks);
+        let name = b"Objects\0";
+        let at: Vec<usize> = cdb.windows(name.len()).enumerate().filter(|(_, w)| w == name).map(|(i, _)| i).collect();
+        assert_eq!(at.len(), 1, "the field name appears once, in the string table");
+        assert!(MaterialIndex::build(&cdb).is_ok(), "the unrenamed fixture builds");
+        cdb[at[0] + 6] = b'z';
+        let err = MaterialIndex::build(&cdb).expect_err("an index with no Objects table keys nothing");
+        assert!(
+            matches!(err, Error::NoKeyedObjects { rows: 0 }),
+            "expected NoKeyedObjects {{ rows: 0 }}, got {err:?}"
+        );
+    }
+
+    /// #7132 — an error inside an ordinary stream instance names the
+    /// instance's stream position and class, with the reader's error as its
+    /// source; the layer object is the first instance after the DBFileIndex.
+    #[test]
+    fn an_instance_error_names_its_stream_position_and_class() {
+        let (mut chunks, dbfile) = mutable_chunks();
+        let layer = dbfile + 5;
+        assert_eq!(*chunks[layer].0, *b"OBJT", "the layer object follows the index's side chunks");
+        chunks[layer].1.push(0xAB);
+        let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks))
+            .expect_err("trailing bytes in an instance must be rejected");
+        match &err {
+            Error::AtInstance { index, class, source } => {
+                assert_eq!((*index, class.as_str()), (1, "BSMaterial::LayerID"));
+                assert!(matches!(**source, Error::ObjectTrailingBytes { leftover: 1 }), "{source:?}");
+            }
+            other => panic!("expected AtInstance, got {other:?}"),
+        }
+        assert!(err.to_string().starts_with("CDB stream instance 1 (BSMaterial::LayerID): "), "{err}");
+    }
+
+    /// #7174 — an `Objects` row whose key an earlier row took is counted (the later still
+    /// wins), and an index with no component rows and no instances after it is refused instead
+    /// of passing the row/instance join at 0 == 0.
+    #[test]
+    fn colliding_keys_are_counted_and_an_index_without_component_rows_is_refused() {
+        let (base, dbfile) = mutable_chunks();
+        assert_eq!(MaterialIndex::build(&assemble_synthetic_cdb(&base)).unwrap().key_collisions(), 0);
+        let mut chunks = base.clone();
+        let objects = &mut chunks[dbfile + 1].1;
+        assert_eq!(i32::from_le_bytes(objects[4..8].try_into().unwrap()), 1, "one Objects row");
+        let row = objects[8..].to_vec();
+        objects.extend_from_slice(&row);
+        objects[4..8].copy_from_slice(&2i32.to_le_bytes());
+        let index = MaterialIndex::build(&assemble_synthetic_cdb(&chunks)).expect("a duplicated row still builds");
+        assert_eq!((index.material_count(), index.key_collisions()), (1, 1));
+        // Components emptied, and the instances after the index removed with them.
+        let mut chunks = base.clone();
+        chunks[dbfile + 2].1.truncate(4);
+        chunks[dbfile + 2].1.extend_from_slice(&0i32.to_le_bytes());
+        chunks.truncate(dbfile + 5);
+        let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks)).expect_err("no component rows");
+        assert!(matches!(err, Error::NoComponentRows), "expected NoComponentRows, got {err:?}");
+    }
+
+    /// #7175 — an error inside the DBFileIndex's own stream (here an `Objects` row cut short)
+    /// names the index's stream position and class, as every other instance's does; the index's
+    /// whole-index verdicts (`NoKeyedObjects`, `UnsupportedDbFileIndexChunk`) stay as they are.
+    #[test]
+    fn an_error_inside_the_dbfile_index_names_where_it_is() {
+        let (mut chunks, dbfile) = mutable_chunks();
+        let objects = &mut chunks[dbfile + 1].1;
+        objects.truncate(objects.len() - 4);
+        let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks)).expect_err("a cut Objects row");
+        let message = err.to_string();
+        assert!(message.starts_with("CDB stream instance 0 (BSComponentDB2::DBFileIndex): "), "{message}");
+        assert!(!matches!(at_the_index(err), Error::AtInstance { .. }), "wrapped once");
+        let mut chunks = mutable_chunks().0;
+        chunks[dbfile].0 = b"DIFF";
+        let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks)).expect_err("a DIFF index");
+        assert!(matches!(err, Error::UnsupportedDbFileIndexChunk { .. }), "a whole-index verdict stays bare: {err:?}");
+    }
+
+    /// #7161 — an instance whose class reference is outside the class table
+    /// is named by its stream position too, its class marked unreadable.
+    #[test]
+    fn an_instance_whose_class_cannot_be_read_names_its_stream_position() {
+        let (mut chunks, dbfile) = mutable_chunks();
+        let layer = dbfile + 5;
+        assert_eq!(*chunks[layer].0, *b"OBJT", "the layer object follows the index's side chunks");
+        chunks[layer].1[..4].copy_from_slice(&0x7fff_fff0i32.to_le_bytes());
+        let err = MaterialIndex::build(&assemble_synthetic_cdb(&chunks))
+            .expect_err("an instance of an undeclared class must be rejected");
+        match &err {
+            Error::AtInstance { index, class, source } => {
+                assert_eq!((*index, class.as_str()), (1, "<unreadable>"));
+                assert!(matches!(**source, Error::UnknownTypeRef { id: 0x7fff_fff0 }), "{source:?}");
+            }
+            other => panic!("expected AtInstance, got {other:?}"),
+        }
     }
 
     /// #5320 — a DIFF-shaped DBFileIndex was "supported" but misread (its

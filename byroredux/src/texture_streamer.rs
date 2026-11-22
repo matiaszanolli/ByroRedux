@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use byroredux_core::ecs::TextureResidencyTelemetry;
 use byroredux_core::math::{Mat4, Vec3};
 use byroredux_renderer::texture_registry::{
-    TextureHandle, TextureRegistry, WantedCase, WantedMip, WantedStats,
+    PromotionLanding, TextureHandle, TextureRegistry, WantedCase, WantedMip, WantedStats,
 };
 use byroredux_renderer::vulkan::context::DrawCommand;
 use byroredux_renderer::VulkanContext;
@@ -51,6 +51,8 @@ pub(crate) struct TextureStreamer {
     pub(crate) last_wanted: WantedStats,
     /// PRD §8 settle time.
     settle: SettleClock,
+    /// [`crate::asset_provider::archive_replacements`] when `provider` was built (#7144).
+    archive_generation: u64,
 }
 
 /// Camera position, forward and vertical field of view: what the wanted-mip
@@ -145,7 +147,26 @@ impl TextureStreamer {
             wanted: FxHashMap::default(),
             last_wanted: WantedStats::default(),
             settle: SettleClock::default(),
+            archive_generation: crate::asset_provider::archive_replacements(),
         })
+    }
+
+    /// #7144 — rebuild the provider with `build` when an archive was replaced on disk since it was
+    /// built. The streamer keeps its provider across cell transitions, where every other provider
+    /// is rebuilt and re-checks each archive (`Archive::open_shared`); without this its promotions
+    /// kept reading a replaced archive through the old file table while floors came from the new
+    /// one. Reads already in flight finish on the old provider. Answers whether it rebuilt.
+    /// `generation` is [`crate::asset_provider::archive_replacements`] read *before* `build` runs:
+    /// a replacement the build itself notices then costs one more rebuild, not a miss. It is an
+    /// argument rather than read here so a test can drive the rule without the process-wide
+    /// counter other tests move (#7164).
+    pub(crate) fn refresh_provider(&mut self, generation: u64, build: impl FnOnce() -> TextureProvider) -> bool {
+        if generation == self.archive_generation {
+            return false;
+        }
+        self.provider = Arc::new(build());
+        self.archive_generation = generation;
+        true
     }
 
     /// Advance the settle clock after this frame's reads and flush.
@@ -180,21 +201,32 @@ impl TextureStreamer {
         let mut landed = 0;
         while let Ok(read) = self.done_rx.try_recv() {
             self.in_flight.remove(&read.handle);
+            // #7129 — a failed read backs the texture off in the registry, so
+            // it is not re-read (and re-warned) every frame it stays wanted.
             let Some(bytes) = read.bytes else {
+                registry.note_promotion_read_failed(read.handle);
                 log::warn!(
-                    "texture promotion read for handle {} found no archive entry",
-                    read.handle
-                );
-                continue;
-            };
-            if registry.queue_promotion_bytes(read.handle, read.target, bytes) {
-                landed += 1;
-            } else {
-                log::debug!(
-                    "texture promotion for handle {} to level {} was not queued (released or already there)",
+                    "texture promotion read for handle {} (level {}) returned nothing: \
+                     no archive entry, an unreadable one (the archive layer names it), \
+                     or a panicked read; backing off",
                     read.handle,
                     read.target,
                 );
+                continue;
+            };
+            match registry.queue_promotion_bytes(read.handle, read.target, bytes) {
+                PromotionLanding::Queued => landed += 1,
+                PromotionLanding::NothingToDo => log::debug!(
+                    "texture promotion for handle {} to level {} was not queued (released or already there)",
+                    read.handle,
+                    read.target,
+                ),
+                PromotionLanding::Unusable => log::warn!(
+                    "texture promotion read for handle {} does not supply level {} \
+                     (short or undecodable payload); backing off",
+                    read.handle,
+                    read.target,
+                ),
             }
         }
         let room = MAX_READS_IN_FLIGHT.saturating_sub(self.in_flight.len());
@@ -405,6 +437,27 @@ mod tests {
     use super::*;
 
     const POSE: StreamPose = ([0.0, 1.0, 2.0], [0.0, 0.0, 1.0], 1.2);
+
+    /// #7144 — the provider is rebuilt only when an archive was replaced since it was built.
+    /// #7164 — driven by explicit generations: reading the process-wide counter raced the
+    /// `open_shared` tests that move it (2 failures in 200 parallel runs).
+    #[test]
+    fn the_provider_is_rebuilt_only_after_an_archive_replacement() {
+        let mut streamer = TextureStreamer::new(TextureProvider::new()).expect("pool builds");
+        streamer.archive_generation = 5;
+        let mut builds = 0;
+        let mut refresh = |streamer: &mut TextureStreamer, generation| {
+            streamer.refresh_provider(generation, || {
+                builds += 1;
+                TextureProvider::new()
+            })
+        };
+        assert!(!refresh(&mut streamer, 5), "no replacement, no rebuild");
+        assert!(refresh(&mut streamer, 6), "a replacement since the build rebuilds");
+        assert_eq!(streamer.archive_generation, 6);
+        assert!(!refresh(&mut streamer, 6), "once per replacement");
+        assert_eq!(builds, 1);
+    }
 
     /// A pool read that panics must not abort the process (#6810): the job
     /// reports an unreadable entry and the `FinishedRead` still arrives, so

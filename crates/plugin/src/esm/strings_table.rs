@@ -395,7 +395,7 @@ impl StringTableSet {
             .file_stem()
             .unwrap_or_default()
             .to_string_lossy();
-        let plugin_dir = plugin_path.parent().unwrap_or(Path::new("."));
+        let plugin_dir = plugin_directory(plugin_path);
         // #6797 — the directory component gets the same case-insensitive treatment as the file name
         // below: `strings/` is what archive extractors and mod packagers emit, and an exact-case
         // `Strings` probe misses it on a case-sensitive filesystem, letting the archive win.
@@ -503,6 +503,19 @@ impl StringTableSet {
         std::iter::once(file)
             .chain([StringsFile::Strings, StringsFile::DlStrings, StringsFile::IlStrings].into_iter().filter(|other| *other != file))
             .find_map(|file| table(file).and_then(|t| t.get(id)))
+    }
+}
+
+
+/// The directory a plugin's loose `Strings` folder sits beside. A bare file name
+/// (`--esm Skyrim.esm` launched from `Data/`) has an *empty* parent, not `None`:
+/// `join` still resolves that against the working directory, but `read_dir("")`
+/// fails, so the case-insensitive `strings/` probe silently fell back to the
+/// archive (#7112, the gap #5303 closed for archive discovery).
+fn plugin_directory(plugin_path: &Path) -> &Path {
+    match plugin_path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
     }
 }
 
@@ -937,6 +950,15 @@ fn loose_companion_file_is_found_in_a_lowercase_strings_directory() {
     });
     assert_eq!(set.resolve(0x0001), Some("Loose Override"));
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// #7112 — a bare plugin file name resolves its loose `Strings` folder in the
+/// working directory, so the case-insensitive probe has a directory to read.
+#[test]
+fn a_bare_plugin_name_looks_for_strings_in_the_working_directory() {
+    assert_eq!(plugin_directory(Path::new("Skyrim.esm")), Path::new("."));
+    assert_eq!(plugin_directory(Path::new("./Skyrim.esm")), Path::new("."));
+    assert_eq!(plugin_directory(Path::new("/data/Skyrim.esm")), Path::new("/data"));
 }
 
 /// #4178 — the ±1 length-prefix agreement contract: the prefix may or may

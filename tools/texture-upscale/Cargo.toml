@@ -11,6 +11,8 @@ path = "src/main.rs"
 [dependencies]
 anyhow = { workspace = true }
 byroredux-bsa = { workspace = true }
+# The shared path and file rules (bare components, the archives' case fold, the atomic writer).
+byroredux-core = { workspace = true }
 clap = { workspace = true }
 # Source textures come in as dds/png/tga/bmp/jpg|jpeg (see
 # `accepted_source_extension` in src/lib.rs) — the workspace base only

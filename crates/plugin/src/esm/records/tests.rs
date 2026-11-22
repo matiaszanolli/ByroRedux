@@ -76,7 +76,7 @@ mod real_ruleset_falsifiability {
     /// integration test in this crate.
     fn load(test_name: &str, path: std::path::PathBuf) -> Option<EsmIndex> {
         if !path.exists() {
-            eprintln!("Skipping {test_name}: {} not found", path.display());
+            crate::esm::test_paths::require_or_skip(&format!("{test_name}: {}", path.display()));
             return None;
         }
         let data = std::fs::read(&path).unwrap();
@@ -166,33 +166,32 @@ mod real_ruleset_falsifiability {
         );
     }
 
-    /// Oblivion predates the `AVIF` record type entirely — there is no
-    /// production resolver wiring `oblivion_ruleset` to real data yet
-    /// (`CharacterRulesProfile::OBLIVION` carries `RulesetBuilder::None`,
-    /// confirmed unreachable in production, a distinct gap from this
-    /// issue). `EsmIndex::actor_value_form_id` genuinely resolves nothing
-    /// against a real Oblivion.esm, so this pins that known-empty state
-    /// with real evidence instead of the doc's aspirational "a resolver
-    /// mapping these EditorIDs to its legacy engine actor-value indices at
-    /// the parser boundary" — which does not exist in the parser yet.
+    /// #7202 — Oblivion predates the `AVIF` record type, so the engine
+    /// supplies its 72 actor values (`EsmIndex::install_oblivion_actor_values`,
+    /// as the loader does) and every resolver sees them as ordinary AVIFs.
+    /// Against that installed roster, every attribute and skill the ruleset
+    /// names resolves and the builder registers its six rows (Health, Magicka,
+    /// four Fatigue): a misspelled roster name or output key fails here, with
+    /// no game data needed. The real-master half is the Oblivion `ROSTER_CASES`
+    /// entry in `tests/parse_real_esm.rs`.
     #[test]
-    #[ignore = "needs Oblivion game data on disk"]
-    fn oblivion_ruleset_resolves_nothing_against_avif_pending_a_legacy_resolver() {
-        let Some(index) = load(
-            "oblivion_ruleset_resolves_nothing_against_avif_pending_a_legacy_resolver",
-            crate::esm::test_paths::oblivion_esm(),
-        ) else {
-            return;
-        };
-        let rs = oblivion_ruleset(|id| index.actor_value_form_id(id));
-        assert_eq!(
-            rs.derived_row_len(),
-            0,
-            "Oblivion.esm has no AVIF records, so every EditorID must fail \
-             to resolve — a non-zero count here means either AVIF started \
-             appearing (surprising) or actor_value_form_id started matching \
-             something it shouldn't"
-        );
+    fn oblivion_ruleset_resolves_against_the_installed_engine_roster() {
+        use byroredux_core::character::{AttributeSet, CharacterRulesProfile, SkillSet};
+        let mut index = EsmIndex { game: crate::esm::reader::GameKind::Oblivion, ..Default::default() };
+        index.install_oblivion_actor_values(crate::esm::reader::GlobalSlot::Regular(1)).unwrap();
+        let unresolved: Vec<&str> = AttributeSet::TES_CLASSIC
+            .members()
+            .iter()
+            .map(|attribute| attribute.editor_id())
+            .chain(SkillSet::OBLIVION.skills().iter().map(|skill| skill.editor_id))
+            .filter(|name| index.actor_value_form_id(name).is_none())
+            .collect();
+        assert!(unresolved.is_empty(), "roster names with no installed actor value: {unresolved:?}");
+        assert_eq!(oblivion_ruleset(|id| index.actor_value_form_id(id)).derived_row_len(), 6);
+        let built = CharacterRulesProfile::OBLIVION
+            .build_ruleset(|id| index.actor_value_form_id(id), |_| None, &[])
+            .expect("the Oblivion profile builds its ruleset");
+        assert_eq!(built.derived_row_len(), 6);
     }
 }
 
@@ -211,7 +210,7 @@ fn skyrim_bodt_body_templates_decode_their_biped_masks() {
 
     let path = test_paths::skyrim_se_esm();
     if !path.is_file() {
-        eprintln!("Skipping skyrim_bodt_body_templates: {} not found", path.display());
+        crate::esm::test_paths::require_or_skip(&format!("skyrim_bodt_body_templates: {}", path.display()));
         return;
     }
     let index = parse_esm(&std::fs::read(&path).unwrap()).unwrap();
@@ -587,14 +586,13 @@ fn oblivion_clothing_enters_inventory_and_gender_aware_equipment() {
     match &item.kind {
         ItemKind::Armor {
             biped_flags,
-            slot_mask,
             armor_rating_x100,
             health,
             dt,
             dr,
             ..
         } => {
-            assert_eq!((*biped_flags, *slot_mask), (0x0c, 0x0c));
+            assert_eq!(*biped_flags, 0x0c);
             assert_eq!((*armor_rating_x100, *health, *dt, *dr), (0, 0, 0.0, 0));
         }
         _ => panic!("clothing must use the wearable item contract"),
@@ -904,7 +902,7 @@ fn dial_topic_children_walked_into_dialogue_infos() {
 fn parse_real_fnv_dial_infos_populated() {
     let path = crate::esm::test_paths::fnv_esm();
     if !path.exists() {
-        eprintln!("Skipping: FalloutNV.esm not found at {}", path.display());
+        crate::esm::test_paths::require_or_skip(&format!("FalloutNV.esm ({})", path.display()));
         return;
     }
     let data = std::fs::read(&path).unwrap();
@@ -1022,7 +1020,7 @@ fn qust_group_walks_nested_dial_info_scen() {
 fn parse_real_fo4_dialogues_and_scenes_populated() {
     let path = crate::esm::test_paths::fo4_esm();
     if !path.exists() {
-        eprintln!("Skipping: Fallout4.esm not found at {}", path.display());
+        crate::esm::test_paths::require_or_skip(&format!("Fallout4.esm ({})", path.display()));
         return;
     }
     let data = std::fs::read(&path).unwrap();
@@ -1056,7 +1054,7 @@ fn parse_real_fo4_dialogues_and_scenes_populated() {
 fn parse_real_starfield_dialogues_and_scenes_populated() {
     let path = crate::esm::test_paths::starfield_esm();
     if !path.exists() {
-        eprintln!("Skipping: Starfield.esm not found at {}", path.display());
+        crate::esm::test_paths::require_or_skip(&format!("Starfield.esm ({})", path.display()));
         return;
     }
     let data = std::fs::read(&path).unwrap();
@@ -1092,7 +1090,7 @@ fn parse_real_starfield_dialogues_and_scenes_populated() {
 fn parse_real_fnv_esm_record_counts() {
     let path = crate::esm::test_paths::fnv_esm();
     if !path.exists() {
-        eprintln!("Skipping: FalloutNV.esm not found at {}", path.display());
+        crate::esm::test_paths::require_or_skip(&format!("FalloutNV.esm ({})", path.display()));
         return;
     }
     let data = std::fs::read(&path).unwrap();
@@ -1772,7 +1770,7 @@ fn lvlc_group_dispatches_to_leveled_creatures_map() {
 fn parse_real_fo3_esm_scpt_count_and_scri_resolves() {
     let path = crate::esm::test_paths::fo3_esm();
     if !path.exists() {
-        eprintln!("Skipping: Fallout3.esm not found at {}", path.display());
+        crate::esm::test_paths::require_or_skip(&format!("Fallout3.esm ({})", path.display()));
         return;
     }
     let data = std::fs::read(&path).unwrap();
@@ -1816,7 +1814,7 @@ fn parse_real_fo3_esm_scpt_count_and_scri_resolves() {
 fn parse_real_fo3_esm_crea_and_lvlc_counts() {
     let path = crate::esm::test_paths::fo3_esm();
     if !path.exists() {
-        eprintln!("Skipping: Fallout3.esm not found at {}", path.display());
+        crate::esm::test_paths::require_or_skip(&format!("Fallout3.esm ({})", path.display()));
         return;
     }
     let data = std::fs::read(&path).unwrap();
@@ -1946,7 +1944,7 @@ fn total_and_breakdown_drive_off_same_table() {
 /// `pub foos: HashMap<...>` field, increment this.
 #[test]
 fn categories_table_row_count_pinned() {
-    // 80 typed maps on EsmIndex + 2 from cells (cells, statics).
+    // The pinned count below is the live number; the history follows.
     // Bumped from 37 → 38 in #624 (image_spaces map for IMGS dispatch).
     // Bumped from 38 → 39 in #630 (form_lists map for FLST dispatch).
     // Bumped from 39 → 44 in #808 (FNV-D2-NEW-01: PROJ + EFSH +
@@ -2601,12 +2599,12 @@ fn scol_grup_skipped_for_skyrim_too() {
 #[test]
 fn scol_grup_parsed_for_fo76() {
     // #4643 — FO76's HEDR is a live-service value that drifts with
-    // patches (68.0 → 266.0 → 279.0 over the project's history; the
-    // installed `SeventySix.esm` / `NW.esm` read 279.0 on 2026-09-22,
-    // rec_ver 209). Probe the current value plus one historical one —
+    // patches (68.0 → 266.0 → 279.0 → 280.0 over the project's history;
+    // the installed `SeventySix.esm` / `NW.esm` read 280.0 / rec_ver 210
+    // on 2026-11-08, #6779). Probe the current value plus historical ones —
     // the classification floor (>= 60.0), not the sample, is what
     // routes FO76.
-    for hedr in [279.0f32, 266.0] {
+    for hedr in [280.0f32, 279.0, 266.0] {
         let mut esm = tes4_with_hedr(hedr);
         esm.extend_from_slice(&wrap_group(b"SCOL", &minimal_record(b"SCOL", 0x0001_2345)));
         let index = parse_esm(&esm).expect("parse_esm");
@@ -2993,7 +2991,6 @@ const EXEMPT_NO_U32_READS: &[(&str, &str)] = &[
     // struct. The only cross-record reference in the pairing (LSCR.TNAM →
     // TRNS) lives on the LSCR side, and parse_lscr remaps it.
     ("load_screen.rs", "parse_trns"),
-    ("condition.rs", "parse_condition_list"),
     ("misc/effects.rs", "parse_efsh"),
     // #4219 — the walker entry points moved to `parse.rs`; the exemption
     // follows the code, and the table's mechanical no-u32-reads check still

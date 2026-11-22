@@ -22,7 +22,10 @@ mod rgb;
 mod simd;
 mod tables;
 
-pub use container::{AudioPacket, AudioTrack, Bk2, MAX_AUDIO_TRACKS, MAX_DIMENSION, MAX_FRAMES, MAX_PIXELS};
+pub use container::{
+    is_unsupported, AudioPacket, AudioTrack, Bk2, Unsupported, MAX_AUDIO_TRACKS, MAX_DIMENSION, MAX_FRAMES, MAX_PIXELS,
+    REVISIONS,
+};
 pub use frame::{Frame, MbTrace, MbType, Plane};
 pub use simd::set_simd;
 
@@ -44,6 +47,10 @@ pub enum Error {
     NoReference,
     /// A syntax element whose meaning has not been established yet.
     Unsupported(&'static str),
+    /// The frame's macroblocks end this many bits past its packet: the bits past the end read as 0
+    /// and decode to a picture, but no game file reads even one (#7127, STATE.md), so the packet is
+    /// short, not the stream.
+    Overrun(usize),
 }
 
 impl fmt::Display for Error {
@@ -55,6 +62,7 @@ impl fmt::Display for Error {
             Error::ShortPacket => write!(f, "packet shorter than its header"),
             Error::NoReference => write!(f, "inter frame without a reference frame"),
             Error::Unsupported(what) => write!(f, "unsupported: {what}"),
+            Error::Overrun(bits) => write!(f, "the frame's macroblocks run {bits} bits past the end of its packet"),
         }
     }
 }
@@ -266,6 +274,13 @@ fn decode_into(
     let trace = views.iter_mut().find_map(|v| v.trace.take());
     f.trace = trace;
     res?;
+    // #7127 — the bit reader answers 0 past the packet, so a cut packet would decode to a picture.
+    // Over the 54 installed files no frame's last macroblock ends past its packet (0 of 74,680
+    // frames, `[ours]`, STATE.md), so any over-read is a short packet: refuse the frame.
+    let end = f.mb_bits.iter().copied().max().unwrap_or(0);
+    if end > 8 * data.len() {
+        return Err(Error::Overrun(end - 8 * data.len()));
+    }
     if opts.filters {
         filters::apply(f, flags, opts.threads);
     }

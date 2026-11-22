@@ -37,26 +37,22 @@ use byroredux_core::string::StringPool;
 /// safeguard.
 ///
 /// Head and tail are tested independently — a name may carry either without
-/// the other — and both are case- and separator-insensitive, matching
-/// `normalize_mesh_path`'s technique in `byroredux/src/asset_provider/archive.rs`.
-/// That helper cannot be called from here: it lives in the top-level binary
-/// crate, which `crates/nif` does not (and must not) depend on.
+/// the other — and both are case- and separator-insensitive. The head is the
+/// root test `normalize_mesh_path` uses, `byroredux_core::paths::starts_with_root`
+/// (#7145).
 fn canonical_mesh_path(mesh_name: &str) -> String {
     const HEAD: &str = "geometries";
     const TAIL: &str = ".mesh";
 
     let bytes = mesh_name.as_bytes();
-    // `geometries` + exactly one separator, either slash form.
-    let has_head = bytes.len() > HEAD.len()
-        && bytes[..HEAD.len()].eq_ignore_ascii_case(HEAD.as_bytes())
-        && (bytes[HEAD.len()] == b'\\' || bytes[HEAD.len()] == b'/');
+    // `geometries` + a separator, either slash form.
+    let has_head = byroredux_core::paths::starts_with_root(mesh_name, HEAD);
     // #3391 — byte-slice, NOT `mesh_name[mesh_name.len() - TAIL.len()..]`.
     // `mesh_name` is archive input decoded lossily (`read_sized_string` falls
     // back to `from_utf8_lossy`, so every invalid byte becomes a 3-byte
     // U+FFFD), and a `&str` byte-range slice panics when the cut lands inside
     // a multi-byte scalar — `"модель"` is 12 bytes and `12 - 5` is mid-char.
-    // This is the same technique `has_head` uses two lines above, and the one
-    // `normalize_mesh_path` uses end-to-end.
+    // This is the same technique `starts_with_root` uses for the head.
     let has_tail = bytes.len() > TAIL.len()
         && bytes[bytes.len() - TAIL.len()..].eq_ignore_ascii_case(TAIL.as_bytes());
 

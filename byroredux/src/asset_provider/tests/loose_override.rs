@@ -195,10 +195,44 @@ fn loose_tier_bounds_a_chain_of_doubled_links() {
     std::os::unix::fs::symlink(tmp.path().join("mods/d0"), tmp.path().join("textures/root")).unwrap();
 
     let keys = super::super::archive::loose_keys_bounded(tmp.path(), 500);
-    // `textures` plus 499 chain directories use the 500-directory budget; each chain directory holds
-    // one file (the links are directories, not files), so exactly 499 files are indexed and the walk
-    // ends instead of making 2^24 passes.
-    assert_eq!(keys.len(), 499, "{keys:?}");
+    // #7141 — the budget is 500 entries: `textures\root`, then per chain directory its file and the
+    // link walked into the next, in name order (`f`, `l0`, `l1`). Exactly 250 files are indexed and
+    // the walk ends instead of making 2^24 passes.
+    assert_eq!(keys.len(), 250, "{keys:?}");
+}
+
+/// #7141 — the budget counts entries, not directories, so the files in each directory are no
+/// multiplier: a doubled-link chain whose directories hold 100 files each indexes at most the
+/// budget's worth of keys (it used to be the directory budget times 100), and the same ones on
+/// every run, since each directory is walked in name order.
+#[cfg(unix)]
+#[test]
+fn loose_tier_bounds_indexed_entries_not_directories() {
+    let tmp = tempfile::tempdir().unwrap();
+    let depth = 10;
+    for level in 0..=depth {
+        for file in 0..100 {
+            write(tmp.path(), &format!("mods/d{level}/f{file:03}.dds"), b"x");
+        }
+    }
+    for level in 0..depth {
+        for link in ["l0", "l1"] {
+            std::os::unix::fs::symlink(
+                tmp.path().join(format!("mods/d{}", level + 1)),
+                tmp.path().join(format!("mods/d{level}/{link}")),
+            )
+            .unwrap();
+        }
+    }
+    std::fs::create_dir_all(tmp.path().join("textures")).unwrap();
+    std::os::unix::fs::symlink(tmp.path().join("mods/d0"), tmp.path().join("textures/root")).unwrap();
+
+    let keys = super::super::archive::loose_keys_bounded(tmp.path(), 500);
+    // 500 entries: `textures\root`, then down the `l0` chain 100 files and one link per level;
+    // the fifth level's walk stops after its 95th file.
+    assert_eq!(keys.len(), 495);
+    assert_eq!(keys.last().map(String::as_str), Some(r"textures\root\l0\l0\l0\l0\f094.dds"));
+    assert_eq!(super::super::archive::loose_keys_bounded(tmp.path(), 500), keys, "the same subset every run");
 }
 
 /// Both providers pick the tier up from `--esm` alone.

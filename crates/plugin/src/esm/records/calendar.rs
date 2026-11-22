@@ -49,6 +49,11 @@ pub fn start_date(globals: &HashMap<u32, GlobalRecord>) -> Option<(f32, f32, f32
 
 /// The weekday (0 Sunday .. 6 Saturday) the game clock starts on for a master of `game` with `HEDR`
 /// version `hedr_version` and the authored `start_date`; `None` when no source establishes it.
+///
+/// A `hedr_version` of `0.0` means no `HEDR` was read (`read_file_header` leaves the default), and
+/// `GameKind::from_header` then falls back to `Fallout3NV` without having detected it. That pairing
+/// is not an established Fallout origin, so it yields `None` instead of Fallout's Sunday, and the
+/// first-established merge keeps looking for a master that does establish one (#7102).
 pub fn weekday_origin(game: GameKind, hedr_version: f32, start_date: Option<(f32, f32, f32)>) -> Option<u8> {
     let gregorian = || {
         start_date.map(|(year, month, day)| gregorian_weekday(year as i64, month as i64 + 1, day as i64) as u8)
@@ -57,7 +62,8 @@ pub fn weekday_origin(game: GameKind, hedr_version: f32, start_date: Option<(f32
         GameKind::Oblivion => Some(1),
         // Fallout's start weekday is in the executable; with no authored date the clock counts from
         // Sunday, as it did before the origin was resolved here.
-        GameKind::Fallout3NV => Some(gregorian().unwrap_or(0)),
+        GameKind::Fallout3NV if hedr_version > 0.0 => Some(gregorian().unwrap_or(0)),
+        GameKind::Fallout3NV => None,
         GameKind::Skyrim if hedr_version >= 1.6 => Some(0),
         GameKind::Skyrim if hedr_version > 0.0 && hedr_version < 1.0 => Some(1),
         // A Skyrim master whose HEDR names neither edition: not established.
@@ -116,6 +122,8 @@ mod tests {
         assert_eq!(weekday_origin(GameKind::Oblivion, 0.8, None), Some(1));
         assert_eq!(weekday_origin(GameKind::Fallout3NV, 1.34, date), Some(2));
         assert_eq!(weekday_origin(GameKind::Fallout3NV, 1.34, None), Some(0), "no authored date: from Sunday");
+        // #7102 — no HEDR read: `from_header` defaulted to Fallout3NV, which detected nothing.
+        assert_eq!(weekday_origin(GameKind::Fallout3NV, 0.0, date), None, "a defaulted header establishes no origin");
         assert_eq!(weekday_origin(GameKind::Fallout4, 0.95, date), Some(2));
         assert_eq!(weekday_origin(GameKind::Fallout4, 0.95, None), None, "no start date: not established");
         assert_eq!(weekday_origin(GameKind::Starfield, 0.0, date), Some(2));

@@ -256,6 +256,23 @@ is not named here.
                            COMPUTE / SHADER_WRITE → DRAW_INDIRECT|VERTEX|
                            FRAGMENT|TRANSFER / INDIRECT_COMMAND_READ|
                            SHADER_READ|TRANSFER_READ.
+5e terrain_patch.comp ───  TSD-4.1 terrain displacement patches
+                           (`record_terrain_patches`, #7152) after 5d and
+                           before step 6: one dispatch per resident patch
+                           slot rewrites that slot's reserved range of the
+                           global vertex buffer in place from the base cell's
+                           vertices and the terrain-tile height maps. Records
+                           a zero-fill of this slot's readback buffer, then an
+                           entry barrier TRANSFER|VERTEX_INPUT|VERTEX|
+                           FRAGMENT|COMPUTE / TRANSFER_WRITE → COMPUTE /
+                           SHADER_READ|SHADER_WRITE (earlier geometry and tile
+                           copies land; the previous frame's vertex fetch of
+                           the patch ranges finishes first), and an exit
+                           barrier COMPUTE / SHADER_WRITE → VERTEX_INPUT|
+                           VERTEX|FRAGMENT|COMPUTE|HOST / VERTEX_ATTRIBUTE_
+                           READ|SHADER_READ|HOST_READ. The terrain-tile copy
+                           (`upload_terrain_tiles`) releases to COMPUTE as
+                           well as FRAGMENT for this pass.
 6  [Main render pass]   ─  raster (BEGIN → END, `record_geometry_pass`), in order:
                            `record_main_batches` (`record_batch_draws` per batch),
                            `record_water_surfaces`, `record_groundcover_blades`:

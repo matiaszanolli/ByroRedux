@@ -249,7 +249,8 @@ fn cached_scene_lazy<'a>(
     tex_provider: &TextureProvider,
     mat_provider: Option<&mut MaterialProvider>,
 ) -> Option<std::sync::Arc<byroredux_nif::import::ImportedScene>> {
-    let key = path.to_ascii_lowercase();
+    // #7180 — the archives' case fold.
+    let key = byroredux_core::paths::fold_case(path);
     let cached = world.resource_mut::<crate::scene_import_cache::SceneImportCache>().get(&key);
     if let Some(cached) = cached {
         return cached;

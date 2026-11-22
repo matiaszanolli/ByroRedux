@@ -375,6 +375,7 @@ impl TextureRegistry {
             color_space,
             path: path.to_string(),
             change: None,
+            generation: self.source_generation(),
         });
         Ok(EnqueueOutcome::Reserved(handle))
     }
@@ -435,6 +436,7 @@ impl TextureRegistry {
             color_space,
             path,
             change: Some(change),
+            generation: self.source_generation(),
         });
         Some(change)
     }
@@ -480,6 +482,37 @@ impl TextureRegistry {
         }
         self.stream_widths[slot] = source.width;
         self.stream_sources.insert(handle, source);
+    }
+
+    /// #7169 — the counter the host moves whenever an archive is replaced on
+    /// disk (`asset_provider::archive_replacements`), read as each upload is
+    /// queued. A cell load's provider notices a replacement while it is built,
+    /// before it reads that cell's floors, so the value at queue time says
+    /// which files a floor's bytes came from.
+    pub fn set_source_generation_counter(&mut self, counter: &'static std::sync::atomic::AtomicU64) {
+        self.generation_source = Some(counter);
+    }
+
+    pub(super) fn source_generation(&self) -> u64 {
+        self.generation_source
+            .map_or(0, |counter| counter.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// #7167, #7169 — the generation the host's promotion reads now come from
+    /// (its streamer provider's). Only sources floored under it are promoted:
+    /// one floored from a replaced file keeps the levels it holds, all from
+    /// that file, so no texture mixes mips of two files (it can still demote,
+    /// and is re-floored from the new file once released and loaded again),
+    /// while one floored from the new file promotes as soon as the reads do
+    /// too. #7169: the stamp is the generation at queue time, not a count the
+    /// host advanced afterwards, which retired the first new floors too. A
+    /// change drops the requests not yet taken (they were asked for under the
+    /// old reads); reads in flight land on the textures they were read for.
+    pub fn set_promotable_generation(&mut self, generation: u64) {
+        if generation != self.promotable_generation {
+            self.promotable_generation = generation;
+            self.promotion_requests.clear();
+        }
     }
 
     /// Drop a streamed texture's source on its last release.
@@ -541,7 +574,12 @@ impl TextureRegistry {
             if target < r.first_resident {
                 stats.deficits += 1;
                 source.coarser_since = None;
-                if !queued.contains_key(&handle) && frame >= source.retry_after_frame {
+                // #7167, #7169 — a source floored from other files than the
+                // promotion reads keeps its levels.
+                if !queued.contains_key(&handle)
+                    && frame >= source.retry_after_frame
+                    && source.generation == self.promotable_generation
+                {
                     candidates.push((
                         w.case,
                         r.first_resident - target,
@@ -888,26 +926,51 @@ impl TextureRegistry {
 
     /// M39 — queue the change a [`PromotionRequest`] asked for, from the
     /// bytes the host read (a DDS file whose payload starts at or above the
-    /// request's target). `false` when the handle was released or has moved
-    /// so nothing is left to do, or the bytes do not cover the target.
+    /// request's target). [`PromotionLanding::NothingToDo`] when the handle
+    /// was released or already holds the target; [`PromotionLanding::Unusable`]
+    /// when the bytes do not cover it, which backs the texture off like a
+    /// failed read ([`Self::note_promotion_read_failed`]).
     pub fn queue_promotion_bytes(
         &mut self,
         handle: TextureHandle,
         target: u32,
         dds_bytes: Vec<u8>,
-    ) -> bool {
+    ) -> PromotionLanding {
         let Some(source) = self.stream_sources.get(&handle).cloned() else {
-            return false;
+            return PromotionLanding::NothingToDo;
         };
-        self.queue_residency_change(
+        let moves = self.textures.get(handle as usize).is_some_and(|entry| {
+            entry.ref_count > 0 && entry.residency.is_some_and(|r| r.plan(target).is_some())
+        });
+        if !moves {
+            return PromotionLanding::NothingToDo;
+        }
+        match self.queue_residency_change(
             handle,
             target,
             dds_bytes,
             source.clamp_mode,
             source.color_space,
             source.path.to_string(),
-        )
-        .is_some()
+        ) {
+            Some(_) => PromotionLanding::Queued,
+            None => {
+                self.note_promotion_read_failed(handle);
+                PromotionLanding::Unusable
+            }
+        }
+    }
+
+    /// #7129 — the host's read for a promotion of `handle` failed (no entry,
+    /// an unreadable one, or bytes too short for the target): it is not
+    /// requested again for [`residency::READ_FAILURE_RETRY_FRAMES`] frames,
+    /// instead of being re-read every frame it stays wanted.
+    pub fn note_promotion_read_failed(&mut self, handle: TextureHandle) {
+        if let Some(source) = self.stream_sources.get_mut(&handle) {
+            source.retry_after_frame = self
+                .current_frame_id
+                .wrapping_add(residency::READ_FAILURE_RETRY_FRAMES);
+        }
     }
 
     /// M39 — queued promotions and demotions, for telemetry.
@@ -1667,7 +1730,7 @@ impl TextureRegistry {
     }
 
     /// Record each installed floor's source.
-    fn record_floor_sources(
+    pub(super) fn record_floor_sources(
         &mut self,
         pending: &[PendingDdsUpload],
         floor_sources: Vec<(TextureHandle, bool, usize, usize)>,
@@ -1703,6 +1766,7 @@ impl TextureRegistry {
                     level_bytes,
                     declined_target: None,
                     retry_after_frame: 0,
+                    generation: upload.generation,
                 },
             );
         }

@@ -225,7 +225,7 @@ pub enum GameKind {
     Fallout3NV,  // FO3 (0.85) + FNV (1.34) — shared DATA/DNAM layouts; default
     Skyrim,      // LE + SE (1.7)
     Fallout4,    // 0.95
-    Fallout76,   // live-service HEDR: 68.0 → 266.0 → 279.0 (2026-09-20 patch; rec_ver 209 throughout)
+    Fallout76,   // live-service HEDR, drifts per patch: 68.0 → 266.0 → 279.0 → 280.0 (last read 2026-11-08: 280.0 / rec_ver 210, #6779)
     Starfield,   // 0.96
 }
 ```
@@ -443,7 +443,7 @@ it grew from 18 maps in Session 12 to ~90 today. The struct opens with
   them yet: `enchantments` (ENCH), `reputations` (REPU),
   `combat_styles` (CSTY), `impacts` (IPCT), `impact_data_sets` (IPDS) and
   `soul_gems` (SLGM), plus four decoded for census or a future consumer:
-  `music_tracks` (Skyrim MUST, the Skyrim half of #3816), `weather_settings`
+  `music_tracks` (Skyrim / FO4 / FO76 MUST, #6790; the xWMA half of #3816), `weather_settings`
   (Starfield WTHS, #5364), `volumetric_lighting` (VOLI) and `god_rays` (GDRY) (the
   last two PRD `volumetric-lighting.md` §10 Q8).
   They back cross-reference resolution and the census / probe tooling, so the
@@ -463,11 +463,11 @@ it grew from 18 maps in Session 12 to ~90 today. The struct opens with
   presentation curves, `parse_imad`) and `sounds` (SOUN, `parse_soun`
   — FNAM file-path decode, EX-16 item 1 / #2372's FormID→archive-path
   prerequisite); MSET (`parse_mset`), MUSC (`parse_musc`), GRAS
-  (`parse_gras`), LSCR (`parse_lscr`), RADS (`parse_rads`) and CHAL
-  (`parse_chal`) have since graduated too. 26 arms remain on the minimal-stub
+  (`parse_gras`), LSCR (`parse_lscr`), RADS (`parse_rads`), CHAL
+  (`parse_chal`) and ALOC (`parse_aloc`, #6870) have since graduated too. 25 arms remain on the minimal-stub
   path in `records/dispatch_misc_stub.rs` (the arms that insert only
   `parse_minimal_esm_record(fid, subs)`): audio:
-  ALOC/ANIO/ASPC/CAMS/CPTH/DOBJ/MICN/VTYP plus the later-added
+  ANIO/ASPC/CAMS/CPTH/DOBJ/MICN/VTYP plus the later-added
   SECH/AOPF; visual/world: AMEF/DEBR/LSCT/PWAT/RGDL plus LCRT; FNV hardcore:
   DEHY/HUNG/SLPD; Caravan/Casino: CCRD/CDCK/CHIP/CMNY/CSNO; recipe residuals:
   RCCT/RCPE.

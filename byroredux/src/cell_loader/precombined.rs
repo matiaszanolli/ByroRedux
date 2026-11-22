@@ -1072,13 +1072,38 @@ fn lookup_precombine_cache(reg: &NifImportRegistry, path: &str) -> PrecombineCac
     }
 }
 
+/// #6116 — drop the vertex arrays of every precombine instance that is not its object's #3510
+/// geometry representative. `build_precombine_meshes` clones the decoded object once per
+/// `BSPackedGeomDataCombined` instance; uploads and BLASes already share the representative's, but
+/// every clone stayed resident in the cache entry for its registry lifetime (1.50x the distinct
+/// geometry over 1,505 sampled `_oc.nif`). An alias keeps its transform, material and the local
+/// bound `from_geometry` computed before the strip, and every geometry reader goes through
+/// [`CachedNifImport::geometry_source`]. A mapping that does not cover every mesh strips nothing.
+fn strip_alias_geometry(meshes: &mut [ImportedMesh], geometry_dedup: &[u32]) {
+    if geometry_dedup.len() != meshes.len() {
+        return;
+    }
+    for (index, mesh) in meshes.iter_mut().enumerate() {
+        let representative = geometry_dedup[index] as usize;
+        if representative != index && representative < index {
+            mesh.positions = Vec::new();
+            mesh.colors = Vec::new();
+            mesh.normals = Vec::new();
+            mesh.tangents = Vec::new();
+            mesh.uvs = Vec::new();
+            mesh.indices = Vec::new();
+        }
+    }
+}
+
 /// Wrap precombine-decoded meshes in a geometry-only [`CachedNifImport`]
 /// (no collisions / lights / clips / particles) so the existing
 /// [`spawn_placed_instances`] path uploads + spawns them.
 pub(super) fn geometry_only_cached(
-    meshes: Vec<ImportedMesh>,
+    mut meshes: Vec<ImportedMesh>,
     geometry_dedup: Vec<u32>,
 ) -> CachedNifImport {
+    strip_alias_geometry(&mut meshes, &geometry_dedup);
     CachedNifImport {
         meshes,
         beam_volumes: Default::default(),
@@ -1120,6 +1145,44 @@ mod tests {
     use super::*;
     use byroredux_bsa::Ba2Archive;
     use std::path::PathBuf;
+
+    /// #6116 — a precombine cache entry holds one copy of each object's vertex data: aliases keep
+    /// their transform and local bound, their arrays are dropped, and every reader gets the
+    /// representative's geometry through `geometry_source`.
+    #[test]
+    fn a_precombine_entry_keeps_one_copy_of_each_objects_geometry() {
+        let object = || {
+            ImportedMesh::from_geometry(
+                vec![[0.0, 0.0, 0.0], [4.0, 0.0, 0.0], [0.0, 4.0, 0.0]],
+                vec![[1.0; 4]; 3],
+                vec![[0.0, 0.0, 1.0]; 3],
+                vec![[1.0, 0.0, 0.0, 1.0]; 3],
+                vec![[0.0, 0.0]; 3],
+                vec![0, 1, 2],
+            )
+        };
+        let mut alias = object();
+        alias.translation = [100.0, 0.0, 0.0];
+        let bound = (alias.local_bound_center, alias.local_bound_radius);
+        let cached = geometry_only_cached(vec![object(), alias, object()], vec![0, 0, 2]);
+
+        assert_eq!(cached.meshes[0].positions.len(), 3, "the representative keeps its arrays");
+        assert_eq!(cached.meshes[2].positions.len(), 3, "a second object's representative too");
+        let stripped = &cached.meshes[1];
+        assert!(stripped.positions.is_empty() && stripped.indices.is_empty() && stripped.normals.is_empty());
+        assert!(stripped.uvs.is_empty() && stripped.colors.is_empty() && stripped.tangents.is_empty());
+        assert_eq!(stripped.translation, [100.0, 0.0, 0.0], "the alias keeps its own placement");
+        assert_eq!((stripped.local_bound_center, stripped.local_bound_radius), bound, "and its bound");
+
+        assert!(std::ptr::eq(cached.geometry_source(1), &cached.meshes[0]));
+        assert!(std::ptr::eq(cached.geometry_source(0), &cached.meshes[0]));
+        assert!(std::ptr::eq(cached.geometry_source(2), &cached.meshes[2]));
+        assert_eq!(cached.geometry_source(1).indices, vec![0, 1, 2]);
+
+        // A mapping that does not cover every mesh strips nothing.
+        let partial = geometry_only_cached(vec![object(), object()], vec![0]);
+        assert_eq!(partial.meshes[1].positions.len(), 3);
+    }
 
     /// #5522 — a negative registry entry (the worker's failed pre-parse)
     /// is a terminal miss, distinct from a path never seen: the precombine

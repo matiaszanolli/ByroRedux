@@ -19,7 +19,6 @@ use super::shared::*;
 use byroredux_core::ecs::components::camera::ACTIVE_DEPTH_MAPPING;
 use byroredux_core::ecs::components::{Camera, DepthMapping};
 use byroredux_core::ecs::{ActiveCamera, DepthCapture, DepthCaptureBridge};
-use std::io::Write;
 
 /// `depth.stats` — arm a depth capture, then report the captured field.
 pub(crate) struct DepthStatsCommand;
@@ -72,21 +71,10 @@ impl ConsoleCommand for DepthDumpCommand {
             Ok(data) => data,
             Err(error) => return CommandOutput::line(error),
         };
-        let path = std::path::Path::new("screenshots").join(name);
-        let result = std::fs::create_dir_all("screenshots").and_then(|()| {
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)?;
-            if let Err(error) = file.write_all(&data) {
-                drop(file);
-                let _ = std::fs::remove_file(&path);
-                return Err(error);
-            }
-            Ok(())
-        });
-        match result {
-            Ok(()) => CommandOutput::line(format!(
+        // #7182 — the one confined-writer rule: a single name under `screenshots/`, which must
+        // resolve inside the working directory, written `create_new`.
+        match byroredux_core::atomic_file::write_new_confined("screenshots", name, &data) {
+            Ok(path) => CommandOutput::line(format!(
                 "depth saved: {} ({}x{}, view-axis world units; background=inf, invalid=nan)",
                 path.display(),
                 capture.width,

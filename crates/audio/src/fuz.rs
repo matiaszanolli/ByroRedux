@@ -260,10 +260,10 @@ pub fn fuz_to_wav_bytes(data: &[u8]) -> Result<Vec<u8>, FuzDecodeError> {
     let mut command = Command::new("ffmpeg");
     command
         .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-i"])
-        .arg(&temp)
+        .arg(temp.path())
         .args(["-vn", "-acodec", "pcm_s16le", "-f", "s16le", "pipe:1"]);
     let result = run_bounded(command, MAX_PCM_BYTES, FFMPEG_TIMEOUT);
-    let _ = std::fs::remove_file(&temp);
+    drop(temp);
     let output = match result {
         Ok(output) => output,
         // No `ffmpeg` on the host (or it is not executable): the optional
@@ -291,41 +291,15 @@ pub fn fuz_to_wav_bytes(data: &[u8]) -> Result<Vec<u8>, FuzDecodeError> {
     wav_header(output.stdout, stream.channels, stream.sample_rate).ok_or(FuzDecodeError::BadXwma)
 }
 
-/// Write the xWMA image to a fresh temp file. `create_new` (`O_EXCL`) refuses an
-/// existing path, a planted symlink included, instead of following and
-/// truncating it; the name carries the pid and a per-process counter beside the
-/// clock, so concurrent decodes cannot collide (#6307).
-fn write_temp_xwma(xwma: &[u8]) -> std::io::Result<std::path::PathBuf> {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let mut last = None;
-    for _ in 0..8 {
-        let unique = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "byro-fuz-{}-{unique}-{counter}.xwma",
-            std::process::id()
-        ));
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        match options.open(&path) {
-            Ok(mut file) => {
-                if let Err(error) = file.write_all(xwma) {
-                    drop(file);
-                    let _ = std::fs::remove_file(&path);
-                    return Err(error);
-                }
-                return Ok(path);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => last = Some(error),
-            Err(error) => return Err(error),
-        }
-    }
-    Err(last.unwrap_or_else(|| std::io::Error::from(std::io::ErrorKind::AlreadyExists)))
+/// Write the xWMA image to a fresh temp file, through the shared exclusive creator
+/// (`atomic_file::create_temp_file`: `create_new`, `0600`, a unique name — #6307, #7143), whose
+/// guard removes it however the decode ends (#7158).
+fn write_temp_xwma(xwma: &[u8]) -> std::io::Result<byroredux_core::atomic_file::TempPath> {
+    let (mut file, temp) = byroredux_core::atomic_file::create_temp_file("byro-fuz", "xwma")?;
+    // Closed before `temp` can drop: Windows refuses to remove an open file.
+    let written = file.write_all(xwma);
+    drop(file);
+    written.map(|()| temp)
 }
 
 /// A finished child process: its exit status and what it wrote.
@@ -658,9 +632,13 @@ mod tests {
         fn the_temp_file_is_exclusive_and_unique() {
             let a = write_temp_xwma(b"one").unwrap();
             let b = write_temp_xwma(b"two").unwrap();
-            assert_ne!(a, b);
-            assert_eq!(std::fs::read(&a).unwrap(), b"one");
-            assert_eq!(std::fs::read(&b).unwrap(), b"two");
+            assert_ne!(a.path(), b.path());
+            assert_eq!(std::fs::read(a.path()).unwrap(), b"one");
+            assert_eq!(std::fs::read(b.path()).unwrap(), b"two");
+            // #7158: the guard removes the file when the decode is done with it.
+            let gone = a.path().to_path_buf();
+            drop(a);
+            assert!(!gone.exists());
             // An existing path (a planted symlink included) is refused, never truncated.
             let planted = std::env::temp_dir().join(format!("byro-fuz-test-{}", std::process::id()));
             std::fs::write(&planted, b"keep").unwrap();
@@ -670,9 +648,8 @@ mod tests {
                 options.open(&planted).unwrap_err().kind(),
                 std::io::ErrorKind::AlreadyExists
             );
-            for path in [a, b, planted] {
-                let _ = std::fs::remove_file(path);
-            }
+            drop(b);
+            let _ = std::fs::remove_file(planted);
         }
     }
 

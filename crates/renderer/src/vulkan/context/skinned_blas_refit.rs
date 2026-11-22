@@ -697,6 +697,7 @@ impl SkinChain<'_> {
                 }
                 let bound = bound.get_or_insert_with(|| skin_pipeline.bind(self.device, cmd));
                 skin_pipeline.dispatch(bound, self.device, cmd, slot, frame, buffers, push);
+                self.last_skin_coverage_frame.dispatch_vertices += u64::from(push.vertex_count);
                 // #3991 — the "populated" bit is what the
                 // NEXT frame's skip gate reads, and it is only
                 // true once this frame's dispatch has actually
@@ -1045,6 +1046,7 @@ impl SkinChain<'_> {
                 ) {
                     Ok(()) => {
                         self.last_skin_coverage_frame.refits_succeeded += 1;
+                        self.last_skin_coverage_frame.refit_triangles += u64::from(idx_count / 3);
                     }
                     Err(e) => {
                         log::warn!("skin_compute BLAS refit failed for entity {entity_id}: {e}");

@@ -186,7 +186,9 @@ The level-up the rank-ups build toward (`crates/scripting/src/oblivion_skill_use
   Health's **stored** term gains `floor(0.1 × Endurance)`, Endurance read after the picks (V8), and Magicka's and Fatigue's stored terms are
   untouched (V9); the level rises by one and the count falls by ten, a surplus carrying to the next level. With every attribute at 100 there
   is no level (OSL-LVL-006): "Perfection cannot be improved upon." and the level stays pending. The notification is "You are now level N."
-  followed by the load order's `sLevelUp{N}` text (`Oblivion.esm` authors 2 to 20); the tenth major increase says the executable's default
+  followed by the load order's `sLevelUp{N}` text for levels 2 to 20 where it authors one (`Oblivion.esm` authors nine: 4, 6, 11, 12, 15, 17,
+  18, 19 and 20), else UESP *Oblivion:Leveling*'s documented message for the level, and from level 21 on the documented 21+ message (#7209);
+  the tenth major increase says the executable's default
   `sMeditate` (V12).
 
 ### Oblivion sleep and level-up menus (#7086)

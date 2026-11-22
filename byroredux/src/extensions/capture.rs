@@ -236,8 +236,10 @@ pub(super) fn capture_entity_projections(
                     // layer and the #7044 level-up term into `base` so
                     // `current()` agrees with the live `ActorValue::current`
                     // and a mod reads back its own routed `SetBase` (#5508).
+                    // #7184 — derived from `undamaged()`, not summed by hand, so
+                    // a layer the component gains later folds in too.
                     let value = ActorValueState::new(
-                        value.base + value.set_override + value.stored,
+                        value.undamaged() - value.permanent_mod - value.temporary_mod,
                         value.permanent_mod,
                         value.temporary_mod,
                         value.damage,

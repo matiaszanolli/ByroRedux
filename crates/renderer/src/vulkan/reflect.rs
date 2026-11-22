@@ -1404,6 +1404,11 @@ mod tests {
             "skin_vertices.comp" => crate::vulkan::skin_compute::SKIN_VERTICES_COMP_SPV,
         );
         assert_layout!(
+            "terrain_patch",
+            crate::vulkan::terrain_patch::terrain_patch_layout_bindings(),
+            "terrain_patch.comp" => crate::vulkan::terrain_patch::TERRAIN_PATCH_COMP_SPV,
+        );
+        assert_layout!(
             "skin_palette",
             crate::vulkan::skin_compute::skin_palette_layout_bindings(),
             "skin_palette.comp" => crate::vulkan::skin_compute::SKIN_PALETTE_COMP_SPV,

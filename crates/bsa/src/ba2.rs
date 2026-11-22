@@ -57,7 +57,7 @@
 //! }
 //! ```
 
-use crate::read_at::ReadAt;
+use crate::read_at::{read_exact_for, ReadAt};
 use crate::safety::{
     capacity_hint, checked_chunk_size, checked_chunk_size_usize, checked_chunk_total,
     checked_entry_count,
@@ -195,7 +195,7 @@ impl Ba2Archive {
 
         // ── Header (24 bytes base, +8 for Starfield v2+) ────────────
         let mut hdr = [0u8; 24];
-        reader.read_exact(&mut hdr)?;
+        read_exact_for(&mut reader, &mut hdr, &"BA2 header")?;
 
         if &hdr[0..4] != MAGIC_BTDX {
             return Err(io::Error::new(
@@ -277,7 +277,7 @@ impl Ba2Archive {
             BA2_V_FO4 | BA2_V_FO4_NEXT_GEN_TEX | BA2_V_FO4_NEXT_GEN_MESH => Ba2Compression::Zlib,
             BA2_V_STARFIELD_V2 => {
                 let mut extra = [0u8; 8];
-                reader.read_exact(&mut extra)?;
+                read_exact_for(&mut reader, &mut extra, &"BA2 v2 header extension")?;
                 // #1186 — defense-in-depth: log the trailing 2×u32 the
                 // community RE'd as "compressed name-table size +
                 // reserved" so a malformed archive failure surfaces here
@@ -289,9 +289,9 @@ impl Ba2Archive {
             }
             BA2_V_STARFIELD_V3 => {
                 let mut extra = [0u8; 8];
-                reader.read_exact(&mut extra)?;
+                read_exact_for(&mut reader, &mut extra, &"BA2 v3 header extension")?;
                 let mut method_buf = [0u8; 4];
-                reader.read_exact(&mut method_buf)?;
+                read_exact_for(&mut reader, &mut method_buf, &"BA2 v3 compression method")?;
                 // #2360 / SF-BA2-02 — log AFTER the compression-method read,
                 // not before it. The point of `stream_pos` in this diagnostic
                 // is "where does the header end", to be compared against
@@ -344,12 +344,12 @@ impl Ba2Archive {
         // `file_count`: `files.len()` equals it here, but only because every
         // one of those records was really present in the file.
         let mut names = Vec::with_capacity(files.len());
-        for _ in 0..file_count {
+        for name_index in 0..file_count {
             let mut len_buf = [0u8; 2];
-            reader.read_exact(&mut len_buf)?;
+            read_exact_for(&mut reader, &mut len_buf, &format_args!("BA2 name {name_index} length"))?;
             let name_len = u16::from_le_bytes(len_buf) as usize;
             let mut name_buf = vec![0u8; name_len];
-            reader.read_exact(&mut name_buf)?;
+            read_exact_for(&mut reader, &mut name_buf, &format_args!("BA2 name {name_index}"))?;
             names.push(normalize_path(&String::from_utf8_lossy(&name_buf)));
         }
 
@@ -467,7 +467,7 @@ impl Ba2Archive {
                 num_mips: *num_mips,
                 is_cubemap: *is_cubemap,
             },
-            read_dx10_chunk_payloads(&self.file, &chunks[keep_from..])?,
+            read_dx10_chunk_payloads(&self.file, &chunks[keep_from..], path, keep_from)?,
             self.compression,
             path,
         )?;
@@ -586,7 +586,13 @@ impl Ba2Archive {
                 packed_size,
                 unpacked_size,
             } => finish_chunk_payload(
-                read_chunk_payload(&self.file, *offset, *packed_size, *unpacked_size)?,
+                read_chunk_payload(
+                    &self.file,
+                    *offset,
+                    *packed_size,
+                    *unpacked_size,
+                    ChunkSite { path, chunk: None },
+                )?,
                 self.compression,
                 path,
             ),
@@ -605,7 +611,7 @@ impl Ba2Archive {
                     num_mips: *num_mips,
                     is_cubemap: *is_cubemap,
                 },
-                read_dx10_chunk_payloads(&self.file, chunks)?,
+                read_dx10_chunk_payloads(&self.file, chunks, path, 0)?,
                 self.compression,
                 path,
             ),
@@ -1035,24 +1041,46 @@ enum ChunkPayload {
     },
 }
 
+/// Which payload a chunk read is for, for its error: the entry, and for a
+/// DX10 texture the chunk's index in the record's table.
+#[derive(Clone, Copy)]
+struct ChunkSite<'a> {
+    path: &'a str,
+    chunk: Option<usize>,
+}
+
+/// `BA2 entry '<path>'`, then ` chunk <n>` for a DX10 chunk. #7170 — a `Display`, so the label
+/// is formatted only when a read fails; it used to be built as a `String` before every read.
+impl std::fmt::Display for ChunkSite<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "BA2 entry '{}'", self.path)?;
+        match self.chunk {
+            Some(index) => write!(f, " chunk {index}"),
+            None => Ok(()),
+        }
+    }
+}
+
 fn read_chunk_payload<R: ReadAt + ?Sized>(
     reader: &R,
     offset: u64,
     packed_size: u32,
     unpacked_size: u32,
+    site: ChunkSite,
 ) -> io::Result<ChunkPayload> {
-    if packed_size == 0 {
-        let mut buf = vec![0u8; unpacked_size as usize];
-        reader.read_exact_at(&mut buf, offset)?;
-        Ok(ChunkPayload::Raw(buf))
+    let len = if packed_size == 0 { unpacked_size } else { packed_size } as usize;
+    let mut buf = vec![0u8; len];
+    // #7131 — a record whose offset or size runs past the file names the
+    // entry and chunk (`read_exact_at_for` adds the length and offset).
+    reader.read_exact_at_for(&mut buf, offset, &site)?;
+    Ok(if packed_size == 0 {
+        ChunkPayload::Raw(buf)
     } else {
-        let mut packed = vec![0u8; packed_size as usize];
-        reader.read_exact_at(&mut packed, offset)?;
-        Ok(ChunkPayload::Compressed {
-            bytes: packed,
+        ChunkPayload::Compressed {
+            bytes: buf,
             unpacked_size: unpacked_size as usize,
-        })
-    }
+        }
+    })
 }
 
 fn finish_chunk_payload(
@@ -1089,18 +1117,24 @@ fn extract_dx10<R: ReadAt + ?Sized>(
     compression: Ba2Compression,
     path: &str,
 ) -> io::Result<Vec<u8>> {
-    let payloads = read_dx10_chunk_payloads(reader, chunks)?;
+    let payloads = read_dx10_chunk_payloads(reader, chunks, path, 0)?;
     finish_dx10_payload(info, payloads, compression, path)
 }
 
+/// `chunks` is the record's table from index `first` on (a mip-range read
+/// skips the head chunks), so errors name each chunk's real index.
 fn read_dx10_chunk_payloads<R: ReadAt + ?Sized>(
     reader: &R,
     chunks: &[Dx10Chunk],
+    path: &str,
+    first: usize,
 ) -> io::Result<Vec<ChunkPayload>> {
     chunks
         .iter()
-        .map(|chunk| {
-            read_chunk_payload(reader, chunk.offset, chunk.packed_size, chunk.unpacked_size)
+        .enumerate()
+        .map(|(i, chunk)| {
+            let site = ChunkSite { path, chunk: Some(first + i) };
+            read_chunk_payload(reader, chunk.offset, chunk.packed_size, chunk.unpacked_size, site)
         })
         .collect()
 }
@@ -1375,6 +1409,13 @@ pub fn normalize_path(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #7170 — a chunk read's label: the entry, and the chunk index for a DX10 chunk.
+    #[test]
+    fn a_chunk_site_names_its_entry_and_chunk() {
+        assert_eq!(ChunkSite { path: "textures\\a.dds", chunk: Some(3) }.to_string(), "BA2 entry 'textures\\a.dds' chunk 3");
+        assert_eq!(ChunkSite { path: "meshes\\b.nif", chunk: None }.to_string(), "BA2 entry 'meshes\\b.nif'");
+    }
 
     /// Concurrent extracts from one archive must each read their own
     /// record's bytes. Pins the positional-read contract: with a shared
@@ -2469,7 +2510,7 @@ mod tests {
             .expect("the BA2_V_STARFIELD_V3 match arm must exist in this file");
         let body = prefix_up_to(arm, 2000);
         let method_read = body
-            .find("reader.read_exact(&mut method_buf)")
+            .find("read_exact_for(&mut reader, &mut method_buf")
             .expect("the v3 arm must still read the 4-byte compression method");
         let log_call = body
             .find(r#"log_v2_v3_extra_bytes("v3""#)
@@ -2754,6 +2795,33 @@ mod tests {
         bytes.extend_from_slice(&(name.len() as u16).to_le_bytes());
         bytes.extend_from_slice(name.as_bytes());
         bytes
+    }
+
+    /// #7131 — a chunk record running past the file names the entry and the
+    /// chunk's index in its table (also from a mip-range read, which starts
+    /// part-way through the table), and keeps `UnexpectedEof`.
+    #[test]
+    fn a_chunk_read_past_the_file_names_its_entry_and_chunk() {
+        let ranges = [(0u16, 0u16), (1, 1), (2, 6)];
+        let chunk_bytes = vec![vec![0xA0u8; 2048], vec![0xB1; 512], (0..184u8).collect()];
+        let mut bytes = build_dx10_ba2_with_payloads(&ranges, &chunk_bytes, &[], 64, 7);
+        // Chunk 2's record (after the 24-byte header and the 24-byte base
+        // record) points past the end of the file.
+        let record = 24 + 24 + 2 * 24;
+        let past = bytes.len() as u64 + 16;
+        bytes[record..record + 8].copy_from_slice(&past.to_le_bytes());
+        let path = write_temp_ba2(&bytes, "chunk_past_eof");
+        let archive = Ba2Archive::open(&path).expect("opens");
+        let _ = std::fs::remove_file(&path);
+        for error in [
+            archive.extract("textures\\probe.dds").expect_err("full extract"),
+            archive.extract_dx10_mips("textures\\probe.dds", 2).expect_err("floor extract"),
+        ] {
+            assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+            let message = error.to_string();
+            assert!(message.contains("'textures\\probe.dds' chunk 2"), "{message}");
+            assert!(message.contains(&format!("at offset {past}")), "{message}");
+        }
     }
 
     /// M39 A2 / TXS-SRC-001 — a mip-range extract inflates only the chunks

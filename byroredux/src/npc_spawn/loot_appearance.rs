@@ -1677,7 +1677,6 @@ mod tests {
                 dt: 0.0,
                 dr: 0,
                 health: 0,
-                slot_mask: 0x4,
                 armor_rating_x100: 0,
                 armor_type: None,
                 armatures: Vec::new(),

@@ -104,10 +104,6 @@ pub struct SpellCastModel {
     pub luck_skill_mult: f32,
     /// `iActorLuckSkillBase`: the offset added with it (so Luck 50 adds nothing).
     pub luck_skill_base: f32,
-    /// `fMagicSpellLevelCostMult` and `fMagicSpellLevelCostBase`: the affine map from a base cost to the value the
-    /// tier thresholds read.
-    pub level_cost_mult: f32,
-    pub level_cost_base: f32,
     /// `fMagicSpellLevelApprenticeMin`, `JourneymanMin`, `ExpertMin`, `MasterMin`: the base-cost thresholds.
     pub spell_level_min: [f32; 4],
     /// `iSkillApprenticeMin`, `JourneymanMin`, `ExpertMin`, `MasterMin`: the skill that reaches each player tier.
@@ -138,10 +134,9 @@ impl SpellCastModel {
         base_cost_scale: 0.1,
         area_scale: 0.15,
         target_multiplier: 1.5,
-        luck_skill_mult: 0.4,
-        luck_skill_base: -20.0,
-        level_cost_mult: 1.0,
-        level_cost_base: 0.0,
+        // #7199 — the effective skill's one home: the damage settings' Luck pair (CS wiki *Effective Skill Level*).
+        luck_skill_mult: crate::combat::OblivionDamageSettings::OBLIVION.luck_skill_mult,
+        luck_skill_base: crate::combat::OblivionDamageSettings::OBLIVION.luck_skill_base,
         spell_level_min: [25.5, 62.5, 149.5, 399.5],
         skill_tier_min: [25.0, 50.0, 75.0, 100.0],
         fatigue_cast_base: 1.0,
@@ -164,8 +159,6 @@ impl SpellCastModel {
             target_multiplier: authored("fMagicRangeTargetCostMult", self.target_multiplier),
             luck_skill_mult: authored("fActorLuckSkillMult", self.luck_skill_mult),
             luck_skill_base: authored("iActorLuckSkillBase", self.luck_skill_base),
-            level_cost_mult: authored("fMagicSpellLevelCostMult", self.level_cost_mult),
-            level_cost_base: authored("fMagicSpellLevelCostBase", self.level_cost_base),
             spell_level_min: [
                 authored("fMagicSpellLevelApprenticeMin", self.spell_level_min[0]),
                 authored("fMagicSpellLevelJourneymanMin", self.spell_level_min[1]),
@@ -252,13 +245,16 @@ impl SpellCastModel {
     }
 
     /// The tier a spell requires (`0x41d3c0`, `0x548c50`): for an auto-calculated spell, its base cost against the four
-    /// `fMagicSpellLevel*Min` thresholds; for a Manual Spell Cost spell, its stored `SPIT` level.
+    /// `fMagicSpellLevel*Min` thresholds; for a Manual Spell Cost spell, its stored `SPIT` level. #7208 — the bare base
+    /// cost, as `charal-oblivion-ruleset.md` (Spell casting) states the rule: `fMagicSpellLevelCostMult` /
+    /// `fMagicSpellLevelCostBase` are not read (CS wiki: "Not used by the game", Deprecated Settings; `Oblivion.esm`
+    /// authors neither).
     #[must_use]
     pub fn spell_tier(&self, effects: &[EffectCostInput], manual: Option<(u32, u8)>) -> Tier {
         match manual {
             Some((_, level)) => level.min(4),
             None => {
-                let value = self.base_cost(effects, None) * self.level_cost_mult + self.level_cost_base;
+                let value = self.base_cost(effects, None);
                 self.spell_level_min.iter().filter(|min| value >= **min).count() as Tier
             }
         }
@@ -405,6 +401,14 @@ mod tests {
         // Flare is Novice; a Manual Spell Cost spell reads its stored level.
         assert_eq!(model.spell_tier(&[flare()], None), 0);
         assert_eq!(model.spell_tier(&[], Some((368, 3))), 3);
+        // #7208 — the two settings the CS wiki lists as "Not used by the game" retune nothing.
+        let authored = model.with_gmst(|name| match name {
+            "fMagicSpellLevelCostMult" => Some(10.0),
+            "fMagicSpellLevelCostBase" => Some(500.0),
+            _ => None,
+        });
+        assert_eq!(authored.spell_tier(&spell(25.0), None), 0);
+        assert_eq!(authored, model);
     }
 
     #[test]

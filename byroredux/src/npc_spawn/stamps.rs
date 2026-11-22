@@ -97,7 +97,7 @@ pub(super) fn stamp_spell_list(
     world.insert(placement_root, byroredux_scripting::SpellList(spells));
 }
 
-fn player_level_for_spawn(world: &World, index: &EsmIndex) -> Option<u16> {
+pub(super) fn player_level_for_spawn(world: &World, index: &EsmIndex) -> Option<u16> {
     crate::components::PlayerEntity::get(world)
         .and_then(|player| world.get::<byroredux_core::character::CharacterLevel>(player).map(|level| level.level))
         .or_else(|| index.npcs.get(&7).and_then(|player| u16::try_from(player.level).ok()))
@@ -297,6 +297,7 @@ pub fn build_vats_model(
             willpower_avif: None,
             stunted_magicka_avif: None,
             action_points,
+            tes_rates: None,
         },
     ))
 }

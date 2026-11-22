@@ -22,14 +22,19 @@
 //! diverging regen math is out of scope, matching
 //! [`super::tes::oblivion_health_gain_per_level`])
 //!
-//! * **Fatigue**: flat `10`/sec — `fFatigueReturnBase=10.0`,
-//!   `fFatigureReturnMult=0.0` (the Endurance term ships at coefficient zero
-//!   in vanilla).
+//! * **Fatigue**: `fFatigueReturnBase + fFatigueReturnMult × Endurance` per
+//!   second — flat `10`/sec in vanilla (`Oblivion.esm` authors `10.0` and
+//!   `0.0`, so the Endurance term ships at coefficient zero).
 //! * **Health**: **no passive regen at all** — deliberately not modeled here.
 //! * **Magicka**: `(Willpower × 0.02 + 0.75) × (MaxMagicka / 100)`. Stunted
 //!   Magicka (Atronach birthsign / *Astral Vapors* disease / one Shivering
 //!   Isles item) zeroes this entirely; the resolved actor value supplies the
 //!   flag when present.
+//!
+//! #7197 — all four settings are authored by `Oblivion.esm`, so they are
+//! read from the load order: [`TesPoolRegen`] holds them, overlaid by
+//! [`TesPoolRegen::with_gmst`] over the documented defaults below, and the
+//! profile's `build_tes_pool_regen` installs it on the [`PoolRegenConfig`].
 
 use super::components::CharacterLevel;
 use super::derived::DerivedScope;
@@ -77,15 +82,72 @@ pub const MAGICKA_REGEN_WILLPOWER_COEFF: f32 = 0.02;
 /// Magicka regen's bias term (`fMagickaReturnBase`).
 pub const MAGICKA_REGEN_BASE: f32 = 0.75;
 
-/// `(Willpower × 0.02 + 0.75) × (MaxMagicka / 100)`, or `0.0` while
-/// `stunted` (Stunted Magicka — see module docs for why this is always
-/// `false` from the tick system today).
+/// `(Willpower × 0.02 + 0.75) × (MaxMagicka / 100)` at the documented default
+/// rates ([`TesPoolRegen::OBLIVION`]), or `0.0` while `stunted` (an active
+/// Stunted Magicka value). The tick uses the installed, load-order rates.
 #[must_use]
 pub fn magicka_regen_per_sec(willpower: f32, max_magicka: f32, stunted: bool) -> f32 {
-    if stunted || max_magicka <= 0.0 {
-        return 0.0;
+    TesPoolRegen::OBLIVION.magicka_per_sec(willpower, max_magicka, stunted)
+}
+
+/// #7197 — Oblivion's Fatigue and Magicka regeneration rates: the load order's
+/// `fFatigueReturnBase` / `fFatigueReturnMult` / `fMagickaReturnBase` /
+/// `fMagickaReturnMult` (all four authored by `Oblivion.esm`) over the
+/// documented defaults, plus the Endurance record the Fatigue term reads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TesPoolRegen {
+    /// `fFatigueReturnBase`: Fatigue restored per second.
+    pub fatigue_base: f32,
+    /// `fFatigueReturnMult`: Fatigue per second per point of Endurance.
+    pub fatigue_endurance_mult: f32,
+    /// The Endurance actor value the Fatigue term reads; `None` reads 0.
+    pub endurance_avif: Option<u32>,
+    /// `fMagickaReturnBase`: Magicka regen's bias, per 100 points of maximum.
+    pub magicka_base: f32,
+    /// `fMagickaReturnMult`: Magicka regen per point of Willpower, per 100 points of maximum.
+    pub magicka_willpower_mult: f32,
+}
+
+impl TesPoolRegen {
+    /// The documented defaults (`charal-oblivion-ruleset.md`, Fatigue and Magicka regeneration).
+    pub const OBLIVION: Self = Self {
+        fatigue_base: FATIGUE_REGEN_PER_SEC,
+        fatigue_endurance_mult: 0.0,
+        endurance_avif: None,
+        magicka_base: MAGICKA_REGEN_BASE,
+        magicka_willpower_mult: MAGICKA_REGEN_WILLPOWER_COEFF,
+    };
+
+    /// The rates with each setting the load order authors replacing its default. A non-finite or negative value is
+    /// ignored (a negative rate would drain the pool it regenerates).
+    #[must_use]
+    pub fn with_gmst(self, gmst: impl Fn(&str) -> Option<f32>) -> Self {
+        let authored = |name: &str, default: f32| gmst(name).filter(|value| value.is_finite() && *value >= 0.0).unwrap_or(default);
+        Self {
+            fatigue_base: authored("fFatigueReturnBase", self.fatigue_base),
+            fatigue_endurance_mult: authored("fFatigueReturnMult", self.fatigue_endurance_mult),
+            magicka_base: authored("fMagickaReturnBase", self.magicka_base),
+            magicka_willpower_mult: authored("fMagickaReturnMult", self.magicka_willpower_mult),
+            ..self
+        }
     }
-    (willpower * MAGICKA_REGEN_WILLPOWER_COEFF + MAGICKA_REGEN_BASE) * (max_magicka / 100.0)
+
+    /// Fatigue per second for an actor with `endurance`: `fFatigueReturnBase + fFatigueReturnMult × Endurance`,
+    /// never negative.
+    #[must_use]
+    pub fn fatigue_per_sec(&self, endurance: f32) -> f32 {
+        (self.fatigue_base + self.fatigue_endurance_mult * endurance).max(0.0)
+    }
+
+    /// Magicka per second: `(Willpower × fMagickaReturnMult + fMagickaReturnBase) × (MaxMagicka / 100)`, or `0.0`
+    /// while `stunted` or with no Magicka pool.
+    #[must_use]
+    pub fn magicka_per_sec(&self, willpower: f32, max_magicka: f32, stunted: bool) -> f32 {
+        if stunted || max_magicka <= 0.0 {
+            return 0.0;
+        }
+        ((willpower * self.magicka_willpower_mult + self.magicka_base) * (max_magicka / 100.0)).max(0.0)
+    }
 }
 
 /// Cross-frame accumulator driving the fixed 60 Hz regen tick — a `Resource`,
@@ -130,6 +192,9 @@ pub struct PoolRegenConfig {
     pub willpower_avif: Option<u32>,
     /// An active Stunted Magicka actor value disables Magicka regeneration.
     pub stunted_magicka_avif: Option<u32>,
+    /// #7197 — the Fatigue and Magicka lanes' rates, the load order's settings over the documented defaults. `None`
+    /// on a game with no TES pool lanes; a TES lane without its rates is off.
+    pub tes_rates: Option<TesPoolRegen>,
     /// #6350 — the Fallout ActionPoints lane. `None` on the TES games
     /// (and on any Fallout load whose AP AVIF failed to resolve, which
     /// disables regen rather than force-populating a zero entry — the
@@ -242,8 +307,9 @@ pub fn pool_regen_tick_system(world: &World, frame_dt: f32) {
         // instead of no-oping the whole system for want of a storage that
         // was never going to exist.
         let level = world.get::<CharacterLevel>(entity).map_or(1, |cl| cl.level);
-        if let Some(fatigue) = config.fatigue_avif.filter(|&id| avs.get(id).is_some()) {
-            avs.restore(fatigue, FATIGUE_REGEN_PER_SEC * elapsed);
+        if let (Some(fatigue), Some(rates)) = (config.fatigue_avif.filter(|&id| avs.get(id).is_some()), config.tes_rates) {
+            let endurance = rates.endurance_avif.map_or(0.0, |id| avs.current(id));
+            avs.restore(fatigue, rates.fatigue_per_sec(endurance) * elapsed);
         }
         // #6350 — the AP lane: flat per-second restore on the same tick,
         // actors without the AV simply skip it. VATS needs no special
@@ -254,10 +320,10 @@ pub fn pool_regen_tick_system(world: &World, frame_dt: f32) {
             && avs.get(ap.avif).is_some() {
                 avs.restore(ap.avif, ap.per_second * elapsed);
             }
-        if let Some((magicka, base_max)) = config
-            .magicka_avif
-            .and_then(|id| avs.get(id).map(|av| (id, av.undamaged())))
-        {
+        if let (Some((magicka, base_max)), Some(rates)) = (
+            config.magicka_avif.and_then(|id| avs.get(id).map(|av| (id, av.undamaged()))),
+            config.tes_rates,
+        ) {
             let willpower = config.willpower_avif.map_or(0.0, |id| avs.current(id));
             // #2932 — honour `DerivedScope`, which `derived_value`
             // deliberately does NOT enforce (it is a caller contract; the
@@ -282,7 +348,7 @@ pub fn pool_regen_tick_system(world: &World, frame_dt: f32) {
             });
             let max_magicka = scoped_max.unwrap_or(base_max);
             let stunted = config.stunted_magicka_avif.is_some_and(|id| avs.current(id) > 0.0);
-            let rate = magicka_regen_per_sec(willpower, max_magicka, stunted);
+            let rate = rates.magicka_per_sec(willpower, max_magicka, stunted);
             avs.restore(magicka, rate * elapsed);
         }
     }
@@ -297,7 +363,7 @@ mod tests {
         world.register::<ActorValues>();
         world.insert_resource(PoolRegenConfig {
             fatigue_avif: Some(1), magicka_avif: Some(2), willpower_avif: Some(3),
-            stunted_magicka_avif: Some(4), action_points: None,
+            stunted_magicka_avif: Some(4), action_points: None, tes_rates: Some(TesPoolRegen::OBLIVION),
         });
         world.insert_resource(PoolRegenAccumulator::default());
         let actor = world.spawn();
@@ -328,6 +394,7 @@ mod tests {
                 // FNV's authored 0.06 per frame, normalized to per-second.
                 per_second: 3.6,
             }),
+            tes_rates: Some(TesPoolRegen::OBLIVION),
         });
         world.insert_resource(PoolRegenAccumulator::default());
         let entity = world.spawn();
@@ -366,7 +433,7 @@ mod tests {
             magicka_avif: None,
             willpower_avif: None,
             stunted_magicka_avif: None,
-            action_points: None,
+            action_points: None, tes_rates: None,
         });
         world.insert_resource(PoolRegenAccumulator::default());
         let entity = world.spawn();
@@ -417,7 +484,7 @@ mod tests {
             magicka_avif: Some(MAGICKA),
             willpower_avif: Some(WILLPOWER),
             stunted_magicka_avif: None,
-            action_points: None,
+            action_points: None, tes_rates: Some(TesPoolRegen::OBLIVION),
         });
         world.insert_resource(PoolRegenAccumulator::default());
         let e = world.spawn();
@@ -473,7 +540,7 @@ mod tests {
             magicka_avif: Some(MAGICKA),
             willpower_avif: Some(WILLPOWER),
             stunted_magicka_avif: None,
-            action_points: None,
+            action_points: None, tes_rates: Some(TesPoolRegen::OBLIVION),
         });
         world.insert_resource(PoolRegenAccumulator::default());
 
@@ -593,6 +660,51 @@ mod tests {
         assert_eq!(magicka_regen_per_sec(30.0, 0.0, false), 0.0);
     }
 
+    /// #7197 — the tick regenerates at the installed rates, not the compiled defaults: a load order retuning
+    /// `fFatigueReturnBase` / `fFatigueReturnMult` (with its Endurance term) and `fMagickaReturnBase` /
+    /// `fMagickaReturnMult` is honoured, and a non-finite or negative authored rate keeps its default.
+    #[test]
+    fn regeneration_follows_the_installed_rates_and_the_endurance_term() {
+        const FATIGUE: u32 = 1;
+        const MAGICKA: u32 = 2;
+        const WILLPOWER: u32 = 3;
+        const ENDURANCE: u32 = 5;
+        let rates = TesPoolRegen { endurance_avif: Some(ENDURANCE), ..TesPoolRegen::OBLIVION }.with_gmst(|name| match name {
+            "fFatigueReturnBase" => Some(4.0),
+            "fFatigueReturnMult" => Some(0.1),
+            "fMagickaReturnBase" => Some(1.0),
+            "fMagickaReturnMult" => Some(0.05),
+            _ => None,
+        });
+        let mut world = World::new();
+        world.register::<ActorValues>();
+        world.insert_resource(PoolRegenConfig {
+            fatigue_avif: Some(FATIGUE),
+            magicka_avif: Some(MAGICKA),
+            willpower_avif: Some(WILLPOWER),
+            stunted_magicka_avif: None,
+            action_points: None,
+            tes_rates: Some(rates),
+        });
+        world.insert_resource(PoolRegenAccumulator::default());
+        let actor = world.spawn();
+        let mut avs = ActorValues::from_pairs([(FATIGUE, 200.0), (MAGICKA, 100.0), (WILLPOWER, 40.0), (ENDURANCE, 60.0)]);
+        avs.apply_damage(FATIGUE, 100.0);
+        avs.apply_damage(MAGICKA, 50.0);
+        world.insert(actor, avs);
+        for _ in 0..60 {
+            pool_regen_tick_system(&world, POOL_REGEN_DT);
+        }
+        let avs = world.get::<ActorValues>(actor).unwrap();
+        // One second: Fatigue 4 + 0.1 x Endurance 60 = 10; Magicka (40 x 0.05 + 1) x 100/100 = 3.
+        assert!((avs.current(FATIGUE) - 110.0).abs() < 1e-3, "{}", avs.current(FATIGUE));
+        assert!((avs.current(MAGICKA) - 53.0).abs() < 1e-3, "{}", avs.current(MAGICKA));
+        drop(avs);
+        for bad in [f32::NAN, -1.0] {
+            assert_eq!(TesPoolRegen::OBLIVION.with_gmst(move |_| Some(bad)), TesPoolRegen::OBLIVION, "{bad}");
+        }
+    }
+
     #[test]
     fn accumulator_ticks_at_sixty_hz_and_caps_catchup() {
         let mut acc = PoolRegenAccumulator::default();
@@ -632,7 +744,7 @@ mod tests {
             magicka_avif: Some(MAGICKA),
             willpower_avif: Some(WILLPOWER),
             stunted_magicka_avif: None,
-            action_points: None,
+            action_points: None, tes_rates: Some(TesPoolRegen::OBLIVION),
         });
         world.insert_resource(PoolRegenAccumulator::default());
 
@@ -715,7 +827,7 @@ mod tests {
             magicka_avif: Some(MAGICKA),
             willpower_avif: Some(WILLPOWER),
             stunted_magicka_avif: None,
-            action_points: None,
+            action_points: None, tes_rates: Some(TesPoolRegen::OBLIVION),
         });
         world.insert_resource(PoolRegenAccumulator::default());
         // Deliberately NO CharacterRuleset.

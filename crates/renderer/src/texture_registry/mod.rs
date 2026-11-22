@@ -117,6 +117,9 @@ struct PendingDdsUpload {
     /// Lowercased path — for diagnostic logging only. The path_map
     /// entry is set up by `enqueue_dds_with_clamp_and_color_space` at queue time.
     path: String,
+    /// The host's source generation when this upload was queued, which a
+    /// floor's [`StreamSource`] keeps (#7167, #7169).
+    generation: u64,
     /// M39 — `Some` for a promotion or demotion of a live streamable
     /// texture (queued on `pending_promotions`); `None` for a first upload.
     change: Option<residency::ResidencyChange>,
@@ -158,6 +161,11 @@ struct StreamSource {
     /// No promotion is requested before this frame: the backoff after a
     /// failed image allocation (TXS-BUD-007).
     retry_after_frame: u64,
+    /// The host's source generation when its floor was queued: which archive
+    /// files its bytes came from. #7167, #7169 — it is promoted only while
+    /// that is the generation the host's promotion reads come from
+    /// ([`TextureRegistry::set_promotable_generation`]).
+    generation: u64,
 }
 
 impl StreamSource {
@@ -216,6 +224,19 @@ pub struct PromotionRequest {
     pub handle: TextureHandle,
     pub path: String,
     pub target: u32,
+}
+
+/// M39 — what [`TextureRegistry::queue_promotion_bytes`] did with a read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromotionLanding {
+    /// The promotion is queued for upload.
+    Queued,
+    /// Nothing is left to do: the handle was released, or it already holds
+    /// the target.
+    NothingToDo,
+    /// The bytes cannot supply the levels the promotion uploads (a short or
+    /// undecodable read). The texture backs off like a failed read (#7129).
+    Unusable,
 }
 
 /// Outcome of [`TextureRegistry::queue_or_hit`]. Distinguishes a
@@ -440,6 +461,12 @@ pub struct TextureRegistry {
     /// re-read the levels a promotion needs (and a demotion can be queued
     /// from the header alone). Removed with the handle's last release.
     stream_sources: rustc_hash::FxHashMap<TextureHandle, StreamSource>,
+    /// The host's source-generation counter, read when an upload is queued
+    /// ([`Self::set_source_generation_counter`]); `None` reads as 0 (#7169).
+    generation_source: Option<&'static std::sync::atomic::AtomicU64>,
+    /// The generation the host's promotion reads come from; only sources
+    /// floored under it are promoted (#7167, #7169).
+    promotable_generation: u64,
     /// Level 0's larger edge of each streamed handle, indexed by handle (`0`
     /// = not streamed): the wanted-mip pass asks per draw per texture slot,
     /// which a hash lookup made the pass's dominant cost (1.5 ms a frame on
@@ -734,6 +761,8 @@ impl TextureRegistry {
             pending_dds_uploads: Vec::new(),
             pending_promotions: Vec::new(),
             stream_sources: Default::default(),
+            generation_source: None,
+            promotable_generation: 0,
             stream_widths: Vec::new(),
             promotion_requests: Vec::new(),
             streaming: false,
@@ -1779,7 +1808,8 @@ impl TextureRegistry {
 /// fixed by #522; only the diagnostic's own display grouping still
 /// double-counted spelling variants as distinct textures).
 pub fn normalize_path(path: &str) -> String {
-    let lowered = path.to_ascii_lowercase().replace('\\', "/");
+    // #7180 — the archives' case fold, so a non-ASCII spelling variant is one cache entry.
+    let lowered = byroredux_core::paths::fold_case(path).replace('\\', "/");
     if lowered.starts_with("textures/") {
         lowered
     } else {

@@ -26,7 +26,7 @@ fn an_oblivion_index_builds_the_ruleset_and_the_fatigue_and_magicka_regen_lanes(
     assert!(build_character_ruleset(&index).is_some(), "the built Oblivion ruleset resolves on the installed roster");
     let regen = index
         .character_rules
-        .build_tes_pool_regen(|name| index.actor_value_form_id(name))
+        .build_tes_pool_regen(|name| index.actor_value_form_id(name), |name| index.game_setting_float(name))
         .expect("an Oblivion profile has TES regeneration lanes");
     assert_eq!(regen.fatigue_avif, index.actor_value_form_id("Fatigue"));
     assert_eq!(regen.magicka_avif, index.actor_value_form_id("Magicka"));
@@ -34,11 +34,16 @@ fn an_oblivion_index_builds_the_ruleset_and_the_fatigue_and_magicka_regen_lanes(
     assert_eq!(regen.stunted_magicka_avif, index.actor_value_form_id("StuntedMagicka"));
     assert!(regen.fatigue_avif.is_some() && regen.magicka_avif.is_some());
     assert!(regen.action_points.is_none(), "Action Points are the Fallout lane");
-    // The install itself: the reference loader builds both resources behind the same `is_none()` guards.
+    // #7197 — the lanes carry their rates, and the Fatigue term reads the installed Endurance.
+    let rates = regen.tes_rates.expect("the TES lanes carry their rates");
+    assert_eq!(rates.endurance_avif, index.actor_value_form_id("Endurance"));
+    // The install itself: the reference loader builds both resources behind the same `is_none()` guards, and hands
+    // the regen builder the load order's settings (#7197).
     let loader = include_str!("../cell_loader/references/mod.rs");
     assert!(loader.contains("build_character_ruleset(record_index)") && loader.contains("build_tes_pool_regen(|name|"));
+    assert!(loader.contains("|name| record_index.game_setting_float(name))"), "the regen rates read the load order's settings");
     // A non-Oblivion profile carries no TES lanes.
-    assert!(CharacterRulesProfile::FALLOUT_NEW_VEGAS.build_tes_pool_regen(|_| None).is_none());
+    assert!(CharacterRulesProfile::FALLOUT_NEW_VEGAS.build_tes_pool_regen(|_| None, |_| None).is_none());
 }
 
 #[test]
@@ -1724,7 +1729,6 @@ fn skyrim_armor_item(
             dt: 0.0,
             dr: 0,
             health: 0,
-            slot_mask: 0,
             armor_rating_x100: 0,
             armor_type: Some(1),
             armatures,
@@ -1764,7 +1768,6 @@ fn legacy_armor_item(
             dt: 0.0,
             dr: 0,
             health: 0,
-            slot_mask: biped_flags as u16,
             armor_rating_x100: 0,
             armor_type: None,
             armatures: Vec::new(),

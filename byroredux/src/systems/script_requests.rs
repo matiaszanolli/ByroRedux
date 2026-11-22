@@ -316,7 +316,9 @@ pub(crate) fn finish_sleep(world: &World, source: byroredux_scripting::oblivion_
 pub(crate) fn find_case_insensitive(root: &std::path::Path, relative: &str) -> Option<std::path::PathBuf> {
     let mut path = root.to_path_buf();
     for component in relative.split(['\\', '/']).filter(|part| !part.is_empty()) {
-        if component == ".." || component == "." {
+        // `..` / `.`, and (#7142) a drive prefix or any `:`: on Windows `join("C:")` replaces the
+        // path walked so far, so a script's `C:\x.bik` or `D:x.bik` would leave the data folder.
+        if !byroredux_core::paths::is_bare_component(component) {
             return None;
         }
         let exact = path.join(component);

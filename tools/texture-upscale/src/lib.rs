@@ -188,23 +188,35 @@ pub fn load_manifest(path: &Path) -> Result<Manifest> {
     Ok(manifest)
 }
 
-pub fn save_manifest(path: &Path, manifest: &Manifest) -> Result<()> {
+/// Write `manifest` to `path`. #7192 — an existing manifest is refused unless `overwrite` (it is the
+/// file the README tells users to review and extend by hand, and `discover` used to replace it
+/// silently), and the write goes through the shared atomic writer, so a crash never leaves it torn.
+pub fn save_manifest(path: &Path, manifest: &Manifest, overwrite: bool) -> Result<()> {
     manifest.validate()?;
+    if !overwrite && path.exists() {
+        bail!(
+            "{} already exists and may hold your edits; pass --overwrite to replace it",
+            path.display()
+        );
+    }
     let text = toml::to_string_pretty(manifest).context("serialize texture manifest")?;
     space::ensure_single_path_space(path, text.len() as u64, "texture manifest")?;
-    if let Some(parent) = path.parent() {
+    if let Some(parent) = path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("create manifest directory {}", parent.display()))?;
     }
-    std::fs::write(path, text).with_context(|| format!("write manifest {}", path.display()))
+    let temp = byroredux_core::atomic_file::atomic_temp_path(path);
+    byroredux_core::atomic_file::atomic_write(path, &temp, text.as_bytes())
+        .with_context(|| format!("write manifest {}", path.display()))
 }
 
+/// An asset path as the source stack keys it: trimmed, `/`-separated, case-folded as the archives
+/// and the engine's caches fold (`core::paths::fold_case`, #7191 — it folded ASCII only, so `Ä.dds`
+/// in one source did not override `ä.dds` in an earlier one).
 pub fn normalize_asset_path(path: &str) -> String {
-    path.trim()
-        .trim_start_matches("./")
-        .trim_start_matches(".\\")
-        .replace('\\', "/")
-        .to_ascii_lowercase()
+    byroredux_core::paths::fold_case(
+        &path.trim().trim_start_matches("./").trim_start_matches(".\\").replace('\\', "/"),
+    )
 }
 
 pub fn output_png_path(root: &Path, asset_path: &str) -> Result<PathBuf> {
@@ -223,10 +235,11 @@ fn validate_asset_path(path: &str) -> Result<()> {
     if normalized.is_empty() {
         bail!("asset path must not be empty");
     }
+    // #7190 — every segment a bare name (`core::paths::is_bare_component`: not empty, `.` or `..`,
+    // no `/`, `\` or `:`): a `c:` or `d:x` segment passed the old shape check, and on Windows
+    // `PathBuf::push("c:")` replaces the output root.
     if Path::new(&normalized).is_absolute()
-        || normalized
-            .split('/')
-            .any(|part| part.is_empty() || part == "." || part == "..")
+        || !normalized.split('/').all(byroredux_core::paths::is_bare_component)
     {
         bail!("asset path must be a safe relative path, got {:?}", path);
     }
@@ -339,6 +352,31 @@ fn role_rank(role: MapRole) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #7192 — an existing manifest is not replaced without `overwrite`; with it, it is replaced.
+    #[test]
+    fn an_existing_manifest_is_kept_unless_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("textures.toml");
+        let manifest = Manifest::discovered(4, Vec::<String>::new());
+        save_manifest(&path, &manifest, false).expect("a new manifest is written");
+        std::fs::write(&path, "# hand edits\n").unwrap();
+        let err = save_manifest(&path, &manifest, false).expect_err("an existing manifest is refused");
+        assert!(err.to_string().contains("--overwrite"), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# hand edits\n", "the edits are kept");
+        save_manifest(&path, &manifest, true).expect("--overwrite replaces it");
+        assert!(load_manifest(&path).is_ok(), "the replacement is a whole manifest");
+    }
+
+    /// #7190 — a drive-prefixed or `:`-carrying segment is refused like `..`, on every host.
+    #[test]
+    fn drive_prefixed_and_colon_segments_are_refused() {
+        let root = std::path::Path::new("out");
+        for bad in ["c:/x.dds", "d:x.dds", "textures/c:/x.dds", "textures/a:b.dds", "../x.dds", "textures//x.dds"] {
+            assert!(output_png_path(root, bad).is_err(), "{bad}");
+        }
+        assert!(output_png_path(root, "textures/armor/iron.dds").is_ok());
+    }
 
     #[test]
     fn discovery_groups_only_unambiguous_companions() {

@@ -7,7 +7,7 @@
 //! downstream character consumers read the same table.
 
 use super::{
-    fallout3_ruleset_with_gmst, fallout4_ruleset_with_gmst, falloutnv_ruleset_with_gmst, oblivion_ruleset, skyrim_ruleset, CharacterRuleset, CrimeModel,
+    fallout3_ruleset_with_gmst, fallout4_ruleset_with_gmst, falloutnv_ruleset_with_gmst, skyrim_ruleset, CharacterRuleset, CrimeModel,
     SkillSet, SpellCastModel, StanceModel, VatsModel, ArmorModel, ArmorRatingModel, BlockModel, BowModel, FallModel,
 };
 
@@ -886,7 +886,7 @@ impl CharacterRulesProfile {
             // a per-level Health gain to the stored term (`0x66c3e0`). The level-up is wired (#7052,
             // `oblivion_skill_use.rs`): the gain lands in `ActorValue::stored` (#7044), apart from this
             // refreshed base, so the refresh does not erase it.
-            RulesetBuilder::Oblivion => oblivion_ruleset(resolve),
+            RulesetBuilder::Oblivion => super::tes::oblivion_ruleset_with_gmst(resolve, &gmst),
             RulesetBuilder::None => return None,
         };
         ruleset.leveling = ruleset
@@ -897,7 +897,15 @@ impl CharacterRulesProfile {
     }
 
     /// Resolve this profile's TES pool-regeneration lanes from its records.
-    pub fn build_tes_pool_regen(self, resolve: impl Fn(&str) -> Option<u32>) -> Option<super::regen::PoolRegenConfig> {
+    ///
+    /// #7197 — the lanes' rates are the load order's `fFatigueReturnBase` / `fFatigueReturnMult` /
+    /// `fMagickaReturnBase` / `fMagickaReturnMult` over the documented defaults
+    /// ([`TesPoolRegen::with_gmst`](super::regen::TesPoolRegen::with_gmst)), and the Fatigue term reads Endurance.
+    pub fn build_tes_pool_regen(
+        self,
+        resolve: impl Fn(&str) -> Option<u32>,
+        gmst: impl Fn(&str) -> Option<f32>,
+    ) -> Option<super::regen::PoolRegenConfig> {
         if self.npc_stats != NpcStatModel::OblivionNpc { return None; }
         Some(super::regen::PoolRegenConfig {
             fatigue_avif: resolve("Fatigue"),
@@ -905,6 +913,10 @@ impl CharacterRulesProfile {
             willpower_avif: resolve("Willpower"),
             stunted_magicka_avif: resolve("StuntedMagicka"),
             action_points: None,
+            tes_rates: Some(super::regen::TesPoolRegen {
+                endurance_avif: resolve("Endurance"),
+                ..super::regen::TesPoolRegen::OBLIVION.with_gmst(gmst)
+            }),
         })
     }
 
@@ -933,6 +945,46 @@ mod tests {
     /// perk entry points), pinned per profile. Each row is an exhaustive
     /// struct literal, so a new profile cannot compile without stating every
     /// one; this pin keeps the stated values from drifting.
+    /// #7203 — the player rule rows and the M65 stealth rows, pinned per profile. Each is an exhaustive struct literal,
+    /// so a profile cannot compile without stating them; this pin keeps the stated values from moving (a `block` row
+    /// moved onto the Skyrim profile, say, breaks here and nowhere else).
+    #[test]
+    fn player_and_stealth_rule_rows_are_stated_on_every_profile() {
+        use crate::stealth::{IndicatorModel, StealthKind};
+        let p = CharacterRulesProfile::OBLIVION;
+        assert_eq!(
+            (p.spell_cast(), p.bow(), p.block(), p.fall(), p.armor_rating()),
+            (
+                Some(SpellCastModel::OBLIVION),
+                Some(BowModel::OBLIVION),
+                Some(BlockModel::OBLIVION),
+                Some(FallModel::OBLIVION),
+                Some(ArmorRatingModel::OBLIVION)
+            )
+        );
+        assert_eq!((p.stance(), p.stealth(), p.indicator()), (StanceModel::OBLIVION, StealthKind::Oblivion, IndicatorModel::OBLIVION));
+        let s = CharacterRulesProfile::SKYRIM;
+        assert_eq!((s.spell_cast(), s.bow(), s.block(), s.fall(), s.armor_rating()), (None, Some(BowModel::SKYRIM), None, None, None));
+        assert_eq!((s.stance(), s.stealth(), s.indicator()), (StanceModel::SKYRIM, StealthKind::Skyrim, IndicatorModel::SKYRIM));
+        let rest = [
+            (CharacterRulesProfile::NONE, StanceModel::NONE, StealthKind::SightOnly, IndicatorModel::NONE),
+            (CharacterRulesProfile::FALLOUT3, StanceModel::FALLOUT, StealthKind::Fallout3, IndicatorModel::FALLOUT),
+            (CharacterRulesProfile::FALLOUT_NEW_VEGAS, StanceModel::FALLOUT, StealthKind::FalloutNv, IndicatorModel::FALLOUT),
+            (CharacterRulesProfile::FALLOUT4, StanceModel::FALLOUT4, StealthKind::Fallout4, IndicatorModel::FALLOUT4),
+            (CharacterRulesProfile::FALLOUT76, StanceModel::NONE, StealthKind::SightOnly, IndicatorModel::NONE),
+            (CharacterRulesProfile::STARFIELD, StanceModel::NONE, StealthKind::Starfield, IndicatorModel::STARFIELD),
+        ];
+        for (profile, stance, stealth, indicator) in rest {
+            assert_eq!(
+                (profile.spell_cast(), profile.bow(), profile.block(), profile.fall(), profile.armor_rating()),
+                (None, None, None, None, None),
+                "{}",
+                profile.name()
+            );
+            assert_eq!((profile.stance(), profile.stealth(), profile.indicator()), (stance, stealth, indicator), "{}", profile.name());
+        }
+    }
+
     #[test]
     fn per_game_rule_rows_are_stated_on_every_profile() {
         use OverEncumberedRule as E;
@@ -1360,6 +1412,17 @@ mod tests {
                 .build_ruleset(|_| None, |_| None, &[])
                 .is_some(),
         );
+        // #7198 — the profile hands the load order's settings to the player's pool rows.
+        let resolve = |name: &str| match name {
+            "Magicka" => Some(0x91),
+            "Intelligence" => Some(0x09),
+            _ => None,
+        };
+        let tuned = CharacterRulesProfile::OBLIVION
+            .build_ruleset(resolve, |name| (name == "fPCBaseMagickaMult").then_some(2.0), &[])
+            .unwrap();
+        let avs = crate::ecs::components::ActorValues::from_pairs([(0x09, 40.0)]);
+        assert_eq!(tuned.derived_value(0x91, &avs, 1), Some(120.0), "40 x (1 + 2)");
     }
 
     /// #7037, #7041 — the player's Health, Magicka and Fatigue are their formulas (`Oblivion.exe` `0x5e2210`;
@@ -1422,7 +1485,7 @@ mod tests {
         let mut gains = 0.0;
         for endurance in [45.0, 50.0, 55.0] {
             values.set_base(5, endurance);
-            gains += apply_oblivion_level_up_health(&mut values, 1, endurance as u16);
+            gains += apply_oblivion_level_up_health(&mut values, 1, endurance as u16, crate::character::tes::OBLIVION_HEALTH_PER_ENDURANCE);
             assert!(rules.refresh_player_only_bases(&mut values, 5), "the per-frame refresh runs every tick");
             assert_eq!(values.current(1), 2.0 * endurance + gains, "base 2 x Endurance plus the accumulated gains");
         }
@@ -1445,10 +1508,26 @@ mod tests {
             "Fatigue" => Some(1), "Magicka" => Some(2), "Willpower" => Some(3),
             "StuntedMagicka" => Some(4), _ => None,
         };
-        let config = CharacterRulesProfile::OBLIVION.build_tes_pool_regen(resolve).unwrap();
+        let config = CharacterRulesProfile::OBLIVION.build_tes_pool_regen(resolve, |_| None).unwrap();
         assert_eq!((config.fatigue_avif, config.magicka_avif, config.willpower_avif, config.stunted_magicka_avif), (Some(1), Some(2), Some(3), Some(4)));
         assert!(config.action_points.is_none());
-        assert!(CharacterRulesProfile::FALLOUT3.build_tes_pool_regen(resolve).is_none());
+        assert!(CharacterRulesProfile::FALLOUT3.build_tes_pool_regen(resolve, |_| None).is_none());
+        // #7197 — unauthored settings keep the documented rates; authored ones replace them.
+        assert_eq!(config.tes_rates.map(|rates| rates.fatigue_base), Some(10.0));
+        let retuned = CharacterRulesProfile::OBLIVION
+            .build_tes_pool_regen(resolve, |name| match name {
+                "fFatigueReturnBase" => Some(4.0),
+                "fFatigueReturnMult" => Some(0.1),
+                "fMagickaReturnBase" => Some(1.0),
+                "fMagickaReturnMult" => Some(0.05),
+                _ => None,
+            })
+            .and_then(|config| config.tes_rates)
+            .unwrap();
+        assert_eq!(
+            (retuned.fatigue_base, retuned.fatigue_endurance_mult, retuned.magicka_base, retuned.magicka_willpower_mult),
+            (4.0, 0.1, 1.0, 0.05)
+        );
     }
 
     /// #4453 — FO76 and Starfield claim no NPC stat model until a capture

@@ -376,7 +376,10 @@ pub(super) fn load_references_budgeted(
                 world.insert_resource(rs);
             }
         if world.try_resource::<byroredux_core::character::regen::PoolRegenConfig>().is_none()
-            && let Some(regen) = record_index.character_rules.build_tes_pool_regen(|name| record_index.actor_value_form_id(name)) {
+            && let Some(regen) = record_index
+                .character_rules
+                .build_tes_pool_regen(|name| record_index.actor_value_form_id(name), |name| record_index.game_setting_float(name))
+        {
                 world.insert_resource(regen);
             }
         // #6350 — same idempotent-once construction for the VATS tuning

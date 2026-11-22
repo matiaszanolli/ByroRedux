@@ -484,9 +484,11 @@ pub fn actor_value_view(world: &World, entity: EntityId, avif: u32, view: ActorV
         if let Some(value) = entry.filter(|value| value.base_authored) {
             return match view {
                 ActorValueView::Current => value.current(),
-                ActorValueView::Base => value.base + value.set_override,
+                // #7205 — through the accessors, so a layer added to the composition (`stored`, #7044) reaches
+                // every view; the hand-summed arms left it out.
+                ActorValueView::Base => value.base_view(),
                 ActorValueView::Undamaged => value.undamaged(),
-                ActorValueView::Permanent => value.base + value.set_override + value.permanent_mod,
+                ActorValueView::Permanent => value.permanent(),
             };
         }
         let mut avs = avs.clone();

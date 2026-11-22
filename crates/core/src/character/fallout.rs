@@ -54,9 +54,12 @@ const LEVEL: DerivedInput = DerivedInput::LEVEL;
 /// compiled-in vanilla `default`. The same overlay contract as
 /// [`LevelingModel::with_gmst`], so a retuned `fAVD*` setting reaches the
 /// derived-stat rows and a vanilla (or synthetic) load order is unchanged.
+/// #7200 — a non-finite authored value is ignored, as every sibling overlay
+/// does: a NaN would otherwise become the row's floor (a Health or AP of 0) and
+/// an infinity an unbounded uncapped row.
 #[inline]
 fn setting<G: Fn(&str) -> Option<f32>>(gmst: &G, name: &str, default: f32) -> f32 {
-    gmst(name).unwrap_or(default)
+    gmst(name).filter(|value| value.is_finite()).unwrap_or(default)
 }
 
 /// FO3/FNV player Health: `100 + fAVDHealthEnduranceMult·END +
@@ -423,6 +426,21 @@ mod tests {
             rs.derived_formula(0x2D1).unwrap().scope,
             DerivedScope::ActorGeneral
         );
+    }
+
+    /// #7200 — a NaN or infinite authored `fAVD*` setting is ignored, so every
+    /// derived row keeps its vanilla coefficient instead of reading 0 or infinity.
+    #[test]
+    fn a_non_finite_favd_setting_keeps_its_vanilla_coefficient() {
+        // STR 6, END 5, AGI 4, Unarmed 50, level 3.
+        let avs = ActorValues::from_pairs([(0x05, 6.0), (0x07, 5.0), (0x0A, 4.0), (0x2C, 50.0)]);
+        let vanilla = falloutnv_ruleset_with_gmst(full, |_| None);
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let corrupt = falloutnv_ruleset_with_gmst(full, move |name: &str| name.starts_with("fAVD").then_some(bad));
+            for output in [0x2C9, 0x2D0, 0x2D1, 0x2D2, 0x2D4] {
+                assert_eq!(corrupt.derived_value(output, &avs, 3), vanilla.derived_value(output, &avs, 3), "{bad} on {output:#x}");
+            }
+        }
     }
 
     /// #6756 — every authored `fAVD*` coefficient reaches its derived row, and

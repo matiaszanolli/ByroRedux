@@ -475,6 +475,8 @@ impl VulkanContext {
         stats.first_sight_succeeded = f.first_sight_succeeded;
         stats.refits_attempted = f.refits_attempted;
         stats.refits_succeeded = f.refits_succeeded;
+        stats.dispatch_vertices = f.dispatch_vertices;
+        stats.refit_triangles = f.refit_triangles;
         // #2803 — host-side chain cost, same-frame (not fence-lagged
         // like the GPU brackets below).
         stats.cpu_skin_chain_ms = f.cpu_skin_chain_ns as f32 / 1.0e6;
@@ -511,6 +513,7 @@ impl VulkanContext {
             stats.gpu_far_sun_ms = snap.far_sun_ms;
             stats.gpu_cache_update_ms = snap.cache_update_ms;
             stats.gpu_cache_resolve_ms = snap.cache_resolve_ms;
+            stats.gpu_terrain_patch_ms = snap.terrain_patch_ms;
             stats.gpu_cloud_shadow_ms = snap.cloud_shadow_ms;
             // #2513 / REN-D20-NEW-03 — copy the "did this bracket actually
             // run" flags too, closing the gap #2278 opened at the producer
@@ -542,6 +545,7 @@ impl VulkanContext {
             stats.gpu_far_sun_active = snap.far_sun_active;
             stats.gpu_cache_update_active = snap.cache_update_active;
             stats.gpu_cache_resolve_active = snap.cache_resolve_active;
+            stats.gpu_terrain_patch_active = snap.terrain_patch_active;
             stats.gpu_cloud_shadow_active = snap.cloud_shadow_active;
         } else {
             stats.gpu_skin_dispatch_ms = 0.0;
@@ -572,6 +576,7 @@ impl VulkanContext {
             stats.gpu_far_sun_ms = 0.0;
             stats.gpu_cache_update_ms = 0.0;
             stats.gpu_cache_resolve_ms = 0.0;
+            stats.gpu_terrain_patch_ms = 0.0;
             stats.gpu_cloud_shadow_ms = 0.0;
             // No `GpuPerFrameTimers` at all (driver lacks timestamp
             // support) — every bracket is inactive, not just zero.
@@ -602,6 +607,7 @@ impl VulkanContext {
             stats.gpu_far_sun_active = false;
             stats.gpu_cache_update_active = false;
             stats.gpu_cache_resolve_active = false;
+            stats.gpu_terrain_patch_active = false;
             stats.gpu_cloud_shadow_active = false;
         }
         stats.slots_active = self.skin.slots.len() as u32;

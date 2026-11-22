@@ -833,6 +833,29 @@ impl VulkanContext {
             .as_ref()
             .is_some_and(|b| b.has_samples())
     }
+
+    /// #7152 — the reserved terrain patch meshes of both lattice levels,
+    /// indexed by slot (`None` without the pass; empty when its reservation
+    /// failed).
+    pub fn terrain_patch_meshes(&self) -> Option<&crate::vulkan::terrain_patch::TerrainPatchMeshes> {
+        self.exterior.terrain_patch.as_ref().map(|pass| pass.meshes())
+    }
+
+    /// #7152 — stage this frame's resident terrain patches for `draw_frame`.
+    pub fn set_terrain_patch_frame(
+        &mut self,
+        slots: &[crate::vulkan::terrain_patch::TerrainPatchSlot],
+        params: crate::vulkan::terrain_patch::TerrainPatchParams,
+    ) {
+        if let Some(pass) = self.exterior.terrain_patch.as_mut() {
+            pass.set_frame(slots, params);
+        }
+    }
+
+    /// #7152 — the terrain patch seam check from the last harvested frame.
+    pub fn terrain_patch_stats(&self) -> Option<&crate::vulkan::terrain_patch::TerrainPatchStats> {
+        self.exterior.terrain_patch.as_ref().map(|pass| pass.stats())
+    }
 }
 
 #[cfg(test)]

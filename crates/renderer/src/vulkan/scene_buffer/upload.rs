@@ -1183,10 +1183,11 @@ impl super::buffers::SceneBuffers {
                 .buffer(dst)
                 .offset(0)
                 .size(byte_size);
+            // #7152 — the terrain patch compute pass reads the tiles too.
             device.cmd_pipeline_barrier(
                 cmd,
                 vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::FRAGMENT_SHADER,
+                vk::PipelineStageFlags::FRAGMENT_SHADER | vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::DependencyFlags::empty(),
                 &[],
                 &[barrier],
@@ -1197,6 +1198,12 @@ impl super::buffers::SceneBuffers {
         self.terrain_tile_staging_buffers[frame_index] = Some(staging);
 
         Ok(())
+    }
+
+    /// The shared terrain-tile SSBO and its size, for the TSD-4 terrain patch
+    /// pass's descriptor (#7152).
+    pub fn terrain_tile_buffer(&self) -> (vk::Buffer, vk::DeviceSize) {
+        (self.terrain_tile_buffer.buffer, self.terrain_tile_buffer.size)
     }
 
     /// Get the light buffers (for compute pipeline descriptor writes).

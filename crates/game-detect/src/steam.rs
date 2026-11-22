@@ -128,22 +128,6 @@ impl SteamInstall {
     }
 }
 
-/// Whether a manifest's `installdir` is the single bare directory name Steam
-/// writes, so `steamapps/common/<it>` stays inside `common`.
-///
-/// #5016 — checked by string, not `Path`, so the rule is the same on every
-/// host: `Path::is_absolute` is false on Windows for rooted-prefixless
-/// `\x` and prefixed-rootless `C:x`, yet `join` with either escapes the
-/// base, and on Linux `..\..\x` is one `Normal` component. A Windows
-/// directory name cannot contain `\`, `/` or `:`, so rejecting all three
-/// loses no real install.
-fn is_bare_install_dir(install_dir: &str) -> bool {
-    !install_dir.is_empty()
-        && install_dir != "."
-        && install_dir != ".."
-        && !install_dir.contains(['/', '\\', ':'])
-}
-
 /// Titles the engine has a profile for, installed in this library.
 ///
 /// A manifest that names an app we do not support, cannot be read, or whose
@@ -180,7 +164,8 @@ pub fn installs_in_library(library: &Path) -> Vec<SteamInstall> {
         // right-hand side discards the base, so a tampered manifest's
         // `installdir` would be reported as a detected install anywhere on
         // disk; `..` components escape more quietly.
-        if !is_bare_install_dir(install_dir) {
+        // #5016 — the single bare directory name Steam writes (`byroredux_core::paths::is_bare_component`).
+        if !byroredux_core::paths::is_bare_component(install_dir) {
             log::warn!(
                 "game-detect: {} manifest authors suspicious installdir {:?} — skipped",
                 app.profile,
@@ -324,13 +309,13 @@ mod tests {
     #[test]
     fn only_a_bare_directory_name_is_a_valid_installdir() {
         for ok in ["FalloutNV", "Fallout New Vegas", "Skyrim Special Edition", "a.b"] {
-            assert!(is_bare_install_dir(ok), "{ok:?} must be accepted");
+            assert!(byroredux_core::paths::is_bare_component(ok), "{ok:?} must be accepted");
         }
         for bad in [
             "", ".", "..", "\\Somewhere", "D:Somewhere", "C:\\x", "/etc", "..\\..\\evil",
             "../evil", "a/b", "a\\b", "\\\\server\\share",
         ] {
-            assert!(!is_bare_install_dir(bad), "{bad:?} must be rejected");
+            assert!(!byroredux_core::paths::is_bare_component(bad), "{bad:?} must be rejected");
         }
     }
 

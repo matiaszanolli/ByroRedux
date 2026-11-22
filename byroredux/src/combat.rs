@@ -521,8 +521,10 @@ impl WeaponDefense {
 /// Oblivion's armor rating and Resist Normal Weapons against an actor's weapon hit (UESP *Oblivion:The Complete Damage
 /// Formula*; `ArmorRatingModel`), or `None` where the game has no such rule or the hit is not an actor's (a trap or a script's).
 /// The combined rating is the sum of the pieces the target wears, each worth its `ARMO` rating at the wearer's Light or Heavy
-/// Armor (a piece covering several slots counts once), capped; a Master Sneak attack ignores it. Not modelled: armor condition
-/// (read as full) and Shield-like boosting effects.
+/// Armor (a piece covering several slots counts once), capped; a Master Sneak attack ignores it. A blow struck with no
+/// weapon and no projectile is outside the resistance when it is a creature's natural attack or a fist at Journeyman Hand
+/// to Hand (#7195, `ArmorRatingModel::unarmed_ignores_resistance`); a negative resistance is a weakness and raises the hit.
+/// Not modelled: armor condition (read as full) and Shield-like boosting effects.
 fn weapon_defense(world: &World, event: &byroredux_scripting::HitEvent, target: EntityId) -> Option<WeaponDefense> {
     use byroredux_core::character::{weapon_resistance_factor, ArmorRatingModel};
     use byroredux_core::ecs::components::{EquipmentSlots, Inventory};
@@ -551,7 +553,14 @@ fn weapon_defense(world: &World, event: &byroredux_scripting::HitEvent, target: 
     }
     let master_sneak = event.sneak_attack && model.is_master_sneak(crate::detection::actor_value(world, event.aggressor, "Sneak"));
     let through_armor = model.armor_factor(combined, master_sneak);
-    let through_resistance = weapon_resistance_factor(skill("ResistNormalWeapons"), event.ignores_resistance);
+    let unarmed = event.projectile == 0 && !event.arrow && world.get::<EquippedWeapon>(event.aggressor).is_none();
+    let ignores_resistance = event.ignores_resistance
+        || (unarmed
+            && model.unarmed_ignores_resistance(
+                world.get::<byroredux_core::ecs::components::CreatureActor>(event.aggressor).is_some(),
+                crate::detection::actor_value(world, event.aggressor, "HandToHand"),
+            ));
+    let through_resistance = weapon_resistance_factor(skill("ResistNormalWeapons"), ignores_resistance);
     Some(WeaponDefense { armor_stopped: 1.0 - through_armor, resisted: 1.0 - through_resistance })
 }
 
@@ -2199,7 +2208,6 @@ mod tests {
                 dt: 0.0,
                 dr: 0,
                 health: 300,
-                slot_mask: 0,
                 armor_rating_x100: stored,
                 armor_type: Some(1),
                 female_model_path: String::new(),
@@ -2261,6 +2269,45 @@ mod tests {
         near(run(&[], 50.0, 100.0, false, None, true), 100.0); // a ghost takes nothing from a normal weapon
         near(run(&[], 50.0, 100.0, true, None, true), 80.0); // but a silver, daedric or enchanted one hurts it
         near(run(&[], 50.0, 25.0, false, None, true), 85.0); // Resist Normal Weapons 25%
+        near(run(&[], 50.0, -50.0, false, None, true), 70.0); // #7195: 50% Weakness to Normal Weapons, 20 becomes 30
+    }
+
+    /// #7195 — which unweaponed blows Resist Normal Weapons stops (UESP *Oblivion:Resist Normal Weapons*): a creature's
+    /// natural attack is unaffected, a fist is a normal weapon only below Journeyman Hand to Hand (50), and an armed
+    /// attacker's blow is its weapon's.
+    #[test]
+    fn creature_attacks_and_journeyman_fists_are_outside_resist_normal_weapons() {
+        use byroredux_core::character::ArmorRatingModel;
+        use byroredux_core::ecs::components::CreatureActor;
+        use byroredux_plugin::esm::records::{AvifRecord, EsmIndex};
+        const RESIST: u32 = 0x43;
+        const HAND_TO_HAND: u32 = 0x44;
+        // (armed, creature, Hand to Hand) against a 50% resistance -> health left of 100 after a 20-point blow
+        let run = |armed: bool, creature: bool, hand_to_hand: f32| {
+            let (mut world, aggressor, target) = damage_fixture(100.0, armed.then_some(20.0), false);
+            world.insert(aggressor, ActorVitals { health: 0x2D4 });
+            world.register::<CreatureActor>();
+            if creature {
+                world.insert(aggressor, CreatureActor);
+            }
+            world.query_mut::<byroredux_scripting::HitEvent>().unwrap().get_mut(target).unwrap().damage = 20.0;
+            let mut index = EsmIndex::default();
+            for (form, name) in [(RESIST, "ResistNormalWeapons"), (HAND_TO_HAND, "HandToHand")] {
+                index.actor_values.insert(form, AvifRecord { form_id: form, editor_id: format!("AV{name}"), ..Default::default() });
+            }
+            world.insert_resource(byroredux_scripting::ActorValueNames::from_index(&index));
+            world.insert_resource(crate::components::LoadedCellIndex(std::sync::Arc::new(index)));
+            world.insert_resource(ArmorRatingModel::OBLIVION);
+            world.get_mut::<ActorValues>(target).unwrap().set_base(RESIST, 50.0);
+            world.insert(aggressor, ActorValues::from_pairs([(HAND_TO_HAND, hand_to_hand)]));
+            combat_damage_system(&world, 0.0);
+            world.get::<ActorValues>(target).unwrap().current(0x2D4)
+        };
+        let near = |got: f32, want: f32| assert!((got - want).abs() < 1e-2, "{got} vs {want}");
+        near(run(false, true, 0.0), 80.0); // a creature's natural attack: unaffected
+        near(run(false, false, 49.0), 90.0); // an Apprentice's fist is a normal weapon
+        near(run(false, false, 50.0), 80.0); // a Journeyman's is not
+        near(run(true, false, 100.0), 90.0); // an armed blow is its (normal) weapon's, whatever the fists could do
     }
 
     /// A player strike on a bystander NPC in an Oblivion-ruled world with one
@@ -2766,6 +2813,49 @@ mod tests {
         assert!(!last.killed);
         assert!(last.outcome.ends_with("; bleedout"), "{}", last.outcome);
         assert_eq!(state.kills, 0);
+    }
+
+    /// #7203 — the five player rule-row installers (spell cast, bow, armor rating, fall, block) follow the profile's
+    /// row, not the game: an Oblivion profile under a Skyrim index installs Oblivion's rows, a Skyrim profile under an
+    /// Oblivion index installs Skyrim's bow and clears the four rows Skyrim does not have, and a Fallout profile under
+    /// an Oblivion index clears every one a previous load left behind.
+    #[test]
+    fn the_player_rule_row_installers_follow_the_profile_not_the_game() {
+        use byroredux_core::character::{
+            ArmorRatingModel, BlockModel, BowModel, CharacterRulesProfile, FallModel, SpellCastModel,
+        };
+        use byroredux_plugin::esm::reader::GameKind;
+        use byroredux_plugin::esm::records::EsmIndex;
+        let install_all = |world: &mut World, game: GameKind, profile: CharacterRulesProfile| {
+            let index = EsmIndex { game, character_rules: profile, ..Default::default() };
+            crate::player_cast::install_spell_cast_model(world, &index);
+            crate::bow::install_bow_model(world, &index);
+            install_armor_rating_model(world, &index);
+            install_fall_model(world, &index);
+            install_block_model(world, &index);
+        };
+        let mut world = World::new();
+        install_all(&mut world, GameKind::Skyrim, CharacterRulesProfile::OBLIVION);
+        assert_eq!(*world.resource::<SpellCastModel>(), SpellCastModel::OBLIVION);
+        assert_eq!(*world.resource::<BowModel>(), BowModel::OBLIVION);
+        assert_eq!(*world.resource::<ArmorRatingModel>(), ArmorRatingModel::OBLIVION);
+        assert_eq!(*world.resource::<FallModel>(), FallModel::OBLIVION);
+        assert_eq!(*world.resource::<BlockModel>(), BlockModel::OBLIVION);
+
+        install_all(&mut world, GameKind::Oblivion, CharacterRulesProfile::SKYRIM);
+        assert_eq!(*world.resource::<BowModel>(), BowModel::SKYRIM, "Skyrim's bow, under an Oblivion index");
+        assert!(world.try_resource::<SpellCastModel>().is_none());
+        assert!(world.try_resource::<ArmorRatingModel>().is_none());
+        assert!(world.try_resource::<FallModel>().is_none());
+        assert!(world.try_resource::<BlockModel>().is_none());
+
+        install_all(&mut world, GameKind::Skyrim, CharacterRulesProfile::OBLIVION);
+        install_all(&mut world, GameKind::Oblivion, CharacterRulesProfile::FALLOUT_NEW_VEGAS);
+        assert!(world.try_resource::<SpellCastModel>().is_none());
+        assert!(world.try_resource::<BowModel>().is_none());
+        assert!(world.try_resource::<ArmorRatingModel>().is_none());
+        assert!(world.try_resource::<FallModel>().is_none());
+        assert!(world.try_resource::<BlockModel>().is_none());
     }
 
     /// #6760 -- `install_experience_rules` follows the profile's kill-experience

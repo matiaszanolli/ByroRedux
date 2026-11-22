@@ -1164,18 +1164,33 @@ pub fn toggle_player_mode(world: &mut byroredux_core::ecs::World) {
         PlayerMode::FlyCam => PlayerMode::Character,
         PlayerMode::Character => PlayerMode::FlyCam,
     };
+    set_player_mode(world, next);
+}
 
-    // On Fly → Character, snap the character body to the active
-    // camera's position. Abort the toggle (stay in FlyCam) if the
-    // snap couldn't complete — matches the pre-extraction behavior:
-    // a body-less boot (`--mesh` / `--tree` / `--fly`) shouldn't
-    // silently flip into a PlayerMode with no body to control.
-    if matches!(next, PlayerMode::Character) && !snap_character_body_to_camera(world) {
-        return;
+/// Switch the player to `next`; returns whether the world is now in it.
+/// Shared by the F key ([`toggle_player_mode`]) and the `cam.fly` console
+/// command. Both run outside the parallel system window — the key handler
+/// holds `&mut World`, the command runs in the exclusive debug drain — which
+/// is what lets `camera_follow_system` only *read* `PlayerMode` in parallel.
+///
+/// On Fly → Character the character body snaps to the active camera's
+/// position; the switch is refused (staying in FlyCam) if the snap cannot
+/// complete, so a body-less boot (`--mesh` / `--tree` / `--fly`) never flips
+/// into a mode with no body to control. Character → Fly leaves the body
+/// where it stands and the camera where it is.
+pub fn set_player_mode(world: &byroredux_core::ecs::World, next: PlayerMode) -> bool {
+    let Some(current) = world.try_resource::<PlayerMode>().map(|r| *r) else {
+        return false;
+    };
+    if current == next {
+        return true;
     }
-
+    if matches!(next, PlayerMode::Character) && !snap_character_body_to_camera(world) {
+        return false;
+    }
     *world.resource_mut::<PlayerMode>() = next;
-    log::info!("Player mode → {:?} (F key — toggle walk/fly)", next);
+    log::info!("Player mode → {:?} (F key / cam.fly — toggle walk/fly)", next);
+    true
 }
 
 /// Compute the world-space horizontal motion vector for the character

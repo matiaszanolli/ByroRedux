@@ -82,11 +82,28 @@ fn push_texture_streaming(
         byroredux_debug_ui::TEXTURE_STREAMING_SETTING_ID,
         false,
     );
+    let build_provider = || crate::asset_provider::build_texture_provider(&crate::cli_args::effective_args());
     if streaming && streamer.is_none() {
-        *streamer = crate::texture_streamer::TextureStreamer::new(
-            crate::asset_provider::build_texture_provider(&crate::cli_args::effective_args()),
+        *streamer = crate::texture_streamer::TextureStreamer::new(build_provider());
+    }
+    // #7144 — the streamer's provider outlives cell transitions; rebuild it once an archive was
+    // replaced on disk, so its promotions and the floors read the same file.
+    let generation = crate::asset_provider::archive_replacements();
+    if let Some(streamer) = streamer.as_mut()
+        && streamer.refresh_provider(generation, build_provider)
+    {
+        log::info!(
+            "texture streamer: an archive was replaced on disk; its provider was rebuilt, and \
+             textures floored from the old file keep the levels they hold"
         );
     }
+    // #7167, #7169 — floors are stamped with the archive generation they were queued under, and
+    // only those floored under the generation the streamer now reads from promote: a texture
+    // floored from a replaced file never mixes in the new one's mips, and one floored from the
+    // new file (by the cell load that noticed the replacement) promotes as soon as the reads do.
+    ctx.texture_registry
+        .set_source_generation_counter(crate::asset_provider::archive_replacement_counter());
+    ctx.texture_registry.set_promotable_generation(generation);
     if let Some(streamer) = streamer.as_mut() {
         if streaming {
             streamer.update_wanted(draws, ctx, frame.camera_pos, frame.camera_fov_y);
@@ -449,6 +466,8 @@ impl App {
             crate::render::update_morph_weights(&self.world, ctx);
             // #6195 — bind terrain height maps that finished generating.
             crate::terrain_height::apply_ready_heights(&self.world, ctx);
+            // #7152 — TSD-4.1 terrain patches for this frame's compute pass.
+            crate::terrain_patches::push_terrain_patches(&self.world, ctx);
 
             // #4052 — EXAL ground cover §11.1; no-ops without `--bench-groundcover-sampling`.
             drive_groundcover_bench(

@@ -232,6 +232,110 @@ impl ConsoleCommand for TerrainParallaxCommand {
     }
 }
 
+/// `terrain.patches [on | off | amplitude <m> | range <m>]` — TSD-4.1's
+/// terrain displacement patches (#7152). With no argument, the geometric seam
+/// check the renderer read back one frame-in-flight ago (§3.4): every patch
+/// border that must sit at the 1 mm lip (a cell border or a missing
+/// neighbour) and the largest deviation from it, every border two resident
+/// patches share and the largest height gap between them, and each slot's
+/// largest displacement. `on` / `off` is the A/B switch; `amplitude` and
+/// `range` retune the session (metres), until stage 4.3's settings.
+pub(crate) struct TerrainPatchesCommand;
+impl ConsoleCommand for TerrainPatchesCommand {
+    fn name(&self) -> &str {
+        "terrain.patches"
+    }
+
+    fn description(&self) -> &str {
+        "Terrain displacement patches: terrain.patches [on | off | amplitude <m> | range <m> | fine <m> | parallax on|off] (#7152)"
+    }
+
+    fn execute(&self, world: &World, args: &str) -> CommandOutput {
+        use crate::terrain_patches::{TerrainPatchState, LIP_M};
+        use byroredux_core::lighting::BETHESDA_UNITS_PER_METER as UNITS_PER_M;
+        let Some(mut state) = world.try_resource_mut::<TerrainPatchState>() else {
+            return CommandOutput::line("terrain.patches: not available in this session");
+        };
+        let usage =
+            "usage: terrain.patches [on | off | amplitude <m> | range <m> | fine <m> | parallax on|off]";
+        let parse = |word: &str| word.parse::<f32>().ok().filter(|v| v.is_finite() && *v >= 0.0);
+        let words: Vec<&str> = args.split_whitespace().collect();
+        match words.as_slice() {
+            [] => {}
+            ["on"] => state.enabled = true,
+            ["off"] => state.enabled = false,
+            ["amplitude", m] => match parse(m) {
+                Some(m) => state.amplitude_m = m,
+                None => return CommandOutput::line(format!("terrain.patches: bad number\n{usage}")),
+            },
+            ["range", m] => match parse(m).filter(|m| *m > 0.0) {
+                Some(m) => state.range_m = m,
+                None => return CommandOutput::line(format!("terrain.patches: bad number\n{usage}")),
+            },
+            // The fine-lattice radius: 0 = every patch coarse, >= range = every
+            // patch fine (the single-level pool).
+            ["fine", m] => match parse(m) {
+                Some(m) => state.fine_range_m = m,
+                None => return CommandOutput::line(format!("terrain.patches: bad number\n{usage}")),
+            },
+            // Parallax on patch draws: on by default (the 3 cm patch relief
+            // alone reads flat); `off` is the A/B switch until 4.3 marches
+            // only the residual relief (§3.6).
+            ["parallax", "on"] => state.parallax = true,
+            ["parallax", "off"] => state.parallax = false,
+            _ => return CommandOutput::line(usage),
+        }
+        let mut lines = vec![format!(
+            "terrain.patches: {} amplitude={:.3} m range={:.1} m fine={:.1} m parallax={} lip={:.3} m pool={} assigned={}",
+            if state.enabled { "on" } else { "off" },
+            state.amplitude_m,
+            state.range_m,
+            state.fine_range_m,
+            if state.parallax { "on" } else { "off" },
+            LIP_M,
+            state.meshes.fine.len().min(state.meshes.coarse.len()),
+            state.resident(),
+        )];
+        let s = &state.stats;
+        let cm = |units: f32| units / UNITS_PER_M * 100.0;
+        lines.push(format!(
+            "  readback: resident={} coarse={} lip_edges={} max|d-lip|={:.4} cm shared_edges={} level_edges={} max_seam_gap={:.4} cm max_d={:.2} cm",
+            s.resident,
+            s.coarse,
+            s.lip_edges,
+            cm(s.max_lip_deviation),
+            s.shared_edges,
+            s.level_edges,
+            cm(s.max_seam_gap),
+            cm(s.max_displacement),
+        ));
+        // The GPU brackets the A/B harness reads (last timer snapshot).
+        if let Some(cov) = world.try_resource::<byroredux_core::ecs::SkinCoverageStats>() {
+            let ms = |value: f32, active: bool| {
+                byroredux_core::ecs::format_gpu_bracket_ms(value, active, 3)
+            };
+            lines.push(format!(
+                "  gpu: terrain_patch_ms={} main_render_ms={}",
+                ms(cov.gpu_terrain_patch_ms, cov.gpu_terrain_patch_active),
+                ms(cov.gpu_main_render_ms, cov.gpu_main_render_active),
+            ));
+        }
+        for slot in &s.slots {
+            lines.push(format!(
+                "  slot {:2}: cell ({:.0}, {:.0}) patch ({:2}, {:2}) {} max_d={:.2} cm",
+                slot.slot,
+                slot.cell_origin_xz[0],
+                slot.cell_origin_xz[1],
+                slot.patch_col,
+                slot.patch_row,
+                if slot.coarse { "coarse" } else { "fine  " },
+                cm(slot.max_displacement),
+            ));
+        }
+        CommandOutput::lines(lines)
+    }
+}
+
 /// Every lane of every resident terrain cell, by generation state.
 fn census(world: &World) -> CommandOutput {
     let Some(lanes) = world.query::<TerrainLayerHeights>() else {

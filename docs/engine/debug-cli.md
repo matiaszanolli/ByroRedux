@@ -186,7 +186,7 @@ using the generic `register_component::<T>()` helper, called from
 `byroredux-core`). The registry is owned by the `DebugDrainSystem`
 (`DebugDrainSystem.registry`), not stored as a World resource.
 
-### Currently registered (86 components)
+### Currently registered (90 components)
 
 | Component | Fields |
 |-----------|--------|
@@ -247,6 +247,10 @@ using the generic `register_component::<T>()` helper, called from
 | `CreatureAttack` | damage — creature attack profile |
 | `Perks` | entries — owned perk ranks |
 | `SpellList` | 0 — the actor's spell FormIDs, in arrival order (a perk's Ability spell is one of them, PERK-DX-006) |
+| `ActiveMagicEffects` | 0 — the magic effects running on the actor (#7183) |
+| `Bleedout` | remaining_secs — an actor down in bleedout; `null` stays down (#7183) |
+| `ScriptVariables` | values — a script instance's numeric variables by condition string id (#7183) |
+| `WeaponDrawn` | (marker) — the actor's weapon is drawn, `SetAlert 1` (#7183) |
 | `CharacterLevel` | level, xp |
 | `LevelUpPoints` | skill_points, skill_point_fraction, perk_points |
 | `SkillUseLevel` | major_increases, attribute_tallies, pending |
@@ -346,7 +350,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**192**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**194**) grouped by
 purpose:
 
 ```
@@ -378,7 +382,10 @@ pick [count=10]             → ray-cast from camera-forward, list entities whos
 
 # Camera control (fly-camera entity, ActiveCamera resource)
 cam.where                   → print active camera position + yaw/pitch
-cam.pos <x> <y> <z>         → teleport camera to absolute world position
+cam.pos <x> <y> <z>         → teleport camera to absolute world position (Character
+                              mode carries the body, which falls to the floor)
+cam.fly [on|off]            → switch the fly camera on/off at runtime (F key);
+                              `on` before `cam.pos` to place the camera freely
 cam.tp <entity_id>          → teleport camera to over-the-shoulder framing of
                               the entity (200 back + 50 up, look-at).
                               No-arg form uses the picked ref (prid)
@@ -521,6 +528,8 @@ terrain.blend [band]        → read/set the height-based layer blend band for t
 terrain.soften [amount]     → read/set the near-terrain distance softening toward the LOD look for this session; 0 = off
 terrain.parallax [off | <range_m> [<depth_m>]]
                             → read/set the near-camera terrain parallax (fade-out distance, relief depth, metres) for this session; off / range 0 = off (#6197)
+terrain.patches [on | off | amplitude <m> | range <m> | fine <m> | parallax on|off]
+                            → TSD-4.1 terrain displacement patches (#7152): the seam readback (lip-border deviation, shared-border gap incl. fine/coarse borders, per-slot level and max displacement) or the session's on/off, amplitude, range and fine-lattice radius in metres (`fine 0` = all coarse, `fine` ≥ range = all fine), and whether patch draws keep the TSD-3 parallax march (default on)
 render.debug                → renderer debug-mode control
 r.dbg [0xMASK|+0xB|-0xB]    → read / set / add / clear the DBG_* bit mask at runtime
 r.shadowfilter [on|off]     → read or switch the direct-shadow spatial filter
@@ -789,7 +798,8 @@ per-frame telemetry like `skin.coverage` against a known viewpoint.
 | Command | What it does |
 |---------|-------------|
 | `cam.where` | Print `ActiveCamera` entity ID, world position, yaw/pitch in radians + degrees |
-| `cam.pos <x> <y> <z>` | Teleport to an absolute world position (renderer Y-up). Leaves rotation untouched |
+| `cam.pos <x> <y> <z>` | Teleport to an absolute world position (renderer Y-up). Leaves rotation untouched. In Character mode it carries the player body, which then falls to the floor: a lift lands back on the ground and a camera lowered into the terrain is pushed back out |
+| `cam.fly [on\|off]` | Switch between the fly camera and the character body (the F key's console form). `on` keeps the camera where it is, so `cam.pos` then places it freely, in the air or at grass height; `off` snaps the body under the camera and is refused when there is no body. No argument prints the mode |
 | `cam.tp <entity_id>` | Teleport over-the-shoulder of an entity (200 units back + 50 up, look-at). No-arg form uses the picked ref (`prid`) |
 
 ### Look-at math
@@ -1436,7 +1446,7 @@ byro> components
   TextureHandle
   Transform
   WorldBound
-(86 components)
+(90 components)
 
 byro> entities Inventory
   Entity 12 "saadia"
