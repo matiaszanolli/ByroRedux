@@ -1028,7 +1028,15 @@ fn live_load_drain_discards_the_outgoing_sessions_requests() {
         arrow: true,
         ignores_resistance: false,
     }]));
+    // #7230 — a draw held and a cast interval running when the load came.
+    world.insert_resource(crate::bow::BowState { held: 0.8, cooldown: 0.4, last: None, shots: 3 });
+    world.insert_resource(byroredux_scripting::player_cast::CastState { cooldown_remaining: 0.6, interval: 1.0, last: None, impact: None });
     discard_outgoing_session_requests(&world);
+    {
+        let bow = world.resource::<crate::bow::BowState>();
+        assert_eq!((bow.held, bow.cooldown, bow.shots), (0.0, 0.0, 0), "#7230: no draw carries into the loaded game");
+        assert_eq!(world.resource::<byroredux_scripting::player_cast::CastState>().cooldown_remaining, 0.0, "#7230: nor a cast interval");
+    }
     assert!(world.resource::<crate::systems::projectiles::ActiveProjectiles>().0.is_empty(), "#7229: no shot flies on");
     assert!(world.resource::<byroredux_scripting::PendingTrapHits>().0.is_empty(), "#7229: no queued hit lands");
     assert!(

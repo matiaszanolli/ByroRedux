@@ -461,8 +461,8 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("ArmorRatingModel", "the Oblivion armor-rating and weapon-resistance rules, re-derived at load from the profile's armor_rating row and fMaxArmorRating by install_armor_rating_model"),
         ("FallModel", "the Oblivion fall-damage rules, re-derived at load from the profile's fall row and the load order's fJumpFall* GMSTs by install_fall_model"),
         ("FallTracker", "the player's fall clock (the time spent below the takeoff height); `place_character_body`, which the load's pose restore and every teleport go through, resets it, so a load ends any fall in flight (#7227)"),
-        ("CastState", "session state of the cast (the casting interval's remaining seconds and the last report for cast.status); a load starts with no cast in flight"),
-        ("BowState", "session state of the bow (the draw held so far, the interval's remaining seconds, the last report for bow.status); a load starts with no draw in flight"),
+        ("CastState", "session state of the cast (the casting interval's remaining seconds and the last report for cast.status); a load starts with no cast in flight (the load drain resets it, #7230)"),
+        ("BowState", "session state of the bow (the draw held so far, the interval's remaining seconds, the last report for bow.status); a load starts with no draw in flight (the load drain resets it, #7230)"),
         // ── #6350 VATS session state ────────────────────────────────
         ("VatsModel", "re-derived at load from the load order's GMSTs by build_vats_model; saving it would freeze a mod's tuning across load-order changes"),
         ("VatsState", "transient targeting-mode state (mode + scan + queue), keyed by the session's EntityIds; an in-process load ends it in discard_outgoing_session_requests (#6508) so the loaded world is never frozen on stale ids, a cold start never has one — the AP pool persists through ActorValues"),
@@ -617,7 +617,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("ComplexSceneObject", "the base form of the DOBJ CMPX Complex Scene Object; rebuilt from the load order every boot (M43)"),
         ("MineBook", "every proximity-mine projectile of the load order (trigger distance, fuse, blast), by PROJ FormID; rebuilt from the records every boot (M43)"),
         ("PendingMineHits", "mine blast hits waiting a frame for their target's HitEvent slot (#6540); a load discards the queue (M43)"),
-        ("MineClock", "the mine trigger scan's cadence timer; a load restarts it (M43)"),
+        ("MineClock", "the mine trigger scan's cadence timer; a load restarts it (M43) (the load drain resets it, #7230)"),
         ("ArmedMine", "a placed mine that has been tripped and is burning its fuse; a load restores the mine as placed (M43)"),
         ("SpentMine", "a mine that has gone off this session; the persistent half is the enable ledger entry it writes (M43)"),
         ("AttractionBook", "the attraction keywords with their rules and the object / NPC bases that carry them; rebuilt from the records every boot (M43)"),
@@ -799,10 +799,10 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PendingEvidenceDeposits", "confiscated stolen goods (the Oblivion PayFine / GoToJail path) queued for a jail's StolenGoods chest, drained by evidence_deposit_system on the NEXT frame's Update (the INFO / stage-result producers run after the consumer, so the queue straddles the frame boundary a save or load drains on); the ObScriptLedger's saved evidence is the durable record until delivered, and a load discards the queue (#6573). Faction.SendPlayerToJail does not queue: it deposits synchronously through EvidenceChestDeposit and removes goods only once the chest took them"),
         ("EvidenceChestDeposit", "the engine's deposit-into-a-placed-reference function Faction.SendPlayerToJail calls (loaded chest directly, an unloaded one parked); installed at boot (#6573)"),
         ("JailTable", "the load order's jails (linked interior / exterior PrisonMarker door pairs) for PayFine / GoToJail; rebuilt from the records every boot"),
-        ("LevelNotices", "Oblivion level-up: how many pending levels the player was told of; session state, a load re-seeds it from the saved levels"),
+        ("LevelNotices", "Oblivion level-up: how many pending levels the player was told of; session state, a load re-seeds it from the saved levels (the load drain resets it, #7230)"),
         ("SleepCompletions", "Oblivion level-up: completed sleeps queued for the level system, drained within the frame"),
         ("RestSession", "Oblivion bed and level-up menus: in-progress choices and sleep authorizations reset on live load"),
-        ("StanceTimers", "Oblivion skill use: the one-second timers of running, swimming and sneaking; session state, a load restarts them"),
+        ("StanceTimers", "Oblivion skill use: the one-second timers of running, swimming and sneaking; session state, a load restarts them (the load drain resets it, #7230)"),
         ("PendingSkillUse", "Oblivion skill uses the emitters queue, drained by combat::skill_use_system within the frame; empty at a save"),
         ("SkillUseClasses", "the load order's CLAS specialization and major skills, and the player's class (Oblivion); rebuilt from the records every boot"),
         ("GuardClasses", "the load order's CLAS forms flagged Guard (Oblivion), for IsGuard / IsTurnArrest; rebuilt from the records every boot"),
@@ -1053,7 +1053,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("SaveState", "save-slot directory + ring cursor, resumed from disk at startup (SaveState::new) — save/load plumbing itself, not part of the world snapshot"),
         ("SceneImportCache", "process-lifetime parsed-scene cache wrapper around the same ParsedNifCache core as NifImportRegistry"),
         ("SharedToneCache", "bounded DDS mip cache for NPC seam blending; derived from archive assets and rebuilt on demand"),
-        ("PackageDayBlocks", "AIP-FLG-001 — when each Once Per Day package was first selected; a load restarts the 24-hour block like the rest of the ambient runtime state"),
+        ("PackageDayBlocks", "AIP-FLG-001 — when each Once Per Day package was first selected; a load restarts the 24-hour block like the rest of the ambient runtime state (the load drain resets it, #7230)"),
         ("SeatReservations", "derived sandbox occupancy, pruned on cell-reference load against live Furniture + claimant Seated state — see its own doc"),
         ("SettingsPersistence", "process-local user-config path; preferences are independently persisted in settings.toml, never inside a gameplay save"),
         ("SkyParamsRes", "WTHR sky rendering parameters, rebuilt from the parsed record every exterior cell load"),
@@ -1264,17 +1264,24 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
     // #6574 were each a transient whose reason promised a load handled it while the drain never named it;
     // a claim the drain does not back is now a failure here, not a latent stale-state bug.
     let drain_source = include_str!("live_load.rs");
+    // Comments stripped (#7230): the drain's comments name the types they reset, so a name surviving only in a
+    // comment would otherwise pass for a reset line.
     let drain = {
         let start = drain_source
             .find("pub(super) fn discard_outgoing_session_requests(")
             .expect("the load drain's request sweep must exist");
         let body = &drain_source[start..];
-        &body[..body.find("\n}\n").expect("the sweep's closing brace")]
+        byroredux_core::source_scan::strip_comments(&body[..body.find("\n}\n").expect("the sweep's closing brace")])
+    };
+    // Types the drain resets through a call that does not name them, with that call.
+    const RESET_THROUGH_A_CALL: &[(&str, &str)] = &[("ActiveCrafting", "crate::crafting::end_crafting(world)")];
+    let drain_resets = |name: &str| {
+        drain.contains(name) || RESET_THROUGH_A_CALL.iter().any(|(listed, call)| *listed == name && drain.contains(call))
     };
     let unbacked: Vec<&str> = NOT_SAVED_BY_DESIGN
         .iter()
         .filter(|(_, reason)| reason.contains("a load discards") || reason.contains("The load drain ends"))
-        .filter(|(name, _)| !drain.contains(name))
+        .filter(|(name, _)| !drain_resets(name))
         .map(|(name, _)| *name)
         .collect();
     assert!(
@@ -1282,6 +1289,50 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         "NOT_SAVED_BY_DESIGN rows claim a load discards them but \
          discard_outgoing_session_requests never names them: {unbacked:#?}",
     );
+
+    // #7230 — the same promise in its other wordings. The check above matched two phrases only, and missed
+    // `ActiveProjectiles` (#7229) and `FallTracker` (#7227), whose cold-start-only reasons an in-process load broke. A
+    // row that says a load starts, restarts, re-seeds, resets, forgets, ends, drops, re-derives or re-installs its type
+    // is either reset by the drain or listed here with the mechanism that does it instead.
+    const LOAD_RESET_PHRASES: &[&str] = &[
+        "a load starts",
+        "a load restarts",
+        "a load re-seeds",
+        "a load resets",
+        "a load forgets",
+        "a load ends",
+        "a load drops",
+        "a load re-derives",
+        "a load re-installs",
+    ];
+    const RESET_OUTSIDE_THE_DRAIN: &[(&str, &str)] = &[
+        ("FallTracker", "place_character_body, which the load's pose restore calls, resets it (#7227)"),
+        ("SyntheticHeights", "a content-addressed cache keyed by normal-map path: a kept verdict is the one re-deriving would give"),
+        ("MoviePlaying", "the app rewrites it every frame; the phrase means the load itself plays no movie"),
+        ("VideoStatus", "the movie player's telemetry; the phrase means the load itself plays no movie"),
+        ("ConversationHold", "an NPC component: the load's cell reload respawns both actors without it"),
+        ("FindProgress", "an NPC component: the load's cell reload respawns the actor without it"),
+        ("Awareness", "a detector NPC's component: the load's cell reload respawns the detector without it"),
+        ("InstalledOutdoorEnvironment", "every environment install rewrites it, and the load re-installs the sky"),
+    ];
+    let claims_a_load_reset = |reason: &str| LOAD_RESET_PHRASES.iter().any(|phrase| reason.contains(phrase));
+    let unaccounted: Vec<&str> = NOT_SAVED_BY_DESIGN
+        .iter()
+        .filter(|(_, reason)| claims_a_load_reset(reason))
+        .filter(|(name, _)| !drain_resets(name) && !RESET_OUTSIDE_THE_DRAIN.iter().any(|(listed, _)| listed == name))
+        .map(|(name, _)| *name)
+        .collect();
+    assert!(
+        unaccounted.is_empty(),
+        "NOT_SAVED_BY_DESIGN rows promise a load resets them, but discard_outgoing_session_requests never names them \
+         and RESET_OUTSIDE_THE_DRAIN gives no other mechanism (#7230): {unaccounted:#?}",
+    );
+    let stale: Vec<&str> = RESET_OUTSIDE_THE_DRAIN
+        .iter()
+        .filter(|(listed, _)| !NOT_SAVED_BY_DESIGN.iter().any(|(name, reason)| name == listed && claims_a_load_reset(reason)))
+        .map(|(listed, _)| *listed)
+        .collect();
+    assert!(stale.is_empty(), "RESET_OUTSIDE_THE_DRAIN lists rows that no longer promise a load reset: {stale:#?}");
 }
 
 /// #6085 — the eviction row (`cell_loader::reference_state`) is the third

@@ -483,6 +483,17 @@ pub(super) fn discard_outgoing_session_requests(world: &World) {
     // Late request waits a frame) names the outgoing session's entities too.
     reset_resource::<crate::systems::projectiles::ActiveProjectiles>(world);
     reset_resource::<byroredux_scripting::PendingTrapHits>(world);
+    // #7230 — process-lifetime session state whose NOT_SAVED reason promises a load restarts it. `LevelNotices` holds
+    // the outgoing session's announced level count (left alone, a save with more pending levels announced "rest and
+    // meditate" again on the first frame); `CastState` holds a stale impact target id; the bow draw, the cast interval,
+    // the stance timers, the mine scan cadence and the Once Per Day blocks (keyed by the outgoing session's actors)
+    // carried over too.
+    reset_resource::<crate::skill_use_emit::LevelNotices>(world);
+    reset_resource::<byroredux_scripting::player_cast::CastState>(world);
+    reset_resource::<crate::bow::BowState>(world);
+    reset_resource::<crate::skill_use_emit::StanceTimers>(world);
+    reset_resource::<crate::systems::mines::MineClock>(world);
+    reset_resource::<crate::npc_spawn::package_flags::PackageDayBlocks>(world);
     if let Some(mut request) = world.try_resource_mut::<byroredux_scripting::PlayerMoveRequest>() {
         request.0 = None;
     }
