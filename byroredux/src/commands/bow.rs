@@ -119,7 +119,7 @@ impl ConsoleCommand for BowStatusCommand {
 fn damage_line(model: &BowModel) -> String {
     use byroredux_core::character::DamageRule;
     match model.damage {
-        DamageRule::Rating { attribute, skill } => format!(
+        DamageRule::Rating { attribute, skill, .. } => format!(
             "damage=(bow + arrow) x {attribute}-and-{skill} rating x Fatigue term (documented); bow and arrow condition read as 1 (declared gap); the sneak multiplier, the target's armor rating and its Resist Normal Weapons act at the hit on the shared path (armor condition and Shield-like boosting effects are not modelled: declared gaps)"
         ),
         DamageRule::SkillBonus { skill, per_point } => format!(

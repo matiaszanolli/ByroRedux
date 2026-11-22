@@ -138,8 +138,9 @@ impl SpellCastModel {
         base_cost_scale: 0.1,
         area_scale: 0.15,
         target_multiplier: 1.5,
-        luck_skill_mult: 0.4,
-        luck_skill_base: -20.0,
+        // #7199 — the effective skill's one home: the damage settings' Luck pair (CS wiki *Effective Skill Level*).
+        luck_skill_mult: crate::combat::OblivionDamageSettings::OBLIVION.luck_skill_mult,
+        luck_skill_base: crate::combat::OblivionDamageSettings::OBLIVION.luck_skill_base,
         level_cost_mult: 1.0,
         level_cost_base: 0.0,
         spell_level_min: [25.5, 62.5, 149.5, 399.5],

@@ -569,8 +569,14 @@ not hardcoded, per the WATAL/CHARAL split): `fDamageWeaponMult=0.5`,
 `fHandDamageSkillMult=1`/`fHandFatigueDamageMult=0.5`; sneak/power-attack
 GMSTs (`fPerkSneakAttackMelee*Mult`, `fDamagePowerAttack*Bonus`); armor
 (`fMaxArmorRating=85`). All future formula rows built for Oblivion should read
-these by name once GMST parsing lands (CHARAL §8 item 6), not re-hardcode the
-numeric constants captured here.
+these by name (CHARAL §8 item 6), not re-hardcode the numeric constants captured here.
+**Read since #7199:** `OblivionDamageSettings` (`crates/core/src/combat.rs`) holds the weapon family, the
+condition pair, the whole Hand-to-Hand family (`fHandHealthMin`/`Max`, `fHandDamageStrengthBase`/`Mult`,
+`fHandDamageSkillBase`/`Mult`, `fHandFatigueDamageBase`/`Mult`), the Luck pair of the effective skill
+(`fActorLuckSkillMult` 0.4 / `iActorLuckSkillBase` -20, CS wiki *Effective Skill Level*, which the spell-cast row
+takes its defaults from) and the Fatigue pair (`fFatigueBase` 1.0 / `fFatigueMult` 0.5, CS wiki *Fatigue Game
+Settings*), each overlaid from the load order by `OblivionDamageSettings::with_gmst`; the bow's Oblivion damage
+rule carries it (`BowModel::with_gmst`). `fMaxArmorRating` is read by `ArmorRatingModel::with_gmst`.
 
 ## Fatigue — base pool cross-checked (already BUILT), regen formula now BUILT too, Remastered divergence recorded
 
