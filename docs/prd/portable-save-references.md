@@ -1,6 +1,8 @@
 # Portable Save References — Product Requirements
 
-**Status**: APPROVED (2026-11-22). Revision 4 folds in review round 1; the history is §12.
+**Status**: ACTIVE (2026-11-22). Revision 5 opens the tracking issues; revision 4 folds in review round 1; the history is §12.
+
+**Tracking**: #7258 (parent). Phases: #7255 (0), #7256 (1), #7257 (2).
 
 **Scope**: Persisted references to plugin records across save-registered components, resources and nested state, including the live reload path after plugins are added, removed or reordered. Runtime consumers continue to use session keys. This does not promise migration from old save formats, nor does it change original-game save files.
 
@@ -168,3 +170,4 @@ Publish the changed-order result as a "Changed-order load" entry in each in-scop
 | 2 | 2026-11-15 | Recorded the owner's approval and missing-reference policy | owner: approved |
 | 3 | 2026-11-15 | PROPOSED → APPROVED at the owner's direction | — |
 | 4 | 2026-11-22 | Review round 1 folded in: the existing portable codec path (`register_component_codec`, `SaveError::UnownedFormId`) named as what Phase 1 extends; the Phase 0 inventory and AUDIT_SAVE's deferred fields linked; an identity-class table; observables for PSR-ID-002, PSR-LOAD-004 and scenario 4; the warn-and-continue deviation (CK wiki `sSaveGameContentIsMissing`); Fallout 76 out of scope; the light-plugin source; the metric's ROADMAP column. The tracking issues and the ACTIVE transition are not part of this revision | claude: revise |
+| 5 | 2026-11-22 | APPROVED → ACTIVE: tracking issues #7258 (parent) and #7255–#7257 (Phases 0–2) filed; no **Phase 0: verify** items are open | — |
