@@ -5,7 +5,7 @@ argument-hint: "--focus <dimensions> --game <name> --depth shallow|deep"
 
 # ESM / Plugin Parser Audit
 
-Audit `crates/plugin/` (~87k LOC in `src/`) as a parser: GRUP walker, sub-record byte
+Audit `crates/plugin/` (~89k LOC in `src/`) as a parser: GRUP walker, sub-record byte
 accounting, per-record schema dispatch, FormID load-order remap, CELL/WRLD walkers, and
 the `EsmIndex` → ECS handoff. Per-game audits (`/audit-fnv`, `/audit-skyrim`, …) each
 sample one game's slice; this skill owns the parser itself.
@@ -28,7 +28,7 @@ shared protocol (dedup, methodology, finding format). Do not duplicate them here
 `lmsw.rs` (Starfield `LMSW`/`MTPT` reflection blobs), `reflection.rs` (the BGS reflection container decoder shared by `WTHS`/`LMSW`/`MTPT`, moved out of `weather_settings.rs` by `ce5796431`, #6272; public paths unchanged via re-exports)),
 `esm/cell/` (walkers `walkers.rs`, `support.rs`, `wrld.rs`, `helpers.rs`; `spaces.rs` = the load-door `SpaceGraph` cross-cell travel routes over, `7af55a0df`; `mod.rs` is a re-export hub over the
 data tier `base_objects`/`cell_data`/`index`/`landscape`/`lighting`/`placed_ref`/`worldspace.rs`, `d7c47d741`),
-`esm/strings_table.rs`, `equip.rs`, `esm/records/oblivion_actor_values.rs` + `oblivion_population.rs` (Oblivion's executable-defined actor-value roster and record→canonical values; the CHARAL feed), and the Redux-native tier
+`esm/strings_table.rs`, `equip.rs`, the Legacy Mod Compat load-order tier (#6670 Phase 1: `activation.rs` profile activation, `archive_pairing.rs`, `esm/raw_record.rs` single-record reader + field diff, `esm/records/provenance.rs` fold provenance, `esm/records/list_merge.rs` levelled-list merge; the identity key `plugin_key` lives in `crates/core/src/form_id.rs`), `esm/records/oblivion_actor_values.rs` + `oblivion_population.rs` (Oblivion's executable-defined actor-value roster and record→canonical values; the CHARAL feed), and the Redux-native tier
 (`datastore`/`manifest`/`record`/`resolver`).
 
 **Not in scope**: cell-loader consumption of `CellData` (`/audit-<game>` Dim 1); VMAD
@@ -40,7 +40,7 @@ consumption semantics of `src/consumables.rs` / `expand_leveled_loot` (`equip.rs
 timed restoratives, container loot, LSCR selection (`/audit-gameplay`; the decode contract
 stays here, Dim 4); CHARAL formulas (`/audit-character`).
 
-**Ground truth**: `docs/engine/plugin-loading.md`, `docs/engine/esm-records.md`,
+**Ground truth**: `docs/engine/plugin-loading.md` (its first section, *The live legacy load order*, is the Phase 1 spec; PRD `docs/prd/legacy-mod-compatibility.md`), `docs/engine/esm-records.md`,
 `docs/engine/pipeline-overview.md`. Every non-obvious decode should cite a
 `wbDefinitions{TES4,FNV,TES5,FO4,FO76,SF1}.pas:line` range (crate docstring in
 `crates/plugin/src/lib.rs`); a decode with no citation and no test is a guess
@@ -199,7 +199,7 @@ any fn returning `SubRecord` built from a parameter 4-CC, not only fixed names).
 **Output**: `/tmp/audit/esm/dim_2.md`
 
 ### Dimension 3: FormID Remap, Load Order & ESL Space
-Paths: `crates/plugin/src/esm/reader.rs` (`FormIdRemap`, `GlobalSlot`), `esm/records/tests.rs`, `esm/records/common.rs`, `byroredux/src/cell_loader/load_order.rs`
+Paths: `crates/plugin/src/esm/reader.rs` (`FormIdRemap`, `GlobalSlot`), `esm/records/tests.rs`, `esm/records/common.rs`, `crates/plugin/src/activation.rs`, `crates/core/src/form_id.rs`, `byroredux/src/cell_loader/load_order.rs`, `byroredux/src/plugin_activation.rs`
 First step: `cargo test -p byroredux-plugin -- every_record_parser_takes_a_remap parsers_that_take_a_remap no_parser_with_a_remap remap_fid_has_exactly_one`
 **Guards**: `records::tests::all_record_parsers` walks `records/` at test time and requires
 every `pub fn parse_*` to take a `remap` parameter or sit in `EXEMPT_NO_U32_READS`
@@ -255,14 +255,37 @@ FormID-param function needs its row.
   `reader.rs`; a fixture or new caller building `FormIdRemap` for Starfield with the default
   scheme is the regression.
 - Master list read in file order; a missing master fails diagnosably, not as a silently
-  shifted slot table.
+  shifted slot table. Since #6670 Phase 1 the profile is activated **before** any walk
+  (`activate_plugin_args` → `activation::activate`, LMC-ID-003/-011): a master listed after its dependent is hoisted to
+  just ahead of the first dependent that needs it and nothing else moves; a plugin whose master is not in the profile
+  is disabled with every transitive dependent (duplicate identity, master cycle and unreadable `TES4` likewise) and
+  the rest activates; the `--esm` must activate and stay last or boot stops with the report. The cell loader, exterior
+  context, `--list-cells` and the saved plugin set read the activated order — a consumer that re-reads the raw
+  `--master` argv is the regression. Guards: the `activation_tests.rs` cases (hoist, missing master, cycle,
+  duplicate, unreadable, determinism) and `plugin_activation.rs`'s
+  `the_session_plugin_must_activate_and_load_last`.
+- **Plugin identity is one key** (LMC-ID-001/-009): `byroredux_core::form_id::plugin_key` — the basename, Unicode
+  `to_lowercase`, `\` and `/` equivalent — feeds the load-order key (`plugin_basename_lc`), `MAST` matching, script
+  `GetFormFromFile`/`IsDLCInstalled` names and `PluginId::from_filename` (UUID v5 over the key bytes), pinned by
+  `plugin_identity_folds_case_and_path`. A hand-rolled `to_ascii_lowercase` / `eq_ignore_ascii_case` on a plugin
+  name is the regression (script names once hashed apart from the load order's). The fold is *not* ASCII-only
+  (#7249, `6438f700a`): a non-ASCII capital changes a plugin's `PluginId` against the old key (saves are not kept
+  compatible across it) and it is not NTFS's per-character rule (final sigma, `İ`) — which host rule to match stays an
+  open LMC-ID-009 decision, documented, not a finding.
+- **Paired archives** (LMC-AST-002, `archive_pairing.rs`): each activated plugin brings the archives its game pairs
+  with it by name, from its own directory, per the base master's `GameKind` (Oblivion `<stem>` + nothing/space/`-`/`_`;
+  FO3/FNV `<stem>.bsa` or `<stem> - *.bsa`; Skyrim `<stem>.bsa`; FO4 and Starfield the `- Main`/`- Textures`/… `.ba2`
+  set). Last-wins providers (mesh, texture, sound, material) get them after the listed archives in load order; the
+  first-wins script provider gets them ahead, **reversed**, so one archive wins everywhere; an archive the args already
+  name keeps its place and flags. Guards `each_game_pairs_its_documented_names`,
+  `paired_archives_feed_every_provider_with_the_later_plugin_winning`.
 - Multi-plugin is live (`--master` repeatable → `parse_esm_with_load_order`); `parse_esm`
   passes `None`. Verify every embedded FormID in a newly-touched parser goes through
   `remap_fid`. The guard walk sees only `pub`/`pub(crate)`/`pub(super) fn parse_*` in
   `records/` (files named `tests.rs` and `#[cfg(test)]` modules excised) — `decode_*` /
   `from_subs*` helpers and `cell/` are outside it.
 - Parallel walk (#3813, `parse_record_indexes_in_load_order_with_archive`): walks run on
-  the rayon pool, but slot allocation, remap construction, `.STRINGS` loads and the
+  the rayon pool, but slot allocation, remap construction, `.STRINGS` loads, the provenance/list-merge notes and the
   `merge_from` fold stay on the calling thread in load order — fold order, never completion
   order. Guard: `load_order_parallel_tests::parallel_walk_matches_the_inline_walk_on_a_localized_master_chain`.
 **Output**: `/tmp/audit/esm/dim_3.md`
@@ -320,7 +343,33 @@ closure, like `dialogues` and `game_settings` — or a reasoned exclusion: `reco
   the per-field walk instead of comparing only the chain ends. "Use Model/Animation"
   (`TEMPLATE_FLAG_USE_MODEL_ANIMATION`, `ResolvedNpc::model`) resolves model-less templated
   `CREA` shells through their `LVLC` pick (`011ad0c07`, #6075; 63% of FNV fauna placements). A terminal `level` of 0 (30/3,816 FalloutNV.esm `NPC_`) backfills from the authored entry level of the deepest `LVLN` the walk picked through (`last_pick_level`, `ResolvedNpc::level()`), so its owned leveled lists are not expanded at level 0; an authored level or a list-less chain is unchanged (`4fbff2c6c`, #4232 — `effective_actor_level` itself stays unfloored, #3081). `ResolvedNpc::level()` is **Oblivion-aware**: ACBS bit 7 is *PC Level Offset* there (FO3/FNV's *PC Level Mult* stand-in `calc_min.max(1)` is not a level), so a record carrying `oblivion_pools` resolves at `actor_level_at_spawn` and an NPC's (not a creature's) is held to `min(own, player)`; the spawn boundary supplies the player's level via `ResolvedNpc::with_player_level`, and a caller without one reads as before (`cc907aa92`, #7193, pinned by `oblivion_leveled_lists_resolve_at_the_actor_level_held_to_the_players`). The lineage-wide Player base `NPC_` (FormID 7) has one home, `PLAYER_NPC_FORM_ID` / `player_npc_form_id(game)` in `records/actor/mod.rs`; the binary's inventory re-exports it (`3fd30c4f1`, #7211) — a new bare `7` for the Player base in the plugin/scripting crates is the regression.
-- `EsmIndex::merge_from`: last-write-wins matches Bethesda override semantics; `game` is
+- **The fold's provenance and the levelled-list merge** (#6670, LMC-REC-002/-003/-005/-006/-007; the fold lives in
+  `parse_record_indexes_in_load_order_with_policy`, `byroredux/src/cell_loader/load_order.rs`). Per plugin, in load
+  order and on the calling thread, **before** `merge_from`: `FoldProvenance::note_plugin` (`provenance.rs`) notes every
+  form the plugin carries that an earlier one did (an override, or a `DELE` deletion is a carrier) and every form it
+  defines in an ID space it does not own (an injected record), storing only those; then `ListMerge::note_plugin`; after
+  `merge_from`, `lists.apply`. `LoadOrder::record_winner` (provenance's winner) replaced the SCPT-only *script_winners*
+  table (#5428) — an override keeps the master's FormID, so the FormID's slot byte names the *definer*, never the
+  winner. The slot owner is resolved lazily from a once-built `GlobalSlot` → position map, only when it decides
+  something (`459e07b16`, #7250, pinned by `the_slot_owner_is_asked_only_when_it_decides_something` — a per-record
+  `slots.iter().position` scan is the regression, the fold has no plugin ceiling); an injected form a later plugin
+  overrides leaves the injected list, as `note_writer` already did (`944c0005a`, #7247, `an_injected_form_names_its_injector_and_a_later_override_follows_it`).
+  **Under the default `--merge-policy merge`, `LVLI`/`LVLN`/`LVLC`/`LVSP` are no longer last-write-wins** (`list_merge.rs`):
+  independent overrides (neither declares the other as a master, directly or transitively) are diffed against their
+  base — the latest earlier carrier among the plugin's own masters — per entry form as a `(level, count)` multiset, an
+  add/remove/change applied to the merged list, the later plugin winning a form or field (editor ID, chance none,
+  flags) and the earlier operation kept as overruled; a plugin that masters every contributor wins whole; `legacy`
+  keeps last-wins for everything. A re-level must be one change (a form left twice in the list is the regression);
+  form lists, keywords, inventories, factions, outfits and spell lists are still last-wins. Guards `list_merge_tests.rs`
+  and `independent_mods_merge_a_levelled_list_that_legacy_overwrites` (`commands/plugins.rs`). The conflict report
+  (`plugins.conflicts [formid [fields]]`, `--plugin-report`, `byroredux/src/commands/plugins.rs`) reads each carrier's
+  record back through `raw_record.rs` (`find_raw_record`, loading only the top-level groups the type can sit in) and
+  judges each override against the record it replaced — changed, identical (an ITM) or a revert to the definer's; a
+  repeated sub-record compares as a multiset, and `FLAG_COMPRESSED` is masked out of the flag comparison since it is
+  how the saving tool wrote the record (`34e1a9f50`, #7248; `single_fields_compare_by_bytes_and_lists_as_multisets`,
+  `each_override_is_judged_against_the_record_it_replaced`). A form-ID field that differs in bytes only because two
+  files index a shared master differently is reported as such (`same_form_id_encoding`), not as a value change.
+- `EsmIndex::merge_from`: last-write-wins matches Bethesda override semantics (levelled lists excepted under `merge`, above); `game` is
   only adopted when `other.total() > 0` (a failed-parse `EsmIndex::default()` must not
   relabel the load order as FO3/FNV, #3403); `character_rules` is first-non-`NONE` wins.
   **Exception — `dialogues`** (`168b81322`, #5375): an override DIAL replaces only the
@@ -574,6 +623,9 @@ First step: `cargo run --release -p byroredux-plugin --example esm_dim8_coverage
 - Real-data tests resolve installs through `esm/test_paths.rs` (`*_data_dir()` + `require_or_skip`; the ignored lane too, `2a311b378`, #7122);
   `BYROREDUX_REQUIRE_GAME_DATA` turns an absent install into a failure on the strict lane (`3e4bfab51`, #6184) — a
   test that re-inlines a Steam root or returns `ok` on a missing master is the regression.
+- Profile activation, paired archives, the fold's conflict report and the levelled-list merge have a headless live
+  gate, `docs/smoke-tests/lmc-activation.sh` (FNV, `--list-cells` / `--plugin-report`, no Vulkan; Dead Money plus
+  generated plugins) — real-data evidence for Dims 3-4's LMC bullets (`docs/smoke-tests/README.md` indexes it).
 - No windowed engine launch (*feedback_no_parallel_engine_launch*); example binaries and
   default `cargo test` only (see Phase 1 step 4 on `--ignored`).
 **Output**: `/tmp/audit/esm/dim_8.md`

@@ -350,7 +350,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**194**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**196**) grouped by
 purpose:
 
 ```
@@ -578,6 +578,8 @@ cast.status                  → the readied spell, the last cast (started or it
 bow.status                   → the readied bow, the equipped arrow and its count, the last shot (released with its draw fraction, speed and range, or the refusal reason), the trajectory in effect (and what the setting asks for), the provisional interval, the range, and the skill feed (`Marksman unfed` / `Archery unfed`) (player-archery BOW-DX-001)
 bow.shoot [seconds]          → release the player's bow after a draw of that many seconds (default a full draw): the attack key's own gate, arrow spend and flight, so a smoke script drives the real path (BOW-DX-002)
 door.state [entity]         → every in-cell door (the ones that open in place; teleport doors stay `door.list`), nearest the camera first, or the one entity named: reference, state (`open` / `closed` / `opening` / `closing`), lock and its key, default state, `FNAM` flags and the three sounds (door-runtime DRT-DX-001)
+plugins.activation          → the plugin profile as given (`--master`… `--esm`), the load order boot activation turned it into, each master hoisted ahead of a dependent and each plugin left out with its reason, the chain back to a missing master included, and the archives each plugin pairs with by name (legacy-mod-compatibility LMC-ID-003, -011, LMC-AST-002)
+plugins.conflicts [formid] [fields] → with no form, how many forms more than one plugin carries and how many were injected, the wins / losses / injections per plugin and the first 40 overridden forms; with a hex form, every plugin that carried it in load order, the winner and the policy (`legacy`, LMC-REC-002), an injected form's ID space, and for a record with lists (levelled list, form list, outfit, container, actor, race, item) the fold merged (`merge`, LMC-REC-003) its contributors and, per list entry form and field, who decided it and whom they overruled; `fields` also reads each carrier's record back from its file and judges each override against the record it replaced: the sub-records it changed, added or dropped, an identical override (ITM) or a revert (LMC-REC-005, -006, -007). The headless `--plugin-report [formid] [fields]` flag prints the same without a window
 weather.force <WTHR|none> [lock] → force the exterior weather like ObScript ForceWeather (saved); `none` releases it
 actor.where <entity|0xREFR> → where an actor is now and its cross-cell travel state: `routing via door entity <id> toward <cell>`, `offscreen, arrives at day <d> <hh:mm> in <cell>`, `unroutable <reason>`, or `in <cell>` / `not loaded, in <cell>`, with its pose (XCT-RPT-001)
 actor.where --census          → every actor the relocation ledger or the router knows: home cell, current cell and state, under a tally line (arrived / offscreen / routing / unroutable by reason, XCT-RPT-002)

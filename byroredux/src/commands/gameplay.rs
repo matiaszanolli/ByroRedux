@@ -612,7 +612,7 @@ mod tests {
     }
 }
 
-/// M47.2 — `levelup` — the level-up menu's work, until a menu exists: show
+/// M47.2 — `levelup` — the Fallout/Skyrim level-up menu's work, until a menu exists for it: show
 /// the player's banked level-up rewards, spend skill points on a skill of the
 /// game's roster (one point raises it one, never past 100 — the Fallout
 /// level-up menu's cap), or spend a perk point on a perk rank (the record's playable flag, minimum level and level-up
@@ -662,8 +662,9 @@ impl ConsoleCommand for LevelUpCommand {
                     rewards.pool_picks
                 ))
             }
-            // OSL-API-005 (Q3): the level-up surface until a native page exists. Picks one of the three attributes
-            // the oldest pending level raises; the level is taken at the next completed sleep.
+            // OSL-API-005 (Q3): Oblivion's attribute picks for a scripted or jail sleep. A bed sleep offers the level-up
+            // page instead (`oblivion_rest`, #7086). Picks one of the three attributes the oldest pending level raises;
+            // the level is taken at the next completed sleep.
             Some("attr") => {
                 use byroredux_scripting::oblivion_skill_use::{pick_attribute, PickRefusal, LEVEL_PICKS};
                 const ATTRIBUTES: [&str; 8] =

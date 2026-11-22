@@ -5,7 +5,7 @@ use super::super::condition::{
 use super::super::misc::MagicEffectItem;
 use super::*;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ConsumableEffect {
     pub effect: MagicEffectItem,
     /// FO3/FNV EFIT delivery (0=self, 1=touch, 2=target); Skyrim uses MGEF.

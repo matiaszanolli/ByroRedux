@@ -352,6 +352,17 @@ vec2 sampleFlowMap(uint flowMapIndex, vec2 uv) {
 // faint sky cast through the refraction path's miss shading (downward
 // refraction rays escaping the BLAS at cliff edges or sparse exterior
 // cells).
+// #1561 / #7261 — the one RT gate for every ray this shader traces.
+// `sceneFlags.x` is 1.0 only when ray_query is supported AND the TLAS is
+// current (draw.rs). Helper invocations (the lanes filling out a 2×2 quad
+// along a triangle edge) trace nothing: their outputs, stores and atomics are
+// discarded, and no derivative in this shader follows a ray — the only
+// implicit-LOD fetches are the normal-map samples above the first trace.
+// Pinned by `helper_lanes_trace_no_main_rays_and_no_derivative_follows`.
+bool waterRaysEnabled() {
+    return sceneFlags.x >= 0.5 && !gl_HelperInvocation;
+}
+
 vec3 traceWaterRay(
     vec3 origin,
     vec3 direction,
@@ -367,7 +378,7 @@ vec3 traceWaterRay(
     // case (binding 2 may be absent from the bound layout) and the RT first-
     // frame / TLAS-failure stale-TLAS readback. Degrades to the miss
     // fallback (sky reflection / deep-water refraction) instead of tracing.
-    if (sceneFlags.x < 0.5) {
+    if (!waterRaysEnabled()) {
         hit = false;
         hitDist = maxDist;
         return missFallback;
@@ -558,7 +569,7 @@ vec3 absorbWaterColumn(vec3 refractedRadiance, float hitDist, bool cameraUnderwa
 float foamShoreline(vec3 worldPos, vec3 surfaceNormal) {
     // #1561 — no RT / unwritten TLAS ⇒ no shoreline foam (same gate as
     // traceWaterRay / caustic_splat.comp).
-    if (sceneFlags.x < 0.5) {
+    if (!waterRaysEnabled()) {
         return 0.0;
     }
     rayQueryEXT rq;
@@ -1138,7 +1149,7 @@ void main() {
         // from the water side — refract returns zero and all energy goes to
         // the already-resolved reflection.
         if (length(Tdir) > 0.001) {
-            refrTraced = sceneFlags.x >= 0.5;
+            refrTraced = waterRaysEnabled();
             // Refraction-miss: deep water tint is the right backdrop
             // (the downward ray escaped the BLAS — cliff edge / sparse
             // exterior — but conceptually it should land in the deep
@@ -1228,7 +1239,7 @@ void main() {
     if (sunDirection.w > 0.0) {
         sunDir = normalize(sunDirection.xyz);
         sunVisibility = 1.0;
-        if (sceneFlags.x >= 0.5) {
+        if (waterRaysEnabled()) {
             vec3 sunTransmission = traceShadowTransmittance(
                 offsetRayOrigin(vWorldPos, Nsurface),
                 sunDir,
@@ -1434,10 +1445,10 @@ void main() {
     // CAUSTIC_FIXED_SCALE). `clamp_max = 0xFFFFFFFFu / scale`
     // mirrors the #1099 anchor — prevents wraparound when a hot
     // sun + perpendicular surface fragment dumps a large value.
-    // #1561 — `sceneFlags.x >= 0.5` gates the caustic shadow + floor ray
+    // #1561 — `waterRaysEnabled()` gates the caustic shadow + floor ray
     // queries below (mirrors the helper gates): no RT / unwritten TLAS ⇒ no
     // caustic projection rather than a trace against an absent / stale TLAS.
-    if (sunDirection.w > 0.0 && sceneFlags.x >= 0.5) {
+    if (sunDirection.w > 0.0 && waterRaysEnabled()) {
         // INVARIANT (REG-03 / #1635, #1459): `sunDirection.xyz` points TO the
         // sun (light-incoming), matching GpuLight.direction_angle /
         // triangle.frag's directional `L` AND the caustic_splat.comp

@@ -83,8 +83,9 @@ const GUARD_DEFAULT_RADIUS: f32 = super::locomotion::AI_PACKAGE_DEFAULT_RADIUS;
 /// `NearReference`-type PLDT FormID resolve to
 /// `travel_system::resolve_near_reference_target` (shared with
 /// Travel/Escort — #2561, this module previously duplicated that logic
-/// inline), falling back to `home` — the actor's own spawn position — on
-/// any miss after the shared retry window. See this module's doc for why the
+/// inline), falling back to `home` on any miss after the shared retry
+/// window: the actor's `EditorPlacement` for a Near Editor Location package
+/// (#7254), otherwise where it stands (`travel::package_home`). See this module's doc for why the
 /// fallback is `home` rather than Travel's random-pick-within-radius.
 fn resolve_anchor(world: &World, behavior: &GuardBehavior, home: Vec3) -> Vec3 {
     super::travel::resolve_near_reference_target(world, behavior.anchor_form_id).unwrap_or(home)
@@ -210,7 +211,8 @@ fn guard_system_inner(world: &World, dt: f32, scratch: &mut GuardScratch) {
                     ) {
                         continue;
                     }
-                    let anchor = resolve_anchor(world, behavior, current);
+                    let home = super::travel::package_home(world, entity, behavior.near_editor_location, current);
+                    let anchor = resolve_anchor(world, behavior, home);
                     (anchor, Some(GuardState { anchor }))
                 }
             };
@@ -375,6 +377,7 @@ mod tests {
                 anchor_form_id: None,
                 radius: Some(200.0),
                 form_id: 0x000A_0001,
+                near_editor_location: false,
             },
         );
 
@@ -431,6 +434,7 @@ mod tests {
                 anchor_form_id: Some(0x000B_0001),
                 radius: None,
                 form_id: 0x000B_0002,
+                near_editor_location: false,
             },
         );
 
@@ -463,6 +467,7 @@ mod tests {
                 anchor_form_id: Some(0x000B_0001),
                 radius: None,
                 form_id: 0x000B_0002,
+                near_editor_location: false,
             },
         );
         let mut scratch = GuardScratch::default();
@@ -511,6 +516,7 @@ mod tests {
                 anchor_form_id: None,
                 radius: Some(20.0),
                 form_id: 0x000C_0001,
+                near_editor_location: false,
             },
         );
         world.insert(
@@ -580,6 +586,7 @@ mod tests {
                 anchor_form_id: Some(0x0010_0001),
                 radius: None,
                 form_id: 0x0010_0002,
+                near_editor_location: false,
             },
         );
 
@@ -621,6 +628,7 @@ mod tests {
                 anchor_form_id: None,
                 radius: Some(1.0), // small leash: the anchor is far beyond it
                 form_id: 0x0011_0001,
+                near_editor_location: false,
             },
         );
         world.insert(entity, GuardState { anchor });
@@ -675,6 +683,7 @@ mod tests {
                 anchor_form_id: None,
                 radius: Some(20.0),
                 form_id: 0x0012_0001,
+                near_editor_location: false,
             },
         );
         world.insert(
@@ -720,7 +729,7 @@ mod tests {
         let post = Vec3::new(400.0, 0.0, 0.0);
         let guard = world.spawn();
         world.insert(guard, Transform::from_translation(Vec3::new(-400.0, 0.0, 0.0)));
-        world.insert(guard, GuardBehavior { anchor_form_id: None, radius: Some(20.0), form_id: 0x0012_0001 });
+        world.insert(guard, GuardBehavior { anchor_form_id: None, radius: Some(20.0), form_id: 0x0012_0001, near_editor_location: false });
         world.insert(guard, GuardState { anchor: post });
 
         let mut switched = false;
@@ -735,5 +744,31 @@ mod tests {
             }
         }
         panic!("a guard held against a wall must take the pathgrid back to its post");
+    }
+
+    /// #7254 — a Near Editor Location Guard (FNV `DefaultGuardLinkedRef…StayAtEdLoc…`, `NovacBooneGuard`) whose
+    /// actor an earlier package walked away anchors on its editor placement, not where it stands; a Near
+    /// Current Location one still holds where it stands.
+    #[test]
+    fn a_near_editor_location_guard_anchors_on_the_editor_placement() {
+        use byroredux_core::ecs::components::EditorPlacement;
+        let placement = Vec3::new(-300.0, 0.0, 40.0);
+        let away = Vec3::new(500.0, 0.0, 500.0);
+        for near_editor_location in [true, false] {
+            let mut world = World::new();
+            world.register::<GuardBehavior>();
+            world.register::<GuardState>();
+            world.register::<Transform>();
+            world.register::<NavPath>();
+            world.register::<EditorPlacement>();
+            let guard = world.spawn();
+            world.insert(guard, Transform::from_translation(away));
+            world.insert(guard, EditorPlacement { translation: placement });
+            world.insert(guard, GuardBehavior { anchor_form_id: None, radius: Some(64.0), form_id: 0x0005_AFCB, near_editor_location });
+            make_guard_system()(&world, 0.016);
+            let anchor = world.get::<GuardState>(guard).expect("anchor resolved on first sight").anchor;
+            let expected = if near_editor_location { placement } else { away };
+            assert!((anchor - expected).length() < 1e-3, "near_editor_location {near_editor_location}: anchor {anchor:?}, expected {expected:?}");
+        }
     }
 }

@@ -120,6 +120,18 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 //      separately, by the global COMPUTE SHADER_WRITE → SHADER_READ
 //      `memory_barrier` in `record_volumetrics_pass` — documented at
 //      Stage B in `volumetrics.rs::dispatch`, not by a dedicated barrier.
+//  16. The terrain-patch set (#7221, TSD-4.2): `TerrainPatchPass` rewrites the
+//      reserved patch vertices in place every frame, and
+//      `acceleration/blas_terrain_patch.rs`'s `TerrainPatchBlasSet` refits
+//      each patch BLAS in place (`src == dst`) out of ONE `scratch` buffer
+//      shared by both slots — riders 10 and 11's shape, not per-FIF. Frame
+//      N-1's raster draws, ray queries and BLAS build may still read the
+//      vertices and the AS. On the one queue the ordering is held today by a
+//      transitive barrier chain (the patch compute's entry barrier from
+//      FRAGMENT|COMPUTE, its exit barrier into AS build, the set's AS-build →
+//      AS-build barrier), derived by reading rather than by validation, plus
+//      this all-slots wait. A grown scratch is already deferred-destroyed; the
+//      in-place rewrites are not.
 //
 // #4601 — the wait's own argument is now pinned: the all-slots spelling
 // `wait_for_fences(&self.frame_sync.in_flight, true, u64::MAX)` is
@@ -150,8 +162,9 @@ const _: () = assert!(
      the skinned BLAS scratch free, the depth-capture/screenshot \
      staging destroys, the terrain tile buffer, mapped morph weights, \
      ground-cover model buffers/readback, and the skinned output/BLAS/ \
-     bind-inverse staging/immediate unload frees all rest on the same \
-     both-slots wait (#3643, #4851, #4852). \
+     bind-inverse staging/immediate unload frees, and the in-place \
+     terrain-patch vertices/BLAS/scratch all rest on the same \
+     both-slots wait (#3643, #4851, #4852, #7245). \
      The HUD rotation dependency was removed by #3429."
 );
 
@@ -759,6 +772,16 @@ mod tests {
             (
                 "combustion_occupancy_buffers",
                 crate::source_scan::production_text(include_str!("volumetrics.rs")),
+            ),
+            // #7245 — rider 16: the terrain-patch vertices rewritten in place, and
+            // the patch BLAS set refit in place out of one shared scratch.
+            (
+                "TerrainPatchPass",
+                crate::source_scan::production_text(include_str!("terrain_patch.rs")),
+            ),
+            (
+                "TerrainPatchBlasSet",
+                crate::source_scan::production_text(include_str!("acceleration/blas_terrain_patch.rs")),
             ),
         ] {
             assert!(

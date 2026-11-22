@@ -406,10 +406,10 @@ pub(crate) fn push_terrain_patches(world: &World, ctx: &mut byroredux_renderer::
     let Some(mut state) = world.try_resource_mut::<TerrainPatchState>() else {
         return;
     };
-    if state.meshes.is_empty() {
-        if let Some(meshes) = ctx.terrain_patch_meshes() {
-            state.meshes = meshes.clone();
-        }
+    if state.meshes.is_empty()
+        && let Some(meshes) = ctx.terrain_patch_meshes()
+    {
+        state.meshes = meshes.clone();
     }
     if let Some(stats) = ctx.terrain_patch_stats() {
         state.stats = stats.clone();

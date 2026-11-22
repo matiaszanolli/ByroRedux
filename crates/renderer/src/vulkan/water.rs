@@ -1784,7 +1784,8 @@ mod tests {
             .find("bool refrTraced = false;")
             .expect("water.frag must track whether a refraction ray was traced");
         assert!(
-            src.contains("refrTraced = sceneFlags.x >= 0.5;"),
+            // #7261 — the gate also drops helper lanes, whose coverage is discarded.
+            src.contains("refrTraced = waterRaysEnabled();"),
             "only a live-RT, non-TIR refraction counts as traced"
         );
         let refraction_coverage = src

@@ -177,16 +177,8 @@ fn startup_asset_roots() -> Vec<std::path::PathBuf> {
     let args: Vec<String> = crate::cli_args::effective_args();
     args.windows(2)
         .filter(|pair| {
-            matches!(
-                pair[0].as_str(),
-                "--esm"
-                    | "--master"
-                    | "--bsa"
-                    | "--textures-bsa"
-                    | "--scripts-bsa"
-                    | "--sounds-bsa"
-                    | "--materials-bsa"
-            )
+            matches!(pair[0].as_str(), "--esm" | "--master")
+                || crate::cli_args::ARCHIVE_FLAGS.contains(&pair[0].as_str())
         })
         .filter_map(|pair| std::path::Path::new(&pair[1]).parent()?.canonicalize().ok())
         .collect()

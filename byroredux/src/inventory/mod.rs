@@ -11,7 +11,6 @@ use byroredux_core::ecs::components::{
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::Component;
 use byroredux_core::ecs::{Resource, World};
-use byroredux_plugin::esm::reader::GameKind;
 use byroredux_plugin::esm::records::{EsmIndex, ItemKind};
 use byroredux_sdk::inventory::{ItemCategory, ItemMetadata};
 use rustc_hash::FxHashMap;
@@ -103,32 +102,12 @@ pub(crate) fn add_item(
     Some(index)
 }
 
-/// Queue one [`InventoryAction::ToggleEquip`] for the row whose base form is
-/// `form_id`, to be drained through [`apply_action`] on the main thread.
-/// Returns a user-facing error when the player has no such row.
+/// Queue one [`InventoryAction::ToggleEquip`] for the player's first row carrying `form_id` (`inv.equip`), to be
+/// drained through [`apply_action`] on the main thread. Returns a user-facing error when the player has no such row.
+/// The row is [`Inventory::first_row_of`]'s, as `inv.use` and `inv.drop` take it: a row zeroed in place is skipped
+/// for a later one that holds the item (#7232).
 pub(crate) fn queue_equip_by_form_id(world: &World, form_id: u32) -> Result<String, String> {
-    let player = PlayerEntity::get(world)
-        .ok_or_else(|| "no player".to_string())?;
-    let index = world
-        .get::<Inventory>(player)
-        .and_then(|inventory| {
-            inventory
-                .items
-                .iter()
-                .position(|stack| stack.base_form_id == form_id)
-        })
-        .ok_or_else(|| format!("no inventory row with form {form_id:08X}"))?;
-    let Some(mut pending) = world.try_resource_mut::<PendingInventoryActions>() else {
-        return Err("inventory action queue unavailable".to_string());
-    };
-    pending
-        .0
-        .push(byroredux_native_ui::InventoryAction::ToggleEquip {
-            index: index as u32,
-        });
-    Ok(format!(
-        "queued equip toggle for row {index} (form {form_id:08X})"
-    ))
+    queue_by_form_id(world, form_id, "equip toggle", |index, _| byroredux_native_ui::InventoryAction::ToggleEquip { index })
 }
 
 /// Queue the menu's own `Consume` of the player's row carrying `form_id` (`inv.use`): the same door a

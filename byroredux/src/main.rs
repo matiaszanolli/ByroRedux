@@ -56,6 +56,7 @@ mod inventory;
 mod music;
 mod notifications;
 mod perk_activate;
+mod plugin_activation;
 mod objectives;
 mod hud;
 mod light_translate;

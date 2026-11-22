@@ -1,5 +1,6 @@
 use super::*;
 use byroredux_core::ecs::components::{Children, MeshHandle, Parent};
+use byroredux_plugin::esm::reader::GameKind;
 
 /// #4571 — pickup_loot's marker must reach the placement's MESH
 /// entities, not just the root: the root never carries a MeshHandle
@@ -857,6 +858,23 @@ fn activated_container(
         byroredux_scripting::ActivateEvent { activator: player },
     );
     container
+}
+
+/// #7231 — take-all over a source with a row zeroed in place (rows keep their position) moves the live rows only: the
+/// emptied form reports no transfer, so no `OnAdd` / `OnDrop` runs for it and no stolen row is noted, and the player
+/// gains no zero-count row for it.
+#[test]
+fn take_all_reports_and_moves_only_the_rows_that_hold_items() {
+    let (mut world, player) = fixture();
+    let container = activated_container(&mut world, player);
+    world.get_mut::<Inventory>(container).unwrap().items = vec![ItemStack::new(0x4444, 0), ItemStack::new(0x5678, 7)];
+    let before = world.get::<Inventory>(player).unwrap().count_of(0x5678);
+    let outcome = transfer_loot(&world, player, container, LootSelection::All).unwrap();
+    assert_eq!(outcome.rows, vec![(0x5678, 7)], "the emptied row reports no transfer");
+    assert_eq!(outcome.item_count, 7);
+    let inventory = world.get::<Inventory>(player).unwrap();
+    assert!(!inventory.items.iter().any(|stack| stack.base_form_id == 0x4444), "no zero-count row reaches the player");
+    assert_eq!(inventory.count_of(0x5678), before + 7);
 }
 
 #[test]
@@ -2801,6 +2819,26 @@ fn a_script_weapon_equip_is_queued_through_the_menu_door() {
     request(&world, player, 0x9ABC);
     drain_pending_inventory_actions(&mut world);
     assert_eq!(world.get::<EquipmentSlots>(player).unwrap().weapon.map(|index| index.0), Some(2));
+}
+
+/// #7232 — `inv.equip` takes the first row that holds the item, as `inv.use` and `inv.drop` do: a row of the form
+/// zeroed in place (rows keep their position) is passed over for a later live one, rather than queued and refused.
+#[test]
+fn queued_equip_skips_a_zeroed_row_for_a_live_one() {
+    let (mut world, player) = fixture();
+    world.insert_resource(PendingInventoryActions::default());
+    world.get_mut::<Inventory>(player).unwrap().items[0].count = 0;
+    let live = {
+        let inventory = world.get_mut::<Inventory>(player).unwrap();
+        inventory.items.push(ItemStack::new(0x1234, 1));
+        inventory.items.len() - 1
+    };
+    let message = queue_equip_by_form_id(&world, 0x1234).expect("a live row exists");
+    assert!(message.contains(&format!("row {live}")), "{message}");
+    assert!(matches!(
+        world.resource::<PendingInventoryActions>().0.as_slice(),
+        [byroredux_native_ui::InventoryAction::ToggleEquip { index }] if *index as usize == live
+    ));
 }
 
 #[test]

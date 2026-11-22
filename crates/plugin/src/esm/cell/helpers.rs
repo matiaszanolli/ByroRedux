@@ -166,7 +166,7 @@ impl CellSubrecordFields {
                 let expected = FO76_XCRI_HEADER_LEN
                     .saturating_add(mesh_count.saturating_mul(FO76_XCRI_MESH_LEN))
                     .saturating_add(entries.saturating_mul(FO76_XCRI_REF_LEN));
-                if expected != sub.data.len() || ref_count % 2 != 0 {
+                if expected != sub.data.len() || !ref_count.is_multiple_of(2) {
                     log::warn!(
                         "CELL {:08X} FO76 XCRI size mismatch: meshes={} refs={} expected={} actual={} — skipping",
                         cell_form_id,

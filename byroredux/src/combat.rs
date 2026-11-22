@@ -521,9 +521,13 @@ impl WeaponDefense {
 /// Oblivion's armor rating and Resist Normal Weapons against an actor's weapon hit (UESP *Oblivion:The Complete Damage
 /// Formula*; `ArmorRatingModel`), or `None` where the game has no such rule or the hit is not an actor's (a trap or a script's).
 /// The combined rating is the sum of the pieces the target wears, each worth its `ARMO` rating at the wearer's Light or Heavy
-/// Armor (a piece covering several slots counts once), capped; a Master Sneak attack ignores it. A blow struck with no
-/// weapon and no projectile is outside the resistance when it is a creature's natural attack or a fist at Journeyman Hand
-/// to Hand (#7195, `ArmorRatingModel::unarmed_ignores_resistance`); a negative resistance is a weakness and raises the hit.
+/// Armor (a piece covering several slots counts once), capped; a Master Sneak attack ignores it. A blow from an aggressor
+/// that wields no weapon and is not the player's arrow is outside the resistance when it is a creature's natural attack or
+/// a fist at Journeyman Hand to Hand (#7195, `ArmorRatingModel::unarmed_ignores_resistance`); a negative resistance is a
+/// weakness and raises the hit. The test rests on `EquippedWeapon` and `arrow` alone (#7234): every shot and script strike
+/// lands through the `TrapHit` flush with `projectile: 0`, so the projectile id tells nothing apart. A shooter firing a
+/// weapon it does not wield (a script's `UseWeapon`) would read as unarmed; no Oblivion path produces one (no UseWeapon
+/// procedure, NPC archery or scripted fire), and a producer that adds one must carry the weapon.
 /// Not modelled: armor condition (read as full) and Shield-like boosting effects.
 fn weapon_defense(world: &World, event: &byroredux_scripting::HitEvent, target: EntityId) -> Option<WeaponDefense> {
     use byroredux_core::character::{weapon_resistance_factor, ArmorRatingModel};
@@ -553,7 +557,7 @@ fn weapon_defense(world: &World, event: &byroredux_scripting::HitEvent, target: 
     }
     let master_sneak = event.sneak_attack && model.is_master_sneak(crate::detection::actor_value(world, event.aggressor, "Sneak"));
     let through_armor = model.armor_factor(combined, master_sneak);
-    let unarmed = event.projectile == 0 && !event.arrow && world.get::<EquippedWeapon>(event.aggressor).is_none();
+    let unarmed = !event.arrow && world.get::<EquippedWeapon>(event.aggressor).is_none();
     let ignores_resistance = event.ignores_resistance
         || (unarmed
             && model.unarmed_ignores_resistance(
@@ -584,9 +588,15 @@ pub(crate) fn weapon_ignores_resistance(world: &World, actor: EntityId) -> bool 
     let Some(base) = world.get::<EquippedWeapon>(actor).map(|weapon| weapon.base_form_id) else {
         return false;
     };
-    world.try_resource::<crate::components::LoadedCellIndex>().is_some_and(|index| {
-        matches!(index.0.items.get(&base).map(|item| &item.kind), Some(byroredux_plugin::esm::records::ItemKind::Weapon { ignores_normal_resistance: true, .. }))
-    })
+    world
+        .try_resource::<crate::components::LoadedCellIndex>()
+        .is_some_and(|index| item_ignores_resistance(index.0.items.get(&base).map(|item| &item.kind)))
+}
+
+/// Whether `weapon` (an item record's kind) is a weapon that ignores Resist Normal Weapons; `false` for anything else.
+/// The one reading of the flag for every hit producer: the wielded weapon above, and a script's `UseWeapon` (#7234).
+pub(crate) fn item_ignores_resistance(weapon: Option<&byroredux_plugin::esm::records::ItemKind>) -> bool {
+    matches!(weapon, Some(byroredux_plugin::esm::records::ItemKind::Weapon { ignores_normal_resistance: true, .. }))
 }
 
 /// #7054 — the share of a hit `target`'s guard stops (Oblivion's Block, UESP *Oblivion:Block*), or `None` where it puts
@@ -615,7 +625,6 @@ fn target_block(world: &World, aggressor: EntityId, target: EntityId) -> Option<
     model.reduction(skill, guard, world.has::<EquippedWeapon>(aggressor))
 }
 
-/// Install (or, for a game without block rules, remove) the [`BlockModel`] for a freshly loaded index.
 /// Install (or, for a game without fall damage, remove) the [`FallModel`](byroredux_core::character::FallModel) for a freshly
 /// loaded index, retuned by the load order's `fJumpFall*` settings (#7056).
 pub(crate) fn install_fall_model(world: &mut World, index: &byroredux_plugin::esm::records::EsmIndex) {
@@ -629,6 +638,8 @@ pub(crate) fn install_fall_model(world: &mut World, index: &byroredux_plugin::es
     }
 }
 
+/// Install (or, for a game without block rules, remove) the [`BlockModel`](byroredux_core::character::BlockModel) for a
+/// freshly loaded index.
 pub(crate) fn install_block_model(world: &mut World, index: &byroredux_plugin::esm::records::EsmIndex) {
     match index.character_rules.block() {
         Some(model) => {
@@ -4069,5 +4080,35 @@ mod held_death_reconciliation_tests {
         let pending = world.resource::<PendingDeathReconciliations>();
         assert!(pending.held().is_empty());
         assert_eq!(pending.queued(), &[combat_kill, late_static_corpse]);
+    }
+}
+
+/// #7236 — each player rule-row installer carries its own doc, naming the model it installs. One was inserted between
+/// `install_block_model` and its doc, which then read as the first paragraph of `install_fall_model`'s.
+#[cfg(test)]
+mod installer_doc_source_tests {
+    #[test]
+    fn every_rule_row_installer_documents_its_own_model() {
+        let src = include_str!("combat.rs");
+        let lines: Vec<&str> = src.lines().collect();
+        let mut seen = 0;
+        for (at, line) in lines.iter().enumerate() {
+            let Some(rest) = line.strip_prefix("pub(crate) fn install_") else { continue };
+            let Some(row) = rest.split('(').next().and_then(|name| name.strip_suffix("_model")) else { continue };
+            seen += 1;
+            let model: String = row
+                .split('_')
+                .map(|word| word[..1].to_uppercase() + &word[1..])
+                .chain(std::iter::once("Model".to_owned()))
+                .collect();
+            let doc: Vec<&str> = lines[..at].iter().rev().take_while(|line| line.starts_with("///")).copied().collect();
+            let doc = doc.into_iter().rev().collect::<Vec<_>>().join(" ");
+            assert!(doc.contains(&model), "install_{row}_model's doc must name {model}: {doc:?}");
+            let others = ["BlockModel", "FallModel", "ArmorRatingModel"].into_iter().filter(|other| *other != model);
+            for other in others {
+                assert!(!doc.contains(&format!("[`{other}`]")), "install_{row}_model's doc names {other}: {doc:?}");
+            }
+        }
+        assert!(seen >= 3, "the armor-rating, block and fall installers are scanned");
     }
 }

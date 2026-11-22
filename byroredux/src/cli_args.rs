@@ -19,6 +19,10 @@ use byroredux_renderer::{FsrQuality, RendererConfig, TonemapOp, UpscalerMode, Vo
 /// debugging journey.
 static EFFECTIVE_ARGS: OnceLock<Vec<String>> = OnceLock::new();
 
+/// Every flag that names an archive for an asset provider: meshes, textures, compiled scripts, sounds, `.bgsm`
+/// materials. Each takes one archive path and may repeat.
+pub(crate) const ARCHIVE_FLAGS: [&str; 5] = ["--bsa", "--textures-bsa", "--scripts-bsa", "--sounds-bsa", "--materials-ba2"];
+
 /// Store the post-expansion args list. Call exactly once at
 /// program start, after `--game` expansion. Re-call panics —
 /// the singleton is set-once for the lifetime of the process.

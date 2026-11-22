@@ -498,7 +498,7 @@ Also `cleanup_removes_all_event_types`;
   markers must merge, not overwrite** (`SparseSetStorage` = one slot per entity): `QuestStageAdvancedBatch`
   (`push_quest_stage_advances`), `HitEvent` (one row per target: the NPC melee producer holds a strike on an
   already-hit target, #4324; projectile hits ride the `ProcessTrapHit` queue whose flush applies the same hold,
-  #5860 `ea28a35b8` — re-verify after any new producer; every producer fills `arrow` / `ignores_resistance` — `TrapHit` carries both onto the landed event, #7055/Resist Normal Weapons, `fba412ebb`; a VATS queue's folded shots ride the sibling `HitParts` (per-shot `PartStrike`, VATS-LIMB-002, `83e9c6c92`), a Pattern-A marker drained with the `HitEvent` it describes), `ActivateEvent` (a system running after the Update consumers must queue through `PendingFragmentActivations`, not insert — the Find package's arrival did, so Update `OnActivate` consumers missed it until #6466 `9f783b30f`; Update-stage consumer order pinned by the flush test, which now
+  #5860 `ea28a35b8` — re-verify after any new producer; every producer fills `arrow` / `ignores_resistance` — `TrapHit` carries both onto the landed event, #7055/Resist Normal Weapons, `fba412ebb`; a script's `UseWeapon` reads the fired weapon's flag through `item_ignores_resistance` rather than hard-coding false, #7234 `71f31e0aa`; a VATS queue's folded shots ride the sibling `HitParts` (per-shot `PartStrike`, VATS-LIMB-002, `83e9c6c92`), a Pattern-A marker drained with the `HitEvent` it describes), `ActivateEvent` (a system running after the Update consumers must queue through `PendingFragmentActivations`, not insert — the Find package's arrival did, so Update `OnActivate` consumers missed it until #6466 `9f783b30f`; Update-stage consumer order pinned by the flush test, which now
   lists `container_loot_system` and `mg07_on_activate_dispatch` (#4712/#4116), plus
   `reference_script_event_system`; the Late-stage `npc_dialogue` selection system is a further consumer — it must
   stay before `event_cleanup_system`); `NativeActivation` rides an `ActivateEvent` raised by `Activate(akActivator,
@@ -874,8 +874,8 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   The behavior-graph decode is `/audit-parsers`; collider/motion halves `/audit-physics`.
 - **Marker patterns** for this domain (Pattern B, drained at consumer head): `Scene{Start,Stop}Request`,
   `SceneActionCompletionBatch`, `DialoguePresentationEventBatch`, `DialogueLineCompletionBatch`,
-  `ScenePackage*Batch`, `EvaluatePackageRequest`, `MotionTypeChangeRequest` (tail-drains exactly what it
-  snapshotted). Pattern-A `SceneEventBatch`/`SceneFragmentInvocationBatch` feed
+  `ScenePackage*Batch`, `EvaluatePackageRequest`, `ReleasePackageHold`, `MotionTypeChangeRequest` (tail-drains exactly what it
+  snapshotted). `ReleasePackageHold` is raised only by `request_package_evaluation` (the explicit `Actor.EvaluatePackage` / ObScript `EVP`; `queue_package_evaluation`, which the actor's own script-package state uses, raises the request alone) and taken by `ambient_ai_package_system` at the head of its pass, before any early return, so the next ambient selection ignores the Must Complete extension and the running package survives only while its own window is open (GECK *EvaluatePackage*; #7243 `aa15ee950`, pinned by `an_explicit_evaluate_package_ends_a_must_complete_hold` in `byroredux/src/npc_spawn/ai_package.rs`; the no-Done-state hold rule is #7224 `94e785c7e`). Its drain is a `cleanup.rs` doc-table row only, not yet run by the drain-pin test above. Pattern-A `SceneEventBatch`/`SceneFragmentInvocationBatch` feed
   `scene_fragment_dispatch_system` (Dim 2 order guard). SCEN package `Activate` leaf ordering vs `ActivateEvent`
   consumers is pinned by the schedule tests.
 - **Playback lifecycle**: `idle_clip_playback_system` starts a scoped player once per serial and drains the
@@ -996,7 +996,7 @@ SCTX frontend (`ScriptSource::Obscript` placeholder).
   inventory item), which lowers onto the same
   `QuestStageState`/`Globals` and emits the same stage events as the fragment path (so Dim 2's journal and
   cascade rules apply). Timers/effect ring (`ObScriptQuestTimers`, `ObScriptEffectLog`, cap 64) are unsaved by
-  design — elapsed time restarts on load (documented residual, not silent save loss). Quest-script **locals persist**
+  design — elapsed time restarts on load: the live-load drain resets `ObScriptQuestTimers` (`discard_outgoing_session_requests`, #7253 `bf977bfb3`; it was only ever built at boot, so an in-process load carried the outgoing cadence over), the cap-64 ring is runtime observability only (documented residual, not silent save loss). Quest-script **locals persist**
   between GameMode runs in the saved `ObScriptQuestLocals` (seeded into each run's `VmState`, stored back after the
   run; an unassigned slot reads 0) and condition fn 79 `GetQuestVariable` reads them on Oblivion/FO3/FNV only
   (`f67d82b3c`; the game split and the cross-tick read are pinned since #5787 `a5e5346d0` by

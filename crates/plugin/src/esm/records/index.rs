@@ -863,12 +863,8 @@ impl EsmIndex {
         // make it unrecoverable once the loop below no longer re-promotes it
         // (e.g. a later plugin's OMOD override drops the `LNAM` reference).
         for item in self.items.values_mut() {
-            if let super::ItemKind::Mod { was_junk } = item.kind {
-                item.kind = if was_junk {
-                    super::ItemKind::Junk
-                } else {
-                    super::ItemKind::Misc
-                };
+            if let super::ItemKind::Mod { .. } = item.kind {
+                item.kind = item.kind.authored().into_owned();
             }
         }
         for &loose_item in self.object_mod_loose_items.values() {

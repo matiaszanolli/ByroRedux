@@ -515,6 +515,8 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     world.register::<byroredux_core::ecs::components::PatrolBehavior>();
     world.register::<byroredux_core::ecs::components::PatrolState>();
     world.register::<crate::components::AmbientPackageRuntime>();
+    // #7233 — the leaf a running tree package installed, written by `ambient_ai_package_system`.
+    world.register::<crate::npc_spawn::ai_package::TreeLeafRun>();
     world.register::<crate::systems::random_conversation::ConversationHold>();
     world.register::<crate::systems::mines::ArmedMine>();
     world.register::<crate::systems::mines::SpentMine>();
