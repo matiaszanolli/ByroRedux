@@ -535,6 +535,20 @@ pub(crate) fn run() -> Result<()> {
         return crate::list_cells::run(&plugin_paths, filter);
     }
 
+    // --plugin-report [FORMID] [fields]: what activation did to the plugin profile and what the fold did with the
+    // forms more than one plugin carries (or one form's carriers, winner and changed sub-records), then exit. The
+    // console's `plugins.activation` / `plugins.conflicts` without a window (LMC-REC-007, #6670).
+    if let Some(idx) = args.iter().position(|a| a == "--plugin-report") {
+        let esm_path = parse_string_arg(&args, "--esm").ok_or_else(|| {
+            anyhow::anyhow!("--plugin-report requires --esm <PATH> or --game <KEY> to name a plugin")
+        })?;
+        let plugin_paths: Vec<String> = crate::cli_args::parse_all_string_args(&args, "--master")
+            .into_iter()
+            .chain(std::iter::once(esm_path))
+            .collect();
+        return crate::commands::plugins::run_report(&plugin_paths, &args[idx + 1..]);
+    }
+
     // Headless --cmd mode: execute command and exit without creating a window.
     if let Some(cmd_idx) = args.iter().position(|a| a == "--cmd") {
         // #637 / FNV-D5-03 — the headless path builds an empty World

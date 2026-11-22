@@ -69,7 +69,7 @@ mod world_info;
 mod music;
 mod bow;
 mod door;
-mod plugins;
+pub(crate) mod plugins;
 mod spell;
 mod stealth;
 mod video;

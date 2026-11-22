@@ -49,7 +49,8 @@ What the engine does today with a legacy plugin set (`--master …` `--esm`), th
    (`crates/plugin/src/esm/raw_record.rs`, which loads only the top-level groups the record type can sit in) and names
    the sub-records the winner changed, added or dropped against it. A repeated sub-record is compared as a multiset,
    so one entry added to a list is one addition. The comparison is of bytes, so when two files index a shared master
-   differently a form-ID field can differ in bytes only, and the line says so.
+   differently a form-ID field can differ in bytes only, and the line says so. `--plugin-report [formid] [fields]`
+   prints the same (with the activation report) without a window: `byroredux --game fnv --master … --plugin-report`.
 
 Not built yet in Phase 1: the mod profile beyond argv (discovery, mod roots, LMC-ID-012), the official/user boundary
 (LMC-REC-008), archive pairing by the verified naming rules (LMC-AST-002), the `merge` policy (LMC-REC-003), the

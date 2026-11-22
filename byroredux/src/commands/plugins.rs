@@ -1,6 +1,6 @@
 //! The session's plugin profile from the console (PRD legacy-mod-compatibility Phase 1, #6670): `plugins.activation`
 //! shows what activation did to the profile (LMC-ID-003, -011), `plugins.conflicts` what the fold did with the forms
-//! more than one plugin carries (LMC-REC-005, -007).
+//! more than one plugin carries (LMC-REC-005, -007). `--plugin-report` prints the same without a window ([`run_report`]).
 
 use super::shared::*;
 use crate::cell_loader::load_order::{ActiveLoadOrder, LoadOrder};
@@ -31,9 +31,11 @@ impl ConsoleCommand for PluginActivationCommand {
 }
 
 fn activation_lines(report: &crate::plugin_activation::PluginActivationReport) -> Vec<String> {
-    let mut lines = vec![format!("profile ({}): {}", report.profile.len(), report.profile.join(", "))];
+    let file = |path: &String| path.rsplit(['/', '\\']).next().unwrap_or(path).to_owned();
+    let profile: Vec<String> = report.profile.iter().map(file).collect();
+    let mut lines = vec![format!("profile ({}): {}", profile.len(), profile.join(", "))];
     lines.push(format!("load order ({}):", report.order.len()));
-    lines.extend(report.order.iter().enumerate().map(|(position, name)| format!("  {position:3}  {name}")));
+    lines.extend(report.order.iter().enumerate().map(|(position, path)| format!("  {position:3}  {}", file(path))));
     if report.lines.is_empty() {
         lines.push("the profile loads as given: no master hoisted, no plugin disabled".to_owned());
     } else {
@@ -82,6 +84,31 @@ impl ConsoleCommand for PluginConflictsCommand {
             },
         }
     }
+}
+
+/// `--plugin-report [formid] [fields]`: the two commands' answers for the session's plugin set, printed without a
+/// window or a World (the boot activation has already rewritten the `--master` list), then the process exits.
+pub(crate) fn run_report(plugin_paths: &[String], args: &[String]) -> anyhow::Result<()> {
+    let refs: Vec<&str> = plugin_paths.iter().map(String::as_str).collect();
+    let (index, order) = crate::cell_loader::parse_record_indexes_in_load_order(&refs)?;
+    if let Some(report) = crate::plugin_activation::activation_report() {
+        activation_lines(report).iter().for_each(|line| println!("{line}"));
+    }
+    let record_type = |form_id: u32| index.record_types.get(&form_id).copied();
+    let form = args.first().filter(|arg| !arg.starts_with("--"));
+    let lines = match form.map(|text| parse_form_id(text)) {
+        None => summary_lines(&order, record_type),
+        Some(None) => anyhow::bail!("--plugin-report takes a hex form ID, got '{}'", form.map_or("", String::as_str)),
+        Some(Some(form_id)) => {
+            let mut lines = form_lines(&order, form_id, record_type(form_id));
+            if args.get(1).is_some_and(|arg| arg == "fields") {
+                lines.extend(field_lines(&order, plugin_paths, form_id, record_type(form_id)));
+            }
+            lines
+        }
+    };
+    lines.iter().for_each(|line| println!("{line}"));
+    Ok(())
 }
 
 fn parse_form_id(text: &str) -> Option<u32> {

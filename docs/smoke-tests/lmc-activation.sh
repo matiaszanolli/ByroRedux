@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # Headless live gate for plugin-profile activation (PRD legacy-mod-compatibility Phase 1, #6670): `lmc-activation.sh`.
-# No window and no Vulkan: each leg runs `--list-cells` over New Vegas masters plus small generated plugins and reads
+# No window and no Vulkan: each leg runs `--list-cells` (the last `--plugin-report`) over New Vegas masters plus small generated plugins and reads
 # the activation report the engine logs.
 #   1. masters out of order: DeadMoney.esm listed before FalloutNV.esm is hoisted behind it (LMC-ID-003) and loads.
 #   2. a missing master: a plugin naming LonesomeRoad_absent.esm is disabled with the patch that depends on it, a plugin
 #      naming its master in another case (FALLOUTNV.ESM) is kept (LMC-ID-001, -009, -011), and the session loads.
 #   3. the session plugin itself missing a master: DeadMoney.esm alone is refused, naming the --master to pass.
+#   4. the conflict report: `--plugin-report 000000D2 fields` names the Dead Money topic's carriers in load order and the
+#      sub-records Dead Money changed against FalloutNV.esm (LMC-REC-007).
 # Requires the New Vegas data (BYROREDUX_FNV_DATA), python3 and a built engine (BYRO_BIN, else target/release, else
 # target/debug).
 set -euo pipefail
@@ -80,5 +82,14 @@ run refused --esm "$DATA/DeadMoney.esm"
 expect refused "(--esm) cannot be activated"
 expect refused "pass \`--master FalloutNV.esm\` before \`--esm\`"
 echo "smoke[$GATE]: PASS -- a session plugin missing its own master is refused with the flag to add"
+
+set +e
+"$BIN" --master "$DATA/FalloutNV.esm" --esm "$DATA/DeadMoney.esm" --plugin-report 000000D2 fields >"$WORK/report.log" 2>&1
+status=$?
+set -e
+(( status == 0 )) || fail "report: --plugin-report exited $status (see $WORK/report.log)"
+expect report "carriers in load order: falloutnv.esm → deadmoney.esm (wins)"
+expect report "deadmoney.esm over falloutnv.esm: QSTI added, INFC 4 dropped, INFX 4 dropped"
+echo "smoke[$GATE]: PASS -- --plugin-report names a Dead Money topic's carriers and the sub-records it changes (LMC-REC-007)"
 
 echo "smoke[$GATE]: PASS"
