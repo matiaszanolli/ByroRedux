@@ -50,6 +50,9 @@ pub(crate) struct LoadOrder {
     /// FormID's slot byte names the original *definer*, never the plugin whose body won the merge (#5428); this is the
     /// winner. Empty for hand-built test orders (consumers then fall back to the slot owner).
     provenance: esm::records::FoldProvenance,
+    /// How each levelled list more than one plugin carried was merged (LMC-REC-003). Empty under the `legacy` policy and
+    /// for hand-built test orders.
+    list_merge: esm::records::list_merge::ListMerge,
     /// Slot allocated after real plugins for Oblivion's engine-owned records.
     engine_slot: Option<esm::reader::GlobalSlot>,
 }
@@ -81,6 +84,7 @@ impl LoadOrder {
             slots,
             dependencies,
             provenance: esm::records::FoldProvenance::default(),
+            list_merge: esm::records::list_merge::ListMerge::default(),
             engine_slot: None,
         }
     }
@@ -104,6 +108,11 @@ impl LoadOrder {
     /// The fold's provenance (LMC-REC-007).
     pub(crate) fn provenance(&self) -> &esm::records::FoldProvenance {
         &self.provenance
+    }
+
+    /// The fold's levelled-list merge (LMC-REC-003).
+    pub(crate) fn list_merge(&self) -> &esm::records::list_merge::ListMerge {
+        &self.list_merge
     }
 
     /// The slots in load order, parallel to the names.
@@ -141,6 +150,7 @@ impl Default for LoadOrder {
             slots: Vec::new(),
             dependencies: Vec::new(),
             provenance: esm::records::FoldProvenance::default(),
+            list_merge: esm::records::list_merge::ListMerge::default(),
             engine_slot: None,
         }
     }
@@ -701,11 +711,20 @@ impl ArchiveStringSource {
 pub(crate) fn parse_record_indexes_in_load_order(
     plugin_paths: &[&str],
 ) -> anyhow::Result<(esm::records::EsmIndex, LoadOrder)> {
+    parse_record_indexes_in_load_order_with_policy(plugin_paths, crate::plugin_activation::merge_policy())
+}
+
+/// [`parse_record_indexes_in_load_order`] under an explicit record policy (LMC-REC-003) rather than the session's.
+pub(crate) fn parse_record_indexes_in_load_order_with_policy(
+    plugin_paths: &[&str],
+    policy: esm::records::list_merge::MergePolicy,
+) -> anyhow::Result<(esm::records::EsmIndex, LoadOrder)> {
     let mut archive_source = ArchiveStringSource::default();
     parse_record_indexes_in_load_order_with_archive(
         plugin_paths,
         |plugin_path, relative_path| archive_source.read(plugin_path, relative_path),
         PluginWalk::Parallel,
+        policy,
     )
 }
 
@@ -861,6 +880,7 @@ fn parse_record_indexes_in_load_order_with_archive<F>(
     plugin_paths: &[&str],
     mut read_archive: F,
     walk: PluginWalk,
+    policy: esm::records::list_merge::MergePolicy,
 ) -> anyhow::Result<(esm::records::EsmIndex, LoadOrder)>
 where
     F: FnMut(&Path, &str) -> Option<Vec<u8>>,
@@ -994,6 +1014,11 @@ where
 
     let mut merged = esm::records::EsmIndex::default();
     let mut provenance = esm::records::FoldProvenance::default();
+    // LMC-REC-003 — independent overrides of a levelled list merge; a plugin depends on another when it declares it
+    // as a master, directly or through its masters.
+    let mut list_merge = esm::records::list_merge::ListMerge::new(policy);
+    let requires = transitive_masters(&dependencies);
+    let depends_on = |plugin: u32, master: u32| requires[plugin as usize].contains(&master);
     let fold_started = std::time::Instant::now();
     let mut provenance_time = std::time::Duration::ZERO;
     for (position, (path, plugin_records)) in plugin_paths.iter().zip(walked).enumerate() {
@@ -1010,13 +1035,18 @@ where
             let slot = global_slot_of(form_id);
             slots.iter().position(|owner| *owner == slot)
         });
+        let lists = list_merge.note_plugin(position, &plugin_records, &merged, &provenance, &depends_on);
         provenance_time += noted.elapsed();
         merged.merge_from(plugin_records);
+        lists.apply(&mut merged);
     }
     let (overridden, injected) = provenance.counts();
+    let (merged_lists, overruled) = list_merge.counts();
     log::info!(
-        "load-order fold: {} plugins, {overridden} forms overridden, {injected} injected, in {:.2} s ({:.2} s of it provenance)",
+        "load-order fold: {} plugins, {overridden} forms overridden, {injected} injected, {merged_lists} levelled lists \
+         merged ({overruled} operations overruled, policy {}), in {:.2} s ({:.2} s of it provenance and merge)",
         plugin_paths.len(),
+        list_merge.policy().name(),
         fold_started.elapsed().as_secs_f64(),
         provenance_time.as_secs_f64()
     );
@@ -1027,6 +1057,7 @@ where
     merged.plugin_files = load_order.clone();
     let mut order = LoadOrder::with_dependencies(load_order, slots, dependencies);
     order.provenance = provenance;
+    order.list_merge = list_merge;
     if merged.game == esm::reader::GameKind::Oblivion {
         let owners = order.slots.iter().copied().zip(order.names.iter().map(|name| PluginId::from_filename(name))).collect();
         let mut identity = LoadOrderIdentity::new(owners);
@@ -1043,6 +1074,23 @@ where
         order.engine_slot = Some(slot);
     }
     Ok((merged, order))
+}
+
+/// Each plugin's masters, direct and through their own masters, from each plugin's direct master positions (every
+/// master loads ahead of its dependents, so one pass in load order closes the set).
+fn transitive_masters(dependencies: &[Vec<u32>]) -> Vec<std::collections::HashSet<u32>> {
+    let mut closure: Vec<std::collections::HashSet<u32>> = Vec::with_capacity(dependencies.len());
+    for masters in dependencies {
+        let mut set = std::collections::HashSet::new();
+        for &master in masters {
+            set.insert(master);
+            if let Some(inherited) = closure.get(master as usize) {
+                set.extend(inherited.iter().copied());
+            }
+        }
+        closure.push(set);
+    }
+    closure
 }
 
 /// Allocate one global load-order slot without ever entering reserved or
@@ -1639,6 +1687,7 @@ mod tests {
                 (relative_path == r"strings\PackedPlugin_english.STRINGS").then(|| packed.clone())
             },
             PluginWalk::Parallel,
+            esm::records::list_merge::MergePolicy::default(),
         )
         .unwrap();
 

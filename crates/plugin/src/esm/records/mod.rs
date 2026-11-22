@@ -35,6 +35,7 @@ pub mod mswp;
 pub mod outfit;
 pub mod pathgrid;
 pub mod pkin;
+pub mod list_merge;
 pub mod provenance;
 pub mod scol;
 pub mod script;

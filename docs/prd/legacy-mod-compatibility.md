@@ -1,6 +1,7 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-22). Revision 7 records the owner's ruling
+**Status**: ACTIVE (2026-11-22). Revision 8 builds the list merge
+(LMC-REC-003) for levelled lists. Revision 7 records the owner's ruling
 that `.esm` and `.esl` plugins pair with archives (LMC-AST-002). Revision 6 starts Phase 0: the mechanism
 catalog is machine-readable and §3.1 is generated from it. Revision 5 files
 the tracking issues.
@@ -152,7 +153,7 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
 | Id | Mechanism | Examples | Disp. | Games | Reason and citation | v |
 |---|---|---|---|---|---|---|
 | R1 | New records in a plugin (ESM/ESP/ESL/ESH) | every content mod | D1 | all | A plugin's new records are ordinary input to the multi-plugin fold. (§5.1 LMC-ID-003) | 1 |
-| R2 | Record overrides of a master's records | patches, overhauls | D1 | all | Last-in-order wins at the fold; deletions are carried. (§5.2 LMC-REC-001) | 1 |
+| R2 | Record overrides of a master's records | patches, overhauls | D1 | all | Last-in-order wins at the fold (the legacy policy); under the default merge policy independent overrides of a levelled list combine per entry form (LMC-REC-003). Deletions are carried. (§5.2 LMC-REC-001; §5.2 LMC-REC-003; [`crates/plugin/src/esm/records/list_merge.rs`](../../crates/plugin/src/esm/records/list_merge.rs)) | 2 |
 | R3 | Deleted / disabled records (DELE flag, UDR tombstones) | cleaned plugins, cell edits | D1 | all | Tombstones are decoded; the engine honours the deletion. (§3.1 R3) | 1 |
 | R4 | Injected records (a plugin defines a form in a master's ID space) | AWKCR-style, Bashed Patch | D1 | all | Loaded as any record the plugin defines. (§3.1 R4) | 1 |
 | R5 | Cell / worldspace overrides, new worldspaces, REFR edits | new lands, cell overhauls | D1 | all | The cell walker runs per plugin and the fold merges the overrides. (§3.1 R5) | 1 |
@@ -225,7 +226,7 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
 |---|---|---|---|---|---|---|
 | T1 | Unofficial patches as plugins | UOP, UFO3P, YUP, USSEP, UFO4P, SCP | D2 | all | A known patch is not loaded; the engine stands in for dependents (decision Q1). (§5.8 LMC-FIX-001; §5.8 LMC-FIX-004) | 1 |
 | T2.plugin | Generated patch plugins: the plugin | Bashed Patch, Smashed Patch, Synthesis output, Reqtificator output | D1 | all | A generated plugin loads as any plugin. (§3.1 T2) | 1 |
-| T2.necessity | Generated patch plugins: the need for them where record merging covers it | Bashed Patch, Smashed Patch, Synthesis output | D2 | all | The per-form merge policy covers the case the patch exists for. (§5.2 LMC-REC-003) | 1 |
+| T2.necessity | Generated patch plugins: the need for them where record merging covers it | Bashed Patch, Smashed Patch, Synthesis output | D2 | all | The per-form merge policy covers the case the patch exists for: levelled lists today; the other list types LMC-REC-003 names are still last-wins. (§5.2 LMC-REC-003; [`crates/plugin/src/esm/records/list_merge.rs`](../../crates/plugin/src/esm/records/list_merge.rs)) | 2 |
 | T3.plugin | Merged plugins, ESL-flagged plugins, 'cleaned' masters: the plugin | load-order management | D1 | all | Loads as any plugin; there is no slot ceiling in the design. (§5.1 LMC-ID-004) | 1 |
 | T3.necessity | Merged plugins, ESL-flagged plugins, 'cleaned' masters: the need for them | load-order management | D2 | all | Plugin-count workarounds are not needed. (§5.1 LMC-ID-004) | 1 |
 | T4.data | FO4 precombine / previs repair packs: the data | PRP | D1 | FO4 | Loads as data; the engine falls back to REFRs when precombines are absent (M49). (§5.2 LMC-REC-012) | 1 |
@@ -485,6 +486,20 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   The recommended default is `merge`; `legacy` restores LMC-REC-002 for
   every record. This makes Bashed-/Smashed-/Synthesis-style list patches
   redundant for the cases it covers.
+  Built for the levelled lists (`LVLI`, `LVLN`, `LVLC`, `LVSP`), #6670:
+  `crates/plugin/src/esm/records/list_merge.rs`, selected per session with
+  `--merge-policy merge|legacy` (default `merge`). "Independent" is decided
+  on the transitive master closure, so a patch that masters every
+  contributor wins whole; an override's base is its latest earlier carrier
+  among its own masters. A wholesale winner's changes against the list it
+  replaced count as its operations, so a later independent override that
+  undoes one overrules it in the report. Per-entry `COED` data is not
+  decoded and takes no part in the comparison. The other list-valued
+  sub-records named above are still last-wins. On the installed games the
+  vanilla master-plus-DLC sets merge no levelled list (their DLC extend
+  shared lists by script); a Fallout 4 profile with the Unofficial Fallout 4
+  Patch and MojaveImports merges two, where `legacy` let the mod built
+  against vanilla undo the patch's fix.
 - **LMC-REC-004.** DELE-flagged overrides and tombstoned references MUST
   behave as the game treats them: a deleted base record disappears from the
   merged index; a deleted reference is absent from its cell. The cleaning
@@ -1278,3 +1293,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 5 | 2026-11-03 | → ACTIVE: parent #6664 and phase issues #6669, #6670, #6671, #6672, #6673, #6674, #6675, #6676 filed; the Phase 0 verify items are acceptance criteria of #6669 | — |
 | 6 | 2026-11-04 | Phase 0 started (#6669): §3.1 is generated from `assets/legacy_mod_compat/mechanisms.toml` (65 rows, composite rows split, one disposition per game, versioned, cited; `scripts/check-lmc-catalog.py`, CI); the hand-written "Today" column is removed. Verified: the FO3 / FNV `<stem> - <anything>.bsa` pairing form (GECK) and Skyrim's `<stem>.bsa` (CK wiki). Still open, no primary source reachable: the rest of the Phase 0 verify list, corpus verification and scenarios, the honoured-INI table | — |
 | 7 | 2026-11-22 | LMC-AST-002: owner ruling on #6670 — `.esm` and `.esl` plugins pair with archives as `.esp` plugins do. The FO4 voice suffix and Starfield's automatic pairing (with `- Localization` and `- Voices_<lang>`) verified from the shipped DLC; Skyrim's `- Textures.bsa` stays unverified and unpaired; the FO4 high-resolution pack's series is a new verify item. Pairing built in `crates/plugin/src/archive_pairing.rs` | — |
+| 8 | 2026-11-22 | LMC-REC-003 built for the levelled lists (`merge` by default per Q2, `--merge-policy legacy`); the catalog's R2 and T2.necessity rows say so | — |

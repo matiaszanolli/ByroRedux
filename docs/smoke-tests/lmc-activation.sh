@@ -10,6 +10,9 @@
 #   3. the session plugin itself missing a master: DeadMoney.esm alone is refused, naming the --master to pass.
 #   4. the conflict report: `--plugin-report 000000D2 fields` names the Dead Money topic's carriers in load order and the
 #      sub-records Dead Money changed against FalloutNV.esm (LMC-REC-007), after the archives Dead Money pairs with.
+#   5. levelled-list merge: the generated ListBase.esm defines a levelled list, and MergeA.esp and MergeB.esp, neither a
+#      master of the other, each add an entry to it. Under the default `merge` policy both additions stand and the report
+#      names who made each; under `--merge-policy legacy` MergeB.esp's record wins whole (LMC-REC-003).
 # Requires the New Vegas data with the Dead Money and Caravan Pack DLC (BYROREDUX_FNV_DATA), python3 and a built engine
 # (BYRO_BIN, else target/release, else target/debug).
 set -euo pipefail
@@ -35,21 +38,35 @@ command -v python3 >/dev/null || { echo "smoke[$GATE]: SKIP -- missing python3";
 
 WORK="$(mktemp -d "/tmp/byro-$GATE.XXXXXX")"
 echo "smoke[$GATE]: engine $BIN, logs in $WORK"
-# A plugin is a TES4 record with a New Vegas HEDR and its MAST list; activation reads nothing else.
+# A plugin is a TES4 record with a New Vegas HEDR and its MAST list (activation reads nothing else), and for leg 5 one
+# LVLI record in an LVLI group: form 01000800, ListBase.esm's own (its one master, FalloutNV.esm, is index 00).
 python3 -I - "$WORK" <<'EOF'
 import os, struct, sys
 out = sys.argv[1]
 def sub(tag, data): return tag + struct.pack('<H', len(data)) + data
-def plugin(masters):
+def lvli(entries):
+    body = sub(b'EDID', b'LMCMergeList\0') + sub(b'LVLD', b'\0') + sub(b'LVLF', b'\0')
+    for level, form, count in entries:
+        body += sub(b'LVLO', struct.pack('<HHIHH', level, 0, form, count, 0))
+    record = b'LVLI' + struct.pack('<III', len(body), 0, 0x01000800) + b'\0' * 8 + body
+    return b'GRUP' + struct.pack('<I', 24 + len(record)) + b'LVLI' + b'\0' * 12 + record
+def plugin(masters, records=b'', esm=False):
     body = sub(b'HEDR', struct.pack('<fII', 1.34, 0, 0x800))
     for master in masters:
         body += sub(b'MAST', master.encode() + b'\0') + sub(b'DATA', b'\0' * 8)
-    return b'TES4' + struct.pack('<III', len(body), 0, 0) + b'\0' * 8 + body
+    return b'TES4' + struct.pack('<III', len(body), 1 if esm else 0, 0) + b'\0' * 8 + body + records
 for name, masters in [('NeedsAbsentDLC.esp', ['FalloutNV.esm', 'LonesomeRoad_absent.esm']),
                       ('PatchForIt.esp', ['FalloutNV.esm', 'NeedsAbsentDLC.esp']),
                       ('OtherCase.esp', ['FALLOUTNV.ESM'])]:
     with open(os.path.join(out, name), 'wb') as f:
         f.write(plugin(masters))
+# Entries name FalloutNV.esm forms 00000A01.. (any form will do: the merge compares entries, it does not resolve them).
+lists = {'ListBase.esm': ([(1, 0xA01, 1)], ['FalloutNV.esm']),
+         'MergeA.esp': ([(1, 0xA01, 1), (5, 0xA02, 1)], ['FalloutNV.esm', 'ListBase.esm']),
+         'MergeB.esp': ([(1, 0xA01, 1), (8, 0xA03, 2)], ['FalloutNV.esm', 'ListBase.esm'])}
+for name, (entries, masters) in lists.items():
+    with open(os.path.join(out, name), 'wb') as f:
+        f.write(plugin(masters, lvli(entries), esm=name.endswith('.esm')))
 EOF
 # A paired archive beside a generated plugin (a real one no profile plugin pairs, so it would open), and a name the New
 # Vegas rule rejects. Pairing compares archives by their resolved paths: a link to an archive another plugin brought is
@@ -103,5 +120,23 @@ expect report "DeadMoney.esm pairs DeadMoney - Main.bsa, DeadMoney - Sounds.bsa"
 expect report "carriers in load order: falloutnv.esm → deadmoney.esm (wins)"
 expect report "deadmoney.esm over falloutnv.esm: QSTI added, INFC 4 dropped, INFX 4 dropped"
 echo "smoke[$GATE]: PASS -- --plugin-report names a Dead Money topic's carriers and the sub-records it changes (LMC-REC-007)"
+
+merge_report() { # merge_report <leg> <extra args...>: --plugin-report 01000800 over the generated list plugins
+    local leg="$1"; shift
+    set +e
+    "$BIN" "$@" --master "$DATA/FalloutNV.esm" --master "$WORK/ListBase.esm" --master "$WORK/MergeA.esp" \
+        --esm "$WORK/MergeB.esp" --plugin-report 01000800 >"$WORK/$leg.log" 2>&1
+    status=$?
+    set -e
+    (( status == 0 )) || fail "$leg: --plugin-report exited $status (see $WORK/$leg.log)"
+}
+merge_report merge
+expect merge "carriers in load order: listbase.esm → mergea.esp → mergeb.esp (merged)"
+expect merge "merged from: mergea.esp, mergeb.esp; policy: merge"
+expect merge "  entry 00000A02: added by mergea.esp"
+expect merge "  entry 00000A03: added by mergeb.esp"
+merge_report legacy --merge-policy legacy
+expect legacy "winner: mergeb.esp; policy: legacy"
+echo "smoke[$GATE]: PASS -- independent additions to one levelled list both stand under merge, the last wins under legacy (LMC-REC-003)"
 
 echo "smoke[$GATE]: PASS"

@@ -42,9 +42,9 @@ name = "Record overrides of a master's records"
 examples = "patches, overhauls"
 disposition = "D1"
 games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
-reason = "Last-in-order wins at the fold; deletions are carried."
-citations = ["docs/prd/legacy-mod-compatibility.md §5.2 LMC-REC-001"]
-version = 1
+reason = "Last-in-order wins at the fold (the legacy policy); under the default merge policy independent overrides of a levelled list combine per entry form (LMC-REC-003). Deletions are carried."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.2 LMC-REC-001", "docs/prd/legacy-mod-compatibility.md §5.2 LMC-REC-003", "crates/plugin/src/esm/records/list_merge.rs"]
+version = 2
 
 [[mechanism]]
 id = "R3"
@@ -581,9 +581,9 @@ name = "Generated patch plugins: the need for them where record merging covers i
 examples = "Bashed Patch, Smashed Patch, Synthesis output"
 disposition = "D2"
 games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
-reason = "The per-form merge policy covers the case the patch exists for."
-citations = ["docs/prd/legacy-mod-compatibility.md §5.2 LMC-REC-003"]
-version = 1
+reason = "The per-form merge policy covers the case the patch exists for: levelled lists today; the other list types LMC-REC-003 names are still last-wins."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.2 LMC-REC-003", "crates/plugin/src/esm/records/list_merge.rs"]
+version = 2
 
 [[mechanism]]
 id = "T3.plugin"
