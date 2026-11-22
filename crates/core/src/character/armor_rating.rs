@@ -42,11 +42,13 @@ impl ArmorRatingModel {
     /// Oblivion's, as documented.
     pub const OBLIVION: Self = Self { skill_base: 0.35, skill_per_level: 0.0065, max_rating: 85.0, master_sneak_skill: 100.0, stored_scale: 100.0 };
 
-    /// The model with each setting the load order authors replacing its default (`fMaxArmorRating`). A non-finite value is
-    /// ignored.
+    /// The model with each setting the load order authors replacing its default (`fMaxArmorRating`). A non-finite or
+    /// negative value is ignored, and the cap is held to 100 so a retune cannot make armor heal (#7194; the same guard as
+    /// [`ArmorModel::with_gmst`](super::ArmorModel::with_gmst)).
     #[must_use]
     pub fn with_gmst(self, gmst: impl Fn(&str) -> Option<f32>) -> Self {
-        Self { max_rating: gmst("fMaxArmorRating").filter(|value| value.is_finite()).unwrap_or(self.max_rating), ..self }
+        let max_rating = gmst("fMaxArmorRating").filter(|value| value.is_finite() && *value >= 0.0).unwrap_or(self.max_rating);
+        Self { max_rating: max_rating.min(100.0), ..self }
     }
 
     /// What one worn piece is worth to a wearer with `armor_skill` in its kind (Light or Heavy Armor): the `ARMO`'s stored
@@ -99,6 +101,22 @@ mod tests {
         assert_eq!(model.armor_factor(80.0, true), 1.0, "a Master Sneak attack ignores armor");
         assert!(model.is_master_sneak(100.0) && !model.is_master_sneak(99.0));
         assert!((model.with_gmst(|name| (name == "fMaxArmorRating").then_some(50.0)).armor_factor(90.0, false) - 0.5).abs() < 1e-6);
+    }
+
+    /// #7194 — an authored `fMaxArmorRating` that is negative or non-finite is ignored (a negative cap made
+    /// `armor_factor`'s clamp panic on the first hit), and one above 100 is held to 100, so armor stops at most the whole
+    /// hit and never heals.
+    #[test]
+    fn an_out_of_range_max_armor_rating_is_ignored_or_held_to_100() {
+        let retuned = |value: f32| ArmorRatingModel::OBLIVION.with_gmst(move |name| (name == "fMaxArmorRating").then_some(value));
+        for bad in [-5.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            assert_eq!(retuned(bad).max_rating, 85.0, "{bad} keeps the default");
+            assert!((retuned(bad).armor_factor(10.0, false) - 0.9).abs() < 1e-6);
+        }
+        let over = retuned(150.0);
+        assert_eq!(over.max_rating, 100.0);
+        assert_eq!(over.armor_factor(120.0, false), 0.0, "the whole hit stopped, none healed");
+        assert_eq!(retuned(0.0).armor_factor(50.0, false), 1.0, "a zero cap is a valid retune: armor stops nothing");
     }
 
     /// UESP's worked case for Block: 85% armor leaves 15%; and Resist Normal Weapons scales by `(100 - R) / 100` unless
