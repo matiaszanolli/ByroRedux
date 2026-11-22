@@ -19,6 +19,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/renderer/shaders/include/terrain_tile.glsl` | exterior Dim 2, renderer, performance | HIGH |
 | `crates/renderer/shaders/terrain_patch.comp` | exterior Dim 2, renderer, performance | HIGH |
 | `crates/renderer/src/vulkan/terrain_patch.rs` | exterior Dim 2, renderer, safety, concurrency, performance | HIGH |
+| `crates/renderer/src/vulkan/acceleration/blas_terrain_patch.rs` | exterior Dim 2, renderer, safety, concurrency, performance | HIGH |
 | `crates/renderer/src/vulkan/cloud_noise.rs` | exterior, renderer, safety, concurrency, performance | HIGH |
 | `crates/renderer/shaders/include/clouds.glsl` | exterior, renderer | HIGH |
 | `crates/renderer/src/vulkan/water` | renderer Dim 8, exterior | HIGH |
@@ -361,6 +362,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `docs/smoke-tests/{oblivion-spellcasting,oblivion-archery,oblivion-block,oblivion-fall,oblivion-armor,oblivion-ghost}.sh` | runtime, gameplay, character; oblivion | LOW |
 | `docs/smoke-tests/{skyrim-archery.sh,lib/archery.sh}` | runtime, gameplay, character; skyrim, oblivion | LOW |
 | `docs/smoke-tests/door-runtime.sh` | runtime, gameplay Dim 2; oblivion, fnv | LOW |
+| `docs/smoke-tests/lmc-` | runtime, esm, tooling Dim 4; fnv | LOW |
 | `docs/smoke-tests/` | runtime | LOW |
 | `docs/releasing.md` | tooling, tech-debt (release packaging) | LOW |
 | `docs/data/game-ui/` | ui, tooling, tech-debt (generated census data) | LOW |
