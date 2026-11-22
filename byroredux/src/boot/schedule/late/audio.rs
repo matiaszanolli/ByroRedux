@@ -55,7 +55,15 @@ pub(super) fn register_audio_systems(scheduler: &mut Scheduler) {
     // audio on AudioWorld) — exclusive systems aren't paired
     // against anything in the access report.
     scheduler.add_exclusive(Stage::Late, byroredux_audio::audio_system);
-    // Water audio consumes the markers the interaction bridge wrote; the audio update runs last.
+    // Water audio consumes the Splash/Ripple markers the interaction bridge
+    // writes (#7280: named, not left to registration order); the audio update
+    // runs last.
+    // The factory's closure has a type name of its own, so a throwaway
+    // instance names every closure it builds (`system_name` reads the type).
+    scheduler.run_after(
+        byroredux_core::ecs::system_name(&crate::systems::water_audio_system),
+        byroredux_core::ecs::system_name(&crate::systems::make_water_interaction_system()),
+    );
     scheduler.run_after(
         byroredux_core::ecs::system_name(&byroredux_audio::audio_system),
         byroredux_core::ecs::system_name(&crate::systems::water_audio_system),

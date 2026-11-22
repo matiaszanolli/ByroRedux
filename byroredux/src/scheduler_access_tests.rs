@@ -811,6 +811,7 @@ fn submersion_runs_after_camera_follow_and_before_water_audio() {
     let camera_follow = index_of("systems::character::camera_follow_system");
     let submersion = index_of("systems::water::submersion_system");
     let water_audio = index_of("systems::audio::water_audio_system");
+    let water_interaction = index_of("systems::water::make_water_interaction_system");
     let audio = index_of("byroredux_audio::system::audio_system");
     let ragdoll = index_of("ragdoll::ragdoll_writeback_system");
 
@@ -843,6 +844,12 @@ fn submersion_runs_after_camera_follow_and_before_water_audio() {
         "submersion_system ({submersion}) must run BEFORE water_audio_system \
          ({water_audio}), which consumes the SubmersionState and the \
          Splash/Ripple markers it writes (#3180)"
+    );
+    assert!(
+        water_interaction < water_audio,
+        "the water-interaction bridge ({water_interaction}) must run BEFORE \
+         water_audio_system ({water_audio}), which reads the Splash/Ripple \
+         markers it writes this frame; event_cleanup drops them after (#7280)"
     );
     assert!(
         water_audio < audio,
