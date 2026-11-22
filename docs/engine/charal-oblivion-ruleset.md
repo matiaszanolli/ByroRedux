@@ -5,10 +5,9 @@ of the already-complete core ruleset (`AttributeSet::TES_CLASSIC` — shared
 with Morrowind, hence the name rather than a per-game one —
 `SkillSet::OBLIVION`, `LevelingModel::OBLIVION`, `oblivion_attribute_bonus`,
 `oblivion_health_formula` — all shipped, see `crates/core/src/character/
-tes.rs` and `charal.md` §5, which describes the Oblivion ruleset **builder**
-as complete but unwired — `CharacterRulesProfile::OBLIVION` is
-`RulesetBuilder::None`, and `Oblivion.esm` authors no `AVIF` records at all,
-so wiring needs a legacy actor-value resolver first). This doc
+tes.rs` and `charal.md` §5; the ruleset is wired since #7010
+(`RulesetBuilder::Oblivion`), over the 72 actor values the loader supplies because
+`Oblivion.esm` authors no `AVIF` records). This doc
 exists for the same reason `charal-skyrim-ruleset.md` does even though
 Skyrim's core is also done: real, sourced, downstream gameplay math that
 isn't a core derived stat but is still worth capturing precisely. LOCKED
@@ -672,18 +671,12 @@ needed). `pool_regen_tick_system(world, frame_dt)` is registered in
 `Stage::Update` via `add_exclusive_with_access`
 (`byroredux/src/boot/schedule/update/` — the registration moved out of
 `main.rs` under #3170's boot split; #4109 swept the stale `main.rs`/
-`boot/` references) — on Oblivion it no-ops today because `PoolRegenConfig`
-(the per-game resolved AVIF ids) is inserted by no Oblivion path (FO3/FNV install
-it for their Action Points lane only, #6350): the
-`oblivion_pool_regen_config` constructor that once lived in `tes.rs` was
-deleted under #3848 (`git show e13985dfc` recovers it), and re-adding it
-is gated on Oblivion's ruleset actually being wired — deliberately
-blocked on the pre-AVIF actor-value resolver (#3768), not on "a live
-`CharacterRuleset` landing" (a ruleset alone never installs the config,
-because the Fatigue/Magicka lanes are Oblivion-shaped; FO3/FNV install it
-for the Action Points lane only).
-So the Oblivion lanes are wired and tested but have no live consumer until that
-resolver lands. 5
+`boot/` references). **Live on Oblivion since #7010:** `CharacterRulesProfile::build_tes_pool_regen`
+installs `PoolRegenConfig` with the Fatigue, Magicka, Willpower and `StuntedMagicka` records the
+engine-supplied roster resolves, on the first cell load (`cell_loader/references/mod.rs`), and since
+#7197 its rates are the load order's four `f*Return*` settings (`TesPoolRegen`, the Endurance term
+included) rather than the constants named above, which remain the defaults. FO3/FNV install the
+config for their Action Points lane only (#6350). 5
 new tests (formula match, 60 Hz tick counting, fractional-time carry-over
 across frames, substep cap, and a full ECS integration test proving both
 Fatigue and Magicka regen end-to-end).
@@ -725,8 +718,9 @@ applies to NPCs or only to the player. The three base-pool rows in
 Fallout convention** (NPCs ship baked pool values) — and that convention is itself
 FO4-evidence-specific (FO4 NPCs read a baked `DNAM`). It is a conservative choice,
 not a captured fact: the sibling Armor Rating rows above are `ActorGeneral` because
-the source is silent on a player/NPC split there. Oblivion has no wired ruleset
-today, so nothing observes the choice; it matters when #3768 lands. Pinned by
+the source is silent on a player/NPC split there (those rows were removed in #7201). The
+choice is observable since #7010 wired the ruleset: the rows reach the live player, and an
+NPC's pools come from the population model, not from them. Pinned by
 `oblivion_pool_rows_are_player_only_pending_a_source`. Resolve by finding a
 citation (or an in-engine NPC pool check) and update this note and the code together.
 
@@ -831,9 +825,9 @@ and one Shivering Isles item all set a flag that **zeroes regen entirely**
 regardless of Willpower/MaxMagicka. A status-effect boolean multiplying the
 regen formula to 0, same shape as a `temporary_mod` gate elsewhere in CHARAL.
 `magicka_regen_per_sec`'s `stunted` parameter makes the *formula* complete,
-but no status-effect component exists anywhere in the engine yet to carry
-this flag, so `pool_regen_tick_system` always passes `false` today — a known,
-documented gap (module docs in `regen.rs`), not a silent omission.
+and the tick reads it from the `StuntedMagicka` actor value (`PoolRegenConfig::stunted_magicka_avif`):
+a positive value stops Magicka regeneration and leaves Fatigue alone
+(`stunted_magicka_stops_only_magicka_regeneration`).
 
 **Oblivion Remastered's MagickaRegen is the first confirmed quadratic
 formula in the whole Fallout+Oblivion corpus** (Skyrim's Enchanting
@@ -1076,7 +1070,9 @@ skill's increase, not only major skills** (V13: the tally runs on every rank-up,
 or `fSkillUseMinorMult` otherwise (executable defaults 1, 1, 0.75, 0.75, 1.25; `Oblivion.esm` authors Factor 0.35 and Exp 1.5).
 `fSkillUseCurve` 1.95 is **Skyrim's** setting, not Oblivion's. Source: [UESP Oblivion:
 Leveling](https://en.uesp.net/wiki/Oblivion:Leveling) and the executable decode in [skill-use.md](skill-use.md) (#7049, V1, V2, V13).
-Not built: the PRD [Oblivion skill-use leveling](../prd/oblivion-skill-use-leveling.md) owns the build.
+**Built (#7050-#7056):** the [Oblivion skill-use leveling PRD](../prd/oblivion-skill-use-leveling.md) and
+[skill-use.md](skill-use.md); 16 of the 21 skills are fed, the level is taken at a completed sleep, and the
+level-up settings above are read from the load order (#7196).
 
 ## Engine-supplied actor values and stat models — BUILT at HEAD (#7008, OAV-RES / OAV-POP / OAI)
 
@@ -1413,8 +1409,7 @@ The engine stamps these values once, when an NPC spawns (`derive`, `oblivion_pop
 level at that moment (`player_level_for_spawn`). It agrees with the table for an NPC spawned after the last
 walker event, and for the auto-calc-only combination at any time; it differs for an already-spawned offset NPC
 when the player levels up (the executable recalculates every offset NPC; the engine keeps the spawn-time
-values), which cannot happen until Oblivion has a level-up
-([skill-use leveling PRD](../prd/oblivion-skill-use-leveling.md)).
+values). Oblivion has had a level-up since #7052, so the difference is reachable: this divergence is declared by the [skill-use leveling PRD](../prd/oblivion-skill-use-leveling.md) (comparison row 5, OSL-NG-003: the CS says the world follows the player's level only after a loading door or a cell change; owned by #7022 / #7040).
 
 ### Creature level scaling — LOCKED from the executable (#7040)
 
@@ -1451,8 +1446,9 @@ The engine matches this (`creature_values` and `level` in
 - **Open:** the executable multiplies on every read, so a PC-offset creature's
   maxima follow the player's level while it lives; the engine stamps them once
   at spawn (`actor_level_at_spawn`). The two agree until the player levels
-  with such a creature loaded, which cannot happen until Oblivion has a
-  level-up ([skill-use leveling PRD](../prd/oblivion-skill-use-leveling.md)).
+  with such a creature loaded, which is reachable since Oblivion's level-up
+  landed (#7052); the divergence is declared by the [skill-use leveling
+  PRD](../prd/oblivion-skill-use-leveling.md) (row 5, OSL-NG-003, owned by #7022 / #7040).
 - A second word form of the creature (`0x51c980`, vtable offset `0x10` of another sub-object) scales as
   `stored + level x fCreatureCalcDamage` with the same level. The CS says the attack damage of a PC-level-offset
   creature is "added to 1/2 the level of the creature", which is that formula at a setting of 0.5;
