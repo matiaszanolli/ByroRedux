@@ -236,6 +236,13 @@ fn edge_sample(words: &[u32], edge: usize, i: usize) -> Option<(f32, f32)> {
     (words[w + 1] != 0).then(|| (f32::from_bits(words[w]), f32::from_bits(words[w + 1])))
 }
 
+/// Decode the readback's native-endian words into `out`, reusing its
+/// allocation (#7263).
+fn decode_readback_words(bytes: &[u8], out: &mut Vec<u32>) {
+    out.clear();
+    out.extend(bytes.as_chunks::<4>().0.iter().map(|w| u32::from_ne_bytes(*w)));
+}
+
 /// The seam check over one harvested frame. `words` holds
 /// `TERRAIN_PATCH_READBACK_WORDS` per pool slot, indexed by
 /// [`TerrainPatchSlot::slot`].
@@ -408,8 +415,14 @@ pub struct TerrainPatchPass {
     readback: Vec<GpuBuffer>,
     /// Per frame slot: the slots and lip it last dispatched, harvested when
     /// that slot comes round again (its fence has retired by then).
+    /// Refilled in place each time the slot records, never reallocated (#7263).
     pending: [Vec<TerrainPatchSlot>; MAX_FRAMES_IN_FLIGHT],
     pending_lip: [f32; MAX_FRAMES_IN_FLIGHT],
+    /// [`Self::record`]'s push constants and workgroup counts, kept across
+    /// frames so a frame with resident patches allocates nothing (#7263).
+    pushes: Vec<(TerrainPatchPush, u32)>,
+    /// [`Self::harvest`]'s decoded readback words, kept across frames (#7263).
+    readback_words: Vec<u32>,
     /// The reserved patch meshes, indexed by slot. Empty until
     /// [`Self::reserve_meshes`] succeeds.
     meshes: TerrainPatchMeshes,
@@ -481,6 +494,8 @@ impl TerrainPatchPass {
             readback: Vec::new(),
             pending: std::array::from_fn(|_| Vec::new()),
             pending_lip: [0.0; MAX_FRAMES_IN_FLIGHT],
+            pushes: Vec::new(),
+            readback_words: Vec::new(),
             meshes: TerrainPatchMeshes::default(),
             frame_slots: Vec::new(),
             frame_params: None,
@@ -613,13 +628,12 @@ impl TerrainPatchPass {
 
     /// Read back what `frame` dispatched last time round. Its fence has
     /// retired: `draw_frame` waits it before recording into the slot.
+    /// `pending[frame]` is left in place; [`Self::record`] refills it.
     fn harvest(&mut self, device: &ash::Device, frame: usize) {
-        let slots = std::mem::take(&mut self.pending[frame]);
-        if slots.is_empty() {
+        if self.pending[frame].is_empty() {
             self.stats = TerrainPatchStats::default();
             return;
         }
-        let lip = self.pending_lip[frame];
         let buffer = &mut self.readback[frame];
         if buffer.invalidate_if_needed(device).is_err() {
             return;
@@ -627,13 +641,12 @@ impl TerrainPatchPass {
         let Ok(bytes) = buffer.mapped_slice_mut() else {
             return;
         };
-        let words: Vec<u32> = bytes
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|w| u32::from_ne_bytes(*w))
-            .collect();
-        self.stats = summarize_patch_readback(&slots, lip, &words);
+        decode_readback_words(bytes, &mut self.readback_words);
+        self.stats = summarize_patch_readback(
+            &self.pending[frame],
+            self.pending_lip[frame],
+            &self.readback_words,
+        );
     }
 
     /// Record this frame's dispatches into `cmd`: zero the readback, then one
@@ -655,6 +668,9 @@ impl TerrainPatchPass {
         registry: &MeshRegistry,
     ) -> u32 {
         self.harvest(device, frame);
+        // Emptied before any early return: `blas_requests` reads what this
+        // record dispatched, so a frame that dispatches nothing leaves none.
+        self.pending[frame].clear();
         let Some(params) = self.frame_params.take() else {
             return 0;
         };
@@ -664,8 +680,9 @@ impl TerrainPatchPass {
         }
         // Resolve both offsets now: compaction can move either mesh between
         // frames, so a cached offset would write someone else's vertices.
-        let mut pushes = Vec::with_capacity(self.frame_slots.len());
-        let mut dispatched = Vec::with_capacity(self.frame_slots.len());
+        let mut pushes = std::mem::take(&mut self.pushes);
+        pushes.clear();
+        let dispatched = &mut self.pending[frame];
         for slot in &self.frame_slots {
             let (Some(patch), Some(base)) = (
                 self.meshes.get(slot.slot, slot.coarse).and_then(|h| registry.get(h)),
@@ -691,6 +708,7 @@ impl TerrainPatchPass {
         }
         self.frame_slots.clear();
         if pushes.is_empty() {
+            self.pushes = pushes;
             return 0;
         }
 
@@ -794,10 +812,9 @@ impl TerrainPatchPass {
                 &[],
             );
         }
+        self.pushes = pushes;
         self.pending_lip[frame] = params.lip;
-        let count = dispatched.len() as u32;
-        self.pending[frame] = dispatched;
-        count
+        self.pending[frame].len() as u32
     }
 
     /// The patch BLAS work for what [`Self::record`] just dispatched into
@@ -1060,5 +1077,20 @@ mod tests {
         put(&mut words, 0, 3, 7, 17.5, lip);
         let stats = summarize_patch_readback(&[a, b], lip, &words);
         assert!((stats.max_seam_gap - 0.5).abs() < 1e-6, "{}", stats.max_seam_gap);
+    }
+
+    /// #7263 — the readback decode refills the list it is handed: the words
+    /// come out in order and a second frame keeps the first one's allocation.
+    #[test]
+    fn the_readback_decode_reuses_its_word_list() {
+        let frame: Vec<u32> = (0..64).chain([0xDEAD_BEEF]).collect();
+        let bytes: Vec<u8> = frame.iter().flat_map(|w| w.to_ne_bytes()).collect();
+        let mut words = Vec::new();
+        decode_readback_words(&bytes, &mut words);
+        assert_eq!(words, frame);
+        let before = (words.as_ptr(), words.capacity());
+        decode_readback_words(&bytes[..8], &mut words);
+        assert_eq!(words, [0, 1], "the old words are cleared, not appended to");
+        assert_eq!((words.as_ptr(), words.capacity()), before, "the second frame reuses the first frame's allocation");
     }
 }

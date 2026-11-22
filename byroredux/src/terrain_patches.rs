@@ -145,6 +145,18 @@ pub(crate) struct TerrainPatchState {
     pub(crate) camera_pos: [f32; 3],
     /// The renderer's last seam check, for `terrain.patches`.
     pub(crate) stats: TerrainPatchStats,
+    /// Per-frame working lists, kept across frames (#7263).
+    scratch: PatchScratch,
+}
+
+/// The lists [`emit_patch_draws`] and [`push_terrain_patches`] rebuild every
+/// exterior frame, kept on [`TerrainPatchState`] so a frame with resident
+/// patches allocates nothing (#7263, the host half of #7246's fix).
+#[derive(Default)]
+struct PatchScratch {
+    cells: Vec<PatchCell>,
+    candidates: Vec<(f32, PatchKey, PatchCell)>,
+    frame_slots: Vec<TerrainPatchSlot>,
 }
 
 impl Default for TerrainPatchState {
@@ -160,6 +172,7 @@ impl Default for TerrainPatchState {
             slots: [None; SLOTS],
             camera_pos: [0.0; 3],
             stats: TerrainPatchStats::default(),
+            scratch: PatchScratch::default(),
         }
     }
 }
@@ -204,10 +217,22 @@ fn distance_to_square(lx: f32, lz: f32, col: i32, row: i32) -> f32 {
     (dx * dx + dz * dz).sqrt()
 }
 
+/// [`assign_patches_with`] on a fresh candidate list.
+#[cfg(test)]
+pub(crate) fn assign_patches(
+    slots: &mut [Option<PatchAssignment>; SLOTS],
+    cells: &[PatchCell],
+    cam_xz: [f32; 2],
+    ranges: PatchRanges,
+) {
+    assign_patches_with(&mut Vec::new(), slots, cells, cam_xz, ranges);
+}
+
 /// Reassign `slots` for a camera at `cam_xz` (world units), keeping every
 /// patch that is still wanted in the slot it already has, and pick each
-/// patch's lattice level.
-pub(crate) fn assign_patches(
+/// patch's lattice level. `candidates` is the caller's kept working list.
+fn assign_patches_with(
+    candidates: &mut Vec<(f32, PatchKey, PatchCell)>,
     slots: &mut [Option<PatchAssignment>; SLOTS],
     cells: &[PatchCell],
     cam_xz: [f32; 2],
@@ -215,7 +240,7 @@ pub(crate) fn assign_patches(
 ) {
     let PatchRanges { range, hysteresis, fine_range, fine_hysteresis } = ranges;
     let keep_range = range + hysteresis;
-    let mut candidates: Vec<(f32, PatchKey, PatchCell)> = Vec::new();
+    candidates.clear();
     for cell in cells {
         let lx = cam_xz[0] - cell.origin_xz[0];
         let lz = cell.origin_xz[1] - cam_xz[1];
@@ -252,7 +277,7 @@ pub(crate) fn assign_patches(
             }
         }
     }
-    for &(_, key, cell) in &candidates {
+    for &(_, key, cell) in candidates.iter() {
         if slots.iter().flatten().any(|a| a.key == key) {
             continue;
         }
@@ -283,8 +308,7 @@ pub(crate) fn assign_patches(
     // A neighbour square is missing unless a resident patch of the same cell
     // holds it; squares across the cell border always are (the cell-border
     // rule, §3.4).
-    let resident: Vec<(PatchKey, bool)> =
-        slots.iter().flatten().map(|a| (a.key, a.coarse)).collect();
+    let resident = *slots;
     for assignment in slots.iter_mut().flatten() {
         let PatchKey { cell, col, row } = assignment.key;
         let mut mask = 0;
@@ -297,10 +321,10 @@ pub(crate) fn assign_patches(
                 let (c, r) = (col as i32 + dc, row as i32 + dr);
                 let inside = (0..PER_SIDE).contains(&c) && (0..PER_SIDE).contains(&r);
                 let key = PatchKey { cell, col: c as u32, row: r as u32 };
-                match resident.iter().find(|(k, _)| inside && *k == key) {
+                match resident.iter().flatten().find(|a| inside && a.key == key) {
                     None => mask |= neighbour_bit(dr, dc),
-                    Some(&(_, true)) => coarse_mask |= neighbour_bit(dr, dc),
-                    Some(&(_, false)) => {}
+                    Some(a) if a.coarse => coarse_mask |= neighbour_bit(dr, dc),
+                    Some(_) => {}
                 }
             }
         }
@@ -309,17 +333,18 @@ pub(crate) fn assign_patches(
     }
 }
 
-/// Every resident full-detail LAND cell within reach of `cam_xz`.
-fn nearby_cells(world: &World, cam_xz: [f32; 2], reach: f32) -> Vec<PatchCell> {
+/// Every resident full-detail LAND cell within reach of `cam_xz`, into
+/// `cells` (cleared first).
+fn nearby_cells(world: &World, cam_xz: [f32; 2], reach: f32, cells: &mut Vec<PatchCell>) {
+    cells.clear();
     let (Some(origins), Some(tiles), Some(meshes)) = (
         world.query::<TerrainCellOrigin>(),
         world.query::<TerrainTileSlot>(),
         world.query::<MeshHandle>(),
     ) else {
-        return Vec::new();
+        return;
     };
     let cell_size = PATCH_SIZE * PER_SIDE as f32;
-    let mut cells = Vec::new();
     for (entity, origin) in origins.iter() {
         let (Some(tile), Some(mesh)) = (tiles.get(entity), meshes.get(entity)) else {
             continue;
@@ -339,7 +364,6 @@ fn nearby_cells(world: &World, cam_xz: [f32; 2], reach: f32) -> Vec<PatchCell> {
         }
     }
     cells.sort_by_key(|c| c.entity);
-    cells
 }
 
 /// Assign this frame's patches and append their draws: each patch draws as a
@@ -366,8 +390,9 @@ pub(crate) fn emit_patch_draws(
     }
     let ranges = state.ranges();
     let cam_xz = [cam_pos.x, cam_pos.z];
-    let cells = nearby_cells(world, cam_xz, ranges.range + ranges.hysteresis);
-    assign_patches(&mut state.slots, &cells, cam_xz, ranges);
+    let scratch = &mut state.scratch;
+    nearby_cells(world, cam_xz, ranges.range + ranges.hysteresis, &mut scratch.cells);
+    assign_patches_with(&mut scratch.candidates, &mut state.slots, &scratch.cells, cam_xz, ranges);
 
     let base_count = draw_commands.len();
     for (slot, assignment) in state.slots.iter().enumerate() {
@@ -414,7 +439,11 @@ pub(crate) fn push_terrain_patches(world: &World, ctx: &mut byroredux_renderer::
     if let Some(stats) = ctx.terrain_patch_stats() {
         state.stats = stats.clone();
     }
-    let slots: Vec<TerrainPatchSlot> = state
+    let state = &mut *state;
+    let params = state.params();
+    let slots = &mut state.scratch.frame_slots;
+    slots.clear();
+    slots.extend(state
         .slots
         .iter()
         .enumerate()
@@ -431,11 +460,11 @@ pub(crate) fn push_terrain_patches(world: &World, ctx: &mut byroredux_renderer::
                 coarse_mask: a.coarse_mask,
             })
         })
-        .collect();
+        );
     if slots.is_empty() {
         return;
     }
-    ctx.set_terrain_patch_frame(&slots, state.params());
+    ctx.set_terrain_patch_frame(slots, params);
 }
 
 #[cfg(test)]
@@ -714,5 +743,25 @@ mod tests {
         }
         assert!(!square_hidden(0, 3, 12));
         assert!(square_hidden(0x0F, 3, 12));
+    }
+
+    /// #7263 — the per-frame candidate list is the caller's: a second frame
+    /// refills the first frame's allocation, and the assignment is the same as
+    /// on a fresh list.
+    #[test]
+    fn the_candidate_list_keeps_its_allocation_across_frames() {
+        let c = cell(1, 0, 0);
+        let cam = at(&c, 100.0, 100.0);
+        let mut fresh = [None; SLOTS];
+        assign_patches(&mut fresh, &[c], cam, ranges(RANGE));
+
+        let mut candidates = Vec::new();
+        let mut kept = [None; SLOTS];
+        assign_patches_with(&mut candidates, &mut kept, &[c], cam, ranges(RANGE));
+        assert!(!candidates.is_empty(), "the camera's own cell offers squares");
+        let before = (candidates.as_ptr(), candidates.capacity());
+        assign_patches_with(&mut candidates, &mut kept, &[c], cam, ranges(RANGE));
+        assert_eq!((candidates.as_ptr(), candidates.capacity()), before, "the second frame reuses the list");
+        assert_eq!(kept, fresh, "a kept list assigns exactly what a fresh one does");
     }
 }
