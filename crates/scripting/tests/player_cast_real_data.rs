@@ -239,3 +239,42 @@ fn touch_and_target_resolve_on_the_real_master() {
         Err(refusal) => panic!("{area_spell:08X}: {refusal}"),
     }
 }
+
+
+/// `SE13LpJyggalag8AreaTouch`: Fire Damage, Absorb Health and a script effect whose `SCIT` school is Destruction.
+const JYGGALAG_AREA_TOUCH: u32 = 0x0008_3EA6;
+/// `SE09FakeSummonFleshAtronach`, Summon Flesh Atronach: one Self script effect, `SCIT` school Conjuration.
+const FAKE_SUMMON_FLESH_ATRONACH: u32 = 0x0004_FC63;
+
+/// A script effect's school is its `SCIT` school (PRD §7.2 scenario 1, PSC-USE-003). Every script effect's MGEF (`SEFF`)
+/// is Alteration, so a test that read the MGEF school would see 0 where the master stores another school.
+#[test]
+#[ignore = "needs Oblivion.esm on disk"]
+fn a_script_effects_school_is_its_scit_school() {
+    let Some(index) = data() else { return };
+    let model = SpellCastModel::OBLIVION.with_gmst(|name| index.game_setting_float(name));
+    let record = &index.spells[&JYGGALAG_AREA_TOUCH];
+    assert_eq!(record.editor_id, "SE13LpJyggalag8AreaTouch");
+    let script = record.effects.iter().position(|effect| effect.script_school.is_some()).expect("a script effect");
+    let mgef = index.resolve_magic_effect(record.effects[script].effect_form_id).expect("SEFF resolves");
+    assert_eq!((mgef.magic_school, record.effects[script].script_school), (0, Some(2)), "SEFF is Alteration, SCIT is Destruction");
+    let data = canonical_spell(&index, JYGGALAG_AREA_TOUCH).cast.expect("cast data");
+    let schools: Vec<_> = data.effects.iter().map(|effect| effect.school).collect();
+    assert_eq!(schools, vec![Some(2), Some(5), Some(2)], "Fire Damage, Absorb Health, then the script effect's SCIT school");
+    // The script effect costs nothing, so it decides nothing here: Absorb Health 16 (125.2) outweighs Fire Damage 12 (120.2).
+    assert_eq!(model.effect_cost(&data.effects[2]), 0.0);
+    assert_eq!(model.primary_school(&data.effects), Some(5), "Restoration");
+
+    // Where the script effect is the spell, its SCIT school is the cast's school, and the cast feeds that skill.
+    let (mut world, player, _) = world_with(&index, 25.0);
+    world.insert_resource(byroredux_core::character::CharacterRuleset::new(byroredux_core::character::LevelingModel::OBLIVION));
+    byroredux_scripting::oblivion_skill_use::install(&mut world);
+    world.query_mut::<SpellList>().unwrap().get_mut(player).unwrap().0.push(FAKE_SUMMON_FLESH_ATRONACH);
+    let preview = player_cast::preview(&world, player, FAKE_SUMMON_FLESH_ATRONACH).expect("priced");
+    assert_eq!(preview.school, Some(1), "Conjuration, not SEFF's Alteration");
+    player_cast::ready_spell(&world, player, FAKE_SUMMON_FLESH_ATRONACH).expect("castable");
+    let started = player_cast::cast_readied(&world, player, true, 0.45, &|| None).outcome.expect("a Novice spell casts at skill 25");
+    assert_eq!((started.school, started.fed), (Some(1), Some(1)));
+    let fed: Vec<_> = world.resource::<byroredux_scripting::oblivion_skill_use::PendingSkillUse>().0.iter().map(|record| record.skill).collect();
+    assert_eq!(fed, vec![21], "Conjuration's actor value");
+}

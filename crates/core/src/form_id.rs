@@ -92,6 +92,16 @@ impl<'de> serde::Deserialize<'de> for PluginId {
 /// every host filesystem. The load-order key, a master named in a `MAST` sub-record, a script's `GetFormFromFile` file
 /// and [`PluginId::from_filename`] all go through it.
 ///
+/// The fold is Rust's full Unicode [`str::to_lowercase`], not ASCII-only (#7249):
+/// - **Identity change.** Before 285633f27 the load-order key was `to_ascii_lowercase`. A name whose only capitals are
+///   ASCII keeps its identity, but one with a non-ASCII capital (`Ünï.esp`) now hashes to a different [`PluginId`], so
+///   ids saved against the old key do not resolve. Saves are not kept compatible across such changes.
+/// - **Not a filesystem fold.** `to_lowercase` applies the context-sensitive final sigma (`Σ` at the end of a word
+///   becomes `ς`, elsewhere `σ`) and multi-codepoint mappings (`İ` becomes `i̇`). NTFS compares names through a
+///   per-character upcase table, so two names it treats as one (`ΑΣ.esp`, `ας.esp`, `ασ.esp`) need not fold alike
+///   here. Matching a particular filesystem exactly is an open LMC-ID-009 decision; every vanilla and most mod names
+///   are ASCII, where all of these agree.
+///
 /// ```
 /// # use byroredux_core::form_id::plugin_key;
 /// assert_eq!(plugin_key("Data\\Skyrim.esm"), "skyrim.esm");
@@ -373,9 +383,16 @@ mod tests {
         assert_eq!(
             canonical,
             PluginId::from_uuid(Uuid::new_v5(&PLUGIN_NAMESPACE, b"skyrim.esm")),
-            "a lowercase name keeps the identity it always had, so saved lowercase-keyed ids still resolve"
+            "a name whose capitals are ASCII keeps the identity it had under the old ASCII-only key"
         );
+        // #7249 — the fold is not ASCII-only, so a non-ASCII capital is folded too: that name's identity is not the one
+        // the old `to_ascii_lowercase` key gave it.
         assert_eq!(plugin_key("Ünïcödé.esp"), "ünïcödé.esp", "the fold is not ASCII-only");
+        assert_ne!(
+            PluginId::from_filename("Ünïcödé.esp"),
+            PluginId::from_uuid(Uuid::new_v5(&PLUGIN_NAMESPACE, "Ünïcödé.esp".to_ascii_lowercase().as_bytes())),
+            "a non-ASCII capital changes the identity the ASCII-only key gave"
+        );
     }
 
     #[test]

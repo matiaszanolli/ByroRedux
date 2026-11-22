@@ -173,25 +173,37 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/rende
 - **Exposure meter** (`exposure_meter.rs`): post-bloom composite → `exposure_meter.comp` → this frame's
   `ExposureResource` slot, sampled unconditionally by `presentation.frag` and the FSR dispatch — the slot
   write must be published before both consumers, in fixed mode too.
-- **Radiance cache (RCG, not yet a pass).** `gpu_timers.rs` reserves the update / resolve timer brackets (queries 64-67; `QUERIES_PER_FRAME` = 70 since the terrain-patch bracket took 68-69) and `GpuRayBudget` carries `cache_update_stride`, but no cache compute pass records yet (nothing outside `gpu_timers.rs` names `TimerPass::CacheUpdate` / `CacheResolve`); when the update-path trace and the resolve fold land they join this dimension as a compute → compute → fragment chain over the cache buffers, with the same per-FIF and publish-before-consumer checks.
+- **Radiance cache (RCG, not yet a pass).** `gpu_timers.rs` reserves the update / resolve timer brackets (queries 64-67; `QUERIES_PER_FRAME` = 72 since the terrain-patch brackets took 68-69 and the TSD-4.2 patch-BLAS bracket 70-71) and `GpuRayBudget` carries `cache_update_stride`, but no cache compute pass records yet (nothing outside `gpu_timers.rs` names `TimerPass::CacheUpdate` / `CacheResolve`); when the update-path trace and the resolve fold land they join this dimension as a compute → compute → fragment chain over the cache buffers, with the same per-FIF and publish-before-consumer checks.
 - **Combustion local grid (#6533, d3e3acc7b).** `volumetrics/local_grid.rs` `record_frame` (the `volumetrics_local_sim.comp`
   atlas sim, Stage B2 of `VolumetricsPipeline::dispatch`) runs BEFORE the froxel injection, which reads this frame's atlas
   and writes the irradiance field; Stage F's `composite_barriers` (atlas state + optical + irradiance, COMPUTE → FRAGMENT)
   and `record_publish_bricks` publish them to composite's close-range fire march. The atlas / irradiance images
   are double-buffered per FIF slot like the froxel fields. Sim → inject visibility, and what a skipped / neutral frame
   leaves in the atlas, are for a `BYRO_VALIDATION` capture, not reading.
-- **Terrain displacement patches (#7152, 84f04205f).** `terrain_patch.rs` `TerrainPatchPass::record`, called from
-  `VulkanContext::record_terrain_patches` (`context/dispatch_skin_and_cluster.rs`, `draw.rs`) between the instance upload and the
-  geometry pass, re-displaces each resident slot IN PLACE in reserved ranges of the one global vertex buffer (not per-FIF) with
-  `terrain_patch.comp`. Its barrier pair is the whole contract: before = TRANSFER write (readback zero-fill, geometry upload, tile copy) +
-  the previous frame's VERTEX_INPUT / VERTEX / FRAGMENT / COMPUTE reads of the patch ranges → COMPUTE; after = SHADER_WRITE →
-  VERTEX_ATTRIBUTE_READ | SHADER_READ | HOST_READ at VERTEX_INPUT / VERTEX / FRAGMENT / COMPUTE / HOST. The per-FIF host readback
+- **Terrain displacement patches (#7152 TSD-4.1, 84f04205f; #7221 TSD-4.2, ff339f658).** `terrain_patch.rs` `TerrainPatchPass::record`, called from
+  `VulkanContext::record_terrain_patches` (`context/dispatch_skin_and_cluster.rs`; `draw.rs` calls it right after
+  `upload_terrain_tiles_if_dirty` and BEFORE `dispatch_skin_and_cluster`, the module docs and SAFETY comment name that order since #7244, a75402b05),
+  re-displaces each resident slot IN PLACE in reserved ranges of the one global vertex buffer (not per-FIF) with
+  `terrain_patch.comp`. Its barrier pair is the compute half of the contract: before = TRANSFER write (readback zero-fill, geometry upload, tile copy) +
+  the previous frame's VERTEX_INPUT / VERTEX / FRAGMENT / COMPUTE reads of the patch ranges → COMPUTE (no AS_BUILD source stage: the previous
+  frame's patch-BLAS build read of the vertices is ordered only transitively, see rider 16); after = SHADER_WRITE →
+  VERTEX_ATTRIBUTE_READ | SHADER_READ | HOST_READ at VERTEX_INPUT / VERTEX / FRAGMENT / COMPUTE / ACCELERATION_STRUCTURE_BUILD / HOST (AS-build geometry
+  reads are SHADER_READ at the AS_BUILD stage, the 507945d8 rule). The per-FIF host readback
   (seam samples + largest displacement) is `harvest`ed one frame later behind that slot's fence with `invalidate_if_needed`, and
-  `bound[frame]` re-writes the descriptor set only when the vertex / tile buffer or its generation changed. Stage 4.1 is raster-only
-  (`in_tlas = false`, no BLAS); a stage-4.2 patch BLAS adds a vertex-write → ACCELERATION_STRUCTURE_BUILD edge that does not exist yet. The pool
-  rewrite is not in `sync.rs`'s all-slots-wait rider list (the before-barrier orders it on-queue against the last frame's fetch), so
-  re-derive it in the change that narrows the wait (#5365). Overlap with a validation capture is the evidence; the commit's own
-  measurement was sync-validation-clean at five positions.
+  `bound[frame]` re-writes the descriptor set only when the vertex / tile buffer or its generation changed. Stage 4.2 puts the patches in the TLAS:
+  `record_terrain_patches` ends by calling `record_terrain_patch_blas`, which fills the manager's kept request list and calls
+  `AccelerationManager::record_terrain_patch_blas` (`acceleration/blas_terrain_patch.rs`) — ONE batched
+  `cmd_build_acceleration_structures` for every build and refit of the frame, over disjoint aligned regions of the set's own
+  `scratch` buffer (so no per-BLAS serialize barrier), bracketed by an AS_BUILD write → AS_BUILD read|write barrier before and an
+  AS write → AS_BUILD | FRAGMENT | COMPUTE read barrier after, before the TLAS build in `dispatch_skin_and_cluster`. A mesh refits (`UPDATE`, `src == dst`)
+  while it shows the same square at the same pool addresses and builds otherwise (at most two builds a frame, a rebuild after 600
+  refits); a deferred or failed patch is simply absent from `ready`, and `tlas.rs` skips a patch draw whose BLAS is not `ready_address` (no stale-BLAS
+  instance; `plan_patch_blas_ops` is unit-tested). The patch meshes are skipped by the static-BLAS restore path. One `scratch`
+  buffer serves both frame slots, and only a GROWN scratch is retired through `pending_destroy_scratch`; the in-place vertex rewrite, the AS refit and the
+  shared scratch rest on the all-slots wait plus the barrier chain (`sync.rs` rider 16, #7245, cc5e64d4b; pinned by
+  `frames_in_flight_contract_names_every_dependent_resource`), so re-derive them in the change that narrows the wait (#5365). The per-frame lists live on
+  `PatchBlasFrame` (#7246, 6c293b8d6) and are `mem::take`n out of the set for the record and put back whatever the outcome. Overlap with a validation capture
+  is the evidence; the TSD-4.2 commit's own measurement was sync-validation-clean at the tundra and FNV positions.
 - **MaterialBuffer SSBO.** upload is `HOST_WRITE → VERTEX/FRAGMENT_READ`, before draw recording; flag only if it moves into a mid-frame compute path.
 - **Volumetrics skip path (#4780, fixed d213521ef).** The #3685 skip-clear latch owns only the GPU clear
   (`record_neutral_frame`), and it (with the caustic twin) is staged in `pending_*_cleared_on_skip` and promoted only
@@ -265,7 +277,7 @@ re-audit it here. This dimension owns how *systems* use it.
   `ParticleEmitter` write (`submersion_with_a_bed_field_takes_its_locks_in_one_order`), `kf_idle_work_pending` held `ActorCinematicState`
   over an `IdleClipCatalog` read (the reverse of `idle_clip_playback_system`), the SDK capture (`extensions/capture.rs`) held `Inventory`
   before `InventoryCatalog` (the reverse of `encumbrance_system`), and the unload walk read `AnimatedTextureFlip` after
-  `MaterialTextureHandles` / `TerrainTileSlot` (now its own pass, as #6209). Attribution recipe: a temporary edge logger
+  `MaterialTextureHandles` / `TerrainTileSlot` (now its own pass, as #6209). The sandbox seat pass read `CreatureActor` last, after `GlobalTransform` / `Furniture` / `Seated`, while other code holds a `CreatureActor` read across `ActorValues` then `GlobalTransform`; `a_creature_actor_never_takes_furniture` aborted the ABBA lane until ace99c164 took `CreatureActor` first (`sandbox_seat_system_inner`, `systems/sandbox.rs`). Attribution recipe: a temporary edge logger
   in `record_and_check`, `--test-threads=1 --nocapture`; fix by gathering under one guard, dropping it, then composing.
 - **`FormIdPool`'s entity index is a leaf mutex (#6338, ab3a604bf).** `FormIdPool::entity_with_local` rebuilds a lazily
   cached `local → entity` map under an interior `Mutex` keyed on `FormIdComponent`'s structural generation + pool length;
@@ -442,7 +454,7 @@ First step: `grep -n 'load-bearing' -B4 -A12 crates/renderer/src/vulkan/context/
 - **AS cleanup on shutdown.** All `BlasEntry` buffers, `TlasState` buffers and scratch released; per-entity skin outputs kept until the entity is destroyed.
 - **Other GPU cleanup.** `scene_buffer`, `MaterialBuffer`, texture registry (incl. the `dynamic_rgba` staging
   arena), `EguiPass::destroy()` (`Option<EguiPass>` taken in `Drop`; its texture retirements are a
-  frames-in-flight rider, #4988), a partially-built object's error arm (`GpuPerFrameTimers::new`, #4998), `TerrainPatchPass::destroy` (per-FIF readbacks, then pool / pipeline / layouts; the reserved patch meshes belong to the mesh registry),
+  frames-in-flight rider, #4988), a partially-built object's error arm (`GpuPerFrameTimers::new`, #4998), `TerrainPatchPass::destroy` (per-FIF readbacks, then pool / pipeline / layouts; the reserved patch meshes belong to the mesh registry) and `destroy_terrain_patch_blas` (every patch BLAS + the shared scratch, called from `AccelerationManager::destroy`),
   and `GpuImage` (`vulkan/image.rs`), which routes most passes' image
   create/bind/destroy through one lock rule: a poisoned allocator lock is recovered, not unwrapped (#4089).
 - **Per-frame leaks.** Any descriptor / command-buffer / staging allocation created per frame but not freed or reset is HIGH.

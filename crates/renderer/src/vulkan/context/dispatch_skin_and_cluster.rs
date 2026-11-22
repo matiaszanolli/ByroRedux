@@ -587,8 +587,10 @@ impl VulkanContext {
     }
 
     /// #7152 — TSD-4.1: re-displace this frame's resident terrain patches in
-    /// place, after the instance upload (which also copies any dirty terrain
-    /// tiles the pass reads) and before the geometry pass that draws them.
+    /// place, after `upload_terrain_tiles_if_dirty` (the tiles the pass reads)
+    /// and before the patch BLAS refit and the TLAS build in
+    /// `dispatch_skin_and_cluster` (#7221), so the TLAS and the geometry pass
+    /// both see this frame's relief.
     pub(super) fn record_terrain_patches(&mut self, cmd: vk::CommandBuffer, frame: usize) {
         let Some(pass) = self.exterior.terrain_patch.as_mut() else {
             return;
@@ -609,9 +611,9 @@ impl VulkanContext {
             timers.cmd_start(TimerPass::TerrainPatch, &self.device, cmd, frame);
         }
         let bindless_set = self.texture_registry.descriptor_set(frame);
-        // SAFETY: outside any render pass (between the instance upload and the
-        // geometry pass); the vertex and tile buffers are the ones this frame's
-        // draws bind, and the bindless set is this frame's.
+        // SAFETY: outside any render pass (after the terrain-tile upload, before
+        // the patch BLAS and the TLAS build); the vertex and tile buffers are the
+        // ones this frame's draws bind, and the bindless set is this frame's.
         unsafe {
             pass.record(&self.device, cmd, frame, buffers, bindless_set, &self.mesh_registry);
         }
@@ -650,7 +652,8 @@ impl VulkanContext {
                 ),
             )
         };
-        let requests = pass.blas_requests(frame, &self.mesh_registry, vertex_base, index_base);
+        let requests = accel.terrain_patch_blas_requests();
+        pass.blas_requests(frame, &self.mesh_registry, vertex_base, index_base, requests);
         let timed = !requests.is_empty();
         if timed && let Some(timers) = self.gpu_timers.as_mut() {
             timers.cmd_start(TimerPass::TerrainPatchBlas, &self.device, cmd, frame);
@@ -659,8 +662,7 @@ impl VulkanContext {
         // barrier makes its vertex writes visible to AS-build reads, outside
         // any render pass and before this frame's TLAS build; the requests
         // address the live global buffers.
-        let stats =
-            unsafe { accel.record_terrain_patch_blas(&self.device, allocator, cmd, &requests) };
+        let stats = unsafe { accel.record_terrain_patch_blas(&self.device, allocator, cmd) };
         if timed && let Some(timers) = self.gpu_timers.as_mut() {
             timers.cmd_end(TimerPass::TerrainPatchBlas, &self.device, cmd, frame);
         }

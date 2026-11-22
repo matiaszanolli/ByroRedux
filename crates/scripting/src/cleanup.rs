@@ -41,6 +41,7 @@
 //! | `DialoguePresentationEventBatch`, `DialogueLineCompletionBatch` | `dialogue::scene_dialogue_system` |
 //! | `ScenePackageEventBatch`, `ScenePackageCompletionBatch`, `EvaluatePackageRequest` | `package::scene_package_system` |
 //! | `StoryEvent` | `story_manager::story_manager_dispatch_system` (#5366) |
+//! | `ReleasePackageHold` | `byroredux::npc_spawn::ai_package::ambient_ai_package_system` (takes it beside its read of `EvaluatePackageRequest`, before any early return, #7243) |
 //! | `TwoStateTransitionBatch` | `vm_state::two_state_activator_system` |
 //! | `OnDeathEvent` | `fragment::reference::collect_deliveries` (the frame pass drains it before anything else runs) |
 //! | `HavokImpulseRequest` | `byroredux::systems::cinematic::scripted_havok_impulse_system` (snapshots every request and drains exactly those; the only early return before the drain is the empty set, and a missing `HavokImpulseRules` drains the snapshot before returning, #6009) |

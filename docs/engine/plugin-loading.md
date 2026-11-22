@@ -23,7 +23,11 @@ What the engine does today with a legacy plugin set (`--master …` `--esm`), th
    case-folded, `\` and `/` equivalent. The load-order key (`plugin_basename_lc`), a `MAST` entry, a script's
    `GetFormFromFile` / `IsDLCInstalled` file name and `PluginId::from_filename` all go through it, so `Skyrim.esm`,
    `skyrim.esm` and `Data\Skyrim.esm` are one plugin. (Before the fold a script's `"Skyrim.esm"` hashed apart from the
-   load order's `skyrim.esm`, so `GetFormFromFile` returned `None` and no New Vegas DLC read as installed.)
+   load order's `skyrim.esm`, so `GetFormFromFile` returned `None` and no New Vegas DLC read as installed.) The fold is
+   Rust's full Unicode `to_lowercase`. The load-order key used to be ASCII-only, so a plugin named with a non-ASCII
+   capital changed identity, and ids saved against it no longer resolve. The fold is also not any filesystem's case
+   rule: final sigma and `İ` fold differently from NTFS's per-character table. Which host rule to match is an open
+   LMC-ID-009 decision (#7249).
 2. **Activation (LMC-ID-003, -011)**, once at boot, before anything reads argv
    (`byroredux/src/plugin_activation.rs` over `crates/plugin/src/activation.rs`). The profile is the `--master` plugins
    in argv order, then the `--esm`. Each plugin's `TES4` record alone is read for its masters. A master the profile
@@ -37,7 +41,7 @@ What the engine does today with a legacy plugin set (`--master …` `--esm`), th
    its own names the `--master` to add.
 3. **The fold (LMC-REC-002, -005, -007).** `parse_record_indexes_in_load_order` walks the plugins in parallel and folds
    them in load order with `EsmIndex::merge_from`, the last carrier of a record winning it whole (the `legacy` policy;
-   `merge`, LMC-REC-003, is not built). Before each plugin's merge, `FoldProvenance::note_plugin`
+   `merge`, LMC-REC-003, combines records with lists, item 6). Before each plugin's merge, `FoldProvenance::note_plugin`
    (`crates/plugin/src/esm/records/provenance.rs`) notes, from the record headers the walk traced, every form that
    plugin carries that an earlier one already did (an override, or a `DELE` deletion), and every form it defines in an
    ID space it does not own (an injected record). Only those forms are stored; the rest cost one lookup each. The
@@ -68,9 +72,33 @@ What the engine does today with a legacy plugin set (`--master …` `--esm`), th
    place and its flags. What each plugin brought is logged and shown by `plugins.activation` and `--plugin-report`:
    `DeadMoney.esm pairs DeadMoney - Main.bsa, DeadMoney - Sounds.bsa`.
 
+6. **Records with lists merge (LMC-REC-003).** Under the session's record policy, `--merge-policy merge` (the default,
+   per the PRD's decision Q2) or `legacy`, the fold combines independent overrides of a record with lists (the levelled
+   lists `LVLI`, `LVLN`, `LVLC`, `LVSP`, form lists `FLST`, outfits `OTFT`, containers `CONT`; actors `NPC_` and `CREA`:
+   inventory, factions, spells, perks, keywords, actor values; races `RACE`: spells, keywords, race relations; carried
+   items `ALCH`, `AMMO`, `ARMO`, `BOOK`, `MISC`, `WEAP` and the rest: keywords) instead of keeping the last record whole
+   (`crates/plugin/src/esm/records/list_merge.rs`; each type declares its lists and scalar fields to the
+   `list_record!` macro, which destructures the record whole so a new field cannot go unmerged). Two
+   overrides are independent when neither plugin declares the other as a master, directly or through its masters; a
+   plugin that masters every plugin whose changes the list holds wins it whole, as under `legacy`. Otherwise the
+   override is diffed against its base (the latest earlier carrier among its own masters) per entry form, the entries of
+   a form compared as a multiset of the rest of each entry (a levelled entry's level and count, a container entry's
+   count, a faction's or perk's rank, an actor value's value): an added, removed or changed form is applied to the
+   merged list, the later plugin winning a form or a field (a list's chance none, a container's name or weight, an
+   actor's level) that two changed, and the earlier operation recorded as overruled. A form list's null entries hold a
+   place and are never an operation. A list whose order is its meaning is one field: an actor's AI packages and a
+   consumable's effects. An item's kind is compared as its record authored it, and the merge re-runs the Fallout
+   loose-mod classification after writing merged items back. `ListMerge::note_plugin` runs beside `FoldProvenance::note_plugin`, before each
+   plugin's `merge_from`, and writes the merged records back after it; the fold's log line counts the records merged and
+   the operations overruled. `plugins.conflicts <formid>` shows a merged record's contributors and, per list entry form
+   (`inventory 00000A02: added by mergea.esp`) and field, who decided it and whom they overruled; its carrier chain ends
+   `(merged)`. The keyword lists of other records (locations, quests, activators, furniture, magic effects, spells)
+   are still last-wins.
+
 Not built yet in Phase 1: the mod profile beyond argv (discovery, mod roots, LMC-ID-012), the official/user boundary
-(LMC-REC-008), the `merge` policy (LMC-REC-003), the merge-ownership half of LMC-REC-006 (the report half is item 4's
-verdicts), the virtual legacy index (LMC-ID-005) and the profile fingerprint in saves (LMC-ID-007, LMC-SAV-001).
+(LMC-REC-008), the `merge` policy for the keyword lists of the records item 6 leaves last-wins (LMC-REC-003), the merge-ownership half of
+LMC-REC-006 (the report half is item 4's verdicts), the virtual legacy index (LMC-ID-005) and the profile fingerprint in
+saves (LMC-ID-007, LMC-SAV-001).
 
 ## Overview
 

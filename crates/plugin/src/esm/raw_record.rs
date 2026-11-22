@@ -15,7 +15,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use super::reader::{EsmReader, EsmVariant, FormIdRemap, SubRecord};
+use super::reader::{EsmReader, EsmVariant, FormIdRemap, SubRecord, FLAG_COMPRESSED};
 
 /// A record as its plugin stores it, decompressed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,7 +104,8 @@ fn find_in(reader: &mut EsmReader, end: usize, record_type: [u8; 4], form_id: u3
 /// One way two records of a form differ.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FieldDiff {
-    /// The record header flags (deleted, persistent, initially disabled, …).
+    /// The record header flags (deleted, persistent, initially disabled, …), without the compressed bit, which says
+    /// how the record was stored rather than what it holds (#7248).
     Flags { winner: u32, other: u32 },
     /// A sub-record each record has once, with different bytes.
     Differs { tag: [u8; 4] },
@@ -160,8 +161,11 @@ pub fn diff_fields(winner: &RawRecord, other: &RawRecord) -> Vec<FieldDiff> {
             .count()
     }
     let mut diffs = Vec::new();
-    if winner.flags != other.flags {
-        diffs.push(FieldDiff::Flags { winner: winner.flags, other: other.flags });
+    // #7248 — the compressed bit is storage, not a value: a record one tool saved compressed and another did not,
+    // with the same sub-records (already decompressed here), is identical (LMC-REC-006, xEdit's ITM).
+    let (winner_flags, other_flags) = (winner.flags & !FLAG_COMPRESSED, other.flags & !FLAG_COMPRESSED);
+    if winner_flags != other_flags {
+        diffs.push(FieldDiff::Flags { winner: winner_flags, other: other_flags });
     }
     let (ours, theirs) = (by_tag(winner), by_tag(other));
     let empty: Vec<&[u8]> = Vec::new();
@@ -239,6 +243,12 @@ mod tests {
             ["QSTI 2 dropped", "KWDA 2 dropped"]
         );
         assert!(diff_fields(&master, &master.clone()).is_empty(), "an identical override differs in nothing");
+        // #7248 — the same values stored compressed by one tool and uncompressed by another are identical; a real
+        // flag change beside the compressed bit still shows, without it.
+        let stored_compressed = RawRecord { flags: FLAG_COMPRESSED, ..master.clone() };
+        assert!(diff_fields(&stored_compressed, &master).is_empty(), "compression is storage, not a difference");
+        let persistent_and_compressed = RawRecord { flags: FLAG_COMPRESSED | 0x400, ..master.clone() };
+        assert_eq!(diff_fields(&persistent_and_compressed, &master), vec![FieldDiff::Flags { winner: 0x400, other: 0 }]);
     }
 
     /// Two plugins encode form IDs alike when every plugin both address sits at the same index in each.

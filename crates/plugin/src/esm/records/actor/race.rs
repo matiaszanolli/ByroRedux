@@ -399,13 +399,13 @@ pub mod head_part {
 
 /// Per-gender attribute block for `RaceRecord.base_attributes`
 /// (Oblivion `ATTR` sub-record). 8 attributes × 2 genders = 16 bytes.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct RaceAttributes {
     pub male: GenderedAttributes,
     pub female: GenderedAttributes,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct GenderedAttributes {
     pub strength: u8,
     pub intelligence: u8,

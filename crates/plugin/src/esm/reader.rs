@@ -16,11 +16,12 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-/// Record flag: data is zlib-compressed.
-const FLAG_COMPRESSED: u32 = 0x00040000;
+/// Record flag: data is zlib-compressed. A storage detail of how the saving tool wrote the record, not one of its
+/// values: `pub(crate)` so the conflict report's field diff can leave it out (#7248).
+pub(crate) const FLAG_COMPRESSED: u32 = 0x00040000;
 /// Record flag: this override deletes the inherited authored record.
 ///
-/// `pub(crate)` (unlike [`FLAG_COMPRESSED`]) because two independent
+/// `pub(crate)` because two independent
 /// consumers test this bit and used to declare it twice under two names —
 /// here, and as `RECORD_FLAG_DELETED` in `cell/walkers.rs`. #3543's own
 /// evidence was mis-stated because of exactly that: a
@@ -92,7 +93,7 @@ fn record_inflation_ceiling(compressed_len: usize) -> usize {
 /// Record flag: "Visible When Distant" / "Has Distant LOD" (#1731 /
 /// LC-D7-02). Not to be confused with the deleted-REFR tombstone flag
 /// `0x20` (SKY-D4-01 / #1660) — a different bit on the same `flags` field.
-/// `pub` (unlike [`FLAG_COMPRESSED`]) so downstream LOD-spawn consumers
+/// `pub` (not `pub(crate)` like [`FLAG_COMPRESSED`]) so downstream LOD-spawn consumers
 /// (`docs/engine/exal.md` §5.4, LC-D7-01) can reference it by name instead
 /// of a magic number.
 pub const FLAG_VISIBLE_WHEN_DISTANT: u32 = 0x00010000;
@@ -506,7 +507,7 @@ pub enum FormIdScheme {
 /// lets [`FormIdRemap::remap`] decode all kinds — and references *to* an
 /// ESL/medium master — uniformly. See the Creation Engine light-master
 /// spec / SK-D4-03 / #1554, and #4639 for the per-game flag bits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GlobalSlot {
     /// Full-byte load-order index (`0x00`–`0xFC`; `0xFD` is reserved for
     /// the medium-master space below).

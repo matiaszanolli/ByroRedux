@@ -32,7 +32,9 @@ pub struct FoldProvenance {
 
 impl FoldProvenance {
     /// Note `plugin`, the plugin at load-order `position`, before it is folded into `merged`. `owner_of` names the
-    /// position of the plugin that owns a form's ID space (its slot), `None` for a slot no plugin holds.
+    /// position of the plugin that owns a form's ID space (its slot), `None` for a slot no plugin holds. It is asked
+    /// only for a form this plugin is the first to override or that it defines (#7250: a record already overridden, a
+    /// deletion of an unseen form and an override of an injected form need no owner).
     pub fn note_plugin(&mut self, position: usize, plugin: &EsmIndex, merged: &EsmIndex, owner_of: impl Fn(u32) -> Option<usize>) {
         let position = position as u32;
         let carried = plugin.record_types.keys().map(|&id| (id, false));
@@ -43,17 +45,19 @@ impl FoldProvenance {
                 carriers.push(carrier);
                 continue;
             }
-            let owner = owner_of(form_id).map(|owner| owner as u32);
+            let owner = || owner_of(form_id).map(|owner| owner as u32);
             if merged.record_types.contains_key(&form_id) || merged.deleted_record_metadata.contains(&form_id) {
-                // An earlier plugin carried it: the definer is the injecting plugin, else the slot owner.
-                let definer = self.injected.get(&form_id).copied().or(owner);
+                // An earlier plugin carried it: the definer is the injecting plugin, else the slot owner. An injected
+                // form a later plugin overrides leaves `injected`, which lists only those no later plugin overrode
+                // (`note_writer` does the same, #7247).
+                let definer = self.injected.remove(&form_id).or_else(owner);
                 let mut carriers = Vec::with_capacity(2);
                 if let Some(definer) = definer.filter(|&definer| definer != position) {
                     carriers.push(Carrier { plugin: definer, deletes: false });
                 }
                 carriers.push(carrier);
                 self.overridden.insert(form_id, carriers);
-            } else if owner != Some(position) && !deletes {
+            } else if !deletes && owner() != Some(position) {
                 self.injected.insert(form_id, position);
             }
         }
@@ -169,6 +173,38 @@ mod tests {
             fold(vec![plugin(&[0x0000_0001], &[]), plugin(&[0x0000_0F00], &[]), plugin(&[0x0000_0F00], &[])]);
         assert_eq!(provenance.carriers(0x0000_0F00), [carrier(1), carrier(2)], "the injector is the definer");
         assert_eq!(provenance.winner(0x0000_0F00), Some(2));
+        // #7247 — overridden, it is no longer counted as injected (the fold log and `plugins.conflicts` columns).
+        assert_eq!(provenance.injected().count(), 0, "an overridden injected form leaves `injected`");
+        assert_eq!(provenance.counts(), (1, 0));
+    }
+
+    /// #7250 — the slot owner is looked up only for a form this plugin first overrides or defines: never for one
+    /// already overridden, an override of an injected form, or a deletion of a form nothing carried.
+    #[test]
+    fn the_slot_owner_is_asked_only_when_it_decides_something() {
+        use std::cell::Cell;
+        let asked = Cell::new(0);
+        let owner = |form_id: u32| {
+            asked.set(asked.get() + 1);
+            Some((form_id >> 24) as usize)
+        };
+        let mut merged = EsmIndex::default();
+        let mut provenance = FoldProvenance::default();
+        // Plugin 0 defines 0x01 in its own slot; plugin 1 overrides it, injects 0x0F01 into slot 0 and deletes a form
+        // nothing carried; plugin 2 overrides both.
+        let first = plugin(&[0x0000_0001], &[]);
+        provenance.note_plugin(0, &first, &merged, owner);
+        merged.merge_from(first);
+        assert_eq!(asked.replace(0), 1, "a defined form asks once");
+        let second = plugin(&[0x0000_0001, 0x0000_0F01], &[0x0100_0002]);
+        provenance.note_plugin(1, &second, &merged, owner);
+        merged.merge_from(second);
+        assert_eq!(asked.replace(0), 2, "the first override and the injected form ask; the deletion of an unseen form does not");
+        let third = plugin(&[0x0000_0001, 0x0000_0F01], &[]);
+        provenance.note_plugin(2, &third, &merged, owner);
+        assert_eq!(asked.get(), 0, "an overridden form and an override of an injected form need no owner");
+        assert_eq!(provenance.carriers(0x0000_0F01), [carrier(1), carrier(2)]);
+        assert_eq!(provenance.carriers(0x0000_0001), [carrier(0), carrier(1), carrier(2)]);
     }
 
     /// LMC-REC-004 — a deletion is a carrier like any other, marked as one, and it is the last word on the form.

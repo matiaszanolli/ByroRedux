@@ -1173,3 +1173,41 @@ fn a_live_load_rebaselines_the_players_perk_bodies() {
         .expect("the live load must drop the player's PerkBodyState (SAVE-2)");
     assert!(removal > overlay, "after the overlay that replaced the player's Perks");
 }
+
+/// #7252 — the Once Per Day blocks are cleared before the load's cell reload, not after it: the reload's spawns note
+/// the blocks of the packages they select, and the drain that runs after the reload used to erase those, which a
+/// cold start keeps. An aborted reload gives the live session its own blocks back.
+#[test]
+fn the_day_blocks_restart_before_the_reload_and_survive_an_aborted_one() {
+    use super::live_load::{discard_outgoing_session_requests, reload_with_fresh_day_blocks};
+    use crate::npc_spawn::package_flags::PackageDayBlocks;
+    use byroredux_core::ecs::EntityId;
+    let (outgoing, respawned) = (EntityId::from(3u32), EntityId::from(4u32));
+    let mut world = World::new();
+    world.insert_resource(PackageDayBlocks::default());
+    world.resource_mut::<PackageDayBlocks>().note(outgoing, 0x10, 9.0);
+
+    let loaded = reload_with_fresh_day_blocks(&mut world, |world| {
+        assert!(!world.resource::<PackageDayBlocks>().holds(outgoing, 0x10), "the reload starts with no blocks");
+        world.resource_mut::<PackageDayBlocks>().note(respawned, 0x20, 30.0);
+        Some(())
+    });
+    assert!(loaded.is_some());
+    discard_outgoing_session_requests(&world);
+    let blocks = world.resource::<PackageDayBlocks>();
+    assert!(blocks.holds(respawned, 0x20), "the drain after the reload keeps the reload's own spawn-time block");
+    assert!(!blocks.holds(outgoing, 0x10));
+    drop(blocks);
+
+    let aborted: Option<()> = reload_with_fresh_day_blocks(&mut world, |_| None);
+    assert!(aborted.is_none());
+    assert!(
+        world.resource::<PackageDayBlocks>().holds(respawned, 0x20),
+        "an aborted reload keeps the current session, blocks included"
+    );
+    // …and the load sequence runs its reload through it.
+    let source = include_str!("live_load.rs");
+    let sequence = &source[source.find("let outcome = crate::cell_loader::reference_state::without_parked_state").unwrap()..];
+    let reload_call = sequence.find("reload_interior_session(world").unwrap();
+    assert!(sequence[..reload_call].contains("reload_with_fresh_day_blocks(world, |world|"), "the reload must run inside reload_with_fresh_day_blocks");
+}

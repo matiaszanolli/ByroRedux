@@ -89,15 +89,17 @@ pub(super) enum PatchBlasOp {
     Defer,
 }
 
-/// The op for each request, in request order. `previous` is what each
+/// The op for each request, in request order, into `ops` (emptied first). `previous` is what each
 /// mesh's BLAS was last built or refit from, with its refit count.
 pub(super) fn plan_patch_blas_ops(
     requests: &[(Option<(TerrainPatchBlasContent, u32)>, TerrainPatchBlasContent)],
     build_budget: usize,
     rebuild_after: u32,
-) -> Vec<PatchBlasOp> {
+    ops: &mut Vec<PatchBlasOp>,
+) {
     let mut builds = 0;
-    requests
+    ops.clear();
+    ops.extend(requests
         .iter()
         .map(|&(previous, now)| match previous {
             Some((built, refits)) if built == now && refits < rebuild_after => PatchBlasOp::Refit,
@@ -106,8 +108,15 @@ pub(super) fn plan_patch_blas_ops(
                 PatchBlasOp::Build
             }
             _ => PatchBlasOp::Defer,
-        })
-        .collect()
+        }));
+}
+
+/// `buffer`, emptied, as a `Vec` of another element type. Std's in-place `collect` keeps the allocation when
+/// the two share a layout, which is how the record path keeps a list whose elements borrow one frame's data
+/// (the build infos, the range slices) across frames without reallocating it (#7246).
+fn emptied<T, U>(mut buffer: Vec<T>) -> Vec<U> {
+    buffer.clear();
+    buffer.into_iter().map(|_| unreachable!("the buffer was cleared")).collect()
 }
 
 /// Round `size` up to a multiple of `align` (≥ 1).
@@ -139,6 +148,28 @@ pub struct TerrainPatchBlasSet {
     /// Meshes whose BLAS describes this frame's vertices.
     ready: rustc_hash::FxHashSet<u32>,
     stats: TerrainPatchBlasStats,
+    /// The record path's per-frame working set (#7246).
+    frame: PatchBlasFrame,
+}
+
+/// The patch BLAS record path's per-frame lists, refilled every frame and never freed, so once the first exterior
+/// frame has sized them a frame with resident patches allocates nothing. Each holds at most one entry per
+/// dispatched patch slot (`TERRAIN_PATCH_SLOTS`), so they need no shrink policy.
+#[derive(Default)]
+struct PatchBlasFrame {
+    requests: Vec<TerrainPatchBlasRequest>,
+    /// Indices into `requests` that passed validation.
+    live: Vec<usize>,
+    plan: Vec<(Option<(TerrainPatchBlasContent, u32)>, TerrainPatchBlasContent)>,
+    ops: Vec<PatchBlasOp>,
+    regions: Vec<vk::DeviceSize>,
+    /// (index into `live`, op) for every op not deferred.
+    recorded: Vec<(usize, PatchBlasOp)>,
+    geometries: Vec<vk::AccelerationStructureGeometryKHR<'static>>,
+    ranges: Vec<vk::AccelerationStructureBuildRangeInfoKHR>,
+    /// Always empty between frames: kept only for its allocation (see [`emptied`]).
+    infos: Vec<vk::AccelerationStructureBuildGeometryInfoKHR<'static>>,
+    range_refs: Vec<&'static [vk::AccelerationStructureBuildRangeInfoKHR]>,
 }
 
 impl TerrainPatchBlasSet {
@@ -252,8 +283,17 @@ impl AccelerationManager {
         Ok(())
     }
 
+    /// This frame's patch BLAS request list, emptied, for the patch pass to fill before
+    /// [`Self::record_terrain_patch_blas`] reads it. The buffer is kept across frames (#7246).
+    pub fn terrain_patch_blas_requests(&mut self) -> &mut Vec<TerrainPatchBlasRequest> {
+        let requests = &mut self.terrain_patch_blas.frame.requests;
+        requests.clear();
+        requests
+    }
+
     /// Build or refit this frame's patch BLAS from the vertices the patch
-    /// compute pass just wrote, and mark which may enter the TLAS.
+    /// compute pass just wrote (the requests filled through
+    /// [`Self::terrain_patch_blas_requests`]), and mark which may enter the TLAS.
     ///
     /// # Safety
     /// `cmd` must be recording outside a render pass, after the patch compute
@@ -266,16 +306,38 @@ impl AccelerationManager {
         device: &ash::Device,
         allocator: &SharedAllocator,
         cmd: vk::CommandBuffer,
-        requests: &[TerrainPatchBlasRequest],
     ) -> TerrainPatchBlasStats {
+        // The working set leaves the set for the record so its vectors and the
+        // manager can be borrowed apart; it goes back whatever the outcome.
+        let mut frame = std::mem::take(&mut self.terrain_patch_blas.frame);
+        // SAFETY: the caller's contract, passed through.
+        let stats = unsafe { self.record_patch_blas_frame(device, allocator, cmd, &mut frame) };
+        self.terrain_patch_blas.frame = frame;
+        stats
+    }
+
+    /// [`Self::record_terrain_patch_blas`]'s body, over the reused working set.
+    ///
+    /// # Safety
+    /// As [`Self::record_terrain_patch_blas`].
+    unsafe fn record_patch_blas_frame(
+        &mut self,
+        device: &ash::Device,
+        allocator: &SharedAllocator,
+        cmd: vk::CommandBuffer,
+        frame: &mut PatchBlasFrame,
+    ) -> TerrainPatchBlasStats {
+        let PatchBlasFrame { requests, live, plan, ops, regions, recorded, geometries, ranges, infos, range_refs } =
+            frame;
         self.terrain_patch_blas.ready.clear();
         let mut stats = TerrainPatchBlasStats::default();
 
         // Size every first-seen mesh, and drop requests whose entry cannot
         // exist or whose counts no longer match it (VUID-03667: an UPDATE, and
-        // a BUILD into an AS sized for other counts, must not happen).
-        let mut live: Vec<&TerrainPatchBlasRequest> = Vec::with_capacity(requests.len());
-        for request in requests {
+        // a BUILD into an AS sized for other counts, must not happen). `live`
+        // holds indices into `requests`.
+        live.clear();
+        for (index, request) in requests.iter().enumerate() {
             if !self.terrain_patch_blas.is_patch_mesh(request.mesh) || request.index_count < 3 {
                 stats.failed += 1;
                 continue;
@@ -293,25 +355,27 @@ impl AccelerationManager {
                 stats.failed += 1;
                 continue;
             }
-            live.push(request);
+            live.push(index);
         }
 
-        let plan_input: Vec<_> = live
-            .iter()
-            .map(|r| (self.terrain_patch_blas.entries[&r.mesh].content, r.content))
-            .collect();
-        let ops = plan_patch_blas_ops(
-            &plan_input,
+        plan.clear();
+        plan.extend(live.iter().map(|&i| {
+            let request = &requests[i];
+            (self.terrain_patch_blas.entries[&request.mesh].content, request.content)
+        }));
+        plan_patch_blas_ops(
+            plan,
             MAX_TERRAIN_PATCH_BLAS_BUILDS_PER_FRAME,
             TERRAIN_PATCH_BLAS_REBUILD_AFTER_REFITS,
+            ops,
         );
 
         // Disjoint, aligned scratch regions, one per recorded op.
         let align = self.scratch_align;
-        let mut regions: Vec<vk::DeviceSize> = Vec::with_capacity(live.len());
+        regions.clear();
         let mut total: vk::DeviceSize = 0;
-        for (request, op) in live.iter().zip(&ops) {
-            let entry = &self.terrain_patch_blas.entries[&request.mesh];
+        for (&i, op) in live.iter().zip(ops.iter()) {
+            let entry = &self.terrain_patch_blas.entries[&requests[i].mesh];
             let need = match op {
                 PatchBlasOp::Build => entry.build_scratch,
                 PatchBlasOp::Refit => entry.update_scratch,
@@ -362,15 +426,15 @@ impl AccelerationManager {
         );
 
         // Geometries first: the build infos borrow them.
-        let mut recorded: Vec<(usize, PatchBlasOp)> = Vec::with_capacity(live.len());
-        let mut geometries: Vec<vk::AccelerationStructureGeometryKHR<'static>> =
-            Vec::with_capacity(live.len());
-        let mut ranges: Vec<vk::AccelerationStructureBuildRangeInfoKHR> = Vec::with_capacity(live.len());
-        for (i, (request, op)) in live.iter().zip(&ops).enumerate() {
+        recorded.clear();
+        geometries.clear();
+        ranges.clear();
+        for (slot, (&i, op)) in live.iter().zip(ops.iter()).enumerate() {
             if *op == PatchBlasOp::Defer {
                 continue;
             }
-            recorded.push((i, *op));
+            let request = &requests[i];
+            recorded.push((slot, *op));
             geometries.push(patch_geometry(&request.content, request.vertex_count));
             ranges.push(vk::AccelerationStructureBuildRangeInfoKHR {
                 primitive_count: request.index_count / 3,
@@ -379,29 +443,30 @@ impl AccelerationManager {
                 transform_offset: 0,
             });
         }
-        let infos: Vec<vk::AccelerationStructureBuildGeometryInfoKHR<'_>> = recorded
-            .iter()
-            .zip(&geometries)
-            .map(|(&(i, op), geometry)| {
-                let entry = &self.terrain_patch_blas.entries[&live[i].mesh];
-                let info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
-                    .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
-                    .flags(TERRAIN_PATCH_BLAS_FLAGS)
-                    .dst_acceleration_structure(entry.accel)
-                    .geometries(std::slice::from_ref(geometry))
-                    .scratch_data(vk::DeviceOrHostAddressKHR {
-                        device_address: scratch_base + regions[i],
-                    });
-                match op {
-                    PatchBlasOp::Refit => info
-                        .mode(vk::BuildAccelerationStructureModeKHR::UPDATE)
-                        .src_acceleration_structure(entry.accel),
-                    _ => info.mode(vk::BuildAccelerationStructureModeKHR::BUILD),
-                }
-            })
-            .collect();
-        let range_refs: Vec<&[vk::AccelerationStructureBuildRangeInfoKHR]> =
-            ranges.iter().map(std::slice::from_ref).collect();
+        // The two lists that borrow this frame's geometries and ranges reuse
+        // their kept allocations through `emptied`.
+        let mut frame_infos: Vec<vk::AccelerationStructureBuildGeometryInfoKHR<'_>> =
+            emptied(std::mem::take(infos));
+        frame_infos.extend(recorded.iter().zip(geometries.iter()).map(|(&(slot, op), geometry)| {
+            let entry = &self.terrain_patch_blas.entries[&requests[live[slot]].mesh];
+            let info = vk::AccelerationStructureBuildGeometryInfoKHR::default()
+                .ty(vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL)
+                .flags(TERRAIN_PATCH_BLAS_FLAGS)
+                .dst_acceleration_structure(entry.accel)
+                .geometries(std::slice::from_ref(geometry))
+                .scratch_data(vk::DeviceOrHostAddressKHR {
+                    device_address: scratch_base + regions[slot],
+                });
+            match op {
+                PatchBlasOp::Refit => info
+                    .mode(vk::BuildAccelerationStructureModeKHR::UPDATE)
+                    .src_acceleration_structure(entry.accel),
+                _ => info.mode(vk::BuildAccelerationStructureModeKHR::BUILD),
+            }
+        }));
+        let mut frame_range_refs: Vec<&[vk::AccelerationStructureBuildRangeInfoKHR]> =
+            emptied(std::mem::take(range_refs));
+        frame_range_refs.extend(ranges.iter().map(std::slice::from_ref));
 
         // SAFETY: caller contract — `cmd` is recording outside a render pass
         // after the patch compute and its barrier. Each info writes its own
@@ -420,7 +485,7 @@ impl AccelerationManager {
                     | vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
             );
             self.accel_loader
-                .cmd_build_acceleration_structures(cmd, &infos, &range_refs);
+                .cmd_build_acceleration_structures(cmd, &frame_infos, &frame_range_refs);
             // After: the TLAS build and every ray query read the results.
             crate::vulkan::descriptors::memory_barrier(
                 device,
@@ -433,10 +498,11 @@ impl AccelerationManager {
                 vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
             );
         }
-        drop(infos);
+        *infos = emptied(frame_infos);
+        *range_refs = emptied(frame_range_refs);
 
-        for &(i, op) in &recorded {
-            let request = live[i];
+        for &(slot, op) in recorded.iter() {
+            let request = &requests[live[slot]];
             let entry = self
                 .terrain_patch_blas
                 .entries
@@ -511,10 +577,40 @@ mod tests {
         TerrainPatchBlasContent { square, vertex_address: 0x1000, index_address: 0x2000 }
     }
 
+    fn plan(
+        requests: &[(Option<(TerrainPatchBlasContent, u32)>, TerrainPatchBlasContent)],
+        build_budget: usize,
+        rebuild_after: u32,
+    ) -> Vec<PatchBlasOp> {
+        let mut ops = vec![PatchBlasOp::Defer; 7];
+        plan_patch_blas_ops(requests, build_budget, rebuild_after, &mut ops);
+        ops
+    }
+
+    /// #7246 — the frame lists keep their allocation: the planner refills the vector it is handed, and `emptied`
+    /// carries a buffer's capacity over to a list whose elements borrow another frame's data.
+    #[test]
+    fn the_record_paths_frame_lists_keep_their_allocations() {
+        let a = content(1);
+        let mut ops = Vec::with_capacity(16);
+        let before = ops.as_ptr();
+        plan_patch_blas_ops(&[(Some((a, 0)), a), (None, content(2))], 2, 600, &mut ops);
+        assert_eq!(ops, vec![PatchBlasOp::Refit, PatchBlasOp::Build]);
+        assert_eq!(ops.as_ptr(), before, "the planner refills the vector it is handed");
+
+        let kept: Vec<vk::AccelerationStructureBuildGeometryInfoKHR<'static>> = Vec::with_capacity(24);
+        let geometry = vk::AccelerationStructureGeometryKHR::default();
+        let mut infos: Vec<vk::AccelerationStructureBuildGeometryInfoKHR<'_>> = emptied(kept);
+        assert!(infos.capacity() >= 24, "the borrowed list reuses the kept allocation");
+        infos.push(vk::AccelerationStructureBuildGeometryInfoKHR::default().geometries(std::slice::from_ref(&geometry)));
+        let back: Vec<vk::AccelerationStructureBuildGeometryInfoKHR<'static>> = emptied(infos);
+        assert!(back.is_empty() && back.capacity() >= 24, "and hands it back, empty, for the next frame");
+    }
+
     #[test]
     fn the_same_square_refits_and_a_new_one_builds_within_the_budget() {
         let a = content(1);
-        let ops = plan_patch_blas_ops(
+        let ops = plan(
             &[
                 (Some((a, 3)), a),            // unchanged: refit
                 (None, content(2)),           // never built: build
@@ -533,7 +629,7 @@ mod tests {
     fn a_moved_pool_or_the_refit_limit_forces_a_build() {
         let a = content(1);
         let moved = TerrainPatchBlasContent { vertex_address: 0x9000, ..a };
-        let ops = plan_patch_blas_ops(&[(Some((a, 0)), moved), (Some((a, 600)), a)], 4, 600);
+        let ops = plan(&[(Some((a, 0)), moved), (Some((a, 600)), a)], 4, 600);
         assert_eq!(ops, vec![PatchBlasOp::Build, PatchBlasOp::Build]);
     }
 

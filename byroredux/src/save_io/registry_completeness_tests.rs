@@ -737,6 +737,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("Dlc2Ttr4aPlayerScript", "forward-latent — no live production spawn site exists outside tests/examples"),
         ("EquipItemCatalog", "populated once at cell/plugin load, only ever read afterward"),
         ("EvaluatePackageRequest", "one-shot ingress marker, drained every tick by scene_package_system"),
+        ("ReleasePackageHold", "#7243 — one-shot companion of an explicit EvaluatePackageRequest, taken by ambient_ai_package_system on its next pass"),
         ("ExtensionScriptFunctionInvoker", "process-local authenticated host callback republished after extension activation; Arc function pointers are neither portable nor save state"),
         // FragmentExecutionQueue: FIXED — registered (#2381 /
         // SAVE-D1-16), no longer allowlisted here.
@@ -1054,7 +1055,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("SaveState", "save-slot directory + ring cursor, resumed from disk at startup (SaveState::new) — save/load plumbing itself, not part of the world snapshot"),
         ("SceneImportCache", "process-lifetime parsed-scene cache wrapper around the same ParsedNifCache core as NifImportRegistry"),
         ("SharedToneCache", "bounded DDS mip cache for NPC seam blending; derived from archive assets and rebuilt on demand"),
-        ("PackageDayBlocks", "AIP-FLG-001 — when each Once Per Day package was first selected; a load restarts the 24-hour block like the rest of the ambient runtime state (the load drain resets it, #7230)"),
+        ("PackageDayBlocks", "AIP-FLG-001 — when each Once Per Day package was first selected; a load restarts the 24-hour block like the rest of the ambient runtime state (cleared before the load's cell reload, whose spawns note their own, #7252)"),
         ("SeatReservations", "derived sandbox occupancy, pruned on cell-reference load against live Furniture + claimant Seated state — see its own doc"),
         ("SettingsPersistence", "process-local user-config path; preferences are independently persisted in settings.toml, never inside a gameplay save"),
         ("SkyParamsRes", "WTHR sky rendering parameters, rebuilt from the parsed record every exterior cell load"),
@@ -1293,21 +1294,19 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
 
     // #7230 — the same promise in its other wordings. The check above matched two phrases only, and missed
     // `ActiveProjectiles` (#7229) and `FallTracker` (#7227), whose cold-start-only reasons an in-process load broke. A
-    // row that says a load starts, restarts, re-seeds, resets, forgets, ends, drops, re-derives or re-installs its type
-    // is either reset by the drain or listed here with the mechanism that does it instead.
-    const LOAD_RESET_PHRASES: &[&str] = &[
-        "a load starts",
-        "a load restarts",
-        "a load re-seeds",
-        "a load resets",
-        "a load forgets",
-        "a load ends",
-        "a load drops",
-        "a load re-derives",
-        "a load re-installs",
+    // row that promises a load resets its type is either reset by the drain or listed here with the mechanism that
+    // does it instead.
+    //
+    // #7253 — the promise is matched by its two shapes, with the verb matched by its root rather than one fixed phrase
+    // per spelling (nine exact `a load <verb>` strings missed "a load re-arms", "a load re-observes", "restarts on
+    // load" and "reset on live load"): `a load <verb…>`, and `<verb…>` within three words before `on [live] load`.
+    const LOAD_RESET_ROOTS: &[&str] = &[
+        "start", "restart", "re-seed", "reset", "forget", "end", "drop", "re-derive", "re-install", "re-arm",
+        "re-observe", "clear",
     ];
     const RESET_OUTSIDE_THE_DRAIN: &[(&str, &str)] = &[
         ("FallTracker", "place_character_body, which the load's pose restore calls, resets it (#7227)"),
+        ("PackageDayBlocks", "live_load::reload_with_fresh_day_blocks clears it before the cell reload, so the reload's spawns keep theirs (#7252)"),
         ("SyntheticHeights", "a content-addressed cache keyed by normal-map path: a kept verdict is the one re-deriving would give"),
         ("MoviePlaying", "the app rewrites it every frame; the phrase means the load itself plays no movie"),
         ("VideoStatus", "the movie player's telemetry; the phrase means the load itself plays no movie"),
@@ -1315,8 +1314,36 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("FindProgress", "an NPC component: the load's cell reload respawns the actor without it"),
         ("Awareness", "a detector NPC's component: the load's cell reload respawns the detector without it"),
         ("InstalledOutdoorEnvironment", "every environment install rewrites it, and the load re-installs the sky"),
+        ("ObjectAnimationGraph", "a prop component attached in its start state at spawn: the load's cell reload respawns the prop with a fresh one"),
+        ("StealthPoints", "install_stealth_rules re-inserts it full from populate_scene_runtime, which the load's cell reload runs"),
     ];
-    let claims_a_load_reset = |reason: &str| LOAD_RESET_PHRASES.iter().any(|phrase| reason.contains(phrase));
+    let is_reset_verb = |word: &str| LOAD_RESET_ROOTS.iter().any(|root| word.starts_with(root));
+    let claims_a_load_reset = |reason: &str| {
+        let words: Vec<String> = reason
+            .split_whitespace()
+            .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric() && c != '-').to_lowercase())
+            .collect();
+        words.iter().enumerate().any(|(i, word)| {
+            word == "load"
+                && ((i >= 1 && words[i - 1] == "a" && words.get(i + 1).is_some_and(|next| is_reset_verb(next)))
+                    || {
+                        // `<verb…> on [live] load`: the verb within three words before the `on`.
+                        let on = match (i.checked_sub(1).map(|j| words[j].as_str()), i.checked_sub(2).map(|j| words[j].as_str())) {
+                            (Some("on"), _) => Some(i - 1),
+                            (Some("live"), Some("on")) => Some(i - 2),
+                            _ => None,
+                        };
+                        on.is_some_and(|on| words[on.saturating_sub(3)..on].iter().any(|word| is_reset_verb(word)))
+                    })
+        })
+    };
+    // The matcher itself, on the wordings #7253 found it missing and on ones it must leave alone.
+    for reason in ["a load re-arms the scan", "a load re-observes", "its cadence restarts on load", "reset on live load", "a load starts it"] {
+        assert!(claims_a_load_reset(reason), "{reason:?} promises a load reset");
+    }
+    for reason in ["rebuilt from the load order every boot", "a load discards it", "loaded on demand", "the load order's GMSTs"] {
+        assert!(!claims_a_load_reset(reason), "{reason:?} promises no load reset");
+    }
     let unaccounted: Vec<&str> = NOT_SAVED_BY_DESIGN
         .iter()
         .filter(|(_, reason)| claims_a_load_reset(reason))

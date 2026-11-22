@@ -76,7 +76,7 @@ pub struct WeaponVats {
 }
 
 /// What kind of item this is, with kind-specific stats.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ItemKind {
     /// APPA alchemy equipment. TES4 uses a type byte and floating quality;
     /// TES5 uses a separate integer tier. Missing fields remain absent.
@@ -331,6 +331,22 @@ impl WeaponSoundLevel {
 }
 
 impl ItemKind {
+    /// The kind the item's own record authored: a loose object mod (`Mod`) is a `MISC` the load-order fold promoted
+    /// from `Junk` or `Misc` because an `OMOD` names it (`EsmIndex::classify_fallout_inventory_kinds`), so it demotes
+    /// to the one it was. Every other kind is its own.
+    pub fn authored(&self) -> std::borrow::Cow<'_, Self> {
+        match self {
+            Self::Mod { was_junk: true } => std::borrow::Cow::Owned(Self::Junk),
+            Self::Mod { was_junk: false } => std::borrow::Cow::Owned(Self::Misc),
+            kind => std::borrow::Cow::Borrowed(kind),
+        }
+    }
+
+    /// Whether two kinds are the same as their records authored them (see [`Self::authored`]).
+    pub fn same_authored(a: &Self, b: &Self) -> bool {
+        a.authored() == b.authored()
+    }
+
     /// A weapon with every optional field at its "not authored" value
     /// (`0` / `None`) and a neutral `1.0` critical multiplier, for fixtures
     /// and placeholders that pin only the fields they care about (#6372).

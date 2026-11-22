@@ -1056,6 +1056,23 @@ void main() {
         && !compileDisableReflectionGlass
         && (dbgFlags & DBG_DISABLE_REFLECTION_GLASS_RAYS) == 0u;
 
+    // #7261 — helper invocations (the lanes that fill out a 2×2 quad along a
+    // triangle edge) trace no shadow or GI rays. Their outputs, stores and
+    // atomics are discarded, so a ray they trace only costs time: on small
+    // triangles it was 35–43 % of the TSD patch premium (terrain-displacement
+    // §8.3). It is sound only because no derivative follows the ray branches:
+    // `aaRoughness` (`dFdx(N)`) is hoisted above every one of them (#3983),
+    // the RT reflection below is gated the same way, and the AO fetch is
+    // screen-space. A `dFdx`/`dFdy`/`fwidth`, implicit-LOD `texture()` on a
+    // ray-dependent value, or quad/subgroup op added after the hoist would
+    // read a helper lane's ray-less result — pinned by
+    // `helper_lanes_trace_no_main_rays_and_no_derivative_follows`.
+    // `reflectionGlassRayEnabled` keeps helper lanes: the glass branch rewrites
+    // `N` above the hoist, and `dFdx(N)` must see the same `N` in every lane.
+    bool helperLane = gl_HelperInvocation;
+    directShadowRayEnabled = directShadowRayEnabled && !helperLane;
+    giRayEnabled = giRayEnabled && !helperLane;
+
     // ── RT mipmap LOD — analogous to textureGrad mip selection ──────────
     //
     // World-space size of one screen pixel at this fragment. Larger footprint
@@ -3204,7 +3221,8 @@ void main() {
             if (rtLOD < RT_LOD_REFLECT) atomicAdd(rayBudget.rtReflectionTraced, 1u);
             else atomicAdd(rayBudget.rtReflectionLodCulled, 1u);
         }
-        if (reflectionGlassRayEnabled && rtLOD < RT_LOD_REFLECT) {
+        // #7261 — after the `aaRoughness` hoist, so helper lanes skip it.
+        if (reflectionGlassRayEnabled && !helperLane && rtLOD < RT_LOD_REFLECT) {
             // Deterministic rough reflection: a single SHARP ray, GGX-lobe
             // blur applied as a roughness-scaled mip on the hit sample
             // (`traceReflection`'s mipBias). mip ~ roughness·8 spans the
