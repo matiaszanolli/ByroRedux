@@ -1,6 +1,6 @@
 # Oblivion skill-use leveling — Product Requirements
 
-**Status**: ACTIVE (2026-11-22). Revision 17 folds in review round 3; the history is §12.
+**Status**: SHIPPED (2026-11-22). Revision 18 ships it: every phase exit is met, the metrics are in the ROADMAP Oblivion row, and every tracking issue is closed; the history is §12.
 
 **Tracking**: #7047 (parent). Phases: #7049 (0), #7050 (1), #7051 (2), #7052 (3). Menu request: #7048, built in #7086. Follow-ups, all closed: #7044 (with Phase 3), #7053 (the player cast action, six schools), #7054 (the block guard, Block), #7055 (the bow shot path, Marksman), #7056 (fall damage, Acrobatics' fall).
 
@@ -312,3 +312,4 @@ The verify items Phase 0 closes:
 | 15 | 2026-11-20 | #7048: link the menu contract and acceptance checks in Game UI Integration, and record the scripted and interactive sleep boundaries for the Phase 3 bindings | — |
 | 16 | 2026-11-20 | #7086: an ordinary bed sleep offers the oldest pending level and the interactive menu submits all three picks to the shared rules. Scripted sleep continues to use console picks | — |
 | 17 | 2026-11-22 | Review round 3 folded in: OSL-USE-002, -003, -004 and -006 restated as built (16 of 21 skills fed; Block, Marksman, the six schools and Acrobatics' fall); §3 rewritten at HEAD by symbol, with revision 16's §3 the pre-build record, and the "Today" clauses dropped; §1's HEAD paragraph dated to the draft; Phase 0's V1–V15 answers written into their requirements, with an Answer column and a provenance note in §9; the executable-derived answers labelled declared, and OSL-XP-002's major multiplier re-sourced to UESP *Increasing Skills*; the Related row, §6 rows 1, 2, 4 and 6 and the §11 rows link skill-use.md and GUI-XML-004…007; §8's home corrected; scenario 3 states the commands the smoke script runs; the follow-ups relabelled closed; the status line trimmed | claude: revise |
+| 18 | 2026-11-22 | ACTIVE → SHIPPED. Exits re-measured at `299403322`: the scenario tests pass (core `character::` 244, scripting `oblivion_skill_use` 18, the two real-data tests against `Oblivion.esm`, `rejects_major_version_skew`, and the binary's `skill_use_emit` 19, `oblivion_rest` 2 and `save_io` 120), and so does `oblivion-level-up.sh` (Blade 5 to 7, Sneak 5 to 6). Revision 14's hold is met: the player cast action (#7053) and the menus (#7048, #7086) have landed, and #7054 to #7056 are closed. Metrics re-checked: 16 of 21 skills fed, 18 of 26 UESP actions, 15 of 15 verify items closed (7 declared). #7047 is closed | — |
