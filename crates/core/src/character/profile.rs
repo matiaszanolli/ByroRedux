@@ -945,6 +945,46 @@ mod tests {
     /// perk entry points), pinned per profile. Each row is an exhaustive
     /// struct literal, so a new profile cannot compile without stating every
     /// one; this pin keeps the stated values from drifting.
+    /// #7203 — the player rule rows and the M65 stealth rows, pinned per profile. Each is an exhaustive struct literal,
+    /// so a profile cannot compile without stating them; this pin keeps the stated values from moving (a `block` row
+    /// moved onto the Skyrim profile, say, breaks here and nowhere else).
+    #[test]
+    fn player_and_stealth_rule_rows_are_stated_on_every_profile() {
+        use crate::stealth::{IndicatorModel, StealthKind};
+        let p = CharacterRulesProfile::OBLIVION;
+        assert_eq!(
+            (p.spell_cast(), p.bow(), p.block(), p.fall(), p.armor_rating()),
+            (
+                Some(SpellCastModel::OBLIVION),
+                Some(BowModel::OBLIVION),
+                Some(BlockModel::OBLIVION),
+                Some(FallModel::OBLIVION),
+                Some(ArmorRatingModel::OBLIVION)
+            )
+        );
+        assert_eq!((p.stance(), p.stealth(), p.indicator()), (StanceModel::OBLIVION, StealthKind::Oblivion, IndicatorModel::OBLIVION));
+        let s = CharacterRulesProfile::SKYRIM;
+        assert_eq!((s.spell_cast(), s.bow(), s.block(), s.fall(), s.armor_rating()), (None, Some(BowModel::SKYRIM), None, None, None));
+        assert_eq!((s.stance(), s.stealth(), s.indicator()), (StanceModel::SKYRIM, StealthKind::Skyrim, IndicatorModel::SKYRIM));
+        let rest = [
+            (CharacterRulesProfile::NONE, StanceModel::NONE, StealthKind::SightOnly, IndicatorModel::NONE),
+            (CharacterRulesProfile::FALLOUT3, StanceModel::FALLOUT, StealthKind::Fallout3, IndicatorModel::FALLOUT),
+            (CharacterRulesProfile::FALLOUT_NEW_VEGAS, StanceModel::FALLOUT, StealthKind::FalloutNv, IndicatorModel::FALLOUT),
+            (CharacterRulesProfile::FALLOUT4, StanceModel::FALLOUT4, StealthKind::Fallout4, IndicatorModel::FALLOUT4),
+            (CharacterRulesProfile::FALLOUT76, StanceModel::NONE, StealthKind::SightOnly, IndicatorModel::NONE),
+            (CharacterRulesProfile::STARFIELD, StanceModel::NONE, StealthKind::Starfield, IndicatorModel::STARFIELD),
+        ];
+        for (profile, stance, stealth, indicator) in rest {
+            assert_eq!(
+                (profile.spell_cast(), profile.bow(), profile.block(), profile.fall(), profile.armor_rating()),
+                (None, None, None, None, None),
+                "{}",
+                profile.name()
+            );
+            assert_eq!((profile.stance(), profile.stealth(), profile.indicator()), (stance, stealth, indicator), "{}", profile.name());
+        }
+    }
+
     #[test]
     fn per_game_rule_rows_are_stated_on_every_profile() {
         use OverEncumberedRule as E;

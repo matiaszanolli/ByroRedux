@@ -2815,6 +2815,49 @@ mod tests {
         assert_eq!(state.kills, 0);
     }
 
+    /// #7203 — the five player rule-row installers (spell cast, bow, armor rating, fall, block) follow the profile's
+    /// row, not the game: an Oblivion profile under a Skyrim index installs Oblivion's rows, a Skyrim profile under an
+    /// Oblivion index installs Skyrim's bow and clears the four rows Skyrim does not have, and a Fallout profile under
+    /// an Oblivion index clears every one a previous load left behind.
+    #[test]
+    fn the_player_rule_row_installers_follow_the_profile_not_the_game() {
+        use byroredux_core::character::{
+            ArmorRatingModel, BlockModel, BowModel, CharacterRulesProfile, FallModel, SpellCastModel,
+        };
+        use byroredux_plugin::esm::reader::GameKind;
+        use byroredux_plugin::esm::records::EsmIndex;
+        let install_all = |world: &mut World, game: GameKind, profile: CharacterRulesProfile| {
+            let index = EsmIndex { game, character_rules: profile, ..Default::default() };
+            crate::player_cast::install_spell_cast_model(world, &index);
+            crate::bow::install_bow_model(world, &index);
+            install_armor_rating_model(world, &index);
+            install_fall_model(world, &index);
+            install_block_model(world, &index);
+        };
+        let mut world = World::new();
+        install_all(&mut world, GameKind::Skyrim, CharacterRulesProfile::OBLIVION);
+        assert_eq!(*world.resource::<SpellCastModel>(), SpellCastModel::OBLIVION);
+        assert_eq!(*world.resource::<BowModel>(), BowModel::OBLIVION);
+        assert_eq!(*world.resource::<ArmorRatingModel>(), ArmorRatingModel::OBLIVION);
+        assert_eq!(*world.resource::<FallModel>(), FallModel::OBLIVION);
+        assert_eq!(*world.resource::<BlockModel>(), BlockModel::OBLIVION);
+
+        install_all(&mut world, GameKind::Oblivion, CharacterRulesProfile::SKYRIM);
+        assert_eq!(*world.resource::<BowModel>(), BowModel::SKYRIM, "Skyrim's bow, under an Oblivion index");
+        assert!(world.try_resource::<SpellCastModel>().is_none());
+        assert!(world.try_resource::<ArmorRatingModel>().is_none());
+        assert!(world.try_resource::<FallModel>().is_none());
+        assert!(world.try_resource::<BlockModel>().is_none());
+
+        install_all(&mut world, GameKind::Skyrim, CharacterRulesProfile::OBLIVION);
+        install_all(&mut world, GameKind::Oblivion, CharacterRulesProfile::FALLOUT_NEW_VEGAS);
+        assert!(world.try_resource::<SpellCastModel>().is_none());
+        assert!(world.try_resource::<BowModel>().is_none());
+        assert!(world.try_resource::<ArmorRatingModel>().is_none());
+        assert!(world.try_resource::<FallModel>().is_none());
+        assert!(world.try_resource::<BlockModel>().is_none());
+    }
+
     /// #6760 -- `install_experience_rules` follows the profile's kill-experience
     /// row, not the game: FO3/FNV profiles install the bands (here under a Skyrim
     /// game), and a profile without kill experience removes a prior install (here
