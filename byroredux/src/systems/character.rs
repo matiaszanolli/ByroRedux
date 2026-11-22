@@ -1018,6 +1018,12 @@ pub(crate) fn place_character_body(
         && let Some(c) = cq.get_mut(body) {
             c.clear_momentum();
         }
+    // #7227 — a placement ends any fall in flight, as it ends the momentum: the fall clock forgets a fall only on a
+    // one-frame move past `TELEPORT_DISTANCE`, so a quick-load or door arrival closer than that kept the pre-placement
+    // seconds and charged them on the first landing.
+    if let Some(mut tracker) = world.try_resource_mut::<byroredux_core::character::FallTracker>() {
+        *tracker = byroredux_core::character::FallTracker::default();
+    }
     Some(byroredux_physics::set_kinematic_translation(world, body, pos))
 }
 
@@ -1917,6 +1923,28 @@ mod tests {
         place_character_body(&world, body, pos, Some(Quat::IDENTITY));
         assert_eq!(world.get::<Transform>(body).unwrap().rotation, Quat::IDENTITY);
         assert_eq!(world.get::<GlobalTransform>(body).unwrap().rotation, Quat::IDENTITY);
+    }
+
+    /// #7227 — a placement within `TELEPORT_DISTANCE` of a fall in flight (a quick-load or door arrival a few metres from
+    /// where the player was falling) ends that fall: the first landing after it costs nothing.
+    #[test]
+    fn place_character_body_ends_a_fall_in_flight() {
+        use byroredux_core::character::FallTracker;
+        let mut world = World::new();
+        let body = world.spawn();
+        world.insert(body, Transform::from_translation(Vec3::ZERO));
+        world.insert_resource(FallTracker::default());
+        {
+            let mut tracker = world.resource_mut::<FallTracker>();
+            assert_eq!(tracker.step([0.0, 100.0, 0.0], true, false, 0.1), None, "standing on the ledge");
+            for frame in 1..=5 {
+                assert_eq!(tracker.step([0.0, 100.0 - frame as f32 * 10.0, 0.0], false, false, 0.1), None);
+            }
+        }
+        let landing = Vec3::new(0.0, 60.0, 50.0);
+        place_character_body(&world, body, landing, None);
+        let landed = world.resource_mut::<FallTracker>().step([landing.x, landing.y, landing.z], true, false, 0.1);
+        assert_eq!(landed, None, "the half second of pre-placement falling is not charged");
     }
 
     #[test]

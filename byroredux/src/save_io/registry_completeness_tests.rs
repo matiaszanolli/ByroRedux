@@ -460,7 +460,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("BlockModel", "the Oblivion block rules, re-derived at load from the profile's block row by install_block_model"),
         ("ArmorRatingModel", "the Oblivion armor-rating and weapon-resistance rules, re-derived at load from the profile's armor_rating row and fMaxArmorRating by install_armor_rating_model"),
         ("FallModel", "the Oblivion fall-damage rules, re-derived at load from the profile's fall row and the load order's fJumpFall* GMSTs by install_fall_model"),
-        ("FallTracker", "the player's fall clock (the time spent below the takeoff height); a load starts with the body unplaced and no fall in flight"),
+        ("FallTracker", "the player's fall clock (the time spent below the takeoff height); `place_character_body`, which the load's pose restore and every teleport go through, resets it, so a load ends any fall in flight (#7227)"),
         ("CastState", "session state of the cast (the casting interval's remaining seconds and the last report for cast.status); a load starts with no cast in flight"),
         ("BowState", "session state of the bow (the draw held so far, the interval's remaining seconds, the last report for bow.status); a load starts with no draw in flight"),
         // ── #6350 VATS session state ────────────────────────────────
