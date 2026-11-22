@@ -26,4 +26,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 control="${1:?usage: m-light-portal-sky.sh CONTROL_BINARY [HEAD_BINARY]}"
 head="${2:-${ROOT}/target/release/byroredux}"
 python="${BYROREDUX_MITSUBA_PYTHON:-python3}"
+# A release engine binds the debug port only behind this opt-in (portal_sky.py sets it on the
+# engines it launches as well).
+export BYRO_DEBUG_SERVER=1
 exec "${python}" -I -B "${ROOT}/scripts/m-light/portal_sky.py" --control "${control}" --head "${head}"
