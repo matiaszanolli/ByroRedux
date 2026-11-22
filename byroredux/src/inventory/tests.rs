@@ -859,6 +859,23 @@ fn activated_container(
     container
 }
 
+/// #7231 — take-all over a source with a row zeroed in place (rows keep their position) moves the live rows only: the
+/// emptied form reports no transfer, so no `OnAdd` / `OnDrop` runs for it and no stolen row is noted, and the player
+/// gains no zero-count row for it.
+#[test]
+fn take_all_reports_and_moves_only_the_rows_that_hold_items() {
+    let (mut world, player) = fixture();
+    let container = activated_container(&mut world, player);
+    world.get_mut::<Inventory>(container).unwrap().items = vec![ItemStack::new(0x4444, 0), ItemStack::new(0x5678, 7)];
+    let before = world.get::<Inventory>(player).unwrap().count_of(0x5678);
+    let outcome = transfer_loot(&world, player, container, LootSelection::All).unwrap();
+    assert_eq!(outcome.rows, vec![(0x5678, 7)], "the emptied row reports no transfer");
+    assert_eq!(outcome.item_count, 7);
+    let inventory = world.get::<Inventory>(player).unwrap();
+    assert!(!inventory.items.iter().any(|stack| stack.base_form_id == 0x4444), "no zero-count row reaches the player");
+    assert_eq!(inventory.count_of(0x5678), before + 7);
+}
+
 #[test]
 fn container_loot_preserves_stacks_instances_equipment_and_activation() {
     let (mut world, player) = fixture();
