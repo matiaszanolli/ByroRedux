@@ -1919,3 +1919,10 @@ dugout	18-18,15-15	brighter	0.1940	0.0685	RLT-IBL-001..004, RLT-IBL-010 with RLT
 # bounded-aperture interior, and the spike's A11 against the Phase 4 anchors under this declaration reads 0 tiles
 # outside on Cornell, Prospector, MedTek and Dugout and 1 on Whiterun, a tile that differs between two captures of
 # identical code (14,17 in one run, 37,20 in the next: process-to-process scene variance). No entries are added.
+# RLT-IBL-004 traced lobe visibility (rev 49, owner), checked in before its code: no entries. Sized on an
+# uncommitted spike of exactly this code (on an exterior, the sky probe share occluded by one TLAS ray per pixel
+# drawn from the visible-normal GGX lobe instead of SSAO's Lagarde form), 2026-11-22, against the Phase 4 anchors.
+# The mechanism runs on exteriors only, and every A11 scene is an interior or the Cornell room (the Whiterun
+# scene is the Bannered Mare), so it moves no anchor tile. The two tiles the spike capture puts at the tolerance
+# edge (Dugout 4,18 and Whiterun 37,20) read the same, to four digits, in the rev 48 build's capture: they are
+# not this change. Its content effect is measured by A6's contact-sky rows instead.
