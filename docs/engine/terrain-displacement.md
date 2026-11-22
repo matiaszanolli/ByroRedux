@@ -453,6 +453,29 @@ delta, ms. The `main_render` delta now includes ray queries traversing the patch
   fails the 1.0 ms bar, so 4.3's savings belong in the raster. The `main_render`
   baselines here are higher than §8.2's, so the absolute ms are not comparable across
   runs; only the in-run deltas are.
+- **The raster, broken down at FNV.** Six interleaved states in one run, patches out of
+  the TLAS throughout, 8 rounds × 4 samples. The `main_render` deltas over patches-off
+  are in ms; the sd per state is 0.12–0.44:
+
+  | pose | defaults | amplitude 0 | parallax off | all coarse | all fine |
+  |---|---|---|---|---|---|
+  | down | +0.77 | +0.76 | +0.46 | +0.27 | +0.53 |
+  | eye | +0.92 | +0.86 | +0.72 | +0.55 | +1.20 |
+  | graze | +0.81 | +0.79 | +0.78 | +0.79 | +1.23 |
+
+  - **The relief height is free.** At amplitude 0 the cost stays within 0.06 ms.
+  - **The parallax march on patches costs 0.31 / 0.20 / 0.03 ms**, an upper bound on what
+    4.3's residual march can save.
+  - **Triangle density** is the other near-camera term. All-coarse saves 0.50 / 0.37 ms
+    looking down / at eye level, and nothing at graze, where the two-level pool is
+    already mostly coarse. All-fine adds 0.3–0.4 ms at eye and graze. All-fine coming in
+    *under* the defaults looking down (0.53 against 0.77, sd 0.23) is unexplained.
+  - **A floor of 0.3–0.8 ms remains even all-coarse**, growing toward graze. Relief,
+    parallax and triangle count do not explain it. The patches draw before the base
+    terrain they cover (lower mesh handles, same sort group), so the base is early-Z
+    rejected under them rather than shaded twice. A GPU capture is needed to attribute
+    the floor (small-triangle raster efficiency, the base's rejected coverage) before
+    4.3 commits to a fix for it.
 - **Raster-only is not a fallback.** At Riverwood (eye, on the riverbank) the raster-only
   frame darkens the bank's crease by up to 23 levels of 8-bit luma in a band of rows:
   rays leaving the patch surface hit the base terrain the patch covers. With the patches
