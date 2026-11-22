@@ -5,8 +5,9 @@
 //! Smashed, Synthesis) exist. The `merge` policy, the default by decision Q2, combines them instead, for the records
 //! that carry lists: the levelled lists (`LVLI`, `LVLN`, `LVLC`, `LVSP`), form lists (`FLST`), outfits (`OTFT`),
 //! containers (`CONT`), actors (`NPC_`, `CREA`: inventory, factions, spells, perks, keywords, actor values), races
-//! (`RACE`: spells, keywords, race relations) and carried items (`ALCH`, `AMMO`, `ARMO`, `BOOK`, `MISC`, `WEAP`, ...:
-//! keywords):
+//! (`RACE`: spells, keywords, race relations), carried items (`ALCH`, `AMMO`, `ARMO`, `BOOK`, `MISC`, `WEAP`, ...:
+//! keywords) and the keyword lists of activator, flora, furniture and container bases, which the index keeps apart from
+//! their records (`EsmIndex::placed_object_keywords`) and which merge on their own:
 //!
 //! - **Scope.** Only *independent* overrides merge: a plugin that declares, directly or through its masters, every
 //!   plugin whose changes the record holds so far (a patch) wins it whole, as under `legacy`.
@@ -32,8 +33,10 @@
 //! an added form goes at the end, so the indices of a form list's untouched entries stay put. A form list's null
 //! entries (`0xFFFFFFFF`, a slot the author left empty) hold a place, not a form: they are never an operation and keep
 //! their positions. Per-entry extra data (`COED` owner and condition) is not decoded, so it takes no part in the
-//! comparison. The keyword lists of other records (locations, quests, activators, furniture, magic effects, spells)
-//! still follow `legacy`, as does every record without a list.
+//! comparison. Locations (`LCTN`) and quests (`QUST`) still follow `legacy`: Fallout 4 and Starfield write overrides of
+//! both as *partial forms* (record flag `0x4000`, xEdit "Partial Form"), which carry only the sub-records they change,
+//! and the fold does not overlay a partial form on the record it overrides yet, so an absent sub-record would read as a
+//! removal. Every record without a list follows `legacy` too.
 
 use std::collections::HashMap;
 
@@ -90,6 +93,9 @@ pub enum ListKind {
     Race,
     /// Every carried item type (`ALCH`, `AMMO`, `ARMO`, `BOOK`, `KEYM`, `MISC`, `WEAP`, ...), one map.
     Item,
+    /// The keyword lists of activator, flora, furniture and container bases, kept apart from their records
+    /// (`EsmIndex::placed_object_keywords`).
+    ObjectKeywords,
 }
 
 /// One entry of a list that merges: the form it names, and the rest of it, which the multiset comparison sees.
@@ -319,6 +325,29 @@ list_record!(RaceRecord, lists [spells: "spell", keywords: "keyword", race_react
             default_skin: "skin", subgraph_template: "subgraph template",
             subgraph_additive: "subgraph additive race", subgraph_data: "subgraphs", bleedout: "bleedout"],
     maps [Race => races]);
+
+/// A base object's keyword list kept apart from its record: the list is all there is to merge.
+impl ListRecord for Vec<u32> {
+    const KINDS: &'static [ListKind] = &[ListKind::ObjectKeywords];
+    const LISTS: &'static [List<Self>] = &[List {
+        entry: "keyword",
+        diff: |base, incoming| list_diff(base, incoming),
+        fold: |base, incoming, current| list_fold(base, incoming, current),
+    }];
+    const FIELDS: &'static [Field<Self>] = &[];
+    fn records(kind: ListKind, index: &EsmIndex) -> &HashMap<u32, Self> {
+        match kind {
+            ListKind::ObjectKeywords => &index.placed_object_keywords,
+            _ => unreachable!("{kind:?} is not a keyword list"),
+        }
+    }
+    fn records_mut(kind: ListKind, index: &mut EsmIndex) -> &mut HashMap<u32, Self> {
+        match kind {
+            ListKind::ObjectKeywords => &mut index.placed_object_keywords,
+            _ => unreachable!("{kind:?} is not a keyword list"),
+        }
+    }
+}
 
 // An item's keyword list sits in its shared fields, so it is named by path and the fields are checked here.
 const _: fn(&ItemRecord) = |item| {
@@ -585,6 +614,7 @@ pub struct ListMerge {
     actors: States<NpcRecord>,
     races: States<RaceRecord>,
     items: States<ItemRecord>,
+    object_keywords: States<Vec<u32>>,
 }
 
 /// Fold the records of type `R` that `plugin` overrides into `states`, queueing the merged ones on `pending`.
@@ -665,18 +695,25 @@ impl ListMerge {
         note_records(&mut self.actors, position, plugin, merged, provenance, depends_on, &mut pending);
         note_records(&mut self.races, position, plugin, merged, provenance, depends_on, &mut pending);
         note_records(&mut self.items, position, plugin, merged, provenance, depends_on, &mut pending);
+        note_records(&mut self.object_keywords, position, plugin, merged, provenance, depends_on, &mut pending);
         pending
     }
 
-    /// How `form` was merged, when it is a record that merges and more than one plugin carried it.
-    pub fn record(&self, form: u32) -> Option<&ListMergeRecord> {
-        state_of(&self.leveled, form)
-            .or_else(|| state_of(&self.form_lists, form))
-            .or_else(|| state_of(&self.outfits, form))
-            .or_else(|| state_of(&self.containers, form))
-            .or_else(|| state_of(&self.actors, form))
-            .or_else(|| state_of(&self.races, form))
-            .or_else(|| state_of(&self.items, form))
+    /// How `form` was merged, when it is a record that merges and more than one plugin carried it: one entry, or two
+    /// for a base whose keyword list is kept apart from its record (a container's contents and its keywords).
+    pub fn records(&self, form: u32) -> impl Iterator<Item = &ListMergeRecord> {
+        [
+            state_of(&self.leveled, form),
+            state_of(&self.form_lists, form),
+            state_of(&self.outfits, form),
+            state_of(&self.containers, form),
+            state_of(&self.actors, form),
+            state_of(&self.races, form),
+            state_of(&self.items, form),
+            state_of(&self.object_keywords, form),
+        ]
+        .into_iter()
+        .flatten()
     }
 
     /// The records that hold more than one plugin's changes, in no particular order.
@@ -688,12 +725,18 @@ impl ListMerge {
             .chain(records_in(&self.actors))
             .chain(records_in(&self.races))
             .chain(records_in(&self.items))
+            .chain(records_in(&self.object_keywords))
             .filter(|(_, record)| record.is_merged())
     }
 
-    /// How many records hold more than one plugin's changes, and how many operations were overruled in them.
+    /// How many forms hold more than one plugin's changes, and how many operations were overruled in them.
     pub fn counts(&self) -> (usize, usize) {
-        self.merged().fold((0, 0), |(lists, overruled), (_, record)| (lists + 1, overruled + record.overruled()))
+        let (mut forms, mut overruled) = (std::collections::HashSet::new(), 0);
+        for (form, record) in self.merged() {
+            forms.insert(form);
+            overruled += record.overruled();
+        }
+        (forms.len(), overruled)
     }
 }
 

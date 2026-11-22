@@ -42,9 +42,9 @@ name = "Record overrides of a master's records"
 examples = "patches, overhauls"
 disposition = "D1"
 games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
-reason = "Last-in-order wins at the fold (the legacy policy); under the default merge policy independent overrides of a levelled list, form list, outfit, container, actor, race or carried item combine per list entry form and per field (LMC-REC-003). Deletions are carried."
+reason = "Last-in-order wins at the fold (the legacy policy); under the default merge policy independent overrides of a levelled list, form list, outfit, container, actor, race, carried item or base object's keyword list combine per list entry form and per field (LMC-REC-003). Deletions are carried. Partial forms (record flag 0x4000, Fallout 4 and Starfield) are not overlaid on the record they override yet: they replace it whole."
 citations = ["docs/prd/legacy-mod-compatibility.md §5.2 LMC-REC-001", "docs/prd/legacy-mod-compatibility.md §5.2 LMC-REC-003", "crates/plugin/src/esm/records/list_merge.rs"]
-version = 4
+version = 5
 
 [[mechanism]]
 id = "R3"
@@ -581,9 +581,9 @@ name = "Generated patch plugins: the need for them where record merging covers i
 examples = "Bashed Patch, Smashed Patch, Synthesis output"
 disposition = "D2"
 games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
-reason = "The per-form merge policy covers the case the patch exists for: levelled lists, form lists, outfits, containers, the lists of actors and races, and item keywords today; the keyword lists of other records (locations, quests, activators, furniture, magic effects, spells) are still last-wins."
+reason = "The per-form merge policy covers the case the patch exists for: levelled lists, form lists, outfits, containers, the lists of actors and races, and the keywords of items, activators, flora, furniture and containers today; locations and quests are still last-wins until partial forms are overlaid."
 citations = ["docs/prd/legacy-mod-compatibility.md §5.2 LMC-REC-003", "crates/plugin/src/esm/records/list_merge.rs"]
-version = 4
+version = 5
 
 [[mechanism]]
 id = "T3.plugin"

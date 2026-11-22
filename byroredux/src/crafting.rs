@@ -107,8 +107,9 @@ impl CraftingBook {
             .collect();
         recipes.sort_by_key(|recipe| recipe.form_id);
         let crafted_at: std::collections::HashSet<u32> = recipes.iter().map(|recipe| recipe.bench_keyword).collect();
-        let bench_bases = index
-            .furniture_keywords
+        let bench_keywords: HashMap<u32, Vec<u32>> =
+            index.furniture_keywords().map(|(base, keywords)| (base, keywords.clone())).collect();
+        let bench_bases = bench_keywords
             .iter()
             .filter(|(_, keywords)| keywords.iter().any(|keyword| crafted_at.contains(keyword)))
             .map(|(base, _)| *base)
@@ -121,7 +122,7 @@ impl CraftingBook {
             .collect();
         Self {
             recipes: Arc::new(recipes),
-            bench_keywords: Arc::new(index.furniture_keywords.clone()),
+            bench_keywords: Arc::new(bench_keywords),
             bench_bases: Arc::new(bench_bases),
             forge_keywords: Arc::new(forge_keywords),
             improve_keywords: Arc::new(
@@ -586,8 +587,10 @@ mod tests {
                 ..Default::default()
             },
         );
-        index.furniture_keywords.insert(FORGE, vec![FORGE_KW]);
-        index.furniture_keywords.insert(COOKPOT, vec![COOK_KW]);
+        for (bench, keyword) in [(FORGE, FORGE_KW), (COOKPOT, COOK_KW)] {
+            index.placed_object_keywords.insert(bench, vec![keyword]);
+            index.record_types.insert(bench, *b"FURN");
+        }
         for (form_id, editor_id) in [(FORGE_KW, "CraftingSmithingForge"), (COOK_KW, "CraftingCookpot")] {
             index.keywords.insert(form_id, byroredux_plugin::esm::records::KywdRecord { form_id, editor_id: editor_id.into(), attraction_rule: 0 });
         }
@@ -756,7 +759,8 @@ mod tests {
                 ..Default::default()
             },
         );
-        index.furniture_keywords.insert(WHEEL, vec![WHEEL_KW]);
+        index.placed_object_keywords.insert(WHEEL, vec![WHEEL_KW]);
+        index.record_types.insert(WHEEL, *b"FURN");
         index.keywords.insert(WHEEL_KW, byroredux_plugin::esm::records::KywdRecord { form_id: WHEEL_KW, editor_id: "CraftingSmithingSharpeningWheel".into(), attraction_rule: 0 });
         if enchanted {
             let mut item = byroredux_plugin::esm::records::ItemRecord { form_id: STEEL_SWORD, common: Default::default(), kind: byroredux_plugin::esm::records::ItemKind::weapon_stub(10, 0) };

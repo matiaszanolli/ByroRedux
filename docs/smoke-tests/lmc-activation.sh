@@ -10,11 +10,12 @@
 #   3. the session plugin itself missing a master: DeadMoney.esm alone is refused, naming the --master to pass.
 #   4. the conflict report: `--plugin-report 000000D2 fields` names the Dead Money topic's carriers in load order and the
 #      sub-records Dead Money changed against FalloutNV.esm (LMC-REC-007), after the archives Dead Money pairs with.
-#   5. list merge: the generated ListBase.esm defines a levelled list, a form list and an actor, and MergeA.esp and
-#      MergeB.esp, neither a master of the other, each add an entry to the levelled list, one adds to the form list what
-#      the other removes from it, and one gives the actor an item and a promotion while the other gives it a spell. Under
-#      the default `merge` policy every operation stands and the report names who made each; under
-#      `--merge-policy legacy` MergeB.esp's records win whole (LMC-REC-003).
+#   5. list merge: the generated ListBase.esm defines a levelled list, a form list, an actor and a keyworded activator,
+#      and MergeA.esp and MergeB.esp, neither a master of the other, each add an entry to the levelled list, one adds to
+#      the form list what the other removes from it, one gives the actor an item and a promotion while the other gives
+#      it a spell, and one adds a keyword to the activator while the other drops its every keyword. Under the default
+#      `merge` policy every operation stands and the report names who made each; under `--merge-policy legacy`
+#      MergeB.esp's records win whole (LMC-REC-003).
 # Requires the New Vegas data with the Dead Money and Caravan Pack DLC (BYROREDUX_FNV_DATA), python3 and a built engine
 # (BYRO_BIN, else target/release, else target/debug).
 set -euo pipefail
@@ -41,7 +42,7 @@ command -v python3 >/dev/null || { echo "smoke[$GATE]: SKIP -- missing python3";
 WORK="$(mktemp -d "/tmp/byro-$GATE.XXXXXX")"
 echo "smoke[$GATE]: engine $BIN, logs in $WORK"
 # A plugin is a TES4 record with a New Vegas HEDR and its MAST list (activation reads nothing else), and for leg 5 one
-# LVLI, one FLST and one NPC_ record, each in its group: forms 01000800, 01000801 and 01000802, ListBase.esm's own (its
+# LVLI, one FLST, one NPC_ and one ACTI record, each in its group: forms 01000800 to 01000803, ListBase.esm's own (its
 # one master, FalloutNV.esm, is index 00).
 python3 -I - "$WORK" <<'EOF'
 import os, struct, sys
@@ -60,6 +61,11 @@ def npc(inventory, factions, spells):
     body += b''.join(sub(b'CNTO', struct.pack('<Ii', form, count)) for form, count in inventory)
     body += b''.join(sub(b'SPLO', struct.pack('<I', form)) for form in spells)
     return group(b'NPC_', 0x01000802, body)
+def acti(keywords):
+    body = sub(b'EDID', b'LMCMergeActivator\0') + sub(b'MODL', b'Clutter\\Lantern01.nif\0')
+    if keywords:
+        body += sub(b'KSIZ', struct.pack('<I', len(keywords))) + sub(b'KWDA', b''.join(struct.pack('<I', k) for k in keywords))
+    return group(b'ACTI', 0x01000803, body)
 def group(tag, form, body):
     record = tag + struct.pack('<III', len(body), 0, form) + b'\0' * 8 + body
     return b'GRUP' + struct.pack('<I', 24 + len(record)) + tag + b'\0' * 12 + record
@@ -74,15 +80,17 @@ for name, masters in [('NeedsAbsentDLC.esp', ['FalloutNV.esm', 'LonesomeRoad_abs
     with open(os.path.join(out, name), 'wb') as f:
         f.write(plugin(masters))
 # Entries name FalloutNV.esm forms 00000A01.. (any form will do: the merge compares entries, it does not resolve them).
-# The actor: (inventory, factions, spells).
-lists = {'ListBase.esm': ([(1, 0xA01, 1)], [0xA01, 0xA02], ([(0xA01, 1)], [(0xA05, 0)], []), ['FalloutNV.esm']),
+# The actor: (inventory, factions, spells); then the activator's keywords.
+lists = {'ListBase.esm': ([(1, 0xA01, 1)], [0xA01, 0xA02], ([(0xA01, 1)], [(0xA05, 0)], []), [0xA07],
+                          ['FalloutNV.esm']),
          'MergeA.esp': ([(1, 0xA01, 1), (5, 0xA02, 1)], [0xA01, 0xA02, 0xA04], ([(0xA01, 1), (0xA02, 1)], [(0xA05, 2)], []),
-                        ['FalloutNV.esm', 'ListBase.esm']),
-         'MergeB.esp': ([(1, 0xA01, 1), (8, 0xA03, 2)], [0xA02], ([(0xA01, 1)], [(0xA05, 0)], [0xA06]),
+                        [0xA07, 0xA08], ['FalloutNV.esm', 'ListBase.esm']),
+         'MergeB.esp': ([(1, 0xA01, 1), (8, 0xA03, 2)], [0xA02], ([(0xA01, 1)], [(0xA05, 0)], [0xA06]), [],
                         ['FalloutNV.esm', 'ListBase.esm'])}
-for name, (entries, forms, actor, masters) in lists.items():
+for name, (entries, forms, actor, keywords, masters) in lists.items():
     with open(os.path.join(out, name), 'wb') as f:
-        f.write(plugin(masters, lvli(entries) + flst(forms) + npc(*actor), esm=name.endswith('.esm')))
+        records = lvli(entries) + flst(forms) + npc(*actor) + acti(keywords)
+        f.write(plugin(masters, records, esm=name.endswith('.esm')))
 EOF
 # A paired archive beside a generated plugin (a real one no profile plugin pairs, so it would open), and a name the New
 # Vegas rule rejects. Pairing compares archives by their resolved paths: a link to an archive another plugin brought is
@@ -169,5 +177,13 @@ expect actor "  spell 00000A06: added by mergeb.esp"
 merge_report actor-legacy 01000802 --merge-policy legacy
 expect actor-legacy "winner: mergeb.esp; policy: legacy"
 echo "smoke[$GATE]: PASS -- one mod's item and promotion and another's spell on one actor all stand under merge (LMC-REC-003)"
+merge_report keywords 01000803
+expect keywords "carriers in load order: listbase.esm → mergea.esp → mergeb.esp (merged)"
+expect keywords "keywords merged from: mergea.esp, mergeb.esp; policy: merge"
+expect keywords "  keyword 00000A08: added by mergea.esp"
+expect keywords "  keyword 00000A07: removed by mergeb.esp"
+merge_report keywords-legacy 01000803 --merge-policy legacy
+expect keywords-legacy "winner: mergeb.esp; policy: legacy"
+echo "smoke[$GATE]: PASS -- one mod's keyword on an activator and another's dropping its every keyword both stand under merge (LMC-REC-003)"
 
 echo "smoke[$GATE]: PASS"

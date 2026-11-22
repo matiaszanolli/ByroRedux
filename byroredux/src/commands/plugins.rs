@@ -5,7 +5,7 @@
 
 use super::shared::*;
 use crate::cell_loader::load_order::{ActiveLoadOrder, LoadOrder};
-use byroredux_plugin::esm::records::list_merge::{EntryOp, ListMergeRecord, MergePolicy, Resolution};
+use byroredux_plugin::esm::records::list_merge::{EntryOp, ListKind, ListMergeRecord, MergePolicy, Resolution};
 use byroredux_plugin::esm::records::Carrier;
 
 /// The override rule the fold applies: the only policy built (LMC-REC-002; `merge`, LMC-REC-003, is not).
@@ -142,7 +142,7 @@ fn slot_owner(order: &LoadOrder, form_id: u32) -> Option<usize> {
 /// One carrier chain, `A → B → C (wins)`, a deletion marked; `C (merged)` when the fold merged the form's record
 /// rather than keeping the last one (LMC-REC-003).
 fn chain(order: &LoadOrder, form_id: u32, carriers: &[Carrier]) -> String {
-    let last = if order.list_merge().record(form_id).is_some_and(|record| record.is_merged()) { " (merged)" } else { " (wins)" };
+    let last = if order.list_merge().records(form_id).any(|record| record.is_merged()) { " (merged)" } else { " (wins)" };
     carriers
         .iter()
         .enumerate()
@@ -241,8 +241,9 @@ fn form_lines(order: &LoadOrder, form_id: u32, record_type: Option<[u8; 4]>) -> 
             owner.map_or("an unloaded plugin", |owner| plugin_name(order, owner))
         ));
     }
-    if let Some(record) = order.list_merge().record(form_id).filter(|record| record.is_merged()) {
-        lines.extend(merge_lines(order, record));
+    let merged: Vec<&ListMergeRecord> = order.list_merge().records(form_id).filter(|record| record.is_merged()).collect();
+    if !merged.is_empty() {
+        merged.into_iter().for_each(|record| lines.extend(merge_lines(order, record)));
         return lines;
     }
     let winner = carriers.last().expect("a carrier list is never empty");
@@ -264,7 +265,9 @@ const MERGE_POLICY: &str = "merge: independent overrides of a record with lists 
 /// and those it overruled (LMC-REC-003's explainability).
 fn merge_lines(order: &LoadOrder, record: &ListMergeRecord) -> Vec<String> {
     let names = |plugins: &[u32]| plugins.iter().map(|&plugin| plugin_name(order, plugin as usize)).collect::<Vec<_>>().join(", ");
-    let mut lines = vec![format!("merged from: {}; policy: {MERGE_POLICY}", names(&record.contributors))];
+    // A base's keyword list kept apart from its record merges on its own, beside the record.
+    let what = if record.kind == ListKind::ObjectKeywords { "keywords merged from" } else { "merged from" };
+    let mut lines = vec![format!("{what}: {}; policy: {MERGE_POLICY}", names(&record.contributors))];
     if let Some((winner, over)) = &record.wholesale {
         lines.push(format!("won whole by {}, a dependent override of {}", plugin_name(order, *winner as usize), names(over)));
     }
