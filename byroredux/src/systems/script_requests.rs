@@ -123,6 +123,8 @@ pub(crate) fn use_weapon_system(world: &World, dt: f32) {
             continue;
         }
         let weapon = index.items.get(&run.request.weapon).map(|item| &item.kind);
+        // #7234 — the hit carries the fired weapon's Resist Normal Weapons flag, as a wielded weapon's does.
+        let ignores_resistance = crate::combat::item_ignores_resistance(weapon);
         let fired = match weapon {
             Some(ItemKind::Weapon { ammo_form, .. }) if *ammo_form != 0 => {
                 let launch = |aim_at: u32| {
@@ -132,7 +134,7 @@ pub(crate) fn use_weapon_system(world: &World, dt: f32) {
                 };
                 let land = |target: EntityId, weapon_damage: f32, ammo_damage: f32| {
                     if let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingTrapHits>() {
-                        pending.0.push(byroredux_scripting::TrapHit { target, trap: actor, damage: if run.request.harmless { 0.0 } else { weapon_damage + ammo_damage.max(0.0) }, sneak_attack: false, arrow: false, ignores_resistance: false });
+                        pending.0.push(byroredux_scripting::TrapHit { target, trap: actor, damage: if run.request.harmless { 0.0 } else { weapon_damage + ammo_damage.max(0.0) }, sneak_attack: false, arrow: false, ignores_resistance });
                     }
                 };
                 match target {
@@ -179,7 +181,7 @@ pub(crate) fn use_weapon_system(world: &World, dt: f32) {
                 let near = target.is_none() || options.always_hit || from.distance(to) <= reach;
                 if let (true, Some(target)) = (near, target)
                     && let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingTrapHits>() {
-                        pending.0.push(byroredux_scripting::TrapHit { target, trap: actor, damage: if run.request.harmless { 0.0 } else { *damage as f32 }, sneak_attack: false, arrow: false, ignores_resistance: false });
+                        pending.0.push(byroredux_scripting::TrapHit { target, trap: actor, damage: if run.request.harmless { 0.0 } else { *damage as f32 }, sneak_attack: false, arrow: false, ignores_resistance });
                     }
                 near
             }
@@ -605,6 +607,30 @@ mod tests {
         let cooldown = world.get::<UseWeaponRun>(actor).unwrap().cooldown;
         use_weapon_system(&world, cooldown + 0.01);
         assert!(world.get::<UseWeaponRun>(actor).unwrap().cooldown < 5.0);
+    }
+
+    /// #7234 -- a script's UseWeapon strike carries the fired weapon's Resist Normal Weapons flag, as a wielded weapon's
+    /// hit does; an ordinary weapon's strike does not.
+    #[test]
+    fn a_use_weapon_strike_carries_the_weapons_resistance_flag() {
+        for silver in [false, true] {
+            let near = Vec3::new(10.0, 0.0, 0.0);
+            let (world, _) = volley_world(near, 1, 3, UseWeaponOptions::default());
+            if silver {
+                use byroredux_plugin::esm::records::{common::CommonItemFields, EsmIndex, ItemRecord};
+                let mut kind = ItemKind::weapon_stub(3, 30).with_weapon_speed(1.0);
+                if let ItemKind::Weapon { ignores_normal_resistance, .. } = &mut kind {
+                    *ignores_normal_resistance = true;
+                }
+                let mut index = EsmIndex::default();
+                index.items.insert(0xA1, ItemRecord { form_id: 0xA1, common: CommonItemFields::default(), kind });
+                world.resource_mut::<crate::components::LoadedCellIndex>().0 = std::sync::Arc::new(index);
+            }
+            use_weapon_system(&world, 0.016);
+            let pending = world.resource::<byroredux_scripting::PendingTrapHits>();
+            assert_eq!(pending.0.len(), 1, "the strike lands");
+            assert_eq!(pending.0[0].ignores_resistance, silver);
+        }
     }
 
     /// AIP-UW-004 -- Always Hit lands the shot on a target out of the weapon's reach; without it the shot misses.

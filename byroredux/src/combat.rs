@@ -521,9 +521,13 @@ impl WeaponDefense {
 /// Oblivion's armor rating and Resist Normal Weapons against an actor's weapon hit (UESP *Oblivion:The Complete Damage
 /// Formula*; `ArmorRatingModel`), or `None` where the game has no such rule or the hit is not an actor's (a trap or a script's).
 /// The combined rating is the sum of the pieces the target wears, each worth its `ARMO` rating at the wearer's Light or Heavy
-/// Armor (a piece covering several slots counts once), capped; a Master Sneak attack ignores it. A blow struck with no
-/// weapon and no projectile is outside the resistance when it is a creature's natural attack or a fist at Journeyman Hand
-/// to Hand (#7195, `ArmorRatingModel::unarmed_ignores_resistance`); a negative resistance is a weakness and raises the hit.
+/// Armor (a piece covering several slots counts once), capped; a Master Sneak attack ignores it. A blow from an aggressor
+/// that wields no weapon and is not the player's arrow is outside the resistance when it is a creature's natural attack or
+/// a fist at Journeyman Hand to Hand (#7195, `ArmorRatingModel::unarmed_ignores_resistance`); a negative resistance is a
+/// weakness and raises the hit. The test rests on `EquippedWeapon` and `arrow` alone (#7234): every shot and script strike
+/// lands through the `TrapHit` flush with `projectile: 0`, so the projectile id tells nothing apart. A shooter firing a
+/// weapon it does not wield (a script's `UseWeapon`) would read as unarmed; no Oblivion path produces one (no UseWeapon
+/// procedure, NPC archery or scripted fire), and a producer that adds one must carry the weapon.
 /// Not modelled: armor condition (read as full) and Shield-like boosting effects.
 fn weapon_defense(world: &World, event: &byroredux_scripting::HitEvent, target: EntityId) -> Option<WeaponDefense> {
     use byroredux_core::character::{weapon_resistance_factor, ArmorRatingModel};
@@ -553,7 +557,7 @@ fn weapon_defense(world: &World, event: &byroredux_scripting::HitEvent, target: 
     }
     let master_sneak = event.sneak_attack && model.is_master_sneak(crate::detection::actor_value(world, event.aggressor, "Sneak"));
     let through_armor = model.armor_factor(combined, master_sneak);
-    let unarmed = event.projectile == 0 && !event.arrow && world.get::<EquippedWeapon>(event.aggressor).is_none();
+    let unarmed = !event.arrow && world.get::<EquippedWeapon>(event.aggressor).is_none();
     let ignores_resistance = event.ignores_resistance
         || (unarmed
             && model.unarmed_ignores_resistance(
@@ -584,9 +588,15 @@ pub(crate) fn weapon_ignores_resistance(world: &World, actor: EntityId) -> bool 
     let Some(base) = world.get::<EquippedWeapon>(actor).map(|weapon| weapon.base_form_id) else {
         return false;
     };
-    world.try_resource::<crate::components::LoadedCellIndex>().is_some_and(|index| {
-        matches!(index.0.items.get(&base).map(|item| &item.kind), Some(byroredux_plugin::esm::records::ItemKind::Weapon { ignores_normal_resistance: true, .. }))
-    })
+    world
+        .try_resource::<crate::components::LoadedCellIndex>()
+        .is_some_and(|index| item_ignores_resistance(index.0.items.get(&base).map(|item| &item.kind)))
+}
+
+/// Whether `weapon` (an item record's kind) is a weapon that ignores Resist Normal Weapons; `false` for anything else.
+/// The one reading of the flag for every hit producer: the wielded weapon above, and a script's `UseWeapon` (#7234).
+pub(crate) fn item_ignores_resistance(weapon: Option<&byroredux_plugin::esm::records::ItemKind>) -> bool {
+    matches!(weapon, Some(byroredux_plugin::esm::records::ItemKind::Weapon { ignores_normal_resistance: true, .. }))
 }
 
 /// #7054 — the share of a hit `target`'s guard stops (Oblivion's Block, UESP *Oblivion:Block*), or `None` where it puts
