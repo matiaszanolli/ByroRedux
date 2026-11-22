@@ -43,9 +43,9 @@ writes the missing design.
 | Mechanism | Owning design |
 |---|---|
 | FO3 / FNV detection formula and its sourced coefficients | [CHARAL FNV/FO3 ruleset § Sneak Detection](../engine/charal-fnv-fo3-ruleset.md#sneak-detection-fnv--locked-but-an-aistealth-subsystem-not-a-charal-stat) |
-| Skyrim detection formula | [CHARAL Skyrim ruleset § Sneak Detection](../engine/charal-skyrim-ruleset.md#sneak-detection-skyrim--locked-sounddistance-halves-pending-visualskill-halves--out-of-charal-scope) |
+| Skyrim detection formula | [CHARAL Skyrim ruleset § Sneak Detection](../engine/charal-skyrim-ruleset.md#sneak-detection-skyrim--locked-built-as-stealthkindskyrim-m65-6914--out-of-charal-scope) |
 | Oblivion sneak-attack multiplier inside the damage formula | [CHARAL Oblivion ruleset § The Complete Damage Formula](../engine/charal-oblivion-ruleset.md#the-complete-damage-formula--closes-marksmanhand-to-hand-adds-luck-chained-skill--armor-rating--all-now-built) |
-| Skyrim sneak-attack multipliers by weapon class | [CHARAL Skyrim ruleset § Sneak Detection](../engine/charal-skyrim-ruleset.md#sneak-detection-skyrim--locked-sounddistance-halves-pending-visualskill-halves--out-of-charal-scope) (its sneak-attack paragraph) |
+| Skyrim sneak-attack multipliers by weapon class | [CHARAL Skyrim ruleset § Sneak Detection](../engine/charal-skyrim-ruleset.md#sneak-detection-skyrim--locked-built-as-stealthkindskyrim-m65-6914--out-of-charal-scope) (its sneak-attack paragraph) |
 | Crime witnesses and fines | [CHARAL Oblivion ruleset § Crime fines](../engine/charal-oblivion-ruleset.md#crime-fines--theft-assault-and-murder-built-the-rest-sourced-and-unbuilt) |
 | Fallout 4 detection ("dead end" at HEAD) | [CHARAL FO4 ruleset](../engine/charal-fo4-ruleset.md) |
 | Stance, detection tick, per-pair level and alert state, the actor-to-actor sight test (§10 Q7), the light input, consumer migration, FO3 / FNV sneak-attack damage | [Sneak and Detection design](../engine/sneak-detection.md) (Phase 0, #6909) |
@@ -752,7 +752,7 @@ games are recorded out with the reason.
 |---|---|
 | The FO3 / FNV formula and its sources | [CHARAL FNV/FO3 ruleset § Sneak Detection](../engine/charal-fnv-fo3-ruleset.md#sneak-detection-fnv--locked-but-an-aistealth-subsystem-not-a-charal-stat) |
 | `fVATSStealthMult` and the other VATS settings | [CHARAL FNV/FO3 ruleset § VATS tuning](../engine/charal-fnv-fo3-ruleset.md#vats-tuning-action-points-regen-and-the-radiation-gauge--built-6350) |
-| The Skyrim formula and sneak-attack multipliers | [CHARAL Skyrim ruleset § Sneak Detection](../engine/charal-skyrim-ruleset.md#sneak-detection-skyrim--locked-sounddistance-halves-pending-visualskill-halves--out-of-charal-scope) |
+| The Skyrim formula and sneak-attack multipliers | [CHARAL Skyrim ruleset § Sneak Detection](../engine/charal-skyrim-ruleset.md#sneak-detection-skyrim--locked-built-as-stealthkindskyrim-m65-6914--out-of-charal-scope) |
 | Oblivion damage and crime | [CHARAL Oblivion ruleset](../engine/charal-oblivion-ruleset.md) |
 | Fallout 4 detection, recorded as a dead end | [CHARAL FO4 ruleset](../engine/charal-fo4-ruleset.md) |
 | The activate perks and the sneak entry points | [Perk Entry Points PRD](perk-entry-points.md) |

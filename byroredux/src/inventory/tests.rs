@@ -1,5 +1,6 @@
 use super::*;
 use byroredux_core::ecs::components::{Children, MeshHandle, Parent};
+use byroredux_plugin::esm::reader::GameKind;
 
 /// #4571 — pickup_loot's marker must reach the placement's MESH
 /// entities, not just the root: the root never carries a MeshHandle

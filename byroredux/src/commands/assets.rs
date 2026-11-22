@@ -474,10 +474,8 @@ fn configured_debug_archive(path: &str) -> bool {
     let requested = std::path::Path::new(path).canonicalize().ok();
     let args = crate::cli_args::effective_args();
     args.windows(2).any(|pair| {
-        matches!(
-            pair[0].as_str(),
-            "--bsa" | "--textures-bsa" | "--scripts-bsa" | "--sounds-bsa" | "--materials-bsa"
-        ) && std::path::Path::new(&pair[1]).canonicalize().ok() == requested
+        crate::cli_args::ARCHIVE_FLAGS.contains(&pair[0].as_str())
+            && std::path::Path::new(&pair[1]).canonicalize().ok() == requested
             && requested.is_some()
     })
 }

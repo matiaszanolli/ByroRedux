@@ -139,7 +139,8 @@ impl Resource for LoadedCellIndex {}
 /// resource can hand it straight to `PendingCellTransition`.
 #[derive(Clone, Debug)]
 pub struct LoadedPluginSet {
-    /// Repeatable `--master <path>` args in CLI order.
+    /// The `--master <path>` plugins in load order: the CLI's, as boot activation left them (masters hoisted ahead of
+    /// their dependents, a plugin with a missing master dropped; `plugin_activation`, LMC-ID-003 / -011).
     pub masters: Vec<String>,
     /// The `--esm <path>` value.
     pub esm_path: String,
