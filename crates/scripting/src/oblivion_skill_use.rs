@@ -509,8 +509,8 @@ pub fn queue_skill_use(world: &World, code: u32, usage: u8, mult: f32) -> bool {
 
 /// OSL-API-003: what `levelup` reports for an Oblivion player — the class it read and its
 /// major skills, the level count, each attribute's tally, and per skill the value, the experience
-/// banked and its cost. `None` when the ruleset does not level by skill use. (The pending levels
-/// and the unfed skills arrive with the phases that build them.)
+/// banked and its cost, the pending levels with their offered bonuses and picks, and the skills
+/// no emitter feeds yet. `None` when the ruleset does not level by skill use.
 pub fn skill_use_report(world: &World, player: EntityId) -> Option<Vec<String>> {
     let rules = world.try_resource::<CharacterRuleset>()?.leveling;
     let byroredux_core::character::LevelingModel::SkillUse { major_skill_ups_per_level, .. } = rules else {

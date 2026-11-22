@@ -104,8 +104,9 @@ pub fn is_modeled(world: &World, condition: &Condition) -> bool {
             function.vm_getter_command().is_some_and(|cmd| crate::obscript_cmd::getter_answers_conditions(world, cmd))
         }
         // An authored enum index is readable once it translates to a loaded
-        // AVIF (#5989); one that cannot (Oblivion has no AVIFs, an index the
-        // record set lacks) is declined by the fail-closed gates.
+        // AVIF (#5989; Oblivion's through the engine-supplied roster); one that
+        // cannot (an index the installed records lack) is declined by the
+        // fail-closed gates.
         ConditionFunction::GetActorValue | ConditionFunction::GetPermanentActorValue => {
             crate::actor_value_names::condition_actor_value_form(world, condition.param_1).is_some()
         }

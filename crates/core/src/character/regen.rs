@@ -184,8 +184,8 @@ impl PoolRegenAccumulator {
 /// Magicka, Willpower and Stunted Magicka records through its profile.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PoolRegenConfig {
-    /// #6430 — `None` on every game that resolves no TES pool AVIF (all of
-    /// today's loads): the lane is off, rather than keyed on an id `0` that
+    /// #6430 — `None` on every game that resolves no TES pool AVIF (every game
+    /// but Oblivion): the lane is off, rather than keyed on an id `0` that
     /// an actor holding a stray AV 0 would arm.
     pub fatigue_avif: Option<u32>,
     pub magicka_avif: Option<u32>,

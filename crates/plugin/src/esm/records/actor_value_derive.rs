@@ -162,7 +162,8 @@ fn base_skill(governing: u8, luck: u8) -> f32 {
 /// two-endpoint comparison skipped) — see
 /// [`crate::equip::resolve_inherited_field`].
 ///
-/// Empty for every other game (Oblivion), a Skyrim NPC whose race has no
+/// Oblivion routes to `oblivion_population::derive` through its own stat
+/// models (#7010). Empty for FO76 / Starfield (no stat model), a Skyrim NPC whose race has no
 /// usable pool values, an FO4 NPC with no `PRPS`, or an FNV NPC whose class
 /// wasn't parsed. Individual missing Skyrim AVIFs are skipped independently.
 ///

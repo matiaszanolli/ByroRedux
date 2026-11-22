@@ -268,8 +268,8 @@ pub struct CharacterRulesProfile {
     /// for `body_condition_base`): a future family divergence or new game
     /// is a profile-row edit. The editor ids resolve through
     /// `EsmIndex::actor_value_form_id` — a pool the game does not author
-    /// (or a profile with no resolver yet, Oblivion pre-#3768) drops out
-    /// per candidate rather than erroring.
+    /// drops out per candidate rather than erroring (Oblivion's resolve
+    /// through the engine-supplied roster, #7010).
     vital_pools: &'static [(&'static str, &'static str)],
     /// The radiation gauge as `(HUD label, AVIF editor id)`: an accumulating
     /// value drawn against the master's highest radiation sickness stage

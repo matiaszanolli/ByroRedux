@@ -17,8 +17,8 @@
 //! * **a jump** (`on_jump`) feeds Acrobatics (usage 0): UESP's "each jump or dodge".
 //!
 //! Emitters only queue ([`byroredux_scripting::oblivion_skill_use::queue_skill_use`]); nothing here touches
-//! the player's actor values. A weapon the engine cannot feed (a staff casts, a bow has no shot path here)
-//! feeds nothing, and a blocked hit feeds nothing: no producer models a target's own guard (#4324).
+//! the player's actor values. A staff in hand feeds nothing (it casts); a bow feeds Marksman only through its
+//! arrow's hit (#7055), and a hit the player blocks feeds Block (#7054), both in [`on_landed_hit`].
 
 use byroredux_core::character::{ArmorHitSlot, ARMOR_HIT_ATTEMPTS};
 use byroredux_core::ecs::components::{EquipmentSlots, EquippedWeapon, Inventory};
