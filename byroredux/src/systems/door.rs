@@ -140,6 +140,9 @@ pub(crate) fn door_motion_system(world: &World, dt: f32) {
     // Advance the playing clips and settle the doors whose clip has ended or whose pose is stale.
     let mut settled: Vec<(EntityId, bool, DoorMotion)> = Vec::new();
     let mut stale: Vec<(EntityId, bool, DoorMotion)> = Vec::new();
+    // Doors with no clip left to play that still say they are animating: a door saved, or parked by an unload, mid-swing
+    // restores the saved flag over a fresh `Door` whose clip time is 0 (#7226). `is_animating` holds only while a clip plays.
+    let mut idle: Vec<EntityId> = Vec::new();
     if let Some((states, mut doors)) = world.query_2_mut::<TwoStateActivator, Door>() {
         for (entity, door) in doors.iter_mut() {
             let Some(state) = states.get(entity) else { continue };
@@ -149,7 +152,12 @@ pub(crate) fn door_motion_system(world: &World, dt: f32) {
                     door.remaining = 0.0;
                     settled.push((entity, state.is_open, door.motion));
                 }
-            } else if door.posed != Some(state.is_open) {
+                continue;
+            }
+            if state.is_animating {
+                idle.push(entity);
+            }
+            if door.posed != Some(state.is_open) {
                 door.posed = Some(state.is_open);
                 stale.push((entity, state.is_open, door.motion));
             }
@@ -158,10 +166,15 @@ pub(crate) fn door_motion_system(world: &World, dt: f32) {
     for (entity, open, motion) in settled {
         let handle = clip_for(motion, open);
         set_player(world, entity, handle, clip_duration(world, handle), false);
-        if let Some(mut states) = world.query_mut::<TwoStateActivator>()
-            && let Some(state) = states.get_mut(entity)
-        {
-            state.is_animating = false;
+        idle.push(entity);
+    }
+    if !idle.is_empty()
+        && let Some(mut states) = world.query_mut::<TwoStateActivator>()
+    {
+        for entity in idle {
+            if let Some(state) = states.get_mut(entity) {
+                state.is_animating = false;
+            }
         }
     }
     // A door at rest in a state its pose does not show: its pose is the `Open` clip's last frame when open and its first
@@ -335,6 +348,27 @@ mod tests {
         let (world, door, open, _) = door_world(false);
         tick(&world, 0.016);
         assert_eq!(player_of(&world, door), (open, 0.0, false));
+    }
+
+    /// #7226 — a door saved (or parked by an unload) mid-swing comes back with the saved `is_animating` over a fresh `Door`
+    /// that has no clip time left. The first tick snaps the pose to the saved target and clears the flag, so the door takes
+    /// activations and shows its prompt again instead of staying "opening" or "closing" for good.
+    #[test]
+    fn a_door_restored_mid_swing_settles_and_takes_activations_again() {
+        for is_open in [true, false] {
+            let (mut world, door, open, _) = door_world(is_open);
+            let player = world.spawn();
+            world.query_mut::<TwoStateActivator>().unwrap().get_mut(door).unwrap().is_animating = true;
+            tick(&world, 0.016);
+            assert!(!world.get::<TwoStateActivator>(door).unwrap().is_animating, "the restored flag clears (open: {is_open})");
+            let (handle, time, playing) = player_of(&world, door);
+            assert_eq!((handle, playing), (open, false));
+            assert!((time - if is_open { 1.0 } else { 0.0 }).abs() < 1e-5, "the pose shows the saved state");
+
+            activate(&world, door, player, false);
+            door_activation_verdicts(&world);
+            assert_eq!(is_open_after(&world, door), !is_open, "and the next activation toggles it");
+        }
     }
 
     /// A placed door with `Open` and `Close` sequences, as the cell loader hands it to `attach_door`.

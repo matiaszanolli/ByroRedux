@@ -123,8 +123,8 @@ pub(crate) fn equipped_ammo(world: &World, player: EntityId) -> Option<u32> {
     carried.then_some(form)
 }
 
-/// Write the equipped arrow slot (`None` clears it). The row is written, never removed, so the additive save overlay
-/// carries a clear (BOW-AMM-002).
+/// Write the equipped arrow slot (`None` clears it). The save column is replacing (#7228), so a saved `None` and a saved
+/// absence both clear the live slot on a load (BOW-AMM-002).
 pub(crate) fn set_equipped_ammo(world: &World, player: EntityId, ammo: Option<u32>) {
     if let Some(mut slots) = world.query_mut::<EquippedAmmo>() {
         slots.insert(player, EquippedAmmo(ammo));

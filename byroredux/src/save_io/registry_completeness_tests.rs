@@ -460,7 +460,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("BlockModel", "the Oblivion block rules, re-derived at load from the profile's block row by install_block_model"),
         ("ArmorRatingModel", "the Oblivion armor-rating and weapon-resistance rules, re-derived at load from the profile's armor_rating row and fMaxArmorRating by install_armor_rating_model"),
         ("FallModel", "the Oblivion fall-damage rules, re-derived at load from the profile's fall row and the load order's fJumpFall* GMSTs by install_fall_model"),
-        ("FallTracker", "the player's fall clock (the time spent below the takeoff height); a load starts with the body unplaced and no fall in flight"),
+        ("FallTracker", "the player's fall clock (the time spent below the takeoff height); `place_character_body`, which the load's pose restore and every teleport go through, resets it, so a load ends any fall in flight (#7227)"),
         ("CastState", "session state of the cast (the casting interval's remaining seconds and the last report for cast.status); a load starts with no cast in flight"),
         ("BowState", "session state of the bow (the draw held so far, the interval's remaining seconds, the last report for bow.status); a load starts with no draw in flight"),
         // ── #6350 VATS session state ────────────────────────────────
@@ -1031,7 +1031,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PickedUp", "volatile pickup marker; the durable half is the saved PersistentReferenceStates tombstone row, and reference_state::restore re-stamps the marker at load"),
         ("RegionAmbientRes", "resolved REGN Sound-entry FormIDs for the resident cell/tile (EX-16 item 1 / #2372), rederived identically from the cell's XCLR list + the plugin's parsed REGN map every cell load — same posture as CellLightingRes/NavmeshTile"),
         ("SandboxSitClip", "resolved once at cell load from the archive provider, read-only afterward"),
-        ("Door", "M66 in-cell door runtime: the motion clips, record flags and sounds are re-derived from the model and the DOOR record at every spawn, and the open state it animates is the saved TwoStateActivator; `posed`/`remaining` are presentation bookkeeping that the first tick re-establishes"),
+        ("Door", "M66 in-cell door runtime: the motion clips, record flags and sounds are re-derived from the model and the DOOR record at every spawn, and the open state it animates is the saved TwoStateActivator; `posed`/`remaining` are presentation bookkeeping that the first tick re-establishes; a saved mid-swing `is_animating` restores over `remaining == 0`, so the first tick snaps the pose and clears the flag (#7226)"),
         ("SkyrimWalkClip", "resolved once at cell load from the archive provider, read-only afterward — same posture as SandboxSitClip"),
         ("WalkAnimation", "runtime walk-clip playback state (M42.10): `walk_handle` re-derives from the spawn path lookup, `walking`/`last_pos`/`captured` are per-frame transient — same posture as NavPath"),
         ("WalkStuckTimer", "runtime blocked-leg scratch (M42.10), cleared on package handover and re-accumulated from zero against the same deterministic obstacle — same posture as NavPath"),
@@ -1522,7 +1522,9 @@ fn the_schema_fingerprint_is_pinned() {
     // type), registered right after `EquippedWeapon`.
     // PSC-RDY-004 (#7079) — `ReadiedSpell` joined the registry as a new replacing component column (the player's
     // readied spell), registered after `SpellList`.
-    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x0f2c_8ad0_7aa8_16d1;
+    // #7228 — `EquippedAmmo` became a replacing column (a saved absence clears the live arrow choice); same name and
+    // position, new policy.
+    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x1aa4_507e_f6b0_81c5;
     let actual = build_save_registry().schema_fingerprint();
     assert_eq!(
         actual, BASELINE_SCHEMA_FINGERPRINT,

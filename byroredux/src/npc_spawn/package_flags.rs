@@ -7,6 +7,8 @@
 //!   one carries on while its window is open. The block is [`PackageDayBlocks`].
 //! * **Must Complete** (AIP-FLG-002): the running package keeps winning past its schedule window until its
 //!   procedure reports done — Travel arrived, Find's count met or target dealt with, UseWeapon's bursts fired.
+//!   A procedure with no Done state (Sleep, Eat, Wander, Sandbox, Guard, …) never reports done, so it holds
+//!   until a higher-priority package or `EvaluatePackage` ends it, as the GECK describes (#7224).
 //! * **Continue If PC Near** (AIP-FLG-003): "will not terminate ... so long as the PC is nearby. Primarily used
 //!   to keep shops open" — the running package keeps winning past its window while the player is in the
 //!   actor's cell. The GECK gives no radius for "nearby"; the cell is the PRD's stand-in (Phase 0: verify).
@@ -49,8 +51,14 @@ fn procedure_done(world: &World, actor: EntityId, package: &PackRecord) -> bool 
             world.has::<byroredux_core::ecs::components::UseWeaponPackageStarted>(actor)
                 && !world.has::<crate::systems::script_requests::UseWeaponRun>(actor)
         }
-        // A procedure with no completion signal never reports done, so a Must Complete one stays until
-        // something else ends it (the script-package slot's own rule).
+        // A procedure with no Done state never reports done, so a Must Complete one holds past its window
+        // until something else ends it (a higher-priority package, `EvaluatePackage`, a script package).
+        // That is the GECK's own account, not a stand-in (#7224): *OnPackageDone* says a package completes
+        // when "the duration has expired, unless the Must Reach Location or Must Complete flags are
+        // checked", and that "wanders, sleeps and eats, cannot 'complete', as they have no Done state";
+        // *Guard Package* says one marked Must Complete "can never complete, therefore the package will
+        // never reevaluate". The pages that call the flag "Invalid" (Sandbox, Accompany, Guard) warn
+        // against setting it; they do not say the engine ignores it.
         _ => false,
     }
 }
@@ -200,6 +208,20 @@ mod tests {
         // Without the flag the window ends it.
         let plain = [morning(1, 0), always(2)];
         assert_eq!(winner(&world, actor, 14.0, Some(1), &plain), Some(2));
+    }
+
+    /// #7224 -- a Must Complete package whose procedure has no Done state (a Sleep here) holds past its window
+    /// for good: the GECK's *OnPackageDone* and *Guard Package* pages say the flag stops a package ending on
+    /// its duration and that such a package never reevaluates. It still yields to a higher-priority open one.
+    #[test]
+    fn a_must_complete_package_with_no_done_state_holds_past_its_window() {
+        let (world, actor) = world_at(0, 14.0);
+        let sleep = PackRecord { procedure_type: byroredux_plugin::esm::records::misc::pack::PROCEDURE_SLEEP, ..morning(1, PKDT_MUST_COMPLETE) };
+        let packages = [sleep.clone(), always(2)];
+        assert_eq!(winner(&world, actor, 14.0, Some(1), &packages), Some(1), "past its window, still running");
+        assert_eq!(winner(&world, actor, 14.0, None, &packages), Some(2), "not running: the closed window keeps it out");
+        let preempted = [always(9), sleep];
+        assert_eq!(winner(&world, actor, 14.0, Some(1), &preempted), Some(9), "a higher-priority open package ends it");
     }
 
     /// A kept package still yields to an earlier package whose window is open.

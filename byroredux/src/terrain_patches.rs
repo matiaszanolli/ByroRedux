@@ -8,7 +8,7 @@
 //!
 //! - [`emit_patch_draws`] (inside `build_render_data`, before the sort) clones
 //!   each patch's base cell draw command onto the patch mesh. It keeps the
-//!   base's `in_tlas`: the renderer gives each patch mesh its own refit BLAS
+//!   base's `in_tlas` (unless `terrain.patches rt off`): the renderer gives each patch mesh its own refit BLAS
 //!   and admits the draw to the TLAS once that BLAS matches the frame (#7221);
 //! - [`push_terrain_patches`] (after it, with the renderer) stages the slots
 //!   and the shared parameters for `draw_frame`'s compute pass, and publishes
@@ -132,6 +132,11 @@ pub(crate) struct TerrainPatchState {
     /// Keep the TSD-3 parallax march on patch draws (default on; see
     /// `TerrainPatchParams::parallax`).
     pub(crate) parallax: bool,
+    /// Admit patch draws to the TLAS (default on). `terrain.patches rt off`
+    /// keeps them raster-only — rays then see the base terrain under them — so
+    /// the ray-traversal share of the patch cost can be measured on its own
+    /// (#7221).
+    pub(crate) rt: bool,
     /// The renderer's reserved patch meshes, indexed by slot; copied on the
     /// first frame with a renderer. Empty means no patches.
     pub(crate) meshes: TerrainPatchMeshes,
@@ -150,6 +155,7 @@ impl Default for TerrainPatchState {
             range_m: DEFAULT_RANGE_M,
             fine_range_m: DEFAULT_FINE_RANGE_M,
             parallax: true,
+            rt: true,
             meshes: TerrainPatchMeshes::default(),
             slots: [None; SLOTS],
             camera_pos: [0.0; 3],
@@ -381,6 +387,7 @@ pub(crate) fn emit_patch_draws(
         };
         let mut patch = base.clone();
         patch.mesh_handle = mesh;
+        patch.in_tlas = base.in_tlas && state.rt;
         patch.entity_id = PATCH_ENTITY_ID_BASE - slot as u32;
         let centre = Vec4::new(
             assignment.cell.origin_xz[0] + (assignment.key.col as f32 + 0.5) * PATCH_SIZE,
