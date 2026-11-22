@@ -378,8 +378,64 @@ different, non-buggy Remastered rebalance, not a fix).
 
 Both formulas govern jump physics / fall-damage mitigation, not an
 ActorValue output — same "skill AV in, mechanic-formula out" routing as
-Lockpicking/Sneak Detection in `charal-skyrim-ruleset.md`. Documented for
-completeness, not a CHARAL build target.
+Lockpicking/Sneak Detection in `charal-skyrim-ruleset.md`.
+
+### Fall damage — BUILT (#7056)
+
+Fall damage is now a rule row, `FallModel::OBLIVION` (`crates/core/src/character/fall.rs`, the profile's `fall`
+row), read from the load order by `FallModel::with_gmst`. Its settings and their sources (CS wiki `fJumpFall*`
+setting pages; UESP *Oblivion:Acrobatics*):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `fJumpFallTimeMult` | 80 | damage per second of falling (`Oblivion.esm` authors 80) |
+| `fJumpFallTimeMin` | 0.2 | no damage at all below this many seconds of falling |
+| `fJumpFallTimeBase` | 0 | the floor of the base damage once it applies |
+| `fJumpFallSkillBase` | 1.25 | the skill factor at Acrobatics 0 |
+| `fJumpFallSkillMult` | −0.01 | per point of Acrobatics, over 100: `1.25 − Acrobatics / 10000` |
+
+```text
+base   = max(fJumpFallTimeBase, fall seconds * fJumpFallTimeMult)         (0 below fJumpFallTimeMin)
+damage = base * (fJumpFallSkillBase + Acrobatics * fJumpFallSkillMult / 100)
+```
+
+The skill is not capped at 100, and the result is never negative. **Declared gap:** what counts as falling (the CS
+wiki's *fJumpFallTimeBase* says a vertical threshold must be passed, with no setting named); `FallTracker` counts
+the time spent below the take-off height. The mounted-rider term (`fJumpFallRiderMult`) is out: no mounts.
+
+## Block — BUILT (#7054)
+
+`BlockModel::OBLIVION` (`crates/core/src/character/block.rs`, the profile's `block` row). UESP *Oblivion:Block*,
+"Blocked Melee Damage" and "Notes": a shield blocks 1% of the damage per level of Block, capped at 75%; a blade,
+blunt weapon or bow in hand blocks 0.5% per level; bare hands block 0.25% per level, "but only against unarmed
+opponents. NPC's equipped with weapons will always deal full damage"; "skill levels over 100 will not increase the
+blocked damage any further"; and the reduction is "the same for melee and ranged attacks".
+
+```text
+shield  reduction = min(0.75, 0.01   * min(Block, 100))
+weapon  reduction =           0.005  * min(Block, 100)
+hands   reduction =           0.0025 * min(Block, 100)      (an unarmed attacker only; 0 against a weapon)
+```
+
+The shield is the worn item in biped slot 13 (UESP *Biped Object Flags*, `0x2000` = Shield). **Not modelled:** the
+Novice's Fatigue drain, wear on the weapon or shield, the higher ranks' recoil, knockback, stagger and disarm, and
+whether a block needs the defender to face the attacker (the page does not say).
+
+## Archery (bow) — BUILT (#7055)
+
+`BowModel::OBLIVION` (`crates/core/src/character/bow.rs`, the profile's `bow` row), read from the load order by
+`BowModel::with_gmst`. CS wiki *fArrowSpeedMult*, *fArrowBowTimerBase*, *fArrowBowTimerMult*, *fArrowWeakSpeed*;
+`Oblivion.esm` authors none of the four:
+
+```text
+draw fraction = min(1, fArrowBowTimerBase (0.25) + fArrowBowTimerMult (0.4) * draw seconds)     (full at 1.875 s)
+arrow speed   = ammo speed * fArrowSpeedMult (1500) * (fArrowWeakSpeed (0.01) + 0.99 * draw fraction)
+damage        = (bow + arrow) * weapon rating (Agility, Marksman, Luck) * Fatigue factor
+```
+
+The damage is the weapon-damage rule of *The Complete Damage Formula* below, its settings held by
+`OblivionDamageSettings` (#7199), at full condition (bow wear is BOW-NG-007, an arrow has no health). **Declared
+gap:** Oblivion's arrow range, which no source gives; the host supplies a labelled provisional constant.
 
 ## Melee weapon damage (Blade/Blunt) — BUILT — first real bilinear (attribute × skill) multiplier, shared across weapon-type skills
 

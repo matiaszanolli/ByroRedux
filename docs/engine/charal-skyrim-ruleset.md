@@ -835,6 +835,21 @@ here so the row can be checked against a document.
   `wbDefinitionsTES5.pas`, which the value-math composition and the barter price
   hooks read.
 
+## Archery (bow) — BUILT (#7055)
+
+`BowModel::SKYRIM` (`crates/core/src/character/bow.rs`, the profile's `bow` row), read from the load order by
+`BowModel::with_gmst`. UESP *Skyrim:Archery*:
+
+```text
+draw complete = 0.4 s (nock) + 1.66 s / (weapon speed * (1 + Quick Shot)) + 0.6 s     (2.66 s at speed 1, no perk)
+arrow speed   = the arrow's PROJ speed, at a full draw only
+damage        = (bow + arrow) * (1 + 0.005 * Archery)                                   ("+0.5% per skill point")
+```
+
+The arrow tilts up 2 degrees first-person and 2.5 third-person (`f1PArrowTiltUpAngle`, `f3PArrowTiltUpAngle`) and
+stops doing damage past `fVisibleNavmeshMoveDist` 4096 ("phase through targets"). **Declared gaps:** a partial draw's
+damage and speed (no documented formula, Q4: an early release fires nothing) and the Quick Shot perk (no perk yet, 1).
+
 ## Crime — fines per crime faction (built), guards and jail (not built)
 
 Sources: CK *Crime*, *Faction* (Crime Tab), *Creating a Custom Crime Faction*,
