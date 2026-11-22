@@ -2443,6 +2443,32 @@ mod tests {
         );
     }
 
+    /// #7278 — a body registered by the exclusive
+    /// `register_newcomers_and_refresh_queries` helper (scene setup,
+    /// `combat.approach`) before the scheduled tick is no newcomer to that
+    /// tick, so a tick-local `n_new > 0` never opened the buoyancy scan for
+    /// it. The registration latch does: with the construction-time wake
+    /// already spent and the body asleep, the first tick still sees it wet.
+    #[test]
+    fn a_body_registered_before_the_tick_still_floats_on_its_first_frame() {
+        use byroredux_core::ecs::components::water::WaterContact;
+
+        let (world, _water, body) = submerged_ball_world(-60.0);
+        assert_eq!(crate::register_newcomers_and_refresh_queries(&world), 1);
+        // Spend the construction-time first-frame wake, so only the newcomer
+        // escape can open the quiesced scan.
+        world.resource_mut::<PhysicsWorld>().step(PHYSICS_DT);
+        assert!(!world.resource::<PhysicsWorld>().pending_wake(), "fixture: no wake left");
+
+        crate::physics_sync_system(&world, PHYSICS_DT);
+        assert!(
+            world
+                .get::<WaterContact>(body)
+                .is_some_and(|contact| contact.submerged_fraction > 0.0),
+            "a body the helper registered must be seen submerged on the first tick"
+        );
+    }
+
     /// WATAL §7.3 Phase 2 test gate, end-to-end through the LIVE
     /// `physics_sync_system` buoyancy phase: a dynamic body spawned (asleep,
     /// per the exterior-freeze fix) inside a `WaterVolume` must float up,

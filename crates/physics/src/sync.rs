@@ -137,10 +137,12 @@ pub fn physics_sync_system(world: &World, dt: f32) {
     // never pins the static-scene fast path. No-op when no `WaterPlane`
     // entities exist (the loose-NIF demo / interior-without-water path).
     let s25 = t(profile);
-    // `n_new > 0` lets the buoyancy phase still float a body that streamed in
-    // already submerged (spawned asleep) on its very first frame — the one
-    // case its quiesced-scene fast path must not skip.
-    crate::water::apply_buoyancy(world, n_new > 0);
+    // The newcomer latch lets the buoyancy phase still float a body that
+    // streamed in already submerged (spawned asleep) on its very first frame —
+    // the one case its quiesced-scene fast path must not skip. It is set by
+    // every registration, this tick's and the exclusive helper's (#7278).
+    let had_newcomers = world.resource_mut::<PhysicsWorld>().take_newcomers_since_buoyancy();
+    crate::water::apply_buoyancy(world, had_newcomers);
     let ms25 = ms(s25);
 
     // Phase 3: step.
@@ -1207,6 +1209,7 @@ fn register_newcomers(world: &World, newcomers: Vec<Newcomer>) {
             inserted.push(handle);
         }
         pw.queue_query_refresh(inserted);
+        pw.note_newcomers_registered();
 
         registered.push((
             n.entity,

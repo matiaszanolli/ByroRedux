@@ -354,6 +354,13 @@ pub struct PhysicsWorld {
     /// pipeline run for a fully-asleep scene without missing the first
     /// frame of newly-introduced motion. See the static-scene fast path.
     pending_wake: bool,
+    /// #7278 — newcomers were registered since the buoyancy phase last
+    /// asked. Set by `sync::register_newcomers` on every path, the scheduled
+    /// tick and the exclusive `register_newcomers_and_refresh_queries` helper
+    /// alike, and taken by the tick's buoyancy phase: a body registered by
+    /// the helper before the tick (scene setup, `combat.approach`) still gets
+    /// its first-frame float-up, which a tick-local `n_new > 0` missed.
+    newcomers_since_buoyancy: bool,
     /// #6487 — impulses queued for multibody LINKS, which cannot take
     /// `RigidBody::apply_impulse` (see [`Self::apply_impulse`]). Drained by
     /// [`Self::step`] into a one-substep force.
@@ -537,6 +544,7 @@ impl PhysicsWorld {
             // Step once on the first frame so any bodies present at startup
             // settle / populate the island state.
             pending_wake: true,
+            newcomers_since_buoyancy: false,
             pending_link_impulses: Vec::new(),
             pending_query_leaves: Vec::new(),
             dynamic_bodies: Vec::new(),
@@ -915,7 +923,7 @@ impl PhysicsWorld {
     /// alone, which the fast path below honours without arming a step.
     /// Consumers that need first-frame visibility of a newcomer take it as
     /// an explicit argument instead — see `water.rs`'s
-    /// `apply_buoyancy(world, n_new > 0)` and the `had_newcomers` term in
+    /// `apply_buoyancy(world, had_newcomers)` (the #7278 newcomer latch) and the `had_newcomers` term in
     /// its quiesced-scene fast path, whose own comment records that it is
     /// load-bearing *because* spawn does not arm `pending_wake`.
     ///
@@ -956,6 +964,20 @@ impl PhysicsWorld {
     #[inline]
     pub fn pending_wake(&self) -> bool {
         self.pending_wake
+    }
+
+    /// #7278 — record that newcomers were registered, for the next buoyancy
+    /// phase (see the `newcomers_since_buoyancy` field).
+    #[inline]
+    pub(crate) fn note_newcomers_registered(&mut self) {
+        self.newcomers_since_buoyancy = true;
+    }
+
+    /// #7278 — whether newcomers were registered since the last call, by any
+    /// path; clears the latch. The buoyancy phase's `had_newcomers`.
+    #[inline]
+    pub(crate) fn take_newcomers_since_buoyancy(&mut self) -> bool {
+        std::mem::take(&mut self.newcomers_since_buoyancy)
     }
 
     /// Add a persistent external force (engine world-space, Y-up) to a
