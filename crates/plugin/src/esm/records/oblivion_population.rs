@@ -59,7 +59,7 @@ fn npc_values(
         return;
     };
     // The player's new-game template is the authored Player NPC record.
-    if npc.acbs_flags & (AUTO_CALC | PC_LEVEL_OFFSET) == 0 || resolved.shell.form_id == 7 {
+    if npc.acbs_flags & (AUTO_CALC | PC_LEVEL_OFFSET) == 0 || resolved.shell.form_id == super::actor::player_npc_form_id(index.game) {
         for (i, value) in authored.attributes.iter().enumerate() {
             push(index, out, i as u32, f32::from(*value));
         }

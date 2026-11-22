@@ -70,9 +70,6 @@ pub struct SkillUseClasses {
 
 impl Resource for SkillUseClasses {}
 
-/// The form id of the player's `NPC_` record.
-const PLAYER_NPC: u32 = 0x0000_0007;
-
 /// Build [`SkillUseClasses`] from the load order. Only Oblivion's `CLAS` carries
 /// a specialization and seven major skills; any other game installs an empty
 /// resource, so no class is ever read there.
@@ -91,7 +88,10 @@ pub fn install_skill_use_classes(world: &mut World, index: &EsmIndex) {
                 );
             }
         }
-        out.player_class = index.npcs.get(&PLAYER_NPC).map(|npc| npc.class_form_id);
+        out.player_class = index
+            .npcs
+            .get(&byroredux_plugin::esm::records::actor::player_npc_form_id(index.game))
+            .map(|npc| npc.class_form_id);
     }
     world.insert_resource(out);
 }

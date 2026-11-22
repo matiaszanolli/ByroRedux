@@ -39,7 +39,9 @@ pub(crate) const SOURCES: &str = concat!(
     include_str!("actions.rs"),
 );
 
-const PLAYER_NPC_FORM_ID: u32 = 0x0000_0007;
+// #7211 — the Player base FormID and its per-game table live beside `NpcRecord` in the plugin crate, where the
+// population and scripting crates can read them too.
+pub(crate) use byroredux_plugin::esm::records::actor::{player_npc_form_id, PLAYER_NPC_FORM_ID};
 
 /// Where an equippable item goes when the player toggles it.
 ///
@@ -64,20 +66,6 @@ pub(crate) enum EquipTarget {
     Ammo,
 }
 
-/// Resolve the base `NPC_` record for the player, never the placed player
-/// reference (`0x00000014`). Every currently supported master preserves the
-/// lineage-wide `Player` base at FormID 7; keeping the exhaustive game table
-/// here makes a future variant divergence an explicit compiler-visible edit.
-pub(crate) fn player_npc_form_id(game: GameKind) -> u32 {
-    match game {
-        GameKind::Oblivion
-        | GameKind::Fallout3NV
-        | GameKind::Skyrim
-        | GameKind::Fallout4
-        | GameKind::Fallout76
-        | GameKind::Starfield => PLAYER_NPC_FORM_ID,
-    }
-}
 
 /// One-frame-plus handoff queue for inventory actions arriving off the
 /// main-thread mutation scope (the `inv.equip` debug command). Drained
