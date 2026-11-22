@@ -1432,10 +1432,11 @@ def sky_probe_case(view: int) -> str:
     return "lambertian"
 
 
-def sky_energy_rows(case: str, ea, eb, ra, rb, mask) -> list[Row]:
-    """§2 relative error distribution over the probe, normalised by the
-    region's mean reference value of the same component, and the energy
-    ratio engine ÷ reference (a ratio below 1 is missing sky light)."""
+def sky_energy_rows(case: str, ea, eb, ra, rb, mask, region: str = "sky_probe") -> list[Row]:
+    """§2 relative error distribution over the probe (or `region`),
+    normalised by the region's mean reference value of the same component,
+    and the energy ratio engine ÷ reference (a ratio below 1 is missing sky
+    light)."""
     def rel(e, r):
         norm = region_mean(r, mask)
         err = np.abs(luminance(e)[mask] - luminance(r)[mask]) / norm
@@ -1444,14 +1445,14 @@ def sky_energy_rows(case: str, ea, eb, ra, rb, mask) -> list[Row]:
     rows = []
     value = ratio(ea, ra, mask)
     floor_e, floor_r = abs(ratio(eb, ra, mask) - value), abs(ratio(ea, rb, mask) - value)
-    rows.append(Row("A6", case, "sky_probe", "energy_ratio", value, floor_e, floor_r, passed="report"))
+    rows.append(Row("A6", case, region, "energy_ratio", value, floor_e, floor_r, passed="report"))
     # The gated form (Q6, rev 45): the distance of the ratio from 1.
-    rows.append(Row("A6", case, "sky_probe", "energy_error", abs(value - 1.0), floor_e, floor_r,
+    rows.append(Row("A6", case, region, "energy_error", abs(value - 1.0), floor_e, floor_r,
                     passed="report"))
     (m_a, p_a), (m_b, p_b), (m_r, p_r) = rel(ea, ra), rel(eb, ra), rel(ea, rb)
-    rows.append(Row("A6", case, "sky_probe", "rel_error_mean", m_a, abs(m_b - m_a), abs(m_r - m_a),
+    rows.append(Row("A6", case, region, "rel_error_mean", m_a, abs(m_b - m_a), abs(m_r - m_a),
                     passed="report"))
-    rows.append(Row("A6", case, "sky_probe", "rel_error_p95", p_a, abs(p_b - p_a), abs(p_r - p_a),
+    rows.append(Row("A6", case, region, "rel_error_p95", p_a, abs(p_b - p_a), abs(p_r - p_a),
                     passed="report"))
     return rows
 
@@ -1493,6 +1494,39 @@ def gate_sky_ibl(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
             rows += [(raw, key), (expected, key)]
             ra, rb = ra * diff, rb * diff
         rows += [(row, key) for row in sky_energy_rows(case, ea, eb, ra, rb, mask)]
+    return rows
+
+
+def gate_contact_sky(engine: Engine, store: ReferenceStore, ctx: Context, spp: int):
+    """A6's contact rows (RLT-IBL-004): sky specular in the contact bands of
+    the static casters, on the specular-only conductor floor of the
+    `contact-sky` rung, probe alone, directional dropped. The reference's
+    `direct` integrator is the sky times its visibility from each floor
+    point, so a band's energy ratio below the open floor's is occlusion the
+    engine over-applies, and one above it occlusion it misses. The open-floor
+    region is the control: its ratio is the split sum's own error there."""
+    env = capture_sky_env(engine, ctx)
+    export = engine.out / "scenes" / "contact-sky"
+    native = ["--upscaler", "taa", "--rt-test-no-jitter"]
+    flags = hex(DBG_DISABLE_MULTISCATTER)  # V13, as the A6 probes
+    ea = engine.capture("contact_sky", "contact-sky", "direct_only", 0, ctx.tier, export_dir=export,
+                        extra=native, debug_flags=flags)
+    eb = engine.capture("contact_sky", "contact-sky", "direct_only", 1, ctx.tier, extra=native, debug_flags=flags)
+    shutil.copyfile(env, export / SKY_ENV_FILE)
+    ra, key = store.render(export, "direct", spp, 0)
+    rb, _ = store.render(export, "direct", spp, 1)
+    ea, eb = load_exr(ea), load_exr(eb)
+    rung = read_rung(export)
+    masks, positions = pixel_hits(export)
+    floor = erode(masks["con_floor"], ERODE_PX)
+    regions = {band[0]: band_mask(positions, floor, band) for band in rung.bands}
+    for name, _, lo, hi in rung.regions:
+        regions[name] = floor & np.all((positions >= lo) & (positions <= hi), axis=-1)
+    rows = []
+    for name, mask in regions.items():
+        rows += [(row, key) for row in sky_energy_rows("contact-sky", ea, eb, ra, rb, mask, name)]
+        rows.append((Row("A6", "contact-sky", name, "band_pixels", float(mask.sum()), 0.0, 0.0,
+                         passed="report"), key))
     return rows
 
 
@@ -2067,6 +2101,7 @@ def main() -> int:
         rows += gate_far_sun(engine, ctx)
     if "A6" in gates:
         rows += gate_sky_ibl(engine, store, ctx, args.spp)
+        rows += gate_contact_sky(engine, store, ctx, args.spp)
     if "A17" in gates:
         rows += gate_sun_once(engine, store, ctx, args.spp)
     if gates & {"A3", "A14", "SHD-006"}:

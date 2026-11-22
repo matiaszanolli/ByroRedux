@@ -265,6 +265,15 @@ fn environment_specular_is_the_exact_split_sum_with_probe_occlusion() {
     assert!(!env.contains("(1.0 - roughness)"), "RLT-IBL-003 retired the (1 - roughness) heuristic");
     assert!(env.contains("DBG_DISABLE_MULTISCATTER"), "RLT-REF-008: the bit governs the environment term too");
     assert!(env.contains("exp2(-16.0 * roughness - 1.0)"), "RLT-IBL-004: Lagarde's specular occlusion");
+    // RLT-IBL-004 (rev 49): on an exterior the probe share is occluded by one
+    // traced lobe sample that removes its own direction's sky radiance,
+    // weighted G1(L) / (A + B); a sample below the surface traces nothing.
+    assert!(env.contains("sampleVisibleGgxNormal(N_view, V, roughness, lobeRand)"));
+    assert!(env.contains("if (lobeNdotL > 0.0 && traceShadowBinary("));
+    assert!(env.contains("ggxSmithG1(lobeNdotL, roughness) / max(envAB.x + envAB.y, 1e-3)"));
+    assert!(env.contains(
+        "envColor -= probeShare * lobeWeight * exteriorSkyRadianceOr(lobeL, ambientFallback, 0.0);"
+    ));
     assert!(triangle.contains("bool exteriorSkyProbe = jitter.w > 0.5 && exteriorSkyTint.w > 0.5;"),
         "RLT-IBL-001: exterior dielectrics read the probe");
     assert!(triangle.contains("&& !isEyeEnvmap && !lambertianReferenceEnv;"),

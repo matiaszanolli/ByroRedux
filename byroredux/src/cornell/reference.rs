@@ -121,6 +121,14 @@ pub(crate) enum ReferenceRung {
     /// dielectric (ρ 0.5) and a conductor (ρ 0.95) at each of
     /// [`SKY_PROBE_ROUGHNESS`], under one emitter at the same three views.
     MaterialsSpecular,
+    /// RLT-IBL-004: the contact rung's static casters (block, cube, plank)
+    /// and their bands on a specular-only conductor floor (ρ 0.95,
+    /// roughness 0.74, which the environment term reads from the probe
+    /// alone) under the probe-only sky (RLT-REF-019, RLT-REF-021). The
+    /// reference's `direct` integrator lights the floor with the sky times
+    /// its visibility, so each band's energy against it measures the sky
+    /// specular occlusion; an open-floor region is its control.
+    ContactSky,
 }
 
 /// RLT-REF-021: the L5 sweep's five roughness values (the showcase's
@@ -247,6 +255,7 @@ impl ReferenceRung {
             Self::SkyProbe => "sky-probe",
             Self::SkySunPlane => "sky-sun-plane",
             Self::MaterialsSpecular => "materials-spec",
+            Self::ContactSky => "contact-sky",
         }
     }
 }
@@ -269,6 +278,7 @@ const RUNGS: &[ReferenceRung] = &[
     ReferenceRung::SkyProbe,
     ReferenceRung::SkySunPlane,
     ReferenceRung::MaterialsSpecular,
+    ReferenceRung::ContactSky,
 ];
 
 /// Penumbra rungs: plate half-extent and height above the floor.
@@ -456,33 +466,7 @@ fn setup_contact_rung(
         insert_normal_map(world, floor_entity, normal_map);
     }
 
-    // (name, half extents in metres, centre x/z, yaw, band width in metres)
-    #[allow(clippy::type_complexity)] // the comment above names each element; an alias would only move the naming
-    let casters: [(&str, [f32; 3], [f32; 2], f32, f32); 3] = [
-        // 1.2 m tall: band <= 0.12 m.
-        ("con_block", [0.15, 0.6, 0.15], [-0.55, -0.35], 0.3, 0.06),
-        // 0.3 m cube: band <= 0.03 m.
-        ("con_cube", [0.15, 0.15, 0.15], [0.5, -0.4], -0.4, 0.03),
-        // RLT-CON-006: a 2 cm plank lying flat, a fixed 3 cm band.
-        ("con_plank", [0.3, 0.01, 0.075], [-0.4, 0.45], 0.2, 0.03),
-    ];
-    let mut bands = Vec::new();
-    let mut caster_names = Vec::new();
-    for (name, half, [x, z], yaw, band) in casters {
-        let mesh = builder.box_mesh([half[0] * M, half[1] * M, half[2] * M]);
-        spawn_object(world, mesh, neutral, Vec3::new(x * M, half[1] * M, z * M), Quat::from_rotation_y(yaw),
-            lambert([0.8; 3]), name);
-        bands.push(ContactBand {
-            name: format!("{name}_band"),
-            receiver: "con_floor".into(),
-            centre: Vec3::new(x * M, 0.0, z * M),
-            half_extents: [half[0] * M, half[2] * M],
-            yaw,
-            width: band * M,
-            follow: None,
-        });
-        caster_names.push(name.to_string());
-    }
+    let (mut bands, mut caster_names) = spawn_static_contact_casters(world, builder, neutral);
 
     // RLT-CON-008: an upright 0.6 m panel, 1 cm thick, cut by a cross of
     // slots symmetric in u so its front and back faces (whose u runs
@@ -537,6 +521,75 @@ fn setup_contact_rung(
     // ~2 m from the casters: a 3 cm band is ~13 px at 720p.
     (Vec3::new(0.0, 1.6 * M, 1.2 * M), Vec3::new(0.0, 0.0, 0.05 * M))
 }
+
+/// The contact rung's three static casters resting on `con_floor` (a tall
+/// block, a small cube and RLT-CON-006's plank), each with its contact band;
+/// shared by [`ReferenceRung::Contact`] and [`ReferenceRung::ContactSky`].
+fn spawn_static_contact_casters(
+    world: &mut World,
+    builder: &mut MeshBuilder,
+    neutral: TextureHandle,
+) -> (Vec<ContactBand>, Vec<String>) {
+    // (name, half extents in metres, centre x/z, yaw, band width in metres)
+    #[allow(clippy::type_complexity)] // the comment above names each element; an alias would only move the naming
+    let casters: [(&str, [f32; 3], [f32; 2], f32, f32); 3] = [
+        // 1.2 m tall: band <= 0.12 m.
+        ("con_block", [0.15, 0.6, 0.15], [-0.55, -0.35], 0.3, 0.06),
+        // 0.3 m cube: band <= 0.03 m.
+        ("con_cube", [0.15, 0.15, 0.15], [0.5, -0.4], -0.4, 0.03),
+        // RLT-CON-006: a 2 cm plank lying flat, a fixed 3 cm band.
+        ("con_plank", [0.3, 0.01, 0.075], [-0.4, 0.45], 0.2, 0.03),
+    ];
+    let mut bands = Vec::new();
+    let mut caster_names = Vec::new();
+    for (name, half, [x, z], yaw, band) in casters {
+        let mesh = builder.box_mesh([half[0] * M, half[1] * M, half[2] * M]);
+        spawn_object(world, mesh, neutral, Vec3::new(x * M, half[1] * M, z * M), Quat::from_rotation_y(yaw),
+            lambert([0.8; 3]), name);
+        bands.push(ContactBand {
+            name: format!("{name}_band"),
+            receiver: "con_floor".into(),
+            centre: Vec3::new(x * M, 0.0, z * M),
+            half_extents: [half[0] * M, half[2] * M],
+            yaw,
+            width: band * M,
+            follow: None,
+        });
+        caster_names.push(name.to_string());
+    }
+    (bands, caster_names)
+}
+
+/// RLT-IBL-004's rung ([`ReferenceRung::ContactSky`]): the static contact
+/// casters on a specular-only conductor floor under the probe-only sky, the
+/// same camera as the contact rung.
+fn setup_contact_sky_rung(world: &mut World, builder: &mut MeshBuilder, neutral: TextureHandle) -> (Vec3, Vec3) {
+    insert_reference_sky(world, true, false);
+    let floor = builder.box_mesh([1.5 * M, BOX_WALL_T, 1.5 * M]);
+    spawn_object(world, floor, neutral, Vec3::new(0.0, -BOX_WALL_T, 0.0), Quat::IDENTITY,
+        pbr([0.95; 3], 1.0, CONTACT_SKY_FLOOR_ROUGHNESS), "con_floor");
+    let (bands, casters) = spawn_static_contact_casters(world, builder, neutral);
+    // The control: open floor 0.85 m or more from every caster.
+    let regions = vec![MeasuredRegion {
+        name: "con_open_floor".into(),
+        receiver: "con_floor".into(),
+        min: Vec3::new(0.35 * M, -0.01 * M, 0.3 * M),
+        max: Vec3::new(0.6 * M, 0.01 * M, 0.6 * M),
+    }];
+    world.insert_resource(RungMeasurements {
+        bands,
+        regions,
+        casters,
+        analytic_sky: true,
+        ..Default::default()
+    });
+    (Vec3::new(0.0, 1.6 * M, 1.2 * M), Vec3::new(0.0, 0.0, 0.05 * M))
+}
+
+/// [`ReferenceRung::ContactSky`]'s floor roughness: one of
+/// [`SKY_PROBE_ROUGHNESS`] at or above the traced-reflection cut (0.6), so a
+/// conductor's environment term is the probe's share alone.
+const CONTACT_SKY_FLOOR_ROUGHNESS: f32 = SKY_PROBE_ROUGHNESS[3];
 
 /// The contact rung's skinned proxy bone (RLT-CON-003).
 pub(crate) const PROXY_BONE: &str = "con_proxy_bone";
@@ -919,6 +972,7 @@ pub(crate) fn setup_reference_scene(
         }
         ReferenceRung::Contact => setup_contact_rung(world, &mut builder, neutral, true),
         ReferenceRung::ContactFlat => setup_contact_rung(world, &mut builder, neutral, false),
+        ReferenceRung::ContactSky => setup_contact_sky_rung(world, &mut builder, neutral),
         ReferenceRung::NormalPlane => {
             let floor = builder.box_mesh([2.0 * M, BOX_WALL_T, 2.0 * M]);
             spawn_object(world, floor, neutral, Vec3::new(0.0, -BOX_WALL_T, 0.0), Quat::IDENTITY,

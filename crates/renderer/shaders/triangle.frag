@@ -3259,6 +3259,35 @@ void main() {
             : max(texture(aoTexture, gl_FragCoord.xy / screen.xy).r, 0.20);
         float probeOcclusion = clamp(
             pow(NdotV + envAO, exp2(-16.0 * roughness - 1.0)) - 1.0 + envAO, 0.0, 1.0);
+        // M-LIGHT RLT-IBL-004 (owner, rev 49): on an exterior, the sky probe's
+        // share is occluded by a traced visibility term instead. SSAO's
+        // screen radius (at most 32 px) sees a crease but not a caster that
+        // blocks a large part of the sky, so the contact bands of the
+        // `contact-sky` rung read up to 1.75 of the reference with it. One
+        // ray per pixel and frame, drawn from the visible-normal GGX lobe
+        // around R, tests the TLAS. Under that lobe the BRDF-weighted sky
+        // the probe stands for is E[L G1(L)] / E[G1(L)], with E[G1(L)] the
+        // split sum's A + B (`envAB`, the engine's separable Smith), so a
+        // blocked sample removes its own direction's sky radiance times
+        // G1(L) / (A + B) from the probe share: the sky a caster hides is
+        // the sky in the caster's direction, not the lobe's average. A sample
+        // below the surface, which the BRDF weights zero, removes nothing and
+        // needs no ray. TAA resolves the per-frame estimate. Within the
+        // reflection ray's LOD reach only; past it the SSAO form stands.
+        if (exteriorSkyProbe && probeShare > 0.0 && reflectionGlassRayEnabled
+            && rtLOD < RT_LOD_REFLECT && (dbgFlags & DBG_DISABLE_AO) == 0u) {
+            vec2 lobeRand = ditheredSequence2(uvec2(gl_FragCoord.xy), uint(cameraPos.w), MAX_LIGHTS + 1u);
+            vec3 lobeH = sampleVisibleGgxNormal(N_view, V, roughness, lobeRand);
+            vec3 lobeL = reflect(-V, lobeH);
+            float lobeNdotL = dot(lobeL, N_view);
+            probeOcclusion = 1.0;
+            if (lobeNdotL > 0.0 && traceShadowBinary(
+                    offsetRayOriginForDirection(fragWorldPos, N_bias, lobeL), lobeL,
+                    0.0, 6000.0, VISIBILITY_MASK_ALL_OPAQUE)) {
+                float lobeWeight = ggxSmithG1(lobeNdotL, roughness) / max(envAB.x + envAB.y, 1e-3);
+                envColor -= probeShare * lobeWeight * exteriorSkyRadianceOr(lobeL, ambientFallback, 0.0);
+            }
+        }
         float specularOcclusion = mix(1.0, probeOcclusion, probeShare);
         Lo += envColor * environmentWeight * specularOcclusion
             * environmentReflectionMask * environmentStrength;

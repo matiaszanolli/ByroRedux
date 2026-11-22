@@ -825,8 +825,18 @@ reach.
   is the named technique; a traced visibility term is an acceptable
   alternative the design chooses. Implemented in rev 48 as Lagarde's
   ambient-occlusion form on the probe's share of the environment term (a
-  traced ray already sees its occluder); its contact-band gate needs a
-  contact rung under the exterior sky, which is not built yet.
+  traced ray already sees its occluder). Measured in rev 49 on the new
+  `contact-sky` rung (the contact rung's static casters on a
+  specular-only conductor floor at roughness 0.74 under the probe-only
+  sky): with SSAO as its input the contact bands read 1.42 (block), 1.75
+  (cube) and 1.15 (plank) of the reference against 1.05 on open floor,
+  since SSAO's screen radius cannot see a caster that hides a large part
+  of the sky. Met in rev 49 by the traced alternative (owner, 2026-11-22):
+  on an exterior, one ray per pixel drawn from the visible-normal GGX lobe
+  removes its own direction's sky radiance, weighted G1(L) ⁄ (A + B), from
+  the probe share; the bands read 0.845 / 0.990 / 0.902 and the open floor
+  1.023, within the owner's contact budget of 0.20. The residual is
+  recorded in §6 (row 12).
 - **RLT-IBL-005.** (withdrawn, rev 3) A mean-luminance cap would block the
   correct fix: dielectric sky specular raises mean luminance by design.
   Replaced by RLT-IBL-008 and RLT-IBL-009.
@@ -852,7 +862,11 @@ reach.
   number SKYAL records, and the probe MUST NOT become a once-per-cell
   capture. At HEAD on 2026-11-01 the number is zero: the bake and the
   composite background evaluate the same `sky_radiance` in the same frame
-  (T7).
+  (T7). Pinned in rev 49 by
+  `the_sky_probe_bakes_every_frame_from_that_frames_composite_parameters`
+  (`crates/renderer/src/vulkan/context/build_and_upload_instances.rs`):
+  the bake takes the frame's composite parameters, under no condition but
+  the pipeline's presence, and is recorded before the geometry pass.
 - **RLT-IBL-008.** Before the IBL phase ships RLT-IBL-001, a material dump
   MUST publish, for each Wave 1 benchmark scene and each material class
   (§2), the translated roughness and metalness distributions, and MUST
@@ -1201,6 +1215,7 @@ complete while it is unowned, and no other phase waits for it.
 | 9 | — | Shadow-ray visibility cosine-weighted over the emitter disk on every light (RLT-SHD-012) | — | Small local brightening or darkening in partly occluded pixels on every title (rev 31) → A11 under a change declaration committed before the code (RLT-CNT-002), A13 |
 | 10 | — | On-screen sun shadow beyond the traced fade from a screen-space term (RLT-CON-004, Q4) | — | Off-screen casters cast nothing there, and receivers past `SHADOW_FADE_START` darken where they were unshadowed → the CON-004 gate's off-screen control (A19), A11, A13 |
 | 11 | — | Light-loop specular in the non-/π diffuse convention, π × today's highlights (RLT-IBL-011) | — | Every point- and sun-light highlight on every title brightens about π× → the change declaration (RLT-CNT-002), A11, A13, and RLT-IBL-008's material flags for over-glossy translations |
+| 12 | — | Exterior sky specular occluded by one traced lobe sample per pixel instead of SSAO (RLT-IBL-004, rev 49) | — | Sky reflections darken beside every caster on exterior glossy surfaces, and the probe's split sum assumes N = V = R, so in a contact band the traced sample over-subtracts by up to 15 % where the real lobe stretches toward the casters (owner budget 0.20) → A6's contact rows, the change declaration (RLT-CNT-002), A11, A13. One more ray per exterior probe pixel |
 
 ---
 
@@ -1250,7 +1265,7 @@ scenarios need the user's own installed data; nothing is checked in.
 | A3 | Penumbra under camera motion | gate (direct-light self-consistency) | `scripts/m-light-gates.sh --gates A3` (moving vs parked at the same pose, with age-matched held controls and paired sampling seeds); `--gates SHD-005,SHD-006` publish the reservoir-cap bias and the `final` γ = 1.5 / 1.0 pan beside it | none | RLT-SHD-002; RLT-SHD-005 and RLT-SHD-006 (reports) |
 | A4 | Filter bands and thin rod | gate (visibility error, thin rod pending a budget) | `scripts/m-light-gates.sh --gates A4` | none + reference | RLT-SHD-003, RLT-SHD-004, RLT-SHD-009 |
 | A5 | Contact bands | gate (visibility error) | `scripts/m-light-gates.sh --gates A5` (block, cube, plank, normal-mapped floor, alpha-tested caster, skinned proxy mid-animation in the RLT-REF-017 mode). The flat-floor plank is report-only (`--cornell-reference contact-flat`, RLT-SHD-012). | none + reference | RLT-CON-001…003, RLT-CON-006…008, RLT-SHD-012, RLT-REF-017 |
-| A6 | Sky IBL energy | gate | new test `cornell_sun_ibl_sweep_matches_reference` (probe-only sky rung, L5 sweep, specular-only and Lambertian probes), plus a time-of-day step during the run after which the probe-lit probe and the visible sky agree within the SKYAL frame count | none + reference | RLT-IBL-001…004, RLT-IBL-007, RLT-REF-021 |
+| A6 | Sky IBL energy | gate | `scripts/m-light-gates.sh --gates A6` (probe-only sky rung, L5 sweep, specular-only and Lambertian probes; the `contact-sky` rung's contact bands and open-floor control, RLT-IBL-004, rev 49). The time-of-day step is the renderer test `the_sky_probe_bakes_every_frame_from_that_frames_composite_parameters` (owner, rev 49): the probe re-bakes every frame before the geometry pass from that frame's composite sky, so the lag is zero frames by construction | none + reference | RLT-IBL-001…004, RLT-IBL-007, RLT-REF-021 |
 | A7 | GI deficit | report (gate once Q5's mechanism lands, RLT-GI-003) | `scripts/m-light-gates.sh --gates A7` on the Lambertian `--cornell-reference lambert-box` rung: tiers 0–3 pinned, plus the clamp off (`--rt-test-no-gi-clamp`) and the RT-LOD gate off at tier 3; deficit, mean and 95th-percentile relative error per region with both sides' floors in the RLT-REF-004 manifest. The tier floor of the bounded path is pinned by `bounded_path_preserves_the_accepted_segment_and_diffuse_budgets` (`cargo test -p byroredux-renderer`); the box-rung coverage of RLT-GI-012 is the RCG PRD's RCG-VAL-001 (`--gates RCG-COV`) | none + reference | RLT-GI-001, RLT-GI-002, RLT-GI-003, RLT-GI-006, RLT-GI-010, RLT-GI-011, RLT-GI-012 |
 | A8 | Traced share free of SSAO | gate | `scripts/m-light-gates.sh --gates A8`: the `traced_share` view with and without `DBG_DISABLE_AO` (`0x800`) on the box rung | none | RLT-GI-004, RLT-GI-009 |
 | A9 | Material translation and anchor luminance | report | material-class distribution dump (Phase 1 tool) and `scripts/check-render-anchor.sh` on linear captures, HEAD vs the pre-IBL anchor | FNV, Skyrim SE, FO4 | RLT-IBL-008, RLT-IBL-009 |
