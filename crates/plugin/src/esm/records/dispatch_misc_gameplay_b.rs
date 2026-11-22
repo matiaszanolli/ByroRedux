@@ -72,10 +72,7 @@ pub(super) fn dispatch_misc_gameplay_b_group(
         // both in one walk.
         b"ACTI" => extract_records_with_modl(reader, end, b"ACTI", statics, &mut |fid, subs| {
             index.activators.insert(fid, parse_acti(fid, subs, &remap));
-            let keywords = kwda_keywords(subs, &remap);
-            if !keywords.is_empty() {
-                index.placed_object_keywords.insert(fid, keywords);
-            }
+            index.placed_object_keywords.insert(fid, kwda_keywords(subs, &remap));
         })?,
         b"TERM" => extract_records_with_modl(reader, end, b"TERM", statics, &mut |fid, subs| {
             index.terminals.insert(fid, parse_term(fid, subs, &remap));

@@ -587,12 +587,10 @@ pub struct EsmIndex {
     ///
     /// Read by the crafting book (`CraftingBook::from_index`, `crafting.rs`).
     pub recipes: HashMap<u32, CobjRecord>,
-    /// `FURN` base form → its `KWDA` keywords (Skyrim+; absent for a furniture with none). A crafting
-    /// bench is a furniture carrying the keyword a `COBJ`'s `BNAM` names.
-    pub furniture_keywords: HashMap<u32, Vec<u32>>,
-    /// M43 — the `KWDA` keywords of activator, flora and container bases (and furniture, which also lands in
-    /// [`Self::furniture_keywords`]): what makes a placed object an *attraction object* (Fallout 4,
-    /// [`Self::attraction_rules`]). Only bases that author at least one keyword appear.
+    /// M43 — the `KWDA` keywords of activator, flora, furniture and container bases: what makes a placed object
+    /// an *attraction object* (Fallout 4, [`Self::attraction_rules`]) and a furniture a crafting bench
+    /// ([`Self::furniture_keywords`]). Every such base has an entry, empty when it authors no keyword, so an
+    /// override that drops a base's keywords replaces them in the load-order fold.
     pub placed_object_keywords: HashMap<u32, Vec<u32>>,
     /// M43 — Fallout 4 `AORU` attraction rules: a keyword's `DATA` names one, and an object and an actor
     /// that share that keyword react to each other inside its radius (CK *AttractionRule*).
@@ -880,6 +878,15 @@ impl EsmIndex {
         }
     }
 
+    /// `FURN` base form → its `KWDA` keywords: the furniture entries of [`Self::placed_object_keywords`]. A
+    /// crafting bench is a furniture carrying the keyword a `COBJ`'s `BNAM` names.
+    pub fn furniture_keywords(&self) -> impl Iterator<Item = (u32, &Vec<u32>)> {
+        self.placed_object_keywords
+            .iter()
+            .filter(|(form_id, _)| self.record_types.get(form_id) == Some(b"FURN"))
+            .map(|(form_id, keywords)| (*form_id, keywords))
+    }
+
     /// The base actor record a placed actor REFR points at — `NPC_` first,
     /// then `CREA`.
     ///
@@ -1076,7 +1083,6 @@ impl EsmIndex {
             map_category!("impacts", impacts),
             map_category!("impact_data_sets", impact_data_sets),
             map_category!("recipes", recipes),
-            map_category!("furniture_keywords", furniture_keywords),
             map_category!("placed_object_keywords", placed_object_keywords),
             map_category!("attraction_rules", attraction_rules),
             // #810 / FNV-D2-NEW-03 — long-tail minimal stubs.

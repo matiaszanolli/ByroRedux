@@ -2021,7 +2021,9 @@ fn categories_table_row_count_pinned() {
     // Bumped 115 → 117 in #6725 (volumetric_lighting + god_rays — Skyrim SE VOLI and FO4 GDRY, the authored
     //   god-ray profiles of VLM-HF-010 / -011, decoded for the census and consumed by nothing).
     // Bumped 117 → 118 in M65 (movement_types — Skyrim / FO4 MOVT, whose `SPED` sets the sneak stance's speed).
-    assert_eq!(EsmIndex::categories().len(), 118);
+    // Dropped 118 → 117 in #6670 (furniture_keywords — the furniture entries of placed_object_keywords, read through
+    //   `EsmIndex::furniture_keywords`, so the list merge tracks one copy).
+    assert_eq!(EsmIndex::categories().len(), 117);
 }
 
 /// Regression test for #989 — `.STRINGS` companion file resolves lstring

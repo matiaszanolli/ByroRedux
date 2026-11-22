@@ -31,10 +31,7 @@ pub(super) fn dispatch_world_placement_group(
         b"FLOR" => {
             let remap = reader.get_form_id_remap();
             extract_records_with_modl(reader, end, b"FLOR", statics, &mut |fid, subs| {
-                let keywords = kwda_keywords(subs, &remap);
-                if !keywords.is_empty() {
-                    index.placed_object_keywords.insert(fid, keywords);
-                }
+                index.placed_object_keywords.insert(fid, kwda_keywords(subs, &remap));
             })?
         }
         // FURN — the same placement entry, plus the `KWDA` keywords a crafting bench is recognised
@@ -42,11 +39,7 @@ pub(super) fn dispatch_world_placement_group(
         b"FURN" => {
             let remap = reader.get_form_id_remap();
             extract_records_with_modl(reader, end, b"FURN", statics, &mut |fid, subs| {
-                let keywords = kwda_keywords(subs, &remap);
-                if !keywords.is_empty() {
-                    index.placed_object_keywords.insert(fid, keywords.clone());
-                    index.furniture_keywords.insert(fid, keywords);
-                }
+                index.placed_object_keywords.insert(fid, kwda_keywords(subs, &remap));
             })?
         }
         // TREE — dual-target: typed `EsmIndex.trees` entry AND

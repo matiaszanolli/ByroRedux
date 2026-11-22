@@ -76,7 +76,9 @@ What the engine does today with a legacy plugin set (`--master …` `--esm`), th
    per the PRD's decision Q2) or `legacy`, the fold combines independent overrides of a record with lists (the levelled
    lists `LVLI`, `LVLN`, `LVLC`, `LVSP`, form lists `FLST`, outfits `OTFT`, containers `CONT`; actors `NPC_` and `CREA`:
    inventory, factions, spells, perks, keywords, actor values; races `RACE`: spells, keywords, race relations; carried
-   items `ALCH`, `AMMO`, `ARMO`, `BOOK`, `MISC`, `WEAP` and the rest: keywords) instead of keeping the last record whole
+   items `ALCH`, `AMMO`, `ARMO`, `BOOK`, `MISC`, `WEAP` and the rest: keywords; the keyword lists of `ACTI`, `FLOR`,
+   `FURN` and `CONT` bases, which `EsmIndex::placed_object_keywords` keeps apart from their records and which merge on
+   their own, reported as `keywords merged from: …`) instead of keeping the last record whole
    (`crates/plugin/src/esm/records/list_merge.rs`; each type declares its lists and scalar fields to the
    `list_record!` macro, which destructures the record whole so a new field cannot go unmerged). Two
    overrides are independent when neither plugin declares the other as a master, directly or through its masters; a
@@ -92,11 +94,15 @@ What the engine does today with a legacy plugin set (`--master …` `--esm`), th
    plugin's `merge_from`, and writes the merged records back after it; the fold's log line counts the records merged and
    the operations overruled. `plugins.conflicts <formid>` shows a merged record's contributors and, per list entry form
    (`inventory 00000A02: added by mergea.esp`) and field, who decided it and whom they overruled; its carrier chain ends
-   `(merged)`. The keyword lists of other records (locations, quests, activators, furniture, magic effects, spells)
-   are still last-wins.
+   `(merged)`. Every such base has a keyword-list entry, empty when it authors none, so an override that drops every
+   keyword clears them under either policy. Locations (`LCTN`) and quests (`QUST`) are still last-wins: Fallout 4 and
+   Starfield write overrides of them as partial forms (record flag `0x4000`), which carry only the sub-records they
+   change, and the fold does not overlay a partial form on the record it overrides yet (it replaces it whole, under
+   either policy).
 
 Not built yet in Phase 1: the mod profile beyond argv (discovery, mod roots, LMC-ID-012), the official/user boundary
-(LMC-REC-008), the `merge` policy for the keyword lists of the records item 6 leaves last-wins (LMC-REC-003), the merge-ownership half of
+(LMC-REC-008), partial forms overlaid on the record they override and then the `merge` policy for locations and quests
+(LMC-REC-003), the merge-ownership half of
 LMC-REC-006 (the report half is item 4's verdicts), the virtual legacy index (LMC-ID-005) and the profile fingerprint in
 saves (LMC-ID-007, LMC-SAV-001).
 

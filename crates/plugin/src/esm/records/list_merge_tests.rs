@@ -74,6 +74,7 @@ fn record_type(kind: ListKind) -> &'static [u8; 4] {
         ListKind::Creature => b"CREA",
         ListKind::Race => b"RACE",
         ListKind::Item => b"ARMO",
+        ListKind::ObjectKeywords => b"CONT",
     }
 }
 
@@ -81,9 +82,14 @@ fn forms(list: &LeveledList) -> Vec<(u32, u16, u16)> {
     list.entries.iter().map(|entry| (entry.form_id, entry.level, entry.count)).collect()
 }
 
+/// How `LIST` was merged.
+fn record(merge: &ListMerge) -> &ListMergeRecord {
+    merge.records(LIST).next().expect("LIST merged")
+}
+
 /// The resolution of `form` in the list whose entries are called `list`.
 fn resolution_in<'a>(merge: &'a ListMerge, list: &str, form: u32) -> &'a Resolution<EntryOp> {
-    &merge.record(LIST).unwrap().entries.iter().find(|((l, f), _)| *l == list && *f == form).unwrap().1
+    &record(&merge).entries.iter().find(|((l, f), _)| *l == list && *f == form).unwrap().1
 }
 
 fn resolution(merge: &ListMerge, form: u32) -> &Resolution<EntryOp> {
@@ -103,7 +109,7 @@ fn independent_additions_both_survive() {
     };
     let (merged, merge) = fold(MergePolicy::Merge, plugins());
     assert_eq!(forms(&merged), [(SWORD, 1, 1), (SHIELD, 5, 1), (BOW, 8, 1)]);
-    let record = merge.record(LIST).unwrap();
+    let record = record(&merge);
     assert_eq!(record.contributors, [1, 2], "the first override masters the definer and replaced its record whole");
     assert_eq!(record.wholesale, Some((1, vec![0])));
     assert_eq!(resolution(&merge, SHIELD), &Resolution { winner: 1, op: EntryOp::Add, overruled: vec![] });
@@ -112,7 +118,7 @@ fn independent_additions_both_survive() {
 
     let (legacy, merge) = fold(MergePolicy::Legacy, plugins());
     assert_eq!(forms(&legacy), [(SWORD, 1, 1), (BOW, 8, 1)], "legacy keeps the last record whole");
-    assert!(merge.record(LIST).is_none());
+    assert!(merge.records(LIST).next().is_none());
 }
 
 /// Two plugins re-levelling the same form conflict; the later wins and the form is in the list once.
@@ -144,7 +150,7 @@ fn removals_combine_and_duplicates_are_a_multiset() {
     );
     assert_eq!(forms(&merged), [(SWORD, 1, 1), (SWORD, 1, 1), (BOW, 2, 1)]);
     assert_eq!(resolution(&merge, AXE).op, EntryOp::Remove);
-    assert!(merge.record(LIST).unwrap().entries.iter().all(|((_, form), _)| *form != SWORD), "reordering is no change");
+    assert!(record(&merge).entries.iter().all(|((_, form), _)| *form != SWORD), "reordering is no change");
 }
 
 /// A patch that masters every contributor wins the list whole, as under `legacy`; an ordinary dependent override
@@ -162,7 +168,7 @@ fn a_patch_over_every_contributor_wins_the_list_whole() {
         ],
     );
     assert_eq!(forms(&merged), forms(&patch), "the patch dropped the bow on purpose");
-    let record = merge.record(LIST).unwrap();
+    let record = record(&merge);
     assert_eq!(record.wholesale, Some((3, vec![1, 2])));
     assert!(!record.is_merged());
 
@@ -189,7 +195,7 @@ fn a_partial_patch_diffs_against_the_master_it_overrides() {
     );
     assert_eq!(forms(&merged), [(SWORD, 1, 1), (BOW, 8, 1)]);
     assert_eq!(resolution(&merge, SHIELD), &Resolution { winner: 3, op: EntryOp::Remove, overruled: vec![(1, EntryOp::Add)] });
-    assert_eq!(merge.record(LIST).unwrap().contributors, [1, 2, 3]);
+    assert_eq!(record(&merge).contributors, [1, 2, 3]);
 }
 
 /// A field an override changed against its base is an operation; one it left alone is not, so it does not undo an
@@ -207,7 +213,7 @@ fn fields_merge_by_what_each_override_changed() {
     );
     assert_eq!(merged.chance_none, 50);
     assert_eq!(forms(&merged), [(SWORD, 1, 1), (BOW, 8, 1)]);
-    let fields = &merge.record(LIST).unwrap().fields;
+    let fields = &record(&merge).fields;
     assert_eq!(fields, &[("chance none", Resolution { winner: 1, op: (), overruled: vec![] })]);
 }
 
@@ -243,7 +249,7 @@ fn containers_merge_their_contents_and_fields() {
     let contents: Vec<(u32, i32)> = merged.contents.iter().map(|entry| (entry.item_form_id, entry.count)).collect();
     assert_eq!(contents, [(SWORD, 3), (SHIELD, 1), (BOW, 2)]);
     assert_eq!(merged.full_name, "Strongbox");
-    let record = merge.record(LIST).unwrap();
+    let record = record(&merge);
     assert_eq!(record.kind, ListKind::Container);
     assert_eq!(resolution(&merge, SWORD).op, EntryOp::Change);
     assert_eq!(record.fields, [("name", Resolution { winner: 2, op: (), overruled: vec![] })]);
@@ -267,7 +273,7 @@ fn form_lists_append_and_keep_their_slots() {
         ],
     );
     assert_eq!(merged.entries, [SWORD, NULL, AXE, SHIELD, BOW], "a null slot is never an operation");
-    assert!(merge.record(LIST).unwrap().entries.iter().all(|((_, form), _)| *form != NULL));
+    assert!(record(&merge).entries.iter().all(|((_, form), _)| *form != NULL));
     assert_eq!(merge.counts(), (1, 0));
 }
 
@@ -328,7 +334,7 @@ fn actors_merge_each_list_and_their_fields() {
     assert_eq!(resolution_in(&merge, "inventory", SHIELD).op, EntryOp::Add);
     assert_eq!(resolution_in(&merge, "faction", GUARDS), &Resolution { winner: 1, op: EntryOp::Change, overruled: vec![] });
     assert_eq!(resolution_in(&merge, "spell", FIREBALL).winner, 2);
-    let record = merge.record(LIST).unwrap();
+    let record = record(&merge);
     assert_eq!(record.kind, ListKind::Npc);
     assert_eq!(record.fields, [("level", Resolution { winner: 2, op: (), overruled: vec![] })]);
 
@@ -358,7 +364,7 @@ fn creatures_merge_as_actors() {
         ],
     );
     assert_eq!(merged.spells, [HEAL], "the removal and the addition combine");
-    assert_eq!(merge.record(LIST).unwrap().kind, ListKind::Creature);
+    assert_eq!(record(&merge).kind, ListKind::Creature);
 }
 
 /// A race merges its spells and keywords; a field one mod changed holds against another that left it alone.
@@ -420,12 +426,71 @@ fn items_merge_keywords_and_fields() {
     assert_eq!(merged.common.full_name, "[Junk] Wrench");
     assert_eq!(merged.common.weight, 0.0);
     assert_eq!(merged.common.keywords, [VENDOR_ITEM]);
-    let record = merge.record(LIST).unwrap();
+    let record = record(&merge);
     assert_eq!(record.contributors, [1, 2, 3]);
     let fields: Vec<&str> = record.fields.iter().map(|(name, _)| *name).collect();
     assert_eq!(fields, ["name", "weight"], "a promoted kind is not a change");
     assert!(ItemKind::same_authored(&promoted, &ItemKind::Misc));
     assert!(!ItemKind::same_authored(&ItemKind::Mod { was_junk: true }, &ItemKind::Misc));
+}
+
+const DUNGEON: u32 = 0x0000_0E01;
+const CLEARED: u32 = 0x0000_0E02;
+const MARKED: u32 = 0x0000_0E03;
+/// A base object's keyword list merges on its own; an override that drops every keyword carries an empty list,
+/// which removes them under both policies.
+#[test]
+fn object_keyword_lists_merge_and_an_empty_list_removes() {
+    let (merged, merge) = fold_records(
+        MergePolicy::Merge,
+        ListKind::ObjectKeywords,
+        vec![
+            plugin(&[], Some(vec![DUNGEON, MARKED])),
+            plugin(&[0], Some(vec![])),
+            plugin(&[0], Some(vec![DUNGEON, MARKED, CLEARED])),
+        ],
+    );
+    assert_eq!(merged, [CLEARED], "the first mod's removals and the second's addition combine");
+    assert_eq!(resolution_in(&merge, "keyword", DUNGEON).op, EntryOp::Remove);
+    assert_eq!(record(&merge).kind, ListKind::ObjectKeywords);
+
+    let (legacy, _) = fold_records(
+        MergePolicy::Legacy,
+        ListKind::ObjectKeywords,
+        vec![plugin(&[], Some(vec![DUNGEON])), plugin(&[0], Some(vec![]))],
+    );
+    assert!(legacy.is_empty(), "the override's empty list replaces the master's");
+}
+
+/// A container's keyword list is kept apart from its record, so a container can merge twice; it counts once.
+#[test]
+fn a_container_and_its_keywords_merge_apart_and_count_once() {
+    let mut merge = ListMerge::new(MergePolicy::Merge);
+    let mut closure: Vec<Vec<u32>> = Vec::new();
+    let mut merged = EsmIndex::default();
+    let mut provenance = FoldProvenance::default();
+    let plugins = [
+        (vec![], container("Chest", &[(SWORD, 1)]), vec![DUNGEON]),
+        (vec![0], container("Chest", &[(SWORD, 1), (SHIELD, 1)]), vec![DUNGEON]),
+        (vec![0], container("Chest", &[(SWORD, 1), (BOW, 1)]), vec![DUNGEON, CLEARED]),
+    ];
+    for (position, (masters, contents, keywords)) in plugins.into_iter().enumerate() {
+        closure.push(masters);
+        let mut index = EsmIndex::default();
+        index.record_types.insert(LIST, *b"CONT");
+        index.containers.insert(LIST, contents);
+        index.placed_object_keywords.insert(LIST, keywords);
+        provenance.note_plugin(position, &index, &merged, |id| Some((id >> 24) as usize));
+        let depends_on = |a: u32, b: u32| closure[a as usize].contains(&b);
+        let pending = merge.note_plugin(position, &index, &merged, &provenance, &depends_on);
+        merged.merge_from(index);
+        pending.apply(&mut merged);
+    }
+    let kinds: Vec<ListKind> = merge.records(LIST).map(|record| record.kind).collect();
+    assert_eq!(kinds, [ListKind::Container, ListKind::ObjectKeywords]);
+    assert_eq!(merged.placed_object_keywords[&LIST], [DUNGEON, CLEARED]);
+    assert_eq!(merged.containers[&LIST].contents.len(), 3);
+    assert_eq!(merge.counts(), (1, 0));
 }
 
 #[test]

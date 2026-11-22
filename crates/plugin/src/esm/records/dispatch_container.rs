@@ -28,10 +28,7 @@ pub(super) fn dispatch_container_group(
                 index
                     .containers
                     .insert(fid, parse_cont(fid, subs, &cont_remap));
-                let keywords = kwda_keywords(subs, &cont_remap);
-                if !keywords.is_empty() {
-                    index.placed_object_keywords.insert(fid, keywords);
-                }
+                index.placed_object_keywords.insert(fid, kwda_keywords(subs, &cont_remap));
             })?
         }
         b"LVLI" => {
