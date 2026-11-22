@@ -5,6 +5,7 @@
 
 use super::shared::*;
 use crate::cell_loader::load_order::{ActiveLoadOrder, LoadOrder};
+use byroredux_plugin::esm::records::list_merge::{EntryOp, ListMergeRecord, MergePolicy, Resolution};
 use byroredux_plugin::esm::records::Carrier;
 
 /// The override rule the fold applies: the only policy built (LMC-REC-002; `merge`, LMC-REC-003, is not).
@@ -138,8 +139,10 @@ fn slot_owner(order: &LoadOrder, form_id: u32) -> Option<usize> {
     order.slots().iter().position(|owner| *owner == slot)
 }
 
-/// One carrier chain, `A → B → C (wins)`, a deletion marked.
-fn chain(order: &LoadOrder, carriers: &[Carrier]) -> String {
+/// One carrier chain, `A → B → C (wins)`, a deletion marked; `C (merged)` when the fold merged the form's levelled
+/// list rather than keeping the last record (LMC-REC-003).
+fn chain(order: &LoadOrder, form_id: u32, carriers: &[Carrier]) -> String {
+    let last = if order.list_merge().record(form_id).is_some_and(|record| record.is_merged()) { " (merged)" } else { " (wins)" };
     carriers
         .iter()
         .enumerate()
@@ -149,7 +152,7 @@ fn chain(order: &LoadOrder, carriers: &[Carrier]) -> String {
                 text.push_str(" [deletes]");
             }
             if index + 1 == carriers.len() {
-                text.push_str(" (wins)");
+                text.push_str(last);
             }
             text
         })
@@ -164,7 +167,13 @@ fn summary_lines(order: &LoadOrder, record_type: impl Fn(u32) -> Option<[u8; 4]>
     let (overridden, injected) = provenance.counts();
     let mut lines = vec![
         format!("{overridden} forms carried by more than one plugin; {injected} injected into a master's ID space"),
-        format!("policy: {POLICY}"),
+        match order.list_merge().policy() {
+            MergePolicy::Legacy => format!("policy: {POLICY}"),
+            MergePolicy::Merge => {
+                let (lists, overruled) = order.list_merge().counts();
+                format!("policy: {MERGE_POLICY}; {lists} levelled lists merged, {overruled} operations overruled; every other record: {POLICY}")
+            }
+        },
     ];
     // Per plugin: forms it wins, forms it carried and lost, forms it injected.
     let mut wins = vec![0usize; order.len()];
@@ -197,7 +206,7 @@ fn summary_lines(order: &LoadOrder, record_type: impl Fn(u32) -> Option<[u8; 4]>
         lines.push(format!("first {} of {} (plugins.conflicts <formid> for one):", forms.len().min(LISTED), forms.len()));
     }
     for (form_id, carriers) in forms.into_iter().take(LISTED) {
-        lines.push(format!("  {form_id:08X} {}  {}", type_label(record_type(form_id)), chain(order, carriers)));
+        lines.push(format!("  {form_id:08X} {}  {}", type_label(record_type(form_id)), chain(order, form_id, carriers)));
     }
     lines
 }
@@ -222,7 +231,7 @@ fn form_lines(order: &LoadOrder, form_id: u32, record_type: Option<[u8; 4]>) -> 
         }
         return lines;
     }
-    lines.push(format!("carriers in load order: {}", chain(order, carriers)));
+    lines.push(format!("carriers in load order: {}", chain(order, form_id, carriers)));
     if let Some(first) = carriers.first()
         && owner != Some(first.plugin as usize)
     {
@@ -232,12 +241,56 @@ fn form_lines(order: &LoadOrder, form_id: u32, record_type: Option<[u8; 4]>) -> 
             owner.map_or("an unloaded plugin", |owner| plugin_name(order, owner))
         ));
     }
+    if let Some(record) = order.list_merge().record(form_id).filter(|record| record.is_merged()) {
+        lines.extend(merge_lines(order, record));
+        return lines;
+    }
     let winner = carriers.last().expect("a carrier list is never empty");
     lines.push(format!(
         "winner: {}{}; policy: {POLICY}",
         plugin_name(order, winner.plugin as usize),
         if winner.deletes { ", which deletes it" } else { "" }
     ));
+    lines
+}
+
+/// The policy line for a levelled list the fold merged.
+const MERGE_POLICY: &str = "merge: independent overrides of a levelled list combine per entry form, the later plugin \
+                            winning a form or field both changed; a plugin that masters every contributor wins it whole \
+                            (LMC-REC-003)";
+
+/// How a merged levelled list came together: its contributors, and per form and field the operation that decided it
+/// and those it overruled (LMC-REC-003's explainability).
+fn merge_lines(order: &LoadOrder, record: &ListMergeRecord) -> Vec<String> {
+    let names = |plugins: &[u32]| plugins.iter().map(|&plugin| plugin_name(order, plugin as usize)).collect::<Vec<_>>().join(", ");
+    let mut lines = vec![format!("merged from: {}; policy: {MERGE_POLICY}", names(&record.contributors))];
+    if let Some((winner, over)) = &record.wholesale {
+        lines.push(format!("won whole by {}, a dependent override of {}", plugin_name(order, *winner as usize), names(over)));
+    }
+    let op_text = |op: EntryOp| match op {
+        EntryOp::Add => "added",
+        EntryOp::Change => "changed",
+        EntryOp::Remove => "removed",
+    };
+    let overruled = |overruled: Vec<String>| {
+        if overruled.is_empty() { String::new() } else { format!(", overruling {}", overruled.join(", ")) }
+    };
+    let mut entries: Vec<&(u32, Resolution<EntryOp>)> = record.entries.iter().collect();
+    entries.sort_unstable_by_key(|(form, _)| *form);
+    for (form, resolution) in entries {
+        let lost =
+            resolution.overruled.iter().map(|(plugin, op)| format!("{}'s {}", plugin_name(order, *plugin as usize), op_text(*op))).collect();
+        lines.push(format!(
+            "  entry {form:08X}: {} by {}{}",
+            op_text(resolution.op),
+            plugin_name(order, resolution.winner as usize),
+            overruled(lost)
+        ));
+    }
+    for (field, resolution) in &record.fields {
+        let lost = resolution.overruled.iter().map(|(plugin, ())| plugin_name(order, *plugin as usize).to_owned()).collect();
+        lines.push(format!("  {}: set by {}{}", field.name(), plugin_name(order, resolution.winner as usize), overruled(lost)));
+    }
     lines
 }
 
@@ -377,6 +430,58 @@ mod tests {
         assert_eq!(row("deadmoney.esm"), "0 1 0");
         assert_eq!(row("mymod.esp"), "1 0 1");
         assert!(lines.iter().any(|line| line.contains("00001234 WEAP  falloutnv.esm → deadmoney.esm → mymod.esp (wins)")));
+    }
+
+    /// Real data (ignored: it parses `Fallout4.esm`, and needs two user mods): the Unofficial Fallout 4 Patch and
+    /// MojaveImports, which declare no master relation, both override LVLI `0016FBCB`. MojaveImports was built against
+    /// the vanilla list, so under `legacy` it silently undoes the patch's fix (the removal of `00023736`, the addition
+    /// of `0019C0D9`); under `merge` both plugins' changes stand and the report names who made each (LMC-REC-003).
+    #[test]
+    #[ignore = "parses Fallout4.esm and the UFO4P + MojaveImports mods; run with --ignored"]
+    fn independent_mods_merge_a_levelled_list_that_legacy_overwrites() {
+        use byroredux_plugin::esm::records::list_merge::MergePolicy;
+        let data = byroredux_plugin::esm::test_paths::fo4_data_dir();
+        let find = |name: &str| {
+            std::fs::read_dir(&data).ok()?.flatten().map(|entry| entry.path()).find(|path| {
+                path.file_name().is_some_and(|file| file.to_string_lossy().eq_ignore_ascii_case(name))
+            })
+        };
+        let names = [
+            "Fallout4.esm", "DLCRobot.esm", "DLCworkshop01.esm", "DLCCoast.esm", "DLCworkshop02.esm", "DLCworkshop03.esm",
+            "DLCNukaWorld.esm", "ccbgsfo4044-hellfirepowerarmor.esl", "ccbgsfo4115-x02.esl", "ccbgsfo4116-heavyflamer.esl",
+            "ccbgsfo4110-ws_enclave.esl", "ccbgsfo4096-as_enclave.esl", "ccfsvfo4007-halloween.esl", "ccbgsfo4046-tescan.esl",
+            "ccsbjfo4003-grenade.esl", "ccotmfo4001-remnants.esl", "unofficial fallout 4 patch.esp", "mojaveimports.esp",
+        ];
+        let Some(paths) = names.iter().map(|name| find(name).map(|path| path.to_string_lossy().into_owned())).collect::<Option<Vec<_>>>()
+        else {
+            byroredux_plugin::esm::test_paths::require_or_skip("Fallout 4 data with the UFO4P and MojaveImports mods");
+            return;
+        };
+        let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+        const LIST: u32 = 0x0016_FBCB;
+        let forms = |index: &byroredux_plugin::esm::records::EsmIndex| -> Vec<u32> {
+            index.leveled_items[&LIST].entries.iter().map(|entry| entry.form_id).collect()
+        };
+
+        let (legacy, _) =
+            crate::cell_loader::load_order::parse_record_indexes_in_load_order_with_policy(&refs, MergePolicy::Legacy).expect("parse");
+        let legacy = forms(&legacy);
+        assert!(legacy.contains(&0x0002_3736) && !legacy.contains(&0x0019_C0D9), "legacy: MojaveImports' vanilla-based list wins whole");
+
+        let (index, order) =
+            crate::cell_loader::load_order::parse_record_indexes_in_load_order_with_policy(&refs, MergePolicy::Merge).expect("parse");
+        let merged = forms(&index);
+        assert!(!merged.contains(&0x0002_3736), "the patch's removal stands: {merged:08X?}");
+        assert!(merged.contains(&0x0019_C0D9), "the patch's addition stands: {merged:08X?}");
+        let mojave = order.slots()[names.len() - 1];
+        let mojave_own = merged.iter().filter(|&&form| byroredux_scripting::load_order::global_slot_of(form) == mojave).count();
+        assert!(mojave_own > 0, "MojaveImports' own addition stands: {merged:08X?}");
+
+        let lines = form_lines(&order, LIST, Some(*b"LVLI"));
+        eprintln!("{}", lines.join("\n"));
+        assert!(lines.iter().any(|line| line.starts_with("merged from: unofficial fallout 4 patch.esp, mojaveimports.esp")), "{lines:?}");
+        assert!(lines.iter().any(|line| line == "  entry 00023736: removed by unofficial fallout 4 patch.esp"), "{lines:?}");
+        assert!(lines.iter().any(|line| line.contains("(merged)")), "{lines:?}");
     }
 
     /// Real data (ignored: it parses `FalloutNV.esm`): Dead Money's overrides of the base game list both carriers with Dead
