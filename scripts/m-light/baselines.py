@@ -43,6 +43,12 @@ REPO = Path(__file__).resolve().parents[2]
 GAMES_ROOT = Path(os.environ.get("BYROREDUX_GAMES_ROOT", "/mnt/data/SteamLibrary/steamapps/common"))
 SCENES = ("cornell", "prospector", "whiterun", "medtek", "dugout")
 WAVE1_GAME_SCENES = ("prospector", "whiterun", "medtek", "dugout")
+# M-LIGHT Phase 5's Wave 2 benchmark scenes (RLT-CNT-001, PRD rev 51): Oblivion,
+# Fallout 3 and Starfield, one interior each (scripts/bench-scenes.sh). Not in
+# the default SCENES, so a Phase 1b-style run stays the Wave 1 record; pass them
+# with --scenes.
+WAVE2_SCENES = ("gildedcarafe", "moriarty", "cydonia")
+GAME_SCENES = WAVE1_GAME_SCENES + WAVE2_SCENES
 LUMA = np.array([0.2126, 0.7152, 0.0722])
 TILE = 32  # RLT-CNT-001 tile grid
 # The bench of record's reference (TAA at native resolution) and the shipping
@@ -277,7 +283,7 @@ def materials_only(engine: "Engine", args: argparse.Namespace, out: Path) -> int
     """A9 alone: the dump comes from the same run the full report takes it
     from (TAA, renderer-stepped orbit, the adaptive window)."""
     rows = []
-    for scene in [s.strip() for s in args.scenes.split(",") if s.strip() in WAVE1_GAME_SCENES]:
+    for scene in [s.strip() for s in args.scenes.split(",") if s.strip() in GAME_SCENES]:
         workdir, _, _ = scene_spec(scene)
         if not workdir.is_dir():
             log(f"skip {scene}: {workdir} not present")
@@ -349,7 +355,7 @@ def main() -> int:
         anchor_tier, anchor_fields = None, None
         for config, config_args in CONFIGS:
             extra = config_args + stepped
-            if config == "taa" and scene in WAVE1_GAME_SCENES:
+            if config == "taa" and scene in GAME_SCENES:
                 extra = extra + ["--material-dump", str(dump)]
             adaptive = [a if a != str(args.frames) else str(240 + args.window) for a in extra]
             line, _ = engine.run(scene, f"{config}_adaptive", adaptive)
@@ -387,7 +393,7 @@ def main() -> int:
         for row in pending_rows:
             base_rows.append(row + [pos, fwd, f"{tile_mean:.5f}", f"{tile_p95:.5f}", digest])
         pending_rows.clear()
-        if scene in WAVE1_GAME_SCENES and dump.exists():
+        if scene in GAME_SCENES and dump.exists():
             material_rows += material_report(dump, scene)
 
     revision = subprocess.run(["git", "-C", str(REPO), "rev-parse", "--short=12", "HEAD"],

@@ -42,6 +42,11 @@ scene_entity_floor() {
     # near-empty exterior load pass as a valid bench row, which is exactly
     # what the per-scene floors exist to catch.
     gridcross) echo 0 ;;
+    # M-LIGHT Phase 5 Wave 2 scenes (PRD rev 51, owner 2026-11-22), ~50% of
+    # their first run's counts (2637, 3557, 323038; 2026-11-22).
+    gildedcarafe) echo 1300 ;;
+    moriarty)   echo 1750 ;;
+    cydonia)    echo 160000 ;;
     *)          echo 0 ;;
   esac
 }
@@ -54,6 +59,10 @@ scene_dir() {
     medtek)     echo "$GAMES_ROOT/Fallout 4/Data" ;;
     dugout)     echo "$GAMES_ROOT/Fallout 4/Data" ;;
     gridcross)  echo "$GAMES_ROOT/Fallout New Vegas/Data" ;;
+    # The Wave 2 scenes load through `--game`, whose profile table
+    # (`assets/debug_profiles.toml`) is read from the repo root and expands
+    # to absolute install paths, so they run from there.
+    gildedcarafe|moriarty|cydonia) echo "$REPO" ;;
   esac
 }
 
@@ -121,6 +130,18 @@ run_scene_args() {
             --bsa "Fallout - Meshes.bsa"
             --textures-bsa "Fallout - Textures.bsa"
             --textures-bsa "Fallout - Textures2.bsa")
+      ;;
+    # M-LIGHT Phase 5's Wave 2 benchmark scenes (RLT-CNT-001): one interior per
+    # Wave 2 title, the inns of scripts/lighting-game-matrix.py, loaded through
+    # each game's `--game` profile (its masters and archive lists).
+    gildedcarafe)
+      ARGS=(--game oblivion --cell ICMarketDistrictTheGildedCarafe)
+      ;;
+    moriarty)
+      ARGS=(--game fo3 --cell MegatonMoriartysSaloon)
+      ;;
+    cydonia)
+      ARGS=(--game starfield --cell CityCydoniaMainLevel)
       ;;
     *)
       echo "unknown scene '$scene'" >&2
