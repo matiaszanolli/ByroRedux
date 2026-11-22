@@ -68,9 +68,24 @@ What the engine does today with a legacy plugin set (`--master …` `--esm`), th
    place and its flags. What each plugin brought is logged and shown by `plugins.activation` and `--plugin-report`:
    `DeadMoney.esm pairs DeadMoney - Main.bsa, DeadMoney - Sounds.bsa`.
 
+6. **Levelled lists merge (LMC-REC-003).** Under the session's record policy, `--merge-policy merge` (the default, per
+   the PRD's decision Q2) or `legacy`, the fold combines independent overrides of a levelled list (`LVLI`, `LVLN`,
+   `LVLC`, `LVSP`) instead of keeping the last record whole (`crates/plugin/src/esm/records/list_merge.rs`). Two
+   overrides are independent when neither plugin declares the other as a master, directly or through its masters; a
+   plugin that masters every plugin whose changes the list holds wins it whole, as under `legacy`. Otherwise the
+   override is diffed against its base (the latest earlier carrier among its own masters) per entry form, the entries of
+   a form compared as a multiset of `(level, count)`: an added, removed or changed form is applied to the merged list,
+   the later plugin winning a form or a field (editor ID, chance none, flags) that two changed, and the earlier
+   operation recorded as overruled. `ListMerge::note_plugin` runs beside `FoldProvenance::note_plugin`, before each
+   plugin's `merge_from`, and writes the merged lists back after it; the fold's log line counts the lists merged and the
+   operations overruled. `plugins.conflicts <formid>` shows a merged list's contributors and, per entry form and field,
+   who decided it and whom they overruled; its carrier chain ends `(merged)`. Other list-valued records (form lists,
+   keywords, inventories, factions, outfits) are still last-wins.
+
 Not built yet in Phase 1: the mod profile beyond argv (discovery, mod roots, LMC-ID-012), the official/user boundary
-(LMC-REC-008), the `merge` policy (LMC-REC-003), the merge-ownership half of LMC-REC-006 (the report half is item 4's
-verdicts), the virtual legacy index (LMC-ID-005) and the profile fingerprint in saves (LMC-ID-007, LMC-SAV-001).
+(LMC-REC-008), the `merge` policy for list types other than levelled lists (LMC-REC-003), the merge-ownership half of
+LMC-REC-006 (the report half is item 4's verdicts), the virtual legacy index (LMC-ID-005) and the profile fingerprint in
+saves (LMC-ID-007, LMC-SAV-001).
 
 ## Overview
 

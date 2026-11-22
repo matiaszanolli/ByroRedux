@@ -1,0 +1,192 @@
+use super::*;
+
+const LIST: u32 = 0x0000_0100;
+const SWORD: u32 = 0x0000_0A01;
+const SHIELD: u32 = 0x0000_0A02;
+const BOW: u32 = 0x0000_0A03;
+const AXE: u32 = 0x0000_0A04;
+
+fn entry(form_id: u32, level: u16, count: u16) -> LeveledEntry {
+    LeveledEntry { level, form_id, count }
+}
+
+fn list(entries: &[LeveledEntry]) -> LeveledList {
+    LeveledList { form_id: LIST, editor_id: "LItemSwords".into(), chance_none: 0, flags: 0, entries: entries.to_vec() }
+}
+
+/// A plugin carrying `list` as its `LVLI`, declaring the plugins at `masters` as its masters.
+struct Plugin {
+    masters: Vec<u32>,
+    list: Option<LeveledList>,
+}
+
+fn plugin(masters: &[u32], list: Option<LeveledList>) -> Plugin {
+    Plugin { masters: masters.to_vec(), list }
+}
+
+/// Fold `plugins` in order under `policy`, the first defining `LIST`, and return the folded list and the merge.
+fn fold(policy: MergePolicy, plugins: Vec<Plugin>) -> (LeveledList, ListMerge) {
+    // Each plugin's masters, transitively.
+    let mut closure: Vec<std::collections::HashSet<u32>> = Vec::new();
+    for plugin in &plugins {
+        let mut set = std::collections::HashSet::new();
+        for &master in &plugin.masters {
+            set.insert(master);
+            set.extend(closure[master as usize].iter().copied());
+        }
+        closure.push(set);
+    }
+    let depends_on = |a: u32, b: u32| closure[a as usize].contains(&b);
+    let mut merged = EsmIndex::default();
+    let mut provenance = FoldProvenance::default();
+    let mut merge = ListMerge::new(policy);
+    for (position, plugin) in plugins.into_iter().enumerate() {
+        let mut index = EsmIndex::default();
+        if let Some(list) = plugin.list {
+            index.record_types.insert(LIST, *b"LVLI");
+            index.leveled_items.insert(LIST, list);
+        }
+        provenance.note_plugin(position, &index, &merged, |id| Some((id >> 24) as usize));
+        let pending = merge.note_plugin(position, &index, &merged, &provenance, &depends_on);
+        merged.merge_from(index);
+        pending.apply(&mut merged);
+    }
+    (merged.leveled_items[&LIST].clone(), merge)
+}
+
+fn forms(list: &LeveledList) -> Vec<(u32, u16, u16)> {
+    list.entries.iter().map(|entry| (entry.form_id, entry.level, entry.count)).collect()
+}
+
+fn resolution(merge: &ListMerge, form: u32) -> &Resolution<EntryOp> {
+    &merge.record(LIST).unwrap().entries.iter().find(|(f, _)| *f == form).unwrap().1
+}
+
+/// Two mods that each add a form to a vanilla list both keep their addition, which `legacy` loses.
+#[test]
+fn independent_additions_both_survive() {
+    let base = list(&[entry(SWORD, 1, 1)]);
+    let plugins = || {
+        vec![
+            plugin(&[], Some(base.clone())),
+            plugin(&[0], Some(list(&[entry(SWORD, 1, 1), entry(SHIELD, 5, 1)]))),
+            plugin(&[0], Some(list(&[entry(SWORD, 1, 1), entry(BOW, 8, 1)]))),
+        ]
+    };
+    let (merged, merge) = fold(MergePolicy::Merge, plugins());
+    assert_eq!(forms(&merged), [(SWORD, 1, 1), (SHIELD, 5, 1), (BOW, 8, 1)]);
+    let record = merge.record(LIST).unwrap();
+    assert_eq!(record.contributors, [1, 2], "the first override masters the definer and replaced its record whole");
+    assert_eq!(record.wholesale, Some((1, vec![0])));
+    assert_eq!(resolution(&merge, SHIELD), &Resolution { winner: 1, op: EntryOp::Add, overruled: vec![] });
+    assert_eq!(resolution(&merge, BOW), &Resolution { winner: 2, op: EntryOp::Add, overruled: vec![] });
+    assert_eq!(merge.counts(), (1, 0));
+
+    let (legacy, merge) = fold(MergePolicy::Legacy, plugins());
+    assert_eq!(forms(&legacy), [(SWORD, 1, 1), (BOW, 8, 1)], "legacy keeps the last record whole");
+    assert!(merge.record(LIST).is_none());
+}
+
+/// Two plugins re-levelling the same form conflict; the later wins and the form is in the list once.
+#[test]
+fn a_relevel_is_one_change_and_the_later_plugin_wins_it() {
+    let (merged, merge) = fold(
+        MergePolicy::Merge,
+        vec![
+            plugin(&[], Some(list(&[entry(SWORD, 5, 1), entry(AXE, 3, 1)]))),
+            plugin(&[0], Some(list(&[entry(SWORD, 10, 1), entry(AXE, 3, 1)]))),
+            plugin(&[0], Some(list(&[entry(SWORD, 20, 1), entry(AXE, 3, 1)]))),
+        ],
+    );
+    assert_eq!(forms(&merged), [(SWORD, 20, 1), (AXE, 3, 1)]);
+    assert_eq!(resolution(&merge, SWORD), &Resolution { winner: 2, op: EntryOp::Change, overruled: vec![(1, EntryOp::Change)] });
+    assert_eq!(merge.counts(), (1, 1));
+}
+
+/// A removal and an addition by independent plugins combine; a form listed twice on purpose stays twice.
+#[test]
+fn removals_combine_and_duplicates_are_a_multiset() {
+    let (merged, merge) = fold(
+        MergePolicy::Merge,
+        vec![
+            plugin(&[], Some(list(&[entry(SWORD, 1, 1), entry(SWORD, 1, 1), entry(AXE, 3, 1)]))),
+            plugin(&[0], Some(list(&[entry(SWORD, 1, 1), entry(SWORD, 1, 1)]))),
+            plugin(&[0], Some(list(&[entry(SWORD, 1, 1), entry(AXE, 3, 1), entry(SWORD, 1, 1), entry(BOW, 2, 1)]))),
+        ],
+    );
+    assert_eq!(forms(&merged), [(SWORD, 1, 1), (SWORD, 1, 1), (BOW, 2, 1)]);
+    assert_eq!(resolution(&merge, AXE).op, EntryOp::Remove);
+    assert!(merge.record(LIST).unwrap().entries.iter().all(|(form, _)| *form != SWORD), "reordering is no change");
+}
+
+/// A patch that masters every contributor wins the list whole, as under `legacy`; an ordinary dependent override
+/// does too.
+#[test]
+fn a_patch_over_every_contributor_wins_the_list_whole() {
+    let patch = list(&[entry(SWORD, 1, 1), entry(SHIELD, 5, 1)]);
+    let (merged, merge) = fold(
+        MergePolicy::Merge,
+        vec![
+            plugin(&[], Some(list(&[entry(SWORD, 1, 1)]))),
+            plugin(&[0], Some(list(&[entry(SWORD, 1, 1), entry(SHIELD, 5, 1)]))),
+            plugin(&[0], Some(list(&[entry(SWORD, 1, 1), entry(BOW, 8, 1)]))),
+            plugin(&[0, 1, 2], Some(patch.clone())),
+        ],
+    );
+    assert_eq!(forms(&merged), forms(&patch), "the patch dropped the bow on purpose");
+    let record = merge.record(LIST).unwrap();
+    assert_eq!(record.wholesale, Some((3, vec![1, 2])));
+    assert!(!record.is_merged());
+
+    let (merged, merge) = fold(
+        MergePolicy::Merge,
+        vec![plugin(&[], Some(list(&[entry(SWORD, 1, 1)]))), plugin(&[0], Some(list(&[entry(BOW, 2, 1)])))],
+    );
+    assert_eq!(forms(&merged), [(BOW, 2, 1)], "a single override is the plain legacy override");
+    assert_eq!(merge.counts(), (0, 0));
+}
+
+/// A patch over one of two independent mods diffs against that mod's record: it undoes that mod's addition and keeps
+/// the other mod's.
+#[test]
+fn a_partial_patch_diffs_against_the_master_it_overrides() {
+    let (merged, merge) = fold(
+        MergePolicy::Merge,
+        vec![
+            plugin(&[], Some(list(&[entry(SWORD, 1, 1)]))),
+            plugin(&[0], Some(list(&[entry(SWORD, 1, 1), entry(SHIELD, 5, 1)]))),
+            plugin(&[0], Some(list(&[entry(SWORD, 1, 1), entry(BOW, 8, 1)]))),
+            plugin(&[0, 1], Some(list(&[entry(SWORD, 1, 1)]))),
+        ],
+    );
+    assert_eq!(forms(&merged), [(SWORD, 1, 1), (BOW, 8, 1)]);
+    assert_eq!(resolution(&merge, SHIELD), &Resolution { winner: 3, op: EntryOp::Remove, overruled: vec![(1, EntryOp::Add)] });
+    assert_eq!(merge.record(LIST).unwrap().contributors, [1, 2, 3]);
+}
+
+/// A field an override changed against its base is an operation; one it left alone is not, so it does not undo an
+/// earlier plugin's change.
+#[test]
+fn fields_merge_by_what_each_override_changed() {
+    let chance = |chance_none: u8, entries: &[LeveledEntry]| LeveledList { chance_none, ..list(entries) };
+    let (merged, merge) = fold(
+        MergePolicy::Merge,
+        vec![
+            plugin(&[], Some(chance(0, &[entry(SWORD, 1, 1)]))),
+            plugin(&[0], Some(chance(50, &[entry(SWORD, 1, 1)]))),
+            plugin(&[0], Some(chance(0, &[entry(SWORD, 1, 1), entry(BOW, 8, 1)]))),
+        ],
+    );
+    assert_eq!(merged.chance_none, 50);
+    assert_eq!(forms(&merged), [(SWORD, 1, 1), (BOW, 8, 1)]);
+    let fields = &merge.record(LIST).unwrap().fields;
+    assert_eq!(fields, &[(ListField::ChanceNone, Resolution { winner: 1, op: (), overruled: vec![] })]);
+}
+
+#[test]
+fn the_policy_reads_its_name() {
+    assert_eq!(MergePolicy::parse("Legacy"), Some(MergePolicy::Legacy));
+    assert_eq!(MergePolicy::parse("merge").map(MergePolicy::name), Some("merge"));
+    assert_eq!(MergePolicy::parse("smash"), None);
+    assert_eq!(MergePolicy::default(), MergePolicy::Merge, "decision Q2: merge by default");
+}

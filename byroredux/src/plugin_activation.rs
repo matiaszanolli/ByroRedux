@@ -28,6 +28,25 @@ use byroredux_plugin::archive_pairing::{
     archives_hold_bgsm_materials, archives_hold_compiled_scripts, paired_archives,
 };
 use byroredux_plugin::esm::reader::GameKind;
+use byroredux_plugin::esm::records::list_merge::MergePolicy;
+
+/// The profile's record policy (LMC-REC-003, decision Q2): `--merge-policy merge` (the default) merges levelled lists
+/// across independent overrides, `--merge-policy legacy` keeps the last plugin's record of every form whole.
+static MERGE_POLICY: OnceLock<MergePolicy> = OnceLock::new();
+
+/// The session's record policy, `merge` when boot set none (a test's fold).
+pub(crate) fn merge_policy() -> MergePolicy {
+    MERGE_POLICY.get().copied().unwrap_or_default()
+}
+
+/// `--merge-policy <merge|legacy>` from `args`, the default when absent; an error naming the choices otherwise.
+fn parse_merge_policy(args: &[String]) -> anyhow::Result<MergePolicy> {
+    let Some(at) = args.iter().position(|arg| arg == "--merge-policy") else {
+        return Ok(MergePolicy::default());
+    };
+    let value = args.get(at + 1).map(String::as_str).unwrap_or("");
+    MergePolicy::parse(value).ok_or_else(|| anyhow::anyhow!("--merge-policy takes `merge` or `legacy`, got '{value}'"))
+}
 
 /// What activation did to the session's profile.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +115,8 @@ pub(crate) fn log_report() {
 /// Args with no `--esm` come back unchanged. Errors only when the `--esm` plugin itself cannot be activated as the
 /// last plugin of the order.
 pub(crate) fn activate_plugin_args(args: Vec<String>) -> anyhow::Result<Vec<String>> {
+    // A second boot path in one process (a test) keeps the first policy, as it keeps the first report.
+    let _ = MERGE_POLICY.set(parse_merge_policy(&args)?);
     let Some(esm) = crate::cli_args::parse_string_arg(&args, "--esm").filter(|value| !value.starts_with("--")) else {
         return Ok(args);
     };
@@ -288,6 +309,16 @@ mod tests {
         // The readers skip a `--master` that is followed by a flag, and so does the rewrite.
         let out = with_masters(args(&["byroredux", "--master", "--esm", "C.esp"]), &["A.esm".to_owned()]);
         assert_eq!(out, args(&["byroredux", "--master", "--master", "A.esm", "--esm", "C.esp"]));
+    }
+
+    /// LMC-REC-003 — the policy defaults to `merge` (decision Q2), takes `legacy`, and refuses anything else.
+    #[test]
+    fn the_merge_policy_flag_defaults_to_merge() {
+        assert_eq!(parse_merge_policy(&args(&["byroredux"])).unwrap(), MergePolicy::Merge);
+        assert_eq!(parse_merge_policy(&args(&["byroredux", "--merge-policy", "legacy"])).unwrap(), MergePolicy::Legacy);
+        let error = parse_merge_policy(&args(&["byroredux", "--merge-policy", "smash"])).unwrap_err().to_string();
+        assert!(error.contains("takes `merge` or `legacy`, got 'smash'"), "{error}");
+        assert!(parse_merge_policy(&args(&["byroredux", "--merge-policy"])).is_err());
     }
 
     /// Args without an `--esm` have no profile and pass through untouched.
