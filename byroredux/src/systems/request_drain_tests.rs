@@ -30,6 +30,13 @@ fn present<T: Component>(world: &World) -> bool {
 
 /// Raise `marker` on a bare entity, run `system`, and expect the marker gone.
 fn drains<T: Component>(name: &str, marker: T, system: impl FnOnce(&World)) {
+    // #7273: the label must be the type raised, so the table-coverage check
+    // below reads a case as covering exactly the marker it names.
+    assert_eq!(
+        std::any::type_name::<T>().rsplit("::").next(),
+        Some(name),
+        "drains({name:?}, ..) raises a different marker type"
+    );
     let mut world = World::new();
     byroredux_scripting::register(&mut world);
     let entity = world.spawn();
@@ -129,14 +136,25 @@ fn every_pattern_b_table_row_has_a_drain_test() {
         .skip(2)
         .take_while(|line| line.starts_with("//! | "));
     let mut markers = Vec::new();
+    let mut rows = 0;
     for row in table {
+        rows += 1;
         let first_cell = row["//! | ".len()..].split(" | ").next().unwrap_or_default();
+        let before = markers.len();
         markers.extend(first_cell.split('`').skip(1).step_by(2));
+        assert!(markers.len() > before, "table row names no marker: {row}");
     }
-    assert!(markers.len() >= 20, "the table parse found only {markers:?}");
+    assert!(rows > 0, "cleanup.rs's Pattern-B table was not found");
 
-    // rustfmt may break a call after `drains(`, so match with whitespace removed.
-    let squash = |text: &str| text.split_whitespace().collect::<String>();
+    // rustfmt may break a call after `drains(`, so match with whitespace
+    // removed; comment lines are dropped first, so a commented-out case does
+    // not count (#7273). Each `drains` asserts its label is the type it raises.
+    let squash = |text: &str| {
+        text.lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .flat_map(str::split_whitespace)
+            .collect::<String>()
+    };
     let (cleanup, here) = (squash(CLEANUP), squash(HERE));
     for marker in markers {
         let call = format!("drains(\"{marker}\"");

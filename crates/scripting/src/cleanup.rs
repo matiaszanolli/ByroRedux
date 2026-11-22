@@ -215,6 +215,14 @@ mod contract_tests {
         use crate::vm_state::TwoStateTransitionBatch;
 
         fn drains<T: Component>(marker: &str, raised_marker: T, consumer: impl FnOnce(&World)) {
+            // #7273: the label is the table's name for the marker; it must be the
+            // type this case raises, or the table-coverage check counts a test of
+            // something else.
+            assert_eq!(
+                std::any::type_name::<T>().rsplit("::").next(),
+                Some(marker),
+                "drains({marker:?}, ..) raises a different marker type"
+            );
             let world = raised(raised_marker);
             consumer(&world);
             assert!(
