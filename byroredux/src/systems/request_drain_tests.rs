@@ -8,6 +8,11 @@
 //! text. Here each system is run on a world holding its marker, and the marker
 //! is gone afterwards — including when the request has nothing to act on, which
 //! is the case a marker left behind by an early return would show.
+//!
+//! #7264 — the table's binary-side rows are covered here, its scripting-side
+//! rows by `cleanup.rs`'s own drain test, and
+//! [`every_pattern_b_table_row_has_a_drain_test`] holds the table to that: a
+//! row added with no drain test in either crate fails it.
 
 use byroredux_core::ecs::storage::Component;
 use byroredux_core::ecs::World;
@@ -94,4 +99,55 @@ fn reset_inventory_system_takes_its_request() {
     drains("ResetInventoryRequest", ResetInventoryRequest, |w| {
         super::script_requests::reset_inventory_system(w, 0.0)
     });
+}
+
+#[test]
+fn ambient_ai_package_system_takes_its_release_marker() {
+    drains("ReleasePackageHold", byroredux_scripting::package::ReleasePackageHold, |w| {
+        crate::npc_spawn::ai_package::ambient_ai_package_system(w, 0.0)
+    });
+}
+
+/// #7264 — every marker `cleanup.rs`'s Pattern-B table lists is run through its
+/// consumer by a drain test: the scripting-side ones in that file's
+/// `every_documented_pattern_b_marker_drains_in_its_named_consumer`, the
+/// binary-side ones above. `OnResetEvent`'s consumer is private to
+/// `obscript_objects`, which tests its drain itself.
+#[test]
+fn every_pattern_b_table_row_has_a_drain_test() {
+    const CLEANUP: &str = include_str!("../../../crates/scripting/src/cleanup.rs");
+    const HERE: &str = include_str!("request_drain_tests.rs");
+    const OBSCRIPT_OBJECTS: &str = include_str!("../../../crates/scripting/src/obscript_objects.rs");
+    let elsewhere = [(
+        "OnResetEvent",
+        OBSCRIPT_OBJECTS.contains("fn the_reset_marker_is_taken_even_when_nothing_has_a_script()"),
+    )];
+
+    let table = CLEANUP
+        .lines()
+        .skip_while(|line| !line.starts_with("//! | Marker | Owning consumer |"))
+        .skip(2)
+        .take_while(|line| line.starts_with("//! | "));
+    let mut markers = Vec::new();
+    for row in table {
+        let first_cell = row["//! | ".len()..].split(" | ").next().unwrap_or_default();
+        markers.extend(first_cell.split('`').skip(1).step_by(2));
+    }
+    assert!(markers.len() >= 20, "the table parse found only {markers:?}");
+
+    // rustfmt may break a call after `drains(`, so match with whitespace removed.
+    let squash = |text: &str| text.split_whitespace().collect::<String>();
+    let (cleanup, here) = (squash(CLEANUP), squash(HERE));
+    for marker in markers {
+        let call = format!("drains(\"{marker}\"");
+        let covered = cleanup.contains(&call)
+            || here.contains(&call)
+            || elsewhere.iter().any(|&(name, tested)| name == marker && tested);
+        assert!(
+            covered,
+            "`{marker}` is in cleanup.rs's Pattern-B table but no drain test runs its consumer: add a \
+             `drains(\"{marker}\", ..)` case to cleanup.rs (scripting-side consumer) or to \
+             byroredux/src/systems/request_drain_tests.rs (binary-side consumer)"
+        );
+    }
 }
