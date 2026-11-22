@@ -87,6 +87,18 @@ pub(crate) struct PatchCell {
     pub(crate) origin_xz: [f32; 2],
     pub(crate) base_mesh: u32,
     pub(crate) tile: u32,
+    /// The XCLC Hide Quad bits the base mesh dropped (`TerrainCellOrigin`).
+    pub(crate) hidden_quadrants: u8,
+}
+
+/// Whether patch square (`col`, `row`) lies in a quadrant the base cell
+/// hides (#6043). A patch square is 2×2 LAND quads, so the quadrant split
+/// falls between squares 7 and 8 on each axis; quadrant `q` is
+/// `[SW, SE, NW, NE]` with rows growing north, as `land_tile_indices` reads it.
+fn square_hidden(hidden_quadrants: u8, col: i32, row: i32) -> bool {
+    let half = PER_SIDE / 2;
+    let quadrant = u32::from(row >= half) * 2 + u32::from(col >= half);
+    hidden_quadrants & (1 << quadrant) != 0
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -206,6 +218,11 @@ pub(crate) fn assign_patches(
         let hi_row = (((lz + keep_range) / PATCH_SIZE).floor() as i32).min(PER_SIDE - 1);
         for row in lo_row..=hi_row {
             for col in lo_col..=hi_col {
+                // The base draws nothing there, so neither does a patch; the
+                // square counts as missing and its neighbours fade to the lip.
+                if square_hidden(cell.hidden_quadrants, col, row) {
+                    continue;
+                }
                 let dist = distance_to_square(lx, lz, col, row);
                 let key = PatchKey { cell: cell.entity, col: col as u32, row: row as u32 };
                 let held = slots.iter().flatten().any(|a| a.key == key);
@@ -310,6 +327,7 @@ fn nearby_cells(world: &World, cam_xz: [f32; 2], reach: f32) -> Vec<PatchCell> {
                 origin_xz: origin.origin_xz,
                 base_mesh: mesh.0,
                 tile: tile.0,
+                hidden_quadrants: origin.hidden_quadrants,
             });
         }
     }
@@ -425,6 +443,7 @@ mod tests {
             origin_xz: [gx as f32 * CELL, -(gy as f32) * CELL],
             base_mesh: 100 + entity,
             tile: entity,
+            hidden_quadrants: 0,
         }
     }
 
@@ -647,5 +666,45 @@ mod tests {
         let mut slots = [None; SLOTS];
         assign_patches(&mut slots, &[c], cam, all_fine);
         assert!(slots.iter().flatten().all(|a| !a.coarse && a.coarse_mask == 0));
+    }
+
+    #[test]
+    fn squares_in_a_hidden_quadrant_get_no_patch_and_their_neighbours_fade() {
+        // Camera on the cell centre, where all four quadrants meet; hide NE (bit 3).
+        let mut c = cell(1, 0, 0);
+        c.hidden_quadrants = 1 << 3;
+        let cam = at(&c, 8.0 * PATCH_SIZE, 8.0 * PATCH_SIZE);
+        let mut slots = [None; SLOTS];
+        assign_patches(&mut slots, &[c], cam, ranges(RANGE));
+        let held = keys(&slots);
+        assert!(!held.is_empty());
+        // NE is col >= 8 and row >= 8 (rows grow north, toward -Z).
+        assert!(held.iter().all(|k| !(k.col >= 8 && k.row >= 8)), "{held:?}");
+        // The other three quadrants still fill the 4×4 block around the centre.
+        assert_eq!(held.len(), 12);
+        // SE square (8, 7) borders the hidden (8, 8): that side is missing.
+        let se = slots
+            .iter()
+            .flatten()
+            .find(|a| (a.key.col, a.key.row) == (8, 7))
+            .expect("(8, 7) is resident");
+        assert_ne!(se.missing_mask & neighbour_bit(1, 0), 0);
+    }
+
+    #[test]
+    fn the_quadrant_split_matches_the_land_mesh() {
+        // Square (col, row) covers LAND quads 2col..2col+2 × 2row..2row+2;
+        // `land_tile_indices` puts LAND quad (qc, qr) in quadrant
+        // (qr >= 16) * 2 + (qc >= 16).
+        for q in 0..4u8 {
+            for row in 0..PER_SIDE {
+                for col in 0..PER_SIDE {
+                    let land_q = u8::from(2 * row >= 16) * 2 + u8::from(2 * col >= 16);
+                    assert_eq!(square_hidden(1 << q, col, row), land_q == q, "q{q} ({col},{row})");
+                }
+            }
+        }
+        assert!(!square_hidden(0, 3, 12));
+        assert!(square_hidden(0x0F, 3, 12));
     }
 }

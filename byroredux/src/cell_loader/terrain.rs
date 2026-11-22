@@ -1621,6 +1621,7 @@ pub(super) fn spawn_terrain_mesh(
         entity,
         crate::components::TerrainCellOrigin {
             origin_xz: [origin_x, -origin_y],
+            hidden_quadrants,
         },
     );
     world.insert(

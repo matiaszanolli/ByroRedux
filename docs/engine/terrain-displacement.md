@@ -233,8 +233,10 @@ settings/UI. Each stage ends with a review, as in TSD-1–3.
   - assignment covers every square whose footprint comes within the range (not only
     squares whose centre does), so the faded disc is always covered while slots last,
     with 1 m of hysteresis;
-  - patches still draw over XCLC-hidden quadrants (known gap; the base drops those
-    quadrants from its index buffer, the patch does not know);
+  - a square inside an XCLC-hidden quadrant gets no patch: `TerrainCellOrigin` carries
+    the cell's Hide Quad bits, the assignment skips those squares, and since they count as
+    missing, the neighbouring patches fade to the lip there (the base drops the same
+    quadrants from its index buffer, #6043);
   - the TSD-3 parallax march still runs on patch draws by default (§3.6 is 4.3). A patch
     draw carries `INSTANCE_FLAG_TERRAIN_PATCH` (bit 11, set by the renderer from the
     reserved patch meshes), and `terrain.patches parallax off` makes `triangle.frag` skip
