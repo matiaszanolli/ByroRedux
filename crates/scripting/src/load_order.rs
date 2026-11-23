@@ -22,6 +22,19 @@ pub struct LoadOrderIdentity {
 
 impl Resource for LoadOrderIdentity {}
 
+/// The load order a save in progress converts its FormIDs through (LMC-SAV-002..004): written as the stable identity
+/// this load order gives them, read back as the global FormID the current one does.
+#[cfg(feature = "save")]
+impl byroredux_core::stable_form_id::FormIdTranslator for LoadOrderIdentity {
+    fn pair(&self, global: u32) -> Option<FormIdPair> {
+        LoadOrderIdentity::pair(self, global)
+    }
+
+    fn global(&self, pair: FormIdPair) -> Option<u32> {
+        self.global_form_id(FormRef::new(pair.plugin.0.to_be_bytes(), pair.local.0))
+    }
+}
+
 impl LoadOrderIdentity {
     pub fn new(owners: Vec<(GlobalSlot, PluginId)>) -> Self {
         Self { owners }

@@ -355,7 +355,9 @@ impl SaveCommand {
         let dir = state.dir.clone();
         drop(state);
 
-        let mut snapshot = match save_world(world, &registry) {
+        // LMC-SAV-002..004 — the marked FormIDs are written as stable identities through this load order.
+        let (snapshot, _) = translated(session_translator(world), || save_world(world, &registry));
+        let mut snapshot = match snapshot {
             Ok(s) => s,
             Err(e) => return CommandOutput::error(format!("snapshot failed: {e}")),
         };

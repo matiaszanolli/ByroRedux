@@ -86,16 +86,16 @@ fn ranked_empty_and_absent_perks_replace_live_state_on_disk_load() {
             .unwrap();
         let registry = build_save_registry();
         byroredux_save::validate_snapshot_types(&registry, &snapshot).unwrap();
-        byroredux_save::restore_resources(&mut live, &registry, &snapshot).unwrap();
+        translated(session_translator(&live), || byroredux_save::restore_resources(&mut live, &registry, &snapshot)).0.unwrap();
         let remap = byroredux_save::build_form_id_remap(&live, &registry, &snapshot);
         assert_eq!(remap.get(&saved_player), Some(&live_player));
-        byroredux_save::apply_deltas(
+        translated(session_translator(&live), || byroredux_save::apply_deltas(
             &mut live,
             &registry,
             &snapshot,
             &remap,
             MUTABLE_DELTA_COLUMNS,
-        )
+        )).0
         .unwrap();
         let loaded = live.get::<Perks>(live_player);
         assert_eq!(
@@ -227,16 +227,16 @@ fn disk_round_trip_with_perk(index: &EsmIndex, potion: u32, restoration: f32, pe
             .expect("disk load queued");
         let registry = build_save_registry();
         byroredux_save::validate_snapshot_types(&registry, &snapshot).unwrap();
-        byroredux_save::restore_resources(&mut live, &registry, &snapshot).unwrap();
+        translated(session_translator(&live), || byroredux_save::restore_resources(&mut live, &registry, &snapshot)).0.unwrap();
         let remap = byroredux_save::build_form_id_remap(&live, &registry, &snapshot);
         assert_eq!(remap.get(&saved_player), Some(&live_player));
-        byroredux_save::apply_deltas(
+        translated(session_translator(&live), || byroredux_save::apply_deltas(
             &mut live,
             &registry,
             &snapshot,
             &remap,
             MUTABLE_DELTA_COLUMNS,
-        )
+        )).0
         .unwrap();
         assert_eq!(
             live.get::<Perks>(live_player)
@@ -469,7 +469,7 @@ fn timed_disk_round_trip(
             .unwrap();
         let registry = build_save_registry();
         byroredux_save::validate_snapshot_types(&registry, &snapshot).unwrap();
-        byroredux_save::restore_resources(&mut live, &registry, &snapshot).unwrap();
+        translated(session_translator(&live), || byroredux_save::restore_resources(&mut live, &registry, &snapshot)).0.unwrap();
         assert_eq!(
             live.resource::<byroredux_core::ecs::resources::HardcoreMode>()
                 .enabled,
@@ -477,13 +477,13 @@ fn timed_disk_round_trip(
         );
         let remap = byroredux_save::build_form_id_remap(&live, &registry, &snapshot);
         assert_eq!(remap.get(&saved_player), Some(&live_player));
-        byroredux_save::apply_deltas(
+        translated(session_translator(&live), || byroredux_save::apply_deltas(
             &mut live,
             &registry,
             &snapshot,
             &remap,
             MUTABLE_DELTA_COLUMNS,
-        )
+        )).0
         .unwrap();
         assert_eq!(
             live.get::<Inventory>(live_player).unwrap().items[0].count,
@@ -652,9 +652,9 @@ fn faction_reputation_round_trips_through_a_disk_save_and_load() {
         let snapshot = live.resource_mut::<PendingSaveLoadSlot>().snapshot.take().unwrap();
         let registry = build_save_registry();
         byroredux_save::validate_snapshot_types(&registry, &snapshot).unwrap();
-        byroredux_save::restore_resources(&mut live, &registry, &snapshot).unwrap();
+        translated(session_translator(&live), || byroredux_save::restore_resources(&mut live, &registry, &snapshot)).0.unwrap();
         let remap = byroredux_save::build_form_id_remap(&live, &registry, &snapshot);
-        byroredux_save::apply_deltas(&mut live, &registry, &snapshot, &remap, MUTABLE_DELTA_COLUMNS).unwrap();
+        translated(session_translator(&live), || byroredux_save::apply_deltas(&mut live, &registry, &snapshot, &remap, MUTABLE_DELTA_COLUMNS)).0.unwrap();
         let loaded = live.get::<FactionReputation>(live_player);
         if slot == 0 {
             let loaded = loaded.expect("the saved reputation is restored");
@@ -700,9 +700,9 @@ fn dismember_record_round_trips_through_a_disk_save_and_load() {
         let snapshot = live.resource_mut::<PendingSaveLoadSlot>().snapshot.take().unwrap();
         let registry = build_save_registry();
         byroredux_save::validate_snapshot_types(&registry, &snapshot).unwrap();
-        byroredux_save::restore_resources(&mut live, &registry, &snapshot).unwrap();
+        translated(session_translator(&live), || byroredux_save::restore_resources(&mut live, &registry, &snapshot)).0.unwrap();
         let remap = byroredux_save::build_form_id_remap(&live, &registry, &snapshot);
-        byroredux_save::apply_deltas(&mut live, &registry, &snapshot, &remap, MUTABLE_DELTA_COLUMNS).unwrap();
+        translated(session_translator(&live), || byroredux_save::apply_deltas(&mut live, &registry, &snapshot, &remap, MUTABLE_DELTA_COLUMNS)).0.unwrap();
         let loaded = live.get::<DismemberRecord>(live_player).map(|record| *record);
         if slot == 0 {
             let loaded = loaded.expect("the saved record is restored");
@@ -756,7 +756,7 @@ fn the_relocation_ledger_round_trips_through_a_disk_save_and_load() {
     let snapshot = live.resource_mut::<PendingSaveLoadSlot>().snapshot.take().unwrap();
     let registry = build_save_registry();
     byroredux_save::validate_snapshot_types(&registry, &snapshot).unwrap();
-    byroredux_save::restore_resources(&mut live, &registry, &snapshot).unwrap();
+    translated(session_translator(&live), || byroredux_save::restore_resources(&mut live, &registry, &snapshot)).0.unwrap();
     let restored = live.resource::<ActorRelocations>();
     assert_eq!(*restored, ledger, "the saved ledger replaces the outgoing one");
     assert!(restored.contains(0x0010_4E85) && restored.contains(0x0010_4E86));

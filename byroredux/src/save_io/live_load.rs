@@ -855,7 +855,19 @@ pub fn execute_pending_save_loads(
     // resolve, then overlay the form-id-keyed mutable deltas. The
     // spawn-time consumers were served by the pre-reload restore above
     // (#3789); this second pass is the one that has always been here.
-    if let Err(e) = byroredux_save::restore_resources(world, &registry, &snapshot) {
+    // LMC-SAV-002..004 — saved FormIDs read back through the reloaded load order; what its plugins lack is counted.
+    let translator = session_translator(world);
+    let mut translation = byroredux_core::stable_form_id::TranslationReport::default();
+    let mut tally = |report: byroredux_core::stable_form_id::TranslationReport| {
+        translation.translated += report.translated;
+        for (plugin, count) in report.absent {
+            *translation.absent.entry(plugin).or_default() += count;
+        }
+    };
+    let (restored, report) =
+        translated(translator.clone(), || byroredux_save::restore_resources(world, &registry, &snapshot));
+    tally(report);
+    if let Err(e) = restored {
         let message = format!("save load: resource restore failed: {e}");
         log::error!("{message}");
         notify_player(world, message);
@@ -914,7 +926,11 @@ pub fn execute_pending_save_loads(
     // column is replacing and idempotent, so the full overlay below reapplies
     // the same value harmlessly.
     let remap = byroredux_save::build_form_id_remap(world, &registry, &snapshot);
-    match byroredux_save::apply_deltas(world, &registry, &snapshot, &remap, &["ScriptPackage"]) {
+    let (pre_seated, report) = translated(translator.clone(), || {
+        byroredux_save::apply_deltas(world, &registry, &snapshot, &remap, &["ScriptPackage"])
+    });
+    tally(report);
+    match pre_seated {
         Ok(applied) if applied > 0 => {
             log::debug!("save load: pre-seated {applied} ScriptPackage(s) before the ambient re-seat")
         }
@@ -940,7 +956,21 @@ pub fn execute_pending_save_loads(
              for their next respawn"
         );
     }
-    match byroredux_save::apply_deltas(world, &registry, &snapshot, &remap, MUTABLE_DELTA_COLUMNS) {
+    let (overlaid, report) = translated(translator.clone(), || {
+        byroredux_save::apply_deltas(world, &registry, &snapshot, &remap, MUTABLE_DELTA_COLUMNS)
+    });
+    tally(report);
+    if !translation.absent.is_empty() {
+        let absent: Vec<String> =
+            translation.absent.iter().map(|(plugin, count)| format!("{:032x} ({count})", plugin.0)).collect();
+        log::warn!(
+            "save load: {} saved form(s) belong to plugins this load order lacks, read as absent: {}",
+            translation.absent.values().sum::<usize>(),
+            absent.join(", ")
+        );
+    }
+    log::debug!("save load: {} saved FormID(s) read through the load order", translation.translated);
+    match overlaid {
         Ok(applied) => {
             let dead = crate::combat::reconcile_dead_actor_runtime_state(world);
             // #3488 — the overlay is additive-only, so a saved *absence*

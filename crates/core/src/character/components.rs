@@ -163,6 +163,7 @@ impl LevelUpPoints {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct PerkRank {
+    #[cfg_attr(feature = "inspect", serde(with = "crate::stable_form_id"))]
     pub perk_form_id: u32,
     pub rank: u8,
 }
@@ -284,6 +285,7 @@ impl Component for Background {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct FactionStanding {
+    #[cfg_attr(feature = "inspect", serde(with = "crate::stable_form_id"))]
     pub repu_form_id: u32,
     pub fame: u16,
     pub infamy: u16,
@@ -345,6 +347,7 @@ pub struct CharacterIdentity {
     pub name: String,
     pub female: bool,
     /// The race's FormID.
+    #[cfg_attr(feature = "inspect", serde(with = "crate::stable_form_id"))]
     pub race_form_id: u32,
     /// The class a script gave the player (`SetClass`); 0 until one did, meaning the player record's own. Saved here
     /// because `Background`, where every class reader looks, is re-created with the actor and is not (#7348): the

@@ -1,6 +1,7 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-23). Revision 24 merges mods' translation files (U4)
+**Status**: ACTIVE (2026-11-23). Revision 25 saves the actor columns' FormIDs as stable
+identities (Phase 7 slice 1). Revision 24 merges mods' translation files (U4)
 and records why Phase 7 starts with stable saved FormIDs. Revision 23 layers mods' UI files over the vanilla
 archives (#7336). Revision 22 measures LMC-AST-005 and
 builds what it found missing. Revision 21 measures LMC-SET-002 and
@@ -1047,7 +1048,16 @@ adds the user-facing contract:
   `u32` FormIDs, so the live load reloads the *save's* plugin list to keep
   them meaning the same forms. Hence a removed plugin refuses the load and an
   added one is not loaded. Phase 7 therefore starts with stable saved
-  FormIDs; the approach is the owner's decision.
+  FormIDs. The owner chose to save each FormID as its stable identity
+  (2026-11-23). Slice 1 is built: `byroredux_core::stable_form_id`'s serde
+  adapters write a saved FormID as its (plugin, object) pair through the
+  session's load order and read it back through the current one, a pair
+  whose plugin is gone reading as absent and counted for the load report;
+  the actor columns (inventory, equipped weapon and arrow, perks, faction
+  reputation, race, spells, readied spell) use them, save format v144. The
+  other saved state, a guard that keeps new FormID fields stable, and the
+  switch of the live load to the session's profile with LMC-SAV-002/003's
+  consequences follow.
 - **LMC-SAV-005.** Mod-version migration of extension state follows
   [STATE-006](../engine/sandboxed-linked-mods.md#13-persistent-state-and-saves);
   Papyrus-only mods keep component state keyed by script identity.
@@ -1509,3 +1519,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 22 | 2026-11-23 | LMC-AST-005 measured on FNV, Skyrim SE and a Fallout 4 + SS2 profile: `Data\` / leading-separator stripping shared by meshes, textures and materials; `sound`, `scripts` and `lodsettings` loose roots and a loose script tier; Scaleform interface layering filed (#7336). The preflight stops counting base-game Papyrus calls as extender calls | — |
 | 23 | 2026-11-23 | #7336: a mod's Scaleform movies and fonts (U1, U5) and MenuXml menus, prefabs, fonts and HUD textures (U3) resolve over the vanilla archives through every mod tier (`LayeredSources`), verified on the installed Skyrim SE and New Vegas archives; U4 set to D5 with a target of D1 until a source says who merges mods' translation files | — |
 | 24 | 2026-11-23 | Catalog U4 sourced and built: SKSE64 and F4SE (`Translation.cpp`) merge every enabled plugin's `Interface\\Translations\\<stem>_<language>.txt`, UCS-2 LE, first definition kept; the engine does the same natively (U4 D1, Starfield D5 with no source). LMC-SAV-004's premise measured false for saved state (session-global FormIDs), which Phase 7 has to resolve first | — |
+| 25 | 2026-11-23 | Phase 7 slice 1 (owner's option A): saved FormIDs as stable identities through `byroredux_core::stable_form_id`, the actor columns converted, save format v144 | — |

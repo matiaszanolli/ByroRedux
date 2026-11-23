@@ -92,6 +92,26 @@ use live_load::{
     exterior_reload_bootstrap_mode, reset_story_location_cursor,
 };
 
+/// The session's load order as the translator saved FormIDs go through (`byroredux_core::stable_form_id`,
+/// LMC-SAV-002..004): a save writes the stable identity this load order gives a FormID, a load reads it back as the
+/// FormID the current one does. `None` without a plugin profile (a unit test's world), where the FormIDs stay numbers.
+fn session_translator(world: &World) -> Option<std::rc::Rc<dyn byroredux_core::stable_form_id::FormIdTranslator>> {
+    world.try_resource::<byroredux_scripting::LoadOrderIdentity>().map(|identity| {
+        std::rc::Rc::new((*identity).clone()) as std::rc::Rc<dyn byroredux_core::stable_form_id::FormIdTranslator>
+    })
+}
+
+/// Run `f` with `translator` converting the saved FormIDs it (de)serializes, or plainly when there is none.
+fn translated<R>(
+    translator: Option<std::rc::Rc<dyn byroredux_core::stable_form_id::FormIdTranslator>>,
+    f: impl FnOnce() -> R,
+) -> (R, byroredux_core::stable_form_id::TranslationReport) {
+    match translator {
+        Some(translator) => byroredux_core::stable_form_id::with_translator(translator, f),
+        None => (f(), Default::default()),
+    }
+}
+
 // Tests live in sibling files by topic (#2407 / TD1-004) — the repo's
 // existing convention (`cell_loader/*_tests.rs`,
 // `scene_buffer/*_tests.rs`). Contents moved verbatim.

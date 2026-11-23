@@ -2768,3 +2768,63 @@ fn the_skill_use_level_tallies_survive_save_load_round_trip() {
     let again = save_world(&dst, &reg).unwrap();
     assert_eq!(again.components.get("SkillUseLevel"), decoded.components.get("SkillUseLevel"));
 }
+
+/// LMC-SAV-002..004 (#6676) — the slice-1 FormID columns save as stable identities: a save made with `ModA.esp` at
+/// slot 1 and `ModB.esp` at slot 2 restores into a load order where `ModA.esp` is gone and `ModB.esp` sits at slot
+/// one. ModB's item, perk, spell, equipped arrow and readied spell follow it; ModA's item and perk read as absent (the
+/// inventory keeps a null stack for the load report's sweep, a list drops the entry); the game's forms are unchanged.
+#[test]
+fn slice_one_form_ids_follow_their_plugin_across_a_changed_load_order() {
+    use byroredux_core::character::Perks;
+    use byroredux_core::ecs::components::{EquippedAmmo, Inventory, ItemStack};
+    use byroredux_core::form_id::PluginId;
+    use byroredux_plugin::esm::reader::GlobalSlot;
+    use byroredux_scripting::player_cast::ReadiedSpell;
+    use byroredux_scripting::{LoadOrderIdentity, SpellList};
+    let registry = build_save_registry();
+    let (game, mod_a, mod_b) =
+        (PluginId::from_filename("Skyrim.esm"), PluginId::from_filename("ModA.esp"), PluginId::from_filename("ModB.esp"));
+    let mut source = World::new();
+    source.insert_resource(LoadOrderIdentity::new(vec![
+        (GlobalSlot::Regular(0), game),
+        (GlobalSlot::Regular(1), mod_a),
+        (GlobalSlot::Regular(2), mod_b),
+    ]));
+    let actor = source.spawn();
+    let mut inventory = Inventory::new();
+    inventory.add(ItemStack::new(0x0000_0f00, 3));
+    inventory.add(ItemStack::new(0x0100_0800, 1));
+    inventory.add(ItemStack::new(0x0200_0801, 20));
+    source.insert(actor, inventory);
+    let mut perks = Perks::default();
+    perks.set_rank(0x0100_0810, 1);
+    perks.set_rank(0x0200_0811, 2);
+    source.insert(actor, perks);
+    source.insert(actor, SpellList(vec![0x0000_0012, 0x0200_0820]));
+    source.insert(actor, ReadiedSpell(Some(0x0200_0820)));
+    source.insert(actor, EquippedAmmo(Some(0x0200_0801)));
+    let (snapshot, saved) = translated(session_translator(&source), || save_world(&source, &registry));
+    let snapshot = snapshot.unwrap();
+    assert_eq!(saved.translated, 9, "every marked FormID was written as a stable identity");
+    let bytes = encode(&snapshot, registry.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, registry.schema_fingerprint()).unwrap();
+
+    let mut destination = World::new();
+    destination.insert_resource(LoadOrderIdentity::new(vec![(GlobalSlot::Regular(0), game), (GlobalSlot::Regular(1), mod_b)]));
+    destination.insert_resource(FormIdPool::new());
+    let (restored, loaded) =
+        translated(session_translator(&destination), || restore_world(&mut destination, &registry, &decoded));
+    restored.unwrap();
+    assert_eq!(loaded.absent.get(&mod_a), Some(&2), "ModA's item and perk");
+
+    let inventory = destination.get::<Inventory>(actor).unwrap();
+    let bases: Vec<u32> = inventory.items.iter().map(|stack| stack.base_form_id).collect();
+    assert_eq!(bases, vec![0x0000_0f00, 0, 0x0100_0801], "ModB's arrows follow it to slot 1; ModA's item is the null form");
+    drop(inventory);
+    let perks = destination.get::<Perks>(actor).unwrap();
+    assert_eq!((perks.rank(0x0100_0811), perks.rank(0x0100_0810)), (2, 0));
+    drop(perks);
+    assert_eq!(destination.get::<SpellList>(actor).unwrap().0, vec![0x0000_0012, 0x0100_0820]);
+    assert_eq!(destination.get::<ReadiedSpell>(actor).map(|r| r.0), Some(Some(0x0100_0820)));
+    assert_eq!(destination.get::<EquippedAmmo>(actor).map(|a| a.0), Some(Some(0x0100_0801)));
+}

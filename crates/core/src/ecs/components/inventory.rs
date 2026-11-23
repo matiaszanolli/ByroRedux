@@ -59,7 +59,9 @@ pub struct ItemStack {
     /// `FormIdPool`) when M45 save lands and the rest of the engine
     /// switches over in one pass; using `u32` here today avoids
     /// threading `FormIdPool` through every spawn site for a slice
-    /// that doesn't yet need cross-load identity.
+    /// that doesn't yet need cross-load identity. Saved as the stable
+    /// plugin-and-object identity (`stable_form_id`, LMC-SAV-002..004).
+    #[cfg_attr(feature = "inspect", serde(with = "crate::stable_form_id"))]
     pub base_form_id: u32,
     /// Stack count. Always non-negative at runtime — the parsed CNTO's
     /// `i32` is normalised to `u32` at the spawn boundary (negative
@@ -192,6 +194,7 @@ pub struct InventoryIndex(pub u32);
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
 pub struct EquippedWeapon {
     pub inventory_index: InventoryIndex,
+    #[cfg_attr(feature = "inspect", serde(with = "crate::stable_form_id"))]
     pub base_form_id: u32,
     pub damage: f32,
     /// Authored melee reach in Bethesda units, `0.0` when the source
@@ -221,7 +224,7 @@ impl Component for EquippedWeapon {
 /// column is replacing, so a save with no row clears it too (BOW-AMM-002, #7228).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[cfg_attr(feature = "inspect", derive(serde::Serialize, serde::Deserialize))]
-pub struct EquippedAmmo(pub Option<u32>);
+pub struct EquippedAmmo(#[cfg_attr(feature = "inspect", serde(with = "crate::stable_form_id::option"))] pub Option<u32>);
 
 impl Component for EquippedAmmo {
     type Storage = SparseSetStorage<Self>;

@@ -237,7 +237,7 @@ fn spell_cast_data(index: &EsmIndex, spell: &byroredux_plugin::esm::records::Spe
 /// script added. Saved — a script's `AddSpell` must survive a reload.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
-pub struct SpellList(pub Vec<u32>);
+pub struct SpellList(#[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::vec"))] pub Vec<u32>);
 
 impl Component for SpellList {
     type Storage = SparseSetStorage<Self>;

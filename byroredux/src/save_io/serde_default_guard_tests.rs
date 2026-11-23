@@ -908,6 +908,12 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `MenuEventRegistrations` resource column.
     // #7044 — refreshed WITH a major bump (v135 -> v136): `ActorValue` gained the required `stored` layer.
     // #7309 — refreshed WITH a major bump (v142 -> v143): `ObScriptLedger` lost its unread `forms` column.
+<<<<<<< Updated upstream
+=======
+    // LMC-SAV-002..004 (#6676) — refreshed WITH a major bump (v143 -> v144): the slice-1 FormID fields (`Inventory`,
+    // `EquippedWeapon`, `EquippedAmmo`, `Perks`, `FactionReputation`, `CharacterIdentity`, `SpellList`,
+    // `ReadiedSpell`) save as stable identities through `byroredux_core::stable_form_id`.
+>>>>>>> Stashed changes
     const BASELINE_MAJOR: u16 = 144;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
@@ -1379,9 +1385,13 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // LMC-ID-007 / LMC-SAV-001 (#6670) — v142: `SessionProfile` (the profile the save was made with, wire type
     // `ProfileRecord`) joined the saved registry as a NEW resource codec column, refreshed WITH the major bump above.
     // #7309 — v143: `ObScriptLedger` lost its unread `forms` column, refreshed WITH the major bump above.
+<<<<<<< Updated upstream
     // #7348 — v144: `CharacterIdentity` gained the required `class_form_id` (a script-set player class, which the
     // unsaved `Background` cannot keep), refreshed WITH the major bump above.
     const BASELINE_SHAPE_FINGERPRINT: u64 = 0x8a58_9c7e_6307_240a;
+=======
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x9104_bc02_53db_6300;
+>>>>>>> Stashed changes
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.
