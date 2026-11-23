@@ -567,8 +567,7 @@ impl VulkanContext {
                 frame,
                 &self.reservoir_buffers,
                 budget.shadow_filter_iterations,
-                budget.quality_tier
-                    >= crate::vulkan::scene_buffer::SHADOW_FILTER_PENUMBRA_SEARCH_MIN_TIER,
+                crate::vulkan::scene_buffer::penumbra_search_for_tier(budget.quality_tier),
             );
         }
         if let Some(ref mut timers) = self.gpu_timers {
