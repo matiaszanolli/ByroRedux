@@ -211,6 +211,14 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// #7355 — the cache writer is a durable writer like the settings, boot-request, overrides and save writers, and is
+    /// pinned like them (#5164): one `atomic_write`, the staging path bound and handed over once, no clobbering
+    /// fallback (#5143).
+    #[test]
+    fn the_cache_writer_has_no_clobber_fallback() {
+        byroredux_core::atomic_file::assert_no_clobber_fallback(include_str!("terrain_height.rs"));
+    }
+
     /// #6290 — jobs with different source triples can share one cache key, so several
     /// writers publish the same path at once. Every one must succeed, and the file must
     /// always be whole for a concurrent reader.

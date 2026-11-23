@@ -266,14 +266,19 @@ checked bounds → CRC over the payload only → `serde_json::from_slice`), advi
 (`save_42.ess.tmp` rejected), `slots_by_recency` newest-first with slot-number tie-break, ring wrap/resume (`SaveRing::resume` uses `slots_by_recency`'s tie-break, higher slot wins at equal mtimes — SAVE-8 `110790dce`, `resume`'s old `max_by_key` followed arbitrary `read_dir` order).
 Residual checks:
 - **`atomic_write`** (`crates/core/src/atomic_file.rs`; shared with `crates/settings-io`,
-  `crates/boot-request`, `crates/game-detect/src/overrides.rs`) order is exactly: create tmp → `write_all` →
+  `crates/boot-request`, `crates/game-detect/src/overrides.rs`, the terrain-height cache
+  `byroredux/src/asset_provider/terrain_height.rs` and the texture-upscale manifest writer
+  `tools/texture-upscale/src/lib.rs`) order is exactly: create tmp → `write_all` →
   `flush` → `sync_all` → byte-exact read-back → `rename` (all inside `stage_and_rename`) → parent-directory
   fsync. **Any** failure up to the rename removes the temp (#5163 `69fd54fb2`; `failed_rename_removes_the_temp`),
   and no caller may fall back to copying/renaming the temp over the target on error — the old "Windows rename"
-  fallback clobbered good files on disk-full (#5143 `2e95f0bbf`). The three non-save writers pin that with
-  `assert_no_clobber_fallback` (production text only, via `core::source_scan`); `write_slot` is pinned by
+  fallback clobbered good files on disk-full (#5143 `2e95f0bbf`). The five non-save writers pin that with
+  `assert_no_clobber_fallback` (production text only, via `core::source_scan`; the last two since #7355, the
+  guard needs the staging path bound as `temp_path`); `write_slot` is pinned by
   `write_slot_has_no_clobber_fallback` and stages through the unique `atomic_temp_path` (#5247 `eb08e14fd`;
-  the old fixed `save_<slot>.ess.tmp` raced two processes sharing a save dir) after `create_dir_all`. Rename-before-fsync, a length-only read-back, or a new fallback branch is a HIGH
+  the old fixed `save_<slot>.ess.tmp` raced two processes sharing a save dir) after `create_dir_all`. A crash between creating the staging file and renaming it leaves a `.save_<slot>.ess.<pid>.<n>.tmp` the
+  slot scans ignore; `SaveState::new` reclaims the ones at least ten minutes old (`disk::reclaim_stale_staging_files`,
+  #7354, `stale_staging_files_are_reclaimed_and_nothing_else`). Rename-before-fsync, a length-only read-back, or a new fallback branch is a HIGH
   durability hole.
 - **Ring never clobbers the last good save**: `SaveState::new` must build the ring via `SaveRing::resume`
   (not `new`), and the cursor advances only after a committed write (`quicksave_ring_cursor_does_not_advance_on_validation_abort`).

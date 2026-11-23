@@ -205,8 +205,8 @@ pub fn save_manifest(path: &Path, manifest: &Manifest, overwrite: bool) -> Resul
         std::fs::create_dir_all(parent)
             .with_context(|| format!("create manifest directory {}", parent.display()))?;
     }
-    let temp = byroredux_core::atomic_file::atomic_temp_path(path);
-    byroredux_core::atomic_file::atomic_write(path, &temp, text.as_bytes())
+    let temp_path = byroredux_core::atomic_file::atomic_temp_path(path);
+    byroredux_core::atomic_file::atomic_write(path, &temp_path, text.as_bytes())
         .with_context(|| format!("write manifest {}", path.display()))
 }
 
@@ -352,6 +352,14 @@ fn role_rank(role: MapRole) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #7355 — the manifest writer is a durable writer like the settings, boot-request, overrides and save writers, and
+    /// is pinned like them (#5164): one `atomic_write`, the staging path bound and handed over once, no clobbering
+    /// fallback (#5143).
+    #[test]
+    fn the_manifest_writer_has_no_clobber_fallback() {
+        byroredux_core::atomic_file::assert_no_clobber_fallback(include_str!("lib.rs"));
+    }
 
     /// #7192 — an existing manifest is not replaced without `overwrite`; with it, it is replaced.
     #[test]
