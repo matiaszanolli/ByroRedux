@@ -325,6 +325,9 @@ pub(crate) struct GroundCoverCollectScratch {
     pub(crate) candidates: Vec<ChunkCandidate>,
     pub(crate) emitted: FxHashMap<usize, u32>,
     pub(crate) disturber_found: Vec<(f32, GpuGroundCoverDisturber)>,
+    /// The actor behind each `disturber_found` row, so the capsule radius is read
+    /// after the `GlobalTransform` guard is dropped (#3260 lock order).
+    pub(crate) disturber_entities: Vec<byroredux_core::ecs::EntityId>,
     /// #5176 — (horizontal camera distance, slot) per chunk record, sorted
     /// into [`GpuGroundCoverChunk::layout_order`].
     pub(crate) layout_order: Vec<(f32, u32)>,
@@ -677,45 +680,59 @@ pub(crate) fn collect_groundcover_disturbers(
 ) {
     use byroredux_core::ecs::components::{ActorValues, GlobalTransform};
     out.clear();
-    let (Some(actor_q), Some(xform_q)) = (
-        world.query::<ActorValues>(),
-        world.query::<GlobalTransform>(),
-    ) else {
-        return;
-    };
-    let controller_q = world.query::<byroredux_physics::CharacterController>();
     // Anything past this cannot reach a texel of the field, so it would cost a
-    // per-texel loop iteration to contribute exactly zero.
+    // per-texel loop iteration to contribute exactly zero. The cull uses the
+    // largest radius, so it does not need the actor's own.
     let reach = GROUNDCOVER_INTERACTION_UNITS * 0.5 + MAX_DISTURBER_RADIUS;
     let found = &mut scratch.disturber_found;
+    let entities = &mut scratch.disturber_entities;
     found.clear();
-    for (entity, _) in actor_q.iter() {
-        let Some(xform) = xform_q.get(entity) else {
-            continue;
+    entities.clear();
+    {
+        let (Some(actor_q), Some(xform_q)) = (
+            world.query::<ActorValues>(),
+            world.query::<GlobalTransform>(),
+        ) else {
+            return;
         };
-        let pos = xform.translation;
-        let radius = controller_q
-            .as_ref()
-            .and_then(|q| q.get(entity))
-            .map_or(DEFAULT_DISTURBER_RADIUS, |cc| cc.radius)
-            .clamp(1.0, MAX_DISTURBER_RADIUS);
-        let dx = pos.x - camera_pos.x;
-        let dz = pos.z - camera_pos.z;
-        // Horizontal only, for the same reason the chunk cull is horizontal:
-        // an actor on a ledge above the camera is standing in grass the camera
-        // can see, and a 3-D distance would drop it.
-        let dist_sq = dx * dx + dz * dz;
-        if dist_sq > reach * reach {
-            continue;
+        for (entity, _) in actor_q.iter() {
+            let Some(xform) = xform_q.get(entity) else {
+                continue;
+            };
+            let pos = xform.translation;
+            let dx = pos.x - camera_pos.x;
+            let dz = pos.z - camera_pos.z;
+            // Horizontal only, for the same reason the chunk cull is horizontal:
+            // an actor on a ledge above the camera is standing in grass the camera
+            // can see, and a 3-D distance would drop it.
+            let dist_sq = dx * dx + dz * dz;
+            if dist_sq > reach * reach {
+                continue;
+            }
+            found.push((
+                dist_sq,
+                GpuGroundCoverDisturber {
+                    world_xz: [pos.x, pos.z],
+                    radius: DEFAULT_DISTURBER_RADIUS,
+                    strength: 1.0,
+                },
+            ));
+            entities.push(entity);
         }
-        found.push((
-            dist_sq,
-            GpuGroundCoverDisturber {
-                world_xz: [pos.x, pos.z],
-                radius,
-                strength: 1.0,
-            },
-        ));
+    }
+    // The capsule radius, read with the `GlobalTransform` guard dropped:
+    // `character_controller_system` holds `CharacterController` → `Transform` and
+    // propagation `Transform` → `GlobalTransform`, so holding `GlobalTransform`
+    // while reading `CharacterController` closes a cycle (#3260).
+    if let Some(controller_q) = world.query::<byroredux_physics::CharacterController>() {
+        for ((_, disturber), entity) in found.iter_mut().zip(entities.iter()) {
+            if let Some(cc) = controller_q.get(*entity) {
+                disturber.radius = cc.radius;
+            }
+        }
+    }
+    for (_, disturber) in found.iter_mut() {
+        disturber.radius = disturber.radius.clamp(1.0, MAX_DISTURBER_RADIUS);
     }
     // Nearest first, because the renderer truncates at
     // `GROUNDCOVER_INTERACTION_MAX_DISTURBERS` and the ones nearest the camera
@@ -2090,6 +2107,41 @@ mod tests {
         // No CharacterController on any of them, so each takes the vanilla
         // actor capsule rather than a number invented at the call site.
         assert_eq!(out[0].radius, DEFAULT_DISTURBER_RADIUS);
+    }
+
+    /// `character_controller_system` holds `CharacterController` while it reads `Transform`, and
+    /// propagation holds `Transform` while it writes `GlobalTransform`. A gather that holds
+    /// `GlobalTransform` while it reads `CharacterController` closes that cycle (#3260;
+    /// `camera_follow_system` drops its `GlobalTransform` guard first for the same reason). No disturber
+    /// fixture had a `CharacterController`, so the lock-order lane (`BYRO_LOCK_ORDER_CHECK=1`) never saw
+    /// it. The two edges are taken here the way those systems take them, then the field is gathered.
+    #[test]
+    fn the_disturber_gather_reads_controllers_after_dropping_global_transform() {
+        use byroredux_core::ecs::components::{ActorValues, GlobalTransform, Transform};
+        use byroredux_physics::CharacterController;
+        let mut world = World::new();
+        let actor = world.spawn();
+        world.insert(actor, ActorValues::from_pairs([(7, 5.0)]));
+        world.insert(actor, Transform::IDENTITY);
+        world.insert(actor, GlobalTransform { translation: Vec3::new(100.0, 0.0, 0.0), ..GlobalTransform::IDENTITY });
+        let wide = CharacterController { radius: 40.0, ..CharacterController::HUMAN };
+        world.insert(actor, wide);
+        {
+            // `character_controller_system`: `CharacterController` held, then `Transform`.
+            let controllers = world.query::<CharacterController>();
+            let _transforms = world.query::<Transform>();
+            drop(controllers);
+        }
+        {
+            // Propagation: `Transform` held, then `GlobalTransform`.
+            let transforms = world.query::<Transform>();
+            let _globals = world.query::<GlobalTransform>();
+            drop(transforms);
+        }
+        let mut out = Vec::new();
+        collect_groundcover_disturbers(&world, Vec3::ZERO, &mut GroundCoverCollectScratch::default(), &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].radius, 40.0f32.clamp(1.0, MAX_DISTURBER_RADIUS), "the actor's own capsule");
     }
 
     /// An actor far enough out cannot reach a texel of the field, so it would
