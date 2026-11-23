@@ -318,7 +318,7 @@ pub(crate) fn authored_container_inventory(
 /// restructure flips a test, not the scripting layer silently. The second
 /// consumer is `consumables.rs`'s CTDA fn-586 whitelist
 /// (`fn586_condition_gate_is_profile_scoped_not_game_scoped`).
-fn obscript_dialect_for(
+pub(crate) fn obscript_dialect_for(
     game: byroredux_plugin::esm::reader::GameKind,
     profile: byroredux_core::character::CharacterRulesProfile,
 ) -> Option<byroredux_scripting::ObscriptDialect> {

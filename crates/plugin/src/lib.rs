@@ -39,6 +39,7 @@ pub mod equip;
 pub mod esm;
 pub mod extension;
 pub mod load_order_import;
+pub mod mod_catalog;
 pub mod manifest;
 pub mod record;
 pub mod resolver;

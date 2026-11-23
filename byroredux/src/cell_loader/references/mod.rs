@@ -31,6 +31,8 @@ use super::spawn::{light_radius_or_default, spawn_placed_instances};
 use super::FrameTimeBudget;
 
 mod attach;
+/// The ObScript dialect a game's extender calls decode in, for the preflight's eager script scan (LMC-SCR-005).
+pub(crate) use attach::obscript_dialect_for;
 mod import;
 
 use attach::{attach_script_for_refr, trigger_volume_from_phantom, trigger_volume_from_primitive};

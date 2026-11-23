@@ -541,6 +541,20 @@ pub(crate) fn run() -> Result<()> {
         return crate::load_order_import::run(&args);
     }
 
+    // --preflight [--preflight-json <file>]: the plugin report, then every file each mod root ships classified by the
+    // mechanism catalog, an eager extender-call scan of its scripts, the asset paths two sources ship, and a coverage
+    // summary; nothing a mod ships is executed (LMC-DX-001, #6671). See `preflight`.
+    if args.iter().any(|a| a == crate::preflight::PREFLIGHT_FLAG) {
+        let esm_path = parse_string_arg(&args, "--esm").ok_or_else(|| {
+            anyhow::anyhow!("--preflight requires --esm <PATH>, --game <KEY> or --boot <request> to name a profile")
+        })?;
+        let plugin_paths: Vec<String> = crate::cli_args::parse_all_string_args(&args, "--master")
+            .into_iter()
+            .chain(std::iter::once(esm_path))
+            .collect();
+        return crate::preflight::run(&plugin_paths, &args);
+    }
+
     // --plugin-report [FORMID] [fields]: what activation did to the plugin profile and what the fold did with the
     // forms more than one plugin carries (or one form's carriers, winner and changed sub-records), then exit. The
     // console's `plugins.activation` / `plugins.conflicts` without a window (LMC-REC-007, #6670).

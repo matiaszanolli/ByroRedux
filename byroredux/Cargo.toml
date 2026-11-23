@@ -38,6 +38,7 @@ byroredux-platform = { workspace = true }
 # `save` feature: derive serde on script-owned game-state components
 # (ScriptTimer) so the M45 save registry can snapshot them.
 byroredux-scripting = { workspace = true, features = ["save"] }
+byroredux-pex = { workspace = true }
 byroredux-nif = { workspace = true }
 # #2923 — `App::skin_offsets` is probed once per mesh draw per frame.
 rustc-hash = { workspace = true }

@@ -3209,7 +3209,9 @@ many references therefore counts it once. Operators can run `sdk.compat` in
 `byro-dbg` to see deterministic provider/function aggregates, occurrence and
 unique-script counts, mapped engine services, malformed-call totals, and
 whether the registry hit its budget. This is an observed-script report for the
-current engine world, not yet an eager scan of every PEX in every archive.
+current engine world. The eager scan of every script a mod profile ships, loose
+or archived, Papyrus or ObScript, is the preflight (`byroredux … --preflight`,
+LMC-DX-001 / LMC-SCR-005).
 For exact `StorageUtil` global integer/string read aliases, each aggregate also
 prints the target `byro.storage` operation, expected value variant, and
 `ObjKey == None` constraint. Writes and other `StorageUtil` families are

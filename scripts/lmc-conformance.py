@@ -26,7 +26,12 @@ Per mod, the §7.3 rules:
                the installed corpus mods it `requires`. Checking each
                mechanism's disposition needs the preflight (LMC-DX-001):
                until it exists, rule 1 is activation only.
-  2 preflight  not measurable yet: needs LMC-DX-001 / LMC-SCR-005
+  2 preflight  the same run is `--preflight` (LMC-DX-001), which prints the
+               plugin report first and writes `preflight.json`: every file,
+               INI key and extender call the mod's own root ships must be
+               classified by the mechanism catalog (a catalogued D5 is
+               reported, not failed, as §7.3 rule 2 says); an unclassified
+               item fails the rule until the catalog says what it is
   3 scenario   the mod's acceptance scenario (`[mod.scenario]` in the corpus):
                the engine is launched on the profile with `--bench-hold`, and
                each step's byro-dbg command must print its `expect` text
@@ -79,7 +84,6 @@ PLUGIN_EXTENSIONS = (".esm", ".esp", ".esl")
 FIXTURE_OF = {"fnv": "fnv", "skyrim": "skyrim_se"}
 RULES = ("activate", "preflight", "scenario", "save")
 NOT_MEASURABLE = {
-    "preflight": "not measurable yet: needs the preflight (LMC-DX-001, LMC-SCR-005)",
     "save": "not measurable yet: needs profile-change saves (LMC-SAV-002..004)",
 }
 SKIP = 77
@@ -230,6 +234,30 @@ def judge_activation(report: str, status: int, own: list[str], root_label: str) 
             return False, f"root {root_label}: {m.group(1)}"
         return True, f"root opened: {m.group(1)}"
     return True, f"{len(own)} plugin(s) loaded: {', '.join(own)}"
+
+
+# ── rule 2: preflight ───────────────────────────────────────────────────────
+
+def judge_preflight(preflight: dict | None, root_label: str) -> tuple[bool, str]:
+    """Read `--preflight-json` output for the mod's own root: (passed, reason)."""
+    if preflight is None:
+        return False, "the preflight did not run (the profile did not activate)"
+    root = next((r for r in preflight.get("roots", []) if r.get("root") == root_label), None)
+    if root is None:
+        return False, f"the preflight lists no mod root {root_label}"
+    counts: dict[str, int] = {}
+    for mech in root.get("mechanisms", {}).values():
+        counts[mech["disposition"]] = counts.get(mech["disposition"], 0) + mech["count"]
+    for call in root.get("calls", []):
+        counts[call["disposition"]] = counts.get(call["disposition"], 0) + call["occurrences"]
+    tally = ", ".join(f"{d} {n}" for d, n in sorted(counts.items())) or "nothing classified"
+    unclassified = root.get("unclassified", [])
+    if unclassified:
+        shown = "; ".join(unclassified[:3]) + (f"; … {len(unclassified) - 3} more" if len(unclassified) > 3 else "")
+        return False, f"{len(unclassified)} unclassified: {shown}"
+    d5 = [c["function"] for c in root.get("calls", []) if c["disposition"] == "D5"]
+    d5 += [m for m, v in root.get("mechanisms", {}).items() if v["disposition"] == "D5"]
+    return True, tally + (f"; catalogued D5: {', '.join(sorted(set(d5))[:5])}" if d5 else "")
 
 
 # ── rule 3: scenario ────────────────────────────────────────────────────────
@@ -435,16 +463,24 @@ def main() -> int:
             rules = {k: {"status": "n/a", "detail": v} for k, v in NOT_MEASURABLE.items()}
             if prof.missing:
                 rules["activate"] = {"status": "blocked", "detail": "masters not installed: " + ", ".join(prof.missing)}
+                rules["preflight"] = {"status": "blocked", "detail": "profile does not resolve"}
                 rules["scenario"] = {"status": "blocked", "detail": "profile does not resolve"}
             else:
                 args = prof.engine_args(base_esm)
-                (mwork / "activate.cmd").write_text(" ".join([str(engine)] + args + ["--plugin-report"]) + "\n")
-                res = subprocess.run([str(engine)] + args + ["--plugin-report"], capture_output=True, text=True,
-                                     timeout=1800)
+                # One headless run serves rules 1 and 2: `--preflight` prints the plugin report first.
+                preflight_json = mwork / "preflight.json"
+                preflight_json.unlink(missing_ok=True)
+                run = [str(engine)] + args + ["--preflight", "--preflight-json", str(preflight_json)]
+                (mwork / "activate.cmd").write_text(" ".join(run) + "\n")
+                res = subprocess.run(run, capture_output=True, text=True, timeout=1800)
                 report = res.stdout + res.stderr
                 (mwork / "activate.log").write_text(report)
-                ok, why = judge_activation(report, res.returncode, prof.own, installed[mod["id"]].name.lower())
+                own_root = installed[mod["id"]].name.lower()
+                ok, why = judge_activation(report, res.returncode, prof.own, own_root)
                 rules["activate"] = {"status": "pass" if ok else "fail", "detail": why}
+                preflight = json.loads(preflight_json.read_text()) if res.returncode == 0 and preflight_json.is_file() else None
+                pok, pwhy = judge_preflight(preflight, own_root)
+                rules["preflight"] = {"status": "pass" if pok else "fail", "detail": pwhy}
                 scenario = mod.get("scenario")
                 if not isinstance(scenario, dict):
                     rules["scenario"] = {"status": "missing", "detail": "no acceptance scenario written (§7.3 rule 3)"}
@@ -534,6 +570,15 @@ def self_test() -> int:
     dis = good + "disabled: ModB.esp — its master Absent.esm is not in the profile\n"
     check("a disabled plugin fails", not judge_activation(dis, 0, ["ModB.esp"], "x")[0])
     check("an asset root that opens passes", judge_activation(good, 0, [], "fnv-tex")[0])
+    clean = {"roots": [{"root": "fnv-b", "unclassified": [],
+                        "mechanisms": {"R1": {"disposition": "D1", "count": 1}},
+                        "calls": [{"function": "Ar_Map", "disposition": "D5", "occurrences": 2}]}]}
+    pok, pwhy = judge_preflight(clean, "fnv-b")
+    check("rule 2: a classified root passes and names its catalogued D5", pok and "D5 2" in pwhy and "Ar_Map" in pwhy, pwhy)
+    dirty = {"roots": [{"root": "fnv-b", "unclassified": ["NVSE/Plugins/x.dll"], "mechanisms": {}, "calls": []}]}
+    check("rule 2: an unclassified item fails", not judge_preflight(dirty, "fnv-b")[0])
+    check("rule 2: no preflight fails", not judge_preflight(None, "fnv-b")[0])
+    check("rule 2: the mod's root missing fails", not judge_preflight(clean, "fnv-c")[0])
     check("an asset root that is disabled fails",
           not judge_activation(good.replace("1 loose file", "disabled with its plugins"), 0, [], "fnv-tex")[0])
 

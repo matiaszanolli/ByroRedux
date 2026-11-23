@@ -573,6 +573,7 @@ dependencies = [
  "byroredux-native-ui",
  "byroredux-nif",
  "byroredux-papyrus",
+ "byroredux-pex",
  "byroredux-physics",
  "byroredux-platform",
  "byroredux-plugin",

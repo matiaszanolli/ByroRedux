@@ -18,6 +18,10 @@ Checks (each is an error):
       `LMC-<AREA>-<NNN>` id names one the PRD defines
   C8  every mechanism the PRD refers to as `§3.1 <id>` exists in the catalog
   C9  the generated block in the PRD is up to date
+  C15 every preflight pattern (`paths`, `game_dir_paths`, `ini_keys`, and
+      `[not_game_data].paths`) is a lowercase relative `/` path whose
+      segments are literal, `*`-wildcarded or `**`, and no pattern is listed
+      twice in one field kind
 
 The conformance corpus (PRD §7.2, `assets/legacy_mod_compat/corpus.toml`) is
 checked against the catalog:
@@ -163,8 +167,40 @@ def scenario_errors(sc) -> list[str]:
     return errors
 
 
-def validate(cat: dict, root: Path) -> list[str]:
+PATTERN_SEGMENT = re.compile(r"^(\*\*|[a-z0-9_ .*?+@'()\[\]-]+)$")
+
+
+def pattern_errors(cat: dict) -> list[str]:
+    """C15: the preflight's classification patterns (LMC-DX-001)."""
     errors: list[str] = []
+    fields = ("paths", "game_dir_paths", "ini_keys")
+    owners: dict[tuple[str, str], str] = {}
+    entries = [(e.get("id", f"#{i}"), e) for i, e in enumerate(cat.get("mechanism", []))]
+    entries.append(("[not_game_data]", cat.get("not_game_data") or {}))
+    for label, e in entries:
+        for field in fields:
+            value = e.get(field)
+            if value is None:
+                continue
+            if not isinstance(value, list) or not all(isinstance(p, str) for p in value):
+                errors.append(f"C15 {label}: `{field}` must be a list of strings")
+                continue
+            for pat in value:
+                segments = pat.split("/")
+                if (pat != pat.lower() or pat.startswith("/") or "\\" in pat
+                        or not all(PATTERN_SEGMENT.match(seg) for seg in segments)
+                        or any("**" in seg and seg != "**" for seg in segments)):
+                    errors.append(f"C15 {label}: `{field}` pattern {pat!r} is not a lowercase relative "
+                                  "`/` path of literal, `*` or `**` segments")
+                key = ("ini" if field == "ini_keys" else field, pat)
+                if key in owners:
+                    errors.append(f"C15 {label}: `{field}` pattern {pat!r} is also listed by {owners[key]}")
+                owners[key] = label
+    return errors
+
+
+def validate(cat: dict, root: Path) -> list[str]:
+    errors: list[str] = pattern_errors(cat)
     if not isinstance(cat.get("catalog_version"), int):
         errors.append("C1 `catalog_version` missing or not an integer")
     games = cat.get("games")
