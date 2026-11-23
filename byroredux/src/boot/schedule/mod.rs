@@ -808,6 +808,13 @@ mod system_access_declaration_tests {
     // #7318 — the interaction prompt's rest / jail-bed check.
     const JAIL_SRC: &str = include_str!("../../../../crates/scripting/src/jail.rs");
     const OBLIVION_REST_SRC: &str = include_str!("../../oblivion_rest.rs");
+    // #7319 — the newer declared exclusives and their cross-file hops.
+    const DETECTION_TICK_SRC: &str = include_str!("../../detection/tick.rs");
+    const STANCE_SRC: &str = include_str!("../../systems/stance.rs");
+    const PLAYER_CAST_SRC: &str = include_str!("../../player_cast.rs");
+    const PROJECTILES_SRC: &str = include_str!("../../systems/projectiles.rs");
+    const BOW_SRC: &str = include_str!("../../bow.rs");
+    const PLAYER_SEAT_SRC: &str = include_str!("../../player_seat.rs");
     // #5069 — equipment_appearance_system's mid-life gear-import hop lives
     // in npc_spawn/loot_appearance.rs; exclusive rows are invisible to the
     // PARALLEL_SYSTEMS proof, so it gets its own scan below.
@@ -1154,6 +1161,71 @@ mod system_access_declaration_tests {
                 (CHALLENGES_SRC, "note"),
             ],
             "combat_damage_system",
+        );
+    }
+
+    // #7319 — the declared exclusives added since the guard's named list was drawn up. An exclusive is
+    // never paired, but its row is the basis for promoting it to a parallel lane and for the
+    // `sys.accesses` report, so a row that declares less than the body takes reads as safe when it is not.
+    #[test]
+    fn detection_tick_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(
+            &[(DETECTION_TICK_SRC, "detection_tick_system")],
+            "detection_tick_system",
+        );
+    }
+
+    #[test]
+    fn sneak_stance_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(&[(STANCE_SRC, "sneak_stance_system")], "sneak_stance_system");
+    }
+
+    #[test]
+    fn player_cast_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(
+            &[
+                (PLAYER_CAST_SRC, "player_cast_system"),
+                // The aim ray, the touch reach and the shooter's own bodies.
+                (INTERACTION_SRC, "camera_ray"),
+                (COMBAT_SRC, "actor_in_reach"),
+                (PROJECTILES_SRC, "bodies_of"),
+            ],
+            "player_cast_system",
+        );
+    }
+
+    #[test]
+    fn player_bow_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(
+            &[
+                (BOW_SRC, "player_bow_system"),
+                (INTERACTION_SRC, "camera_ray"),
+                (PROJECTILES_SRC, "bodies_of"),
+                // `remove_items` spends the arrow.
+                (FRAGMENT_EFFECTS_SRC, "remove_items"),
+            ],
+            "player_bow_system",
+        );
+    }
+
+    #[test]
+    fn player_seat_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(&[(PLAYER_SEAT_SRC, "player_seat_system")], "player_seat_system");
+    }
+
+    #[test]
+    fn combat_input_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(
+            &[
+                (COMBAT_SRC, "combat_input_system"),
+                // A gun's shot (`fire_player_gun`, which spends ammo through `remove_items`) and a sneak
+                // strike (`sneak_strike` → `unaware_of_player`).
+                (COMBAT_SRC, "fire_player_gun"),
+                (COMBAT_SRC, "sneak_strike"),
+                (DETECTION_TICK_SRC, "unaware_of_player"),
+                (FRAGMENT_EFFECTS_SRC, "remove_items"),
+            ],
+            "combat_input_system",
         );
     }
 
