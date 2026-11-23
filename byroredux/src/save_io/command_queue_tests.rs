@@ -513,6 +513,43 @@ fn a_quicksave_waits_for_queued_actor_moves_to_reach_their_ledger() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// #7353 — `input.press quicksave` and `engine.quit` in one batch: a quicksave SAVE-4 defers for a queued actor move
+/// was still waiting when the next `about_to_wait` shut the engine down, and the save was lost without a message.
+/// The quit poll now holds while a player save action is queued, so the save lands first; and the wait is capped, so
+/// a queue that never empties cannot keep the process alive.
+#[test]
+fn a_quit_waits_for_the_quicksave_it_was_batched_with() {
+    use crate::app_events::{quit_waits_for_a_queued_save, GracefulExitRequested, QUIT_SAVE_WAIT_TICKS};
+    let dir = std::env::temp_dir().join(format!("byro_quit_save_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut world = quicksave_test_world(dir.clone());
+    world.insert_resource(PendingPlayerSaveActions::default());
+    world.insert_resource(GracefulExitRequested(true, 0));
+    let request = byroredux_scripting::ActorMoveRequest::ToPackageLocation { actor: 0x104C1C };
+    world.insert_resource(byroredux_scripting::PendingActorMoves(vec![request]));
+    queue_player_save_action(&world, PlayerSaveAction::Quicksave).unwrap();
+
+    // The frame loop: each tick the poll decides whether to shut down, then the drain runs.
+    let (mut ticks, mut saved) = (0, 0);
+    while quit_waits_for_a_queued_save(&world) {
+        ticks += 1;
+        saved += execute_pending_player_save_actions(&world).len();
+        assert!(ticks < 20, "the quit never stopped waiting");
+    }
+    assert_eq!(saved, 1, "the quicksave was written before the shutdown");
+    assert!(ticks <= QUIT_SAVE_WAIT_TICKS, "the wait stays within its cap ({ticks} ticks)");
+
+    // Nothing queued: the quit does not wait at all.
+    world.insert_resource(GracefulExitRequested(true, 0));
+    assert!(!quit_waits_for_a_queued_save(&world));
+
+    // A queue that nothing drains holds the quit for the cap and then lets it through.
+    queue_player_save_action(&world, PlayerSaveAction::Quicksave).unwrap();
+    let waited = (0..50).take_while(|_| quit_waits_for_a_queued_save(&world)).count();
+    assert_eq!(waited as u32, QUIT_SAVE_WAIT_TICKS);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// SAVE-3 — a non-finite `f32` in a saved column encodes as JSON `null`, which does not decode back. The save
 /// must be refused before anything is written (and without advancing the ring), not committed and then
 /// unloadable.

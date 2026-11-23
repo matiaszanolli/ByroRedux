@@ -606,7 +606,14 @@ pub(crate) fn quickload_latest(world: &World) -> CommandOutput {
 /// the save registry/component lock set. FIFO order makes a quicksave followed
 /// by quickload deterministic within one frame.
 /// How many ticks a queued quicksave waits for pending actor moves (SAVE-4) before it saves anyway.
-const MAX_SAVE_DEFERRALS: u32 = 3;
+pub(crate) const MAX_SAVE_DEFERRALS: u32 = 3;
+
+/// Whether a player save or load action is still queued, waiting for the post-scheduler drain
+/// ([`execute_pending_player_save_actions`]). The quit poll reads it (#7353): a quicksave deferred by SAVE-4 is
+/// still here on the frame after `engine.quit`.
+pub(crate) fn player_save_actions_pending(world: &World) -> bool {
+    world.try_resource::<PendingPlayerSaveActions>().is_some_and(|pending| !pending.queued().is_empty())
+}
 
 pub(crate) fn execute_pending_player_save_actions(
     world: &World,

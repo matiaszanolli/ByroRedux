@@ -118,8 +118,40 @@ fn record_about_to_wait_timings(
 /// save actions deferred alongside the quit (`input.press quicksave` +
 /// `engine.quit` in one batch) execute in that frame's post-scheduler step
 /// before the teardown begins.
+///
+/// #7353 — "executes in that frame" stopped being true when SAVE-4 let a quicksave wait up to
+/// `MAX_SAVE_DEFERRALS` ticks for a queued actor move, so the next poll would tear the world down with the save still
+/// queued, losing it with no message. The poll therefore holds the shutdown while a player save action is queued
+/// ([`quit_waits_for_a_queued_save`]), at most [`QUIT_SAVE_WAIT_TICKS`] polls, counted in the second field.
 #[derive(Debug, Default, Clone, Copy)]
-pub(crate) struct GracefulExitRequested(pub bool);
+pub(crate) struct GracefulExitRequested(pub bool, pub u32);
+
+/// How many polls the shutdown holds for a queued player save: the drain defers a quicksave at most
+/// `MAX_SAVE_DEFERRALS` ticks and runs it on the next, plus one for the tick the quit was requested in.
+pub(crate) const QUIT_SAVE_WAIT_TICKS: u32 = crate::save_io::MAX_SAVE_DEFERRALS + 2;
+
+/// Whether the orderly shutdown `engine.quit` requested is due this tick: it was requested, and no player save is still
+/// waiting out SAVE-4's deferral ([`quit_waits_for_a_queued_save`], #7353), which drains in this frame's post-scheduler
+/// step so the next poll shuts down.
+pub(crate) fn graceful_exit_due(world: &byroredux_core::ecs::World) -> bool {
+    world.try_resource::<GracefulExitRequested>().is_some_and(|request| request.0) && !quit_waits_for_a_queued_save(world)
+}
+
+/// Whether the shutdown `engine.quit` requested should wait one more tick because a player save action is still queued
+/// (#7353). Counts the waits, so a queue that never empties cannot keep the process alive.
+pub(crate) fn quit_waits_for_a_queued_save(world: &byroredux_core::ecs::World) -> bool {
+    if !crate::save_io::player_save_actions_pending(world) {
+        return false;
+    }
+    let Some(mut request) = world.try_resource_mut::<GracefulExitRequested>() else {
+        return false;
+    };
+    if request.1 >= QUIT_SAVE_WAIT_TICKS {
+        return false;
+    }
+    request.1 += 1;
+    true
+}
 
 
 /// M-LIGHT RLT-PERF-005 — bench frames excluded from the adaptive-tier
@@ -1534,11 +1566,7 @@ impl ApplicationHandler for App {
         // `engine.quit` (or any future non-window frontend) asked for the
         // orderly shutdown. Same arm as `CloseRequested` and the pause-menu
         // Quit; see `GracefulExitRequested` for the one-frame-later polling.
-        if self
-            .world
-            .try_resource::<GracefulExitRequested>()
-            .is_some_and(|request| request.0)
-        {
+        if graceful_exit_due(&self.world) {
             self.shutdown(event_loop);
             return;
         }
@@ -1967,6 +1995,26 @@ fn pressed_key(event: &WindowEvent) -> Option<KeyCode> {
 /// neither releases the pin.
 fn press_takes_world_control(code: KeyCode, inventory_pressed: bool) -> bool {
     code != KeyCode::Escape && !inventory_pressed
+}
+
+/// #7353 — the `engine.quit` poll holds the shutdown for a queued player save (see [`GracefulExitRequested`]).
+#[cfg(test)]
+mod quit_save_wait_tests {
+    #[test]
+    fn the_quit_poll_asks_whether_a_save_is_still_queued_before_shutting_down() {
+        let src = include_str!("app_events.rs");
+        // The decision: requested, and no save still queued.
+        let due = src.find("pub(crate) fn graceful_exit_due(").expect("the exit decision");
+        let decision = &src[due..(due + 400).min(src.len())];
+        assert!(
+            decision.contains("request.0") && decision.contains("&& !quit_waits_for_a_queued_save("),
+            "the decision must hold the exit while a save is queued (#7353): {decision}"
+        );
+        // And the frame loop shuts down on exactly that decision.
+        let poll = src.find("if graceful_exit_due(&self.world)").expect("the poll must use the decision");
+        let window = &src[poll..(poll + 120).min(src.len())];
+        assert!(window.contains("self.shutdown("), "the decision gates the shutdown: {window}");
+    }
 }
 
 // Moved here with the `resumed` arm it pins (#2731); see the note in
