@@ -6846,6 +6846,87 @@ fn the_native_wave_reads_locks_doors_cells_states_shields_weapons_and_templates(
     assert_eq!(quest_property(&world, "Open"), Some(1.0), "an open, settled door is 1 (Open)");
 }
 
+/// The second native wave: `SetScale` scales a reference, `SetRestrained` restrains an actor other than
+/// the player, and `MoveToNode` puts a reference on the named node of another's 3D (its position and
+/// rotation), as the CK pages give them.
+#[test]
+fn set_scale_set_restrained_and_move_to_node_act_on_their_references() {
+    use byroredux_core::ecs::components::{Children, GlobalTransform, Name, Transform};
+    use byroredux_core::math::{Quat, Vec3};
+    const ITEM: u32 = 0x0000_1701;
+    const RACK: u32 = 0x0000_1702;
+    const GUARD: u32 = 0x0000_1703;
+    let script = parsed_source(
+        "ScriptName QF_VmPlace extends Quest\n\
+         ObjectReference Property Item Auto\n\
+         ObjectReference Property Rack Auto\n\
+         Actor Property Guard Auto\n\
+         Function Fragment_1()\n\
+           Item.SetScale(2.5)\n\
+           Guard.SetRestrained()\n\
+           Item.MoveToNode(Rack, \"SwordNode\")\n\
+         EndFunction\n",
+    );
+    if let Err(why) = crate::fragment::vm::checker::check_function_reason(Arc::clone(&script), "Fragment_1", None) {
+        panic!("{why}")
+    }
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(QuestStageState::default());
+    world.register::<FormIdComponent>();
+    world.register::<crate::ActorControlState>();
+    let mut pool = FormIdPool::default();
+    let mut id = |local: u32| pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(local) });
+    let (item_id, rack_id, guard_id) = (id(ITEM), id(RACK), id(GUARD));
+    world.insert_resource(pool);
+    let mut strings = byroredux_core::string::StringPool::default();
+    let node_name = strings.intern("SwordNode");
+    world.insert_resource(strings);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    let item = world.spawn();
+    world.insert(item, FormIdComponent(item_id));
+    world.insert(item, Transform::default());
+    let rack = world.spawn();
+    world.insert(rack, FormIdComponent(rack_id));
+    world.insert(rack, Transform::default());
+    let node = world.spawn();
+    world.insert(node, Name(node_name));
+    let at = Vec3::new(10.0, 20.0, 30.0);
+    let turned = Quat::from_rotation_y(1.0);
+    world.insert(node, GlobalTransform::new(at, turned, 1.0));
+    world.insert(rack, Children(vec![node]));
+    let guard = world.spawn();
+    world.insert(guard, FormIdComponent(guard_id));
+    let object = |name: &str, form_id: u32| ScriptProperty { name: name.into(), status: 1, value: PropertyValue::Object { form_id, alias: -1 } };
+    let vmad = ScriptInstanceData {
+        version: 5,
+        object_format: 2,
+        scripts: vec![ScriptInstance {
+            name: "QF_VmPlace".into(),
+            status: 0,
+            properties: vec![object("Item", ITEM), object("Rack", RACK), object("Guard", GUARD)],
+        }],
+    };
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        fragments.insert_vmad(Q, vmad);
+        fragments.insert_vm_script(script);
+        fragments.insert(
+            Q,
+            10,
+            vec![Effect::Interpret { script: "QF_VmPlace".into(), function: "Fragment_1".into(), args: Vec::new(), resume: None }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    let placed = *world.get::<Transform>(item).unwrap();
+    assert_eq!(placed.scale, 2.5, "SetScale");
+    assert!((placed.translation - at).length() < 1e-4, "MoveToNode takes the node's position");
+    assert!(placed.rotation.abs_diff_eq(turned, 1e-5), "and its rotation");
+    assert!(world.get::<crate::ActorControlState>(guard).is_some_and(|state| state.restrained), "SetRestrained");
+}
+
 /// CK *WaitGameTime - Utility*: "Pauses the script for at least the specified amount of game time":
 /// the run suspends until the game clock has advanced by the wait, however little real time passes.
 #[test]

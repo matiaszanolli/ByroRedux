@@ -5174,14 +5174,20 @@ fn set_open_declines_with_extra_arg() {
     assert_eq!(lower_fragment(&body), None);
 }
 
+/// The player's restraint is `SetPlayerRestrained`; another actor's is `SetRestrained` (its
+/// `ActorControlState`, which the package system honours). An extra argument declines either.
 #[test]
-fn set_player_restrained_declines_on_non_player_receiver_and_extra_arg() {
+fn set_restrained_lowers_per_receiver_and_declines_an_extra_arg() {
     let non_player = first_fn_body(
         "ScriptName QF extends Quest\n\
          Function Fragment_21()\n\
          SomeActor.SetRestrained(true)\n EndFunction\n",
     );
-    assert_eq!(lower_fragment(&non_player), None);
+    assert!(
+        matches!(lower_fragment(&non_player).as_deref(), Some([Effect::SetRestrained { restrained: true, .. }])),
+        "{:?}",
+        lower_fragment(&non_player)
+    );
 
     let extra_arg = first_fn_body(
         "ScriptName QF extends Quest\n\

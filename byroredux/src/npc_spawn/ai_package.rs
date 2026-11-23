@@ -1356,6 +1356,11 @@ pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
     // next tick.
     let mut unconscious = Vec::new();
     byroredux_scripting::collect_unconscious(world, &mut unconscious);
+    // A restrained actor (`SetRestrained`) cannot move either: it walks no package, as the unconscious
+    // do, though unlike them it still talks and fights.
+    if let Some(states) = world.query::<byroredux_scripting::ActorControlState>() {
+        unconscious.extend(states.iter().filter(|(_, state)| state.restrained).map(|(entity, _)| entity));
+    }
     for &actor in &unconscious {
         suspend_ambient_behavior_for_combat(world, actor);
     }
@@ -3792,6 +3797,23 @@ mod tests {
         });
         ambient_ai_package_system(&world, 0.0);
         assert!(world.has::<WanderBehavior>(actor), "restored on waking");
+    }
+
+    /// `SetRestrained`: a restrained actor cannot move, so it walks no package either; releasing it
+    /// restores the package.
+    #[test]
+    fn restraint_suspends_the_ambient_package_until_released() {
+        let (mut world, actor) = setup_actor(10.0, vec![pack(0x100, PROCEDURE_WANDER, None)]);
+        world.register::<byroredux_scripting::ActorControlState>();
+        assert!(world.has::<WanderBehavior>(actor));
+        byroredux_scripting::update_actor_control(&world, actor, |state| state.set_restrained(true));
+        ambient_ai_package_system(&world, 0.0);
+        assert!(!world.has::<WanderBehavior>(actor), "restrained this tick");
+        ambient_ai_package_system(&world, 0.0);
+        assert!(!world.has::<WanderBehavior>(actor), "no re-selection");
+        byroredux_scripting::update_actor_control(&world, actor, |state| state.set_restrained(false));
+        ambient_ai_package_system(&world, 0.0);
+        assert!(world.has::<WanderBehavior>(actor), "restored on release");
     }
 
     /// #4703 — a seated Sandbox actor put into combat stands up: `Seated`

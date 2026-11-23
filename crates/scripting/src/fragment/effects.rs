@@ -210,6 +210,8 @@ pub(crate) fn apply_effect(
             apply_inventory_effect(effect, context, vmad, world, stages, deferred)
         }
         Effect::MoveTo { .. }
+        | Effect::MoveToNode { .. }
+        | Effect::SetScale { .. }
         | Effect::MoveToEditorLocation { .. }
         | Effect::MoveToPackageLocation { .. }
         | Effect::MovePlayerTo { .. }
@@ -300,6 +302,7 @@ pub(crate) fn apply_effect(
         | Effect::StopCombatAlarm { .. }
         | Effect::SetCrimeFaction { .. }
         | Effect::SetUnconscious { .. }
+        | Effect::SetRestrained { .. }
         | Effect::SetGhost { .. }
         | Effect::SetNotShowOnStealthMeter { .. }
         | Effect::EvaluatePackage { .. } => {

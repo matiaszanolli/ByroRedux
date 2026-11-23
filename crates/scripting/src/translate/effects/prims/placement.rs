@@ -63,6 +63,32 @@ pub(super) fn prim_move_to(e: &Expr, scope: &Scope) -> Option<Effect> {
     Some(Effect::MoveTo { moved, destination, offset, match_rotation })
 }
 
+/// `<moved>.MoveToNode(<target>, "<node>")`: the node name must be a literal.
+pub(super) fn prim_move_to_node(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "MoveToNode")?;
+    let [target, node] = args else { return None };
+    let Expr::StringLit(node) = &node.value.node else { return None };
+    if player_expr_ref(object, scope) {
+        return None;
+    }
+    Some(Effect::MoveToNode {
+        moved: receiver_object(object, scope)?,
+        target: receiver_object(&target.value.node, scope)?,
+        node: node.clone(),
+    })
+}
+
+/// `<object>.SetScale(<scale>)`: a literal scale, positive and finite.
+pub(super) fn prim_set_scale(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "SetScale")?;
+    let [scale] = args else { return None };
+    let scale = as_num(&scale.value.node)?;
+    if !(scale.is_finite() && scale > 0.0) || player_expr_ref(object, scope) {
+        return None;
+    }
+    Some(Effect::SetScale { object: receiver_object(object, scope)?, scale })
+}
+
 /// `<reference>.MoveToMyEditorLocation()` (CK: "Moves this reference to its
 /// original editor location and orientation").
 pub(super) fn prim_move_to_editor_location(e: &Expr, scope: &Scope) -> Option<Effect> {

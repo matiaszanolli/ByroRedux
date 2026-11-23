@@ -142,6 +142,8 @@ pub(super) fn apply_quest_scoped_effect(
         | Effect::RemoveItem { .. }
         | Effect::EquipItem { .. }
         | Effect::MoveTo { .. }
+        | Effect::MoveToNode { .. }
+        | Effect::SetScale { .. }
         | Effect::MovePlayerTo { .. }
         | Effect::Disable { .. }
         | Effect::Enable { .. }
@@ -204,6 +206,7 @@ pub(super) fn apply_quest_scoped_effect(
         | Effect::StopCombatAlarm { .. }
         | Effect::SetCrimeFaction { .. }
         | Effect::SetUnconscious { .. }
+        | Effect::SetRestrained { .. }
         | Effect::SetGhost { .. }
         | Effect::SetNotShowOnStealthMeter { .. }
         | Effect::SetAlly { .. }

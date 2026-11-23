@@ -16,6 +16,32 @@ pub(super) fn apply_placement_effect(
     deferred: &mut DeferredFragmentEffects,
 ) -> Option<QuestStageAdvanced> {
     match effect {
+        Effect::MoveToNode { moved, target, node } => {
+            let body = |entity: EntityId| !crate::is_logical_stub(world, entity);
+            let moved_entity =
+                resolve_object(vmad, world, context, moved, &deferred.scene_actor_bindings).filter(|e| body(*e));
+            let target_entity =
+                resolve_object(vmad, world, context, target, &deferred.scene_actor_bindings).filter(|e| body(*e));
+            let (Some(moved_entity), Some(target_entity)) = (moved_entity, target_entity) else {
+                log::debug!("fragment MoveToNode skipped: a reference has no loaded body");
+                return None;
+            };
+            match named_descendant(world, target_entity, node) {
+                Some(node_entity) => {
+                    apply_move_to_effect(world, moved_entity, node_entity, [0.0; 3], true, context.0);
+                }
+                None => log::debug!("fragment MoveToNode skipped: no node {node} in the target's 3D"),
+            }
+            None
+        }
+        Effect::SetScale { object, scale } => {
+            let entity = resolve_object(vmad, world, context, object, &deferred.scene_actor_bindings)?;
+            match world.query_mut::<Transform>().as_mut().and_then(|transforms| transforms.get_mut(entity)) {
+                Some(transform) => transform.scale = *scale,
+                None => log::debug!("fragment SetScale skipped: the reference has no Transform"),
+            }
+            None
+        }
         Effect::MoveTo {
             moved,
             destination,
@@ -124,6 +150,32 @@ pub(super) fn apply_placement_effect(
         }
         _ => unreachable!("apply_placement_effect received a non-placement effect"),
     }
+}
+
+/// The entity under `root` (its own subtree, breadth first) whose `Name` is `node`, ignoring case — a
+/// node of a reference's loaded 3D.
+pub(crate) fn named_descendant(world: &World, root: EntityId, node: &str) -> Option<EntityId> {
+    use byroredux_core::ecs::components::{Children, Name};
+    let pool = world.try_resource::<byroredux_core::string::StringPool>()?;
+    let names = world.query::<Name>()?;
+    let children = world.query::<Children>()?;
+    let mut queue = std::collections::VecDeque::from([root]);
+    let mut visited = 0usize;
+    while let Some(entity) = queue.pop_front() {
+        visited += 1;
+        if visited > 4096 {
+            return None;
+        }
+        if entity != root
+            && names.get(entity).and_then(|name| pool.resolve(name.0)).is_some_and(|name| name.eq_ignore_ascii_case(node))
+        {
+            return Some(entity);
+        }
+        if let Some(kids) = children.get(entity) {
+            queue.extend(kids.0.iter().copied());
+        }
+    }
+    None
 }
 
 /// Place `moved` at `destination`'s position plus `offset` (Gamebryo Z-up

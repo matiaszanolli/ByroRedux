@@ -1400,7 +1400,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `#[serde(skip)]` process-local list like its `events`, so no saved wire form changed (#3460/#3332).
     // Native wave — refreshed WITHOUT a bump: `FragmentResumeCondition` gained `GameTimeReached` (a
     // `Utility.WaitGameTime` continuation). A new variant is read-compatible: every v147 save still decodes.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xee1a_c580_a59d_807c;
+    // Native wave 2 — refreshed WITHOUT a bump: the saved `Effect` gained `MoveToNode`, `SetScale` and
+    // `SetRestrained`. New variants are read-compatible: every v147 save still decodes.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x4fcd_4584_606e_b196;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.

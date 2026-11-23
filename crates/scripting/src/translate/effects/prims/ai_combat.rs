@@ -128,6 +128,20 @@ pub(super) fn prim_set_unconscious(e: &Expr, scope: &Scope) -> Option<Effect> {
     })
 }
 
+/// `Actor.SetRestrained(bool abRestrained = true)` on an actor other than the player (whose restraint
+/// is [`prim_set_player_restrained`](super::player_control)).
+pub(super) fn prim_set_restrained(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "SetRestrained")?;
+    if args.len() > 1 || is_game_get_player(object) {
+        return None;
+    }
+    let actor = receiver_actor(object, scope)?;
+    if actor == ActorRef::Player {
+        return None;
+    }
+    Some(Effect::SetRestrained { actor, restrained: bool_arg(args, 0)?.unwrap_or(true) })
+}
+
 /// `Actor.SetGhost(bool abIsGhost = true)`. The player may be a ghost too
 /// (the CS page's `player.SetGhost 1`).
 pub(super) fn prim_set_ghost(e: &Expr, scope: &Scope) -> Option<Effect> {

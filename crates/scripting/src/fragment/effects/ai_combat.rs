@@ -158,6 +158,14 @@ pub(super) fn apply_ai_combat_effect(
             }
             None
         }
+        Effect::SetRestrained { actor, restrained } => {
+            let actor =
+                resolve_npc_actor(vmad, world, context, actor, &deferred.scene_actor_bindings, deferred.speaker)?;
+            if !crate::update_actor_control(world, actor, |state| state.set_restrained(*restrained)) {
+                log::debug!("fragment SetRestrained skipped: actor-control storage is unavailable");
+            }
+            None
+        }
         Effect::SetUnconscious { actor, unconscious } => {
             let actor =
                 resolve_npc_actor(vmad, world, context, actor, &deferred.scene_actor_bindings, deferred.speaker)?;

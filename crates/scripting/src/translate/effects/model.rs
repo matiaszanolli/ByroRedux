@@ -433,6 +433,12 @@ pub enum Effect {
         offset: [f32; 3],
         match_rotation: bool,
     },
+    /// `<moved>.MoveToNode(<target>, "<node>")` (CK *MoveToNode - ObjectReference*): the moved
+    /// reference takes the position and rotation of the target's 3D node of that name.
+    MoveToNode { moved: ObjectRef, target: ObjectRef, node: String },
+    /// `<object>.SetScale(<scale>)` (CK *SetScale - ObjectReference*): "The overall scale of the
+    /// object". Collision keeps its size (the CK notes say so of the original too).
+    SetScale { object: ObjectRef, scale: f32 },
     /// `Game.GetPlayer().MoveTo(<destination>)` (M47.2) — the player's
     /// teleport, with [`Self::MoveTo`]'s default-offsets rule. The player
     /// may land in another cell, so the runtime records the destination
@@ -738,6 +744,10 @@ pub enum Effect {
     /// suppresses. Wakes FO4's dormant "Starts Unconscious" robots and
     /// turrets.
     SetUnconscious { actor: ActorRef, unconscious: bool },
+    /// `<actor>.SetRestrained([abRestrained = true])` on an actor other than the player (the player's is
+    /// [`Self::SetPlayerRestrained`]): [`crate::ActorControlState::restrained`]. A restrained actor walks
+    /// no package; it still talks and fights.
+    SetRestrained { actor: ActorRef, restrained: bool },
     /// M47.2 — `<actor>.SetGhost([abIsGhost = true])`
     /// ([`crate::ActorControlState::ghost`]).
     SetGhost { actor: ActorRef, ghost: bool },
@@ -992,6 +1002,8 @@ impl Effect {
             Effect::SetActorValue { .. } => "SetActorValue",
             Effect::EquipItem { .. } => "EquipItem",
             Effect::MoveTo { .. } => "MoveTo",
+            Effect::MoveToNode { .. } => "MoveToNode",
+            Effect::SetScale { .. } => "SetScale",
             Effect::MovePlayerTo { .. } => "MovePlayerTo",
             Effect::ChangePerk { .. } => "ChangePerk",
             Effect::ForceAlias { .. } => "ForceAlias",
@@ -1071,6 +1083,7 @@ impl Effect {
             Effect::WaitForActors3DLoaded { .. } => "WaitForActors3DLoaded",
             Effect::ProviderCall(_) => "ProviderCall",
             Effect::SetUnconscious { .. } => "SetUnconscious",
+            Effect::SetRestrained { .. } => "SetRestrained",
             Effect::AddRaceSpells { .. } => "AddRaceSpells",
             Effect::RemoveRaceSpells { .. } => "RemoveRaceSpells",
         }
