@@ -3,7 +3,7 @@
 
 use byroredux_core::ecs::World;
 
-use super::{answer, caller, done, flag, ledger, ledger_mut, player, store, MenuRequest, PendingMenus, PushActorRequest};
+use super::{answer, caller, done, flag, ledger, ledger_mut, no_reader, player, store, MenuRequest, PendingMenus, PushActorRequest};
 use crate::obscript_actions::{Action, Context};
 use crate::obscript_cmd::{Command, Games};
 use crate::obscript_effects::{form_arg, live, num};
@@ -224,65 +224,6 @@ fn open_teammate_container(world: &World, _fallout: bool, cmd: u16, args: &[ObSc
     done(format!("{cmd:#06x}"))
 }
 
-// GECK *EnableFastTravel <flag>*: "1 = allowed, 0 = disabled until reenabled by this function".
-fn cmd_1111(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    store(world, cmd, 0, num(args, 0))
-}
-
-// GECK *SetLocationSpecificLoadScreensOnly*, *AutoDisplayObjectives*, *EnableLoadingMenu*,
-// *PipBoyRadioOff*, *SetPCYoung*: game-wide flags.
-fn set_location_specific_load_screens_only(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    store(world, cmd, 0, num(args, 0))
-}
-
-fn cmd_1224(world: &World, _fallout: bool, cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
-    store(world, cmd, 0, 1.0)
-}
-
-// GECK *AgeRace <steps>* / *SexChange <male|female> <flag>*: the player's race age and sex.
-fn cmd_11e4(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    match player(world) {
-        Some(_) => store(world, cmd, 0x14, num(args, 0)),
-        None => Action::Declined,
-    }
-}
-
-// GECK *SetCellImageSpace <cell> <imagespace>* (Fallout 3): "the ImageSpace will not be refreshed until
-// the cell is reloaded".
-fn cmd_1196(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    match (form_arg(args, 0), form_arg(args, 1)) {
-        (Some(cell), Some(imagespace)) => {
-            ledger_mut(world, |l| l.set_form(cmd, cell, imagespace));
-            done(format!("SetCellImageSpace {cell:08X} {imagespace:08X}"))
-        }
-        _ => Action::Declined,
-    }
-}
-
-// GECK *SetLastExtDoorActivated <door>* (Fallout 3).
-fn cmd_1230(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    match form_arg(args, 0) {
-        Some(door) => {
-            ledger_mut(world, |l| l.set_form(cmd, 0, door));
-            done(format!("SetLastExtDoorActivated {door:08X}"))
-        }
-        None => Action::Declined,
-    }
-}
-
-// GECK *SetNPCRadio <on> <station>*, *SetBroadcastState <flag>*, *StartRadioConversation [topic]*.
-fn cmd_11c4(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
-    match caller(world, ctx) {
-        Some((form, _)) => {
-            if let Some(station) = form_arg(args, 1).or_else(|| form_arg(args, 0)) {
-                ledger_mut(world, |l| l.set_form(cmd, form, station));
-            }
-            store(world, cmd, form, if cmd == 0x11d6 { 1.0 } else { num(args, 0) })
-        }
-        None => Action::Declined,
-    }
-}
-
 // GECK *SetCriticalStage <stage>*: None, GooStart, GooEnd, DisintegrateStart, DisintegrateEnd; the End
 // stages "cull its 3D, and remove its havok data from the world" — the reference is disabled.
 fn cmd_1212(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
@@ -302,14 +243,6 @@ fn cmd_1212(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx
 fn cmd_1213(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
     match caller(world, ctx) {
         Some((form, _)) => flag(ledger(world, |l| l.value(0x1212, form)).flatten().is_some_and(|stage| stage == num(args, 0))),
-        None => Action::Declined,
-    }
-}
-
-// `SetSecuritronExpression <ref> <type> <expression>` (New Vegas): the securitron's face.
-fn set_securitron_expression(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
-    match caller(world, ctx).map(|(form, _)| form).or_else(|| form_arg(args, 0)) {
-        Some(subject) => store(world, cmd, subject, num(args, 2).max(num(args, 1))),
         None => Action::Declined,
     }
 }
@@ -353,22 +286,22 @@ pub(crate) const ACTIONS_COMMANDS: &[Command] = &[
     Command { id: 0x1260, games: Games::Fallout, needs_caller: false, handler: cmd_1260 },
     Command { id: 0x1250, games: Games::Fallout, needs_caller: false, handler: open_teammate_container },
     Command { id: 0x11c8, games: Games::Fallout, needs_caller: false, handler: open_teammate_container },
-    Command { id: 0x1111, games: Games::Both, needs_caller: false, handler: cmd_1111 },
-    Command { id: 0x1200, games: Games::Fallout, needs_caller: false, handler: set_location_specific_load_screens_only },
-    Command { id: 0x1225, games: Games::Fallout, needs_caller: false, handler: set_location_specific_load_screens_only },
-    Command { id: 0x1270, games: Games::Fallout, needs_caller: false, handler: set_location_specific_load_screens_only },
-    Command { id: 0x11e6, games: Games::Fallout, needs_caller: false, handler: set_location_specific_load_screens_only },
-    Command { id: 0x1224, games: Games::Fallout, needs_caller: false, handler: cmd_1224 },
-    Command { id: 0x11e4, games: Games::Fallout, needs_caller: false, handler: cmd_11e4 },
-    Command { id: 0x11e7, games: Games::Fallout, needs_caller: false, handler: cmd_11e4 },
-    Command { id: 0x1196, games: Games::Fallout, needs_caller: false, handler: cmd_1196 },
-    Command { id: 0x1230, games: Games::Fallout, needs_caller: false, handler: cmd_1230 },
-    Command { id: 0x11c4, games: Games::Fallout, needs_caller: false, handler: cmd_11c4 },
-    Command { id: 0x11d5, games: Games::Fallout, needs_caller: false, handler: cmd_11c4 },
-    Command { id: 0x11d6, games: Games::Fallout, needs_caller: false, handler: cmd_11c4 },
+    Command { id: 0x1111, games: Games::Both, needs_caller: false, handler: no_reader },
+    Command { id: 0x1200, games: Games::Fallout, needs_caller: false, handler: no_reader },
+    Command { id: 0x1225, games: Games::Fallout, needs_caller: false, handler: no_reader },
+    Command { id: 0x1270, games: Games::Fallout, needs_caller: false, handler: no_reader },
+    Command { id: 0x11e6, games: Games::Fallout, needs_caller: false, handler: no_reader },
+    Command { id: 0x1224, games: Games::Fallout, needs_caller: false, handler: no_reader },
+    Command { id: 0x11e4, games: Games::Fallout, needs_caller: false, handler: no_reader },
+    Command { id: 0x11e7, games: Games::Fallout, needs_caller: false, handler: no_reader },
+    Command { id: 0x1196, games: Games::Fallout, needs_caller: false, handler: no_reader },
+    Command { id: 0x1230, games: Games::Fallout, needs_caller: false, handler: no_reader },
+    Command { id: 0x11c4, games: Games::Fallout, needs_caller: false, handler: no_reader },
+    Command { id: 0x11d5, games: Games::Fallout, needs_caller: false, handler: no_reader },
+    Command { id: 0x11d6, games: Games::Fallout, needs_caller: false, handler: no_reader },
     Command { id: 0x1212, games: Games::Fallout, needs_caller: false, handler: cmd_1212 },
     Command { id: 0x1213, games: Games::Fallout, needs_caller: false, handler: cmd_1213 },
-    Command { id: 0x1248, games: Games::Fallout, needs_caller: false, handler: set_securitron_expression },
+    Command { id: 0x1248, games: Games::Fallout, needs_caller: false, handler: no_reader },
     Command { id: 0x1138, games: Games::Fallout, needs_caller: false, handler: get_pc_misc_stat },
     Command { id: 0x1137, games: Games::Fallout, needs_caller: false, handler: cmd_1137 },
 ];
