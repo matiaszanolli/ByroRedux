@@ -166,11 +166,14 @@ vec2 parallaxDisplaceUV(
 // use those gradients, so the march is well-defined under its data-dependent
 // `break`.
 //
-// Geometry is NOT displaced. Ray-traced shadows, reflections and GI hits
-// keep the flat terrain (`ray_hit.glsl` never sees this UV): a known,
-// accepted mismatch at this amplitude (centimetres), the reason the effect
-// is confined to a short range. Motion vectors stay valid because only the
-// texture coordinate moves.
+// This march moves the texture coordinate only. On the base terrain, geometry is
+// NOT displaced: ray-traced shadows, reflections and GI hits keep the flat
+// terrain (`ray_hit.glsl` never sees this UV), a known, accepted mismatch at this
+// amplitude (centimetres), the reason the effect is confined to a short range.
+// On a displacement patch (`INSTANCE_FLAG_TERRAIN_PATCH`, TSD-4) the vertices
+// carry `geometryRelief` of the relief and the patches are in the TLAS, so ray
+// hits do see that part within the patch range; the march covers only the rest.
+// Motion vectors stay valid because only the texture coordinate moves.
 vec2 terrainParallaxDisplaceUV(
     vec2 uv,
     vec2 dUVdx,

@@ -565,28 +565,6 @@ bool giLightSample(
     return contrib >= 1.0e-4;
 }
 
-// Radiance seen by a bounded path that escapes the TLAS. Interiors retain
-// their authored cell ambient; Skyrim DALC cells use the authored directional
-// cube; exteriors blend horizon ambient into the sky zenith along the actual
-// ray direction. The old path returned `sceneFlags.yzw * 0.5` everywhere,
-// which made an upward sky ray and a downward horizon ray indistinguishable.
-//
-// #2472 — `sceneFlags.yzw` (XCLL cell ambient) is `sampleDalcCube`'s
-// sibling everywhere else this shader treats them interchangeably (see
-// the `ambientFallback` ternary in `triangle.frag`): both are authored
-// irradiance. #2244 converted the DALC arm below to radiance (`* (1.0 /
-// PI)`) but left the sky-mix and interior-fallback arms in irradiance
-// units, so a Skyrim DALC cell's bounded-path escape came out ~π× dimmer
-// than an otherwise-identical FO3/FNV/Oblivion XCLL cell. `skyTint` is
-// already rendered sky radiance and is untouched by the conversion — see
-// the RT-miss blends that consume it directly as radiance,
-// `triangle.frag`'s `skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5` and its
-// `include/raytrace.glsl` `missCol` twin. (#3620: this used to cite a
-// `skyColor = skyTint.rgb` "background write" in `triangle.frag`. That
-// line is gone — #3323 rewrote it to `skyColor = exteriorSkyTint.rgb`,
-// and it was never a background write but the glass window-portal escape,
-// a branch whose own comment warns it must not be generalised. The units
-// argument holds; the citation pointed at the one special case.)
 // Rotate `value` by the unit quaternion `q` (x, y, z, w) — the same form the
 // composite applies to these aperture planes (`rotateByApertureQuaternion`).
 vec3 rotateBySkyApertureQuaternion(vec3 value, vec4 q) {
@@ -610,6 +588,29 @@ bool pathCrossesSkyAperture(vec3 origin, vec3 direction) {
     return false;
 }
 
+// Radiance seen by a bounded path that escapes the TLAS. Interiors retain
+// their authored cell ambient; Skyrim DALC cells use the authored directional
+// cube; exteriors blend horizon ambient into the sky zenith along the actual
+// ray direction. The old path returned `sceneFlags.yzw * 0.5` everywhere,
+// which made an upward sky ray and a downward horizon ray indistinguishable.
+//
+// #2472 — `sceneFlags.yzw` (XCLL cell ambient) is `sampleDalcCube`'s
+// sibling everywhere else this shader treats them interchangeably (see
+// the `ambientFallback` ternary in `triangle.frag`): both are authored
+// irradiance. #2244 converted the DALC arm below to radiance (`* (1.0 /
+// PI)`) but left the sky-mix and interior-fallback arms in irradiance
+// units, so a Skyrim DALC cell's bounded-path escape came out ~π× dimmer
+// than an otherwise-identical FO3/FNV/Oblivion XCLL cell. `skyTint` is
+// already rendered sky radiance and is untouched by the conversion — see
+// the RT-miss blends that consume it directly as radiance,
+// `triangle.frag`'s `skyTint.xyz * 0.5 + sceneFlags.yzw * 0.5` and its
+// `include/raytrace.glsl` `missCol` twin. (#3620: this used to cite a
+// `skyColor = skyTint.rgb` "background write" in `triangle.frag`. That
+// line is gone — #3323 rewrote it to `skyColor = exteriorSkyTint.rgb`,
+// and it was never a background write but the glass window-portal escape,
+// a branch whose own comment warns it must not be generalised. The units
+// argument holds; the citation pointed at the one special case.)
+//
 // `origin` is the path's absolute world position (the GI path is traced from
 // `fragWorldPos`); the aperture planes are render-origin relative, so the
 // aperture test below takes `origin - renderOrigin.xyz` (#7268).
