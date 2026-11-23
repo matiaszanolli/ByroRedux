@@ -3,7 +3,7 @@
 //! Bracketing GPU hot spots with `vkCmdWriteTimestamp` so per-pass
 //! cost can be measured rather than guessed. Owns one `VkQueryPool`
 //! per frame-in-flight slot, `QUERIES_PER_FRAME` TIMESTAMP queries
-//! each — 34 start/end brackets, bumped from 32/16 by #4052's
+//! each — 36 start/end brackets, bumped from 32/16 by #4052's
 //! ground-cover-bench bracket (#4210), again from 34/17 by the SKYAL
 //! sky-cubemap bake, again from 36/18 by the production ground-cover
 //! scatter (#4315), again from 38/19 by the exposure meter (#4618), again
@@ -15,8 +15,9 @@
 //! sky-cube bracket (#6316), from 60/30 by the world-space combustion
 //! local-grid sim (#6533), from 62/31 by the far-field sun shadows, and from
 //! 64/32 by the radiance cache's update and resolve brackets (RCG-PERF-001,
-//! which also widened the active-bit mask from `u32` to `u64`), and from 68/34
-//! by the TSD-4 terrain patch pass (#7152):
+//! which also widened the active-bit mask from `u32` to `u64`), from 68/34
+//! by the TSD-4 terrain patch pass (#7152), and from 70/35 by the patch BLAS
+//! builds and refits (#7221):
 //!
 //! | Slot | Bracket                                |
 //! |------|----------------------------------------|
@@ -1726,6 +1727,29 @@ mod tests {
         }
     }
 
+    /// #7392 — the module header states the bracket count once ("N start/end brackets"); it
+    /// stayed at 34 through two bumps because only the slot table and the constant were guarded.
+    #[test]
+    fn the_module_header_names_the_live_bracket_count() {
+        let src = crate::source_scan::production_text(include_str!("gpu_timers.rs"));
+        let header: String = src
+            .lines()
+            .take_while(|line| line.starts_with("//!"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let words: Vec<&str> = header.split_whitespace().collect();
+        let at = words
+            .windows(3)
+            .position(|w| w[1] == "start/end" && w[2].starts_with("brackets"))
+            .expect("the header states 'N start/end brackets'");
+        let named: u32 = words[at].parse().expect("a bracket count precedes 'start/end brackets'");
+        assert_eq!(
+            named,
+            QUERIES_PER_FRAME / 2,
+            "the header says {named} start/end brackets but QUERIES_PER_FRAME is {QUERIES_PER_FRAME} (two queries per bracket)"
+        );
+    }
+
     #[test]
     fn doc_table_slot_count_matches_queries_per_frame() {
         let src = include_str!("gpu_timers.rs");
@@ -1800,6 +1824,12 @@ mod tests {
             format!("{}-query", 64),
             format!("full {}", 64),
             format!("currently {}", 32),
+            format!("{}-query", 68),
+            format!("full {}", 68),
+            format!("currently {}", 34),
+            format!("{}-query", 70),
+            format!("full {}", 70),
+            format!("currently {}", 35),
         ];
         for pattern in &rotted {
             assert!(
