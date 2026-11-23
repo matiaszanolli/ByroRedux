@@ -307,6 +307,9 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
     let damage = attack_damage_against(world, aggressor, target);
     // M65 (SNK-ATK-001, -003) — the sneaking player's strike on an unaware target.
     let (damage, sneak_attack) = sneak_strike(world, aggressor, target, damage);
+    // #7302 — resolved before the events guard is taken (it reads `EquippedWeapon` and the
+    // loaded-cell index), as the VATS producer does: nothing is acquired under the HitEvent write.
+    let ignores_resistance = weapon_ignores_resistance(world, aggressor);
     let Some(mut events) = world.query_mut::<byroredux_scripting::HitEvent>() else {
         record_miss(world, "HitEvent storage is not registered");
         return;
@@ -344,7 +347,7 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
             // charge or bash input exists. `sneak_attack` is M65's (above).
             blocked: block_held,
             arrow: false,
-            ignores_resistance: weapon_ignores_resistance(world, aggressor),
+            ignores_resistance,
         },
     );
     drop(events);
@@ -4110,5 +4113,27 @@ mod installer_doc_source_tests {
             }
         }
         assert!(seen >= 3, "the armor-rating, block and fall installers are scanned");
+    }
+}
+
+/// #7302 — the two melee `HitEvent` producers resolve the weapon's resistance flag before they take
+/// the HitEvent write guard: reading `EquippedWeapon` and the loaded-cell index under it is an edge
+/// the lock-order detector would record. A call back inside the guarded region is the regression.
+#[cfg(test)]
+mod hit_guard_tests {
+    fn guarded_region<'a>(source: &'a str, guard: &str, end: &str) -> &'a str {
+        let from = source.find(guard).expect("the HitEvent guard");
+        let rest = &source[from..];
+        &rest[..rest.find(end).expect("the guarded region ends")]
+    }
+
+    #[test]
+    fn melee_hit_producers_resolve_resistance_before_the_events_guard() {
+        let player = guarded_region(include_str!("combat.rs"), "let Some(mut events) = world.query_mut::<byroredux_scripting::HitEvent>() else {", "drop(events);");
+        let npc = guarded_region(include_str!("systems/combat_ai.rs"), "if let Some(mut events) = world.query_mut::<byroredux_scripting::HitEvent>() {", "\n    }\n");
+        for (name, region) in [("combat.rs", player), ("combat_ai.rs", npc)] {
+            assert!(!region.contains("weapon_ignores_resistance("), "{name}: resolved under the HitEvent guard");
+            assert!(region.contains("ignores_resistance,"), "{name}: the event takes the value resolved before the guard");
+        }
     }
 }
