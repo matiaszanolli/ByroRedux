@@ -120,6 +120,10 @@ fn ambient_ai_package_system_takes_its_release_marker() {
 /// `every_documented_pattern_b_marker_drains_in_its_named_consumer`, the
 /// binary-side ones above. `OnResetEvent`'s consumer is private to
 /// `obscript_objects`, which tests its drain itself.
+///
+/// #7304 — and every row has the other half too: a `survives(..)` case in
+/// `cleanup.rs`'s `pattern_b_markers_survive_event_cleanup`, so a marker added
+/// to `event_cleanup_system` by mistake is caught before its consumer misses it.
 #[test]
 fn every_pattern_b_table_row_has_a_drain_test() {
     const CLEANUP: &str = include_str!("../../../crates/scripting/src/cleanup.rs");
@@ -166,6 +170,12 @@ fn every_pattern_b_table_row_has_a_drain_test() {
             "`{marker}` is in cleanup.rs's Pattern-B table but no drain test runs its consumer: add a \
              `drains(\"{marker}\", ..)` case to cleanup.rs (scripting-side consumer) or to \
              byroredux/src/systems/request_drain_tests.rs (binary-side consumer)"
+        );
+        assert!(
+            cleanup.contains(&format!("survives(\"{marker}\"")),
+            "`{marker}` is in cleanup.rs's Pattern-B table but `pattern_b_markers_survive_event_cleanup` \
+             does not check that `event_cleanup_system` leaves it for its consumer: add a \
+             `survives(\"{marker}\", ..)` case there"
         );
     }
 }

@@ -290,7 +290,8 @@ mod contract_tests {
         use crate::obscript_more::UseWeaponRequest;
         use crate::obscript_state::{OnResetEvent, ReviveRequest};
         use crate::package::{
-            EvaluatePackageRequest, ScenePackageCompletionBatch, ScenePackageEventBatch,
+            EvaluatePackageRequest, ReleasePackageHold, ScenePackageCompletionBatch,
+            ScenePackageEventBatch,
         };
         use crate::scene::playback::{
             SceneActionCompletionBatch, SceneStartRequest, SceneStopRequest,
@@ -299,6 +300,13 @@ mod contract_tests {
         use crate::vm_state::TwoStateTransitionBatch;
 
         fn survives<T: Component>(marker: &str, raised_marker: T) {
+            // #7304: the label is the type raised, so the table-coverage check in
+            // `request_drain_tests.rs` reads a case as covering exactly that marker.
+            assert_eq!(
+                std::any::type_name::<T>().rsplit("::").next(),
+                Some(marker),
+                "survives({marker:?}, ..) raises a different marker type"
+            );
             let world = raised(raised_marker);
             event_cleanup_system(&world, 0.0);
             assert!(
@@ -316,6 +324,7 @@ mod contract_tests {
         survives("ScenePackageEventBatch", ScenePackageEventBatch::default());
         survives("ScenePackageCompletionBatch", ScenePackageCompletionBatch(vec![0]));
         survives("EvaluatePackageRequest", EvaluatePackageRequest);
+        survives("ReleasePackageHold", ReleasePackageHold);
         survives(
             "StoryEvent",
             StoryEvent {
