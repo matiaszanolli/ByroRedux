@@ -1,6 +1,7 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-23). Revision 39 serves MCM Helper's hotkeys (LMC-UI-002 slice 4b). Revision 38 measures LMC-PERF-001: a 1,000-plugin profile with
+**Status**: ACTIVE (2026-11-23). Revision 40 records that no `.xwm` decodes (LMC-AST-009, catalog
+A7.xwma). Revision 39 serves MCM Helper's hotkeys (LMC-UI-002 slice 4b). Revision 38 measures LMC-PERF-001: a 1,000-plugin profile with
 paired archives activates in 0.35 s, and archive pairing is linear. Revision 37 serves MCM Helper's config menus (LMC-UI-002 slice 4), with
 the player's settings kept per named profile (LMC-SET-004). Revision 36 builds LMC-PERF-003: an asset lookup is one index
 probe whatever the archive count, and opening archives is linear. Revision 35 makes SkyUI's `ShowMessage` (and any box wrapper called
@@ -202,7 +203,8 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
 | A4 | Archive invalidation (bInvalidateOlderFiles, redirection archives) | FO3/FNV/Oblivion texture mods | D2 | Obl, FO3, FNV | Loose files always win in this engine, so the INI flag and the redirection archive are ignored with a note. ([geck.uesp.net](https://geck.uesp.net/wiki/BSA_Files); [en.uesp.net](https://en.uesp.net/wiki/Oblivion_Mod:BSAs_and_Archive_Invalidation); §5.3 LMC-AST-004) | 1 |
 | A5 | DDS textures from mod tooling | all texture mods | D1 | all | Formats are decoded in crates/renderer/src/vulkan/dds.rs; the mod corpus gates the rest. (§3.1 A5) | 1 |
 | A6 | NIF meshes from mod tooling (NifSkope, Blender, 3ds Max exporters) | all mesh mods | D1 | all | The NIF parser is the input; mod NIFs join the parse corpus. (§3.1 A6) | 1 |
-| A7 | Sound / voice / lip (.wav, .xwm, .mp3, .fuz, .lip) | voiced mods | D1 | all | M44 audio plays them; the .fuz header bug is tracked as #6480. (§3.1 A7; #6480) | 1 |
+| A7 | Sound / voice / lip (.wav, .mp3, .ogg, .fuz, .lip) | voiced mods | D1 | all | M44 audio plays .wav, .ogg and .mp3 (symphonia); a .fuz voice line decodes its xWMA through the host's ffmpeg (#5912); the .fuz header bug is tracked as #6480. xWMA effects and music are A7.xwma. (§3.1 A7; #6480; #5912) | 2 |
+| A7.xwma | xWMA effects and music (.xwm) | Fallout 4 and Skyrim sound and music mods | D5 → D1 | Sky, FO4 | unsupported: the effect decoder (symphonia: wav, ogg, mp3, flac) has no xWMA codec and music marks .xwm unresolved; the vanilla archives ship 6,463 xWMA effects of Fallout 4's 8,410 sounds and all of Skyrim's (269) and Fallout 4's (459) music, so they are silent too. Tracked as the xWMA decoder PRD the owner called for (2026-11-13, game-music MUS-NG-001). ([game-music.md MUS-NG-001](../prd/game-music.md MUS-NG-001); [p2-combat-anim-sound-fixture.md](../engine/p2-combat-anim-sound-fixture.md); LMC-AST-009) | 1 |
 | A8 | SpeedTree .spt replacements | Oblivion/FO3/FNV tree mods | D1 | Obl, FO3, FNV | crates/spt reads them and imports billboards. (§3.1 A8) | 1 |
 | A9 | FaceGen data (facegendata/) overrides | NPC overhauls | D1 | all | M41 FaceGen reads the data. (§3.1 A9) | 1 |
 | A10.assets | LOD-generator outputs: generated plugins, object / tree / grass LOD meshes and textures, TexGen output, xLODGen terrain LOD | DynDOLOD, TexGen, xLODGen | D1 | Sky, FO4 | The .bto / .btr ladder (M35) consumes generated static LOD like vanilla LOD, until engine-side LOD generation (M53) makes it redundant. ([dyndolod.info](https://dyndolod.info/Help/Generation-Instructions); §3.1 A10) | 1 |
@@ -799,6 +801,14 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
 - **LMC-AST-009.** Every audio container the games accept (`.wav`, `.xwm`,
   `.mp3` for Oblivion, `.fuz`, `.lip`) loads from loose or archived mod
   content with the same precedence as other assets.
+  Not met for `.xwm` (measured 2026-11-23, catalog A7.xwma, D5): the effect
+  decoder (symphonia, built with wav, ogg, mp3 and flac) has no xWMA codec,
+  and music marks `.xwm` unresolved (game-music MUS-NG-001). The vanilla
+  archives ship 6,463 xWMA effects of Fallout 4's 8,410 sounds, and all of
+  Skyrim's (269) and Fallout 4's (459) music, so those are silent along with
+  any mod's `.xwm`. A `.fuz` voice line decodes its xWMA through the host's
+  `ffmpeg` (#5912); `.wav`, `.ogg` and `.mp3` decode. The decoder is the
+  xWMA PRD the owner called for (2026-11-13).
 - **LMC-AST-010 — Mod-root order.** A profile has one loose root per mod,
   and the profile MUST carry those roots as an ordered list, independent of
   plugin order. That order resolves loose-versus-loose conflicts: the later
@@ -1656,3 +1666,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 37 | 2026-11-23 | LMC-UI-002 slice 4: MCM Helper (v1.6.2, version code 15) served by an engine `MCM_ConfigBase` and `MCM`; pages from `config.json` with mod-setting, script-property and global value sources, group conditions and actions; settings layered over the mod's defaults and an earlier install's file, written per game and named profile (`--profile-name`, a boot request's `[mods] name`; owner's decisions, mcm-host.md §6.4–6.6); hotkeys (`keybinds.json`) are slice 4b | — |
 | 38 | 2026-11-23 | LMC-PERF-001 measured on synthetic profiles of light plugins with paired archives: 1,000 plugins activate in 0.35 s warm and 0.33 s cold on a Ryzen 9 7950X with NVMe; archive pairing made linear (`ArchiveDirectory`, 0.345 s to 0.043 s at 2,000 plugins); real mod sizes and regular plugins past 252 not measured | — |
 | 39 | 2026-11-23 | LMC-UI-002 slice 4b: MCM Helper's `keybinds.json` hotkeys; a key map with an id binds a key (bindings per game and named profile, over an earlier install's); a press runs the function call, `SendEvent` delivers `OnControlDown` / `OnControlUp`; `RunConsoleCommand` is declined (no game-console interpreter) | — |
+| 40 | 2026-11-23 | LMC-AST-009 measured: no `.xwm` decodes (Fallout 4's xWMA effects, 77% of its sounds, and Skyrim's and Fallout 4's music); catalog A7 split, A7.xwma at D5 with target D1, tracked by the xWMA decoder PRD | — |

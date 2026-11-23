@@ -236,13 +236,26 @@ version = 1
 [[mechanism]]
 id = "A7"
 group = "assets"
-name = "Sound / voice / lip (.wav, .xwm, .mp3, .fuz, .lip)"
+name = "Sound / voice / lip (.wav, .mp3, .ogg, .fuz, .lip)"
 examples = "voiced mods"
 disposition = "D1"
 games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
-paths = ["sound/**/*.wav", "sound/**/*.xwm", "sound/**/*.mp3", "sound/**/*.fuz", "sound/**/*.lip", "sound/**/*.ogg", "music/**/*.mp3", "music/**/*.wav", "music/**/*.xwm"]
-reason = "M44 audio plays them; the .fuz header bug is tracked as #6480."
-citations = ["docs/prd/legacy-mod-compatibility.md §3.1 A7", "#6480"]
+paths = ["sound/**/*.wav", "sound/**/*.mp3", "sound/**/*.fuz", "sound/**/*.lip", "sound/**/*.ogg", "music/**/*.mp3", "music/**/*.wav"]
+reason = "M44 audio plays .wav, .ogg and .mp3 (symphonia); a .fuz voice line decodes its xWMA through the host's ffmpeg (#5912); the .fuz header bug is tracked as #6480. xWMA effects and music are A7.xwma."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 A7", "#6480", "#5912"]
+version = 2
+
+[[mechanism]]
+id = "A7.xwma"
+group = "assets"
+name = "xWMA effects and music (.xwm)"
+examples = "Fallout 4 and Skyrim sound and music mods"
+disposition = "D5"
+target = "D1"
+games = ["skyrim", "fo4"]
+paths = ["sound/**/*.xwm", "music/**/*.xwm"]
+reason = "unsupported: the effect decoder (symphonia: wav, ogg, mp3, flac) has no xWMA codec and music marks .xwm unresolved; the vanilla archives ship 6,463 xWMA effects of Fallout 4's 8,410 sounds and all of Skyrim's (269) and Fallout 4's (459) music, so they are silent too. Tracked as the xWMA decoder PRD the owner called for (2026-11-13, game-music MUS-NG-001)."
+citations = ["docs/prd/game-music.md MUS-NG-001", "docs/engine/p2-combat-anim-sound-fixture.md", "docs/prd/legacy-mod-compatibility.md LMC-AST-009"]
 version = 1
 
 [[mechanism]]
