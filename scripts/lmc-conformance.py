@@ -360,7 +360,7 @@ def run_scenario(scenario: dict, engine: Path, dbg: Path, base_args: list[str], 
 
 # ── rule 4: save, reload, removal ───────────────────────────────────────────
 
-LOADED = "save load: restored player pose"
+LOADED = "save load: load complete"
 ABORTED = "save load ABORTED"
 
 
@@ -719,9 +719,9 @@ def self_test() -> int:
           [x.name for x in lean.data_plugins] == ["FalloutNV.esm", "DeadMoney.esm"]
           and lean.root_plugins == ["Shared.esm"] and [r.name for r in lean.roots] == ["fnv-tex", "fnv-a"],
           (lean.data_plugins, lean.root_plugins, lean.roots))
-    log = "x\nsave load: restored player pose at (1, 2, 3)\n"
+    log = "x\nsave load: load complete: slot 1, cell 'X'\n"
     check("rule 4: a load already counted is still running", load_outcome(log, 1) is None)
-    check("rule 4: a new restored pose completes the load", load_outcome(log, 0) == "done")
+    check("rule 4: a new completion line completes the load", load_outcome(log, 0) == "done")
     aborted = load_outcome("save load ABORTED — cannot reload cell 'X': gone\n", 0)
     check("rule 4: an abort names its reason", aborted == "aborted: cannot reload cell 'X': gone", aborted)
     report = ("WARN save load: ModB.esp is not loaded: 2 saved form(s) of it read as absent, 1 reference(s) of it left out\n"

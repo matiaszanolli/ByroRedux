@@ -1,6 +1,7 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-23). Revision 30 measures LMC-PERF-001's and -002's fold cost
+**Status**: ACTIVE (2026-11-23). Revision 31 makes a save made in a removed plugin's cell or worldspace
+load: Oblivion's safe cell, else the session's location (owner's rule). Revision 30 measures LMC-PERF-001's and -002's fold cost
 and removes its two quadratic steps. Revision 29 measures Phase 7's profile-change saves on real data
 (`lmc-profile-change-save.sh`) and makes the conformance runner's rule 4 measurable. Revision 28 builds LMC-REC-010: the sub-records no
 parser decodes are kept for every plugin after the first. Revision 27 switches the live load to the session's own plugins with
@@ -1101,6 +1102,19 @@ adds the user-facing contract:
   DLCThievesDen.esp, the engine-supplied actor values moving onto the
   session's slot (80 and 17 references of the two plugins left out one way,
   7 masked Knights edits and 6 unseen Start Game Enabled quests the other).
+  A save made in a cell or worldspace the session's plugins lack loads too
+  (revision 31). Oblivion documents where: `SSaveGameSafeCellID:General`,
+  default `2AEEA`, the Tiber Septim Hotel lobby, where "any actors whose cell
+  has disappeared will be placed"
+  ([UESP: Oblivion.ini](https://en.uesp.net/wiki/Oblivion_Mod:Oblivion.ini),
+  [UESP: The Tiber Septim Hotel](https://en.uesp.net/wiki/Oblivion:The_Tiber_Septim_Hotel)),
+  and the player is placed by that cell's spawn point. Fallout 3 and New
+  Vegas ship the key, but the GECK wiki lists it as unused and `2AEEA` is no
+  cell in either master; Skyrim, Fallout 4 and Starfield document nothing.
+  There, by the owner's rule (2026-11-23), the load reloads the session's own
+  location and the player keeps their pose in it. The report names the lost
+  location and where the player is; both gates measure it (a save in
+  LMCGone.esp's own room on FNV, one in Knights.esp's priory on Oblivion).
 - **LMC-SAV-005.** Mod-version migration of extension state follows
   [STATE-006](../engine/sandboxed-linked-mods.md#13-persistent-state-and-saves);
   Papyrus-only mods keep component state keyed by script identity.
@@ -1587,3 +1601,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 28 | 2026-11-23 | LMC-REC-010 built: the sub-records no parser decodes are kept as opaque bytes for every plugin after the first, with the carrying plugin as provenance, and named by `plugins.conflicts`; "decoded" is measured per game and record type by removing each sub-record from sampled real records and re-parsing (the table is checked in and re-derived by ignored real-data tests); the official/user boundary is approximated by the first plugin until LMC-REC-008 | — |
 | 29 | 2026-11-23 | Phase 7 measured on real data: the FNV profile-change save gate, and the Oblivion plugin-set gate updated to the session-profile load; the conformance runner measures §7.3 rule 4 (save, reload, the removal case) and LMC-DX-003's text says rule 2 is measured | — |
 | 30 | 2026-11-23 | LMC-PERF-001 and -002 measured: the fold costs 0.6 to 0.9 µs per record from 250 to 4,000 light plugins and from 16,000 to 961,000 records; the chain profile's quadratic master closure became bitsets and master lookups share one name map; #6591 recorded as fixed | — |
+| 31 | 2026-11-23 | LMC-SAV-002: a save made in a cell or worldspace the session's plugins lack loads, into Oblivion's documented safe cell (`SSaveGameSafeCellID`, default the Tiber Septim Hotel lobby) or, where no game documents one, the session's own location with the player's pose (owner's rule) | — |
