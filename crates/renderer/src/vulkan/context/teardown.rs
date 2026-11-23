@@ -540,6 +540,42 @@ mod skin_slot_drain_is_not_nested_under_skin_compute_tests {
     /// *and* the `Arc<Mutex<Allocator>>` clone each one holds — which trips
     /// the #665 outstanding-references guard and leaks the `VkDevice`,
     /// `VkSurfaceKHR`, `VkInstance` and debug messenger along with it.
+    /// #7364 — the terrain-patch pass and its patch BLAS set own raw handles (pipeline, descriptor pool, AS)
+    /// that no `Drop` frees, and `GpuBuffer` fields that keep an allocator `Arc` alive. Both teardown calls
+    /// must stay, the pass's before the `Arc::try_unwrap`, and the BLAS set's inside the acceleration
+    /// manager's own `destroy` (which runs ahead of the allocator-owned block). A refactor that drops
+    /// either leaks the handles and trips the outstanding-references path at the end of `Drop`.
+    #[test]
+    fn the_terrain_patch_pass_and_blas_set_are_destroyed_before_the_allocator_goes() {
+        let teardown = crate::source_scan::production_text(include_str!("teardown.rs"));
+        let patches = teardown
+            .find("if let Some(ref mut patches) = self.exterior.terrain_patch {")
+            .expect("the terrain patch pass must be torn down (#7364)");
+        let call = teardown[patches..]
+            .find("patches.destroy(&self.device, alloc);")
+            .map(|off| patches + off)
+            .expect("the patch pass must be destroyed inside its `if let` (#7364)");
+        let take = teardown
+            .find("if let Some(alloc_arc) = self.allocator.take()")
+            .expect("the allocator is taken at the end of Drop");
+        assert!(call < take, "the patch pass must be destroyed before the allocator is taken (#7364)");
+
+        let accel = crate::source_scan::production_text(include_str!("../acceleration/mod.rs"));
+        let (_, destroy) = accel.split_once("pub unsafe fn destroy(").expect("AccelerationManager::destroy");
+        assert!(
+            destroy.contains("self.destroy_terrain_patch_blas(device, allocator);"),
+            "AccelerationManager::destroy must free the patch BLAS set (#7364)"
+        );
+        let patch_src = crate::source_scan::production_text(include_str!("../acceleration/blas_terrain_patch.rs"));
+        let (_, body) = patch_src
+            .split_once("unsafe fn destroy_terrain_patch_blas(")
+            .expect("destroy_terrain_patch_blas must exist");
+        assert!(
+            body.contains("destroy_acceleration_structure(") && body.contains("scratch.take()"),
+            "the set destroys each entry's AS and its scratch buffer (#7364)"
+        );
+    }
+
     #[test]
     fn skin_slot_drain_sits_outside_the_skin_compute_guard() {
         let src = crate::source_scan::production_text(include_str!("teardown.rs"));
