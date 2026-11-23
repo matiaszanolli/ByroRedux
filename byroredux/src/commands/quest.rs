@@ -1449,7 +1449,8 @@ impl ConsoleCommand for WeatherForceCommand {
             *forced = ForcedWeather::default();
             return CommandOutput::line("weather override released");
         }
-        let Some(form) = parse_console_u32(which) else {
+        // #7333 — a FormID argument is hex, bare or `0x`-prefixed (#5817's rule).
+        let Some(form) = parse_console_form_id(which) else {
             return CommandOutput::error(format!("weather.force: bad WTHR FormID `{which}`"));
         };
         let known = world
@@ -1703,6 +1704,22 @@ impl ConsoleCommand for ChargenCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #7333 — `weather.force` reads its WTHR FormID as hex, bare or `0x`-prefixed, like
+    /// every other console FormID: a bare `0010E1F2` used to be refused as a bad FormID,
+    /// and a bare `10` read as form 10 decimal. With no weather in the load order the
+    /// command reaches the lookup and names the form it parsed.
+    #[test]
+    fn weather_force_reads_a_bare_form_id_as_hex() {
+        let mut world = World::new();
+        world.insert_resource(byroredux_scripting::obscript_state::ForcedWeather::default());
+        for (arg, form) in [("0010E1F2", "0010E1F2"), ("0x0010E1F2", "0010E1F2"), ("10", "00000010")] {
+            let out = WeatherForceCommand.execute(&world, &format!("{arg} lock")).lines.join("\n");
+            assert!(out.contains(&format!("{form} is not a WTHR in the load order")), "{arg}: {out}");
+        }
+        let out = WeatherForceCommand.execute(&world, "clear").lines.join("\n");
+        assert!(out.contains("bad WTHR FormID"), "{out}");
+    }
     use byroredux_plugin::esm::records::{
         AliasInjectedData, QuestAlias, QuestObjective, QuestStage, QustRecord, ScenRecord,
     };
