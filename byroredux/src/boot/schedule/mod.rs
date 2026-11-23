@@ -802,6 +802,12 @@ mod system_access_declaration_tests {
     const STORY_EVENTS_SRC: &str = include_str!("../../systems/story_events.rs");
     const STORY_MANAGER_SRC: &str = include_str!("../../../../crates/scripting/src/story_manager.rs");
     const OBSCRIPT_STATE_SRC: &str = include_str!("../../../../crates/scripting/src/obscript_state.rs");
+    // #7318 — `note_death`'s player-kill arm: the misc-stat bump and the Kill challenge.
+    const OBSCRIPT_MORE_SRC: &str = include_str!("../../../../crates/scripting/src/obscript_more.rs");
+    const CHALLENGES_SRC: &str = include_str!("../../../../crates/scripting/src/challenges.rs");
+    // #7318 — the interaction prompt's rest / jail-bed check.
+    const JAIL_SRC: &str = include_str!("../../../../crates/scripting/src/jail.rs");
+    const OBLIVION_REST_SRC: &str = include_str!("../../oblivion_rest.rs");
     // #5069 — equipment_appearance_system's mid-life gear-import hop lives
     // in npc_spawn/loot_appearance.rs; exclusive rows are invisible to the
     // PARALLEL_SYSTEMS proof, so it gets its own scan below.
@@ -1104,6 +1110,9 @@ mod system_access_declaration_tests {
                 (LOCKPICK_SRC, "raise_lockpick_event"),
                 (LOCKPICK_SRC, "raise_hack_event"),
                 (STORY_MANAGER_SRC, "raise_story_event"),
+                // #7318 — `populate_candidates`' sleep prompt: the Oblivion rest support and the jail check.
+                (OBLIVION_REST_SRC, "supports_rest"),
+                (JAIL_SRC, "player_in_jail"),
             ],
             "interaction_system",
         );
@@ -1133,6 +1142,16 @@ mod system_access_declaration_tests {
                 (SMITHING_SRC, "stack_quality"),
                 // `ASSU` / `KILL`.
                 (STORY_MANAGER_SRC, "raise_story_event"),
+                // #7318 — the kill branch: the KILL story event's cell-context reads and the death funnel
+                // (`raise_death_event` → `note_death`), whose player-kill arm bumps the misc stats and
+                // notes the Kill challenge — the player is a possible killer here, unlike the drowning
+                // death `player_controller_system` raises.
+                (STORY_EVENTS_SRC, "raise_kill_story_event"),
+                (OBSCRIPT_STATE_SRC, "note_death"),
+                // `note_death` → `reference_form` resolves victim and killer to global FormIDs.
+                (CONDITION_SRC, "entity_global_form_id"),
+                (OBSCRIPT_MORE_SRC, "mod_misc_stat"),
+                (CHALLENGES_SRC, "note"),
             ],
             "combat_damage_system",
         );
