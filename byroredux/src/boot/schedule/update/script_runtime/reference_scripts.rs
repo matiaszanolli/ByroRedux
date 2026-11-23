@@ -26,6 +26,8 @@ pub(super) fn register_reference_scripts_systems(scheduler: &mut Scheduler) {
     }
     scheduler.add_exclusive(Stage::Update, check_quest_scripts_dispatch);
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::quest_script_init_system);
+    // LMC-UI-002 — a Mod Configuration Menu script whose OnInit ran in an earlier session registers again.
+    scheduler.add_exclusive(Stage::Update, byroredux_scripting::mcm::mcm_registration_system);
     scheduler.add_exclusive(Stage::Update, check_alias_scripts_dispatch);
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::alias_script_event_system);
     scheduler.add_exclusive(

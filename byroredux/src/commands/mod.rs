@@ -51,6 +51,7 @@ mod pack_ambient;
 mod perk;
 mod vats;
 mod physics;
+mod mcm;
 mod quest;
 mod ragdoll_status;
 mod scene;
@@ -169,6 +170,10 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(QuestStartCommand);
     registry.register(QuestStopCommand);
     registry.register(QuestResetCommand);
+    // LMC-UI-002 — the Mod Configuration Menu, driven from the console.
+    for command in mcm::MCM_COMMANDS {
+        registry.register(command);
+    }
     registry.register(TerminalSelectCommand);
     registry.register(PerkRunCommand);
     registry.register(QuestSetStageCommand);

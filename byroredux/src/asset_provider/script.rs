@@ -161,6 +161,10 @@ impl<'a> ProviderScriptLibrary<'a> {
 
 impl byroredux_scripting::translate::effects::ScriptLibrary for ProviderScriptLibrary<'_> {
     fn script(&self, name: &str) -> Option<std::sync::Arc<byroredux_scripting::translate::effects::PapyrusScript>> {
+        // LMC-UI-002 — the engine's own scripts (its `SKI_ConfigBase`) shadow a mod's of the same name.
+        if let Some(engine) = byroredux_scripting::mcm::engine_script(name) {
+            return Some(engine);
+        }
         let key = name.to_ascii_lowercase().replace(':', "\\");
         if let Some(hit) = self.cache.borrow().get(&key) {
             return hit.clone();
@@ -469,8 +473,21 @@ pub(crate) fn check_quest_own_scripts(world: &byroredux_core::ecs::world::World)
             let Some((events, scripts)) = outcome else {
                 continue;
             };
+            // The chain the run resolves through: each parent is among the scripts it needs.
+            let mut extends = Vec::new();
+            let mut parent = library
+                .script(&instance.name)
+                .and_then(|script| script.parent.as_ref().map(|p| p.node.0.to_ascii_lowercase()));
+            while let Some(name) = parent.filter(|_| extends.len() < 16) {
+                parent = scripts
+                    .iter()
+                    .find(|script| script.name.node.0.eq_ignore_ascii_case(&name))
+                    .and_then(|script| script.parent.as_ref().map(|p| p.node.0.to_ascii_lowercase()));
+                extends.push(name);
+            }
             installed.extend(scripts);
             checked.push(byroredux_scripting::QuestScript {
+                extends,
                 script: instance.name.clone(),
                 vmad: std::sync::Arc::new(byroredux_plugin::esm::records::script_instance::ScriptInstanceData {
                     version: vmad.version,

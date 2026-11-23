@@ -899,6 +899,16 @@ fn alias_scripts_start_follow_their_reference_and_shut_down() {
 
 /// A world with a quest's own script checked and installed the way the host does it.
 fn world_with_quest_script(script: Arc<Script>, library: Option<&dyn CheckLibrary>, running: bool) -> Option<World> {
+    world_with_quest_script_extending(script, library, running, Vec::new())
+}
+
+/// [`world_with_quest_script`] for a script whose `extends` chain the host recorded as `extends`.
+fn world_with_quest_script_extending(
+    script: Arc<Script>,
+    library: Option<&dyn CheckLibrary>,
+    running: bool,
+    extends: Vec<String>,
+) -> Option<World> {
     let (events, scripts) = crate::check_quest_script(Arc::clone(&script), &crate::DELIVERED_QUEST_EVENTS, library).ok()?;
     let mut world = World::new();
     crate::register(&mut world);
@@ -921,6 +931,7 @@ fn world_with_quest_script(script: Arc<Script>, library: Option<&dyn CheckLibrar
             script: script.name.node.0.clone(),
             vmad: Arc::new(ScriptInstanceData { version: 5, object_format: 2, scripts: vec![instance] }),
             events,
+            extends,
         }],
     );
     if running {
@@ -986,6 +997,104 @@ fn a_quest_script_inherits_its_oninit_and_one_without_is_declined() {
 
     let silent = parsed_source("ScriptName VmQuestSilent extends Quest\nFunction Helper()\nEndFunction\n");
     assert!(world_with_quest_script(silent, None, false).is_none(), "no OnInit: not a delivered script");
+}
+
+/// LMC-UI-002 — a SkyUI config script on the engine's `SKI_ConfigBase`: it registers from its `OnInit`
+/// (`OnGameReload` → `OnConfigInit` → registration), lays its pages out on demand, and answers the
+/// panel: a toggle by option id on the front page, a slider by state on a named page, whose dialog its
+/// open event fills; an id from another page names nothing. After a load it registers again.
+#[test]
+fn a_skyui_config_script_registers_lays_out_and_answers_the_panel() {
+    use crate::mcm::{McmAnswer, McmDialog, McmHost, McmKind};
+    let base = crate::mcm::engine_script("SKI_ConfigBase").expect("the engine's SKI_ConfigBase parses");
+    let config = parsed_source(
+        "ScriptName VmMcmConfig extends SKI_ConfigBase\n\
+         Bool Property Enabled Auto\n\
+         Float Property Speed Auto\n\
+         Int toggleId\n\
+         Event OnConfigInit()\n ModName = \"VM MCM\"\n Pages = new String[1]\n Pages[0] = \"Movement\"\n Speed = 1.0\n EndEvent\n\
+         Event OnPageReset(String page)\n\
+          If page == \"\"\n SetCursorFillMode(TOP_TO_BOTTOM)\n AddHeaderOption(\"General\")\n toggleId = AddToggleOption(\"Enabled\", Enabled)\n\
+          Else\n AddSliderOptionST(\"SpeedState\", \"Speed\", Speed, \"{1}\")\n EndIf\n\
+         EndEvent\n\
+         Event OnOptionSelect(Int option)\n If option == toggleId\n Enabled = !Enabled\n SetToggleOptionValue(option, Enabled)\n EndIf\n EndEvent\n\
+         State SpeedState\n\
+          Event OnSliderOpenST()\n SetSliderDialogStartValue(Speed)\n SetSliderDialogRange(0.5, 3.0)\n SetSliderDialogInterval(0.5)\n EndEvent\n\
+          Event OnSliderAcceptST(Float value)\n Speed = value\n SetSliderOptionValueST(Speed, \"{1}\")\n EndEvent\n\
+         EndState\n",
+    );
+    let scripts: HashMap<String, Arc<Script>> = [(crate::mcm::CONFIG_BASE.to_owned(), Arc::clone(&base))].into();
+    let library = Installed(&scripts);
+    let world = world_with_quest_script_extending(config, Some(&library), true, vec![crate::mcm::CONFIG_BASE.into()])
+        .unwrap_or_else(|| panic!("declined: {:?}", crate::check_quest_script(parsed_source("ScriptName X extends Quest\n"), &[], None)));
+
+    crate::quest_script_init_system(&world, 0.0);
+    {
+        let host = world.resource::<McmHost>();
+        assert_eq!(host.mods.len(), 1, "registered from OnInit");
+        assert_eq!(host.mods[0].name, "VM MCM");
+        assert_eq!(host.mods[0].pages, ["Movement"]);
+    }
+
+    crate::mcm::open(&world, 0).expect("opens");
+    let toggle = {
+        let host = world.resource::<McmHost>();
+        let page = host.open.as_ref().unwrap();
+        assert_eq!(page.title, "VM MCM", "the front page is titled with the mod's name");
+        assert_eq!(page.cells[0].as_ref().map(|o| o.kind), Some(McmKind::Header));
+        assert!(page.cells[1].is_none(), "top to bottom: the next option is a row down");
+        assert_eq!(page.cells[2].as_ref().map(|o| (o.kind, o.number)), Some((McmKind::Toggle, 0.0)));
+        page.option_id(2)
+    };
+    assert_eq!(toggle, 2, "the front page's ids are its cell indices");
+    crate::mcm::activate(&world, toggle).expect("selects");
+    assert_eq!(quest_property(&world, "Enabled"), Some(1.0), "OnOptionSelect flipped the setting");
+    assert_eq!(world.resource::<McmHost>().open.as_ref().unwrap().option(toggle).unwrap().number, 1.0, "and set the toggle");
+
+    crate::mcm::select_page(&world, Some(0)).expect("shows the page");
+    assert!(crate::mcm::activate(&world, toggle).is_err(), "the front page's id names nothing here");
+    let slider = 0x100;
+    {
+        let host = world.resource::<McmHost>();
+        let option = host.open.as_ref().unwrap().option(slider).expect("page 1's first cell is 0x100");
+        assert_eq!((option.kind, option.state.as_str(), option.value_text()), (McmKind::Slider, "SpeedState", "1.0".to_owned()));
+    }
+    crate::mcm::activate(&world, slider).expect("opens the dialog");
+    assert_eq!(
+        world.resource::<McmHost>().open.as_ref().unwrap().dialog,
+        Some((slider, McmDialog::Slider { start: 1.0, default: 1.0, min: 0.5, max: 3.0, interval: 0.5 })),
+        "OnSliderOpenST ran in its state and filled the dialog"
+    );
+    crate::mcm::accept(&world, slider, McmAnswer::Slider(2.5)).expect("accepts");
+    assert_eq!(quest_property(&world, "Speed"), Some(2.5));
+    {
+        let host = world.resource::<McmHost>();
+        let page = host.open.as_ref().unwrap();
+        assert_eq!(page.option(slider).unwrap().value_text(), "2.5");
+        assert!(page.dialog.is_none());
+    }
+    crate::mcm::close(&world).expect("closes");
+
+    // A load: the session's registrations are gone, and the config script registers again from its
+    // OnGameReload (its OnInit already ran in this save).
+    world.resource_mut::<McmHost>().reset_session();
+    crate::mcm::mcm_registration_system(&world, 0.0);
+    assert_eq!(world.resource::<McmHost>().mods.len(), 1);
+    assert_eq!(quest_property(&world, "Speed"), Some(2.5), "OnConfigInit does not run again");
+}
+
+/// A config script that calls `ShowMessage` is declined whole: it waits for the player's answer inside a
+/// call for a value, which the VM cannot suspend.
+#[test]
+fn a_config_script_calling_show_message_is_declined() {
+    let base = crate::mcm::engine_script("SKI_ConfigBase").unwrap();
+    let config = parsed_source(
+        "ScriptName VmMcmAsks extends SKI_ConfigBase\n\
+         Event OnOptionSelect(Int option)\n If ShowMessage(\"Reset?\")\n ForcePageReset()\n EndIf\n EndEvent\n",
+    );
+    let scripts: HashMap<String, Arc<Script>> = [(crate::mcm::CONFIG_BASE.to_owned(), base)].into();
+    let error = crate::check_quest_script(config, &crate::DELIVERED_QUEST_EVENTS, Some(&Installed(&scripts))).unwrap_err();
+    assert!(error.contains("ShowMessage"), "{error}");
 }
 
 /// A script whose `OnInit` the VM cannot run is declined whole, so it never half-runs.

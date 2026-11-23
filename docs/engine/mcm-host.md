@@ -1,6 +1,6 @@
 # MCM Host — Design
 
-**Status**: DESIGN (2026-11-23); the owner took every §6 recommendation the same day. Slice 1 is built. Requirement:
+**Status**: DESIGN (2026-11-23); the owner took every §6 recommendation the same day. Slices 1 and 2 are built. Requirement:
 [LMC-UI-002](../prd/legacy-mod-compatibility.md) (catalog row U2, D4 "served by an engine-owned MCM
 host"), Phase 3 (#6672). Nothing here is built.
 
@@ -129,9 +129,28 @@ extension-state save path (STATE-001) as LMC-UI-002 says.
    rule (a non-Run-Once quest's reset on start: variables and properties back to defaults, then
    `OnInit` again) is not modelled; it touches every quest-start path and is its own issue.
 2. `McmHost` model, the engine `SKI_ConfigBase` / `SKI_PlayerLoadGameAlias`, the VM native route,
-   registration and version events, the `mcm.*` console driver. A generated test mod (a quest with a
-   config script compiled from `.psc`) registers, builds a page, takes a toggle and a slider, and its
-   values survive a save and load.
+   registration and version events, the `mcm.*` console driver. **Built (2026-11-23).**
+   - `crates/scripting/src/mcm/SKI_ConfigBase.psc` is the engine's base, Papyrus written from the
+     wiki with SkyUI's published constants (option flags 1 / 2 / 4, `LEFT_TO_RIGHT` 1,
+     `TOP_TO_BOTTOM` 2, option ids `cell + (page + 1) * 0x100`); `mcm::engine_script` shadows a
+     mod's script of the same name in the provider library. Its option calls are the static class
+     `McmHost` (`fragment/vm/natives/mcm.rs`), which writes [`McmHost`](../../crates/scripting/src/mcm.rs).
+   - The panel's actions run its `_McmEvent`, which dispatches as SkyUI does: a state option's event
+     in its state, then the previous state back. The quest-script check covers `OnGameReload` and
+     `_McmEvent`, so a config script's handlers are checked before any runs.
+   - Saved state is the config script's own variables (its settings, the base's initialised flag
+     and `CurrentVersion`); `McmHost` is per session, and `mcm_registration_system` raises
+     `OnGameReload` on every config script whose `OnInit` ran in an earlier session.
+   - `mcm.list / open / page / show / select / accept / cancel / default / highlight / close`
+     drive it from the console.
+   - Measured by a unit test with a config script on the engine base (registration from `OnInit`,
+     a toggle by id, a slider by state with its dialog, a stale id, re-registration after a load
+     without a second `OnConfigInit`). No live run: the engine loads Papyrus as compiled `.pex`,
+     and no Papyrus compiler or SkyUI-dependent mod is available here.
+   - Not built: `ShowMessage` waits for the player inside a call for a value, which the VM cannot
+     suspend, so a config script that calls it is declined whole (with that reason); key-map
+     conflict detection (`GetCustomControl`, the conflicting control's name) passes "" (no
+     conflict); a `.swf` custom content panel.
 3. The native Mod Configuration page and its dialogs.
 4. MCM Helper (`MCM/Config/<mod>/config.json`, `settings.ini`) on the same model.
 5. Fallout 4 MCM (`MCM/Config/<mod>/config.json`, its `MCM.*` Papyrus calls) and New Vegas MCM,

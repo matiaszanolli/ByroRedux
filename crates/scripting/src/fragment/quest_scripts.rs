@@ -12,8 +12,11 @@
 
 use super::*;
 
-/// The events a quest's own script receives that the engine raises.
-pub const DELIVERED_QUEST_EVENTS: [&str; 1] = ["OnInit"];
+/// What the engine calls on a quest's own script: `OnInit`, and on a Mod Configuration Menu script (one
+/// extending the engine's `SKI_ConfigBase`, [`crate::mcm`]) the game-load event and the panel's entry
+/// point. A script is checked over each it handles, so a config script's option handlers are checked
+/// through `_McmEvent` before any of them runs.
+pub const DELIVERED_QUEST_EVENTS: [&str; 3] = ["OnInit", "OnGameReload", "_McmEvent"];
 
 /// One script the VM runs on a quest.
 #[derive(Debug, Clone)]
@@ -24,11 +27,18 @@ pub struct QuestScript {
     pub vmad: Arc<ScriptInstanceData>,
     /// The [`DELIVERED_QUEST_EVENTS`] it handles.
     pub events: Vec<String>,
+    /// The scripts it extends, lowercase, most derived first (itself excluded).
+    pub extends: Vec<String>,
 }
 
 impl QuestScript {
     pub(super) fn handles(&self, event: &str) -> bool {
         self.events.iter().any(|handled| handled.eq_ignore_ascii_case(event))
+    }
+
+    /// Whether it extends `script` (lowercase), directly or not.
+    pub fn extends(&self, script: &str) -> bool {
+        self.extends.iter().any(|parent| parent == script)
     }
 }
 

@@ -1,6 +1,7 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-23). Revision 32 designs the MCM host (LMC-UI-002) and builds its first
+**Status**: ACTIVE (2026-11-23). Revision 33 builds the MCM host's model and engine `SKI_ConfigBase`
+(slice 2). Revision 32 designs the MCM host (LMC-UI-002) and builds its first
 slice, quest-script `OnInit`. Revision 31 makes a save made in a removed plugin's cell or worldspace
 load: Oblivion's safe cell, else the session's location (owner's rule). Revision 30 measures LMC-PERF-001's and -002's fold cost
 and removes its two quadratic steps. Revision 29 measures Phase 7's profile-change saves on real data
@@ -944,6 +945,12 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   engine `SKI_ConfigBase` shadowing SkyUI's, a native Mod Configuration page,
   reached from the native pause menu). Its slice 1 is built: quest scripts
   receive `OnInit` once per save (CK *OnInit*), which the registration needs.
+  Slice 2 is built (revision 33): the engine's `SKI_ConfigBase` (Papyrus
+  shadowing SkyUI's, SkyUI's constants and option ids), the `McmHost` model
+  it writes, SkyUI's dispatch of state options, re-registration after every
+  load, and the `mcm.*` console commands. A config script calling
+  `ShowMessage` is declined until the VM can suspend inside a call for a
+  value.
 - **LMC-UI-003.** MenuXml replacements, `<include>` prefabs and font
   replacements from mods load through the MenuXml crate with the same
   precedence rules.
@@ -1608,3 +1615,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 30 | 2026-11-23 | LMC-PERF-001 and -002 measured: the fold costs 0.6 to 0.9 µs per record from 250 to 4,000 light plugins and from 16,000 to 961,000 records; the chain profile's quadratic master closure became bitsets and master lookups share one name map; #6591 recorded as fixed | — |
 | 31 | 2026-11-23 | LMC-SAV-002: a save made in a cell or worldspace the session's plugins lack loads, into Oblivion's documented safe cell (`SSaveGameSafeCellID`, default the Tiber Septim Hotel lobby) or, where no game documents one, the session's own location with the player's pose (owner's rule) | — |
 | 32 | 2026-11-23 | LMC-UI-002 designed (`docs/engine/mcm-host.md`, owner's decisions: engine `SKI_ConfigBase`, native page, pause-menu entry); slice 1 built: a quest's own scripts receive `OnInit` once per save | — |
+| 33 | 2026-11-23 | LMC-UI-002 slice 2: the engine `SKI_ConfigBase` and `SKI_PlayerLoadGameAlias` shadow SkyUI's, the `McmHost` model and static class, SkyUI's state-option dispatch, re-registration after every load, `mcm.*` console commands; `ShowMessage` declined | — |

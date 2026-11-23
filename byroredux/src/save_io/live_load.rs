@@ -870,6 +870,11 @@ pub fn execute_pending_save_loads(
     // player entering it against the outgoing session's visits and clock.
     byroredux_scripting::obscript_state::discard_pending_cell_resets(world);
     discard_outgoing_session_requests(world);
+    // LMC-UI-002 — the outgoing session's config menus and open page; each config script registers again
+    // from its OnGameReload once the save's script state is back.
+    if let Some(mut host) = world.try_resource_mut::<byroredux_scripting::mcm::McmHost>() {
+        host.reset_session();
+    }
 
     // The cell/session replacement invalidates every transient SDK entity
     // handle even when the restored population happens to reuse the same raw

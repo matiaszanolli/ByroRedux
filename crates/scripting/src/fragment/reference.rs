@@ -219,7 +219,7 @@ pub fn attach_reference_script(
 
 /// Where whether `script` has run its `OnInit` on a reference is kept, among
 /// the reference's script variables.
-pub(super) fn initialized_key(script: &str) -> ConditionStringId {
+pub(crate) fn initialized_key(script: &str) -> ConditionStringId {
     ConditionStringId::from_text(&format!("::init::{}", script.to_ascii_lowercase()))
 }
 
@@ -430,6 +430,30 @@ pub fn run_quest_script_function(world: &World, script: &str, function: &str, ar
     let advances = apply_fragment_guard_free(world, std::slice::from_ref(&effect), quest, Some(&vmad));
     flush_advances(world, advances);
     Ok(quest.0)
+}
+
+/// Run `function` of quest `quest`'s own script `script` now, with `args`: the engine calling into a
+/// checked quest script ([`QuestOwnScripts`]), as the Mod Configuration Menu host does.
+pub fn run_quest_own_script(
+    world: &World,
+    quest: QuestFormId,
+    script: &str,
+    function: &str,
+    args: Vec<VmStored>,
+) -> Result<(), String> {
+    let vmad = world
+        .try_resource::<QuestOwnScripts>()
+        .and_then(|scripts| {
+            scripts
+                .running_scripts()
+                .find(|(owner, _)| *owner == quest)
+                .and_then(|(_, scripts)| scripts.iter().find(|s| s.script.eq_ignore_ascii_case(script)).map(|s| Arc::clone(&s.vmad)))
+        })
+        .ok_or_else(|| format!("quest {:08X} runs no script {script}", quest.0))?;
+    let effect = Effect::interpret(script, function, args);
+    let advances = run_papyrus_call(world, quest, Some(&vmad), effect);
+    flush_advances(world, advances);
+    Ok(())
 }
 
 /// Run one Papyrus statement now (the debug console's `script.exec`): it is wrapped in a
