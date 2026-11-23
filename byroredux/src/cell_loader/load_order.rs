@@ -922,6 +922,9 @@ where
     // M48 GUI-FONT-002 / -004 — the same language picks the Scaleform font configuration and the
     // translation table.
     byroredux_ui::set_text_languages(byroredux_plugin::esm::strings_table::language_candidates(&strings_language));
+    // Catalog U4 — each plugin's `interface\translations\<stem>_<language>.txt` merges into that table, in load
+    // order, as SKSE / F4SE do for every enabled plugin.
+    byroredux_ui::set_translation_plugins(load_order.clone());
 
     // #1554 — global-slot assignment. Regular plugins consume a full
     // top-byte slot (0x00–0xFD); ESL / light-master plugins share the

@@ -8,7 +8,7 @@
 //! The file is game-archive input: a malformed line is skipped, never an error.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 use crate::navigator::ScaleformResourceProvider;
 
@@ -32,26 +32,101 @@ pub fn parse_translation_table(bytes: &[u8]) -> HashMap<String, String> {
     table
 }
 
-/// Give Ruffle's `$`-key pass the active language's table: `interface\translate_<spelling>.txt`
-/// for the first spelling `provider` carries (GUI-FONT-002's language). Loaded once per language;
-/// a provider with no table leaves the installed one in place.
+fn translation_plugins() -> &'static RwLock<Vec<String>> {
+    static PLUGINS: OnceLock<RwLock<Vec<String>>> = OnceLock::new();
+    PLUGINS.get_or_init(Default::default)
+}
+
+/// The session's enabled plugins in load order (file names), whose
+/// `interface\translations\<plugin stem>_<language>.txt` tables [`install_translations`] merges, as
+/// SKSE and F4SE do for every enabled plugin (catalog U4). Process-wide, like the text language.
+pub fn set_translation_plugins(plugins: Vec<String>) {
+    if let Ok(mut current) = translation_plugins().write() {
+        *current = plugins;
+    }
+}
+
+/// Parse a plugin's translation file by the script extenders' rules (SKSE64 / F4SE
+/// `Translation.cpp`, `ParseTranslation`): UCS-2 little-endian with its byte-order mark, else the
+/// file is refused; a line of at least four characters that starts with `$`; the key ends at the
+/// line's *last* tab. Entries in file order.
+pub fn parse_extender_translation(bytes: &[u8]) -> Option<Vec<(String, String)>> {
+    let body = bytes.strip_prefix(&[0xFF, 0xFE])?;
+    let text = utf16(body, u16::from_le_bytes);
+    let mut entries = Vec::new();
+    for raw in text.split('\n') {
+        // The length test is on the line as read, carriage return included (`len < 4`).
+        if raw.chars().count() < 4 || !raw.starts_with('$') {
+            continue;
+        }
+        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        let Some((key, value)) = line.rsplit_once('\t') else { continue };
+        if key.chars().count() < 2 || entries.len() >= MAX_ENTRIES {
+            continue;
+        }
+        entries.push((key.to_owned(), value.to_owned()));
+    }
+    Some(entries)
+}
+
+/// The active language's merged table and the files it came from: `interface\translate_<spelling>.txt`
+/// for the first spelling `provider` carries (GUI-FONT-002's language), then each of `plugins`'
+/// `interface\translations\<plugin stem>_<spelling>.txt` in load order. A key the table already
+/// holds keeps its first definition, as the extenders' hash-set insert does (`tHashSet::Insert`
+/// returns `kInsert_Duplicate`): a mod adds keys but cannot replace the game's, and an earlier
+/// plugin's entry beats a later one's. `None` when no file is found at all.
+pub(crate) fn merged_translation_table(
+    provider: &dyn ScaleformResourceProvider,
+    spellings: &[String],
+    plugins: &[String],
+) -> Option<(Vec<String>, HashMap<String, String>)> {
+    let vanilla = spellings.iter().find_map(|spelling| {
+        let path = format!("interface\\translate_{}.txt", spelling.to_ascii_lowercase());
+        provider.load(&path).ok().flatten().map(|bytes| (path, bytes))
+    });
+    let mut sources: Vec<String> = vanilla.as_ref().map(|(path, _)| path.clone()).into_iter().collect();
+    let mut table = vanilla.map(|(_, bytes)| parse_translation_table(&bytes)).unwrap_or_default();
+    for plugin in plugins {
+        let stem = plugin.rsplit_once('.').map_or(plugin.as_str(), |(stem, _)| stem).to_ascii_lowercase();
+        let Some((path, bytes)) = spellings.iter().find_map(|spelling| {
+            let path = format!("interface\\translations\\{stem}_{}.txt", spelling.to_ascii_lowercase());
+            provider.load(&path).ok().flatten().map(|bytes| (path, bytes))
+        }) else {
+            continue;
+        };
+        let Some(entries) = parse_extender_translation(&bytes) else {
+            log::warn!("Scaleform translation {path:?}: not UCS-2 LE with a byte-order mark, refused as the extenders refuse it");
+            continue;
+        };
+        for (key, value) in entries {
+            if table.len() < MAX_ENTRIES || table.contains_key(&key) {
+                table.entry(key).or_insert(value);
+            }
+        }
+        sources.push(path);
+    }
+    (!sources.is_empty()).then_some((sources, table))
+}
+
+/// Give Ruffle's `$`-key pass the active language's merged table ([`merged_translation_table`]
+/// over the session's [`set_translation_plugins`]). Loaded once per language and plugin set; a
+/// provider with no table at all leaves the installed one in place.
 pub(crate) fn install_translations(provider: &dyn ScaleformResourceProvider, spellings: &[String]) {
     static INSTALLED: OnceLock<Mutex<Option<String>>> = OnceLock::new();
     let installed = INSTALLED.get_or_init(Default::default);
-    let Some((path, bytes)) = spellings.iter().find_map(|spelling| {
-        let path = format!("interface\\translate_{}.txt", spelling.to_ascii_lowercase());
-        provider.load(&path).ok().flatten().map(|bytes| (path, bytes))
-    }) else {
+    let plugins = translation_plugins().read().map(|plugins| plugins.clone()).unwrap_or_default();
+    let Some((sources, table)) = merged_translation_table(provider, spellings, &plugins) else {
         return;
     };
+    let key = sources.join("|");
     let mut current = installed.lock().unwrap_or_else(|e| e.into_inner());
-    if current.as_deref() == Some(path.as_str()) {
+    if current.as_deref() == Some(key.as_str()) {
         return;
     }
-    let table = Arc::new(parse_translation_table(&bytes));
-    log::info!("Scaleform translation table {path:?}: {} key(s)", table.len());
+    log::info!("Scaleform translation table {}: {} key(s) from {} file(s)", sources[0], table.len(), sources.len());
+    let table = Arc::new(table);
     ruffle_core::byro_translation::set_text_translator(Some(Arc::new(move |key: &str| table.get(key).cloned())));
-    *current = Some(path);
+    *current = Some(key);
 }
 
 /// A game interface text file's contents: UTF-16 by its byte-order mark (LE or BE), UTF-8
@@ -112,5 +187,44 @@ mod tests {
         assert_eq!(t("costs $5"), None, "only a run that starts with $ is a key");
         set_text_translator(None);
         assert_eq!(t("$Quit?"), None);
+    }
+
+    /// U4 — a plugin translation file follows the script extenders' parser (SKSE64 / F4SE
+    /// `ParseTranslation`): UCS-2 LE with its byte-order mark or nothing, `$`-led lines of at least
+    /// four characters as read, the key ending at the last tab.
+    #[test]
+    fn a_plugin_translation_file_parses_by_the_extenders_rules() {
+        let entries = parse_extender_translation(&utf16le("$SKI_Title\tSkyUI\r\n$A\tb\tc\r\n$x\t\nnot\tkey\r\n$NoTab\r\n"))
+            .expect("a UCS-2 LE file with its mark");
+        assert_eq!(
+            entries,
+            vec![("$SKI_Title".to_owned(), "SkyUI".to_owned()), ("$A\tb".to_owned(), "c".to_owned())],
+            "the last tab splits; `$x<TAB>` is three characters as read and is skipped"
+        );
+        assert_eq!(parse_extender_translation(b"$A\tb\n"), None, "UTF-8 without the mark is refused");
+    }
+
+    /// U4 — the merged table keeps a key's first definition: the game's table, then each enabled
+    /// plugin's file in load order, as the extenders' hash-set insert keeps the existing entry.
+    #[test]
+    fn plugin_tables_add_keys_and_the_first_definition_wins() {
+        struct Files(Vec<(&'static str, Vec<u8>)>);
+        impl ScaleformResourceProvider for Files {
+            fn load(&self, path: &str) -> std::io::Result<Option<Vec<u8>>> {
+                Ok(self.0.iter().find(|(p, _)| *p == path).map(|(_, b)| b.clone()))
+            }
+        }
+        let files = Files(vec![
+            ("interface\\translate_english.txt", utf16le("$Map\tMap\r\n")),
+            ("interface\\translations\\skyui_se_english.txt", utf16le("$Map\tSkyUI map\r\n$SKI\tSkyUI\r\n")),
+            ("interface\\translations\\later_english.txt", utf16le("$SKI\tLater\r\n$Later\tL\r\n")),
+        ]);
+        let plugins = ["Skyrim.esm".to_owned(), "SkyUI_SE.esp".to_owned(), "Later.esp".to_owned()];
+        let (sources, table) =
+            merged_translation_table(&files, &["english".to_owned(), "en".to_owned()], &plugins).expect("three tables");
+        assert_eq!(sources.len(), 3, "the game's table and two plugin tables; Skyrim.esm ships none");
+        assert_eq!(table["$Map"], "Map", "a mod cannot replace the game's key");
+        assert_eq!(table["$SKI"], "SkyUI", "the earlier plugin's entry wins");
+        assert_eq!(table["$Later"], "L");
     }
 }
