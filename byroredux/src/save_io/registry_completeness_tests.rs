@@ -1607,7 +1607,9 @@ fn the_schema_fingerprint_is_pinned() {
     // readied spell), registered after `SpellList`.
     // #7228 — `EquippedAmmo` became a replacing column (a saved absence clears the live arrow choice); same name and
     // position, new policy.
-    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x1aa4_507e_f6b0_81c5;
+    // LMC-ID-007 / LMC-SAV-001 (#6670) — `SessionProfile` joined the registry as a new resource codec column (the
+    // profile the save was made with), registered after `CurrentExteriorContext`.
+    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x4076_e472_2f99_f830;
     let actual = build_save_registry().schema_fingerprint();
     assert_eq!(
         actual, BASELINE_SCHEMA_FINGERPRINT,

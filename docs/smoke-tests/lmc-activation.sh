@@ -21,6 +21,8 @@
 #      absent. The `--esm` is a bare plugin name that resolves through the roots; the report lists each root's plugins
 #      and loose files, ModB's taking a path from ModA (LMC-ID-012, LMC-AST-010), and DLCPatch disabled with its only
 #      plugin (LMC-ID-011).
+#   7. profile fingerprint: the report prints the fingerprint a save would carry (LMC-ID-007). The same profile gives the
+#      same fingerprint twice; changing the record policy changes it.
 # Requires the New Vegas data with the Dead Money and Caravan Pack DLC (BYROREDUX_FNV_DATA), python3 and a built engine
 # (BYRO_BIN, else target/release, else target/debug).
 set -euo pipefail
@@ -217,5 +219,19 @@ expect roots "    1  moda: 1 plugin (1 in the profile), 0 archives, 2 loose file
 expect roots "    2  dlcpatch: 1 plugin (1 in the profile), 0 archives; disabled with its plugins, its loose files left out"
 expect roots "    3  modb: 1 plugin (1 in the profile), 0 archives, 1 loose file, 1 over moda's"
 echo "smoke[$GATE]: PASS -- mod roots own their plugins and loose files, a later root's file wins, and a root loses its loose files with its only plugin (LMC-ID-012, LMC-AST-010, LMC-ID-011)"
+
+fingerprint() { # fingerprint <leg> <extra args...>: the profile fingerprint the report prints for the list plugins
+    local leg="$1"; shift
+    merge_report "$leg" 01000800 "$@"
+    grep -o 'profile fingerprint [0-9a-f]\{16\}' "$WORK/$leg.log" | head -1
+}
+first="$(fingerprint fingerprint-a)"
+second="$(fingerprint fingerprint-b)"
+legacy="$(fingerprint fingerprint-legacy --merge-policy legacy)"
+[[ -n "$first" ]] || fail "fingerprint: the report printed no profile fingerprint (see $WORK/fingerprint-a.log)"
+expect fingerprint-a "4 plugins, 0 mod roots, 0 extensions, 0 grants, policy merge"
+[[ "$first" == "$second" ]] || fail "fingerprint: one profile gave two fingerprints ($first, $second)"
+[[ "$first" != "$legacy" ]] || fail "fingerprint: the record policy did not change the fingerprint ($first)"
+echo "smoke[$GATE]: PASS -- the report prints the profile fingerprint a save carries, stable for one profile and changed by the policy (LMC-ID-007)"
 
 echo "smoke[$GATE]: PASS"

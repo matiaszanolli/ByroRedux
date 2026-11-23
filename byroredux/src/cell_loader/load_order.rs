@@ -55,6 +55,9 @@ pub(crate) struct LoadOrder {
     list_merge: esm::records::list_merge::ListMerge,
     /// Slot allocated after real plugins for Oblivion's engine-owned records.
     engine_slot: Option<esm::reader::GlobalSlot>,
+    /// Each plugin's content hash (xxHash64 of its file), parallel to `names`, for the profile fingerprint a save
+    /// stores (LMC-ID-007, LMC-SAV-001). Empty for hand-built test orders.
+    content_hashes: Vec<u64>,
 }
 
 impl LoadOrder {
@@ -86,7 +89,13 @@ impl LoadOrder {
             provenance: esm::records::FoldProvenance::default(),
             list_merge: esm::records::list_merge::ListMerge::default(),
             engine_slot: None,
+            content_hashes: Vec::new(),
         }
+    }
+
+    /// The content hash (xxHash64) of the plugin at `position`, when the fold read it.
+    pub(crate) fn content_hash(&self, position: usize) -> Option<u64> {
+        self.content_hashes.get(position).copied()
     }
 
     /// Record that the plugin at `position` wrote the record `form_id`; called in load order, so the last call per
@@ -152,6 +161,7 @@ impl Default for LoadOrder {
             provenance: esm::records::FoldProvenance::default(),
             list_merge: esm::records::list_merge::ListMerge::default(),
             engine_slot: None,
+            content_hashes: Vec::new(),
         }
     }
 }
@@ -350,8 +360,9 @@ impl Resource for GlobalFormIdResolver {}
 
 /// Install the active load order's resolver and, beside it, the
 /// [`LoadOrderIdentity`] it delegates to — the scripting crate's systems read
-/// the latter to persist FormIDs portably (#4414). Every load path that
-/// replaces the resolver goes through here so the two cannot diverge.
+/// the latter to persist FormIDs portably (#4414) — and the session's profile
+/// record, which a save stores (LMC-ID-007). Every load path that replaces the
+/// resolver goes through here so they cannot diverge.
 pub(crate) fn install_form_resolver(
     world: &mut byroredux_core::ecs::World,
     resolver: GlobalFormIdResolver,
@@ -360,6 +371,7 @@ pub(crate) fn install_form_resolver(
     world.insert_resource(resolver.identity().clone());
     world.insert_resource(byroredux_scripting::FactionCatalog(resolver.faction_relationships()));
     world.insert_resource(resolver);
+    world.insert_resource(crate::profile_fingerprint::session_profile(&load_order));
     world.insert_resource(ActiveLoadOrder(load_order));
 }
 
@@ -928,7 +940,9 @@ where
     // the others' indexes finish, so the parse-time peak rises by about that
     // file's size (`docs/engine/memory-budget.md`, "ESM Index").
     let plugin_count = plugin_paths.len();
-    let mut walked: Vec<Option<anyhow::Result<esm::records::EsmIndex>>> =
+    // Each walk's result and the plugin's content hash (LMC-ID-007), hashed on the walking thread from the bytes it
+    // already holds.
+    let mut walked: Vec<Option<(u64, anyhow::Result<esm::records::EsmIndex>)>> =
         plugin_paths.iter().map(|_| None).collect();
     let plugins = plugin_paths.iter().enumerate().zip(walked.iter_mut());
     rayon::in_place_scope(|scope| -> anyhow::Result<()> {
@@ -993,6 +1007,7 @@ where
             let walk_plugin = move || {
                 let started = std::time::Instant::now();
                 let _strings_guard = tables.map(esm::StringsTableGuard::new);
+                let content_hash = twox_hash::XxHash64::oneshot(0, &bytes);
                 let plugin_records = esm::records::parse_esm_with_load_order(&bytes, Some(remap));
                 log::info!(
                     "Walked plugin {}/{} '{}' in {:.2} s",
@@ -1001,7 +1016,7 @@ where
                     path,
                     started.elapsed().as_secs_f64(),
                 );
-                plugin_records
+                (content_hash, plugin_records)
             };
             match walk {
                 PluginWalk::Parallel => scope.spawn(move |_| *walked = Some(walk_plugin())),
@@ -1027,13 +1042,14 @@ where
     }
     let fold_started = std::time::Instant::now();
     let mut provenance_time = std::time::Duration::ZERO;
-    for (position, (path, plugin_records)) in plugin_paths.iter().zip(walked).enumerate() {
-        let plugin_records = plugin_records
-            .expect("the scope joins every walk it spawned before returning")
-            .unwrap_or_else(|e| {
-                log::warn!("Record parse failed for '{}': {}", path, e);
-                esm::records::EsmIndex::default()
-            });
+    let mut content_hashes = Vec::with_capacity(plugin_count);
+    for (position, (path, walk)) in plugin_paths.iter().zip(walked).enumerate() {
+        let (content_hash, plugin_records) = walk.expect("the scope joins every walk it spawned before returning");
+        content_hashes.push(content_hash);
+        let plugin_records = plugin_records.unwrap_or_else(|e| {
+            log::warn!("Record parse failed for '{}': {}", path, e);
+            esm::records::EsmIndex::default()
+        });
         // LMC-REC-007 — note who carried each record before the fold keeps the later one whole (#5428: the last
         // writer of a SCPT is the one whose body is live).
         let noted = std::time::Instant::now();
@@ -1063,6 +1079,7 @@ where
     let mut order = LoadOrder::with_dependencies(load_order, slots, dependencies);
     order.provenance = provenance;
     order.list_merge = list_merge;
+    order.content_hashes = content_hashes;
     if merged.game == esm::reader::GameKind::Oblivion {
         let owners = order.slots.iter().copied().zip(order.names.iter().map(|name| PluginId::from_filename(name))).collect();
         let mut identity = LoadOrderIdentity::new(owners);

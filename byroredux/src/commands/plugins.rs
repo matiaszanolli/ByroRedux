@@ -24,12 +24,32 @@ impl ConsoleCommand for PluginActivationCommand {
         "Show the plugin profile, the load order it activated to, each hoisted master and disabled plugin, each plugin's paired archives, and the mod roots with what each ships: plugins.activation"
     }
 
-    fn execute(&self, _world: &World, _args: &str) -> CommandOutput {
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
         match crate::plugin_activation::activation_report() {
-            Some(report) => CommandOutput::lines(activation_lines(report)),
+            Some(report) => {
+                let mut lines = activation_lines(report);
+                // LMC-ID-007 — the fingerprint a save made now would carry, once a cell has loaded.
+                if let Some(profile) = world.try_resource::<crate::profile_fingerprint::SessionProfile>() {
+                    lines.push(fingerprint_line(&profile.0));
+                }
+                CommandOutput::lines(lines)
+            }
             None => CommandOutput::line("no plugin profile: the session was started without --esm"),
         }
     }
+}
+
+/// `profile fingerprint …`: the profile a save made now would carry (LMC-ID-007).
+fn fingerprint_line(profile: &crate::profile_fingerprint::ProfileRecord) -> String {
+    format!(
+        "profile fingerprint {:016x}: {} plugins, {} mod roots, {} extensions, {} grants, policy {}",
+        profile.fingerprint,
+        profile.plugins.len(),
+        profile.mod_roots.len(),
+        profile.extensions.len(),
+        profile.grants.len(),
+        profile.merge_policy
+    )
 }
 
 fn activation_lines(report: &crate::plugin_activation::PluginActivationReport) -> Vec<String> {
@@ -152,6 +172,7 @@ pub(crate) fn run_report(plugin_paths: &[String], args: &[String]) -> anyhow::Re
     if let Some(report) = crate::plugin_activation::activation_report() {
         activation_lines(report).iter().for_each(|line| println!("{line}"));
     }
+    println!("{}", fingerprint_line(&crate::profile_fingerprint::session_profile(&order).0));
     let record_type = |form_id: u32| index.record_types.get(&form_id).copied();
     let form = args.first().filter(|arg| !arg.starts_with("--"));
     let lines = match form.map(|text| parse_form_id(text)) {

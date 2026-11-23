@@ -508,6 +508,22 @@ impl ConsoleCommand for SaveInfoCommand {
                         },
                     ));
                 }
+                // LMC-SAV-001 (#6670) — the profile the save was made with, against this session's.
+                match crate::profile_fingerprint::saved_record(&snap) {
+                    Some(saved) => {
+                        let changes = crate::profile_fingerprint::save_profile_lines(world, &snap);
+                        if changes.is_empty() {
+                            lines.push(format!(
+                                "  profile: fingerprint {:016x}, {} plugin(s), as this session's",
+                                saved.fingerprint,
+                                saved.plugins.len()
+                            ));
+                        } else {
+                            lines.extend(changes.iter().map(|line| format!("  {line}")));
+                        }
+                    }
+                    None => lines.push("  profile: none recorded".to_string()),
+                }
                 for (name, col) in &snap.components {
                     let rows = col.as_array().map_or(0, |a| a.len());
                     lines.push(format!("  {name}: {rows} rows"));

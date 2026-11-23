@@ -58,6 +58,7 @@ mod notifications;
 mod perk_activate;
 mod mod_roots;
 mod plugin_activation;
+mod profile_fingerprint;
 mod objectives;
 mod hud;
 mod light_translate;
