@@ -698,7 +698,12 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// (maps keyed by FormID become `[key, value]` lists; `QuestFormId` itself is stable), the active-effect and parked
 /// reference codecs, script-instance properties, and the reference variables kept as `f32` halves (quest locals,
 /// `ScriptVariables`, which now also lists its reference pairs). A v145 row's numbers and object keys do not decode.
-pub const FORMAT_MAJOR: u16 = 146;
+///
+/// v146 -> v147 (#6676, LMC-SAV-002..004, slice 3): the six ledgers the live load restores before its cell reload
+/// (`ReferenceEnableState`, `ReferenceLockState`, `ReferenceScriptState`, `ScriptedFactionChanges`,
+/// `ReferenceMotionTypeState`, `ActorRelocations`) save their FormIDs as stable identities too, now that the load
+/// reloads the session's own plugins; a v146 ledger's numbers would be read as other forms.
+pub const FORMAT_MAJOR: u16 = 147;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

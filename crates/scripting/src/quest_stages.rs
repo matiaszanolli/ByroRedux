@@ -866,6 +866,12 @@ impl StartGameQuestRegistry {
     pub fn is_empty(&self) -> bool {
         self.quests.is_empty()
     }
+
+    /// The Start Game Enabled quests `stages` has not seen, which [`quest_startup_system`] starts on its next tick:
+    /// after a load, the ones a plugin added since the save brought (LMC-SAV-003), with no SEQ file needed.
+    pub fn not_started(&self, stages: &QuestStageState) -> usize {
+        self.quests.keys().filter(|quest| !stages.is_started(**quest)).count()
+    }
 }
 
 /// Engine-supplied equivalent of a quest alias script that advances once a

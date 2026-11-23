@@ -62,6 +62,7 @@ impl FactionChange {
 #[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ScriptedFactionChanges {
+    #[cfg_attr(feature = "save", serde(with = "stable_changes"))]
     by_reference: HashMap<u32, Vec<(u32, Option<i8>)>>,
 }
 
@@ -182,5 +183,38 @@ mod tests {
         let other = world.spawn();
         reapply_scripted_faction_changes(&world, other, 0xB0);
         assert!(world.get::<FactionRanks>(other).is_none());
+    }
+}
+
+/// The scripted memberships saved with each reference and faction as stable identities (LMC-SAV-002..004): an absent
+/// plugin's reference drops its changes, an absent plugin's faction drops that change.
+#[cfg(feature = "save")]
+mod stable_changes {
+    use std::collections::HashMap;
+
+    use byroredux_core::stable_form_id::SavedForm;
+    use serde::{Deserialize, Serialize};
+
+    type Changes = HashMap<u32, Vec<(u32, Option<i8>)>>;
+    type Wire = Vec<(SavedForm, Vec<(SavedForm, Option<i8>)>)>;
+
+    pub fn serialize<S: serde::Serializer>(changes: &Changes, ser: S) -> Result<S::Ok, S::Error> {
+        let wire: Wire = changes
+            .iter()
+            .map(|(&reference, factions)| {
+                (SavedForm::save(reference), factions.iter().map(|&(faction, rank)| (SavedForm::save(faction), rank)).collect())
+            })
+            .collect();
+        wire.serialize(ser)
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Changes, D::Error> {
+        Ok(Wire::deserialize(de)?
+            .into_iter()
+            .filter_map(|(reference, factions)| {
+                let factions = factions.into_iter().filter_map(|(faction, rank)| Some((faction.load()?, rank))).collect();
+                Some((reference.load()?, factions))
+            })
+            .collect())
     }
 }
