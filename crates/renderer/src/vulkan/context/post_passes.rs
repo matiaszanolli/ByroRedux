@@ -164,6 +164,11 @@ impl VulkanContext {
         if let Some(gc) = self.exterior.groundcover.as_mut() {
             gc.discard_pending_field_commit();
         }
+        // #7361 — a terrain-tile copy that was recorded but never submitted left the SSBO stale.
+        super::resources::discard_terrain_tile_upload(
+            &mut self.exterior.terrain_tiles_dirty,
+            &mut self.exterior.terrain_tiles_upload_staged,
+        );
     }
 
     /// #5956 — commit the staged volumetrics / caustic skip-clear latches. Runs
@@ -172,6 +177,7 @@ impl VulkanContext {
     /// staged values dropped, so the retry decides (and clears) again.
     pub(super) fn promote_skip_clear_latches(&mut self, frame: usize) {
         self.promote_linear_capture_copy(); // #6811
+        super::resources::commit_terrain_tile_upload(&mut self.exterior.terrain_tiles_upload_staged); // #7361
         if let Some(gc) = self.exterior.groundcover.as_mut() {
             gc.promote_field_commit(); // #6291
         }

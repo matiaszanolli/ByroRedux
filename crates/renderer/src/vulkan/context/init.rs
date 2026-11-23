@@ -952,6 +952,7 @@ impl VulkanContext {
                 // test behaviour).
                 terrain_tile_free_list: (0..scene_buffer::MAX_TERRAIN_TILES as u32).rev().collect(),
                 terrain_tiles_dirty: false,
+                terrain_tiles_upload_staged: false,
                 groundcover,
                 groundcover_models,
                 // #4052 — created on demand by

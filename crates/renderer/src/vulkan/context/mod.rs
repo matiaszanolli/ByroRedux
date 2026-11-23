@@ -1028,6 +1028,13 @@ pub struct ExteriorState {
     /// cell transition so a single DEVICE_LOCAL allocation is the correct
     /// shape.
     terrain_tiles_dirty: bool,
+    /// The tile copy this frame recorded, until its `queue_submit` settles it (#7361). `fill_terrain_tiles`
+    /// clears `terrain_tiles_dirty` at record time, which is a decision about GPU work: a frame whose
+    /// staging acquire failed or whose command buffer was discarded leaves the SSBO stale. Set when the copy
+    /// is recorded; `promote_skip_clear_latches` clears it after a successful submit, and
+    /// `discard_pending_skip_clear_latches` (top of the next `draw_frame`) re-arms the dirty flag if it is
+    /// still set.
+    terrain_tiles_upload_staged: bool,
 }
 
 pub struct VulkanContext {
@@ -2441,6 +2448,7 @@ mod field_group_tests {
                 "terrain_tiles",
                 "terrain_tile_free_list",
                 "terrain_tiles_dirty",
+                "terrain_tiles_upload_staged",
             ],
         ),
     ];

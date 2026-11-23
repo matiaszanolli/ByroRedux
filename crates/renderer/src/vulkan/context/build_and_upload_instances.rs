@@ -1011,9 +1011,18 @@ impl VulkanContext {
         let mut tile_scratch: Vec<GpuTerrainTile> =
             std::mem::take(&mut self.scratch.terrain_tile_scratch);
         if self.fill_terrain_tile_scratch_if_dirty(&mut tile_scratch) {
-            self.scene_buffers
+            // #7361 — `fill_terrain_tiles` cleared the dirty flag; it stays cleared only once the copy is
+            // recorded AND its frame is submitted (`promote_skip_clear_latches`).
+            let recorded = self
+                .scene_buffers
                 .upload_terrain_tiles(&self.device, cmd, frame, &tile_scratch)
-                .unwrap_or_else(|e| log::warn!("Failed to upload terrain tiles: {e}"));
+                .map_err(|e| log::warn!("Failed to upload terrain tiles: {e}"))
+                .is_ok();
+            super::resources::note_terrain_tile_upload(
+                &mut self.exterior.terrain_tiles_dirty,
+                &mut self.exterior.terrain_tiles_upload_staged,
+                recorded,
+            );
         }
         self.scratch.terrain_tile_scratch = tile_scratch;
     }

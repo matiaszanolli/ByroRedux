@@ -38,6 +38,30 @@ pub(super) fn fill_terrain_tiles(
     true
 }
 
+/// #7361 — the record-time outcome of the tile copy. A recorded copy is staged until the frame's submit
+/// settles it; a failed one (the staging acquire or map) re-arms the dirty flag at once, so the next frame
+/// tries again.
+pub(super) fn note_terrain_tile_upload(dirty: &mut bool, staged: &mut bool, recorded: bool) {
+    if recorded {
+        *staged = true;
+    } else {
+        *dirty = true;
+    }
+}
+
+/// #7361 — `queue_submit` returned `Ok`: the recorded tile copy is on the queue.
+pub(super) fn commit_terrain_tile_upload(staged: &mut bool) {
+    *staged = false;
+}
+
+/// #7361 — the top of the next `draw_frame`: a copy still staged never reached the queue (a tail `Err`
+/// site discarded its command buffer), so the SSBO is stale and the tiles are dirty again.
+pub(super) fn discard_terrain_tile_upload(dirty: &mut bool, staged: &mut bool) {
+    if std::mem::take(staged) {
+        *dirty = true;
+    }
+}
+
 /// Free-function core of `VulkanContext::free_terrain_tile` — Vulkan-free
 /// so unit tests can exercise the state transition. Releases `slot` back
 /// to `free_list`, clears the corresponding `tiles` entry, sets `*dirty`,
@@ -1052,6 +1076,52 @@ mod tests {
     /// is a single bool (the DEVICE_LOCAL SSBO needs exactly one upload per
     /// cell transition), so the capacity reuse is verified by toggling the
     /// flag back on manually after each consumption.
+    /// #7361 — the dirty flag `fill_terrain_tiles` clears at record time comes back when the copy never
+    /// reached the queue: a failed staging acquire at once, a discarded command buffer at the next frame.
+    #[test]
+    fn a_tile_copy_that_never_reached_the_queue_re_arms_the_dirty_flag() {
+        let tiles: Vec<Option<GpuTerrainTile>> = vec![Some(GpuTerrainTile::default()); 2];
+        let mut dest = Vec::new();
+
+        // Recorded, then submitted: the flag stays cleared.
+        let (mut dirty, mut staged) = (true, false);
+        assert!(fill_terrain_tiles(&tiles, &mut dirty, &mut dest));
+        note_terrain_tile_upload(&mut dirty, &mut staged, true);
+        commit_terrain_tile_upload(&mut staged);
+        discard_terrain_tile_upload(&mut dirty, &mut staged);
+        assert!(!dirty && !staged);
+        assert!(!fill_terrain_tiles(&tiles, &mut dirty, &mut dest), "nothing left to upload");
+
+        // Recorded, then the command buffer was discarded: the next frame's discard re-arms it.
+        let (mut dirty, mut staged) = (true, false);
+        assert!(fill_terrain_tiles(&tiles, &mut dirty, &mut dest));
+        note_terrain_tile_upload(&mut dirty, &mut staged, true);
+        discard_terrain_tile_upload(&mut dirty, &mut staged);
+        assert!(dirty && !staged);
+        assert!(fill_terrain_tiles(&tiles, &mut dirty, &mut dest), "the next frame uploads again");
+
+        // The copy itself failed to record: dirty again at once.
+        let (mut dirty, mut staged) = (true, false);
+        assert!(fill_terrain_tiles(&tiles, &mut dirty, &mut dest));
+        note_terrain_tile_upload(&mut dirty, &mut staged, false);
+        assert!(dirty && !staged);
+    }
+
+    /// #7361 — the settle hooks ride the skip-clear latch pair and the caller feeds the copy's outcome in.
+    #[test]
+    fn the_tile_upload_is_settled_by_the_skip_clear_latch_hooks() {
+        let post = crate::source_scan::production_text(include_str!("post_passes.rs"));
+        assert!(
+            post.contains("discard_terrain_tile_upload(") && post.contains("commit_terrain_tile_upload("),
+            "discard_/promote_skip_clear_latches settle the staged tile copy (#7361)"
+        );
+        let upload = crate::source_scan::production_text(include_str!("build_and_upload_instances.rs"));
+        assert!(
+            upload.contains("note_terrain_tile_upload("),
+            "upload_terrain_tiles_if_dirty reports the copy's outcome (#7361)"
+        );
+    }
+
     #[test]
     fn fill_reuses_scratch_capacity_across_dirty_refills() {
         let mut tiles: Vec<Option<GpuTerrainTile>> = vec![None; MAX_TERRAIN_TILES];
