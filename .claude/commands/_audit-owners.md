@@ -173,6 +173,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/cell_loader/load_order.rs` | esm, save Dim 1-2, concurrency Dim 7, performance Dim 7; per-game | HIGH |
 | `byroredux/src/plugin_activation` | esm, tooling Dim 4, ecs; per-game | MEDIUM |
 | `byroredux/src/load_order_import.rs` | esm, tooling Dim 4 | MEDIUM |
+| `byroredux/src/preflight` | esm, tooling Dim 4 (LMC headless preflight: classifies a mod's files by the mechanism catalog) | MEDIUM |
 | `byroredux/src/mod_roots.rs` | esm, tooling Dim 4, parsers (loose-tier layering); per-game | MEDIUM |
 | `byroredux/src/profile_fingerprint.rs` | save, esm | MEDIUM |
 | `byroredux/src/cell_loader/precombined` | fo4; performance | HIGH |
