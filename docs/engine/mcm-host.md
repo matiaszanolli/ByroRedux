@@ -169,6 +169,13 @@ extension-state save path (STATE-001) as LMC-UI-002 says.
      snapshot's or listed) and 8 adapter tests. No live run: no SkyUI-dependent mod is available
      here, so the path from a click to a config script's event is covered in two halves (the
      page's actions; slice 2's drivers on a generated config script), not end to end.
+   - A script message box (`ShowMessage`, or any box a script raises while a config page is open)
+     shows on the page itself, over any dialog: its title, text and buttons come from the shared
+     message queue (`$`-keys translated), a button answers it by index through the same path
+     `ui.answer` drives, and no other surface opens for it meanwhile (a native page opened over the
+     Mod Configuration page would draw under it, or wait unseen). Skyrim box text and buttons on the
+     native page are translated the same way. Not verified live: where the page is not open, the
+     existing movie or native surface still decides.
    - Not built: a `.dds` custom panel is carried but not decoded (the page reports it as
      unsupported, like a `.swf`).
 4. MCM Helper (`MCM/Config/<mod>/config.json`, `settings.ini`) on the same model.

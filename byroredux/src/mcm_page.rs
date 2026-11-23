@@ -9,13 +9,19 @@
 
 use byroredux_core::ecs::world::World;
 use byroredux_native_ui::{
-    McmAction, McmCellKind, McmCellView, McmCustomContent, McmDialogView, McmModView, McmSnapshot,
+    McmAction, McmCellKind, McmCellView, McmCustomContent, McmDialogView, McmModView, McmSnapshot, MessageBoxView,
 };
 use byroredux_scripting::mcm::{self, flags, McmAnswer, McmDialog, McmHost, McmKind, McmOption, McmPage};
 
 /// Build the page's snapshot from the host: `None` while no config menu is registered (the pause
-/// page then offers no entry). `translate` resolves a script text that is a `$`-key.
-pub(crate) fn snapshot(world: &World, translate: &dyn Fn(&str) -> String) -> Option<McmSnapshot> {
+/// page then offers no entry). `translate` resolves a script text that is a `$`-key. `message` is the
+/// script message box waiting for an answer, already translated: while a config page is open it
+/// shows on the page (a box on another surface would draw under it or wait unseen), over any dialog.
+pub(crate) fn snapshot(
+    world: &World,
+    translate: &dyn Fn(&str) -> String,
+    message: Option<&MessageBoxView>,
+) -> Option<McmSnapshot> {
     let host = world.try_resource::<McmHost>()?;
     if host.mods.is_empty() {
         return None;
@@ -35,7 +41,14 @@ pub(crate) fn snapshot(world: &World, translate: &dyn Fn(&str) -> String) -> Opt
         view.title = translate(&page.title);
         view.info = translate(&page.info);
         view.cells = cells(page, translate);
-        view.dialog = page.dialog.as_ref().map(|(id, dialog)| dialog_view(page, *id, dialog, translate));
+        view.dialog = match message {
+            Some(message) => Some(McmDialogView::Message {
+                title: message.title.clone(),
+                text: message.text.clone(),
+                buttons: message.buttons.clone(),
+            }),
+            None => page.dialog.as_ref().map(|(id, dialog)| dialog_view(page, *id, dialog, translate)),
+        };
         view.custom = page.custom.as_ref().map(|(source, x, y)| McmCustomContent {
             source: source.clone(),
             x: *x,
@@ -167,8 +180,12 @@ fn apply_one(world: &World, action: &McmAction) -> Result<(), String> {
             mcm::cancel_dialog(world);
             Ok(())
         }
-        // ShowMessage is declined at check time, so the host opens no message to answer.
-        McmAction::MessageAnswer(_) => Ok(()),
+        // The box is the shared queue's, whoever raised it: its answer reaches the script that waits
+        // (`ShowMessage`'s ticket included) through the one path `ui.answer` drives.
+        McmAction::MessageAnswer(button) => {
+            crate::notifications::answer_message_box(world, Some(*button));
+            Ok(())
+        }
         McmAction::Close => mcm::close(world),
     }
 }
@@ -181,28 +198,10 @@ pub(crate) fn leave(world: &World) {
     }
 }
 
-/// Install the game's `$`-key table once for this session, so the page translates without a movie
-/// of its own being loaded. A game with no interface archive (Oblivion, Fallout 3, New Vegas) has no
-/// such table, and nothing is installed.
-fn ensure_translations() {
-    static DONE: std::sync::Once = std::sync::Once::new();
-    DONE.call_once(|| {
-        let args = crate::cli_args::effective_args();
-        let Ok(Some((_, archive_path))) = crate::scaleform_hud::interface_archive(&args) else {
-            return;
-        };
-        match crate::asset_provider::LayeredSources::interface(&args, &archive_path) {
-            Ok(sources) => byroredux_ui::load_translations(&sources),
-            Err(error) => log::warn!("mod configuration: the translation table could not be read: {error}"),
-        }
-    });
-}
-
 /// The snapshot for the live page: the host's, translated through the game's table.
 pub(crate) fn live_snapshot(world: &World) -> Option<McmSnapshot> {
     world.try_resource::<McmHost>().filter(|host| !host.mods.is_empty())?;
-    ensure_translations();
-    snapshot(world, &byroredux_ui::translate_text)
+    snapshot(world, &crate::ui_translate::translate, crate::notifications::front_message_box(world).as_ref())
 }
 
 #[cfg(test)]
@@ -242,16 +241,16 @@ mod tests {
     #[test]
     fn no_registered_menu_is_no_snapshot() {
         let world = World::new();
-        assert!(snapshot(&world, &table).is_none());
+        assert!(snapshot(&world, &table, None).is_none());
         let mut world = World::new();
         world.insert_resource(McmHost::default());
-        assert!(snapshot(&world, &table).is_none(), "an empty registry offers no pause entry");
+        assert!(snapshot(&world, &table, None).is_none(), "an empty registry offers no pause entry");
     }
 
     #[test]
     fn registered_mods_and_pages_are_translated() {
         let world = world_with(None);
-        let view = snapshot(&world, &table).expect("one mod registered");
+        let view = snapshot(&world, &table, None).expect("one mod registered");
         assert_eq!(view.mods[0].name, "Frostfall");
         assert_eq!(view.mods[0].pages, ["General", "Enabled (translated)"]);
         assert_eq!((view.open_mod, view.generation), (None, 7));
@@ -271,7 +270,7 @@ mod tests {
         let id = |cell: usize| page.option_id(cell) as u32;
         let ids = [id(0), id(1), id(2), id(3), id(4)];
         let world = world_with(Some(page));
-        let view = snapshot(&world, &table).unwrap();
+        let view = snapshot(&world, &table, None).unwrap();
         assert_eq!((view.open_mod, view.open_page), (Some(0), Some(1)));
         assert_eq!((view.title.as_str(), view.info.as_str()), ("Enabled (translated)", "Turns it on."));
         let kinds: Vec<_> = view.cells.iter().map(|cell| cell.kind).collect();
@@ -295,7 +294,7 @@ mod tests {
             page.cells[5] = Some(option(McmKind::KeyMap, "Wait", "", 0x2C as f32, unmap));
             page.dialog = Some((page.option_id(5), McmDialog::KeyMap));
             let world = world_with(Some(page));
-            snapshot(&world, &table).unwrap().dialog.unwrap()
+            snapshot(&world, &table, None).unwrap().dialog.unwrap()
         };
         assert_eq!(key_map(0), McmDialogView::KeyMap { id: 5, current: 0x2C, with_unmap: false });
         assert_eq!(key_map(flags::WITH_UNMAP), McmDialogView::KeyMap { id: 5, current: 0x2C, with_unmap: true });
@@ -306,7 +305,7 @@ mod tests {
         page.dialog = Some((slider, McmDialog::Slider { start: 2.0, default: 1.0, min: 0.0, max: 5.0, interval: 0.5 }));
         let world = world_with(Some(page));
         assert_eq!(
-            snapshot(&world, &table).unwrap().dialog.unwrap(),
+            snapshot(&world, &table, None).unwrap().dialog.unwrap(),
             McmDialogView::Slider { id: 1, start: 2.0, default: 1.0, min: 0.0, max: 5.0, interval: 0.5, format: "{2} x".into() },
             "the format is the slider option's own text"
         );
@@ -315,7 +314,7 @@ mod tests {
         page.dialog = Some((9, McmDialog::Menu { options: vec!["$Enabled".into(), "Off".into()], start: 1, default: 0 }));
         let world = world_with(Some(page));
         assert_eq!(
-            snapshot(&world, &table).unwrap().dialog.unwrap(),
+            snapshot(&world, &table, None).unwrap().dialog.unwrap(),
             McmDialogView::Menu { id: 9, options: vec!["Enabled (translated)".into(), "Off".into()], start: 1, default: 0 }
         );
     }
@@ -325,16 +324,16 @@ mod tests {
         let mut page = McmPage::new(0, None);
         page.custom = Some(("Interface/frostfall/logo.dds".into(), 10.0, 20.0));
         let world = world_with(Some(page));
-        let custom = snapshot(&world, &table).unwrap().custom.unwrap();
+        let custom = snapshot(&world, &table, None).unwrap().custom.unwrap();
         assert_eq!((custom.source.as_str(), custom.x, custom.y), ("Interface/frostfall/logo.dds", 10.0, 20.0));
     }
 
     #[test]
-    fn dismissing_a_dialog_clears_it_and_a_message_answer_is_a_no_op() {
+    fn dismissing_a_dialog_clears_it() {
         let mut page = McmPage::new(0, None);
         page.dialog = Some((3, McmDialog::Input { start_text: "x".into() }));
         let world = world_with(Some(page));
-        apply(&world, vec![McmAction::MessageAnswer(true), McmAction::DialogCancel]);
+        apply(&world, vec![McmAction::DialogCancel]);
         assert!(world.resource::<McmHost>().open.as_ref().unwrap().dialog.is_none());
     }
 
@@ -358,5 +357,43 @@ mod tests {
         leave(&world);
         assert!(world.resource::<McmHost>().open.is_none());
         assert_eq!(world.resource::<McmHost>().generation, 7, "no close was run");
+    }
+
+    fn box_of(buttons: &[&str]) -> byroredux_scripting::ScriptMessage {
+        byroredux_scripting::ScriptMessage {
+            title: "Frostfall".into(),
+            text: "Reset everything?".into(),
+            message_box: true,
+            buttons: buttons.iter().map(|b| (*b).to_owned()).collect(),
+            answer: byroredux_scripting::MessageAnswer::Unread,
+        }
+    }
+
+    #[test]
+    fn a_waiting_message_box_shows_on_the_open_page_over_a_dialog() {
+        let mut page = McmPage::new(0, None);
+        page.dialog = Some((3, McmDialog::Input { start_text: "x".into() }));
+        let world = world_with(Some(page));
+        let message = MessageBoxView { title: "Frostfall".into(), text: "Reset everything?".into(), buttons: vec!["Yes".into(), "No".into()] };
+        let dialog = snapshot(&world, &table, Some(&message)).unwrap().dialog.unwrap();
+        assert_eq!(
+            dialog,
+            McmDialogView::Message { title: "Frostfall".into(), text: "Reset everything?".into(), buttons: vec!["Yes".into(), "No".into()] }
+        );
+        // No page open: the box is not this page's to show.
+        let world = world_with(None);
+        assert!(snapshot(&world, &table, Some(&message)).unwrap().dialog.is_none());
+    }
+
+    #[test]
+    fn a_message_answer_takes_the_front_box_off_the_shared_queue() {
+        let mut world = world_with(None);
+        world.insert_resource(crate::notifications::MessageBoxQueue(
+            [box_of(&["Yes", "No"]), box_of(&["Later"])].into_iter().collect(),
+        ));
+        apply(&world, vec![McmAction::MessageAnswer(1)]);
+        let queue = world.resource::<crate::notifications::MessageBoxQueue>();
+        assert_eq!(queue.0.len(), 1, "the front box was answered");
+        assert_eq!(queue.0[0].buttons, ["Later"]);
     }
 }

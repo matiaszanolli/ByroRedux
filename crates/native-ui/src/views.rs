@@ -316,8 +316,10 @@ pub enum McmDialogView {
     Input { id: u32, start_text: String },
     /// The key-map capture: the next key pressed is the new binding.
     KeyMap { id: u32, current: u32, with_unmap: bool },
-    /// `ShowMessage`: the script is blocked until it is answered.
-    Message { text: String, with_cancel: bool, accept_label: String, cancel_label: String },
+    /// A script message box raised while the page is open (`ShowMessage`, or any other box): the
+    /// script is blocked until a button answers it. The box shows here, on the page, because a box on
+    /// another surface would draw under or behind the native page. No buttons: the implicit Ok.
+    Message { title: String, text: String, buttons: Vec<String> },
 }
 
 /// One mod's entry in the registry: its name and its pages (none: the front page only).
@@ -374,7 +376,8 @@ pub enum McmAction {
     KeyMapChange(u32, u32),
     /// The open dialog was dismissed.
     DialogCancel,
-    MessageAnswer(bool),
+    /// The button, by index, that answered the message box (0 for the implicit Ok).
+    MessageAnswer(usize),
     /// Leave the page.
     Close,
 }

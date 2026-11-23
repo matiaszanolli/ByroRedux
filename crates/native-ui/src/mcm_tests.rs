@@ -234,18 +234,26 @@ fn a_key_map_dialog_binds_the_next_key_and_esc_cancels() {
 }
 
 #[test]
-fn a_message_waits_for_its_answer() {
+fn a_message_box_shows_on_the_page_and_a_button_answers_it_by_index() {
     let mut mcm = registered();
     mcm.dialog = Some(McmDialogView::Message {
+        title: "Frostfall".into(),
         text: "Reset every setting?".into(),
-        with_cancel: true,
-        accept_label: "Reset all".into(),
-        cancel_label: String::new(),
+        buttons: vec!["Reset all".into(), "Keep".into(), "Ask later".into()],
     });
     let mut page = Page::new(GameMenuPage::ModConfiguration, mcm);
-    assert!(page.drawn("Reset every setting?"));
-    assert_eq!(page.click("Cancel"), [McmAction::MessageAnswer(false)], "an empty label falls back to the game's word");
-    assert_eq!(page.click("Reset all"), [McmAction::MessageAnswer(true)]);
+    assert!(page.drawn("Reset every setting?") && page.drawn("Frostfall"));
+    assert_eq!(page.click("Keep"), [McmAction::MessageAnswer(1)]);
+    assert_eq!(page.click("Reset all"), [McmAction::MessageAnswer(0)]);
+    assert_eq!(page.click("Ask later"), [McmAction::MessageAnswer(2)], "more than two buttons");
+}
+
+#[test]
+fn a_message_box_without_buttons_has_the_implicit_ok() {
+    let mut mcm = registered();
+    mcm.dialog = Some(McmDialogView::Message { title: String::new(), text: "Saved.".into(), buttons: Vec::new() });
+    let mut page = Page::new(GameMenuPage::ModConfiguration, mcm);
+    assert_eq!(page.click("Ok"), [McmAction::MessageAnswer(0)]);
 }
 
 #[test]

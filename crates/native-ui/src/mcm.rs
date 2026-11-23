@@ -372,18 +372,21 @@ fn draw_dialog(
                     }
                 });
             }
-            McmDialogView::Message { text, with_cancel, accept_label, cancel_label } => {
+            McmDialogView::Message { title, text, buttons } => {
+                if !title.is_empty() {
+                    ui.label(RichText::new(title).strong());
+                }
                 ui.label(text);
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    let accept = if accept_label.is_empty() { labels.text("Ok") } else { accept_label.as_str() };
-                    if ui.button(accept).clicked() {
-                        outputs.mcm_actions.push(McmAction::MessageAnswer(true));
+                    if buttons.is_empty() {
+                        if ui.button(labels.text("Ok")).clicked() {
+                            outputs.mcm_actions.push(McmAction::MessageAnswer(0));
+                        }
                     }
-                    if *with_cancel {
-                        let cancel = if cancel_label.is_empty() { labels.text("Cancel") } else { cancel_label.as_str() };
-                        if ui.button(cancel).clicked() {
-                            outputs.mcm_actions.push(McmAction::MessageAnswer(false));
+                    for (index, button) in buttons.iter().enumerate() {
+                        if ui.button(button).clicked() {
+                            outputs.mcm_actions.push(McmAction::MessageAnswer(index));
                         }
                     }
                 });

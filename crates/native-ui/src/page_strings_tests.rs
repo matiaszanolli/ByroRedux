@@ -402,9 +402,10 @@ fn mod_configuration_page_draws_only_game_snapshot_and_listed_words() {
         Some(McmDialogView::Color { id: 0x106, start: 0x00FF8040, default: 0 }),
         Some(McmDialogView::Input { id: 0x107, start_text: "Whiterun".into() }),
         Some(McmDialogView::KeyMap { id: 0x104, current: 0x2C, with_unmap: true }),
-        Some(McmDialogView::Message { text: "Reset everything?".into(), with_cancel: true, accept_label: String::new(), cancel_label: String::new() }),
+        Some(McmDialogView::Message { title: String::new(), text: "Reset everything?".into(), buttons: Vec::new() }),
+        Some(McmDialogView::Message { title: "Frostfall".into(), text: "Reset everything?".into(), buttons: vec!["Reset all".into(), "Keep".into()] }),
     ];
-    let data: Vec<&str> = MCM_DATA.iter().copied().chain(["Easy", "Hard", "Whiterun", "Reset everything"]).collect();
+    let data: Vec<&str> = MCM_DATA.iter().copied().chain(["Easy", "Hard", "Whiterun", "Reset everything", "Reset all", "Keep"]).collect();
     for dialog in dialogs {
         let snapshot = PageSnapshot { mcm: Some(registered_mcm(dialog, None)), ..Default::default() };
         assert_page(&["mod configuration"], &snapshot, &menu(GameMenuPage::ModConfiguration), &data);

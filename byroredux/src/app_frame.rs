@@ -1157,6 +1157,11 @@ impl App {
         if !crate::notifications::route_script_messages(&self.world) {
             return;
         }
+        // LMC-UI-002 — the Mod Configuration page shows a box itself (its snapshot carries the front
+        // one and its buttons answer it); another surface would sit under the page or wait unseen.
+        if self.debug_ui.as_ref().is_some_and(byroredux_debug_ui::DebugUiState::mod_configuration_visible) {
+            return;
+        }
         if self.ui.menu_documents.iter().any(|document| crate::menuxml_rest::is_rest_document(document.code)) {
             return;
         }

@@ -108,6 +108,7 @@ mod texture_streamer;
 mod ui_input;
 mod video;
 mod ui_state;
+mod ui_translate;
 #[cfg(test)]
 mod workspace_hygiene_tests;
 mod zup_yup;
