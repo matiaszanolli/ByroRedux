@@ -612,9 +612,12 @@ Untrusted-Input: Yes — `.pex` bytes come from possibly-modded archives.
 - **Every identity-only actor/reference stub must attach scripts.** All `spawn_logical_quest_reference`
   callers outside `synth_child.rs` — the persistent-worldspace loop in `cell_loader/exterior/persistent.rs`,
   `materialize_scene_actor_alias_stubs` in `scene/scene_runtime.rs` and XCT's `relocated::reconcile_logical_identities` (stamps `RemoteSceneActorStub`) — go through
-  `spawn_logical_quest_reference_with_scripts` (attaches once per `reference_form_id`, #4112/#4331; the source
-  pin in `cell_loader/references/source_pin_tests.rs` rejects the bare spelling and scans production text only,
-  #5650 `a7e05dd7b`). Identity-only entities get `OnInit` alone: `attach_script_for_refr` takes `has_3d` and inserts
+  `spawn_logical_quest_reference_with_scripts` (attaches once per `reference_form_id`, #4112/#4331). One source
+  pin per caller rejects the bare spelling and scans production text only (#5650 `a7e05dd7b`):
+  `cell_loader/exterior/logical_stub_source_pin_tests.rs`, `scene_actor_alias_stubs_spawn_through_the_script_attaching_helper`
+  in `scene/scene_runtime.rs` and `relocated_logical_stubs_spawn_through_the_script_attaching_helper` in
+  `cell_loader/relocated.rs` (#7307); `references/synth_child_tests.rs` pins the helper's own body and
+  `logical_quest_reference_spawns_identity_and_attaches_scripts` its behaviour. Identity-only entities get `OnInit` alone: `attach_script_for_refr` takes `has_3d` and inserts
   `OnCellLoadEvent` (→ `OnInit`/`OnCellAttach`/`OnLoad`/`OnCellLoad`) only with real 3D, else `OnInitEvent`; every
   `spawn_logical_quest_reference` site pairs with `attach_identity_reference_script` and a `Disable()`d trigger passes
   `!placement_disabled` (#5997 `a44d4a20d`, `attach_script_for_refr_sends_the_load_events_only_to_entities_with_3d`)

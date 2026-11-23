@@ -1403,4 +1403,27 @@ mod tests {
         assert!(world.get::<DoorFade>(actor).is_none());
         assert_eq!(passed(&world), 0, "and not passed");
     }
+
+    /// #7307 — XCT's logical-identity stub is the fourth caller of the script-attaching
+    /// spawner (#4112/#4331), and the only one with no pin. Driving
+    /// `reconcile_logical_identities` needs a loaded cell index and load order, so
+    /// this pins the wiring the way `scene_runtime.rs` and the persistent-worldspace
+    /// loop (`exterior/logical_stub_source_pin_tests.rs`) pin theirs. It reads
+    /// production text only (#5650), since this module's own literals would
+    /// satisfy a whole-file scan.
+    #[test]
+    fn relocated_logical_stubs_spawn_through_the_script_attaching_helper() {
+        let src = byroredux_core::source_scan::production_text(include_str!("relocated.rs"));
+        assert!(
+            src.contains("references::spawn_logical_quest_reference_with_scripts("),
+            "a relocated actor's logical stub must call the spawner that also \
+             attaches its scripts (#4112)"
+        );
+        assert_eq!(
+            src.matches("spawn_logical_quest_reference(").count(),
+            0,
+            "the identity-only spawner drops the base record's SCRI/VMAD and the \
+             ACHR's own VMAD; it must not appear on the XCT path (#4112)"
+        );
+    }
 }
