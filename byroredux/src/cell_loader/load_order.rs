@@ -106,6 +106,13 @@ impl LoadOrder {
         self.provenance.note_writer(form_id, position);
     }
 
+    /// Install a fold's provenance and merge, for fixtures that fold records without plugin files.
+    #[cfg(test)]
+    pub(crate) fn set_fold(&mut self, provenance: esm::records::FoldProvenance, list_merge: esm::records::list_merge::ListMerge) {
+        self.provenance = provenance;
+        self.list_merge = list_merge;
+    }
+
     /// Basename of the plugin whose record for `form_id` won the merge when that is not simply the slot owner (#5428:
     /// an override; LMC-REC-005: an injected record), or `None` when the slot owner carried it alone or no plugin of
     /// this order is known to have written it.

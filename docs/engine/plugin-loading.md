@@ -53,7 +53,10 @@ What the engine does today with a legacy plugin set (`--master …` `--esm`), th
    (`crates/plugin/src/esm/raw_record.rs`, which loads only the top-level groups the record type can sit in) and names
    the sub-records the winner changed, added or dropped against it. Each override is judged against the record it
    replaced (LMC-REC-006): it changes it, is identical to it (an ITM), or reverts an earlier plugin's change back to the
-   definer's record. A repeated sub-record is compared as a multiset,
+   definer's record. The winner is the carrier that owns the record: under `merge`, an override identical in every
+   field the merge reads to the record it would replace takes no ownership (LMC-REC-006), so the chain marks it
+   `[no-op]` and names the carrier before it; when `fields` finds bytes differing in such an override, the line says
+   they are in no field the merge reads. A repeated sub-record is compared as a multiset,
    so one entry added to a list is one addition. The comparison is of bytes, so when two files index a shared master
    differently a form-ID field can differ in bytes only, and the line says so. `--plugin-report [formid] [fields]`
    prints the same (with the activation report) without a window: `byroredux --game fnv --master … --plugin-report`.
