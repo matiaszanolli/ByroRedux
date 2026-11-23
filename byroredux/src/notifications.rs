@@ -45,6 +45,8 @@ pub(crate) fn route_script_messages(world: &World) -> bool {
         .try_resource_mut::<byroredux_scripting::PendingScriptMessages>()
         .map(|mut pending| std::mem::take(&mut pending.0))
         .unwrap_or_default();
+    // #7297 — the tickets of refused Papyrus boxes, answered once the queue's guard is gone.
+    let mut lost = Vec::new();
     for message in raised {
         if message.message_box {
             if let Some(mut boxes) = world.try_resource_mut::<MessageBoxQueue>() {
@@ -55,6 +57,9 @@ pub(crate) fn route_script_messages(world: &World) -> bool {
                         "script message box dropped, {MAX_PENDING_BOXES} already waiting: {:?}",
                         message.text.chars().take(80).collect::<String>()
                     );
+                    if let byroredux_scripting::MessageAnswer::Papyrus(ticket) = message.answer {
+                        lost.push(ticket);
+                    }
                 } else {
                     boxes.0.push_back(message);
                 }
@@ -62,6 +67,11 @@ pub(crate) fn route_script_messages(world: &World) -> bool {
         } else {
             push(world, message.text);
         }
+    }
+    // A refused box is a box lost, like one a load took: the run waiting on it resumes with its
+    // default, button 0, instead of parking until a load or the ticket cap evicts it.
+    for ticket in lost {
+        byroredux_scripting::messages::record_papyrus_answer(world, ticket, 0);
     }
     world
         .try_resource::<MessageBoxQueue>()
@@ -159,6 +169,44 @@ mod tests {
         assert_eq!(front_message_box(&world).unwrap().text, "Leave?");
         assert!(!answer_message_box(&world, Some(0)));
         assert!(!route_script_messages(&world), "raised once");
+    }
+
+    /// #7297 — a Papyrus box the full queue refuses is a lost box: its waiting run gets the default,
+    /// button 0, at once, instead of waiting until a load or the ticket cap evicts it.
+    #[test]
+    fn a_refused_papyrus_box_answers_its_run_with_the_default() {
+        use byroredux_scripting::messages::{show_message_awaiting, take_papyrus_answer, PapyrusMessageAnswers};
+        use byroredux_scripting::{PendingScriptMessages, ScriptMessage};
+        const MESSAGE: u32 = 0x0001_0F10;
+        let mut world = World::new();
+        world.insert_resource(PlayerNotifications::default());
+        world.insert_resource(MessageBoxQueue::default());
+        world.insert_resource(PapyrusMessageAnswers::default());
+        world.insert_resource(PendingScriptMessages::default());
+        let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+        index.messages.insert(
+            MESSAGE,
+            byroredux_plugin::esm::records::MesgRecord {
+                form_id: MESSAGE,
+                description: "Again?".into(),
+                message_box: true,
+                buttons: vec!["No".into(), "Yes".into()],
+                ..Default::default()
+            },
+        );
+        byroredux_scripting::install_message_catalog(&mut world, &index);
+        world.resource_mut::<MessageBoxQueue>().0.extend((0..MAX_PENDING_BOXES).map(|i| ScriptMessage {
+            title: String::new(),
+            text: format!("Box {i}"),
+            message_box: true,
+            buttons: Vec::new(),
+            answer: byroredux_scripting::MessageAnswer::Unread,
+        }));
+        let ticket = show_message_awaiting(&world, MESSAGE, &[]).expect("a box is issued");
+        assert_eq!(take_papyrus_answer(&world, ticket), None, "waiting before it is routed");
+        route_script_messages(&world);
+        assert_eq!(world.resource::<MessageBoxQueue>().0.len(), MAX_PENDING_BOXES, "refused");
+        assert_eq!(take_papyrus_answer(&world, ticket), Some(0), "its run resumes with the default");
     }
 
     #[test]
