@@ -17,6 +17,10 @@ pub(super) const READS: &[&str] = &[
     "applyhavokimpulse",
     "dropobject",
     "isfurnitureinuse",
+    "islocked",
+    "getopenstate",
+    "getparentcell",
+    "getstate",
 ];
 
 /// The most references one `PlaceAtMe` call creates.
@@ -88,6 +92,45 @@ impl Vm<'_> {
         args: &[CallArg],
     ) -> Run<Option<Value>> {
         Ok(match (owner, name) {
+            // CK *IsLocked - ObjectReference*: "If this object is currently locked" — the `Locked`
+            // component, which the lock ledger's script overrides are applied to at spawn.
+            // CK *GetOpenState*: 0 none, 1 open, 2 opening, 3 closed, 4 closing.
+            // CK *GetParentCell*: "The Cell the object is currently in"; None when it is not loaded.
+            (Value::Form(reference), "islocked" | "getopenstate" | "getparentcell") if args.is_empty() => {
+                let entity = if *reference == PLAYER_REF {
+                    crate::papyrus_demo::PapyrusPlayerEntity::get(self.world)
+                } else {
+                    self.entity_of(*reference)
+                };
+                match (name, entity) {
+                    ("getparentcell", entity) => {
+                        Some(entity.and_then(|e| crate::condition::reference_cell(e, self.world)).map_or(Value::None, Value::Form))
+                    }
+                    (_, None) => return stop(format!("{name} on a reference that is not loaded")),
+                    ("islocked", Some(entity)) => Some(Value::Bool(self.world.has::<byroredux_core::ecs::components::Locked>(entity))),
+                    (_, Some(entity)) => Some(Value::Int(crate::vm_state::open_state(self.world, entity))),
+                }
+            }
+            // CK *GetState - ScriptObject*: another reference's script's state, the one `GotoState`
+            // last set or its auto state. Its state is the attached script's; a reference carrying
+            // several VM scripts names no one state, and stops the run.
+            (Value::Form(reference), "getstate") if args.is_empty() => {
+                let Some(entity) = self.entity_of(*reference) else {
+                    return stop("GetState on a reference that is not loaded");
+                };
+                let attached = self
+                    .world
+                    .get::<crate::fragment::PapyrusReferenceScripts>(entity)
+                    .map(|scripts| scripts.0.iter().map(|s| s.script.to_ascii_lowercase()).collect::<Vec<_>>())
+                    .unwrap_or_default();
+                let [name] = attached.as_slice() else {
+                    return stop(format!("GetState on a reference with {} VM scripts", attached.len()));
+                };
+                let Some(script) = self.deferred.vm_scripts.get(name).cloned() else {
+                    return stop("GetState on a script the VM has not installed");
+                };
+                Some(Value::Str(self.script_state(QuestFormId(*reference), &script)))
+            }
             // CK *GetScale*: "the current scale of the reference".
             (Value::Form(reference), "getscale") if args.is_empty() => {
                 let entity = if *reference == PLAYER_REF {
@@ -232,6 +275,10 @@ impl Checker<'_> {
             (Kind::Object | Kind::Player, "getbaseobject" | "getactorbase" | "getleveledactorbase") => {
                 return Some(Kind::Object);
             }
+            (Kind::Object, "islocked") if arg_kinds.is_empty() => return Some(Kind::Bool),
+            (Kind::Object, "getstate") if arg_kinds.is_empty() => return Some(Kind::Str),
+            (Kind::Object, "getopenstate") if arg_kinds.is_empty() => return Some(Kind::Num),
+            (Kind::Object | Kind::Player, "getparentcell") if arg_kinds.is_empty() => return Some(Kind::Object),
             (Kind::Object | Kind::Player, "dropobject")
                 if matches!(arg_kinds.first(), Some(Arg::Kind(Kind::Object | Kind::Player)))
                     && arg_kinds.get(1).is_none_or(|count| matches!(count, Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num)))

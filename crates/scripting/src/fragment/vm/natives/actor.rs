@@ -18,7 +18,23 @@ pub(super) const READS: &[&str] = &[
     "isindialoguewithplayer",
     "getsex",
     "getvoicetype",
+    "iscommandedactor",
+    "getequippedshield",
+    "getequippedweapon",
+    "gettemplate",
 ];
+
+/// The biped slot a shield occupies in `game`, as an `EquipmentSlots` bit: Oblivion's is the block
+/// model's (UESP *Oblivion Mod:Mod File Format/ARMO*, bit 13), Skyrim's slot 39 (CK *Biped Object*:
+/// "39 - shield"; slots start at 30, so bit 9). The Fallouts and Starfield have no shields.
+pub(in crate::fragment::vm) fn shield_biped_bit(game: byroredux_plugin::esm::reader::GameKind) -> Option<u8> {
+    use byroredux_plugin::esm::reader::GameKind;
+    match game {
+        GameKind::Oblivion => Some(byroredux_core::character::block::BlockModel::OBLIVION.shield_bit),
+        GameKind::Skyrim => Some(39 - 30),
+        _ => None,
+    }
+}
 
 impl Vm<'_> {
     /// The actor reads of [`Vm::object_read`].
@@ -44,6 +60,69 @@ impl Vm<'_> {
                     .reference_flag_changes
                     .push(crate::ReferenceFlagChange::Flag { reference: *reference, flag, on });
                 Some(Value::None)
+            }
+            // CK *IsCommandedActor - Actor*: "Whether this actor is commanded or not" — the condition's
+            // model: no summon or reanimate mechanic exists, so no actor is.
+            (Value::Form(actor), "iscommandedactor") if args.is_empty() => {
+                let entity = if *actor == PLAYER_REF {
+                    crate::papyrus_demo::PapyrusPlayerEntity::get(self.world)
+                } else {
+                    self.entity_of(*actor)
+                };
+                match entity {
+                    Some(entity) => Some(Value::Bool(crate::condition::actor_is_commanded(entity, self.world))),
+                    None => return stop("IsCommandedActor on an actor that is not loaded"),
+                }
+            }
+            // CK *GetEquippedShield - Actor*: "the actor's currently equipped shield" — the armor in
+            // the game's shield slot; None when the slot is empty or the game has no shields.
+            (Value::Form(actor), "getequippedshield") if args.is_empty() => {
+                let entity = if *actor == PLAYER_REF {
+                    crate::papyrus_demo::PapyrusPlayerEntity::get(self.world)
+                } else {
+                    self.entity_of(*actor)
+                };
+                let Some(entity) = entity else {
+                    return stop("GetEquippedShield on an actor that is not loaded");
+                };
+                let bit = self.world.try_resource::<crate::ScriptGame>().and_then(|game| shield_biped_bit(game.0));
+                let index = bit.and_then(|bit| {
+                    self.world
+                        .get::<byroredux_core::ecs::components::EquipmentSlots>(entity)
+                        .and_then(|slots| slots.at(bit))
+                });
+                let shield = index.and_then(|index| {
+                    self.world
+                        .get::<byroredux_core::ecs::components::Inventory>(entity)
+                        .and_then(|inventory| inventory.get(index).map(|stack| stack.base_form_id))
+                });
+                Some(shield.filter(|&form| form != 0).map_or(Value::None, Value::Form))
+            }
+            // CK *GetEquippedWeapon - Actor*: the weapon in the right hand (`abLeftHand` False, the
+            // default) — the wielded weapon; None when the hand is empty. The left hand has no model
+            // yet, so the checker declines a call asking for it.
+            (Value::Form(actor), "getequippedweapon") if args.len() <= 1 => {
+                let entity = if *actor == PLAYER_REF {
+                    crate::papyrus_demo::PapyrusPlayerEntity::get(self.world)
+                } else {
+                    self.entity_of(*actor)
+                };
+                let Some(entity) = entity else {
+                    return stop("GetEquippedWeapon on an actor that is not loaded");
+                };
+                let weapon = self.world.get::<byroredux_core::ecs::components::EquippedWeapon>(entity).map(|w| w.base_form_id);
+                Some(weapon.filter(|&form| form != 0).map_or(Value::None, Value::Form))
+            }
+            // CK *GetTemplate - Package*: "The Package that this one is templated on. If this package
+            // isn't templated on another package, it will return None."
+            (Value::Form(package), "gettemplate") if args.is_empty() => {
+                let Some(registry) = self.world.try_resource::<crate::package::PackageRegistry>() else {
+                    return stop("GetTemplate without the package registry");
+                };
+                let Some(record) = registry.package(*package) else {
+                    return stop("GetTemplate on a form that is not a package");
+                };
+                Some(record.package_template_form_id.filter(|&form| form != 0).map_or(Value::None, Value::Form))
             }
             // CK *GetRace - Actor*: "the Race the actor is" (its record's).
             (Value::Form(actor), "getrace") if args.is_empty() => {
@@ -196,6 +275,14 @@ impl Checker<'_> {
                 return Some(Kind::Num);
             }
             (Kind::Object | Kind::Player, "getrace") if arg_kinds.is_empty() => return Some(Kind::Object),
+            (Kind::Object | Kind::Player, "iscommandedactor") if arg_kinds.is_empty() => return Some(Kind::Bool),
+            (Kind::Object | Kind::Player, "getequippedshield") if arg_kinds.is_empty() => return Some(Kind::Object),
+            (Kind::Object | Kind::Player, "getequippedweapon")
+                if matches!(arg_kinds, [] | [Arg::Literal(Expr::BoolLit(false))]) =>
+            {
+                return Some(Kind::Object)
+            }
+            (Kind::Object, "gettemplate") if arg_kinds.is_empty() => return Some(Kind::Object),
             (Kind::Object | Kind::Player, "ignorefriendlyhits" | "setcandocommand")
                 if statement && arg_kinds.len() <= 1 && arg_kinds.iter().all(|a| matches!(a, Arg::Literal(Expr::BoolLit(_)) | Arg::Kind(Kind::Bool))) =>
             {

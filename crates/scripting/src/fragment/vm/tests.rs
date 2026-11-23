@@ -6739,6 +6739,158 @@ fn message_show_waits_for_its_answer_and_branches_on_it() {
     }
 }
 
+/// The native wave (#5800 families): a door's lock and open state and its cell, its one script's state, an
+/// actor's commanded flag, shield and right-hand weapon, and a package's template, as the CK pages give them.
+#[test]
+fn the_native_wave_reads_locks_doors_cells_states_shields_weapons_and_templates() {
+    use byroredux_core::ecs::components::{CellFormId, EquipmentSlots, EquippedWeapon, Inventory, InventoryIndex, ItemStack, Locked};
+    const DOOR: u32 = 0x0000_D002;
+    const CELL: u32 = 0x0000_CE11;
+    const SHIELD: u32 = 0x0000_5E1D;
+    const SWORD: u32 = 0x0000_5A0D;
+    const PACKAGE: u32 = 0x0000_9A01;
+    const TEMPLATE: u32 = 0x0000_9A02;
+    let script = parsed_source(
+        "ScriptName QF_VmNatives extends Quest\n\
+         ObjectReference Property Door Auto\n\
+         Package Property Pkg Auto\n\
+         Armor Property Shield Auto\n\
+         Weapon Property Sword Auto\n\
+         Package Property Template Auto\n\
+         Int Property Results Auto\n\
+         Int Property Open Auto\n\
+         Function Fragment_1()\n\
+           Actor player = Game.GetPlayer()\n\
+           If Door.IsLocked()\n Results += 1\n EndIf\n\
+           Open = Door.GetOpenState()\n\
+           If Door.GetParentCell() == player.GetParentCell()\n Results += 10\n EndIf\n\
+           If !player.IsCommandedActor()\n Results += 100\n EndIf\n\
+           If player.GetEquippedShield() == Shield\n Results += 1000\n EndIf\n\
+           If player.GetEquippedWeapon() == Sword\n Results += 10000\n EndIf\n\
+           If Pkg.GetTemplate() == Template\n Results += 100000\n EndIf\n\
+           If Door.GetState() == \"Waiting\"\n Results += 1000000\n EndIf\n\
+         EndFunction\n",
+    );
+    let door_script = parsed_source("ScriptName VmDoorScript extends ObjectReference\nAuto State Waiting\nEndState\n");
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(crate::ScriptGame(byroredux_plugin::esm::reader::GameKind::Skyrim));
+    world.insert_resource(QuestStageState::default());
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.insert_resource(crate::QuestScriptObjects::default());
+    world.insert_resource(crate::package::PackageRegistry::from_records([
+        byroredux_plugin::esm::records::PackRecord { form_id: PACKAGE, package_template_form_id: Some(TEMPLATE), ..Default::default() },
+        byroredux_plugin::esm::records::PackRecord { form_id: TEMPLATE, ..Default::default() },
+    ]));
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let door_id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(DOOR) });
+    world.insert_resource(pool);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert(player, CellFormId(CELL));
+    let mut inventory = Inventory::new();
+    inventory.push(ItemStack::new(SHIELD, 1));
+    inventory.push(ItemStack::new(SWORD, 1));
+    world.insert(player, inventory);
+    let mut slots = EquipmentSlots::new();
+    slots.equip(1 << 9, InventoryIndex(0));
+    world.insert(player, slots);
+    world.insert(player, EquippedWeapon { inventory_index: InventoryIndex(1), base_form_id: SWORD, damage: 7.0, reach: 1.0, speed: 1.0 });
+    let door = world.spawn();
+    world.insert(door, FormIdComponent(door_id));
+    world.insert(door, CellFormId(CELL));
+    world.insert(door, Locked { lock_level: 25, key_form_id: None });
+    world.insert(door, crate::vm_state::TwoStateActivator { is_open: true, ..Default::default() });
+    world.insert(
+        door,
+        crate::fragment::PapyrusReferenceScripts(vec![crate::fragment::ReferenceScript {
+            script: "VmDoorScript".into(),
+            vmad: Arc::new(ScriptInstanceData { version: 5, object_format: 2, scripts: Vec::new() }),
+            events: Vec::new(),
+        }]),
+    );
+    let object = |name: &str, form_id: u32| ScriptProperty { name: name.into(), status: 1, value: PropertyValue::Object { form_id, alias: -1 } };
+    let vmad = ScriptInstanceData {
+        version: 5,
+        object_format: 2,
+        scripts: vec![ScriptInstance {
+            name: "QF_VmNatives".into(),
+            status: 0,
+            properties: vec![
+                object("Door", DOOR),
+                object("Pkg", PACKAGE),
+                object("Shield", SHIELD),
+                object("Sword", SWORD),
+                object("Template", TEMPLATE),
+            ],
+        }],
+    };
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        fragments.insert_vmad(Q, vmad);
+        fragments.insert_vm_script(Arc::clone(&script));
+        fragments.insert_vm_script(door_script);
+        fragments.insert(
+            Q,
+            10,
+            vec![Effect::Interpret { script: "QF_VmNatives".into(), function: "Fragment_1".into(), args: Vec::new(), resume: None }],
+        );
+    }
+    if let Err(why) = crate::fragment::vm::checker::check_function_reason(Arc::clone(&script), "Fragment_1", None) {
+        panic!("{why}")
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(quest_property(&world, "Results"), Some(1_111_111.0), "every read answered as the CK gives it");
+    assert_eq!(quest_property(&world, "Open"), Some(1.0), "an open, settled door is 1 (Open)");
+}
+
+/// CK *WaitGameTime - Utility*: "Pauses the script for at least the specified amount of game time":
+/// the run suspends until the game clock has advanced by the wait, however little real time passes.
+#[test]
+fn wait_game_time_resumes_when_the_game_clock_reaches_it() {
+    const SOURCE: &str = "ScriptName QF_VmWaitGame extends Quest\n\
+        Function Fragment_1()\n\
+          Utility.WaitGameTime(2.0)\n\
+          Self.SetStage(6)\n\
+        EndFunction\n";
+    let (script, errors) = byroredux_papyrus::parse_script(SOURCE).unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+    let script = Arc::new(script);
+    if let Err(why) = crate::fragment::vm::checker::check_function_reason(Arc::clone(&script), "Fragment_1", None) {
+        panic!("{why}")
+    }
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    let mut vmad = vmad();
+    vmad.scripts[0].name = "QF_VmWaitGame".into();
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        fragments.insert_vmad(Q, vmad);
+        fragments.insert_vm_script(Arc::clone(&script));
+        fragments.insert(
+            Q,
+            0,
+            vec![Effect::Interpret { script: "QF_VmWaitGame".into(), function: "Fragment_1".into(), args: Vec::new(), resume: None }],
+        );
+    }
+    crate::fragment::script_update_system(&world, 0.0, Some(10.0));
+    world.resource_mut::<QuestStageState>().set_stage(Q, 0);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    crate::fragment::fragment_continuation_system(&world, 30.0);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 0, "real time does not end a game-time wait");
+    crate::fragment::script_update_system(&world, 0.0, Some(11.0));
+    crate::fragment::fragment_continuation_system(&world, 0.0);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 0, "an hour in");
+    crate::fragment::script_update_system(&world, 0.0, Some(12.0));
+    crate::fragment::fragment_continuation_system(&world, 0.0);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 6, "two game hours on, the run resumes");
+}
+
 /// #7298 — a VM `Message.Show()` runs under the quest guards, so it takes only the ticket there
 /// (the catalog and the answers, two leaves); the box, whose text reads `Globals` and the alias
 /// registry (the story manager takes that registry before `QuestStageState`), is built with the

@@ -787,6 +787,9 @@ pub(crate) enum FragmentResumeCondition {
     /// M48 #6667 — `Message.Show()`'s value: the run resumes once the box `ticket` is answered
     /// (CK *Show - Message*: latent, "returns the button pressed").
     MessageAnswered { ticket: u32 },
+    /// CK *WaitGameTime - Utility*: the run resumes once the game clock reaches `hours` (game hours
+    /// since the start), the call's time plus its wait.
+    GameTimeReached { hours: f64 },
     Actors3DLoaded {
         actors: Vec<ActorRef>,
         poll_seconds: f32,

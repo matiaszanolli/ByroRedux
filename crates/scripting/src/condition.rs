@@ -166,7 +166,7 @@ pub use eval::{
     evaluate_script_getter, is_modeled, resolve_entity_by_global_form_id,
     uses_obscript_quest_variables, ActorValueView,
 };
-pub(crate) use eval::{attacking_weapon, function_of, health_percentage, item_count};
+pub(crate) use eval::{actor_is_commanded, attacking_weapon, function_of, health_percentage, item_count, reference_cell};
 pub use requirement::{subject_requirement, IdentityTest, SubjectRequirement};
 
 #[cfg(test)]

@@ -1398,7 +1398,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // #6676 — v147: the pre-reload ledgers' FormIDs, refreshed WITH the major bump above.
     // LMC (CK *OnInit* quest reset) — refreshed WITHOUT a bump: `QuestStageState` gained `started`, a
     // `#[serde(skip)]` process-local list like its `events`, so no saved wire form changed (#3460/#3332).
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x5172_31bf_ddab_964c;
+    // Native wave — refreshed WITHOUT a bump: `FragmentResumeCondition` gained `GameTimeReached` (a
+    // `Utility.WaitGameTime` continuation). A new variant is read-compatible: every v147 save still decodes.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xee1a_c580_a59d_807c;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.

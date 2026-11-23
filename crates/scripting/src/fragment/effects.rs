@@ -407,6 +407,8 @@ pub fn apply_effects(
                                 FragmentResumeCondition::MessageAnswered { ticket }
                             } else if std::mem::take(&mut deferred.awaits_movie) {
                                 FragmentResumeCondition::MovieEnded
+                            } else if let Some(hours) = deferred.awaits_game_time.take() {
+                                FragmentResumeCondition::GameTimeReached { hours }
                             } else {
                                 FragmentResumeCondition::DelayElapsed
                             },

@@ -279,7 +279,7 @@ impl Checker<'_> {
         if class == "utility" && name == "isinmenumode" && arg_kinds.is_empty() {
             return Some(Kind::Bool);
         }
-        if class == "utility" && name == "wait" {
+        if class == "utility" && matches!(name, "wait" | "waitgametime") {
             if statement && matches!(arg_kinds, [Arg::Literal(_)] | [Arg::Kind(Kind::Num)]) {
                 self.waits = true;
                 return Some(Kind::None);

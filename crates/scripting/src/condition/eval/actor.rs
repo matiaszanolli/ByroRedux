@@ -213,8 +213,14 @@ pub(super) fn get_is_voice_type(condition: &Condition, entity: EntityId, world: 
 /// raised as a zombie or summoned by a summoning spell. The engine has no
 /// summon or reanimate mechanic — nothing can make an actor commanded — so the
 /// answer is always 0.0. When one exists, its marker is read here.
-pub(super) fn is_commanded_actor(_entity: EntityId, _world: &World) -> f32 {
-    0.0
+pub(super) fn is_commanded_actor(entity: EntityId, world: &World) -> f32 {
+    f32::from(u8::from(actor_is_commanded(entity, world)))
+}
+
+/// Whether `entity` is a commanded actor (the condition and the Papyrus `IsCommandedActor` both read
+/// this): never, until a summon or reanimate mechanic exists.
+pub(crate) fn actor_is_commanded(_entity: EntityId, _world: &World) -> bool {
+    false
 }
 
 /// `GetItemCount` (CTDA 47, ObScript `0x102f`): how many of `item` the
