@@ -411,8 +411,9 @@ compute `D` or `h`. Options:
    amplitude | range | afine` now set these entries for the session only, like the
    other `terrain.*` switches, so they don't reach the settings file until a menu
    edit. `fine <m>` still forces 4.1's distance rule for the session, until
-   `afine`. The quality presets (`assets/graphics_presets.toml`) are unchanged: only
-   High's values (the defaults) have been measured, so no other rung is set yet.
+   `afine`. Among the quality presets (`assets/graphics_presets.toml`), Low turns
+   the patches off (amplitude 0, the trade measured in §8.7); the other rungs keep
+   the default amplitude.
 
 **Not in 4.3.** A visibility-buffer or deferred lighting pass would trace rays per
 covered pixel with no quad overhead at all. It is the structural fix for every dense
@@ -872,6 +873,53 @@ The sd per state is 0.14–0.43 ms. No run logged a validation line.
   so no difference there clears the noise. That position is not evidence either way.
 - **Default**: the residual march stays on. `terrain.patches parallax off` remains the
   A/B switch.
+
+### 8.7 Patch range sweep (2026-11-23)
+Is the new range setting (§7.3 step 5) a cost lever, either for meeting the bar at FNV
+or for the quality presets? Same harness as §8.6, one release binary at HEAD
+`f217a4619`. States were patches off and the range at 6 (the default), 5 and 4 m,
+interleaved in one run per position at 853×480. Each cell is the median
+`main_render_ms` change from patches off; the sd is in brackets.
+
+| position | pose | off (ms) | 6 m | 5 m | 4 m |
+|---|---|---|---|---|---|
+| FNV Mojave | down | 5.39 | +0.90 (0.12) | +1.00 (0.19) | +0.93 (0.12) |
+| | eye | 7.12 | +1.08 (0.22) | +1.20 (0.32) | +1.16 (0.40) |
+| | graze | 7.40 | +0.49 (0.45) | +0.59 (0.46) | +0.44 (0.47) |
+| Skyrim Riverwood | down | 2.01 | +0.39 (0.11) | +0.40 (0.18) | +0.41 (0.10) |
+| | eye | 2.03 | +0.44 (0.12) | +0.43 (0.10) | +0.43 (0.09) |
+| | graze | 2.70 | +0.24 (0.09) | +0.13 (0.02) | +0.15 (0.02) |
+
+The setting did take effect. Mean per-pixel difference from the first 6 m frame, in
+levels, with the share of pixels over 8 levels:
+
+| FNV pose | second 6 m shot (noise) | 5 m | 4 m | off |
+|---|---|---|---|---|
+| down | 1.6 / 2.6 % | 1.2 / 1.4 % | 2.3 / 4.3 % | 17.8 / 55 % |
+| eye | 2.6 / 7.5 % | 5.0 / 16 % | 10.0 / 30 % | 20.8 / 57 % |
+| graze | 4.2 / 14 % | 6.4 / 22 % | 9.8 / 31 % | 14.9 / 42 % |
+
+At Riverwood the noise shot already differs by 6–14 levels, as in §8.6, so the images
+there can't be judged. No run logged a validation line.
+
+- **Range isn't a cost lever.** From 6 m down to 4 m no pose moves by more than its sd,
+  even where the frame visibly loses relief (FNV eye, 30 % of pixels). The squares
+  dropped at 4–6 m are a small share of the patch pixels at these poses, and they are
+  coarse, so they cost little. The premium sits in the squares nearest the camera.
+  The default stays at 6 m.
+- **FNV stays over the bar** at the eye pose: +1.08 ms at 6 m. That repeats §8.4. The
+  levers measured so far:
+  - turning the patches off;
+  - forcing all squares coarse, which saves 0.1–0.35 ms at 480 lines (§8.5).
+    A threshold of 512 px² does that at both 480 and 960 lines, since a fine triangle
+    at 1 m projects to 121 px² at 480 lines and about 480 px² at 960.
+
+  Neither is a free default: all-coarse looks flatter at eye level (§8.2).
+- **For the presets**, the measured trade is patches off (amplitude 0), which saves the
+  whole 0.4–1.1 ms. **Low now sets it**, and Medium, High and Ultra name the default
+  amplitude so a switch away from Low restores it. All coarse (threshold 512) sits in
+  between, but its look has only been judged by eye (§8.2), so Medium doesn't use it
+  yet. A shorter range buys nothing measurable.
 
 ## 9. Review decisions (Matías, 2026-11-21)
 1. **Upward-only displacement, base mesh kept (§3.3)**: accepted. No holes, no zero-mean

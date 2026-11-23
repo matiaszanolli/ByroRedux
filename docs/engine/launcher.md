@@ -406,12 +406,15 @@ out-of-range slider past the registry. Editing any control afterwards switches
 the label to `Custom` without discarding values.
 
 **Honest scope**: a preset can only move settings that are *registered*, and the
-registry holds exactly one graphics-quality knob today (`render.upscaler`). So
-the shipped presets vary the upscaler and nothing else. The mechanism is general
-— adding a shadow-distance or texture-quality setting extends the presets by
-editing the TOML, no code change — but this is not yet a quality ladder, and a
-test fails the build if a preset names a setting the registry refuses or does
-not have.
+shipped file sets a rung only where its trade has been measured. Today the presets
+move the upscaler and the terrain displacement patches, which only Low turns off
+(`render.terrain_patch_amplitude_m` = 0, [terrain-displacement.md
+§8.7](terrain-displacement.md)). The mechanism is general — adding a
+shadow-distance or texture-quality setting extends the presets by editing the
+TOML, no code change — but this is not yet a quality ladder. Tests fail the build
+if a preset names a setting the registry refuses or does not have, or if the
+presets don't all name the same settings (a setting one rung leaves out would
+keep the previous rung's value).
 
 **Pre-flight.** Query the GPU before offering presets. The launcher links
 `ash` (already a workspace dep, and enumerating adapters does not require a

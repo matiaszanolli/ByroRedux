@@ -1,13 +1,13 @@
 //! Named bundles of setting values — Low / Medium / High / Ultra.
 //!
 //! **Scope, stated plainly.** A preset can only move settings that are actually
-//! registered, and today the registry holds exactly one graphics-quality knob:
-//! `render.upscaler`. So the shipped presets vary the upscaler and nothing
-//! else. The mechanism is general — a preset is a list of `(id, value)` pairs,
-//! and adding shadow, texture, or draw-distance settings to the registry
-//! extends the presets by editing `assets/graphics_presets.toml`, with no code
-//! change here — but it would be dishonest to call the current file a full
-//! quality ladder.
+//! registered, and the shipped file sets a rung only where its trade has been
+//! measured: today the upscaler, and the terrain displacement patches, which
+//! only Low turns off. The mechanism is general — a preset is a list of
+//! `(id, value)` pairs, and adding shadow, texture, or draw-distance settings to
+//! the registry extends the presets by editing `assets/graphics_presets.toml`,
+//! with no code change here — but it would be dishonest to call the current
+//! file a full quality ladder.
 //!
 //! Values are applied through [`SettingsRegistry::set`], so a preset is bound
 //! by exactly the same validation as a hand edit: a preset cannot push a slider
@@ -304,6 +304,29 @@ mod tests {
             assert!(
                 !preset.values.is_empty(),
                 "preset `{slug}` sets nothing at all"
+            );
+        }
+    }
+
+    /// A preset moves only the settings it names, so a setting one shipped rung
+    /// names and another leaves out would keep the previous rung's value when
+    /// the other is selected — Low's patches-off would survive a switch to High,
+    /// and High would still read as active.
+    #[test]
+    fn every_shipped_preset_names_the_same_settings() {
+        let path = std::path::Path::new("../../assets/graphics_presets.toml");
+        if !path.exists() {
+            return; // not running from the repo
+        }
+        let file = PresetFile::load(path);
+        let ordered = file.ordered();
+        let (first_slug, first) = ordered.first().expect("shipped preset file is empty");
+        let ids = |preset: &Preset| preset.values.keys().cloned().collect::<Vec<_>>();
+        for (slug, preset) in &ordered {
+            assert_eq!(
+                ids(preset),
+                ids(first),
+                "preset `{slug}` names different settings from `{first_slug}`"
             );
         }
     }
