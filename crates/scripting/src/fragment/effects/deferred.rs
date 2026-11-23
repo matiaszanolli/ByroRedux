@@ -568,6 +568,12 @@ impl DeferredFragmentEffects {
         advances
     }
 
+    /// #7298 — queue the box of a VM `Message.Show()` whose ticket the run reserved; it is built
+    /// with the other deferred messages once the quest guards drop.
+    pub(in crate::fragment) fn defer_awaiting_box(&mut self, form_id: u32, args: Vec<f32>, ticket: u32) {
+        self.messages.push(PendingMessage::ShowAwaiting(form_id, args, ticket));
+    }
+
     fn flush_messages(&mut self, world: &World) {
         for message in std::mem::take(&mut self.messages) {
             match message {
@@ -575,6 +581,9 @@ impl DeferredFragmentEffects {
                     if !crate::messages::show_message(world, form_id, &args) {
                         log::debug!("fragment Show skipped: no message {form_id:08X}");
                     }
+                }
+                PendingMessage::ShowAwaiting(form_id, args, ticket) => {
+                    crate::messages::show_reserved_box(world, form_id, &args, ticket);
                 }
                 PendingMessage::Notify(text) => crate::messages::notify(world, text),
                 PendingMessage::ItemAdded(item_form_id, count) => {

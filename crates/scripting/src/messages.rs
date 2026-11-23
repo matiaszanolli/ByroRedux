@@ -526,14 +526,32 @@ pub fn show_message(world: &World, form_id: u32, args: &[f32]) -> bool {
 /// [`show_message`] does, its answer going to a new ticket; the ticket, or `None` when `form_id`
 /// is not a message box. A message that is not a box (a notification) has no answer to wait on.
 pub fn show_message_awaiting(world: &World, form_id: u32, args: &[f32]) -> Option<u32> {
+    let ticket = reserve_papyrus_box(world, form_id)?;
+    show_reserved_box(world, form_id, args, ticket);
+    Some(ticket)
+}
+
+/// #7298 — the first half of [`show_message_awaiting`], for a run that holds the quest guards:
+/// whether `form_id` is a message box, and if so its ticket. It reads the catalog and writes the
+/// answers, two leaf resources; building the box (its text reads `Globals` and the alias registry
+/// through [`replace_tags`]) waits for [`show_reserved_box`], which the run's deferred effects call
+/// once the guards drop.
+pub fn reserve_papyrus_box(world: &World, form_id: u32) -> Option<u32> {
     let is_box = world
         .try_resource::<MessageCatalog>()
         .and_then(|catalog| catalog.message(form_id).map(|definition| definition.message_box))?;
     if !is_box {
         return None;
     }
-    let ticket = world.try_resource_mut::<PapyrusMessageAnswers>()?.issue();
-    queue_message(world, form_id, args, MessageAnswer::Papyrus(ticket)).then_some(ticket)
+    Some(world.try_resource_mut::<PapyrusMessageAnswers>()?.issue())
+}
+
+/// #7298 — queue the box a [`reserve_papyrus_box`] ticket stands for. A box that cannot be queued
+/// is a lost box: its run resumes with the default, button 0.
+pub fn show_reserved_box(world: &World, form_id: u32, args: &[f32], ticket: u32) {
+    if !queue_message(world, form_id, args, MessageAnswer::Papyrus(ticket)) {
+        record_papyrus_answer(world, ticket, 0);
+    }
 }
 
 fn queue_message(world: &World, form_id: u32, args: &[f32], answer: MessageAnswer) -> bool {

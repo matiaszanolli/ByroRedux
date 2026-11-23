@@ -22,25 +22,24 @@ pub fn recognize(ctx: &RecognizeCtx<'_>) -> Option<Recognized> {
     // whole recognizer, not quietly adopt the `.psc`-authored default. Only
     // a genuinely absent property (`Some(None)`) falls through to
     // `bool_prop`.
-    let is_open = vmad_bool(ctx, "isOpen")?
-        .or(bool_prop(script, "isOpen")?)
-        .unwrap_or(false);
+    // #7306 — an `isOpen` the placement's VMAD authors is that placement's choice; without one, a
+    // door whose `attach_door` already seeded its state from `Open by Default` keeps it (resolved at
+    // spawn, below), and anything else takes the script's default.
+    let authored_open = vmad_bool(ctx, "isOpen")?;
+    let default_open = bool_prop(script, "isOpen")?.unwrap_or(false);
     let is_animating = vmad_bool(ctx, "isAnimating")?
         .or(bool_prop(script, "isAnimating")?)
         .unwrap_or(false);
     let do_once = vmad_bool(ctx, "doOnce")?
         .or(bool_prop(script, "doOnce")?)
         .unwrap_or(false);
-    let state = TwoStateActivator {
-        is_open,
-        is_animating,
-        do_once,
-        activated_once: false,
-    };
-
     Some(Recognized::new(
         format!("two_state_activator@{}", script.name.node),
         move |world, entity| {
+            let is_open = authored_open.unwrap_or_else(|| {
+                world.get::<TwoStateActivator>(entity).map_or(default_open, |seeded| seeded.is_open)
+            });
+            let state = TwoStateActivator { is_open, is_animating, do_once, activated_once: false };
             world.insert(entity, state);
             let mut variables = ScriptVariables::default();
             variables.set_by_name("::isOpen_var", f32::from(is_open));
@@ -252,5 +251,36 @@ mod tests {
         let state = world.get::<TwoStateActivator>(entity).unwrap();
         assert!(state.is_open);
         assert!(!state.do_once);
+    }
+
+    /// #7306 — a door's `attach_door` seeds its state from `Open by Default` before the script
+    /// attaches. With no `isOpen` on the placement's VMAD the seed stays (the `.psc` default does not
+    /// override the placement's flag); an `isOpen` the VMAD authors is the placement's own choice and
+    /// wins; with no seed the script default applies, as before.
+    #[test]
+    fn a_seeded_open_state_survives_unless_the_placement_authors_is_open() {
+        let source = "ScriptName default2StateActivator extends ObjectReference\n\
+                      Bool Property isOpen = False Auto\n";
+        let (script, errors) = parse_script(source).expect("source parses");
+        assert!(errors.is_empty());
+        let spawn = |vmad: ScriptInstanceData, seeded: Option<bool>| {
+            let recognized = crate::translate_script(&ScriptSource::PapyrusSource(&script), GameKind::Skyrim, Some(&vmad), None)
+                .expect("recognized");
+            let mut world = World::new();
+            crate::register(&mut world);
+            let entity = world.spawn();
+            if let Some(is_open) = seeded {
+                world.insert(entity, TwoStateActivator { is_open, is_animating: false, do_once: false, activated_once: false });
+            }
+            (recognized.spawn)(&mut world, entity);
+            let open = world.get::<TwoStateActivator>(entity).unwrap().is_open;
+            let variable = world.get::<ScriptVariables>(entity).unwrap().get_by_name("::isOpen_var");
+            assert_eq!(variable, Some(f32::from(open)), "the script variable mirrors the state");
+            open
+        };
+        let silent = || vmad_with("doOnce", PropertyValue::Bool(false));
+        assert!(spawn(silent(), Some(true)), "Open by Default survives a script that authors no isOpen");
+        assert!(!spawn(vmad_with("isOpen", PropertyValue::Bool(false)), Some(true)), "an authored isOpen wins");
+        assert!(!spawn(silent(), None), "no seed: the script default");
     }
 }

@@ -2,7 +2,7 @@
 //! the player's fame and infamy, bounty, the per-faction "the player did this to them" flags, who has
 //! talked to the player, and the flags a `Set...` command stores for its `Get...`.
 //!
-//! One resource, [`ObScriptLedger`], saved whole (`FORMAT_MAJOR` 112): every field is plain data keyed
+//! One resource, [`ObScriptLedger`], saved whole (`FORMAT_MAJOR` 112; 143 dropped the unread `forms` column, #7309): every field is plain data keyed
 //! by FormIDs, so no entity ids or interned strings ride in a save.
 //!
 //! What each part is (the CS / GECK pages):
@@ -21,6 +21,9 @@
 //! A command whose value nothing in the engine would read back is not stored here: it declines
 //! (*AddTopic*, *ModDisposition*, *SetQuestObject*, *SetItemValue* — no topic gate, disposition
 //! adjustment ledger, quest-item marker or barter value consumes one) rather than report a no-op as done.
+//! The `Set...` values kept here are only the ones a getter or a system reads back (`obscript_more`'s
+//! `no_reader` lists the commands that decline instead); no form-valued column exists, since none of
+//! the form-taking `Set...` commands has a reader (#7309).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -65,9 +68,6 @@ pub struct ObScriptLedger {
     /// global one uses subject `0`.
     #[cfg_attr(feature = "save", serde(with = "crate::serde_pairs"))]
     values: BTreeMap<(u16, u32), f32>,
-    /// A form argument stored the same way (the combat style of an actor, a talking activator's actor).
-    #[cfg_attr(feature = "save", serde(with = "crate::serde_pairs"))]
-    forms: BTreeMap<(u16, u32), u32>,
     /// Per `(holder reference, weapon base)` condition percent (`ModWeaponHealthPerc`,
     /// `AddItemHealthPercent`).
     #[cfg_attr(feature = "save", serde(with = "crate::serde_pairs"))]
@@ -184,14 +184,6 @@ impl ObScriptLedger {
         self.values.insert((key, subject), value);
     }
 
-    pub fn form(&self, key: u16, subject: u32) -> Option<u32> {
-        self.forms.get(&(key, subject)).copied()
-    }
-
-    pub fn set_form(&mut self, key: u16, subject: u32, form: u32) {
-        self.forms.insert((key, subject), form);
-    }
-
     /// The condition percent of `weapon` held by `holder`; 100 when no script changed it.
     pub fn weapon_condition(&self, holder: u32, weapon: u32) -> f32 {
         self.weapon_condition.get(&(holder, weapon)).copied().unwrap_or(100.0)
@@ -292,8 +284,7 @@ mod tests {
     #[test]
     fn a_populated_ledger_survives_a_json_save() {
         let mut ledger = ObScriptLedger::default();
-        ledger.set_value(0x1159, 0x14, 3.0);
-        ledger.set_form(0x10a3, 0x0010_4E85, 0x0002_C5F2);
+        ledger.set_value(0x1151, 0x14, 1.0);
         ledger.set_weapon_condition(0x14, 0x0008_ED0B, 40.0);
         ledger.set_reaction(0x0010_4C5F, 0x0001_B2A4, 1.0);
         ledger.note_friend_hit(0x0010_4E85, 0x14);

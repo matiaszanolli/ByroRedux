@@ -7,7 +7,7 @@ use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
 
 use super::state::{caller_or_player, names_other_actor};
-use super::{answer, caller, done, flag, ledger, ledger_mut, player, store, MenuRequest, PendingMenus};
+use super::{answer, caller, done, flag, ledger, ledger_mut, no_reader, player, store, MenuRequest, PendingMenus};
 use crate::obscript_actions::{Action, Context};
 use crate::obscript_cmd::{Command, Games};
 use crate::obscript_effects::{form_arg, live, num, remove_from_all_factions};
@@ -187,12 +187,6 @@ fn cmd_126f(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _c
     }
 }
 
-// GECK *SetRumble <left> <right> <seconds>*: the motors of an Xbox 360 / PS3 pad. No pad is read, so
-// the request is kept for one that is.
-fn cmd_11fb(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    store(world, cmd, 0, num(args, 0).max(num(args, 1)))
-}
-
 // GECK *ExitGame*: "plays credits and returns the game to the main menu". The engine has no main
 // menu to return to: the game ends.
 fn exit_game(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
@@ -223,24 +217,10 @@ fn cmd_1114(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _c
     done(format!("PlayBink {file}"))
 }
 
-// GECK *PipBoyRadio <0|1|Tune> [station]*: the radio's state, kept: `Tune` names the station.
-fn tune(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    store(world, cmd, 0, num(args, 0));
-    if let Some(station) = form_arg(args, 1).or_else(|| form_arg(args, 0)) {
-        ledger_mut(world, |l| l.set_form(cmd, 0, station));
-    }
-    done("PipBoyRadio")
-}
-
 // GECK *ResetPipboyManager*: re-initialises the Pip-Boy's menus and appearance; the engine's holds
 // nothing a script could have left stale.
 fn reset_pipboy_manager(_world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
     done("ResetPipboyManager")
-}
-
-// GECK *SetHardcore <flag>* (Hardcore mode).
-fn cmd_124b(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    store(world, cmd, 0, num(args, 0))
 }
 
 // GECK *DetonatePlacedExplosives*: the player's placed mines go off. None is ever placed.
@@ -251,11 +231,6 @@ fn detonate_placed_explosives(_world: &World, _fallout: bool, _cmd: u16, _args: 
 // GECK *PreloadMagicEffect*: queues an effect's particles; nothing waits to be loaded.
 fn preload_magic_effect(_world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
     done("PreloadMagicEffect")
-}
-
-// GECK *SetGlobalTimeMultiplier* (`SGTM`): "1.0 is standard time, 0.5 is slow mo".
-fn set_global_time_multiplier(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    store(world, cmd, 0, num(args, 0))
 }
 
 // ── math (GECK, `Sqrt` / `Abs` / `Tan`) ────────────────────────────────────────────────────
@@ -460,17 +435,6 @@ fn dispel_all_spells(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScript
     }
 }
 
-// GECK *SetDisposition <actor> <value>*: kept for the reference.
-fn cmd_1184(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
-    match (caller(world, ctx), form_arg(args, 0)) {
-        (Some((subject, _)), Some(other)) => {
-            ledger_mut(world, |l| l.set_form(cmd, subject, other));
-            store(world, cmd, subject, num(args, 1))
-        }
-        _ => Action::Declined,
-    }
-}
-
 // GECK *SetWeaponHealthPerc <value>*: "sets the base condition of an actor's currently equipped
 // weapon" — in New Vegas "hardcoded not to increase condition beyond 99.83%".
 fn cmd_11f5(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
@@ -506,17 +470,6 @@ fn cmd_11e5(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ct
     }
 }
 
-// GECK *MatchFaceGeometry <actor> <percent>*: the face morph, kept; no runtime morph reads it.
-fn cmd_11df(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
-    match (caller(world, ctx), form_arg(args, 0)) {
-        (Some((subject, _)), Some(other)) => {
-            ledger_mut(world, |l| l.set_form(cmd, subject, other));
-            store(world, cmd, subject, num(args, 1))
-        }
-        _ => Action::Declined,
-    }
-}
-
 // CS *SetClass <class>*.
 fn cmd_10f0(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
     match (caller_or_player(world, ctx), form_arg(args, 0)) {
@@ -535,19 +488,6 @@ fn cmd_10f0(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ct
 fn get_is_lock_broken(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], ctx: &Context) -> Action {
     match caller(world, ctx) {
         Some(_) => flag(false),
-        None => Action::Declined,
-    }
-}
-
-// GECK *SetMinimalUse <flag>* on a door; *SetNoActivationSound <sound>*; *SetNoRumors*: kept.
-fn set_no_rumors(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
-    match caller(world, ctx) {
-        Some((subject, _)) => {
-            if let Some(form) = form_arg(args, 0) {
-                ledger_mut(world, |l| l.set_form(cmd, subject, form));
-            }
-            store(world, cmd, subject, num(args, 0))
-        }
         None => Action::Declined,
     }
 }
@@ -683,14 +623,6 @@ fn sar(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ctx: &C
     }
 }
 
-// CS *Wait <package>*: the follower waits ("stopped waiting" by *StopWaiting*): kept.
-fn stop_waiting(world: &World, _fallout: bool, cmd: u16, _args: &[ObScriptValue], ctx: &Context) -> Action {
-    match caller(world, ctx) {
-        Some((subject, _)) => store(world, cmd, subject, 1.0),
-        None => Action::Declined,
-    }
-}
-
 // CS *Drop <item> <count>*: "calling actor drops the specified item(s) in the world at his/her feet".
 fn cmd_1057(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
     match (caller(world, ctx), form_arg(args, 0)) {
@@ -724,29 +656,6 @@ fn delete_full_actor_copy(world: &World, _fallout: bool, _cmd: u16, _args: &[ObS
 }
 
 // ── cells and quests ───────────────────────────────────────────────────────────────────────
-// GECK *SetCellOwnership <cell> [owner]*: the owner kept for the cell (none: the player).
-fn cmd_1119(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    match form_arg(args, 0) {
-        Some(cell) => {
-            let owner = form_arg(args, 1).unwrap_or(crate::PLAYER_REFERENCE);
-            ledger_mut(world, |l| l.set_form(cmd, cell, owner));
-            done(format!("SetCellOwnership {cell:08X} {owner:08X}"))
-        }
-        None => Action::Declined,
-    }
-}
-
-// GECK *SetCellFullName <cell> <message>*: the cell's display name, kept.
-fn cmd_111b(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    match (form_arg(args, 0), form_arg(args, 1)) {
-        (Some(cell), Some(message)) => {
-            ledger_mut(world, |l| l.set_form(cmd, cell, message));
-            done(format!("SetCellFullName {cell:08X}"))
-        }
-        _ => Action::Declined,
-    }
-}
-
 // GECK *ResetInterior <cell>*: "marks the cell as expired so that the next time it is loaded it will be
 // cleaned up as if several days have passed".
 fn cmd_1127(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
@@ -757,14 +666,6 @@ fn cmd_1127(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _c
             }
             done(format!("ResetInterior {cell:08X}"))
         }
-        None => Action::Declined,
-    }
-}
-
-// GECK *SetZoneRespawns <zone> <flag>*: kept for the encounter zone.
-fn cmd_11ea(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    match form_arg(args, 0) {
-        Some(zone) => store(world, cmd, zone, num(args, 1)),
         None => Action::Declined,
     }
 }
@@ -782,30 +683,6 @@ fn cmd_11be(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ct
         }
         _ => Action::Declined,
     }
-}
-
-// GECK *DisableNavMesh <navmesh ref>*: kept; the pathing does not read it yet.
-fn cmd_11bf(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    match form_arg(args, 0) {
-        Some(mesh) => store(world, cmd, mesh, 1.0),
-        None => Action::Declined,
-    }
-}
-
-// GECK *ForceActiveQuest <quest>*: the quest the journal shows first, kept.
-fn cmd_11dd(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    match form_arg(args, 0) {
-        Some(quest) => {
-            ledger_mut(world, |l| l.set_form(cmd, 0, quest));
-            done(format!("ForceActiveQuest {quest:08X}"))
-        }
-        None => Action::Declined,
-    }
-}
-
-// GECK *FadeSFX <seconds>*: the sound effects fade; kept.
-fn cmd_1227(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    store(world, cmd, 0, num(args, 0))
 }
 
 // GECK *GetIsLockBroken* above; *IsPlayerActionActive <index>* (FO3): the player's current action —
@@ -847,15 +724,15 @@ pub(crate) const TAIL_COMMANDS: &[Command] = &[
     Command { id: 0x1135, games: Games::Both, needs_caller: false, handler: is_xbox },
     Command { id: 0x120c, games: Games::Fallout, needs_caller: false, handler: cmd_120c },
     Command { id: 0x126f, games: Games::Fallout, needs_caller: false, handler: cmd_126f },
-    Command { id: 0x11fb, games: Games::Fallout, needs_caller: false, handler: cmd_11fb },
+    Command { id: 0x11fb, games: Games::Fallout, needs_caller: false, handler: no_reader },
     Command { id: 0x11b5, games: Games::Fallout, needs_caller: false, handler: exit_game },
     Command { id: 0x1114, games: Games::Both, needs_caller: false, handler: cmd_1114 },
-    Command { id: 0x11a7, games: Games::Fallout, needs_caller: false, handler: tune },
+    Command { id: 0x11a7, games: Games::Fallout, needs_caller: false, handler: no_reader },
     Command { id: 0x1201, games: Games::Fallout, needs_caller: false, handler: reset_pipboy_manager },
-    Command { id: 0x124b, games: Games::Fallout, needs_caller: false, handler: cmd_124b },
+    Command { id: 0x124b, games: Games::Fallout, needs_caller: false, handler: no_reader },
     Command { id: 0x124d, games: Games::Fallout, needs_caller: false, handler: detonate_placed_explosives },
     Command { id: 0x1163, games: Games::Fallout, needs_caller: false, handler: preload_magic_effect },
-    Command { id: 0x1186, games: Games::Fallout, needs_caller: false, handler: set_global_time_multiplier },
+    Command { id: 0x1186, games: Games::Fallout, needs_caller: false, handler: no_reader },
     Command { id: 0x121f, games: Games::Fallout, needs_caller: false, handler: sqrt },
     Command { id: 0x1221, games: Games::Fallout, needs_caller: false, handler: cmd_1221 },
     Command { id: 0x121e, games: Games::Fallout, needs_caller: false, handler: cmd_121e },
@@ -879,16 +756,16 @@ pub(crate) const TAIL_COMMANDS: &[Command] = &[
     Command { id: 0x1120, games: Games::Fallout, needs_caller: false, handler: cmd_1120 },
     Command { id: 0x1133, games: Games::Fallout, needs_caller: false, handler: cmd_1133 },
     Command { id: 0x1148, games: Games::Fallout, needs_caller: false, handler: dispel_all_spells },
-    Command { id: 0x1184, games: Games::Fallout, needs_caller: false, handler: cmd_1184 },
+    Command { id: 0x1184, games: Games::Fallout, needs_caller: false, handler: no_reader },
     Command { id: 0x1214, games: Games::Fallout, needs_caller: true, handler: remove_from_all_factions },
     Command { id: 0x11f5, games: Games::Fallout, needs_caller: false, handler: cmd_11f5 },
     Command { id: 0x11e5, games: Games::Fallout, needs_caller: false, handler: cmd_11e5 },
-    Command { id: 0x11df, games: Games::Fallout, needs_caller: false, handler: cmd_11df },
+    Command { id: 0x11df, games: Games::Fallout, needs_caller: false, handler: no_reader },
     Command { id: 0x10f0, games: Games::Oblivion, needs_caller: false, handler: cmd_10f0 },
     Command { id: 0x120a, games: Games::Fallout, needs_caller: false, handler: get_is_lock_broken },
-    Command { id: 0x1228, games: Games::Fallout, needs_caller: false, handler: set_no_rumors },
-    Command { id: 0x11fc, games: Games::Fallout, needs_caller: false, handler: set_no_rumors },
-    Command { id: 0x1141, games: Games::Oblivion, needs_caller: false, handler: set_no_rumors },
+    Command { id: 0x1228, games: Games::Fallout, needs_caller: false, handler: no_reader },
+    Command { id: 0x11fc, games: Games::Fallout, needs_caller: false, handler: no_reader },
+    Command { id: 0x1141, games: Games::Oblivion, needs_caller: false, handler: no_reader },
     Command { id: 0x11d8, games: Games::Fallout, needs_caller: false, handler: clear_destruction },
     Command { id: 0x125b, games: Games::Fallout, needs_caller: false, handler: cmd_125b },
     Command { id: 0x123b, games: Games::Fallout, needs_caller: false, handler: cmd_123b },
@@ -902,17 +779,17 @@ pub(crate) const TAIL_COMMANDS: &[Command] = &[
     Command { id: 0x107d, games: Games::Oblivion, needs_caller: false, handler: is_guard },
     Command { id: 0x114c, games: Games::Oblivion, needs_caller: false, handler: is_in_dangerous_water },
     Command { id: 0x1154, games: Games::Oblivion, needs_caller: false, handler: sar },
-    Command { id: 0x10b7, games: Games::Oblivion, needs_caller: false, handler: stop_waiting },
+    Command { id: 0x10b7, games: Games::Oblivion, needs_caller: false, handler: no_reader },
     Command { id: 0x1057, games: Games::Oblivion, needs_caller: false, handler: cmd_1057 },
     Command { id: 0x1168, games: Games::Oblivion, needs_caller: false, handler: delete_full_actor_copy },
-    Command { id: 0x1119, games: Games::Fallout, needs_caller: false, handler: cmd_1119 },
-    Command { id: 0x111b, games: Games::Fallout, needs_caller: false, handler: cmd_111b },
+    Command { id: 0x1119, games: Games::Fallout, needs_caller: false, handler: no_reader },
+    Command { id: 0x111b, games: Games::Fallout, needs_caller: false, handler: no_reader },
     Command { id: 0x1127, games: Games::Fallout, needs_caller: false, handler: cmd_1127 },
-    Command { id: 0x11ea, games: Games::Fallout, needs_caller: false, handler: cmd_11ea },
+    Command { id: 0x11ea, games: Games::Fallout, needs_caller: false, handler: no_reader },
     Command { id: 0x11be, games: Games::Fallout, needs_caller: false, handler: cmd_11be },
-    Command { id: 0x11bf, games: Games::Fallout, needs_caller: false, handler: cmd_11bf },
-    Command { id: 0x11dd, games: Games::Fallout, needs_caller: false, handler: cmd_11dd },
-    Command { id: 0x1227, games: Games::Fallout, needs_caller: false, handler: cmd_1227 },
+    Command { id: 0x11bf, games: Games::Fallout, needs_caller: false, handler: no_reader },
+    Command { id: 0x11dd, games: Games::Fallout, needs_caller: false, handler: no_reader },
+    Command { id: 0x1227, games: Games::Fallout, needs_caller: false, handler: no_reader },
     Command { id: 0x1170, games: Games::Fallout, needs_caller: false, handler: get_is_lock_broken_command },
     Command { id: 0x1138, games: Games::Oblivion, needs_caller: false, handler: cmd_1138 },
     Command { id: 0x1137, games: Games::Oblivion, needs_caller: false, handler: cmd_1137 },

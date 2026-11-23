@@ -220,6 +220,31 @@ fn store(world: &World, cmd: u16, subject: u32, value: f32) -> Action {
     done(format!("{cmd:#06x} {subject:08X} {value}"))
 }
 
+/// The `Set...` commands whose value nothing in the engine reads back: each declines (#6190's ledger
+/// rule, #7309) instead of storing a value only a save would see and reporting the no-op as run. A
+/// command leaves this list when the state it changes gets a reader, and stores again then.
+///
+/// Fallout 3 / New Vegas (GECK): *SetActorFullName*, *SetTalkingActivatorActor*, *SetCombatStyle*,
+/// *SetMerchantContainer* (no name, talking-activator, combat-style or vendor-container override is
+/// read), *SetCellPublicFlag* (no trespass crime), *SetVATSTarget* (VATS reads no per-object flag),
+/// *EnableFastTravel* (no fast travel), the game-wide flags *SetLocationSpecificLoadScreensOnly*,
+/// *AutoDisplayObjectives*, *EnableLoadingMenu*, *PipBoyRadioOff* and *SetPCYoung* (`0x1200`, `0x1224`,
+/// `0x1225`, `0x1270`, `0x11e6`), *AgeRace*, *SexChange*, *SetCellImageSpace*,
+/// *SetLastExtDoorActivated*, *SetNPCRadio*, *SetBroadcastState*, *StartRadioConversation*,
+/// *PipBoyRadio*, *SetSecuritronExpression*, *SetRumble* (no pad is read), *SetHardcore*,
+/// *SetGlobalTimeMultiplier*, *SetDisposition*, *MatchFaceGeometry*, *SetMinimalUse*,
+/// *SetNoActivationSound*, *SetNoRumors*, *SetCellOwnership*, *SetCellFullName*, *SetZoneRespawns*,
+/// *DisableNavMesh*, *ForceActiveQuest* and *FadeSFX*.
+///
+/// Oblivion (CS): *SetShowQuestItems*, *SetForceRun*, *SetDoorDefaultOpen*, *ForceCloseOblivionGate*,
+/// *SetRigidBodyMass*, *EnableLinkedPathPoints* / *DisableLinkedPathPoints* (the path-grid router,
+/// `find_path_over_grid`, does not consult the flag), *StopWaiting*, plus the shared ids above
+/// that run there (*SetCellPublicFlag*, *SetCombatStyle*, *SetActorFullName*, *EnableFastTravel*,
+/// *SetNoRumors*).
+fn no_reader(_world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
+    Action::Declined
+}
+
 /// `GetCurrentAIPackage`'s value for a PACK procedure type (CS page: 0 EXPLORE, 1 FOLLOW, 2 ESCORT, 3 EAT,
 /// 4 SLEEP, 5 COMBAT, 6 DIALOGUE, ..., 13 WANDER, 14 TRAVEL, 15 ACCOMPANY, 16 USEITEMAT, 17 AMBUSH,
 /// 18 FLEE_NON_COMBAT, 19 CAST_MAGIC, 33 USE_WEAPON, 35 GUARD, 36 SANDBOX, 37 PATROL).

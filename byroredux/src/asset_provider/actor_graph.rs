@@ -229,6 +229,16 @@ fn sync_points(clip: &byroredux_core::animation::AnimationClip, pool: &StringPoo
     }
 }
 
+/// The sync points of the registered clip `handle`. The registry is taken before the pool: `StringPool`
+/// is the lock order's sink, taken last with nothing beneath it (`docs/engine/ecs.md`), and
+/// `start_cli_animation` holds the registry while it takes the pool. Holding the pool first closed a
+/// cycle with it.
+fn registered_sync_points(world: &World, handle: u32) -> Option<[f32; 2]> {
+    let registry = world.resource::<AnimationClipRegistry>();
+    let pool = world.resource::<StringPool>();
+    registry.get(handle).and_then(|registered| sync_points(registered, &pool))
+}
+
 /// Decode the clips the running graphs asked for and restart the graphs that were
 /// waiting on them.
 fn resolve_wanted(world: &mut World, provider: &TextureProvider) {
@@ -291,10 +301,7 @@ fn resolve_wanted(world: &mut World, provider: &TextureProvider) {
             match resolved {
                 Some(clip) => {
                     log::debug!("actor graph clip '{}' (looping {}) -> handle {} ({:.2} s)", key.0, key.1, clip.handle, clip.duration);
-                    let points = {
-                        let pool = world.resource::<StringPool>();
-                        world.resource::<AnimationClipRegistry>().get(clip.handle).and_then(|registered| sync_points(registered, &pool))
-                    };
+                    let points = registered_sync_points(world, clip.handle);
                     if let Some(points) = points {
                         job.lazy.provide_sync(clip.handle, points);
                     }
@@ -367,5 +374,26 @@ mod tests {
         assert_eq!(sync_points(&only_left, &pool), None);
         let four = clip_with(&[(0.1, "SyncLeft"), (0.2, "SyncRight"), (0.3, "SyncLeft"), (0.4, "SyncRight")], &mut pool);
         assert_eq!(sync_points(&four, &pool), None, "a multi-step cycle falls back to even phase");
+    }
+
+    /// `StringPool` is the lock order's sink: `start_cli_animation` holds `AnimationClipRegistry` while it
+    /// takes the pool, so the sync-point lookup must take the registry first. It used to hold the pool
+    /// while it read the registry, which closed a cycle the lock-order lane (`BYRO_LOCK_ORDER_CHECK=1`)
+    /// never saw, because no fixture ran both. The CLI's edge is taken here, then the lookup runs.
+    #[test]
+    fn the_sync_point_lookup_takes_the_registry_before_the_pool() {
+        let mut world = World::new();
+        let mut pool = StringPool::new();
+        let walk = clip_with(&[(0.33, "SyncLeft"), (0.93, "SyncRight")], &mut pool);
+        let mut registry = AnimationClipRegistry::new();
+        let handle = registry.add(walk);
+        world.insert_resource(pool);
+        world.insert_resource(registry);
+        {
+            // `start_cli_animation`: the registry held, then the pool.
+            let _registry = world.resource_mut::<AnimationClipRegistry>();
+            let _pool = world.resource_mut::<StringPool>();
+        }
+        assert_eq!(registered_sync_points(&world, handle), Some([0.33, 0.93]));
     }
 }

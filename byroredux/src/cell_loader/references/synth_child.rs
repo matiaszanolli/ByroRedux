@@ -62,6 +62,9 @@ pub(super) fn stamp_quest_reference(
         local: LocalFormId(placed_ref.form_id),
     });
     world.insert(entity, FormIdComponent(placement));
+    // #7317 — an NPC picked its first package inside its spawn job, before this stamp, so a Once Per Day
+    // block it noted is keyed by the entity; move it onto the reference a stream respawn keeps.
+    crate::npc_spawn::package_flags::adopt_entity_day_blocks(world, entity);
     // The pose it spawned at is the authored one (`MoveToMyEditorLocation`).
     if let Some(transform) = world.get::<byroredux_core::ecs::Transform>(entity).map(|t| *t) {
         world.insert(

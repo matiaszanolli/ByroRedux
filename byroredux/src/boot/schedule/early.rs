@@ -186,7 +186,11 @@ pub(super) fn register_early_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_scripting::PlayerControlState>()
             .reads_resource::<byroredux_scripting::input_layers::InputLayers>()
             .reads::<byroredux_core::ecs::components::Sneaking>()
-            .writes::<byroredux_core::ecs::components::Sneaking>(),
+            .writes::<byroredux_core::ecs::components::Sneaking>()
+            // #7319 — `sync_stance_locomotion` swaps the player's locomotion clips with the stance.
+            .writes::<crate::systems::stance::StanceLocomotion>()
+            .writes::<crate::components::WalkAnimation>()
+            .writes::<byroredux_core::animation::AnimationPlayer>(),
     );
     // #3111 — weather writes WindField while the player controller samples it
     // for water waves. Keep weather in the same stage but serialize it after

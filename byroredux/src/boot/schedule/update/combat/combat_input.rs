@@ -46,7 +46,34 @@ pub(super) fn register_combat_input_systems(scheduler: &mut Scheduler) {
             // #6942 — an attack draws the weapon and the Ready Weapon key draws or puts it away.
             .reads::<byroredux_scripting::obscript_state::WeaponDrawn>()
             .writes::<byroredux_scripting::obscript_state::WeaponDrawn>()
-            .writes::<byroredux_scripting::HitEvent>(),
+            .writes::<byroredux_scripting::HitEvent>()
+            // #7319 — M65: an attack is noise the detection tick hears, and a sneak strike reads whether the
+            // target is unaware (`sneak_strike` → `unaware_of_player`).
+            .writes_resource::<crate::detection::PlayerActionNoise>()
+            .reads_resource::<byroredux_core::stealth::StealthRules>()
+            .reads_resource::<byroredux_core::stealth::StealthPoints>()
+            .reads_resource::<byroredux_scripting::ActorValueNames>()
+            .reads_resource::<crate::inventory::InventoryCatalog>()
+            .reads::<byroredux_core::ecs::components::Sneaking>()
+            .reads::<byroredux_core::ecs::components::Awareness>()
+            .reads::<byroredux_core::ecs::components::SleepBehavior>()
+            .reads::<byroredux_scripting::AiCombatState>()
+            // #7319 — a gun's shot (`fire_player_gun`) queues the projectile and spends the ammo.
+            .writes_resource::<crate::systems::projectiles::ActiveProjectiles>()
+            .writes::<byroredux_core::ecs::components::Inventory>()
+            // #7319 — `remove_items` (the scripting crate's removal effect): it unequips what it takes, drops the
+            // item-instance rows, and checks quest-alias, collection-alias, scene and created-reference claims.
+            .writes::<byroredux_core::ecs::components::EquipmentSlots>()
+            .writes::<byroredux_core::ecs::components::EquippedWeapon>()
+            .writes_resource::<byroredux_core::ecs::resources::ItemInstancePool>()
+            .reads_resource::<byroredux_scripting::AliasScriptOwners>()
+            .reads_resource::<byroredux_scripting::CollectionAliasKinds>()
+            .reads_resource::<byroredux_scripting::CreatedReferences>()
+            .reads_resource::<byroredux_scripting::QuestDefinitionRegistry>()
+            .reads_resource::<byroredux_scripting::QuestScriptInstances>()
+            .reads_resource::<byroredux_scripting::QuestStageFragments>()
+            .reads_resource::<byroredux_scripting::SceneActorBindings>()
+            .reads::<byroredux_scripting::scene::ScenePlayer>(),
     );
     // Player-spellcasting (PSC-CST-009): the one system that owns the spend. It ticks the casting interval, keeps the
     // readied spell on the player's list, and on a `CastSpell` edge gates, applies the Magicka and Fatigue damage and
@@ -70,7 +97,21 @@ pub(super) fn register_combat_input_systems(scheduler: &mut Scheduler) {
             .writes::<byroredux_core::ecs::components::ActorValues>()
             // `cast_spell` starts the effects and raises the Story Manager `CAST` event.
             .writes::<byroredux_scripting::magic_effects::ActiveMagicEffects>()
-            .writes::<byroredux_scripting::story_manager::StoryEvent>(),
+            .writes::<byroredux_scripting::story_manager::StoryEvent>()
+            // #7319 — the aim ray (`camera_ray`), the touch reach (`actor_in_reach`), and the projectile a
+            // spell launches.
+            .reads_resource::<ActiveCamera>()
+            .reads_resource::<byroredux_physics::PhysicsWorld>()
+            .writes_resource::<crate::systems::projectiles::ActiveProjectiles>()
+            .reads::<Transform>()
+            .reads::<byroredux_core::ecs::GlobalTransform>()
+            .reads::<byroredux_physics::RapierHandles>()
+            .reads::<byroredux_physics::ActorColliderOwner>()
+            .reads::<byroredux_core::ecs::components::ActorVitals>()
+            // #7319 — `bodies_of`: the shooter's own bodies, matched by source form and parent chain.
+            .reads::<byroredux_core::ecs::components::FormIdComponent>()
+            .reads::<byroredux_core::ecs::Parent>()
+            .reads::<byroredux_core::ecs::components::PhysicsSourceForm>(),
     );
     // Player-archery (BOW-DRW-005): the one system that owns the draw, the release and the spend. It reads the held
     // attack action, ticks the interval, and on the release edge gates, spends one arrow of the equipped type and
@@ -101,6 +142,23 @@ pub(super) fn register_combat_input_systems(scheduler: &mut Scheduler) {
             .writes::<byroredux_core::ecs::components::EquippedAmmo>()
             // `remove_items` spends the arrow.
             .reads::<byroredux_core::ecs::components::Inventory>()
-            .writes::<byroredux_core::ecs::components::Inventory>(),
+            .writes::<byroredux_core::ecs::components::Inventory>()
+            // #7319 — `bodies_of`: the shooter's own bodies, matched by source form and parent chain.
+            .reads::<byroredux_core::ecs::components::FormIdComponent>()
+            .reads::<byroredux_core::ecs::Parent>()
+            .reads::<byroredux_core::ecs::components::PhysicsSourceForm>()
+            // #7319 — `remove_items` (the scripting crate's removal effect): it unequips what it takes, drops the
+            // item-instance rows, and checks quest-alias, collection-alias, scene and created-reference claims.
+            .writes::<byroredux_core::ecs::components::EquipmentSlots>()
+            .writes::<byroredux_core::ecs::components::EquippedWeapon>()
+            .writes_resource::<byroredux_core::ecs::resources::ItemInstancePool>()
+            .reads_resource::<byroredux_scripting::AliasScriptOwners>()
+            .reads_resource::<byroredux_scripting::CollectionAliasKinds>()
+            .reads_resource::<byroredux_scripting::CreatedReferences>()
+            .reads_resource::<byroredux_scripting::QuestDefinitionRegistry>()
+            .reads_resource::<byroredux_scripting::QuestScriptInstances>()
+            .reads_resource::<byroredux_scripting::QuestStageFragments>()
+            .reads_resource::<byroredux_scripting::SceneActorBindings>()
+            .reads::<byroredux_scripting::scene::ScenePlayer>(),
     );
 }

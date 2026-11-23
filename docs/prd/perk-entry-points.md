@@ -1,21 +1,6 @@
 # Perk Entry Points — Product Requirements
 
-**Status**: ACTIVE (2026-11-20). Revision 7 brings the document to HEAD after
-review round 3: §3.3 re-read at HEAD (Phases 1 and 2 shipped, Phases 3 and 4 part
-shipped), each phase's state recorded in §9, the Phase 0 verify tags that the census
-closed rewritten as sourced facts and the measured answers moved to §3.5,
-PERK-DEC-003 stated per game. Revision 6 settles hook 56's Target tab and
-records PERK-SUB-002 shipped. Revision 5 files the tracking issues.
-Revision 4 recorded the owner's §10 decisions, every one the
-recommendation. Revision 3 folded in review round 2:
-every §3.3 claim re-read at HEAD; Skyrim perk fragments (PERK-DEC-011) and
-the activate entry's run path (PERK-HOOK-012) added; Skyrim's "Not Used"
-hooks Inert (PERK-HOOK-011); the embedded-script and FO3/FNV ability-rank
-verify items closed from xEdit and the GECK; the Starfield census rule made
-consistent with its decode-only scope; Q1, Q3, Q4, Q5 and Q7 restated with
-the facts their consequences rest on. Revision 2 (2026-11-01) folded in
-round 1; revision 1 was the first draft of the M24.2 remainder: the `PERK`
-decode gaps left at HEAD and the runtime that consumes them. Statements
+**Status**: ACTIVE (2026-11-22). Revision 8 folds in review round 4; the history is §12. Statements
 about how an original engine, format or tool behaves cite external sources
 (the Creation Kit and GECK wikis in their local dumps, xEdit's record
 definitions); a claim that could not be verified is marked **Phase 0:
@@ -151,9 +136,9 @@ The inventory below is the state at HEAD on 2026-11-20, re-read in review round 
 against the code cited; the 2026-11-03 version listed items Phases 1 and 2 have
 since shipped. It is hand-written and goes stale. The hook rows are not here: the
 hook catalog (`crates/scripting/src/perk_entry_points/catalog.rs`, PERK-HOOK-001)
-holds them and `perk.hooks` prints them, 272 rows of which are still
-`Pending { id: UNCLASSIFIED }` (the Phase 0 census draft, #6651, has not
-classified them).
+holds them and `perk.hooks` prints them; `perk.hooks pending` lists the rows still
+`Pending { id: UNCLASSIFIED }` (271 of the catalog's 324 at HEAD on 2026-11-22),
+which the Phase 0 census draft (#6651) has not classified.
 
 **Record and body decode** (`parse_perk`, `decode_perk_epfd` in
 `crates/plugin/src/esm/records/misc/magic.rs`)
@@ -171,7 +156,7 @@ classified them).
 | D9 | `EPF2` / `EPF3` | Shipped (#6652): `PerkEntryDetails` (`run_immediately`, `replace_default`, `fragment_index`, `button_label`) |
 | D10 | `EPFB` entry id (FO4) | Shipped (#6652): `PerkEntryDetails.entry_id` |
 | D11 | FO3/FNV embedded activate script | Shipped (#6652): `PerkEntryDetails.script`, decoded by `embedded_script_at` |
-| D12 | Starfield layout | Shipped (#6652): `DATA` decodes from the Starfield layout and ranks count `PRRK` blocks (PERK-DEC-009, test at `magic.rs`); the `EPFD` shapes stay undecoded (D2) |
+| D12 | Starfield layout | Shipped (#6652): `DATA` decodes from the Starfield layout and ranks count `PRRK` blocks (PERK-DEC-009, `parse_perk_starfield_data_is_not_read_in_the_fo3_byte_order` in `magic.rs`); the `EPFD` shapes stay undecoded (D2) |
 | D13 | Skyrim `VMAD` perk fragments | Shipped (#6652): `PerkRecord.script_fragments` keyed by the entry's `EPF3` index (`parse_perk_skyrim_fragments_key_on_epf3`) |
 
 **Runtime**
@@ -714,7 +699,9 @@ path). No game file is checked in. The scenarios:
 
 The numbers live in ROADMAP's [M24.2 row](../../ROADMAP.md#tier-6--engine-infrastructure)
 until the PRD ships, then in the compatibility matrix's *Verified content*
-column ([ROADMAP](../../ROADMAP.md#compatibility-matrix)).
+column ([ROADMAP](../../ROADMAP.md#compatibility-matrix)). Decode mismatches and body coverage are
+published there since Phases 1 and 2 closed; hook coverage, fireability and classification wait on
+Phases 0, 3 and 4.
 
 | Metric | Definition | Granularity |
 |---|---|---|
@@ -745,8 +732,8 @@ authored hook with a state and a source. Close the **Phase 0: verify** items.
 *Status 2026-11-20: open (#6651).* The Phase 2 to 4 censuses answered the verify
 items that Skyrim's Ability rank rule, Quest entry timing, Skyrim's level byte,
 `NNAM` against `num_ranks`, the FO4 weapon-damage hook and hook 56's Target tab
-named (§3.5). The catalog draft is unfinished: 272 rows are still
-`Pending { id: UNCLASSIFIED }`. What is left:
+named (§3.5). The catalog draft is unfinished: `perk.hooks pending` lists the rows still
+`Pending { id: UNCLASSIFIED }` (271 of 324 at HEAD on 2026-11-22). What is left:
 
 | Item | Requirement |
 |---|---|
@@ -943,3 +930,4 @@ Each needs the project owner. The recommendation is the first option.
 | 5 | 2026-11-03 | → ACTIVE: parent #6635 and phase issues #6651, #6652, #6654, #6657, #6659 filed; the Phase 0 verify items are acceptance criteria of #6651 | — |
 | 6 | 2026-11-05 | PERK-SUB-002 shipped ahead of Phases 0-2 at the owner's request, for the FNV perks that had no effect: hook 56's Target tab settled from the census, `IsWeaponSkillType` modeled from the newly decoded `DNAM` skill, R4 and §3.2 updated | claude: revise |
 | 7 | 2026-11-20 | Review round 3 folded in: §3.3 re-read at HEAD after Phases 1 and 2 shipped (D4, D5, D8, D10, R2, R5, R6, R8, R10 and the matching "Today" sentences), each phase's state recorded in §9 and the Tracking line, the Phase 0 verify tags the Phase 2–4 censuses closed rewritten as sourced facts (PERK-BODY-001/-003, PERK-GATE-002/-004, PERK-HOOK-010) with the measured answers moved to §3.5 and the Phase 0 table cut to the open items, PERK-DEC-003 stated per game with §6 row 10. The log had no rows for the 2026-11-06 to 2026-11-09 edits | claude: revise |
+| 8 | 2026-11-22 | Review round 4 folded in: the unclassified-hook count read from `perk.hooks pending` (271 of 324, not 272) in §3.3 and §9; §8 says which metrics are published and which wait on open phases, and the M24.2 row publishes decode mismatches (0 on five masters, #6652) and body coverage (3 of 3 on four games, `perk_body_census` 2026-11-22); D12 names its test; the status line trimmed | claude: revise |

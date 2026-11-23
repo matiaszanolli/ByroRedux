@@ -106,6 +106,12 @@ mod schedule_order {
             Self(super::build_scheduler().access_report())
         }
 
+        /// A schedule the test has extended past `build_scheduler` (the debug drain, #7320).
+        #[cfg(feature = "debug-server")]
+        pub(super) fn of(scheduler: &byroredux_core::ecs::Scheduler) -> Self {
+            Self(scheduler.access_report())
+        }
+
         /// The position of the one system named `system`. A name that is missing
         /// or ambiguous panics rather than skipping the check, so a rename cannot
         /// leave a guard green while checking nothing.
@@ -202,6 +208,22 @@ mod fragment_activation_order_tests {
     use super::schedule_order::{bare_name, BuiltSchedule};
     use byroredux_core::ecs::Stage;
 
+    /// #7321 — `door_motion_system` reads the `TwoStateTransitionBatch` that `two_state_activator_system`
+    /// drains at the head of every run, and writes the `DefaultActivation` verdicts the activator reads the
+    /// same frame, so it must run before the activator: a transition published in frame N plays in frame N + 1
+    /// (`systems/door.rs`). Swapped, the batch is drained before the door sees it and no door ever animates.
+    #[test]
+    fn door_motion_runs_before_the_activator_that_drains_its_batch() {
+        let schedule = BuiltSchedule::new();
+        assert!(
+            schedule
+                .position("door_motion_system")
+                .runs_before(schedule.position("two_state_activator_system")),
+            "`door_motion_system` must run before `two_state_activator_system`, which drains the transition \
+             batch the doors play"
+        );
+    }
+
     #[test]
     fn activation_flush_is_scheduled_before_every_activate_event_consumer() {
         let schedule = BuiltSchedule::new();
@@ -217,6 +239,12 @@ mod fragment_activation_order_tests {
             "two_state_activator_system",
             "mg07_on_activate_dispatch",
             "reference_script_event_system",
+            // #7321 — M66 door motion (its activation verdicts), the player's seat, the Oblivion bed and
+            // the jail bed read `ActivateEvent` too.
+            "door_motion_system",
+            "player_seat_system",
+            "bed_use_system",
+            "jail_bed_system",
         ] {
             assert!(
                 flush.runs_before(schedule.position(consumer)),
@@ -263,11 +291,9 @@ mod fragment_activation_order_tests {
                 "make_npc_combat_ai_system",
                 // #6580 — a mine blast hits every actor in its radius (M43 placed mines)
                 "mine_system",
-                // #6813 — a VATS shot inserts a `HitEvent` per landed target
-                // (`vats_confirm`, reached from the mode machine). Safe today
-                // because it is an Early exclusive and every consumer is in
-                // Update; the pin keeps a stage move honest.
-                "vats_mode_system",
+                // A VATS shot's `HitEvent` is not raised by `vats_mode_system` (#6813 named it on a false
+                // premise): `vats_confirm` runs only from the `vats.confirm` console command, in the debug
+                // drain — see `console_raised_hits_are_queued_after_the_frame_cleanup` (#7320).
             ] {
                 assert!(
                     schedule
@@ -276,6 +302,36 @@ mod fragment_activation_order_tests {
                     "`{consumer}` must run after the `HitEvent` producer `{producer}`"
                 );
             }
+        }
+    }
+
+    /// #7320 — a VATS shot's `HitEvent`s come from `vats_confirm`, which only the `vats.confirm` console
+    /// command reaches. Console commands run in the debug server's drain, which
+    /// `byroredux_debug_server::start` appends to Late after the whole schedule, so it runs after
+    /// `event_cleanup_system`: the hits it raises survive that frame's cleanup and reach the next frame's
+    /// Update consumers. A drain ordered before the cleanup would have them removed unseen. Built with the
+    /// real registration on an ephemeral loopback port, not a text scan.
+    #[cfg(feature = "debug-server")]
+    #[test]
+    fn console_raised_hits_are_queued_after_the_frame_cleanup() {
+        let mut scheduler = super::build_scheduler();
+        let _server = byroredux_debug_server::start(&mut scheduler, 0)
+            .expect("the debug server binds an ephemeral loopback port");
+        let schedule = BuiltSchedule::of(&scheduler);
+        let drain = schedule.position(byroredux_debug_server::DRAIN_SYSTEM_NAME);
+        let cleanup = schedule.position("event_cleanup_system");
+        assert!(drain.is_exclusive_in(Stage::Late), "the drain must stay a Late exclusive");
+        assert!(
+            cleanup.runs_before(drain),
+            "the debug drain (where `vats.confirm` raises VATS hits) must run after `event_cleanup_system`, \
+             or those hits are removed before any consumer sees them"
+        );
+        for consumer in ["combat_damage_system", "hit_event_system", "reference_script_hit_system", "obscript_hit_system"] {
+            assert!(
+                schedule.position(consumer).runs_before(drain),
+                "`{consumer}` reads the console-raised hit on the next frame, so it must not follow the drain \
+                 into Late"
+            );
         }
     }
 
@@ -735,6 +791,7 @@ mod system_access_declaration_tests {
     const EXECUTE_SRC: &str =
         include_str!("../../../../crates/scripting/src/papyrus_provider/execute.rs");
     const OBSCRIPT_SRC: &str = include_str!("../../../../crates/scripting/src/obscript_runtime.rs");
+    const EVENTS_SRC: &str = include_str!("../../../../crates/scripting/src/events.rs");
 
     const CHARACTER_SRC: &str = include_str!("../../systems/character.rs");
     const CAMERA_SRC: &str = include_str!("../../systems/camera.rs");
@@ -802,6 +859,19 @@ mod system_access_declaration_tests {
     const STORY_EVENTS_SRC: &str = include_str!("../../systems/story_events.rs");
     const STORY_MANAGER_SRC: &str = include_str!("../../../../crates/scripting/src/story_manager.rs");
     const OBSCRIPT_STATE_SRC: &str = include_str!("../../../../crates/scripting/src/obscript_state.rs");
+    // #7318 — `note_death`'s player-kill arm: the misc-stat bump and the Kill challenge.
+    const OBSCRIPT_MORE_SRC: &str = include_str!("../../../../crates/scripting/src/obscript_more.rs");
+    const CHALLENGES_SRC: &str = include_str!("../../../../crates/scripting/src/challenges.rs");
+    // #7318 — the interaction prompt's rest / jail-bed check.
+    const JAIL_SRC: &str = include_str!("../../../../crates/scripting/src/jail.rs");
+    const OBLIVION_REST_SRC: &str = include_str!("../../oblivion_rest.rs");
+    // #7319 — the newer declared exclusives and their cross-file hops.
+    const DETECTION_TICK_SRC: &str = include_str!("../../detection/tick.rs");
+    const STANCE_SRC: &str = include_str!("../../systems/stance.rs");
+    const PLAYER_CAST_SRC: &str = include_str!("../../player_cast.rs");
+    const PROJECTILES_SRC: &str = include_str!("../../systems/projectiles.rs");
+    const BOW_SRC: &str = include_str!("../../bow.rs");
+    const PLAYER_SEAT_SRC: &str = include_str!("../../player_seat.rs");
     // #5069 — equipment_appearance_system's mid-life gear-import hop lives
     // in npc_spawn/loot_appearance.rs; exclusive rows are invisible to the
     // PARALLEL_SYSTEMS proof, so it gets its own scan below.
@@ -1104,6 +1174,9 @@ mod system_access_declaration_tests {
                 (LOCKPICK_SRC, "raise_lockpick_event"),
                 (LOCKPICK_SRC, "raise_hack_event"),
                 (STORY_MANAGER_SRC, "raise_story_event"),
+                // #7318 — `populate_candidates`' sleep prompt: the Oblivion rest support and the jail check.
+                (OBLIVION_REST_SRC, "supports_rest"),
+                (JAIL_SRC, "player_in_jail"),
             ],
             "interaction_system",
         );
@@ -1133,15 +1206,92 @@ mod system_access_declaration_tests {
                 (SMITHING_SRC, "stack_quality"),
                 // `ASSU` / `KILL`.
                 (STORY_MANAGER_SRC, "raise_story_event"),
+                // #7318 — the kill branch: the KILL story event's cell-context reads and the death funnel
+                // (`raise_death_event` → `note_death`), whose player-kill arm bumps the misc stats and
+                // notes the Kill challenge — the player is a possible killer here, unlike the drowning
+                // death `player_controller_system` raises.
+                (STORY_EVENTS_SRC, "raise_kill_story_event"),
+                (OBSCRIPT_STATE_SRC, "note_death"),
+                // `note_death` → `reference_form` resolves victim and killer to global FormIDs.
+                (CONDITION_SRC, "entity_global_form_id"),
+                (OBSCRIPT_MORE_SRC, "mod_misc_stat"),
+                (CHALLENGES_SRC, "note"),
             ],
             "combat_damage_system",
         );
     }
 
+    // #7319 — the declared exclusives added since the guard's named list was drawn up. An exclusive is
+    // never paired, but its row is the basis for promoting it to a parallel lane and for the
+    // `sys.accesses` report, so a row that declares less than the body takes reads as safe when it is not.
+    #[test]
+    fn detection_tick_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(
+            &[(DETECTION_TICK_SRC, "detection_tick_system")],
+            "detection_tick_system",
+        );
+    }
+
+    #[test]
+    fn sneak_stance_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(&[(STANCE_SRC, "sneak_stance_system")], "sneak_stance_system");
+    }
+
+    #[test]
+    fn player_cast_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(
+            &[
+                (PLAYER_CAST_SRC, "player_cast_system"),
+                // The aim ray, the touch reach and the shooter's own bodies.
+                (INTERACTION_SRC, "camera_ray"),
+                (COMBAT_SRC, "actor_in_reach"),
+                (PROJECTILES_SRC, "bodies_of"),
+            ],
+            "player_cast_system",
+        );
+    }
+
+    #[test]
+    fn player_bow_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(
+            &[
+                (BOW_SRC, "player_bow_system"),
+                (INTERACTION_SRC, "camera_ray"),
+                (PROJECTILES_SRC, "bodies_of"),
+                // `remove_items` spends the arrow.
+                (FRAGMENT_EFFECTS_SRC, "remove_items"),
+            ],
+            "player_bow_system",
+        );
+    }
+
+    #[test]
+    fn player_seat_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(&[(PLAYER_SEAT_SRC, "player_seat_system")], "player_seat_system");
+    }
+
+    #[test]
+    fn combat_input_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(
+            &[
+                (COMBAT_SRC, "combat_input_system"),
+                // A gun's shot (`fire_player_gun`, which spends ammo through `remove_items`) and a sneak
+                // strike (`sneak_strike` → `unaware_of_player`).
+                (COMBAT_SRC, "fire_player_gun"),
+                (COMBAT_SRC, "sneak_strike"),
+                (DETECTION_TICK_SRC, "unaware_of_player"),
+                (FRAGMENT_EFFECTS_SRC, "remove_items"),
+            ],
+            "combat_input_system",
+        );
+    }
+
     #[test]
     fn papyrus_provider_system_declares_everything_it_acquires() {
+        // #7311 — `papyrus_activations` (events.rs) is a hop of its own: the scan follows same-file
+        // callees only, so it is listed, or its `NativeActivation` read goes unseen.
         assert_declares_everything_it_acquires(
-            &[(EXECUTE_SRC, "papyrus_provider_system")],
+            &[(EXECUTE_SRC, "papyrus_provider_system"), (EVENTS_SRC, "papyrus_activations")],
             "papyrus_provider_system",
         );
     }

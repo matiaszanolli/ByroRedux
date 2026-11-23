@@ -42,6 +42,8 @@ fn register_interaction_system(scheduler: &mut Scheduler) {
             // GUI-PAGE-005 — the key notice in the game's words (`sOpenWithKey`).
             .reads_resource::<byroredux_core::ui_labels::UiLabels>()
             .reads_resource::<byroredux_core::form_id::FormIdPool>()
+            // #7318 — the sleep prompt asks whether the player is jailed (`jail::player_in_jail`).
+            .reads_resource::<byroredux_scripting::obscript_ledger::ObScriptLedger>()
             .reads::<byroredux_core::ecs::components::FormIdComponent>()
             // M65 (#6912) — a hit bone collider walks its parent chain to the actor it belongs to.
             .reads::<byroredux_core::ecs::components::Parent>()

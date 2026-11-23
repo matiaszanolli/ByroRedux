@@ -4,7 +4,7 @@ use byroredux_core::ecs::components::{Dead, GlobalTransform};
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
 
-use super::{answer, caller, done, faction_ids, flag, ledger, ledger_mut, player, store, MenuRequest, PendingMenus, PendingSleep};
+use super::{answer, caller, done, faction_ids, flag, ledger, ledger_mut, no_reader, player, store, MenuRequest, PendingMenus, PendingSleep};
 use crate::obscript_actions::{Action, Context};
 use crate::obscript_cmd::{Command, Games};
 use crate::obscript_effects::{form_arg, live, num};
@@ -244,11 +244,6 @@ fn set_quest_object(_world: &World, _fallout: bool, _cmd: u16, _args: &[ObScript
     Action::Declined
 }
 
-// CS *SetShowQuestItems <flag>* (a global).
-fn cmd_114e(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    store(world, cmd, 0, num(args, 0))
-}
-
 // ── sleeping, time ─────────────────────────────────────────────────────────────────────────
 // GECK *SetPCSleepHours <hours>*: "manually forces the player to sleep the specified number of hours".
 fn cmd_10bd(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
@@ -272,8 +267,8 @@ fn wake_up_pc(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue],
 }
 
 // ── flags and values a Set command keeps for its Get ───────────────────────────────────────
-// GECK *SetForceSneak* / *GetForceSneak*; *SetForceRun* (Oblivion): the actor's forced stance. The
-// engine has no sneak or run stance to apply it to, so it is kept and read back.
+// GECK *SetForceSneak* / *GetForceSneak*: the actor's forced stance, kept for its getter. Oblivion's
+// *SetForceRun* (`0x10d1`) has no getter or run stance to read it, so it declines (#7309).
 fn set_force_sneak(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
     match caller_or_player(world, ctx) {
         Some((form, _)) => store(world, cmd, form, num(args, 0)),
@@ -304,35 +299,6 @@ fn get_ignore_friendly_hits(world: &World, _fallout: bool, _cmd: u16, _args: &[O
     }
 }
 
-// GECK *SetCellPublicFlag <cell> <flag>*: "cells which are public cannot have trespassing".
-fn cmd_10bb(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    match form_arg(args, 0) {
-        Some(cell) => store(world, cmd, cell, num(args, 1)),
-        None => Action::Declined,
-    }
-}
-
-// CS *SetDoorDefaultOpen <flag>*: the door's default open state.
-fn cmd_10d8(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
-    match caller(world, ctx) {
-        Some((form, _)) => store(world, cmd, form, num(args, 0)),
-        None => Action::Declined,
-    }
-}
-
-// GECK *SetActorFullName <message>*, *SetTalkingActivatorActor [actor]*, *SetCombatStyle <style>*,
-// *SetMerchantContainer <container>*: a form kept for the reference.
-fn cmd_111c(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
-    match caller(world, ctx) {
-        Some((subject, _)) => {
-            let form = form_arg(args, 0).unwrap_or(0);
-            ledger_mut(world, |l| l.set_form(cmd, subject, form));
-            done(format!("{cmd:#06x} {subject:08X} {form:08X}"))
-        }
-        None => Action::Declined,
-    }
-}
-
 // GECK *SetItemValue <caps>* declines: the base value is read straight from the record by barter,
 // repair and the inventory weight/value totals, and nothing overlays a script's override.
 fn cmd_1155(_world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
@@ -357,17 +323,11 @@ fn cmd_116f(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ct
 }
 
 // GECK *SetAllReachable / SetAllVisible / SetNoAvoidance / SetSceneIsComplex*: "increase the game's
-// performance ... the flag is cleared every frame". They change cost, not results: kept for the frame.
-fn cmd_1159(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
-    store(world, cmd, 0, num(args, 0))
-}
-
-// GECK *SetVATSTarget <flag>*: VATS targeting of a destructible object.
-fn cmd_11eb(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
-    match caller(world, ctx) {
-        Some((form, _)) => store(world, cmd, form, num(args, 0)),
-        None => Action::Declined,
-    }
+// performance ... the flag is cleared every frame". They change what a frame costs, never what it
+// computes, and this engine has no cost they would trade, so the whole command is the no-op it
+// reports. Nothing is stored: no reader would consult it (#7309).
+fn cmd_1159(_world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], _ctx: &Context) -> Action {
+    done(format!("{cmd:#06x} {}", num(args, 0)))
 }
 
 // CS *SetPackDuration <iDuration>*: "Sets the duration of the actor's current package to iDuration (in
@@ -391,14 +351,6 @@ fn cmd_1164(world: &World, _fallout: bool, cmd: u16, _args: &[ObScriptValue], _c
         menus.0.push(MenuRequest::coded(menu, code, 0));
     }
     done(format!("{cmd:#06x}"))
-}
-
-// CS *ForceCloseOblivionGate*: the gate quests' state is the scripts' own; recorded for them.
-fn force_close_oblivion_gate(world: &World, _fallout: bool, cmd: u16, _args: &[ObScriptValue], ctx: &Context) -> Action {
-    match caller(world, ctx) {
-        Some((form, _)) => store(world, cmd, form, 1.0),
-        None => Action::Declined,
-    }
 }
 
 // CS *SetPlayerInSEWorld <flag>* / *GetPlayerInSEWorld* (Oblivion; `0x116c` is DamageObject in
@@ -430,23 +382,6 @@ fn clear_ownership(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptVal
 // timer is the airborne time, which the character system owns.
 fn reset_fall_damage_timer(_world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
     done("ResetFallDamageTimer")
-}
-
-// CS *SetRigidBodyMass <0..100>*: "how much it moves when it is bumped ... 100 being no movement".
-fn cmd_1156(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
-    match caller(world, ctx) {
-        Some((form, _)) => store(world, cmd, form, num(args, 0).clamp(0.0, 100.0)),
-        None => Action::Declined,
-    }
-}
-
-// Oblivion path grids: *EnableLinkedPathPoints* / *DisableLinkedPathPoints*: the flag is stored, but
-// the grid router (`find_path_over_grid`, `pathgrid_path.rs`) does not read it yet.
-fn enable_linked_path_points(world: &World, _fallout: bool, cmd: u16, _args: &[ObScriptValue], ctx: &Context) -> Action {
-    match caller(world, ctx) {
-        Some((form, _)) => store(world, 0x112a, form, if cmd == 0x112a { 1.0 } else { 0.0 }),
-        None => Action::Declined,
-    }
 }
 
 // CS *CreateFullActorCopy*: "creates a copy of the specified actor and its base ... and returns the
@@ -739,7 +674,7 @@ pub(crate) const STATE_COMMANDS: &[Command] = &[
     Command { id: 0x1053, games: Games::Oblivion, needs_caller: false, handler: mod_disposition },
     Command { id: 0x1145, games: Games::Oblivion, needs_caller: false, handler: refresh_topic_list },
     Command { id: 0x110d, games: Games::Both, needs_caller: false, handler: set_quest_object },
-    Command { id: 0x114e, games: Games::Oblivion, needs_caller: false, handler: cmd_114e },
+    Command { id: 0x114e, games: Games::Oblivion, needs_caller: false, handler: no_reader },
     // Oblivion's `SetPCSleepHours` is the same opcode (`Oblivion.exe` command table, `0x50bac0`): hours queued for the clock, and a
     // completed sleep is what applies a pending level (#7052).
     Command { id: 0x10bd, games: Games::Both, needs_caller: false, handler: cmd_10bd },
@@ -747,16 +682,16 @@ pub(crate) const STATE_COMMANDS: &[Command] = &[
     Command { id: 0x1109, games: Games::Oblivion, needs_caller: false, handler: is_pc_sleeping },
     Command { id: 0x10ae, games: Games::Both, needs_caller: false, handler: wake_up_pc },
     Command { id: 0x10d3, games: Games::Both, needs_caller: false, handler: set_force_sneak },
-    Command { id: 0x10d1, games: Games::Oblivion, needs_caller: false, handler: set_force_sneak },
+    Command { id: 0x10d1, games: Games::Oblivion, needs_caller: false, handler: no_reader },
     Command { id: 0x10d2, games: Games::Both, needs_caller: false, handler: cmd_10d2 },
     Command { id: 0x1151, games: Games::Both, needs_caller: false, handler: cmd_1151 },
     Command { id: 0x1152, games: Games::Fallout, needs_caller: false, handler: get_ignore_friendly_hits },
-    Command { id: 0x10bb, games: Games::Both, needs_caller: false, handler: cmd_10bb },
-    Command { id: 0x10d8, games: Games::Oblivion, needs_caller: false, handler: cmd_10d8 },
-    Command { id: 0x111c, games: Games::Both, needs_caller: false, handler: cmd_111c },
-    Command { id: 0x1171, games: Games::Fallout, needs_caller: false, handler: cmd_111c },
-    Command { id: 0x10b1, games: Games::Both, needs_caller: false, handler: cmd_111c },
-    Command { id: 0x11b7, games: Games::Fallout, needs_caller: false, handler: cmd_111c },
+    Command { id: 0x10bb, games: Games::Both, needs_caller: false, handler: no_reader },
+    Command { id: 0x10d8, games: Games::Oblivion, needs_caller: false, handler: no_reader },
+    Command { id: 0x111c, games: Games::Both, needs_caller: false, handler: no_reader },
+    Command { id: 0x1171, games: Games::Fallout, needs_caller: false, handler: no_reader },
+    Command { id: 0x10b1, games: Games::Both, needs_caller: false, handler: no_reader },
+    Command { id: 0x11b7, games: Games::Fallout, needs_caller: false, handler: no_reader },
     Command { id: 0x1155, games: Games::Both, needs_caller: false, handler: cmd_1155 },
     Command { id: 0x1129, games: Games::Both, needs_caller: false, handler: cmd_1129 },
     Command { id: 0x116f, games: Games::Oblivion, needs_caller: false, handler: cmd_116f },
@@ -765,21 +700,21 @@ pub(crate) const STATE_COMMANDS: &[Command] = &[
     Command { id: 0x115a, games: Games::Both, needs_caller: false, handler: cmd_1159 },
     Command { id: 0x115b, games: Games::Both, needs_caller: false, handler: cmd_1159 },
     Command { id: 0x115d, games: Games::Both, needs_caller: false, handler: cmd_1159 },
-    Command { id: 0x11eb, games: Games::Fallout, needs_caller: false, handler: cmd_11eb },
+    Command { id: 0x11eb, games: Games::Fallout, needs_caller: false, handler: no_reader },
     Command { id: 0x1122, games: Games::Both, needs_caller: false, handler: cmd_1122 },
     Command { id: 0x1189, games: Games::Fallout, needs_caller: false, handler: cmd_1189 },
     Command { id: 0x116b, games: Games::Oblivion, needs_caller: false, handler: cmd_1189 },
     Command { id: 0x1164, games: Games::Oblivion, needs_caller: false, handler: cmd_1164 },
     Command { id: 0x10db, games: Games::Oblivion, needs_caller: false, handler: cmd_1164 },
-    Command { id: 0x1165, games: Games::Oblivion, needs_caller: false, handler: force_close_oblivion_gate },
+    Command { id: 0x1165, games: Games::Oblivion, needs_caller: false, handler: no_reader },
     Command { id: 0x116c, games: Games::Oblivion, needs_caller: false, handler: get_player_in_se_world },
     Command { id: 0x116d, games: Games::Oblivion, needs_caller: false, handler: cmd_116d },
     Command { id: 0x1132, games: Games::Oblivion, needs_caller: false, handler: is_actor_using_a_torch },
     Command { id: 0x1170, games: Games::Oblivion, needs_caller: false, handler: clear_ownership },
     Command { id: 0x1134, games: Games::Oblivion, needs_caller: false, handler: reset_fall_damage_timer },
-    Command { id: 0x1156, games: Games::Oblivion, needs_caller: false, handler: cmd_1156 },
-    Command { id: 0x112a, games: Games::Oblivion, needs_caller: false, handler: enable_linked_path_points },
-    Command { id: 0x112b, games: Games::Oblivion, needs_caller: false, handler: enable_linked_path_points },
+    Command { id: 0x1156, games: Games::Oblivion, needs_caller: false, handler: no_reader },
+    Command { id: 0x112a, games: Games::Oblivion, needs_caller: false, handler: no_reader },
+    Command { id: 0x112b, games: Games::Oblivion, needs_caller: false, handler: no_reader },
     Command { id: 0x1167, games: Games::Oblivion, needs_caller: false, handler: create_full_actor_copy },
     Command { id: 0x105b, games: Games::Oblivion, needs_caller: false, handler: get_is_alerted },
     Command { id: 0x10df, games: Games::Both, needs_caller: false, handler: cmd_10df },

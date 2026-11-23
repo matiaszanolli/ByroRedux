@@ -319,12 +319,12 @@ examples (#6962 `365f6fa3e`: `perk_entry_composition_access` / `perk_fragment_re
 - Cross-stage sequencing (a consumer in an earlier stage than its producer) is invisible to the
   analyzer — see `/audit-concurrency` Dim 4 for the pinned cases and the by-hand rule. The same blind spot
   covers same-stage order against a one-frame marker: `HitEvent` producers (melee, NPC strike, force-greet,
-  `Weapon.Fire` projectile flight, the VM's `ProcessTrapHit` flush inside the reference/alias script systems, VATS shots via `vats_mode_system`)
+  `Weapon.Fire` projectile flight, the VM's `ProcessTrapHit` flush inside the reference/alias script systems)
   must register before all four consumers — `combat_damage_system`, `hit_event_system`,
   `reference_script_hit_system` (#5991) and the ObScript `obscript_hit_system` (split out of
   `obscript_object_system`, #6293 `6208348f7`) — or `event_cleanup_system`
   drains the hit unseen — dart-trap and projectile damage never landed until `ee6468fd1`, now pinned by
-  `hit_event_consumers_run_after_every_producer` (`mine_system`, #6580/#6540, and `vats_mode_system`, #6813 `ca0844c89` — an Early exclusive, safe today, pinned against a stage move — are producers). `vats_mode_system` is the single `VatsState` writer and runs in the Early exclusive phase, so
+  `hit_event_consumers_run_after_every_producer` (`mine_system`, #6580/#6540, is a producer). VATS hits are not scheduled-system producers: `vats_confirm` runs only from the `vats.confirm` console command in the debug server's Late drain, after `event_cleanup_system`, so they reach the next frame's consumers — pinned by `console_raised_hits_are_queued_after_the_frame_cleanup` (#7320; #6813 had named `vats_mode_system`, which raises no hit). `vats_mode_system` is the single `VatsState` writer and runs in the Early exclusive phase, so
   `player_controller_system`'s VATS movement gate reads the previous frame's mode — an intended one-frame lag, pinned by
   `vats_mode_is_written_after_the_early_movement_gate_and_before_its_action_consumers` (#6812 `f6a991435`). Since #6684 `2a02c5446` the
   eight schedule-order guards read the **built** schedule (`build_scheduler()` + `access_report()` through the

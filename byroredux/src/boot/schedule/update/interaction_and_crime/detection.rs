@@ -27,6 +27,9 @@ pub(super) fn register_detection(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_scripting::obscript_ledger::ObScriptLedger>()
             .reads_resource::<crate::cell_loader::load_order::GlobalFormIdResolver>()
             .writes_resource::<crate::detection::PlayerActionNoise>()
+            // #7319 — Skyrim's stealth points (`StealthPoints`) and the detectors' skills by name.
+            .writes_resource::<byroredux_core::stealth::StealthPoints>()
+            .reads_resource::<byroredux_scripting::ActorValueNames>()
             .writes_resource::<crate::detection::PlayerDetection>()
             .writes_resource::<byroredux_scripting::detection_events::PendingDetectionEvents>()
             .reads::<byroredux_core::ecs::components::GlobalTransform>()

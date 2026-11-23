@@ -38,6 +38,7 @@ pub mod consumables;
 pub mod equip;
 pub mod esm;
 pub mod extension;
+pub mod load_order_import;
 pub mod manifest;
 pub mod record;
 pub mod resolver;

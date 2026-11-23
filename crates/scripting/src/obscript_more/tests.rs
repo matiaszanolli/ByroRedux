@@ -905,12 +905,44 @@ fn a_knocked_out_actor_reports_state_one_and_one_pushed_away_reports_zero() {
     assert_eq!(value(run(&world, 0x1187, &[], &c)), -1.0, "no hit location is recorded");
 }
 
+/// #7309: a `Set...` command whose value nothing in the engine reads back declines and stores nothing
+/// (#6190's ledger rule), with a caller and arguments present, so only the missing reader can be why.
 #[test]
-fn the_cell_commands_keep_what_they_are_told_and_reset_interior_expires_the_visit() {
+fn a_set_command_with_no_reader_declines_and_stores_nothing() {
+    const FALLOUT_UNREAD: &[u16] = &[
+        0x111c, 0x1171, 0x10b1, 0x11b7, 0x10bb, 0x11eb, 0x1111, 0x1200, 0x1224, 0x1225, 0x1270, 0x11e6, 0x11e4,
+        0x11e7, 0x1196, 0x1230, 0x11c4, 0x11d5, 0x11d6, 0x1248, 0x11fb, 0x11a7, 0x124b, 0x1186, 0x1184, 0x11df,
+        0x1228, 0x11fc, 0x1119, 0x111b, 0x11ea, 0x11bf, 0x11dd, 0x1227,
+    ];
+    const OBLIVION_UNREAD: &[u16] = &[
+        0x114e, 0x10d1, 0x10bb, 0x10d8, 0x111c, 0x10b1, 0x1165, 0x1156, 0x112a, 0x112b, 0x10b7, 0x1111, 0x1141,
+    ];
+    for (game, ids) in [(GameKind::Fallout3NV, FALLOUT_UNREAD), (GameKind::Oblivion, OBLIVION_UNREAD)] {
+        let (world, ..) = world(game);
+        let mut args = refs(&[OTHER, FACTION]);
+        args.extend(nums(&[1.0, 1.0]));
+        for &id in ids {
+            assert_eq!(run(&world, id, &args, &ctx(Some(ACTOR))), Action::Declined, "{game:?} {id:#06x}");
+        }
+        assert_eq!(*world.try_resource::<ObScriptLedger>().unwrap(), ObScriptLedger::default(), "{game:?}: nothing stored");
+    }
+}
+
+/// The performance hints (*SetSceneIsComplex* and its kin) change what a frame costs, never what it
+/// computes: they run, and store nothing (#7309).
+#[test]
+fn the_performance_hints_run_and_store_nothing() {
+    let (world, ..) = world(GameKind::Fallout3NV);
+    for id in [0x1159, 0x115a, 0x115b, 0x115d] {
+        assert!(is_done(&run(&world, id, &nums(&[1.0]), &ctx(None))), "{id:#06x}");
+    }
+    assert_eq!(*world.try_resource::<ObScriptLedger>().unwrap(), ObScriptLedger::default());
+}
+
+#[test]
+fn reset_interior_expires_the_visit() {
     let (world, ..) = world(GameKind::Fallout3NV);
     let c = ctx(None);
-    run(&world, 0x1119, &refs(&[0xAA]), &c);
-    assert_eq!(world.try_resource::<ObScriptLedger>().unwrap().form(0x1119, 0xAA), Some(crate::PLAYER_REFERENCE), "no owner argument: the player");
     assert!(is_done(&run(&world, 0x1127, &refs(&[0xAA]), &c)));
     let mut visits = world.try_resource_mut::<crate::obscript_state::CellVisits>().unwrap();
     assert!(visits.enter(0xAA, 1.0, 72.0), "the next entry finds the expired cell reset");

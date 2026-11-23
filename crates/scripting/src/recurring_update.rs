@@ -133,9 +133,10 @@ impl Component for OnUpdateEvent {
 /// marker on the entity and re-arms the counter.
 ///
 /// Cumulative `dt`-overshoot handling: if a long frame pushes the
-/// counter from 0.5 to -1.5 on a 1.0s subscription, the next fire
-/// re-arms to `-1.5 + 1.0 = -0.5` (still negative, would fire
-/// again next frame). We DON'T loop within the tick — same as
+/// counter from 0.5 to -1.5 on a 1.0s subscription, one interval
+/// added still leaves it due (`-0.5`), so the re-arm wraps it onto the
+/// next phase point (`0.5`, #7301) rather than firing again on every
+/// following frame. We DON'T loop within the tick — same as
 /// Papyrus: "missed" fires drop. Two reasons:
 ///
 /// 1. Burst-fire on resume from a long frame stall (debugger
@@ -159,9 +160,15 @@ pub fn recurring_update_tick_system(world: &World, dt: f32) {
         if ru.seconds_until_next <= 0.0 {
             // Accumulate instead of reset so a dt overshoot
             // doesn't lose the partial second on the next interval.
-            // For dt > 2 × interval this still fires only once
-            // (the missed-fire contract — see module doc).
             ru.seconds_until_next += ru.interval_secs;
+            // #7301 — a stall of several intervals leaves the counter still
+            // due; without this it fired again on every following frame
+            // until it caught up. The missed fires drop (module doc): wrap
+            // onto the subscription's next phase point instead.
+            if ru.seconds_until_next <= 0.0 && ru.interval_secs > 0.0 {
+                let into = ru.seconds_until_next.rem_euclid(ru.interval_secs);
+                ru.seconds_until_next = if into > 0.0 { into } else { ru.interval_secs };
+            }
             to_fire.push(entity);
         }
     }

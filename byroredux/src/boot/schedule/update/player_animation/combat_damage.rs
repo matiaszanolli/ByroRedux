@@ -33,6 +33,16 @@ fn register_damage_pass(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_core::character::CharacterRuleset>()
             .reads_resource::<crate::components::LoadedCellIndex>()
             .reads::<byroredux_scripting::HitEvent>()
+            // #7318 — the kill branch: the KILL story event's location (`resolve_current_lctn`), the
+            // `OnDeath` event and kill record (`raise_death_event` → `note_death`), and, when the player
+            // is the killer, the misc stats and the Kill challenge.
+            .reads_resource::<crate::cell_loader::CurrentCellContext>()
+            .reads_resource::<crate::cell_loader::CurrentExteriorContext>()
+            .writes::<byroredux_scripting::OnDeathEvent>()
+            .writes_resource::<byroredux_scripting::obscript_state::KillRecords>()
+            .writes_resource::<byroredux_scripting::misc_stats::MiscStats>()
+            .reads_resource::<byroredux_scripting::challenges::ChallengeDefs>()
+            .writes_resource::<byroredux_scripting::challenges::ChallengeState>()
             // #7054 — the target's guard: the block rules, its Block stance, its Block skill and what it holds.
             .reads_resource::<byroredux_core::character::BlockModel>()
             // Oblivion's armor rating and Resist Normal Weapons: the model, the worn pieces and the skills by name.

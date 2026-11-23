@@ -714,9 +714,9 @@ name = "Mod-manager deployment layouts and profiles"
 examples = "Vortex, MO2 profiles"
 disposition = "D1"
 games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
-reason = "Imported once into a profile (LMC-ID-006, not built); a deployed mod directory can be given as a mod root today (--mod-root, LMC-ID-012)."
-citations = ["docs/prd/legacy-mod-compatibility.md §5.1 LMC-ID-006", "docs/prd/legacy-mod-compatibility.md §5.1 LMC-ID-012", "byroredux/src/mod_roots.rs"]
-version = 2
+reason = "Imported once into a profile: --import-load-order reads plugins.txt / loadorder.txt, an MO2 profile (modlist.txt priority, its enabled mod directories as roots) or a Vortex deployment (staged mods as roots, ordered so each deployed file's mod wins) and writes the boot request's [mods]. A deployed mod directory can also be given as a mod root directly (--mod-root, LMC-ID-012)."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.1 LMC-ID-006", "docs/prd/legacy-mod-compatibility.md §5.1 LMC-ID-012", "crates/plugin/src/load_order_import.rs", "byroredux/src/load_order_import.rs", "byroredux/src/mod_roots.rs"]
+version = 3
 
 [[mechanism]]
 id = "T11.plugin-enablers"

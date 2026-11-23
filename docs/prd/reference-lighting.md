@@ -1,11 +1,11 @@
 # Reference-Quality Lighting — Product Requirements
 
-**Status**: ACTIVE (2026-11-22). Revision 50. The change history is in
+**Status**: ACTIVE (2026-11-22). Revision 51. The change history is in
 §12. Every decision in §10 is decided and every Phase 0 verify item is
 closed or filed as an issue.
 
-**Tracking**: #6595 (parent). Phases: #6596 (0), #6601 (1a), #6598 (1b),
-#6602 (2), #6603 (3), #6604 (4), #6599 (5). Phase 3 children: #6721
+**Tracking**: #6595 (parent). Phases: #6596 (0), #6601 (1a), #6598 (1b), #6602 (2), #6603 (3), #6604 (4), #6599 (5).
+Phase 3 children: #6721
 (RLT-SHD-012, closed in rev 40), #7091 (the light-animation seed, an
 RLT-OPS-004 regression, fixed in rev 41). Phase 3 closed in rev 41. Phase 4 children: #7151 (RLT-IBL-008 F3, fixed in rev 48), #7148 (exterior reference rungs carrying a medium, open). Phase 4 closed in rev 50. M51 tools built here: #6600
 (exporter, PTR-VAL-004), #6597 (EXR writer, PTR-OUT-001). Verify items
@@ -166,17 +166,17 @@ their owner.
 
 ### 3.1 The four gated terms
 
-The table below is the state at HEAD on 2026-11-01. Its Today column is
-hand-written; from Phase 1b exit the generated Lighting fidelity table
-(RLT-REF-004, §8) replaces it, each term's row filled at that term's
-phase entry (§9), and this table is not maintained by hand after that.
+| # | Term | Gate |
+|---|---|---|
+| L1 | Soft penumbra | A2 (width) and A4 (filter bands) against the reference; A3 (camera motion) and A14 (moving blocker) as temporal self-consistency gates |
+| L2 | Contact shadow | A5 |
+| L3 | Sky IBL, diffuse and specular, exteriors | A6, A17 |
+| L4 | Multi-bounce diffuse GI | A7, A8 |
 
-| # | Term | Gate | State | Today |
-|---|---|---|---|---|
-| L1 | Soft penumbra | A2 (width) and A4 (filter bands) against the reference; A3 (camera motion) and A14 (moving blocker) as temporal self-consistency gates | S1+ | `cornell_parked_penumbra_converges_at_one_shadow_ray` (`byroredux/tests/cornell_rt_oracle.rs`, A1) compares a parked one-ray capture with an 8-ray engine capture in 8-bit luma: engine against engine, no reference |
-| L2 | Contact shadow | A5 | S1 | No rung measures a contact band |
-| L3 | Sky IBL, diffuse and specular, exteriors | A6, A17 | S1 | `vulkan::sky_cube::filter` GPU tests check the prefilter and the SH projection in isolation, not the lit result |
-| L4 | Multi-bounce diffuse GI | A7, A8 | S1 | The `scripts/renderer-eval.sh` no-à-trous A/B compares the engine with itself |
+Each term's state lives in the generated Lighting fidelity table (RLT-REF-004, §8) in
+[ROADMAP § Lighting fidelity](../../ROADMAP.md#lighting-fidelity-m-light-prd), which
+replaced this section's hand-written state column from the Phase 1b exit, as rev 3 set
+out. Revision 50's §3.1 holds the state at HEAD on 2026-11-01.
 
 ### 3.2 Mechanism inventory (not gated)
 
@@ -189,7 +189,7 @@ instead of restating them.
 | # | Mechanism | Term | Today |
 |---|---|---|---|
 | T1 | Disk-jittered shadow rays: sun cone from `skyTint.w`, local lights from `GpuLight.params.y` (floor 1.0 unit) | L1 | `triangle.frag` ReSTIR finalize; sun radius `SUN_ANGULAR_RADIUS = 0.020` rad in `byroredux/src/env_translate/sky_weather.rs` |
-| T2 | ReSTIR-DI reservoirs + shadow-ratio EMA (Heitz et al. 2018), one ratio per cluster (#5020) | L1 | Gated parked only, by the self-consistency test in §3.1 L1 |
+| T2 | ReSTIR-DI reservoirs + shadow-ratio EMA (Heitz et al. 2018), one ratio per cluster (#5020) | L1 | Gated parked only, by the self-consistency test `cornell_parked_penumbra_converges_at_one_shadow_ray` (`byroredux/tests/cornell_rt_oracle.rs`, A1) |
 | T3 | `shadow_filter.comp`: 5×5 B3 à-trous over the shadow ratio, 2 iterations (strides 1, 2), normal / distance / ratio edge stops, mesh-ID ownership test (#6249); its correction is added in `composite.frag`, which returns the raw main-pass value for every non-final debug view, so `direct_only` never shows it | L1 | `crates/renderer/src/vulkan/shadow_filter.rs` (`ITERATIONS = 2`); on by default (`shadow_filter_enabled: true`, `context/init.rs`); `r.shadowfilter on\|off`; `rawDebug` early return in `composite.frag`; GPU bracket `shadow_filter` inside `svgf` |
 | T4 | 1 / 2 / 4 / 8 direct shadow samples at tiers 0–3 | L1 | `settings_for_tier`, `crates/renderer/src/vulkan/scene_buffer/ray_budget.rs` |
 | T5 | Every opaque TLAS caster is traced from the representable-float origin offset with `tMin = 0`; SSAO never darkens the direct term, but it does multiply traced indirect (T12) | L2 | [R3](../engine/rt-lighting-material-recovery.md#execution-status) |
@@ -836,7 +836,9 @@ reach.
   removes its own direction's sky radiance, weighted G1(L) ⁄ (A + B), from
   the probe share; the bands read 0.845 / 0.990 / 0.902 and the open floor
   1.023, within the owner's contact budget of 0.20. The residual is
-  recorded in §6 (row 12).
+  recorded in §6 (row 12). The traced term applies to the sky probe's
+  share; a material that reads an authored cubemap has none and is not
+  traced (#7269).
 - **RLT-IBL-005.** (withdrawn, rev 3) A mean-luminance cap would block the
   correct fix: dielectric sky specular raises mean luminance by design.
   Replaced by RLT-IBL-008 and RLT-IBL-009.
@@ -1441,7 +1443,13 @@ RLT-IBL-008's flagged classes resolved first, then RLT-IBL-001…004,
 RLT-IBL-010, RLT-IBL-011 (added at the entry, rev 44) and RLT-IBL-006. Exit: A6 and A17 pass, A9 is re-published
 with no unresolved flag, A12 passes on one Wave 1 title, A11 passes under
 the phase's change declaration, and A13 shows the phase within its
-ceiling.
+ceiling. Closed in rev 50 (#6604, owner, 2026-11-22) on rev 49's evidence:
+A6 and A17 pass ([exit gates](../audits/MLIGHT_phase4_exit_gates_A6A17_2026-11-22.tsv)),
+A9 is re-published with F3 at 0, A12 is published, A11 passes under the
+phase declaration and A13 is within every ceiling. After the exit, #7268
+moved the GI escape's aperture test into render-origin space, #7269 kept
+authored-cubemap materials out of the traced sky occlusion, and `4adcb79b4`
+made helper lanes skip that ray (no pixel changes).
 
 **Phase 5 — Waves and cross-check.** Depends on the
 [RCG PRD](radiance-cache-gi-coverage.md) (#7069) for L4 at S3: RLT-GI-003
@@ -1749,3 +1757,4 @@ Each needs the project owner. The recommendation is the first option.
 | 48 | 2026-11-21 | RLT-IBL-001…004, RLT-IBL-010 and RLT-IBL-006 implemented (#6604), under the declarations committed before their code. Environment specular is the split sum from an exactly integrated table (`scripts/gen_env_brdf_lut.py`, set 1 / binding 26: a constant array cost the main pass +2 to +8.5 ms), with the probe mip above roughness 0.6, Lagarde's occlusion on the probe share, and the probe baked without the sun disc (`SKY_CUBE_SUN_DISC_OFF`); a GI path that leaves a Show Sky interior, or crosses a marked opening (binding 27, `GpuCamera` 384 B), reads the portal sky. Owner decisions (2026-11-21): the dielectric Fresnel gap as a recorded mapping difference (§6 row 7); the zero floors re-frozen at their current values; the p95 budget 0.45; RLT-IBL-006 in both interior modes. [Gates](../audits/MLIGHT_phase4_ibl001_gates_2026-11-21.tsv): every row passes except A15 `normal-plane-azimuth2` at 0.998461, its value since before Phase 4. [A11](../audits/MLIGHT_phase4_ibl001_A11_2026-11-21.tsv): 0 tiles outside on four scenes and one on Whiterun, a tile that moves between repeats of the same two binaries. [A13](../audits/MLIGHT_phase4_ibl001_A13_2026-11-21.tsv): eight of ten cases within their ceiling and every settled tier held; Prospector and Whiterun FSR read +0.75 / +0.56 ms against 0.53 / 0.48, and the [attribution](../audits/MLIGHT_phase4_ibl001_A13attr_2026-11-21.tsv) run measures them at +0.05 / +0.13 ms wall with every bracket within ±0.1 ms. [A12](../audits/MLIGHT_phase4_A12_2026-11-21.tsv) published on FO4 `DBTechHighSchool01` (the row's title corrected: FNV has no Show Sky interior, and Skyrim SE `AbandonedShackInterior` and FNV `NellisHangar1` cannot discriminate). [A9](../audits/MLIGHT_materials_2026-11-21.tsv) re-published: F3 narrowed to the materials its rule covers (#7151, [per-path table](../audits/MLIGHT_phase4_F3_paths_2026-11-21.tsv)) reads 0 on MedTek and Dugout; F1 and F2 as accepted in rev 47 | owner: approved |
 | 49 | 2026-11-22 | RLT-IBL-004 measured and met, RLT-IBL-007 pinned (#6604). A new `contact-sky` rung (the contact rung's static casters on a specular-only conductor floor at roughness 0.74 under the probe-only sky) and A6 contact rows: with SSAO as the occlusion input the bands read 1.42 / 1.75 / 1.15 of the reference against 1.05 on open floor ([SSAO baseline](../audits/MLIGHT_phase4_contact_sky_ssao_2026-11-21.tsv)). Owner decisions (2026-11-22): the traced alternative RLT-IBL-004 names, one lobe ray per exterior probe pixel removing its own direction's sky radiance weighted G1(L) ⁄ (A + B), among five measured forms; the contact-row budget 0.20 (the open floor under rev 45's 0.10), the residual recorded as §6 row 12; RLT-IBL-007's time-of-day step as the contract test `the_sky_probe_bakes_every_frame_from_that_frames_composite_parameters`; A13's Prospector and Whiterun FSR cases of rev 48 accepted as noise; Whiterun A11 tile (37,20), mean +0.0225 against 0.0225 in every capture since rev 48, accepted as an undeclared rev 48 change at the tolerance edge (RLT-OPS-004), correcting rev 48, which called it frame noise. The declaration was committed before the code with no entries (every A11 scene is an interior or the Cornell room, which the exterior-only mechanism does not reach). [A6 and A17](../audits/MLIGHT_phase4_exit_gates_A6A17_2026-11-22.tsv): all 28 gated rows pass; contact bands 0.845 / 0.990 / 0.902, open floor 1.023, A17 0.9977. [A11](../audits/MLIGHT_phase4_ibl004_A11_2026-11-22.tsv): 0 tiles outside on four scenes, the accepted Whiterun tile on the fifth. [A13](../audits/MLIGHT_phase4_ibl004_A13_2026-11-22.tsv) against the rev 48 control: every case within its ceiling (−0.30 to +0.38 ms) and every settled tier held; its scenes are interiors, so the exterior ray's cost is not in it | owner: approved |
 | 50 | 2026-11-22 | Phase 4 exit (#6604), on rev 49's evidence: A6 and A17 pass every gated row ([gates](../audits/MLIGHT_phase4_exit_gates_A6A17_2026-11-22.tsv)), A9 is re-published with F3 at 0 and F1 / F2 accepted ([A9](../audits/MLIGHT_materials_2026-11-21.tsv)), A12 is published on FO4 `DBTechHighSchool01` ([A12](../audits/MLIGHT_phase4_A12_2026-11-21.tsv)), A11 passes under the phase declaration with the owner-accepted Whiterun tile ([A11](../audits/MLIGHT_phase4_ibl004_A11_2026-11-22.tsv)), and A13 is within every Q8 ceiling ([A13](../audits/MLIGHT_phase4_ibl004_A13_2026-11-22.tsv)). RLT-IBL-001…004, RLT-IBL-006, RLT-IBL-007, RLT-IBL-010 and RLT-IBL-011 are met; RLT-IBL-008's flags are resolved. Phase 5 (#6599) waits on the RCG radiance cache (#7072) | owner: approved |
+| 51 | 2026-11-22 | Review round 6 folded in: §3.1's hand-written state column replaced by the link to the generated Lighting fidelity table its own text promised (revision 50's §3.1 is the 2026-11-01 record); the owner set L1, L2 and L3 at S3 from their Phase 3 and 4 exits, recorded in ROADMAP; §9 records Phase 4 closed in rev 50 with its evidence and the fixes after it (#7268, #7269, `4adcb79b4`); RLT-IBL-004 scoped to the probe's share (#7269); the Tracking line's phase list on one line | claude: revise |

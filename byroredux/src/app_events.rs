@@ -39,12 +39,13 @@ use crate::{bench_frame_distribution, bench_gpu_inactive_token};
 /// (#4610). Split out of `about_to_wait` (#5096).
 fn groundcover_collect_scratch_rows(
     gc: &crate::render::groundcover::GroundCoverCollectScratch,
-) -> [ScratchRow; 9] {
+) -> [ScratchRow; 10] {
     [
         vec_row("groundcover.collect_scratch.resident_cells", &gc.resident_cells),
         vec_row("groundcover.collect_scratch.candidates", &gc.candidates),
         map_row("groundcover.collect_scratch.emitted", &gc.emitted),
         vec_row("groundcover.collect_scratch.disturber_found", &gc.disturber_found),
+        vec_row("groundcover.collect_scratch.disturber_entities", &gc.disturber_entities),
         vec_row("groundcover.collect_scratch.layout_order", &gc.layout_order),
         // #4906 — the model tier's per-cell cover masks and the cover's record
         // FormID index.

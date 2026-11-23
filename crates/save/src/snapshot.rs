@@ -681,7 +681,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v141 -> v142 (#6670, LMC-ID-007 / LMC-SAV-001): a new resource column, `SessionProfile` (the profile the save was
 /// made with: plugins with their content hashes, mod roots, extensions, grants, record policy and fingerprint), so a
 /// v141 snapshot has no such column and the schema no longer matches.
-pub const FORMAT_MAJOR: u16 = 142;
+///
+/// v142 -> v143 (#7309): `ObScriptLedger` lost its `forms` column (the form a `Set...` command was given, which
+/// nothing read back; those commands now decline), so a v142 ledger carries a field this one does not have.
+pub const FORMAT_MAJOR: u16 = 143;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

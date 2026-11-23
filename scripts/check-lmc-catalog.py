@@ -19,6 +19,21 @@ Checks (each is an error):
   C8  every mechanism the PRD refers to as `§3.1 <id>` exists in the catalog
   C9  the generated block in the PRD is up to date
 
+The conformance corpus (PRD §7.2, `assets/legacy_mod_compat/corpus.toml`) is
+checked against the catalog:
+  C10 the corpus parses, has `corpus_version`, and every mod has the required
+      fields with the right types; ids are unique
+  C11 `game` is a catalog game; `url` is https; `kind`, `tranche` and `status`
+      take their listed values
+  C12 every mechanism a mod names exists in the catalog (a bare `N1` matches
+      its components `N1.binary` / `N1.facilities`) and is defined for the
+      mod's game
+  C13 a `verified` mod carries an acceptance scenario and a licence note
+      (PRD §7.3 rule 3, LMC-LEGAL-001)
+  C14 a scenario has the shape scripts/lmc-conformance.py runs: a `summary`,
+      optional `launch` engine arguments and `bench_frames`, and at least one
+      `step` with a byro-dbg `cmd`, the `expect` text and an optional `wait_s`
+
 Usage:
     check-lmc-catalog.py            # check
     check-lmc-catalog.py --write    # regenerate the PRD block, then check
@@ -41,6 +56,7 @@ except ModuleNotFoundError:  # pragma: no cover
 
 ROOT = Path(__file__).resolve().parent.parent
 CATALOG = Path("assets/legacy_mod_compat/mechanisms.toml")
+CORPUS = Path("assets/legacy_mod_compat/corpus.toml")
 PRD = Path("docs/prd/legacy-mod-compatibility.md")
 BEGIN = "<!-- lmc-catalog:begin -->"
 END = "<!-- lmc-catalog:end -->"
@@ -63,8 +79,88 @@ REQUIRED = {
 }
 
 
-def load(root: Path):
-    return tomllib.loads((root / CATALOG).read_text(encoding="utf-8"))
+CORPUS_REQUIRED = {
+    "id": str, "game": str, "name": str, "url": str, "author": str, "kind": str,
+    "mechanisms": list, "tranche": int, "status": str, "evidence": str,
+}
+CORPUS_KINDS = ("plugin", "assets", "native", "scripts", "ui", "tool", "total-conversion")
+CORPUS_STATUS = ("candidate", "verified")
+CORPUS_TRANCHES = (1, 2, 3)
+
+
+def load(root: Path, path: Path = CATALOG):
+    return tomllib.loads((root / path).read_text(encoding="utf-8"))
+
+
+def validate_corpus(corpus: dict, cat: dict) -> list[str]:
+    errors: list[str] = []
+    if not isinstance(corpus.get("corpus_version"), int):
+        errors.append("C10 `corpus_version` missing or not an integer")
+    games = cat.get("games") or []
+    mechs = {e.get("id"): e for e in cat.get("mechanism", [])}
+    seen: set[str] = set()
+    for i, m in enumerate(corpus.get("mod", [])):
+        label = m.get("id", f"#{i}")
+        for key, typ in CORPUS_REQUIRED.items():
+            if not isinstance(m.get(key), typ):
+                errors.append(f"C10 {label}: `{key}` missing or not {typ.__name__}")
+        if label in seen:
+            errors.append(f"C10 {label}: duplicate id")
+        seen.add(label)
+        game = m.get("game")
+        if game not in games:
+            errors.append(f"C11 {label}: unknown game {game!r}")
+        if not str(m.get("url", "")).startswith("https://"):
+            errors.append(f"C11 {label}: `url` must be an https link")
+        if m.get("kind") not in CORPUS_KINDS:
+            errors.append(f"C11 {label}: `kind` {m.get('kind')!r} is not one of {CORPUS_KINDS}")
+        if m.get("tranche") not in CORPUS_TRANCHES:
+            errors.append(f"C11 {label}: `tranche` must be one of {CORPUS_TRANCHES}")
+        if m.get("status") not in CORPUS_STATUS:
+            errors.append(f"C11 {label}: `status` {m.get('status')!r} is not one of {CORPUS_STATUS}")
+        if not m.get("mechanisms"):
+            errors.append(f"C12 {label}: names no mechanism")
+        for mid in m.get("mechanisms") or []:
+            entries = [e for k, e in mechs.items() if k == mid or str(k).startswith(mid + ".")]
+            if not entries:
+                errors.append(f"C12 {label}: mechanism {mid} is not in the catalog")
+            elif not any(game in (e.get("games") or []) for e in entries):
+                errors.append(f"C12 {label}: mechanism {mid} is not defined for {game}")
+        if m.get("status") == "verified":
+            if "scenario" not in m:
+                errors.append(f"C13 {label}: a verified mod needs `scenario`")
+            if not str(m.get("licence", "")).strip():
+                errors.append(f"C13 {label}: a verified mod needs `licence`")
+        if "scenario" in m:
+            errors += [f"C14 {label}: {e}" for e in scenario_errors(m["scenario"])]
+    return errors
+
+
+def scenario_errors(sc) -> list[str]:
+    if not isinstance(sc, dict):
+        return ["`scenario` must be a table ([mod.scenario])"]
+    errors = []
+    if not str(sc.get("summary", "")).strip():
+        errors.append("scenario needs a `summary`")
+    launch = sc.get("launch", [])
+    if not isinstance(launch, list) or not all(isinstance(x, str) for x in launch):
+        errors.append("scenario `launch` must be a list of strings")
+    if "bench_frames" in sc and not (isinstance(sc["bench_frames"], int) and sc["bench_frames"] > 0):
+        errors.append("scenario `bench_frames` must be a positive integer")
+    steps = sc.get("step")
+    if not isinstance(steps, list) or not steps:
+        errors.append("scenario needs at least one [[mod.scenario.step]]")
+        return errors
+    for i, st in enumerate(steps, 1):
+        if not isinstance(st, dict):
+            errors.append(f"step {i} must be a table")
+            continue
+        for key in ("cmd", "expect"):
+            if not str(st.get(key, "")).strip():
+                errors.append(f"step {i} needs `{key}`")
+        if "wait_s" in st and not (isinstance(st["wait_s"], (int, float)) and st["wait_s"] >= 0):
+            errors.append(f"step {i} `wait_s` must be a non-negative number")
+    return errors
 
 
 def validate(cat: dict, root: Path) -> list[str]:
@@ -190,6 +286,10 @@ def block_bounds(text: str):
 def run(root: Path, write: bool) -> list[str]:
     cat = load(root)
     errors = validate(cat, root)
+    if not (root / CORPUS).exists():
+        errors.append(f"C10 {CORPUS} is missing")
+    else:
+        errors += validate_corpus(load(root, CORPUS), cat)
     if errors:
         return errors
     prd_path = root / PRD
@@ -221,6 +321,12 @@ def self_test() -> int:
             'id = "R1"\ngroup = "records"\nname = "n"\nexamples = "e"\ndisposition = "D1"\n'
             'games = ["fnv"]\nreason = "r"\ncitations = ["docs/engine/x.md", "docs/prd/legacy-mod-compatibility.md LMC-AST-001"]\nversion = 1\n'
         )
+        corpus = (
+            'corpus_version = 1\n[[mod]]\nid = "m"\ngame = "fnv"\nname = "n"\n'
+            'url = "https://example.org/m"\nauthor = "a"\nkind = "plugin"\nmechanisms = ["R1"]\n'
+            'tranche = 1\nstatus = "candidate"\nevidence = "e"\n'
+        )
+        (root / CORPUS).write_text(corpus)
         def check(label: str, text: str, want: str | None):
             nonlocal ok
             (root / CATALOG).write_text(text)
@@ -238,6 +344,29 @@ def self_test() -> int:
         check("C7 missing path", good.replace("docs/engine/x.md", "docs/engine/nope.md"), "C7")
         check("C7 undefined LMC id", good.replace("LMC-AST-001\"", "LMC-AST-999\""), "C7")
         check("C8 PRD refers to a missing mechanism", good.replace('id = "R1"', 'id = "R2"'), "C8")
+        def check_corpus(label: str, text: str, want: str):
+            nonlocal ok
+            (root / CATALOG).write_text(good)
+            (root / CORPUS).write_text(text)
+            errs = validate_corpus(load(root, CORPUS), load(root))
+            if not any(e.startswith(want) for e in errs):
+                ok = False
+                print(f"self-test FAIL: {label}: wanted {want}, got {errs}")
+        check_corpus("C10 missing field", corpus.replace('author = "a"\n', ""), "C10")
+        check_corpus("C11 non-https url", corpus.replace("https://", "http://"), "C11")
+        check_corpus("C11 bad status", corpus.replace('"candidate"', '"maybe"'), "C11")
+        check_corpus("C12 unknown mechanism", corpus.replace('["R1"]', '["R9"]'), "C12")
+        check_corpus("C12 mechanism not defined for the game", corpus.replace('game = "fnv"', 'game = "skyrim"'), "C12")
+        check_corpus("C13 verified without scenario", corpus.replace('"candidate"', '"verified"'), "C13")
+        scenario = '[mod.scenario]\nsummary = "s"\nlaunch = ["--cell", "X"]\n[[mod.scenario.step]]\ncmd = "c"\nexpect = "e"\n'
+        (root / CORPUS).write_text(corpus + scenario)
+        if validate_corpus(load(root, CORPUS), load(root)):
+            ok = False
+            print("self-test FAIL: a well-formed scenario was rejected")
+        check_corpus("C14 scenario as a string", corpus + 'scenario = "do it"\n', "C14")
+        check_corpus("C14 scenario without steps", corpus + '[mod.scenario]\nsummary = "s"\n', "C14")
+        check_corpus("C14 step without expect", corpus + scenario.replace('expect = "e"\n', ""), "C14")
+        (root / CORPUS).write_text(corpus)
         # C9: a stale block is reported when not writing
         (root / CATALOG).write_text(good)
         (root / PRD).write_text(f"LMC-AST-001 and §3.1 R1\n\n{BEGIN}\nstale\n{END}\n")
@@ -261,7 +390,8 @@ def main() -> int:
         print(f"check-lmc-catalog: {e}")
     if not errors:
         n = len(load(a.root)["mechanism"])
-        print(f"check-lmc-catalog: ok — {n} mechanisms, PRD §3.1 block current")
+        c = len(load(a.root, CORPUS).get("mod", []))
+        print(f"check-lmc-catalog: ok — {n} mechanisms, {c} corpus mods, PRD §3.1 block current")
     return 1 if errors else 0
 
 

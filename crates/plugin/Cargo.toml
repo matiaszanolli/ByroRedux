@@ -11,6 +11,8 @@ uuid = { workspace = true }
 semver = { workspace = true }
 toml = { workspace = true }
 serde = { workspace = true }
+# LMC-ID-006 — Vortex's `vortex.deployment.json`.
+serde_json = { workspace = true }
 anyhow = { workspace = true }
 log = { workspace = true }
 thiserror = { workspace = true }
@@ -22,6 +24,8 @@ byroredux-bsa = { path = "../bsa" }
 env_logger = { workspace = true }
 # Builds the compressed-record fixtures in `esm/reader.rs` tests.
 flate2 = { workspace = true }
+# LMC-ID-006 import tests lay out game, MO2 and Vortex directories.
+tempfile = { workspace = true }
 
 # Contains `unsafe`, so it does not inherit the workspace `unsafe_code = "forbid"`.
 [lints.rust]

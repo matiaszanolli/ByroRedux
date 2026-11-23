@@ -1,6 +1,6 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-22). Revision 14 builds the merge-ownership
+**Status**: ACTIVE (2026-11-22). Revision 17 builds the merge-ownership
 half of LMC-REC-006. Revision 13 builds the profile
 fingerprint and its record in saves (LMC-ID-007, LMC-SAV-001). Revision 12 builds mod roots and their
 ownership (LMC-ID-012), root-ordered loose files (LMC-AST-010) and the
@@ -245,7 +245,7 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
 | T8 | Mod-provided INIs / JSON (Data/SKSE/Plugins/*.ini, MCM/Settings/*.json, NVSE/Plugins/*.ini) | configurable DLL mods | D4 | all | Readable by a ported extension through scoped content read (SEC-018). ([sandboxed-linked-mods.md](../engine/sandboxed-linked-mods.md#102-requirements); §5.7 LMC-SET-003) | 1 |
 | T9 | Cosaves (.skse, .f4se, .nvse) and save editors | ReSaver, FallrimTools | D3 | all | There is no legacy save format (ROADMAP anti-scope). (§3.1 T9) | 1 |
 | T10.vfs | Mod-manager virtual filesystems | MO2 USVFS | D3 | all | The engine reads a profile, not a virtual filesystem: each mod directory is a mod root (--mod-root, in priority order) whose plugins resolve by name and whose loose files layer in root order, as the virtual filesystem presents them (LMC-ID-012, LMC-AST-010). (§5.1 LMC-ID-006; §5.1 LMC-ID-012; byroredux/src/mod_roots.rs) | 2 |
-| T10.outputs | Mod-manager deployment layouts and profiles | Vortex, MO2 profiles | D1 | all | Imported once into a profile (LMC-ID-006, not built); a deployed mod directory can be given as a mod root today (--mod-root, LMC-ID-012). (§5.1 LMC-ID-006; §5.1 LMC-ID-012; byroredux/src/mod_roots.rs) | 2 |
+| T10.outputs | Mod-manager deployment layouts and profiles | Vortex, MO2 profiles | D1 | all | Imported once into a profile: --import-load-order reads plugins.txt / loadorder.txt, an MO2 profile (modlist.txt priority, its enabled mod directories as roots) or a Vortex deployment (staged mods as roots, ordered so each deployed file's mod wins) and writes the boot request's [mods]. A deployed mod directory can also be given as a mod root directly (--mod-root, LMC-ID-012). (§5.1 LMC-ID-006; §5.1 LMC-ID-012; [`crates/plugin/src/load_order_import.rs`](../../crates/plugin/src/load_order_import.rs); byroredux/src/load_order_import.rs; byroredux/src/mod_roots.rs) | 3 |
 | T11.plugin-enablers | Plugin-limit and plugins.txt enablers | Plugins.txt Enabler | D2 | SF | The engine has no plugin gate to open. (§3.1 T11) | 1 |
 | T11.achievement-enablers | Achievement enablers | Achievement Enabler | D3 | SF | Targets the original executable's achievement lock. (§3.1 T11) | 1 |
 | T12 | Total conversions | Tale of Two Wastelands, Enderal | D1 | all | Content loads as content; not attempted, corpus tier is decision Q6. (§10 Q6) | 1 |
@@ -378,6 +378,25 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   each Vortex-deployed mod becomes a root that owns the plugins, archives
   and loose files it contains. Launcher P4+ work
   ([launcher.md](../engine/launcher.md)).
+  Built ahead of Phase 2 (#6670): `byroredux --game <key> --import-load-order
+  <source> [--write <boot.toml>]` imports a `plugins.txt`, a `loadorder.txt`,
+  an MO2 profile or a Vortex deployment (repeatable, so a Vortex deployment
+  takes the game's `plugins.txt` beside it), prints the active plugins in
+  load order with the root each comes from, the roots lowest priority first
+  and a note per unresolved entry, and writes the launcher boot request's
+  `[mods]` table, which `--boot` expands into `--master` / `--esm` /
+  `--mod-root`. The rules are cited from the tools that write these files
+  (`crates/plugin/src/load_order_import.rs`): libloadorder for the per-game
+  methods (file time on Oblivion, Fallout 3 and New Vegas; `loadorder.txt`
+  on Skyrim LE; asterisk `plugins.txt` on Skyrim SE, Fallout 4 and
+  Starfield), the early-loading and `.ccc` plugins and New Vegas `.nam`
+  activation; MO2's sources for `modlist.txt` priority, separators, foreign
+  entries, `overwrite` and the instance directories; a live Vortex
+  deployment for its manifest, whose staged mods are ordered so each
+  deployed file's mod wins. A Vortex mod whose staging folder is gone stays
+  in `Data`, unowned, with a note. MO2's `archives.txt` order is reported,
+  not reproduced. Not modelled: `sTestFile`, Starfield's `My Games` `.ccc`
+  and `BlueprintShips-` activation, ghosted plugins.
 - **LMC-ID-007.** A profile MUST carry a fingerprint over plugin identities,
   order, content hashes, extension packages, grants and policies
   ([PKG-010](../engine/sandboxed-linked-mods.md#8-package-manifest-requirements),
@@ -445,7 +464,7 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   file name resolves through the roots, the highest-priority root first and
   the unmanaged root last. `plugins.activation` and `--plugin-report` list
   each root with its plugins, archives and loose files. Manifest identities
-  and the import that writes roots (LMC-ID-006) are not built.
+  are not built; the import that writes roots is (LMC-ID-006).
 
 ### 5.2 Records (`LMC-REC`)
 
@@ -986,6 +1005,16 @@ adds the user-facing contract:
 - **LMC-DX-003.** A conformance runner drives the corpus headlessly per game,
   opt-in like the game-data corpus tests, with the mod files supplied
   locally and never checked in.
+  Built ahead of Phase 7 (#6676), so every later slice moves a measured
+  number: `scripts/lmc-conformance.py` runs each installed corpus mod of
+  `assets/legacy_mod_compat/corpus.toml` from a local corpus directory.
+  Rule 1 of §7.3 is measured as activation (the profile, with masters
+  resolved from the Data directory or other corpus mods, loads every plugin
+  of the mod and disables none); rule 3 runs the mod's `[mod.scenario]`
+  steps through `--bench-hold` and byro-dbg. Rules 2 and 4 are reported as
+  not measurable until LMC-DX-001 and LMC-SAV-002..004 exist, and count as
+  not passed. A mod whose masters are not installed is blocked and left out
+  of the rates.
 - **LMC-DX-004.** The published per-game compatibility matrix grows from the
   current `COMPATIBILITY.md` §15 rows into per-mechanism rows with the
   corpus pass rate. One home (ROADMAP), refreshed at session close.
@@ -1086,6 +1115,14 @@ at least once per game and the most depended-on masters are present. Each
 entry MUST be verified in Phase 0 (it exists, its licence permits local
 testing, it exercises the mechanisms listed) before it counts. The list is
 not a compatibility claim about any mod.
+
+The Wave 1 candidates (Fallout: New Vegas and Skyrim SE) live with their
+download links, dependencies, install tranche and verification status in
+[`assets/legacy_mod_compat/corpus.toml`](../../assets/legacy_mod_compat/corpus.toml),
+which `scripts/check-lmc-catalog.py` checks against the §3.1 catalog (every
+mechanism a mod names must exist for its game). That file is the list the
+conformance runner measures; the table below is the starting inventory it
+was drawn from.
 
 | Game | Candidate | Mechanisms exercised |
 |---|---|---|
@@ -1375,4 +1412,7 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 11 | 2026-11-22 | LMC-REC-003 extended to the keyword lists of activator, flora, furniture and container bases; an override that drops every keyword now clears them under both policies; locations and quests recorded as waiting on partial-form support; the catalog's R2 and T2.necessity rows at version 5 | — |
 | 12 | 2026-11-22 | LMC-ID-012 built for the session profile (`--mod-root`, ownership, bare plugin names resolve through the roots); LMC-AST-010's root-ordered loose tier and LMC-ID-011's root half built with it; the catalog's A1, T10.vfs and T10.outputs rows at version 2 | — |
 | 13 | 2026-11-22 | LMC-ID-007 and LMC-SAV-001 built: the profile record (plugins with content hashes, mod roots, extensions, grants, policy) and its fingerprint, saved as the `SessionProfile` column (save format v142); a load and `save.info` report every difference | — |
-| 14 | 2026-11-22 | LMC-REC-006's merge-ownership half built: under `merge` an override identical to the record it would replace is a no-op without ownership, and an independent override identical to its master changes nothing; both are reported | — |
+| 14 | 2026-11-22 | Phase 0 (§7.2): the Wave 1 corpus is checked in as `assets/legacy_mod_compat/corpus.toml`, 56 candidates (21 FNV, 35 Skyrim SE) with links, dependencies and install tranches; the catalog checker gains C10–C13 (corpus fields, mechanisms defined for the game, a verified mod carries a scenario and a licence). Additions to the §7.2 inventory: The Inheritance (content-only voiced quest), Extensible Follower Framework's SEQ file (R11), Player Character Gestures (OAR). No entry is verified yet | — |
+| 15 | 2026-11-22 | LMC-DX-003 built ahead of Phase 7: the conformance runner (`scripts/lmc-conformance.py`) measures §7.3 rule 1 as activation and runs rule 3 scenarios, reporting rules 2 and 4 as not measurable until the preflight and profile-change saves exist; the corpus gains the `[mod.scenario]` shape and the catalog checker C14 for it. Moving the runner forward is the owner's call (2026-11-22); Phase 7's exit is unchanged | — |
+| 16 | 2026-11-22 | LMC-ID-006 built ahead of Phase 2 at the owner's request: `--import-load-order` imports plugins.txt / loadorder.txt, MO2 profiles and Vortex deployments into the boot request's `[mods]` (plugins in load order, mod roots in priority order), with the per-game rules cited from libloadorder, MO2 and a live Vortex manifest; activation takes the unmanaged root from the base master `--game` appends, so an imported profile names its plugins by file name | — |
+| 17 | 2026-11-22 | LMC-REC-006's merge-ownership half built: under `merge` an override identical to the record it would replace is a no-op without ownership, and an independent override identical to its master changes nothing; both are reported | — |

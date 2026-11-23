@@ -17,4 +17,12 @@ pub(super) fn register_obscript_objects_systems(scheduler: &mut Scheduler) {
         Stage::Update,
         byroredux_scripting::obscript_objects::obscript_object_system,
     );
+    // GUI-EVT-006 / #7293 — the object scripts' `Begin MenuMode [code]` blocks, on every frame a
+    // menu-mode menu is open; `obscript_object_system` above runs no `GameMode` then. A menu that
+    // pauses nothing (dialogue) still advances the schedule, so it runs here as its quest sibling
+    // does; the paused frames a native page holds run it by hand (`run_menu_mode_frame`).
+    scheduler.add_exclusive(
+        Stage::Update,
+        byroredux_scripting::obscript_objects::obscript_object_menu_mode_system,
+    );
 }

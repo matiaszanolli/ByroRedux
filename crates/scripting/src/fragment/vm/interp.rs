@@ -1223,8 +1223,11 @@ impl Vm<'_> {
         for arg in args {
             numbers.push(self.eval(frame, &arg.value.node)?.number().unwrap_or(0.0));
         }
-        match crate::messages::show_message_awaiting(self.world, form, &numbers) {
+        // #7298 — only the ticket is taken here, under the quest guards; the box is built (its text
+        // reads `Globals` and the alias registry) with the deferred messages once they drop.
+        match crate::messages::reserve_papyrus_box(self.world, form) {
             Some(ticket) => {
+                self.deferred.defer_awaiting_box(form, numbers, ticket);
                 self.deferred.awaits_message = Some(ticket);
                 stop(AWAITS_MESSAGE)
             }

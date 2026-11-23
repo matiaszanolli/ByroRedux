@@ -520,9 +520,20 @@ fn capture_script_states(
             )
         })
         .collect();
+    // #7305 — an in-cell door's open state is not parked: a door returns to its `Open by Default`
+    // state when its cell is unloaded and re-entered, whatever state it was left in (CS
+    // *GetDoorDefaultOpen*, door-runtime PRD DRT-STATE-003), scripted or not. A lever or another
+    // scripted two-state activator keeps it (#6071). Gathered first, so the two guards are not held
+    // together.
+    let doors: Vec<bool> = match world.query::<crate::components::Door>() {
+        Some(door_q) => rows.iter().map(|(entity, _, _)| door_q.contains(*entity)).collect(),
+        None => vec![false; rows.len()],
+    };
     if let Some(two_state_q) = world.query::<byroredux_scripting::TwoStateActivator>() {
-        for ((entity, _, _), (_, state)) in rows.iter().zip(&mut states) {
-            state.two_state = two_state_q.get(*entity).copied();
+        for (((entity, _, _), (_, state)), door) in rows.iter().zip(&mut states).zip(&doors) {
+            if !door {
+                state.two_state = two_state_q.get(*entity).copied();
+            }
         }
     }
     if let Some(variables_q) = world.query::<byroredux_scripting::ScriptVariables>() {
@@ -2067,6 +2078,37 @@ mod tests {
             Some(1.0)
         );
         assert!(!restore_script_state(&mut world, lever), "the row is consumed");
+    }
+
+    /// #7305 — an in-cell door's open state is not parked at eviction: the door returns to its
+    /// `Open by Default` state on re-entry (DRT-STATE-003), and an unscripted door leaves no saved
+    /// row behind. A two-state lever, which is not a door, still parks its state (#6071).
+    #[test]
+    fn a_doors_open_state_is_not_parked_but_a_levers_is() {
+        use byroredux_scripting::TwoStateActivator;
+        let mut world = world();
+        world.register::<TwoStateActivator>();
+        world.register::<crate::components::Door>();
+        let opened = TwoStateActivator { is_open: true, is_animating: false, do_once: false, activated_once: true };
+        let door = reference(&mut world, "Oblivion.esm", 0x900);
+        world.insert(door, opened);
+        world.insert(
+            door,
+            crate::components::Door {
+                motion: crate::components::DoorMotion::Sequence { open: 1, close: 2 },
+                data: Default::default(),
+                flags: Default::default(),
+                default_open: false,
+                remaining: 0.0,
+                posed: Some(true),
+            },
+        );
+        let lever = reference(&mut world, "Oblivion.esm", 0x901);
+        world.insert(lever, opened);
+        evict(&mut world, &[door, lever]);
+        let scripts = &world.resource::<PersistentReferenceStates>().scripts;
+        assert_eq!(scripts.len(), 1, "only the lever parks a row");
+        assert!(scripts.values().all(|state| state.two_state == Some(opened)));
     }
 
     /// #6071 — the save-reload park path carries the script half too, for a

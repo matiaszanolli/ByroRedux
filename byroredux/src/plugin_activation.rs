@@ -133,9 +133,12 @@ pub(crate) fn activate_plugin_args(args: Vec<String>) -> anyhow::Result<Vec<Stri
         return Ok(args);
     };
     let masters = crate::cli_args::parse_all_string_args(&args, "--master");
-    // LMC-ID-012 — the base master's directory is the game's `Data`, the unmanaged root; the named roots follow it.
+    // LMC-ID-012 — the base master's directory is the game's `Data`, the unmanaged root; the named roots follow it. A
+    // profile that names every plugin by file name (an imported load order, LMC-ID-006) takes it from the base master
+    // `--game` appends as a later `--esm`, which first-occurrence-wins otherwise ignores.
     let given_roots = crate::mod_roots::mod_root_args(&args);
-    let unmanaged = masters.iter().chain(std::iter::once(&esm)).find(|path| Path::new(path).is_file()).map(|path| {
+    let later_esms: Vec<String> = crate::cli_args::parse_all_string_args(&args, "--esm").into_iter().skip(1).collect();
+    let unmanaged = masters.iter().chain(std::iter::once(&esm)).chain(&later_esms).find(|path| Path::new(path).is_file()).map(|path| {
         match Path::new(path).parent() {
             Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
             _ => PathBuf::from("."),

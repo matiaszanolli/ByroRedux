@@ -20,7 +20,7 @@ commit. Live state only: when something closes, it becomes a one-liner under
 
 ## Status
 
-**Last session close:** Session 116, 2026-11-20. Workspace numbers (tests, LOC,
+**Last session close:** Session 117, 2026-11-22. Workspace numbers (tests, LOC,
 files, issue dirs) live in [Project Stats](#project-stats) only.
 
 **Gates.** `rust-toolchain.toml` pins rustc 1.100.0 (#5308; raised from 1.96.0 on 2026-11-14), above the bin crate's 1.96 MSRV (wasmtime 49). CI on
@@ -121,7 +121,7 @@ all-slots fence wait that dominates GPU-bound frames (#5365, the throughput half
 - The [playable vertical slice](#playable-vertical-slice) is **complete**
   (P0–P5, closed 2026-10-01). Its follow-ons are listed there; none of them
   blocks the slice.
-- M-LIGHT (#6595) has closed Phases 0–3. Phase 3 (#6603) closed on 2026-11-20 with A2–A5, A14 and the far-sun gate passing, A11 judged against a re-anchored entry and A13 by the brackets the phase adds ([evidence](docs/audits/MLIGHT_phase3_exit_2026-11-20.md)). Phase 4 (#6604, sky IBL) closed on 2026-11-22 (PRD rev 50): the split-sum sky probe from an exact table, the probe mip above roughness 0.6, traced sky-specular occlusion, the sun counted once, π-scaled light-loop specular and the portal-sky GI escape, with A6 / A17 passing and A9, A11, A12, A13 recorded. Phase 5 (#6599) is next; L4's exit waits on the RCG radiance cache (#7069).
+- M-LIGHT (#6595) has closed Phases 0–4. Phase 3 (#6603) closed on 2026-11-20 with A2–A5, A14 and the far-sun gate passing, A11 judged against a re-anchored entry and A13 by the brackets the phase adds ([evidence](docs/audits/MLIGHT_phase3_exit_2026-11-20.md)). Phase 4 (#6604, sky IBL) closed on 2026-11-22 (PRD rev 50): the split-sum sky probe from an exact table, the probe mip above roughness 0.6, traced sky-specular occlusion, the sun counted once, π-scaled light-loop specular and the portal-sky GI escape, with A6 / A17 passing and A9, A11, A12, A13 recorded. Phase 5 (#6599) is next; L4's exit waits on the RCG radiance cache (#7069).
   [Reference Lighting PRD](docs/prd/reference-lighting.md) · [Phase 3 results](docs/audits/MLIGHT_phase3_exit_2026-11-18.md).
 - Texture streaming (M39, #6626): Phases 0–1 closed 2026-11-03; Phases 2–4 (#6629–#6631) built
   and measured on five games, open on the gates in its [Tier 5 row](#tier-5--renderer-polish-quality-not-capability).
@@ -193,7 +193,7 @@ interpreter** (first Known Issue).
 
 ### Lighting fidelity (M-LIGHT, [PRD](docs/prd/reference-lighting.md))
 
-Terms: L1 penumbra S1+ (A1), L2 contact S1, L3 sky IBL S1, **L4 GI S2**: Phase 2 exit tier-3 deficit 1.00 / 0.93 / 1.00
+Terms: **L1 penumbra S3** and **L2 contact S3** (Phase 3 exit, A2–A5 and A14, rev 41), **L3 sky IBL S3** (Phase 4 exit, A6 and A17, rev 50), **L4 GI S2**: Phase 2 exit tier-3 deficit 1.00 / 0.93 / 1.00
 (floor / back wall / ceiling; 0.42 / 0.42 / 0.33 with the RT-LOD gate off, entry 0.82 / 0.82 / 0.79; floors ≤ 2e-3), A8 passes. Phase 1b
 baseline (`688f42705`, RTX 4070 Ti, 1280×720, stepped orbit, tier histogram past a
 240-frame warm-up); frame time is the 3-run median with the tier pinned there:
@@ -206,7 +206,7 @@ baseline (`688f42705`, RTX 4070 Ti, 1280×720, stepped orbit, tier histogram pas
 | MedTek Research 01 | 0 / 0 (0 / 0) | 27.73 / 16.36 |
 | FO4 Dugout Inn | 0 / 1 (0 / 0.01) | 15.51 / 12.40 |
 
-The baseline is 1008 commits old at the Session 116 close (Session 108's Phase 2 exit A13
+The baseline is 1294 commits old at the Session 117 close (Session 108's Phase 2 exit A13
 last checked cost against it); re-run `scripts/m-light-baselines.sh` before citing it.
 
 ### Compatibility matrix
@@ -297,7 +297,7 @@ design doc.
 
 | #     | Milestone | State | Depends on |
 |-------|-----------|-------|------------|
-| M24.2 | ESM Phase 2 — QUST stages + PERK entries | **QUST done:** [`parse_qust`](crates/plugin/src/esm/records/misc/quest.rs) covers startup/shutdown stages, conditional log entries, objectives, and version-aware targets with load-order remapping, and the scripting runtime consumes all of it. **PERK:** all three PRKE entry bodies decode, with per-function EPFD and per-entry CTDA; the decode residue closed (#6652). Phase 2 (#6654, 2026-11-08): Quest and Ability entries follow the actor's perks, level-up applies the record's gates, `perk.hooks` / `perk.compose`, and a hook catalog covers every FO3/FNV (0–73) and Skyrim (0–91) hook. **Phases 3–4 so far (2026-11-09):** Fallout 4 has its own dialect (`PerkEntryPointDialect::Fallout4`, hooks 0–157 catalogued from xEdit, descending priority order, AVIF-named actor-value operands); weapon damage, carry weight and Add Leveled List On Death compose on it through the calculation table, an applied entry with a bound `EPFB` fragment reports its run, and FO3/FNV *Calculate To Hit Chance* (8) composes onto the VATS chance. **Activate (2026-11-10):** a passing FO3/FNV or Skyrim *Add Activate Choice* entry holds the player's activation on the message-box page (default verb, then its `EPF2` label); a pick runs the embedded script on the activated reference or reports its Skyrim fragment and casts *Apply Spell*, and Run Immediately / Replace Default run beside or in place of the activation (`perk_activate.rs`). **Open:** FO4's activate leg (#6659, Run Immediately timing), what the vanilla FNV activate perks still need (the sneak stance and `IsSneaking` landed with M65 Phase 1, #6910, so Robotics Expert fires; the Cannibal family and Mister Sandman wait on #6937: `HasBeenEaten`, `StartCannibal`, `StartMisterSandman`), the remaining hook consumers (Player Kill AP Reward and Add Leveled List On Death landed), per the [Perk Entry Points PRD](docs/prd/perk-entry-points.md) (ACTIVE 2026-11-03, tracking #6635). DIAL conversation trees are M43 scope. | R2 |
+| M24.2 | ESM Phase 2 — QUST stages + PERK entries | **QUST done:** [`parse_qust`](crates/plugin/src/esm/records/misc/quest.rs) covers startup/shutdown stages, conditional log entries, objectives, and version-aware targets with load-order remapping, and the scripting runtime consumes all of it. **PERK:** all three PRKE entry bodies decode, with per-function EPFD and per-entry CTDA; the decode residue closed (#6652). **Metrics** ([PRD](docs/prd/perk-entry-points.md) §8): decode mismatches 0 on Fallout 3, New Vegas, Skyrim SE, Fallout 4 and Starfield (#6652; Skyrim LE not run); body coverage 3 of 3 (Quest, Ability, Entry Point) on Fallout 3, New Vegas, Skyrim SE and Fallout 4 (`perk_body_census`, 2026-11-22). Phase 2 (#6654, 2026-11-08): Quest and Ability entries follow the actor's perks, level-up applies the record's gates, `perk.hooks` / `perk.compose`, and a hook catalog covers every FO3/FNV (0–73) and Skyrim (0–91) hook. **Phases 3–4 so far (2026-11-09):** Fallout 4 has its own dialect (`PerkEntryPointDialect::Fallout4`, hooks 0–157 catalogued from xEdit, descending priority order, AVIF-named actor-value operands); weapon damage, carry weight and Add Leveled List On Death compose on it through the calculation table, an applied entry with a bound `EPFB` fragment reports its run, and FO3/FNV *Calculate To Hit Chance* (8) composes onto the VATS chance. **Activate (2026-11-10):** a passing FO3/FNV or Skyrim *Add Activate Choice* entry holds the player's activation on the message-box page (default verb, then its `EPF2` label); a pick runs the embedded script on the activated reference or reports its Skyrim fragment and casts *Apply Spell*, and Run Immediately / Replace Default run beside or in place of the activation (`perk_activate.rs`). **Open:** FO4's activate leg (#6659, Run Immediately timing), what the vanilla FNV activate perks still need (the sneak stance and `IsSneaking` landed with M65 Phase 1, #6910, so Robotics Expert fires; the Cannibal family and Mister Sandman wait on #6937: `HasBeenEaten`, `StartCannibal`, `StartMisterSandman`), the remaining hook consumers (Player Kill AP Reward and Add Leveled List On Death landed), per the [Perk Entry Points PRD](docs/prd/perk-entry-points.md) (ACTIVE 2026-11-03, tracking #6635). DIAL conversation trees are M43 scope. | R2 |
 
 #### Tier 7 — Deep gameplay systems
 
@@ -566,13 +566,13 @@ it; the full list as it stood on 2026-09-29 (open and closed) is in
   is +0.5–1.2 ms on Cornell, Whiterun and MedTek, unattributed (742-commit
   window: ReSTIR `c2647d468` / `17e0b7464` / `6110b6078`, GI sampling `0b56f1133`,
   SVGF history `1092b5b9e` / `24eb7dba8`, cloud-shadow map `c231f5b5f`). Next:
-  bisect Cornell `gpu_main`. The record is 1508 commits old at the Session 116
+  bisect Cornell `gpu_main`. The record is 1794 commits old at the Session 117
   close (renderer paths since: the ray budget's tier-0 exit `2c0ef3394`, exterior fog height `ac558feb7`, render-layer depth bias `0c118907c`, explicit LODs on streamed textures `f754eee28`, synthetic parallax `51ce1c2f9` (off by default), cloud deck drift `ea1f464b9`, shadow filter `0999490b9` and its reach `a2180dd18`,
   shadow-ray cosine weighting `55ba81e20`, ReSTIR taint `bed162262`, water waves/shores
   `7dd294ee3`, geometry-pool caps and admission tiers `bb97be77c` / `22d6e1a80`, terrain
   softening `e71451d08`, the fire local grid `d3e3acc7b`, M-LIGHT GI energy `6f43c9bd4`
   and ray offsets `49324fc95`, M39's mip-range upload path `073e3af53` / `494d077b2` with
-  streaming off); none was re-benched, so re-run before citing it.
+  streaming off), the sky IBL probe and traced sky occlusion `84104564e` / `5f51748d5`, terrain displacement patches and their BLAS `84f04205f` / `ff339f658`, and the helper-lane ray skip `d9d119733`; none was re-benched, so re-run before citing it.
 - [ ] **Papyrus interpreter: what the frame budget does not bound** (#5764).
   #5763 gave the four exclusive `Update` systems a shared 10 000-statement
   frame allowance (runaway frame 13.6 → 1.4 ms; a never-ending handler dies at
@@ -704,16 +704,16 @@ performance finding. The measured knob table is in
 
 ## Project Stats
 
-Ground-truth as of 2026-11-20, HEAD `aca40315e`: all figures re-counted at the Session 116 close.
+Ground-truth as of 2026-11-22, HEAD `8700f6166`: all figures re-counted at the Session 117 close.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs)         | 976 185                       |
-| Rust total lines (all `.rs`, excl. `target/`) | 1 037 747                |
-| Source files (`.rs`, excl. `target/`)   | 1890 total · 1777 outside `tests/` dirs (+24 / +21 since the Session 115 close) |
+| Rust source lines (`src/` dirs, excl. `third_party/`) | 993 340 |
+| Rust total lines (all `.rs`, excl. `target/` and `third_party/`) | 1 055 092 |
+| Source files (`.rs`, excl. `target/` and `third_party/`) | 1907 total · 1793 outside `tests/` dirs (+17 / +16 since the Session 116 close) |
 | Workspace members                       | 39 (count the `[workspace] members` block only; 34 crates — `video`, `bink2`, `binkaudio` joined in Session 111, `native-ui` with M48 GUI-PAGE-006 — + `byroredux` binary + 4 tools — `tools/nifskope` is on disk but not a member) |
-| Tests                                   | **12 875 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.100.0, 2026-11-20; 473 ignored; the lock-order detector is off in this count, and the bin crate is also green under it since #7093). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
-| Open issue directories                  | 6871 (`.claude/issues/`)     |
+| Tests                                   | **13 125 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.100.0, 2026-11-22; 482 ignored; the lock-order detector is off in this count, and the bin crate is also green under it since #7093). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
+| Open issue directories                  | 7066 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **562 069** across eight games (Skyrim SE re-measured 2026-09-29 at 33 468 over 8 archives, #3712 added Animations; FO76's tail closed by #3461 and the 2026-10-03 re-measure (#4628) swept 102 980 over 5 of its 20 mesh-bearing archives; Skyrim LE 22 466 gated since fb8173fe0; earlier widenings #3369/#3466, Oblivion DLC #3925, Starfield #4440). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 468 · Skyrim LE 22 466 · FO4 235 082 · FO76 102 980 · Starfield 120 543. |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on all eight titles (Starfield re-measured 2026-09-24 #4440; FO76's `GeneratedMeshes` truncation tail closed by #3461 and re-measured 2026-10-03, #4628). |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |

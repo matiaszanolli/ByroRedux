@@ -6435,6 +6435,22 @@ fn message_show_waits_for_its_answer_and_branches_on_it() {
     assert_eq!(run(None), 6, "a box a load took resumes with its default");
 }
 
+/// #7298 — a VM `Message.Show()` runs under the quest guards, so it takes only the ticket there
+/// (the catalog and the answers, two leaves); the box, whose text reads `Globals` and the alias
+/// registry (the story manager takes that registry before `QuestStageState`), is built with the
+/// deferred messages after the guards drop. A `Show` that builds its box inline is the regression.
+#[test]
+fn message_show_takes_its_ticket_under_the_guards_and_defers_the_box() {
+    let source = include_str!("interp.rs");
+    let body = source.split_once("fn message_show(").expect("message_show").1;
+    let body = &body[..body.find("\n    }\n").expect("message_show ends")];
+    assert!(body.contains("crate::messages::reserve_papyrus_box(self.world, form)"), "reserves the ticket");
+    assert!(body.contains("self.deferred.defer_awaiting_box(form, numbers, ticket)"), "defers the box");
+    for inline in ["show_message_awaiting(", "show_reserved_box(", "queue_message(", "replace_tags("] {
+        assert!(!body.contains(inline), "message_show must not build its box under the guards: {inline}");
+    }
+}
+
 /// #7290 — a function whose body waits on a box is a waiting function: called for its value it is
 /// refused ahead of time, as one holding a `Utility.Wait` is, instead of raising the box and then
 /// stopping at run time; called as a statement it runs.

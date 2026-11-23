@@ -297,6 +297,37 @@ fn provider_on_init_runs_once_per_reference_across_respawns() {
     assert_eq!(calls.lock().unwrap().len(), 1, "the second spawn must not replay OnInit");
 }
 
+/// #7312 — the once-only flag is written only for a reference that runs a provider program. A
+/// scripted reference with an `OnInitEvent` but no program (a VM or ObScript attach) leaves no row
+/// in the saved `QuestScriptVariables`.
+#[test]
+fn the_on_init_flag_is_kept_only_for_references_with_a_program() {
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(0x0001_7312) });
+    world.insert_resource(pool);
+    world.insert_resource(crate::QuestScriptVariables::default());
+    let callback = Arc::new(|_principal: Option<&PrincipalId>, _route: &str, _arguments: &[ScriptValue]| {
+        Ok(ScriptValue::String("clear".to_owned()))
+    }) as Arc<PapyrusProviderCallback>;
+    set_papyrus_provider_runtime(&world, Arc::new(catalog()), Some(callback));
+    let entity = world.spawn();
+    world.insert(entity, FormIdComponent(id));
+    world.query_mut::<crate::OnInitEvent>().unwrap().insert(entity, crate::OnInitEvent);
+    papyrus_provider_system(&world, 0.0);
+    let owner = crate::QuestFormId(crate::condition::entity_global_form_id(&world, entity).expect("a FormID"));
+    assert_eq!(
+        world.resource::<crate::QuestScriptVariables>().get(owner, crate::papyrus_provider::execute::provider_initialized_key()),
+        None,
+        "no provider program, no once-only flag"
+    );
+}
+
 #[test]
 fn dynamic_mod_event_registration_delivers_typed_callback_and_unregisters() {
     let source = r#"

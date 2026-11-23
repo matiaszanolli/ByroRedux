@@ -47,6 +47,7 @@ impl BootRequest {
     pub fn to_args(&self, existing: &[String]) -> Expansion {
         let mut out = Expansion::default();
         self.push_content_source(existing, &mut out);
+        self.push_mods(existing, &mut out);
         self.push_action(existing, &mut out);
         out
     }
@@ -92,15 +93,21 @@ impl BootRequest {
         let join =
             |name: &str| -> String { data_dir.join(name.trim()).to_string_lossy().into_owned() };
 
+        // An imported load order replaces the game's own plugin list
+        // (`push_mods`); the archives still come from here.
+        let mods_replace_plugins = !self.mods.load_order.is_empty();
+
         // Masters precede the main plugin: the cell loader composes the load
         // order as `[masters…, esm]` and both are opened as paths, so each is
         // joined against the data dir rather than left relative to the CWD.
-        for master in self.game.masters.iter().filter(|m| !m.trim().is_empty()) {
+        for master in self.game.masters.iter().filter(|m| !mods_replace_plugins && !m.trim().is_empty()) {
             out.args.push("--master".to_owned());
             out.args.push(join(master));
         }
 
-        if self.game.esm.trim().is_empty() {
+        if mods_replace_plugins {
+            // `push_mods` names the plugins.
+        } else if self.game.esm.trim().is_empty() {
             out.notes.push(format!(
                 "boot request sets data_dir {} but no esm; no plugin will be loaded",
                 data_dir.display()
@@ -122,6 +129,41 @@ impl BootRequest {
                 out.args.push(flag.to_owned());
                 out.args.push(join(name));
             }
+        }
+    }
+
+    /// The imported mod profile (LMC-ID-006): `--master` for each plugin but
+    /// the last, `--esm` for the last, then `--mod-root` per root, lowest
+    /// priority first. Plugins go by file name and the engine resolves them
+    /// through the roots and the game's `Data` (LMC-ID-012). In a
+    /// self-contained request the first plugin, the base master, is joined
+    /// against the data dir, which is what makes it the unmanaged root; a
+    /// profile request leaves that to the base master `--game` appends.
+    fn push_mods(&self, existing: &[String], out: &mut Expansion) {
+        let mods = &self.mods;
+        let plugins: Vec<&str> = mods.load_order.iter().map(|p| p.trim()).filter(|p| !p.is_empty()).collect();
+        if !plugins.is_empty() {
+            if has_flag(existing, "--esm") || has_flag(existing, "--master") {
+                out.notes.push(
+                    "boot request load order suppressed: --esm / --master on the command line wins".to_owned(),
+                );
+            } else {
+                let data_dir = self.game.data_dir.trim();
+                for (position, plugin) in plugins.iter().enumerate() {
+                    let value = if position == 0 && !data_dir.is_empty() {
+                        Path::new(data_dir).join(plugin).to_string_lossy().into_owned()
+                    } else {
+                        (*plugin).to_owned()
+                    };
+                    let flag = if position + 1 == plugins.len() { "--esm" } else { "--master" };
+                    out.args.push(flag.to_owned());
+                    out.args.push(value);
+                }
+            }
+        }
+        for root in mods.roots.iter().map(|r| r.trim()).filter(|r| !r.is_empty()) {
+            out.args.push("--mod-root".to_owned());
+            out.args.push(root.to_owned());
         }
     }
 
@@ -407,5 +449,64 @@ mod tests {
             "{:?}",
             expansion.args
         );
+    }
+
+    fn imported() -> crate::ModsSpec {
+        crate::ModsSpec {
+            load_order: vec!["FalloutNV.esm".into(), "DeadMoney.esm".into(), "WMX.esp".into()],
+            roots: vec!["/mo2/mods/WMX".into(), "/mo2/overwrite".into()],
+            imported_from: "MO2 profile /mo2/profiles/Default".into(),
+        }
+    }
+
+    /// LMC-ID-006 — an imported load order names its plugins by file name and
+    /// its roots in priority order, after the profile's `--game`; the engine
+    /// resolves the names through the roots and the game's Data.
+    #[test]
+    fn an_imported_load_order_expands_to_plugins_then_roots() {
+        let request = BootRequest { mods: imported(), ..BootRequest::for_profile("fnv") };
+        let expansion = request.to_args(&argv(&["byroredux"]));
+        assert_eq!(
+            expansion.args,
+            argv(&[
+                "--game", "fnv",
+                "--master", "FalloutNV.esm", "--master", "DeadMoney.esm", "--esm", "WMX.esp",
+                "--mod-root", "/mo2/mods/WMX", "--mod-root", "/mo2/overwrite",
+            ])
+        );
+        assert!(expansion.notes.is_empty(), "{:?}", expansion.notes);
+    }
+
+    /// In a self-contained request the imported order replaces the game's own
+    /// masters and esm, and the base master is joined against the data dir.
+    #[test]
+    fn a_self_contained_import_replaces_the_game_plugins_and_anchors_the_base_master() {
+        let request = BootRequest { mods: imported(), ..self_contained() };
+        let args = request.to_args(&argv(&["byroredux"])).args;
+        assert!(!args.iter().any(|a| a.ends_with("Dawnguard.esm") || a.ends_with("Skyrim.esm")), "{args:?}");
+        let at = args.iter().position(|a| a == "--master").unwrap();
+        assert_eq!(args[at + 1], "/games/SkyrimSE/Data/FalloutNV.esm");
+        assert!(args.windows(2).any(|w| w == ["--esm", "WMX.esp"]), "{args:?}");
+        assert!(args.windows(2).any(|w| w == ["--bsa", "/games/SkyrimSE/Data/Skyrim - Meshes0.bsa"]), "{args:?}");
+    }
+
+    /// An explicit plugin on the command line wins over the imported order;
+    /// the roots still apply.
+    #[test]
+    fn an_explicit_esm_suppresses_the_imported_order_but_not_its_roots() {
+        let request = BootRequest { mods: imported(), ..BootRequest::for_profile("fnv") };
+        let expansion = request.to_args(&argv(&["byroredux", "--esm", "Other.esp"]));
+        assert!(!expansion.args.iter().any(|a| a == "--master" || a == "--esm"), "{:?}", expansion.args);
+        assert_eq!(expansion.args.iter().filter(|a| *a == "--mod-root").count(), 2);
+        assert_eq!(expansion.notes.len(), 1);
+    }
+
+    /// The whole request round-trips through TOML with the mods table filled.
+    #[test]
+    fn an_imported_profile_round_trips_through_toml() {
+        let request = BootRequest { mods: imported(), ..BootRequest::for_profile("fnv") };
+        let text = request.to_toml_string().unwrap();
+        assert!(text.contains("[mods]"), "{text}");
+        assert_eq!(BootRequest::from_toml_str(&text).unwrap(), request);
     }
 }
