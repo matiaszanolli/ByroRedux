@@ -1,6 +1,7 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-23). Revision 22 measures LMC-AST-005 and
+**Status**: ACTIVE (2026-11-23). Revision 23 layers mods' UI files over the vanilla
+archives (#7336). Revision 22 measures LMC-AST-005 and
 builds what it found missing. Revision 21 measures LMC-SET-002 and
 fixes the two hard-coded GMSTs it found. Revision 20 builds the first slice of the
 preflight (LMC-DX-001) and measures LMC-REC-011. Revision 19 builds LMC-REC-004 for the
@@ -226,11 +227,11 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
 
 | Id | Mechanism | Examples | Disp. | Games | Reason and citation | v |
 |---|---|---|---|---|---|---|
-| U1 | Scaleform menu replacement .swf | SkyUI, DEF_UI, HUDFramework, StarUI | D1 | Sky, FO4, SF | Served within the host-method catalogs (M48); an unmapped method is an attributed diagnostic. (§5.6) | 1 |
+| U1 | Scaleform menu replacement .swf | SkyUI, DEF_UI, HUDFramework, StarUI | D1 | Sky, FO4, SF | A mod's movie resolves over the vanilla interface archive through every mod tier: loose interface files per root, then plugin-paired archives (#7336). Its host methods are served within the M48 catalogs; an unmapped method is an attributed diagnostic. (§5.6; byroredux/src/asset_provider/layered.rs) | 2 |
 | U2 | Mod Configuration Menus (SkyUI MCM, MCM Helper, FO4 MCM, FNV MCM via UIO) | most configurable mods | D4 | all | Served by an engine-owned MCM host. (§5.6 LMC-UI-002) | 1 |
-| U3 | MenuXml menu replacements and prefabs | DarNified UI, Vanilla UI Plus, oHUD, UIO | D1 | Obl, FO3, FNV | crates/menuxml reads them, including <include> prefabs. (§3.1 U3) | 1 |
-| U4 | Translation files (Interface/Translations/*_<lang>.txt) | SkyUI, localised mods | D1 | Sky, FO4, SF | Read as interface data. (§3.1 U4) | 1 |
-| U5 | Font replacements (fontconfig.txt, .swf fonts, .fnt) | UI mods | D1 | all | Read as interface data. (§3.1 U5) | 1 |
+| U3 | MenuXml menu replacements and prefabs | DarNified UI, Vanilla UI Plus, oHUD, UIO | D1 | Obl, FO3, FNV | crates/menuxml reads them, including <include> prefabs; a mod's menus, prefabs, fonts and HUD textures resolve over the vanilla Misc and texture archives through every mod tier (#7336). (§3.1 U3; byroredux/src/asset_provider/layered.rs) | 2 |
+| U4 | Translation files (Interface/Translations/*_<lang>.txt) | SkyUI, localised mods | D5 → D1 | Sky, FO4, SF | Only the language's one translation table is read (a mod replacing it is served through the mod tiers, #7336); a mod's own translation file beside it is not merged in, and no local source says whether the game or the script extender merges them. (§3.1 U4; [`crates/ui/src/translate.rs`](../../crates/ui/src/translate.rs)) | 2 |
+| U5 | Font replacements (fontconfig.txt, .swf fonts, .fnt) | UI mods | D1 | all | fontconfig.txt and fonts_*.swf resolve through the Scaleform sources, .fnt through the MenuXml sources, each layering every mod tier over the vanilla archives (#7336). (§3.1 U5; byroredux/src/asset_provider/layered.rs) | 2 |
 
 **Settings and tooling outputs**
 
@@ -267,7 +268,7 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
 - A9: override of FaceGen data by loose path
 - S4.uncovered: per-function 'introduced in' API level of every extender and library family, from changelogs
 - S5: probe functions of MCM Helper, Fallout 4 MCM, ConsoleUtil, UIExtensions, HUDFramework, Workshop Framework and SFSE
-- U4: translation-file handling
+- U4: which loader merges Interface/Translations/<name>_<lang>.txt files: the game or the script extender
 - U5: font-replacement handling
 - T7.registered: the honoured-INI table: INI key to registry entry per game, each key from a primary source
 
@@ -750,8 +751,13 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   for meshes, textures and materials alike, and the loose index now covers
   `textures`, `meshes`, `materials`, `geometries`, `music`, `sound`,
   `scripts` and `lodsettings`, with a loose script tier ahead of every
-  script archive. Open: Scaleform `interface\` movies, translations and
-  fonts load from the vanilla archive alone (#7336).
+  script archive. The UI's files resolve the same way (#7336): Scaleform
+  movies and fonts over the vanilla interface archive, MenuXml menus,
+  prefabs, fonts and HUD textures over the vanilla Misc and texture
+  archives, each under every mod tier (`interface`, `menus` and `fonts` are
+  loose roots too). Open: a mod's own `Interface\Translations\*_<lang>.txt`
+  is not merged into the language's table (catalog U4, now D5: no source
+  says whether the game or the script extender merges them).
 - **LMC-AST-006.** Asset errata from the fix catalog apply only when the
   vanilla content hash matches ([FIX-006](../engine/builtin-fixes.md#1-requirements)),
   so a mod's replacement mesh is never "fixed" into something else.
@@ -1492,3 +1498,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 20 | 2026-11-23 | LMC-DX-001 first slice built (#6671): `--preflight` classifies every file a mod root ships by catalog patterns (catalog_version 2 adds `paths`, `game_dir_paths`, `ini_keys` and `[not_game_data]`, checked by C15), scans its Papyrus and ObScript scripts eagerly (LMC-SCR-005), names DLLs (LMC-EXT-001) and plugin-named INI keys (LMC-SET-001), lists asset conflicts and coverage; the conformance runner measures §7.3 rule 2 from it. LMC-REC-011 measured by the fold conformance gate | — |
 | 21 | 2026-11-23 | LMC-SET-002 measured: 240 authored GMSTs read through the merged index, 8 named without a read; `fSkillUseCurve` and `fCombatDistance` were hard-coded and are now read (melee reach 141 on Skyrim, Fallout 4 and Fallout 76, 128 on Fallout 3 and New Vegas, where the engine used 180); `combat.approach` scales its ring with the reach; Oblivion's default and Starfield's meaning of `fCombatDistance` recorded as Phase 0: verify | — |
 | 22 | 2026-11-23 | LMC-AST-005 measured on FNV, Skyrim SE and a Fallout 4 + SS2 profile: `Data\` / leading-separator stripping shared by meshes, textures and materials; `sound`, `scripts` and `lodsettings` loose roots and a loose script tier; Scaleform interface layering filed (#7336). The preflight stops counting base-game Papyrus calls as extender calls | — |
+| 23 | 2026-11-23 | #7336: a mod's Scaleform movies and fonts (U1, U5) and MenuXml menus, prefabs, fonts and HUD textures (U3) resolve over the vanilla archives through every mod tier (`LayeredSources`), verified on the installed Skyrim SE and New Vegas archives; U4 set to D5 with a target of D1 until a source says who merges mods' translation files | — |

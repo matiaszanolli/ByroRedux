@@ -352,7 +352,9 @@ impl App {
         let args = crate::cli_args::effective_args();
         let (_, archive_path) = crate::scaleform_hud::interface_archive(&args)?
             .ok_or_else(|| format!("ui.open: no {} interface archive beside the ESM", game.label()))?;
-        let archive = crate::asset_provider::Archive::open(&archive_path).map_err(|e| format!("ui.open: {archive_path}: {e}"))?;
+        // #7336 — layered over by every mod tier (loose `interface\` files, plugin-paired archives).
+        let archive = crate::asset_provider::LayeredSources::interface(&args, &archive_path)
+            .map_err(|e| format!("ui.open: {archive_path}: {e}"))?;
         let ctx = self.renderer.as_mut().ok_or("ui.open: no renderer")?;
         let (w, h) = ctx.swapchain_extent();
         let manager = self.ui.manager.get_or_insert_with(|| UiManager::new(w, h));

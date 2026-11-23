@@ -539,9 +539,9 @@ examples = "SkyUI, DEF_UI, HUDFramework, StarUI"
 disposition = "D1"
 games = ["skyrim", "fo4", "starfield"]
 paths = ["interface/**/*.swf"]
-reason = "Served within the host-method catalogs (M48); an unmapped method is an attributed diagnostic."
-citations = ["docs/prd/legacy-mod-compatibility.md §5.6"]
-version = 1
+reason = "A mod's movie resolves over the vanilla interface archive through every mod tier: loose interface files per root, then plugin-paired archives (#7336). Its host methods are served within the M48 catalogs; an unmapped method is an attributed diagnostic."
+citations = ["docs/prd/legacy-mod-compatibility.md §5.6", "byroredux/src/asset_provider/layered.rs"]
+version = 2
 
 [[mechanism]]
 id = "U2"
@@ -563,22 +563,23 @@ examples = "DarNified UI, Vanilla UI Plus, oHUD, UIO"
 disposition = "D1"
 games = ["oblivion", "fo3", "fnv"]
 paths = ["menus/**/*.xml"]
-reason = "crates/menuxml reads them, including <include> prefabs."
-citations = ["docs/prd/legacy-mod-compatibility.md §3.1 U3"]
-version = 1
+reason = "crates/menuxml reads them, including <include> prefabs; a mod's menus, prefabs, fonts and HUD textures resolve over the vanilla Misc and texture archives through every mod tier (#7336)."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 U3", "byroredux/src/asset_provider/layered.rs"]
+version = 2
 
 [[mechanism]]
 id = "U4"
 group = "ui"
 name = "Translation files (Interface/Translations/*_<lang>.txt)"
 examples = "SkyUI, localised mods"
-disposition = "D1"
+disposition = "D5"
+target = "D1"
 games = ["skyrim", "fo4", "starfield"]
 paths = ["interface/translations/*.txt"]
-reason = "Read as interface data."
-citations = ["docs/prd/legacy-mod-compatibility.md §3.1 U4"]
-verify = ["translation-file handling"]
-version = 1
+reason = "Only the language's one translation table is read (a mod replacing it is served through the mod tiers, #7336); a mod's own translation file beside it is not merged in, and no local source says whether the game or the script extender merges them."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 U4", "crates/ui/src/translate.rs"]
+verify = ["which loader merges Interface/Translations/<name>_<lang>.txt files: the game or the script extender"]
+version = 2
 
 [[mechanism]]
 id = "U5"
@@ -588,10 +589,10 @@ examples = "UI mods"
 disposition = "D1"
 games = ["oblivion", "fo3", "fnv", "skyrim", "fo4", "starfield"]
 paths = ["interface/fontconfig.txt", "interface/fonts_*.swf", "textures/fonts/*.fnt"]
-reason = "Read as interface data."
-citations = ["docs/prd/legacy-mod-compatibility.md §3.1 U5"]
+reason = "fontconfig.txt and fonts_*.swf resolve through the Scaleform sources, .fnt through the MenuXml sources, each layering every mod tier over the vanilla archives (#7336)."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 U5", "byroredux/src/asset_provider/layered.rs"]
 verify = ["font-replacement handling"]
-version = 1
+version = 2
 
 [[mechanism]]
 id = "T1"

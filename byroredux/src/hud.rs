@@ -36,7 +36,7 @@ use byroredux_menuxml::profile::{FontArchive, MenuProfile};
 use byroredux_menuxml::tex::Rgba8;
 use byroredux_menuxml::{MenuRenderer, ScreenTraits};
 
-use crate::asset_provider::{extract_first, open_with_numeric_siblings, Archive};
+use crate::asset_provider::{open_with_numeric_siblings, Archive};
 use crate::inventory::PlayerVitals;
 use crate::systems::PlayerEntity;
 
@@ -219,12 +219,14 @@ impl HudGameProfile {
 }
 
 /// The archives a HUD render needs, plus the profile that says which one
-/// carries fonts (Oblivion: Misc; FO3/FNV: the texture pool).
+/// carries fonts (Oblivion: Misc; FO3/FNV: the texture pool). Each is the
+/// vanilla archive under every mod tier (#7336): loose `menus\` / `fonts\` /
+/// `textures\` files and the session's archives win over it.
 pub(crate) struct HudAssets {
-    misc: Archive,
-    /// The named texture archive followed by its numeric siblings, in open
-    /// order. Last-listed wins, as in `TextureProvider::extract`.
-    textures: Vec<Archive>,
+    misc: crate::asset_provider::LayeredSources,
+    /// Over the named texture archive and its numeric siblings (last-listed
+    /// wins, as in `TextureProvider::extract`).
+    textures: crate::asset_provider::LayeredSources,
     pub(crate) profile: HudGameProfile,
 }
 
@@ -237,17 +239,27 @@ impl HudAssets {
         let mut textures = Vec::new();
         let textures_path = data.join(profile.default_textures_bsa).to_string_lossy().into_owned();
         open_with_numeric_siblings(&textures_path, "HUD textures", &mut textures, &mut std::collections::HashSet::new());
-        Some(Self { misc, textures, profile })
+        Some(Self::layered(misc, textures, profile, &[]))
+    }
+
+    /// The vanilla `misc` archive and `textures` pool (lowest priority first) under the session's mod tiers.
+    fn layered(misc: Archive, textures: Vec<Archive>, profile: HudGameProfile, args: &[String]) -> Self {
+        use crate::asset_provider::LayeredSources;
+        Self {
+            misc: LayeredSources::over(vec![misc], args, &["menus\\", "fonts\\"], &["--bsa"]),
+            textures: LayeredSources::over(textures, args, &["textures\\"], &["--textures-bsa"]),
+            profile,
+        }
     }
 
     fn extract_texture(&self, path: &str) -> Option<Vec<u8>> {
-        extract_first(self.textures.iter().rev(), path)
+        self.textures.extract(path)
     }
 }
 
 impl MenuAssets for HudAssets {
     fn menu_xml(&self, path: &str) -> Option<Vec<u8>> {
-        self.misc.extract_or_warn(path)
+        self.misc.extract(path)
     }
     fn texture(&self, path: &str) -> Option<Vec<u8>> {
         self.extract_texture(path)
@@ -255,16 +267,16 @@ impl MenuAssets for HudAssets {
     fn font(&self, index: u8) -> Option<Vec<u8>> {
         let path = self.profile.menu.font_paths.get(index as usize - 1)?;
         match self.profile.menu.font_archive {
-            FontArchive::Misc => self.misc.extract_or_warn(path),
+            FontArchive::Misc => self.misc.extract(path),
             FontArchive::Textures => self.extract_texture(path),
         }
     }
     fn font_texture(&self, path: &str) -> Option<Vec<u8>> {
         match self.profile.menu.font_archive {
-            FontArchive::Misc => self.misc.extract_or_warn(path),
+            FontArchive::Misc => self.misc.extract(path),
             FontArchive::Textures => self
                 .extract_texture(path)
-                .or_else(|| self.misc.extract_or_warn(path)),
+                .or_else(|| self.misc.extract(path)),
         }
     }
 }
@@ -533,7 +545,7 @@ pub(crate) fn session_menu_assets(args: &[String]) -> Result<Option<(HudAssets, 
     if textures.is_empty() {
         return Err(format!("hud: texture archive open failed: '{textures_path}'"));
     }
-    Ok(Some((HudAssets { misc, textures, profile }, misc_path, textures_path)))
+    Ok(Some((HudAssets::layered(misc, textures, profile, args), misc_path, textures_path)))
 }
 
 pub(crate) fn launch_hud(
@@ -1517,5 +1529,40 @@ mod tests {
         args.extend(argv(&["--hud-textures", "elsewhere/My Textures.bsa"]));
         let (_, textures, _) = hud_archive_args(&args).unwrap().unwrap();
         assert_eq!(textures, "elsewhere/My Textures.bsa");
+    }
+
+    /// #7336 — on the installed New Vegas archives, a mod root's loose MenuXml prefab replaces the Misc BSA's copy, a
+    /// mod's loose HUD texture replaces the texture archive's, and what the mod does not ship still comes from the
+    /// vanilla archives.
+    #[test]
+    #[ignore = "needs the New Vegas data (BYROREDUX_FNV_DATA)"]
+    fn a_mod_roots_loose_menu_files_layer_over_the_vanilla_archives() {
+        let data = byroredux_plugin::esm::test_paths::fnv_data_dir();
+        if !data.join("FalloutNV.esm").is_file() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let modroot = tmp.path().join("DarnUI");
+        for (path, bytes) in [
+            ("menus/prefabs/meter.xml", &b"<!-- mod meter -->"[..]),
+            ("textures/interface/hud/glow_hud_comp_direction_strip.dds", b"mod strip"),
+        ] {
+            let path = modroot.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
+        let args: Vec<String> = [
+            "--esm".to_owned(),
+            data.join("FalloutNV.esm").to_string_lossy().into_owned(),
+            crate::mod_roots::LOOSE_ROOT_FLAG.to_owned(),
+            data.to_string_lossy().into_owned(),
+            crate::mod_roots::LOOSE_ROOT_FLAG.to_owned(),
+            modroot.to_string_lossy().into_owned(),
+        ]
+        .into();
+        let (assets, _, _) = session_menu_assets(&args).unwrap().expect("the New Vegas menu archives");
+        assert_eq!(assets.menu_xml(r"menus\prefabs\meter.xml").as_deref(), Some(&b"<!-- mod meter -->"[..]));
+        assert_eq!(assets.texture(r"textures\interface\hud\glow_hud_comp_direction_strip.dds").as_deref(), Some(&b"mod strip"[..]));
+        assert!(assets.menu_xml(r"menus\main\hud_main_menu.xml").is_some_and(|xml| !xml.is_empty()), "vanilla still serves the rest");
     }
 }

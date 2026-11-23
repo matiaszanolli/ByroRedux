@@ -39,7 +39,6 @@ use byroredux_core::ecs::World;
 use byroredux_ui::path::PATH_CALLBACKS;
 use byroredux_ui::{PathOp, PathOutcome, RenderPacing, ScaleformHostBridge, ScaleformValue, UiLayer, UiManager, WhenAbsent};
 
-use crate::asset_provider::Archive;
 use crate::hud::{bar_reading, publish_readings, shown_bits, BarReading, HudBackend, HudControl, HUD_REFRESH_INTERVAL};
 
 /// #4717 — how often the always-on HUD may render and read back its Ruffle
@@ -495,13 +494,15 @@ pub(crate) fn launch(
     }
 
     let (w, h) = ctx.swapchain_extent();
-    let archive = match Archive::open(&archive_path) {
-        Ok(archive) => archive,
+    // #7336 — the vanilla interface archive under every mod tier: loose `interface\` files and plugin-paired archives.
+    let archive = match crate::asset_provider::LayeredSources::interface(args, &archive_path) {
+        Ok(sources) => sources,
         Err(e) => {
             log::error!("hud: failed to open {}: {e}", archive_path);
             return None;
         }
     };
+    log::info!("hud: interface sources: {} tier(s) over '{archive_path}'", archive.tier_count());
 
     let compass = (game == ScaleformGame::Fallout4).then(Fallout4Compass::default);
     let menu_path = game.menu_path();

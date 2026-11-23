@@ -53,10 +53,13 @@ enum Backend {
 /// are the roots a mod overrides loose that the sound provider, the script
 /// provider and the LOD reader look up (LMC-AST-005, measured 2026-11-23:
 /// before them a mod's loose sound, `.pex` or LOD settings never reached a
-/// consumer). `interface` is not here: Scaleform movies load from the vanilla
-/// interface archive alone.
-const LOOSE_ASSET_ROOTS: [&str; 8] =
-    ["textures", "meshes", "materials", "geometries", "music", "sound", "scripts", "lodsettings"];
+/// consumer). `interface` feeds the Scaleform sources
+/// ([`LayeredSources`](super::LayeredSources), #7336), and `menus` and `fonts`
+/// the MenuXml ones: a mod's loose menu and font replacements.
+const LOOSE_ASSET_ROOTS: [&str; 11] = [
+    "textures", "meshes", "materials", "geometries", "music", "sound", "scripts", "lodsettings", "interface", "menus",
+    "fonts",
+];
 
 /// How many directory levels below an asset root the loose index descends.
 /// Archive paths are shallow (vanilla nests a handful deep), so this only

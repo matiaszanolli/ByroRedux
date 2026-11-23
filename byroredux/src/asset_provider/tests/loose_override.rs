@@ -401,3 +401,52 @@ fn loose_scripts_layer_over_the_archives_by_root_priority() {
     assert_eq!(resolved.principal, crate::asset_provider::script::legacy_script_principal("SkyUI"));
     assert_eq!(provider.principals().count(), 2, "the texture-only root adds no script tier");
 }
+
+/// #7336 — a Scaleform movie resolves through every mod tier before the vanilla interface archive: the last mod
+/// root's loose file first, then earlier roots, then the vanilla source; a file only the vanilla source has still
+/// resolves, and a root with no loose `interface\` file adds no tier.
+#[test]
+fn interface_sources_layer_mod_roots_over_the_vanilla_archive() {
+    use byroredux_ui::ScaleformResourceProvider;
+    let tmp = tempfile::tempdir().unwrap();
+    let (data, skyui, retex, vanilla) =
+        (tmp.path().join("Data"), tmp.path().join("SkyUI"), tmp.path().join("Retex"), tmp.path().join("Vanilla"));
+    write(&data, "Interface/inventorymenu.swf", b"data");
+    write(&skyui, "Interface/inventorymenu.swf", b"skyui");
+    write(&skyui, "Interface/skyui/icons.swf", b"icons");
+    write(&retex, "textures/a.dds", b"dds");
+    write(&vanilla, "interface/inventorymenu.swf", b"vanilla");
+    write(&vanilla, "interface/fonts_en.swf", b"fonts");
+    let mut args = Vec::new();
+    for root in [&data, &skyui, &retex] {
+        args.extend([crate::mod_roots::LOOSE_ROOT_FLAG.to_owned(), root.to_string_lossy().into_owned()]);
+    }
+    let sources = crate::asset_provider::LayeredSources::interface(&args, &vanilla.to_string_lossy()).unwrap();
+    assert_eq!(sources.tier_count(), 3, "Data, SkyUI and the vanilla source; the texture-only root adds none");
+    assert_eq!(sources.load(r"interface\inventorymenu.swf").unwrap().as_deref(), Some(&b"skyui"[..]));
+    assert_eq!(sources.load("Interface/SkyUI/Icons.swf").unwrap().as_deref(), Some(&b"icons"[..]));
+    assert_eq!(sources.load(r"interface\fonts_en.swf").unwrap().as_deref(), Some(&b"fonts"[..]));
+    assert_eq!(sources.load(r"interface\missing.swf").unwrap(), None);
+}
+
+/// #7336 — on the installed Skyrim SE interface archive, a mod root's loose menu movie replaces the vanilla one and a
+/// movie the mod does not ship still comes from the archive.
+#[test]
+#[ignore = "needs the Skyrim SE data (BYROREDUX_SKYRIMSE_DATA)"]
+fn a_mod_roots_loose_movie_layers_over_the_skyrim_interface_archive() {
+    use byroredux_ui::ScaleformResourceProvider;
+    let data = byroredux_plugin::esm::test_paths::skyrim_se_data_dir();
+    let vanilla = data.join("Skyrim - Interface.bsa");
+    if !vanilla.is_file() {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let skyui = tmp.path().join("SkyUI");
+    write(&skyui, "Interface/inventorymenu.swf", b"skyui inventory");
+    let args =
+        vec![crate::mod_roots::LOOSE_ROOT_FLAG.to_owned(), skyui.to_string_lossy().into_owned()];
+    let sources = crate::asset_provider::LayeredSources::interface(&args, &vanilla.to_string_lossy()).unwrap();
+    assert_eq!(sources.load(r"interface\inventorymenu.swf").unwrap().as_deref(), Some(&b"skyui inventory"[..]));
+    let hud = sources.load(r"interface\hudmenu.swf").unwrap().expect("the vanilla HUD movie");
+    assert!(hud.starts_with(b"CWS") || hud.starts_with(b"FWS") || hud.starts_with(b"GFX") || hud.starts_with(b"CFX"));
+}
