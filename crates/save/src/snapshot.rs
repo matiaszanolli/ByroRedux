@@ -689,7 +689,7 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// gave the player, which `Background` does not save), so a v143 identity row lacks a field this one requires.
 ///
 /// v144 -> v145 (#6676, LMC-SAV-002..004): the FormIDs of `Inventory`, `EquippedWeapon`, `EquippedAmmo`, `Perks`,
-/// `FactionReputation`, `CharacterIdentity`, `SpellList` and `ReadiedSpell` are saved as stable plugin-and-object
+/// `FactionReputation`, `CharacterIdentity` (its race and class), `SpellList` and `ReadiedSpell` are saved as stable plugin-and-object
 /// identities (`byroredux_core::stable_form_id`) instead of session-global numbers, so a v144 row's numbers would be
 /// read as whatever form the current load order gives them.
 pub const FORMAT_MAJOR: u16 = 145;

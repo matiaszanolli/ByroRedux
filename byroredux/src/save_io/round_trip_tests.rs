@@ -2769,6 +2769,50 @@ fn the_skill_use_level_tallies_survive_save_load_round_trip() {
     assert_eq!(again.components.get("SkillUseLevel"), decoded.components.get("SkillUseLevel"));
 }
 
+/// #7348 + LMC-SAV-002..004 — the player's saved identity holds two FormIDs, its race and the class a script gave it,
+/// and both are written as stable identities: a class from `ModB.esp` follows the plugin when the load order moves it
+/// to another slot, one from a plugin that is gone reads as no class (0, the record's own stands), and a game form is
+/// unchanged. (The class was the one FormID of the identity left as a session-global number.)
+#[test]
+fn a_character_identitys_race_and_class_follow_their_plugin_across_a_changed_load_order() {
+    use byroredux_core::character::CharacterIdentity;
+    use byroredux_core::form_id::PluginId;
+    use byroredux_plugin::esm::reader::GlobalSlot;
+    use byroredux_scripting::LoadOrderIdentity;
+    let registry = build_save_registry();
+    let (game, mod_a, mod_b) =
+        (PluginId::from_filename("Oblivion.esm"), PluginId::from_filename("ModA.esp"), PluginId::from_filename("ModB.esp"));
+    let identity = |race_form_id, class_form_id| CharacterIdentity { name: "A".into(), female: false, race_form_id, class_form_id };
+    let mut source = World::new();
+    source.insert_resource(LoadOrderIdentity::new(vec![
+        (GlobalSlot::Regular(0), game),
+        (GlobalSlot::Regular(1), mod_a),
+        (GlobalSlot::Regular(2), mod_b),
+    ]));
+    let (moved, gone, plain) = (source.spawn(), source.spawn(), source.spawn());
+    source.insert(moved, identity(0x0000_0019, 0x0200_0900)); // a game race, a ModB class
+    source.insert(gone, identity(0x0000_0019, 0x0100_0901)); // a ModA class
+    source.insert(plain, identity(0x0000_0019, 0)); // no class
+    let (snapshot, saved) = translated(session_translator(&source), || save_world(&source, &registry));
+    let snapshot = snapshot.unwrap();
+    assert_eq!(saved.translated, 5, "three races and two classes (a 0 is no form and stays a number)");
+    let bytes = encode(&snapshot, registry.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, registry.schema_fingerprint()).unwrap();
+
+    // ModA is gone and ModB moved from slot 2 to slot 1.
+    let mut destination = World::new();
+    destination.insert_resource(LoadOrderIdentity::new(vec![(GlobalSlot::Regular(0), game), (GlobalSlot::Regular(1), mod_b)]));
+    destination.insert_resource(FormIdPool::new());
+    let (restored, loaded) =
+        translated(session_translator(&destination), || restore_world(&mut destination, &registry, &decoded));
+    restored.unwrap();
+    assert_eq!(loaded.absent.get(&mod_a), Some(&1), "ModA's class");
+    let read = |world: &World, entity| world.get::<CharacterIdentity>(entity).map(|identity| (identity.race_form_id, identity.class_form_id));
+    assert_eq!(read(&destination, moved), Some((0x0000_0019, 0x0100_0900)), "the class follows ModB to slot 1");
+    assert_eq!(read(&destination, gone), Some((0x0000_0019, 0)), "a class from an absent plugin is no class");
+    assert_eq!(read(&destination, plain), Some((0x0000_0019, 0)));
+}
+
 /// LMC-SAV-002..004 (#6676) — the slice-1 FormID columns save as stable identities: a save made with `ModA.esp` at
 /// slot 1 and `ModB.esp` at slot 2 restores into a load order where `ModA.esp` is gone and `ModB.esp` sits at slot
 /// one. ModB's item, perk, spell, equipped arrow and readied spell follow it; ModA's item and perk read as absent (the

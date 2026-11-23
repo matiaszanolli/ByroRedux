@@ -351,7 +351,9 @@ pub struct CharacterIdentity {
     pub race_form_id: u32,
     /// The class a script gave the player (`SetClass`); 0 until one did, meaning the player record's own. Saved here
     /// because `Background`, where every class reader looks, is re-created with the actor and is not (#7348): the
-    /// identity sync writes it back, and a load that carries none puts the record's class back.
+    /// identity sync writes it back, and a load that carries none puts the record's class back. A FormID like the
+    /// race, so it is saved as a stable identity too (LMC-SAV-002..004): a class from a plugin that moved still names it.
+    #[cfg_attr(feature = "inspect", serde(with = "crate::stable_form_id"))]
     pub class_form_id: u32,
 }
 
