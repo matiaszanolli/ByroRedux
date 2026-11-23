@@ -16,12 +16,12 @@
 //! The exporter refuses what reference rungs exclude (PTX-005,
 //! RLT-REF-009) instead of approximating it.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use byroredux_core::ecs::{
-    Camera, EmitterKind, GlobalTransform, LightSource, Material, MeshHandle,
+    Camera, EmitterKind, EntityId, GlobalTransform, LightSource, Material, MeshHandle,
     Resource, World,
 };
 use byroredux_core::lighting::{AttenuationModel, BETHESDA_UNITS_PER_METER};
@@ -189,37 +189,74 @@ pub(crate) fn gather_export_scene(world: &World, extent: (u32, u32)) -> Result<E
         return Err("reference rungs carry no fog volume (RLT-REF-009)".into());
     }
 
+    // #7316 — one storage guard at a time, each read into an owned snapshot,
+    // as `material_dump::material_rows` does since #6618. Held together, these
+    // guards inverted the render collector's order (`GlobalTransform` →
+    // `MeshHandle` → `TextureHandle` → …, and `GlobalTransform` before
+    // `LightSource`), which the lock-order detector rejects. This is a one-shot
+    // export, so the copies cost nothing that matters.
+    // `None` = the storage does not exist, which (as before) skips that whole
+    // block rather than failing each entity.
+    let transforms: Option<HashMap<EntityId, GlobalTransform>> = world
+        .query::<GlobalTransform>()
+        .map(|q| q.iter().map(|(entity, t)| (entity, *t)).collect());
+    let meshes: Option<Vec<(EntityId, u32)>> = world
+        .query::<MeshHandle>()
+        .map(|q| q.iter().map(|(entity, mesh)| (entity, mesh.0)).collect());
+    let materials: Option<HashMap<EntityId, Material>> = world.query::<Material>().map(|q| {
+        meshes
+            .iter()
+            .flatten()
+            .filter_map(|&(entity, _)| q.get(entity).map(|m| (entity, m.clone())))
+            .collect()
+    });
+    let no_transforms = HashMap::new();
+    let transform_of = |entity: &EntityId| transforms.as_ref().unwrap_or(&no_transforms).get(entity);
+    let normal_maps: HashMap<EntityId, u32> = world
+        .query::<crate::components::MaterialTextureHandles>()
+        .map(|q| q.iter().map(|(entity, h)| (entity, h.textures.normal)).collect())
+        .unwrap_or_default();
+    let base_textures: HashMap<EntityId, u32> = world
+        .query::<byroredux_core::ecs::TextureHandle>()
+        .map(|q| q.iter().map(|(entity, h)| (entity, h.0)).collect())
+        .unwrap_or_default();
+    let alpha_blended: HashSet<EntityId> = world
+        .query::<crate::components::AlphaBlend>()
+        .map(|q| q.iter().map(|(entity, _)| entity).collect())
+        .unwrap_or_default();
+    let palettes: HashMap<EntityId, Vec<Mat4>> = world
+        .query::<byroredux_core::ecs::SkinnedMesh>()
+        .map(|q| {
+            q.iter()
+                .map(|(entity, skin)| {
+                    let mut palette = Vec::new();
+                    skin.compute_palette_into(&mut palette, |bone| {
+                        transform_of(&bone).map(|t| t.to_matrix())
+                    });
+                    (entity, palette)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     let mut shapes = Vec::new();
-    let texture_roles = world.query::<crate::components::MaterialTextureHandles>();
-    let base_textures = world.query::<byroredux_core::ecs::TextureHandle>();
-    let alpha_blended = world.query::<crate::components::AlphaBlend>();
-    let skins = world.query::<byroredux_core::ecs::SkinnedMesh>();
-    if let (Some(meshes), Some(transforms), Some(materials)) = (
-        world.query::<MeshHandle>(),
-        world.query::<GlobalTransform>(),
-        world.query::<Material>(),
-    ) {
-        for (entity, mesh) in meshes.iter() {
+    if let (Some(meshes), Some(_), Some(materials)) = (meshes, &transforms, &materials) {
+        for (entity, mesh) in meshes {
             let name = name_of(entity);
-            let Some(transform) = transforms.get(entity) else {
+            let Some(transform) = transform_of(&entity) else {
                 return Err(format!("{name}: mesh without GlobalTransform"));
             };
-            let Some(material) = materials.get(entity) else {
+            let Some(material) = materials.get(&entity) else {
                 return Err(format!("{name}: mesh without Material"));
             };
-            let normal_map = texture_roles
-                .as_ref()
-                .and_then(|q| q.get(entity))
-                .map(|handles| handles.textures.normal)
-                .filter(|&handle| handle != 0);
-            if alpha_blended.as_ref().is_some_and(|q| q.get(entity).is_some()) {
+            let normal_map = normal_maps.get(&entity).copied().filter(|&handle| handle != 0);
+            if alpha_blended.contains(&entity) {
                 return Err(format!("{name}: alpha-blended materials are excluded (RLT-REF-009)"));
             }
             let cutout = if material.alpha_test && material.alpha_threshold > 0.0 {
                 let texture = base_textures
-                    .as_ref()
-                    .and_then(|q| q.get(entity))
-                    .map(|handle| handle.0)
+                    .get(&entity)
+                    .copied()
                     .ok_or_else(|| format!("{name}: an alpha-tested shape needs a base texture"))?;
                 Some(ExportCutout {
                     texture,
@@ -230,17 +267,11 @@ pub(crate) fn gather_export_scene(world: &World, extent: (u32, u32)) -> Result<E
             } else {
                 None
             };
-            let palette = skins.as_ref().and_then(|q| q.get(entity)).map(|skin| {
-                let mut palette = Vec::new();
-                skin.compute_palette_into(&mut palette, |bone| {
-                    transforms.get(bone).map(|t| t.to_matrix())
-                });
-                palette
-            });
+            let palette = palettes.get(&entity).cloned();
             shapes.push(ExportShape {
                 bsdf: export_bsdf(&name, material)?,
                 name,
-                mesh: mesh.0,
+                mesh,
                 to_world: if palette.is_some() { Mat4::IDENTITY } else { transform.to_matrix() },
                 normal_map,
                 cutout,
@@ -249,54 +280,54 @@ pub(crate) fn gather_export_scene(world: &World, extent: (u32, u32)) -> Result<E
         }
     }
 
+    let lights: Vec<(EntityId, LightSource)> = match &transforms {
+        Some(_) => world
+            .query::<LightSource>()
+            .map(|q| q.iter().map(|(entity, light)| (entity, *light)).collect())
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
     let mut emitters = Vec::new();
-    if let (Some(lights), Some(transforms)) =
-        (world.query::<LightSource>(), world.query::<GlobalTransform>())
-    {
-        for (entity, light) in lights.iter() {
-            let name = name_of(entity);
-            let emitter = light.emitter;
-            match (emitter.kind, emitter.attenuation) {
-                (EmitterKind::Point, AttenuationModel::InverseSquare) => {}
-                (EmitterKind::Point, AttenuationModel::LegacySoftRange) => {
-                    return Err(format!(
-                        "{name}: LegacySoftRange point emitters have no external counterpart (RLT-REF-002)"
-                    ))
-                }
-                (kind, _) => {
-                    return Err(format!(
-                        "{name}: {kind:?} emitters are not exported in this phase (sun: RLT-EXP-004)"
-                    ))
-                }
+    for (entity, light) in lights {
+        let name = name_of(entity);
+        let emitter = light.emitter;
+        match (emitter.kind, emitter.attenuation) {
+            (EmitterKind::Point, AttenuationModel::InverseSquare) => {}
+            (EmitterKind::Point, AttenuationModel::LegacySoftRange) => {
+                return Err(format!(
+                    "{name}: LegacySoftRange point emitters have no external counterpart (RLT-REF-002)"
+                ))
             }
-            let Some(transform) = transforms.get(entity) else {
-                return Err(format!("{name}: light without GlobalTransform"));
-            };
-            let scale = light.dimmer * light.intensity;
-            emitters.push(ExportEmitter {
-                name,
-                position: transform.translation,
-                intensity: emitter.radiant_intensity.scaled(scale),
-                source_radius_m: emitter.source_radius.get(),
-            });
+            (kind, _) => {
+                return Err(format!(
+                    "{name}: {kind:?} emitters are not exported in this phase (sun: RLT-EXP-004)"
+                ))
+            }
         }
+        let Some(transform) = transform_of(&entity) else {
+            return Err(format!("{name}: light without GlobalTransform"));
+        };
+        let scale = light.dimmer * light.intensity;
+        emitters.push(ExportEmitter {
+            name,
+            position: transform.translation,
+            intensity: emitter.radiant_intensity.scaled(scale),
+            source_radius_m: emitter.source_radius.get(),
+        });
     }
 
     let camera = {
-        let cameras = world
+        let cameras: Vec<(EntityId, f32)> = world
             .query::<Camera>()
-            .ok_or("no Camera component in the world")?;
-        let transforms = world
-            .query::<GlobalTransform>()
-            .ok_or("no GlobalTransform storage")?;
-        let mut found = None;
-        for (entity, camera) in cameras.iter() {
-            if let Some(transform) = transforms.get(entity) {
-                found = Some((camera.fov_y, *transform));
-                break;
-            }
-        }
-        let (fov_y, transform) = found.ok_or("the Camera entity has no GlobalTransform")?;
+            .ok_or("no Camera component in the world")?
+            .iter()
+            .map(|(entity, camera)| (entity, camera.fov_y))
+            .collect();
+        let transforms = transforms.as_ref().ok_or("no GlobalTransform storage")?;
+        let (fov_y, transform) = cameras
+            .iter()
+            .find_map(|(entity, fov_y)| transforms.get(entity).map(|t| (*fov_y, *t)))
+            .ok_or("the Camera entity has no GlobalTransform")?;
         ExportCamera {
             origin: transform.translation,
             forward: transform.rotation * Vec3::NEG_Z,
@@ -1247,6 +1278,70 @@ mod tests {
         export_mitsuba(&scene(), &sources, &textures, &dir).unwrap();
         assert_eq!(first, std::fs::read(dir.join("scene.xml")).unwrap());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// #7316 — the render collector holds `GlobalTransform` → `MeshHandle` →
+    /// `TextureHandle` → `Material` → `MaterialTextureHandles`, and
+    /// `GlobalTransform` before `LightSource`. The export gather held its
+    /// storages in the inverse order. No test reached `gather_export_scene`, so
+    /// the lock-order lane (`BYRO_LOCK_ORDER_CHECK=1`) never saw it. The
+    /// collector's edges are taken here the way it takes them, then the scene
+    /// is gathered.
+    #[test]
+    fn the_export_gather_takes_one_storage_at_a_time() {
+        use byroredux_core::ecs::TextureHandle;
+        use byroredux_core::lighting::{Emitter, Meters, RadiantIntensityRgb, VisibilityMask};
+        let mut world = World::new();
+        let shape = world.spawn();
+        world.insert(shape, MeshHandle(7));
+        world.insert(shape, GlobalTransform::IDENTITY);
+        world.insert(shape, Material::default());
+        world.insert(shape, TextureHandle(3));
+        world.insert(
+            shape,
+            crate::components::MaterialTextureHandles {
+                textures: Default::default(),
+                normal_has_alpha: false,
+                tint_has_alpha: false,
+                parallax_height_scale: 0.0,
+                parallax_max_passes: 0.0,
+            },
+        );
+        let light = world.spawn();
+        world.insert(light, GlobalTransform::new(Vec3::new(0.0, 100.0, 0.0), Quat::IDENTITY, 1.0));
+        world.insert(
+            light,
+            LightSource {
+                emitter: Emitter::inverse_square_point(
+                    RadiantIntensityRgb::new([2.0; 3]),
+                    Meters::new(10.0),
+                    Meters::new(0.02),
+                    VisibilityMask::NONE,
+                ),
+                ..Default::default()
+            },
+        );
+        let camera = world.spawn();
+        world.insert(camera, Camera::new(1.0, 2.0, 0.1, 1000.0));
+        world.insert(camera, GlobalTransform::new(Vec3::new(0.0, 70.0, 140.0), Quat::IDENTITY, 1.0));
+        {
+            // The static-mesh collector's order.
+            let _transforms = world.query::<GlobalTransform>();
+            let _meshes = world.query::<MeshHandle>();
+            let _textures = world.query::<TextureHandle>();
+            let _materials = world.query::<Material>();
+            let _roles = world.query::<crate::components::MaterialTextureHandles>();
+        }
+        {
+            // `collect_lights`: `GlobalTransform` before `LightSource`.
+            let _transforms = world.query::<GlobalTransform>();
+            let _lights = world.query::<LightSource>();
+        }
+        let scene = gather_export_scene(&world, (64, 32)).expect("a plain lit shape exports");
+        assert_eq!((scene.shapes.len(), scene.emitters.len()), (1, 1));
+        assert_eq!(scene.shapes[0].mesh, 7);
+        assert_eq!(scene.emitters[0].position, Vec3::new(0.0, 100.0, 0.0));
+        assert_eq!(scene.camera.origin, Vec3::new(0.0, 70.0, 140.0));
     }
 
     #[test]
