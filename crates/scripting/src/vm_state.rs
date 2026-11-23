@@ -354,3 +354,18 @@ mod tests {
         );
     }
 }
+
+/// GECK / CK *GetOpenState*: 0 none (no open / closed states), 1 open, 2 opening, 3 closed, 4 closing —
+/// read from the two-state activator, the only open / closed state the runtime keeps (doors included);
+/// a reference without one has none. The ObScript and Papyrus `GetOpenState` both read this.
+pub fn open_state(world: &World, entity: byroredux_core::ecs::EntityId) -> i32 {
+    match world.get::<TwoStateActivator>(entity) {
+        None => 0,
+        Some(state) => match (state.is_open, state.is_animating) {
+            (true, false) => 1,
+            (true, true) => 2,
+            (false, false) => 3,
+            (false, true) => 4,
+        },
+    }
+}

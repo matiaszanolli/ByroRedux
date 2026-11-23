@@ -103,6 +103,14 @@ fn mods_spec(imported: &ImportedProfile, sources: &[String]) -> ModsSpec {
         load_order: imported.plugins.iter().map(|plugin| plugin.name.clone()).collect(),
         roots: imported.roots.iter().map(|root| root.path.to_string_lossy().into_owned()).collect(),
         imported_from: sources.join("; "),
+        // An MO2 profile is a directory; its folder name names the profile (LMC-SET-004).
+        name: sources
+            .iter()
+            .map(std::path::Path::new)
+            .find(|source| source.is_dir())
+            .and_then(|dir| dir.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default(),
     }
 }
 

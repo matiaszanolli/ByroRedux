@@ -45,6 +45,17 @@ pub fn chain_reach(iterations: u32) -> f32 {
     2.0 * ((1u32 << iterations) - 1) as f32
 }
 
+/// The `pixelAngle` push constant the dispatch sends: the real angle when the blocker search
+/// runs, `0.0` otherwise, which is the shader's pre-PAF arm (no search, full reach, no Gaussian;
+/// PAF-012, #7382). Pure so the tier-0 shed is pinned by a test instead of by reading the call.
+pub(crate) fn dispatch_pixel_angle(penumbra_search: bool, fov_y_radians: f32, height: u32) -> f32 {
+    if penumbra_search {
+        pixel_angle(fov_y_radians, height)
+    } else {
+        0.0
+    }
+}
+
 /// Pixels spanned per unit of view distance, `2 tan(fov_y / 2) / height`
 /// (PAF section 3.2); 0 when the extent or field of view is unusable, which
 /// makes the shader fall back to the full chain reach.
@@ -387,11 +398,7 @@ impl ShadowFilterPipeline {
         let iterations = iterations.clamp(1, SHADOW_FILTER_MAX_ITERATIONS);
         // PAF-012: `pixelAngle` 0 is the shader's pre-PAF path (no blocker
         // search, full reach, no Gaussian).
-        let pixel_angle = if penumbra_search {
-            pixel_angle(self.fov_y_radians, self.height)
-        } else {
-            0.0
-        };
+        let pixel_angle = dispatch_pixel_angle(penumbra_search, self.fov_y_radians, self.height);
         let reach_max = chain_reach(iterations);
         let images = &self.frames[frame];
         let reservoir_barrier = vk::BufferMemoryBarrier::default()
@@ -544,7 +551,41 @@ impl ShadowFilterPipeline {
 
 #[cfg(test)]
 mod tests {
-    use super::{chain_reach, pixel_angle};
+    use super::{chain_reach, dispatch_pixel_angle, pixel_angle};
+
+    /// #7382 / PAF-012 — tier 0 sheds the blocker search: the dispatch hands the shader
+    /// `pixelAngle` 0 (its pre-PAF arm: no search, full reach, no Gaussian) and tiers 1-3
+    /// hand it the real angle. The ray budget's tier decision, the call site that feeds it to
+    /// `dispatch`, and the mapping to the push constant were three links held only by reading
+    /// (the old test proved the comparison alone).
+    #[test]
+    fn tier_zero_sends_pixel_angle_zero_and_every_other_tier_the_real_angle() {
+        use crate::vulkan::scene_buffer::{penumbra_search_for_tier, SHADOW_FILTER_PENUMBRA_SEARCH_MIN_TIER};
+        let real = pixel_angle(1.0, 1080);
+        assert!(real > 0.0);
+        for tier in 0..=3u32 {
+            let sent = dispatch_pixel_angle(penumbra_search_for_tier(tier), 1.0, 1080);
+            if tier < SHADOW_FILTER_PENUMBRA_SEARCH_MIN_TIER {
+                assert_eq!(sent, 0.0, "tier {tier} sheds the search");
+            } else {
+                assert_eq!(sent, real, "tier {tier} keeps it");
+            }
+        }
+        // The call site feeds `dispatch` exactly that decision, not a restated comparison.
+        let post = crate::source_scan::production_text(include_str!("context/post_passes.rs"));
+        let (_, body) = post.split_once("fn record_shadow_filter(").expect("record_shadow_filter must exist");
+        let body = body.split_once("\n    }\n").expect("fn body").0;
+        assert!(
+            body.contains("penumbra_search_for_tier(budget.quality_tier)"),
+            "record_shadow_filter must pass penumbra_search_for_tier(budget.quality_tier) to dispatch (#7382)"
+        );
+        let me = crate::source_scan::production_text(include_str!("shadow_filter.rs"));
+        let (_, dispatch) = me.split_once("pub fn dispatch(").expect("dispatch must exist");
+        assert!(
+            dispatch.contains("dispatch_pixel_angle(penumbra_search, self.fov_y_radians, self.height)"),
+            "dispatch must derive pixelAngle through dispatch_pixel_angle (#7382)"
+        );
+    }
 
     /// #6249 — the filter must gate every guide (and the centre pixel) on
     /// the slot's owner being the visible surface: the mesh-ID attachment

@@ -456,6 +456,32 @@ pub fn run_quest_own_script(
     Ok(())
 }
 
+/// Run `script.function(args)`, a global function, now, under `owner`'s frame budget (MCM Helper's
+/// `CallGlobalFunction`). The script must be installed and the function checked
+/// ([`check_installed_function`]).
+pub fn run_global_function(world: &World, owner: QuestFormId, script: &str, function: &str, args: Vec<VmStored>) {
+    let effect = Effect::interpret(script, function, args);
+    let advances = run_papyrus_call(world, owner, None, effect);
+    flush_advances(world, advances);
+}
+
+/// Whether the VM runs `script.function` over the scripts it has installed, installing what the run
+/// needs: a call a mod's data names (MCM Helper's `action`) is checked like a script's own entry points,
+/// so it is declined whole instead of stopping halfway.
+pub fn check_installed_function(world: &World, script: &str, function: &str) -> Result<(), String> {
+    let installed = world
+        .try_resource::<crate::QuestStageFragments>()
+        .map(|fragments| fragments.vm_scripts())
+        .ok_or("no installed scripts")?;
+    let target = installed.get(&script.to_ascii_lowercase()).cloned().ok_or_else(|| format!("script {script} is not installed"))?;
+    let needed = super::vm::check_installed(target, function, &installed)?;
+    let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+    for script in needed {
+        fragments.insert_vm_script(script);
+    }
+    Ok(())
+}
+
 /// Run one Papyrus statement now (the debug console's `script.exec`): it is wrapped in a
 /// quest script's function, parsed, installed for the VM and run with no properties, so it can
 /// name `Game` calls and what they return (`Game.GetPlayer().AddItem(Game.GetCredits() as

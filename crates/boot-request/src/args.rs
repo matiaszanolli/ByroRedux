@@ -165,6 +165,11 @@ impl BootRequest {
             out.args.push("--mod-root".to_owned());
             out.args.push(root.to_owned());
         }
+        let name = mods.name.trim();
+        if !name.is_empty() && !has_flag(existing, "--profile-name") {
+            out.args.push("--profile-name".to_owned());
+            out.args.push(name.to_owned());
+        }
     }
 
     fn push_action(&self, existing: &[String], out: &mut Expansion) {
@@ -456,7 +461,19 @@ mod tests {
             load_order: vec!["FalloutNV.esm".into(), "DeadMoney.esm".into(), "WMX.esp".into()],
             roots: vec!["/mo2/mods/WMX".into(), "/mo2/overwrite".into()],
             imported_from: "MO2 profile /mo2/profiles/Default".into(),
+            name: String::new(),
         }
+    }
+
+    /// LMC-SET-004 — a named profile expands to `--profile-name` after its roots; one the command line
+    /// names already wins.
+    #[test]
+    fn a_named_profile_expands_to_its_profile_name() {
+        let request = BootRequest { mods: crate::ModsSpec { name: "Survival".into(), ..imported() }, ..BootRequest::for_profile("fnv") };
+        let args = request.to_args(&argv(&["byroredux"])).args;
+        assert_eq!(args[args.len() - 2..], argv(&["--profile-name", "Survival"]));
+        let args = request.to_args(&argv(&["byroredux", "--profile-name", "Mine"])).args;
+        assert!(!args.iter().any(|a| a == "--profile-name"), "{args:?}");
     }
 
     /// LMC-ID-006 — an imported load order names its plugins by file name and

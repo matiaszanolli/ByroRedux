@@ -307,7 +307,7 @@ pub(super) fn static_class(e: &Expr) -> Option<&str> {
     let Expr::Ident(name) = e else {
         return None;
     };
-    ["game", "utility", "debug", "math", "weather", "mcmhost"]
+    ["game", "utility", "debug", "math", "weather", "mcmhost", "mcmhelper"]
         .into_iter()
         .find(|class| name.0.eq_ignore_ascii_case(class))
 }

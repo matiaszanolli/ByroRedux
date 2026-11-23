@@ -15,7 +15,8 @@ mod actor;
 mod global;
 mod reference;
 
-pub(crate) use actor::{attacking_weapon, health_percentage, item_count};
+pub(crate) use actor::{actor_is_commanded, attacking_weapon, health_percentage, item_count};
+pub(crate) use reference::reference_cell;
 
 use super::catalog::{
     index_is_foreign_in, ConditionFunction,

@@ -15,6 +15,13 @@ pub const SHADOW_FILTER_MAX_ITERATIONS: u32 = 4;
 /// contact gate tiers 1-3, so neither sees the floor.
 pub const SHADOW_FILTER_PENUMBRA_SEARCH_MIN_TIER: u32 = 1;
 
+/// Whether the shadow filter runs its blocker search at ray quality tier `quality_tier`
+/// (PAF-012): the one decision `record_shadow_filter` hands `ShadowFilterPipeline::dispatch`
+/// (#7382). A function, not an inline comparison, so the test and the call site share it.
+pub fn penumbra_search_for_tier(quality_tier: u32) -> bool {
+    quality_tier >= SHADOW_FILTER_PENUMBRA_SEARCH_MIN_TIER
+}
+
 /// RCG-UPD-001 / RCG-PERF-002: the radiance cache's update-path stride per ray quality tier. One update
 /// path is traced from one pixel of each `stride x stride` block of the frame, so the update fraction is
 /// `1 / stride^2`; the block position varies between frames. A lower tier reduces this rate and never
@@ -399,10 +406,7 @@ mod tests {
     #[test]
     fn penumbra_search_is_shed_at_tier_zero_only() {
         let searches: Vec<bool> = (0..=3)
-            .map(|t| {
-                AdaptiveRayBudget::settings_for_tier(t).quality_tier
-                    >= SHADOW_FILTER_PENUMBRA_SEARCH_MIN_TIER
-            })
+            .map(|t| penumbra_search_for_tier(AdaptiveRayBudget::settings_for_tier(t).quality_tier))
             .collect();
         assert_eq!(searches, [false, true, true, true]);
     }

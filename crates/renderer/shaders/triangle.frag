@@ -3171,8 +3171,6 @@ void main() {
         // glossy reflection into lockstep so both paths share one bias rule.
         vec3 N_view = dot(N, V) < 0.0 ? -N : N;
         vec3 R = reflect(-V, N_view);
-        // Fresnel-weighted reflection: stronger at grazing angles.
-        vec3 F = fresnelSchlickPower(NdotV, F0, mat.fresnelPower);
         float environmentMask = mat.envMaskIndex != 0u
             ? texture(
                 textures[nonuniformEXT(mat.envMaskIndex)],
@@ -3282,6 +3280,9 @@ void main() {
         // multiple-scattering compensation the light loop applies and the
         // same debug bit (RLT-REF-008). Karis's 2014 LUT-free fit
         // (`envBRDFApprox`) was 0.83-1.16 of the exact weights on the A6 sweep.
+        // The table bakes the standard Schlick curve, so a material's authored
+        // `fresnelPower` reaches the diffuse weight and the light loop but not this
+        // term (#7371; recorded in docs/engine/nifal.md).
         vec2 envAB = envBRDFLut(NdotV, roughness);
         vec3 environmentWeight = F0 * envAB.x + envAB.y;
         if ((dbgFlags & DBG_DISABLE_MULTISCATTER) == 0u) {
@@ -3322,9 +3323,10 @@ void main() {
             vec3 lobeL = reflect(-V, lobeH);
             float lobeNdotL = dot(lobeL, N_view);
             probeOcclusion = 1.0;
-            if (lobeNdotL > 0.0 && traceShadowBinary(
+            // Alpha-aware: the binary trace made every cutout card a solid quad (#7369).
+            if (lobeNdotL > 0.0 && traceOpaqueBlockedAlphaAware(
                     offsetRayOriginForDirection(fragWorldPos, N_bias, lobeL), lobeL,
-                    0.0, 6000.0, VISIBILITY_MASK_ALL_OPAQUE)) {
+                    6000.0, VISIBILITY_MASK_ALL_OPAQUE)) {
                 float lobeWeight = ggxSmithG1(lobeNdotL, roughness) / max(envAB.x + envAB.y, 1e-3);
                 envColor -= probeShare * lobeWeight * exteriorSkyRadianceOr(lobeL, ambientFallback, 0.0);
             }

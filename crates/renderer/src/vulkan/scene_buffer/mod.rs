@@ -34,7 +34,8 @@ pub use gpu_types::{
 };
 pub use light_history::sort_lights_by_priority_with_ids;
 pub use ray_budget::{
-    GpuRayBudget, RtLodTelemetry, SHADOW_FILTER_MAX_ITERATIONS, SHADOW_FILTER_PENUMBRA_SEARCH_MIN_TIER,
+    penumbra_search_for_tier, GpuRayBudget, RtLodTelemetry, SHADOW_FILTER_MAX_ITERATIONS,
+    SHADOW_FILTER_PENUMBRA_SEARCH_MIN_TIER,
 };
 
 #[cfg(test)]

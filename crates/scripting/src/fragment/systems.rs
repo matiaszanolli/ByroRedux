@@ -80,6 +80,14 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
         }
         match &mut pending.resume_when {
             FragmentResumeCondition::DelayElapsed => ready.push(pending),
+            FragmentResumeCondition::GameTimeReached { hours } => {
+                let now = world.try_resource::<super::ScriptUpdates>().and_then(|updates| updates.game_hours());
+                if now.is_some_and(|now| now >= *hours) {
+                    ready.push(pending);
+                } else {
+                    still_pending.push(pending);
+                }
+            }
             FragmentResumeCondition::MovieEnded => {
                 if crate::obscript_more::movies_idle(world) {
                     ready.push(pending);

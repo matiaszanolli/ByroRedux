@@ -29,9 +29,12 @@ pub const CONFIG_BASE: &str = "ski_configbase";
 pub const CELLS: usize = 128;
 
 /// The engine's own scripts, by lowercase name: they shadow a mod's script of the same name.
-const ENGINE_SOURCES: [(&str, &str); 2] = [
+const ENGINE_SOURCES: [(&str, &str); 4] = [
     (CONFIG_BASE, include_str!("mcm/SKI_ConfigBase.psc")),
     ("ski_playerloadgamealias", include_str!("mcm/SKI_PlayerLoadGameAlias.psc")),
+    // MCM Helper (slice 4, `helper`): its config base and its global API.
+    (helper::HELPER_BASE, include_str!("mcm/MCM_ConfigBase.psc")),
+    ("mcm", include_str!("mcm/MCM.psc")),
 ];
 
 /// The engine's script named `name` (any case), parsed once.
@@ -84,6 +87,9 @@ impl McmKind {
         })
     }
 }
+
+/// MCM Helper's config menus (slice 4).
+pub mod helper;
 
 /// Option flags, SkyUI's values.
 pub mod flags {
@@ -432,7 +438,10 @@ fn raise(world: &World, action: i32, option: i32, number: f32, text: &str) -> Re
         (entry.quest, entry.script.clone())
     };
     let args = vec![VmStored::Int(action), VmStored::Int(option), VmStored::Float(number), VmStored::Str(text.to_owned())];
-    crate::fragment::run_quest_own_script(world, quest, &script, "_McmEvent", args)
+    let result = crate::fragment::run_quest_own_script(world, quest, &script, "_McmEvent", args);
+    // An MCM Helper control's action runs after the event that changed it, as MCM Helper dispatches it.
+    helper::run_pending_actions(world);
+    result
 }
 
 /// Lay the open page out again: cleared, then the script's `OnPageReset`, again while it asks

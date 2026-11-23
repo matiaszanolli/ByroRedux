@@ -141,6 +141,15 @@ fn check_events_unguarded(
     Ok((handled, checker.scripts.into_values().collect()))
 }
 
+/// [`check_function_reason`] over the installed scripts as the library.
+pub(in crate::fragment) fn check_installed(
+    script: Arc<Script>,
+    function: &str,
+    installed: &HashMap<String, Arc<Script>>,
+) -> Result<Vec<Arc<Script>>, String> {
+    check_function_reason(script, function, Some(&Installed(installed)))
+}
+
 /// The installed scripts as a [`CheckLibrary`].
 pub(super) struct Installed<'a>(pub(super) &'a HashMap<String, Arc<Script>>);
 

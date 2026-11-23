@@ -439,9 +439,9 @@ fn gpu_terrain_tile_is_240_bytes() {
 
 #[test]
 fn gpu_terrain_tile_field_offsets_match_shader_contract() {
-    // Matches `OpDecorate ... ArrayStride 224` + members at 0 / 32 / 64 /
+    // Matches `OpDecorate ... ArrayStride 240` + members at 0 / 32 / 64 /
     // 96 / 112 / 128 / 136 / 140 / 144 / 160 / 164 / 168 / 172 / 204 / 208 /
-    // 212 / 216 / 220 in the shipped triangle.frag.spv.
+    // 212 / 216 / 220 / 224 / 228 / 232 / 236 in the shipped triangle.frag.spv.
     assert_eq!(offset_of!(GpuTerrainTile, layer_diffuse_index), 0);
     assert_eq!(offset_of!(GpuTerrainTile, layer_normal_index), 32);
     assert_eq!(offset_of!(GpuTerrainTile, layer_specular_index), 64);
@@ -468,41 +468,58 @@ fn gpu_terrain_tile_field_offsets_match_shader_contract() {
     assert_eq!(offset_of!(GpuTerrainTile, parallax_fade_start), 212);
     assert_eq!(offset_of!(GpuTerrainTile, parallax_fade_end), 216);
     assert_eq!(offset_of!(GpuTerrainTile, lod_soften_end), 220);
+    // #7376 — TSD-4.3's patch-geometry lanes sit at the tail (224 -> 240 B). They were held only
+    // by the 22-name order check and the size, so a swap that kept both would not have failed.
+    assert_eq!(offset_of!(GpuTerrainTile, patch_amplitude), 224);
+    assert_eq!(offset_of!(GpuTerrainTile, patch_fade_start), 228);
+    assert_eq!(offset_of!(GpuTerrainTile, patch_fade_end), 232);
+    assert_eq!(offset_of!(GpuTerrainTile, patch_parallax), 236);
 }
 
 /// The shipped SPIR-V is the contract's other half. A Rust-side layout change
 /// that never reached a `glslangValidator` run would pass every assertion
-/// above and still read the tile array at the old stride on the GPU.
+/// above and still read the tile array at the old stride on the GPU. Every
+/// shader that indexes `terrainTiles` carries its own copy of the stride (#7376),
+/// so each one is checked, not only the main fragment shader.
 #[test]
-fn shipped_triangle_frag_spv_carries_the_terrain_tile_stride() {
-    let spv = include_bytes!("../../../shaders/triangle.frag.spv");
-    // ArrayStride is `OpDecorate <id> ArrayStride <n>`: opcode 71, decoration
-    // 6. Scan the word stream for any array decorated with 224 rather than
-    // parsing the module — the point is only that the new stride is present
-    // and the old one is not still describing this array.
-    let words: Vec<u32> = spv
-        .as_chunks::<4>().0.iter()
-        .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
-        .collect();
-    let mut strides = Vec::new();
-    let mut i = 5; // skip the 5-word header
-    while i < words.len() {
-        let len = (words[i] >> 16) as usize;
-        let op = words[i] & 0xFFFF;
-        if len == 0 {
-            break;
+fn every_shipped_shader_reading_the_tile_array_carries_the_terrain_tile_stride() {
+    let shaders: [(&str, &[u8]); 5] = [
+        ("triangle.frag.spv", include_bytes!("../../../shaders/triangle.frag.spv")),
+        ("triangle_early.frag.spv", include_bytes!("../../../shaders/triangle_early.frag.spv")),
+        ("groundcover_blade.frag.spv", include_bytes!("../../../shaders/groundcover_blade.frag.spv")),
+        ("water.frag.spv", include_bytes!("../../../shaders/water.frag.spv")),
+        ("terrain_patch.comp.spv", include_bytes!("../../../shaders/terrain_patch.comp.spv")),
+    ];
+    for (name, spv) in shaders {
+        // ArrayStride is `OpDecorate <id> ArrayStride <n>`: opcode 71, decoration
+        // 6. Scan the word stream for any array decorated with the stride rather
+        // than parsing the module — the point is only that the current stride is
+        // present, and the old one is not still describing this array.
+        let words: Vec<u32> = spv
+            .as_chunks::<4>().0.iter()
+            .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
+            .collect();
+        let mut strides = Vec::new();
+        let mut i = 5; // skip the 5-word header
+        while i < words.len() {
+            let len = (words[i] >> 16) as usize;
+            let op = words[i] & 0xFFFF;
+            if len == 0 {
+                break;
+            }
+            if op == 71 && len == 4 && words[i + 2] == 6 {
+                strides.push(words[i + 3]);
+            }
+            i += len;
         }
-        if op == 71 && len == 4 && words[i + 2] == 6 {
-            strides.push(words[i + 3]);
-        }
-        i += len;
+        assert!(
+            strides.contains(&(size_of::<GpuTerrainTile>() as u32)),
+            "no ArrayStride {} in the shipped {name} — recompile it after changing \
+             GpuTerrainTile (TSD-4.3's patch-geometry lanes grew the record 224 -> 240). \
+             Found: {strides:?}",
+            size_of::<GpuTerrainTile>()
+        );
     }
-    assert!(
-        strides.contains(&240),
-        "no ArrayStride 240 in the shipped triangle.frag.spv — recompile it \
-         after changing GpuTerrainTile (TSD-4.3's patch-geometry lanes grew the \
-         record 224 → 240). Found: {strides:?}"
-    );
 }
 
 /// #3990 — the byte view `upload_instances` and `hash_instance_slice` take is

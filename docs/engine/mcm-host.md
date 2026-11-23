@@ -182,17 +182,167 @@ extension-state save path (STATE-001) as LMC-UI-002 says.
      existing movie or native surface still decides.
    - Not built: a `.dds` custom panel is carried but not decoded (the page reports it as
      unsupported, like a `.swf`).
-4. MCM Helper (`MCM/Config/<mod>/config.json`, `settings.ini`) on the same model.
+4. MCM Helper (`MCM/Config/<mod>/config.json`, `settings.ini`) on the same model. **Built
+   (2026-11-23)** as designed in §5.1, with the owner's decisions §6.4–6.6.
+   - **Scripting crate.**
+     - `crates/scripting/src/mcm/helper/config.rs` parses the config. `helper/settings.rs` holds the
+       typed, layered settings store. `helper.rs` lays the page out, reads and writes values, and
+       queues actions.
+     - The engine scripts are `mcm/MCM_ConfigBase.psc` and `mcm/MCM.psc`, and their static class is
+       `fragment/vm/natives/mcm_helper.rs`.
+     - An action's function is checked over the installed scripts before it runs
+       (`check_installed_function`), so a function the VM cannot run is declined whole.
+   - **Binary.**
+     - `byroredux/src/mcm_files.rs` reads `mcm\…` through the mod roots and writes
+       `<config dir>/mcm/<base master>/<profile>/<mod>.ini`.
+     - `--profile-name` names the profile. A boot request's `[mods] name` sets it, and
+       `--import-load-order` fills that from an MO2 profile folder.
+   - **Measured.**
+     - Unit tests for the config (sources, conditions, actions, bad input) and for the settings
+       (layers, typed reads, commits only on change, reset).
+     - Three VM tests on the engine scripts. One config script registers with the config's name and
+       pages; each control kind lays out from its source; and toggle, slider, enum, stepper, key map
+       and input write where their values live. Each raises `OnSettingChange` with its id, the group
+       switch disables and re-enables its control, and the toggle's action runs after the event. The
+       other two cover the error page (bad JSON, `minMcmVersion`, a missing required plugin) and
+       `MCM.IsInstalled` / `GetVersionCode` / the global setting calls.
+     - The profile directory, path safety and the atomic write.
+     - No live run: no MCM Helper mod is available here.
+   - **Not built** (§5.1):
+     - `keybinds.json` hotkeys and the key-map controls bound to them (slice 4b).
+     - `RunConsoleCommand` and the key-conflict question.
+     - Nested `{…}` translation arguments.
+     - A key map shows its scancode, not the key's name.
+     - A property or action on a form other than a quest is declined with a diagnostic.
 5. Fallout 4 MCM (`MCM/Config/<mod>/config.json`, its `MCM.*` Papyrus calls) and New Vegas MCM,
    each after its source is read.
 
-## 5. Other front ends (sketch)
+## 5. Other front ends
 
-MCM Helper and Fallout 4 MCM describe pages declaratively in `config.json` and bind controls to
-script properties, globals or INI keys; the model's cells hold them unchanged, and their writes go to
-the bound target. New Vegas' MCM is a MenuXml menu driven by script variables through NVSE
-functions; it is its own front end on the MenuXml track. Each needs its documented format read
-first; none is designed here.
+### 5.1 MCM Helper (slice 4)
+
+Sources, read 2026-11-23 at release v1.6.2 (MIT licence, github.com/Exit-9B/MCM-Helper): the JSON
+schemas `docs/config.schema.json` and `docs/keybinds.schema.json`, the Papyrus API
+`scripts/public/MCM.psc` and `MCM_ConfigBase.psc`, and the plugin source that gives them meaning
+(`ConfigStore`, `SettingStore`, `Config/ValueSource`, `Config/Control`, `Config/Action`,
+`Config/GroupConditionTree`, `Papyrus/MCM_ConfigBase`). v1.6.2's version code
+(`MCM.GetVersionCode()`) is 15.
+
+**What MCM Helper is.**
+
+- A config script `extends MCM_ConfigBase`, which `extends SKI_ConfigBase`. `MCM_ConfigBase`
+  overrides `OnPageReset` and every `OnOption…` event with natives, so the page is built from
+  `Data/MCM/Config/<mod>/config.json`. `<mod>` is the file stem of the plugin that defines the config
+  quest. The plugin sets the script's `Pages` from the config's page names and `ModName` from its
+  `displayName`. A config that does not parse gives one "Error loading config" text option, whose
+  select shows the parse error.
+- `config.json`:
+  - Top level: `modName`, `displayName`, `minMcmVersion`, `pluginRequirements`,
+    `cursorFillMode` (`leftToRight` or `topToBottom`), and `content` or `customContent` for the front
+    page.
+  - `pages`: each has a `pageDisplayName` and its own `content` or `customContent`.
+  - A control has `type`, `id`, `text`, `position`, `help` (where `{value}` is replaced by the value),
+    `groupCondition` and `groupBehavior` (`disable`, `hide` or `skip`), `action`, and `valueOptions`.
+  - Control types: `empty`, `header`, `text`, `toggle`, `hiddenToggle` (holds a value, never drawn),
+    `slider`, `stepper` (a text option that cycles through its options on select), `menu` (a string
+    value from `options` and `shortNames`), `enum` (an index into `options`), `color`, `keymap`
+    (`ignoreConflicts`) and `input`.
+- Where a value lives (`valueOptions.sourceType`):
+  - `PropertyValueBool`, `PropertyValueInt` or `PropertyValueFloat`: `propertyName` on `scriptName`
+    attached to `sourceForm` (`"Plugin.esp|D62"`). Both default to the config quest and its script.
+  - `ModSettingBool`, `ModSettingInt` or `ModSettingFloat`: the control's `id`, spelled
+    `key:Section`.
+  - `GlobalValue`: a `GLOB`.
+  - Text, menu and input controls use a string property or a string mod setting.
+  - `defaultValue` is what the reset key restores. A mod setting without one falls back to the
+    `settings.ini` default.
+- Mod settings:
+  - Defaults come from `MCM/Config/<mod>/settings.ini`. The user's values come from
+    `MCM/Settings/<mod>.ini`, which overrides them.
+  - A key's first letter gives its type: `b` bool, `i` int, `u` unsigned, `f` float, `s` string, `r`
+    colour.
+  - A write commits only that key to the user's file.
+- Events:
+  - A change runs `OnSettingChange(id)` on the config script, then the control's action.
+  - A toggle with `groupControl N` makes group N active while it is checked, and changing it refreshes
+    the page.
+  - A `groupCondition` is a group number, an array (OR by default), or `{OR | AND | ONLY | NOT: …}`.
+  - `OnPageSelect(page)` follows each page reset.
+- Actions:
+  - `CallFunction` calls `function` on `scriptName` attached to `form`.
+  - `CallGlobalFunction` calls `script.function`.
+  - In `params`, `{value}` becomes the control's value, and the prefixes `{i}`, `{u}`, `{b}`, `{f}`,
+    `{s}` and `{r}` type a literal.
+- Papyrus API:
+  - `MCM.IsInstalled()`, `MCM.GetVersionCode()`, and `MCM.Get/SetModSetting{Int,Bool,Float,String}(mod,
+    name)`.
+  - On the base: `RefreshMenu()`, `SetMenuOptions(id, options, shortNames)`,
+    `Get/SetModSetting…(name)` and `GetCustomControl(keyCode)`.
+- `keybinds.json` (with the user's `MCM/Settings/keybinds.json`):
+  - Hotkeys with a description and an action. Besides the two calls, an action can be `SendEvent`
+    (`OnControlDown` / `OnControlUp`) or `RunConsoleCommand`.
+  - A `keymap` control with no value source binds such a hotkey by its `id`.
+- Texts are `$`-keys. MCM Helper's translator also fills nested `{…}` arguments
+  (`$MCM_KeyAlreadyMapped{…}`).
+
+**Design.**
+
+- **Engine scripts.** The engine supplies `MCM_ConfigBase` and `MCM`, shadowing MCM Helper's scripts as
+  §3.2 does SkyUI's.
+  - `MCM_ConfigBase` extends the engine `SKI_ConfigBase`. Its overridden events call a static class
+    `McmHelper`, whose VM natives build the page into `McmHost` through the same page buffer and add
+    options as a SkyUI script would.
+  - A native that changes a value returns the changed control's `id`. The Papyrus body then raises
+    `OnSettingChange(id)`, and the control's action runs after the event as a call the host queues.
+- **The store.** `McmHelperStore` is a resource built on first use per mod:
+  - each mod's parsed `config.json`;
+  - its `settings.ini` defaults and user values;
+  - the open page's cache: option id to control, `SetMenuOptions` overrides, and the group toggles.
+- **Reading files.** MCM Helper reads loose files only (`std::filesystem`), so the engine reads
+  `mcm\config\…` and `mcm\settings\…` through the profile's mod roots (`LayeredSources` with no
+  archive).
+- **Value sources.**
+  - A property on a quest reads and writes that quest's script variables (`QuestScriptVariables`,
+    `QuestScriptObjects`). A property on another kind of form is declined with a diagnostic.
+  - `GlobalValue` uses `Globals`.
+  - Mod settings use the store.
+- **Actions.** `CallFunction` runs on a quest's own scripts, and `CallGlobalFunction` runs any global
+  the VM checks. Any other target form is declined with a diagnostic.
+- **Version probes.**
+  - `MCM.IsInstalled()` returns true and `GetVersionCode()` returns 15, so a mod gating on MCM
+    Helper finds it (LMC-SCR-010).
+  - A config with `minMcmVersion` above 15, or with a `pluginRequirements` entry not in the load
+    order, gets MCM Helper's own error page.
+
+**Not in this slice** (each its own follow-up): `keybinds.json` hotkeys and the key-map controls
+bound to them (they need an input hook that runs Papyrus on a key press); `RunConsoleCommand`;
+the conflict question a key map asks (the engine's control bindings are not consulted, §4); nested
+`{…}` translation arguments.
+
+**Settings on disk (§6.4, §6.5).**
+
+- The player's values are written to `<config dir>/byroredux/mcm/<game>/<profile>/<mod>.ini`.
+  - The config dir is `settings.toml`'s.
+  - `<profile>` is `--profile-name`. A boot request's `[mods] name` sets it, and `--import-load-order`
+    fills that from the MO2 profile's folder name. Without one it is `default`.
+  - So settings survive saves, new games and mod updates, and two named profiles keep their own
+    (LMC-SET-004).
+- Reads are layered:
+  1. the mod's `MCM/Config/<mod>/settings.ini` defaults;
+  2. any existing `MCM/Settings/<mod>.ini` an earlier MCM Helper install left in the game's `Data` or
+     a mod root (read, never written);
+  3. the profile's own file.
+
+  A write commits only the changed key, to the profile's file, as MCM Helper commits to its own.
+
+Decisions: §6.4–6.6.
+
+### 5.2 Fallout 4 MCM and New Vegas MCM (sketch)
+
+Fallout 4 MCM describes pages declaratively in `config.json` and binds controls to script properties,
+globals or INI keys; MCM Helper was modelled on it, so its front end should reuse §5.1's store. New
+Vegas' MCM is a MenuXml menu driven by script variables through NVSE functions; it is its own front
+end on the MenuXml track. Each needs its documented format read first; neither is designed here.
 
 ## 6. Decisions (owner, 2026-11-23: each recommendation taken)
 
@@ -205,3 +355,12 @@ first; none is designed here.
 3. **Where MCM lives in the menus.** Recommended: an entry in the native pause menu on every game
    with an MCM front end. SkyUI puts it in the Journal (System tab); the engine's Journal is the
    native pause page already.
+4. **Where MCM Helper's settings live** (owner, 2026-11-23). Taken: one INI per mod in an engine
+   directory per game and named profile (§5.1). The alternatives were the save (a new game would lose
+   them, unlike MCM Helper) and the game's `Data/MCM/Settings` (written into the install, shared by
+   every profile, against LMC-SET-004). Keying by the profile fingerprint was rejected because it
+   hashes every plugin's bytes, so any mod update would reset every mod's settings.
+5. **Settings an earlier MCM Helper install left** (owner, 2026-11-23). Taken: read as a layer
+   between the defaults and the profile's values, never written.
+6. **MCM Helper's hotkeys** (`keybinds.json`; owner, 2026-11-23). Taken: a follow-up slice (4b),
+   because they need an input hook that runs Papyrus on a key press.

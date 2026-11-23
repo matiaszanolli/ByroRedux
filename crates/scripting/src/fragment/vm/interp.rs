@@ -1266,6 +1266,23 @@ impl Vm<'_> {
                 }
                 return Ok(Flow::Suspend(seconds.max(0.0), Vec::new(), Vec::new()));
             }
+        // CK *WaitGameTime - Utility*: "Pauses the script for at least the specified amount of game
+        // time" — the run suspends until the game clock reaches the call's time plus the wait.
+        if let Expr::MemberAccess { object, member } = &callee.node
+            && static_class(&object.node) == Some("utility") && member.node.0.eq_ignore_ascii_case("waitgametime") {
+                let hours = match args.first() {
+                    Some(arg) => self.eval(frame, &arg.value.node)?.number().unwrap_or(0.0),
+                    None => 0.0,
+                };
+                if !hours.is_finite() {
+                    return stop("Utility.WaitGameTime of a non-finite time");
+                }
+                let Some(now) = self.world.try_resource::<crate::fragment::ScriptUpdates>().and_then(|u| u.game_hours()) else {
+                    return stop("Utility.WaitGameTime without a game clock");
+                };
+                self.deferred.awaits_game_time = Some(now + f64::from(hours.max(0.0)));
+                return Ok(Flow::Suspend(0.0, Vec::new(), Vec::new()));
+            }
         // CK *WaitForAnimationEvent*: "waits for the specified animation event from
         // this object to happen before returning". The graph's schedule is
         // deterministic, so the wait is computed now; with no graph (or an event it

@@ -6739,6 +6739,158 @@ fn message_show_waits_for_its_answer_and_branches_on_it() {
     }
 }
 
+/// The native wave (#5800 families): a door's lock and open state and its cell, its one script's state, an
+/// actor's commanded flag, shield and right-hand weapon, and a package's template, as the CK pages give them.
+#[test]
+fn the_native_wave_reads_locks_doors_cells_states_shields_weapons_and_templates() {
+    use byroredux_core::ecs::components::{CellFormId, EquipmentSlots, EquippedWeapon, Inventory, InventoryIndex, ItemStack, Locked};
+    const DOOR: u32 = 0x0000_D002;
+    const CELL: u32 = 0x0000_CE11;
+    const SHIELD: u32 = 0x0000_5E1D;
+    const SWORD: u32 = 0x0000_5A0D;
+    const PACKAGE: u32 = 0x0000_9A01;
+    const TEMPLATE: u32 = 0x0000_9A02;
+    let script = parsed_source(
+        "ScriptName QF_VmNatives extends Quest\n\
+         ObjectReference Property Door Auto\n\
+         Package Property Pkg Auto\n\
+         Armor Property Shield Auto\n\
+         Weapon Property Sword Auto\n\
+         Package Property Template Auto\n\
+         Int Property Results Auto\n\
+         Int Property Open Auto\n\
+         Function Fragment_1()\n\
+           Actor player = Game.GetPlayer()\n\
+           If Door.IsLocked()\n Results += 1\n EndIf\n\
+           Open = Door.GetOpenState()\n\
+           If Door.GetParentCell() == player.GetParentCell()\n Results += 10\n EndIf\n\
+           If !player.IsCommandedActor()\n Results += 100\n EndIf\n\
+           If player.GetEquippedShield() == Shield\n Results += 1000\n EndIf\n\
+           If player.GetEquippedWeapon() == Sword\n Results += 10000\n EndIf\n\
+           If Pkg.GetTemplate() == Template\n Results += 100000\n EndIf\n\
+           If Door.GetState() == \"Waiting\"\n Results += 1000000\n EndIf\n\
+         EndFunction\n",
+    );
+    let door_script = parsed_source("ScriptName VmDoorScript extends ObjectReference\nAuto State Waiting\nEndState\n");
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(crate::ScriptGame(byroredux_plugin::esm::reader::GameKind::Skyrim));
+    world.insert_resource(QuestStageState::default());
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.insert_resource(crate::QuestScriptObjects::default());
+    world.insert_resource(crate::package::PackageRegistry::from_records([
+        byroredux_plugin::esm::records::PackRecord { form_id: PACKAGE, package_template_form_id: Some(TEMPLATE), ..Default::default() },
+        byroredux_plugin::esm::records::PackRecord { form_id: TEMPLATE, ..Default::default() },
+    ]));
+    world.register::<FormIdComponent>();
+    let mut pool = FormIdPool::default();
+    let door_id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(DOOR) });
+    world.insert_resource(pool);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert(player, CellFormId(CELL));
+    let mut inventory = Inventory::new();
+    inventory.push(ItemStack::new(SHIELD, 1));
+    inventory.push(ItemStack::new(SWORD, 1));
+    world.insert(player, inventory);
+    let mut slots = EquipmentSlots::new();
+    slots.equip(1 << 9, InventoryIndex(0));
+    world.insert(player, slots);
+    world.insert(player, EquippedWeapon { inventory_index: InventoryIndex(1), base_form_id: SWORD, damage: 7.0, reach: 1.0, speed: 1.0 });
+    let door = world.spawn();
+    world.insert(door, FormIdComponent(door_id));
+    world.insert(door, CellFormId(CELL));
+    world.insert(door, Locked { lock_level: 25, key_form_id: None });
+    world.insert(door, crate::vm_state::TwoStateActivator { is_open: true, ..Default::default() });
+    world.insert(
+        door,
+        crate::fragment::PapyrusReferenceScripts(vec![crate::fragment::ReferenceScript {
+            script: "VmDoorScript".into(),
+            vmad: Arc::new(ScriptInstanceData { version: 5, object_format: 2, scripts: Vec::new() }),
+            events: Vec::new(),
+        }]),
+    );
+    let object = |name: &str, form_id: u32| ScriptProperty { name: name.into(), status: 1, value: PropertyValue::Object { form_id, alias: -1 } };
+    let vmad = ScriptInstanceData {
+        version: 5,
+        object_format: 2,
+        scripts: vec![ScriptInstance {
+            name: "QF_VmNatives".into(),
+            status: 0,
+            properties: vec![
+                object("Door", DOOR),
+                object("Pkg", PACKAGE),
+                object("Shield", SHIELD),
+                object("Sword", SWORD),
+                object("Template", TEMPLATE),
+            ],
+        }],
+    };
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        fragments.insert_vmad(Q, vmad);
+        fragments.insert_vm_script(Arc::clone(&script));
+        fragments.insert_vm_script(door_script);
+        fragments.insert(
+            Q,
+            10,
+            vec![Effect::Interpret { script: "QF_VmNatives".into(), function: "Fragment_1".into(), args: Vec::new(), resume: None }],
+        );
+    }
+    if let Err(why) = crate::fragment::vm::checker::check_function_reason(Arc::clone(&script), "Fragment_1", None) {
+        panic!("{why}")
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(quest_property(&world, "Results"), Some(1_111_111.0), "every read answered as the CK gives it");
+    assert_eq!(quest_property(&world, "Open"), Some(1.0), "an open, settled door is 1 (Open)");
+}
+
+/// CK *WaitGameTime - Utility*: "Pauses the script for at least the specified amount of game time":
+/// the run suspends until the game clock has advanced by the wait, however little real time passes.
+#[test]
+fn wait_game_time_resumes_when_the_game_clock_reaches_it() {
+    const SOURCE: &str = "ScriptName QF_VmWaitGame extends Quest\n\
+        Function Fragment_1()\n\
+          Utility.WaitGameTime(2.0)\n\
+          Self.SetStage(6)\n\
+        EndFunction\n";
+    let (script, errors) = byroredux_papyrus::parse_script(SOURCE).unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+    let script = Arc::new(script);
+    if let Err(why) = crate::fragment::vm::checker::check_function_reason(Arc::clone(&script), "Fragment_1", None) {
+        panic!("{why}")
+    }
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    let mut vmad = vmad();
+    vmad.scripts[0].name = "QF_VmWaitGame".into();
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        fragments.insert_vmad(Q, vmad);
+        fragments.insert_vm_script(Arc::clone(&script));
+        fragments.insert(
+            Q,
+            0,
+            vec![Effect::Interpret { script: "QF_VmWaitGame".into(), function: "Fragment_1".into(), args: Vec::new(), resume: None }],
+        );
+    }
+    crate::fragment::script_update_system(&world, 0.0, Some(10.0));
+    world.resource_mut::<QuestStageState>().set_stage(Q, 0);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    crate::fragment::fragment_continuation_system(&world, 30.0);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 0, "real time does not end a game-time wait");
+    crate::fragment::script_update_system(&world, 0.0, Some(11.0));
+    crate::fragment::fragment_continuation_system(&world, 0.0);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 0, "an hour in");
+    crate::fragment::script_update_system(&world, 0.0, Some(12.0));
+    crate::fragment::fragment_continuation_system(&world, 0.0);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 6, "two game hours on, the run resumes");
+}
+
 /// #7298 — a VM `Message.Show()` runs under the quest guards, so it takes only the ticket there
 /// (the catalog and the answers, two leaves); the box, whose text reads `Globals` and the alias
 /// registry (the story manager takes that registry before `QuestStageState`), is built with the
@@ -6985,4 +7137,196 @@ fn an_answered_show_deferred_by_the_budget_keeps_the_button_pressed() {
     crate::fragment::fragment_continuation_system(&world, 0.0);
     crate::fragment::fragment_continuation_system(&world, 0.0);
     assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 7, "it keeps button 1, Ralof");
+}
+
+/// LMC-UI-002 slice 4 — an MCM Helper config script world: the script extends the engine's
+/// `MCM_ConfigBase`, its quest belongs to `Frost.esp`, and the store reads `files`.
+fn mcm_helper_world(config_source: &str, files: crate::mcm::helper::settings::tests::MemoryFiles) -> World {
+    use crate::mcm::helper::McmHelperStore;
+    let config = parsed_source(config_source);
+    let scripts: HashMap<String, Arc<Script>> = [
+        (crate::mcm::CONFIG_BASE.to_owned(), crate::mcm::engine_script("SKI_ConfigBase").expect("SKI_ConfigBase parses")),
+        (crate::mcm::helper::HELPER_BASE.to_owned(), crate::mcm::engine_script("MCM_ConfigBase").expect("MCM_ConfigBase parses")),
+        ("mcm".to_owned(), crate::mcm::engine_script("MCM").expect("MCM parses")),
+    ]
+    .into();
+    let library = Installed(&scripts);
+    let extends = vec![crate::mcm::CONFIG_BASE.to_owned(), crate::mcm::helper::HELPER_BASE.to_owned()];
+    let mut world = world_with_quest_script_extending(Arc::clone(&config), Some(&library), true, extends)
+        .unwrap_or_else(|| panic!("declined: {:?}", crate::check_quest_script(config, &crate::DELIVERED_QUEST_EVENTS, Some(&library)).err()));
+    world.insert_resource(crate::load_order::LoadOrderIdentity::new(vec![(
+        byroredux_plugin::esm::reader::GlobalSlot::Regular(0),
+        PluginId::from_filename("Frost.esp"),
+    )]));
+    // The quest is a quest with scripts, so its properties can back a control.
+    let instance = ScriptInstanceData { version: 5, object_format: 2, scripts: Vec::new() };
+    world.insert_resource(crate::QuestScriptInstances(Arc::new([(Q, instance)].into())));
+    world.insert_resource(McmHelperStore::new(Arc::new(files), &["Skyrim.esm".to_owned(), "Frost.esp".to_owned()]));
+    world
+}
+
+const HELPER_SCRIPT: &str = "ScriptName VmHelperConfig extends MCM_ConfigBase\n\
+     Int Property Speed Auto\n\
+     Int Property Changes Auto\n\
+     Float Property RateSeen Auto\n\
+     Int Property Applied Auto\n\
+     Event OnSettingChange(String a_ID)\n\
+      Changes += 1\n\
+      If a_ID == \"fRate:Main\"\n RateSeen = GetModSettingFloat(\"fRate:Main\")\n EndIf\n\
+     EndEvent\n\
+     Function Apply(Bool a_value, Int a_tag)\n\
+      If a_value\n Applied = a_tag\n Else\n Applied = -a_tag\n EndIf\n\
+     EndFunction\n";
+
+const HELPER_CONFIG: &str = r#"{
+    "modName": "Frost",
+    "displayName": "Frost Config",
+    "pluginRequirements": ["Frost.esp"],
+    "content": [
+        { "type": "header", "text": "General" },
+        { "id": "bEnabled:Main", "type": "toggle", "text": "Enabled", "groupControl": 1,
+          "valueOptions": { "sourceType": "ModSettingBool" },
+          "action": { "type": "CallFunction", "function": "Apply", "params": ["{value}", "{i}7"] } },
+        { "id": "fRate:Main", "type": "slider", "text": "Rate", "help": "Rate is {value}", "groupCondition": 1,
+          "valueOptions": { "min": 0, "max": 5, "step": 0.5, "formatString": "{1}x", "sourceType": "ModSettingFloat" } },
+        { "type": "enum", "text": "Speed", "valueOptions": { "options": ["Slow", "Fast"], "sourceType": "PropertyValueInt", "propertyName": "Speed", "defaultValue": 0 } },
+        { "id": "iMode:Main", "type": "stepper", "text": "Mode", "valueOptions": { "options": ["A", "B", "C"], "sourceType": "ModSettingInt" } },
+        { "id": "iKey:Main", "type": "keymap", "text": "Hotkey", "valueOptions": { "sourceType": "ModSettingInt" } },
+        { "id": "sName:Main", "type": "input", "text": "Name" }
+    ],
+    "pages": [ { "pageDisplayName": "Extra", "content": [ { "type": "text", "text": "Version", "valueOptions": { "value": "3.4" } } ] } ]
+}"#;
+
+fn helper_files(config: &str) -> crate::mcm::helper::settings::tests::MemoryFiles {
+    let mut files = crate::mcm::helper::settings::tests::MemoryFiles::default();
+    files.config.insert("Frost".into(), config.into());
+    files.defaults.insert("Frost".into(), "[Main]\nbEnabled=1\nfRate=1.5\niMode=0\niKey=48\nsName=Ysolda\n".into());
+    files
+}
+
+/// LMC-UI-002 slice 4 — an MCM Helper config script on the engine's `MCM_ConfigBase`: it registers with
+/// the config's display name and pages, its page is laid out from `config.json` with each control's
+/// value read where it lives, and the panel's actions write those values, raise `OnSettingChange` with
+/// the control's id, follow the group switch and run the control's action.
+#[test]
+fn an_mcm_helper_config_lays_out_from_json_and_writes_where_values_live() {
+    use crate::mcm::{McmAnswer, McmDialog, McmHost, McmKind};
+    let files = helper_files(HELPER_CONFIG);
+    let world = mcm_helper_world(HELPER_SCRIPT, files);
+    crate::quest_script_init_system(&world, 0.0);
+    {
+        let host = world.resource::<McmHost>();
+        assert_eq!(host.mods.len(), 1, "registered from OnInit");
+        assert_eq!((host.mods[0].name.as_str(), host.mods[0].pages.as_slice()), ("Frost Config", &["Extra".to_owned()][..]));
+    }
+    crate::mcm::open(&world, 0).expect("opens");
+    let cell = |world: &World, index: usize| world.resource::<McmHost>().open.as_ref().unwrap().cells[index].clone().unwrap();
+    assert_eq!(cell(&world, 0).kind, McmKind::Header);
+    assert_eq!((cell(&world, 1).kind, cell(&world, 1).number), (McmKind::Toggle, 1.0), "bEnabled's default");
+    assert_eq!((cell(&world, 2).kind, cell(&world, 2).number, cell(&world, 2).flags), (McmKind::Slider, 1.5, 0));
+    assert_eq!(cell(&world, 2).value_text(), "1.5x");
+    assert_eq!((cell(&world, 3).kind, cell(&world, 3).text.as_str()), (McmKind::Menu, "Slow"));
+    assert_eq!((cell(&world, 4).kind, cell(&world, 4).text.as_str()), (McmKind::Text, "A"));
+    assert_eq!((cell(&world, 5).kind, cell(&world, 5).number, cell(&world, 5).flags), (McmKind::KeyMap, 48.0, flags_with_unmap()));
+    assert_eq!((cell(&world, 6).kind, cell(&world, 6).text.as_str()), (McmKind::Input, "Ysolda"));
+
+    // The toggle: its setting flips, the group it switches disables the slider, the script hears the
+    // id, and the action runs with the new value.
+    crate::mcm::activate(&world, 1).expect("selects");
+    let variable = |world: &World, name: &str| quest_property(world, name);
+    assert_eq!(cell(&world, 1).number, 0.0);
+    assert_eq!(cell(&world, 2).flags, crate::mcm::flags::DISABLED, "group 1 is off");
+    assert_eq!(variable(&world, "Changes"), Some(1.0), "OnSettingChange(\"bEnabled:Main\")");
+    assert_eq!(variable(&world, "Applied"), Some(-7.0), "Apply(false, 7) ran after the event");
+    crate::mcm::activate(&world, 1).expect("selects again");
+    assert_eq!(cell(&world, 2).flags, 0, "group 1 is on again");
+    assert_eq!(variable(&world, "Applied"), Some(7.0));
+
+    // The slider: its dialog takes the setting, its default and range; the accepted value is written.
+    crate::mcm::activate(&world, 2).expect("opens the dialog");
+    assert_eq!(
+        world.resource::<McmHost>().open.as_ref().unwrap().dialog,
+        Some((2, McmDialog::Slider { start: 1.5, default: 1.5, min: 0.0, max: 5.0, interval: 0.5 }))
+    );
+    crate::mcm::accept(&world, 2, McmAnswer::Slider(2.5)).expect("accepts");
+    assert_eq!(cell(&world, 2).value_text(), "2.5x");
+    assert_eq!(variable(&world, "RateSeen"), Some(2.5), "the script read the new value in OnSettingChange");
+    crate::mcm::highlight(&world, 2).expect("highlights");
+    assert_eq!(world.resource::<McmHost>().open.as_ref().unwrap().info, "Rate is 2.5", "help with {{value}}");
+    crate::mcm::reset_option(&world, 2).expect("resets");
+    assert_eq!(cell(&world, 2).number, 1.5, "back to the settings.ini default");
+
+    // The enum writes the script property; the stepper steps its setting; the key map and input store theirs.
+    crate::mcm::activate(&world, 3).expect("opens the menu");
+    assert!(matches!(&world.resource::<McmHost>().open.as_ref().unwrap().dialog, Some((3, McmDialog::Menu { options, start: 0, .. })) if options == &["Slow", "Fast"]));
+    crate::mcm::accept(&world, 3, McmAnswer::Menu(1)).expect("accepts");
+    assert_eq!(variable(&world, "Speed"), Some(1.0));
+    assert_eq!(cell(&world, 3).text, "Fast");
+    crate::mcm::activate(&world, 4).expect("steps");
+    assert_eq!(cell(&world, 4).text, "B");
+    crate::mcm::activate(&world, 5).expect("opens the key prompt");
+    crate::mcm::accept(&world, 5, McmAnswer::KeyMap(0x22, String::new())).expect("binds");
+    assert_eq!(cell(&world, 5).number, 34.0);
+    crate::mcm::activate(&world, 6).expect("opens the input");
+    assert_eq!(world.resource::<McmHost>().open.as_ref().unwrap().dialog, Some((6, McmDialog::Input { start_text: "Ysolda".into() })));
+    crate::mcm::accept(&world, 6, McmAnswer::Input("Lydia".into())).expect("accepts");
+    assert_eq!(cell(&world, 6).text, "Lydia");
+
+    // Every write reached the profile's file, and only the changed keys.
+    let store = world.resource::<crate::mcm::helper::McmHelperStore>();
+    drop(store);
+    let written = {
+        let mut store = world.resource_mut::<crate::mcm::helper::McmHelperStore>();
+        (store.setting_bool("Frost", "bEnabled:Main"), store.setting_float("Frost", "fRate:Main"), store.setting_int("Frost", "iMode:Main"), store.setting_text("Frost", "sName:Main"))
+    };
+    assert_eq!(written, (true, 1.5, 1, "Lydia".to_owned()));
+
+    // The sub-page.
+    crate::mcm::select_page(&world, Some(0)).expect("shows the page");
+    assert_eq!((cell(&world, 0).kind, cell(&world, 0).text.as_str()), (McmKind::Text, "3.4"));
+}
+
+fn flags_with_unmap() -> u32 {
+    crate::mcm::flags::WITH_UNMAP
+}
+
+/// A config that does not load shows MCM Helper's error option, whose highlight explains why; so does
+/// one needing a later MCM Helper or a plugin the session lacks.
+#[test]
+fn an_mcm_helper_config_that_cannot_load_shows_the_error_page() {
+    use crate::mcm::{McmHost, McmKind};
+    for (config, reason) in [
+        ("{ \"content\": [ { \"type\": \"dial\" } ] }", "unknown control type 'dial'"),
+        (r#"{ "minMcmVersion": 99, "content": [] }"#, "version code 99"),
+        (r#"{ "pluginRequirements": ["Missing.esp"], "content": [] }"#, "Missing.esp"),
+    ] {
+        let world = mcm_helper_world(HELPER_SCRIPT, helper_files(config));
+        crate::quest_script_init_system(&world, 0.0);
+        crate::mcm::open(&world, 0).expect("opens");
+        let option = world.resource::<McmHost>().open.as_ref().unwrap().cells[0].clone().expect("the error option");
+        assert_eq!((option.kind, option.label.as_str(), option.text.as_str()), (McmKind::Text, "Error loading config", "Click to view"));
+        crate::mcm::highlight(&world, 0).expect("highlights");
+        let info = world.resource::<McmHost>().open.as_ref().unwrap().info.clone();
+        assert!(info.contains(reason), "{info:?} names {reason:?}");
+    }
+}
+
+/// `MCM.IsInstalled()` / `GetVersionCode()` answer a mod probing for MCM Helper, and the global setting
+/// calls read and write another mod's settings by name.
+#[test]
+fn mcm_helpers_global_api_answers_probes_and_settings() {
+    let world = mcm_helper_world(
+        "ScriptName VmHelperProbe extends MCM_ConfigBase\n\
+         Int Property Code Auto\n\
+         Int Property Mode Auto\n\
+         Event OnConfigInit()\n\
+          If MCM.IsInstalled()\n Code = MCM.GetVersionCode()\n EndIf\n\
+          MCM.SetModSettingInt(\"Frost\", \"iMode:Main\", 2)\n\
+          Mode = MCM.GetModSettingInt(\"Frost\", \"iMode:Main\") + GetModSettingInt(\"iMode:Main\")\n\
+         EndEvent\n",
+        helper_files(HELPER_CONFIG),
+    );
+    crate::quest_script_init_system(&world, 0.0);
+    assert_eq!(quest_property(&world, "Code"), Some(crate::mcm::helper::VERSION_CODE as f32));
+    assert_eq!(quest_property(&world, "Mode"), Some(4.0), "both reads see the write");
 }

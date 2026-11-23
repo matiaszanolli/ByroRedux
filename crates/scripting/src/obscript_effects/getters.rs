@@ -420,15 +420,7 @@ pub(super) fn get_ignore_crime(world: &World, _fallout: bool, _cmd: u16, _args: 
 pub(super) fn get_open_state(world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], context: &Context) -> Action {
     let caller = caller_of(context);
     let Some(subject) = live(world, caller) else { return Action::Declined };
-    Action::number(match world.get::<crate::vm_state::TwoStateActivator>(subject) {
-        None => 0.0,
-        Some(state) => match (state.is_open, state.is_animating) {
-            (true, false) => 1.0,
-            (true, true) => 2.0,
-            (false, false) => 3.0,
-            (false, true) => 4.0,
-        },
-    })
+    Action::number(crate::vm_state::open_state(world, subject) as f32)
 }
 
 // GECK *GetSitting*: 0 not sitting, 3 is sitting (the "getting ready to sit / stand" states 2

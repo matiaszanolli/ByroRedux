@@ -14,6 +14,8 @@ use byroredux_core::ecs::World;
 pub fn register(world: &mut World) {
     // LMC-UI-002 — the Mod Configuration Menu host the engine's SKI_ConfigBase writes.
     world.init_resource::<crate::mcm::McmHost>();
+    // LMC-UI-002 slice 4 — MCM Helper's configs and settings; the host installs one that reads files.
+    world.init_resource::<crate::mcm::helper::McmHelperStore>();
     compatibility::install(world);
     obscript_speech::install(world);
     faction_changes::install(world);
@@ -171,14 +173,14 @@ mod tests {
     /// `PendingStreamMusic`, +1 for MUS-SCR-004's `CellMusicTypes`, +1 for GUI-EVT-001's
     /// `MenuEventRegistrations`, +1 for M48 #6667's `PapyrusMessageAnswers`, +3 for Oblivion skill-use
     /// leveling's `PendingSkillUse`, `SkillUseClasses`, `SleepCompletions`, +1 for #7291's
-    /// `AmbientPackageRequestsSeen`); the list is
+    /// `AmbientPackageRequestsSeen`, +1 for LMC-UI-002 slice 4's `McmHelperStore`); the list is
     /// the types it used to initialise by hand, so a dropped `install` call fails by name rather
     /// than by count alone.
     #[test]
     fn register_installs_the_same_resource_set() {
         let mut world = World::new();
         register(&mut world);
-        assert_eq!(world.resource_count(), 152, "the resource set `register` installs changed");
+        assert_eq!(world.resource_count(), 153, "the resource set `register` installs changed");
 
         macro_rules! present {
             ($($ty:path),+ $(,)?) => {$(
@@ -197,6 +199,7 @@ mod tests {
         crate::globals::GameCalendar,
         crate::fragment::QuestAliasScripts,
         crate::mcm::McmHost,
+        crate::mcm::helper::McmHelperStore,
         crate::fragment::AliasScriptOwners,
         crate::fragment::ActorWatch,
         crate::fragment::PendingUnloadDeliveries,

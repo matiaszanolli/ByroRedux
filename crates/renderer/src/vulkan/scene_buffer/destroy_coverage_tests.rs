@@ -13,15 +13,45 @@ fn between<'a>(src: &'a str, start: &str, end: &str) -> &'a str {
     &src[from..to]
 }
 
-/// Names of the `Vec<GpuBuffer>` fields declared in the `SceneBuffers` struct.
-fn buffer_families(buffers_rs: &str) -> Vec<String> {
+/// `(name, type)` of every field declared in the `SceneBuffers` struct, whatever its
+/// visibility spelling (`pub`, `pub(super)`, `pub(crate)`). A field spelled any other way
+/// was invisible to the old scan, which keyed on `pub(super)` alone (#7381).
+fn struct_fields(buffers_rs: &str) -> Vec<(String, String)> {
     between(buffers_rs, "pub struct SceneBuffers {", "\n}\n")
         .lines()
         .filter_map(|line| {
             let line = line.trim();
-            let (name, ty) = line.strip_prefix("pub(super) ")?.split_once(':')?;
-            (ty.trim() == "Vec<GpuBuffer>,").then(|| name.trim().to_string())
+            let rest = ["pub(super) ", "pub(crate) ", "pub "]
+                .iter()
+                .find_map(|vis| line.strip_prefix(vis))?;
+            let (name, ty) = rest.split_once(':')?;
+            Some((name.trim().to_string(), ty.trim().trim_end_matches(',').to_string()))
         })
+        .collect()
+}
+
+/// Names of the `Vec<GpuBuffer>` fields declared in the `SceneBuffers` struct.
+fn buffer_families(buffers_rs: &str) -> Vec<String> {
+    struct_fields(buffers_rs)
+        .into_iter()
+        .filter_map(|(name, ty)| (ty == "Vec<GpuBuffer>").then_some(name))
+        .collect()
+}
+
+/// Names of the single `GpuBuffer` fields (the same leak applies: a scalar buffer missed in
+/// `destroy` keeps its allocator `Arc` clone alive, #7381).
+fn scalar_buffers(buffers_rs: &str) -> Vec<String> {
+    struct_fields(buffers_rs)
+        .into_iter()
+        .filter_map(|(name, ty)| (ty == "GpuBuffer").then_some(name))
+        .collect()
+}
+
+/// Names of the deferred-destroy queues of `GpuBuffer`s, drained by `destroy`.
+fn buffer_queues(buffers_rs: &str) -> Vec<String> {
+    struct_fields(buffers_rs)
+        .into_iter()
+        .filter_map(|(name, ty)| ty.ends_with("DeferredDestroyQueue<GpuBuffer>").then_some(name))
         .collect()
 }
 
@@ -41,6 +71,40 @@ fn destroy_walks_every_per_frame_buffer_family() {
                 && destroy.contains(&format!("self.{family}.clear();")),
             "`SceneBuffers::destroy` never tears down `{family}` — a per-frame buffer family \
              that skips teardown leaks the allocator Arc and fails the shutdown unwrap (#6521)"
+        );
+    }
+}
+
+/// #7381 — the single `GpuBuffer` fields (`bind_inverses_persistent`,
+/// `bind_inverse_upload_staging`, `terrain_tile_buffer`, `ray_budget_buffer` and, since
+/// RLT-IBL-003, `env_brdf_lut_buffer`) and the deferred-destroy queues of buffers fail the
+/// shutdown the same way a missed family does, and were covered only by hand review.
+#[test]
+fn destroy_tears_down_every_single_buffer_and_drains_every_buffer_queue() {
+    let buffers_rs = include_str!("buffers.rs");
+    let descriptors_rs = include_str!("descriptors.rs");
+    let destroy = between(descriptors_rs, "pub unsafe fn destroy(&mut self", "\n    }\n}\n");
+    let scalars = scalar_buffers(buffers_rs);
+    assert!(
+        scalars.len() >= 5,
+        "the scalar-field scan lost its footing (found {scalars:?}); fix `scalar_buffers`"
+    );
+    for name in &scalars {
+        assert!(
+            destroy.contains(&format!("self.{name}.destroy(device, allocator);")),
+            "`SceneBuffers::destroy` never tears down `{name}` — a buffer that skips teardown \
+             leaks the allocator Arc and fails the shutdown unwrap (#7381, the #6521 class)"
+        );
+    }
+    let queues = buffer_queues(buffers_rs);
+    assert!(!queues.is_empty(), "the queue scan lost its footing; fix `buffer_queues`");
+    for name in &queues {
+        let from = destroy
+            .find(&format!("self.{name}"))
+            .unwrap_or_else(|| panic!("`SceneBuffers::destroy` never reaches the `{name}` queue (#7381)"));
+        assert!(
+            destroy[from..].contains(".drain("),
+            "`SceneBuffers::destroy` does not drain `{name}`, so its retired buffers outlive the allocator (#7381)"
         );
     }
 }

@@ -253,6 +253,23 @@ pub struct SkinCoverageFrame {
     pub cpu_skin_chain_ns: u64,
 }
 
+impl SkinCoverageFrame {
+    /// A skin compute dispatch was recorded for a slot with `vertex_count` vertices. Called only
+    /// after `SkinComputePipeline::dispatch`: an entity the dirty gate skipped never reaches it,
+    /// so `dispatch_vertices` counts the work the GPU bracket measured (#7150, #7383).
+    pub fn note_dispatched(&mut self, vertex_count: u32) {
+        self.dispatch_vertices += u64::from(vertex_count);
+    }
+
+    /// A BLAS refit was recorded over an index buffer of `index_count` indices. Refit-only:
+    /// first-sight builds take another path, so `refit_triangles` is the work
+    /// `gpu_skin_blas_refit_ms` measured (#7150, #7383).
+    pub fn note_refit_succeeded(&mut self, index_count: u32) {
+        self.refits_succeeded += 1;
+        self.refit_triangles += u64::from(index_count / 3);
+    }
+}
+
 /// LRU eviction predicate for [`SkinSlot`] / `skinned_blas` cleanup.
 ///
 /// Returns `true` when a slot whose most-recent dispatch was at
@@ -1347,6 +1364,57 @@ impl SkinPaletteComputePipeline {
 
 #[cfg(test)]
 mod tests {
+
+    /// #7150 / #7383 — `dispatch_vertices` counts only the dispatches that were recorded:
+    /// an entity the dirty gate skipped never calls `note_dispatched`, and the count sums
+    /// each dispatch's own `vertex_count`.
+    #[test]
+    fn dispatch_vertices_counts_recorded_dispatches_only() {
+        let mut frame = SkinCoverageFrame::default();
+        // Three visible entities; the middle one is skipped (bone palette unchanged).
+        frame.dispatches_total += 1;
+        frame.note_dispatched(1_200);
+        frame.dispatches_total += 1;
+        frame.dispatches_skipped += 1;
+        frame.dispatches_total += 1;
+        frame.note_dispatched(800);
+        assert_eq!(frame.dispatch_vertices, 2_000);
+        assert_eq!((frame.dispatches_total, frame.dispatches_skipped), (3, 1));
+    }
+
+    /// #7150 / #7383 — a successful refit adds `index_count / 3` triangles (floor) and one
+    /// success; a failed refit (the `Err` arm) never reaches the method, and the counters
+    /// start from zero each frame (`SkinCoverageFrame::default()` at the top of `draw_frame`).
+    #[test]
+    fn refit_triangles_sum_the_indices_of_successful_refits() {
+        let mut frame = SkinCoverageFrame::default();
+        assert_eq!((frame.refits_succeeded, frame.refit_triangles), (0, 0));
+        frame.note_refit_succeeded(300);
+        frame.note_refit_succeeded(901); // a partial triangle floors: 300 triangles
+        assert_eq!(frame.refits_succeeded, 2);
+        assert_eq!(frame.refit_triangles, 100 + 300);
+        // The reset is the whole struct's default, so neither new counter can survive a frame.
+        let reset = SkinCoverageFrame::default();
+        assert_eq!((reset.dispatch_vertices, reset.refit_triangles), (0, 0));
+    }
+
+    /// #7383 — the two call sites sit where the counters' meaning needs them: the dispatch
+    /// count after the dirty gate's `continue` and after `dispatch(`, the refit count in the
+    /// `Ok(())` arm of `refit_skinned_blas` (first-sight builds take another path).
+    #[test]
+    fn the_coverage_counters_are_bumped_at_the_recorded_work_only() {
+        let src = crate::source_scan::production_text(include_str!("context/skinned_blas_refit.rs"));
+        let skipped = src.find("dispatches_skipped += 1;").expect("the dirty gate's skip counter");
+        let dispatch = src.find("skin_pipeline.dispatch(bound").expect("the dispatch call");
+        let noted = src.find("note_dispatched(push.vertex_count)").expect("dispatch_vertices is bumped through the method");
+        assert!(skipped < dispatch && dispatch < noted, "a skipped entity must not count (#7383)");
+        let refit = src.find("accel.refit_skinned_blas(").expect("the refit call");
+        let ok_arm = src[refit..].find("Ok(()) => {").expect("the refit's Ok arm") + refit;
+        let err_arm = src[ok_arm..].find("Err(e) =>").expect("the refit's Err arm") + ok_arm;
+        let bumped = src.find("note_refit_succeeded(idx_count)").expect("refit_triangles is bumped through the method");
+        assert!(ok_arm < bumped && bumped < err_arm, "only a successful refit counts (#7383)");
+        assert_eq!(src.matches("note_refit_succeeded(").count(), 1);
+    }
     use super::*;
 
     /// Pin the compute pass's INPUT stride against the Rust `Vertex`

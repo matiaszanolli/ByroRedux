@@ -821,6 +821,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("DecompiledPexCache", "#5999 — per-script cache of the extracted, parsed, preflighted and decompiled .pex, re-derived from the script archive on demand; never gameplay state"),
         ("VmAliasScriptChecks", "M47.2 — per-script cache of whether the Papyrus VM runs an alias script, re-checked from the script archive on demand; never gameplay state"),
         ("QuestOwnScripts", "the quests' own scripts the Papyrus VM runs (for OnInit), checked a few per frame from the QUST records and the script archives every boot; the once-per-save OnInit gate lives in the saved QuestScriptVariables"),
+        ("McmHelperStore", "LMC-UI-002 slice 4 — MCM Helper's parsed configs, its settings read through the mod roots and the open page; the player's values persist in the profile's own INI files (LMC-SET-004), never the save"),
         ("McmHost", "LMC-UI-002 — the session's Mod Configuration Menu: the registered config menus and the open page; every config script registers again in OnGameReload after a load, and its settings are its own saved script variables"),
         ("VmQuestScriptChecks", "per-script cache of whether the Papyrus VM runs a quest's own script, re-checked from the script archive on demand; never gameplay state"),
         ("VmReferenceScriptChecks", "M47.2 — per-script cache of whether the Papyrus VM runs a reference script, re-checked from the script archive on demand; never gameplay state"),

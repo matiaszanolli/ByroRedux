@@ -1,6 +1,7 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-23). Revision 36 builds LMC-PERF-003: an asset lookup is one index
+**Status**: ACTIVE (2026-11-23). Revision 37 serves MCM Helper's config menus (LMC-UI-002 slice 4), with
+the player's settings kept per named profile (LMC-SET-004). Revision 36 builds LMC-PERF-003: an asset lookup is one index
 probe whatever the archive count, and opening archives is linear. Revision 35 makes SkyUI's `ShowMessage` (and any box wrapper called
 for its value) wait for its answer, and resets a quest's scripts as it starts. Revision 34 builds the MCM host's native Mod Configuration page and
 its adapter (slice 3). Revision 33 builds the MCM host's model and engine `SKI_ConfigBase`
@@ -959,6 +960,9 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   Slice 3 is built (revision 34): the native Mod Configuration page
   (reached from the pause menu once a mod registered) and the adapter that
   feeds it from `McmHost` and runs its actions as the config script's events.
+  Slice 4 is built (revision 37): MCM Helper's `config.json` menus and its
+  `MCM` API, with the player's settings per game and named profile
+  (LMC-SET-004); its hotkeys are slice 4b.
 - **LMC-UI-003.** MenuXml replacements, `<include>` prefabs and font
   replacements from mods load through the MenuXml crate with the same
   precedence rules.
@@ -1639,3 +1643,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 34 | 2026-11-23 | LMC-UI-002 slice 3: the native Mod Configuration page (grid, five dialogs, unmap, blocking message) reached from the pause menu, the `McmHost` adapter with `$`-key translation, leaving the menus closes the page; a `.dds` custom panel is carried but not drawn | — |
 | 35 | 2026-11-23 | A box wrapper (one `Return` body) called for its value hands its box to the calling statement, which waits and replays with the answer: SkyUI's `ShowMessage` raises a box with Accept / Cancel and returns the answer. A non-Run-Once Papyrus quest resets its own and its aliases' script state as it starts, then runs `OnInit`, before its startup stage (CK *OnInit*). Measured first: on vanilla Skyrim SE the general value-call wait declines 13 of 19,412 scripted references and 5 of 2,529 alias instances, so only the wrapper shape was built | — |
 | 36 | 2026-11-23 | LMC-PERF-003 built: provider pools are `ArchiveSet`s with one path index each (a lookup costs 0.8 µs from 10 to 400 archives, was 1.6 to 64 µs), verified against the archive scan on real FNV, Skyrim SE and Fallout 4 archives; opening a pool's shadow counts became linear (400 archives: 21 s to 0.53 s), noted under LMC-PERF-001 | — |
+| 37 | 2026-11-23 | LMC-UI-002 slice 4: MCM Helper (v1.6.2, version code 15) served by an engine `MCM_ConfigBase` and `MCM`; pages from `config.json` with mod-setting, script-property and global value sources, group conditions and actions; settings layered over the mod's defaults and an earlier install's file, written per game and named profile (`--profile-name`, a boot request's `[mods] name`; owner's decisions, mcm-host.md §6.4–6.6); hotkeys (`keybinds.json`) are slice 4b | — |

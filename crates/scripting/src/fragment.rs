@@ -172,6 +172,7 @@ pub(crate) const SOURCES: &str = concat!(
     include_str!("fragment/vm/natives/linked_refs.rs"),
     include_str!("fragment/vm/natives/location.rs"),
     include_str!("fragment/vm/natives/mcm.rs"),
+    include_str!("fragment/vm/natives/mcm_helper.rs"),
     include_str!("fragment/vm/natives/ownership_crime.rs"),
     include_str!("fragment/vm/natives/quest.rs"),
     include_str!("fragment/vm/natives/reference.rs"),

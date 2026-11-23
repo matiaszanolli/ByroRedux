@@ -33,6 +33,7 @@ mod game_utility;
 mod linked_refs;
 mod location;
 mod mcm;
+mod mcm_helper;
 mod ownership_crime;
 mod quest;
 mod reference;

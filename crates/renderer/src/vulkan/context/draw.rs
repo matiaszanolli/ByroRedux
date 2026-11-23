@@ -1252,6 +1252,42 @@ mod skin_dispatch_ran_ordering_tests {
         );
     }
 
+    /// #7379 — the terrain-patch frame order, which no barrier reasoning can recover from
+    /// a swapped call. `upload_terrain_tiles`' own TRANSFER barrier and the patch pass's entry
+    /// barrier order a tile copy only if the copy is recorded *before* the compute; the patch
+    /// BLAS builds are valid only if recorded after the compute's exit barrier; and the TLAS
+    /// build (inside `dispatch_skin_and_cluster`) must come after both. A swap compiles and
+    /// passes every other test. Order: tiles -> patch compute -> patch BLAS -> TLAS.
+    #[test]
+    fn the_terrain_patch_frame_order_is_tiles_then_compute_then_blas_then_tlas() {
+        let src = super::draw_frame_body();
+        let at = |needle: &str| src.find(needle).unwrap_or_else(|| panic!("draw_frame must call `{needle}` (#7379)"));
+        let tiles = at("self.upload_terrain_tiles_if_dirty(");
+        let patches = at("self.record_terrain_patches(");
+        let tlas = at("self.dispatch_skin_and_cluster(");
+        assert!(
+            tiles < patches && patches < tlas,
+            "tile upload, then the patch compute, then the skin chain / TLAS build (#7379)"
+        );
+
+        let record = crate::source_scan::production_text(include_str!("dispatch_skin_and_cluster.rs"));
+        let (_, body) = record
+            .split_once("fn record_terrain_patches(")
+            .expect("record_terrain_patches must exist");
+        let body = body.split_once("\n    }\n").expect("fn body").0;
+        let pos = |needle: &str| body.find(needle).unwrap_or_else(|| panic!("record_terrain_patches must contain `{needle}`"));
+        let (start, compute, end, blas) = (
+            pos("timers.cmd_start(TimerPass::TerrainPatch,"),
+            pos("pass.record("),
+            pos("timers.cmd_end(TimerPass::TerrainPatch,"),
+            pos("self.record_terrain_patch_blas("),
+        );
+        assert!(
+            start < compute && compute < end && end < blas,
+            "the patch compute sits inside its timer bracket and the patch BLAS is recorded after it (#7379)"
+        );
+    }
+
     /// The record-time latch and the submit-time flag must both be reset at the
     /// top of `draw_frame`, or a bailed frame reports the previous frame's
     /// outcome (#1796 for the first, #3991 for the second).

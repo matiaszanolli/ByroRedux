@@ -60,6 +60,8 @@ pub struct DeferredFragmentEffects {
     /// BIK-PRES-006 — the VM run called `Game.PlayBink`: its suspension waits for the movie, not a
     /// delay.
     pub(crate) awaits_movie: bool,
+    /// `Utility.WaitGameTime`: the game hour the suspended run resumes at.
+    pub(crate) awaits_game_time: Option<f64>,
     /// M48 #6667 — the VM run waits on the answer to this `Message.Show()` box.
     pub(crate) awaits_message: Option<u32>,
     pub(super) quest_definitions: Option<crate::QuestDefinitionRegistry>,
@@ -327,6 +329,7 @@ impl DeferredFragmentEffects {
     pub fn new(world: &World) -> Self {
         Self {
             awaits_movie: false,
+            awaits_game_time: None,
             awaits_message: None,
             quest_definitions: world
                 .try_resource::<crate::QuestDefinitionRegistry>()

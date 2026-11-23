@@ -181,6 +181,25 @@ vec3 traceShadowTransmittanceDetailed(
     return transmission;
 }
 
+// #7369 — an alpha-aware opaque blocker for rays that only need "is something
+// there": the traced sky-specular occlusion lobe (RLT-IBL-004). Walks the same
+// layers the direct-sun path walks (`traceShadowTransmittanceDetailed`), so an
+// alpha-tested leaf, fence or grate blocks where its texel covers and is
+// advanced past where it does not, instead of occluding as a solid quad like
+// the binary trace (every BLAS is `OPAQUE`). Glass and effect layers are not in
+// the mask this takes, and no emitter shell applies (`emitterRadius` 0).
+bool traceOpaqueBlockedAlphaAware(
+    vec3 origin, vec3 direction, float maxDist, uint visibilityMask
+) {
+    uint committedInstance;
+    float committedDistance;
+    traceShadowTransmittanceDetailed(
+        origin, direction, maxDist, 0.0,
+        visibilityMask & VISIBILITY_MASK_ALL_OPAQUE,
+        committedInstance, committedDistance);
+    return committedInstance != 0xFFFFFFFFu;
+}
+
 vec3 traceShadowTransmittance(
     vec3 origin, vec3 direction, float maxDist, float emitterRadius,
     uint visibilityMask

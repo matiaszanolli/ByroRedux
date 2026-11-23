@@ -35,18 +35,16 @@ pub(super) fn get_distance(condition: &Condition, entity: EntityId, world: &Worl
 }
 
 pub(super) fn get_in_cell(condition: &Condition, entity: EntityId, world: &World) -> f32 {
-    // Cell ownership is stamped on every loaded entity. The global
-    // authored CELL FormID lives once on its root, avoiding duplicate
-    // identity data across every mesh, actor, and child entity.
+    f32::from(u8::from(reference_cell(entity, world) == Some(condition.param_1)))
+}
+
+/// The CELL a loaded reference is in (`GetInCell`, the Papyrus `GetParentCell`). Cell ownership is
+/// stamped on every loaded entity; the global authored CELL FormID lives once on its root, avoiding
+/// duplicate identity data across every mesh, actor, and child entity.
+pub(crate) fn reference_cell(entity: EntityId, world: &World) -> Option<u32> {
     use byroredux_core::ecs::components::{CellFormId, CellRoot};
     let cell_root = world.get::<CellRoot>(entity).map_or(entity, |root| root.0);
-    world.get::<CellFormId>(cell_root).map_or(0.0, |cell| {
-        if cell.0 == condition.param_1 {
-            1.0
-        } else {
-            0.0
-        }
-    })
+    world.get::<CellFormId>(cell_root).map(|cell| cell.0).filter(|&cell| cell != 0)
 }
 
 pub(super) fn has_loaded_3d(entity: EntityId, world: &World) -> f32 {

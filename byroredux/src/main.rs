@@ -69,6 +69,7 @@ mod list_cells;
 mod material_dump;
 mod material_flags;
 mod material_translate;
+mod mcm_files;
 mod mcm_page;
 mod menu_stack;
 mod menu_xml_input;
@@ -545,6 +546,83 @@ mod bench_frame_distribution_tests {
         for (index, (key, _, _)) in samples.iter().enumerate() {
             assert_eq!(*key, BENCH_GPU_KEYS[index], "row {index} of bench_gpu_samples is out of BENCH_GPU_KEYS order");
         }
+    }
+
+    /// #7386 — a bracket added to `BENCH_GPU_KEYS` must reach the other two GPU-pass readers:
+    /// the overlay / byro-dbg `gpu_pass_ms` rows (`metrics_sample_system`) and the slow-frame
+    /// hitch line (`gpu_breakdown`). `far_sun` was wired into neither, and the cache,
+    /// terrain-patch and patch-BLAS brackets into only the first, because only the `bench:` line
+    /// had a parity test. The three spell four brackets differently, so the table names each.
+    #[test]
+    fn every_bench_gpu_bracket_reaches_the_overlay_rows_and_the_hitch_line() {
+        // (bench key, metrics_sample_system key, gpu_breakdown name)
+        const READERS: [(&str, &str, &str); 30] = [
+            ("skin_disp", "skin", "skin"),
+            ("blas_refit", "skin_blas_refit", "blas_refit"),
+            ("taa", "taa", "taa"),
+            ("upscale", "upscale", "upscale"),
+            ("main_render", "main_render", "main_render"),
+            ("svgf", "svgf", "svgf"),
+            ("composite", "composite", "composite"),
+            ("ssao", "ssao", "ssao"),
+            ("bloom", "bloom", "bloom"),
+            ("volumetrics", "volumetrics", "volumetrics"),
+            ("cluster_cull", "cluster_cull", "cluster_cull"),
+            ("presentation", "presentation", "presentation"),
+            ("tlas_build", "tlas_build", "tlas"),
+            ("caustic_splat", "caustic_splat", "caustic"),
+            ("skin_palette", "skin_palette", "skin_palette"),
+            ("depth_history_copy", "depth_history_copy", "depth_history_copy"),
+            ("sky_cube", "sky_cube", "sky_cube"),
+            ("groundcover_scatter", "groundcover_scatter", "groundcover_scatter"),
+            ("exposure_meter", "exposure_meter", "exposure_meter"),
+            ("groundcover_models", "groundcover_models", "groundcover_models"),
+            ("volumetrics_inject", "volumetrics_inject", "volumetrics_inject"),
+            ("volumetrics_integrate", "volumetrics_integrate", "volumetrics_integrate"),
+            ("shadow_filter", "shadow_filter", "shadow_filter"),
+            ("cloud_shadow", "cloud_shadow", "cloud_shadow"),
+            ("volumetrics_local_sim", "volumetrics_local_sim", "volumetrics_local_sim"),
+            ("far_sun", "far_sun", "far_sun"),
+            ("cache_update", "cache_update", "cache_update"),
+            ("cache_resolve", "cache_resolve", "cache_resolve"),
+            ("terrain_patch", "terrain_patch", "terrain_patch"),
+            ("terrain_patch_blas", "terrain_patch_blas", "terrain_patch_blas"),
+        ];
+        assert_eq!(
+            READERS.map(|(bench, _, _)| bench),
+            BENCH_GPU_KEYS,
+            "the reader table follows BENCH_GPU_KEYS row for row (#7386)"
+        );
+
+        let metrics = byroredux_core::source_scan::production_text(include_str!("systems/metrics.rs"));
+        let mut inserted: Vec<&str> = Vec::new();
+        for (at, _) in metrics.match_indices("gpu_pass_ms.insert(") {
+            let rest = metrics[at..].trim_start_matches("gpu_pass_ms.insert(").trim_start();
+            if let Some(name) = rest.strip_prefix('"').and_then(|r| r.split('"').next()) {
+                inserted.push(name);
+            }
+        }
+        let debug = byroredux_core::source_scan::production_text(include_str!("systems/debug.rs"));
+        let (_, breakdown) = debug.split_once("fn gpu_breakdown(").expect("gpu_breakdown must exist");
+        let format_string = &breakdown[..breakdown.find("rt_tier={}").expect("the format string's volumetrics tail")];
+        for (bench, metrics_key, breakdown_name) in READERS {
+            assert!(
+                inserted.contains(&metrics_key),
+                "metrics_sample_system has no gpu_pass_ms row for `{bench}` (key `{metrics_key}`): the overlay grid, its sum and the byro-dbg wire never show it (#7386)"
+            );
+            assert!(
+                format_string.contains(&format!(" {breakdown_name}={{}}")) || format_string.contains(&format!("\"{breakdown_name}={{}}")),
+                "gpu_breakdown (the slow-frame hitch line) never prints `{bench}` as `{breakdown_name}=` (#7386)"
+            );
+        }
+        let mut distinct = inserted.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            READERS.len(),
+            "every gpu_pass_ms row belongs to a bench bracket and none repeats; rows: {inserted:?}"
+        );
     }
 
     /// #3629 — the key list and the printed line were free to drift, and

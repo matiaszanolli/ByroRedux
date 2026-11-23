@@ -436,32 +436,9 @@ fn triangle_pipeline_inner(
         .sample_shading_enable(false)
         .rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
-    // Main render pass has 8 color attachments (HDR + normal + motion +
-    // mesh_id + raw_indirect + albedo + the two FSR masks). Each needs a
-    // blend state entry. The opaque pipeline never blends any of them.
-    let color_blend_none = vk::PipelineColorBlendAttachmentState::default()
-        .color_write_mask(vk::ColorComponentFlags::RGBA)
-        .blend_enable(false);
-    // Opaque and alpha-tested geometry is fully described by depth and
-    // motion, which is exactly the "leave the mask at its zero clear" case.
-    // Masking the writes off (rather than writing zero) also keeps the
-    // cleared attachment untouched where an opaque draw covers a
-    // transparent one that already MAX-blended a value in.
-    let fsr_mask_off = vk::PipelineColorBlendAttachmentState::default()
-        .color_write_mask(vk::ColorComponentFlags::empty())
-        .blend_enable(false);
-    let color_blend_attachment = [
-        color_blend_none, // 0 HDR color
-        color_blend_none, // 1 normal
-        color_blend_none, // 2 motion
-        color_blend_none, // 3 mesh_id
-        color_blend_none, // 4 raw_indirect
-        color_blend_none, // 5 albedo
-        fsr_mask_off,     // 6 fsr_reactive
-        color_blend_none.color_write_mask(
-            vk::ColorComponentFlags::G | vk::ColorComponentFlags::B | vk::ColorComponentFlags::A,
-        ), // 7 far-field sun; preserve the transparency mask in R
-    ];
+    // Main render pass has 8 color attachments; the opaque pipeline never blends
+    // any of them (see `opaque_gbuffer_attachments` for the per-slot write masks).
+    let color_blend_attachment = opaque_gbuffer_attachments();
 
     let color_blending = vk::PipelineColorBlendStateCreateInfo::default()
         .logic_op_enable(false)
@@ -691,6 +668,41 @@ pub(crate) fn fsr_mask_max_attachment() -> vk::PipelineColorBlendAttachmentState
         .alpha_blend_op(vk::BlendOp::MAX)
 }
 
+/// The opaque and alpha-tested pipelines' eight G-buffer blend states: nothing blends,
+/// every attachment is overwritten, with two exceptions on the FSR side (#7378).
+///
+/// - Slot 6 (the FSR reactive mask) is masked off: opaque and alpha-tested geometry is
+///   fully described by depth and motion, which is the "leave the mask at its zero clear"
+///   case, and masking (rather than writing zero) keeps a value a transparent draw already
+///   MAX-blended in where an opaque draw later covers it.
+/// - Slot 7 (`outTransparencyAndSun`, `TRANSPARENCY_SUN_FORMAT`) has split channel
+///   ownership: R is the FSR transparency mask, which blended draws MAX in
+///   ([`fsr_mask_max_attachment`]), and G|B|A is the visible opaque receiver's far-field
+///   sun radiance, which only opaque draws write. So opaque writes G|B|A and preserves R.
+///   Masking all four drops the far-sun pass's input; writing all four clobbers the mask.
+///
+/// A pure function so a test can pin the masks without a device.
+fn opaque_gbuffer_attachments() -> [vk::PipelineColorBlendAttachmentState; 8] {
+    let overwrite = vk::PipelineColorBlendAttachmentState::default()
+        .color_write_mask(vk::ColorComponentFlags::RGBA)
+        .blend_enable(false);
+    let fsr_mask_off = vk::PipelineColorBlendAttachmentState::default()
+        .color_write_mask(vk::ColorComponentFlags::empty())
+        .blend_enable(false);
+    [
+        overwrite,    // 0 HDR color
+        overwrite,    // 1 normal
+        overwrite,    // 2 motion
+        overwrite,    // 3 mesh_id
+        overwrite,    // 4 raw_indirect
+        overwrite,    // 5 albedo
+        fsr_mask_off, // 6 fsr_reactive
+        overwrite.color_write_mask(
+            vk::ColorComponentFlags::G | vk::ColorComponentFlags::B | vk::ColorComponentFlags::A,
+        ), // 7 far-field sun in GBA; preserve the transparency mask in R
+    ]
+}
+
 /// `hdr_blend` is the one attachment state that depends on the caller's
 /// authored (src, dst) Gamebryo blend factors, so it's built by the
 /// caller and passed in; every other state here is fixed.
@@ -735,7 +747,7 @@ fn blend_gbuffer_attachments(
             no_write,     // 4 preserve opaque raw_indirect
             no_write,     // 5 preserve opaque albedo
             fsr_mask_max, // 6 fsr_reactive
-            fsr_mask_max, // 7 fsr_transparency
+            fsr_mask_max, // 7 transparency mask (R only; GBA is the opaque far-sun lane)
         ]
     } else {
         [
@@ -746,7 +758,7 @@ fn blend_gbuffer_attachments(
             auxiliary_blend, // 4 raw_indirect (coverage blend)
             auxiliary_blend, // 5 albedo (coverage blend)
             fsr_mask_max,    // 6 fsr_reactive
-            fsr_mask_max,    // 7 fsr_transparency
+            fsr_mask_max,    // 7 transparency mask (R only; GBA is the opaque far-sun lane)
         ]
     }
 }
@@ -1276,6 +1288,61 @@ mod tests {
         assert_eq!(a.src_alpha_blend_factor, vk::BlendFactor::ONE);
         assert_eq!(a.dst_alpha_blend_factor, vk::BlendFactor::ONE);
         assert_eq!(a.alpha_blend_op, vk::BlendOp::MAX);
+    }
+
+    fn same_attachment_state(
+        a: &vk::PipelineColorBlendAttachmentState,
+        b: &vk::PipelineColorBlendAttachmentState,
+    ) -> bool {
+        a.color_write_mask == b.color_write_mask
+            && a.blend_enable == b.blend_enable
+            && a.src_color_blend_factor == b.src_color_blend_factor
+            && a.dst_color_blend_factor == b.dst_color_blend_factor
+            && a.color_blend_op == b.color_blend_op
+            && a.src_alpha_blend_factor == b.src_alpha_blend_factor
+            && a.dst_alpha_blend_factor == b.dst_alpha_blend_factor
+            && a.alpha_blend_op == b.alpha_blend_op
+    }
+
+    /// #7378 — attachment 7 splits its channels: R is the FSR transparency mask (blended
+    /// draws MAX it in), GBA is the opaque receiver's far-field sun. The opaque pipelines
+    /// must write G|B|A and leave R, and mask the reactive mask (6) off; the blend arms
+    /// must use the shared R-only MAX state at both 6 and 7. A change on either side
+    /// compiles and passes everything else: it drops the far-sun pass's input, or
+    /// clobbers the FSR mask, visible only in RenderDoc.
+    #[test]
+    fn attachment_7_keeps_its_split_channel_ownership_in_every_gbuffer_pipeline() {
+        let opaque = opaque_gbuffer_attachments();
+        for (idx, name) in [(0, "hdr"), (1, "normal"), (2, "motion"), (3, "mesh_id"), (4, "raw_indirect"), (5, "albedo")] {
+            assert_eq!(opaque[idx].color_write_mask, vk::ColorComponentFlags::RGBA, "{name} is overwritten");
+            assert_eq!(opaque[idx].blend_enable, vk::FALSE, "{name} never blends in an opaque pipeline");
+        }
+        assert_eq!(
+            opaque[6].color_write_mask,
+            vk::ColorComponentFlags::empty(),
+            "the opaque pipelines leave the FSR reactive mask at its clear"
+        );
+        assert_eq!(
+            opaque[7].color_write_mask,
+            vk::ColorComponentFlags::G | vk::ColorComponentFlags::B | vk::ColorComponentFlags::A,
+            "attachment 7: opaque writes the far-field sun (GBA) and preserves the transparency mask (R)"
+        );
+        assert_eq!(opaque[7].blend_enable, vk::FALSE);
+
+        let hdr_blend = vk::PipelineColorBlendAttachmentState::default()
+            .color_write_mask(vk::ColorComponentFlags::RGBA)
+            .blend_enable(true);
+        let mask = fsr_mask_max_attachment();
+        for preserve in [false, true] {
+            let blend = blend_gbuffer_attachments(hdr_blend, preserve);
+            for slot in [6, 7] {
+                assert!(
+                    same_attachment_state(&blend[slot], &mask),
+                    "blend arm (preserve_opaque_gbuffer = {preserve}) slot {slot} must be the shared \
+                     R-only MAX state, so it neither writes the far-sun lane nor drops the mask"
+                );
+            }
+        }
     }
 
     /// Regression: #392 — every Gamebryo `AlphaFunction` value (0..10)

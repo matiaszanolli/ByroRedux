@@ -931,8 +931,16 @@ Skinned BLAS coverage (last frame):
   first_sight_succeeded  = 0
   refits_attempted       = 6
   refits_succeeded       = 6
+  dispatch_vertices      = 48210  (skinned this frame)
+  refit_triangles        = 71322  (BLAS-refit this frame)
   coverage: full
 ```
+
+`dispatch_vertices` and `refit_triangles` (#7150) are the work the skin-dispatch and
+BLAS-refit GPU brackets measured, so each bracket reads as a per-vertex / per-triangle rate.
+The brackets are fence-lagged, so take rates from a steady scene, not one frame. A skipped
+entity (palette unchanged) adds no vertices; only a successful refit adds triangles
+(first-sight builds are not counted).
 
 A regression — for example, a slot-pool exhaustion that drops two NPCs from
 refit — surfaces as:
@@ -943,8 +951,10 @@ refit — surfaces as:
 ```
 
 See `crates/core/src/ecs/resources/mod.rs` (`SkinCoverageStats`) for the canonical
-schema and `crates/renderer/src/vulkan/context/draw.rs` for the per-frame
-increments.
+schema and `crates/renderer/src/vulkan/skin_compute.rs` (`SkinCoverageFrame`, whose
+`note_dispatched` / `note_refit_succeeded` methods
+`crates/renderer/src/vulkan/context/skinned_blas_refit.rs` calls) for the per-frame
+increments; `draw.rs` only resets the frame.
 
 ### `engine.quit` — graceful shutdown request
 

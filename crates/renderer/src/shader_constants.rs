@@ -2056,6 +2056,8 @@ mod tests {
             INSTANCE_FLAG_CAUSTIC_SOURCE as SB_CAUSTIC_SOURCE,
             INSTANCE_FLAG_DIFFUSE_ALPHA as SB_DIFFUSE_ALPHA,
             INSTANCE_FLAG_FLAT_SHADING as SB_FLAT_SHADING,
+            INSTANCE_FLAG_LOD_BLOCK as SB_LOD_BLOCK,
+            INSTANCE_FLAG_MOVED_THIS_FRAME as SB_MOVED_THIS_FRAME,
             INSTANCE_FLAG_NON_UNIFORM_SCALE as SB_NON_UNIFORM_SCALE,
             INSTANCE_FLAG_TERRAIN_PATCH as SB_TERRAIN_PATCH,
             INSTANCE_FLAG_TERRAIN_SPLAT as SB_TERRAIN_SPLAT,
@@ -2067,6 +2069,12 @@ mod tests {
         assert_eq!(INSTANCE_FLAG_FLAT_SHADING, SB_FLAT_SHADING);
         assert_eq!(INSTANCE_FLAG_DIFFUSE_ALPHA, SB_DIFFUSE_ALPHA);
         assert_eq!(INSTANCE_FLAG_TERRAIN_PATCH, SB_TERRAIN_PATCH);
+        // #7377 — the CPU packs both from `scene_buffer/constants.rs` while the shaders read the
+        // generated define: `MOVED_THIS_FRAME` drives the ReSTIR mover taint (#6250) and
+        // `LOD_BLOCK` the distant-LOD shading path, and editing one file's bit alone split the
+        // two silently.
+        assert_eq!(INSTANCE_FLAG_LOD_BLOCK, SB_LOD_BLOCK);
+        assert_eq!(INSTANCE_FLAG_MOVED_THIS_FRAME, SB_MOVED_THIS_FRAME);
     }
 
     /// #2045 (TD7-101) — `INSTANCE_RENDER_LAYER_SHIFT`/`_MASK` were
