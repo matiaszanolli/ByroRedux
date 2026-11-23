@@ -468,18 +468,7 @@ impl VulkanContext {
     /// for diagnostic spot-checks via `byro-dbg`, not a stable
     /// regression key.
     pub fn fill_skin_coverage_stats(&self, stats: &mut byroredux_core::ecs::SkinCoverageStats) {
-        let f = self.skin.last_skin_coverage_frame;
-        stats.dispatches_total = f.dispatches_total;
-        stats.dispatches_skipped = f.dispatches_skipped;
-        stats.first_sight_attempted = f.first_sight_attempted;
-        stats.first_sight_succeeded = f.first_sight_succeeded;
-        stats.refits_attempted = f.refits_attempted;
-        stats.refits_succeeded = f.refits_succeeded;
-        stats.dispatch_vertices = f.dispatch_vertices;
-        stats.refit_triangles = f.refit_triangles;
-        // #2803 — host-side chain cost, same-frame (not fence-lagged
-        // like the GPU brackets below).
-        stats.cpu_skin_chain_ms = f.cpu_skin_chain_ns as f32 / 1.0e6;
+        apply_skin_coverage_frame(stats, &self.skin.last_skin_coverage_frame);
         // #1194 — GPU timer snapshot. Zeros when timer unavailable
         // (driver lacks timestamp support) or first pipelined cycle
         // hasn't completed.
@@ -738,5 +727,65 @@ impl VulkanContext {
         // renderer census and core `ShadowMaskCensus`. Nothing is pending.
         census.actor_diverted_effect_shader = snapshot.actor_diverted_effect_shader;
         census.actor_diverted_fire_refraction = snapshot.actor_diverted_fire_refraction;
+    }
+}
+
+/// The CPU-side counters of one frame's [`SkinCoverageFrame`] copied into the
+/// `SkinCoverageStats` resource: the dispatch / first-sight / refit counts, the
+/// work denominators `dispatch_vertices` and `refit_triangles` (#7150), and the host
+/// chain cost (#2803, same-frame, not fence-lagged like the GPU brackets). Pure so a
+/// test can pin the mapping without a device (#7383).
+pub(super) fn apply_skin_coverage_frame(
+    stats: &mut byroredux_core::ecs::SkinCoverageStats,
+    f: &super::super::skin_compute::SkinCoverageFrame,
+) {
+    stats.dispatches_total = f.dispatches_total;
+    stats.dispatches_skipped = f.dispatches_skipped;
+    stats.first_sight_attempted = f.first_sight_attempted;
+    stats.first_sight_succeeded = f.first_sight_succeeded;
+    stats.refits_attempted = f.refits_attempted;
+    stats.refits_succeeded = f.refits_succeeded;
+    stats.dispatch_vertices = f.dispatch_vertices;
+    stats.refit_triangles = f.refit_triangles;
+    stats.cpu_skin_chain_ms = f.cpu_skin_chain_ns as f32 / 1.0e6;
+}
+
+#[cfg(test)]
+mod skin_coverage_mapping_tests {
+    use super::apply_skin_coverage_frame;
+    use crate::vulkan::skin_compute::SkinCoverageFrame;
+    use byroredux_core::ecs::SkinCoverageStats;
+
+    /// #7383 — every counter reaches the resource under its own name; distinct values so a
+    /// crossed pair (e.g. `dispatch_vertices` read from `refit_triangles`) cannot pass.
+    #[test]
+    fn every_skin_coverage_counter_reaches_its_stat() {
+        let frame = SkinCoverageFrame {
+            dispatches_total: 11,
+            dispatches_skipped: 3,
+            first_sight_attempted: 5,
+            first_sight_succeeded: 4,
+            refits_attempted: 9,
+            refits_succeeded: 8,
+            dispatch_vertices: 123_456,
+            refit_triangles: 7_890,
+            cpu_skin_chain_ns: 2_500_000,
+        };
+        let mut stats = SkinCoverageStats::default();
+        apply_skin_coverage_frame(&mut stats, &frame);
+        assert_eq!(
+            (
+                stats.dispatches_total,
+                stats.dispatches_skipped,
+                stats.first_sight_attempted,
+                stats.first_sight_succeeded,
+                stats.refits_attempted,
+                stats.refits_succeeded,
+            ),
+            (11, 3, 5, 4, 9, 8)
+        );
+        assert_eq!(stats.dispatch_vertices, 123_456);
+        assert_eq!(stats.refit_triangles, 7_890);
+        assert!((stats.cpu_skin_chain_ms - 2.5).abs() < 1e-6);
     }
 }
