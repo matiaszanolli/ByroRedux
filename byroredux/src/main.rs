@@ -1587,6 +1587,8 @@ fn build_debug_ui_snapshot(
 
     byroredux_debug_ui::PanelSnapshot {
         game: byroredux_native_ui::PageSnapshot {
+            // LMC-UI-002: the McmHost adapter fills this once the host lands.
+            mcm: None,
             loading_tip: None,
             interaction_prompt: build_interaction_prompt(world),
             show_crosshair: setting_bool(world, byroredux_debug_ui::SHOW_CROSSHAIR_SETTING_ID, true),

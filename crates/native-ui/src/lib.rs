@@ -11,19 +11,24 @@
 mod chargen;
 mod game_menu;
 mod hud;
+mod mcm;
 mod rest;
 mod setting_control;
 mod views;
 #[cfg(test)]
+mod mcm_tests;
+#[cfg(test)]
 mod page_strings_tests;
 
 pub use chargen::ChargenDraft;
+pub use mcm::{format_slider_value, scancode as directinput_scancode, McmDraft};
 pub use game_menu::{draw_game_menu, GameMenuPage, GameMenuState};
 pub use hud::{draw_hud, draw_loading_tip, draw_player_message};
 pub use setting_control::draw_setting_control;
 pub use views::{
     BarterAction, BarterItemView, BarterSnapshot, ChargenChoice, ChargenOption, ChargenScreenView, ChargenSnapshot,
-    CraftingAction, CraftingRecipeView, CraftingSnapshot, DialogueTopicEntryView, DialogueTopicSnapshot,
+    CraftingAction, CraftingRecipeView, McmAction, McmCellKind, McmCellView, McmCustomContent, McmDialogView, McmModView,
+    McmSnapshot, MCM_FLAG_DISABLED, MCM_FLAG_HIDDEN, MCM_FLAG_WITH_UNMAP, CraftingSnapshot, DialogueTopicEntryView, DialogueTopicSnapshot,
     DialogueUiAction, InteractionPrompt, InventoryAction, InventoryItemView, InventorySnapshot, MessageBoxView,
     ObjectiveView, PageOutputs, PageSnapshot, RestAction, RestAttribute, RestView, StealthIndicatorLook, StealthIndicatorView, VitalBarView,
 };
