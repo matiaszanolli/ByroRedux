@@ -33,6 +33,21 @@ pub fn is_bare_component(name: &str) -> bool {
     !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', ':'])
 }
 
+/// `path` without leading separators and without one leading `Data\` folder (either separator, any case): the
+/// game's `Data` directory is the root every asset key is relative to, so an authored `Data\Meshes\x.nif` or
+/// `\textures\x.dds` names the same file as `meshes\x.nif` / `textures\x.dds` (LMC-AST-005). No installed game's
+/// archives hold a `data\` folder at their root or under `meshes\` (FNV, Skyrim SE and Fallout 4: 1.03 million
+/// entries, 2026-11-23), so the strip cannot shadow a real path. Borrows.
+pub fn strip_data_root(path: &str) -> &str {
+    let trimmed = path.trim_start_matches(['\\', '/']);
+    let bytes = trimmed.as_bytes();
+    if bytes.len() > 5 && bytes[..4].eq_ignore_ascii_case(b"data") && matches!(bytes[4], b'\\' | b'/') {
+        trimmed[5..].trim_start_matches(['\\', '/'])
+    } else {
+        trimmed
+    }
+}
+
 /// Prepend `meshes\` to a NIF path when the input doesn't already
 /// start with that segment (case-insensitive, accepts either
 /// separator). `MODL` sub-records on RACE / NPC_ / ARMO records are
@@ -45,6 +60,8 @@ pub fn is_bare_component(name: &str) -> bool {
 /// renderer's mesh cache keys through the same rule, `geometries\` exemption
 /// included, instead of a copy of its own.
 pub fn normalize_mesh_path(path: &str) -> std::borrow::Cow<'_, str> {
+    // LMC-AST-005 — a leading separator or `Data\` folder is not part of the archive key.
+    let path = strip_data_root(path);
     // #1292 — Starfield content-addressed BSGeometry external `.mesh`
     // companion files live at `geometries\<hash>.mesh` (NO `meshes\`
     // prefix). The importer at `crates/nif/src/import/mesh/bs_geometry.rs`
@@ -166,5 +183,19 @@ mod tests {
         assert_eq!(cache_root_from(Some("".into()), exe()), PathBuf::from("/opt/byro"), "an empty override is unset");
         assert_eq!(cache_root_from(None, exe()), PathBuf::from("/opt/byro"));
         assert_eq!(cache_root_from(None, None), PathBuf::from("."));
+    }
+
+    /// LMC-AST-005 — a leading separator or `Data\` folder is not part of an asset key, for meshes as for textures.
+    #[test]
+    fn a_leading_separator_or_data_folder_is_not_part_of_the_key() {
+        assert_eq!(strip_data_root(r"Data\Meshes\x.nif"), r"Meshes\x.nif");
+        assert_eq!(strip_data_root(r"\data/textures\x.dds"), r"textures\x.dds");
+        assert_eq!(strip_data_root("/x.nif"), "x.nif");
+        assert_eq!(strip_data_root(r"database\x.nif"), r"database\x.nif", "only a whole `data` folder");
+        assert_eq!(strip_data_root(r"meshes\data\x.nif"), r"meshes\data\x.nif", "only a leading one");
+        assert_eq!(normalize_mesh_path(r"Data\Meshes\Armor\x.nif"), r"Meshes\Armor\x.nif");
+        assert_eq!(normalize_mesh_path(r"\Armor\x.nif"), r"meshes\Armor\x.nif");
+        assert_eq!(normalize_mesh_path(r"data\Armor\x.nif"), r"meshes\Armor\x.nif");
+        assert!(matches!(normalize_mesh_path(r"Data\Meshes\x.nif"), std::borrow::Cow::Borrowed(_)));
     }
 }

@@ -49,7 +49,14 @@ enum Backend {
 /// override that names new `.mesh` bodies resolves none of them (#6330).
 /// `music` is where Oblivion, Fallout 3 and New Vegas ship all their music,
 /// loose (Game Music MUS-SRC-011): the sound provider's loose tier reads it.
-const LOOSE_ASSET_ROOTS: [&str; 5] = ["textures", "meshes", "materials", "geometries", "music"];
+/// `sound` (effects and voice), `scripts` (compiled Papyrus) and `lodsettings`
+/// are the roots a mod overrides loose that the sound provider, the script
+/// provider and the LOD reader look up (LMC-AST-005, measured 2026-11-23:
+/// before them a mod's loose sound, `.pex` or LOD settings never reached a
+/// consumer). `interface` is not here: Scaleform movies load from the vanilla
+/// interface archive alone.
+const LOOSE_ASSET_ROOTS: [&str; 8] =
+    ["textures", "meshes", "materials", "geometries", "music", "sound", "scripts", "lodsettings"];
 
 /// How many directory levels below an asset root the loose index descends.
 /// Archive paths are shallow (vanilla nests a handful deep), so this only
@@ -847,23 +854,11 @@ pub(crate) fn normalize_material_path(path: &str) -> std::borrow::Cow<'_, str> {
     // Step 1 — build-pipeline strip.
     let after_build = strip_build_prefix(path);
 
-    // Step 2 — leading `data\` / `data/` strip (case-insensitive).
-    let after_data: Cow<'_, str> = {
-        let bytes = after_build.as_bytes();
-        if bytes.len() >= 5
-            && bytes[..4].eq_ignore_ascii_case(b"data")
-            && (bytes[4] == b'\\' || bytes[4] == b'/')
-        {
-            // Borrow the trailer from `after_build`. If `after_build`
-            // is borrowed, the new slice stays borrowed; if it was
-            // already owned, we allocate (rare).
-            match after_build {
-                Cow::Borrowed(s) => Cow::Borrowed(&s[5..]),
-                Cow::Owned(s) => Cow::Owned(s[5..].to_string()),
-            }
-        } else {
-            after_build
-        }
+    // Step 2 — leading separators and a leading `data\` / `data/` (case-insensitive), the one shared rule
+    // (`byroredux_core::paths::strip_data_root`, LMC-AST-005). A borrowed input stays borrowed.
+    let after_data: Cow<'_, str> = match after_build {
+        Cow::Borrowed(s) => Cow::Borrowed(byroredux_core::paths::strip_data_root(s)),
+        Cow::Owned(s) => Cow::Owned(byroredux_core::paths::strip_data_root(&s).to_owned()),
     };
 
     // Step 3 — forward-slash → backslash. Only allocate when at
@@ -916,18 +911,9 @@ pub(crate) fn normalize_material_path(path: &str) -> std::borrow::Cow<'_, str> {
 /// case).
 pub(crate) fn normalize_texture_path(path: &str) -> std::borrow::Cow<'_, str> {
     use std::borrow::Cow;
-    // Step 1 — leading `data\` strip. Check the first 5 bytes:
-    // `data` + separator. Borrow the trailer to keep allocations on
-    // the rare path.
-    let bytes = path.as_bytes();
-    let after_data: Cow<'_, str> = if bytes.len() >= 5
-        && bytes[..4].eq_ignore_ascii_case(b"data")
-        && (bytes[4] == b'\\' || bytes[4] == b'/')
-    {
-        Cow::Borrowed(&path[5..])
-    } else {
-        Cow::Borrowed(path)
-    };
+    // Step 1 — leading separators and a leading `data\` / `data/`, the one shared rule
+    // (`byroredux_core::paths::strip_data_root`, LMC-AST-005). Borrows.
+    let after_data: Cow<'_, str> = Cow::Borrowed(byroredux_core::paths::strip_data_root(path));
 
     // Step 2 — prepend `textures\` if missing. Case-insensitive on
     // the first 8 bytes; matches `/` or `\` as the separator after.

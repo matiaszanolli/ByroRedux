@@ -345,9 +345,11 @@ fn tree_model_resolves_leading_separator_bare_names_under_the_measured_directory
 
     // Nothing anywhere → the REFR is skipped, exactly as before the fix. No
     // silent path invention.
+    // LMC-AST-005: the mesh normaliser trims the leading separator, so the reported key is `meshes\Missing.spt`,
+    // not the doubled `meshes\\Missing.spt` the bare concatenation gave.
     assert_eq!(
         resolve_spt_model_path("\\Missing.spt", |_| false),
-        "meshes\\\\Missing.spt"
+        "meshes\\Missing.spt"
     );
 }
 

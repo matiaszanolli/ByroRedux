@@ -62,7 +62,8 @@ fn loose_tier_indexes_asset_roots_by_archive_key() {
     );
     assert_eq!(loose.declared_size(r"meshes\clutter\cup.nif").unwrap(), 3);
     assert!(loose.contains(r"materials\landscape\dirt.bgsm"));
-    assert!(!loose.contains(r"sound\fx\step.wav"));
+    // LMC-AST-005 — `sound\` is a loose root now: a mod's loose sound effect reaches the sound provider.
+    assert!(loose.contains(r"sound\fx\step.wav"));
     assert!(!loose.contains("readme.txt"));
     assert_eq!(
         loose.extract(r"textures\missing.dds").unwrap_err().kind(),
@@ -70,7 +71,7 @@ fn loose_tier_indexes_asset_roots_by_archive_key() {
     );
 
     let empty = tempfile::tempdir().unwrap();
-    write(empty.path(), "Sound/fx/step.wav", b"wav");
+    write(empty.path(), "Video/intro.bik", b"bik");
     assert!(Archive::open_loose(empty.path()).is_none());
 }
 
@@ -368,4 +369,35 @@ fn loose_texture_overrides_the_archived_copy() {
     ]);
     let provider = build_texture_provider(&args);
     assert_eq!(provider.extract(key).unwrap(), b"mod dirt");
+}
+
+/// LMC-AST-005 — a mod's loose sound effect reaches the sound provider: `sound\` is a loose root, as `music\` was.
+#[test]
+fn a_loose_sound_effect_reaches_the_sound_provider() {
+    let tmp = tempfile::tempdir().unwrap();
+    write(tmp.path(), "Sound/FX/NPC/Dog/Bark01.wav", b"woof");
+    let provider = build_sound_archive_provider(&esm_args(tmp.path()));
+    assert_eq!(provider.extract(r"sound\fx\npc\dog\bark01.wav").as_deref(), Some(&b"woof"[..]));
+}
+
+/// LMC-AST-005 / LMC-AST-010 — loose compiled scripts reach the script provider ahead of every archive, the
+/// highest-priority root first, each with its root's name as principal; a root with no loose script adds no tier.
+#[test]
+fn loose_scripts_layer_over_the_archives_by_root_priority() {
+    let tmp = tempfile::tempdir().unwrap();
+    let data = tmp.path().join("Data");
+    let modroot = tmp.path().join("SkyUI");
+    let textures_only = tmp.path().join("Retexture");
+    write(&data, "Scripts/SKI_ConfigBase.pex", b"vanilla-ish");
+    write(&modroot, "Scripts/SKI_ConfigBase.pex", b"mod");
+    write(&textures_only, "textures/a.dds", b"dds");
+    let mut args = Vec::new();
+    for root in [&data, &modroot, &textures_only] {
+        args.extend([crate::mod_roots::LOOSE_ROOT_FLAG.to_owned(), root.to_string_lossy().into_owned()]);
+    }
+    let provider = crate::asset_provider::script::build_script_provider(&args);
+    let resolved = provider.resolve_pex("SKI_ConfigBase").expect("the loose script resolves");
+    assert_eq!(resolved.bytes, b"mod");
+    assert_eq!(resolved.principal, crate::asset_provider::script::legacy_script_principal("SkyUI"));
+    assert_eq!(provider.principals().count(), 2, "the texture-only root adds no script tier");
 }

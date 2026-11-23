@@ -1046,9 +1046,27 @@ pub(crate) fn ensure_obscript_tables(
 /// Build a [`ScriptProvider`] from CLI arguments. Accepts repeated
 /// `--scripts-bsa <path>` flags so modded script archives can layer over
 /// the vanilla one (first hit wins, so list overrides before the base).
-/// Silently returns an empty provider when no flag is present.
+/// Loose `scripts\` files come first, the highest-priority root first: a
+/// loose file outranks any archive (LMC-AST-010), and a mod's loose `.pex`
+/// overrides a vanilla script as it does in the game (LMC-AST-005). Each loose
+/// tier's principal is its root's directory name, as an archive's is its file
+/// stem; a root with no loose script adds nothing. Silently returns an empty
+/// provider when there is neither a flag nor a loose script.
 pub(crate) fn build_script_provider(args: &[String]) -> ScriptProvider {
     let mut provider = ScriptProvider::new();
+    for (dir, loose) in crate::asset_provider::loose_dirs(args)
+        .into_iter()
+        .rev()
+        .filter_map(|dir| Archive::open_loose(&dir).map(|loose| (dir, loose)))
+    {
+        if loose.all_paths().iter().any(|path| path.starts_with("scripts\\")) {
+            log::info!("Loose scripts layered from '{}'", dir.display());
+            provider.archives.push(ScriptArchive {
+                archive: loose,
+                principal: legacy_script_principal(&dir.to_string_lossy()),
+            });
+        }
+    }
     let mut i = 0;
     while i < args.len() {
         if args[i] == "--scripts-bsa"

@@ -1,6 +1,7 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-23). Revision 21 measures LMC-SET-002 and
+**Status**: ACTIVE (2026-11-23). Revision 22 measures LMC-AST-005 and
+builds what it found missing. Revision 21 measures LMC-SET-002 and
 fixes the two hard-coded GMSTs it found. Revision 20 builds the first slice of the
 preflight (LMC-DX-001) and measures LMC-REC-011. Revision 19 builds LMC-REC-004 for the
 cell index's records. Revision 18 records LMC-REC-007 as built
@@ -741,6 +742,16 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   `meshes`, `materials`, `geometries`, plus `sound`, `music`, `scripts`,
   `interface`, `strings`, `facegendata`, `lodsettings` as those consumers
   move to the shared provider). Today the loose index covers four roots.
+  Measured 2026-11-23 (FNV, Skyrim SE, a Fallout 4 + SS2 profile): every
+  record model and texture path the load orders author resolves in the
+  shapes they use (plain, `Meshes\`-rooted, `/`-separated, any case); the
+  misses are content no archive ships. Built: one `strip_data_root`
+  (`byroredux_core::paths`) drops leading separators and a leading `Data\`
+  for meshes, textures and materials alike, and the loose index now covers
+  `textures`, `meshes`, `materials`, `geometries`, `music`, `sound`,
+  `scripts` and `lodsettings`, with a loose script tier ahead of every
+  script archive. Open: Scaleform `interface\` movies, translations and
+  fonts load from the vanilla archive alone (#7336).
 - **LMC-AST-006.** Asset errata from the fix catalog apply only when the
   vanilla content hash matches ([FIX-006](../engine/builtin-fixes.md#1-requirements)),
   so a mod's replacement mesh is never "fixed" into something else.
@@ -1480,3 +1491,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 19 | 2026-11-23 | LMC-REC-004 built for the cell index: cells, modelled base objects, pack-ins and the other form-keyed cell-index maps prune deleted forms (their prune was a no-op); measured on FNV, Skyrim SE and Fallout 4 + UFO4P against a raw record walk; a live reference to a deleted base and a deleted cell's uncovered references recorded as Phase 0: verify | — |
 | 20 | 2026-11-23 | LMC-DX-001 first slice built (#6671): `--preflight` classifies every file a mod root ships by catalog patterns (catalog_version 2 adds `paths`, `game_dir_paths`, `ini_keys` and `[not_game_data]`, checked by C15), scans its Papyrus and ObScript scripts eagerly (LMC-SCR-005), names DLLs (LMC-EXT-001) and plugin-named INI keys (LMC-SET-001), lists asset conflicts and coverage; the conformance runner measures §7.3 rule 2 from it. LMC-REC-011 measured by the fold conformance gate | — |
 | 21 | 2026-11-23 | LMC-SET-002 measured: 240 authored GMSTs read through the merged index, 8 named without a read; `fSkillUseCurve` and `fCombatDistance` were hard-coded and are now read (melee reach 141 on Skyrim, Fallout 4 and Fallout 76, 128 on Fallout 3 and New Vegas, where the engine used 180); `combat.approach` scales its ring with the reach; Oblivion's default and Starfield's meaning of `fCombatDistance` recorded as Phase 0: verify | — |
+| 22 | 2026-11-23 | LMC-AST-005 measured on FNV, Skyrim SE and a Fallout 4 + SS2 profile: `Data\` / leading-separator stripping shared by meshes, textures and materials; `sound`, `scripts` and `lodsettings` loose roots and a loose script tier; Scaleform interface layering filed (#7336). The preflight stops counting base-game Papyrus calls as extender calls | — |
