@@ -1003,9 +1003,10 @@ pub fn execute_pending_save_loads(
             // LMC-SAV-002 — what the save held of the plugins this load order lacks: inventory items removed, before
             // the reconciles below re-derive the weapon and worn gear from what is left.
             let removed_items = sweep_absent_inventory_stacks(world);
+            // Logged only: the lines are operator text, and the one line the HUD has for a load is `LOAD_FAILED`,
+            // which a load that went through must never show (#7367, the #7347 class).
             for line in removed_mod_report(&removed_plugins, &translation, &gone_references, removed_items) {
                 log::warn!("save load: {line}");
-                notify_player(world, line);
             }
             for line in profile_change_report(world, &snapshot, &remap) {
                 log::info!("save load: {line}");

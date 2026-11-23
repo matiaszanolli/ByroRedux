@@ -1252,6 +1252,29 @@ fn a_profile_difference_is_logged_and_never_shown_as_a_failed_load() {
     assert!(!window.contains("notify_player("), "a profile difference is not a failed load (#7347): {window}");
 }
 
+/// #7367 — `notify_player` ignores its text and shows `LOAD_FAILED`, so it belongs on a failure path only. The
+/// removed-mod report (LMC-SAV-002) was pushed through it inside the arm that handles a load that went through, and a
+/// successful load that dropped a plugin told the player "Load failed." (#7347 fixed the same thing for the profile
+/// report). Every call must sit directly under the `log::error!` of the failure it reports.
+#[test]
+fn notify_player_is_only_ever_called_for_a_failed_load() {
+    let source = byroredux_core::source_scan::production_text(include_str!("live_load.rs"));
+    let calls: Vec<usize> = source.match_indices("notify_player(world,").map(|(at, _)| at).collect();
+    assert!(calls.len() >= 10, "the drain's failure arms call notify_player: {}", calls.len());
+    for at in calls {
+        let before = &source[at.saturating_sub(120)..at];
+        assert!(
+            before.contains("log::error!"),
+            "notify_player shows `Load failed.`, so it follows a `log::error!` for a real failure (#7367): {before}"
+        );
+    }
+    // The removed-mod report is logged and never reaches the HUD.
+    let drain = &source[source.find("pub fn execute_pending_save_loads(").expect("the drain")..];
+    let report = drain.find("removed_mod_report(&removed_plugins").expect("the drain reports removed mods");
+    let window = &drain[report..(report + 300).min(drain.len())];
+    assert!(window.contains("log::warn!") && !window.contains("notify_player("), "{window}");
+}
+
 /// #7349 — the load reports against the profile the session ran BEFORE the reload. The reload installs the save's own
 /// plugin list and `install_form_resolver` rebuilds `SessionProfile` from it, so against the resource every plugin the
 /// player added or removed since the save looked unchanged and the report could never fire; and the capture must sit
