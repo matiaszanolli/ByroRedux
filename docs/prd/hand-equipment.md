@@ -1,7 +1,8 @@
 # Hand Equipment — Product Requirements
 
-**Status**: APPROVED (2026-11-23). Revision 2: the owner approved the first draft and took every §10
-recommendation. Statements about how an original engine, format or tool behaves cite external
+**Status**: APPROVED (2026-11-23). Revision 3 settles Phase 0's verify items from the masters and the
+CK / UESP pages, and links the design Phase 0 wrote. Revision 2: the owner approved the first draft
+and took every §10 recommendation. Statements about how an original engine, format or tool behaves cite external
 sources; a claim that could not be verified is marked **Phase 0: verify** instead of being stated as
 fact.
 
@@ -16,7 +17,7 @@ promised here has an owner in this table, or Phase 0 writes the missing design.
 
 | Mechanism | Owning design |
 |---|---|
-| Equip slots, occupancy and the hand state | `docs/engine/hand-equipment.md`, which Phase 0 writes |
+| Equip slots, occupancy and the hand state | [Hand Equipment — design](../engine/hand-equipment.md) |
 | Actor values, skills and block rules the hands feed | [CHARAL](../engine/charal.md) |
 | The player's casting (a readied spell, Oblivion) | [Player Spellcasting PRD](player-spellcasting.md) |
 | Papyrus natives reading the hands | [Scripting](../engine/scripting.md) |
@@ -107,13 +108,17 @@ The engine at HEAD on 2026-11-23 (`66668ed4b`):
   EQUP](https://en.uesp.net/wiki/Skyrim_Mod:Mod_File_Format/EQUP) page lays them out.
 - **HND-SLOT-002.** An item's hands MUST follow its slot: a slot that uses all its parents takes every
   parent hand; one that does not takes one of them ([CK: Equip Slot](https://ck.uesp.net/wiki/Equip_Slot)).
+  An item whose slot fits one hand (`RightHand`, as 1,286 of Skyrim.esm's weapons are, or
+  `EitherHand`) goes in the hand the equip call names, the right by default ([CK:
+  EquipItemEx](https://ck.uesp.net/wiki/EquipItemEx_-_Actor): 0 default, 1 right, 2 left).
 - **HND-SLOT-003.** Equipping an item MUST unequip what held the hands it takes ("Items marked with the
   same slot can't be equipped simultaneously").
-- **HND-SLOT-004.** A shield MUST occupy the left hand. **Phase 0: verify** where the shield's hand
-  comes from (its ARMO `ETYP`, the UESP ARMO page's "only shields" note, or the biped slot).
+- **HND-SLOT-004.** A shield MUST occupy the left hand, by its ARMO `ETYP`: all 237 of Skyrim.esm's
+  shields name the `Shield` slot, whose one parent is `LeftHand` (design §1).
 - **HND-SLOT-005.** A carryable light (LIGH flag `0x0002` "Can be carried", [UESP: LIGH](https://en.uesp.net/wiki/Skyrim_Mod:Mod_File_Format/LIGH)) MUST be equippable into the left hand as a
-  torch. **Phase 0: verify** the torch's slot from the data, and that the original allows it only in
-  the left hand (UESP *Skyrim:Block*: "You can block with a shield, a torch, …").
+  torch. No light carries an `ETYP` (Skyrim.esm: none of 435), so the hand is the documented rule:
+  "To block with a shield or torch, equip one to your left hand" ([UESP:
+  Skyrim:Block](https://en.uesp.net/wiki/Skyrim:Block)).
 
 ### 5.2 State (`HND-STATE`)
 
@@ -121,9 +126,11 @@ The engine at HEAD on 2026-11-23 (`66668ed4b`):
   equip and unequip paths.
 - **HND-STATE-002.** The state MUST be saved, its FormIDs as stable identities, and parked across a
   cell's eviction with the inventory it indexes.
-- **HND-STATE-003.** An NPC MUST spawn with the hands its loadout implies. **Phase 0: verify** how
-  the original fills an NPC's hands from its inventory and outfit (default weapon choice, a shield
-  beside a one-handed weapon, a torch at night).
+- **HND-STATE-003.** An NPC MUST spawn with the hands its loadout implies, within the documented limits:
+  it dual wields only when its race's "Can Dual Wield" ([CK: Race](https://ck.uesp.net/wiki/Race)) and
+  its combat style's "Allow Dual Wielding" ([CK: Combat Style](https://ck.uesp.net/wiki/Combat_Style))
+  are both set. How the original picks an NPC's hand items, and whether it takes out a torch, is
+  undocumented: a declared gap, filled by the engine rule in the design's §2.
 
 ### 5.3 Readers (`HND-READ`)
 
@@ -160,9 +167,9 @@ The engine at HEAD on 2026-11-23 (`66668ed4b`):
 | Fallout 3 | no | One weapon, no shields. |
 | Fallout: New Vegas | no | One weapon, no shields. |
 | Skyrim (LE / SE / AE) | yes | The equip-slot model this PRD describes (Wave 1). |
-| Fallout 4 | no | **Phase 0: verify** whether its `ETYP` / `EQUP` data describes hands at all. |
+| Fallout 4 | no | Its 38 `EQUP` slots model creature limbs, grenades and alternate attacks; no shields (design §1). |
 | Fallout 76 | n/a | Out of every PRD. |
-| Starfield | no | **Phase 0: verify**, as Fallout 4. |
+| Starfield | no | Its 25 `EQUP` slots model creature limbs and grenades, as Fallout 4's (design §1). |
 
 ### 7.2 Acceptance
 
@@ -216,7 +223,7 @@ HND-READ-003..004. Exit: acceptance 2 and 3.
 
 | Need | Go to |
 |---|---|
-| How the slots and the hand state are built | `docs/engine/hand-equipment.md` (Phase 0) |
+| How the slots and the hand state are built | [Hand Equipment — design](../engine/hand-equipment.md) |
 | Actor values and the block rule | [CHARAL](../engine/charal.md) |
 | The player's casting | [Player Spellcasting PRD](player-spellcasting.md) |
 | Live milestone state and published metrics | [ROADMAP.md](../../ROADMAP.md) |
@@ -229,3 +236,4 @@ HND-READ-003..004. Exit: acceptance 2 and 3.
 |---|---|---|---|
 | 1 | 2026-11-23 | First draft | — |
 | 2 | 2026-11-23 | Approved; Q1–Q3 decided as recommended | owner: approved |
+| 3 | 2026-11-23 | Phase 0: the verify items settled from the masters (EQUP / ETYP scan of Skyrim, Fallout 4 and Starfield) and the CK / UESP pages; NPC hand choice a declared gap with an engine rule; the design written | — |
