@@ -100,6 +100,11 @@ What the engine does today with a legacy plugin set (`--master …` `--esm`), th
    change, and the fold does not overlay a partial form on the record it overrides yet (it replaces it whole, under
    either policy).
 
+   The merge's ownership follows LMC-REC-006: an override identical to the record it would replace is a no-op that
+   takes no ownership (it neither wins whole nor becomes a contributor), and an independent override identical to its
+   own base changes nothing; the report names both (`no-op:`, `changes nothing:`), on merged records and on those the
+   merge left as `legacy` keeps them.
+
 7. **Mod roots (LMC-ID-012, LMC-AST-010, LMC-ID-011).** A mod root is one mod's directory as a mod manager deploys it
    (`byroredux/src/mod_roots.rs`). The profile names its roots with `--mod-root <dir>`, repeated, lowest priority
    first; the base master's directory, the game's `Data`, is the implicit unmanaged root and sorts first. Before
@@ -123,8 +128,8 @@ What the engine does today with a legacy plugin set (`--master …` `--esm`), th
 Not built yet in Phase 1: the mod profile beyond argv (discovery and the import that writes roots, LMC-ID-006; manifest
 identities for roots), the official/user boundary
 (LMC-REC-008), partial forms overlaid on the record they override and then the `merge` policy for locations and quests
-(LMC-REC-003), the merge-ownership half of
-LMC-REC-006 (the report half is item 4's verdicts) and the virtual legacy index (LMC-ID-005).
+(LMC-REC-003), lifting the regular-plugin ceiling (LMC-ID-004: a global FormID's top byte is its plugin's slot, so
+regular slots end at `0xFB`) and the virtual legacy index that follows from it (LMC-ID-005).
 
 ## Overview
 

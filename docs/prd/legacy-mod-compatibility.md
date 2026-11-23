@@ -1,6 +1,7 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-22). Revision 13 builds the profile
+**Status**: ACTIVE (2026-11-22). Revision 14 builds the merge-ownership
+half of LMC-REC-006. Revision 13 builds the profile
 fingerprint and its record in saves (LMC-ID-007, LMC-SAV-001). Revision 12 builds mod roots and their
 ownership (LMC-ID-012), root-ordered loose files (LMC-AST-010) and the
 root half of missing-master disabling (LMC-ID-011). Revision 11 extends the list merge
@@ -579,6 +580,18 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   ([Tome of xEdit §7](https://tes5edit.github.io/docs/7-mod-cleaning-and-error-checking.html)),
   and some patches do it on purpose. Such an override keeps ownership and
   MUST be reported as a revert naming the plugin whose change it undid.
+  Built (#6670): the conflict report's verdicts (`plugins.conflicts <form>
+  fields`) judge each override against the record it replaced, and under
+  `merge` an override identical to the record it would replace is a no-op
+  that neither wins the record whole nor becomes a contributor. An
+  independent override identical to its own master changes nothing under
+  `merge`; the report names it, since under `legacy` it wins whole and
+  reverts the changes before it. On the installed mod profiles this takes
+  the merged-record count from 570 to 284 (Fallout 4 with UFO4P, Inventory
+  Organizer and MojaveImports) and from 1,728 to 415 (Starfield with the
+  patches and both weightless-item mods); the overruled operations are
+  unchanged. The records that dropped out are those whose outcome is what
+  `legacy` keeps.
 - **LMC-REC-007.** The conflict report lists, per form: winner, losers in
   order, the policy that chose, and the fields that differ. This is the
   `DataStore` provenance model ([plugin-loading.md](../engine/plugin-loading.md#datastore))
@@ -1362,3 +1375,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 11 | 2026-11-22 | LMC-REC-003 extended to the keyword lists of activator, flora, furniture and container bases; an override that drops every keyword now clears them under both policies; locations and quests recorded as waiting on partial-form support; the catalog's R2 and T2.necessity rows at version 5 | — |
 | 12 | 2026-11-22 | LMC-ID-012 built for the session profile (`--mod-root`, ownership, bare plugin names resolve through the roots); LMC-AST-010's root-ordered loose tier and LMC-ID-011's root half built with it; the catalog's A1, T10.vfs and T10.outputs rows at version 2 | — |
 | 13 | 2026-11-22 | LMC-ID-007 and LMC-SAV-001 built: the profile record (plugins with content hashes, mod roots, extensions, grants, policy) and its fingerprint, saved as the `SessionProfile` column (save format v142); a load and `save.info` report every difference | — |
+| 14 | 2026-11-22 | LMC-REC-006's merge-ownership half built: under `merge` an override identical to the record it would replace is a no-op without ownership, and an independent override identical to its master changes nothing; both are reported | — |

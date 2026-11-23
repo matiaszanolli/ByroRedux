@@ -198,6 +198,61 @@ fn a_partial_patch_diffs_against_the_master_it_overrides() {
     assert_eq!(record(&merge).contributors, [1, 2, 3]);
 }
 
+/// LMC-REC-006 — an override identical to the record it would replace is a no-op: it takes no ownership, so the
+/// record is not a merge and a later patch need not master it.
+#[test]
+fn an_identical_override_is_a_no_op_and_takes_no_ownership() {
+    let modded = list(&[entry(SWORD, 1, 1), entry(SHIELD, 5, 1)]);
+    let (merged, merge) = fold(
+        MergePolicy::Merge,
+        vec![
+            plugin(&[], Some(list(&[entry(SWORD, 1, 1)]))),
+            plugin(&[0], Some(modded.clone())),
+            plugin(&[0, 1], Some(modded.clone())),
+        ],
+    );
+    assert_eq!(forms(&merged), forms(&modded));
+    let record = record(&merge);
+    assert_eq!(record.no_ops, [2]);
+    assert_eq!(record.contributors, [1], "the no-op does not take the record");
+    assert_eq!(record.wholesale, Some((1, vec![0])));
+    assert!(!record.is_merged(), "the record is what legacy keeps");
+    assert_eq!(merge.counts(), (0, 0));
+}
+
+/// An independent override identical to the record it overrides changes nothing under `merge`: it is no contributor,
+/// the earlier mod's change stands, and the report marks the record merged because `legacy` would keep the override's
+/// record whole. A later patch need master only the contributors to win the record whole.
+#[test]
+fn an_unchanged_override_contributes_nothing_and_a_patch_need_not_master_it() {
+    let (merged, merge) = fold(
+        MergePolicy::Merge,
+        vec![
+            plugin(&[], Some(list(&[entry(SWORD, 1, 1)]))),
+            plugin(&[0], Some(list(&[entry(SWORD, 1, 1), entry(SHIELD, 5, 1)]))),
+            plugin(&[0], Some(list(&[entry(SWORD, 1, 1)]))),
+        ],
+    );
+    assert_eq!(forms(&merged), [(SWORD, 1, 1), (SHIELD, 5, 1)], "the first mod's addition stands");
+    let state = record(&merge);
+    assert_eq!(state.unchanged, [2]);
+    assert_eq!(state.contributors, [1]);
+    assert!(state.legacy_differs && state.is_merged());
+    assert_eq!(merge.counts(), (1, 0));
+
+    let (merged, merge) = fold(
+        MergePolicy::Merge,
+        vec![
+            plugin(&[], Some(list(&[entry(SWORD, 1, 1)]))),
+            plugin(&[0], Some(list(&[entry(SWORD, 1, 1), entry(SHIELD, 5, 1)]))),
+            plugin(&[0], Some(list(&[entry(SWORD, 1, 1)]))),
+            plugin(&[0, 1], Some(list(&[entry(SHIELD, 5, 1)]))),
+        ],
+    );
+    assert_eq!(forms(&merged), [(SHIELD, 5, 1)], "the patch masters every contributor and wins whole");
+    assert_eq!(record(&merge).wholesale, Some((3, vec![1])));
+}
+
 /// A field an override changed against its base is an operation; one it left alone is not, so it does not undo an
 /// earlier plugin's change.
 #[test]
