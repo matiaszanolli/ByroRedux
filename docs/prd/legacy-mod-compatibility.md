@@ -1,6 +1,7 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-23). Revision 20 builds the first slice of the
+**Status**: ACTIVE (2026-11-23). Revision 21 measures LMC-SET-002 and
+fixes the two hard-coded GMSTs it found. Revision 20 builds the first slice of the
 preflight (LMC-DX-001) and measures LMC-REC-011. Revision 19 builds LMC-REC-004 for the
 cell index's records. Revision 18 records LMC-REC-007 as built
 and names a no-op override's owner in the report. Revision 17 builds the merge-ownership
@@ -921,6 +922,22 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   for every rule the games expose as a GMST; consumers read the merged
   index (the `VatsModel` / `PoolRegenConfig` pattern, re-derived from the
   load order), never constants.
+  Measured (#6670): of the GMSTs the five shipped masters author (Oblivion
+  382, Fallout 3 530, New Vegas 648, Skyrim 1,584, Fallout 4 2,039), the
+  engine's non-test code reads 240 through the merged index and names 8
+  without reading them. Six of those are explanation or behaviour declared
+  not modelled (the three mine settings, `iCombatTargetLostRemoveSearchCount`,
+  `fAVDHealthEnduranceOffset`, `fJumpHeightMin`). Two were hard-coded values,
+  now read: `fSkillUseCurve` (Skyrim's skill-rank cost exponent, 1.95) and
+  `fCombatDistance`, the melee reach baseline a weapon's Reach multiplies
+  (GECK wiki *Weapons*). The engine used 180 for every game; Skyrim,
+  Fallout 4 and Fallout 76 author 141, and Fallout 3 and New Vegas default
+  to 128 (GECK wiki *FCombatDistance*). The measurement finds only
+  hard-codes whose code names the setting. **Phase 0: verify** Oblivion's
+  default for `fCombatDistance` (its master authors none, and no source
+  gives the executable's; the engine keeps 180) and what Starfield's
+  `fCombatDistance` is (its master authors 2.0, so it is not this reach, and
+  the engine keeps its own there).
 - **LMC-SET-003.** Mod-provided INIs and JSON are mod data (LMC-EXT-005).
 - **LMC-SET-004.** Settings a mod writes at runtime (MCM, extension settings
   declarations) persist per profile, not per installation.
@@ -1462,3 +1479,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 18 | 2026-11-23 | LMC-REC-007 recorded as built (fold provenance, `plugins.conflicts`, `--plugin-report`); the report's winner is the carrier that owns the record, so a no-op override is marked as one, and a byte difference in a field the merge does not read is labelled; measured on FNV with its nine DLC: 781 overridden forms, 11 of them kept by an earlier carrier | — |
 | 19 | 2026-11-23 | LMC-REC-004 built for the cell index: cells, modelled base objects, pack-ins and the other form-keyed cell-index maps prune deleted forms (their prune was a no-op); measured on FNV, Skyrim SE and Fallout 4 + UFO4P against a raw record walk; a live reference to a deleted base and a deleted cell's uncovered references recorded as Phase 0: verify | — |
 | 20 | 2026-11-23 | LMC-DX-001 first slice built (#6671): `--preflight` classifies every file a mod root ships by catalog patterns (catalog_version 2 adds `paths`, `game_dir_paths`, `ini_keys` and `[not_game_data]`, checked by C15), scans its Papyrus and ObScript scripts eagerly (LMC-SCR-005), names DLLs (LMC-EXT-001) and plugin-named INI keys (LMC-SET-001), lists asset conflicts and coverage; the conformance runner measures §7.3 rule 2 from it. LMC-REC-011 measured by the fold conformance gate | — |
+| 21 | 2026-11-23 | LMC-SET-002 measured: 240 authored GMSTs read through the merged index, 8 named without a read; `fSkillUseCurve` and `fCombatDistance` were hard-coded and are now read (melee reach 141 on Skyrim, Fallout 4 and Fallout 76, 128 on Fallout 3 and New Vegas, where the engine used 180); `combat.approach` scales its ring with the reach; Oblivion's default and Starfield's meaning of `fCombatDistance` recorded as Phase 0: verify | — |

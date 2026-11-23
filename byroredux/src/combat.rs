@@ -22,9 +22,11 @@ use crate::interaction::{camera_ray, ActionState, InputAction};
 use crate::systems::{PlayerEntity, PlayerMode};
 
 /// Camera-forward melee reach in Bethesda units — the unarmed / no-weapon
-/// baseline. `EquippedWeapon::reach` is an authored *multiplier* on this
-/// baseline (1.0 = same reach as a longsword/mace; source: CS wiki's
-/// `fCombatDistance * NPCScale * Reach` formula), not an absolute distance.
+/// baseline where the game has no `fCombatDistance` reach (Starfield) or no
+/// load order is installed. Elsewhere the baseline is the load order's
+/// `fCombatDistance`, else the profile's default for it ([`melee_reach_baseline`],
+/// LMC-SET-002). `EquippedWeapon::reach` is an authored *multiplier* on the
+/// baseline (`fCombatDistance * NPCScale * Reach`), not an absolute distance.
 pub(crate) const MELEE_REACH_BU: f32 = 180.0;
 /// #5160 — the swing's swept corridor radius (BU). A swing resolves through
 /// a ball cast along the camera ray, not a zero-width line: authored actor
@@ -1415,16 +1417,27 @@ fn melee_damage_charal_bonus(world: &World, aggressor: EntityId) -> f32 {
     ruleset.actor_value(melee_damage_avif, &avs, level)
 }
 
+/// LMC-SET-002 — the unarmed melee reach: the load order's `fCombatDistance`, else the profile's default for it
+/// (`CharacterRulesProfile::combat_distance`), else [`MELEE_REACH_BU`] where the game's setting is not this reach or
+/// no load order is installed. A non-finite or non-positive authored value is ignored.
+fn melee_reach_baseline(world: &World) -> f32 {
+    world
+        .try_resource::<crate::components::LoadedCellIndex>()
+        .and_then(|index| {
+            let default = index.0.character_rules.combat_distance()?;
+            Some(index.0.game_setting_float("fCombatDistance").filter(|reach| reach.is_finite() && *reach > 0.0).unwrap_or(default))
+        })
+        .unwrap_or(MELEE_REACH_BU)
+}
+
 /// Weapon-scaled melee reach. `EquippedWeapon::reach` is a multiplier on
-/// [`MELEE_REACH_BU`] (1.0 = same reach as a longsword/mace); `0.0` means
-/// the source game's weapon layout isn't decoded yet (see
+/// the baseline ([`melee_reach_baseline`]; 1.0 = same reach as a longsword/mace);
+/// `0.0` means the source game's weapon layout isn't decoded yet (see
 /// `ItemKind::Weapon::reach`), so it falls back to the flat baseline —
 /// same rule the unarmed case already uses.
 pub(crate) fn attack_reach_bu(world: &World, aggressor: EntityId) -> f32 {
-    world
-        .get::<EquippedWeapon>(aggressor)
-        .filter(|weapon| weapon.reach > 0.0)
-        .map_or(MELEE_REACH_BU, |weapon| MELEE_REACH_BU * weapon.reach)
+    let baseline = melee_reach_baseline(world);
+    world.get::<EquippedWeapon>(aggressor).filter(|weapon| weapon.reach > 0.0).map_or(baseline, |weapon| baseline * weapon.reach)
 }
 
 /// M65 (SNK-ATK-001 to -004) — whether the player's strike on `target` is a sneak attack, and its damage. It is
@@ -3435,6 +3448,43 @@ mod tests {
         combat_damage_system(&world, 0.0);
         assert_eq!(world.get::<ActorValues>(target).unwrap().current(0x2D4), 10.0);
         assert!(world.get::<Dead>(target).is_none());
+    }
+
+    /// LMC-SET-002 — the melee reach baseline is the load order's `fCombatDistance`, else the profile's default for it
+    /// (New Vegas 128, GECK wiki), and a weapon's authored Reach multiplies it. Starfield's setting is not this reach,
+    /// so its baseline stays the engine's.
+    #[test]
+    fn melee_reach_is_the_load_orders_combat_distance() {
+        use byroredux_core::character::CharacterRulesProfile;
+        use byroredux_plugin::esm::records::{EsmIndex, GameSetting, SettingValue};
+        let world_with = |index: EsmIndex| {
+            let mut world = World::new();
+            world.register::<EquippedWeapon>();
+            world.insert_resource(crate::components::LoadedCellIndex(std::sync::Arc::new(index)));
+            let unarmed = world.spawn();
+            let armed = world.spawn();
+            world.insert(
+                armed,
+                EquippedWeapon { inventory_index: InventoryIndex(0), base_form_id: 0x1234, damage: 10.0, reach: 0.7, speed: 1.0 },
+            );
+            (world, unarmed, armed)
+        };
+        let fnv = || EsmIndex { character_rules: CharacterRulesProfile::FALLOUT_NEW_VEGAS, ..Default::default() };
+
+        let (world, unarmed, armed) = world_with(fnv());
+        assert_eq!(attack_reach_bu(&world, unarmed), 128.0, "the profile's default where the load order authors none");
+        assert!((attack_reach_bu(&world, armed) - 128.0 * 0.7).abs() < 1e-4);
+
+        let mut retuned = fnv();
+        retuned.insert_game_setting(GameSetting { form_id: 0x0000_0456, editor_id: "fCombatDistance".into(), value: SettingValue::Float(200.0) });
+        let (world, unarmed, armed) = world_with(retuned);
+        assert_eq!(attack_reach_bu(&world, unarmed), 200.0, "a mod's fCombatDistance is the reach");
+        assert!((attack_reach_bu(&world, armed) - 200.0 * 0.7).abs() < 1e-4);
+
+        let mut starfield = EsmIndex { character_rules: CharacterRulesProfile::STARFIELD, ..Default::default() };
+        starfield.insert_game_setting(GameSetting { form_id: 0x0000_0457, editor_id: "fCombatDistance".into(), value: SettingValue::Float(2.0) });
+        let (world, unarmed, _) = world_with(starfield);
+        assert_eq!(attack_reach_bu(&world, unarmed), MELEE_REACH_BU, "Starfield's fCombatDistance is not a reach");
     }
 
     #[test]

@@ -241,12 +241,20 @@ impl ConsoleCommand for CombatStatusCommand {
 /// ray-cast, event, damage, and death systems.
 pub(crate) struct CombatApproachCommand;
 
+/// The ring radii and the longest accepted swing ray, at a reach of [`crate::combat::MELEE_REACH_BU`]; each scales with
+/// the approaching player's own reach ([`scaled_to_reach`]), which the load order's `fCombatDistance` and the weapon's
+/// Reach set (LMC-SET-002), so a placement stays inside the swing whatever the game or weapon.
 const COMBAT_APPROACH_RADII_BU: [f32; 3] = [120.0, 96.0, 144.0];
 const COMBAT_APPROACH_ANGLE_STEPS: usize = 16;
 pub(super) const COMBAT_APPROACH_MAX_RAY_BU: f32 = 176.0;
 
-pub(super) fn combat_approach_offsets() -> impl Iterator<Item = Vec3> {
-    COMBAT_APPROACH_RADII_BU.into_iter().flat_map(|radius| {
+/// `distance`, stated at the reference reach, at `reach` instead.
+pub(super) fn scaled_to_reach(distance: f32, reach: f32) -> f32 {
+    distance * reach / crate::combat::MELEE_REACH_BU
+}
+
+pub(super) fn combat_approach_offsets(reach: f32) -> impl Iterator<Item = Vec3> {
+    COMBAT_APPROACH_RADII_BU.into_iter().map(move |radius| scaled_to_reach(radius, reach)).flat_map(|radius| {
         (0..COMBAT_APPROACH_ANGLE_STEPS).map(move |step| {
             let angle = step as f32 * std::f32::consts::TAU / COMBAT_APPROACH_ANGLE_STEPS as f32;
             Vec3::new(angle.sin() * radius, 0.0, -angle.cos() * radius)
@@ -355,7 +363,8 @@ fn find_walkable_combat_approach(
     // registration helper's exclusivity contract (#3267).
     byroredux_physics::register_newcomers_and_refresh_queries(world);
 
-    combat_approach_offsets().find_map(|offset| {
+    let reach = crate::combat::attack_reach_bu(world, player);
+    combat_approach_offsets(reach).find_map(|offset| {
         let candidate = target_pos + offset;
         let surface_y = crate::scene::probe_walkable_floor_near(
             world,
@@ -372,7 +381,7 @@ fn find_walkable_combat_approach(
         );
         let camera_pos = body_pos + Vec3::Y * controller.eye_height;
         let aim_pos = target_pos + Vec3::Y * controller.eye_height * 1.15;
-        if camera_pos.distance(aim_pos) > COMBAT_APPROACH_MAX_RAY_BU {
+        if camera_pos.distance(aim_pos) > scaled_to_reach(COMBAT_APPROACH_MAX_RAY_BU, reach) {
             return None;
         }
         // Reject a ring position the swing's own ray cannot reach through
@@ -424,13 +433,14 @@ impl ConsoleCommand for CombatApproachCommand {
             .map(|controller| *controller)
             .unwrap_or(byroredux_physics::CharacterController::HUMAN);
 
-        // Keep the distance inside the 180-BU melee reach. The frozen ambush
+        // Keep the distance inside the player's melee reach. The frozen ambush
         // actor is not itself standing over architecture, so a live engine
         // searches a deterministic ring for a nearby authored floor and
         // rejects candidates whose vertical separation would put the actor
         // outside the attack ray. Resource-light command tests retain the
         // direct authored-height fallback.
-        let authored_floor_pos = target_pos - Vec3::Z * 120.0;
+        let authored_floor_pos =
+            target_pos - Vec3::Z * scaled_to_reach(COMBAT_APPROACH_RADII_BU[0], crate::combat::attack_reach_bu(world, player));
         let (body_pos, floor_y) = if world
             .try_resource::<byroredux_physics::PhysicsWorld>()
             .is_some()

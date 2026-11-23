@@ -231,7 +231,8 @@ fn player_status_reports_character_body_grid_and_grounding() {
 
 #[test]
 fn combat_approach_search_is_deterministic_and_stays_inside_melee_reach() {
-    let offsets: Vec<Vec3> = super::view::combat_approach_offsets().collect();
+    let reference = crate::combat::MELEE_REACH_BU;
+    let offsets: Vec<Vec3> = super::view::combat_approach_offsets(reference).collect();
     assert_eq!(offsets.len(), 48);
     assert_eq!(offsets[0], Vec3::new(0.0, 0.0, -120.0));
     assert!(offsets.iter().all(|offset| {
@@ -242,6 +243,12 @@ fn combat_approach_search_is_deterministic_and_stays_inside_melee_reach() {
                 .iter()
                 .any(|expected| (radius - expected).abs() < 0.01)
     }));
+    // LMC-SET-002 — a shorter reach (New Vegas' fCombatDistance 128 with a 0.7-Reach knife) shrinks the ring with it,
+    // so every candidate stays inside the swing.
+    let knife = 128.0 * 0.7;
+    let max_ray = super::view::scaled_to_reach(super::view::COMBAT_APPROACH_MAX_RAY_BU, knife);
+    assert!(max_ray < knife);
+    assert!(super::view::combat_approach_offsets(knife).all(|offset| offset.length() <= max_ray + 0.01));
 }
 
 /// `skin.dump` regression for #841 — the dump must surface the
