@@ -353,6 +353,14 @@ The console commands are registered in `byroredux/src/commands/mod.rs`
 `byroredux/src/save_io.rs`. Current registered commands (**196**) grouped by
 purpose:
 
+**FormID arguments are hex**, bare or `0x`-prefixed: `quest.show 18B4B`, `quest.show
+0x18B4B` and `inv.add 10` (form 0x10) all address a form the same way
+(`parse_console_form_id`, #5817 / #7333). A plain-number argument (a quest stage, an
+alias or menu-item id, `r.dbg` bits) is decimal unless prefixed with `0x`. So are
+`cond`'s parameters, which are FormIDs for some functions and numbers for others. An
+*entity* argument (`<entity|.>`) is still a decimal entity id, or a resident
+reference's `0x<FormID>`.
+
 ```
 # Engine state
 help                        → list every registered command

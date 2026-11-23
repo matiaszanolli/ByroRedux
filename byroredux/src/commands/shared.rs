@@ -84,7 +84,11 @@ pub(crate) fn resolve_console_entity(world: &World, tok: &str) -> Result<EntityI
         .map_err(|_| format!("bad entity `{tok}` (decimal id, 0x<FormID> or `.`)"))
 }
 
-/// Parse a decimal or `0x`-hex `u32` console argument (FormIDs are hex).
+/// Parse a plain-number console argument, decimal or `0x`-hex: a quest stage,
+/// an alias or menu-item id, flag bits. Never a FormID — those go through
+/// [`parse_console_form_id`], which reads a bare token as hex. `cond`'s
+/// parameters use this too, since a parameter is a FormID for some
+/// functions and a number for others (#7333).
 pub(crate) fn parse_console_u32(tok: &str) -> Option<u32> {
     if let Some(hex) = tok.strip_prefix("0x").or_else(|| tok.strip_prefix("0X")) {
         u32::from_str_radix(hex, 16).ok()
@@ -99,8 +103,11 @@ pub(crate) fn parse_console_u32(tok: &str) -> Option<u32> {
 /// commands used to hand-roll this (dropping `0X`, and reading the same
 /// bare token differently from `parse_console_u32`'s decimal-first
 /// rule), so `inv.add 10` addressed form 0x10 while `quest.force 10`
-/// addressed form 10. Every FormID-shaped argument goes through this
-/// one parser.
+/// addressed form 10. #7333 routed the remaining FormID arguments (the
+/// `quest.*` commands, `scene.show`, `terminal.select`, `perk.run`,
+/// `dialogue.forcegreet`, `sm.event`, `cndf`, `anim.archetype`,
+/// `setav`/`modav`, `weather.force`) through it, so every FormID-shaped
+/// argument now goes through this one parser.
 pub(crate) fn parse_console_form_id(tok: &str) -> Option<u32> {
     let hex = tok
         .strip_prefix("0x")

@@ -158,7 +158,7 @@ impl ConsoleCommand for QuestForceAliasCommand {
         else {
             return CommandOutput::error("usage: quest.force <quest_formid> <alias_id> <entity|.|0xREFR>");
         };
-        let (Some(quest), Ok(alias)) = (parse_console_u32(quest_token), alias_token.parse::<i32>()) else {
+        let (Some(quest), Ok(alias)) = (parse_console_form_id(quest_token), alias_token.parse::<i32>()) else {
             return CommandOutput::error("quest.force: bad quest or alias id");
         };
         // `0x…` names the placed reference by FormID; anything else is an entity id.

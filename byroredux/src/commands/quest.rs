@@ -43,7 +43,7 @@ fn parse_quest_arg(args: &str, usage: &str) -> Result<QuestFormId, CommandOutput
     if tokens.next().is_some() {
         return Err(CommandOutput::error(format!("usage: {usage}")));
     }
-    parse_console_u32(raw)
+    parse_console_form_id(raw)
         .map(QuestFormId)
         .ok_or_else(|| CommandOutput::error(format!("bad quest FormID `{raw}`")))
 }
@@ -277,7 +277,7 @@ impl ConsoleCommand for QuestEffectsCommand {
         let filter = if args.trim().is_empty() {
             None
         } else {
-            match parse_console_u32(args.trim()) {
+            match parse_console_form_id(args.trim()) {
                 Some(form) => Some(QuestFormId(form)),
                 None => {
                     return CommandOutput::error(format!("bad quest FormID `{}`", args.trim()))
@@ -621,7 +621,7 @@ impl ConsoleCommand for SceneShowCommand {
         if tokens.next().is_some() {
             return CommandOutput::error("usage: scene.show <formid>");
         }
-        let Some(form_id) = parse_console_u32(raw) else {
+        let Some(form_id) = parse_console_form_id(raw) else {
             return CommandOutput::error(format!("bad scene FormID `{raw}`"));
         };
         // #3650 — snapshot the definition (an `Arc` bump, not a deep copy)
@@ -895,7 +895,7 @@ impl ConsoleCommand for QuestSetStageCommand {
         if tokens.next().is_some() {
             return CommandOutput::error("usage: quest.setstage <formid> <stage>");
         }
-        let Some(quest) = parse_console_u32(raw_quest).map(QuestFormId) else {
+        let Some(quest) = parse_console_form_id(raw_quest).map(QuestFormId) else {
             return CommandOutput::error(format!("bad quest FormID `{raw_quest}`"));
         };
         let Some(stage) = parse_console_u32(raw_stage).and_then(|stage| u16::try_from(stage).ok())
@@ -952,7 +952,7 @@ impl ConsoleCommand for TerminalSelectCommand {
         if tokens.next().is_some() {
             return CommandOutput::error(USAGE);
         }
-        let Some(reference) = parse_console_u32(raw_reference) else {
+        let Some(reference) = parse_console_form_id(raw_reference) else {
             return CommandOutput::error(format!("bad reference FormID `{raw_reference}`"));
         };
         let Some(item) = parse_console_u32(raw_item) else {
@@ -1000,11 +1000,11 @@ impl ConsoleCommand for PerkRunCommand {
         if tokens.next().is_some() {
             return CommandOutput::error(USAGE);
         }
-        let (Some(perk), Some(entry)) = (parse_console_u32(raw_perk), parse_console_u32(raw_entry)) else {
+        let (Some(perk), Some(entry)) = (parse_console_form_id(raw_perk), parse_console_u32(raw_entry)) else {
             return CommandOutput::error(USAGE);
         };
         let target = match raw_target {
-            Some(raw) => match parse_console_u32(raw) {
+            Some(raw) => match parse_console_form_id(raw) {
                 Some(target) => Some(target),
                 None => return CommandOutput::error(format!("bad target FormID `{raw}`")),
             },
@@ -1221,7 +1221,7 @@ impl ConsoleCommand for DialogueForceGreetCommand {
             Ok(entity) => entity,
             Err(error) => return CommandOutput::error(error),
         };
-        let Some(pack_id) = parse_console_u32(pack_tok) else {
+        let Some(pack_id) = parse_console_form_id(pack_tok) else {
             return CommandOutput::error(format!("bad PACK FormID `{pack_tok}`"));
         };
         let Some(index) = world.try_resource::<crate::cell_loader::LoadedCellIndex>() else {
@@ -1320,7 +1320,7 @@ impl ConsoleCommand for SmEventCommand {
             };
             match slot {
                 "kw" => {
-                    let Some(form) = parse_console_u32(value) else {
+                    let Some(form) = parse_console_form_id(value) else {
                         return CommandOutput::error(format!("bad keyword FormID `{value}`"));
                     };
                     keyword = Some(form);
@@ -1332,7 +1332,7 @@ impl ConsoleCommand for SmEventCommand {
                     values[usize::from(slot == "v2")] = number;
                 }
                 "l1" | "l2" => {
-                    let Some(form) = parse_console_u32(value) else {
+                    let Some(form) = parse_console_form_id(value) else {
                         return CommandOutput::error(format!("bad LCTN FormID `{value}`"));
                     };
                     if slot == "l1" {
@@ -1353,7 +1353,7 @@ impl ConsoleCommand for SmEventCommand {
                             }
                         }
                     } else {
-                        let Some(form) = parse_console_u32(value) else {
+                        let Some(form) = parse_console_form_id(value) else {
                             return CommandOutput::error(format!("bad FormID `{value}`"));
                         };
                         match byroredux_scripting::condition::resolve_entity_by_global_form_id(world, form) {
@@ -1704,6 +1704,21 @@ impl ConsoleCommand for ChargenCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #7333 — the `quest.*` commands share `parse_quest_arg`, which reads a bare
+    /// FormID as hex like every console FormID: `18B4B` used to be refused and `10`
+    /// to address form 10.
+    #[test]
+    fn quest_commands_read_a_bare_form_id_as_hex() {
+        let usage = "quest.show <formid>";
+        for (arg, form) in [("18B4B", 0x18B4B), ("0x00018B4B", 0x18B4B), ("10", 0x10)] {
+            match parse_quest_arg(arg, usage) {
+                Ok(quest) => assert_eq!(quest, QuestFormId(form), "{arg}"),
+                Err(out) => panic!("{arg}: {:?}", out.lines),
+            }
+        }
+        assert!(parse_quest_arg("MS01", usage).is_err());
+    }
 
     /// #7333 — `weather.force` reads its WTHR FormID as hex, bare or `0x`-prefixed, like
     /// every other console FormID: a bare `0010E1F2` used to be refused as a bad FormID,

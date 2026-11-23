@@ -1562,6 +1562,39 @@ fn form_id_arguments_parse_hex_through_one_spelling() {
     }
 }
 
+/// #7333 — #5817 routed only the gameplay commands; the quest, scene, perk,
+/// package, story-event, condition-form, keyword and actor-value arguments kept
+/// the decimal-first parser, so a bare `18B4B` was refused and a bare `10` read
+/// as form 10. Every `parse_console_u32` call left in the command tree must take
+/// a plain-number argument, named here; a new FormID argument must use
+/// `parse_console_form_id`.
+#[test]
+fn only_number_arguments_use_the_decimal_first_parser() {
+    // quest stage, terminal menu item, perk entry id, `r.dbg` bits, `cond` params.
+    const NUMBER_ARGUMENTS: [&str; 5] = ["raw_stage", "raw_item", "raw_entry", "digits", "t"];
+    let dir = format!("{}/src/commands", env!("CARGO_MANIFEST_DIR"));
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).expect("command tree") {
+        let path = entry.expect("command file").path();
+        if path.file_name().is_some_and(|name| name == "shared.rs") {
+            continue; // the definition
+        }
+        let source = std::fs::read_to_string(&path).expect("command source");
+        for (at, _) in source.match_indices("parse_console_u32(") {
+            let rest = &source[at + "parse_console_u32(".len()..];
+            let argument = &rest[..rest.find(')').expect("closing paren")];
+            assert!(
+                NUMBER_ARGUMENTS.contains(&argument),
+                "{}: parse_console_u32({argument}) — a FormID argument goes through \
+                 parse_console_form_id (#7333); a new number argument joins NUMBER_ARGUMENTS",
+                path.display()
+            );
+            checked += 1;
+        }
+    }
+    assert_eq!(checked, NUMBER_ARGUMENTS.len(), "a number-argument site was removed or renamed");
+}
+
 /// #6322 — `mesh.info` prints a placement's rotation as the REFR `DATA`
 /// triple, so it can be compared with FNVEdit directly. The old glam ZYX
 /// decomposition of the Y-up quat put a pure heading on `ry` with its sign

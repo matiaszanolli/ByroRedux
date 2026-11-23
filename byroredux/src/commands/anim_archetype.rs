@@ -48,7 +48,7 @@ impl ConsoleCommand for AnimArchetypeCommand {
         let keyword = if keyword_token.eq_ignore_ascii_case("none") {
             0
         } else {
-            match parse_console_u32(keyword_token) {
+            match parse_console_form_id(keyword_token) {
                 Some(keyword) => keyword,
                 None => return CommandOutput::error(format!("anim.archetype: bad keyword `{keyword_token}`")),
             }

@@ -67,7 +67,7 @@ fn edit_av(world: &World, args: &str, cmd: &str, edit: AvEdit) -> CommandOutput 
         Ok(e) => e,
         Err(msg) => return CommandOutput::error(format!("{cmd}: {msg}")),
     };
-    let Some(av) = parse_console_u32(av_tok) else {
+    let Some(av) = parse_console_form_id(av_tok) else {
         return CommandOutput::error(format!("{cmd}: bad actor-value FormID `{av_tok}`"));
     };
     // SAVE-4 — a key no loaded plugin owns (and local id 0) cannot be saved: `save_key` refuses it and every later

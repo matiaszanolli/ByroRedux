@@ -29,7 +29,7 @@ impl ConsoleCommand for CndfCommand {
             let shown: Vec<String> = runnable.iter().take(40).map(|form| format!("{form:08X}")).collect();
             return CommandOutput::line(format!("{} answerable forms: {}", runnable.len(), shown.join(" ")));
         }
-        let Some(form) = parse_console_u32(first) else {
+        let Some(form) = parse_console_form_id(first) else {
             return CommandOutput::error(format!("cndf: bad form id `{first}`"));
         };
         let Some(subject_token) = tokens.next() else {
