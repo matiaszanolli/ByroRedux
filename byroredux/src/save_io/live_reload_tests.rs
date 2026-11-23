@@ -497,6 +497,8 @@ fn post_reload_drain_steps_keep_their_order() {
         "byroredux_save::build_form_id_remap(world, &registry, &snapshot)",
         "&[\"ScriptPackage\"])",
         "ai_package::reseat_ambient_packages_after_restore(world)",
+        // #7350 — after the re-seat, which decides which package each actor runs.
+        "package_flags::drop_day_blocks_of_packages_not_running(world)",
         "&remap, MUTABLE_DELTA_COLUMNS)",
         // #5460 — the worn-gear reconcile lives in the apply_deltas
         // reconciler arm and must run exactly once (a merge slip had left

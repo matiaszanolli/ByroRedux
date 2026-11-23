@@ -18,7 +18,7 @@
 //! A kept package still loses to an earlier (higher-priority) one whose window is open, and still needs its
 //! conditions to pass: only the *schedule* is extended.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use byroredux_core::ecs::components::{CellFormId, CellRoot, FindProgress, FormIdComponent, Traveled};
 use byroredux_core::ecs::resource::Resource;
@@ -110,6 +110,30 @@ pub(crate) fn adopt_entity_day_blocks(world: &World, entity: EntityId) {
 }
 
 impl Resource for PackageDayBlocks {}
+
+/// #7350 — after a load's re-seat, keep a Once Per Day block only for the package its actor is running. The reload's
+/// spawns noted a block for the package each actor picked at spawn, under the clock the spawn saw;
+/// [`restart_day_blocks_at_loaded_clock`] dated those from the load, and the re-seat then ran at the restored clock and
+/// may have installed another package (an actor spawned at 09:00 under its breakfast package, from an evening save).
+/// A block for a package the actor is not running would suppress it for 24 hours from the load for no run, so it goes;
+/// the saved session's own block lapses as the clock jumps ahead, as a cold start from the same save would have it.
+pub(crate) fn drop_day_blocks_of_packages_not_running(world: &World) {
+    let running: Vec<(EntityId, u32)> = world
+        .query::<crate::components::AmbientPackageRuntime>()
+        .map(|runtimes| {
+            runtimes
+                .iter()
+                .filter_map(|(actor, runtime)| runtime.active_package_form_id.map(|package| (actor, package)))
+                .collect()
+        })
+        .unwrap_or_default();
+    // Owners are read after the runtime guard drops: `block_owner` takes `FormIdComponent`.
+    let keep: HashSet<(BlockOwner, u32)> =
+        running.into_iter().map(|(actor, package)| (block_owner(world, actor), package)).collect();
+    if let Some(mut blocks) = world.try_resource_mut::<PackageDayBlocks>() {
+        blocks.0.retain(|key, _| keep.contains(key));
+    }
+}
 
 /// #7341 — start every Once Per Day block at the clock a load just restored. A load clears the blocks before its
 /// cell reload (#7252), so every block held now was noted by the reload's own spawns, which ran under the OUTGOING
@@ -482,6 +506,49 @@ mod tests {
         assert_eq!(winner(&world, actor, 9.0, None, &packages), Some(2), "an hour after the load: blocked");
         at(&mut world, 5, 8.5);
         assert_eq!(winner(&world, actor, 8.5, None, &packages), Some(1), "24 hours after the load: free");
+    }
+
+    /// #7350 -- the reload's spawns noted a block for each actor's spawn package and the load restarted them all;
+    /// the re-seat then ran at the restored clock. A block survives only for the package its actor is running (a
+    /// reference-keyed one included), so a package the re-seat dropped is not left blocked for 24 hours from the load.
+    #[test]
+    fn a_load_keeps_a_day_block_only_for_the_package_its_actor_runs() {
+        use crate::components::AmbientPackageRuntime;
+        let (mut world, actor) = world_at(1, 9.0);
+        world.register::<AmbientPackageRuntime>();
+        let placed = reference(&mut world, 0x1234);
+        world.insert(actor, FormIdComponent(placed));
+        // Spawned under package 1 (breakfast), re-seated into 2 (evening); the load restarted both blocks.
+        note_selected(&world, actor, PKDT_ONCE_PER_DAY, 1);
+        adopt_entity_day_blocks(&world, actor);
+        note_selected(&world, actor, PKDT_ONCE_PER_DAY, 2);
+        world.insert(
+            actor,
+            AmbientPackageRuntime {
+                package_candidates: vec![1, 2],
+                active_package_form_id: Some(2),
+                actor_form_id: 0,
+                last_evaluated_game_minute: None,
+            },
+        );
+        // Another actor with no placed reference keeps its entity-keyed block for the package it runs.
+        let unplaced = world.spawn();
+        note_selected(&world, unplaced, PKDT_ONCE_PER_DAY, 3);
+        world.insert(
+            unplaced,
+            AmbientPackageRuntime {
+                package_candidates: vec![3],
+                active_package_form_id: Some(3),
+                actor_form_id: 0,
+                last_evaluated_game_minute: None,
+            },
+        );
+        drop_day_blocks_of_packages_not_running(&world);
+        let blocks = &world.resource::<PackageDayBlocks>().0;
+        assert!(!blocks.contains_key(&(BlockOwner::Reference(placed), 1)), "the dropped package is not blocked: {blocks:?}");
+        assert!(blocks.contains_key(&(BlockOwner::Reference(placed), 2)), "the running package keeps its block");
+        assert!(blocks.contains_key(&(BlockOwner::Entity(unplaced), 3)), "an unplaced actor keeps its own");
+        assert_eq!(blocks.len(), 2);
     }
 
     /// #7340 -- the spawn job picked package 1 before the reference was stamped, so it could not see the

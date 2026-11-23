@@ -922,6 +922,8 @@ pub fn execute_pending_save_loads(
         Err(error) => log::warn!("save load: ScriptPackage pre-seat failed: {error}"),
     }
     crate::npc_spawn::ai_package::reseat_ambient_packages_after_restore(world);
+    // #7350 — a block restarted above is kept only for the package its actor ended up running.
+    crate::npc_spawn::package_flags::drop_day_blocks_of_packages_not_running(world);
     // #5054 — an exterior save holds resident cells out to the hysteresis
     // ring (`radius_load + 1`) while the reload streams only `radius_load`,
     // so the ring's rows cannot overlay. Park them as eviction would have,
