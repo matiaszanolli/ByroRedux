@@ -488,6 +488,11 @@ fn post_reload_drain_steps_keep_their_order() {
     // call shape, so the markers key on their column arguments.
     let steps = [
         "byroredux_save::restore_resources(world, &registry, &snapshot)",
+        // #7341 / #7351 — the blocks the reload's spawns noted are restarted at the clock `restore_resources` has just
+        // put back, ahead of the re-seat that reads them: a deleted call, or one moved after the restore of the
+        // resident rows, leaves them dated under the outgoing clock (the loaded game would suppress a package for the
+        // gap between the two clocks on top of its 24 hours).
+        "package_flags::restart_day_blocks_at_loaded_clock(world)",
         "reference_state::restore_resident(world)",
         "byroredux_save::build_form_id_remap(world, &registry, &snapshot)",
         "&[\"ScriptPackage\"])",
