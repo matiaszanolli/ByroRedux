@@ -206,9 +206,12 @@ pub(crate) fn stance_use_system(world: &World, dt: f32) {
             (drives_body && moving, actions.is_held(Sprint))
         })
         .unwrap_or((false, false));
+    // #7294 — UESP *Oblivion:Sneak*: "only if there is a person or creature nearby" and the
+    // sneaker is not detected. "Nearby" is the detection tick's own range: it names a detector
+    // only when a live actor stands within it, so an empty room (no detector) banks nothing.
     let undetected = world
         .try_resource::<crate::detection::PlayerDetection>()
-        .is_none_or(|detection| detection.level < DetectionLevel::Noticed);
+        .is_some_and(|detection| detection.detector.is_some() && detection.level < DetectionLevel::Noticed);
     let stance = stance_of(
         moving,
         world.has::<Sneaking>(player),
@@ -671,12 +674,38 @@ mod tests {
         assert_eq!(run_a_second(&world), 1, "a second of running in Character mode banks one use");
     }
 
+    /// #7294 — UESP *Oblivion:Sneak*: Sneak experience accrues "only if there is a person or creature
+    /// nearby". With no actor within the detection tick's range (no detector) a second of sneaking
+    /// banks nothing; with one in range that has not noticed the player it banks one use.
+    #[test]
+    fn sneaking_with_nobody_in_range_banks_no_sneak() {
+        use byroredux_core::ecs::components::Sneaking;
+        let (mut world, player, npc) = world();
+        world.insert_resource(StanceTimers::default());
+        world.insert_resource(crate::systems::PlayerMode::Character);
+        world.register::<Sneaking>();
+        world.insert(player, Sneaking);
+        let mut actions = crate::interaction::ActionState::default();
+        actions.press_for_test(crate::interaction::InputAction::MoveForward);
+        world.insert_resource(actions);
+        let sneak_a_second = |world: &World| {
+            for _ in 0..30 {
+                stance_use_system(world, 0.05);
+            }
+            world.resource::<PendingSkillUse>().0.iter().filter(|r| r.skill == SNEAK).count()
+        };
+        world.insert_resource(crate::detection::PlayerDetection::default());
+        assert_eq!(sneak_a_second(&world), 0, "an empty room");
+        world.insert_resource(crate::detection::PlayerDetection { detector: Some(npc), ..Default::default() });
+        assert_eq!(sneak_a_second(&world), 1, "someone in range, unaware");
+    }
+
     /// OSL-USE-005 end to end: a player running for a second queues one Athletics use at 0.03 (value 1),
     /// sneaking undetected 0.75 of Sneak, and a jump 0.3 of Acrobatics; swimming would use value 2.
     #[test]
     fn seconds_of_a_stance_and_a_jump_queue_their_skil_amounts() {
         use byroredux_core::ecs::components::Sneaking;
-        let (mut world, player, _) = world();
+        let (mut world, player, npc) = world();
         world.insert_resource(StanceTimers::default());
         world.insert_resource(crate::systems::PlayerMode::Character);
         world.register::<Sneaking>();
@@ -691,6 +720,8 @@ mod tests {
             world.resource::<PendingSkillUse>().0.iter().map(|r| (r.skill, r.amount)).collect()
         };
         assert_eq!(amounts(&world), vec![(ATHLETICS, 0.03)], "one second of running in 30 frames of 0.05 s");
+        // Someone within detection range who has not noticed the player (#7294).
+        world.insert_resource(crate::detection::PlayerDetection { detector: Some(npc), ..Default::default() });
         world.insert(player, Sneaking);
         for _ in 0..30 {
             stance_use_system(&world, 0.05);

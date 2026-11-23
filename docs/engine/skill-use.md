@@ -129,7 +129,9 @@ unfed list; its source is `FED_SKILLS` in `oblivion_skill_use.rs`, where a skill
   moving feeds **Athletics usage 1** (0.04), else running and moving feeds **Athletics usage 0** (0.03). The two usages the Phase 0 census
   left open (rows 13 and 15) are decoded: both push `edi`, which is 0 for an unmounted player, so usage 0. The executable gates its Sneak
   branch on a flag at `player + 0x5a8` that was not traced; the engine reads UESP's and the PRD's "undetected" from the detection level
-  (`PlayerDetection`, below Noticed). The engine's "running" is the Sprint action, as the detection tick reads it.
+  (`PlayerDetection`, below Noticed), and UESP's "only if there is a person or creature nearby" as a detector in range: the detection
+  tick names one only when a live actor stands within its range, so sneaking in an empty room banks nothing (#7294). The engine's
+  "running" is the Sprint action, as the detection tick reads it.
 - **Acrobatics** (a jump, usage 0, 0.3): the controller's `jump_fired` on land. UESP: "each jump or dodge".
 
 **Fed since #7081** (the six magic schools; with Marksman and Block, 16 of 21 in all; the [player-spellcasting PRD](../prd/player-spellcasting.md)): the player's cast
