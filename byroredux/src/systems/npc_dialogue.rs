@@ -747,7 +747,14 @@ impl byroredux_core::ecs::Resource for FollowUpTopics {}
 
 /// The topic owning INFO `info` in `index`, from the [`FollowUpTopics`] map.
 fn follow_up_topic(world: &World, index: &std::sync::Arc<byroredux_plugin::esm::records::EsmIndex>, info: u32) -> Option<u32> {
-    let cache = world.try_resource::<FollowUpTopics>()?;
+    let Some(cache) = world.try_resource::<FollowUpTopics>() else {
+        // `build_world` installs it; a world without it would skip every follow-up silently (#7308).
+        static WARNED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            log::warn!("npc dialogue: no FollowUpTopics resource, so no follow-up line can be found");
+        }
+        return None;
+    };
     let mut slot = cache.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let key = std::sync::Arc::downgrade(index);
     if !slot.as_ref().is_some_and(|(built_for, _)| std::sync::Weak::ptr_eq(built_for, &key)) {
@@ -1271,6 +1278,44 @@ mod tests {
     const INFO_GENERIC: u32 = 0x20_0012;
     const TOPIC_RUMORS: u32 = 0x20_0020;
     const INFO_RUMORS: u32 = 0x20_0021;
+
+    /// #7308 — the follow-up INFO → topic map answers what a scan of every topic's INFOs answers,
+    /// for every INFO of a multi-topic index, and nothing for an INFO no topic owns.
+    #[test]
+    fn follow_up_topic_agrees_with_a_scan_of_every_topic() {
+        let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+        for (topic, infos) in [(0x30_0001u32, [0x31_0001u32, 0x31_0002]), (0x30_0002, [0x31_0003, 0x31_0004]), (0x30_0003, [0x31_0005, 0x31_0006])] {
+            let infos = infos.iter().map(|&form_id| info(form_id, 0, "")).collect();
+            index.dialogues.insert(topic, DialRecord { form_id: topic, infos, ..Default::default() });
+        }
+        let index = std::sync::Arc::new(index);
+        let mut world = World::new();
+        world.init_resource::<FollowUpTopics>();
+        let scan = |form: u32| index.dialogues.values().find_map(|record| record.infos.iter().any(|i| i.form_id == form).then_some(record.form_id));
+        for form in 0x31_0001..=0x31_0006 {
+            assert_eq!(follow_up_topic(&world, &index, form), scan(form), "INFO {form:#08X}");
+            assert!(scan(form).is_some());
+        }
+        assert_eq!(follow_up_topic(&world, &index, 0x31_00FF), None, "an INFO no topic owns");
+    }
+
+    /// #7308 — the map is keyed by the index it was built from: a new loaded index (a cell change
+    /// swaps `LoadedCellIndex`) rebuilds it, so an INFO that moved topic resolves to its new owner.
+    #[test]
+    fn follow_up_topic_rebuilds_for_a_new_index() {
+        let index_with = |topic: u32| {
+            let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+            index.dialogues.insert(topic, DialRecord { form_id: topic, infos: vec![info(0x31_0001, 0, "")], ..Default::default() });
+            std::sync::Arc::new(index)
+        };
+        let mut world = World::new();
+        world.init_resource::<FollowUpTopics>();
+        let first = index_with(0x30_0001);
+        assert_eq!(follow_up_topic(&world, &first, 0x31_0001), Some(0x30_0001));
+        let second = index_with(0x30_0002);
+        assert_eq!(follow_up_topic(&world, &second, 0x31_0001), Some(0x30_0002), "built for the new index");
+        assert_eq!(follow_up_topic(&world, &first, 0x31_0001), Some(0x30_0001), "and back again");
+    }
 
     fn info(form_id: u32, speaker: u32, text: &str) -> InfoRecord {
         InfoRecord {
