@@ -370,16 +370,13 @@ fn cmd_11eb(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx
     }
 }
 
-// CS *SetPackDuration <minutes>*: the current package's duration — kept; the ambient AI re-evaluates
-// the actor when it elapses.
-fn cmd_1122(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
-    match caller(world, ctx) {
-        Some((form, actor)) => {
-            crate::package::request_package_evaluation(world, actor);
-            store(world, cmd, form, num(args, 0))
-        }
-        None => Action::Declined,
-    }
+// CS *SetPackDuration <iDuration>*: "Sets the duration of the actor's current package to iDuration (in
+// seconds of gametime)". No system reads a per-package duration, so it declines (#6190's ledger rule)
+// instead of storing a value nothing reads and reporting it done. #7292 — it used to request an
+// explicit EvaluatePackage, which the CS page does not describe and which, since #7243, also ended
+// the actor's Must Complete package.
+fn cmd_1122(_world: &World, _fallout: bool, _cmd: u16, _args: &[ObScriptValue], _ctx: &Context) -> Action {
+    Action::Declined
 }
 
 // Menus and screens with no UI here: the request is queued for the UI that shows them.

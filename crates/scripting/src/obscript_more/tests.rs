@@ -132,6 +132,17 @@ fn every_listed_id_has_an_arm_in_its_game() {
     }
 }
 
+/// #7292 — CS *SetPackDuration* sets the running package's duration; nothing reads a per-package
+/// duration, so it declines. It must not request an explicit EvaluatePackage (which ends a Must
+/// Complete package) nor store a value no one reads.
+#[test]
+fn set_pack_duration_declines_and_leaves_the_package_alone() {
+    let (world, actor, _, _) = world(GameKind::Oblivion);
+    assert_eq!(run(&world, 0x1122, &nums(&[2.0]), &ctx(Some(ACTOR))), Action::Declined);
+    assert!(!world.has::<crate::package::EvaluatePackageRequest>(actor), "no re-evaluation requested");
+    assert!(!world.has::<crate::package::ReleasePackageHold>(actor), "no Must Complete hold released");
+}
+
 /// A game other than the two families runs none of the ids.
 #[test]
 fn other_games_run_none_of_the_ids() {
