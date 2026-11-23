@@ -185,7 +185,8 @@ pub struct McmPage {
 }
 
 impl McmPage {
-    fn new(mod_index: usize, page: Option<usize>) -> Self {
+    /// An empty page for `mod_index`'s `page` (`None`: the front page): 128 unfilled cells, no dialog.
+    pub fn new(mod_index: usize, page: Option<usize>) -> Self {
         Self {
             mod_index,
             page,

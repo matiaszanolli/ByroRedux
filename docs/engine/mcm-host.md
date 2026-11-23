@@ -151,7 +151,26 @@ extension-state save path (STATE-001) as LMC-UI-002 says.
      suspend, so a config script that calls it is declined whole (with that reason); key-map
      conflict detection (`GetCustomControl`, the conflicting control's name) passes "" (no
      conflict); a `.swf` custom content panel.
-3. The native Mod Configuration page and its dialogs.
+3. The native Mod Configuration page and its dialogs. **Built (2026-11-23).**
+   - `crates/native-ui/src/mcm.rs` draws the registered mods and the open mod's pages, the page's
+     two-column grid (header, empty, text, toggle, slider, menu, colour, key-map and input
+     options, with the disabled and hidden flags), the info text, and the slider, menu, colour,
+     key-map (with unmap), input and message dialogs. It reads `McmSnapshot` and hands back
+     `McmAction`s (`views.rs`); it never writes a value. The pause page offers it once a mod
+     registered, and the menu registry counts it as the pause menu. Its words are labels, the
+     snapshot's data or rows of `native-page-strings.tsv` (pages `mod configuration`, `pause`).
+   - `byroredux/src/mcm_page.rs` is the adapter: `McmHost` to `McmSnapshot` (cells in grid order with
+     SkyUI's option ids, the dialog with its option's own format and flags), every script text
+     through the Scaleform `$`-key table (`byroredux_ui::translate_text`, installed once from the
+     interface archive and the enabled plugins' translation files, since the page has no movie of
+     its own), and each action to its driver function; leaving the menus closes an open page.
+   - Measured by 16 click-driven page tests (each interaction yields the action the contract
+     needs and nothing else), the page-strings gate (every drawn word is the game's, the
+     snapshot's or listed) and 8 adapter tests. No live run: no SkyUI-dependent mod is available
+     here, so the path from a click to a config script's event is covered in two halves (the
+     page's actions; slice 2's drivers on a generated config script), not end to end.
+   - Not built: a `.dds` custom panel is carried but not decoded (the page reports it as
+     unsupported, like a `.swf`).
 4. MCM Helper (`MCM/Config/<mod>/config.json`, `settings.ini`) on the same model.
 5. Fallout 4 MCM (`MCM/Config/<mod>/config.json`, its `MCM.*` Papyrus calls) and New Vegas MCM,
    each after its source is read.

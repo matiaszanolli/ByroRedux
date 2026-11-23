@@ -1,6 +1,7 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-23). Revision 33 builds the MCM host's model and engine `SKI_ConfigBase`
+**Status**: ACTIVE (2026-11-23). Revision 34 builds the MCM host's native Mod Configuration page and
+its adapter (slice 3). Revision 33 builds the MCM host's model and engine `SKI_ConfigBase`
 (slice 2). Revision 32 designs the MCM host (LMC-UI-002) and builds its first
 slice, quest-script `OnInit`. Revision 31 makes a save made in a removed plugin's cell or worldspace
 load: Oblivion's safe cell, else the session's location (owner's rule). Revision 30 measures LMC-PERF-001's and -002's fold cost
@@ -950,7 +951,9 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   it writes, SkyUI's dispatch of state options, re-registration after every
   load, and the `mcm.*` console commands. A config script calling
   `ShowMessage` is declined until the VM can suspend inside a call for a
-  value.
+  value. Slice 3 is built (revision 34): the native Mod Configuration page
+  (reached from the pause menu once a mod registered) and the adapter that
+  feeds it from `McmHost` and runs its actions as the config script's events.
 - **LMC-UI-003.** MenuXml replacements, `<include>` prefabs and font
   replacements from mods load through the MenuXml crate with the same
   precedence rules.
@@ -1616,3 +1619,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 31 | 2026-11-23 | LMC-SAV-002: a save made in a cell or worldspace the session's plugins lack loads, into Oblivion's documented safe cell (`SSaveGameSafeCellID`, default the Tiber Septim Hotel lobby) or, where no game documents one, the session's own location with the player's pose (owner's rule) | — |
 | 32 | 2026-11-23 | LMC-UI-002 designed (`docs/engine/mcm-host.md`, owner's decisions: engine `SKI_ConfigBase`, native page, pause-menu entry); slice 1 built: a quest's own scripts receive `OnInit` once per save | — |
 | 33 | 2026-11-23 | LMC-UI-002 slice 2: the engine `SKI_ConfigBase` and `SKI_PlayerLoadGameAlias` shadow SkyUI's, the `McmHost` model and static class, SkyUI's state-option dispatch, re-registration after every load, `mcm.*` console commands; `ShowMessage` declined | — |
+| 34 | 2026-11-23 | LMC-UI-002 slice 3: the native Mod Configuration page (grid, five dialogs, unmap, blocking message) reached from the pause menu, the `McmHost` adapter with `$`-key translation, leaving the menus closes the page; a `.dds` custom panel is carried but not drawn | — |

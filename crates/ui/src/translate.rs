@@ -129,6 +129,21 @@ pub(crate) fn install_translations(provider: &dyn ScaleformResourceProvider, spe
     *current = Some(key);
 }
 
+/// Install the active language's table from `provider` for a surface with no movie of its own (the
+/// native Mod Configuration page), which [`translate_text`] then reads. The same table a movie
+/// load installs; installing it again for the same files is free.
+pub fn load_translations(provider: &dyn ScaleformResourceProvider) {
+    install_translations(provider, &crate::fonts::text_languages());
+}
+
+/// `text` with its `$` key translated through the installed table, else unchanged: an unknown key
+/// stays as written, as the game draws it. Text with no `$`, and any text before a table is
+/// installed, passes through.
+pub fn translate_text(text: &str) -> String {
+    ruffle_core::byro_translation::translate(&ruffle_core::string::WString::from_utf8(text))
+        .map_or_else(|| text.to_owned(), |translated| translated.to_utf8_lossy().into_owned())
+}
+
 /// A game interface text file's contents: UTF-16 by its byte-order mark (LE or BE), UTF-8
 /// (with or without a mark) otherwise. Shared with the font configuration reader.
 pub(crate) fn decode_text(bytes: &[u8]) -> String {
@@ -185,7 +200,14 @@ mod tests {
         assert_eq!(t("<p align=\"center\"><b>$Compass_North</b></p>").as_deref(), Some("<p align=\"center\"><b>N</b></p>"));
         assert_eq!(t("$Unknown"), None);
         assert_eq!(t("costs $5"), None, "only a run that starts with $ is a key");
+        // The native pages read the same table (the Mod Configuration page): a known key is
+        // replaced, an unknown one stays as written, plain text passes through. Asserted here, with
+        // the process-wide table, so no parallel test sees it installed.
+        assert_eq!(translate_text("$Quit?"), "Quit to main menu?");
+        assert_eq!(translate_text("$Unknown"), "$Unknown");
+        assert_eq!(translate_text("Quit"), "Quit");
         set_text_translator(None);
+        assert_eq!(translate_text("$Quit?"), "$Quit?", "before a table is installed text passes through");
         assert_eq!(t("$Quit?"), None);
     }
 
