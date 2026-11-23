@@ -37,11 +37,12 @@ shadows on RTX 4070 Ti. Current entity count + bench numbers in
 | **ESM records (FNV)** | ~25 structured types (items, NPCs, factions, cells, CREA, LVLC, SCPT, PACK, QUST, DIAL, MESG, PERK, SPEL, MGEF, …) plus a separate long-tail bucket (sounds / idle / grasses / debris). See [ROADMAP Status](ROADMAP.md#status) for the current count — it's tracked by a floor-based integration test, not a number pinned here. |
 | **Cross-game translation** | **NIFAL** (NIF Abstraction Layer) — one explicit `translate()` boundary per data category resolves each game's native NIF into a single canonical, game-agnostic representation; no per-game branches downstream. See [docs/engine/nifal.md](docs/engine/nifal.md). |
 | **Test count, LOC, file count, workspace size** | See [ROADMAP Project Stats](ROADMAP.md#project-stats) — refreshed per `/session-close` so the README doesn't drift behind. |
-| **Renderer** | Vulkan 1.3 + `VK_KHR_ray_query` — multi-light RT shadows, reflections, bounded material-aware path-traced GI, SVGF temporal denoiser, TAA, streaming RIS (8 reservoirs/fragment), BLAS compaction + LRU eviction, Disney/Burley BSDF lobe for PBR (BGSM/BGEM + Starfield) content |
+| **Renderer** | Vulkan 1.3 + `VK_KHR_ray_query` — ReSTIR-DI direct lighting with a penumbra-aware shadow filter, RT reflections, bounded material-aware path-traced GI, split-sum sky image-based lighting, SVGF, FSR 3.1 (default) or TAA, auto-metered exposure with ACES or AgX, volumetric fog, terrain displacement patches, BLAS compaction + LRU eviction, Disney/Burley BSDF lobe for PBR (BGSM/BGEM + Starfield) content |
 | **Physics** | Rapier3D — collision import from NIF `bhk` chain, dynamic bodies, fixed 60 Hz substep |
-| **Scripting** | Papyrus `.psc` parser + `.pex` decompiler; conservative QUST/SCEN/INFO fragment lowering with a bounded Papyrus-interpreter fallback; ECS-native quests, aliases, objectives, globals, events, timers, packages and persisted reference state |
-| **Save/load** | Atomic rotating slots; typed preflight; interior/exterior live rebuild + stable FormID delta overlay; player pose, notifications and corrupt-slot fallback |
-| **UI** | Native egui HUD + pause/settings/inventory menus; Scaleform / SWF compatibility menus via Ruffle (offscreen wgpu → Vulkan texture overlay) |
+| **Scripting** | Papyrus `.psc` parser + `.pex` decompiler; conservative QUST/SCEN/INFO fragment lowering with a bounded Papyrus-interpreter fallback; an SCDA interpreter for Oblivion / FO3 / FNV quest and object scripts; ECS-native quests, aliases, objectives, globals, events, timers, packages and persisted reference state |
+| **Save/load** | Atomic rotating slots; typed preflight; interior/exterior live rebuild + stable FormID delta overlay; saved FormIDs are (plugin, object) identities, so a live load reloads the session's own plugins and reports removed, added and reordered mods; player pose, notifications and corrupt-slot fallback |
+| **Mods** | [Legacy mod compatibility](docs/prd/legacy-mod-compatibility.md) (active PRD, #6670): `--import-load-order` reads `plugins.txt`, MO2 profiles and Vortex deployments; one merged record index with provenance and a conflict report (`--plugin-report`, `--merge-policy`); `--mod-root` folders layer over the vanilla archives; a headless `--preflight` classifies a mod's files; saves record their profile. An engine-owned MCM host is designed ([mcm-host.md](docs/engine/mcm-host.md)); quest-script `OnInit` and a native Mod Configuration page are built, the page awaits its data source |
+| **UI** | Native egui HUD + pause/settings/inventory menus; native MenuXml HUDs for Oblivion / FO3 / FNV and the vanilla Skyrim / FO4 `hudmenu.swf` via `--hud`; Scaleform / SWF compatibility menus via Ruffle (offscreen wgpu → Vulkan texture overlay) |
 | **Audio** | kira 0.12 — 3D positional sound, NPC voice, footsteps and impacts, per-cell reverb, underwater low-pass; a per-game **music controller** for Oblivion, Fallout 3 and New Vegas (cell, worldspace, region and New Vegas audio-marker music, battle music, stings, scripted `PlayMusic` / `StreamMusic`) — see [music.md](docs/engine/music.md) |
 | **Video** | The games' own Bink movies, decoded in process: Bink 1 via [`mercs2_bink`](https://crates.io/crates/mercs2_bink), Bink 2 and its Bink Audio soundtrack via ByroRedux's own **clean-room decoders** ([below](#clean-room-decoders)). Every installed movie measured decodes to its last frame (101 of 101, Bink 1 and Bink 2) — per-game counts in the [ROADMAP video column](ROADMAP.md#compatibility-matrix) |
 
@@ -92,13 +93,12 @@ remain follow-up work.
 
 ## Highlights
 
-- **Full RT lighting pipeline** — ray-query shadows with streaming weighted
-  reservoir sampling (8 reservoirs / fragment, unbiased weight clamped at
-  64×), RT reflections with roughness-driven jitter, bounded path-traced GI
+- **Full RT lighting pipeline** — ray-query shadows through ReSTIR-DI with a
+  penumbra-aware filter, RT reflections with roughness-driven jitter, bounded path-traced GI
   with GGX visible-normal and diffuse sampling (up to two diffuse events,
   with glass/specular transport), SVGF temporal denoiser with
   motion-vector reprojection and mesh-id disocclusion, TAA with Halton(2,3)
-  jitter and YCoCg variance clamp, ACES tone mapping. PBR surfaces shade
+  jitter and YCoCg variance clamp, ACES or AgX tone mapping. PBR surfaces shade
   through a Disney/Burley BSDF lobe (anisotropic GGX, Burley retro-reflective
   diffuse) gated on `MAT_FLAG_PBR_BSDF` for BGSM/BGEM + Starfield material
   content; classic Gamebryo content keeps the legacy lobe.
@@ -143,6 +143,13 @@ remain follow-up work.
 - **Game music, the way each original picks it** — per-game sources feed one
   controller; where no document says how the original behaves, the games'
   executables were traced ([music.md](docs/engine/music.md)).
+- **Sky image-based lighting** — a split-sum sky probe, traced sky-specular
+  occlusion and a portal-sky GI escape for interiors with sky openings
+  ([M-LIGHT Phase 4](docs/prd/reference-lighting.md), closed 2026-11-22).
+- **Terrain displacement patches** — compute-displaced ground near the camera,
+  inside the ray-tracing TLAS ([terrain-displacement.md](docs/engine/terrain-displacement.md)).
+- **Mods without a patcher** — load-order import, a merged record index and mod
+  folders over the archives ([PRD](docs/prd/legacy-mod-compatibility.md)).
 
 ## Why ByroRedux exists
 
@@ -164,40 +171,31 @@ results and the disclosures: [docs/clean-room-decoders.md](docs/clean-room-decod
 
 ## State
 
-Interior cells load and render end-to-end across six games — Oblivion
-(Anvil Heinrich Oaken Halls), FO3 (Megaton, 929 REFRs), FNV (Prospector
-Saloon), Skyrim SE (Whiterun Bannered Mare), FO4 (MedTekResearch01),
-and Starfield (Cydonia, 93 547 entities + 91 698 static colliders —
-Session 42 bring-up via #1289 / #1291 / #1292 / #1294).
-Per-cell entity counts and bench numbers live in [ROADMAP Project
-Stats](ROADMAP.md#project-stats), refreshed per `/session-close`.
-Full RT pipeline + sky/atmosphere + exterior sun operational. Skinning
-chain verified end-to-end (M29 closed) with GPU bone-palette compute
-pass + persistent SSBO slot pool (M29.5 / M29.6, Session 40). World
-streaming (M40, closed) — multi-cell grid loads and follows the player
-via an async pre-parse worker, with LRU BLAS eviction/reload as cells
-stream out; interior↔exterior cell swaps trigger via the `door.teleport`
-console command. See
-[docs/engine/exterior-grid-streaming.md](docs/engine/exterior-grid-streaming.md).
-Kinematic character controller (M28.5)
-replaces fly-cam-only on-foot movement — gravity + collide-and-slide +
-jump, walk/fly toggle on `F`. NPC spawning (M41) shipped Phase 1
-(T-pose humanoid + skeleton + body + hands + head + FaceGen morphs) and
-Phase 2 close-out (`Inventory` / `EquipmentSlots` ECS + ARMO/ARMA/LVLI
-dispatch + worn-mesh resolver). FO4 humanoid armor meshes pending a
-Havok `.hkx` skeleton stub (M41.x); the ECS equip state is observable
-today via `inspect <ref>` in `byro-dbg`. Oblivion exterior WRLD/CELL/LAND
-wiring and rendering are live; the cross-game readiness/streaming workstream
-is tracked under [exterior epic #2377](https://github.com/matiaszanolli/ByroRedux/issues/2377).
-A standalone launcher (`cargo run -p byro-launcher`) is available —
-Steam-install discovery, a Library/Play/Details/Settings UI, and a GPU
-pre-flight are landed; see [docs/engine/launcher.md](docs/engine/launcher.md)
-for status. The playable vertical slice — one console-free Skyrim route
+Interior cells load and render end-to-end from unmodified game data for
+Oblivion, FO3, FNV, Skyrim SE and FO4, plus a walkable Starfield Cydonia;
+FO76 parses but does not load as a world. Exterior grids stream as the player
+moves (M40, [design](docs/engine/exterior-grid-streaming.md)), with distant LOD
+per game. Per-cell entity counts and bench numbers live in
+[ROADMAP Project Stats](ROADMAP.md#project-stats).
+
+On foot: a kinematic character controller (M28.5) with a first/third-person
+view; NPCs spawn with skeleton, body, FaceGen head and outfit (M41) and run
+fourteen AI package procedures (M42); faction hostility, melee and ranged
+combat, sneak and detection (M65), crime and ragdolls. Oblivion's player can
+cast, shoot, block, fall, sleep and level up by skill use, with its rules read
+from the load order. The playable vertical slice — one console-free Skyrim route
 from door traversal through dialogue, combat, loot and F5/F9 save/reload —
-closed on 2026-10-01 ([plan](docs/engine/playable-vertical-slice.md)).
-See **[ROADMAP.md](ROADMAP.md)** for the
-authoritative capability matrix, active milestones, and architecture
-decisions. Session narratives live in **[HISTORY.md](HISTORY.md)**.
+closed on 2026-10-01 ([plan](docs/engine/playable-vertical-slice.md)); new-game
+routes run for Skyrim, FNV, Oblivion and FO3.
+
+Rendering: M-LIGHT has closed Phases 0–4; texture streaming (M39) is built but
+off by default until its gates close.
+
+A standalone launcher (`cargo run -p byro-launcher`) handles Steam-install
+discovery, a Library/Play/Details/Settings UI and a GPU pre-flight
+([launcher.md](docs/engine/launcher.md)). **[ROADMAP.md](ROADMAP.md)** is the
+authoritative capability matrix; the [feature matrix](docs/feature-matrix.md)
+says what works per game; session narratives live in **[HISTORY.md](HISTORY.md)**.
 
 ## Run
 
@@ -447,7 +445,9 @@ BYROREDUX_STARFIELD_DATA  .../Starfield/Data
 - [docs/getting-started.md](docs/getting-started.md) — first build, first run, debug attach, troubleshooting
 - [docs/contributing.md](docs/contributing.md) — build, test, run; start here to get hacking
 - [ROADMAP.md](ROADMAP.md) — current state, active milestones, architecture decisions
-- [HISTORY.md](HISTORY.md) — session narratives (2026-04 audit closeouts, Session 42 Starfield bring-up, etc.)
+- [HISTORY.md](HISTORY.md) — session narratives, newest first
+- [docs/prd/legacy-mod-compatibility.md](docs/prd/legacy-mod-compatibility.md) and [docs/engine/mcm-host.md](docs/engine/mcm-host.md) — the mod-compatibility program and its MCM host design
+- [docs/prd/reference-lighting.md](docs/prd/reference-lighting.md) — the M-LIGHT reference-lighting program
 - [docs/engine/nifal.md](docs/engine/nifal.md) — NIFAL canonical translation tier (three-tier model, per-category leak inventory)
 - [docs/engine/material-abstraction.md](docs/engine/material-abstraction.md) — the material slice that NIFAL generalises (canonical `Material`, glass/PBR resolved at parse)
 - [docs/engine/video-playback.md](docs/engine/video-playback.md) and [docs/engine/music.md](docs/engine/music.md) — Bink movies, and the music controller with the executable traces behind it

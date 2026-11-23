@@ -12,6 +12,8 @@ use byroredux_core::ecs::World;
 /// Call during setup so that `query_mut()` works for event markers
 /// before any entity has triggered an event.
 pub fn register(world: &mut World) {
+    // LMC-UI-002 — the Mod Configuration Menu host the engine's SKI_ConfigBase writes.
+    world.init_resource::<crate::mcm::McmHost>();
     compatibility::install(world);
     obscript_speech::install(world);
     faction_changes::install(world);
@@ -176,7 +178,7 @@ mod tests {
     fn register_installs_the_same_resource_set() {
         let mut world = World::new();
         register(&mut world);
-        assert_eq!(world.resource_count(), 151, "the resource set `register` installs changed");
+        assert_eq!(world.resource_count(), 152, "the resource set `register` installs changed");
 
         macro_rules! present {
             ($($ty:path),+ $(,)?) => {$(
@@ -194,6 +196,7 @@ mod tests {
         crate::map_markers::MapMarkers,
         crate::globals::GameCalendar,
         crate::fragment::QuestAliasScripts,
+        crate::mcm::McmHost,
         crate::fragment::AliasScriptOwners,
         crate::fragment::ActorWatch,
         crate::fragment::PendingUnloadDeliveries,

@@ -219,7 +219,7 @@ pub fn attach_reference_script(
 
 /// Where whether `script` has run its `OnInit` on a reference is kept, among
 /// the reference's script variables.
-fn initialized_key(script: &str) -> ConditionStringId {
+pub(crate) fn initialized_key(script: &str) -> ConditionStringId {
     ConditionStringId::from_text(&format!("::init::{}", script.to_ascii_lowercase()))
 }
 
@@ -430,6 +430,30 @@ pub fn run_quest_script_function(world: &World, script: &str, function: &str, ar
     let advances = apply_fragment_guard_free(world, std::slice::from_ref(&effect), quest, Some(&vmad));
     flush_advances(world, advances);
     Ok(quest.0)
+}
+
+/// Run `function` of quest `quest`'s own script `script` now, with `args`: the engine calling into a
+/// checked quest script ([`QuestOwnScripts`]), as the Mod Configuration Menu host does.
+pub fn run_quest_own_script(
+    world: &World,
+    quest: QuestFormId,
+    script: &str,
+    function: &str,
+    args: Vec<VmStored>,
+) -> Result<(), String> {
+    let vmad = world
+        .try_resource::<QuestOwnScripts>()
+        .and_then(|scripts| {
+            scripts
+                .running_scripts()
+                .find(|(owner, _)| *owner == quest)
+                .and_then(|(_, scripts)| scripts.iter().find(|s| s.script.eq_ignore_ascii_case(script)).map(|s| Arc::clone(&s.vmad)))
+        })
+        .ok_or_else(|| format!("quest {:08X} runs no script {script}", quest.0))?;
+    let effect = Effect::interpret(script, function, args);
+    let advances = run_papyrus_call(world, quest, Some(&vmad), effect);
+    flush_advances(world, advances);
+    Ok(())
 }
 
 /// Run one Papyrus statement now (the debug console's `script.exec`): it is wrapped in a
@@ -889,6 +913,105 @@ pub fn alias_script_event_system(world: &World, _dt: f32) {
                     init_gated: false,
                 });
             }
+        }
+    }
+    run_deliveries(world, deliveries);
+}
+
+/// Deliver `OnInit` to the quest scripts the VM runs that have not had it in this save (CK *OnInit*:
+/// quest scripts receive it "on game startup"); the gate is saved, so it runs once per save.
+pub fn quest_script_init_system(world: &World, _dt: f32) {
+    let pending: Vec<(QuestFormId, QuestScript)> = {
+        let Some(scripts) = world.try_resource::<QuestOwnScripts>() else {
+            return;
+        };
+        let variables = world.try_resource::<crate::QuestScriptVariables>();
+        let mut pending: Vec<(QuestFormId, QuestScript)> = scripts
+            .running_scripts()
+            .flat_map(|(quest, scripts)| scripts.iter().map(move |script| (quest, script)))
+            .filter(|(quest, script)| {
+                script.handles("OnInit")
+                    && variables.as_ref().is_none_or(|v| v.get(*quest, initialized_key(&script.script)).is_none())
+            })
+            .map(|(quest, script)| (quest, script.clone()))
+            .collect();
+        pending.sort_unstable_by(|a, b| (a.0 .0, &a.1.script).cmp(&(b.0 .0, &b.1.script)));
+        pending
+    };
+    if pending.is_empty() {
+        return;
+    }
+    let deliveries = pending
+        .into_iter()
+        .map(|(quest, script)| Delivery {
+            owner: quest.0,
+            script: script.script,
+            vmad: script.vmad,
+            event: "OnInit",
+            args: Vec::new(),
+            init_gated: true,
+        })
+        .collect();
+    run_deliveries(world, deliveries);
+}
+
+/// CK *OnInit*: "OnInit is called again when an object is reset. All your variables and properties
+/// will be reset before OnInit is called. For Quests and Aliases this will happen when your quest
+/// starts", unless the quest is Run Once ("Ticking the 'Run Once' flag, however, prevents the Quest
+/// from being reset when it starts"). Each Papyrus quest (one whose QUST carries a `VMAD`) started
+/// since the last call has its own scripts' and its alias scripts' writes forgotten, then its own
+/// scripts' `OnInit` runs now, before its startup stage (its alias scripts start with it in
+/// [`alias_script_event_system`]). The fragment dispatch calls this before each stage it runs.
+pub(crate) fn reset_started_quests(world: &World) {
+    let started = match world.try_resource_mut::<QuestStageState>() {
+        Some(mut stages) => stages.take_started(),
+        None => return,
+    };
+    if started.is_empty() {
+        return;
+    }
+    let mut deliveries = Vec::new();
+    for quest in started {
+        let papyrus = world.try_resource::<crate::QuestScriptInstances>().is_some_and(|instances| instances.0.contains_key(&quest));
+        let run_once = world
+            .try_resource::<crate::quest_stages::QuestDefinitionRegistry>()
+            .is_some_and(|registry| registry.is_run_once(quest));
+        if !papyrus || run_once {
+            continue;
+        }
+        let owners: Vec<QuestFormId> = std::iter::once(quest)
+            .chain(world.try_resource::<AliasScriptOwners>().into_iter().flat_map(|owners| {
+                owners
+                    .table()
+                    .iter()
+                    .filter(|(_, (owner_quest, _))| *owner_quest == quest.0)
+                    .map(|(owner, _)| QuestFormId(*owner))
+                    .collect::<Vec<_>>()
+            }))
+            .collect();
+        if let Some(mut variables) = world.try_resource_mut::<crate::QuestScriptVariables>() {
+            for owner in &owners {
+                variables.reset(*owner);
+            }
+        }
+        if let Some(mut objects) = world.try_resource_mut::<crate::QuestScriptObjects>() {
+            for owner in &owners {
+                objects.reset(*owner);
+            }
+        }
+        log::debug!("quest {:08X} started: its script state reset", quest.0);
+        let scripts = world
+            .try_resource::<QuestOwnScripts>()
+            .and_then(|own| own.running_scripts().find(|(owner, _)| *owner == quest).map(|(_, scripts)| Arc::clone(scripts)));
+        for script in scripts.iter().flat_map(|scripts| scripts.iter()).filter(|script| script.handles("OnInit")) {
+            deliveries.push(Delivery {
+                owner: quest.0,
+                script: script.script.clone(),
+                vmad: Arc::clone(&script.vmad),
+                event: "OnInit",
+                args: Vec::new(),
+                init_gated: true,
+            });
         }
     }
     run_deliveries(world, deliveries);

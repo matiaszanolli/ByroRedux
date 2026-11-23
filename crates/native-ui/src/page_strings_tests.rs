@@ -355,3 +355,73 @@ fn hud_prompt_and_vitals_draw_only_game_and_listed_words() {
         }
     }
 }
+
+fn registered_mcm(dialog: Option<McmDialogView>, custom: Option<McmCustomContent>) -> McmSnapshot {
+    let cell = |id: u32, kind, label: &str, value: &str| McmCellView {
+        id,
+        kind,
+        label: label.into(),
+        value_text: value.into(),
+        number: 0.0,
+        flags: 0,
+    };
+    McmSnapshot {
+        mods: vec![McmModView { name: "Frostfall".into(), pages: vec!["Survival".into()] }],
+        open_mod: Some(0),
+        open_page: Some(0),
+        title: "Survival settings".into(),
+        info: "Sets how cold it gets.".into(),
+        cells: vec![
+            cell(0x101, McmCellKind::Header, "Core", ""),
+            cell(0x102, McmCellKind::Toggle, "Enabled", ""),
+            cell(0x103, McmCellKind::Slider, "Cold rate", "2.5 units"),
+            cell(0x104, McmCellKind::KeyMap, "Wait key", "Z"),
+        ],
+        dialog,
+        custom,
+        generation: 1,
+        ..Default::default()
+    }
+}
+
+const MCM_DATA: &[&str] =
+    &["Frostfall", "Survival", "Survival settings", "Sets how cold it gets.", "Core", "Enabled", "Cold rate", "units", "Wait key", "Z"];
+
+#[test]
+fn pause_page_offers_mod_configuration_in_listed_words() {
+    let snapshot = PageSnapshot { mcm: Some(registered_mcm(None, None)), ..Default::default() };
+    assert_page(&["pause"], &snapshot, &menu(GameMenuPage::Pause), &[]);
+}
+
+#[test]
+fn mod_configuration_page_draws_only_game_snapshot_and_listed_words() {
+    let dialogs = [
+        None,
+        Some(McmDialogView::Slider { id: 0x103, start: 2.5, default: 1.0, min: 0.0, max: 10.0, interval: 0.5, format: "{1} units".into() }),
+        Some(McmDialogView::Menu { id: 0x105, options: vec!["Easy".into(), "Hard".into()], start: 0, default: 0 }),
+        Some(McmDialogView::Color { id: 0x106, start: 0x00FF8040, default: 0 }),
+        Some(McmDialogView::Input { id: 0x107, start_text: "Whiterun".into() }),
+        Some(McmDialogView::KeyMap { id: 0x104, current: 0x2C, with_unmap: true }),
+        Some(McmDialogView::Message { title: String::new(), text: "Reset everything?".into(), buttons: Vec::new() }),
+        Some(McmDialogView::Message { title: "Frostfall".into(), text: "Reset everything?".into(), buttons: vec!["Reset all".into(), "Keep".into()] }),
+    ];
+    let data: Vec<&str> = MCM_DATA.iter().copied().chain(["Easy", "Hard", "Whiterun", "Reset everything", "Reset all", "Keep"]).collect();
+    for dialog in dialogs {
+        let snapshot = PageSnapshot { mcm: Some(registered_mcm(dialog, None)), ..Default::default() };
+        assert_page(&["mod configuration"], &snapshot, &menu(GameMenuPage::ModConfiguration), &data);
+    }
+}
+
+#[test]
+fn mod_configuration_page_draws_its_empty_and_unsupported_states_in_listed_words() {
+    for snapshot in [
+        PageSnapshot::default(),
+        PageSnapshot { mcm: Some(McmSnapshot { mods: vec![McmModView { name: "Frostfall".into(), pages: Vec::new() }], ..Default::default() }), ..Default::default() },
+        PageSnapshot {
+            mcm: Some(registered_mcm(None, Some(McmCustomContent { source: "frostfall/logo.swf".into(), x: 0.0, y: 0.0, image: None }))),
+            ..Default::default()
+        },
+    ] {
+        assert_page(&["mod configuration"], &snapshot, &menu(GameMenuPage::ModConfiguration), &[MCM_DATA, &["frostfall/logo.swf"]].concat());
+    }
+}

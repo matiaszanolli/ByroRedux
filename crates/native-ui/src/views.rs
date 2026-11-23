@@ -269,6 +269,119 @@ pub enum RestAction {
     Cancel,
 }
 
+/// What an option on a Mod Configuration page is (SkyUI's option kinds).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McmCellKind {
+    Header,
+    Empty,
+    Text,
+    Toggle,
+    Slider,
+    Menu,
+    Color,
+    KeyMap,
+    Input,
+}
+
+/// `OPTION_FLAG_DISABLED` (SkyUI MCM API).
+pub const MCM_FLAG_DISABLED: u32 = 1;
+/// `OPTION_FLAG_HIDDEN`.
+pub const MCM_FLAG_HIDDEN: u32 = 2;
+/// `OPTION_FLAG_WITH_UNMAP`: a key-map option offers an unmap button.
+pub const MCM_FLAG_WITH_UNMAP: u32 = 4;
+
+/// One option of the open Mod Configuration page. Texts arrive translated: the adapter resolves a
+/// `$`-key through the UI translation table before it builds the view.
+#[derive(Debug, Clone, PartialEq)]
+pub struct McmCellView {
+    /// The option id the script knows (SkyUI's encoding), handed back in the actions.
+    pub id: u32,
+    pub kind: McmCellKind,
+    pub label: String,
+    /// The text drawn for the value: the string of a text, menu or input option, a slider's
+    /// formatted number.
+    pub value_text: String,
+    /// A toggle's 0 or 1, a slider's value, a colour's `0xRRGGBB`, a key map's scancode.
+    pub number: f32,
+    /// `MCM_FLAG_*` bits.
+    pub flags: u32,
+}
+
+/// A dialog a script opened for one option, or a message it is waiting on.
+#[derive(Debug, Clone, PartialEq)]
+pub enum McmDialogView {
+    Slider { id: u32, start: f32, default: f32, min: f32, max: f32, interval: f32, format: String },
+    Menu { id: u32, options: Vec<String>, start: i32, default: i32 },
+    Color { id: u32, start: u32, default: u32 },
+    Input { id: u32, start_text: String },
+    /// The key-map capture: the next key pressed is the new binding.
+    KeyMap { id: u32, current: u32, with_unmap: bool },
+    /// A script message box raised while the page is open (`ShowMessage`, or any other box): the
+    /// script is blocked until a button answers it. The box shows here, on the page, because a box on
+    /// another surface would draw under or behind the native page. No buttons: the implicit Ok.
+    Message { title: String, text: String, buttons: Vec<String> },
+}
+
+/// One mod's entry in the registry: its name and its pages (none: the front page only).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct McmModView {
+    pub name: String,
+    pub pages: Vec<String>,
+}
+
+/// A custom panel drawn in place of the option list (`LoadCustomContent`). Only an image the
+/// adapter decoded can be drawn; a `.swf`, or an image that did not decode, is reported.
+#[derive(Debug, Clone, PartialEq)]
+pub struct McmCustomContent {
+    pub source: String,
+    pub x: f32,
+    pub y: f32,
+    /// Width, height and RGBA8 pixels.
+    pub image: Option<(u32, u32, std::sync::Arc<[u8]>)>,
+}
+
+/// The Mod Configuration page: the registered mods, the open mod's open page as the script built
+/// it, and the dialog it is in. `None` on the snapshot: no mod registered a configuration.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct McmSnapshot {
+    pub mods: Vec<McmModView>,
+    pub open_mod: Option<usize>,
+    /// Index into the open mod's pages; `None` is the mod's front page.
+    pub open_page: Option<usize>,
+    pub title: String,
+    pub info: String,
+    /// The option list in grid order: two columns, left to right (up to 128).
+    pub cells: Vec<McmCellView>,
+    pub dialog: Option<McmDialogView>,
+    pub custom: Option<McmCustomContent>,
+    /// Changes with every page rebuild.
+    pub generation: u32,
+}
+
+/// What the player did on the Mod Configuration page; the adapter turns each into the script
+/// event the contract names, by the option's kind.
+#[derive(Debug, Clone, PartialEq)]
+pub enum McmAction {
+    SelectMod(usize),
+    SelectPage(usize),
+    /// A click on an option: select, or open its dialog.
+    Activate(u32),
+    Default(u32),
+    Highlight(u32),
+    SliderAccept(u32, f32),
+    MenuAccept(u32, i32),
+    ColorAccept(u32, u32),
+    InputAccept(u32, String),
+    /// The key map's new binding, a DirectInput scancode; 0 unmaps.
+    KeyMapChange(u32, u32),
+    /// The open dialog was dismissed.
+    DialogCancel,
+    /// The button, by index, that answered the message box (0 for the implicit Ok).
+    MessageAnswer(usize),
+    /// Leave the page.
+    Close,
+}
+
 /// The player-facing state the HUD and the native pages draw, built each frame by the binary.
 /// The operator overlay's `PanelSnapshot` carries one as its `game` field.
 #[derive(Default, Clone)]
@@ -323,6 +436,8 @@ pub struct PageSnapshot {
     pub chargen: Option<ChargenSnapshot>,
     /// The open Oblivion rest or level-up session.
     pub rest: Option<RestView>,
+    /// The Mod Configuration page, present while any mod registered one (LMC-UI-002).
+    pub mcm: Option<McmSnapshot>,
     /// M48 GUI-PAGE-005 — the native pages' words in the load order's vocabulary (a handle;
     /// the default is the engine text).
     pub labels: byroredux_core::ui_labels::UiLabels,
@@ -368,6 +483,8 @@ pub struct PageOutputs {
     /// What the player accepted on the open character-creation screen.
     pub chargen_choice: Option<ChargenChoice>,
     pub rest_actions: Vec<RestAction>,
+    /// What the player did on the Mod Configuration page, applied in order.
+    pub mcm_actions: Vec<McmAction>,
     /// Close the native pause menu and return input to the world.
     pub resume_game: bool,
     /// Save to the next ring slot through the binary's canonical save API.

@@ -23,6 +23,8 @@ pub enum GameMenuPage {
     CharGen,
     SleepWait,
     LevelUp,
+    /// The Mod Configuration page (LMC-UI-002): the registered mods' own option pages.
+    ModConfiguration,
 }
 
 /// Persistent navigation state for the player-facing native menu.
@@ -35,6 +37,8 @@ pub struct GameMenuState {
     pub selected_inventory_index: Option<u32>,
     /// The open character-creation screen's working choices.
     pub chargen: super::ChargenDraft,
+    /// The Mod Configuration page's open dialog's working values.
+    pub mcm: super::McmDraft,
 }
 
 /// Player-facing pause/settings surface. This deliberately consumes the same
@@ -61,6 +65,8 @@ pub fn draw_game_menu(
 
     // GUI-PAGE-005: every word a page draws that the game has goes through the load order's labels.
     let labels = &snapshot.labels;
+    // The pause page offers the Mod Configuration page once a mod has registered one.
+    let has_mcm = snapshot.mcm.as_ref().is_some_and(|mcm| !mcm.mods.is_empty());
     let title = match state.page {
         GameMenuPage::Pause => "Paused",
         GameMenuPage::Settings => "Settings",
@@ -72,6 +78,7 @@ pub fn draw_game_menu(
         GameMenuPage::CharGen => "Character",
         GameMenuPage::SleepWait => "Rest",
         GameMenuPage::LevelUp => "Level Up",
+        GameMenuPage::ModConfiguration => "Mod Configuration",
     };
     Window::new(title)
         .id(Id::new("game_menu_window"))
@@ -81,7 +88,9 @@ pub fn draw_game_menu(
         .collapsible(false)
         .resizable(false)
         .fixed_size(match state.page {
+            GameMenuPage::Pause if has_mcm => egui::vec2(360.0, 440.0),
             GameMenuPage::Pause => egui::vec2(360.0, 390.0),
+            GameMenuPage::ModConfiguration => egui::vec2(980.0, 640.0),
             GameMenuPage::Settings => egui::vec2(760.0, 620.0),
             GameMenuPage::Inventory => egui::vec2(900.0, 620.0),
             GameMenuPage::Dialogue => egui::vec2(760.0, 560.0),
@@ -100,7 +109,7 @@ pub fn draw_game_menu(
                 .inner_margin(Margin::same(22)),
         )
         .show(ctx, |ui| match state.page {
-            GameMenuPage::Pause => draw_pause_page(ui, labels, state, outputs),
+            GameMenuPage::Pause => draw_pause_page(ui, labels, has_mcm, state, outputs),
             GameMenuPage::Settings => draw_game_settings(ui, labels, &snapshot.settings, state, outputs),
             GameMenuPage::Inventory => {
                 draw_inventory_page(ui, labels, snapshot.inventory.as_ref(), state, outputs)
@@ -115,6 +124,9 @@ pub fn draw_game_menu(
             GameMenuPage::Crafting => draw_crafting_page(ui, labels, snapshot.crafting.as_ref(), state, outputs),
             GameMenuPage::CharGen => super::chargen::draw_chargen_page(ui, labels, snapshot.chargen.as_ref(), &mut state.chargen, outputs),
             GameMenuPage::SleepWait | GameMenuPage::LevelUp => super::rest::draw(ui, labels, snapshot.rest.as_ref(), outputs),
+            GameMenuPage::ModConfiguration => {
+                super::mcm::draw(ui, labels, snapshot.mcm.as_ref(), &mut state.page, &mut state.mcm, outputs)
+            }
         });
 }
 
@@ -413,7 +425,7 @@ fn draw_dialogue_page(
     }
 }
 
-fn draw_pause_page(ui: &mut egui::Ui, labels: &UiLabels, state: &mut GameMenuState, outputs: &mut PageOutputs) {
+fn draw_pause_page(ui: &mut egui::Ui, labels: &UiLabels, has_mcm: bool, state: &mut GameMenuState, outputs: &mut PageOutputs) {
     ui.vertical_centered(|ui| {
         ui.add_space(12.0);
         ui.label(
@@ -432,6 +444,12 @@ fn draw_pause_page(ui: &mut egui::Ui, labels: &UiLabels, state: &mut GameMenuSta
             state.page = GameMenuPage::Settings;
         }
         ui.add_space(8.0);
+        if has_mcm {
+            if wide_button(ui, "Mod Configuration").clicked() {
+                state.page = GameMenuPage::ModConfiguration;
+            }
+            ui.add_space(8.0);
+        }
         if wide_button(ui, labels.text("Inventory")).clicked() {
             state.page = GameMenuPage::Inventory;
         }

@@ -307,6 +307,12 @@ impl DebugUiState {
         self.game_menu.visible && self.game_menu.page == GameMenuPage::MessageBox
     }
 
+    /// Whether the native Mod Configuration page is up: a script message box raised meanwhile shows
+    /// on that page (it would otherwise draw under it, or wait unseen).
+    pub fn mod_configuration_visible(&self) -> bool {
+        self.game_menu.visible && self.game_menu.page == GameMenuPage::ModConfiguration
+    }
+
     /// Open the native menu on the barter page.
     pub fn open_barter_menu(&mut self) {
         self.game_menu.visible = true;

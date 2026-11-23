@@ -32,6 +32,7 @@ mod forms;
 mod game_utility;
 mod linked_refs;
 mod location;
+mod mcm;
 mod ownership_crime;
 mod quest;
 mod reference;

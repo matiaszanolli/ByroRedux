@@ -27,7 +27,7 @@ use std::sync::Arc;
 pub use avm2_host::ScaleformHostObjectState;
 pub use behaviour::{HostBehaviour, HostCallReport, HostClass, Placeholder};
 pub use fonts::{set_text_languages, text_languages, FALLBACK_FONT_NAME};
-pub use translate::{parse_extender_translation, set_translation_plugins};
+pub use translate::{load_translations, parse_extender_translation, set_translation_plugins, translate_text};
 pub use catalog::{
     ScaleformHostCatalog, ScaleformHostMethod, ScaleformHostMethodKind, ScaleformHostObject,
 };

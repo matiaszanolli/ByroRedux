@@ -1577,8 +1577,8 @@ fn form_id_arguments_parse_hex_through_one_spelling() {
 /// `parse_console_form_id`.
 #[test]
 fn only_number_arguments_use_the_decimal_first_parser() {
-    // quest stage, terminal menu item, perk entry id, `r.dbg` bits, `cond` params.
-    const NUMBER_ARGUMENTS: [&str; 5] = ["raw_stage", "raw_item", "raw_entry", "digits", "t"];
+    // quest stage, terminal menu item, perk entry id, `r.dbg` bits, `cond` params, MCM option id.
+    const NUMBER_ARGUMENTS: [&str; 6] = ["raw_stage", "raw_item", "raw_entry", "digits", "t", "raw_option"];
     let dir = format!("{}/src/commands", env!("CARGO_MANIFEST_DIR"));
     let mut checked = 0;
     for entry in std::fs::read_dir(&dir).expect("command tree") {

@@ -897,6 +897,293 @@ fn alias_scripts_start_follow_their_reference_and_shut_down() {
     assert_eq!(count(&world), Some(115.0), "shut down once");
 }
 
+/// A world with a quest's own script checked and installed the way the host does it.
+fn world_with_quest_script(script: Arc<Script>, library: Option<&dyn CheckLibrary>, running: bool) -> Option<World> {
+    world_with_quest_script_extending(script, library, running, Vec::new())
+}
+
+/// [`world_with_quest_script`] for a script whose `extends` chain the host recorded as `extends`.
+fn world_with_quest_script_extending(
+    script: Arc<Script>,
+    library: Option<&dyn CheckLibrary>,
+    running: bool,
+    extends: Vec<String>,
+) -> Option<World> {
+    let (events, scripts) = crate::check_quest_script(Arc::clone(&script), &crate::DELIVERED_QUEST_EVENTS, library).ok()?;
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    world.insert_resource(crate::QuestScriptObjects::default());
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.init_resource::<crate::QuestOwnScripts>();
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        for script in scripts {
+            fragments.insert_vm_script(script);
+        }
+    }
+    let instance = ScriptInstance { name: script.name.node.0.clone(), status: 0, properties: Vec::new() };
+    world.resource_mut::<crate::QuestOwnScripts>().set_checked(
+        Q,
+        vec![crate::QuestScript {
+            script: script.name.node.0.clone(),
+            vmad: Arc::new(ScriptInstanceData { version: 5, object_format: 2, scripts: vec![instance] }),
+            events,
+            extends,
+        }],
+    );
+    if running {
+        world.resource_mut::<QuestStageState>().start_quest(Q, None);
+    }
+    Some(world)
+}
+
+fn quest_property(world: &World, name: &str) -> Option<f32> {
+    world.resource::<crate::QuestScriptVariables>().get(Q, crate::QuestScriptVariables::property_key(name))
+}
+
+/// CK *OnInit*: a quest's own script receives it "on game startup" — whether or not the quest runs —
+/// and the engine delivers it once per save, so a second pass (a later frame, a load) does not re-run it.
+#[test]
+fn a_quest_script_receives_oninit_once_at_startup() {
+    let script = parsed_source(
+        "ScriptName VmQuestInit extends Quest\n\
+         Int Property Count Auto\n\
+         Event OnInit()\n Count += 7\n EndEvent\n",
+    );
+    for running in [false, true] {
+        let world = world_with_quest_script(Arc::clone(&script), None, running).expect("the VM runs it");
+        assert_eq!(quest_property(&world, "Count"), None);
+        crate::quest_script_init_system(&world, 0.0);
+        assert_eq!(quest_property(&world, "Count"), Some(7.0), "running: {running}");
+        crate::quest_script_init_system(&world, 0.0);
+        assert_eq!(quest_property(&world, "Count"), Some(7.0), "once per save, running: {running}");
+    }
+}
+
+/// The gate is saved state (the quest's script variables): a quest whose variables a save restored
+/// has had its `OnInit`, and one added to an existing save has not.
+#[test]
+fn a_quest_script_oninit_follows_the_saved_gate() {
+    let script = parsed_source(
+        "ScriptName VmQuestInitGate extends Quest\n\
+         Int Property Count Auto\n\
+         Event OnInit()\n Count += 1\n EndEvent\n",
+    );
+    let world = world_with_quest_script(Arc::clone(&script), None, false).expect("the VM runs it");
+    let gate = crate::fragment::reference::initialized_key("VmQuestInitGate");
+    world.resource_mut::<crate::QuestScriptVariables>().set(Q, gate, 1.0);
+    crate::quest_script_init_system(&world, 0.0);
+    assert_eq!(quest_property(&world, "Count"), None, "the save already recorded the OnInit");
+}
+
+/// An inherited `OnInit` runs (SkyUI's `SKI_ConfigBase` is the case), and a quest script handling no
+/// delivered event is declined rather than run.
+#[test]
+fn a_quest_script_inherits_its_oninit_and_one_without_is_declined() {
+    let base = parsed_source(
+        "ScriptName VmQuestBase extends Quest\n\
+         Int Property Count Auto\n\
+         Event OnInit()\n Count += 3\n EndEvent\n",
+    );
+    let child = parsed_source("ScriptName VmQuestChild extends VmQuestBase\n");
+    let scripts: HashMap<String, Arc<Script>> = [("vmquestbase".to_owned(), Arc::clone(&base))].into();
+    let library = Installed(&scripts);
+    let world = world_with_quest_script(Arc::clone(&child), Some(&library), false).expect("the inherited event runs");
+    crate::quest_script_init_system(&world, 0.0);
+    assert_eq!(quest_property(&world, "Count"), Some(3.0));
+
+    let silent = parsed_source("ScriptName VmQuestSilent extends Quest\nFunction Helper()\nEndFunction\n");
+    assert!(world_with_quest_script(silent, None, false).is_none(), "no OnInit: not a delivered script");
+}
+
+/// LMC-UI-002 — a SkyUI config script on the engine's `SKI_ConfigBase`: it registers from its `OnInit`
+/// (`OnGameReload` → `OnConfigInit` → registration), lays its pages out on demand, and answers the
+/// panel: a toggle by option id on the front page, a slider by state on a named page, whose dialog its
+/// open event fills; an id from another page names nothing. After a load it registers again.
+#[test]
+fn a_skyui_config_script_registers_lays_out_and_answers_the_panel() {
+    use crate::mcm::{McmAnswer, McmDialog, McmHost, McmKind};
+    let base = crate::mcm::engine_script("SKI_ConfigBase").expect("the engine's SKI_ConfigBase parses");
+    let config = parsed_source(
+        "ScriptName VmMcmConfig extends SKI_ConfigBase\n\
+         Bool Property Enabled Auto\n\
+         Float Property Speed Auto\n\
+         Int toggleId\n\
+         Event OnConfigInit()\n ModName = \"VM MCM\"\n Pages = new String[1]\n Pages[0] = \"Movement\"\n Speed = 1.0\n EndEvent\n\
+         Event OnPageReset(String page)\n\
+          If page == \"\"\n SetCursorFillMode(TOP_TO_BOTTOM)\n AddHeaderOption(\"General\")\n toggleId = AddToggleOption(\"Enabled\", Enabled)\n\
+          Else\n AddSliderOptionST(\"SpeedState\", \"Speed\", Speed, \"{1}\")\n EndIf\n\
+         EndEvent\n\
+         Event OnOptionSelect(Int option)\n If option == toggleId\n Enabled = !Enabled\n SetToggleOptionValue(option, Enabled)\n EndIf\n EndEvent\n\
+         State SpeedState\n\
+          Event OnSliderOpenST()\n SetSliderDialogStartValue(Speed)\n SetSliderDialogRange(0.5, 3.0)\n SetSliderDialogInterval(0.5)\n EndEvent\n\
+          Event OnSliderAcceptST(Float value)\n Speed = value\n SetSliderOptionValueST(Speed, \"{1}\")\n EndEvent\n\
+         EndState\n",
+    );
+    let scripts: HashMap<String, Arc<Script>> = [(crate::mcm::CONFIG_BASE.to_owned(), Arc::clone(&base))].into();
+    let library = Installed(&scripts);
+    let world = world_with_quest_script_extending(config, Some(&library), true, vec![crate::mcm::CONFIG_BASE.into()])
+        .unwrap_or_else(|| panic!("declined: {:?}", crate::check_quest_script(parsed_source("ScriptName X extends Quest\n"), &[], None)));
+
+    crate::quest_script_init_system(&world, 0.0);
+    {
+        let host = world.resource::<McmHost>();
+        assert_eq!(host.mods.len(), 1, "registered from OnInit");
+        assert_eq!(host.mods[0].name, "VM MCM");
+        assert_eq!(host.mods[0].pages, ["Movement"]);
+    }
+
+    crate::mcm::open(&world, 0).expect("opens");
+    let toggle = {
+        let host = world.resource::<McmHost>();
+        let page = host.open.as_ref().unwrap();
+        assert_eq!(page.title, "VM MCM", "the front page is titled with the mod's name");
+        assert_eq!(page.cells[0].as_ref().map(|o| o.kind), Some(McmKind::Header));
+        assert!(page.cells[1].is_none(), "top to bottom: the next option is a row down");
+        assert_eq!(page.cells[2].as_ref().map(|o| (o.kind, o.number)), Some((McmKind::Toggle, 0.0)));
+        page.option_id(2)
+    };
+    assert_eq!(toggle, 2, "the front page's ids are its cell indices");
+    crate::mcm::activate(&world, toggle).expect("selects");
+    assert_eq!(quest_property(&world, "Enabled"), Some(1.0), "OnOptionSelect flipped the setting");
+    assert_eq!(world.resource::<McmHost>().open.as_ref().unwrap().option(toggle).unwrap().number, 1.0, "and set the toggle");
+
+    crate::mcm::select_page(&world, Some(0)).expect("shows the page");
+    assert!(crate::mcm::activate(&world, toggle).is_err(), "the front page's id names nothing here");
+    let slider = 0x100;
+    {
+        let host = world.resource::<McmHost>();
+        let option = host.open.as_ref().unwrap().option(slider).expect("page 1's first cell is 0x100");
+        assert_eq!((option.kind, option.state.as_str(), option.value_text()), (McmKind::Slider, "SpeedState", "1.0".to_owned()));
+    }
+    crate::mcm::activate(&world, slider).expect("opens the dialog");
+    assert_eq!(
+        world.resource::<McmHost>().open.as_ref().unwrap().dialog,
+        Some((slider, McmDialog::Slider { start: 1.0, default: 1.0, min: 0.5, max: 3.0, interval: 0.5 })),
+        "OnSliderOpenST ran in its state and filled the dialog"
+    );
+    crate::mcm::accept(&world, slider, McmAnswer::Slider(2.5)).expect("accepts");
+    assert_eq!(quest_property(&world, "Speed"), Some(2.5));
+    {
+        let host = world.resource::<McmHost>();
+        let page = host.open.as_ref().unwrap();
+        assert_eq!(page.option(slider).unwrap().value_text(), "2.5");
+        assert!(page.dialog.is_none());
+    }
+    crate::mcm::close(&world).expect("closes");
+
+    // A load: the session's registrations are gone, and the config script registers again from its
+    // OnGameReload (its OnInit already ran in this save).
+    world.resource_mut::<McmHost>().reset_session();
+    crate::mcm::mcm_registration_system(&world, 0.0);
+    assert_eq!(world.resource::<McmHost>().mods.len(), 1);
+    assert_eq!(quest_property(&world, "Speed"), Some(2.5), "OnConfigInit does not run again");
+}
+
+/// SkyUI's `ShowMessage` (a box wrapper on the engine's base): the option's handler raises a box with
+/// the message and Accept / Cancel, waits for the answer, and replays its `If` with it — accepted runs
+/// the branch, cancelled does not.
+#[test]
+fn a_config_script_waits_for_show_message_and_branches_on_it() {
+    use crate::mcm::McmHost;
+    let base = crate::mcm::engine_script("SKI_ConfigBase").unwrap();
+    let source = "ScriptName VmMcmAsks extends SKI_ConfigBase\n\
+         Bool Property Enabled Auto\n\
+         Event OnConfigInit()\n ModName = \"Asks\"\n EndEvent\n\
+         Event OnPageReset(String page)\n AddToggleOption(\"Enabled\", Enabled)\n EndEvent\n\
+         Event OnOptionSelect(Int option)\n\
+          If ShowMessage(\"Turn it on?\")\n Enabled = True\n SetToggleOptionValue(option, Enabled)\n EndIf\n\
+         EndEvent\n";
+    let run = |button: usize| {
+        let scripts: HashMap<String, Arc<Script>> = [(crate::mcm::CONFIG_BASE.to_owned(), Arc::clone(&base))].into();
+        let world = world_with_quest_script_extending(parsed_source(source), Some(&Installed(&scripts)), true, vec![crate::mcm::CONFIG_BASE.into()])
+            .expect("a config script calling ShowMessage runs");
+        crate::quest_script_init_system(&world, 0.0);
+        crate::mcm::open(&world, 0).expect("opens");
+        crate::mcm::activate(&world, 0).expect("selects");
+        crate::fragment::fragment_continuation_system(&world, 0.0);
+        let raised = std::mem::take(&mut world.resource_mut::<crate::PendingScriptMessages>().0);
+        assert_eq!(raised.len(), 1, "the box is up");
+        assert_eq!((raised[0].text.as_str(), raised[0].buttons.as_slice()), ("Turn it on?", ["$Accept".to_owned(), "$Cancel".to_owned()].as_slice()));
+        let crate::MessageAnswer::Papyrus(ticket) = raised[0].answer else { panic!("{:?}", raised[0].answer) };
+        crate::fragment::fragment_continuation_system(&world, 1.0);
+        assert_eq!(quest_property(&world, "Enabled"), None, "the handler waits for the answer");
+        crate::messages::record_papyrus_answer(&world, ticket, button);
+        crate::fragment::fragment_continuation_system(&world, 0.0);
+        assert!(world.resource::<crate::PendingScriptMessages>().0.is_empty(), "the replay reads the answer; no second box");
+        let shown = world.resource::<McmHost>().open.as_ref().unwrap().option(0).unwrap().number;
+        (quest_property(&world, "Enabled"), shown)
+    };
+    assert_eq!(run(0), (Some(1.0), 1.0), "accepted: the branch ran and set the toggle");
+    assert_eq!(run(1), (None, 0.0), "cancelled: it did not");
+}
+
+/// CK *OnInit*: "All your variables and properties will be reset before OnInit is called. For Quests
+/// and Aliases this will happen when your quest starts" — unless it is Run Once. The reset lands before
+/// the startup stage's fragment, which then writes over the reset value; `OnInit` runs in between.
+#[test]
+fn a_quest_resets_its_script_state_as_it_starts_unless_run_once() {
+    let script = parsed_source(
+        "ScriptName VmQuestReset extends Quest\n\
+         Int Property Count Auto\n\
+         Int Property Kept Auto\n\
+         Event OnInit()\n Count += 1\n EndEvent\n\
+         Function Fragment_10()\n Kept += 100\n EndFunction\n",
+    );
+    let run = |flags: u16| {
+        let mut world = world_with_quest_script(Arc::clone(&script), None, false).expect("the VM runs it");
+        let vmad = ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance { name: "VmQuestReset".into(), status: 0, properties: Vec::new() }],
+        };
+        crate::quest_stages::install_start_game_quests(
+            &mut world,
+            [byroredux_plugin::esm::records::QustRecord { form_id: Q.0, quest_flags: flags, ..Default::default() }],
+        );
+        world.insert_resource(crate::QuestScriptInstances(Arc::new(HashMap::from([(Q, vmad.clone())]))));
+        {
+            let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+            fragments.insert_vmad(Q, vmad);
+            fragments.insert(
+                Q,
+                10,
+                vec![Effect::Interpret { script: "VmQuestReset".into(), function: "Fragment_10".into(), args: Vec::new(), resume: None }],
+            );
+        }
+        // A save's state from an earlier run of the quest.
+        crate::quest_script_init_system(&world, 0.0);
+        {
+            let mut variables = world.resource_mut::<crate::QuestScriptVariables>();
+            variables.set(Q, crate::QuestScriptVariables::property_key("Count"), 5.0);
+            variables.set(Q, crate::QuestScriptVariables::property_key("Kept"), 9.0);
+        }
+        world.resource_mut::<QuestStageState>().start_quest(Q, Some(10));
+        crate::fragment::quest_fragment_dispatch_system(&world);
+        crate::quest_script_init_system(&world, 0.0);
+        (quest_property(&world, "Count"), quest_property(&world, "Kept"))
+    };
+    assert_eq!(run(0), (Some(1.0), Some(100.0)), "reset, OnInit once more, then the startup stage");
+    assert_eq!(
+        run(byroredux_plugin::esm::records::QUEST_FLAG_RUN_ONCE),
+        (Some(5.0), Some(109.0)),
+        "a Run Once quest keeps its state"
+    );
+}
+
+/// A script whose `OnInit` the VM cannot run is declined whole, so it never half-runs.
+#[test]
+fn a_quest_script_with_an_unmodelled_oninit_is_declined() {
+    let script = parsed_source(
+        "ScriptName VmQuestUnmodelled extends Quest\n\
+         Event OnInit()\n VmNoSuchLibrary.DoThing()\n EndEvent\n",
+    );
+    assert!(crate::check_quest_script(script, &crate::DELIVERED_QUEST_EVENTS, None).is_err());
+}
+
 /// A Fallout 4 alias script registers for its own hit in `OnAliasInit`; the
 /// `OnHit(akTarget, akAggressor, …)` it declares is not delivered automatically,
 /// runs once for the first matching hit, and is delivered the nine arguments of
@@ -6374,8 +6661,23 @@ fn message_show_waits_for_its_answer_and_branches_on_it() {
             Self.SetStage(7)\n\
           EndIf\n\
         EndFunction\n";
-    let run = |answer: Option<usize>| {
-        let (script, errors) = byroredux_papyrus::parse_script(SOURCE).unwrap();
+    // The same branch through a box wrapper called for its value: the calling statement waits on the
+    // wrapper's box and replays with the answer.
+    const WRAPPED: &str = "ScriptName QF_VmShow extends Quest\n\
+        Message Property TempChooseSidesMessage Auto\n\
+        Int Function Ask()\n\
+          Return TempChooseSidesMessage.Show()\n\
+        EndFunction\n\
+        Function Fragment_1()\n\
+          Utility.Wait(1.0)\n\
+          If Ask() == 0\n\
+            Self.SetStage(6)\n\
+          Else\n\
+            Self.SetStage(7)\n\
+          EndIf\n\
+        EndFunction\n";
+    let run = |source: &str, answer: Option<usize>| {
+        let (script, errors) = byroredux_papyrus::parse_script(source).unwrap();
         assert!(errors.is_empty(), "{errors:?}");
         let script = Arc::new(script);
         if let Err(why) = crate::fragment::vm::checker::check_function_reason(Arc::clone(&script), "Fragment_1", None) { panic!("{why}") }
@@ -6430,9 +6732,11 @@ fn message_show_waits_for_its_answer_and_branches_on_it() {
         assert!(world.resource::<crate::PendingScriptMessages>().0.is_empty(), "the replay reads the answer; no second box");
         world.resource::<QuestStageState>().get_stage(Q)
     };
-    assert_eq!(run(Some(0)), 6, "Hadvar");
-    assert_eq!(run(Some(1)), 7, "Ralof");
-    assert_eq!(run(None), 6, "a box a load took resumes with its default");
+    for source in [SOURCE, WRAPPED] {
+        assert_eq!(run(source, Some(0)), 6, "Hadvar");
+        assert_eq!(run(source, Some(1)), 7, "Ralof");
+        assert_eq!(run(source, None), 6, "a box a load took resumes with its default");
+    }
 }
 
 /// #7298 — a VM `Message.Show()` runs under the quest guards, so it takes only the ticket there
@@ -6453,13 +6757,38 @@ fn message_show_takes_its_ticket_under_the_guards_and_defers_the_box() {
 
 /// #7290 — a function whose body waits on a box is a waiting function: called for its value it is
 /// refused ahead of time, as one holding a `Utility.Wait` is, instead of raising the box and then
-/// stopping at run time; called as a statement it runs.
+/// stopping at run time; called as a statement it runs. A box wrapper — a body of one `Return`
+/// (`Return Question.Show()`, SkyUI's `ShowMessage`) — may be called for its value: its box is the
+/// calling statement's, which replays with the answer (one box per statement still).
 #[test]
 fn a_function_that_shows_a_box_is_a_wait_for_its_callers() {
-    const SOURCE: &str = "ScriptName QF_VmAsk extends Quest\n\
+    const WRAPPER: &str = "ScriptName QF_VmAskWrapped extends Quest\n\
         Message Property Question Auto\n\
         Int Function Ask()\n\
           Return Question.Show()\n\
+        EndFunction\n\
+        Function Fragment_1()\n\
+          If Ask() == 0\n\
+            Self.SetStage(6)\n\
+          EndIf\n\
+        EndFunction\n\
+        Function Fragment_2()\n\
+          If Ask() == Ask()\n\
+            Self.SetStage(6)\n\
+          EndIf\n\
+        EndFunction\n";
+    let (wrapped, errors) = byroredux_papyrus::parse_script(WRAPPER).unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+    let wrapped = Arc::new(wrapped);
+    assert!(check_function_reason(Arc::clone(&wrapped), "Fragment_1", None).is_ok(), "a wrapper for its value");
+    let two = check_function_reason(wrapped, "Fragment_2", None).err().unwrap_or_default();
+    assert!(two.contains("two Message.Show() answers in one statement"), "{two}");
+
+    const SOURCE: &str = "ScriptName QF_VmAsk extends Quest\n\
+        Message Property Question Auto\n\
+        Int Function Ask()\n\
+          Int answer = Question.Show()\n\
+          Return answer\n\
         EndFunction\n\
         Function Fragment_1()\n\
           If Ask() == 0\n\

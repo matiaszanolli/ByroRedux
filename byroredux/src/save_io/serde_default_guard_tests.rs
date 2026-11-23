@@ -1396,7 +1396,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // save written before this change decodes, and no registered column's wire form is refused.
     // #6676 — v146: the slice-2 FormID columns, refreshed WITH the major bump above.
     // #6676 — v147: the pre-reload ledgers' FormIDs, refreshed WITH the major bump above.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x372c_7a70_dcaa_a604;
+    // LMC (CK *OnInit* quest reset) — refreshed WITHOUT a bump: `QuestStageState` gained `started`, a
+    // `#[serde(skip)]` process-local list like its `events`, so no saved wire form changed (#3460/#3332).
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x5172_31bf_ddab_964c;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.

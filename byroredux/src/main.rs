@@ -69,6 +69,7 @@ mod list_cells;
 mod material_dump;
 mod material_flags;
 mod material_translate;
+mod mcm_page;
 mod menu_stack;
 mod menu_xml_input;
 mod menu_drivers;
@@ -107,6 +108,7 @@ mod texture_streamer;
 mod ui_input;
 mod video;
 mod ui_state;
+mod ui_translate;
 #[cfg(test)]
 mod workspace_hygiene_tests;
 mod zup_yup;
@@ -1516,6 +1518,8 @@ impl App {
         self.leave_open_dialogue();
         crate::barter::end_barter(&mut self.world);
         crate::crafting::end_crafting(&self.world);
+        // LMC-UI-002 — leaving the menus with a config page open closes it (`OnConfigClose`).
+        crate::mcm_page::leave(&self.world);
         if let Some(ui) = self.debug_ui.as_mut() {
             ui.close_game_menu();
         }
@@ -1587,6 +1591,8 @@ fn build_debug_ui_snapshot(
 
     byroredux_debug_ui::PanelSnapshot {
         game: byroredux_native_ui::PageSnapshot {
+            // LMC-UI-002: the registered config menus and the open page, translated.
+            mcm: crate::mcm_page::live_snapshot(world),
             loading_tip: None,
             interaction_prompt: build_interaction_prompt(world),
             show_crosshair: setting_bool(world, byroredux_debug_ui::SHOW_CROSSHAIR_SETTING_ID, true),
@@ -1710,6 +1716,8 @@ fn apply_debug_ui_outputs(
     for action in outputs.game.rest_actions {
         crate::oblivion_rest::apply(world, action);
     }
+    // LMC-UI-002 — what the player did on the Mod Configuration page runs the config script's events.
+    crate::mcm_page::apply(world, outputs.game.mcm_actions);
     // M47.2 — the answered message box leaves the queue; the page stays up
     // for the next one, and the last answer closes it back to the world.
     // A character-creation screen closes on its answer, or unchanged when the page is dismissed;

@@ -40,7 +40,7 @@ pub(super) struct Vm<'a> {
 
 /// M48 #6667 — the `Stop` a `Message.Show()` raises to unwind its expression to the statement
 /// that waits on it (`Vm::exec_block` turns it into a suspension).
-const AWAITS_MESSAGE: &str = "a Message.Show() awaiting its answer";
+pub(super) const AWAITS_MESSAGE: &str = "a Message.Show() awaiting its answer";
 
 /// Run `script`'s `function` attached to `context` — a quest's fragment, or
 /// a reference script's event with its `args` — its properties bound by
@@ -267,7 +267,9 @@ impl Vm<'_> {
         Ok(frame)
     }
 
-    /// A function called for its value; it may not wait.
+    /// A function called for its value; it may not wait, except a box wrapper ([`is_box_wrapper`]),
+    /// whose box becomes the calling statement's: the statement replays with the answer, calling the
+    /// wrapper again, whose box then returns it.
     pub(super) fn call_function(&mut self, frame: Frame, code: &Code, name: &str, args: Vec<Value>) -> Run<Value> {
         let mut frame = self.enter(frame, code, name, args)?;
         self.value_calls += 1;
@@ -276,6 +278,11 @@ impl Vm<'_> {
         Ok(match flow? {
             Flow::Return(value) => value,
             Flow::Normal => Value::None,
+            Flow::Suspend(..)
+                if self.deferred.awaits_message.is_some() && code.callable(name).is_ok_and(|c| is_box_wrapper(c.body)) =>
+            {
+                return stop(AWAITS_MESSAGE)
+            }
             Flow::Suspend(..) => return stop("a wait in a function called for its value"),
         })
     }

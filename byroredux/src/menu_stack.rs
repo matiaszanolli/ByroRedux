@@ -94,7 +94,9 @@ pub(crate) fn native_menus(registry: &MenuRegistry, state: &NativeMenuState) -> 
         open.push((name(NativeMenu::Loading), native(NativeMenu::Loading)));
     }
     let page = match state.page {
-        Some(GameMenuPage::Pause) => Some(NativeMenu::Pause),
+        // The Mod Configuration page is the pause menu's own sub-page (Skyrim: the journal's, where
+        // SkyUI puts it), so it is that menu to a script asking.
+        Some(GameMenuPage::Pause | GameMenuPage::ModConfiguration) => Some(NativeMenu::Pause),
         Some(GameMenuPage::Settings) => Some(NativeMenu::Settings),
         Some(GameMenuPage::Inventory) => Some(NativeMenu::Inventory),
         Some(GameMenuPage::Dialogue) => Some(NativeMenu::Dialogue),

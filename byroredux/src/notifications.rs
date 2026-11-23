@@ -89,10 +89,13 @@ pub(crate) fn message_box_waiting(world: &World) -> bool {
 pub(crate) fn front_message_box(world: &World) -> Option<byroredux_native_ui::MessageBoxView> {
     let boxes = world.try_resource::<MessageBoxQueue>()?;
     let message = boxes.0.front()?;
+    // A Skyrim box's words may be `$` keys (`$Accept`, a mod's own); the native page has no movie to
+    // translate them, and a movie's own pass leaves translated text alone.
+    let tr = crate::ui_translate::translate;
     Some(byroredux_native_ui::MessageBoxView {
-        title: message.title.clone(),
-        text: message.text.clone(),
-        buttons: message.buttons.clone(),
+        title: tr(&message.title),
+        text: tr(&message.text),
+        buttons: message.buttons.iter().map(|button| tr(button)).collect(),
     })
 }
 

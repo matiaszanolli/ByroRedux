@@ -350,7 +350,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**196**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**206**) grouped by
 purpose:
 
 **FormID arguments are hex**, bare or `0x`-prefixed: `quest.show 18B4B`, `quest.show
@@ -572,6 +572,16 @@ quest.setstage              → advance a quest through the canonical stage path
 perk.run                    → run a perk entry's fragment on the player (perk, entry id, optional target)
 terminal.select             → pick a terminal menu item by reference + item id, running its fragment
 quest.effects               → inspect the quest effect log
+mcm.list                    → the registered Mod Configuration Menus (LMC-UI-002, docs/engine/mcm-host.md)
+mcm.open <mod> [page]       → open a config menu (OnConfigOpen, then OnPageReset) and print its page
+mcm.page <page|front>       → show another page of the open config menu
+mcm.show                    → print the open page: cells, option ids, values, flags, states, dialog
+mcm.select <id>             → use an option: select a text/toggle, or open a slider/menu/colour/input/key dialog
+mcm.accept <id> <value>     → answer the open dialog (slider value, menu index, RRGGBB, key code, text)
+mcm.cancel                  → close the open dialog unanswered
+mcm.default <id>            → OnOptionDefault on an option
+mcm.highlight <id>          → OnOptionHighlight on an option (the script sets the info text)
+mcm.close                   → close the open config menu (OnConfigClose)
 inv.use <form_id>            → use (consume) a player inventory item through the menu's Consume action
 inv.drop <form_id>           → drop one of a player inventory item into the world through the menu's Drop action (M43; raises the Story Manager's REMP)
 craft list | open | make <recipe> → list the recipes of the workbench nearest the player / open its crafting page like activating it / craft one through the page's action (M43; raises CRFT)

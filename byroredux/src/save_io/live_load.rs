@@ -783,6 +783,8 @@ pub fn execute_pending_save_loads(
     // save. Saved FormIDs read back through this load order (`stable_form_id`), which the reload rebuilds unchanged,
     // so even the ledgers restored before it translate through the right one.
     let session_plugins = session_plugin_list(world);
+    // LMC-SAV-002 — and a save made in a cell or worldspace the session's plugins lack still loads, somewhere else.
+    let destination = load_destination(world, &snapshot, session_plugins.as_ref(), &args);
     let translator = session_translator(world);
     let mut translation = byroredux_core::stable_form_id::TranslationReport::default();
     let mut tally = |report: byroredux_core::stable_form_id::TranslationReport| {
@@ -812,8 +814,15 @@ pub fn execute_pending_save_loads(
     // Resident rows arrive from the snapshot's component overlay; nonresident
     // rows arrive with the post-reload resource restore below.
     let outcome = crate::cell_loader::reference_state::without_parked_state(world, |world| {
-        reload_with_fresh_day_blocks(world, |world| {
-            if let Some(mut cell_ctx) = snapshot_cell_context(&snapshot) {
+        reload_with_fresh_day_blocks(world, |world| match &destination {
+            LoadDestination::SafeCell { cell_ctx, .. } => reload_interior_session(world, ctx, streaming, &args, cell_ctx),
+            LoadDestination::Current { location: SessionLocation::Interior(cell_ctx), .. } => {
+                reload_interior_session(world, ctx, streaming, &args, cell_ctx)
+            }
+            LoadDestination::Current { location: SessionLocation::Exterior(ext_ctx), .. } => {
+                reload_exterior_session(world, ctx, streaming, &args, ext_ctx)
+            }
+            LoadDestination::Saved => if let Some(mut cell_ctx) = snapshot_cell_context(&snapshot) {
                 if let Some((masters, esm_path)) = &session_plugins {
                     cell_ctx.masters.clone_from(masters);
                     cell_ctx.esm_path.clone_from(esm_path);
@@ -830,7 +839,7 @@ pub fn execute_pending_save_loads(
                 log::error!("{message}");
                 notify_player(world, message);
                 None
-            }
+            },
         })
     });
     let Some(ReloadOutcome {
@@ -861,6 +870,11 @@ pub fn execute_pending_save_loads(
     // player entering it against the outgoing session's visits and clock.
     byroredux_scripting::obscript_state::discard_pending_cell_resets(world);
     discard_outgoing_session_requests(world);
+    // LMC-UI-002 — the outgoing session's config menus and open page; each config script registers again
+    // from its OnGameReload once the save's script state is back.
+    if let Some(mut host) = world.try_resource_mut::<byroredux_scripting::mcm::McmHost>() {
+        host.reset_session();
+    }
 
     // The cell/session replacement invalidates every transient SDK entity
     // handle even when the restored population happens to reuse the same raw
@@ -895,6 +909,8 @@ pub fn execute_pending_save_loads(
             ext_ctx.esm_path.clone_from(esm_path);
         }
     }
+    // LMC-SAV-002 — and where the save's location is not in the session, the one the load reloaded stands.
+    destination.reassert_location(world);
     if let Err(e) = restored {
         let message = format!("save load: resource restore failed: {e}");
         log::error!("{message}");
@@ -1008,6 +1024,10 @@ pub fn execute_pending_save_loads(
             for line in removed_mod_report(&removed_plugins, &translation, &gone_references, removed_items) {
                 log::warn!("save load: {line}");
             }
+            // Logged only, like the lines above (#7367).
+            if let Some(line) = destination.report_line() {
+                log::warn!("save load: {line}");
+            }
             for line in profile_change_report(world, &snapshot, &remap) {
                 log::info!("save load: {line}");
             }
@@ -1094,7 +1114,13 @@ pub fn execute_pending_save_loads(
     crate::music::end_sting_layer(world);
     // INC4-2 — the overlay may have restored a different sex or race than the live body wears.
     crate::player_body::sync_body_after_load(world, identity_before);
-    if let Some(pose) = snapshot_player_pose(&snapshot)
+    let pose = match &destination {
+        LoadDestination::Saved => snapshot_player_pose(&snapshot),
+        // The saved pose belongs to the missing location: the safe cell's spawn point placed the player.
+        LoadDestination::SafeCell { .. } => None,
+        LoadDestination::Current { pose, .. } => *pose,
+    };
+    if let Some(pose) = pose
         && apply_player_pose(world, &pose) {
             log::info!(
                 "save load: restored player pose at ({:.1}, {:.1}, {:.1}) yaw={:.2} pitch={:.2} ({})",
@@ -1110,6 +1136,7 @@ pub fn execute_pending_save_loads(
                 },
             );
         }
+    log::info!("save load: load complete: slot {loaded_slot}, {location_label}");
     if let Err(error) = crate::extensions::queue_session_event(
         world,
         byroredux_sdk::event::SessionEvent {
@@ -1377,5 +1404,180 @@ mod removed_plugin_tests {
             ]
         );
         assert!(removed_mod_report(&removed, &Default::default(), &Default::default(), 0).is_empty());
+    }
+}
+
+/// The cell Oblivion puts what a removed mod orphaned in, the player included, when `SSaveGameSafeCellID:General`
+/// does not name another: `2AEEA`, the Tiber Septim Hotel lobby (UESP *Oblivion Mod:Oblivion.ini*: "This is where the
+/// game dumps things that get orphaned by removed mods"; *Oblivion:The Tiber Septim Hotel*: "Any actors whose cell has
+/// disappeared will be placed in the hotel's lobby"). `Oblivion_default.ini` does not set the key. Fallout 3 and New
+/// Vegas ship it (`2AEEA` again, no cell in either master), but the GECK wiki lists it among the unused settings.
+const OBLIVION_SAFE_CELL: u32 = 0x0002_AEEA;
+
+/// Where a live load reloads (LMC-SAV-002).
+enum LoadDestination {
+    /// The save's own cell or worldspace, which the session's plugins have.
+    Saved,
+    /// Oblivion's safe cell, for a save whose location a removed plugin took with it; the player is placed by the
+    /// cell's spawn point.
+    SafeCell { cell_ctx: crate::cell_loader::CurrentCellContext, missing: String },
+    /// The session's own location and the player's pose in it, for a game that documents no safe cell (the owner's
+    /// rule, 2026-11-23): the save's state loads around a player who stays where they are.
+    Current { location: SessionLocation, pose: Option<PlayerPose>, missing: String },
+}
+
+/// The location a running session is in.
+enum SessionLocation {
+    Interior(crate::cell_loader::CurrentCellContext),
+    Exterior(crate::cell_loader::CurrentExteriorContext),
+}
+
+impl LoadDestination {
+    /// The load report's line for a save whose location is gone.
+    fn report_line(&self) -> Option<String> {
+        match self {
+            LoadDestination::Saved => None,
+            LoadDestination::SafeCell { cell_ctx, missing } => Some(format!(
+                "the save's {missing} is in no loaded plugin; the player is placed in the safe cell '{}' \
+                 (SSaveGameSafeCellID)",
+                cell_ctx.cell_editor_id
+            )),
+            LoadDestination::Current { location, missing, .. } => Some(format!(
+                "the save's {missing} is in no loaded plugin; the player stays in {}",
+                match location {
+                    SessionLocation::Interior(cell) => format!("cell '{}'", cell.cell_editor_id),
+                    SessionLocation::Exterior(exterior) => format!(
+                        "worldspace '{}' at ({}, {})",
+                        exterior.worldspace_key, exterior.grid.0, exterior.grid.1
+                    ),
+                }
+            )),
+        }
+    }
+
+    /// The post-reload restore put the save's location context back; where the load reloaded another, that one is
+    /// the session's location, and the next save must record it.
+    fn reassert_location(&self, world: &mut World) {
+        let interior = match self {
+            LoadDestination::Saved => return,
+            LoadDestination::SafeCell { cell_ctx, .. } => Some(cell_ctx.clone()),
+            LoadDestination::Current { location: SessionLocation::Interior(cell_ctx), .. } => Some(cell_ctx.clone()),
+            LoadDestination::Current { location: SessionLocation::Exterior(ext_ctx), .. } => {
+                world.remove_resource::<crate::cell_loader::CurrentCellContext>();
+                world.insert_resource(ext_ctx.clone());
+                None
+            }
+        };
+        if let Some(cell_ctx) = interior {
+            world.remove_resource::<crate::cell_loader::CurrentExteriorContext>();
+            world.insert_resource(cell_ctx);
+        }
+    }
+}
+
+/// LMC-SAV-002 — where the load goes: the save's own location when the session's plugins have it; else Oblivion's
+/// safe cell, else the session's own location. A parse failure leaves it to the reload, which reports it.
+fn load_destination(
+    world: &World,
+    snapshot: &byroredux_save::Snapshot,
+    plugins: Option<&(Vec<String>, String)>,
+    args: &[String],
+) -> LoadDestination {
+    let Some((masters, esm_path)) = plugins else { return LoadDestination::Saved };
+    let paths: Vec<&str> = masters.iter().map(String::as_str).chain(std::iter::once(esm_path.as_str())).collect();
+    let Ok((index, _)) = crate::cell_loader::load_order::parse_record_indexes_shared(&paths) else {
+        return LoadDestination::Saved;
+    };
+    let missing = if let Some(cell) = snapshot_cell_context(snapshot) {
+        (!index.cells.cells.contains_key(&cell.cell_editor_id.to_ascii_lowercase()))
+            .then(|| format!("cell '{}'", cell.cell_editor_id))
+    } else if let Some(exterior) = snapshot_exterior_context(snapshot) {
+        (!index.cells.worldspaces.contains_key(&exterior.worldspace_key))
+            .then(|| format!("worldspace '{}'", exterior.worldspace_key))
+    } else {
+        None
+    };
+    let Some(missing) = missing else { return LoadDestination::Saved };
+    if index.game == byroredux_plugin::esm::reader::GameKind::Oblivion {
+        let ini = crate::game_ini::read_default_ini(args, index.game);
+        let form = safe_cell_form(ini.as_deref());
+        if let Some(cell) = index.cells.cells.values().find(|cell| cell.form_id == form) {
+            let cell_ctx = crate::cell_loader::CurrentCellContext {
+                cell_editor_id: cell.editor_id.clone(),
+                esm_path: esm_path.clone(),
+                masters: masters.clone(),
+            };
+            return LoadDestination::SafeCell { cell_ctx, missing };
+        }
+        log::warn!("save load: the safe cell {form:08X} (SSaveGameSafeCellID) is in no loaded plugin");
+    }
+    let location = if let Some(cell) = world.try_resource::<crate::cell_loader::CurrentCellContext>() {
+        SessionLocation::Interior((*cell).clone())
+    } else if let Some(exterior) = world.try_resource::<crate::cell_loader::CurrentExteriorContext>() {
+        SessionLocation::Exterior((*exterior).clone())
+    } else {
+        return LoadDestination::Saved;
+    };
+    let pose = world.try_resource::<PlayerPose>().map(|pose| *pose);
+    LoadDestination::Current { location, pose, missing }
+}
+
+/// The safe cell's FormID: `SSaveGameSafeCellID:General` of the install's default INI (hex), else the compiled-in
+/// [`OBLIVION_SAFE_CELL`].
+fn safe_cell_form(ini: Option<&str>) -> u32 {
+    ini.and_then(|text| crate::game_ini::ini_value(text, "General", "SSaveGameSafeCellID"))
+        .and_then(|value| u32::from_str_radix(value.trim(), 16).ok())
+        .unwrap_or(OBLIVION_SAFE_CELL)
+}
+
+#[cfg(test)]
+mod safe_cell_tests {
+    use super::*;
+
+    #[test]
+    fn the_safe_cell_is_the_ini_value_else_the_tiber_septim_hotel() {
+        assert_eq!(safe_cell_form(None), 0x0002_AEEA);
+        assert_eq!(safe_cell_form(Some("[General]\nSIntroSequence=x.bik\n")), 0x0002_AEEA);
+        assert_eq!(safe_cell_form(Some("[General]\nSSaveGameSafeCellID=0001A2B3\n")), 0x0001_A2B3);
+        assert_eq!(safe_cell_form(Some("[Display]\nSSaveGameSafeCellID=0001A2B3\n")), 0x0002_AEEA, "[General] only");
+        assert_eq!(safe_cell_form(Some("[General]\nSSaveGameSafeCellID=hotel\n")), 0x0002_AEEA, "not hex");
+    }
+
+    #[test]
+    fn a_lost_location_is_reported_with_where_the_player_is() {
+        let cell = |id: &str| crate::cell_loader::CurrentCellContext { cell_editor_id: id.into(), ..Default::default() };
+        let safe = LoadDestination::SafeCell { cell_ctx: cell("ICTalosPlazaTheTiberSeptimHotel"), missing: "cell 'ModRoom'".into() };
+        assert_eq!(
+            safe.report_line().unwrap(),
+            "the save's cell 'ModRoom' is in no loaded plugin; the player is placed in the safe cell \
+             'ICTalosPlazaTheTiberSeptimHotel' (SSaveGameSafeCellID)"
+        );
+        let exterior = crate::cell_loader::CurrentExteriorContext {
+            worldspace_key: "wastelandnv".into(),
+            grid: (-17, 0),
+            ..Default::default()
+        };
+        let stay = LoadDestination::Current {
+            location: SessionLocation::Exterior(exterior),
+            pose: None,
+            missing: "worldspace 'modworld'".into(),
+        };
+        assert_eq!(
+            stay.report_line().unwrap(),
+            "the save's worldspace 'modworld' is in no loaded plugin; the player stays in worldspace 'wastelandnv' at (-17, 0)"
+        );
+        assert!(LoadDestination::Saved.report_line().is_none());
+    }
+
+    /// The restore put the save's (lost) context back: the reloaded one replaces it, and the other kind is removed.
+    #[test]
+    fn the_reloaded_location_replaces_the_saved_one() {
+        let mut world = World::new();
+        world.insert_resource(crate::cell_loader::CurrentCellContext { cell_editor_id: "ModRoom".into(), ..Default::default() });
+        let exterior = crate::cell_loader::CurrentExteriorContext { worldspace_key: "wastelandnv".into(), ..Default::default() };
+        let stay = LoadDestination::Current { location: SessionLocation::Exterior(exterior), pose: None, missing: String::new() };
+        stay.reassert_location(&mut world);
+        assert!(world.try_resource::<crate::cell_loader::CurrentCellContext>().is_none());
+        assert_eq!(world.resource::<crate::cell_loader::CurrentExteriorContext>().worldspace_key, "wastelandnv");
     }
 }

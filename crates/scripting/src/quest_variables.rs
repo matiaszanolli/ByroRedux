@@ -71,6 +71,12 @@ impl QuestScriptVariables {
         self.written.entry(quest).or_default().insert(variable, value);
     }
 
+    /// Forget every write to `owner`: its scripts' variables and properties read their authored
+    /// values again (a quest's reset as it starts, CK *OnInit*).
+    pub fn reset(&mut self, owner: QuestFormId) {
+        self.written.remove(&owner);
+    }
+
     /// Every scripted write, for the debug console and tests.
     pub fn written(&self) -> impl Iterator<Item = (QuestFormId, ConditionStringId, f32)> + '_ {
         self.written
@@ -191,6 +197,11 @@ impl QuestScriptObjects {
 
     pub fn set(&mut self, quest: QuestFormId, variable: ConditionStringId, value: ScriptObject) {
         self.written.entry(quest).or_default().insert(variable, value);
+    }
+
+    /// Forget every write to `owner` (its scripts' state included), as [`QuestScriptVariables::reset`].
+    pub fn reset(&mut self, owner: QuestFormId) {
+        self.written.remove(&owner);
     }
 }
 

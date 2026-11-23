@@ -16,6 +16,9 @@
 #     fails if the rulesets or the player's keys are stale;
 #   * the next save is accepted, and a save made after the load loads back across the plugin sets again, with
 #     its values (a stale key is refused by the save's identity preflight).
+#   * a save made inside a Knights.esp interior (NDPrioryoftheNineHouse) loads under set A, which lacks it: the
+#     player is placed in Oblivion's safe cell, SSaveGameSafeCellID's default 2AEEA (the Tiber Septim Hotel lobby,
+#     UESP), with the saved values (LMC-SAV-002);
 #   * after each live load the player drinks PotionRestoreHealth (0x98496, Restore Health 35, instant) and
 #     Health rises by 35: the consume path reads ActorVitals.health, so a stale key (SAVE-1) refuses the potion
 #     where the console's GetAV / DamageAV, which resolve by name, would not notice (#7045).
@@ -71,9 +74,9 @@ expect() {
         || fail "$1: got '${2:-nothing}', expected $3"
 }
 slot_of() { grep -h 'Installed 72 engine-supplied' "$1" | sed -nE 's/.*Regular\(([0-9]+)\).*/\1/p' | tail -1; }
-# launch <phase> <A|B>: A = Oblivion.esm alone, B = Oblivion.esm + Knights.esp + DLCThievesDen.esp.
+# launch <phase> <A|B> [cell]: A = Oblivion.esm alone, B = Oblivion.esm + Knights.esp + DLCThievesDen.esp.
 launch() {
-    local phase="$1" set="$2" plugins
+    local phase="$1" set="$2" cell="${3:-AnvilTheCountsArms}" plugins
     if [[ "$set" == A ]]; then
         plugins=(--esm "$DATA/Oblivion.esm")
     else
@@ -82,7 +85,7 @@ launch() {
     : >"$LOG_DIR/$phase.log"
     env BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 BYROREDUX_SETTINGS_PATH="$LOG_DIR/settings.toml" \
         BYROREDUX_SAVE_DIR="$LOG_DIR/saves" RUST_LOG=warn,byroredux::save_io=info,byroredux::cell_loader=info \
-        "$BIN/byroredux" "${plugins[@]}" --cell AnvilTheCountsArms \
+        "$BIN/byroredux" "${plugins[@]}" --cell "$cell" \
         --bsa "$DATA/Oblivion - Meshes.bsa" --textures-bsa "$DATA/Oblivion - Textures - Compressed.bsa" \
         --player --hud --bench-frames 30 --bench-hold >"$LOG_DIR/$phase.log" 2>&1 &
     engine_pid=$!
@@ -96,10 +99,10 @@ launch() {
 # live_load <phase> <slot>: queue the load and wait for it to finish.
 live_load() {
     local phase="$1" slot="$2" before
-    before="$(grep -c 'save load: restored player pose' "$LOG_DIR/$phase.log" || true)"
+    before="$(grep -c 'save load: load complete' "$LOG_DIR/$phase.log" || true)"
     run "load $slot" | grep -Fq "queued load of slot $slot" || fail "$phase: load $slot was not queued"
     local deadline=$((SECONDS + TIMEOUT))
-    until (( $(grep -c 'save load: restored player pose' "$LOG_DIR/$phase.log" || true) > before )); do
+    until (( $(grep -c 'save load: load complete' "$LOG_DIR/$phase.log" || true) > before )); do
         grep -q 'save load: .*abort\|save load: .*ABORT\|load ABORTED' "$LOG_DIR/$phase.log" && fail "$phase: load $slot aborted"
         (( SECONDS < deadline )) || fail "$phase: timed out loading slot $slot"
         sleep 0.5
@@ -174,4 +177,23 @@ live_load b2 2
 [[ "$(slot_of "$LOG_DIR/b2.log")" == 3 ]] || fail 'loading the re-saved slot moved the engine records off Regular(3)'
 state b2 'B<-resaved loaded' 50 90 100 160
 potion 'B<-resaved loaded'
+stop_engine
+
+# 4. A save made inside a Knights.esp interior, loaded under A (no Knights.esp): the safe cell takes the player.
+launch b3 B NDPrioryoftheNineHouse
+run 'obscript.cmd 0x14 ModAV Endurance 7' >/dev/null
+sleep 1
+# The priory boot's own values (its start differs from Anvil's), with Endurance raised: the load must bring them back.
+priory=("$(av Endurance)" "$(av Health)" "$(av Magicka)" "$(av Fatigue)")
+saved 5
+stop_engine
+launch a3 A
+live_load a3 5
+grep -Fq "the save's cell 'NDPrioryoftheNineHouse' is in no loaded plugin; the player is placed in the safe cell 'ICTalosPlazaTheTiberSeptimHotel' (SSaveGameSafeCellID)" "$LOG_DIR/a3.log" \
+    || fail 'the save made in the removed plugin'"'"'s cell did not place the player in the safe cell (LMC-SAV-002)'
+grep -Fq "save load: load complete: slot 5, cell 'ICTalosPlazaTheTiberSeptimHotel'" "$LOG_DIR/a3.log" \
+    || fail 'the load did not complete in the Tiber Septim Hotel'
+[[ "$(slot_of "$LOG_DIR/a3.log")" == 2 ]] || fail 'the safe-cell load moved the engine records off Regular(2)'
+state a3 'A<-priory loaded' "${priory[@]}"
+potion 'A<-priory loaded'
 printf 'smoke[oblivion-live-load-plugin-set]: PASS -- A(2)<->B(3) saves load into the session slot both directions; artifacts: %s\n' "$LOG_DIR"

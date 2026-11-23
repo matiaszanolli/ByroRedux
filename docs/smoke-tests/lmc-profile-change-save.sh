@@ -146,8 +146,6 @@ for form, flags, body in temporary:
         statics.append((form, flags, body))
 assert len(statics) >= 2, 'fewer than two plain statics in the cell'
 (added_ref, added_flags, added_body), (order_ref, order_flags, order_body) = statics[0], statics[1]
-cell_local = cell_id & 0xFFFFFF
-block, sub_block = cell_local % 10, (cell_local // 10) % 10
 
 
 def moved(body, dz):
@@ -160,10 +158,18 @@ def moved(body, dz):
     return b''.join(parts)
 
 
-def cell_group(refs):
-    children = grup(struct.pack('<I', cell_id), 9, b''.join(refs))
-    body = cell_record + grup(struct.pack('<I', cell_id), 6, children)
-    return grup(b'CELL', 0, grup(struct.pack('<i', block), 2, grup(struct.pack('<i', sub_block), 3, body)))
+def cell_block(refs, record=None, form=None):
+    """One interior cell with its temporary children, in its block and sub-block groups."""
+    record, form = record or cell_record, form or cell_id
+    local = form & 0xFFFFFF
+    children = grup(struct.pack('<I', form), 9, b''.join(refs))
+    body = record + grup(struct.pack('<I', form), 6, children)
+    return grup(struct.pack('<i', local % 10), 2, grup(struct.pack('<i', (local // 10) % 10), 3, body))
+
+
+def cell_group(*blocks):
+    """The plugin's one top-level CELL group."""
+    return grup(b'CELL', 0, b''.join(blocks))
 
 
 def plugin(name, groups, records):
@@ -179,13 +185,16 @@ token = record(b'MISC', 0x01000800, sub(b'EDID', b'LMCGoneToken\0') + sub(b'OBND
                sub(b'DATA', struct.pack('<if', 1, 0.1)))
 placed = record(b'REFR', 0x01000801, sub(b'NAME', struct.pack('<I', 0x01000800)) +
                 sub(b'DATA', struct.pack('<6f', x, y, z + 40.0, 0, 0, 0)))
-plugin('LMCGone.esp', [grup(b'MISC', 0, token), cell_group([placed])], 3)
+# LMCGone's own interior, LMCGoneRoom (01000820), dressed with a copy of the saloon static LMCAdded moves.
+room = record(b'CELL', 0x01000820, sub(b'EDID', b'LMCGoneRoom\0') + sub(b'DATA', b'\x01'))
+room_static = record(b'REFR', 0x01000821, b''.join(sub(t, v) for t, v in subrecords(added_body) if t in (b'NAME', b'DATA')))
+plugin('LMCGone.esp', [grup(b'MISC', 0, token), cell_group(cell_block([placed]), cell_block([room_static], room, 0x01000820))], 5)
 quest = record(b'QUST', 0x01000810, sub(b'EDID', b'LMCAddedQuest\0') + sub(b'FULL', b'LMC Added Quest\0') +
                sub(b'DATA', struct.pack('<BBHf', 0x01, 10, 0, 0.0)))
 plugin('LMCAdded.esp', [grup(b'QUST', 0, quest),
-                        cell_group([record(b'REFR', added_ref, moved(added_body, 8.0), added_flags)])], 3)
-plugin('LMCOrderA.esp', [cell_group([record(b'REFR', order_ref, moved(order_body, 4.0), order_flags)])], 2)
-plugin('LMCOrderB.esp', [cell_group([record(b'REFR', order_ref, moved(order_body, 12.0), order_flags)])], 2)
+                        cell_group(cell_block([record(b'REFR', added_ref, moved(added_body, 8.0), added_flags)]))], 3)
+plugin('LMCOrderA.esp', [cell_group(cell_block([record(b'REFR', order_ref, moved(order_body, 4.0), order_flags)]))], 2)
+plugin('LMCOrderB.esp', [cell_group(cell_block([record(b'REFR', order_ref, moved(order_body, 12.0), order_flags)]))], 2)
 print(f'{added_ref:08X} {order_ref:08X}')
 PY
 )
@@ -211,7 +220,8 @@ wait_log() {
     done
 }
 require() { grep -Fq -- "$2" "$1" || fail "$3 (no '$2' in $(basename "$1"))"; pass "$3"; }
-# launch <phase> <plugin>...: FalloutNV.esm then the generated plugins, the last as --esm.
+# launch <phase> <plugin>...: FalloutNV.esm then the generated plugins, the last as --esm, in $CELL.
+CELL="$P1_CELL"
 launch() {
     local phase="$1" plugins=() i
     shift
@@ -221,11 +231,14 @@ launch() {
     env BYRO_DEBUG_PORT="$PORT" BYRO_DEBUG_SERVER=1 BYROREDUX_SETTINGS_PATH="$WORK/settings.toml" \
         BYROREDUX_SAVE_DIR="$WORK/saves" RUST_LOG=warn,byroredux::save_io=info \
         "${SMOKE_HEADLESS[@]}" "$ENGINE_BIN" "${plugins[@]}" --mod-root "$WORK/mods/lmc" "${ARCHIVES[@]}" \
-        --cell "$P1_CELL" --player --radius 1 --camera-pos "$P1_CAMERA_POS" --camera-forward "$P1_CAMERA_FORWARD" \
+        --cell "$CELL" --player --radius 1 --camera-pos "$P1_CAMERA_POS" --camera-forward "$P1_CAMERA_FORWARD" \
         --bench-frames 30 --bench-hold >"$WORK/$phase.stdout" 2>"$WORK/$phase.stderr" &
     engine_pid=$!
     wait_log "$WORK/$phase.stderr" 'bench-hold:'
-    smoke_end_boot_conversation "$WORK/$phase.dialogue"
+    # The fixture's boot-time force-greet is the saloon's; another cell opens none.
+    if [[ "$CELL" == "$P1_CELL" ]]; then
+        smoke_end_boot_conversation "$WORK/$phase.dialogue"
+    fi
 }
 player_entity() {
     debug_command 'player.status' "$WORK/player.status"
@@ -235,14 +248,14 @@ item_count() {
     debug_command 'inventory.status' "$WORK/inventory.status"
     grep -o 'item_count=[0-9]*' "$WORK/inventory.status" | head -1 | cut -d= -f2
 }
-# live_load <phase> <slot>: queue the load and wait until it has restored the player.
+# live_load <phase> <slot>: queue the load and wait until it completes.
 live_load() {
     local log="$WORK/$1.stderr" before
-    before="$(grep -c 'save load: restored player pose' "$log" || true)"
+    before="$(grep -c 'save load: load complete' "$log" || true)"
     debug_command "load $2" "$WORK/$1.load$2"
     require "$WORK/$1.load$2" "queued load of slot $2" "$1: load $2 queued"
     local deadline=$((SECONDS + TIMEOUT))
-    until (( $(grep -c 'save load: restored player pose' "$log" || true) > before )); do
+    until (( $(grep -c 'save load: load complete' "$log" || true) > before )); do
         grep -Fq 'save load ABORTED' "$log" && fail "$1: load $2 aborted: $(grep -F 'save load ABORTED' "$log" | tail -1)"
         kill -0 "$engine_pid" 2>/dev/null || fail "$1: the engine exited loading slot $2"
         (( SECONDS < deadline )) || fail "$1: timed out loading slot $2"
@@ -266,7 +279,14 @@ SAVED_ITEMS="$(item_count)"
 saved save 1
 stop_engine
 
-# 2. Load it into the changed profile.
+# 1b. Save in LMCGone's own interior (slot 3).
+CELL=LMCGoneRoom
+launch room LMCGone.esp LMCOrderA.esp LMCOrderB.esp
+saved room 3
+stop_engine
+CELL="$P1_CELL"
+
+# 2. Load slot 1 into the changed profile.
 launch load LMCOrderB.esp LMCOrderA.esp LMCAdded.esp
 PLAYER="$(player_entity)"
 live_load load 1
@@ -296,5 +316,18 @@ live_load load 2
 after="$(grep -c 'is not loaded: ' "$LOG" || true)"
 (( after == before )) || fail 'loading the save made under the changed profile reported a removed plugin'
 pass 'the changed profile'"'"'s own save loads back with no removed plugin'
+
+# 4. The save made in LMCGone's interior loads too (LMC-SAV-002 MUST): New Vegas documents no safe cell, so the player
+#    stays in the session's cell, and the next save records it.
+live_load load 3
+require "$LOG" "save load: the save's cell 'LMCGoneRoom' is in no loaded plugin; the player stays in cell '$P1_CELL'" \
+    'LMC-SAV-002: a save made in the removed plugin'"'"'s cell loads, the player staying in the session'"'"'s cell'
+require "$LOG" "save load: load complete: slot 3, cell '$P1_CELL'" 'LMC-SAV-002: the load completes in the session'"'"'s cell'
+saved load 4
+before="$(grep -c 'is in no loaded plugin' "$LOG" || true)"
+live_load load 4
+after="$(grep -c 'is in no loaded plugin' "$LOG" || true)"
+(( after == before )) || fail 'the save made after the fallback still names the lost cell'
+pass 'the save made after the fallback records the session'"'"'s cell'
 stop_engine
 echo "smoke[$GATE]: PASS -- removed, added and reordered plugins across a live load; artifacts: $WORK"

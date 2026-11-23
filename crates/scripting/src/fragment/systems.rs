@@ -389,6 +389,8 @@ pub fn quest_fragment_dispatch_system(world: &World) {
         }
     }
 
+    // CK *OnInit* — a quest started since the last pass resets its scripts before its startup stage.
+    super::reference::reset_started_quests(world);
     if queue.is_empty() {
         return;
     }
@@ -397,6 +399,8 @@ pub fn quest_fragment_dispatch_system(world: &World) {
     // `OnStageSet` remote event is raised for each.
     let mut stage_sets: Vec<(QuestFormId, u16)> = Vec::new();
     while let Some((quest, stage, is_cascade)) = queue.pop_front() {
+        // A quest a fragment of this pass started resets before its own startup stage.
+        super::reference::reset_started_quests(world);
         if is_cascade {
             cascade_steps += 1;
         }
