@@ -39,7 +39,7 @@
 //! |---|---|
 //! | `SceneStartRequest`, `SceneStopRequest`, `SceneActionCompletionBatch` | `scene::playback::scene_playback_system` |
 //! | `DialoguePresentationEventBatch`, `DialogueLineCompletionBatch` | `dialogue::scene_dialogue_system` |
-//! | `ScenePackageEventBatch`, `ScenePackageCompletionBatch`, `EvaluatePackageRequest` | `package::scene_package_system` |
+//! | `ScenePackageEventBatch`, `ScenePackageCompletionBatch`, `EvaluatePackageRequest` | `package::scene_package_system` (`EvaluatePackageRequest`: only the requests `ambient_ai_package_system` read this frame, `AmbientPackageRequestsSeen`; a later one waits a frame, #7291) |
 //! | `StoryEvent` | `story_manager::story_manager_dispatch_system` (#5366) |
 //! | `ReleasePackageHold` | `byroredux::npc_spawn::ai_package::ambient_ai_package_system` (takes it beside its read of `EvaluatePackageRequest`, before any early return, #7243) |
 //! | `TwoStateTransitionBatch` | `vm_state::two_state_activator_system` |

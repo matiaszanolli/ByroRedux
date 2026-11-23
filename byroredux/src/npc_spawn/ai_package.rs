@@ -1382,6 +1382,11 @@ pub(crate) fn ambient_ai_package_system(world: &World, dt: f32) {
         .query::<EvaluatePackageRequest>()
         .map(|query| query.iter().map(|(actor, _)| actor).collect())
         .unwrap_or_default();
+    // #7291 — tell `scene_package_system`, which drains the request later in the frame, which
+    // requests this pass read; one raised after it waits for the next pass instead of being lost.
+    if let Some(mut seen) = world.try_resource_mut::<byroredux_scripting::package::AmbientPackageRequestsSeen>() {
+        seen.0 = Some(requested.iter().copied().collect());
+    }
     // #7243 — an explicit `EvaluatePackage` also ends the running package's Must Complete hold. Its marker is
     // this system's alone (Pattern B), so it is taken here, before any early return; it is as rare as the
     // request, so the mutable lock is only taken when one is present.
@@ -3149,6 +3154,40 @@ mod tests {
         assert_eq!(running(&world), Some(0x200), "EVP drops the held package");
         assert!(world.has::<WanderBehavior>(actor));
         assert!(!world.has::<ReleasePackageHold>(actor), "the release marker is taken by the pass that read it");
+    }
+
+    /// #7291 — an `EvaluatePackage` raised after the ambient pass in a frame (by a PF_/PRKF_/TERM_
+    /// fragment or an ObScript script, which run between it and `scene_package_system`) still reaches
+    /// the ambient AI: the scene system takes only the requests the ambient pass read, so this one
+    /// survives to the next pass, which ends the Must Complete hold, and the scene system takes it
+    /// then.
+    #[test]
+    fn an_evaluate_package_raised_after_the_ambient_pass_reaches_the_next_one() {
+        use crate::npc_spawn::package_flags::PKDT_MUST_COMPLETE;
+        use byroredux_scripting::package::{request_package_evaluation, AmbientPackageRequestsSeen};
+        let morning = PackSchedule { start_hour: Some(8), duration_minutes: 4 * 60, ..Default::default() };
+        let sleep = PackRecord { package_flags: PKDT_MUST_COMPLETE, ..pack(0x100, PROCEDURE_SLEEP, Some(morning)) };
+        let (mut world, actor) = setup_actor(9.0, vec![sleep, pack(0x200, PROCEDURE_WANDER, None)]);
+        world.init_resource::<AmbientPackageRequestsSeen>();
+        let running = |world: &World| world.get::<AmbientPackageRuntime>(actor).unwrap().active_package_form_id;
+        world.resource_mut::<GameTimeRes>().hour = 14.0;
+
+        // Frame N: the ambient pass runs with no request and holds the sleep past its window; a fragment
+        // after it raises EvaluatePackage; the scene system runs last.
+        ambient_ai_package_system(&world, 0.0);
+        assert_eq!(running(&world), Some(0x100), "held past its window");
+        assert!(request_package_evaluation(&world, actor));
+        byroredux_scripting::scene_package_system(&world, 0.0);
+        assert!(
+            world.has::<EvaluatePackageRequest>(actor),
+            "the scene system leaves a request the ambient pass has not read"
+        );
+
+        // Frame N+1: the ambient pass reads it and drops the held package; the scene system takes it.
+        ambient_ai_package_system(&world, 0.0);
+        assert_eq!(running(&world), Some(0x200), "the late EVP still ends the hold");
+        byroredux_scripting::scene_package_system(&world, 0.0);
+        assert!(!world.has::<EvaluatePackageRequest>(actor), "taken once the ambient pass has read it");
     }
 
     /// #6074 — an actor whose running package came from a quest-alias overlay

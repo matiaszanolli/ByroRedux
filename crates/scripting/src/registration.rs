@@ -168,14 +168,15 @@ mod tests {
     /// +1 for XCT-LOC-004's `PendingActorMoves`, +1 for BIK-PRES-006's `MoviePlaying`, +1 for MUS-SCR-003's
     /// `PendingStreamMusic`, +1 for MUS-SCR-004's `CellMusicTypes`, +1 for GUI-EVT-001's
     /// `MenuEventRegistrations`, +1 for M48 #6667's `PapyrusMessageAnswers`, +3 for Oblivion skill-use
-    /// leveling's `PendingSkillUse`, `SkillUseClasses`, `SleepCompletions`); the list is
+    /// leveling's `PendingSkillUse`, `SkillUseClasses`, `SleepCompletions`, +1 for #7291's
+    /// `AmbientPackageRequestsSeen`); the list is
     /// the types it used to initialise by hand, so a dropped `install` call fails by name rather
     /// than by count alone.
     #[test]
     fn register_installs_the_same_resource_set() {
         let mut world = World::new();
         register(&mut world);
-        assert_eq!(world.resource_count(), 150, "the resource set `register` installs changed");
+        assert_eq!(world.resource_count(), 151, "the resource set `register` installs changed");
 
         macro_rules! present {
             ($($ty:path),+ $(,)?) => {$(

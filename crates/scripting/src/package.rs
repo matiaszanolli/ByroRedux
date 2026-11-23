@@ -239,6 +239,19 @@ impl Component for ReleasePackageHold {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// #7291 — the actors whose [`EvaluatePackageRequest`] `ambient_ai_package_system` read on its
+/// last pass. The request has two consumers: the ambient pass reads it and
+/// [`scene_package_system`], which runs later in the frame, drains it. A request raised between
+/// the two (a PF_/PRKF_/TERM_ fragment, an ObScript quest or result script) was drained before
+/// the ambient pass ever saw it, and its [`ReleasePackageHold`] went unused. The scene system
+/// therefore takes only the requests the ambient pass recorded here and leaves the rest for the
+/// next frame, so each consumer handles every request exactly once. `None` until an ambient pass
+/// records (a world with no ambient AI): the scene system then takes every request.
+#[derive(Debug, Default)]
+pub struct AmbientPackageRequestsSeen(pub Option<HashSet<EntityId>>);
+
+impl Resource for AmbientPackageRequestsSeen {}
+
 /// `Actor.EvaluatePackage` / ObScript `EvaluatePackage` (`EVP`): "forces the
 /// actor to reevaluate its package list" (GECK) — a request the ambient AI and
 /// scene systems drain. It ends the running package even when it is flagged
@@ -276,6 +289,7 @@ pub fn register(world: &mut World) {
     world.register::<ScenePackageCompletionBatch>();
     world.register::<EvaluatePackageRequest>();
     world.register::<ReleasePackageHold>();
+    world.init_resource::<AmbientPackageRequestsSeen>();
     world.register::<crate::script_packages::ScriptPackage>();
     world.init_resource::<PackageRegistry>();
     world.init_resource::<PackageTargetRegistry>();
@@ -682,10 +696,19 @@ pub fn scene_package_system(world: &World, dt: f32) {
     drain::<ScenePackageEventBatch>(world);
     let external = snapshot::<ScenePackageCompletionBatch>(world);
     drain::<ScenePackageCompletionBatch>(world);
+    // #7291 — only the requests the ambient pass has already read; a later one waits a frame.
+    let seen = world
+        .try_resource::<AmbientPackageRequestsSeen>()
+        .and_then(|seen| seen.0.clone());
     let reevaluate: HashSet<EntityId> = snapshot::<EvaluatePackageRequest>(world)
         .into_keys()
+        .filter(|actor| seen.as_ref().is_none_or(|seen| seen.contains(actor)))
         .collect();
-    drain::<EvaluatePackageRequest>(world);
+    if let Some(mut requests) = world.query_mut::<EvaluatePackageRequest>() {
+        for actor in &reevaluate {
+            requests.remove(*actor);
+        }
+    }
     let scene_events = snapshot::<SceneEventBatch>(world);
     let mut playbacks = snapshot::<ScenePackagePlayback>(world);
     let scene_form_ids = crate::scene::scene_form_ids(world);
