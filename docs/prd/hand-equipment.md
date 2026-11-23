@@ -1,10 +1,12 @@
 # Hand Equipment — Product Requirements
 
-**Status**: APPROVED (2026-11-23). Revision 3 settles Phase 0's verify items from the masters and the
+**Status**: ACTIVE (2026-11-23). Revision 4 files the tracking issues. Revision 3 settles Phase 0's verify items from the masters and the
 CK / UESP pages, and links the design Phase 0 wrote. Revision 2: the owner approved the first draft
 and took every §10 recommendation. Statements about how an original engine, format or tool behaves cite external
 sources; a claim that could not be verified is marked **Phase 0: verify** instead of being stated as
 fact.
+
+**Tracking**: #7397 (parent), #7398 (Phase 1), #7399 (Phase 2). Phase 0 is done (revision 3).
 
 **Scope**: what each of an actor's two hands holds in Skyrim — a weapon, a shield, a torch, a spell or
 nothing — as the plugin data says it may, kept per actor, saved, and read by the scripts, conditions
@@ -237,3 +239,4 @@ HND-READ-003..004. Exit: acceptance 2 and 3.
 | 1 | 2026-11-23 | First draft | — |
 | 2 | 2026-11-23 | Approved; Q1–Q3 decided as recommended | owner: approved |
 | 3 | 2026-11-23 | Phase 0: the verify items settled from the masters (EQUP / ETYP scan of Skyrim, Fallout 4 and Starfield) and the CK / UESP pages; NPC hand choice a declared gap with an engine rule; the design written | — |
+| 4 | 2026-11-23 | ACTIVE: tracking issues #7397 (parent), #7398 (Phase 1), #7399 (Phase 2) | — |
