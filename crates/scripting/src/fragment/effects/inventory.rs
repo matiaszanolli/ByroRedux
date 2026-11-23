@@ -297,6 +297,11 @@ impl LeveledItemLists {
 /// `player.additem CondNV9mmPistolLoot 1` (Doc Mitchell's outro), a list, not a
 /// weapon.
 pub fn add_items(world: &World, container: EntityId, item_form_id: u32, count: u32) {
+    // #7344 — adding nothing adds no row and announces no transfer (a zero-count `OnItemAdded` is a phantom
+    // event; the take-all twin was #7231).
+    if count == 0 {
+        return;
+    }
     let lists = world.try_resource::<LeveledItemLists>().map(|lists| std::sync::Arc::clone(&lists.0));
     if let Some(lists) = lists.filter(|lists| lists.contains_key(&item_form_id)) {
         let level = world.get::<byroredux_core::character::CharacterLevel>(container).map_or(1, |level| level.level.max(1));
@@ -366,5 +371,23 @@ mod leveled_add_tests {
         let inventory = world.get::<Inventory>(player).unwrap();
         let held: Vec<(u32, u32)> = inventory.items.iter().map(|stack| (stack.base_form_id, stack.count)).collect();
         assert_eq!(held, vec![(PISTOL, 1)]);
+    }
+
+    /// #7344 — an `AddItem` of 0 adds no row and raises no `OnItemAdded`: the take-all twin (#7231) published
+    /// zero-count transfers the same way.
+    #[test]
+    fn adding_zero_adds_no_row_and_no_transfer() {
+        const ITEM: u32 = 0x0000_0F00;
+        let mut world = World::new();
+        world.register::<Inventory>();
+        world.register::<crate::ItemEventBatch>();
+        let player = world.spawn();
+        world.insert(player, Inventory::new());
+        add_items(&world, player, ITEM, 0);
+        assert!(world.get::<Inventory>(player).unwrap().items.is_empty(), "no zero row");
+        assert!(world.get::<crate::ItemEventBatch>(player).is_none(), "no phantom transfer");
+        add_items(&world, player, ITEM, 2);
+        assert_eq!(world.get::<Inventory>(player).unwrap().count_of(ITEM), 2);
+        assert_eq!(world.get::<crate::ItemEventBatch>(player).map(|batch| batch.0.len()), Some(1));
     }
 }

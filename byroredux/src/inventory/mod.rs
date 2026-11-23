@@ -86,6 +86,10 @@ pub(crate) fn add_item(
     form_id: u32,
     count: u32,
 ) -> Option<InventoryIndex> {
+    // #7344 — a count of 0 adds no row and announces no transfer (both callers already refuse or clamp it).
+    if count == 0 {
+        return None;
+    }
     let player = PlayerEntity::get(world)?;
     let index = {
         let mut inventories = world.query_mut::<Inventory>()?;
