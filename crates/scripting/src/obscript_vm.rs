@@ -1442,20 +1442,74 @@ fn apply_operator(stack: &mut Vec<ObScriptValue>, token: &str) {
             // zero to keep the stack walk going, but say so once per token: a silent zero is what
             // hid the missing `%` (SCR-2026-11-15-01).
             static REPORTED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
-            if let Ok(mut reported) = REPORTED.lock()
-                && !reported.iter().any(|seen| seen == token) {
-                    reported.push(token.to_string());
-                    log::warn!("ObScript expression uses an operator the VM does not know: {token:?} (read as 0)");
+            if let Ok(mut reported) = REPORTED.lock() {
+                match note_unknown_operator(&mut reported, token) {
+                    UnknownOperatorNote::First => {
+                        log::warn!("ObScript expression uses an operator the VM does not know: {token:?} (read as 0)")
+                    }
+                    UnknownOperatorNote::LastReported => log::warn!(
+                        "ObScript expressions use more than {MAX_REPORTED_UNKNOWN_OPERATORS} distinct unknown \
+                         operators; the rest are read as 0 without a report"
+                    ),
+                    UnknownOperatorNote::Seen => {}
                 }
+            }
             ObScriptValue::Num(0.0)
         }
     };
     stack.push(value);
 }
 
+/// #7295 — how many distinct unknown operator tokens the VM reports. Only corrupt or hostile
+/// bytecode reaches an unknown operator, and the tokens come from mod-supplied `SCDA`, so the
+/// process-wide list of reported tokens stays small and its scan bounded.
+const MAX_REPORTED_UNKNOWN_OPERATORS: usize = 32;
+
+#[derive(Debug, PartialEq, Eq)]
+enum UnknownOperatorNote {
+    /// A token not reported before: report it.
+    First,
+    /// Reported already, or past the cap.
+    Seen,
+    /// The token that fills the list: say no more will be reported.
+    LastReported,
+}
+
+/// Record `token` in the reported list unless it is there or the list is full (#7295).
+fn note_unknown_operator(reported: &mut Vec<String>, token: &str) -> UnknownOperatorNote {
+    if reported.len() > MAX_REPORTED_UNKNOWN_OPERATORS || reported.iter().any(|seen| seen == token) {
+        return UnknownOperatorNote::Seen;
+    }
+    if reported.len() == MAX_REPORTED_UNKNOWN_OPERATORS {
+        // One past the cap marks the list closed; the marker is not a token.
+        reported.push(String::new());
+        return UnknownOperatorNote::LastReported;
+    }
+    reported.push(token.to_string());
+    UnknownOperatorNote::First
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #7295 — the unknown-operator report list is bounded: each distinct token is reported once, up
+    /// to the cap; the next distinct one closes the list, and later ones are neither reported nor
+    /// stored.
+    #[test]
+    fn the_unknown_operator_report_list_is_capped() {
+        let mut reported = Vec::new();
+        assert_eq!(note_unknown_operator(&mut reported, "@"), UnknownOperatorNote::First);
+        assert_eq!(note_unknown_operator(&mut reported, "@"), UnknownOperatorNote::Seen, "once per token");
+        for i in 1..MAX_REPORTED_UNKNOWN_OPERATORS {
+            assert_eq!(note_unknown_operator(&mut reported, &format!("op{i}")), UnknownOperatorNote::First);
+        }
+        assert_eq!(note_unknown_operator(&mut reported, "one-more"), UnknownOperatorNote::LastReported);
+        for i in 0..1000 {
+            assert_eq!(note_unknown_operator(&mut reported, &format!("late{i}")), UnknownOperatorNote::Seen);
+        }
+        assert_eq!(reported.len(), MAX_REPORTED_UNKNOWN_OPERATORS + 1, "the list stops growing");
+    }
 
     /// SCR-2026-11-15-01 — `%` is modulus on integers (CS *Set*), applied the way the RPN loop does:
     /// `timerBark % 31 == 0` (FalloutNV's `VNovacChupacabraNightkinSCRIPT`) is true only on multiples

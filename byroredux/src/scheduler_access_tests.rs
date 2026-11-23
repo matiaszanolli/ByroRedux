@@ -1331,3 +1331,18 @@ fn per_frame_driver_functions_stay_within_their_size_pins() {
         );
     }
 }
+
+/// #7293 — the object scripts' `Begin MenuMode` blocks run on every menu-mode frame the schedule
+/// runs (a dialogue pauses nothing), not only on the paused frames `run_menu_mode_frame` covers by
+/// hand: the system is registered in `Stage::Update`, after `obscript_object_system`.
+#[test]
+fn object_menu_mode_blocks_run_in_the_update_schedule() {
+    use byroredux_core::ecs::Stage;
+    let report = crate::boot::build_scheduler().access_report();
+    let update = report.stages.iter().find(|s| s.stage == Stage::Update).expect("Stage::Update");
+    let at = |needle: &str| update.systems.iter().position(|row| row.name.contains(needle));
+    let objects = at("obscript_objects::obscript_object_system").expect("the object-script system");
+    let menu = at("obscript_objects::obscript_object_menu_mode_system")
+        .expect("object MenuMode blocks are scheduled, not only run on paused frames (#7293)");
+    assert!(objects < menu, "MenuMode runs after the frame's GameMode pass");
+}
