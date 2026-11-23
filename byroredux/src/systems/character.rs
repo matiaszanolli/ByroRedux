@@ -100,6 +100,29 @@ pub(crate) fn player_can_act(world: &World) -> bool {
             .is_none_or(|vats| vats.mode == crate::components::VatsMode::None)
 }
 
+/// #7337 — [`player_can_act`] plus the script's lock on combat controls: a
+/// `DisablePlayerControls` that selects fighting (CK *Game.DisablePlayerControls*
+/// `abFighting`, "the player's combat controls"; GECK FightingFlag; FO4/Starfield's
+/// `InputEnableLayer` `Fighting` control folds into the same field) stops the
+/// swing, the block, readying a weapon, the bow, the cast and iron sights.
+pub(crate) fn player_may_fight(world: &World) -> bool {
+    player_can_act(world)
+        && world
+            .try_resource::<byroredux_scripting::PlayerControlState>()
+            .is_none_or(|controls| controls.fighting_enabled)
+}
+
+/// #7337 — [`player_can_act`] plus the script's lock on activation (CK
+/// `abActivate`, "the ability for player to activate objects"; the GECK's
+/// MovementFlag and the CS's bare `DisablePlayerControls` take it too, mapped in
+/// `obscript_effects/actor_state.rs`).
+pub(crate) fn player_may_activate(world: &World) -> bool {
+    player_can_act(world)
+        && world
+            .try_resource::<byroredux_scripting::PlayerControlState>()
+            .is_none_or(|controls| controls.activation_enabled)
+}
+
 /// Keep the player's `Background` race on the race chosen in character creation
 /// ([`CharacterIdentity`](byroredux_core::character::CharacterIdentity)). `Background` is
 /// re-created with the actor from its record and not saved; the identity is saved, so after a

@@ -119,7 +119,11 @@ pub(super) fn mod_av(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptVa
 // call assigns it. The page's definitions give the mapping: Movement also
 // takes world activation, PipBoy the pip-boy/wait menus (`menu`), POV camera
 // switching. RolloverText has no domain here and is not applied.
-pub(super) fn enable_player_controls(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
+//
+// #7337 — Oblivion's command takes no flags. CS *DisablePlayerControls*: the "Player cannot move, wait, activate
+// anything, or access his journal interface", and "can still look around"; fighting is not in the list, so it
+// stays enabled. Movement, the wait/journal menus (`menu`) and activation are the selection.
+pub(super) fn enable_player_controls(world: &World, fallout: bool, cmd: u16, args: &[ObScriptValue], context: &Context) -> Action {
     let caller = caller_of(context);
     let bind = Binder::default();
     let effects: Vec<Effect> = {
@@ -127,9 +131,8 @@ pub(super) fn enable_player_controls(world: &World, _fallout: bool, cmd: u16, ar
         let flag = |i: usize, default: bool| if args.len() > i { num(args, i) != 0.0 } else { default };
         let defaults = if enable { [true; 7] } else { [true, true, true, true, false, false, false] };
         let [movement, pipboy, fighting, pov, looking, _rollover, sneaking] = std::array::from_fn(|i| flag(i, defaults[i]));
-        vec![Effect::SetPlayerControls {
-            enabled: enable,
-            selection: crate::player_control::PlayerControlSelection {
+        let selection = if fallout {
+            crate::player_control::PlayerControlSelection {
                 movement,
                 fighting,
                 camera_switching: pov,
@@ -139,8 +142,21 @@ pub(super) fn enable_player_controls(world: &World, _fallout: bool, cmd: u16, ar
                 activation: movement,
                 journal_tabs: false,
                 pov_type: 0,
-            },
-        }]
+            }
+        } else {
+            crate::player_control::PlayerControlSelection {
+                movement: true,
+                fighting: false,
+                camera_switching: false,
+                looking: false,
+                sneaking: false,
+                menu: true,
+                activation: true,
+                journal_tabs: false,
+                pov_type: 0,
+            }
+        };
+        vec![Effect::SetPlayerControls { enabled: enable, selection }]
     };
     finish_effects(world, cmd, context, caller, &bind, effects)
 }

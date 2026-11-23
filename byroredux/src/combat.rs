@@ -201,9 +201,12 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
     let can_swing = world
         .try_resource::<PlayerMode>()
         .is_some_and(|mode| *mode == PlayerMode::Character)
-        // #4701 — a dead player's attack edge is not a swing either.
-        && crate::systems::player_can_act(world);
+        // #4701 — a dead player's attack edge is not a swing either; #7337 —
+        // nor one a script's DisablePlayerControls locked out.
+        && crate::systems::player_may_fight(world);
 
+    // #7337 — read once, outside `MeleeState`'s write guard below.
+    let fight_allowed = crate::systems::player_may_fight(world);
     if ready_pressed
         && let Some(player) = aggressor {
             toggle_ready_weapon(world, player, can_swing);
@@ -240,7 +243,8 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
             // block flag keep tracking in every mode, so entering and
             // leaving fly-cam neither freezes a running cooldown nor
             // strands `blocking` true.
-            state.blocking = block_held;
+            // #7337 — a locked-out player does not hold a guard either.
+            state.blocking = block_held && fight_allowed;
             state.cooldown_remaining = (state.cooldown_remaining - dt.max(0.0)).max(0.0);
             if attack_pressed && can_swing && state.cooldown_remaining <= 0.0 {
                 state.cooldown_remaining = armed_cooldown;
@@ -3934,6 +3938,31 @@ mod tests {
             assert_eq!(world.resource::<CombatState>().attacks_started, swings, "weapon type {oblivion_type}");
             assert_eq!(melee_state_of(&world, aggressor).cooldown_remaining > 0.0, swings == 1, "weapon type {oblivion_type}");
         }
+    }
+
+    /// #7337 — a script's `DisablePlayerControls` that selects fighting (CK `abFighting`, "the player's combat
+    /// controls") stops the swing and the guard: the attack edge arms nothing, a held Block raises no guard, and the
+    /// same press swings once the script gives the controls back.
+    #[test]
+    fn a_script_lock_on_fighting_stops_the_swing_and_the_guard() {
+        use crate::components::InputState;
+        use winit::keyboard::KeyCode;
+        let (mut world, aggressor) = attack_edge_fixture(PlayerMode::Character);
+        world.insert_resource(byroredux_scripting::PlayerControlState { fighting_enabled: false, ..Default::default() });
+        world.resource_mut::<InputState>().keys_held.insert(KeyCode::KeyX);
+        press_attack(&world);
+        combat_input_system(&world, 1.0 / 60.0);
+        assert_eq!(world.resource::<CombatState>().attacks_started, 0, "a locked-out press is no swing");
+        assert!(!melee_state_of(&world, aggressor).blocking, "a locked-out player holds no guard");
+
+        world.resource_mut::<byroredux_scripting::PlayerControlState>().fighting_enabled = true;
+        world.resource_mut::<InputState>().keys_held.clear();
+        crate::interaction::refresh_action_state(&world);
+        world.resource_mut::<InputState>().keys_held.insert(KeyCode::KeyX);
+        press_attack(&world);
+        combat_input_system(&world, 1.0 / 60.0);
+        assert_eq!(world.resource::<CombatState>().attacks_started, 1, "the controls are back");
+        assert!(melee_state_of(&world, aggressor).blocking);
     }
 
     #[test]

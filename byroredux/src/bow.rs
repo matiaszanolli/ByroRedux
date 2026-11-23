@@ -23,7 +23,7 @@ use std::fmt;
 
 use crate::interaction::{ActionState, InputAction};
 use crate::systems::projectiles::{arrow_shot, ActiveProjectiles, ArrowSpec};
-use crate::systems::{player_can_act, PlayerEntity, PlayerMode};
+use crate::systems::{PlayerEntity, PlayerMode};
 
 /// The interval between two shots until a bow animation exists: the melee cooldown (BOW-DRW-004). Provisional, and
 /// labelled so in `bow.status`: Oblivion ties the cadence to the bow's speed without a number, and Skyrim's rest
@@ -252,7 +252,8 @@ pub(crate) fn shoot_now(world: &World, held: f32) -> BowReport {
 fn release(world: &World, held: f32) -> BowReport {
     let player = PlayerEntity::get(world).ok_or(Refusal::CannotAct)?;
     let in_character = world.try_resource::<PlayerMode>().is_some_and(|mode| *mode == PlayerMode::Character);
-    if !in_character || !player_can_act(world) {
+    // #7337 — a script's lock on combat controls refuses the shot like death or VATS.
+    if !in_character || !crate::systems::player_may_fight(world) {
         return Err(Refusal::CannotAct);
     }
     let model = *world.try_resource::<BowModel>().ok_or(Refusal::NoBow)?;

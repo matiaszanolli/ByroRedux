@@ -361,6 +361,24 @@ fn player_controls_assign_the_domains_the_flags_name() {
     assert!(state.fighting_enabled && !state.movement_enabled);
 }
 
+/// #7337 — Oblivion's `DisablePlayerControls` takes no flags and, per the CS page, stops moving, waiting,
+/// activating and the journal; fighting and looking stay enabled.
+#[test]
+fn oblivion_disable_player_controls_follows_the_cs_page() {
+    let (mut world, _, _) = world();
+    world.insert_resource(crate::ScriptGame(GameKind::Oblivion));
+    world.insert_resource(crate::PlayerControlState::default());
+    let ctx = context(None);
+    assert!(done(&run(&world, CMD_DISABLE_PLAYER_CONTROLS, &[], &ctx)));
+    let state = *world.try_resource::<crate::PlayerControlState>().unwrap();
+    assert!(!state.movement_enabled && !state.menu_enabled && !state.activation_enabled);
+    assert!(state.fighting_enabled, "the CS page does not disable fighting");
+    assert!(state.looking_enabled && state.camera_switching_enabled && state.sneaking_enabled);
+    assert!(done(&run(&world, CMD_ENABLE_PLAYER_CONTROLS, &[], &ctx)));
+    let state = *world.try_resource::<crate::PlayerControlState>().unwrap();
+    assert!(state.movement_enabled && state.menu_enabled && state.activation_enabled);
+}
+
 #[test]
 fn get_in_same_cell_compares_the_two_references_cells() {
     use byroredux_core::ecs::components::CellFormId;

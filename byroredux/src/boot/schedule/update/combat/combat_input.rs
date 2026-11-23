@@ -21,6 +21,10 @@ pub(super) fn register_combat_input_systems(scheduler: &mut Scheduler) {
             .reads_resource::<ActionState>()
             .reads_resource::<crate::systems::PlayerEntity>()
             .reads_resource::<crate::systems::PlayerMode>()
+            // #7337 — `player_may_fight`: a script's lock on combat controls.
+            .reads_resource::<byroredux_scripting::PlayerControlState>()
+            // `player_can_act` (under `player_may_fight`): no live swing inside VATS.
+            .reads_resource::<crate::components::VatsState>()
             .reads_resource::<ActiveCamera>()
             .reads_resource::<byroredux_physics::PhysicsWorld>()
             .reads_resource::<byroredux_core::character::MeleeDamageConfig>()
@@ -85,6 +89,8 @@ pub(super) fn register_combat_input_systems(scheduler: &mut Scheduler) {
             .reads_resource::<ActionState>()
             .reads_resource::<crate::systems::PlayerEntity>()
             .reads_resource::<crate::systems::PlayerMode>()
+            // #7337 — `player_may_fight`: a script's lock on combat controls.
+            .reads_resource::<byroredux_scripting::PlayerControlState>()
             .reads_resource::<crate::components::VatsState>()
             .reads_resource::<byroredux_core::character::SpellCastModel>()
             .reads_resource::<byroredux_scripting::magic::SpellCatalog>()
@@ -123,6 +129,8 @@ pub(super) fn register_combat_input_systems(scheduler: &mut Scheduler) {
             .reads_resource::<ActionState>()
             .reads_resource::<crate::systems::PlayerEntity>()
             .reads_resource::<crate::systems::PlayerMode>()
+            // #7337 — `player_may_fight`: a script's lock on combat controls.
+            .reads_resource::<byroredux_scripting::PlayerControlState>()
             .reads_resource::<crate::components::VatsState>()
             .reads_resource::<byroredux_core::character::BowModel>()
             .reads_resource::<crate::components::LoadedCellIndex>()

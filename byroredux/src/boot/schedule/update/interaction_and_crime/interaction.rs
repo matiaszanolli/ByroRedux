@@ -38,6 +38,10 @@ fn register_interaction_system(scheduler: &mut Scheduler) {
         Stage::Update,
         crate::interaction::interaction_system,
         Access::new()
+            // #7337 — `player_may_activate`: a script's lock on activation.
+            .reads_resource::<byroredux_scripting::PlayerControlState>()
+            // `player_can_act` (under `player_may_activate`): no live activation inside VATS.
+            .reads_resource::<crate::components::VatsState>()
             .writes_resource::<crate::notifications::PlayerNotifications>()
             // GUI-PAGE-005 — the key notice in the game's words (`sOpenWithKey`).
             .reads_resource::<byroredux_core::ui_labels::UiLabels>()

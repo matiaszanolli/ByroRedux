@@ -1168,6 +1168,8 @@ mod system_access_declaration_tests {
         assert_declares_everything_it_acquires(
             &[
                 (INTERACTION_SRC, "interaction_system"),
+                // #7337 — the activate gate.
+                (CHARACTER_SRC, "player_may_activate"),
                 (CRAFTING_SRC, "request_crafting"),
                 // `unlock_with_carried_key` -> the pick / hack bypass and its `LOCK` / `HACK` events.
                 (LOCKPICK_SRC, "bypass_of"),
@@ -1242,6 +1244,8 @@ mod system_access_declaration_tests {
         assert_declares_everything_it_acquires(
             &[
                 (PLAYER_CAST_SRC, "player_cast_system"),
+                // #7337 — the combat-controls gate.
+                (CHARACTER_SRC, "player_may_fight"),
                 // The aim ray, the touch reach and the shooter's own bodies.
                 (INTERACTION_SRC, "camera_ray"),
                 (COMBAT_SRC, "actor_in_reach"),
@@ -1256,6 +1260,7 @@ mod system_access_declaration_tests {
         assert_declares_everything_it_acquires(
             &[
                 (BOW_SRC, "player_bow_system"),
+                (CHARACTER_SRC, "player_may_fight"), // #7337
                 (INTERACTION_SRC, "camera_ray"),
                 (PROJECTILES_SRC, "bodies_of"),
                 // `remove_items` spends the arrow.
@@ -1275,6 +1280,7 @@ mod system_access_declaration_tests {
         assert_declares_everything_it_acquires(
             &[
                 (COMBAT_SRC, "combat_input_system"),
+                (CHARACTER_SRC, "player_may_fight"), // #7337
                 // A gun's shot (`fire_player_gun`, which spends ammo through `remove_items`) and a sneak
                 // strike (`sneak_strike` → `unaware_of_player`).
                 (COMBAT_SRC, "fire_player_gun"),

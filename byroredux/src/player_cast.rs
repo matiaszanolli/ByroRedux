@@ -12,7 +12,7 @@ use byroredux_plugin::esm::records::EsmIndex;
 use byroredux_scripting::player_cast::{self, CastReport, TargetLaunch};
 
 use crate::interaction::{ActionState, InputAction};
-use crate::systems::{player_can_act, PlayerEntity, PlayerMode};
+use crate::systems::{PlayerEntity, PlayerMode};
 
 /// The casting interval until a cast animation exists: the melee cooldown (PSC-CST-006). Provisional, and said so in
 /// `cast.status`.
@@ -31,9 +31,11 @@ pub(crate) fn install_spell_cast_model(world: &mut World, index: &EsmIndex) {
     }
 }
 
-/// Whether the player may cast right now: alive, not in VATS, and in character mode.
+/// Whether the player may cast right now: alive, not in VATS, combat controls not locked by a script
+/// (#7337), and in character mode.
 fn can_cast(world: &World) -> bool {
-    world.try_resource::<PlayerMode>().is_some_and(|mode| *mode == PlayerMode::Character) && player_can_act(world)
+    world.try_resource::<PlayerMode>().is_some_and(|mode| *mode == PlayerMode::Character)
+        && crate::systems::player_may_fight(world)
 }
 
 /// The first live actor hit by the camera ray within the configured activation pick length (PSC-TGT-002).

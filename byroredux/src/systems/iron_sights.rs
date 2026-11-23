@@ -61,7 +61,7 @@ pub(crate) fn iron_sights_system(world: &World, _dt: f32) {
     let aiming = holding
         && armed
         && world.try_resource::<PlayerMode>().is_some_and(|mode| *mode == PlayerMode::Character)
-        && crate::systems::player_can_act(world);
+        && crate::systems::player_may_fight(world); // #7337
     let began = match world.try_resource_mut::<IronSightsState>() {
         Some(mut state) => {
             let began = aiming && !state.aiming;

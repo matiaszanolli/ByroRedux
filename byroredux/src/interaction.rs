@@ -1751,8 +1751,9 @@ pub(crate) fn ray_sphere_distance(origin: Vec3, direction: Vec3, bound: WorldBou
 /// composed first ([`crate::perk_activate`]); the default button of their choice box comes back here
 /// without them, the entries already resolved.
 pub(crate) fn activate_target(world: &World, target: InteractionTarget, compose_perks: bool) {
-    // #4701 — a dead player opens no doors and fires no `ActivateEvent`.
-    if !crate::systems::player_can_act(world) {
+    // #4701 — a dead player opens no doors and fires no `ActivateEvent`; #7337 —
+    // nor does one whose activation a script disabled.
+    if !crate::systems::player_may_activate(world) {
         return;
     }
     // #5865 — the refusals come BEFORE the key is spent: a script-blocked
@@ -3041,6 +3042,34 @@ mod tests {
             vec![ItemStack::new(0xA110, 1)],
             "the same activation lands once the player is alive"
         );
+    }
+
+    /// #7337 — a script's `DisablePlayerControls` that selects activation (CK `abActivate`; the GECK's Movement
+    /// flag and Oblivion's bare call take it too) fires no activation; the same press activates once the script
+    /// gives the control back.
+    #[test]
+    fn a_script_lock_on_activation_fires_no_activation() {
+        let mut world = input_fixture();
+        world.register::<byroredux_scripting::ActivateEvent>();
+        world.insert_resource(FormIdPool::new());
+        world.insert_resource(byroredux_scripting::PlayerControlState { activation_enabled: false, ..Default::default() });
+        let player = spawn_camera(&mut world);
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        let door = spawn_test_door(&mut world, Vec3::new(0.0, 0.0, -80.0));
+
+        world.resource_mut::<InputState>().keys_held.insert(KeyCode::KeyE);
+        refresh_action_state(&world);
+        interaction_system(&world, 0.0);
+        assert!(!world.has::<byroredux_scripting::ActivateEvent>(door));
+        assert_eq!(world.resource::<InteractionTrace>().activation_count, 0);
+
+        world.resource_mut::<byroredux_scripting::PlayerControlState>().activation_enabled = true;
+        world.resource_mut::<InputState>().keys_held.clear();
+        refresh_action_state(&world);
+        world.resource_mut::<InputState>().keys_held.insert(KeyCode::KeyE);
+        refresh_action_state(&world);
+        interaction_system(&world, 0.0);
+        assert_eq!(world.resource::<InteractionTrace>().activation_count, 1, "the control is back");
     }
 
     #[test]
