@@ -1347,10 +1347,17 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `SavedPersistentReferenceStates`, which are unchanged; nothing serialized the in-memory types any more.
     // Only the scan's input shrank; no registered column decodes differently.
     // #6667 — v135: `Effect::ShowAppearanceMenu` (Fallout 4's `ShowRaceMenu` appearance modes).
-    // #6667 — refreshed WITHOUT a major bump: `FragmentResumeCondition::MessageAnswered { ticket }` was
-    // appended (a script frozen on `Message.Show()`'s value). Name-tagged like `MovieEnded` and
-    // `DetectedBy` before it: no v135 save carries the variant and no existing variant or field moved.
-    // `PapyrusMessageAnswers` is UI state and is not saved (`registry_completeness_tests`).
+    // #6667 — refreshed WITHOUT a major bump, and the refresh moved THREE shapes, not one (#7352): (1)
+    // `FragmentResumeCondition::MessageAnswered { ticket }` was appended (a script frozen on `Message.Show()`'s
+    // value); (2) `VmStep::Replay(u32)` was appended to the resume path; (3) `VmResume` gained the field
+    // `answer: Option<i32>`. The two variants are name-tagged like `MovieEnded` and `DetectedBy` before them, so no
+    // save carries them and no existing variant moved. The field is different: a new `Option` in a saved type is the
+    // kind of change this guard's policy bumps for, because serde default-fills a missing `Option` with `None`, which
+    // is the mechanism `#[serde(default)]` is forbidden for (#1714). It was safe here for two reasons that do not
+    // generalise: a missing `answer` means "no answer yet", the right reading of a v135 continuation, and the
+    // v136 bump below refuses every v135 save outright, so nothing old can decode through the default. The next
+    // such field needs its own bump or its own argument. `PapyrusMessageAnswers` is UI state and is not saved
+    // (`registry_completeness_tests`).
     // #7044 — v136: `ActorValue` gained the required `stored` layer (a level-up's accumulated term), refreshed WITH the
     // major bump above.
     // #7050 — v137: `SkillUseLevel` (u16 + [u16; 8]) joined the saved registry as a NEW component column, refreshed
