@@ -59,6 +59,8 @@ detector on a real world, and the lane never saw them because no fixture registe
 `the_diner_gather_takes_walk_speed_before_global_transform`). Exclusive code needs the same order discipline as parallel code.
 Two more landed after: #7063 `4cad5d974` (`reset_health`, `crates/scripting/src/obscript_actor_values.rs`, held the `ActorValueNames` guard across `clear_actor_value_damage`, which locks `ActorValues` — every other site takes `ActorValues` first; the names guard now drops at the end of the block that resolves the owned vitals Vec, found only by the full `-p byroredux-scripting` lane) and the M66 door prompt, `populate_candidates` (`byroredux/src/interaction.rs`) nesting `Door` reads inside a `TwoStateActivator` iteration while the motion system takes the pair in `TypeId` order (`4288659fa`, pinned by `door_prompts_and_motion_share_the_lock_order`: snapshot the activators first, then read `Door`).
 
+The directions those cycles settled are now one table, `docs/engine/ecs.md` § Lock-ordering policy → **Settled pairs** (#7365 `86fa4449e`): `InventoryCatalog` → `Inventory`, `WalkSpeed` → `GlobalTransform`, `CreatureActor` → `Furniture` / `Seated` / `GlobalTransform`, `RapierHandles` → `WaterContact` → `ActorVitals`, `ActorValues` → `ActorValueNames`, `FormIdComponent` → `FormIdPool`, each with its site. The three `BYRO_LOCK_ORDER_CHECK` lanes are what pin a pair, so check a new multi-storage gather against the table first and add a row when a cycle fix settles a new direction.
+
 A wrong lock order is HIGH. This dimension owns the *machinery*; system-level cycles, canonical-order
 adherence and CI detector coverage are `/audit-concurrency` Dim 3 and Dim 5.
 
@@ -268,13 +270,13 @@ examples (#6962 `365f6fa3e`: `perk_entry_composition_access` / `perk_fragment_re
   `every_parallel_system_declares_everything_it_acquires` scans each parallel system's body (same-file
   callees to depth 3, plus the explicit cross-file hops in `PARALLEL_SYSTEMS`) and fails if an acquired
   type is missing from its `Access`; `the_parallel_system_table_covers_every_parallel_registration`
-  fails when an `add_to_with_access` lands outside the table; the declared exclusives each have a
-  `<system>_declares_everything_it_acquires` test (`rg -c 'fn \w+_declares_everything_it_acquires' byroredux/src/boot/schedule/mod.rs`; #7318 `40b2cda36` added the
+  fails when an `add_to_with_access` lands outside the table; some declared exclusives have a
+  `<system>_declares_everything_it_acquires` test: 20 of them (plus `npc_dialogue_selection_declares_everything_the_spoken_fragment_path_acquires`) against 57 `add_exclusive_with_access` registrations at 2026-11-23, so most exclusive rows have no scan; recount with `rg -c 'fn \w+_declares_everything_it_acquires' byroredux/src/boot/schedule/mod.rs` (two of the matches are the shared helper and the parallel-system scan) and `rg -c 'add_exclusive_with_access\(' byroredux/src/boot/schedule`, and never copy either number. The rows that gained scans, each after its declaration had drifted: #7318 `40b2cda36` added the
   cross-file hops of `interaction_system` (`supports_rest` / `player_in_jail`) and `combat_damage_system` (the kill branch: `raise_kill_story_event`, `note_death`,
-  `mod_misc_stat`, challenges), and #7319 `623fccb8c` added six exclusives — `detection_tick_system`, `sneak_stance_system`, `player_cast_system`,
+  `mod_misc_stat`, challenges); #7319 `623fccb8c` six exclusives — `detection_tick_system`, `sneak_stance_system`, `player_cast_system`,
   `player_bow_system`, `player_seat_system`, `combat_input_system` — whose rows had under-declared what their cross-file callees take, so the
-  `sys.accesses` report read safer than the bodies; #7311 `2d62dccad` listed `papyrus_activations` (`events.rs`) as a `papyrus_provider_system` hop for its `NativeActivation` read); the
-  older ones are (`npc_combat_ai_system`, `papyrus_provider_system`, `legacy_obscript_load_order_system`,
+  `sys.accesses` report read safer than the bodies; #7311 `2d62dccad` listed `papyrus_activations` (`events.rs`) as a `papyrus_provider_system` hop for its `NativeActivation` read; #7345 `7e9f6cb9c` the Oblivion skill-use exclusives (`stance_use_system` after #7281's movement gate took `PlayerMode` / `Dead` / `PlayerControlState` / `ActorControlState` / `VatsState`, `skill_use_system`, `oblivion_level_system`); #7362 `d1a8560f1` the two script XP systems (`scripted_experience_system` / `scripted_skill_system`: `grant_experience` reads `UiLabels` and reaches the notice queue, the level-up sting and the `LEVL` story event), `reconcile_pending_dead_actors_system` and the faction-hostility tick (`make_faction_hostility_system`); #7337 `382a5720e` listed `player_may_activate` / `player_may_fight` (`systems/character.rs`) as hops of the rows that now gate on a script's `DisablePlayerControls`; the
+  older ones are (`npc_combat_ai_system`, `container_loot_system` — #6546 `5129240c4`, `papyrus_provider_system`, `legacy_obscript_load_order_system`,
   `equipment_appearance_system` — its mid-life gear-import hop into `npc_spawn/loot_appearance.rs`, #5069
   `9355fcb5c` — and `npc_dialogue_selection_system` — #5307, plus its `play_line_voice` / `raise_hello_story_event`
   cross-file hops since #5414 `9d8fd4cc9` and the cross-crate `evaluate_function` condition-evaluator hop since
@@ -294,7 +296,7 @@ examples (#6962 `365f6fa3e`: `perk_entry_composition_access` / `perk_fragment_re
   The `player_controller_system` row's cross-file hops include `raise_kill_story_event` (the drowning death's
   `StoryEvent` write + cell-context reads, #5641 `17a84f442`) and the scripting crate's `note_death`
   (`KillRecords` write plus its `SceneAliasCandidate` / `CreatureActor` / `FormIdComponent` / `FormIdPool` /
-  `PapyrusPlayerEntity` reads, #6217 `ef48dbd03`) and `limbs::locomotion_mult` / `crippled_legs` (the crippled-leg speed multiplier's `LimbEffects` + `ActorValues` reads, CONC-6 `dfcbcafd5`). Since #5647 `eca0c4709` `raise_kill_story_event` ends in the
+  `PapyrusPlayerEntity` reads, #6217 `ef48dbd03`) and `limbs::locomotion_mult` / `crippled_legs` (the crippled-leg speed multiplier's `LimbEffects` + `ActorValues` reads, CONC-6 `dfcbcafd5`), and the fall / jump skill-use hops (`on_jump` / `on_fall` in `skill_use_emit.rs` → scripting's `queue_skill_use`, a `CharacterRuleset` read and `PendingSkillUse` write; `fall_landing` → `detection::actor_value`, `ActorValueNames` then `ActorValues`; #7363 `8c00c34d2` — the row's declarations were already right, nothing held them, and the cross-file pin now names `PendingSkillUse` write and `ActorValueNames` read). Since #5647 `eca0c4709` `raise_kill_story_event` ends in the
   scripting crate's `story_manager::raise_story_event`, whose collision path writes the `PendingScriptStoryEvents`
   resource — a cross-crate, non-turbofish hop. #6447 `1ebb38bce` closed the gap this left: the row now declares that
   write and `raise_story_event` is a listed `PARALLEL_SYSTEMS` hop (red without it, per the commit). The same shape —
@@ -313,7 +315,7 @@ examples (#6962 `365f6fa3e`: `perk_entry_composition_access` / `perk_fragment_re
 - **Exclusive declarations are optional**: most `add_exclusive` registrations are undeclared by design
   (`undeclared_exclusive_count()` non-zero); the analyzer never pairs exclusives. Flag only a *parallel*
   system that lost its declaration, or an exclusive that a test above says must declare. Enumerate live
-  counts with `rg -c` on the four `add_*` forms; never quote a total.
+  counts with `rg -c` on the four `add_*` forms; never quote an undated total.
 - **Panic policy is fail-fast** (#1412): do not report a missing `catch_unwind`. `Scheduler::run` takes
   `&mut self` and `Scheduler` is deliberately not a `Resource` (re-entry impossible, #868). The one other
   entry point is `Scheduler::run_exclusive_named` (#5141, `00115f7a5`): the engine's paused frame path runs

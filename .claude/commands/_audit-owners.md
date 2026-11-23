@@ -47,6 +47,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/core/src/combat.rs` | character | MEDIUM |
 | `crates/core/src/stealth.rs` | character | MEDIUM |
 | `crates/core/src/stealth/` | character, ecs | MEDIUM |
+| `crates/core/src/stable_form_id` | ecs, concurrency, save, scripting | HIGH |
 | `crates/core/src/ui_labels.rs` | ui, ecs | MEDIUM |
 | `crates/core/src/ecs/resources/menu_registry` | ui, ecs, concurrency, scripting Dim 5 | HIGH |
 | `crates/core/src/animation/` | ecs Dim 9, nif, nifal | MEDIUM |
@@ -58,7 +59,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/core/src/ecs/components/{sandbox,wander,travel,follow,escort,guard,patrol,eat_sleep,ambush,find_package,flee_package,use_weapon_package,creature_attack}.rs` | gameplay | MEDIUM |
 | `crates/core/src/ecs/components/{actor_values,faction_ranks}.rs` | character, ecs, save, concurrency | HIGH |
 | `crates/core/src/lighting.rs` | renderer, nifal | MEDIUM |
-| `crates/core/src/atomic_file.rs` | save, tooling, parsers, audio | MEDIUM |
+| `crates/core/src/atomic_file.rs` | save, tooling, parsers, audio, concurrency Dim 7 (temp-file lifetime) | MEDIUM |
 | `crates/core/src/paths.rs` | tooling, ecs, parsers, nif | MEDIUM |
 | `crates/core/src/bytes.rs` | parsers, ecs | HIGH |
 | `crates/core/src/source_scan.rs` | tech-debt, tooling | LOW |
@@ -137,7 +138,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `crates/audio/src/stream_decoder.rs` | audio, parsers | MEDIUM |
 | `crates/audio/src/fuz.rs` | audio, parsers; skyrim | MEDIUM |
 | `crates/audio/` | audio | MEDIUM |
-| `crates/bink2/` | parsers, safety, performance | HIGH |
+| `crates/bink2/` | parsers, safety, performance, concurrency Dim 7 (`thread::scope` workers) | HIGH |
 | `crates/binkaudio/` | parsers, audio, safety | HIGH |
 | `crates/video/` | parsers, ui, audio, concurrency, performance Dim 7 | MEDIUM |
 | `crates/ui/` | ui, safety | MEDIUM |
@@ -167,6 +168,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/cell_loader/object_lod.rs` | exterior, performance | MEDIUM |
 | `byroredux/src/cell_loader/placement_lod.rs` | exterior, performance; oblivion | MEDIUM |
 | `byroredux/src/cell_loader/legacy_lod_index` | exterior, performance; fo3, fnv | MEDIUM |
+| `byroredux/src/cell_loader/{fold_conformance_tests,load_order_deletion_tests}.rs` | esm Dim 4; per-game | MEDIUM |
 | `byroredux/src/cell_loader/reference_state.rs` | gameplay, save, scripting, concurrency Dim 5, performance Dim 7; fnv, fo3 | MEDIUM |
 | `byroredux/src/cell_loader/stream_snapshot.rs` | save, performance | MEDIUM |
 | `byroredux/src/cell_loader/interior_spawn.rs` | gameplay; per-game | MEDIUM |
@@ -196,6 +198,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/ragdoll` | physics; skyrim, fo4, starfield, fo3, fnv | HIGH |
 | `byroredux/src/npc_spawn/seam_blend` | nifal, gameplay; oblivion, fo3, fnv | MEDIUM |
 | `byroredux/src/npc_spawn/loot_appearance.rs` | gameplay, save Dim 1, nifal; skyrim | MEDIUM |
+| `byroredux/src/npc_spawn/package_flags.rs` | gameplay, scripting Dim 3, character Dim 4, performance Dim 7, concurrency Dim 7; per-game | MEDIUM |
 | `byroredux/src/npc_spawn/ai_package.rs` | gameplay, scripting Dim 5, performance Dim 7, concurrency Dim 7; per-game | MEDIUM |
 | `byroredux/src/npc_spawn` | gameplay, character Dim 4, performance Dim 7, concurrency Dim 7; per-game | MEDIUM |
 | `byroredux/src/systems/request_drain_tests.rs` | scripting, gameplay, ecs, performance | MEDIUM |
@@ -288,9 +291,10 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/texture_streamer.rs` | renderer, performance Dim 7, concurrency Dim 7 | MEDIUM |
 | `byroredux/src/asset_provider/material/cdb.rs` | nifal Dim 8, parsers, renderer Dim 6, performance Dim 3, concurrency Dim 7; fo4, starfield | HIGH |
 | `byroredux/src/asset_provider/material/` | nifal Dim 8, parsers, renderer Dim 6, performance Dim 3; fo4, starfield | HIGH |
+| `byroredux/src/asset_provider/layered.rs` | ui Dim 4, parsers; per-game | MEDIUM |
 | `byroredux/src/asset_provider/terrain_height.rs` | exterior Dim 2, parsers | MEDIUM |
 | `byroredux/src/asset_provider/` | parsers; per-game | MEDIUM |
-| `byroredux/src/scene/scene_runtime.rs` | scripting, gameplay; per-game | MEDIUM |
+| `byroredux/src/scene/scene_runtime.rs` | scripting, gameplay, character (`chargen_quest_default`); per-game | MEDIUM |
 | `byroredux/src/scene/mesh_entity.rs` | nifal, speedtree, renderer; per-game | MEDIUM |
 | `byroredux/src/scene/character_spawn.rs` | gameplay, physics Dim 4; per-game | MEDIUM |
 | `byroredux/src/scene/world_setup.rs` | exterior, performance Dim 7; per-game | MEDIUM |
@@ -342,6 +346,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `scripts/game-ui-data/` | ui, runtime | LOW |
 | `scripts/sdp-fog-term.py` | renderer Dim 12, exterior, runtime | LOW |
 | `scripts/{lmc-conformance,check-lmc-catalog}.py` | esm, tooling Dim 4 (legacy-mod-compat conformance + catalog) | LOW |
+| `scripts/lmc-fold-oracle.py` | esm, tooling Dim 4, runtime (legacy-mod-compat fold oracle) | LOW |
 | `scripts/gen_env_brdf_lut.py` | renderer Dim 10 (env BRDF LUT generator for binding 26), performance | LOW |
 | `scripts/` | runtime, performance | LOW |
 | `screenshots/` | runtime, tooling | LOW |

@@ -28,7 +28,7 @@ shared protocol (dedup, methodology, finding format). Do not duplicate them here
 `lmsw.rs` (Starfield `LMSW`/`MTPT` reflection blobs), `reflection.rs` (the BGS reflection container decoder shared by `WTHS`/`LMSW`/`MTPT`, moved out of `weather_settings.rs` by `ce5796431`, #6272; public paths unchanged via re-exports)),
 `esm/cell/` (walkers `walkers.rs`, `support.rs`, `wrld.rs`, `helpers.rs`; `spaces.rs` = the load-door `SpaceGraph` cross-cell travel routes over, `7af55a0df`; `mod.rs` is a re-export hub over the
 data tier `base_objects`/`cell_data`/`index`/`landscape`/`lighting`/`placed_ref`/`worldspace.rs`, `d7c47d741`),
-`esm/strings_table.rs`, `equip.rs`, the Legacy Mod Compat load-order tier (#6670 Phase 1: `activation.rs` profile activation, `archive_pairing.rs`, `esm/raw_record.rs` single-record reader + field diff, `esm/records/provenance.rs` fold provenance, `esm/records/list_merge.rs` list-record merge; `load_order_import.rs` imports a `plugins.txt` / MO2 profile / Vortex deployment into a profile, LMC-ID-006; the identity key `plugin_key` lives in `crates/core/src/form_id.rs`), `esm/records/oblivion_actor_values.rs` + `oblivion_population.rs` (Oblivion's executable-defined actor-value roster and record→canonical values; the CHARAL feed), and the Redux-native tier
+`esm/strings_table.rs`, `equip.rs`, the Legacy Mod Compat load-order tier (#6670 Phase 1: `activation.rs` profile activation, `archive_pairing.rs`, `esm/raw_record.rs` single-record reader + field diff, `esm/records/provenance.rs` fold provenance, `esm/records/list_merge.rs` list-record merge; `esm/opaque.rs` undecoded sub-records kept per plugin (LMC-REC-010) with `esm/decode_probe.rs` + `esm/structural_digest.rs` + `data/decoded_subrecords.toml` measuring what the parsers decode; `mod_catalog.rs` the mechanism catalog the `--preflight` classifier reads; `load_order_import.rs` imports a `plugins.txt` / MO2 profile / Vortex deployment into a profile, LMC-ID-006; the identity key `plugin_key` lives in `crates/core/src/form_id.rs`), `esm/records/oblivion_actor_values.rs` + `oblivion_population.rs` (Oblivion's executable-defined actor-value roster and record→canonical values; the CHARAL feed), and the Redux-native tier
 (`datastore`/`manifest`/`record`/`resolver`).
 
 **Not in scope**: cell-loader consumption of `CellData` (`/audit-<game>` Dim 1); VMAD
@@ -291,7 +291,7 @@ FormID-param function needs its row.
   `records/` (files named `tests.rs` and `#[cfg(test)]` modules excised) — `decode_*` /
   `from_subs*` helpers and `cell/` are outside it.
 - Parallel walk (#3813, `parse_record_indexes_in_load_order_with_archive`): walks run on
-  the rayon pool, but slot allocation, remap construction, `.STRINGS` loads, the provenance/list-merge notes and the
+  the rayon pool, but slot allocation, remap construction, `.STRINGS` loads, the provenance/list-merge/opaque notes and the
   `merge_from` fold stay on the calling thread in load order — fold order, never completion
   order. Guard: `load_order_parallel_tests::parallel_walk_matches_the_inline_walk_on_a_localized_master_chain`.
 **Output**: `/tmp/audit/esm/dim_3.md`
@@ -305,7 +305,7 @@ handled, `PDCL` is deliberately absent; `LCTN`/`LCRT`/`RELA` are routed through 
 `index::tests::every_index_map_is_a_category_or_a_recorded_exclusion` (every `EsmIndex`
 map is a `categories()` row — `map_category!` or a hand-written row recognized by its count
 closure, like `dialogues` and `game_settings` — or a reasoned exclusion: `record_types`, the derived
-`generic_greeting_form` cache, the derived `game_settings_by_edid` side-table; the non-`HashMap` `deleted_record_metadata` /
+`generic_greeting_form` cache, the derived `game_settings_by_edid` side-table, `opaque_subrecords` (LMC-REC-010 — taken out per plugin by the fold, never merged); the non-`HashMap` `deleted_record_metadata` /
 `skipped_unconsumed_groups` sit in its `MANUALLY_MERGED` table); `cell::plugin_loading_doc_pin_tests::the_documented_esm_cell_index_lists_every_field` and
 `…::the_audio_record_split_matches_the_dispatcher` (docs ↔ code).
 **Checklist**:
@@ -349,7 +349,7 @@ closure, like `dialogues` and `game_settings` — or a reasoned exclusion: `reco
   the per-field walk instead of comparing only the chain ends. "Use Model/Animation"
   (`TEMPLATE_FLAG_USE_MODEL_ANIMATION`, `ResolvedNpc::model`) resolves model-less templated
   `CREA` shells through their `LVLC` pick (`011ad0c07`, #6075; 63% of FNV fauna placements). A terminal `level` of 0 (30/3,816 FalloutNV.esm `NPC_`) backfills from the authored entry level of the deepest `LVLN` the walk picked through (`last_pick_level`, `ResolvedNpc::level()`), so its owned leveled lists are not expanded at level 0; an authored level or a list-less chain is unchanged (`4fbff2c6c`, #4232 — `effective_actor_level` itself stays unfloored, #3081). `ResolvedNpc::level()` is **Oblivion-aware**: ACBS bit 7 is *PC Level Offset* there (FO3/FNV's *PC Level Mult* stand-in `calc_min.max(1)` is not a level), so a record carrying `oblivion_pools` resolves at `actor_level_at_spawn` and an NPC's (not a creature's) is held to `min(own, player)`; the spawn boundary supplies the player's level via `ResolvedNpc::with_player_level`, and a caller without one reads as before (`cc907aa92`, #7193, pinned by `oblivion_leveled_lists_resolve_at_the_actor_level_held_to_the_players`). The lineage-wide Player base `NPC_` (FormID 7) has one home, `PLAYER_NPC_FORM_ID` / `player_npc_form_id(game)` in `records/actor/mod.rs`; the binary's inventory re-exports it (`3fd30c4f1`, #7211) — a new bare `7` for the Player base in the plugin/scripting crates is the regression.
-- **The fold's provenance and the levelled-list merge** (#6670, LMC-REC-002/-003/-005/-006/-007; the fold lives in
+- **The fold's provenance and the levelled-list merge** (#6670, LMC-REC-002/-003/-004/-005/-006/-007/-010; the fold lives in
   `parse_record_indexes_in_load_order_with_policy`, `byroredux/src/cell_loader/load_order.rs`). Per plugin, in load
   order and on the calling thread, **before** `merge_from`: `FoldProvenance::note_plugin` (`provenance.rs`) notes every
   form the plugin carries that an earlier one did (an override, or a `DELE` deletion is a carrier) and every form it
@@ -380,13 +380,39 @@ closure, like `dialogues` and `game_settings` — or a reasoned exclusion: `reco
   CELL override replace the CELL-record fields whole). Every list-less record follows `legacy`.
   Guards `list_merge_tests.rs` (per-kind cases, the no-op/unchanged ownership pair)
   and `independent_mods_merge_a_levelled_list_that_legacy_overwrites` (`commands/plugins.rs`). The conflict report
-  (`plugins.conflicts [formid [fields]]`, `--plugin-report`, `byroredux/src/commands/plugins.rs`) reads each carrier's
+  (`plugins.conflicts [formid [fields]]`, `--plugin-report`, `byroredux/src/commands/plugins.rs`) names the record's **owner** — the last contributor under the merge policy (`ListMergeRecord::owner`), not a later override that is a no-op, marked `[no-op]` / `[changes nothing]` in the chain (`0b4152b92`, LMC-REC-007) — and reads each carrier's
   record back through `raw_record.rs` (`find_raw_record`, loading only the top-level groups the type can sit in) and
   judges each override against the record it replaced — changed, identical (an ITM) or a revert to the definer's; a
   repeated sub-record compares as a multiset, and `FLAG_COMPRESSED` is masked out of the flag comparison since it is
   how the saving tool wrote the record (`34e1a9f50`, #7248; `single_fields_compare_by_bytes_and_lists_as_multisets`,
   `each_override_is_judged_against_the_record_it_replaced`). A form-ID field that differs in bytes only because two
   files index a shared master differently is reported as such (`same_form_id_encoding`), not as a value change.
+- **Deletions leave the cell-index maps too** (LMC-REC-004, `422e2bd6f`): the `cell_category!` rows (cells, statics, pack-ins, static collections,
+  movables, texture sets, material maps) once had a no-op prune, so a deleted base record survived in `cells.statics` / `cells.packins` / the cell maps
+  (Skyrim SE `0006CD7C`, FO4 DLCCoast interior `001DFB07`). The form-keyed rows now `retain` live forms and the `cells` row is `prune_deleted_cells`
+  (interior, exterior grid and worldspace-persistent maps; a held reference no deletion covers is logged, what the engine does with one is an
+  undocumented Phase 0 item, not a finding). Guard `load_order_deletion_tests.rs` (`fnv_/skyrim_/fo4_deletions_leave_the_merged_index`, ignored lane, against
+  an independent raw walk); a new `cell_category!` row with a `|..| {}` prune is the regression. Placements keep their own tombstones (#1660, #2370).
+- **Undecoded sub-records are kept, not dropped** (LMC-REC-010, `55f4f8bee`; `esm/opaque.rs`): `parse_esm_with_options(.., ParseOptions { collect_opaque })`
+  makes the reader (`enable_opaque_collection`, hooked in `read_sub_records` / `skip_record` / `skip_group`) note, per remapped FormID, every sub-record
+  `data/decoded_subrecords.toml` does not list as decoded for the record type, and every record or group no parser reads, whole; Deleted records are not
+  noted. The fold asks for it for every plugin **after the first** (`idx > 0` — the game's own master stands in for the official/user boundary until
+  LMC-REC-008), stamps each with its plugin in `LoadOrder::opaque()` (`OpaqueStore`, every carrier of a form kept) and takes it out of the index
+  (`opaque_subrecords`), so it never reaches `merge_from`; `plugins.conflicts <form>` and the summary report it. The table is *measured*, not hand-written:
+  `decode_probe.rs` re-parses a rebuilt plugin with one tag removed at a time and compares `structural_digest` (moved here from the load-order tests), and
+  `inspect decoded-subrecords` regenerates the file byte for byte. Hazards: a table entry for a tag no parser decodes drops that tag's bytes (the
+  ignored `decoded_table_real_data.rs` lane fails first on it); a parser that gains or loses a decoded sub-record needs the table regenerated; a
+  game or record type with no entry keeps everything (errs toward keeping). Guards in `opaque.rs` (`a_read_record_keeps_only_the_undecoded_sub_records`,
+  `a_skipped_record_is_kept_whole`, `the_store_keeps_each_carrier_of_a_form`) and `the_fold_holds_a_mods_undecoded_sub_records_and_not_the_masters`.
+- **Fold conformance gate** (`90a6770bd`): `docs/smoke-tests/lmc-fold-conformance.sh` runs the ignored `fold_conformance_tests.rs` dump of each installed
+  game's official load order (plus `BYRO_FOLD_PROFILES`) and diffs it against `scripts/lmc-fold-oracle.py`, a raw read applying the last-carrier rule:
+  presence and record type per form, tombstones in every category, placed references, navmeshes and the provenance winner. Record groups the parser
+  skips are listed as not checked; FormIDs whose mod index points past the master list are reported as known (#7329). A fold change with no run of it is unmeasured.
+- **`--preflight`** (`byroredux/src/preflight.rs`, LMC-DX-001, #6671): prints the plugin report, then classifies every file a mod root ships through
+  `mod_catalog` (`assets/legacy_mod_compat/mechanisms.toml`, `catalog_version` 2: per-mechanism `paths` / `game_dir_paths` / `ini_keys` patterns, most
+  literal characters wins, a `[not_game_data]` list; `scripts/check-lmc-catalog.py` C15 checks the patterns). A file, INI key or extender call with no
+  pattern is *unclassified* and fails §7.3 rule 2 of `scripts/lmc-conformance.py`; the unmanaged `Data` root is listed, not classified (LMC-REC-008).
+  Nothing a mod ships is executed. Guards `mod_catalog_tests.rs`, `preflight_tests.rs`.
 - `EsmIndex::merge_from`: last-write-wins matches Bethesda override semantics (levelled lists excepted under `merge`, above); `game` is
   only adopted when `other.total() > 0` (a failed-parse `EsmIndex::default()` must not
   relabel the load order as FO3/FNV, #3403); `character_rules` is first-non-`NONE` wins.
@@ -653,7 +679,7 @@ First step: `cargo run --release -p byroredux-plugin --example esm_dim8_coverage
 - Profile activation, paired archives, mod roots, the fold's conflict report, the list merge (levelled lists, form lists, actors, keywords), the profile
   fingerprint and the load-order import have a headless live
   gate, `docs/smoke-tests/lmc-activation.sh` (FNV, `--list-cells` / `--plugin-report`, no Vulkan; Dead Money plus
-  generated plugins) — real-data evidence for Dims 3-4's LMC bullets (`docs/smoke-tests/README.md` indexes it).
+  generated plugins) — real-data evidence for Dims 3-4's LMC bullets (`docs/smoke-tests/README.md` indexes it); the fold itself is measured by `docs/smoke-tests/lmc-fold-conformance.sh` (Dim 4, *Fold conformance gate*).
 - No windowed engine launch (*feedback_no_parallel_engine_launch*); example binaries and
   default `cargo test` only (see Phase 1 step 4 on `--ignored`).
 **Output**: `/tmp/audit/esm/dim_8.md`
