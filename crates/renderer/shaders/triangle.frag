@@ -3322,9 +3322,10 @@ void main() {
             vec3 lobeL = reflect(-V, lobeH);
             float lobeNdotL = dot(lobeL, N_view);
             probeOcclusion = 1.0;
-            if (lobeNdotL > 0.0 && traceShadowBinary(
+            // Alpha-aware: the binary trace made every cutout card a solid quad (#7369).
+            if (lobeNdotL > 0.0 && traceOpaqueBlockedAlphaAware(
                     offsetRayOriginForDirection(fragWorldPos, N_bias, lobeL), lobeL,
-                    0.0, 6000.0, VISIBILITY_MASK_ALL_OPAQUE)) {
+                    6000.0, VISIBILITY_MASK_ALL_OPAQUE)) {
                 float lobeWeight = ggxSmithG1(lobeNdotL, roughness) / max(envAB.x + envAB.y, 1e-3);
                 envColor -= probeShare * lobeWeight * exteriorSkyRadianceOr(lobeL, ambientFallback, 0.0);
             }

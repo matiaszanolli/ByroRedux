@@ -269,7 +269,27 @@ fn environment_specular_is_the_exact_split_sum_with_probe_occlusion() {
     // traced lobe sample that removes its own direction's sky radiance,
     // weighted G1(L) / (A + B); a sample below the surface traces nothing.
     assert!(env.contains("sampleVisibleGgxNormal(N_view, V, roughness, lobeRand)"));
-    assert!(env.contains("if (lobeNdotL > 0.0 && traceShadowBinary("));
+    // #7369: the lobe ray is alpha-aware, like the direct-sun path. The binary trace
+    // (`gl_RayFlagsOpaqueEXT`, never inspects the hit) made every alpha-tested leaf,
+    // fence and grate a solid quad, where the SSAO form it replaced saw only the
+    // texels that pass alpha.
+    assert!(env.contains("if (lobeNdotL > 0.0 && traceOpaqueBlockedAlphaAware("));
+    assert!(
+        !env.contains("traceShadowBinary("),
+        "the sky-occlusion ray must not use the binary trace, which treats cutouts as solid (#7369)"
+    );
+    let transport = include_str!("../../../shaders/include/shadow_transport.glsl");
+    let helper = transport
+        .split_once("bool traceOpaqueBlockedAlphaAware(")
+        .expect("#7369: the alpha-aware blocker lives beside the direct path's walk")
+        .1;
+    let helper = &helper[..helper.find("\n}\n").expect("the helper's body ends")];
+    assert!(
+        helper.contains("traceShadowTransmittanceDetailed(")
+            && helper.contains("VISIBILITY_MASK_ALL_OPAQUE")
+            && helper.contains("committedInstance != 0xFFFFFFFFu"),
+        "the helper reports the walk's committed blocker over the opaque layers only: {helper}"
+    );
     assert!(env.contains("ggxSmithG1(lobeNdotL, roughness) / max(envAB.x + envAB.y, 1e-3)"));
     assert!(env.contains(
         "envColor -= probeShare * lobeWeight * exteriorSkyRadianceOr(lobeL, ambientFallback, 0.0);"
