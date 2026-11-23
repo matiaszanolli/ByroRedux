@@ -535,6 +535,12 @@ pub(crate) fn run() -> Result<()> {
         return crate::list_cells::run(&plugin_paths, filter);
     }
 
+    // --import-load-order <source> [--write <boot.toml>]: import a plugins.txt / loadorder.txt, an MO2 profile or a
+    // Vortex deployment into a mod profile, print it, then exit (LMC-ID-006, #6670). See `load_order_import`.
+    if args.iter().any(|a| a == crate::load_order_import::IMPORT_FLAG) {
+        return crate::load_order_import::run(&args);
+    }
+
     // --plugin-report [FORMID] [fields]: what activation did to the plugin profile and what the fold did with the
     // forms more than one plugin carries (or one form's carriers, winner and changed sub-records), then exit. The
     // console's `plugins.activation` / `plugins.conflicts` without a window (LMC-REC-007, #6670).

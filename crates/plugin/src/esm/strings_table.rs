@@ -92,7 +92,7 @@ const CP1252_HIGH: [char; 32] = [
 /// multi-byte sequence in them (`é` → `Ã©`), trading 80 corrupt English
 /// entries for ~1.8 M corrupt Russian bytes. So: try UTF-8, and fall back
 /// to cp1252 only for the byte runs UTF-8 rejects.
-fn decode_entry(bytes: &[u8]) -> String {
+pub(crate) fn decode_entry(bytes: &[u8]) -> String {
     match std::str::from_utf8(bytes) {
         Ok(s) => s.to_owned(),
         Err(_) => bytes

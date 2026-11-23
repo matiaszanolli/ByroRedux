@@ -183,8 +183,10 @@ kind = "new_game"
 [settings]
 path = "/home/u/.config/byroredux/settings.toml"     # §4; the registry file
 
-[mods]
-load_order = []                                      # P4; empty until then
+[mods]                                               # LMC-ID-006; written by --import-load-order
+load_order = ["FalloutNV.esm", "YUP.esm", "WMX.esp"]  # active plugins in load order, by file name
+roots = ["/mo2/mods/YUP", "/mo2/mods/WMX"]           # mod roots, lowest priority first
+imported_from = "/mo2/profiles/Default"              # display only
 ```
 
 ### 2.3 Engine side

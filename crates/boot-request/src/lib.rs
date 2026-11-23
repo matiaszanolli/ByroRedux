@@ -56,8 +56,9 @@ pub struct BootRequest {
     pub action: Option<Action>,
     #[serde(default, skip_serializing_if = "SettingsSpec::is_empty")]
     pub settings: SettingsSpec,
-    /// Reserved for P5. Present in v1 so adding load-order support later is
-    /// not a `version` bump.
+    /// The mod profile: the active plugins in load order and the mod roots,
+    /// written by a load-order import (LMC-ID-006). Present since v1, so
+    /// filling it is not a `version` bump.
     #[serde(default, skip_serializing_if = "ModsSpec::is_empty")]
     pub mods: ModsSpec,
 }
@@ -169,16 +170,30 @@ impl SettingsSpec {
     }
 }
 
-/// Reserved for P5 (see `docs/engine/launcher.md` §7).
+/// The mod profile (PRD legacy-mod-compatibility LMC-ID-006, LMC-ID-012).
+///
+/// `byroredux --game <key> --import-load-order <source> --write <boot.toml>`
+/// fills it from a `plugins.txt` / `loadorder.txt`, a Mod Organizer 2 profile
+/// or a Vortex deployment. When `load_order` is set it replaces the game's own
+/// `masters` / `esm`: its last plugin is the session plugin.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ModsSpec {
+    /// The active plugins in load order, by file name. Each resolves through
+    /// `roots`, the highest-priority root first, then the game's `Data`.
     #[serde(default)]
     pub load_order: Vec<String>,
+    /// Mod root directories, lowest priority first, each owning the plugins,
+    /// archives and loose files it ships.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roots: Vec<String>,
+    /// Where the import read the profile from, for display only.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub imported_from: String,
 }
 
 impl ModsSpec {
     pub fn is_empty(&self) -> bool {
-        self.load_order.is_empty()
+        self.load_order.is_empty() && self.roots.is_empty()
     }
 }
 
