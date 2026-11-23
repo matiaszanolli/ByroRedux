@@ -60,4 +60,4 @@ mod report_once_tests {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
