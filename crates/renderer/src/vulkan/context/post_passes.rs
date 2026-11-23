@@ -995,6 +995,8 @@ impl VulkanContext {
                                 temporal_params: [
                                     super::super::volumetrics::DEFAULT_TEMPORAL_HISTORY_WEIGHT,
                                     super::super::volumetrics::DEFAULT_DENSITY_REJECTION,
+                                    // Also the combustion clock: the switch freezes fire and
+                                    // smoke too, not only the noise phase (#7388).
                                     if super::super::volumetrics::freeze_froxel_pattern() {
                                         0.0
                                     } else {

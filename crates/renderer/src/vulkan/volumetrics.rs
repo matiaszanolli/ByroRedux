@@ -206,7 +206,15 @@ pub fn froxel_sun_enabled() -> bool {
     *ENABLED.get_or_init(|| !matches!(std::env::var("BYRO_FROXEL_SUN"), Ok(value) if value == "0"))
 }
 
-/// Diagnostic control for holding procedural density noise at its initial phase.
+/// Diagnostic control (`BYRO_FREEZE_FROXEL_PATTERN=1`, off by default) that freezes ALL
+/// volumetric time, not only the procedural density noise: it uploads `0.0` in
+/// `temporal_params.z`, which is also the combustion clock. `VolumetricsPipeline::dispatch`
+/// derives `simulation_time` and `simulation_dt` from that lane (so `transport_armed` goes
+/// false after the first frame), and the shaders read it as `timeSeconds` for the emitter
+/// flicker and the transport's turbulence and wave terms. A cell with fire or smoke therefore
+/// stops evolving after its first seeded frame, and the local grid's box holds its first
+/// state: use it for "same frame, frozen noise" comparisons only where no combustion source
+/// is live (#7388).
 pub fn freeze_froxel_pattern() -> bool {
     static FREEZE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *FREEZE.get_or_init(|| {

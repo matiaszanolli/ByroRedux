@@ -390,7 +390,7 @@ BYRO_BFECC=0                          plain semi-Lagrangian transport (A/B)
 BYRO_SUN_ALPHA=0                      froxel sun trace reads every triangle as solid (A/B, VLM-SH-009)
 BYRO_FROXEL_SUN_OCCLUSION=0           diagnostic: ignore exterior froxel sun blockers (surface shadows and interiors unchanged)
 BYRO_FROXEL_SUN=0                     diagnostic: disable the froxel sun term (local lights and surface lighting unchanged)
-BYRO_FREEZE_FROXEL_PATTERN=1          diagnostic: hold analytic density patterns at their initial phase
+BYRO_FREEZE_FROXEL_PATTERN=1          diagnostic: freeze all volumetric time (the noise phase AND the combustion clock: fire and smoke stop after their first frame, #7388)
 BYRO_SUN_DUST=<per metre>             experiment, off by default: extra scattering on the open-sky sun term only
 ```
 
