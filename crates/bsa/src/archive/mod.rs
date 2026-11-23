@@ -5,7 +5,7 @@
 //! Split into submodules during the Session 36 #1118 / TD9-006 refactor — the
 //! 1619-line monolith now lives in:
 //!
-//! - [`hash`] — debug-only folder/file name hash helpers (`#[cfg(any(debug_assertions, test))]`)
+//! - [`hash`] — the folder name hash (every profile since #7358: `open` counts stored-vs-computed mismatches) and the file name hash (debug/test builds only, `#[cfg(any(debug_assertions, test))]`)
 //! - [`open`] — header parse + folder / file record table walk (`BsaArchive::open`)
 //! - [`extract`] — per-file extraction + zlib (v103/v104) / LZ4 (v105) dispatch
 //! - [`tests`] (cfg-gated) — every integration / synthetic / fixture test
@@ -52,6 +52,12 @@ pub struct BsaArchive {
     embed_file_names: bool,
     /// Maps normalized file path to FileEntry.
     files: HashMap<String, FileEntry>,
+    /// Folders the archive declares (the folder-record count).
+    folder_count: usize,
+    /// Folders whose stored name hash disagrees with the hash of the name
+    /// read from the folder-name block (#7358). Zero for every vanilla
+    /// archive.
+    folder_hash_mismatches: usize,
 }
 
 struct FileEntry {
@@ -116,6 +122,19 @@ impl BsaArchive {
     /// Number of files in the archive.
     pub fn file_count(&self) -> usize {
         self.files.len()
+    }
+
+    /// Number of folders the archive declares.
+    pub fn folder_count(&self) -> usize {
+        self.folder_count
+    }
+
+    /// How many folders stored a name hash that disagrees with the hash of
+    /// their name. A vanilla archive has none; a hand-crafted one, or a bug in
+    /// the hash, shows here in every build (before #7358 the comparison ran in
+    /// debug builds only, and only warned).
+    pub fn folder_hash_mismatches(&self) -> usize {
+        self.folder_hash_mismatches
     }
 }
 

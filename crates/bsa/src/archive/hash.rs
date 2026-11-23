@@ -1,9 +1,10 @@
 //! BSA v103+ folder / file name hash functions.
 //!
-//! Only built under `#[cfg(any(debug_assertions, test))]` — production
-//! release builds never invoke these; the parse path's hash-mismatch
-//! warning is a debug-only diagnostic that turns into dead code in
-//! release. See #622 / SK-D2-07.
+//! [`genhash_folder`] is built in every profile since #7358: `BsaArchive::open`
+//! counts folders whose stored hash disagrees with it, so a release-mode census
+//! can pin that count. [`genhash_file`] is still only built under
+//! `#[cfg(any(debug_assertions, test))]` — the per-file hash check is a
+//! debug-only diagnostic that would be dead code in release. See #622 / SK-D2-07.
 
 /// Bethesda BSA v103+ folder-name hash. Used by the v103/v104/v105
 /// directory tables to identify folders without scanning names.
@@ -23,7 +24,6 @@
 ///
 /// See UESP `Oblivion_Mod:BSA_File_Format#Hash_Calculation` and the
 /// BSArch / libbsarch reference implementations. See #361.
-#[cfg(any(debug_assertions, test))]
 pub(super) fn genhash_folder(name: &[u8]) -> u64 {
     let len = name.len();
 

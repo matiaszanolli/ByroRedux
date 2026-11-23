@@ -319,6 +319,78 @@ fn fo3_fnv_and_skyrimse_bsa_corpus_census() {
     }
 }
 
+/// #7358 — every FO3 archive's folders store the hash of their name, and the reader compares
+/// them in every build. Before this the comparison ran in debug builds only and only warned,
+/// so no release lane could see a drift in the hash or in a v104 folder table. A vanilla
+/// archive has no mismatch.
+#[test]
+#[ignore = "needs FO3 game data on disk"]
+fn fo3_bsa_folder_hashes_match_the_stored_hashes() {
+    let Some(data) = fo3_data_dir() else {
+        eprintln!("[FO3] data unavailable; skipping");
+        return;
+    };
+    let mut paths: Vec<_> = std::fs::read_dir(&data)
+        .unwrap_or_else(|e| panic!("read {data:?}: {e}"))
+        .map(|entry| entry.unwrap_or_else(|e| panic!("directory entry: {e}")).path())
+        .filter(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("bsa"))
+        })
+        .collect();
+    paths.sort();
+    let (mut folders, mut mismatched) = (0usize, Vec::new());
+    for path in &paths {
+        let archive = BsaArchive::open(path).unwrap_or_else(|e| panic!("open {path:?}: {e}"));
+        folders += archive.folder_count();
+        if archive.folder_hash_mismatches() != 0 {
+            mismatched.push((path.clone(), archive.folder_hash_mismatches()));
+        }
+    }
+    eprintln!("[FO3] {} BSA archives, {folders} folders, {} with a hash mismatch", paths.len(), mismatched.len());
+    assert_eq!(paths.len(), 16, "FO3 BSA archive census changed");
+    assert!(mismatched.is_empty(), "folder hashes disagree with their names: {mismatched:?}");
+    assert_eq!(folders, FO3_BSA_FOLDER_COUNT, "FO3 BSA folder census changed");
+}
+
+/// #7358 — `Fallout - Textures.bsa` extracts every `.dds` as a real DDS: the `DDS ` magic, the
+/// 124-byte header, the 32-byte pixel format and a non-empty surface. Extraction succeeding
+/// (the corpus census above) proves the inflate worked, not that the payload is a texture.
+#[test]
+#[ignore = "needs FO3 game data on disk"]
+fn fo3_textures_bsa_dds_header_census() {
+    let Some(data) = fo3_data_dir() else {
+        eprintln!("[FO3] data unavailable; skipping");
+        return;
+    };
+    let path = data.join("Fallout - Textures.bsa");
+    require_archive(&path);
+    let archive = BsaArchive::open(&path).unwrap_or_else(|e| panic!("open {path:?}: {e}"));
+    let dds: Vec<&str> = archive.list_files().into_iter().filter(|name| name.ends_with(".dds")).collect();
+    let u32_at = |bytes: &[u8], at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
+    let mut bad = Vec::new();
+    for name in &dds {
+        let bytes = archive.extract(name).unwrap_or_else(|e| panic!("extract {name}: {e}"));
+        let ok = bytes.len() >= 128
+            && &bytes[..4] == b"DDS "
+            && u32_at(&bytes, 4) == 124
+            && u32_at(&bytes, 12) > 0
+            && u32_at(&bytes, 16) > 0
+            && u32_at(&bytes, 76) == 32;
+        if !ok {
+            bad.push((*name).to_string());
+        }
+    }
+    eprintln!("[FO3] Fallout - Textures.bsa: {} .dds entries, {} with an invalid header", dds.len(), bad.len());
+    assert!(bad.is_empty(), "not a DDS header: {:?}", &bad[..bad.len().min(8)]);
+    assert_eq!(dds.len(), FO3_TEXTURES_DDS_COUNT, "FO3 texture archive .dds census changed");
+}
+
+/// Measured on the installed FO3 GOTY (16 archives); see the two censuses above.
+const FO3_BSA_FOLDER_COUNT: usize = 2_923;
+const FO3_TEXTURES_DDS_COUNT: usize = 12_261;
+
 /// #5903 — Skyrim LE is optional because most machines only install SE.
 #[test]
 #[ignore = "needs Skyrim LE game data on disk; set BYROREDUX_SKYRIMLE_DATA"]

@@ -137,13 +137,11 @@ impl BsaArchive {
 
         let folder_record_size: usize = if version == BSA_V_SKYRIM_SE { 24 } else { 16 };
         struct FolderRecord {
-            /// Stored folder-name hash. Only retained in debug builds
-            /// for the per-folder hash validation in the name-pass
-            /// loop below (#361). Release builds drop the field
-            /// entirely so the dead-code warning doesn't fire — same
-            /// pattern as the sibling `RawFileRecord.hash`. See #622 /
-            /// SK-D2-07.
-            #[cfg(debug_assertions)]
+            /// Stored folder-name hash, checked against the hash of the name
+            /// read in the name-pass loop below. Kept in every build since
+            /// #7358: the count of disagreements is
+            /// [`BsaArchive::folder_hash_mismatches`], so a release-mode
+            /// census can see it (debug builds still warn per folder, #361).
             hash: u64,
             count: usize,
             /// v103/v104: u32 at [12..16]. v105: u64 at [16..24]. Used to
@@ -161,7 +159,6 @@ impl BsaArchive {
         for folder_index in 0..folder_count {
             let mut rec = [0u8; 24];
             read_exact_for(&mut reader, &mut rec[..folder_record_size], &format_args!("BSA folder record {folder_index}"))?;
-            #[cfg(debug_assertions)]
             let hash = u64::from_le_bytes(rec[0..8].try_into().unwrap());
             // Per-folder file count: also attacker-controlled, and the
             // inner loop below pushes one entry per iteration — a
@@ -178,7 +175,6 @@ impl BsaArchive {
                 u32::from_le_bytes(rec[12..16].try_into().unwrap()) as u64
             };
             folder_records.push(FolderRecord {
-                #[cfg(debug_assertions)]
                 hash,
                 count,
                 #[cfg(debug_assertions)]
@@ -235,6 +231,7 @@ impl BsaArchive {
         // file-name pass with a misleading "read past end" error. Same
         // debug-only approach #361/#362 use for the per-folder hash +
         // offset checks.
+        let mut folder_hash_mismatches: usize = 0;
         #[cfg(debug_assertions)]
         let mut folder_names_consumed: u64 = 0;
         #[cfg(debug_assertions)]
@@ -279,15 +276,15 @@ impl BsaArchive {
             }
             let folder_name = String::from_utf8_lossy(&name_buf).to_lowercase();
 
-            // B2-03 (#361): warn if the stored folder hash disagrees
-            // with the computed hash of the name we just read. A
-            // mismatch points at either a hand-crafted archive or a
-            // bug in our hash algorithm — either way, worth surfacing
-            // in debug builds.
-            #[cfg(debug_assertions)]
-            {
-                let computed = super::hash::genhash_folder(folder_name.as_bytes());
-                if computed != folder.hash {
+            // B2-03 (#361): compare the stored folder hash with the hash
+            // of the name we just read. A mismatch points at either a
+            // hand-crafted archive or a bug in our hash algorithm. Counted
+            // in every build (#7358: the census that pins it runs in
+            // release); the per-folder warning stays a debug-build aid.
+            let computed = super::hash::genhash_folder(folder_name.as_bytes());
+            if computed != folder.hash {
+                folder_hash_mismatches += 1;
+                if cfg!(debug_assertions) {
                     log::warn!(
                         "BSA folder hash mismatch for '{}': stored {:#018x}, computed {:#018x}",
                         folder_name,
@@ -485,6 +482,8 @@ impl BsaArchive {
             compressed_by_default,
             embed_file_names,
             files,
+            folder_count: folder_records.len(),
+            folder_hash_mismatches,
         })
     }
 }
