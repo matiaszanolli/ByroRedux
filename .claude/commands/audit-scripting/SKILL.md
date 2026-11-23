@@ -50,7 +50,7 @@ in its module doc; each is a `FORMAT_MAJOR` question for `/audit-save`): `quest_
 `bleedout.rs`, `messages.rs`, `keywords.rs`, `relationships.rs`, `faction_changes.rs`, `alias_overrides.rs`,
 `alias_collections.rs`, `created_references.rs` (the Created Object ledger **and** the XCT actor-travel ledger the engine's `cell_loader/relocated.rs` drives: `ActorRelocations`/`Journey` saved; `PendingRelocations`, `PendingActorMoves`/`ActorMoveRequest` + `queue_actor_move`, `is_logical_stub` unsaved — Dim 4), `perk_entry_points{,/{activate,bodies,catalog,gates}}.rs` (the hook catalog + gate + body split of #6654; `activate.rs` is PERK-HOOK-007/012's Activate choices, the engine side `byroredux/src/perk_activate.rs`), `destruction.rs` and the sibling
 `activate_parents`/`crime_*`/`jail`/`guards`/`followers`/`map_markers`/`menus`/`ownership`/`scanning`/`skills`/`oblivion_skill_use`/`speechcraft`/
-`*_requests`/`tempering`/`words_of_power` files (subsystems migrated by #5802 export their own `install(world)` + `register_saved(registry)`; `oblivion_skill_use.rs` is Oblivion's skill-use leveling entry point — `bank_skill_use` / `raise_skill_ranks` (ObScript `AdvancePCSkill`/`ModPCSkill`, `obscript_more/state.rs`), `PendingSkillUse` drained by the host's `skill_use_system` (`byroredux/src/combat.rs`), emitters in `byroredux/src/skill_use_emit.rs`, sleep-completed level-up (`SleepCompleted` carries a `SleepSource`, `Scripted` or `Bed`: a bed's menu confirms its own attribute picks through `apply_level_menu_picks`, `250a5ba67`; `FED_SKILLS` is 16 of 21 — Block, Marksman and the six schools joined, #7053-#7055; the "at 100" banking gate reads the skill's current value, Fortify included, #7210 `723c5281c`; the level-up reads `iLevelUpSkillCount`, the `iLevelUpXXMult` bands and `fStatsHealthLevelMult` through the `CharacterRuleset` leveling model, #7196 `4e91d26c6`; `install_skill_use_classes` keys on a decoded `CLAS` specialization, not the game, #7212 `188bb4535`; the player's `NPC_` is `byroredux_plugin::esm::records::actor::player_npc_form_id`, and `relationships::PLAYER_BASE` aliases the plugin constant, #7211 `3fd30c4f1`); the rules are `/audit-character`'s, this skill keeps the ObScript door and the install/save seam (#7049-#7052; `docs/engine/skill-use.md`);
+`*_requests`/`tempering`/`words_of_power` files (subsystems migrated by #5802 export their own `install(world)` + `register_saved(registry)`; `oblivion_skill_use.rs` is Oblivion's skill-use leveling entry point — `bank_skill_use` / `raise_skill_ranks` (ObScript `AdvancePCSkill`/`ModPCSkill`, `obscript_more/state.rs`; `Amount` is ranks and both commands clear the skill's banked experience to 0.0 even when no rank rises — there is no *keep_surplus* carry, #7310 `bc67d1c2f`, `the_script_calls_raise_ranks`), `PendingSkillUse` drained by the host's `skill_use_system` (`byroredux/src/combat.rs`), emitters in `byroredux/src/skill_use_emit.rs`, sleep-completed level-up (`SleepCompleted` carries a `SleepSource`, `Scripted` or `Bed`: a bed's menu confirms its own attribute picks through `apply_level_menu_picks`, `250a5ba67`; `FED_SKILLS` is 16 of 21 — Block, Marksman and the six schools joined, #7053-#7055; the "at 100" banking gate reads the skill's current value, Fortify included, #7210 `723c5281c`; the level-up reads `iLevelUpSkillCount`, the `iLevelUpXXMult` bands and `fStatsHealthLevelMult` through the `CharacterRuleset` leveling model, #7196 `4e91d26c6`; `install_skill_use_classes` keys on a decoded `CLAS` specialization, not the game, #7212 `188bb4535`; the player's `NPC_` is `byroredux_plugin::esm::records::actor::player_npc_form_id`, and `relationships::PLAYER_BASE` aliases the plugin constant, #7211 `3fd30c4f1`); the rules are `/audit-character`'s, this skill keeps the ObScript door and the install/save seam (#7049-#7052; `docs/engine/skill-use.md`);
 `build_save_registry` calls each at its old row position — the schema fingerprint is order-sensitive); the M47.3 ObScript family
 `obscript{,_runtime,_vm,_quests,_results,_objects,_cmd,_actions,_actor_values,_anim,_speech,_state,_ledger,_more}.rs`
 + `obscript_effects/` (`mod.rs` the effect table + shared helpers; `getters`/`inventory`/`combat`/`actor_state`/`world_state`/`presentation`, #6355 `aa29774ec`) + `obscript_more/` with its sibling runtimes `magic_effects.rs`
@@ -274,13 +274,13 @@ they cannot see:
   alias-aware `receiver_object` as their siblings (an alias-bound marker must not decline alone).
 - **Placeholders are coverage with a hole**: `Effect::is_placeholder` (`ShowAppearanceMenu`, `RequestSave`,
   `SetHudCartMode`, `AddAchievement` — state nothing reads; `ShowRaceMenu` left the set when it opened the
-  character-creation page, `bcfe6b5dd`) must be reported separately by coverage harnesses
+  character-creation page, `bcfe6b5dd`; FO4's `ShowRaceMenu(akMenuTarget, …)` lowers only for an omitted, `None` or player target and declines another actor, #7288 `3dada3f58`) must be reported separately by coverage harnesses
   (#4328/#4372), nested ones included (`Effect::contains_placeholder` / `visit_nested` walk `Conditional` arms and
   `QuestScope` bodies, #5975 `fd70bf557`); any *new* effect whose runtime arm only records a value needs listing
   there and a pin (`only_the_counter_only_primitives_are_placeholders`).
 - **Chain order**: `RECOGNIZERS` = per-script first (`two_state_activator`, `rumble`), generic second
   (`quest_stage_gate`); first match wins, all-`None` = silent miss; a new generic recognizer must not shadow a
-  per-script one. `quest_stage_gate` declines when the condition quest and the `SetStage` target disagree, and arms only the
+  per-script one. `two_state_activator` resolves `isOpen` at spawn: the placement's VMAD value wins, else a state a door's `attach_door` already seeded from Open by Default is kept, else the `.psc` default (#7306 `d8cb945fd`, `a_seeded_open_state_survives_unless_the_placement_authors_is_open`). `quest_stage_gate` declines when the condition quest and the `SetStage` target disagree, and arms only the
   handler in effect in the script's **boot state** (the `Auto State`'s handler, else script scope; handlers
   only in non-auto states are ignored — #5639 `e1b7e31e7`, `advance_handler_must_be_in_the_boot_state`).
   `rumble` extracts literal property values only. Fidelity gate: `recognizes_da10_and_reproduces_hand_builder`
@@ -377,7 +377,7 @@ apply_effect_itself, the_nested_lock_residual_list_names_every_type_apply_effect
 - `Effect::StartCombat` also removes the actor's `AmbientEngagement` (moved into `crates/scripting/src/combat.rs`
   beside `AiCombatState`) in its own guard scope, so a scripted fight is never auto-dropped by the ambient
   disengage (#5046 `fef67f3c3`); `Effect::SetUnconscious` writes `ActorControlState` (mutually exclusive with
-  restrained) and ends the actor's combat — both acquisitions belong in `apply_effect`'s lock inventory.
+  restrained) and ends the actor's combat — both acquisitions belong in `apply_effect`'s lock inventory, as do the stance locks `Effect::StartPlayerSneaking` / the `ActorSneaking` guard take through `crate::stance::{toggle_sneaking, is_sneaking}` (`Sneaking`, then `PlayerControlState` and `InputLayers`; the scan requires each acquired type as a whole word, #7300 `90812a777`).
 - `Effect::AddSpell`/`RemoveSpell` apply through `magic::{add_spell,remove_spell}` (`SpellList` + permanent
   `ActorValues` modifier, add/undo symmetric — `add_and_remove_spell_apply_and_undo_permanent_modifiers`); both
   types are nested under the quest lock, so they belong in `apply_effect`'s lock inventory.
@@ -456,7 +456,7 @@ apply_effect_itself, the_nested_lock_residual_list_names_every_type_apply_effect
   `FragmentResumeCondition::MessageAnswered { ticket }`; `fragment_continuation_system` resumes it with the button index once
   `messages::take_papyrus_answer` returns one (a live load's `forget_boxes` makes a waiting run resume with its default, `save_io/live_load.rs`). A suspension that falls back to
   a delay, or a ticket nothing ever answers, is the finding. The catalog guard is taken last (`messages::alias_name` no longer reads the alias
-  registry behind it — the `QuestStageState -> MessageCatalog -> SceneQuestAliasRegistry` ABBA cycle, `10f7c16fc`). ObScript `PlayBink` (Dim 6) queues the same request through the same
+  registry behind it — the `QuestStageState -> MessageCatalog -> SceneQuestAliasRegistry` ABBA cycle, `10f7c16fc`); the value form only *reserves* its ticket under the quest guards (`reserve_papyrus_box`) and defers the box as `PendingMessage::ShowAwaiting`, built after they drop (#7298 `76a415a4a`). The ahead-of-time check counts `Message.Show()` as a wait (#7290 `8cf05458b`), a resumed `While` condition can suspend on one and a statement holds at most one waited box (#7299 `7f7782ed0`), and a run the frame budget re-defers goes back already due so its answered button survives (#7289 `c2529b923`). ObScript `PlayBink` (Dim 6) queues the same request through the same
   `queue_video` but does not freeze its caller.
 - **Delivery systems** (all exclusive `Update`; order in `boot/schedule/update/`): (`obscript_object_system`, Dim 6) →
   `check_alias_scripts_dispatch` →
@@ -488,7 +488,7 @@ Pattern-B marker still present. The binary crate's request consumers (`HavokImpu
 `PickIdleRequest`, `FleeRequest`, `PushActorRequest`, `ReviveRequest`, `UseWeaponRequest`, `ResetInventoryRequest`) are run in
 `byroredux/src/systems/request_drain_tests.rs`; `OnResetEvent`'s private consumer in
 `obscript_objects.rs::the_reset_marker_is_taken_even_when_nothing_has_a_script` (it drains ahead of `collect_due`'s
-no-instances early returns, #6267 `cf7380e27`) — a new Pattern-B row needs its consumer run in one of those, not a text row.
+no-instances early returns, #6267 `cf7380e27`) — a new Pattern-B row needs its consumer run in one of those, not a text row. `request_drain_tests.rs::every_pattern_b_table_row_has_a_drain_test` (#7264 `c504ac64f`) requires every `cleanup.rs` table row to yield a marker named by a `drains("<Name>", ..)` case in one crate or the other and a `survives(..)` case in `cleanup.rs` (#7304 `24e49c6c5`); each helper asserts its label is the raised type's name and the scan skips comment lines, so a mislabelled or commented-out case no longer counts (#7273 `a97d2123c`).
 Also `cleanup_removes_all_event_types`;
 `boot/schedule/mod.rs::{transient_cleanup_is_the_last_late_exclusive, activation_flush_is_scheduled_before_every_activate_event_consumer, extension_event_adapters_run_before_transient_cleanup}`.
 - **Marker lifetime — two sanctioned patterns** (module doc of `cleanup.rs` is authoritative): **A** = listed in
@@ -578,7 +578,7 @@ getters to 77, #6460 `102e4f5cd` + the tempering read to 88, #6558 `612f876f9` +
   `disableWhenDone`) records into `ReferenceEnableState`; both fire-once variants park in `ReferenceScriptState`
   (`fire_once_advances_park_the_reference_script_state`, #4334).
 - `recurring_update_tick_system`: no fire on the registering frame/zero dt; once per interval; overshoot fires
-  once; `UnregisterForUpdate` in a handler terminates cleanly. `QuestAliasReadinessGate` timing: after
+  once and a stall of several intervals wraps onto the next phase point instead of re-firing every frame (#7301 `b1054db6f`, `dt_overshoot_fires_only_once_per_tick`); `UnregisterForUpdate` in a handler terminates cleanly. `QuestAliasReadinessGate` timing: after
   `quest_alias_refresh_system`, before `scene_playback_system`.
 **Output**: `/tmp/audit/scripting/dim_3.md`
 
@@ -721,7 +721,7 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   surface keys on `DialogueSurfaceState::npc`, #5038); both entry points gate on `player_can_act` and the shared
   `npc_refuses_dialogue` (dead / `AiCombatState` / unconscious — the whole `collect_unconscious` set, so also knocked
   down, fleeing or `SetActorsAI 0`, #6287 `aa1016f3c`), also applied by the interaction Talk arm
-  (#5043, `1d31ced2b`) and by `default_activation_blocked` (a script `BlockActivation`, M47.2). `DialogueSurfaceState`
+  (#5043, `1d31ced2b`) and by `default_activation_blocked` (a script `BlockActivation`, M47.2). A follow-up INFO resolves to its topic through the `FollowUpTopics` map (#7115), keyed by the loaded index's `Weak` pointer; `follow_up_topic_agrees_with_a_scan_of_every_topic` / `follow_up_topic_rebuilds_for_a_new_index` pin it against a full scan and an index swap, and a world without the resource warns once instead of skipping every follow-up silently (#7308 `b55022dbc`). `DialogueSurfaceState`
   lives in `crates/scripting/src/dialogue.rs` (re-exported by `npc_dialogue.rs`). UI re-selection goes through `select_topic_by_form_id` and must re-check live
   ownership. Each menu entry records the INFO that admitted it and a click on a listed topic speaks that INFO —
   conditions are evaluated once per offer, never re-rolled at selection (#5682 `8daa24105`, #6007 `f7c8f02a7`); an
@@ -879,7 +879,7 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
 - **Marker patterns** for this domain (Pattern B, drained at consumer head): `Scene{Start,Stop}Request`,
   `SceneActionCompletionBatch`, `DialoguePresentationEventBatch`, `DialogueLineCompletionBatch`,
   `ScenePackage*Batch`, `EvaluatePackageRequest`, `ReleasePackageHold`, `MotionTypeChangeRequest` (head drain via
-  `take_requests`, #6150). `ReleasePackageHold` is raised only by `request_package_evaluation` (the explicit `Actor.EvaluatePackage` / ObScript `EVP`; `queue_package_evaluation`, which the actor's own script-package state uses, raises the request alone) and taken by `ambient_ai_package_system` at the head of its pass, before any early return, so the next ambient selection ignores the Must Complete extension and the running package survives only while its own window is open (GECK *EvaluatePackage*; #7243 `aa15ee950`, pinned by `an_explicit_evaluate_package_ends_a_must_complete_hold` in `byroredux/src/npc_spawn/ai_package.rs`; the no-Done-state hold rule is #7224 `94e785c7e`). Its drain is pinned by `ambient_ai_package_system_takes_its_release_marker` (`byroredux/src/systems/request_drain_tests.rs`, #7264), and its survival of `event_cleanup_system` by `pattern_b_markers_survive_event_cleanup` (#7304). Pattern-A `SceneEventBatch`/`SceneFragmentInvocationBatch` feed
+  `take_requests`, #6150). `ReleasePackageHold` is raised only by `request_package_evaluation` (the explicit `Actor.EvaluatePackage` / ObScript `EVP`; `queue_package_evaluation`, which the actor's own script-package state uses, raises the request alone) and taken by `ambient_ai_package_system` at the head of its pass, before any early return, so the next ambient selection ignores the Must Complete extension and the running package survives only while its own window is open (GECK *EvaluatePackage*; #7243 `aa15ee950`, pinned by `an_explicit_evaluate_package_ends_a_must_complete_hold` in `byroredux/src/npc_spawn/ai_package.rs`; the no-Done-state hold rule is #7224 `94e785c7e`). `EvaluatePackageRequest` has two consumers: `ambient_ai_package_system` records the requests it read in `AmbientPackageRequestsSeen` (a NOT_SAVED resource, `register`'s resource count 151) and `scene_package_system`, later in the frame, drains only those, so one raised between them (a PF_/PRKF_/TERM_ fragment, an ObScript script) waits for the next ambient pass instead of being lost with its release unused (#7291 `6fc191177`, `an_evaluate_package_raised_after_the_ambient_pass_reaches_the_next_one`); ObScript `SetPackDuration` declines rather than end the actor's package (#7292 `c62c7f9d5`). A Once Per Day package's block (`PackageDayBlocks`, not saved) is owned by the actor's placed reference, not its `EntityId`, so a stream respawn under a fresh id keeps it; `stamp_quest_reference` calls `adopt_entity_day_blocks` to move a block noted before the `FormIdComponent` stamp (#7317 `c99ccdb23`, `a_once_per_day_block_survives_the_actor_respawning`). Its drain is pinned by `ambient_ai_package_system_takes_its_release_marker` (`byroredux/src/systems/request_drain_tests.rs`, #7264), and its survival of `event_cleanup_system` by `pattern_b_markers_survive_event_cleanup` (#7304). Pattern-A `SceneEventBatch`/`SceneFragmentInvocationBatch` feed
   `scene_fragment_dispatch_system` (Dim 2 order guard). SCEN package `Activate` leaf ordering vs `ActivateEvent`
   consumers is pinned by the schedule tests.
 - **Playback lifecycle**: `idle_clip_playback_system` starts a scoped player once per serial and drains the
@@ -946,7 +946,7 @@ SCTX frontend (`ScriptSource::Obscript` placeholder).
   decode (`decode_args_at_depth`); guards `excessive_nested_if_chains_are_malformed`,
   `excessive_nested_x_arguments_are_rejected` — a new recursive path that skips the depth parameter is the
   regression. The operand stack in
-  `eval_expr`/`apply_operator` must not grow unbounded from a lying token count.
+  `eval_expr`/`apply_operator` must not grow unbounded from a lying token count; the process-wide unknown-operator report list is capped at `MAX_REPORTED_UNKNOWN_OPERATORS` (32, #7295 `3bdc0f7f0`, `the_unknown_operator_report_list_is_capped`).
 - **Command and block IDs are empirical** — recovered by aligning each script's `SCTX` with its compiled stream over
   the vanilla masters (`obscript_tools`), never from a spec. The quest core (`SetStage` 0x1039, `GetStage` 0x103a,
   `GetStageDone` 0x103b, `StartQuest`/`StopQuest` 0x1036/0x1037, `GetQuestRunning` 0x1038, `GetSecondsPassed`
@@ -1040,7 +1040,7 @@ SCTX frontend (`ScriptSource::Obscript` placeholder).
   inactive `AudioWorld` (#6281 `41b53ab41`); the audio engine itself is `/audit-audio`.
 - **Ledger honesty** (#6190 `7e867cf47`): a command whose value no system, gate or UI reads back declines instead of
   storing it in the saved `ObScriptLedger` and reporting done (`AddTopic`, `ModDisposition`, `SetQuestObject`,
-  `SetItemValue` were removed; `GetTalkedToPC` is written by `apply_selection`). Mod-supplied accumulators saturate
+  `SetItemValue` were removed; `GetTalkedToPC` is written by `apply_selection`). The form column broke it for ~40 `Set...` rows (`SetCombatStyle`, `SetCellOwnership`, `SetHardcore`, `SetForceRun` ...): each now points at the one `obscript_more::no_reader` handler, which declines (the command-table census stays intact), and the ledger lost its `forms` column (`FORMAT_MAJOR` 143, #7309 `ed8c4c968`) — a new `Set...` row that stores a value must name its reader or take `no_reader`. Mod-supplied accumulators saturate
   (`ModCrimeGold`/`ModDisposition`, #6187 `50e743a56`). The compiled and source `If`/`ElseIf`/`Else` line forms share one
   `parse_conditional` recursion that enforces `MAX_LEGACY_OBSCRIPT_NESTING` once (#6159 `3c553b7ca`). Same rule since 2026-11: `SendTrespassAlarm` declines
 until trespass is routed into the crime runtime (#6511 `baa93fe87`); Oblivion's caller-scoped `GetCrimeGold` / `SetCrimeGold` /
@@ -1102,7 +1102,7 @@ is `/audit-tooling`; audit here the runtime that consumes it.
   reclaimed), delivery runs under `MAX_PAPYRUS_MOD_EVENT_DELIVERIES_PER_FRAME` = 1 024 with the rest left queued in
   order, owner FormIDs resolve per entity on demand, and a failing provider call keeps the registrations collected
   before it. A reference's provider `OnInit` runs once, its first-init flag saved in `QuestScriptVariables` under
-  the reference FormID (#6017 `0b1f1545f`). Value sizes
+  the reference FormID (#6017 `0b1f1545f`), and only for references holding a `PapyrusProviderProgram` — every scripted reference raises `OnInitEvent`, VM and ObScript attaches included (#7312 `00fcad383`, `the_on_init_flag_is_kept_only_for_references_with_a_program`). Value sizes
   obey `MAX_SCRIPT_ARRAY_ELEMENTS`/`MAX_SCRIPT_CALL_BYTES`/`MAX_PENDING_PAPYRUS_MOD_EVENTS` (256) /
   `MAX_PAPYRUS_MOD_EVENT_REGISTRATIONS` (4 096). `execute.rs` has
   `unreachable!` arms guarded by "validated …" invariants — each must be truly established by lowering.

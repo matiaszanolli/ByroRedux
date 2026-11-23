@@ -20,15 +20,15 @@ a dimension whose Paths have no commits since the last `AUDIT_SAFETY_*` report.
 
 Census recipe: `grep -rwo unsafe <crate>/src | wc -l` for tokens, `grep -rnE 'unsafe[[:space:]]*\{' <crate>/src`
 for blocks — **read the hits**: word counts also match prose (`byroredux` reports 5 tokens and
-only 2 real blocks). Re-measured 2026-11-22 at bf977bfb3 (the 52 commits since 91e91aeac added one file with `unsafe`, `vulkan/acceleration/blas_terrain_patch.rs`, #7221 ff339f658: +12 tokens / +9 blocks / +3 `unsafe fn` / no new impl, 1023 / 718 / 120 / 47 at 91e91aeac; the 142 commits before that, since 2d857fff2, added exactly one pass with `unsafe`, `vulkan/terrain_patch.rs`, #7152 84f04205f: +9 tokens / +7 blocks / +1 `unsafe fn` / +1 `NoUninit` impl, 1014 / 711 / 119 / 46 at that baseline on 2026-11-20, unchanged from 2026-11-19 at a7d4b49bb; earlier 935 / 686 / 117 / 45 at 8ff82d514 on 2026-11-14; 933 / 684 / 117 / 45 at 88c239b35 on 2026-11-09; 936 / 688 / 116 / 45 at 66c85af80 on 2026-11-06; 900 / 669 / 102 / 44 at 8985a2e99 on 2026-10-31; 948 / 717 / 102 / 44 at eae8fd740 on 2026-10-27; 943 tokens / 716 blocks / 100 `unsafe fn` / 38 impls at 1be33af66 on 2026-10-21; 922 / 704 at f4ae42a6f on 2026-10-15; #5593 (c6d36b4e7) removed eleven; #5273 removed five earlier):
+only 2 real blocks). Re-measured 2026-11-23 at d3b8acb4a (the 143 commits since bf977bfb3 added exactly one `unsafe impl` and no block: `NoUninit for GpuSkyAperturePlane` in `vulkan/scene_buffer/gpu_types.rs`, RLT-IBL 84104564e, +1 token, 1036 / 727 / 123 / 48 at HEAD; at bf977bfb3 on 2026-11-22 the 52 commits since 91e91aeac added one file with `unsafe`, `vulkan/acceleration/blas_terrain_patch.rs`, #7221 ff339f658: +12 tokens / +9 blocks / +3 `unsafe fn` / no new impl, 1023 / 718 / 120 / 47 at 91e91aeac; the 142 commits before that, since 2d857fff2, added exactly one pass with `unsafe`, `vulkan/terrain_patch.rs`, #7152 84f04205f: +9 tokens / +7 blocks / +1 `unsafe fn` / +1 `NoUninit` impl, 1014 / 711 / 119 / 46 at that baseline on 2026-11-20, unchanged from 2026-11-19 at a7d4b49bb; earlier 935 / 686 / 117 / 45 at 8ff82d514 on 2026-11-14; 933 / 684 / 117 / 45 at 88c239b35 on 2026-11-09; 936 / 688 / 116 / 45 at 66c85af80 on 2026-11-06; 900 / 669 / 102 / 44 at 8985a2e99 on 2026-10-31; 948 / 717 / 102 / 44 at eae8fd740 on 2026-10-27; 943 tokens / 716 blocks / 100 `unsafe fn` / 38 impls at 1be33af66 on 2026-10-21; 922 / 704 at f4ae42a6f on 2026-10-15; #5593 (c6d36b4e7) removed eleven; #5273 removed five earlier):
 
-- `crates/renderer/src`: **1035** word tokens — 727 `unsafe {`
+- `crates/renderer/src`: **1036** word tokens — 727 `unsafe {`
   blocks, 123 declared `unsafe fn` (`grep -E '^\s*(pub(\([a-z]+\))?\s+)?unsafe fn'`; the loose `grep 'unsafe fn'` reads ~219: prose and source-scan
-  strings; the newest are `texture::submit_initial_layouts`, #6146, and the local-grid / linear-capture record fns, and `TerrainPatchPass::record`, and `record_terrain_patch_blas` / `destroy_terrain_patch_blas` / the private `record_patch_blas_frame` in `blas_terrain_patch.rs`), 47 `unsafe impl` (every one a `NoUninit`, the
-  `buffer.rs` primitive macro and `[T; N]` blanket included; newest: `TerrainPatchPush` in `terrain_patch.rs`, `FarSunProjection` in `composite.rs`; earlier: `NoUninit for ScatterPush` / `BladePush` / `BenchPush`, #6033 02b828fff, then #6270
+  strings; the newest are `texture::submit_initial_layouts`, #6146, and the local-grid / linear-capture record fns, and `TerrainPatchPass::record`, and `record_terrain_patch_blas` / `destroy_terrain_patch_blas` / the private `record_patch_blas_frame` in `blas_terrain_patch.rs`), 48 `unsafe impl` (every one a `NoUninit`, the
+  `buffer.rs` primitive macro and `[T; N]` blanket included; newest: `GpuSkyAperturePlane` in `scene_buffer/gpu_types.rs`, `TerrainPatchPush` in `terrain_patch.rs`, `FarSunProjection` in `composite.rs`; earlier: `NoUninit for ScatterPush` / `BladePush` / `BenchPush`, #6033 02b828fff, then #6270
   dedf6c0d6 added `Push` (shadow filter), `AtrousPush`, `WaterPush`, `PresentationPushConstants` and both skin push structs
   and routed those casts plus the geometry / morph-weight / bind-inverse bulk views through `byte_view`, dropping their
-  hand-rolled `from_raw_parts` blocks), ~855 `SAFETY` mentions. Growth since 10-15 is new
+  hand-rolled `from_raw_parts` blocks), ~856 `SAFETY` mentions. Growth since 10-15 is new
   passes — `vulkan/shadow_filter.rs` (10 blocks + `unsafe fn destroy`) and the SKYAL cloud-shadow bake
   `vulkan/sky_cube/cloud_shadow.rs` (7 now, + `unsafe fn record` / `destroy`, c231f5b5f); since 10-31 the world-space combustion local
   grid `vulkan/volumetrics/local_grid.rs` (13 blocks now, #6533 / d3e3acc7b) and the M-LIGHT scene-linear capture
@@ -277,7 +277,7 @@ First step: `cargo test -p byroredux-renderer gpu_material gpu_instance gpu_came
 
 - **Sizes are pinned by tests named for the size** (`gpu_material_size_is_432_bytes` — `GpuMaterial` is 432 B;
   `gpu_instance_is_160_bytes_std430_compatible`, `gpu_camera_is_384_bytes`, `gpu_light_is_64_bytes`,
-  `gpu_terrain_tile_is_224_bytes`, spread across `scene_buffer/`). A test-name-vs-asserted-size
+  `gpu_terrain_tile_is_240_bytes`, spread across `scene_buffer/`). A test-name-vs-asserted-size
   mismatch or a stale number in prose means the GPU reads wrong bytes. Guards that police the prose:
   `bindings_glsl_states_the_real_struct_size`, `the_pin_test_bindings_glsl_names_actually_exists` and
   `gpu_material_size_claims` (scans `crates`, `byroredux`, `tools`, `docs/engine`, `.claude/commands`, top-level
