@@ -317,6 +317,8 @@ pub fn install_actor_value_names(world: &mut World, index: &EsmIndex) -> usize {
     world.insert_resource(crate::obscript_state::ItemTypeCodes::from_index(index));
     world.insert_resource(crate::obscript_state::GameSettings::from_index(index));
     world.insert_resource(crate::obscript_state::WeaponAnimTypes::from_index(index));
+    // Hand Equipment PRD — the weapons' slots and the shields, for what each hand holds.
+    world.insert_resource(crate::hands::HandCatalog::from_index(index));
     world.insert_resource(crate::challenges::ChallengeDefs::from_index(index));
     world.insert_resource(crate::obscript_more::MusicTracks::from_index(index));
     world.insert_resource(crate::obscript_more::AshPiles::from_index(index));

@@ -144,7 +144,9 @@ pub(crate) fn copied_transform(world: &World, entity: EntityId) -> Option<Transf
 ///     receiver's `CharacterLevel`, each alone, before any inventory guard;
 ///     `Effect::EquipItem` of an item with no armor slot pushes to
 ///     `PendingNonArmorEquips` (write) for the binary's inventory, after the
-///     `EquipItemCatalog` read has been released and with no component guard held
+///     `EquipItemCatalog` read has been released and with no component guard held;
+///     so does the player's shield, after a `HandCatalog` read (Hand Equipment #7398)
+///     taken and released before any inventory guard
 ///   - **via the guard / value evaluators** (`evaluate_guard`, `evaluate_value`,
 ///     #5986) — `Dead`, `FollowerState`, `LocationTable`, `MiscStats`,
 ///     `StoryManagerRng` (the `GetRandomPercent` draw) and the `ActorVitals`

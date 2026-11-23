@@ -21,6 +21,7 @@ pub(super) const READS: &[&str] = &[
     "iscommandedactor",
     "getequippedshield",
     "getequippedweapon",
+    "getequippeditemtype",
     "gettemplate",
 ];
 
@@ -98,20 +99,35 @@ impl Vm<'_> {
                 });
                 Some(shield.filter(|&form| form != 0).map_or(Value::None, Value::Form))
             }
-            // CK *GetEquippedWeapon - Actor*: the weapon in the right hand (`abLeftHand` False, the
-            // default) — the wielded weapon; None when the hand is empty. The left hand has no model
-            // yet, so the checker declines a call asking for it.
-            (Value::Form(actor), "getequippedweapon") if args.len() <= 1 => {
+            // CK *GetEquippedWeapon - Actor*: "If true, will return the weapon equipped in the actor's
+            // left hand. If false, will return the right-hand weapon instead" (the default); None when
+            // the hand holds no weapon. A two-handed weapon is in both (Hand Equipment PRD, HND-READ-002).
+            // CK *GetEquippedItemType - Actor*: the hand's item type, 0 left and 1 right (HND-READ-001).
+            (Value::Form(actor), "getequippedweapon" | "getequippeditemtype") if args.len() <= 1 => {
                 let entity = if *actor == PLAYER_REF {
                     crate::papyrus_demo::PapyrusPlayerEntity::get(self.world)
                 } else {
                     self.entity_of(*actor)
                 };
                 let Some(entity) = entity else {
-                    return stop("GetEquippedWeapon on an actor that is not loaded");
+                    return stop(format!("{name} on an actor that is not loaded"));
                 };
-                let weapon = self.world.get::<byroredux_core::ecs::components::EquippedWeapon>(entity).map(|w| w.base_form_id);
-                Some(weapon.filter(|&form| form != 0).map_or(Value::None, Value::Form))
+                let values = self.eval_args(frame, args)?;
+                let hand = if name == "getequippedweapon" {
+                    if values.first().is_some_and(Value::truthy) { crate::hands::Hand::Left } else { crate::hands::Hand::Right }
+                } else {
+                    match values.first().and_then(Value::number).map(|hand| hand as i32) {
+                        Some(0) => crate::hands::Hand::Left,
+                        Some(1) => crate::hands::Hand::Right,
+                        _ => return stop("GetEquippedItemType of a hand other than 0 or 1"),
+                    }
+                };
+                let item = crate::hands::hand_item(self.world, entity, hand);
+                if name == "getequippedweapon" {
+                    Some(item.weapon().filter(|&form| form != 0).map_or(Value::None, Value::Form))
+                } else {
+                    Some(Value::Int(item.item_type_code()))
+                }
             }
             // CK *GetTemplate - Package*: "The Package that this one is templated on. If this package
             // isn't templated on another package, it will return None."
@@ -278,9 +294,14 @@ impl Checker<'_> {
             (Kind::Object | Kind::Player, "iscommandedactor") if arg_kinds.is_empty() => return Some(Kind::Bool),
             (Kind::Object | Kind::Player, "getequippedshield") if arg_kinds.is_empty() => return Some(Kind::Object),
             (Kind::Object | Kind::Player, "getequippedweapon")
-                if matches!(arg_kinds, [] | [Arg::Literal(Expr::BoolLit(false))]) =>
+                if matches!(arg_kinds, [] | [Arg::Literal(Expr::BoolLit(_))] | [Arg::Kind(Kind::Bool)]) =>
             {
                 return Some(Kind::Object)
+            }
+            (Kind::Object | Kind::Player, "getequippeditemtype")
+                if matches!(arg_kinds, [Arg::Literal(Expr::IntLit(0 | 1))] | [Arg::Kind(Kind::Num)]) =>
+            {
+                return Some(Kind::Num)
             }
             (Kind::Object, "gettemplate") if arg_kinds.is_empty() => return Some(Kind::Object),
             (Kind::Object | Kind::Player, "ignorefriendlyhits" | "setcandocommand")

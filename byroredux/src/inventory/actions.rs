@@ -379,7 +379,8 @@ pub(crate) fn apply_action(
     use byroredux_native_ui::InventoryAction;
     let result = match action {
         InventoryAction::Consume { index, form_id } => consume_item(world, index, form_id),
-        InventoryAction::ToggleEquip { index } => toggle_equip(world, index),
+        InventoryAction::ToggleEquip { index } => toggle_equip_in(world, index, byroredux_scripting::hands::Hand::Right),
+        InventoryAction::EquipLeft { index } => toggle_equip_in(world, index, byroredux_scripting::hands::Hand::Left),
         InventoryAction::Drop { index, form_id } => drop_item(world, index, form_id),
     };
     if result == MutationResult::Unavailable {
@@ -396,7 +397,7 @@ pub(super) fn notify_refused_action(world: &World, action: byroredux_native_ui::
     let (verb, form_id) = match action {
         InventoryAction::Consume { form_id, .. } => ("use", Some(form_id)),
         InventoryAction::Drop { form_id, .. } => ("drop", Some(form_id)),
-        InventoryAction::ToggleEquip { index } => (
+        InventoryAction::ToggleEquip { index } | InventoryAction::EquipLeft { index } => (
             "equip",
             PlayerEntity::get(world)
                 .and_then(|player| {
@@ -429,7 +430,80 @@ pub(super) fn notify_refused_action(world: &World, action: byroredux_native_ui::
 
 /// Equip or unequip one player inventory row through the catalog's
 /// recorded destination.
-pub(super) fn toggle_equip(world: &mut World, index: u32) -> MutationResult {
+/// What the equip-slot rules need to know of an item and of what the hands hold (Hand Equipment PRD,
+/// HND-SLOT-002 / -003), gathered before the equipment is borrowed.
+struct HandRules {
+    item_two_handed: bool,
+    item_shield: bool,
+    right_two_handed: bool,
+    /// The worn shields (their entries), which a weapon taking the left hand takes off.
+    shields_worn: Vec<InventoryIndex>,
+    /// How many of the item the row holds: one item cannot be in both hands.
+    stack_count: u32,
+}
+
+/// Equip `index` into `hand` by the equip-slot rules (CK *Equip Slot*: "Items marked with the same slot
+/// can't be equipped simultaneously. Attempting to equip one will automatically unequip the other"):
+/// a two-handed weapon takes both hands (the left emptied, a shield taken off); a one-handed weapon
+/// goes in the hand asked for; a shield takes the left hand (a weapon there and a two-handed right
+/// weapon off). Returns what was displaced, and whether the right hand's weapon changed.
+fn equip_into_hand(
+    equipment: &mut EquipmentSlots,
+    index: InventoryIndex,
+    target: EquipTarget,
+    hand: byroredux_scripting::hands::Hand,
+    rules: &HandRules,
+) -> (Vec<InventoryIndex>, bool) {
+    use byroredux_scripting::hands::Hand;
+    let mut displaced = Vec::new();
+    let mut weapon_changed = false;
+    match target {
+        EquipTarget::BipedSlots(mask) => {
+            displaced.extend(equipment.equip(mask, index));
+            if rules.item_shield {
+                displaced.extend(equipment.unequip_left_hand());
+                if rules.right_two_handed {
+                    displaced.extend(equipment.unequip_weapon());
+                    weapon_changed = true;
+                }
+            }
+        }
+        EquipTarget::Weapon if hand == Hand::Left && !rules.item_two_handed => {
+            displaced.extend(equipment.equip_left_hand(index));
+            if rules.right_two_handed || (equipment.weapon == Some(index) && rules.stack_count < 2) {
+                displaced.extend(equipment.unequip_weapon());
+                weapon_changed = true;
+            }
+            for &shield in &rules.shields_worn {
+                if equipment.release(shield) {
+                    displaced.push(shield);
+                }
+            }
+        }
+        EquipTarget::Weapon => {
+            displaced.extend(equipment.equip_weapon(index));
+            weapon_changed = true;
+            if rules.item_two_handed {
+                displaced.extend(equipment.unequip_left_hand());
+                for &shield in &rules.shields_worn {
+                    if equipment.release(shield) {
+                        displaced.push(shield);
+                    }
+                }
+            } else if equipment.left_hand == Some(index) && rules.stack_count < 2 {
+                displaced.extend(equipment.unequip_left_hand());
+            }
+        }
+        EquipTarget::Ammo => {}
+    }
+    displaced.retain(|&item| item != index);
+    (displaced, weapon_changed)
+}
+
+/// Toggle `index`'s equip state into `hand`: an item already there comes off; otherwise it goes on by
+/// [`equip_into_hand`]. The right hand is the default (the menu's equip); the left takes a one-handed
+/// weapon (`EquipLeft`).
+pub(super) fn toggle_equip_in(world: &mut World, index: u32, hand: byroredux_scripting::hands::Hand) -> MutationResult {
     // #4701 — `consume_item` carries its own `Dead` refusal; equip is the
     // other half of the menu and refuses the same way.
     if !crate::systems::player_can_act(world) {
@@ -472,6 +546,27 @@ pub(super) fn toggle_equip(world: &mut World, index: u32) -> MutationResult {
     if equip_target == EquipTarget::Ammo {
         return toggle_equipped_ammo(world, player, form_id);
     }
+    // Hand Equipment — the item's slot and what the hands hold, read before the equipment is borrowed.
+    let rules = {
+        let catalog = world.try_resource::<byroredux_scripting::hands::HandCatalog>();
+        let two_handed = |form: u32| catalog.as_ref().is_some_and(|catalog| catalog.two_handed(form));
+        let is_shield = |form: u32| catalog.as_ref().is_some_and(|catalog| catalog.is_shield(form));
+        let slots = world.get::<EquipmentSlots>(player).map(|slots| (*slots).clone()).unwrap_or_default();
+        let base = |idx: InventoryIndex| inventory_form_ids.get(idx.0 as usize).copied();
+        let mut shields_worn: Vec<InventoryIndex> =
+            slots.occupants.iter().flatten().copied().filter(|&idx| base(idx).is_some_and(is_shield)).collect();
+        shields_worn.dedup();
+        HandRules {
+            item_two_handed: two_handed(form_id),
+            item_shield: is_shield(form_id),
+            right_two_handed: slots.weapon.and_then(base).is_some_and(two_handed),
+            shields_worn,
+            stack_count: world
+                .get::<Inventory>(player)
+                .and_then(|inventory| inventory.get(inventory_index).map(|stack| stack.count))
+                .unwrap_or(0),
+        }
+    };
     let Some(mut equipment_query) = world.query_mut::<EquipmentSlots>() else {
         return MutationResult::Unavailable;
     };
@@ -483,7 +578,23 @@ pub(super) fn toggle_equip(world: &mut World, index: u32) -> MutationResult {
     // reaches both destinations, and route the equip through the variant the
     // catalog recorded rather than a slot mask that could address either.
     let mut changes = Vec::new();
-    let mutation = if equipment.release(inventory_index) {
+    // Taken off: what the asked hand holds (the left hand's weapon for `EquipLeft`), else the item
+    // wherever it is (the menu's toggle).
+    let left = hand == byroredux_scripting::hands::Hand::Left && equip_target == EquipTarget::Weapon && !rules.item_two_handed;
+    let release = if left {
+        let held = equipment.left_hand == Some(inventory_index);
+        if held {
+            equipment.unequip_left_hand();
+        }
+        held
+    } else if equipment.left_hand == Some(inventory_index) && equipment.weapon != Some(inventory_index) && rules.stack_count >= 2 {
+        // A second of the left hand's weapon goes into the right.
+        false
+    } else {
+        equipment.release(inventory_index)
+    };
+    let mut weapon_changed = equip_target == EquipTarget::Weapon && release;
+    let mutation = if release {
         changes.push(byroredux_scripting::EquipmentChange {
             item_form_id: form_id,
             equipped: false,
@@ -491,15 +602,8 @@ pub(super) fn toggle_equip(world: &mut World, index: u32) -> MutationResult {
         log::info!("inventory: player unequipped {form_id:08X}");
         MutationResult::Unequipped
     } else {
-        let displaced = match equip_target {
-            EquipTarget::BipedSlots(mask) => equipment.equip(mask, inventory_index),
-            EquipTarget::Weapon => equipment
-                .equip_weapon(inventory_index)
-                .into_iter()
-                .collect(),
-            // Taken before the equipment query above; an arrow never reaches the occupancy array.
-            EquipTarget::Ammo => Vec::new(),
-        };
+        let (displaced, right_changed) = equip_into_hand(equipment, inventory_index, equip_target, hand, &rules);
+        weapon_changed |= right_changed;
         for displaced in displaced {
             if !equipment.is_equipped(displaced)
                 && let Some(item_form_id) = inventory_form_ids.get(displaced.0 as usize).copied() {
@@ -516,11 +620,10 @@ pub(super) fn toggle_equip(world: &mut World, index: u32) -> MutationResult {
         log::info!("inventory: player equipped {form_id:08X}");
         MutationResult::Equipped
     };
-    // Only a weapon toggle can change what is wielded — an armor toggle
-    // must leave `EquippedWeapon` alone. Pre-#3112 this re-derived from
-    // `occupants[31]` after *every* toggle, so equipping an armor whose
-    // BOD2 set bit 31 silently unequipped the player's weapon.
-    let weapon_changed = equip_target == EquipTarget::Weapon;
+    // Only a change to the right hand re-derives `EquippedWeapon` — an armor toggle leaves it alone
+    // unless a shield displaced a two-handed weapon. Pre-#3112 this re-derived from `occupants[31]`
+    // after *every* toggle, so equipping an armor whose BOD2 set bit 31 silently unequipped the
+    // player's weapon.
     let equipped_weapon = equipment.weapon;
     drop(equipment_query);
     if weapon_changed {

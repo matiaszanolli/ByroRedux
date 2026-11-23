@@ -825,6 +825,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("HotkeyKeys", "LMC-UI-002 slice 4b — the keys the MCM Helper hotkeys last saw held, for the frame's presses and releases; transient input state"),
         ("McmHelperStore", "LMC-UI-002 slice 4 — MCM Helper's parsed configs, its settings read through the mod roots and the open page; the player's values persist in the profile's own INI files (LMC-SET-004), never the save"),
         ("McmHost", "LMC-UI-002 — the session's Mod Configuration Menu: the registered config menus and the open page; every config script registers again in OnGameReload after a load, and its settings are its own saved script variables"),
+        ("HandCatalog", "Hand Equipment — the load order's weapons (kind, slot) and shields, rebuilt from the WEAP / ARMO / EQUP records every boot; what a hand holds is the saved EquipmentSlots"),
         ("VmQuestScriptChecks", "per-script cache of whether the Papyrus VM runs a quest's own script, re-checked from the script archive on demand; never gameplay state"),
         ("VmReferenceScriptChecks", "M47.2 — per-script cache of whether the Papyrus VM runs a reference script, re-checked from the script archive on demand; never gameplay state"),
         ("RecurringUpdate", "forward-latent — its only writer is unreachable in production today (no live Dlc2Ttr4aPlayerScript spawn site); re-evaluate the moment a real RegisterForUpdate recognizer lands"),

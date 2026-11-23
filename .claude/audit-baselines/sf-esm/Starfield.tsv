@@ -155,7 +155,7 @@ top	TRAV	1	1981	23	0	0
 top	BNDS	1	1954	14	1	0
 top	SMEN	1	1920	20	1	0
 top	GBFT	1	1717	8	0	0
-top	EQUP	1	1676	25	0	0
+top	EQUP	1	1676	25	1	0
 top	CLAS	1	1352	8	1	0
 top	DEBR	1	1265	2	1	0
 top	LGTM	1	1196	6	1	0
@@ -229,7 +229,7 @@ leaf	DOOR	339	0	0	1	0
 leaf	EFSH	47	0	0	1	0
 leaf	EFSQ	484	0	0	0	0
 leaf	ENCH	106	0	0	1	0
-leaf	EQUP	25	0	0	0	0
+leaf	EQUP	25	0	0	1	0
 leaf	EXPL	273	0	0	1	0
 leaf	FACT	812	0	0	1	0
 leaf	FFKW	231	0	0	0	0
@@ -362,3 +362,4 @@ leaf	ZOOM	118	0	0	0	0
 # 2026-11-03 (#6048): dispatch arm MATT now reads handled=1 (sf_smoke derives the flag from
 # DISPATCH_HANDLED_FOURCCS alone; no byte total moves).
 # 2026-11-15 (M65, #6910): dispatch arm MOVT now reads handled=1 (no byte total moves).
+# regenerated 2026-11-23 (Hand Equipment #7398): the EQUP dispatch arm reads equip slots (EsmIndex::equip_slots), so EQUP is handled=1.

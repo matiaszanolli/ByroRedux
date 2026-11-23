@@ -199,6 +199,8 @@ pub struct InventoryItemView {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InventoryAction {
     ToggleEquip { index: u32 },
+    /// Hand Equipment: wield the row's one-handed weapon in the left hand (toggles off when it is there).
+    EquipLeft { index: u32 },
     Consume { index: u32, form_id: u32 },
     /// Drop one of the row's items into the world at the player's feet.
     Drop { index: u32, form_id: u32 },

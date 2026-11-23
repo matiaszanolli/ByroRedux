@@ -275,6 +275,10 @@ pub struct EquipmentSlots {
     /// compatibility default would mask this intra-type change, so
     /// `byroredux_save::FORMAT_MAJOR` is bumped instead.
     pub weapon: Option<InventoryIndex>,
+    /// What the left hand holds besides a shield (Hand Equipment PRD): a one-handed weapon wielded
+    /// there. A shield stays a biped occupant; [`weapon`](Self::weapon) is the right hand. Required,
+    /// like `weapon` (a format bump, not a default).
+    pub left_hand: Option<InventoryIndex>,
 }
 
 /// [`EquipmentSlots::occupants`] as a sequence of exactly [`MAX_BIPED_SLOTS`] entries.
@@ -301,6 +305,7 @@ impl Default for EquipmentSlots {
         Self {
             occupants: [None; MAX_BIPED_SLOTS],
             weapon: None,
+            left_hand: None,
         }
     }
 }
@@ -363,6 +368,16 @@ impl EquipmentSlots {
         self.weapon.take()
     }
 
+    /// Hold `idx` in the left hand, returning what it displaced there (if anything else).
+    pub fn equip_left_hand(&mut self, idx: InventoryIndex) -> Option<InventoryIndex> {
+        self.left_hand.replace(idx).filter(|&prev| prev != idx)
+    }
+
+    /// Empty the left hand, returning what it held.
+    pub fn unequip_left_hand(&mut self) -> Option<InventoryIndex> {
+        self.left_hand.take()
+    }
+
     /// Every inventory entry this actor currently has equipped — biped
     /// occupants and the wielded weapon. Yields duplicates when one item
     /// covers several biped bits; callers that need uniqueness dedup.
@@ -370,7 +385,7 @@ impl EquipmentSlots {
     /// Use this (not a bare `occupants` scan) for any "is this item
     /// equipped?" question, or the weapon reads as unequipped (#3112).
     pub fn equipped_indices(&self) -> impl Iterator<Item = InventoryIndex> + '_ {
-        self.occupants.iter().flatten().copied().chain(self.weapon)
+        self.occupants.iter().flatten().copied().chain(self.weapon).chain(self.left_hand)
     }
 
     /// Whether `idx` is equipped in any biped slot or the weapon slot.
@@ -390,6 +405,10 @@ impl EquipmentSlots {
         }
         if self.weapon == Some(idx) {
             self.weapon = None;
+            released = true;
+        }
+        if self.left_hand == Some(idx) {
+            self.left_hand = None;
             released = true;
         }
         released

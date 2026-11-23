@@ -9,7 +9,7 @@ use super::super::cell::EsmCellIndex;
 use super::super::reader::GameKind;
 use super::{
     ActiRecord, ArmaRecord, AvifRecord, BptdRecord, ChalRecord, ClassRecord, ClimateRecord, CobjRecord,
-    ContainerRecord, CstyRecord, DialRecord, DlbrRecord, CndfRecord, KywdRecord, EcznRecord, EfshRecord, EnchRecord,
+    ContainerRecord, CstyRecord, DialRecord, DlbrRecord, CndfRecord, EqupRecord, KywdRecord, EcznRecord, EfshRecord, EnchRecord,
     ExplRecord, EyesRecord, FactionRecord, FlstRecord, GameSetting, GlobalRecord, MovementType, GrasRecord, HairRecord,
     HdptRecord,
     IdleRecord, ImadRecord, LctnRecord, ImgsRecord, ImodRecord, InfoRecord, IpctRecord, IpdsRecord, ItemRecord,
@@ -409,6 +409,8 @@ pub struct EsmIndex {
     pub condition_forms: HashMap<u32, CndfRecord>,
     /// `KYWD` keywords (editor id only).
     pub keywords: HashMap<u32, KywdRecord>,
+    /// `EQUP` equip slots (Skyrim and later; Hand Equipment PRD, HND-SLOT-001).
+    pub equip_slots: HashMap<u32, EqupRecord>,
     /// `LGTM` lighting templates — ties to #379 (per-field inheritance
     /// fallback on cells without XCLL).
     pub lighting_templates: HashMap<u32, LgtmRecord>,
@@ -1026,6 +1028,7 @@ impl EsmIndex {
             map_category!("encounter_zones", encounter_zones),
             map_category!("condition_forms", condition_forms),
             map_category!("keywords", keywords),
+            map_category!("equip_slots", equip_slots),
             map_category!("lighting_templates", lighting_templates),
             map_category!("volumetric_lighting", volumetric_lighting),
             map_category!("god_rays", god_rays),
