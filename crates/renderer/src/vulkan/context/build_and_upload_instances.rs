@@ -973,13 +973,13 @@ impl VulkanContext {
             if let Some(tile_idx) = draw_cmd.terrain_tile_index {
                 f |= INSTANCE_FLAG_TERRAIN_SPLAT;
                 f |= (tile_idx & INSTANCE_TERRAIN_TILE_MASK) << INSTANCE_TERRAIN_TILE_SHIFT;
-                // #7152 — a displacement patch carries its relief in the
-                // geometry: the fragment skips the parallax march on it.
+                // #7152 / TSD-4.3 — a displacement patch carries part of its
+                // relief in the geometry: the fragment marches only the rest.
                 if self
                     .exterior
                     .terrain_patch
                     .as_ref()
-                    .is_some_and(|pass| pass.skips_parallax(draw_cmd.mesh_handle))
+                    .is_some_and(|pass| pass.draws_patch(draw_cmd.mesh_handle))
                 {
                     f |= crate::vulkan::scene_buffer::INSTANCE_FLAG_TERRAIN_PATCH;
                 }

@@ -182,14 +182,17 @@ vec2 terrainParallaxDisplaceUV(
     float cameraDistance,
     vec4 splat0,
     vec4 splat1,
-    GpuTerrainTile tile
+    GpuTerrainTile tile,
+    float geometryRelief
 ) {
     // Smooth fade to plain shading with distance. A degenerate range
     // (`end <= start`) is a hard cut at `end`, never an undefined smoothstep.
     float fade = tile.parallaxFadeEnd > tile.parallaxFadeStart
         ? 1.0 - smoothstep(tile.parallaxFadeStart, tile.parallaxFadeEnd, cameraDistance)
         : (cameraDistance < tile.parallaxFadeEnd ? 1.0 : 0.0);
-    float relief = tile.parallaxDepth * fade;
+    // TSD-4.3 (§3.6) — on a displacement patch the vertices already carry `geometryRelief` of the
+    // relief (0 on the base terrain), so the march covers only what is left of the parallax depth.
+    float relief = max(tile.parallaxDepth * fade - geometryRelief, 0.0);
     if (relief <= 0.0) {
         return uv;
     }

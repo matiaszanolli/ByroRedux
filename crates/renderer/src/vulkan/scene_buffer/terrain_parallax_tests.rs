@@ -438,8 +438,11 @@ fn triangle_frag_displaces_before_the_blend_with_the_painted_weights() {
         .expect("blend call");
     assert!(grads < call, "the gradients must be captured before the march");
     assert!(call < blend, "the displaced UV must exist before the height blend runs");
-    let site = &frag[call.saturating_sub(400)..call + 500];
+    let site = &frag[call.saturating_sub(900)..call + 500];
     assert!(site.contains("terrainTile.parallaxDepth > 0.0"), "{site}");
+    // TSD-4.3 (§3.6) — a patch draw marches only the depth its geometry does not carry.
+    assert!(site.contains("terrainTile.patchAmplitude * (1.0 - smoothstep("), "{site}");
+    assert!(site.contains("terrainTile.patchParallax > 0.5"), "{site}");
     assert!(site.contains("(dbgFlags & DBG_BYPASS_POM) == 0u"), "{site}");
     assert!(
         site.contains("terrainSplat[0], terrainSplat[1], terrainTile"),

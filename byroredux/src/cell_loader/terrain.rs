@@ -1209,6 +1209,11 @@ fn terrain_tile_record(
         parallax_fade_start: 0.0,
         parallax_fade_end: 0.0,
         lod_soften_end: 0.0,
+        // TSD-4.3 — set with each frame's patches (`set_terrain_patch_frame`); 0 subtracts nothing.
+        patch_amplitude: 0.0,
+        patch_fade_start: 0.0,
+        patch_fade_end: 0.0,
+        patch_parallax: 0.0,
     }
 }
 

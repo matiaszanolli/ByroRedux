@@ -125,9 +125,9 @@ pub struct TerrainPatchParams {
     pub edge_ramp: f32,
     /// Keep the TSD-3 parallax march on patch draws. On by default: the 3 cm
     /// patch relief alone reads flatter than the 8 cm parallax depth, so
-    /// dropping the march flattens the ground nearest the camera; marching
-    /// only the residual relief is stage 4.3 (design §3.6). `false` is the
-    /// A/B switch.
+    /// dropping the march flattens the ground nearest the camera. Since 4.3
+    /// the march covers only the depth the geometry does not (design §3.6).
+    /// `false` is the A/B switch.
     pub parallax: bool,
 }
 
@@ -429,8 +429,6 @@ pub struct TerrainPatchPass {
     /// This frame's input from the host; consumed by [`Self::record`].
     frame_slots: Vec<TerrainPatchSlot>,
     frame_params: Option<TerrainPatchParams>,
-    /// The last staged `TerrainPatchParams::parallax`.
-    parallax: bool,
     stats: TerrainPatchStats,
 }
 
@@ -499,7 +497,6 @@ impl TerrainPatchPass {
             meshes: TerrainPatchMeshes::default(),
             frame_slots: Vec::new(),
             frame_params: None,
-            parallax: true,
             stats: TerrainPatchStats::default(),
         };
         if let Err(e) = this.create_resources(device, allocator, pipeline_cache, &bindings) {
@@ -600,14 +597,14 @@ impl TerrainPatchPass {
                 self.frame_slots.push(*slot);
             }
         }
-        self.parallax = params.parallax;
         self.frame_params = Some(params);
     }
 
-    /// Whether a draw of `mesh` skips the TSD-3 parallax march: a patch mesh,
-    /// when the host turned parallax off on patches.
-    pub fn skips_parallax(&self, mesh: u32) -> bool {
-        !self.parallax && self.meshes.contains(mesh)
+    /// Whether a draw of `mesh` is a displacement patch: the instance carries
+    /// `INSTANCE_FLAG_TERRAIN_PATCH`, and `triangle.frag` marches only the
+    /// relief its geometry does not carry (§3.6).
+    pub fn draws_patch(&self, mesh: u32) -> bool {
+        self.meshes.contains(mesh)
     }
 
     /// Whether [`Self::record`] has anything to dispatch this frame.

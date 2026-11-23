@@ -855,6 +855,24 @@ impl VulkanContext {
         if let Some(pass) = self.exterior.terrain_patch.as_mut() {
             pass.set_frame(slots, params);
         }
+        // TSD-4.3 (§3.6) — the patch geometry the fragment's parallax march subtracts on patch draws,
+        // broadcast like `set_terrain_parallax`. Marks the SSBO dirty only on a real change.
+        let parallax = if params.parallax { 1.0 } else { 0.0 };
+        let mut changed = false;
+        for tile in self.exterior.terrain_tiles.iter_mut().flatten() {
+            if tile.patch_amplitude != params.amplitude
+                || tile.patch_fade_start != params.fade_start
+                || tile.patch_fade_end != params.fade_end
+                || tile.patch_parallax != parallax
+            {
+                tile.patch_amplitude = params.amplitude;
+                tile.patch_fade_start = params.fade_start;
+                tile.patch_fade_end = params.fade_end;
+                tile.patch_parallax = parallax;
+                changed = true;
+            }
+        }
+        self.exterior.terrain_tiles_dirty |= changed;
     }
 
     /// #7152 — the terrain patch seam check from the last harvested frame.

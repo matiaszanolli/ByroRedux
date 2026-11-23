@@ -100,6 +100,15 @@ pub struct GpuTerrainTile {
     /// `VulkanContext::set_terrain_lod_soften_end`, riding the lane that was
     /// the named pad (the stride stays 224).
     pub lod_soften_end: f32,
+    /// TSD-4.3 (design §3.6) — the displacement patches' geometry, broadcast to every live tile by
+    /// `VulkanContext::set_terrain_patch_frame` from the frame's `TerrainPatchParams`: the amplitude
+    /// (world units) and the camera distances over which it fades, so a patch draw's parallax march
+    /// covers only the relief its vertices do not. `patch_parallax` is 1.0 to keep that march on patch
+    /// draws and 0.0 for `terrain.patches parallax off`. Appended at the tail: stride 224 → 240.
+    pub patch_amplitude: f32,
+    pub patch_fade_start: f32,
+    pub patch_fade_end: f32,
+    pub patch_parallax: f32,
 }
 
 impl GpuTerrainTile {

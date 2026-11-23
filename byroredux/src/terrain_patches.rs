@@ -823,7 +823,7 @@ mod tests {
         assert!((p.fade_start - 3.0 * UNITS_PER_M).abs() < 1e-4);
         // §3.4: the ramp must fit inside one patch.
         assert!(p.edge_ramp < PATCH_SIZE);
-        // Patches keep the parallax march until 4.3 splits the relief.
+        // Patches keep the parallax march by default; since 4.3 it covers only the residual depth (§3.6).
         assert!(p.parallax);
     }
 

@@ -276,12 +276,12 @@ fn memory_budget_ledger_pins_the_terrain_tile_row() {
     for claim in [
         format!("{size} B"),
         format!("~{kilobytes} KB"),
-        "gpu_terrain_tile_is_224_bytes".to_string(),
+        "gpu_terrain_tile_is_240_bytes".to_string(),
     ] {
         assert!(
             row.contains(&claim),
             "the terrain-tile row must state `{claim}` ({size} B × MAX_TERRAIN_TILES, pinned \
-             by `gpu_terrain_tile_is_224_bytes`): {row}"
+             by `gpu_terrain_tile_is_240_bytes`): {row}"
         );
     }
     assert!(
@@ -421,19 +421,19 @@ fn mesh_id_format_is_r32_uint() {
 /// exterior cell. No test fails, no validation layer fires: the byte count
 /// is legal either way.
 #[test]
-fn gpu_terrain_tile_is_224_bytes() {
+fn gpu_terrain_tile_is_240_bytes() {
     assert_eq!(
         size_of::<GpuTerrainTile>(),
-        224,
-        "GpuTerrainTile must stay 224 B (3 × uint[8], then #4057's two vec4 \
+        240,
+        "GpuTerrainTile must stay 240 B (3 × uint[8], then #4057's two vec4 \
          affinity rows, the vec2+float+float canopy tail, Tier-3's atlas \
          vec4, #4903's base affinity + base diffuse, #6195's base + 8 layer \
-         height handles, #6196's blend band and #6197's three parallax \
-         settings plus a named pad) to match the std430 \
-         `struct GpuTerrainTile` in include/bindings.glsl, whose \
-         16-alignment rounds the stride up from 220. The shipped \
-         triangle.frag.spv carries `ArrayStride 224` for this type; changing \
-         the record means recompiling it, not just this assert."
+         height handles, #6196's blend band, #6197's three parallax settings \
+         plus the LOD-soften lane, and TSD-4.3's four patch-geometry lanes) to \
+         match the std430 `struct GpuTerrainTile` in include/terrain_tile.glsl. \
+         The shipped triangle.frag.spv carries `ArrayStride 240` for this type; \
+         changing the record means recompiling every shader that indexes \
+         `terrainTiles`, not just this assert."
     );
 }
 
@@ -498,10 +498,10 @@ fn shipped_triangle_frag_spv_carries_the_terrain_tile_stride() {
         i += len;
     }
     assert!(
-        strides.contains(&224),
-        "no ArrayStride 224 in the shipped triangle.frag.spv — recompile it \
-         after changing GpuTerrainTile (#6197's parallax settings grew the \
-         record 208 → 224). Found: {strides:?}"
+        strides.contains(&240),
+        "no ArrayStride 240 in the shipped triangle.frag.spv — recompile it \
+         after changing GpuTerrainTile (TSD-4.3's patch-geometry lanes grew the \
+         record 224 → 240). Found: {strides:?}"
     );
 }
 

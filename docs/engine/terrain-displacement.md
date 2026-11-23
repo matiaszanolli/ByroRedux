@@ -389,7 +389,12 @@ compute `D` or `h`. Options:
 3. **The third level and 2:1 balance**, only if step 2's data asks for it.
 4. **§3.6 residual parallax on patches**: march `depth_pom − amplitude_geo`. Its cost
    bound is small (0.31 / 0.20 / 0.03 ms, §8.3), but it keeps the near relief from
-   reading flat.
+   reading flat. **Done** (§8.6). The patch geometry reaches the fragment as four
+   `GpuTerrainTile` lanes broadcast with each frame's patch parameters (stride
+   224 → 240). The march subtracts `patchAmplitude · fade`, where `fade` is the camera
+   distance fade `terrain_patch.comp` applies. The compute's second fade, the 1 m
+   ramp to the lip at a missing neighbour or a cell border, is not reproduced, so
+   relief there reads slightly flatter (first order).
 5. **Settings/UI**: amplitude, range and `A_FINE` (or a quality preset that maps to
    it), each one registry entry, through the settings pass.
 
@@ -815,6 +820,42 @@ there is only good to about ±0.25 ms. No run logged a validation line.
   measured is the near squares going fine → coarse (the all-coarse column). What is
   left follows the patch pixels, not lattice density. Not measured: a coarser lattice
   on the far squares themselves.
+
+### 8.6 Residual parallax on patches (2026-11-22)
+§7.3 step 4, built. The harness is §8.4's, with 6 interleaved rounds × 4 samples. Each
+position ran two binaries at identical poses: the new one, which marches the residual
+depth on patch draws, and a saved build of the previous one, which marched the full
+depth. Each run covered three states: patches off, patches with their march, and
+patches with `parallax off`. The cells are `main_render` deltas over patches off, in ms:
+
+| position | pose | full depth: march / no march | residual: march / no march |
+|---|---|---|---|
+| FNV Mojave | down | +0.94 / +0.67 | +0.98 / +0.83 |
+| | eye | +1.33 / +1.02 | +1.22 / +0.95 |
+| | graze | +0.53 / +0.61 | +0.76 / +0.77 |
+| Skyrim Riverwood | down | +0.45 / +0.34 | +0.42 / +0.31 |
+| | eye | +0.60 / +0.27 | +0.43 / +0.41 |
+| | graze | +0.26 / +0.29 | +0.27 / +0.15 |
+
+The sd per state is 0.14–0.43 ms. No run logged a validation line.
+
+- **The cost does not change**, as expected. The march's step count follows the view
+  angle, not the depth (6 looking down, 20 at grazing). So the march costs 0.0–0.3 ms
+  over no march at either depth, inside §8.3's bound.
+- **The picture does.** At FNV, where the stony slope fills the frame, the two
+  binaries' no-march frames match within the frame-to-frame noise in the lower half of
+  the screen (8-bit level, mean |Δ| 1.3–5.0, the same as each run's own repeat shot).
+  So the two runs see the same scene. The residual frame differs from the full-depth
+  frame by a mean 14–19 levels, and from no march by 20–25.
+  - The full depth stacked 8 cm of march onto 3 cm of real relief, and its near stones
+    smear along the view direction.
+  - The residual shows rounder stones with clean occlusion.
+  - No march flattens them to streaks.
+
+  At Riverwood the river and the grass move between frames (noise floor 6–21 levels),
+  so no difference there clears the noise. That position is not evidence either way.
+- **Default**: the residual march stays on. `terrain.patches parallax off` remains the
+  A/B switch.
 
 ## 9. Review decisions (Matías, 2026-11-21)
 1. **Upward-only displacement, base mesh kept (§3.3)**: accepted. No holes, no zero-mean

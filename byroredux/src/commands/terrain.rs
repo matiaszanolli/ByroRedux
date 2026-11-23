@@ -286,8 +286,8 @@ impl ConsoleCommand for TerrainPatchesCommand {
                 None => return CommandOutput::line(format!("terrain.patches: bad number\n{usage}")),
             },
             // Parallax on patch draws: on by default (the 3 cm patch relief
-            // alone reads flat); `off` is the A/B switch until 4.3 marches
-            // only the residual relief (§3.6).
+            // alone reads flat). Since 4.3 a patch marches only the depth its
+            // geometry does not carry (§3.6); `off` is the A/B switch.
             ["parallax", "on"] => state.parallax = true,
             ["parallax", "off"] => state.parallax = false,
             // Patch draws in the TLAS: on by default; `off` keeps them

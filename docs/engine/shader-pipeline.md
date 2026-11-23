@@ -802,7 +802,7 @@ ReSTIR invalid-selection sentinel and is never occupied by a real light.
 | 56 | `visibility_mask` | Exact f32 encoding of `VisibilityMask` bits; decoded to the ray-query cull mask by `decodeVisibilityMask` |
 | 60 | `attenuation_model` | `ATTENUATION_MODEL_*` discriminant encoded as f32 |
 
-### `GpuTerrainTile` — 224 bytes, SSBO (Set 1, Binding 10)
+### `GpuTerrainTile` — 240 bytes, SSBO (Set 1, Binding 10)
 
 One record per LAND tile slot (`MAX_TERRAIN_TILES`), indexed by the slot in
 `GpuInstance.flags` bits 16–31. The full field list lives on the struct
@@ -819,6 +819,10 @@ One record per LAND tile slot (`MAX_TERRAIN_TILES`), indexed by the slot in
 | 212 | `parallax_fade_start` | Camera distance (world units) where the parallax starts to fade |
 | 216 | `parallax_fade_end` | Camera distance where it reaches plain shading |
 | 220 | `lod_soften_end` | Camera distance (world units) at which near terrain is fully softened toward the LOD look; 0 = off. Rode the named pad, stride unchanged; onset/reach in [`exal.md` §5.4.2](exal.md#542-the-terrain-lod-join-20261026-27) |
+| 224 | `patch_amplitude` | TSD-4.3 (§3.6): the displacement patches' relief amplitude (world units), broadcast by `set_terrain_patch_frame`; a patch draw's parallax march subtracts it, faded with distance |
+| 228 | `patch_fade_start` | Camera distance (world units) where the patch geometry starts fading to the lip |
+| 232 | `patch_fade_end` | …and where it is fully faded |
+| 236 | `patch_parallax` | 1.0 = march the residual depth on patch draws; 0.0 = `terrain.patches parallax off`. Stride 224 → 240 |
 
 `height_blend_band` is not per-cell data: the `render.terrain_height_blend_band`
 setting (debug-UI slider, `terrain.blend`) is broadcast into every tile by
@@ -876,7 +880,7 @@ the colour from — both go through `byroTerrainBlendCore`). The displaced
 | `MAX_MATERIALS` | 16 384 | 432 B each; deduplicated per frame |
 | `MAX_TOTAL_BONES` | 196 608 | `floor(196 608 / 144)` = 1 365 palette slots, minus reserved slot 0 → **1 364 allocatable** skinned meshes (M29.6). Not an exact product: 1 365 × 144 = 196 560 leaves a 48-bone unused tail |
 | `MAX_PENDING_BIND_INVERSE_UPLOADS_PER_FRAME` | 1 364 | First-sight bind-inverse upload cap; equals `MAX_SKIN_SLOTS` by construction |
-| `MAX_TERRAIN_TILES` | 1 024 | 224 B each (`GpuTerrainTile`) |
+| `MAX_TERRAIN_TILES` | 1 024 | 240 B each (`GpuTerrainTile`) |
 
 ---
 

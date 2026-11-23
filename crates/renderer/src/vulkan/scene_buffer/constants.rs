@@ -386,8 +386,9 @@ pub const INSTANCE_FLAG_LOD_BLOCK: u32 = 1 << 9;
 /// Assembled for every draw, rasterized or not: rays hit off-screen movers.
 pub const INSTANCE_FLAG_MOVED_THIS_FRAME: u32 = 1 << 10;
 /// TSD-4 terrain displacement patch (#7152): the draw of a patch mesh, whose
-/// geometry already carries the relief, so `triangle.frag` skips the TSD-3
-/// terrain parallax march on it (design §3.6: the two must not stack).
+/// geometry already carries part of the relief, so `triangle.frag`'s TSD-3
+/// terrain parallax march covers only the rest (design §3.6: the two must not
+/// stack). Set on every patch draw; the tile's `patch_parallax` turns the march off.
 /// Rasterizer-only; set from the reserved patch meshes, not the draw command.
 pub const INSTANCE_FLAG_TERRAIN_PATCH: u32 = 1 << 11;
 

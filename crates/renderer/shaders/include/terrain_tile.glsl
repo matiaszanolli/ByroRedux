@@ -76,6 +76,16 @@ struct GpuTerrainTile {
     float parallaxFadeStart;
     float parallaxFadeEnd;
     float lodSoftenEnd;
+    /// TSD-4.3 (design §3.6) — the displacement patches' geometry, broadcast like the parallax
+    /// settings above by `VulkanContext::set_terrain_patch_frame`. A patch draw carries
+    /// `patchAmplitude · fade` of the relief in its vertices, where `fade` falls from 1 to 0 between
+    /// `patchFadeStart` and `patchFadeEnd` world units from the camera, so its parallax march covers
+    /// only the rest. `patchParallax` > 0.5 keeps that march on patch draws; 0 is the
+    /// `terrain.patches parallax off` A/B. Appended at the tail: stride 224 → 240.
+    float patchAmplitude;
+    float patchFadeStart;
+    float patchFadeEnd;
+    float patchParallax;
 };
 
 /// #6196 — height-based blending between terrain layers.

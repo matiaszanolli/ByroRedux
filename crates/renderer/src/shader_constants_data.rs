@@ -1854,8 +1854,9 @@ pub const INSTANCE_FLAG_LOD_BLOCK: u32 = 1 << 9;
 // direct-light history (the per-pixel replacement for the scene-wide
 // "anything moved" gate).
 pub const INSTANCE_FLAG_MOVED_THIS_FRAME: u32 = 1 << 10;
-// bit 11 — a TSD-4 terrain displacement patch (#7152): its geometry carries the
-// relief, so the fragment shader skips the TSD-3 parallax march on it.
+// bit 11 — a TSD-4 terrain displacement patch (#7152): its geometry carries part
+// of the relief, so the fragment shader's TSD-3 parallax march covers only the
+// rest (§3.6), or none with `terrain.patches parallax off`.
 pub const INSTANCE_FLAG_TERRAIN_PATCH: u32 = 1 << 11;
 // bit 8 — diffuse texture carries a genuine authored alpha channel
 // (BC2/BC3/BC7/RGBA). Set CPU-side from the cached `handle_has_alpha`

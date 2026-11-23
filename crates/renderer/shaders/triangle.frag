@@ -368,19 +368,28 @@ void main() {
         // the layer composition describe the same surface. The painted
         // weights drive it (the blend has not run yet). Depth 0 — the
         // setting off, or a tile spawned before the broadcast — skips it.
-        // #7152 — the renderer flags a displacement patch draw for skipping
-        // when the host turns parallax off on patches (`terrain.patches
-        // parallax off`); by default it marches like the base until stage
-        // 4.3 marches only the relief the geometry does not carry (§3.6).
+        // TSD-4.3 (§3.6) — a displacement patch draw carries
+        // `patchAmplitude` of the relief in its vertices, faded with camera
+        // distance the way `terrain_patch.comp` fades it, so it marches only
+        // the rest; `terrain.patches parallax off` (`patchParallax` 0) skips
+        // the march on patches for the A/B. The compute's second fade, the
+        // ramp to the lip at a missing neighbour or a cell border, is not
+        // reproduced here: within that metre the geometry is lower than this
+        // assumes and the relief reads slightly flatter (first order, §3.6).
+        bool terrainPatchDraw = (inst.flags & INSTANCE_FLAG_TERRAIN_PATCH) != 0u;
         if (terrainTile.parallaxDepth > 0.0 && (dbgFlags & DBG_BYPASS_POM) == 0u
-            && (inst.flags & INSTANCE_FLAG_TERRAIN_PATCH) == 0u) {
+            && (!terrainPatchDraw || terrainTile.patchParallax > 0.5)) {
             vec3 terrainView = cameraPos.xyz - fragWorldPos;
             float terrainViewDistance = length(terrainView);
+            float geometryRelief = terrainPatchDraw
+                ? terrainTile.patchAmplitude * (1.0 - smoothstep(
+                    terrainTile.patchFadeStart, terrainTile.patchFadeEnd, terrainViewDistance))
+                : 0.0;
             sampleUV = terrainParallaxDisplaceUV(
                 sampleUV, splatUVdx, splatUVdy, splatPosdx, splatPosdy,
                 terrainView / max(terrainViewDistance, 1.0e-4),
                 normalize(fragNormalEffective), terrainViewDistance,
-                terrainSplat[0], terrainSplat[1], terrainTile);
+                terrainSplat[0], terrainSplat[1], terrainTile, geometryRelief);
         }
         if (terrainTile.heightBlendBand > 0.0) {
             byroTerrainHeightBlend(
