@@ -153,6 +153,13 @@ What the engine does today with a legacy plugin set (`--master …` `--esm`), th
    `crates/plugin/tests/decoded_table_real_data.rs` re-derive each section and fail when the parsers and the file disagree,
    in the direction that loses data first. A game or record type with no entry decodes nothing, so everything of it is kept.
 
+10. **Scaling (LMC-PERF-001, -002).** The fold costs per record, not per pair of plugins: `load_order_scale_tests.rs` (opt-in, `--ignored`)
+   folds synthetic profiles of up to 4,000 light plugins, wide and as a master chain, and fails when time per record triples
+   (measured 0.6 to 0.9 µs per record across the range). A plugin finds its masters through one name-to-position map built per
+   fold (`load_positions`, which also rejects a repeated name), and the masters' transitive closure is a bitset row per plugin
+   (`MasterClosure`). A door transition does not fold again: `parse_record_indexes_shared` serves the resident index while
+   the plugin set and file fingerprints are unchanged (#6123, #6591).
+
 Not built yet in Phase 1: the mod profile beyond argv (discovery and the import that writes roots, LMC-ID-006; manifest
 identities for roots), the official/user boundary
 (LMC-REC-008), partial forms overlaid on the record they override and then the `merge` policy for locations and quests

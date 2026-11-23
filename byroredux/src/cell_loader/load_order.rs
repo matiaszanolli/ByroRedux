@@ -545,14 +545,37 @@ pub(crate) fn build_remap_for_plugin(
     load_order: &[String],
     slots: &[esm::reader::GlobalSlot],
 ) -> anyhow::Result<esm::reader::FormIdRemap> {
+    build_remap_with_positions(plugin_path, header, game, plugin_slot, &load_positions(load_order), slots)
+}
+
+/// Each plugin name's load-order position, the first holding a name winning: the lookup every master reference makes.
+/// Built once for a fold instead of scanning the load order per master per plugin, which was quadratic in the plugin
+/// count (LMC-PERF-002).
+fn load_positions(load_order: &[String]) -> HashMap<&str, usize> {
+    let mut positions = HashMap::with_capacity(load_order.len());
+    for (position, name) in load_order.iter().enumerate() {
+        positions.entry(name.as_str()).or_insert(position);
+    }
+    positions
+}
+
+/// [`build_remap_for_plugin`] over a prebuilt [`load_positions`] map.
+fn build_remap_with_positions(
+    plugin_path: &str,
+    header: &esm::reader::FileHeader,
+    game: esm::reader::GameKind,
+    plugin_slot: esm::reader::GlobalSlot,
+    positions: &HashMap<&str, usize>,
+    slots: &[esm::reader::GlobalSlot],
+) -> anyhow::Result<esm::reader::FormIdRemap> {
     let master_slots: Vec<esm::reader::GlobalSlot> = header
         .master_files
         .iter()
         .map(|m| {
             let m_lc = plugin_basename_lc(m);
-            let pos = load_order
-                .iter()
-                .position(|name| name == &m_lc)
+            let pos = positions
+                .get(m_lc.as_str())
+                .copied()
                 .ok_or_else(|| {
                     anyhow::anyhow!(
                         "Plugin '{}' declares master '{}' which is not in the load order — \
@@ -921,17 +944,15 @@ where
     F: FnMut(&Path, &str) -> Option<Vec<u8>>,
 {
     let load_order: Vec<String> = plugin_paths.iter().map(|p| plugin_basename_lc(p)).collect();
-    {
+    let positions = load_positions(&load_order);
+    if positions.len() != load_order.len() {
         let mut seen = std::collections::HashSet::with_capacity(load_order.len());
-        for name in &load_order {
-            if !seen.insert(name) {
-                return Err(anyhow::anyhow!(
-                    "Plugin '{}' appears twice in the load order — \
-                     a plugin can only be passed once",
-                    name
-                ));
-            }
-        }
+        let duplicate = load_order.iter().find(|name| !seen.insert(*name)).expect("a repeated name is why the lengths differ");
+        return Err(anyhow::anyhow!(
+            "Plugin '{}' appears twice in the load order — \
+             a plugin can only be passed once",
+            duplicate
+        ));
     }
     // #1553 — companion `.STRINGS` language. Read once outside the loop.
     let strings_language = strings_language();
@@ -1009,16 +1030,14 @@ where
             )?;
             slots.push(plugin_slot);
 
-            let remap = build_remap_for_plugin(path, &header, game, plugin_slot, &load_order, &slots)?;
+            let remap = build_remap_with_positions(path, &header, game, plugin_slot, &positions, &slots)?;
             let plugin_dependencies = header
                 .master_files
                 .iter()
                 .map(|master| {
-                    let master = plugin_basename_lc(master);
-                    load_order
-                        .iter()
-                        .position(|name| name == &master)
-                        .and_then(|position| u32::try_from(position).ok())
+                    positions
+                        .get(plugin_basename_lc(master).as_str())
+                        .and_then(|&position| u32::try_from(position).ok())
                         .expect("validated master is present earlier in bounded load order")
                 })
                 .collect();
@@ -1062,7 +1081,7 @@ where
     // as a master, directly or through its masters.
     let mut list_merge = esm::records::list_merge::ListMerge::new(policy);
     let requires = transitive_masters(&dependencies);
-    let depends_on = |plugin: u32, master: u32| requires[plugin as usize].contains(&master);
+    let depends_on = |plugin: u32, master: u32| requires.depends_on(plugin, master);
     // #7250 — each slot's load-order position, once, instead of a scan of `slots` per record (the fold has no plugin
     // ceiling, LMC-ID-004). The first holder of a slot owns it, as `position` read it.
     let mut slot_owner: HashMap<esm::reader::GlobalSlot, usize> = HashMap::with_capacity(slots.len());
@@ -1133,19 +1152,38 @@ where
 
 /// Each plugin's masters, direct and through their own masters, from each plugin's direct master positions (every
 /// master loads ahead of its dependents, so one pass in load order closes the set).
-fn transitive_masters(dependencies: &[Vec<u32>]) -> Vec<std::collections::HashSet<u32>> {
-    let mut closure: Vec<std::collections::HashSet<u32>> = Vec::with_capacity(dependencies.len());
+fn transitive_masters(dependencies: &[Vec<u32>]) -> MasterClosure {
+    let words = dependencies.len().div_ceil(64);
+    let mut rows: Vec<Vec<u64>> = Vec::with_capacity(dependencies.len());
     for masters in dependencies {
-        let mut set = std::collections::HashSet::new();
+        // A plugin masters only plugins before it, so a row never needs bits past its own position.
+        let mut row = vec![0u64; words.min(rows.len() / 64 + 1)];
         for &master in masters {
-            set.insert(master);
-            if let Some(inherited) = closure.get(master as usize) {
-                set.extend(inherited.iter().copied());
+            let master = master as usize;
+            if let Some(inherited) = rows.get(master) {
+                for (word, inherited) in row.iter_mut().zip(inherited) {
+                    *word |= inherited;
+                }
+                row[master / 64] |= 1 << (master % 64);
             }
         }
-        closure.push(set);
+        rows.push(row);
     }
-    closure
+    MasterClosure { rows }
+}
+
+/// Which plugins each plugin masters, directly or through its masters: a bit per earlier plugin, so the closure of a
+/// chain of N plugins costs N²/64 words to build, not N²/2 hash-set inserts (LMC-PERF-002).
+struct MasterClosure {
+    rows: Vec<Vec<u64>>,
+}
+
+impl MasterClosure {
+    /// Whether the plugin at `plugin` declares the one at `master` as a master, directly or through its masters.
+    fn depends_on(&self, plugin: u32, master: u32) -> bool {
+        let master = master as usize;
+        self.rows.get(plugin as usize).and_then(|row| row.get(master / 64)).is_some_and(|word| word >> (master % 64) & 1 == 1)
+    }
 }
 
 /// Allocate one global load-order slot without ever entering reserved or
@@ -2129,6 +2167,10 @@ mod parallel_tests;
 #[cfg(test)]
 #[path = "load_order_deletion_tests.rs"]
 mod deletion_tests;
+
+#[cfg(test)]
+#[path = "load_order_scale_tests.rs"]
+mod scale_tests;
 
 /// #4639 — medium masters (Starfield TES4 `0x400`) allocate from the
 /// `0xFD` space with an 8-bit sub-index, and their presence shrinks the
