@@ -159,6 +159,12 @@ What the engine does today with a legacy plugin set (`--master …` `--esm`), th
    fold (`load_positions`, which also rejects a repeated name), and the masters' transitive closure is a bitset row per plugin
    (`MasterClosure`). A door transition does not fold again: `parse_record_indexes_shared` serves the resident index while
    the plugin set and file fingerprints are unchanged (#6123, #6591).
+   Activation as a whole (LMC-PERF-001) is timed by the same file: a profile of light plugins that each bring a paired
+   archive goes through master hoisting and archive pairing, the fold, and the texture, mesh, sound and script pools, warm
+   and with its files evicted from the page cache. Pairing finds a plugin's archives through one `ArchiveDirectory` per
+   directory (the names sorted by folded key, searched by the plugin's stem), not by testing every archive against every
+   plugin, which made a 2,000-plugin profile's pairing quadratic (0.345 s, now 0.043 s). Measured on a Ryzen 9 7950X with
+   an NVMe drive: 1,000 plugins activate in 0.35 s with the page cache warm and 0.33 s cold.
 
 Not built yet in Phase 1: the mod profile beyond argv (discovery and the import that writes roots, LMC-ID-006; manifest
 identities for roots), the official/user boundary

@@ -1,6 +1,7 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-23). Revision 37 serves MCM Helper's config menus (LMC-UI-002 slice 4), with
+**Status**: ACTIVE (2026-11-23). Revision 38 measures LMC-PERF-001: a 1,000-plugin profile with
+paired archives activates in 0.35 s, and archive pairing is linear. Revision 37 serves MCM Helper's config menus (LMC-UI-002 slice 4), with
 the player's settings kept per named profile (LMC-SET-004). Revision 36 builds LMC-PERF-003: an asset lookup is one index
 probe whatever the archive count, and opening archives is linear. Revision 35 makes SkyUI's `ShowMessage` (and any box wrapper called
 for its value) wait for its answer, and resets a quest's scripts as it starts. Revision 34 builds the MCM host's native Mod Configuration page and
@@ -1212,13 +1213,21 @@ adds the user-facing contract:
   activates; activation time is published with hardware and cache state
   ([SCALE-011](../engine/sandboxed-linked-mods.md#14-performance-and-scale)). Per-plugin
   parsing already runs in parallel (#3813).
-  Partly measured (#6670): the fold of 1,000 synthetic light plugins (121,000
-  records) takes 0.09 s on the owner's Ryzen 9 7950X with the plugin files
-  in the page cache (`load_order_scale_tests.rs`, below). Not measured: real
-  plugin sizes, paired archives, and the activation steps around the fold.
-  Opening archives is linear since revision 36: 400 synthetic archives of
-  5,000 entries open, with their shadow counts, in 0.53 s, where the
-  pairwise probe took 21 s.
+  Measured (#6670): `cell_loader/load_order_scale_tests.rs` activates
+  synthetic profiles of light plugins (the kind a 1,000-plugin profile can
+  hold until LMC-ID-004), each with 100 own and 20 overriding records and a
+  paired archive of 200 entries, through master hoisting and archive
+  pairing, the fold, and the texture, mesh, sound and script pools. On the
+  owner's machine (Ryzen 9 7950X, 16 cores; WD SN850X NVMe, ext4), 1,000
+  plugins activate in 0.35 s with the page cache warm and in 0.33 s with the
+  profile evicted from it first (`dd iflag=nocache`, confirmed by
+  `fincore`): about 0.3 to 0.4 ms per plugin from 500 to 2,000. Archive
+  pairing was quadratic (each plugin tested every archive name in its
+  directory; 0.345 s at 2,000 plugins) and finds a plugin's archives by its
+  stem since revision 38 (0.043 s). Opening archives is linear since
+  revision 36. Not measured: plugins and archives of real mod sizes, which
+  wait on the Wave 1 corpus, and regular plugins past 252, which wait on
+  LMC-ID-004.
 - **LMC-PERF-002.** Cost of the merged index is linear in records. A cell
   transition MUST NOT re-parse the load order on the main thread (#6591,
   fixed: one parse serves interior and exterior sessions, and a door
@@ -1644,3 +1653,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 35 | 2026-11-23 | A box wrapper (one `Return` body) called for its value hands its box to the calling statement, which waits and replays with the answer: SkyUI's `ShowMessage` raises a box with Accept / Cancel and returns the answer. A non-Run-Once Papyrus quest resets its own and its aliases' script state as it starts, then runs `OnInit`, before its startup stage (CK *OnInit*). Measured first: on vanilla Skyrim SE the general value-call wait declines 13 of 19,412 scripted references and 5 of 2,529 alias instances, so only the wrapper shape was built | — |
 | 36 | 2026-11-23 | LMC-PERF-003 built: provider pools are `ArchiveSet`s with one path index each (a lookup costs 0.8 µs from 10 to 400 archives, was 1.6 to 64 µs), verified against the archive scan on real FNV, Skyrim SE and Fallout 4 archives; opening a pool's shadow counts became linear (400 archives: 21 s to 0.53 s), noted under LMC-PERF-001 | — |
 | 37 | 2026-11-23 | LMC-UI-002 slice 4: MCM Helper (v1.6.2, version code 15) served by an engine `MCM_ConfigBase` and `MCM`; pages from `config.json` with mod-setting, script-property and global value sources, group conditions and actions; settings layered over the mod's defaults and an earlier install's file, written per game and named profile (`--profile-name`, a boot request's `[mods] name`; owner's decisions, mcm-host.md §6.4–6.6); hotkeys (`keybinds.json`) are slice 4b | — |
+| 38 | 2026-11-23 | LMC-PERF-001 measured on synthetic profiles of light plugins with paired archives: 1,000 plugins activate in 0.35 s warm and 0.33 s cold on a Ryzen 9 7950X with NVMe; archive pairing made linear (`ArchiveDirectory`, 0.345 s to 0.043 s at 2,000 plugins); real mod sizes and regular plugins past 252 not measured | — |

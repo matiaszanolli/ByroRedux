@@ -31,7 +31,7 @@ use std::sync::OnceLock;
 
 use byroredux_plugin::activation::{activate, read_profile_plugin, Activation, ProfilePlugin};
 use byroredux_plugin::archive_pairing::{
-    archives_hold_bgsm_materials, archives_hold_compiled_scripts, paired_archives,
+    archives_hold_bgsm_materials, archives_hold_compiled_scripts, ArchiveDirectory,
 };
 use byroredux_plugin::esm::reader::GameKind;
 use byroredux_plugin::esm::records::list_merge::MergePolicy;
@@ -260,7 +260,7 @@ fn pair_archives(
     listed: &HashSet<String>,
     mut list_dir: impl FnMut(&Path) -> Vec<String>,
 ) -> Vec<PairedArchives> {
-    let mut listings: HashMap<PathBuf, Vec<String>> = HashMap::new();
+    let mut listings: HashMap<PathBuf, ArchiveDirectory<String>> = HashMap::new();
     let mut taken: HashSet<String> = listed.clone();
     let mut paired = Vec::new();
     for plugin in order {
@@ -268,8 +268,11 @@ fn pair_archives(
             Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
             _ => PathBuf::from("."),
         };
-        let names = listings.entry(dir.clone()).or_insert_with(|| list_dir(&dir));
-        let archives: Vec<String> = paired_archives(game, plugin, names.iter().map(String::as_str))
+        // LMC-PERF-001 — one indexed listing per directory: a plugin's archives are found by its stem, not by testing
+        // every archive in the directory against every plugin.
+        let names = listings.entry(dir.clone()).or_insert_with(|| ArchiveDirectory::new(list_dir(&dir)));
+        let archives: Vec<String> = names
+            .paired(game, plugin)
             .into_iter()
             .map(|name| dir.join(name).to_string_lossy().into_owned())
             .filter(|path| taken.insert(archive_identity(path)))

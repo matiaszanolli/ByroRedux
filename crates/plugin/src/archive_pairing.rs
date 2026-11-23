@@ -55,11 +55,44 @@ pub fn pairs_with(game: GameKind, plugin: &str, archive: &str) -> bool {
 }
 
 /// The names among `archives` (file names in the plugin's directory) that pair with `plugin` in `game`, ordered by
-/// case-folded name so a plugin's archives open in the same order on every file system.
+/// case-folded name so a plugin's archives open in the same order on every file system. One plugin's question; a
+/// profile asks it for every plugin of a directory through one [`ArchiveDirectory`].
 pub fn paired_archives<'a>(game: GameKind, plugin: &str, archives: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
-    let mut paired: Vec<&str> = archives.into_iter().filter(|archive| pairs_with(game, plugin, archive)).collect();
-    paired.sort_by_cached_key(|archive| archive.to_lowercase());
-    paired
+    ArchiveDirectory::new(archives).paired(game, plugin).into_iter().copied().collect()
+}
+
+/// The archive names of one directory, sorted by their folded key, so the archives a plugin pairs with are found by
+/// its stem instead of by testing every name (LMC-PERF-001: a 2,000-plugin profile in one `Data` directory made four
+/// million [`pairs_with`] calls). Every rule pairs an archive whose folded name starts with the plugin's folded stem,
+/// so the names outside that range are ones [`pairs_with`] rejects; the names inside it are still decided by it.
+pub struct ArchiveDirectory<S> {
+    /// `(plugin_key(name), name)`, sorted by the key, then the name.
+    names: Vec<(String, S)>,
+}
+
+impl<S: AsRef<str>> ArchiveDirectory<S> {
+    pub fn new(archives: impl IntoIterator<Item = S>) -> Self {
+        let mut names: Vec<(String, S)> = archives.into_iter().map(|name| (plugin_key(name.as_ref()), name)).collect();
+        names.sort_unstable_by(|(a, a_name), (b, b_name)| a.cmp(b).then_with(|| a_name.as_ref().cmp(b_name.as_ref())));
+        Self { names }
+    }
+
+    /// [`paired_archives`] of `plugin` over this directory's names.
+    pub fn paired(&self, game: GameKind, plugin: &str) -> Vec<&S> {
+        let key = plugin_key(plugin);
+        let Some(stem) = [".esm", ".esp", ".esl"].iter().find_map(|ext| key.strip_suffix(ext)) else {
+            return Vec::new();
+        };
+        let start = self.names.partition_point(|(name, _)| name.as_str() < stem);
+        let mut paired: Vec<&S> = self.names[start..]
+            .iter()
+            .take_while(|(name, _)| name.starts_with(stem))
+            .map(|(_, name)| name)
+            .filter(|archive| pairs_with(game, plugin, archive.as_ref()))
+            .collect();
+        paired.sort_by_cached_key(|archive| archive.as_ref().to_lowercase());
+        paired
+    }
 }
 
 /// Whether `game` ships compiled scripts (Papyrus `.pex`) inside its archives, so a paired archive also feeds the
@@ -77,6 +110,28 @@ pub fn archives_hold_bgsm_materials(game: GameKind) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The indexed lookup finds what testing every name finds, for each game's rule, over names that share and extend
+    /// stems: `Foo` and `Foo - Bar` plugins, a `Foo_` and a `Foobar` archive, case and extension variants.
+    #[test]
+    fn the_directory_index_pairs_what_testing_every_name_pairs() {
+        let names = [
+            "Foo.bsa", "foo - main.bsa", "Foo - Bar.bsa", "Foo - Bar - Main.bsa", "Foo_Extra.bsa", "Foo Extra.bsa", "Foobar.bsa",
+            "FOO - MAIN.BA2", "Foo - Textures.ba2", "Foo - Voices_en.ba2", "Foo - Localization.ba2", "Foo - Bar - Main.ba2",
+            "Bar.bsa", "Bar - Main.ba2", "A.bsa", "Zeta - Main.bsa", "foo.BSA", "Foo.ba2", "Fo.bsa", "Foo-x.bsa",
+        ];
+        let plugins = ["Foo.esp", "foo.ESM", "Foo - Bar.esp", "Foobar.esl", "Bar.esm", "Fo.esp", "Zeta.esm", "Missing.esp", "Foo.txt"];
+        let directory = ArchiveDirectory::new(names);
+        for game in [GameKind::Oblivion, GameKind::Fallout3NV, GameKind::Skyrim, GameKind::Fallout4, GameKind::Starfield, GameKind::Fallout76] {
+            for plugin in plugins {
+                let mut scanned: Vec<&str> = names.iter().copied().filter(|archive| pairs_with(game, plugin, archive)).collect();
+                scanned.sort_by_cached_key(|archive| archive.to_lowercase());
+                let indexed: Vec<&str> = directory.paired(game, plugin).into_iter().copied().collect();
+                assert_eq!(indexed, scanned, "{game:?} {plugin}");
+            }
+        }
+        assert_eq!(paired_archives(GameKind::Fallout3NV, "Foo.esp", names), ["Foo - Bar - Main.bsa", "Foo - Bar.bsa", "foo - main.bsa", "Foo.bsa", "foo.BSA"]);
+    }
 
     /// The rule each game applies, over archive names shipped with the installed games (and the documented examples).
     #[test]

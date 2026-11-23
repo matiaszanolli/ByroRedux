@@ -44,7 +44,7 @@ pub(super) fn imported_mesh_with_material_path(
 
 /// A v1 GNRL BA2 holding `entries` (name, payload, whether the payload is declared zlib-compressed) at `path`: the
 /// fixture the archive tests share. An undeclared payload is stored raw.
-pub(super) fn write_ba2(path: &std::path::Path, entries: &[(&str, &[u8], bool)]) {
+pub(crate) fn write_ba2(path: &std::path::Path, entries: &[(&str, &[u8], bool)]) {
     let count = entries.len() as u32;
     let data_start = 24u64 + 36 * u64::from(count);
     let payloads: u64 = entries.iter().map(|(_, payload, _)| payload.len() as u64).sum();
