@@ -162,18 +162,15 @@ pub struct TerrainPatchBlasSet {
 /// acceleration structure that was never built (the skinned set's #3991). The record stages the prior
 /// value here; [`Self::commit`] (after `queue_submit` returns `Ok`) forgets it and [`Self::rollback`]
 /// (a discarded command buffer) hands it back so the next frame plans from what the GPU really holds.
+/// A stage neither hook settled (a frame that returned between the record and the tail) is handed back
+/// by the next record before it plans (#7373), the way #7361's tile latch re-arms at the next
+/// `draw_frame`, so no exit path can leave a never-run BUILD described as built.
 #[derive(Default)]
 struct StagedPatchContent {
     prior: Vec<(u32, Option<(TerrainPatchBlasContent, u32)>)>,
 }
 
 impl StagedPatchContent {
-    /// A new frame's record starts from an empty stage: a stage the previous frame never settled (it
-    /// returned before the submit) cannot be undone any more, and holding it would restore stale content.
-    fn begin_frame(&mut self) {
-        self.prior.clear();
-    }
-
     fn stage(&mut self, mesh: u32, prior: Option<(TerrainPatchBlasContent, u32)>) {
         self.prior.push((mesh, prior));
     }
@@ -367,8 +364,17 @@ impl AccelerationManager {
     ) -> TerrainPatchBlasStats {
         let PatchBlasFrame { requests, live, plan, ops, regions, recorded, geometries, ranges, infos, range_refs } =
             frame;
+        // #7373 — a stage the previous frame never settled still describes BUILDs that may not have run:
+        // hand it back before planning (it clears `ready` too). After a submitted or discarded frame the
+        // stage is already empty and this restores nothing.
+        let unsettled = self.rollback_terrain_patch_blas();
+        if unsettled > 0 {
+            log::warn!(
+                "terrain patch BLAS: the previous frame left {unsettled} staged build/refit(s) unsettled \
+                 (it returned before submitting); restored their content so they are planned again (#7373)"
+            );
+        }
         self.terrain_patch_blas.ready.clear();
-        self.terrain_patch_blas.staged.begin_frame();
         let mut stats = TerrainPatchBlasStats::default();
 
         // Size every first-seen mesh, and drop requests whose entry cannot
@@ -696,7 +702,6 @@ mod tests {
         let (a, b) = (content(1), content(2));
         // Mesh 10 was never built; mesh 11 held square `a` (3 refits) and is reassigned to `b`.
         let mut staged = StagedPatchContent::default();
-        staged.begin_frame();
         staged.stage(10, None);
         staged.stage(11, Some((a, 3)));
         let mut contents: std::collections::HashMap<u32, Option<(TerrainPatchBlasContent, u32)>> =
@@ -719,14 +724,16 @@ mod tests {
     }
 
     #[test]
-    fn a_submitted_frame_forgets_its_stage_and_a_new_record_starts_empty() {
+    fn a_submitted_frame_forgets_its_stage_and_an_unsettled_one_is_handed_back() {
         let mut staged = StagedPatchContent::default();
         staged.stage(1, None);
         staged.commit();
         assert_eq!(staged.rollback().count(), 0, "a committed frame has nothing to undo");
+        // #7373: a stage neither hook settled is handed back, not dropped, so the next record can
+        // restore it (`rollback_terrain_patch_blas` at the top of `record_patch_blas_frame`).
         staged.stage(2, None);
-        staged.begin_frame();
-        assert_eq!(staged.rollback().count(), 0, "an unsettled stage is not carried into the next record");
+        assert_eq!(staged.rollback().collect::<Vec<_>>(), [(2, None)], "an unsettled stage is handed back");
+        assert_eq!(staged.rollback().count(), 0, "and then it is settled");
         // A mesh staged twice in one frame ends on its oldest value.
         let a = content(1);
         staged.stage(3, None);
