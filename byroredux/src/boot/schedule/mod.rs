@@ -106,6 +106,12 @@ mod schedule_order {
             Self(super::build_scheduler().access_report())
         }
 
+        /// A schedule the test has extended past `build_scheduler` (the debug drain, #7320).
+        #[cfg(feature = "debug-server")]
+        pub(super) fn of(scheduler: &byroredux_core::ecs::Scheduler) -> Self {
+            Self(scheduler.access_report())
+        }
+
         /// The position of the one system named `system`. A name that is missing
         /// or ambiguous panics rather than skipping the check, so a rename cannot
         /// leave a guard green while checking nothing.
@@ -263,11 +269,9 @@ mod fragment_activation_order_tests {
                 "make_npc_combat_ai_system",
                 // #6580 — a mine blast hits every actor in its radius (M43 placed mines)
                 "mine_system",
-                // #6813 — a VATS shot inserts a `HitEvent` per landed target
-                // (`vats_confirm`, reached from the mode machine). Safe today
-                // because it is an Early exclusive and every consumer is in
-                // Update; the pin keeps a stage move honest.
-                "vats_mode_system",
+                // A VATS shot's `HitEvent` is not raised by `vats_mode_system` (#6813 named it on a false
+                // premise): `vats_confirm` runs only from the `vats.confirm` console command, in the debug
+                // drain — see `console_raised_hits_are_queued_after_the_frame_cleanup` (#7320).
             ] {
                 assert!(
                     schedule
@@ -276,6 +280,36 @@ mod fragment_activation_order_tests {
                     "`{consumer}` must run after the `HitEvent` producer `{producer}`"
                 );
             }
+        }
+    }
+
+    /// #7320 — a VATS shot's `HitEvent`s come from `vats_confirm`, which only the `vats.confirm` console
+    /// command reaches. Console commands run in the debug server's drain, which
+    /// `byroredux_debug_server::start` appends to Late after the whole schedule, so it runs after
+    /// `event_cleanup_system`: the hits it raises survive that frame's cleanup and reach the next frame's
+    /// Update consumers. A drain ordered before the cleanup would have them removed unseen. Built with the
+    /// real registration on an ephemeral loopback port, not a text scan.
+    #[cfg(feature = "debug-server")]
+    #[test]
+    fn console_raised_hits_are_queued_after_the_frame_cleanup() {
+        let mut scheduler = super::build_scheduler();
+        let _server = byroredux_debug_server::start(&mut scheduler, 0)
+            .expect("the debug server binds an ephemeral loopback port");
+        let schedule = BuiltSchedule::of(&scheduler);
+        let drain = schedule.position(byroredux_debug_server::DRAIN_SYSTEM_NAME);
+        let cleanup = schedule.position("event_cleanup_system");
+        assert!(drain.is_exclusive_in(Stage::Late), "the drain must stay a Late exclusive");
+        assert!(
+            cleanup.runs_before(drain),
+            "the debug drain (where `vats.confirm` raises VATS hits) must run after `event_cleanup_system`, \
+             or those hits are removed before any consumer sees them"
+        );
+        for consumer in ["combat_damage_system", "hit_event_system", "reference_script_hit_system", "obscript_hit_system"] {
+            assert!(
+                schedule.position(consumer).runs_before(drain),
+                "`{consumer}` reads the console-raised hit on the next frame, so it must not follow the drain \
+                 into Late"
+            );
         }
     }
 

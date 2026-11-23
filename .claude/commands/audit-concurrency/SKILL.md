@@ -373,8 +373,9 @@ The access model and the mechanical declaration guard (`system_access_declaratio
   `event_cleanup_system` drains in Late, so `combat_damage_system` / `hit_event_system` registered ahead of the
   projectile-flight and VM `ProcessTrapHit` producers dropped every dart-trap hit; a registration-order bug the
   access analyzer cannot see; the ObScript `obscript_hit_system` consumer joined the same test as a split-out system, #6293
-  6208348f7; `vats_mode_system`, whose `vats_confirm` inserts a `HitEvent` per landed target, joined the producer list in #6813 —
-  safe because it is an Early exclusive and every consumer is in Update), `vats_mode_is_written_after_the_early_movement_gate_and_before_its_action_consumers`
+  6208348f7; #6813 listed `vats_mode_system` as a producer, but `vats_confirm` runs only from the `vats.confirm` console
+  command in the debug server's Late drain after `event_cleanup_system`, pinned by
+  `console_raised_hits_are_queued_after_the_frame_cleanup`, #7320), `vats_mode_is_written_after_the_early_movement_gate_and_before_its_action_consumers`
   (`VatsState`: the Early parallel `player_controller_system` movement gate and the app loop's `dt` scaling read the PREVIOUS
   frame's mode, so the world freeze trails the enter/exit edge by one frame by design; the writer is an Early exclusive that must
   stay after the `ActionState` edges and before `combat_input_system` / `interaction_system`, #6812), and the spoken-INFO path in Stage::Late must not claim the fragment journal cursor
