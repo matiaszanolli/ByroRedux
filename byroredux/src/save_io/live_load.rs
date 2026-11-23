@@ -839,6 +839,8 @@ pub fn execute_pending_save_loads(
         notify_player(world, message);
         return;
     }
+    // #7341 — the reload's spawns noted their Once Per Day blocks under the outgoing clock; the saved one is back.
+    crate::npc_spawn::package_flags::restart_day_blocks_at_loaded_clock(world);
     // #4695 — the reload above ran inside `without_parked_state`, so every
     // spawn-time `restore` call bailed with the store absent, and the saved
     // store only exists again now. Re-run the per-placement restore across

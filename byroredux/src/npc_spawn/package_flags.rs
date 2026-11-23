@@ -111,6 +111,18 @@ pub(crate) fn adopt_entity_day_blocks(world: &World, entity: EntityId) {
 
 impl Resource for PackageDayBlocks {}
 
+/// #7341 — start every Once Per Day block at the clock a load just restored. A load clears the blocks before its
+/// cell reload (#7252), so every block held now was noted by the reload's own spawns, which ran under the OUTGOING
+/// session's clock (`GameTimeRes` is restored after the reload). Left there, a block from a later session suppressed
+/// its package for the gap between the two clocks on top of its 24 hours; a load restarts the blocks instead.
+pub(crate) fn restart_day_blocks_at_loaded_clock(world: &World) {
+    let now = now_hours(world);
+    if let Some(mut blocks) = world.try_resource_mut::<PackageDayBlocks>() {
+        for first in blocks.0.values_mut() {
+            *first = now;
+        }
+    }
+}
 
 #[cfg(test)]
 impl PackageDayBlocks {
@@ -447,6 +459,29 @@ mod tests {
         assert!(blocks.keys().all(|(owner, _)| *owner != BlockOwner::Entity(actor)), "{blocks:?}");
         assert_eq!(blocks.get(&(BlockOwner::Reference(placed), 1)), Some(&earlier), "the earlier start wins");
         assert_eq!(blocks.get(&(BlockOwner::Reference(placed), 3)), Some(&now));
+    }
+
+    /// #7341 -- a load's cell reload notes its blocks under the outgoing session's clock (day 10 here), then
+    /// restores the saved clock (day 4). Restarted at the loaded clock, the block lasts its 24 hours from the
+    /// load, not the six days between the two clocks on top of them.
+    #[test]
+    fn a_load_restarts_the_reloads_blocks_at_the_saved_clock() {
+        let (mut world, actor) = world_at(10, 9.0);
+        let packages = [morning(1, PKDT_ONCE_PER_DAY), always(2)];
+        note_selected(&world, actor, PKDT_ONCE_PER_DAY, 1);
+        let mut saved = GameTimeRes::frozen_at(8.0);
+        saved.day = 4;
+        world.insert_resource(saved);
+        restart_day_blocks_at_loaded_clock(&world);
+        let at = |world: &mut World, day: u64, hour: f32| {
+            let mut time = GameTimeRes::frozen_at(hour);
+            time.day = day;
+            world.insert_resource(time);
+        };
+        at(&mut world, 4, 9.0);
+        assert_eq!(winner(&world, actor, 9.0, None, &packages), Some(2), "an hour after the load: blocked");
+        at(&mut world, 5, 8.5);
+        assert_eq!(winner(&world, actor, 8.5, None, &packages), Some(1), "24 hours after the load: free");
     }
 
     /// #7340 -- the spawn job picked package 1 before the reference was stamped, so it could not see the
