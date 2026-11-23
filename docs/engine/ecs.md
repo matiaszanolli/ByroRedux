@@ -732,6 +732,22 @@ taken *after* the resource; hoisting them made the acquisition monotone,
 not disjoint. Treat `PhysicsWorld` the way `StringPool` is treated at the
 tail of the main order.
 
+**Settled pairs.** Each direction below was fixed by a cycle the
+`BYRO_LOCK_ORDER_CHECK` lanes (core, scripting, the engine binary) caught, and
+lives otherwise only in a code comment at its site. A new gather that holds
+both types takes them in this order; the lanes are what pin each pair, since a
+reversed pair aborts a debug build as soon as both sites have run (#7365).
+
+| Earlier | Later | Site and history |
+|---|---|---|
+| `InventoryCatalog` | `Inventory` | `extensions/capture.rs`, the order `encumbrance_system` takes them in; held to the end of `capture_entity_projections` (CONC-4). |
+| `WalkSpeed` | `GlobalTransform` | `systems/eat_sleep.rs`: escort, follow, flee, travel and guard hold their `WalkSpeed` guard while reading `GlobalTransform` (CONC-1). |
+| `CreatureActor` | `Furniture`, `Seated`, `GlobalTransform` | `systems/sandbox.rs`: other systems read `CreatureActor` while holding those, so the sandbox seat system takes it first (ace99c164). |
+| `RapierHandles` | `WaterContact` | Buoyancy's order. |
+| `WaterContact` | `ActorVitals` | Water damage's order. So `ActorVitals` must not be held across a `RapierHandles` read: `live_actor_bodies` (`systems/trap_hits.rs`) collects the actors and drops the vitals guard first (#7315). |
+| `ActorValues` | `ActorValueNames` | `read_caster` (`crates/scripting/src/player_cast.rs`) resolves names while its `ActorValues` guard is held; the reverse, `reset_health` holding the names across `clear_actor_value_damage`, was the cycle #7063 closed. |
+| `FormIdComponent` | `FormIdPool` | Storage first, then the pool; a gather that held the pool across a `FormIdComponent` query closed the reverse cycle. |
+
 Two properties make a violation cheap to miss and expensive to hit:
 
 - Exclusive systems can invert the order and never deadlock, because no two
