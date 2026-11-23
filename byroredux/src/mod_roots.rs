@@ -4,7 +4,8 @@
 //! loose files under it (`textures\`, `meshes\`, ...). The profile names its roots with `--mod-root <dir>`, repeated,
 //! lowest priority first. The directory the base master lives in, the game's `Data` directory, is the implicit
 //! *unmanaged* root and sorts first. A root's identity is its directory name, case-folded (no root carries a manifest
-//! yet); two roots with one identity are reported (LMC-ID-010).
+//! yet). A directory listed twice is one root, kept at its first place; two different directories with one identity
+//! are an identity collision, reported, and both load (LMC-ID-010).
 //!
 //! - **Plugins.** A `--master` or `--esm` given as a bare file name that names no file is looked up in the roots, the
 //!   highest-priority root first and the unmanaged root last, as a mod manager's virtual `Data` resolves it.
@@ -86,8 +87,8 @@ fn root(path: PathBuf, unmanaged: bool) -> ModRoot {
     }
 }
 
-/// The profile's roots: `unmanaged` (the base master's directory) first, then each of `given` that is a directory, in
-/// order; and one report line per root left out and per identity two roots share.
+/// The profile's roots: `unmanaged` (the base master's directory) first, then each of `given` that is a directory and
+/// not already a root, in order; and one report line per root left out and per identity two directories share.
 pub(crate) fn discover(unmanaged: Option<&Path>, given: &[PathBuf]) -> (Vec<ModRoot>, Vec<String>) {
     let mut roots: Vec<ModRoot> = unmanaged.map(|path| root(path.to_path_buf(), true)).into_iter().collect();
     let mut lines = Vec::new();
@@ -98,10 +99,20 @@ pub(crate) fn discover(unmanaged: Option<&Path>, given: &[PathBuf]) -> (Vec<ModR
             lines.push(format!("mod root {}: not a directory, left out", path.display()));
             continue;
         }
+        let canonical = |path: &Path| std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        if let Some(earlier) = roots.iter().find(|earlier| canonical(&earlier.path) == canonical(&path)) {
+            lines.push(format!(
+                "mod root {}: the same directory as the earlier root {}, left out (it is one root)",
+                path.display(),
+                earlier.label()
+            ));
+            continue;
+        }
         let added = root(path, false);
         if let Some(earlier) = roots.iter().find(|earlier| !earlier.unmanaged && earlier.identity == added.identity) {
             lines.push(format!(
-                "mod roots {} and {} share the identity '{}' (LMC-ID-010); both load, the later winning their loose files",
+                "identity collision (LMC-ID-010): mod roots {} and {} are different directories with the identity '{}'; \
+                 both load, the later winning their loose files",
                 earlier.path.display(),
                 added.path.display(),
                 added.identity
@@ -275,6 +286,22 @@ mod tests {
         let (roots, lines) = discover(None, &[first, second]);
         assert_eq!(roots.len(), 2);
         assert_eq!(roots[1].identity, "patch", "a trailing separator still names the directory");
-        assert!(lines[0].contains("share the identity 'patch' (LMC-ID-010)"), "{lines:?}");
+        assert!(lines[0].starts_with("identity collision (LMC-ID-010)"), "{lines:?}");
+        assert!(lines[0].contains("are different directories with the identity 'patch'"), "{lines:?}");
+    }
+
+    /// LMC-ID-010 — the same directory listed twice, under any spelling, is one root, not a collision.
+    #[test]
+    fn a_directory_listed_twice_is_one_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("Data");
+        touch(&data.join("Skyrim.esm"));
+        let patch = tmp.path().join("Patch");
+        touch(&patch.join("Patch.esp"));
+        let (roots, lines) = discover(Some(&data), &[patch.clone(), tmp.path().join("Patch/../Patch"), data.clone()]);
+        assert_eq!(roots.len(), 2, "{roots:?}");
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].ends_with("the same directory as the earlier root patch, left out (it is one root)"), "{lines:?}");
+        assert!(lines[1].contains("the same directory as the earlier root unmanaged ("), "{lines:?}");
     }
 }

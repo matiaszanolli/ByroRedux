@@ -29,7 +29,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use byroredux_plugin::activation::{activate, read_profile_plugin, Activation, ProfilePlugin};
+use byroredux_plugin::activation::{activate, read_profile_plugin, same_file_content, Activation, ProfilePlugin};
 use byroredux_plugin::archive_pairing::{
     archives_hold_bgsm_materials, archives_hold_compiled_scripts, ArchiveDirectory,
 };
@@ -149,7 +149,9 @@ pub(crate) fn activate_plugin_args(args: Vec<String>) -> anyhow::Result<Vec<Stri
     let resolved_esm = crate::mod_roots::resolve_plugin(&esm, &roots);
     let profile: Vec<ProfilePlugin> =
         masters.iter().chain(std::iter::once(&resolved_esm)).map(|path| read_profile_plugin(path)).collect();
-    let activation = activate(&profile);
+    let mut activation = activate(&profile);
+    // LMC-ID-010: a duplicate entry is a repeat or an identity collision depending on its bytes.
+    activation.compare_duplicates(&profile, |first, later| same_file_content(Path::new(first), Path::new(later)).ok());
     let mut report = session_report(&profile, &activation)?;
     let kept: Vec<(String, bool)> = profile
         .iter()

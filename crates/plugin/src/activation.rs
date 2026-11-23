@@ -11,10 +11,12 @@
 //!   plugin that transitively depends on it; each is reported with the reason, and activation carries on with the
 //!   rest. The original engines crash before the main menu instead (UESP, *Oblivion Mod:PCS Library/CTD on load*).
 //! - **Identity (LMC-ID-001, -009).** Names are matched by [`plugin_key`]: case-folded basenames, `\` and `/`
-//!   equivalent. The second entry with an identity already in the profile is dropped and reported (LMC-ID-010).
+//!   equivalent. The second entry with an identity already in the profile is dropped and reported (LMC-ID-010): as a
+//!   repeat when both entries hold the same bytes, as an identity collision when they differ.
 //!
 //! The module is pure over [`ProfilePlugin`]s; [`read_profile_plugin`] fills one from a file by reading its `TES4`
-//! record and nothing else.
+//! record and nothing else, and [`Activation::compare_duplicates`] with [`same_file_content`] tells the two kinds of
+//! duplicate apart.
 
 use std::collections::HashMap;
 use std::io::Read;
@@ -67,10 +69,23 @@ pub enum DisableCause {
     /// Its masters lead back to it. `cycle` lists the profile positions around the loop, starting and ending here. No
     /// shipped content does this; it is reported rather than looped on.
     MasterCycle { cycle: Vec<usize> },
-    /// It has the identity of the plugin at `first`, which the profile lists earlier (LMC-ID-010).
-    Duplicate { first: usize },
+    /// It has the identity of the plugin at `first`, which the profile lists earlier (LMC-ID-010). The earlier entry
+    /// loads either way; `content` says whether this one was a repeat or a different file under the same name.
+    Duplicate { first: usize, content: DuplicateContent },
     /// Its header could not be read.
     Unreadable { error: String },
+}
+
+/// How a duplicate's content compares with the plugin it duplicates (LMC-ID-010, the sandbox design's PKG-013).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DuplicateContent {
+    /// Not compared: [`activate`] works on names alone, and [`Activation::compare_duplicates`] fills this in; it stays
+    /// unknown when either file cannot be read.
+    Unknown,
+    /// The same bytes, or the same file listed twice: a repeat.
+    Same,
+    /// Different bytes under one identity: an identity collision.
+    Different,
 }
 
 /// A plugin the activation left out, by profile position.
@@ -108,6 +123,24 @@ impl Activation {
     /// The disabled entry for the plugin at `plugin`, if it is disabled.
     pub fn disabled_entry(&self, plugin: usize) -> Option<&Disabled> {
         self.disabled.iter().find(|entry| entry.plugin == plugin)
+    }
+
+    /// Compare each duplicate's content with the plugin it duplicates, by their profile names, through `same_content`
+    /// (`None` when it cannot tell; [`same_file_content`] for files). Only the duplicate pairs are compared.
+    pub fn compare_duplicates(
+        &mut self,
+        profile: &[ProfilePlugin],
+        mut same_content: impl FnMut(&str, &str) -> Option<bool>,
+    ) {
+        for entry in &mut self.disabled {
+            let DisableCause::Duplicate { first, content } = &mut entry.cause else { continue };
+            let (Some(earlier), Some(later)) = (profile.get(*first), profile.get(entry.plugin)) else { continue };
+            *content = match same_content(&earlier.name, &later.name) {
+                Some(true) => DuplicateContent::Same,
+                Some(false) => DuplicateContent::Different,
+                None => DuplicateContent::Unknown,
+            };
+        }
     }
 
     /// The report lines: one per hoist and one per disabled plugin, each disabled dependent naming the chain back to
@@ -149,7 +182,18 @@ impl Activation {
                 DisableCause::MasterCycle { cycle } => {
                     format!("its masters form a cycle: {}", cycle.iter().map(|&p| name(p)).collect::<Vec<_>>().join(" -> "))
                 }
-                DisableCause::Duplicate { first } => format!("the profile already lists it as {}", name(*first)),
+                DisableCause::Duplicate { first, content: DuplicateContent::Unknown } => {
+                    format!("the profile already lists it as {}", name(*first))
+                }
+                DisableCause::Duplicate { first, content: DuplicateContent::Same } => {
+                    format!("the profile already lists it as {}, with the same content", name(*first))
+                }
+                DisableCause::Duplicate { first, content: DuplicateContent::Different } => format!(
+                    "identity collision (LMC-ID-010): {} has the identity of {}, which the profile lists earlier, but \
+                     different content; the earlier one loads",
+                    profile.get(entry.plugin).map_or("?", |plugin| plugin.name.as_str()),
+                    profile.get(*first).map_or("?", |plugin| plugin.name.as_str())
+                ),
                 DisableCause::Unreadable { error } => format!("its header could not be read: {error}"),
             };
             lines.push(format!("disabled: {} — {reason}", name(entry.plugin)));
@@ -167,7 +211,7 @@ pub fn activate(profile: &[ProfilePlugin]) -> Activation {
     let mut by_key: HashMap<String, usize> = HashMap::with_capacity(count);
     for (position, plugin) in profile.iter().enumerate() {
         match by_key.get(&plugin_key(&plugin.name)) {
-            Some(&first) => cause[position] = Some(DisableCause::Duplicate { first }),
+            Some(&first) => cause[position] = Some(DisableCause::Duplicate { first, content: DuplicateContent::Unknown }),
             None => {
                 by_key.insert(plugin_key(&plugin.name), position);
             }
@@ -305,6 +349,41 @@ pub fn activate(profile: &[ProfilePlugin]) -> Activation {
         .filter_map(|(plugin, cause)| cause.map(|cause| Disabled { plugin, cause }))
         .collect();
     Activation { order, hoists, disabled }
+}
+
+/// Whether the files at `a` and `b` hold the same bytes: true at once for one file under two spellings, false at once
+/// for two lengths, otherwise compared in chunks up to the first difference.
+pub fn same_file_content(a: &Path, b: &Path) -> std::io::Result<bool> {
+    if let (Ok(a), Ok(b)) = (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        if a == b {
+            return Ok(true);
+        }
+    }
+    if std::fs::metadata(a)?.len() != std::fs::metadata(b)?.len() {
+        return Ok(false);
+    }
+    // Fill `buffer` from `reader`, short only at the end of the file.
+    fn fill(reader: &mut impl Read, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let mut filled = 0;
+        while filled < buffer.len() {
+            match reader.read(&mut buffer[filled..])? {
+                0 => break,
+                read => filled += read,
+            }
+        }
+        Ok(filled)
+    }
+    let (mut a, mut b) = (std::fs::File::open(a)?, std::fs::File::open(b)?);
+    let (mut chunk_a, mut chunk_b) = (vec![0u8; 1 << 16], vec![0u8; 1 << 16]);
+    loop {
+        let (read_a, read_b) = (fill(&mut a, &mut chunk_a)?, fill(&mut b, &mut chunk_b)?);
+        if chunk_a[..read_a] != chunk_b[..read_b] {
+            return Ok(false);
+        }
+        if read_a == 0 {
+            return Ok(true);
+        }
+    }
 }
 
 /// Read `path`'s `TES4` header, and only that record, into a [`ProfilePlugin`] named `path`. A file that cannot be
