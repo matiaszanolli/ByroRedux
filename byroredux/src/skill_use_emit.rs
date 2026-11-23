@@ -6,9 +6,10 @@
 //!
 //! * a **melee blow the player lands** feeds the skill of the equipped weapon (Blade for a blade, Blunt for a
 //!   blunt weapon, Hand to Hand unarmed), usage 0: UESP's "each hit on a target";
-//! * a **hit the player takes** feeds Light or Heavy Armor by the piece struck (`Oblivion.exe` `0x5e5a00`:
-//!   a roll of 0 to 99 over the slots' `iArmorDamage*Chance` weights, re-rolled up to seven times while the
-//!   struck slot is empty), usage 0.
+//! * a **hit the player takes** feeds Light or Heavy Armor by the piece struck, usage 0: a roll of 0 to 99
+//!   over the slots' `iArmorDamage*Chance` weights (CS), rolled again up to seven times while the struck
+//!   slot is empty. The weights are documented; the roll order, the shield as remainder and the attempt
+//!   count are an engine choice ([`ARMOR_HIT_ATTEMPTS`], #7310).
 //!
 //! * **seconds of a stance** (`stance_use_system`, `Oblivion.exe` `0x671620`): each full second the player
 //!   moves while sneaking and undetected feeds Sneak (usage 0), while swimming Athletics (usage 1), while
@@ -65,8 +66,8 @@ fn mix(mut seed: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// The skill (Light or Heavy Armor) of the piece a hit strikes on `wearer`, or `None` when seven rolls
-/// find every struck slot empty. `seed` makes the rolls deterministic per hit.
+/// The skill (Light or Heavy Armor) of the piece a hit strikes on `wearer`, or `None` when
+/// [`ARMOR_HIT_ATTEMPTS`] rolls find every struck slot empty. `seed` makes the rolls deterministic per hit.
 #[must_use]
 pub(crate) fn struck_armor_skill(world: &World, wearer: EntityId, seed: u64) -> Option<u32> {
     let chances = ArmorHitSlot::ROLLED.map(|(_, name, default)| {
@@ -787,7 +788,7 @@ mod tests {
         use byroredux_scripting::oblivion_skill_use::{pick_attribute, raise_skill_ranks};
         let (world, player) = level_world();
         oblivion_level_system(&world, 0.0); // seeds the announcement count
-        raise_skill_ranks(&world, player, BLADE, 10, false);
+        raise_skill_ranks(&world, player, BLADE, 10);
         oblivion_level_system(&world, 0.0);
         let told = crate::notifications::drain(&world);
         assert_eq!(told, vec![MEDITATE.to_string()], "the tenth major increase says to rest");
@@ -839,7 +840,7 @@ mod tests {
             _ => None,
         })));
         oblivion_level_system(&world, 0.0);
-        raise_skill_ranks(&world, player, BLADE, 5, false);
+        raise_skill_ranks(&world, player, BLADE, 5);
         assert_eq!(pick_attribute(&world, player, 0).unwrap().bonus, 4, "Strength's five rank-ups: iLevelUp05Mult");
         for attribute in [5, 7] {
             pick_attribute(&world, player, attribute).unwrap();
@@ -862,7 +863,7 @@ mod tests {
         use byroredux_scripting::oblivion_skill_use::{pick_attribute, raise_skill_ranks};
         let (world, player) = level_world();
         oblivion_level_system(&world, 0.0);
-        raise_skill_ranks(&world, player, BLADE, 10, false);
+        raise_skill_ranks(&world, player, BLADE, 10);
         crate::notifications::drain(&world);
         sleep(&world, false);
         oblivion_level_system(&world, 0.0);
@@ -882,7 +883,7 @@ mod tests {
     fn a_loaded_pending_level_is_not_announced_again() {
         use byroredux_scripting::oblivion_skill_use::raise_skill_ranks;
         let (world, player) = level_world();
-        raise_skill_ranks(&world, player, BLADE, 10, false);
+        raise_skill_ranks(&world, player, BLADE, 10);
         oblivion_level_system(&world, 0.0);
         assert!(crate::notifications::drain(&world).is_empty());
     }
@@ -909,7 +910,7 @@ mod tests {
         use byroredux_scripting::oblivion_skill_use::{SleepCompletions, SleepSource, raise_skill_ranks};
         use crate::oblivion_rest::{apply, bed_use_system, snapshot};
         let (world, player, _) = rest_world();
-        raise_skill_ranks(&world, player, BLADE, 10, false);
+        raise_skill_ranks(&world, player, BLADE, 10);
         byroredux_scripting::oblivion_skill_use::advance_level(&world, player);
         assert_eq!(world.get::<SkillUseLevel>(player).unwrap().pending.len(), 2);
 
@@ -949,7 +950,7 @@ mod tests {
         use byroredux_scripting::oblivion_skill_use::{SleepCompletions, raise_skill_ranks};
         use crate::oblivion_rest::{apply, bed_use_system, request_wait, snapshot};
         let (mut world, player, bed) = rest_world();
-        raise_skill_ranks(&world, player, BLADE, 10, false);
+        raise_skill_ranks(&world, player, BLADE, 10);
         let clock = |world: &World| world.resource::<crate::components::GameTimeRes>().absolute_hours();
         let unchanged = |world: &World| {
             oblivion_level_system(world, 0.0);

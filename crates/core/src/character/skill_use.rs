@@ -176,8 +176,12 @@ pub fn skill_use_amount(skill_av: u32, usage: u8, mult: f32) -> Option<f32> {
     (amount > 0.0 && amount.is_finite()).then_some(amount)
 }
 
-/// The armor slots a hit can strike, in the executable's roll order (`0x5e5a00`): five weighted slots,
-/// then the shield as the remainder.
+/// The armor slots a hit can strike: five weighted slots, then the shield as the remainder.
+///
+/// Only the weights are documented (CS *iArmorDamageXXChance*, "the percentage of damage that will be
+/// absorbed by a piece of armor"). The roll order, and the shield taking what the five leave instead of
+/// reading its own `iArmorDamageShieldChance` (30, which is that remainder at the defaults), are an engine
+/// choice (owner decision 2026-11-23, #7310).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArmorHitSlot {
     Helmet,
@@ -189,8 +193,8 @@ pub enum ArmorHitSlot {
 }
 
 impl ArmorHitSlot {
-    /// The five rolled slots with their setting and executable default (`iArmorDamage*Chance`: 10, 25,
-    /// 15, 10, 10 of 100; the shield takes the rest, 30).
+    /// The five rolled slots with their setting and its CS default (`iArmorDamage*Chance`: 10, 25, 15,
+    /// 10, 10 of 100; the shield takes the rest, 30).
     pub const ROLLED: [(Self, &'static str, u32); 5] = [
         (Self::Helmet, "iArmorDamageHelmChance", 10),
         (Self::Cuirass, "iArmorDamageCuirassChance", 25),
@@ -228,7 +232,9 @@ impl ArmorHitSlot {
     }
 }
 
-/// How many times a hit re-rolls when the struck slot holds nothing (`0x5e5a00` loops seven times).
+/// How many times a hit rolls when the struck slot holds nothing. An engine choice, not a documented rule
+/// (owner decision 2026-11-23, #7310): no source says how the original picks among the pieces worn (UESP
+/// *Armor*: "the exact mechanism … is unclear"). A hit that finds no piece earns no armor skill use.
 pub const ARMOR_HIT_ATTEMPTS: usize = 7;
 
 fn sanitize(banked: f32) -> f32 {
@@ -438,8 +444,8 @@ mod tests {
         assert_eq!(skill_use_amount(33, 0, 0.0), None);
     }
 
-    /// `0x5e5a00`: a roll under the first weight strikes the helmet; each weight extends the running total;
-    /// what is left of the 100 (30 by default) is the shield.
+    /// A roll under the first weight strikes the helmet; each weight extends the running total; what is
+    /// left of the 100 (30 by default) is the shield (the engine's order, #7310).
     #[test]
     fn a_roll_strikes_the_slot_whose_running_total_covers_it() {
         let chances = [10, 25, 15, 10, 10];

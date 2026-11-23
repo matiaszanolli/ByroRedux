@@ -236,33 +236,19 @@ pub fn bank_skill_use(world: &World, player: EntityId, code: u32, amount: f32) -
 
 /// OSL-API-001 / OSL-API-006: raise the player's skill `code` by `ranks` ranks
 /// (the unit of `AdvancePCSkill` and `ModPCSkill`, V14), counting each toward the
-/// level and the attribute tally. `keep_surplus` is the executable's
-/// "banked − cost, clamped at 0" per rank; without it the banked experience is
-/// set to 0.0, as `ModPCSkill` does (Q5). A skill stops at 100.
-pub fn raise_skill_ranks(
-    world: &World,
-    player: EntityId,
-    code: u32,
-    ranks: u32,
-    keep_surplus: bool,
-) -> Vec<u16> {
+/// level and the attribute tally. The banked experience is set to 0.0 for both
+/// commands: the Beta Patch 1.1 behaviour CS *ModPCSkill* documents (Q5), which CS
+/// *AdvancePCSkill* says it shares ("subject to the same issue as ModPCSkill";
+/// owner decision 2026-11-23, #7310). A skill stops at 100.
+pub fn raise_skill_ranks(world: &World, player: EntityId, code: u32, ranks: u32) -> Vec<u16> {
     let Some(skill) = resolve(world, player, code) else {
         return Vec::new();
     };
-    apply(world, player, &skill, |mut value, mut banked| {
-        let start = value;
-        for _ in 0..ranks {
-            if value >= SKILL_USE_CAP {
-                break;
-            }
-            let cost = skill.costs.cost(value, skill.class);
-            banked = if keep_surplus { (banked - cost).max(0.0) } else { 0.0 };
-            value += 1;
-        }
-        if !keep_surplus && value == start {
-            banked = 0.0;
-        }
-        (value, banked, value - start)
+    apply(world, player, &skill, |value, _banked| {
+        // One per rank, stopping at 100; a skill already past it is left where it is.
+        let cap = u32::from(SKILL_USE_CAP.max(value));
+        let raised = u32::from(value).saturating_add(ranks).min(cap) as u16;
+        (raised, 0.0, raised - value)
     })
 }
 
@@ -788,24 +774,29 @@ mod tests {
         assert_eq!(base(&world, player, blade), 5.0);
     }
 
-    /// OSL-API-001 / OSL-API-006 (V14): `Amount` is ranks. ModPCSkill leaves 0.0
-    /// banked (Q5); AdvancePCSkill keeps "banked − cost" (the executable's
-    /// loop). Both feed the tallies once per rank.
+    /// OSL-API-001 / OSL-API-006 (V14): `Amount` is ranks, and both commands
+    /// leave 0.0 banked (Q5; #7310 for AdvancePCSkill), even when no rank is
+    /// raised. Both feed the tallies once per rank.
     #[test]
     fn the_script_calls_raise_ranks() {
         let (world, player, blade, _) = world();
         bank_skill_use(&world, player, BLADE, 0.5);
-        assert_eq!(raise_skill_ranks(&world, player, BLADE, 2, false), vec![6, 7]);
+        assert_eq!(raise_skill_ranks(&world, player, BLADE, 2), vec![6, 7]);
         assert_eq!(base(&world, player, blade), 7.0);
         assert_eq!(world.resource::<SkillProgress>().0[&blade], 0.0);
         let level = world.get::<SkillUseLevel>(player).unwrap();
         assert_eq!((level.major_increases, level.attribute_tallies[0]), (2, 2));
         drop(level);
         bank_skill_use(&world, player, BLADE, 1.0);
-        assert_eq!(raise_skill_ranks(&world, player, BLADE, 1, true), vec![8]);
-        assert_eq!(world.resource::<SkillProgress>().0[&blade], 0.0, "1.0 banked < the cost, clamped at 0");
+        assert_eq!(raise_skill_ranks(&world, player, BLADE, 1), vec![8]);
+        assert_eq!(world.resource::<SkillProgress>().0[&blade], 0.0);
+        // #7310 — no surplus rule: experience banked toward a rank that is not raised is cleared too.
+        bank_skill_use(&world, player, BLADE, 1.0);
+        assert!(world.resource::<SkillProgress>().0[&blade] > 0.0);
+        assert_eq!(raise_skill_ranks(&world, player, BLADE, 0), Vec::<u16>::new());
+        assert_eq!(world.resource::<SkillProgress>().0[&blade], 0.0, "banked experience is set to 0.0 (Q5)");
         // A skill stops at 100.
-        assert_eq!(raise_skill_ranks(&world, player, BLADE, 500, false).last(), Some(&100));
+        assert_eq!(raise_skill_ranks(&world, player, BLADE, 500).last(), Some(&100));
         assert_eq!(base(&world, player, blade), 100.0);
     }
 
@@ -904,19 +895,19 @@ mod tests {
     #[test]
     fn ten_major_increases_make_a_level_pending() {
         let (world, player) = level_world();
-        raise_skill_ranks(&world, player, BLADE, 9, false);
+        raise_skill_ranks(&world, player, BLADE, 9);
         assert!(world.get::<SkillUseLevel>(player).unwrap().pending.is_empty());
-        raise_skill_ranks(&world, player, BLADE, 1, false);
+        raise_skill_ranks(&world, player, BLADE, 1);
         {
             let level = world.get::<SkillUseLevel>(player).unwrap();
             assert_eq!(level.pending.len(), 1);
             assert_eq!(level.pending[0].tallies[0], 10, "Blade is Strength's; the tenth counts (V13)");
             assert_eq!(level.attribute_tallies, [0; 8]);
         }
-        raise_skill_ranks(&world, player, BLADE, 10, false);
+        raise_skill_ranks(&world, player, BLADE, 10);
         assert_eq!(world.get::<SkillUseLevel>(player).unwrap().pending.len(), 2);
         // A minor skill's rank-up tallies its attribute but never freezes a level.
-        raise_skill_ranks(&world, player, SNEAK, 12, false);
+        raise_skill_ranks(&world, player, SNEAK, 12);
         assert_eq!(world.get::<SkillUseLevel>(player).unwrap().pending.len(), 2);
     }
 
@@ -926,7 +917,7 @@ mod tests {
     fn a_level_takes_three_distinct_picks() {
         let (world, player) = level_world();
         assert_eq!(pick_attribute(&world, player, 0), Err(PickRefusal::NoPendingLevel));
-        raise_skill_ranks(&world, player, BLADE, 10, false);
+        raise_skill_ranks(&world, player, BLADE, 10);
         assert_eq!(pick_attribute(&world, player, 0), Ok(PickAccepted { attribute: 0, bonus: 5, picks: 1 }));
         assert_eq!(pick_attribute(&world, player, 0), Err(PickRefusal::AlreadyPicked));
         assert_eq!(pick_attribute(&world, player, 8), Err(PickRefusal::NotAnAttribute));
@@ -946,7 +937,7 @@ mod tests {
     fn a_picked_level_applies_its_bonuses_and_health() {
         let (world, player) = level_world();
         assert_eq!(apply_pending_level(&world, player), LevelUp::NoPending);
-        raise_skill_ranks(&world, player, BLADE, 10, false);
+        raise_skill_ranks(&world, player, BLADE, 10);
         assert_eq!(apply_pending_level(&world, player), LevelUp::NotReady { picks: 0 });
         for code in [0, 5, 7] {
             pick_attribute(&world, player, code).unwrap();
@@ -976,9 +967,9 @@ mod tests {
     #[test]
     fn the_bonus_is_frozen_and_capped() {
         let (world, player) = level_world();
-        raise_skill_ranks(&world, player, BLADE, 10, false);
+        raise_skill_ranks(&world, player, BLADE, 10);
         // Rank-ups after the freeze (three more of Blade, Strength's) do not enter the pending level.
-        raise_skill_ranks(&world, player, BLADE, 3, false);
+        raise_skill_ranks(&world, player, BLADE, 3);
         for code in [0, 4, 7] {
             pick_attribute(&world, player, code).unwrap();
         }
@@ -995,7 +986,7 @@ mod tests {
     #[test]
     fn perfection_cannot_be_improved_upon() {
         let (world, player) = level_world();
-        raise_skill_ranks(&world, player, BLADE, 10, false);
+        raise_skill_ranks(&world, player, BLADE, 10);
         for code in [0, 5, 7] {
             pick_attribute(&world, player, code).unwrap();
         }
@@ -1015,7 +1006,7 @@ mod tests {
     #[test]
     fn advance_level_makes_a_level_pending_now() {
         let (world, player) = level_world();
-        raise_skill_ranks(&world, player, BLADE, 4, false);
+        raise_skill_ranks(&world, player, BLADE, 4);
         assert!(advance_level(&world, player));
         let level = world.get::<SkillUseLevel>(player).unwrap();
         assert_eq!(level.pending.len(), 1);
@@ -1030,7 +1021,7 @@ mod tests {
     #[test]
     fn the_report_lists_pending_levels() {
         let (world, player) = level_world();
-        raise_skill_ranks(&world, player, BLADE, 10, false);
+        raise_skill_ranks(&world, player, BLADE, 10);
         pick_attribute(&world, player, 0).unwrap();
         let report = skill_use_report(&world, player).unwrap().join("\n");
         assert!(report.contains("pending level 1 offers Strength +5, Intelligence +1"), "{report}");

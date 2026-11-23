@@ -1133,7 +1133,7 @@ fn a_console_play_bink_keeps_its_flags_in_their_slots() {
     assert_eq!(flags, vec![("FNVIntro.bik", true, true, false, true), ("Other.bik", false, true, true, true)]);
 }
 
-/// #7050 — `AdvancePCSkill` / `ModPCSkill` (Oblivion, `0x10d4` / `0x110f`, one handler in the executable):
+/// #7050 — `AdvancePCSkill` / `ModPCSkill` (Oblivion, `0x10d4` / `0x110f`):
 /// declined on a ruleset that does not level by skill use, and on a reference that is not the player; on
 /// Oblivion's they raise the player's base skill by `Amount` ranks.
 #[test]

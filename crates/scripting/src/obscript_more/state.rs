@@ -31,12 +31,12 @@ fn cmd_10f8(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], _c
     done(format!("ModPCFame {}", num(args, 0)))
 }
 
-// CS *AdvancePCSkill* / *ModPCSkill* (Oblivion): "increases the player's skill by `Amount`". In the
-// executable one handler serves both (`0x50d020`, opcodes `0x10d4` and `0x110f`, both taking the skill's
-// actor-value code and an amount). `Amount` is skill **ranks**: it loops once per rank, each raising the base
-// skill by 1 and counting toward the level and the attribute tally (#7049 V14). `ModPCSkill` leaves 0.0 of the
-// skill's experience banked (the Beta Patch 1.1 behaviour, PRD Q5); `AdvancePCSkill` keeps the executable's
-// "banked - cost, clamped at 0". Only the player has these (CS: *ModPCSkill* is a player function).
+// CS *AdvancePCSkill* / *ModPCSkill* (Oblivion, opcodes `0x10d4` and `0x110f`, each taking the skill's
+// actor-value code and an amount): "increases the player's skill by `Amount`". `Amount` is skill **ranks**,
+// each raising the base skill by 1 and counting toward the level and the attribute tally (#7049 V14). Both
+// leave 0.0 of the skill's experience banked: the Beta Patch 1.1 behaviour CS *ModPCSkill* documents (PRD Q5),
+// which CS *AdvancePCSkill* says it shares ("subject to the same issue as ModPCSkill"; owner decision
+// 2026-11-23, #7310). Only the player has these (CS: *ModPCSkill* is a player function).
 fn pc_skill(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
     if names_other_actor(ctx) {
         return Action::Declined;
@@ -54,7 +54,7 @@ fn pc_skill(world: &World, _fallout: bool, cmd: u16, args: &[ObScriptValue], ctx
     if world.try_resource::<byroredux_core::character::CharacterRuleset>().and_then(|r| r.leveling.skill_use_costs()).is_none() {
         return Action::Declined;
     }
-    crate::oblivion_skill_use::raise_skill_ranks(world, player, code as u32, ranks, cmd != 0x110f);
+    crate::oblivion_skill_use::raise_skill_ranks(world, player, code as u32, ranks);
     done(format!("{name} {code} {ranks}"))
 }
 

@@ -79,7 +79,8 @@ by running the original).
 So the answers to V4:
 
 - **Which armor piece takes a hit's experience**: one piece per hit, the one `0x5e5a00` selects; Light or Heavy Armor by that piece
-  (row 9). A mixed outfit feeds whichever piece is struck.
+  (row 9). A mixed outfit feeds whichever piece is struck. (Only the slot weights are documented; how the engine rolls is §3's
+  Light and Heavy Armor entry, an engine choice since #7310.)
 - **Jump, fall and dodge**: Acrobatics value 1 (3) for taking fall damage (rows 10 and 11) and value 0 (0.3) for a jump (row 12). The
   executable has no dodge action; UESP's "dodge" is the sidestep, which the census does not find as a separate call.
 - **A pickpocket counts**: Sneak value 2 per item successfully taken (row 3).
@@ -114,11 +115,14 @@ unfed list; its source is `FED_SKILLS` in `oblivion_skill_use.rs`, where a skill
   bow (type 5) has no shot path in the engine, so neither feeds a melee skill. UESP and the PRD say "each hit", so the emitter feeds per
   landed blow, not per swing; whether the executable's swing loop (row 17) counts swings is not read. Live (`oblivion-level-up.sh`): six
   unarmed blows on an Anvil patron took Hand to Hand from 5 to 7 with 0.59 banked, which is 6 × 0.6 less the two rank costs (1.30 and 1.71).
-- **Light and Heavy Armor** (usage 0: 1.5, 1.25): a hit the player takes. The struck piece is `0x5e5a00`'s roll, decoded this phase: a
-  number from 0 to 99 is compared with the running total of the five slots' weights, Helmet 10, Cuirass 25, Greaves 15, Gauntlets 10,
-  Boots 10 (`iArmorDamageHelmChance` and its siblings, executable defaults; the setting objects are created in the order Cuirass,
-  Greaves, Helm, Gauntlets, Boots and are summed in the order Helm, Cuirass, Greaves, Gauntlets, Boots), and a roll past the fifth slot
-  strikes the shield, the remaining 30. An empty struck slot re-rolls, up to seven times; a piece that is a heavy armor feeds Heavy Armor,
+- **Light and Heavy Armor** (usage 0: 1.5, 1.25): a hit the player takes. **Documented:** the slot weights, CS *iArmorDamageXXChance*
+  (Helmet 10, Cuirass 25, Greaves 15, Gauntlets 10, Boots 10, Shield 30, "the percentage of damage that will be absorbed by a piece of
+  armor"); UESP *Armor* says "the exact mechanism for determining which armor pieces you are wearing take how much damage is unclear".
+  **Engine choice** (owner decision 2026-11-23, #7310; first read from the executable's `0x5e5a00`, which the 2026-11-20 ruling no longer
+  accepts as a source): a number from 0 to 99 is compared with the running total of the five weights in the order Helm, Cuirass,
+  Greaves, Gauntlets, Boots; a roll past the fifth strikes the shield, so `iArmorDamageShieldChance` is not read (it equals that
+  remainder, 30, at the defaults); an empty struck slot rolls again, up to seven times (`ARMOR_HIT_ATTEMPTS`), and a hit that finds no
+  piece earns nothing. A piece that is a heavy armor feeds Heavy Armor,
   any other Light Armor. Oblivion's heavy flag is `BMDT` General Flags bit 7, now kept as `armor_type` 1 (the Skyrim field). The engine's roll is
   a deterministic mix of the hit counter and the two actors, not the executable's RNG.
 
@@ -169,8 +173,10 @@ scroll or an ability is never a cast action. Row 16's routine `0x5fca20` is the 
   experience is the per-skill `SkillProgress` the Skyrim path already saves; the new saved column is `SkillUseLevel` (format 137).
 - **Scheduler access declared.** The system declares the resource it writes and the components it reads, as `PendingSkillAdvances` does
   in `boot/schedule/late/scripted_combat.rs`, so the scheduler orders it against the emitters.
-- **The same entry for script calls.** `AdvancePCSkill` and `ModPCSkill` (one handler in the executable, `0x50d020`) raise a skill by
-  `Amount` **ranks** (V14), through the rank-up path and its tallies, not through use.
+- **The same entry for script calls.** `AdvancePCSkill` and `ModPCSkill` raise a skill by `Amount` **ranks** (V14), through the
+  rank-up path and its tallies, not through use. Both set the skill's banked experience to 0.0: the Beta Patch 1.1 behaviour
+  CS *ModPCSkill* documents (PRD Q5), which CS *AdvancePCSkill* says it shares ("subject to the same issue as ModPCSkill"). The
+  executable's surplus carry for `AdvancePCSkill` is not used: no documented source gives it (owner decision 2026-11-23, #7310).
 
 ## 5. Levels (#7052)
 
