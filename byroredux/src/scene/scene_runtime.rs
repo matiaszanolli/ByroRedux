@@ -260,6 +260,7 @@ pub(crate) fn populate_scene_runtime(
     world.init_resource::<crate::asset_provider::VmQuestScriptChecks>();
     // LMC-UI-002 slice 4 — MCM Helper's configs and settings, through the profile's mod roots.
     crate::mcm_files::install(world);
+    world.init_resource::<crate::mcm_hotkeys::HotkeyKeys>();
     // M47.2 — references that start disabled, for IsDisabled / IsEnabled.
     byroredux_scripting::install_authored_disabled_references(world, index);
     // M47.2 — Skyrim's SetAV("Name", v) resolves names through the AVIFs.

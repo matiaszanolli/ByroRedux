@@ -1,6 +1,6 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-23). Revision 38 measures LMC-PERF-001: a 1,000-plugin profile with
+**Status**: ACTIVE (2026-11-23). Revision 39 serves MCM Helper's hotkeys (LMC-UI-002 slice 4b). Revision 38 measures LMC-PERF-001: a 1,000-plugin profile with
 paired archives activates in 0.35 s, and archive pairing is linear. Revision 37 serves MCM Helper's config menus (LMC-UI-002 slice 4), with
 the player's settings kept per named profile (LMC-SET-004). Revision 36 builds LMC-PERF-003: an asset lookup is one index
 probe whatever the archive count, and opening archives is linear. Revision 35 makes SkyUI's `ShowMessage` (and any box wrapper called
@@ -963,7 +963,8 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   feeds it from `McmHost` and runs its actions as the config script's events.
   Slice 4 is built (revision 37): MCM Helper's `config.json` menus and its
   `MCM` API, with the player's settings per game and named profile
-  (LMC-SET-004); its hotkeys are slice 4b.
+  (LMC-SET-004). Slice 4b is built (revision 39): its `keybinds.json`
+  hotkeys, bound through its key maps and run on a key press.
 - **LMC-UI-003.** MenuXml replacements, `<include>` prefabs and font
   replacements from mods load through the MenuXml crate with the same
   precedence rules.
@@ -1654,3 +1655,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 36 | 2026-11-23 | LMC-PERF-003 built: provider pools are `ArchiveSet`s with one path index each (a lookup costs 0.8 µs from 10 to 400 archives, was 1.6 to 64 µs), verified against the archive scan on real FNV, Skyrim SE and Fallout 4 archives; opening a pool's shadow counts became linear (400 archives: 21 s to 0.53 s), noted under LMC-PERF-001 | — |
 | 37 | 2026-11-23 | LMC-UI-002 slice 4: MCM Helper (v1.6.2, version code 15) served by an engine `MCM_ConfigBase` and `MCM`; pages from `config.json` with mod-setting, script-property and global value sources, group conditions and actions; settings layered over the mod's defaults and an earlier install's file, written per game and named profile (`--profile-name`, a boot request's `[mods] name`; owner's decisions, mcm-host.md §6.4–6.6); hotkeys (`keybinds.json`) are slice 4b | — |
 | 38 | 2026-11-23 | LMC-PERF-001 measured on synthetic profiles of light plugins with paired archives: 1,000 plugins activate in 0.35 s warm and 0.33 s cold on a Ryzen 9 7950X with NVMe; archive pairing made linear (`ArchiveDirectory`, 0.345 s to 0.043 s at 2,000 plugins); real mod sizes and regular plugins past 252 not measured | — |
+| 39 | 2026-11-23 | LMC-UI-002 slice 4b: MCM Helper's `keybinds.json` hotkeys; a key map with an id binds a key (bindings per game and named profile, over an earlier install's); a press runs the function call, `SendEvent` delivers `OnControlDown` / `OnControlUp`; `RunConsoleCommand` is declined (no game-console interpreter) | — |

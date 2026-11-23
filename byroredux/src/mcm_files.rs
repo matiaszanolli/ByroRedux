@@ -52,14 +52,31 @@ impl HelperFiles for McmFiles {
         let path = self.profile_file(mod_name);
         write_atomically(&path, text).map_err(|error| format!("{}: {error}", path.display()))
     }
+    fn keybinds(&self, mod_name: &str) -> Option<Vec<u8>> {
+        self.read(format!("mcm\\config\\{mod_name}\\keybinds.json"))
+    }
+    fn legacy_registrations(&self) -> Option<Vec<u8>> {
+        self.read("mcm\\settings\\keybinds.json".to_owned())
+    }
+    fn profile_registrations(&self) -> Option<Vec<u8>> {
+        std::fs::read(self.profile_dir.join(BINDINGS_FILE)).ok()
+    }
+    fn write_profile_registrations(&self, text: &str) -> Result<(), String> {
+        let path = self.profile_dir.join(BINDINGS_FILE);
+        write_atomically(&path, text).map_err(|error| format!("{}: {error}", path.display()))
+    }
 }
+
+/// The profile's hotkey bindings (slice 4b), beside its mods' `<mod>.ini` files.
+const BINDINGS_FILE: &str = "keybinds.json";
 
 /// Write `text` beside `path` and rename it over, so a crash never leaves half a file.
 fn write_atomically(path: &Path, text: &str) -> std::io::Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    let partial = path.with_extension("ini.partial");
+    let extension = path.extension().map_or(String::new(), |ext| ext.to_string_lossy().into_owned());
+    let partial = path.with_extension(format!("{extension}.partial"));
     std::fs::write(&partial, text)?;
     std::fs::rename(&partial, path)
 }
@@ -137,5 +154,9 @@ mod tests {
         files.write_profile_settings("Frost", "[Main]\niLevel=3\n").unwrap();
         assert_eq!(files.profile_settings("Frost").as_deref(), Some(&b"[Main]\niLevel=3\n"[..]));
         assert!(!dir.path().join("mcm/skyrim/default/Frost.ini.partial").exists(), "the partial file was renamed over");
+        assert!(files.profile_registrations().is_none());
+        files.write_profile_registrations("{}\n").unwrap();
+        assert_eq!(files.profile_registrations().as_deref(), Some(&b"{}\n"[..]));
+        assert!(dir.path().join("mcm/skyrim/default/keybinds.json").is_file());
     }
 }

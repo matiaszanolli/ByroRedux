@@ -136,7 +136,7 @@ pub struct FormSpec {
 }
 
 impl FormSpec {
-    fn parse(text: &str) -> Result<Self, String> {
+    pub(super) fn parse(text: &str) -> Result<Self, String> {
         let (plugin, id) = text.split_once('|').ok_or_else(|| format!("form '{text}' is not 'Plugin.esp|ID'"))?;
         let digits = id.trim_start_matches("0x").trim_start_matches("0X");
         let local = u32::from_str_radix(digits, 16).map_err(|_| format!("form '{text}': '{id}' is not a hex form id"))?;
@@ -214,7 +214,7 @@ pub enum Param {
 }
 
 impl Param {
-    fn parse(value: &Value) -> Self {
+    pub(super) fn parse(value: &Value) -> Self {
         match value {
             Value::Bool(b) => Self::Bool(*b),
             Value::Number(n) if n.is_i64() => Self::Int(n.as_i64().unwrap_or(0) as i32),
@@ -438,14 +438,15 @@ fn numeric_source(source: &str, form: Option<FormSpec>, script: Option<String>, 
     Err(format!("unknown sourceType '{source}'"))
 }
 
-fn action(value: &Value) -> Result<Action, String> {
+pub(super) fn action(value: &Value) -> Result<Action, String> {
     let object = value.as_object().ok_or("an 'action' is not an object")?;
     let string = |key: &str| -> Option<String> { object.get(key).and_then(Value::as_str).map(str::to_owned) };
     let function = string("function").ok_or("an action has no 'function'")?;
     let target = match string("type").as_deref() {
+        // Without a form, MCM Helper takes the script from `script` as well (`ActionHandler`).
         Some("CallFunction") => ActionTarget::Method {
             form: string("form").map(|text| FormSpec::parse(&text)).transpose()?,
-            script: string("scriptName"),
+            script: string("scriptName").or_else(|| string("form").is_none().then(|| string("script")).flatten()),
         },
         Some("CallGlobalFunction") => ActionTarget::Global { script: string("script").ok_or("CallGlobalFunction without a 'script'")? },
         Some(other) => return Err(format!("Unsupported action type '{other}'")),

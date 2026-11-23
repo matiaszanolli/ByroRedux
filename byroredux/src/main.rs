@@ -70,6 +70,7 @@ mod material_dump;
 mod material_flags;
 mod material_translate;
 mod mcm_files;
+mod mcm_hotkeys;
 mod mcm_page;
 mod menu_stack;
 mod menu_xml_input;

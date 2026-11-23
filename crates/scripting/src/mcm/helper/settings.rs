@@ -28,6 +28,14 @@ pub trait HelperFiles: Send + Sync {
     fn profile_settings(&self, mod_name: &str) -> Option<Vec<u8>>;
     /// Replace the profile's `<mod>.ini`.
     fn write_profile_settings(&self, mod_name: &str, text: &str) -> Result<(), String>;
+    /// `MCM/Config/<mod>/keybinds.json` (slice 4b).
+    fn keybinds(&self, mod_name: &str) -> Option<Vec<u8>>;
+    /// `MCM/Settings/keybinds.json` an earlier MCM Helper install left (read only).
+    fn legacy_registrations(&self) -> Option<Vec<u8>>;
+    /// The profile's own `keybinds.json`.
+    fn profile_registrations(&self) -> Option<Vec<u8>>;
+    /// Replace the profile's `keybinds.json`.
+    fn write_profile_registrations(&self, text: &str) -> Result<(), String>;
 }
 
 /// A setting's type, from its key's first letter.
@@ -260,6 +268,9 @@ pub(crate) mod tests {
         pub(crate) legacy: HashMap<String, String>,
         pub(crate) profile: Mutex<HashMap<String, String>>,
         pub(crate) writes: Mutex<usize>,
+        pub(crate) keybinds: HashMap<String, String>,
+        pub(crate) legacy_registrations: Option<String>,
+        pub(crate) profile_registrations: Mutex<Option<String>>,
     }
 
     impl HelperFiles for MemoryFiles {
@@ -278,6 +289,19 @@ pub(crate) mod tests {
         fn write_profile_settings(&self, mod_name: &str, text: &str) -> Result<(), String> {
             *self.writes.lock().unwrap() += 1;
             self.profile.lock().unwrap().insert(mod_name.to_owned(), text.to_owned());
+            Ok(())
+        }
+        fn keybinds(&self, mod_name: &str) -> Option<Vec<u8>> {
+            self.keybinds.get(mod_name).map(|text| text.as_bytes().to_vec())
+        }
+        fn legacy_registrations(&self) -> Option<Vec<u8>> {
+            self.legacy_registrations.as_ref().map(|text| text.as_bytes().to_vec())
+        }
+        fn profile_registrations(&self) -> Option<Vec<u8>> {
+            self.profile_registrations.lock().unwrap().as_ref().map(|text| text.as_bytes().to_vec())
+        }
+        fn write_profile_registrations(&self, text: &str) -> Result<(), String> {
+            *self.profile_registrations.lock().unwrap() = Some(text.to_owned());
             Ok(())
         }
     }

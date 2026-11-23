@@ -7330,3 +7330,74 @@ fn mcm_helpers_global_api_answers_probes_and_settings() {
     assert_eq!(quest_property(&world, "Code"), Some(crate::mcm::helper::VERSION_CODE as f32));
     assert_eq!(quest_property(&world, "Mode"), Some(4.0), "both reads see the write");
 }
+
+/// LMC-UI-002 slice 4b — MCM Helper's hotkeys: a key-map control with an id binds a key to the hotkey
+/// of `keybinds.json` the id names (saved in the profile's bindings, over the bindings an earlier
+/// install left); a press runs a function call, `SendEvent` delivers `OnControlDown` and, on release,
+/// `OnControlUp` with the time held; a console-command hotkey is declined; an unmapped key stops it.
+#[test]
+fn mcm_helper_hotkeys_bind_through_a_key_map_and_run_on_a_press() {
+    use crate::mcm::helper::{hotkey_events, McmHelperStore};
+    use crate::mcm::{McmAnswer, McmHost};
+    let mut files = helper_files(
+        r#"{ "modName": "Frost", "displayName": "Frost Config",
+             "content": [ { "id": "warm", "type": "keymap", "text": "Warm up" } ] }"#,
+    );
+    files.keybinds.insert(
+        "Frost".into(),
+        r#"{ "modName": "Frost", "keybinds": [
+            { "id": "warm", "desc": "Warm yourself", "action": { "type": "CallFunction", "function": "Apply", "params": [true, "{i}5"] } },
+            { "id": "sprint", "action": { "type": "SendEvent", "form": "Frost.esp|10F00", "scriptName": "VmHotkeyConfig" } },
+            { "id": "tgm", "action": { "type": "RunConsoleCommand", "command": "tgm" } }
+        ] }"#
+            .into(),
+    );
+    files.legacy_registrations = Some(
+        r#"{ "version": 15, "keybinds": [ { "keycode": 42, "modName": "Frost", "id": "sprint" }, { "keycode": 20, "modName": "Frost", "id": "tgm" } ] }"#.into(),
+    );
+    let files = std::sync::Arc::new(files);
+    let mut world = mcm_helper_world(
+        "ScriptName VmHotkeyConfig extends MCM_ConfigBase\n\
+         Int Property Applied Auto\n\
+         Int Property Downs Auto\n\
+         Float Property Held Auto\n\
+         Function Apply(Bool a_value, Int a_tag)\n If a_value\n Applied += a_tag\n EndIf\n EndFunction\n\
+         Event OnControlDown(String control)\n If control == \"sprint\"\n Downs += 1\n EndIf\n EndEvent\n\
+         Event OnControlUp(String control, Float holdTime)\n Held = holdTime\n EndEvent\n",
+        crate::mcm::helper::settings::tests::MemoryFiles::default(),
+    );
+    world.insert_resource(McmHelperStore::new(files.clone(), &["Skyrim.esm".to_owned(), "Frost.esp".to_owned()]));
+    crate::quest_script_init_system(&world, 0.0);
+    crate::mcm::open(&world, 0).expect("opens");
+    let key = |world: &World| world.resource::<McmHost>().open.as_ref().unwrap().cells[0].as_ref().unwrap().number;
+    assert_eq!(key(&world), -1.0, "nothing bound yet");
+    crate::mcm::highlight(&world, 0).expect("highlights");
+    assert_eq!(world.resource::<McmHost>().open.as_ref().unwrap().info, "Warm yourself", "the hotkey's description");
+
+    crate::mcm::activate(&world, 0).expect("opens the key prompt");
+    crate::mcm::accept(&world, 0, McmAnswer::KeyMap(0x22, String::new())).expect("binds");
+    assert_eq!(key(&world), 34.0);
+    let written = files.profile_registrations.lock().unwrap().clone().expect("the profile's bindings were written");
+    let bindings = crate::mcm::helper::keybinds::parse_registrations(written.as_bytes());
+    assert_eq!(bindings.len(), 3, "the earlier install's two bindings carried over: {written}");
+    crate::mcm::close(&world).expect("closes");
+
+    let applied = |world: &World| quest_property(world, "Applied");
+    hotkey_events(&world, &[0x22], &[]);
+    assert_eq!(applied(&world), Some(5.0), "Apply(true, 5) ran on the press");
+    hotkey_events(&world, &[], &[(0x22, 0.4)]);
+    assert_eq!(applied(&world), Some(5.0), "a function call runs on the key going down only");
+    hotkey_events(&world, &[42], &[]);
+    assert_eq!(quest_property(&world, "Downs"), Some(1.0), "OnControlDown(\"sprint\")");
+    hotkey_events(&world, &[], &[(42, 1.5)]);
+    assert_eq!(quest_property(&world, "Held"), Some(1.5), "OnControlUp with the time held");
+    hotkey_events(&world, &[20], &[]);
+    hotkey_events(&world, &[0x30], &[]);
+    assert_eq!(applied(&world), Some(5.0), "the console hotkey and an unbound key run nothing");
+
+    crate::mcm::open(&world, 0).expect("opens again");
+    crate::mcm::activate(&world, 0).expect("opens the key prompt");
+    crate::mcm::accept(&world, 0, McmAnswer::KeyMap(-1, String::new())).expect("unmaps");
+    hotkey_events(&world, &[0x22], &[]);
+    assert_eq!(applied(&world), Some(5.0), "the unmapped hotkey no longer runs");
+}

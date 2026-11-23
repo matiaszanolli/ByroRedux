@@ -209,11 +209,49 @@ extension-state save path (STATE-001) as LMC-UI-002 says.
      - The profile directory, path safety and the atomic write.
      - No live run: no MCM Helper mod is available here.
    - **Not built** (§5.1):
-     - `keybinds.json` hotkeys and the key-map controls bound to them (slice 4b).
      - `RunConsoleCommand` and the key-conflict question.
      - Nested `{…}` translation arguments.
      - A key map shows its scancode, not the key's name.
      - A property or action on a form other than a quest is declined with a diagnostic.
+4b. MCM Helper's hotkeys (`keybinds.json`). **Built (2026-11-23).**
+   - **Scripting crate.**
+     - `crates/scripting/src/mcm/helper/keybinds.rs` parses a mod's hotkeys. Each has an id, a
+       description, and an action: `CallFunction`, `CallGlobalFunction`, `SendEvent` or
+       `RunConsoleCommand`.
+     - It also reads and writes the bindings file, `{ "version", "keybinds": [ { "keycode", "modName",
+       "id" } ] }`.
+     - A mod's hotkeys become live when its config loads, as MCM Helper reads them in `ReadConfigs`.
+   - **Key-map controls.** A key map with an `id` and no value source shows and sets the key bound to
+     that hotkey. Its info text without `help` is the hotkey's description. Unmapped (-1) removes the
+     binding.
+   - **Bindings on disk.**
+     - They are layered: any `MCM/Settings/keybinds.json` an earlier install left (read only) under
+       the profile's own `keybinds.json`.
+     - The profile file is the only one written, with every binding, as MCM Helper commits all of
+       them.
+   - **Presses.**
+     - `byroredux/src/mcm_hotkeys.rs` (`mcm_hotkey_system`) diffs the keys and mouse buttons the
+       world holds against the last frame's. Each key going down or coming up is sent as its
+       DirectInput code, a mouse button as 256 + its index. The scancode table in `interaction.rs`
+       is now the full DirectInput keyboard set.
+     - Nothing is sent while an open menu pauses the game, as MCM Helper skips input then.
+     - A function call runs on the key going down. `SendEvent` raises `OnControlDown(id)` going down
+       and `OnControlUp(id, heldSeconds)` coming up. Each runs after the VM has checked it, as a
+       control's action does.
+   - **Measured.**
+     - Parsing every action kind, bad files, and binding layering with a round trip.
+     - One VM test: bind through a key map over an earlier install's bindings, then a press runs the
+       call, `SendEvent` runs both events with the held time, a console hotkey and an unbound key run
+       nothing, and an unmapped key stops it.
+     - The input diff and the key and mouse code tables.
+     - No live run.
+   - **Not built.**
+     - `RunConsoleCommand`: the engine has no game-console interpreter, so it is declined with one
+       diagnostic per hotkey.
+     - Gamepad buttons.
+     - A key the engine itself handles (Escape, the inventory key, the debug `F` / `V`) never reaches
+       the held set, so it cannot be a hotkey.
+     - `SendEvent` to a form that is not a quest is declined.
 5. Fallout 4 MCM (`MCM/Config/<mod>/config.json`, its `MCM.*` Papyrus calls) and New Vegas MCM,
    each after its source is read.
 
@@ -363,4 +401,4 @@ end on the MenuXml track. Each needs its documented format read first; neither i
 5. **Settings an earlier MCM Helper install left** (owner, 2026-11-23). Taken: read as a layer
    between the defaults and the profile's values, never written.
 6. **MCM Helper's hotkeys** (`keybinds.json`; owner, 2026-11-23). Taken: a follow-up slice (4b),
-   because they need an input hook that runs Papyrus on a key press.
+   because they need an input hook that runs Papyrus on a key press. Built the same day (§4, 4b).

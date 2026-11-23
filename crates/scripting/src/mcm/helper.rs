@@ -13,15 +13,17 @@
 //! `Papyrus/MCM_ConfigBase.cpp` (v1.6.2).
 
 pub mod config;
+pub mod keybinds;
 pub mod settings;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::world::World;
 
 use self::config::{ActionTarget, Control, ControlKind, DefaultValue, FormSpec, GroupBehavior, HelperConfig, NumberKind, PageContent, Param, Source};
+use self::keybinds::{HotkeyAction, Keybind, Registrations};
 use self::settings::{HelperFiles, SettingStore};
 use super::{flags, McmHost, McmKind, McmOption};
 use crate::quest_stages::QuestFormId;
@@ -84,6 +86,15 @@ pub struct McmHelperStore {
     plugins: Vec<String>,
     page: Option<HelperPage>,
     pending: Vec<PendingAction>,
+    /// The hotkeys of each mod whose config loaded, by mod (lowercase); MCM Helper reads a mod's
+    /// `keybinds.json` when its config registers.
+    keybinds: HashMap<String, Vec<Keybind>>,
+    /// Each such mod's config quest and config script, which a hotkey's action defaults to.
+    config_quests: HashMap<String, (QuestFormId, String)>,
+    /// The player's key bindings, read on first use.
+    registrations: Option<Registrations>,
+    /// Hotkeys whose console command was declined, so the diagnostic is given once.
+    console_declined: HashSet<String>,
 }
 
 impl Resource for McmHelperStore {}
@@ -201,6 +212,42 @@ impl McmHelperStore {
     }
 }
 
+impl McmHelperStore {
+    /// The player's key bindings, read the first time they are needed.
+    fn registrations(&mut self) -> &mut Registrations {
+        if self.registrations.is_none() {
+            let parse = |bytes: Option<Vec<u8>>| bytes.as_deref().map(keybinds::parse_registrations).unwrap_or_default();
+            let (legacy, profile) = match self.files() {
+                Ok(files) => (parse(files.legacy_registrations()), parse(files.profile_registrations())),
+                Err(_) => (Vec::new(), Vec::new()),
+            };
+            self.registrations = Some(Registrations::layered(legacy, profile));
+        }
+        self.registrations.get_or_insert_with(Registrations::default)
+    }
+
+    /// The key bound to `mod_name`'s hotkey `id`; `-1` when none is.
+    pub fn bound_key(&mut self, mod_name: &str, id: &str) -> i32 {
+        self.registrations().key(mod_name, id)
+    }
+
+    /// Bind (or, with an unmapped key, unbind) `mod_name`'s hotkey `id` and commit the profile's bindings.
+    pub fn bind_key(&mut self, mod_name: &str, id: &str, keycode: i32) {
+        if !self.registrations().bind(mod_name, id, keycode) {
+            return;
+        }
+        let text = keybinds::registrations_text(self.registrations().all());
+        if let Err(error) = self.files().and_then(|files| files.write_profile_registrations(&text)) {
+            log::warn!("MCM Helper: the key bindings could not be written: {error}");
+        }
+    }
+
+    /// The description of `mod_name`'s hotkey `id`, if its `keybinds.json` declares it.
+    fn keybind_desc(&self, mod_name: &str, id: &str) -> Option<String> {
+        self.keybinds.get(&mod_name.to_ascii_lowercase())?.iter().find(|k| k.id == id).map(|k| k.desc.clone())
+    }
+}
+
 fn stem(file: &str) -> &str {
     file.rsplit_once('.').map_or(file, |(stem, _)| stem)
 }
@@ -229,6 +276,29 @@ fn context(world: &World, quest: QuestFormId) -> Result<Context, String> {
         })
         .unwrap_or_default();
     Ok(Context { quest, mod_name, script })
+}
+
+/// A config script registered: its mod's hotkeys become live (`KeybindManager::ReadKeybinds`, which MCM
+/// Helper runs for each config it reads), with the config quest their actions default to.
+pub fn note_config_quest(world: &World, quest: QuestFormId) {
+    let Ok(ctx) = context(world, quest) else { return };
+    let key = ctx.mod_name.to_ascii_lowercase();
+    let mut store = world.resource_mut::<McmHelperStore>();
+    if matches!(&*store.config(&ctx.mod_name), Err(_)) {
+        return;
+    }
+    store.config_quests.insert(key.clone(), (quest, ctx.script.clone()));
+    if store.keybinds.contains_key(&key) {
+        return;
+    }
+    let parsed = match store.files().map(|files| files.keybinds(&ctx.mod_name)) {
+        Ok(Some(bytes)) => keybinds::parse_keybinds(&bytes).unwrap_or_else(|error| {
+            log::warn!("MCM Helper: the hotkeys of {} do not load: {error}", ctx.mod_name);
+            Vec::new()
+        }),
+        _ => Vec::new(),
+    };
+    store.keybinds.insert(key, parsed);
 }
 
 /// A form a config names (`"Plugin.esp|D62"`), as a load-order FormID.
@@ -280,6 +350,10 @@ fn read_number(world: &World, ctx: &Context, control: &Control) -> f32 {
         Some(Source::Global { form }) => resolve_form(world, form)
             .and_then(|id| world.try_resource::<crate::Globals>().and_then(|globals| globals.get(id)))
             .unwrap_or(0.0),
+        // A key map with no source shows the key bound to the hotkey its id names (slice 4b).
+        None if control.kind == ControlKind::KeyMap && !control.id.is_empty() => {
+            world.resource_mut::<McmHelperStore>().bound_key(&ctx.mod_name, &control.id) as f32
+        }
         _ => 0.0,
     }
 }
@@ -463,6 +537,10 @@ fn value_string(world: &World, ctx: &Context, control: &Control) -> String {
 
 /// The info text for a control: its `help`, with `{value}` replaced (`Control::GetInfoText`).
 fn info_text(world: &World, ctx: &Context, control: &Control) -> String {
+    // A hotkey's key map without help shows the hotkey's description (`KeyMapControl::GetInfoText`).
+    if control.help.is_empty() && control.kind == ControlKind::KeyMap && control.values.source.is_none() && !control.id.is_empty() {
+        return world.resource::<McmHelperStore>().keybind_desc(&ctx.mod_name, &control.id).unwrap_or_default();
+    }
     if !control.help.contains("{value}") {
         return control.help.clone();
     }
@@ -761,9 +839,14 @@ pub fn accept(world: &World, quest: QuestFormId, option: i32, value: Accepted) -
             }
         }
         (ControlKind::Enum, Accepted::Index(index)) => write_number(world, &ctx, &control, index as f32),
-        (ControlKind::KeyMap, Accepted::Number(_)) if control.values.source.is_none() => {
-            // A key map bound to a hotkey of `keybinds.json`: slice 4b.
-            Err("a key map bound to an MCM Helper hotkey is not served yet".to_owned())
+        (ControlKind::KeyMap, Accepted::Number(code)) if control.values.source.is_none() => {
+            // A key map bound to a hotkey of `keybinds.json` (`KeybindManager::Register`).
+            if control.id.is_empty() {
+                Err("a key map with neither a value source nor an id".to_owned())
+            } else {
+                world.resource_mut::<McmHelperStore>().bind_key(&ctx.mod_name, &control.id, code as i32);
+                Ok(())
+            }
         }
         (ControlKind::Slider | ControlKind::Color | ControlKind::KeyMap, Accepted::Number(number)) => {
             write_number(world, &ctx, &control, number)
@@ -835,3 +918,101 @@ fn run_action(world: &World, action: &PendingAction) -> Result<(), String> {
     }
 }
 
+
+// ---- hotkeys (slice 4b) ----
+
+/// This frame's key presses (`downs`) and releases with how long each was held (`ups`), as DirectInput
+/// codes (a mouse button is 256 + its index): every hotkey bound to the key runs its action. The input
+/// feed sends nothing while the game is paused, as MCM Helper ignores input then.
+pub fn hotkey_events(world: &World, downs: &[i32], ups: &[(i32, f32)]) {
+    let presses = downs.iter().map(|&code| (code, None)).chain(ups.iter().map(|&(code, held)| (code, Some(held))));
+    let mut queued = false;
+    for (code, released) in presses {
+        let hotkeys: Vec<(String, Keybind, Option<(QuestFormId, String)>)> = {
+            let mut store = world.resource_mut::<McmHelperStore>();
+            let bound: Vec<(String, String)> =
+                store.registrations().bound_to(code).map(|(mod_name, id)| (mod_name.to_owned(), id.to_owned())).collect();
+            bound
+                .into_iter()
+                .filter_map(|(mod_name, id)| {
+                    let key = mod_name.to_ascii_lowercase();
+                    let keybind = store.keybinds.get(&key)?.iter().find(|k| k.id == id)?.clone();
+                    Some((mod_name, keybind, store.config_quests.get(&key).cloned()))
+                })
+                .collect()
+        };
+        for (mod_name, keybind, config) in hotkeys {
+            queued |= queue_hotkey(world, &mod_name, &keybind, config, released);
+        }
+    }
+    if queued {
+        run_pending_actions(world);
+    }
+}
+
+/// Queue what a hotkey does on this press; whether anything was queued.
+fn queue_hotkey(world: &World, mod_name: &str, keybind: &Keybind, config: Option<(QuestFormId, String)>, released: Option<f32>) -> bool {
+    let Some((quest, script)) = config else { return false };
+    let ctx = Context { quest, mod_name: mod_name.to_owned(), script };
+    let pending = match (&keybind.action, released) {
+        (HotkeyAction::Call(action), None) => {
+            let args = action
+                .params
+                .iter()
+                .map(|param| match param {
+                    Param::ControlValue => VmStored::None,
+                    Param::Int(i) => VmStored::Int(*i),
+                    Param::Bool(b) => VmStored::Bool(*b),
+                    Param::Float(f) => VmStored::Float(*f),
+                    Param::Text(text) => VmStored::Str(text.clone()),
+                })
+                .collect();
+            match &action.target {
+                ActionTarget::Global { script } => {
+                    Ok(PendingAction { quest, script: script.clone(), function: action.function.clone(), args, global: true })
+                }
+                ActionTarget::Method { form, script } => target_quest(world, &ctx, form.as_ref()).map(|target| PendingAction {
+                    quest: target,
+                    script: script.clone().unwrap_or_else(|| ctx.script.clone()),
+                    function: action.function.clone(),
+                    args,
+                    global: false,
+                }),
+            }
+        }
+        (HotkeyAction::Call(_), Some(_)) => return false,
+        (HotkeyAction::SendEvent { form, script }, released) => target_quest(world, &ctx, Some(form)).and_then(|target| {
+            let script = script.clone().or_else(|| first_script(world, target)).ok_or("the form runs no script")?;
+            let (function, args) = match released {
+                None => ("OnControlDown", vec![VmStored::Str(keybind.id.clone())]),
+                Some(held) => ("OnControlUp", vec![VmStored::Str(keybind.id.clone()), VmStored::Float(held)]),
+            };
+            Ok(PendingAction { quest: target, script, function: function.to_owned(), args, global: false })
+        }),
+        (HotkeyAction::Console { command }, None) => {
+            let mut store = world.resource_mut::<McmHelperStore>();
+            if store.console_declined.insert(format!("{mod_name}:{}", keybind.id)) {
+                log::warn!("MCM Helper: hotkey '{}' of {mod_name} runs the console command '{command}', which the engine does not interpret", keybind.id);
+            }
+            return false;
+        }
+        (HotkeyAction::Console { .. }, Some(_)) => return false,
+    };
+    match pending {
+        Ok(pending) => {
+            world.resource_mut::<McmHelperStore>().pending.push(pending);
+            true
+        }
+        Err(error) => {
+            log::warn!("MCM Helper: hotkey '{}' of {mod_name} is not run: {error}", keybind.id);
+            false
+        }
+    }
+}
+
+/// The first script the VM runs on `quest`, for an event whose `scriptName` is omitted.
+fn first_script(world: &World, quest: QuestFormId) -> Option<String> {
+    world.try_resource::<crate::QuestOwnScripts>().and_then(|scripts| {
+        scripts.running_scripts().find(|(owner, _)| *owner == quest).and_then(|(_, scripts)| scripts.first().map(|s| s.script.clone()))
+    })
+}

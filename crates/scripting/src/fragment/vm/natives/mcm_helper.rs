@@ -56,9 +56,12 @@ impl Vm<'_> {
         };
         Ok(Some(match name {
             "versioncode" => Value::Int(helper::VERSION_CODE as i32),
-            "configname" => Value::Str(
-                world.resource_mut::<McmHelperStore>().registration(world, quest).map(|(name, _)| name).unwrap_or_default(),
-            ),
+            "configname" => {
+                let name = world.resource_mut::<McmHelperStore>().registration(world, quest).map(|(name, _)| name).unwrap_or_default();
+                // The config is read: its mod's hotkeys become live (slice 4b).
+                helper::note_config_quest(world, quest);
+                Value::Str(name)
+            }
             "configpages" => {
                 let pages = world.resource_mut::<McmHelperStore>().registration(world, quest).map(|(_, pages)| pages).unwrap_or_default();
                 Value::Array(std::rc::Rc::new(std::cell::RefCell::new(pages.into_iter().map(Value::Str).collect())))
