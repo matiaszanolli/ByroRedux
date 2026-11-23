@@ -6461,6 +6461,97 @@ fn a_function_that_shows_a_box_is_a_wait_for_its_callers() {
     assert!(check_function_reason(script, "Fragment_2", None).is_ok(), "as a statement it may wait");
 }
 
+/// #7299 — a waited-on box replays its statement with the one answer it returned, so a statement
+/// holding two `Show()` calls is refused ahead of time; one in an `If` and another in its body are
+/// two statements and run.
+#[test]
+fn one_statement_holds_at_most_one_waited_box() {
+    let check = |body: &str| {
+        let source = format!(
+            "ScriptName QF_VmTwo extends Quest\nMessage Property First Auto\nMessage Property Second Auto\n\
+             Function Fragment_1()\n{body}\nEndFunction\n"
+        );
+        let (script, errors) = byroredux_papyrus::parse_script(&source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        check_function_reason(Arc::new(script), "Fragment_1", None)
+    };
+    let reason = check("If First.Show() == 0 && Second.Show() == 1\n Self.SetStage(6)\nEndIf").err().unwrap_or_default();
+    assert!(reason.contains("two Message.Show() answers in one statement"), "{reason}");
+    assert!(check("If First.Show() == 0\n Int b = Second.Show()\nEndIf").is_ok(), "one per statement");
+}
+
+/// #7299 — a `While` whose condition waits on a box, re-evaluated after a body that waited, suspends
+/// on that box (the resumed path re-runs only the condition with the answer) instead of the run
+/// stopping: the loop goes round once on button 1 and leaves on button 0.
+#[test]
+fn a_while_condition_waits_on_its_box_after_a_resumed_body() {
+    const MESSAGE: u32 = 0x0001_0F10;
+    const SOURCE: &str = "ScriptName QF_VmLoop extends Quest\n\
+        Message Property Again Auto\n\
+        Function Fragment_1()\n\
+          Int rounds = 0\n\
+          While Again.Show() == 1\n\
+            rounds += 1\n\
+            Utility.Wait(1.0)\n\
+          EndWhile\n\
+          Self.SetStage(10 + rounds)\n\
+        EndFunction\n";
+    let (script, errors) = byroredux_papyrus::parse_script(SOURCE).unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+    let script = Arc::new(script);
+    if let Err(why) = check_function_reason(Arc::clone(&script), "Fragment_1", None) { panic!("{why}") }
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+    index.messages.insert(
+        MESSAGE,
+        byroredux_plugin::esm::records::MesgRecord {
+            form_id: MESSAGE,
+            description: "Again?".into(),
+            message_box: true,
+            buttons: vec!["No".into(), "Yes".into()],
+            ..Default::default()
+        },
+    );
+    crate::install_message_catalog(&mut world, &index);
+    let mut vmad = vmad();
+    vmad.scripts[0].name = "QF_VmLoop".into();
+    vmad.scripts[0].properties.push(ScriptProperty {
+        name: "Again".into(),
+        status: 1,
+        value: PropertyValue::Object { form_id: MESSAGE, alias: -1 },
+    });
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        fragments.insert_vmad(Q, vmad);
+        fragments.insert_vm_script(Arc::clone(&script));
+        fragments.insert(
+            Q,
+            0,
+            vec![Effect::Interpret { script: "QF_VmLoop".into(), function: "Fragment_1".into(), args: Vec::new(), resume: None }],
+        );
+    }
+    let ticket = |world: &World| {
+        let raised = std::mem::take(&mut world.resource_mut::<crate::PendingScriptMessages>().0);
+        assert_eq!(raised.len(), 1, "one box is up");
+        let crate::MessageAnswer::Papyrus(ticket) = raised[0].answer else { panic!("{:?}", raised[0].answer) };
+        ticket
+    };
+    world.resource_mut::<QuestStageState>().set_stage(Q, 0);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    crate::messages::record_papyrus_answer(&world, ticket(&world), 1);
+    crate::fragment::fragment_continuation_system(&world, 0.0); // round 1: the body waits
+    crate::fragment::fragment_continuation_system(&world, 1.0); // the wait ends; the condition asks again
+    let second = ticket(&world);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 0, "the run waits on the second box");
+    crate::messages::record_papyrus_answer(&world, second, 0);
+    crate::fragment::fragment_continuation_system(&world, 0.0);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 11, "one round, then out");
+}
+
 /// #7289 — an answered `Message.Show()` run that is ready in a frame whose budget an earlier ready
 /// run spends goes back on the queue. It already took its answer, so it must come back due, not
 /// asking again: asking again read the lost-box default, button 0, in place of the one pressed.

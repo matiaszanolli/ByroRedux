@@ -448,7 +448,16 @@ impl Vm<'_> {
             }
             Stmt::While { condition, body } => {
                 match self.exec_block(frame, body, Some(rest), inner, false)? {
-                    Flow::Normal => self.exec_while(frame, &condition.node, body),
+                    Flow::Normal => match self.exec_while(frame, &condition.node, body) {
+                        // #7299 — the loop's condition waits on a box after a resumed body: suspend
+                        // past the body's end, so the answer re-runs only the condition. (On the
+                        // first run the statement loop in `exec_block` catches the same stop.)
+                        Err(Stop(why)) if why == AWAITS_MESSAGE && self.deferred.awaits_message.is_some() => Ok(suspend_at(
+                            VmStep::Branch(0),
+                            Flow::Suspend(0.0, vec![VmStep::Replay(body.len() as u32)], Vec::new()),
+                        )),
+                        flow => flow,
+                    },
                     flow => Ok(suspend_at(VmStep::Branch(0), flow)),
                 }
             }

@@ -25,6 +25,9 @@ pub(super) struct Checker<'l> {
     /// Whether the function being checked waits (itself or in a function
     /// it calls as a statement).
     pub(super) waits: bool,
+    /// #7299 — the value `Message.Show()` calls in the statement being checked. A waited-on box
+    /// replays its statement with one answer, so a statement may hold only one.
+    pub(super) value_shows: u32,
     /// The functions that wait, by lowercased (script, function).
     pub(super) waiting: HashSet<(String, String)>,
     /// The first reason the check failed, for diagnostics.
@@ -243,6 +246,7 @@ impl<'l> Checker<'l> {
             library,
             reason: None,
             waits: false,
+            value_shows: 0,
             waiting: HashSet::new(),
             scripts: HashMap::new(),
             visiting: HashSet::new(),
@@ -495,6 +499,15 @@ impl<'l> Checker<'l> {
     }
 
     pub(super) fn check_stmt(&mut self, frame: &mut CheckFrame, statement: &Stmt) -> Option<()> {
+        // #7299 — each statement counts its own value `Show()` calls; a nested block's statements
+        // replay on their own, so the enclosing count is restored after them.
+        let outer = std::mem::replace(&mut self.value_shows, 0);
+        let checked = self.check_stmt_counted(frame, statement);
+        self.value_shows = outer;
+        checked
+    }
+
+    fn check_stmt_counted(&mut self, frame: &mut CheckFrame, statement: &Stmt) -> Option<()> {
         match statement {
             Stmt::VarDecl(variable) => {
                 if let Some(init) = &variable.initial_value {
@@ -1112,6 +1125,13 @@ impl<'l> Checker<'l> {
                 // a function holding it waits, so a caller calling it for its value is refused
                 // (`call_waits`) instead of raising the box and then stopping mid-run.
                 self.waits = true;
+                // #7299 — the statement replays with the one answer its box returned, so a second
+                // `Show()` in the same statement would read the first's answer (or the first the
+                // second's): refuse it ahead of time.
+                self.value_shows += 1;
+                if self.value_shows > 1 {
+                    return self.fail(|| "two Message.Show() answers in one statement".into());
+                }
                 return Some(Kind::Num);
             }
             return self.fail(|| format!("Message.Show/{} as written", arg_kinds.len()));
