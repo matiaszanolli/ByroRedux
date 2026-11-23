@@ -217,7 +217,7 @@ separate integration gap. See the gaps table below.
 | `script.activate` console command wired | ✓ |
 | Full Papyrus transpiler (M47.2) | ✓ `.pex` recognizer slice (CFG→lift→short-circuit→control-flow→lower); full transpiler deferred | 
 | Papyrus VM (bounded interpreter, decline-fallback) | ✓ reference/alias/update/event + quest-fragment scripts run what the static lowering declines, under a per-frame budget (#5763); structs + array methods |
-| MCM host (LMC-UI-002) | ◐ Designed ([mcm-host.md](engine/mcm-host.md)); first slice built: a quest's own scripts receive `OnInit` once per save. The SkyUI `SKI_ConfigBase` front end, the page model and the presentation are not built; MCM Helper, Fallout 4 MCM and New Vegas MCM are sketched |
+| MCM host (LMC-UI-002) | ◐ Designed ([mcm-host.md](engine/mcm-host.md)); built: a quest's own scripts receive `OnInit` once per save (slice 1) and the native Mod Configuration page, the pause menu's sub-page (slice 3, `crates/native-ui/src/mcm.rs`). The page draws an `McmSnapshot` and nothing produces one yet: the host adapter, the model and the SkyUI `SKI_ConfigBase` front end are not built; MCM Helper, Fallout 4 MCM and New Vegas MCM are sketched |
 | Script-extender compatibility layer (SKSE-family) | ◐ **vertical slice** — six built-in provider families registered in the Papyrus provider catalog (Game, Input, UI, StorageUtil, JContainers, ModEvent). ~23.5k LOC across [`crates/sdk/src/`](../crates/sdk/src/) (14 701), [`crates/scripting/src/papyrus_provider/`](../crates/scripting/src/papyrus_provider/) (7 673) and `compatibility.rs` (1 109), measured 2026-11-23; the ObScript runtime the 2026-09-10 count folded in is the M47.3 row below (`obscript*`, ~19.3k LOC). Audited as `/audit-scripting` Dimension 7 (the provider seam, in its reports since `AUDIT_SCRIPTING_2026-09-06.md`) and `/audit-tooling` (the SDK, since `AUDIT_TOOLING_2026-09-22.md`). It is not verified against real mod content: treat the status as "exists and is tested in-crate". Design: [`docs/engine/sdk-v0.1-development-plan.md`](engine/sdk-v0.1-development-plan.md). |
 
 ---
@@ -379,7 +379,7 @@ The engine stands in for what extender patches did, and does not load the patche
 | Load-order rules | ✓ | Melee reach and the skill-rank curve read the load order's GMSTs (#7335) |
 | Saves across a changed load order | ✓ | A save records its profile; saved FormIDs are (plugin, object) identities; a live load reloads the session's own plugins and reports removed, added and reordered mods; a save made in a removed plugin's cell loads (Oblivion's safe cell, else the session's location) |
 | Fold conformance | ✓ | `scripts/lmc-conformance.py` and `lmc-fold-conformance.sh` measure the fold against a raw-record oracle |
-| MCM host | ◐ | Designed; first slice built (see Scripting) |
+| MCM host | ◐ | Designed; quest-script `OnInit` and the native page are built, the page has no data source yet (see Scripting) |
 | Script-extender layer against real mods | ◐ | See the Scripting row and the gap below |
 
 ---
@@ -419,4 +419,4 @@ The engine stands in for what extender patches did, and does not load the patche
 | Texture streaming on by default (M39) | VRAM headroom on large exteriors | The A11 reflection A/B, a clean FO4 A9 soak and the default flip (#6629–#6631) |
 | Radiance-cache GI | GI on every surface without a wider ray gate; M-LIGHT Phase 5 and the Phase 4 L4 exit | [`radiance-cache-gi-coverage.md`](prd/radiance-cache-gi-coverage.md); the cache is not allocated yet (#7069) |
 | Terrain patches: per-pixel cost review | Whether displacement ships beyond the Medium preset's coarse setting | TSD-4.2 stage review (#7221) |
-| MCM front ends beyond the first slice | In-game configuration for `SKI_ConfigBase` mods, MCM Helper, Fallout 4 and New Vegas MCM | LMC-UI-002, [`mcm-host.md`](engine/mcm-host.md) |
+| MCM host model and front ends | In-game configuration for `SKI_ConfigBase` mods (the page exists but shows nothing until the model feeds it), MCM Helper, Fallout 4 and New Vegas MCM | LMC-UI-002, [`mcm-host.md`](engine/mcm-host.md) |
