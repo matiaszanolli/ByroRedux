@@ -44,8 +44,8 @@
 //! | `ReleasePackageHold` | `byroredux::npc_spawn::ai_package::ambient_ai_package_system` (takes it beside its read of `EvaluatePackageRequest`, before any early return, #7243) |
 //! | `TwoStateTransitionBatch` | `vm_state::two_state_activator_system` |
 //! | `OnDeathEvent` | `fragment::reference::collect_deliveries` (the frame pass drains it before anything else runs) |
-//! | `HavokImpulseRequest` | `byroredux::systems::cinematic::scripted_havok_impulse_system` (snapshots every request and drains exactly those; the only early return before the drain is the empty set, and a missing `HavokImpulseRules` drains the snapshot before returning, #6009) |
-//! | `MotionTypeChangeRequest` | `byroredux::systems::cinematic` (the one tail-drain — it removes exactly the entities it snapshotted, after an empty-set early return that strands nothing) |
+//! | `HavokImpulseRequest` | `byroredux::systems::cinematic::scripted_havok_impulse_system` (head drain via `take_requests`, #6150; a missing `HavokImpulseRules` drops the drained requests instead of re-resolving them every frame, #6009) |
+//! | `MotionTypeChangeRequest` | `byroredux::systems::cinematic::scripted_motion_type_system` (head drain via `take_requests`, #6150) |
 //! | `OnResetEvent` | `obscript_objects::obscript_object_system` (`collect_due` takes it first, before its no-instances early returns, #6267) |
 //! | `PickIdleRequest` | `byroredux::systems::cinematic::pick_idle_system` |
 //! | `FleeRequest` | `byroredux::systems::flee::flee_system` (`start_flights`) |
@@ -54,8 +54,9 @@
 //! | `UseWeaponRequest` | `byroredux::systems::script_requests::use_weapon_system` |
 //! | `ResetInventoryRequest` | `byroredux::systems::script_requests::reset_inventory_system` |
 //!
-//! The binary-side request consumers above all snapshot-then-drain: the only early return before the
-//! drain is the empty set, which strands nothing.
+//! The binary-side request consumers above all open with `byroredux::systems::take_requests` (#6150): one
+//! head drain that removes exactly the requests it copied out, so no early return can sit before it.
+//! `byroredux/src/systems/request_drain_tests.rs` runs each consumer and checks its marker is gone.
 //!
 //! Everything else is **persistent state**, not a marker, and belongs to
 //! neither pattern: playback/plan components (`ScenePlayer`,

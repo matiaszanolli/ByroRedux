@@ -510,9 +510,9 @@ Also `cleanup_removes_all_event_types`;
   `reference_script_event_system` (a Late-stage script kill is delivered next frame, not lost to cleanup).
   `event_cleanup_system` also renews `VmFrameBudget` (Dim 2) and drains `NativeActivation` and `DefaultActivation`; its module-doc table
   lists the request markers the engine-side consumers drain (e.g. `HavokImpulseRequest` →
-  `scripted_havok_impulse_system`, which snapshots, drains exactly those and early-returns only when there are none —
-a missing `HavokImpulseRules` drains the snapshot before returning, #6009 `f00bfd6e5`; a resource check placed after
-the resolve and before the drain is the recurrence).
+  `scripted_havok_impulse_system`; every binary-side consumer opens with the one head drain `take_requests`, #6150,
+so a missing `HavokImpulseRules` drops already-drained requests, #6009 `f00bfd6e5`; a consumer that resolves before
+calling `take_requests` is the recurrence).
 - **Two-phase lock discipline**: `timer_tick_system` (no production code starts a `ScriptTimer` or reads
   `TimerExpired` — #5608; FO4 `OnTimer` is `fragment/updates.rs`), `trigger_detection_system`,
   `recurring_update_tick_system` collect under one `query_mut`, `drop()`, then acquire the marker-insert
@@ -874,8 +874,8 @@ The M47.2 MQ101 cart sequence is the first scripted sequence that drives *animat
   The behavior-graph decode is `/audit-parsers`; collider/motion halves `/audit-physics`.
 - **Marker patterns** for this domain (Pattern B, drained at consumer head): `Scene{Start,Stop}Request`,
   `SceneActionCompletionBatch`, `DialoguePresentationEventBatch`, `DialogueLineCompletionBatch`,
-  `ScenePackage*Batch`, `EvaluatePackageRequest`, `ReleasePackageHold`, `MotionTypeChangeRequest` (tail-drains exactly what it
-  snapshotted). `ReleasePackageHold` is raised only by `request_package_evaluation` (the explicit `Actor.EvaluatePackage` / ObScript `EVP`; `queue_package_evaluation`, which the actor's own script-package state uses, raises the request alone) and taken by `ambient_ai_package_system` at the head of its pass, before any early return, so the next ambient selection ignores the Must Complete extension and the running package survives only while its own window is open (GECK *EvaluatePackage*; #7243 `aa15ee950`, pinned by `an_explicit_evaluate_package_ends_a_must_complete_hold` in `byroredux/src/npc_spawn/ai_package.rs`; the no-Done-state hold rule is #7224 `94e785c7e`). Its drain is a `cleanup.rs` doc-table row only, not yet run by the drain-pin test above. Pattern-A `SceneEventBatch`/`SceneFragmentInvocationBatch` feed
+  `ScenePackage*Batch`, `EvaluatePackageRequest`, `ReleasePackageHold`, `MotionTypeChangeRequest` (head drain via
+  `take_requests`, #6150). `ReleasePackageHold` is raised only by `request_package_evaluation` (the explicit `Actor.EvaluatePackage` / ObScript `EVP`; `queue_package_evaluation`, which the actor's own script-package state uses, raises the request alone) and taken by `ambient_ai_package_system` at the head of its pass, before any early return, so the next ambient selection ignores the Must Complete extension and the running package survives only while its own window is open (GECK *EvaluatePackage*; #7243 `aa15ee950`, pinned by `an_explicit_evaluate_package_ends_a_must_complete_hold` in `byroredux/src/npc_spawn/ai_package.rs`; the no-Done-state hold rule is #7224 `94e785c7e`). Its drain is a `cleanup.rs` doc-table row only, not yet run by the drain-pin test above. Pattern-A `SceneEventBatch`/`SceneFragmentInvocationBatch` feed
   `scene_fragment_dispatch_system` (Dim 2 order guard). SCEN package `Activate` leaf ordering vs `ActivateEvent`
   consumers is pinned by the schedule tests.
 - **Playback lifecycle**: `idle_clip_playback_system` starts a scoped player once per serial and drains the
