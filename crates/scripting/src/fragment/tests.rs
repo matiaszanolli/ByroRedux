@@ -4625,7 +4625,7 @@ fn magic_callout_bodies(src: &str) -> String {
 /// paired quest guards, so a lock one of them takes is a lock taken under it;
 /// the family-only scan was blind to them. Every name must be found, so a rename
 /// fails loud instead of scanning green.
-fn nested_helper_bodies(sources: &str, equipment_rs: &str, created_references_rs: &str) -> String {
+fn nested_helper_bodies(sources: &str, equipment_rs: &str, created_references_rs: &str, stance_rs: &str) -> String {
     const IN_SOURCES: &[&str] = &[
         "apply_effects",
         "resolve_actor",
@@ -4643,12 +4643,15 @@ fn nested_helper_bodies(sources: &str, equipment_rs: &str, created_references_rs
     // #6926 — the XCT-LOC-004 `MoveTo` fallthrough and `MoveToPackageLocation`
     // reach these from the placement arms.
     const IN_CREATED_REFERENCES: &[&str] = &["is_logical_stub", "queue_actor_move"];
+    // #7300 — the M65 sneak effect and guard reach the stance module.
+    const IN_STANCE: &[&str] = &["toggle_sneaking", "set_sneaking", "is_sneaking", "sneaking_enabled"];
     let mut bodies = String::new();
     for (src, wanted, origin) in IN_SOURCES
         .iter()
         .map(|name| (sources, *name, "fragment::SOURCES"))
         .chain(IN_EQUIPMENT.iter().map(|name| (equipment_rs, *name, "equipment.rs")))
         .chain(IN_CREATED_REFERENCES.iter().map(|name| (created_references_rs, *name, "created_references.rs")))
+        .chain(IN_STANCE.iter().map(|name| (stance_rs, *name, "stance.rs")))
     {
         let mut at = 0usize;
         let mut found = false;
@@ -4738,10 +4741,12 @@ fn the_nested_lock_residual_list_names_every_type_apply_effect_acquires() {
     bodies.push_str(&magic_callout_bodies(MAGIC_RS));
     // #5986 — and the helpers one hop out in the fragment sources / equipment.rs.
     // #6926 — and the created-references helpers the placement arms call.
+    // #7300 — and the stance helpers the M65 sneak effect and guard call.
     bodies.push_str(&nested_helper_bodies(
         FRAGMENT_RS,
         include_str!("../equipment.rs"),
         include_str!("../created_references.rs"),
+        include_str!("../stance.rs"),
     ));
     let body = bodies.as_str();
 
@@ -4788,7 +4793,14 @@ fn the_nested_lock_residual_list_names_every_type_apply_effect_acquires() {
          not the doc"
     );
 
-    let missing: Vec<&String> = acquired.iter().filter(|ty| !doc.contains(*ty)).collect();
+    // A whole word: `StartPlayerSneaking` must not stand in for `Sneaking` (#7300).
+    let names = |ty: &str| {
+        doc.match_indices(ty).any(|(at, _)| {
+            let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+            !doc[..at].ends_with(ident) && !doc[at + ty.len()..].starts_with(ident)
+        })
+    };
+    let missing: Vec<&String> = acquired.iter().filter(|ty| !names(ty)).collect();
     assert!(
         missing.is_empty(),
         "apply_effect acquires {missing:?} without naming them in its own \

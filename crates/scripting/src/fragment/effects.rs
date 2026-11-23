@@ -120,6 +120,11 @@ pub(crate) fn copied_transform(world: &World, entity: EntityId) -> Option<Transf
 ///     `PendingActorMoves` (write), each taken and released alone. A `MoveTo` of the player
 ///     takes `PlayerMoveRequest` (write) instead, as `MovePlayerTo` does (#6916)
 ///   - **via [`update_actor_cinematic_state`]** — `ActorCinematicState`
+///   - **via `crate::stance::{toggle_sneaking, is_sneaking}`** (`Effect::StartPlayerSneaking`
+///     and the `FragmentGuard::ActorSneaking` guard — M65, #6910, #7300) — `Sneaking` (read, the
+///     presence test; write, entering or leaving the stance) and, before an entry,
+///     `sneaking_enabled`'s `PlayerControlState` (read) then `InputLayers` (read), each taken and
+///     released alone
 ///   - **via `crate::magic::{add_spell, remove_spell}`** (the
 ///     `AddSpell`/`RemoveSpell` arms, applied inline rather than deferred —
 ///     no cycle: every quest-resource system is exclusive) — `SpellList`
