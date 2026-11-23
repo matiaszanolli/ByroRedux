@@ -232,6 +232,11 @@ impl SaveState {
         // the first quicksave after a restart doesn't clobber the most-recent
         // save (the cursor is in-memory and would otherwise restart at 0).
         let ring = disk::SaveRing::resume(ring_size, &dir);
+        // #7354 — a crash mid-save leaves a staging file nothing else deletes.
+        let reclaimed = disk::reclaim_stale_staging_files(&dir, disk::STALE_STAGING_AGE);
+        if reclaimed > 0 {
+            log::info!("save: removed {reclaimed} stale staging file(s) a crash left in {}", dir.display());
+        }
         Self { dir, ring }
     }
 }

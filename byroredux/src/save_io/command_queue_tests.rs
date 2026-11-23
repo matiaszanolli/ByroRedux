@@ -550,6 +550,27 @@ fn a_quit_waits_for_the_quicksave_it_was_batched_with() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// #7354 — starting the save state reclaims the staging files a crash left behind (a dead writer's
+/// `.save_<slot>.ess.<pid>.<n>.tmp`, which nothing else ever deletes), and leaves the slots alone.
+#[test]
+fn a_new_save_state_reclaims_the_staging_files_a_crash_left() {
+    let dir = std::env::temp_dir().join(format!("byro_save_state_reclaim_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let stale = dir.join(".save_1.ess.4242.0.tmp");
+    std::fs::write(&stale, b"a crash left this").unwrap();
+    let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    std::fs::OpenOptions::new().write(true).open(&stale).unwrap().set_modified(long_ago).unwrap();
+    let slot = byroredux_save::disk::slot_path(&dir, 0);
+    std::fs::write(&slot, b"a real save").unwrap();
+
+    let state = SaveState::new(dir.clone(), 3);
+    assert!(!stale.exists(), "the crash's staging file is reclaimed at startup");
+    assert!(slot.exists(), "a slot file is never touched");
+    assert_eq!(state.ring.peek(), 1, "and the ring still resumes past the newest slot");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// SAVE-3 — a non-finite `f32` in a saved column encodes as JSON `null`, which does not decode back. The save
 /// must be refused before anything is written (and without advancing the ring), not committed and then
 /// unloadable.

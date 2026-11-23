@@ -55,6 +55,54 @@ pub fn write_slot(dir: &Path, slot: u32, bytes: &[u8]) -> Result<PathBuf, SaveEr
         .map(|()| final_path)
 }
 
+/// How old a staging file must be before [`reclaim_stale_staging_files`] may delete it. A save takes milliseconds, so a
+/// staging file this old belongs to a writer that died; a younger one may belong to a live process sharing the
+/// directory (#5247) and is left alone.
+pub const STALE_STAGING_AGE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Whether `name` is the staging name [`write_slot`] creates: `.save_<slot>.ess.<pid>.<n>.tmp`.
+fn is_slot_staging_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix(".save_").and_then(|rest| rest.strip_suffix(".tmp")) else {
+        return false;
+    };
+    let mut parts = rest.split('.');
+    let numeric = |part: Option<&str>| part.is_some_and(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()));
+    numeric(parts.next())
+        && parts.next() == Some(SAVE_EXT)
+        && numeric(parts.next())
+        && numeric(parts.next())
+        && parts.next().is_none()
+}
+
+/// Delete the staging files a crash or power cut left in `dir` (#7354). `atomic_write` removes its temp on every
+/// failure it can see, but a process that dies between creating the temp and renaming it leaves
+/// `.save_<slot>.ess.<pid>.<n>.tmp` holding up to a full snapshot, and the unique name never repeats, so nothing
+/// else ever reclaims it (`slots_by_recency` and [`SaveRing::resume`] correctly ignore it). Removes only regular
+/// files with exactly that name and at least `older_than` old, best-effort (an entry that cannot be read or removed
+/// is skipped), and never touches a slot file. Returns how many it removed.
+pub fn reclaim_stale_staging_files(dir: &Path, older_than: std::time::Duration) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let now = std::time::SystemTime::now();
+    let mut removed = 0;
+    for entry in entries.filter_map(|entry| entry.ok()) {
+        if !is_slot_staging_name(&entry.file_name().to_string_lossy()) {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else { continue };
+        let old_enough = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age >= older_than);
+        if metadata.is_file() && old_enough && fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
 /// Read the raw bytes of `slot` under `dir`.
 pub fn read_slot(dir: &Path, slot: u32) -> Result<Vec<u8>, SaveError> {
     let path = slot_path(dir, slot);
@@ -339,6 +387,47 @@ mod tests {
     #[test]
     fn write_slot_has_no_clobber_fallback() {
         byroredux_core::atomic_file::assert_no_clobber_fallback(include_str!("disk.rs"));
+    }
+
+    /// #7354 — a crash between creating a staging file and renaming it leaves a `.save_<slot>.ess.<pid>.<n>.tmp`
+    /// nothing ever deleted. The reclaim removes exactly those, once they are old enough to belong to a dead writer,
+    /// and nothing else in the directory.
+    #[test]
+    fn stale_staging_files_are_reclaimed_and_nothing_else() {
+        let dir = std::env::temp_dir().join(format!("byro_save_reclaim_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        let aged = |name: &str| {
+            let path = dir.join(name);
+            fs::write(&path, b"x").unwrap();
+            fs::OpenOptions::new().write(true).open(&path).unwrap().set_modified(hour_ago).unwrap();
+            path
+        };
+        // A dead writer's temps: removed.
+        let stale = [aged(".save_3.ess.4242.0.tmp"), aged(".save_0.ess.1.17.tmp")];
+        // Not the staging shape, however old: kept.
+        let kept = [
+            aged("save_1.ess"),
+            aged(".save_9.ess.tmp"),
+            aged(".save_x.ess.1.2.tmp"),
+            aged(".save_1.ess.1.2.3.tmp"),
+            aged(".save_1.dat.1.2.tmp"),
+            aged(".settings.toml.1.2.tmp"),
+            aged("save_1.ess.1.2.tmp"),
+        ];
+        // The right shape but young, as a live writer's would be: kept.
+        let young = dir.join(".save_2.ess.77.5.tmp");
+        fs::write(&young, b"in flight").unwrap();
+
+        assert_eq!(reclaim_stale_staging_files(&dir, STALE_STAGING_AGE), 2);
+        assert!(stale.iter().all(|path| !path.exists()), "a dead writer's staging files are gone");
+        assert!(kept.iter().all(|path| path.exists()), "nothing else is touched");
+        assert!(young.exists(), "a young staging file may belong to a live process");
+        assert_eq!(slots_by_recency(&dir).first(), Some(&1), "the live slot still reads");
+        assert_eq!(reclaim_stale_staging_files(&dir, STALE_STAGING_AGE), 0, "nothing left to reclaim");
+        assert_eq!(reclaim_stale_staging_files(&dir.join("absent"), STALE_STAGING_AGE), 0, "a missing directory is fine");
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
