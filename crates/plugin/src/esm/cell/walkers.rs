@@ -441,7 +441,7 @@ fn parse_cell_group_inner(
                     // lookup key) first.
                     let canonical_id =
                         canonical_interior_cell_id(header.form_id, &fields.editor_id);
-                    let key = canonical_id.to_ascii_lowercase();
+                    let key = interior_cell_key(cells, header.form_id, &canonical_id, None);
                     let cell = fields.into_cell(
                         header.form_id,
                         canonical_id,

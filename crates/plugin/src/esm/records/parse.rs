@@ -483,6 +483,34 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
         .into_inner();
     index.record_types = record_type_trace.record_types;
     index.deleted_record_metadata = record_type_trace.deleted_records;
+    // #1272 — drain per-cell navmeshes (collected by the cell walker's
+    // child-GRUP loop) into the global `EsmIndex.navmeshes` map. The
+    // top-level NAVM dispatch at the `b"NAVM"` arm above only ever
+    // fires for non-vanilla mods that flatten NAVMs out of cell
+    // children; vanilla Bethesda masters route every authored NAVM
+    // through the cell tier. It runs before the #3543 prune below, so a
+    // NAVM this plugin marks Deleted is pruned like any other tombstoned
+    // record; drained after it, the tombstone re-entered the map and the
+    // fold put it back over the master's pruned copy (71 navmeshes on
+    // Skyrim SE + DLC, 8 on Fallout 4 + DLC, LMC-REC-011).
+    for cell in cells.values_mut() {
+        for navm in cell.navmeshes.drain(..) {
+            index.navmeshes.insert(navm.form_id, navm);
+        }
+    }
+    for wrld_cells in exterior_cells.values_mut() {
+        for cell in wrld_cells.values_mut() {
+            for navm in cell.navmeshes.drain(..) {
+                index.navmeshes.insert(navm.form_id, navm);
+            }
+        }
+    }
+    for cell in worldspace_persistent_cells.values_mut() {
+        for navm in cell.navmeshes.drain(..) {
+            index.navmeshes.insert(navm.form_id, navm);
+        }
+    }
+
     // #3543 — a base record this plugin marks Deleted (header flag 0x20)
     // was still parsed into its category map above; drop it now, so neither
     // this index nor anything it merges into carries the tombstoned
@@ -510,30 +538,6 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     );
     if !wrld_names.is_empty() {
         log::info!("  Worldspaces: {:?}", wrld_names);
-    }
-
-    // #1272 — drain per-cell navmeshes (collected by the cell walker's
-    // child-GRUP loop) into the global `EsmIndex.navmeshes` map. The
-    // top-level NAVM dispatch at the `b"NAVM"` arm above only ever
-    // fires for non-vanilla mods that flatten NAVMs out of cell
-    // children; vanilla Bethesda masters route every authored NAVM
-    // through the cell tier.
-    for cell in cells.values_mut() {
-        for navm in cell.navmeshes.drain(..) {
-            index.navmeshes.insert(navm.form_id, navm);
-        }
-    }
-    for wrld_cells in exterior_cells.values_mut() {
-        for cell in wrld_cells.values_mut() {
-            for navm in cell.navmeshes.drain(..) {
-                index.navmeshes.insert(navm.form_id, navm);
-            }
-        }
-    }
-    for cell in worldspace_persistent_cells.values_mut() {
-        for navm in cell.navmeshes.drain(..) {
-            index.navmeshes.insert(navm.form_id, navm);
-        }
     }
 
     index.cells = EsmCellIndex {

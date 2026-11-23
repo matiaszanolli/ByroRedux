@@ -253,6 +253,37 @@ pub(crate) fn canonical_interior_cell_id(form_id: u32, editor_id: &str) -> Strin
     }
 }
 
+/// The map key for interior CELL `form_id`, named `editor_id` (already canonical), in `cells`: its case-folded editor
+/// ID, unless a different CELL form already holds that key. Then the cell keeps `previous`, the key it already has, or
+/// takes its form-ID key, so neither cell replaces the other. A CELL's identity is its FormID; an editor ID is a name
+/// two cells can share (LMC-REC-011). Keying by name alone made the later cell erase the earlier one with every
+/// reference in it: Far Harbor's `TestTony` and Nuka-World's `TestCory01` erased Automatron's cells of the same names
+/// (619 placements). The first holder keeps the name, so a name lookup (`--cell`, `coc`) finds the cell it found before
+/// the later plugin loaded; every FormID lookup (doors, XTEL, `cell_by_form_id`) reaches both.
+pub(crate) fn interior_cell_key(
+    cells: &HashMap<String, CellData>,
+    form_id: u32,
+    editor_id: &str,
+    previous: Option<&str>,
+) -> String {
+    let named = editor_id.to_ascii_lowercase();
+    match cells.get(&named) {
+        Some(holder) if holder.form_id != form_id => {
+            let key = previous
+                .filter(|previous| *previous != named)
+                .map(str::to_owned)
+                .unwrap_or_else(|| canonical_interior_cell_id(form_id, "").to_ascii_lowercase());
+            log::warn!(
+                "interior CELL {form_id:08X} '{editor_id}' shares its editor ID with CELL {:08X}; both kept, \
+                 {form_id:08X} keyed '{key}'",
+                holder.form_id
+            );
+            key
+        }
+        _ => named,
+    }
+}
+
 fn is_synthetic_interior_cell_id(form_id: u32, editor_id: &str) -> bool {
     editor_id.eq_ignore_ascii_case(&canonical_interior_cell_id(form_id, ""))
 }
@@ -745,7 +776,12 @@ impl EsmCellIndex {
                 if is_synthetic_interior_cell_id(over_cell.form_id, &over_cell.editor_id) {
                     previous_key.unwrap_or(key)
                 } else {
-                    over_cell.editor_id.to_ascii_lowercase()
+                    interior_cell_key(
+                        &self.cells,
+                        over_cell.form_id,
+                        &over_cell.editor_id,
+                        previous_key.as_deref(),
+                    )
                 };
             interior_keys_by_form.insert(over_cell.form_id, insert_key.clone());
             self.cells.insert(insert_key, over_cell);

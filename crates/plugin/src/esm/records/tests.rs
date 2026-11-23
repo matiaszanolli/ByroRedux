@@ -3590,3 +3590,33 @@ fn voli_is_stored_for_skyrim_and_fo76_only() {
     let starfield = parse_esm(&plugin(0.96)).unwrap();
     assert!(starfield.volumetric_lighting.is_empty());
 }
+
+/// LMC-REC-011 — a NAVM a later plugin marks Deleted leaves the merged index. The #1272 drain moved each cell's NAVMs
+/// into `navmeshes` after the plugin's own #3543 prune, so the tombstone survived its plugin's parse and the fold put it
+/// back over the master's pruned copy: Dawnguard's 59 deleted Skyrim.esm navmeshes (71 on Skyrim SE + DLC, 8 on
+/// Fallout 4 + DLC) stayed resident.
+#[test]
+fn a_navmesh_a_later_plugin_deletes_leaves_the_merged_index() {
+    const CELL: u32 = 0x0000_0A00;
+    const NAVM: u32 = 0x0000_0A01;
+    let plugin = |masters: &[&str], navm_flags: u32| {
+        let mast: Vec<(&[u8; 4], Vec<u8>)> = masters.iter().map(|m| (b"MAST", format!("{m}\0").into_bytes())).collect();
+        let mut data = build_record(b"TES4", 0, &mast);
+        let mut navm = build_record(b"NAVM", NAVM, &[]);
+        navm[8..12].copy_from_slice(&navm_flags.to_le_bytes());
+        let cell = build_record(b"CELL", CELL, &[(b"EDID", b"NavCell\0".to_vec()), (b"DATA", vec![0x01])]);
+        let temporary = wrap_sub_group(CELL.to_le_bytes(), 9, &navm);
+        let children = wrap_sub_group(CELL.to_le_bytes(), 6, &temporary);
+        let sub_block = wrap_sub_group(0u32.to_le_bytes(), 3, &[cell, children].concat());
+        let block = wrap_sub_group(0u32.to_le_bytes(), 2, &sub_block);
+        data.extend_from_slice(&wrap_group(b"CELL", &block));
+        parse_esm(&data).unwrap()
+    };
+    let mut merged = plugin(&[], 0);
+    assert!(merged.navmeshes.contains_key(&NAVM), "the master's navmesh is indexed");
+    let deleting = plugin(&["Master.esm"], 0x20);
+    assert!(!deleting.navmeshes.contains_key(&NAVM), "a plugin's own parse drops the NAVM it tombstones");
+    merged.merge_from(deleting);
+    assert!(!merged.navmeshes.contains_key(&NAVM), "the deletion removes the master's navmesh from the fold");
+    assert!(merged.cells.cells.contains_key("navcell"), "the cell itself stays");
+}

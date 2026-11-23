@@ -1810,3 +1810,48 @@ fn parse_cell_xgdr_god_rays() {
     parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout4).unwrap();
     assert_eq!(cells.get("godrayint").expect("interior CELL present").god_rays_form, Some(0x0050_0009));
 }
+
+/// LMC-REC-011 — two CELL forms authored under one editor ID are two cells. Keyed by the case-folded name alone, the
+/// second erased the first and every reference in it; the first keeps the name, the second takes its form-ID key.
+#[test]
+fn cells_sharing_an_editor_id_in_one_plugin_both_survive_the_walk() {
+    use super::wrld::{build_cell_children_group, build_cell_record};
+    let refr = |form_id: u32| {
+        let mut sub_data = Vec::new();
+        for (tag, payload) in [(b"NAME", 0x0000_0999_u32.to_le_bytes().to_vec()), (b"DATA", vec![0u8; 24])] {
+            sub_data.extend_from_slice(tag);
+            sub_data.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+            sub_data.extend_from_slice(&payload);
+        }
+        let mut record = Vec::new();
+        record.extend_from_slice(b"REFR");
+        record.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+        record.extend_from_slice(&0u32.to_le_bytes());
+        record.extend_from_slice(&form_id.to_le_bytes());
+        record.extend_from_slice(&[0u8; 8]);
+        record.extend_from_slice(&sub_data);
+        record
+    };
+    let mut buf = Vec::new();
+    for (cell_id, ref_id) in [(0x0A_u32, 0x10_u32), (0x0B, 0x20)] {
+        buf.extend(build_cell_record(cell_id, &[(b"EDID", b"TestTony\0".to_vec()), (b"DATA", vec![0x01])]));
+        let temporary = build_cell_children_group(cell_id, 9, &refr(ref_id));
+        buf.extend(build_cell_children_group(cell_id, 6, &temporary));
+    }
+
+    let mut reader = super::super::super::reader::EsmReader::with_variant(
+        &buf,
+        super::super::super::reader::EsmVariant::Tes5Plus,
+    );
+    let end = buf.len();
+    let mut cells = HashMap::new();
+    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout4).unwrap();
+
+    assert_eq!(cells.len(), 2, "both cells kept: {:?}", cells.keys().collect::<Vec<_>>());
+    let refs = |cell: &CellData| cell.references.iter().map(|r| r.form_id).collect::<Vec<_>>();
+    let first = &cells["testtony"];
+    assert_eq!((first.form_id, refs(first)), (0x0A, vec![0x10]));
+    let second = &cells["cell_0000000b"];
+    assert_eq!((second.form_id, refs(second)), (0x0B, vec![0x20]));
+    assert_eq!(second.editor_id, "TestTony", "the cell keeps its own name");
+}

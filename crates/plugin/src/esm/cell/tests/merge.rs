@@ -1204,3 +1204,46 @@ fn icon_override_is_not_re_resolved_through_an_earlier_tnam() {
     assert!(!merged.landscape_texture_txsts.contains_key(&LTEX));
     assert!(!merged.landscape_texture_sets.contains_key(&LTEX));
 }
+
+/// LMC-REC-011 — a later plugin's CELL that shares an editor ID with an earlier plugin's *different* CELL is a second
+/// cell, not an override of the first (Far Harbor's `TestTony` erased Automatron's, 619 placements on FO4 + DLC). The
+/// first keeps the name; the second takes its form-ID key; both are reachable by FormID.
+#[test]
+fn a_later_cell_sharing_an_editor_id_does_not_replace_the_earlier_cell() {
+    let mut robot = EsmCellIndex::default();
+    let mut tony = cell_with_refs("TestTony", vec![placed(0x10, 0xAA)]);
+    tony.form_id = 0x0100_2623;
+    robot.cells.insert("testtony".into(), tony);
+
+    let mut coast = EsmCellIndex::default();
+    let mut other_tony = cell_with_refs("TestTony", vec![placed(0x20, 0xBB)]);
+    other_tony.form_id = 0x0200_8831;
+    coast.cells.insert("testtony".into(), other_tony);
+    robot.merge_from(coast);
+
+    let refs = |cell: &CellData| cell.references.iter().map(|r| r.form_id).collect::<Vec<_>>();
+    assert_eq!(robot.cells.len(), 2);
+    assert_eq!(robot.cells["testtony"].form_id, 0x0100_2623, "the first holder keeps the name");
+    assert_eq!(refs(&robot.cells["testtony"]), vec![0x10]);
+    let second = &robot.cells["cell_02008831"];
+    assert_eq!((second.form_id, refs(second)), (0x0200_8831, vec![0x20]));
+    assert_eq!(robot.cell_by_form_id(0x0200_8831).map(|c| c.editor_id.as_str()), Some("TestTony"));
+
+    // A later override of the displaced cell merges into it under the key it already has, and leaves the name holder
+    // alone; an override of the name holder still merges into the named entry.
+    let mut patch = EsmCellIndex::default();
+    let mut over_second = cell_with_refs("TestTony", vec![placed(0x21, 0xCC)]);
+    over_second.form_id = 0x0200_8831;
+    patch.cells.insert("testtony".into(), over_second);
+    robot.merge_from(patch);
+    let mut patch = EsmCellIndex::default();
+    let mut over_first = cell_with_refs("TestTony", vec![placed(0x11, 0xDD)]);
+    over_first.form_id = 0x0100_2623;
+    patch.cells.insert("testtony".into(), over_first);
+    robot.merge_from(patch);
+
+    assert_eq!(robot.cells.len(), 2);
+    assert_eq!(refs(&robot.cells["cell_02008831"]), vec![0x20, 0x21]);
+    assert_eq!(refs(&robot.cells["testtony"]), vec![0x10, 0x11]);
+    assert_eq!(robot.cells["testtony"].form_id, 0x0100_2623);
+}
