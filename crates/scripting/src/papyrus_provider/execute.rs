@@ -12,7 +12,7 @@ use byroredux_plugin::esm::records::condition::ConditionStringId;
 /// Where a reference's provider `OnInit` having run is kept, among its saved
 /// script variables — the provider twin of the Papyrus VM's per-script
 /// `::init::<script>` flag.
-fn provider_initialized_key() -> ConditionStringId {
+pub(crate) fn provider_initialized_key() -> ConditionStringId {
     ConditionStringId::from_text("::init::papyrus_provider")
 }
 
@@ -217,6 +217,14 @@ pub fn papyrus_provider_system(world: &World, dt: f32) {
                 .collect::<BTreeSet<_>>()
         })
         .unwrap_or_default();
+    // #7312 — only references running a provider program: the once-only flag is theirs. Every
+    // scripted reference raises `OnInitEvent` (VM and ObScript attaches too), and stamping the flag
+    // for each wrote a saved row per reference that never runs one. The guard is dropped before
+    // `first_initializations` takes the variables.
+    let initialized: BTreeSet<EntityId> = match world.query::<PapyrusProviderProgram>() {
+        Some(programs) => initialized.into_iter().filter(|entity| programs.get(*entity).is_some()).collect(),
+        None => BTreeSet::new(),
+    };
     let initialized = first_initializations(world, initialized);
     let Some(programs) = world.query::<PapyrusProviderProgram>() else {
         return;
