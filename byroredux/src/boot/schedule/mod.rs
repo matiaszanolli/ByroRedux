@@ -983,6 +983,14 @@ mod system_access_declaration_tests {
                 // `LimbEffects` and the player's `ActorValues`.
                 (LIMBS_SRC, "locomotion_mult"),
                 (LIMBS_SRC, "crippled_legs"),
+                // #7363 — the fall and jump paths (#7051 / #7056): `on_jump` / `on_fall` feed Acrobatics
+                // through scripting's `queue_skill_use` (`CharacterRuleset` read, `PendingSkillUse` write),
+                // and `fall_landing` resolves the skill through `detection::actor_value`
+                // (`ActorValueNames`, then `ActorValues`).
+                (SKILL_USE_EMIT_SRC, "on_jump"),
+                (SKILL_USE_EMIT_SRC, "on_fall"),
+                (OBLIVION_SKILL_USE_SRC, "queue_skill_use"),
+                (DETECTION_TICK_SRC, "actor_value"),
             ],
         ),
         ("timer_tick_system", &[(TIMER_SRC, "timer_tick_system")]),
@@ -1101,6 +1109,9 @@ mod system_access_declaration_tests {
             ("PhysicsWorld", Mode::Write),
             ("PendingDeathReconciliations", Mode::Write),
             ("WindField", Mode::Read),
+            // #7363 — the fall / jump skill-use hops.
+            ("PendingSkillUse", Mode::Write),
+            ("ActorValueNames", Mode::Read),
         ] {
             assert!(
                 player.get(needle) == Some(&mode),
