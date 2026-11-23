@@ -1855,3 +1855,43 @@ fn cells_sharing_an_editor_id_in_one_plugin_both_survive_the_walk() {
     assert_eq!((second.form_id, refs(second)), (0x0B, vec![0x20]));
     assert_eq!(second.editor_id, "TestTony", "the cell keeps its own name");
 }
+
+/// LMC-REC-011 / #7275 — a CELL in the interior block is an interior whatever its DATA bit says. Sim Settlements 2's
+/// partial overrides (record flag 0x4000) of vanilla interiors carry `DATA 0000`; gating on the bit dropped the cell
+/// and the references the plugin adds to it (89 on a Fallout 4 + SS2 profile).
+#[test]
+fn a_partial_override_with_a_zeroed_data_is_still_an_interior() {
+    use super::wrld::{build_cell_children_group, build_cell_record};
+    const CELL: u32 = 0x0006_8F7C;
+    let mut refr = Vec::new();
+    let mut sub_data = Vec::new();
+    for (tag, payload) in [(b"NAME", 0x0000_0999_u32.to_le_bytes().to_vec()), (b"DATA", vec![0u8; 24])] {
+        sub_data.extend_from_slice(tag);
+        sub_data.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+        sub_data.extend_from_slice(&payload);
+    }
+    refr.extend_from_slice(b"REFR");
+    refr.extend_from_slice(&(sub_data.len() as u32).to_le_bytes());
+    refr.extend_from_slice(&0u32.to_le_bytes());
+    refr.extend_from_slice(&0x0200_E816_u32.to_le_bytes());
+    refr.extend_from_slice(&[0u8; 8]);
+    refr.extend_from_slice(&sub_data);
+
+    let mut cell = build_cell_record(CELL, &[(b"EDID", b"USAFSatellite01\0".to_vec()), (b"DATA", vec![0, 0])]);
+    cell[8..12].copy_from_slice(&0x4000_u32.to_le_bytes()); // partial form
+    let mut buf = cell;
+    let persistent = build_cell_children_group(CELL, 8, &refr);
+    buf.extend(build_cell_children_group(CELL, 6, &persistent));
+
+    let mut reader = super::super::super::reader::EsmReader::with_variant(
+        &buf,
+        super::super::super::reader::EsmVariant::Tes5Plus,
+    );
+    let end = buf.len();
+    let mut cells = HashMap::new();
+    parse_cell_group(&mut reader, end, &mut cells, crate::esm::reader::GameKind::Fallout4).unwrap();
+
+    let cell = cells.get("usafsatellite01").expect("the partial override is kept as an interior");
+    assert!(cell.is_interior);
+    assert_eq!(cell.references.iter().map(|r| r.form_id).collect::<Vec<_>>(), vec![0x0200_E816]);
+}

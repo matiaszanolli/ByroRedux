@@ -221,14 +221,12 @@ fn parse_cell_group_inner(
                 // `CellSubrecordFields::absorb`; this walker keeps only
                 // its interior-specific arms (DATA, XCLL).
                 let mut fields = super::helpers::CellSubrecordFields::default();
-                let mut is_interior = false;
                 let mut show_sky = None;
                 let mut lighting = None;
 
                 for sub in &subs {
                     match &sub.sub_type {
                         b"DATA" if !sub.data.is_empty() => {
-                            is_interior = sub.data[0] & 1 != 0;
                             show_sky = Some(sub.data[0] & 0x80 != 0);
                         }
                         b"XCLL" if sub.data.len() >= 28 => {
@@ -435,26 +433,22 @@ fn parse_cell_group_inner(
                     }
                 }
 
-                if is_interior {
-                    // #5815 — the shared CellData build; the interior
-                    // walker canonicalises its editor id (the save/game
-                    // lookup key) first.
-                    let canonical_id =
-                        canonical_interior_cell_id(header.form_id, &fields.editor_id);
-                    let key = interior_cell_key(cells, header.form_id, &canonical_id, None);
-                    let cell = fields.into_cell(
-                        header.form_id,
-                        canonical_id,
-                        true,
-                        show_sky,
-                        None,
-                        lighting.clone(),
-                    );
-                    cells.insert(key.clone(), cell);
-                    current_cell = Some(key);
-                } else {
-                    current_cell = None;
-                }
+                // A CELL in the top-level CELL group (the interior blocks and
+                // sub-blocks, group types 2 and 3) is an interior by where it
+                // sits: exteriors live under their WRLD. The DATA interior bit
+                // agrees on every full record of FNV, Skyrim SE and Fallout 4,
+                // but a partial override (record flag 0x4000, #7275) can carry
+                // a zeroed DATA. Gating on the bit dropped the cell and every
+                // reference under it: 44 Sim Settlements 2 overrides of vanilla
+                // interiors and the 89 placements they add (LMC-REC-011).
+                //
+                // #5815 — the shared CellData build; the interior walker
+                // canonicalises its editor id (the save/game lookup key) first.
+                let canonical_id = canonical_interior_cell_id(header.form_id, &fields.editor_id);
+                let key = interior_cell_key(cells, header.form_id, &canonical_id, None);
+                let cell = fields.into_cell(header.form_id, canonical_id, true, show_sky, None, lighting.clone());
+                cells.insert(key.clone(), cell);
+                current_cell = Some(key);
             } else {
                 reader.skip_record(&header);
             }
