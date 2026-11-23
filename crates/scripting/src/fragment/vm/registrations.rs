@@ -242,6 +242,34 @@ impl Vm<'_> {
         Ok(())
     }
 
+    /// F4SE's `RegisterForExternalEvent(name, callback)` / `UnregisterForExternalEvent(name)` on the
+    /// script itself (see [`crate::fragment::ExternalEventRegistrations`]).
+    pub(super) fn external_event_registration(&mut self, frame: &mut Frame, name: &str, args: &[CallArg]) -> Run<()> {
+        let values = self.eval_args(frame, args)?;
+        let Some(Value::Str(event)) = values.first() else {
+            return stop(format!("{name} without an event name"));
+        };
+        let script = frame.script.name.node.0.clone();
+        let Some(mut registrations) = self.world.try_resource_mut::<crate::fragment::ExternalEventRegistrations>() else {
+            return stop("no external-event registrations");
+        };
+        if name == "registerforexternalevent" {
+            let Some(Value::Str(callback)) = values.get(1) else {
+                return stop("RegisterForExternalEvent without a callback");
+            };
+            registrations.register(crate::fragment::ExternalEventRegistration {
+                owner: frame.owner.0,
+                script,
+                vmad: frame.vmad.clone().map(Arc::new),
+                event: event.clone(),
+                callback: callback.clone(),
+            });
+        } else {
+            registrations.unregister(frame.owner.0, &script, event);
+        }
+        Ok(())
+    }
+
     /// `RegisterForMenuOpenCloseEvent` / `UnregisterForMenuOpenCloseEvent` /
     /// `UnregisterForAllMenuOpenCloseEvents` on the script itself (see
     /// [`crate::fragment::MenuEventRegistrations`]).

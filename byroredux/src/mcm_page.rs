@@ -236,6 +236,7 @@ mod tests {
             script: "frostfallmcm".into(),
             name: "$Frost".into(),
             pages: vec!["General".into(), "$Enabled".into()],
+            config: None,
         }];
         host.open = open;
         host.generation = 7;

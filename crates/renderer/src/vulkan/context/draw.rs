@@ -1246,10 +1246,14 @@ mod skin_dispatch_ran_ordering_tests {
             .split_once("unsafe fn record_patch_blas_frame(")
             .expect("record_patch_blas_frame must exist");
         let record = record.split_once("\n    /// The frame's command buffer was submitted").expect("record body").0;
-        assert!(
-            record.contains("staged.begin_frame();") && record.contains("staged.stage(request.mesh, entry.content);"),
-            "the record must stage each entry's prior content before overwriting it (#7360)"
-        );
+        let handed_back = record
+            .find("self.rollback_terrain_patch_blas()")
+            .expect("the record must first hand back a stage the previous frame left unsettled (#7373)");
+        let staged = record
+            .find("staged.stage(request.mesh, entry.content);")
+            .expect("the record must stage each entry's prior content before overwriting it (#7360)");
+        assert!(handed_back < staged, "an unsettled stage is restored before this frame plans (#7373)");
+        assert!(!record.contains("staged.begin_frame()"), "an unsettled stage is never silently dropped (#7373)");
     }
 
     /// #7379 — the terrain-patch frame order, which no barrier reasoning can recover from

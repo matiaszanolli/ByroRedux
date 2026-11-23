@@ -53,9 +53,41 @@ pub enum ControlKind {
     Color,
     KeyMap,
     Input,
+    /// Fallout 4 MCM's `button`: a text option whose select runs its `action`.
+    Button,
+}
+
+/// Which front end's config a file is: MCM Helper's (Skyrim, §5.1) or Fallout 4 MCM's (§5.2), whose
+/// control names and defaults differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Dialect {
+    #[default]
+    McmHelper,
+    Fallout4,
 }
 
 impl ControlKind {
+    /// Fallout 4 MCM's control `name` (wiki *Control-Types*): `Some(None)` for a control it documents
+    /// that the engine leaves out of the page (an AS3 `image`, the undocumented `positioner`, the numeric
+    /// text inputs only third parties describe).
+    fn parse_fallout4(name: &str) -> Option<Option<Self>> {
+        Some(Some(match name {
+            "spacer" => Self::Empty,
+            "section" => Self::Header,
+            "text" => Self::Text,
+            "switcher" => Self::Toggle,
+            "hiddenSwitcher" => Self::HiddenToggle,
+            "slider" => Self::Slider,
+            "stepper" => Self::Stepper,
+            "dropdown" => Self::Enum,
+            "hotkey" => Self::KeyMap,
+            "button" => Self::Button,
+            "textinput" => Self::Input,
+            "image" | "positioner" | "textinputInt" | "textinputFloat" => return Some(None),
+            _ => return None,
+        }))
+    }
+
     fn parse(name: &str) -> Option<Self> {
         Some(match name {
             "empty" => Self::Empty,
@@ -287,8 +319,13 @@ pub struct Control {
     pub values: ValueOptions,
 }
 
-/// Parse `config.json`.
+/// Parse MCM Helper's `config.json`.
 pub fn parse(bytes: &[u8]) -> Result<HelperConfig, String> {
+    parse_in(bytes, Dialect::McmHelper)
+}
+
+/// Parse a `config.json` of `dialect`.
+pub fn parse_in(bytes: &[u8], dialect: Dialect) -> Result<HelperConfig, String> {
     let text = std::str::from_utf8(bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes))
         .map_err(|_| "the config is not UTF-8".to_owned())?;
     let root: Value = serde_json::from_str(text).map_err(|error| format!("JSON: {error}"))?;
@@ -299,7 +336,7 @@ pub fn parse(bytes: &[u8]) -> Result<HelperConfig, String> {
         for page in list.as_array().ok_or("'pages' is not an array")? {
             let page = page.as_object().ok_or("a page is not an object")?;
             let name = page.get("pageDisplayName").and_then(Value::as_str).ok_or("a page has no 'pageDisplayName'")?;
-            let content = content(page)?.ok_or_else(|| format!("page '{name}' has no 'content' or 'customContent'"))?;
+            let content = content(page, dialect)?.ok_or_else(|| format!("page '{name}' has no 'content' or 'customContent'"))?;
             match pages.iter_mut().find(|(existing, _)| existing == name) {
                 Some(slot) => slot.1 = content,
                 None => pages.push((name.to_owned(), content)),
@@ -319,13 +356,13 @@ pub fn parse(bytes: &[u8]) -> Result<HelperConfig, String> {
             Some("topToBottom") => crate::mcm::TOP_TO_BOTTOM,
             _ => crate::mcm::LEFT_TO_RIGHT,
         },
-        main: content(root)?,
+        main: content(root, dialect)?,
         pages,
     })
 }
 
 /// A page's `content` or `customContent`, if it has either.
-fn content(object: &Map<String, Value>) -> Result<Option<PageContent>, String> {
+fn content(object: &Map<String, Value>, dialect: Dialect) -> Result<Option<PageContent>, String> {
     if let Some(custom) = object.get("customContent") {
         let custom = custom.as_object().ok_or("'customContent' is not an object")?;
         let source = custom.get("source").and_then(Value::as_str).ok_or("'customContent' has no 'source'")?;
@@ -334,17 +371,26 @@ fn content(object: &Map<String, Value>) -> Result<Option<PageContent>, String> {
     }
     let Some(list) = object.get("content") else { return Ok(None) };
     let list = list.as_array().ok_or("'content' is not an array")?;
-    list.iter().map(control).collect::<Result<Vec<_>, _>>().map(|controls| Some(PageContent::Layout(controls)))
+    let controls: Vec<Option<Control>> = list.iter().map(|value| control(value, dialect)).collect::<Result<_, _>>()?;
+    Ok(Some(PageContent::Layout(controls.into_iter().flatten().collect())))
 }
 
-fn control(value: &Value) -> Result<Control, String> {
+/// One control; `None` for a control the dialect documents that the engine leaves out of the page.
+fn control(value: &Value, dialect: Dialect) -> Result<Option<Control>, String> {
     let object = value.as_object().ok_or("a control is not an object")?;
     let string = |key: &str| object.get(key).and_then(Value::as_str).unwrap_or_default().to_owned();
     let type_name = object.get("type").and_then(Value::as_str).ok_or("a control has no 'type'")?;
-    let kind = ControlKind::parse(type_name).ok_or_else(|| format!("unknown control type '{type_name}'"))?;
+    let parsed = match dialect {
+        Dialect::McmHelper => ControlKind::parse(type_name).map(Some),
+        Dialect::Fallout4 => ControlKind::parse_fallout4(type_name),
+    };
+    let Some(kind) = parsed.ok_or_else(|| format!("unknown control type '{type_name}'"))? else {
+        log::info!("MCM: a '{type_name}' control is not drawn (docs/engine/mcm-host.md §5.2)");
+        return Ok(None);
+    };
     let id = string("id");
     let action = object.get("action").map(action).transpose()?;
-    let values = match object.get("valueOptions") {
+    let mut values = match object.get("valueOptions") {
         Some(options) => value_options(options.as_object().ok_or("'valueOptions' is not an object")?, kind, &id)?,
         // A string control with an id and no options still stores its value as that mod setting.
         None if kind.is_text() && !id.is_empty() => {
@@ -352,15 +398,27 @@ fn control(value: &Value) -> Result<Control, String> {
         }
         None => ValueOptions::default(),
     };
-    Ok(Control {
+    if dialect == Dialect::Fallout4 {
+        // FO4's `text` only shows its text; its slider has no format string and shows the step's decimals.
+        if kind == ControlKind::Text {
+            values.source = None;
+        }
+        if kind == ControlKind::Slider {
+            let step = format!("{}", values.step);
+            values.format = format!("{{{}}}", step.split_once('.').map_or(0, |(_, fraction)| fraction.len()));
+        }
+    }
+    Ok(Some(Control {
         kind,
         text: string("text"),
         position: object.get("position").and_then(Value::as_i64).map(|p| p as i32),
         help: string("help"),
         group_condition: object.get("groupCondition").map(group_condition).transpose()?,
-        group_behavior: match object.get("groupBehavior").and_then(Value::as_str) {
-            Some("hide") => GroupBehavior::Hide,
-            Some("skip") => GroupBehavior::Skip,
+        group_behavior: match (object.get("groupBehavior").and_then(Value::as_str), dialect) {
+            (Some("hide"), _) => GroupBehavior::Hide,
+            (Some("skip"), _) => GroupBehavior::Skip,
+            // FO4 MCM has no `groupBehavior`; its docs call a control whose condition fails hidden.
+            (_, Dialect::Fallout4) => GroupBehavior::Hide,
             _ => GroupBehavior::Disable,
         },
         group_control: object.get("groupControl").and_then(Value::as_u64).unwrap_or(0) as u32,
@@ -368,7 +426,7 @@ fn control(value: &Value) -> Result<Control, String> {
         action,
         values,
         id,
-    })
+    }))
 }
 
 fn value_options(object: &Map<String, Value>, kind: ControlKind, id: &str) -> Result<ValueOptions, String> {

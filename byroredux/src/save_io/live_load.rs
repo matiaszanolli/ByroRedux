@@ -510,6 +510,9 @@ pub(super) fn discard_outgoing_session_requests(world: &World) {
     // reload instead (`reload_with_fresh_day_blocks`, #7252): the reload's own spawns note theirs.
     reset_resource::<crate::skill_use_emit::LevelNotices>(world);
     reset_resource::<byroredux_scripting::player_cast::CastState>(world);
+    // LMC-UI-002 slice 5 — F4SE keeps external-event registrations per session; the loaded save's scripts
+    // register again (FO4 MCM's wiki does it in OnPlayerLoadGame).
+    reset_resource::<byroredux_scripting::fragment::ExternalEventRegistrations>(world);
     reset_resource::<crate::bow::BowState>(world);
     reset_resource::<crate::skill_use_emit::StanceTimers>(world);
     reset_resource::<crate::systems::mines::MineClock>(world);

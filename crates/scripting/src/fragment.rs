@@ -64,6 +64,7 @@ mod distance;
 mod dispatch;
 mod anim_events;
 mod events;
+mod external_events;
 mod hits;
 mod menu_events;
 mod owners;
@@ -86,6 +87,7 @@ pub(crate) use dispatch::{flush_advances, run_papyrus_call};
 pub use anim_events::*;
 pub use hits::*;
 pub use menu_events::*;
+pub use external_events::{reset_external_events, send_external_event, ExternalEventRegistration, ExternalEventRegistrations};
 pub use events::{EventRegistration, EventRegistrations, EventRequest, REMOTE_EVENTS};
 pub use package::*;
 pub use perk::*;
@@ -141,6 +143,7 @@ pub(crate) const SOURCES: &str = concat!(
     include_str!("fragment/distance.rs"),
     include_str!("fragment/dispatch.rs"),
     include_str!("fragment/events.rs"),
+    include_str!("fragment/external_events.rs"),
     include_str!("fragment/hits.rs"),
     include_str!("fragment/menu_events.rs"),
     include_str!("fragment/owners.rs"),
