@@ -15,7 +15,9 @@
 //! texture is generated once per machine, and a mod that replaces the source
 //! (a different archive copy, a loose override #6200) gets its own entry.
 
-use super::{extract_first, Archive};
+use super::ArchiveSet;
+#[cfg(test)]
+use super::Archive;
 use byroredux_menuxml::tex::Rgba8;
 use byroredux_plugin::esm::reader::GameKind;
 use byroredux_terrain_height as th;
@@ -89,7 +91,7 @@ pub(crate) fn default_cache_dir() -> PathBuf {
 pub(crate) struct HeightJob {
     pub(crate) sources: LayerHeightSources,
     pub(crate) green: Option<th::GreenConvention>,
-    pub(crate) archives: Vec<Archive>,
+    pub(crate) archives: ArchiveSet,
     pub(crate) cache_dir: PathBuf,
 }
 
@@ -104,7 +106,7 @@ pub(crate) fn run_job(job: &HeightJob) -> Result<CachedHeight, String> {
     let mut skipped = Vec::new();
     for (source, path) in tiers {
         let Some(path) = path else { continue };
-        let Some(bytes) = extract_first(job.archives.iter().rev(), path) else {
+        let Some(bytes) = job.archives.extract_first(path) else {
             skipped.push(format!("{path}: not in any archive"));
             continue;
         };
@@ -290,7 +292,7 @@ mod tests {
         HeightJob {
             sources,
             green: Some(th::GreenConvention::YDown),
-            archives: vec![archive],
+            archives: ArchiveSet::from(vec![archive]),
             cache_dir: dir.join("cache"),
         }
     }
@@ -368,7 +370,7 @@ mod tests {
         let seed_sources = LayerHeightSources::new(None, Some(r"textures\b_n.dds"), None).unwrap();
         let seeded = run_job(&HeightJob {
             sources: seed_sources,
-            archives: vec![real],
+            archives: ArchiveSet::from(vec![real]),
             ..clone_job(&job)
         })
         .unwrap();

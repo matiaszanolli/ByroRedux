@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use super::archive_set::ArchiveSet;
+
 /// A game archive that can extract files by path.
 /// Wraps either a BSA (Oblivion–Skyrim SE) or BA2 (FO4–Starfield) archive.
 ///
@@ -11,6 +13,14 @@ use std::sync::{Arc, Mutex, OnceLock};
 #[derive(Clone)]
 pub(crate) struct Archive {
     inner: Arc<ArchiveInner>,
+}
+
+impl Archive {
+    /// Which opened archive this is: the same for every clone of a handle, different for any other archive. A pool's
+    /// index is memoised by the identities of its archives in order ([`ArchiveSet`]).
+    pub(crate) fn identity(&self) -> usize {
+        Arc::as_ptr(&self.inner) as usize
+    }
 }
 
 impl std::ops::Deref for Archive {
@@ -719,24 +729,6 @@ impl ArchiveInner {
     }
 }
 
-/// #3637 — count how many of `new_archive`'s entries also exist in any of
-/// `existing`. Both `extract`/`extract_mesh` and `open_with_numeric_siblings`
-/// treat later-opened archives as the ones that win (last-listed wins,
-/// matching Bethesda's own load-order precedence), so a nonzero count here
-/// means `new_archive` is about to silently start overriding content an
-/// earlier archive used to answer for — worth a boot-time log line instead
-/// of a silent decision.
-pub(crate) fn count_shadowed_entries(new_archive: &Archive, existing: &[Archive]) -> usize {
-    if existing.is_empty() {
-        return 0;
-    }
-    new_archive
-        .all_paths()
-        .into_iter()
-        .filter(|path| existing.iter().any(|a| a.contains(path)))
-        .count()
-}
-
 /// Whether a canonicalised texture path carries a FaceGen SDK
 /// export-tool prefix instead of a real Data-relative one.
 ///
@@ -1015,7 +1007,7 @@ pub(crate) fn parse_grid_coords(s: &str) -> (i32, i32) {
 pub(crate) fn open_with_numeric_siblings(
     path: &str,
     kind: &str,
-    archives: &mut Vec<Archive>,
+    archives: &mut ArchiveSet,
     opened_paths: &mut HashSet<String>,
 ) {
     if !mark_opened(path, opened_paths) {
@@ -1092,9 +1084,9 @@ pub(crate) static SHADOW_COUNT_WALKS: std::sync::atomic::AtomicUsize =
 /// pool in the same order is a cache hit, not an O(entries × archives) walk —
 /// while a different pool, or a replaced file (which is never `reused`),
 /// recomputes.
-pub(crate) fn shadow_count_for_open(new: &Archive, archives: &[Archive], reused: bool) -> usize {
+pub(crate) fn shadow_count_for_open(new: &Archive, archives: &mut ArchiveSet, reused: bool) -> usize {
     let mut key = String::from(new.path());
-    for a in archives {
+    for a in archives.iter() {
         key.push('\0');
         key.push_str(a.path());
     }
@@ -1108,7 +1100,7 @@ pub(crate) fn shadow_count_for_open(new: &Archive, archives: &[Archive], reused:
         }
     #[cfg(test)]
     SHADOW_COUNT_WALKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let n = count_shadowed_entries(new, archives);
+    let n = archives.count_shadowed(new);
     let mut cache = shadow_count_cache().lock().unwrap_or_else(|e| e.into_inner());
     if cache.len() >= SHADOW_COUNT_CACHE_MAX {
         cache.clear();
@@ -1130,7 +1122,7 @@ pub(crate) fn log_opened_archive(
     kind: &str,
     path: &str,
     new: &Archive,
-    archives: &[Archive],
+    archives: &mut ArchiveSet,
     reused: bool,
 ) {
     let shadow_count = shadow_count_for_open(new, archives, reused);
@@ -1308,25 +1300,9 @@ mod tests {
     /// A one-entry v1 GNRL BA2 at a unique temp path. `packed_size == 0`
     /// stores `payload` raw; non-zero declares it zlib-compressed.
     fn write_one_entry_ba2(tag: &str, name: &str, payload: &[u8], packed: bool) -> String {
-        let data_offset = 24u64 + 36;
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"BTDX");
-        bytes.extend_from_slice(&1u32.to_le_bytes());
-        bytes.extend_from_slice(b"GNRL");
-        bytes.extend_from_slice(&1u32.to_le_bytes());
-        bytes.extend_from_slice(&(data_offset + payload.len() as u64).to_le_bytes());
-        bytes.extend_from_slice(&[0u8; 16]); // name/ext/dir hashes + flags
-        bytes.extend_from_slice(&data_offset.to_le_bytes());
-        let packed_size = if packed { payload.len() as u32 } else { 0 };
-        bytes.extend_from_slice(&packed_size.to_le_bytes());
-        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-        bytes.extend_from_slice(&0xBAAD_F00Du32.to_le_bytes());
-        bytes.extend_from_slice(payload);
-        bytes.extend_from_slice(&(name.len() as u16).to_le_bytes());
-        bytes.extend_from_slice(name.as_bytes());
         let path =
             std::env::temp_dir().join(format!("byroredux_4658_{tag}_{}.ba2", std::process::id()));
-        std::fs::write(&path, bytes).expect("write temp BA2");
+        crate::asset_provider::tests::write_ba2(&path, &[(name, payload, packed)]);
         path.to_string_lossy().into_owned()
     }
 

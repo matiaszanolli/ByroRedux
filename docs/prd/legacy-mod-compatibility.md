@@ -1,6 +1,7 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-23). Revision 35 makes SkyUI's `ShowMessage` (and any box wrapper called
+**Status**: ACTIVE (2026-11-23). Revision 36 builds LMC-PERF-003: an asset lookup is one index
+probe whatever the archive count, and opening archives is linear. Revision 35 makes SkyUI's `ShowMessage` (and any box wrapper called
 for its value) wait for its answer, and resets a quest's scripts as it starts. Revision 34 builds the MCM host's native Mod Configuration page and
 its adapter (slice 3). Revision 33 builds the MCM host's model and engine `SKI_ConfigBase`
 (slice 2). Revision 32 designs the MCM host (LMC-UI-002) and builds its first
@@ -1211,6 +1212,9 @@ adds the user-facing contract:
   records) takes 0.09 s on the owner's Ryzen 9 7950X with the plugin files
   in the page cache (`load_order_scale_tests.rs`, below). Not measured: real
   plugin sizes, paired archives, and the activation steps around the fold.
+  Opening archives is linear since revision 36: 400 synthetic archives of
+  5,000 entries open, with their shadow counts, in 0.53 s, where the
+  pairwise probe took 21 s.
 - **LMC-PERF-002.** Cost of the merged index is linear in records. A cell
   transition MUST NOT re-parse the load order on the main thread (#6591,
   fixed: one parse serves interior and exterior sessions, and a door
@@ -1228,6 +1232,15 @@ adds the user-facing contract:
   plugins and is not profiled.
 - **LMC-PERF-003.** Asset lookup is an index hit, independent of archive
   count.
+  Built (#6670): each provider pool is an `ArchiveSet` holding an index from
+  the hash of each normalized path to the last-listed archive that holds it
+  ([archives.md](../engine/archives.md#asset-provider-precedence-and-the-loose-tier)).
+  An asset only the first of N synthetic archives holds cost 1.6 µs at 10
+  archives and 64 µs at 400; it now costs 0.80 to 0.87 µs at any count. The
+  index agrees with the archive scan on every entry of the real FNV, Skyrim
+  SE and Fallout 4 archives tested, and a hit is checked against its archive
+  so a hash collision costs a scan, never a wrong file. The script provider's
+  short first-wins list is unchanged.
 - **LMC-PERF-004.** Preflight on a 1,000-plugin profile completes in a time
   a launcher can show a progress bar for, published like LMC-PERF-001.
 
@@ -1625,3 +1638,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 33 | 2026-11-23 | LMC-UI-002 slice 2: the engine `SKI_ConfigBase` and `SKI_PlayerLoadGameAlias` shadow SkyUI's, the `McmHost` model and static class, SkyUI's state-option dispatch, re-registration after every load, `mcm.*` console commands; `ShowMessage` declined | — |
 | 34 | 2026-11-23 | LMC-UI-002 slice 3: the native Mod Configuration page (grid, five dialogs, unmap, blocking message) reached from the pause menu, the `McmHost` adapter with `$`-key translation, leaving the menus closes the page; a `.dds` custom panel is carried but not drawn | — |
 | 35 | 2026-11-23 | A box wrapper (one `Return` body) called for its value hands its box to the calling statement, which waits and replays with the answer: SkyUI's `ShowMessage` raises a box with Accept / Cancel and returns the answer. A non-Run-Once Papyrus quest resets its own and its aliases' script state as it starts, then runs `OnInit`, before its startup stage (CK *OnInit*). Measured first: on vanilla Skyrim SE the general value-call wait declines 13 of 19,412 scripted references and 5 of 2,529 alias instances, so only the wrapper shape was built | — |
+| 36 | 2026-11-23 | LMC-PERF-003 built: provider pools are `ArchiveSet`s with one path index each (a lookup costs 0.8 µs from 10 to 400 archives, was 1.6 to 64 µs), verified against the archive scan on real FNV, Skyrim SE and Fallout 4 archives; opening a pool's shadow counts became linear (400 archives: 21 s to 0.53 s), noted under LMC-PERF-001 | — |

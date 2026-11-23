@@ -30,7 +30,7 @@ pub(crate) fn build_material_provider(args: &[String]) -> MaterialProvider {
                         Ok((a, reused)) => {
                             // #3637 — shadow-count diagnostic shared with
                             // TextureProvider's --bsa/--textures-bsa opens.
-                            log_opened_archive("materials", path, &a, &provider.archives, reused);
+                            log_opened_archive("materials", path, &a, &mut provider.archives, reused);
                             // #1289 / SF-D3-NEW-01 → #1571 / SF-D3-03 —
                             // scan the archive for every Starfield component
                             // database (base `materials\materialsbeta.cdb`
@@ -100,7 +100,7 @@ pub(crate) fn build_material_provider(args: &[String]) -> MaterialProvider {
     // #6200 — loose `Data\materials` files override every material archive, each mod root's in root order
     // (LMC-AST-010).
     for loose in open_loose_tiers(args) {
-        log_opened_archive("loose materials", loose.path(), &loose, &provider.archives, false);
+        log_opened_archive("loose materials", loose.path(), &loose, &mut provider.archives, false);
         // #6330 — registered last, so a loose CDB overlays the archived ones
         // (`lookup_cdb_material` is last-registered-wins).
         let source = loose.path().to_owned();
@@ -163,7 +163,7 @@ fn warn_parse_diagnostics(kind: &str, path: &str, diag: &ParseDiagnostics) {
 /// must tolerate absence and keep the NIF defaults. Never hard-fail a
 /// cell load on a broken BGSM. See #493.
 pub(crate) struct MaterialProvider {
-    pub(crate) archives: Vec<Archive>,
+    pub(crate) archives: ArchiveSet,
     /// BGSM chain cache from the `bgsm` crate — handles template
     /// inheritance with case-insensitive keying + LRU eviction.
     bgsm_cache: TemplateCache,
@@ -341,7 +341,7 @@ impl MaterialProvider {
 
     pub(crate) fn new() -> Self {
         Self {
-            archives: Vec::new(),
+            archives: ArchiveSet::new(),
             bgsm_cache: TemplateCache::new(256),
             bgem_cache: HashMap::new(),
             bgem_cache_order: VecDeque::new(),
@@ -435,7 +435,7 @@ impl MaterialProvider {
         // no documented "list mods first" inversion — that's `--scripts-bsa`
         // only, see `ScriptProvider::resolve_pex`'s doc / #1743).
         // #4658 — a present-but-corrupt entry is named, not silently missed.
-        extract_first(self.archives.iter().rev(), &normalized)
+        self.archives.extract_first(&normalized)
     }
 
     /// Resolve a BGSM file + its template chain. Returns `None` when the
@@ -464,7 +464,7 @@ impl MaterialProvider {
         // parent walks (`root_material_path` carrying any of the
         // four non-canonical forms) resolve correctly.
         struct ArchiveReader<'a> {
-            archives: &'a [Archive],
+            archives: &'a ArchiveSet,
         }
         impl<'a> TemplateResolver for ArchiveReader<'a> {
             fn canonicalize(&self, path: &str) -> String {
@@ -475,7 +475,7 @@ impl MaterialProvider {
                 let normalized = normalize_material_path(path);
                 // #3637 — same last-listed-wins precedence as
                 // `extract_from_archives`.
-                extract_first(self.archives.iter().rev(), &normalized)
+                self.archives.extract_first(&normalized)
             }
 
             // #5010 — every file in the chain (leaf and templates), not just
