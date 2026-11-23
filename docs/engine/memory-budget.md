@@ -191,6 +191,7 @@ measured allocations.
 | Indirect draw SSBO ³ | `MAX_INDIRECT_DRAWS` = 262 144 | 262 144 | 20 B | 5.2 MB | **10.5 MB** |
 | Material SSBO | `MAX_MATERIALS` = 16 384 | 16 384 | 432 B | 7.1 MB | **14.2 MB** |
 | Terrain tile SSBO | `MAX_TERRAIN_TILES` = 1 024 | 1 024 | 240 B (`GpuTerrainTile`: 3× `[u32; 8]` texture indices + #4057's two `[f32; 4]` cover-affinity rows, `cell_origin_xz`, `water_y`, `canopy_height`, #4056's ground-cover detail-atlas `uvec4`, #4903/#4907's `base_cover_affinity` + `base_diffuse_index`, and #6195's `base_height_index` + `[u32; 8]` layer height handles, #6196's `height_blend_band`, #6197's three parallax settings + the LOD-soften lane, and TSD-4.3's four patch-geometry lanes; pinned by `gpu_terrain_tile_is_240_bytes`) | — | **~240 KB** (single shared buffer, NOT FIF-doubled) |
+| Terrain-patch readback (TSD-4.1, host-visible, one per frame in flight) | `TERRAIN_PATCH_SLOTS` = 24 × `TERRAIN_PATCH_READBACK_WORDS` = 524 words (2 × `TERRAIN_PATCH_EDGE_SAMPLES` 260 + 4) | 24 | 2 096 B (524 × 4 B) | 50 304 B | **100 608 B** |
 | Bone buffers ¹ | `MAX_TOTAL_BONES` = 196 608 | 196 608 | 64 B | 12.6 MB/buffer | **100.6 MB** |
 | Camera UBO | — | 1 | 384 B (#3323, RLT-IBL-006) | 384 B | **768 B** |
 | Environment BRDF table (binding 26, RLT-IBL-003) | `ENV_BRDF_LUT_SIZE` = 32 | 32 × 32 | 8 B (two `f32`) | — | **8.2 KB** (single shared buffer, written once, NOT FIF-doubled) |
@@ -943,6 +944,7 @@ terrain diffuse/normal layers they are derived from.
 | `INDEX_POOL_SOFT_CAP` | 28 M indices | ~112 MB (4 B/index) |
 | `INDEX_POOL_HARD_CAP` | 28 M indices | ~112 MB (same as the admission threshold) |
 | `DEAD_SPAN_CREDIT_PERCENT` (`pool_ceiling`) | 25 % over the hard caps: 8.75 M vertices, 35 M indices in the raw `pending_vertices` / `pending_indices` | host RAM only: up to ~210 MB (+182 MB vertices, +28 MB indices) above the cap figures between a scene-mesh drop and the compaction in `rebuild_geometry_ssbo`. Admission tests *live* geometry (pending less the dead spans, #6106), and the uploaded SSBO is always the compacted pool, so VRAM stays at the caps |
+| Terrain-patch pool (TSD-4, reserved once at init) | 24 fine (4 225 vertices, 24 576 indices) + 24 coarse (1 089 vertices, 6 144 indices) = 127 536 vertices, 737 280 indices | ~13.3 MB + ~2.9 MB = ~16.2 MB of the global pools, permanent: uploaded global-only as the registry's first handles, admitted as Essential and never dropped (~1.8 % of the vertex cap) |
 
 The vertex stride is 104 B (20 × f32 + 4 × u32 + 8 × u8 — position,
 colour (widened `vec3`→`vec4`, `cd2b5fe4`), normal, UV, bone
@@ -1317,6 +1319,17 @@ They are host memory, outside the VRAM budget:
 A grep of this page for the owning subsystem name is the cheapest way to
 find a gap in it. These are known and not yet folded into the rough budget:
 
+- **Terrain-patch BLAS set (TSD-4.2, #7221).** `TerrainPatchBlasSet` owns one acceleration
+  structure per reserved patch mesh (24 fine + 24 coarse = 48) and one scratch buffer for
+  every build and refit of a frame. Both are permanent: the ASes live for the session
+  (`destroy_terrain_patch_blas` runs only from `AccelerationManager::destroy`), and the
+  scratch grows monotonically in `record_patch_blas_frame` with no shrink path
+  (`shrink_blas_scratch_to_fit` does not reach it). `total_blas_bytes` includes the AS
+  buffers (`create_patch_blas_entry`) but not the scratch, and `blas_budget_for_heap`
+  does not bill either, so this is VRAM the reservation does not see. Neither is measured:
+  `terrain.patches` prints the AS bytes (`TerrainPatchBlasStats::bytes`) from a live
+  exterior, and the scratch size is not exposed. The pool slice and readback are ledgered
+  above.
 - **Per-mesh scene vertex / index buffers.** `upload_scene_mesh` and
   `upload_scene_meshes_batched` give every scene mesh its own device-local
   vertex + index buffer (the per-mesh draw fallback, and the BLAS build input

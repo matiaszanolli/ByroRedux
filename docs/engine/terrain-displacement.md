@@ -68,8 +68,11 @@ an existing measurement in this repo, **[unmeasured]** = needs the spike.
   8192 triangles, 0.54 MB [derived]. World-aligned inside a cell (16×16 patches per cell), so a
   patch never straddles a cell border and always has exactly one tile.
 - **Pool**: 24 slots (≈ the ~9–16 patches a 6 m radius touches, plus hysteresis) =
-  101 k vertices / 197 k triangles / **12.9 MB** in the global pool [derived]. Reserved **once at
-  start-up** as placeholder geometry (24 stable handles), never allocated or freed again.
+  101 k vertices / 197 k triangles / **12.9 MB** in the global pool for the fine lattice [derived]; with
+  the coarse lattice `a06d5f9db` added (24 × 1 089 vertices, 6 144 indices) the reserved pool is
+  127 536 vertices / 737 280 indices / **16.2 MB** (see
+  [memory-budget.md](memory-budget.md#mesh-registry)). Reserved **once at
+  start-up** as placeholder geometry (24 fine + 24 coarse stable handles), never allocated or freed again.
 - **One shared index buffer** for all slots (identical topology; local indices — the draw path
   already adds a per-mesh vertex offset).
 - **Range**: patches whose centre is within ~6 m of the camera (a setting; same slider family
@@ -141,8 +144,9 @@ Vertex 104 B + index 12 B/triangle; patch lattice spacing × radius:
 | 8 m | 251 k / 16.1 | 112 k / 7.1 | 63 k / 4.0 | 28 k / 1.8 |
 | 10 m | 393 k / 25.1 | 175 k / 11.2 | 98 k / 6.3 | 44 k / 2.8 |
 
-(disc area only; the 24-slot square-patch pool is 197 k triangles / 12.9 MB.) Against the pool
-cap of 7 M vertices (728 MB) it is **~1.4 % of the vertex pool** (2.5 % at the old 4 M cap). The 5.7 cm lattice is the
+(disc area only; the 24-slot fine square-patch pool is 197 k triangles / 12.9 MB, 16.2 MB with the
+coarse lattice.) Against the pool cap of 7 M vertices (728 MB) the fine pool is **~1.4 % of the vertex
+pool** (2.5 % at the old 4 M cap), and the full two-lattice pool 127 536 vertices, ~1.8 %. The 5.7 cm lattice is the
 sensible floor: the source height texels are ~1 cm, so 4 cm geometry buys little over what
 TSD-3 already resolves.
 

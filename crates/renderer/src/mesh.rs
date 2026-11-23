@@ -2237,6 +2237,19 @@ mod memory_budget_doc_pin_tests {
     /// "~1.66 GB cap" against the hard caps (then ~480 MB), and the rebuild row still
     /// read "+2× projected, ≤ ~512 MB" after the gate became the 80% headroom
     /// line. The pool figure is derived here from the constants.
+    /// Thousands grouped with a space, the page's convention (`127 536`).
+    fn spaced(n: usize) -> String {
+        let digits = n.to_string();
+        let mut out = String::new();
+        for (i, c) in digits.chars().enumerate() {
+            if i > 0 && (digits.len() - i) % 3 == 0 {
+                out.push(' ');
+            }
+            out.push(c);
+        }
+        out
+    }
+
     /// #7375 — the dead-span credit lets the raw host pools run past the hard caps until the
     /// next compaction; the VRAM rows stay at the caps, so the page names the host-RAM peak
     /// derived here from the same constants `pool_ceiling` uses.
@@ -2262,6 +2275,55 @@ mod memory_budget_doc_pin_tests {
         let (ceiling_vertices, ceiling_indices) = crate::mesh::pool_limits::PoolLimits::DEFAULT.pool_ceiling();
         assert_eq!(ceiling_vertices, VERTEX_POOL_HARD_CAP + extra_vertices, "pool_ceiling is the cap plus the credit");
         assert_eq!(ceiling_indices, INDEX_POOL_HARD_CAP + extra_indices);
+    }
+
+    /// #7374 — the TSD-4 reserved patch meshes are permanent residents of the global pools
+    /// (Essential, never dropped) and the pass owns a per-frame readback; the page carries both,
+    /// derived from the constants `reserve_meshes` and `create_resources` read.
+    #[test]
+    fn memory_budget_ledgers_the_terrain_patch_pool_and_readback() {
+        use crate::shader_constants::{
+            TERRAIN_PATCH_COARSE_STEP, TERRAIN_PATCH_COARSE_VERTEX_COUNT, TERRAIN_PATCH_QUADS, TERRAIN_PATCH_READBACK_WORDS,
+            TERRAIN_PATCH_SLOTS, TERRAIN_PATCH_VERTEX_COUNT,
+        };
+        let slots = TERRAIN_PATCH_SLOTS as usize;
+        let fine_indices = 6 * (TERRAIN_PATCH_QUADS as usize).pow(2);
+        let coarse_quads = (TERRAIN_PATCH_QUADS / TERRAIN_PATCH_COARSE_STEP) as usize;
+        let coarse_indices = 6 * coarse_quads.pow(2);
+        let vertices = slots * (TERRAIN_PATCH_VERTEX_COUNT + TERRAIN_PATCH_COARSE_VERTEX_COUNT) as usize;
+        let indices = slots * (fine_indices + coarse_indices);
+        let vertex_bytes = vertices * std::mem::size_of::<Vertex>();
+        let index_bytes = indices * std::mem::size_of::<u32>();
+        let pool = BUDGET_MD
+            .lines()
+            .find(|line| line.starts_with("| Terrain-patch pool"))
+            .expect("memory-budget.md lost its terrain-patch pool row (#7374)");
+        for needle in [
+            format!("{} fine ({} vertices, {} indices)", slots, spaced(TERRAIN_PATCH_VERTEX_COUNT as usize), spaced(fine_indices)),
+            format!("{} coarse ({} vertices, {} indices)", slots, spaced(TERRAIN_PATCH_COARSE_VERTEX_COUNT as usize), spaced(coarse_indices)),
+            format!("{} vertices, {} indices", spaced(vertices), spaced(indices)),
+            format!("~{:.1} MB", (vertex_bytes + index_bytes) as f64 / 1.0e6),
+        ] {
+            assert!(pool.contains(&needle), "the patch pool row must carry `{needle}`: {pool}");
+        }
+        let readback = BUDGET_MD
+            .lines()
+            .find(|line| line.starts_with("| Terrain-patch readback"))
+            .expect("memory-budget.md lost its terrain-patch readback row (#7374)");
+        let per_frame = slots * TERRAIN_PATCH_READBACK_WORDS as usize * 4;
+        for needle in [
+            format!("`TERRAIN_PATCH_READBACK_WORDS` = {}", TERRAIN_PATCH_READBACK_WORDS),
+            format!("{} B", spaced(per_frame)),
+            format!("**{} B**", spaced(per_frame * 2)),
+        ] {
+            assert!(readback.contains(&needle), "the readback row must carry `{needle}`: {readback}");
+        }
+        // The patch BLAS half is unmeasured and says so, under the page's "not yet ledgered" list.
+        let not_yet = BUDGET_MD.split_once("### Not yet ledgered").expect("the not-yet-ledgered section").1;
+        assert!(
+            not_yet.contains("Terrain-patch BLAS set") && not_yet.contains("Neither is measured"),
+            "the patch BLAS set and its scratch are listed as known and unmeasured (#7374)"
+        );
     }
 
     #[test]
