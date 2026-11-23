@@ -77,7 +77,7 @@ fn gpu_breakdown(cov: &SkinCoverageStats) -> String {
         "main_render={} depth_history_copy={} tlas={} svgf={} composite={} cluster_cull={} \
          ssao={} bloom={} caustic={} volumetrics={} skin={} blas_refit={} \
          taa={} skin_palette={} upscale={} presentation={} sky_cube={} \
-         groundcover_scatter={} exposure_meter={} groundcover_models={} volumetrics_inject={} volumetrics_integrate={} volumetrics_local_sim={} shadow_filter={} cloud_shadow={} rt_tier={} volumetric_light_cap={} froxel_extent={}x{}x{} transport_armed={} fog_volume_count={} fog_cluster_max_density={} fog_cluster_max_portal={} local_grid_boxes={} local_grid_cells={} local_grid_hash={:08x}",
+         groundcover_scatter={} exposure_meter={} groundcover_models={} volumetrics_inject={} volumetrics_integrate={} volumetrics_local_sim={} shadow_filter={} cloud_shadow={} far_sun={} cache_update={} cache_resolve={} terrain_patch={} terrain_patch_blas={} rt_tier={} volumetric_light_cap={} froxel_extent={}x{}x{} transport_armed={} fog_volume_count={} fog_cluster_max_density={} fog_cluster_max_portal={} local_grid_boxes={} local_grid_cells={} local_grid_hash={:08x}",
         ms(cov.gpu_main_render_ms, cov.gpu_main_render_active),
         ms(
             cov.gpu_depth_history_copy_ms,
@@ -109,6 +109,11 @@ fn gpu_breakdown(cov: &SkinCoverageStats) -> String {
         ms(cov.gpu_volumetrics_local_sim_ms, cov.gpu_volumetrics_local_sim_active),
         ms(cov.gpu_shadow_filter_ms, cov.gpu_shadow_filter_active),
         ms(cov.gpu_cloud_shadow_ms, cov.gpu_cloud_shadow_active),
+        ms(cov.gpu_far_sun_ms, cov.gpu_far_sun_active),
+        ms(cov.gpu_cache_update_ms, cov.gpu_cache_update_active),
+        ms(cov.gpu_cache_resolve_ms, cov.gpu_cache_resolve_active),
+        ms(cov.gpu_terrain_patch_ms, cov.gpu_terrain_patch_active),
+        ms(cov.gpu_terrain_patch_blas_ms, cov.gpu_terrain_patch_blas_active),
         cov.volumetrics_state.rt_tier,
         cov.volumetrics_state.light_cap,
         cov.volumetrics_state.froxel_extent[0],

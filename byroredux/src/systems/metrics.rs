@@ -341,6 +341,10 @@ pub fn metrics_sample_system(world: &World, _dt: f32) {
             gpu_bracket_ms(cov.gpu_cloud_shadow_ms, cov.gpu_cloud_shadow_active),
         );
         gpu_pass_ms.insert(
+            "far_sun".to_string(),
+            gpu_bracket_ms(cov.gpu_far_sun_ms, cov.gpu_far_sun_active),
+        );
+        gpu_pass_ms.insert(
             "cache_update".to_string(),
             gpu_bracket_ms(cov.gpu_cache_update_ms, cov.gpu_cache_update_active),
         );
