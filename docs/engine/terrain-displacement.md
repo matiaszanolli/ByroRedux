@@ -1055,11 +1055,55 @@ off, the default 128 px² and 512 px²:
   at Riverwood. It does not compare directly with §8.9's 696 lines, because the
   upscaler differs (TAA vs FSR), and that changes the patches-off frame too. FNV's down
   pose is unusable: its patches-off frame swung by ±4.8 ms.
-- **The visual question is still open.** It needs a forced all-coarse state (the
-  console's `fine 0`), not a threshold, at this height. If coarse-only shows no
-  visible loss there, a setting that means "all coarse" at any resolution would let
-  Medium save at every height. The options are a higher slider cap or a separate
-  coarse-only switch.
+- **The visual question needed a forced all-coarse state** (the console's `fine 0`),
+  not a threshold, at this height. §8.11 ran it.
+
+### 8.11 Forced all-coarse at ~1000 native lines (2026-11-23)
+The check §8.10 asked for: with every square forced coarse (`terrain.patches fine 0`),
+does the saving or the look change at ~1000 lines, as it does at 480? Same harness,
+binary and pins as §8.10, native TAA. The renders were 1920×1045 at FNV and 1853×1013 at
+Riverwood. The status line confirmed the states: at the default 128 px² FNV drew 5 fine
+and 11 coarse squares and Riverwood 4 and 12, and the forced state drew 16 coarse at both.
+The clock was pinned at noon, Riverwood's weather was locked, and no run logged a
+validation line.
+
+The machine came under heavy memory pressure partway through the FNV run, from a
+concurrent from-scratch build by another session. The FNV engine stalled, and its graze
+pose was lost. FNV's sky readout also differed between its start and end. Its down pose is
+unusable (sd 4.5–4.7 ms).
+
+| position | pose | off (ms) | 128 px² (default) | all coarse |
+|---|---|---|---|---|
+| FNV Mojave | down | 5.52 | +0.64 (4.72) | +0.11 (4.53) |
+| | eye | 7.15 | +0.73 (0.16) | +0.44 (0.24) |
+| Skyrim Riverwood | down | 6.58 | +1.39 (0.28) | +0.96 (2.20) |
+| | eye | 7.65 | +1.12 (0.09) | +1.03 (0.35) |
+| | graze | 10.58 | +0.73 (0.38) | +0.72 (1.22) |
+
+Image difference from the first default shot (mean levels / share over 8 levels):
+
+| position | pose | second default shot (noise) | all coarse | off |
+|---|---|---|---|---|
+| FNV | down | 1.4 / 3.0 % | 2.8 / 6.0 % | 22.1 / 63 % |
+| | eye | 2.6 / 7.8 % | 4.1 / 12 % | 24.1 / 61 % |
+| Riverwood | down | 46.7 / 53 % | 40.9 / 91 % | 42.4 / 69 % |
+| | eye | 8.4 / 34 % | 8.2 / 33 % | 23.2 / 66 % |
+| | graze | 6.5 / 22 % | 6.8 / 23 % | 17.6 / 52 % |
+
+- **The saving is about 0.3 ms at FNV eye** (+0.73 → +0.44), the same size as at 480
+  lines (§8.8). At Riverwood it is under 0.1 ms at eye and graze, and the down pose is
+  too noisy to read. The saving does not grow with the render height.
+- **Look.** At FNV eye all-coarse differs from the default by 4.1 levels against 2.6
+  between two default shots, the same margin as at 480 lines. In a native-resolution
+  crop of the near ground the stones keep their shapes and shadows, but their dark
+  outlines read slightly softer than at 480 lines. That is a judgement by eye. At
+  Riverwood eye and graze all-coarse is within the noise of the default, and the down
+  pose can't be judged.
+- **Conclusion.** The default stays at 128 px². At this height all-coarse buys at most
+  about 0.3 ms and costs a little edge definition on the near stones. A setting that
+  means "all coarse at any resolution" is not added for Medium: Medium keeps the
+  0.15–0.4 ms it saves at the default 480-line render height (§8.8), and above that it
+  equals High (§8.10).
 
 ## 9. Review decisions (Matías, 2026-11-21)
 1. **Upward-only displacement, base mesh kept (§3.3)**: accepted. No holes, no zero-mean
