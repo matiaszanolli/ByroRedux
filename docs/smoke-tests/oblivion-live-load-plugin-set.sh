@@ -5,12 +5,13 @@
 # archives); exits 77 without them. Artifacts remain in the printed folder.
 #
 # The engine's actor-value records take the lowest slot no record occupies, so the plugin set moves them:
-# Oblivion.esm alone -> Regular(2); with Knights.esp and DLCThievesDen.esp -> Regular(3). A live load
-# re-installs the load order stored in the save, so loading across the two moves the slot under a running
-# engine. What it checks, from the console:
-#   * the engine boots at the expected slot, and the live load installs the other one and rebuilds the
-#     process-lifetime rulesets (SAVE-2);
-#   * the player's values (Endurance, Health, Magicka, Fatigue) and the HUD bar come back under the new keys;
+# Oblivion.esm alone -> Regular(2); with Knights.esp and DLCThievesDen.esp -> Regular(3). A live load keeps the
+# running session's plugins (LMC Phase 7 slice 3, #6676) and reads the save's FormIDs as stable identities, the
+# engine's records as the engine's own, so loading across the two sets moves the saved values onto the session's
+# slot. What it checks, from the console:
+#   * the engine boots at the expected slot, and the live load keeps it: no other load order is installed and the
+#     process-lifetime rulesets are not rebuilt;
+#   * the player's values (Endurance, Health, Magicka, Fatigue) and the HUD bar come back under the session's keys;
 #   * the derived pools still follow their inputs afterwards (ModAV Endurance moves Fatigue and Health), which
 #     fails if the rulesets or the player's keys are stale;
 #   * the next save is accepted, and a save made after the load loads back across the plugin sets again, with
@@ -141,9 +142,9 @@ launch a1 A
 state a1 'A baseline' 40 80 100 150
 saved 3
 live_load a1 1
-[[ "$(slot_of "$LOG_DIR/a1.log")" == 3 ]] || fail 'the live load did not install the save set at Regular(3)'
+[[ "$(slot_of "$LOG_DIR/a1.log")" == 2 ]] || fail 'the live load moved the engine records off the session slot Regular(2)'
 grep -Fq 'load order changed since the actor-value resources were built; rebuilding them' "$LOG_DIR/a1.log" \
-    || fail 'the process-lifetime rulesets were not rebuilt on the load-order change (SAVE-2)'
+    && fail 'the live load changed the load order, which keeps the session plugins (#6676)'
 state a1 'A<-B loaded' 45 80 100 155
 run hud.status | grep -Eq 'health=0\.8[89]' || fail 'the HUD health bar does not read 80 of 90 after the load'
 run 'obscript.cmd 0x14 ModAV Endurance 5' >/dev/null
@@ -160,9 +161,9 @@ stop_engine
 launch b2 B
 [[ "$(slot_of "$LOG_DIR/b2.log")" == 3 ]] || fail 'set B should place the engine records at Regular(3) again'
 live_load b2 3
-[[ "$(slot_of "$LOG_DIR/b2.log")" == 2 ]] || fail 'the reverse live load did not install the save set at Regular(2)'
+[[ "$(slot_of "$LOG_DIR/b2.log")" == 3 ]] || fail 'the reverse live load moved the engine records off the session slot Regular(3)'
 grep -Fq 'load order changed since the actor-value resources were built; rebuilding them' "$LOG_DIR/b2.log" \
-    || fail 'the rulesets were not rebuilt on the reverse load-order change (SAVE-2)'
+    && fail 'the reverse live load changed the load order, which keeps the session plugins (#6676)'
 state b2 'B<-A loaded' 40 80 100 150
 run 'obscript.cmd 0x14 ModAV Endurance 5' >/dev/null
 sleep 1
@@ -170,7 +171,7 @@ expect 'B<-A ModAV Fatigue' "$(av Fatigue)" 155
 saved 4
 potion 'B<-A loaded'
 live_load b2 2
-[[ "$(slot_of "$LOG_DIR/b2.log")" == 3 ]] || fail 'loading the re-saved slot did not return to Regular(3)'
+[[ "$(slot_of "$LOG_DIR/b2.log")" == 3 ]] || fail 'loading the re-saved slot moved the engine records off Regular(3)'
 state b2 'B<-resaved loaded' 50 90 100 160
 potion 'B<-resaved loaded'
-printf 'smoke[oblivion-live-load-plugin-set]: PASS -- A(2)<->B(3) both directions; artifacts: %s\n' "$LOG_DIR"
+printf 'smoke[oblivion-live-load-plugin-set]: PASS -- A(2)<->B(3) saves load into the session slot both directions; artifacts: %s\n' "$LOG_DIR"

@@ -87,7 +87,7 @@ for entry in filter(None, profiles.split(',')):
     print(game, os.path.abspath(list_file))
 EOF
 if [[ ! -s "$WORK/orders.txt" ]]; then
-    echo "smoke[$GATE]: SKIP -- no game data (set BYROREDUX_FO3_DATA / _FNV_DATA / _SKYRIMSE_DATA / _FO4_DATA, or BYRO_FOLD_PROFILES)"
+    echo "smoke[$GATE]: SKIP -- missing game data (set BYROREDUX_FO3_DATA / _FNV_DATA / _SKYRIMSE_DATA / _FO4_DATA, or BYRO_FOLD_PROFILES)"
     exit 77
 fi
 

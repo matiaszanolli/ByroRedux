@@ -1,6 +1,7 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-23). Revision 28 builds LMC-REC-010: the sub-records no
+**Status**: ACTIVE (2026-11-23). Revision 29 measures Phase 7's profile-change saves on real data
+(`lmc-profile-change-save.sh`) and makes the conformance runner's rule 4 measurable. Revision 28 builds LMC-REC-010: the sub-records no
 parser decodes are kept for every plugin after the first. Revision 27 switches the live load to the session's own plugins with
 LMC-SAV-002/003/004's consequences in its report (Phase 7 slice 3). Revision 26 makes the rest of the post-reload save
 state's FormIDs stable (Phase 7 slice 2). Revision 25 saves the actor columns' FormIDs as stable
@@ -1090,7 +1091,15 @@ adds the user-facing contract:
   tick. Not yet built: STATE-008's opaque, purgeable preservation of an
   absent package's script and extension state (it is dropped with the
   forms), and a per-item list of removed stacks (a stack whose plugin is
-  gone reads back as form 0, so the report counts them).
+  gone reads back as form 0, so the report counts them). Measured on real
+  data (revision 29): `docs/smoke-tests/lmc-profile-change-save.sh` loads
+  an FNV save across a removed, an added and two swapped generated plugins
+  and checks every consequence above in the log and the world; the Oblivion
+  gate `oblivion-live-load-plugin-set.sh` loads saves both ways between
+  Oblivion.esm alone and Oblivion.esm with Knights.esp and
+  DLCThievesDen.esp, the engine-supplied actor values moving onto the
+  session's slot (80 and 17 references of the two plugins left out one way,
+  7 masked Knights edits and 6 unseen Start Game Enabled quests the other).
 - **LMC-SAV-005.** Mod-version migration of extension state follows
   [STATE-006](../engine/sandboxed-linked-mods.md#13-persistent-state-and-saves);
   Papyrus-only mods keep component state keyed by script identity.
@@ -1140,10 +1149,13 @@ adds the user-facing contract:
   Rule 1 of §7.3 is measured as activation (the profile, with masters
   resolved from the Data directory or other corpus mods, loads every plugin
   of the mod and disables none); rule 3 runs the mod's `[mod.scenario]`
-  steps through `--bench-hold` and byro-dbg. Rules 2 and 4 are reported as
-  not measurable until LMC-DX-001 and LMC-SAV-002..004 exist, and count as
-  not passed. A mod whose masters are not installed is blocked and left out
-  of the rates.
+  steps through `--bench-hold` and byro-dbg. Rule 2 is the same headless
+  run's `--preflight`: every item the mod's root ships must be classified by
+  the catalog. Rule 4 saves on the profile (where the scenario plays, else
+  the fixture's cell), loads that save in a fresh process on the same
+  profile and saves again, then loads it in a process without the mod's own
+  plugins and root and saves again; every load must complete. A mod whose
+  masters are not installed is blocked and left out of the rates.
 - **LMC-DX-004.** The published per-game compatibility matrix grows from the
   current `COMPATIBILITY.md` §15 rows into per-mechanism rows with the
   corpus pass rate. One home (ROADMAP), refreshed at session close.
@@ -1556,3 +1568,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 26 | 2026-11-23 | Phase 7 slice 2: the remaining post-reload saved FormIDs as stable identities (save format v146), with a guard classifying every save column | — |
 | 27 | 2026-11-23 | Phase 7 slice 3: the pre-reload ledgers' FormIDs stable (v147); the live load reloads the session's plugins, drops a removed plugin's references and inventory stacks, and reports LMC-SAV-002/003/004's consequences | — |
 | 28 | 2026-11-23 | LMC-REC-010 built: the sub-records no parser decodes are kept as opaque bytes for every plugin after the first, with the carrying plugin as provenance, and named by `plugins.conflicts`; "decoded" is measured per game and record type by removing each sub-record from sampled real records and re-parsing (the table is checked in and re-derived by ignored real-data tests); the official/user boundary is approximated by the first plugin until LMC-REC-008 | — |
+| 29 | 2026-11-23 | Phase 7 measured on real data: the FNV profile-change save gate, and the Oblivion plugin-set gate updated to the session-profile load; the conformance runner measures §7.3 rule 4 (save, reload, the removal case) and LMC-DX-003's text says rule 2 is measured | — |
