@@ -778,8 +778,24 @@ pub fn execute_pending_save_loads(
     // it ("keeping the current session") would otherwise leave the other
     // timeline's values in the session the player keeps playing.
     let live_ledgers = LiveReloadLedgers::capture(world);
-    if let Err(e) =
+    // LMC-SAV-002/003 — the load reloads the session's own plugins, not the save's: a mod removed since the save is
+    // not asked for (the save still loads), and one added since is loaded. Only the cell or worldspace comes from the
+    // save. Saved FormIDs read back through this load order (`stable_form_id`), which the reload rebuilds unchanged,
+    // so even the ledgers restored before it translate through the right one.
+    let session_plugins = session_plugin_list(world);
+    let translator = session_translator(world);
+    let mut translation = byroredux_core::stable_form_id::TranslationReport::default();
+    let mut tally = |report: byroredux_core::stable_form_id::TranslationReport| {
+        translation.translated += report.translated;
+        for (plugin, count) in report.absent {
+            *translation.absent.entry(plugin).or_default() += count;
+        }
+    };
+    let (pre_restored, report) = translated(translator.clone(), || {
         byroredux_save::restore_resources_subset(world, &registry, &snapshot, PRE_RELOAD_RESOURCES)
+    });
+    tally(report);
+    if let Err(e) = pre_restored
     {
         live_ledgers.reinstate(world);
         let message = format!(
@@ -797,9 +813,17 @@ pub fn execute_pending_save_loads(
     // rows arrive with the post-reload resource restore below.
     let outcome = crate::cell_loader::reference_state::without_parked_state(world, |world| {
         reload_with_fresh_day_blocks(world, |world| {
-            if let Some(cell_ctx) = snapshot_cell_context(&snapshot) {
+            if let Some(mut cell_ctx) = snapshot_cell_context(&snapshot) {
+                if let Some((masters, esm_path)) = &session_plugins {
+                    cell_ctx.masters.clone_from(masters);
+                    cell_ctx.esm_path.clone_from(esm_path);
+                }
                 reload_interior_session(world, ctx, streaming, &args, &cell_ctx)
-            } else if let Some(ext_ctx) = snapshot_exterior_context(&snapshot) {
+            } else if let Some(mut ext_ctx) = snapshot_exterior_context(&snapshot) {
+                if let Some((masters, esm_path)) = &session_plugins {
+                    ext_ctx.masters.clone_from(masters);
+                    ext_ctx.esm_path.clone_from(esm_path);
+                }
                 reload_exterior_session(world, ctx, streaming, &args, &ext_ctx)
             } else {
                 let message = "save load: snapshot lost its cell/exterior context between queue and drain";
@@ -856,17 +880,21 @@ pub fn execute_pending_save_loads(
     // spawn-time consumers were served by the pre-reload restore above
     // (#3789); this second pass is the one that has always been here.
     // LMC-SAV-002..004 — saved FormIDs read back through the reloaded load order; what its plugins lack is counted.
-    let translator = session_translator(world);
-    let mut translation = byroredux_core::stable_form_id::TranslationReport::default();
-    let mut tally = |report: byroredux_core::stable_form_id::TranslationReport| {
-        translation.translated += report.translated;
-        for (plugin, count) in report.absent {
-            *translation.absent.entry(plugin).or_default() += count;
-        }
-    };
     let (restored, report) =
         translated(translator.clone(), || byroredux_save::restore_resources(world, &registry, &snapshot));
     tally(report);
+    // The restore put the save's own cell context back, with the plugins the save was made with; the session's are
+    // the ones it is running, and the next save must record those.
+    if let Some((masters, esm_path)) = &session_plugins {
+        if let Some(mut cell_ctx) = world.try_resource_mut::<crate::cell_loader::CurrentCellContext>() {
+            cell_ctx.masters.clone_from(masters);
+            cell_ctx.esm_path.clone_from(esm_path);
+        }
+        if let Some(mut ext_ctx) = world.try_resource_mut::<crate::cell_loader::CurrentExteriorContext>() {
+            ext_ctx.masters.clone_from(masters);
+            ext_ctx.esm_path.clone_from(esm_path);
+        }
+    }
     if let Err(e) = restored {
         let message = format!("save load: resource restore failed: {e}");
         log::error!("{message}");
@@ -945,6 +973,15 @@ pub fn execute_pending_save_loads(
     // so the ring's rows cannot overlay. Park them as eviction would have,
     // so those placements return with their saved state when streamed in.
     let unresolved = byroredux_save::unresolved_form_id_pairs(&registry, &snapshot, &remap);
+    // LMC-SAV-002 — a saved reference of a plugin the save had and this load order lacks will never stream in: its
+    // rows are dropped and reported, not parked for a respawn that cannot come.
+    let removed_plugins = removed_plugins(world, &snapshot);
+    let (unresolved, gone): (Vec<_>, Vec<_>) =
+        unresolved.into_iter().partition(|(_, pair)| !removed_plugins.contains_key(&pair.plugin));
+    let mut gone_references: std::collections::BTreeMap<byroredux_core::form_id::PluginId, usize> = Default::default();
+    for (_, pair) in &gone {
+        *gone_references.entry(pair.plugin).or_default() += 1;
+    }
     // The parked rows decode the same columns the overlay does, so through the same load order.
     let (parked_rows, report) = translated(translator.clone(), || {
         crate::cell_loader::reference_state::park_unresolved_snapshot_rows(world, &snapshot, &unresolved)
@@ -960,18 +997,19 @@ pub fn execute_pending_save_loads(
         byroredux_save::apply_deltas(world, &registry, &snapshot, &remap, MUTABLE_DELTA_COLUMNS)
     });
     tally(report);
-    if !translation.absent.is_empty() {
-        let absent: Vec<String> =
-            translation.absent.iter().map(|(plugin, count)| format!("{:032x} ({count})", plugin.0)).collect();
-        log::warn!(
-            "save load: {} saved form(s) belong to plugins this load order lacks, read as absent: {}",
-            translation.absent.values().sum::<usize>(),
-            absent.join(", ")
-        );
-    }
     log::debug!("save load: {} saved FormID(s) read through the load order", translation.translated);
     match overlaid {
         Ok(applied) => {
+            // LMC-SAV-002 — what the save held of the plugins this load order lacks: inventory items removed, before
+            // the reconciles below re-derive the weapon and worn gear from what is left.
+            let removed_items = sweep_absent_inventory_stacks(world);
+            for line in removed_mod_report(&removed_plugins, &translation, &gone_references, removed_items) {
+                log::warn!("save load: {line}");
+                notify_player(world, line);
+            }
+            for line in profile_change_report(world, &snapshot, &remap) {
+                log::info!("save load: {line}");
+            }
             let dead = crate::combat::reconcile_dead_actor_runtime_state(world);
             // #3488 — the overlay is additive-only, so a saved *absence*
             // (unarmed) cannot clear a live `EquippedWeapon` off the
@@ -1102,5 +1140,241 @@ mod exterior_reload_overlay_tests {
     fn nonzero_pending_is_unsafe() {
         assert!(!exterior_reload_overlay_is_safe(1));
         assert!(!exterior_reload_overlay_is_safe(48));
+    }
+}
+
+/// The plugins the running session loaded (its `--master`s and `--esm`), from whichever context it is in; `None`
+/// before any cell or worldspace loaded, when the load falls back to the save's own list.
+fn session_plugin_list(world: &World) -> Option<(Vec<String>, String)> {
+    if let Some(cell) = world.try_resource::<crate::cell_loader::CurrentCellContext>() {
+        return Some((cell.masters.clone(), cell.esm_path.clone()));
+    }
+    world
+        .try_resource::<crate::cell_loader::CurrentExteriorContext>()
+        .map(|exterior| (exterior.masters.clone(), exterior.esm_path.clone()))
+}
+
+/// The plugins the save was made with that this load order lacks (LMC-SAV-002), by identity, with their names, from
+/// the save's own profile record.
+fn removed_plugins(
+    world: &World,
+    snapshot: &byroredux_save::Snapshot,
+) -> std::collections::HashMap<byroredux_core::form_id::PluginId, String> {
+    let Some(identity) = world.try_resource::<byroredux_scripting::LoadOrderIdentity>().map(|identity| (*identity).clone())
+    else {
+        return Default::default();
+    };
+    let Some(saved) = snapshot
+        .resources
+        .get("SessionProfile")
+        .and_then(|value| serde_json::from_value::<crate::profile_fingerprint::ProfileRecord>(value.clone()).ok())
+    else {
+        return Default::default();
+    };
+    saved
+        .plugins
+        .into_iter()
+        .map(|plugin| (byroredux_core::form_id::PluginId::from_filename(&plugin.name), plugin.name))
+        .filter(|(id, _)| identity.global_form_id(byroredux_sdk::identity::FormRef::new(id.0.to_be_bytes(), 1)).is_none())
+        .collect()
+}
+
+/// LMC-SAV-002 — an inventory stack whose base form belonged to a plugin this load order lacks reads back as the null
+/// form; it is removed: its count zeroed (rows keep their indices, as a consumed stack's does), its instance freed and
+/// its equipment slots released. Returns the stacks removed.
+fn sweep_absent_inventory_stacks(world: &World) -> usize {
+    use byroredux_core::ecs::components::{EquipmentSlots, Inventory, InventoryIndex};
+    let mut released = Vec::new();
+    let mut emptied: Vec<(byroredux_core::ecs::EntityId, usize)> = Vec::new();
+    if let Some(mut inventories) = world.query_mut::<Inventory>() {
+        for (entity, inventory) in inventories.iter_mut() {
+            for (index, stack) in inventory.items.iter_mut().enumerate() {
+                if stack.base_form_id == 0 && (stack.count > 0 || stack.instance.is_some()) {
+                    stack.count = 0;
+                    released.extend(stack.instance.take());
+                    emptied.push((entity, index));
+                }
+            }
+        }
+    }
+    if let Some(mut pool) = world.try_resource_mut::<byroredux_core::ecs::resources::ItemInstancePool>() {
+        for id in released {
+            pool.release(id);
+        }
+    }
+    if let Some(mut slots) = world.query_mut::<EquipmentSlots>() {
+        for &(entity, index) in &emptied {
+            if let Some(slots) = slots.get_mut(entity) {
+                slots.release(InventoryIndex(index as u32));
+            }
+        }
+    }
+    emptied.len()
+}
+
+/// The load report's lines for what the removed plugins took with them (LMC-SAV-002): per plugin, the saved forms
+/// that read as absent and the references whose saved state was dropped, and the inventory stacks removed.
+fn removed_mod_report(
+    removed: &std::collections::HashMap<byroredux_core::form_id::PluginId, String>,
+    translation: &byroredux_core::stable_form_id::TranslationReport,
+    gone_references: &std::collections::BTreeMap<byroredux_core::form_id::PluginId, usize>,
+    removed_items: usize,
+) -> Vec<String> {
+    let name = |plugin: &byroredux_core::form_id::PluginId| {
+        removed.get(plugin).cloned().unwrap_or_else(|| format!("plugin {:032x}", plugin.0))
+    };
+    let mut plugins: Vec<&byroredux_core::form_id::PluginId> =
+        translation.absent.keys().chain(gone_references.keys()).collect();
+    plugins.sort();
+    plugins.dedup();
+    let mut lines: Vec<String> = plugins
+        .into_iter()
+        .map(|plugin| {
+            format!(
+                "{} is not loaded: {} saved form(s) of it read as absent, {} reference(s) of it left out",
+                name(plugin),
+                translation.absent.get(plugin).copied().unwrap_or(0),
+                gone_references.get(plugin).copied().unwrap_or(0)
+            )
+        })
+        .collect();
+    if removed_items > 0 {
+        lines.push(format!("{removed_items} inventory stack(s) of plugins that are not loaded removed"));
+    }
+    lines
+}
+
+/// The load report's lines for what the session's plugins change about the save's references (LMC-SAV-003, -004).
+/// Every resident reference the save holds is overlaid with its saved state, so where a plugin added since the save
+/// now wins a reference, the save's state masks that plugin's edit; where the save's own plugins were reordered, a
+/// reference can have a different winner than when it was saved. Plus the Start Game Enabled quests the save had not
+/// seen, which start on the next tick.
+fn profile_change_report(
+    world: &World,
+    snapshot: &byroredux_save::Snapshot,
+    remap: &std::collections::HashMap<byroredux_core::ecs::EntityId, byroredux_core::ecs::EntityId>,
+) -> Vec<String> {
+    use byroredux_core::form_id::plugin_key;
+    let Some(saved) = snapshot
+        .resources
+        .get("SessionProfile")
+        .and_then(|value| serde_json::from_value::<crate::profile_fingerprint::ProfileRecord>(value.clone()).ok())
+    else {
+        return Vec::new();
+    };
+    let Some(active) = world.try_resource::<crate::cell_loader::load_order::ActiveLoadOrder>().map(|active| active.0.clone()) else {
+        return Vec::new();
+    };
+    let saved_order: Vec<String> = saved.plugins.iter().map(|plugin| plugin_key(&plugin.name)).collect();
+    let current: Vec<String> = active.iter().map(|name| plugin_key(name)).collect();
+    let mut masked: std::collections::BTreeMap<&str, Vec<u32>> = Default::default();
+    let mut reordered: Vec<(u32, &str, &str)> = Vec::new();
+    for &live in remap.values() {
+        let Some(global) = byroredux_scripting::condition::entity_global_form_id(world, live) else { continue };
+        let carriers = active.provenance().carriers(global);
+        let Some(now) = carriers.last().and_then(|carrier| current.get(carrier.plugin as usize)) else { continue };
+        if !saved_order.contains(now) {
+            masked.entry(now.as_str()).or_default().push(global);
+            continue;
+        }
+        let then = carriers
+            .iter()
+            .filter_map(|carrier| current.get(carrier.plugin as usize))
+            .filter_map(|name| saved_order.iter().position(|saved| saved == name).map(|at| (at, name.as_str())))
+            .max_by_key(|&(at, _)| at)
+            .map(|(_, name)| name);
+        if let Some(then) = then.filter(|then| *then != now.as_str()) {
+            reordered.push((global, then, now));
+        }
+    }
+    let mut lines: Vec<String> = masked
+        .into_iter()
+        .map(|(plugin, forms)| {
+            format!(
+                "{} reference(s) {plugin} edits keep their saved state, which masks the edit (e.g. {:08X})",
+                forms.len(),
+                forms[0]
+            )
+        })
+        .collect();
+    if let Some(&(form, then, now)) = reordered.first() {
+        lines.push(format!(
+            "{} reference(s) won by another plugin since the save's load order (e.g. {form:08X}: {then}, now {now})",
+            reordered.len()
+        ));
+    }
+    let quests = match (
+        world.try_resource::<byroredux_scripting::quest_stages::StartGameQuestRegistry>(),
+        world.try_resource::<byroredux_scripting::quest_stages::QuestStageState>(),
+    ) {
+        (Some(registry), Some(stages)) => registry.not_started(&stages),
+        _ => 0,
+    };
+    if quests > 0 {
+        lines.push(format!("{quests} Start Game Enabled quest(s) the save had not seen start now"));
+    }
+    lines
+}
+
+#[cfg(test)]
+mod removed_plugin_tests {
+    use super::{removed_mod_report, sweep_absent_inventory_stacks};
+    use byroredux_core::ecs::components::{EquipmentSlots, Inventory, InventoryIndex, ItemStack};
+    use byroredux_core::ecs::resources::{ItemInstance, ItemInstancePool};
+    use byroredux_core::ecs::World;
+    use byroredux_core::form_id::PluginId;
+
+    /// A stack whose base form read back as absent (0) is emptied in place: its instance freed, its slot released;
+    /// the stacks around it keep their indices.
+    #[test]
+    fn absent_inventory_stacks_are_removed_in_place() {
+        let mut world = World::new();
+        let mut pool = ItemInstancePool::new();
+        let instance = pool.allocate(ItemInstance { quality: 2 });
+        world.insert_resource(pool);
+        let mut inventory = Inventory::new();
+        inventory.push(ItemStack::new(0x0000_0100, 3));
+        inventory.push(ItemStack { base_form_id: 0, count: 1, instance: Some(instance) });
+        inventory.push(ItemStack::new(0x0000_0101, 1));
+        let mut slots = EquipmentSlots::new();
+        slots.equip(1 << 2, InventoryIndex(1));
+        slots.equip(1 << 3, InventoryIndex(2));
+        let actor = world.spawn();
+        world.insert(actor, inventory);
+        world.insert(actor, slots);
+
+        assert_eq!(sweep_absent_inventory_stacks(&world), 1);
+        {
+            let inventory = world.get::<Inventory>(actor).unwrap();
+            assert_eq!(inventory.items.len(), 3);
+            assert_eq!(inventory.items[1], ItemStack::new(0, 0));
+            assert_eq!(inventory.items[0].count, 3);
+        }
+        assert_eq!(world.resource::<ItemInstancePool>().live_count(), 0);
+        {
+            let slots = world.get::<EquipmentSlots>(actor).unwrap();
+            assert!(!slots.is_equipped(InventoryIndex(1)));
+            assert!(slots.is_equipped(InventoryIndex(2)));
+        }
+        assert_eq!(sweep_absent_inventory_stacks(&world), 0, "an emptied stack is not counted again");
+    }
+
+    /// One line per removed plugin, named from the save's profile, merging its absent forms and its dropped
+    /// references; then the removed stacks.
+    #[test]
+    fn the_removed_mod_report_names_each_plugin_once() {
+        let gone = PluginId::from_filename("ModA.esp");
+        let removed = std::collections::HashMap::from([(gone, "ModA.esp".to_string())]);
+        let mut translation = byroredux_core::stable_form_id::TranslationReport::default();
+        translation.absent.insert(gone, 4);
+        let references = std::collections::BTreeMap::from([(gone, 2)]);
+        assert_eq!(
+            removed_mod_report(&removed, &translation, &references, 1),
+            [
+                "ModA.esp is not loaded: 4 saved form(s) of it read as absent, 2 reference(s) of it left out",
+                "1 inventory stack(s) of plugins that are not loaded removed",
+            ]
+        );
+        assert!(removed_mod_report(&removed, &Default::default(), &Default::default(), 0).is_empty());
     }
 }

@@ -22,7 +22,9 @@ use super::*;
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ReferenceEnableState {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::vec"))]
     disabled: HashSet<u32>,
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::vec"))]
     enabled: HashSet<u32>,
 }
 
@@ -274,6 +276,7 @@ pub enum LockOverride {
     /// ledger can override.
     Locked {
         lock_level: u8,
+        #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::option"))]
         key_form_id: Option<u32>,
     },
     /// A script unlocked it. Distinct from "absent": absent means no
@@ -306,6 +309,7 @@ pub enum LockOverride {
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ReferenceLockState {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))]
     overrides: HashMap<u32, LockOverride>,
 }
 
@@ -379,6 +383,7 @@ impl ReferenceLockState {
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ReferenceMotionTypeState {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))]
     overrides: HashMap<u32, byroredux_core::ecs::components::MotionType>,
 }
 
@@ -481,6 +486,7 @@ impl ReferenceEnableState {
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ReferenceScriptState {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::vec"))]
     script_parked: HashSet<u32>,
 }
 

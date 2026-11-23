@@ -1,6 +1,7 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-23). Revision 26 makes the rest of the post-reload save
+**Status**: ACTIVE (2026-11-23). Revision 27 switches the live load to the session's own plugins with
+LMC-SAV-002/003/004's consequences in its report (Phase 7 slice 3). Revision 26 makes the rest of the post-reload save
 state's FormIDs stable (Phase 7 slice 2). Revision 25 saves the actor columns' FormIDs as stable
 identities (Phase 7 slice 1). Revision 24 merges mods' translation files (U4)
 and records why Phase 7 starts with stable saved FormIDs. Revision 23 layers mods' UI files over the vanilla
@@ -1061,9 +1062,21 @@ adds the user-facing contract:
   Papyrus registrations, the effect and parked-reference codecs,
   script-instance properties and the reference variables kept as `f32`
   halves; a guard classifies every save column as stable, FormID-free or
-  pre-reload raw. Left for slice 3: the six ledgers restored before the
-  reload, and the switch of the live load to the session's profile with
-  LMC-SAV-002/003's consequences and LMC-SAV-004's report.
+  pre-reload raw. Slice 3 is built (v147): the six ledgers restored before
+  the reload save stable identities too, and the live load reloads the
+  *session's* plugins, not the save's. A removed plugin's references are
+  not spawned by the reload and their saved rows are dropped, not parked;
+  inventory stacks whose base form reads as absent are emptied in place,
+  their instances freed and slots released. The load report (log and HUD)
+  counts, per removed plugin, its saved forms read as absent, its
+  references left out and the stacks removed; it counts the references a
+  plugin added since the save edits, whose saved state masks the edit, and
+  those a reorder gave another winner, each with an example FormID; and the
+  Start Game Enabled quests the save had not seen, which start on the next
+  tick. Not yet built: STATE-008's opaque, purgeable preservation of an
+  absent package's script and extension state (it is dropped with the
+  forms), and a per-item list of removed stacks (a stack whose plugin is
+  gone reads back as form 0, so the report counts them).
 - **LMC-SAV-005.** Mod-version migration of extension state follows
   [STATE-006](../engine/sandboxed-linked-mods.md#13-persistent-state-and-saves);
   Papyrus-only mods keep component state keyed by script identity.
@@ -1527,3 +1540,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 24 | 2026-11-23 | Catalog U4 sourced and built: SKSE64 and F4SE (`Translation.cpp`) merge every enabled plugin's `Interface\\Translations\\<stem>_<language>.txt`, UCS-2 LE, first definition kept; the engine does the same natively (U4 D1, Starfield D5 with no source). LMC-SAV-004's premise measured false for saved state (session-global FormIDs), which Phase 7 has to resolve first | — |
 | 25 | 2026-11-23 | Phase 7 slice 1 (owner's option A): saved FormIDs as stable identities through `byroredux_core::stable_form_id`, the actor columns converted, save format v144 | — |
 | 26 | 2026-11-23 | Phase 7 slice 2: the remaining post-reload saved FormIDs as stable identities (save format v146), with a guard classifying every save column | — |
+| 27 | 2026-11-23 | Phase 7 slice 3: the pre-reload ledgers' FormIDs stable (v147); the live load reloads the session's plugins, drops a removed plugin's references and inventory stacks, and reports LMC-SAV-002/003/004's consequences | — |

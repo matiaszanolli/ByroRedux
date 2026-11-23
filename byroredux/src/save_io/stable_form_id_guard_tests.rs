@@ -2,7 +2,7 @@
 //! so a save follows its plugins across a changed load order.
 //!
 //! Rust has no field reflection, so the guard is an audited classification of every registered column, the
-//! `MUTABLE_DELTA_COLUMNS` pattern: a new column fails here until it is placed in one of the three lists below, which
+//! `MUTABLE_DELTA_COLUMNS` pattern: a new column fails here until it is placed in one of the lists below, which
 //! is the moment to mark its FormIDs. The shift tests check representative columns of each shape end to end.
 
 use super::*;
@@ -25,12 +25,8 @@ const STABLE: &[&str] = &[
     "EventRegistrations", "DistanceWatches", "HitRegistrations", "AnimationEventRegistrations", "MenuEventRegistrations",
     "ScriptUpdates", "AliasScriptOwners", "CinematicPresentationState", "FormIdComponent", "FactionRelations",
     "PapyrusProviderContinuationQueue",
-];
-
-/// Ledgers the live load restores *before* the cell reload (`PRE_RELOAD_RESOURCES`), while the world still holds the
-/// outgoing session's load order. They stay session-global numbers until the load reloads the session's own profile
-/// (Phase 7 slice 3), when that order is the one to read them through.
-const PRE_RELOAD_RAW: &[&str] = &[
+    // Restored before the cell reload (`PRE_RELOAD_RESOURCES`): the live load reloads the session's own plugins, so
+    // the load order they read through before the reload is the one it rebuilds (Phase 7 slice 3).
     "ReferenceEnableState", "ReferenceLockState", "ReferenceScriptState", "ScriptedFactionChanges",
     "ReferenceMotionTypeState", "ActorRelocations",
 ];
@@ -50,7 +46,7 @@ const NO_FORM_IDS: &[&str] = &[
 fn every_saved_column_is_classified_for_stable_form_ids() {
     let registry = build_save_registry();
     let registered: Vec<&str> = registry.component_names().chain(registry.resource_names()).collect();
-    let lists = [("STABLE", STABLE), ("PRE_RELOAD_RAW", PRE_RELOAD_RAW), ("NO_FORM_IDS", NO_FORM_IDS)];
+    let lists = [("STABLE", STABLE), ("NO_FORM_IDS", NO_FORM_IDS)];
     let unclassified: Vec<&str> =
         registered.iter().copied().filter(|name| !lists.iter().any(|(_, list)| list.contains(name))).collect();
     assert!(
@@ -114,4 +110,39 @@ fn script_variable_references_follow_their_plugin() {
     assert_eq!(loaded.get_by_name("gone#lo"), None);
     assert_eq!(loaded.get_by_name("count"), Some(3.0));
     assert_eq!(report.absent.get(&removed()), Some(&1));
+}
+
+/// Slice 3 — the ledgers the live load restores before its cell reload follow a shifted plugin and lose an absent
+/// one's entries: a reference set, a lock's key, a faction-membership map keyed by reference.
+#[test]
+fn pre_reload_ledgers_follow_their_plugin_across_a_changed_load_order() {
+    use byroredux_scripting::{LockOverride, ReferenceEnableState, ReferenceLockState, ScriptedFactionChanges};
+
+    let mut enable = ReferenceEnableState::default();
+    enable.set_enabled(0x0200_0300, false);
+    enable.set_enabled(0x0100_0301, false);
+    let (loaded, report) = shift(&enable, &[]);
+    assert_eq!(loaded.override_for(0x0100_0300), Some(false), "ModB's disabled reference follows it to slot 1");
+    assert_eq!(loaded.override_for(0x0100_0301), None, "ModA's is gone, not read as ModB's");
+    assert_eq!(report.absent.get(&removed()), Some(&1));
+
+    let mut locks = ReferenceLockState::default();
+    locks.set_locked(0x0000_0400, 50, Some(0x0200_0401));
+    locks.set_locked(0x0000_0402, 25, Some(0x0100_0403));
+    let (loaded, _) = shift(&locks, &[]);
+    assert_eq!(loaded.override_for(0x0000_0400), Some(LockOverride::Locked { lock_level: 50, key_form_id: Some(0x0100_0401) }));
+    assert_eq!(
+        loaded.override_for(0x0000_0402),
+        Some(LockOverride::Locked { lock_level: 25, key_form_id: None }),
+        "the lock stands; its absent key is cleared"
+    );
+
+    let mut factions = ScriptedFactionChanges::default();
+    factions.record(0x0200_0500, 0x0000_0501, Some(2));
+    factions.record(0x0200_0500, 0x0100_0502, Some(1));
+    factions.record(0x0100_0503, 0x0000_0501, None);
+    let (loaded, report) = shift(&factions, &[]);
+    assert_eq!(loaded.changes_for(0x0100_0500), &[(0x0000_0501, Some(2))], "ModA's faction is dropped from the list");
+    assert!(loaded.changes_for(0x0100_0503).is_empty(), "ModA's reference is gone");
+    assert_eq!(report.absent.get(&removed()), Some(&2));
 }

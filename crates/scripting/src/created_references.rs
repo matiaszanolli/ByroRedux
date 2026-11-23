@@ -262,11 +262,13 @@ impl CreatedReferences {
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ActorRelocations {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))]
     placements: std::collections::BTreeMap<u32, CreatedPlacement>,
     /// XCT-OFF-001 — actors travelling **Offscreen** toward a destination in
     /// another space, by FormID. An actor on a journey has no body anywhere
     /// until it arrives (XCT-OFF-003); its logical identity stands at
     /// [`Journey::origin`].
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))]
     journeys: std::collections::BTreeMap<u32, Journey>,
 }
 
@@ -278,6 +280,7 @@ pub struct ActorRelocations {
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct Journey {
     /// The destination reference (its package location).
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))]
     pub destination: u32,
     /// Where the actor stood when it went out of sight.
     pub origin: CreatedPlacement,
