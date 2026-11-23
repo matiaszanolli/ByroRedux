@@ -15,6 +15,9 @@ use super::*;
 #[derive(Debug)]
 pub(super) enum PendingMessage {
     Show(u32, Vec<f32>),
+    /// #7298 — a VM `Message.Show()` box whose ticket the run reserved under the quest guards:
+    /// `(message FormID, arguments, ticket)`, built and queued once they drop.
+    ShowAwaiting(u32, Vec<f32>, u32),
     Notify(String),
     /// A non-silent scripted add to the player: `(item base FormID, count)`,
     /// named and worded when it is shown (#5913).
