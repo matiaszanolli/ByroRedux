@@ -483,19 +483,21 @@ mod tests {
     fn the_vm_script_checkers_run_inside_the_panic_net() {
         let source = include_str!("../fragment/vm/checker.rs");
         let needle = format!("{}{}", "catching_", "panics(");
-        for name in ["check_reference_script", "check_alias_script"] {
+        let body_of = |name: &str| {
             let start = source
-                .find(&format!("pub fn {name}("))
-                .unwrap_or_else(|| panic!("{name}: entry point not found"));
+                .find(&format!("fn {name}("))
+                .unwrap_or_else(|| panic!("{name}: not found"));
             let body = &source[start..];
-            let end = body.find("\n}\n").expect("end of the entry point");
-            let body = &body[..end];
-            assert!(body.contains(&needle), "{name}: the panic net is gone (#6000)");
-            assert!(
-                body.contains(&format!("{name}_unguarded(")),
-                "{name}: the net must wrap the checking body"
-            );
+            let end = body.find("\n}\n").expect("end of the function");
+            body[..end].to_owned()
+        };
+        // The three entry points share one guard, which wraps the one checking body.
+        for name in ["check_reference_script", "check_alias_script", "check_quest_script"] {
+            assert!(body_of(name).contains("check_events_guarded("), "{name}: the panic net is gone (#6000)");
         }
+        let guard = body_of("check_events_guarded");
+        assert!(guard.contains(&needle), "check_events_guarded: the panic net is gone (#6000)");
+        assert!(guard.contains("check_events_unguarded("), "the net must wrap the checking body");
     }
 
     #[test]

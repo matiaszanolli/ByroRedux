@@ -897,6 +897,107 @@ fn alias_scripts_start_follow_their_reference_and_shut_down() {
     assert_eq!(count(&world), Some(115.0), "shut down once");
 }
 
+/// A world with a quest's own script checked and installed the way the host does it.
+fn world_with_quest_script(script: Arc<Script>, library: Option<&dyn CheckLibrary>, running: bool) -> Option<World> {
+    let (events, scripts) = crate::check_quest_script(Arc::clone(&script), &crate::DELIVERED_QUEST_EVENTS, library).ok()?;
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    world.insert_resource(crate::QuestScriptObjects::default());
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.init_resource::<crate::QuestOwnScripts>();
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        for script in scripts {
+            fragments.insert_vm_script(script);
+        }
+    }
+    let instance = ScriptInstance { name: script.name.node.0.clone(), status: 0, properties: Vec::new() };
+    world.resource_mut::<crate::QuestOwnScripts>().set_checked(
+        Q,
+        vec![crate::QuestScript {
+            script: script.name.node.0.clone(),
+            vmad: Arc::new(ScriptInstanceData { version: 5, object_format: 2, scripts: vec![instance] }),
+            events,
+        }],
+    );
+    if running {
+        world.resource_mut::<QuestStageState>().start_quest(Q, None);
+    }
+    Some(world)
+}
+
+fn quest_property(world: &World, name: &str) -> Option<f32> {
+    world.resource::<crate::QuestScriptVariables>().get(Q, crate::QuestScriptVariables::property_key(name))
+}
+
+/// CK *OnInit*: a quest's own script receives it "on game startup" — whether or not the quest runs —
+/// and the engine delivers it once per save, so a second pass (a later frame, a load) does not re-run it.
+#[test]
+fn a_quest_script_receives_oninit_once_at_startup() {
+    let script = parsed_source(
+        "ScriptName VmQuestInit extends Quest\n\
+         Int Property Count Auto\n\
+         Event OnInit()\n Count += 7\n EndEvent\n",
+    );
+    for running in [false, true] {
+        let world = world_with_quest_script(Arc::clone(&script), None, running).expect("the VM runs it");
+        assert_eq!(quest_property(&world, "Count"), None);
+        crate::quest_script_init_system(&world, 0.0);
+        assert_eq!(quest_property(&world, "Count"), Some(7.0), "running: {running}");
+        crate::quest_script_init_system(&world, 0.0);
+        assert_eq!(quest_property(&world, "Count"), Some(7.0), "once per save, running: {running}");
+    }
+}
+
+/// The gate is saved state (the quest's script variables): a quest whose variables a save restored
+/// has had its `OnInit`, and one added to an existing save has not.
+#[test]
+fn a_quest_script_oninit_follows_the_saved_gate() {
+    let script = parsed_source(
+        "ScriptName VmQuestInitGate extends Quest\n\
+         Int Property Count Auto\n\
+         Event OnInit()\n Count += 1\n EndEvent\n",
+    );
+    let world = world_with_quest_script(Arc::clone(&script), None, false).expect("the VM runs it");
+    let gate = crate::fragment::reference::initialized_key("VmQuestInitGate");
+    world.resource_mut::<crate::QuestScriptVariables>().set(Q, gate, 1.0);
+    crate::quest_script_init_system(&world, 0.0);
+    assert_eq!(quest_property(&world, "Count"), None, "the save already recorded the OnInit");
+}
+
+/// An inherited `OnInit` runs (SkyUI's `SKI_ConfigBase` is the case), and a quest script handling no
+/// delivered event is declined rather than run.
+#[test]
+fn a_quest_script_inherits_its_oninit_and_one_without_is_declined() {
+    let base = parsed_source(
+        "ScriptName VmQuestBase extends Quest\n\
+         Int Property Count Auto\n\
+         Event OnInit()\n Count += 3\n EndEvent\n",
+    );
+    let child = parsed_source("ScriptName VmQuestChild extends VmQuestBase\n");
+    let scripts: HashMap<String, Arc<Script>> = [("vmquestbase".to_owned(), Arc::clone(&base))].into();
+    let library = Installed(&scripts);
+    let world = world_with_quest_script(Arc::clone(&child), Some(&library), false).expect("the inherited event runs");
+    crate::quest_script_init_system(&world, 0.0);
+    assert_eq!(quest_property(&world, "Count"), Some(3.0));
+
+    let silent = parsed_source("ScriptName VmQuestSilent extends Quest\nFunction Helper()\nEndFunction\n");
+    assert!(world_with_quest_script(silent, None, false).is_none(), "no OnInit: not a delivered script");
+}
+
+/// A script whose `OnInit` the VM cannot run is declined whole, so it never half-runs.
+#[test]
+fn a_quest_script_with_an_unmodelled_oninit_is_declined() {
+    let script = parsed_source(
+        "ScriptName VmQuestUnmodelled extends Quest\n\
+         Event OnInit()\n VmNoSuchLibrary.DoThing()\n EndEvent\n",
+    );
+    assert!(crate::check_quest_script(script, &crate::DELIVERED_QUEST_EVENTS, None).is_err());
+}
+
 /// A Fallout 4 alias script registers for its own hit in `OnAliasInit`; the
 /// `OnHit(akTarget, akAggressor, …)` it declares is not delivered automatically,
 /// runs once for the first matching hit, and is delivered the nine arguments of

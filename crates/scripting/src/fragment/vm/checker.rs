@@ -77,35 +77,7 @@ pub fn check_reference_script(
     events: &[&str],
     library: Option<&dyn CheckLibrary>,
 ) -> Result<(Vec<String>, Vec<Arc<Script>>), String> {
-    // #6000 — the checker walks the decompiler's AST of a mod-supplied `.pex`
-    // and runs on the cell-load attach path and a per-frame system, so it sits
-    // inside the same panic net as the rest of the `.pex` path (#3948/#1816): a
-    // panic declines the script instead of aborting the load or the frame loop.
-    crate::translate::catching_panics("check_reference_script", || check_reference_script_unguarded(script, events, library))
-        .unwrap_or_else(|| Err("the checker panicked".to_owned()))
-}
-
-fn check_reference_script_unguarded(
-    script: Arc<Script>,
-    events: &[&str],
-    library: Option<&dyn CheckLibrary>,
-) -> Result<(Vec<String>, Vec<Arc<Script>>), String> {
-    let mut checker = Checker::new(library, &script);
-    let mut handled = Vec::new();
-    for event in events {
-        if checker.versions(&script, event).is_empty() || checker.hit_by_registration(&script, event) {
-            continue;
-        }
-        if checker.check_call_into(&script, event, true, Kind::Object).is_none() {
-            let reason = checker.reason.take().unwrap_or_else(|| "unsupported".into());
-            return Err(format!("{event}: {reason}"));
-        }
-        handled.push((*event).to_owned());
-    }
-    if handled.is_empty() {
-        return Err("handles no delivered event".into());
-    }
-    Ok((handled, checker.scripts.into_values().collect()))
+    check_events_guarded("check_reference_script", script, events, library, Kind::Object)
 }
 
 /// Whether an alias script runs on this VM: [`check_reference_script`] with
@@ -115,18 +87,41 @@ pub fn check_alias_script(
     events: &[&str],
     library: Option<&dyn CheckLibrary>,
 ) -> Result<(Vec<String>, Vec<Arc<Script>>), String> {
-    // #6000 — the checker walks the decompiler's AST of a mod-supplied `.pex`
-    // and runs on the cell-load attach path and a per-frame system, so it sits
-    // inside the same panic net as the rest of the `.pex` path (#3948/#1816): a
-    // panic declines the script instead of aborting the load or the frame loop.
-    crate::translate::catching_panics("check_alias_script", || check_alias_script_unguarded(script, events, library))
-        .unwrap_or_else(|| Err("the checker panicked".to_owned()))
+    check_events_guarded("check_alias_script", script, events, library, Kind::Alias)
 }
 
-fn check_alias_script_unguarded(
+/// Whether a quest's own script runs on this VM: [`check_reference_script`] with `Self` the quest,
+/// over the events a quest script receives ([`DELIVERED_QUEST_EVENTS`](crate::DELIVERED_QUEST_EVENTS)).
+pub fn check_quest_script(
     script: Arc<Script>,
     events: &[&str],
     library: Option<&dyn CheckLibrary>,
+) -> Result<(Vec<String>, Vec<Arc<Script>>), String> {
+    check_events_guarded("check_quest_script", script, events, library, Kind::Quest)
+}
+
+/// #6000 — the checker walks the decompiler's AST of a mod-supplied `.pex`
+/// and runs on the cell-load attach path and per-frame systems, so it sits
+/// inside the same panic net as the rest of the `.pex` path (#3948/#1816): a
+/// panic declines the script instead of aborting the load or the frame loop.
+fn check_events_guarded(
+    entry: &'static str,
+    script: Arc<Script>,
+    events: &[&str],
+    library: Option<&dyn CheckLibrary>,
+    self_kind: Kind,
+) -> Result<(Vec<String>, Vec<Arc<Script>>), String> {
+    crate::translate::catching_panics(entry, || check_events_unguarded(script, events, library, self_kind))
+        .unwrap_or_else(|| Err("the checker panicked".to_owned()))
+}
+
+/// The checking body of the three entry points: which of `events` the script
+/// handles, each handler run whole with `Self` of `self_kind`.
+fn check_events_unguarded(
+    script: Arc<Script>,
+    events: &[&str],
+    library: Option<&dyn CheckLibrary>,
+    self_kind: Kind,
 ) -> Result<(Vec<String>, Vec<Arc<Script>>), String> {
     let mut checker = Checker::new(library, &script);
     let mut handled = Vec::new();
@@ -134,7 +129,7 @@ fn check_alias_script_unguarded(
         if checker.versions(&script, event).is_empty() || checker.hit_by_registration(&script, event) {
             continue;
         }
-        if checker.check_call_into(&script, event, true, Kind::Alias).is_none() {
+        if checker.check_call_into(&script, event, true, self_kind).is_none() {
             let reason = checker.reason.take().unwrap_or_else(|| "unsupported".into());
             return Err(format!("{event}: {reason}"));
         }

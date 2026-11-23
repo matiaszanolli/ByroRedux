@@ -45,7 +45,7 @@ pub const DELIVERED_ALIAS_EVENTS: [&str; 16] = {
     out
 };
 
-pub use super::vm::check_alias_script;
+pub use super::vm::{check_alias_script, check_quest_script};
 
 /// One script the VM runs on a quest alias.
 #[derive(Debug, Clone)]

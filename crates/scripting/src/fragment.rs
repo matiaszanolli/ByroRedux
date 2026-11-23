@@ -58,6 +58,7 @@ use crate::translate::effects::{ActorRef, Effect};
 
 pub mod budget;
 mod alias_scripts;
+mod quest_scripts;
 mod effects;
 mod distance;
 mod dispatch;
@@ -78,6 +79,7 @@ pub mod vm;
 
 pub use budget::{VmFrameBudget, VmFrameUse, DEFAULT_FRAME_BUDGET, RUN_START_COST};
 pub use alias_scripts::*;
+pub use quest_scripts::*;
 pub use effects::*;
 pub use distance::*;
 pub(crate) use dispatch::{flush_advances, run_papyrus_call};
@@ -112,6 +114,7 @@ pub use updates::*;
 #[cfg(test)]
 pub(crate) const SOURCES: &str = concat!(
     include_str!("fragment/alias_scripts.rs"),
+    include_str!("fragment/quest_scripts.rs"),
     include_str!("fragment/anim_events.rs"),
     include_str!("fragment/budget.rs"),
     include_str!("fragment/state.rs"),

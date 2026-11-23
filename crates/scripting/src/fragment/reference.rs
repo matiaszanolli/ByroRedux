@@ -219,7 +219,7 @@ pub fn attach_reference_script(
 
 /// Where whether `script` has run its `OnInit` on a reference is kept, among
 /// the reference's script variables.
-fn initialized_key(script: &str) -> ConditionStringId {
+pub(super) fn initialized_key(script: &str) -> ConditionStringId {
     ConditionStringId::from_text(&format!("::init::{}", script.to_ascii_lowercase()))
 }
 
@@ -891,6 +891,43 @@ pub fn alias_script_event_system(world: &World, _dt: f32) {
             }
         }
     }
+    run_deliveries(world, deliveries);
+}
+
+/// Deliver `OnInit` to the quest scripts the VM runs that have not had it in this save (CK *OnInit*:
+/// quest scripts receive it "on game startup"); the gate is saved, so it runs once per save.
+pub fn quest_script_init_system(world: &World, _dt: f32) {
+    let pending: Vec<(QuestFormId, QuestScript)> = {
+        let Some(scripts) = world.try_resource::<QuestOwnScripts>() else {
+            return;
+        };
+        let variables = world.try_resource::<crate::QuestScriptVariables>();
+        let mut pending: Vec<(QuestFormId, QuestScript)> = scripts
+            .running_scripts()
+            .flat_map(|(quest, scripts)| scripts.iter().map(move |script| (quest, script)))
+            .filter(|(quest, script)| {
+                script.handles("OnInit")
+                    && variables.as_ref().is_none_or(|v| v.get(*quest, initialized_key(&script.script)).is_none())
+            })
+            .map(|(quest, script)| (quest, script.clone()))
+            .collect();
+        pending.sort_unstable_by(|a, b| (a.0 .0, &a.1.script).cmp(&(b.0 .0, &b.1.script)));
+        pending
+    };
+    if pending.is_empty() {
+        return;
+    }
+    let deliveries = pending
+        .into_iter()
+        .map(|(quest, script)| Delivery {
+            owner: quest.0,
+            script: script.script,
+            vmad: script.vmad,
+            event: "OnInit",
+            args: Vec::new(),
+            init_gated: true,
+        })
+        .collect();
     run_deliveries(world, deliveries);
 }
 

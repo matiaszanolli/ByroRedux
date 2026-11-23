@@ -391,6 +391,112 @@ pub(crate) fn check_running_quest_alias_scripts(world: &byroredux_core::ecs::wor
     }
 }
 
+/// Per script name, whether the Papyrus VM runs it as a quest's own script: the events it handles and
+/// the scripts its runs need, or `None`. Checked once per session, like [`VmAliasScriptChecks`].
+#[derive(Default)]
+pub(crate) struct VmQuestScriptChecks(std::collections::HashMap<String, VmReferenceScriptCheck>);
+
+impl byroredux_core::ecs::resource::Resource for VmQuestScriptChecks {}
+
+/// The most distinct, uncached quest scripts one frame decompiles and checks.
+const QUEST_SCRIPT_CHECKS_PER_FRAME: usize = 8;
+
+/// Check the load order's quest scripts for the VM, a few per frame (each is a decompile): the
+/// running quests' first, then every other quest's, since a quest script receives `OnInit` at game
+/// startup whether its quest runs or not (CK *OnInit*). A quest the budget stops resumes next frame.
+pub(crate) fn check_quest_own_scripts(world: &byroredux_core::ecs::world::World) {
+    let pending: Vec<(byroredux_scripting::QuestFormId, std::sync::Arc<byroredux_plugin::esm::records::script_instance::ScriptInstanceData>)> = {
+        let (Some(instances), Some(own)) = (
+            world.try_resource::<byroredux_scripting::QuestScriptInstances>(),
+            world.try_resource::<byroredux_scripting::QuestOwnScripts>(),
+        ) else {
+            return;
+        };
+        let stages = world.resource::<byroredux_scripting::quest_stages::QuestStageState>();
+        let mut unchecked: Vec<byroredux_scripting::QuestFormId> = own.unchecked(&instances).collect();
+        if unchecked.is_empty() {
+            return;
+        }
+        unchecked.sort_unstable_by_key(|quest| (!stages.is_running(*quest), quest.0));
+        unchecked
+            .into_iter()
+            .take(QUEST_SCRIPT_CHECKS_PER_FRAME)
+            .map(|quest| (quest, std::sync::Arc::new(instances.0[&quest].clone())))
+            .collect()
+    };
+    let Some(provider) = world.try_resource::<ScriptProvider>() else {
+        return;
+    };
+    if provider.is_empty() {
+        drop(provider);
+        let mut own = world.resource_mut::<byroredux_scripting::QuestOwnScripts>();
+        for (quest, _) in pending {
+            own.set_checked(quest, Vec::new());
+        }
+        return;
+    }
+    let library = ProviderScriptLibrary::new(&provider);
+    use byroredux_scripting::translate::effects::ScriptLibrary as _;
+    let mut budget = ScriptCheckBudget(QUEST_SCRIPT_CHECKS_PER_FRAME);
+    let mut results = Vec::new();
+    'quests: for (quest, vmad) in pending {
+        let mut checked = Vec::new();
+        let mut installed = Vec::new();
+        for instance in &vmad.scripts {
+            let key = instance.name.to_ascii_lowercase();
+            let cached = world.try_resource::<VmQuestScriptChecks>().and_then(|checks| checks.0.get(&key).cloned());
+            let outcome = match cached {
+                Some(outcome) => outcome,
+                None => {
+                    if !budget.try_spend() {
+                        break 'quests;
+                    }
+                    let outcome = library.script(&instance.name).and_then(|script| {
+                        byroredux_scripting::check_quest_script(
+                            script,
+                            &byroredux_scripting::DELIVERED_QUEST_EVENTS,
+                            Some(&library),
+                        )
+                        .map_err(|why| log::trace!("the Papyrus VM declines quest script '{}': {why}", instance.name))
+                        .ok()
+                    });
+                    if let Some(mut checks) = world.try_resource_mut::<VmQuestScriptChecks>() {
+                        checks.0.insert(key, outcome.clone());
+                    }
+                    outcome
+                }
+            };
+            let Some((events, scripts)) = outcome else {
+                continue;
+            };
+            installed.extend(scripts);
+            checked.push(byroredux_scripting::QuestScript {
+                script: instance.name.clone(),
+                vmad: std::sync::Arc::new(byroredux_plugin::esm::records::script_instance::ScriptInstanceData {
+                    version: vmad.version,
+                    object_format: vmad.object_format,
+                    scripts: vec![instance.clone()],
+                }),
+                events,
+            });
+        }
+        results.push((quest, checked, installed));
+    }
+    drop(library);
+    drop(provider);
+    for (quest, checked, installed) in results {
+        if !checked.is_empty() {
+            log::debug!("{} script(s) of quest {:08X} run on the Papyrus VM", checked.len(), quest.0);
+        }
+        let mut fragments = world.resource_mut::<byroredux_scripting::QuestStageFragments>();
+        for script in installed {
+            fragments.insert_vm_script(script);
+        }
+        drop(fragments);
+        world.resource_mut::<byroredux_scripting::QuestOwnScripts>().set_checked(quest, checked);
+    }
+}
+
 /// Normalise a Papyrus script name to its archive key: lowercase,
 /// backslash-separated, under the `scripts\` folder with a `.pex`
 /// extension. A name authored with the folder and/or extension already

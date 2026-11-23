@@ -820,6 +820,8 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("QuestAliasScripts", "M47.2 — the scripts quests attach to aliases (authored) and the ones the VM runs (checked when the quest first runs); rebuilt from the QUST records and the script archives every boot"),
         ("DecompiledPexCache", "#5999 — per-script cache of the extracted, parsed, preflighted and decompiled .pex, re-derived from the script archive on demand; never gameplay state"),
         ("VmAliasScriptChecks", "M47.2 — per-script cache of whether the Papyrus VM runs an alias script, re-checked from the script archive on demand; never gameplay state"),
+        ("QuestOwnScripts", "the quests' own scripts the Papyrus VM runs (for OnInit), checked a few per frame from the QUST records and the script archives every boot; the once-per-save OnInit gate lives in the saved QuestScriptVariables"),
+        ("VmQuestScriptChecks", "per-script cache of whether the Papyrus VM runs a quest's own script, re-checked from the script archive on demand; never gameplay state"),
         ("VmReferenceScriptChecks", "M47.2 — per-script cache of whether the Papyrus VM runs a reference script, re-checked from the script archive on demand; never gameplay state"),
         ("RecurringUpdate", "forward-latent — its only writer is unreachable in production today (no live Dlc2Ttr4aPlayerScript spawn site); re-evaluate the moment a real RegisterForUpdate recognizer lands"),
         // RumbleOnActivate: FIXED — registered (#2382 / SAVE-D1-17), no

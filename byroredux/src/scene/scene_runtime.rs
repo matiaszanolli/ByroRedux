@@ -255,6 +255,9 @@ pub(crate) fn populate_scene_runtime(
         log::info!("Installed {alias_scripts} quest alias scripts");
     }
     world.init_resource::<VmAliasScriptChecks>();
+    // A quest's own scripts, checked a few per frame and given `OnInit` once per save.
+    world.init_resource::<byroredux_scripting::QuestOwnScripts>();
+    world.init_resource::<crate::asset_provider::VmQuestScriptChecks>();
     // M47.2 — references that start disabled, for IsDisabled / IsEnabled.
     byroredux_scripting::install_authored_disabled_references(world, index);
     // M47.2 — Skyrim's SetAV("Name", v) resolves names through the AVIFs.

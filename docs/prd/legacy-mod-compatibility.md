@@ -1,6 +1,7 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-23). Revision 31 makes a save made in a removed plugin's cell or worldspace
+**Status**: ACTIVE (2026-11-23). Revision 32 designs the MCM host (LMC-UI-002) and builds its first
+slice, quest-script `OnInit`. Revision 31 makes a save made in a removed plugin's cell or worldspace
 load: Oblivion's safe cell, else the session's location (owner's rule). Revision 30 measures LMC-PERF-001's and -002's fold cost
 and removes its two quadratic steps. Revision 29 measures Phase 7's profile-change saves on real data
 (`lmc-profile-change-save.sh`) and makes the conformance runner's rule 4 measurable. Revision 28 builds LMC-REC-010: the sub-records no
@@ -938,7 +939,11 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   declarative JSON, FO4 MCM's JSON and FNV MCM's NVSE-era registration, and
   persists MCM settings through the extension-state save path
   ([STATE-001](../engine/sandboxed-linked-mods.md#13-persistent-state-and-saves)).
-  Today only `UI.IsMenuOpen` is served.
+  Today only `UI.IsMenuOpen` is served. Design:
+  [mcm-host.md](../engine/mcm-host.md) (owner's decisions 2026-11-23: an
+  engine `SKI_ConfigBase` shadowing SkyUI's, a native Mod Configuration page,
+  reached from the native pause menu). Its slice 1 is built: quest scripts
+  receive `OnInit` once per save (CK *OnInit*), which the registration needs.
 - **LMC-UI-003.** MenuXml replacements, `<include>` prefabs and font
   replacements from mods load through the MenuXml crate with the same
   precedence rules.
@@ -1602,3 +1607,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 29 | 2026-11-23 | Phase 7 measured on real data: the FNV profile-change save gate, and the Oblivion plugin-set gate updated to the session-profile load; the conformance runner measures §7.3 rule 4 (save, reload, the removal case) and LMC-DX-003's text says rule 2 is measured | — |
 | 30 | 2026-11-23 | LMC-PERF-001 and -002 measured: the fold costs 0.6 to 0.9 µs per record from 250 to 4,000 light plugins and from 16,000 to 961,000 records; the chain profile's quadratic master closure became bitsets and master lookups share one name map; #6591 recorded as fixed | — |
 | 31 | 2026-11-23 | LMC-SAV-002: a save made in a cell or worldspace the session's plugins lack loads, into Oblivion's documented safe cell (`SSaveGameSafeCellID`, default the Tiber Septim Hotel lobby) or, where no game documents one, the session's own location with the player's pose (owner's rule) | — |
+| 32 | 2026-11-23 | LMC-UI-002 designed (`docs/engine/mcm-host.md`, owner's decisions: engine `SKI_ConfigBase`, native page, pause-menu entry); slice 1 built: a quest's own scripts receive `OnInit` once per save | — |

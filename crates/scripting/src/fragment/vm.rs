@@ -124,7 +124,7 @@ use registrations::*;
 use script_model::*;
 use value::*;
 
-pub use checker::{check_alias_script, check_function, check_function_reason, check_reference_script};
+pub use checker::{check_alias_script, check_function, check_function_reason, check_quest_script, check_reference_script};
 pub(super) use checker::{handler_runs, SelfKind};
 pub(super) use interp::run_fragment;
 pub use value::Value;
