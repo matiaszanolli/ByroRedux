@@ -361,8 +361,13 @@ fn sandbox_seat_system_inner(world: &World, _dt: f32, scratch: &mut SandboxScrat
                 behavior.near_editor_location,
                 npc_g.translation,
             );
-            if let Some((seat_id, seat)) =
-                pick_nearest_seat(centre, &scratch.seats, &reservations.0, radius)
+            // #7339 — the seat is taken by a snap (no pathing, v0), so it must also lie within the search radius
+            // of where the actor stands: before #7262 the centre WAS the actor, and that bounded the snap. A
+            // Near Editor Location sandboxer displaced from its placement waits rather than teleport home.
+            let within_reach =
+                |seat: &GlobalTransform| (seat.translation - npc_g.translation).length() <= radius;
+            if let Some((seat_id, seat)) = pick_nearest_seat(centre, &scratch.seats, &reservations.0, radius)
+                .filter(|(_, seat)| within_reach(seat))
             {
                 // Record the claimant as well as the seat. Exterior streaming
                 // may despawn the actor while leaving cross-cell furniture
@@ -671,7 +676,8 @@ mod tests {
     }
 
     /// #7262 — a Near Editor Location Sandbox searches for its seat around the actor's editor placement;
-    /// any other Sandbox searches around where the actor stands.
+    /// any other Sandbox searches around where the actor stands. #7339 — and the seat must also be within the
+    /// search radius of the actor, since seating is a snap: a displaced sandboxer is not teleported home.
     #[test]
     fn a_near_editor_location_sandbox_seats_near_the_editor_placement() {
         use crate::components::{SandboxSitClip, SeatReservations};
@@ -682,7 +688,12 @@ mod tests {
             pose.translation.x = x;
             pose
         };
-        for near_editor_location in [true, false] {
+        // #7339 — (where the actor stands, near_editor_location, the chair it should claim): at home it seats at
+        // home; displaced 4000 units away it claims nothing, since the seat is taken by a snap and the old pass
+        // teleported it across the cell; a plain Sandbox seats where it stands.
+        for (stand, near_editor_location, expect_home) in
+            [(-1900.0, true, Some(true)), (2000.0, true, None), (2000.0, false, Some(false))]
+        {
             let mut world = World::new();
             world.register::<SandboxBehavior>();
             world.register::<Seated>();
@@ -701,7 +712,7 @@ mod tests {
             world.insert(chair_here, Furniture { markers: vec![marker([0.0; 3], None, 0)] });
 
             let actor = world.spawn();
-            world.insert(actor, at(2000.0));
+            world.insert(actor, at(stand));
             world.insert(actor, EditorPlacement { translation: Vec3::new(-2000.0, 0.0, 0.0) });
             world.insert(actor, SandboxBehavior { search_radius: Some(500.0), near_editor_location });
 
@@ -709,8 +720,13 @@ mod tests {
 
             let claimed: Vec<EntityId> =
                 world.resource::<SeatReservations>().0.keys().map(|(furniture, _)| *furniture).collect();
-            let expected = if near_editor_location { chair_at_home } else { chair_here };
-            assert_eq!(claimed, [expected], "near_editor_location {near_editor_location}");
+            let expected: Vec<EntityId> = match expect_home {
+                Some(true) => vec![chair_at_home],
+                Some(false) => vec![chair_here],
+                None => Vec::new(),
+            };
+            assert_eq!(claimed, expected, "standing at {stand}, near_editor_location {near_editor_location}");
+            assert_eq!(world.get::<Seated>(actor).is_some(), expect_home.is_some(), "standing at {stand}");
         }
     }
 
