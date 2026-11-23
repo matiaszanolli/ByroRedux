@@ -897,9 +897,10 @@ MenuXml input parts are Phases 2 and 3. Evidence is in `docs/data/game-ui/`
   the inventory's `script_entry_points`). The character-creation screens open
   their native page, which publishes under that name; every other request is
   reported as S4 with its fallback (`script.requests`: `menu RouletteMenu code
-  1082 (S4, recorded)`, `menu RaceSex Menu (S4, accepts the current appearance)
-  from ShowRaceMenu`). `Game.ShowRaceMenu`'s auto-accept placeholder is that
-  fallback. Papyrus menu functions the VM does not run yet (`ShowGiftMenu`,
+  1082 (S4, recorded)`, `menu LooksMenu (S4, no appearance editor until the
+  slider milestone (GUI-NG-005)) from ShowRaceMenu form 00000003`, Fallout 4's
+  appearance modes). `Game.ShowRaceMenu()` itself opens the character-creation
+  page, with no fallback. Papyrus menu functions the VM does not run yet (`ShowGiftMenu`,
   `ShowTrainingMenu`, `OpenInventory`, `ShowSPECIALMenu`) still decline their
   script.
 - **Menu events** (GUI-EVT-001/002, #6668). Every opening and closing the

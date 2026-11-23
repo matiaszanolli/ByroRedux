@@ -272,8 +272,9 @@ they cannot see:
   (#5979 `a6e66a08c`, which deleted the per-writer copies) — a local 0x14 special-case elsewhere is drift. A VMAD
   `None` object property resolves to absent, never form 0 (`ScriptInstance::object_form_id`, #5971 `34cc809ae`). `Disable`/`Enable` classify the receiver through the same
   alias-aware `receiver_object` as their siblings (an alias-bound marker must not decline alone).
-- **Placeholders are coverage with a hole**: `Effect::is_placeholder` (`ShowRaceMenu`, `RequestSave`,
-  `SetHudCartMode`, `AddAchievement` — state nothing reads) must be reported separately by coverage harnesses
+- **Placeholders are coverage with a hole**: `Effect::is_placeholder` (`ShowAppearanceMenu`, `RequestSave`,
+  `SetHudCartMode`, `AddAchievement` — state nothing reads; `ShowRaceMenu` left the set when it opened the
+  character-creation page, `bcfe6b5dd`) must be reported separately by coverage harnesses
   (#4328/#4372), nested ones included (`Effect::contains_placeholder` / `visit_nested` walk `Conditional` arms and
   `QuestScope` bodies, #5975 `fd70bf557`); any *new* effect whose runtime arm only records a value needs listing
   there and a pin (`only_the_counter_only_primitives_are_placeholders`).

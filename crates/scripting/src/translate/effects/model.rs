@@ -1130,8 +1130,8 @@ impl Effect {
     }
 
     /// [`Self::is_placeholder`] for this effect or anything nested under it.
-    /// The coverage harnesses use this: a `ShowRaceMenu` inside an `If` is
-    /// still a stub claimed as coverage (#5975).
+    /// The coverage harnesses use this: a `ShowAppearanceMenu` inside an `If`
+    /// is still a stub claimed as coverage (#5975).
     pub fn contains_placeholder(&self) -> bool {
         let mut found = false;
         self.visit_nested(&mut |effect| found |= effect.is_placeholder());

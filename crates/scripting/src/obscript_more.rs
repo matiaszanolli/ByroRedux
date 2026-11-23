@@ -102,8 +102,8 @@ pub struct MenuRequest {
     pub function: Option<&'static str>,
     /// The form the menu is about (a recipe list, a map marker, a casino), if any.
     pub form: u32,
-    /// What the effect already did in the menu's place (`Game.ShowRaceMenu` accepts the current
-    /// appearance); `Some` means the request is reported only.
+    /// Why the request has no surface (Fallout 4's appearance modes: no appearance editor until
+    /// the slider milestone); `Some` means the request is reported only.
     pub fallback: Option<&'static str>,
 }
 
