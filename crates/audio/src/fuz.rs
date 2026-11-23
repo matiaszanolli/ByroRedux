@@ -291,11 +291,14 @@ pub fn fuz_to_wav_bytes(data: &[u8]) -> Result<Vec<u8>, FuzDecodeError> {
     wav_header(output.stdout, stream.channels, stream.sample_rate).ok_or(FuzDecodeError::BadXwma)
 }
 
+/// The `(stem, extension)` of the xWMA temp file, for the boot-time sweep of what a process death left (#7366).
+pub const XWMA_TEMP_FILE: (&str, &str) = ("byro-fuz", "xwma");
+
 /// Write the xWMA image to a fresh temp file, through the shared exclusive creator
 /// (`atomic_file::create_temp_file`: `create_new`, `0600`, a unique name — #6307, #7143), whose
 /// guard removes it however the decode ends (#7158).
 fn write_temp_xwma(xwma: &[u8]) -> std::io::Result<byroredux_core::atomic_file::TempPath> {
-    let (mut file, temp) = byroredux_core::atomic_file::create_temp_file("byro-fuz", "xwma")?;
+    let (mut file, temp) = byroredux_core::atomic_file::create_temp_file(XWMA_TEMP_FILE.0, XWMA_TEMP_FILE.1)?;
     // Closed before `temp` can drop: Windows refuses to remove an open file.
     let written = file.write_all(xwma);
     drop(file);

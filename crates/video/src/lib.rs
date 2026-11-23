@@ -299,6 +299,9 @@ struct Soundtrack {
 /// The soundtrack WAVs' temp-file stem.
 const SOUNDTRACK_STEM: &str = "byroredux-movie";
 
+/// The `(stem, extension)` of the soundtrack temp file, for the boot-time sweep of what a process death left (#7366).
+pub const SOUNDTRACK_TEMP_FILE: (&str, &str) = (SOUNDTRACK_STEM, "wav");
+
 impl Soundtrack {
     /// #7125, #7153 — refuse a packet stating more than one frame may hold (`decoded_bytes` of
     /// 16-bit PCM) before the decoder grows its output for it: a zero-filled packet stating a

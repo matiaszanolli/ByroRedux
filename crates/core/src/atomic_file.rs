@@ -148,6 +148,70 @@ pub fn create_temp_file(stem: &str, extension: &str) -> std::io::Result<(fs::Fil
     Err(last.unwrap_or_else(|| std::io::Error::from(std::io::ErrorKind::AlreadyExists)))
 }
 
+/// How old a [`create_temp_file`] file must be before [`reclaim_stale_temp_files`] may delete it. The longest
+/// legitimate holder is a movie soundtrack, capped at one hour of audio and written once at open, so a file two
+/// hours old belongs to a process that died; a younger one may belong to a live engine sharing the temp
+/// directory and is left alone.
+pub const STALE_TEMP_AGE: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
+
+/// Whether `name` is `{stem}-{pid}-{nanos}-{counter}.{extension}` as [`create_temp_file`] writes it, made by a
+/// process other than `own_pid`.
+fn is_foreign_temp_name(name: &str, stem: &str, extension: &str, own_pid: u32) -> bool {
+    let Some(rest) = name
+        .strip_prefix(stem)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .and_then(|rest| rest.strip_suffix(extension))
+        .and_then(|rest| rest.strip_suffix('.'))
+    else {
+        return false;
+    };
+    let parts: Vec<&str> = rest.split('-').collect();
+    parts.len() == 3
+        && parts.iter().all(|part| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit()))
+        && parts[0].parse::<u32>().is_ok_and(|pid| pid != own_pid)
+}
+
+/// Delete the temp files a process death left in `dir` (#7366). [`TempPath`] removes its file on a return and on
+/// an unwinding panic, but SIGKILL, an OOM kill, a power cut or a driver crash runs no destructor, so a movie
+/// soundtrack WAV (up to ~1.4 GB, alive for the whole playback) or a `.fuz` xWMA image stays behind and nothing
+/// reclaims it: the names never repeat. Removes only regular files named `{stem}-{pid}-{nanos}-{counter}.{extension}`
+/// for one of `kinds` (`(stem, extension)` pairs), made by another process than `own_pid` and at least `older_than`
+/// old, best-effort (an entry that cannot be read or removed is skipped). Returns how many it removed.
+pub fn reclaim_stale_temp_files(
+    dir: &Path,
+    kinds: &[(&str, &str)],
+    own_pid: u32,
+    older_than: std::time::Duration,
+) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let now = std::time::SystemTime::now();
+    let mut removed = 0;
+    for entry in entries.filter_map(|entry| entry.ok()) {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !kinds.iter().any(|&(stem, extension)| is_foreign_temp_name(&name, stem, extension, own_pid)) {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else { continue };
+        let old_enough = metadata
+            .modified()
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age >= older_than);
+        if metadata.is_file() && old_enough && fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+/// [`reclaim_stale_temp_files`] over the system temp directory, as this process.
+pub fn reclaim_stale_temp_files_in_temp_dir(kinds: &[(&str, &str)]) -> usize {
+    reclaim_stale_temp_files(&std::env::temp_dir(), kinds, std::process::id(), STALE_TEMP_AGE)
+}
+
 /// Where a console or debug command may write `name`: a single file name (one normal component —
 /// no separator, no `..`, not absolute) under the working-directory folder `dir`, which is created
 /// if missing and must still resolve inside the working directory once canonicalised, so a `dir`
@@ -421,5 +485,53 @@ mod tests {
         // A needle that only lives in the test module does not count.
         let source = format!("let temp_path = 1;{tail}atomic_file::atomic_write(&temp_path)");
         assert!(std::panic::catch_unwind(|| assert_no_clobber_fallback(&source)).is_err());
+    }
+
+    /// #7366 — the sweep removes only another process's old `create_temp_file` files of the named kinds.
+    #[test]
+    fn the_sweep_removes_only_dead_processes_old_temp_files_of_the_named_kinds() {
+        let dir = std::env::temp_dir().join(format!("byro-sweep-test-{}-{}", std::process::id(), line!()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let kinds = [("byroredux-movie", "wav"), ("byro-fuz", "xwma")];
+        let own = std::process::id();
+        let dead = own.wrapping_add(1);
+        let touch = |name: String| {
+            fs::write(dir.join(&name), b"x").unwrap();
+            name
+        };
+        let stale_wav = touch(format!("byroredux-movie-{dead}-1700000000000-0.wav"));
+        let stale_fuz = touch(format!("byro-fuz-{dead}-1700000000000-3.xwma"));
+        let own_wav = touch(format!("byroredux-movie-{own}-1700000000000-1.wav"));
+        let other_stem = touch(format!("someone-else-{dead}-1700000000000-0.wav"));
+        let other_ext = touch(format!("byroredux-movie-{dead}-1700000000000-0.txt"));
+        let malformed = touch(format!("byroredux-movie-{dead}-nanos-0.wav"));
+        let extra_part = touch(format!("byroredux-movie-{dead}-1-2-3.wav"));
+        fs::create_dir(dir.join(format!("byroredux-movie-{dead}-1-2.wav"))).unwrap();
+
+        // Too young for the age gate: nothing goes.
+        assert_eq!(reclaim_stale_temp_files(&dir, &kinds, own, std::time::Duration::from_secs(3600)), 0);
+        assert!(dir.join(&stale_wav).exists(), "a fresh file may belong to a live process");
+
+        // Old enough: only the two dead-process files of the named kinds.
+        assert_eq!(reclaim_stale_temp_files(&dir, &kinds, own, std::time::Duration::ZERO), 2);
+        assert!(!dir.join(&stale_wav).exists() && !dir.join(&stale_fuz).exists());
+        for kept in [&own_wav, &other_stem, &other_ext, &malformed, &extra_part] {
+            assert!(dir.join(kept).exists(), "{kept} is not a stale temp file of ours");
+        }
+        assert!(dir.join(format!("byroredux-movie-{dead}-1-2.wav")).is_dir(), "directories are never removed");
+        assert_eq!(reclaim_stale_temp_files(&dir, &kinds, own, std::time::Duration::ZERO), 0, "nothing left");
+        assert_eq!(reclaim_stale_temp_files(&dir.join("absent"), &kinds, own, std::time::Duration::ZERO), 0);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The names the sweep matches are the names the creator writes.
+    #[test]
+    fn the_sweep_matches_the_names_create_temp_file_writes() {
+        let (file, path) = create_temp_file("byro-sweep-shape", "bin").unwrap();
+        drop(file);
+        let name = path.path().file_name().unwrap().to_string_lossy().into_owned();
+        assert!(is_foreign_temp_name(&name, "byro-sweep-shape", "bin", std::process::id().wrapping_add(1)));
+        assert!(!is_foreign_temp_name(&name, "byro-sweep-shape", "bin", std::process::id()));
     }
 }
