@@ -5,8 +5,8 @@ use byroredux_renderer::{TextureColorSpace, VulkanContext};
 
 /// Provides file data by searching BSA/BA2 archives.
 pub(crate) struct TextureProvider {
-    texture_archives: Vec<Archive>,
-    mesh_archives: Vec<Archive>,
+    texture_archives: ArchiveSet,
+    mesh_archives: ArchiveSet,
     /// Prefix for this provider's texture-registry cache keys — never for
     /// archive lookups. The registry keys bindless slots by path alone, which
     /// is exact for one game per process; the Studio gallery keeps several
@@ -56,8 +56,8 @@ impl ResolveExtractTotals {
 impl TextureProvider {
     pub(crate) fn new() -> Self {
         Self {
-            texture_archives: Vec::new(),
-            mesh_archives: Vec::new(),
+            texture_archives: ArchiveSet::new(),
+            mesh_archives: ArchiveSet::new(),
             registry_namespace: None,
             resolve_extract: ResolveExtractCounters::default(),
             prefetch: Default::default(),
@@ -127,7 +127,7 @@ impl TextureProvider {
     /// The texture pool in lookup order (last wins), as cheap shared handles
     /// a background job can own — terrain height generation (#6195) reads
     /// its sources off the main thread through these.
-    pub(crate) fn texture_archive_snapshot(&self) -> Vec<Archive> {
+    pub(crate) fn texture_archive_snapshot(&self) -> ArchiveSet {
         self.texture_archives.clone()
     }
 
@@ -168,7 +168,8 @@ impl TextureProvider {
         // one). Checking from the end and returning on first hit means the
         // last-listed archive that actually carries the path answers.
         // #4658 — a present-but-corrupt entry is named, not silently missed.
-        extract_first(self.texture_archives.iter().rev(), normalized.as_ref())
+        self.texture_archives
+            .extract_first(normalized.as_ref())
             .or_else(|| self.extract_via_facegen_tool_path_fallback(&normalized))
     }
 
@@ -184,7 +185,7 @@ impl TextureProvider {
     /// archives on its own and fall through on a failure, so a floor and a promotion that failed
     /// in different archives gave one resident texture mips from two files.
     fn streaming_source(&self, normalized: &str) -> Option<&Archive> {
-        self.texture_archives.iter().rev().find(|archive| archive.contains(normalized))
+        self.texture_archives.winner(normalized)
     }
 
     /// M39 — [`Self::extract`] for a texture registry upload: with
@@ -222,9 +223,7 @@ impl TextureProvider {
     /// Whether a texture exists, without extracting or decompressing it.
     pub(crate) fn has_texture(&self, path: &str) -> bool {
         let normalized = normalize_texture_path(path);
-        self.texture_archives
-            .iter()
-            .any(|archive| archive.contains(normalized.as_ref()))
+        self.texture_archives.contains(normalized.as_ref())
             || (is_facegen_tool_path(&normalized)
                 && self
                     .texture_archives
@@ -263,7 +262,7 @@ impl TextureProvider {
     pub(crate) fn extract_mesh(&self, path: &str) -> Option<Vec<u8>> {
         let normalised = normalize_mesh_path(path);
         // #3637 — last-listed archive wins; see `extract`'s doc for why.
-        extract_first(self.mesh_archives.iter().rev(), normalised.as_ref())
+        self.mesh_archives.extract_first(normalised.as_ref())
     }
 
     /// The decoded size [`Self::extract_mesh`] returns for `path`, read from
@@ -272,10 +271,7 @@ impl TextureProvider {
     /// the read + inflate. `None` when no mesh archive has it.
     pub(crate) fn mesh_declared_size(&self, path: &str) -> Option<usize> {
         let normalised = normalize_mesh_path(path);
-        self.mesh_archives
-            .iter()
-            .rev()
-            .find_map(|archive| archive.declared_size(normalised.as_ref()).ok())
+        self.mesh_archives.declared_size(normalised.as_ref())
     }
 
     /// Whether a mesh exists, without paying for extraction + decompression.
@@ -286,9 +282,7 @@ impl TextureProvider {
     /// would inflate + discard a whole macro-mesh per probe.
     pub(crate) fn has_mesh(&self, path: &str) -> bool {
         let normalised = normalize_mesh_path(path);
-        self.mesh_archives
-            .iter()
-            .any(|archive| archive.contains(normalised.as_ref()))
+        self.mesh_archives.contains(normalised.as_ref())
     }
 
     /// Whether a mesh exists at *exactly* this archive key — no `meshes\`
@@ -307,9 +301,7 @@ impl TextureProvider {
     /// consumer in the engine and stays untouched, so this cannot change any
     /// other lookup.
     pub(crate) fn has_mesh_exact(&self, path: &str) -> bool {
-        self.mesh_archives
-            .iter()
-            .any(|archive| archive.contains(path))
+        self.mesh_archives.contains(path)
     }
 
     /// #5222 — every file name in every open mesh and texture archive,
@@ -329,7 +321,7 @@ impl TextureProvider {
     /// [`Self::has_mesh_exact`] for why the `.spt` route needs it.
     pub(crate) fn extract_mesh_exact(&self, path: &str) -> Option<Vec<u8>> {
         // #3637 — last-listed archive wins; see `extract`'s doc for why.
-        extract_first(self.mesh_archives.iter().rev(), path)
+        self.mesh_archives.extract_first(path)
     }
 }
 
@@ -1186,7 +1178,7 @@ mod tests {
             std::fs::write(dir.path().join("textures/x.dds"), bytes).unwrap();
         }
         let open = |dir: &tempfile::TempDir| super::Archive::open_loose(dir.path()).expect("loose tier");
-        let provider = super::TextureProvider { texture_archives: vec![open(&lower), open(&winner)], ..super::TextureProvider::new() };
+        let provider = super::TextureProvider { texture_archives: vec![open(&lower), open(&winner)].into(), ..super::TextureProvider::new() };
         assert_eq!(provider.extract_for_registry(r"textures\x.dds", true).as_deref(), Some(&b"upper"[..]));
         assert_eq!(provider.extract_texture_from(r"textures\x.dds", 1).as_deref(), Some(&b"upper"[..]));
 

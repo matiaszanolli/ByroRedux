@@ -96,7 +96,7 @@ fn count_shadowed_entries_reports_the_collision() {
     let base = Archive::open(&base_path.to_string_lossy()).expect("open base MeshesExtra.ba2");
     let dlc = Archive::open(&dlc_path.to_string_lossy()).expect("open DLCCoast - Main.ba2");
 
-    let shadowed = count_shadowed_entries(&dlc, std::slice::from_ref(&base));
+    let shadowed = ArchiveSet::from(vec![base]).count_shadowed(&dlc);
     assert!(
         shadowed > 0,
         "DLCCoast - Main.ba2 shares hundreds of precombine paths with the \
@@ -206,7 +206,10 @@ fn every_content_provider_resolves_collisions_last_wins() {
     // left the whole literal in the source and made the test find itself.
     // #4658 moved most walks into `extract_first(<archives>, path)`, whose
     // first argument carries the iteration order, so its call sites are
-    // scanned the same way.
+    // scanned the same way. LMC-PERF-003 then moved the providers' pools into
+    // `ArchiveSet`, whose `<pool>.extract_first(path)` method serves the last-listed
+    // archive that holds the path by construction (`archive_set.rs` pins it), so a
+    // method call is the safe form and only the free function's forward walk is scanned.
     let needles = [
         format!("{}{}", "for archive ", "in "),
         format!("{}{}", "extract_", "first("),
@@ -249,6 +252,14 @@ fn every_content_provider_resolves_collisions_last_wins() {
                 .find('\n')
                 .map_or(source.len(), |i| offset + i);
             let line = &source[offset..line_end];
+            if line.starts_with(needles[1].as_str()) && source[..offset].ends_with("fn ") {
+                // `ArchiveSet::extract_first`'s own definition; its order is pinned by `tests/archive_set.rs`.
+                continue;
+            }
+            if line.starts_with(needles[1].as_str()) && source[..offset].ends_with('.') {
+                checked += 1;
+                continue;
+            }
             if let Some((_, issue)) = FIRST_WINS_BY_DESIGN.iter().find(|(f, _)| *f == name) {
                 assert!(
                     source.contains(issue),
@@ -306,19 +317,19 @@ fn a_reused_handle_reports_its_shadow_count_for_the_pool_it_joins() {
     let (_b, tex_base) = loose_pool_member(&["textures/t.dds"]);
     let (_c, shared) = loose_pool_member(&["meshes/b.nif", "textures/t.dds", "textures/u.dds"]);
 
-    let mesh_pool = std::slice::from_ref(&mesh_base);
-    let tex_pool = std::slice::from_ref(&tex_base);
-    assert_eq!(shadow_count_for_open(&shared, mesh_pool, false), 1, "b.nif");
+    let mut mesh_pool = ArchiveSet::from(vec![mesh_base]);
+    let mut tex_pool = ArchiveSet::from(vec![tex_base]);
+    assert_eq!(shadow_count_for_open(&shared, &mut mesh_pool, false), 1, "b.nif");
     // The same handle, reused, joining a different chain: its own count, not the
     // mesh pool's.
     assert_eq!(
-        shadow_count_for_open(&shared, tex_pool, true),
+        shadow_count_for_open(&shared, &mut tex_pool, true),
         1,
         "t.dds — computed for the texture pool, not suppressed or borrowed from the mesh pool"
     );
     let (_d, unrelated) = loose_pool_member(&["materials/m.bgsm"]);
     assert_eq!(
-        shadow_count_for_open(&shared, std::slice::from_ref(&unrelated), true),
+        shadow_count_for_open(&shared, &mut ArchiveSet::from(vec![unrelated]), true),
         0,
         "a pool sharing nothing reports 0, whatever another pool cached for this archive"
     );
@@ -331,11 +342,11 @@ fn rebuilding_the_same_pool_does_not_rewalk_the_file_tables() {
     use std::sync::atomic::Ordering;
     let (_a, base) = loose_pool_member(&["meshes/only_here_5664.nif"]);
     let (_b, shared) = loose_pool_member(&["meshes/only_here_5664.nif"]);
-    let pool = std::slice::from_ref(&base);
+    let mut pool = ArchiveSet::from(vec![base]);
 
-    assert_eq!(shadow_count_for_open(&shared, pool, false), 1);
+    assert_eq!(shadow_count_for_open(&shared, &mut pool, false), 1);
     let walks = SHADOW_COUNT_WALKS.load(Ordering::Relaxed);
-    assert_eq!(shadow_count_for_open(&shared, pool, true), 1);
+    assert_eq!(shadow_count_for_open(&shared, &mut pool, true), 1);
     assert_eq!(
         SHADOW_COUNT_WALKS.load(Ordering::Relaxed),
         walks,

@@ -311,6 +311,26 @@ provider is an ordered list of them. Lookups walk the list from the **end**:
 the **last-listed archive wins** (#3637). `<stem>N.bsa` siblings of a listed
 archive (`Textures.bsa` → `Textures2.bsa`) are appended automatically.
 
+**One index per pool** (LMC-PERF-003). A provider's pool is an `ArchiveSet`
+(`archive_set.rs`), which keeps beside its archives an index from the 64-bit
+hash of each normalized path to the last-listed archive that holds it. A lookup
+is one hash probe whatever the archive count, where it used to probe every
+archive in turn and allocate an error for each miss (an asset only the first of
+400 archives holds: 64 µs before, 0.87 µs after; the same 0.8 µs at 10). The
+index is a hint: a hit is checked against its archive, and a failed check (a
+hash collision, a leading separator) falls back to scanning the archives, so a
+wrong archive is never served; an absent hash is trusted, since every stored
+key is indexed. A present entry that fails to read still falls through to the
+next archive down (#4658). Opening a pool counts each archive's entries an
+earlier one also holds (the "overrides N entries" log line) against a running
+index of the pool, so it costs the new archive's entries, not every pair: 400
+archives of 5,000 entries open in 0.53 s, where the pairwise probe took 21 s.
+Indexes are memoised by the ordered archives, so a provider rebuild of the same
+pool reuses one. The script provider (first-listed wins, a few archives) and
+the Scaleform layered sources (`LayeredSources`) keep their own short lists.
+`tests/archive_set.rs` holds the equivalence tests, an agreement run over
+real FNV, Skyrim SE and Fallout 4 archives, and the opt-in timing harness.
+
 **Plugin-paired archives** (LMC-AST-002, #6670). Each plugin of the session's
 profile brings the archives the game pairs with it by name (`DeadMoney.esm` →
 `DeadMoney - Main.bsa`, `DeadMoney - Sounds.bsa`; `.esm`, `.esp` and `.esl`

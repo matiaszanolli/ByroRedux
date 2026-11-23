@@ -86,19 +86,19 @@ pub(crate) fn sound_archive_path(sound_path: &str) -> String {
 /// `ScriptProvider` exists instead of every VMAD attach reopening
 /// `--scripts-bsa` from scratch.
 pub(crate) struct SoundArchiveProvider {
-    archives: Vec<Archive>,
+    archives: ArchiveSet,
     /// The loose tiers (#6200's shared index, which includes the `music`
     /// root): `Data`, then each mod root in root order (LMC-AST-010), the
     /// later winning; all of them win over every archive, as loose files do
     /// for every other asset (Game Music MUS-SRC-013).
-    loose: Vec<Archive>,
+    loose: ArchiveSet,
 }
 
 impl SoundArchiveProvider {
     pub(crate) fn new() -> Self {
         Self {
-            archives: Vec::new(),
-            loose: Vec::new(),
+            archives: ArchiveSet::new(),
+            loose: ArchiveSet::new(),
         }
     }
 
@@ -136,7 +136,7 @@ impl SoundArchiveProvider {
     /// policy decision no consumer has made yet, so there is deliberately no
     /// `extract_any_in(folder)` sibling.
     pub(crate) fn extract(&self, archive_path: &str) -> Option<Vec<u8>> {
-        extract_first(self.loose.iter().rev().chain(self.archives.iter().rev()), archive_path)
+        self.loose.extract_first(archive_path).or_else(|| self.archives.extract_first(archive_path))
     }
 
     /// Every entry under `music\` the loose tier and the archives hold, lower-cased and
@@ -145,7 +145,7 @@ impl SoundArchiveProvider {
     pub(crate) fn music_keys(&self) -> std::collections::BTreeSet<String> {
         self.loose
             .iter()
-            .chain(&self.archives)
+            .chain(self.archives.iter())
             .flat_map(|archive| archive.all_paths())
             .map(|path| path.replace('/', "\\").to_ascii_lowercase())
             .filter(|path| path.starts_with("music\\"))
@@ -166,7 +166,7 @@ impl Resource for SoundArchiveProvider {}
 /// the archives alone.
 pub(crate) fn build_sound_archive_provider(args: &[String]) -> SoundArchiveProvider {
     let mut provider = SoundArchiveProvider::new();
-    provider.loose = super::archive::open_loose_tiers(args);
+    provider.loose = super::archive::open_loose_tiers(args).into();
     let mut i = 0;
     while i < args.len() {
         if args[i] == "--sounds-bsa"

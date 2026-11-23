@@ -236,18 +236,18 @@ impl HudAssets {
     #[cfg(test)]
     pub(crate) fn open_in(profile: HudGameProfile, data: &std::path::Path) -> Option<Self> {
         let misc = Archive::open(&data.join(profile.misc_bsa).to_string_lossy()).ok()?;
-        let mut textures = Vec::new();
+        let mut textures = crate::asset_provider::ArchiveSet::new();
         let textures_path = data.join(profile.default_textures_bsa).to_string_lossy().into_owned();
         open_with_numeric_siblings(&textures_path, "HUD textures", &mut textures, &mut std::collections::HashSet::new());
         Some(Self::layered(misc, textures, profile, &[]))
     }
 
     /// The vanilla `misc` archive and `textures` pool (lowest priority first) under the session's mod tiers.
-    fn layered(misc: Archive, textures: Vec<Archive>, profile: HudGameProfile, args: &[String]) -> Self {
+    fn layered(misc: Archive, textures: crate::asset_provider::ArchiveSet, profile: HudGameProfile, args: &[String]) -> Self {
         use crate::asset_provider::LayeredSources;
         Self {
             misc: LayeredSources::over(vec![misc], args, &["menus\\", "fonts\\"], &["--bsa"]),
-            textures: LayeredSources::over(textures, args, &["textures\\"], &["--textures-bsa"]),
+            textures: LayeredSources::over(textures.to_vec(), args, &["textures\\"], &["--textures-bsa"]),
             profile,
         }
     }
@@ -540,7 +540,7 @@ pub(crate) fn session_menu_assets(args: &[String]) -> Result<Option<(HudAssets, 
     let misc = Archive::open(&misc_path).map_err(|e| format!("hud: archive open failed: {e}"))?;
     // `open_with_numeric_siblings` reports a failed open as a warning and
     // pushes nothing, so an empty pool is the failure signal.
-    let mut textures = Vec::new();
+    let mut textures = crate::asset_provider::ArchiveSet::new();
     open_with_numeric_siblings(&textures_path, "HUD textures", &mut textures, &mut std::collections::HashSet::new());
     if textures.is_empty() {
         return Err(format!("hud: texture archive open failed: '{textures_path}'"));

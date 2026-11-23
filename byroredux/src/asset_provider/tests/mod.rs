@@ -5,6 +5,7 @@
 //! (#2311). Zero logic change — every test moved verbatim.
 
 mod archive_precedence;
+mod archive_set;
 mod archive_siblings;
 mod bgsm_diagnostics;
 mod bgsm_merge;
@@ -39,4 +40,35 @@ pub(super) fn imported_mesh_with_material_path(
     mesh.material.glossiness = 80.0;
     mesh.material.env_map_scale = 1.0;
     mesh
+}
+
+/// A v1 GNRL BA2 holding `entries` (name, payload, whether the payload is declared zlib-compressed) at `path`: the
+/// fixture the archive tests share. An undeclared payload is stored raw.
+pub(super) fn write_ba2(path: &std::path::Path, entries: &[(&str, &[u8], bool)]) {
+    let count = entries.len() as u32;
+    let data_start = 24u64 + 36 * u64::from(count);
+    let payloads: u64 = entries.iter().map(|(_, payload, _)| payload.len() as u64).sum();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"BTDX");
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.extend_from_slice(b"GNRL");
+    bytes.extend_from_slice(&count.to_le_bytes());
+    bytes.extend_from_slice(&(data_start + payloads).to_le_bytes());
+    let mut offset = data_start;
+    for (_, payload, packed) in entries {
+        bytes.extend_from_slice(&[0u8; 16]); // name/ext/dir hashes + flags
+        bytes.extend_from_slice(&offset.to_le_bytes());
+        bytes.extend_from_slice(&(if *packed { payload.len() as u32 } else { 0 }).to_le_bytes());
+        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&0xBAAD_F00Du32.to_le_bytes());
+        offset += payload.len() as u64;
+    }
+    for (_, payload, _) in entries {
+        bytes.extend_from_slice(payload);
+    }
+    for (name, _, _) in entries {
+        bytes.extend_from_slice(&(name.len() as u16).to_le_bytes());
+        bytes.extend_from_slice(name.as_bytes());
+    }
+    std::fs::write(path, bytes).expect("write temp BA2");
 }
