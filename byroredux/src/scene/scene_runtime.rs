@@ -323,7 +323,7 @@ pub(crate) fn populate_scene_runtime(
             );
         }
     }
-    if let Some(default_quest) = chargen_quest_default(index.game)
+    if let Some(default_quest) = chargen_quest_default(index.game, &index.character_rules)
         && crate::components::NewGameStart::active(world)
     {
         // A Fallout 3 / New Vegas / Oblivion new game starts the quest named by
@@ -677,12 +677,22 @@ pub(crate) fn materialize_scene_actor_alias_stubs(
 
 
 /// The quest a new game starts when the default INI does not name one (`sCharGenQuest`'s compiled-in
-/// default): New Vegas's VCG00 (its executable is encrypted; the shipped INI sets the same form) and
-/// Oblivion's `Charactergen`, read out of `Oblivion.exe` (#6903 method). Fallout 3 and New Vegas share
-/// a game kind; Fallout 3's INI always sets it. `None` for a game without a chargen quest to start.
-fn chargen_quest_default(game: byroredux_plugin::esm::reader::GameKind) -> Option<u32> {
+/// default): Fallout 3's CG00 "Birth" and New Vegas's VCG00 (neither executable's default is read
+/// here; each shipped INI sets the same form) and Oblivion's `Charactergen`, read out of
+/// `Oblivion.exe` (#6903 method). Fallout 3 and New Vegas share a game kind, so the pair is told
+/// apart by the rules profile, the one place the load order's real header picks between them
+/// (#6780): a defaulted header reads as New Vegas, never as Fallout 3. Without this, a Fallout 3
+/// install whose INI was not found fell back to New Vegas's VCG00, a form `Fallout3.esm` does not
+/// carry, and started no chargen quest at all (#7359). `None` for a game without a chargen quest to
+/// start.
+fn chargen_quest_default(
+    game: byroredux_plugin::esm::reader::GameKind,
+    rules: &byroredux_core::character::CharacterRulesProfile,
+) -> Option<u32> {
+    use byroredux_core::character::CharacterRulesProfile;
     use byroredux_plugin::esm::reader::GameKind;
     match game {
+        GameKind::Fallout3NV if *rules == CharacterRulesProfile::FALLOUT3 => Some(0x0001_F388),
         GameKind::Fallout3NV => Some(0x0010_2037),
         GameKind::Oblivion => Some(0x0002_466E),
         _ => None,
@@ -692,6 +702,29 @@ fn chargen_quest_default(game: byroredux_plugin::esm::reader::GameKind) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #7359 — with no `Fallout_default.ini` found, the compiled-in `sCharGenQuest` default follows the
+    /// rules profile: Fallout 3 starts CG00 (`0001f388`, the form its shipped INI names), New Vegas
+    /// VCG00, Oblivion `Charactergen`. `GameKind` alone gave both Fallout games New Vegas's form, which
+    /// `Fallout3.esm` does not carry, so a Fallout 3 new game started no chargen quest.
+    #[test]
+    fn the_chargen_default_follows_the_rules_profile_not_the_game_kind() {
+        use byroredux_core::character::CharacterRulesProfile;
+        use byroredux_plugin::esm::reader::GameKind;
+        let fo3 = CharacterRulesProfile::FALLOUT3;
+        let fnv = CharacterRulesProfile::FALLOUT_NEW_VEGAS;
+        assert_eq!(chargen_quest_default(GameKind::Fallout3NV, &fo3), Some(0x0001_F388));
+        assert_eq!(chargen_quest_default(GameKind::Fallout3NV, &fnv), Some(0x0010_2037));
+        // Only Fallout 3's own profile takes CG00: a defaulted header resolves to New Vegas's profile
+        // (#6780), and the empty profile keeps New Vegas's form too.
+        assert_eq!(
+            chargen_quest_default(GameKind::Fallout3NV, &CharacterRulesProfile::default()),
+            chargen_quest_default(GameKind::Fallout3NV, &fnv),
+        );
+        // Oblivion's default does not depend on the profile; a game with no chargen quest has none.
+        assert_eq!(chargen_quest_default(GameKind::Oblivion, &CharacterRulesProfile::OBLIVION), Some(0x0002_466E));
+        assert_eq!(chargen_quest_default(GameKind::Skyrim, &fo3), None);
+    }
 
     /// #4331 (SCR-D7-2026-09-14-03) — `materialize_scene_actor_alias_stubs`
     /// was the second identity-only stub path, spawning a scene actor and
