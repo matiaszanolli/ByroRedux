@@ -119,9 +119,15 @@ pub(super) fn prim_set_in_chargen(e: &Expr, _scope: &Scope) -> Option<Effect> {
 
 /// `Game.ShowRaceMenu()`; Fallout 4's form `ShowRaceMenu(akMenuTarget, uiMode, akMenuSpouseFemale,
 /// akMenuSpouseMale, akVendor)` (FO4 CK) lowers on its literal `uiMode`: 0 (start-of-game
-/// chargen) is the race menu, 1–4 the appearance modes (GUI-PAGE-003). The target, spouse and
-/// vendor arguments name whose face the editor would show; with no editor they are not read.
-pub(super) fn prim_show_race_menu(e: &Expr, _scope: &Scope) -> Option<Effect> {
+/// chargen) is the race menu, 1–4 the appearance modes (GUI-PAGE-003).
+///
+/// #7288 — `akMenuTarget` is "the primary actor to be modified by the race menu", `None` meaning
+/// the player (FO4 CK). The menu this lowers to edits the player, so the call lowers only when the
+/// target is omitted, `None`, or the player; any other actor declines rather than opening the
+/// player's menu in its place. The spouse and vendor arguments only add faces and services to the
+/// same player's menu (the CK's chargen mirror and barber/surgeon); they are not shown yet
+/// (GUI-NG-005) and do not change whose menu opens.
+pub(super) fn prim_show_race_menu(e: &Expr, scope: &Scope) -> Option<Effect> {
     let args = game_call(e, "ShowRaceMenu")?;
     if args.len() > 5 {
         return None;
@@ -131,6 +137,12 @@ pub(super) fn prim_show_race_menu(e: &Expr, _scope: &Scope) -> Option<Effect> {
         args.get(slot).is_some_and(|arg| matches!(arg.value.node, Expr::IntLit(_) | Expr::FloatLit(_) | Expr::BoolLit(_) | Expr::StringLit(_)))
     };
     if [0, 2, 3, 4].into_iter().any(literal) {
+        return None;
+    }
+    if let Some(target) = args.first()
+        && !matches!(target.value.node, Expr::NoneLit)
+        && !player_expr_ref(&target.value.node, scope)
+    {
         return None;
     }
     let mode = match args.get(1) {

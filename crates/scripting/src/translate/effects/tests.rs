@@ -3145,6 +3145,28 @@ fn fallout4_show_race_menu_lowers_on_its_mode() {
     assert_eq!(lower("Game.ShowRaceMenu(None, 1, None, None, None, None)"), None);
 }
 
+/// #7288 — `akMenuTarget` is the actor the menu modifies (FO4 CK; `None` is the player). The menu
+/// edits the player, so the player as target lowers and any other actor declines instead of
+/// opening the player's menu in its place. The chargen spouse arguments do not change whose menu
+/// it is.
+#[test]
+fn show_race_menu_declines_a_target_that_is_not_the_player() {
+    let lower = |call: &str| {
+        lower_fragment(&first_fn_body(&format!(
+            "ScriptName QF extends Quest\nObjectReference Property Spouse Auto\nActor Property Companion Auto\n\
+             Function Fragment_8()\n{call}\n EndFunction\n"
+        )))
+    };
+    assert_eq!(lower("Game.ShowRaceMenu(Game.GetPlayer(), 0)"), Some(vec![Effect::ShowRaceMenu]));
+    assert_eq!(
+        lower("Game.ShowRaceMenu(None, 0, Spouse, None, None)"),
+        Some(vec![Effect::ShowRaceMenu]),
+        "the chargen spouse joins the player's menu"
+    );
+    assert_eq!(lower("Game.ShowRaceMenu(Companion, 0)"), None, "another actor's menu is not the player's");
+    assert_eq!(lower("Game.ShowRaceMenu(Companion, 2)"), None);
+}
+
 #[test]
 fn request_save_primitives_decline_with_args() {
     // #4328 — both are 0-arg natives; the `is_empty` arity guard had no
