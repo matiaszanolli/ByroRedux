@@ -6434,3 +6434,93 @@ fn message_show_waits_for_its_answer_and_branches_on_it() {
     assert_eq!(run(Some(1)), 7, "Ralof");
     assert_eq!(run(None), 6, "a box a load took resumes with its default");
 }
+
+/// #7289 — an answered `Message.Show()` run that is ready in a frame whose budget an earlier ready
+/// run spends goes back on the queue. It already took its answer, so it must come back due, not
+/// asking again: asking again read the lost-box default, button 0, in place of the one pressed.
+#[test]
+fn an_answered_show_deferred_by_the_budget_keeps_the_button_pressed() {
+    const MESSAGE: u32 = 0x0001_0F10;
+    const Q2: QuestFormId = QuestFormId(0x0001_0F01);
+    const SHOW: &str = "ScriptName QF_VmShow extends Quest\n\
+        Message Property TempChooseSidesMessage Auto\n\
+        Function Fragment_1()\n\
+          Utility.Wait(1.0)\n\
+          If TempChooseSidesMessage.Show() == 0\n\
+            Self.SetStage(6)\n\
+          Else\n\
+            Self.SetStage(7)\n\
+          EndIf\n\
+        EndFunction\n";
+    // Resumes in the same frame as the answered run, queued ahead of it, and spends the budget.
+    const BUSY: &str = "ScriptName QF_VmBusy extends Quest\n\
+        Function Fragment_1()\n\
+          Utility.Wait(6.0)\n\
+          Int i = 0\n\
+          While i < 400\n\
+            i += 1\n\
+          EndWhile\n\
+        EndFunction\n";
+    let parse = |source: &str, function: &str| {
+        let (script, errors) = byroredux_papyrus::parse_script(source).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+        let script = Arc::new(script);
+        if let Err(why) = crate::fragment::vm::checker::check_function_reason(Arc::clone(&script), function, None) { panic!("{why}") }
+        script
+    };
+    let (show, busy) = (parse(SHOW, "Fragment_1"), parse(BUSY, "Fragment_1"));
+    let mut world = World::new();
+    crate::register(&mut world);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    world.insert_resource(QuestStageState::default());
+    let mut index = byroredux_plugin::esm::records::EsmIndex::default();
+    index.messages.insert(
+        MESSAGE,
+        byroredux_plugin::esm::records::MesgRecord {
+            form_id: MESSAGE,
+            description: "Who will you follow?".into(),
+            message_box: true,
+            buttons: vec!["Hadvar".into(), "Ralof".into()],
+            ..Default::default()
+        },
+    );
+    crate::install_message_catalog(&mut world, &index);
+    let mut show_vmad = vmad();
+    show_vmad.scripts[0].name = "QF_VmShow".into();
+    show_vmad.scripts[0].properties.push(ScriptProperty {
+        name: "TempChooseSidesMessage".into(),
+        status: 1,
+        value: PropertyValue::Object { form_id: MESSAGE, alias: -1 },
+    });
+    let mut busy_vmad = vmad();
+    busy_vmad.scripts[0].name = "QF_VmBusy".into();
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        for (quest, vmad, script, name) in [(Q2, busy_vmad, &busy, "QF_VmBusy"), (Q, show_vmad, &show, "QF_VmShow")] {
+            fragments.insert_vmad(quest, vmad);
+            fragments.insert_vm_script(Arc::clone(script));
+            fragments.insert(
+                quest,
+                0,
+                vec![Effect::Interpret { script: name.into(), function: "Fragment_1".into(), args: Vec::new(), resume: None }],
+            );
+        }
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q2, 0);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 0);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    crate::fragment::fragment_continuation_system(&world, 1.0);
+    let raised = std::mem::take(&mut world.resource_mut::<crate::PendingScriptMessages>().0);
+    let crate::MessageAnswer::Papyrus(ticket) = raised[0].answer else { panic!("{:?}", raised[0].answer) };
+    crate::messages::record_papyrus_answer(&world, ticket, 1);
+
+    // The frame both resume in: the busy run, ahead in the queue, spends a small budget.
+    world.insert_resource(crate::fragment::budget::VmFrameBudget::with_limit(48));
+    crate::fragment::fragment_continuation_system(&world, 5.0);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 0, "the answered run is deferred, not run");
+    world.insert_resource(crate::fragment::budget::VmFrameBudget::default());
+    crate::fragment::fragment_continuation_system(&world, 0.0);
+    crate::fragment::fragment_continuation_system(&world, 0.0);
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 7, "it keeps button 1, Ralof");
+}

@@ -151,14 +151,19 @@ pub fn fragment_continuation_system(world: &World, dt: f32) {
         // The interpreter's frame budget is spent: what is still ready waits
         // for the next frame, untouched and in order, without paying the
         // scheduler snapshot each run costs just to be deferred again.
+        // #7289 — each goes back as already due: its wait is over, and a `MessageAnswered` run has
+        // taken its answer (now on its continuation), so asking again next frame would read the
+        // lost-box default 0 in place of the button the player pressed.
         if super::budget::exhausted(world)
             && let Some(mut queue) = world.try_resource_mut::<FragmentExecutionQueue>() {
                 let mut waiting = vec![PendingFragmentExecution {
                     remaining_seconds: 0.0,
+                    resume_when: FragmentResumeCondition::DelayElapsed,
                     ..pending
                 }];
                 waiting.extend(ready.by_ref().map(|rest| PendingFragmentExecution {
                     remaining_seconds: 0.0,
+                    resume_when: FragmentResumeCondition::DelayElapsed,
                     ..rest
                 }));
                 queue.extend_capped(waiting);
