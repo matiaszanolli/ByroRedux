@@ -296,6 +296,14 @@ pub struct CharacterRulesProfile {
     /// `OnRecoverFromBleedout`), and how those combine is unsourced — so a
     /// `None` game keeps its downed essentials down until scripted.
     essential_death_time_secs: Option<f32>,
+    /// LMC-SET-002 — the default of `fCombatDistance`, the melee reach a weapon's authored `Reach` multiplies
+    /// (`fCombatDistance * NPCScale * Reach`: GECK wiki *Weapons*, UESP *Skyrim Mod:Mod File Format/WEAP*), which the load
+    /// order's GMST replaces. Fallout 3 and New Vegas 128 (GECK wiki *FCombatDistance*; geckwiki *Complete List of
+    /// GameSettings*, FNV); Skyrim, Fallout 4 and Fallout 76 141, which their masters author (CK wiki *Settings*).
+    /// Oblivion's master authors none and no source gives the executable's default: 180, the engine's value before
+    /// this row, is kept (**Phase 0: verify**). `None` where the setting is not this reach: Starfield authors 2.0, so the
+    /// engine's own reach applies there.
+    combat_distance: Option<f32>,
     /// #5921 — the barter price model, where one is sourced.
     barter: Option<BarterModel>,
     /// #5921 — the perk entry-point numbering.
@@ -378,6 +386,7 @@ impl CharacterRulesProfile {
         over_encumbered: OverEncumberedRule::None,
         kill_experience: false,
         essential_death_time_secs: None,
+        combat_distance: None,
         barter: None,
         perk_entry_points: PerkEntryPointDialect::None,
         add_perk_raises_rank: false,
@@ -409,6 +418,7 @@ impl CharacterRulesProfile {
         kill_experience: false,
         // Oblivion.exe loads it as a constant beside the name.
         essential_death_time_secs: Some(10.0),
+        combat_distance: Some(180.0),
         barter: None,
         perk_entry_points: PerkEntryPointDialect::None,
         add_perk_raises_rank: false,
@@ -451,6 +461,7 @@ impl CharacterRulesProfile {
         kill_experience: true,
         // Fallout3.exe's setting table; the GECK says 10 s.
         essential_death_time_secs: Some(10.0),
+        combat_distance: Some(128.0),
         barter: None,
         perk_entry_points: PerkEntryPointDialect::Fallout3NV,
         add_perk_raises_rank: true,
@@ -492,6 +503,7 @@ impl CharacterRulesProfile {
         // FalloutNV.exe is encrypted on disk; New Vegas runs the Fallout 3
         // engine and the GECK page documents both.
         essential_death_time_secs: Some(10.0),
+        combat_distance: Some(128.0),
         barter: None,
         perk_entry_points: PerkEntryPointDialect::Fallout3NV,
         add_perk_raises_rank: true,
@@ -535,6 +547,7 @@ impl CharacterRulesProfile {
         kill_experience: false,
         // SkyrimSE.exe's setting table.
         essential_death_time_secs: Some(30.0),
+        combat_distance: Some(141.0),
         barter: Some(BarterModel {
             skill: "Speechcraft",
             skill_scale: 100.0,
@@ -582,6 +595,7 @@ impl CharacterRulesProfile {
         kill_experience: false,
         // Fallout4.exe's setting table.
         essential_death_time_secs: Some(30.0),
+        combat_distance: Some(141.0),
         barter: Some(BarterModel {
             skill: "Charisma",
             skill_scale: 10.0,
@@ -636,6 +650,7 @@ impl CharacterRulesProfile {
         kill_experience: false,
         // No executable capture for FO76.
         essential_death_time_secs: None,
+        combat_distance: Some(141.0),
         barter: None,
         perk_entry_points: PerkEntryPointDialect::None,
         add_perk_raises_rank: false,
@@ -679,6 +694,7 @@ impl CharacterRulesProfile {
         // Recover Chance — captured on `RaceRecord::bleedout`, #6259) by a
         // rule no source states yet, so none is modelled.
         essential_death_time_secs: None,
+        combat_distance: None,
         barter: None,
         perk_entry_points: PerkEntryPointDialect::None,
         add_perk_raises_rank: false,
@@ -763,6 +779,13 @@ impl CharacterRulesProfile {
     #[must_use]
     pub const fn essential_death_time_secs(self) -> Option<f32> {
         self.essential_death_time_secs
+    }
+
+    /// LMC-SET-002 — the default of `fCombatDistance`, the melee reach baseline; `None` where the setting means
+    /// something else (see the field doc).
+    #[must_use]
+    pub const fn combat_distance(self) -> Option<f32> {
+        self.combat_distance
     }
 
     /// #5921 — the barter price model, `None` where none is sourced.

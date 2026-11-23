@@ -803,7 +803,10 @@ is the sum of the per-step costs, not a closed form. Source: [UESP Skyrim:
 Leveling](https://en.uesp.net/wiki/Skyrim:Leveling). Implemented as
 `skyrim_skill_xp_to_next` / `skyrim_skill_xp_between` /
 `SKYRIM_SKILL_USE_CURVE` (`crates/core/src/character/skyrim.rs`), pinned by
-`skill_xp_cost_matches_uesp_lockpicking`.
+`skill_xp_cost_matches_uesp_lockpicking`. The curve `Game.AdvanceSkill` uses is
+the load order's `fSkillUseCurve`, with `SKYRIM_SKILL_USE_CURVE` as the default
+(`SkillScaling::use_curve`, LMC-SET-002), pinned by
+`the_load_orders_skill_use_curve_sets_the_cost`.
 
 ## Bleedout, encumbrance, barter defaults — LOCKED (#6284)
 
