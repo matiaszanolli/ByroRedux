@@ -232,14 +232,15 @@ impl ConsoleCommand for TerrainParallaxCommand {
     }
 }
 
-/// `terrain.patches [on | off | amplitude <m> | range <m>]` — TSD-4.1's
-/// terrain displacement patches (#7152). With no argument, the geometric seam
-/// check the renderer read back one frame-in-flight ago (§3.4): every patch
-/// border that must sit at the 1 mm lip (a cell border or a missing
+/// `terrain.patches [on | off | amplitude <m> | range <m> | afine <px²> | …]` —
+/// TSD-4's terrain displacement patches (#7152). With no argument, the
+/// geometric seam check the renderer read back one frame-in-flight ago (§3.4):
+/// every patch border that must sit at the 1 mm lip (a cell border or a missing
 /// neighbour) and the largest deviation from it, every border two resident
 /// patches share and the largest height gap between them, and each slot's
-/// largest displacement. `on` / `off` is the A/B switch; `amplitude` and
-/// `range` retune the session (metres), until stage 4.3's settings.
+/// largest displacement. `on` / `off` is the A/B switch. `amplitude`, `range`
+/// and `afine` set the three `render.terrain_patch_*` settings the debug-UI
+/// sliders edit, for this session only (stage 4.3 step 5).
 pub(crate) struct TerrainPatchesCommand;
 impl ConsoleCommand for TerrainPatchesCommand {
     fn name(&self) -> &str {
@@ -251,34 +252,49 @@ impl ConsoleCommand for TerrainPatchesCommand {
     }
 
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
-        use crate::terrain_patches::{LevelSetting, TerrainPatchState, LIP_M};
+        use crate::terrain_patches::{LevelSetting, PatchSettings, TerrainPatchState, LIP_M};
         use byroredux_core::lighting::BETHESDA_UNITS_PER_METER as UNITS_PER_M;
-        let Some(mut state) = world.try_resource_mut::<TerrainPatchState>() else {
-            return CommandOutput::line("terrain.patches: not available in this session");
+        use byroredux_core::settings::builtin::{
+            TERRAIN_PATCH_AMPLITUDE_SETTING_ID, TERRAIN_PATCH_A_FINE_SETTING_ID,
+            TERRAIN_PATCH_RANGE_SETTING_ID,
         };
+        use byroredux_core::settings::SettingsRegistry;
+        if world.try_resource::<TerrainPatchState>().is_none() {
+            return CommandOutput::line("terrain.patches: not available in this session");
+        }
         let usage =
             "usage: terrain.patches [on | off | amplitude <m> | range <m> | afine <px²> | fine <m> | parallax on|off | rt on|off]";
         let parse = |word: &str| word.parse::<f32>().ok().filter(|v| v.is_finite() && *v >= 0.0);
         let words: Vec<&str> = args.split_whitespace().collect();
+        // The three registry-backed values are written first, with the pool
+        // unlocked, so the registry and the pool are never locked together.
+        // 0 amplitude or range turns the patches off; `afine` 0 makes every
+        // patch fine (§7.3's screen-space rule, the default).
+        let setting = match words.as_slice() {
+            ["amplitude", m] => Some((TERRAIN_PATCH_AMPLITUDE_SETTING_ID, *m)),
+            ["range", m] => Some((TERRAIN_PATCH_RANGE_SETTING_ID, *m)),
+            ["afine", px] => Some((TERRAIN_PATCH_A_FINE_SETTING_ID, *px)),
+            _ => None,
+        };
+        if let Some((id, word)) = setting {
+            if world.try_resource::<SettingsRegistry>().is_none() {
+                return CommandOutput::line("terrain.patches: no settings registry in this session");
+            }
+            let Some(value) = parse(word) else {
+                return CommandOutput::line(format!("terrain.patches: bad number\n{usage}"));
+            };
+            if let Err(error) = set_session_number(world, id, value) {
+                return CommandOutput::line(format!("terrain.patches: {error}"));
+            }
+        }
+        let settings = PatchSettings::read(world);
+        let mut state = world.resource_mut::<TerrainPatchState>();
         match words.as_slice() {
-            [] => {}
+            [] | ["amplitude", _] | ["range", _] => {}
             ["on"] => state.enabled = true,
             ["off"] => state.enabled = false,
-            ["amplitude", m] => match parse(m) {
-                Some(m) => state.amplitude_m = m,
-                None => return CommandOutput::line(format!("terrain.patches: bad number\n{usage}")),
-            },
-            ["range", m] => match parse(m).filter(|m| *m > 0.0) {
-                Some(m) => state.range_m = m,
-                None => return CommandOutput::line(format!("terrain.patches: bad number\n{usage}")),
-            },
-            // §7.3's screen-space level rule (the default): a square draws fine
-            // while one fine-lattice triangle projects to at least <px²> render
-            // pixels. 0 = every patch fine.
-            ["afine", px] => match parse(px) {
-                Some(px) => state.level = LevelSetting::Screen { a_fine_px2: px },
-                None => return CommandOutput::line(format!("terrain.patches: bad number\n{usage}")),
-            },
+            // Back to the screen-space rule from a forced distance rule.
+            ["afine", _] => state.level = LevelSetting::Screen { a_fine_px2: settings.a_fine_px2 },
             // 4.1's world-distance rule, kept for A/B and as the forced modes:
             // 0 = every patch coarse, >= range = every patch fine.
             ["fine", m] => match parse(m) {
@@ -296,6 +312,7 @@ impl ConsoleCommand for TerrainPatchesCommand {
             ["rt", "off"] => state.rt = false,
             _ => return CommandOutput::line(usage),
         }
+        state.apply_settings(settings);
         // The level rule in effect, with the projection inputs it reads (§7.3).
         let level = match state.level {
             LevelSetting::Distance { fine_range_m } => format!("level=distance fine={fine_range_m:.1} m"),
@@ -310,7 +327,11 @@ impl ConsoleCommand for TerrainPatchesCommand {
         };
         let mut lines = vec![format!(
             "terrain.patches: {} amplitude={:.3} m range={:.1} m {} parallax={} rt={} lip={:.3} m pool={} assigned={}",
-            if state.enabled { "on" } else { "off" },
+            match (state.enabled, state.active()) {
+                (_, true) => "on",
+                (true, false) => "off (amplitude or range 0)",
+                (false, false) => "off",
+            },
             state.amplitude_m,
             state.range_m,
             level,
@@ -556,6 +577,9 @@ mod tests {
         use crate::terrain_patches::{LevelSetting, TerrainPatchState, DEFAULT_A_FINE_PX2};
         let mut world = World::new();
         world.insert_resource(TerrainPatchState::default());
+        let mut registry = byroredux_core::settings::SettingsRegistry::default();
+        byroredux_debug_ui::register_builtin_settings(&mut registry).unwrap();
+        world.insert_resource(registry);
         let out = TerrainPatchesCommand.execute(&world, "").lines.join("\n");
         assert!(out.contains("level=screen afine=128 px²") && out.contains("distance fallback"), "{out}");
         assert_eq!(
@@ -579,5 +603,67 @@ mod tests {
         assert!(out.contains("level=screen afine=128 px² (render_h=480 fov_y=45.0°"), "{out}");
         let out = TerrainPatchesCommand.execute(&world, "afine -3").lines.join("\n");
         assert!(out.contains("bad number"), "{out}");
+    }
+
+    /// 4.3 step 5 — `amplitude`, `range` and `afine` set the registry entries
+    /// the sliders edit, session-only like the other `terrain.*` switches, and
+    /// the registry bounds them; 0 amplitude or range reports the patches off.
+    #[test]
+    fn terrain_patches_tuning_goes_through_the_registry_and_stays_off_disk() {
+        use crate::terrain_patches::{LevelSetting, TerrainPatchState};
+        use byroredux_core::settings::builtin::{
+            TERRAIN_PATCH_AMPLITUDE_SETTING_ID as AMPLITUDE, TERRAIN_PATCH_A_FINE_SETTING_ID as AFINE,
+            TERRAIN_PATCH_RANGE_SETTING_ID as RANGE,
+        };
+        use byroredux_core::settings::{SettingChange, SettingValue, SettingsRegistry};
+        use byroredux_debug_ui::FOV_SETTING_ID;
+
+        let mut world = World::new();
+        world.insert_resource(TerrainPatchState::default());
+        let out = TerrainPatchesCommand.execute(&world, "amplitude 0.05").lines.join("\n");
+        assert!(out.contains("no settings registry"), "{out}");
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.toml");
+        let mut registry = SettingsRegistry::default();
+        byroredux_debug_ui::register_builtin_settings(&mut registry).unwrap();
+        world.insert_resource(registry);
+        world.insert_resource(crate::settings_io::SettingsPersistence::at(path.clone()));
+
+        let out = TerrainPatchesCommand.execute(&world, "amplitude 0.05").lines.join("\n");
+        assert!(out.contains("amplitude=0.050 m"), "{out}");
+        let out = TerrainPatchesCommand.execute(&world, "range 4").lines.join("\n");
+        assert!(out.contains("range=4.0 m"), "{out}");
+        TerrainPatchesCommand.execute(&world, "fine 1");
+        let out = TerrainPatchesCommand.execute(&world, "afine 256").lines.join("\n");
+        assert!(out.contains("afine=256 px²"), "{out}");
+        assert_eq!(
+            world.resource::<TerrainPatchState>().level,
+            LevelSetting::Screen { a_fine_px2: 256.0 }
+        );
+        for (id, value) in [(AMPLITUDE, 0.05), (RANGE, 4.0), (AFINE, 256.0)] {
+            assert_eq!(crate::setting_number(&world, id, f32::NAN), value, "{id}");
+        }
+
+        // The registry bounds the console: the pool's reach tops out at 7 m.
+        let out = TerrainPatchesCommand.execute(&world, "range 9").lines.join("\n");
+        assert!(out.starts_with("terrain.patches: ") && !out.contains("range=9"), "{out}");
+        assert_eq!(crate::setting_number(&world, RANGE, f32::NAN), 4.0);
+
+        let out = TerrainPatchesCommand.execute(&world, "amplitude 0").lines.join("\n");
+        assert!(out.contains("off (amplitude or range 0)"), "{out}");
+
+        // An unrelated menu edit saves; the console values stay off disk.
+        let mut outputs = byroredux_debug_ui::PanelOutputs::default();
+        outputs
+            .game
+            .setting_changes
+            .push(SettingChange::new(FOV_SETTING_ID, SettingValue::Number(80.0)));
+        crate::apply_debug_ui_outputs(&mut world, outputs, &mut false, None);
+        let stored = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(stored.contains(FOV_SETTING_ID), "the unrelated edit must save:\n{stored}");
+        for id in [AMPLITUDE, RANGE, AFINE] {
+            assert!(!stored.contains(id), "a console value must not persist ({id}):\n{stored}");
+        }
     }
 }

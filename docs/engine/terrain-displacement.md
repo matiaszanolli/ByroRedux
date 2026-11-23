@@ -396,7 +396,23 @@ compute `D` or `h`. Options:
    ramp to the lip at a missing neighbour or a cell border, is not reproduced, so
    relief there reads slightly flatter (first order).
 5. **Settings/UI**: amplitude, range and `A_FINE` (or a quality preset that maps to
-   it), each one registry entry, through the settings pass.
+   it), each one registry entry, through the settings pass. **Done** as three
+   `Rendering` sliders, which the debug UI, the launcher and the in-game menu all
+   draw from the registry:
+   - `render.terrain_patch_amplitude_m`: 0–0.1 m, default 0.03. 0 turns the patches off.
+   - `render.terrain_patch_range_m`: 0–7 m, default 6. 0 turns the patches off. The
+     cap comes from the pool: 24 slots of 3.66 m squares, each kept until 1 m past
+     the range, cover about 20 squares at 7 m on flat ground, so the whole fade
+     stays patched.
+   - `render.terrain_patch_fine_threshold_px2`: 0–512 px², default 128 (§8.5).
+     0 makes every patch fine.
+
+   The host reads the three each frame before it locks the pool. `terrain.patches
+   amplitude | range | afine` now set these entries for the session only, like the
+   other `terrain.*` switches, so they don't reach the settings file until a menu
+   edit. `fine <m>` still forces 4.1's distance rule for the session, until
+   `afine`. The quality presets (`assets/graphics_presets.toml`) are unchanged: only
+   High's values (the defaults) have been measured, so no other rung is set yet.
 
 **Not in 4.3.** A visibility-buffer or deferred lighting pass would trace rays per
 covered pixel with no quad overhead at all. It is the structural fix for every dense

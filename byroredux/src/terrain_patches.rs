@@ -36,6 +36,11 @@ use byroredux_core::ecs::{EntityId, MeshHandle, Resource, World};
 use byroredux_core::lighting::BETHESDA_UNITS_PER_METER as UNITS_PER_M;
 use byroredux_core::math::coord::{LAND_GRID_VERTS, LAND_VERTEX_SPACING};
 use byroredux_core::math::{Mat4, Vec3, Vec4};
+use byroredux_core::settings::builtin::{
+    TERRAIN_PATCH_AMPLITUDE_DEFAULT_M, TERRAIN_PATCH_AMPLITUDE_SETTING_ID,
+    TERRAIN_PATCH_A_FINE_DEFAULT_PX2, TERRAIN_PATCH_A_FINE_SETTING_ID,
+    TERRAIN_PATCH_RANGE_DEFAULT_M, TERRAIN_PATCH_RANGE_SETTING_ID,
+};
 use byroredux_renderer::shader_constants::{
     TERRAIN_PATCHES_PER_CELL_SIDE, TERRAIN_PATCH_LATTICE_STEP, TERRAIN_PATCH_QUADS,
     TERRAIN_PATCH_SLOTS,
@@ -52,10 +57,10 @@ const PER_SIDE: i32 = TERRAIN_PATCHES_PER_CELL_SIDE as i32;
 /// World units across one patch square (256).
 const PATCH_SIZE: f32 = TERRAIN_PATCH_LATTICE_STEP * TERRAIN_PATCH_QUADS as f32;
 
-/// Defaults (§9: 3 cm amplitude, 6 m radius). Tunable through
-/// `terrain.patches`; the settings/UI pass is stage 4.3.
-pub(crate) const DEFAULT_AMPLITUDE_M: f32 = 0.03;
-pub(crate) const DEFAULT_RANGE_M: f32 = 6.0;
+/// Defaults (§9: 3 cm amplitude, 6 m radius): the registry's, which owns them
+/// (`render.terrain_patch_*`, stage 4.3 step 5).
+pub(crate) const DEFAULT_AMPLITUDE_M: f32 = TERRAIN_PATCH_AMPLITUDE_DEFAULT_M;
+pub(crate) const DEFAULT_RANGE_M: f32 = TERRAIN_PATCH_RANGE_DEFAULT_M;
 /// Squares within this distance draw the fine lattice, the rest the coarse
 /// one. `terrain.patches fine 0` makes every patch coarse, a fine range at or
 /// past `range` every patch fine (the single-level pool).
@@ -64,11 +69,9 @@ pub(crate) const DEFAULT_FINE_RANGE_M: f32 = 2.0;
 pub(crate) const FINE_HYSTERESIS_M: f32 = 0.5;
 /// The screen-space rule's threshold (§7.3): a square draws fine while one
 /// fine-lattice triangle at its nearest point projects to at least this many
-/// render pixels. A fine square drops to coarse below half of it. 128 is the
-/// sweep's pick (§8.5): at the bench's 480 render lines it selects the squares
-/// 4.1's 2 m rule did, and at 960 lines 32–64 px² added fine squares for up to
-/// 0.9 ms with nothing measured in return.
-pub(crate) const DEFAULT_A_FINE_PX2: f32 = 128.0;
+/// render pixels. A fine square drops to coarse below half of it. The default
+/// is the §8.5 sweep's pick, documented where the registry declares it.
+pub(crate) const DEFAULT_A_FINE_PX2: f32 = TERRAIN_PATCH_A_FINE_DEFAULT_PX2;
 /// Squares in one cell's grid.
 pub(crate) const SQUARES_PER_CELL: usize = (PER_SIDE * PER_SIDE) as usize;
 /// The 1 mm step every patch border and every undisplaced point sits at above
@@ -258,13 +261,44 @@ fn fine_triangle_area_px(
     0.5 * edge_px * edge_px * sin_view
 }
 
-/// The pool's host-side state.
-pub(crate) struct TerrainPatchState {
-    /// `terrain.patches off` turns the whole stage off (the A/B switch).
-    pub(crate) enabled: bool,
+/// The three registry settings that tune the patches (stage 4.3 step 5): read
+/// once per frame, before the pool's state is locked, and applied to it with
+/// [`TerrainPatchState::apply_settings`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct PatchSettings {
     pub(crate) amplitude_m: f32,
     pub(crate) range_m: f32,
-    /// The lattice-level rule (`terrain.patches afine <px²>` / `fine <m>`).
+    pub(crate) a_fine_px2: f32,
+}
+
+impl PatchSettings {
+    /// The registry's values; a session without a registry (or a value of the
+    /// wrong type) reads the defaults.
+    pub(crate) fn read(world: &World) -> Self {
+        let number = |id, default: f32| {
+            let value = crate::setting_number(world, id, default);
+            if value.is_finite() { value.max(0.0) } else { default }
+        };
+        Self {
+            amplitude_m: number(TERRAIN_PATCH_AMPLITUDE_SETTING_ID, DEFAULT_AMPLITUDE_M),
+            range_m: number(TERRAIN_PATCH_RANGE_SETTING_ID, DEFAULT_RANGE_M),
+            a_fine_px2: number(TERRAIN_PATCH_A_FINE_SETTING_ID, DEFAULT_A_FINE_PX2),
+        }
+    }
+}
+
+/// The pool's host-side state.
+pub(crate) struct TerrainPatchState {
+    /// `terrain.patches off` turns the whole stage off for the session (the
+    /// A/B switch). An amplitude or range of 0 turns it off too.
+    pub(crate) enabled: bool,
+    /// `render.terrain_patch_amplitude_m` and `render.terrain_patch_range_m`,
+    /// as of this frame.
+    pub(crate) amplitude_m: f32,
+    pub(crate) range_m: f32,
+    /// The lattice-level rule. The screen rule's threshold follows
+    /// `render.terrain_patch_fine_threshold_px2`; `terrain.patches fine <m>`
+    /// forces 4.1's distance rule for the session, until `afine`.
     pub(crate) level: LevelSetting,
     /// The scene-render extent's height (`VulkanContext::render_extent`, the
     /// pixels the main pass shades, below the output under an upscaler) and
@@ -327,6 +361,23 @@ impl Resource for TerrainPatchState {}
 impl TerrainPatchState {
     pub(crate) fn resident(&self) -> usize {
         self.slots.iter().flatten().count()
+    }
+
+    /// Take this frame's registry values. A forced distance rule
+    /// (`terrain.patches fine`) stays in force; the screen rule takes the
+    /// registry's threshold.
+    pub(crate) fn apply_settings(&mut self, settings: PatchSettings) {
+        self.amplitude_m = settings.amplitude_m;
+        self.range_m = settings.range_m;
+        if let LevelSetting::Screen { .. } = self.level {
+            self.level = LevelSetting::Screen { a_fine_px2: settings.a_fine_px2 };
+        }
+    }
+
+    /// Whether any patch draws: the session switch on, and neither the
+    /// amplitude nor the range at 0.
+    pub(crate) fn active(&self) -> bool {
+        self.enabled && self.amplitude_m > 0.0 && self.range_m > 0.0
     }
 
     pub(crate) fn ranges(&self) -> PatchRanges {
@@ -563,13 +614,16 @@ pub(crate) fn emit_patch_draws(
     fov_y: f32,
     draw_commands: &mut Vec<DrawCommand>,
 ) {
+    // The registry is read before the pool is locked, so the two locks never nest.
+    let settings = PatchSettings::read(world);
     let Some(mut state) = world.try_resource_mut::<TerrainPatchState>() else {
         return;
     };
     let state = &mut *state;
+    state.apply_settings(settings);
     state.camera_pos = cam_pos.to_array();
     state.fov_y = fov_y;
-    if !state.enabled || state.meshes.fine.len() < SLOTS || state.meshes.coarse.len() < SLOTS {
+    if !state.active() || state.meshes.fine.len() < SLOTS || state.meshes.coarse.len() < SLOTS {
         state.slots = [None; SLOTS];
         return;
     }
@@ -1170,5 +1224,59 @@ mod tests {
         nearby_cells(&world, [100.0, -100.0], RANGE, &mut cells);
         assert_eq!(cells.len(), 1);
         assert_eq!((cells[0].base_mesh, cells[0].tile), (9, 3));
+    }
+
+    /// 4.3 step 5 — the pool takes the three `render.terrain_patch_*` settings
+    /// every frame: amplitude and range directly (either at 0 turns the patches
+    /// off), the threshold into the screen rule only. A distance rule forced
+    /// from the console survives a registry read.
+    #[test]
+    fn registry_settings_drive_the_pool() {
+        use byroredux_core::settings::{SettingValue, SettingsRegistry};
+        let mut world = World::new();
+        assert_eq!(
+            PatchSettings::read(&world),
+            PatchSettings {
+                amplitude_m: DEFAULT_AMPLITUDE_M,
+                range_m: DEFAULT_RANGE_M,
+                a_fine_px2: DEFAULT_A_FINE_PX2,
+            },
+            "no registry reads the defaults"
+        );
+        let mut registry = SettingsRegistry::default();
+        byroredux_core::settings::builtin::register_builtin_settings(&mut registry).unwrap();
+        for (id, value) in [
+            (TERRAIN_PATCH_AMPLITUDE_SETTING_ID, 0.05),
+            (TERRAIN_PATCH_RANGE_SETTING_ID, 4.5),
+            (TERRAIN_PATCH_A_FINE_SETTING_ID, 256.0),
+        ] {
+            registry.set(id, SettingValue::Number(value)).unwrap();
+        }
+        world.insert_resource(registry);
+        let settings = PatchSettings::read(&world);
+        assert_eq!(settings, PatchSettings { amplitude_m: 0.05, range_m: 4.5, a_fine_px2: 256.0 });
+
+        let mut state = TerrainPatchState::default();
+        state.apply_settings(settings);
+        assert_eq!((state.amplitude_m, state.range_m), (0.05, 4.5));
+        assert_eq!(state.level, LevelSetting::Screen { a_fine_px2: 256.0 });
+        assert!((state.params().amplitude - 0.05 * UNITS_PER_M).abs() < 1e-4);
+        assert!((state.params().fade_end - 4.5 * UNITS_PER_M).abs() < 1e-3);
+        assert!(state.active());
+
+        state.level = LevelSetting::Distance { fine_range_m: 1.0 };
+        state.apply_settings(settings);
+        assert_eq!(state.level, LevelSetting::Distance { fine_range_m: 1.0 });
+
+        for off in [
+            PatchSettings { amplitude_m: 0.0, ..settings },
+            PatchSettings { range_m: 0.0, ..settings },
+        ] {
+            state.apply_settings(off);
+            assert!(!state.active(), "{off:?}");
+        }
+        state.apply_settings(settings);
+        state.enabled = false;
+        assert!(!state.active());
     }
 }

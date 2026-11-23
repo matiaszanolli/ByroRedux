@@ -71,6 +71,34 @@ pub const TERRAIN_LOD_SOFTEN_SETTING_ID: &str = "render.terrain_lod_soften";
 /// lower resolution than the tiled splat layers, so the join reads as a step
 /// in detail unless the near terrain's detail gives way first.
 pub const TERRAIN_LOD_SOFTEN_DEFAULT: f32 = 0.5;
+/// TSD-4 (docs/engine/terrain-displacement.md) — relief amplitude, in metres,
+/// of the displaced terrain patches drawn on the squares nearest the camera.
+/// The patch geometry carries this much of the relief; the parallax march
+/// covers only the rest of `render.terrain_parallax_depth_m` (§3.6). 0 turns
+/// the patches off.
+pub const TERRAIN_PATCH_AMPLITUDE_SETTING_ID: &str = "render.terrain_patch_amplitude_m";
+/// §9's review decision: 3 cm, the starting point the stage was measured at.
+pub const TERRAIN_PATCH_AMPLITUDE_DEFAULT_M: f32 = 0.03;
+/// TSD-4 — camera distance, in metres, where the patch relief has faded to the
+/// base surface (it starts fading at half of it). 0 turns the patches off.
+pub const TERRAIN_PATCH_RANGE_SETTING_ID: &str = "render.terrain_patch_range_m";
+/// §9's review decision: 6 m, the starting point the stage was measured at.
+pub const TERRAIN_PATCH_RANGE_DEFAULT_M: f32 = 6.0;
+/// The slider's top. The renderer reserves 24 patch slots of 3.66 m squares,
+/// and a square is kept until 1 m past the range: at 7 m the squares within
+/// reach number about 20 on flat ground, so the pool still covers the whole
+/// fade. Past that the farthest squares inside the range go without a patch.
+pub const TERRAIN_PATCH_RANGE_MAX_M: f32 = 7.0;
+/// TSD-4.3 (§7.3) — the screen-space lattice-level threshold, in render px²:
+/// a patch draws its fine lattice while one fine-lattice triangle at the
+/// square's nearest point projects to at least this area, and drops to the
+/// coarse one below half of it. Lower is finer and costlier; 0 makes every
+/// patch fine.
+pub const TERRAIN_PATCH_A_FINE_SETTING_ID: &str = "render.terrain_patch_fine_threshold_px2";
+/// The §8.5 sweep's pick: at 480 render lines 128 px² selects the squares
+/// 4.1's 2 m distance rule did, and at 960 lines 32–64 px² added fine squares
+/// for up to 0.9 ms with nothing measured in return.
+pub const TERRAIN_PATCH_A_FINE_DEFAULT_PX2: f32 = 128.0;
 /// M39 — texture streaming switch (docs/prd/texture-streaming.md
 /// TXS-RES-008). Off restores the full-chain upload, the same-binary control
 /// of every streaming A/B. Phase 1: on means the forced floor-then-full
@@ -239,6 +267,47 @@ pub fn register_builtin_settings(registry: &mut SettingsRegistry) -> Result<(), 
         1.0,
         0.05,
         "",
+    ))?;
+    registry.register(SettingEntry::slider(
+        TERRAIN_PATCH_AMPLITUDE_SETTING_ID,
+        "Rendering",
+        "Terrain displacement",
+        "Relief, in metres, that the ground nearest the camera gains as real \
+         geometry: stones and ruts stand up, cast ray-traced shadows and show \
+         in reflections. Terrain parallax covers only the rest of its depth. \
+         Collision keeps the flat ground. 0 turns it off.",
+        TERRAIN_PATCH_AMPLITUDE_DEFAULT_M,
+        0.0,
+        0.1,
+        0.005,
+        " m",
+    ))?;
+    registry.register(SettingEntry::slider(
+        TERRAIN_PATCH_RANGE_SETTING_ID,
+        "Rendering",
+        "Terrain displacement range",
+        "Camera distance at which terrain displacement has faded back to the \
+         flat ground; it starts fading at half this distance. Shorter is \
+         cheaper. 0 turns it off.",
+        TERRAIN_PATCH_RANGE_DEFAULT_M,
+        0.0,
+        TERRAIN_PATCH_RANGE_MAX_M,
+        0.5,
+        " m",
+    ))?;
+    registry.register(SettingEntry::slider(
+        TERRAIN_PATCH_A_FINE_SETTING_ID,
+        "Rendering",
+        "Terrain displacement detail threshold",
+        "How large, in rendered pixels, one triangle of the finer displacement \
+         mesh must appear before a patch of ground uses it instead of the \
+         coarser one. Lower draws more ground at the finer level, which costs \
+         more at high render resolutions. 0 always uses the finer level.",
+        TERRAIN_PATCH_A_FINE_DEFAULT_PX2,
+        0.0,
+        512.0,
+        16.0,
+        " px²",
     ))?;
     registry.register(SettingEntry::toggle(
         TEXTURE_STREAMING_SETTING_ID,
