@@ -529,17 +529,6 @@ impl Drop for VulkanContext {
 /// gap is defence against. Source position is what is checkable without a GPU.
 #[cfg(test)]
 mod skin_slot_drain_is_not_nested_under_skin_compute_tests {
-    /// The drain must be a bare `for` over `std::mem::take(&mut
-    /// self.skin.slots)`, not a loop inside `if let Some(ref skin) =
-    /// self.skin.compute`.
-    ///
-    /// `SkinSlot::destroy` needs only the device and the allocator; only the
-    /// `free_descriptor_sets` half needs the pipeline, and pool destruction
-    /// frees those sets implicitly anyway. If the drain is ever re-nested, a
-    /// `skin_compute == None` shutdown leaks every live skinned output buffer
-    /// *and* the `Arc<Mutex<Allocator>>` clone each one holds — which trips
-    /// the #665 outstanding-references guard and leaks the `VkDevice`,
-    /// `VkSurfaceKHR`, `VkInstance` and debug messenger along with it.
     /// #7364 — the terrain-patch pass and its patch BLAS set own raw handles (pipeline, descriptor pool, AS)
     /// that no `Drop` frees, and `GpuBuffer` fields that keep an allocator `Arc` alive. Both teardown calls
     /// must stay, the pass's before the `Arc::try_unwrap`, and the BLAS set's inside the acceleration
@@ -576,6 +565,17 @@ mod skin_slot_drain_is_not_nested_under_skin_compute_tests {
         );
     }
 
+    /// The drain must be a bare `for` over `std::mem::take(&mut
+    /// self.skin.slots)`, not a loop inside `if let Some(ref skin) =
+    /// self.skin.compute`.
+    ///
+    /// `SkinSlot::destroy` needs only the device and the allocator; only the
+    /// `free_descriptor_sets` half needs the pipeline, and pool destruction
+    /// frees those sets implicitly anyway. If the drain is ever re-nested, a
+    /// `skin_compute == None` shutdown leaks every live skinned output buffer
+    /// *and* the `Arc<Mutex<Allocator>>` clone each one holds — which trips
+    /// the #665 outstanding-references guard and leaks the `VkDevice`,
+    /// `VkSurfaceKHR`, `VkInstance` and debug messenger along with it.
     #[test]
     fn skin_slot_drain_sits_outside_the_skin_compute_guard() {
         let src = crate::source_scan::production_text(include_str!("teardown.rs"));
