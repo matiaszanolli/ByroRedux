@@ -1,6 +1,7 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-23). Revision 29 measures Phase 7's profile-change saves on real data
+**Status**: ACTIVE (2026-11-23). Revision 30 measures LMC-PERF-001's and -002's fold cost
+and removes its two quadratic steps. Revision 29 measures Phase 7's profile-change saves on real data
 (`lmc-profile-change-save.sh`) and makes the conformance runner's rule 4 measurable. Revision 28 builds LMC-REC-010: the sub-records no
 parser decodes are kept for every plugin after the first. Revision 27 switches the live load to the session's own plugins with
 LMC-SAV-002/003/004's consequences in its report (Phase 7 slice 3). Revision 26 makes the rest of the post-reload save
@@ -1173,9 +1174,25 @@ adds the user-facing contract:
   activates; activation time is published with hardware and cache state
   ([SCALE-011](../engine/sandboxed-linked-mods.md#14-performance-and-scale)). Per-plugin
   parsing already runs in parallel (#3813).
+  Partly measured (#6670): the fold of 1,000 synthetic light plugins (121,000
+  records) takes 0.09 s on the owner's Ryzen 9 7950X with the plugin files
+  in the page cache (`load_order_scale_tests.rs`, below). Not measured: real
+  plugin sizes, paired archives, and the activation steps around the fold.
 - **LMC-PERF-002.** Cost of the merged index is linear in records. A cell
-  transition MUST NOT re-parse the load order on the main thread (#6591 is
-  open against this).
+  transition MUST NOT re-parse the load order on the main thread (#6591,
+  fixed: one parse serves interior and exterior sessions, and a door
+  transition reuses the resident index while the plugin set is unchanged).
+  Measured (#6670): `cell_loader/load_order_scale_tests.rs` folds up to 4,000
+  synthetic light plugins and fails if time per record triples. Per record
+  the fold costs 0.6 to 0.9 µs from 250 to 4,000 plugins (31,000 to 481,000
+  records), in a wide profile and in a chain where every plugin masters the
+  one before it, and the same from 16,000 to 961,000 records at 500 plugins.
+  The chain had a quadratic step, the transitive master closure built as a
+  hash set per plugin (0.63 s at 4,000 plugins, now 0.43 s); it is a bitset
+  row per plugin, and each plugin's masters are found through one name map
+  built per fold, not by scanning the load order. The rise that remains,
+  about 1.4 times over a 16-fold growth, appears with records as well as
+  plugins and is not profiled.
 - **LMC-PERF-003.** Asset lookup is an index hit, independent of archive
   count.
 - **LMC-PERF-004.** Preflight on a 1,000-plugin profile completes in a time
@@ -1569,3 +1586,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 27 | 2026-11-23 | Phase 7 slice 3: the pre-reload ledgers' FormIDs stable (v147); the live load reloads the session's plugins, drops a removed plugin's references and inventory stacks, and reports LMC-SAV-002/003/004's consequences | — |
 | 28 | 2026-11-23 | LMC-REC-010 built: the sub-records no parser decodes are kept as opaque bytes for every plugin after the first, with the carrying plugin as provenance, and named by `plugins.conflicts`; "decoded" is measured per game and record type by removing each sub-record from sampled real records and re-parsing (the table is checked in and re-derived by ignored real-data tests); the official/user boundary is approximated by the first plugin until LMC-REC-008 | — |
 | 29 | 2026-11-23 | Phase 7 measured on real data: the FNV profile-change save gate, and the Oblivion plugin-set gate updated to the session-profile load; the conformance runner measures §7.3 rule 4 (save, reload, the removal case) and LMC-DX-003's text says rule 2 is measured | — |
+| 30 | 2026-11-23 | LMC-PERF-001 and -002 measured: the fold costs 0.6 to 0.9 µs per record from 250 to 4,000 light plugins and from 16,000 to 961,000 records; the chain profile's quadratic master closure became bitsets and master lookups share one name map; #6591 recorded as fixed | — |
