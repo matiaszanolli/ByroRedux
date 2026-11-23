@@ -557,6 +557,21 @@ mod tests {
         assert!(params.portal_outdoor_sky.unwrap().is_exterior);
     }
 
+    /// #7391 — every interior that has an outdoor environment carries a portal sky, so the
+    /// renderer's interior sky mode reads 2 (bounded apertures, none marked in a sealed room) for
+    /// it and never 0; mode 0 means an exterior or no `SkyParamsRes` at all. The renderer-side
+    /// `interior_sky_mode` test builds its no-palette case by hand because production cannot.
+    #[test]
+    fn a_plain_interior_with_an_outdoor_environment_carries_a_portal_sky() {
+        let params = build_sky_params(&interior_boot_world(12.0));
+        assert!(!params.is_exterior);
+        assert!(!params.interior_show_sky, "a plain interior is not a Show Sky cell");
+        assert!(
+            params.portal_outdoor_sky.is_some(),
+            "the renderer's mode 2 premise: every loaded interior has an outdoor palette (#7391)"
+        );
+    }
+
     /// #4902 — with no outdoor environment resource there is no portal sky:
     /// the renderer no longer invents one. (The cell loader always installs
     /// it for an interior; only a non-cell harness can reach this.)

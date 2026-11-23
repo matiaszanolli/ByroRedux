@@ -20,7 +20,8 @@ pub(super) fn is_sky_aperture(volume: &super::super::volumetrics::GpuFogVolume) 
 /// (set 1 / binding 27, RLT-IBL-006): in a bounded-aperture interior, the
 /// openings nearest the camera, each its source plane relative to the render
 /// origin. Elsewhere none: a Show Sky interior's every escape sees the sky, and
-/// a sealed one's none does.
+/// a sealed room (an outdoor palette with no marked opening, which is mode 2 with
+/// an empty list) has no escape that does.
 pub(super) fn gi_sky_aperture_planes(
     sky_params: &super::types::SkyParams,
     volumes: &[super::super::volumetrics::GpuFogVolume],
@@ -56,9 +57,11 @@ pub(super) fn gi_sky_aperture_planes(
     planes.into_iter().map(|(_, plane)| plane).collect()
 }
 
-/// The interior sky mode: 0 none (an exterior, or a sealed interior), 1 Show
-/// Sky (the whole cell is open to the sky), 2 bounded apertures (an outdoor
-/// palette seen only through marked openings). The composite packs it into
+/// The interior sky mode: 0 none (an exterior, or an interior with no outdoor
+/// palette, which in production means no `SkyParamsRes`), 1 Show Sky (the whole
+/// cell is open to the sky), 2 an interior with an outdoor palette (every cell
+/// that has a `SkyParamsRes`, `build_sky_params`), whose sky shows only through
+/// marked openings; a sealed room is mode 2 with no openings. The composite packs it into
 /// `sky_lower.w`; the main pass reads it as `CameraUBO.interiorSky.x` so a GI
 /// path that leaves the cell reads the same sky the composite paints
 /// (M-LIGHT RLT-IBL-006). One function so the two cannot disagree.
@@ -268,8 +271,10 @@ mod gi_sky_aperture_tests {
     #[test]
     fn interior_sky_mode_matches_the_composite_lanes() {
         assert_eq!(interior_sky_mode(&outdoor()), 0.0);
-        let sealed = SkyParams { is_exterior: false, ..SkyParams::default() };
-        assert_eq!(interior_sky_mode(&sealed), 0.0);
+        // No outdoor palette at all: only a harness with no `SkyParamsRes` builds this
+        // (`build_sky_params` gives every loaded interior one, #7391).
+        let no_outdoor_palette = SkyParams { is_exterior: false, ..SkyParams::default() };
+        assert_eq!(interior_sky_mode(&no_outdoor_palette), 0.0);
         let show_sky = SkyParams { is_exterior: false, interior_show_sky: true, ..SkyParams::default() };
         assert_eq!(interior_sky_mode(&show_sky), 1.0);
         let bounded = SkyParams {
@@ -278,6 +283,9 @@ mod gi_sky_aperture_tests {
             ..SkyParams::default()
         };
         assert_eq!(interior_sky_mode(&bounded), 2.0);
+        // A sealed room is the same mode with no openings: it reads mode 2 and uploads no planes,
+        // so a GI escape falls through to the authored ambient exactly as mode 0 would (#7391).
+        assert!(gi_sky_aperture_planes(&bounded, &[], [0.0; 3], Vec3::ZERO).is_empty());
     }
 
     /// Only a bounded-aperture interior uploads planes, marked openings only,

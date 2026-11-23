@@ -692,7 +692,7 @@ pub struct GpuCamera {
     pub exterior_sky_tint: [f32; 4],
     /// M-LIGHT RLT-IBL-006: x = the interior's sky mode, the same value the
     /// composite packs into `sky_lower.w` (`interior_sky_mode`: 0 none,
-    /// 1 Show Sky, 2 bounded apertures); yzw = 0. A GI path that escapes the
+    /// 1 Show Sky, 2 an outdoor palette seen through marked apertures, none in a sealed room); yzw = 0. A GI path that escapes the
     /// TLAS in a Show Sky interior, or through one of the aperture planes at
     /// set 1 / binding 27 in a bounded one, reads the portal sky instead of
     /// the authored ambient (`pathEnvironmentRadiance`, `include/lighting.glsl`).
