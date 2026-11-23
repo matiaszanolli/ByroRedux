@@ -1107,18 +1107,52 @@ mod tests {
         assert!(dirty && !staged);
     }
 
-    /// #7361 — the settle hooks ride the skip-clear latch pair and the caller feeds the copy's outcome in.
+    /// #7361 / #7379 — the settle hooks ride the skip-clear latch pair, one in each body, and
+    /// the record side touches the staged flag only through `note_terrain_tile_upload`. Scoped
+    /// to the hook bodies like the linear-capture guard: a whole-file `contains` stays green
+    /// when a second record-time `commit_terrain_tile_upload` call is added (which would stop
+    /// `discard` from ever re-arming the flag), as long as the two hook calls remain.
     #[test]
     fn the_tile_upload_is_settled_by_the_skip_clear_latch_hooks() {
         let post = crate::source_scan::production_text(include_str!("post_passes.rs"));
+        let body_of = |name: &str| -> String {
+            let (_, rest) = post.split_once(name).unwrap_or_else(|| panic!("{name} must exist"));
+            rest.split_once("\n    }\n").expect("fn body").0.to_string()
+        };
+        let discard = body_of("fn discard_pending_skip_clear_latches(");
+        let promote = body_of("fn promote_skip_clear_latches(");
         assert!(
-            post.contains("discard_terrain_tile_upload(") && post.contains("commit_terrain_tile_upload("),
-            "discard_/promote_skip_clear_latches settle the staged tile copy (#7361)"
+            discard.contains("discard_terrain_tile_upload(") && !discard.contains("commit_terrain_tile_upload("),
+            "the discard hook re-arms an unsettled tile copy and never commits one (#7361)"
         );
-        let upload = crate::source_scan::production_text(include_str!("build_and_upload_instances.rs"));
         assert!(
-            upload.contains("note_terrain_tile_upload("),
-            "upload_terrain_tiles_if_dirty reports the copy's outcome (#7361)"
+            promote.contains("commit_terrain_tile_upload(") && !promote.contains("discard_terrain_tile_upload("),
+            "the promote hook settles the staged tile copy after queue_submit (#7361)"
+        );
+        // No other production site in the context commits or discards the staged copy.
+        for (file, text) in [
+            ("post_passes.rs", post.as_ref()),
+            ("build_and_upload_instances.rs", crate::source_scan::production_text(include_str!("build_and_upload_instances.rs"))),
+            ("draw.rs", crate::source_scan::production_text(include_str!("draw.rs"))),
+            ("dispatch_skin_and_cluster.rs", crate::source_scan::production_text(include_str!("dispatch_skin_and_cluster.rs"))),
+            ("skinned_blas_refit.rs", crate::source_scan::production_text(include_str!("skinned_blas_refit.rs"))),
+        ] {
+            let commits = text.matches("commit_terrain_tile_upload(").count();
+            let discards = text.matches("discard_terrain_tile_upload(").count();
+            let expected = if file == "post_passes.rs" { (1, 1) } else { (0, 0) };
+            assert_eq!(
+                (commits, discards),
+                expected,
+                "{file}: the staged tile copy is committed / discarded only by the two latch hooks (#7379)"
+            );
+        }
+        // The record side reports the copy's outcome and touches the flag no other way.
+        let upload = crate::source_scan::production_text(include_str!("build_and_upload_instances.rs"));
+        assert!(upload.contains("note_terrain_tile_upload("), "upload_terrain_tiles_if_dirty reports the copy's outcome (#7361)");
+        assert_eq!(
+            upload.matches("terrain_tiles_upload_staged").count(),
+            1,
+            "the record side reaches the staged flag only as the argument of note_terrain_tile_upload (#7379)"
         );
     }
 
