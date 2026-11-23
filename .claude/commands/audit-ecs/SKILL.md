@@ -197,7 +197,7 @@ First step: `git log --since=<last-report-date> --format='%h %s' -- crates/core/
   site inserting a *configured* value, such as `TerrainHeightService`, is legitimately different).
   `World::resource_count()` (#6706 `70e58334f`) exists so `register_installs_the_same_resource_set` can pin the
   scripting crate's `register` to the exact resource count it produced before it became a flat list of per-subsystem `install`
-  calls (138 then, 150 at 2026-11-20 — the assert moves with every subsystem that adds a resource; read the live value); a resource dropped from an `install` shows up there, not as a missing-resource panic at first use.
+  calls (138 then, 151 at 2026-11-23, after #7291's `AmbientPackageRequestsSeen` — the assert moves with every subsystem that adds a resource; read the live value); a resource dropped from an `install` shows up there, not as a missing-resource panic at first use.
 - **Read accessors, one spelling each**: the bin reads the player entity only through `PlayerEntity::get(world)`
   (`byroredux/src/systems/character.rs`, #6362 `67722b6e4` — it replaced 66 hand-spelled reads, and
   `no_source_hand_spells_the_player_entity_read` keeps it so). It is deliberately NOT synchronised with the scripting
@@ -249,7 +249,7 @@ subsystem file missing from `SOURCES` is invisible to those guards**, so confirm
 Orders that used to be file position are named constraints: `Scheduler::run_before` / `run_after` + `resolve_order`
 (`crates/core/src/ecs/scheduler.rs`, #6702 `065aac9c4`; applied per stage phase, stable, so a constraint-free schedule is
 unchanged; an unknown name, a stage-forbidden constraint or a cycle is an error that leaves the schedule untouched, and
-`run` fails fast on one). Audit a new constraint for the by-name coupling it adds (a renamed system now errors in `resolve_order`, not silently). `Access::with(fn(Access) -> Access)` (#6701 `c22a9d410`) lets a subsystem export its own declaration
+`run` fails fast on one). Audit a new constraint for the by-name coupling it adds (a renamed system now errors in `resolve_order`, not silently). Latest: #7280 `e2a4c54cc` orders `water_audio_system` after the water-interaction system (a throwaway `make_water_interaction_system()` instance names the factory's closure type), and #7321 `af9c6f55d` pins `door_motion_system` before `two_state_activator_system` plus the four new `ActivateEvent` consumers (`door_motion_system`, `player_seat_system`, `bed_use_system`, `jail_bed_system`) after the activation flush. `Access::with(fn(Access) -> Access)` (#6701 `c22a9d410`) lets a subsystem export its own declaration
 (`crime_faction_access`, `crime_gold_access`, `ownership_access` on the dialogue row); the acquisition scan follows a
 function passed to `.with` into the delegate files (`declaration_with_delegates`, `byroredux/src/acquisition_scan.rs`), so
 moving a claim into a delegate must not drop it from the scan's reach. The perk entry-point composition and the fragment report are the shared
@@ -268,8 +268,13 @@ examples (#6962 `365f6fa3e`: `perk_entry_composition_access` / `perk_fragment_re
   `every_parallel_system_declares_everything_it_acquires` scans each parallel system's body (same-file
   callees to depth 3, plus the explicit cross-file hops in `PARALLEL_SYSTEMS`) and fails if an acquired
   type is missing from its `Access`; `the_parallel_system_table_covers_every_parallel_registration`
-  fails when an `add_to_with_access` lands outside the table; five exclusive fns are covered too
-  (`npc_combat_ai_system`, `papyrus_provider_system`, `legacy_obscript_load_order_system`,
+  fails when an `add_to_with_access` lands outside the table; the declared exclusives each have a
+  `<system>_declares_everything_it_acquires` test (`rg -c 'fn \w+_declares_everything_it_acquires' byroredux/src/boot/schedule/mod.rs`; #7318 `40b2cda36` added the
+  cross-file hops of `interaction_system` (`supports_rest` / `player_in_jail`) and `combat_damage_system` (the kill branch: `raise_kill_story_event`, `note_death`,
+  `mod_misc_stat`, challenges), and #7319 `623fccb8c` added six exclusives — `detection_tick_system`, `sneak_stance_system`, `player_cast_system`,
+  `player_bow_system`, `player_seat_system`, `combat_input_system` — whose rows had under-declared what their cross-file callees take, so the
+  `sys.accesses` report read safer than the bodies; #7311 `2d62dccad` listed `papyrus_activations` (`events.rs`) as a `papyrus_provider_system` hop for its `NativeActivation` read); the
+  older ones are (`npc_combat_ai_system`, `papyrus_provider_system`, `legacy_obscript_load_order_system`,
   `equipment_appearance_system` — its mid-life gear-import hop into `npc_spawn/loot_appearance.rs`, #5069
   `9355fcb5c` — and `npc_dialogue_selection_system` — #5307, plus its `play_line_voice` / `raise_hello_story_event`
   cross-file hops since #5414 `9d8fd4cc9` and the cross-crate `evaluate_function` condition-evaluator hop since
@@ -327,7 +332,7 @@ examples (#6962 `365f6fa3e`: `perk_entry_composition_access` / `perk_fragment_re
   `hit_event_consumers_run_after_every_producer` (`mine_system`, #6580/#6540, is a producer). VATS hits are not scheduled-system producers: `vats_confirm` runs only from the `vats.confirm` console command in the debug server's Late drain, after `event_cleanup_system`, so they reach the next frame's consumers — pinned by `console_raised_hits_are_queued_after_the_frame_cleanup` (#7320; #6813 had named `vats_mode_system`, which raises no hit). `vats_mode_system` is the single `VatsState` writer and runs in the Early exclusive phase, so
   `player_controller_system`'s VATS movement gate reads the previous frame's mode — an intended one-frame lag, pinned by
   `vats_mode_is_written_after_the_early_movement_gate_and_before_its_action_consumers` (#6812 `f6a991435`). Since #6684 `2a02c5446` the
-  eight schedule-order guards read the **built** schedule (`build_scheduler()` + `access_report()` through the
+  ten schedule-order guards (the eight plus `door_motion_runs_before_the_activator_that_drains_its_batch`, #7321, and `console_raised_hits_are_queued_after_the_frame_cleanup`, #7320, which is `debug-server`-gated and extends the built schedule with the debug drain through `BuiltSchedule::of`) read the **built** schedule (`build_scheduler()` + `access_report()` through the
   `schedule_order` helper, exact system names, panic on a missing name; two parallel systems in one stage count as
   unordered) rather than where registration text sits in `SOURCES`; the kill-switch and timing pins stay text scans because
   they cover environment-gated branches, and the movers need `BYRO_NO_AI_LOCOMOTION` unset. A new producer outside that
@@ -406,7 +411,9 @@ First step: `cargo test -p byroredux --bin byroredux -- rapier_release persisten
   `transient_cleanup_is_the_last_late_exclusive`; a second cleanup site would double-free); Pattern B markers
   (`StoryEvent`, the scene-package batches, `ReleasePackageHold` — #7243 `aa15ee950`, the one-shot
   `EvaluatePackage` raises beside `EvaluatePackageRequest`; `ambient_ai_package_system` takes it before any early
-  return, so no pass strands it, …) drain in their one consumer and must not also be listed in
+  return, so no pass strands it; `EvaluatePackageRequest` itself has two consumers since #7291 `6fc191177`: the ambient pass reads it
+  and records the actors in the unsaved `AmbientPackageRequestsSeen`, and `scene_package_system` drains only those, so a request raised
+  between the two waits one frame instead of being drained unseen — pinned by `an_evaluate_package_raised_after_the_ambient_pass_reaches_the_next_one`, …) drain in their one consumer and must not also be listed in
   the cleanup (the table in `cleanup.rs` names each owner). The cleanup system also resets the Papyrus `VmFrameBudget` (#5763). Late readers
   now include `equipment_appearance_system` and `npc_dialogue_selection_system`. `timer_tick_system` never accumulates negative time.
   `StoryEvent` is one slot per entity; since #5647 `eca0c4709` every engine producer (CLOC, AHEL, KILL) raises it

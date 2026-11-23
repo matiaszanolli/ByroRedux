@@ -5,7 +5,7 @@ argument-hint: "--focus <dimensions> --game <name> --depth shallow|deep"
 
 # ESM / Plugin Parser Audit
 
-Audit `crates/plugin/` (~89k LOC in `src/`) as a parser: GRUP walker, sub-record byte
+Audit `crates/plugin/` (~91k LOC in `src/`) as a parser: GRUP walker, sub-record byte
 accounting, per-record schema dispatch, FormID load-order remap, CELL/WRLD walkers, and
 the `EsmIndex` → ECS handoff. Per-game audits (`/audit-fnv`, `/audit-skyrim`, …) each
 sample one game's slice; this skill owns the parser itself.
@@ -28,7 +28,7 @@ shared protocol (dedup, methodology, finding format). Do not duplicate them here
 `lmsw.rs` (Starfield `LMSW`/`MTPT` reflection blobs), `reflection.rs` (the BGS reflection container decoder shared by `WTHS`/`LMSW`/`MTPT`, moved out of `weather_settings.rs` by `ce5796431`, #6272; public paths unchanged via re-exports)),
 `esm/cell/` (walkers `walkers.rs`, `support.rs`, `wrld.rs`, `helpers.rs`; `spaces.rs` = the load-door `SpaceGraph` cross-cell travel routes over, `7af55a0df`; `mod.rs` is a re-export hub over the
 data tier `base_objects`/`cell_data`/`index`/`landscape`/`lighting`/`placed_ref`/`worldspace.rs`, `d7c47d741`),
-`esm/strings_table.rs`, `equip.rs`, the Legacy Mod Compat load-order tier (#6670 Phase 1: `activation.rs` profile activation, `archive_pairing.rs`, `esm/raw_record.rs` single-record reader + field diff, `esm/records/provenance.rs` fold provenance, `esm/records/list_merge.rs` levelled-list merge; the identity key `plugin_key` lives in `crates/core/src/form_id.rs`), `esm/records/oblivion_actor_values.rs` + `oblivion_population.rs` (Oblivion's executable-defined actor-value roster and record→canonical values; the CHARAL feed), and the Redux-native tier
+`esm/strings_table.rs`, `equip.rs`, the Legacy Mod Compat load-order tier (#6670 Phase 1: `activation.rs` profile activation, `archive_pairing.rs`, `esm/raw_record.rs` single-record reader + field diff, `esm/records/provenance.rs` fold provenance, `esm/records/list_merge.rs` list-record merge; `load_order_import.rs` imports a `plugins.txt` / MO2 profile / Vortex deployment into a profile, LMC-ID-006; the identity key `plugin_key` lives in `crates/core/src/form_id.rs`), `esm/records/oblivion_actor_values.rs` + `oblivion_population.rs` (Oblivion's executable-defined actor-value roster and record→canonical values; the CHARAL feed), and the Redux-native tier
 (`datastore`/`manifest`/`record`/`resolver`).
 
 **Not in scope**: cell-loader consumption of `CellData` (`/audit-<game>` Dim 1); VMAD
@@ -279,6 +279,12 @@ FormID-param function needs its row.
   first-wins script provider gets them ahead, **reversed**, so one archive wins everywhere; an archive the args already
   name keeps its place and flags. Guards `each_game_pairs_its_documented_names`,
   `paired_archives_feed_every_provider_with_the_later_plugin_winning`.
+- **Legacy load-order import** (LMC-ID-006, `load_order_import.rs`, `7a1eb8c64`; reached by `--import-load-order <source>` and `--write <boot.toml>`):
+  `plugins.txt` / `loadorder.txt`, an MO2 profile or a Vortex deployment becomes the active plugins in load order plus the mod roots (lowest
+  priority first), one diagnostic per unresolved entry. Rules cite libloadorder / MO2 revisions per `GameKind` (`rules_for`: timestamp order for
+  Oblivion/FO3/FNV, `loadorder.txt` for Skyrim LE, asterisk `plugins.txt` for SSE/FO4/Starfield; early-loading plugins and the `.ccc` list first);
+  a rule with no citation is a guess. Nothing loads a plugin there — activation runs on the result as on any profile; the unmodelled list at the top of
+  the module (`sTestFile`, ghosted plugins, MO2 `archives.txt`) is documented, not a finding. Guards `load_order_import_tests.rs`, smoke leg 8.
 - Multi-plugin is live (`--master` repeatable → `parse_esm_with_load_order`); `parse_esm`
   passes `None`. Verify every embedded FormID in a newly-touched parser goes through
   `remap_fid`. The guard walk sees only `pub`/`pub(crate)`/`pub(super) fn parse_*` in
@@ -354,13 +360,25 @@ closure, like `dialogues` and `game_settings` — or a reasoned exclusion: `reco
   something (`459e07b16`, #7250, pinned by `the_slot_owner_is_asked_only_when_it_decides_something` — a per-record
   `slots.iter().position` scan is the regression, the fold has no plugin ceiling); an injected form a later plugin
   overrides leaves the injected list, as `note_writer` already did (`944c0005a`, #7247, `an_injected_form_names_its_injector_and_a_later_override_follows_it`).
-  **Under the default `--merge-policy merge`, `LVLI`/`LVLN`/`LVLC`/`LVSP` are no longer last-write-wins** (`list_merge.rs`):
-  independent overrides (neither declares the other as a master, directly or transitively) are diffed against their
-  base — the latest earlier carrier among the plugin's own masters — per entry form as a `(level, count)` multiset, an
-  add/remove/change applied to the merged list, the later plugin winning a form or field (editor ID, chance none,
-  flags) and the earlier operation kept as overruled; a plugin that masters every contributor wins whole; `legacy`
-  keeps last-wins for everything. A re-level must be one change (a form left twice in the list is the regression);
-  form lists, keywords, inventories, factions, outfits and spell lists are still last-wins. Guards `list_merge_tests.rs`
+  **Under the default `--merge-policy merge`, list-carrying records are no longer last-write-wins** (`list_merge.rs`, generic over
+  the record type: a `ListRecord` names its lists, scalar fields and `EsmIndex` map, implemented by the `list_record!` macro, which
+  destructures the record whole so a new field does not compile until it is named): `LVLI`/`LVLN`/`LVLC`/`LVSP`, `FLST`, `OTFT`,
+  `CONT`, `NPC_`/`CREA` (inventory, factions, spells, perks, keywords, actor values), `RACE` (spells, keywords, race relations),
+  every carried item type (keywords) and the activator/flora/furniture/container keyword lists in `placed_object_keywords`
+  (`ListKind`; `4870178b3`, `547668280`, `40089b42e`). Independent overrides (neither declares the other as a master, directly or
+  transitively) are diffed against their base — the latest earlier carrier among the plugin's own masters — per entry form as a
+  multiset of the rest of the entry, an add/remove/change applied to the merged list, the later plugin winning a form or field
+  (editor ID, chance none, flags, name, level) and the earlier operation kept as overruled; a plugin that masters every contributor
+  wins whole; `legacy` keeps last-wins for everything. LMC-REC-006 ownership (`84e0cc3a7`): an override equal to the record it
+  would replace is a no-op (no wholesale win, no contributor), an independent override equal to its own base changes nothing, and a
+  record counts as merged only when more than one plugin's changes are in it or it differs from what `legacy` keeps. A re-level must
+  be one change (a form left twice in the list is the regression); a form list's `0xFFFFFFFF` slots hold their place and are never an
+  operation, and additions append so index-keyed consumers keep their indices; AI packages and a consumable's effects are one field
+  (order is meaning); an item's kind compares as authored (`ItemKind::authored`, so the fold's `OMOD` loose-mod promotion is not a
+  change). `LCTN` and `QUST` stay last-wins on purpose: FO4/Starfield write their overrides as partial forms (record flag `0x4000`),
+  the fold does not overlay them yet and an absent sub-record would read as a removal (#7275, open — the same gap makes a partial
+  CELL override replace the CELL-record fields whole). Every list-less record follows `legacy`.
+  Guards `list_merge_tests.rs` (per-kind cases, the no-op/unchanged ownership pair)
   and `independent_mods_merge_a_levelled_list_that_legacy_overwrites` (`commands/plugins.rs`). The conflict report
   (`plugins.conflicts [formid [fields]]`, `--plugin-report`, `byroredux/src/commands/plugins.rs`) reads each carrier's
   record back through `raw_record.rs` (`find_raw_record`, loading only the top-level groups the type can sit in) and
@@ -403,11 +421,12 @@ closure, like `dialogues` and `game_settings` — or a reasoned exclusion: `reco
   RACE FO4/FO76/Starfield `SRAC`/`SADD`/`SAKD`/`SGNM`/`SAPT`/`STKD`/`SRAF` subgraph data (`SubgraphRole::from_raw(raw, game)`: value 3 is *Linking Only* on FO76/Starfield and *Idle* on FO4, Starfield 5–7 are Mt/Weapon/FurnitureGeneration; `SADD` stays one-per-race, not per entry — a raw scan of all 55 Starfield masters finds 17 races authoring it once, ahead of the first entry; `40cebd21d`, #6621), `KWDA` on
   `CommonNamedFields`, PERK entry bodies (`PerkEntry`/`PerkEntryBody`, EPFT/EPFD per the
   xEdit layout), and a "Use Base Data" template chain terminal (`ResolvedNpc::base_data`). The
-  `EsmIndex::categories()` count is pinned in `records::tests` (118 on 2026-11-19; `MOVT` `movement_types` is the newest row) — read the live
+  `EsmIndex::categories()` count is pinned in `records::tests` (117 at HEAD: `MOVT` `movement_types` made it 118, then #6670 dropped `furniture_keywords` as a duplicate of `placed_object_keywords`) — read the live
   number there; each new map must be a category row or a recorded exclusion. M43 added FO4 `AORU`
-  attraction rules (`attraction_rules`, `parse_aoru` in `misc/world/keyword.rs`) and the `KWDA` side tables
-  `furniture_keywords` (FURN) / `placed_object_keywords` (FURN, FLOR, ACTI, CONT; `kwda_keywords` in
-  `common.rs`) — all three are category rows; `complex_scene_object` (the `DOBJ` `CMPX` pair, read
+  attraction rules (`attraction_rules`, `parse_aoru` in `misc/world/keyword.rs`) and the `KWDA` side table
+  `placed_object_keywords` (FURN, FLOR, ACTI, CONT; `kwda_keywords` in `common.rs`) — a category row; every such base has an entry, empty when it
+  authors none, so an override that drops its keywords replaces them in the fold (`547668280`), and `EsmIndex::furniture_keywords()` is now a method
+  deriving the FURN entries by record type, never a second map (read by `byroredux/src/crafting.rs`); `complex_scene_object` (the `DOBJ` `CMPX` pair, read
   by `complex_scene_object` in `dispatch_misc_stub.rs`; later plugin wins in `merge_from`) is a scalar
   and a recorded exclusion. FNV music sources (#6870/#6882, `782e23d0a`): DOBJ's five FO3/FNV default music slots (`EsmIndex::default_music`, last plugin wins in `merge_from`), Oblivion `WRLD` `SNAM` raw on `WorldspaceRecord::music_category`, `ALOC` → `MediaLocationRecord` on `media_locations` (a category row; `NAM1` flags byte = Faction Not Found / Looping / Use Defaults, `18d7dd331`, #6906), and the REFR audio-marker block `MMRK`/`CNAM`/`BNAM`/`MNAM`/`NNAM` on `PlacedRef::audio_marker`. FO3/FNV `NAVI` `NVCI` door links (`NaviRecord::door_links`, remapped, rows that do not reconcile skipped) plus `NAVM` door triangles feed `EsmIndex::navmesh_door_links` (cross-cell travel router, `7af55a0df`); FO3/FNV `INFO` `TCFU` follow-ups are `InfoRecord::follow_ups` (INFO FormIDs, not topics); a `CTDA`/`CIS1`/`CIS2` after a `SPEL`/`ENCH` effect's `EFIT` is that effect's `MagicEffectItem::conditions`; FO3/FNV `WEAP` `DNAM` offset 36 is `projectile_form`. FNV `MSET` is typed (`parse_mset` → `MediaSetRecord`, `misc/media_set.rs`;
   `media_sets` was a `MinimalEsmRecord` stub, `9ee802d57`). Skyrim `MUSC` (remapped `TNAM`, `parse_musc`, which takes the remap — no remap-free entry point, #6788) and `MUST` (`parse_must` → `music_tracks`, a category row; `MUST` decodes for Skyrim, FO4 and FO76 (one shared layout, #6790); only Starfield lays it out differently) decode in `misc/music.rs`, and `first_playable_track` resolves REGN `RDMO` → `MUSC` → first playable `MUST` (palettes descend, depth-capped; `03f9d2158`). #3816 is narrowed to Skyrim (the FNV `MSET` and Oblivion `RDMD` halves play through the Game Music controller, `byroredux/src/music/translate.rs`); what stays OPEN is the tracks shipping as xWMA, which the streaming path cannot decode — a typed `music_tracks` map with no player is not a finding.
@@ -425,6 +444,14 @@ closure, like `dialogues` and `game_settings` — or a reasoned exclusion: `reco
 Paths: `crates/plugin/src/esm/cell/**/*.rs`, `esm/records/misc/world/`, `esm/records/spatial_units.rs`
 First step: `git log --since=<last report> --format='%h %cs %s' -- crates/plugin/src/esm/cell crates/plugin/src/esm/records/misc/world`
 **Checklist**:
+- **Interior identity** (LMC-REC-011, `d3b8acb4a`, `ea92b885d`): a CELL in the top-level CELL group (group types 2/3) *is* an interior by where
+  it sits — the `DATA` interior bit is not read, because a partial override (flag `0x4000`, #7275) can carry a zeroed `DATA` and gating on it dropped the
+  cell and every reference it adds (`a_partial_override_with_a_zeroed_data_is_still_an_interior`). A CELL's identity is its FormID, not its editor ID:
+  `interior_cell_key` (`cell/index.rs`, used by both the walker and `EsmCellIndex::merge_from`) keeps the case-folded editor ID for the first holder and
+  gives a later, different CELL sharing it its form-ID key, so both stay loaded (`cells_sharing_an_editor_id_in_one_plugin_both_survive_the_walk`,
+  `a_later_cell_sharing_an_editor_id_does_not_replace_the_earlier_cell`); keying by name alone erased Automatron's cells under Far Harbor/Nuka-World's
+  (619 placements). The #1272 navmesh drain runs *before* the #3543 deleted-record prune in `parse_esm_with_load_order`, so a NAVM a plugin deletes does
+  not re-enter the index and get folded back over the master's pruned copy (`a_navmesh_a_later_plugin_deletes_leaves_the_merged_index`).
 - Cell child groups: type 6 is the `Cell Children` *container*; 8 = Persistent, 9 =
   Temporary, 10 = Visible Distant nest inside it (#4169 — earlier legends said 6/8/9).
   `PlacedRef.group_type` is re-derived at each nested GRUP in `parse_refr_group_inner`
@@ -623,7 +650,8 @@ First step: `cargo run --release -p byroredux-plugin --example esm_dim8_coverage
 - Real-data tests resolve installs through `esm/test_paths.rs` (`*_data_dir()` + `require_or_skip`; the ignored lane too, `2a311b378`, #7122);
   `BYROREDUX_REQUIRE_GAME_DATA` turns an absent install into a failure on the strict lane (`3e4bfab51`, #6184) — a
   test that re-inlines a Steam root or returns `ok` on a missing master is the regression.
-- Profile activation, paired archives, the fold's conflict report and the levelled-list merge have a headless live
+- Profile activation, paired archives, mod roots, the fold's conflict report, the list merge (levelled lists, form lists, actors, keywords), the profile
+  fingerprint and the load-order import have a headless live
   gate, `docs/smoke-tests/lmc-activation.sh` (FNV, `--list-cells` / `--plugin-report`, no Vulkan; Dead Money plus
   generated plugins) — real-data evidence for Dims 3-4's LMC bullets (`docs/smoke-tests/README.md` indexes it).
 - No windowed engine launch (*feedback_no_parallel_engine_launch*); example binaries and

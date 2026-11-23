@@ -172,6 +172,9 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/cell_loader/interior_spawn.rs` | gameplay; per-game | MEDIUM |
 | `byroredux/src/cell_loader/load_order.rs` | esm, save Dim 1-2, concurrency Dim 7, performance Dim 7; per-game | HIGH |
 | `byroredux/src/plugin_activation` | esm, tooling Dim 4, ecs; per-game | MEDIUM |
+| `byroredux/src/load_order_import.rs` | esm, tooling Dim 4 | MEDIUM |
+| `byroredux/src/mod_roots.rs` | esm, tooling Dim 4, parsers (loose-tier layering); per-game | MEDIUM |
+| `byroredux/src/profile_fingerprint.rs` | save, esm | MEDIUM |
 | `byroredux/src/cell_loader/precombined` | fo4; performance | HIGH |
 | `byroredux/src/cell_loader/spawn.rs` | physics, per-game, performance | MEDIUM |
 | `byroredux/src/cell_loader/spawn/precombined.rs` | fo4, performance | MEDIUM |
@@ -197,13 +200,13 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/systems/request_drain_tests.rs` | scripting, gameplay, ecs, performance | MEDIUM |
 | `byroredux/src/systems/water.rs` | exterior, physics | MEDIUM |
 | `byroredux/src/systems/weather.rs` | exterior | MEDIUM |
-| `byroredux/src/systems/character.rs` | physics Dim 4+5; gameplay, character | MEDIUM |
+| `byroredux/src/systems/character.rs` | physics Dim 4+5; gameplay, character; oblivion | MEDIUM |
 | `byroredux/src/systems/audio.rs` | audio, physics Dim 2+6 | MEDIUM |
 | `byroredux/src/systems/eat_sleep.rs` | gameplay Dim 5, physics Dim 4, ecs Dim 6, concurrency Dim 5; fnv, fo3 | MEDIUM |
 | `byroredux/src/systems/pathgrid_path.rs` | gameplay, physics Dim 4, ecs, performance; oblivion | MEDIUM |
 | `byroredux/src/systems/door.rs` | gameplay Dim 2, physics Dim 2, scripting, ecs, performance | MEDIUM |
 | `byroredux/src/systems/navmesh_path.rs` | gameplay, physics Dim 4 | MEDIUM |
-| `byroredux/src/systems/{sandbox,wander,travel,follow,escort,guard,patrol,walk_anim,combat_ai,faction_hostility,locomotion,restoration,find_package,flee_package,use_weapon_package}.rs` | gameplay; oblivion | MEDIUM |
+| `byroredux/src/systems/{sandbox,wander,travel,follow,escort,guard,patrol,walk_anim,combat_ai,faction_hostility,locomotion,restoration,find_package,flee_package,use_weapon_package}.rs` | gameplay; oblivion, fnv, fo3 | MEDIUM |
 | `byroredux/src/systems/combat_anim.rs` | gameplay, ecs Dim 9, audio | MEDIUM |
 | `byroredux/src/systems/npc_dialogue.rs` | scripting Dim 5, gameplay Dim 2, concurrency Dim 3 | MEDIUM |
 | `byroredux/src/systems/cinematic.rs` | scripting, ecs Dim 7, save Dim 5 | MEDIUM |
@@ -337,11 +340,14 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `scripts/{prune-target-cache,target-size-guard}.sh` | tech-debt (dev tooling), tooling | LOW |
 | `scripts/game-ui-data/` | ui, runtime | LOW |
 | `scripts/sdp-fog-term.py` | renderer Dim 12, exterior, runtime | LOW |
+| `scripts/{lmc-conformance,check-lmc-catalog}.py` | esm, tooling Dim 4 (legacy-mod-compat conformance + catalog) | LOW |
+| `scripts/gen_env_brdf_lut.py` | renderer Dim 10 (env BRDF LUT generator for binding 26), performance | LOW |
 | `scripts/` | runtime, performance | LOW |
 | `screenshots/` | runtime, tooling | LOW |
 | `assets/debug_profiles.toml` | tooling; per-game | MEDIUM |
 | `packaging/` | tooling, tech-debt (release packaging) | LOW |
 | `assets/fonts/` | ui, tech-debt (bundled Noto Sans OFL fonts) | LOW |
+| `assets/legacy_mod_compat/` | esm, tooling Dim 4 (LMC corpus + mechanisms catalog); fnv, skyrim | LOW |
 | `assets/` | tooling | LOW |
 | `docs/smoke-tests/sm1-story-manager.sh` | runtime, scripting | LOW |
 | `docs/smoke-tests/dt1-dialogue-layers.sh` | runtime, gameplay, scripting; fnv, fo3 | LOW |
