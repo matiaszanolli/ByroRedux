@@ -52,6 +52,8 @@ pub(super) fn register_script_host_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_scripting::PapyrusProviderProgram>()
             .reads::<byroredux_scripting::OnCellLoadEvent>()
             .reads::<byroredux_scripting::ActivateEvent>()
+            // #7311 — through `papyrus_activations`: a native-only activation is no OnActivate.
+            .reads::<byroredux_scripting::NativeActivation>()
             .reads::<byroredux_scripting::OnInitEvent>()
             .reads::<byroredux_scripting::HitEvent>()
             .reads::<byroredux_scripting::EquipmentEventBatch>()

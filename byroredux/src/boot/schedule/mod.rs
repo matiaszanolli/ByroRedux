@@ -769,6 +769,7 @@ mod system_access_declaration_tests {
     const EXECUTE_SRC: &str =
         include_str!("../../../../crates/scripting/src/papyrus_provider/execute.rs");
     const OBSCRIPT_SRC: &str = include_str!("../../../../crates/scripting/src/obscript_runtime.rs");
+    const EVENTS_SRC: &str = include_str!("../../../../crates/scripting/src/events.rs");
 
     const CHARACTER_SRC: &str = include_str!("../../systems/character.rs");
     const CAMERA_SRC: &str = include_str!("../../systems/camera.rs");
@@ -1265,8 +1266,10 @@ mod system_access_declaration_tests {
 
     #[test]
     fn papyrus_provider_system_declares_everything_it_acquires() {
+        // #7311 — `papyrus_activations` (events.rs) is a hop of its own: the scan follows same-file
+        // callees only, so it is listed, or its `NativeActivation` read goes unseen.
         assert_declares_everything_it_acquires(
-            &[(EXECUTE_SRC, "papyrus_provider_system")],
+            &[(EXECUTE_SRC, "papyrus_provider_system"), (EVENTS_SRC, "papyrus_activations")],
             "papyrus_provider_system",
         );
     }
