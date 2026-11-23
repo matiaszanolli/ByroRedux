@@ -908,7 +908,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `MenuEventRegistrations` resource column.
     // #7044 — refreshed WITH a major bump (v135 -> v136): `ActorValue` gained the required `stored` layer.
     // #7309 — refreshed WITH a major bump (v142 -> v143): `ObScriptLedger` lost its unread `forms` column.
-    const BASELINE_MAJOR: u16 = 143;
+    const BASELINE_MAJOR: u16 = 144;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1379,7 +1379,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // LMC-ID-007 / LMC-SAV-001 (#6670) — v142: `SessionProfile` (the profile the save was made with, wire type
     // `ProfileRecord`) joined the saved registry as a NEW resource codec column, refreshed WITH the major bump above.
     // #7309 — v143: `ObScriptLedger` lost its unread `forms` column, refreshed WITH the major bump above.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xcb2a_6c5b_b7e9_ea9a;
+    // #7348 — v144: `CharacterIdentity` gained the required `class_form_id` (a script-set player class, which the
+    // unsaved `Background` cannot keep), refreshed WITH the major bump above.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x8a58_9c7e_6307_240a;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.

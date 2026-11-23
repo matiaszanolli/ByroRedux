@@ -226,6 +226,8 @@ fn current_identity(world: &World, index: &EsmIndex, player: byroredux_core::ecs
             .map(|background| background.race_form_id)
             .or_else(|| npc.map(|npc| byroredux_plugin::equip::traits_terminal(npc, index).race_form_id))
             .unwrap_or(0),
+        // No script has given the player a class yet: the record's stands (#7348).
+        class_form_id: 0,
     }
 }
 

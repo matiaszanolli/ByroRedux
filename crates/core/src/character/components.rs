@@ -346,6 +346,10 @@ pub struct CharacterIdentity {
     pub female: bool,
     /// The race's FormID.
     pub race_form_id: u32,
+    /// The class a script gave the player (`SetClass`); 0 until one did, meaning the player record's own. Saved here
+    /// because `Background`, where every class reader looks, is re-created with the actor and is not (#7348): the
+    /// identity sync writes it back, and a load that carries none puts the record's class back.
+    pub class_form_id: u32,
 }
 
 impl Component for CharacterIdentity {

@@ -684,7 +684,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v142 -> v143 (#7309): `ObScriptLedger` lost its `forms` column (the form a `Set...` command was given, which
 /// nothing read back; those commands now decline), so a v142 ledger carries a field this one does not have.
-pub const FORMAT_MAJOR: u16 = 143;
+///
+/// v143 -> v144 (#7348): `CharacterIdentity` gained the required `class_form_id` (the class a script's `SetClass`
+/// gave the player, which `Background` does not save), so a v143 identity row lacks a field this one requires.
+pub const FORMAT_MAJOR: u16 = 144;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

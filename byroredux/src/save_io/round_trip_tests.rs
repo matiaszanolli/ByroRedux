@@ -81,7 +81,7 @@ fn delta_columns_carry_only_session_stable_fields() {
         "Sneaking",
         // VATS-LIMB-009 - DismemberRecord: u16 body-location bitset + Option<u8> killing-blow location.
         "DismemberRecord",
-        // CharacterIdentity: an owned String name, a bool and a u32 race FormID.
+        // CharacterIdentity: an owned String name, a bool and two u32 FormIDs (race, class).
         "CharacterIdentity",
         // #2014 — WanderState/PatrolState: home/target Vec3 + WanderPhase
         // enum (Walking, or Paused{remaining: f32}) + pick_count u32.
@@ -2603,6 +2603,54 @@ fn equipped_ammo_round_trips() {
     assert_eq!(crate::bow::equipped_ammo(&dst, player), None);
     crate::bow::reconcile_equipped_ammo(&dst, player);
     assert_eq!(dst.get::<EquippedAmmo>(player).map(|slot| *slot), Some(EquippedAmmo(None)));
+}
+
+/// #7348 — the class a script's `SetClass` gave the player survives a save and a load: it is saved in the
+/// `CharacterIdentity` (a replacing delta column), overlaid onto the process-lifetime player, and
+/// `player_identity_sync_system` writes it onto `Background`, which is not saved.
+#[test]
+fn a_script_set_player_class_survives_save_load() {
+    use byroredux_core::character::{Background, CharacterIdentity};
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::{FormIdPair, LocalFormId, PluginId};
+
+    fn player_in(world: &mut World) -> byroredux_core::ecs::EntityId {
+        let entity = world.spawn();
+        let fid = world.resource_mut::<FormIdPool>().intern(FormIdPair {
+            plugin: PluginId::from_filename("Oblivion.esm"),
+            local: LocalFormId(0x14),
+        });
+        world.insert(entity, FormIdComponent(fid));
+        entity
+    }
+
+    let registry = build_save_registry();
+    let mut saved = World::new();
+    saved.insert_resource(StringPool::new());
+    saved.insert_resource(FormIdPool::new());
+    saved.register::<CharacterIdentity>();
+    let player = player_in(&mut saved);
+    saved.insert(player, CharacterIdentity { name: "A".into(), female: true, race_form_id: 0x42, class_form_id: 0x55 });
+    let snapshot = save_world(&saved, &registry).unwrap();
+    let bytes = encode(&snapshot, registry.schema_fingerprint()).unwrap();
+    let decoded = decode(&bytes, registry.schema_fingerprint()).unwrap();
+
+    // The loaded session: its player's Background was re-created from the record (class 0x11), and carries nothing saved.
+    let mut live = World::new();
+    live.insert_resource(FormIdPool::new());
+    live.register::<CharacterIdentity>();
+    live.register::<Background>();
+    live.spawn(); // No saved entity may match by numeric EntityId.
+    let live_player = player_in(&mut live);
+    live.insert_resource(crate::components::PlayerEntity(Some(live_player)));
+    live.insert(live_player, Background { race_form_id: 0x19, class_form_id: 0x11 });
+
+    let remap = byroredux_save::build_form_id_remap(&live, &registry, &decoded);
+    byroredux_save::apply_deltas(&mut live, &registry, &decoded, &remap, MUTABLE_DELTA_COLUMNS).unwrap();
+    assert_eq!(live.get::<CharacterIdentity>(live_player).map(|identity| identity.class_form_id), Some(0x55), "the class is saved");
+    crate::systems::player_identity_sync_system(&live, 0.0);
+    let background = live.get::<Background>(live_player).map(|b| (b.race_form_id, b.class_form_id));
+    assert_eq!(background, Some((0x42, 0x55)), "and read back onto Background");
 }
 
 /// #7228 — the arrow slot is created by the first arrow equip, so a save from before it has no `EquippedAmmo` row for the
