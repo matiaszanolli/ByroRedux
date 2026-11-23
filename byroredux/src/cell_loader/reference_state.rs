@@ -573,7 +573,15 @@ pub(crate) fn restore_script_state(world: &mut World, entity: EntityId) -> bool 
     if let Some(two_state) = state.two_state {
         world.insert(entity, two_state);
     }
-    if let Some(variables) = state.variables {
+    if let Some(mut variables) = state.variables {
+        // #7338 — a door's open state is not parked (#7305): it came back at its `Open by Default` state, so the
+        // script's own mirror of it, parked with the rest of the door script's locals, is re-derived from that
+        // state instead of restored stale.
+        if world.get::<crate::components::Door>(entity).is_some()
+            && let Some(two_state) = world.get::<byroredux_scripting::TwoStateActivator>(entity).map(|state| *state)
+        {
+            variables.mirror_two_state(&two_state);
+        }
         world.insert(entity, variables);
     }
     if let Some(timer) = state.timer {
@@ -2109,6 +2117,50 @@ mod tests {
         let scripts = &world.resource::<PersistentReferenceStates>().scripts;
         assert_eq!(scripts.len(), 1, "only the lever parks a row");
         assert!(scripts.values().all(|state| state.two_state == Some(opened)));
+    }
+
+    /// #7338 — a scripted door's locals are still parked, but its mirror of the open state (`::isOpen_var`,
+    /// `::isAnimating_var`) comes back re-derived from the `Open by Default` state the door returns to (#7305),
+    /// never as the stale open it was left in; its other locals are restored as parked.
+    #[test]
+    fn a_doors_parked_locals_come_back_with_the_open_state_mirror_rederived() {
+        use byroredux_scripting::{ScriptVariables, TwoStateActivator};
+        let door_component = || crate::components::Door {
+            motion: crate::components::DoorMotion::Sequence { open: 1, close: 2 },
+            data: Default::default(),
+            flags: Default::default(),
+            default_open: false,
+            remaining: 0.0,
+            posed: Some(false),
+        };
+        let mut world = world();
+        world.register::<TwoStateActivator>();
+        world.register::<ScriptVariables>();
+        world.register::<crate::components::Door>();
+        let opened = TwoStateActivator { is_open: true, is_animating: false, do_once: false, activated_once: true };
+        let door = reference(&mut world, "Oblivion.esm", 0x902);
+        world.insert(door, opened);
+        world.insert(door, door_component());
+        let mut locals = ScriptVariables::default();
+        locals.mirror_two_state(&opened);
+        locals.set_by_name("bDone", 1.0);
+        world.insert(door, locals);
+        evict(&mut world, &[door]);
+
+        // Respawn: `attach_door` seeds the default (closed) state and the recognizer stamps its mirror.
+        let door = reference(&mut world, "Oblivion.esm", 0x902);
+        let closed = TwoStateActivator::default();
+        world.insert(door, door_component());
+        world.insert(door, closed);
+        let mut fresh = ScriptVariables::default();
+        fresh.mirror_two_state(&closed);
+        world.insert(door, fresh);
+        assert!(restore_script_state(&mut world, door));
+        let locals = world.get::<ScriptVariables>(door).unwrap();
+        assert_eq!(locals.get_by_name("::isOpen_var"), Some(0.0), "the mirror follows the default state");
+        assert_eq!(locals.get_by_name("bDone"), Some(1.0), "the door script's other locals are restored");
+        drop(locals);
+        assert_eq!(world.get::<TwoStateActivator>(door).map(|state| state.is_open), Some(false));
     }
 
     /// #6071 — the save-reload park path carries the script half too, for a

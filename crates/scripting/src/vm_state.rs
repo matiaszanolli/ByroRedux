@@ -43,6 +43,13 @@ impl ScriptVariables {
     pub fn set_by_name(&mut self, name: &str, value: f32) {
         self.set(ConditionStringId::from_text(name), value);
     }
+
+    /// #7338 — set the `default2StateActivator` mirror (`::isOpen_var`, `::isAnimating_var`) from `state`, the
+    /// pair the recognizer stamps beside a [`TwoStateActivator`] and the toggle keeps in step.
+    pub fn mirror_two_state(&mut self, state: &TwoStateActivator) {
+        self.set_by_name(IS_OPEN_VARIABLE, f32::from(state.is_open));
+        self.set_by_name(IS_ANIMATING_VARIABLE, f32::from(state.is_animating));
+    }
 }
 
 /// Runtime state extracted from the `default2StateActivator` Papyrus class.
