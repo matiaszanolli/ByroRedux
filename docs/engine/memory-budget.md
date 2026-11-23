@@ -942,6 +942,7 @@ terrain diffuse/normal layers they are derived from.
 | `VERTEX_POOL_HARD_CAP` | 7 M vertices | ~728 MB (same as the admission threshold) |
 | `INDEX_POOL_SOFT_CAP` | 28 M indices | ~112 MB (4 B/index) |
 | `INDEX_POOL_HARD_CAP` | 28 M indices | ~112 MB (same as the admission threshold) |
+| `DEAD_SPAN_CREDIT_PERCENT` (`pool_ceiling`) | 25 % over the hard caps: 8.75 M vertices, 35 M indices in the raw `pending_vertices` / `pending_indices` | host RAM only: up to ~210 MB (+182 MB vertices, +28 MB indices) above the cap figures between a scene-mesh drop and the compaction in `rebuild_geometry_ssbo`. Admission tests *live* geometry (pending less the dead spans, #6106), and the uploaded SSBO is always the compacted pool, so VRAM stays at the caps |
 
 The vertex stride is 104 B (20 × f32 + 4 × u32 + 8 × u8 — position,
 colour (widened `vec3`→`vec4`, `cd2b5fe4`), normal, UV, bone

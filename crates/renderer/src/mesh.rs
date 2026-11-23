@@ -2237,6 +2237,33 @@ mod memory_budget_doc_pin_tests {
     /// "~1.66 GB cap" against the hard caps (then ~480 MB), and the rebuild row still
     /// read "+2× projected, ≤ ~512 MB" after the gate became the 80% headroom
     /// line. The pool figure is derived here from the constants.
+    /// #7375 — the dead-span credit lets the raw host pools run past the hard caps until the
+    /// next compaction; the VRAM rows stay at the caps, so the page names the host-RAM peak
+    /// derived here from the same constants `pool_ceiling` uses.
+    #[test]
+    fn memory_budget_ledgers_the_dead_span_credit_host_peak() {
+        use crate::mesh::pool_limits::DEAD_SPAN_CREDIT_PERCENT;
+        let extra_vertices = VERTEX_POOL_HARD_CAP / 100 * DEAD_SPAN_CREDIT_PERCENT;
+        let extra_indices = INDEX_POOL_HARD_CAP / 100 * DEAD_SPAN_CREDIT_PERCENT;
+        let vertex_mb = extra_vertices * std::mem::size_of::<Vertex>() / 1_000_000;
+        let index_mb = extra_indices * std::mem::size_of::<u32>() / 1_000_000;
+        let row = BUDGET_MD
+            .lines()
+            .find(|line| line.starts_with("| `DEAD_SPAN_CREDIT_PERCENT`"))
+            .expect("memory-budget.md lost its DEAD_SPAN_CREDIT_PERCENT row (#7375)");
+        for needle in [
+            format!("{DEAD_SPAN_CREDIT_PERCENT} %"),
+            format!("~{} MB", vertex_mb + index_mb),
+            format!("+{vertex_mb} MB vertices"),
+            format!("+{index_mb} MB indices"),
+        ] {
+            assert!(row.contains(&needle), "the credit row must carry `{needle}`: {row}");
+        }
+        let (ceiling_vertices, ceiling_indices) = crate::mesh::pool_limits::PoolLimits::DEFAULT.pool_ceiling();
+        assert_eq!(ceiling_vertices, VERTEX_POOL_HARD_CAP + extra_vertices, "pool_ceiling is the cap plus the credit");
+        assert_eq!(ceiling_indices, INDEX_POOL_HARD_CAP + extra_indices);
+    }
+
     #[test]
     fn rough_budget_geometry_rows_match_the_pool_caps() {
         let row = |name: &str| {
