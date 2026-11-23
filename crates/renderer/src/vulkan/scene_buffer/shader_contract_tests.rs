@@ -290,6 +290,9 @@ fn environment_specular_is_the_exact_split_sum_with_probe_occlusion() {
             && helper.contains("committedInstance != 0xFFFFFFFFu"),
         "the helper reports the walk's committed blocker over the opaque layers only: {helper}"
     );
+    // #7371: the table bakes the standard Schlick curve; an authored `fresnelPower` does not
+    // reach this term (nifal.md), and the old dead `F` local is gone.
+    assert!(!env.contains("mat.fresnelPower"), "the split-sum environment term reads no authored fresnel power (#7371)");
     assert!(env.contains("ggxSmithG1(lobeNdotL, roughness) / max(envAB.x + envAB.y, 1e-3)"));
     assert!(env.contains(
         "envColor -= probeShare * lobeWeight * exteriorSkyRadianceOr(lobeL, ambientFallback, 0.0);"

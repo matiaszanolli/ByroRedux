@@ -88,6 +88,14 @@ glass, and GI response. Soft/rim/back feature flags and their lighting-mask /
 back-light texture roles are normalized before the renderer; the shader never
 asks which game or source format authored them.
 
+`fresnel_power` reaches the light loop, the diffuse weight, glass and the eye term,
+but not the environment specular: since M-LIGHT RLT-IBL-003 that term is the
+split sum from the exactly integrated table, which bakes the standard Schlick
+curve, so a material authored off the default power has its diffuse weight and
+light-loop specular on one Fresnel curve and its environment specular on
+another (#7371). Folding the power into the table is an open option, to be
+measured on a non-default-power FO4 BGSM first.
+
 That paragraph and the `Material` doc used to call this "matching the existing
 `grayscale_to_palette_scale` precedent". It was not one, and the correction
 (#2592 / SKY-D7-04) is what kept this section's **converged** verdict honest:
