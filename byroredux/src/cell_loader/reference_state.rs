@@ -593,6 +593,37 @@ pub(crate) fn restore_script_state(world: &mut World, entity: EntityId) -> bool 
     true
 }
 
+/// #7342 — a door's saved open state, parked from a save it was not resident for (the exterior ring,
+/// [`park_unresolved_snapshot_rows`]): put it on the door when `attach_door` stamps it, scripted or not, and drop the
+/// row once nothing else is left in it (a door script's locals stay for its attach). Eviction never parks a door's
+/// state (#7305), so only a save reaches this: a door keeps the state it was saved in, as a resident one does
+/// through the deltas, and no unconsumed row is re-saved forever.
+pub(crate) fn restore_parked_door_state(world: &mut World, entity: EntityId) -> bool {
+    let Some(pair) = identity(world, entity) else {
+        return false;
+    };
+    let two_state = {
+        let Some(mut store) = world.try_resource_mut::<PersistentReferenceStates>() else {
+            return false;
+        };
+        let Some(state) = store.scripts.get_mut(&pair) else {
+            return false;
+        };
+        let two_state = state.two_state.take();
+        if state.is_empty() {
+            store.scripts.remove(&pair);
+        }
+        two_state
+    };
+    match two_state {
+        Some(two_state) => {
+            world.insert(entity, two_state);
+            true
+        }
+        None => false,
+    }
+}
+
 /// Restore after authored inventory/equipment/AI have been attached. Consuming
 /// the parked row prevents stale state from overriding later resident changes.
 pub(crate) fn restore(world: &mut World, entity: EntityId) -> bool {
@@ -2161,6 +2192,45 @@ mod tests {
         assert_eq!(locals.get_by_name("bDone"), Some(1.0), "the door script's other locals are restored");
         drop(locals);
         assert_eq!(world.get::<TwoStateActivator>(door).map(|state| state.is_open), Some(false));
+    }
+
+    /// #7342 — a door's open state a save parked for it (it was in the exterior ring) goes on the door when
+    /// `attach_door` stamps it, scripted or not, and the row is dropped once nothing else is in it; a door
+    /// script's parked locals stay for its own attach.
+    #[test]
+    fn a_saved_door_state_parked_for_the_ring_is_put_on_the_door_at_attach() {
+        use byroredux_scripting::{ScriptVariables, TwoStateActivator};
+        let opened = TwoStateActivator { is_open: true, is_animating: false, do_once: false, activated_once: true };
+        for scripted in [false, true] {
+            let mut world = world();
+            world.register::<TwoStateActivator>();
+            world.register::<ScriptVariables>();
+            let door = reference(&mut world, "FalloutNV.esm", 0x903);
+            let pair = identity(&world, door).unwrap();
+            let mut locals = ScriptVariables::default();
+            locals.set_by_name("bDone", 1.0);
+            world.resource_mut::<PersistentReferenceStates>().scripts.insert(
+                pair,
+                ScriptState { two_state: Some(opened), variables: scripted.then_some(locals), timer: None, rumble: None },
+            );
+            world.register::<crate::components::Door>();
+            world.insert(
+                door,
+                byroredux_core::animation::NamedSequences(std::sync::Arc::from(vec![("Open".into(), 0u32), ("Close".into(), 1u32)])),
+            );
+            // The spawn path: `attach_door` seeds the default (closed) state, then puts the parked one over it.
+            assert!(crate::systems::door::attach_door(
+                &mut world,
+                door,
+                Default::default(),
+                byroredux_plugin::esm::reader::GameKind::Fallout3NV,
+                false,
+            ));
+            assert_eq!(world.get::<TwoStateActivator>(door).map(|state| *state), Some(opened), "scripted {scripted}");
+            let row = world.resource::<PersistentReferenceStates>().scripts.get(&pair).cloned();
+            assert_eq!(row.is_some(), scripted, "an unscripted door's row is consumed whole; a script's locals stay");
+            assert!(row.is_none_or(|row| row.two_state.is_none()));
+        }
     }
 
     /// #6071 — the save-reload park path carries the script half too, for a

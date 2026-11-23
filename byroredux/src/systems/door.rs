@@ -189,7 +189,8 @@ pub(crate) fn door_motion_system(world: &World, dt: f32) {
 /// Give a placed in-cell door its runtime (DRT-STATE-001): the open state, set from `Open by Default`, and the
 /// [`Door`] the motion system reads. Only a door whose model authors `Open` and `Close` sequences gets one so far;
 /// the doors that author nothing (ladders, hatches, door frames and a few hinged doors, design §1) wait on the swing.
-/// `root` is the placement root, which already carries the model's `NamedSequences`.
+/// `root` is the placement root, which already carries the model's `NamedSequences`. A saved state parked for the
+/// placement replaces the default (#7342, `reference_state::restore_parked_door_state`).
 pub(crate) fn attach_door(
     world: &mut World,
     root: EntityId,
@@ -218,6 +219,8 @@ pub(crate) fn attach_door(
             posed: None,
         },
     );
+    // #7342 — a state a save parked for this door (it was in the exterior ring) goes on it now, over the default.
+    crate::cell_loader::reference_state::restore_parked_door_state(world, root);
     true
 }
 
