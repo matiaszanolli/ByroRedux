@@ -35,6 +35,11 @@ pub(super) fn register_faction_hostility_systems(scheduler: &mut Scheduler) {
             .reads::<byroredux_scripting::ActorControlState>()
             // #4816 — the ambient-combat marker it stamps, ages and drops.
             .reads::<crate::systems::AmbientEngagement>()
-            .writes::<crate::systems::AmbientEngagement>(),
+            .writes::<crate::systems::AmbientEngagement>()
+            // #7362 — `ambush_gates` (the ambusher's trigger marker, the cell index its location reads) and
+            // the ignore-crime check.
+            .reads::<byroredux_core::ecs::components::AmbushBehavior>()
+            .reads_resource::<crate::components::LoadedCellIndex>()
+            .reads::<byroredux_scripting::obscript_state::IgnoreCrime>(),
     );
 }

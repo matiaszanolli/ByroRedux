@@ -872,6 +872,9 @@ mod system_access_declaration_tests {
     const PROJECTILES_SRC: &str = include_str!("../../systems/projectiles.rs");
     const BOW_SRC: &str = include_str!("../../bow.rs");
     const PLAYER_SEAT_SRC: &str = include_str!("../../player_seat.rs");
+    const FACTION_HOSTILITY_SRC: &str = include_str!("../../systems/faction_hostility.rs");
+    const NOTIFICATIONS_SRC: &str = include_str!("../../notifications.rs");
+    const MUSIC_SRC: &str = include_str!("../../music/mod.rs");
     const SKILL_USE_EMIT_SRC: &str = include_str!("../../skill_use_emit.rs");
     const OBLIVION_SKILL_USE_SRC: &str = include_str!("../../../../crates/scripting/src/oblivion_skill_use.rs");
     // #5069 — equipment_appearance_system's mid-life gear-import hop lives
@@ -1236,6 +1239,22 @@ mod system_access_declaration_tests {
         );
     }
 
+    // #7362 — `grant_experience`'s cross-file tails, shared by the two script XP systems.
+    const XP_SOURCES_EXPERIENCE: [(&str, &str); 5] = [
+        (COMBAT_SRC, "scripted_experience_system"),
+        (NOTIFICATIONS_SRC, "push"),
+        (MUSIC_SRC, "raise_sting"),
+        (STORY_EVENTS_SRC, "raise_level_story_event"),
+        (OBSCRIPT_MORE_SRC, "in_chargen"),
+    ];
+    const XP_SOURCES_SKILL: [(&str, &str); 5] = [
+        (COMBAT_SRC, "scripted_skill_system"),
+        (NOTIFICATIONS_SRC, "push"),
+        (MUSIC_SRC, "raise_sting"),
+        (STORY_EVENTS_SRC, "raise_level_story_event"),
+        (OBSCRIPT_MORE_SRC, "in_chargen"),
+    ];
+
     // #7319 — the declared exclusives added since the guard's named list was drawn up. An exclusive is
     // never paired, but its row is the basis for promoting it to a parallel lane and for the
     // `sys.accesses` report, so a row that declares less than the body takes reads as safe when it is not.
@@ -1304,6 +1323,35 @@ mod system_access_declaration_tests {
     #[test]
     fn oblivion_level_system_declares_everything_it_acquires() {
         assert_declares_everything_it_acquires(&[(SKILL_USE_EMIT_SRC, "oblivion_level_system")], "oblivion_level_system");
+    }
+
+    /// #7362 — the rows that gained acquisitions the declarations never followed: the two script XP systems
+    /// (`grant_experience` reads `UiLabels` and reaches the notice queue, the level-up sting and the `LEVL`
+    /// story event), the dead-actor reconciler and the faction-hostility tick.
+    #[test]
+    fn scripted_experience_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(&XP_SOURCES_EXPERIENCE, "scripted_experience_system");
+    }
+
+    #[test]
+    fn scripted_skill_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(&XP_SOURCES_SKILL, "scripted_skill_system");
+    }
+
+    #[test]
+    fn reconcile_pending_dead_actors_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(
+            &[(COMBAT_SRC, "reconcile_pending_dead_actors_system")],
+            "reconcile_pending_dead_actors_system",
+        );
+    }
+
+    #[test]
+    fn faction_hostility_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(
+            &[(FACTION_HOSTILITY_SRC, "make_faction_hostility_system")],
+            "make_faction_hostility_system",
+        );
     }
 
     #[test]

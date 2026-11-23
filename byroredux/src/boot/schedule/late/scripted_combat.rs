@@ -17,7 +17,14 @@ pub(super) fn register_scripted_combat_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_core::character::CharacterRuleset>()
             .writes::<byroredux_core::character::CharacterLevel>()
             .writes::<byroredux_core::character::LevelUpPoints>()
-            .reads::<byroredux_core::ecs::components::ActorValues>(),
+            .reads::<byroredux_core::ecs::components::ActorValues>()
+            // #7362 — `grant_experience`: the `sStatsXP` word, the notice, the level-up sting and the
+            // chargen check.
+            .reads_resource::<byroredux_core::ui_labels::UiLabels>()
+            .writes_resource::<crate::notifications::PlayerNotifications>()
+            .writes_resource::<crate::music::MusicCatalog>()
+            .reads_resource::<byroredux_scripting::obscript_ledger::ObScriptLedger>()
+            .reads_resource::<byroredux_scripting::ActorValueNames>(),
     );
     // M47.2 — script Game.AdvanceSkill: skill usage XP, skill level-ups, and the
     // character XP a rank-up feeds through the same level roll.
@@ -33,7 +40,13 @@ pub(super) fn register_scripted_combat_systems(scheduler: &mut Scheduler) {
             .reads_resource::<byroredux_core::character::CharacterRuleset>()
             .writes::<byroredux_core::character::CharacterLevel>()
             .writes::<byroredux_core::character::LevelUpPoints>()
-            .writes::<byroredux_core::ecs::components::ActorValues>(),
+            .writes::<byroredux_core::ecs::components::ActorValues>()
+            // #7362 — `grant_experience`: the `sStatsXP` word, the notice, the level-up sting and the
+            // chargen check.
+            .reads_resource::<byroredux_core::ui_labels::UiLabels>()
+            .writes_resource::<crate::notifications::PlayerNotifications>()
+            .writes_resource::<crate::music::MusicCatalog>()
+            .reads_resource::<byroredux_scripting::obscript_ledger::ObScriptLedger>(),
     );
     // Oblivion skill-use leveling: seconds of running, swimming and undetected sneaking queue their skill uses
     // (OSL-USE-005), ahead of the drain below so they apply the same frame.
@@ -143,7 +156,13 @@ pub(super) fn register_scripted_combat_systems(scheduler: &mut Scheduler) {
             .writes::<byroredux_scripting::magic_effects::ActiveMagicEffects>()
             .writes::<byroredux_scripting::obscript_anim::HeadLook>()
             .writes_resource::<byroredux_scripting::ActivePackages>()
-            .writes_resource::<byroredux_scripting::PendingPackageTransitions>(),
+            .writes_resource::<byroredux_scripting::PendingPackageTransitions>()
+            // #7362 — `reconcile_dead_actor` ends the corpse's combat and ambient package state and reads
+            // the ragdoll marker.
+            .writes::<byroredux_scripting::AiCombatState>()
+            .writes::<crate::components::AmbientPackageRuntime>()
+            .writes::<byroredux_scripting::package::EvaluatePackageRequest>()
+            .reads::<crate::ragdoll::RagdollActive>(),
     );
     // The reconciler runs only after both death producers (#3119).
     scheduler.run_after(
