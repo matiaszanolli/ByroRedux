@@ -2100,6 +2100,10 @@ mod tests {
 #[path = "load_order_parallel_tests.rs"]
 mod parallel_tests;
 
+#[cfg(test)]
+#[path = "load_order_deletion_tests.rs"]
+mod deletion_tests;
+
 /// #4639 — medium masters (Starfield TES4 `0x400`) allocate from the
 /// `0xFD` space with an 8-bit sub-index, and their presence shrinks the
 /// regular ceiling so no regular plugin can collide with the `0xFD` byte.

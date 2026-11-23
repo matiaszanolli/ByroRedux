@@ -1,6 +1,7 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-23). Revision 18 records LMC-REC-007 as built
+**Status**: ACTIVE (2026-11-23). Revision 19 builds LMC-REC-004 for the
+cell index's records. Revision 18 records LMC-REC-007 as built
 and names a no-op override's owner in the report. Revision 17 builds the merge-ownership
 half of LMC-REC-006. Revision 13 builds the profile
 fingerprint and its record in saves (LMC-ID-007, LMC-SAV-001). Revision 12 builds mod roots and their
@@ -584,6 +585,20 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   a position where it is no longer visible"
   ([Tome of xEdit §7](https://tes5edit.github.io/docs/7-mod-cleaning-and-error-checking.html))
   produces data the engine already handles as a disabled, moved reference.
+  Built (#6670): every map of the merged index prunes a deleted form,
+  including the cell index's cells, modelled base objects (`statics`),
+  pack-ins and material forms, which kept theirs until revision 19 (Skyrim
+  SE's deleted statics `0006CD7C` and `000BD6A5`, Fallout 4 DLCCoast's
+  interior cell `001DFB07` and pack-in `001DFB9F`). Measured against a raw
+  record walk on FNV, Skyrim SE and Fallout 4 with UFO4P: no deletion that
+  ends its form's chain survives the fold. Two consequences have no
+  documented original-engine behaviour. **Phase 0: verify** what the game
+  does with a live reference whose base a later plugin deletes (Skyrim.esm's
+  `0010C5CD` in Bthardamz03 places Dawnguard's deleted
+  `DA13VineCeiling01NoCol`; the engine skips it, as it skips any reference
+  without a base). **Phase 0: verify** what it does with references a
+  deleted CELL still holds that no deletion covers (none in the measured
+  data; the engine drops them with the cell and logs them).
 - **LMC-REC-005.** Injected records (a plugin defining a form whose ID space
   belongs to one of its masters) MUST resolve to the master's identity space
   with the defining plugin recorded as provenance.
@@ -1426,3 +1441,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 16 | 2026-11-22 | LMC-ID-006 built ahead of Phase 2 at the owner's request: `--import-load-order` imports plugins.txt / loadorder.txt, MO2 profiles and Vortex deployments into the boot request's `[mods]` (plugins in load order, mod roots in priority order), with the per-game rules cited from libloadorder, MO2 and a live Vortex manifest; activation takes the unmanaged root from the base master `--game` appends, so an imported profile names its plugins by file name | — |
 | 17 | 2026-11-22 | LMC-REC-006's merge-ownership half built: under `merge` an override identical to the record it would replace is a no-op without ownership, and an independent override identical to its master changes nothing; both are reported | — |
 | 18 | 2026-11-23 | LMC-REC-007 recorded as built (fold provenance, `plugins.conflicts`, `--plugin-report`); the report's winner is the carrier that owns the record, so a no-op override is marked as one, and a byte difference in a field the merge does not read is labelled; measured on FNV with its nine DLC: 781 overridden forms, 11 of them kept by an earlier carrier | — |
+| 19 | 2026-11-23 | LMC-REC-004 built for the cell index: cells, modelled base objects, pack-ins and the other form-keyed cell-index maps prune deleted forms (their prune was a no-op); measured on FNV, Skyrim SE and Fallout 4 + UFO4P against a raw record walk; a live reference to a deleted base and a deleted cell's uncovered references recorded as Phase 0: verify | — |
