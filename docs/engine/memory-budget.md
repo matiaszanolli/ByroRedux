@@ -193,6 +193,8 @@ measured allocations.
 | Terrain tile SSBO | `MAX_TERRAIN_TILES` = 1 024 | 1 024 | 240 B (`GpuTerrainTile`: 3× `[u32; 8]` texture indices + #4057's two `[f32; 4]` cover-affinity rows, `cell_origin_xz`, `water_y`, `canopy_height`, #4056's ground-cover detail-atlas `uvec4`, #4903/#4907's `base_cover_affinity` + `base_diffuse_index`, and #6195's `base_height_index` + `[u32; 8]` layer height handles, #6196's `height_blend_band`, #6197's three parallax settings + the LOD-soften lane, and TSD-4.3's four patch-geometry lanes; pinned by `gpu_terrain_tile_is_240_bytes`) | — | **~240 KB** (single shared buffer, NOT FIF-doubled) |
 | Bone buffers ¹ | `MAX_TOTAL_BONES` = 196 608 | 196 608 | 64 B | 12.6 MB/buffer | **100.6 MB** |
 | Camera UBO | — | 1 | 384 B (#3323, RLT-IBL-006) | 384 B | **768 B** |
+| Environment BRDF table (binding 26, RLT-IBL-003) | `ENV_BRDF_LUT_SIZE` = 32 | 32 × 32 | 8 B (two `f32`) | — | **8.2 KB** (single shared buffer, written once, NOT FIF-doubled) |
+| Sky aperture planes (binding 27, RLT-IBL-006) | `MAX_COMPOSITE_SKY_APERTURES` = 256 | 256 | 48 B (`GpuSkyAperturePlane`) + 16 B header | 12.3 KB | **24.6 KB** |
 
 ¹ Eight 12.6 MB bone-sized allocations, not one: palette (`bone_device`),
 `bone_world` staging, and `bone_world` device-copy are each FIF-doubled
