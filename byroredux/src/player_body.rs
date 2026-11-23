@@ -258,6 +258,13 @@ pub(crate) fn player_identity(world: &World) -> Option<(bool, u32)> {
     world.get::<byroredux_core::character::CharacterIdentity>(player).map(|identity| (identity.female, identity.race_form_id))
 }
 
+/// The class the player's own record gives (`NPC_` `CNAM`), SetClass aside (#7348).
+fn record_class_form_id(world: &World) -> Option<u32> {
+    let index = world.try_resource::<LoadedCellIndex>()?.0.clone();
+    let npc = index.npcs.get(&crate::inventory::player_npc_form_id(index.game))?;
+    Some(npc.class_form_id)
+}
+
 /// The race the player's own record gives, chargen aside: the Use-Traits terminal's, as the body
 /// assembly resolves it.
 fn record_race_form_id(world: &World) -> Option<u32> {
@@ -272,6 +279,7 @@ fn record_race_form_id(world: &World) -> Option<u32> {
 /// creation) also puts the record's race back on `Background`, which `player_identity_sync_system`
 /// only writes from an identity and which would otherwise keep the outgoing session's choice.
 pub(crate) fn sync_body_after_load(world: &World, before: Option<(bool, u32)>) {
+    restore_record_class_after_load(world);
     let after = player_identity(world);
     if after == before {
         return;
@@ -288,6 +296,27 @@ pub(crate) fn sync_body_after_load(world: &World, before: Option<(bool, u32)>) {
                 background.race_form_id = race;
             }
     }
+}
+
+/// #7348 — the class half of the same restore. `Background.class_form_id` belongs to the process-lifetime player, who
+/// survives a live load carrying whatever class the outgoing session's script gave. The saved identity says which class
+/// the loaded game has (`player_identity_sync_system` writes it); when it says none (no identity, or class 0: no script
+/// ever set one), the player record's own class stands, so the outgoing timeline's does not leak into the loaded game.
+fn restore_record_class_after_load(world: &World) {
+    let Some(player) = crate::components::PlayerEntity::get(world) else {
+        return;
+    };
+    let saved = world.get::<byroredux_core::character::CharacterIdentity>(player).map_or(0, |identity| identity.class_form_id);
+    if saved != 0 {
+        return;
+    }
+    let Some(class) = record_class_form_id(world) else {
+        return;
+    };
+    if let Some(mut backgrounds) = world.query_mut::<byroredux_core::character::Background>()
+        && let Some(background) = backgrounds.get_mut(player) {
+            background.class_form_id = class;
+        }
 }
 
 /// Release the player's assembled body through the GPU-aware teardown equipment changes use
@@ -766,7 +795,7 @@ mod tests {
         world.insert(player, Background { race_form_id: CHOSEN_RACE, class_form_id: 0 });
         let requested = |world: &World| std::mem::take(&mut world.resource_mut::<PlayerBodyRebuildRequest>().0);
 
-        world.insert(player, CharacterIdentity { name: "A".into(), female: true, race_form_id: CHOSEN_RACE });
+        world.insert(player, CharacterIdentity { name: "A".into(), female: true, race_form_id: CHOSEN_RACE, class_form_id: 0 });
         sync_body_after_load(&world, Some((true, CHOSEN_RACE)));
         assert!(!requested(&world), "the same identity keeps the body");
         sync_body_after_load(&world, Some((false, CHOSEN_RACE)));
@@ -776,6 +805,42 @@ mod tests {
         sync_body_after_load(&world, Some((true, CHOSEN_RACE)));
         assert!(requested(&world), "a pre-chargen save asks for the record's body");
         assert_eq!(world.get::<Background>(player).map(|b| b.race_form_id), Some(RECORD_RACE), "and the record's race");
+    }
+
+    /// #7348 — a live load keeps the process-lifetime player's `Background`, so a class the outgoing session's script
+    /// gave would leak into the loaded game. When the loaded identity carries no class (no identity, or class 0), the
+    /// player record's own class goes back; when it carries one, `player_identity_sync_system` writes it, and this
+    /// leaves it alone.
+    #[test]
+    fn a_live_load_puts_the_records_class_back_unless_the_loaded_identity_has_one() {
+        use byroredux_core::character::{Background, CharacterIdentity};
+        const RECORD_CLASS: u32 = 0x77;
+        const LEAKED_CLASS: u32 = 0x99;
+        let mut world = World::new();
+        world.register::<CharacterIdentity>();
+        world.register::<Background>();
+        world.init_resource::<PlayerBodyRebuildRequest>();
+        let mut index = byroredux_plugin::esm::EsmIndex::default();
+        let player_npc = crate::inventory::player_npc_form_id(index.game);
+        index.npcs.insert(player_npc, byroredux_plugin::esm::records::NpcRecord { form_id: player_npc, class_form_id: RECORD_CLASS, race_form_id: 0x19, ..Default::default() });
+        world.insert_resource(LoadedCellIndex(std::sync::Arc::new(index)));
+        let player = world.spawn();
+        world.insert_resource(crate::components::PlayerEntity(Some(player)));
+        let class = |world: &World| world.get::<Background>(player).map(|background| background.class_form_id);
+
+        world.insert(player, Background { race_form_id: 0x19, class_form_id: LEAKED_CLASS });
+        sync_body_after_load(&world, None);
+        assert_eq!(class(&world), Some(RECORD_CLASS), "no identity: the record's class, not the outgoing session's");
+
+        world.insert(player, Background { race_form_id: 0x19, class_form_id: LEAKED_CLASS });
+        world.insert(player, CharacterIdentity { name: "A".into(), female: false, race_form_id: 0x19, class_form_id: 0 });
+        sync_body_after_load(&world, Some((false, 0x19)));
+        assert_eq!(class(&world), Some(RECORD_CLASS), "an identity with no class: the record's too");
+
+        world.insert(player, Background { race_form_id: 0x19, class_form_id: 0x55 });
+        world.insert(player, CharacterIdentity { name: "A".into(), female: false, race_form_id: 0x19, class_form_id: 0x55 });
+        sync_body_after_load(&world, Some((false, 0x19)));
+        assert_eq!(class(&world), Some(0x55), "an identity that carries a class keeps the one it has");
     }
 
     /// A stand-in for what `NpcSpawnJob::advance` assembled: a root at the

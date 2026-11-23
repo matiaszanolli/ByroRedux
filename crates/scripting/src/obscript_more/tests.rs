@@ -1176,3 +1176,37 @@ fn the_pc_skill_commands_raise_the_players_skill_by_ranks() {
     assert!(is_done(&run(&world, 0x10bd, &nums(&[8.0]), &c)));
     assert_eq!(world.resource::<PendingSleep>().0, 8.0);
 }
+
+/// #7348 — `SetClass` on the player also goes into the saved `CharacterIdentity` (`Background`, where the class is
+/// read, is re-created with the actor and not saved): into the identity the player has, leaving its name, sex and race
+/// alone; or a made one that overrides nothing (the sex already in effect, race 0 = no choice). Another actor's class
+/// changes on its `Background` only.
+#[test]
+fn set_class_on_the_player_is_kept_in_the_saved_identity() {
+    use byroredux_core::character::{Background, CharacterIdentity};
+    let (mut world, actor, _other, player) = world(GameKind::Oblivion);
+    world.register::<Background>();
+    world.register::<CharacterIdentity>();
+    world.insert(player, Background { race_form_id: 0x19, class_form_id: 0x11 });
+    world.insert(actor, Background { race_form_id: 0x19, class_form_id: 0x11 });
+    let class = |world: &World, entity| world.get::<Background>(entity).map(|background| background.class_form_id);
+
+    // No identity yet: one is made, and it overrides nothing.
+    assert!(is_done(&run(&world, 0x10f0, &[ObScriptValue::Ref(0x22)], &ctx(None))));
+    assert_eq!(class(&world, player), Some(0x22), "the class readers see it now");
+    let made = world.get::<CharacterIdentity>(player).map(|identity| identity.clone()).expect("the class is kept");
+    assert_eq!(made, CharacterIdentity { name: String::new(), female: false, race_form_id: 0, class_form_id: 0x22 });
+
+    // An identity the player has keeps what it chose.
+    world.insert(player, CharacterIdentity { name: "A".into(), female: true, race_form_id: 0x42, class_form_id: 0 });
+    assert!(is_done(&run(&world, 0x10f0, &[ObScriptValue::Ref(0x33)], &ctx(None))));
+    let kept = world.get::<CharacterIdentity>(player).map(|identity| identity.clone()).unwrap();
+    assert_eq!(kept, CharacterIdentity { name: "A".into(), female: true, race_form_id: 0x42, class_form_id: 0x33 });
+
+    // Another actor's class is its own Background's business; it has no saved identity to keep it in.
+    assert!(is_done(&run(&world, 0x10f0, &[ObScriptValue::Ref(0x44)], &ctx(Some(ACTOR)))));
+    assert_eq!(class(&world, actor), Some(0x44));
+    assert!(world.get::<CharacterIdentity>(actor).is_none());
+    assert_eq!(class(&world, player), Some(0x33), "and the player's is untouched");
+}
+

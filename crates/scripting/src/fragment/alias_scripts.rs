@@ -167,8 +167,12 @@ impl Resource for AliasScriptOwners {}
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct AliasOwnersSaved {
+    /// `(quest, alias, owner)`: the quest saved as its stable identity; the owner is a synthetic `0xFC` id, which no
+    /// plugin owns and stays a number.
+    #[cfg_attr(feature = "save", serde(with = "stable_owners"))]
     pub owners: Vec<(u32, i16, u32)>,
     pub next: u32,
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::vec"))]
     pub started: Vec<u32>,
 }
 
@@ -321,5 +325,24 @@ mod tests {
         assert_eq!(restored, owners);
         assert_eq!(restored.alias_of(ALIAS_OWNER_BASE + 1), Some((8, 2)));
         assert_eq!(restored.table().len(), 2);
+    }
+}
+
+/// The alias owner allocations saved with each quest as its stable identity (LMC-SAV-002..004); an allocation for an
+/// absent plugin's quest is dropped. The synthetic owner id has no plugin and stays a number.
+#[cfg(feature = "save")]
+mod stable_owners {
+    use byroredux_core::stable_form_id::SavedForm;
+    use serde::{Deserialize, Serialize};
+
+    pub fn serialize<S: serde::Serializer>(owners: &[(u32, i16, u32)], ser: S) -> Result<S::Ok, S::Error> {
+        owners.iter().map(|&(quest, alias, owner)| (SavedForm::save(quest), alias, owner)).collect::<Vec<_>>().serialize(ser)
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Vec<(u32, i16, u32)>, D::Error> {
+        Ok(Vec::<(SavedForm, i16, u32)>::deserialize(de)?
+            .into_iter()
+            .filter_map(|(quest, alias, owner)| Some((quest.load()?, alias, owner)))
+            .collect())
     }
 }

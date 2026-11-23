@@ -118,9 +118,11 @@ struct Entry {
 #[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ChallengeState {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))]
     entries: BTreeMap<u32, Entry>,
     /// The map markers already counted as discovered (`Locations Discovered`, and the challenges that
     /// name a marker), so each is counted once.
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::vec"))]
     discovered_markers: std::collections::BTreeSet<u32>,
 }
 

@@ -110,6 +110,26 @@ impl LiveReloadLedgers {
     }
 }
 
+/// LMC-SAV-001 — log what differs between the profile the save was made with and the one the session was running
+/// BEFORE the load (`before`, captured ahead of the reload: the reload installs the save's own plugin list and rebuilds
+/// `SessionProfile` from it, so the resource can no longer say what the player had, #7349), one WARN line each
+/// (`save.info` prints the same against the running session). The player's HUD gets nothing: the lines are operator
+/// text (fingerprints, plugin hashes), which #6825 keeps in the log, and the one line the HUD has for a load is
+/// [`LOAD_FAILED`], which a load that went through must never show (#7347: the summary was once pushed through
+/// [`notify_player`], so a successful load with a changed plugin told the player it failed). Returns how many lines it
+/// logged; none without a pre-load record.
+pub(super) fn report_profile_difference(
+    before: Option<&crate::profile_fingerprint::ProfileRecord>,
+    snapshot: &byroredux_save::Snapshot,
+) -> usize {
+    let Some(before) = before else { return 0 };
+    let lines = crate::profile_fingerprint::profile_lines_against(before, snapshot);
+    for line in &lines {
+        log::warn!("save load: {line}");
+    }
+    lines.len()
+}
+
 /// A load failed. Every caller has already logged the diagnostic (`log::error!`, the cell or
 /// worldspace, the error chain); the player sees one short line instead of it (#6825: the
 /// diagnostics are operator text, not the HUD's). Neither game authors a load-failure notice
@@ -674,6 +694,8 @@ pub fn execute_pending_save_loads(
     let registry = build_save_registry();
     // INC4-2 — the identity the player's live body was assembled from, before the load replaces it.
     let identity_before = crate::player_body::player_identity(world);
+    // #7349 — the profile the session was running, before the reload rebuilds it from the save's plugin list.
+    let profile_before = world.try_resource::<crate::profile_fingerprint::SessionProfile>().map(|profile| profile.0.clone());
 
     // #3163 — every typed column is decodable from the snapshot alone.
     // Reject before the irreversible cell/streaming teardown so no serde
@@ -833,7 +855,19 @@ pub fn execute_pending_save_loads(
     // resolve, then overlay the form-id-keyed mutable deltas. The
     // spawn-time consumers were served by the pre-reload restore above
     // (#3789); this second pass is the one that has always been here.
-    if let Err(e) = byroredux_save::restore_resources(world, &registry, &snapshot) {
+    // LMC-SAV-002..004 — saved FormIDs read back through the reloaded load order; what its plugins lack is counted.
+    let translator = session_translator(world);
+    let mut translation = byroredux_core::stable_form_id::TranslationReport::default();
+    let mut tally = |report: byroredux_core::stable_form_id::TranslationReport| {
+        translation.translated += report.translated;
+        for (plugin, count) in report.absent {
+            *translation.absent.entry(plugin).or_default() += count;
+        }
+    };
+    let (restored, report) =
+        translated(translator.clone(), || byroredux_save::restore_resources(world, &registry, &snapshot));
+    tally(report);
+    if let Err(e) = restored {
         let message = format!("save load: resource restore failed: {e}");
         log::error!("{message}");
         notify_player(world, message);
@@ -892,7 +926,11 @@ pub fn execute_pending_save_loads(
     // column is replacing and idempotent, so the full overlay below reapplies
     // the same value harmlessly.
     let remap = byroredux_save::build_form_id_remap(world, &registry, &snapshot);
-    match byroredux_save::apply_deltas(world, &registry, &snapshot, &remap, &["ScriptPackage"]) {
+    let (pre_seated, report) = translated(translator.clone(), || {
+        byroredux_save::apply_deltas(world, &registry, &snapshot, &remap, &["ScriptPackage"])
+    });
+    tally(report);
+    match pre_seated {
         Ok(applied) if applied > 0 => {
             log::debug!("save load: pre-seated {applied} ScriptPackage(s) before the ambient re-seat")
         }
@@ -900,23 +938,39 @@ pub fn execute_pending_save_loads(
         Err(error) => log::warn!("save load: ScriptPackage pre-seat failed: {error}"),
     }
     crate::npc_spawn::ai_package::reseat_ambient_packages_after_restore(world);
+    // #7350 — a block restarted above is kept only for the package its actor ended up running.
+    crate::npc_spawn::package_flags::drop_day_blocks_of_packages_not_running(world);
     // #5054 — an exterior save holds resident cells out to the hysteresis
     // ring (`radius_load + 1`) while the reload streams only `radius_load`,
     // so the ring's rows cannot overlay. Park them as eviction would have,
     // so those placements return with their saved state when streamed in.
     let unresolved = byroredux_save::unresolved_form_id_pairs(&registry, &snapshot, &remap);
-    let parked_rows = crate::cell_loader::reference_state::park_unresolved_snapshot_rows(
-        world,
-        &snapshot,
-        &unresolved,
-    );
+    // The parked rows decode the same columns the overlay does, so through the same load order.
+    let (parked_rows, report) = translated(translator.clone(), || {
+        crate::cell_loader::reference_state::park_unresolved_snapshot_rows(world, &snapshot, &unresolved)
+    });
+    tally(report);
     if parked_rows > 0 {
         log::info!(
             "save load: parked {parked_rows} saved row(s) of non-resident references \
              for their next respawn"
         );
     }
-    match byroredux_save::apply_deltas(world, &registry, &snapshot, &remap, MUTABLE_DELTA_COLUMNS) {
+    let (overlaid, report) = translated(translator.clone(), || {
+        byroredux_save::apply_deltas(world, &registry, &snapshot, &remap, MUTABLE_DELTA_COLUMNS)
+    });
+    tally(report);
+    if !translation.absent.is_empty() {
+        let absent: Vec<String> =
+            translation.absent.iter().map(|(plugin, count)| format!("{:032x} ({count})", plugin.0)).collect();
+        log::warn!(
+            "save load: {} saved form(s) belong to plugins this load order lacks, read as absent: {}",
+            translation.absent.values().sum::<usize>(),
+            absent.join(", ")
+        );
+    }
+    log::debug!("save load: {} saved FormID(s) read through the load order", translation.translated);
+    match overlaid {
         Ok(applied) => {
             let dead = crate::combat::reconcile_dead_actor_runtime_state(world);
             // #3488 — the overlay is additive-only, so a saved *absence*
@@ -992,13 +1046,7 @@ pub fn execute_pending_save_loads(
 
     // LMC-SAV-001 (#6670) — the save carries the profile it was made with; say what changed since. The session keeps
     // its own profile.
-    let profile_lines = crate::profile_fingerprint::save_profile_lines(world, &snapshot);
-    for line in &profile_lines {
-        log::warn!("save load: {line}");
-    }
-    if let Some(summary) = profile_lines.first() {
-        notify_player(world, format!("{summary} (see the log or save.info)"));
-    }
+    report_profile_difference(profile_before.as_ref(), &snapshot);
 
     // M45.1 refinement — put the player back where they saved, on top of
     // the reloaded cell (which spawns the player at the default door).

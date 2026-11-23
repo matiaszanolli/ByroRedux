@@ -105,6 +105,7 @@ pub struct QuestAliasInjectionState {
     /// `(quest, alias, reference, item, count)` entries are deliberately free
     /// of session-local entity IDs. Refilling the alias onto another authored
     /// reference still grants there because its reference FormID differs.
+    #[cfg_attr(feature = "save", serde(with = "stable_grants"))]
     inventory_grants: HashSet<(QuestFormId, i32, u32, u32, u32)>,
 }
 
@@ -1743,4 +1744,38 @@ pub(super) fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
     // already-saved inventory stacks. Faction bookkeeping inside this
     // resource is serde-skipped and re-derived from static QUST data.
     registry.register_resource::<QuestAliasInjectionState>("QuestAliasInjectionState");
+}
+
+/// The alias inventory grants saved with their quest, reference and item as stable identities (LMC-SAV-002..004); a
+/// grant naming an absent plugin's form is dropped.
+#[cfg(feature = "save")]
+mod stable_grants {
+    use std::collections::HashSet;
+
+    use byroredux_core::stable_form_id::{SavedForm, StableForms};
+    use serde::{Deserialize, Serialize};
+
+    use crate::quest_stages::QuestFormId;
+
+    type Grant = (QuestFormId, i32, u32, u32, u32);
+
+    pub fn serialize<S: serde::Serializer>(grants: &HashSet<Grant>, ser: S) -> Result<S::Ok, S::Error> {
+        grants
+            .iter()
+            .map(|&(quest, alias, reference, item, count)| {
+                (quest.to_wire(), alias, SavedForm::save(reference), SavedForm::save(item), count)
+            })
+            .collect::<Vec<_>>()
+            .serialize(ser)
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(de: D) -> Result<HashSet<Grant>, D::Error> {
+        Ok(Vec::<(SavedForm, i32, SavedForm, SavedForm, u32)>::deserialize(de)?
+            .into_iter()
+            .filter_map(|(quest, alias, reference, item, count)| {
+                let (quest, reference, item) = (QuestFormId::from_wire(quest), reference.load(), item.load());
+                Some((quest?, alias, reference?, item?, count))
+            })
+            .collect())
+    }
 }

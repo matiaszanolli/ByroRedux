@@ -33,6 +33,7 @@ pub const MENU_OPEN_CLOSE_EVENT: &str = "OnMenuOpenCloseEvent";
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct MenuEventRegistration {
     /// The object the registering script is attached to.
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))]
     pub owner: u32,
     pub script: String,
     /// The menu name as the script wrote it.

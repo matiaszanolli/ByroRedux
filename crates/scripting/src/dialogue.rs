@@ -50,7 +50,7 @@ impl Resource for DialogueQuestPriorities {}
 /// the save schema.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
-pub struct DialogueSpokenInfoForms(pub std::collections::HashSet<(u32, u32)>);
+pub struct DialogueSpokenInfoForms(#[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::vec"))] pub std::collections::HashSet<(u32, u32)>);
 
 impl Resource for DialogueSpokenInfoForms {}
 

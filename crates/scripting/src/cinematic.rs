@@ -41,6 +41,7 @@ impl CinematicAnimationEvent {
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ImageSpaceModifierApplication {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))]
     pub form_id: u32,
     pub strength: f32,
 }
@@ -104,6 +105,7 @@ pub struct ActorCinematicState {
     /// Authored cart seat most recently exited (MQ101 uses 1..=5).
     pub cart_seat: Option<u8>,
     /// IDLE record FormID requested by the latest `PlayIdle`-family call.
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::option"))]
     pub requested_idle_form_id: Option<u32>,
     /// Monotonic generation so an animation consumer can observe repeated
     /// requests for the same IDLE instead of treating them as unchanged.
@@ -150,6 +152,7 @@ pub struct HorseTetherState {
     pub horse_local_rotation: Quat,
     /// Current XLKR waypoint followed by the horse while this native cart
     /// tether is active. `None` lazily resolves from the horse's placed ref.
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::option"))]
     pub route_target_form_id: Option<u32>,
 }
 
@@ -191,6 +194,7 @@ pub struct CinematicPresentationState {
     pub applied_image_space_modifiers: Vec<ImageSpaceModifierApplication>,
     /// Sampled aggregate consumed by the renderer this frame.
     pub image_space_modifier_frame: ImageSpaceModifier,
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))]
     image_space_modifier_catalog: HashMap<u32, ImadRecord>,
     active_image_space_modifiers: Vec<ActiveImageSpaceModifier>,
     player_imod_event: Option<PlayerAnimationEventRegistration>,

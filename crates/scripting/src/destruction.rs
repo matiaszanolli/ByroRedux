@@ -72,7 +72,7 @@ pub struct ReferenceDestruction {
 /// Every damaged or destroyed reference, by FormID. Saved.
 #[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
-pub struct DestructionStates(pub BTreeMap<u32, ReferenceDestruction>);
+pub struct DestructionStates(#[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))] pub BTreeMap<u32, ReferenceDestruction>);
 
 impl Resource for DestructionStates {}
 

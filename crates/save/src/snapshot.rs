@@ -684,7 +684,21 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v142 -> v143 (#7309): `ObScriptLedger` lost its `forms` column (the form a `Set...` command was given, which
 /// nothing read back; those commands now decline), so a v142 ledger carries a field this one does not have.
-pub const FORMAT_MAJOR: u16 = 143;
+///
+/// v143 -> v144 (#7348): `CharacterIdentity` gained the required `class_form_id` (the class a script's `SetClass`
+/// gave the player, which `Background` does not save), so a v143 identity row lacks a field this one requires.
+///
+/// v144 -> v145 (#6676, LMC-SAV-002..004): the FormIDs of `Inventory`, `EquippedWeapon`, `EquippedAmmo`, `Perks`,
+/// `FactionReputation`, `CharacterIdentity` (its race and class), `SpellList` and `ReadiedSpell` are saved as stable plugin-and-object
+/// identities (`byroredux_core::stable_form_id`) instead of session-global numbers, so a v144 row's numbers would be
+/// read as whatever form the current load order gives them.
+///
+/// v145 -> v146 (#6676, LMC-SAV-002..004, slice 2): every other saved FormID the post-reload restore reads is saved as
+/// a stable identity: the quest, story, alias, ledger, crime, registration, cinematic and reference-state columns
+/// (maps keyed by FormID become `[key, value]` lists; `QuestFormId` itself is stable), the active-effect and parked
+/// reference codecs, script-instance properties, and the reference variables kept as `f32` halves (quest locals,
+/// `ScriptVariables`, which now also lists its reference pairs). A v145 row's numbers and object keys do not decode.
+pub const FORMAT_MAJOR: u16 = 146;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

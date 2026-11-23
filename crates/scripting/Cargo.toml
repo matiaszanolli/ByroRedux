@@ -9,7 +9,7 @@ rust-version.workspace = true
 # (`ScriptTimer`) so the save crate can snapshot them. Off by default;
 # the binary turns it on. #5802 — and lets a subsystem register its own saved
 # columns (`register_saved`) instead of the binary's registry hub spelling them.
-save = ["serde", "byroredux-core/save", "dep:byroredux-save"]
+save = ["serde", "byroredux-core/save", "dep:byroredux-save", "byroredux-plugin/save"]
 
 [dependencies]
 byroredux-core = { workspace = true }

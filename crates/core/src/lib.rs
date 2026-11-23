@@ -20,6 +20,8 @@ pub mod combustion;
 pub mod console;
 pub mod ecs;
 pub mod form_id;
+#[cfg(feature = "inspect")]
+pub mod stable_form_id;
 pub mod imagespace;
 pub mod lighting;
 pub mod math;

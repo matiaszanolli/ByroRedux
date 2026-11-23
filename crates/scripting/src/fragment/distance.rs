@@ -28,9 +28,13 @@ use crate::translate::effects::VmStored;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub enum DistanceTarget {
-    Reference(u32),
+    Reference(#[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))] u32),
     /// A `ReferenceAlias`, resolved when the distance is checked.
-    Alias { quest: u32, alias: i16 },
+    Alias {
+        #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))]
+        quest: u32,
+        alias: i16,
+    },
 }
 
 /// One script instance's pending distance registration.
@@ -38,6 +42,7 @@ pub enum DistanceTarget {
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct DistanceWatch {
     /// The object the script is attached to: a quest or a reference.
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))]
     pub owner: u32,
     pub script: String,
     pub a: DistanceTarget,

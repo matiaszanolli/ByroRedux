@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredStack {
+    #[serde(with = "byroredux_core::stable_form_id")]
     base_form_id: u32,
     count: u32,
     instance: Option<ItemInstance>,
@@ -188,6 +189,7 @@ struct SavedReferenceState {
     equipment: Option<EquipmentSlots>,
     weapon: Option<EquippedWeapon>,
     actor_values: Option<byroredux_scripting::actor_value_save::SavedActorValues>,
+    #[serde(with = "byroredux_core::stable_form_id::forms")]
     spells: Option<Vec<u32>>,
     perks: Option<byroredux_core::character::Perks>,
     control: Option<byroredux_scripting::ActorControlState>,
@@ -594,10 +596,14 @@ pub(crate) fn restore_script_state(world: &mut World, entity: EntityId) -> bool 
 }
 
 /// #7342 — a door's saved open state, parked from a save it was not resident for (the exterior ring,
-/// [`park_unresolved_snapshot_rows`]): put it on the door when `attach_door` stamps it, scripted or not, and drop the
-/// row once nothing else is left in it (a door script's locals stay for its attach). Eviction never parks a door's
-/// state (#7305), so only a save reaches this: a door keeps the state it was saved in, as a resident one does
-/// through the deltas, and no unconsumed row is re-saved forever.
+/// [`park_unresolved_snapshot_rows`]): put it on the door when `attach_door` stamps it, scripted or not. Eviction
+/// never parks a door's state (#7305), so only a save reaches this: a door keeps the state it was saved in, as a
+/// resident one does through the deltas, and no unconsumed row is re-saved forever.
+///
+/// The row is consumed here only when it holds nothing else. A row that also holds the door script's locals, timer or
+/// rumble keeps its `two_state`: a script will attach, its recognizer re-stamps the whole component (so
+/// `activated_once` would be lost and an authored `isOpen` would win), and [`restore_script_state`] puts the saved
+/// state back over it, then re-derives the mirror (#7346).
 pub(crate) fn restore_parked_door_state(world: &mut World, entity: EntityId) -> bool {
     let Some(pair) = identity(world, entity) else {
         return false;
@@ -609,8 +615,9 @@ pub(crate) fn restore_parked_door_state(world: &mut World, entity: EntityId) -> 
         let Some(state) = store.scripts.get_mut(&pair) else {
             return false;
         };
-        let two_state = state.two_state.take();
-        if state.is_empty() {
+        let two_state = state.two_state;
+        let a_script_will_attach = state.variables.is_some() || state.timer.is_some() || state.rumble.is_some();
+        if two_state.is_some() && !a_script_will_attach {
             store.scripts.remove(&pair);
         }
         two_state
@@ -2195,8 +2202,10 @@ mod tests {
     }
 
     /// #7342 — a door's open state a save parked for it (it was in the exterior ring) goes on the door when
-    /// `attach_door` stamps it, scripted or not, and the row is dropped once nothing else is in it; a door
-    /// script's parked locals stay for its own attach.
+    /// `attach_door` stamps it, scripted or not. #7346 — an unscripted door's row is then consumed whole; a
+    /// scripted door's row keeps its state and locals, because the door script's recognizer re-stamps the whole
+    /// component after `attach_door` (losing `activated_once`, and letting an authored `isOpen` win), and
+    /// `restore_script_state` puts the saved state back over it.
     #[test]
     fn a_saved_door_state_parked_for_the_ring_is_put_on_the_door_at_attach() {
         use byroredux_scripting::{ScriptVariables, TwoStateActivator};
@@ -2228,8 +2237,24 @@ mod tests {
             ));
             assert_eq!(world.get::<TwoStateActivator>(door).map(|state| *state), Some(opened), "scripted {scripted}");
             let row = world.resource::<PersistentReferenceStates>().scripts.get(&pair).cloned();
-            assert_eq!(row.is_some(), scripted, "an unscripted door's row is consumed whole; a script's locals stay");
-            assert!(row.is_none_or(|row| row.two_state.is_none()));
+            assert_eq!(row.is_some(), scripted, "an unscripted door's row is consumed whole; a script's row stays");
+            if scripted {
+                // The door script's recognizer: the whole component re-stamped from the script's defaults, an
+                // authored `isOpen` (closed) over the saved state, `activated_once` reset.
+                world.insert(door, TwoStateActivator { is_open: false, is_animating: false, do_once: true, activated_once: false });
+                world.insert(door, ScriptVariables::default());
+                assert!(restore_script_state(&mut world, door));
+                assert_eq!(
+                    world.get::<TwoStateActivator>(door).map(|state| *state),
+                    Some(opened),
+                    "the saved state, `activated_once` included, comes back over the recognizer's"
+                );
+                let locals = world.get::<ScriptVariables>(door).unwrap();
+                assert_eq!(locals.get_by_name("bDone"), Some(1.0));
+                assert_eq!(locals.get_by_name("::isOpen_var"), Some(1.0), "the mirror follows the restored state");
+                drop(locals);
+                assert!(!world.resource::<PersistentReferenceStates>().scripts.contains_key(&pair), "consumed");
+            }
         }
     }
 

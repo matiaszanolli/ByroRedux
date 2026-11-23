@@ -28,6 +28,7 @@ pub struct ImadColorKey {
 /// no `EntityId`, no engine-side handle.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ImadRecord {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))]
     pub form_id: u32,
     pub editor_id: String,
     pub flags: u32,

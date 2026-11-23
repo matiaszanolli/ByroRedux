@@ -58,6 +58,7 @@ const MIN_GAME_TIMER_HOURS: f32 = 0.033;
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct UpdateRegistration {
     /// The object the script is attached to: a quest or a reference.
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))]
     pub owner: u32,
     pub script: String,
     pub clock: UpdateClock,

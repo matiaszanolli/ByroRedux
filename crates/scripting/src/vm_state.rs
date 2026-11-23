@@ -17,10 +17,62 @@ const IS_OPEN_VARIABLE: &str = "::isOpen_var";
 const IS_ANIMATING_VARIABLE: &str = "::isAnimating_var";
 
 /// Numeric Papyrus instance variables addressable by CTDA string parameter.
+///
+/// A reference variable is kept as two exact `f32` halves under `<name>#lo` / `<name>#hi`
+/// ([`Self::set_reference_by_name`]). Only the names' hashes are stored, so the variables also remember which pairs
+/// hold a reference: the save writes each as its stable identity (LMC-SAV-002..004) and the load splits it again
+/// through the current load order.
 #[derive(Debug, Clone, Default, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "save", serde(from = "SavedScriptVariables", into = "SavedScriptVariables"))]
 pub struct ScriptVariables {
     values: HashMap<ConditionStringId, f32>,
+    /// The `(low, high)` half keys of every reference variable set through [`Self::set_reference_by_name`].
+    references: Vec<(ConditionStringId, ConditionStringId)>,
+}
+
+/// [`ScriptVariables`] as saved: the plain values, and each reference variable as its half keys and the one FormID
+/// they make, saved as a stable identity.
+#[cfg(feature = "save")]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedScriptVariables {
+    values: HashMap<ConditionStringId, f32>,
+    references: Vec<(ConditionStringId, ConditionStringId, byroredux_core::stable_form_id::SavedForm)>,
+}
+
+#[cfg(feature = "save")]
+impl From<ScriptVariables> for SavedScriptVariables {
+    fn from(mut variables: ScriptVariables) -> Self {
+        let references = variables
+            .references
+            .iter()
+            .map(|&(low, high)| {
+                let form = crate::obscript_vm::form_from_halves(
+                    variables.values.remove(&low).unwrap_or(0.0),
+                    variables.values.remove(&high).unwrap_or(0.0),
+                );
+                (low, high, byroredux_core::stable_form_id::SavedForm::save(form))
+            })
+            .collect();
+        Self { values: variables.values, references }
+    }
+}
+
+#[cfg(feature = "save")]
+impl From<SavedScriptVariables> for ScriptVariables {
+    /// A reference to an absent plugin's form is left unset, which reads as no reference.
+    fn from(saved: SavedScriptVariables) -> Self {
+        let mut variables = Self { values: saved.values, references: Vec::new() };
+        for (low, high, form) in saved.references {
+            if let Some(form) = form.load() {
+                let (low_value, high_value) = crate::obscript_vm::form_halves(form);
+                variables.values.insert(low, low_value);
+                variables.values.insert(high, high_value);
+                variables.references.push((low, high));
+            }
+        }
+        variables
+    }
 }
 
 impl Component for ScriptVariables {
@@ -42,6 +94,19 @@ impl ScriptVariables {
 
     pub fn set_by_name(&mut self, name: &str, value: f32) {
         self.set(ConditionStringId::from_text(name), value);
+    }
+
+    /// Set the reference variable `name` to `form`, as its two exact halves under `<name>#lo` / `<name>#hi`, and
+    /// remember the pair so a save can write the reference as a stable identity.
+    pub fn set_reference_by_name(&mut self, name: &str, form: u32) {
+        let (low_name, high_name) = crate::obscript_objects::ref_variable_halves(name);
+        let (low_key, high_key) = (ConditionStringId::from_text(&low_name), ConditionStringId::from_text(&high_name));
+        let (low, high) = crate::obscript_vm::form_halves(form);
+        self.set(low_key, low);
+        self.set(high_key, high);
+        if !self.references.contains(&(low_key, high_key)) {
+            self.references.push((low_key, high_key));
+        }
     }
 
     /// #7338 — set the `default2StateActivator` mirror (`::isOpen_var`, `::isAnimating_var`) from `state`, the

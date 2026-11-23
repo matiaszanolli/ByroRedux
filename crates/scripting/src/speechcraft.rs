@@ -23,7 +23,9 @@ pub enum SpeechcraftOutcome {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct SpeechcraftOutcomes {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::vec"))]
     bribed: BTreeSet<u32>,
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::vec"))]
     intimidated: BTreeSet<u32>,
 }
 

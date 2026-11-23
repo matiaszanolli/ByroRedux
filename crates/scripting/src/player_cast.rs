@@ -37,7 +37,7 @@ const TIER_NAMES: [&str; 5] = ["Novice", "Apprentice", "Journeyman", "Expert", "
 /// none. Saved (PSC-RDY-004); a spell that leaves the list clears it ([`readied`]).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
-pub struct ReadiedSpell(pub Option<u32>);
+pub struct ReadiedSpell(#[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::option"))] pub Option<u32>);
 
 impl Component for ReadiedSpell {
     type Storage = SparseSetStorage<Self>;

@@ -26,12 +26,15 @@ use byroredux_core::ecs::world::World;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct CrimeEntry {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))]
     pub knower: u32,
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))]
     pub criminal: u32,
     pub kind: CrimeKind,
     /// The reference (or, for theft from an actor's property, the actor base)
     /// the crime was against; 0 when it was against no one in particular (a
     /// faction's property).
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))]
     pub victim: u32,
 }
 

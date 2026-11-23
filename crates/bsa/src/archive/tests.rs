@@ -340,6 +340,8 @@ fn archive_with_payload(
         compressed_by_default,
         embed_file_names,
         files,
+        folder_count: 0,
+        folder_hash_mismatches: 0,
     }
 }
 

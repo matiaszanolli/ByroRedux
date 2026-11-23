@@ -247,7 +247,37 @@ pub fn editor_location(world: &World, entity: EntityId) -> Option<u32> {
 #[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct LocationAliasBindings {
+    #[cfg_attr(feature = "save", serde(with = "stable_bindings"))]
     bound: HashMap<QuestFormId, HashMap<i32, u32>>,
+}
+
+/// The bindings saved with each quest and location as stable identities (LMC-SAV-002..004): a quest or location of an
+/// absent plugin drops its binding.
+#[cfg(feature = "save")]
+mod stable_bindings {
+    use super::{HashMap, QuestFormId};
+    use byroredux_core::stable_form_id::{SavedForm, StableForms};
+    use serde::{Deserialize, Serialize};
+
+    type Wire = Vec<(SavedForm, Vec<(i32, SavedForm)>)>;
+
+    pub fn serialize<S: serde::Serializer>(bound: &HashMap<QuestFormId, HashMap<i32, u32>>, ser: S) -> Result<S::Ok, S::Error> {
+        let wire: Wire = bound
+            .iter()
+            .map(|(quest, aliases)| (quest.to_wire(), aliases.iter().map(|(&alias, &lctn)| (alias, SavedForm::save(lctn))).collect()))
+            .collect();
+        wire.serialize(ser)
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(de: D) -> Result<HashMap<QuestFormId, HashMap<i32, u32>>, D::Error> {
+        Ok(Wire::deserialize(de)?
+            .into_iter()
+            .filter_map(|(quest, aliases)| {
+                let aliases = aliases.into_iter().filter_map(|(alias, lctn)| Some((alias, lctn.load()?))).collect();
+                Some((QuestFormId::from_wire(quest)?, aliases))
+            })
+            .collect())
+    }
 }
 
 impl Resource for LocationAliasBindings {}
@@ -290,7 +320,9 @@ impl LocationAliasBindings {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct LocationClearState {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::vec"))]
     cleared: std::collections::HashSet<u32>,
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::vec"))]
     dead_bosses: std::collections::HashSet<u32>,
 }
 

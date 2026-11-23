@@ -43,6 +43,7 @@ pub fn install_crime_factions(world: &mut World, index: &EsmIndex) -> usize {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct CrimeFactionOverrides {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map_forms"))]
     set: BTreeMap<u32, u32>,
 }
 

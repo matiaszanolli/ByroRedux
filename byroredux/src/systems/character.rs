@@ -123,19 +123,20 @@ pub(crate) fn player_may_activate(world: &World) -> bool {
             .is_none_or(|controls| controls.activation_enabled)
 }
 
-/// Keep the player's `Background` race on the race chosen in character creation
-/// ([`CharacterIdentity`](byroredux_core::character::CharacterIdentity)). `Background` is
-/// re-created with the actor from its record and not saved; the identity is saved, so after a
-/// load (or the chargen screen) this puts the chosen race back where every race reader
-/// (`GetIsRace`, `GetPlayerRace`, the alias and crime rules) looks. Writes only on a change.
+/// Keep the player's `Background` race and class on the choices saved with the character
+/// ([`CharacterIdentity`](byroredux_core::character::CharacterIdentity)): the race chosen in character creation, and
+/// the class a script gave the player (`SetClass`, #7348). `Background` is re-created with the actor from its record
+/// and not saved; the identity is saved, so after a load (or the chargen screen) this puts the choices back where every
+/// reader (`GetIsRace`, `GetPlayerRace`, the alias and crime rules, the skill-use classes) looks. A 0 is no choice and
+/// leaves the field alone. Writes only on a change.
 pub(crate) fn player_identity_sync_system(world: &World, _dt: f32) {
     let Some(player) = PlayerEntity::get(world) else {
         return;
     };
-    let Some(race) = world
+    let Some((race, class)) = world
         .get::<byroredux_core::character::CharacterIdentity>(player)
-        .map(|identity| identity.race_form_id)
-        .filter(|race| *race != 0)
+        .map(|identity| ((identity.race_form_id != 0).then_some(identity.race_form_id), (identity.class_form_id != 0).then_some(identity.class_form_id)))
+        .filter(|(race, class)| race.is_some() || class.is_some())
     else {
         return;
     };
@@ -143,10 +144,19 @@ pub(crate) fn player_identity_sync_system(world: &World, _dt: f32) {
         return;
     };
     match backgrounds.get_mut(player) {
-        Some(background) if background.race_form_id != race => background.race_form_id = race,
-        Some(_) => {}
+        Some(background) => {
+            if let Some(race) = race.filter(|race| background.race_form_id != *race) {
+                background.race_form_id = race;
+            }
+            if let Some(class) = class.filter(|class| background.class_form_id != *class) {
+                background.class_form_id = class;
+            }
+        }
         None => {
-            backgrounds.insert(player, byroredux_core::character::Background { race_form_id: race, class_form_id: 0 });
+            backgrounds.insert(
+                player,
+                byroredux_core::character::Background { race_form_id: race.unwrap_or(0), class_form_id: class.unwrap_or(0) },
+            );
         }
     }
 }
@@ -1919,6 +1929,30 @@ pub(crate) fn resolve_ground_contact(
 mod tests {
     use super::*;
     use byroredux_core::ecs::components::water::WaterKind;
+
+    /// #7348 — the identity sync writes the saved race AND class back onto `Background`, each only when it is a choice
+    /// (not 0), and never touches a field the identity has no choice for.
+    #[test]
+    fn the_identity_sync_restores_the_saved_race_and_class_and_only_those() {
+        use byroredux_core::character::{Background, CharacterIdentity};
+        let identity = |race_form_id, class_form_id| CharacterIdentity { name: "A".into(), female: false, race_form_id, class_form_id };
+        let sync = |identity: CharacterIdentity| {
+            let mut world = World::new();
+            world.register::<Background>();
+            world.register::<CharacterIdentity>();
+            let player = world.spawn();
+            world.insert_resource(PlayerEntity(Some(player)));
+            world.insert(player, Background { race_form_id: 0x19, class_form_id: 0x11 });
+            world.insert(player, identity);
+            player_identity_sync_system(&world, 0.0);
+            let background = world.get::<Background>(player).map(|background| (background.race_form_id, background.class_form_id));
+            background.unwrap()
+        };
+        assert_eq!(sync(identity(0x42, 0x55)), (0x42, 0x55), "both choices");
+        assert_eq!(sync(identity(0, 0x55)), (0x19, 0x55), "a class alone leaves the race");
+        assert_eq!(sync(identity(0x42, 0)), (0x42, 0x11), "a race alone leaves the class (the record's)");
+        assert_eq!(sync(identity(0, 0)), (0x19, 0x11), "no choice at all changes nothing");
+    }
 
     /// #5155 — only a downward request swept to no descent counts as a
     /// blocked fall: a fall that moves, a rise, and an idle frame do not.

@@ -53,9 +53,23 @@ use std::sync::Arc;
 /// quest-keyed maps don't accidentally collide with other FormID
 /// spaces (item, NPC, cell) when M47.2's transpiler emits typed
 /// quest references from Papyrus `Quest Property X Auto`.
+///
+/// Saved as the quest's stable identity (`byroredux_core::stable_form_id`, LMC-SAV-002..004); a map keyed by quest
+/// goes through `stable_form_id::map`, since a stable identity is not a JSON object key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
-pub struct QuestFormId(pub u32);
+pub struct QuestFormId(#[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))] pub u32);
+
+#[cfg(feature = "save")]
+impl byroredux_core::stable_form_id::StableForms for QuestFormId {
+    type Wire = byroredux_core::stable_form_id::SavedForm;
+    fn to_wire(&self) -> Self::Wire {
+        byroredux_core::stable_form_id::SavedForm::save(self.0)
+    }
+    fn from_wire(wire: Self::Wire) -> Option<Self> {
+        wire.load().map(QuestFormId)
+    }
+}
 
 /// #4612 — a change key for quest-derived presentation (the HUD objective
 /// list): every state change stamps a fresh value from one process-wide
@@ -102,6 +116,7 @@ impl Default for QuestRevision {
 #[derive(Debug, Default)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct QuestStageState {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))]
     quests: HashMap<QuestFormId, QuestStageData>,
     /// Transient delivery state. Quest progress is saved; event history and
     /// subscriber cursors are process-local and restart cleanly after load.
@@ -442,6 +457,7 @@ impl QuestStageState {
 #[derive(Debug, Default)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct QuestObjectiveState {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))]
     quests: HashMap<QuestFormId, HashMap<i32, ObjectiveStatus>>,
     /// Stamped by every objective mutator.
     #[cfg_attr(feature = "save", serde(skip, default))]

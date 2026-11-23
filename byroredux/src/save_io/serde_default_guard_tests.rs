@@ -908,7 +908,13 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `MenuEventRegistrations` resource column.
     // #7044 — refreshed WITH a major bump (v135 -> v136): `ActorValue` gained the required `stored` layer.
     // #7309 — refreshed WITH a major bump (v142 -> v143): `ObScriptLedger` lost its unread `forms` column.
-    const BASELINE_MAJOR: u16 = 143;
+    // #7348 — refreshed WITH a major bump (v143 -> v144): `CharacterIdentity` gained the required `class_form_id`.
+    // LMC-SAV-002..004 (#6676) — refreshed WITH a major bump (v144 -> v145): the slice-1 FormID fields (`Inventory`,
+    // `EquippedWeapon`, `EquippedAmmo`, `Perks`, `FactionReputation`, `CharacterIdentity`, `SpellList`,
+    // `ReadiedSpell`) save as stable identities through `byroredux_core::stable_form_id`.
+    // LMC-SAV-002..004 (#6676) slice 2 — refreshed WITH a major bump (v145 -> v146): the remaining post-reload saved
+    // FormIDs save as stable identities, `ScriptVariables` gained its `references` list.
+    const BASELINE_MAJOR: u16 = 146;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1347,10 +1353,17 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `SavedPersistentReferenceStates`, which are unchanged; nothing serialized the in-memory types any more.
     // Only the scan's input shrank; no registered column decodes differently.
     // #6667 — v135: `Effect::ShowAppearanceMenu` (Fallout 4's `ShowRaceMenu` appearance modes).
-    // #6667 — refreshed WITHOUT a major bump: `FragmentResumeCondition::MessageAnswered { ticket }` was
-    // appended (a script frozen on `Message.Show()`'s value). Name-tagged like `MovieEnded` and
-    // `DetectedBy` before it: no v135 save carries the variant and no existing variant or field moved.
-    // `PapyrusMessageAnswers` is UI state and is not saved (`registry_completeness_tests`).
+    // #6667 — refreshed WITHOUT a major bump, and the refresh moved THREE shapes, not one (#7352): (1)
+    // `FragmentResumeCondition::MessageAnswered { ticket }` was appended (a script frozen on `Message.Show()`'s
+    // value); (2) `VmStep::Replay(u32)` was appended to the resume path; (3) `VmResume` gained the field
+    // `answer: Option<i32>`. The two variants are name-tagged like `MovieEnded` and `DetectedBy` before them, so no
+    // save carries them and no existing variant moved. The field is different: a new `Option` in a saved type is the
+    // kind of change this guard's policy bumps for, because serde default-fills a missing `Option` with `None`, which
+    // is the mechanism `#[serde(default)]` is forbidden for (#1714). It was safe here for two reasons that do not
+    // generalise: a missing `answer` means "no answer yet", the right reading of a v135 continuation, and the
+    // v136 bump below refuses every v135 save outright, so nothing old can decode through the default. The next
+    // such field needs its own bump or its own argument. `PapyrusMessageAnswers` is UI state and is not saved
+    // (`registry_completeness_tests`).
     // #7044 — v136: `ActorValue` gained the required `stored` layer (a level-up's accumulated term), refreshed WITH the
     // major bump above.
     // #7050 — v137: `SkillUseLevel` (u16 + [u16; 8]) joined the saved registry as a NEW component column, refreshed
@@ -1372,7 +1385,15 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // LMC-ID-007 / LMC-SAV-001 (#6670) — v142: `SessionProfile` (the profile the save was made with, wire type
     // `ProfileRecord`) joined the saved registry as a NEW resource codec column, refreshed WITH the major bump above.
     // #7309 — v143: `ObScriptLedger` lost its unread `forms` column, refreshed WITH the major bump above.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xcb2a_6c5b_b7e9_ea9a;
+    // #7348 — v144: `CharacterIdentity` gained the required `class_form_id` (a script-set player class, which the
+    // unsaved `Background` cannot keep), refreshed WITH the major bump above.
+    // #6676 — v145: the slice-1 FormID fields save as stable identities (`stable_form_id`), refreshed WITH the major
+    // bump above.
+    // #7348 — refreshed WITHOUT a major bump: `CharacterIdentity.class_form_id`, the one FormID of the identity the v145
+    // change missed (it was added in v144), joined the stable fields. The adapter still reads a bare number, so a
+    // save written before this change decodes, and no registered column's wire form is refused.
+    // #6676 — v146: the slice-2 FormID columns, refreshed WITH the major bump above.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x1def_5204_9d19_bf28;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.

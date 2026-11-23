@@ -1,7 +1,10 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-23). Revision 24 builds LMC-REC-010: the sub-records no
-parser decodes are kept for every plugin after the first. Revision 23 layers mods' UI files over the vanilla
+**Status**: ACTIVE (2026-11-23). Revision 27 builds LMC-REC-010: the sub-records no
+parser decodes are kept for every plugin after the first. Revision 26 makes the rest of the post-reload save
+state's FormIDs stable (Phase 7 slice 2). Revision 25 saves the actor columns' FormIDs as stable
+identities (Phase 7 slice 1). Revision 24 merges mods' translation files (U4)
+and records why Phase 7 starts with stable saved FormIDs. Revision 23 layers mods' UI files over the vanilla
 archives (#7336). Revision 22 measures LMC-AST-005 and
 builds what it found missing. Revision 21 measures LMC-SET-002 and
 fixes the two hard-coded GMSTs it found. Revision 20 builds the first slice of the
@@ -231,7 +234,7 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
 | U1 | Scaleform menu replacement .swf | SkyUI, DEF_UI, HUDFramework, StarUI | D1 | Sky, FO4, SF | A mod's movie resolves over the vanilla interface archive through every mod tier: loose interface files per root, then plugin-paired archives (#7336). Its host methods are served within the M48 catalogs; an unmapped method is an attributed diagnostic. (§5.6; byroredux/src/asset_provider/layered.rs) | 2 |
 | U2 | Mod Configuration Menus (SkyUI MCM, MCM Helper, FO4 MCM, FNV MCM via UIO) | most configurable mods | D4 | all | Served by an engine-owned MCM host. (§5.6 LMC-UI-002) | 1 |
 | U3 | MenuXml menu replacements and prefabs | DarNified UI, Vanilla UI Plus, oHUD, UIO | D1 | Obl, FO3, FNV | crates/menuxml reads them, including <include> prefabs; a mod's menus, prefabs, fonts and HUD textures resolve over the vanilla Misc and texture archives through every mod tier (#7336). (§3.1 U3; byroredux/src/asset_provider/layered.rs) | 2 |
-| U4 | Translation files (Interface/Translations/*_<lang>.txt) | SkyUI, localised mods | D5 → D1 | Sky, FO4, SF | Only the language's one translation table is read (a mod replacing it is served through the mod tiers, #7336); a mod's own translation file beside it is not merged in, and no local source says whether the game or the script extender merges them. (§3.1 U4; [`crates/ui/src/translate.rs`](../../crates/ui/src/translate.rs)) | 2 |
+| U4 | Translation files (Interface/Translations/*_<lang>.txt) | SkyUI, localised mods | D1; SF D5 | Sky, FO4, SF | The script extender, not the game, merges them: SKSE64 and F4SE read Interface/Translations/<plugin stem>_<language>.txt for every enabled plugin in load order, UCS-2 LE with its mark, and keep a key's first definition (Translation.cpp ParseTranslation / ImportTranslationFiles; tHashSet::Insert). The engine does the same natively. Starfield: no source for SFSE's behaviour, so not claimed. (§3.1 U4; [`crates/ui/src/translate.rs`](../../crates/ui/src/translate.rs); [github.com](https://github.com/ianpatt/skse64/blob/master/skse64/Translation.cpp); [github.com](https://github.com/ianpatt/f4se/blob/master/f4se/Translation.cpp)) | 3 |
 | U5 | Font replacements (fontconfig.txt, .swf fonts, .fnt) | UI mods | D1 | all | fontconfig.txt and fonts_*.swf resolve through the Scaleform sources, .fnt through the MenuXml sources, each layering every mod tier over the vanilla archives (#7336). (§3.1 U5; byroredux/src/asset_provider/layered.rs) | 2 |
 
 **Settings and tooling outputs**
@@ -269,7 +272,6 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
 - A9: override of FaceGen data by loose path
 - S4.uncovered: per-function 'introduced in' API level of every extender and library family, from changelogs
 - S5: probe functions of MCM Helper, Fallout 4 MCM, ConsoleUtil, UIExtensions, HUDFramework, Workshop Framework and SFSE
-- U4: which loader merges Interface/Translations/<name>_<lang>.txt files: the game or the script extender
 - U5: font-replacement handling
 - T7.registered: the honoured-INI table: INI key to registry entry per game, each key from a primary source
 
@@ -769,9 +771,10 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   movies and fonts over the vanilla interface archive, MenuXml menus,
   prefabs, fonts and HUD textures over the vanilla Misc and texture
   archives, each under every mod tier (`interface`, `menus` and `fonts` are
-  loose roots too). Open: a mod's own `Interface\Translations\*_<lang>.txt`
-  is not merged into the language's table (catalog U4, now D5: no source
-  says whether the game or the script extender merges them).
+  loose roots too). A mod's own `Interface\Translations\<plugin>_<lang>.txt`
+  merges into the language's table as SKSE64 and F4SE merge it (catalog U4:
+  every enabled plugin in load order, UCS-2 LE, a key's first definition
+  kept); Starfield's extender has no source, so U4 is not claimed there.
 - **LMC-AST-006.** Asset errata from the fix catalog apply only when the
   vanilla content hash matches ([FIX-006](../engine/builtin-fixes.md#1-requirements)),
   so a mod's replacement mesh is never "fixed" into something else.
@@ -1053,6 +1056,28 @@ adds the user-facing contract:
 - **LMC-SAV-004 — Reordering mods.** No Form ID shifts by construction
   (stable `FormIdPair`). A reorder changes which override wins, and the load
   report says so for records the save references.
+  Measured 2026-11-23: the premise holds for reference identity
+  (`FormIdComponent` saves the pair) but not for saved state in general.
+  Inventories, equipment, actor values, perks, faction reputation,
+  persistent reference states and the scripting ledgers save session-global
+  `u32` FormIDs, so the live load reloads the *save's* plugin list to keep
+  them meaning the same forms. Hence a removed plugin refuses the load and an
+  added one is not loaded. Phase 7 therefore starts with stable saved
+  FormIDs. The owner chose to save each FormID as its stable identity
+  (2026-11-23). Slice 1 is built: `byroredux_core::stable_form_id`'s serde
+  adapters write a saved FormID as its (plugin, object) pair through the
+  session's load order and read it back through the current one, a pair
+  whose plugin is gone reading as absent and counted for the load report;
+  the actor columns (inventory, equipped weapon and arrow, perks, faction
+  reputation, race, spells, readied spell) use them (save format v145 after
+  #7348's v144). Slice 2 is built (v146): every other saved FormID the
+  post-reload restore reads, including quest-keyed and pair-keyed maps,
+  Papyrus registrations, the effect and parked-reference codecs,
+  script-instance properties and the reference variables kept as `f32`
+  halves; a guard classifies every save column as stable, FormID-free or
+  pre-reload raw. Left for slice 3: the six ledgers restored before the
+  reload, and the switch of the live load to the session's profile with
+  LMC-SAV-002/003's consequences and LMC-SAV-004's report.
 - **LMC-SAV-005.** Mod-version migration of extension state follows
   [STATE-006](../engine/sandboxed-linked-mods.md#13-persistent-state-and-saves);
   Papyrus-only mods keep component state keyed by script identity.
@@ -1513,4 +1538,7 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 21 | 2026-11-23 | LMC-SET-002 measured: 240 authored GMSTs read through the merged index, 8 named without a read; `fSkillUseCurve` and `fCombatDistance` were hard-coded and are now read (melee reach 141 on Skyrim, Fallout 4 and Fallout 76, 128 on Fallout 3 and New Vegas, where the engine used 180); `combat.approach` scales its ring with the reach; Oblivion's default and Starfield's meaning of `fCombatDistance` recorded as Phase 0: verify | — |
 | 22 | 2026-11-23 | LMC-AST-005 measured on FNV, Skyrim SE and a Fallout 4 + SS2 profile: `Data\` / leading-separator stripping shared by meshes, textures and materials; `sound`, `scripts` and `lodsettings` loose roots and a loose script tier; Scaleform interface layering filed (#7336). The preflight stops counting base-game Papyrus calls as extender calls | — |
 | 23 | 2026-11-23 | #7336: a mod's Scaleform movies and fonts (U1, U5) and MenuXml menus, prefabs, fonts and HUD textures (U3) resolve over the vanilla archives through every mod tier (`LayeredSources`), verified on the installed Skyrim SE and New Vegas archives; U4 set to D5 with a target of D1 until a source says who merges mods' translation files | — |
-| 24 | 2026-11-23 | LMC-REC-010 built: the sub-records no parser decodes are kept as opaque bytes for every plugin after the first, with the carrying plugin as provenance, and named by `plugins.conflicts`; "decoded" is measured per game and record type by removing each sub-record from sampled real records and re-parsing (the table is checked in and re-derived by ignored real-data tests); the official/user boundary is approximated by the first plugin until LMC-REC-008 | — |
+| 24 | 2026-11-23 | Catalog U4 sourced and built: SKSE64 and F4SE (`Translation.cpp`) merge every enabled plugin's `Interface\\Translations\\<stem>_<language>.txt`, UCS-2 LE, first definition kept; the engine does the same natively (U4 D1, Starfield D5 with no source). LMC-SAV-004's premise measured false for saved state (session-global FormIDs), which Phase 7 has to resolve first | — |
+| 25 | 2026-11-23 | Phase 7 slice 1 (owner's option A): saved FormIDs as stable identities through `byroredux_core::stable_form_id`, the actor columns converted, save format v144 | — |
+| 26 | 2026-11-23 | Phase 7 slice 2: the remaining post-reload saved FormIDs as stable identities (save format v146), with a guard classifying every save column | — |
+| 27 | 2026-11-23 | LMC-REC-010 built: the sub-records no parser decodes are kept as opaque bytes for every plugin after the first, with the carrying plugin as provenance, and named by `plugins.conflicts`; "decoded" is measured per game and record type by removing each sub-record from sampled real records and re-parsing (the table is checked in and re-derived by ignored real-data tests); the official/user boundary is approximated by the first plugin until LMC-REC-008 | — |

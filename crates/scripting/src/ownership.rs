@@ -54,6 +54,7 @@ pub fn install_owner_kinds(world: &mut World, index: &EsmIndex) {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct OwnerOverrides {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map_forms"))]
     owners: std::collections::BTreeMap<u32, u32>,
 }
 

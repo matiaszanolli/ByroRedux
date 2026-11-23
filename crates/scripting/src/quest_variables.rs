@@ -39,6 +39,7 @@ type VariableMap = HashMap<QuestFormId, HashMap<ConditionStringId, f32>>;
 #[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct QuestScriptVariables {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))]
     written: VariableMap,
 }
 
@@ -150,8 +151,12 @@ pub fn install_quest_script_variables<'a>(
 pub enum ScriptObject {
     None,
     /// A form by FormID (a reference, a base object, a quest).
-    Form(u32),
-    Alias { quest: u32, alias: i16 },
+    Form(#[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))] u32),
+    Alias {
+        #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))]
+        quest: u32,
+        alias: i16,
+    },
     /// A string — a `String` variable, or a script's state name.
     Str(String),
     /// An element of a stored array or struct member.
@@ -173,6 +178,7 @@ pub enum ScriptObject {
 #[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct QuestScriptObjects {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))]
     written: HashMap<QuestFormId, HashMap<ConditionStringId, ScriptObject>>,
 }
 

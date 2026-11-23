@@ -572,14 +572,13 @@ id = "U4"
 group = "ui"
 name = "Translation files (Interface/Translations/*_<lang>.txt)"
 examples = "SkyUI, localised mods"
-disposition = "D5"
-target = "D1"
+disposition = "D1"
+per_game = { starfield = "D5" }
 games = ["skyrim", "fo4", "starfield"]
 paths = ["interface/translations/*.txt"]
-reason = "Only the language's one translation table is read (a mod replacing it is served through the mod tiers, #7336); a mod's own translation file beside it is not merged in, and no local source says whether the game or the script extender merges them."
-citations = ["docs/prd/legacy-mod-compatibility.md §3.1 U4", "crates/ui/src/translate.rs"]
-verify = ["which loader merges Interface/Translations/<name>_<lang>.txt files: the game or the script extender"]
-version = 2
+reason = "The script extender, not the game, merges them: SKSE64 and F4SE read Interface/Translations/<plugin stem>_<language>.txt for every enabled plugin in load order, UCS-2 LE with its mark, and keep a key's first definition (Translation.cpp ParseTranslation / ImportTranslationFiles; tHashSet::Insert). The engine does the same natively. Starfield: no source for SFSE's behaviour, so not claimed."
+citations = ["docs/prd/legacy-mod-compatibility.md §3.1 U4", "crates/ui/src/translate.rs", "https://github.com/ianpatt/skse64/blob/master/skse64/Translation.cpp", "https://github.com/ianpatt/f4se/blob/master/f4se/Translation.cpp"]
+version = 3
 
 [[mechanism]]
 id = "U5"

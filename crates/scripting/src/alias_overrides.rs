@@ -20,18 +20,19 @@ use crate::quest_stages::QuestFormId;
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub enum AliasOverride {
     /// `ForceRefTo` — the alias holds this reference (`0x14` for the player).
-    Forced(u32),
+    Forced(#[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))] u32),
     /// `Clear` — the alias holds nothing.
     Cleared,
     /// `LocationAlias.ForceLocationTo` — the location alias holds this
     /// location.
-    ForcedLocation(u32),
+    ForcedLocation(#[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))] u32),
 }
 
 /// Every scripted alias override of a running quest. Saved.
 #[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct AliasOverrides {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))]
     by_quest: HashMap<QuestFormId, HashMap<i32, AliasOverride>>,
 }
 

@@ -19,7 +19,7 @@ use std::collections::HashMap;
 /// Runtime GLOB values, keyed by global-load-order FormID.
 #[derive(Debug, Clone, Default)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
-pub struct Globals(pub HashMap<u32, f32>);
+pub struct Globals(#[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))] pub HashMap<u32, f32>);
 
 impl Globals {
     /// An empty global table.

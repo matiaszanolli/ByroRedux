@@ -117,13 +117,15 @@ pub enum CreatedDeletion {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct CreatedReference {
-    /// Its FormID, in the `0xFF` created-object slot.
+    /// Its FormID, in the `0xFF` created-object slot: no plugin owns it, so it is saved as the number.
     pub form_id: u32,
     /// The base object (`ALCO`).
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))]
     pub base: u32,
     /// `ALCL`'s encounter level, as authored.
     pub level: u32,
     /// The reference it is created at — the target alias's reference.
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))]
     pub at_reference: u32,
     /// Resolved by the engine from `at_reference`; `None` until then.
     pub placement: Option<CreatedPlacement>,
@@ -134,6 +136,7 @@ pub struct CreatedReference {
 #[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct CreatedReferences {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))]
     by_alias: HashMap<QuestFormId, HashMap<i32, CreatedReference>>,
     /// The next created FormID's low 24 bits.
     next: u32,

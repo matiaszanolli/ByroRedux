@@ -75,16 +75,19 @@ fn fnv_dialogue_declined_by_unmodeled_conditions() {
     // #6545 bridged four more (GetCurrentAIPackage 110, GetIsReference 136, IsOwner 278,
     // GetHitLocation 391): 641 -> 613. GetFriendHit 288 (9) and GetFactionRelation 450 (6) stay
     // declined: all their authored conditions carry a zero target the bodies cannot read.
-    assert_eq!(declined_infos, 613, "declined FNV INFOs moved");
+    // b73899734 (Refs #6657) bridged three more (GetSleeping 49, GetUnconscious 242,
+    // GetIsCreatureType 438): 613 -> 609 (#7357).
+    assert_eq!(declined_infos, 609, "declined FNV INFOs moved");
     // Four quests were declined whole by IsChild (GenericAdultCombat, GenericKids),
     // IsInList (Followers) and GetTalkedToPC (DialogueCrimeKarma) until #6460.
     assert_eq!(declined_quests, 0, "declined FNV quest dialogue gates moved");
     // Objective targets (`QSTA`): 284 of the 772 conditioned ones were declined,
     // 198 only by catalogued-since getters (GetDisabled ×94 among them). What
     // is left is PlayerInRegion (612), GetInCellParam (230) and the like (#6460 took
-    // GetDestructionStage 471 and GetMapMarkerVisible 492: 86 -> 70; #6558's nine: 70 -> 69).
+    // GetDestructionStage 471 and GetMapMarkerVisible 492: 86 -> 70; #6558's nine: 70 -> 69;
+    // b73899734's three: 69 -> 68, #7357).
     assert_eq!(targets.len(), 772, "conditioned FNV objective targets moved");
-    assert_eq!(declined_targets, 69, "declined FNV objective targets moved");
+    assert_eq!(declined_targets, 68, "declined FNV objective targets moved");
 }
 
 fn fo3_index() -> Option<EsmIndex> {
@@ -97,7 +100,11 @@ fn fo3_index() -> Option<EsmIndex> {
 /// `GetTalkedToPC` (50) alone declined 21 FO3 quests whole — 5,377 of 22,327 INFOs (24 %). Now no quest
 /// is declined whole and 1,777 INFOs (8 %) were, by the functions still uncatalogued. #6558 bridged
 /// nine more getters the VM answers — `GetIsCurrentPackage` (161), the gate on package-context barks,
-/// led them — and 1,202 (5 %) are left, led by `GetScriptVariable` (53).
+/// led them — and 1,202 (5 %) were left, led by `GetScriptVariable` (53). The rows catalogued
+/// after that fire on FO3 too (a row's `Games` decides, not the commit that added it): #6545's
+/// `GetCurrentAIPackage` (110), `GetIsReference` (136), `IsOwner` (278) and `GetHitLocation` (391),
+/// then b73899734's `GetSleeping` (49), `GetUnconscious` (242) and `GetIsCreatureType` (438).
+/// Neither commit re-pinned this leg, so it sat red at 1,152 (#7357).
 #[test]
 #[ignore = "needs Fallout3.esm on disk"]
 fn fo3_dialogue_declined_by_unmodeled_conditions() {
@@ -115,7 +122,7 @@ fn fo3_dialogue_declined_by_unmodeled_conditions() {
     let declined_infos = infos.iter().filter(|info| declines(&info.conditions)).count();
     let declined_quests = index.quests.values().filter(|quest| declines(&quest.dialogue_conditions)).count();
     eprintln!("FO3 declined INFOs {declined_infos} of {}, quests {declined_quests}", infos.len());
-    assert_eq!(declined_infos, 1202, "declined FO3 INFOs moved");
+    assert_eq!(declined_infos, 1152, "declined FO3 INFOs moved");
     assert_eq!(declined_quests, 0, "declined FO3 quest dialogue gates moved");
 }
 

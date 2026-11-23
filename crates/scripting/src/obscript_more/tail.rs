@@ -470,6 +470,23 @@ fn cmd_11e5(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ct
     }
 }
 
+/// Record the class a script gave the player in the saved [`CharacterIdentity`], making one when the player has none
+/// (#7348). An identity overrides the record's sex and race wherever they are read, so a made one carries exactly what
+/// is in effect: the sex the record (or an earlier choice) gives, and race 0, which every reader takes as "no choice".
+///
+/// [`CharacterIdentity`]: byroredux_core::character::CharacterIdentity
+fn remember_player_class(world: &World, player: EntityId, class: u32) {
+    use byroredux_core::character::CharacterIdentity;
+    let female = crate::actor_base_traits::is_female(world, player).unwrap_or(false);
+    let Some(mut identities) = world.query_mut::<CharacterIdentity>() else {
+        return;
+    };
+    match identities.get_mut(player) {
+        Some(identity) => identity.class_form_id = class,
+        None => identities.insert(player, CharacterIdentity { name: String::new(), female, race_form_id: 0, class_form_id: class }),
+    }
+}
+
 // CS *SetClass <class>*.
 fn cmd_10f0(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ctx: &Context) -> Action {
     match (caller_or_player(world, ctx), form_arg(args, 0)) {
@@ -478,6 +495,11 @@ fn cmd_10f0(world: &World, _fallout: bool, _cmd: u16, args: &[ObScriptValue], ct
                 && let Some(background) = backgrounds.get_mut(actor) {
                     background.class_form_id = class;
                 }
+            // #7348 — `Background` is re-created with the actor and is not saved, so the player's class also goes into the
+            // saved identity, where `player_identity_sync_system` reads it back after a load.
+            if player(world) == Some(actor) {
+                remember_player_class(world, actor, class);
+            }
             done(format!("SetClass {class:08X}"))
         }
         _ => Action::Declined,

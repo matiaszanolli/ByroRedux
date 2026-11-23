@@ -19,11 +19,14 @@ use byroredux_plugin::esm::records::EsmIndex;
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct MapMarkers {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::vec"))]
     visible: HashSet<u32>,
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::vec"))]
     fast_travel: HashSet<u32>,
     /// Starfield's `SetMarkerVisibleOnStarMap(abVisible)`: markers a script made visible on
     /// the star map (the game's `ObjectReference.pex` declares the native with no body; the
     /// meaning is the name's, and nothing reads it yet - there is no star map).
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::vec"))]
     star_map_visible: HashSet<u32>,
 }
 
