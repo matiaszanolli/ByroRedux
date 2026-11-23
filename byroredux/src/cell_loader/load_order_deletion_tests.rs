@@ -244,3 +244,22 @@ fn fo4_deletions_leave_the_merged_index() {
     };
     assert!(report("Fallout 4", &paths).is_empty());
 }
+
+/// LMC-REC-010 — the fold keeps what no parser decodes of every plugin after the first, stamped with the plugin, and
+/// holds nothing of the game's own master. New Vegas and Dead Money: both carry sub-records the parsers skip (the
+/// master's are 378,904 of them, in 177,666 forms), and only Dead Money's are held (20,962 of them, in 8,887 forms).
+#[test]
+#[ignore = "parses FalloutNV.esm and DeadMoney.esm; run with --ignored"]
+fn the_fold_holds_a_mods_undecoded_sub_records_and_not_the_masters() {
+    let Some(paths) = paths_in(byroredux_plugin::esm::test_paths::fnv_data_dir(), &["FalloutNV.esm", "DeadMoney.esm"]) else {
+        byroredux_plugin::esm::test_paths::require_or_skip("Fallout: New Vegas with Dead Money");
+        return;
+    };
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+    let (_, order) = parse_record_indexes_in_load_order(&refs).expect("fold");
+    let held = order.opaque().per_plugin();
+    assert_eq!(held.keys().copied().collect::<Vec<_>>(), [1], "only Dead Money (position 1) is held: {held:?}");
+    let (forms, subs, bytes) = order.opaque().counts();
+    eprintln!("Dead Money: {subs} undecoded sub-records of {forms} forms, {bytes} bytes");
+    assert!(forms > 100 && subs >= forms, "{forms} forms, {subs} sub-records");
+}

@@ -116,6 +116,19 @@ pub(crate) fn character_rules_profile(game: GameKind, hedr_version: f32) -> Char
 /// Every embedded FormID read anywhere in `records/` must go through
 /// `common::remap_fid` so it participates in this remap.
 pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Result<EsmIndex> {
+    parse_esm_with_options(data, remap, ParseOptions::default())
+}
+
+/// What a walk gathers beyond the index's records.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ParseOptions {
+    /// Keep the sub-records no parser decodes in [`EsmIndex::opaque_subrecords`] (LMC-REC-010). Off for a game's own
+    /// master, whose records are on disk and numerous; on for the plugins a mod adds.
+    pub collect_opaque: bool,
+}
+
+/// [`parse_esm_with_load_order`] with `options`.
+pub fn parse_esm_with_options(data: &[u8], remap: Option<FormIdRemap>, options: ParseOptions) -> Result<EsmIndex> {
     let mut index = EsmIndex::default();
 
     let mut reader = EsmReader::new(data);
@@ -140,6 +153,9 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
     // re-deriving from a HEDR they no longer have.
     index.game = game;
     reader.set_game(game);
+    if options.collect_opaque {
+        reader.enable_opaque_collection(game);
+    }
     index.character_rules = character_rules_profile(game, file_header.hedr_version);
     let record_type_trace = reader.enable_record_type_trace();
     log::info!(
@@ -477,6 +493,7 @@ pub fn parse_esm_with_load_order(data: &[u8], remap: Option<FormIdRemap>) -> Res
             }
         }
     }
+    index.opaque_subrecords = reader.take_opaque();
     drop(reader);
     let record_type_trace = std::rc::Rc::try_unwrap(record_type_trace)
         .expect("record metadata trace has one owner after ESM walk")

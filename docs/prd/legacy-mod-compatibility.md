@@ -1,6 +1,7 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-23). Revision 27 switches the live load to the session's own plugins with
+**Status**: ACTIVE (2026-11-23). Revision 28 builds LMC-REC-010: the sub-records no
+parser decodes are kept for every plugin after the first. Revision 27 switches the live load to the session's own plugins with
 LMC-SAV-002/003/004's consequences in its report (Phase 7 slice 3). Revision 26 makes the rest of the post-reload save
 state's FormIDs stable (Phase 7 slice 2). Revision 25 saves the actor columns' FormIDs as stable
 identities (Phase 7 slice 1). Revision 24 merges mods' translation files (U4)
@@ -656,6 +657,19 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   as opaque bytes with provenance, so a later decoder sees them and the
   explain tooling can show that a mod touched them
   ([ARC-010](../engine/sandboxed-linked-mods.md#71-package-content-and-attachment)).
+  Built (#6670): no parser records what it reads, so "not decoded" is
+  measured: for each record type of each game's vanilla plugins, a sampled
+  copy of the plugin is parsed with each sub-record removed in turn, and a
+  tag whose removal leaves the index unchanged is not decoded (6 games, 789
+  (game, record type) entries, checked in as `crates/plugin/data/decoded_subrecords.toml`,
+  re-derived by ignored tests). The reader keeps the undecoded sub-records
+  of every record it reads, and every record or group no parser reads, of
+  every plugin but the first, stamped with the plugin that carried them;
+  `plugins.conflicts <form>` names them. The first plugin is the game's own
+  master, standing in for the official/user boundary that LMC-REC-008 has
+  yet to define; the owner chose to hold the mods' bytes and leave the
+  official ones on disk. A mod plugin holds about a quarter of its file
+  (the Unofficial Fallout 4 Patch: 14.6 MB, 3.5 MB held).
 - **LMC-REC-011.** Cell overrides merge per cell, with the winning plugin's
   placed references replacing the loser's for the same reference ID and new
   references appended; navmesh overrides take the winner's navmesh for that
@@ -1541,3 +1555,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 25 | 2026-11-23 | Phase 7 slice 1 (owner's option A): saved FormIDs as stable identities through `byroredux_core::stable_form_id`, the actor columns converted, save format v144 | — |
 | 26 | 2026-11-23 | Phase 7 slice 2: the remaining post-reload saved FormIDs as stable identities (save format v146), with a guard classifying every save column | — |
 | 27 | 2026-11-23 | Phase 7 slice 3: the pre-reload ledgers' FormIDs stable (v147); the live load reloads the session's plugins, drops a removed plugin's references and inventory stacks, and reports LMC-SAV-002/003/004's consequences | — |
+| 28 | 2026-11-23 | LMC-REC-010 built: the sub-records no parser decodes are kept as opaque bytes for every plugin after the first, with the carrying plugin as provenance, and named by `plugins.conflicts`; "decoded" is measured per game and record type by removing each sub-record from sampled real records and re-parsing (the table is checked in and re-derived by ignored real-data tests); the official/user boundary is approximated by the first plugin until LMC-REC-008 | — |

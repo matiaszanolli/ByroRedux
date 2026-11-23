@@ -10,6 +10,7 @@
 //! cargo run --release -p byroredux-plugin --example inspect -- quest-dialogue <ESM> <quest|grep:text|speaker:npc>
 //! cargo run --release -p byroredux-plugin --example inspect -- wthr-dump <oblivion|fo3nv|skyrim|fo4|fo76|starfield> <ESM>
 //! cargo run --release -p byroredux-plugin --example inspect -- cross-space-census <game> <ESM> [<actor REFR hex> <PACK hex>]
+//! cargo run --release -p byroredux-plugin --example inspect -- decoded-subrecords [<section>] > crates/plugin/data/decoded_subrecords.toml
 //! ```
 //!
 //! `<game>` is `oblivion`, `fo3` / `fnv` (or `fo3nv`), `skyrim`, `fo4`, `fo76` or `starfield`.
@@ -28,8 +29,32 @@ fn main() -> anyhow::Result<()> {
         "quest-dialogue" => quest_dialogue(&rest),
         "wthr-dump" => wthr_dump(&rest),
         "cross-space-census" => cross_space_census(&rest),
+        "decoded-subrecords" => decoded_subrecords(&rest),
         other => anyhow::bail!("unknown subcommand {other:?} (see the module doc)"),
     }
+}
+
+/// `decoded-subrecords [<section>]` — `data/decoded_subrecords.toml`, derived from the games' vanilla plugins
+/// (LMC-REC-010): which sub-records each game's parsers decode, found by `esm::decode_probe`. No argument prints the
+/// whole file under its header; a section name prints that section only. The plugins are `decode_probe::TABLE_SOURCES`,
+/// read where `esm::test_paths` finds the games (`BYROREDUX_*_DATA` overrides); a section whose game is not installed
+/// stops the run rather than leaving a hole.
+fn decoded_subrecords(args: &[String]) -> anyhow::Result<()> {
+    use byroredux_plugin::esm::decode_probe::{derive_section, render_table_section, ProbeLimits, TABLE_HEADER, TABLE_SOURCES};
+    if args.is_empty() {
+        println!("{TABLE_HEADER}");
+    }
+    for (section, _) in TABLE_SOURCES {
+        if args.first().is_some_and(|name| name != section) {
+            continue;
+        }
+        let started = std::time::Instant::now();
+        let decoded = derive_section(section, &ProbeLimits::default())?
+            .ok_or_else(|| anyhow::anyhow!("{section}: its plugins are not all installed (see decode_probe::TABLE_SOURCES)"))?;
+        eprintln!("{section}: {} record types, {:.1}s", decoded.len(), started.elapsed().as_secs_f32());
+        println!("{}", render_table_section(section, &decoded));
+    }
+    Ok(())
 }
 
 /// `base-model <ESM> <form hex>...` — the model path of base records by id.

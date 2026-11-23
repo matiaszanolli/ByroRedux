@@ -176,7 +176,7 @@ mod dispatch_world_placement;
 mod parse;
 mod spatial_units;
 
-pub use parse::{parse_esm, parse_esm_with_load_order, DISPATCH_HANDLED_FOURCCS};
+pub use parse::{parse_esm, parse_esm_with_load_order, parse_esm_with_options, ParseOptions, DISPATCH_HANDLED_FOURCCS};
 
 #[cfg(test)]
 mod tests;

@@ -131,6 +131,27 @@ What the engine does today with a legacy plugin set (`--master …` `--esm`), th
    the extension manifests and grants and the record policy (`byroredux/src/profile_fingerprint.rs`). A save stores it
    and a load reports how the save's differs; `plugins.activation` and `--plugin-report` print the fingerprint
    ([save-load-roundtrip.md](save-load-roundtrip.md), the profile section).
+9. **Sub-records no parser decodes (LMC-REC-010).** A parser reads the sub-records it knows and ignores the rest, so a mod's
+   edit to a field with no decoder used to leave no trace. `EsmReader` now gathers them as it reads (`esm/opaque.rs`): a
+   record a parser reads keeps the sub-records `crates/plugin/data/decoded_subrecords.toml` does not list as decoded for its
+   type and game, and a record or group nobody reads (`skip_record`, `skip_group`: a record type with no parser) is kept
+   whole. The plugin's parse returns them in `EsmIndex::opaque_subrecords` and the fold takes them out per plugin into
+   `LoadOrder::opaque()` (`OpaqueStore`), stamped with the plugin that carried them, every carrier of a form kept in load
+   order, because a loser's field is one a mod touched too. The load order's first plugin, the game's own master, is
+   not held: its records are on disk (the official/user boundary proper is LMC-REC-008). `plugins.conflicts <formid>`
+   prints `not decoded: <plugin>: TAG (n bytes), …` for each carrier and the summary the totals per plugin;
+   `--plugin-report` prints the same. A mod plugin parses about 20% slower with collection on, and holds about a quarter
+   of its file as opaque bytes (measured on the Unofficial Fallout 4 Patch: 14.6 MB, 177,513 sub-records, 3.5 MB).
+
+   **The decoded-sub-record table.** No parser records what it reads, so the table is measured: `esm/decode_probe.rs`
+   picks real records so every sub-record tag shows several different payloads, rebuilds a small plugin of them, parses it,
+   removes one tag from every record of the type, parses again and compares the two indexes with `structural_digest`
+   (the order-independent digest the load-order tests use). A tag whose removal changes the index, or fails the parse, is
+   decoded. A tag judged on the payloads sampled can only err toward "not decoded", which keeps bytes the parsers also read.
+   `cargo run --release -p byroredux-plugin --example inspect -- decoded-subrecords > crates/plugin/data/decoded_subrecords.toml`
+   rewrites the file from the vanilla plugins in `decode_probe::TABLE_SOURCES` (about three minutes); the ignored tests in
+   `crates/plugin/tests/decoded_table_real_data.rs` re-derive each section and fail when the parsers and the file disagree,
+   in the direction that loses data first. A game or record type with no entry decodes nothing, so everything of it is kept.
 
 Not built yet in Phase 1: the mod profile beyond argv (discovery and the import that writes roots, LMC-ID-006; manifest
 identities for roots), the official/user boundary

@@ -288,6 +288,17 @@ fn summary_lines(order: &LoadOrder, record_type: impl Fn(u32) -> Option<[u8; 4]>
     for (position, name) in order.iter().enumerate() {
         lines.push(format!("  {position:3}  {name:<40} {:6} {:6} {:9}", wins[position], losses[position], injects[position]));
     }
+    // LMC-REC-010 — what the plugins carry that no parser decodes.
+    let (opaque_forms, opaque_subs, opaque_bytes) = order.opaque().counts();
+    if opaque_subs > 0 {
+        lines.push(format!(
+            "{opaque_subs} sub-records of {opaque_forms} forms are not decoded and kept as opaque bytes ({opaque_bytes} bytes; the \
+             game's own master is not held), per plugin, forms and sub-records:"
+        ));
+        for (plugin, (forms, subs)) in order.opaque().per_plugin() {
+            lines.push(format!("  {:3}  {:<40} {forms:6} {subs:6}", plugin, plugin_name(order, plugin as usize)));
+        }
+    }
     let mut forms: Vec<(u32, &[Carrier])> = provenance.overridden().collect();
     forms.sort_unstable_by_key(|(form_id, _)| *form_id);
     if !forms.is_empty() {
@@ -299,7 +310,34 @@ fn summary_lines(order: &LoadOrder, record_type: impl Fn(u32) -> Option<[u8; 4]>
     lines
 }
 
+/// One form: its carriers, winner and policy ([`carrier_lines`]), then the sub-records no parser decodes that the
+/// plugins carrying it hold (LMC-REC-010).
 fn form_lines(order: &LoadOrder, form_id: u32, record_type: Option<[u8; 4]>) -> Vec<String> {
+    let mut lines = carrier_lines(order, form_id, record_type);
+    lines.extend(opaque_lines(order, form_id));
+    lines
+}
+
+/// The sub-records of `form_id` no parser decodes, per carrying plugin: kept as opaque bytes, so a mod's edit to a field the
+/// engine has no decoder for is named instead of silently dropped (LMC-REC-010). The game's own master is not held.
+fn opaque_lines(order: &LoadOrder, form_id: u32) -> Vec<String> {
+    order
+        .opaque()
+        .carriers(form_id)
+        .iter()
+        .map(|carrier| {
+            let subs: Vec<String> = carrier
+                .record
+                .subrecords
+                .iter()
+                .map(|sub| format!("{} ({} bytes)", byroredux_plugin::esm::opaque::encode_tag(&sub.tag), sub.data.len()))
+                .collect();
+            format!("not decoded: {}: {} (kept as opaque bytes, LMC-REC-010)", plugin_name(order, carrier.plugin as usize), subs.join(", "))
+        })
+        .collect()
+}
+
+fn carrier_lines(order: &LoadOrder, form_id: u32, record_type: Option<[u8; 4]>) -> Vec<String> {
     let provenance = order.provenance();
     let mut lines = vec![format!("{form_id:08X} {}", type_label(record_type))];
     let owner = slot_owner(order, form_id);
@@ -592,6 +630,40 @@ mod tests {
         let row = |name: &str| lines.iter().find(|line| line.contains(name)).unwrap().split_whitespace().skip(2).collect::<Vec<_>>().join(" ");
         assert_eq!(row("deadmoney.esm"), "1 0 0", "{lines:?}");
         assert_eq!(row("mymod.esp"), "0 1 0", "{lines:?}");
+    }
+
+    /// LMC-REC-010 in the report: the sub-records no parser decodes are named per plugin and form, in the form's own report
+    /// (also for a form one plugin carries alone, which has no conflict) and as totals per plugin in the summary.
+    #[test]
+    fn undecoded_sub_records_are_named_per_plugin_and_form() {
+        use byroredux_plugin::esm::opaque::{OpaqueRecord, OpaqueStore, OpaqueSubRecord};
+        let record = |subs: &[(&[u8; 4], usize)]| OpaqueRecord {
+            record_type: *b"WEAP",
+            subrecords: subs.iter().map(|(tag, len)| OpaqueSubRecord { tag: **tag, data: vec![0; *len] }).collect(),
+        };
+        let mut order = order();
+        let mut store = OpaqueStore::default();
+        // DeadMoney and MyMod both carry an undecoded sub-record of the contested form; MyMod alone of a form nobody else has.
+        store.note_plugin(1, std::collections::HashMap::from([(0x0000_1234, record(&[(b"ZZZZ", 12)]))]));
+        store.note_plugin(
+            2,
+            std::collections::HashMap::from([(0x0000_1234, record(&[(b"ZZZZ", 3), (&[0x14, b'I', b'A', b'D'], 40)])), (0x0200_0001, record(&[(b"XMBO", 8)]))]),
+        );
+        order.set_opaque(store);
+
+        let lines = form_lines(&order, 0x0000_1234, Some(*b"WEAP")).join("\n");
+        assert!(lines.contains("not decoded: deadmoney.esm: ZZZZ (12 bytes) (kept as opaque bytes, LMC-REC-010)"), "{lines}");
+        assert!(lines.contains("not decoded: mymod.esp: ZZZZ (3 bytes), %14IAD (40 bytes)"), "{lines}");
+        let alone = form_lines(&order, 0x0200_0001, Some(*b"WEAP")).join("\n");
+        assert!(alone.contains("not decoded: mymod.esp: XMBO (8 bytes)"), "a form no one else carries: {alone}");
+        let none = form_lines(&order, 0x0000_F00D, Some(*b"MISC")).join("\n");
+        assert!(!none.contains("not decoded"), "{none}");
+
+        let summary = summary_lines(&order, |_| Some(*b"WEAP")).join("\n");
+        assert!(summary.contains("4 sub-records of 2 forms are not decoded and kept as opaque bytes (63 bytes;"), "{summary}");
+        assert!(summary.contains("  1  deadmoney.esm") && summary.contains("  2  mymod.esp"), "{summary}");
+        let clean = summary_lines(&self::order(), |_| Some(*b"WEAP")).join("\n");
+        assert!(!clean.contains("not decoded"), "no line when nothing is held: {clean}");
     }
 
     /// The summary counts each plugin's wins, losses and injections and lists the overridden forms.

@@ -50,6 +50,8 @@ pub(crate) struct LoadOrder {
     /// FormID's slot byte names the original *definer*, never the plugin whose body won the merge (#5428); this is the
     /// winner. Empty for hand-built test orders (consumers then fall back to the slot owner).
     provenance: esm::records::FoldProvenance,
+    /// Each plugin's sub-records no parser decodes, by form (LMC-REC-010).
+    opaque: esm::opaque::OpaqueStore,
     /// How each record with lists (levelled list, form list, outfit, container, actor, race, item) more than one
     /// plugin carried was merged (LMC-REC-003). Empty under the `legacy` policy and for hand-built test orders.
     list_merge: esm::records::list_merge::ListMerge,
@@ -87,6 +89,7 @@ impl LoadOrder {
             slots,
             dependencies,
             provenance: esm::records::FoldProvenance::default(),
+            opaque: esm::opaque::OpaqueStore::default(),
             list_merge: esm::records::list_merge::ListMerge::default(),
             engine_slot: None,
             content_hashes: Vec::new(),
@@ -104,6 +107,12 @@ impl LoadOrder {
     #[cfg(test)]
     pub(crate) fn note_record_writer(&mut self, form_id: u32, position: usize) {
         self.provenance.note_writer(form_id, position);
+    }
+
+    /// Install the undecoded sub-records, for fixtures that fold records without plugin files.
+    #[cfg(test)]
+    pub(crate) fn set_opaque(&mut self, opaque: esm::opaque::OpaqueStore) {
+        self.opaque = opaque;
     }
 
     /// Install a fold's provenance and merge, for fixtures that fold records without plugin files.
@@ -124,6 +133,12 @@ impl LoadOrder {
     /// The fold's provenance (LMC-REC-007).
     pub(crate) fn provenance(&self) -> &esm::records::FoldProvenance {
         &self.provenance
+    }
+
+    /// The sub-records no parser decodes, by the plugin that carried them (LMC-REC-010). The load order's first plugin,
+    /// the game's own master, is not held: its records are on disk, and it is where the decode table was measured.
+    pub(crate) fn opaque(&self) -> &esm::opaque::OpaqueStore {
+        &self.opaque
     }
 
     /// The fold's list merge (LMC-REC-003).
@@ -166,6 +181,7 @@ impl Default for LoadOrder {
             slots: Vec::new(),
             dependencies: Vec::new(),
             provenance: esm::records::FoldProvenance::default(),
+            opaque: esm::opaque::OpaqueStore::default(),
             list_merge: esm::records::list_merge::ListMerge::default(),
             engine_slot: None,
             content_hashes: Vec::new(),
@@ -1018,7 +1034,9 @@ where
                 let started = std::time::Instant::now();
                 let _strings_guard = tables.map(esm::StringsTableGuard::new);
                 let content_hash = twox_hash::XxHash64::oneshot(0, &bytes);
-                let plugin_records = esm::records::parse_esm_with_load_order(&bytes, Some(remap));
+                // LMC-REC-010 — keep what no parser decodes of every plugin but the first, the game's own master.
+                let options = esm::records::ParseOptions { collect_opaque: idx > 0 };
+                let plugin_records = esm::records::parse_esm_with_options(&bytes, Some(remap), options);
                 log::info!(
                     "Walked plugin {}/{} '{}' in {:.2} s",
                     idx + 1,
@@ -1039,6 +1057,7 @@ where
 
     let mut merged = esm::records::EsmIndex::default();
     let mut provenance = esm::records::FoldProvenance::default();
+    let mut opaque = esm::opaque::OpaqueStore::default();
     // LMC-REC-003 — independent overrides of a record with lists merge; a plugin depends on another when it declares it
     // as a master, directly or through its masters.
     let mut list_merge = esm::records::list_merge::ListMerge::new(policy);
@@ -1056,10 +1075,11 @@ where
     for (position, (path, walk)) in plugin_paths.iter().zip(walked).enumerate() {
         let (content_hash, plugin_records) = walk.expect("the scope joins every walk it spawned before returning");
         content_hashes.push(content_hash);
-        let plugin_records = plugin_records.unwrap_or_else(|e| {
+        let mut plugin_records = plugin_records.unwrap_or_else(|e| {
             log::warn!("Record parse failed for '{}': {}", path, e);
             esm::records::EsmIndex::default()
         });
+        opaque.note_plugin(position, std::mem::take(&mut plugin_records.opaque_subrecords));
         // LMC-REC-007 — note who carried each record before the fold keeps the later one whole (#5428: the last
         // writer of a SCPT is the one whose body is live).
         let noted = std::time::Instant::now();
@@ -1073,9 +1093,11 @@ where
     }
     let (overridden, injected) = provenance.counts();
     let (merged_lists, overruled) = list_merge.counts();
+    let (opaque_forms, opaque_subs, opaque_bytes) = opaque.counts();
     log::info!(
         "load-order fold: {} plugins, {overridden} forms overridden, {injected} injected, {merged_lists} records \
-         merged ({overruled} operations overruled, policy {}), in {:.2} s ({:.2} s of it provenance and merge)",
+         merged ({overruled} operations overruled, policy {}), {opaque_subs} undecoded sub-records of {opaque_forms} \
+         forms kept ({opaque_bytes} bytes), in {:.2} s ({:.2} s of it provenance and merge)",
         plugin_paths.len(),
         list_merge.policy().name(),
         fold_started.elapsed().as_secs_f64(),
@@ -1088,6 +1110,7 @@ where
     merged.plugin_files = load_order.clone();
     let mut order = LoadOrder::with_dependencies(load_order, slots, dependencies);
     order.provenance = provenance;
+    order.opaque = opaque;
     order.list_merge = list_merge;
     order.content_hashes = content_hashes;
     if merged.game == esm::reader::GameKind::Oblivion {
