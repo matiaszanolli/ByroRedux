@@ -193,7 +193,7 @@ interpreter** (first Known Issue).
 
 ### Lighting fidelity (M-LIGHT, [PRD](docs/prd/reference-lighting.md))
 
-Terms: L1 penumbra S1+ (A1), L2 contact S1, L3 sky IBL S1, **L4 GI S2**: Phase 2 exit tier-3 deficit 1.00 / 0.93 / 1.00
+Terms: **L1 penumbra S3** and **L2 contact S3** (Phase 3 exit, A2–A5 and A14, rev 41), **L3 sky IBL S3** (Phase 4 exit, A6 and A17, rev 50), **L4 GI S2**: Phase 2 exit tier-3 deficit 1.00 / 0.93 / 1.00
 (floor / back wall / ceiling; 0.42 / 0.42 / 0.33 with the RT-LOD gate off, entry 0.82 / 0.82 / 0.79; floors ≤ 2e-3), A8 passes. Phase 1b
 baseline (`688f42705`, RTX 4070 Ti, 1280×720, stepped orbit, tier histogram past a
 240-frame warm-up); frame time is the 3-run median with the tier pinned there:
