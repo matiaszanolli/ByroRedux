@@ -1028,7 +1028,38 @@ with the sd in brackets and the fine/coarse split of the 16 resident squares:
   example 2.6 vs 2.8 levels at eye). Riverwood's down pose is unusable: two shots of
   the same state differ by 50 levels.
 
-The visual check that decides the default runs natively at about 1045 lines.
+The visual check that decides the default runs natively at about 1045 lines (§8.10).
+
+### 8.10 Native ~1045-line run (2026-11-23)
+The run §8.9 called for, with native TAA (`--upscaler taa`) at the largest window the
+monitor allows. It rendered at 1853×1013 at FNV and 1920×1045 at Riverwood; FNV's window
+came out a little smaller. Same harness, binary and pins as §8.9. The sky readout
+matched at the start and end, and no run logged a validation line. States were patches
+off, the default 128 px² and 512 px²:
+
+| position | pose | off (ms) | 128 px² | 512 px² |
+|---|---|---|---|---|
+| FNV Mojave | down | 9.54 | −3.62 (4.81) | −3.74 (4.85) |
+| | eye | 6.65 | +0.63 (0.10) | +0.67 (0.13) |
+| | graze | 7.54 | +0.61 (1.34) | +0.60 (0.09) |
+| Skyrim Riverwood | down | 6.77 | +1.43 (0.20) | +1.57 (0.34) |
+| | eye | 7.94 | +1.27 (1.90) | +1.27 (0.07) |
+| | graze | 11.04 | +0.77 (0.09) | +0.76 (0.12) |
+
+- **At ~1000 lines, 512 px² selects exactly the squares the default does**: 4 fine and
+  12 coarse at every pose and both positions. So the two columns measure the same
+  state twice, and their agreement is a check on the harness. The slider tops out at
+  512 px², so no threshold forces all-coarse at this height: **Medium is identical to
+  High here**, and its saving exists only near the 480-line default render height.
+- **The premium at ~1000 native lines** is +0.6 ms at FNV (eye, graze) and +0.8–1.6 ms
+  at Riverwood. It does not compare directly with §8.9's 696 lines, because the
+  upscaler differs (TAA vs FSR), and that changes the patches-off frame too. FNV's down
+  pose is unusable: its patches-off frame swung by ±4.8 ms.
+- **The visual question is still open.** It needs a forced all-coarse state (the
+  console's `fine 0`), not a threshold, at this height. If coarse-only shows no
+  visible loss there, a setting that means "all coarse" at any resolution would let
+  Medium save at every height. The options are a higher slider cap or a separate
+  coarse-only switch.
 
 ## 9. Review decisions (Matías, 2026-11-21)
 1. **Upward-only displacement, base mesh kept (§3.3)**: accepted. No holes, no zero-mean
