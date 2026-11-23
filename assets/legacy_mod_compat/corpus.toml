@@ -1,0 +1,784 @@
+# Legacy mod conformance corpus (docs/prd/legacy-mod-compatibility.md §7.2, §7.3).
+#
+# The candidate mods the conformance runner measures, with where to get them.
+# No mod file is ever checked in (LMC-LEGAL-001): each entry is a link, and the
+# mods are downloaded by hand into a local, opt-in profile.
+#
+# Checked by scripts/check-lmc-catalog.py (C10–C13) against mechanisms.toml:
+# every mechanism a mod names must exist in the catalog for the mod's game.
+#
+# Fields:
+# - `id`          stable corpus id, `<game>-<slug>`
+# - `game`        a catalog game
+# - `url`         the canonical download page (Nexus, GitHub, ModDB, official site)
+# - `kind`        plugin | assets | native | scripts | ui | tool | total-conversion
+#                 (the main file; `native` = extender DLL, never loaded, reported)
+# - `mechanisms`  the §3.1 mechanisms the mod exercises (catalog ids)
+# - `tranche`     install order: 1 = content only (records, assets, ObScript /
+#                 Papyrus without an extender), 2 = needs extender, library or
+#                 UI services, or is native code to report (D2/D3/D4), 3 = tool
+#                 outputs and total conversions
+# - `status`      candidate = the link was found; verified = installed, the
+#                 mechanisms confirmed from its files, the licence read, and an
+#                 acceptance scenario written (§7.3 rule 3)
+# - `evidence`    how the link was confirmed, with the date
+# - `requires`    masters and mods it depends on, as far as the sources showed
+# - `licence`     the permissions summary; required once verified
+# - `scenario`    the §7.3 acceptance scenario; required once verified
+# - `notes`       anything that affects whether the entry stays in the corpus
+#
+# Nexus refused automated page fetches when this list was written (2026-11-22),
+# so no Nexus permissions panel was read; "step wiki" evidence means the
+# stepmodifications.org page names the same Nexus id, a second source.
+corpus_version = 1
+
+# ── Fallout: New Vegas (Wave 1) ─────────────────────────────────────────────
+
+[[mod]]
+id = "fnv-yup"
+game = "fnv"
+name = "Yukichigai Unofficial Patch (YUP)"
+url = "https://www.nexusmods.com/newvegas/mods/51664"
+author = "Yukichigai"
+kind = "plugin"
+mechanisms = ["T1", "R2", "S2"]
+tranche = 1
+status = "candidate"
+evidence = "step wiki + search result, 2026-11-22"
+requires = ["FalloutNV.esm", "all six DLC"]
+notes = "One combined ESM, no extender. Its NVSE add-on (Unofficial Patch NVSE Plus, https://www.nexusmods.com/newvegas/mods/71239) is a separate tranche-2 case. T1: the engine skips it and stands in (LMC-FIX-001/004)."
+
+[[mod]]
+id = "fnv-wmx"
+game = "fnv"
+name = "Weapon Mods Expanded (WMX)"
+url = "https://www.nexusmods.com/newvegas/mods/39651"
+author = "Antistar"
+kind = "plugin"
+mechanisms = ["R1", "R2", "A2"]
+tranche = 1
+status = "candidate"
+evidence = "search result, 2026-11-22"
+notes = "1.1.4 (2015). WMX-DM / WMX-MW add-ons are separate files on the same page."
+
+[[mod]]
+id = "fnv-awop"
+game = "fnv"
+name = "A World of Pain (AWOP)"
+url = "https://www.nexusmods.com/newvegas/mods/38719"
+author = "Dj Mystro"
+kind = "plugin"
+mechanisms = ["R5", "A2"]
+tranche = 1
+status = "candidate"
+evidence = "search result, 2026-11-22"
+notes = "6.94 per search snippet. 'A World of (Less) Pain' (https://www.nexusmods.com/newvegas/mods/71139) is an alternative edition; the two do not mix."
+
+[[mod]]
+id = "fnv-nvinteriors"
+game = "fnv"
+name = "The N.V. Interiors Project (NVInteriors)"
+url = "https://www.nexusmods.com/newvegas/mods/43534"
+author = "chucksteel"
+kind = "plugin"
+mechanisms = ["R5", "A2"]
+tranche = 1
+status = "candidate"
+evidence = "step wiki + search result, 2026-11-22"
+notes = "NVInteriors_Core.esm v2.1.1 per Step. NV Interiors Remastered (https://www.nexusmods.com/newvegas/mods/71228) is the maintained successor; pick one in verification."
+
+[[mod]]
+id = "fnv-nvb1"
+game = "fnv"
+name = "New Vegas Bounties I"
+url = "https://www.nexusmods.com/newvegas/mods/37310"
+author = "Someguy"
+kind = "plugin"
+mechanisms = ["S2", "R5", "A7"]
+tranche = 1
+status = "candidate"
+evidence = "search result, 2026-11-22"
+requires = ["SomeguySeries.esm v2.0"]
+notes = "Voiced quest mod. Whether it calls NVSE functions is unconfirmed; the S2 scan in verification settles it (an NVSE call moves it to tranche 2)."
+
+[[mod]]
+id = "fnv-nvb2"
+game = "fnv"
+name = "New Vegas Bounties II"
+url = "https://www.nexusmods.com/newvegas/mods/41184"
+author = "Someguy"
+kind = "plugin"
+mechanisms = ["S2", "R5", "A7"]
+tranche = 1
+status = "candidate"
+evidence = "search result, 2026-11-22"
+requires = ["SomeguySeries.esm", "fnv-nvb1"]
+
+[[mod]]
+id = "fnv-nvb3"
+game = "fnv"
+name = "New Vegas Bounties III"
+url = "https://www.nexusmods.com/newvegas/mods/55744"
+author = "Someguy"
+kind = "plugin"
+mechanisms = ["S2", "R5", "A7"]
+tranche = 1
+status = "candidate"
+evidence = "search result, 2026-11-22"
+requires = ["SomeguySeries.esm", "HonestHearts.esm", "LonesomeRoad.esm"]
+
+[[mod]]
+id = "fnv-inheritance"
+game = "fnv"
+name = "The Inheritance"
+url = "https://www.nexusmods.com/newvegas/mods/49012"
+author = "Someguy"
+kind = "plugin"
+mechanisms = ["R1", "S2", "A7"]
+tranche = 1
+status = "candidate"
+evidence = "search result, 2026-11-22"
+requires = ["SomeguySeries.esm"]
+notes = "Added as the content-only voiced-quest case; NVSE-free is unconfirmed (Requirements tab not seen)."
+
+[[mod]]
+id = "fnv-nevada-skies"
+game = "fnv"
+name = "Nevada Skies"
+url = "https://www.nexusmods.com/newvegas/mods/35998"
+author = "Yossarian"
+kind = "plugin"
+mechanisms = ["R1", "R2"]
+tranche = 1
+status = "candidate"
+evidence = "search result, 2026-11-22"
+notes = "Weather case. Description forbids reusing its assets under any circumstances: local testing only, nothing quoted or extracted into the repo. Its in-game settings go through MCM (optional)."
+
+[[mod]]
+id = "fnv-nmc"
+game = "fnv"
+name = "NMC's Texture Pack for New Vegas"
+url = "https://www.nexusmods.com/newvegas/mods/43135"
+author = "NeilMc_NMC"
+kind = "assets"
+mechanisms = ["A1", "A2", "A5", "A6"]
+tranche = 1
+status = "candidate"
+evidence = "step wiki + search result, 2026-11-22"
+notes = "Small / Medium / Large editions; Step uses Medium (parts 1 and 2). The 4GB-patcher requirement is an N3 case the engine does not need."
+
+[[mod]]
+id = "fnv-eve"
+game = "fnv"
+name = "EVE - Essential Visual Enhancements"
+url = "https://www.nexusmods.com/newvegas/mods/42666"
+author = "weijiesen, jonnyeah"
+kind = "plugin"
+mechanisms = ["R2", "A1", "A5", "A6"]
+tranche = 1
+status = "candidate"
+evidence = "search result, 2026-11-22"
+notes = "Weapon effects + plugin. Unofficial patches: https://www.nexusmods.com/newvegas/mods/81282."
+
+[[mod]]
+id = "fnv-xnvse"
+game = "fnv"
+name = "xNVSE (New Vegas Script Extender)"
+url = "https://github.com/xNVSE/NVSE/releases"
+author = "xNVSE team (korri123, cnf13, jazzisparis, Demorome)"
+kind = "native"
+mechanisms = ["N1", "S3"]
+tranche = 2
+status = "candidate"
+evidence = "GitHub page fetched, 2026-11-22 (6.4.9); Nexus mirror https://www.nexusmods.com/newvegas/mods/67883 by search"
+notes = "Loader + DLL go in the game root. The binary is never loaded (N1.binary); its facilities are engine services (N1.facilities, S3)."
+
+[[mod]]
+id = "fnv-jip-ln"
+game = "fnv"
+name = "JIP LN NVSE Plugin"
+url = "https://www.nexusmods.com/newvegas/mods/58277"
+author = "jazzisparis, LuthienAnarion"
+kind = "native"
+mechanisms = ["N1", "S3", "S4"]
+tranche = 2
+status = "candidate"
+evidence = "step wiki + search result, 2026-11-22"
+requires = ["fnv-xnvse"]
+notes = "The largest NVSE function family; drives the S4 catalog demand. No GitHub releases, Nexus is the only download."
+
+[[mod]]
+id = "fnv-mcm"
+game = "fnv"
+name = "The Mod Configuration Menu (MCM)"
+url = "https://www.nexusmods.com/newvegas/mods/42507"
+author = "Pelinor"
+kind = "ui"
+mechanisms = ["U2", "U3"]
+tranche = 2
+status = "candidate"
+evidence = "step wiki + search result, 2026-11-22"
+requires = ["fnv-xnvse"]
+notes = "Main file + update file."
+
+[[mod]]
+id = "fnv-uio"
+game = "fnv"
+name = "User Interface Organizer (UIO)"
+url = "https://www.nexusmods.com/newvegas/mods/57174"
+author = "jazzisparis"
+kind = "native"
+mechanisms = ["U3", "N1"]
+tranche = 2
+status = "candidate"
+evidence = "step wiki + search result, 2026-11-22"
+requires = ["fnv-xnvse"]
+notes = "An NVSE DLL that merges MenuXml includes; the merge is what the engine has to provide (U3)."
+
+[[mod]]
+id = "fnv-vui-plus"
+game = "fnv"
+name = "Vanilla UI Plus"
+url = "https://www.moddb.com/mods/vanilla-ui-plus"
+author = "Axonis"
+kind = "ui"
+mechanisms = ["U3"]
+tranche = 2
+status = "candidate"
+evidence = "search result only (ModDB refused the fetch), 2026-11-22"
+requires = ["fnv-uio"]
+notes = "Not on Nexus any more; ModDB is the only home found. 9.48."
+
+[[mod]]
+id = "fnv-project-nevada"
+game = "fnv"
+name = "Project Nevada"
+url = "https://www.nexusmods.com/newvegas/mods/40040"
+author = "PN Team"
+kind = "plugin"
+mechanisms = ["S2", "S3", "S4", "U3"]
+tranche = 2
+status = "candidate"
+evidence = "step wiki + search result, 2026-11-22"
+requires = ["fnv-xnvse", "fnv-mcm"]
+notes = "Step calls it very outdated (2021) but it is still the densest NVSE-script + MenuXml overhaul; kept as a script stress case, not a recommendation."
+
+[[mod]]
+id = "fnv-nvac"
+game = "fnv"
+name = "NVAC - New Vegas Anti Crash"
+url = "https://www.nexusmods.com/newvegas/mods/53635"
+author = "Queue"
+kind = "native"
+mechanisms = ["N2"]
+tranche = 2
+status = "candidate"
+evidence = "step wiki + search result, 2026-11-22"
+requires = ["fnv-xnvse"]
+notes = "Reporting case: expected D2/D3, never loaded."
+
+[[mod]]
+id = "fnv-nvtf"
+game = "fnv"
+name = "NVTF - New Vegas Tick Fix"
+url = "https://www.nexusmods.com/newvegas/mods/66537"
+author = "carxt, lStewieAl, tgspy"
+kind = "native"
+mechanisms = ["N2", "T8"]
+tranche = 2
+status = "candidate"
+evidence = "step wiki + search result, 2026-11-22"
+requires = ["fnv-xnvse"]
+notes = "Reporting case, plus NVTF.ini as a mod-provided INI (T8)."
+
+[[mod]]
+id = "fnv-stewie-tweaks"
+game = "fnv"
+name = "lStewieAl's Tweaks and Engine Fixes"
+url = "https://www.nexusmods.com/newvegas/mods/66347"
+author = "lStewieAl"
+kind = "native"
+mechanisms = ["N2", "T8"]
+tranche = 2
+status = "candidate"
+evidence = "search result, 2026-11-22"
+requires = ["fnv-xnvse"]
+notes = "Reporting case; its INI mixes engine fixes (D2) with gameplay tweaks that may need a disposition each."
+
+[[mod]]
+id = "fnv-ttw"
+game = "fnv"
+name = "Tale of Two Wastelands (TTW)"
+url = "https://mod.pub/ttw/133"
+author = "TTW team"
+kind = "total-conversion"
+mechanisms = ["T12"]
+tranche = 3
+status = "candidate"
+evidence = "search result, 2026-11-22 (3.4); FAQ https://taleoftwowastelands.com/faq"
+requires = ["Fallout 3 GOTY", "FNV Ultimate", "~22 GB free"]
+notes = "Separate corpus tier after Wave 1 passes (decision Q6). The installer builds the merged data from both games."
+
+# ── Skyrim Special Edition (Wave 1; LE counted with SE) ────────────────────
+# Nexus ids are skyrimspecialedition unless the url says otherwise.
+
+[[mod]]
+id = "sky-ussep"
+game = "skyrim"
+name = "Unofficial Skyrim Special Edition Patch (USSEP)"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/266"
+author = "The Unofficial Patch Team"
+kind = "plugin"
+mechanisms = ["T1", "R2", "S1"]
+tranche = 1
+status = "candidate"
+evidence = "step wiki + search result, 2026-11-22 (4.3.7 per UESP)"
+requires = ["Skyrim SE 1.6.1130+ masters"]
+notes = "T1: skipped, engine stands in (LMC-FIX-001/004). Arthmoor's Nexus pages point at AFK Mods for current files."
+
+[[mod]]
+id = "sky-crf"
+game = "skyrim"
+name = "Cutting Room Floor"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/276"
+author = "Arthmoor"
+kind = "plugin"
+mechanisms = ["S1", "S7", "R5"]
+tranche = 1
+status = "candidate"
+evidence = "step wiki, 2026-11-22"
+notes = "Nexus page carries an 'outdated, no longer supported here' notice; current file may be on AFK Mods."
+
+[[mod]]
+id = "sky-alternate-start"
+game = "skyrim"
+name = "Alternate Start - Live Another Life"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/272"
+author = "Arthmoor"
+kind = "plugin"
+mechanisms = ["S1", "S7", "R5"]
+tranche = 1
+status = "candidate"
+evidence = "search result, 2026-11-22"
+notes = "Sources disagree on whether the Nexus file is current (readme says see AFK Mods / ModDB; a file was added April 2025). Likely ships an SEQ (R11) — check in verification."
+
+[[mod]]
+id = "sky-ordinator"
+game = "skyrim"
+name = "Ordinator - Perks of Skyrim"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/1137"
+author = "Enai Siaion"
+kind = "plugin"
+mechanisms = ["R2", "S1", "S7"]
+tranche = 1
+status = "candidate"
+evidence = "search result only, id weakly confirmed, 2026-11-22"
+notes = "Perk entry points + perk fragments."
+
+[[mod]]
+id = "sky-lotd"
+game = "skyrim"
+name = "Legacy of the Dragonborn"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/11802"
+author = "Legacy of the Dragonborn team"
+kind = "plugin"
+mechanisms = ["S1", "S7", "R5", "A2"]
+tranche = 1
+status = "candidate"
+evidence = "search result, 2026-11-22"
+notes = "Scale case (~3.6 GB). Version conflict: UESP 6.10.2 vs a stale Nexus snapshot 5.6.5. May pull in SKSE-dependent patches; take the core file only for tranche 1."
+
+[[mod]]
+id = "sky-bruma"
+game = "skyrim"
+name = "Beyond Skyrim - Bruma"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/10917"
+author = "Beyond Skyrim team"
+kind = "plugin"
+mechanisms = ["R5", "A2", "A7"]
+tranche = 1
+status = "candidate"
+evidence = "search result, 2026-11-22"
+requires = ["Dawnguard.esm", "HearthFires.esm", "Dragonborn.esm"]
+notes = "New worldspace. Version conflict: Nexus 1.6.3 vs UESP 2.0.0 (2026-11-11)."
+
+[[mod]]
+id = "sky-elfx"
+game = "skyrim"
+name = "Enhanced Lights and FX (ELFX)"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/2424"
+author = "anamorfus"
+kind = "plugin"
+mechanisms = ["R2", "R5", "A6"]
+tranche = 1
+status = "candidate"
+evidence = "step wiki, 2026-11-22"
+notes = "Interior lighting overrides. Add-ons: ELFX Fixes (25498), ELFX Shadows (63790), search only."
+
+[[mod]]
+id = "sky-obsidian-weathers"
+game = "skyrim"
+name = "Obsidian Weathers and Seasons"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/12125"
+author = "Dr Mega, Arindel"
+kind = "plugin"
+mechanisms = ["R1", "R2"]
+tranche = 1
+status = "candidate"
+evidence = "search result, 2026-11-22 (1.07a)"
+
+[[mod]]
+id = "sky-smim"
+game = "skyrim"
+name = "Static Mesh Improvement Mod (SMIM)"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/659"
+author = "Brumbek"
+kind = "assets"
+mechanisms = ["A1", "A2", "A6", "R2"]
+tranche = 1
+status = "candidate"
+evidence = "step wiki + search result, 2026-11-22 (2.08)"
+notes = "FOMOD; SMIM-Merged-All is the common pick."
+
+[[mod]]
+id = "sky-noble-skyrim"
+game = "skyrim"
+name = "Noble Skyrim Mod HD-2K"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/21423"
+author = "Shutt3r"
+kind = "assets"
+mechanisms = ["A1", "A2", "A5"]
+tranche = 1
+status = "candidate"
+evidence = "UNVERIFIED id: 21423 appeared twice in results without a title, 2026-11-22; LE page is https://www.nexusmods.com/skyrim/mods/45807"
+notes = "Confirm the page before downloading. Permissions forbid reusing assets without the author's permission: local testing only."
+
+[[mod]]
+id = "sky-eff-seq"
+game = "skyrim"
+name = "Extensible Follower Framework + its SEQ file"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/66342"
+author = "unknown (SEQ page); EFF by Expired6978"
+kind = "plugin"
+mechanisms = ["R11", "S1", "S7"]
+tranche = 1
+status = "candidate"
+evidence = "search result title + comment excerpt, 2026-11-22: the page supplies Data/Seq/EFFCore.seq, which the EFF package lacks"
+notes = "The R11 case §7.2 asks for: a Start Game Enabled quest with dialogue (FollowerExtension). EFF's own SE page id is unverified (37672?). Alternatives: Wyrmstooth (changelog says its SEQ loads from the BSA — a better test if confirmed), Inigo (1461)."
+
+[[mod]]
+id = "sky-skse64"
+game = "skyrim"
+name = "SKSE64"
+url = "https://skse.silverlock.org/"
+author = "SKSE team"
+kind = "native"
+mechanisms = ["N1", "S4"]
+tranche = 2
+status = "candidate"
+evidence = "official page fetched, 2026-11-22 (Nexus mirror 30379, step wiki); version lines on the page are inconsistent, read it live"
+notes = "Binary never loaded (N1.binary); its Papyrus functions are engine services."
+
+[[mod]]
+id = "sky-address-library"
+game = "skyrim"
+name = "Address Library for SKSE Plugins"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/32444"
+author = "meh321"
+kind = "native"
+mechanisms = ["N3"]
+tranche = 2
+status = "candidate"
+evidence = "step wiki, 2026-11-22"
+notes = "Reporting case (D3). Separate SE (1.5.x) and AE (1.6.x) files on the page."
+
+[[mod]]
+id = "sky-engine-fixes"
+game = "skyrim"
+name = "SSE Engine Fixes"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/17230"
+author = "aers, Nukem, Ryan"
+kind = "native"
+mechanisms = ["N2", "N3", "T8"]
+tranche = 2
+status = "candidate"
+evidence = "step wiki, 2026-11-22"
+requires = ["sky-skse64"]
+notes = "Reporting case. Part 2 (preloader + TBB) goes in the game root; its INI is a T8 case."
+
+[[mod]]
+id = "sky-bug-fixes"
+game = "skyrim"
+name = "Bug Fixes SSE"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/33261"
+author = "meh321"
+kind = "native"
+mechanisms = ["N2"]
+tranche = 2
+status = "candidate"
+evidence = "step wiki, 2026-11-22"
+notes = "Reporting case. Files only for 1.5.97 / 1.6.629; obsolete on current runtimes but still common in lists."
+
+[[mod]]
+id = "sky-skyui"
+game = "skyrim"
+name = "SkyUI"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/12604"
+author = "SkyUI team (Schlangster et al.)"
+kind = "ui"
+mechanisms = ["U1", "U2", "U4", "S1", "S4"]
+tranche = 2
+status = "candidate"
+evidence = "step wiki, 2026-11-22"
+requires = ["sky-skse64"]
+notes = "The MCM host. Community fork 'SkyUI 6' exists."
+
+[[mod]]
+id = "sky-mcm-helper"
+game = "skyrim"
+name = "MCM Helper"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/53000"
+author = "Parapets"
+kind = "native"
+mechanisms = ["U2", "S5", "T8"]
+tranche = 2
+status = "candidate"
+evidence = "step wiki, 2026-11-22"
+requires = ["sky-skse64", "sky-skyui"]
+notes = "JSON-declared MCMs (MCM/Config, MCM/Settings)."
+
+[[mod]]
+id = "sky-papyrusutil"
+game = "skyrim"
+name = "PapyrusUtil SE"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/13048"
+author = "exiledviper, meh321"
+kind = "native"
+mechanisms = ["S5"]
+tranche = 2
+status = "candidate"
+evidence = "step wiki, 2026-11-22 (4.6)"
+requires = ["sky-skse64", "sky-address-library"]
+
+[[mod]]
+id = "sky-jcontainers"
+game = "skyrim"
+name = "JContainers SE"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/16495"
+author = "silvericed, ryobg"
+kind = "native"
+mechanisms = ["S5"]
+tranche = 2
+status = "candidate"
+evidence = "step wiki, 2026-11-22 (4.2.9)"
+requires = ["sky-skse64"]
+notes = "File-backed JSON state (decision Q5)."
+
+[[mod]]
+id = "sky-po3-papyrus-extender"
+game = "skyrim"
+name = "powerofthree's Papyrus Extender"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/22854"
+author = "powerofthree"
+kind = "native"
+mechanisms = ["S5"]
+tranche = 2
+status = "candidate"
+evidence = "step wiki + GitHub API (v6.5.2, 2026-09-05; https://github.com/powerof3/PapyrusExtenderSSE), 2026-11-22"
+requires = ["sky-skse64", "sky-address-library"]
+
+[[mod]]
+id = "sky-consoleutil-ng"
+game = "skyrim"
+name = "ConsoleUtilSSE NG"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/76649"
+author = "VersuchDrei"
+kind = "native"
+mechanisms = ["S5"]
+tranche = 2
+status = "candidate"
+evidence = "step wiki, 2026-11-22"
+requires = ["sky-skse64"]
+notes = "NG port; the original (darkconsole) has no confirmed Nexus id."
+
+[[mod]]
+id = "sky-campfire"
+game = "skyrim"
+name = "Campfire"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/667"
+author = "Chesko"
+kind = "plugin"
+mechanisms = ["S1", "S4", "U2"]
+tranche = 2
+status = "candidate"
+evidence = "search result, 2026-11-22 (1.12.1 SE)"
+notes = "SKSE and SkyUI optional; tranche 2 for the MCM path."
+
+[[mod]]
+id = "sky-frostfall"
+game = "skyrim"
+name = "Frostfall"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/671"
+author = "Chesko"
+kind = "plugin"
+mechanisms = ["S1", "S4", "S5", "U2"]
+tranche = 2
+status = "candidate"
+evidence = "search result, 2026-11-22 (3.4.1 SE)"
+requires = ["sky-campfire"]
+
+[[mod]]
+id = "sky-xpmsse"
+game = "skyrim"
+name = "XP32 Maximum Skeleton Special Extended (XPMSSE)"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/1988"
+author = "Team XPMSE"
+kind = "assets"
+mechanisms = ["A6", "N6"]
+tranche = 2
+status = "candidate"
+evidence = "step wiki, 2026-11-22"
+notes = "Nexus page is flagged NSFW (an SFW link is offered)."
+
+[[mod]]
+id = "sky-oar"
+game = "skyrim"
+name = "Open Animation Replacer (OAR)"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/92109"
+author = "Ershin"
+kind = "native"
+mechanisms = ["N7"]
+tranche = 2
+status = "candidate"
+evidence = "step wiki + GitHub repo (ersh1/OpenAnimationReplacer, tags only), 2026-11-22"
+requires = ["sky-skse64", "sky-address-library"]
+
+[[mod]]
+id = "sky-oar-gestures"
+game = "skyrim"
+name = "Player Character Gestures (OAR)"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/106955"
+author = "unknown"
+kind = "assets"
+mechanisms = ["N7"]
+tranche = 2
+status = "candidate"
+evidence = "search result title only, 2026-11-22"
+requires = ["sky-oar"]
+notes = "The OAR-conditions consumer §7.2 asks for; author and condition files unseen. Alternates: 89069, 85085."
+
+[[mod]]
+id = "sky-nemesis"
+game = "skyrim"
+name = "Nemesis Unlimited Behavior Engine"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/60033"
+author = "Shikyo Kira"
+kind = "tool"
+mechanisms = ["N6"]
+tranche = 3
+status = "candidate"
+evidence = "step wiki, 2026-11-22"
+notes = "Largely superseded by Pandora; one of the two generators is enough — measure the output, not the tool."
+
+[[mod]]
+id = "sky-pandora"
+game = "skyrim"
+name = "Pandora Behaviour Engine+"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/133232"
+author = "Monitor221hz"
+kind = "tool"
+mechanisms = ["N6"]
+tranche = 3
+status = "candidate"
+evidence = "GitHub API (v5.0.0-beta, 2026-10-01; https://github.com/Monitor221hz/Pandora-Behaviour-Engine-Plus) + search result for the Nexus id, 2026-11-22"
+notes = "Every release is tagged beta."
+
+[[mod]]
+id = "sky-dyndolod"
+game = "skyrim"
+name = "DynDOLOD 3 + TexGen (with DynDOLOD Resources SE, DLL NG)"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/68518"
+author = "sheson"
+kind = "tool"
+mechanisms = ["A10", "N1"]
+tranche = 3
+status = "candidate"
+evidence = "dyndolod.info/Downloads fetched, 2026-11-22; Resources SE 52897, DLL NG and Scripts 97720"
+notes = "Measure the generated output over the corpus set; the DLL NG is present and never loaded."
+
+[[mod]]
+id = "sky-xlodgen"
+game = "skyrim"
+name = "xLODGen (terrain LOD)"
+url = "https://stepmodifications.org/forum/topic/13451-xlodgen-terrain-lod-beta-for-fnv-fo3-fo4-fo4vr-tes5-sse-tes5vr-enderal/"
+author = "sheson"
+kind = "tool"
+mechanisms = ["A10"]
+tranche = 3
+status = "candidate"
+evidence = "search result, 2026-11-22; no Nexus page, distributed through the Step forum thread"
+notes = "Same tool covers FNV terrain LOD; one install serves both games."
+
+[[mod]]
+id = "sky-ngio"
+game = "skyrim"
+name = "No Grass In Objects NG"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/42161"
+author = "meh321, DwemerEngineer, alandtse"
+kind = "native"
+mechanisms = ["A11", "N2"]
+tranche = 3
+status = "candidate"
+evidence = "step wiki + GitHub API (1.0.13, 2024-04-30; https://github.com/DwemerEngineer/No-Grass-In-Objects-NG), 2026-11-22"
+notes = "Whether the Nexus file is the NG/AE build is unconfirmed; the GitHub release is."
+
+[[mod]]
+id = "sky-grass-cache-helper"
+game = "skyrim"
+name = "Grass Cache Helper NG"
+url = "https://www.nexusmods.com/skyrimspecialedition/mods/101095"
+author = "Shizof"
+kind = "native"
+mechanisms = ["A11", "N2"]
+tranche = 3
+status = "candidate"
+evidence = "search result, 2026-11-22"
+requires = ["sky-ngio"]
+
+[[mod]]
+id = "sky-wrye-bash"
+game = "skyrim"
+name = "Wrye Bash (Bashed Patch over the set)"
+url = "https://github.com/wrye-bash/wrye-bash/releases"
+author = "Wrye Bash team"
+kind = "tool"
+mechanisms = ["T2"]
+tranche = 3
+status = "candidate"
+evidence = "GitHub API (v315, 2026-09-14), 2026-11-22; Nexus mirror https://www.nexusmods.com/site/mods/591"
+notes = "Also builds FNV Bashed Patches."
+
+[[mod]]
+id = "sky-synthesis"
+game = "skyrim"
+name = "Synthesis (patch built over the set)"
+url = "https://github.com/Mutagen-Modding/Synthesis/releases"
+author = "Mutagen-Modding"
+kind = "tool"
+mechanisms = ["T2"]
+tranche = 3
+status = "candidate"
+evidence = "GitHub API (0.36.6, 2026-08-08), 2026-11-22"
+
+[[mod]]
+id = "sky-enderal"
+game = "skyrim"
+name = "Enderal: Forgotten Stories (Special Edition)"
+url = "https://store.steampowered.com/app/976620"
+author = "SureAI"
+kind = "total-conversion"
+mechanisms = ["T12"]
+tranche = 3
+status = "candidate"
+evidence = "Steam page fetched, 2026-11-22"
+notes = "Free on Steam for Skyrim SE owners. Separate corpus tier after Wave 1 passes (decision Q6)."

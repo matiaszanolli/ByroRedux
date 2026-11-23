@@ -1074,6 +1074,14 @@ entry MUST be verified in Phase 0 (it exists, its licence permits local
 testing, it exercises the mechanisms listed) before it counts. The list is
 not a compatibility claim about any mod.
 
+The Wave 1 candidates (Fallout: New Vegas and Skyrim SE) live with their
+download links, dependencies, install tranche and verification status in
+[`assets/legacy_mod_compat/corpus.toml`](../../assets/legacy_mod_compat/corpus.toml),
+which `scripts/check-lmc-catalog.py` checks against the §3.1 catalog (every
+mechanism a mod names must exist for its game). That file is the list the
+conformance runner measures; the table below is the starting inventory it
+was drawn from.
+
 | Game | Candidate | Mechanisms exercised |
 |---|---|---|
 | FNV | Yukichigai Unofficial Patch | T1, R2, S2 |
@@ -1362,3 +1370,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 11 | 2026-11-22 | LMC-REC-003 extended to the keyword lists of activator, flora, furniture and container bases; an override that drops every keyword now clears them under both policies; locations and quests recorded as waiting on partial-form support; the catalog's R2 and T2.necessity rows at version 5 | — |
 | 12 | 2026-11-22 | LMC-ID-012 built for the session profile (`--mod-root`, ownership, bare plugin names resolve through the roots); LMC-AST-010's root-ordered loose tier and LMC-ID-011's root half built with it; the catalog's A1, T10.vfs and T10.outputs rows at version 2 | — |
 | 13 | 2026-11-22 | LMC-ID-007 and LMC-SAV-001 built: the profile record (plugins with content hashes, mod roots, extensions, grants, policy) and its fingerprint, saved as the `SessionProfile` column (save format v142); a load and `save.info` report every difference | — |
+| 14 | 2026-11-22 | Phase 0 (§7.2): the Wave 1 corpus is checked in as `assets/legacy_mod_compat/corpus.toml`, 56 candidates (21 FNV, 35 Skyrim SE) with links, dependencies and install tranches; the catalog checker gains C10–C13 (corpus fields, mechanisms defined for the game, a verified mod carries a scenario and a licence). Additions to the §7.2 inventory: The Inheritance (content-only voiced quest), Extensible Follower Framework's SEQ file (R11), Player Character Gestures (OAR). No entry is verified yet | — |
