@@ -2397,3 +2397,7 @@ mod shared_parse_tests {
         assert_eq!(calls.get(), 1);
     }
 }
+
+#[cfg(test)]
+#[path = "fold_conformance_tests.rs"]
+mod fold_conformance_tests;
