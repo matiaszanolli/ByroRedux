@@ -170,6 +170,9 @@ pub struct McmMod {
     pub script: String,
     pub name: String,
     pub pages: Vec<String>,
+    /// A config no script registers (Fallout 4 MCM, §5.2), by its mod name: the panel's actions reach
+    /// [`helper`] directly instead of a config script's `_McmEvent`.
+    pub config: Option<String>,
 }
 
 /// The page on screen.
@@ -255,7 +258,25 @@ impl McmHost {
                 entry.name = name;
                 entry.pages = pages;
             }
-            None => self.mods.push(McmMod { quest, script: script.to_owned(), name, pages }),
+            None => self.mods.push(McmMod { quest, script: script.to_owned(), name, pages, config: None }),
+        }
+    }
+
+    /// A config no script registers (Fallout 4 MCM): its menu, by the config's mod name.
+    pub fn register_config(&mut self, mod_name: &str, name: String, pages: Vec<String>) {
+        self.generation += 1;
+        match self.mods.iter_mut().find(|entry| entry.config.as_deref().is_some_and(|m| m.eq_ignore_ascii_case(mod_name))) {
+            Some(entry) => {
+                entry.name = name;
+                entry.pages = pages;
+            }
+            None => self.mods.push(McmMod {
+                quest: QuestFormId(0),
+                script: String::new(),
+                name,
+                pages,
+                config: Some(mod_name.to_owned()),
+            }),
         }
     }
 
@@ -429,19 +450,67 @@ mod action {
     pub const CONFIG_CLOSE: i32 = 14;
 }
 
-/// Run `_McmEvent(action, option, number, text)` on the open mod's config script.
+/// Run `_McmEvent(action, option, number, text)` on the open mod's config script, or, for a config no
+/// script registers, answer the action from the config itself ([`raise_config`]).
 fn raise(world: &World, action: i32, option: i32, number: f32, text: &str) -> Result<(), String> {
-    let (quest, script) = {
+    let (quest, script, config) = {
         let host = world.try_resource::<McmHost>().ok_or("no MCM host")?;
         let page = host.open.as_ref().ok_or("no config menu is open")?;
         let entry = &host.mods[page.mod_index];
-        (entry.quest, entry.script.clone())
+        (entry.quest, entry.script.clone(), entry.config.clone())
     };
-    let args = vec![VmStored::Int(action), VmStored::Int(option), VmStored::Float(number), VmStored::Str(text.to_owned())];
-    let result = crate::fragment::run_quest_own_script(world, quest, &script, "_McmEvent", args);
+    let result = match config {
+        Some(mod_name) => raise_config(world, &mod_name, action, option, number, text),
+        None => {
+            let args = vec![VmStored::Int(action), VmStored::Int(option), VmStored::Float(number), VmStored::Str(text.to_owned())];
+            crate::fragment::run_quest_own_script(world, quest, &script, "_McmEvent", args)
+        }
+    };
     // An MCM Helper control's action runs after the event that changed it, as MCM Helper dispatches it.
     helper::run_pending_actions(world);
     result
+}
+
+/// A panel action on a Fallout 4 MCM config (§5.2): the config answers it, and a change, an opening or a
+/// closing is sent to the scripts registered for FO4 MCM's external events.
+fn raise_config(world: &World, mod_name: &str, action: i32, option: i32, number: f32, text: &str) -> Result<(), String> {
+    let owner = helper::McmOwner::Config(mod_name.to_owned());
+    let changed = match action {
+        action::PAGE_RESET => {
+            helper::page_reset(world, &owner, text)?;
+            String::new()
+        }
+        action::HIGHLIGHT => {
+            helper::highlight(world, &owner, option);
+            String::new()
+        }
+        action::DEFAULT => helper::reset(world, &owner, option),
+        action::SELECT => helper::select(world, &owner, option),
+        action::SLIDER_OPEN | action::MENU_OPEN | action::COLOR_OPEN | action::INPUT_OPEN => {
+            helper::open_dialog(world, &owner, option);
+            String::new()
+        }
+        action::SLIDER_ACCEPT | action::COLOR_ACCEPT | action::KEYMAP_CHANGE => {
+            helper::accept(world, &owner, option, helper::Accepted::Number(number))
+        }
+        action::MENU_ACCEPT => helper::accept(world, &owner, option, helper::Accepted::Index(number as i32)),
+        action::INPUT_ACCEPT => helper::accept(world, &owner, option, helper::Accepted::Text(text.to_owned())),
+        action::CONFIG_OPEN => {
+            crate::fragment::send_external_event(world, "OnMCMMenuOpen", mod_name, &[VmStored::Str(mod_name.to_owned())]);
+            // The wiki's example registers a bare `OnMCMOpen`, with no arguments.
+            crate::fragment::send_external_event(world, "OnMCMOpen", mod_name, &[]);
+            String::new()
+        }
+        action::CONFIG_CLOSE => {
+            crate::fragment::send_external_event(world, "OnMCMMenuClose", mod_name, &[VmStored::Str(mod_name.to_owned())]);
+            String::new()
+        }
+        other => return Err(format!("unknown panel action {other}")),
+    };
+    if !changed.is_empty() {
+        crate::fragment::send_external_event(world, "OnMCMSettingChange", mod_name, &[VmStored::Str(mod_name.to_owned()), VmStored::Str(changed)]);
+    }
+    Ok(())
 }
 
 /// Lay the open page out again: cleared, then the script's `OnPageReset`, again while it asks
@@ -618,6 +687,8 @@ pub fn close(world: &World) -> Result<(), String> {
 /// its `OnInit` registers from it. Also lays the open page out again when a handler that waited on a
 /// `ShowMessage` box asked for it (`ForcePageReset`) after the panel's action returned.
 pub fn mcm_registration_system(world: &World, _dt: f32) {
+    // Fallout 4 MCM's configs register themselves: no script does it for them (§5.2).
+    helper::register_config_menus(world);
     if let Err(error) = settle(world)
         && world.try_resource::<McmHost>().is_some_and(|host| host.open.is_some()) {
             log::warn!("MCM: page reset: {error}");

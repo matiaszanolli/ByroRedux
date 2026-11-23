@@ -894,6 +894,22 @@ impl<'l> Checker<'l> {
             if name == "getstate" {
                 return Some(Kind::Str);
             }
+            // F4SE's `RegisterForExternalEvent(name, callback)` / `UnregisterForExternalEvent(name)`, as
+            // statements; the callback must be a literal, and it must run whole.
+            if name == "registerforexternalevent" || name == "unregisterforexternalevent" {
+                let text = |arg: &Arg| matches!(arg, Arg::Literal(Expr::StringLit(_)) | Arg::Kind(Kind::Str));
+                return match (name.as_str(), arg_kinds.as_slice()) {
+                    ("registerforexternalevent", [event, Arg::Literal(Expr::StringLit(callback))]) if statement && text(event) => {
+                        if self.versions(&script, &callback.to_ascii_lowercase()).is_empty() {
+                            return self.fail(|| format!("RegisterForExternalEvent: no function {callback}"));
+                        }
+                        self.check_call_into(&script, &callback.to_ascii_lowercase(), true, frame.self_kind)?;
+                        Some(Kind::None)
+                    }
+                    ("unregisterforexternalevent", [event]) if statement && text(event) => Some(Kind::None),
+                    _ => self.fail(|| format!("{name} as written")),
+                };
+            }
             // An update registration: the handler it delivers to must run.
             if crate::fragment::EventRequest::is_call(&name) {
                 return self.check_event_registration(&script, &name, &arg_kinds, statement, frame.self_kind);

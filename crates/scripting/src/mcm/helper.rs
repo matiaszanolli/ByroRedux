@@ -22,7 +22,7 @@ use std::sync::Arc;
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::world::World;
 
-use self::config::{ActionTarget, Control, ControlKind, DefaultValue, FormSpec, GroupBehavior, HelperConfig, NumberKind, PageContent, Param, Source};
+use self::config::{ActionTarget, Dialect, Control, ControlKind, DefaultValue, FormSpec, GroupBehavior, HelperConfig, NumberKind, PageContent, Param, Source};
 use self::keybinds::{HotkeyAction, Keybind, Registrations};
 use self::settings::{HelperFiles, SettingStore};
 use super::{flags, McmHost, McmKind, McmOption};
@@ -32,12 +32,23 @@ use crate::translate::effects::VmStored;
 /// MCM Helper v1.6.2's `MCM.GetVersionCode()`, the release the engine follows (CMakeLists `PLUGIN_VERSION`).
 pub const VERSION_CODE: u32 = 15;
 
+/// FO4 MCM 1.40's `MCM.GetVersionCode()` (`changelog.txt` of reg2k/f4mcm).
+pub const FALLOUT4_VERSION_CODE: u32 = 9;
+
 /// The script a config script extends for MCM Helper, lowercase.
 pub const HELPER_BASE: &str = "mcm_configbase";
 
 /// The text option MCM Helper shows for a config it cannot load (`ErrorControl`).
 const ERROR_LABEL: &str = "Error loading config";
 const ERROR_VALUE: &str = "Click to view";
+
+/// Whose config menu a page belongs to: a config script's quest (MCM Helper, §5.1), or a config that no
+/// script registers (Fallout 4 MCM, §5.2), by its mod name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McmOwner {
+    Script(QuestFormId),
+    Config(String),
+}
 
 /// One control the open page laid out, with what it needs to read and write its value.
 #[derive(Debug, Clone)]
@@ -49,7 +60,8 @@ struct PlacedControl {
 /// menu options a script replaced (`SetMenuOptions`).
 #[derive(Debug, Clone)]
 struct HelperPage {
-    quest: QuestFormId,
+    owner: McmOwner,
+    quest: Option<QuestFormId>,
     mod_name: String,
     script: String,
     controls: HashMap<i32, PlacedControl>,
@@ -89,12 +101,19 @@ pub struct McmHelperStore {
     /// The hotkeys of each mod whose config loaded, by mod (lowercase); MCM Helper reads a mod's
     /// `keybinds.json` when its config registers.
     keybinds: HashMap<String, Vec<Keybind>>,
-    /// Each such mod's config quest and config script, which a hotkey's action defaults to.
-    config_quests: HashMap<String, (QuestFormId, String)>,
+    /// Each such mod's config quest and config script, which a hotkey's action defaults to (none for a
+    /// config no script registers).
+    config_quests: HashMap<String, (Option<QuestFormId>, String)>,
     /// The player's key bindings, read on first use.
     registrations: Option<Registrations>,
     /// Hotkeys whose console command was declined, so the diagnostic is given once.
     console_declined: HashSet<String>,
+    /// Which front end's configs the game's are (MCM Helper on Skyrim, FO4 MCM on Fallout 4).
+    dialect: Dialect,
+    /// What `MCM.GetVersionCode()` answers: the release of the front end the engine follows.
+    version_code: u32,
+    /// Fallout 4 MCM's configs found under the mod roots, by mod name: they register themselves.
+    config_mods: Vec<String>,
 }
 
 impl Resource for McmHelperStore {}
@@ -111,8 +130,23 @@ impl McmHelperStore {
             files: Some(files),
             plugin_stems,
             plugins: plugins.iter().map(|name| name.to_ascii_lowercase()).collect(),
+            version_code: VERSION_CODE,
             ..Default::default()
         }
+    }
+
+    /// The same store serving Fallout 4 MCM (§5.2): its config dialect and version code, and the configs
+    /// found under the mod roots, which register themselves.
+    pub fn for_fallout4(mut self, config_mods: Vec<String>) -> Self {
+        self.dialect = Dialect::Fallout4;
+        self.version_code = FALLOUT4_VERSION_CODE;
+        self.config_mods = config_mods;
+        self
+    }
+
+    /// `MCM.GetVersionCode()`.
+    pub fn version_code(&self) -> u32 {
+        if self.version_code == 0 { VERSION_CODE } else { self.version_code }
     }
 
     fn files(&self) -> Result<Arc<dyn HelperFiles>, String> {
@@ -127,7 +161,7 @@ impl McmHelperStore {
         }
         let parsed = match self.files() {
             Ok(files) => match files.config(mod_name) {
-                Some(bytes) => config::parse(&bytes),
+                Some(bytes) => config::parse_in(&bytes, self.dialect),
                 None => Err(format!("no MCM/Config/{mod_name}/config.json")),
             },
             Err(error) => Err(error),
@@ -206,7 +240,7 @@ impl McmHelperStore {
 
     /// `SetMenuOptions(id, options, shortNames)` for the open page of `quest`.
     pub fn set_menu_options(&mut self, quest: QuestFormId, id: &str, options: Vec<String>, short_names: Vec<String>) {
-        if let Some(page) = self.page.as_mut().filter(|page| page.quest == quest) {
+        if let Some(page) = self.page.as_mut().filter(|page| page.owner == McmOwner::Script(quest)) {
             page.menu_overrides.insert(id.to_ascii_lowercase(), (options, short_names));
         }
     }
@@ -217,8 +251,14 @@ impl McmHelperStore {
     fn registrations(&mut self) -> &mut Registrations {
         if self.registrations.is_none() {
             let parse = |bytes: Option<Vec<u8>>| bytes.as_deref().map(keybinds::parse_registrations).unwrap_or_default();
+            // An earlier FO4 MCM install's `Keybinds.json` names keys in an undocumented code space, so it
+            // is not read (§5.2).
+            let read_legacy = self.dialect != Dialect::Fallout4;
             let (legacy, profile) = match self.files() {
-                Ok(files) => (parse(files.legacy_registrations()), parse(files.profile_registrations())),
+                Ok(files) => (
+                    if read_legacy { parse(files.legacy_registrations()) } else { Vec::new() },
+                    parse(files.profile_registrations()),
+                ),
                 Err(_) => (Vec::new(), Vec::new()),
             };
             self.registrations = Some(Registrations::layered(legacy, profile));
@@ -255,12 +295,20 @@ fn stem(file: &str) -> &str {
 /// Who is asking: the config quest, its mod and its config script.
 #[derive(Debug, Clone)]
 struct Context {
-    quest: QuestFormId,
+    owner: McmOwner,
+    /// The config quest a property or method defaults to; none for a config no script registers.
+    quest: Option<QuestFormId>,
     mod_name: String,
     script: String,
 }
 
-fn context(world: &World, quest: QuestFormId) -> Result<Context, String> {
+fn context(world: &World, owner: &McmOwner) -> Result<Context, String> {
+    let quest = match owner {
+        McmOwner::Script(quest) => *quest,
+        McmOwner::Config(mod_name) => {
+            return Ok(Context { owner: owner.clone(), quest: None, mod_name: mod_name.clone(), script: String::new() });
+        }
+    };
     let mod_name = world
         .try_resource::<McmHelperStore>()
         .ok_or("no MCM Helper store")?
@@ -275,30 +323,90 @@ fn context(world: &World, quest: QuestFormId) -> Result<Context, String> {
                 .and_then(|(_, scripts)| scripts.iter().find(|script| script.extends(HELPER_BASE)).map(|script| script.script.clone()))
         })
         .unwrap_or_default();
-    Ok(Context { quest, mod_name, script })
+    Ok(Context { owner: owner.clone(), quest: Some(quest), mod_name, script })
 }
 
 /// A config script registered: its mod's hotkeys become live (`KeybindManager::ReadKeybinds`, which MCM
 /// Helper runs for each config it reads), with the config quest their actions default to.
 pub fn note_config_quest(world: &World, quest: QuestFormId) {
-    let Ok(ctx) = context(world, quest) else { return };
+    let Ok(ctx) = context(world, &McmOwner::Script(quest)) else { return };
     let key = ctx.mod_name.to_ascii_lowercase();
     let mut store = world.resource_mut::<McmHelperStore>();
     if matches!(&*store.config(&ctx.mod_name), Err(_)) {
         return;
     }
-    store.config_quests.insert(key.clone(), (quest, ctx.script.clone()));
-    if store.keybinds.contains_key(&key) {
-        return;
+    store.config_quests.insert(key, (Some(quest), ctx.script.clone()));
+    store.load_keybinds(&ctx.mod_name);
+}
+
+impl McmHelperStore {
+    /// Read `mod_name`'s `keybinds.json` once.
+    fn load_keybinds(&mut self, mod_name: &str) {
+        let key = mod_name.to_ascii_lowercase();
+        if self.keybinds.contains_key(&key) {
+            return;
+        }
+        let parsed = match self.files().map(|files| files.keybinds(mod_name)) {
+            Ok(Some(bytes)) => keybinds::parse_keybinds(&bytes).unwrap_or_else(|error| {
+                log::warn!("MCM: the hotkeys of {mod_name} do not load: {error}");
+                Vec::new()
+            }),
+            _ => Vec::new(),
+        };
+        self.keybinds.insert(key, parsed);
     }
-    let parsed = match store.files().map(|files| files.keybinds(&ctx.mod_name)) {
-        Ok(Some(bytes)) => keybinds::parse_keybinds(&bytes).unwrap_or_else(|error| {
-            log::warn!("MCM Helper: the hotkeys of {} do not load: {error}", ctx.mod_name);
-            Vec::new()
-        }),
-        _ => Vec::new(),
+}
+
+/// Register Fallout 4 MCM's configs (§5.2) that the host does not list yet: each whose
+/// `pluginRequirements` are loaded and, when it names none, whose own plugin is. Its hotkeys become live
+/// with it. Runs every frame, so a load (which clears the host) registers them again.
+pub fn register_config_menus(world: &World) {
+    let pending: Vec<String> = {
+        let (Some(store), Some(host)) = (world.try_resource::<McmHelperStore>(), world.try_resource::<McmHost>()) else { return };
+        if store.config_mods.is_empty() {
+            return;
+        }
+        store
+            .config_mods
+            .iter()
+            .filter(|name| !host.mods.iter().any(|entry| entry.config.as_deref().is_some_and(|m| m.eq_ignore_ascii_case(name))))
+            .cloned()
+            .collect()
     };
-    store.keybinds.insert(key, parsed);
+    for mod_name in pending {
+        let registration = {
+            let mut store = world.resource_mut::<McmHelperStore>();
+            let config = store.config(&mod_name);
+            let Ok(config) = &*config else { continue };
+            if let Some(refusal) = store.refusal(config) {
+                log::info!("FO4 MCM: {mod_name} is not listed: {refusal}");
+                store.config_mods.retain(|name| name != &mod_name);
+                continue;
+            }
+            let own = ["esp", "esm", "esl"].iter().any(|ext| store.plugins.contains(&format!("{mod_name}.{ext}").to_ascii_lowercase()));
+            if config.plugin_requirements.is_empty() && !own {
+                log::info!("FO4 MCM: {mod_name} is not listed: no plugin of that name is loaded");
+                store.config_mods.retain(|name| name != &mod_name);
+                continue;
+            }
+            let pages = config.pages.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>();
+            let name = if config.display_name.is_empty() { mod_name.clone() } else { config.display_name.clone() };
+            // The config's own spelling of its mod (FO4: `modName` "must match your directory name").
+            let canonical = if config.mod_name.eq_ignore_ascii_case(&mod_name) { config.mod_name.clone() } else { mod_name.clone() };
+            store.config_quests.insert(mod_name.to_ascii_lowercase(), (None, String::new()));
+            store.load_keybinds(&mod_name);
+            (name, pages, canonical)
+        };
+        world.resource_mut::<McmHost>().register_config(&registration.2, registration.0, registration.1);
+    }
+}
+
+/// `MCM.RefreshMenu()` (FO4's global): the open page's values again, whichever menu it is.
+pub fn refresh_open(world: &World) {
+    let owner = world.try_resource::<McmHelperStore>().and_then(|store| store.page.as_ref().map(|page| page.owner.clone()));
+    if let Some(owner) = owner {
+        refresh(world, &owner);
+    }
 }
 
 /// A form a config names (`"Plugin.esp|D62"`), as a load-order FormID.
@@ -310,7 +418,9 @@ fn resolve_form(world: &World, form: &FormSpec) -> Option<u32> {
 /// The quest a property source or a method action targets: the config quest by default. A form that is
 /// not a quest with scripts is refused: the VM keeps script variables for quests only.
 fn target_quest(world: &World, ctx: &Context, form: Option<&FormSpec>) -> Result<QuestFormId, String> {
-    let Some(form) = form else { return Ok(ctx.quest) };
+    let Some(form) = form else {
+        return ctx.quest.ok_or_else(|| "no form, and the config has no quest to default to".to_owned());
+    };
     let id = resolve_form(world, form).ok_or_else(|| format!("{}|{:X} is not in the load order", form.plugin, form.local))?;
     let is_quest = world.try_resource::<crate::QuestScriptInstances>().is_some_and(|instances| instances.0.contains_key(&QuestFormId(id)));
     if is_quest {
@@ -504,6 +614,8 @@ fn shown(world: &World, ctx: &Context, control: &Control) -> (McmKind, String, f
         ControlKind::Menu | ControlKind::Enum => (McmKind::Menu, menu_text(world, ctx, control), 0.0),
         ControlKind::Color => (McmKind::Color, String::new(), read_number(world, ctx, control)),
         ControlKind::KeyMap => (McmKind::KeyMap, String::new(), read_number(world, ctx, control)),
+        // FO4's button: a text option with no value; its select runs its action.
+        ControlKind::Button => (McmKind::Text, String::new(), 0.0),
     }
 }
 
@@ -516,7 +628,7 @@ fn value_param(world: &World, ctx: &Context, control: &Control) -> VmStored {
             VmStored::Int(read_number(world, ctx, control) as i32)
         }
         ControlKind::Text | ControlKind::Menu | ControlKind::Input => VmStored::Str(read_text(world, ctx, control)),
-        ControlKind::Empty | ControlKind::Header => VmStored::None,
+        ControlKind::Empty | ControlKind::Header | ControlKind::Button => VmStored::None,
     }
 }
 
@@ -572,11 +684,12 @@ fn behaviour(control: &Control, active: &HashMap<u32, bool>, all: &[u32]) -> Opt
 }
 
 /// `OnPageReset(page)` of an MCM Helper config script: the config's page laid out into the host.
-pub fn page_reset(world: &World, quest: QuestFormId, page_name: &str) -> Result<(), String> {
-    let ctx = context(world, quest)?;
+pub fn page_reset(world: &World, owner: &McmOwner, page_name: &str) -> Result<(), String> {
+    let ctx = context(world, owner)?;
     let config = world.resource_mut::<McmHelperStore>().config(&ctx.mod_name);
     let mut page = HelperPage {
-        quest,
+        owner: owner.clone(),
+        quest: ctx.quest,
         mod_name: ctx.mod_name.clone(),
         script: ctx.script.clone(),
         controls: HashMap::new(),
@@ -659,18 +772,18 @@ fn error_control() -> Control {
 }
 
 /// The open page's control for `option`, with the context to read it, if `quest`'s page is open.
-fn placed(world: &World, quest: QuestFormId, option: i32) -> Option<(Context, Control)> {
+fn placed(world: &World, owner: &McmOwner, option: i32) -> Option<(Context, Control)> {
     let store = world.try_resource::<McmHelperStore>()?;
-    let page = store.page.as_ref().filter(|page| page.quest == quest)?;
+    let page = store.page.as_ref().filter(|page| page.owner == *owner)?;
     let control = page.controls.get(&option)?.control.clone();
-    Some((Context { quest, mod_name: page.mod_name.clone(), script: page.script.clone() }, control))
+    Some((Context { owner: owner.clone(), quest: page.quest, mod_name: page.mod_name.clone(), script: page.script.clone() }, control))
 }
 
 /// Redraw every control's value and flags (`RefreshPage`), after a value changed.
-pub fn refresh(world: &World, quest: QuestFormId) {
+pub fn refresh(world: &World, owner: &McmOwner) {
     let Some((ctx, controls, groups)) = world.try_resource::<McmHelperStore>().and_then(|store| {
-        let page = store.page.as_ref().filter(|page| page.quest == quest && page.error.is_none())?;
-        let ctx = Context { quest, mod_name: page.mod_name.clone(), script: page.script.clone() };
+        let page = store.page.as_ref().filter(|page| page.owner == *owner && page.error.is_none())?;
+        let ctx = Context { owner: owner.clone(), quest: page.quest, mod_name: page.mod_name.clone(), script: page.script.clone() };
         let controls: Vec<(i32, Control)> = page.controls.iter().map(|(id, placed)| (*id, placed.control.clone())).collect();
         Some((ctx, controls, page.groups.clone()))
     }) else {
@@ -684,7 +797,7 @@ pub fn refresh(world: &World, quest: QuestFormId) {
             ControlKind::Text | ControlKind::Input | ControlKind::Stepper | ControlKind::Menu | ControlKind::Enum => host.set_option_text(id, text),
             ControlKind::Slider => host.set_option_number(id, number, text),
             ControlKind::Toggle | ControlKind::Color | ControlKind::KeyMap => host.set_option_number(id, number, String::new()),
-            ControlKind::Empty | ControlKind::Header | ControlKind::HiddenToggle => {}
+            ControlKind::Empty | ControlKind::Header | ControlKind::HiddenToggle | ControlKind::Button => {}
         }
         // A control without a group condition keeps the flags it was laid out with (`RefreshFlags`).
         if control.group_condition.is_some()
@@ -697,33 +810,33 @@ pub fn refresh(world: &World, quest: QuestFormId) {
 }
 
 /// After a change: the info text again if the cursor is on an option (`UpdateInfoText(…, true)`).
-fn update_info(world: &World, quest: QuestFormId) {
+fn update_info(world: &World, owner: &McmOwner) {
     let highlighted = world.try_resource::<McmHelperStore>().and_then(|store| store.page.as_ref().and_then(|page| page.highlighted));
     if let Some(option) = highlighted {
-        highlight(world, quest, option);
+        highlight(world, owner, option);
     }
 }
 
 /// The id a change reports to `OnSettingChange`, after the page shows the new value.
 fn changed(world: &World, ctx: &Context, control: &Control) -> String {
     let regroup = control.group_control > 0;
-    refresh(world, ctx.quest);
+    refresh(world, &ctx.owner);
     if regroup {
         log::trace!("MCM Helper: group {} switched; the page refreshed", control.group_control);
     }
-    update_info(world, ctx.quest);
+    update_info(world, &ctx.owner);
     control.id.clone()
 }
 
 /// `OnOptionHighlight`: the control's help, `{value}` filled; an error page's error.
-pub fn highlight(world: &World, quest: QuestFormId, option: i32) {
+pub fn highlight(world: &World, owner: &McmOwner, option: i32) {
     let error = world.try_resource::<McmHelperStore>().and_then(|store| store.page.as_ref().and_then(|page| page.error.clone()));
     if let Some(mut store) = world.try_resource_mut::<McmHelperStore>()
-        && let Some(page) = store.page.as_mut().filter(|page| page.quest == quest)
+        && let Some(page) = store.page.as_mut().filter(|page| page.owner == *owner)
     {
         page.highlighted = Some(option);
     }
-    let text = match (error, placed(world, quest, option)) {
+    let text = match (error, placed(world, owner, option)) {
         (Some(error), _) => error,
         (None, Some((ctx, control))) => info_text(world, &ctx, &control),
         (None, None) => return,
@@ -733,8 +846,8 @@ pub fn highlight(world: &World, quest: QuestFormId, option: i32) {
 
 /// `OnOptionSelect`: a toggle flips, a stepper steps; the id to report, `""` for none. Every control's
 /// action is queued (MCM Helper invokes it on any select).
-pub fn select(world: &World, quest: QuestFormId, option: i32) -> String {
-    let Some((ctx, control)) = placed(world, quest, option) else { return String::new() };
+pub fn select(world: &World, owner: &McmOwner, option: i32) -> String {
+    let Some((ctx, control)) = placed(world, owner, option) else { return String::new() };
     let id = match control.kind {
         ControlKind::Toggle => {
             let flipped = if read_number(world, &ctx, &control) == 0.0 { 1.0 } else { 0.0 };
@@ -759,8 +872,8 @@ fn report(result: Result<(), String>, control: &Control) {
 }
 
 /// `OnOptionDefault`: the value back to its default; the id to report.
-pub fn reset(world: &World, quest: QuestFormId, option: i32) -> String {
-    let Some((ctx, control)) = placed(world, quest, option) else { return String::new() };
+pub fn reset(world: &World, owner: &McmOwner, option: i32) -> String {
+    let Some((ctx, control)) = placed(world, owner, option) else { return String::new() };
     if control.values.source.is_none() {
         return String::new();
     }
@@ -774,8 +887,8 @@ pub fn reset(world: &World, quest: QuestFormId, option: i32) -> String {
 }
 
 /// `OnOptionSliderOpen` / `MenuOpen` / `ColorOpen` / `InputOpen`: the dialog's values.
-pub fn open_dialog(world: &World, quest: QuestFormId, option: i32) {
-    let Some((ctx, control)) = placed(world, quest, option) else { return };
+pub fn open_dialog(world: &World, owner: &McmOwner, option: i32) {
+    let Some((ctx, control)) = placed(world, owner, option) else { return };
     match control.kind {
         ControlKind::Slider => {
             let (start, default) = (read_number(world, &ctx, &control), default_number(world, &ctx, &control));
@@ -828,8 +941,8 @@ pub enum Accepted {
 
 /// `OnOptionSliderAccept` / `MenuAccept` / `ColorAccept` / `KeyMapChange` / `InputAccept`: the value
 /// stored and the action queued; the id to report.
-pub fn accept(world: &World, quest: QuestFormId, option: i32, value: Accepted) -> String {
-    let Some((ctx, control)) = placed(world, quest, option) else { return String::new() };
+pub fn accept(world: &World, owner: &McmOwner, option: i32, value: Accepted) -> String {
+    let Some((ctx, control)) = placed(world, owner, option) else { return String::new() };
     let result = match (control.kind, value) {
         (ControlKind::Menu, Accepted::Index(index)) => {
             let (options, _) = menu_options(world, &control);
@@ -878,11 +991,11 @@ fn queue_action(world: &World, ctx: &Context, control: &Control) {
         .collect();
     let pending = match &action.target {
         ActionTarget::Global { script } => {
-            Ok(PendingAction { quest: ctx.quest, script: script.clone(), function: action.function.clone(), args, global: true })
+            Ok(PendingAction { quest: ctx.quest.unwrap_or(QuestFormId(0)), script: script.clone(), function: action.function.clone(), args, global: true })
         }
         ActionTarget::Method { form, script } => target_quest(world, ctx, form.as_ref()).map(|quest| PendingAction {
             quest,
-            script: script.clone().unwrap_or_else(|| ctx.script.clone()),
+            script: method_script(world, ctx, quest, script.as_deref()),
             function: action.function.clone(),
             args,
             global: false,
@@ -928,7 +1041,7 @@ pub fn hotkey_events(world: &World, downs: &[i32], ups: &[(i32, f32)]) {
     let presses = downs.iter().map(|&code| (code, None)).chain(ups.iter().map(|&(code, held)| (code, Some(held))));
     let mut queued = false;
     for (code, released) in presses {
-        let hotkeys: Vec<(String, Keybind, Option<(QuestFormId, String)>)> = {
+        let hotkeys: Vec<(String, Keybind, Option<(Option<QuestFormId>, String)>)> = {
             let mut store = world.resource_mut::<McmHelperStore>();
             let bound: Vec<(String, String)> =
                 store.registrations().bound_to(code).map(|(mod_name, id)| (mod_name.to_owned(), id.to_owned())).collect();
@@ -951,9 +1064,10 @@ pub fn hotkey_events(world: &World, downs: &[i32], ups: &[(i32, f32)]) {
 }
 
 /// Queue what a hotkey does on this press; whether anything was queued.
-fn queue_hotkey(world: &World, mod_name: &str, keybind: &Keybind, config: Option<(QuestFormId, String)>, released: Option<f32>) -> bool {
+fn queue_hotkey(world: &World, mod_name: &str, keybind: &Keybind, config: Option<(Option<QuestFormId>, String)>, released: Option<f32>) -> bool {
     let Some((quest, script)) = config else { return false };
-    let ctx = Context { quest, mod_name: mod_name.to_owned(), script };
+    let owner = quest.map_or_else(|| McmOwner::Config(mod_name.to_owned()), McmOwner::Script);
+    let ctx = Context { owner, quest, mod_name: mod_name.to_owned(), script };
     let pending = match (&keybind.action, released) {
         (HotkeyAction::Call(action), None) => {
             let args = action
@@ -969,11 +1083,11 @@ fn queue_hotkey(world: &World, mod_name: &str, keybind: &Keybind, config: Option
                 .collect();
             match &action.target {
                 ActionTarget::Global { script } => {
-                    Ok(PendingAction { quest, script: script.clone(), function: action.function.clone(), args, global: true })
+                    Ok(PendingAction { quest: quest.unwrap_or(QuestFormId(0)), script: script.clone(), function: action.function.clone(), args, global: true })
                 }
                 ActionTarget::Method { form, script } => target_quest(world, &ctx, form.as_ref()).map(|target| PendingAction {
                     quest: target,
-                    script: script.clone().unwrap_or_else(|| ctx.script.clone()),
+                    script: method_script(world, &ctx, target, script.as_deref()),
                     function: action.function.clone(),
                     args,
                     global: false,
@@ -1007,6 +1121,17 @@ fn queue_hotkey(world: &World, mod_name: &str, keybind: &Keybind, config: Option
             log::warn!("MCM Helper: hotkey '{}' of {mod_name} is not run: {error}", keybind.id);
             false
         }
+    }
+}
+
+/// The script a method action calls on `quest`: its `scriptName`; else, on the config quest, the config
+/// script; else the quest's own script (FO4 MCM: `scriptName` "is only needed if the form has several
+/// scripts").
+fn method_script(world: &World, ctx: &Context, quest: QuestFormId, named: Option<&str>) -> String {
+    match named {
+        Some(script) => script.to_owned(),
+        None if ctx.quest == Some(quest) && !ctx.script.is_empty() => ctx.script.clone(),
+        None => first_script(world, quest).unwrap_or_default(),
     }
 }
 

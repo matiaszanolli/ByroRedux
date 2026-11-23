@@ -7,9 +7,14 @@ Bool Function IsInstalled() Global
 	Return True
 EndFunction
 
-; MCM Helper v1.6.2's version code.
+; MCM Helper v1.6.2's version code (15), or FO4 MCM 1.40's (9) on Fallout 4.
 Int Function GetVersionCode() Global
 	Return McmHelper.VersionCode()
+EndFunction
+
+; Fallout 4 MCM's: refresh the open menu's values, after a script changed them.
+Function RefreshMenu() Global
+	McmHelper.RefreshOpen()
 EndFunction
 
 Int Function GetModSettingInt(String a_modName, String a_settingName) Global

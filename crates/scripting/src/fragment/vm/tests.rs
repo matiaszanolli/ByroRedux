@@ -7482,3 +7482,119 @@ fn mcm_helper_hotkeys_bind_through_a_key_map_and_run_on_a_press() {
     hotkey_events(&world, &[0x22], &[]);
     assert_eq!(applied(&world), Some(5.0), "the unmapped hotkey no longer runs");
 }
+
+/// LMC-UI-002 slice 5 — Fallout 4 MCM: a config no script registers is listed by its folder when its
+/// plugin is loaded (one whose plugin is missing is not), its page is laid out by FO4's control names, a
+/// switcher's group hides the controls it gates, a button runs its action, an image is left out, and a
+/// quest script registered with F4SE's `RegisterForExternalEvent` hears the opening, each change (with
+/// the mod and the id) and the closing.
+#[test]
+fn a_fallout4_mcm_config_registers_itself_and_sends_external_events() {
+    use crate::mcm::helper::McmHelperStore;
+    use crate::mcm::{McmAnswer, McmHost, McmKind};
+    let mut files = helper_files(
+        r#"{ "modName": "Frost", "displayName": "Frost Config",
+             "content": [
+                { "type": "section", "text": "General" },
+                { "id": "bEnabled:Main", "type": "switcher", "text": "Enabled", "groupControl": 1, "valueOptions": { "sourceType": "ModSettingBool" } },
+                { "id": "fRate:Main", "type": "slider", "text": "Rate", "groupCondition": 1, "valueOptions": { "min": 0, "max": 5, "step": 0.25, "sourceType": "ModSettingFloat" } },
+                { "type": "dropdown", "text": "Speed", "valueOptions": { "options": ["Slow", "Fast"], "sourceType": "PropertyValueInt", "sourceForm": "Frost.esp|10F00", "propertyName": "Speed" } },
+                { "type": "button", "text": "Apply", "action": { "type": "CallFunction", "form": "Frost.esp|10F00", "function": "Applied", "params": ["{i}3"] } },
+                { "type": "image", "libName": "lib", "className": "Logo" },
+                { "type": "text", "text": "Version 1.0", "id": "unused" }
+             ] }"#,
+    );
+    files.config.insert("Ghost".into(), r#"{ "modName": "Ghost", "displayName": "Ghost", "content": [] }"#.into());
+    let mut world = mcm_helper_world(
+        "ScriptName VmFo4Listener extends Quest\n\
+         Int Property Speed Auto\n\
+         Int Property Changes Auto\n\
+         Int Property Opens Auto\n\
+         Int Property Closes Auto\n\
+         Int Property Button Auto\n\
+         Int Property RateChanges Auto\n\
+         Event OnInit()\n\
+          RegisterForExternalEvent(\"OnMCMSettingChange|Frost\", \"OnSetting\")\n\
+          RegisterForExternalEvent(\"OnMCMMenuOpen\", \"OnOpen\")\n\
+          RegisterForExternalEvent(\"OnMCMMenuClose|Frost\", \"OnClose\")\n\
+         EndEvent\n\
+         Function OnSetting(String modName, String id)\n\
+          If modName == \"Frost\"\n Changes += 1\n EndIf\n\
+          If id == \"fRate:Main\"\n RateChanges += 1\n EndIf\n\
+         EndFunction\n\
+         Function OnOpen(String modName)\n Opens += 1\n EndFunction\n\
+         Function OnClose(String modName)\n Closes += 1\n EndFunction\n\
+         Function Applied(Int a_tag)\n Button = a_tag\n EndFunction\n",
+        crate::mcm::helper::settings::tests::MemoryFiles::default(),
+    );
+    world.insert_resource(
+        McmHelperStore::new(std::sync::Arc::new(files), &["Fallout4.esm".to_owned(), "Frost.esp".to_owned()])
+            .for_fallout4(vec!["Frost".into(), "Ghost".into()]),
+    );
+    crate::quest_script_init_system(&world, 0.0);
+    crate::mcm::mcm_registration_system(&world, 0.0);
+    {
+        let host = world.resource::<McmHost>();
+        assert_eq!(host.mods.len(), 1, "Ghost.esp is not loaded, so its config is not listed");
+        assert_eq!((host.mods[0].name.as_str(), host.mods[0].config.as_deref()), ("Frost Config", Some("Frost")));
+    }
+    assert_eq!(world.resource::<McmHelperStore>().version_code(), 9, "FO4 MCM 1.40's version code");
+
+    crate::mcm::open(&world, 0).expect("opens");
+    assert_eq!(quest_property(&world, "Opens"), Some(1.0), "OnMCMMenuOpen(\"Frost\")");
+    let cell = |world: &World, index: usize| world.resource::<McmHost>().open.as_ref().unwrap().cells[index].clone();
+    let kinds: Vec<_> = (0..7).map(|i| cell(&world, i).map(|c| c.kind)).collect();
+    assert_eq!(
+        kinds,
+        [Some(McmKind::Header), Some(McmKind::Toggle), Some(McmKind::Slider), Some(McmKind::Menu), Some(McmKind::Text), Some(McmKind::Text), None],
+        "the image is left out"
+    );
+    assert_eq!(cell(&world, 2).unwrap().value_text(), "1.50", "a slider shows its step's decimals");
+    assert_eq!(cell(&world, 3).unwrap().text, "Slow");
+    assert_eq!((cell(&world, 5).unwrap().label.as_str(), cell(&world, 5).unwrap().text.as_str()), ("Version 1.0", ""), "FO4's text has no value");
+
+    crate::mcm::activate(&world, 1).expect("switches");
+    assert_eq!(cell(&world, 2).unwrap().flags, crate::mcm::flags::DISABLED | crate::mcm::flags::HIDDEN, "a failed group hides on FO4");
+    assert_eq!(quest_property(&world, "Changes"), Some(1.0), "OnMCMSettingChange(\"Frost\", \"bEnabled:Main\")");
+    crate::mcm::activate(&world, 1).expect("switches back");
+    crate::mcm::activate(&world, 2).expect("opens the slider");
+    crate::mcm::accept(&world, 2, McmAnswer::Slider(3.25)).expect("accepts");
+    assert_eq!(quest_property(&world, "RateChanges"), Some(1.0), "the id reaches the callback");
+    assert_eq!(quest_property(&world, "Changes"), Some(3.0));
+
+    crate::mcm::activate(&world, 3).expect("opens the dropdown");
+    crate::mcm::accept(&world, 3, McmAnswer::Menu(1)).expect("accepts");
+    assert_eq!(quest_property(&world, "Speed"), Some(1.0), "the dropdown's index into the property");
+    assert_eq!(cell(&world, 3).unwrap().text, "Fast");
+
+    crate::mcm::activate(&world, 4).expect("presses the button");
+    assert_eq!(quest_property(&world, "Button"), Some(3.0), "the button's CallFunction ran");
+
+    crate::mcm::close(&world).expect("closes");
+    assert_eq!(quest_property(&world, "Closes"), Some(1.0), "OnMCMMenuClose|Frost");
+
+    // A load clears the host and the session's registrations; the config lists itself again.
+    world.resource_mut::<McmHost>().reset_session();
+    crate::fragment::reset_external_events(&world);
+    crate::mcm::mcm_registration_system(&world, 0.0);
+    assert_eq!(world.resource::<McmHost>().mods.len(), 1);
+    assert!(world.resource::<crate::fragment::ExternalEventRegistrations>().0.is_empty());
+}
+
+/// F4SE's `RegisterForExternalEvent` is checked like the script's own calls: a callback the script lacks,
+/// or one named by a variable, declines it.
+#[test]
+fn register_for_external_event_needs_a_literal_callback_the_script_has() {
+    let check = |source: &str| crate::check_quest_script(parsed_source(source), &crate::DELIVERED_QUEST_EVENTS, None);
+    assert!(check(
+        "ScriptName VmExt1 extends Quest\n\
+         Event OnInit()\n RegisterForExternalEvent(\"OnMCMSettingChange\", \"Cb\")\n UnregisterForExternalEvent(\"Other\")\n EndEvent\n\
+         Function Cb(String a, String b)\n EndFunction\n"
+    )
+    .is_ok());
+    assert!(check("ScriptName VmExt2 extends Quest\nEvent OnInit()\n RegisterForExternalEvent(\"E\", \"Missing\")\n EndEvent\n").is_err());
+    assert!(check(
+        "ScriptName VmExt3 extends Quest\nString cb = \"Cb\"\nEvent OnInit()\n RegisterForExternalEvent(\"E\", cb)\n EndEvent\nFunction Cb()\nEndFunction\n"
+    )
+    .is_err());
+}

@@ -54,6 +54,16 @@ impl LayeredSources {
         self.tiers.len()
     }
 
+    /// Every path under `prefix` (lowercase, `\\`-separated) any tier holds, each once. A BSA lists nothing
+    /// (`Archive::list_files`), so this is for loose files and BA2s.
+    pub(crate) fn list(&self, prefix: &str) -> Vec<String> {
+        let mut paths: Vec<String> =
+            self.tiers.iter().flat_map(|tier| tier.list_files()).filter(|path| path.starts_with(prefix)).map(str::to_owned).collect();
+        paths.sort_unstable();
+        paths.dedup();
+        paths
+    }
+
     /// `path` from the highest tier that holds it. A present but unreadable entry is warned about once, as
     /// [`Archive::extract_or_warn`] does, and the lookup does not fall through to a lower tier's copy.
     pub(crate) fn extract(&self, path: &str) -> Option<Vec<u8>> {

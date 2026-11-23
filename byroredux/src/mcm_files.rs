@@ -121,8 +121,32 @@ pub(crate) fn install(world: &mut byroredux_core::ecs::world::World) {
         sources: LayeredSources::over(Vec::new(), &args, &["mcm\\"], &[]),
         profile_dir: profile_dir(&settings_dir, plugins.first().map_or("", String::as_str), profile.as_deref()),
     };
-    log::debug!("MCM Helper: {} loose tier(s); settings in {}", files.sources.tier_count(), files.profile_dir.display());
-    world.insert_resource(McmHelperStore::new(Arc::new(files), &plugins));
+    log::debug!("MCM: {} loose tier(s); settings in {}", files.sources.tier_count(), files.profile_dir.display());
+    // Fallout 4 MCM's menus are folders, not scripts (`docs/engine/mcm-host.md` §5.2): the configs under the
+    // mod roots, by folder name.
+    let fallout4 = plugins.first().is_some_and(|base| base.eq_ignore_ascii_case("Fallout4.esm"));
+    let configs = if fallout4 { config_folders(&files.sources.list("mcm\\config\\")) } else { Vec::new() };
+    let store = McmHelperStore::new(Arc::new(files), &plugins);
+    let store = if fallout4 {
+        log::info!("FO4 MCM: {} config(s) under the mod roots", configs.len());
+        store.for_fallout4(configs)
+    } else {
+        store
+    };
+    world.insert_resource(store);
+}
+
+/// The folders under `mcm\config\` that hold a `config.json`, from the listed paths.
+fn config_folders(paths: &[String]) -> Vec<String> {
+    let mut folders: Vec<String> = paths
+        .iter()
+        .filter_map(|path| path.strip_prefix("mcm\\config\\")?.strip_suffix("\\config.json"))
+        .filter(|folder| !folder.is_empty() && !folder.contains('\\'))
+        .map(str::to_owned)
+        .collect();
+    folders.sort_unstable();
+    folders.dedup();
+    folders
 }
 
 #[cfg(test)]
@@ -136,6 +160,20 @@ mod tests {
         assert_eq!(profile_dir(root, "FalloutNV.esm", Some("Survival")), root.join("mcm/falloutnv/Survival"));
         assert_eq!(profile_dir(root, "Fallout3.esm", Some("  ")), root.join("mcm/fallout3/default"));
         assert_eq!(profile_dir(root, "Skyrim.esm", Some("../evil")), root.join("mcm/skyrim/.._evil"), "no escape from the directory");
+    }
+
+    #[test]
+    fn config_folders_are_the_ones_holding_a_config() {
+        let paths = [
+            "mcm\\config\\frost\\config.json",
+            "mcm\\config\\frost\\settings.ini",
+            "mcm\\config\\onlyini\\settings.ini",
+            "mcm\\config\\deep\\nested\\config.json",
+            "mcm\\config\\config.json",
+            "mcm\\config\\ash\\config.json",
+        ]
+        .map(str::to_owned);
+        assert_eq!(config_folders(&paths), ["ash", "frost"]);
     }
 
     #[test]

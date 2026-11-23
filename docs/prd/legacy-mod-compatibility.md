@@ -1,6 +1,7 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-23). Revision 40 records that no `.xwm` decodes (LMC-AST-009, catalog
+**Status**: ACTIVE (2026-11-23). Revision 41 serves Fallout 4's MCM (LMC-UI-002 slice 5): menus by their
+config folders, F4SE's external events. Revision 40 records that no `.xwm` decodes (LMC-AST-009, catalog
 A7.xwma). Revision 39 serves MCM Helper's hotkeys (LMC-UI-002 slice 4b). Revision 38 measures LMC-PERF-001: a 1,000-plugin profile with
 paired archives activates in 0.35 s, and archive pairing is linear. Revision 37 serves MCM Helper's config menus (LMC-UI-002 slice 4), with
 the player's settings kept per named profile (LMC-SET-004). Revision 36 builds LMC-PERF-003: an asset lookup is one index
@@ -974,7 +975,9 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   Slice 4 is built (revision 37): MCM Helper's `config.json` menus and its
   `MCM` API, with the player's settings per game and named profile
   (LMC-SET-004). Slice 4b is built (revision 39): its `keybinds.json`
-  hotkeys, bound through its key maps and run on a key press.
+  hotkeys, bound through its key maps and run on a key press. Slice 5 is
+  built for Fallout 4 (revision 41): FO4 MCM's `config.json` menus, found by
+  their folders, and F4SE's external events; New Vegas' MCM is its own slice.
 - **LMC-UI-003.** MenuXml replacements, `<include>` prefabs and font
   replacements from mods load through the MenuXml crate with the same
   precedence rules.
@@ -1667,3 +1670,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 38 | 2026-11-23 | LMC-PERF-001 measured on synthetic profiles of light plugins with paired archives: 1,000 plugins activate in 0.35 s warm and 0.33 s cold on a Ryzen 9 7950X with NVMe; archive pairing made linear (`ArchiveDirectory`, 0.345 s to 0.043 s at 2,000 plugins); real mod sizes and regular plugins past 252 not measured | — |
 | 39 | 2026-11-23 | LMC-UI-002 slice 4b: MCM Helper's `keybinds.json` hotkeys; a key map with an id binds a key (bindings per game and named profile, over an earlier install's); a press runs the function call, `SendEvent` delivers `OnControlDown` / `OnControlUp`; `RunConsoleCommand` is declined (no game-console interpreter) | — |
 | 40 | 2026-11-23 | LMC-AST-009 measured: no `.xwm` decodes (Fallout 4's xWMA effects, 77% of its sounds, and Skyrim's and Fallout 4's music); catalog A7 split, A7.xwma at D5 with target D1, tracked by the xWMA decoder PRD | — |
+| 41 | 2026-11-23 | LMC-UI-002 slice 5 (Fallout 4): FO4 MCM (1.40, version code 9) from its author documentation; configs listed by their `MCM/Config/<mod>` folders under the mod roots when their plugin or requirements are loaded; FO4's control names (button added; image, positioner and numeric text inputs left out, failed groups hidden); F4SE `RegisterForExternalEvent` served (per session) with `OnMCMSettingChange` / `OnMCMMenuOpen` / `OnMCMMenuClose`; `MCM.RefreshMenu()`; New Vegas' MCM is its own slice | — |

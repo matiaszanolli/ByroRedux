@@ -4,7 +4,7 @@
 //! running quest (`Self` of the config script).
 
 use super::*;
-use crate::mcm::helper::{self, Accepted, McmHelperStore};
+use crate::mcm::helper::{self, Accepted, McmHelperStore, McmOwner};
 
 /// The `McmHelper` natives, lowercase, with what each returns.
 const NATIVES: &[(&str, Kind)] = &[
@@ -20,6 +20,7 @@ const NATIVES: &[(&str, Kind)] = &[
     ("acceptindex", Kind::Str),
     ("accepttext", Kind::Str),
     ("refreshmenu", Kind::None),
+    ("refreshopen", Kind::None),
     ("setmenuoptions", Kind::None),
     ("getmodsettingint", Kind::Num),
     ("getmodsettingbool", Kind::Bool),
@@ -46,6 +47,7 @@ impl Vm<'_> {
             _ => Vec::new(),
         };
         let quest = self.context;
+        let owner = McmOwner::Script(quest);
         let world = self.world;
         if world.try_resource::<McmHelperStore>().is_none() {
             return stop("McmHelper without the MCM Helper store");
@@ -55,7 +57,11 @@ impl Vm<'_> {
             if given.is_empty() { world.resource::<McmHelperStore>().mod_of(world, quest) } else { Some(given) }
         };
         Ok(Some(match name {
-            "versioncode" => Value::Int(helper::VERSION_CODE as i32),
+            "versioncode" => Value::Int(world.resource::<McmHelperStore>().version_code() as i32),
+            "refreshopen" => {
+                helper::refresh_open(world);
+                Value::None
+            }
             "configname" => {
                 let name = world.resource_mut::<McmHelperStore>().registration(world, quest).map(|(name, _)| name).unwrap_or_default();
                 // The config is read: its mod's hotkeys become live (slice 4b).
@@ -67,31 +73,31 @@ impl Vm<'_> {
                 Value::Array(std::rc::Rc::new(std::cell::RefCell::new(pages.into_iter().map(Value::Str).collect())))
             }
             "pagereset" => {
-                if let Err(error) = helper::page_reset(world, quest, &text(0)) {
+                if let Err(error) = helper::page_reset(world, &owner, &text(0)) {
                     return stop(format!("McmHelper.PageReset: {error}"));
                 }
                 Value::None
             }
             "highlight" => {
-                helper::highlight(world, quest, int(0));
+                helper::highlight(world, &owner, int(0));
                 Value::None
             }
-            "select" => Value::Str(helper::select(world, quest, int(0))),
-            "default" => Value::Str(helper::reset(world, quest, int(0))),
+            "select" => Value::Str(helper::select(world, &owner, int(0))),
+            "default" => Value::Str(helper::reset(world, &owner, int(0))),
             "opendialog" => {
-                helper::open_dialog(world, quest, int(0));
+                helper::open_dialog(world, &owner, int(0));
                 Value::None
             }
-            "acceptnumber" => Value::Str(helper::accept(world, quest, int(0), Accepted::Number(num(1)))),
-            "acceptindex" => Value::Str(helper::accept(world, quest, int(0), Accepted::Index(int(1)))),
-            "accepttext" => Value::Str(helper::accept(world, quest, int(0), Accepted::Text(text(1)))),
+            "acceptnumber" => Value::Str(helper::accept(world, &owner, int(0), Accepted::Number(num(1)))),
+            "acceptindex" => Value::Str(helper::accept(world, &owner, int(0), Accepted::Index(int(1)))),
+            "accepttext" => Value::Str(helper::accept(world, &owner, int(0), Accepted::Text(text(1)))),
             "refreshmenu" => {
-                helper::refresh(world, quest);
+                helper::refresh(world, &owner);
                 Value::None
             }
             "setmenuoptions" => {
                 world.resource_mut::<McmHelperStore>().set_menu_options(quest, &text(0), strings(1), strings(2));
-                helper::refresh(world, quest);
+                helper::refresh(world, &owner);
                 Value::None
             }
             "getmodsettingint" => Value::Int(match mod_name(text(0)) {

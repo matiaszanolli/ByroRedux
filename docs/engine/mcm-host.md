@@ -252,8 +252,36 @@ extension-state save path (STATE-001) as LMC-UI-002 says.
      - A key the engine itself handles (Escape, the inventory key, the debug `F` / `V`) never reaches
        the held set, so it cannot be a hotkey.
      - `SendEvent` to a form that is not a quest is declined.
-5. Fallout 4 MCM (`MCM/Config/<mod>/config.json`, its `MCM.*` Papyrus calls) and New Vegas MCM,
-   each after its source is read.
+5. Fallout 4 MCM (`MCM/Config/<mod>/config.json`, its `MCM.*` Papyrus calls and F4SE external
+   events). **Built (2026-11-23)** as designed in §5.2. New Vegas' MCM is its own slice after it
+   (§5.3; owner, 2026-11-23).
+   - **Scripting crate.**
+     - `config.rs` gains a `Dialect` (`parse_in`) with FO4's control names and `button`.
+     - `helper.rs`'s page and option functions take an `McmOwner`: a config script's quest, or a
+       config by mod name. A method action without `scriptName` calls its form's own script.
+     - `McmHelperStore::for_fallout4` sets the dialect and version code 9, and holds the configs found.
+       It skips an earlier install's `Keybinds.json`.
+     - `register_config_menus` (run by `mcm_registration_system`) lists them in `McmHost`
+       (`McmMod::config`), whose drivers answer their panel actions through `raise_config`.
+     - `fragment/external_events.rs` keeps the per-session registrations that
+       `RegisterForExternalEvent` / `UnregisterForExternalEvent` make. They're checked as statements
+       with a literal callback the script has. `send_external_event` delivers them.
+   - **Binary.**
+     - `mcm_files.rs` lists the config folders through `LayeredSources::list` when the base master is
+       `Fallout4.esm`.
+     - A load clears the registrations (`discard_outgoing_session_requests`).
+   - **Measured.** One VM test:
+     - the config is listed and another, whose plugin is missing, is not;
+     - version code 9;
+     - every FO4 control kind is laid out, with the image left out, the slider at its step's
+       decimals, and text with no value;
+     - a failed group hides;
+     - a listener quest hears the opening, each change with mod and id, and the closing;
+     - the dropdown writes a property, and the button's action runs;
+     - a load clears the host and the registrations, and the config lists itself again.
+
+     Two more tests cover the registration's check and the event filter. Unit tests cover the folder
+     listing. No live run.
 
 ## 5. Other front ends
 
@@ -375,12 +403,93 @@ the conflict question a key map asks (the engine's control bindings are not cons
 
 Decisions: §6.4–6.6.
 
-### 5.2 Fallout 4 MCM and New Vegas MCM (sketch)
+### 5.2 Fallout 4 MCM (slice 5)
 
-Fallout 4 MCM describes pages declaratively in `config.json` and binds controls to script properties,
-globals or INI keys; MCM Helper was modelled on it, so its front end should reuse §5.1's store. New
-Vegas' MCM is a MenuXml menu driven by script variables through NVSE functions; it is its own front
-end on the MenuXml track. Each needs its documented format read first; neither is designed here.
+**Sources** (read 2026-11-23). FO4 MCM (reg2k and Neanka) publishes no licence for its plugin
+source, so the engine follows the author documentation only:
+
+- the wiki of github.com/Neanka/MCM_0.1_AS3 (*Home*, *Menu-Layout*, *Control-Types*,
+  *Setting-Types*, *Display-Conditions*, *Hotkeys*, *Advanced-Papyrus-Integration*, *Translations*);
+- the shipped `MCM.psc`, `changelog.txt` and `settings.ini` of github.com/reg2k/f4mcm.
+
+The C++ source was not read. Release 1.40's version code (`GetVersionCode`) is 9.
+
+**What differs from MCM Helper** (§5.1, which was modelled on it):
+
+- **No config script.** A menu is a folder `Data/MCM/Config/<mod>/` with a `config.json`, whose
+  `modName` must match the folder. It is found by the folder, not registered from Papyrus. The
+  `pluginRequirements` key gates it.
+- **Controls by FO4's names.**
+
+  | FO4 control | MCM Helper equivalent |
+  |---|---|
+  | `spacer` | `empty` |
+  | `section` | `header` |
+  | `switcher` | `toggle` |
+  | `hiddenSwitcher` | `hiddenToggle` |
+  | `dropdown` (an index into `options`) | `enum` |
+  | `hotkey` | key map bound to a `keybinds.json` id |
+
+  - `text`, `slider` and `stepper` keep their names.
+  - New: `button`, whose select runs its `action`.
+  - New: `image`, an AS3 class from the mod's `lib.swf`.
+  - New: `positioner` and `textinput`, which are listed but undocumented.
+  - There is no `color`, `menu`, `input`, `position`, `cursorFillMode`, `customContent`,
+    `formatString`, `shortNames` or `defaultValue`.
+- **Group conditions.** They have no `NOT` and no `groupBehavior`. The docs call a control whose
+  condition fails "hidden".
+- **Events.** `RegisterForExternalEvent("OnMCMSettingChange|<mod>", "Callback")`, an F4SE function on
+  any script, receives `(modName, id)` after a change. Without the `|<mod>` suffix it receives every
+  mod's changes. `OnMCMMenuOpen` and `OnMCMMenuClose` receive `(modName)`. The wiki also registers a
+  bare `OnMCMOpen`. Scripts register again after every load.
+- **Hotkeys.**
+  - Same `keybinds.json` and actions as §5.1.
+  - Bindings may carry Ctrl, Alt and Shift modifiers.
+  - The player's bindings file, `Data/MCM/Settings/Keybinds.json`, is undocumented, and two
+    third-party sources disagree on its key-code space.
+- **Papyrus API.** `MCM.psc` is `Scriptname MCM Native Hidden`, with global natives:
+  `IsInstalled`, `GetVersionCode`, `RefreshMenu`, and `Get/SetModSetting{Int,Bool,Float,String}(mod,
+  name)`.
+
+**Design.**
+
+- **Same store.** The front end is §5.1's store under a Fallout 4 dialect.
+  - `config.rs` maps FO4's control names onto the same kinds and adds `button`.
+  - A failed group condition hides the control.
+  - A slider shows its value to its step's decimals.
+  - `image`, `positioner` and the numeric `textinput` variants are left out of the page, with one
+    diagnostic each. `textinput` is a string input, bound as §5.1's input is.
+- **Menus with no script.**
+  - The engine lists `mcm\config\*\config.json` through the profile's mod roots on Fallout 4.
+  - It registers each config whose `pluginRequirements` are loaded, and whose own plugin
+    (`<modName>.esp/.esm/.esl`) is loaded when it names no requirement.
+  - Each becomes an `McmHost` entry with no quest. The panel's actions reach the store directly
+    instead of a config script's `_McmEvent`. The menu re-registers after a load, as a config
+    script does.
+- **External events.**
+  - The VM serves `RegisterForExternalEvent(name, callback)` and `UnregisterForExternalEvent(name)`.
+    They must be statements with a literal callback, which the check covers.
+  - Registrations are kept per session, as F4SE keeps them, and cleared by a load.
+  - A change sends `OnMCMSettingChange(modName, id)`. Opening a menu sends `OnMCMMenuOpen(modName)`
+    and also the wiki's bare `OnMCMOpen()`; closing it sends `OnMCMMenuClose(modName)`. Each event
+    goes to the registrations for the bare name and for `name|modName`.
+- **`MCM` script.** The engine `MCM` gains `RefreshMenu()`, which refreshes the open page.
+  `GetVersionCode()` returns 9 on Fallout 4 and 15 elsewhere.
+- **Hotkeys.** A `hotkey` control is §5.1's id-bound key map. A binding has no modifiers. An earlier
+  FO4 MCM install's `Keybinds.json` is not read, because its key codes are undocumented. Bindings
+  live in the profile's `keybinds.json` (§6.4).
+- **Not built:**
+  - `image` (an AS3 class) and `positioner`;
+  - modifier keys on a hotkey;
+  - an earlier install's hotkey bindings;
+  - the `textinputInt` and `textinputFloat` variants, which only third-party sources describe.
+
+### 5.3 New Vegas MCM (sketch)
+
+New Vegas' MCM is a menu inside `start_menu.xml` that a mod drives through NVSE functions
+(`SetUIFloat` / `GetUIFloat` on `StartMenu/MCM/...`, MCM's `GetMCMFloat` / `SetMCMFloat`), answering
+the menu's requests from a `MenuMode 1013` block each frame, and registering by adding an item to MCM's
+form list. It is its own slice, after its guide (MCM Guide v6, Nexus) is read.
 
 ## 6. Decisions (owner, 2026-11-23: each recommendation taken)
 
