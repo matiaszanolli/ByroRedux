@@ -2999,6 +2999,7 @@ const EXEMPT_NO_U32_READS: &[(&str, &str)] = &[
     // verifies the claim from the new location.
     ("parse.rs", "parse_esm"),
     ("parse.rs", "parse_esm_with_load_order"),
+    ("parse.rs", "parse_esm_with_options"),
     ("misc/effects.rs", "parse_expl"),
     ("misc/character.rs", "parse_eyes"),
     ("global.rs", "parse_glob"),

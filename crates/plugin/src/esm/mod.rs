@@ -5,10 +5,13 @@
 //! Higher-level record extraction (CELL, REFR, STAT, etc.) builds on top.
 
 pub mod cell;
+pub mod decode_probe;
+pub mod opaque;
 pub mod raw_record;
 pub mod reader;
 pub mod records;
 pub mod strings_table;
+pub mod structural_digest;
 pub mod sub_reader;
 
 // #3741 (TD2-2026-08-30-01) — deliberately NOT `#[cfg(test)]`: that gate

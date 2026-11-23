@@ -311,6 +311,10 @@ pub struct EsmIndex {
     /// Tombstones retained across plugin merges so deleted overrides remove
     /// metadata inherited from an earlier master.
     pub deleted_record_metadata: HashSet<u32>,
+    /// The sub-records no parser decoded in the plugin this index was parsed from, by remapped FormID (LMC-REC-010).
+    /// Empty unless the parse asked for them ([`super::ParseOptions::collect_opaque`]); the load-order fold takes them
+    /// out per plugin, stamps them with the plugin ([`crate::esm::opaque::OpaqueStore`]) and does not merge them.
+    pub opaque_subrecords: HashMap<u32, crate::esm::opaque::OpaqueRecord>,
     pub cells: EsmCellIndex,
     pub items: HashMap<u32, ItemRecord>,
     /// Fallout 4 / 76 OMOD FormID → optional loose MISC item (`LNAM`).
@@ -2264,6 +2268,11 @@ mod tests {
             (
                 "record_types",
                 "generic metadata duplicates typed record maps and must not inflate record totals",
+            ),
+            (
+                "opaque_subrecords",
+                "LMC-REC-010 — a plugin's undecoded sub-records, handed to the load-order fold's OpaqueStore per plugin \
+                 and never merged; they duplicate records the typed maps already count",
             ),
             // #5426 — a derived cache, not an independent record map: the
             // generic greeting's FormID, recomputed from `dialogues` at the

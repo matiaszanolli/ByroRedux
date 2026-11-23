@@ -11,6 +11,7 @@
 //! identical in either layout, so we only need to branch on the
 //! additional skip at the end.
 
+use super::opaque::{OpaqueCollector, OpaqueRecord};
 use anyhow::{ensure, Result};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -436,6 +437,9 @@ pub struct EsmReader<'a> {
     /// See [`FormIdRemap`] for the mapping rules.
     form_id_remap: Option<FormIdRemap>,
     record_type_trace: Option<Rc<RefCell<RecordTypeTrace>>>,
+    /// The sub-records no parser decodes, gathered as records are read and skipped (LMC-REC-010); `None` unless
+    /// [`Self::enable_opaque_collection`] asked for them.
+    opaque: Option<OpaqueCollector>,
     /// The game the file's header was detected as, once the record walk has read it
     /// ([`EsmReader::set_game`]). `None` before that, and for a reader no walk has stamped
     /// (tests, header-only probes).
@@ -776,6 +780,7 @@ impl<'a> EsmReader<'a> {
             variant: EsmVariant::detect(data),
             form_id_remap: None,
             record_type_trace: None,
+            opaque: None,
             game: None,
         }
     }
@@ -789,6 +794,7 @@ impl<'a> EsmReader<'a> {
             variant,
             form_id_remap: None,
             record_type_trace: None,
+            opaque: None,
             game: None,
         }
     }
@@ -805,6 +811,18 @@ impl<'a> EsmReader<'a> {
         let trace = Rc::new(RefCell::new(RecordTypeTrace::default()));
         self.record_type_trace = Some(Rc::clone(&trace));
         trace
+    }
+
+    /// Gather the sub-records the parsers do not decode, for `game`, from here on (LMC-REC-010). A record a parser reads
+    /// keeps the sub-records `data/decoded_subrecords.toml` does not list for its type; a record or group nobody reads is
+    /// kept whole. Costs a table lookup per sub-record, so only a plugin that is not the game's own master asks for it.
+    pub fn enable_opaque_collection(&mut self, game: GameKind) {
+        self.opaque = Some(OpaqueCollector::new(game));
+    }
+
+    /// The opaque sub-records gathered so far, by (remapped) form ID; empty when collection was never enabled.
+    pub fn take_opaque(&mut self) -> HashMap<u32, OpaqueRecord> {
+        self.opaque.take().map(OpaqueCollector::into_records).unwrap_or_default()
     }
 
     /// Get a clone of the installed FormID remap (if any).
@@ -988,8 +1006,20 @@ impl<'a> EsmReader<'a> {
 
     /// Read the sub-records within a record's data section.
     ///
-    /// If the record is compressed (FLAG_COMPRESSED), decompresses first.
+    /// If the record is compressed (FLAG_COMPRESSED), decompresses first. When opaque collection is on, the ones no
+    /// parser decodes for this record type are noted (LMC-REC-010).
     pub fn read_sub_records(&mut self, header: &RecordHeader) -> Result<Vec<SubRecord>> {
+        let subs = self.decode_sub_records(header)?;
+        if let Some(collector) = self.opaque.as_mut()
+            && header.flags & FLAG_DELETED == 0
+        {
+            collector.note_read(header.record_type, header.form_id, &subs);
+        }
+        Ok(subs)
+    }
+
+    /// [`Self::read_sub_records`] without the opaque bookkeeping.
+    fn decode_sub_records(&mut self, header: &RecordHeader) -> Result<Vec<SubRecord>> {
         let data_start = self.pos;
         let raw_data = if header.flags & FLAG_COMPRESSED != 0 {
             // First 4 bytes = uncompressed size, rest is zlib.
@@ -1120,8 +1150,18 @@ impl<'a> EsmReader<'a> {
         Ok(subs)
     }
 
-    /// Skip a record's data section without parsing.
+    /// Skip a record's data section without parsing. With opaque collection on, nobody decodes what is skipped, so all
+    /// of it is noted (LMC-REC-010).
     pub fn skip_record(&mut self, header: &RecordHeader) {
+        if self.opaque.is_some() && header.flags & FLAG_DELETED == 0 {
+            let start = self.pos;
+            if let Ok(subs) = self.decode_sub_records(header)
+                && let Some(collector) = self.opaque.as_mut()
+            {
+                collector.note_skipped(header.record_type, header.form_id, &subs);
+            }
+            self.pos = start;
+        }
         self.pos += header.data_size as usize;
     }
 
@@ -1139,7 +1179,29 @@ impl<'a> EsmReader<'a> {
     /// move the cursor past the parent's boundary. #4644 — the recurse
     /// arms were clamped by #3721/#4076; the skip arms are this issue's.
     pub fn skip_group(&mut self, header: &GroupHeader) {
-        self.pos += self.group_content_len(header);
+        let end = self.pos + self.group_content_len(header);
+        if self.opaque.is_some() {
+            self.note_skipped_content(end);
+        }
+        self.pos = end;
+    }
+
+    /// Note every record under the skipped group content up to `end` as opaque (LMC-REC-010). The records are read
+    /// without the record-type trace: nobody consumes them, so they are not forms the fold carried.
+    fn note_skipped_content(&mut self, end: usize) {
+        let trace = self.record_type_trace.take();
+        while self.pos < end.min(self.data.len()) {
+            if self.is_group() {
+                let Ok(group) = self.read_group_header() else { break };
+                let group_end = (self.pos + self.group_content_len(&group)).min(end);
+                self.note_skipped_content(group_end);
+                self.pos = group_end;
+            } else {
+                let Ok(header) = self.read_record_header() else { break };
+                self.skip_record(&header);
+            }
+        }
+        self.record_type_trace = trace;
     }
 
     /// Advance to an absolute byte offset, saturating at the buffer end.

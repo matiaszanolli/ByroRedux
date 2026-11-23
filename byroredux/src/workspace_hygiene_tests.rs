@@ -1601,7 +1601,9 @@ fn example_targets_hold_their_per_crate_ceilings() {
         // the engine does, so a localized master's (Skyrim's) string settings resolve.
         // #7099 re-measure: +16 LOC — `esm_dim8_coverage`'s recursive GRUP walk takes the shared
         // `MAX_GRUP_NESTING_DEPTH` cap (no new target).
-        ("plugin", 76, 10719),
+        // LMC-REC-010 re-measure: +25 LOC — the `inspect decoded-subrecords` subcommand, which regenerates
+        // `data/decoded_subrecords.toml` (no new target: it joined `inspect.rs` rather than becoming an example).
+        ("plugin", 76, 10744),
         // M47.3 result scripts — `obscript_tools avcodes` aligns the Fallout
         // misc-stat codes and `live` names the quests a script advanced
         // (no new target; the existing triage tool grew).

@@ -1,6 +1,7 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-23). Revision 23 layers mods' UI files over the vanilla
+**Status**: ACTIVE (2026-11-23). Revision 24 builds LMC-REC-010: the sub-records no
+parser decodes are kept for every plugin after the first. Revision 23 layers mods' UI files over the vanilla
 archives (#7336). Revision 22 measures LMC-AST-005 and
 builds what it found missing. Revision 21 measures LMC-SET-002 and
 fixes the two hard-coded GMSTs it found. Revision 20 builds the first slice of the
@@ -653,6 +654,19 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   as opaque bytes with provenance, so a later decoder sees them and the
   explain tooling can show that a mod touched them
   ([ARC-010](../engine/sandboxed-linked-mods.md#71-package-content-and-attachment)).
+  Built (#6670): no parser records what it reads, so "not decoded" is
+  measured: for each record type of each game's vanilla plugins, a sampled
+  copy of the plugin is parsed with each sub-record removed in turn, and a
+  tag whose removal leaves the index unchanged is not decoded (6 games, 789
+  (game, record type) entries, checked in as `crates/plugin/data/decoded_subrecords.toml`,
+  re-derived by ignored tests). The reader keeps the undecoded sub-records
+  of every record it reads, and every record or group no parser reads, of
+  every plugin but the first, stamped with the plugin that carried them;
+  `plugins.conflicts <form>` names them. The first plugin is the game's own
+  master, standing in for the official/user boundary that LMC-REC-008 has
+  yet to define; the owner chose to hold the mods' bytes and leave the
+  official ones on disk. A mod plugin holds about a quarter of its file
+  (the Unofficial Fallout 4 Patch: 14.6 MB, 3.5 MB held).
 - **LMC-REC-011.** Cell overrides merge per cell, with the winning plugin's
   placed references replacing the loser's for the same reference ID and new
   references appended; navmesh overrides take the winner's navmesh for that
@@ -1499,3 +1513,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 21 | 2026-11-23 | LMC-SET-002 measured: 240 authored GMSTs read through the merged index, 8 named without a read; `fSkillUseCurve` and `fCombatDistance` were hard-coded and are now read (melee reach 141 on Skyrim, Fallout 4 and Fallout 76, 128 on Fallout 3 and New Vegas, where the engine used 180); `combat.approach` scales its ring with the reach; Oblivion's default and Starfield's meaning of `fCombatDistance` recorded as Phase 0: verify | — |
 | 22 | 2026-11-23 | LMC-AST-005 measured on FNV, Skyrim SE and a Fallout 4 + SS2 profile: `Data\` / leading-separator stripping shared by meshes, textures and materials; `sound`, `scripts` and `lodsettings` loose roots and a loose script tier; Scaleform interface layering filed (#7336). The preflight stops counting base-game Papyrus calls as extender calls | — |
 | 23 | 2026-11-23 | #7336: a mod's Scaleform movies and fonts (U1, U5) and MenuXml menus, prefabs, fonts and HUD textures (U3) resolve over the vanilla archives through every mod tier (`LayeredSources`), verified on the installed Skyrim SE and New Vegas archives; U4 set to D5 with a target of D1 until a source says who merges mods' translation files | — |
+| 24 | 2026-11-23 | LMC-REC-010 built: the sub-records no parser decodes are kept as opaque bytes for every plugin after the first, with the carrying plugin as provenance, and named by `plugins.conflicts`; "decoded" is measured per game and record type by removing each sub-record from sampled real records and re-parsing (the table is checked in and re-derived by ignored real-data tests); the official/user boundary is approximated by the first plugin until LMC-REC-008 | — |
