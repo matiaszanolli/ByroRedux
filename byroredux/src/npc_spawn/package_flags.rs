@@ -64,27 +64,53 @@ fn block_owner(world: &World, actor: EntityId) -> BlockOwner {
 /// Move the blocks noted against `entity` itself onto its placed reference, once the spawn path has stamped
 /// one (`stamp_quest_reference`). The earlier start wins where the reference already holds a block for the
 /// same package (a respawn whose spawn job re-selected it), so the 24 hours run from the first selection.
+///
+/// #7340 — the spawn job could not see that earlier block (it had no reference to key it by), so a package
+/// still inside its 24 hours may have won the spawn scan and been installed as running, which the block then
+/// exempts. When the reference's earlier, live block names the package the spawn installed, that install is
+/// undone and the actor reselects on its next pass, where the block applies.
 pub(crate) fn adopt_entity_day_blocks(world: &World, entity: EntityId) {
     let BlockOwner::Reference(reference) = block_owner(world, entity) else {
         return;
     };
-    let Some(mut blocks) = world.try_resource_mut::<PackageDayBlocks>() else {
-        return;
+    let now = now_hours(world);
+    let blocked: Vec<u32> = {
+        let Some(mut blocks) = world.try_resource_mut::<PackageDayBlocks>() else {
+            return;
+        };
+        let moved: Vec<(u32, f64)> = blocks
+            .0
+            .iter()
+            .filter(|((owner, _), _)| *owner == BlockOwner::Entity(entity))
+            .map(|((_, package), first)| (*package, *first))
+            .collect();
+        let mut blocked = Vec::new();
+        for (package, first) in moved {
+            blocks.0.remove(&(BlockOwner::Entity(entity), package));
+            let kept = blocks.0.entry((BlockOwner::Reference(reference), package)).or_insert(first);
+            if *kept < first && now - *kept < ONCE_PER_DAY_HOURS {
+                blocked.push(package);
+            }
+            *kept = kept.min(first);
+        }
+        blocked
     };
-    let moved: Vec<(u32, f64)> = blocks
-        .0
-        .iter()
-        .filter(|((owner, _), _)| *owner == BlockOwner::Entity(entity))
-        .map(|((_, package), first)| (*package, *first))
-        .collect();
-    for (package, first) in moved {
-        blocks.0.remove(&(BlockOwner::Entity(entity), package));
-        let kept = blocks.0.entry((BlockOwner::Reference(reference), package)).or_insert(first);
-        *kept = kept.min(first);
+    let running = world
+        .get::<crate::components::AmbientPackageRuntime>(entity)
+        .and_then(|runtime| runtime.active_package_form_id);
+    if running.is_some_and(|package| blocked.contains(&package)) {
+        super::ai_package::clear_ambient_behavior(world, entity);
+        if let Some(mut runtimes) = world.query_mut::<crate::components::AmbientPackageRuntime>()
+            && let Some(runtime) = runtimes.get_mut(entity)
+        {
+            runtime.active_package_form_id = None;
+            runtime.last_evaluated_game_minute = None;
+        }
     }
 }
 
 impl Resource for PackageDayBlocks {}
+
 
 #[cfg(test)]
 impl PackageDayBlocks {
@@ -421,5 +447,35 @@ mod tests {
         assert!(blocks.keys().all(|(owner, _)| *owner != BlockOwner::Entity(actor)), "{blocks:?}");
         assert_eq!(blocks.get(&(BlockOwner::Reference(placed), 1)), Some(&earlier), "the earlier start wins");
         assert_eq!(blocks.get(&(BlockOwner::Reference(placed), 3)), Some(&now));
+    }
+
+    /// #7340 -- the spawn job picked package 1 before the reference was stamped, so it could not see the
+    /// reference's live block for it and installed 1 as running (which the block exempts). The adoption undoes
+    /// that install so the next pass reselects under the block; a pick the reference does not block is kept.
+    #[test]
+    fn a_spawn_pick_the_references_block_forbids_is_undone_at_the_stamp() {
+        use crate::components::AmbientPackageRuntime;
+        let runtime = |active| AmbientPackageRuntime {
+            package_candidates: vec![1, 2],
+            active_package_form_id: active,
+            actor_form_id: 0,
+            last_evaluated_game_minute: Some(5),
+        };
+        for (blocked_earlier, expect) in [(true, None), (false, Some(1))] {
+            let (mut world, actor) = world_at(1, 9.0);
+            world.register::<AmbientPackageRuntime>();
+            let placed = reference(&mut world, 0x1234);
+            if blocked_earlier {
+                let earlier = now_hours(&world) - 5.0;
+                world.resource_mut::<PackageDayBlocks>().0.insert((BlockOwner::Reference(placed), 1), earlier);
+            }
+            note_selected(&world, actor, PKDT_ONCE_PER_DAY, 1);
+            world.insert(actor, runtime(Some(1)));
+            world.insert(actor, FormIdComponent(placed));
+            adopt_entity_day_blocks(&world, actor);
+            let after = world.get::<AmbientPackageRuntime>(actor).unwrap().clone();
+            assert_eq!(after.active_package_form_id, expect, "blocked earlier: {blocked_earlier}");
+            assert_eq!(after.last_evaluated_game_minute.is_none(), expect.is_none(), "a reselect is forced only when undone");
+        }
     }
 }
