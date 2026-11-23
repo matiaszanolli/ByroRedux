@@ -49,7 +49,14 @@ pub(super) fn register_scripted_combat_systems(scheduler: &mut Scheduler) {
             .reads_resource::<crate::detection::PlayerDetection>()
             .reads::<byroredux_core::ecs::components::Sneaking>()
             .reads::<byroredux_physics::CharacterController>()
-            .reads::<byroredux_core::ecs::components::water::WaterContact>(),
+            .reads::<byroredux_core::ecs::components::water::WaterContact>()
+            // #7345 — #7281's gate, `player_movement_input_drives_body`: the mode, death, the script and actor
+            // control locks, and VATS.
+            .reads_resource::<crate::systems::PlayerMode>()
+            .reads_resource::<byroredux_scripting::PlayerControlState>()
+            .reads_resource::<crate::components::VatsState>()
+            .reads::<byroredux_core::ecs::components::Dead>()
+            .reads::<byroredux_scripting::ActorControlState>(),
     );
     // Oblivion skill-use leveling: the one drain of the skill uses emitters queue (OSL-XP-007). Banks
     // experience, raises the base skill, and feeds the level tallies.

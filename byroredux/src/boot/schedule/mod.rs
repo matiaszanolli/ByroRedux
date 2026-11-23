@@ -872,6 +872,8 @@ mod system_access_declaration_tests {
     const PROJECTILES_SRC: &str = include_str!("../../systems/projectiles.rs");
     const BOW_SRC: &str = include_str!("../../bow.rs");
     const PLAYER_SEAT_SRC: &str = include_str!("../../player_seat.rs");
+    const SKILL_USE_EMIT_SRC: &str = include_str!("../../skill_use_emit.rs");
+    const OBLIVION_SKILL_USE_SRC: &str = include_str!("../../../../crates/scripting/src/oblivion_skill_use.rs");
     // #5069 — equipment_appearance_system's mid-life gear-import hop lives
     // in npc_spawn/loot_appearance.rs; exclusive rows are invisible to the
     // PARALLEL_SYSTEMS proof, so it gets its own scan below.
@@ -1268,6 +1270,29 @@ mod system_access_declaration_tests {
             ],
             "player_bow_system",
         );
+    }
+
+    /// #7345 — the Oblivion skill-use exclusives: the stance emitter (with #7281's movement gate), the drain
+    /// (its host shim and the scripting entry point it hands the player to) and the level system.
+    #[test]
+    fn stance_use_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(
+            &[(SKILL_USE_EMIT_SRC, "stance_use_system"), (CHARACTER_SRC, "player_movement_input_drives_body")],
+            "stance_use_system",
+        );
+    }
+
+    #[test]
+    fn skill_use_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(
+            &[(COMBAT_SRC, "skill_use_system"), (OBLIVION_SKILL_USE_SRC, "skill_use_system")],
+            "skill_use_system",
+        );
+    }
+
+    #[test]
+    fn oblivion_level_system_declares_everything_it_acquires() {
+        assert_declares_everything_it_acquires(&[(SKILL_USE_EMIT_SRC, "oblivion_level_system")], "oblivion_level_system");
     }
 
     #[test]
