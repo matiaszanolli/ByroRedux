@@ -110,6 +110,19 @@ impl LiveReloadLedgers {
     }
 }
 
+/// LMC-SAV-001 — log what differs between the profile the save was made with and the session's, one WARN line each
+/// (`save.info` prints the same). The player's HUD gets nothing: the lines are operator text (fingerprints, plugin
+/// hashes), which #6825 keeps in the log, and the one line the HUD has for a load is [`LOAD_FAILED`], which a load
+/// that went through must never show (#7347: the summary was once pushed through [`notify_player`], so a successful
+/// load with a changed plugin told the player it failed). Returns how many lines it logged.
+pub(super) fn report_profile_difference(world: &World, snapshot: &byroredux_save::Snapshot) -> usize {
+    let lines = crate::profile_fingerprint::save_profile_lines(world, snapshot);
+    for line in &lines {
+        log::warn!("save load: {line}");
+    }
+    lines.len()
+}
+
 /// A load failed. Every caller has already logged the diagnostic (`log::error!`, the cell or
 /// worldspace, the error chain); the player sees one short line instead of it (#6825: the
 /// diagnostics are operator text, not the HUD's). Neither game authors a load-failure notice
@@ -992,13 +1005,7 @@ pub fn execute_pending_save_loads(
 
     // LMC-SAV-001 (#6670) — the save carries the profile it was made with; say what changed since. The session keeps
     // its own profile.
-    let profile_lines = crate::profile_fingerprint::save_profile_lines(world, &snapshot);
-    for line in &profile_lines {
-        log::warn!("save load: {line}");
-    }
-    if let Some(summary) = profile_lines.first() {
-        notify_player(world, format!("{summary} (see the log or save.info)"));
-    }
+    report_profile_difference(world, &snapshot);
 
     // M45.1 refinement — put the player back where they saved, on top of
     // the reloaded cell (which spawns the player at the default door).

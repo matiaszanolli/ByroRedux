@@ -1211,3 +1211,36 @@ fn the_day_blocks_restart_before_the_reload_and_survive_an_aborted_one() {
     let reload_call = sequence.find("reload_interior_session(world").unwrap();
     assert!(sequence[..reload_call].contains("reload_with_fresh_day_blocks(world, |world|"), "the reload must run inside reload_with_fresh_day_blocks");
 }
+
+/// #7347 — a load whose saved profile differs from the session's is reported in the log and nowhere on the HUD: the
+/// profile summary was pushed through `notify_player`, which ignores its text and shows `LOAD_FAILED`, so a load
+/// that succeeded told the player "Load failed.".
+#[test]
+fn a_profile_difference_is_logged_and_never_shown_as_a_failed_load() {
+    use crate::profile_fingerprint::{HashedEntry, ProfileRecord, SessionProfile};
+    let registry = build_save_registry();
+    let record = |plugins: &[(&str, u64)]| ProfileRecord {
+        fingerprint: 0,
+        plugins: plugins.iter().map(|(name, hash)| HashedEntry { name: (*name).into(), content_hash: *hash }).collect(),
+        ..Default::default()
+    }
+    .sealed();
+    let mut world = World::new();
+    world.insert_resource(crate::notifications::PlayerNotifications::default());
+    world.insert_resource(SessionProfile(record(&[("skyrim.esm", 1), ("mod.esp", 2)])));
+    let snapshot = byroredux_save::save_world(&world, &registry).expect("save");
+    // The session now runs without the mod the save was made with.
+    world.insert_resource(SessionProfile(record(&[("skyrim.esm", 1)])));
+
+    assert!(live_load::report_profile_difference(&world, &snapshot) >= 2, "the difference is reported");
+    let shown = crate::notifications::drain(&world);
+    assert!(shown.is_empty(), "nothing reaches the HUD, least of all {LOAD_FAILED:?}: {shown:?}");
+
+    // And the drain does not route the report through `notify_player` (which always shows `LOAD_FAILED`).
+    let source = include_str!("live_load.rs");
+    let body = &source[source.find("pub fn execute_pending_save_loads(").expect("the drain")..];
+    let call = body.find("report_profile_difference(").expect("the drain reports the profile difference");
+    let window = &body[call..(call + 300).min(body.len())];
+    assert!(!window.contains("notify_player("), "a profile difference is not a failed load (#7347): {window}");
+}
+
