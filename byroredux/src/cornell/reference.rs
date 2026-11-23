@@ -146,8 +146,36 @@ pub(crate) const SKY_ENV_FACES: [[f32; 3]; 6] = [
     [0.0, 0.0, 1.0],
     [0.0, 0.0, -1.0],
 ];
-/// The highest `--cornell-reference-view` any rung reads.
-const MAX_REFERENCE_VIEW: u32 = SKY_PROBE_VIEWS - 1;
+
+impl ReferenceRung {
+    /// How many `--cornell-reference-view` values this rung has (#7387): a view at or past it is
+    /// refused rather than aliased to another view. An exhaustive match, so a new rung states its
+    /// count.
+    pub(crate) const fn view_count(self) -> u32 {
+        match self {
+            ReferenceRung::SkyEnvironment => SKY_ENV_FACES.len() as u32,
+            ReferenceRung::SkyProbe => SKY_PROBE_VIEWS,
+            // Three view angles (materials), light azimuths (normal plane) or caster poses (far sun).
+            ReferenceRung::Materials
+            | ReferenceRung::MaterialsSpecular
+            | ReferenceRung::NormalPlane
+            | ReferenceRung::FarSun => 3,
+            // The front view and the close-up of the tall block's base (A8).
+            ReferenceRung::LambertBox | ReferenceRung::ReservoirClamp => 2,
+            // One fixed camera.
+            ReferenceRung::CalibrationPoint
+            | ReferenceRung::CalibrationSun
+            | ReferenceRung::CalibrationSky
+            | ReferenceRung::Penumbra
+            | ReferenceRung::PenumbraSun
+            | ReferenceRung::PenumbraMoving
+            | ReferenceRung::Contact
+            | ReferenceRung::ContactFlat
+            | ReferenceRung::SkySunPlane
+            | ReferenceRung::ContactSky => 1,
+        }
+    }
+}
 /// Toward the sun on the sky rungs: about 37° up, off every axis, so its
 /// glow falls inside one face of the environment capture and away from the
 /// probe's silhouette.
@@ -370,16 +398,24 @@ pub(crate) const MATERIAL_PLANES: &[(&str, [f32; 3])] = &[
     ("mat_lambert_green", [0.12, 0.45, 0.15]),
 ];
 
-/// Parse `--cornell-reference-view N` (default 0): the material rung's view
-/// angle (0..=2), the box rung's close-up (1), the environment rung's face
-/// (0..=5) or the sky probe (0..=10). A rung with one fixed camera ignores it.
-pub(crate) fn cornell_reference_view(args: &[String]) -> Result<u32, String> {
+/// Parse `--cornell-reference-view N` (default 0) for `rung`: the material rungs' view
+/// angle, the normal plane's light azimuth and the far-sun caster pose (0..=2), the box
+/// rungs' close-up (1), the environment rung's face (0..=5) or the sky probe (0..=10); a rung
+/// with one fixed camera takes only 0. A view past the rung's [`ReferenceRung::view_count`]
+/// is an error (#7387): before, the parser checked one global bound and the rung's own
+/// arm clamped or fell through to its last view, so a mistyped gate invocation produced a
+/// plausible duplicate capture instead of a refusal.
+pub(crate) fn cornell_reference_view(args: &[String], rung: ReferenceRung) -> Result<u32, String> {
     let Some(index) = args.iter().position(|a| a == "--cornell-reference-view") else {
         return Ok(0);
     };
+    let count = rung.view_count();
     match args.get(index + 1).map(|v| v.parse::<u32>()) {
-        Some(Ok(view)) if view <= MAX_REFERENCE_VIEW => Ok(view),
-        _ => Err(format!("--cornell-reference-view requires 0..={MAX_REFERENCE_VIEW}")),
+        Some(Ok(view)) if view < count => Ok(view),
+        _ => Err(format!(
+            "--cornell-reference-view requires 0..={} for the {rung:?} rung",
+            count - 1
+        )),
     }
 }
 
@@ -743,7 +779,8 @@ pub(crate) fn setup_reference_scene(
         ReferenceRung::SkyEnvironment => {
             insert_reference_sky(world, false, false);
             world.insert_resource(HarnessCameraFov(std::f32::consts::FRAC_PI_2));
-            let face = Vec3::from_array(SKY_ENV_FACES[(view as usize).min(SKY_ENV_FACES.len() - 1)]);
+            // `cornell_reference_view` refuses a view past the six faces (#7387): no clamp here.
+            let face = Vec3::from_array(SKY_ENV_FACES[view as usize]);
             (Vec3::ZERO, face * M)
         }
         ReferenceRung::SkyProbe => {
@@ -1080,18 +1117,35 @@ mod tests {
         assert!(cornell_reference_rung(&args(&["--cornell-reference", "cal-pt"])).is_err());
     }
 
+    /// #7387 — each rung takes exactly its own views. The parser used to accept 0..=10 for every
+    /// rung, and an out-of-range view was clamped (sky-env re-captured face 5) or fell through to
+    /// the rung's last view (views 3..=10 became view 2), so a mistyped gate invocation produced a
+    /// plausible duplicate capture.
     #[test]
-    fn view_selector_defaults_to_zero_and_rejects_out_of_range() {
-        assert_eq!(cornell_reference_view(&args(&[])).unwrap(), 0);
-        assert_eq!(
-            cornell_reference_view(&args(&["--cornell-reference-view", "2"])).unwrap(),
-            2
-        );
-        assert_eq!(
-            cornell_reference_view(&args(&["--cornell-reference-view", "10"])).unwrap(),
-            10
-        );
-        assert!(cornell_reference_view(&args(&["--cornell-reference-view", "11"])).is_err());
+    fn view_selector_defaults_to_zero_and_rejects_a_view_past_the_rungs_own_count() {
+        use ReferenceRung::*;
+        let view = |rung, v: &str| cornell_reference_view(&args(&["--cornell-reference-view", v]), rung);
+        assert_eq!(cornell_reference_view(&args(&[]), SkyEnvironment).unwrap(), 0, "default 0");
+        for (rung, count) in [
+            (SkyEnvironment, 6),
+            (SkyProbe, 11),
+            (Materials, 3),
+            (MaterialsSpecular, 3),
+            (NormalPlane, 3),
+            (FarSun, 3),
+            (LambertBox, 2),
+            (ReservoirClamp, 2),
+            (CalibrationPoint, 1),
+            (Contact, 1),
+            (ContactSky, 1),
+        ] {
+            assert_eq!(rung.view_count(), count, "{rung:?}");
+            assert_eq!(view(rung, &(count - 1).to_string()).unwrap(), count - 1, "{rung:?} takes its last view");
+            assert!(view(rung, &count.to_string()).is_err(), "{rung:?} refuses view {count}");
+        }
+        assert!(view(Materials, "x").is_err(), "a non-number is an error");
+        // The six sky-env faces are the six views; nothing past them is reachable now.
+        assert_eq!(SkyEnvironment.view_count() as usize, SKY_ENV_FACES.len());
     }
 
     #[test]
