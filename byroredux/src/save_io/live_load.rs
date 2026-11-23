@@ -988,6 +988,16 @@ pub fn execute_pending_save_loads(
     issues.extend(validate_cinematic_entity_refs(world));
     log_validation_warnings(&format!("save load: {location_label}"), &issues);
 
+    // LMC-SAV-001 (#6670) — the save carries the profile it was made with; say what changed since. The session keeps
+    // its own profile.
+    let profile_lines = crate::profile_fingerprint::save_profile_lines(world, &snapshot);
+    for line in &profile_lines {
+        log::warn!("save load: {line}");
+    }
+    if let Some(summary) = profile_lines.first() {
+        notify_player(world, format!("{summary} (see the log or save.info)"));
+    }
+
     // M45.1 refinement — put the player back where they saved, on top of
     // the reloaded cell (which spawns the player at the default door).
     // AUD-4 — the outgoing session's sting ends with it (the reload's teardown already ended the

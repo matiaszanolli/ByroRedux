@@ -301,6 +301,29 @@ path picks the first accepted ammunition in the inventory (`player_ammo_for`). I
 - **Not saved:** a shot in progress (`BowState`: the draw held so far, the interval) and every `Projectile` in
   flight, which are transient by the projectile path's design ([game-loop.md](game-loop.md), the projectile path).
 
+## The profile a save was made with (LMC-ID-007, LMC-SAV-001)
+
+A save records the profile it was made with, so a load can say what changed since (Legacy Mod Compatibility PRD,
+#6670; `byroredux/src/profile_fingerprint.rs`):
+
+- **The record, `ProfileRecord`:** the plugins in load order, each by identity (`plugin_key`) with the xxHash64 of its
+  file; the mod roots in order by identity, a disabled one marked; each `--extension` manifest by file name with the
+  hash of its file; the `--extension-grant` values, sorted; the record policy (`merge` / `legacy`); and the
+  fingerprint, the xxHash64 of all of it. The plugin hashes come from the load-order fold, which hashes each plugin's
+  bytes on the thread that walks it (`LoadOrder::content_hash`), so no file is read twice.
+- **The session's record** is the `SessionProfile` resource, built by `install_form_resolver`, through which every
+  load path installs its load order.
+- **Saved as a codec column, `SessionProfile`**, registered after `CurrentExteriorContext` (a save-format bump, v141 to
+  v142). Its encoder writes the session's record; its decoder keeps the live one, so a load never changes the
+  session's profile.
+- **On load**, `save_profile_lines` compares the record the save carries with the session's. Every difference is
+  logged: a plugin absent now, added since, or with changed content; a reorder of the plugins both hold; the mod roots,
+  extensions, grants or policy. The player is told how many there are. `save.info` prints the same lines, or the
+  fingerprint when the profiles match. What a difference does to the loaded world (LMC-SAV-002 to -004) is not decided
+  here. `plugins.activation` and `--plugin-report` print the fingerprint a save made now would carry.
+- **Not in the record yet:** extension component hashes and selected providers, which wait for the package manifest
+  (PKG-010), and the content of a root's loose files.
+
 ## What's not covered
 
 Delta application is still structurally **additive-only**

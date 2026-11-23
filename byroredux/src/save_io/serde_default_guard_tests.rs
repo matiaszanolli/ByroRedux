@@ -907,7 +907,7 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // M48 GUI-EVT-001 (#6668) — refreshed WITH a major bump (v133 -> v134): the new
     // `MenuEventRegistrations` resource column.
     // #7044 — refreshed WITH a major bump (v135 -> v136): `ActorValue` gained the required `stored` layer.
-    const BASELINE_MAJOR: u16 = 141;
+    const BASELINE_MAJOR: u16 = 142;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1368,7 +1368,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // it is NOT_SAVED_BY_DESIGN beside the registered `GuardState` in the same file. No on-disk column changed.
     // #7262 — refreshed WITHOUT a major bump, the same #3332 case: `SandboxBehavior` gained `near_editor_location`;
     // it is NOT_SAVED_BY_DESIGN beside the registered `Seated` in the same file. No on-disk column changed.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xbc64_9e8c_f15d_ed37;
+    // LMC-ID-007 / LMC-SAV-001 (#6670) — v142: `SessionProfile` (the profile the save was made with, wire type
+    // `ProfileRecord`) joined the saved registry as a NEW resource codec column, refreshed WITH the major bump above.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x8a61_72f4_e16d_7721;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.

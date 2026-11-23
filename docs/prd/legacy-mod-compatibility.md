@@ -1,6 +1,7 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-22). Revision 12 builds mod roots and their
+**Status**: ACTIVE (2026-11-22). Revision 13 builds the profile
+fingerprint and its record in saves (LMC-ID-007, LMC-SAV-001). Revision 12 builds mod roots and their
 ownership (LMC-ID-012), root-ordered loose files (LMC-AST-010) and the
 root half of missing-master disabling (LMC-ID-011). Revision 11 extends the list merge
 (LMC-REC-003) to the keyword lists of activators, flora, furniture and
@@ -380,8 +381,14 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   order, content hashes, extension packages, grants and policies
   ([PKG-010](../engine/sandboxed-linked-mods.md#8-package-manifest-requirements),
   [STATE-011](../engine/sandboxed-linked-mods.md#13-persistent-state-and-saves)).
-  Saves store it (§5.10). Today a save stores only the cell, ESM path and
-  master list (`CurrentCellContext`).
+  Saves store it (§5.10). Built for the session profile (#6670):
+  `byroredux/src/profile_fingerprint.rs`. The record holds the plugins in
+  load order by identity, each with the xxHash64 of its file (hashed in the
+  load-order fold), the mod roots in order, each extension manifest with
+  its hash, the grants and the record policy; the fingerprint is the
+  xxHash64 of all of it. Extension component hashes and selected providers
+  wait for the package manifest (PKG-010); a root's loose files enter by
+  root identity and order, not content.
 - **LMC-ID-008.** ESL / ESH / ESM header flags affect only Form ID decoding
   and masters-first ordering. "Small" MUST NOT impose a form count beyond
   the 12-bit object space the file was authored in (4,095 records), and
@@ -908,7 +915,11 @@ adds the user-facing contract:
 ### 5.10 Saves and profile changes (`LMC-SAV`)
 
 - **LMC-SAV-001.** A save stores the profile fingerprint (LMC-ID-007) and the
-  ordered plugin list with content hashes.
+  ordered plugin list with content hashes. Built (#6670): the record is the
+  save column `SessionProfile` (format v142). A load keeps the session's
+  profile and reports each difference from the save's: a plugin absent,
+  added or changed, a reorder, the mod roots, extensions, grants or
+  policy. `save.info` prints the same.
 - **LMC-SAV-002 — Removing a mod.** Loading a save whose profile contained a
   plugin now absent MUST load. References whose base form belonged to the
   absent plugin are despawned; inventory items whose base form is absent are
@@ -1350,3 +1361,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 10 | 2026-11-22 | LMC-REC-003 extended to actors (inventory, factions, spells, perks, keywords, actor values), races (spells, keywords, race relations) and carried items (keywords); AI packages and consumable effects stay one field, their order being their meaning; the catalog's R2 and T2.necessity rows at version 4 | — |
 | 11 | 2026-11-22 | LMC-REC-003 extended to the keyword lists of activator, flora, furniture and container bases; an override that drops every keyword now clears them under both policies; locations and quests recorded as waiting on partial-form support; the catalog's R2 and T2.necessity rows at version 5 | — |
 | 12 | 2026-11-22 | LMC-ID-012 built for the session profile (`--mod-root`, ownership, bare plugin names resolve through the roots); LMC-AST-010's root-ordered loose tier and LMC-ID-011's root half built with it; the catalog's A1, T10.vfs and T10.outputs rows at version 2 | — |
+| 13 | 2026-11-22 | LMC-ID-007 and LMC-SAV-001 built: the profile record (plugins with content hashes, mod roots, extensions, grants, policy) and its fingerprint, saved as the `SessionProfile` column (save format v142); a load and `save.info` report every difference | — |

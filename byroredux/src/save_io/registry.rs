@@ -406,6 +406,11 @@ pub fn build_save_registry() -> SaveRegistry {
     // taken mid-exterior-streaming, so `load` can rebuild the same
     // `WorldStreamingState` instead of rejecting exterior saves outright.
     r.register_resource::<CurrentExteriorContext>("CurrentExteriorContext");
+    // LMC-ID-007 / LMC-SAV-001 (#6670) — the profile the save was made with (plugins with their content hashes, mod
+    // roots, extensions, grants, policy, and its fingerprint). A load compares it with the session's and reports the
+    // differences; the session keeps its own profile, so the load decodes to the live record.
+    r.register_resource_codec("SessionProfile",
+        crate::profile_fingerprint::save_profile, crate::profile_fingerprint::load_profile);
     // M45.1 refinement — where the player was standing + looking, so
     // `load` restores the pose instead of the cell's default spawn.
     r.register_resource::<PlayerPose>("PlayerPose");

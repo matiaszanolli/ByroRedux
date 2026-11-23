@@ -114,13 +114,17 @@ What the engine does today with a legacy plugin set (`--master …` `--esm`), th
    root winning a path and the whole tier above every archive. Without `--mod-root` the loose tier is the `--esm`
    directory, as before. `plugins.activation` and `--plugin-report` list each root with its plugins (and how many are
    in the profile), archives and loose files, and how many of its files take a path from an earlier root.
+8. **The profile fingerprint (LMC-ID-007, LMC-SAV-001).** The fold hashes each plugin's bytes (xxHash64) on the thread
+   that walks it, and `install_form_resolver` builds the session's `ProfileRecord` from the load order, the mod roots,
+   the extension manifests and grants and the record policy (`byroredux/src/profile_fingerprint.rs`). A save stores it
+   and a load reports how the save's differs; `plugins.activation` and `--plugin-report` print the fingerprint
+   ([save-load-roundtrip.md](save-load-roundtrip.md), the profile section).
 
 Not built yet in Phase 1: the mod profile beyond argv (discovery and the import that writes roots, LMC-ID-006; manifest
 identities for roots), the official/user boundary
 (LMC-REC-008), partial forms overlaid on the record they override and then the `merge` policy for locations and quests
 (LMC-REC-003), the merge-ownership half of
-LMC-REC-006 (the report half is item 4's verdicts), the virtual legacy index (LMC-ID-005) and the profile fingerprint in
-saves (LMC-ID-007, LMC-SAV-001).
+LMC-REC-006 (the report half is item 4's verdicts) and the virtual legacy index (LMC-ID-005).
 
 ## Overview
 
