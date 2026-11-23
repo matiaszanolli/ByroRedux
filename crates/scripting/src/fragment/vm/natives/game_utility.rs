@@ -47,6 +47,9 @@ impl Vm<'_> {
         if class == "mcmhost" {
             return self.read_mcm_host(frame, name, args);
         }
+        if class == "mcmhelper" {
+            return self.read_mcm_helper(frame, name, args);
+        }
         Ok(match (class, name) {
             ("game", "getplayer") => Some(Value::Form(PLAYER_REF)),
             // CK *ShakeCamera - Game*: shakes the camera "from the specified
@@ -210,6 +213,9 @@ impl Checker<'_> {
     ) -> Option<Kind> {
         if class == "mcmhost" {
             return self.check_mcm_host(name, statement);
+        }
+        if class == "mcmhelper" {
+            return self.check_mcm_helper(name);
         }
         if class == "game" && name == "getplayer" {
             return Some(Kind::Player);

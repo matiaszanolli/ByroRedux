@@ -175,7 +175,12 @@ fn apply_one(world: &World, action: &McmAction) -> Result<(), String> {
         McmAction::InputAccept(id, text) => mcm::accept(world, *id as i32, McmAnswer::Input(text.clone())),
         // No conflict is reported: the engine's own control bindings are not asked yet, so a key
         // another control already uses binds without the script's conflict question.
-        McmAction::KeyMapChange(id, code) => mcm::accept(world, *id as i32, McmAnswer::KeyMap(*code as i32, String::new())),
+        // The page's unmap is scancode 0; SkyUI reports an unmapped key as -1 (MCM Helper's
+        // `OnOptionKeyMapChange` relies on it).
+        McmAction::KeyMapChange(id, code) => {
+            let code = if *code == 0 { -1 } else { *code as i32 };
+            mcm::accept(world, *id as i32, McmAnswer::KeyMap(code, String::new()))
+        }
         McmAction::DialogCancel => {
             mcm::cancel_dialog(world);
             Ok(())

@@ -189,6 +189,10 @@ pub struct ModsSpec {
     /// Where the import read the profile from, for display only.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub imported_from: String,
+    /// The profile's name (an MO2 profile's folder name), which keys the settings mods write at run
+    /// time (MCM Helper's, LMC-SET-004); expands to `--profile-name`. Empty: the `default` profile.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
 }
 
 impl ModsSpec {
