@@ -208,6 +208,22 @@ mod fragment_activation_order_tests {
     use super::schedule_order::{bare_name, BuiltSchedule};
     use byroredux_core::ecs::Stage;
 
+    /// #7321 — `door_motion_system` reads the `TwoStateTransitionBatch` that `two_state_activator_system`
+    /// drains at the head of every run, and writes the `DefaultActivation` verdicts the activator reads the
+    /// same frame, so it must run before the activator: a transition published in frame N plays in frame N + 1
+    /// (`systems/door.rs`). Swapped, the batch is drained before the door sees it and no door ever animates.
+    #[test]
+    fn door_motion_runs_before_the_activator_that_drains_its_batch() {
+        let schedule = BuiltSchedule::new();
+        assert!(
+            schedule
+                .position("door_motion_system")
+                .runs_before(schedule.position("two_state_activator_system")),
+            "`door_motion_system` must run before `two_state_activator_system`, which drains the transition \
+             batch the doors play"
+        );
+    }
+
     #[test]
     fn activation_flush_is_scheduled_before_every_activate_event_consumer() {
         let schedule = BuiltSchedule::new();
@@ -223,6 +239,12 @@ mod fragment_activation_order_tests {
             "two_state_activator_system",
             "mg07_on_activate_dispatch",
             "reference_script_event_system",
+            // #7321 — M66 door motion (its activation verdicts), the player's seat, the Oblivion bed and
+            // the jail bed read `ActivateEvent` too.
+            "door_motion_system",
+            "player_seat_system",
+            "bed_use_system",
+            "jail_bed_system",
         ] {
             assert!(
                 flush.runs_before(schedule.position(consumer)),
