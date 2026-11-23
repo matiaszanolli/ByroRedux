@@ -476,6 +476,34 @@ fn gpu_terrain_tile_field_offsets_match_shader_contract() {
     assert_eq!(offset_of!(GpuTerrainTile, patch_parallax), 236);
 }
 
+/// #7390 — comments that point at the tile-size pin by name went stale when TSD-4.3 grew the
+/// record 224 -> 240 B and renamed the test: a SAFETY comment kept sending readers to a test that
+/// no longer exists. Every mention of `gpu_terrain_tile_is_<N>_bytes` in the sources that carry
+/// one must name the live size (the real test is checked to exist under that name).
+#[test]
+fn comments_name_the_tile_size_test_by_its_live_size() {
+    let live = size_of::<GpuTerrainTile>();
+    assert_eq!(live, 240, "update the sites below with the size");
+    let name = format!("gpu_terrain_tile_is_{live}_bytes");
+    // A reference, not a scan: this fails to compile if the test is renamed again, so the
+    // name every comment points at keeps existing.
+    let _: fn() = gpu_terrain_tile_is_240_bytes;
+    for (file, text) in [
+        ("shaders/include/terrain_tile.glsl", include_str!("../../../shaders/include/terrain_tile.glsl")),
+        ("scene_buffer/upload.rs", include_str!("upload.rs")),
+    ] {
+        for (at, _) in text.match_indices("gpu_terrain_tile_is_") {
+            let mention = &text[at..];
+            let end = mention.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(mention.len());
+            assert_eq!(
+                &mention[..end],
+                name,
+                "{file} names a tile-size test that is not `{name}` — the record is {live} B (#7390)"
+            );
+        }
+    }
+}
+
 /// The shipped SPIR-V is the contract's other half. A Rust-side layout change
 /// that never reached a `glslangValidator` run would pass every assertion
 /// above and still read the tile array at the old stride on the GPU. Every

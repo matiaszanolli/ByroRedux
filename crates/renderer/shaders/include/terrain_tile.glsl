@@ -32,8 +32,9 @@ struct GpuTerrainTile {
     // std430: both vec4 rows are on their 16-byte boundaries (96, 112), the
     // Tier-3 atlas uvec4 lands on its own at 144, the #4903 base affinity
     // follows at 160, #6195's height handles at 168..204, #6196's band at
-    // 204, #6197's parallax settings at 208..224. `gpu_terrain_tile_field_offsets_match_shader_contract` and
-    // `gpu_terrain_tile_is_224_bytes` pin the Rust half against exactly
+    // 204, #6197's parallax settings at 208..220, `lodSoftenEnd` at 220 and TSD-4.3's
+    // patch-geometry lanes at 224..240. `gpu_terrain_tile_field_offsets_match_shader_contract` and
+    // `gpu_terrain_tile_is_240_bytes` pin the Rust half against exactly
     // those numbers.
     /// `cover_affinity` for LAND splat layers 0-3 and 4-7.
     vec4 coverAffinity0;
@@ -52,14 +53,14 @@ struct GpuTerrainTile {
     uvec4 groundcoverDetailAtlas;
     /// The BTXT base LTEX's own `cover_affinity` (#4903) — the terrain-side
     /// density evaluations start their ordered mix from it. The named tail
-    /// pads below round the record out to the 224-byte std430 array stride
+    /// pads below round the record out to the 240-byte std430 array stride
     /// (the struct's 16-alignment from its vec4 rows).
     float baseCoverAffinity;
     /// Bindless diffuse handle of the BTXT base texture (#4907). Zero when
     /// the base failed to resolve.
     uint baseDiffuseIndex;
     /// #6195 — per-layer `[0, 1]` height maps (BC4), base then splat lanes.
-    /// Zero = no height (yet). Appended at the tail: stride 176 → 208 at #6195/#6196, 224 since #6197.
+    /// Zero = no height (yet). Appended at the tail: stride 176 → 208 at #6195/#6196, 224 at #6197, 240 since TSD-4.3.
     uint baseHeightIndex;
     uint layerHeightIndex[TERRAIN_SPLAT_LAYERS];
     /// #6196 — height-blend transition band; 0 = height blending off.
@@ -70,8 +71,8 @@ struct GpuTerrainTile {
     /// shading between `parallaxFadeStart` and `parallaxFadeEnd` world units
     /// from the camera. The fourth lane is `lodSoftenEnd`: the camera distance
     /// at which the full-detail terrain is fully softened toward the distant
-    /// LOD look (starting at half of it); 0 = off. It keeps the record at its
-    /// 224-byte std430 stride.
+    /// LOD look (starting at half of it); 0 = off. It took the last named pad of
+    /// the 224-byte stride; TSD-4.3's patch lanes below grew the record to 240.
     float parallaxDepth;
     float parallaxFadeStart;
     float parallaxFadeEnd;

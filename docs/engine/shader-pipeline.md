@@ -827,7 +827,7 @@ One record per LAND tile slot (`MAX_TERRAIN_TILES`), indexed by the slot in
 `height_blend_band` is not per-cell data: the `render.terrain_height_blend_band`
 setting (debug-UI slider, `terrain.blend`) is broadcast into every tile by
 `VulkanContext::set_terrain_height_blend_band`, which dirties the buffer only
-when the value moves. `byroTerrainHeightBlend` (`include/bindings.glsl`)
+when the value moves. `byroTerrainHeightBlend` (`include/terrain_tile.glsl`)
 re-divides the painted shares of the height-mapped lanes by `height + share`
 (Mishkinis 2013) and writes them back as ordered-`mix` weights, so
 `triangle.frag`'s diffuse / specular / normal loops and

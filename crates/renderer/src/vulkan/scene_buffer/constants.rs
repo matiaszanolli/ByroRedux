@@ -268,7 +268,7 @@ const _: () = assert!(
 pub const MAX_INDIRECT_DRAWS: usize = MAX_INSTANCES;
 
 /// Maximum number of `GpuTerrainTile` slots held in the per-frame
-/// terrain-tile SSBO. 1024 × 224 B = 224 KB — one slot per
+/// terrain-tile SSBO. 1024 × 240 B = 240 KiB — one slot per
 /// terrain-mesh entity. A 3×3 loaded-cell grid emits 9 tiles; larger
 /// exterior loads stay well under the cap. Capped at 65535 by the
 /// 16-bit index packed into `GpuInstance.flags` (bits 16..31). See #470.
@@ -300,7 +300,7 @@ pub const MAX_MATERIALS: usize = 16384;
 /// Each frame's slot must start on a `minStorageBufferOffsetAlignment`
 /// boundary; 256 covers every common desktop / mobile GPU
 /// (NVIDIA = 16, AMD = 4, Intel = 16, mobile up to 256). The actual
-/// payload is currently 68 bytes — the rest is alignment padding. Total buffer
+/// payload is currently 80 bytes (`GpuRayBudget::WORDS` = 20 words) — the rest is alignment padding. Total buffer
 /// at MAX_FRAMES_IN_FLIGHT = 2 is 512 bytes.
 pub const RAY_BUDGET_STRIDE: vk::DeviceSize = 256;
 

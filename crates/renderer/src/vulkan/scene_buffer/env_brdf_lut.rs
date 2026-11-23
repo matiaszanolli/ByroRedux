@@ -4,7 +4,8 @@
 //! binding 26 (`include/env_brdf_lut.glsl`).
 
 // The side is `crate::shader_constants::ENV_BRDF_LUT_SIZE` (32).
-// The integrator's values at six decimals, the same text as the GLSL table; a few
+// The integrator's values at six decimals, as the shader reads them from the storage buffer at
+// set 1 binding 26 (`include/env_brdf_lut.glsl` declares the buffer, not the values); a few
 // near 1 (`1.000010`) carry a digit f32 cannot hold, which rounds as intended.
 #[rustfmt::skip]
 #[allow(clippy::excessive_precision)]
