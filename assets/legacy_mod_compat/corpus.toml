@@ -24,7 +24,18 @@
 # - `evidence`    how the link was confirmed, with the date
 # - `requires`    masters and mods it depends on, as far as the sources showed
 # - `licence`     the permissions summary; required once verified
-# - `scenario`    the §7.3 acceptance scenario; required once verified
+# - `scenario`    the §7.3 acceptance scenario, required once verified; the
+#                 conformance runner (scripts/lmc-conformance.py) launches the
+#                 engine on the mod's profile with `launch` and --bench-hold,
+#                 then sends each step's byro-dbg `cmd` and requires `expect`
+#                 in its output:
+#                   [mod.scenario]
+#                   summary = "a named new interior loads with its references"
+#                   launch = ["--cell", "<EditorID>"]
+#                   [[mod.scenario.step]]
+#                   cmd = "<byro-dbg command>"
+#                   expect = "<text the output must contain>"
+#                   wait_s = 0        # optional pause before the step
 # - `notes`       anything that affects whether the entry stays in the corpus
 #
 # Nexus refused automated page fetches when this list was written (2026-11-22),

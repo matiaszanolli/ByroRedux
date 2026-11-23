@@ -73,6 +73,8 @@ jobs:
         run: python3 scripts/check-lmc-catalog.py --self-test
       - name: Check the legacy-mod mechanism catalog and its generated PRD tables
         run: python3 scripts/check-lmc-catalog.py
+      - name: Self-test the legacy-mod conformance runner
+        run: python3 scripts/lmc-conformance.py --self-test
 
   unused-dependencies:
     name: Unused dependencies

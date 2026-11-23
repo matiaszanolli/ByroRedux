@@ -973,6 +973,16 @@ adds the user-facing contract:
 - **LMC-DX-003.** A conformance runner drives the corpus headlessly per game,
   opt-in like the game-data corpus tests, with the mod files supplied
   locally and never checked in.
+  Built ahead of Phase 7 (#6676), so every later slice moves a measured
+  number: `scripts/lmc-conformance.py` runs each installed corpus mod of
+  `assets/legacy_mod_compat/corpus.toml` from a local corpus directory.
+  Rule 1 of §7.3 is measured as activation (the profile, with masters
+  resolved from the Data directory or other corpus mods, loads every plugin
+  of the mod and disables none); rule 3 runs the mod's `[mod.scenario]`
+  steps through `--bench-hold` and byro-dbg. Rules 2 and 4 are reported as
+  not measurable until LMC-DX-001 and LMC-SAV-002..004 exist, and count as
+  not passed. A mod whose masters are not installed is blocked and left out
+  of the rates.
 - **LMC-DX-004.** The published per-game compatibility matrix grows from the
   current `COMPATIBILITY.md` §15 rows into per-mechanism rows with the
   corpus pass rate. One home (ROADMAP), refreshed at session close.
@@ -1371,3 +1381,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 12 | 2026-11-22 | LMC-ID-012 built for the session profile (`--mod-root`, ownership, bare plugin names resolve through the roots); LMC-AST-010's root-ordered loose tier and LMC-ID-011's root half built with it; the catalog's A1, T10.vfs and T10.outputs rows at version 2 | — |
 | 13 | 2026-11-22 | LMC-ID-007 and LMC-SAV-001 built: the profile record (plugins with content hashes, mod roots, extensions, grants, policy) and its fingerprint, saved as the `SessionProfile` column (save format v142); a load and `save.info` report every difference | — |
 | 14 | 2026-11-22 | Phase 0 (§7.2): the Wave 1 corpus is checked in as `assets/legacy_mod_compat/corpus.toml`, 56 candidates (21 FNV, 35 Skyrim SE) with links, dependencies and install tranches; the catalog checker gains C10–C13 (corpus fields, mechanisms defined for the game, a verified mod carries a scenario and a licence). Additions to the §7.2 inventory: The Inheritance (content-only voiced quest), Extensible Follower Framework's SEQ file (R11), Player Character Gestures (OAR). No entry is verified yet | — |
+| 15 | 2026-11-22 | LMC-DX-003 built ahead of Phase 7: the conformance runner (`scripts/lmc-conformance.py`) measures §7.3 rule 1 as activation and runs rule 3 scenarios, reporting rules 2 and 4 as not measurable until the preflight and profile-change saves exist; the corpus gains the `[mod.scenario]` shape and the catalog checker C14 for it. Moving the runner forward is the owner's call (2026-11-22); Phase 7's exit is unchanged | — |

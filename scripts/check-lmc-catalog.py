@@ -30,6 +30,9 @@ checked against the catalog:
       mod's game
   C13 a `verified` mod carries an acceptance scenario and a licence note
       (PRD §7.3 rule 3, LMC-LEGAL-001)
+  C14 a scenario has the shape scripts/lmc-conformance.py runs: a `summary`,
+      optional `launch` engine arguments and `bench_frames`, and at least one
+      `step` with a byro-dbg `cmd`, the `expect` text and an optional `wait_s`
 
 Usage:
     check-lmc-catalog.py            # check
@@ -124,9 +127,39 @@ def validate_corpus(corpus: dict, cat: dict) -> list[str]:
             elif not any(game in (e.get("games") or []) for e in entries):
                 errors.append(f"C12 {label}: mechanism {mid} is not defined for {game}")
         if m.get("status") == "verified":
-            for key in ("scenario", "licence"):
-                if not str(m.get(key, "")).strip():
-                    errors.append(f"C13 {label}: a verified mod needs `{key}`")
+            if "scenario" not in m:
+                errors.append(f"C13 {label}: a verified mod needs `scenario`")
+            if not str(m.get("licence", "")).strip():
+                errors.append(f"C13 {label}: a verified mod needs `licence`")
+        if "scenario" in m:
+            errors += [f"C14 {label}: {e}" for e in scenario_errors(m["scenario"])]
+    return errors
+
+
+def scenario_errors(sc) -> list[str]:
+    if not isinstance(sc, dict):
+        return ["`scenario` must be a table ([mod.scenario])"]
+    errors = []
+    if not str(sc.get("summary", "")).strip():
+        errors.append("scenario needs a `summary`")
+    launch = sc.get("launch", [])
+    if not isinstance(launch, list) or not all(isinstance(x, str) for x in launch):
+        errors.append("scenario `launch` must be a list of strings")
+    if "bench_frames" in sc and not (isinstance(sc["bench_frames"], int) and sc["bench_frames"] > 0):
+        errors.append("scenario `bench_frames` must be a positive integer")
+    steps = sc.get("step")
+    if not isinstance(steps, list) or not steps:
+        errors.append("scenario needs at least one [[mod.scenario.step]]")
+        return errors
+    for i, st in enumerate(steps, 1):
+        if not isinstance(st, dict):
+            errors.append(f"step {i} must be a table")
+            continue
+        for key in ("cmd", "expect"):
+            if not str(st.get(key, "")).strip():
+                errors.append(f"step {i} needs `{key}`")
+        if "wait_s" in st and not (isinstance(st["wait_s"], (int, float)) and st["wait_s"] >= 0):
+            errors.append(f"step {i} `wait_s` must be a non-negative number")
     return errors
 
 
@@ -325,6 +358,14 @@ def self_test() -> int:
         check_corpus("C12 unknown mechanism", corpus.replace('["R1"]', '["R9"]'), "C12")
         check_corpus("C12 mechanism not defined for the game", corpus.replace('game = "fnv"', 'game = "skyrim"'), "C12")
         check_corpus("C13 verified without scenario", corpus.replace('"candidate"', '"verified"'), "C13")
+        scenario = '[mod.scenario]\nsummary = "s"\nlaunch = ["--cell", "X"]\n[[mod.scenario.step]]\ncmd = "c"\nexpect = "e"\n'
+        (root / CORPUS).write_text(corpus + scenario)
+        if validate_corpus(load(root, CORPUS), load(root)):
+            ok = False
+            print("self-test FAIL: a well-formed scenario was rejected")
+        check_corpus("C14 scenario as a string", corpus + 'scenario = "do it"\n', "C14")
+        check_corpus("C14 scenario without steps", corpus + '[mod.scenario]\nsummary = "s"\n', "C14")
+        check_corpus("C14 step without expect", corpus + scenario.replace('expect = "e"\n', ""), "C14")
         (root / CORPUS).write_text(corpus)
         # C9: a stale block is reported when not writing
         (root / CATALOG).write_text(good)
