@@ -7,8 +7,9 @@ run the engine, what do you see?
 **Legend:** ✓ Working · ~ Partial / known gaps · ✗ Not started · — Not applicable
 
 **Bench record:** Numbers in the *Cells* row reference the stepped-camera
-75-run matrix (`2da754e7`, 2026-09-03): all 75 state-gated runs accepted. See
-[ROADMAP.md](../ROADMAP.md) for the full preset table and repro commands.
+75-run matrix (`d9a201c71`, 2026-10-22): all 75 runs accepted, with a
+same-machine control. See [ROADMAP.md](../ROADMAP.md) for the full preset table
+and repro commands.
 
 ---
 
@@ -33,19 +34,23 @@ extracts fine — that framing was a stale premise, closed by #699.)
 
 | Feature | Status | Notes |
 |---|---|---|
-| **RT shadows** | ✓ All games | Streaming WRS, 16 reservoirs/fragment, weight clamp 64× |
+| **RT shadows** | ✓ All games | ReSTIR-DI with temporal and spatial reuse; a penumbra-aware shadow filter ([doc](engine/penumbra-aware-shadow-filter.md)); a screen-space far-field sun shadow beyond the traced range; helper lanes trace no rays (#7261) |
 | **RT reflections** | ✓ All games | Per-mesh BLAS compaction + LRU eviction |
-| **1-bounce GI** | ✓ All games | Ray-query; denoised by SVGF |
+| **Path-traced GI** | ✓ All games | Bounded, material-aware ray-query GI (up to two diffuse events); denoised by SVGF; interiors with sky openings escape to the portal sky |
 | **SVGF temporal denoiser** | ✓ All games | Motion-vector reprojection, mesh-ID disocclusion |
 | **Upscaling** | ✓ All games | FSR 3.1 Quality (default, `5c7acfe2`) / TAA native (`--upscaler taa` fallback); four FSR presets (Quality/Balanced/Performance/Ultra Performance), see ROADMAP.md Session 60 |
 | **TAA** | ✓ All games | Halton(2,3) jitter, YCoCg variance clamp |
-| **ACES tone mapping** | ✓ All games | Runs in the output-resolution presentation pass (`presentation.frag`), after upscaling; fog blend (LIGHT-N2, #784) happens earlier, in `composite.frag` |
+| **Tone mapping + exposure** | ✓ All games | ACES or AgX, with exposure auto-metered by default (`a070baaad`). Runs in the output-resolution presentation pass (`presentation.frag`), after upscaling; fog blend (LIGHT-N2, #784) happens earlier, in `composite.frag` |
+| **Sky image-based lighting** | ✓ Exteriors; interiors with sky openings | M-LIGHT Phase 4, closed 2026-11-22 ([PRD](prd/reference-lighting.md)): split-sum environment BRDF from an exact table, a prefiltered sky probe above roughness 0.6, traced sky-specular occlusion, the sun counted once, π-scaled light-loop specular, and a portal-sky GI escape |
+| **Terrain displacement (TSD-4)** | ~ Built, stage review open | Compute-displaced patch pool near the camera; fine and coarse lattices chosen by projected triangle area; one refit BLAS per patch in the TLAS (#7221, open for the per-pixel cost); `render.terrain_patch_*` settings, off on Low, all-coarse on Medium at 480 render lines ([doc](engine/terrain-displacement.md)) |
+| **Ground cover (EXAL)** | ✓ Exteriors | Scatter compute and blade pass, with an authored-model tier (#4413); content rules in [exal.md](engine/exal.md) |
+| **Texture streaming (M39)** | ~ Built, off by default | `render.texture_streaming`: floor levels first, promotions and demotions per frame under a VRAM budget; default-on waits on its A9 / A11 gates ([doc](engine/texture-streaming.md)) |
 | **Normal mapping** | ✓ All games | Authored tangents (Skyrim+/FO4) or synthesized (FO3/FNV/Oblivion) |
 | **Terrain splatting** | ✓ FO3/FNV/Skyrim/FO4/Starfield | LTEX/TXST splat; `INSTANCE_FLAG_TERRAIN_SPLAT` path |
 | **Water + RT caustics** | ✓ All games | Vertex displacement, Fresnel, RT reflection/refraction; caustic splat compute (M38) |
 | **Bloom** | ✓ All games | Dual-pass pyramid (downsample + upsample) |
 | **SSAO** | ✓ All games | Screen-space, sampled in `triangle.frag` |
-| **Volumetrics** | ~ Partial | Procedural froxel-grid fog + clustered local fog volumes shipped (Session 62); authored CELL/WTHR extinction/chromaticity/peak-radiance/coverage now consumed; REGN-driven per-cell density and god-ray light shafts remain open (M55) |
+| **Volumetrics** | ~ Partial | Procedural froxel-grid fog + clustered local fog volumes shipped (Session 62); authored CELL/WTHR extinction/chromaticity/peak-radiance/coverage now consumed; REGN-driven per-cell density and god-ray light shafts remain open (M55). Interior god rays and sky apertures are a vertical slice ([status](engine/interior-godrays-status.md)); the combustion solver and its world-space local grid (#6531, Phases 1–3) are built and await review |
 | **Depth of field** | ~ TAA-accumulated | Aperture disk jitter via TAA history; no explicit CoC pass |
 | **Disney BSDF** | ✓ FO4/Starfield/BGSM | `MAT_FLAG_PBR_BSDF`; subsurface/sheen/anisotropic |
 | **Glass RT refraction** | ✓ All games | `MATERIAL_KIND_GLASS` triggers RT refraction ray budget |
@@ -212,6 +217,7 @@ separate integration gap. See the gaps table below.
 | `script.activate` console command wired | ✓ |
 | Full Papyrus transpiler (M47.2) | ✓ `.pex` recognizer slice (CFG→lift→short-circuit→control-flow→lower); full transpiler deferred | 
 | Papyrus VM (bounded interpreter, decline-fallback) | ✓ reference/alias/update/event + quest-fragment scripts run what the static lowering declines, under a per-frame budget (#5763); structs + array methods |
+| MCM host (LMC-UI-002) | ◐ Designed ([mcm-host.md](engine/mcm-host.md)); first slice built: a quest's own scripts receive `OnInit` once per save. The SkyUI `SKI_ConfigBase` front end, the page model and the presentation are not built; MCM Helper, Fallout 4 MCM and New Vegas MCM are sketched |
 | Script-extender compatibility layer (SKSE-family) | ◐ **vertical slice** — six built-in provider families registered in the Papyrus provider catalog (Game, Input, UI, StorageUtil, JContainers, ModEvent). ~23.5k LOC across [`crates/sdk/src/`](../crates/sdk/src/) (14 701), [`crates/scripting/src/papyrus_provider/`](../crates/scripting/src/papyrus_provider/) (7 673) and `compatibility.rs` (1 109), measured 2026-11-23; the ObScript runtime the 2026-09-10 count folded in is the M47.3 row below (`obscript*`, ~19.3k LOC). Audited as `/audit-scripting` Dimension 7 (the provider seam, in its reports since `AUDIT_SCRIPTING_2026-09-06.md`) and `/audit-tooling` (the SDK, since `AUDIT_TOOLING_2026-09-22.md`). It is not verified against real mod content: treat the status as "exists and is tested in-crate". Design: [`docs/engine/sdk-v0.1-development-plan.md`](engine/sdk-v0.1-development-plan.md). |
 
 ---
@@ -279,6 +285,8 @@ Implementation: `byroredux/src/combat.rs` (melee vertical slice), `byroredux/src
 | Fallout 4 Scaleform host objects | ◐ `BGSCodeObj` lifecycle + 269-method installed-corpus catalog ([counts](engine/ui.md#scaleform-host-methods-and-remaining-_globalgfx-stubs)) + injected ABC dispatch + BA2-backed `ImportAssets` shipped; HUD/Pip-Boy readiness and destruction plus Atomic Command inventory asserted, method behavior pending M48 |
 | Scaleform menu input routing + modal focus | ✓ M48 (`3ea5e275`) — winit → `UiInputEvent` translation (`crates/ui/src/input.rs`, `byroredux/src/ui_input.rs`), cursor position + modifier state, focus transfer and modal capture ahead of world controls, window→movie coordinate scaling |
 | `byroredux-debug-ui` egui overlay (F-key toggle) | ✓ |
+| Native MenuXml HUDs (Oblivion / FO3 / FNV) and the vanilla Skyrim / FO4 `hudmenu.swf` via `--hud` | ✓ M48.4–M48.7 |
+| Mod UI layering | ✓ Mods' translation tables, menus, fonts and HUD textures layer over the vanilla archives (LMC-UI, #7336; tables merge by SKSE / F4SE rules, first definition wins, Starfield unmerged) |
 | Native game menu (Pause / Settings / Inventory) | ✓ Shipped 2026-08-15/16 — `byroredux-native-ui`'s egui `GameMenuPage::{Pause,Settings,Inventory}` (`crates/native-ui/src/game_menu.rs`; in `byroredux-debug-ui` until M48 GUI-PAGE-006); native `InventorySnapshot`/`InventoryAction` bridge over the canonical `Inventory`/`EquipmentSlots` components (`byroredux/src/inventory/`); validated TOML-persisted settings with stale-entry recovery (`byroredux/src/settings_io.rs`). Runs alongside Scaleform, not a replacement. Save/load toasts are live. Container/corpse transfer shipped (`container_loot_system` — activation take-all + corpse looting, #4712), and the visible player mesh shipped (a070baaad body + view toggle, db8351587 walk/idle, 0182fc5e8 gear import; `p3-player-body.sh`); general HUD bars and quest-objective presentation remain open. |
 
 ---
@@ -357,6 +365,25 @@ early-returns, and the Fatigue/Magicka lanes are inert everywhere.
 
 ---
 
+## Mods (Legacy Mod Compatibility, [PRD](prd/legacy-mod-compatibility.md) — ACTIVE, tracking #6670)
+
+The engine stands in for what extender patches did, and does not load the patches themselves.
+
+| Feature | Status | Notes |
+|---|---|---|
+| Load-order import | ✓ | `--import-load-order` reads `plugins.txt`, MO2 profiles and Vortex deployments |
+| Merged record index with provenance | ✓ | One plugin identity per record; merges for levelled lists, form lists, outfits, containers, actors, races, items and keyword lists under `--merge-policy`; deleted cells, statics and pack-ins leave the merged index; cells sharing an editor ID both survive |
+| Conflict report | ✓ | `--plugin-report` names each record's owning carrier |
+| Mod folders over the archives | ✓ | `--mod-root` layers textures, meshes, materials, sound, scripts, UI files, fonts and translations over the vanilla archives, loose `Data\`-prefixed paths included |
+| Headless preflight | ✓ | `--preflight` (and `--preflight-json`) classifies a mod's files, plugin-named INI keys and extender calls against the mechanism catalog |
+| Load-order rules | ✓ | Melee reach and the skill-rank curve read the load order's GMSTs (#7335) |
+| Saves across a changed load order | ✓ | A save records its profile; saved FormIDs are (plugin, object) identities; a live load reloads the session's own plugins and reports removed, added and reordered mods; a save made in a removed plugin's cell loads (Oblivion's safe cell, else the session's location) |
+| Fold conformance | ✓ | `scripts/lmc-conformance.py` and `lmc-fold-conformance.sh` measure the fold against a raw-record oracle |
+| MCM host | ◐ | Designed; first slice built (see Scripting) |
+| Script-extender layer against real mods | ◐ | See the Scripting row and the gap below |
+
+---
+
 ## Starfield-Specific
 
 | Feature | Status |
@@ -370,7 +397,7 @@ early-returns, and the Fatigue/Magicka lanes are inert everywhere.
 
 ---
 
-## What Doesn't Work Yet (live gaps as of 2026-10-22; CHARAL rows 2026-11-22)
+## What Doesn't Work Yet (live gaps as of 2026-10-22; CHARAL rows 2026-11-22; rendering and mod rows 2026-11-23)
 
 <!-- TD3-002: Save/load (M45/M45.1) removed — shipped 2026-06-21. The M47.2
      row below is the *full* transpiler, which is genuinely still deferred;
@@ -389,3 +416,7 @@ early-returns, and the Fatigue/Magicka lanes are inert everywhere.
 | Per-material footsteps (FOOT) | Correct surface audio | M44 follow-up |
 | CHARAL: player actor-value seed | The player body carries `ActorValues` seeded from the base Player `NPC_` (#4458), with the ruleset's PlayerOnly rows evaluated for the player at stamping (#4674). Games: FO3/FNV/FO4/Skyrim/Oblivion yes (Oblivion's Health, Magicka and Fatigue are formulas, #7037/#7041), FO76/Starfield no (NPC stat wire layout uncaptured, #4453) | CHARAL (charal.md §7) |
 | CHARAL: the affliction tick is inert everywhere; Stamina regen has no row | Radiation/disease/addiction on all seven games; Skyrim Stamina/Magicka regen (rates unsourced/with no row, #4463). Fatigue/Magicka regen is live on Oblivion (#7197) and Action Points regen on FO3/FNV (#6350); Health regen is deliberately unmodelled (charal.md §4.7) | CHARAL (charal.md §8) |
+| Texture streaming on by default (M39) | VRAM headroom on large exteriors | The A11 reflection A/B, a clean FO4 A9 soak and the default flip (#6629–#6631) |
+| Radiance-cache GI | GI on every surface without a wider ray gate; M-LIGHT Phase 5 and the Phase 4 L4 exit | [`radiance-cache-gi-coverage.md`](prd/radiance-cache-gi-coverage.md); the cache is not allocated yet (#7069) |
+| Terrain patches: per-pixel cost review | Whether displacement ships beyond the Medium preset's coarse setting | TSD-4.2 stage review (#7221) |
+| MCM front ends beyond the first slice | In-game configuration for `SKI_ConfigBase` mods, MCM Helper, Fallout 4 and New Vegas MCM | LMC-UI-002, [`mcm-host.md`](engine/mcm-host.md) |
