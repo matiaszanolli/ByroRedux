@@ -1,28 +1,12 @@
 # Game UI Integration — Product Requirements
 
-**Status**: ACTIVE (2026-11-20). Revision 9 records the playable Oblivion menus (#7086).
-Revision 8 specifies Oblivion's sleep/rest and level-up menus (#7048).
-Revision 7 names an owning issue for every open Phase 0 item (§9.1).
-Revision 6 records the Phase 0 results (§9.1).
-Revision 5 files the tracking issues.
-Revision 4 recorded the owner's §10 decisions, every one the
-recommendation. Revision 3 folded in review round 2:
-§3.1 re-verified at HEAD (no close path, one native page at a time, the
-native pause freezing every script, ObScript menu requests, `MenuMode`
-blocks and `Utility.IsInMenuMode` unserved), the pause flag and the
-vanilla menu-mode queries added as requirements, the FO3 / FNV menu codes
-sourced from xEdit, the path service held to the SDK plan's capability
-model, and the acceptance scripts renamed off the Starfield `m48-8` slot.
-Revision 2 folded in review round 1; revision 1 was the first draft of the
-M48 remainder: what the shipped Scaleform and MenuXml slices leave open,
-and the decisions it needs from the project owner (§10). Statements about
+**Status**: ACTIVE (2026-11-22). Revision 10 folds in review round 3; the history is §12. Statements about
 how an original engine, file format or tool behaves cite external sources
 (the Creation Kit / GECK / CS wikis, xEdit's record definitions, Autodesk's
 Scaleform documentation, the Ruffle project); a claim that could not be
 verified is marked **Phase 0: verify** instead of being stated as fact.
 
-**Tracking**: #6641 (parent). Phases: #6643 (0), #6653 (1), #6661 (2),
-#6665 (3), #6666 (4), #6667 (5), #6668 (6). Oblivion's sleep/rest and level-up menu contract: #7048.
+**Tracking**: #6641 (parent). Phases: #6643 (0), #6653 (1), #6661 (2), #6665 (3), #6666 (4), #6667 (5), #6668 (6). Oblivion's sleep/rest and level-up menu contract: #7048, built in #7086.
 
 **Scope**: The player-facing user interface of the six single-player
 target titles: which surface renders each of a game's menus (the game's own
@@ -50,7 +34,7 @@ writes the missing design.
 | Scaleform HUD route (`--hud`, Skyrim / Fallout 4) | [UI System § Scaleform HUD](../engine/ui.md#scaleform-hud-m486-skyrim--m487-fallout-4) |
 | MenuXml track (Oblivion / FO3 / FNV) | [UI System § MenuXml legacy UI](../engine/ui.md#menuxml-legacy-ui-m484-oblivion--m485-fo3) |
 | Oblivion sleep completion and level application | [Skill Use § Levels](../engine/skill-use.md#5-levels-7052) |
-| Menu registry, menu stack, path-addressed access | none today — Phase 0 writes it as a section of [ui.md](../engine/ui.md#input-routing) |
+| Menu registry, menu stack, path-addressed access | [UI System § Menu registry, stack and path access](../engine/ui.md#menu-registry-stack-and-path-access-m48-design-phase-0) (written in Phase 0) |
 | Loading screens | [UI System § loading screens](../engine/ui.md#original-game-loading-screens-during-scene-transitions) |
 | Native dialogue page and the dialogue layers behind it | [Dialogue Trees](../engine/dialogue-trees.md#3-scope) |
 | VATS menu content and controls (a consumer of `GUI-REG` and `GUI-XML-001`…`003`) | [VATS and Action Points PRD](vats.md) |
@@ -70,13 +54,13 @@ Ruffle as the Flash VM with ByroRedux-owned Scaleform host profiles,
 *preserving SWF mod compatibility*
 ([R4, roadmap-history](../archive/roadmap-history.md#tier-7--deep-gameplay-systems-deferred-until-tier-14-proves-out)).
 The pre-Skyrim games keep their own XML UI on a separate track (M48.4 /
-M48.5). Both tracks now load the vanilla HUD over the world. What they do
-not yet do is *behave*: menus call the host and get nothing back, the
-Skyrim and Fallout 4 meters stay empty, one menu can be open at a time,
-scripts that open or watch menus see either nothing or a different answer
-depending on which script language asked (and no script runs at all while
-a native page other than dialogue is open), and every player-facing page
-except the HUD is an engine-native page drawn by the engine's own overlay.
+M48.5). When this PRD was drafted (2026-11-01), both tracks loaded the vanilla HUD over the world. What they did
+not yet do was *behave*: menus called the host and got nothing back, the
+Skyrim and Fallout 4 meters stayed empty, one menu could be open at a time,
+scripts that opened or watched menus saw either nothing or a different answer
+depending on which script language asked (and no script ran at all while
+a native page other than dialogue was open), and every player-facing page
+except the HUD was an engine-native page drawn by the engine's own overlay. Phases 1, 2 and 4 have closed most of that (§9).
 
 This PRD is for the player of each target title, and through
 `LMC-UI-001` / `LMC-UI-003` for every UI mod author whose movie or XML must
@@ -108,7 +92,7 @@ state for.
 | **Behaviour class** | The engine's answer to one host method: one of H1–H4 (§3.2). |
 | **Path-addressed access** | Reading, writing or invoking an ActionScript member by its dot path from the host (`_root.HUDMovieBaseInstance…`), the operation Scaleform exposes to C++ as `GFx::Movie::GetVariable` / `SetVariable` / `Invoke` ([Autodesk: Game Communication Overview](https://help.autodesk.com/cloudhelp/ENU/Scaleform-Help/scaleform_help/game_communication.html); [Autodesk: ActionScript](https://help.autodesk.com/cloudhelp/ENU/Scaleform-Help/scaleform_help/game_communication/c_actionscript.html)). |
 | **Adapter injection** | Inserting a ByroRedux-owned bytecode adapter into a movie at load so the host can reach movie state through Ruffle's supported ExternalInterface boundary. Shipped for AVM2 (`crates/ui/src/avm2_host.rs`); the AVM1 counterpart is the "AVM1 injection" the ROADMAP M48 row names. |
-| **Menu registry** | The one engine record of which menus are open, in which order, with which flags. Does not exist at HEAD (§3.1 row 2); `GUI-REG` defines it. |
+| **Menu registry** | The one engine record of which menus are open, in which order, with which flags: `MenuRegistry` (`crates/core/src/ecs/resources/menu_registry/`), built in Phase 1 (`GUI-REG`). |
 | **Menu flags** | Per-menu behaviour bits (pauses the game, shows the cursor, allows saving, blurs the world) plus a depth. The only cited bit definitions are F4SE's `MenuData` struct for *custom* Fallout 4 menus (`MenuFlags` 0x01 PauseGame, 0x04 ShowCursor, 0x800 DoNotPreventGameSave, 0x400000 BlurBackground; `Depth` a separate field), which gives one vanilla menu's value (MessageBoxMenu 0x8018499) and notes that not all flags are known ([FO4 CK: MenuData Struct](https://falloutck.uesp.net/wiki/MenuData_Struct_-_UI)). |
 | **Menu mode** | The state scripts observe while a menu is open: ObScript's `Begin MenuMode` / `Begin GameMode` blocks and `MenuMode` function ([GECK: MenuMode](https://geck.uesp.net/wiki/MenuMode), [GECK: GameMode](https://geck.uesp.net/wiki/GameMode), [CS: MenuMode](https://cs.uesp.net/wiki/MenuMode)), and Papyrus `Utility.IsInMenuMode`, which the CK defines by the game being paused, so that dialogue does not count ([CK: IsInMenuMode](https://ck.uesp.net/wiki/IsInMenuMode_-_Utility), [FO4 CK: IsInMenuMode](https://falloutck.uesp.net/wiki/IsInMenuMode_-_Utility)). |
 | **Menu code** | The number ObScript names a menu by (`MenuMode 1002`). Per game: [CS: MenuTypes](https://cs.uesp.net/wiki/Template:MenuTypes) for Oblivion, [GECK: MenuTypes](https://geck.uesp.net/wiki/Template:MenuTypes) for FO3 / FNV, and xEdit's `wbMenuModeEnum` (`wbDefinitionsCommon.pas`), which lists Oblivion's and FO3 / FNV's codes in one table. |
@@ -134,30 +118,18 @@ behaviour class per host call, one report.
 
 ### 3.1 State at HEAD
 
-The inventory below is the state at HEAD on 2026-11-03 (re-verified for
-revision 3; first written 2026-11-01). It is hand-written and will go
-stale; Phase 0 replaces it with the per-game menu inventory (GUI-REG-006),
-after which this table is generated from that inventory or removed.
+Phase 0 replaced the hand-written inventory (GUI-REG-006): every menu of each game, with its Q1 target surface, is in the checked-in inventories `docs/data/game-ui/menu-inventory-{oblivion,fo3,fnv,skyrim-se,fallout4}.tsv`. What is built is recorded in the [ROADMAP M48 row](../../ROADMAP.md#tier-7--deep-gameplay-systems), which holds every published number, and the registry, stack and path service are designed in [UI System § Menu registry, stack and path access](../engine/ui.md#menu-registry-stack-and-path-access-m48-design-phase-0). The state before the work, on 2026-11-03, is revision 9's §3.1.
 
-| # | Item | Today |
+What is not built yet, re-measured at HEAD on 2026-11-22:
+
+| # | Item | At HEAD |
 |---|---|---|
-| 1 | Shipped slices | Host bridge, Skyrim/SkyUI and Fallout 4 `BGSCodeObj` catalogs, generated AVM2 adapter, archive navigator, MenuXml HUDs for Oblivion / FO3 / FNV, `--hud` over vanilla Skyrim and Fallout 4 `hudmenu.swf`: the [ROADMAP M48 row](../../ROADMAP.md#tier-7--deep-gameplay-systems) is the inventory and owns the catalog sizes |
-| 2 | Open movies | One: `UiManager` holds `player: Option<SwfPlayer>` and one `menu_name` (`crates/ui/src/lib.rs:57-65`). The wgpu instance and device are created once per process and shared by every `SwfPlayer` (`shared_descriptors`, `crates/ui/src/player.rs:121`, #2733; corrected in Phase 0, revisions 1-5 said each player creates its own). There is no close: a movie is replaced (`install_player`, `lib.rs:151`) or hidden (`hud.off`), never unloaded; #2723 deleted the caller-less `UiManager::close` (`lib.rs:356-364`) |
-| 3 | Native pages | `GameMenuPage` = Pause, Settings, Inventory, Dialogue, MessageBox, Barter, Crafting, drawn with egui in `crates/debug-ui/src/panels/game_menu.rs:11`; one page at a time (`GameMenuState.page`, `game_menu.rs:24-30`). The native HUD layer (crosshair, prompts, vitals, objectives) is `draw_hud` (`panels/hud.rs:7`); its vitals draw whenever the `interface.show_vitals` setting (default on, `byroredux/src/app_frame.rs:301`) is set and the player has vitals (`hud.rs:25`), whether or not an original HUD is up |
-| 4 | Host calls | Drained once per frame and logged; an `Unknown` or `MissingResponse` call warns once per (menu, method); no call is routed into game state (`drain_host_calls` loop, `byroredux/src/app_frame.rs:1401-1483`) |
-| 5 | Host answers | The only production response handlers are the Scaleform HUD driver's (`updateStats`, `RequestPlayerInfo`, Skyrim-profile only; `set_response_handler` at `byroredux/src/scaleform_hud.rs:298` is the only production caller, and no static `set_response` value is registered anywhere). The bridge itself consumes the adapter's `__byroBGSCodeObjDestroyed` acknowledgement (`record_call`, `crates/ui/src/host.rs:443-449`); the other `__byro*` hooks are engine-to-movie callbacks, not answers |
-| 6 | Vanilla HUD meters and compass | Empty on Skyrim and Fallout 4: the movies make no stats call (`hudmenu_host_calls_are_pinned_and_cataloged`, `fallout4_hudmenu_lifecycle_and_calls_are_pinned` in `crates/ui/tests/`), and the HUD driver's push table (`updateStats`, `updateCompass` and their capitalised forms) finds no registered target in a vanilla movie (`ScaleformHudDriver::push` doc, `byroredux/src/scaleform_hud.rs:430-444`) |
-| 7 | Scaleform extensions | No `_global.gfxExtensions` / `scaleform.gfx.*` surface exists (`rg _global crates/ui/src`, `rg gfxExtensions crates/ui/src` and `rg scaleform.gfx crates/ui/src` each match nothing; the only `gfx` hits are the AVM1 scanner's `gfx.io.GameDelegate` comments in `crates/ui/src/avm1_host.rs` and its tests) |
-| 8 | Fonts | `fonts_en.swf` reaches Fallout 4 through `ImportAssets` ([ui.md](../engine/ui.md#font-loading)); no `FontConfig.txt` is read (`rg -i fontconfig crates/ui byroredux/src` finds nothing) |
-| 9 | Extender `UI.IsMenuOpen` | SKSE / F4SE's function ([CK: UI Script](https://ck.uesp.net/wiki/UI_Script), [FO4 CK: UI Script](https://falloutck.uesp.net/wiki/UI_Script)), served through the SDK alias `ui.menu-is-open` (`crates/sdk/src/compatibility/source_alias.rs:227`). It answers from the one `UiManager` movie name (`extension_ui_menu_sync`, called from `byroredux/src/app_events.rs:1472`); a native page is never "open" to it |
-| 10 | ObScript `MenuMode` | Answers from `UiMenuState`, built from the native pages, the operator overlay (code 3), the loading cover (1007) and the message-box and barter queues (codes 0–3, 1001, 1002, 1007, 1009, 1013, 1053; `menu_open`, `byroredux/src/systems/script_queries.rs:55-72`), with no per-game code table; a Scaleform movie is never "open" to it |
-| 11 | Menu events to scripts | No handler for Fallout 4's `RegisterForMenuOpenCloseEvent` / `OnMenuOpenCloseEvent`: the only match in the code is the `.pex` decompiler's event-name table (`crates/pex/src/decompile/event_names.rs:114`), which names the event and runs nothing; SKSE's `RegisterForMenu` is classified unsupported, "await the isolated UI contribution service" (`classify_method_call`, `crates/sdk/src/compatibility/source_alias.rs:489-492`) |
-| 12 | Race menu | `Game.ShowRaceMenu()` lowers to `Effect::ShowRaceMenu`, a placeholder that auto-accepts the current appearance (`crates/scripting/src/translate/effects/model.rs:513-518`, `is_placeholder`); only the zero-argument form lowers (`crates/scripting/src/translate/effects/prims/player_control.rs:110-111`); ObScript `ShowRaceMenu` does the same (`crates/scripting/src/obscript_more/tail.rs:252-258`). ROADMAP lists it as the MQ101 residue in [Known Issues](../../ROADMAP.md#known-issues) |
-| 13 | Script-opened menus | `Actor.ShowBarterMenu()` opens the native Barter page (`crates/scripting/src/menus.rs`, `byroredux/src/barter.rs`). ObScript's menu commands (the character-creation screens including `ShowRaceMenu`, `ShowRecipeMenu`, the casino games, …; `ShowMap` queued one too until #6823, although the CS / GECK pages say it only adds a map marker; `ShowDialogSubtitles` has no handler) queue a `MenuRequest` under an engine-coined name (`"special book"`, `"vigor tester"`, …; `crates/scripting/src/obscript_more.rs:91-102`) that `script_ui_request_system` logs and drops (`byroredux/src/systems/script_requests.rs:403`); `script.requests` lists them (`byroredux/src/commands/quest.rs:1550`) |
-| 14 | Resize | The UI viewport is fixed at `UiManager::new`; a swapchain resize stretches the overlay (field doc, `crates/ui/src/lib.rs:68-74`). #2723 was closed by documenting this, not fixing it (`7390fe4c`): the reason given was that Ruffle's `TextureTarget` / `WgpuRenderBackend` have no in-place resize, which Phase 0 corrected: at the pinned Ruffle `Player::set_viewport_dimensions` resizes in place through `TextureTarget::resize` ([ui.md](../engine/ui.md#menu-registry-stack-and-path-access-m48-design-phase-0)) |
-| 15 | MenuXml beyond the HUD | `HudGameProfile` drives `menus\main\hud_main_menu.xml` only (`byroredux/src/hud.rs:139`, `:172`); FO3/FNV `-s`-prefixed strings are not resolved (`MenuProfile` doc, `crates/menuxml/src/profile.rs:36-40`); they are `&-sName;` XML entities that `expand_entity` expands to nothing (`crates/menuxml/src/parse.rs:217`) |
-| 16 | Pause | Every native page except Dialogue freezes the whole scheduler (`DebugUiState::simulation_paused`, `crates/debug-ui/src/lib.rs:348-350`; `scheduler.run` skipped in `byroredux/src/app_events.rs:1546-1580`), so no script runs while one is open. A Scaleform movie never pauses anything |
-| 17 | Menu-mode script surfaces | ObScript runs `Begin GameMode` and the event blocks only: object scripts have no `MenuMode` arm (`crates/scripting/src/obscript_objects.rs:367`) and quest scripts run their GameMode block only (`run_quest_game_mode`, `crates/scripting/src/obscript_quests.rs:342`), so a `Begin MenuMode` block never runs. Papyrus `Utility.IsInMenuMode` has no handler (`rg -i isinmenumode` matches no Rust source) |
+| 1 | Scaleform AS2 extensions | No `_global.gfxExtensions` / `scaleform.gfx.*` surface exists in `crates/ui/src` (GUI-GFX-001, -003, -004; Phase 3) |
+| 2 | Host behaviour | Every catalog method carries its Phase 0 class, and calls are classed live (`ui.host`), but no Skyrim method runs as H1 at run time: the ROADMAP M48 row gives H1 0 (GUI-HOST-002, -005, -006, GUI-EVT-004; Phase 3) |
+| 3 | FO3 / FNV `-s` strings | `&-sName;` entities still expand to nothing (`expand_entity`, `crates/menuxml/src/parse.rs`; GUI-FONT-005, Phase 3) |
+| 4 | UI frame cost | Not measured or published (GUI-OPS-003, -004; Phase 3's exit) |
+| 5 | Race menu | `Game.ShowRaceMenu()` opens the native race and sex page (`Effect::ShowRaceMenu`, GUI-PAGE-002, -003); Phase 5's exit, scenario 9 on Skyrim SE and FNV, is open (#6667) |
+| 6 | Wave 2 and Starfield | Fallout 4's AS3 extensions, Fallout 3 and Oblivion beyond the menus already served, and Starfield's profile and catalog (Phase 6, #6668); Fallout 4's menu open and close events already run (`crates/scripting/src/fragment/menu_events.rs`) |
 
 ### 3.2 Host-method behaviour classes
 
@@ -238,16 +210,14 @@ methods:
 
 - **GUI-REG-001.** The engine MUST hold one menu registry listing every
   open menu by its game-facing name, in stacking order, with its surface
-  and flags. Today there is none: `UiManager` holds one movie and the native
-  pages publish a separate `UiMenuState` (§3.1 rows 2, 9, 10).
+  and flags.
 - **GUI-REG-002.** The extender `UI.IsMenuOpen` (served through the SDK
-  alias, §3.1 row 9; whether it is served is `LMC`'s disposition), ObScript
+  alias `ui.menu-is-open`; whether it is served is `LMC`'s disposition), ObScript
   `MenuMode` and every engine-side "is a menu open" check MUST read the
   registry, so that the same open menu answers `true` to all of them; the
   type-level questions (`MenuMode` 0–3) count only the menus that count
   toward menu mode (GUI-EVT-006), so an open HUD alone answers `false`.
-  Today a native inventory page is invisible to `UI.IsMenuOpen` and a
-  Scaleform movie is invisible to `MenuMode` (§3.1 rows 9, 10). The name
+  The name
   and code tables are per game and live in the translate step (the menu
   codes of §2, [GECK: MenuTypes](https://geck.uesp.net/wiki/Template:MenuTypes),
   [CS: MenuTypes](https://cs.uesp.net/wiki/Template:MenuTypes) and xEdit's
@@ -279,7 +249,7 @@ methods:
   never pauses the world on its own account, citing `VATS-UI-007` in the
   [VATS PRD](vats.md), whatever pause bit a source gives it.
 - **GUI-REG-005.** Open movies MUST share one wgpu device rather than
-  creating one per `SwfPlayer` (§3.1 row 2), so that stacking N menus does
+  creating one per `SwfPlayer`, so that stacking N menus does
   not create N GPU devices; `ui.menus` (GUI-OPS-001) MUST report the device
   count.
 - **GUI-REG-006.** Phase 0 MUST check in a per-game menu inventory: every
@@ -299,42 +269,33 @@ methods:
   [VATS PRD](vats.md)'s.
 - **GUI-REG-007.** Closing, replacing or failing to load a menu MUST return
   input to the next owner in the stack (or the world) in the same frame.
-  Today only replacement transfers focus (`install_player`,
-  `crates/ui/src/lib.rs:151`) and nothing closes a movie (§3.1 row 2);
+ 
   the native pages release world input on open
   ([ui.md](../engine/ui.md#input-routing)).
 - **GUI-REG-008.** The UI viewport MUST follow swapchain resizes: after a
   resize every open movie and document re-renders at the new extent
-  instead of stretching. #2723 closed by documenting the stretch, because
-  Ruffle's render target has no in-place resize (§3.1 row 14); the Phase 0
-  design states how a movie's renderer is rebuilt instead.
+  instead of stretching. Built in Phase 1: `SwfPlayer::resize` resizes a movie in place through Ruffle's `Player::set_viewport_dimensions` (`crates/ui/src/player.rs`).
 - **GUI-REG-009.** At most one registry menu MUST own input at a time, and
   it MUST be the topmost menu whose flags claim input; `ui.menus`
-  (GUI-OPS-001) names it. Today input focus is one `UiManager` flag plus
-  the native pages' modal capture
-  ([ui.md](../engine/ui.md#input-routing)).
+  (GUI-OPS-001) names it.
 - **GUI-REG-010.** Whether the simulation advances while menus are open
   MUST follow the PauseGame flag (GUI-REG-004) of the open registry menus,
   whatever their surface; `ui.menus` (GUI-OPS-001) MUST report the pause
-  state. Today the rule is per surface: every native page except Dialogue
-  freezes the whole scheduler and a Scaleform movie freezes nothing (§3.1
-  row 16). The VATS menu is the stated exception: it never pauses the
+  state. The VATS menu is the stated exception: it never pauses the
   world on its own account, and world time during VATS belongs to the
   [VATS PRD](vats.md) (`VATS-UI-007`, `VATS-FO4-002`), so its GUI-REG-004
   entry carries no pause and `ui.menus` reports no pause on its account.
 - **GUI-REG-011.** Papyrus `Utility.IsInMenuMode` (Skyrim, Fallout 4) MUST
   answer `true` exactly while the registry holds a menu whose flags pause
   the game, so that an open dialogue menu answers `false`, as the CK and
-  Fallout 4 CK define it (§2 *Menu mode*). Today it has no handler (§3.1
-  row 17).
+  Fallout 4 CK define it (§2 *Menu mode*).
 
 ### 5.2 Host-method behaviour (`GUI-HOST`)
 
 - **GUI-HOST-001.** Every catalog entry of every in-scope profile MUST
   carry one behaviour class in the catalog itself (H1–H3 as a field; H4 is "not in the catalog", §3.2, so it is a runtime diagnostic class a catalog entry cannot have, Phase 0)
   (`crates/ui/src/catalog.rs`), next to the existing `provenance` field.
-  Today a call's `ScaleformHostDispatch` (`crates/ui/src/host.rs`) records
-  transport state only.
+ 
 - **GUI-HOST-002.** An H1 method MUST act through the same canonical API the
   native page for that menu uses (inventory, equipment, barter, crafting,
   dialogue, settings, save), so there is one validation path per action;
@@ -349,8 +310,7 @@ methods:
   vanilla methods those are, settled by the per-method review of the Phase 0
   catalog against the menu each method is called from.
 - **GUI-HOST-004.** An H3 or H4 call MUST produce one attributed diagnostic
-  per (menu, method) naming the class, as the drain does today for
-  `Unknown` / `MissingResponse` (§3.1 row 4), and MUST NOT be answered with
+  per (menu, method) naming the class, as `ui.host` reports them, and MUST NOT be answered with
   a fabricated value. For a mod's replacement movie the H4 half of this is
   `LMC-UI-001`'s attributed diagnostic, cited here and not restated; this
   ID adds H3 and covers vanilla movies.
@@ -370,9 +330,7 @@ methods:
 
 - **GUI-PATH-001.** The engine MUST offer path-addressed get, set and
   invoke on any open movie of either VM, through adapter injection (Q2).
-  Today Ruffle's `call_internal_interface` reaches registered
-  ExternalInterface callbacks only, which is why the vanilla meters stay
-  empty ([ui.md](../engine/ui.md#scaleform-hud-m486-skyrim--m487-fallout-4)).
+ 
 - **GUI-PATH-002.** A set or invoke on a path that does not exist in the
   movie MUST return a typed "absent path" result and a diagnostic, never a
   silent no-op. This mirrors Scaleform's own contract: `Movie::Invoke`
@@ -410,7 +368,7 @@ methods:
 - **GUI-HUD-001.** With `--hud` on Skyrim, the vanilla `hudmenu.swf` health,
   magicka and stamina meters MUST follow the player's composed actor values;
   `hud.values 1.0` then `0.35` MUST change the meter band's pixels and leave
-  a control band unchanged. Today they stay empty (§3.1 row 6).
+  a control band unchanged.
 - **GUI-HUD-002.** The Fallout 4 twin of GUI-HUD-001 MUST hold for the
   health and action-point meters.
 - **GUI-HUD-003.** The vanilla meter feed paths MUST be the ones the
@@ -421,12 +379,11 @@ methods:
   itself; the list is checked in as data beside the catalog.
 - **GUI-HUD-004.** When an original HUD drives the player's vitals, the
   native HUD's vitals bars MUST NOT draw a second copy; today they are gated
-  only by `interface.show_vitals` (§3.1 row 3).
+  only by `interface.show_vitals` (`crates/native-ui/src/hud.rs`).
 - **GUI-HUD-005.** The compass of each original HUD MUST follow the camera
   heading, as the MenuXml HUDs already do through `cropx`
   ([ui.md](../engine/ui.md#menuxml-legacy-ui-m484-oblivion--m485-fo3)).
-  Today the vanilla Skyrim and Fallout 4 compasses are not driven (§3.1
-  row 6); their feed paths are part of GUI-HUD-003's verify.
+  Their feed paths are part of GUI-HUD-003's verify.
 - **GUI-HUD-006.** The FO3 / FNV HUD art SHOULD be tinted by the game's HUD
   colour instead of rendering art-native white: ui.md records that the
   `systemcolor &hudmain;` default is not pinned. **Phase 0: verify** the
@@ -439,7 +396,7 @@ methods:
   members vanilla movies read, enabled the way Scaleform enables them
   (`_global.gfxExtensions = true`,
   [Autodesk: AS2 Extensions Reference](https://help.autodesk.com/cloudhelp/ENU/Scaleform-Help/scaleform_help/as2_reference.html)).
-  Today none exist (§3.1 row 7).
+  None exist yet (§3.1 row 1).
 - **GUI-GFX-002.** The AVM2 profile MUST provide the AS3 extension surface
   (`scaleform.gfx.Extensions`,
   [Autodesk: AS3 Extensions Reference](https://help.autodesk.com/cloudhelp/ENU/Scaleform-Help/scaleform_help/as3_reference.html))
@@ -486,13 +443,13 @@ methods:
   registered through `RegisterForMenuOpenCloseEvent` for that menu name,
   vanilla Papyrus on Fallout 4
   ([FO4 CK: OnMenuOpenCloseEvent](https://falloutck.uesp.net/wiki/OnMenuOpenCloseEvent_-_ScriptObject)).
-  Today nothing handles either (§3.1 row 11).
+ 
 - **GUI-EVT-002.** The registration MUST unregister automatically when the
   owning quest stops or the active magic effect is removed, as the CK page
   documents.
 - **GUI-EVT-003.** Script functions that open a menu MUST open it through
   the registry, under the game-facing name the per-game inventory gives
-  (not today's engine-coined `MenuRequest` names, §3.1 row 13), with the
+ , with the
   surface the inventory names, or report S4 with the fallback the effect
   already uses (the auto-accept placeholder, or the `script.requests` log
   for the ObScript requests nothing opens). The Phase 0 inventory
@@ -510,9 +467,7 @@ methods:
   native page emits for that action, applied after the UI frame, as the
   native pages apply theirs today ([ui.md](../engine/ui.md#input-routing)).
 - **GUI-EVT-005.** A menu open MUST NOT change saveable state by itself;
-  the registry is presentation state, republished every frame, the same
-  `NOT_SAVED_BY_DESIGN` rule `UiMenuState` carries today
-  (`byroredux/src/systems/script_queries.rs:13-14`).
+  the registry is presentation state, republished every frame, which `MenuRegistry` carries as a not-saved-by-design entry (`byroredux/src/save_io/registry_completeness_tests.rs`).
 - **GUI-EVT-006.** ObScript `Begin MenuMode [code]` blocks MUST run on the
   frames the registry holds a menu matching the block's code (any
   menu-mode menu when it names none), and `Begin GameMode` blocks MUST NOT
@@ -521,8 +476,7 @@ methods:
   registry menus count toward menu mode is a per-menu entry of the
   GUI-REG-004 table; a HUD menu does not, since GameMode blocks run "during
   normal gameplay" while the HUD is up ([GECK: GameMode](https://geck.uesp.net/wiki/GameMode)).
-  Today no `MenuMode` block runs
-  (§3.1 row 17). **Phase 0: verify** the compiled block-type number of
+  **Phase 0: verify** the compiled block-type number of
   `Begin MenuMode` per game, settled by the `obscript_tools census`
   block-name alignment the VM already uses for its other block numbers
   (the VM's test fixture labels type 9 `MenuMode`, but the census assigns
@@ -535,8 +489,7 @@ methods:
   `Dialog`, code `1009`, …), so that scripts see it as that menu.
 - **GUI-PAGE-002.** `Game.ShowRaceMenu()` / ObScript `ShowRaceMenu` MUST open
   an interactive race and sex selection on the surface Q4 chooses, listed
-  open in the registry until the player accepts. Today the call is a
-  placeholder that auto-accepts (§3.1 row 12). **Phase 0: verify** what the
+  open in the registry until the player accepts. **Phase 0: verify** what the
   caller observes while the menu is open — whether the original native
   returns before the menu closes, and which quest state advances on accept
   — settled by the MQ101 fragment and scene that follow the call
@@ -552,7 +505,7 @@ methods:
   it.
 - **GUI-PAGE-003.** The Fallout 4 `ShowRaceMenu` parameters (`uiMode` 0–4,
   the menu target and vendor, [FO4 CK: ShowRaceMenu](https://falloutck.uesp.net/wiki/ShowRaceMenu_-_Game))
-  MUST lower; today only the zero-argument form lowers (§3.1 row 12).
+  MUST lower.
   Modes other than start-of-game chargen MAY report S4 until the slider
   milestone (GUI-NG-005).
 - **GUI-PAGE-004.** The dialogue menu MUST reach the surface Q1 chooses
@@ -569,14 +522,13 @@ methods:
   unless the Phase 0 inventory lists it as an engine string with its
   reason; a per-page test asserts that no unlisted engine string is drawn.
 - **GUI-PAGE-006.** Player-facing native pages SHOULD live outside the
-  operator overlay crate; today they are in `byroredux-debug-ui`
-  (`crates/debug-ui/src/panels/`) beside the F3 operator panels.
+  operator overlay crate. They do: `crates/native-ui` holds them, apart from the F3 operator panels in `byroredux-debug-ui`.
 
 ### 5.9 MenuXml menus beyond the HUD (`GUI-XML`)
 
 - **GUI-XML-001.** The MenuXml track MUST load any menu document of the
   three pre-Skyrim games through the same `MenuProfile`, not only
-  `hud_main_menu.xml` (§3.1 row 15); which menus become S2 follows Q1.
+  `hud_main_menu.xml`; which menus become S2 follows Q1.
 - **GUI-XML-002.** MenuXml input (pointer hit-testing over tile rects,
   keyboard navigation) MUST route through the same `UiInputEvent` contract
   the Scaleform track uses (`crates/ui/src/input.rs`), so that one input
@@ -641,13 +593,7 @@ methods:
 - **GUI-OPS-005.** A `ui.open <menu>` / `ui.close <menu> [accept|cancel]`
   console pair MUST open a menu by its game-facing name through the
   registry and close it with the stated result, so §7.2's scenarios drive
-  menus headless; the next `ui.menus` line MUST show the change. Today
-  each menu has its own driver and none names a menu by its game-facing
-  name: `input.press inventory` (`debug_action`,
-  `byroredux/src/interaction.rs:665-676`), `ui.answer` for a waiting
-  message box and `dialogue.select` / `dialogue.end` for the dialogue page
-  (`byroredux/src/commands/quest.rs`), and `hud.on` / `hud.off` for the HUD
-  (`byroredux/src/commands/hud.rs`).
+  menus headless; the next `ui.menus` line MUST show the change.
 
 ---
 
@@ -879,10 +825,12 @@ column or by an issue filed at the Phase 0 exit (#6823-#6826).
 **Phase 1 — Registry and stack.** GUI-REG-001…011, GUI-PAGE-001,
 GUI-EVT-005/006, GUI-OPS-001, GUI-OPS-005. Exit: scenarios 2, 3 and 10
 pass, and scenario 1's floor passes.
+**Closed** (#6653); results in the ROADMAP M48 row.
 
 **Phase 2 — Path service and live HUD meters.** GUI-PATH-001…005,
 GUI-HUD-001…005. Exit: scenarios 4, 5 and 6 pass; HUD meter liveness is
 published for Skyrim and Fallout 4.
+**Closed** (#6661); results and HUD meter liveness in the ROADMAP M48 row.
 
 **Phase 3 — Behaviour, extensions and text, wave 1.** GUI-HOST-001…006,
 GUI-GFX-001/003/004, GUI-FONT-001…004, GUI-EVT-003/004 for Skyrim;
@@ -894,6 +842,7 @@ non-HUD FNV and FO3 menu document loads and takes pointer input through
 like the existing `fo3_corpus.rs`); host behaviour
 coverage, placeholder share and UI frame cost are published for Skyrim and
 FNV.
+**Partly built** (#6665): host classes and `ui.host`, Skyrim fonts through `fontconfig.txt`, script-opened menus reported as S4, and FO3 / FNV MenuXml input are in the ROADMAP M48 row. **Open at HEAD (2026-11-22):** §3.1 rows 1 to 4.
 
 **Phase 4 — Surfaces per Q1, wave 1.** The dialogue menu first
 (GUI-PAGE-004), then the menus Q1 assigns, on Skyrim and FNV;
@@ -901,14 +850,17 @@ GUI-PAGE-005/006. Exit: Phase P passes on the chosen surface on both
 games (`dt1-dialogue-layers.sh` on FNV, the new Phase P leg of
 `dt2-skyrim-forcegreet.sh` on Skyrim, GUI-PAGE-004), and menu surface
 coverage is published for both.
+**Closed** (#6666); Skyrim dialogue runs on `dialoguemenu.swf` (S1) and New Vegas dialogue on `dialog_menu.xml` (S2), with the results in the ROADMAP M48 row.
 
 **Phase 5 — Race menu.** GUI-PAGE-002/003 per Q4. Exit: scenario 9 passes
 on Skyrim SE and FNV, and the MQ101 Known Issue is closed in ROADMAP.
+**Open** (#6667): §3.1 row 5.
 
 **Phase 6 — Wave 2 and Starfield.** Fallout 4 (GUI-GFX-002, GUI-EVT-001/002),
 Fallout 3, Oblivion; then Starfield's profile and catalog if Phase 0's
 verify found a host contract. Exit: scenario 8 passes, and every metric of
 §8 is published for every in-scope game.
+**Open** (#6668): §3.1 row 6.
 
 **Oblivion menu follow-up (#7048).** This PRD revision owns the surface and
 input/output contracts. Exit: the revision specifying GUI-XML-004…007 is
@@ -1066,3 +1018,4 @@ Each needs the project owner. The recommendation is the first option.
 | 7 | 2026-11-09 | Phase 0 exit: the open verify items each name their owning issue in §9.1 (phase issues, or #6823-#6826 filed for the five no phase issue covered); status line unchanged | — |
 | 8 | 2026-11-20 | #7048: GUI-XML-004…007 assign Oblivion's sleep/rest and level-up menus to MenuXml, specify successful and interrupted sleep, and define the frozen attribute-pick contract and acceptance scenarios for the #7047 bindings | — |
 | 9 | 2026-11-20 | #7086: implement and exercise the Oblivion MenuXml and native fallback paths for GUI-XML-004…007 in Weynon House. Test cancellation, waiting, and combat interruption without consuming a pending level | — |
+| 10 | 2026-11-22 | Review round 3 folded in: §3.1 replaced by links to the checked-in menu inventories, the ui.md registry design and the ROADMAP M48 row, keeping only the rows not yet built, re-measured at HEAD (Scaleform extensions, H1 host behaviour, the `-s` strings, UI frame cost, the race menu's exit, wave 2 and Starfield); §1 dated to the draft; the menu registry defined as built and the Related row linked; §9 records Phases 1, 2 and 4 closed and Phase 3 partly built; the requirement clauses the built phases made untrue dropped or re-pointed at the new §3.1 rows (GUI-REG-001, -002, -005, -007…-011, GUI-HOST-001, -004, GUI-PATH-001, GUI-HUD-001, -004, -005, GUI-GFX-001, GUI-EVT-001, -003, -005, -006, GUI-XML-001, GUI-PAGE-002, -003, -006, GUI-OPS-005); the Tracking line on one line; the status line trimmed | claude: revise |
