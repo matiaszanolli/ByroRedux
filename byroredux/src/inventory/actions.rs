@@ -248,14 +248,15 @@ pub(super) fn consume_item(world: &mut World, index: u32, form_id: u32) -> Mutat
 /// Drop one item of an inventory row into the world: it leaves the inventory (the row keeps its
 /// position, like a use) and a created reference of the same base stands where the player does, which
 /// the ordinary placement spawns and the pickup path can take back. Refused for an equipped row, a
-/// dead player, an item with an unresolvable instance, or a base the pickup path would not take (a
-/// container, an uncatalogued form) — a dropped item must be one the player can pick up again.
+/// dead player, an improved item (#7343: an instanced row; a created reference carries no
+/// `ItemInstance`, so its quality would be lost on the floor), or a base the pickup path would not take
+/// (a container, an uncatalogued form) — a dropped item must be one the player can pick up again,
+/// unchanged.
 ///
 /// The Story Manager's `REMP` (Player Remove Item) needs the dropped reference as `R2`; the entity
 /// exists only once the placement spawns it, so the drop is queued on [`PendingDroppedItems`] and
 /// `dropped_item_story_event_system` raises the event then.
 pub(super) fn drop_item(world: &mut World, index: u32, form_id: u32) -> MutationResult {
-    use byroredux_core::ecs::resources::ItemInstancePool;
     if !crate::systems::player_can_act(world) {
         return MutationResult::Unavailable;
     }
@@ -275,12 +276,14 @@ pub(super) fn drop_item(world: &mut World, index: u32, form_id: u32) -> Mutation
         || !world
             .try_resource::<InventoryCatalog>()
             .is_some_and(|catalog| catalog.is_pickup_base(form_id))
-        || stack.instance.is_some_and(|instance| {
-            world
-                .try_resource::<ItemInstancePool>()
-                .is_none_or(|pool| pool.get(instance).is_none())
-        })
     {
+        return MutationResult::Unavailable;
+    }
+    // #7343 — a created reference stands for a base form only, so an improved item dropped and picked up
+    // again would come back unimproved. Refused, with the reason, until a reference can carry the instance.
+    if stack.instance.is_some() {
+        log::warn!("drop_item {form_id:08X} refused: an improved item cannot be dropped (its quality would be lost)");
+        crate::notifications::push(world, "An improved item cannot be dropped.".to_string());
         return MutationResult::Unavailable;
     }
     // Where it lands: the player's own spot, in the cell the player occupies.
@@ -293,19 +296,8 @@ pub(super) fn drop_item(world: &mut World, index: u32, form_id: u32) -> Mutation
     let Some(reference) = created.next() else {
         return MutationResult::Unavailable;
     };
-    let released = {
-        let inventory = world.get_mut::<Inventory>(player).unwrap();
-        let row = &mut inventory.items[index as usize];
-        row.count -= 1;
-        if row.count == 0 {
-            row.instance.take()
-        } else {
-            None
-        }
-    };
-    if let Some(instance) = released {
-        world.resource_mut::<ItemInstancePool>().release(instance);
-    }
+    // A plain row: the count goes down and the row stays where it is.
+    world.get_mut::<Inventory>(player).unwrap().items[index as usize].count -= 1;
     {
         let mut created = world.resource_mut::<byroredux_scripting::CreatedReferences>();
         created.create_scripted(reference, form_id, byroredux_scripting::PLAYER_REFERENCE, false);

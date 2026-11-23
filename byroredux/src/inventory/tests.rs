@@ -3160,6 +3160,47 @@ fn dropping_an_item_creates_a_reference_and_raises_remove_from_player() {
     );
 }
 
+/// #7343 — an improved item (an instanced row) is not dropped: a created reference stands for a base form only, so
+/// the item would come back from the floor unimproved. The drop is refused with a notice and the row is untouched;
+/// the plain stack of the same fixture still drops.
+#[test]
+fn an_improved_item_is_not_dropped() {
+    use byroredux_core::ecs::components::GlobalTransform;
+    use byroredux_core::ecs::resources::{ItemInstance, ItemInstancePool};
+    let (mut world, player) = fixture();
+    byroredux_scripting::register(&mut world);
+    world.register::<GlobalTransform>();
+    world.insert(player, GlobalTransform::default());
+    world.insert_resource(crate::notifications::PlayerNotifications::default());
+    world.insert_resource(byroredux_scripting::CreatedReferences::default());
+    world.insert_resource(PendingDroppedItems::default());
+    world.insert_resource(crate::cell_loader::created::CreatedReferenceEntities::default());
+    world.insert_resource(crate::cell_loader::CurrentCellContext {
+        cell_editor_id: "Whiterun".to_owned(),
+        esm_path: String::new(),
+        masters: Vec::new(),
+    });
+    world.resource_mut::<InventoryCatalog>().containers.clear();
+    let mut pool = ItemInstancePool::new();
+    let instance = pool.allocate(ItemInstance { quality: 3 });
+    world.insert_resource(pool);
+    world.get_mut::<Inventory>(player).unwrap().items[2].instance = Some(instance);
+
+    let improved = byroredux_native_ui::InventoryAction::Drop { index: 2, form_id: 0x9ABC };
+    assert_eq!(apply_action(&mut world, improved), MutationResult::Unavailable);
+    let row = world.get::<Inventory>(player).unwrap().items[2];
+    assert_eq!((row.count, row.instance), (1, Some(instance)), "the improved row is untouched");
+    assert!(world.resource::<ItemInstancePool>().get(instance).is_some(), "its quality is kept");
+    assert_eq!(world.resource::<byroredux_scripting::CreatedReferences>().iter().count(), 0, "nothing on the floor");
+    assert!(
+        crate::notifications::drain(&world).iter().any(|line| line.contains("improved item cannot be dropped")),
+        "the player is told why"
+    );
+
+    let plain = byroredux_native_ui::InventoryAction::Drop { index: 1, form_id: 0x5678 };
+    assert_eq!(apply_action(&mut world, plain), MutationResult::Dropped);
+}
+
 /// M43 — an improved weapon (quality in its item instance) hits harder by the quality's rating bonus when it is
 /// equipped; an unimproved copy of the same base does not.
 #[test]
