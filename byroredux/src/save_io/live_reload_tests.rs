@@ -1232,7 +1232,8 @@ fn a_profile_difference_is_logged_and_never_shown_as_a_failed_load() {
     // The session now runs without the mod the save was made with.
     world.insert_resource(SessionProfile(record(&[("skyrim.esm", 1)])));
 
-    assert!(live_load::report_profile_difference(&world, &snapshot) >= 2, "the difference is reported");
+    let before = world.resource::<SessionProfile>().0.clone();
+    assert!(live_load::report_profile_difference(Some(&before), &snapshot) >= 2, "the difference is reported");
     let shown = crate::notifications::drain(&world);
     assert!(shown.is_empty(), "nothing reaches the HUD, least of all {LOAD_FAILED:?}: {shown:?}");
 
@@ -1242,5 +1243,41 @@ fn a_profile_difference_is_logged_and_never_shown_as_a_failed_load() {
     let call = body.find("report_profile_difference(").expect("the drain reports the profile difference");
     let window = &body[call..(call + 300).min(body.len())];
     assert!(!window.contains("notify_player("), "a profile difference is not a failed load (#7347): {window}");
+}
+
+/// #7349 — the load reports against the profile the session ran BEFORE the reload. The reload installs the save's own
+/// plugin list and `install_form_resolver` rebuilds `SessionProfile` from it, so against the resource every plugin the
+/// player added or removed since the save looked unchanged and the report could never fire; and the capture must sit
+/// ahead of the reload in the drain.
+#[test]
+fn a_load_reports_against_the_profile_captured_before_the_reload() {
+    use crate::profile_fingerprint::{HashedEntry, ProfileRecord, SessionProfile};
+    let registry = build_save_registry();
+    let record = |plugins: &[(&str, u64)]| ProfileRecord {
+        fingerprint: 0,
+        plugins: plugins.iter().map(|(name, hash)| HashedEntry { name: (*name).into(), content_hash: *hash }).collect(),
+        ..Default::default()
+    }
+    .sealed();
+    let made_with = record(&[("skyrim.esm", 1), ("mod.esp", 2)]);
+    let mut world = World::new();
+    world.insert_resource(SessionProfile(made_with.clone()));
+    let snapshot = byroredux_save::save_world(&world, &registry).expect("save");
+
+    // The player now runs without `mod.esp`; the reload then rebuilds the resource from the save's own plugin list.
+    let before = record(&[("skyrim.esm", 1)]);
+    world.insert_resource(SessionProfile(made_with));
+    let after_reload = world.resource::<SessionProfile>().0.clone();
+    assert_eq!(live_load::report_profile_difference(Some(&after_reload), &snapshot), 0, "the rebuilt record cannot differ");
+    assert!(live_load::report_profile_difference(Some(&before), &snapshot) >= 2, "the pre-load record shows the removal");
+    assert_eq!(live_load::report_profile_difference(None, &snapshot), 0, "no record before the load, nothing to say");
+
+    // The drain captures it ahead of the reload.
+    let source = include_str!("live_load.rs");
+    let body = &source[source.find("pub fn execute_pending_save_loads(").unwrap()..];
+    let captured = body.find("let profile_before =").expect("the drain captures the pre-load profile");
+    let reload = body.find("reload_with_fresh_day_blocks(world").expect("the reload runs in the drain");
+    let reported = body.find("report_profile_difference(profile_before.as_ref()").expect("the report reads the capture");
+    assert!(captured < reload && reload < reported, "capture, then reload, then report (#7349)");
 }
 

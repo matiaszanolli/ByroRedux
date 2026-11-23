@@ -7,9 +7,12 @@
 //!
 //! The session's record is the [`SessionProfile`] resource, built wherever a load path installs the load order (the
 //! plugins' hashes come from the fold, which reads every plugin's bytes anyway). A save writes it; loading a save
-//! compares the record the save carries with the session's and reports every difference ([`differences`], in `load` and
-//! `save.info`), while the session keeps its own: a load never changes the profile. What a difference means for the
-//! loaded world (LMC-SAV-002..004) is not decided here.
+//! compares the record the save carries with the one the session was running and reports every difference
+//! ([`differences`], in `load` and `save.info`). The save's column never replaces the session's record, but a load's
+//! reload does rebuild the resource, from the save's own plugin list (`install_form_resolver`); the load therefore
+//! reports against the record it captured BEFORE the reload ([`profile_lines_against`], #7349), while `save.info`,
+//! which reloads nothing, reports against the resource. What a difference means for the loaded world
+//! (LMC-SAV-002..004) is not decided here.
 //!
 //! Not in the record yet: the extension packages' component hashes and selected providers, which wait for the
 //! package manifest of the sandbox design (PKG-010), and the content of a root's loose files (a root enters by
@@ -53,7 +56,8 @@ impl ProfileRecord {
     }
 }
 
-/// The session's profile record; a load keeps it (see the module docs).
+/// The session's profile record: the reload rebuilds it from the save's plugin list, and the load reports against the
+/// record captured before (see the module docs).
 #[derive(Clone, Debug, Default)]
 pub struct SessionProfile(pub ProfileRecord);
 
@@ -67,8 +71,8 @@ pub(crate) fn save_profile(
     Ok(live.0.clone())
 }
 
-/// The save column's decoder: the session keeps its own profile, whatever the save carried ([`differences`] reports
-/// what changed).
+/// The save column's decoder: the restore never installs the save's record, whatever the save carried ([`differences`]
+/// reports what changed).
 pub(crate) fn load_profile(
     world: &byroredux_core::ecs::World,
     _saved: ProfileRecord,
@@ -154,9 +158,17 @@ pub fn saved_record(snapshot: &byroredux_save::Snapshot) -> Option<ProfileRecord
 /// How the profile of the save `snapshot` differs from the session's in `world`: a summary line, then one line per
 /// difference; empty when they match, or when either side has no record.
 pub fn save_profile_lines(world: &byroredux_core::ecs::World, snapshot: &byroredux_save::Snapshot) -> Vec<String> {
-    let Some(saved) = saved_record(snapshot) else { return Vec::new() };
     let Some(live) = world.try_resource::<SessionProfile>().map(|live| live.0.clone()) else { return Vec::new() };
-    let changes = differences(&saved, &live);
+    profile_lines_against(&live, snapshot)
+}
+
+/// [`save_profile_lines`] against an explicit `live` record. A load needs this form (#7349): its reload installs the
+/// *save's* plugin list, which rebuilds [`SessionProfile`] from that list (`install_form_resolver`), so by the time the
+/// load reports, the resource no longer describes the session the player was running. The drain captures the record
+/// before the reload and reports against it.
+pub fn profile_lines_against(live: &ProfileRecord, snapshot: &byroredux_save::Snapshot) -> Vec<String> {
+    let Some(saved) = saved_record(snapshot) else { return Vec::new() };
+    let changes = differences(&saved, live);
     if changes.is_empty() {
         return Vec::new();
     }

@@ -110,13 +110,20 @@ impl LiveReloadLedgers {
     }
 }
 
-/// LMC-SAV-001 — log what differs between the profile the save was made with and the session's, one WARN line each
-/// (`save.info` prints the same). The player's HUD gets nothing: the lines are operator text (fingerprints, plugin
-/// hashes), which #6825 keeps in the log, and the one line the HUD has for a load is [`LOAD_FAILED`], which a load
-/// that went through must never show (#7347: the summary was once pushed through [`notify_player`], so a successful
-/// load with a changed plugin told the player it failed). Returns how many lines it logged.
-pub(super) fn report_profile_difference(world: &World, snapshot: &byroredux_save::Snapshot) -> usize {
-    let lines = crate::profile_fingerprint::save_profile_lines(world, snapshot);
+/// LMC-SAV-001 — log what differs between the profile the save was made with and the one the session was running
+/// BEFORE the load (`before`, captured ahead of the reload: the reload installs the save's own plugin list and rebuilds
+/// `SessionProfile` from it, so the resource can no longer say what the player had, #7349), one WARN line each
+/// (`save.info` prints the same against the running session). The player's HUD gets nothing: the lines are operator
+/// text (fingerprints, plugin hashes), which #6825 keeps in the log, and the one line the HUD has for a load is
+/// [`LOAD_FAILED`], which a load that went through must never show (#7347: the summary was once pushed through
+/// [`notify_player`], so a successful load with a changed plugin told the player it failed). Returns how many lines it
+/// logged; none without a pre-load record.
+pub(super) fn report_profile_difference(
+    before: Option<&crate::profile_fingerprint::ProfileRecord>,
+    snapshot: &byroredux_save::Snapshot,
+) -> usize {
+    let Some(before) = before else { return 0 };
+    let lines = crate::profile_fingerprint::profile_lines_against(before, snapshot);
     for line in &lines {
         log::warn!("save load: {line}");
     }
@@ -687,6 +694,8 @@ pub fn execute_pending_save_loads(
     let registry = build_save_registry();
     // INC4-2 — the identity the player's live body was assembled from, before the load replaces it.
     let identity_before = crate::player_body::player_identity(world);
+    // #7349 — the profile the session was running, before the reload rebuilds it from the save's plugin list.
+    let profile_before = world.try_resource::<crate::profile_fingerprint::SessionProfile>().map(|profile| profile.0.clone());
 
     // #3163 — every typed column is decodable from the snapshot alone.
     // Reject before the irreversible cell/streaming teardown so no serde
@@ -1005,7 +1014,7 @@ pub fn execute_pending_save_loads(
 
     // LMC-SAV-001 (#6670) — the save carries the profile it was made with; say what changed since. The session keeps
     // its own profile.
-    report_profile_difference(world, &snapshot);
+    report_profile_difference(profile_before.as_ref(), &snapshot);
 
     // M45.1 refinement — put the player back where they saved, on top of
     // the reloaded cell (which spawns the player at the default door).
