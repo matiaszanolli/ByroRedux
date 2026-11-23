@@ -5,7 +5,8 @@
 # has been measured. Today the presets move two things: the upscaler, and the
 # terrain displacement patches: Low turns them off (0.4–1.1 ms at the bench's
 # 480 render lines, docs/engine/terrain-displacement.md §8.7) and Medium draws
-# every patch on the coarse mesh (up to 0.4 ms, no visible loss measured, §8.8). The
+# every patch on the coarse mesh at 480 render lines (up to 0.4 ms, no visible
+# loss measured, §8.8; above 480 lines the nearest squares stay fine, §8.9). The
 # mechanism is general — add a shadow-distance or texture-quality setting to the
 # registry and it can be listed here with no code change — but this is not yet a
 # full quality ladder, and calling it one would be a lie the frame rate would

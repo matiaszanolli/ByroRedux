@@ -384,8 +384,9 @@ compute `D` or `h`. Options:
    - hysteresis;
    - the existing `fine 0` / full-fine overrides, kept as forced modes.
 
-   Then the `A_FINE` sweep at 480 and 1080 render lines. **Done**, at 480 and 960 lines
-   (§8.5). The default is 128 px².
+   Then the `A_FINE` sweep at 480 and 1080 render lines. **Done** (§8.5), at 480 and
+   675–696 lines: the 2560×1440 window meant for 960 lines is clamped to the bench
+   machine's 1080p monitors (§8.9). The default is 128 px².
 3. **The third level and 2:1 balance**, only if step 2's data asks for it.
 4. **§3.6 residual parallax on patches**: march `depth_pom − amplitude_geo`. Its cost
    bound is small (0.31 / 0.20 / 0.03 ms, §8.3), but it keeps the near relief from
@@ -412,8 +413,10 @@ compute `D` or `h`. Options:
    other `terrain.*` switches, so they don't reach the settings file until a menu
    edit. `fine <m>` still forces 4.1's distance rule for the session, until
    `afine`. Among the quality presets (`assets/graphics_presets.toml`), Low turns
-   the patches off (amplitude 0, §8.7) and Medium draws them on the coarse mesh only
-   (threshold 512 px², §8.8). High and Ultra keep the defaults.
+   the patches off (amplitude 0, §8.7) and Medium raises the threshold to 512 px²
+   (§8.8). At 480 render lines that draws every patch coarse; at higher render
+   heights the squares nearest the camera stay fine (§8.9). High and Ultra keep the
+   defaults.
 
 **Not in 4.3.** A visibility-buffer or deferred lighting pass would trace rays per
 covered pixel with no quad overhead at all. It is the structural fix for every dense
@@ -793,8 +796,10 @@ The 4.3 selector (§7.3, step 2) compared against 4.1's distance rule. Same harn
 - `afine` at 32, 64, 128 and 256 px².
 
 The two render heights are the default 1280×720 window under FSR Quality (853×480) and
-a 2560×1440 window (1707×960). The camera's `fov_y` is 45°, so `k` is 579.4 px at 480
-lines. Each cell is the §8.3 total in ms, with the fine/coarse square split of the 16
+a 2560×1440 window meant to give 1707×960. **Correction (§8.9):** the window manager
+clamps that window to the bench machine's 1920×1080 monitors, so the "960" rows below
+actually rendered at 1280×696 (FNV) and 1235×675 (tundra). The camera's `fov_y` is 45°,
+so `k` is 579.4 px at 480 lines. Each cell is the §8.3 total in ms, with the fine/coarse square split of the 16
 resident in brackets:
 
 | lines | position | pose | distance | all coarse | 32 px² | 64 px² | **128 px²** | 256 px² |
@@ -805,21 +810,21 @@ resident in brackets:
 | 480 | Skyrim tundra | down | 0.75 [4/12] | 0.42 | 0.77 [4/12] | 0.75 [4/12] | **0.78** [4/12] | 0.75 [4/12] |
 | | | eye | 0.69 | 0.57 | 0.77 | 0.73 | **0.66** | 0.62 |
 | | | graze | 0.58 | 0.58 | 0.54 | 0.62 | **0.59** | 0.60 |
-| 960 | FNV Mojave | down | 1.87 [4/12] | 1.50 | 1.82 [8/8] | 1.91 [8/8] | **1.86** [4/12] | 1.89 [4/12] |
+| 696 | FNV Mojave | down | 1.87 [4/12] | 1.50 | 1.82 [8/8] | 1.91 [8/8] | **1.86** [4/12] | 1.89 [4/12] |
 | | | eye | 1.57 | 1.09 | 1.23 | 1.18 | **0.75** | 0.80 |
 | | | graze | 1.19 | 0.83 | 1.97 | 2.12 | **1.29** | 1.32 |
-| 960 | Skyrim tundra | down | 1.56 [4/12] | 0.92 | 1.11 [7/9] | 1.33 [7/9] | **1.17** [4/12] | 1.19 [4/12] |
+| 675 | Skyrim tundra | down | 1.56 [4/12] | 0.92 | 1.11 [7/9] | 1.33 [7/9] | **1.17** [4/12] | 1.19 [4/12] |
 | | | eye | 1.38 | 1.35 | 1.45 | 1.40 | **1.38** | 1.17 |
 | | | graze | 0.57 | 0.60 | 0.76 | 0.82 | **0.39** | 0.81 |
 
-The per-state sd is 0.06–0.50 ms, except FNV at 960, where it is 0.6–1.07 ms. A cell
+The per-state sd is 0.06–0.50 ms, except FNV at 696, where it is 0.6–1.07 ms. A cell
 there is only good to about ±0.25 ms. No run logged a validation line.
 
 - **Levels switch per whole 3.66 m square, so thresholds group into steps.** At 480
   lines, 32–128 px² pick the same squares as the 2 m rule: the 2×2 block around the
-  camera. Only 256 px² at FNV drops two of them. At 960 lines, 32–64 px² add three or
-  four squares and 128–256 px² match the 2 m rule again.
-- **More fine squares cost and buy nothing measurable here.** At 960 lines the extra
+  camera. Only 256 px² at FNV drops two of them. At 675–696 lines, 32–64 px² add three
+  or four squares and 128–256 px² match the 2 m rule again.
+- **More fine squares cost and buy nothing measurable here.** At 675–696 lines the extra
   squares from 32–64 px² cost up to 0.9 ms (FNV graze). **128 px²** reproduces 4.1's
   selection at the bench resolution and is the default. Unlike the 2 m rule, it scales
   with the render height and `fov_y`. A lower render height or a wider field of view
@@ -827,7 +832,7 @@ there is only good to about ±0.25 ms. No run logged a validation line.
 - **All coarse is the floor**: 0.1–0.35 ms below the 2-level pool at 480 lines. That
   is the price of the fine lattice near the camera, and only screenshots, not timing,
   can say whether it is worth paying.
-- **At 960 lines even all-coarse costs 0.6–1.5 ms**, against 0.4–0.7 ms at 480. The
+- **At 675–696 lines even all-coarse costs 0.6–1.5 ms**, against 0.4–0.7 ms at 480. The
   patches-off frame itself grows by half (FNV 5.3 → 7.8 ms looking down). The
   remaining cost follows the patch pixels, and a lattice selector cannot remove it.
   §8.3 traced it to the shadow and GI rays those pixels fire. That puts the 1.0 ms
@@ -911,8 +916,11 @@ there can't be judged. No run logged a validation line.
   levers measured so far:
   - turning the patches off;
   - forcing all squares coarse, which saves 0.1–0.35 ms at 480 lines (§8.5).
-    A threshold of 512 px² does that at both 480 and 960 lines, since a fine triangle
-    at 1 m projects to 121 px² at 480 lines and about 480 px² at 960.
+    A threshold of 512 px² does that at 480 lines. **Correction (§8.9):** not at
+    higher render heights. The selector measures each square from its nearest
+    point, which for the squares around the camera's feet is closer than the 1 m
+    this bullet first assumed. At 696 lines 512 px² still leaves 2 squares fine at
+    FNV and 4 at Riverwood.
 
   Neither is a free default: all-coarse looks flatter at eye level (§8.2).
 - **For the presets**, the measured trade is patches off (amplitude 0), which saves the
@@ -923,8 +931,8 @@ there can't be judged. No run logged a validation line.
 
 ### 8.8 Coarse-only patches with residual parallax (2026-11-23)
 §8.2 judged all-coarse patches flatter at eye level, but that was before §8.6 cut the
-parallax march to the residual depth. Does a threshold of 512 px² (every square coarse,
-at 480 and 960 lines alike, §8.7) still lose visible relief? Same harness and binary as
+parallax march to the residual depth. Does a threshold of 512 px² (every square coarse
+at 480 lines; not above it, §8.9) still lose visible relief? Same harness and binary as
 §8.7, at 853×480. States were patches off, the default 128 px², and 512 px². The
 status line confirmed the split each time:
 - FNV: 2 fine and 14 coarse at 128 px²;
@@ -966,13 +974,61 @@ No run logged a validation line.
   residual march. Riverwood's moving cloud shadows, falling flakes and river shimmer
   hide anything smaller than its noise floor, so it only rules out a large loss.
 - **Medium now uses 512 px².** The default stays at 128 px². Everything here was
-  measured at 480 render lines, and at 960 lines each coarse triangle covers four
-  times the pixels, which is where the fine mesh should start to show. 128 px² scales
-  with the render height by itself. Changing the default needs a 960-line visual
-  check first.
+  measured at 480 render lines. At twice the render height each coarse triangle covers
+  four times the pixels, which is where the fine mesh should start to show. 128 px²
+  scales with the render height by itself. Changing the default needs a visual check
+  at a higher render height first (§8.9).
 - `weather.force` refused a bare `0010E1F2` (SkyrimClear_A) because it parsed the
   FormID decimal-first. That is fixed separately, so a future run can pin the
   weather too.
+
+### 8.9 The "960-line" runs rendered at 696 (2026-11-23)
+A run meant to repeat §8.8 at 960 render lines found that the bench machine can't
+produce them with a window. Its monitors are 1920×1080, so a requested 2560×1440
+window is clamped to 1920×1045, which FSR Quality renders at 1280×696. Every
+`render_extent` the bench printed confirms it:
+
+| run | render extent |
+|---|---|
+| §8.5 FNV "960" | 1280×696 |
+| §8.5 tundra "960" | 1235×675 |
+| this run, FNV and Riverwood | 1280×696 |
+
+§8.5's rows are relabelled. A render height above about 700 lines needs native
+rendering at the largest window the monitor allows (`--upscaler taa` at 1920×1080,
+about 1045 lines).
+
+**At 696 lines**, same harness and binary as §8.8. The clock was pinned at noon at
+both positions and Riverwood's weather was locked (`weather.force 0x0010E1F2 lock`,
+SkyrimClear_A). The sky readout matched at the start and end, and no run logged a
+validation line. Each cell is the median `main_render_ms` change from patches off,
+with the sd in brackets and the fine/coarse split of the 16 resident squares:
+
+| position | pose | off (ms) | 128 px² (default) | 512 px² |
+|---|---|---|---|---|
+| FNV Mojave | down | 8.86 | +1.38 (0.20) [4/12] | +1.45 (0.23) [2/14] |
+| | eye | 7.70 | +1.27 (1.19) | +1.10 (1.01) |
+| | graze | 7.62 | +0.89 (0.29) | +1.05 (0.40) |
+| Skyrim Riverwood | down | 7.95 | +1.45 (0.11) [4/12] | +1.45 (0.18) [4/12] |
+| | eye | 8.35 | +1.62 (0.18) | +1.62 (0.21) |
+| | graze | 10.54 | +0.87 (0.97) | +0.87 (1.09) |
+
+- **512 px² is not "every square coarse" above 480 lines.** The selector measures each
+  square from its nearest point, and for the squares around the camera's feet that
+  point is closer than the 1 m §8.7 assumed. At 696 lines 512 px² still leaves 2 fine
+  squares at FNV and the same 4 as the default at Riverwood. Medium therefore means
+  "every patch coarse at 480 lines, all but the nearest above it". The
+  descriptions in §7.3, the preset file and `launcher.md` now say so.
+- **512 px² saves nothing measurable at 696 lines.** At FNV it moves only 2 squares,
+  and the differences are within the spread. At Riverwood the two states select the
+  same squares and measure the same, a check on the harness itself.
+- **The premium grows with the render height**: 0.9–1.6 ms at 696 lines, against
+  0.4–1.1 ms at 480 (§8.7, §8.8). That bears on the per-resolution bar (§8.5).
+- **Images**: at FNV the two states differ by no more than two default shots do (for
+  example 2.6 vs 2.8 levels at eye). Riverwood's down pose is unusable: two shots of
+  the same state differ by 50 levels.
+
+The visual check that decides the default runs natively at about 1045 lines.
 
 ## 9. Review decisions (Matías, 2026-11-21)
 1. **Upward-only displacement, base mesh kept (§3.3)**: accepted. No holes, no zero-mean

@@ -63,7 +63,6 @@ fn mirror_host_reports(
     }
 }
 
-/// #6197 — publish the terrain parallax settings to every live LAND tile:
 /// M39 — the texture streaming switch; the re-reads promotions asked for
 /// (landed into the promotion queue, new ones started); then this frame's
 /// queued promotions. Runs before `draw_frame`, so the new images'
@@ -120,6 +119,7 @@ fn push_texture_streaming(
     }
 }
 
+/// #6197 — publish the terrain parallax settings to every live LAND tile:
 /// the metre settings, converted to world units here and nowhere else.
 /// Either setting at 0 turns the effect off (depth 0 on the GPU). Extracted
 /// from `render_one_frame` per the #5096 size-pin discipline.

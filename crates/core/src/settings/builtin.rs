@@ -96,8 +96,9 @@ pub const TERRAIN_PATCH_RANGE_MAX_M: f32 = 7.0;
 /// patch fine.
 pub const TERRAIN_PATCH_A_FINE_SETTING_ID: &str = "render.terrain_patch_fine_threshold_px2";
 /// The §8.5 sweep's pick: at 480 render lines 128 px² selects the squares
-/// 4.1's 2 m distance rule did, and at 960 lines 32–64 px² added fine squares
-/// for up to 0.9 ms with nothing measured in return.
+/// 4.1's 2 m distance rule did, and at 675–696 lines (the sweep's "960" runs,
+/// clamped by the monitor, §8.9) 32–64 px² added fine squares for up to 0.9 ms
+/// with nothing measured in return.
 pub const TERRAIN_PATCH_A_FINE_DEFAULT_PX2: f32 = 128.0;
 /// M39 — texture streaming switch (docs/prd/texture-streaming.md
 /// TXS-RES-008). Off restores the full-chain upload, the same-binary control

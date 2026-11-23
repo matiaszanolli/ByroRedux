@@ -408,9 +408,9 @@ the label to `Custom` without discarding values.
 **Honest scope**: a preset can only move settings that are *registered*, and the
 shipped file sets a rung only where its trade has been measured. Today the presets
 move the upscaler and the terrain displacement patches: Low turns them off
-(`render.terrain_patch_amplitude_m` = 0) and Medium draws them on the coarse mesh
-only (`render.terrain_patch_fine_threshold_px2` = 512), as measured in
-[terrain-displacement.md §8.7–§8.8](terrain-displacement.md). The mechanism is general — adding a
+(`render.terrain_patch_amplitude_m` = 0) and Medium raises their fine-mesh threshold
+(`render.terrain_patch_fine_threshold_px2` = 512, every patch coarse at 480 render
+lines), as measured in [terrain-displacement.md §8.7–§8.9](terrain-displacement.md). The mechanism is general — adding a
 shadow-distance or texture-quality setting extends the presets by editing the
 TOML, no code change — but this is not yet a quality ladder. Tests fail the build
 if a preset names a setting the registry refuses or does not have, or if the
