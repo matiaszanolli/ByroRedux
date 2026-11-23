@@ -31,9 +31,11 @@ use crate::translate::effects::VmStored;
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct AnimationEventRegistration {
     /// The object the registering script is attached to.
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))]
     pub owner: u32,
     pub script: String,
     /// The reference whose graph raises the event.
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))]
     pub sender: u32,
     /// The event as the script wrote it.
     pub event: String,

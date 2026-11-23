@@ -48,6 +48,7 @@ pub enum FormListChange {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct FormListAdditions {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map_forms"))]
     added: std::collections::BTreeMap<u32, Vec<u32>>,
 }
 

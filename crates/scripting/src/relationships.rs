@@ -35,7 +35,7 @@ impl Resource for AuthoredRelationships {}
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ScriptedRelationships(
-    #[cfg_attr(feature = "save", serde(with = "crate::serde_pairs"))]
+    #[cfg_attr(feature = "save", serde(with = "normalized_pairs"))]
     pub HashMap<(u32, u32), i8>,
 );
 
@@ -179,5 +179,22 @@ mod tests {
             .0
             .insert(pair(SIGRID, ALVOR), -1);
         assert_eq!(base_relationship_rank(&world, ALVOR, SIGRID), -1);
+    }
+}
+
+/// The scripted relationships saved as stable identities (LMC-SAV-002..004). The pair is normalised `(min, max)`, and a
+/// changed load order can reverse the two FormIDs' order, so it is normalised again on load; a pair naming an absent
+/// plugin's form is dropped.
+#[cfg(feature = "save")]
+mod normalized_pairs {
+    use std::collections::HashMap;
+
+    pub fn serialize<S: serde::Serializer>(pairs: &HashMap<(u32, u32), i8>, ser: S) -> Result<S::Ok, S::Error> {
+        byroredux_core::stable_form_id::map::serialize(pairs, ser)
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(de: D) -> Result<HashMap<(u32, u32), i8>, D::Error> {
+        let pairs: HashMap<(u32, u32), i8> = byroredux_core::stable_form_id::map::deserialize(de)?;
+        Ok(pairs.into_iter().map(|((a, b), rank)| ((a.min(b), a.max(b)), rank)).collect())
     }
 }

@@ -210,6 +210,7 @@ pub fn reference_enabled_with_parent(
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ReferenceActivationBlocks {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::vec"))]
     blocked: HashSet<u32>,
 }
 

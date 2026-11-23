@@ -19,7 +19,7 @@ use byroredux_core::ecs::world::World;
 /// The words of power the player has obtained, by `WOOP` FormID. Saved.
 #[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
-pub struct KnownWords(pub BTreeSet<u32>);
+pub struct KnownWords(#[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::vec"))] pub BTreeSet<u32>);
 
 impl Resource for KnownWords {}
 

@@ -24,6 +24,7 @@ pub struct SavedActorVitals {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SavedTimedRestoration {
+    #[serde(with = "byroredux_core::stable_form_id")]
     source_form_id: u32,
     actor_value: FormIdPair,
     per_second: f32,
@@ -190,9 +191,13 @@ pub struct SavedValueEffect {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SavedActiveEffect {
+    #[serde(with = "byroredux_core::stable_form_id")]
     source: u32,
+    #[serde(with = "byroredux_core::stable_form_id")]
     mgef: u32,
+    #[serde(with = "byroredux_core::stable_form_id")]
     caster: u32,
+    #[serde(with = "byroredux_core::stable_form_id")]
     script: u32,
     duration: f32,
     indefinite: bool,
@@ -202,6 +207,7 @@ pub struct SavedActiveEffect {
     value: Option<SavedValueEffect>,
     ticks: u32,
     locals: Vec<(u16, f32)>,
+    #[serde(with = "stable_ref_locals")]
     ref_locals: Vec<(u16, u32)>,
     suspended: bool,
     effect_index: u16,
@@ -284,7 +290,16 @@ pub fn load_active_effects(
             ending: effect.ending,
             value,
             ticks: effect.ticks,
-            locals: effect.locals,
+            // LMC-SAV-002..004 — the reference slots' numeric copies follow the exact references, which the load just
+            // read through the current load order (an absent plugin's reference is 0, no reference).
+            locals: effect
+                .locals
+                .into_iter()
+                .map(|(slot, value)| {
+                    let reference = effect.ref_locals.iter().find(|&&(ref_slot, _)| ref_slot == slot);
+                    (slot, reference.map_or(value, |&(_, form)| form as f32))
+                })
+                .collect(),
             ref_locals: effect.ref_locals,
             suspended: effect.suspended,
             effect_index: effect.effect_index,
@@ -477,5 +492,20 @@ mod tests {
         assert_eq!(restored.0[0].value.unwrap().actor_value, 0x0200_0020);
         assert_eq!(restored.0[0].locals, vec![(2, 3.0)]);
         assert_eq!(restored.0[0].effect_index, 2, "the effect's position in its spell is saved");
+    }
+}
+
+/// A running script effect's reference variables saved as stable identities (LMC-SAV-002..004). A reference to an
+/// absent plugin's form reads as `0`, no reference, and keeps its slot, so the slot's numeric copy is reset with it.
+mod stable_ref_locals {
+    use byroredux_core::stable_form_id::SavedForm;
+    use serde::{Deserialize, Serialize};
+
+    pub fn serialize<S: serde::Serializer>(refs: &[(u16, u32)], ser: S) -> Result<S::Ok, S::Error> {
+        refs.iter().map(|&(slot, form)| (slot, SavedForm::save(form))).collect::<Vec<_>>().serialize(ser)
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Vec<(u16, u32)>, D::Error> {
+        Ok(Vec::<(u16, SavedForm)>::deserialize(de)?.into_iter().map(|(slot, form)| (slot, form.load().unwrap_or(0))).collect())
     }
 }

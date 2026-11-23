@@ -37,6 +37,7 @@ pub const REMOTE_EVENTS: [&str; 5] = ["onactivate", "ondeath", "onhit", "ontrigg
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct EventRegistration {
     /// The object the registering script is attached to.
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))]
     pub owner: u32,
     pub script: String,
     /// The object whose event it is.

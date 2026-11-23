@@ -16,6 +16,7 @@ use byroredux_core::ecs::resource::Resource;
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ScannedReferences {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::vec"))]
     scanned: BTreeSet<u32>,
 }
 

@@ -46,6 +46,7 @@ pub enum FactionFlag {
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct JailSentence {
     /// The exterior `PrisonMarker` reference the player is released at.
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))]
     pub exit_marker: u32,
     /// The sentence, in days (`bounty / iCrimeDaysInPrisonMod`).
     pub days: f32,
@@ -61,36 +62,41 @@ pub struct ObScriptLedger {
     pub crime_gold: i32,
     /// "The total value of stolen goods that the player has sold."
     pub amount_sold_stolen: i32,
+    #[cfg_attr(feature = "save", serde(with = "stable_faction_flags"))]
     faction_flags: BTreeSet<(FactionFlag, u32)>,
     /// Actors that have spoken to the player (`GetTalkedToPC`).
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::vec"))]
     talked_to_player: BTreeSet<u32>,
     /// `Set...` commands' values for their getters, keyed by `(command id, subject reference)`; a
     /// global one uses subject `0`.
-    #[cfg_attr(feature = "save", serde(with = "crate::serde_pairs"))]
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))]
     values: BTreeMap<(u16, u32), f32>,
     /// Per `(holder reference, weapon base)` condition percent (`ModWeaponHealthPerc`,
     /// `AddItemHealthPercent`).
-    #[cfg_attr(feature = "save", serde(with = "crate::serde_pairs"))]
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))]
     weapon_condition: BTreeMap<(u32, u32), f32>,
     /// The last actor each actor hit (`GetOwnerLastTarget`), by reference.
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map_forms"))]
     last_targets: BTreeMap<u32, u32>,
     /// The numeric faction reactions scripts set (`SetFactionReaction`, `ModFactionReaction`), by
     /// `(faction, other faction)`.
-    #[cfg_attr(feature = "save", serde(with = "crate::serde_pairs"))]
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))]
     reactions: BTreeMap<(u32, u32), f32>,
     /// The player's tagged skills: slot (0..=2) to the skill's actor-value code.
     tag_skills: BTreeMap<u8, u8>,
     /// What the player holds that was stolen, by base form: counted when a witnessed theft
     /// is charged, taken back by `PayFine` / `GoToJail`. A count, not a per-stack mark, so
     /// confiscation takes no more than the player still holds of the item.
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))]
     stolen_goods: BTreeMap<u32, u32>,
     /// Stolen goods the law confiscated and that have not reached a jail's `StolenGoods`
     /// chest yet (a jail with no usable chest never delivers them), by base form.
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))]
     evidence: BTreeMap<u32, u32>,
     /// The sentence being served, if the player is in jail.
     pub jail: Option<JailSentence>,
     /// Friendly hits taken, by `(victim, attacker)` reference (`GetFriendHit`).
-    #[cfg_attr(feature = "save", serde(with = "crate::serde_pairs"))]
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))]
     friend_hits: BTreeMap<(u32, u32), u32>,
 }
 
@@ -293,5 +299,28 @@ mod tests {
         ledger.jail = Some(JailSentence { exit_marker: 0x0003_8D6A, days: 2.5 });
         let json = serde_json::to_value(&ledger).expect("a populated ledger serializes");
         assert_eq!(serde_json::from_value::<ObScriptLedger>(json).unwrap(), ledger);
+    }
+}
+
+/// The faction flags saved with each faction as its stable identity (LMC-SAV-002..004); a flag on an absent plugin's
+/// faction is dropped.
+#[cfg(feature = "save")]
+mod stable_faction_flags {
+    use std::collections::BTreeSet;
+
+    use byroredux_core::stable_form_id::SavedForm;
+    use serde::{Deserialize, Serialize};
+
+    use super::FactionFlag;
+
+    pub fn serialize<S: serde::Serializer>(flags: &BTreeSet<(FactionFlag, u32)>, ser: S) -> Result<S::Ok, S::Error> {
+        flags.iter().map(|&(flag, faction)| (flag, SavedForm::save(faction))).collect::<Vec<_>>().serialize(ser)
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(de: D) -> Result<BTreeSet<(FactionFlag, u32)>, D::Error> {
+        Ok(Vec::<(FactionFlag, SavedForm)>::deserialize(de)?
+            .into_iter()
+            .filter_map(|(flag, faction)| Some((flag, faction.load()?)))
+            .collect())
     }
 }

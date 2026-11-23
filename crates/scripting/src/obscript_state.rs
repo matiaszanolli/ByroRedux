@@ -27,6 +27,7 @@ use byroredux_core::ecs::{Resource, World};
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct PipBoyNotes {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::vec"))]
     notes: Vec<u32>,
 }
 
@@ -63,7 +64,9 @@ impl PipBoyNotes {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct KillRecords {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))]
     dead_by_base: BTreeMap<u32, u32>,
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map_forms"))]
     killers: BTreeMap<u32, u32>,
 }
 
@@ -104,6 +107,7 @@ impl KillRecords {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ForcedWeather {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::option"))]
     pub weather: Option<u32>,
     pub locked: bool,
 }
@@ -136,6 +140,7 @@ impl Component for IgnoreCrime {
 #[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct CellVisits {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))]
     entered: BTreeMap<u32, f64>,
 }
 

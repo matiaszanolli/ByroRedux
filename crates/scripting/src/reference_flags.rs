@@ -27,9 +27,13 @@ use byroredux_core::ecs::resource::Resource;
 #[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ReferenceFlags {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::vec"))]
     no_favor: HashSet<u32>,
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map_forms"))]
     actor_cause: HashMap<u32, u32>,
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::vec"))]
     ignore_friendly_hits: HashSet<u32>,
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::vec"))]
     can_do_command: HashSet<u32>,
 }
 

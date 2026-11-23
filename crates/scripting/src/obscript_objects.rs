@@ -853,7 +853,7 @@ fn seed_locals(world: &World, entity: EntityId, script: &ScriptRecord) -> HashMa
 /// The name a reference variable's exact form id is kept under on the
 /// reference's `ScriptVariables`: its low and high 16 bits, each exact as an
 /// `f32`. The variable itself holds the nearest `f32`, as every local does.
-fn ref_variable_halves(name: &str) -> (String, String) {
+pub(crate) fn ref_variable_halves(name: &str) -> (String, String) {
     (format!("{name}#lo"), format!("{name}#hi"))
 }
 
@@ -899,10 +899,7 @@ fn store_refs(world: &World, entity: EntityId, script: &ScriptRecord, before: &H
     if let Some(mut variables) = world.query_mut::<ScriptVariables>()
         && let Some(variables) = variables.get_mut(entity) {
             for (name, form) in changed {
-                let (low_name, high_name) = ref_variable_halves(&name);
-                let (low, high) = crate::obscript_vm::form_halves(form);
-                variables.set_by_name(&low_name, low);
-                variables.set_by_name(&high_name, high);
+                variables.set_reference_by_name(&name, form);
             }
         }
 }

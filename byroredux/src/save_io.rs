@@ -128,4 +128,6 @@ mod round_trip_tests;
 #[cfg(test)]
 mod serde_default_guard_tests;
 #[cfg(test)]
+mod stable_form_id_guard_tests;
+#[cfg(test)]
 mod validation_gate_tests;

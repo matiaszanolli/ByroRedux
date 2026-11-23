@@ -912,7 +912,9 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // LMC-SAV-002..004 (#6676) — refreshed WITH a major bump (v144 -> v145): the slice-1 FormID fields (`Inventory`,
     // `EquippedWeapon`, `EquippedAmmo`, `Perks`, `FactionReputation`, `CharacterIdentity`, `SpellList`,
     // `ReadiedSpell`) save as stable identities through `byroredux_core::stable_form_id`.
-    const BASELINE_MAJOR: u16 = 145;
+    // LMC-SAV-002..004 (#6676) slice 2 — refreshed WITH a major bump (v145 -> v146): the remaining post-reload saved
+    // FormIDs save as stable identities, `ScriptVariables` gained its `references` list.
+    const BASELINE_MAJOR: u16 = 146;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1390,7 +1392,8 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // #7348 — refreshed WITHOUT a major bump: `CharacterIdentity.class_form_id`, the one FormID of the identity the v145
     // change missed (it was added in v144), joined the stable fields. The adapter still reads a bare number, so a
     // save written before this change decodes, and no registered column's wire form is refused.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x0b92_e98d_0ebf_4ae1;
+    // #6676 — v146: the slice-2 FormID columns, refreshed WITH the major bump above.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x1def_5204_9d19_bf28;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.

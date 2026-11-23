@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct StoredStack {
+    #[serde(with = "byroredux_core::stable_form_id")]
     base_form_id: u32,
     count: u32,
     instance: Option<ItemInstance>,
@@ -188,6 +189,7 @@ struct SavedReferenceState {
     equipment: Option<EquipmentSlots>,
     weapon: Option<EquippedWeapon>,
     actor_values: Option<byroredux_scripting::actor_value_save::SavedActorValues>,
+    #[serde(with = "byroredux_core::stable_form_id::forms")]
     spells: Option<Vec<u32>>,
     perks: Option<byroredux_core::character::Perks>,
     control: Option<byroredux_scripting::ActorControlState>,

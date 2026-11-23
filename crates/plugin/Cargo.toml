@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[features]
+# LMC-SAV-002..004 — the record types a save carries (script-instance properties, image-space modifier records) write
+# their FormIDs as stable identities through `byroredux_core::stable_form_id`. The scripting crate's `save` turns it on.
+save = ["byroredux-core/inspect"]
+
 [dependencies]
 byroredux-core = { workspace = true }
 byroredux-sdk = { workspace = true }

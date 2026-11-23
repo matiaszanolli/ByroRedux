@@ -70,14 +70,16 @@ impl KeywordTable {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct KeywordChanges {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::vec"))]
     pub added: Vec<u32>,
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::vec"))]
     pub removed: Vec<u32>,
 }
 
 /// Script `AddKeyword` / `RemoveKeyword` changes by reference FormID. Saved.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
-pub struct ScriptedKeywords(pub HashMap<u32, KeywordChanges>);
+pub struct ScriptedKeywords(#[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))] pub HashMap<u32, KeywordChanges>);
 
 impl Resource for ScriptedKeywords {}
 

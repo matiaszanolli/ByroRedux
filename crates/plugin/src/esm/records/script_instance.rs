@@ -60,7 +60,11 @@ use crate::esm::sub_reader::SubReader;
 pub enum PropertyValue {
     /// Type 1 — a form reference. `alias` is the quest-alias index when
     /// the property is alias-bound (`-1` = none).
-    Object { form_id: u32, alias: i16 },
+    Object {
+        #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))]
+        form_id: u32,
+        alias: i16,
+    },
     /// Type 2.
     String(String),
     /// Type 3.

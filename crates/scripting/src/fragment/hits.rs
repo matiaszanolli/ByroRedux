@@ -36,7 +36,7 @@ pub enum HitAggressor {
     /// A reference (exact match) or an alias (the reference filling it).
     Target(DistanceTarget),
     /// Any actor in this faction.
-    Faction(u32),
+    Faction(#[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))] u32),
 }
 
 /// The filters of one hit registration.
@@ -88,6 +88,7 @@ impl HitFilter {
 pub struct HitRegistration {
     /// The object the script is attached to: a quest, a reference or an alias
     /// script's owner id.
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))]
     pub owner: u32,
     pub script: String,
     /// The object being hit.

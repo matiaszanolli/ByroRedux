@@ -945,11 +945,11 @@ pub fn execute_pending_save_loads(
     // so the ring's rows cannot overlay. Park them as eviction would have,
     // so those placements return with their saved state when streamed in.
     let unresolved = byroredux_save::unresolved_form_id_pairs(&registry, &snapshot, &remap);
-    let parked_rows = crate::cell_loader::reference_state::park_unresolved_snapshot_rows(
-        world,
-        &snapshot,
-        &unresolved,
-    );
+    // The parked rows decode the same columns the overlay does, so through the same load order.
+    let (parked_rows, report) = translated(translator.clone(), || {
+        crate::cell_loader::reference_state::park_unresolved_snapshot_rows(world, &snapshot, &unresolved)
+    });
+    tally(report);
     if parked_rows > 0 {
         log::info!(
             "save load: parked {parked_rows} saved row(s) of non-resident references \

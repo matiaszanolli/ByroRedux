@@ -49,6 +49,7 @@ pub const SCRIPT_PACKAGE_REEVALUATE_SECS: f32 = 10.0;
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ScriptPackage {
     /// The `PACK` FormID.
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))]
     pub package: u32,
     /// Whether the package is flagged *Must reach location* or *Must complete*.
     pub constrained: bool,

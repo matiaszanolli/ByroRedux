@@ -203,10 +203,12 @@ const REF_HIGH_BASE: u16 = 0x8000;
 #[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct ObScriptQuestLocals {
+    #[cfg_attr(feature = "save", serde(with = "stable_quest_locals"))]
     values: std::collections::BTreeMap<u32, std::collections::BTreeMap<u16, f32>>,
     /// Quest FormID → the interval a script's `SetQuestDelay` chose. Gameplay
     /// state like the locals: a quest that slowed itself down must not speed
     /// back up on a reload.
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))]
     delays: std::collections::BTreeMap<u32, f32>,
 }
 
@@ -2125,5 +2127,62 @@ mod tick_interval_tests {
         assert_eq!(runs(&world), 3, "back on the 5 s default");
         obscript_quest_tick_system(&world, 1.0);
         assert_eq!(runs(&world), 4);
+    }
+}
+
+/// The quest locals saved with each quest, and each reference variable, as stable identities (LMC-SAV-002..004). A
+/// reference variable is kept as two `f32` halves in slots `REF_LOW_BASE + n` / `REF_HIGH_BASE + n`; it is saved as
+/// the one FormID they make and split again on load, so it follows its plugin across a changed load order. A quest of
+/// an absent plugin drops its locals; a reference to an absent plugin's form is left unset, which reads `0`.
+#[cfg(feature = "save")]
+mod stable_quest_locals {
+    use std::collections::BTreeMap;
+
+    use byroredux_core::stable_form_id::SavedForm;
+    use serde::{Deserialize, Serialize};
+
+    use super::{REF_HIGH_BASE, REF_LOW_BASE};
+    use crate::obscript_vm::{form_from_halves, form_halves};
+
+    type Locals = BTreeMap<u32, BTreeMap<u16, f32>>;
+    /// Per quest: its plain slots and its reference variables.
+    type Wire = Vec<(SavedForm, Vec<(u16, f32)>, Vec<(u16, SavedForm)>)>;
+
+    pub fn serialize<S: serde::Serializer>(values: &Locals, ser: S) -> Result<S::Ok, S::Error> {
+        let wire: Wire = values
+            .iter()
+            .map(|(&quest, slots)| {
+                let plain = slots.iter().filter(|&(&slot, _)| slot < REF_LOW_BASE).map(|(&slot, &value)| (slot, value)).collect();
+                let refs = slots
+                    .iter()
+                    .filter(|&(&slot, _)| (REF_LOW_BASE..REF_HIGH_BASE).contains(&slot))
+                    .map(|(&slot, &low)| {
+                        let variable = slot - REF_LOW_BASE;
+                        let high = slots.get(&(REF_HIGH_BASE + variable)).copied().unwrap_or(0.0);
+                        (variable, SavedForm::save(form_from_halves(low, high)))
+                    })
+                    .collect();
+                (SavedForm::save(quest), plain, refs)
+            })
+            .collect();
+        wire.serialize(ser)
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(de: D) -> Result<Locals, D::Error> {
+        Ok(Wire::deserialize(de)?
+            .into_iter()
+            .filter_map(|(quest, plain, refs)| {
+                let quest = quest.load();
+                let mut slots: BTreeMap<u16, f32> = plain.into_iter().collect();
+                for (variable, form) in refs {
+                    if let Some(form) = form.load() {
+                        let (low, high) = form_halves(form);
+                        slots.insert(REF_LOW_BASE + variable, low);
+                        slots.insert(REF_HIGH_BASE + variable, high);
+                    }
+                }
+                Some((quest?, slots))
+            })
+            .collect())
     }
 }

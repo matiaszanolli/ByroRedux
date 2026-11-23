@@ -19,6 +19,7 @@ use byroredux_core::ecs::world::World;
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct FactionCrimeGold {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))]
     by_faction: BTreeMap<u32, (i32, i32)>,
 }
 

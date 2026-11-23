@@ -39,6 +39,7 @@ pub enum FollowerFlag {
 #[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct FollowerState {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))]
     actors: HashMap<u32, FollowerFlags>,
 }
 

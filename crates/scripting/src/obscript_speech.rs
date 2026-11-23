@@ -55,9 +55,11 @@ pub struct ScriptedLine {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
 pub struct SpeakingLine {
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id"))]
     pub topic_form_id: u32,
     /// The INFO being said, one of the topic's, whose result scripts run at the start and end of
     /// the line; `None` for a line with no record behind it.
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::option"))]
     pub info_form_id: Option<u32>,
     pub remaining: f32,
     /// Whether the Begin result script has run.

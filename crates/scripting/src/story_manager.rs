@@ -263,6 +263,7 @@ impl Resource for StoryLocationCursor {}
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct StoryManagerNodeState {
     /// Per node, per pool entry. Empty until the node first fires.
+    #[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))]
     pub nodes: HashMap<u32, SmNodeRuntime>,
 }
 
@@ -359,6 +360,7 @@ pub struct StoryEventFill {
     /// player), captured at dispatch: what the alias refresh re-resolves
     /// after a load or a cell reload gave the actor a new id. Location
     /// slots are not carried — no alias consumes them yet (Phase 3+).
+    #[cfg_attr(feature = "save", serde(with = "stable_reference_forms"))]
     pub reference_forms: [Option<u32>; 2],
 }
 
@@ -399,7 +401,7 @@ impl StoryEventFill {
 /// gave a new id (#5419's liveness probe still guards the rest).
 #[derive(Debug, Default)]
 #[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
-pub struct StoryEventAliasFill(pub HashMap<QuestFormId, StoryEventFill>);
+pub struct StoryEventAliasFill(#[cfg_attr(feature = "save", serde(with = "byroredux_core::stable_form_id::map"))] pub HashMap<QuestFormId, StoryEventFill>);
 
 impl Resource for StoryEventAliasFill {}
 
@@ -3727,5 +3729,22 @@ fn event_data_r1_resolves_and_location_tags_fail_cleanly() {
             "the radiant pool cycles different quests across fires (seeded): \
              started {fired:#X?} of pool {pool:#X?}"
         );
+    }
+}
+
+/// The R1/R2 reference FormIDs saved as stable identities (LMC-SAV-002..004); a slot whose reference belongs to an
+/// absent plugin reads as empty.
+#[cfg(feature = "save")]
+mod stable_reference_forms {
+    use byroredux_core::stable_form_id::StableForms;
+    use serde::{Deserialize, Serialize};
+
+    pub fn serialize<S: serde::Serializer>(forms: &[Option<u32>; 2], ser: S) -> Result<S::Ok, S::Error> {
+        [forms[0].to_wire(), forms[1].to_wire()].serialize(ser)
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(de: D) -> Result<[Option<u32>; 2], D::Error> {
+        let [a, b] = <[<Option<u32> as StableForms>::Wire; 2]>::deserialize(de)?;
+        Ok([Option::from_wire(a).flatten(), Option::from_wire(b).flatten()])
     }
 }
