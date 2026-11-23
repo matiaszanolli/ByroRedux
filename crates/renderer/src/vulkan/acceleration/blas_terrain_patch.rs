@@ -150,6 +150,44 @@ pub struct TerrainPatchBlasSet {
     stats: TerrainPatchBlasStats,
     /// The record path's per-frame working set (#7246).
     frame: PatchBlasFrame,
+    /// What each entry's `content` held before this frame's record, until the frame's submit settles (#7360).
+    staged: StagedPatchContent,
+}
+
+/// The content each patch BLAS held before the frame being recorded wrote its build or refit (#7360).
+///
+/// `entry.content` is the planner's only input for "refit or build", and a record writes it as soon as it
+/// has recorded the op. That is a submit-time fact: when one of `draw_frame`'s tail `Err` sites discards the
+/// command buffer, a first-time BUILD never ran, and the next frame would plan an UPDATE refit of an
+/// acceleration structure that was never built (the skinned set's #3991). The record stages the prior
+/// value here; [`Self::commit`] (after `queue_submit` returns `Ok`) forgets it and [`Self::rollback`]
+/// (a discarded command buffer) hands it back so the next frame plans from what the GPU really holds.
+#[derive(Default)]
+struct StagedPatchContent {
+    prior: Vec<(u32, Option<(TerrainPatchBlasContent, u32)>)>,
+}
+
+impl StagedPatchContent {
+    /// A new frame's record starts from an empty stage: a stage the previous frame never settled (it
+    /// returned before the submit) cannot be undone any more, and holding it would restore stale content.
+    fn begin_frame(&mut self) {
+        self.prior.clear();
+    }
+
+    fn stage(&mut self, mesh: u32, prior: Option<(TerrainPatchBlasContent, u32)>) {
+        self.prior.push((mesh, prior));
+    }
+
+    /// The frame was submitted: what it recorded is the new truth.
+    fn commit(&mut self) {
+        self.prior.clear();
+    }
+
+    /// The frame was discarded: every staged entry's content, newest first so a mesh staged twice ends on
+    /// its oldest value.
+    fn rollback(&mut self) -> impl Iterator<Item = (u32, Option<(TerrainPatchBlasContent, u32)>)> + '_ {
+        self.prior.drain(..).rev()
+    }
 }
 
 /// The patch BLAS record path's per-frame lists, refilled every frame and never freed, so once the first exterior
@@ -330,6 +368,7 @@ impl AccelerationManager {
         let PatchBlasFrame { requests, live, plan, ops, regions, recorded, geometries, ranges, infos, range_refs } =
             frame;
         self.terrain_patch_blas.ready.clear();
+        self.terrain_patch_blas.staged.begin_frame();
         let mut stats = TerrainPatchBlasStats::default();
 
         // Size every first-seen mesh, and drop requests whose entry cannot
@@ -508,6 +547,7 @@ impl AccelerationManager {
                 .entries
                 .get_mut(&request.mesh)
                 .expect("entry checked above");
+            self.terrain_patch_blas.staged.stage(request.mesh, entry.content);
             entry.content = Some(match op {
                 PatchBlasOp::Refit => {
                     stats.refit += 1;
@@ -527,6 +567,29 @@ impl AccelerationManager {
         stats
     }
 
+    /// The frame's command buffer was submitted: its patch BLAS builds and refits are what the GPU holds
+    /// (#7360). Called beside `commit_provisional_skinned_blas`, after `queue_submit` returns `Ok`.
+    pub fn commit_terrain_patch_blas(&mut self) {
+        self.terrain_patch_blas.staged.commit();
+    }
+
+    /// The frame's command buffer was discarded: put every patch BLAS's content back to what it held before
+    /// the record, so the next frame builds (rather than UPDATE-refits) an AS whose build never ran (#7360).
+    /// Returns how many entries were restored.
+    pub fn rollback_terrain_patch_blas(&mut self) -> usize {
+        let set = &mut self.terrain_patch_blas;
+        let mut restored = 0;
+        for (mesh, prior) in set.staged.rollback() {
+            if let Some(entry) = set.entries.get_mut(&mesh) {
+                entry.content = prior;
+                restored += 1;
+            }
+        }
+        // None of this frame's BLAS is a usable answer for the TLAS any more.
+        set.ready.clear();
+        restored
+    }
+
     /// Free every patch BLAS and the scratch buffer (teardown, device idle).
     pub(super) unsafe fn destroy_terrain_patch_blas(
         &mut self,
@@ -543,6 +606,7 @@ impl AccelerationManager {
             scratch.destroy(device, allocator);
         }
         self.terrain_patch_blas.ready.clear();
+        self.terrain_patch_blas.staged.commit();
     }
 }
 
@@ -623,6 +687,52 @@ mod tests {
         );
         use PatchBlasOp::*;
         assert_eq!(ops, vec![Refit, Build, Build, Defer, Refit]);
+    }
+
+    /// #7360 — a discarded frame hands back the content each BLAS held before its record, so a first-time
+    /// BUILD that never ran is planned as a BUILD again, never an UPDATE refit of an unbuilt AS.
+    #[test]
+    fn a_discarded_frames_first_build_is_planned_as_a_build_again() {
+        let (a, b) = (content(1), content(2));
+        // Mesh 10 was never built; mesh 11 held square `a` (3 refits) and is reassigned to `b`.
+        let mut staged = StagedPatchContent::default();
+        staged.begin_frame();
+        staged.stage(10, None);
+        staged.stage(11, Some((a, 3)));
+        let mut contents: std::collections::HashMap<u32, Option<(TerrainPatchBlasContent, u32)>> =
+            [(10, Some((a, 0))), (11, Some((b, 0)))].into_iter().collect();
+
+        // Unrolled, the record's commit makes the next frame refit both.
+        assert_eq!(plan(&[(contents[&10], a), (contents[&11], b)], 4, 600), vec![PatchBlasOp::Refit; 2]);
+
+        for (mesh, prior) in staged.rollback() {
+            contents.insert(mesh, prior);
+        }
+        assert_eq!(contents[&10], None);
+        assert_eq!(contents[&11], Some((a, 3)));
+        assert_eq!(
+            plan(&[(contents[&10], a), (contents[&11], b)], 4, 600),
+            vec![PatchBlasOp::Build, PatchBlasOp::Build],
+            "an unbuilt AS builds again, and a reassigned one rebuilds for its new square"
+        );
+        assert_eq!(staged.rollback().count(), 0, "a rollback settles the stage");
+    }
+
+    #[test]
+    fn a_submitted_frame_forgets_its_stage_and_a_new_record_starts_empty() {
+        let mut staged = StagedPatchContent::default();
+        staged.stage(1, None);
+        staged.commit();
+        assert_eq!(staged.rollback().count(), 0, "a committed frame has nothing to undo");
+        staged.stage(2, None);
+        staged.begin_frame();
+        assert_eq!(staged.rollback().count(), 0, "an unsettled stage is not carried into the next record");
+        // A mesh staged twice in one frame ends on its oldest value.
+        let a = content(1);
+        staged.stage(3, None);
+        staged.stage(3, Some((a, 1)));
+        let restored: Vec<_> = staged.rollback().collect();
+        assert_eq!(restored.last(), Some(&(3, None)));
     }
 
     #[test]

@@ -75,6 +75,7 @@ impl VulkanContext {
         }
         if let Some(ref mut accel) = self.accel_manager {
             accel.commit_provisional_skinned_blas();
+            accel.commit_terrain_patch_blas(); // #7360
         }
         // Only now is the record-time latch a submit-time fact.
         self.skin.state_submitted = self.skin.dispatch_ran;
@@ -99,6 +100,14 @@ impl VulkanContext {
             // build. Abandoning that recording must also prevent UPDATE from
             // assuming the recorded BUILD reached the GPU.
             accel.invalidate_tlas_recording(frame);
+            let patches = accel.rollback_terrain_patch_blas(); // #7360
+            if patches > 0 {
+                log::warn!(
+                    "Frame submit failed after recording {patches} terrain-patch BLAS build/refit(s); \
+                     restored their content so the next frame rebuilds rather than UPDATE-refitting \
+                     an acceleration structure that was never built (#7360)"
+                );
+            }
             let dropped = accel.rollback_provisional_skinned_blas();
             if dropped > 0 {
                 log::warn!(

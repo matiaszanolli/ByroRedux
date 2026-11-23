@@ -1218,6 +1218,40 @@ mod skin_dispatch_ran_ordering_tests {
         );
     }
 
+    /// #7360 — the terrain-patch BLAS content a frame recorded is committed only after `queue_submit`
+    /// returns `Ok` and handed back by the same three tail-`Err` rollbacks as the skin state: otherwise a
+    /// discarded first-time BUILD leaves a never-built AS the next frame refits.
+    #[test]
+    fn the_patch_blas_content_is_settled_with_the_skin_state_after_submit() {
+        let skin = crate::source_scan::production_text(include_str!("skinned_blas_refit.rs"));
+        let (_, promote) = skin
+            .split_once("fn promote_skin_frame_state(")
+            .expect("promote_skin_frame_state must exist");
+        let promote = promote.split_once("\n    }\n").expect("fn body").0;
+        assert!(
+            promote.contains("accel.commit_terrain_patch_blas();"),
+            "the submitted frame commits its patch BLAS content (#7360)"
+        );
+        let (_, rollback) = skin
+            .split_once("fn rollback_skin_frame_state(")
+            .expect("rollback_skin_frame_state must exist");
+        let rollback = rollback.split_once("\n    }\n").expect("fn body").0;
+        assert!(
+            rollback.contains("accel.rollback_terrain_patch_blas()"),
+            "a discarded frame restores its patch BLAS content (#7360)"
+        );
+        // The record stages; only the settle hooks may write the committed state back.
+        let patch = crate::source_scan::production_text(include_str!("../acceleration/blas_terrain_patch.rs"));
+        let (_, record) = patch
+            .split_once("unsafe fn record_patch_blas_frame(")
+            .expect("record_patch_blas_frame must exist");
+        let record = record.split_once("\n    /// The frame's command buffer was submitted").expect("record body").0;
+        assert!(
+            record.contains("staged.begin_frame();") && record.contains("staged.stage(request.mesh, entry.content);"),
+            "the record must stage each entry's prior content before overwriting it (#7360)"
+        );
+    }
+
     /// The record-time latch and the submit-time flag must both be reset at the
     /// top of `draw_frame`, or a bailed frame reports the previous frame's
     /// outcome (#1796 for the first, #3991 for the second).
