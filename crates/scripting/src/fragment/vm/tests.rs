@@ -6435,6 +6435,32 @@ fn message_show_waits_for_its_answer_and_branches_on_it() {
     assert_eq!(run(None), 6, "a box a load took resumes with its default");
 }
 
+/// #7290 — a function whose body waits on a box is a waiting function: called for its value it is
+/// refused ahead of time, as one holding a `Utility.Wait` is, instead of raising the box and then
+/// stopping at run time; called as a statement it runs.
+#[test]
+fn a_function_that_shows_a_box_is_a_wait_for_its_callers() {
+    const SOURCE: &str = "ScriptName QF_VmAsk extends Quest\n\
+        Message Property Question Auto\n\
+        Int Function Ask()\n\
+          Return Question.Show()\n\
+        EndFunction\n\
+        Function Fragment_1()\n\
+          If Ask() == 0\n\
+            Self.SetStage(6)\n\
+          EndIf\n\
+        EndFunction\n\
+        Function Fragment_2()\n\
+          Ask()\n\
+        EndFunction\n";
+    let (script, errors) = byroredux_papyrus::parse_script(SOURCE).unwrap();
+    assert!(errors.is_empty(), "{errors:?}");
+    let script = Arc::new(script);
+    let reason = check_function_reason(Arc::clone(&script), "Fragment_1", None).err().unwrap_or_default();
+    assert!(reason.contains("a wait in a function called for its value"), "{reason}");
+    assert!(check_function_reason(script, "Fragment_2", None).is_ok(), "as a statement it may wait");
+}
+
 /// #7289 — an answered `Message.Show()` run that is ready in a frame whose budget an earlier ready
 /// run spends goes back on the queue. It already took its answer, so it must come back due, not
 /// asking again: asking again read the lost-box default, button 0, in place of the one pressed.

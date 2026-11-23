@@ -1108,6 +1108,10 @@ impl<'l> Checker<'l> {
                 matches!(arg, Arg::Kind(Kind::Num) | Arg::Literal(Expr::IntLit(_) | Expr::FloatLit(_)))
             };
             if arg_kinds.len() <= 9 && arg_kinds.iter().all(numeric) {
+                // #7290 — the run suspends here until the box is answered, as at a `Utility.Wait`:
+                // a function holding it waits, so a caller calling it for its value is refused
+                // (`call_waits`) instead of raising the box and then stopping mid-run.
+                self.waits = true;
                 return Some(Kind::Num);
             }
             return self.fail(|| format!("Message.Show/{} as written", arg_kinds.len()));
