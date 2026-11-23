@@ -65,13 +65,18 @@ pub(crate) fn live_actor_bodies(
     world: &World,
 ) -> FxHashMap<byroredux_physics::RigidBodyHandle, EntityId> {
     let mut owners = FxHashMap::default();
-    if let Some(actors) = world.query::<ActorVitals>() {
-        for (actor, _) in actors.iter() {
-            if world.get::<Dead>(actor).is_none()
-                && let Some(handles) = world.get::<byroredux_physics::RapierHandles>(actor) {
-                    owners.insert(handles.body, actor);
-                }
-        }
+    // #7315 — collect the actors and drop the `ActorVitals` guard before reading `RapierHandles`:
+    // buoyancy holds `RapierHandles` → `WaterContact` and water damage `WaterContact` →
+    // `ActorVitals`, so holding `ActorVitals` across the handle read closes a three-way cycle.
+    let actors: Vec<EntityId> = world
+        .query::<ActorVitals>()
+        .map(|actors| actors.iter().map(|(actor, _)| actor).collect())
+        .unwrap_or_default();
+    for actor in actors {
+        if world.get::<Dead>(actor).is_none()
+            && let Some(handles) = world.get::<byroredux_physics::RapierHandles>(actor) {
+                owners.insert(handles.body, actor);
+            }
     }
     if let Some(colliders) = world.query::<byroredux_physics::ActorColliderOwner>() {
         for (collider, owner) in colliders.iter() {
@@ -334,6 +339,35 @@ mod tests {
         let _wall = world.spawn();
         world.insert(_wall, wall_handles);
         (world, trap, near)
+    }
+
+    /// #7315 — buoyancy holds `RapierHandles` while it takes `WaterContact`
+    /// (`apply_buoyancy_with_scratch`), and water damage holds `WaterContact` while it takes
+    /// `ActorVitals` (`water_damage_system`). The actor-body gather must not hold `ActorVitals`
+    /// while it reads `RapierHandles`, or the three close a cycle. No trap fixture had a
+    /// `WaterContact`, so the lock-order lane (`BYRO_LOCK_ORDER_CHECK=1`) never saw it. The two
+    /// water edges are taken here the way those systems take them, then the trap gather runs.
+    #[test]
+    fn the_actor_body_gather_does_not_close_the_water_lock_cycle() {
+        use byroredux_core::ecs::components::water::WaterContact;
+        let (mut world, _trap, near) = trap_world();
+        world.insert(near, WaterContact::default());
+        {
+            // Buoyancy: `RapierHandles` held, then `WaterContact`.
+            let handles = world.query::<byroredux_physics::RapierHandles>();
+            let _contacts = world.query::<WaterContact>();
+            drop(handles);
+        }
+        {
+            // Water damage: `WaterContact` held, then `ActorVitals`.
+            let contacts = world.query::<WaterContact>();
+            let _vitals = world.query::<ActorVitals>();
+            drop(contacts);
+        }
+        let actor_bodies = live_actor_bodies(&world);
+        let near_body = world.get::<byroredux_physics::RapierHandles>(near).unwrap().body;
+        assert_eq!(actor_bodies.get(&near_body), Some(&near));
+        assert_eq!(actor_bodies.len(), 2, "both live actors, no wall");
     }
 
     /// A live actor whose collider overlaps a scripted Trap-layer body is a new
