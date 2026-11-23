@@ -52,6 +52,9 @@ pub enum ExtenderFamily {
     PapyrusUtil,
     JContainers,
     Shared,
+    /// Declared by the base game's own Papyrus scripts, not by an extender: the engine still executes it through an
+    /// adapter, but a mod calling it depends on no extender. See [`is_base_game_papyrus_function`].
+    BaseGame,
 }
 
 /// Current source-compatibility disposition.

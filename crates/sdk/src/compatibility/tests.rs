@@ -1568,3 +1568,21 @@ fn vanilla_and_unknown_mod_calls_are_not_misclassified() {
         CompatibilityDisposition::Unsupported
     );
 }
+
+/// The Creation Kit wikis' `Game Script` pages list `GetPlayer` and `GetFormFromFile` as base-game functions in Skyrim
+/// and Fallout 4, and `IsPluginInstalled` as base-game in Fallout 4 but an SKSE addition in Skyrim: the first two keep
+/// their engine adapters but are no extender's, the third depends on the game.
+#[test]
+fn base_game_papyrus_functions_are_no_extenders() {
+    for function in ["GetPlayer", "getformfromfile"] {
+        let call = classify_static_call("Game", function).unwrap();
+        assert_eq!((call.family, call.disposition), (ExtenderFamily::BaseGame, CompatibilityDisposition::Native));
+    }
+    assert_eq!(classify_static_call("Game", "GetModCount").unwrap().family, ExtenderFamily::Skse);
+    assert_eq!(classify_static_call("Game", "IsPluginInstalled").unwrap().family, ExtenderFamily::Skse);
+    assert!(is_base_game_papyrus_function("fo4", "game", "IsPluginInstalled"));
+    assert!(!is_base_game_papyrus_function("skyrim", "Game", "IsPluginInstalled"));
+    assert!(is_base_game_papyrus_function("skyrim", "Game", "GetFormFromFile"));
+    assert!(!is_base_game_papyrus_function("skyrim", "Game", "GetModCount"));
+    assert!(!is_base_game_papyrus_function("starfield", "Game", "GetPlayer"), "no source for Starfield");
+}

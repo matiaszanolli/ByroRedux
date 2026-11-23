@@ -93,6 +93,8 @@ struct RootScan {
     notes: Vec<String>,
     papyrus_scripts: usize,
     obscript_scripts: usize,
+    /// Calls to functions the base game's own scripts declare, which the SDK adapts but no extender provides.
+    base_game_calls: usize,
     /// (mechanism, family, function case-folded (Papyrus names are case-insensitive), disposition) → calls.
     calls: BTreeMap<(String, String, String, String), CallTally>,
 }
@@ -108,10 +110,19 @@ impl RootScan {
 
     /// Fold one script's extender findings in, each call under the mechanism the catalog files it as: a script-library
     /// DLL's API (PapyrusUtil, JContainers) is S5, a call the engine has no contract for S4.uncovered, the rest
-    /// S4.covered. Malformed call metadata is unclassified: the scan could not say what the call is.
-    fn add_report(&mut self, script: &str, report: &CompatibilityReport) {
+    /// S4.covered. A base-game function (`Game.GetPlayer`, and per game `Game.IsPluginInstalled` on Fallout 4) is no
+    /// extender call and is only counted. Malformed call metadata is unclassified: the scan could not say what the call
+    /// is.
+    fn add_report(&mut self, game: &str, script: &str, report: &CompatibilityReport) {
         for finding in &report.findings {
             let compatibility = &finding.compatibility;
+            let base_game = compatibility.family == ExtenderFamily::BaseGame
+                || matches!(&finding.call.target, byroredux_pex::CallTarget::StaticType(provider)
+                    if byroredux_sdk::compatibility::is_base_game_papyrus_function(game, provider, &finding.call.function));
+            if base_game {
+                self.base_game_calls += 1;
+                continue;
+            }
             let mechanism = match (compatibility.family, compatibility.disposition) {
                 (ExtenderFamily::PapyrusUtil | ExtenderFamily::JContainers, _) => "S5",
                 (_, CompatibilityDisposition::Unsupported) => "S4.uncovered",
@@ -260,7 +271,7 @@ fn scan_root(
                     scan.notes.push(format!("{relative}: no enabled plugin pairs with it, so it does not open"));
                     continue;
                 }
-                scan_archive(&path, &relative, position, paired_position[lower.as_str()], scan, sources);
+                scan_archive(game, &path, &relative, position, paired_position[lower.as_str()], scan, sources);
             }
             "ini" if top_level && lower.rsplit_once('.').is_some_and(|(stem, _)| plugin_stems.contains(stem)) => {
                 // A plugin-named INI sets game INI values (LMC-SET-001): each key is its own item.
@@ -275,7 +286,7 @@ fn scan_root(
                 if is_papyrus(&lower)
                     && let Ok(bytes) = std::fs::read(&path)
                 {
-                    scan_papyrus(&relative, &bytes, scan);
+                    scan_papyrus(game, &relative, &bytes, scan);
                 }
                 if matches!(classified, Classified::Mechanism(_)) && !lower.ends_with(".dll") && !lower.ends_with(".ini") {
                     sources.entry(lower).or_default().push((position, None));
@@ -306,7 +317,7 @@ fn scan_root(
                     ),
                     (None, None) => continue,
                 };
-                scan.add_report(&label, &report);
+                scan.add_report(game, &label, &report);
             }
         }
     }
@@ -318,6 +329,7 @@ fn plugin_file_name(name: &str) -> String {
 }
 
 fn scan_archive(
+    game: &str,
     path: &Path,
     relative: &str,
     root_position: usize,
@@ -339,7 +351,7 @@ fn scan_archive(
     for (file, entry) in files {
         if is_papyrus(&file) {
             match archive.extract(&entry) {
-                Ok(bytes) => scan_papyrus(&format!("{relative}:{file}"), &bytes, scan),
+                Ok(bytes) => scan_papyrus(game, &format!("{relative}:{file}"), &bytes, scan),
                 Err(error) => scan.notes.push(format!("{relative}:{file}: cannot be extracted: {error}")),
             }
         }
@@ -347,10 +359,10 @@ fn scan_archive(
     }
 }
 
-fn scan_papyrus(label: &str, bytes: &[u8], scan: &mut RootScan) {
+fn scan_papyrus(game: &str, label: &str, bytes: &[u8], scan: &mut RootScan) {
     scan.papyrus_scripts += 1;
     match byroredux_pex::parse(bytes) {
-        Ok(pex) => scan.add_report(label, &byroredux_scripting::compatibility::analyze_pex_compatibility(&pex)),
+        Ok(pex) => scan.add_report(game, label, &byroredux_scripting::compatibility::analyze_pex_compatibility(&pex)),
         Err(error) => scan.unclassified.push(format!("{label}: not a readable compiled script: {error}")),
     }
 }
@@ -431,8 +443,8 @@ fn report_lines(
         }
         if scan.papyrus_scripts + scan.obscript_scripts > 0 {
             lines.push(format!(
-                "  scripts: {} Papyrus, {} ObScript; extender calls:",
-                scan.papyrus_scripts, scan.obscript_scripts
+                "  scripts: {} Papyrus, {} ObScript; {} call(s) to base-game functions the engine adapts; extender calls:",
+                scan.papyrus_scripts, scan.obscript_scripts, scan.base_game_calls
             ));
         }
         for ((id, family, _, compatibility), tally) in &scan.calls {
@@ -507,7 +519,8 @@ fn report_json(
             serde_json::json!({
                 "root": scan.label, "unmanaged": scan.unmanaged, "disabled": scan.disabled, "files": scan.files,
                 "mechanisms": mechanisms, "calls": calls, "papyrus_scripts": scan.papyrus_scripts,
-                "obscript_scripts": scan.obscript_scripts, "not_game_data": scan.not_game_data,
+                "obscript_scripts": scan.obscript_scripts, "base_game_calls": scan.base_game_calls,
+                "not_game_data": scan.not_game_data,
                 "unclassified": scan.unclassified, "notes": scan.notes,
             })
         })

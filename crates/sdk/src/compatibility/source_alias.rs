@@ -312,9 +312,29 @@ pub fn source_alias(provider: &str, function: &str) -> Option<SourceAlias> {
     })
 }
 
+/// Whether `provider.function` is declared by the base game's own Papyrus scripts in `game` (`skyrim` or `fo4`, the
+/// mechanism catalog's game names), so a script calling it needs no extender. Sourced from the Creation Kit wikis'
+/// `Game Script` pages, which list base-game and extender functions under separate headings: `GetPlayer` and
+/// `GetFormFromFile` are base-game in Skyrim (the latter since patch 1.6) and Fallout 4; `IsPluginInstalled` is
+/// base-game in Fallout 4 and an SKSE addition in Skyrim. Starfield has no local source, so nothing is claimed for it.
+pub fn is_base_game_papyrus_function(game: &str, provider: &str, function: &str) -> bool {
+    if !provider.eq_ignore_ascii_case("Game") {
+        return false;
+    }
+    match game {
+        "skyrim" => matches_ignore_ascii_case(function, &["GetPlayer", "GetFormFromFile"]),
+        "fo4" => matches_ignore_ascii_case(function, &["GetPlayer", "GetFormFromFile", "IsPluginInstalled"]),
+        _ => false,
+    }
+}
+
 /// Classify a static Papyrus call by provider type and function name.
-/// Returns `None` for providers that are not known extender APIs.
+/// Returns `None` for providers that are not known extender APIs or engine-adapted base-game functions.
 pub fn classify_static_call(provider: &str, function: &str) -> Option<CompatibilityMatch> {
+    // `Game.GetPlayer` / `Game.GetFormFromFile` are base-game functions in every Papyrus game the sources cover
+    // ([`is_base_game_papyrus_function`]): engine-adapted, but no extender's.
+    let base_game = provider.eq_ignore_ascii_case("Game")
+        && matches_ignore_ascii_case(function, &["GetPlayer", "GetFormFromFile"]);
     if provider.eq_ignore_ascii_case("Game")
         && matches_ignore_ascii_case(
             function,
@@ -335,7 +355,7 @@ pub fn classify_static_call(provider: &str, function: &str) -> Option<Compatibil
         )
     {
         return Some(native(
-            ExtenderFamily::Skse,
+            if base_game { ExtenderFamily::BaseGame } else { ExtenderFamily::Skse },
             if function.eq_ignore_ascii_case("GetPlayer") {
                 WORLD_PROJECTION_SERVICE
             } else {
