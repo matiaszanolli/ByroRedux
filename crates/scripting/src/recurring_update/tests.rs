@@ -84,6 +84,15 @@ fn dt_overshoot_fires_only_once_per_tick() {
     // against future storage refactors.
     crate::event_cleanup_system(&world, 0.0);
     assert!(!world.has::<OnUpdateEvent>(e));
+    // #7301 — nor does it fire again on the frames right after the
+    // stall: the missed fires are dropped, not paid back one per frame.
+    for _ in 0..10 {
+        recurring_update_tick_system(&world, 0.016);
+        assert!(!world.has::<OnUpdateEvent>(e), "no burst after the stall");
+    }
+    // The next fire comes on the subscription's own phase: 5.5 s.
+    recurring_update_tick_system(&world, 0.5 - 0.16 + 0.001);
+    assert!(world.has::<OnUpdateEvent>(e));
 }
 
 #[test]
