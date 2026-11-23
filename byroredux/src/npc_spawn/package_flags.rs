@@ -20,10 +20,11 @@
 
 use std::collections::HashMap;
 
-use byroredux_core::ecs::components::{CellFormId, CellRoot, FindProgress, Traveled};
+use byroredux_core::ecs::components::{CellFormId, CellRoot, FindProgress, FormIdComponent, Traveled};
 use byroredux_core::ecs::resource::Resource;
 use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::World;
+use byroredux_core::form_id::FormId;
 use byroredux_plugin::esm::records::{PackClock, PackRecord};
 
 pub(super) const PKDT_MUST_COMPLETE: u32 = 0x0000_0004;
@@ -36,20 +37,65 @@ const ONCE_PER_DAY_HOURS: f64 = 24.0;
 /// When each `(actor, package)` Once Per Day package was first selected, in game hours since the runtime
 /// began. `NOT_SAVED_BY_DESIGN`: a load restarts the 24-hour block, like the rest of the ambient runtime
 /// state (`AmbientPackageRuntime`); it is cleared before the load's cell reload, whose spawns note their own (#7252).
+///
+/// #7317 — keyed by the actor's placed reference ([`BlockOwner`]), not its `EntityId`: streaming evicts and
+/// respawns an actor under a fresh id (ids are never recycled), and a block keyed by the old id let the
+/// package win again inside its 24 hours (AIP-FLG-001). A stream round trip inside one session keeps the block.
 #[derive(Debug, Default, Clone)]
-pub(crate) struct PackageDayBlocks(HashMap<(EntityId, u32), f64>);
+pub(crate) struct PackageDayBlocks(HashMap<(BlockOwner, u32), f64>);
+
+/// Who a Once Per Day block belongs to: the actor's placed reference when it has one, which a stream
+/// respawn keeps, else the entity. An NPC selects its first package inside its spawn job, before the
+/// caller stamps the reference ([`adopt_entity_day_blocks`] moves those onto it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum BlockOwner {
+    Reference(FormId),
+    Entity(EntityId),
+}
+
+/// The owner of `actor`'s blocks. Reads `FormIdComponent` alone; callers take [`PackageDayBlocks`] after.
+fn block_owner(world: &World, actor: EntityId) -> BlockOwner {
+    world
+        .get::<FormIdComponent>(actor)
+        .map(|form| BlockOwner::Reference(form.0))
+        .unwrap_or(BlockOwner::Entity(actor))
+}
+
+/// Move the blocks noted against `entity` itself onto its placed reference, once the spawn path has stamped
+/// one (`stamp_quest_reference`). The earlier start wins where the reference already holds a block for the
+/// same package (a respawn whose spawn job re-selected it), so the 24 hours run from the first selection.
+pub(crate) fn adopt_entity_day_blocks(world: &World, entity: EntityId) {
+    let BlockOwner::Reference(reference) = block_owner(world, entity) else {
+        return;
+    };
+    let Some(mut blocks) = world.try_resource_mut::<PackageDayBlocks>() else {
+        return;
+    };
+    let moved: Vec<(u32, f64)> = blocks
+        .0
+        .iter()
+        .filter(|((owner, _), _)| *owner == BlockOwner::Entity(entity))
+        .map(|((_, package), first)| (*package, *first))
+        .collect();
+    for (package, first) in moved {
+        blocks.0.remove(&(BlockOwner::Entity(entity), package));
+        let kept = blocks.0.entry((BlockOwner::Reference(reference), package)).or_insert(first);
+        *kept = kept.min(first);
+    }
+}
 
 impl Resource for PackageDayBlocks {}
 
 #[cfg(test)]
 impl PackageDayBlocks {
     /// Note a block directly (tests outside this module, which cannot reach [`note_selected`]).
+    /// `actor`'s own entity key: these tests' actors carry no placed reference.
     pub(crate) fn note(&mut self, actor: EntityId, package: u32, at_hours: f64) {
-        self.0.insert((actor, package), at_hours);
+        self.0.insert((BlockOwner::Entity(actor), package), at_hours);
     }
 
     pub(crate) fn holds(&self, actor: EntityId, package: u32) -> bool {
-        self.0.contains_key(&(actor, package))
+        self.0.contains_key(&(BlockOwner::Entity(actor), package))
     }
 }
 
@@ -109,12 +155,12 @@ fn kept_past_window(world: &World, actor: EntityId, current: Option<u32>, releas
 }
 
 /// Whether a Once Per Day `package` is inside its 24-hour block and not the running package.
-fn once_per_day_blocked(world: &World, actor: EntityId, current: Option<u32>, package: &PackRecord, now: f64) -> bool {
+fn once_per_day_blocked(world: &World, owner: BlockOwner, current: Option<u32>, package: &PackRecord, now: f64) -> bool {
     package.package_flags & PKDT_ONCE_PER_DAY != 0
         && current != Some(package.form_id)
         && world
             .try_resource::<PackageDayBlocks>()
-            .and_then(|blocks| blocks.0.get(&(actor, package.form_id)).copied())
+            .and_then(|blocks| blocks.0.get(&(owner, package.form_id)).copied())
             .is_some_and(|first| now - first < ONCE_PER_DAY_HOURS)
 }
 
@@ -131,9 +177,10 @@ pub(super) fn scan_with_flags<'a>(
     condition_met: impl Fn(&PackRecord) -> bool,
 ) -> Option<&'a PackRecord> {
     let now = now_hours(world);
+    let owner = block_owner(world, actor);
     packages.into_iter().find(|package| {
         (package.scheduled_active_at(clock) || kept_past_window(world, actor, current, release_hold, package))
-            && !once_per_day_blocked(world, actor, current, package, now)
+            && !once_per_day_blocked(world, owner, current, package, now)
             && condition_met(package)
     })
 }
@@ -145,11 +192,12 @@ pub(super) fn note_selected(world: &World, actor: EntityId, package_flags: u32, 
         return;
     }
     let now = now_hours(world);
+    let owner = block_owner(world, actor);
     if let Some(mut blocks) = world.try_resource_mut::<PackageDayBlocks>() {
         // An entry past its 24 hours blocks nothing (`once_per_day_blocked`), so it is dropped here
         // rather than kept for an actor whose cell unloaded long ago (INC7-6: the map only grew).
         blocks.0.retain(|_, first| now - *first < ONCE_PER_DAY_HOURS);
-        let first = blocks.0.entry((actor, package)).or_insert(now);
+        let first = blocks.0.entry((owner, package)).or_insert(now);
         if now - *first >= ONCE_PER_DAY_HOURS {
             *first = now;
         }
@@ -216,7 +264,7 @@ mod tests {
         note_selected(&world, actor, PKDT_ONCE_PER_DAY, 0x20);
         let blocks = &world.resource::<PackageDayBlocks>().0;
         assert_eq!(blocks.len(), 1, "the other actor's expired block is gone");
-        assert!(blocks.contains_key(&(actor, 0x20)));
+        assert!(blocks.contains_key(&(BlockOwner::Entity(actor), 0x20)));
     }
 
     /// AIP-FLG-002 -- a Must Complete package keeps winning past its window until its procedure is done.
@@ -324,5 +372,54 @@ mod tests {
         let packages = [morning(1, 0), always(2)];
         assert_eq!(winner(&world, actor, 9.0, None, &packages), Some(1));
         assert_eq!(winner(&world, actor, 13.0, None, &packages), Some(2));
+    }
+
+    /// The placed reference an actor's `FormIdComponent` names.
+    fn reference(world: &mut World, local: u32) -> FormId {
+        use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+        world.init_resource::<FormIdPool>();
+        world
+            .resource_mut::<FormIdPool>()
+            .intern(FormIdPair { plugin: PluginId::from_filename("FalloutNV.esm"), local: LocalFormId(local) })
+    }
+
+    /// #7317 -- a stream round trip despawns the actor and respawns it under a new `EntityId` (ids are never
+    /// recycled); the Once Per Day block follows its placed reference, so the package does not win again
+    /// inside its 24 hours (AIP-FLG-001).
+    #[test]
+    fn a_once_per_day_block_survives_the_actor_respawning() {
+        let (mut world, actor) = world_at(1, 9.0);
+        let placed = reference(&mut world, 0x1234);
+        world.insert(actor, FormIdComponent(placed));
+        let packages = [morning(1, PKDT_ONCE_PER_DAY), always(2)];
+        assert_eq!(winner(&world, actor, 9.0, None, &packages), Some(1));
+        note_selected(&world, actor, PKDT_ONCE_PER_DAY, 1);
+        world.despawn(actor);
+        let respawned = world.spawn();
+        world.insert(respawned, FormIdComponent(placed));
+        assert_eq!(winner(&world, respawned, 10.0, None, &packages), Some(2), "one hour in: still blocked");
+        // An actor without a reference keeps the entity key.
+        let unplaced = world.spawn();
+        assert_eq!(winner(&world, unplaced, 10.0, None, &packages), Some(1));
+    }
+
+    /// #7317 -- an NPC selects its first package inside its spawn job, before `stamp_quest_reference` gives
+    /// it a `FormIdComponent`, so that block is noted under the entity. The stamp moves it onto the
+    /// reference, and where the reference already holds one (a respawn), the earlier start is kept.
+    #[test]
+    fn a_block_noted_before_the_reference_stamp_moves_onto_it_keeping_the_earlier_start() {
+        let (mut world, actor) = world_at(1, 9.0);
+        let placed = reference(&mut world, 0x1234);
+        let earlier = now_hours(&world) - 5.0;
+        world.resource_mut::<PackageDayBlocks>().0.insert((BlockOwner::Reference(placed), 1), earlier);
+        note_selected(&world, actor, PKDT_ONCE_PER_DAY, 1);
+        note_selected(&world, actor, PKDT_ONCE_PER_DAY, 3);
+        world.insert(actor, FormIdComponent(placed));
+        adopt_entity_day_blocks(&world, actor);
+        let now = now_hours(&world);
+        let blocks = &world.resource::<PackageDayBlocks>().0;
+        assert!(blocks.keys().all(|(owner, _)| *owner != BlockOwner::Entity(actor)), "{blocks:?}");
+        assert_eq!(blocks.get(&(BlockOwner::Reference(placed), 1)), Some(&earlier), "the earlier start wins");
+        assert_eq!(blocks.get(&(BlockOwner::Reference(placed), 3)), Some(&now));
     }
 }
