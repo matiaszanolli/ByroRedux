@@ -47,13 +47,20 @@ What the engine does today with a legacy plugin set (`--master …` `--esm`), th
    ID space it does not own (an injected record). Only those forms are stored; the rest cost one lookup each. The
    provenance rides on the `LoadOrder` (it replaced #5428's SCPT-only last-writer table, `record_winner`), and the log
    line `load-order fold: N plugins, … forms overridden, … injected, in … s (… s of it provenance)` reports it.
+   A deletion (the record header's `0x20` flag, LMC-REC-004) removes the form from every map that holds it, the cell
+   index's included (cells, modelled base objects, pack-ins, texture sets, material swaps), and a deleted reference
+   leaves its cell; `load_order_deletion_tests.rs` measures this on FNV, Skyrim SE and Fallout 4 + UFO4P against a raw
+   record walk.
 4. **The conflict report (LMC-REC-007).** `plugins.conflicts` lists the overridden forms with wins, losses and
    injections per plugin; `plugins.conflicts <formid>` one form's carriers in load order, its winner and the policy;
    and `plugins.conflicts <formid> fields` reads each carrier's record back from its file
    (`crates/plugin/src/esm/raw_record.rs`, which loads only the top-level groups the record type can sit in) and names
    the sub-records the winner changed, added or dropped against it. Each override is judged against the record it
    replaced (LMC-REC-006): it changes it, is identical to it (an ITM), or reverts an earlier plugin's change back to the
-   definer's record. A repeated sub-record is compared as a multiset,
+   definer's record. The winner is the carrier that owns the record: under `merge`, an override identical in every
+   field the merge reads to the record it would replace takes no ownership (LMC-REC-006), so the chain marks it
+   `[no-op]` and names the carrier before it; when `fields` finds bytes differing in such an override, the line says
+   they are in no field the merge reads. A repeated sub-record is compared as a multiset,
    so one entry added to a list is one addition. The comparison is of bytes, so when two files index a shared master
    differently a form-ID field can differ in bytes only, and the line says so. `--plugin-report [formid] [fields]`
    prints the same (with the activation report) without a window: `byroredux --game fnv --master … --plugin-report`.

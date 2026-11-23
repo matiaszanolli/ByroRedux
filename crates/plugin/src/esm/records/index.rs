@@ -69,19 +69,53 @@ macro_rules! map_category_keyed_by_value {
     };
 }
 
+/// A category held by the cell index. `EsmCellIndex::merge_from` folds it, so its merge is a no-op here; its prune is
+/// not (LMC-REC-004): a deleted base record leaves the merged index whichever map holds it. The `cells` row prunes
+/// cells by their own form ID ([`prune_deleted_cells`]); every other row is keyed by form ID. Placements inside a cell
+/// have their own tombstone handling: the REFR walk drops Deleted records before they reach `over` (`walkers.rs`,
+/// #1660), and `CellData::deleted_refs` (#2370) carries removals across masters.
 macro_rules! cell_category {
+    ($label:literal, cells) => {
+        (
+            $label,
+            |index: &EsmIndex| index.cells.cells.len(),
+            |_target: &mut EsmIndex, _source: &mut EsmIndex| {},
+            prune_deleted_cells,
+        )
+    };
     ($label:literal, $field:ident) => {
         (
             $label,
             |index: &EsmIndex| index.cells.$field.len(),
             |_target: &mut EsmIndex, _source: &mut EsmIndex| {},
-            // Placements carry their own tombstone machinery: the REFR walk
-            // drops Deleted records before they reach `over`
-            // (`walkers.rs`, #1660), and `CellData::deleted_refs` (#2370)
-            // propagates removals across masters.
-            |_index: &mut EsmIndex, _deleted: &HashSet<u32>| {},
+            |index: &mut EsmIndex, deleted: &HashSet<u32>| {
+                index.cells.$field.retain(|form_id, _| !deleted.contains(form_id));
+            },
         )
     };
+}
+
+/// LMC-REC-004 — a CELL whose record is deleted leaves the index: interior, exterior and worldspace-persistent cells
+/// alike, keyed by name or grid but identified by their form ID. Its placed references go with it. Deleting plugins
+/// delete those too (DLCCoast.esm deletes interior `001DFB07` and all 29 of its references); a reference that no
+/// deletion covers is logged, because what the original engine does with one is not documented (Phase 0: verify).
+fn prune_deleted_cells(index: &mut EsmIndex, deleted: &HashSet<u32>) {
+    let keep = |cell: &super::super::cell::CellData| {
+        let gone = cell.form_id != 0 && deleted.contains(&cell.form_id);
+        if gone {
+            let live = cell.references.iter().filter(|placed| !deleted.contains(&placed.form_id)).count();
+            if live > 0 {
+                log::warn!("deleted CELL {:08X} ('{}') still held {live} references no deletion covers; they leave with it", cell.form_id, cell.editor_id);
+            }
+        }
+        !gone
+    };
+    let cells = &mut index.cells;
+    cells.cells.retain(|_, cell| keep(cell));
+    for grid in cells.exterior_cells.values_mut() {
+        grid.retain(|_, cell| keep(cell));
+    }
+    cells.worldspace_persistent_cells.retain(|_, cell| keep(cell));
 }
 
 /// #5375 — fold one override plugin's INFO into the topic's composed
@@ -2484,6 +2518,55 @@ mod tests {
             "the tombstone must remove only its own FormID"
         );
         assert!(!master.record_types.contains_key(&DELETED_NPC));
+    }
+
+    /// LMC-REC-004 — the categories the cell index holds prune too. Their prune was a no-op, so a deleted base record
+    /// with a model survived in `cells.statics` (Skyrim SE: Update.esm's `SwordFernCluster03snow` 0006CD7C, Dawnguard's
+    /// `DA13VineCeiling01NoCol` 000BD6A5), a deleted PKIN in `cells.packins` and a deleted CELL in the cell maps
+    /// (Fallout 4: DLCCoast.esm's interior 001DFB07, whose 29 references it deletes too, and its PKIN 001DFB9F).
+    #[test]
+    fn a_deleted_static_pack_in_or_cell_leaves_the_cell_index() {
+        use crate::esm::cell::{CellData, StaticObject};
+        const STAT: u32 = 0x0006_CD7C;
+        const KEPT_STAT: u32 = 0x0006_CD7D;
+        const PATH_FORM: u32 = 0x001D_FB9F;
+        const INTERIOR: u32 = 0x001D_FB07;
+        const EXTERIOR: u32 = 0x0000_3C01;
+        const PERSISTENT: u32 = 0x0000_3C02;
+        let stat = |form_id| StaticObject {
+            form_id,
+            editor_id: String::new(),
+            model_path: "clutter\\fern.nif".into(),
+            record_type: crate::record::RecordType::STAT,
+            light_data: None,
+            addon_data: None,
+            has_script: false,
+            script_instance: None,
+            script_form_id: 0,
+            visible_when_distant: false,
+            destruction: None,
+            door: None,
+        };
+        let cell = |form_id, is_interior| CellData { form_id, is_interior, ..Default::default() };
+
+        let mut master = EsmIndex::default();
+        master.cells.statics.insert(STAT, stat(STAT));
+        master.cells.statics.insert(KEPT_STAT, stat(KEPT_STAT));
+        master.cells.material_path_forms.insert(PATH_FORM, "materials\\a.bgsm".into());
+        master.cells.cells.insert("cell_001dfb07".into(), cell(INTERIOR, true));
+        master.cells.exterior_cells.entry("tamriel".into()).or_default().insert((1, 2), cell(EXTERIOR, false));
+        master.cells.worldspace_persistent_cells.insert("tamriel".into(), cell(PERSISTENT, false));
+
+        let mut dlc = EsmIndex::default();
+        dlc.deleted_record_metadata.extend([STAT, PATH_FORM, INTERIOR, EXTERIOR, PERSISTENT]);
+        master.merge_from(dlc);
+
+        assert!(!master.cells.statics.contains_key(&STAT), "a deleted static leaves `cells.statics`");
+        assert!(master.cells.statics.contains_key(&KEPT_STAT), "and only it");
+        assert!(!master.cells.material_path_forms.contains_key(&PATH_FORM), "every form-keyed cell-index map prunes");
+        assert!(master.cells.cells.is_empty(), "a deleted interior cell leaves the index");
+        assert!(master.cells.exterior_cells["tamriel"].is_empty(), "so does a deleted exterior cell");
+        assert!(master.cells.worldspace_persistent_cells.is_empty(), "and a deleted persistent cell");
     }
 
     /// The other direction, mirroring `record_metadata_merge_honors_delete_

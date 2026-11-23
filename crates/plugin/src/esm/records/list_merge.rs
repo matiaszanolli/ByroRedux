@@ -428,6 +428,18 @@ impl ListMergeRecord {
         self.contributors.len() > 1 || self.legacy_differs
     }
 
+    /// The plugin that owns the record: the last contributor. A later no-op or unchanged override takes no ownership
+    /// (LMC-REC-006), so the owner is not always the last carrier.
+    pub fn owner(&self) -> u32 {
+        *self.contributors.last().expect("a merge record starts with the record it merged from")
+    }
+
+    /// Whether the plugin at `position` overrode the record without taking ownership: a no-op, or an independent
+    /// override that changes nothing (LMC-REC-006).
+    pub fn took_no_ownership(&self, position: u32) -> bool {
+        self.no_ops.contains(&position) || self.unchanged.contains(&position)
+    }
+
     /// How many operations were overruled.
     pub fn overruled(&self) -> usize {
         self.entries.iter().map(|(_, r)| r.overruled.len()).sum::<usize>()

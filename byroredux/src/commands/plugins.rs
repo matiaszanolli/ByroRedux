@@ -8,7 +8,8 @@ use crate::cell_loader::load_order::{ActiveLoadOrder, LoadOrder};
 use byroredux_plugin::esm::records::list_merge::{EntryOp, ListKind, ListMergeRecord, MergePolicy, Resolution};
 use byroredux_plugin::esm::records::Carrier;
 
-/// The override rule the fold applies: the only policy built (LMC-REC-002; `merge`, LMC-REC-003, is not).
+/// The override rule the fold applies to every record that does not merge, and under `--merge-policy legacy` to all
+/// of them (LMC-REC-002).
 const POLICY: &str = "legacy: the last plugin in load order that carries a record wins it whole (LMC-REC-002)";
 
 /// `plugins.activation` — the profile as given, the load order it activated to, every hoisted master and disabled
@@ -209,10 +210,26 @@ fn slot_owner(order: &LoadOrder, form_id: u32) -> Option<usize> {
     order.slots().iter().position(|owner| *owner == slot)
 }
 
+/// The merge record that says who owns `form_id`'s record: the record's own, not the keyword list a base keeps apart
+/// from it, which merges on its own (LMC-REC-003). `None` for a form whose record does not merge.
+fn ownership_record(order: &LoadOrder, form_id: u32) -> Option<&ListMergeRecord> {
+    order.list_merge().records(form_id).find(|record| record.kind != ListKind::ObjectKeywords)
+}
+
+/// The index in `carriers` of the carrier whose record the fold kept: the last one, unless the merge left the
+/// overrides after it without ownership (LMC-REC-006).
+fn owning_carrier(record: Option<&ListMergeRecord>, carriers: &[Carrier]) -> usize {
+    let last = carriers.len().saturating_sub(1);
+    record.and_then(|record| carriers.iter().rposition(|carrier| carrier.plugin == record.owner())).unwrap_or(last)
+}
+
 /// One carrier chain, `A → B → C (wins)`, a deletion marked; `C (merged)` when the fold merged the form's record
-/// rather than keeping the last one (LMC-REC-003).
+/// rather than keeping the last one (LMC-REC-003); `B (wins) → C [no-op]` when C's override took no ownership
+/// (LMC-REC-006).
 fn chain(order: &LoadOrder, form_id: u32, carriers: &[Carrier]) -> String {
-    let last = if order.list_merge().records(form_id).any(|record| record.is_merged()) { " (merged)" } else { " (wins)" };
+    let record = ownership_record(order, form_id);
+    let owner = owning_carrier(record, carriers);
+    let kept = if order.list_merge().records(form_id).any(|record| record.is_merged()) { " (merged)" } else { " (wins)" };
     carriers
         .iter()
         .enumerate()
@@ -221,8 +238,12 @@ fn chain(order: &LoadOrder, form_id: u32, carriers: &[Carrier]) -> String {
             if carrier.deletes {
                 text.push_str(" [deletes]");
             }
-            if index + 1 == carriers.len() {
-                text.push_str(last);
+            if index == owner {
+                text.push_str(kept);
+            } else if index > owner {
+                // Every override after the owner took no ownership: it is a no-op, or changes nothing.
+                let no_op = record.is_some_and(|record| record.no_ops.contains(&carrier.plugin));
+                text.push_str(if no_op { " [no-op]" } else { " [changes nothing]" });
             }
             text
         })
@@ -249,15 +270,12 @@ fn summary_lines(order: &LoadOrder, record_type: impl Fn(u32) -> Option<[u8; 4]>
     let mut wins = vec![0usize; order.len()];
     let mut losses = vec![0usize; order.len()];
     let mut injects = vec![0usize; order.len()];
-    for (_, carriers) in provenance.overridden() {
-        if let Some((last, rest)) = carriers.split_last() {
-            if let Some(count) = wins.get_mut(last.plugin as usize) {
+    for (form_id, carriers) in provenance.overridden() {
+        let owner = owning_carrier(ownership_record(order, form_id), carriers);
+        for (index, carrier) in carriers.iter().enumerate() {
+            let counts = if index == owner { &mut wins } else { &mut losses };
+            if let Some(count) = counts.get_mut(carrier.plugin as usize) {
                 *count += 1;
-            }
-            for carrier in rest {
-                if let Some(count) = losses.get_mut(carrier.plugin as usize) {
-                    *count += 1;
-                }
             }
         }
     }
@@ -316,11 +334,14 @@ fn form_lines(order: &LoadOrder, form_id: u32, record_type: Option<[u8; 4]>) -> 
         merged.into_iter().for_each(|record| lines.extend(merge_lines(order, record)));
         return lines;
     }
-    let winner = carriers.last().expect("a carrier list is never empty");
+    let owner = owning_carrier(ownership_record(order, form_id), carriers);
+    let winner = carriers[owner];
     lines.push(format!(
-        "winner: {}{}; policy: {POLICY}",
+        "winner: {}{}; policy: {}",
         plugin_name(order, winner.plugin as usize),
-        if winner.deletes { ", which deletes it" } else { "" }
+        if winner.deletes { ", which deletes it" } else { "" },
+        // The later overrides kept it from winning the record whole only because the merge judged them (LMC-REC-006).
+        if owner + 1 < carriers.len() { MERGE_POLICY } else { POLICY }
     ));
     // A record the merge left as `legacy` keeps it can still have had overrides that took no part.
     for record in order.list_merge().records(form_id) {
@@ -335,14 +356,15 @@ fn ownership_lines(order: &LoadOrder, record: &ListMergeRecord) -> Vec<String> {
     let mut lines = Vec::new();
     if !record.no_ops.is_empty() {
         lines.push(format!(
-            "no-op: {} — identical to the record it would replace, so it takes no ownership (LMC-REC-006)",
+            "no-op: {} — identical, in every field the merge reads, to the record it would replace, so it takes no \
+             ownership (LMC-REC-006)",
             names(&record.no_ops)
         ));
     }
     if !record.unchanged.is_empty() {
         lines.push(format!(
-            "changes nothing: {} — identical to the record it overrides, so under merge it undoes nothing; under legacy \
-             it would win the record whole",
+            "changes nothing: {} — identical, in every field the merge reads, to the record it overrides, so under \
+             merge it undoes nothing; under legacy it would win the record whole",
             names(&record.unchanged)
         ));
     }
@@ -454,6 +476,8 @@ fn field_lines(order: &LoadOrder, paths: &[String], form_id: u32, record_type: O
     let records: Vec<_> = read.iter().map(|result| result.as_ref().ok().map(|(record, _)| record.clone())).collect();
     let verdicts = chain_verdicts(&records);
     let name = |index: usize| plugin_name(order, carriers[index].plugin as usize);
+    let merge_record = ownership_record(order, form_id);
+    let no_op = |plugin: u32| merge_record.is_some_and(|record| record.no_ops.contains(&plugin));
     let mut lines = vec!["fields: each override against the record it replaced (sub-records compared by bytes):".to_owned()];
     if let Err(error) = &read[0] {
         lines.push(format!("  {}: could not read it: {error}", name(0)));
@@ -470,7 +494,15 @@ fn field_lines(order: &LoadOrder, paths: &[String], form_id: u32, record_type: O
         let text = match verdict {
             OverrideVerdict::Identical => "identical: an override that changes nothing (ITM, LMC-REC-006)".to_owned(),
             OverrideVerdict::Reverts => format!("reverts {}'s change: equal to {}'s record (LMC-REC-006)", name(index - 1), name(0)),
-            OverrideVerdict::Changes(diffs) => diffs.iter().map(ToString::to_string).collect::<Vec<_>>().join(", "),
+            OverrideVerdict::Changes(diffs) => {
+                let mut text = diffs.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
+                // The merge reads decoded fields, these are bytes: a difference in a field no decoder reads leaves the
+                // merge's no-op verdict standing, and the report says which of the two this is.
+                if no_op(carriers[index].plugin) {
+                    text.push_str(" — in no field the merge reads, so the merge counts it a no-op (LMC-REC-006)");
+                }
+                text
+            }
         };
         let caveat = match (&read[index], &read[index - 1]) {
             (Ok((_, masters)), Ok((_, replaced_masters)))
@@ -516,6 +548,50 @@ mod tests {
         let lines = form_lines(&order, 0x0100_0001, Some(*b"STAT")).join("\n");
         assert!(lines.contains("carried by deadmoney.esm alone: no conflict"), "{lines}");
         assert_eq!(order.slots()[1], GlobalSlot::Regular(1));
+    }
+
+    /// LMC-REC-006 in the report (LMC-REC-007): an override the merge judged a no-op takes no ownership, so the report
+    /// names the carrier before it the winner, marks the no-op, and counts the win where the record stayed. Found on
+    /// Gun Runners' Arsenal's frag grenade (WEAP 00004330), whose DNAM differs from FalloutNV's only in Attack Shots/Sec,
+    /// a field no decoder reads: the report called GRA the winner and, a line later, an override with no ownership.
+    #[test]
+    fn a_no_op_override_is_not_named_the_winner() {
+        use byroredux_plugin::esm::records::container::{LeveledEntry, LeveledList};
+        use byroredux_plugin::esm::records::list_merge::ListMerge;
+        use byroredux_plugin::esm::records::{EsmIndex, FoldProvenance};
+        const LIST: u32 = 0x0000_0100;
+        let list = |forms: &[u32]| LeveledList {
+            form_id: LIST,
+            editor_id: "LItemSwords".into(),
+            chance_none: 0,
+            flags: 0,
+            entries: forms.iter().map(|&form_id| LeveledEntry { level: 1, form_id, count: 1 }).collect(),
+        };
+        // DeadMoney adds a shield to FalloutNV's list; MyMod, mastering both, carries DeadMoney's list unchanged.
+        let lists = [list(&[0xA01]), list(&[0xA01, 0xA02]), list(&[0xA01, 0xA02])];
+        let depends_on = |a: u32, b: u32| b < a;
+        let (mut merged, mut provenance, mut merge) = (EsmIndex::default(), FoldProvenance::default(), ListMerge::new(MergePolicy::Merge));
+        for (position, record) in lists.into_iter().enumerate() {
+            let mut index = EsmIndex::default();
+            index.record_types.insert(LIST, *b"LVLI");
+            index.leveled_items.insert(LIST, record);
+            provenance.note_plugin(position, &index, &merged, |id| Some((id >> 24) as usize));
+            let pending = merge.note_plugin(position, &index, &merged, &provenance, &depends_on);
+            merged.merge_from(index);
+            pending.apply(&mut merged);
+        }
+        let mut order = LoadOrder::all_regular(vec!["falloutnv.esm".into(), "deadmoney.esm".into(), "mymod.esp".into()]);
+        order.set_fold(provenance, merge);
+
+        let lines = form_lines(&order, LIST, Some(*b"LVLI")).join("\n");
+        assert!(lines.contains("carriers in load order: falloutnv.esm → deadmoney.esm (wins) → mymod.esp [no-op]"), "{lines}");
+        assert!(lines.contains("winner: deadmoney.esm; policy: merge"), "{lines}");
+        assert!(lines.contains("no-op: mymod.esp — identical, in every field the merge reads, to the record it would replace"), "{lines}");
+
+        let lines = summary_lines(&order, |_| Some(*b"LVLI"));
+        let row = |name: &str| lines.iter().find(|line| line.contains(name)).unwrap().split_whitespace().skip(2).collect::<Vec<_>>().join(" ");
+        assert_eq!(row("deadmoney.esm"), "1 0 0", "{lines:?}");
+        assert_eq!(row("mymod.esp"), "0 1 0", "{lines:?}");
     }
 
     /// The summary counts each plugin's wins, losses and injections and lists the overridden forms.
