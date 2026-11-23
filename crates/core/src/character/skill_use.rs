@@ -1,12 +1,14 @@
 //! Classic-TES skill-use experience: the cost of a rank, and banking.
 //!
 //! The arithmetic half of Oblivion's skill-use leveling (PRD
-//! `docs/prd/oblivion-skill-use-leveling.md` §5.1, decoded from
-//! `Oblivion.exe` in `docs/engine/skill-use.md` §1). Pure data and functions:
-//! no ECS, no game branches. The host supplies the skill's value, its banked
-//! experience and its [`SkillClass`], and gets back the ranks reached.
+//! `docs/prd/oblivion-skill-use-leveling.md` §5.1; `docs/engine/skill-use.md`
+//! §1 says which rule each source settles and which are the engine's own
+//! choices, #7331). Pure data and functions: no ECS, no game branches. The
+//! host supplies the skill's value, its banked experience and its
+//! [`SkillClass`], and gets back the ranks reached.
 //!
-//! The cost a skill at value `L` needs to rise by one (`0x548030`):
+//! The cost a skill at value `L` needs to rise by one (CS *fSkillUseExp*;
+//! UESP *Oblivion:Increasing Skills*, "Skill Experience"):
 //!
 //! ```text
 //! (factor · L) ^ exp · (specialization ? spec_mult : 1) · (major ? major_mult : minor_mult)
@@ -22,7 +24,7 @@ pub const OBLIVION_SKILL_AV_FIRST: u32 = 12;
 /// See [`OBLIVION_SKILL_AV_FIRST`].
 pub const OBLIVION_SKILL_AV_LAST: u32 = 32;
 
-/// A skill never rises past 100 by use (`Oblivion.exe` `0x668b30`).
+/// A skill never rises past 100 by use (UESP *Oblivion:Increasing Skills*: "the maximum value of 100").
 pub const SKILL_USE_CAP: u16 = 100;
 
 /// How a skill relates to the player's class: in its specialization, among
@@ -66,9 +68,10 @@ pub struct SkillUseCosts {
 }
 
 impl SkillUseCosts {
-    /// Oblivion's resolved settings: `Oblivion.esm` authors Factor 0.35 and
-    /// Exp 1.5; the executable's defaults supply Minor 1.25, Major 0.75 and
-    /// Spec 0.75 (`docs/engine/skill-use.md` §1, V1).
+    /// Oblivion's settings at their documented defaults: CS *fSkillUseFactor* 0.35, *fSkillUseExp* 1.5,
+    /// *fSkillUseMinorMult* 1.25, *fSkillUseMajorMult* 0.75 and *fSkillUseSpecMult* 0.75 (UESP *Oblivion:
+    /// Increasing Skills* gives the same five). `Oblivion.esm` authors Factor and Exp; a load order's
+    /// `GMST`s overlay all five through [`super::LevelingModel::with_gmst`].
     pub const OBLIVION: Self = Self {
         factor: 0.35,
         exp: 1.5,
@@ -78,8 +81,10 @@ impl SkillUseCosts {
     };
 
     /// The experience a skill at value `level` needs to rise by one. The
-    /// original stores 1.0 when the computed cost is 0 (`0x663c50`), so a
-    /// skill at 0 still needs something.
+    /// documented formula gives 0 for a skill at 0; the engine charges 1.0
+    /// there (and for a non-finite result), so one use never raises a skill
+    /// from nothing to 1 for free. An engine choice: no source covers a skill
+    /// at 0 (#7331).
     #[must_use]
     pub fn cost(&self, level: u16, class: SkillClass) -> f32 {
         let base = (self.factor * f32::from(level)).powf(self.exp);
@@ -103,13 +108,12 @@ impl SkillUseCosts {
 
     /// Bank `amount` experience against a skill and return what it reached.
     ///
-    /// Mirrors the original's entry (`0x668b30`): a skill at 100 or more
-    /// banks nothing; otherwise `banked += amount`, and each time the cost is
-    /// **strictly below** the banked experience the skill rises by one and the
-    /// cost is paid, the surplus staying banked. (The original ranks once per
-    /// call; this loops it, as the engine's single entry point returns every
-    /// rank reached, OSL-XP-001.) A non-positive or non-finite `amount` banks
-    /// nothing.
+    /// A skill at 100 or more banks nothing (the documented maximum, [`SKILL_USE_CAP`]; the host's gate
+    /// reads the current value, #7210). Otherwise `banked += amount`, and each time the cost is **strictly
+    /// below** the banked experience the skill rises by one and the cost is paid, the surplus staying
+    /// banked, repeating while the bank covers the next cost (OSL-XP-001 returns every rank reached). The
+    /// documented sources give the cost, not this boundary, the surplus or the repeat: those three are
+    /// engine choices (#7331). A non-positive or non-finite `amount` banks nothing.
     #[must_use]
     pub fn bank(&self, value: u16, banked: f32, class: SkillClass, amount: f32) -> SkillBank {
         let mut out = SkillBank {
@@ -135,8 +139,7 @@ impl SkillUseCosts {
 }
 
 /// The experience each Oblivion skill's action earns: the two use values of the skill's `SKIL` record
-/// (`DATA`: value 1, value 2), which UESP's *Increasing Skills* "Exp./Action" column lists and which
-/// `Oblivion.exe` reads through `0x668c30(skill, usage, mult)` (`docs/engine/skill-use.md` §1). Held as
+/// (`DATA`: value 1, value 2), which UESP's *Increasing Skills* "Exp./Action" column lists. Held as
 /// data (OSL-USE-001), by actor-value code in `CLAS` order (Armorer 12 first, Speechcraft 32 last; the
 /// roster's names live once, in the plugin's `OBLIVION_ACTOR_VALUES`). The real-data test
 /// `oblivion_skill_use_values_match_the_masters_skil_records` checks it against `Oblivion.esm`. Each
@@ -166,8 +169,10 @@ pub const OBLIVION_SKILL_USE_VALUES: [(f32, f32); 21] = [
 ];
 
 /// The experience of one use of the skill with actor-value code `skill_av` (12 to 32): `use value[usage]`
-/// (`usage` 0 or 1), times `mult` when `mult` is not 0 (`0x668c30`); `None` for a code outside the 21
-/// skills or a result not above 0 (the original drops it).
+/// (`usage` 0 or 1), times `mult` when `mult` is not 0; `None` for a code outside the 21 skills or a
+/// result not above 0. The `mult` scaling is the engine's call shape (an engine choice, #7331): every fed
+/// emitter passes 0, and an action whose amount scales (UESP's Mercantile) decides its own rule when its
+/// emitter is built.
 #[must_use]
 pub fn skill_use_amount(skill_av: u32, usage: u8, mult: f32) -> Option<f32> {
     let &(first, second) = OBLIVION_SKILL_USE_VALUES.get(skill_av.checked_sub(OBLIVION_SKILL_AV_FIRST)? as usize)?;
@@ -311,7 +316,7 @@ mod tests {
     /// The page's worked examples (Alchemy for four standard classes). Its
     /// 19.12 is the only value off the formula by more than a rounding step
     /// (the exact value is 19.14; the same page's Nightblade 31.89 is 31.90),
-    /// so the tolerance is 0.02: the executable's formula is the source.
+    /// so the tolerance is 0.02: the formula (CS *fSkillUseExp*) is the source, not the rounded table.
     #[test]
     fn the_worked_examples_hold() {
         let c = SkillUseCosts::OBLIVION;
@@ -348,8 +353,8 @@ mod tests {
         assert_eq!(out.value, *out.ranks.last().unwrap());
     }
 
-    /// `0x668bc8`: the rank-up needs the cost strictly below the experience;
-    /// an equal value does not rank.
+    /// The engine's rank-up boundary (#7331): the cost must be strictly below
+    /// the experience; an equal value does not rank.
     #[test]
     fn an_equal_cost_does_not_rank() {
         let c = SkillUseCosts {
@@ -398,7 +403,7 @@ mod tests {
         assert_eq!(c.bank(10, f32::NAN, BASE, 1.0).banked, 1.0);
     }
 
-    /// `0x663c50` stores 1.0 when the cost is 0 (a skill at 0).
+    /// The engine charges 1.0 when the formula gives 0 (a skill at 0; #7331).
     #[test]
     fn a_zero_cost_is_one() {
         assert_eq!(SkillUseCosts::OBLIVION.cost(0, BASE), 1.0);

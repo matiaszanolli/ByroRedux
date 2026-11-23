@@ -1064,12 +1064,13 @@ storage or any of these contributor formulas exist in the engine yet.
 Oblivion uses skill-use leveling rather than character XP: using a skill banks experience, enough experience raises the skill by one, and
 a level becomes available after 10 increases of major skills (`iLevelUpSkillCount`), applied by a night's sleep. At level-up the player
 raises three attributes; each receives a bonus from the number of governed skill increases tallied for it, **counting every governed
-skill's increase, not only major skills** (V13: the tally runs on every rank-up, the major count only on major ones): 0 increases give +1,
-1–4 give +2, 5–7 +3, 8–9 +4, 10 or more +5 (`iLevelUp01Mult` to `iLevelUp10Mult`, `0x5480a0`). The experience a skill needs from value `L` is
+skill's increase, not only major skills** (UESP *Oblivion:Leveling*, "major *and* minor"): 0 increases give +1, 1–4 give +2, 5–7 +3,
+8–9 +4, 10 or more +5 (UESP's table; the settings are `iLevelUp01Mult` to `iLevelUp10Mult`). The experience a skill needs from value `L` is
 `(fSkillUseFactor · L) ^ fSkillUseExp`, times `fSkillUseSpecMult` for a specialization skill, times `fSkillUseMajorMult` for a major skill
-or `fSkillUseMinorMult` otherwise (executable defaults 1, 1, 0.75, 0.75, 1.25; `Oblivion.esm` authors Factor 0.35 and Exp 1.5).
-`fSkillUseCurve` 1.95 is **Skyrim's** setting, not Oblivion's. Source: [UESP Oblivion:
-Leveling](https://en.uesp.net/wiki/Oblivion:Leveling) and the executable decode in [skill-use.md](skill-use.md) (#7049, V1, V2, V13).
+or `fSkillUseMinorMult` otherwise (CS *fSkillUseExp*; CS defaults 0.35, 1.5, 0.75, 0.75, 1.25, which `Oblivion.esm`'s Factor 0.35 and
+Exp 1.5 repeat). `fSkillUseCurve` 1.95 is **Skyrim's** setting, not Oblivion's. Sources: [UESP Oblivion:
+Leveling](https://en.uesp.net/wiki/Oblivion:Leveling), UESP *Oblivion:Increasing Skills* and the CS `fSkillUse*` pages; the rules no
+documented source settles are marked as engine choices in [skill-use.md](skill-use.md) §1 and §5 (#7331).
 **Built (#7050-#7056):** the [Oblivion skill-use leveling PRD](../prd/oblivion-skill-use-leveling.md) and
 [skill-use.md](skill-use.md); 16 of the 21 skills are fed, the level is taken at a completed sleep, and the
 level-up settings above are read from the load order (#7196).

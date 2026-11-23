@@ -11,10 +11,11 @@
 //!   slot is empty. The weights are documented; the roll order, the shield as remainder and the attempt
 //!   count are an engine choice ([`ARMOR_HIT_ATTEMPTS`], #7310).
 //!
-//! * **seconds of a stance** (`stance_use_system`, `Oblivion.exe` `0x671620`): each full second the player
-//!   moves while sneaking and undetected feeds Sneak (usage 0), while swimming Athletics (usage 1), while
-//!   running Athletics (usage 0), one at a time in that order; the original's one-second timer accumulates
-//!   only while its stance holds and resets when it fires;
+//! * **seconds of a stance** (`stance_use_system`): each full second the player moves while sneaking and
+//!   undetected feeds Sneak (usage 0), while swimming Athletics (usage 1), while running Athletics (usage 0).
+//!   The per-second unit is UESP's (*Oblivion:Increasing Skills*: "time (secs) spent running", "…swimming",
+//!   "…undetected while moving in sneak mode"). One stance at a time, in that order, and a timer that
+//!   accumulates only while its stance holds and resets when it fires, are engine choices (#7331);
 //! * **a jump** (`on_jump`) feeds Acrobatics (usage 0): UESP's "each jump or dodge".
 //!
 //! Emitters only queue ([`byroredux_scripting::oblivion_skill_use::queue_skill_use`]); nothing here touches
@@ -149,8 +150,8 @@ pub(crate) struct StanceTimers {
 impl byroredux_core::ecs::resource::Resource for StanceTimers {}
 
 /// Advance one stance timer: it counts `dt` while `active` and, on reaching a second, fires and resets
-/// (`0x671855`: `1.0 <= timer` fires, otherwise the frame time is added). A stance that does not hold
-/// leaves the timer where it was.
+/// (`1.0 <= timer` fires, otherwise the frame time is added). A stance that does not hold leaves the timer
+/// where it was. UESP gives the per-second unit; the timer's shape is an engine choice (#7331).
 pub(crate) fn stance_step(timer: &mut f32, active: bool, dt: f32) -> bool {
     if !active {
         return false;
@@ -164,7 +165,8 @@ pub(crate) fn stance_step(timer: &mut f32, active: bool, dt: f32) -> bool {
 }
 
 /// Which stance the player holds this frame: sneaking and undetected (Sneak), swimming (Athletics, usage 1),
-/// or running (Athletics, usage 0). The first that holds wins, as the executable's branches do.
+/// or running (Athletics, usage 0). The first that holds wins: an engine choice, since no source says
+/// whether two stances can feed in one second (#7331).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Stance {
     Sneak,
@@ -263,8 +265,9 @@ pub(crate) struct LevelNotices {
 
 impl byroredux_core::ecs::resource::Resource for LevelNotices {}
 
-/// The hint the original shows with the tenth major increase: `sMeditate`, an executable default that
-/// `Oblivion.esm` does not author (#7049 V12).
+/// The hint shown with the tenth major increase (UESP *Oblivion:First Time Players*: a message "suggesting
+/// that you rest and meditate on what you have learned"). `Oblivion.esm` does not author the `sMeditate`
+/// setting that carries it (#7049 V12), so the engine supplies the wording.
 const MEDITATE: &str = "You should rest and meditate on what you've learned.";
 
 /// UESP *Oblivion: Leveling*, Notes: what an attempt to level with every attribute at 100 says.
@@ -272,8 +275,8 @@ const PERFECTION: &str = "Perfection cannot be improved upon. Your attributes ar
 
 /// #7209 — the level-up flavour text UESP *Oblivion:Leveling* documents (Messages): levels 2 to 20, then one message for
 /// every level from 21 on. `Oblivion.esm` authors only nine of them as `sLevelUp{N}` settings (4, 6, 11, 12, 15, 17,
-/// 18, 19, 20, the same text); the rest are executable defaults no file in the load order carries, so the documented
-/// table stands in for them, as [`PERFECTION`] and [`MEDITATE`] do.
+/// 18, 19, 20, the same text); no file in the load order carries the rest, so the documented table stands in
+/// for them, as [`PERFECTION`] and [`MEDITATE`] do.
 const LEVEL_UP_MESSAGES: [&str; 20] = [
     "You realize that all your life you have been coasting along as if you were in a dream. Suddenly, facing the trials of the last few days, you have come alive.",
     "You realize that you are catching on to the secret of success. It's just a matter of concentration.",
@@ -614,8 +617,8 @@ mod tests {
         assert!(queued(&world).is_empty());
     }
 
-    /// `0x671855`: the timer counts only while its stance holds, fires at a second and restarts; an
-    /// interrupted stance keeps its count.
+    /// The engine's stance timer (#7331): it counts only while its stance holds, fires at a second and
+    /// restarts; an interrupted stance keeps its count.
     #[test]
     fn a_stance_timer_fires_each_second_of_its_stance() {
         let mut timer = 0.0;
@@ -629,7 +632,7 @@ mod tests {
         assert_eq!(paused, 0.5, "a stance that does not hold leaves the count");
     }
 
-    /// The executable's branch order: sneaking undetected, else swimming, else running (never while
+    /// The engine's stance order (#7331): sneaking undetected, else swimming, else running (never while
     /// sneaking); nothing while standing still.
     #[test]
     fn the_stance_follows_the_branch_order() {

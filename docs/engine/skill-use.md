@@ -1,14 +1,29 @@
 # Oblivion skill use — what the original does, and the emitter contract
 
 **Status**: Phase 0 design (#7049, 2026-11-18) of the [Oblivion skill-use leveling PRD](../prd/oblivion-skill-use-leveling.md); **Phase 1 built (#7050)**: §1's arithmetic and §4's contract run (`crates/core/src/character/skill_use.rs`, `crates/scripting/src/oblivion_skill_use.rs`); **Phase 2 built (#7051)**: the emitters in `byroredux/src/skill_use_emit.rs` feed 16 of the 21 skills (§4; 8 at Phase 2, the rest with #7053-#7056); **Phase 3 built (#7052)**: the level-up, the attribute picks and the completed-sleep trigger (`crates/scripting/src/oblivion_skill_use.rs`).
-It records what `Oblivion.exe` does when the player uses a skill (OSL-XP-007's action census, V3 and V4), and the contract every emitter in
-the engine follows. The level-up, the attribute bonus and the sleep trigger are in the PRD; the Health term is in
+It records the rules of the original's skill use (OSL-XP-007's action census, V3 and V4), where each rule comes from, and the contract every
+emitter in the engine follows. **Sources** (#7331, under the owner's 2026-11-20 rule that a decoded executable is not a source): every rule
+cites the CS wiki or UESP, or is marked **engine choice** where no documented source settles it. Phase 0 (#7049) first read the rules
+from `Oblivion.exe`; the addresses that remain below are historical notes from that decode, never the source of a rule. The level-up, the attribute bonus and the sleep trigger are in the PRD; the Health term is in
 [charal-oblivion-ruleset.md](charal-oblivion-ruleset.md). Addresses are `Oblivion.exe` 1.2.0.416 (sha256 `a8f31384…dc6`, image base
 `0x400000`). The raw notes are `.claude/issues/7049/INVESTIGATION.md`.
 
 ## 1. The original's model
 
-Three routines, one behind the other (`this` is `PlayerCharacter`, `[0xb333c4]`):
+| Rule | Source |
+|---|---|
+| An action earns its skill's `SKIL` use value: usage 0 reads value 1, usage 1 value 2 | UESP *Oblivion:Increasing Skills* "Exp./Action" column; the `SKIL` `DATA` (below) |
+| The cost of the next rank: `(fSkillUseFactor · L) ^ fSkillUseExp`, times `fSkillUseMajorMult` or `fSkillUseMinorMult`, times `fSkillUseSpecMult` for a specialization skill | CS *fSkillUseExp*; UESP *Increasing Skills*, "Skill Experience" |
+| Defaults Factor 0.35, Exp 1.5, Minor 1.25, Major 0.75, Spec 0.75 | CS *fSkillUseFactor*, *fSkillUseExp*, *fSkillUseMinorMult*, *fSkillUseMajorMult*, *fSkillUseSpecMult* |
+| A skill rises no further than 100 | UESP *Increasing Skills*: "the maximum value of 100" |
+| A rank-up raises the skill's base by one and counts toward the level (ten major points) and the governing attribute's bonus | UESP *Oblivion:Leveling* |
+| The banking gate reads the skill's current value, Fortify included | owner decision 2026-11-22 (#7210) |
+| The rank comes when the cost is **strictly below** the banked experience; the surplus stays banked; one call repeats while the bank covers the next cost | **engine choice** (#7331) |
+| A skill at 0 (where the formula gives 0) costs 1.0 | **engine choice** (#7331) |
+| An emitter's `mult` scales the amount when it is not 0 | **engine choice** (#7331); every fed emitter passes 0 |
+| `AdvancePCSkill` / `ModPCSkill` clear the banked experience | CS *ModPCSkill* (PRD Q5); owner decision 2026-11-23 (#7310) |
+
+The Phase 0 decode (historical) read three routines, one behind the other (`this` is `PlayerCharacter`, `[0xb333c4]`):
 
 | Routine | Does |
 |---|---|
@@ -16,15 +31,12 @@ Three routines, one behind the other (`this` is `PlayerCharacter`, `[0xb333c4]`)
 | `0x668b30(skill, amount, record, flag)` | **a skill at 100 or more banks nothing** (`GetAV(skill) >= 100 → return`); otherwise `exp += amount`, and when the skill's cost is **strictly below** the experience, calls the rank-up once |
 | `0x668070(record, …)` | the rank-up: `exp = max(exp − cost, 0)` (a surplus stays banked), the skill's **base** value `+ 1`, the cost recomputed, the attribute tally and the major count updated, the level made pending at the tenth major increase |
 
-The engine gates banking the same way (#7210, owner decision 2026-11-22): `bank_skill_use` reads the skill's **current** value, Fortify included, and banks nothing at 100 or more; a rank-up still writes the base.
+`bank_skill_use` reads the skill's **current** value, Fortify included, and banks nothing at 100 or more; a rank-up still writes the base
+(#7210). The engine's single entry point (OSL-XP-001) repeats the rank step while the bank covers the next cost and returns every rank
+reached.
 
-So one call ranks a skill at most once; a large amount ranks again on the next use. The engine's single entry point (OSL-XP-001) loops
-the original's step and returns the ranks it reached.
-
-The cost (`0x548030`, stored by `0x663c50`): `(fSkillUseFactor · L) ^ fSkillUseExp · (specialization ? fSkillUseSpecMult : 1) · (major ?
-fSkillUseMajorMult : fSkillUseMinorMult)`. The setting is **`fSkillUseMinorMult`** (not `fSkillUseMinor`); the major multiplier replaces
-the minor one. Executable defaults 1 / 1 / 1.25 / 0.75 / 0.75 (Factor / Exp / Minor / Major / Spec); `Oblivion.esm` authors Factor 0.35
-and Exp 1.5.
+The setting is **`fSkillUseMinorMult`** (CS's page name; UESP spells it `FSkillUseMinor`); the major multiplier replaces the minor one.
+`Oblivion.esm` authors Factor 0.35 and Exp 1.5, the CS defaults; a load order's `GMST`s overlay all five.
 
 ### The amounts: `SKIL` use values (V3)
 
@@ -50,7 +62,8 @@ The CS's `GetSkillUseIncrement` is not a command of this executable.
 
 ## 2. The action census (V4)
 
-Every call of `0x668c30` is a call through the vtable slot; the executable has 19 of them in 15 routines. Each row gives the skill, the
+**The source of what feeds a skill is UESP's action table** (§ "UESP's action count" below). This census is the Phase 0 decode, kept as a
+historical cross-check; where it differs from UESP it settles nothing (#7331). Every call of `0x668c30` is a call through the vtable slot; the executable has 19 of them in 15 routines. Each row gives the skill, the
 `usage` (which use value) and the multiplier, with what triggers it. **Confidence**: *read* means the skill, the usage and the code that gates the call were read;
 *named* means the skill and the usage were read and the trigger is named from the menu or system that owns the routine (not verified
 by running the original).
@@ -99,9 +112,10 @@ UESP's *Oblivion: Increasing Skills* table (local dump `uesp-wiki/Oblivion/Incre
 **8 magic** (Alchemy potion made and ingredient eaten; one spell cast with a valid target for each of the six schools) and
 **10 stealth** (Acrobatics jump or dodge and damaging fall; Light Armor hit taken; Marksman shot hitting; Mercantile sale; Security tumbler fixed
 and Auto-Attempt click; Sneak undetected movement and pickpocket; Speechcraft turn). Its per-action amounts agree with the `SKIL` use
-values of §1 (for example Alteration 4.0 = value 2, Alchemy potion 5.0 = value 1, Sneak pickpocket 2.0 = value 2). Where UESP's wording and the
-executable differ, the executable's census is the source: Mercantile banks per barter by value traded (row 4), not per sale, and UESP's
-"dodge" has no call of its own (row 10 to 12). The metric's denominator is therefore 26, split 8 / 8 / 10 by school.
+values of §1 (for example Alteration 4.0 = value 2, Alchemy potion 5.0 = value 1, Sneak pickpocket 2.0 = value 2). UESP's table is the
+source (#7331). The decode differs in two places, neither live: it read Mercantile banking per barter by value traded (row 4) where UESP
+says "each sales transaction" (Mercantile is unfed; its rule is decided when its emitter is built), and it found no call of its own for
+UESP's "dodge" (rows 10 to 12; the engine feeds the jump). The metric's denominator is 26, split 8 / 8 / 10 by school.
 
 ## 3. What the engine can feed
 
@@ -128,11 +142,11 @@ unfed list; its source is `FED_SKILLS` in `oblivion_skill_use.rs`, where a skill
 
 **Fed since #7051 Phase 2b** (3 more skills, 8 of 21 in all):
 
-- **Athletics, Sneak** (`stance_use_system`, the player's per-frame update `0x671620`): the original keeps three one-second timers that
-  count only while their stance holds, fire at a second and reset. Sneaking and moving feeds **Sneak usage 0** (0.75), else swimming and
-  moving feeds **Athletics usage 1** (0.04), else running and moving feeds **Athletics usage 0** (0.03). The two usages the Phase 0 census
-  left open (rows 13 and 15) are decoded: both push `edi`, which is 0 for an unmounted player, so usage 0. The executable gates its Sneak
-  branch on a flag at `player + 0x5a8` that was not traced; the engine reads UESP's and the PRD's "undetected" from the detection level
+- **Athletics, Sneak** (`stance_use_system`): UESP's table counts these per second: "time (secs) spent undetected while moving in sneak
+  mode" **Sneak usage 0** (0.75), "time (secs) spent swimming" **Athletics usage 1** (0.04), "time (secs) spent running" **Athletics
+  usage 0** (0.03). **Engine choice** (#7331): three one-second timers that count only while their stance holds, fire at a second and
+  reset, and one stance at a time in the order Sneak, swimming, running (the Phase 0 decode read the same shape at `0x671620`, history
+  only). The engine reads UESP's and the PRD's "undetected" from the detection level
   (`PlayerDetection`, below Noticed), and UESP's "only if there is a person or creature nearby" as a detector in range: the detection
   tick names one only when a live actor stands within its range, so sneaking in an empty room banks nothing (#7294). The engine's
   "running" is the Sprint action, as the detection tick reads it.
@@ -149,7 +163,7 @@ scroll or an ability is never a cast action. Row 16's routine `0x5fca20` is the 
 
 **Fed since #7055** (Marksman, code 28): the player's own arrow landing on a living target queues one use at **usage 0**, 0.8 (UESP *Oblivion:Marksman*: "0.8 experience points per successful hit, regardless of damage inflicted"; the `SKIL` first use value), from `on_landed_hit` with the hit's provenance (`HitEvent::arrow`, set only by the bow shot path): a script's projectile, the gun's shot, a spell and a bow merely wielded feed nothing, and an arrow that dealt nothing (a ghost, a blocked shot) or landed on a corpse is no hit. The release itself feeds nothing. See the [Player archery PRD](../prd/player-archery.md) BOW-USE.
 
-**Fed since #7054** (Block, code 15): a hit that meets a blocking player's guard queues one use at **usage 0**, 1.25 (UESP *Oblivion:Block*: "1.25 experience points each time you successfully block an attack, whether using a shield or a weapon, regardless of the amount of damage blocked"; `0x5f5bf9`). The guard is the target's own: `combat_damage_system` reads the defender's Block stance (`MeleeState::blocking`, the Block action held), and a defender holding it stops a share of the hit by the documented rule (`BlockModel`, `crates/core/src/character/block.rs`: a worn shield 1% a level of Block to 75%, a wielded weapon 0.5% a level, bare hands 0.25% a level against an unarmed attacker only and nothing against an armed one), for melee and ranged alike. A hit from a trap or a script, a hit on a defender not holding Block, and a bare-handed block against an armed attacker feed nothing. Not modelled: the Novice's Fatigue drain, shield and weapon wear, recoil, knockback, stagger and disarm, and whether a block needs the defender to face the attacker (undocumented, so not tested); NPCs never hold Block, so only the player's block is live. `HitEvent::blocked` stays the aggressor's own stance (#4324), which still negates the swing.
+**Fed since #7054** (Block, code 15): a hit that meets a blocking player's guard queues one use at **usage 0**, 1.25 (UESP *Oblivion:Block*: "1.25 experience points each time you successfully block an attack, whether using a shield or a weapon, regardless of the amount of damage blocked"). The guard is the target's own: `combat_damage_system` reads the defender's Block stance (`MeleeState::blocking`, the Block action held), and a defender holding it stops a share of the hit by the documented rule (`BlockModel`, `crates/core/src/character/block.rs`: a worn shield 1% a level of Block to 75%, a wielded weapon 0.5% a level, bare hands 0.25% a level against an unarmed attacker only and nothing against an armed one), for melee and ranged alike. A hit from a trap or a script, a hit on a defender not holding Block, and a bare-handed block against an armed attacker feed nothing. Not modelled: the Novice's Fatigue drain, shield and weapon wear, recoil, knockback, stagger and disarm, and whether a block needs the defender to face the attacker (undocumented, so not tested); NPCs never hold Block, so only the player's block is live. `HitEvent::blocked` stays the aggressor's own stance (#4324), which still negates the swing.
 
 **Fed since #7056** (Acrobatics' fall, row 10): a landing that took fall damage queues one use at **usage 1**, 3.0 (UESP *Oblivion:Acrobatics*: "3.0 experience points each time you take damage from falling ... it does not matter how much damage"). The damage is Oblivion's documented rule (`FallModel`, `crates/core/src/character/fall.rs`; the CS wiki's `fJumpFall*` pages): `fall seconds x 80`, nothing under 0.2 s, times `1.25 - Acrobatics / 10000` (the skill term as shipped, "probably bugged"). The controller's `FallTracker` counts the time the body spends below the height it last stood at (so a jump that lands where it began and a curb cost nothing; a body that has not stood anywhere, a teleport, a swim and a fall into water end the clock), and `fall_landing` takes the damage off Health through the sink drowning uses. **Declared:** what counts as falling is undocumented (the CS wiki says only that "a certain threshold of vertical distance has to be passed"), so the below-takeoff clock is the engine's reading; the engine's gravity (1220.8 units a second squared) is not the original's, so heights differ from the original's for the same time; the mounted rider term has no mounts. Tested by the `FallTracker` and `FallModel` unit tests and `a_damaging_landing_costs_health_and_feeds_acrobatics`; `oblivion-fall.sh` guards the negative half live (no ledge in Count's Arms to drop from).
 
@@ -183,8 +197,9 @@ scroll or an ability is never a cast action. Row 16's routine `0x5fca20` is the 
 The level-up the rank-ups build toward (`crates/scripting/src/oblivion_skill_use.rs`, `byroredux/src/skill_use_emit.rs`):
 
 - **Pending levels.** `SkillUseLevel` keeps the running attribute tallies and the major-increase count. Every `iLevelUpSkillCount`-th
-  (10th) major increase freezes the tallies, **including that increase's own** (V13), into a `PendingLevel` and starts fresh tallies
-  (`0x65fb30`); a rank-up after it belongs to the next level. Several levels can be pending, each with its own tallies (OSL-LVL-005).
+  (10th) major increase (UESP *Oblivion:Leveling*: "a total of 10 points") freezes the tallies into a `PendingLevel` and starts fresh
+  tallies; a rank-up after it belongs to the next level. The tenth increase's own tally is frozen with it (V13; UESP *Leveling*'s Example 2
+  counts it, though its prose says "before gaining the 10th increase"). Several levels can be pending, each with its own tallies (OSL-LVL-005).
   `AdvancePCLevel` freezes whatever the tallies are now. Saved: `FORMAT_MAJOR` 138.
 - **Picks.** `levelup attr <attribute>` picks one of a pending level's three attributes (distinct, none at 100). The offered bonus is
   `oblivion_attribute_bonus` of the frozen tally (+1 for none, up to +5 for ten; Luck, governing nothing, is always +1). The player also
@@ -192,14 +207,16 @@ The level-up the rank-ups build toward (`crates/scripting/src/oblivion_skill_use
 - **The sleep.** `sleep_system` advances the clock for confirmed bed sleep, `SetPCSleepHours`, and jail rest. An uninterrupted bed sleep
   offers the oldest pending level to the menu. Scripted and jail sleep apply the oldest pending level with its saved console picks.
   Waiting advances the clock without a `SleepCompleted` event. An interrupted sleep leaves the pending level available for a later sleep.
-- **Taking a level** (`0x66c3e0`, V7 to V9): each pick's base rises by its bonus, capped at 100, and an unspent tally rolls over to nothing;
-  Health's **stored** term gains `floor(0.1 × Endurance)`, Endurance read after the picks (V8), and Magicka's and Fatigue's stored terms are
-  untouched (V9); the level rises by one and the count falls by ten, a surplus carrying to the next level. With every attribute at 100 there
+- **Taking a level** (V7 to V9; UESP *Oblivion:Leveling*): each pick's base rises by its bonus, capped at 100, and an unspent tally rolls
+  over to nothing ("do **not** roll over to the next level"); Health's **stored** term gains a tenth of Endurance ("Your Health increases by
+  10% of your Endurance"), and Magicka's and Fatigue's stored terms are untouched (they derive from the attributes, V9); the level rises by
+  one. **Engine choices** (#7331): the Health gain is floored and reads Endurance after the picks (V8), and the major count falls by ten with
+  a surplus carrying to the next level. With every attribute at 100 there
   is no level (OSL-LVL-006): "Perfection cannot be improved upon." and the level stays pending. The notification is "You are now level N."
   followed by the load order's `sLevelUp{N}` text for levels 2 to 20 where it authors one (`Oblivion.esm` authors nine: 4, 6, 11, 12, 15, 17,
   18, 19 and 20), else UESP *Oblivion:Leveling*'s documented message for the level, and from level 21 on the documented 21+ message (#7209);
-  the tenth major increase says the executable's default
-  `sMeditate` (V12).
+  the tenth major increase shows the "rest and meditate on what you have learned" hint UESP *Oblivion:First Time Players* describes
+  (`sMeditate`, which `Oblivion.esm` does not author, so the engine supplies the wording; V12).
 
 ### Oblivion sleep and level-up menus (#7086)
 
