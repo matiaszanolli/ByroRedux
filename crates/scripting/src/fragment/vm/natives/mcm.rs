@@ -56,6 +56,23 @@ impl Vm<'_> {
             })
         };
         let script = if name == "register" { config_script() } else { None };
+        // SkyUI's `ShowMessage`: a box with the message and Accept (and Cancel) whose answer the
+        // calling statement waits for, as at a `Message.Show()`; accepted is button 0.
+        if name == "showmessage" {
+            if let Some(button) = self.answer.take() {
+                return Ok(Some(Value::Bool(button == 0)));
+            }
+            let mut buttons = vec![text(2)];
+            if values.get(1).is_some_and(Value::truthy) {
+                buttons.push(text(3));
+            }
+            let Some(ticket) = crate::messages::reserve_papyrus_ticket(self.world) else {
+                return stop("ShowMessage could not raise its box");
+            };
+            self.deferred.defer_awaiting_text_box(text(0), buttons, ticket);
+            self.deferred.awaits_message = Some(ticket);
+            return stop(super::super::interp::AWAITS_MESSAGE);
+        }
         let Some(mut host) = self.world.try_resource_mut::<McmHost>() else {
             return stop("McmHost without the MCM host resource");
         };
@@ -140,11 +157,19 @@ impl Vm<'_> {
 }
 
 impl Checker<'_> {
-    /// Whether the VM runs `McmHost.<name>`. `ShowMessage` waits for the player's answer, and a call for
-    /// a value cannot suspend on this VM, so a config script that calls it is declined whole.
-    pub(in crate::fragment::vm) fn check_mcm_host(&mut self, name: &str) -> Option<Kind> {
+    /// Whether the VM runs `McmHost.<name>`. `ShowMessage` is a box the calling statement waits on (a
+    /// `Message.Show()` for its value): it waits, and its statement holds at most one.
+    pub(in crate::fragment::vm) fn check_mcm_host(&mut self, name: &str, statement: bool) -> Option<Kind> {
         if name == "showmessage" {
-            return self.fail(|| "SKI_ConfigBase.ShowMessage waits for the player's answer inside a call for a value".into());
+            if statement {
+                return self.fail(|| "McmHost.ShowMessage as a statement".into());
+            }
+            self.waits = true;
+            self.value_shows += 1;
+            if self.value_shows > 1 {
+                return self.fail(|| "two Message.Show() answers in one statement".into());
+            }
+            return Some(Kind::Bool);
         }
         match MCM_NATIVES.iter().find(|(native, _)| *native == name) {
             Some((_, kind)) => Some(*kind),

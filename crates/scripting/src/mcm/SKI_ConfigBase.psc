@@ -322,8 +322,8 @@ Function SetInputDialogStartText(String a_text)
 	McmHost.SetInputDialogText(a_text)
 EndFunction
 
-; Blocks until the player answers (SkyUI waits in menu mode). The VM cannot suspend inside a call for
-; a value yet, so the checker declines a script that calls it (docs/engine/mcm-host.md).
+; Blocks until the player answers (SkyUI waits in menu mode): a box wrapper, so the calling
+; statement waits on its box and replays with the answer. Accepted is True.
 Bool Function ShowMessage(String a_message, Bool a_withCancel = True, String a_acceptLabel = "$Accept", String a_cancelLabel = "$Cancel")
 	Return McmHost.ShowMessage(a_message, a_withCancel, a_acceptLabel, a_cancelLabel)
 EndFunction

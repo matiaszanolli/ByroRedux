@@ -606,8 +606,13 @@ pub fn close(world: &World) -> Result<(), String> {
 
 /// Raise `OnGameReload` on every config script whose `OnInit` already ran in this save and that has not
 /// registered this session: after a load (and at boot for a save's quests). A script still waiting for
-/// its `OnInit` registers from it.
+/// its `OnInit` registers from it. Also lays the open page out again when a handler that waited on a
+/// `ShowMessage` box asked for it (`ForcePageReset`) after the panel's action returned.
 pub fn mcm_registration_system(world: &World, _dt: f32) {
+    if let Err(error) = settle(world)
+        && world.try_resource::<McmHost>().is_some_and(|host| host.open.is_some()) {
+            log::warn!("MCM: page reset: {error}");
+        }
     let pending: Vec<(QuestFormId, String)> = {
         let (Some(host), Some(scripts)) = (world.try_resource::<McmHost>(), world.try_resource::<crate::QuestOwnScripts>()) else {
             return;

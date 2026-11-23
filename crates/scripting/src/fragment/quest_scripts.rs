@@ -5,7 +5,8 @@
 //! once per save and quest script (the gate is the saved `::init::` key among the quest's script
 //! variables, the one reference scripts use), so a quest a mod adds to an existing save gets it on its
 //! first load too. The second, a non-Run-Once quest's reset on start (variables and properties back to
-//! their defaults, then `OnInit` again), is not modelled yet.
+//! their defaults, then `OnInit` again), is the fragment dispatch's (`reset_started_quests`), so it
+//! lands before the quest's startup stage.
 //!
 //! Checking a script decompiles it, so the host checks a few per frame: the running quests' first,
 //! then the rest of the load order's ([`QuestOwnScripts::unchecked`]).

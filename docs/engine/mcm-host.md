@@ -96,7 +96,8 @@ Required in the VM:
    `OnInit` is silently skipped today.
 2. **Engine-class natives for the fragment VM**, a route from a native call on an engine class to an
    engine service (the provider catalog has one; the VM's native bridge does not take providers).
-3. **`ShowMessage` blocking**, as `Message.Show` already blocks.
+3. **`ShowMessage` blocking**, as `Message.Show` already blocks (built: a box wrapper's box is the
+   calling statement's, §4 slice 2).
 
 ### 3.3 The first presentation: a native page
 
@@ -125,9 +126,9 @@ extension-state save path (STATE-001) as LMC-UI-002 says.
    receive `OnInit` once per save (`quest_script_init_system`, gated on the saved `::init::` key),
    so a quest a mod adds to an existing save gets it too. On vanilla Skyrim SE (Whiterun, 900
    frames) 151 quests' scripts check; `FavorChangeLocationQuestScript`, the Civil War controllers
-   and the `defaultAddItem*` initialisers run it (the last only copy their properties). The second
-   rule (a non-Run-Once quest's reset on start: variables and properties back to defaults, then
-   `OnInit` again) is not modelled; it touches every quest-start path and is its own issue.
+   and the `defaultAddItem*` initialisers run it (the last only copy their properties). The second rule, a non-Run-Once quest's reset as it starts (variables and properties back to
+   their defaults, then `OnInit` again), is built in the fragment dispatch, before the quest's
+   startup stage (PRD revision 35).
 2. `McmHost` model, the engine `SKI_ConfigBase` / `SKI_PlayerLoadGameAlias`, the VM native route,
    registration and version events, the `mcm.*` console driver. **Built (2026-11-23).**
    - `crates/scripting/src/mcm/SKI_ConfigBase.psc` is the engine's base, Papyrus written from the
@@ -147,10 +148,13 @@ extension-state save path (STATE-001) as LMC-UI-002 says.
      a toggle by id, a slider by state with its dialog, a stale id, re-registration after a load
      without a second `OnConfigInit`). No live run: the engine loads Papyrus as compiled `.pex`,
      and no Papyrus compiler or SkyUI-dependent mod is available here.
-   - Not built: `ShowMessage` waits for the player inside a call for a value, which the VM cannot
-     suspend, so a config script that calls it is declined whole (with that reason); key-map
-     conflict detection (`GetCustomControl`, the conflicting control's name) passes "" (no
-     conflict); a `.swf` custom content panel.
+   - `ShowMessage` (2026-11-23, PRD revision 35): the engine's is a box wrapper, a function whose
+     body is one `Return`, here `Return McmHost.ShowMessage(...)`. Called for its value, it hands
+     its box to the calling statement, which waits and then replays with the answer, the way it
+     does for a `Message.Show()` written in place, so `If ShowMessage("Reset?")` works. The box
+     carries the message and the accept (and cancel) labels; accepted is button 0.
+   - Not built: key-map conflict detection (`GetCustomControl`, the conflicting control's name)
+     passes "" (no conflict); a `.swf` custom content panel.
 3. The native Mod Configuration page and its dialogs. **Built (2026-11-23).**
    - `crates/native-ui/src/mcm.rs` draws the registered mods and the open mod's pages, the page's
      two-column grid (header, empty, text, toggle, slider, menu, colour, key-map and input

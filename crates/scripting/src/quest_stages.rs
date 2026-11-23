@@ -125,6 +125,10 @@ pub struct QuestStageState {
     /// Stamped by every quest-state mutator (not by event delivery).
     #[cfg_attr(feature = "save", serde(skip, default))]
     revision: QuestRevision,
+    /// Quests started since the fragment dispatch last took them: their Papyrus scripts reset before
+    /// their startup stage runs (CK *OnInit*, [`Self::take_started`]). Process-local like `events`.
+    #[cfg_attr(feature = "save", serde(skip, default))]
+    started: Vec<QuestFormId>,
 }
 
 impl Resource for QuestStageState {}
@@ -195,6 +199,9 @@ impl QuestStageState {
                 return None;
             }
             data.status = QuestStatus::Running;
+            if !self.started.contains(&quest) {
+                self.started.push(quest);
+            }
             let previous_stage = data.current_stage;
             if let Some(stage) = start_up_stage {
                 data.current_stage = stage;
@@ -216,6 +223,9 @@ impl QuestStageState {
             data.stages_done.insert(stage);
         }
         self.quests.insert(quest, data);
+        if !self.started.contains(&quest) {
+                self.started.push(quest);
+            }
         let event = QuestStageAdvanced {
             quest,
             previous_stage: 0,
@@ -224,6 +234,12 @@ impl QuestStageState {
         };
         self.events.push(event);
         Some(event)
+    }
+
+    /// The quests started since the last call, in order, each once (a game whose dispatch never takes
+    /// them keeps at most one entry per quest).
+    pub fn take_started(&mut self) -> Vec<QuestFormId> {
+        std::mem::take(&mut self.started)
     }
 
     /// Whether a quest has entered its runtime lifecycle. This checks map
@@ -363,6 +379,12 @@ impl QuestStageState {
     /// back to when the runtime can't resolve the flags).
     pub fn set_stage(&mut self, quest: QuestFormId, stage: u16) -> u16 {
         self.revision.bump();
+        // `SetStage` on a quest that has not started starts it (it enters the map running).
+        if !self.quests.contains_key(&quest) {
+            if !self.started.contains(&quest) {
+                self.started.push(quest);
+            }
+        }
         let entry = self.quests.entry(quest).or_default();
         let prev = entry.current_stage;
         entry.current_stage = stage;

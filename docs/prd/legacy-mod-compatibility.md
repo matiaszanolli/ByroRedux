@@ -1,6 +1,7 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-23). Revision 34 builds the MCM host's native Mod Configuration page and
+**Status**: ACTIVE (2026-11-23). Revision 35 makes SkyUI's `ShowMessage` (and any box wrapper called
+for its value) wait for its answer, and resets a quest's scripts as it starts. Revision 34 builds the MCM host's native Mod Configuration page and
 its adapter (slice 3). Revision 33 builds the MCM host's model and engine `SKI_ConfigBase`
 (slice 2). Revision 32 designs the MCM host (LMC-UI-002) and builds its first
 slice, quest-script `OnInit`. Revision 31 makes a save made in a removed plugin's cell or worldspace
@@ -949,9 +950,12 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   Slice 2 is built (revision 33): the engine's `SKI_ConfigBase` (Papyrus
   shadowing SkyUI's, SkyUI's constants and option ids), the `McmHost` model
   it writes, SkyUI's dispatch of state options, re-registration after every
-  load, and the `mcm.*` console commands. A config script calling
-  `ShowMessage` is declined until the VM can suspend inside a call for a
-  value. Slice 3 is built (revision 34): the native Mod Configuration page
+  load, and the `mcm.*` console commands. `ShowMessage` works since
+  revision 35: a box wrapper (a function whose body is one `Return`) called
+  for its value hands its box to the calling statement, which waits and
+  replays with the answer as it does for a `Message.Show()` written in place.
+  A quest's scripts also reset as it starts (CK *OnInit*, revision 35).
+  Slice 3 is built (revision 34): the native Mod Configuration page
   (reached from the pause menu once a mod registered) and the adapter that
   feeds it from `McmHost` and runs its actions as the config script's events.
 - **LMC-UI-003.** MenuXml replacements, `<include>` prefabs and font
@@ -1620,3 +1624,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 32 | 2026-11-23 | LMC-UI-002 designed (`docs/engine/mcm-host.md`, owner's decisions: engine `SKI_ConfigBase`, native page, pause-menu entry); slice 1 built: a quest's own scripts receive `OnInit` once per save | — |
 | 33 | 2026-11-23 | LMC-UI-002 slice 2: the engine `SKI_ConfigBase` and `SKI_PlayerLoadGameAlias` shadow SkyUI's, the `McmHost` model and static class, SkyUI's state-option dispatch, re-registration after every load, `mcm.*` console commands; `ShowMessage` declined | — |
 | 34 | 2026-11-23 | LMC-UI-002 slice 3: the native Mod Configuration page (grid, five dialogs, unmap, blocking message) reached from the pause menu, the `McmHost` adapter with `$`-key translation, leaving the menus closes the page; a `.dds` custom panel is carried but not drawn | — |
+| 35 | 2026-11-23 | A box wrapper (one `Return` body) called for its value hands its box to the calling statement, which waits and replays with the answer: SkyUI's `ShowMessage` raises a box with Accept / Cancel and returns the answer. A non-Run-Once Papyrus quest resets its own and its aliases' script state as it starts, then runs `OnInit`, before its startup stage (CK *OnInit*). Measured first: on vanilla Skyrim SE the general value-call wait declines 13 of 19,412 scripted references and 5 of 2,529 alias instances, so only the wrapper shape was built | — |

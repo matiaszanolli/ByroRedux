@@ -209,7 +209,7 @@ impl Checker<'_> {
         statement: bool,
     ) -> Option<Kind> {
         if class == "mcmhost" {
-            return self.check_mcm_host(name);
+            return self.check_mcm_host(name, statement);
         }
         if class == "game" && name == "getplayer" {
             return Some(Kind::Player);

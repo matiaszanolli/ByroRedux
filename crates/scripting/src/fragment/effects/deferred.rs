@@ -574,6 +574,11 @@ impl DeferredFragmentEffects {
         self.messages.push(PendingMessage::ShowAwaiting(form_id, args, ticket));
     }
 
+    /// [`Self::defer_awaiting_box`] for a box with its own text and buttons.
+    pub(in crate::fragment) fn defer_awaiting_text_box(&mut self, text: String, buttons: Vec<String>, ticket: u32) {
+        self.messages.push(PendingMessage::ShowTextAwaiting { text, buttons, ticket });
+    }
+
     fn flush_messages(&mut self, world: &World) {
         for message in std::mem::take(&mut self.messages) {
             match message {
@@ -584,6 +589,9 @@ impl DeferredFragmentEffects {
                 }
                 PendingMessage::ShowAwaiting(form_id, args, ticket) => {
                     crate::messages::show_reserved_box(world, form_id, &args, ticket);
+                }
+                PendingMessage::ShowTextAwaiting { text, buttons, ticket } => {
+                    crate::messages::show_text_box(world, text, buttons, ticket);
                 }
                 PendingMessage::Notify(text) => crate::messages::notify(world, text),
                 PendingMessage::ItemAdded(item_form_id, count) => {

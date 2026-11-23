@@ -955,6 +955,68 @@ pub fn quest_script_init_system(world: &World, _dt: f32) {
     run_deliveries(world, deliveries);
 }
 
+/// CK *OnInit*: "OnInit is called again when an object is reset. All your variables and properties
+/// will be reset before OnInit is called. For Quests and Aliases this will happen when your quest
+/// starts", unless the quest is Run Once ("Ticking the 'Run Once' flag, however, prevents the Quest
+/// from being reset when it starts"). Each Papyrus quest (one whose QUST carries a `VMAD`) started
+/// since the last call has its own scripts' and its alias scripts' writes forgotten, then its own
+/// scripts' `OnInit` runs now, before its startup stage (its alias scripts start with it in
+/// [`alias_script_event_system`]). The fragment dispatch calls this before each stage it runs.
+pub(crate) fn reset_started_quests(world: &World) {
+    let started = match world.try_resource_mut::<QuestStageState>() {
+        Some(mut stages) => stages.take_started(),
+        None => return,
+    };
+    if started.is_empty() {
+        return;
+    }
+    let mut deliveries = Vec::new();
+    for quest in started {
+        let papyrus = world.try_resource::<crate::QuestScriptInstances>().is_some_and(|instances| instances.0.contains_key(&quest));
+        let run_once = world
+            .try_resource::<crate::quest_stages::QuestDefinitionRegistry>()
+            .is_some_and(|registry| registry.is_run_once(quest));
+        if !papyrus || run_once {
+            continue;
+        }
+        let owners: Vec<QuestFormId> = std::iter::once(quest)
+            .chain(world.try_resource::<AliasScriptOwners>().into_iter().flat_map(|owners| {
+                owners
+                    .table()
+                    .iter()
+                    .filter(|(_, (owner_quest, _))| *owner_quest == quest.0)
+                    .map(|(owner, _)| QuestFormId(*owner))
+                    .collect::<Vec<_>>()
+            }))
+            .collect();
+        if let Some(mut variables) = world.try_resource_mut::<crate::QuestScriptVariables>() {
+            for owner in &owners {
+                variables.reset(*owner);
+            }
+        }
+        if let Some(mut objects) = world.try_resource_mut::<crate::QuestScriptObjects>() {
+            for owner in &owners {
+                objects.reset(*owner);
+            }
+        }
+        log::debug!("quest {:08X} started: its script state reset", quest.0);
+        let scripts = world
+            .try_resource::<QuestOwnScripts>()
+            .and_then(|own| own.running_scripts().find(|(owner, _)| *owner == quest).map(|(_, scripts)| Arc::clone(scripts)));
+        for script in scripts.iter().flat_map(|scripts| scripts.iter()).filter(|script| script.handles("OnInit")) {
+            deliveries.push(Delivery {
+                owner: quest.0,
+                script: script.script.clone(),
+                vmad: Arc::clone(&script.vmad),
+                event: "OnInit",
+                args: Vec::new(),
+                init_gated: true,
+            });
+        }
+    }
+    run_deliveries(world, deliveries);
+}
+
 /// Relay this frame's engine events to the scripts registered for them
 /// remotely (`RegisterForRemoteEvent`): the event a reference received, handled
 /// by the registrant with the sender first and the event's own arguments after.

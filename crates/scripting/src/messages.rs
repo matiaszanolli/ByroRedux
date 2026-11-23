@@ -546,6 +546,28 @@ pub fn reserve_papyrus_box(world: &World, form_id: u32) -> Option<u32> {
     Some(world.try_resource_mut::<PapyrusMessageAnswers>()?.issue())
 }
 
+/// A ticket for a box that is not a `MESG` record (SkyUI's `ShowMessage`, LMC-UI-002); `None` without
+/// the answers store.
+pub fn reserve_papyrus_ticket(world: &World) -> Option<u32> {
+    Some(world.try_resource_mut::<PapyrusMessageAnswers>()?.issue())
+}
+
+/// Queue a box with its own `text` and `buttons`, its answer going to `ticket`. A box that cannot be
+/// queued is a lost box: its run resumes with the default, button 0.
+pub fn show_text_box(world: &World, text: String, buttons: Vec<String>, ticket: u32) {
+    let message = ScriptMessage {
+        title: String::new(),
+        text,
+        message_box: true,
+        buttons,
+        answer: MessageAnswer::Papyrus(ticket),
+    };
+    match world.try_resource_mut::<PendingScriptMessages>() {
+        Some(mut pending) => pending.0.push(message),
+        None => record_papyrus_answer(world, ticket, 0),
+    }
+}
+
 /// #7298 — queue the box a [`reserve_papyrus_box`] ticket stands for. A box that cannot be queued
 /// is a lost box: its run resumes with the default, button 0.
 pub fn show_reserved_box(world: &World, form_id: u32, args: &[f32], ticket: u32) {

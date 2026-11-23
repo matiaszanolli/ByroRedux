@@ -18,6 +18,9 @@ pub(super) enum PendingMessage {
     /// #7298 — a VM `Message.Show()` box whose ticket the run reserved under the quest guards:
     /// `(message FormID, arguments, ticket)`, built and queued once they drop.
     ShowAwaiting(u32, Vec<f32>, u32),
+    /// A box with its own text and buttons whose answer a run waits on under the ticket (SkyUI's
+    /// `ShowMessage`, LMC-UI-002).
+    ShowTextAwaiting { text: String, buttons: Vec<String>, ticket: u32 },
     Notify(String),
     /// A non-silent scripted add to the player: `(item base FormID, count)`,
     /// named and worded when it is shown (#5913).

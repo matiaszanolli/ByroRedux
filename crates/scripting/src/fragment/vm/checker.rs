@@ -423,9 +423,12 @@ impl<'l> Checker<'l> {
         if versions.is_empty() {
             return self.fail(|| format!("no function {function}"));
         }
+        let wrapper = versions.iter().all(|(defined_in, state)| {
+            callable_in(defined_in, state.as_deref(), function).is_some_and(|callable| is_box_wrapper(callable.body))
+        });
         if !self.visiting.insert(key.clone()) {
             // Checked already, or recursion: assume the declared return.
-            return self.call_waits(self.waiting.contains(&key), statement).map(|_| returns);
+            return self.call_waits(self.waiting.contains(&key), statement, wrapper).map(|_| returns);
         }
         let outer = std::mem::replace(&mut self.waits, false);
         for (defined_in, state) in &versions {
@@ -452,7 +455,7 @@ impl<'l> Checker<'l> {
         if waits {
             self.waiting.insert(key);
         }
-        self.call_waits(waits, statement).map(|_| returns)
+        self.call_waits(waits, statement, wrapper).map(|_| returns)
     }
 
     /// Check an event handler a registration delivers to later, installing
@@ -475,11 +478,19 @@ impl<'l> Checker<'l> {
         Some(())
     }
 
-    /// A call to a function that `waits` makes its caller wait too.
-    pub(super) fn call_waits(&mut self, waits: bool, statement: bool) -> Option<()> {
+    /// A call to a function that `waits` makes its caller wait too. Called for its value, only a
+    /// box wrapper may wait ([`is_box_wrapper`]): its box is the caller's statement's box, replayed
+    /// with the answer like one written in place, so the statement holds at most one (#7299).
+    pub(super) fn call_waits(&mut self, waits: bool, statement: bool, box_wrapper: bool) -> Option<()> {
         if waits {
             if !statement {
-                return self.fail(|| "a wait in a function called for its value".into());
+                if !box_wrapper {
+                    return self.fail(|| "a wait in a function called for its value".into());
+                }
+                self.value_shows += 1;
+                if self.value_shows > 1 {
+                    return self.fail(|| "two Message.Show() answers in one statement".into());
+                }
             }
             self.waits = true;
         }

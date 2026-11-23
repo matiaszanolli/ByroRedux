@@ -87,6 +87,14 @@ pub(super) fn script_chain(script: &Arc<Script>, scripts: &HashMap<String, Arc<S
     chain
 }
 
+/// A box wrapper: a function whose whole body is one `Return` (`Int Function Ask() Return
+/// Question.Show() EndFunction`, SkyUI's `ShowMessage`). The only box its value can wait on is in that
+/// expression, so a caller's statement that calls it for its value can replay it with the answer, as
+/// it replays a box written in place: the replay re-evaluates nothing but that expression.
+pub(super) fn is_box_wrapper(body: &[Spanned<Stmt>]) -> bool {
+    matches!(body, [statement] if matches!(statement.node, Stmt::Return(Some(_))))
+}
+
 /// An engine class — `Form`, `ObjectReference`, `Quest`, … — declares
 /// `Native` functions; no game script does. Its API, scripted wrappers
 /// included (`Quest.SetStage` → `SetCurrentStageID`), is the native
