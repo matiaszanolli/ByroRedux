@@ -78,10 +78,13 @@ fn mark_bone_world_slot_written(state: &mut u8, frame_index: usize) {
     }
 }
 
-/// #6493 — true on the first upload of a mover-list overflow episode, and
-/// latches `logged` so the rest of the episode stays quiet; an upload that fits
-/// the cap clears the latch, so the next crowd is reported again.
-fn moved_surface_overflow_episode_starts(logged: &mut bool, submitted: usize, kept: usize) -> bool {
+/// #6493 / #7385 — true on the first upload of an overflow episode, and latches
+/// `logged` so the rest of the episode stays quiet; an upload that fits the cap
+/// clears the latch, so the next overflow is reported again. Shared by the mover
+/// list and every per-frame SSBO upload that clamps (a scene held over a cap
+/// logged one line a frame, ~60 lines/s, in exactly the scenes already running hot;
+/// `rt.integrity` carries the live counts).
+fn overflow_episode_starts(logged: &mut bool, submitted: usize, kept: usize) -> bool {
     let over = submitted > kept;
     let starts = over && !*logged;
     *logged = over;
@@ -90,7 +93,7 @@ fn moved_surface_overflow_episode_starts(logged: &mut bool, submitted: usize, ke
 
 #[cfg(test)]
 mod moved_surface_overflow_tests {
-    use super::moved_surface_overflow_episode_starts;
+    use super::overflow_episode_starts;
 
     /// #6493 — a crowd held over the cap warned on every frame (~60 lines/s).
     #[test]
@@ -100,7 +103,7 @@ mod moved_surface_overflow_tests {
         let warned: Vec<bool> = [10, 70, 212, 70, 64, 0, 90, 90]
             .into_iter()
             .map(|submitted| {
-                moved_surface_overflow_episode_starts(&mut logged, submitted, submitted.min(CAP))
+                overflow_episode_starts(&mut logged, submitted, submitted.min(CAP))
             })
             .collect();
         assert_eq!(warned, [false, true, false, false, false, false, true, false]);
@@ -133,7 +136,7 @@ impl super::buffers::SceneBuffers {
             lights.len().min(u32::MAX as usize) as u32,
             count.min(u32::MAX as usize) as u32,
         );
-        if lights.len() > MAX_LIGHTS {
+        if overflow_episode_starts(&mut self.overflow_episodes.lights, lights.len(), count) {
             // The excess tail is NOT arbitrary: `collect_lights` sorts the
             // point-light suffix by descending `gi_priority_score`
             // (directional pinned at index 0) before this clamp, so the
@@ -813,7 +816,7 @@ impl super::buffers::SceneBuffers {
         // dropped here instead of written past the allocation.
         let capacity = self.instance_capacity[frame_index];
         let count = instances.len().min(capacity);
-        if instances.len() > capacity {
+        if overflow_episode_starts(&mut self.overflow_episodes.instances, instances.len(), count) {
             log::warn!(
                 "Instance SSBO overflow: {} instances submitted, capped at {} (ceiling {}) — excess draws silently dropped. #279 P2-12",
                 instances.len(),
@@ -884,7 +887,7 @@ impl super::buffers::SceneBuffers {
             moved_surface_ids.len().min(u32::MAX as usize) as u32,
             kept as u32,
         );
-        if moved_surface_overflow_episode_starts(
+        if overflow_episode_starts(
             &mut self.moved_surface_overflow_logged,
             moved_surface_ids.len(),
             kept,
@@ -934,7 +937,7 @@ impl super::buffers::SceneBuffers {
         // #4199 — same per-slot clamp as `upload_instances`.
         let capacity = self.instance_capacity[frame_index];
         let count = models.len().min(capacity);
-        if models.len() > capacity {
+        if overflow_episode_starts(&mut self.overflow_episodes.previous_models, models.len(), count) {
             log::warn!(
                 "Previous-model SSBO overflow: {} transforms submitted, capped at {} (ceiling {})",
                 models.len(),
@@ -1040,7 +1043,7 @@ impl super::buffers::SceneBuffers {
         draws: &[vk::DrawIndexedIndirectCommand],
     ) -> Result<()> {
         let count = draws.len().min(MAX_INDIRECT_DRAWS);
-        if draws.len() > MAX_INDIRECT_DRAWS {
+        if overflow_episode_starts(&mut self.overflow_episodes.indirect_draws, draws.len(), count) {
             log::warn!(
                 "Indirect draw overflow: {} commands submitted, capped at {} — excess draws silently dropped",
                 draws.len(),

@@ -33,6 +33,15 @@ pub(super) struct LightHeader {
     pub(super) previous_to_current: [u32; MAX_LIGHTS + 1],
 }
 
+/// #7385 — which per-frame SSBO uploads are inside an overflow episode that has already been logged.
+#[derive(Debug, Default, Clone, Copy)]
+pub(super) struct OverflowEpisodes {
+    pub(super) lights: bool,
+    pub(super) instances: bool,
+    pub(super) previous_models: bool,
+    pub(super) indirect_draws: bool,
+}
+
 /// Per-frame scene buffers and their descriptor sets.
 pub struct SceneBuffers {
     /// One SSBO per frame-in-flight (header + light array).
@@ -56,6 +65,9 @@ pub struct SceneBuffers {
     /// #6493 — the mover list is over its cap and that episode has been
     /// logged; cleared when the count falls back under the cap.
     pub(super) moved_surface_overflow_logged: bool,
+    /// #7385 — the per-frame clamped uploads' overflow episodes (see
+    /// `overflow_episode_starts`): one warn per episode, not one per frame.
+    pub(super) overflow_episodes: OverflowEpisodes,
     /// One UBO per frame-in-flight (camera data).
     pub(super) camera_buffers: Vec<GpuBuffer>,
     /// DEVICE_LOCAL | STORAGE_BUFFER bone palette per frame-in-flight.
@@ -1175,6 +1187,7 @@ impl SceneBuffers {
             last_light_counts: (0, 0),
             last_moved_surface_counts: (0, 0),
             moved_surface_overflow_logged: false,
+            overflow_episodes: OverflowEpisodes::default(),
         })
     }
 }

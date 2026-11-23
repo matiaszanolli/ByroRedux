@@ -27,11 +27,13 @@ fn upload_lights_warns_on_overflow_like_upload_instances() {
     );
     let lights_fn_body = &src[lights_fn_start..instances_fn_start];
 
+    // #7385: the guard is the episode latch over the unclamped length and the clamped count,
+    // so the warn fires once per overflow episode rather than on every frame.
     assert!(
-        lights_fn_body.contains("lights.len() > MAX_LIGHTS"),
-        "upload_lights must guard an overflow warning on `lights.len() > MAX_LIGHTS` \
-         (PERF-D4-NEW-02 / #1808) — mirroring upload_instances's \
-         `instances.len() > MAX_INSTANCES` guard"
+        lights_fn_body.contains("let count = lights.len().min(MAX_LIGHTS);")
+            && lights_fn_body.contains("overflow_episode_starts(&mut self.overflow_episodes.lights, lights.len(), count)"),
+        "upload_lights must guard its overflow warning on the unclamped length against MAX_LIGHTS \
+         (PERF-D4-NEW-02 / #1808), through the per-episode latch (#7385)"
     );
     // The warn must describe the real drop policy. collect_lights sorts
     // the point-light suffix by descending gi_priority_score (#1800)
@@ -53,7 +55,7 @@ fn upload_lights_warns_on_overflow_like_upload_instances() {
     let warn_idx = lights_fn_body
         .find("log::warn!")
         .expect("upload_lights must emit a log::warn! on overflow (PERF-D4-NEW-02 / #1808)");
-    let guard_idx = lights_fn_body.find("lights.len() > MAX_LIGHTS").unwrap();
+    let guard_idx = lights_fn_body.find("overflow_episode_starts(&mut self.overflow_episodes.lights").unwrap();
     assert!(
         guard_idx < warn_idx,
         "the length-vs-MAX_LIGHTS check must precede the log::warn! call"
@@ -69,4 +71,32 @@ fn upload_lights_warns_on_overflow_like_upload_instances() {
         clamp_idx < guard_idx && guard_idx - clamp_idx < 200,
         "overflow check should sit immediately alongside the clamp, not buried deep in the function"
     );
+}
+
+/// #7385 — every SSBO upload that runs each frame and clamps logs its overflow once per
+/// episode. A scene held over a cap (a heavy modded interior, many combustion field lights)
+/// logged one line a frame from each of these, ~60 lines/s, while `rt.integrity` already
+/// reported the live counts. The terrain-tile upload is dirty-gated, not per frame, so it
+/// keeps its plain warn.
+#[test]
+fn every_per_frame_clamped_upload_warns_once_per_overflow_episode() {
+    // A whole-file scan, like the guard above: `upload.rs` keeps a test module near its top, so
+    // `production_text` (which cuts at the first `#[cfg(test)]`) would drop every upload function.
+    // The needles are production spellings (`&mut self.<latch>`) the test module does not contain.
+    let src = include_str!("upload.rs");
+    for (function, latch, message) in [
+        ("pub fn upload_lights(", "overflow_episodes.lights", "Light SSBO overflow"),
+        ("pub fn upload_instances(", "overflow_episodes.instances", "Instance SSBO overflow"),
+        ("pub fn upload_previous_models(", "overflow_episodes.previous_models", "Previous-model SSBO overflow"),
+        ("pub fn upload_indirect_draws(", "overflow_episodes.indirect_draws", "Indirect draw overflow"),
+    ] {
+        let start = src.find(function).unwrap_or_else(|| panic!("{function} must exist"));
+        let body = &src[start..];
+        let body = &body[..body[1..].find("\n    pub fn ").map_or(body.len(), |at| at + 1)];
+        let warn = body.find(message).unwrap_or_else(|| panic!("{function} keeps its `{message}` warn"));
+        let guard = body
+            .find(&format!("overflow_episode_starts(&mut self.{latch}"))
+            .unwrap_or_else(|| panic!("{function} must gate its warn on the `{latch}` episode latch (#7385)"));
+        assert!(guard < warn, "{function}: the latch must guard the warn (#7385)");
+    }
 }
