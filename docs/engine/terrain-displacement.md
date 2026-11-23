@@ -412,8 +412,8 @@ compute `D` or `h`. Options:
    other `terrain.*` switches, so they don't reach the settings file until a menu
    edit. `fine <m>` still forces 4.1's distance rule for the session, until
    `afine`. Among the quality presets (`assets/graphics_presets.toml`), Low turns
-   the patches off (amplitude 0, the trade measured in §8.7); the other rungs keep
-   the default amplitude.
+   the patches off (amplitude 0, §8.7) and Medium draws them on the coarse mesh only
+   (threshold 512 px², §8.8). High and Ultra keep the defaults.
 
 **Not in 4.3.** A visibility-buffer or deferred lighting pass would trace rays per
 covered pixel with no quad overhead at all. It is the structural fix for every dense
@@ -918,8 +918,61 @@ there can't be judged. No run logged a validation line.
 - **For the presets**, the measured trade is patches off (amplitude 0), which saves the
   whole 0.4–1.1 ms. **Low now sets it**, and Medium, High and Ultra name the default
   amplitude so a switch away from Low restores it. All coarse (threshold 512) sits in
-  between, but its look has only been judged by eye (§8.2), so Medium doesn't use it
-  yet. A shorter range buys nothing measurable.
+  between, but its look has only been judged by eye (§8.2); §8.8 measures it. A
+  shorter range buys nothing measurable.
+
+### 8.8 Coarse-only patches with residual parallax (2026-11-23)
+§8.2 judged all-coarse patches flatter at eye level, but that was before §8.6 cut the
+parallax march to the residual depth. Does a threshold of 512 px² (every square coarse,
+at 480 and 960 lines alike, §8.7) still lose visible relief? Same harness and binary as
+§8.7, at 853×480. States were patches off, the default 128 px², and 512 px². The
+status line confirmed the split each time:
+- FNV: 2 fine and 14 coarse at 128 px²;
+- Riverwood: 4 fine and 12 coarse;
+- every square coarse at 512 px², at both positions.
+
+A first Riverwood run drifted as the weather and the time of day moved. Its patches-off
+frame went from 5.5 to 11 ms, so it was discarded. The run below has the clock pinned
+at noon and paused (`time.set 12:00`, `time.pause`). Its sky readout (`sky.dump`)
+matched at the start and end, and its patches-off frame is the §8.7 one again.
+
+| position | pose | off (ms) | 128 px² (default) | 512 px² (coarse only) |
+|---|---|---|---|---|
+| FNV Mojave | down | 4.97 | +0.75 (0.31) | +0.36 (0.18) |
+| | eye | 5.48 | +0.83 (0.25) | +0.51 (0.31) |
+| | graze | 5.06 | +0.60 (0.15) | +0.45 (0.13) |
+| Skyrim Riverwood | down | 1.95 | +0.42 (0.13) | +0.33 (0.11) |
+| | eye | 2.02 | +0.43 (0.31) | +0.34 (0.13) |
+| | graze | 2.74 | +0.14 (0.15) | +0.28 (0.23) |
+
+Image difference from the first 128 px² frame (mean levels / share over 8 levels):
+
+| position | pose | second 128 px² shot (noise) | 512 px² | off |
+|---|---|---|---|---|
+| FNV | down | 1.7 / 2.7 % | 3.5 / 9.7 % | 17.6 / 55 % |
+| | eye | 2.6 / 7.3 % | 4.1 / 13 % | 20.5 / 56 % |
+| | graze | 3.6 / 12 % | 4.4 / 14 % | 14.0 / 40 % |
+| Riverwood | down | 6.2 / 23 % | 6.8 / 26 % | 7.9 / 31 % |
+| | eye | 13.4 / 37 % | 13.5 / 38 % | 16.9 / 49 % |
+| | graze | 7.5 / 21 % | 6.9 / 20 % | 10.2 / 32 % |
+
+No run logged a validation line.
+
+- **Coarse only saves 0.15–0.4 ms at FNV**, and up to about 0.1 ms at Riverwood,
+  which is within the spread there. That matches §8.5.
+- **No visible loss at either position.** At FNV, coarse only sits just above the
+  noise floor and far from patches off. Side-by-side crops of the near ground keep
+  the stones' shapes and shadows. The §8.2 flatness doesn't reproduce with the
+  residual march. Riverwood's moving cloud shadows, falling flakes and river shimmer
+  hide anything smaller than its noise floor, so it only rules out a large loss.
+- **Medium now uses 512 px².** The default stays at 128 px². Everything here was
+  measured at 480 render lines, and at 960 lines each coarse triangle covers four
+  times the pixels, which is where the fine mesh should start to show. 128 px² scales
+  with the render height by itself. Changing the default needs a 960-line visual
+  check first.
+- `weather.force` refused a bare `0010E1F2` (SkyrimClear_A) because it parsed the
+  FormID decimal-first. That is fixed separately, so a future run can pin the
+  weather too.
 
 ## 9. Review decisions (Matías, 2026-11-21)
 1. **Upward-only displacement, base mesh kept (§3.3)**: accepted. No holes, no zero-mean

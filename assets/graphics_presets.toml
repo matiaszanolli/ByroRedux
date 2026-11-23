@@ -3,8 +3,9 @@
 # HONEST SCOPE: a preset can only move settings that are actually registered
 # (`crates/core/src/settings/builtin.rs`), and a rung is set only where its trade
 # has been measured. Today the presets move two things: the upscaler, and the
-# terrain displacement patches, which only Low turns off (0.4–1.1 ms at the
-# bench's 480 render lines, docs/engine/terrain-displacement.md §8.7). The
+# terrain displacement patches: Low turns them off (0.4–1.1 ms at the bench's
+# 480 render lines, docs/engine/terrain-displacement.md §8.7) and Medium draws
+# every patch on the coarse mesh (up to 0.4 ms, no visible loss measured, §8.8). The
 # mechanism is general — add a shadow-distance or texture-quality setting to the
 # registry and it can be listed here with no code change — but this is not yet a
 # full quality ladder, and calling it one would be a lie the frame rate would
@@ -29,22 +30,22 @@
 name = "Low"
 description = "Renders at roughly half resolution and reconstructs, and keeps the ground flat near the camera. Highest frame rate; softest image."
 rank = 0
-values = { "render.upscaler" = "fsr3/performance", "render.terrain_patch_amplitude_m" = 0.0 }
+values = { "render.upscaler" = "fsr3/performance", "render.terrain_patch_amplitude_m" = 0.0, "render.terrain_patch_fine_threshold_px2" = 128.0 }
 
 [presets.medium]
 name = "Medium"
-description = "Balances reconstruction against sharpness. A good default below 8 GB of video memory."
+description = "Balances reconstruction against sharpness, and draws the ground near the camera with a coarser mesh. A good default below 8 GB of video memory."
 rank = 1
-values = { "render.upscaler" = "fsr3/balanced", "render.terrain_patch_amplitude_m" = 0.03 }
+values = { "render.upscaler" = "fsr3/balanced", "render.terrain_patch_amplitude_m" = 0.03, "render.terrain_patch_fine_threshold_px2" = 512.0 }
 
 [presets.high]
 name = "High"
 description = "The engine default. Renders below output resolution and reconstructs at high quality."
 rank = 2
-values = { "render.upscaler" = "fsr3/quality", "render.terrain_patch_amplitude_m" = 0.03 }
+values = { "render.upscaler" = "fsr3/quality", "render.terrain_patch_amplitude_m" = 0.03, "render.terrain_patch_fine_threshold_px2" = 128.0 }
 
 [presets.ultra]
 name = "Ultra"
 description = "Renders at native resolution with temporal anti-aliasing. Sharpest image; most demanding."
 rank = 3
-values = { "render.upscaler" = "taa", "render.terrain_patch_amplitude_m" = 0.03 }
+values = { "render.upscaler" = "taa", "render.terrain_patch_amplitude_m" = 0.03, "render.terrain_patch_fine_threshold_px2" = 128.0 }

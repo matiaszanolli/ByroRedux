@@ -2,8 +2,8 @@
 //!
 //! **Scope, stated plainly.** A preset can only move settings that are actually
 //! registered, and the shipped file sets a rung only where its trade has been
-//! measured: today the upscaler, and the terrain displacement patches, which
-//! only Low turns off. The mechanism is general — a preset is a list of
+//! measured: today the upscaler, and the terrain displacement patches (Low
+//! turns them off, Medium draws them on the coarse mesh only). The mechanism is general — a preset is a list of
 //! `(id, value)` pairs, and adding shadow, texture, or draw-distance settings to
 //! the registry extends the presets by editing `assets/graphics_presets.toml`,
 //! with no code change here — but it would be dishonest to call the current
