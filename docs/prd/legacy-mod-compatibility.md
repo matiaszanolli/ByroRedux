@@ -1,6 +1,7 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-22). Revision 13 builds the profile
+**Status**: ACTIVE (2026-11-22). Revision 17 builds the merge-ownership
+half of LMC-REC-006. Revision 13 builds the profile
 fingerprint and its record in saves (LMC-ID-007, LMC-SAV-001). Revision 12 builds mod roots and their
 ownership (LMC-ID-012), root-ordered loose files (LMC-AST-010) and the
 root half of missing-master disabling (LMC-ID-011). Revision 11 extends the list merge
@@ -598,6 +599,18 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   ([Tome of xEdit §7](https://tes5edit.github.io/docs/7-mod-cleaning-and-error-checking.html)),
   and some patches do it on purpose. Such an override keeps ownership and
   MUST be reported as a revert naming the plugin whose change it undid.
+  Built (#6670): the conflict report's verdicts (`plugins.conflicts <form>
+  fields`) judge each override against the record it replaced, and under
+  `merge` an override identical to the record it would replace is a no-op
+  that neither wins the record whole nor becomes a contributor. An
+  independent override identical to its own master changes nothing under
+  `merge`; the report names it, since under `legacy` it wins whole and
+  reverts the changes before it. On the installed mod profiles this takes
+  the merged-record count from 570 to 284 (Fallout 4 with UFO4P, Inventory
+  Organizer and MojaveImports) and from 1,728 to 415 (Starfield with the
+  patches and both weightless-item mods); the overruled operations are
+  unchanged. The records that dropped out are those whose outcome is what
+  `legacy` keeps.
 - **LMC-REC-007.** The conflict report lists, per form: winner, losers in
   order, the policy that chose, and the fields that differ. This is the
   `DataStore` provenance model ([plugin-loading.md](../engine/plugin-loading.md#datastore))
@@ -1402,3 +1415,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 14 | 2026-11-22 | Phase 0 (§7.2): the Wave 1 corpus is checked in as `assets/legacy_mod_compat/corpus.toml`, 56 candidates (21 FNV, 35 Skyrim SE) with links, dependencies and install tranches; the catalog checker gains C10–C13 (corpus fields, mechanisms defined for the game, a verified mod carries a scenario and a licence). Additions to the §7.2 inventory: The Inheritance (content-only voiced quest), Extensible Follower Framework's SEQ file (R11), Player Character Gestures (OAR). No entry is verified yet | — |
 | 15 | 2026-11-22 | LMC-DX-003 built ahead of Phase 7: the conformance runner (`scripts/lmc-conformance.py`) measures §7.3 rule 1 as activation and runs rule 3 scenarios, reporting rules 2 and 4 as not measurable until the preflight and profile-change saves exist; the corpus gains the `[mod.scenario]` shape and the catalog checker C14 for it. Moving the runner forward is the owner's call (2026-11-22); Phase 7's exit is unchanged | — |
 | 16 | 2026-11-22 | LMC-ID-006 built ahead of Phase 2 at the owner's request: `--import-load-order` imports plugins.txt / loadorder.txt, MO2 profiles and Vortex deployments into the boot request's `[mods]` (plugins in load order, mod roots in priority order), with the per-game rules cited from libloadorder, MO2 and a live Vortex manifest; activation takes the unmanaged root from the base master `--game` appends, so an imported profile names its plugins by file name | — |
+| 17 | 2026-11-22 | LMC-REC-006's merge-ownership half built: under `merge` an override identical to the record it would replace is a no-op without ownership, and an independent override identical to its master changes nothing; both are reported | — |

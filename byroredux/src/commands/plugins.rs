@@ -322,6 +322,30 @@ fn form_lines(order: &LoadOrder, form_id: u32, record_type: Option<[u8; 4]>) -> 
         plugin_name(order, winner.plugin as usize),
         if winner.deletes { ", which deletes it" } else { "" }
     ));
+    // A record the merge left as `legacy` keeps it can still have had overrides that took no part.
+    for record in order.list_merge().records(form_id) {
+        lines.extend(ownership_lines(order, record));
+    }
+    lines
+}
+
+/// The overrides of a merge-policy record that took no part in it, and why (LMC-REC-006).
+fn ownership_lines(order: &LoadOrder, record: &ListMergeRecord) -> Vec<String> {
+    let names = |plugins: &[u32]| plugins.iter().map(|&plugin| plugin_name(order, plugin as usize)).collect::<Vec<_>>().join(", ");
+    let mut lines = Vec::new();
+    if !record.no_ops.is_empty() {
+        lines.push(format!(
+            "no-op: {} — identical to the record it would replace, so it takes no ownership (LMC-REC-006)",
+            names(&record.no_ops)
+        ));
+    }
+    if !record.unchanged.is_empty() {
+        lines.push(format!(
+            "changes nothing: {} — identical to the record it overrides, so under merge it undoes nothing; under legacy \
+             it would win the record whole",
+            names(&record.unchanged)
+        ));
+    }
     lines
 }
 
@@ -341,6 +365,7 @@ fn merge_lines(order: &LoadOrder, record: &ListMergeRecord) -> Vec<String> {
     if let Some((winner, over)) = &record.wholesale {
         lines.push(format!("won whole by {}, a dependent override of {}", plugin_name(order, *winner as usize), names(over)));
     }
+    lines.extend(ownership_lines(order, record));
     let op_text = |op: EntryOp| match op {
         EntryOp::Add => "added",
         EntryOp::Change => "changed",
@@ -658,8 +683,9 @@ mod tests {
     }
 
     /// Real data (ignored: it parses `Skyrim.esm`): Dawnguard and Hearthfires, neither a master of the other, both
-    /// override three vanilla containers. Dawnguard's record changes nothing the merge reads and Hearthfires adds its
-    /// own item, so `merge` gives what `legacy` does and says why (LMC-REC-003).
+    /// override three vanilla containers. Dawnguard's record changes nothing the merge reads, so it is a no-op that takes
+    /// no ownership (LMC-REC-006), and Hearthfires, a dependent of the vanilla record alone, wins whole: `merge` gives
+    /// what `legacy` does, and the report says Dawnguard took no part.
     #[test]
     #[ignore = "parses Skyrim.esm, Dawnguard.esm and HearthFires.esm; run with --ignored"]
     fn the_skyrim_dlc_containers_merge_to_what_legacy_keeps() {
@@ -684,9 +710,13 @@ mod tests {
             };
             assert_eq!(contents(&merged), contents(&legacy), "{form:08X}");
             let lines = form_lines(&order, form, Some(*b"CONT"));
-            assert!(lines.iter().any(|line| line.starts_with("merged from: dawnguard.esm, hearthfires.esm")), "{lines:?}");
-            let added = format!("  entry {:08X}: added by hearthfires.esm", hearthfires.compose(0x915));
-            assert!(lines.contains(&added), "{lines:?}");
+            assert!(lines.iter().any(|line| line.ends_with("hearthfires.esm (wins)")), "{lines:?}");
+            assert!(lines.iter().any(|line| line.starts_with("no-op: dawnguard.esm — identical")), "{lines:?}");
+            let state = order.list_merge().records(form).next().expect("the container was folded");
+            assert!(!state.is_merged(), "{state:?}");
+            assert_eq!(state.wholesale.as_ref().map(|(winner, _)| *winner), Some(3), "hearthfires won whole");
+            let added = state.entries.iter().any(|((_, entry), _)| *entry == hearthfires.compose(0x915));
+            assert!(added, "hearthfires' own item is its operation: {state:?}");
         }
     }
 

@@ -11,6 +11,11 @@
 //!
 //! - **Scope.** Only *independent* overrides merge: a plugin that declares, directly or through its masters, every
 //!   plugin whose changes the record holds so far (a patch) wins it whole, as under `legacy`.
+//! - **Ownership (LMC-REC-006).** An override identical to the record it would replace is a *no-op*: it takes no
+//!   ownership, so it neither wins the record whole nor becomes a contributor a later patch must master. An
+//!   independent override identical to its own base *changes nothing*: it is no contributor either, and the changes
+//!   before it stand, where `legacy` would let its record undo them. A record counts as merged when more than one
+//!   plugin's changes are in it or when it differs from the record `legacy` keeps.
 //! - **Per form.** An override is diffed against the record it overrides, its *base*: the latest earlier carrier among
 //!   its own masters (the definer at the least). Each list's entries are grouped by the form they name and compared as
 //!   multisets of the rest of each entry (a levelled entry's level and count, an inventory entry's count, a faction's
@@ -408,12 +413,19 @@ pub struct ListMergeRecord {
     pub entries: Vec<((&'static str, u32), Resolution<EntryOp>)>,
     /// Per field a contributor changed, by its name, likewise.
     pub fields: Vec<(&'static str, Resolution<()>)>,
+    /// Overrides identical to the record they would replace (LMC-REC-006): no-ops, which take no ownership.
+    pub no_ops: Vec<u32>,
+    /// Independent overrides identical to the record they override (their base), which therefore change nothing
+    /// under `merge`; under `legacy` such an override wins the record whole and undoes the changes before it.
+    pub unchanged: Vec<u32>,
+    /// The merged record differs from the last carrier's own record, the one `legacy` keeps.
+    pub legacy_differs: bool,
 }
 
 impl ListMergeRecord {
-    /// Whether more than one plugin's changes are in the record.
+    /// Whether more than one plugin's changes are in the record, or the record differs from what `legacy` keeps.
     pub fn is_merged(&self) -> bool {
-        self.contributors.len() > 1
+        self.contributors.len() > 1 || self.legacy_differs
     }
 
     /// How many operations were overruled.
@@ -494,6 +506,12 @@ fn replace_form<E: ListEntry>(current: &mut Vec<E>, form: u32, entries: &[E]) ->
     true
 }
 
+/// Whether `a` and `b` are the same record as the merge reads them: every field equal, every list holding the same
+/// entries per form (order aside).
+fn same_record<R: ListRecord>(a: &R, b: &R) -> bool {
+    R::FIELDS.iter().all(|field| (field.same)(a, b)) && R::LISTS.iter().all(|list| (list.diff)(a, b).is_empty())
+}
+
 /// Record that `winner`'s `op` decided `key`, overruling the operation that had.
 fn decide<K: PartialEq + Copy, Op: Copy>(resolutions: &mut Vec<(K, Resolution<Op>)>, key: K, winner: u32, op: Op) {
     match resolutions.iter_mut().find(|(k, _)| *k == key) {
@@ -515,6 +533,9 @@ impl<R: ListRecord> ListState<R> {
                 wholesale: None,
                 entries: Vec::new(),
                 fields: Vec::new(),
+                no_ops: Vec::new(),
+                unchanged: Vec::new(),
+                legacy_differs: false,
             },
             carriers: vec![(previous, record.clone())],
             current: record.clone(),
@@ -524,6 +545,13 @@ impl<R: ListRecord> ListState<R> {
     /// Fold `incoming`, the record of the plugin at `position`. `true` when the result is a merge the fold must write
     /// back over the plugin's own record; `false` when the plugin won the record whole.
     fn fold(&mut self, position: u32, incoming: &R, depends_on: &dyn Fn(u32, u32) -> bool) -> bool {
+        // LMC-REC-006 — an override identical to the record it would replace is a no-op: it takes no ownership, so
+        // it neither wins the record whole nor becomes a contributor a later patch must master.
+        if same_record(&self.current, incoming) {
+            self.record.no_ops.push(position);
+            self.carriers.push((position, incoming.clone()));
+            return true;
+        }
         let contributors = &self.record.contributors;
         if contributors.iter().all(|&contributor| depends_on(position, contributor)) {
             // A dependent override wins whole. What it changed in the list it replaced is still its operations, so
@@ -555,18 +583,26 @@ impl<R: ListRecord> ListState<R> {
             .unwrap_or(&self.carriers[0])
             .1
             .clone();
+        let mut changed = false;
         for list in R::LISTS {
             for (form, op) in (list.fold)(&base, incoming, &mut self.current) {
                 decide(&mut self.record.entries, (list.entry, form), position, op);
+                changed = true;
             }
         }
         for field in R::FIELDS {
             if !(field.same)(&base, incoming) && !(field.same)(&self.current, incoming) {
                 (field.copy)(incoming, &mut self.current);
                 decide(&mut self.record.fields, field.name, position, ());
+                changed = true;
             }
         }
-        self.record.contributors.push(position);
+        // An override that decided nothing holds none of the record's changes: it is not a contributor.
+        if changed {
+            self.record.contributors.push(position);
+        } else {
+            self.record.unchanged.push(position);
+        }
         self.carriers.push((position, incoming.clone()));
         true
     }
@@ -643,7 +679,10 @@ fn note_records<R: ListRecord>(
                 let previous = carriers.len().checked_sub(2).map_or(0, |at| carriers[at].plugin);
                 ListState::new(kind, previous, current)
             });
-            if state.fold(position, incoming, depends_on) {
+            let write_back = state.fold(position, incoming, depends_on);
+            // `legacy` keeps this plugin's own record whole; the merge reports where it does not.
+            state.record.legacy_differs = !same_record(&state.current, incoming);
+            if write_back {
                 let record = state.current.clone();
                 pending.0.push(Box::new(move |merged| {
                     R::records_mut(kind, merged).insert(form, record);
