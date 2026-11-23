@@ -518,10 +518,12 @@ fn assign_patches_with(
 /// `cells` (cleared first).
 fn nearby_cells(world: &World, cam_xz: [f32; 2], reach: f32, cells: &mut Vec<PatchCell>) {
     cells.clear();
-    let (Some(origins), Some(tiles), Some(meshes)) = (
+    // #7314 — `MeshHandle` before `TerrainTileSlot`: the static-mesh collector and cell unload
+    // hold them in that order, and a tuple acquires left to right with every guard kept.
+    let (Some(origins), Some(meshes), Some(tiles)) = (
         world.query::<TerrainCellOrigin>(),
-        world.query::<TerrainTileSlot>(),
         world.query::<MeshHandle>(),
+        world.query::<TerrainTileSlot>(),
     ) else {
         return;
     };
@@ -1144,5 +1146,29 @@ mod tests {
         }
         state.level = LevelSetting::Distance { fine_range_m: 0.0 };
         assert_eq!(state.ranges().level, distance(0.0));
+    }
+
+    /// #7314 — the static-mesh collector (`StaticMeshQueries::new`) and cell unload
+    /// (`collect_victim_gpu_handles`) hold `MeshHandle` while they take `TerrainTileSlot`;
+    /// `nearby_cells` must take the two in that order too. No patch fixture had all three of its
+    /// storages, so the lock-order lane (`BYRO_LOCK_ORDER_CHECK=1`) never saw both edges. The
+    /// collector's edge is taken here the way it takes it, then the host gathers.
+    #[test]
+    fn nearby_cells_takes_mesh_handle_before_terrain_tile_slot() {
+        let mut world = World::new();
+        let cell = world.spawn();
+        world.insert(cell, TerrainCellOrigin { origin_xz: [0.0, 0.0], hidden_quadrants: 0 });
+        world.insert(cell, TerrainTileSlot(3));
+        world.insert(cell, MeshHandle(9));
+        {
+            // The collector: `MeshHandle` held, then `TerrainTileSlot`.
+            let meshes = world.query::<MeshHandle>();
+            let _tiles = world.query::<TerrainTileSlot>();
+            drop(meshes);
+        }
+        let mut cells = Vec::new();
+        nearby_cells(&world, [100.0, -100.0], RANGE, &mut cells);
+        assert_eq!(cells.len(), 1);
+        assert_eq!((cells[0].base_mesh, cells[0].tile), (9, 3));
     }
 }
