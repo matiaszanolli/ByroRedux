@@ -137,24 +137,24 @@ pub(crate) fn install(world: &mut byroredux_core::ecs::world::World) {
     world.insert_resource(store);
 }
 
-/// PapyrusUtil `JsonUtil`'s files (LMC PRD Q5, [`byroredux_scripting::json_util`]): the profile's own copy under
-/// `<settings.toml's directory>/moddata/<base master>/<profile>/skse/plugins/`, written when the game saves, over a
-/// mod root's shipped `SKSE/Plugins/…` file (loose files, as PapyrusUtil reads them).
+/// The mod data files PapyrusUtil's `JsonUtil` and JContainers read and write (LMC PRD Q5,
+/// [`byroredux_scripting::json_util`]): the profile's own copy under `<settings.toml's directory>/moddata/<base
+/// master>/<profile>/`, by its path under `Data/`, over a mod root's shipped file (loose files, as both read them).
 struct JsonFiles {
     sources: LayeredSources,
-    plugins_dir: PathBuf,
+    data_dir: PathBuf,
 }
 
 impl JsonFiles {
-    /// The profile's copy of a resolved path (lowercase, `/`-separated, never above `skse/plugins/`).
+    /// The profile's copy of a resolved path (lowercase, `/`-separated, never above `Data/`).
     fn profile_path(&self, path: &str) -> PathBuf {
-        path.split('/').fold(self.plugins_dir.clone(), |dir, part| dir.join(part))
+        path.split('/').fold(self.data_dir.clone(), |dir, part| dir.join(part))
     }
 }
 
 impl byroredux_scripting::json_util::JsonUtilFiles for JsonFiles {
     fn read(&self, path: &str) -> Option<Vec<u8>> {
-        std::fs::read(self.profile_path(path)).ok().or_else(|| self.sources.extract(&format!("skse\\plugins\\{}", path.replace('/', "\\"))))
+        std::fs::read(self.profile_path(path)).ok().or_else(|| self.sources.extract(&path.replace('/', "\\")))
     }
     fn write(&self, path: &str, text: &str) -> Result<(), String> {
         let target = self.profile_path(path);
@@ -168,10 +168,10 @@ impl byroredux_scripting::json_util::JsonUtilFiles for JsonFiles {
             .filter_map(|entry| entry.file_name().into_string().ok())
             .chain(
                 self.sources
-                    .list(&format!("skse\\plugins\\{}\\", folder.replace('/', "\\")))
+                    .list(&format!("{}\\", folder.replace('/', "\\")))
                     .iter()
                     .filter_map(|path| path.rsplit_once('\\').map(|(dir, name)| (dir.to_owned(), name.to_owned())))
-                    .filter(|(dir, _)| dir.eq_ignore_ascii_case(&format!("skse\\plugins\\{}", folder.replace('/', "\\"))))
+                    .filter(|(dir, _)| dir.eq_ignore_ascii_case(&folder.replace('/', "\\")))
                     .map(|(_, name)| name),
             )
             .filter(|name| name.to_ascii_lowercase().ends_with(".json"))
@@ -197,10 +197,11 @@ pub(crate) fn install_json_util(world: &mut byroredux_core::ecs::world::World) {
     let settings_dir = settings.path().parent().map(Path::to_path_buf).unwrap_or_default();
     let profile = crate::cli_args::parse_string_arg(&args, PROFILE_NAME_FLAG);
     let files = JsonFiles {
-        sources: LayeredSources::over(Vec::new(), &args, &["skse\\plugins\\"], &[]),
-        plugins_dir: profile_dir(&settings_dir, "moddata", &base_master, profile.as_deref()).join("skse").join("plugins"),
+        // Any loose tier: JContainers reads files anywhere under `Data/`.
+        sources: LayeredSources::over(Vec::new(), &args, &[""], &[]),
+        data_dir: profile_dir(&settings_dir, "moddata", &base_master, profile.as_deref()),
     };
-    log::debug!("JsonUtil: {} loose tier(s); files in {}", files.sources.tier_count(), files.plugins_dir.display());
+    log::debug!("JsonUtil: {} loose tier(s); files in {}", files.sources.tier_count(), files.data_dir.display());
     world.insert_resource(byroredux_scripting::json_util::JsonUtilStore::new(Arc::new(files)));
 }
 
@@ -236,9 +237,10 @@ mod tests {
     fn json_util_files_write_and_list_in_the_profile_directory() {
         use byroredux_scripting::json_util::{resolve, resolve_folder, JsonUtilFiles};
         let root = std::env::temp_dir().join(format!("byro-jsonutil-{}", std::process::id()));
-        let plugins_dir = profile_dir(&root, "moddata", "Skyrim.esm", Some("Main")).join("skse").join("plugins");
-        assert_eq!(plugins_dir, root.join("moddata/skyrim/Main/skse/plugins"));
-        let files = JsonFiles { sources: LayeredSources::over(Vec::new(), &[], &["skse\\plugins\\"], &[]), plugins_dir: plugins_dir.clone() };
+        let data_dir = profile_dir(&root, "moddata", "Skyrim.esm", Some("Main"));
+        assert_eq!(data_dir, root.join("moddata/skyrim/Main"));
+        let plugins_dir = data_dir.join("skse").join("plugins");
+        let files = JsonFiles { sources: LayeredSources::over(Vec::new(), &[], &[""], &[]), data_dir };
         let path = resolve("MyMod/Settings").unwrap();
         assert!(files.read(&path).is_none());
         files.write(&path, "{\"int\":{\"a\":1}}").unwrap();

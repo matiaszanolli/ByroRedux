@@ -31,6 +31,8 @@ mod favor;
 mod form_list;
 mod forms;
 mod game_utility;
+mod jcontainers;
+pub(in crate::fragment::vm) use jcontainers::CLASSES as JC_CLASSES;
 mod json_util;
 mod linked_refs;
 mod location;

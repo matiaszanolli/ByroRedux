@@ -436,6 +436,8 @@ pub fn build_save_registry() -> SaveRegistry {
     // placement, so a quest's created reference respawns in its cell.
     byroredux_scripting::created_references::register_saved(&mut r);
     byroredux_scripting::alias_overrides::register_saved(&mut r);
+    byroredux_scripting::json_util::register_saved(&mut r);
+    byroredux_scripting::jcontainers::register_saved(&mut r);
     byroredux_scripting::fragment::register_state_saved(&mut r);
     byroredux_scripting::map_markers::register_saved(&mut r);
     byroredux_scripting::location::register_saved_location_clear_state(&mut r);

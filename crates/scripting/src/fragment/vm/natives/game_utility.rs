@@ -50,14 +50,18 @@ impl Vm<'_> {
         if class == "mcmhelper" {
             return self.read_mcm_helper(frame, name, args);
         }
-        // LMC Q5 — PapyrusUtil's file-backed values; `StorageUtil` serves only its `File*` functions.
+        // LMC Q5 — PapyrusUtil's file-backed values (`JsonUtil`, `StorageUtil.File*`) and `StorageUtil`'s
+        // form-keyed ones.
         if class == "jsonutil" {
             return self.read_json_util(frame, name, args, false);
+        }
+        if super::jcontainers::CLASSES.contains(&class) {
+            return self.read_jcontainers(frame, class, name, args);
         }
         if class == "storageutil" {
             return match name.strip_prefix("file") {
                 Some(rest) => self.read_json_util(frame, rest, args, true),
-                None => stop(format!("StorageUtil.{name}")),
+                None => self.read_storage_util(frame, name, args),
             };
         }
         // LMC-SCR-010 — the extenders' version probes.
@@ -268,6 +272,9 @@ impl Checker<'_> {
         }
         if class == "skse" || class == "f4se" {
             return self.check_extender_probe(class, name, arg_kinds.len());
+        }
+        if super::jcontainers::CLASSES.contains(&class) {
+            return self.check_jcontainers(class, name);
         }
         if class == "game" && name == "getplayer" {
             return Some(Kind::Player);

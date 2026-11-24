@@ -1619,7 +1619,9 @@ fn the_schema_fingerprint_is_pinned() {
     // position, new policy.
     // LMC-ID-007 / LMC-SAV-001 (#6670) — `SessionProfile` joined the registry as a new resource codec column (the
     // profile the save was made with), registered after `CurrentExteriorContext`.
-    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x4076_e472_2f99_f830;
+    // LMC Q5 — `StorageUtilValues` (PapyrusUtil StorageUtil's form-keyed values) and `JcHeap` (JContainers' objects)
+    // joined the registry as new resource columns, registered after `AliasOverrides`.
+    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x7c9f_fdda_9827_9520;
     let actual = build_save_registry().schema_fingerprint();
     assert_eq!(
         actual, BASELINE_SCHEMA_FINGERPRINT,

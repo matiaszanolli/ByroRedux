@@ -710,7 +710,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// v148 -> v149 (Hand Equipment PRD, #7399): `EquipmentSlots` gained `left_spell` and `right_spell`, the
 /// spells readied in each hand (stable FormIDs, required fields), and the saved `Effect::EquipItem`
 /// gained `left` (`EquipItemEx`'s hand); a v148 row has neither.
-pub const FORMAT_MAJOR: u16 = 149;
+///
+/// v149 -> v150 (LMC Q5): the saved `StorageUtilValues` resource (PapyrusUtil `StorageUtil`'s form-keyed values,
+/// keyed by plugin-and-id text) and the saved `JcHeap` (JContainers' objects); a v149 save has neither.
+pub const FORMAT_MAJOR: u16 = 150;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

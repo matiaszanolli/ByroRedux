@@ -7062,7 +7062,7 @@ fn json_util_storage_util_files_and_mod_index_reads() {
     ]));
     let files = std::sync::Arc::new(MemoryJsonFiles {
         shipped: std::collections::HashMap::from([(
-            "storageutildata/mymod/settings.json".to_owned(),
+            "skse/plugins/storageutildata/mymod/settings.json".to_owned(),
             r#"{ "int": { "difficulty": 4 } }"#.to_owned(),
         )]),
         ..Default::default()
@@ -7101,12 +7101,187 @@ fn json_util_storage_util_files_and_mod_index_reads() {
 
     assert_eq!(world.resource_mut::<JsonUtilStore>().save_modified(), 2);
     let profile = files.profile.lock().unwrap();
-    let settings: serde_json::Value = serde_json::from_str(&profile["storageutildata/mymod/settings.json"]).unwrap();
+    let settings: serde_json::Value = serde_json::from_str(&profile["skse/plugins/storageutildata/mymod/settings.json"]).unwrap();
     assert_eq!(settings["int"], serde_json::json!({ "difficulty": 4, "visits": 2 }));
     assert_eq!(settings["intList"]["levels"], serde_json::json!([3]));
     assert_eq!(settings["form"]["item"], serde_json::json!("0x12eb7|Skyrim.esm"), "PapyrusUtil's form string");
-    let storage: serde_json::Value = serde_json::from_str(&profile["storageutil.json"]).unwrap();
+    let storage: serde_json::Value = serde_json::from_str(&profile["skse/plugins/storageutil.json"]).unwrap();
     assert_eq!(storage["string"]["name"], serde_json::json!("Lydia"));
+}
+
+/// LMC Q5: `StorageUtil`'s values on a form and globally (set, pluck, a zero unsets, list shift / pop / sort,
+/// prefix counts across objects, the debug listings) and `JsonUtil`'s paths and `ListRandom`.
+#[test]
+fn storage_util_form_values_and_json_util_paths() {
+    use crate::json_util::{tests::MemoryJsonFiles, JsonUtilStore, StorageUtilValues};
+    use byroredux_core::form_id::PluginId;
+    use byroredux_plugin::esm::reader::GlobalSlot;
+    use byroredux_sdk::content::{ContentCatalog, PluginInfo, PluginKind};
+    const LYDIA: u32 = 0x000A_2C94;
+    let script = parsed_source(
+        "ScriptName QF_VmStorage extends Quest\n\
+         Actor Property Lydia Auto\n\
+         Int Property Results Auto\n\
+         Int Property Plucked Auto\n\
+         Int Property Shifted Auto\n\
+         Int Property Prefixed Auto\n\
+         Int Property PathValue Auto\n\
+         Function Fragment_1()\n\
+           StorageUtil.SetIntValue(Lydia, \"mymod_mood\", 3)\n\
+           StorageUtil.SetIntValue(None, \"mymod_visits\", 7)\n\
+           If StorageUtil.GetIntValue(Lydia, \"MyMod_Mood\") == 3 && StorageUtil.GetIntValue(None, \"mymod_visits\") == 7\n Results += 1\n EndIf\n\
+           Plucked = StorageUtil.PluckIntValue(None, \"mymod_visits\")\n\
+           If !StorageUtil.HasIntValue(None, \"mymod_visits\")\n Results += 10\n EndIf\n\
+           StorageUtil.SetIntValue(Lydia, \"temp\", 5)\n\
+           StorageUtil.SetIntValue(Lydia, \"temp\", 0)\n\
+           If !StorageUtil.HasIntValue(Lydia, \"temp\")\n Results += 100\n EndIf\n\
+           StorageUtil.IntListAdd(Lydia, \"mymod_order\", 3)\n\
+           StorageUtil.IntListAdd(Lydia, \"mymod_order\", 1)\n\
+           StorageUtil.IntListAdd(Lydia, \"mymod_order\", 2)\n\
+           StorageUtil.IntListSort(Lydia, \"mymod_order\")\n\
+           Shifted = StorageUtil.IntListShift(Lydia, \"mymod_order\")\n\
+           If StorageUtil.IntListPop(Lydia, \"mymod_order\") == 3 && StorageUtil.IntListCount(Lydia, \"mymod_order\") == 1\n Results += 1000\n EndIf\n\
+           Prefixed = StorageUtil.CountAllPrefix(\"mymod_\")\n\
+           If StorageUtil.debug_GetIntObject(0) == Lydia && StorageUtil.debug_GetIntObjectCount() == 1\n Results += 10000\n EndIf\n\
+           JsonUtil.SetPathIntValue(\"paths\", \".foo.bar[1]\", 10)\n\
+           PathValue = JsonUtil.GetPathIntValue(\"paths\", \"foo.bar[1]\")\n\
+           If JsonUtil.PathCount(\"paths\", \".foo.bar\") == 2 && JsonUtil.IsPathArray(\"paths\", \".foo.bar\") && !JsonUtil.CanResolvePath(\"paths\", \".nope\")\n Results += 100000\n EndIf\n\
+           JsonUtil.IntListAdd(\"paths\", \"one\", 42)\n\
+           If JsonUtil.IntListRandom(\"paths\", \"one\") == 42\n Results += 1000000\n EndIf\n\
+         EndFunction\n",
+    );
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(crate::ScriptGame(byroredux_plugin::esm::reader::GameKind::Skyrim));
+    world.insert_resource(QuestStageState::default());
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.insert_resource(crate::QuestScriptObjects::default());
+    let plugin = |name: &str| PluginInfo::new(name, PluginId::from_filename(name).0.to_be_bytes(), PluginKind::Regular).unwrap();
+    crate::set_legacy_obscript_content_catalog(&world, std::sync::Arc::new(ContentCatalog::new(vec![plugin("Skyrim.esm")]).unwrap()));
+    world.insert_resource(crate::LoadOrderIdentity::new(vec![(GlobalSlot::Regular(0), PluginId::from_filename("Skyrim.esm"))]));
+    world.insert_resource(JsonUtilStore::new(std::sync::Arc::new(MemoryJsonFiles::default())));
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    let vmad = ScriptInstanceData {
+        version: 5,
+        object_format: 2,
+        scripts: vec![ScriptInstance {
+            name: "QF_VmStorage".into(),
+            status: 0,
+            properties: vec![ScriptProperty { name: "Lydia".into(), status: 1, value: PropertyValue::Object { form_id: LYDIA, alias: -1 } }],
+        }],
+    };
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        fragments.insert_vmad(Q, vmad);
+        fragments.insert_vm_script(Arc::clone(&script));
+        fragments.insert(
+            Q,
+            10,
+            vec![Effect::Interpret { script: "QF_VmStorage".into(), function: "Fragment_1".into(), args: Vec::new(), resume: None }],
+        );
+    }
+    if let Err(why) = crate::fragment::vm::checker::check_function_reason(Arc::clone(&script), "Fragment_1", None) {
+        panic!("{why}")
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(quest_property(&world, "Plucked"), Some(7.0), "a pluck returns the value");
+    assert_eq!(quest_property(&world, "Shifted"), Some(1.0), "sorted, then shifted from the front");
+    assert_eq!(quest_property(&world, "Prefixed"), Some(2.0), "mymod_mood and mymod_order on Lydia");
+    assert_eq!(quest_property(&world, "PathValue"), Some(10.0));
+    assert_eq!(quest_property(&world, "Results"), Some(1_111_111.0), "every read answered");
+    let mut values = world.resource_mut::<StorageUtilValues>();
+    let lydia = values.doc("0xa2c94|Skyrim.esm").get(crate::json_util::Kind::Int, "mymod_mood");
+    assert_eq!(lydia, Some(serde_json::json!(3)), "keyed by the form's plugin and id");
+}
+
+/// LMC Q5: a mod script's JContainers calls through a fragment: a `JMap` with an array and a form map in it, `JDB`
+/// and `JFormDB` paths, `JAtomic`, a file written and read back in JContainers' format, and the version checks.
+#[test]
+fn jcontainers_objects_paths_files_and_version() {
+    use crate::jcontainers::JcHeap;
+    use crate::json_util::{tests::MemoryJsonFiles, JsonUtilStore};
+    use byroredux_core::form_id::PluginId;
+    use byroredux_plugin::esm::reader::GlobalSlot;
+    use byroredux_sdk::content::{ContentCatalog, PluginInfo, PluginKind};
+    const LYDIA: u32 = 0x000A_2C94;
+    let script = parsed_source(
+        "ScriptName QF_VmJc extends Quest\n\
+         Actor Property Lydia Auto\n\
+         Int Property Results Auto\n\
+         Int Property Previous Auto\n\
+         Int Property Copy Auto\n\
+         Function Fragment_1()\n\
+           int jSettings = JMap.object()\n\
+           JMap.setInt(jSettings, \"Difficulty\", 3)\n\
+           int jLevels = JArray.objectWithInts(new int[3])\n\
+           JArray.setInt(jLevels, -1, 7)\n\
+           JMap.setObj(jSettings, \"levels\", jLevels)\n\
+           int jByActor = JFormMap.object()\n\
+           JFormMap.setStr(jByActor, Lydia, \"housecarl\")\n\
+           JMap.setObj(jSettings, \"byActor\", jByActor)\n\
+           JDB.setObj(\"mymod\", jSettings)\n\
+           If JDB.solveInt(\".mymod.difficulty\") == 3 && JDB.solveInt(\".mymod.levels[2]\") == 7\n Results += 1\n EndIf\n\
+           If JValue.solveStr(jSettings, \".byActor[__formData|Skyrim.esm|0xa2c94]\") == \"housecarl\"\n Results += 10\n EndIf\n\
+           JFormDB.solveIntSetter(Lydia, \".mymodforms.mood\", 5, true)\n\
+           If JFormDB.getInt(Lydia, \".mymodforms.mood\") == 5 && JFormDB.findEntry(\"mymodforms\", Lydia) != 0\n Results += 100\n EndIf\n\
+           Previous = JAtomic.fetchAddInt(jSettings, \".difficulty\", 2)\n\
+           If JMap.getInt(jSettings, \"DIFFICULTY\") == 5\n Results += 1000\n EndIf\n\
+           JValue.writeToFile(jSettings, \"Data/SKSE/Plugins/MyMod/settings.json\")\n\
+           Copy = JValue.readFromFile(\"Data/SKSE/Plugins/MyMod/settings.json\")\n\
+           If JValue.solveInt(Copy, \".levels[2]\") == 7 && JValue.solveForm(Copy, \".byActor[__formData|Skyrim.esm|0xa2c94]\") == None\n Results += 10000\n EndIf\n\
+           If JContainers.isInstalled() && JContainers.versionAtLeast(4, 3) && JContainers.APIVersion() == 4\n Results += 100000\n EndIf\n\
+         EndFunction\n",
+    );
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(crate::ScriptGame(byroredux_plugin::esm::reader::GameKind::Skyrim));
+    world.insert_resource(QuestStageState::default());
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.insert_resource(crate::QuestScriptObjects::default());
+    let plugin = |name: &str| PluginInfo::new(name, PluginId::from_filename(name).0.to_be_bytes(), PluginKind::Regular).unwrap();
+    crate::set_legacy_obscript_content_catalog(&world, std::sync::Arc::new(ContentCatalog::new(vec![plugin("Skyrim.esm")]).unwrap()));
+    world.insert_resource(crate::LoadOrderIdentity::new(vec![(GlobalSlot::Regular(0), PluginId::from_filename("Skyrim.esm"))]));
+    let files = std::sync::Arc::new(MemoryJsonFiles::default());
+    world.insert_resource(JsonUtilStore::new(files.clone()));
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    let vmad = ScriptInstanceData {
+        version: 5,
+        object_format: 2,
+        scripts: vec![ScriptInstance {
+            name: "QF_VmJc".into(),
+            status: 0,
+            properties: vec![ScriptProperty { name: "Lydia".into(), status: 1, value: PropertyValue::Object { form_id: LYDIA, alias: -1 } }],
+        }],
+    };
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        fragments.insert_vmad(Q, vmad);
+        fragments.insert_vm_script(Arc::clone(&script));
+        fragments.insert(
+            Q,
+            10,
+            vec![Effect::Interpret { script: "QF_VmJc".into(), function: "Fragment_1".into(), args: Vec::new(), resume: None }],
+        );
+    }
+    if let Err(why) = crate::fragment::vm::checker::check_function_reason(Arc::clone(&script), "Fragment_1", None) {
+        panic!("{why}")
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(quest_property(&world, "Previous"), Some(3.0), "fetchAdd returns the value before");
+    assert_eq!(quest_property(&world, "Results"), Some(111_111.0), "every read answered");
+    let written: serde_json::Value = serde_json::from_str(&files.profile.lock().unwrap()["skse/plugins/mymod/settings.json"]).unwrap();
+    assert_eq!(written["levels"], serde_json::json!([0, 0, 7]));
+    assert_eq!(written["byActor"]["__metaInfo"]["typeName"], serde_json::json!("JFormMap"));
+    assert_eq!(written["byActor"]["__formData|Skyrim.esm|0xa2c94"], serde_json::json!("housecarl"));
+    // JDB holds the settings: a sweep long after keeps them, and drops nothing JDB reaches.
+    let mut heap = world.resource_mut::<JcHeap>();
+    let alive = heap.len();
+    heap.sweep(1.0e9);
+    assert!(heap.len() >= 4 && heap.len() < alive, "JDB's tree stays; the unowned copy read from file goes");
 }
 
 /// The second native wave: `SetScale` scales a reference, `SetRestrained` restrains an actor other than
