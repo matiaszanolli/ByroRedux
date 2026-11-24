@@ -30,6 +30,8 @@ pub(super) fn register_reference_scripts_systems(scheduler: &mut Scheduler) {
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::mcm::mcm_registration_system);
     // LMC-UI-002 slice 4b — MCM Helper's hotkeys: this frame's key presses and releases run them.
     scheduler.add_exclusive(Stage::Update, crate::mcm_hotkeys::mcm_hotkey_system);
+    // LMC-SCR-004 — the script extenders' key and control events and Input key state.
+    scheduler.add_exclusive(Stage::Update, crate::mcm_hotkeys::extender_input_system);
     scheduler.add_exclusive(Stage::Update, check_alias_scripts_dispatch);
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::alias_script_event_system);
     scheduler.add_exclusive(

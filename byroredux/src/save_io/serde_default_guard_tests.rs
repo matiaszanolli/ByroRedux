@@ -917,7 +917,8 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // LMC-SAV-002..004 (#6676) slice 3 — refreshed WITH a major bump (v146 -> v147): the six pre-reload ledgers'
     // FormIDs save as stable identities.
     // Hand Equipment (#7398) — refreshed WITH a major bump (v147 -> v148): `EquipmentSlots.left_hand`.
-    const BASELINE_MAJOR: u16 = 150;
+    // LMC-SCR-004 — refreshed WITH a major bump (v150 -> v151): the new saved `InputEventRegistrations`.
+    const BASELINE_MAJOR: u16 = 151;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1407,7 +1408,8 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // Hand Equipment (#7399) — v149: `EquipmentSlots.left_spell` / `right_spell` and `Effect::EquipItem.left`
     // (plus the new `Effect::EquipSpell`), refreshed WITH the major bump above.
     // LMC Q5 — v150: the new saved `StorageUtilValues` and `JcHeap`, refreshed WITH the major bump above.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xb5ba_22a4_a81f_1abf;
+    // LMC-SCR-004 — v151: the new saved `InputEventRegistrations`, refreshed WITH the major bump above.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xb208_ad62_e213_f466;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.

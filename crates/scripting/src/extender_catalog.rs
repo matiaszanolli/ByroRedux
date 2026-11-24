@@ -439,42 +439,64 @@ fn placeholder(ty: &str) -> &'static str {
     }
 }
 
-/// The probe script calling `row` with typed placeholders: the call the VM must accept to serve it.
-fn probe_source(row: &CatalogRow) -> Option<String> {
-    let script = row.script.as_deref()?;
-    let (ret, params) = papyrus_signature(&row.signature)?;
-    let mut body = String::new();
+/// The probe scripts calling `row` with typed placeholders: the calls the VM must accept to serve it. An instance
+/// function is called on a typed receiver and, when the probe (a quest script) is itself of `row`'s script (`Quest`
+/// or an ancestor, such as `Form`), also on itself, as a script calls its own registrations.
+fn probe_sources(row: &CatalogRow) -> Vec<String> {
+    let Some(script) = row.script.as_deref() else { return Vec::new() };
+    let Some((ret, params)) = papyrus_signature(&row.signature) else { return Vec::new() };
+    let mut setup = String::new();
     let mut args = Vec::new();
     for (index, ty) in params.iter().enumerate() {
-        body.push_str(&format!(" {ty} a{index} = {}\n", placeholder(ty)));
+        setup.push_str(&format!(" {ty} a{index} = {}\n", placeholder(ty)));
         args.push(format!("a{index}"));
     }
-    let receiver = if row.global {
-        script.to_owned()
-    } else {
-        body.push_str(&format!(" {script} akReceiver = None\n"));
-        "akReceiver".to_owned()
+    let probe = |receiver_setup: &str, receiver: Option<&str>| {
+        let call = match receiver {
+            Some(receiver) => format!("{receiver}.{}({})", row.function, args.join(", ")),
+            None => format!("{}({})", row.function, args.join(", ")),
+        };
+        let line = if ret.eq_ignore_ascii_case("none") { format!(" {call}\n") } else { format!(" {ret} r = {call}\n") };
+        format!("ScriptName ExtenderCatalogProbe extends Quest\nFunction Probe()\n{setup}{receiver_setup}{line}EndFunction\n")
     };
-    let call = format!("{receiver}.{}({})", row.function, args.join(", "));
-    if ret.eq_ignore_ascii_case("none") {
-        body.push_str(&format!(" {call}\n"));
-    } else {
-        body.push_str(&format!(" {ret} r = {call}\n"));
+    if row.global {
+        return vec![probe("", Some(script))];
     }
-    Some(format!("ScriptName ExtenderCatalogProbe extends Quest\nFunction Probe()\n{body}EndFunction\n"))
+    let mut sources = vec![probe(&format!(" {script} akReceiver = None\n"), Some("akReceiver"))];
+    let quest_is_a = |game: &str| {
+        let mut current = Some("Quest");
+        for _ in 0..32 {
+            match current {
+                Some(name) if name.eq_ignore_ascii_case(script) => return true,
+                Some(name) => current = vanilla_parent(game, name),
+                None => return false,
+            }
+        }
+        false
+    };
+    let game = match row.family.as_str() {
+        "skse64" => Some("skyrim"),
+        "f4se" => Some("fo4"),
+        _ => None,
+    };
+    if game.is_some_and(quest_is_a) {
+        sources.push(probe("", None));
+    }
+    sources
 }
 
 /// Whether the Papyrus VM's checker accepts a call of `row`'s declared signature, checked for its family's game.
 pub fn vm_serves(row: &CatalogRow) -> bool {
-    let Some(source) = probe_source(row) else { return false };
-    let Ok((script, errors)) = byroredux_papyrus::parse_script(&source) else { return false };
-    if !errors.is_empty() {
-        return false;
-    }
-    match family_game(&row.family) {
-        Some(game) => crate::fragment::vm::check_function_for_game(Arc::new(script), "Probe", game).is_ok(),
-        None => crate::fragment::vm::check_function_reason(Arc::new(script), "Probe", None).is_ok(),
-    }
+    probe_sources(row).iter().any(|source| {
+        let Ok((script, errors)) = byroredux_papyrus::parse_script(source) else { return false };
+        if !errors.is_empty() {
+            return false;
+        }
+        match family_game(&row.family) {
+            Some(game) => crate::fragment::vm::check_function_for_game(Arc::new(script), "Probe", game).is_ok(),
+            None => crate::fragment::vm::check_function_reason(Arc::new(script), "Probe", None).is_ok(),
+        }
+    })
 }
 
 /// The game a Papyrus family's functions run on.
@@ -569,10 +591,15 @@ mod tests {
             introduced: "1.1.0".into(),
             introduced_source: "first-release".into(),
         };
-        let instance = probe_source(&row("Actor", "GetWornForm", "Form GetWornForm(int slotMask)", false)).unwrap();
-        assert!(instance.contains(" int a0 = 0\n Actor akReceiver = None\n Form r = akReceiver.GetWornForm(a0)\n"), "{instance}");
-        let global = probe_source(&row("Game", "GetModCount", "int GetModCount()", true)).unwrap();
-        assert!(global.contains(" int r = Game.GetModCount()\n"), "{global}");
+        let instance = probe_sources(&row("Actor", "GetWornForm", "Form GetWornForm(int slotMask)", false));
+        assert_eq!(instance.len(), 1, "a quest is not an Actor: no call on itself");
+        assert!(instance[0].contains(" int a0 = 0\n Actor akReceiver = None\n Form r = akReceiver.GetWornForm(a0)\n"), "{instance:?}");
+        let global = probe_sources(&row("Game", "GetModCount", "int GetModCount()", true));
+        assert!(global[0].contains(" int r = Game.GetModCount()\n"), "{global:?}");
+        // A quest is a Form: a Form function is also probed as the script's own call.
+        let own = probe_sources(&row("Form", "RegisterForKey", "None RegisterForKey(int keyCode)", false));
+        assert_eq!(own.len(), 2);
+        assert!(own[1].contains(" int a0 = 0\n RegisterForKey(a0)\n"), "{own:?}");
     }
 
     fn call(target: byroredux_pex::CallTarget, receiver: Option<&str>, function: &str) -> byroredux_pex::CallSite {
@@ -660,8 +687,8 @@ mod tests {
     #[test]
     fn coverage_counts_are_the_published_ones() {
         let published: [(&str, Coverage); 11] = [
-            ("skse64", Coverage { functions: 804, dated: 67, vm: 60, sdk: 21, served: 71 }),
-            ("f4se", Coverage { functions: 227, dated: 13, vm: 14, sdk: 3, served: 17 }),
+            ("skse64", Coverage { functions: 804, dated: 67, vm: 72, sdk: 21, served: 83 }),
+            ("f4se", Coverage { functions: 227, dated: 13, vm: 19, sdk: 3, served: 22 }),
             ("xnvse", Coverage { functions: 565, dated: 50, vm: 0, sdk: 4, served: 4 }),
             ("jip_ln", Coverage { functions: 733, dated: 0, vm: 0, sdk: 0, served: 0 }),
             ("johnnyguitar", Coverage { functions: 142, dated: 31, vm: 0, sdk: 0, served: 0 }),

@@ -72,6 +72,19 @@ impl Vm<'_> {
         if super::skse_util::is_skse_util(class, name) {
             return self.read_skse_util(frame, class, name, args);
         }
+        // SKSE's `Input` key-state reads, from the keys the host holds this frame (ascending codes, as SKSE64's
+        // `DIHookControl` walks them).
+        if class == "input" && matches!(name, "iskeypressed" | "getnumkeyspressed" | "getnthkeypressed") {
+            let values = self.eval_args(frame, args)?;
+            let held = self.world.try_resource::<crate::fragment::HeldKeys>().map(|keys| keys.0.clone()).unwrap_or_default();
+            let code = values.first().and_then(Value::int).unwrap_or(-1);
+            return Ok(Some(match name {
+                "iskeypressed" => Value::Bool(held.contains(&code)),
+                "getnumkeyspressed" => Value::Int(held.len() as i32),
+                // `UInt32` index: a negative one is past the end.
+                _ => Value::Int(held.get(code as u32 as usize).copied().unwrap_or(-1)),
+            }));
+        }
         Ok(match (class, name) {
             ("game", "getplayer") => Some(Value::Form(PLAYER_REF)),
             // CK *ShakeCamera - Game*: shakes the camera "from the specified
@@ -282,6 +295,15 @@ impl Checker<'_> {
         }
         if class == "stringutil" || super::skse_util::is_skse_util(class, name) {
             return self.check_skse_util(class, name, arg_kinds.len());
+        }
+        if class == "input" {
+            let numeric = |arg: &Arg| matches!(arg, Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num));
+            match (name, arg_kinds) {
+                ("iskeypressed", [code]) if numeric(code) => return Some(Kind::Bool),
+                ("getnumkeyspressed", []) => return Some(Kind::Num),
+                ("getnthkeypressed", [index]) if numeric(index) => return Some(Kind::Num),
+                _ => {}
+            }
         }
         if class == "game" && name == "getplayer" {
             return Some(Kind::Player);

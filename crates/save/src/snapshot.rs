@@ -713,7 +713,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v149 -> v150 (LMC Q5): the saved `StorageUtilValues` resource (PapyrusUtil `StorageUtil`'s form-keyed values,
 /// keyed by plugin-and-id text) and the saved `JcHeap` (JContainers' objects); a v149 save has neither.
-pub const FORMAT_MAJOR: u16 = 150;
+///
+/// v150 -> v151 (LMC-SCR-004): the saved `InputEventRegistrations` resource (SKSE's and F4SE's key, control and menu
+/// registrations, which their co-saves keep); a v150 save has none.
+pub const FORMAT_MAJOR: u16 = 151;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

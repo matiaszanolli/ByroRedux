@@ -265,6 +265,8 @@ pub(super) fn register_npc_dialogue_systems(scheduler: &mut Scheduler) {
             .writes_resource::<byroredux_scripting::HitRegistrations>()
             // M48 — a spoken line's menu open / close event registrations.
             .writes_resource::<byroredux_scripting::MenuEventRegistrations>()
+            // LMC-SCR-004 — a spoken line's SKSE / F4SE key, control and menu registrations.
+            .writes_resource::<byroredux_scripting::InputEventRegistrations>()
             // M48 GUI-EVT-003 — a spoken line's Game.ShowRaceMenu, reported as a menu request.
             .writes_resource::<byroredux_scripting::obscript_more::PendingMenus>()
             // M47.2 — a spoken line's ProcessTrapHit (queued for the next

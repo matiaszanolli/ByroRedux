@@ -110,7 +110,8 @@ impl MenuEventRegistrations {
 }
 
 /// Deliver the menus that opened and closed since the last frame to the scripts registered for
-/// them (GUI-EVT-001).
+/// them (GUI-EVT-001), and to SKSE's `RegisterForMenu` registrations (`super::input_events`): one drain
+/// serves both.
 pub fn menu_open_close_event_system(world: &World, _dt: f32) {
     // Always drain, so the registry's queue holds one frame's transitions.
     let transitions = match world.try_resource_mut::<byroredux_core::ecs::resources::MenuRegistry>() {
@@ -120,43 +121,47 @@ pub fn menu_open_close_event_system(world: &World, _dt: f32) {
     if transitions.is_empty() {
         return;
     }
-    let registered: Vec<MenuEventRegistration> = match world.try_resource::<MenuEventRegistrations>() {
-        Some(registrations) if !registrations.entries.is_empty() => registrations.entries.clone(),
-        _ => return,
-    };
+    let registered: Vec<MenuEventRegistration> =
+        world.try_resource::<MenuEventRegistrations>().map(|registrations| registrations.entries.clone()).unwrap_or_default();
     let owners = super::owners::ScriptOwners::new(world);
     for transition in transitions {
         for registration in registered.iter().filter(|r| r.menu.eq_ignore_ascii_case(&transition.name)) {
-            // A quest's (or alias's) registration delivers while the quest runs; a reference's
-            // while it is loaded.
-            let standing = {
-                let stages = world.resource::<QuestStageState>();
-                owners.standing(world, &stages, registration.owner)
-            };
-            let delivers = match standing {
-                Some(standing) => standing,
-                None => ReferenceScriptIndex::lookup(world, registration.owner).is_some(),
-            };
-            if !delivers {
-                continue;
-            }
-            log::debug!(
-                "{:08X}: {}.{MENU_OPEN_CLOSE_EVENT}(\"{}\", {})",
-                registration.owner,
-                registration.script,
-                transition.name,
-                transition.opening
-            );
-            events::queue_handler(
+            deliver_to_standing(
                 world,
                 &owners,
                 registration.owner,
                 &registration.script,
-                MENU_OPEN_CLOSE_EVENT.to_owned(),
+                MENU_OPEN_CLOSE_EVENT,
                 vec![VmStored::Str(transition.name.clone()), VmStored::Bool(transition.opening)],
             );
         }
+        super::input_events::deliver_menu_events(world, &owners, &transition.name, transition.opening);
     }
+}
+
+/// Queue `script`'s `handler(args)` on `owner` when the owner stands: a quest's (or alias's) registration
+/// delivers while the quest runs, a reference's while it is loaded.
+pub(super) fn deliver_to_standing(
+    world: &World,
+    owners: &super::owners::ScriptOwners,
+    owner: u32,
+    script: &str,
+    handler: &str,
+    args: Vec<VmStored>,
+) {
+    let standing = {
+        let stages = world.resource::<QuestStageState>();
+        owners.standing(world, &stages, owner)
+    };
+    let delivers = match standing {
+        Some(standing) => standing,
+        None => ReferenceScriptIndex::lookup(world, owner).is_some(),
+    };
+    if !delivers {
+        return;
+    }
+    log::debug!("{owner:08X}: {script}.{handler}");
+    events::queue_handler(world, owners, owner, script, handler.to_owned(), args);
 }
 
 /// This subsystem's saved column. Called by the binary's `build_save_registry` in its row order

@@ -8224,3 +8224,108 @@ fn skse_form_reads_answer_from_the_records_and_the_classes() {
     crate::fragment::quest_fragment_dispatch_system(&world);
     assert_eq!(quest_property(&world, "Results"), Some(11_111.0), "a door's unread name stops the run");
 }
+
+/// LMC-SCR-004 catalog growth: SKSE's key, control and menu registrations. A quest script registers its object for
+/// a key, a control and a menu; the host's transitions reach `OnKeyDown` / `OnKeyUp` (with the hold time),
+/// `OnControlDown` and `OnMenuOpen` / `OnMenuClose`, compared without case; `UnregisterForAllKeys` stops the keys
+/// while the control and menu stay. The `Input` reads answer the keys the host holds, in ascending code order.
+#[test]
+fn skse_key_control_and_menu_registrations_deliver_their_events() {
+    use byroredux_core::ecs::resources::menu_registry::{MenuGame, MenuRegistry, MenuSurface};
+    let script = parsed_source(
+        "ScriptName QF_VmSkseInput extends Quest\n\
+         Int Property Downs Auto\n\
+         Int Property Ups Auto\n\
+         Float Property Held Auto\n\
+         Int Property Controls Auto\n\
+         Int Property Menus Auto\n\
+         Int Property Reads Auto\n\
+         Function Fragment_1()\n\
+           RegisterForKey(57)\n\
+           RegisterForControl(\"Activate\")\n\
+           RegisterForMenu(\"InventoryMenu\")\n\
+           If Input.IsKeyPressed(30) && !Input.IsKeyPressed(57) && Input.GetNumKeysPressed() == 2 && Input.GetNthKeyPressed(1) == 42 && Input.GetNthKeyPressed(2) == -1\n Reads += 1\n EndIf\n\
+         EndFunction\n\
+         Function Fragment_2()\n\
+           UnregisterForAllKeys()\n\
+         EndFunction\n\
+         Event OnKeyDown(Int keyCode)\n\
+           If keyCode == 57\n Downs += 1\n EndIf\n\
+         EndEvent\n\
+         Event OnKeyUp(Int keyCode, Float holdTime)\n\
+           Ups += 1\n\
+           Held = holdTime\n\
+         EndEvent\n\
+         Event OnControlDown(String control)\n\
+           If control == \"Activate\"\n Controls += 1\n EndIf\n\
+         EndEvent\n\
+         Event OnMenuOpen(String menuName)\n\
+           Menus += 1\n\
+         EndEvent\n\
+         Event OnMenuClose(String menuName)\n\
+           Menus += 10\n\
+         EndEvent\n",
+    );
+    for fragment in ["Fragment_1", "Fragment_2"] {
+        assert_eq!(check_function_reason(Arc::clone(&script), fragment, None).err(), None);
+    }
+    let mut world = world_with_fragment(script);
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.insert_resource(MenuRegistry::new(MenuGame::Skyrim));
+    world.insert_resource(crate::fragment::HeldKeys(vec![30, 42]));
+    {
+        // The quest's VMAD attaches this script: SKSE delivers to every script attached to the registered object.
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        fragments.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                version: 5,
+                object_format: 2,
+                scripts: vec![ScriptInstance { name: "QF_VmSkseInput".into(), status: 0, properties: Vec::new() }],
+            },
+        );
+        fragments.insert(
+            Q,
+            20,
+            vec![Effect::Interpret { script: "QF_VmSkseInput".into(), function: "Fragment_2".into(), args: Vec::new(), resume: None }],
+        );
+    }
+    let variable = |world: &World, name: &str| {
+        world.resource::<crate::QuestScriptVariables>().get(Q, crate::QuestScriptVariables::property_key(name))
+    };
+    let input = |world: &World, frame: crate::fragment::InputFrame| {
+        crate::fragment::deliver_input_events(world, &frame);
+        crate::fragment::fragment_continuation_system(world, 0.0);
+    };
+    let menu = |world: &World, open: bool| {
+        {
+            let mut registry = world.resource_mut::<MenuRegistry>();
+            if open {
+                registry.open("InventoryMenu", MenuSurface::Native { page: "test".into() });
+            } else {
+                registry.close("InventoryMenu");
+            }
+        }
+        crate::menu_open_close_event_system(world, 0.0);
+        crate::fragment::fragment_continuation_system(world, 0.0);
+    };
+
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<crate::fragment::InputEventRegistrations>().entries().len(), 3);
+    assert_eq!(variable(&world, "Reads"), Some(1.0), "the held keys, in code order");
+
+    input(&world, crate::fragment::InputFrame { keys_down: vec![57, 30], controls_down: vec!["activate".into()], ..Default::default() });
+    input(&world, crate::fragment::InputFrame { keys_up: vec![(57, 0.75)], ..Default::default() });
+    assert_eq!((variable(&world, "Downs"), variable(&world, "Ups"), variable(&world, "Held")), (Some(1.0), Some(1.0), Some(0.75)));
+    assert_eq!(variable(&world, "Controls"), Some(1.0), "the control, compared without case");
+    menu(&world, true);
+    menu(&world, false);
+    assert_eq!(variable(&world, "Menus"), Some(11.0), "the opening and the closing");
+
+    world.resource_mut::<QuestStageState>().set_stage(Q, 20);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    input(&world, crate::fragment::InputFrame { keys_down: vec![57], controls_down: vec!["Activate".into()], ..Default::default() });
+    assert_eq!(variable(&world, "Downs"), Some(1.0), "the keys are unregistered");
+    assert_eq!(variable(&world, "Controls"), Some(2.0), "the control stays");
+}

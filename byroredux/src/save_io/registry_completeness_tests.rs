@@ -823,6 +823,8 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("VmAliasScriptChecks", "M47.2 — per-script cache of whether the Papyrus VM runs an alias script, re-checked from the script archive on demand; never gameplay state"),
         ("QuestOwnScripts", "the quests' own scripts the Papyrus VM runs (for OnInit), checked a few per frame from the QUST records and the script archives every boot; the once-per-save OnInit gate lives in the saved QuestScriptVariables"),
         ("ExternalEventRegistrations", "LMC-UI-002 slice 5 — F4SE's RegisterForExternalEvent registrations (FO4 MCM's OnMCMSettingChange and kin); F4SE keeps them per session and a load clears them, so scripts register again"),
+        ("ExtenderInputKeys", "LMC-SCR-004 — the keys the script extenders' key and control events last saw held, for the frame's presses and releases; transient input state"),
+        ("HeldKeys", "LMC-SCR-004 — the keys held this frame, for SKSE's Input.IsKeyPressed and kin; transient input state, published every frame"),
         ("HotkeyKeys", "LMC-UI-002 slice 4b — the keys the MCM Helper hotkeys last saw held, for the frame's presses and releases; transient input state"),
         ("McmHelperStore", "LMC-UI-002 slice 4 — MCM Helper's parsed configs, its settings read through the mod roots and the open page; the player's values persist in the profile's own INI files (LMC-SET-004), never the save"),
         ("McmHost", "LMC-UI-002 — the session's Mod Configuration Menu: the registered config menus and the open page; every config script registers again in OnGameReload after a load, and its settings are its own saved script variables"),
@@ -1622,7 +1624,9 @@ fn the_schema_fingerprint_is_pinned() {
     // profile the save was made with), registered after `CurrentExteriorContext`.
     // LMC Q5 — `StorageUtilValues` (PapyrusUtil StorageUtil's form-keyed values) and `JcHeap` (JContainers' objects)
     // joined the registry as new resource columns, registered after `AliasOverrides`.
-    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x7c9f_fdda_9827_9520;
+    // LMC-SCR-004 — `InputEventRegistrations` (SKSE's and F4SE's key, control and menu registrations) joined the
+    // registry as a new resource column, registered after `MenuEventRegistrations`.
+    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x5b13_c7c0_7cf5_bfac;
     let actual = build_save_registry().schema_fingerprint();
     assert_eq!(
         actual, BASELINE_SCHEMA_FINGERPRINT,

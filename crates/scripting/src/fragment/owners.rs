@@ -73,6 +73,27 @@ impl ScriptOwners {
         })
     }
 
+    /// The scripts attached to `owner`: a quest's, an alias's (its owner id), or a loaded reference's.
+    pub(super) fn attached_scripts(&self, world: &World, owner: u32) -> Vec<String> {
+        let quest = QuestFormId(owner);
+        if let Some(vmad) = self.quests.get(&quest).or_else(|| self.fragments.vmad(quest)) {
+            return vmad.scripts.iter().map(|script| script.name.clone()).collect();
+        }
+        if super::is_alias_owner(owner) {
+            let Some((quest, alias)) = world.try_resource::<AliasScriptOwners>().and_then(|owners| owners.alias_of(owner)) else {
+                return Vec::new();
+            };
+            return world
+                .try_resource::<QuestAliasScripts>()
+                .and_then(|scripts| scripts.scripts(QuestFormId(quest)).cloned())
+                .map(|scripts| scripts.iter().filter(|attached| attached.alias == alias).map(|attached| attached.script.clone()).collect())
+                .unwrap_or_default();
+        }
+        ReferenceScriptIndex::lookup(world, owner)
+            .and_then(|entity| world.get::<PapyrusReferenceScripts>(entity).map(|attached| attached.0.iter().map(|a| a.script.clone()).collect()))
+            .unwrap_or_default()
+    }
+
     /// Whether `handler` of `owner`'s instance of `script` runs whole on the VM.
     pub(super) fn handler_runs(&self, owner: u32, script: &str, handler: &str) -> bool {
         super::vm::handler_runs(&self.scripts(), script, handler, self.kind(owner))

@@ -267,6 +267,8 @@ pub(crate) fn populate_scene_runtime(
     crate::asset_provider::install_extender_probes(world);
     crate::mcm_files::install_json_util(world);
     world.init_resource::<crate::mcm_hotkeys::HotkeyKeys>();
+    // LMC-SCR-004 — the script extenders' key and control events.
+    world.init_resource::<crate::mcm_hotkeys::ExtenderInputKeys>();
     // M47.2 — references that start disabled, for IsDisabled / IsEnabled.
     byroredux_scripting::install_authored_disabled_references(world, index);
     // M47.2 — Skyrim's SetAV("Name", v) resolves names through the AVIFs.

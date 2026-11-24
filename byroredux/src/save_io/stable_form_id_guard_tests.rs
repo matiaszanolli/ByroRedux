@@ -29,6 +29,8 @@ const STABLE: &[&str] = &[
     "StorageUtilValues",
     // LMC Q5 — JContainers' heap holds forms as `FormRef` (plugin identity + local id).
     "JcHeap",
+    // LMC-SCR-004 — the extenders' key, control and menu registrations: the owner is a stable FormID.
+    "InputEventRegistrations",
     // Hand Equipment #7399 — the hands' readied spells (`left_spell` / `right_spell`), stable FormIDs.
     "EquipmentSlots",
     // Restored before the cell reload (`PRE_RELOAD_RESOURCES`): the live load reloads the session's own plugins, so

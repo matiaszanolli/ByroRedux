@@ -22,6 +22,7 @@ pub(super) fn registration_handler(name: &str) -> Option<&'static str> {
         .or_else(|| crate::fragment::DistanceRequest::handler(name))
         .or_else(|| crate::fragment::HitRequest::handler(name))
         .or_else(|| crate::fragment::MenuEventRequest::handler(name))
+        .or_else(|| crate::fragment::input_events::InputEventRequest::handlers(name).map(|handlers| handlers.first().copied().unwrap_or("")))
         .or_else(|| crate::fragment::EventRequest::is_call(name).then_some(""))
 }
 
@@ -48,6 +49,15 @@ pub(super) fn target_of_aggressor(value: &Value) -> Option<crate::fragment::Dist
 /// An update or timer call's arguments: numbers, at most as many as it
 /// takes, and the interval when it starts one.
 pub(super) fn update_args_ok(name: &str, args: &[Arg]) -> bool {
+    // SKSE's key, control and menu registrations: a key code, a name, or nothing for an unregister-all call.
+    if crate::fragment::input_events::InputEventRequest::handlers(name).is_some() {
+        return match (crate::fragment::input_events::InputEventRequest::takes_key(name), args) {
+            (Some(true), [arg]) => matches!(arg, Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num)),
+            (Some(false), [arg]) => matches!(arg, Arg::Literal(Expr::StringLit(_)) | Arg::Kind(Kind::Str)),
+            (None, []) => true,
+            _ => false,
+        };
+    }
     // A menu open / close registration: the menu's name (a string), or nothing for the
     // unregister-all call.
     if crate::fragment::MenuEventRequest::handler(name).is_some() {
@@ -101,8 +111,8 @@ impl Vm<'_> {
         if crate::fragment::DistanceRequest::handler(name).is_some() {
             return self.distance_registration(frame, Some(quest), name, args);
         }
-        if crate::fragment::MenuEventRequest::handler(name).is_some() {
-            // The check declines it (only the registering script hears the event).
+        if crate::fragment::MenuEventRequest::handler(name).is_some() || crate::fragment::input_events::InputEventRequest::handlers(name).is_some() {
+            // The check declines it.
             return stop(format!("{name} on another quest"));
         }
         let mut numbers = Vec::with_capacity(args.len());
@@ -284,6 +294,25 @@ impl Vm<'_> {
         };
         let script = frame.script.name.node.0.clone();
         self.deferred.menu_event_requests.push((frame.owner.0, script, request));
+        Ok(())
+    }
+
+    /// SKSE's `RegisterForKey` / `RegisterForControl` / `RegisterForMenu` and their unregisters on the script's own
+    /// object (see [`crate::fragment::InputEventRegistrations`]).
+    pub(super) fn input_event_registration(&mut self, frame: &mut Frame, name: &str, args: &[CallArg]) -> Run<()> {
+        let values = self.eval_args(frame, args)?;
+        let code = values.first().and_then(|value| value.int().or_else(|| value.number().map(|n| n as i32)));
+        let text = match values.first() {
+            Some(Value::Str(text)) => Some(text.clone()),
+            _ => None,
+        };
+        let Some(request) = crate::fragment::input_events::InputEventRequest::of_call(name, code, text) else {
+            return stop(format!("{name} without its key or name"));
+        };
+        // F4SE registers the calling script alone; SKSE registers its whole object.
+        let fallout4 = self.world.try_resource::<crate::ScriptGame>().is_some_and(|game| game.0 == byroredux_plugin::esm::reader::GameKind::Fallout4);
+        let script = fallout4.then(|| frame.script.name.node.0.clone());
+        self.deferred.input_event_requests.push((frame.owner.0, script, request));
         Ok(())
     }
 

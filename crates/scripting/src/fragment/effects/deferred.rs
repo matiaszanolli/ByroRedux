@@ -178,6 +178,9 @@ pub struct DeferredFragmentEffects {
     /// M48 GUI-EVT-001 — menu open / close registration changes, applied to
     /// [`super::MenuEventRegistrations`] after the guards drop.
     pub(in crate::fragment) menu_event_requests: Vec<(u32, String, super::MenuEventRequest)>,
+    /// LMC-SCR-004 — SKSE key, control and menu registration changes, applied to
+    /// [`super::InputEventRegistrations`] after the guards drop.
+    pub(in crate::fragment) input_event_requests: Vec<(u32, Option<String>, super::input_events::InputEventRequest)>,
     /// `RegisterForAnimationEvent` changes, applied to
     /// [`super::AnimationEventRegistrations`] after the guards drop.
     pub(in crate::fragment) animation_event_requests: Vec<(u32, String, super::AnimationEventRequest)>,
@@ -385,6 +388,7 @@ impl DeferredFragmentEffects {
             distance_requests: Vec::new(),
             hit_requests: Vec::new(),
             menu_event_requests: Vec::new(),
+            input_event_requests: Vec::new(),
             animation_event_requests: Vec::new(),
             sound_plays: Vec::new(),
             camera_shakes: Vec::new(),
@@ -472,6 +476,7 @@ impl DeferredFragmentEffects {
         self.flush_sound_plays(world);
         self.flush_hit_requests(world);
         self.flush_menu_event_requests(world);
+        self.flush_input_event_requests(world);
         self.flush_animation_event_requests(world);
         self.flush_distance_requests(world);
         self.flush_follower_changes(world);
@@ -737,6 +742,12 @@ impl DeferredFragmentEffects {
     fn flush_menu_event_requests(&mut self, world: &World) {
         drain_into_resource::<super::MenuEventRegistrations, _>(world, &mut self.menu_event_requests, |registrations, (owner, script, request)| {
                 registrations.request(owner, &script, &request);
+        });
+    }
+
+    fn flush_input_event_requests(&mut self, world: &World) {
+        drain_into_resource::<super::InputEventRegistrations, _>(world, &mut self.input_event_requests, |registrations, (owner, script, request)| {
+                registrations.request(owner, script.as_deref(), &request);
         });
     }
 

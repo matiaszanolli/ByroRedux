@@ -936,6 +936,12 @@ impl<'l> Checker<'l> {
                 if !handler.is_empty() && !self.versions(&script, handler).is_empty() {
                     self.check_handler(&script, handler, frame.self_kind)?;
                 }
+                // SKSE's registrations deliver to a second handler too (`OnKeyUp`, `OnControlUp`, `OnMenuClose`).
+                for second in crate::fragment::input_events::InputEventRequest::handlers(&name).unwrap_or_default().iter().skip(1) {
+                    if !self.versions(&script, second).is_empty() {
+                        self.check_handler(&script, second, frame.self_kind)?;
+                    }
+                }
                 return Some(Kind::None);
             }
             // CK *RegisterForAnimationEvent - Form* on the script itself: the
@@ -1122,6 +1128,10 @@ impl<'l> Checker<'l> {
             if crate::fragment::MenuEventRequest::handler(&name).is_some() {
                 // A registration delivers only to the script that makes it (CK); registering
                 // another quest's scripts through it is not modelled, so it declines.
+                return self.fail(|| format!("{name} on another quest"));
+            }
+            if crate::fragment::input_events::InputEventRequest::handlers(&name).is_some() {
+                // SKSE's registration on another object is not modelled yet.
                 return self.fail(|| format!("{name} on another quest"));
             }
             if let Some(handler) = registration_handler(&name) {

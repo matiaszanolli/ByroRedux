@@ -127,8 +127,8 @@ call set per family. The preflight reports those calls that are not covered.
 
 | Family | Functions | Dated by a changelog or wiki | VM | SDK | Served |
 |---|---|---|---|---|---|
-| SKSE64 | 804 | 67 | 60 | 21 | 71 |
-| F4SE | 227 | 13 | 14 | 3 | 17 |
+| SKSE64 | 804 | 67 | 72 | 21 | 83 |
+| F4SE | 227 | 13 | 19 | 3 | 22 |
 | xNVSE | 565 | 50 | 0 | 4 | 4 |
 | JIP LN | 733 | 0 | 0 | 0 | 0 |
 | JohnnyGuitar | 142 | 31 | 0 | 0 | 0 |
@@ -147,6 +147,8 @@ call set per family. The preflight reports those calls that are not covered.
   too high this way.
 - `ActorBase.GetWeight` is counted served because `Form.GetWeight` shares its name, but on an `NPC_` the run
   stops (§9).
+- An instance function of `Quest` or an ancestor (`Form`, F4SE's `ScriptObject`) is also checked as the probe
+  script's own call, since a script calls its own registrations: `RegisterForKey(57)`, not `akForm.RegisterForKey`.
 - Each Papyrus family is checked for its own game: SKSE64's on Skyrim, F4SE's on Fallout 4. F4SE's `Form.GetName` and
   kin are not counted, because SKSE's `Form` reads run on Skyrim only.
 - What the engine serves for MCM (`mcm-host.md`) is engine script, not extender natives, so it isn't
@@ -317,5 +319,40 @@ an `NPC_` has no `TESWeightForm`.
 
 **Not yet.** `Form.IsPlayable` is a virtual function implemented in the game executable, not in SKSE's source, so
 its answer per form type is undocumented: a declared gap. The `Set*` functions (`SetName`, `SetWeight`,
-`SetGoldValue`, …) change a form for the session and need save coverage first. The registrations (`RegisterForKey`,
-`RegisterForMenu`, `RegisterForModEvent`, …), `Input`, `Utility.GetINI*` and `Actor`'s equipment come next.
+`SetGoldValue`, …) change a form for the session and need save coverage first. The key, control and menu
+registrations and `Input`'s key state are §10; the mod-event, camera, crosshair, actor-action and NiNode registrations,
+`Utility.GetINI*` and `Actor`'s equipment come next.
+
+## 10. Catalog growth: key, control and menu registrations (2026-11-24)
+
+SKSE64's `Form.RegisterForKey` / `UnregisterForKey` / `UnregisterForAllKeys`, the same for controls and menus, and
+`Input.IsKeyPressed` / `GetNumKeysPressed` / `GetNthKeyPressed`; F4SE's `ScriptObject.RegisterForKey` /
+`RegisterForControl` and their unregisters. The registrations live in `crates/scripting/src/fragment/input_events.rs`;
+the host's key state comes from `byroredux/src/mcm_hotkeys.rs`, which the MCM Helper hotkeys share.
+
+**The events** (SKSE64's `PapyrusEvents.cpp`, F4SE's `Hooks_Input.cpp`, at the pinned commits):
+
+| Registration | Event |
+|---|---|
+| a key code (DirectInput scan code; a mouse button is 256 + its index) | `OnKeyDown(code)` as it goes down, `OnKeyUp(code, holdTime)` as it comes up |
+| a control name | `OnControlDown(control)` / `OnControlUp(control, holdTime)` for the control the key is bound to |
+| a menu name (SKSE) | `OnMenuOpen(name)` / `OnMenuClose(name)` |
+
+- **Who hears it.** SKSE registers the object's handle, so the event reaches every script attached to the object that
+  has the handler, and any of them unregisters it. F4SE registers the calling script, which alone hears it and alone
+  unregisters it. Names compare without case.
+- **When.** SKSE's input handler queues its events whatever menu is open, so the extenders' key state is not paused as
+  MCM Helper's hotkeys are (they keep their own key state). A key the console or an engine overlay took is not seen.
+  The events reach an owner while it stands: a running quest or alias, a loaded reference.
+- **Saved.** Both extenders' co-saves keep the registrations (`KEYR`, `CTLR`, `MENR`), and a quest stopping does not
+  remove them, so `InputEventRegistrations` is saved (format v151).
+- **Controls.** A key's control is the one the engine's bindings give it, under SKSE's control names
+  (`ActionBindings::papyrus_bindings`, the table `Input.GetMappedControl` reads): keyboard bindings only for now.
+- **The menus.** SKSE's menu events come from the menu registry's openings and closings, in the same pass as Fallout 4's
+  `OnMenuOpenCloseEvent`.
+- **`Input`.** The keys held this frame, in ascending code order (SKSE64's `DIHookControl` walks codes from 0);
+  `GetNthKeyPressed` past the end answers -1.
+
+**Not yet.** A registration made on another object (`SomeQuest.RegisterForKey`) is declined. `Input.TapKey`,
+`HoldKey` and `ReleaseKey` inject input, which the engine's input layer does not take from scripts yet. Gamepad
+buttons and mouse bindings have no control names yet.
