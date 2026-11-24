@@ -12,6 +12,7 @@
 use byroredux_core::ecs::sparse_set::SparseSetStorage;
 use byroredux_core::ecs::storage::{Component, EntityId};
 use byroredux_core::ecs::world::World;
+use byroredux_core::math::Vec3;
 use byroredux_core::string::FixedString;
 
 /// Fired when an entity is activated by another entity (e.g., player uses a door).
@@ -72,6 +73,21 @@ pub fn papyrus_activations(world: &World) -> Vec<(EntityId, EntityId)> {
         .collect()
 }
 
+/// Authored weapon damage and direction supplied by a physical hit's producer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PhysicalHit {
+    /// Base WEAP damage, or zero for an unarmed strike.
+    pub weapon_base_damage: f32,
+    /// Toward the source at impact for a projectile. Melee uses the attacker's position.
+    pub toward_source: Option<Vec3>,
+}
+
+impl PhysicalHit {
+    pub const fn from_attacker(weapon_base_damage: f32) -> Self {
+        Self { weapon_base_damage, toward_source: None }
+    }
+}
+
 /// Fired when an entity is hit in combat.
 /// Replaces Papyrus `OnHit`.
 #[derive(Debug, Clone, Copy)]
@@ -90,6 +106,8 @@ pub struct HitEvent {
     /// recomputed would silently diverge the moment anything wrote
     /// `EquippedWeapon` between production and consumption.
     pub damage: f32,
+    /// `None` when the producer supplies no blockable physical attack.
+    pub physical: Option<PhysicalHit>,
     pub power_attack: bool,
     pub sneak_attack: bool,
     pub bash_attack: bool,

@@ -318,6 +318,31 @@ regardless of armor skill): **movement speed penalty** = `min(15%, TotalEquipped
 a universal encumbrance mechanic, not part of the Light Armor governance
 graph, noted here only because it appeared on the same page.
 
+## Block damage reduction
+
+The Skyrim character profile installs its `BlockModel`. The damage pass reads the held guard from
+canonical hands and the defender's Block actor value. An ordinary shield block scales with the
+shield's authored `ARMO` rating. A weapon or left-hand torch scales with the incoming weapon's
+authored `WEAP` damage. An unarmed attacker contributes zero base weapon damage. Bare hands offer
+no damage reduction in an ordinary Skyrim block. [Published in-game measurements](https://www.gamesas.com/did-some-experiments-blocking-and-here-are-the-results-t302871.html) and [Bethesda's manual, Block](https://assets.ctfassets.net/rporu91m20dc/1IuJHrbXY8GqSQQM0GuuUM/2a3c85e2d7772c2eb45f996443f320f4/manual_skyrim-le_ps3_en-us.pdf).
+
+```text
+rating_factor = 1 + 0.015 × Block
+shield = fShieldBaseFactor + fShieldScalingFactor × shield_base_armor × rating_factor / 100
+weapon = fBlockWeaponBase + fBlockWeaponScaling × attacker_base_weapon_damage × rating_factor / 100
+stopped = min(fPlayerMaxResistance / 100, reduction × power_attack_multiplier)
+```
+
+`Skyrim.esm` authors the shield base and scale as `0.45` and `0.2`, the weapon base and scale as
+`0.30` and `0.2`, and `fBlockPowerAttackMult` as `0.66`. The default resistance cap is 85%.
+`fCombatHitConeAngle` defaults to 35° off the forward axis. For a player the guard follows the view
+yaw. A projectile carries its incoming direction and the weapon's base damage through the hit
+queue. Armor and the guard multiply their damage factors. [Block angle experiments](https://forums.uesp.net/viewtopic.php?p=1297223).
+
+The [Skyrim block smoke](../smoke-tests/skyrim-block.sh) checks ordinary frontal hits with a shield,
+sword, torch and bare hands. Shield Wall, Fortify Block and perk-specific arrow or spell defenses
+remain separate mechanics.
+
 ## Alchemy potion/poison strength — LOCKED, crafting-system output (not an actor stat)
 
 Source: UESP *Skyrim:Alchemy* "Formula" section, 2026-07-04. Named GMSTs

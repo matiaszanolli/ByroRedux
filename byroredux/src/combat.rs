@@ -316,6 +316,7 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
     // #7302 — resolved before the events guard is taken (it reads `EquippedWeapon` and the
     // loaded-cell index), as the VATS producer does: nothing is acquired under the HitEvent write.
     let ignores_resistance = weapon_ignores_resistance(world, aggressor);
+    let physical = wielded_weapon_base_damage(world, aggressor).map(byroredux_scripting::events::PhysicalHit::from_attacker);
     let Some(mut events) = world.query_mut::<byroredux_scripting::HitEvent>() else {
         record_miss(world, "HitEvent storage is not registered");
         return;
@@ -338,6 +339,7 @@ pub(crate) fn combat_input_system(world: &World, dt: f32) {
             // undetectable, and a scripted producer has no `EquippedWeapon`
             // to recompute from.
             damage,
+            physical,
             power_attack: false,
             sneak_attack,
             bash_attack: false,
@@ -608,47 +610,112 @@ pub(crate) fn item_ignores_resistance(weapon: Option<&byroredux_plugin::esm::rec
     matches!(weapon, Some(byroredux_plugin::esm::records::ItemKind::Weapon { ignores_normal_resistance: true, .. }))
 }
 
-/// #7054 — the share of a hit `target`'s guard stops (Oblivion's Block, UESP *Oblivion:Block*), or `None` where it puts
-/// up none: the game has no block rules, the target is not holding Block, the hit is not an actor's strike or shot (a trap
-/// or a script's hit is not blocked here), or the block has no effect (bare hands against an armed attacker). The guard is
-/// a worn shield, else a wielded weapon, else bare hands; the skill is the target's own Block. Whether a block needs the
-/// defender to face the attacker is undocumented, so facing is not tested.
-fn target_block(world: &World, aggressor: EntityId, target: EntityId) -> Option<f32> {
+/// The share of a physical attack stopped by the target's guard and Block skill.
+fn target_block(world: &World, event: &byroredux_scripting::HitEvent, target: EntityId) -> Option<f32> {
     use byroredux_core::character::BlockModel;
     let model = *world.try_resource::<BlockModel>()?;
     if !world.query::<MeleeState>()?.get(target)?.blocking {
         return None;
     }
-    world.get::<ActorVitals>(aggressor)?;
+    world.get::<ActorVitals>(event.aggressor)?;
     let skill = crate::detection::actor_value(world, target, "Block");
-    model.reduction(skill, block_guard(world, &model, target), world.has::<EquippedWeapon>(aggressor))
+    let (guard, shield_form) = block_guard(world, model, target);
+    match model {
+        BlockModel::Oblivion => byroredux_core::character::block::oblivion_block_reduction(
+            skill, guard, world.has::<EquippedWeapon>(event.aggressor),
+        ),
+        BlockModel::Skyrim(model) => {
+            let hit = event.physical?;
+            if !incoming_within_guard(world, target, event.aggressor, hit.toward_source, model.half_angle_degrees) {
+                return None;
+            }
+            let base_rating = match shield_form {
+                Some(form) => shield_base_armor(world, form)?,
+                None => hit.weapon_base_damage,
+            };
+            model.reduction(skill, guard, base_rating, event.power_attack)
+        }
+    }
+}
+
+fn incoming_within_guard(
+    world: &World,
+    defender: EntityId,
+    attacker: EntityId,
+    toward_source: Option<byroredux_core::math::Vec3>,
+    half_angle_degrees: f32,
+) -> bool {
+    use byroredux_core::ecs::components::GlobalTransform;
+    use byroredux_core::math::{Quat, Vec3};
+
+    let position = |actor| world.get::<GlobalTransform>(actor).map(|pose| pose.translation);
+    let toward_source = toward_source.or_else(|| {
+        position(attacker).zip(position(defender)).map(|(source, target)| source - target)
+    });
+    let rotation = if Some(defender) == PlayerEntity::get(world) {
+        // The character capsule keeps its own rotation. Block follows the camera's current yaw.
+        world.try_resource::<crate::components::InputState>().map(|input| Quat::from_rotation_y(input.yaw))
+    } else {
+        world.get::<GlobalTransform>(defender).map(|pose| pose.rotation)
+    };
+    let Some(rotation) = rotation else { return false };
+    let forward = rotation * Vec3::NEG_Z;
+    let horizontal = |v: Vec3| Vec3::new(v.x, 0.0, v.z).try_normalize();
+    horizontal(forward).zip(toward_source.and_then(horizontal)).is_some_and(|(forward, toward)| {
+        forward.dot(toward) >= half_angle_degrees.to_radians().cos()
+    })
+}
+
+fn shield_base_armor(world: &World, form: u32) -> Option<f32> {
+    let index = world.try_resource::<crate::components::LoadedCellIndex>()?;
+    match index.0.items.get(&form)?.kind {
+        byroredux_plugin::esm::records::ItemKind::Armor { armor_rating_x100, .. } => Some(armor_rating_x100 as f32 / 100.0),
+        _ => None,
+    }
+}
+
+/// The actual WEAP damage at the strike. Tempering and perk calculations belong to `HitEvent::damage`.
+pub(crate) fn wielded_weapon_base_damage(world: &World, actor: EntityId) -> Option<f32> {
+    let form = world.get::<EquippedWeapon>(actor).map(|weapon| weapon.base_form_id);
+    let Some(form) = form else { return Some(0.0) };
+    let index = world.try_resource::<crate::components::LoadedCellIndex>()?;
+    match index.0.items.get(&form)?.kind {
+        byroredux_plugin::esm::records::ItemKind::Weapon { damage, .. } => Some(damage as f32),
+        _ => None,
+    }
 }
 
 /// What `actor` blocks with. Where the hands are modelled (Skyrim; Hand Equipment HND-READ-004) the left
 /// hand answers: a shield, else a torch or weapon in either hand (UESP *Skyrim:Block*: "To block with a
 /// shield or torch, equip one to your left hand"), else bare hands. Elsewhere the shield's biped bit and
 /// the wielded weapon do (Oblivion).
-fn block_guard(world: &World, model: &byroredux_core::character::BlockModel, actor: EntityId) -> byroredux_core::character::BlockGuard {
+fn block_guard(
+    world: &World,
+    model: byroredux_core::character::BlockModel,
+    actor: EntityId,
+) -> (byroredux_core::character::BlockGuard, Option<u32>) {
     use byroredux_core::character::BlockGuard;
     use byroredux_scripting::hands::{hand_item, Hand, HandCatalog, HandItem};
     if world.try_resource::<HandCatalog>().is_some_and(|catalog| catalog.is_active()) {
         let (left, right) = (hand_item(world, actor, Hand::Left), hand_item(world, actor, Hand::Right));
         return match (left, right) {
-            (HandItem::Shield { .. }, _) => BlockGuard::Shield,
-            (HandItem::Weapon { .. } | HandItem::Torch { .. }, _) | (_, HandItem::Weapon { .. }) => BlockGuard::Weapon,
-            _ => BlockGuard::Hands,
+            (HandItem::Shield { base, .. }, _) => (BlockGuard::Shield, Some(base)),
+            (HandItem::Weapon { .. } | HandItem::Torch { .. }, _) | (_, HandItem::Weapon { .. }) => (BlockGuard::Weapon, None),
+            _ => (BlockGuard::Hands, None),
         };
     }
-    let shield = world
-        .get::<byroredux_core::ecs::components::EquipmentSlots>(actor)
-        .is_some_and(|slots| slots.occupants.get(usize::from(model.shield_bit)).is_some_and(|slot| slot.is_some()));
-    if shield {
+    let shield = model.legacy_shield_bit().is_some_and(|bit| {
+        world.get::<byroredux_core::ecs::components::EquipmentSlots>(actor)
+            .is_some_and(|slots| slots.occupants[usize::from(bit)].is_some())
+    });
+    let guard = if shield {
         BlockGuard::Shield
     } else if world.has::<EquippedWeapon>(actor) {
         BlockGuard::Weapon
     } else {
         BlockGuard::Hands
-    }
+    };
+    (guard, None)
 }
 
 /// Install (or, for a game without fall damage, remove) the [`FallModel`](byroredux_core::character::FallModel) for a freshly
@@ -669,7 +736,7 @@ pub(crate) fn install_fall_model(world: &mut World, index: &byroredux_plugin::es
 pub(crate) fn install_block_model(world: &mut World, index: &byroredux_plugin::esm::records::EsmIndex) {
     match index.character_rules.block() {
         Some(model) => {
-            world.insert_resource(model);
+            world.insert_resource(model.with_gmst(|name| index.game_setting_float(name)));
         }
         None => {
             world.remove_resource::<byroredux_core::character::BlockModel>();
@@ -733,8 +800,8 @@ pub(crate) fn combat_damage_system(world: &World, _dt: f32) {
                 }
             }
         };
-        // #7054 — the target's own guard (Oblivion's Block): a blocking defender stops a share of the hit.
-        let guard = if event.blocked { None } else { target_block(world, event.aggressor, target) };
+        // #7054 — the target's own guard can stop a share of the hit.
+        let guard = if event.blocked { None } else { target_block(world, &event, target) };
         let damage = guard.map_or(damage, |stopped| damage * (1.0 - stopped));
         // Oblivion's armor rating and Resist Normal Weapons (the weapon-damage formula's last two terms).
         let defense = weapon_defense(world, &event, target);
@@ -2171,6 +2238,7 @@ mod tests {
                 bash_attack: false,
                 blocked,
                 arrow: false,
+                physical: None,
                 ignores_resistance: false,
             },
         );
@@ -2237,17 +2305,43 @@ mod tests {
     #[test]
     fn skyrim_block_guard_uses_canonical_hands() {
         use byroredux_core::character::{BlockGuard, BlockModel};
-        use byroredux_core::ecs::components::{EquipmentSlots, Inventory, ItemStack};
-        use byroredux_plugin::esm::records::SlotHands;
+        use byroredux_core::ecs::components::{EquipmentSlots, GlobalTransform, Inventory, ItemStack};
+        use byroredux_core::math::{Quat, Vec3};
+        use byroredux_plugin::esm::records::{AvifRecord, EsmIndex, ItemKind, ItemRecord, SlotHands};
         use byroredux_scripting::hands::{HandCatalog, HandWeapon};
 
         const SHIELD: u32 = 0x300;
         const TORCH: u32 = 0x301;
         const SWORD: u32 = 0x302;
         const ARMOR: u32 = 0x303;
+        const BLOCK_AV: u32 = 0x304;
 
-        let mut world = World::new();
-        let actor = world.spawn();
+        let (mut world, attacker, actor) = damage_fixture(100.0, Some(20.0), false);
+        world.register::<GlobalTransform>();
+        world.register::<MeleeState>();
+        world.register::<Inventory>();
+        world.register::<EquipmentSlots>();
+        world.insert(attacker, ActorVitals { health: 0x2D4 });
+        world.insert(attacker, GlobalTransform::new(Vec3::NEG_Z, Quat::IDENTITY, 1.0));
+        world.insert(actor, GlobalTransform::IDENTITY);
+        world.insert(actor, MeleeState { blocking: true, ..Default::default() });
+        world.insert_resource(BlockModel::SKYRIM);
+        world.insert_resource(PlayerEntity(Some(actor)));
+        world.insert_resource(crate::components::InputState::default());
+        let mut index = EsmIndex::default();
+        index.actor_values.insert(BLOCK_AV, AvifRecord { form_id: BLOCK_AV, editor_id: "AVBlock".into(), ..Default::default() });
+        index.items.insert(SHIELD, ItemRecord {
+            form_id: SHIELD,
+            common: Default::default(),
+            kind: ItemKind::Armor {
+                biped_flags: 1 << 12, dt: 0.0, dr: 0, health: 0, armor_rating_x100: 1500,
+                equip_type: 0, armor_type: None, female_model_path: String::new(), armatures: Vec::new(),
+            },
+        });
+        world.insert_resource(byroredux_scripting::ActorValueNames::from_index(&index));
+        world.insert_resource(crate::components::LoadedCellIndex(std::sync::Arc::new(index)));
+        world.get_mut::<byroredux_scripting::HitEvent>(actor).unwrap().physical =
+            Some(byroredux_scripting::events::PhysicalHit::from_attacker(17.0));
         let mut catalog = HandCatalog::default();
         catalog.insert_shield(SHIELD);
         catalog.insert_torch(TORCH);
@@ -2266,20 +2360,37 @@ mod tests {
         shield_and_sword.equip(1 << 12, shield);
         // An ordinary armor item in the fallback shield bit must not hide the right-hand guard.
         let mut right_sword = EquipmentSlots { weapon: Some(sword), ..Default::default() };
-        right_sword.equip(1 << fallback.shield_bit, armor);
+        right_sword.equip(1 << fallback.legacy_shield_bit().unwrap(), armor);
         let left_torch = EquipmentSlots { left_hand: Some(torch), ..Default::default() };
         let left_sword = EquipmentSlots { left_hand: Some(sword), ..Default::default() };
 
-        for (case, slots, expected) in [
-            ("shield takes priority over right-hand sword", shield_and_sword, BlockGuard::Shield),
-            ("left torch", left_torch, BlockGuard::Weapon),
-            ("right sword", right_sword, BlockGuard::Weapon),
-            ("left sword", left_sword, BlockGuard::Weapon),
-            ("empty hands", EquipmentSlots::new(), BlockGuard::Hands),
+        for (case, slots, expected, health) in [
+            ("shield takes priority over right-hand sword", shield_and_sword, BlockGuard::Shield, 90.5),
+            ("left torch", left_torch.clone(), BlockGuard::Weapon, 87.7),
+            ("right sword", right_sword, BlockGuard::Weapon, 87.7),
+            ("left sword", left_sword, BlockGuard::Weapon, 87.7),
+            ("empty hands", EquipmentSlots::new(), BlockGuard::Hands, 80.0),
         ] {
             world.insert(actor, slots);
-            assert_eq!(block_guard(&world, &fallback, actor), expected, "{case}");
+            world.insert(actor, ActorValues::from_pairs([(0x2D4, 100.0), (BLOCK_AV, 100.0)]));
+            assert_eq!(block_guard(&world, BlockModel::SKYRIM, actor).0, expected, "{case}");
+            combat_damage_system(&world, 0.0);
+            let actual = world.get::<ActorValues>(actor).unwrap().current(0x2D4);
+            assert!((actual - health).abs() < 1e-4, "{case}: {actual} vs {health}");
         }
+
+        world.insert(actor, left_torch);
+        let event = *world.get::<byroredux_scripting::HitEvent>(actor).unwrap();
+        world.resource_mut::<crate::components::InputState>().yaw = std::f32::consts::PI;
+        assert_eq!(target_block(&world, &event, actor), None, "the attacker is behind the player's view");
+        world.resource_mut::<crate::components::InputState>().yaw = 0.0;
+        let trap = byroredux_scripting::HitEvent { physical: None, ..event };
+        assert_eq!(target_block(&world, &trap, actor), None, "an event lacking physical attack provenance bypasses the guard");
+        let arrow = byroredux_scripting::HitEvent {
+            physical: Some(byroredux_scripting::events::PhysicalHit { weapon_base_damage: 17.0, toward_source: Some(Vec3::Z) }),
+            ..event
+        };
+        assert_eq!(target_block(&world, &arrow, actor), None, "a shot's impact direction overrides the shooter's current position");
     }
 
     /// Oblivion's armor rating and Resist Normal Weapons, from the defender's side (UESP *The Complete Damage Formula*): the
@@ -2453,6 +2564,7 @@ mod tests {
                 bash_attack: false,
                 blocked: false,
                 arrow: false,
+                physical: None,
                 ignores_resistance: false,
             },
         );
@@ -2536,6 +2648,7 @@ mod tests {
             aggressor: guard, source: guard, projectile: 0, damage: 10.0,
             power_attack: false, sneak_attack: false, bash_attack: false, blocked: false,
             arrow: false,
+            physical: None,
             ignores_resistance: false,
         });
         combat_damage_system(&world, 0.0);
@@ -2944,7 +3057,7 @@ mod tests {
         assert!(world.try_resource::<SpellCastModel>().is_none());
         assert!(world.try_resource::<ArmorRatingModel>().is_none());
         assert!(world.try_resource::<FallModel>().is_none());
-        assert!(world.try_resource::<BlockModel>().is_none());
+        assert_eq!(*world.resource::<BlockModel>(), BlockModel::SKYRIM);
 
         install_all(&mut world, GameKind::Skyrim, CharacterRulesProfile::OBLIVION);
         install_all(&mut world, GameKind::Oblivion, CharacterRulesProfile::FALLOUT_NEW_VEGAS);

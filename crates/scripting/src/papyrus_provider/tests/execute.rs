@@ -792,6 +792,7 @@ fn combat_and_equipment_events_dispatch_in_batch_order() {
             bash_attack: false,
             blocked: false,
             arrow: false,
+            physical: None,
             ignores_resistance: false,
         },
     );

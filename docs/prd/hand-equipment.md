@@ -1,6 +1,6 @@
 # Hand Equipment — Product Requirements
 
-**Status**: ACTIVE (2026-11-24). Revision 18 records the fixed hand-reader cohort measurement. See §12 for the revision history.
+**Status**: ACTIVE (2026-11-24). Revision 19 records Skyrim's live block damage check. See §12 for the revision history.
 
 **Tracking**: #7397 (parent and follow-ups), #7398 (Phase 1), #7399 (Phase 2). Revision 3 records the initial Phase 0 work.
 
@@ -165,8 +165,8 @@ Pre-implementation baseline on 2026-11-23 (`66668ed4b`). See the
 
 - **HND-READ-004.** Skyrim's hand state MUST classify the guard in priority order. A left-hand
   shield gives a shield guard. A left-hand torch or a weapon in either hand gives a weapon guard.
-  All other hand states give a bare-hand guard. A live damage check depends on the Skyrim
-  `BlockModel` in [CHARAL](../engine/charal.md).
+  All other hand states give a bare-hand guard. The Skyrim [`BlockModel`](../engine/charal-skyrim-ruleset.md#block-damage-reduction)
+  uses that classification to resolve covered physical hits.
 - **HND-READ-005.** `GetEquippedSpell(aiSource)` MUST return the spell in left source 0 or right
   source 1. See [CK GetEquippedSpell](https://ck.uesp.net/wiki/GetEquippedSpell_-_Actor).
 - **HND-READ-006.** Skyrim `GetEquippedShield()` MUST return the shield in the canonical left
@@ -225,7 +225,7 @@ and VM fixtures use synthetic forms and can run without game data.
 | Cell eviction | Run `skyrim_npc_hands_survive_cell_eviction` in the `byroredux` binary tests. The synthetic cell uses the production eviction and placement-restore steps. | The same placed reference resolves to a fresh actor with the original right-hand spell and the left-hand weapon at its restored inventory index. HND-STATE-004. |
 | Torch light | Run `a_held_torch_takes_the_left_hand_and_lights_it` in the `byroredux` binary tests. | A torch equips to the left, supplies one light while held, and removes that light when it leaves the hand. Q3. |
 | NPC dual-wield flags | Run `skyrim_npc_dual_wield_requires_both_flags_and_a_free_left_hand`. Run the official-load-order fixture in the authored slots row to check the decoded race and combat style data. | Across all four flag combinations, the right-hand weapon stays consistent and the second weapon appears only with both flags set. A shield, two-handed primary, or missing second copy prevents a second weapon. HND-STATE-003. |
-| Block guard | Run `skyrim_block_guard_uses_canonical_hands` in the `byroredux` binary tests. | A left shield takes priority over a right-hand weapon, a left torch or a weapon in either hand yields a weapon guard, and empty hands yield a bare-hand guard. Live damage reduction awaits the Skyrim `BlockModel`. HND-READ-004. |
+| Block guard | Run `skyrim_block_guard_uses_canonical_hands` in the `byroredux` binary tests and [the Skyrim block smoke](../smoke-tests/skyrim-block.sh). | A left shield takes priority over a right-hand weapon. At Block 100, Mikael's dagger hit loses 55% to the Iron Shield and 32% to the sword or torch, before armor. Bare hands apply no block reduction. HND-READ-004. |
 | Live oil-pool ignition | Run [`skyrim-oil-pool.sh`](../smoke-tests/skyrim-oil-pool.sh). Each fresh Skyrim SE session walks through `BleakFallsBarrow01` reference `0009B0DE` with a torch or sword equipped and zero active magic effects. | The stock torch trial stays undamaged. With the equipment check enabled, the torch advances the pool through stages 1–3 and requests its authored explosion, and the sword leaves the pool undamaged. The torch trial verifies the authored reset branch restores stage −1. |
 
 The base record `000862CC` disables both equipment and magic checks. The comparison uses temporary
@@ -286,10 +286,9 @@ and the spell portion of HND-STATE-002. Exit: the torch and spell readbacks, bot
 **Phase 3 — Remaining acceptance and integrations (#7397).** Complete authored left-only and
 non-hand weapon cases (HND-SLOT-002), NPC dual wield (HND-STATE-003), cell eviction (HND-STATE-004),
 canonical shield reads (HND-READ-006), and block guard classification (HND-READ-004). The oil-pool
-gate covers the placed-destructible `ObjectReference.Reset` branch. Live block reduction depends on
-CHARAL's Skyrim block model. Exit: the authored slot, four-way NPC flag, cell eviction,
-shield read and guard fixtures pass, and the live oil-pool scenario passes. Track the live block
-damage check with the CHARAL dependency.
+gate covers the placed-destructible `ObjectReference.Reset` branch. Exit: the authored slot,
+four-way NPC flag, cell eviction, shield read and guard fixtures pass and the live oil-pool and
+Skyrim block scenarios pass.
 
 Regression fixtures cover the canonical shield reader, authored weapon and spell slots, NPC
 dual-wield spawn loadouts, hand-state restoration after cell eviction and save/load, guard
@@ -349,3 +348,4 @@ revisions 8–15).
 | 16 | 2026-11-24 | Added `Actor.HasMagicEffectWithKeyword` over applied magic effects and load-order-remapped `MGEF.KWDA` (#7403). The Skyrim SE census removes all 792 declines at that call and admits the 43 gas-trap attachments. The 734 oil-pool attachments now stop at `ObjectReference.Reset`. | — |
 | 17 | 2026-11-24 | Implemented placed-destructible `ObjectReference.Reset` and admitted all 734 oil-pool attachments. Skyrim SE coverage reaches 17,089 of 19,412 scripted references (88.0%). The live gate crosses the model phantom and observes authored burn stages and reset with a torch. The sword control and stock torch run leave the pool undamaged. | — |
 | 18 | 2026-11-24 | Published the unique hand-reader baseline cohort and remaining VM blockers in the ROADMAP compatibility matrix. The revision 16 and 17 census totals count raw rows, including repeated VMAD attachments. | — |
+| 19 | 2026-11-24 | Installed Skyrim's CHARAL block model and verified shield, sword, torch and bare-hand mitigation against live frontal hits. | — |

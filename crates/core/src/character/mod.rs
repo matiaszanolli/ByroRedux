@@ -63,7 +63,7 @@
 //!   settings, the skill's class, and banking with rollover.
 //! * [`armor_rating`] — [`ArmorRatingModel`] / [`weapon_resistance_factor`]: Oblivion's armor rating and Resist Normal
 //!   Weapons (the share of a weapon hit that gets through; the Skyrim sibling is [`armor`]).
-//! * [`block`] — [`BlockModel`] / [`BlockGuard`]: Oblivion's block (how much of a hit a shield, a weapon or bare hands stops
+//! * [`block`] — [`BlockModel`] / [`BlockGuard`]: Oblivion and Skyrim block damage (the share of a physical hit a guard stops
 //!   at a given Block skill; #7054).
 //! * [`fall`] — [`FallModel`] / [`FallTracker`]: Oblivion's fall damage (the `fJumpFall*` rule, and the time a body spends
 //!   below its takeoff height; #7056).

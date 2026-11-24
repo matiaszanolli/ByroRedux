@@ -316,6 +316,7 @@ fn arrow_spec(world: &World, player: EntityId, model: &BowModel, bow: &WieldedBo
     let range = model.range(proj.map_or(0.0, |proj| proj.range));
     Ok(ArrowSpec {
         damage: model.shot_damage(bow.damage, ammo_damage, shot_traits(world, player, model)),
+        weapon_base_damage: bow.damage,
         speed,
         range: if range.is_finite() { range } else { OBLIVION_ARROW_RANGE_BU },
         radius: proj.map_or(0.0, |proj| proj.collision_radius),
@@ -713,7 +714,7 @@ mod tests {
         world.resource_mut::<ActiveProjectiles>().0.push(crate::systems::projectiles::arrow_shot(
             &world,
             player,
-            ArrowSpec { damage: 5.0, speed: 1500.0, range: 4096.0, radius: 0.0, lifetime: None, ignores_resistance: false },
+            ArrowSpec { damage: 5.0, weapon_base_damage: 3.0, speed: 1500.0, range: 4096.0, radius: 0.0, lifetime: None, ignores_resistance: false },
             byroredux_core::math::Vec3::ZERO,
             byroredux_core::math::Vec3::NEG_Z,
         ).map(|mut shot| { shot.arrow = false; shot }).unwrap());

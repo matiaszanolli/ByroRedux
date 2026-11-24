@@ -120,6 +120,7 @@ docs/smoke-tests/m43-hello.sh                      # Skyrim SE: staged movers am
 docs/smoke-tests/m43-node-window.sh                # FO4: a node's HNAM reset window blocks a re-fire for 48 h and lets it through after (M43)
 docs/smoke-tests/m43-tempering.sh                 # Skyrim SE: a held Steel Sword is improved in place at the grindstone (M43)
 docs/smoke-tests/skyrim-oil-pool.sh              # Skyrim SE: walk the same Bleak Falls oil-pool trigger with a torch or sword, verify stock settings and the equipment check with live Papyrus property overrides (Hand Equipment §7.2)
+docs/smoke-tests/skyrim-block.sh                 # Skyrim SE: Mikael's dagger hits a shield, sword, torch and bare-hands player at Block 100 (HND-READ-004)
 docs/smoke-tests/perk-entry-points.sh [fnv|skyrim]  # FNV: levelup perk refuses a failing condition (naming it), takes Swift Learner, perk.compose shows it; Skyrim: an Ability perk's spell is in SpellList once, before and after F5/F9 (M24.2)
 docs/smoke-tests/m43-armor.sh                      # Skyrim SE: a worn cuirass gives an armor rating and physical damage reduction per UESP's formula (M43)
 docs/smoke-tests/m43-fo4-actions.sh                # FO4: a locked terminal is hacked, a lock picked with a bobby pin, a pistol aimed — HACK / LOCK / IRON raised live (M43)

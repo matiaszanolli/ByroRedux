@@ -84,7 +84,7 @@ impl Vm<'_> {
                         _ => None,
                     },
                     Some(GameKind::Oblivion) => {
-                        let bit = byroredux_core::character::block::BlockModel::OBLIVION.shield_bit;
+                        let bit = byroredux_core::character::BlockModel::OBLIVION_SHIELD_BIT;
                         let index = self.world
                             .get::<byroredux_core::ecs::components::EquipmentSlots>(entity)
                             .and_then(|slots| slots.at(bit));

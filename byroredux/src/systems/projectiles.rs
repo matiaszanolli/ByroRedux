@@ -53,6 +53,7 @@ pub(crate) struct Projectile {
     /// to live forever" — they end on range or impact).
     pub lifetime_left: Option<f32>,
     pub damage: f32,
+    pub weapon_base_damage: Option<f32>,
     pub shooter: EntityId,
     pub radius: f32,
     /// A Target spell's projectile (player-spellcasting PRD PSC-TGT-003): on a live actor it starts the spell's Target
@@ -185,6 +186,7 @@ fn launch_of(
         range_left: if proj.range > 0.0 { proj.range } else { f32::INFINITY },
         lifetime_left: (proj.lifetime > 0.0).then_some(proj.lifetime),
         damage: if launch.harmless { 0.0 } else { weapon_damage + ammo_damage.max(0.0) },
+        weapon_base_damage: (!launch.harmless).then_some(weapon_damage),
         shooter: source,
         radius: proj.collision_radius.max(0.0),
         spell: None,
@@ -235,6 +237,7 @@ pub(crate) fn player_shot(
         range_left: if proj.range > 0.0 { proj.range } else { f32::INFINITY },
         lifetime_left: (proj.lifetime > 0.0).then_some(proj.lifetime),
         damage: weapon_damage + ammo_damage.max(0.0),
+        weapon_base_damage: Some(weapon_damage),
         shooter: player,
         radius: proj.collision_radius.max(0.0),
         spell: None,
@@ -249,6 +252,7 @@ pub(crate) fn player_shot(
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct ArrowSpec {
     pub damage: f32,
+    pub weapon_base_damage: f32,
     pub speed: f32,
     pub range: f32,
     /// The `PROJ` collision radius, 0 where the game has no `PROJ` (Oblivion).
@@ -274,6 +278,7 @@ pub(crate) fn arrow_shot(world: &World, player: EntityId, arrow: ArrowSpec, orig
         range_left: arrow.range,
         lifetime_left: arrow.lifetime,
         damage: arrow.damage,
+        weapon_base_damage: Some(arrow.weapon_base_damage),
         shooter: player,
         radius: arrow.radius.max(0.0),
         spell: None,
@@ -313,6 +318,7 @@ pub(crate) fn spell_shot(
         range_left: launch.range,
         lifetime_left: None,
         damage: 0.0,
+        weapon_base_damage: None,
         shooter: player,
         radius: 0.0,
         spell: Some(launch.spell),
@@ -427,7 +433,7 @@ pub(crate) fn projectile_flight_system(world: &World, dt: f32) {
         .map(|(body, _)| *body)
         .collect();
     let mut remaining = Vec::with_capacity(flying.len());
-    let mut hits: Vec<(EntityId, EntityId, f32, bool, bool)> = Vec::new();
+    let mut hits = Vec::new();
     // A Target spell's projectile ends in a landing on a live actor or a miss (player_cast::land_target, missed_target).
     let mut landings: Vec<(EntityId, EntityId, u32)> = Vec::new();
     let mut misses: Vec<u32> = Vec::new();
@@ -486,7 +492,18 @@ pub(crate) fn projectile_flight_system(world: &World, dt: f32) {
                         landings.push((projectile.shooter, target, spell))
                     }
                     (Some(spell), _) => misses.push(spell),
-                    (None, Some(target)) => hits.push((target, projectile.shooter, projectile.damage, projectile.arrow, projectile.ignores_resistance)),
+                    (None, Some(target)) => hits.push(byroredux_scripting::TrapHit {
+                        target,
+                        trap: projectile.shooter,
+                        damage: projectile.damage,
+                        physical: projectile.weapon_base_damage.map(|weapon_base_damage| byroredux_scripting::events::PhysicalHit {
+                            weapon_base_damage,
+                            toward_source: Some(-projectile.velocity),
+                        }),
+                        sneak_attack: false,
+                        arrow: projectile.arrow,
+                        ignores_resistance: projectile.ignores_resistance,
+                    }),
                     (None, None) => {}
                 }
             }
@@ -503,7 +520,7 @@ pub(crate) fn projectile_flight_system(world: &World, dt: f32) {
         // the take), so the survivors simply come back.
         active.0.extend(remaining);
     }
-    hits.retain(|&(target, shooter, _, _, _)| target != shooter && world.get::<Dead>(target).is_none());
+    hits.retain(|hit| hit.target != hit.trap && world.get::<Dead>(hit.target).is_none());
     if hits.is_empty() {
         return;
     }
@@ -513,15 +530,11 @@ pub(crate) fn projectile_flight_system(world: &World, dt: f32) {
     // already struck this frame.
     // M65 (SNK-ATK-001, -003) — a shot from the sneaking player on a target unaware of them. Resolved before
     // the queue's write guard is taken: the detection test takes its own locks.
-    let landed: Vec<byroredux_scripting::TrapHit> = hits
-        .into_iter()
-        .map(|(target, shooter, damage, arrow, ignores_resistance)| {
-            let (damage, sneak_attack) = crate::combat::sneak_strike(world, shooter, target, damage);
-            byroredux_scripting::TrapHit { target, trap: shooter, damage, sneak_attack, arrow, ignores_resistance }
-        })
-        .collect();
+    for hit in &mut hits {
+        (hit.damage, hit.sneak_attack) = crate::combat::sneak_strike(world, hit.trap, hit.target, hit.damage);
+    }
     if let Some(mut pending) = world.try_resource_mut::<byroredux_scripting::PendingTrapHits>() {
-        pending.0.extend(landed);
+        pending.0.extend(hits);
     }
 }
 
@@ -615,6 +628,7 @@ impl Projectile {
             range_left: 10000.0,
             lifetime_left: None,
             damage: 12.0,
+            weapon_base_damage: Some(9.0),
             shooter,
             radius: 1.0,
             spell: None,
@@ -680,6 +694,7 @@ mod tests {
             range_left: 10000.0,
             lifetime_left: None,
             damage: 12.0,
+            weapon_base_damage: Some(9.0),
             shooter: 7,
             radius: 1.0,
             spell: None,
@@ -827,6 +842,9 @@ mod tests {
         let events = world.query::<byroredux_scripting::HitEvent>().unwrap();
         let hit = events.get(actor).expect("the actor was hit");
         assert_eq!((hit.aggressor, hit.damage), (shooter, 12.0));
+        let physical = hit.physical.expect("the shot carries its base weapon damage and impact direction");
+        assert_eq!(physical.weapon_base_damage, 9.0);
+        assert_eq!(physical.toward_source.map(Vec3::normalize), Some(Vec3::Z));
         assert!(events.get(wall).is_none(), "a bare wall takes no HitEvent");
     }
 
@@ -964,6 +982,7 @@ mod tests {
                 bash_attack: false,
                 blocked: false,
                 arrow: false,
+                physical: None,
                 ignores_resistance: false,
             },
         );

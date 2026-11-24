@@ -3407,6 +3407,7 @@ fn hit_adapter_delivers_live_combat_marker_before_cleanup() {
             bash_attack: true,
             blocked: false,
             arrow: false,
+            physical: None,
             ignores_resistance: false,
         },
     );

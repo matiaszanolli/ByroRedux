@@ -459,7 +459,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         // ── Player-spellcasting (PSC-CST-008, #7079) ─────────────────
         ("SpellCastModel", "the Oblivion spell-cast rules, re-derived at load from the profile's spell_cast row and the load order's GMSTs by install_spell_cast_model; saving it would freeze a mod's tuning across loads"),
         ("BowModel", "the Oblivion / Skyrim bow rules, re-derived at load from the profile's bow row and the load order's GMSTs by install_bow_model; saving it would freeze a mod's tuning across loads"),
-        ("BlockModel", "the Oblivion block rules, re-derived at load from the profile's block row by install_block_model"),
+        ("BlockModel", "the block rules, re-derived at load from the character profile and game settings"),
         ("ArmorRatingModel", "the Oblivion armor-rating and weapon-resistance rules, re-derived at load from the profile's armor_rating row and fMaxArmorRating by install_armor_rating_model"),
         ("FallModel", "the Oblivion fall-damage rules, re-derived at load from the profile's fall row and the load order's fJumpFall* GMSTs by install_fall_model"),
         ("FallTracker", "the player's fall clock (the time spent below the takeoff height); `place_character_body`, which the load's pose restore and every teleport go through, resets it, so a load ends any fall in flight (#7227)"),

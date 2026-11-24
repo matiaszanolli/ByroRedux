@@ -344,7 +344,7 @@ pub struct CharacterRulesProfile {
     /// game: it reads the installed `BowModel` resource, which exists only where this row does.
     bow: Option<BowModel>,
     /// #7054 — the block rules (what a shield, a weapon or bare hands stops), where Block is a modelled defense
-    /// (Oblivion). A row of its own so the damage path never tests the game: it reads the installed `BlockModel`.
+    /// A row of its own so the damage path reads the installed model.
     block: Option<BlockModel>,
     /// #7056 — the fall-damage rules (`fJumpFall*`), where a fall hurts the player (Oblivion). A row of its own so the
     /// controller never tests the game: it reads the installed `FallModel`.
@@ -570,7 +570,7 @@ impl CharacterRulesProfile {
         armor: Some(ArmorModel::SKYRIM),
         spell_cast: None,
         bow: Some(BowModel::SKYRIM),
-        block: None,
+        block: Some(BlockModel::SKYRIM),
         fall: None,
         armor_rating: None,
         stance: StanceModel::SKYRIM,
@@ -992,7 +992,7 @@ mod tests {
         );
         assert_eq!((p.stance(), p.stealth(), p.indicator()), (StanceModel::OBLIVION, StealthKind::Oblivion, IndicatorModel::OBLIVION));
         let s = CharacterRulesProfile::SKYRIM;
-        assert_eq!((s.spell_cast(), s.bow(), s.block(), s.fall(), s.armor_rating()), (None, Some(BowModel::SKYRIM), None, None, None));
+        assert_eq!((s.spell_cast(), s.bow(), s.block(), s.fall(), s.armor_rating()), (None, Some(BowModel::SKYRIM), Some(BlockModel::SKYRIM), None, None));
         assert_eq!((s.stance(), s.stealth(), s.indicator()), (StanceModel::SKYRIM, StealthKind::Skyrim, IndicatorModel::SKYRIM));
         let rest = [
             (CharacterRulesProfile::NONE, StanceModel::NONE, StealthKind::SightOnly, IndicatorModel::NONE),

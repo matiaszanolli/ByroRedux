@@ -143,7 +143,7 @@ the torch leaves the hand. The hand bone is not followed, and the torch's burn t
 | `EquipItemEx(item, slot)` / `EquipSpell(spell, source)` | Route through `equip_to_hand`. Fixed spell slots determine occupancy and `EitherHand` uses the requested hand under the current rule. PRD HND-READ-003 and HND-READ-007 cover slot arguments and source verification. |
 | `IsWeaponDrawn` | the drawn state `IsWeaponOut` reads |
 | `IsTorchOut` (condition 102) | a torch in either hand; declined off Skyrim |
-| Block | `block_guard` classifies a left shield, otherwise a left torch or a weapon in either hand, otherwise bare hands. Skyrim's damage path requires a `BlockModel` before calling the helper, and the Skyrim profile leaves that model unset. |
+| Block | `block_guard` classifies a left shield, otherwise a left torch or a weapon in either hand, otherwise bare hands. Skyrim's `BlockModel` uses that choice for a covered physical hit. [Skyrim block rules](charal-skyrim-ruleset.md#block-damage-reduction). |
 
 ## 5. Phases
 

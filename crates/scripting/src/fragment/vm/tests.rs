@@ -1281,6 +1281,7 @@ fn hit_events_are_registered_single_shot_and_filtered() {
                 bash_attack: false,
                 blocked: false,
                 arrow: false,
+                physical: None,
                 ignores_resistance: false,
             },
         );
@@ -2718,6 +2719,7 @@ fn on_hit_receives_the_aggressor_weapon_and_flags() {
             bash_attack: false,
             blocked: false,
             arrow: false,
+            physical: None,
             ignores_resistance: false,
         },
     );

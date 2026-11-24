@@ -410,6 +410,7 @@ mod tests {
                 bash_attack: false,
                 blocked: false,
                 arrow: false,
+                physical: None,
                 ignores_resistance: false,
             },
         );

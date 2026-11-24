@@ -1166,6 +1166,7 @@ fn live_load_drain_discards_the_outgoing_sessions_requests() {
         damage: 5.0,
         sneak_attack: false,
         arrow: true,
+        physical: None,
         ignores_resistance: false,
     }]));
     // #7230 — a draw held and a cast interval running when the load came.

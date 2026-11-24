@@ -263,14 +263,23 @@ fn npc_combat_ai_system_inner(world: &World, dt: f32, scratch: &mut CombatAiScra
     // used to overwrite that hit before `combat_damage_system` read it. Such a
     // strike is held instead: the attacker stays ready and lands it next
     // frame, so no hit is lost and simultaneous attackers fall out of step.
-    // #7302 — each striker's resistance flag, resolved before the events guard is taken (it reads
-    // `EquippedWeapon` and the loaded-cell index), as the VATS producer does.
-    let ignores: Vec<bool> = decisions
+    // Snapshot the weapon before opening the event storage, since this reads equipment and the index.
+    let weapons: Vec<_> = decisions
         .iter()
-        .map(|decision| decision.strike.is_some() && crate::combat::weapon_ignores_resistance(world, decision.entity))
+        .map(|decision| {
+            if decision.strike.is_some() {
+                (
+                    crate::combat::weapon_ignores_resistance(world, decision.entity),
+                    crate::combat::wielded_weapon_base_damage(world, decision.entity)
+                        .map(byroredux_scripting::events::PhysicalHit::from_attacker),
+                )
+            } else {
+                (false, None)
+            }
+        })
         .collect();
     if let Some(mut events) = world.query_mut::<byroredux_scripting::HitEvent>() {
-        for (decision, &ignores_resistance) in decisions.iter_mut().zip(&ignores) {
+        for (decision, (ignores_resistance, physical)) in decisions.iter_mut().zip(weapons) {
             let Some((target, damage)) = decision.strike else {
                 continue;
             };
@@ -289,6 +298,7 @@ fn npc_combat_ai_system_inner(world: &World, dt: f32, scratch: &mut CombatAiScra
                     source: decision.entity,
                     projectile: 0,
                     damage,
+                    physical,
                     power_attack: false,
                     sneak_attack: false,
                     bash_attack: false,
@@ -602,6 +612,7 @@ mod tests {
             bash_attack: false,
             blocked: false,
             arrow: false,
+            physical: None,
             ignores_resistance: false,
         }
     }
