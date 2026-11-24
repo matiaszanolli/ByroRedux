@@ -379,10 +379,8 @@ fn draw_dialog(
                 ui.label(text);
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if buttons.is_empty() {
-                        if ui.button(labels.text("Ok")).clicked() {
-                            outputs.mcm_actions.push(McmAction::MessageAnswer(0));
-                        }
+                    if buttons.is_empty() && ui.button(labels.text("Ok")).clicked() {
+                        outputs.mcm_actions.push(McmAction::MessageAnswer(0));
                     }
                     for (index, button) in buttons.iter().enumerate() {
                         if ui.button(button).clicked() {

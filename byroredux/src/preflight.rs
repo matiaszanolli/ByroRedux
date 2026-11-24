@@ -327,10 +327,14 @@ fn scan_root(
 
     // ObScript SCPT records of the root's loaded plugins (Oblivion, FO3, FNV).
     if matches!(game, "oblivion" | "fo3" | "fnv") {
+        // LMC-REC-009 — read as the profile's game, as the fold reads it.
+        use byroredux_plugin::esm::reader::GameKind;
+        let kind = if game == "oblivion" { GameKind::Oblivion } else { GameKind::Fallout3NV };
+        let options = byroredux_plugin::esm::records::ParseOptions { game: Some(kind), ..Default::default() };
         for (name, _) in root.profile_plugins.iter().filter(|(_, kept)| *kept) {
             let path = root.path.join(plugin_file_name(name));
             let Ok(bytes) = std::fs::read(&path) else { continue };
-            let Ok(index) = byroredux_plugin::esm::records::parse_esm(&bytes) else {
+            let Ok(index) = byroredux_plugin::esm::records::parse_esm_with_options(&bytes, None, options) else {
                 scan.notes.push(format!("{name}: its records could not be parsed for the script scan"));
                 continue;
             };

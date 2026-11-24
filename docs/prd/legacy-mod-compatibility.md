@@ -1,8 +1,10 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-23). Revision 43 resolves every scanned script call against that catalog in the
-preflight (LMC-SCR-005). Revision 42 builds the per-function extender catalog with introduced-in
-versions and measured coverage (LMC-SCR-004). Revision 41 serves Fallout 4's MCM (LMC-UI-002 slice 5): menus by their
+**Status**: ACTIVE (2026-11-23). Revision 45 resolves every scanned script call against that catalog in the
+preflight (LMC-SCR-005). Revision 44 builds the per-function extender catalog with introduced-in
+versions and measured coverage (LMC-SCR-004). Revision 43 reads every plugin as the profile's game (LMC-REC-009) and
+reports light and medium records past their object space (LMC-ID-008). Revision 42 builds LMC-ID-010: a duplicate plugin
+or root is a repeat or an identity collision by content. Revision 41 serves Fallout 4's MCM (LMC-UI-002 slice 5): menus by their
 config folders, F4SE's external events. Revision 40 records that no `.xwm` decodes (LMC-AST-009, catalog
 A7.xwma). Revision 39 serves MCM Helper's hotkeys (LMC-UI-002 slice 4b). Revision 38 measures LMC-PERF-001: a 1,000-plugin profile with
 paired archives activates in 0.35 s, and archive pairing is linear. Revision 37 serves MCM Helper's config menus (LMC-UI-002 slice 4), with
@@ -441,12 +443,29 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   records) ([Ortham](https://blog.ortham.net/posts/2024-06-28-load-order-in-starfield/)).
   The original engines' active-plugin ceilings for each class do not exist
   here (LMC-ID-004).
+  At HEAD on 2026-11-23 (#6670) the flags decide only a plugin's slot, read
+  as the profile's game (LMC-REC-009), and so its Form ID decoding; no
+  record count is imposed. A light or medium plugin's own records whose
+  object ids its space cannot hold are masked into it, as the slot decodes
+  them, and the fold logs how many (`own_records_outside_object_space`,
+  `byroredux/src/cell_loader/load_order.rs`). The per-class slot ceilings
+  that remain are LMC-ID-004's.
 - **LMC-ID-009.** Plugin names, archive names, asset paths and script names
   MUST resolve case-insensitively, with `\` and `/` equivalent, on every
   host filesystem.
 - **LMC-ID-010.** Two enabled packages with the same identity and different
   content MUST be an activation diagnostic, never a silent replacement
   ([PKG-013](../engine/sandboxed-linked-mods.md#8-package-manifest-requirements)).
+  Built for the session profile (#6670). A plugin whose identity an earlier
+  profile entry already has is left out and compared byte for byte with
+  that entry (`same_file_content` in `crates/plugin/src/activation.rs`):
+  the same file or the same bytes is reported as a repeat, different bytes
+  as an identity collision naming both paths; the earlier entry loads
+  either way. A mod root's directory listed twice is one root; two
+  different directories with one identity are reported as an identity
+  collision without comparing their files, and both load, the later
+  winning their loose files (`byroredux/src/mod_roots.rs`). Extension
+  packages wait for the package manifest's content hashes (PKG-010).
 - **LMC-ID-011 — Missing masters.** When an enabled plugin declares a master
   that is not in the profile (a skipped unofficial patch counts as present,
   LMC-FIX-004), activation MUST disable that plugin and every
@@ -485,7 +504,7 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   priority first, after the unmanaged root, the base master's directory.
   Each root owns the plugins and archives at its top level and the loose
   files under it; its identity is its directory name, case-folded, and two
-  roots sharing one are reported (LMC-ID-010). A plugin named by its bare
+  directories sharing one are reported (LMC-ID-010). A plugin named by its bare
   file name resolves through the roots, the highest-priority root first and
   the unmanaged root last. `plugins.activation` and `--plugin-report` list
   each root with its plugins, archives and loose files. Manifest identities
@@ -668,6 +687,16 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
 - **LMC-REC-009.** A plugin's game dialect comes from its header and the
   profile's game, never from consumer branches
   ([per-game translation rule](../engine/nif-engine-translation-layer.md)).
+  Built (#6670): the base master names the profile's game (`ProfileGame`,
+  `crates/plugin/src/esm/reader.rs`), and the fold reads every plugin's
+  record layouts and TES4 light and medium bits as that game, as xEdit tests
+  a file's light bit against the game it loads (`TwbMainRecordStructFlags.IsLight`:
+  `gcLightPlugins in aGameDef.Capabilities` and the game's `LightFlag`). An
+  ESL-flagged plugin with an older header is light in a Skyrim SE profile; a
+  plugin whose header bands as another game is read as the profile's game
+  and logged. The header still gives the plugin's own HEDR, which picks its
+  character rules (Fallout 3 or New Vegas). The preflight's ObScript scan
+  reads plugins the same way.
 - **LMC-REC-010.** Sub-records the parser does not decode MUST be preserved
   as opaque bytes with provenance, so a later decoder sees them and the
   explain tooling can show that a mod touched them
@@ -854,7 +883,7 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   [GetNVSEVersion](https://geck.uesp.net/wiki/GetNVSEVersion)), and
   populating it for every family from the extenders' and libraries'
   changelogs is Phase 0 work. Wave order follows corpus demand (§9,
-  Phase 3). Built (revision 42): the per-function catalog in
+  Phase 3). Built (revision 44): the per-function catalog in
   `docs/data/extenders/` (3 709 functions over SKSE64, F4SE, the NVSE plugin
   families and OBSE, each with its introducing version and its source), its
   coverage measured and published in
@@ -864,7 +893,7 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   profile, archived and loose, not only those observed at attach time.
   Today the registry is observed-only
   ([scripting.md](../engine/scripting.md#pex-extender-compatibility-preflight)).
-  Built for the catalog (revision 43): `--preflight` resolves every compiled
+  Built for the catalog (revision 45): `--preflight` resolves every compiled
   Papyrus call of a root through its receiver's declared type and the game's
   script hierarchy, and every ObScript source's command names, to catalog rows,
   and reports per family the functions called, served and not, with their
@@ -1683,5 +1712,7 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 39 | 2026-11-23 | LMC-UI-002 slice 4b: MCM Helper's `keybinds.json` hotkeys; a key map with an id binds a key (bindings per game and named profile, over an earlier install's); a press runs the function call, `SendEvent` delivers `OnControlDown` / `OnControlUp`; `RunConsoleCommand` is declined (no game-console interpreter) | — |
 | 40 | 2026-11-23 | LMC-AST-009 measured: no `.xwm` decodes (Fallout 4's xWMA effects, 77% of its sounds, and Skyrim's and Fallout 4's music); catalog A7 split, A7.xwma at D5 with target D1, tracked by the xWMA decoder PRD | — |
 | 41 | 2026-11-23 | LMC-UI-002 slice 5 (Fallout 4): FO4 MCM (1.40, version code 9) from its author documentation; configs listed by their `MCM/Config/<mod>` folders under the mod roots when their plugin or requirements are loaded; FO4's control names (button added; image, positioner and numeric text inputs left out, failed groups hidden); F4SE `RegisterForExternalEvent` served (per session) with `OnMCMSettingChange` / `OnMCMMenuOpen` / `OnMCMMenuClose`; `MCM.RefreshMenu()`; New Vegas' MCM is its own slice | — |
-| 42 | 2026-11-23 | LMC-SCR-004 built: `docs/data/extenders/*.tsv` (generated by `scripts/extender-catalog.py` from SKSE64's and F4SE's published scripts and changelogs, xOBSE's changelog and the GECK / CS wiki dumps; 3 709 functions, 322 with a documented introducing version), coverage measured by the VM checker and the SDK catalog and pinned (SKSE64 26 of 804 served, F4SE 4 of 227, xNVSE 4 of 565, OBSE 5 of 644); the scan (LMC-SCR-005) and the probe answers (LMC-SCR-010) are the next slices ([design](../engine/extender-catalog.md)) | — |
-| 43 | 2026-11-23 | LMC-SCR-005 against the catalog: PEX call sites carry their receiver's declared type, resolved through the mod's scripts and the game's vanilla hierarchy (`docs/data/extenders/<family>-scripts.tsv`) to catalog rows; ObScript sources matched by command name; `--preflight` reports per family the functions called, served and not with their introducing versions, and counts receivers no table names | — |
+| 42 | 2026-11-23 | LMC-ID-010 built: a duplicate plugin entry is compared byte for byte with the earlier one and reported as a repeat or as an identity collision (the earlier loads); a mod root listed twice is one root, and two directories with one identity are an identity collision | — |
+| 43 | 2026-11-23 | LMC-REC-009 built: every plugin is read as the profile's game (`ProfileGame` from the base master: record layouts and the TES4 light / medium bits, as xEdit's `IsLight`); LMC-ID-008 verified (the flags decide only the slot) with a fold warning for light / medium records past their object space | — |
+| 44 | 2026-11-23 | LMC-SCR-004 built: `docs/data/extenders/*.tsv` (generated by `scripts/extender-catalog.py` from SKSE64's and F4SE's published scripts and changelogs, xOBSE's changelog and the GECK / CS wiki dumps; 3 709 functions, 322 with a documented introducing version), coverage measured by the VM checker and the SDK catalog and pinned (SKSE64 26 of 804 served, F4SE 4 of 227, xNVSE 4 of 565, OBSE 5 of 644); the scan (LMC-SCR-005) and the probe answers (LMC-SCR-010) are the next slices ([design](../engine/extender-catalog.md)) | — |
+| 45 | 2026-11-23 | LMC-SCR-005 against the catalog: PEX call sites carry their receiver's declared type, resolved through the mod's scripts and the game's vanilla hierarchy (`docs/data/extenders/<family>-scripts.tsv`) to catalog rows; ObScript sources matched by command name; `--preflight` reports per family the functions called, served and not with their introducing versions, and counts receivers no table names | — |

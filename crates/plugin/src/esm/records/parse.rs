@@ -125,6 +125,9 @@ pub struct ParseOptions {
     /// Keep the sub-records no parser decodes in [`EsmIndex::opaque_subrecords`] (LMC-REC-010). Off for a game's own
     /// master, whose records are on disk and numerous; on for the plugins a mod adds.
     pub collect_opaque: bool,
+    /// The game to read the plugin as: a profile's game, which decides every plugin's dialect (LMC-REC-009). `None`
+    /// reads it as its own header's game, for a file parsed on its own.
+    pub game: Option<GameKind>,
 }
 
 /// [`parse_esm_with_load_order`] with `options`.
@@ -143,11 +146,9 @@ pub fn parse_esm_with_options(data: &[u8], remap: Option<FormIdRemap>, options: 
     let file_header = reader
         .read_file_header()
         .context("Failed to read ESM file header")?;
-    let game = GameKind::from_header(
-        reader.variant(),
-        file_header.hedr_version,
-        file_header.record_version,
-    );
+    let game = options.game.unwrap_or_else(|| {
+        GameKind::from_header(reader.variant(), file_header.hedr_version, file_header.record_version)
+    });
     // M41.0 Phase 1b — preserve game on the index so consumers
     // (NPC spawn dispatcher) can route per-version without
     // re-deriving from a HEDR they no longer have.
