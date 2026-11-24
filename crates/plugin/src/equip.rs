@@ -345,10 +345,11 @@ pub const LVLI_MAX_DEPTH: u32 = 8;
 /// `esm/records/actor/mod.rs`), but the bit *meanings* are the same across
 /// all of them. `NpcRecord::template_flags`'s own doc comment enumerates the
 /// full set; the constants below name every bit a `ResolvedNpc` terminal
-/// consumes. Only `0x0200` Script and `0x0400` Def Pack List are parsed and
-/// stored with no consumer yet (#4137) — Script's real consumer is the M47
-/// VMAD attach path, not the `NPC_` TPLT walk — and Skyrim's `0x0800` Use
-/// Attack Data names a block (`ATKD`) the parser does not read at all.
+/// consumes. `0x0200` Script is consumed by the cell loader's VMAD attach
+/// through [`scripts_terminal`], not a `ResolvedNpc` field (#4137); `0x0400`
+/// Def Pack List is parsed and stored with no consumer yet (its `DPLT` list is
+/// not decoded), and Skyrim's `0x0800` Use Attack Data names a block (`ATKD`)
+/// the parser does not read at all.
 pub const TEMPLATE_FLAG_USE_TRAITS: u16 = 0x0001;
 pub const TEMPLATE_FLAG_USE_STATS: u16 = 0x0002;
 /// "Use Factions" — consumed by [`resolve_inherited_factions`] (#4093 /
@@ -390,6 +391,13 @@ pub const TEMPLATE_FLAG_USE_MODEL_ANIMATION: u16 = 0x0040;
 /// template's list. Consumed through [`ResolvedNpc::keywords`] /
 /// [`keywords_terminal`].
 pub const TEMPLATE_FLAG_USE_KEYWORDS: u16 = 0x1000;
+/// #4137 — "Use Script" (Skyrim `u16 @ 18` bit 9): the template's Papyrus scripts are attached **as well as** the
+/// actor's own. CK *Template Data* says the actor's own scripts "will be ignored", but the runtime keeps them:
+/// decoding four unmodded Skyrim SE saves (2026-11-23) showed every Use-Script actor keeping its own VMAD scripts
+/// (221 / 221) and gaining its template chain's (all 55 whose template carries scripts the actor lacks; 50 of them
+/// not named by the placed reference), while templated actors without the flag gained none (0 / 6). Consumed
+/// through [`scripts_terminal`] by the cell loader's VMAD attach.
+pub const TEMPLATE_FLAG_USE_SCRIPT: u16 = 0x0200;
 
 /// Maximum TPLT recursion depth for [`resolve_inherited_record`] and its
 /// public wrappers ([`resolve_inherited_inventory`],
@@ -491,6 +499,22 @@ pub fn keywords_terminal<'a>(
         crate::esm::records::effective_actor_level(shell),
         index,
         TEMPLATE_FLAG_USE_KEYWORDS,
+        0,
+    )
+}
+
+/// #4137 — the "Use Script" terminal of `shell` at the shell's own effective level, the sibling of
+/// [`keywords_terminal`] for a reader that holds a base FormID: the record whose `VMAD` scripts an actor of this base
+/// runs beside its own (see [`TEMPLATE_FLAG_USE_SCRIPT`]). `shell` itself when it does not set the flag.
+pub fn scripts_terminal<'a>(
+    shell: &'a crate::esm::records::actor::NpcRecord,
+    index: &'a EsmIndex,
+) -> &'a crate::esm::records::actor::NpcRecord {
+    resolve_inherited_record(
+        shell,
+        crate::esm::records::effective_actor_level(shell),
+        index,
+        TEMPLATE_FLAG_USE_SCRIPT,
         0,
     )
 }

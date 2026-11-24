@@ -852,15 +852,17 @@ pub(super) fn attach_vmad_scripts(
         return false;
     }
     let base_script_instance = index.base_record_script_instance(base_form_id);
-    // Nothing to attach if neither the REFR nor its base record carries a
-    // VMAD. Pre-#1737 this returned on the base lookup alone, so a REFR
-    // with its own override VMAD over a script-less base attached nothing.
-    if base_script_instance.is_none() && refr_script_instance.is_none() {
+    let template_script_instance = use_script_template_instance(index, base_form_id);
+    // Nothing to attach if neither the REFR, its base record nor (#4137) the
+    // base's Use-Script template carries a VMAD. Pre-#1737 this returned on
+    // the base lookup alone, so a REFR with its own override VMAD over a
+    // script-less base attached nothing.
+    if base_script_instance.is_none() && refr_script_instance.is_none() && template_script_instance.is_none() {
         return false;
     }
     let game = index.game;
     let mut any = false;
-    let scripts = dedup_vmad_scripts(refr_script_instance, base_script_instance);
+    let scripts = dedup_vmad_scripts(refr_script_instance, base_script_instance, template_script_instance);
     for (script_instance, script) in scripts {
         // #5999 — extraction, parse, preflight and decompile are per SCRIPT,
         // not per reference: the cache holds the decompiled AST and only the
@@ -943,25 +945,51 @@ pub(super) fn attach_vmad_scripts(
     any
 }
 
-/// Case-insensitively deduplicate the REFR-own and base-record VMAD script
-/// lists, REFR-own first so it wins name collisions (Papyrus identifiers
+/// #4137 — the `VMAD` of the Use-Script template an actor of `base_form_id`
+/// runs beside its own: the base's [`scripts_terminal`] when the base is a
+/// Skyrim `NPC_` that sets "Use Script" and the chain ends on another record.
+/// Skyrim only: the rule (own scripts plus the template's) is measured from
+/// Skyrim SE saves; FO4's per-flag templates and the FO3 / FNV single `SCRI`
+/// are not measured, so they keep the actor's own scripts alone.
+///
+/// [`scripts_terminal`]: byroredux_plugin::equip::scripts_terminal
+pub(super) fn use_script_template_instance(
+    index: &esm::records::EsmIndex,
+    base_form_id: u32,
+) -> Option<&esm::records::script_instance::ScriptInstanceData> {
+    if index.game != esm::reader::GameKind::Skyrim {
+        return None;
+    }
+    let shell = index.npcs.get(&base_form_id)?;
+    if shell.template_flags & byroredux_plugin::equip::TEMPLATE_FLAG_USE_SCRIPT == 0 {
+        return None;
+    }
+    let terminal = byroredux_plugin::equip::scripts_terminal(shell, index);
+    (terminal.form_id != shell.form_id).then_some(terminal.script_instance.as_ref()).flatten()
+}
+
+/// Case-insensitively deduplicate the REFR-own, base-record and (#4137)
+/// Use-Script template VMAD script lists, in that order, so the REFR's
+/// copy wins over the base's and the base's over the template's (Papyrus identifiers
 /// are case-insensitive — as honored everywhere else in this codebase:
 /// `eq_ignore_ascii_case` name comparisons, the `.pex` path normaliser,
 /// `translate/tables.rs` — so the dedup key is lowercased rather than the
 /// raw byte string, #1769 / D7-NEW-01). Each surviving [`ScriptInstance`]
 /// is paired with its owning [`ScriptInstanceData`] (needed downstream for
 /// VMAD property resolution).
-fn dedup_vmad_scripts(
+pub(super) fn dedup_vmad_scripts(
     refr_script_instance: Option<&esm::records::script_instance::ScriptInstanceData>,
     base_script_instance: Option<&esm::records::script_instance::ScriptInstanceData>,
+    template_script_instance: Option<&esm::records::script_instance::ScriptInstanceData>,
 ) -> Vec<(
     esm::records::script_instance::ScriptInstanceData,
     esm::records::script_instance::ScriptInstance,
 )> {
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut out = Vec::new();
-    for (is_refr, script_instance) in [(true, refr_script_instance), (false, base_script_instance)]
-        .into_iter()
+    for (is_refr, script_instance) in
+        [(true, refr_script_instance), (false, base_script_instance), (false, template_script_instance)]
+            .into_iter()
         .filter_map(|(is_refr, instance)| Some((is_refr, instance?)))
     {
         for script in &script_instance.scripts {
@@ -974,8 +1002,10 @@ fn dedup_vmad_scripts(
             // script with no properties, the weapons and sound sit on the base).
             let mut merged = script.clone();
             if is_refr {
+                // The copy it edits: the base record's, else (#4137) the template's.
                 let base_copy = base_script_instance
                     .into_iter()
+                    .chain(template_script_instance)
                     .flat_map(|base| base.scripts.iter())
                     .find(|candidate| candidate.name.eq_ignore_ascii_case(&script.name));
                 for property in base_copy.into_iter().flat_map(|base| base.properties.iter()) {
@@ -1122,7 +1152,7 @@ mod dedup_vmad_scripts_tests {
         let refr = instance(&["MyScript"]);
         let base = instance(&["myscript"]);
 
-        let out = dedup_vmad_scripts(Some(&refr), Some(&base));
+        let out = dedup_vmad_scripts(Some(&refr), Some(&base), None);
 
         assert_eq!(
             out.len(),
@@ -1150,7 +1180,7 @@ mod dedup_vmad_scripts_tests {
         let mut base = instance(&["DartTrap"]);
         base.scripts[0].properties = vec![property("numshots", 20), property("LvlThreshold1", 10)];
 
-        let out = dedup_vmad_scripts(Some(&refr), Some(&base));
+        let out = dedup_vmad_scripts(Some(&refr), Some(&base), None);
 
         assert_eq!(out.len(), 1);
         let names: Vec<_> = out[0].1.properties.iter().map(|p| (p.name.as_str(), &p.value)).collect();
@@ -1165,11 +1195,117 @@ mod dedup_vmad_scripts_tests {
         let refr = instance(&["RefrOnlyScript"]);
         let base = instance(&["BaseOnlyScript"]);
 
-        let out = dedup_vmad_scripts(Some(&refr), Some(&base));
+        let out = dedup_vmad_scripts(Some(&refr), Some(&base), None);
 
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].1.name, "RefrOnlyScript");
         assert_eq!(out[1].1.name, "BaseOnlyScript");
+    }
+
+    /// #4137 — an actor with "Use Script" runs its own scripts and its template's (measured from Skyrim SE saves:
+    /// MQ304Alduin runs its own `fxalduinscript` and its template's dragon scripts). A name both carry attaches
+    /// once, the actor's own copy; a reference editing a script only the template carries inherits the template
+    /// copy's other properties.
+    #[test]
+    fn use_script_attaches_the_actors_own_scripts_and_its_templates() {
+        use esm::records::script_instance::{PropertyValue, ScriptProperty};
+        let own = instance(&["FXAlduinScript", "SharedScript"]);
+        let mut template = instance(&["DragonActorScript", "sharedscript", "MGRitual05DragonScript"]);
+        template.scripts[0].properties =
+            vec![ScriptProperty { name: "Speed".into(), status: 1, value: PropertyValue::Int32(4) }];
+        let mut refr = instance(&["dragonactorscript"]);
+        refr.scripts[0].properties =
+            vec![ScriptProperty { name: "Health".into(), status: 1, value: PropertyValue::Int32(9) }];
+
+        let out = dedup_vmad_scripts(Some(&refr), Some(&own), Some(&template));
+
+        let names: Vec<&str> = out.iter().map(|(_, script)| script.name.as_str()).collect();
+        assert_eq!(names, ["dragonactorscript", "FXAlduinScript", "SharedScript", "MGRitual05DragonScript"]);
+        let edited = &out[0].1.properties;
+        assert_eq!(edited.len(), 2, "the reference's Health plus the template copy's Speed");
+    }
+}
+
+#[cfg(test)]
+mod use_script_template_tests {
+    use super::*;
+    use byroredux_plugin::equip::TEMPLATE_FLAG_USE_SCRIPT;
+    use esm::records::actor::NpcRecord;
+    use esm::records::script_instance::{ScriptInstance, ScriptInstanceData};
+
+    const SHELL: u32 = 0x0004_E9BC;
+    const TEMPLATE: u32 = 0x0001_0101;
+
+    fn scripts(name: &str) -> Option<ScriptInstanceData> {
+        Some(ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance { name: name.into(), status: 0, properties: Vec::new() }],
+        })
+    }
+
+    fn index(game: esm::reader::GameKind, flags: u16) -> esm::records::EsmIndex {
+        let mut index = esm::records::EsmIndex { game, ..Default::default() };
+        index.npcs.insert(
+            SHELL,
+            NpcRecord {
+                form_id: SHELL,
+                template_form_id: TEMPLATE,
+                template_flags: flags,
+                script_instance: scripts("FXAlduinScript"),
+                ..Default::default()
+            },
+        );
+        index.npcs.insert(TEMPLATE, NpcRecord { form_id: TEMPLATE, script_instance: scripts("DragonActorScript"), ..Default::default() });
+        index
+    }
+
+    /// #4137 — a Skyrim `NPC_` with "Use Script" brings its template's `VMAD`; without the flag, off Skyrim, or for
+    /// a template that is not an actor record there is none, and the actor runs its own scripts alone.
+    #[test]
+    fn only_a_skyrim_use_script_actor_brings_its_templates_scripts() {
+        let skyrim = esm::reader::GameKind::Skyrim;
+        let with = index(skyrim, TEMPLATE_FLAG_USE_SCRIPT);
+        let names = |found: Option<&ScriptInstanceData>| found.map(|data| data.scripts[0].name.clone());
+        assert_eq!(names(use_script_template_instance(&with, SHELL)), Some("DragonActorScript".into()));
+        assert_eq!(names(use_script_template_instance(&index(skyrim, 0), SHELL)), None, "no Use Script");
+        assert_eq!(
+            names(use_script_template_instance(&index(esm::reader::GameKind::Fallout3NV, TEMPLATE_FLAG_USE_SCRIPT), SHELL)),
+            None,
+            "unmeasured off Skyrim"
+        );
+        assert_eq!(names(use_script_template_instance(&with, TEMPLATE)), None, "an untemplated actor");
+        let mut dangling = index(skyrim, TEMPLATE_FLAG_USE_SCRIPT);
+        dangling.npcs.remove(&TEMPLATE);
+        assert_eq!(names(use_script_template_instance(&dangling, SHELL)), None, "a template that resolves to the shell");
+    }
+
+    /// #4137 — the actors the Skyrim SE save decode measured, on the real master: each Use-Script actor whose
+    /// template carries scripts brings them (the Whiterun carriage driver's `CarriageDriverScript`, MQ304Alduin's
+    /// dragon scripts beside its own `FXAlduinScript`); MG03Caller's template carries none, so the Caller runs its own
+    /// `dunFellglowBossBattle` alone.
+    #[test]
+    #[ignore = "needs Skyrim.esm on disk"]
+    fn the_save_measured_use_script_actors_bring_their_templates_scripts() {
+        let path = byroredux_plugin::esm::test_paths::skyrim_se_data_dir().join("Skyrim.esm");
+        let Ok(bytes) = std::fs::read(&path) else {
+            byroredux_plugin::esm::test_paths::require_or_skip("Skyrim.esm");
+            return;
+        };
+        let index = esm::parse_esm(&bytes).expect("parse Skyrim.esm");
+        let base = |editor_id: &str| *index.npcs.iter().find(|(_, npc)| npc.editor_id == editor_id).expect(editor_id).0;
+        let template_scripts = |editor_id: &str| -> Vec<String> {
+            use_script_template_instance(&index, base(editor_id))
+                .map(|data| data.scripts.iter().map(|script| script.name.to_ascii_lowercase()).collect())
+                .unwrap_or_default()
+        };
+        assert_eq!(template_scripts("CarriageDriverWhiterun"), ["carriagedriverscript"]);
+        let mut alduin = template_scripts("MQ304Alduin");
+        alduin.sort();
+        assert_eq!(alduin, ["dragonactorscript", "mgritual05dragonscript"]);
+        assert!(template_scripts("MG03Caller").is_empty());
+        let own = index.base_record_script_instance(base("MG03Caller")).expect("the Caller's own VMAD");
+        assert!(own.scripts.iter().any(|script| script.name.eq_ignore_ascii_case("dunFellglowBossBattle")));
     }
 }
 

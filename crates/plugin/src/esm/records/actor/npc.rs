@@ -438,8 +438,11 @@ pub struct NpcRecord {
     ///     Base Data — each a `ResolvedNpc` terminal.
     ///   * `0x1000` Use Keywords (Skyrim, FO4) — a `ResolvedNpc` terminal
     ///     (#6515): `KeywordTable` reads the template's `KWDA`, not the shell's.
-    ///   * `0x0200` Script, `0x0400` Def Pack List — parsed and stored for
-    ///     the dispatcher; no consumer yet.
+    ///   * `0x0200` Script (#4137) — the template chain's `VMAD` scripts are
+    ///     attached beside the actor's own (Skyrim, measured from saves;
+    ///     `equip::scripts_terminal`).
+    ///   * `0x0400` Def Pack List — parsed and stored; no consumer yet (the
+    ///     `DPLT` list it governs is not decoded).
     ///   * `0x0800` Use Attack Data (Skyrim) — not parsed: the `ATKD` block it
     ///     governs has no reader, so the bit has nothing to gate.
     pub template_flags: u16,
