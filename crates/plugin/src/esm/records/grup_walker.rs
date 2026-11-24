@@ -556,6 +556,47 @@ mod tests {
             "skipping the over-depth group must preserve outer byte accounting"
         );
     }
+    /// #7404 — the opaque collector's descent under `skip_group` honours the shared cap. The table below cannot
+    /// discriminate it (`note_skipped_content` stops quietly on the truncated header its fixture ends with), so this
+    /// test puts a real record below the cap: an unguarded descent notes it as opaque, a guarded one never reaches it.
+    /// The shallow control proves the collector does note a record it reaches.
+    #[test]
+    fn the_opaque_collector_honours_the_shared_depth_cap() {
+        let mut record = Vec::new();
+        record.extend_from_slice(b"GMST");
+        record.extend_from_slice(&10u32.to_le_bytes()); // one 6-byte sub-record header + 4 bytes
+        record.extend_from_slice(&0u32.to_le_bytes());
+        record.extend_from_slice(&0x0000_1234u32.to_le_bytes());
+        record.extend_from_slice(&[0; 8]);
+        record.extend_from_slice(b"DATA");
+        record.extend_from_slice(&4u16.to_le_bytes());
+        record.extend_from_slice(&7u32.to_le_bytes());
+        let nested = |levels: u32| {
+            let mut bytes = record.clone();
+            for _ in 0..levels {
+                bytes = tes5_group(bytes);
+            }
+            bytes
+        };
+        let skip_all = |bytes: &[u8]| {
+            let mut reader = EsmReader::new(bytes);
+            reader.enable_opaque_collection(crate::esm::records::GameKind::Skyrim);
+            let header = reader.read_group_header().expect("outer group header");
+            reader.skip_group(&header);
+            assert_eq!(reader.position(), bytes.len(), "skip_group must preserve byte accounting");
+            reader.take_opaque()
+        };
+
+        let shallow = skip_all(&nested(3));
+        assert!(shallow.contains_key(&0x0000_1234), "a record the collector reaches is noted as opaque");
+
+        let deep = skip_all(&nested(MAX_GRUP_NESTING_DEPTH + 128));
+        assert!(
+            deep.is_empty(),
+            "a record below the depth cap must not be reached by the opaque collector's descent"
+        );
+    }
+
     /// #3503 — every self-recursive GRUP walker in the parser must honour the
     /// shared cap, not just the four `records/` ones the #3237 fixture
     /// happened to point at. That fix wired `bounded_group_content_end` into
