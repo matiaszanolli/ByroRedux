@@ -568,6 +568,13 @@ pub(crate) fn install_catalog(world: &mut World, index: &EsmIndex) {
             // Ammunition is equippable only where the game has a player bow (BOW-MOD-001): a Fallout gun takes the
             // first accepted ammunition the player carries and has no arrow slot.
             let equip_target = equip_target.filter(|target| *target != EquipTarget::Ammo || index.character_rules.bow().is_some());
+            // A carried light is held in a hand only where the game has the hand model (Skyrim; Hand Equipment
+            // HND-SLOT-005).
+            let hand_model = index.game == byroredux_plugin::esm::reader::GameKind::Skyrim;
+            let equip_target = equip_target.filter(|target| *target != EquipTarget::Torch || hand_model);
+            if matches!(item.kind, ItemKind::Light { .. }) && equip_target.is_some() {
+                details = "Torch (left hand)".to_owned();
+            }
             if matches!(item.kind, ItemKind::Aid { .. }) {
                 details = if let Some(plan) = restorations.get(&form_id) {
                     if plan.iter().any(|e| e.duration > 0) {
@@ -683,7 +690,7 @@ pub(super) fn describe_kind(kind: &ItemKind) -> (&'static str, String, Option<Eq
         ItemKind::Light { .. } => (
             "Light",
             "Carried light (equipping unavailable)".to_owned(),
-            None,
+            Some(EquipTarget::Torch),
         ),
         ItemKind::Note { .. } => ("Note", "Note".to_owned(), None),
         ItemKind::Key => ("Key", "Key".to_owned(), None),

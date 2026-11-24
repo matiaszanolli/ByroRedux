@@ -39,7 +39,7 @@ pub(super) fn equip_item(world: &World, _fallout: bool, cmd: u16, args: &[ObScri
         if num(args, 1) != 0.0 {
             return Action::Declined;
         }
-        vec![Effect::EquipItem { actor: me, item: bind.object(item), silent: num(args, 2) != 0.0 }]
+        vec![Effect::EquipItem { actor: me, item: bind.object(item), silent: num(args, 2) != 0.0, left: false }]
     };
     finish_effects(world, cmd, context, caller, &bind, effects)
 }

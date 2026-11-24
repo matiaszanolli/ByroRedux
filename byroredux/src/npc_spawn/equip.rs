@@ -408,6 +408,40 @@ pub(super) fn build_npc_equip_state<'a>(
         }
     }
 
+    // Hand Equipment §2 (HND-STATE-003), the engine rule for an NPC's hands (the original's choice is
+    // undocumented): rule 1, the right hand holds the weapon this path wields; rule 2, a shield is held
+    // only beside a one-handed weapon, so a two-handed one takes a worn shield off (its mesh then
+    // leaves with the displaced-mesh pass below). Rule 3 (dual wield) waits for the RACE / CSTY flags.
+    if let Some(weapon) = equipped_weapon {
+        equipment_slots.equip_weapon(weapon.inventory_index);
+        if game == GameKind::Skyrim {
+            use byroredux_plugin::esm::records::{slot_hands, SlotHands};
+            let hands_of = |form: u32| match index.items.get(&form).map(|item| &item.kind) {
+                Some(ItemKind::Weapon { equip_type, .. } | ItemKind::Armor { equip_type, .. }) if *equip_type != 0 => {
+                    Some(slot_hands(&index.equip_slots, *equip_type))
+                }
+                _ => None,
+            };
+            if hands_of(weapon.base_form_id) == Some(SlotHands::Both) {
+                let shields: Vec<InventoryIndex> = equipment_slots
+                    .occupants
+                    .iter()
+                    .flatten()
+                    .copied()
+                    .filter(|&idx| {
+                        inventory.get(idx).is_some_and(|stack| {
+                            matches!(index.items.get(&stack.base_form_id).map(|item| &item.kind), Some(ItemKind::Armor { .. }))
+                                && hands_of(stack.base_form_id) == Some(SlotHands::Left)
+                        })
+                    })
+                    .collect();
+                for shield in shields {
+                    equipment_slots.release(shield);
+                }
+            }
+        }
+    }
+
     // A race skin can cover several regions in one mesh. If later armor wins
     // only some of those bits, keep the skin mesh but tell the importer which
     // dismember partitions to suppress. Bits outside the skin ARMO's authored

@@ -614,24 +614,41 @@ pub(crate) fn item_ignores_resistance(weapon: Option<&byroredux_plugin::esm::rec
 /// a worn shield, else a wielded weapon, else bare hands; the skill is the target's own Block. Whether a block needs the
 /// defender to face the attacker is undocumented, so facing is not tested.
 fn target_block(world: &World, aggressor: EntityId, target: EntityId) -> Option<f32> {
-    use byroredux_core::character::{BlockGuard, BlockModel};
+    use byroredux_core::character::BlockModel;
     let model = *world.try_resource::<BlockModel>()?;
     if !world.query::<MeleeState>()?.get(target)?.blocking {
         return None;
     }
     world.get::<ActorVitals>(aggressor)?;
     let skill = crate::detection::actor_value(world, target, "Block");
+    model.reduction(skill, block_guard(world, &model, target), world.has::<EquippedWeapon>(aggressor))
+}
+
+/// What `actor` blocks with. Where the hands are modelled (Skyrim; Hand Equipment HND-READ-004) the left
+/// hand answers: a shield, else a torch or weapon in either hand (UESP *Skyrim:Block*: "To block with a
+/// shield or torch, equip one to your left hand"), else bare hands. Elsewhere the shield's biped bit and
+/// the wielded weapon do (Oblivion).
+fn block_guard(world: &World, model: &byroredux_core::character::BlockModel, actor: EntityId) -> byroredux_core::character::BlockGuard {
+    use byroredux_core::character::BlockGuard;
+    use byroredux_scripting::hands::{hand_item, Hand, HandCatalog, HandItem};
+    if world.try_resource::<HandCatalog>().is_some_and(|catalog| catalog.is_active()) {
+        let (left, right) = (hand_item(world, actor, Hand::Left), hand_item(world, actor, Hand::Right));
+        return match (left, right) {
+            (HandItem::Shield { .. }, _) => BlockGuard::Shield,
+            (HandItem::Weapon { .. } | HandItem::Torch { .. }, _) | (_, HandItem::Weapon { .. }) => BlockGuard::Weapon,
+            _ => BlockGuard::Hands,
+        };
+    }
     let shield = world
-        .get::<byroredux_core::ecs::components::EquipmentSlots>(target)
+        .get::<byroredux_core::ecs::components::EquipmentSlots>(actor)
         .is_some_and(|slots| slots.occupants.get(usize::from(model.shield_bit)).is_some_and(|slot| slot.is_some()));
-    let guard = if shield {
+    if shield {
         BlockGuard::Shield
-    } else if world.has::<EquippedWeapon>(target) {
+    } else if world.has::<EquippedWeapon>(actor) {
         BlockGuard::Weapon
     } else {
         BlockGuard::Hands
-    };
-    model.reduction(skill, guard, world.has::<EquippedWeapon>(aggressor))
+    }
 }
 
 /// Install (or, for a game without fall damage, remove) the [`FallModel`](byroredux_core::character::FallModel) for a freshly
@@ -2240,6 +2257,7 @@ mod tests {
                 dr: 0,
                 health: 300,
                 armor_rating_x100: stored,
+                equip_type: 0,
                 armor_type: Some(1),
                 female_model_path: String::new(),
                 armatures: Vec::new(),

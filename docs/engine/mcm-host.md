@@ -282,6 +282,9 @@ extension-state save path (STATE-001) as LMC-UI-002 says.
 
      Two more tests cover the registration's check and the event filter. Unit tests cover the folder
      listing. No live run.
+6. New Vegas' MCM (§5.3): designed, not built. Two inputs are needed first:
+   - real NVSE-compiled plugins, to derive the byte forms from (§6.9);
+   - the MCM Guide v6, for the tile-tree addresses the stand-in must answer (§5.3).
 
 ## 5. Other front ends
 
@@ -484,12 +487,107 @@ The C++ source was not read. Release 1.40's version code (`GetVersionCode`) is 9
   - an earlier install's hotkey bindings;
   - the `textinputInt` and `textinputFloat` variants, which only third-party sources describe.
 
-### 5.3 New Vegas MCM (sketch)
+### 5.3 New Vegas MCM (slice 6)
 
-New Vegas' MCM is a menu inside `start_menu.xml` that a mod drives through NVSE functions
-(`SetUIFloat` / `GetUIFloat` on `StartMenu/MCM/...`, MCM's `GetMCMFloat` / `SetMCMFloat`), answering
-the menu's requests from a `MenuMode 1013` block each frame, and registering by adding an item to MCM's
-form list. It is its own slice, after its guide (MCM Guide v6, Nexus) is read.
+**Sources** (2026-11-23):
+
+- the GECK wiki dumps (`/mnt/data/src/reference/geckwiki`, `geck-uesp-wiki`): *MCM*, *GetMCMFloat*,
+  *SetMCMFloat*, *SetMCMString*, *GetModINISetting*, *SetModINISetting*, *GetUIFloat*, *SetUIFloat*,
+  *SetUIString*, *SetUIStringEx*, the string-variable tutorial and the `let` / `sv_*` pages, for
+  behaviour;
+- two published mod scripts that drive MCM (Tale of Two Wastelands' `TTWMCMSCPT`, DarnifiedUI's
+  config sub-menu), for the protocol as mods use it;
+- secondary notes that cite the MCM Guide (NVForever's spec notes).
+
+The MCM Guide v6 itself (Nexus) has not been read; points that only it settles are marked
+**guide: verify**. MCM is closed source and not redistributable.
+
+**The protocol.**
+
+- **Registration.** A mod's quest script, in `GameMode` on `GetGameRestarted`, checks `IsModLoaded
+  "The Mod Configuration Menu.esp"`. It then `ListAddForm`s one MiscItem (its line's name) to MCM's
+  form list, `BuildRef (GetModIndex "The Mod Configuration Menu.esp") 2790` (0xAE6). The list is not
+  saved; mods add again each session.
+- **The frame loop.** While the pause menu is open, the mod's `Begin MenuMode 1013` block:
+  - acts only when `GetMCMFloat 0 0 "_ActiveMod"` is its own mod index;
+  - reads `_ActiveOption` and `_Value`;
+  - answers at most one request a frame, each a trait on `StartMenu/MCM` that MCM sets and the mod
+    clears.
+
+  | Request | The mod's answer |
+  |---|---|
+  | `_Reset` | Lays the page out on `MCM_Options/Option1..36`: `_enable`, `_title`, `_type`, `_value`, `_prefix`, `_suffix`, `_textOn` / `_textOff` and so on, plus `_columns`. |
+  | `_Default` | Writes its defaults, then sets `_Reset`. |
+  | `_NewValue` | Takes `_Value`, or `_Value1..3`. |
+  | `_ShowList` | Fills the list window, `MCM_List/Item1..10`. |
+  | `_ShowScale` | Fills the slider window: `_Value`, `_ValueMin`, `_ValueMax`, `_ValueIncrement`, `_ValueDecimal`. |
+  | `_DefaultScale` | Puts the slider's default in `_Value`. |
+
+  Mouse-over sets `MCM_Options/_optionID`, and the mod writes the info line.
+- **Option types.**
+
+  | `_type` | Option |
+  |---|---|
+  | 0 | Title |
+  | 1 | List |
+  | 2 | Whole-number slider |
+  | 2.5 | Decimal slider |
+  | 3 | Key |
+  | 4 | Off/on |
+  | 5 | Check box |
+  | 6 | Custom off/on text |
+  | 7 | Fixed text |
+  | 8 | Two or three sliders |
+  | 9 | Colour |
+
+  Sub-menus `_ActiveSubMenu` go up to 10.
+- **Settings** are the mod's own script variables and globals, so they are saved. Optionally they go
+  to `Data\Config\<File>.ini` through `GetModINISetting` / `SetModINISetting`.
+
+**Design (owner's decisions §6.7–6.10).**
+
+- **The engine stands in for MCM** (§6.7, like LMC-FIX-004's stand-ins).
+  - `IsModLoaded`, `GetModIndex` and `BuildRef` answer for "The Mod Configuration Menu.esp" with an
+    engine slot.
+  - `ListAddForm` into its form list registers a mod line.
+  - A real MCM in the load order is not run: its scripts and XML are replaced, and the preflight
+    reports it.
+- **The tile tree is data.** `StartMenu/MCM` is a trait store (`NvMcmTraits`): paths in the tree's
+  own names and indices, as `GetUIFloat` / `SetUIFloat` / `SetUIString(Ex)` and MCM's `*MCMFloat` /
+  `SetMCMString` address them. `*:N` child order is **guide: verify** against a real menu.
+  The published scripts already disagree with the secondary notes on where traits live:
+  - TTW reads the mouse-over option as `GetMCMFloat 0 1 "_optionID"`, where the notes say `1 0`.
+  - Both scripts address MCM's children by position only (`*:5/SubMenu1`, `*:8/SubTitle1`,
+    `image/visible`).
+
+  The stand-in must answer at exactly those addresses, so the trait store and the front end wait for
+  the guide as well.
+- **A third front end on `McmHost`.** Each registered line is a menu.
+  1. Opening one sets `_ActiveMod`, `_ActiveMenu` and `_Reset`.
+  2. The mods' `MenuMode 1013` blocks run while the Mod Configuration page is open; it counts as the
+     pause menu, `StartMenu`.
+  3. The traits they write become the page's cells.
+  4. The panel's actions become the request traits (`_NewValue` with `_Value`, `_ShowList`,
+     `_ShowScale`, `_Default`).
+- **NVSE in the ObScript VM** (§6.8–6.9).
+  - It gets the commands MCM menus use: `IsModLoaded`, `GetModIndex`, `BuildRef`, `ListAddForm`,
+    `GetGameRestarted`, `GetGameLoaded`, `GetUIFloat`, `SetUIFloat`, `SetUIString`,
+    `SetUIStringEx`, the `sv_*` family, `let` / `eval` and `$`.
+  - It gets NVSE string variables. A string variable is a local whose number is an id into a string
+    table, which is saved with the session instead of NVSE's co-save.
+  - Its byte forms (opcodes, the expression tokens of `let` / `eval`, format-string arguments, the
+    string-variable encoding) are **derived from real NVSE-compiled plugins**: each script's `SCTX`
+    source is aligned with its `SCDA` bytes, as the VM's vanilla format was. xNVSE's headers name
+    what the bytes show.
+  - Until such plugins are available, this part is not built.
+- **MCM.dll's commands** (§6.10). The five the GECK wiki documents are built from it: `GetMCMFloat`,
+  `SetMCMFloat`, `SetMCMString`, `GetModINISetting` and `SetModINISetting`. `SetMCMFloatMass`,
+  `SetMCMStringMass`, `SetMCMModList` and `GetMCMListWidth` are empty wiki stubs: a call is declined
+  with a diagnostic until the MCM Guide documents them. `SetMCMModList` builds MCM's own list, which
+  the stand-in replaces.
+- **`GetModINISetting` / `SetModINISetting`.** They read `Data\Config\<File>.ini` through the mod
+  roots and write the profile's copy. This follows §6.4–6.5: per game and named profile, with an
+  earlier file read but never written.
 
 ## 6. Decisions (owner, 2026-11-23: each recommendation taken)
 
@@ -511,3 +609,15 @@ form list. It is its own slice, after its guide (MCM Guide v6, Nexus) is read.
    between the defaults and the profile's values, never written.
 6. **MCM Helper's hotkeys** (`keybinds.json`; owner, 2026-11-23). Taken: a follow-up slice (4b),
    because they need an input hook that runs Papyrus on a key press. Built the same day (§4, 4b).
+7. **New Vegas MCM itself** (owner, 2026-11-23). Taken: the engine stands in for MCM (§5.3). The
+   alternative needed the player's MCM install: running its scripts and rendering its
+   `start_menu.xml` on the MenuXml track.
+8. **How much NVSE the slice builds** (owner, 2026-11-23). Taken: the commands MCM menus use, and
+   NVSE string variables (`string_var`, `let`, `$`, `sv_*`).
+9. **Where NVSE's byte forms come from** (owner, 2026-11-23). Taken: derived from real NVSE-compiled
+   plugins (`SCTX` aligned with `SCDA`). Building from xNVSE's headers plus the layout nv-rs (a
+   GPL-3.0 reimplementation) states was not taken.
+10. **MCM.dll's undocumented commands** (owner, 2026-11-23). Taken: declared gaps. The four commands
+    the GECK wiki leaves as stubs are declined until the MCM Guide documents them; the description
+    derived from a disassembly of MCM.dll is not used (the no-decoding rule).
+

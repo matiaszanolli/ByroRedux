@@ -1694,6 +1694,7 @@ fn no_armor_describe_kind_output_can_target_the_weapon_slot() {
             dr: 0,
             health: 0,
             armor_rating_x100: 0,
+            equip_type: 0,
             armor_type: None,
             armatures: Vec::new(),
         });
@@ -1771,6 +1772,7 @@ fn player_template_uses_authored_inventory_and_equipment_slots() {
                 dr: 0,
                 health: 0,
                 armor_rating_x100: 0,
+                equip_type: 0,
                 armor_type: None,
                 armatures: Vec::new(),
             },
@@ -2798,7 +2800,7 @@ fn a_script_weapon_equip_is_queued_through_the_menu_door() {
     world.insert_resource(PendingInventoryActions::default());
     world.insert_resource(byroredux_scripting::PendingNonArmorEquips::default());
     let request = |world: &World, actor, form| {
-        world.resource_mut::<byroredux_scripting::PendingNonArmorEquips>().0.push((actor, form));
+        world.resource_mut::<byroredux_scripting::PendingNonArmorEquips>().0.push((actor, form, byroredux_scripting::hands::Hand::Right));
     };
 
     // The fixture's row 2 is the Iron Sword; row 0 is armor, row 1 a stack of misc.
@@ -3335,4 +3337,196 @@ fn equipping_an_arrow_type_sets_replaces_and_clears_the_slot() {
     assert_eq!(world.get::<EquippedAmmo>(player).map(|slot| slot.0), Some(None), "put away writes None, not a removal");
     world.remove_resource::<byroredux_core::character::BowModel>();
     assert_eq!(actions::toggle_equipped_ammo(&mut world, player, IRON), actions::MutationResult::Unavailable);
+}
+
+/// Hand Equipment #7398 — the equip-slot rules through the menu's actions: a sword right and a dagger
+/// left; a shield takes the left hand off the dagger; a two-handed sword takes the shield off; a
+/// left-hand dagger takes the two-hander off; a second dagger of the stack goes into the right; the
+/// left toggle takes off only the left; a single sword moved left leaves the right empty.
+#[test]
+fn hands_follow_the_equip_slot_rules() {
+    use byroredux_native_ui::InventoryAction::{EquipLeft, ToggleEquip};
+    use byroredux_plugin::esm::records::SlotHands;
+    use byroredux_scripting::hands::{hand_item, Hand, HandCatalog, HandWeapon};
+    const DAGGER: u32 = 0xD1;
+    const GREATSWORD: u32 = 0xD2;
+    const SHIELD: u32 = 0xD3;
+    let (mut world, player) = fixture();
+    {
+        let mut inventory = world.query_mut::<Inventory>().unwrap();
+        let inventory = inventory.get_mut(player).unwrap();
+        inventory.push(ItemStack::new(DAGGER, 2)); // 3
+        inventory.push(ItemStack::new(GREATSWORD, 1)); // 4
+        inventory.push(ItemStack::new(SHIELD, 1)); // 5
+    }
+    {
+        let mut catalog = world.resource_mut::<InventoryCatalog>();
+        let item = |name: &str, category: &'static str, target| InventoryItemDefinition {
+            name: name.to_owned(),
+            category,
+            value: 1,
+            weight: 1.0,
+            details: String::new(),
+            equip_target: Some(target),
+            weapon_damage: (target == EquipTarget::Weapon).then_some(5.0),
+            weapon_reach: 1.0,
+            weapon_speed: 1.0,
+            weapon_sound: None,
+            weapon_sneak: None,
+        };
+        catalog.entries.insert(DAGGER, item("Dagger", "Weapon", EquipTarget::Weapon));
+        catalog.entries.insert(GREATSWORD, item("Greatsword", "Weapon", EquipTarget::Weapon));
+        catalog.entries.insert(SHIELD, item("Shield", "Armor", EquipTarget::BipedSlots(1 << 9)));
+    }
+    let mut hands = HandCatalog::default();
+    hands.insert_weapon(0x9ABC, HandWeapon { anim_type: 1, hands: SlotHands::Right });
+    hands.insert_weapon(DAGGER, HandWeapon { anim_type: 2, hands: SlotHands::Right });
+    hands.insert_weapon(GREATSWORD, HandWeapon { anim_type: 5, hands: SlotHands::Both });
+    hands.insert_shield(SHIELD);
+    world.insert_resource(hands);
+    let codes = |world: &World| {
+        (hand_item(world, player, Hand::Left).item_type_code(), hand_item(world, player, Hand::Right).item_type_code())
+    };
+    let right_weapon = |world: &World| world.get::<EquippedWeapon>(player).map(|weapon| weapon.base_form_id);
+
+    assert_eq!(apply_action(&mut world, ToggleEquip { index: 2 }), MutationResult::Equipped);
+    assert_eq!(apply_action(&mut world, EquipLeft { index: 3 }), MutationResult::Equipped);
+    assert_eq!(codes(&world), (2, 1), "a dagger left, the sword right");
+    assert_eq!(right_weapon(&world), Some(0x9ABC));
+
+    assert_eq!(apply_action(&mut world, ToggleEquip { index: 5 }), MutationResult::Equipped);
+    assert_eq!(codes(&world), (10, 1), "the shield takes the dagger's hand");
+    assert_eq!(world.get::<EquipmentSlots>(player).unwrap().left_hand, None);
+
+    assert_eq!(apply_action(&mut world, ToggleEquip { index: 4 }), MutationResult::Equipped);
+    assert_eq!(codes(&world), (5, 5), "the two-hander takes the shield off");
+    assert_eq!(world.get::<EquipmentSlots>(player).unwrap().at(9), None);
+    assert_eq!(right_weapon(&world), Some(GREATSWORD));
+
+    assert_eq!(apply_action(&mut world, EquipLeft { index: 3 }), MutationResult::Equipped);
+    assert_eq!(codes(&world), (2, 0), "a left dagger takes the two-hander off");
+    assert_eq!(right_weapon(&world), None);
+
+    assert_eq!(apply_action(&mut world, ToggleEquip { index: 3 }), MutationResult::Equipped);
+    assert_eq!(codes(&world), (2, 2), "the stack's second dagger goes right");
+    assert_eq!(right_weapon(&world), Some(DAGGER));
+
+    assert_eq!(apply_action(&mut world, EquipLeft { index: 3 }), MutationResult::Unequipped);
+    assert_eq!(codes(&world), (0, 2), "the left toggle takes off only the left");
+
+    assert_eq!(apply_action(&mut world, ToggleEquip { index: 2 }), MutationResult::Equipped);
+    assert_eq!(apply_action(&mut world, EquipLeft { index: 2 }), MutationResult::Equipped);
+    assert_eq!(codes(&world), (1, 0), "one sword moved left leaves the right empty");
+    assert_eq!(right_weapon(&world), None);
+
+    // A script's EquipItem of a shield over a two-hander goes through the same rules.
+    assert_eq!(apply_action(&mut world, ToggleEquip { index: 4 }), MutationResult::Equipped);
+    assert_eq!(codes(&world), (5, 5));
+    world.insert_resource(PendingInventoryActions::default());
+    world.insert_resource(byroredux_scripting::PendingNonArmorEquips(vec![(player, SHIELD, Hand::Right)]));
+    drain_pending_inventory_actions(&mut world);
+    assert_eq!(codes(&world), (10, 0), "the script's shield takes the two-hander off");
+    assert_eq!(right_weapon(&world), None, "and the wielded-weapon cache follows");
+}
+
+/// Hand Equipment #7399 — a torch from the menu takes the left hand (off the dagger held there), and a
+/// held torch lights its surroundings (Q3): one light at the holder, gone when the torch is put away.
+#[test]
+fn a_held_torch_takes_the_left_hand_and_lights_it() {
+    use byroredux_core::ecs::{GlobalTransform, LightSource};
+    use byroredux_native_ui::InventoryAction::{EquipLeft, ToggleEquip};
+    use byroredux_plugin::esm::records::SlotHands;
+    use byroredux_scripting::hands::{hand_item, Hand, HandCatalog, HandWeapon};
+    const DAGGER: u32 = 0xD1;
+    const TORCH: u32 = 0xD4;
+    let (mut world, player) = fixture();
+    {
+        let mut inventory = world.query_mut::<Inventory>().unwrap();
+        let inventory = inventory.get_mut(player).unwrap();
+        inventory.push(ItemStack::new(DAGGER, 1)); // 3
+        inventory.push(ItemStack::new(TORCH, 1)); // 4
+    }
+    {
+        let mut catalog = world.resource_mut::<InventoryCatalog>();
+        let item = |name: &str, category: &'static str, target| InventoryItemDefinition {
+            name: name.to_owned(),
+            category,
+            value: 1,
+            weight: 1.0,
+            details: String::new(),
+            equip_target: Some(target),
+            weapon_damage: (target == EquipTarget::Weapon).then_some(5.0),
+            weapon_reach: 1.0,
+            weapon_speed: 1.0,
+            weapon_sound: None,
+            weapon_sneak: None,
+        };
+        catalog.entries.insert(DAGGER, item("Dagger", "Weapon", EquipTarget::Weapon));
+        catalog.entries.insert(TORCH, item("Torch", "Light", EquipTarget::Torch));
+    }
+    let mut hands = HandCatalog::default();
+    hands.insert_weapon(0x9ABC, HandWeapon { anim_type: 1, hands: SlotHands::Right });
+    hands.insert_weapon(DAGGER, HandWeapon { anim_type: 2, hands: SlotHands::Right });
+    hands.insert_torch(TORCH);
+    world.insert_resource(hands);
+    let mut index = EsmIndex::default();
+    index.game = GameKind::Skyrim;
+    index.cells.statics.insert(
+        TORCH,
+        byroredux_plugin::esm::cell::StaticObject {
+            form_id: TORCH,
+            editor_id: "Torch01".to_owned(),
+            model_path: String::new(),
+            record_type: byroredux_plugin::record::RecordType::LIGH,
+            light_data: Some(byroredux_plugin::esm::cell::LightData {
+                radius: 512.0,
+                color: [1.0, 0.6, 0.3],
+                flags: 2,
+                period_secs: 0.0,
+                intensity_amplitude: 0.0,
+                movement_amplitude: 0.0,
+                falloff_exponent: 1.0,
+                fov_degrees: 0.0,
+                xpwr_form_id: None,
+                god_rays_form: None,
+                near_clip: 0.0,
+                god_rays_near_clip: None,
+                starfield_light_type: 0,
+            }),
+            addon_data: None,
+            has_script: false,
+            script_instance: None,
+            script_form_id: 0,
+            visible_when_distant: false,
+            destruction: None,
+            door: None,
+        },
+    );
+    world.insert_resource(crate::cell_loader::LoadedCellIndex(std::sync::Arc::new(index)));
+    world.insert(player, GlobalTransform::new(byroredux_core::math::Vec3::new(1000.0, 0.0, 0.0), byroredux_core::math::Quat::IDENTITY, 1.0));
+    let codes = |world: &World| {
+        (hand_item(world, player, Hand::Left).item_type_code(), hand_item(world, player, Hand::Right).item_type_code())
+    };
+    let lights = |world: &World| world.query::<LightSource>().map_or(0, |lights| lights.iter().count());
+
+    assert_eq!(apply_action(&mut world, ToggleEquip { index: 2 }), MutationResult::Equipped);
+    assert_eq!(apply_action(&mut world, EquipLeft { index: 3 }), MutationResult::Equipped);
+    assert_eq!(codes(&world), (2, 1));
+    assert_eq!(apply_action(&mut world, ToggleEquip { index: 4 }), MutationResult::Equipped);
+    assert_eq!(codes(&world), (11, 1), "the torch takes the dagger's hand; the sword stays");
+    assert!(byroredux_scripting::hands::torch_out(&world, player));
+
+    crate::held_torch::held_torch_light_system(&mut world);
+    assert_eq!(lights(&world), 1, "the held torch lights");
+    let light = world.get::<crate::held_torch::HeldTorchLight>(player).map(|light| light.light).unwrap();
+    let at = world.get::<GlobalTransform>(light).unwrap().translation;
+    assert!(at.distance(byroredux_core::math::Vec3::new(1000.0, 0.0, 0.0)) < 200.0, "at its holder: {at:?}");
+    crate::held_torch::held_torch_light_system(&mut world);
+    assert_eq!(lights(&world), 1, "one light, not one per frame");
+
+    assert_eq!(apply_action(&mut world, ToggleEquip { index: 4 }), MutationResult::Unequipped);
+    assert_eq!(codes(&world), (0, 1));
+    crate::held_torch::held_torch_light_system(&mut world);
+    assert_eq!(lights(&world), 0, "a torch put away puts its light out");
+    assert!(world.get::<crate::held_torch::HeldTorchLight>(player).is_none());
 }

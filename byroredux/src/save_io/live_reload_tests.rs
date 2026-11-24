@@ -1014,7 +1014,7 @@ fn live_load_drain_discards_the_outgoing_sessions_requests() {
         location_2: None,
         scripted: None,
     }]));
-    world.insert_resource(byroredux_scripting::PendingNonArmorEquips(vec![(seated_player, 0x1234)]));
+    world.insert_resource(byroredux_scripting::PendingNonArmorEquips(vec![(seated_player, 0x1234, byroredux_scripting::hands::Hand::Right)]));
     // SAVE-6 — M65 detection transients: a hearing event and the last attack's noise, both taken by the next detection tick.
     world.insert_resource(byroredux_scripting::PendingDetectionEvents(vec![byroredux_scripting::DetectionEvent { source: 0x10, owner: 0x14, sound_level: 60 }]));
     world.insert_resource(crate::detection::PlayerActionNoise { rating: 40.0 });

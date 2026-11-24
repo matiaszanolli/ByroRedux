@@ -389,6 +389,10 @@ pub enum ConditionFunction {
     /// `IsWeaponOut → f32` (#6558): 1.0 while the Run-On actor has a weapon drawn (or is in combat).
     /// FO3 / FNV index **101**; the ObScript getter's body.
     IsWeaponOut,
+    /// `IsTorchOut → f32` (Hand Equipment HND-SLOT-005): 1.0 while the Run-On actor holds a torch in
+    /// either hand (CK *IsTorchOut*: "a light object equipped with the 'This light can be carried' box
+    /// checked"). Index **102** in every game; answered only where the hand model is (Skyrim).
+    IsTorchOut,
     /// `GetSitting → f32` (#6558): the Run-On actor's sitting state (3 seated, 0 not). FO3 / FNV
     /// index **159**; the ObScript getter's body.
     GetSitting,
@@ -627,6 +631,7 @@ const ROWS: &[Row] = &[
     // #6558 — nine more FO3 / FNV getters the VM answers, bridged the same way.
     Row { func: ConditionFunction::GetDetected, indices: &[45], name: "GetDetected", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::IsWeaponOut, indices: &[101], name: "IsWeaponOut", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
+    Row { func: ConditionFunction::IsTorchOut, indices: &[102], name: "IsTorchOut", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetSitting, indices: &[159], name: "GetSitting", first_param_form_id: false, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::GetIsCurrentPackage, indices: &[161], name: "GetIsCurrentPackage", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
     Row { func: ConditionFunction::HasMagicEffect, indices: &[214], name: "HasMagicEffect", first_param_form_id: true, reads_run_on_entity: true, deterministic: true, reads_context: false, identity_test: false },
@@ -719,6 +724,9 @@ const FOREIGN_INDICES: &[(u32, &[GameKind])] = &[
     // `IsGuard` is the same function in every game, but only Oblivion, FO3 and FNV
     // author the class flag it reads; the later games' guards are not told that way.
     (125, &[GameKind::Skyrim, GameKind::Fallout4, GameKind::Fallout76, GameKind::Starfield]),
+    // `IsTorchOut` is the same function in every game, but only Skyrim's hands are modelled (Hand
+    // Equipment PRD §7.1); elsewhere a torch in hand is not known, so the index is not claimed.
+    (102, &[GameKind::Oblivion, GameKind::Fallout3NV, GameKind::Fallout4, GameKind::Fallout76, GameKind::Starfield]),
     (403, &[GameKind::Fallout3NV]),
     (426, &[GameKind::Fallout3NV]),
     (427, &[GameKind::Skyrim, GameKind::Fallout4]),
@@ -796,7 +804,7 @@ impl ConditionFunction {
 
     /// Every known (non-[`Unknown`](Self::Unknown)) function — the catalog the
     /// debug console enumerates and resolves names against.
-    pub const CATALOG: [ConditionFunction; 106] = [
+    pub const CATALOG: [ConditionFunction; 107] = [
         Self::GetDistance,
         Self::GetQuestVariable,
         Self::GetActorValue,
@@ -876,6 +884,7 @@ impl ConditionFunction {
         Self::GetMapMarkerVisible,
         Self::GetDetected,
         Self::IsWeaponOut,
+        Self::IsTorchOut,
         Self::GetSitting,
         Self::GetIsCurrentPackage,
         Self::HasMagicEffect,
@@ -1163,6 +1172,7 @@ mod tests {
                 ConditionFunction::GetMapMarkerVisible |
                 ConditionFunction::GetDetected |
                 ConditionFunction::IsWeaponOut |
+                ConditionFunction::IsTorchOut |
                 ConditionFunction::GetSitting |
                 ConditionFunction::GetIsCurrentPackage |
                 ConditionFunction::HasMagicEffect |

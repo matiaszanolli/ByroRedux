@@ -45,6 +45,8 @@ fn register_damage_pass(scheduler: &mut Scheduler) {
             .writes_resource::<byroredux_scripting::challenges::ChallengeState>()
             // #7054 — the target's guard: the block rules, its Block stance, its Block skill and what it holds.
             .reads_resource::<byroredux_core::character::BlockModel>()
+            // Hand Equipment #7399 — the block guard reads the hands.
+            .reads_resource::<byroredux_scripting::hands::HandCatalog>()
             // Oblivion's armor rating and Resist Normal Weapons: the model, the worn pieces and the skills by name.
             .reads_resource::<byroredux_core::character::ArmorRatingModel>()
             .reads::<byroredux_core::ecs::components::EquipmentSlots>()

@@ -1,6 +1,6 @@
 # Hand Equipment — Product Requirements
 
-**Status**: ACTIVE (2026-11-23). Revision 4 files the tracking issues. Revision 3 settles Phase 0's verify items from the masters and the
+**Status**: ACTIVE (2026-11-24). Revision 6 records Phase 2's build (#7399). Revision 5 records Phase 1's build (#7398). Revision 4 files the tracking issues. Revision 3 settles Phase 0's verify items from the masters and the
 CK / UESP pages, and links the design Phase 0 wrote. Revision 2: the owner approved the first draft
 and took every §10 recommendation. Statements about how an original engine, format or tool behaves cite external
 sources; a claim that could not be verified is marked **Phase 0: verify** instead of being stated as
@@ -240,3 +240,5 @@ HND-READ-003..004. Exit: acceptance 2 and 3.
 | 2 | 2026-11-23 | Approved; Q1–Q3 decided as recommended | owner: approved |
 | 3 | 2026-11-23 | Phase 0: the verify items settled from the masters (EQUP / ETYP scan of Skyrim, Fallout 4 and Starfield) and the CK / UESP pages; NPC hand choice a declared gap with an engine rule; the design written | — |
 | 4 | 2026-11-23 | ACTIVE: tracking issues #7397 (parent), #7398 (Phase 1), #7399 (Phase 2) | — |
+| 5 | 2026-11-23 | Phase 1 built (#7398): EQUP catalog, WEAP / ARMO `ETYP`, `EquipmentSlots.left_hand` (format v148) as the hand state instead of a new component, `equip_into_hand`, `GetEquippedItemType` / `GetEquippedWeapon(true)`; the shield's ARMO `ETYP` (HND-SLOT-004) landed with it. The design's §3 and §5 follow | — |
+| 6 | 2026-11-24 | Phase 2 built (#7399): torches in the left hand and their light (Q3), spells in hands (SPEL `ETYP`, `EquipSpell` / `UnequipSpell` / `GetEquippedSpell`, format v149), `EquipItemEx`'s hand, `IsWeaponDrawn`, `IsTorchOut`, the menu's per-hand entries (Q2), block's guard from the hands, the NPC rule's parts 1–2. NPC dual wield (HND-STATE-003's flags) is left for a follow-up: the RACE / CSTY flags are not parsed yet | — |

@@ -3829,6 +3829,7 @@ fn lowers_mq101_cart_load_gate_tether_and_equipment_sequence() {
                 actor: ActorRef::Object(ObjectRef::Property("Alias_Rider".into())),
                 item: ObjectRef::Property("ArmorGag".into()),
                 silent: true,
+                left: false,
             },
         ])
     );

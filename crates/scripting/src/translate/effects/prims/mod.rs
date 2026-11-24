@@ -123,6 +123,8 @@ pub(super) const EFFECT_PRIMITIVES: &[EffectPrimitive] = &[
     prim_player_caps,
     prim_set_objective_skipped,
     prim_equip_item,
+    prim_equip_item_ex,
+    prim_equip_spell,
     prim_move_to,
     prim_move_to_node,
     prim_set_scale,

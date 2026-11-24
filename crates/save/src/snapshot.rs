@@ -703,7 +703,14 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 /// (`ReferenceEnableState`, `ReferenceLockState`, `ReferenceScriptState`, `ScriptedFactionChanges`,
 /// `ReferenceMotionTypeState`, `ActorRelocations`) save their FormIDs as stable identities too, now that the load
 /// reloads the session's own plugins; a v146 ledger's numbers would be read as other forms.
-pub const FORMAT_MAJOR: u16 = 147;
+///
+/// v147 -> v148 (Hand Equipment PRD, #7398): `EquipmentSlots` gained `left_hand`, the left hand's
+/// one-handed weapon, a required field; a v147 row has no record of what the left hand held.
+///
+/// v148 -> v149 (Hand Equipment PRD, #7399): `EquipmentSlots` gained `left_spell` and `right_spell`, the
+/// spells readied in each hand (stable FormIDs, required fields), and the saved `Effect::EquipItem`
+/// gained `left` (`EquipItemEx`'s hand); a v148 row has neither.
+pub const FORMAT_MAJOR: u16 = 149;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

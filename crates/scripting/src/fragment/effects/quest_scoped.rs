@@ -141,6 +141,7 @@ pub(super) fn apply_quest_scoped_effect(
         | Effect::AddItem { .. }
         | Effect::RemoveItem { .. }
         | Effect::EquipItem { .. }
+        | Effect::EquipSpell { .. }
         | Effect::MoveTo { .. }
         | Effect::MoveToNode { .. }
         | Effect::SetScale { .. }

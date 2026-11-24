@@ -1,6 +1,6 @@
 # Hand Equipment — Design
 
-**Status**: DESIGN (2026-11-23), for the [Hand Equipment PRD](../prd/hand-equipment.md) (APPROVED),
+**Status**: PHASE 2 BUILT (2026-11-24), for the [Hand Equipment PRD](../prd/hand-equipment.md) (APPROVED),
 written by its Phase 0. Skyrim only (PRD §7.1).
 
 ## 1. What the data says
@@ -71,20 +71,49 @@ gap. The engine rule, stated as ours:
 
 ## 3. State
 
-One component per actor, `Hands { left: HandItem, right: HandItem }`, where `HandItem` is `Empty`,
-`Weapon { index, base }`, `Shield { index, base }`, `Torch { index, base }` or `Spell { form }`. A
-`BothHands` item puts the same item in both. `Hands` is the one record of what a hand holds, and one
-function writes it: `equip_to_hand(world, actor, item, hand)`.
+The hands are the actor's `EquipmentSlots` (saved, and parked with the inventory it indexes), not a
+component of their own:
 
-- `equip_to_hand` resolves the item's hands: a `BothHands` slot takes both; `Shield` and a torch take
-  the left; `LeftHand` and `RightHand` spells take theirs. Anything else takes the hand asked for
-  (the right by default). It unequips what held those hands (CK *Equip Slot*: "Attempting to equip
-  one will automatically unequip the other").
-- `EquippedWeapon` stays as the right hand's weapon, with its damage, reach and speed cache. Its 51
-  combat readers keep working unchanged, and `equip_to_hand` keeps the two in step. A shield keeps
-  its biped slot for its model; `Hands.left` is what readers ask.
-- Saved (stable FormIDs), parked across cell eviction beside the inventory it indexes, with a format
-  bump.
+- `weapon` is the right hand's weapon.
+- `left_hand` is a one-handed weapon or a torch held in the left (v148).
+- `left_spell` / `right_spell` are a spell readied in each hand, by FormID (v149); a two-handed spell
+  is in both.
+- A shield keeps its biped slot for its model, and a reader finds it among the occupants.
+
+`byroredux_scripting::hands::hand_item(world, actor, hand)` derives what a hand holds, with
+`HandCatalog` (each weapon's animation type and slot hands, the shields, the torches and the spells'
+slots, built from the records):
+
+- The right hand is its spell, else `weapon`.
+- The left hand is the right weapon when its slot is `BothHands`. Otherwise it is its spell, else
+  `left_hand` (a torch or a weapon), else a worn shield.
+
+Nothing stores a second record of a hand, so two readers can never disagree.
+
+One function writes the hands: `byroredux_scripting::hands::equip_to_hand(slots, item, hand, facts)`,
+following CK *Equip Slot* ("Attempting to equip one will automatically unequip the other"):
+
+- The item takes the hands its slot names (`hands_taken`): a `BothHands` weapon or spell both, a
+  shield or torch the left, a `LeftHand` / `RightHand` spell its own, a one-handed weapon or an
+  `EitherHand` spell the hand asked for, a Voice power none (refused).
+- Whatever held those hands comes off first; a two-handed occupant comes off both.
+- One item of a single stack moved to the other hand leaves the first.
+
+Every equip goes through it:
+
+- the inventory menu's equip, `EquipLeft` and the console's `inv.equip <form> [left]`
+  (`toggle_equip_in`);
+- a script's `EquipItem` / `EquipItemEx` of a weapon, torch or the player's shield, queued with its
+  hand to that same path (`PendingNonArmorEquips`);
+- a script's `EquipSpell` and another actor's shield, applied in the scripting crate.
+
+`EquippedWeapon` stays the right hand's cache (damage, reach, speed; 51 combat readers). It is
+re-derived whenever the menu path changes the right weapon, and dropped every frame when it names a
+weapon the slots no longer wield (a script's spell readied over it).
+
+A held torch lights its surroundings (Q3): `held_torch_light_system` keeps one point light, the LIGH's
+own radius, colour and falloff, at the holder's left side at hand height. It despawns the light when
+the torch leaves the hand. The hand bone is not followed, and the torch's burn time is not modelled.
 
 ## 4. Readers
 
@@ -92,15 +121,33 @@ function writes it: `equip_to_hand(world, actor, item, hand)`.
 |---|---|
 | `GetEquippedItemType(hand)` | 0 empty; a weapon by its `DNAM` animation type (1 OneHandSword … 8 Staff; 9 Crossbow is code 12); 9 spell; 10 shield; 11 torch (CK *GetEquippedItemType - Actor*) |
 | `GetEquippedWeapon(abLeftHand)` | the hand's weapon or None |
-| `GetEquippedShield` | `Hands.left` when it is a shield |
+| `GetEquippedShield` | the left hand when it holds a shield |
 | `GetEquippedSpell(source)` | 0 left, 1 right: the hand's spell |
-| `EquipItemEx(item, slot)` / `EquipSpell(spell, source)` | `equip_to_hand` with that hand; a spell's own slot overrides the source unless it is BothHands (CK *EquipSpell - Actor*) |
-| `IsTorchOut` (condition) | a torch in either hand |
-| Block | the left hand: a shield, a torch, or a weapon (UESP *Skyrim:Block*) |
+| `EquipItemEx(item, slot)` / `EquipSpell(spell, source)` | `equip_into_hand` with that hand; a spell's own slot overrides the source unless it is BothHands (CK *EquipSpell - Actor*) |
+| `IsWeaponDrawn` | the drawn state `IsWeaponOut` reads |
+| `IsTorchOut` (condition 102) | a torch in either hand; declined off Skyrim |
+| Block | the left hand: a shield, else a torch or weapon in either hand, else bare hands (UESP *Skyrim:Block*). Skyrim has no block numbers yet (only Oblivion's `BlockModel`), so the guard is read but nothing is blocked |
 
 ## 5. Phases
 
-As the PRD §9. Phase 1 builds the slot catalog, `ETYP`, `Hands`, `equip_to_hand`, the readers for
-weapons and shields, and the format bump. Phase 2 adds torches (a carried light lit at the hand, the
-owner's decision Q3), spells in hands, the NPC rule of §2, the inventory's equip-left and equip-right
-actions (Q2), and block.
+As the PRD §9.
+
+**Phase 1** builds:
+- the slot catalog (`EQUP`) and the WEAP and ARMO `ETYP`;
+- `EquipmentSlots.left_hand` and the hand rules (`equip_to_hand` since Phase 2);
+- the `GetEquippedItemType` / `GetEquippedWeapon(true)` readers for weapons and shields;
+- the format bump;
+- the engine's `EquipLeft` action, reached today by `inv.equip <form> [left]`.
+
+**Phase 2** (built) adds:
+- torches: equipped into the left hand, lit at the hand (Q3);
+- spells in hands, with the SPEL `ETYP`, `EquipSpell` / `UnequipSpell` / `GetEquippedSpell`;
+- the NPC rule's first two parts (§2): the right hand holds the spawn's weapon, and a two-handed
+  weapon takes a worn shield off;
+- the inventory menu's per-hand entries (Q2);
+- `EquipItemEx`'s hand argument, `IsWeaponDrawn`, the `IsTorchOut` condition;
+- block's guard read from the hands.
+
+Left for later: NPC dual wield (§2 rule 3) needs the RACE "Can Dual Wield" and CSTY "Allow Dual
+Wielding" flags, which are not parsed yet (xEdit names the CSTY flag both as a record flag, bit 19, and
+as `DATA` 0x04, so it needs a measurement of the masters first); the torch's burn time; the hand bone.

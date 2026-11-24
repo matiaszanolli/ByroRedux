@@ -357,4 +357,8 @@ fn fragment_effect_family_access(access: Access) -> Access {
         .writes::<byroredux_scripting::SceneStopRequest>()
         .writes_resource::<byroredux_scripting::PlayerControlState>()
         .reads_resource::<byroredux_scripting::EquipItemCatalog>()
+        // Hand Equipment #7398 — `EquipItem` of a shield reads whether it is one.
+        .reads_resource::<byroredux_scripting::hands::HandCatalog>()
+        // Hand Equipment #7399 — `EquipSpell` readies a spell in the actor's hands.
+        .writes::<byroredux_core::ecs::components::EquipmentSlots>()
 }

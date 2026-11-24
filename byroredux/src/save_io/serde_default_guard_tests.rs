@@ -916,7 +916,8 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // FormIDs save as stable identities, `ScriptVariables` gained its `references` list.
     // LMC-SAV-002..004 (#6676) slice 3 — refreshed WITH a major bump (v146 -> v147): the six pre-reload ledgers'
     // FormIDs save as stable identities.
-    const BASELINE_MAJOR: u16 = 147;
+    // Hand Equipment (#7398) — refreshed WITH a major bump (v147 -> v148): `EquipmentSlots.left_hand`.
+    const BASELINE_MAJOR: u16 = 149;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1402,7 +1403,10 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // `Utility.WaitGameTime` continuation). A new variant is read-compatible: every v147 save still decodes.
     // Native wave 2 — refreshed WITHOUT a bump: the saved `Effect` gained `MoveToNode`, `SetScale` and
     // `SetRestrained`. New variants are read-compatible: every v147 save still decodes.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0x4fcd_4584_606e_b196;
+    // Hand Equipment (#7398) — v148: `EquipmentSlots.left_hand`, refreshed WITH the major bump above.
+    // Hand Equipment (#7399) — v149: `EquipmentSlots.left_spell` / `right_spell` and `Effect::EquipItem.left`
+    // (plus the new `Effect::EquipSpell`), refreshed WITH the major bump above.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xcea1_7066_9b3d_4b65;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.
