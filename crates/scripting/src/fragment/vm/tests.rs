@@ -8656,3 +8656,101 @@ fn registering_another_object_for_a_mod_event_registers_that_object() {
     deliver(&world);
     assert_eq!(variable(&world, OTHER, "Heard"), Some(1.0), "unregistered on the other object");
 }
+
+/// LMC-SCR-004 catalog growth: SKSE's `Actor` equipment reads on Skyrim. A player wields a sword and wears a cuirass
+/// (slot 32, mask 0x4) and boots (slot 37, mask 0x80): `GetWornForm` answers the item sharing a slot bit with the
+/// mask, the lowest inventory entry when two do; `GetEquippedObject` answers the right hand for any slot but 0 (the
+/// left) and 2 (the voice, which stops); the item ids are the CRC-32 of the item's name continued from its object
+/// id; `IsSwimming` is the character system's verdict.
+#[test]
+fn skse_actor_equipment_reads_answer_from_the_worn_slots() {
+    use crate::hands::{HandCatalog, HandWeapon};
+    use byroredux_core::ecs::components::{EquipmentSlots, Inventory, InventoryIndex, ItemStack};
+    use byroredux_plugin::esm::records::{EsmIndex, ItemKind, ItemRecord, SlotHands};
+    const SWORD: u32 = 0x0000_5A0D;
+    const CUIRASS: u32 = 0x0000_5A11;
+    const BOOTS: u32 = 0x0000_5A12;
+    let script = parsed_source(
+        "ScriptName QF_VmSkseActor extends Quest\n\
+         Weapon Property Sword Auto\n\
+         Armor Property Cuirass Auto\n\
+         Armor Property Boots Auto\n\
+         Int Property Results Auto\n\
+         Function Fragment_1()\n\
+           Actor player = Game.GetPlayer()\n\
+           If player.GetWornForm(4) == Cuirass\n Results += 1\n EndIf\n\
+           If player.GetWornForm(2) == None\n Results += 10\n EndIf\n\
+           If player.GetWornForm(132) == Cuirass\n Results += 100\n EndIf\n\
+           If player.GetEquippedObject(1) == Sword && player.GetEquippedObject(9) == Sword && player.GetEquippedObject(0) == None\n Results += 1000\n EndIf\n\
+           If player.GetEquippedItemId(1) == 85618840 && player.GetEquippedItemId(0) == 0\n Results += 10000\n EndIf\n\
+           If player.GetWornItemId(4) == 491399181 && player.GetWornItemId(2) == 0\n Results += 100000\n EndIf\n\
+           If player.IsSwimming()\n Results += 1000000\n EndIf\n\
+         EndFunction\n\
+         Function Fragment_2()\n\
+           Form voice = Game.GetPlayer().GetEquippedObject(2)\n\
+           Results += 1\n\
+         EndFunction\n",
+    );
+    for fragment in ["Fragment_1", "Fragment_2"] {
+        assert_eq!(check_function_reason(Arc::clone(&script), fragment, None).err(), None);
+    }
+    let mut index = EsmIndex { game: byroredux_plugin::esm::reader::GameKind::Skyrim, ..EsmIndex::default() };
+    for (form, name) in [(SWORD, "Iron Sword"), (CUIRASS, "Iron Armor"), (BOOTS, "Iron Boots")] {
+        let mut item = ItemRecord { form_id: form, common: Default::default(), kind: ItemKind::weapon_stub(8, 0) };
+        item.common.full_name = name.into();
+        index.items.insert(form, item);
+    }
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(crate::ScriptGame(byroredux_plugin::esm::reader::GameKind::Skyrim));
+    world.insert_resource(crate::form_facts::FormFacts::from_index(&index));
+    world.insert_resource(QuestStageState::default());
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.insert_resource(crate::QuestScriptObjects::default());
+    world.insert_resource(crate::SwimQuery(|_, _| true));
+    let mut hands = HandCatalog::default();
+    hands.insert_weapon(SWORD, HandWeapon { anim_type: 1, hands: SlotHands::Right });
+    world.insert_resource(hands);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    let mut inventory = Inventory::new();
+    inventory.push(ItemStack::new(SWORD, 1));
+    inventory.push(ItemStack::new(CUIRASS, 1));
+    inventory.push(ItemStack::new(BOOTS, 1));
+    world.insert(player, inventory);
+    let mut slots = EquipmentSlots::new();
+    slots.equip_weapon(InventoryIndex(0));
+    slots.equip(0x4, InventoryIndex(1));
+    slots.equip(0x80, InventoryIndex(2));
+    world.insert(player, slots);
+    let object = |name: &str, form_id: u32| ScriptProperty { name: name.into(), status: 1, value: PropertyValue::Object { form_id, alias: -1 } };
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        fragments.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                version: 5,
+                object_format: 2,
+                scripts: vec![ScriptInstance {
+                    name: "QF_VmSkseActor".into(),
+                    status: 0,
+                    properties: vec![object("Sword", SWORD), object("Cuirass", CUIRASS), object("Boots", BOOTS)],
+                }],
+            },
+        );
+        fragments.insert_vm_script(Arc::clone(&script));
+        for (stage, function) in [(10, "Fragment_1"), (20, "Fragment_2")] {
+            fragments.insert(
+                Q,
+                stage,
+                vec![Effect::Interpret { script: "QF_VmSkseActor".into(), function: function.into(), args: Vec::new(), resume: None }],
+            );
+        }
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(quest_property(&world, "Results"), Some(1_111_111.0), "every read answered");
+    world.resource_mut::<QuestStageState>().set_stage(Q, 20);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(quest_property(&world, "Results"), Some(1_111_111.0), "the voice slot stops the run");
+}

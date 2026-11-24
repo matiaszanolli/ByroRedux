@@ -127,7 +127,7 @@ call set per family. The preflight reports those calls that are not covered.
 
 | Family | Functions | Dated by a changelog or wiki | VM | SDK | Served |
 |---|---|---|---|---|---|
-| SKSE64 | 804 | 67 | 90 | 21 | 93 |
+| SKSE64 | 804 | 67 | 95 | 21 | 98 |
 | F4SE | 227 | 13 | 19 | 3 | 22 |
 | xNVSE | 565 | 50 | 0 | 4 | 4 |
 | JIP LN | 733 | 0 | 0 | 0 | 0 |
@@ -410,3 +410,36 @@ could hear it, and the call changes nothing. A `None` receiver is the usual "cal
 
 **Not yet.** `SendModEvent` on another object is declined. The provider lane keeps its own mod-event registrations
 for the session only, following `Form.psc`'s comment rather than SKSE's serialization.
+
+## 12. Catalog growth: `Actor` equipment reads (2026-11-24)
+
+SKSE64's `Actor.GetWornForm`, `GetWornItemId`, `GetEquippedObject`, `GetEquippedItemId` and `IsSwimming`, on Skyrim
+(`fragment/vm/natives/skse_actor.rs`), from the actor's worn slots, hands and inventory.
+
+**Behaviour** (`PapyrusActor.cpp`, `HashUtil.cpp` at the pinned commit):
+
+- `GetWornForm(mask)` is the first worn item, in the actor's inventory order, whose biped slots share a bit with the
+  mask (`parts & mask != 0`). Only armor and clothes have biped slots, so a weapon never matches. The engine's worn
+  slots are bit positions of the same mask, so the worn entries whose bit is in `mask` are the candidates and the
+  lowest inventory entry is the first. Skyrim's inventory order is the container's; the engine's is the order items
+  arrived, so two items sharing a mask bit can come out the other way round.
+- `GetEquippedObject(slot)`: 0 is the left hand, 2 the voice, and any other number the right hand (SKSE tests
+  `slot == kSlotID_Left` only). A hand holds a weapon, a shield, a torch or a readied spell, as the engine's hand
+  model ([`hands`](../../crates/scripting/src/hands.rs)) reads them.
+- `GetEquippedItemId(slot)` and `GetWornItemId(mask)` are `HashItemId(name, formID)`: the CRC-32 of the item's name
+  with its register started from the plugin-local object id (24 bits, 12 for a light plugin), which is Python's
+  `zlib.crc32(name, id)`. The name is the entry's display name when a mod renamed it (not served) else the base
+  name; the id is `0` for an empty hand, a hand holding a spell (no inventory entry), an item the actor does not
+  hold, and an item with no name. A name is hashed as the game's single-byte string, so a character past U+00FF is
+  hashed as UTF-8 and may differ from SKSE's.
+- `IsSwimming` is the character system's walk/swim verdict (`SwimQuery`); without that query the call stops.
+
+**Not served, with the reason:**
+
+| Function | Why |
+|---|---|
+| `GetEquippedObject(2)`, `GetEquippedItemId(2)` | the equipped shout is not tracked; the call stops |
+| `Actor.GetSpellCount`, `GetNthSpell` | SKSE answers `addedSpells`, the spells a script added; the engine's `SpellList` joins the record's, the race's and the added ones, and the added ones cannot be told apart |
+| `Actor.IsAIEnabled` | no AI-enabled state exists |
+| `Actor.EquipItemEx`, `UnequipItemEx`, `EquipItemById` | they change the actor's equipment; the equip effects exist, but SKSE's slot, prevent-unequip and sound arguments are not modelled |
+| `Utility.GetINI*` | a policy decision, not a build: the PRD says the engine does not read game INIs (LMC-SET-001, T5-T7), and the settings a game INI holds default from the executable |
