@@ -421,6 +421,18 @@ pub enum Effect {
         actor: ActorRef,
         item: ObjectRef,
         silent: bool,
+        /// SKSE `EquipItemEx(item, 2)`: into the left hand (Hand Equipment HND-READ-003); the item's
+        /// own slot still decides (a two-hander takes both, a shield or torch the left).
+        left: bool,
+    },
+    /// `<actor>.EquipSpell(<spell>, <source>)` / `UnequipSpell` (CK *EquipSpell - Actor*,
+    /// *UnequipSpell - Actor*; source 0 left, 1 right): readies the spell in that hand, its own slot
+    /// overriding the source (Hand Equipment HND-READ-003), or takes it out. Held, not cast (NG1).
+    EquipSpell {
+        actor: ActorRef,
+        spell: ObjectRef,
+        left: bool,
+        equip: bool,
     },
     /// `<moved>.MoveTo(<destination>[, x, y, z, matchRotation])` (CK *MoveTo -
     /// ObjectReference*): the destination's position plus the offset (Gamebryo
@@ -1001,6 +1013,8 @@ impl Effect {
             Effect::ChangeFaction { .. } => "ChangeFaction",
             Effect::SetActorValue { .. } => "SetActorValue",
             Effect::EquipItem { .. } => "EquipItem",
+            Effect::EquipSpell { equip: true, .. } => "EquipSpell",
+            Effect::EquipSpell { .. } => "UnequipSpell",
             Effect::MoveTo { .. } => "MoveTo",
             Effect::MoveToNode { .. } => "MoveToNode",
             Effect::SetScale { .. } => "SetScale",

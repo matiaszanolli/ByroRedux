@@ -596,6 +596,7 @@ pub fn evaluate_function(
         ConditionFunction::GetInFaction => actor::get_in_faction(condition, entity, world),
         ConditionFunction::GetLevel => actor::get_level(entity, world),
         ConditionFunction::GetEquipped => actor::get_equipped(condition, entity, world),
+        ConditionFunction::IsTorchOut => truth(crate::hands::torch_out(world, entity)),
         ConditionFunction::GetXPForNextLevel => actor::get_xp_for_next_level(entity, world),
         ConditionFunction::IsSceneActionComplete => global::is_scene_action_complete(condition, world),
         ConditionFunction::GetIsClass

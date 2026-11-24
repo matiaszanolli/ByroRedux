@@ -1766,6 +1766,8 @@ impl ApplicationHandler for App {
         // Debug-queued inventory actions (inv.equip) go through the native
         // menu's canonical apply_action on the main thread.
         crate::inventory::drain_pending_inventory_actions(&mut self.world);
+        // Hand Equipment Q3 — a held torch's light follows its holder.
+        crate::held_torch::held_torch_light_system(&mut self.world);
 
         // Not while a transition/loading screen is remaking the scene —
         // mid-life appearance imports would race the teardown. (A

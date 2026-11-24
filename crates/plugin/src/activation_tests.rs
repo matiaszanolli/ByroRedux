@@ -106,8 +106,59 @@ fn a_duplicate_identity_is_reported_and_the_first_kept() {
     let profile = [plugin("Oblivion.esm", &[]), plugin("Mod.esp", &["Oblivion.esm"]), plugin("data/OBLIVION.ESM", &[])];
     let activation = activate(&profile);
     assert_eq!(activation.order, vec![0, 1]);
-    assert_eq!(activation.disabled, vec![Disabled { plugin: 2, cause: DisableCause::Duplicate { first: 0 } }]);
+    assert_eq!(
+        activation.disabled,
+        vec![Disabled { plugin: 2, cause: DisableCause::Duplicate { first: 0, content: DuplicateContent::Unknown } }]
+    );
     assert!(activation.report(&profile)[0].contains("already lists it as Oblivion.esm"));
+}
+
+/// LMC-ID-010 — a duplicate is compared with the plugin it duplicates: one file listed twice, or a copy with the same
+/// bytes, is a repeat; different bytes under one identity are reported as an identity collision. The earlier entry
+/// loads either way.
+#[test]
+fn a_duplicate_with_different_content_is_an_identity_collision() {
+    let tmp = tempfile::tempdir().unwrap();
+    let write = |relative: &str, bytes: &[u8]| {
+        let path = tmp.path().join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        path.to_string_lossy().into_owned()
+    };
+    let base = write("Data/Skyrim.esm", b"base");
+    let patch = write("a/Patch.esp", b"patch v1");
+    let copy = write("b/patch.ESP", b"patch v1");
+    let other = write("c/Patch.esp", b"patch v2");
+    let longer = write("d/Patch.esp", b"patch v2, longer");
+    let profile = [
+        plugin(&base, &[]),
+        plugin(&patch, &["Skyrim.esm"]),
+        plugin(&patch, &["Skyrim.esm"]),
+        plugin(&copy, &["Skyrim.esm"]),
+        plugin(&other, &["Skyrim.esm"]),
+        plugin(&longer, &["Skyrim.esm"]),
+    ];
+    let mut activation = activate(&profile);
+    activation.compare_duplicates(&profile, |a, b| same_file_content(Path::new(a), Path::new(b)).ok());
+    assert_eq!(activation.order, vec![0, 1]);
+    let content: Vec<_> = activation
+        .disabled
+        .iter()
+        .map(|entry| match entry.cause {
+            DisableCause::Duplicate { first: 1, content } => content,
+            ref cause => panic!("{cause:?}"),
+        })
+        .collect();
+    use DuplicateContent::{Different, Same};
+    assert_eq!(content, [Same, Same, Different, Different]);
+    let report = activation.report(&profile);
+    assert!(report[0].ends_with("already lists it as Patch.esp, with the same content"), "{report:?}");
+    assert!(report[2].contains(&format!("identity collision (LMC-ID-010): {other} has the identity of {patch}")), "{report:?}");
+
+    let absent = [plugin("A.esp", &[]), plugin("x/a.esp", &[])];
+    let mut unreadable = activate(&absent);
+    unreadable.compare_duplicates(&absent, |a, b| same_file_content(Path::new(a), Path::new(b)).ok());
+    assert!(matches!(unreadable.disabled[0].cause, DisableCause::Duplicate { content: DuplicateContent::Unknown, .. }));
 }
 
 /// A master cycle (no shipped content has one) disables its members and their dependents instead of looping.

@@ -22,6 +22,8 @@ pub(super) const READS: &[&str] = &[
     "getequippedshield",
     "getequippedweapon",
     "getequippeditemtype",
+    "getequippedspell",
+    "isweapondrawn",
     "gettemplate",
 ];
 
@@ -103,7 +105,12 @@ impl Vm<'_> {
             // left hand. If false, will return the right-hand weapon instead" (the default); None when
             // the hand holds no weapon. A two-handed weapon is in both (Hand Equipment PRD, HND-READ-002).
             // CK *GetEquippedItemType - Actor*: the hand's item type, 0 left and 1 right (HND-READ-001).
-            (Value::Form(actor), "getequippedweapon" | "getequippeditemtype") if args.len() <= 1 => {
+            // CK *GetEquippedSpell - Actor*: the spell in source 0 (left) or 1 (right) (HND-READ-002);
+            // the Other and Instant sources (2, 3) stop. CK *IsWeaponDrawn - Actor*: "whether this actor
+            // has its weapon drawn", the condition function IsWeaponOut's state.
+            (Value::Form(actor), "getequippedweapon" | "getequippeditemtype" | "getequippedspell" | "isweapondrawn")
+                if args.len() <= 1 =>
+            {
                 let entity = if *actor == PLAYER_REF {
                     crate::papyrus_demo::PapyrusPlayerEntity::get(self.world)
                 } else {
@@ -112,6 +119,12 @@ impl Vm<'_> {
                 let Some(entity) = entity else {
                     return stop(format!("{name} on an actor that is not loaded"));
                 };
+                if name == "isweapondrawn" {
+                    if !args.is_empty() {
+                        return stop("IsWeaponDrawn takes no argument");
+                    }
+                    return Ok(Some(Value::Bool(crate::obscript_state::is_weapon_out(self.world, entity))));
+                }
                 let values = self.eval_args(frame, args)?;
                 let hand = if name == "getequippedweapon" {
                     if values.first().is_some_and(Value::truthy) { crate::hands::Hand::Left } else { crate::hands::Hand::Right }
@@ -119,14 +132,14 @@ impl Vm<'_> {
                     match values.first().and_then(Value::number).map(|hand| hand as i32) {
                         Some(0) => crate::hands::Hand::Left,
                         Some(1) => crate::hands::Hand::Right,
-                        _ => return stop("GetEquippedItemType of a hand other than 0 or 1"),
+                        _ => return stop(format!("{name} of a hand other than 0 or 1")),
                     }
                 };
                 let item = crate::hands::hand_item(self.world, entity, hand);
-                if name == "getequippedweapon" {
-                    Some(item.weapon().filter(|&form| form != 0).map_or(Value::None, Value::Form))
-                } else {
-                    Some(Value::Int(item.item_type_code()))
+                match name {
+                    "getequippedweapon" => Some(item.weapon().filter(|&form| form != 0).map_or(Value::None, Value::Form)),
+                    "getequippedspell" => Some(item.spell().filter(|&form| form != 0).map_or(Value::None, Value::Form)),
+                    _ => Some(Value::Int(item.item_type_code())),
                 }
             }
             // CK *GetTemplate - Package*: "The Package that this one is templated on. If this package
@@ -303,6 +316,12 @@ impl Checker<'_> {
             {
                 return Some(Kind::Num)
             }
+            (Kind::Object | Kind::Player, "getequippedspell")
+                if matches!(arg_kinds, [Arg::Literal(Expr::IntLit(0 | 1))] | [Arg::Kind(Kind::Num)]) =>
+            {
+                return Some(Kind::Object)
+            }
+            (Kind::Object | Kind::Player, "isweapondrawn") if arg_kinds.is_empty() => return Some(Kind::Bool),
             (Kind::Object, "gettemplate") if arg_kinds.is_empty() => return Some(Kind::Object),
             (Kind::Object | Kind::Player, "ignorefriendlyhits" | "setcandocommand")
                 if statement && arg_kinds.len() <= 1 && arg_kinds.iter().all(|a| matches!(a, Arg::Literal(Expr::BoolLit(_)) | Arg::Kind(Kind::Bool))) =>

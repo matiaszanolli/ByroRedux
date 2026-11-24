@@ -1,5 +1,6 @@
 //! The inventory effect applier plus `add_items` / `remove_items`. (#5468, split from `effects.rs`)
 
+use byroredux_plugin::esm::records::SlotHands;
 use super::*;
 
 /// `RemoveItem`'s runtime (M47.2): take up to `count` of `item_form_id` from
@@ -205,33 +206,30 @@ pub(super) fn apply_inventory_effect(
             actor,
             item,
             silent: _,
+            left,
         } => {
             let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings, deferred.speaker)?;
             let item_form_id = resolve_property_form_id(vmad, item.property_name())?;
-            let Some(slot_mask) = world
-                .try_resource::<crate::EquipItemCatalog>()
-                .and_then(|catalog| catalog.slot_mask(item_form_id))
-            else {
-                // No armor slot: a weapon (or something that cannot be worn). The binary's
-                // inventory owns the wielded-weapon state, so the request waits for it.
-                log::debug!("fragment EquipItem: item {item_form_id:08X} has no armor biped slot; queued for the inventory");
-                if let Some(mut pending) = world.try_resource_mut::<crate::equipment::PendingNonArmorEquips>() {
-                    pending.0.push((actor, item_form_id));
-                }
-                return None;
-            };
-            // Hand Equipment #7398 — a shield takes the left hand (HND-SLOT-003/-004). The player's goes
-            // through the inventory's hand rules, which also take off a two-handed weapon and keep the
-            // wielded-weapon cache; another actor's clears its left-hand weapon here.
+            let hand = if *left { crate::hands::Hand::Left } else { crate::hands::Hand::Right };
+            // Hand Equipment — a shield takes the left hand (HND-SLOT-003/-004).
             let shield = world
                 .try_resource::<crate::hands::HandCatalog>()
                 .is_some_and(|catalog| catalog.is_shield(item_form_id));
-            if shield && crate::papyrus_demo::PapyrusPlayerEntity::get(world) == Some(actor) {
+            let slot_mask = world
+                .try_resource::<crate::EquipItemCatalog>()
+                .and_then(|catalog| catalog.slot_mask(item_form_id));
+            // No armor slot (a weapon or a torch), or the player's shield: the binary's inventory owns the
+            // wielded-weapon state and the hand rules' cache, so the request waits for it with its hand.
+            let player = crate::papyrus_demo::PapyrusPlayerEntity::get(world) == Some(actor);
+            let Some(slot_mask) = slot_mask.filter(|_| !(shield && player)) else {
+                log::debug!("fragment EquipItem: item {item_form_id:08X} queued for the inventory");
                 if let Some(mut pending) = world.try_resource_mut::<crate::equipment::PendingNonArmorEquips>() {
-                    pending.0.push((actor, item_form_id));
-                    return None;
+                    pending.0.push((actor, item_form_id, hand));
                 }
-            }
+                return None;
+            };
+            // Another actor's shield goes through the hand rules here, read before the guards below.
+            let shield_facts = shield.then(|| crate::hands::hand_facts(world, actor, None));
             let Some((mut inventories, mut equipment)) =
                 world.query_2_mut_mut::<Inventory, EquipmentSlots>()
             else {
@@ -263,10 +261,17 @@ pub(super) fn apply_inventory_effect(
             if slots.is_equipped(index) {
                 return None;
             }
-            let mut displaced = slots.equip(slot_mask, index);
-            if shield {
-                displaced.extend(slots.unequip_left_hand());
-            }
+            let displaced = match &shield_facts {
+                Some(facts) => crate::hands::equip_to_hand(
+                    slots,
+                    crate::hands::HandEquip::Shield { index, mask: slot_mask },
+                    crate::hands::Hand::Left,
+                    facts,
+                )
+                .map(|change| change.items)
+                .unwrap_or_default(),
+                None => slots.equip(slot_mask, index),
+            };
             let mut changes = displaced
                 .into_iter()
                 .filter(|displaced| !slots.is_equipped(*displaced))
@@ -286,6 +291,41 @@ pub(super) fn apply_inventory_effect(
             drop(inventories);
             drop(equipment);
             crate::emit_equipment_changes(world, actor, changes);
+            None
+        }
+        Effect::EquipSpell { actor, spell, left, equip } => {
+            let actor = resolve_actor(vmad, world, context, actor, &deferred.scene_actor_bindings, deferred.speaker)?;
+            let spell = resolve_property_form_id(vmad, spell.property_name())?;
+            let hand = if *left { crate::hands::Hand::Left } else { crate::hands::Hand::Right };
+            let hands = world.try_resource::<crate::hands::HandCatalog>().and_then(|catalog| catalog.spell_hands(spell));
+            // Read before the slots are borrowed.
+            let facts = crate::hands::hand_facts(world, actor, None);
+            let mut equipment = world.query_mut::<EquipmentSlots>()?;
+            let slots = equipment.get_mut(actor)?;
+            if !*equip {
+                crate::hands::unequip_spell(slots, spell, hand, hands);
+                return None;
+            }
+            // A spell with no slot is held in the hand asked for.
+            let item = crate::hands::HandEquip::Spell { form: spell, hands: hands.unwrap_or(SlotHands::Either) };
+            let Some(change) = crate::hands::equip_to_hand(slots, item, hand, &facts) else {
+                log::debug!("fragment EquipSpell: spell {spell:08X}'s slot is no hand");
+                return None;
+            };
+            drop(equipment);
+            let changes: Vec<crate::EquipmentChange> = world
+                .get::<Inventory>(actor)
+                .map(|inventory| {
+                    change
+                        .items
+                        .iter()
+                        .filter_map(|&taken| inventory.get(taken).map(|stack| crate::EquipmentChange { item_form_id: stack.base_form_id, equipped: false }))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if !changes.is_empty() {
+                crate::emit_equipment_changes(world, actor, changes);
+            }
             None
         }
         _ => unreachable!("apply_inventory_effect received a non-inventory effect"),

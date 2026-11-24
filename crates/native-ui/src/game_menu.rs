@@ -710,6 +710,20 @@ fn draw_inventory_page(
                     form_id: item.form_id,
                 });
             }
+        } else if item.either_hand {
+            // Hand Equipment (Q2): a one-handed weapon takes either hand, each its own equip.
+            for (held, hand, action) in [
+                (item.in_right, "Right hand", InventoryAction::ToggleEquip { index: item.index }),
+                (item.in_left, "Left hand", InventoryAction::EquipLeft { index: item.index }),
+            ] {
+                let label = format!("{}  {hand}", labels.text(if held { "Unequip" } else { "Equip" }));
+                if columns[1]
+                    .add_sized([220.0, 42.0], egui::Button::new(RichText::new(label).size(18.0)))
+                    .clicked()
+                {
+                    outputs.inventory_actions.push(action);
+                }
+            }
         } else if item.equippable {
             let label = labels.text(if item.equipped { "Unequip" } else { "Equip" });
             if columns[1]
@@ -832,6 +846,9 @@ mod tests {
                     equipped: true,
                     equippable: true,
                     consumable: false,
+                    either_hand: false,
+                    in_left: false,
+                    in_right: false,
                 }],
             }),
             ..Default::default()
@@ -868,6 +885,9 @@ mod tests {
                     equipped: false,
                     equippable: false,
                     consumable: true,
+                    either_hand: false,
+                    in_left: false,
+                    in_right: false,
                 }],
             }),
             ..Default::default()
@@ -1154,6 +1174,9 @@ mod tests {
             equipped: false,
             equippable: false,
             consumable: false,
+            either_hand: false,
+            in_left: false,
+            in_right: false,
         };
         let snapshot = PageSnapshot {
             inventory: Some(InventorySnapshot {

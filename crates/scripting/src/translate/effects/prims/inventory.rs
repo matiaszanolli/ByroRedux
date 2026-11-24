@@ -174,5 +174,56 @@ pub(super) fn prim_equip_item(e: &Expr, scope: &Scope) -> Option<Effect> {
         actor: receiver_actor(object, scope)?,
         item: receiver_object(&args[0].value.node, scope)?,
         silent: bool_arg(args, 2)?.unwrap_or(false),
+        left: false,
+    })
+}
+
+/// SKSE `EquipItemEx(akItem, aiEquipSlot = 0, abPreventUnequip = false, abEquipSound = true)`: 0 the
+/// default hand, 1 the right, 2 the left (CK *EquipItemEx - Actor*; Hand Equipment HND-READ-003). A
+/// locked equip declines as `EquipItem`'s does; any other slot value declines.
+pub(super) fn prim_equip_item_ex(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (object, args) = method_call(e, "EquipItemEx")?;
+    if args.is_empty() || args.len() > 4 {
+        return None;
+    }
+    if bool_arg(args, 2)?.unwrap_or(false) {
+        return None;
+    }
+    let left = match args.get(1) {
+        None => false,
+        Some(_) => match int_arg(args, 1)? {
+            0 | 1 => false,
+            2 => true,
+            _ => return None,
+        },
+    };
+    Some(Effect::EquipItem {
+        actor: receiver_actor(object, scope)?,
+        item: receiver_object(&args[0].value.node, scope)?,
+        silent: !bool_arg(args, 3)?.unwrap_or(true),
+        left,
+    })
+}
+
+/// `EquipSpell(akSpell, aiSource)` / `UnequipSpell(akSpell, aiSource)` (CK *EquipSpell - Actor*,
+/// *UnequipSpell - Actor*): source 0 the left hand, 1 the right; any other source declines.
+pub(super) fn prim_equip_spell(e: &Expr, scope: &Scope) -> Option<Effect> {
+    let (equip, (object, args)) = match method_call(e, "EquipSpell") {
+        Some(call) => (true, call),
+        None => (false, method_call(e, "UnequipSpell")?),
+    };
+    if args.len() != 2 {
+        return None;
+    }
+    let left = match int_arg(args, 1)? {
+        0 => true,
+        1 => false,
+        _ => return None,
+    };
+    Some(Effect::EquipSpell {
+        actor: receiver_actor(object, scope)?,
+        spell: receiver_object(&args[0].value.node, scope)?,
+        left,
+        equip,
     })
 }

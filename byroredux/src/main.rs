@@ -62,6 +62,7 @@ mod mod_roots;
 mod plugin_activation;
 mod profile_fingerprint;
 mod objectives;
+mod held_torch;
 mod hud;
 mod light_translate;
 mod linear_capture;

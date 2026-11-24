@@ -117,10 +117,10 @@ pub fn emit_item_transfers(
 /// slot (`EquipItemCatalog`), which in practice is a weapon, or the player's shield (Hand Equipment
 /// #7398: a shield takes the left hand and a two-handed weapon off it). Weapon state (the wielded weapon,
 /// its damage and reach) is derived by the binary's inventory, so the request waits there:
-/// `(actor entity, item base FormID)`, drained by the app the frame it is raised.
+/// `(actor entity, item base FormID, the hand asked for)`, drained by the app the frame it is raised.
 /// `NOT_SAVED_BY_DESIGN`: consumed the frame it is raised.
 #[derive(Debug, Default)]
-pub struct PendingNonArmorEquips(pub Vec<(byroredux_core::ecs::storage::EntityId, u32)>);
+pub struct PendingNonArmorEquips(pub Vec<(byroredux_core::ecs::storage::EntityId, u32, crate::hands::Hand)>);
 
 impl Resource for PendingNonArmorEquips {}
 

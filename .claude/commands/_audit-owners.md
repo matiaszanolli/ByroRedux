@@ -255,6 +255,7 @@ Rules: rows are **path prefixes**; the FIRST matching row routes a changed file,
 | `byroredux/src/{detection,skill_use_emit}` | character, gameplay, ecs; oblivion | MEDIUM |
 | `byroredux/src/scaleform_hud.rs` | ui | MEDIUM |
 | `byroredux/src/{menu_stack,menu_drivers,menu_xml_input,menuxml_document,menuxml_dialogue,menuxml_message,scaleform_dialogue,scaleform_messagebox}` | ui, gameplay Dim 2, ecs | MEDIUM |
+| `byroredux/src/mcm_page.rs` | ui, scripting, legacy-compat | MEDIUM |
 | `byroredux/src/music/` | audio Dim 3+4+5, scripting Dim 6, save, performance Dim 1; fnv, fo3, oblivion | MEDIUM |
 | `byroredux/src/video.rs` | ui, audio, scripting, performance Dim 7 | MEDIUM |
 | `byroredux/src/chargen.rs` | character, gameplay, ui, scripting; fnv | MEDIUM |

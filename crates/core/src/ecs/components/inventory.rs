@@ -279,6 +279,14 @@ pub struct EquipmentSlots {
     /// there. A shield stays a biped occupant; [`weapon`](Self::weapon) is the right hand. Required,
     /// like `weapon` (a format bump, not a default).
     pub left_hand: Option<InventoryIndex>,
+    /// The spell readied in the left hand, by FormID (Hand Equipment PRD, Skyrim): spells are not
+    /// inventory rows. A hand holds a spell or an item, never both; a two-handed spell is in both
+    /// fields. Required (format v149).
+    #[cfg_attr(feature = "inspect", serde(with = "crate::stable_form_id::option"))]
+    pub left_spell: Option<u32>,
+    /// The spell readied in the right hand, as [`left_spell`](Self::left_spell).
+    #[cfg_attr(feature = "inspect", serde(with = "crate::stable_form_id::option"))]
+    pub right_spell: Option<u32>,
 }
 
 /// [`EquipmentSlots::occupants`] as a sequence of exactly [`MAX_BIPED_SLOTS`] entries.
@@ -306,6 +314,8 @@ impl Default for EquipmentSlots {
             occupants: [None; MAX_BIPED_SLOTS],
             weapon: None,
             left_hand: None,
+            left_spell: None,
+            right_spell: None,
         }
     }
 }

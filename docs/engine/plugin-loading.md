@@ -28,13 +28,15 @@ What the engine does today with a legacy plugin set (`--master …` `--esm`), th
    capital changed identity, and ids saved against it no longer resolve. The fold is also not any filesystem's case
    rule: final sigma and `İ` fold differently from NTFS's per-character table. Which host rule to match is an open
    LMC-ID-009 decision (#7249).
-2. **Activation (LMC-ID-003, -011)**, once at boot, before anything reads argv
+2. **Activation (LMC-ID-003, -010, -011)**, once at boot, before anything reads argv
    (`byroredux/src/plugin_activation.rs` over `crates/plugin/src/activation.rs`). The profile is the `--master` plugins
    in argv order, then the `--esm`. Each plugin's `TES4` record alone is read for its masters. A master the profile
    lists after one of its dependents is hoisted to just ahead of the first dependent that needs it; nothing else moves,
    so profile order decides among unrelated plugins. A plugin whose master is not in the profile is disabled with every
    plugin that transitively depends on it, and activation continues; so are a duplicate identity, a master cycle and an
-   unreadable header. The activated `--master` list replaces the given one in the effective args, so the cell loader,
+   unreadable header. A duplicate (a later entry with an earlier entry's identity) is compared byte for byte with the
+   earlier one, which loads either way: the same file or the same bytes is reported as a repeat, different bytes as an
+   identity collision (LMC-ID-010). The activated `--master` list replaces the given one in the effective args, so the cell loader,
    the exterior context, the HUD probes, `--list-cells` and the plugin set a save records all see one order. Every move
    and every disabled plugin (with the chain back to the missing master) is logged as a warning and kept for
    `plugins.activation`. The `--esm` must activate and stay last, or boot stops with the report: a missing master of
@@ -123,8 +125,9 @@ What the engine does today with a legacy plugin set (`--master …` `--esm`), th
    first; the base master's directory, the game's `Data`, is the implicit unmanaged root and sorts first. Before
    activation, each root lists the plugins and archives at its top level, and a `--master` or `--esm` given as a bare
    file name that names no file resolves through the roots, the highest-priority root first and the unmanaged root
-   last (the resolved path replaces it in the effective args). A root's identity is its directory name, case-folded;
-   two roots sharing one are reported (LMC-ID-010). After activation, each root learns which of the profile's plugins
+   last (the resolved path replaces it in the effective args). A root's identity is its directory name, case-folded.
+   A directory listed twice, under any spelling, is one root at its first place; two different directories with one
+   identity are reported as an identity collision and both load (LMC-ID-010). After activation, each root learns which of the profile's plugins
    it ships; a root whose every such plugin was disabled is disabled with them and its loose files leave the session,
    while a root that keeps one keeps its assets with a warning. When the profile names any root, activation writes the
    enabled roots into the effective args as `--loose-root` flags in order, and every asset provider's loose tier is

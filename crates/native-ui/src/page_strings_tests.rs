@@ -206,6 +206,9 @@ fn inventory_page_draws_only_game_and_listed_words() {
         equipped: equippable,
         equippable,
         consumable,
+        either_hand: false,
+        in_left: false,
+        in_right: false,
     };
     let snapshot = PageSnapshot {
         inventory: Some(InventorySnapshot {

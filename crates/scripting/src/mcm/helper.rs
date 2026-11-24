@@ -86,6 +86,10 @@ pub struct PendingAction {
     pub global: bool,
 }
 
+/// A mod's config quest and config script, which its hotkeys' actions default to (no quest for a config no
+/// script registers).
+type ConfigQuest = (Option<QuestFormId>, String);
+
 /// The MCM Helper state: the files, each mod's parsed config and settings, the open page.
 #[derive(Default)]
 pub struct McmHelperStore {
@@ -103,7 +107,7 @@ pub struct McmHelperStore {
     keybinds: HashMap<String, Vec<Keybind>>,
     /// Each such mod's config quest and config script, which a hotkey's action defaults to (none for a
     /// config no script registers).
-    config_quests: HashMap<String, (Option<QuestFormId>, String)>,
+    config_quests: HashMap<String, ConfigQuest>,
     /// The player's key bindings, read on first use.
     registrations: Option<Registrations>,
     /// Hotkeys whose console command was declined, so the diagnostic is given once.
@@ -332,7 +336,7 @@ pub fn note_config_quest(world: &World, quest: QuestFormId) {
     let Ok(ctx) = context(world, &McmOwner::Script(quest)) else { return };
     let key = ctx.mod_name.to_ascii_lowercase();
     let mut store = world.resource_mut::<McmHelperStore>();
-    if matches!(&*store.config(&ctx.mod_name), Err(_)) {
+    if store.config(&ctx.mod_name).is_err() {
         return;
     }
     store.config_quests.insert(key, (Some(quest), ctx.script.clone()));
@@ -1041,7 +1045,7 @@ pub fn hotkey_events(world: &World, downs: &[i32], ups: &[(i32, f32)]) {
     let presses = downs.iter().map(|&code| (code, None)).chain(ups.iter().map(|&(code, held)| (code, Some(held))));
     let mut queued = false;
     for (code, released) in presses {
-        let hotkeys: Vec<(String, Keybind, Option<(Option<QuestFormId>, String)>)> = {
+        let hotkeys: Vec<(String, Keybind, Option<ConfigQuest>)> = {
             let mut store = world.resource_mut::<McmHelperStore>();
             let bound: Vec<(String, String)> =
                 store.registrations().bound_to(code).map(|(mod_name, id)| (mod_name.to_owned(), id.to_owned())).collect();
@@ -1064,7 +1068,7 @@ pub fn hotkey_events(world: &World, downs: &[i32], ups: &[(i32, f32)]) {
 }
 
 /// Queue what a hotkey does on this press; whether anything was queued.
-fn queue_hotkey(world: &World, mod_name: &str, keybind: &Keybind, config: Option<(Option<QuestFormId>, String)>, released: Option<f32>) -> bool {
+fn queue_hotkey(world: &World, mod_name: &str, keybind: &Keybind, config: Option<ConfigQuest>, released: Option<f32>) -> bool {
     let Some((quest, script)) = config else { return false };
     let owner = quest.map_or_else(|| McmOwner::Config(mod_name.to_owned()), McmOwner::Script);
     let ctx = Context { owner, quest, mod_name: mod_name.to_owned(), script };

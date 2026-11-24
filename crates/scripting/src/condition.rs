@@ -22,7 +22,7 @@
 //! ## Function catalog status
 //!
 //! Bethesda ships ~300 condition functions across the four-game
-//! lineage. This catalog ships **106 functions** at their canonical CTDA
+//! lineage. This catalog ships **107 functions** at their canonical CTDA
 //! function indices, verified against TES5Edit `wbDefinitions*.pas`
 //! (the same value `parse_ctda` reads from CTDA bytes 8–11; FO3 == FNV
 //! for every shared function):
@@ -108,6 +108,7 @@
 //! | 492   | GetMapMarkerVisible    | the ObScript getter (FO3/FNV) |
 //! | 45    | GetDetected            | the ObScript getter (FO3/FNV) |
 //! | 101   | IsWeaponOut            | the ObScript getter (FO3/FNV) |
+//! | 102   | IsTorchOut             | a torch in either hand (Skyrim, Hand Equipment) |
 //! | 159   | GetSitting             | the ObScript getter (FO3/FNV) |
 //! | 161   | GetIsCurrentPackage    | the ObScript getter (FO3/FNV) |
 //! | 214   | HasMagicEffect         | the ObScript getter (FO3/FNV) |

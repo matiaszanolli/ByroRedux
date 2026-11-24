@@ -20,7 +20,7 @@ commit. Live state only: when something closes, it becomes a one-liner under
 
 ## Status
 
-**Last session close:** Session 117, 2026-11-22. Workspace numbers (tests, LOC,
+**Last session close:** Session 119, 2026-11-23. Workspace numbers (tests, LOC,
 files, issue dirs) live in [Project Stats](#project-stats) only.
 
 **Gates.** `rust-toolchain.toml` pins rustc 1.100.0 (#5308; raised from 1.96.0 on 2026-11-14), above the bin crate's 1.96 MSRV (wasmtime 49). CI on
@@ -206,7 +206,7 @@ baseline (`688f42705`, RTX 4070 Ti, 1280×720, stepped orbit, tier histogram pas
 | MedTek Research 01 | 0 / 0 (0 / 0) | 27.73 / 16.36 |
 | FO4 Dugout Inn | 0 / 1 (0 / 0.01) | 15.51 / 12.40 |
 
-The baseline is 1294 commits old at the Session 117 close (Session 108's Phase 2 exit A13
+The baseline is 1466 commits old at the Session 119 close (Session 108's Phase 2 exit A13
 last checked cost against it); re-run `scripts/m-light-baselines.sh` before citing it.
 
 ### Compatibility matrix
@@ -566,13 +566,13 @@ it; the full list as it stood on 2026-09-29 (open and closed) is in
   is +0.5–1.2 ms on Cornell, Whiterun and MedTek, unattributed (742-commit
   window: ReSTIR `c2647d468` / `17e0b7464` / `6110b6078`, GI sampling `0b56f1133`,
   SVGF history `1092b5b9e` / `24eb7dba8`, cloud-shadow map `c231f5b5f`). Next:
-  bisect Cornell `gpu_main`. The record is 1794 commits old at the Session 117
+  bisect Cornell `gpu_main`. The record is 1966 commits old at the Session 119
   close (renderer paths since: the ray budget's tier-0 exit `2c0ef3394`, exterior fog height `ac558feb7`, render-layer depth bias `0c118907c`, explicit LODs on streamed textures `f754eee28`, synthetic parallax `51ce1c2f9` (off by default), cloud deck drift `ea1f464b9`, shadow filter `0999490b9` and its reach `a2180dd18`,
   shadow-ray cosine weighting `55ba81e20`, ReSTIR taint `bed162262`, water waves/shores
   `7dd294ee3`, geometry-pool caps and admission tiers `bb97be77c` / `22d6e1a80`, terrain
   softening `e71451d08`, the fire local grid `d3e3acc7b`, M-LIGHT GI energy `6f43c9bd4`
   and ray offsets `49324fc95`, M39's mip-range upload path `073e3af53` / `494d077b2` with
-  streaming off), the sky IBL probe and traced sky occlusion `84104564e` / `5f51748d5`, terrain displacement patches and their BLAS `84f04205f` / `ff339f658`, the 4.3 level selector `1fecf6447` and residual parallax `d4fcb4c69`, and the helper-lane ray skip `d9d119733`; none was re-benched, so re-run before citing it.
+  streaming off), the sky IBL probe and traced sky occlusion `84104564e` / `5f51748d5`, terrain displacement patches and their BLAS `84f04205f` / `ff339f658`, the 4.3 level selector `1fecf6447` and residual parallax `d4fcb4c69`, the alpha-aware sky-occlusion walk `481b84689`, and the helper-lane ray skip `d9d119733`; none was re-benched, so re-run before citing it.
 - [ ] **Papyrus interpreter: what the frame budget does not bound** (#5764).
   #5763 gave the four exclusive `Update` systems a shared 10 000-statement
   frame allowance (runaway frame 13.6 → 1.4 ms; a never-ending handler dies at
@@ -704,16 +704,16 @@ performance finding. The measured knob table is in
 
 ## Project Stats
 
-Ground-truth as of 2026-11-23, HEAD `070e124d2`: line, file and issue counts re-counted at the Session 118 close; the test count is carried from Session 117 (not re-run, the machine was under memory pressure).
+Ground-truth as of 2026-11-23, HEAD `01d576da1`: all figures re-counted at the Session 119 close.
 
 | Metric                                  | Value                        |
 |-----------------------------------------|------------------------------|
-| Rust source lines (`src/` dirs, excl. `third_party/`) | 1 000 406 |
-| Rust total lines (all `.rs`, excl. `target/` and `third_party/`) | 1 062 237 |
-| Source files (`.rs`, excl. `target/` and `third_party/`) | 1920 total · 1806 outside `tests/` dirs (+13 / +13 since the Session 117 close) |
+| Rust source lines (`src/` dirs, excl. `third_party/`) | 1 012 651 |
+| Rust total lines (all `.rs`, excl. `target/` and `third_party/`) | 1 074 582 |
+| Source files (`.rs`, excl. `target/` and `third_party/`) | 1944 total · 1828 outside `tests/` dirs (+24 / +22 since the Session 118 close) |
 | Workspace members                       | 39 (count the `[workspace] members` block only; 34 crates — `video`, `bink2`, `binkaudio` joined in Session 111, `native-ui` with M48 GUI-PAGE-006 — + `byroredux` binary + 4 tools — `tools/nifskope` is on disk but not a member) |
-| Tests                                   | **13 125 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.100.0, 2026-11-22; 482 ignored; the lock-order detector is off in this count, and the bin crate is also green under it since #7093). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
-| Open issue directories                  | 7093 (`.claude/issues/`)     |
+| Tests                                   | **13 363 passing, 0 failing** (`cargo test --workspace --no-fail-fast` on rustc 1.100.0, 2026-11-23; 504 ignored; the lock-order detector is off in this count, and the bin crate is also green under it since #7093). Always pass `--no-fail-fast` for the ground-truth count — without it, `cargo test --workspace` stops after the first binary with a failure and silently omits every crate queued behind it (Session 77 saw 1836 vs the true 6905) — and beware shell pipes: `cargo test … | tail` reports the *pipe's* exit code. |
+| Open issue directories                  | 7121 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **562 069** across eight games (Skyrim SE re-measured 2026-09-29 at 33 468 over 8 archives, #3712 added Animations; FO76's tail closed by #3461 and the 2026-10-03 re-measure (#4628) swept 102 980 over 5 of its 20 mesh-bearing archives; Skyrim LE 22 466 gated since fb8173fe0; earlier widenings #3369/#3466, Oblivion DLC #3925, Starfield #4440). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 468 · Skyrim LE 22 466 · FO4 235 082 · FO76 102 980 · Starfield 120 543. |
 | Per-game NIF clean-parse rate           | See the [compatibility matrix](#compatibility-matrix) — it is the single home for per-game parse rates, sweep dates and residual truncation tails. Summary only: 100% clean on all eight titles (Starfield re-measured 2026-09-24 #4440; FO76's `GeneratedMeshes` truncation tail closed by #3461 and re-measured 2026-10-03, #4628). |
 | Supported archive formats               | BSA v103/v104/v105, BA2 v1/v2/v3/v7/v8 |
