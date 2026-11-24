@@ -234,7 +234,7 @@ impl JsonUtilStore {
 
     /// The value of `key` in `kind`'s section.
     pub fn get(&mut self, path: &str, kind: Kind, key: &str) -> Option<Json> {
-        self.file(path)?.root.get(kind.section())?.get(&key.to_ascii_lowercase()).cloned()
+        self.file(path)?.root.get(kind.section())?.get(key.to_ascii_lowercase()).cloned()
     }
 
     /// Set `key` in `kind`'s section.
@@ -262,7 +262,7 @@ impl JsonUtilStore {
 
     /// `key`'s list in `kind`'s list section, if any.
     pub fn list(&mut self, path: &str, kind: Kind, key: &str) -> Option<Vec<Json>> {
-        self.file(path)?.root.get(kind.list_section())?.get(&key.to_ascii_lowercase())?.as_array().cloned()
+        self.file(path)?.root.get(kind.list_section())?.get(key.to_ascii_lowercase())?.as_array().cloned()
     }
 
     /// Edit `key`'s list in `kind`'s list section, creating it; the edit returns whether it changed the list.

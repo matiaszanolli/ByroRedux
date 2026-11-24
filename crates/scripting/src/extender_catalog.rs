@@ -95,9 +95,12 @@ pub fn families_for_game(game: &str) -> &'static [&'static str] {
     }
 }
 
+/// Each game's vanilla script hierarchy: `(game, [(script lowercase, parent)])`.
+type VanillaHierarchies = Vec<(&'static str, Vec<(String, &'static str)>)>;
+
 /// `script`'s parent in `game`'s hierarchy (case-insensitive), if the game's vanilla scripts declare it.
 fn vanilla_parent(game: &str, script: &str) -> Option<&'static str> {
-    static PARSED: OnceLock<Vec<(&'static str, Vec<(String, &'static str)>)>> = OnceLock::new();
+    static PARSED: OnceLock<VanillaHierarchies> = OnceLock::new();
     let parsed = PARSED.get_or_init(|| {
         HIERARCHIES
             .iter()
