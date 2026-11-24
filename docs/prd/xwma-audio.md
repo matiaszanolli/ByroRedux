@@ -1,6 +1,9 @@
 # xWMA Audio Decoding — Product Requirements
 
-**Status**: PROPOSED (2026-11-24). Revision 4 records the owner's Q1 decision (§10):
+**Status**: PROPOSED (2026-11-24). Revision 5 records the owner's Q2 to Q4 decisions (§10):
+voices move to the same decoder, effects ship before voices before music, and files decode in
+the engine at play time; every question is now decided, and the owner's approval is not yet
+recorded. Revision 4 records the owner's Q1 decision (§10):
 Alternative B, FFmpeg's `wmav2` decoder vendored and linked statically; it carries that
 through the requirements, deviations, acceptance and phases. Revision 3 records the Phase 0 evidence: V1 and V3 to V6
 are sourced in the [findings](../engine/xwma-phase0-findings.md) and the decoder's
@@ -16,8 +19,8 @@ is marked **Phase 0: verify** instead of being stated as fact.
 **Scope**: the engine decodes every xWMA (`.xwm`) stream that Skyrim and Fallout 4 ship,
 and a mod's, in process: the Fallout 4 effects (Static route), the Skyrim and Fallout 4
 music (Streamed route) with the `MUSC` / `MUST` priority and ducking stack that only
-matters once those tracks decode, and, if the owner decides it (Q2), the `.fuz` voice
-streams that decode through the host's `ffmpeg` today (Voice route). A file the engine
+matters once those tracks decode, and the `.fuz` voice
+streams that decode through the host's `ffmpeg` today (Voice route, Q2). A file the engine
 cannot decode is reported by path. Outside the promise: encoding xWMA, converting a mod's
 files on disk, other codecs and console-only formats, Oblivion, Fallout 3 and New Vegas
 (none of their installed archives holds an xWMA, §7.1), and Fallout 76 and Starfield
@@ -148,7 +151,7 @@ installed Oblivion, Fallout 3 and New Vegas BSAs (54 archives) hold no `.xwm` an
   decode and stream, and the `MUSC` / `MUST` stack chooses, layers and ducks them
   (Streamed route).
 - **XWMA-G-003 — Voices need no host tool.** A Skyrim or Fallout 4 `.fuz` line decodes
-  with no `ffmpeg` on the host, if Q2 is decided as recommended (Voice route).
+  with no `ffmpeg` on the host (Voice route, Q2).
 - **XWMA-G-004 — A mod's `.xwm` plays as the original's does.** A loose or archived
   `.xwm` takes the route its use names, with no conversion step (catalog A7.xwma, D5 to D1).
 - **XWMA-G-005 — A failure is named.** Every file the engine cannot decode appears in the
@@ -219,8 +222,8 @@ installed Oblivion, Fallout 3 and New Vegas BSAs (54 archives) hold no `.xwm` an
 
 ### 5.4 Voice route: `.fuz` (`XWMA-VOX`)
 
-- **XWMA-VOX-001.** If Q2 is decided as recommended, a `.fuz` line MUST decode with the
-  in-process decoder and MUST NOT start `ffmpeg`. Today it starts the host's `ffmpeg`
+- **XWMA-VOX-001.** A `.fuz` line MUST decode with the
+  in-process decoder (Q2) and MUST NOT start `ffmpeg`. Today it starts the host's `ffmpeg`
   (`crates/audio/src/fuz.rs`, #5912).
 - **XWMA-VOX-002.** A `.fuz` line that fails to decode MUST fall back to the subtitle
   estimate, as it does today without `ffmpeg`, and MUST report its path once.
@@ -351,9 +354,8 @@ publishes Bink's decode rate.
 
 ## 9. Delivery sequence
 
-Phase 0 closes the **Phase 0: verify** items below. Phases 1 to 4 follow Q3's recommended
-order; if the owner decides music first, Phases 2 and 4 swap and Phase 4's exit moves
-with it. The audio milestone M44 and the music controller of the game-music PRD are
+Phase 0 closes the **Phase 0: verify** items below. Phases 1 to 4 follow Q3's decided
+order: effects, then voices, then music. The audio milestone M44 and the music controller of the game-music PRD are
 the only dependencies.
 
 | # | Item | Settled by |
@@ -379,7 +381,7 @@ pass, with decode coverage published for both games.
 **Phase 2 — Effects.** XWMA-STAT-001, XWMA-STAT-002, XWMA-MOD-001, XWMA-REP-001 and
 XWMA-REP-002. Exit: scenario 3 and scenario 7 pass.
 
-**Phase 3 — Voices.** XWMA-VOX-001 and XWMA-VOX-002, if Q2 is decided as recommended.
+**Phase 3 — Voices.** XWMA-VOX-001 and XWMA-VOX-002.
 Exit: scenario 5 passes and the voice rate is published.
 
 **Phase 4 — Music and the stack.** XWMA-STRM-001 to XWMA-STRM-003, XWMA-MUSC-001 to
@@ -417,16 +419,22 @@ is published for Skyrim and Fallout 4.
    every vanilla voice stream (XWMA-DEC-001), so `.fuz` lines stop depending on `ffmpeg` and
    the three routes share one codec. Alternative: keep `ffmpeg` for voices, which leaves two
    decoders of one codec and keeps the dependency for every Skyrim and Fallout 4 player.
+   **Decided** (2026-11-24): yes. Voices move to the in-process decoder once it decodes every
+   vanilla voice stream (XWMA-DEC-001).
 3. **Q3 — Which route comes first.** Recommended: effects (Static), since they are the
    larger silence (6,463 Fallout 4 files) and need no streaming, then voices, then music with
    its stack. Alternative: music first, the more audible gap on Skyrim, where effects
    already play; streaming and the stack then come before any effect plays on Fallout 4.
+   **Decided** (2026-11-24): effects, then voices, then music with its stack, as the
+   recommendation (§9 phases 2 to 4).
 4. **Q4 — When a file is decoded.** Recommended: in the engine, when a sound first plays
    (effects) or while it plays (music), so a mod's file works as shipped with no extra step.
    Alternative: convert every `.xwm` once to a decoded format on disk, as the
    [Asset Preprocessing PRD](asset-preprocessing.md) (PROPOSED, no decision taken there) would
    do: the runtime then needs no xWMA decoder at all, at the cost of an install-time pass,
    the disk space of decoded audio, and a step a mod's new files must go through.
+   **Decided** (2026-11-24): in the engine, at play time. The conversion alternative would not
+   remove the vendored FFmpeg, since the conversion tool needs it too.
 
 ---
 
@@ -454,3 +462,4 @@ is published for Skyrim and Fallout 4.
 | 2 | 2026-11-24 | Review round 1 folded in: §2, §4 to §9 written; voice archives' format tags measured and every count re-read; format-tag and music-type claims cited or marked verify; ATRAC wording corrected; Q1 reframed (research conditions to Phase 0, the parse-don't-link rule named) and Q4 linked to the preprocessing PRD; the sound failure listing made a requirement; template remnants removed | claude: revise |
 | 3 | 2026-11-24 | Phase 0 evidence recorded: V1 and V3 to V6 sourced in the findings, V2 a negative result (Q1 trigger), decoder design drafted, Related and document map link both | — |
 | 4 | 2026-11-24 | Q1 decided (owner): Alternative B, vendored static FFmpeg `wmav2`; XWMA-DEC-002 and XWMA-DEC-005 rewritten, XWMA-DEC-006 added, V7 added, deviation row 1, scenario 6, terminology and Phase 1 follow; clean-room precedent wording replaced | — |
+| 5 | 2026-11-24 | Q2 to Q4 decided (owner): voices move to the in-process decoder, effects then voices then music, decode in the engine at play time; the Q2 conditionals in the scope, XWMA-G-003, XWMA-VOX-001, §9 and the design's Voice row are removed | — |
