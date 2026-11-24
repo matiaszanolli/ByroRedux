@@ -63,6 +63,9 @@ pub(crate) enum EquipTarget {
     /// The player's chosen arrow type (player-archery BOW-AMM-001): a slot of its own, not a biped slot and not
     /// the wielded weapon. Only games with a bow row make ammunition equippable.
     Ammo,
+    /// A carried light held in the left hand (Hand Equipment HND-SLOT-005). Only where the game has the
+    /// hand model (Skyrim); elsewhere a carried light is not equippable.
+    Torch,
 }
 
 
@@ -151,7 +154,7 @@ fn queue_by_form_id(
 }
 
 /// The weapon equips scripts asked for (`player.equipitem <weapon>`, the VCG02 tutorial's rifle), and the
-/// player's shields (Hand Equipment #7398):
+/// player's shields and torches (Hand Equipment #7398 / #7399):
 /// the player's row for each is toggled on through the menu's own door, unless that weapon is
 /// already the wielded one. Another actor's request, or an item that is no weapon the player
 /// carries, is logged and dropped (an NPC's wielded weapon is not driven from inventory rows yet).
@@ -164,10 +167,13 @@ fn drain_script_weapon_equips(world: &mut World) {
         return;
     }
     let player = PlayerEntity::get(world);
-    for (actor, form_id) in requests {
-        let is_weapon = world
-            .try_resource::<InventoryCatalog>()
-            .is_some_and(|catalog| catalog.entries.get(&form_id).is_some_and(|entry| entry.equip_target == Some(EquipTarget::Weapon)));
+    for (actor, form_id, hand) in requests {
+        let is_weapon = world.try_resource::<InventoryCatalog>().is_some_and(|catalog| {
+            catalog
+                .entries
+                .get(&form_id)
+                .is_some_and(|entry| matches!(entry.equip_target, Some(EquipTarget::Weapon | EquipTarget::Torch)))
+        });
         // Hand Equipment #7398 — the player's shield comes here too, for the hand rules.
         let is_shield = world
             .try_resource::<byroredux_scripting::hands::HandCatalog>()
@@ -187,11 +193,34 @@ fn drain_script_weapon_equips(world: &mut World) {
             log::debug!("script EquipItem {form_id:08X}: the player does not carry it");
             continue;
         };
-        let wielded = world.get::<EquipmentSlots>(actor).is_some_and(|slots| slots.is_equipped(InventoryIndex(row as u32)));
-        if !wielded
+        // Already where it was asked for: the left hand asks for its own slot (`EquipItemEx(item, 2)`),
+        // anything else for the item anywhere.
+        let row_index = InventoryIndex(row as u32);
+        let held = world.get::<EquipmentSlots>(actor).is_some_and(|slots| match hand {
+            byroredux_scripting::hands::Hand::Left => slots.left_hand == Some(row_index),
+            byroredux_scripting::hands::Hand::Right => slots.is_equipped(row_index),
+        });
+        if !held
             && let Some(mut pending) = world.try_resource_mut::<PendingInventoryActions>() {
-                pending.0.push(byroredux_native_ui::InventoryAction::ToggleEquip { index: row as u32 });
+                pending.0.push(match hand {
+                    byroredux_scripting::hands::Hand::Left => byroredux_native_ui::InventoryAction::EquipLeft { index: row as u32 },
+                    byroredux_scripting::hands::Hand::Right => byroredux_native_ui::InventoryAction::ToggleEquip { index: row as u32 },
+                });
             }
+    }
+}
+
+/// Hand Equipment #7399 — a script's spell readied in the right hand takes the wielded weapon off in the
+/// scripting crate, which cannot touch `EquippedWeapon`; the wielded-weapon cache follows the slots here
+/// when it names a weapon they no longer wield.
+fn drop_stale_player_weapon(world: &mut World) {
+    let Some(player) = PlayerEntity::get(world) else {
+        return;
+    };
+    let cached = world.get::<EquippedWeapon>(player).map(|weapon| weapon.inventory_index);
+    let wielded = world.get::<EquipmentSlots>(player).and_then(|slots| slots.weapon);
+    if cached.is_some() && cached != wielded {
+        actions::reconcile_player_equipped_weapon(world, player);
     }
 }
 
@@ -199,6 +228,7 @@ fn drain_script_weapon_equips(world: &mut World) {
 /// Called on the main thread beside the other player-action steps.
 pub(crate) fn drain_pending_inventory_actions(world: &mut World) {
     drain_script_weapon_equips(world);
+    drop_stale_player_weapon(world);
     let Some(mut pending) = world.try_resource_mut::<PendingInventoryActions>() else {
         return;
     };

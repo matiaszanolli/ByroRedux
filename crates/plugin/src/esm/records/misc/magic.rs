@@ -971,6 +971,9 @@ pub struct SpelRecord {
     pub level: u8,
     /// Magic effects applied by this spell. Built from EFID/EFIT pairs.
     pub effects: Vec<MagicEffectItem>,
+    /// Skyrim's `ETYP`: the equip slot (`EQUP`) naming the hands the spell takes (UESP *Skyrim
+    /// Mod:Mod File Format/SPEL*; Hand Equipment PRD). 0 where absent and on other games.
+    pub equip_type: u32,
 }
 
 pub fn parse_spel(
@@ -1000,6 +1003,9 @@ pub fn parse_spel(
                     out.spell_flags = flags;
                     out.level = level;
                 }
+            }
+            b"ETYP" if game == GameKind::Skyrim => {
+                out.equip_type = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
             }
             b"EFID" | b"EFIT" | b"SCIT" | b"CTDA" | b"CTDT" | b"CIS1" | b"CIS2" => effects.feed(sub, remap),
             _ => {}

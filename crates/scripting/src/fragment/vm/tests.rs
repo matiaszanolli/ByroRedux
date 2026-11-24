@@ -6929,6 +6929,91 @@ fn equipped_item_type_and_left_weapon_read_each_hand() {
     assert_eq!(quest_property(&world, "Results"), Some(11.0), "each hand's weapon");
 }
 
+/// Hand Equipment #7399: `EquipSpell` readies a spell in the hand it names (CK source 0 left, 1 right)
+/// and `GetEquippedSpell` / `GetEquippedItemType` (9) read it back; `UnequipSpell` takes it out;
+/// `EquipItemEx(item, 2)` queues the item for the left hand; `IsWeaponDrawn` reads the drawn state.
+#[test]
+fn equip_spell_and_equip_item_ex_reach_the_hands() {
+    use crate::hands::{Hand, HandCatalog, HandWeapon};
+    use byroredux_core::ecs::components::{EquipmentSlots, Inventory, InventoryIndex, ItemStack};
+    use byroredux_plugin::esm::records::SlotHands;
+    const SWORD: u32 = 0x0000_5A0D;
+    const DAGGER: u32 = 0x0000_5A0E;
+    const FLAMES: u32 = 0x0000_5A0F;
+    let script = parsed_source(
+        "ScriptName QF_VmSpells extends Quest\n\
+         Weapon Property Dagger Auto\n\
+         Spell Property Flames Auto\n\
+         Int Property Left Auto\n\
+         Int Property Right Auto\n\
+         Int Property Results Auto\n\
+         Function Fragment_1()\n\
+           Actor player = Game.GetPlayer()\n\
+           player.EquipSpell(Flames, 0)\n\
+           Left = player.GetEquippedItemType(0)\n\
+           If player.GetEquippedSpell(0) == Flames\n Results += 1\n EndIf\n\
+           If !player.IsWeaponDrawn()\n Results += 10\n EndIf\n\
+           player.UnequipSpell(Flames, 0)\n\
+           Right = player.GetEquippedItemType(0)\n\
+           player.EquipItemEx(Dagger, 2)\n\
+         EndFunction\n",
+    );
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(crate::ScriptGame(byroredux_plugin::esm::reader::GameKind::Skyrim));
+    world.insert_resource(QuestStageState::default());
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.insert_resource(crate::QuestScriptObjects::default());
+    let mut hands = HandCatalog::default();
+    hands.insert_weapon(SWORD, HandWeapon { anim_type: 1, hands: SlotHands::Right });
+    hands.insert_weapon(DAGGER, HandWeapon { anim_type: 2, hands: SlotHands::Right });
+    hands.insert_spell(FLAMES, SlotHands::Either);
+    world.insert_resource(hands);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    let mut inventory = Inventory::new();
+    inventory.push(ItemStack::new(SWORD, 1));
+    inventory.push(ItemStack::new(DAGGER, 1));
+    world.insert(player, inventory);
+    let mut slots = EquipmentSlots::new();
+    slots.equip_weapon(InventoryIndex(0));
+    world.insert(player, slots);
+    let object = |name: &str, form_id: u32| ScriptProperty { name: name.into(), status: 1, value: PropertyValue::Object { form_id, alias: -1 } };
+    let vmad = ScriptInstanceData {
+        version: 5,
+        object_format: 2,
+        scripts: vec![ScriptInstance {
+            name: "QF_VmSpells".into(),
+            status: 0,
+            properties: vec![object("Dagger", DAGGER), object("Flames", FLAMES)],
+        }],
+    };
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        fragments.insert_vmad(Q, vmad);
+        fragments.insert_vm_script(Arc::clone(&script));
+        fragments.insert(
+            Q,
+            10,
+            vec![Effect::Interpret { script: "QF_VmSpells".into(), function: "Fragment_1".into(), args: Vec::new(), resume: None }],
+        );
+    }
+    if let Err(why) = crate::fragment::vm::checker::check_function_reason(Arc::clone(&script), "Fragment_1", None) {
+        panic!("{why}")
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(quest_property(&world, "Left"), Some(9.0), "a spell in the left hand");
+    assert_eq!(quest_property(&world, "Results"), Some(11.0), "the left hand's spell, and no weapon drawn");
+    assert_eq!(quest_property(&world, "Right"), Some(0.0), "UnequipSpell empties the hand");
+    assert_eq!(world.get::<EquipmentSlots>(player).and_then(|slots| slots.weapon), Some(InventoryIndex(0)), "the right hand kept its sword");
+    assert_eq!(
+        world.resource::<crate::equipment::PendingNonArmorEquips>().0,
+        vec![(player, DAGGER, Hand::Left)],
+        "EquipItemEx(item, 2) asks for the left hand"
+    );
+}
+
 /// The second native wave: `SetScale` scales a reference, `SetRestrained` restrains an actor other than
 /// the player, and `MoveToNode` puts a reference on the named node of another's 3D (its position and
 /// rotation), as the CK pages give them.

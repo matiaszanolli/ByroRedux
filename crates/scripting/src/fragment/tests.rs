@@ -4167,6 +4167,7 @@ fn dispatch_tethers_cart_and_equips_carried_armor() {
                     )),
                     item: crate::translate::compose::ObjectRef::Property("ArmorGag".into()),
                     silent: false,
+                    left: false,
                 },
             ],
         );

@@ -208,7 +208,7 @@ pub(crate) fn apply_effect(
         | Effect::ModQuestVariable { .. } => {
             apply_quest_vars_effect(effect, context, vmad, world, stages, deferred)
         }
-        Effect::AddItem { .. } | Effect::RemoveItem { .. } | Effect::EquipItem { .. } => {
+        Effect::AddItem { .. } | Effect::RemoveItem { .. } | Effect::EquipItem { .. } | Effect::EquipSpell { .. } => {
             apply_inventory_effect(effect, context, vmad, world, stages, deferred)
         }
         Effect::MoveTo { .. }

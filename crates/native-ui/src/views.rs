@@ -194,6 +194,12 @@ pub struct InventoryItemView {
     pub equipped: bool,
     pub equippable: bool,
     pub consumable: bool,
+    /// Hand Equipment (Q2): a one-handed weapon the player can hold in either hand, offered as an equip
+    /// for each hand.
+    pub either_hand: bool,
+    /// The row is held in the left / right hand.
+    pub in_left: bool,
+    pub in_right: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

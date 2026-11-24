@@ -453,12 +453,7 @@ impl ConsoleCommand for InventoryStatusCommand {
         // Hand Equipment — each hand's item, by the CK *GetEquippedItemType* code and its base form.
         let hand = |hand: byroredux_scripting::hands::Hand| {
             let item = byroredux_scripting::hands::hand_item(world, player, hand);
-            let form = match item {
-                byroredux_scripting::hands::HandItem::Weapon { base, .. } | byroredux_scripting::hands::HandItem::Shield { base, .. } => {
-                    format!(" {base:08X}")
-                }
-                byroredux_scripting::hands::HandItem::Empty => String::new(),
-            };
+            let form = item.form().map(|form| format!(" {form:08X}")).unwrap_or_default();
             format!("{}{form}", item.item_type_code())
         };
         lines.push(format!(
