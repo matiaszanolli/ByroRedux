@@ -349,29 +349,20 @@ pub fn probe_answer(
     ProbeAnswer { level, release, capped_by }
 }
 
-/// What answering a probe needs of the session's scripts (implemented by the binary over its script provider).
-pub trait ProbeScripts: Send + Sync {
-    /// The source a script resolves to (a mod root's loose scripts or a script archive), by index; `None`: no
-    /// source holds it.
-    fn source_of(&self, world: &byroredux_core::ecs::world::World, script: &str) -> Option<usize>;
-    /// Every compiled script the source ships.
-    fn scripts(&self, world: &byroredux_core::ecs::world::World, source: usize) -> Vec<Vec<u8>>;
-}
-
-/// LMC-SCR-010 — the session's version-probe answers: per script source (a mod) and family, computed on the
-/// source's first probe from every script it ships, as the preflight computes them.
+/// LMC-SCR-010 — the session's version-probe answers: per script source (a mod, from
+/// [`crate::script_sources::ScriptSourceIndex`]) and family, computed on the source's first probe from every script
+/// it ships, as the preflight computes them.
 pub struct ExtenderProbes {
     game: String,
-    scripts: Box<dyn ProbeScripts>,
     answers: std::collections::HashMap<(usize, &'static str), ProbeAnswer>,
 }
 
 impl Resource for ExtenderProbes {}
 
 impl ExtenderProbes {
-    /// The probes of a `game` session (the catalog's game name) over its script sources.
-    pub fn new(game: &str, scripts: Box<dyn ProbeScripts>) -> Self {
-        Self { game: game.to_owned(), scripts, answers: Default::default() }
+    /// The probes of a `game` session (the catalog's game name).
+    pub fn new(game: &str) -> Self {
+        Self { game: game.to_owned(), answers: Default::default() }
     }
 }
 
@@ -387,13 +378,16 @@ pub fn probe_answer_for(world: &byroredux_core::ecs::world::World, family: &'sta
         if !families_for_game(&probes.game).contains(&family) {
             return absent;
         }
-        let Some(source) = probes.scripts.source_of(world, script) else {
+        let Some(sources) = world.try_resource::<crate::script_sources::ScriptSourceIndex>() else {
+            return absent;
+        };
+        let Some(source) = sources.0.source_of(world, script) else {
             return absent;
         };
         if let Some(answer) = probes.answers.get(&(source, family)) {
             return answer.clone();
         }
-        (probes.game.clone(), source, probes.scripts.scripts(world, source))
+        (probes.game.clone(), source, sources.0.scripts(world, source))
     };
     let mut called: Vec<&'static CatalogRow> = Vec::new();
     for bytes in blobs {
@@ -687,7 +681,7 @@ mod tests {
     #[test]
     fn coverage_counts_are_the_published_ones() {
         let published: [(&str, Coverage); 11] = [
-            ("skse64", Coverage { functions: 804, dated: 67, vm: 72, sdk: 21, served: 83 }),
+            ("skse64", Coverage { functions: 804, dated: 67, vm: 76, sdk: 21, served: 87 }),
             ("f4se", Coverage { functions: 227, dated: 13, vm: 19, sdk: 3, served: 22 }),
             ("xnvse", Coverage { functions: 565, dated: 50, vm: 0, sdk: 4, served: 4 }),
             ("jip_ln", Coverage { functions: 733, dated: 0, vm: 0, sdk: 0, served: 0 }),

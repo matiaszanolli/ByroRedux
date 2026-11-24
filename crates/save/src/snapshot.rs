@@ -716,7 +716,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v150 -> v151 (LMC-SCR-004): the saved `InputEventRegistrations` resource (SKSE's and F4SE's key, control and menu
 /// registrations, which their co-saves keep); a v150 save has none.
-pub const FORMAT_MAJOR: u16 = 151;
+///
+/// v151 -> v152 (LMC-SCR-004): the saved `ModEventRegistrations` resource (SKSE's mod-event registrations, which its
+/// co-save keeps); a v151 save has none.
+pub const FORMAT_MAJOR: u16 = 152;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 

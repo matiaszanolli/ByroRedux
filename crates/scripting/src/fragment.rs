@@ -67,6 +67,7 @@ mod events;
 mod external_events;
 mod hits;
 mod menu_events;
+mod mod_events;
 mod input_events;
 mod owners;
 mod package;
@@ -88,6 +89,7 @@ pub(crate) use dispatch::{flush_advances, run_papyrus_call};
 pub use anim_events::*;
 pub use hits::*;
 pub use menu_events::*;
+pub use mod_events::{queue_vm_mod_event, vm_mod_event_system, ModEventRegistration, ModEventRegistrations, VmModEventInbox};
 pub use input_events::{deliver_input_events, HeldKeys, InputBinding, InputEventRegistration, InputEventRegistrations, InputFrame};
 pub use external_events::{reset_external_events, send_external_event, ExternalEventRegistration, ExternalEventRegistrations};
 pub use events::{EventRegistration, EventRegistrations, EventRequest, REMOTE_EVENTS};
@@ -149,6 +151,7 @@ pub(crate) const SOURCES: &str = concat!(
     include_str!("fragment/hits.rs"),
     include_str!("fragment/menu_events.rs"),
     include_str!("fragment/input_events.rs"),
+    include_str!("fragment/mod_events.rs"),
     include_str!("fragment/owners.rs"),
     include_str!("fragment/package.rs"),
     include_str!("fragment/perk.rs"),
@@ -228,6 +231,7 @@ pub fn register_anim_events_saved(registry: &mut byroredux_save::SaveRegistry) {
 pub fn register_menu_events_saved(registry: &mut byroredux_save::SaveRegistry) {
     menu_events::register_saved(registry);
     input_events::register_saved(registry);
+    mod_events::register_saved(registry);
 }
 
 #[cfg(feature = "save")]

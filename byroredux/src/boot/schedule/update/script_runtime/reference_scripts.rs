@@ -32,6 +32,8 @@ pub(super) fn register_reference_scripts_systems(scheduler: &mut Scheduler) {
     scheduler.add_exclusive(Stage::Update, crate::mcm_hotkeys::mcm_hotkey_system);
     // LMC-SCR-004 — the script extenders' key and control events and Input key state.
     scheduler.add_exclusive(Stage::Update, crate::mcm_hotkeys::extender_input_system);
+    // LMC-SCR-004 — SKSE mod events reach the VM's RegisterForModEvent callbacks.
+    scheduler.add_exclusive(Stage::Update, byroredux_scripting::vm_mod_event_system);
     scheduler.add_exclusive(Stage::Update, check_alias_scripts_dispatch);
     scheduler.add_exclusive(Stage::Update, byroredux_scripting::alias_script_event_system);
     scheduler.add_exclusive(

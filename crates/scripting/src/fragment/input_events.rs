@@ -167,7 +167,7 @@ impl InputEventRegistrations {
 
 /// Send `handler(args)` to the scripts each registration reaches: its own script (F4SE), or every script on its
 /// object (SKSE).
-fn send(world: &World, owners: &super::owners::ScriptOwners, registered: &[(u32, Option<String>)], handler: &str, args: &[VmStored]) {
+pub(super) fn send(world: &World, owners: &super::owners::ScriptOwners, registered: &[(u32, Option<String>)], handler: &str, args: &[VmStored]) {
     for (owner, script) in registered {
         let scripts = match script {
             Some(script) => vec![script.clone()],

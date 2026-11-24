@@ -163,11 +163,11 @@ impl ScriptProvider {
 
 impl byroredux_core::ecs::resource::Resource for ScriptProvider {}
 
-/// LMC-SCR-010 — the version probes' view of the session's scripts: a source is a mod root's loose scripts or a
-/// script archive, as [`ScriptProvider`] resolves them.
-struct ProviderProbeScripts;
+/// The session's script sources, as [`ScriptProvider`] resolves them: a mod root's loose scripts or a script archive,
+/// each with its principal (LMC-SCR-010 version probes, LMC-SCR-004 mod events).
+struct ProviderScriptSources;
 
-impl byroredux_scripting::extender_catalog::ProbeScripts for ProviderProbeScripts {
+impl byroredux_scripting::script_sources::ScriptSources for ProviderScriptSources {
     fn source_of(&self, world: &byroredux_core::ecs::world::World, script: &str) -> Option<usize> {
         world.try_resource::<ScriptProvider>()?.source_of(script)
     }
@@ -175,12 +175,19 @@ impl byroredux_scripting::extender_catalog::ProbeScripts for ProviderProbeScript
     fn scripts(&self, world: &byroredux_core::ecs::world::World, source: usize) -> Vec<Vec<u8>> {
         world.try_resource::<ScriptProvider>().map(|provider| provider.source_scripts(source)).unwrap_or_default()
     }
+
+    fn principal_of(&self, world: &byroredux_core::ecs::world::World, script: &str) -> Option<PrincipalId> {
+        let provider = world.try_resource::<ScriptProvider>()?;
+        let source = provider.source_of(script)?;
+        provider.archives.get(source).map(|source| source.principal.clone())
+    }
 }
 
-/// LMC-SCR-010 — install the session's extender version probes (`docs/engine/extender-catalog.md` §7) for a
-/// Skyrim or Fallout 4 load order, named by its base master; other games' probes are ObScript commands, not served
-/// yet.
+/// LMC-SCR-010 — install the session's script sources, and the extender version probes
+/// (`docs/engine/extender-catalog.md` §7) for a Skyrim or Fallout 4 load order, named by its base master; other
+/// games' probes are ObScript commands, not served yet.
 pub(crate) fn install_extender_probes(world: &mut byroredux_core::ecs::world::World) {
+    world.insert_resource(byroredux_scripting::script_sources::ScriptSourceIndex(Box::new(ProviderScriptSources)));
     let base = world
         .try_resource::<crate::cell_loader::load_order::ActiveLoadOrder>()
         .and_then(|order| order.0.first().cloned());
@@ -193,7 +200,7 @@ pub(crate) fn install_extender_probes(world: &mut byroredux_core::ecs::world::Wo
         "fallout4.esm" => "fo4",
         _ => return,
     };
-    world.insert_resource(byroredux_scripting::extender_catalog::ExtenderProbes::new(game, Box::new(ProviderProbeScripts)));
+    world.insert_resource(byroredux_scripting::extender_catalog::ExtenderProbes::new(game));
 }
 
 /// M47.2 — the [`ScriptProvider`]'s scripts, decompiled on demand and cached,

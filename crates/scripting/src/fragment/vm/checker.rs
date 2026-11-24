@@ -924,6 +924,32 @@ impl<'l> Checker<'l> {
                     _ => self.fail(|| format!("{name} as written")),
                 };
             }
+            // SKSE's mod events, as statements. A literal callback must run whole; a computed one is checked when an
+            // event is delivered (a callback the VM does not run is skipped there).
+            if matches!(name.as_str(), "registerformodevent" | "unregisterformodevent" | "unregisterforallmodevents" | "sendmodevent") {
+                let text = |arg: &Arg| matches!(arg, Arg::Literal(Expr::StringLit(_)) | Arg::Kind(Kind::Str));
+                let number = |arg: &Arg| matches!(arg, Arg::Literal(Expr::IntLit(_) | Expr::FloatLit(_)) | Arg::Kind(Kind::Num));
+                if !statement {
+                    return self.fail(|| format!("{name} called for its value"));
+                }
+                return match (name.as_str(), arg_kinds.as_slice()) {
+                    ("registerformodevent", [event, callback]) if text(event) && text(callback) => {
+                        if let Arg::Literal(Expr::StringLit(callback)) = callback {
+                            let callback = callback.to_ascii_lowercase();
+                            if !self.versions(&script, &callback).is_empty() {
+                                self.check_call_into(&script, &callback, true, frame.self_kind)?;
+                            }
+                        }
+                        Some(Kind::None)
+                    }
+                    ("unregisterformodevent", [event]) if text(event) => Some(Kind::None),
+                    ("unregisterforallmodevents", []) => Some(Kind::None),
+                    ("sendmodevent", [event, rest @ ..]) if text(event) && rest.len() <= 2 && rest.first().is_none_or(text) && rest.get(1).is_none_or(number) => {
+                        Some(Kind::None)
+                    }
+                    _ => self.fail(|| format!("{name} as written")),
+                };
+            }
             // An update registration: the handler it delivers to must run.
             if crate::fragment::EventRequest::is_call(&name) {
                 return self.check_event_registration(&script, &name, &arg_kinds, statement, frame.self_kind);

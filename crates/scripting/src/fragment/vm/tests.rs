@@ -8042,14 +8042,18 @@ fn register_for_external_event_needs_a_literal_callback_the_script_has() {
 /// release (no script/runtime mismatch) and every plugin not loaded; a script no source holds gets "absent".
 #[test]
 fn skse_version_probes_answer_the_calling_mods_level() {
-    use crate::extender_catalog::{probe_answer_for, ExtenderProbes, ProbeScripts};
+    use crate::extender_catalog::{probe_answer_for, ExtenderProbes};
+    use crate::script_sources::{ScriptSourceIndex, ScriptSources};
     struct OneMod;
-    impl ProbeScripts for OneMod {
+    impl ScriptSources for OneMod {
         fn source_of(&self, _: &World, script: &str) -> Option<usize> {
             script.eq_ignore_ascii_case("QF_VmProbe").then_some(0)
         }
         fn scripts(&self, _: &World, _: usize) -> Vec<Vec<u8>> {
             Vec::new()
+        }
+        fn principal_of(&self, _: &World, _: &str) -> Option<byroredux_sdk::identity::PrincipalId> {
+            None
         }
     }
     let script = parsed_source(
@@ -8077,7 +8081,8 @@ fn skse_version_probes_answer_the_calling_mods_level() {
     world.insert_resource(QuestStageState::default());
     world.insert_resource(crate::QuestScriptVariables::default());
     world.insert_resource(crate::QuestScriptObjects::default());
-    world.insert_resource(ExtenderProbes::new("skyrim", Box::new(OneMod)));
+    world.insert_resource(ScriptSourceIndex(Box::new(OneMod)));
+    world.insert_resource(ExtenderProbes::new("skyrim"));
     let player = world.spawn();
     world.insert_resource(PapyrusPlayerEntity(player));
     let vmad = ScriptInstanceData {
@@ -8328,4 +8333,106 @@ fn skse_key_control_and_menu_registrations_deliver_their_events() {
     input(&world, crate::fragment::InputFrame { keys_down: vec![57], controls_down: vec!["Activate".into()], ..Default::default() });
     assert_eq!(variable(&world, "Downs"), Some(1.0), "the keys are unregistered");
     assert_eq!(variable(&world, "Controls"), Some(2.0), "the control stays");
+}
+
+/// LMC-SCR-004 catalog growth: SKSE's mod events. A quest script registers its object for two events and sends one
+/// with no extension host: the send reaches its callback locally as `(eventName, strArg, numArg, sender)`. An event
+/// built through `ModEvent` arrives on the bus with its pushed values. After `UnregisterForModEvent`, nothing
+/// arrives.
+#[test]
+fn skse_mod_events_reach_their_callbacks() {
+    use crate::script_sources::{ScriptSourceIndex, ScriptSources};
+    use byroredux_sdk::event::{legacy_skse_mod_event_id, CustomEvent, LegacySkseModEventValue, LegacySkseVariadicModEventPayload};
+    use byroredux_sdk::identity::PrincipalId;
+    struct OneMod;
+    impl ScriptSources for OneMod {
+        fn source_of(&self, _: &World, _: &str) -> Option<usize> {
+            Some(0)
+        }
+        fn scripts(&self, _: &World, _: usize) -> Vec<Vec<u8>> {
+            Vec::new()
+        }
+        fn principal_of(&self, _: &World, _: &str) -> Option<PrincipalId> {
+            PrincipalId::new("org.example.mymod").ok()
+        }
+    }
+    let script = parsed_source(
+        "ScriptName QF_VmModEvents extends Quest\n\
+         Int Property Got Auto\n\
+         Float Property Number Auto\n\
+         Int Property Custom Auto\n\
+         Function Fragment_1()\n\
+           RegisterForModEvent(\"MyMod_Ready\", \"OnReady\")\n\
+           RegisterForModEvent(\"MyMod_Custom\", \"OnCustom\")\n\
+           SendModEvent(\"mymod_ready\", \"hello\", 2.5)\n\
+         EndFunction\n\
+         Function Fragment_2()\n\
+           UnregisterForModEvent(\"MyMod_Ready\")\n\
+           SendModEvent(\"MyMod_Ready\", \"again\")\n\
+         EndFunction\n\
+         Event OnReady(String eventName, String strArg, Float numArg, Form sender)\n\
+           If eventName == \"mymod_ready\" && strArg == \"hello\"\n Got += 1\n EndIf\n\
+           Number = numArg\n\
+         EndEvent\n\
+         Event OnCustom(Int count, String label)\n\
+           If label == \"x\"\n Custom = count\n EndIf\n\
+         EndEvent\n",
+    );
+    for fragment in ["Fragment_1", "Fragment_2"] {
+        assert_eq!(check_function_reason(Arc::clone(&script), fragment, None).err(), None);
+    }
+    let mut world = world_with_fragment(script);
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.insert_resource(ScriptSourceIndex(Box::new(OneMod)));
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        fragments.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                version: 5,
+                object_format: 2,
+                scripts: vec![ScriptInstance { name: "QF_VmModEvents".into(), status: 0, properties: Vec::new() }],
+            },
+        );
+        fragments.insert(
+            Q,
+            20,
+            vec![Effect::Interpret { script: "QF_VmModEvents".into(), function: "Fragment_2".into(), args: Vec::new(), resume: None }],
+        );
+    }
+    let variable = |world: &World, name: &str| {
+        world.resource::<crate::QuestScriptVariables>().get(Q, crate::QuestScriptVariables::property_key(name))
+    };
+    let deliver = |world: &World| {
+        crate::fragment::vm_mod_event_system(world, 0.0);
+        crate::fragment::fragment_continuation_system(world, 0.0);
+    };
+
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(world.resource::<crate::fragment::ModEventRegistrations>().entries().len(), 2);
+    deliver(&world);
+    assert_eq!(variable(&world, "Got"), Some(1.0), "the name as sent, its string");
+    assert_eq!(variable(&world, "Number"), Some(2.5));
+
+    // An event a ModEvent builder sent (another lane, a guest) arrives with its pushed values.
+    let payload = LegacySkseVariadicModEventPayload {
+        arguments: vec![LegacySkseModEventValue::Int(7), LegacySkseModEventValue::String("x".into())],
+    };
+    crate::fragment::queue_vm_mod_event(
+        &world,
+        CustomEvent {
+            event: legacy_skse_mod_event_id("MyMod_Custom").unwrap(),
+            sender: PrincipalId::new("org.example.other").unwrap(),
+            payload: payload.encode().unwrap(),
+        },
+    );
+    deliver(&world);
+    assert_eq!(variable(&world, "Custom"), Some(7.0));
+
+    world.resource_mut::<QuestStageState>().set_stage(Q, 20);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    deliver(&world);
+    assert_eq!(variable(&world, "Got"), Some(1.0), "unregistered: the second send is not heard");
+    assert_eq!(variable(&world, "Number"), Some(2.5));
 }

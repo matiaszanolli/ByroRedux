@@ -918,7 +918,8 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // FormIDs save as stable identities.
     // Hand Equipment (#7398) — refreshed WITH a major bump (v147 -> v148): `EquipmentSlots.left_hand`.
     // LMC-SCR-004 — refreshed WITH a major bump (v150 -> v151): the new saved `InputEventRegistrations`.
-    const BASELINE_MAJOR: u16 = 151;
+    // LMC-SCR-004 — refreshed WITH a major bump (v151 -> v152): the new saved `ModEventRegistrations`.
+    const BASELINE_MAJOR: u16 = 152;
     // #4465 — refreshed WITH a major bump (v24 -> v25). `ReferenceState`
     // gained the required `picked_up` tombstone field (the durable half of
     // the P3 `PickedUp` marker, carried through the registered
@@ -1409,7 +1410,8 @@ fn saved_type_shape_changes_require_format_major_bump() {
     // (plus the new `Effect::EquipSpell`), refreshed WITH the major bump above.
     // LMC Q5 — v150: the new saved `StorageUtilValues` and `JcHeap`, refreshed WITH the major bump above.
     // LMC-SCR-004 — v151: the new saved `InputEventRegistrations`, refreshed WITH the major bump above.
-    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xb208_ad62_e213_f466;
+    // LMC-SCR-004 — v152: the new saved `ModEventRegistrations`, refreshed WITH the major bump above.
+    const BASELINE_SHAPE_FINGERPRINT: u64 = 0xbcee_bdc2_7390_a918;
     // #6715 — refreshed WITHOUT a major bump: `CurrentCellContext` and
     // `CurrentExteriorContext` moved from `cell_loader/transition.rs` to
     // `components/indices.rs`, and each shape string is keyed by its file path.

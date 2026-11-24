@@ -297,6 +297,46 @@ impl Vm<'_> {
         Ok(())
     }
 
+    /// SKSE's `RegisterForModEvent` / `UnregisterForModEvent` / `UnregisterForAllModEvents` / `SendModEvent` on the
+    /// script's own object (see [`crate::fragment::ModEventRegistrations`]).
+    pub(super) fn mod_event_call(&mut self, frame: &mut Frame, name: &str, args: &[CallArg]) -> Run<()> {
+        use crate::fragment::mod_events::{ModEventRequest, ModEventSend};
+        let values = self.eval_args(frame, args)?;
+        let text = |index: usize| match values.get(index) {
+            Some(Value::Str(text)) => Some(text.clone()),
+            _ => None,
+        };
+        let owner = frame.owner.0;
+        match name {
+            "registerformodevent" => {
+                let (Some(event), Some(callback)) = (text(0), text(1)) else {
+                    return stop("RegisterForModEvent without its event and callback");
+                };
+                self.deferred.mod_event_requests.push((owner, ModEventRequest::Register { event, callback }));
+            }
+            "unregisterformodevent" => {
+                let Some(event) = text(0) else {
+                    return stop("UnregisterForModEvent without its event");
+                };
+                self.deferred.mod_event_requests.push((owner, ModEventRequest::Unregister { event }));
+            }
+            "unregisterforallmodevents" => self.deferred.mod_event_requests.push((owner, ModEventRequest::UnregisterAll)),
+            _ => {
+                let Some(event) = text(0) else {
+                    return stop("SendModEvent without its event");
+                };
+                self.deferred.mod_event_sends.push(ModEventSend {
+                    script: frame.script.name.node.0.clone(),
+                    owner,
+                    event,
+                    string_arg: text(1).unwrap_or_default(),
+                    number_arg: values.get(2).and_then(Value::number).unwrap_or(0.0),
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// SKSE's `RegisterForKey` / `RegisterForControl` / `RegisterForMenu` and their unregisters on the script's own
     /// object (see [`crate::fragment::InputEventRegistrations`]).
     pub(super) fn input_event_registration(&mut self, frame: &mut Frame, name: &str, args: &[CallArg]) -> Run<()> {

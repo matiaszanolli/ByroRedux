@@ -31,6 +31,8 @@ const STABLE: &[&str] = &[
     "JcHeap",
     // LMC-SCR-004 — the extenders' key, control and menu registrations: the owner is a stable FormID.
     "InputEventRegistrations",
+    // LMC-SCR-004 — SKSE's mod-event registrations: the owner is a stable FormID.
+    "ModEventRegistrations",
     // Hand Equipment #7399 — the hands' readied spells (`left_spell` / `right_spell`), stable FormIDs.
     "EquipmentSlots",
     // Restored before the cell reload (`PRE_RELOAD_RESOURCES`): the live load reloads the session's own plugins, so

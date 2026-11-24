@@ -241,6 +241,7 @@ pub fn register(world: &mut World) {
     hits::install_hits(world);
     menu_events::install_menu_events(world);
     input_events::install_input_events(world);
+    mod_events::install_mod_events(world);
     budget::install_budget(world);
 }
 

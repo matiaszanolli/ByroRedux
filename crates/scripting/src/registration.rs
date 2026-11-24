@@ -179,14 +179,14 @@ mod tests {
     /// `PendingStreamMusic`, +1 for MUS-SCR-004's `CellMusicTypes`, +1 for GUI-EVT-001's
     /// `MenuEventRegistrations`, +1 for M48 #6667's `PapyrusMessageAnswers`, +3 for Oblivion skill-use
     /// leveling's `PendingSkillUse`, `SkillUseClasses`, `SleepCompletions`, +1 for #7291's
-    /// `AmbientPackageRequestsSeen`, +1 for LMC-UI-002 slice 4's `McmHelperStore`, +1 for slice 5's `ExternalEventRegistrations`, +2 for the extenders' `InputEventRegistrations` and `HeldKeys`); the list is
+    /// `AmbientPackageRequestsSeen`, +1 for LMC-UI-002 slice 4's `McmHelperStore`, +1 for slice 5's `ExternalEventRegistrations`, +2 for the extenders' `InputEventRegistrations` and `HeldKeys`, +2 for SKSE's `ModEventRegistrations` and `VmModEventInbox`); the list is
     /// the types it used to initialise by hand, so a dropped `install` call fails by name rather
     /// than by count alone.
     #[test]
     fn register_installs_the_same_resource_set() {
         let mut world = World::new();
         register(&mut world);
-        assert_eq!(world.resource_count(), 158, "the resource set `register` installs changed");
+        assert_eq!(world.resource_count(), 160, "the resource set `register` installs changed");
 
         macro_rules! present {
             ($($ty:path),+ $(,)?) => {$(
@@ -209,6 +209,8 @@ mod tests {
         crate::fragment::ExternalEventRegistrations,
         crate::fragment::InputEventRegistrations,
         crate::fragment::HeldKeys,
+        crate::fragment::ModEventRegistrations,
+        crate::fragment::VmModEventInbox,
         crate::fragment::AliasScriptOwners,
         crate::fragment::ActorWatch,
         crate::fragment::PendingUnloadDeliveries,

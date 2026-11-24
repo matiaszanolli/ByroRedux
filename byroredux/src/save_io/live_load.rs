@@ -513,6 +513,8 @@ pub(super) fn discard_outgoing_session_requests(world: &World) {
     // LMC-UI-002 slice 5 — F4SE keeps external-event registrations per session; the loaded save's scripts
     // register again (FO4 MCM's wiki does it in OnPlayerLoadGame).
     reset_resource::<byroredux_scripting::fragment::ExternalEventRegistrations>(world);
+    // LMC-SCR-004 — mod events sent in the outgoing session are not delivered into the loaded one.
+    reset_resource::<byroredux_scripting::fragment::VmModEventInbox>(world);
     reset_resource::<crate::bow::BowState>(world);
     reset_resource::<crate::skill_use_emit::StanceTimers>(world);
     reset_resource::<crate::systems::mines::MineClock>(world);

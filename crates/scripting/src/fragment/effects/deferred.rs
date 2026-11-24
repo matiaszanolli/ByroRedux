@@ -181,6 +181,11 @@ pub struct DeferredFragmentEffects {
     /// LMC-SCR-004 — SKSE key, control and menu registration changes, applied to
     /// [`super::InputEventRegistrations`] after the guards drop.
     pub(in crate::fragment) input_event_requests: Vec<(u32, Option<String>, super::input_events::InputEventRequest)>,
+    /// LMC-SCR-004 — SKSE mod-event registration changes, applied to [`super::ModEventRegistrations`] after the
+    /// guards drop.
+    pub(in crate::fragment) mod_event_requests: Vec<(u32, super::mod_events::ModEventRequest)>,
+    /// LMC-SCR-004 — `SendModEvent` calls, published after the guards drop.
+    pub(in crate::fragment) mod_event_sends: Vec<super::mod_events::ModEventSend>,
     /// `RegisterForAnimationEvent` changes, applied to
     /// [`super::AnimationEventRegistrations`] after the guards drop.
     pub(in crate::fragment) animation_event_requests: Vec<(u32, String, super::AnimationEventRequest)>,
@@ -389,6 +394,8 @@ impl DeferredFragmentEffects {
             hit_requests: Vec::new(),
             menu_event_requests: Vec::new(),
             input_event_requests: Vec::new(),
+            mod_event_requests: Vec::new(),
+            mod_event_sends: Vec::new(),
             animation_event_requests: Vec::new(),
             sound_plays: Vec::new(),
             camera_shakes: Vec::new(),
@@ -477,6 +484,7 @@ impl DeferredFragmentEffects {
         self.flush_hit_requests(world);
         self.flush_menu_event_requests(world);
         self.flush_input_event_requests(world);
+        self.flush_mod_events(world);
         self.flush_animation_event_requests(world);
         self.flush_distance_requests(world);
         self.flush_follower_changes(world);
@@ -749,6 +757,15 @@ impl DeferredFragmentEffects {
         drain_into_resource::<super::InputEventRegistrations, _>(world, &mut self.input_event_requests, |registrations, (owner, script, request)| {
                 registrations.request(owner, script.as_deref(), &request);
         });
+    }
+
+    fn flush_mod_events(&mut self, world: &World) {
+        drain_into_resource::<super::ModEventRegistrations, _>(world, &mut self.mod_event_requests, |registrations, (owner, request)| {
+                registrations.request(owner, &request);
+        });
+        if !self.mod_event_sends.is_empty() {
+            super::mod_events::send_mod_events(world, std::mem::take(&mut self.mod_event_sends));
+        }
     }
 
     fn flush_animation_event_requests(&mut self, world: &World) {

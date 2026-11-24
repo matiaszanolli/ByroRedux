@@ -127,7 +127,7 @@ call set per family. The preflight reports those calls that are not covered.
 
 | Family | Functions | Dated by a changelog or wiki | VM | SDK | Served |
 |---|---|---|---|---|---|
-| SKSE64 | 804 | 67 | 72 | 21 | 83 |
+| SKSE64 | 804 | 67 | 76 | 21 | 87 |
 | F4SE | 227 | 13 | 19 | 3 | 22 |
 | xNVSE | 565 | 50 | 0 | 4 | 4 |
 | JIP LN | 733 | 0 | 0 | 0 | 0 |
@@ -320,8 +320,8 @@ an `NPC_` has no `TESWeightForm`.
 **Not yet.** `Form.IsPlayable` is a virtual function implemented in the game executable, not in SKSE's source, so
 its answer per form type is undocumented: a declared gap. The `Set*` functions (`SetName`, `SetWeight`,
 `SetGoldValue`, …) change a form for the session and need save coverage first. The key, control and menu
-registrations and `Input`'s key state are §10; the mod-event, camera, crosshair, actor-action and NiNode registrations,
-`Utility.GetINI*` and `Actor`'s equipment come next.
+registrations and `Input`'s key state are §10, the mod events §11; the camera, crosshair, actor-action and NiNode
+registrations, `Utility.GetINI*` and `Actor`'s equipment come next.
 
 ## 10. Catalog growth: key, control and menu registrations (2026-11-24)
 
@@ -356,3 +356,33 @@ the host's key state comes from `byroredux/src/mcm_hotkeys.rs`, which the MCM He
 **Not yet.** A registration made on another object (`SomeQuest.RegisterForKey`) is declined. `Input.TapKey`,
 `HoldKey` and `ReleaseKey` inject input, which the engine's input layer does not take from scripts yet. Gamepad
 buttons and mouse bindings have no control names yet.
+
+## 11. Catalog growth: mod events (2026-11-24)
+
+SKSE64's `Form.RegisterForModEvent(eventName, callbackName)`, `UnregisterForModEvent`, `UnregisterForAllModEvents` and
+`SendModEvent(eventName, strArg = "", numArg = 0.0)`, on the script's own object, in
+`crates/scripting/src/fragment/mod_events.rs`.
+
+**Behaviour** (SKSE64 at the pinned commit):
+
+- The callback receives `(eventName, strArg, numArg, sender)` for a `SendModEvent` (`Form.psc`), the sender being the
+  sending object, and the pushed values for an event built with `ModEvent.Create` / `Push*` / `Send` (`ModEvent.psc`).
+- A registration is made on the object's handle with its callback (`PapyrusForm.cpp`): one per object and event, a
+  second replaces the callback, and every script attached to the object with that function hears it. Event names
+  compare without case.
+- The registrations are saved (`MCBR`, saved and loaded back by `InternalSerialization.cpp`; format v152).
+  `Form.psc`'s comment says they "have to be refreshed after each game load"; a script that does so registers the same
+  thing again.
+
+**One bus.** Mod events travel on the engine's shared bus (`legacy.skse.mod-event.<name>`, `byroredux_sdk::event`), which
+the Papyrus provider lane and sandboxed guests already use:
+
+- A VM script's send is published through the provider runtime's publisher under its source's principal
+  (`crate::script_sources`, shared with the version probes); the host's dispatch copies every legacy mod event to the
+  provider lane and to the VM's inbox, so a VM script, a provider-lane script and a guest hear each other.
+- Without an extension host, a send goes to both lanes directly.
+- The VM's inbox holds at most 256 events; a load empties it.
+
+**Not yet.** `SendModEvent` on another object, and the `Alias` / `ActiveMagicEffect` versions, are declined. `ModEvent.*`
+(the builder) is served by the SDK's adapters but does not run in the VM yet. The provider lane keeps its own
+mod-event registrations for the session only, following `Form.psc`'s comment rather than SKSE's serialization.

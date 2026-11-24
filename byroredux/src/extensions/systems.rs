@@ -301,6 +301,8 @@ pub(crate) fn extension_custom_event_dispatch_system(world: &World, _dt: f32) {
         host.dispatch_pending_custom_events()
     });
     for event in papyrus_mod_events {
+        // LMC-SCR-004 — the Papyrus VM's mod-event registrations hear the same bus.
+        byroredux_scripting::queue_vm_mod_event(world, event.clone());
         byroredux_scripting::queue_papyrus_mod_event(world, event);
     }
 }

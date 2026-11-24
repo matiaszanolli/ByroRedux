@@ -45,6 +45,7 @@ pub mod anim_subgraph;
 pub mod destruction;
 pub mod detection_events;
 pub mod form_facts;
+pub mod script_sources;
 pub mod keywords;
 pub mod menus;
 pub mod alias_collections;
@@ -192,6 +193,7 @@ pub use fragment::{
     hit_event_system, HitFilter, HitRegistration, HitRegistrations, HitRequest,
     menu_open_close_event_system, MenuEventRegistration, MenuEventRegistrations, MenuEventRequest, MENU_OPEN_CLOSE_EVENT,
     deliver_input_events, HeldKeys, InputBinding, InputEventRegistration, InputEventRegistrations, InputFrame,
+    queue_vm_mod_event, vm_mod_event_system, ModEventRegistration, ModEventRegistrations, VmModEventInbox,
     animation_event_system, AnimationEventRegistration, AnimationEventRegistrations, AnimationEventRequest,
     raise_unload_events, raise_reference_call, run_debug_statement, run_quest_script_function, raise_reference_event, ActorWatch, PendingUnloadDeliveries, discard_pending_unload_deliveries, rebaseline_actor_watch,
     alias_script_event_system, check_alias_script, install_quest_alias_scripts, is_alias_owner, AliasScript,

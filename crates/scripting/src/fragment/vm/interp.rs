@@ -1438,6 +1438,11 @@ impl Vm<'_> {
                 return self.external_event_registration(frame, name, args).map(|_| Flow::Normal);
             }
         }
+        for name in ["registerformodevent", "unregisterformodevent", "unregisterforallmodevents", "sendmodevent"] {
+            if self_call_named(&callee.node, name) {
+                return self.mod_event_call(frame, name, args).map(|_| Flow::Normal);
+            }
+        }
         if let Some(name) = update_call(&callee.node) {
             if crate::fragment::EventRequest::is_call(&name) {
                 return self.event_registration(frame, None, &name, args).map(|_| Flow::Normal);

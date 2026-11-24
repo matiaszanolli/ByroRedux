@@ -824,10 +824,12 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("QuestOwnScripts", "the quests' own scripts the Papyrus VM runs (for OnInit), checked a few per frame from the QUST records and the script archives every boot; the once-per-save OnInit gate lives in the saved QuestScriptVariables"),
         ("ExternalEventRegistrations", "LMC-UI-002 slice 5 — F4SE's RegisterForExternalEvent registrations (FO4 MCM's OnMCMSettingChange and kin); F4SE keeps them per session and a load clears them, so scripts register again"),
         ("ExtenderInputKeys", "LMC-SCR-004 — the keys the script extenders' key and control events last saw held, for the frame's presses and releases; transient input state"),
+        ("VmModEventInbox", "LMC-SCR-004 — mod events waiting for the Papyrus VM's registrations, drained every frame; transient, a load starts empty"),
         ("HeldKeys", "LMC-SCR-004 — the keys held this frame, for SKSE's Input.IsKeyPressed and kin; transient input state, published every frame"),
         ("HotkeyKeys", "LMC-UI-002 slice 4b — the keys the MCM Helper hotkeys last saw held, for the frame's presses and releases; transient input state"),
         ("McmHelperStore", "LMC-UI-002 slice 4 — MCM Helper's parsed configs, its settings read through the mod roots and the open page; the player's values persist in the profile's own INI files (LMC-SET-004), never the save"),
         ("McmHost", "LMC-UI-002 — the session's Mod Configuration Menu: the registered config menus and the open page; every config script registers again in OnGameReload after a load, and its settings are its own saved script variables"),
+        ("ScriptSourceIndex", "LMC-SCR-010 / LMC-SCR-004 — the session's script sources (a mod root's loose scripts or a script archive) and their principals, over the script provider; re-derived every boot"),
         ("ExtenderProbes", "LMC-SCR-010 — the SKSE / F4SE version probes' answer per script source, computed from the scripts each source ships on its first probe; re-derived, never gameplay state"),
         ("JsonUtilStore", "LMC Q5 — PapyrusUtil JsonUtil's open files; the files are the state, written to the profile's moddata directory when the game saves and discarded on a load"),
         ("HeldTorchLight", "Hand Equipment Q3 — the light entity of a torch an actor holds, re-derived every frame from the saved hands (EquipmentSlots.left_hand) by held_torch_light_system"),
@@ -1626,7 +1628,8 @@ fn the_schema_fingerprint_is_pinned() {
     // joined the registry as new resource columns, registered after `AliasOverrides`.
     // LMC-SCR-004 — `InputEventRegistrations` (SKSE's and F4SE's key, control and menu registrations) joined the
     // registry as a new resource column, registered after `MenuEventRegistrations`.
-    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x5b13_c7c0_7cf5_bfac;
+    // LMC-SCR-004 — `ModEventRegistrations` (SKSE's mod-event registrations) joined after `InputEventRegistrations`.
+    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x9c36_59d1_0cce_8ce0;
     let actual = build_save_registry().schema_fingerprint();
     assert_eq!(
         actual, BASELINE_SCHEMA_FINGERPRINT,
