@@ -135,9 +135,66 @@ impl ScriptProvider {
     pub(crate) fn principals(&self) -> impl Iterator<Item = &PrincipalId> {
         self.archives.iter().map(|source| &source.principal)
     }
+
+    /// LMC-SCR-010 — the source (by index, in [`Self::resolve_pex`]'s order) a script resolves to.
+    pub(crate) fn source_of(&self, script_name: &str) -> Option<usize> {
+        let name = pex_archive_path(script_name);
+        self.archives.iter().position(|source| source.archive.contains(&name))
+    }
+
+    /// LMC-SCR-010 — every compiled script one source owns: those it ships that resolve from it, not from a
+    /// higher-priority source overriding them (LMC-ID-012).
+    pub(crate) fn source_scripts(&self, index: usize) -> Vec<Vec<u8>> {
+        let Some(source) = self.archives.get(index) else {
+            return Vec::new();
+        };
+        source
+            .archive
+            .all_paths()
+            .into_iter()
+            .filter(|path| {
+                let lower = path.replace('/', "\\").to_ascii_lowercase();
+                lower.starts_with("scripts\\") && lower.ends_with(".pex") && self.source_of(&lower) == Some(index)
+            })
+            .filter_map(|path| source.archive.extract_or_warn(path))
+            .collect()
+    }
 }
 
 impl byroredux_core::ecs::resource::Resource for ScriptProvider {}
+
+/// LMC-SCR-010 — the version probes' view of the session's scripts: a source is a mod root's loose scripts or a
+/// script archive, as [`ScriptProvider`] resolves them.
+struct ProviderProbeScripts;
+
+impl byroredux_scripting::extender_catalog::ProbeScripts for ProviderProbeScripts {
+    fn source_of(&self, world: &byroredux_core::ecs::world::World, script: &str) -> Option<usize> {
+        world.try_resource::<ScriptProvider>()?.source_of(script)
+    }
+
+    fn scripts(&self, world: &byroredux_core::ecs::world::World, source: usize) -> Vec<Vec<u8>> {
+        world.try_resource::<ScriptProvider>().map(|provider| provider.source_scripts(source)).unwrap_or_default()
+    }
+}
+
+/// LMC-SCR-010 — install the session's extender version probes (`docs/engine/extender-catalog.md` §7) for a
+/// Skyrim or Fallout 4 load order, named by its base master; other games' probes are ObScript commands, not served
+/// yet.
+pub(crate) fn install_extender_probes(world: &mut byroredux_core::ecs::world::World) {
+    let base = world
+        .try_resource::<crate::cell_loader::load_order::ActiveLoadOrder>()
+        .and_then(|order| order.0.first().cloned());
+    let Some(base) = base else {
+        return;
+    };
+    let file = std::path::Path::new(&base).file_name().map_or(base.clone(), |file| file.to_string_lossy().to_lowercase());
+    let game = match file.as_str() {
+        "skyrim.esm" => "skyrim",
+        "fallout4.esm" => "fo4",
+        _ => return,
+    };
+    world.insert_resource(byroredux_scripting::extender_catalog::ExtenderProbes::new(game, Box::new(ProviderProbeScripts)));
+}
 
 /// M47.2 — the [`ScriptProvider`]'s scripts, decompiled on demand and cached,
 /// for inlining a quest fragment's calls into its quest's own script. Script

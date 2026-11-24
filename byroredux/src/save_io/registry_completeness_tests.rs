@@ -825,6 +825,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("HotkeyKeys", "LMC-UI-002 slice 4b — the keys the MCM Helper hotkeys last saw held, for the frame's presses and releases; transient input state"),
         ("McmHelperStore", "LMC-UI-002 slice 4 — MCM Helper's parsed configs, its settings read through the mod roots and the open page; the player's values persist in the profile's own INI files (LMC-SET-004), never the save"),
         ("McmHost", "LMC-UI-002 — the session's Mod Configuration Menu: the registered config menus and the open page; every config script registers again in OnGameReload after a load, and its settings are its own saved script variables"),
+        ("ExtenderProbes", "LMC-SCR-010 — the SKSE / F4SE version probes' answer per script source, computed from the scripts each source ships on its first probe; re-derived, never gameplay state"),
         ("JsonUtilStore", "LMC Q5 — PapyrusUtil JsonUtil's open files; the files are the state, written to the profile's moddata directory when the game saves and discarded on a load"),
         ("HeldTorchLight", "Hand Equipment Q3 — the light entity of a torch an actor holds, re-derived every frame from the saved hands (EquipmentSlots.left_hand) by held_torch_light_system"),
         ("HandCatalog", "Hand Equipment — the load order's weapons (kind, slot) and shields, rebuilt from the WEAP / ARMO / EQUP records every boot; what a hand holds is the saved EquipmentSlots"),

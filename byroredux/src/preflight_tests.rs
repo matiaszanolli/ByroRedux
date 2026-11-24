@@ -98,6 +98,8 @@ fn catalogued_calls_are_reported_per_family_with_their_versions() {
     let lines = catalog_lines(&scan);
     assert_eq!(lines[0], "  extender catalog (LMC-SCR-005): 2 method call(s) on receivers of a type no table names");
     assert_eq!(lines[1], "    skse64: 2 function(s) called, 1 served, 1 not — StringUtil.Split (1.7.3)");
+    // LMC-SCR-010: Split is from SKSE64's first release, so the probes answer absent.
+    assert_eq!(lines[2], "      probes answer absent, capped by StringUtil.Split (1.7.3)");
     let tally = scan.catalog_calls.values().find(|t| t.row.function == "Split").unwrap();
     assert_eq!((tally.occurrences, tally.scripts.len()), (2, 2));
 }

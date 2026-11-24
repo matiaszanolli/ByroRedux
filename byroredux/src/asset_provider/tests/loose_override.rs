@@ -390,6 +390,8 @@ fn loose_scripts_layer_over_the_archives_by_root_priority() {
     let textures_only = tmp.path().join("Retexture");
     write(&data, "Scripts/SKI_ConfigBase.pex", b"vanilla-ish");
     write(&modroot, "Scripts/SKI_ConfigBase.pex", b"mod");
+    write(&modroot, "Scripts/SKI_WidgetBase.pex", b"widget");
+    write(&modroot, "Scripts/Source/SKI_WidgetBase.psc", b"source");
     write(&textures_only, "textures/a.dds", b"dds");
     let mut args = Vec::new();
     for root in [&data, &modroot, &textures_only] {
@@ -400,6 +402,14 @@ fn loose_scripts_layer_over_the_archives_by_root_priority() {
     assert_eq!(resolved.bytes, b"mod");
     assert_eq!(resolved.principal, crate::asset_provider::script::legacy_script_principal("SkyUI"));
     assert_eq!(provider.principals().count(), 2, "the texture-only root adds no script tier");
+    // LMC-SCR-010 — a script's source is the tier it resolves from, and that source's scripts are the ones it ships.
+    assert_eq!(provider.source_of("SKI_ConfigBase"), Some(0), "SkyUI, the highest-priority root");
+    assert_eq!(provider.source_of("ski_widgetbase"), Some(0));
+    assert_eq!(provider.source_of("Missing"), None);
+    let mut shipped = provider.source_scripts(0);
+    shipped.sort();
+    assert_eq!(shipped, vec![b"mod".to_vec(), b"widget".to_vec()], "compiled scripts only");
+    assert!(provider.source_scripts(1).is_empty(), "Data's SKI_ConfigBase is SkyUI's: an overridden script is not owned");
 }
 
 /// #7336 — a Scaleform movie resolves through every mod tier before the vanilla interface archive: the last mod

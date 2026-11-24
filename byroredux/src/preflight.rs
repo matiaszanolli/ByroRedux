@@ -130,6 +130,15 @@ impl RootScan {
 }
 
 impl RootScan {
+    /// The catalogued calls grouped by family.
+    fn catalog_families(&self) -> BTreeMap<&str, Vec<&CatalogTally>> {
+        let mut families: BTreeMap<&str, Vec<&CatalogTally>> = BTreeMap::new();
+        for tally in self.catalog_calls.values() {
+            families.entry(tally.row.family.as_str()).or_default().push(tally);
+        }
+        families
+    }
+
     fn classify(&mut self, classified: Classified<'_>, example: String) {
         match classified {
             Classified::Mechanism(mechanism) => self.mechanisms.entry(mechanism.id.clone()).or_default().add(example),
@@ -405,24 +414,11 @@ fn scan_papyrus(game: &str, label: &str, bytes: &[u8], scan: &mut RootScan) {
         Ok(pex) => {
             scan.add_report(game, label, &byroredux_scripting::compatibility::analyze_pex_compatibility(&pex));
             // LMC-SCR-005 — every call resolved against the extender catalog, through the receiver's declared type.
-            let own = |script: &str| {
-                pex.objects.iter().find(|object| object.name.eq_ignore_ascii_case(script)).map(|object| object.parent_class_name.clone())
-            };
-            for call in pex.call_sites().calls {
-                if let Some(row) = byroredux_scripting::extender_catalog::resolve_pex_call(game, &call, &own) {
-                    scan.add_catalog_call(row, label);
-                    continue;
-                }
-                // A method call on a receiver of a type no table names could be an extender call the scan cannot see.
-                let unknown = match (&call.target, call.receiver_type.as_deref()) {
-                    (byroredux_pex::CallTarget::Receiver(_), None) => true,
-                    (byroredux_pex::CallTarget::Receiver(_), Some(ty)) => {
-                        own(ty).is_none() && !byroredux_scripting::extender_catalog::is_game_script(game, ty)
-                    }
-                    _ => false,
-                };
-                scan.unresolved_receivers += usize::from(unknown);
+            let calls = byroredux_scripting::extender_catalog::pex_catalog_calls(game, &pex);
+            for row in calls.rows {
+                scan.add_catalog_call(row, label);
             }
+            scan.unresolved_receivers += calls.unresolved_receivers;
         }
         Err(error) => scan.unclassified.push(format!("{label}: not a readable compiled script: {error}")),
     }
@@ -552,10 +548,7 @@ fn report_lines(
 /// LMC-SCR-005 — a root's catalogued calls per family: how many functions it calls, how many the engine serves, and
 /// the unserved ones with the version that introduced them.
 fn catalog_lines(scan: &RootScan) -> Vec<String> {
-    let mut families: BTreeMap<&str, Vec<&CatalogTally>> = BTreeMap::new();
-    for tally in scan.catalog_calls.values() {
-        families.entry(tally.row.family.as_str()).or_default().push(tally);
-    }
+    let families = scan.catalog_families();
     let mut lines = Vec::new();
     if !families.is_empty() || scan.unresolved_receivers > 0 {
         lines.push(format!(
@@ -577,8 +570,39 @@ fn catalog_lines(scan: &RootScan) -> Vec<String> {
             tallies.len() - served,
             if unserved.is_empty() { String::new() } else { format!(" — {}", unserved.join(", ")) }
         ));
+        lines.push(probe_line(&probe_answer(family, &tallies)));
     }
     lines
+}
+
+/// LMC-SCR-010 — what `family`'s version probes answer a root that calls `tallies`.
+fn probe_answer(family: &str, tallies: &[&CatalogTally]) -> byroredux_scripting::extender_catalog::ProbeAnswer {
+    byroredux_scripting::extender_catalog::probe_answer(family, tallies.iter().map(|t| t.row), &|row| {
+        tallies.iter().any(|t| std::ptr::eq(t.row, row) && t.served)
+    })
+}
+
+/// The answer's level as a version, `absent` when there is none.
+fn probe_level(answer: &byroredux_scripting::extender_catalog::ProbeAnswer) -> String {
+    match &answer.level {
+        Some(level) => level.iter().map(u32::to_string).collect::<Vec<_>>().join("."),
+        None => "absent".to_owned(),
+    }
+}
+
+/// LMC-SCR-010 — the probe answer and the calls that capped it.
+fn probe_line(answer: &byroredux_scripting::extender_catalog::ProbeAnswer) -> String {
+    let level = match answer.level {
+        Some(_) => format!("{} (release {})", probe_level(answer), answer.release),
+        None => probe_level(answer),
+    };
+    let capped: Vec<String> =
+        answer.capped_by.iter().take(EXAMPLES * 2).map(|row| format!("{} ({})", qualified(row), row.introduced)).collect();
+    if capped.is_empty() {
+        format!("      probes answer {level}")
+    } else {
+        format!("      probes answer {level}, capped by {}", capped.join(", "))
+    }
 }
 
 /// A catalog row as a script writes it.
@@ -629,8 +653,23 @@ fn report_json(
                     })
                 })
                 .collect();
+            // LMC-SCR-010 — the version probes' answer per family, and the calls that capped it.
+            let probe_answers: serde_json::Map<String, serde_json::Value> = scan
+                .catalog_families()
+                .into_iter()
+                .map(|(family, tallies)| {
+                    let answer = probe_answer(family, &tallies);
+                    let capped: Vec<String> = answer.capped_by.iter().map(|row| qualified(row)).collect();
+                    let value = serde_json::json!({
+                        "level": answer.level.as_ref().map(|_| probe_level(&answer)), "release": answer.release,
+                        "capped_by": capped,
+                    });
+                    (family.to_owned(), value)
+                })
+                .collect();
             serde_json::json!({
                 "catalog_calls": catalog_calls, "unresolved_receivers": scan.unresolved_receivers,
+                "probe_answers": probe_answers,
                 "root": scan.label, "unmanaged": scan.unmanaged, "disabled": scan.disabled, "files": scan.files,
                 "mechanisms": mechanisms, "calls": calls, "papyrus_scripts": scan.papyrus_scripts,
                 "obscript_scripts": scan.obscript_scripts, "base_game_calls": scan.base_game_calls,

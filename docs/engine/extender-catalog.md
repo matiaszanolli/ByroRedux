@@ -1,7 +1,8 @@
 # Extender Catalog and Version Probes — Design
 
-**Status**: DESIGN (2026-11-23). Requirements: [LMC-SCR-004, LMC-SCR-005 and LMC-SCR-010](../prd/legacy-mod-compatibility.md)
-(PRD decision Q3, owner 2026-11-03), Phase 3 (#6672) on Phase 0 data. Slices 1 and 2 are built (§5, §6).
+**Status**: BUILT (2026-11-24). Requirements: [LMC-SCR-004, LMC-SCR-005 and LMC-SCR-010](../prd/legacy-mod-compatibility.md)
+(PRD decision Q3, owner 2026-11-03), Phase 3 (#6672) on Phase 0 data. All three slices are built (§5, §6, §7); the
+ObScript families' runtime probes wait on the NVSE byte forms (`mcm-host.md` §6.9).
 
 A mod gates on its extender's version. If the probe answers "absent" or "too old", the mod disables
 itself. The engine runs no extender binary (LMC-NG-001). It owns the script-facing surface instead,
@@ -88,7 +89,7 @@ call set per family. The preflight reports those calls that are not covered.
   - OBSE: `GetOBSEVersion` and `GetOBSERevision`;
   - for plugins: `IsPluginInstalled` and `GetPluginVersion`.
 - **Release numbers.** Mapping a version to SKSE's and F4SE's release numbers (`GetVersionRelease`)
-  needs a documented table; that's slice 3's Phase 0 item.
+  needs a documented table: built from each version header's history (§7).
 - **The caller.** The calling script's mod comes from the scan.
 - **Reporting.** The preflight names the level chosen and the calls that capped it (LMC-DX-001). For
   ObScript, a script with a call above its mod's level is reported whole, as its author would have
@@ -126,8 +127,8 @@ call set per family. The preflight reports those calls that are not covered.
 
 | Family | Functions | Dated by a changelog or wiki | VM | SDK | Served |
 |---|---|---|---|---|---|
-| SKSE64 | 804 | 67 | 15 | 21 | 26 |
-| F4SE | 227 | 13 | 1 | 3 | 4 |
+| SKSE64 | 804 | 67 | 20 | 21 | 31 |
+| F4SE | 227 | 13 | 6 | 3 | 9 |
 | xNVSE | 565 | 50 | 0 | 4 | 4 |
 | JIP LN | 733 | 0 | 0 | 0 | 0 |
 | JohnnyGuitar | 142 | 31 | 0 | 0 | 0 |
@@ -197,3 +198,50 @@ call set per family. The preflight reports those calls that are not covered.
   its NVSE opcodes wait for `mcm-host.md` §6.9's derivation.
 - The scan has run on unit fixtures only, since no mod is installed here.
 
+## 7. Slice 3: built (2026-11-24)
+
+**Release tables.** `scripts/extender-catalog.py` also writes `docs/data/extenders/skse64-releases.tsv` and
+`f4se-releases.tsv`: each version's `GetVersionRelease()` index, read from the version header
+(`skse64_common/skse_version.h`, `f4se_common/f4se_version.h`) at each commit that changed it. The header's history
+starts at SKSE64 2.0.19 (release 65) and F4SE 0.6.21 (release 23). An earlier level answers release 0, the
+conservative choice: mods read 0 as "no extender", never as a newer one.
+
+**The level** (`extender_catalog::probe_answer`):
+
+- The candidates are the family's documented releases and the catalog's introducing versions.
+- A version older than the family's first runtime release counts as that release: SKSE64 2.0.0 carried every function
+  SKSE (LE) had added, so `StringUtil.Split` (1.7.3) is a 2.0.0 function on Skyrim SE. F4SE starts at 0.1.0; any other
+  family at its earliest catalogued version.
+- No unserved call: the newest candidate. An unserved call at the first release: absent (every probe answers 0).
+  Otherwise the newest candidate below the lowest unserved call's version.
+- The answer is the level's first three numbers (`GetVersion`, `GetVersionMinor`, `GetVersionBeta`), the release at or
+  below it, and the unserved calls at the lowest version: what capped it.
+
+**The preflight** prints the answer under each family's line, and the JSON carries it as `probe_answers`:
+
+```
+    skse64: 2 function(s) called, 1 served, 1 not — StringUtil.Split (1.7.3)
+      probes answer absent, capped by StringUtil.Split (1.7.3)
+```
+
+**At run time** (Skyrim and Fallout 4 sessions):
+
+- The VM serves `SKSE` and `F4SE` as engine static classes (`fragment/vm/natives/extender_probes.rs`).
+- The caller's mod is the source the running body's script resolves from: a mod root's loose scripts or a script
+  archive (`ScriptProvider::source_of`). Its call set is every script that source owns: those it ships that no
+  higher-priority source overrides (LMC-ID-012).
+- `ExtenderProbes` computes a source's answer on its first probe, with the preflight's resolution
+  (`pex_catalog_calls`), and keeps it for the session.
+- A script no source holds answers absent.
+- `GetScriptVersionRelease()` is no native: SKSE.psc and F4SE.psc return a constant compiled into the installed script
+  (75 and 33 at the pinned commits), which mods compare with `GetVersionRelease()` to catch a mismatch. The engine owns
+  the whole class, so it answers the same release, and a mod sees no mismatch.
+- `GetPluginVersion(name)` answers -1, the scripts' declared "not loaded": the engine loads no extender plugin
+  (LMC-NG-001).
+
+**Not yet.**
+
+- The ObScript families' probes (`GetNVSEVersion`, `GetOBSEVersion`, …) need the NVSE byte forms first
+  (`mcm-host.md` §6.9). The preflight reports their levels already.
+- A level below the oldest documented release answers release 0, so most of SKSE64's 2.0.x range reads as "absent" to
+  a mod that checks the release alone.

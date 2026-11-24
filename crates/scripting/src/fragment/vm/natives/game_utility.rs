@@ -60,6 +60,10 @@ impl Vm<'_> {
                 None => stop(format!("StorageUtil.{name}")),
             };
         }
+        // LMC-SCR-010 — the extenders' version probes.
+        if class == "skse" || class == "f4se" {
+            return self.read_extender_probe(frame, class, name, args);
+        }
         Ok(match (class, name) {
             ("game", "getplayer") => Some(Value::Form(PLAYER_REF)),
             // CK *ShakeCamera - Game*: shakes the camera "from the specified
@@ -261,6 +265,9 @@ impl Checker<'_> {
         }
         if class == "jsonutil" || class == "storageutil" {
             return self.check_json_util(class, name);
+        }
+        if class == "skse" || class == "f4se" {
+            return self.check_extender_probe(class, name, arg_kinds.len());
         }
         if class == "game" && name == "getplayer" {
             return Some(Kind::Player);

@@ -7861,3 +7861,77 @@ fn register_for_external_event_needs_a_literal_callback_the_script_has() {
     )
     .is_err());
 }
+
+/// LMC-SCR-010: `SKSE`'s version probes answer the level of the mod the calling script came from — here a mod
+/// whose scripts call nothing unserved, so the newest documented release — with `GetScriptVersionRelease` the same
+/// release (no script/runtime mismatch) and every plugin not loaded; a script no source holds gets "absent".
+#[test]
+fn skse_version_probes_answer_the_calling_mods_level() {
+    use crate::extender_catalog::{probe_answer_for, ExtenderProbes, ProbeScripts};
+    struct OneMod;
+    impl ProbeScripts for OneMod {
+        fn source_of(&self, _: &World, script: &str) -> Option<usize> {
+            script.eq_ignore_ascii_case("QF_VmProbe").then_some(0)
+        }
+        fn scripts(&self, _: &World, _: usize) -> Vec<Vec<u8>> {
+            Vec::new()
+        }
+    }
+    let script = parsed_source(
+        "ScriptName QF_VmProbe extends Quest\n\
+         Int Property Major Auto\n\
+         Int Property Minor Auto\n\
+         Int Property Beta Auto\n\
+         Int Property Release Auto\n\
+         Int Property ScriptRelease Auto\n\
+         Int Property Plugin Auto\n\
+         Function Fragment_1()\n\
+           Major = SKSE.GetVersion()\n\
+           Minor = SKSE.GetVersionMinor()\n\
+           Beta = SKSE.GetVersionBeta()\n\
+           Release = SKSE.GetVersionRelease()\n\
+           ScriptRelease = SKSE.GetScriptVersionRelease()\n\
+           Plugin = SKSE.GetPluginVersion(\"JContainers64\")\n\
+         EndFunction\n",
+    );
+    if let Err(why) = crate::fragment::vm::checker::check_function_reason(Arc::clone(&script), "Fragment_1", None) {
+        panic!("{why}")
+    }
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(QuestStageState::default());
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.insert_resource(crate::QuestScriptObjects::default());
+    world.insert_resource(ExtenderProbes::new("skyrim", Box::new(OneMod)));
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    let vmad = ScriptInstanceData {
+        version: 5,
+        object_format: 2,
+        scripts: vec![ScriptInstance { name: "QF_VmProbe".into(), status: 0, properties: Vec::new() }],
+    };
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        fragments.insert_vmad(Q, vmad);
+        fragments.insert_vm_script(Arc::clone(&script));
+        fragments.insert(
+            Q,
+            10,
+            vec![Effect::Interpret { script: "QF_VmProbe".into(), function: "Fragment_1".into(), args: Vec::new(), resume: None }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    let newest = probe_answer_for(&world, "skse64", "QF_VmProbe");
+    let (major, minor, beta) = newest.triple();
+    assert!(newest.level.is_some() && newest.release > 0, "{newest:?}");
+    assert_eq!(quest_property(&world, "Major"), Some(major as f32));
+    assert_eq!(quest_property(&world, "Minor"), Some(minor as f32));
+    assert_eq!(quest_property(&world, "Beta"), Some(beta as f32));
+    assert_eq!(quest_property(&world, "Release"), Some(newest.release as f32));
+    assert_eq!(quest_property(&world, "ScriptRelease"), Some(newest.release as f32), "no script/runtime mismatch");
+    assert_eq!(quest_property(&world, "Plugin"), Some(-1.0), "no extender plugin is loaded");
+    // A script no source holds, and the other game's family: absent.
+    assert_eq!(probe_answer_for(&world, "skse64", "SomeoneElse").level, None);
+    assert_eq!(probe_answer_for(&world, "f4se", "QF_VmProbe").level, None);
+}

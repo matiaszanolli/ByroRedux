@@ -24,6 +24,13 @@ import re
 import subprocess
 import sys
 
+# Each family's version header: its history maps a release to its index (`SKSE_VERSION_RELEASEIDX`), which
+# `GetVersionRelease()` answers. The history starts at SKSE64 2.0.19 and F4SE 0.6.21; older releases have no index.
+VERSION_HEADERS = {
+    "skse64": ("skse64_common/skse_version.h", "SKSE"),
+    "f4se": ("f4se_common/f4se_version.h", "F4SE"),
+}
+
 PINS = {
     "skse64": ("ianpatt/skse64", "25b72352adb6", "skse64_whatsnew.txt", "1.1.0"),
     "f4se": ("ianpatt/f4se", "6f6a7caa9aea", "f4se_whatsnew.txt", "0.1.0"),
@@ -169,9 +176,33 @@ def introduced_versions(mentions, known, papyrus):
 SCRIPT_NAME = re.compile(r"^\s*ScriptName\s+(\w+)(?:\s+extends\s+(\w+))?", re.IGNORECASE | re.MULTILINE)
 
 
+def release_table(family, repo, pinned, out_dir):
+    """`docs/data/extenders/<family>-releases.tsv`: each version the header's history up to the pinned commit declares,
+    with its release index (the first commit that declares the pair)."""
+    header, prefix = VERSION_HEADERS[family]
+    out = subprocess.run(["gh", "api", f"repos/{repo}/commits?path={header}&sha={pinned}&per_page=100", "--paginate", "--jq", ".[].sha"],
+                         capture_output=True, check=True)
+    seen = {}
+    for sha in reversed(out.stdout.decode().split()):
+        text = gh_raw(repo, header, sha)
+        values = dict(re.findall(r"#define\s+" + prefix + r"_VERSION_(INTEGER(?:_MINOR|_BETA)?|RELEASEIDX)\s+(\d+)", text))
+        try:
+            version = f"{values['INTEGER']}.{values['INTEGER_MINOR']}.{values['INTEGER_BETA']}"
+            release = int(values["RELEASEIDX"])
+        except KeyError:
+            continue
+        seen.setdefault((version, release), sha[:12])
+    with open(os.path.join(out_dir, f"{family}-releases.tsv"), "w", encoding="utf-8") as table:
+        table.write("version\trelease\tsource\n")
+        for (version, release), sha in sorted(seen.items(), key=lambda item: (item[0][1], [int(p) for p in item[0][0].split(".")])):
+            table.write(f"{version}\t{release}\t{repo}@{sha}:{header}\n")
+    print(f"{family}: {len(seen)} documented release indices")
+
+
 def papyrus_family(family, out_dir):
     repo, ref, whatsnew, first = PINS[family]
     sha = resolve_sha(repo, ref)
+    release_table(family, repo, sha, out_dir)
     tree = gh_tree(repo, sha)
     # The game's script hierarchy, from the vanilla copies and the extender's own scripts: a call on a subclass reaches
     # a function the extender adds to a parent (LMC-SCR-005 resolves calls by it).

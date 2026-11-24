@@ -26,6 +26,7 @@ mod animation;
 mod collections;
 mod combat;
 mod destruction;
+mod extender_probes;
 mod favor;
 mod form_list;
 mod forms;

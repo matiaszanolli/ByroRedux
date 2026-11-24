@@ -10,6 +10,8 @@
 
 use std::sync::{Arc, OnceLock};
 
+use byroredux_core::ecs::resource::Resource;
+
 use byroredux_sdk::compatibility::{
     classify_method_call, classify_obscript_command, classify_static_call, CompatibilityDisposition,
 };
@@ -168,6 +170,38 @@ pub fn resolve_pex_call(
     None
 }
 
+/// What one compiled script calls of the game's extender families.
+#[derive(Debug, Default)]
+pub struct PexCatalogCalls {
+    /// Each catalogued call, once per call site.
+    pub rows: Vec<&'static CatalogRow>,
+    /// Method calls whose receiver's declared type neither the script's own objects nor the game's hierarchy names:
+    /// extender calls the scan could not see.
+    pub unresolved_receivers: usize,
+}
+
+/// LMC-SCR-005 — every call of `pex` resolved against the catalog through its receiver's declared type
+/// ([`resolve_pex_call`]), the script's own objects standing in for its parents.
+pub fn pex_catalog_calls(game: &str, pex: &byroredux_pex::Pex) -> PexCatalogCalls {
+    let own = |script: &str| {
+        pex.objects.iter().find(|object| object.name.eq_ignore_ascii_case(script)).map(|object| object.parent_class_name.clone())
+    };
+    let mut calls = PexCatalogCalls::default();
+    for call in pex.call_sites().calls {
+        if let Some(row) = resolve_pex_call(game, &call, &own) {
+            calls.rows.push(row);
+            continue;
+        }
+        let unknown = match (&call.target, call.receiver_type.as_deref()) {
+            (byroredux_pex::CallTarget::Receiver(_), None) => true,
+            (byroredux_pex::CallTarget::Receiver(_), Some(ty)) => own(ty).is_none() && !is_game_script(game, ty),
+            _ => false,
+        };
+        calls.unresolved_receivers += usize::from(unknown);
+    }
+    calls
+}
+
 /// The catalogued commands an ObScript source calls: each identifier that names a command of the game's families
 /// (case-insensitive), comments and quoted strings skipped. A variable spelled like a command would be counted; NVSE
 /// and OBSE command names are rarely reused as variable names.
@@ -212,6 +246,168 @@ pub fn served_cached(row: &'static CatalogRow) -> bool {
         cache.insert(key, value);
     }
     value
+}
+
+// ---- probe answers (LMC-SCR-010; extender-catalog.md §3) ----
+
+/// Each Papyrus family's release indices (`GetVersionRelease()`), from its version header's history.
+const RELEASES: [(&str, &str); 2] = [
+    ("skse64", include_str!("../../../docs/data/extenders/skse64-releases.tsv")),
+    ("f4se", include_str!("../../../docs/data/extenders/f4se-releases.tsv")),
+];
+
+/// The first release of a family's runtime the engine follows. SKSE64's 2.0.0 carried every function SKSE (LE) had
+/// added, so on Skyrim SE an older introducing version is that release; F4SE starts at 0.1.0. Any other family's is
+/// its earliest catalogued version.
+fn baseline(family: &str) -> Vec<u32> {
+    match family {
+        "skse64" => version_key("2.0.0"),
+        "f4se" => version_key("0.1.0"),
+        _ => rows().iter().filter(|row| row.family == family).map(|row| version_key(&row.introduced)).min().unwrap_or_default(),
+    }
+}
+
+/// A version as comparable numbers: its digit groups in order (`"2.0.17"` → `[2, 0, 17]`).
+pub fn version_key(version: &str) -> Vec<u32> {
+    version.split(|c: char| !c.is_ascii_digit()).filter(|part| !part.is_empty()).filter_map(|part| part.parse().ok()).collect()
+}
+
+fn releases(family: &str) -> Vec<(Vec<u32>, i32)> {
+    RELEASES
+        .iter()
+        .find(|(f, _)| *f == family)
+        .map(|(_, table)| {
+            table
+                .lines()
+                .skip(1)
+                .filter_map(|line| {
+                    let mut cols = line.split('\t');
+                    Some((version_key(cols.next()?), cols.next()?.parse().ok()?))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// What a family's version probes answer to one mod.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProbeAnswer {
+    /// The highest version at which every function the mod calls from that version down is served; `None`: absent.
+    pub level: Option<Vec<u32>>,
+    /// `GetVersionRelease()`: the documented release index at or below the level, 0 when none is documented.
+    pub release: i32,
+    /// The unserved calls at the lowest version among them: what capped the level.
+    pub capped_by: Vec<&'static CatalogRow>,
+}
+
+impl ProbeAnswer {
+    /// `GetVersion()`, `GetVersionMinor()`, `GetVersionBeta()`: the level's first three numbers, 0 when absent.
+    pub fn triple(&self) -> (i32, i32, i32) {
+        let part = |i: usize| self.level.as_ref().and_then(|level| level.get(i)).map_or(0, |n| *n as i32);
+        (part(0), part(1), part(2))
+    }
+}
+
+/// LMC-SCR-010 (decision Q3) — what `family`'s probes answer to a mod that calls `called`: the highest version at which
+/// every function it calls from that version down is served, "absent" when an unserved call sits at the family's
+/// first release. The candidate versions are the family's documented releases and the catalog's introducing versions.
+pub fn probe_answer(
+    family: &str,
+    called: impl IntoIterator<Item = &'static CatalogRow>,
+    served: &dyn Fn(&'static CatalogRow) -> bool,
+) -> ProbeAnswer {
+    let floor = baseline(family);
+    let norm = |version: &str| version_key(version).max(floor.clone());
+    let unserved: Vec<&'static CatalogRow> = called.into_iter().filter(|row| row.family == family && !served(row)).collect();
+    let releases = releases(family);
+    let mut candidates: Vec<Vec<u32>> = rows()
+        .iter()
+        .filter(|row| row.family == family)
+        .map(|row| norm(&row.introduced))
+        .chain(releases.iter().map(|(key, _)| key.clone()))
+        .chain(std::iter::once(floor.clone()))
+        .collect();
+    candidates.sort();
+    candidates.dedup();
+    let lowest_unserved = unserved.iter().map(|row| norm(&row.introduced)).min();
+    let level = match &lowest_unserved {
+        None => candidates.last().cloned(),
+        Some(lowest) if *lowest <= floor => None,
+        Some(lowest) => candidates.iter().rev().find(|candidate| *candidate < lowest).cloned(),
+    };
+    let release = level
+        .as_ref()
+        .and_then(|level| releases.iter().filter(|(key, _)| key <= level).max_by(|a, b| a.0.cmp(&b.0)).map(|(_, release)| *release))
+        .unwrap_or(0);
+    let capped_by = match &lowest_unserved {
+        Some(lowest) => unserved.into_iter().filter(|row| norm(&row.introduced) == *lowest).collect(),
+        None => Vec::new(),
+    };
+    ProbeAnswer { level, release, capped_by }
+}
+
+/// What answering a probe needs of the session's scripts (implemented by the binary over its script provider).
+pub trait ProbeScripts: Send + Sync {
+    /// The source a script resolves to (a mod root's loose scripts or a script archive), by index; `None`: no
+    /// source holds it.
+    fn source_of(&self, world: &byroredux_core::ecs::world::World, script: &str) -> Option<usize>;
+    /// Every compiled script the source ships.
+    fn scripts(&self, world: &byroredux_core::ecs::world::World, source: usize) -> Vec<Vec<u8>>;
+}
+
+/// LMC-SCR-010 — the session's version-probe answers: per script source (a mod) and family, computed on the
+/// source's first probe from every script it ships, as the preflight computes them.
+pub struct ExtenderProbes {
+    game: String,
+    scripts: Box<dyn ProbeScripts>,
+    answers: std::collections::HashMap<(usize, &'static str), ProbeAnswer>,
+}
+
+impl Resource for ExtenderProbes {}
+
+impl ExtenderProbes {
+    /// The probes of a `game` session (the catalog's game name) over its script sources.
+    pub fn new(game: &str, scripts: Box<dyn ProbeScripts>) -> Self {
+        Self { game: game.to_owned(), scripts, answers: Default::default() }
+    }
+}
+
+/// LMC-SCR-010 — what `family`'s probes answer the script `script` (the one whose body is running): its source's
+/// answer. Absent without the session's probes, for a family the session's game has not, and for a script no source
+/// holds.
+pub fn probe_answer_for(world: &byroredux_core::ecs::world::World, family: &'static str, script: &str) -> ProbeAnswer {
+    let absent = ProbeAnswer { level: None, release: 0, capped_by: Vec::new() };
+    let (game, source, blobs) = {
+        let Some(probes) = world.try_resource::<ExtenderProbes>() else {
+            return absent;
+        };
+        if !families_for_game(&probes.game).contains(&family) {
+            return absent;
+        }
+        let Some(source) = probes.scripts.source_of(world, script) else {
+            return absent;
+        };
+        if let Some(answer) = probes.answers.get(&(source, family)) {
+            return answer.clone();
+        }
+        (probes.game.clone(), source, probes.scripts.scripts(world, source))
+    };
+    let mut called: Vec<&'static CatalogRow> = Vec::new();
+    for bytes in blobs {
+        if let Ok(pex) = byroredux_pex::parse(&bytes) {
+            called.extend(pex_catalog_calls(&game, &pex).rows);
+        }
+    }
+    called.sort_by_key(|row| *row as *const CatalogRow as usize);
+    called.dedup_by(|a, b| std::ptr::eq(*a, *b));
+    let answer = probe_answer(family, called, &served_cached);
+    log::info!(
+        "{family} probes answer script source {source} {} (release {})",
+        answer.level.as_ref().map_or_else(|| "absent".to_owned(), |level| level.iter().map(u32::to_string).collect::<Vec<_>>().join(".")),
+        answer.release
+    );
+    world.resource_mut::<ExtenderProbes>().answers.insert((source, family), answer.clone());
+    answer
 }
 
 /// A Papyrus signature `ret Name(type a, type b = 1)`: its return type and parameter types.
@@ -409,13 +605,47 @@ mod tests {
         assert!(obscript_source_calls("fo3", "GetNVSEVersion").is_empty(), "no FOSE catalogue");
     }
 
+    #[test]
+    fn a_probe_answers_the_highest_level_every_call_below_is_served_at() {
+        let find = |script: &str, function: &str| {
+            rows().iter().find(|row| row.family == "skse64" && row.script.as_deref() == Some(script) && row.function == function).unwrap()
+        };
+        let split = find("StringUtil", "Split"); // introduced 1.7.3 (SKSE LE), so SKSE64's first release
+        let plugin = find("SKSE", "GetPluginVersion"); // 1.6.14, likewise
+        let served = |_: &'static CatalogRow| true;
+        let none_served = |_: &'static CatalogRow| false;
+        // Every call served: the newest version, with its documented release index.
+        let all = probe_answer("skse64", [split, plugin], &served);
+        assert_eq!(all.release, *releases("skse64").iter().map(|(_, r)| r).max().unwrap());
+        assert!(all.capped_by.is_empty());
+        // An unserved call from the first release: absent, every probe answers 0.
+        let absent = probe_answer("skse64", [split], &none_served);
+        assert_eq!((absent.level.clone(), absent.release, absent.triple()), (None, 0, (0, 0, 0)));
+        assert_eq!(absent.capped_by.len(), 1);
+        // A mod calling nothing of the family gets the newest version too.
+        assert_eq!(probe_answer("skse64", [], &none_served).level, all.level);
+        // A later unserved function caps the level just below its version.
+        let later = rows().iter().find(|row| row.family == "skse64" && version_key(&row.introduced) > version_key("2.0.0")).unwrap();
+        let capped = probe_answer("skse64", [later], &|row: &'static CatalogRow| !std::ptr::eq(row, later));
+        let level = capped.level.clone().unwrap();
+        assert!(level < version_key(&later.introduced) && level >= version_key("2.0.0"), "{level:?} below {}", later.introduced);
+        assert!(capped.release >= 0);
+    }
+
+    #[test]
+    fn versions_compare_by_their_numbers() {
+        assert!(version_key("2.0.17") > version_key("2.0.9"));
+        assert!(version_key("1.7.3") < version_key("2.0.0"));
+        assert_eq!(version_key("0020 beta 4"), vec![20, 4]);
+    }
+
     /// The coverage `docs/engine/extender-catalog.md` §5 publishes: a change to the catalog or to what the engine
     /// serves moves these, and the document with them.
     #[test]
     fn coverage_counts_are_the_published_ones() {
         let published: [(&str, Coverage); 11] = [
-            ("skse64", Coverage { functions: 804, dated: 67, vm: 15, sdk: 21, served: 26 }),
-            ("f4se", Coverage { functions: 227, dated: 13, vm: 1, sdk: 3, served: 4 }),
+            ("skse64", Coverage { functions: 804, dated: 67, vm: 20, sdk: 21, served: 31 }),
+            ("f4se", Coverage { functions: 227, dated: 13, vm: 6, sdk: 3, served: 9 }),
             ("xnvse", Coverage { functions: 565, dated: 50, vm: 0, sdk: 4, served: 4 }),
             ("jip_ln", Coverage { functions: 733, dated: 0, vm: 0, sdk: 0, served: 0 }),
             ("johnnyguitar", Coverage { functions: 142, dated: 31, vm: 0, sdk: 0, served: 0 }),
