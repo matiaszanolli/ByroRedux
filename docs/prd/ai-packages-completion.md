@@ -1,6 +1,6 @@
 # AI Packages Completion — Product Requirements
 
-**Status**: ACTIVE (2026-11-22). Revision 16 folds in review round 4; the history is §12.
+**Status**: ACTIVE (2026-11-24). Revision 17 folds in review round 5. See §12 for the revision history.
 
 It covers the remainder of milestone M42: the
 procedures, package fields and per-game prerequisites that do not run yet.
@@ -21,10 +21,9 @@ already ships. Out of scope: the Scene-driven package executor (PACKAL
 keeps it unchanged), combat AI, the dialogue runtime behind force-greet,
 navmesh door and cover semantics, and Fallout 76 (§7.1). Walking actors opening in-cell doors is in scope (AIP-DOOR, §5.11).
 
-**Related**: this document states the *promise*; the designs below own the
-*how*. Every mechanism promised here has an owner in this table, or Phase 0
-writes the missing design. A prerequisite that no design owns is filed as
-an issue in Phase 0.
+**Related**: the designs below own implementation. Phase 0 writes missing
+designs and files unowned prerequisites. Q7 explicitly schedules the
+Starfield `.agx` design at the start of Phase 5, before any reader work.
 
 | Mechanism | Owning design |
 |---|---|
@@ -35,7 +34,9 @@ an issue in Phase 0.
 | Package state across tile eviction and respawn | [Stream-Boundary State Continuity](../engine/stream-boundary-state-continuity.md) |
 | Conditions (the M47.1 evaluator), the caster runtime, ObScript package commands | [Scripting](../engine/scripting.md) |
 | Oblivion `PGRD` pathing | [NAVM Pathfinding §11](../engine/navmesh-pathfinding.md#11-oblivion-pathgrids-pgrd), written with rev 8 after the code (decision Q5). The stall it targets is recorded in [Playable Vertical Slice](../engine/playable-vertical-slice.md) |
-| Starfield `.agx` animation-text tables, the walk source of AIP-WALK-001 | none. Decision Q7 takes it; Phase 5 writes the missing design under `docs/engine/` and this row then links it |
+| In-cell door activation, motion and collision contract | [Door Runtime](../engine/door-runtime.md), AIP-DOOR-001 and decision Q8 |
+| Package movers opening in-cell doors | Phase 0 adds the passage design for AIP-DOOR-002…006 to [NPC Spawn → AI Packages](../engine/npc-spawn-ai-packages.md). |
+| Starfield `.agx` animation-text tables, the walk source of AIP-WALK-001 | Design pending. Q7 schedules it as the first Phase 5 deliverable (AIP-WALK-005). Add its link here when written. |
 | Per-game engine tiers | [Game Compatibility](../engine/game-compatibility.md#per-game-support-detail) |
 
 Normative terms **MUST**, **SHOULD** and **MAY** have their RFC 2119
@@ -45,11 +46,11 @@ meanings, as in the related designs. Requirement IDs use the `AIP-` prefix.
 
 ## 1. Product thesis
 
-Ambient AI is what makes a loaded cell look inhabited. A bartender works
-the bar, a settler sleeps at night, a guard holds a post, a sniper fires
-from a wall. Every one of those behaviours is authored data in the
-`PACK` record. Following the keep list's "parse data, don't emulate
-engine" rule
+Players rely on authored NPC routines to make a loaded cell feel inhabited.
+A bartender works the bar, a settler sleeps at night, and a guard holds a
+post. Mod authors need to see which authored package is running and why
+the others were skipped. The `PACK` record supplies the data for these
+routines. Following the keep list's "parse data, don't emulate engine" rule
 ([ROADMAP keep list](../../ROADMAP.md#the-keep-list--what-not-to-change-despite-temptation)),
 ByroRedux runs that data through ECS systems. It does not reproduce the
 original AI process.
@@ -68,16 +69,9 @@ FO3/FNV author no CastMagic package (§3.1). What is left is of three kinds:
    positions on `FURN` are not read (AIP-SIT-003, AIP-SEAT-007). Starfield has no walk source, because its `MT`
    subgraph entries name `.agx` tables that nothing reads (AIP-WALK-001,
    decision Q7).
-3. **Things that silently do nothing.** Closed as a rule by the corollary
-   below: `pack.ambient` and the decline lines (AIP-DX-001, -002) shipped
-   in #6656, and what still declines names its reason.
-
-The corollary that shapes every requirement below: **every authored package
-either runs or is declined for a reason someone can read**. Each procedure,
-in each game, is in exactly one class of §3. A decline is a reported
-state, not a silent `None`. Coverage grows by moving rows between classes,
-not by guessing semantics. When a source cannot settle what a field means,
-the package stays declined and the gap is a **Phase 0: verify** item.
+3. **Package diagnostics.** `pack.ambient` and the initial decline lines
+   shipped in #6656 (AIP-DX-001, -002). The census still needs per-leaf
+   reporting for tree packages (AIP-DX-004).
 
 The engine will **not**:
 
@@ -87,6 +81,11 @@ The engine will **not**:
 - invent a meaning for an unsourced field to raise coverage;
 - add per-game branches past the parser boundary. A per-game numbering
   becomes one canonical value inside `crates/plugin`.
+
+The corollary is that **every authored ambient package either runs or
+reports why it declined**. Section 3 classifies each procedure or leaf by
+game. When a source cannot settle a field's meaning, the package reports
+the decline and the gap becomes a **Phase 0: verify** item.
 
 ---
 
@@ -125,9 +124,21 @@ Every procedure, per game, is in exactly one class:
 | **D** | Declined | No runtime. The reason is catalogued | a decline line naming the reason |
 | **N** | Not authored | No vanilla package in the game uses it | none |
 
-The decline reasons are a closed set: `unmodelled-conditions`,
-`unsupported-shape`, `unsupported-object-type`, `unsourced-semantics`,
-`no-runtime`.
+The census uses the canonical reasons below. AIP-DX-001 and AIP-DX-002
+retain the detail that explains a decision, such as a raw object type or
+leaf name. The table maps existing diagnostics at HEAD on 2026-11-24
+(`npc_spawn/ai_package.rs` and `npc_spawn/ai_package/tree.rs`). An ordinary
+closed schedule or a failed package-level condition is a selection result
+and is reported in its own column.
+
+| Canonical reason | Existing diagnostics or details |
+|---|---|
+| `unmodelled-condition` | `unmodelled-condition`, including a leaf whose condition cannot be evaluated without an actor |
+| `conditions-not-met` | `conditions-not-met` on an evaluated leaf |
+| `unsupported-shape` | `no-target`, `unsupported-target`, `no-fire-data`, `no-weapon`, `no-target-reference`, `dialogue-not-ambient`, `unresolved-input`, `not-root-leaf` |
+| `unsupported-object-type` | `unsupported-object-type` with the raw value |
+| `unsourced-semantics` | `unsourced-semantics`, including unsettled weapon classes and zero-duration schedules |
+| `no-runtime` | `no-runtime` or `no runtime for this procedure` |
 
 **Census provenance.** The counts in §3.1, §5.1, §5.2 and §5.4 were taken
 on 2026-11-01 and 2026-11-03 with uncommitted Python scripts that walk the
@@ -182,20 +193,28 @@ The Skyrim Creation Kit documents 29 procedure leaves
 the state at HEAD on 2026-11-22 (`npc_spawn/ai_package/tree.rs`,
 #6660, re-checked in revision 16); the scene column was last checked at HEAD on 2026-11-03:
 
-| Leaf group | Ambient driver Today | Scene driver Today |
-|---|---|---|
-| Sandbox, Patrol | installs; a tree with a `Sandbox` leaf runs it, else a `Patrol` leaf, each the first in tree order whose own conditions pass (AIP-TREE-001, `tree.rs`) | Patrol as move-to |
-| Travel, Sleep, Eat, Follow, Escort, Guard, Flee, root Wander | installs the FO3/FNV counterpart's component (`tree.rs`) | Travel, Escort: move-to (`resolve_command`, `crates/scripting/src/package.rs`); the others none |
-| FollowTo | none, reason `no-runtime` (AIP-TREE-007) | move-to (`resolve_command`) |
-| ForceGreet | installs the Dialogue behaviour only when every condition is modelled (AIP-TREE-005, `tree.rs`) | none: `resolve_command` returns `AwaitExternal` (`package.rs`). `PackRecord::force_greet` resolves both dialects, but only the `dialogue.forcegreet` console command calls it (`commands/quest.rs`) |
-| Sit, UseIdleMarker | none: waits on the tree leaf wiring (AIP-TREE-004) and, for FO4+, AIP-SIT-003 (`tree.rs`) | interaction (`resolve_command`) |
-| Acquire, Activate, Shout, UseWeapon | none, reason `no-runtime` (AIP-TREE-007) | interaction (`resolve_command`) |
-| Find, HoldPosition, KeepAnEyeOn, LockDoors, UnlockDoors, Say, UseMagic, Wait, FlightGrab, Hover, Orbit | none, reason `no-runtime` (AIP-TREE-007) | none |
+The ambient classes describe the shared runtime for an authored leaf.
+Assign N to a leaf for a particular master only where its inventory
+establishes absence.
+
+| Leaf group | Ambient class | Ambient driver Today | Scene driver Today |
+|---|---|---|---|
+| Sandbox | P | Takes a seat using the existing runtime, with first precedence among eligible leaves (AIP-TREE-001, AIP-NG-007) | none |
+| Patrol | A | Installs the Wander-based Patrol behaviour, with precedence after Sandbox (AIP-TREE-001) | move-to |
+| Travel, Follow, Escort, Guard, Flee | P | Installs the corresponding component for supported inputs. Unresolved required locations or targets decline (`tree.rs`) | Travel and Escort as move-to (`resolve_command`, `crates/scripting/src/package.rs`) |
+| Sleep, Eat | A | Installs the existing bed or walk-and-sit approximation (AIP-TREE-003, §6) | none |
+| Wander | P | Installs when it is the whole tree, and reports `not-root-leaf` otherwise (AIP-TREE-006) | none |
+| FollowTo | D | `no-runtime` (AIP-TREE-007) | move-to (`resolve_command`) |
+| ForceGreet | P | Installs the Dialogue behaviour for a supported player target and fully modelled conditions (AIP-TREE-005, `tree.rs`) | `resolve_command` returns `AwaitExternal` (`package.rs`) |
+| Sit, UseIdleMarker | D | `no-runtime` pending leaf wiring and, on FO4+, the furniture state (AIP-TREE-004, AIP-SIT-003) | interaction (`resolve_command`) |
+| Acquire, Activate, Shout, UseWeapon | D | `no-runtime` (AIP-TREE-007) | interaction (`resolve_command`) |
+| Find, HoldPosition, KeepAnEyeOn, LockDoors, UnlockDoors, Say, UseMagic, Wait, FlightGrab, Hover, Orbit | D | `no-runtime` (AIP-TREE-007) | none |
 The FO4, FO76 and Starfield leaf vocabularies are not documented locally
 (the FO4 CK dump has only `Range (Procedure)` and `Sandbox (Procedure)`).
-**Phase 0: verify** the leaf names each of those masters authors, from the
-per-leaf output of the install-count tests (AIP-DX-004) on `Fallout4.esm`,
-`SeventySix.esm` and `Starfield.esm`. The existing
+**Phase 0: verify** the leaf names each of those masters authors by walking
+their decoded package and template trees in `Fallout4.esm`, `SeventySix.esm`
+and `Starfield.esm`. Use that inventory to check the per-leaf output added
+under AIP-DX-004 for the in-scope games. The existing
 `pack_ambient_shape_survey` example cannot settle it: it prints package
 shapes and procedure counts, not leaf names.
 
@@ -225,10 +244,10 @@ These hand-written tables are replaced by the census code (AIP-DX-003) and
   package referenced from an `NPC_` / `CREA` package list either installs or
   produces a decline line with a reason from the closed set in §3. Measured
   by the census tool and the real-data tests.
-- **AIP-G-002 — FO3/FNV data fully consumed.** On FO3 and FNV, every
-  procedure with authored packages is class R or A. Each remaining
-  approximation has a §6 row, and each P row shrinks to declines with
-  `unsourced-semantics` as the only reason.
+- **AIP-G-002 — FO3/FNV authored procedures classified.** The census MUST
+  put every authored FO3/FNV procedure in R, A or P. Each approximation has
+  a §6 row. Each P row identifies its remaining data shapes, explains their
+  decline reasons and cites a requirement or tracking issue for them.
 - **AIP-G-003 — One ambient driver for both shapes.** Skyrim+ tree-shape
   packages install the same behaviour components as flat-shape ones,
   through the one ambient driver ([PACKAL goal](../engine/packal.md)). No
@@ -331,12 +350,12 @@ Vanilla `PTDT` type-2 targets in Find packages (uncommitted census, §3):
   nearest matching placed item through `inventory::take_placed_item`, once
   the item records can classify that class. Each class SHOULD be enabled
   as soon as its classifier lands.
-- **AIP-FIND-005.** A Find package whose object type AIP-FIND-001…004 do
-  not cover (among them 0 None, 1 Activators, 5 Containers, 6 Doors (AIP-DOOR-006),
-  8 Lights, 24–27 Actor Effects, whichever of 28 / 29 is not Actors: Any,
-  and any number outside the enum) MUST produce a decline line with reason
-  `unsupported-object-type` and the raw number. Shipped in #6656
-  (`npc_spawn/ai_package.rs`).
+- **AIP-FIND-005.** A Find package with an object type unsupported after
+  translation MUST produce a decline line with reason
+  `unsupported-object-type` and the raw number. FO3/FNV examples include
+  None (0), Activators (1), Containers (5), Doors (6), Lights (8) and Actor
+  Effects (24–27). Oblivion uses the mapping in AIP-FIND-006, with Doors
+  covered by AIP-DOOR-006. Shipped in #6656 (`npc_spawn/ai_package.rs`).
 - **AIP-FIND-006.** Oblivion Find packages with an object-type target MUST
   be classified through Oblivion's own numbering (xEdit
   `wbDefinitionsTES4.pas`), translated into one canonical object class
@@ -346,12 +365,15 @@ Vanilla `PTDT` type-2 targets in Find packages (uncommitted census, §3):
   (`find_target_for`, `ai_package.rs`). Armor (3) and Clothing (5)
   stay declined because `CLOT` and `ARMO` share one item kind, and Soul Gems
   (17) are no item record.
-- **AIP-FIND-007.** An Oblivion Find whose target is a chair MUST seat the
-  actor, and one whose target is a container MUST raise one
-  `ActivateEvent` on it with the actor as activator (CS: the actor "finds
-  the target and 'activates' it", a container meaning "Open it"). Seating
-  on Oblivion depends on AIP-SIT-001. The container half shipped in #6662
-  (`systems/find_package.rs`); the chair half is unblocked by AIP-SIT-001 (Oblivion's seat runs, rev 12), but no vanilla cell can gate it live: the placed Find-a-chair packages name a base the cell does not place (`GottlefontHouse`'s bench) or a tree, so it stays unit-gated.
+- **AIP-FIND-007.** An Oblivion Find whose target is a container MUST raise
+  one `ActivateEvent` on it with the actor as activator ([CS: Find Package](https://cs.uesp.net/wiki/Find_Package)).
+  Shipped in #6662 (`systems/find_package.rs`).
+- **AIP-FIND-008.** An Oblivion Find whose target is a chair MUST leave the
+  actor `Seated` on that chair ([CS: Find Package](https://cs.uesp.net/wiki/Find_Package)).
+  The fixture uses the seat path delivered by AIP-SIT-001 and asserts
+  `Seated` for the chair. The known vanilla Find-a-chair packages name a
+  base their cell lacks (`GottlefontHouse`'s bench) or a tree, so this case
+  is unit-gated.
 
 ### 5.2 UseWeapon (`AIP-UW`)
 
@@ -663,10 +685,10 @@ Skyrim+ `PSDT` day-of-week byte uses the same enum as FO3/FNV, 0 Sunday …
   is held on `GameCalendar` (`crates/scripting/src/globals.rs`) and
   `package_weekday` no longer reads the game kind; the per-game rule lives in
   `weekday_origin` (`crates/plugin/src/esm/records/calendar.rs`). Skyrim's origin depends on the edition
-  (decision Q2): the loader resolves it from the master it reads, the
-  2011 launch master (HEDR 0.94) giving Morndas and every later master
-  (HEDR 1.71) giving Sundas; `GameKind` folds both into one kind, so the
-  edition is read here and nowhere past the boundary.
+  (decision Q2): the loader uses the master HEDR to select ByroRedux's
+  origin. Positive versions below 1.0 give Morndas, versions at or above
+  1.6 give Sundas, and other versions leave the origin unset. The actual
+  fresh-start weekday by original edition is **Phase 0: verify** (Q2).
 
 ### 5.7 Package flags (`AIP-FLG`)
 
@@ -777,9 +799,10 @@ script-package slot also reads Must Complete and Must Reach Location
   ray started 256 units over the feet, and under a low ceiling one airborne
   tick set the actor down on the roof (595 to 916); it now starts at the
   capsule's centre (`an_airborne_npc_is_not_set_down_on_the_roof_over_its_head`).
-  The priest then walks 1,600 units in 30 s. The route still ends at a
-  closed door, and no actor opens an in-cell door (AIP-DOOR), so the container is
-  not reached and the gate's activation check stays optional. Out of the requirement as decided: the `PGRI` inter-cell links,
+  At rev 13 the priest walked 1,600 units in 30 s and stopped at a closed
+  door. At HEAD on 2026-11-24 (`f683f374f`), `door_activation_verdicts`
+  handles actor activation under the Door Runtime rules. Package-driven
+  passage still needs AIP-DOOR-002. Out of the requirement as decided: the `PGRI` inter-cell links,
   whose mapping onto the `0xFFFF` edge sentinel the record's own doc calls
   unresolved (`crates/plugin/src/esm/records/pathgrid.rs`).
 - **AIP-WALK-004.** The walk-source lookup MUST stay at the asset boundary
@@ -822,26 +845,31 @@ AIP-DX-006 builds on that query rather than copying it.
   Skyrim and FO4 marker counts of §5.4 and the number of `FURN` records that
   author `SNAM` (AIP-SEAT-007) have no checked-in tool; until one exists
   those tables are **Phase 0: confirm** figures (§3 census provenance).
-- **AIP-DX-004.** Install and decline counts per procedure or leaf MUST be
-  reported for each master by an ignored real-data test. Shipped in #6656
-  and #6663: `real_{fnv,fo3,oblivion,skyrim,fo4,starfield}_esm_package_install_counts`
-  (`npc_spawn/ai_package.rs`).
+- **AIP-DX-004.** An ignored real-data test MUST report install and decline
+  counts by procedure or leaf for each master in the §7.2 census.
+  At HEAD on 2026-11-24 (`f683f374f`), the six
+  `real_*_esm_package_install_counts` tests in `npc_spawn/ai_package.rs`
+  group by `procedure_name`, which reads the flat procedure number.
+  Per-leaf reporting is open. The tree report must identify the selected
+  leaf on install and the evaluated leaves with their reasons on decline.
 - **AIP-DX-005.** `pack.ambient <entity>` MUST also print the actor's walk
-  source and its cached waypoint count.
+  animation source and its cached waypoint count. At HEAD on 2026-11-24
+  (`f683f374f`), `commands/pack_ambient.rs::walk_line` reports routing and
+  waypoint count. Reporting the bound walk animation source is open.
 - **AIP-DX-006.** `pack.ambient` with no argument MUST list every actor that
   has an `AmbientPackageRuntime`, with its winning package or its decline
   reason, in interiors and exteriors alike.
 
 ### 5.11 Door passage (`AIP-DOOR`)
 
-Found by the Oblivion live gate (rev 13): after the walk faults were fixed,
-the Moth priest's route to a container ends at a closed door and he stands
-against it. The cause is not the walk. No actor can open an in-cell door,
-the player included.
+In the rev 13 Oblivion live gate, the Moth priest reached a closed door
+and stopped on his route to a container. Package-driven passage remains
+open under AIP-DOOR-002.
 
 **At HEAD (2026-11-22).**
 
-- The Door Runtime PRD's Phase 1 has delivered most of AIP-DOOR-001: every in-cell door carries an open state from spawn, an `ActivateEvent` from any activator plays its `Open` or `Close` clip, and a locked door refuses an activator without its own key. The [Door Runtime design's Phase 1 status](../engine/door-runtime.md#5-phase-1-status-7059) owns the detail. Not delivered: the snap for a door model that authors no motion (DRT-MOVE-002, its Q2 re-decided 2026-11-22) and the controller test of collision following the door (DRT-MOVE-004).
+- The [Door Runtime design's Phase 1 status](../engine/door-runtime.md#5-phase-1-status-7059)
+  tracks delivery of the AIP-DOOR-001 dependency.
 - The character controller reports a blocked step but not what blocked it:
   `CharacterMoveResult` carries `translation`, `grounded` and
   `is_sliding_down_slope` (`crates/physics/src/world/queries.rs`), although
@@ -874,31 +902,25 @@ How an actor passes an in-cell door that is locked, whether it closes the
 door behind it, and how long it waits for the swing are not documented in
 these sources: **Phase 0: verify** (AIP-DOOR-005).
 
-- **AIP-DOOR-001.** This PRD depends on the [Door Runtime PRD](door-runtime.md)
-  (decision Q8; its DRT-STATE, DRT-ACT and DRT-MOVE areas) delivering the following: a placed in-cell door MUST have an open state, and an
-  `ActivateEvent` from any activator (the player, an actor's package, a
-  script) MUST toggle it, play the model's `Open` or `Close` sequence, and
-  move its collision with the model, so the door stops blocking the
-  character controller once open. A locked door MUST stay shut to an
-  activator with no key, as a load door does (`Locked`, `interaction.rs`).
-  Observable: a unit test that opens a door fixture and walks the
-  controller through it, and a live check that the player opens the
-  Moth catacombs door. The requirement is the contract AIP-DOOR-002 builds
-  on; the Door Runtime PRD owns its design and its issues.
+- **AIP-DOOR-001.** Package-driven passage MUST build on the
+  [Door Runtime contract](door-runtime.md#5-requirements-by-area), per Q8:
+  DRT-STATE-001, DRT-ACT-001 and DRT-ACT-003, and DRT-MOVE-001, DRT-MOVE-002
+  and DRT-MOVE-004. The AI gate in §7.2 checks that a package actor can cross
+  a door it activated through that contract.
 - **AIP-DOOR-002.** The character controller's blocked step MUST report the
   collider that blocked it (`CharacterMoveResult`), and a walking mover
   whose blocker is a closed, unlocked in-cell door within arm's reach
   (decided by the door's size and distance, not by a navmesh flag) MUST
   raise one `ActivateEvent` on it with the actor as activator and resume
   the walk once the door is open, at most once per door per blocked leg.
-  Observable: a test in `systems::locomotion` (a door fixture across the
-  route), and `m42-oblivion-packages.sh` reaching the Moth container with
-  `STRICT_FIND=1` as its default.
-- **AIP-DOOR-003.** (Found live in Phase 0 of the Door Runtime PRD: in `TempleMothCatacombs02` the first door on the Find priest's route, reference `00094D23`, is locked with key `0009DAC6`, and the priest, `TG08MothPriestBossMale01`, is not one of the four actors that carry it, so the Oblivion Find gate cannot pass it unless the original rule lets him through, or the gate moves to another route.) A mover MUST NOT open a door it could not open itself
-  (locked, no key, not the owner or a member of the owning faction); it
-  keeps today's give-up path (`cannot reach`). Which of the three the
-  original actor needs for an *in-cell* lock is **Phase 0: verify**
-  (AIP-DOOR-005); the CK sentence above is about load doors.
+  Observable: a test in `systems::locomotion` with a door across the
+  route, plus the openable-door smoke case in §7.2.
+- **AIP-DOOR-003.** A mover MUST keep the give-up path (`cannot reach`)
+  when the door denies the actor access. The locked-door smoke case in
+  §7.2 uses the vanilla `TempleMothCatacombs02` door `00094D23` and priest
+  `TG08MothPriestBossMale01`, who lacks key `0009DAC6`. Owner, faction and
+  key rules for an original *in-cell* lock are **Phase 0: verify**
+  (AIP-DOOR-005). The CK source above covers load doors.
 - **AIP-DOOR-004.** The `Minimal Use` door flag, decoded under DRT-REC-001
   (CS: "NPCs will not use this door when path finding through the cell"),
   MUST keep a route from choosing that door as a shortcut once a router can
@@ -909,16 +931,19 @@ these sources: **Phase 0: verify** (AIP-DOOR-005).
 - **AIP-DOOR-005.** The unsourced behaviours MUST be settled from a CS /
   GECK / CK page, a UESP page or an observation of the original game before
   they are built, and until then the runtime does the least that unblocks
-  the walk: an unlocked door opens, stays open, and the mover does not wait
-  for the swing. The open items are the locked in-cell door, closing behind
+  the walk: the mover opens an unlocked door, leaves it open, and resumes
+  once the doorway is passable (AIP-DOOR-002). The open items are the locked in-cell door, closing behind
   the actor, the swing wait, and what an actor does at a locked door on its
   route.
-- **AIP-DOOR-006.** A Find package whose object type is Doors (Oblivion
-  type 6) SHOULD, once AIP-DOOR-001 and -002 hold, install and activate the
+- **AIP-DOOR-006.** An Oblivion Find package whose `PTDT` object type is
+  Doors (7 in the [xEdit TES4 definition](https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.6/Core/wbDefinitionsTES4.pas#L2953-L2967))
+  SHOULD, once AIP-DOOR-001 and -002 hold, install and activate the
   nearest in-cell door (and, for a load door, go through it by the
   cross-space route), replacing today's `unsupported-object-type` decline
-  (AIP-FIND-005) for that type. Observable: a `find_package` test beside
-  `a_container_search_activates_the_nearest_container`.
+  for that type. Observable for the in-cell door case: a `find_package`
+  fixture with both a door and a container raises one `ActivateEvent` on
+  the door for type 7. The same fixture with type 6 selects the container
+  as specified by AIP-FIND-007.
 
 ---
 
@@ -930,8 +955,8 @@ kept for the format.
 | # | Original behaviour | Redux behaviour | Becomes redundant | Risk and its requirement |
 |---|---|---|---|---|
 | 1 | Sandbox scores every nearby object (eat, sleep, furniture, idle markers, dialogue), with type weights that drop to zero after use and recover ([GECK: Sandbox Package](https://geck.uesp.net/wiki/Sandbox_Package)) | The nearest free sit marker (`pick_nearest_seat`) | — | Cells look less varied. Decision Q6, AIP-NG-007 |
-| 2 | Packages "seem to be re-evaluated every 10 seconds" ([GECK: How Are Packages Evaluated](https://geck.uesp.net/wiki/How_Are_Packages_Evaluated)) | Once per in-game minute, and on `EvaluatePackage` (`ambient_ai_package_system`) | — | At the default Timescale of 30 ([GECK: List of Global Variables](https://geck.uesp.net/wiki/List_of_Global_Variables)) a game minute is 2 real seconds, faster than the GECK's own hedged figure. None |
-| 3 | Unevaluable conditions do not exist in the original | Lists with an uncatalogued function pass (fail-open), except for procedures that take control of the actor (#5376 rule) | — | A fail-open package can win when the original would skip it. AIP-DX-001 shows when that happened |
+| 2 | The GECK estimates a ten-second reevaluation interval ([GECK: How Are Packages Evaluated](https://geck.uesp.net/wiki/How_Are_Packages_Evaluated)) | Once per in-game minute, and on `EvaluatePackage` (`ambient_ai_package_system`) | — | At the default Timescale of 30 a game minute is two real seconds. Faster reevaluation is an accepted deviation under AIP-NG-003. [GECK: List of Global Variables](https://geck.uesp.net/wiki/List_of_Global_Variables) |
+| 3 | Legacy evaluation of a condition outside ByroRedux's catalog is **Phase 0: verify** when required for parity. Observe the specific function in an original-game fixture with both true and false inputs. | Lists with an uncatalogued function pass (fail-open), except for procedures that take control of the actor (#5376 rule) | — | An unevaluated condition can let a package win. AIP-DX-001 exposes the modelled status. |
 | 4 | Accompany paths to the target's destination ([GECK: Accompany Package](https://geck.uesp.net/wiki/Accompany_Package)) | Follow's trailing runtime | — | The looser formation is not reproduced. §3.1 class A |
 | 5 | Volley size and pause are random in [min, max] (GECK: Use Weapon Package) | The midpoint (AIP-UW-005) | — | Volleys are identical every time; tests and saves are deterministic |
 | 6 | Eat consumes food ([GECK: Eat Package](https://geck.uesp.net/wiki/Eat_Package)) | Walk and sit only | — | Food stocks never deplete. Not addressed in this PRD |
@@ -983,9 +1008,13 @@ an acceptance pass.
 | FO4 furniture positions | new test in `crates/plugin` (AIP-SEAT-007) on a `FURN` fixture transcribed from `Fallout4.esm` | none (fixture) | The decoded markers carry the fixture's offsets, Rotation Z and keywords |
 | Decline reporting | `--bench-hold` on FNV `ULKitchen`, then `byro-dbg` `pack.ambient` with no argument | FNV | Every actor prints a winner or a decline reason; none prints an empty result |
 | Census | `cargo test -p byroredux-plugin --test package_schedule_census -- --ignored` and the `real_*_esm_package_install_counts` tests (AIP-DX-003, -004) | Oblivion, FO3, FNV, Skyrim SE, FO4, Starfield masters | Every procedure with authored packages maps to a §3 class; no "unknown" row |
-| Skyrim tree | `real_skyrim_esm_ambient_packages_now_resolve_for_previously_blind_npcs` (`--ignored`), extended by AIP-DX-004 | Skyrim SE | Reports per-leaf counts; every PKID-referenced package installs or declines with a reason; the skip line is absent |
+| Skyrim tree | Run `real_skyrim_esm_ambient_packages_now_resolve_for_previously_blind_npcs` and the AIP-DX-004 Skyrim census with `--ignored --nocapture` | Skyrim SE | The existing NPC resolution test passes. The extended census identifies selected or declined leaves for each resolved package, accounts for unresolved references and emits no skip line. |
 | Skyrim sit live | `docs/smoke-tests/m42-skyrim-ambient.sh` (rev 12): `--bench-hold` into `WhiterunBanneredMare`, `time.set 19` | Skyrim SE | `entities(Seated)` is non-empty, the clip is installed and the patron's player is parked on its last frame. Passes |
-| Oblivion live | `docs/smoke-tests/m42-oblivion-packages.sh` (rev 12): the Bravil castle dinner at 21:00 (Oblivion seats through Eat, not Sandbox), and the Moth priest's Find-a-container in `TempleMothCatacombs02` | Oblivion | A diner is `Seated` on `chair_leftenter.kf` (passes); the Find installs and picks a container (passes), and the priest walks 500+ units, but the container receives no `ActivateEvent` yet: the route ends at a closed door (AIP-DOOR-002). `STRICT_FIND=1` requires it |
+| Oblivion seating | `docs/smoke-tests/m42-oblivion-packages.sh`: Bravil castle dinner at 21:00 | Oblivion | An Eat actor is `Seated` on `chair_leftenter.kf` |
+| Oblivion Find chair | `systems::find_package` fixture for AIP-FIND-008 | Synthetic chair and actor | The actor becomes `Seated` on the selected chair |
+| Oblivion Find through an openable door | Extend `m42-oblivion-packages.sh` with a `TempleMothCatacombs02` case. Use a locally authored test override that clears the lock on `00094D23` and leaves the door closed at boot. | Oblivion and local test override | The priest activates the door as the package mover, crosses it and emits a container `ActivateEvent` (AIP-DOOR-002) |
+| Oblivion Find at a locked door | Extend the same smoke script with the vanilla `TempleMothCatacombs02` case, loaded without the test override | Oblivion | The priest's Find selects a container and reaches the door. The door stays closed and the route reports `cannot reach` (AIP-DOOR-003) |
+| Starfield archive-backed walk | `--bench-hold` in Cydonia, query the package actor with `byro-dbg` as it moves (AIP-WALK-001, AIP-DX-005) | Local Starfield install and animation archives | The actor moves with a resolved Starfield archive animation source. Two playback samples show its animation time advancing. |
 | Schedules | new tests in `crates/plugin` / `npc_spawn::ai_package` (`a_skyrim_weekday_package_selects_on_its_day`, `psdt_month_gates_the_schedule`, `a_v122_month_zero_is_any`) | none | A day- or month-constrained package wins only on its day or month; a stored 0 on a version-122 record is "any" |
 
 ---
@@ -995,11 +1024,19 @@ an acceptance pass.
 The numbers live in ROADMAP's [M42 row](../../ROADMAP.md#tier-7--deep-gameplay-systems)
 (one home). This section defines what is counted.
 
+The AIP-DX-004 corpus is the set of distinct `PKID` FormIDs referenced by
+vanilla `NPC_` and `CREA` records in each measured master. Report unresolved
+FormIDs separately and keep them in the denominator. The existing helper
+uses distinct IDs from `index.npcs` and counts only the ones it resolves
+(`report_real_master_package_install_counts`, `npc_spawn/ai_package.rs`,
+at HEAD on 2026-11-24). The test report records the installer context so
+the measured install rate can be repeated.
+
 | Metric | Definition | Granularity |
 |---|---|---|
 | Procedure coverage | Procedures of class R or A ÷ procedures with at least one PKID-referenced vanilla package | per game |
-| Install rate | PKID-referenced packages that install ÷ PKID-referenced packages, from the AIP-DX-004 tests | per game |
-| Decline breakdown | Declined packages per reason ÷ PKID-referenced packages | per game, per reason |
+| Install rate | Distinct referenced FormIDs that install in the AIP-DX-004 test context ÷ all distinct referenced FormIDs in the corpus | per game |
+| Decline breakdown | Distinct declined FormIDs with each canonical reason ÷ all distinct referenced FormIDs in the corpus. Count a FormID once per reason. | per game, per reason |
 | Seat rate | Actors whose winning package is a seat procedure and who have a free marker in range that end up `Seated` ÷ all such actors, in the acceptance cells | per acceptance cell |
 
 ---
@@ -1014,12 +1051,17 @@ depends on M42's shipped runtime and the M47.1 evaluator.
 verify item in the table below (each is a **Phase 0: verify** marker), and
 say for each census table whether checked-in code reproduces it
 (AIP-DX-003). File the FO4 `NVNM` body decode as an issue (Related).
-Resolve Q1–Q7, and write the Oblivion `PGRD` section if Q5 takes it.
-Exit: every verify item is closed or filed as an issue; every §10 item
-**Open at HEAD (2026-11-22, #6655):** the census tool of AIP-DX-003 (`crates/plugin/examples/ambient_package_census.rs`) is not checked in, and the verify items #6655 lists are open.
-carries **Decided**; each table without a checked-in tool is marked as such
-in [NPC Spawn → AI Packages](../engine/npc-spawn-ai-packages.md). (#6655
-is still open at HEAD on 2026-11-18.)
+Record the §10 decisions and add the package-passage design to
+[NPC Spawn → AI Packages](../engine/npc-spawn-ai-packages.md). Q5's Oblivion
+`PGRD` design is already linked in Related.
+
+Exit: every verify item is closed or tracked by an issue. Every §10
+decision carries **Decided**. Every census table names its checked-in tool
+or is marked **Phase 0: confirm**. The package-passage design is linked.
+
+**Open at HEAD (2026-11-24, `f683f374f`).** The AIP-DX-003 census tool and
+the package-passage design are pending. The #6655 verify items still need
+their recorded evidence or a tracking issue.
 
 | Verify item | Requirement | What settles it |
 |---|---|---|
@@ -1035,17 +1077,24 @@ is still open at HEAD on 2026-11-18.)
 | Skyrim's chair-entry source (HKX clip or graph state) | AIP-SIT-002 | closed 2026-11-19: the `chair_leftenter.hkx` clip; wired in rev 11 |
 | What a zero-duration window does | AIP-SCHED-003 | one of the Travel packages `PackSchedule::active_at` names, observed live |
 | The radius of Continue if PC near | AIP-FLG-003 | an editor or game-setting source for "nearby" |
-| FO4 / FO76 / Starfield leaf names | §3.2 | the per-leaf output of the install-count tests (AIP-DX-004) on the three masters |
+| FO4 / FO76 / Starfield authored leaf names | §3.2 | Walk the decoded package and template trees of the three masters. Verify the AIP-DX-004 runtime report against the inventory for FO4 and Starfield. |
+| Original Skyrim fresh-start weekday by edition | AIP-SCHED-004, Q2 | Record weekday and master HEDR on LE, SE and AE with no previously loaded save. |
+| Original evaluation of a condition outside ByroRedux's catalog, when parity depends on it | §6 row 3 | Exercise the specific condition in the original game with true and false inputs. |
 | Starfield `MT` subgraph entries and their graphs | AIP-WALK-001 | closed 2026-11-09 (§9, "Measured, found in Phase 5") |
 | Every census count in §3 and §5 | AIP-DX-003 | checked-in code where it exists; otherwise the count stays a **Phase 0: confirm** figure |
 
 **Phase 1 — FO3/FNV completion (wave 1).** AIP-FIND-001…005, AIP-UW-001…009,
-AIP-SEAT-001…004, AIP-FLG-* (per Q4), AIP-DX-001, AIP-DX-002, AIP-DX-005,
-AIP-DX-006, and the FNV, FO3 and Oblivion tests of AIP-DX-004. Exit: on FO3
-and FNV, procedure coverage is 100% of authored procedures, every P row's
-remaining declines carry `unsourced-semantics`, and the §7.2 FNV and
-Lean-marker scenarios pass.
-**Open at HEAD (2026-11-22, #6656):** FO3/FNV Find object types 4, 19 and 20 decline as `unsupported-object-type`, not `unsourced-semantics` (AIP-FIND-004); AIP-FIND-001…003 and AIP-UW-009 wait on their Phase 0 verify items (#6655).
+AIP-SEAT-001…004, AIP-FLG-* (per Q4), AIP-DX-001, AIP-DX-002, the waypoint
+count in AIP-DX-005, AIP-DX-006, and the FNV, FO3 and Oblivion tests of
+AIP-DX-004. Exit: the
+FO3/FNV census assigns every authored procedure to R, A or P. A P row
+passes only when its remaining shapes, reasons and tracking references
+are recorded under AIP-G-002. The §7.2 FNV and Lean-marker scenarios pass.
+Publish the R+A procedure coverage from §8 alongside these results.
+
+**Open at HEAD (2026-11-22, #6656).** Find object types 4, 19 and 20
+decline as `unsupported-object-type` (AIP-FIND-004). AIP-FIND-001…003 and
+AIP-UW-009 still have Phase 0 verification items (#6655).
 
 **Phase 2 — Schedules.** AIP-SCHED-001…004 (Skyrim+ weekday per Q2, month
 decode). Exit: the schedule tests pass, and the census shows zero
@@ -1059,10 +1108,17 @@ with no package outside a §3 class, `m42-skyrim-ambient.sh` passes, and the
 §7.2 FO4 furniture-position test passes.
 **Open at HEAD (2026-11-22, #6660):** the `Sit` and `UseIdleMarker` leaves still decline (AIP-TREE-004), FO4's `FURN` seat positions are not read (AIP-SEAT-007), and FO4 and Starfield have no furniture state (AIP-SIT-003).
 
-**Phase 4 — Oblivion (wave 3).** AIP-FIND-006…007, AIP-SIT-001,
-AIP-WALK-003 (per Q5), AIP-DOOR-002…006 (AIP-DOOR-001 per Q8). AIP-CAST-001 and -002 were withdrawn in rev 6. Exit: `m42-oblivion-packages.sh` passes with
-`STRICT_FIND=1` (the priest reaches and activates a container), and Oblivion's procedure coverage is published.
-**Open at HEAD (2026-11-22, #6662):** door passage, AIP-DOOR-002…006: `CharacterMoveResult` names no blocker and `m42-oblivion-packages.sh` still needs `STRICT_FIND=1` to require the activation.
+**Phase 4 — Oblivion (wave 3).** AIP-FIND-006…008, AIP-SIT-001,
+AIP-WALK-003 (per Q5), AIP-DOOR-002…006 (AIP-DOOR-001 per Q8).
+AIP-CAST-001 and -002 were withdrawn in rev 6. Exit: the §7.2 Oblivion
+seating, chair fixture and both door cases pass, and Oblivion's procedure
+coverage is published in M42.
+
+**Open at HEAD (2026-11-24, `f683f374f`, #6662).** Package-driven door
+passage still needs a blocker in `CharacterMoveResult` and the two-case
+gate in §7.2. The existing script reports only partial Find success on
+the vanilla route, and `STRICT_FIND=1` requires container activation on
+that same route.
 
 **Measured, found in Phase 4 (2026-11-09, `Oblivion.esm`).** The five vanilla CastMagic packages do not carry a
 spell in `PTDT`. Three author a `PTDT` of type 0 (Specific Reference) naming an actor or marker
@@ -1082,15 +1138,13 @@ kind, and Soul Gems (17) are no item record.
 test (`is_havok_graph`: a graph the engine can read), not a game check, and Starfield resolves nothing through it until an
 `.agx` reader exists, which no design owns. The Phase 5 exit's Starfield walk source is therefore unmet.
 
-**Phase 5 — Starfield and FO4 locomotion.** AIP-WALK-001, AIP-WALK-002,
-AIP-WALK-004, AIP-WALK-005 (the `.agx` design, decision Q7), and the
-Starfield test of AIP-DX-004. AIP-WALK-002 depends on
-the FO4 `NVNM` body decode, which no design owns (Related; Phase 0 files
-the issue). Exit: a Starfield Cydonia actor moved by a package shows a walk
-source (`pack.ambient <id>` through `byro-dbg` names one while the actor
-moves), the Starfield real-data test reports an install rate, and an FO4
-interior Travel walk is routed (`pack.ambient` reports a non-zero waypoint
-count).
+**Phase 5 — Starfield and FO4 locomotion.** Start with the `.agx` design
+(AIP-WALK-005, Q7), then AIP-WALK-001, AIP-WALK-004, the walk animation
+source diagnostic in AIP-DX-005 and the Starfield case of AIP-DX-004.
+AIP-WALK-002 depends on the FO4 `NVNM` body decode (Related). Exit: the
+§7.2 Cydonia archive-backed animation check passes, the Starfield
+real-data test reports an install rate, and a Fallout 4 interior Travel
+walk reports a non-zero waypoint count in `pack.ambient`.
 **Open at HEAD (2026-11-22, #6663):** the Starfield walk source waits on an `.agx` reader that no design owns (AIP-WALK-001, decision Q7), and FO4 routing waits on the `NVNM` body decode: 0 of 7,894 `Fallout4.esm` blobs reconcile (AIP-WALK-002).
 
 ---
@@ -1140,12 +1194,13 @@ option.
    (Statistics). The same packages run, each one weekday off from the
    Sundas reading. Alternative: leave Skyrim+ days unevaluated (today).
    Those packages then run every day.
-   **Decided** (2026-11-03): the owner's reading, which reconciles the two
-   UESP pages by edition — Skyrim starts on 17 Last Seed 4E 201, a Morndas
-   on the launch edition (the 2011 master, as *Skyrim: Statistics* says)
-   and a Sundas on every later edition (SE / AE, *Skyrim: Unbound*'s fresh
-   start); the loader tells the editions apart by the master's HEDR version
-   (AIP-SCHED-004). FO4 and Starfield take the recommendation: the
+   **Decided** (2026-11-03): ByroRedux uses Morndas for the launch master
+   and Sundas for SE / AE, selected by the master's HEDR version
+   (AIP-SCHED-004). This is the owner's interpretation of the conflicting
+   UESP pages. **Phase 0: verify** the original-engine distinction by
+   recording each edition's fresh-start weekday and master HEDR on LE,
+   SE and AE, starting with no save previously loaded. FO4 and Starfield
+   take the recommendation: the
    Gregorian weekday of the authored start date. The owner's answer of
    2026-11-03 named Skyrim only; the owner confirmed the FO4 / Starfield
    half on 2026-11-18 (review round 3).
@@ -1241,6 +1296,7 @@ option.
 | How walk legs are routed, and the FO4 `NVNM` prerequisite | [navmesh-pathfinding.md](../engine/navmesh-pathfinding.md) |
 | Package state across tile eviction | [stream-boundary-state-continuity.md](../engine/stream-boundary-state-continuity.md) |
 | Conditions, caster runtime, ObScript package commands | [scripting.md](../engine/scripting.md) |
+| In-cell door activation and collision contract for package movers | [door-runtime.md](../engine/door-runtime.md) |
 | Per-game engine tiers | [game-compatibility.md](../engine/game-compatibility.md#per-game-support-detail) |
 | The live gates and how to run them | [docs/smoke-tests/README.md](../smoke-tests/README.md) |
 | Live milestone state and the published numbers | [ROADMAP.md](../../ROADMAP.md#tier-7--deep-gameplay-systems) |
@@ -1267,3 +1323,4 @@ option.
 | 14 | 2026-11-19 | NPC door passage scoped as AIP-DOOR (§5.11): what exists at HEAD, a four-master census of in-cell doors, the sourced door behaviour, six requirements, the unsourced behaviours as a verify item; AIP-NG-004 clarified; AIP-FIND-005 and Phase 4 reference it; decision Q8 added and decided by the owner: the door runtime gets its own PRD | claude: revise |
 | 15 | 2026-11-19 | Door Runtime PRD drafted (`door-runtime.md`, prefix `DRT`): AIP-DOOR-001 and -004 now cite it; decision Q8 links it | claude: revise |
 | 16 | 2026-11-22 | Review round 4 folded in: §5.11's door block restated against the Door Runtime design's Phase 1 status (AIP-DOOR-001 mostly delivered; the snap and the collision test are not, and AIP-DOOR-002 is unblocked for sequence doors); sit-enter on Oblivion and Skyrim SE recorded in §1, §3.1, §3.3 and §7.1; §3 re-checked at HEAD by symbol, and the `.rs` line numbers outside §12 replaced by files and symbols; §1 and §3.1's Find rows name the three FO3/FNV object types still without a class; AIP-FLG-002 gains the no-Done-state hold, the higher-priority yield and EvaluatePackage's release (GECK); new AIP-SEAT-008, the package location anchor (Near Editor Location, GECK Standard Location); §9 names what keeps Phases 0, 1, 3, 4 and 5 open; the status line trimmed and the Tracking line on one line, with the Door Runtime dependency | claude: revise |
+| 17 | 2026-11-24 | Review round 5 folded in: Oblivion target values and door gates, HEAD census and door claims, Skyrim weekday provenance, design ownership, tree classes and decline taxonomy, AIP-FIND-008, acceptance metrics, and phase exits | codex: revise |

@@ -1,6 +1,6 @@
 # Door Runtime — Product Requirements
 
-**Status**: ACTIVE (2026-11-22). Revision 9 corrects the locked-door citation; revision 8 folds in review round 2 and the owner's re-decided Q2 (a door that authors no motion snaps open); the history is §12.
+**Status**: ACTIVE (2026-11-24). Revision 10 links to the AI package passage scenarios. See §12 for the revision history.
 
 **Tracking**: #7057 (parent). Phases: #7058 (0), #7059 (1), #7060 (2), #7061 (3). Phase 0 residuals: #7062.
 
@@ -175,7 +175,7 @@ The Phase 0 census ([design §1](../engine/door-runtime.md#1-census-how-in-cell-
 A scenario passes when:
 
 1. **Fixtures:** the `cargo test -p byroredux --bin byroredux` cases named in §5 pass, with no game data.
-2. **Oblivion live:** `docs/smoke-tests/door-runtime.sh oblivion` (written in Phase 1; data: Oblivion) boots `TempleMothCatacombs02`, with the key `0009DAC6` in the player's inventory activates reference `00094D23` (the in-cell door where the Moth priest's route ends, level 10, base `0000C519`) and finds it `open`, and finds it shut without the key with the controller passing, and a door of a base that authors no motion (`ICDoorInt01`, `CastleDoor02` or `FarmHouseDoor01`) snaps open and shut (DRT-MOVE-002); and, once the AI packages PRD's AIP-DOOR-002 lands on top of this PRD, `m42-oblivion-packages.sh` with `STRICT_FIND=1` sees the priest reach and activate a container (that gate is the AI packages PRD's Phase 4 exit).
+2. **Oblivion live:** `docs/smoke-tests/door-runtime.sh oblivion` (written in Phase 1; data: Oblivion) boots `TempleMothCatacombs02`, with the key `0009DAC6` in the player's inventory activates reference `00094D23` (the in-cell door where the Moth priest's route ends, level 10, base `0000C519`) and finds it `open`, and finds it shut without the key with the controller passing, and a door of a base that authors no motion (`ICDoorInt01`, `CastleDoor02` or `FarmHouseDoor01`) snaps open and shut (DRT-MOVE-002). The [AI Packages Completion PRD acceptance scenarios](ai-packages-completion.md#72-acceptance) cover the actor's passage and refusal cases.
 3. **FNV live:** the same script with `fnv` opens one authored-sequence door and leaves a locked one shut.
 4. **Skyrim live:** the same script with `skyrim_se` opens one sequence door and leaves a locked one shut (Phase 2).
 5. **Saves:** the round-trip test of DRT-SAVE-001 passes, and `Locked` doors stay shut in each live run.
@@ -253,3 +253,4 @@ Each decision needs the project owner. The recommendation is the first option.
 | 7 | 2026-11-19 | Phase 0 census folded in: sequences are the in-cell door in every game, no door uses a behaviour graph, the swing covers a minority (Q2 premise corrected, decision stands); Skyrim and Fallout 4 phases rewritten to the sequence class; the Moth door named (reference `00094D23`, locked, key `0009DAC6`); the design document written and linked | — |
 | 8 | 2026-11-22 | Review round 2 folded in: §3 rewritten at HEAD by symbol, linking the design's Phase 1 status, and the "Today" clauses of DRT-STATE-001, -003, -004, DRT-ACT-002, -003 and DRT-SAVE-001 dropped; §1 dated to the draft; Q2 re-decided by the owner (a door that authors no motion snaps to a labelled open pose; the motion class is renamed Snap), with DRT-MOVE-002, §6 row 1, scenarios 2 and 3 and Phase 1's exit aligned; §8 points at the M66 row, its live metric counts unlocked doors, and the numbers are published there; §11 gains the design and the motion census; the CK citations name *UnlockOwnedDoorsInCell*; the status line trimmed and #7062 on the Tracking line | claude: revise |
 | 9 | 2026-11-22 | DRT-ACT-003 and §6 row 3 cite CK *Locking and Unlocking Doors* for a locked load door (owner, owning faction or key), in place of revision 8's *UnlockOwnedDoorsInCell*, which revision 8 wrongly called the only source; the in-cell case stays **Phase 0: verify** (#7062) | — |
+| 10 | 2026-11-24 | Link to the AI Packages Completion PRD for the actor's passage and refusal scenarios | — |
