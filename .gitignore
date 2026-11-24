@@ -48,3 +48,32 @@ __pycache__/
 
 # A screenshot taken from the repo root (the engine writes them under screenshots/, #6933).
 /screenshot_*.png
+
+# xWMA PRD, #7413 — the vendored FFmpeg (third_party/ffmpeg/PATCHES.md) is built out of tree by
+# crates/xwma/build.rs into cargo's OUT_DIR, which is under /target. These rules only guard against a
+# `configure` or `make` run inside the vendored tree: they cover exactly what those generate (measured on
+# the V7 build of FFmpeg 9.1) and nothing that ships in the release tarball. Re-check them on a re-vendor.
+/third_party/ffmpeg/ffmpeg-*/.version
+/third_party/ffmpeg/ffmpeg-*/config.h
+/third_party/ffmpeg/ffmpeg-*/config_components.h
+/third_party/ffmpeg/ffmpeg-*/checkasm_*_generated.h
+/third_party/ffmpeg/ffmpeg-*/ffbuild/.config
+/third_party/ffmpeg/ffmpeg-*/ffbuild/config.*
+/third_party/ffmpeg/ffmpeg-*/doc/config.texi
+/third_party/ffmpeg/ffmpeg-*/doc/examples/pc-uninstalled/
+/third_party/ffmpeg/ffmpeg-*/libav*/*.pc
+/third_party/ffmpeg/ffmpeg-*/libav*/*.version
+/third_party/ffmpeg/ffmpeg-*/libavcodec/bsf_list.c
+/third_party/ffmpeg/ffmpeg-*/libavcodec/codec_list.c
+/third_party/ffmpeg/ffmpeg-*/libavcodec/parser_list.c
+/third_party/ffmpeg/ffmpeg-*/libavdevice/indev_list.c
+/third_party/ffmpeg/ffmpeg-*/libavdevice/outdev_list.c
+/third_party/ffmpeg/ffmpeg-*/libavfilter/filter_list.c
+/third_party/ffmpeg/ffmpeg-*/libavformat/demuxer_list.c
+/third_party/ffmpeg/ffmpeg-*/libavformat/muxer_list.c
+/third_party/ffmpeg/ffmpeg-*/libavformat/protocol_list.c
+/third_party/ffmpeg/ffmpeg-*/libavutil/avconfig.h
+/third_party/ffmpeg/ffmpeg-*/libavutil/ffversion.h
+/third_party/ffmpeg/ffmpeg-*/**/*.o
+/third_party/ffmpeg/ffmpeg-*/**/*.d
+/third_party/ffmpeg/ffmpeg-*/**/*.a
