@@ -114,8 +114,9 @@ pub fn emit_item_transfers(
 }
 
 /// `EquipItem` of something the scripting crate cannot equip itself: an item with no armor biped
-/// slot (`EquipItemCatalog`), which in practice is a weapon. Weapon state (the wielded weapon, its
-/// damage and reach) is derived by the binary's inventory, so the request waits there:
+/// slot (`EquipItemCatalog`), which in practice is a weapon, or the player's shield (Hand Equipment
+/// #7398: a shield takes the left hand and a two-handed weapon off it). Weapon state (the wielded weapon,
+/// its damage and reach) is derived by the binary's inventory, so the request waits there:
 /// `(actor entity, item base FormID)`, drained by the app the frame it is raised.
 /// `NOT_SAVED_BY_DESIGN`: consumed the frame it is raised.
 #[derive(Debug, Default)]

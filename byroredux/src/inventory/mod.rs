@@ -114,6 +114,12 @@ pub(crate) fn queue_equip_by_form_id(world: &World, form_id: u32) -> Result<Stri
     queue_by_form_id(world, form_id, "equip toggle", |index, _| byroredux_native_ui::InventoryAction::ToggleEquip { index })
 }
 
+/// Queue one [`InventoryAction::EquipLeft`](byroredux_native_ui::InventoryAction::EquipLeft) for the
+/// player's first row carrying `form_id` (`inv.equip <form> left`): a one-handed weapon into the left hand.
+pub(crate) fn queue_equip_left_by_form_id(world: &World, form_id: u32) -> Result<String, String> {
+    queue_by_form_id(world, form_id, "left-hand equip toggle", |index, _| byroredux_native_ui::InventoryAction::EquipLeft { index })
+}
+
 /// Queue the menu's own `Consume` of the player's row carrying `form_id` (`inv.use`): the same door a
 /// click on "use" takes, drained by [`drain_pending_inventory_actions`].
 pub(crate) fn queue_consume_by_form_id(world: &World, form_id: u32) -> Result<String, String> {
@@ -144,7 +150,8 @@ fn queue_by_form_id(
     Ok(format!("queued {verb} of row {index} (form {form_id:08X})"))
 }
 
-/// The weapon equips scripts asked for (`player.equipitem <weapon>`, the VCG02 tutorial's rifle):
+/// The weapon equips scripts asked for (`player.equipitem <weapon>`, the VCG02 tutorial's rifle), and the
+/// player's shields (Hand Equipment #7398):
 /// the player's row for each is toggled on through the menu's own door, unless that weapon is
 /// already the wielded one. Another actor's request, or an item that is no weapon the player
 /// carries, is logged and dropped (an NPC's wielded weapon is not driven from inventory rows yet).
@@ -161,7 +168,11 @@ fn drain_script_weapon_equips(world: &mut World) {
         let is_weapon = world
             .try_resource::<InventoryCatalog>()
             .is_some_and(|catalog| catalog.entries.get(&form_id).is_some_and(|entry| entry.equip_target == Some(EquipTarget::Weapon)));
-        if !is_weapon {
+        // Hand Equipment #7398 — the player's shield comes here too, for the hand rules.
+        let is_shield = world
+            .try_resource::<byroredux_scripting::hands::HandCatalog>()
+            .is_some_and(|catalog| catalog.is_shield(form_id));
+        if !is_weapon && !is_shield {
             log::debug!("script EquipItem {form_id:08X}: not a weapon the inventory can wield");
             continue;
         }

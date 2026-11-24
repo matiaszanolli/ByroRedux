@@ -492,7 +492,7 @@ levelup [skill <Skill> <n> | perk <perk_hex> | xp <n>] → show / spend the bank
 pack.ambient [entity|.]     → why an actor runs its package: its list in priority order with schedule / conditions / install-or-decline result, and its walk source; no argument lists every ambient actor (AIP-DX-001/-005/-006)
 perk.hooks [consumed|pending|blocked|inert] → the perk entry-point catalog for the loaded game, one line per hook with its state and call site (PERK-DX-002)
 perk.compose <hook> <base> [entity|player|.] → compose a value through one perk hook: the result, each applied entry with the running value, and each held entry that did not apply with why (PERK-DX-001, -003)
-inv.equip <form_id>         → toggle a player row's equipment state through the native menu's canonical action
+inv.equip <form_id> [left]  → toggle a player row's equipment state through the native menu's canonical action; `left` wields a one-handed weapon in the left hand (Hand Equipment)
 settings.status             → report loaded gameplay settings
 setav / modav               → inspect or mutate an actor value
 quest.force <q> <alias> <e|.|0xREFR> → ReferenceAlias.ForceRefTo from the console

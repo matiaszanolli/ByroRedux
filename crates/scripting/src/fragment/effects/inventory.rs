@@ -220,6 +220,18 @@ pub(super) fn apply_inventory_effect(
                 }
                 return None;
             };
+            // Hand Equipment #7398 — a shield takes the left hand (HND-SLOT-003/-004). The player's goes
+            // through the inventory's hand rules, which also take off a two-handed weapon and keep the
+            // wielded-weapon cache; another actor's clears its left-hand weapon here.
+            let shield = world
+                .try_resource::<crate::hands::HandCatalog>()
+                .is_some_and(|catalog| catalog.is_shield(item_form_id));
+            if shield && crate::papyrus_demo::PapyrusPlayerEntity::get(world) == Some(actor) {
+                if let Some(mut pending) = world.try_resource_mut::<crate::equipment::PendingNonArmorEquips>() {
+                    pending.0.push((actor, item_form_id));
+                    return None;
+                }
+            }
             let Some((mut inventories, mut equipment)) =
                 world.query_2_mut_mut::<Inventory, EquipmentSlots>()
             else {
@@ -251,7 +263,10 @@ pub(super) fn apply_inventory_effect(
             if slots.is_equipped(index) {
                 return None;
             }
-            let displaced = slots.equip(slot_mask, index);
+            let mut displaced = slots.equip(slot_mask, index);
+            if shield {
+                displaced.extend(slots.unequip_left_hand());
+            }
             let mut changes = displaced
                 .into_iter()
                 .filter(|displaced| !slots.is_equipped(*displaced))

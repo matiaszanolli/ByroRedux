@@ -190,6 +190,10 @@ pub enum ItemKind {
         /// Armor rating × 100. Sourced from DATA on Oblivion, FNAM on FO4,
         /// and DNAM on Skyrim+. 0 on FO3/FNV, which use `dt`/`dr` instead.
         armor_rating_x100: u32,
+        /// `ETYP`, the equip slot (an `EQUP` FormID) on Skyrim and later: Skyrim's shields name its
+        /// `Shield` slot, whose one parent is `LeftHand` (Hand Equipment PRD, HND-SLOT-004); `0` on
+        /// every other armor and game.
+        equip_type: u32,
         /// Skyrim+: armor type from BOD2 second u32 — xEdit `wbArmorTypeEnum`:
         /// 0 = Light Armor, 1 = Heavy Armor, 2 = Clothing (an earlier comment had
         /// clothing and heavy swapped; the armor-rating code in `byroredux/src/armor.rs`
@@ -764,6 +768,7 @@ pub fn parse_armo(
     let mut health = 0u32;
     let mut armor_rating_x100 = 0u32;
     let mut armor_type: Option<u32> = None;
+    let mut equip_type = 0u32;
     let mut armatures: Vec<u32> = Vec::new();
     let mut female_model_path = String::new();
     let is_skyrim_or_later = matches!(
@@ -887,6 +892,10 @@ pub fn parse_armo(
             // there). On pre-Skyrim games MODL is the worn mesh path
             // string; `CommonItemFields::from_subs` already captured
             // it into `common.model_path`, so we leave it alone there.
+            // The equip slot (an embedded `EQUP` FormID), Skyrim on: the `Shield` slot on a shield.
+            b"ETYP" if is_skyrim_or_later => {
+                equip_type = remap_fid(SubReader::new(&sub.data).u32_or_default(), remap);
+            }
             b"MODL" if is_skyrim_or_later => {
                 if let Ok(id) = SubReader::new(&sub.data).u32() {
                     // #3714 — remap. `EsmIndex.armor_addons` is keyed in
@@ -966,6 +975,7 @@ pub fn parse_armo(
             dr,
             health,
             armor_rating_x100,
+            equip_type,
             armor_type,
             armatures,
         },
@@ -1143,6 +1153,7 @@ pub fn parse_clot(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>)
             dr: 0,
             health: 0,
             armor_rating_x100: 0,
+            equip_type: 0,
             armor_type: None,
             armatures: Vec::new(),
         },

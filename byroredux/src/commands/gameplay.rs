@@ -90,15 +90,21 @@ impl ConsoleCommand for InvEquipCommand {
     }
 
     fn description(&self) -> &str {
-        "Toggle the equipment state of a player inventory row (usage: inv.equip <form_id_hex>)"
+        "Toggle the equipment state of a player inventory row, `left` wielding a one-handed weapon in the left hand (usage: inv.equip <form_id_hex> [left])"
     }
 
     fn execute(&self, world: &World, args: &str) -> CommandOutput {
-        let Some(form_id) = parse_console_form_id(args.trim())
-        else {
-            return CommandOutput::error("usage: inv.equip <form_id_hex>");
+        const USAGE: &str = "usage: inv.equip <form_id_hex> [left]";
+        let mut tokens = args.split_whitespace();
+        let Some(form_id) = tokens.next().and_then(parse_console_form_id) else {
+            return CommandOutput::error(USAGE);
         };
-        match crate::inventory::queue_equip_by_form_id(world, form_id) {
+        let queued = match tokens.next() {
+            None => crate::inventory::queue_equip_by_form_id(world, form_id),
+            Some(hand) if hand.eq_ignore_ascii_case("left") => crate::inventory::queue_equip_left_by_form_id(world, form_id),
+            Some(_) => return CommandOutput::error(USAGE),
+        };
+        match queued {
             Ok(message) => CommandOutput::line(message),
             Err(error) => CommandOutput::error(format!("inv.equip: {error}")),
         }
@@ -444,6 +450,22 @@ impl ConsoleCommand for InventoryStatusCommand {
                 "  equipped_weapon=none damage={damage:.1} source=unarmed reach_bu={reach:.1} cooldown_s={cooldown:.2}"
             )),
         }
+        // Hand Equipment — each hand's item, by the CK *GetEquippedItemType* code and its base form.
+        let hand = |hand: byroredux_scripting::hands::Hand| {
+            let item = byroredux_scripting::hands::hand_item(world, player, hand);
+            let form = match item {
+                byroredux_scripting::hands::HandItem::Weapon { base, .. } | byroredux_scripting::hands::HandItem::Shield { base, .. } => {
+                    format!(" {base:08X}")
+                }
+                byroredux_scripting::hands::HandItem::Empty => String::new(),
+            };
+            format!("{}{form}", item.item_type_code())
+        };
+        lines.push(format!(
+            "  hands left={} right={}",
+            hand(byroredux_scripting::hands::Hand::Left),
+            hand(byroredux_scripting::hands::Hand::Right)
+        ));
         CommandOutput::lines(lines)
     }
 }

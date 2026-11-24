@@ -2023,7 +2023,8 @@ fn categories_table_row_count_pinned() {
     // Bumped 117 → 118 in M65 (movement_types — Skyrim / FO4 MOVT, whose `SPED` sets the sneak stance's speed).
     // Dropped 118 → 117 in #6670 (furniture_keywords — the furniture entries of placed_object_keywords, read through
     //   `EsmIndex::furniture_keywords`, so the list merge tracks one copy).
-    assert_eq!(EsmIndex::categories().len(), 117);
+    // Bumped from 117 → 118 for the Hand Equipment PRD (#7398: equip_slots for EQUP dispatch).
+    assert_eq!(EsmIndex::categories().len(), 118);
 }
 
 /// Regression test for #989 — `.STRINGS` companion file resolves lstring

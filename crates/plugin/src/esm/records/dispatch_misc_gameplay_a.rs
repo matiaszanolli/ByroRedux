@@ -134,6 +134,13 @@ pub(super) fn dispatch_misc_gameplay_a_group(
         })?,
         // Keyword editor ids: the animation-archetype keywords are told
         // apart by name (`AnimArchetype…`).
+        // Hand Equipment PRD (HND-SLOT-001) — equip slots: which body position an item takes.
+        b"EQUP" => {
+            let equp_remap = reader.get_form_id_remap();
+            extract_records(reader, end, b"EQUP", &mut |fid, subs| {
+                index.equip_slots.insert(fid, parse_equp(fid, subs, &equp_remap));
+            })?
+        }
         b"KYWD" => {
             let kywd_remap = reader.get_form_id_remap();
             extract_records(reader, end, b"KYWD", &mut |fid, subs| {

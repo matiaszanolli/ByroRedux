@@ -6795,6 +6795,7 @@ fn the_native_wave_reads_locks_doors_cells_states_shields_weapons_and_templates(
     world.insert(player, inventory);
     let mut slots = EquipmentSlots::new();
     slots.equip(1 << 9, InventoryIndex(0));
+    slots.equip_weapon(InventoryIndex(1));
     world.insert(player, slots);
     world.insert(player, EquippedWeapon { inventory_index: InventoryIndex(1), base_form_id: SWORD, damage: 7.0, reach: 1.0, speed: 1.0 });
     let door = world.spawn();
@@ -6844,6 +6845,88 @@ fn the_native_wave_reads_locks_doors_cells_states_shields_weapons_and_templates(
     crate::fragment::quest_fragment_dispatch_system(&world);
     assert_eq!(quest_property(&world, "Results"), Some(1_111_111.0), "every read answered as the CK gives it");
     assert_eq!(quest_property(&world, "Open"), Some(1.0), "an open, settled door is 1 (Open)");
+}
+
+/// Hand Equipment #7398: `GetEquippedItemType` reads each hand (0 left, 1 right) by the CK's codes and
+/// `GetEquippedWeapon(true)` the left hand's weapon; an item type other than 0 or 1 is declined by the
+/// checker.
+#[test]
+fn equipped_item_type_and_left_weapon_read_each_hand() {
+    use crate::hands::{HandCatalog, HandWeapon};
+    use byroredux_core::ecs::components::{EquipmentSlots, Inventory, InventoryIndex, ItemStack};
+    use byroredux_plugin::esm::records::SlotHands;
+    const SWORD: u32 = 0x0000_5A0D;
+    const DAGGER: u32 = 0x0000_5A0E;
+    let script = parsed_source(
+        "ScriptName QF_VmHands extends Quest\n\
+         Weapon Property Dagger Auto\n\
+         Weapon Property Sword Auto\n\
+         Int Property Left Auto\n\
+         Int Property Right Auto\n\
+         Int Property Results Auto\n\
+         Function Fragment_1()\n\
+           Actor player = Game.GetPlayer()\n\
+           Left = player.GetEquippedItemType(0)\n\
+           Right = player.GetEquippedItemType(1)\n\
+           If player.GetEquippedWeapon(true) == Dagger\n Results += 1\n EndIf\n\
+           If player.GetEquippedWeapon() == Sword\n Results += 10\n EndIf\n\
+         EndFunction\n\
+         Function Fragment_2()\n\
+           Left = Game.GetPlayer().GetEquippedItemType(2)\n\
+         EndFunction\n",
+    );
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(crate::ScriptGame(byroredux_plugin::esm::reader::GameKind::Skyrim));
+    world.insert_resource(QuestStageState::default());
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.insert_resource(crate::QuestScriptObjects::default());
+    let mut hands = HandCatalog::default();
+    hands.insert_weapon(SWORD, HandWeapon { anim_type: 1, hands: SlotHands::Right });
+    hands.insert_weapon(DAGGER, HandWeapon { anim_type: 2, hands: SlotHands::Right });
+    world.insert_resource(hands);
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    let mut inventory = Inventory::new();
+    inventory.push(ItemStack::new(SWORD, 1));
+    inventory.push(ItemStack::new(DAGGER, 1));
+    world.insert(player, inventory);
+    let mut slots = EquipmentSlots::new();
+    slots.equip_weapon(InventoryIndex(0));
+    slots.equip_left_hand(InventoryIndex(1));
+    world.insert(player, slots);
+    let object = |name: &str, form_id: u32| ScriptProperty { name: name.into(), status: 1, value: PropertyValue::Object { form_id, alias: -1 } };
+    let vmad = ScriptInstanceData {
+        version: 5,
+        object_format: 2,
+        scripts: vec![ScriptInstance {
+            name: "QF_VmHands".into(),
+            status: 0,
+            properties: vec![object("Dagger", DAGGER), object("Sword", SWORD)],
+        }],
+    };
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        fragments.insert_vmad(Q, vmad);
+        fragments.insert_vm_script(Arc::clone(&script));
+        fragments.insert(
+            Q,
+            10,
+            vec![Effect::Interpret { script: "QF_VmHands".into(), function: "Fragment_1".into(), args: Vec::new(), resume: None }],
+        );
+    }
+    if let Err(why) = crate::fragment::vm::checker::check_function_reason(Arc::clone(&script), "Fragment_1", None) {
+        panic!("{why}")
+    }
+    assert!(
+        crate::fragment::vm::checker::check_function_reason(Arc::clone(&script), "Fragment_2", None).is_err(),
+        "a hand other than 0 or 1 is declined"
+    );
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(quest_property(&world, "Left"), Some(2.0), "a dagger in the left hand");
+    assert_eq!(quest_property(&world, "Right"), Some(1.0), "a sword in the right");
+    assert_eq!(quest_property(&world, "Results"), Some(11.0), "each hand's weapon");
 }
 
 /// The second native wave: `SetScale` scales a reference, `SetRestrained` restrains an actor other than

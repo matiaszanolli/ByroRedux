@@ -62,6 +62,7 @@ pub mod trap_hit_requests;
 pub mod ownership;
 pub mod crime_knowledge;
 pub mod guards;
+pub mod hands;
 pub mod mcm;
 pub mod jail;
 pub mod weather_state;

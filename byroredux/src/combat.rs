@@ -2240,6 +2240,7 @@ mod tests {
                 dr: 0,
                 health: 300,
                 armor_rating_x100: stored,
+                equip_type: 0,
                 armor_type: Some(1),
                 female_model_path: String::new(),
                 armatures: Vec::new(),
