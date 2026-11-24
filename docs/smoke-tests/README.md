@@ -103,6 +103,7 @@ docs/smoke-tests/xct-census.sh [game]            # every unloaded actor with a c
 docs/smoke-tests/music-fo3.sh                    # FO3: cell music (public / dungeon / 1NoMusic), the exterior default, battle + recovery, level-up and death stings, the movie Hold layer (MUS scenarios 2-5)
 docs/smoke-tests/music-fnv.sh                    # FNV: Sloan's audio-marker media set by day and night, Goodsprings' Neutral then (SetFactionReaction) Enemy set, the intro's PlayBink raises no Hold (MUS scenarios 6, 5)
 docs/smoke-tests/music-oblivion.sh               # Oblivion: Public / Dungeon cell categories, StreamMusic Random on the Script layer, a missing streamed file, the death sting (MUS scenario 7)
+docs/smoke-tests/xwma-effects.sh                 # FO4: Med-Tek boot loads the default `.xwm` footstep and splash from `Fallout4 - Sounds.ba2` and `snd.failed` is empty (xWMA scenario 3); a loose root's broken `.xwm` wins over the archive's and is listed (scenario 7, loose half); does not hear audio
 docs/smoke-tests/bik-flags.sh                    # FNV: PlayBink flags reach the player (mute / pause hold in video.status); video.skip ends an interruptable movie and not another (BIK scenario 3)
 docs/smoke-tests/bik-start-sequence.sh [game]    # oblivion / skyrim_se / fo4: the start sequence from the INI / exe defaults plays to its last frame; on fo4 a Bink 2 movie with its first audio track (BIK Phase 3, scenario 4)
 docs/smoke-tests/p5-f5-f9-quicksave.sh fnv       # F5/F9 bound-input quicksave/quickload + graceful quit + validation
