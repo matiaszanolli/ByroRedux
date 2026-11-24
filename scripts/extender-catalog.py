@@ -166,10 +166,26 @@ def introduced_versions(mentions, known, papyrus):
     return found
 
 
+SCRIPT_NAME = re.compile(r"^\s*ScriptName\s+(\w+)(?:\s+extends\s+(\w+))?", re.IGNORECASE | re.MULTILINE)
+
+
 def papyrus_family(family, out_dir):
     repo, ref, whatsnew, first = PINS[family]
     sha = resolve_sha(repo, ref)
-    paths = sorted(path for path in gh_tree(repo, sha) if path.startswith("scripts/modified/") and path.endswith(".psc"))
+    tree = gh_tree(repo, sha)
+    # The game's script hierarchy, from the vanilla copies and the extender's own scripts: a call on a subclass reaches
+    # a function the extender adds to a parent (LMC-SCR-005 resolves calls by it).
+    parents = {}
+    for path in sorted(p for p in tree if p.startswith(("scripts/vanilla/", "scripts/modified/")) and p.endswith(".psc")):
+        match = SCRIPT_NAME.search(gh_raw(repo, path, sha))
+        if match and match.group(1).lower() not in {name.lower() for name in parents}:
+            parents[match.group(1)] = match.group(2) or ""
+    with open(os.path.join(out_dir, f"{family}-scripts.tsv"), "w", encoding="utf-8") as out:
+        out.write("script\tparent\n")
+        for script in sorted(parents, key=str.lower):
+            out.write(f"{script}\t{parents[script]}\n")
+    print(f"{family}: {len(parents)} scripts in the hierarchy")
+    paths = sorted(path for path in tree if path.startswith("scripts/modified/") and path.endswith(".psc"))
     rows = []
     for path in paths:
         text = gh_raw(repo, path, sha)

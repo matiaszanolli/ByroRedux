@@ -75,6 +75,145 @@ pub fn parse(table: &str) -> Vec<CatalogRow> {
         .collect()
 }
 
+/// Each game's script hierarchy (`script`, `parent`), from the vanilla scripts the extenders ship.
+const HIERARCHIES: [(&str, &str); 2] = [
+    ("skyrim", include_str!("../../../docs/data/extenders/skse64-scripts.tsv")),
+    ("fo4", include_str!("../../../docs/data/extenders/f4se-scripts.tsv")),
+];
+
+/// The catalog families a game's mods call, by the preflight's game name. Fallout 3's FOSE publishes no catalogue
+/// source the engine has read, and Starfield's SFSE no script sources, so both have none.
+pub fn families_for_game(game: &str) -> &'static [&'static str] {
+    match game {
+        "skyrim" => &["skse64"],
+        "fo4" => &["f4se"],
+        "fnv" => &["xnvse", "jip_ln", "johnnyguitar", "showoff", "lstewieal_tweaks", "sup", "knvse", "mcm"],
+        "oblivion" => &["obse"],
+        _ => &[],
+    }
+}
+
+/// `script`'s parent in `game`'s hierarchy (case-insensitive), if the game's vanilla scripts declare it.
+fn vanilla_parent(game: &str, script: &str) -> Option<&'static str> {
+    static PARSED: OnceLock<Vec<(&'static str, Vec<(String, &'static str)>)>> = OnceLock::new();
+    let parsed = PARSED.get_or_init(|| {
+        HIERARCHIES
+            .iter()
+            .map(|(game, table)| {
+                let rows = table
+                    .lines()
+                    .skip(1)
+                    .filter_map(|line| line.split_once('\t'))
+                    .map(|(script, parent)| (script.to_ascii_lowercase(), parent))
+                    .collect();
+                (*game, rows)
+            })
+            .collect()
+    });
+    let key = script.to_ascii_lowercase();
+    parsed
+        .iter()
+        .find(|(g, _)| *g == game)?
+        .1
+        .iter()
+        .find(|(name, _)| *name == key)
+        .map(|(_, parent)| *parent)
+        .filter(|parent| !parent.is_empty())
+}
+
+/// Whether `script` is one of `game`'s vanilla scripts (or one its extender adds).
+pub fn is_game_script(game: &str, script: &str) -> bool {
+    HIERARCHIES.iter().any(|(g, table)| {
+        *g == game && table.lines().skip(1).any(|line| line.split('\t').next().is_some_and(|name| name.eq_ignore_ascii_case(script)))
+    })
+}
+
+fn find_row(game: &str, script: Option<&str>, function: &str, global: Option<bool>) -> Option<&'static CatalogRow> {
+    let families = families_for_game(game);
+    rows().iter().find(|row| {
+        families.contains(&row.family.as_str())
+            && row.function.eq_ignore_ascii_case(function)
+            && match (script, &row.script) {
+                (Some(want), Some(have)) => want.eq_ignore_ascii_case(have),
+                (None, None) => true,
+                _ => false,
+            }
+            && global.is_none_or(|global| global == row.global)
+    })
+}
+
+/// The catalog row a compiled Papyrus call reaches, walking up from the receiver's declared type: through
+/// `own_parents` (the mod's scripts, by name) and the game's vanilla hierarchy. A static call names its script; a
+/// method call reaches an instance function of the receiver's type or a parent's. `None`: not an extender call, or a
+/// receiver of a type neither knows.
+pub fn resolve_pex_call(
+    game: &str,
+    call: &byroredux_pex::CallSite,
+    own_parents: &dyn Fn(&str) -> Option<String>,
+) -> Option<&'static CatalogRow> {
+    let is_static = matches!(call.target, byroredux_pex::CallTarget::StaticType(_));
+    let mut script = call.receiver_type.clone()?;
+    for _ in 0..32 {
+        if let Some(row) = find_row(game, Some(&script), &call.function, Some(is_static)) {
+            return Some(row);
+        }
+        if is_static {
+            return None;
+        }
+        script = match own_parents(&script).filter(|parent| !parent.is_empty()) {
+            Some(parent) => parent,
+            None => vanilla_parent(game, &script)?.to_owned(),
+        };
+    }
+    None
+}
+
+/// The catalogued commands an ObScript source calls: each identifier that names a command of the game's families
+/// (case-insensitive), comments and quoted strings skipped. A variable spelled like a command would be counted; NVSE
+/// and OBSE command names are rarely reused as variable names.
+pub fn obscript_source_calls(game: &str, source: &str) -> Vec<&'static CatalogRow> {
+    let families = families_for_game(game);
+    if families.is_empty() {
+        return Vec::new();
+    }
+    let mut calls = Vec::new();
+    for line in source.lines() {
+        let mut code = String::new();
+        let mut quoted = false;
+        for c in line.chars() {
+            match c {
+                '"' => quoted = !quoted,
+                ';' if !quoted => break,
+                _ if !quoted => code.push(c),
+                _ => {}
+            }
+        }
+        for word in code.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).filter(|w| !w.is_empty()) {
+            if let Some(row) = find_row(game, None, word, None) {
+                calls.push(row);
+            }
+        }
+    }
+    calls
+}
+
+/// [`served`], measured once per row.
+pub fn served_cached(row: &'static CatalogRow) -> bool {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    static CACHE: OnceLock<Mutex<HashMap<usize, bool>>> = OnceLock::new();
+    let key = row as *const CatalogRow as usize;
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(served) = cache.lock().ok().and_then(|cache| cache.get(&key).copied()) {
+        return served;
+    }
+    let value = served(row);
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(key, value);
+    }
+    value
+}
+
 /// A Papyrus signature `ret Name(type a, type b = 1)`: its return type and parameter types.
 fn papyrus_signature(signature: &str) -> Option<(String, Vec<String>)> {
     let open = signature.find('(')?;
@@ -222,6 +361,52 @@ mod tests {
         assert!(instance.contains(" int a0 = 0\n Actor akReceiver = None\n Form r = akReceiver.GetWornForm(a0)\n"), "{instance}");
         let global = probe_source(&row("Game", "GetModCount", "int GetModCount()", true)).unwrap();
         assert!(global.contains(" int r = Game.GetModCount()\n"), "{global}");
+    }
+
+    fn call(target: byroredux_pex::CallTarget, receiver: Option<&str>, function: &str) -> byroredux_pex::CallSite {
+        byroredux_pex::CallSite {
+            source_file: "Test.psc".into(),
+            object: "Test".into(),
+            scope: byroredux_pex::CallScope::StateFunction { state: String::new(), function: "F".into() },
+            instruction_index: 0,
+            source_line: None,
+            target,
+            function: function.into(),
+            argument_count: 0,
+            receiver_type: receiver.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn a_method_call_resolves_through_the_receivers_hierarchy() {
+        use byroredux_pex::CallTarget;
+        let none = |_: &str| None;
+        // SKSE adds GetName to Form; an Actor receiver reaches it through ObjectReference and Form.
+        let row = resolve_pex_call("skyrim", &call(CallTarget::Receiver(Some("akActor".into())), Some("Actor"), "GetName"), &none).unwrap();
+        assert_eq!((row.family.as_str(), row.script.as_deref(), row.function.as_str()), ("skse64", Some("Form"), "GetName"));
+        // A mod script extending Actor reaches it too, through the mod's own declaration.
+        let mine = |script: &str| script.eq_ignore_ascii_case("MyFollower").then(|| "Actor".to_owned());
+        assert!(resolve_pex_call("skyrim", &call(CallTarget::Receiver(None), Some("MyFollower"), "GetName"), &mine).is_some());
+        // A vanilla function is no extender call, and an unknown receiver type resolves nothing.
+        assert!(resolve_pex_call("skyrim", &call(CallTarget::Receiver(None), Some("Actor"), "GetActorValue"), &none).is_none());
+        assert!(resolve_pex_call("skyrim", &call(CallTarget::Receiver(None), Some("Unknown"), "GetName"), &none).is_none());
+        assert!(resolve_pex_call("skyrim", &call(CallTarget::Receiver(None), None, "GetName"), &none).is_none());
+        // A static call names its script exactly.
+        let split = resolve_pex_call("skyrim", &call(CallTarget::StaticType("StringUtil".into()), Some("StringUtil"), "Split"), &none).unwrap();
+        assert_eq!((split.script.as_deref(), split.introduced.as_str()), (Some("StringUtil"), "1.7.3"));
+        assert!(resolve_pex_call("fo4", &call(CallTarget::StaticType("StringUtil".into()), Some("StringUtil"), "Split"), &none).is_none(), "per game");
+    }
+
+    #[test]
+    fn obscript_source_calls_are_the_catalogued_commands() {
+        let calls = obscript_source_calls(
+            "fnv",
+            "scn Test\nbegin GameMode\n if IsModLoaded \"x.esp\" ; GetNVSEVersion in a comment\n  set v to GetNVSEVersion\n  PrintC \"IsModLoaded %g\" v\n endif\nend\n",
+        );
+        let names: Vec<_> = calls.iter().map(|row| row.function.as_str()).collect();
+        assert!(names.contains(&"IsModLoaded") && names.contains(&"GetNVSEVersion"), "{names:?}");
+        assert_eq!(names.iter().filter(|n| n.eq_ignore_ascii_case("IsModLoaded")).count(), 1, "not inside a string");
+        assert!(obscript_source_calls("fo3", "GetNVSEVersion").is_empty(), "no FOSE catalogue");
     }
 
     /// The coverage `docs/engine/extender-catalog.md` §5 publishes: a change to the catalog or to what the engine

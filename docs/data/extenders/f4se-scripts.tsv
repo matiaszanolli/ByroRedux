@@ -1,0 +1,114 @@
+script	parent
+Action	Form
+Activator	Form
+ActiveMagicEffect	ScriptObject
+Actor	ObjectReference
+ActorBase	Form
+ActorValue	Form
+Alias	ScriptObject
+Ammo	Form
+AOScript	Quest
+Armor	Form
+ArmorAddon	Form
+AssociationType	Form
+Book	Form
+CameraShot	Form
+Cell	Form
+Class	Form
+CombatStyle	Form
+CommonArrayFunctions	
+CommonPropertiesScript	Quest
+CompanionActorScript	Actor
+Component	Form
+ConstructibleObject	MiscObject
+Container	Form
+Debug	
+DefaultObject	Form
+DogmeatActorScript	Actor
+DogmeatIdles	Quest
+Door	Form
+EffectShader	Form
+Enchantment	Form
+EncounterZone	Form
+EquipSlot	Form
+Explosion	Form
+F4SE	
+Faction	Form
+FavoritesManager	
+Flora	Activator
+FollowersScript	Quest
+Form	ScriptObject
+FormList	Form
+Furniture	Activator
+Game	
+GlobalVariable	Form
+Hazard	Form
+HeadPart	Form
+Holotape	Form
+Idle	Form
+ImageSpaceModifier	Form
+ImpactDataSet	Form
+Ingredient	Form
+Input	
+InputEnableLayer	ScriptObject
+InstanceData	
+InstanceNamingRules	Form
+Key	MiscObject
+Keyword	Form
+LeveledActor	Form
+LeveledItem	Form
+LeveledSpell	Form
+Light	Form
+Location	Form
+LocationAlias	Alias
+LocationRefType	Keyword
+MagicEffect	Form
+Math	
+MatSwap	Form
+Message	Form
+MiscObject	Form
+MovableStatic	Static
+MusicType	Form
+ObjectMod	Form
+ObjectReference	Form
+Outfit	Form
+OutputModel	Form
+Package	Form
+Perk	Form
+Potion	Form
+Projectile	Form
+Quest	Form
+Race	Form
+RefCollectionAlias	Alias
+ReferenceAlias	Alias
+SAEClutterTriggerScript	ObjectReference
+SASTriggerScript	ObjectReference
+Scene	Form
+ScriptObject	
+Scroll	Form
+Shout	Form
+SoulGem	MiscObject
+Sound	Form
+Spell	Form
+Static	Form
+TeleportActorScript	Actor
+Terminal	Form
+TextureSet	Form
+Topic	Form
+TopicInfo	Form
+Trigger	ObjectReference
+UI	
+Utility	
+VisualEffect	Form
+VoiceType	Form
+WaterType	Form
+Weapon	Form
+Weather	Form
+WordOfPower	Form
+WorkshopDataScript	
+WorkshopNPCScript	Actor
+workshopObjectActorScript	Actor
+WorkshopObjectScript	ObjectReference
+WorkshopParentScript	Quest
+WorkshopScript	ObjectReference
+WorldSpace	Form

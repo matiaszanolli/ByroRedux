@@ -31,6 +31,10 @@ pub struct CallSite {
     pub target: CallTarget,
     pub function: String,
     pub argument_count: usize,
+    /// The receiver's declared type, where the PEX says it: the provider of a static call, the parent of a parent
+    /// call, and for a method call `Self`'s object or the declared type of the parameter, local or object variable
+    /// the receiver names (LMC-SCR-005 resolves extender calls by it). `None` when the receiver is undeclared.
+    pub receiver_type: Option<String>,
 }
 
 /// Malformed call metadata retained as an actionable preflight diagnostic.
@@ -170,6 +174,33 @@ fn target_bytes(target: &CallTarget) -> usize {
     }
 }
 
+/// The declared type of a call's receiver (see [`CallSite::receiver_type`]).
+fn receiver_type(object: &crate::Object, function: &Function, target: &CallTarget) -> Option<String> {
+    match target {
+        CallTarget::StaticType(provider) => Some(provider.clone()),
+        CallTarget::ParentType(parent) => Some(parent.clone()),
+        CallTarget::Receiver(None) => None,
+        CallTarget::Receiver(Some(variable)) => {
+            if variable.eq_ignore_ascii_case("self") {
+                return Some(object.name.clone());
+            }
+            function
+                .params
+                .iter()
+                .chain(&function.locals)
+                .find(|declared| declared.name.eq_ignore_ascii_case(variable))
+                .map(|declared| declared.type_name.clone())
+                .or_else(|| {
+                    object
+                        .variables
+                        .iter()
+                        .find(|declared| declared.name.eq_ignore_ascii_case(variable))
+                        .map(|declared| declared.type_name.clone())
+                })
+        }
+    }
+}
+
 fn scan_function(
     pex: &Pex,
     object: &crate::Object,
@@ -219,6 +250,7 @@ fn scan_function(
                 scope: scope.clone(),
                 instruction_index,
                 source_line,
+                receiver_type: receiver_type(object, function, &target),
                 target,
                 function: called_function.to_owned(),
                 argument_count: instruction.var_args.len(),
@@ -336,7 +368,7 @@ fn lookup_debug_lines<'a>(
 
 #[cfg(test)]
 mod tests {
-    use crate::{DebugInfo, FunctionInfo, Header, Object, Property, ScriptType, State};
+    use crate::{DebugInfo, FunctionInfo, Header, Object, Property, ScriptType, State, TypedName, Variable};
 
     use super::*;
 
@@ -573,6 +605,47 @@ mod tests {
         assert_eq!(
             scan.calls[2].target,
             CallTarget::ParentType("Quest".to_owned())
+        );
+    }
+
+    /// LMC-SCR-005 — each call carries its receiver's declared type: a static call's provider, a parent call's
+    /// parent, and for a method call `Self`'s object or the parameter, local or object variable it names.
+    #[test]
+    fn calls_carry_the_receivers_declared_type() {
+        let event = Function {
+            name: "OnInit".to_owned(),
+            params: vec![TypedName { name: "akActor".to_owned(), type_name: "Actor".to_owned() }],
+            locals: vec![TypedName { name: "::temp1".to_owned(), type_name: "Form".to_owned() }],
+            instructions: vec![
+                call(OpCode::CallMethod, &["GetName", "akActor", "::temp0"], 0),
+                call(OpCode::CallMethod, &["GetType", "::temp1", "::temp0"], 0),
+                call(OpCode::CallMethod, &["GetWornForm", "::Target_var", "::temp0"], 1),
+                call(OpCode::CallMethod, &["Stop", "Self", "::nonevar"], 0),
+                call(OpCode::CallMethod, &["Mystery", "undeclared", "::nonevar"], 0),
+                call(OpCode::CallStatic, &["StringUtil", "Split", "::temp0"], 2),
+                call(OpCode::CallParent, &["OnInit", "::nonevar"], 0),
+            ],
+            ..Default::default()
+        };
+        let pex = Pex {
+            script_type: ScriptType::Skyrim,
+            header: Header { source_file_name: "Typed.psc".to_owned(), ..Default::default() },
+            string_table: Vec::new(),
+            debug_info: DebugInfo::default(),
+            user_flags: Vec::new(),
+            objects: vec![Object {
+                name: "TypedQuest".to_owned(),
+                parent_class_name: "Quest".to_owned(),
+                variables: vec![Variable { name: "::Target_var".to_owned(), type_name: "Actor".to_owned(), ..Default::default() }],
+                states: vec![State { functions: vec![event], ..Default::default() }],
+                ..Default::default()
+            }],
+        };
+        let scan = pex.call_sites();
+        let types: Vec<Option<&str>> = scan.calls.iter().map(|call| call.receiver_type.as_deref()).collect();
+        assert_eq!(
+            types,
+            [Some("Actor"), Some("Form"), Some("Actor"), Some("TypedQuest"), None, Some("StringUtil"), Some("Quest")]
         );
     }
 

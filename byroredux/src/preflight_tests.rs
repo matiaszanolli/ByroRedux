@@ -80,3 +80,24 @@ fn a_mod_root_is_classified_file_by_file() {
     // The loose assets are the conflict section's sources; DLLs and INIs are not assets.
     assert_eq!(sources.keys().collect::<Vec<_>>(), vec!["meshes/clutter/apple.nif", "textures/clutter/apple.dds"]);
 }
+
+/// LMC-SCR-005 — a root's catalogued calls are reported per family: how many functions, how many the engine serves,
+/// and the unserved ones with the version that introduced them; method calls on types no table names are counted.
+#[test]
+fn catalogued_calls_are_reported_per_family_with_their_versions() {
+    let rows = byroredux_scripting::extender_catalog::rows();
+    let find = |script: &str, function: &str| {
+        rows.iter().find(|row| row.family == "skse64" && row.script.as_deref() == Some(script) && row.function == function).unwrap()
+    };
+    let mut scan = RootScan::default();
+    let split = find("StringUtil", "Split");
+    scan.add_catalog_call(split, "a.pex");
+    scan.add_catalog_call(split, "b.pex");
+    scan.add_catalog_call(find("UI", "IsMenuOpen"), "a.pex");
+    scan.unresolved_receivers = 2;
+    let lines = catalog_lines(&scan);
+    assert_eq!(lines[0], "  extender catalog (LMC-SCR-005): 2 method call(s) on receivers of a type no table names");
+    assert_eq!(lines[1], "    skse64: 2 function(s) called, 1 served, 1 not — StringUtil.Split (1.7.3)");
+    let tally = scan.catalog_calls.values().find(|t| t.row.function == "Split").unwrap();
+    assert_eq!((tally.occurrences, tally.scripts.len()), (2, 2));
+}

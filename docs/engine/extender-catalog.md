@@ -1,7 +1,7 @@
 # Extender Catalog and Version Probes — Design
 
 **Status**: DESIGN (2026-11-23). Requirements: [LMC-SCR-004, LMC-SCR-005 and LMC-SCR-010](../prd/legacy-mod-compatibility.md)
-(PRD decision Q3, owner 2026-11-03), Phase 3 (#6672) on Phase 0 data. Slice 1 is built (§5).
+(PRD decision Q3, owner 2026-11-03), Phase 3 (#6672) on Phase 0 data. Slices 1 and 2 are built (§5, §6).
 
 A mod gates on its extender's version. If the probe answers "absent" or "too old", the mod disables
 itself. The engine runs no extender binary (LMC-NG-001). It owns the script-facing surface instead,
@@ -148,4 +148,52 @@ call set per family. The preflight reports those calls that are not covered.
   counted here.
 - The ObScript families are served only through the SDK's `Native` aliases (the load-order queries),
   because the ObScript VM runs no NVSE or OBSE command.
+
+## 6. Slice 2: built (2026-11-23)
+
+**Receiver types.**
+
+- Each PEX call site now carries its receiver's declared type (`CallSite::receiver_type` in
+  `crates/pex/src/call_sites.rs`):
+  - a static call's provider;
+  - a parent call's parent;
+  - for a method call, `Self`'s object, or the parameter, local or object variable the receiver names.
+- `extender_catalog::resolve_pex_call` walks up from that type to a catalog row. The walk goes
+  through the mod's own scripts (the PEX's objects) and the game's vanilla hierarchy
+  (`docs/data/extenders/<family>-scripts.tsv`, generated from the vanilla scripts the extenders ship).
+  So an SKSE function on `Form` is reached from an `Actor` receiver, and a vanilla function is never
+  mistaken for an extender one.
+- `obscript_source_calls` matches the identifiers of an ObScript source against the game's command
+  families. Comments and strings are skipped.
+
+**The preflight.** `--preflight` folds both into each root's scan.
+
+- **The report.** A root reports per family how many functions it calls, how many the engine serves,
+  and the unserved ones with their introducing version:
+
+  ```
+    extender catalog (LMC-SCR-005): 0 method call(s) on receivers of a type no table names
+      skse64: 12 function(s) called, 3 served, 9 not — StringUtil.Split (1.7.3), …
+  ```
+
+  The JSON carries every call as `catalog_calls`, with `unresolved_receivers`.
+- **Unresolved receivers.** A method call whose receiver type is undeclared, or is a type neither the
+  mod nor the game's table names, is counted. It could be an extender call the scan cannot see.
+
+**Per game.**
+
+| Game | Families scanned |
+|---|---|
+| Skyrim | SKSE64 |
+| Fallout 4 | F4SE |
+| New Vegas | xNVSE and its plugin families |
+| Oblivion | OBSE |
+| Fallout 3 | none (no FOSE catalogue has been read) |
+| Starfield | none (SFSE publishes no script sources) |
+
+**Not yet.**
+
+- Compiled-only ObScript, a plugin's `SCDA` with no `SCTX` source, isn't matched against the catalog:
+  its NVSE opcodes wait for `mcm-host.md` §6.9's derivation.
+- The scan has run on unit fixtures only, since no mod is installed here.
 

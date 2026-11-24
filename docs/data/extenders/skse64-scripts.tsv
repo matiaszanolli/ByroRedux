@@ -1,0 +1,86 @@
+script	parent
+Activator	Form
+ActiveMagicEffect	
+Actor	ObjectReference
+ActorBase	Form
+ActorValueInfo	Form
+Alias	
+Ammo	Form
+Apparatus	MiscObject
+Armor	Form
+ArmorAddon	Form
+Art	Form
+AssociationType	Form
+Book	Form
+Camera	
+Cell	Form
+Class	Form
+ColorComponent	
+ColorForm	Form
+CombatStyle	Form
+ConstructibleObject	MiscObject
+DefaultObjectManager	Form
+EffectShader	Form
+Enchantment	Form
+EncounterZone	Form
+EquipSlot	Form
+Explosion	Form
+Faction	Form
+Flora	Activator
+Form	
+FormList	Form
+FormType	
+Game	
+GameData	
+GlobalVariable	Form
+HeadPart	Form
+Idle	Form
+ImageSpaceModifier	Form
+ImpactDataSet	Form
+Ingredient	Form
+Input	
+Key	MiscObject
+Keyword	Form
+LeveledActor	Form
+LeveledItem	Form
+LeveledSpell	Form
+Light	Form
+Location	Form
+LocationRefType	Keyword
+MagicEffect	Form
+Math	
+MiscObject	Form
+ModEvent	
+NetImmerse	
+ObjectReference	Form
+Outfit	Form
+Package	Form
+Perk	Form
+Potion	Form
+Projectile	Form
+Quest	Form
+Race	Form
+ReferenceAlias	Alias
+Scene	Form
+Scroll	Form
+Shout	Form
+SKSE	
+SoulGem	MiscObject
+Sound	Form
+SoundDescriptor	Form
+SpawnerTask	
+Spell	Form
+Static	Form
+StringUtil	
+TextureSet	Form
+Topic	Form
+TreeObject	Form
+UI	
+UICallback	
+Utility	
+VoiceType	Form
+Weapon	Form
+Weather	Form
+WordOfPower	Form
+WorldSpace	Form
+WornObject	

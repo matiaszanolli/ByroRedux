@@ -97,6 +97,36 @@ struct RootScan {
     base_game_calls: usize,
     /// (mechanism, family, function case-folded (Papyrus names are case-insensitive), disposition) → calls.
     calls: BTreeMap<(String, String, String, String), CallTally>,
+    /// LMC-SCR-005 — every call the extender catalog resolves (`docs/engine/extender-catalog.md` §2), by catalog row.
+    catalog_calls: BTreeMap<CatalogKey, CatalogTally>,
+    /// Method calls whose receiver's declared type neither the mod's scripts nor the game's hierarchy names.
+    unresolved_receivers: usize,
+}
+
+/// (family, script or `-`, function), case-folded.
+type CatalogKey = (String, String, String);
+
+/// One catalogued function a root's scripts call.
+struct CatalogTally {
+    row: &'static byroredux_scripting::extender_catalog::CatalogRow,
+    served: bool,
+    occurrences: usize,
+    scripts: BTreeSet<String>,
+}
+
+impl RootScan {
+    /// LMC-SCR-005 — fold one catalogued call in.
+    fn add_catalog_call(&mut self, row: &'static byroredux_scripting::extender_catalog::CatalogRow, script: &str) {
+        let key = (row.family.clone(), row.script.clone().unwrap_or_else(|| "-".into()).to_lowercase(), row.function.to_lowercase());
+        let tally = self.catalog_calls.entry(key).or_insert_with(|| CatalogTally {
+            row,
+            served: byroredux_scripting::extender_catalog::served_cached(row),
+            occurrences: 0,
+            scripts: BTreeSet::new(),
+        });
+        tally.occurrences += 1;
+        tally.scripts.insert(script.to_owned());
+    }
 }
 
 impl RootScan {
@@ -308,6 +338,12 @@ fn scan_root(
             for script in index.scripts.values() {
                 scan.obscript_scripts += 1;
                 let label = format!("{name} SCPT {}", script.editor_id);
+                // LMC-SCR-005 — the catalogued commands its source names.
+                if let Some(source) = script.source.as_deref() {
+                    for row in byroredux_scripting::extender_catalog::obscript_source_calls(game, source) {
+                        scan.add_catalog_call(row, &label);
+                    }
+                }
                 let report = match (script.source.as_deref(), dialect) {
                     (Some(source), _) => byroredux_scripting::compatibility::analyze_obscript_compatibility(&script.editor_id, source),
                     (None, Some(dialect)) => byroredux_scripting::compatibility::analyze_obscript_bytecode_compatibility(
@@ -362,7 +398,28 @@ fn scan_archive(
 fn scan_papyrus(game: &str, label: &str, bytes: &[u8], scan: &mut RootScan) {
     scan.papyrus_scripts += 1;
     match byroredux_pex::parse(bytes) {
-        Ok(pex) => scan.add_report(game, label, &byroredux_scripting::compatibility::analyze_pex_compatibility(&pex)),
+        Ok(pex) => {
+            scan.add_report(game, label, &byroredux_scripting::compatibility::analyze_pex_compatibility(&pex));
+            // LMC-SCR-005 — every call resolved against the extender catalog, through the receiver's declared type.
+            let own = |script: &str| {
+                pex.objects.iter().find(|object| object.name.eq_ignore_ascii_case(script)).map(|object| object.parent_class_name.clone())
+            };
+            for call in pex.call_sites().calls {
+                if let Some(row) = byroredux_scripting::extender_catalog::resolve_pex_call(game, &call, &own) {
+                    scan.add_catalog_call(row, label);
+                    continue;
+                }
+                // A method call on a receiver of a type no table names could be an extender call the scan cannot see.
+                let unknown = match (&call.target, call.receiver_type.as_deref()) {
+                    (byroredux_pex::CallTarget::Receiver(_), None) => true,
+                    (byroredux_pex::CallTarget::Receiver(_), Some(ty)) => {
+                        own(ty).is_none() && !byroredux_scripting::extender_catalog::is_game_script(game, ty)
+                    }
+                    _ => false,
+                };
+                scan.unresolved_receivers += usize::from(unknown);
+            }
+        }
         Err(error) => scan.unclassified.push(format!("{label}: not a readable compiled script: {error}")),
     }
 }
@@ -457,6 +514,7 @@ fn report_lines(
                 tally.scripts.len()
             ));
         }
+        lines.extend(catalog_lines(scan));
         if scan.not_game_data > 0 {
             lines.push(format!("  not game data (documentation, installer files): {}", scan.not_game_data));
         }
@@ -485,6 +543,46 @@ fn report_lines(
         format!("preflight: {unclassified} unclassified item(s) — the catalog has no entry for them (§7.3 rule 2)")
     });
     lines
+}
+
+/// LMC-SCR-005 — a root's catalogued calls per family: how many functions it calls, how many the engine serves, and
+/// the unserved ones with the version that introduced them.
+fn catalog_lines(scan: &RootScan) -> Vec<String> {
+    let mut families: BTreeMap<&str, Vec<&CatalogTally>> = BTreeMap::new();
+    for tally in scan.catalog_calls.values() {
+        families.entry(tally.row.family.as_str()).or_default().push(tally);
+    }
+    let mut lines = Vec::new();
+    if !families.is_empty() || scan.unresolved_receivers > 0 {
+        lines.push(format!(
+            "  extender catalog (LMC-SCR-005): {} method call(s) on receivers of a type no table names",
+            scan.unresolved_receivers
+        ));
+    }
+    for (family, tallies) in families {
+        let served = tallies.iter().filter(|t| t.served).count();
+        let unserved: Vec<String> = tallies
+            .iter()
+            .filter(|t| !t.served)
+            .take(EXAMPLES * 2)
+            .map(|t| format!("{} ({})", qualified(t.row), t.row.introduced))
+            .collect();
+        lines.push(format!(
+            "    {family}: {} function(s) called, {served} served, {} not{}",
+            tallies.len(),
+            tallies.len() - served,
+            if unserved.is_empty() { String::new() } else { format!(" — {}", unserved.join(", ")) }
+        ));
+    }
+    lines
+}
+
+/// A catalog row as a script writes it.
+fn qualified(row: &byroredux_scripting::extender_catalog::CatalogRow) -> String {
+    match &row.script {
+        Some(script) => format!("{script}.{}", row.function),
+        None => row.function.clone(),
+    }
 }
 
 fn report_json(
@@ -516,7 +614,19 @@ fn report_json(
                     })
                 })
                 .collect();
+            let catalog_calls: Vec<serde_json::Value> = scan
+                .catalog_calls
+                .values()
+                .map(|t| {
+                    serde_json::json!({
+                        "family": t.row.family, "function": qualified(t.row), "introduced": t.row.introduced,
+                        "introduced_source": t.row.introduced_source, "served": t.served,
+                        "occurrences": t.occurrences, "scripts": t.scripts.len(),
+                    })
+                })
+                .collect();
             serde_json::json!({
+                "catalog_calls": catalog_calls, "unresolved_receivers": scan.unresolved_receivers,
                 "root": scan.label, "unmanaged": scan.unmanaged, "disabled": scan.disabled, "files": scan.files,
                 "mechanisms": mechanisms, "calls": calls, "papyrus_scripts": scan.papyrus_scripts,
                 "obscript_scripts": scan.obscript_scripts, "base_game_calls": scan.base_game_calls,

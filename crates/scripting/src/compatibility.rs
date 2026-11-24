@@ -258,6 +258,7 @@ pub fn analyze_obscript_compatibility(source_file: &str, source_text: &str) -> C
                             target: CallTarget::StaticType(provider.to_owned()),
                             function: command.to_owned(),
                             argument_count: 0,
+                            receiver_type: None,
                         },
                         compatibility,
                     });
@@ -335,6 +336,7 @@ pub fn analyze_obscript_bytecode_compatibility(
                     target: CallTarget::StaticType(provider.to_owned()),
                     function: call.command.to_owned(),
                     argument_count: obscript_argument_count(call.command),
+                    receiver_type: None,
                 },
                 compatibility,
             })
