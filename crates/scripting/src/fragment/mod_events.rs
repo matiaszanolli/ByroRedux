@@ -1,7 +1,7 @@
 //! SKSE's mod events for the Papyrus VM (LMC-SCR-004 catalog growth, `docs/engine/extender-catalog.md` §11):
 //! `RegisterForModEvent(eventName, callbackName)`, `UnregisterForModEvent(eventName)`, `UnregisterForAllModEvents()`
-//! and `SendModEvent(eventName, strArg = "", numArg = 0.0)` on the script's own object, and the events that reach
-//! the registered callbacks.
+//! and `SendModEvent(eventName, strArg = "", numArg = 0.0)` on the script's own object, the handle builder
+//! (`ModEvent.Create` / `Push*` / `Send` / `Release`), and the events that reach the registered callbacks.
 //!
 //! SKSE64 at the catalog's pinned commit:
 //! - `Form.psc`: the callback is `Event Callback(string eventName, string strArg, float numArg, Form sender)`;
@@ -10,6 +10,9 @@
 //!   (`g_modCallbackRegs.Register(eventName, handle, callbackName)`), so it is one per object and event, a second
 //!   registration replaces its callback, and every script attached to the object with that function hears it;
 //!   `SendModEvent` sends with the object as `sender`;
+//! - `PapyrusModEvent.cpp`: `Create` stores the builder in SKSE's object storage (a global handle, `0` on failure),
+//!   `Push*` appends a typed argument, `Send` takes the builder, queues its arguments to every registration and
+//!   answers true, `Release` drops it; the storage is saved (`OBMG`), so a builder survives a save and load;
 //! - `InternalSerialization.cpp` saves the registrations (`MCBR`) and loads them back, so they are saved here.
 //!   `Form.psc`'s comment says they "have to be refreshed after each game load"; scripts that follow it register
 //!   again, which changes nothing.
@@ -75,6 +78,14 @@ impl ModEventRegistrations {
         }
     }
 }
+
+/// The builders `ModEvent.Create` made and `Send` or `Release` has not taken yet, one store for the whole session as
+/// SKSE's object storage is (the SDK's [`LegacySkseModEventBuilders`] bounds them). Saved.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "save", derive(serde::Serialize, serde::Deserialize))]
+pub struct VmModEventBuilders(pub byroredux_sdk::event::LegacySkseModEventBuilders);
+
+impl Resource for VmModEventBuilders {}
 
 /// The mod events waiting for the VM's registrations. Transient: a load starts empty.
 #[derive(Debug, Clone, Default)]
@@ -154,14 +165,21 @@ pub fn vm_mod_event_system(world: &World, _dt: f32) {
     }
 }
 
-/// One `SendModEvent` a VM run made, sent after the run's guards drop.
+/// What a VM run sends.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum ModEventPayload {
+    /// `SendModEvent(event, strArg, numArg)`: the sender is the sending object.
+    Fixed { event: String, string_arg: String, number_arg: f32 },
+    /// A `ModEvent` builder, taken by `Send`.
+    Built(byroredux_sdk::event::PublishEventCommand),
+}
+
+/// One send a VM run made, published after the run's guards drop.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct ModEventSend {
     pub(super) script: String,
     pub(super) owner: u32,
-    pub(super) event: String,
-    pub(super) string_arg: String,
-    pub(super) number_arg: f32,
+    pub(super) payload: ModEventPayload,
 }
 
 /// Send what VM runs asked for: through the extension host's bus when there is one, else to both lanes directly.
@@ -169,22 +187,27 @@ pub(super) fn send_mod_events(world: &World, sends: Vec<ModEventSend>) {
     for send in sends {
         let principal = world.try_resource::<crate::script_sources::ScriptSourceIndex>().and_then(|sources| sources.0.principal_of(world, &send.script));
         let Some(principal) = principal else {
-            log::warn!("SendModEvent(\"{}\") from {}: a script no source holds has no principal, not sent", send.event, send.script);
+            log::warn!("a mod event from {}: a script no source holds has no principal, not sent", send.script);
             continue;
         };
-        let sender = world.try_resource::<crate::LoadOrderIdentity>().and_then(|identity| identity.form_ref(send.owner));
-        let command = match byroredux_sdk::compatibility::adapt_legacy_send_mod_event(&send.event, send.string_arg, send.number_arg, sender) {
-            Ok(command) => command,
-            Err(error) => {
-                log::warn!("SendModEvent(\"{}\") from {}: {error}", send.event, send.script);
-                continue;
+        let command = match send.payload {
+            ModEventPayload::Built(command) => command,
+            ModEventPayload::Fixed { event, string_arg, number_arg } => {
+                let sender = world.try_resource::<crate::LoadOrderIdentity>().and_then(|identity| identity.form_ref(send.owner));
+                match byroredux_sdk::compatibility::adapt_legacy_send_mod_event(&event, string_arg, number_arg, sender) {
+                    Ok(command) => command,
+                    Err(error) => {
+                        log::warn!("SendModEvent(\"{event}\") from {}: {error}", send.script);
+                        continue;
+                    }
+                }
             }
         };
         let publisher = world.try_resource::<crate::PapyrusProviderRuntime>().and_then(|runtime| runtime.mod_event_publisher());
         match publisher {
             Some(publisher) => {
                 if let Err(error) = publisher(&principal, command) {
-                    log::warn!("SendModEvent(\"{}\") from {}: {error}", send.event, send.script);
+                    log::warn!("a mod event from {}: {error}", send.script);
                 }
             }
             None => {
@@ -202,12 +225,14 @@ pub(super) fn send_mod_events(world: &World, sends: Vec<ModEventSend>) {
 pub(super) fn register_saved(registry: &mut byroredux_save::SaveRegistry) {
     // LMC-SCR-004 — SKSE's mod-event registrations (SKSE's co-save keeps them).
     registry.register_resource::<ModEventRegistrations>("ModEventRegistrations");
+    registry.register_resource::<VmModEventBuilders>("VmModEventBuilders");
 }
 
 /// This subsystem's world setup.
 pub(super) fn install_mod_events(world: &mut byroredux_core::ecs::World) {
     world.init_resource::<ModEventRegistrations>();
     world.init_resource::<VmModEventInbox>();
+    world.insert_resource(VmModEventBuilders(byroredux_sdk::event::LegacySkseModEventBuilders::new()));
 }
 
 #[cfg(test)]

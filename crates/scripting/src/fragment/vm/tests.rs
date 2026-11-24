@@ -8436,3 +8436,223 @@ fn skse_mod_events_reach_their_callbacks() {
     assert_eq!(variable(&world, "Got"), Some(1.0), "unregistered: the second send is not heard");
     assert_eq!(variable(&world, "Number"), Some(2.5));
 }
+
+/// LMC-SCR-004 catalog growth: SKSE's `ModEvent` builder. A quest script builds an event with an int, a float, a
+/// string, a bool and a form, sends it, and the callback registered on the same object receives exactly those
+/// values; `Send` answers true once and false for the taken handle; a released builder sends nothing; the handle is
+/// 0 for an empty name. A bad handle is ignored.
+#[test]
+fn skse_mod_event_builder_delivers_its_pushed_values() {
+    use crate::script_sources::{ScriptSourceIndex, ScriptSources};
+    use byroredux_sdk::identity::PrincipalId;
+    struct OneMod;
+    impl ScriptSources for OneMod {
+        fn source_of(&self, _: &World, _: &str) -> Option<usize> {
+            Some(0)
+        }
+        fn scripts(&self, _: &World, _: usize) -> Vec<Vec<u8>> {
+            Vec::new()
+        }
+        fn principal_of(&self, _: &World, _: &str) -> Option<PrincipalId> {
+            PrincipalId::new("org.example.mymod").ok()
+        }
+    }
+    let script = parsed_source(
+        "ScriptName QF_VmBuilder extends Quest\n\
+         Int Property Heard Auto\n\
+         Int Property Sent Auto\n\
+         Int Property Misc Auto\n\
+         Float Property Ratio Auto\n\
+         Function Fragment_1()\n\
+           RegisterForModEvent(\"MyMod_Built\", \"OnBuilt\")\n\
+           Int handle = ModEvent.Create(\"MyMod_Built\")\n\
+           ModEvent.PushInt(handle, 41)\n\
+           ModEvent.PushFloat(handle, 1.5)\n\
+           ModEvent.PushString(handle, \"label\")\n\
+           ModEvent.PushBool(handle, True)\n\
+           ModEvent.PushForm(handle, Game.GetPlayer())\n\
+           If ModEvent.Send(handle)\n Sent += 1\n EndIf\n\
+           If !ModEvent.Send(handle)\n Sent += 10\n EndIf\n\
+           Int dropped = ModEvent.Create(\"MyMod_Built\")\n\
+           ModEvent.PushInt(dropped, 1)\n\
+           ModEvent.Release(dropped)\n\
+           If !ModEvent.Send(dropped)\n Misc += 1\n EndIf\n\
+           If ModEvent.Create(\"\") == 0\n Misc += 10\n EndIf\n\
+           ModEvent.PushInt(0, 5)\n\
+           ModEvent.Release(-3)\n\
+         EndFunction\n\
+         Event OnBuilt(Int count, Float scale, String label, Bool flag, Form who)\n\
+           If count == 41 && label == \"label\" && flag && who == Game.GetPlayer()\n Heard += 1\n EndIf\n\
+           Ratio = scale\n\
+         EndEvent\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+    let mut world = world_with_fragment(script);
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.insert_resource(ScriptSourceIndex(Box::new(OneMod)));
+    // The player's form is Skyrim.esm's, so a pushed form is a load-order reference and comes back the same form.
+    world.insert_resource(crate::LoadOrderIdentity::new(vec![(
+        byroredux_plugin::esm::reader::GlobalSlot::Regular(0),
+        byroredux_core::form_id::PluginId::from_filename("Skyrim.esm"),
+    )]));
+    world.resource_mut::<crate::QuestStageFragments>().insert_vmad(
+        Q,
+        ScriptInstanceData {
+            version: 5,
+            object_format: 2,
+            scripts: vec![ScriptInstance { name: "QF_VmBuilder".into(), status: 0, properties: Vec::new() }],
+        },
+    );
+    world.resource_mut::<crate::QuestStageFragments>().insert(
+        Q,
+        10,
+        vec![Effect::Interpret { script: "QF_VmBuilder".into(), function: "Fragment_1".into(), args: Vec::new(), resume: None }],
+    );
+    let variable = |world: &World, name: &str| {
+        world.resource::<crate::QuestScriptVariables>().get(Q, crate::QuestScriptVariables::property_key(name))
+    };
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(variable(&world, "Sent"), Some(11.0), "the first Send is true, the taken handle's is false");
+    assert_eq!(variable(&world, "Misc"), Some(11.0), "a released builder is gone; an empty name gives handle 0");
+    assert!(world.resource::<crate::VmModEventBuilders>().0.is_empty(), "every builder was taken or released");
+    crate::fragment::vm_mod_event_system(&world, 0.0);
+    crate::fragment::fragment_continuation_system(&world, 0.0);
+    assert_eq!(variable(&world, "Heard"), Some(1.0), "the callback received the pushed values, once");
+    assert_eq!(variable(&world, "Ratio"), Some(1.5));
+}
+
+/// An alias script and a reference script register, send and hear mod events: the registrations ride their own
+/// object (an alias's owner id), and the check accepts the calls on `Self` as an alias and as a reference.
+#[test]
+fn alias_and_reference_scripts_pass_the_mod_event_checks() {
+    let script = parsed_source(
+        "ScriptName VmAliasModEvents extends ReferenceAlias\n\
+         Event OnInit()\n\
+           RegisterForModEvent(\"MyMod_Ready\", \"OnReady\")\n\
+           UnregisterForModEvent(\"Other\")\n\
+           SendModEvent(\"MyMod_Hello\", \"x\", 1.0)\n\
+         EndEvent\n\
+         Event OnReady(String eventName, String strArg, Float numArg, Form sender)\n\
+         EndEvent\n",
+    );
+    let alias = crate::check_alias_script(Arc::clone(&script), &["oninit"], None);
+    assert!(alias.is_ok(), "an alias script registers: {alias:?}");
+    let reference = crate::check_reference_script(Arc::clone(&script), &["oninit"], None);
+    assert!(reference.is_ok(), "a reference script (an effect's too) registers: {reference:?}");
+}
+
+/// LMC-SCR-004 catalog growth: a helper registers *another* object for a mod event
+/// (`akReceiver.RegisterForModEvent(...)`, Campfire's `FallbackEventEmitter`). The registration is the other quest's:
+/// its callback hears an event sent from anywhere, the registering quest does not, and `UnregisterForModEvent` on the
+/// other object undoes it. An alias receiver passes the check, and an alias with no scripts registers nothing.
+#[test]
+fn registering_another_object_for_a_mod_event_registers_that_object() {
+    use crate::script_sources::{ScriptSourceIndex, ScriptSources};
+    use byroredux_sdk::identity::PrincipalId;
+    const OTHER: QuestFormId = QuestFormId(0x0100_0F00);
+    struct OneMod;
+    impl ScriptSources for OneMod {
+        fn source_of(&self, _: &World, _: &str) -> Option<usize> {
+            Some(0)
+        }
+        fn scripts(&self, _: &World, _: usize) -> Vec<Vec<u8>> {
+            Vec::new()
+        }
+        fn principal_of(&self, _: &World, _: &str) -> Option<PrincipalId> {
+            PrincipalId::new("org.example.mymod").ok()
+        }
+    }
+    let helper = parsed_source(
+        "ScriptName QF_VmEmitter extends Quest\n\
+         Quest Property Other Auto\n\
+         ReferenceAlias Property SomeAlias Auto\n\
+         Int Property Own Auto\n\
+         Function Fragment_1()\n\
+           Other.RegisterForModEvent(\"MyMod_Ping\", \"OnPing\")\n\
+           SomeAlias.RegisterForModEvent(\"MyMod_Ping\", \"OnPing\")\n\
+           SendModEvent(\"MyMod_Ping\", \"a\")\n\
+         EndFunction\n\
+         Function Fragment_2()\n\
+           Other.UnregisterForModEvent(\"mymod_ping\")\n\
+           SendModEvent(\"MyMod_Ping\", \"b\")\n\
+         EndFunction\n\
+         Event OnPing(String eventName, String strArg, Float numArg, Form sender)\n\
+           Own += 1\n\
+         EndEvent\n",
+    );
+    let listener = parsed_source(
+        "ScriptName QF_VmListener extends Quest\n\
+         Int Property Heard Auto\n\
+         Event OnPing(String eventName, String strArg, Float numArg, Form sender)\n\
+           Heard += 1\n\
+         EndEvent\n",
+    );
+    for fragment in ["Fragment_1", "Fragment_2"] {
+        assert_eq!(check_function_reason(Arc::clone(&helper), fragment, None).err(), None);
+    }
+    let mut world = world_with_fragment(Arc::clone(&helper));
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.insert_resource(ScriptSourceIndex(Box::new(OneMod)));
+    let object = |name: &str, form_id: u32, alias: i16| ScriptProperty {
+        name: name.into(),
+        status: 1,
+        value: PropertyValue::Object { form_id, alias },
+    };
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        fragments.insert_vmad(
+            Q,
+            ScriptInstanceData {
+                version: 5,
+                object_format: 2,
+                scripts: vec![ScriptInstance {
+                    name: "QF_VmEmitter".into(),
+                    status: 0,
+                    properties: vec![object("Other", OTHER.0, -1), object("SomeAlias", Q.0, 3)],
+                }],
+            },
+        );
+        fragments.insert_vmad(
+            OTHER,
+            ScriptInstanceData {
+                version: 5,
+                object_format: 2,
+                scripts: vec![ScriptInstance { name: "QF_VmListener".into(), status: 0, properties: Vec::new() }],
+            },
+        );
+        fragments.insert_vm_script(Arc::clone(&listener));
+        fragments.insert(
+            Q,
+            20,
+            vec![Effect::Interpret { script: "QF_VmEmitter".into(), function: "Fragment_2".into(), args: Vec::new(), resume: None }],
+        );
+        fragments.insert(
+            Q,
+            10,
+            vec![Effect::Interpret { script: "QF_VmEmitter".into(), function: "Fragment_1".into(), args: Vec::new(), resume: None }],
+        );
+    }
+    world.resource_mut::<QuestStageState>().set_stage(OTHER, 1);
+    let variable = |world: &World, quest: QuestFormId, name: &str| {
+        world.resource::<crate::QuestScriptVariables>().get(quest, crate::QuestScriptVariables::property_key(name))
+    };
+    let deliver = |world: &World| {
+        crate::fragment::vm_mod_event_system(world, 0.0);
+        crate::fragment::fragment_continuation_system(world, 0.0);
+    };
+
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    let registrations = world.resource::<crate::fragment::ModEventRegistrations>().entries().to_vec();
+    assert_eq!(registrations.iter().map(|r| r.owner).collect::<Vec<_>>(), [OTHER.0], "the other quest alone; the unscripted alias none");
+    deliver(&world);
+    assert_eq!(variable(&world, OTHER, "Heard"), Some(1.0), "the other quest's callback heard the event");
+    assert_eq!(variable(&world, Q, "Own"), None, "the sender registered nothing itself");
+
+    world.resource_mut::<QuestStageState>().set_stage(Q, 20);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert!(world.resource::<crate::fragment::ModEventRegistrations>().entries().is_empty());
+    deliver(&world);
+    assert_eq!(variable(&world, OTHER, "Heard"), Some(1.0), "unregistered on the other object");
+}

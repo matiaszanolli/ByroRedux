@@ -89,7 +89,7 @@ pub(crate) use dispatch::{flush_advances, run_papyrus_call};
 pub use anim_events::*;
 pub use hits::*;
 pub use menu_events::*;
-pub use mod_events::{queue_vm_mod_event, vm_mod_event_system, ModEventRegistration, ModEventRegistrations, VmModEventInbox};
+pub use mod_events::{queue_vm_mod_event, vm_mod_event_system, ModEventRegistration, ModEventRegistrations, VmModEventBuilders, VmModEventInbox};
 pub use input_events::{deliver_input_events, HeldKeys, InputBinding, InputEventRegistration, InputEventRegistrations, InputFrame};
 pub use external_events::{reset_external_events, send_external_event, ExternalEventRegistration, ExternalEventRegistrations};
 pub use events::{EventRegistration, EventRegistrations, EventRequest, REMOTE_EVENTS};
@@ -190,6 +190,7 @@ pub(crate) const SOURCES: &str = concat!(
     include_str!("fragment/vm/natives/reference.rs"),
     include_str!("fragment/vm/natives/scanning.rs"),
     include_str!("fragment/vm/natives/skse_form.rs"),
+    include_str!("fragment/vm/natives/skse_mod_event.rs"),
     include_str!("fragment/vm/natives/skse_util.rs"),
 );
 

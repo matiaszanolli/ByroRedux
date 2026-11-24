@@ -33,6 +33,8 @@ const STABLE: &[&str] = &[
     "InputEventRegistrations",
     // LMC-SCR-004 — SKSE's mod-event registrations: the owner is a stable FormID.
     "ModEventRegistrations",
+    // LMC-SCR-004 — the `ModEvent` builders hold forms as `FormRef` (plugin identity + local id).
+    "VmModEventBuilders",
     // Hand Equipment #7399 — the hands' readied spells (`left_spell` / `right_spell`), stable FormIDs.
     "EquipmentSlots",
     // Restored before the cell reload (`PRE_RELOAD_RESOURCES`): the live load reloads the session's own plugins, so

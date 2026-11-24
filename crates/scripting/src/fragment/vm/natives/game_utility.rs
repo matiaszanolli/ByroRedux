@@ -72,6 +72,10 @@ impl Vm<'_> {
         if super::skse_util::is_skse_util(class, name) {
             return self.read_skse_util(frame, class, name, args);
         }
+        // SKSE's `ModEvent` handle builder.
+        if class == "modevent" {
+            return self.read_mod_event_builder(frame, name, args);
+        }
         // SKSE's `Input` key-state reads, from the keys the host holds this frame (ascending codes, as SKSE64's
         // `DIHookControl` walks them).
         if class == "input" && matches!(name, "iskeypressed" | "getnumkeyspressed" | "getnthkeypressed") {
@@ -295,6 +299,9 @@ impl Checker<'_> {
         }
         if class == "stringutil" || super::skse_util::is_skse_util(class, name) {
             return self.check_skse_util(class, name, arg_kinds.len());
+        }
+        if class == "modevent" {
+            return self.check_mod_event_builder(name, arg_kinds, statement);
         }
         if class == "input" {
             let numeric = |arg: &Arg| matches!(arg, Arg::Literal(Expr::IntLit(_)) | Arg::Kind(Kind::Num));

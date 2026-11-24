@@ -309,7 +309,7 @@ pub(super) fn static_class(e: &Expr) -> Option<&str> {
     let Expr::Ident(name) = e else {
         return None;
     };
-    ["game", "utility", "debug", "math", "weather", "mcmhost", "mcmhelper", "jsonutil", "storageutil", "skse", "f4se", "stringutil", "input"]
+    ["game", "utility", "debug", "math", "weather", "mcmhost", "mcmhelper", "jsonutil", "storageutil", "skse", "f4se", "stringutil", "input", "modevent"]
         .into_iter()
         .chain(super::natives::JC_CLASSES.iter().copied())
         .find(|class| name.0.eq_ignore_ascii_case(class))

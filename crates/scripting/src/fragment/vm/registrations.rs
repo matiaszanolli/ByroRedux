@@ -300,7 +300,7 @@ impl Vm<'_> {
     /// SKSE's `RegisterForModEvent` / `UnregisterForModEvent` / `UnregisterForAllModEvents` / `SendModEvent` on the
     /// script's own object (see [`crate::fragment::ModEventRegistrations`]).
     pub(super) fn mod_event_call(&mut self, frame: &mut Frame, name: &str, args: &[CallArg]) -> Run<()> {
-        use crate::fragment::mod_events::{ModEventRequest, ModEventSend};
+        use crate::fragment::mod_events::{ModEventPayload, ModEventRequest, ModEventSend};
         let values = self.eval_args(frame, args)?;
         let text = |index: usize| match values.get(index) {
             Some(Value::Str(text)) => Some(text.clone()),
@@ -328,9 +328,11 @@ impl Vm<'_> {
                 self.deferred.mod_event_sends.push(ModEventSend {
                     script: frame.script.name.node.0.clone(),
                     owner,
-                    event,
-                    string_arg: text(1).unwrap_or_default(),
-                    number_arg: values.get(2).and_then(Value::number).unwrap_or(0.0),
+                    payload: ModEventPayload::Fixed {
+                        event,
+                        string_arg: text(1).unwrap_or_default(),
+                        number_arg: values.get(2).and_then(Value::number).unwrap_or(0.0),
+                    },
                 });
             }
         }

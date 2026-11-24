@@ -1137,6 +1137,7 @@ impl<'l> Checker<'l> {
             Self::check_destruction,
             Self::check_scanning,
             Self::check_skse_form,
+            Self::check_mod_event_other,
         ];
         for check in families {
             if let Some(kind) = check(self, receiver_kind, &name, &arg_kinds, statement) {

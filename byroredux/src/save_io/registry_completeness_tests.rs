@@ -1629,7 +1629,8 @@ fn the_schema_fingerprint_is_pinned() {
     // LMC-SCR-004 — `InputEventRegistrations` (SKSE's and F4SE's key, control and menu registrations) joined the
     // registry as a new resource column, registered after `MenuEventRegistrations`.
     // LMC-SCR-004 — `ModEventRegistrations` (SKSE's mod-event registrations) joined after `InputEventRegistrations`.
-    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0x9c36_59d1_0cce_8ce0;
+    // LMC-SCR-004 — `VmModEventBuilders` (the `ModEvent` handle builders) joined after `ModEventRegistrations`.
+    const BASELINE_SCHEMA_FINGERPRINT: u64 = 0xa7cf_8548_d69f_be27;
     let actual = build_save_registry().schema_fingerprint();
     assert_eq!(
         actual, BASELINE_SCHEMA_FINGERPRINT,

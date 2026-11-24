@@ -127,7 +127,7 @@ call set per family. The preflight reports those calls that are not covered.
 
 | Family | Functions | Dated by a changelog or wiki | VM | SDK | Served |
 |---|---|---|---|---|---|
-| SKSE64 | 804 | 67 | 76 | 21 | 87 |
+| SKSE64 | 804 | 67 | 90 | 21 | 93 |
 | F4SE | 227 | 13 | 19 | 3 | 22 |
 | xNVSE | 565 | 50 | 0 | 4 | 4 |
 | JIP LN | 733 | 0 | 0 | 0 | 0 |
@@ -145,6 +145,8 @@ call set per family. The preflight reports those calls that are not covered.
   function that shares a name with a vanilla native of another class counts as served:
   `ActorValueInfo.GetBaseValue` matches the vanilla `Actor.GetBaseValue`. The VM column can only be
   too high this way.
+- `ActiveMagicEffect.RegisterForModEvent` and its two kin count as served because the check matches the receiver's
+  kind (an object), but the VM holds no effect values and runs no effect script, so none is ever called (§11).
 - `ActorBase.GetWeight` is counted served because `Form.GetWeight` shares its name, but on an `NPC_` the run
   stops (§9).
 - An instance function of `Quest` or an ancestor (`Form`, F4SE's `ScriptObject`) is also checked as the probe
@@ -383,6 +385,28 @@ the Papyrus provider lane and sandboxed guests already use:
 - Without an extension host, a send goes to both lanes directly.
 - The VM's inbox holds at most 256 events; a load empties it.
 
-**Not yet.** `SendModEvent` on another object, and the `Alias` / `ActiveMagicEffect` versions, are declined. `ModEvent.*`
-(the builder) is served by the SDK's adapters but does not run in the VM yet. The provider lane keeps its own
-mod-event registrations for the session only, following `Form.psc`'s comment rather than SKSE's serialization.
+**The builder** (`ModEvent.Create` / `PushBool` / `PushInt` / `PushFloat` / `PushString` / `PushForm` / `Send` /
+`Release`, `fragment/vm/natives/skse_mod_event.rs`) follows `PapyrusModEvent.cpp`:
+
+- `Create` answers a positive handle (`0` for a name the shared bus cannot carry, which includes the empty name SKSE
+  would accept) from one store for the whole session, `VmModEventBuilders`, the SDK's builder table (64 builders,
+  128 arguments, a payload bound);
+- `Push*` appends a typed argument and ignores a handle that is not live; a form outside the load order is pushed as
+  `None`;
+- `Send` takes the builder, publishes it under the calling script's source principal and answers true, false for a
+  handle that is not live; `Release` drops it; the callback receives the pushed values as its arguments;
+- SKSE's object storage is saved (`OBMG`), so the builders are saved (format v153).
+
+**Alias and effect scripts.** Their calls on `Self` take the same path as a quest's: an alias script's registration
+rides its alias owner id and its events reach its scripts there. An `ActiveMagicEffect` script passes the same check;
+the VM does not run effect scripts yet, so nothing registers from one.
+
+**Another object.** `akReceiver.RegisterForModEvent(event, callback)`, `UnregisterForModEvent` and
+`UnregisterForAllModEvents` on a quest, a reference or an alias value (Campfire's shared `FallbackEventEmitter` helper
+registers the aliases and references it is handed) register that object, as SKSE's registrations are on the receiver's
+handle: its own scripts' callbacks hear the event, the calling script does not. The receiver is the quest's or
+reference's form id, or the alias's script owner id; an alias with no scripts of its own has no owner id, nothing
+could hear it, and the call changes nothing. A `None` receiver is the usual "called on None" ignore.
+
+**Not yet.** `SendModEvent` on another object is declined. The provider lane keeps its own mod-event registrations
+for the session only, following `Form.psc`'s comment rather than SKSE's serialization.

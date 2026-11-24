@@ -719,7 +719,10 @@ pub const FORMAT_MAGIC: &[u8; 8] = b"BYRSAVE\0";
 ///
 /// v151 -> v152 (LMC-SCR-004): the saved `ModEventRegistrations` resource (SKSE's mod-event registrations, which its
 /// co-save keeps); a v151 save has none.
-pub const FORMAT_MAJOR: u16 = 152;
+///
+/// v152 -> v153 (LMC-SCR-004): the saved `VmModEventBuilders` resource (the `ModEvent` handle builders SKSE's object
+/// storage keeps in its co-save); a v152 save has none.
+pub const FORMAT_MAJOR: u16 = 153;
 /// Additive-format version. Bumped when fields are added compatibly.
 pub const FORMAT_MINOR: u16 = 0;
 
