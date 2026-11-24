@@ -70,6 +70,24 @@ vanilla WMA v2 corpus was found. This is a negative result for the search
 performed and triggers the research condition in Q1. It leaves room for
 new public documentation or independently documented black-box experiments.
 
+## V2 addendum — existing decoders for Alternative B
+
+Added 2026-11-24, after the owner chose Alternative B in Q1 (link an existing WMA
+decoder). Candidates were found with `cargo search wma`, `cargo search xwma`
+and `cargo info`, and the first candidate's published source was read, not built.
+
+| Candidate | Licence | What it is | Verdict |
+|---|---|---|---|
+| FFmpeg `libavcodec`, `wmav2` | LGPL-2.1-or-later for the library as a whole; the licence of the files a `wmav2`-only build compiles is V7's to confirm | A mature C decoder. The installed `libavcodec` here is 62.28.102, and the 8.1.2 `ffmpeg` command is the V3 oracle. | **Chosen** (Q1): vendor a pinned release, link statically. |
+| `oxideav-wma` 0.0.5 (crates.io, 2026-10-23) | MIT | Pure Rust, `WMA v1 + v2 baseline`. | Set aside. Its README says the tables were "extracted as bytes from the vendor WMA Standard decoder module's own PE data sections" and the frame layout "traced statically from the vendor decoder's bit-parse call graph", and its checks ran against "the sandboxed vendor decoder". The decoder is derived from Microsoft's binary, which the MIT label does not clear. It also states "clean-room rebuild in progress", validates against six vendor streams, and lists open gaps (two noise-substitution rows "the black-box reference contradicts"). |
+| `rockbox-codecs` 0.2.2 (feature `wma`) | GPL-2.0-or-later | Rockbox's decoders as a library. | Excluded: it cannot be linked into this repository's MIT binary. |
+| Symphonia 0.6 | MPL-2.0 | The engine's Rust audio stack. | No WMA codec (`crates/audio/src/fuz.rs`; its README lists none). |
+
+FFmpeg's wmav2 reads the `fmt ` chunk's extradata when it has one and falls back to defaults
+without it; whether the xWMA `fmt ` chunk (18 bytes, no extradata) decodes correctly when
+the engine hands the decoder packets of `block_align` bytes itself, with no FFmpeg demuxer,
+is **Phase 0: verify** and is V7's first check.
+
 ## V3 — Candidate oracle and tolerance
 
 The installed `/usr/bin/ffmpeg` reports version `8.1.2-2ubuntu2` and
