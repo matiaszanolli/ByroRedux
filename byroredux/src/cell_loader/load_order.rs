@@ -1325,6 +1325,9 @@ pub(crate) fn strings_language() -> String {
 }
 
 #[cfg(test)]
+pub(crate) use tests::{build_record, build_tes4_with_masters, wrap_group};
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use byroredux_core::form_id::LocalFormId;
@@ -1632,7 +1635,7 @@ mod tests {
 
     /// FO3+/TES5 24-byte-header record: `type + size + flags + form_id +
     /// 8-byte trailer`, then `[subtype, u16 len, data]` sub-records.
-    pub(super) fn build_record(
+    pub(crate) fn build_record(
         typ: &[u8; 4],
         form_id: u32,
         subs: &[(&[u8; 4], Vec<u8>)],
@@ -1653,7 +1656,7 @@ mod tests {
         buf
     }
 
-    pub(super) fn wrap_group(label: &[u8; 4], record: &[u8]) -> Vec<u8> {
+    pub(crate) fn wrap_group(label: &[u8; 4], record: &[u8]) -> Vec<u8> {
         let total = 24 + record.len();
         let mut buf = Vec::new();
         buf.extend_from_slice(b"GRUP");
@@ -1960,7 +1963,7 @@ mod tests {
     /// capability) — the parser only reads `MAST`'s null-terminated name,
     /// no companion `DATA` size placeholder, so this is the minimum wire
     /// form `read_file_header` needs.
-    pub(super) fn build_tes4_with_masters(flags: u32, masters: &[&str]) -> Vec<u8> {
+    pub(crate) fn build_tes4_with_masters(flags: u32, masters: &[&str]) -> Vec<u8> {
         let mut hedr = Vec::new();
         hedr.extend_from_slice(b"HEDR");
         hedr.extend_from_slice(&12u16.to_le_bytes());

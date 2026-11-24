@@ -1,5 +1,5 @@
-//! #7407 — Hand Equipment's slot model measured on the real Skyrim SE load order. The unit tests build their EQUP
-//! records and weapons by hand; this one folds the official plugins through the production path and checks what the
+//! Hand Equipment slot checks on a synthetic override and the official Skyrim SE load order (#7407).
+//! The official-data fixture folds the masters through the production path and checks what the
 //! hand rules rest on: the EQUP hand slots, the ARMO `ETYP` shields of every official plugin and the WEAP `ETYP`
 //! both-hands classification. (Every DLC shield names `Skyrim.esm`'s Shield slot through master index 0, which the
 //! official order maps to itself, so this order does not exercise a non-identity `ETYP` remap; the unit test
@@ -7,8 +7,56 @@
 
 use super::deletion_tests::paths_in;
 use super::parse_record_indexes_in_load_order;
+use super::tests::{build_record, build_tes4_with_masters, wrap_group};
 use byroredux_plugin::esm::records::{slot_hands, ItemKind, SlotHands};
 use byroredux_scripting::hands::HandCatalog;
+
+#[test]
+fn skyrim_spell_override_resolves_its_authored_equip_slot() {
+    const LEFT: u32 = 0x0000_0800;
+    const RIGHT: u32 = 0x0000_0801;
+    const SPELL: u32 = 0x0000_0900;
+    const LOCAL_SLOT: u32 = 0x0100_0802;
+    const LOADED_SLOT: u32 = 0x0200_0802;
+    const LOCAL_WEAPON: u32 = 0x0100_0901;
+    const LOADED_WEAPON: u32 = 0x0200_0901;
+
+    let dir = tempfile::tempdir().unwrap();
+    let paths = ["Skyrim.esm", "Update.esm", "HandSlots.esp"].map(|name| dir.path().join(name));
+    let typed_item = |kind: &[u8; 4], form, slot: u32| {
+        build_record(kind, form, &[(b"ETYP", slot.to_le_bytes().to_vec())])
+    };
+
+    let mut base = build_tes4_with_masters(0, &[]);
+    let mut slots = build_record(b"EQUP", LEFT, &[(b"EDID", b"LeftHand\0".to_vec())]);
+    slots.extend(build_record(b"EQUP", RIGHT, &[(b"EDID", b"RightHand\0".to_vec())]));
+    base.extend(wrap_group(b"EQUP", &slots));
+    base.extend(wrap_group(b"SPEL", &typed_item(b"SPEL", SPELL, RIGHT)));
+    std::fs::write(&paths[0], base).unwrap();
+
+    let masters = &["Skyrim.esm"];
+    // Update.esm occupies load-order slot 1 and is absent from HandSlots.esp's master list.
+    std::fs::write(&paths[1], build_tes4_with_masters(0, masters)).unwrap();
+    let mut patch = build_tes4_with_masters(0, masters);
+    let custom_left = build_record(b"EQUP", LOCAL_SLOT, &[
+        (b"EDID", b"TestCastSlot\0".to_vec()),
+        (b"PNAM", LEFT.to_le_bytes().to_vec()),
+    ]);
+    patch.extend(wrap_group(b"EQUP", &custom_left));
+    patch.extend(wrap_group(b"SPEL", &typed_item(b"SPEL", SPELL, LOCAL_SLOT)));
+    patch.extend(wrap_group(b"WEAP", &typed_item(b"WEAP", LOCAL_WEAPON, LOCAL_SLOT)));
+    std::fs::write(&paths[2], patch).unwrap();
+
+    let paths = paths.each_ref().map(|path| path.to_str().unwrap());
+    let (base, _) = parse_record_indexes_in_load_order(&paths[..1]).unwrap();
+    assert_eq!(HandCatalog::from_index(&base).spell_hands(SPELL), Some(SlotHands::Right));
+
+    let (folded, _) = parse_record_indexes_in_load_order(&paths).unwrap();
+    assert_eq!(folded.spells[&SPELL].equip_type, LOADED_SLOT);
+    let catalog = HandCatalog::from_index(&folded);
+    assert_eq!(catalog.spell_hands(SPELL), Some(SlotHands::Left));
+    assert_eq!(catalog.weapon_hands(LOADED_WEAPON), SlotHands::Left);
+}
 
 #[test]
 #[ignore = "parses Skyrim.esm and its DLC; run with --ignored"]

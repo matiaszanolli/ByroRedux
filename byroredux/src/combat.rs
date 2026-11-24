@@ -2234,6 +2234,54 @@ mod tests {
         near(run(true, false, true, true, false, 40.0), 80.0, &[]); // a trap's or script's hit is not blocked
     }
 
+    #[test]
+    fn skyrim_block_guard_uses_canonical_hands() {
+        use byroredux_core::character::{BlockGuard, BlockModel};
+        use byroredux_core::ecs::components::{EquipmentSlots, Inventory, ItemStack};
+        use byroredux_plugin::esm::records::SlotHands;
+        use byroredux_scripting::hands::{HandCatalog, HandWeapon};
+
+        const SHIELD: u32 = 0x300;
+        const TORCH: u32 = 0x301;
+        const SWORD: u32 = 0x302;
+        const ARMOR: u32 = 0x303;
+
+        let mut world = World::new();
+        let actor = world.spawn();
+        let mut catalog = HandCatalog::default();
+        catalog.insert_shield(SHIELD);
+        catalog.insert_torch(TORCH);
+        catalog.insert_weapon(SWORD, HandWeapon { anim_type: 1, hands: SlotHands::Right });
+        world.insert_resource(catalog);
+
+        let mut inventory = Inventory::new();
+        let shield = inventory.push(ItemStack::new(SHIELD, 1));
+        let torch = inventory.push(ItemStack::new(TORCH, 1));
+        let sword = inventory.push(ItemStack::new(SWORD, 1));
+        let armor = inventory.push(ItemStack::new(ARMOR, 1));
+        world.insert(actor, inventory);
+
+        let fallback = BlockModel::OBLIVION;
+        let mut shield_and_sword = EquipmentSlots { weapon: Some(sword), ..Default::default() };
+        shield_and_sword.equip(1 << 12, shield);
+        // An ordinary armor item in the fallback shield bit must not hide the right-hand guard.
+        let mut right_sword = EquipmentSlots { weapon: Some(sword), ..Default::default() };
+        right_sword.equip(1 << fallback.shield_bit, armor);
+        let left_torch = EquipmentSlots { left_hand: Some(torch), ..Default::default() };
+        let left_sword = EquipmentSlots { left_hand: Some(sword), ..Default::default() };
+
+        for (case, slots, expected) in [
+            ("shield takes priority over right-hand sword", shield_and_sword, BlockGuard::Shield),
+            ("left torch", left_torch, BlockGuard::Weapon),
+            ("right sword", right_sword, BlockGuard::Weapon),
+            ("left sword", left_sword, BlockGuard::Weapon),
+            ("empty hands", EquipmentSlots::new(), BlockGuard::Hands),
+        ] {
+            world.insert(actor, slots);
+            assert_eq!(block_guard(&world, &fallback, actor), expected, "{case}");
+        }
+    }
+
     /// Oblivion's armor rating and Resist Normal Weapons, from the defender's side (UESP *The Complete Damage Formula*): the
     /// pieces worn add up at the wearer's Heavy or Light Armor and cap at 85, a piece covering two slots counts once, a
     /// Master Sneak attack ignores the armor, Resist Normal Weapons scales the hit unless the weapon ignores it, and a hit that

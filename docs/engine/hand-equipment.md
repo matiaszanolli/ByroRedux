@@ -88,6 +88,10 @@ component of their own:
   is in both.
 - A shield keeps its biped slot for its model, and a reader finds it among the occupants.
 
+Saves store held spell and inventory item FormIDs by stable plugin identity. The live load overlay
+resolves those forms through the current plugin order and restores the inventory and its hand
+indices together (HND-STATE-002).
+
 Cell eviction parks `EquipmentSlots` with its inventory under the placed reference's identity.
 When the cell returns, the NPC receives its authored loadout first. The placement stamp then
 restores the parked slots and inventory together, preserving the held item's index (HND-STATE-004).

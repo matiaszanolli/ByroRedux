@@ -1,6 +1,6 @@
 # Hand Equipment — Product Requirements
 
-**Status**: ACTIVE (2026-11-24). Revision 11 records NPC hand-state verification across cell eviction. See §12 for the revision history.
+**Status**: ACTIVE (2026-11-24). Revision 14 records hand-state save/load coverage across plugin slot changes. See §12 for the revision history.
 
 **Tracking**: #7397 (parent and follow-ups), #7398 (Phase 1), #7399 (Phase 2). Revision 3 records the initial Phase 0 work.
 
@@ -128,8 +128,8 @@ Pre-implementation baseline on 2026-11-23 (`66668ed4b`). See the
   lights without `ETYP`. [UESP Skyrim:Block](https://en.uesp.net/wiki/Skyrim:Block) describes
   equipping a torch to the left hand for blocking.
 - **HND-SLOT-006.** The engine MUST resolve each Skyrim spell's authored `ETYP` through the
-  same folded `EQUP` catalog as weapons. The fixture checks spell-slot resolution from a plugin
-  override. See [UESP SPEL](https://en.uesp.net/wiki/Skyrim_Mod:Mod_File_Format/SPEL).
+  same folded `EQUP` catalog as weapons. The fixture checks a spell override that refers to a
+  plugin-local equip slot whose FormID changes on load. See [UESP SPEL](https://en.uesp.net/wiki/Skyrim_Mod:Mod_File_Format/SPEL).
 
 ### 5.2 State (`HND-STATE`)
 
@@ -162,10 +162,10 @@ Pre-implementation baseline on 2026-11-23 (`66668ed4b`). See the
   | 1 | Request the right hand |
   | 2 | Request the left hand |
 
-- **HND-READ-004.** Skyrim's hand state MUST classify its block guard as a left-hand shield,
-  otherwise a left-hand torch or a weapon in either hand, otherwise bare hands. At HEAD
-  `ba14baeeb`, `combat.rs::block_guard` classifies the guard and `target_block` requires a
-  `BlockModel`. A live damage check depends on the Skyrim model in [CHARAL](../engine/charal.md).
+- **HND-READ-004.** Skyrim's hand state MUST classify the guard in priority order. A left-hand
+  shield gives a shield guard. A left-hand torch or a weapon in either hand gives a weapon guard.
+  All other hand states give a bare-hand guard. A live damage check depends on the Skyrim
+  `BlockModel` in [CHARAL](../engine/charal.md).
 - **HND-READ-005.** `GetEquippedSpell(aiSource)` MUST return the spell in left source 0 or right
   source 1. See [CK GetEquippedSpell](https://ck.uesp.net/wiki/GetEquippedSpell_-_Actor).
 - **HND-READ-006.** Skyrim `GetEquippedShield()` MUST return the shield in the canonical left
@@ -219,12 +219,12 @@ and VM fixtures use synthetic forms and can run without game data.
 | VM admission census | Run `refr_script_coverage` with `VM_REASONS=1` and `VM_REASON_FAMILIES` for `getequippeditemtype` and `getequippedweapon`, with local `Skyrim.esm` and `Skyrim - Misc.bsa`. See the [example invocation](../../crates/scripting/examples/refr_script_coverage.rs). | Report the baseline families' admission and remaining decline reasons. At HEAD `ba14baeeb`, the weapon-rack activation family is admitted and the trap families still stop at `HasMagicEffectWithKeyword`. |
 | Papyrus hand readback | `cargo test -p byroredux-scripting --lib`. The VM tests cover weapon and spell readback and a shield whose biped mask differs from its hand slot. | Each hand reports the expected type code. The weapon, shield and spell readers return the corresponding form or `None`. |
 | Equipment actions | Extend `hands_follow_the_equip_slot_rules` in `cargo test -p byroredux --bin byroredux` with the transition table below. Use both menu actions from Q2 and the Papyrus spell equip path. | Canonical occupancy after each transition matches the expected code pair and forms. |
-| Authored slots | Run `skyrim_hand_slots_shields_and_two_handers_decode_from_the_official_load_order` in the `byroredux` binary tests with `--ignored` and the Skyrim SE masters. Run `authored_weapon_slots_control_player_equips_and_starting_inventory` for the synthetic weapon cases. Add a spell slot override fixture for HND-SLOT-006. | The official load order resolves the expected slots. The fixtures exercise the authored weapon and spell slots. |
-| Save restoration | Add a `cargo test -p byroredux --bin byroredux` fixture using the live save/load path, a left-hand inventory item and a right-hand spell from a generated plugin. Change the spell plugin's slot between save and reload. | Both readers recover the same items by identity, and the inventory index still names the intended stack. HND-STATE-002. |
+| Authored slots | Run `skyrim_hand_slots_shields_and_two_handers_decode_from_the_official_load_order` in the `byroredux` binary tests with `--ignored` and the Skyrim SE masters. Run `authored_weapon_slots_control_player_equips_and_starting_inventory` and `skyrim_spell_override_resolves_its_authored_equip_slot` for the synthetic cases. | The official load order resolves the expected slots. The spell override and a weapon resolve the same remapped `EQUP` slot. HND-SLOT-006. |
+| Save restoration | Run `skyrim_held_weapon_and_spell_survive_a_changed_plugin_slot` in the `byroredux` binary tests. The fixture uses the disk save/load commands and the live overlay on a rebuilt player with a changed plugin order. | Both hands recover the same records under their new FormIDs, and the left hand still indexes the original inventory stack. HND-STATE-002. |
 | Cell eviction | Run `skyrim_npc_hands_survive_cell_eviction` in the `byroredux` binary tests. The synthetic cell uses the production eviction and placement-restore steps. | The same placed reference resolves to a fresh actor with the original right-hand spell and the left-hand weapon at its restored inventory index. HND-STATE-004. |
 | Torch light | Run `a_held_torch_takes_the_left_hand_and_lights_it` in the `byroredux` binary tests. | A torch equips to the left, supplies one light while held, and removes that light when it leaves the hand. Q3. |
 | NPC dual-wield flags | Run `skyrim_npc_dual_wield_requires_both_flags_and_a_free_left_hand`. Run the official-load-order fixture in the authored slots row to check the decoded race and combat style data. | Across all four flag combinations, the right-hand weapon stays consistent and the second weapon appears only with both flags set. A shield, two-handed primary, or missing second copy prevents a second weapon. HND-STATE-003. |
-| Block guard | Add a `byroredux` binary fixture for HND-READ-004 covering a left shield, a left torch, a right-only weapon, and empty hands. | Each case resolves to its expected guard. Live damage reduction awaits the Skyrim `BlockModel`. |
+| Block guard | Run `skyrim_block_guard_uses_canonical_hands` in the `byroredux` binary tests. | A left shield takes priority over a right-hand weapon, a left torch or a weapon in either hand yields a weapon guard, and empty hands yield a bare-hand guard. Live damage reduction awaits the Skyrim `BlockModel`. HND-READ-004. |
 | Live oil-pool ignition | Extend a headless Skyrim SE smoke test using `--bench-hold` and `byro-dbg`. Select a placed reference bound to `TrapOilPool` from the local master and record its cell and reference ID in the fixture. Start fresh for each trial, with a torch or sword equipped and no fire effect on the actor. | The same trigger ignites with the torch and remains unlit with the sword. This gate waits on the Papyrus VM's `HasMagicEffectWithKeyword`. |
 
 Use distinct synthetic forms for each one-handed sword, the shield, bow, torch and spell.
@@ -275,9 +275,10 @@ on CHARAL's Skyrim block model. Exit: the authored slot, four-way NPC flag, cell
 shield read and guard fixtures pass, and the live oil-pool scenario passes. Track the live block
 damage check with the CHARAL dependency.
 
-Regression fixtures cover the canonical shield reader, authored weapon slots, NPC dual-wield
-spawn loadouts, and NPC hand-state restoration after cell eviction (HND-READ-006, HND-SLOT-002,
-HND-STATE-003, and HND-STATE-004, revisions 8–11).
+Regression fixtures cover the canonical shield reader, authored weapon and spell slots, NPC
+dual-wield spawn loadouts, hand-state restoration after cell eviction and save/load, and guard
+classification (HND-READ-006, HND-SLOT-002, HND-STATE-003, HND-STATE-004, HND-READ-004,
+HND-SLOT-006, and HND-STATE-002, revisions 8–14).
 
 ---
 
@@ -324,3 +325,6 @@ HND-STATE-003, and HND-STATE-004, revisions 8–11).
 | 9 | 2026-11-24 | HND-SLOT-002 implemented. Menu and scripted equips and starting loadouts honor explicit left-only and non-hand weapon slots. Fixtures cover the missing-slot fallback and repeated script requests. | — |
 | 10 | 2026-11-24 | HND-STATE-003 implemented. NPC spawn resolves RACE `DATA` bit 30 through the Traits template and `NPC_.ZNAM` through the AI Data template. `CSTY.DATA` bit 2 supplies the style permission. Fixtures cover all four flag combinations, a worn shield, a two-handed primary, and inventory copy counts. | — |
 | 11 | 2026-11-24 | HND-STATE-004 verified. A persistent Skyrim NPC recovers a runtime-equipped weapon and spell after cell eviction and respawn. The fixture checks both hands and the inventory index through the placed reference. | — |
+| 12 | 2026-11-24 | HND-READ-004 verified. The block-guard fixture covers shield priority, a left torch, a weapon in either hand, and empty hands. Live block reduction depends on the Skyrim `BlockModel`. | — |
+| 13 | 2026-11-24 | HND-SLOT-006 verified. A generated plugin overrides a right-hand spell to use a plugin-local slot with a left-hand parent. The fixture verifies that the load-order fold remaps the slot and resolves both the spell and a weapon through it. | — |
+| 14 | 2026-11-24 | HND-STATE-002 verified. A disk save and live overlay recover a left-hand weapon and right-hand spell after their plugin moves to a different slot. The fixture checks both FormIDs and the weapon's original inventory index and count. | — |

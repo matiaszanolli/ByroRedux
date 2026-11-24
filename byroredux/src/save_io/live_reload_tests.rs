@@ -8,6 +8,139 @@ use byroredux_core::math::Vec3;
 use byroredux_core::string::StringPool;
 use byroredux_save::decode;
 
+#[test]
+fn skyrim_held_weapon_and_spell_survive_a_changed_plugin_slot() {
+    use crate::cell_loader::load_order::{
+        GlobalFormIdResolver, build_record, build_tes4_with_masters, install_form_resolver,
+        parse_record_indexes_in_load_order, wrap_group,
+    };
+    use byroredux_core::ecs::components::{EquipmentSlots, FormIdComponent, Inventory, ItemStack};
+    use byroredux_core::form_id::PLAYER_FORM_ID_PAIR;
+    use byroredux_plugin::esm::records::SlotHands;
+    use byroredux_scripting::hands::{equip_to_hand, hand_item, Hand, HandEquip, HandFacts, HandItem};
+
+    const RIGHT_SLOT: u32 = 0x0000_0800;
+    const JUNK: u32 = 0x0000_0801;
+    const OLD_SPELL: u32 = 0x0100_0900;
+    const OLD_SWORD: u32 = 0x0100_0901;
+    const NEW_SPELL: u32 = 0x0200_0900;
+    const NEW_SWORD: u32 = 0x0200_0901;
+
+    let dir = tempfile::tempdir().unwrap();
+    let files = ["Skyrim.esm", "Other.esp", "Hands.esp"].map(|name| dir.path().join(name));
+    let mut base = build_tes4_with_masters(0, &[]);
+    let right = build_record(b"EQUP", RIGHT_SLOT, &[(b"EDID", b"RightHand\0".to_vec())]);
+    base.extend(wrap_group(b"EQUP", &right));
+    base.extend(wrap_group(b"MISC", &build_record(b"MISC", JUNK, &[])));
+    std::fs::write(&files[0], base).unwrap();
+
+    let item_slot = || (b"ETYP", RIGHT_SLOT.to_le_bytes().to_vec());
+    let spell_plugin = |name: &[u8]| {
+        let mut plugin = build_tes4_with_masters(0, &["Skyrim.esm"]);
+        let spell = build_record(b"SPEL", OLD_SPELL, &[(b"EDID", name.to_vec()), item_slot()]);
+        plugin.extend(wrap_group(b"SPEL", &spell));
+        plugin
+    };
+    // The same local form in another plugin now occupies the old global FormID.
+    std::fs::write(&files[1], spell_plugin(b"DifferentSpell\0")).unwrap();
+    let mut hands = spell_plugin(b"SavedSpell\0");
+    let sword = build_record(b"WEAP", OLD_SWORD, &[(b"DNAM", vec![1]), item_slot()]);
+    hands.extend(wrap_group(b"WEAP", &sword));
+    std::fs::write(&files[2], hands).unwrap();
+
+    let session = |paths: &[&str]| {
+        let (index, order) = parse_record_indexes_in_load_order(paths).unwrap();
+        let mut world = World::new();
+        world.insert_resource(FormIdPool::new());
+        world.insert_resource(StringPool::new());
+        world.insert_resource(build_save_registry());
+        world.insert_resource(SaveState::new(dir.path().to_path_buf(), 4));
+        world.insert_resource(PendingSaveLoadSlot::default());
+        world.insert_resource(crate::extensions::SessionEventQueue::default());
+        world.insert_resource(crate::cell_loader::CurrentCellContext {
+            cell_editor_id: "HandFixtureCell".into(),
+            esm_path: paths.last().unwrap().to_string(),
+            masters: paths[..paths.len() - 1].iter().map(|path| (*path).to_owned()).collect(),
+        });
+        let resolver =
+            GlobalFormIdResolver::from_load_order_with_records(&order, &index.record_types);
+        install_form_resolver(&mut world, resolver, std::sync::Arc::new(order));
+        crate::inventory::install_catalog(&mut world, &index);
+        byroredux_scripting::install_actor_value_names(&mut world, &index);
+        (world, index)
+    };
+    let spawn_player = |world: &mut World| {
+        let player = world.spawn();
+        let id = world.resource_mut::<FormIdPool>().intern(PLAYER_FORM_ID_PAIR);
+        world.insert(player, FormIdComponent(id));
+        world.insert_resource(crate::systems::PlayerEntity(Some(player)));
+        player
+    };
+
+    let paths = files.each_ref().map(|path| path.to_str().unwrap());
+    let (mut source, original) = session(&[paths[0], paths[2]]);
+    assert_eq!(original.spells[&OLD_SPELL].editor_id, "SavedSpell");
+    let saved_player = spawn_player(&mut source);
+    let mut inventory = Inventory::new();
+    inventory.push(ItemStack::new(JUNK, 1));
+    let held_index = inventory.push(ItemStack::new(OLD_SWORD, 2));
+    source.insert(saved_player, inventory);
+    let mut slots = EquipmentSlots::new();
+    equip_to_hand(
+        &mut slots,
+        HandEquip::Weapon { index: held_index, hands: SlotHands::Right },
+        Hand::Left,
+        &HandFacts { stack_count: 2, ..Default::default() },
+    ).unwrap();
+    equip_to_hand(
+        &mut slots,
+        HandEquip::Spell { form: OLD_SPELL, hands: SlotHands::Right },
+        Hand::Right,
+        &HandFacts::default(),
+    ).unwrap();
+    source.insert(saved_player, slots);
+    assert_eq!(hand_item(&source, saved_player, Hand::Left).weapon(), Some(OLD_SWORD));
+    assert_eq!(hand_item(&source, saved_player, Hand::Right).spell(), Some(OLD_SPELL));
+    let saved = SaveCommand.execute(&source, "0");
+    assert!(!command_output_is_failure(&saved), "{:?}", saved.lines);
+
+    let (mut live, reordered) = session(&paths);
+    assert_eq!(reordered.spells[&OLD_SPELL].editor_id, "DifferentSpell");
+    assert_eq!(reordered.spells[&NEW_SPELL].editor_id, "SavedSpell");
+    live.spawn();
+    let live_player = spawn_player(&mut live);
+    live.insert(live_player, Inventory::new());
+    live.insert(live_player, EquipmentSlots::new());
+    let loaded = LoadCommand.execute(&live, "0");
+    assert!(!command_output_is_failure(&loaded), "{:?}", loaded.lines);
+    let snapshot = live
+        .resource_mut::<PendingSaveLoadSlot>()
+        .snapshot
+        .take()
+        .unwrap();
+
+    // Drive the live overlay against the reloaded population and plugin identity.
+    let registry = build_save_registry();
+    let translator = session_translator(&live);
+    translated(translator.clone(), || {
+        byroredux_save::restore_resources(&mut live, &registry, &snapshot)
+    }).0.unwrap();
+    let remap = byroredux_save::build_form_id_remap(&live, &registry, &snapshot);
+    assert_ne!(saved_player, live_player);
+    assert_eq!(remap.get(&saved_player), Some(&live_player));
+    translated(translator, || {
+        byroredux_save::apply_deltas(&mut live, &registry, &snapshot, &remap, MUTABLE_DELTA_COLUMNS)
+    }).0.unwrap();
+
+    assert_eq!(
+        hand_item(&live, live_player, Hand::Left),
+        HandItem::Weapon { index: held_index, base: NEW_SWORD, anim_type: 1, both: false },
+    );
+    assert_eq!(hand_item(&live, live_player, Hand::Right), HandItem::Spell { form: NEW_SPELL });
+    let inventory = live.get::<Inventory>(live_player).unwrap();
+    assert_eq!(inventory.get(held_index), Some(&ItemStack::new(NEW_SWORD, 2)));
+}
+
 /// FlyCam round-trip: capture reads the camera Transform + look
 /// angles into [`PlayerPose`]; apply puts them back after the pose is
 /// scrambled — the camera returns to the saved spot and InputState to
