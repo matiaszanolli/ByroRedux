@@ -199,10 +199,71 @@ def release_table(family, repo, pinned, out_dir):
     print(f"{family}: {len(seen)} documented release indices")
 
 
+# SKSE64's form classes: the `kFormType` enum (GetType's answer, in order from 0) and, per class, the components
+# Form's natives cast to. SKSE's headers list a class's extra parents as fields under a `// parents` comment.
+FORM_HEADERS = ["GameForms.h", "GameObjects.h", "GameReferences.h", "GameFormComponents.h"]
+FORM_COMPONENTS = [("full_name", "TESFullName"), ("weight", "TESWeightForm"), ("keywords", "BGSKeywordForm"),
+                   ("model", "TESModel")]
+
+
+def form_types(repo, sha, out_dir):
+    """`docs/data/extenders/skse64-form-types.tsv`: each `kFormType`, its record signature and class, and which of the
+    components `Form.GetName` / `GetWeight` / `Get*Keyword*` / `*WorldModel*` read the class carries."""
+    texts = {name: gh_raw(repo, f"skse64/{name}", sha) for name in FORM_HEADERS}
+    bases = {}
+    for text in texts.values():
+        lines = text.splitlines()
+        for i, line in enumerate(lines):
+            m = re.match(r"\s*class\s+(\w+)\s*(?::\s*(.*))?$", line)
+            if not m or not (line.rstrip().endswith("{") or (i + 1 < len(lines) and lines[i + 1].strip().startswith("{"))):
+                continue
+            parents = [re.sub(r"<.*", "", b.strip().split()[-1]) for b in (m.group(2) or "").replace("{", "").split(",") if b.strip()]
+            depth, in_parents = 0, False
+            for body in lines[i + 1:]:
+                depth += body.count("{") - body.count("}")
+                stripped = body.strip()
+                if stripped.startswith("// parents"):
+                    in_parents = True
+                elif in_parents:
+                    field = re.match(r"(\w+)\s+\w+\s*;", stripped)
+                    if field:
+                        parents.append(field.group(1))
+                    else:
+                        in_parents = False
+                if depth <= 0 and body.strip().startswith("}"):
+                    break
+            bases[m.group(1)] = parents
+
+    def ancestors(name, seen):
+        for parent in bases.get(name, []):
+            if parent not in seen:
+                seen.add(parent)
+                ancestors(parent, seen)
+        return seen
+
+    # One enumerator per line, counted from `kFormType_None = 0` up to `kFormType_Max` (an alias, not a type); its
+    # comment names the signature and class, and may be empty.
+    enum = "kFormType_None" + texts["GameForms.h"].split("kFormType_None", 1)[1].split("kFormType_Max", 1)[0]
+    rows = []
+    for line in enum.splitlines():
+        m = re.match(r"\s*kFormType_\w+[^,]*,[ \t]*(?://[ \t]*(\S*)[ \t]*(\w*))?", line)
+        if m:
+            rows.append((m.group(1) or "-", m.group(2) or ""))
+    with open(os.path.join(out_dir, "skse64-form-types.tsv"), "w", encoding="utf-8") as table:
+        table.write("type\tsignature\tclass\t" + "\t".join(column for column, _ in FORM_COMPONENTS) + "\tsource\n")
+        for index, (signature, cls) in enumerate(rows):
+            has = ancestors(cls, set()) if cls else set()
+            flags = ["1" if component in has else "0" for _, component in FORM_COMPONENTS]
+            table.write(f"{index}\t{signature}\t{cls or '-'}\t" + "\t".join(flags) + f"\t{repo}@{sha[:12]}:skse64/GameForms.h\n")
+    print(f"skse64: {len(rows)} form types")
+
+
 def papyrus_family(family, out_dir):
     repo, ref, whatsnew, first = PINS[family]
     sha = resolve_sha(repo, ref)
     release_table(family, repo, sha, out_dir)
+    if family == "skse64":
+        form_types(repo, sha, out_dir)
     tree = gh_tree(repo, sha)
     # The game's script hierarchy, from the vanilla copies and the extender's own scripts: a call on a subclass reaches
     # a function the extender adds to a parent (LMC-SCR-005 resolves calls by it).

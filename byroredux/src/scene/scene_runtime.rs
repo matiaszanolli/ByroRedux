@@ -208,6 +208,9 @@ pub(crate) fn populate_scene_runtime(
     // HasKeyword.
     let keyworded = byroredux_scripting::keywords::install_keyword_table(world, index);
     log::info!("Installed keyword table: {keyworded} base objects");
+    // LMC-SCR-004 — Skyrim base forms' types, names, weights, keywords and models, for SKSE's Form reads.
+    let form_facts = byroredux_scripting::form_facts::install_form_facts(world, index);
+    log::info!("Installed form facts: {form_facts} base forms");
     // M47.2 — activate parents (levers, pull chains, tripwires -> what they open).
     let activate_edges = byroredux_scripting::install_activate_parent_table(world, index);
     log::info!("Installed activate parents: {activate_edges} parent -> child edges");

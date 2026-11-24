@@ -561,6 +561,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("PendingDetectionEvents", "CreateDetectionEvent calls the detection tick drains each frame (capped); a load discards it in discard_outgoing_session_requests"),
         ("PendingProjectileLaunches", "Weapon.Fire requests awaiting the host; drained the frame they are made"),
         ("ActiveProjectiles", "projectiles in flight; transient — a saved game restarts with none in the air, as the game resets traps on load, and a load discards the outgoing session's (#7229)"),
+        ("FormFacts", "LMC-SCR-004 — Skyrim base forms' signatures and the names, weights, keywords and models SKSE's Form reads answer from; rebuilt from the records by install_form_facts every boot"),
         ("KeywordTable", "base objects' keywords (an actor's with its race's); rebuilt from the records by install_keyword_table every boot"),
         ("PendingBarterMenu", "a script's ShowBarterMenu request, consumed by the app the frame it is raised"),
         ("BarterRules", "the load order's vendor factions, merchant containers, buy/sell lists and barter GMSTs; rebuilt by install_barter_rules every boot"),

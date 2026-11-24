@@ -42,13 +42,14 @@ mod ownership_crime;
 mod quest;
 mod reference;
 mod scanning;
+mod skse_form;
 mod skse_util;
 
 pub(super) use collections::{layer_native, LayerNative, COLLECTION_NATIVES};
 
 /// Every family's `READS`: a name none of them reads is not an object read,
 /// and its receiver is not evaluated.
-const FAMILY_READS: [&[&str]; 14] = [
+const FAMILY_READS: [&[&str]; 15] = [
     alias::READS,
     quest::READS,
     form_list::READS,
@@ -63,6 +64,7 @@ const FAMILY_READS: [&[&str]; 14] = [
     combat::READS,
     destruction::READS,
     scanning::READS,
+    skse_form::READS,
 ];
 
 /// Builds one synthetic native call: evaluated values bound to names.
@@ -208,6 +210,7 @@ impl Vm<'_> {
             Self::read_combat,
             Self::read_destruction,
             Self::read_scanning,
+            Self::read_skse_form,
         ];
         for read in families {
             if let Some(value) = read(self, frame, &owner, &name, args)? {

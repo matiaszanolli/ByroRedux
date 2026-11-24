@@ -90,16 +90,16 @@ fn catalogued_calls_are_reported_per_family_with_their_versions() {
         rows.iter().find(|row| row.family == "skse64" && row.script.as_deref() == Some(script) && row.function == function).unwrap()
     };
     let mut scan = RootScan::default();
-    let get_name = find("Form", "GetName");
-    scan.add_catalog_call(get_name, "a.pex");
-    scan.add_catalog_call(get_name, "b.pex");
+    let invoke = find("UI", "InvokeString");
+    scan.add_catalog_call(invoke, "a.pex");
+    scan.add_catalog_call(invoke, "b.pex");
     scan.add_catalog_call(find("UI", "IsMenuOpen"), "a.pex");
     scan.unresolved_receivers = 2;
     let lines = catalog_lines(&scan);
     assert_eq!(lines[0], "  extender catalog (LMC-SCR-005): 2 method call(s) on receivers of a type no table names");
-    assert_eq!(lines[1], "    skse64: 2 function(s) called, 1 served, 1 not — Form.GetName (1.1.0)");
-    // LMC-SCR-010: GetName is from SKSE64's first release, so the probes answer absent.
-    assert_eq!(lines[2], "      probes answer absent, capped by Form.GetName (1.1.0)");
-    let tally = scan.catalog_calls.values().find(|t| t.row.function == "GetName").unwrap();
+    assert_eq!(lines[1], "    skse64: 2 function(s) called, 1 served, 1 not — UI.InvokeString (1.1.0)");
+    // LMC-SCR-010: InvokeString is from SKSE64's first release, so the probes answer absent.
+    assert_eq!(lines[2], "      probes answer absent, capped by UI.InvokeString (1.1.0)");
+    let tally = scan.catalog_calls.values().find(|t| t.row.function == "InvokeString").unwrap();
     assert_eq!((tally.occurrences, tally.scripts.len()), (2, 2));
 }

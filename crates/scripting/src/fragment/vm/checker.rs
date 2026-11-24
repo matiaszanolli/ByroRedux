@@ -35,6 +35,9 @@ pub(super) struct Checker<'l> {
     /// Scripts the run will need, by lowercased name.
     pub(super) scripts: HashMap<String, Arc<Script>>,
     pub(super) visiting: HashSet<(String, String)>,
+    /// The game the check is for, when one is named (the extender catalog measures each family on its game); a
+    /// native the run serves on one game only is declined for another. `None`: any game.
+    pub(super) game: Option<byroredux_plugin::esm::reader::GameKind>,
 }
 
 pub(super) struct CheckFrame {
@@ -197,6 +200,16 @@ pub(in crate::fragment) fn handler_runs(scripts: &HashMap<String, Arc<Script>>, 
     checker.versions(script, handler).is_empty() || checker.check_call_into(script, handler, true, kind).is_some()
 }
 
+/// [`check_function_reason`] for one game: a native the run serves only on another game is declined.
+pub fn check_function_for_game(script: Arc<Script>, function: &str, game: byroredux_plugin::esm::reader::GameKind) -> Result<(), String> {
+    let mut checker = Checker::new(None, &script);
+    checker.game = Some(game);
+    match checker.check_call_into(&script, function, true, Kind::Quest) {
+        Some(_) => Ok(()),
+        None => Err(checker.reason.unwrap_or_else(|| "unsupported".into())),
+    }
+}
+
 pub(super) fn check_reason(
     script: Arc<Script>,
     function: &str,
@@ -254,6 +267,7 @@ impl<'l> Checker<'l> {
             waiting: HashSet::new(),
             scripts: HashMap::new(),
             visiting: HashSet::new(),
+            game: None,
         };
         checker
             .scripts
@@ -1090,6 +1104,7 @@ impl<'l> Checker<'l> {
             Self::check_combat,
             Self::check_destruction,
             Self::check_scanning,
+            Self::check_skse_form,
         ];
         for check in families {
             if let Some(kind) = check(self, receiver_kind, &name, &arg_kinds, statement) {

@@ -461,14 +461,27 @@ fn probe_source(row: &CatalogRow) -> Option<String> {
     Some(format!("ScriptName ExtenderCatalogProbe extends Quest\nFunction Probe()\n{body}EndFunction\n"))
 }
 
-/// Whether the Papyrus VM's checker accepts a call of `row`'s declared signature.
+/// Whether the Papyrus VM's checker accepts a call of `row`'s declared signature, checked for its family's game.
 pub fn vm_serves(row: &CatalogRow) -> bool {
     let Some(source) = probe_source(row) else { return false };
     let Ok((script, errors)) = byroredux_papyrus::parse_script(&source) else { return false };
     if !errors.is_empty() {
         return false;
     }
-    crate::fragment::vm::check_function_reason(Arc::new(script), "Probe", None).is_ok()
+    match family_game(&row.family) {
+        Some(game) => crate::fragment::vm::check_function_for_game(Arc::new(script), "Probe", game).is_ok(),
+        None => crate::fragment::vm::check_function_reason(Arc::new(script), "Probe", None).is_ok(),
+    }
+}
+
+/// The game a Papyrus family's functions run on.
+fn family_game(family: &str) -> Option<byroredux_plugin::esm::reader::GameKind> {
+    use byroredux_plugin::esm::reader::GameKind;
+    match family {
+        "skse64" => Some(GameKind::Skyrim),
+        "f4se" => Some(GameKind::Fallout4),
+        _ => None,
+    }
 }
 
 /// Whether the SDK catalog classifies `row` `Native` (an adapter executes it).
@@ -644,7 +657,7 @@ mod tests {
     #[test]
     fn coverage_counts_are_the_published_ones() {
         let published: [(&str, Coverage); 11] = [
-            ("skse64", Coverage { functions: 804, dated: 67, vm: 50, sdk: 21, served: 61 }),
+            ("skse64", Coverage { functions: 804, dated: 67, vm: 60, sdk: 21, served: 71 }),
             ("f4se", Coverage { functions: 227, dated: 13, vm: 14, sdk: 3, served: 17 }),
             ("xnvse", Coverage { functions: 565, dated: 50, vm: 0, sdk: 4, served: 4 }),
             ("jip_ln", Coverage { functions: 733, dated: 0, vm: 0, sdk: 0, served: 0 }),

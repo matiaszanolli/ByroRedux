@@ -44,6 +44,7 @@ pub mod activate_parents;
 pub mod anim_subgraph;
 pub mod destruction;
 pub mod detection_events;
+pub mod form_facts;
 pub mod keywords;
 pub mod menus;
 pub mod alias_collections;

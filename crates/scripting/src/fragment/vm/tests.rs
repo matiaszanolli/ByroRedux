@@ -8139,3 +8139,88 @@ fn skse_string_math_and_array_natives_run_in_the_vm() {
     crate::fragment::quest_fragment_dispatch_system(&world);
     assert_eq!(quest_property(&world, "Results"), Some(11_111.0));
 }
+
+/// LMC-SCR-004 catalog growth: SKSE's `Form` reads on Skyrim. A weapon answers its record's type, name, weight,
+/// keywords (null entries counted but not listed) and model; an armor's class has no world model; a door's type
+/// and model presence come from its class; the player is a reference with none of the components. A door's name,
+/// which its class has but the engine does not read, stops the call instead of answering "".
+#[test]
+fn skse_form_reads_answer_from_the_records_and_the_classes() {
+    use byroredux_plugin::esm::records::{EsmIndex, ItemKind, ItemRecord};
+    const SWORD: u32 = 0x100;
+    const CUIRASS: u32 = 0x101;
+    const DOOR: u32 = 0x102;
+    let mut index = EsmIndex { game: byroredux_plugin::esm::reader::GameKind::Skyrim, ..EsmIndex::default() };
+    let mut sword = ItemRecord { form_id: SWORD, common: Default::default(), kind: ItemKind::weapon_stub(8, 0) };
+    sword.common.full_name = "Iron Sword".into();
+    sword.common.weight = 9.0;
+    sword.common.keywords = vec![0x200, 0, 0x201];
+    sword.common.model_path = "Weapons\\Iron\\Sword.nif".into();
+    index.items.insert(SWORD, sword);
+    let mut cuirass = ItemRecord { form_id: CUIRASS, common: Default::default(), kind: ItemKind::weapon_stub(8, 0) };
+    cuirass.common.full_name = "Iron Armor".into();
+    index.items.insert(CUIRASS, cuirass);
+    for (form, signature) in [(SWORD, b"WEAP"), (CUIRASS, b"ARMO"), (DOOR, b"DOOR"), (0x200, b"KYWD"), (0x201, b"KYWD"), (0x7, b"NPC_")] {
+        index.record_types.insert(form, *signature);
+    }
+    let script = parsed_source(
+        "ScriptName QF_VmSkseForm extends Quest\n\
+         Form Property Sword Auto\n\
+         Form Property Cuirass Auto\n\
+         Form Property Door Auto\n\
+         Int Property Results Auto\n\
+         Function Fragment_1()\n\
+           If Sword.GetType() == 41 && Sword.GetName() == \"Iron Sword\" && Sword.GetWeight() == 9.0\n Results += 1\n EndIf\n\
+           If Sword.GetNumKeywords() == 3 && Sword.GetNthKeyword(1) == None && Sword.GetNthKeyword(-1) == None && Sword.GetKeywords().Length == 2\n Results += 10\n EndIf\n\
+           If Sword.HasWorldModel() && StringUtil.Find(Sword.GetWorldModelPath(), \"Sword.nif\") > 0\n Results += 100\n EndIf\n\
+           If Cuirass.GetType() == 26 && !Cuirass.HasWorldModel() && Cuirass.GetWorldModelPath() == \"\" && Door.GetType() == 29 && Door.HasWorldModel()\n Results += 1000\n EndIf\n\
+           If Game.GetPlayer().GetType() == 62 && Game.GetPlayer().GetName() == \"\"\n Results += 10000\n EndIf\n\
+         EndFunction\n\
+         Function Fragment_2()\n\
+           String name = Door.GetName()\n\
+           Results += 100000\n\
+         EndFunction\n",
+    );
+    for fragment in ["Fragment_1", "Fragment_2"] {
+        if let Err(why) = crate::fragment::vm::checker::check_function_reason(Arc::clone(&script), fragment, None) {
+            panic!("{why}")
+        }
+    }
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.insert_resource(crate::ScriptGame(byroredux_plugin::esm::reader::GameKind::Skyrim));
+    world.insert_resource(crate::form_facts::FormFacts::from_index(&index));
+    world.insert_resource(QuestStageState::default());
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.insert_resource(crate::QuestScriptObjects::default());
+    let player = world.spawn();
+    world.insert_resource(PapyrusPlayerEntity(player));
+    let object = |name: &str, form_id: u32| ScriptProperty { name: name.into(), status: 1, value: PropertyValue::Object { form_id, alias: -1 } };
+    let vmad = ScriptInstanceData {
+        version: 5,
+        object_format: 2,
+        scripts: vec![ScriptInstance {
+            name: "QF_VmSkseForm".into(),
+            status: 0,
+            properties: vec![object("Sword", SWORD), object("Cuirass", CUIRASS), object("Door", DOOR)],
+        }],
+    };
+    {
+        let mut fragments = world.resource_mut::<crate::QuestStageFragments>();
+        fragments.insert_vmad(Q, vmad);
+        fragments.insert_vm_script(Arc::clone(&script));
+        for (stage, function) in [(10, "Fragment_1"), (20, "Fragment_2")] {
+            fragments.insert(
+                Q,
+                stage,
+                vec![Effect::Interpret { script: "QF_VmSkseForm".into(), function: function.into(), args: Vec::new(), resume: None }],
+            );
+        }
+    }
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(quest_property(&world, "Results"), Some(11_111.0), "every read answered");
+    world.resource_mut::<QuestStageState>().set_stage(Q, 20);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(quest_property(&world, "Results"), Some(11_111.0), "a door's unread name stops the run");
+}

@@ -127,7 +127,7 @@ call set per family. The preflight reports those calls that are not covered.
 
 | Family | Functions | Dated by a changelog or wiki | VM | SDK | Served |
 |---|---|---|---|---|---|
-| SKSE64 | 804 | 67 | 50 | 21 | 61 |
+| SKSE64 | 804 | 67 | 60 | 21 | 71 |
 | F4SE | 227 | 13 | 14 | 3 | 17 |
 | xNVSE | 565 | 50 | 0 | 4 | 4 |
 | JIP LN | 733 | 0 | 0 | 0 | 0 |
@@ -145,6 +145,10 @@ call set per family. The preflight reports those calls that are not covered.
   function that shares a name with a vanilla native of another class counts as served:
   `ActorValueInfo.GetBaseValue` matches the vanilla `Actor.GetBaseValue`. The VM column can only be
   too high this way.
+- `ActorBase.GetWeight` is counted served because `Form.GetWeight` shares its name, but on an `NPC_` the run
+  stops (§9).
+- Each Papyrus family is checked for its own game: SKSE64's on Skyrim, F4SE's on Fallout 4. F4SE's `Form.GetName` and
+  kin are not counted, because SKSE's `Form` reads run on Skyrim only.
 - What the engine serves for MCM (`mcm-host.md`) is engine script, not extender natives, so it isn't
   counted here.
 - The ObScript families are served only through the SDK's `Native` aliases (the load-order queries),
@@ -174,7 +178,7 @@ call set per family. The preflight reports those calls that are not covered.
 
   ```
     extender catalog (LMC-SCR-005): 0 method call(s) on receivers of a type no table names
-      skse64: 12 function(s) called, 3 served, 9 not — Form.GetName (1.1.0), …
+      skse64: 12 function(s) called, 3 served, 9 not — UI.InvokeString (1.1.0), …
   ```
 
   The JSON carries every call as `catalog_calls`, with `unresolved_receivers`.
@@ -220,8 +224,8 @@ conservative choice: mods read 0 as "no extender", never as a newer one.
 **The preflight** prints the answer under each family's line, and the JSON carries it as `probe_answers`:
 
 ```
-    skse64: 2 function(s) called, 1 served, 1 not — Form.GetName (1.1.0)
-      probes answer absent, capped by Form.GetName (1.1.0)
+    skse64: 2 function(s) called, 1 served, 1 not — UI.InvokeString (1.1.0)
+      probes answer absent, capped by UI.InvokeString (1.1.0)
 ```
 
 **At run time** (Skyrim and Fallout 4 sessions):
@@ -274,3 +278,44 @@ only, and pinned by `skse_util`'s tests:
 
 **Next** are the functions that read the world: `Form` names, types, weights and keywords, `Form`'s key, menu and
 mod-event registrations, `Input`'s key state, `Utility.GetINI*`, and `Actor`'s equipment.
+
+## 9. Catalog growth: SKSE's `Form` reads (2026-11-24)
+
+Ten more SKSE64 functions read a form's record: `Form.GetType`, `GetName`, `GetWeight`, `GetNumKeywords`,
+`GetNthKeyword`, `GetKeywords`, `HasWorldModel`, `GetWorldModelPath`, and the subclass functions sharing two of those
+names (`HeadPart.GetType`, `ActorBase.GetWeight`, the second not served). They run in
+`fragment/vm/natives/skse_form.rs` on Skyrim, from `crates/scripting/src/form_facts.rs`.
+
+**The classes.** SKSE64's `PapyrusForm.cpp` casts a form to the component a read needs (`TESFullName`,
+`TESWeightForm`, `BGSKeywordForm`, `TESModel`) and answers the empty value ("", 0, None, an empty array, false) for a
+class without it. `scripts/extender-catalog.py` writes `docs/data/extenders/skse64-form-types.tsv` from SKSE64's
+headers at the pinned commit: each `kFormType` (`GetType`'s number, counted from `kFormType_None = 0`), its record
+signature and class, and the four components, followed through each class's base and its `// parents` fields.
+For example, an `ARMO` has no `TESModel` (its world models are biped models), so `HasWorldModel` is false on armor;
+an `NPC_` has no `TESWeightForm`.
+
+**The values.** `FormFacts` is built from the ESM index at boot (Skyrim only):
+
+- every base record's signature, from the index's `record_types` (placed records and world geometry left out);
+- the names, weights, keywords and models the index's records keep: items, soul gems, NPCs (their Use Keywords
+  terminal's keywords, as `KeywordTable` reads them), races, locations, containers, activators, head parts (and their
+  type), trees, projectiles, grasses, and the names of classes, factions, spells, magic effects, enchantments, quests,
+  perks, messages, actor values, eyes, explosions and waters; the placeable bases' models.
+
+**The answers.**
+
+| The form | A read answers |
+|---|---|
+| a base whose class lacks the component | SKSE's empty value |
+| a base whose class has it, and the engine reads it | the record's value |
+| a base whose class has it, and the engine does not read it (a door's or furniture's name, a spell's keywords) | stops, naming what is not read |
+| a loaded reference | `REFR` (61) or `ACHR` (62), and the empty value for the rest: a reference has none of the components |
+| a form the engine has no record of | stops |
+
+`GetNthKeyword` takes a `UInt32` index (a negative one is past the end) and answers None for a null entry;
+`GetKeywords` leaves null entries out, as SKSE does.
+
+**Not yet.** `Form.IsPlayable` is a virtual function implemented in the game executable, not in SKSE's source, so
+its answer per form type is undocumented: a declared gap. The `Set*` functions (`SetName`, `SetWeight`,
+`SetGoldValue`, …) change a form for the session and need save coverage first. The registrations (`RegisterForKey`,
+`RegisterForMenu`, `RegisterForModEvent`, …), `Input`, `Utility.GetINI*` and `Actor`'s equipment come next.
