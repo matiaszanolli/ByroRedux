@@ -78,7 +78,7 @@ impl Vm<'_> {
         }
         if disabled
             && let Value::Form(form_id) = last {
-                self.deferred.reference_enable_changes.push((form_id, false));
+                self.deferred.reference_enable_changes.push((form_id, Some(false)));
             }
         Ok(last)
     }

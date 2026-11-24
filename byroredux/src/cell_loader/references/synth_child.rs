@@ -991,18 +991,13 @@ pub(super) fn spawn_synth_child(
         accum.scripts_recognized += 1;
     }
 
-    // A trigger zone authored as a Havok phantom (Oblivion's `TrigZone*.NIF`): the reference has no
-    // `XPRM`, so the branch above never saw it, and its model has no mesh. Its script's
-    // `OnTrigger` block fires only with a volume, so build one from the model's phantom box.
-    // Gated on the script having a trigger block, so a water phantom or any other scripted
-    // phantom model gets none, and on the reference not being `Disable()`d (as an `XPRM` volume).
+    // Oblivion trigger zones and Skyrim oil pools author their volume as a model phantom.
+    // Use it when the placement has a trigger handler and no explicit trigger volume.
     if !placement_disabled
         && let Some(bounds) = cached.phantom_bounds
-        && byroredux_scripting::obscript_objects::has_trigger_block(world, placement_root)
-        && world.get::<byroredux_scripting::TriggerVolume>(placement_root).is_none()
         && let Some(volume) = trigger_volume_from_phantom(bounds, ref_pos, ref_rot, ref_scale)
+        && super::attach::attach_model_trigger(world, placement_root, placed_ref.form_id, volume)
     {
-        world.insert(placement_root, volume);
         accum.trigger_volumes += 1;
     }
 }

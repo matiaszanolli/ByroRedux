@@ -86,7 +86,8 @@ pub struct DeferredFragmentEffects {
     pub(super) activations: Vec<(EntityId, EntityId)>,
     /// The `Activate(…, true)` ones (default processing only).
     pub(super) native_activations: Vec<(EntityId, EntityId)>,
-    pub(in crate::fragment) reference_enable_changes: Vec<(u32, bool)>,
+    /// `None` clears the override and returns the reference to its authored enable state.
+    pub(in crate::fragment) reference_enable_changes: Vec<(u32, Option<bool>)>,
     /// #4136 — scripted lock changes, FormID-keyed for the same reason
     /// `reference_enable_changes` above is: the state has to outlive the
     /// reference's cell, and a component cannot survive its own entity's
@@ -797,6 +798,7 @@ impl DeferredFragmentEffects {
                 Some(mut created) => {
                     for (form_id, base, at, delete_when_able) in self.created_references.drain(..) {
                         created.create_scripted(form_id, base, at, delete_when_able);
+                        log::debug!("PlaceAtMe: created {form_id:08X} from base {base:08X} at {at:08X}");
                     }
                 }
                 None => log::debug!("PlaceAtMe dropped: CreatedReferences is unavailable"),
@@ -998,7 +1000,10 @@ impl DeferredFragmentEffects {
 
     fn flush_reference_enable_changes(&mut self, world: &World) {
         drain_into_resource::<ReferenceEnableState, _>(world, &mut self.reference_enable_changes, |state, (form_id, enabled)| {
-                state.set_enabled(form_id, enabled);
+            match enabled {
+                Some(enabled) => state.set_enabled(form_id, enabled),
+                None => state.clear_override(form_id),
+            }
         });
     }
 

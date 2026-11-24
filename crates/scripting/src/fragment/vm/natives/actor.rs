@@ -14,6 +14,7 @@ pub(super) const READS: &[&str] = &[
     "ignorefriendlyhits",
     "setcandocommand",
     "hasspell",
+    "hasmagiceffectwithkeyword",
     "getcurrentpackage",
     "getfactionreaction",
     "isindialoguewithplayer",
@@ -251,6 +252,17 @@ impl Vm<'_> {
             // CK *CreateDetectionEvent*: a detection event at this object's location
             // for `akOwner` at `aiSoundLevel` (default 0); recorded for a hearing
             // system the engine does not have (see [`crate::detection_events`]).
+
+            // CK *HasMagicEffectWithKeyword - Actor*: the keyword belongs to an applied magic effect.
+            (Value::Form(actor), "hasmagiceffectwithkeyword") if args.len() == 1 => {
+                let Some(entity) = self.entity_of(*actor) else {
+                    return stop("HasMagicEffectWithKeyword on an actor that is not loaded");
+                };
+                let values = self.eval_args(frame, args)?;
+                let has_effect = matches!(values.as_slice(), [Value::Form(keyword)]
+                    if *keyword != 0 && crate::magic_effects::has_effect_with_keyword(self.world, entity, *keyword));
+                Some(Value::Bool(has_effect))
+            }
             // CK *HasSpell - Actor*: whether the actor "knows" the spell or shout (not
             // whether one is acting on it) - the actor's spell list, which holds its
             // race's and what `AddSpell` gave it.
@@ -289,7 +301,7 @@ impl Checker<'_> {
             (Kind::Object | Kind::Player, "isindialoguewithplayer") if arg_kinds.is_empty() => return Some(Kind::Bool),
             (Kind::Object, "getsex") if arg_kinds.is_empty() => return Some(Kind::Num),
             (Kind::Object | Kind::Player, "getvoicetype") if arg_kinds.is_empty() => return Some(Kind::Object),
-            (Kind::Object | Kind::Player, "hasspell")
+            (Kind::Object | Kind::Player, "hasspell" | "hasmagiceffectwithkeyword")
                 if matches!(arg_kinds, [Arg::Kind(Kind::Object | Kind::Player | Kind::None) | Arg::Literal(Expr::NoneLit)]) =>
             {
                 return Some(Kind::Bool);

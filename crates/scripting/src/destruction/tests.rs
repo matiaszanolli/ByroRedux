@@ -1,7 +1,7 @@
 use super::*;
 
 fn stage(percent: u8, index: u8, model: u8, flags: u8) -> DestructionStage {
-    DestructionStage { health_percent: percent, index, model_damage_stage: model, flags }
+    DestructionStage { health_percent: percent, index, model_damage_stage: model, flags, self_damage_per_second: 0 }
 }
 
 /// The CK tutorial's four stages of decay (75, 50, 25, 0) with the last one
@@ -66,6 +66,52 @@ fn a_stage_that_ignores_external_damage_takes_none() {
     apply_damage(&data, &mut state, 60.0);
     let outcome = apply_damage(&data, &mut state, 30.0);
     assert_eq!((outcome.new_stage, state.damage), (1, 60.0));
+}
+
+#[test]
+fn authored_self_damage_advances_loaded_references_and_queues_stage_changes() {
+    use byroredux_core::ecs::components::FormIdComponent;
+    use byroredux_core::form_id::{FormIdPair, FormIdPool, LocalFormId, PluginId};
+
+    let mut world = World::new();
+    crate::register(&mut world);
+    world.register::<FormIdComponent>();
+    let plugin = PluginId::from_filename("Skyrim.esm");
+    let mut pool = FormIdPool::default();
+    let reference = 0x101;
+    let unloaded = 0x102;
+    let id = pool.intern(FormIdPair { plugin, local: LocalFormId(reference) });
+    pool.intern(FormIdPair { plugin, local: LocalFormId(unloaded) });
+    world.insert_resource(pool);
+    let entity = world.spawn();
+    world.insert(entity, FormIdComponent(id));
+    let base = 0x103;
+    world.insert(entity, crate::scene::SceneAliasCandidate { base_form_id: base, ..Default::default() });
+    let flags = DestructionStage::CAP_DAMAGE | DestructionStage::IGNORE_EXTERNAL_DAMAGE;
+    let data = DestructionData {
+        health: 100,
+        stages: vec![
+            DestructionStage { self_damage_per_second: 10, ..stage(99, 0, 1, flags) },
+            stage(94, 1, 2, DestructionStage::CAP_DAMAGE | DestructionStage::DISABLE),
+        ],
+    };
+    world.insert_resource(DestructionTable([(base, data)].into()));
+    assert_eq!(damage_object(&world, entity, reference, 5.0).unwrap().new_stage, 1);
+    assert_eq!(damage_object(&world, entity, reference, 5.0).unwrap().new_stage, 1);
+    world.resource_mut::<PendingStageChanges>().0.clear();
+    world.resource_mut::<DestructionStates>().0.insert(unloaded, ReferenceDestruction { damage: 1.0, destroyed: false });
+
+    self_damage_system(&world, 0.25);
+    assert_eq!(destruction_stage(&world, entity, reference), 1);
+    assert!(world.resource::<PendingStageChanges>().0.is_empty());
+
+    self_damage_system(&world, 0.5);
+    assert_eq!(destruction_stage(&world, entity, reference), 2);
+    assert_eq!(world.resource::<PendingStageChanges>().0, [entity]);
+    assert!(!crate::fragment::reference_enabled(&world, reference));
+    let states = world.resource::<DestructionStates>();
+    assert_eq!(states.0[&reference].damage, 6.0);
+    assert_eq!(states.0[&unloaded].damage, 1.0);
 }
 
 #[test]

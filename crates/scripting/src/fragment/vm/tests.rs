@@ -6238,7 +6238,7 @@ fn damage_object_walks_the_destruction_stages() {
     let marker = world.spawn();
     world.insert(marker, FormIdComponent(id));
     world.insert(marker, crate::scene::SceneAliasCandidate { base_form_id: BASE, ..Default::default() });
-    let stage = |percent, model, flags| DestructionStage { health_percent: percent, index: model, model_damage_stage: model, flags };
+    let stage = |percent, model, flags| DestructionStage { health_percent: percent, index: model, model_damage_stage: model, flags, self_damage_per_second: 0 };
     world.insert_resource(crate::destruction::DestructionTable(
         [(
             BASE,
@@ -6259,6 +6259,72 @@ fn damage_object_walks_the_destruction_stages() {
     crate::destruction::set_destroyed(&world, MARKER, false);
     assert!(world.resource::<crate::destruction::DestructionStates>().0.is_empty());
     assert_eq!(crate::destruction::destruction_stage(&world, marker, MARKER), -1);
+}
+
+#[test]
+fn reset_restores_a_destructible_reference_to_its_editor_pose_and_enable_state() {
+    use byroredux_core::ecs::components::Transform;
+    use byroredux_core::math::{Quat, Vec3};
+    use byroredux_plugin::esm::cell::{DestructionData, DestructionStage};
+
+    const BASE: u32 = 0x0001_0F90;
+    let script = parsed_source(
+        "ScriptName QF_VmReset extends Quest\n\
+         ObjectReference Property Marker Auto\n\
+         Function Fragment_1()\n\
+           Marker.DamageObject(100.0)\n\
+           If Marker.IsDisabled() && Marker.IsDestroyed()\n\
+             Marker.Reset(None)\n\
+             If !Marker.IsDisabled() && !Marker.IsDestroyed() && Marker.GetCurrentDestructionStage() == -1\n\
+               Self.SetStage(20)\n\
+             EndIf\n\
+           EndIf\n\
+         EndFunction\n\
+         Function UnsupportedDestination()\n\
+           Marker.Reset(Marker)\n\
+         EndFunction\n",
+    );
+    assert!(check_function_reason(Arc::clone(&script), "Fragment_1", None).is_ok());
+    assert!(check_function_reason(Arc::clone(&script), "UnsupportedDestination", None).is_err());
+
+    let mut world = world_with_fragment(script);
+    world.register::<FormIdComponent>();
+    world.register::<Transform>();
+    let mut pool = FormIdPool::default();
+    let id = pool.intern(FormIdPair { plugin: PluginId::from_filename("Skyrim.esm"), local: LocalFormId(MARKER) });
+    world.insert_resource(pool);
+    let marker = world.spawn();
+    world.insert(marker, FormIdComponent(id));
+    world.insert(marker, crate::scene::SceneAliasCandidate { base_form_id: BASE, ..Default::default() });
+    let authored = crate::EditorLocation { translation: Vec3::new(1.0, 2.0, 3.0), rotation: Quat::from_rotation_y(1.0) };
+    world.insert(marker, authored);
+    world.insert(marker, Transform::from_translation(Vec3::new(30.0, 40.0, 50.0)));
+    world.insert_resource(crate::destruction::DestructionTable(
+        [(
+            BASE,
+            DestructionData {
+                health: 100,
+                stages: vec![DestructionStage {
+                    health_percent: 0,
+                    index: 0,
+                    model_damage_stage: 1,
+                    flags: DestructionStage::DESTROY | DestructionStage::DISABLE,
+                    self_damage_per_second: 0,
+                }],
+            },
+        )]
+        .into(),
+    ));
+
+    world.resource_mut::<crate::fragment::ReferenceEnableState>().set_enabled(MARKER, true);
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+
+    assert_eq!(world.resource::<QuestStageState>().get_stage(Q), 20);
+    assert!(world.resource::<crate::destruction::DestructionStates>().0.is_empty());
+    assert_eq!(world.resource::<crate::fragment::ReferenceEnableState>().override_for(MARKER), None);
+    let transform = world.get::<Transform>(marker).unwrap();
+    assert_eq!((transform.translation, transform.rotation), (authored.translation, authored.rotation));
 }
 
 /// `Weapon.Fire(akSource, akAmmo)` records a launch for the host: the weapon, the
@@ -7036,6 +7102,48 @@ fn equip_spell_and_equip_item_ex_reach_the_hands() {
         vec![(player, DAGGER, Hand::Left)],
         "EquipItemEx(item, 2) asks for the left hand"
     );
+}
+
+#[test]
+fn has_magic_effect_with_keyword_reads_only_applied_effects() {
+    use byroredux_plugin::esm::records::{EsmIndex, MgefRecord};
+    use crate::magic_effects::{CastEffect, start_effects};
+
+    const FIRE: u32 = 0x0B01;
+    const FROST: u32 = 0x0B02;
+    let script = parsed_source(
+        "ScriptName VmEffectKeyword extends Quest\n\
+         Keyword Property Marker Auto\n\
+         Function Fragment_1()\n\
+           If Game.GetPlayer().HasMagicEffectWithKeyword(Marker)\n\
+             Self.SetStage(99)\n\
+           EndIf\n\
+         EndFunction\n",
+    );
+    assert_eq!(check_function_reason(Arc::clone(&script), "Fragment_1", None).err(), None);
+
+    let mut index = EsmIndex::default();
+    index.magic_effects.insert(FIRE, MgefRecord {
+        form_id: FIRE, keywords: vec![MARKER], ..Default::default()
+    });
+    index.magic_effects.insert(FROST, MgefRecord {
+        form_id: FROST, ..Default::default()
+    });
+    for (active_effect, expected_stage) in [(None, 10), (Some(FROST), 10), (Some(FIRE), 99)] {
+        let mut world = world_with_fragment(Arc::clone(&script));
+        crate::keywords::install_keyword_table(&mut world, &index);
+        let player = world.resource::<PapyrusPlayerEntity>().0;
+        if let Some(mgef) = active_effect {
+            let effect = CastEffect {
+                mgef, duration: 3.0, script: 0, magnitude: 0.0, value: None, conditions: None,
+                range: Default::default(), area: 0.0,
+            };
+            assert_eq!(start_effects(&world, player, None, 0x0B03, &[effect], false), 1);
+        }
+        world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+        crate::fragment::quest_fragment_dispatch_system(&world);
+        assert_eq!(world.resource::<QuestStageState>().get_stage(Q), expected_stage, "{active_effect:?}");
+    }
 }
 
 /// LMC Q5 / LMC-ID-005: a mod script reads a shipped `JsonUtil` file, writes values, lists and a form in

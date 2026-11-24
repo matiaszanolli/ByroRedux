@@ -9,14 +9,16 @@
 //! `check_reference_script` accepts it, as the cell loader would attach it;
 //! `VM_REASONS=1` tallies why the VM declines the rest, weighted by the
 //! references carrying each script; `VM_REASON_FAMILIES=<text>` lists the
-//! script families whose decline reason contains `text`.
+//! script families whose decline reason contains `text`. `VM_REPORT_ATTACHMENTS=1`
+//! emits one tab-separated row per unique placed FormID and script name, with
+//! `attachment`, FormID, script name, admission path and decline reason columns.
 //!
 //! ```bash
 //! cargo run --release -p byroredux-scripting --example refr_script_coverage -- \
 //!     "<Skyrim SE>/Data/Skyrim.esm" "<Skyrim SE>/Data/Skyrim - Misc.bsa"
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[path = "common/archives.rs"]
 mod archives;
@@ -47,6 +49,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut vm_covered = 0usize;
     let mut vm_reasons: HashMap<String, usize> = HashMap::new();
+    let report_attachments = std::env::var_os("VM_REPORT_ATTACHMENTS").is_some();
+    let mut reported = HashSet::new();
 
     // Script name (lowercased) → (references carrying it, recognized?).
     let mut families: HashMap<String, (usize, Option<bool>)> = HashMap::new();
@@ -87,13 +91,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 for script in &vmad.scripts {
                     let hit = recognize(&script.name, vmad);
                     any |= hit;
-                    if !hit {
+                    let (admission, reason) = if hit {
+                        ("recognizer", String::new())
+                    } else {
                         match vm_check(&script.name) {
-                            Ok(()) => by_vm = true,
-                            Err(why) => *vm_reasons.entry(why).or_default() += 1,
+                            Ok(()) => {
+                                by_vm = true;
+                                ("vm", String::new())
+                            }
+                            Err(why) => {
+                                *vm_reasons.entry(why.clone()).or_default() += 1;
+                                ("declined", why)
+                            }
                         }
+                    };
+                    let name = script.name.to_ascii_lowercase();
+                    if report_attachments && reported.insert((placed.form_id, name.clone())) {
+                        println!("attachment\t{:08X}\t{name}\t{admission}\t{reason}", placed.form_id);
                     }
-                    let family = families.entry(script.name.to_ascii_lowercase()).or_default();
+                    let family = families.entry(name).or_default();
                     family.0 += 1;
                     family.1 = Some(hit);
                 }

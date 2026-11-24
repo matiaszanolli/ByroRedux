@@ -322,6 +322,8 @@ pub struct DestructionStage {
     pub model_damage_stage: u8,
     /// Bit 0 Cap Damage, 1 Disable, 2 Destroy, 3 Ignore External Dmg.
     pub flags: u8,
+    /// Damage taken per simulated second while at this stage.
+    pub self_damage_per_second: i32,
 }
 
 impl DestructionStage {

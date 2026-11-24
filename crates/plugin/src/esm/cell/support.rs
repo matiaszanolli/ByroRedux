@@ -110,7 +110,7 @@ pub(crate) fn build_static_object_from_subs(
             }
             // xEdit `wbDEST`: `DEST` is health (i32), stage count (u8), VATS
             // flag (u8) and two unknown bytes; each `DSTD` opens with health %
-            // (u8), index (u8), model damage stage (u8) and flags (u8).
+            // (u8), index (u8), model damage stage (u8), flags (u8) and self-damage rate (i32).
             b"DEST" if sub.data.len() >= 4 => {
                 let health =
                     i32::from_le_bytes([sub.data[0], sub.data[1], sub.data[2], sub.data[3]]);
@@ -121,11 +121,13 @@ pub(crate) fn build_static_object_from_subs(
             }
             b"DSTD" if sub.data.len() >= 4 => {
                 if let Some(data) = destruction.as_mut() {
+                    let mut stage = crate::esm::sub_reader::SubReader::new(&sub.data);
                     data.stages.push(DestructionStage {
-                        health_percent: sub.data[0],
-                        index: sub.data[1],
-                        model_damage_stage: sub.data[2],
-                        flags: sub.data[3],
+                        health_percent: stage.u8_or_default(),
+                        index: stage.u8_or_default(),
+                        model_damage_stage: stage.u8_or_default(),
+                        flags: stage.u8_or_default(),
+                        self_damage_per_second: stage.i32_or_default(),
                     });
                 }
             }

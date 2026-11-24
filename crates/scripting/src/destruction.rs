@@ -85,11 +85,8 @@ pub fn install_destruction_table(world: &mut World, index: &EsmIndex) -> usize {
     count
 }
 
-fn remaining_percent(data: &DestructionData, damage: f32) -> f32 {
-    if data.health <= 0 {
-        return if damage > 0.0 { 0.0 } else { 100.0 };
-    }
-    (100.0 * (data.health as f32 - damage) / data.health as f32).clamp(0.0, 100.0)
+fn damage_threshold(data: &DestructionData, stage: &DestructionStage) -> f32 {
+    data.health.max(0) as f32 * f32::from(100u8.saturating_sub(stage.health_percent)) / 100.0
 }
 
 /// The stage the object is at after `damage`: the most damaged stage whose
@@ -98,10 +95,9 @@ fn stage_at(data: &DestructionData, damage: f32) -> Option<DestructionStage> {
     if damage <= 0.0 {
         return None;
     }
-    let remaining = remaining_percent(data, damage);
     data.stages
         .iter()
-        .filter(|stage| f32::from(stage.health_percent) >= remaining)
+        .filter(|stage| damage >= damage_threshold(data, stage))
         .min_by(|a, b| a.health_percent.cmp(&b.health_percent).then(b.index.cmp(&a.index)))
         .copied()
 }
@@ -128,30 +124,38 @@ pub struct DamageOutcome {
 
 /// Apply `amount` of external damage to `state` under `data`.
 pub fn apply_damage(data: &DestructionData, state: &mut ReferenceDestruction, amount: f32) -> DamageOutcome {
+    apply_stage_damage(data, state, amount, true)
+}
+
+fn apply_stage_damage(
+    data: &DestructionData,
+    state: &mut ReferenceDestruction,
+    amount: f32,
+    external: bool,
+) -> DamageOutcome {
     let old = stage_at(data, state.damage);
     let old_stage = stage_number(old);
     let unchanged = DamageOutcome { old_stage, new_stage: old_stage, destroyed: false, disable: false };
     if !amount.is_finite() || amount <= 0.0 {
         return unchanged;
     }
-    if old.is_some_and(|stage| stage.flags & DestructionStage::IGNORE_EXTERNAL_DAMAGE != 0) {
+    if external && old.is_some_and(|stage| stage.flags & DestructionStage::IGNORE_EXTERNAL_DAMAGE != 0) {
         return unchanged;
     }
     let health = data.health.max(0) as f32;
-    let before = remaining_percent(data, state.damage);
     let mut damage = (state.damage + amount).min(health.max(amount));
     if data.health > 0 {
         damage = damage.min(health);
-        let after = remaining_percent(data, damage);
         // Cap Damage: the first capped stage this hit would pass stops it there.
-        let cap = data
+        if let Some(threshold) = data
             .stages
             .iter()
             .filter(|stage| stage.flags & DestructionStage::CAP_DAMAGE != 0)
-            .filter(|stage| before > f32::from(stage.health_percent) && after < f32::from(stage.health_percent))
-            .max_by_key(|stage| stage.health_percent);
-        if let Some(cap) = cap {
-            damage = health * (1.0 - f32::from(cap.health_percent) / 100.0);
+            .map(|stage| damage_threshold(data, stage))
+            .filter(|&threshold| state.damage < threshold && damage > threshold)
+            .min_by(f32::total_cmp)
+        {
+            damage = threshold;
         }
     }
     state.damage = damage;
@@ -187,11 +191,65 @@ pub fn damage_object(world: &World, entity: EntityId, form: u32, amount: f32) ->
     let state = states.0.entry(form).or_default();
     let outcome = apply_damage(&data, state, amount);
     drop(states);
-    if outcome.old_stage != outcome.new_stage
-        && let Some(mut changed) = world.try_resource_mut::<PendingStageChanges>() {
-            changed.0.push(entity);
-        }
+    if outcome.old_stage != outcome.new_stage {
+        queue_obscript_stage_change(world, entity);
+    }
     Some(outcome)
+}
+
+fn queue_obscript_stage_change(world: &World, entity: EntityId) {
+    if let Some(mut changed) = world.try_resource_mut::<PendingStageChanges>() {
+        changed.0.push(entity);
+    }
+}
+
+pub(crate) fn raise_papyrus_stage_change(world: &World, entity: EntityId, outcome: DamageOutcome) {
+    use crate::translate::effects::VmStored;
+
+    log::debug!("destruction: entity {entity} changed from stage {} to {}", outcome.old_stage, outcome.new_stage);
+    crate::fragment::raise_reference_event(
+        world,
+        entity,
+        "OnDestructionStageChanged",
+        vec![VmStored::Int(outcome.old_stage), VmStored::Int(outcome.new_stage)],
+    );
+}
+
+/// Advance the authored self-damage of enabled, loaded references. Stage events use the
+/// same queues as the script damage path, and unload leaves the saved damage parked.
+pub fn self_damage_system(world: &World, dt: f32) {
+    if !dt.is_finite() || dt <= 0.0 {
+        return;
+    }
+    let Some(states) = world.try_resource::<DestructionStates>() else { return };
+    let damaged: Vec<_> = states.0.iter().filter_map(|(&form, state)| (state.damage > 0.0).then_some(form)).collect();
+    drop(states);
+
+    for form in damaged {
+        if let Some(entity) = crate::condition::resolve_entity_by_global_form_id(world, form)
+            && crate::fragment::reference_enabled(world, form)
+            && let Some(outcome) = self_damage(world, entity, form, dt)
+            && outcome.old_stage != outcome.new_stage
+        {
+            queue_obscript_stage_change(world, entity);
+            raise_papyrus_stage_change(world, entity, outcome);
+            if outcome.disable
+                && let Some(mut state) = world.try_resource_mut::<crate::fragment::ReferenceEnableState>()
+            {
+                state.set_enabled(form, false);
+            }
+        }
+    }
+}
+
+fn self_damage(world: &World, entity: EntityId, form: u32, dt: f32) -> Option<DamageOutcome> {
+    let base = base_of(world, entity)?;
+    let table = world.try_resource::<DestructionTable>()?;
+    let data = table.get(base)?;
+    let mut states = world.try_resource_mut::<DestructionStates>()?;
+    let state = states.0.get_mut(&form)?;
+    let rate = stage_at(data, state.damage)?.self_damage_per_second;
+    (rate > 0).then(|| apply_stage_damage(data, state, rate as f32 * dt, false))
 }
 
 /// The references whose destruction stage changed since the ObScript `OnDestructionStageChange` blocks

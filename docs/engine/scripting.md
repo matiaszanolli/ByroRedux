@@ -1673,18 +1673,22 @@ state:
 `IsDestroyed` and the `OnDestructionStageChanged(aiOldStage, aiCurrentStage)` event
 (`destruction.rs`). The data is a base record's destructible block, which the plugin now keeps on
 the `StaticObject` (xEdit `wbDEST`: `DEST` health, `DSTD` stages with health %, index, model damage
-stage and flags; 615 base objects in Skyrim.esm). The rules are the CK's *Destructible Objects*
+stage, flags and self-damage rate). The rules are the CK's *Destructible Objects*
 tutorial and the function pages: a stage is entered when the object's remaining health falls to its
 percentage, the stage number scripts see is the *model damage stage*, an undamaged object is -1,
 Cap Damage stops a hit at the capped stage ("if you've got 20 health on your object and you cap with
 a health percentage of 80%, the first hit only brings health down to 80%"), Ignore External Dmg
 makes the stage ignore `DamageObject`, Destroy sets the destroyed flag and Disable disables the
-reference; skipped stages are why the event carries both numbers, and `ClearDestruction` raises
-none. Each reference's damage and destroyed flag is a saved `DestructionStates` by FormID. The
-visible side (replacement models, explosions, debris, a stage's self damage per second) is not
-modelled, and a base with a health of 0 or less takes any damage straight to 0% (the CK says
-nothing about it). Census: `refr_script_coverage` on Skyrim 61.1% to 62.6% of scripted references
-(`MineOreScript` now stops on `Activate`, not `DamageObject`; see the next section).
+reference. Enabled, loaded references take their stage's authored self-damage as simulation time
+advances. Each transition delivers its old and new stages to Papyrus and queues the ObScript stage
+event. Each reference's damage and destroyed flag are saved in `DestructionStates` by FormID. A base
+with a health of 0 or less takes any damage straight to 0%.
+
+`ClearDestruction` restores the undamaged state without raising a stage event. `Reset()` and
+`Reset(None)` on a loaded destructible placement without inventory also restore its editor pose and
+authored enable state. The [oil-pool smoke](../smoke-tests/skyrim-oil-pool.sh) exercises model phantom
+crossings, self-damage and reset with Skyrim's Papyrus scripts. Replacement models, DSTD explosions
+and debris remain open.
 
 ### Fallout 4 and Starfield quest stage fragments (M47.2)
 

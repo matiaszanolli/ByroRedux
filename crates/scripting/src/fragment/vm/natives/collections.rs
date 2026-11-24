@@ -177,7 +177,7 @@ impl Vm<'_> {
             "enableall" | "disableall" => {
                 let enabled = name == "enableall";
                 for form in members.iter() {
-                    self.deferred.reference_enable_changes.push((*form, enabled));
+                    self.deferred.reference_enable_changes.push((*form, Some(enabled)));
                 }
                 Value::None
             }

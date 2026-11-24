@@ -19,8 +19,7 @@
 //!   *Keyword* page has Banish "only affect Actors that have the
 //!   'ActorTypeDaedra' Keyword".
 //!
-//! Base objects covered: actors (`NPC_` + `RACE`) and inventory items. Other
-//! base types' keywords are not collected yet.
+//! The table covers actors (`NPC_` + `RACE`), inventory items, and magic effects.
 
 use std::collections::{HashMap, HashSet};
 
@@ -28,7 +27,7 @@ use byroredux_core::ecs::storage::EntityId;
 use byroredux_core::ecs::{Resource, World};
 use byroredux_plugin::esm::records::EsmIndex;
 
-/// Base object → its keywords (an actor's include its race's; a templated
+/// FormID → its keywords (an actor's include its race's; a templated
 /// actor's come from its Use-Keywords / Use-Traits terminals).
 /// `NOT_SAVED_BY_DESIGN`: rebuilt from the records every boot.
 #[derive(Debug, Default, Clone)]
@@ -56,6 +55,11 @@ impl KeywordTable {
         for item in index.items.values() {
             if !item.common.keywords.is_empty() {
                 table.insert(item.form_id, item.common.keywords.iter().copied().collect());
+            }
+        }
+        for effect in index.magic_effects.values() {
+            if !effect.keywords.is_empty() {
+                table.insert(effect.form_id, effect.keywords.iter().copied().collect());
             }
         }
         Self(table)

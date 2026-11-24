@@ -34,7 +34,7 @@ pub(crate) use resolve::*;
 pub use deferred::*;
 pub use inventory::*;
 use placement::*;
-pub(crate) use placement::apply_move_to_effect;
+pub(crate) use placement::{apply_move_to_effect, move_to_editor_location};
 use scene::*;
 use lock::*;
 use player_control::*;

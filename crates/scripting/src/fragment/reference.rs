@@ -108,6 +108,12 @@ impl ReferenceScript {
 #[derive(Debug, Clone, Default)]
 pub struct PapyrusReferenceScripts(pub Vec<ReferenceScript>);
 
+impl PapyrusReferenceScripts {
+    pub fn handles(&self, event: &str) -> bool {
+        self.0.iter().any(|script| script.handles(event))
+    }
+}
+
 impl Component for PapyrusReferenceScripts {
     type Storage = SparseSetStorage<Self>;
     // The trap-owner cache re-derives when a reference gains or loses its

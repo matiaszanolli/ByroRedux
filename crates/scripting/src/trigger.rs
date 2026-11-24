@@ -1,10 +1,10 @@
 //! Trigger-volume detection — the engine emit site for
 //! [`OnTriggerEnterEvent`](crate::events::OnTriggerEnterEvent).
 //!
-//! A trigger volume is an invisible REFR (no MODL) whose geometry is an
-//! `XPRM` primitive — a box or sphere placed in the world. Bethesda's
-//! `default*Trigger` script family runs `OnTriggerEnter(akActionRef)` when
-//! an actor crosses *into* that volume. This module is the runtime half
+//! A trigger volume comes from a placed reference's `XPRM` primitive or its
+//! model's Havok phantom. Bethesda's `default*Trigger` script family runs
+//! `OnTriggerEnter(akActionRef)` when an actor crosses into that volume.
+//! This module is the runtime half
 //! the [`quest_advance`](crate::papyrus_demo::quest_advance) recognizer
 //! needs: the cell loader attaches a [`TriggerVolume`] to each trigger
 //! REFR, and [`trigger_detection_system`] emits `OnTriggerEnterEvent` on
@@ -16,9 +16,8 @@
 //! emits. Leaving and re-entering fires again — matching the engine.
 //!
 //! The volume is stored in **world space** (computed once by the cell
-//! loader from the REFR placement + primitive), so detection needs only
-//! the player's world position — no per-frame transform composition, and
-//! correct for the static volumes that triggers always are.
+//! loader from the placement and shape), so detection uses the player's
+//! world position directly.
 
 use crate::events::{OnTriggerEnterEvent, OnTriggerLeaveEvent};
 use byroredux_core::ecs::components::GlobalTransform;
@@ -37,8 +36,7 @@ pub enum TriggerShape {
     Sphere,
 }
 
-/// World-space trigger volume attached to an invisible trigger REFR.
-/// Built by the cell loader from the REFR's placement + `XPRM` primitive.
+/// World-space trigger volume attached to the reference that handles its events.
 #[derive(Debug, Clone, Copy)]
 pub struct TriggerVolume {
     /// World-space center (the REFR's placed position).
@@ -112,9 +110,17 @@ impl Component for TriggerVolume {
     type Storage = SparseSetStorage<Self>;
 }
 
+/// A trigger whose volume comes from a Havok phantom in its model.
+pub struct ModelPhantomTrigger;
+
+impl Component for ModelPhantomTrigger {
+    type Storage = SparseSetStorage<Self>;
+}
+
 /// Register the [`TriggerVolume`] storage. Called from [`crate::register`].
 pub fn register(world: &mut World) {
     world.register::<TriggerVolume>();
+    world.register::<ModelPhantomTrigger>();
     world.init_resource::<TriggerOccupancyState>();
 }
 
@@ -173,6 +179,14 @@ pub fn trigger_occupants(world: &World, volume: EntityId) -> Vec<EntityId> {
 /// No-ops gracefully when there's no player, no player transform, or no
 /// trigger volumes in the world.
 pub fn trigger_detection_system(world: &World) {
+    detect_trigger_crossings(world, None);
+}
+
+/// Detect crossings with the player controller's capsule dimensions (half-height and radius).
+/// Model phantoms also contact the capsule's lower hemisphere: a thin floor trigger can be
+/// touched while the player's body center is above it. Point-only primitive triggers keep
+/// their authored crossing behavior.
+pub fn detect_trigger_crossings(world: &World, player_capsule: Option<(f32, f32)>) {
     let Some(player) = crate::papyrus_demo::PapyrusPlayerEntity::get(world) else {
         return;
     };
@@ -205,11 +219,15 @@ pub fn trigger_detection_system(world: &World) {
     // entities that just entered. Mutating `occupant_inside` here keeps
     // the edge-trigger state on the component itself.
     {
+        let phantoms = player_capsule.and_then(|_| world.query::<ModelPhantomTrigger>());
+        let lower_cap = player_capsule.map(|(half_height, radius)| (player_pos - Vec3::Y * half_height, radius));
         let Some(mut vols) = world.query_mut::<TriggerVolume>() else {
             return;
         };
         for (entity, vol) in vols.iter_mut() {
-            let inside = vol.contains(player_pos);
+            let inside = vol.contains(player_pos)
+                || (phantoms.as_ref().is_some_and(|phantoms| phantoms.get(entity).is_some())
+                    && lower_cap.is_some_and(|(center, radius)| vol.intersects_sphere(center, radius)));
             // SCR-D6-NEW-02 / #1817 — `None` means this volume has never
             // been checked before (just spawned, this tick). Seed the
             // state silently instead of comparing against a synthetic
@@ -804,6 +822,23 @@ mod tests {
         assert!(!v.contains(Vec3::new(1.5, 0.0, 0.0)));
         assert!(v.intersects_sphere(Vec3::new(1.5, 0.0, 0.0), 0.6));
         assert!(!v.intersects_sphere(Vec3::new(1.5, 0.0, 0.0), 0.4));
+    }
+
+    #[test]
+    fn the_players_lower_capsule_contacts_a_thin_model_phantom() {
+        let volume = axis_box(Vec3::new(0.0, 7.0, 0.0), Vec3::new(77.0, 7.0, 79.0));
+        let (mut world, trigger, entered) = run_once(Vec3::new(-150.0, 64.0, 0.0), volume);
+        assert!(!entered);
+        let player = PapyrusPlayerEntity::get(&world).unwrap();
+        let point_trigger = world.spawn();
+        world.insert(point_trigger, volume);
+        world.insert(trigger, ModelPhantomTrigger);
+        world.insert(player, GlobalTransform::new(Vec3::new(0.0, 64.0, 0.0), Quat::IDENTITY, 1.0));
+
+        detect_trigger_crossings(&world, Some((46.0, 18.0)));
+
+        assert_eq!(world.get::<OnTriggerEnterEvent>(trigger).unwrap().triggerers, [player]);
+        assert!(!world.has::<OnTriggerEnterEvent>(point_trigger));
     }
 
     #[test]

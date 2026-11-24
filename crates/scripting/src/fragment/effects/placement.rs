@@ -92,19 +92,9 @@ pub(super) fn apply_placement_effect(
         Effect::MoveToEditorLocation { moved } => {
             let moved_entity =
                 resolve_object(vmad, world, context, moved, &deferred.scene_actor_bindings)?;
-            let Some(placed) = world.get::<crate::EditorLocation>(moved_entity).map(|placed| *placed) else {
+            if !move_to_editor_location(world, moved_entity) {
                 log::debug!("fragment MoveToMyEditorLocation skipped: the reference has no editor location");
-                return None;
-            };
-            let mut transforms = world.query_mut::<Transform>()?;
-            let transform = transforms.get_mut(moved_entity)?;
-            log::debug!(
-                "fragment MoveToMyEditorLocation (quest {:08X}): {moved_entity:?} -> {:?}",
-                context.0,
-                placed.translation
-            );
-            transform.translation = placed.translation;
-            transform.rotation = placed.rotation;
+            }
             None
         }
         Effect::MovePlayerTo { destination } => {
@@ -145,11 +135,26 @@ pub(super) fn apply_placement_effect(
             // it: `Effect::Enable` is the only other variant reaching here,
             // so this is exhaustive over the pattern above, not a guess.
             let enabled = matches!(effect, Effect::Enable { .. });
-            deferred.reference_enable_changes.push((form_id, enabled));
+            deferred.reference_enable_changes.push((form_id, Some(enabled)));
             None
         }
         _ => unreachable!("apply_placement_effect received a non-placement effect"),
     }
+}
+
+pub(crate) fn move_to_editor_location(world: &World, entity: EntityId) -> bool {
+    let Some(authored) = world.get::<crate::EditorLocation>(entity).map(|location| *location) else {
+        return false;
+    };
+    let Some(mut transforms) = world.query_mut::<Transform>() else {
+        return false;
+    };
+    let Some(transform) = transforms.get_mut(entity) else {
+        return false;
+    };
+    transform.translation = authored.translation;
+    transform.rotation = authored.rotation;
+    true
 }
 
 /// The entity under `root` (its own subtree, breadth first) whose `Name` is `node`, ignoring case — a

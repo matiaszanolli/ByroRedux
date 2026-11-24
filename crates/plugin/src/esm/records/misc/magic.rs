@@ -1,7 +1,8 @@
 //! Magic / perks records.
 
 use super::super::common::{
-    read_lstring_or_zstring, remap_efid, remap_fid, remap_fid_or_sentinel, CommonNamedFields,
+    kwda_keywords, read_lstring_or_zstring, remap_efid, remap_fid, remap_fid_or_sentinel,
+    CommonNamedFields,
 };
 use super::super::condition::{push_ctda, ConditionList};
 use super::super::script::{embedded_script_at, ScriptRecord};
@@ -1031,6 +1032,8 @@ pub struct MgefRecord {
     pub editor_id: String,
     pub full_name: String,
     pub description: String,
+    /// Authored `KWDA` keyword FormIDs, in load-order space.
+    pub keywords: Vec<u32>,
     /// Flags from DATA offset 0 (hostile / recover / detrimental / ...).
     pub effect_flags: u32,
     /// Base magicka cost from DATA offset 4 (f32).
@@ -1111,6 +1114,7 @@ impl Default for MgefRecord {
             editor_id: String::new(),
             full_name: String::new(),
             description: String::new(),
+            keywords: Vec::new(),
             effect_flags: 0,
             base_cost: 0.0,
             associated_item: 0xFFFF_FFFF,
@@ -1390,6 +1394,7 @@ pub fn parse_mgef_for_game(
 pub fn parse_mgef(form_id: u32, subs: &[SubRecord], remap: &Option<FormIdRemap>) -> MgefRecord {
     let mut out = MgefRecord {
         form_id,
+        keywords: kwda_keywords(subs, remap),
         ..Default::default()
     };
     // #2414 / TD2-117 — the universal named fields come from the
@@ -2347,6 +2352,15 @@ mod tests {
         let subs = vec![sub(b"DATA", &data)];
         let m = parse_mgef(0x6000, &subs, &remap);
         assert_eq!(m.light_form_id, 0x0200_6666);
+    }
+
+    #[test]
+    fn skyrim_mgef_keywords_follow_the_plugin_remap() {
+        let remap = Some(FormIdRemap::regular(4, vec![2]));
+        let keywords = [0x0000_0800_u32, 0x0100_0900].map(u32::to_le_bytes).concat();
+        let subs = [sub(b"KWDA", keywords), sub(b"KWDA", [0xFF; 3])];
+        let effect = parse_mgef_for_game(0x0400_0901, &subs, GameKind::Skyrim, &remap);
+        assert_eq!(effect.keywords, [0x0200_0800, 0x0400_0900]);
     }
 
     /// #4131 — `associated_item` and `effect_shader_id` (#4070) were only

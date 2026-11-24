@@ -1,6 +1,6 @@
 # Hand Equipment — Product Requirements
 
-**Status**: ACTIVE (2026-11-24). Revision 14 records hand-state save/load coverage across plugin slot changes. See §12 for the revision history.
+**Status**: ACTIVE (2026-11-24). Revision 17 records the oil-pool VM admission and live hand-equipment check. See §12 for the revision history.
 
 **Tracking**: #7397 (parent and follow-ups), #7398 (Phase 1), #7399 (Phase 2). Revision 3 records the initial Phase 0 work.
 
@@ -30,8 +30,9 @@ designs. Requirement IDs use the `HND-` prefix.
 Skyrim players and mod authors rely on scripts that know which hand holds an item. Weapon racks
 query the player's hands, and oil and gas traps read equipped items as part of their ignition
 logic. Before this work the VM declined several of those readers. The Skyrim SE census at
-`ba14baeeb` admits the weapon-rack activation script. The trap families still stop at
-`HasMagicEffectWithKeyword`; §7.2 tracks live ignition separately.
+`ba14baeeb` admits the weapon-rack activation script. Revisions 16 and 17 admit the gas and oil
+trap scripts after adding the magic-effect keyword reader and placed destructible reset. Section 7.2
+checks ignition through the original Papyrus handlers.
 
 The promise: an actor's two hands are real state, filled by the same rules the plugin data gives the
 original (equip slots, "both hands", "either hand"), so every reader — a script, a condition, the
@@ -216,16 +217,27 @@ and VM fixtures use synthetic forms and can run without game data.
 
 | Scenario | Runner and data | Pass condition |
 |---|---|---|
-| VM admission census | Run `refr_script_coverage` with `VM_REASONS=1` and `VM_REASON_FAMILIES` for `getequippeditemtype` and `getequippedweapon`, with local `Skyrim.esm` and `Skyrim - Misc.bsa`. See the [example invocation](../../crates/scripting/examples/refr_script_coverage.rs). | Report the baseline families' admission and remaining decline reasons. At HEAD `ba14baeeb`, the weapon-rack activation family is admitted and the trap families still stop at `HasMagicEffectWithKeyword`. |
+| VM admission census | Run `refr_script_coverage` with `VM_REASONS=1` and `VM_REASON_FAMILIES` set to the reader or native under test, with local `Skyrim.esm` and `Skyrim - Misc.bsa`. See the [example invocation](../../crates/scripting/examples/refr_script_coverage.rs). | The weapon-rack activation script remains admitted. Declines at `HasMagicEffectWithKeyword` and `Reset` reach zero. The VM admits all 43 `TrapExplosiveGas` and 734 `TrapOilPool` attachments. |
 | Papyrus hand readback | `cargo test -p byroredux-scripting --lib`. The VM tests cover weapon and spell readback and a shield whose biped mask differs from its hand slot. | Each hand reports the expected type code. The weapon, shield and spell readers return the corresponding form or `None`. |
-| Equipment actions | Extend `hands_follow_the_equip_slot_rules` in `cargo test -p byroredux --bin byroredux` with the transition table below. Use both menu actions from Q2 and the Papyrus spell equip path. | Canonical occupancy after each transition matches the expected code pair and forms. |
+| Equipment actions | Run `hands_follow_the_equip_slot_rules` in the `byroredux` binary tests. It runs the transition table below through both menu actions from Q2 and Papyrus `EquipSpell`. | Canonical occupancy after each transition matches the expected code pair and forms. |
 | Authored slots | Run `skyrim_hand_slots_shields_and_two_handers_decode_from_the_official_load_order` in the `byroredux` binary tests with `--ignored` and the Skyrim SE masters. Run `authored_weapon_slots_control_player_equips_and_starting_inventory` and `skyrim_spell_override_resolves_its_authored_equip_slot` for the synthetic cases. | The official load order resolves the expected slots. The spell override and a weapon resolve the same remapped `EQUP` slot. HND-SLOT-006. |
 | Save restoration | Run `skyrim_held_weapon_and_spell_survive_a_changed_plugin_slot` in the `byroredux` binary tests. The fixture uses the disk save/load commands and the live overlay on a rebuilt player with a changed plugin order. | Both hands recover the same records under their new FormIDs, and the left hand still indexes the original inventory stack. HND-STATE-002. |
 | Cell eviction | Run `skyrim_npc_hands_survive_cell_eviction` in the `byroredux` binary tests. The synthetic cell uses the production eviction and placement-restore steps. | The same placed reference resolves to a fresh actor with the original right-hand spell and the left-hand weapon at its restored inventory index. HND-STATE-004. |
 | Torch light | Run `a_held_torch_takes_the_left_hand_and_lights_it` in the `byroredux` binary tests. | A torch equips to the left, supplies one light while held, and removes that light when it leaves the hand. Q3. |
 | NPC dual-wield flags | Run `skyrim_npc_dual_wield_requires_both_flags_and_a_free_left_hand`. Run the official-load-order fixture in the authored slots row to check the decoded race and combat style data. | Across all four flag combinations, the right-hand weapon stays consistent and the second weapon appears only with both flags set. A shield, two-handed primary, or missing second copy prevents a second weapon. HND-STATE-003. |
 | Block guard | Run `skyrim_block_guard_uses_canonical_hands` in the `byroredux` binary tests. | A left shield takes priority over a right-hand weapon, a left torch or a weapon in either hand yields a weapon guard, and empty hands yield a bare-hand guard. Live damage reduction awaits the Skyrim `BlockModel`. HND-READ-004. |
-| Live oil-pool ignition | Extend a headless Skyrim SE smoke test using `--bench-hold` and `byro-dbg`. Select a placed reference bound to `TrapOilPool` from the local master and record its cell and reference ID in the fixture. Start fresh for each trial, with a torch or sword equipped and no fire effect on the actor. | The same trigger ignites with the torch and remains unlit with the sword. This gate waits on the Papyrus VM's `HasMagicEffectWithKeyword`. |
+| Live oil-pool ignition | Run [`skyrim-oil-pool.sh`](../smoke-tests/skyrim-oil-pool.sh). Each fresh Skyrim SE session walks through `BleakFallsBarrow01` reference `0009B0DE` with a torch or sword equipped and zero active magic effects. | The stock torch trial stays undamaged. With the equipment check enabled, the torch advances the pool through stages 1–3 and requests its authored explosion, and the sword leaves the pool undamaged. The torch trial verifies the authored reset branch restores stage −1. |
+
+The base record `000862CC` disables both equipment and magic checks. The comparison uses temporary
+Papyrus property overrides for `checkActorEquippedItems = True` and
+`deleteSelfAfterIgnition = False` so the same placement exercises the authored hand check and reset
+branch. The test observes the explosion request. Explosion rendering and blast effects are separate
+from this gate.
+
+A stock gas-trap check at `WarehouseTraps` reference `00082E19` exercised the equipment gate with
+its authored properties. The torch reached stage 3, and the iron sword left the trap at stage −1.
+A second crossing in the same enabled torch session ignited the oil pool again and restored it to
+stage −1 a second time.
 
 Use distinct synthetic forms for each one-handed sword, the shield, bow, torch and spell.
 Assert the codes after each action in order, with the left code listed first.
@@ -270,15 +282,16 @@ and the spell portion of HND-STATE-002. Exit: the torch and spell readbacks, bot
 **Phase 3 — Remaining acceptance and integrations (#7397).** Complete authored left-only and
 non-hand weapon cases (HND-SLOT-002), NPC dual wield (HND-STATE-003), cell eviction (HND-STATE-004),
 canonical shield reads (HND-READ-006), and block guard classification (HND-READ-004). The oil-pool
-check depends on the M47.2 Papyrus VM's `HasMagicEffectWithKeyword`. Live block reduction depends
-on CHARAL's Skyrim block model. Exit: the authored slot, four-way NPC flag, cell eviction,
+gate covers the placed-destructible `ObjectReference.Reset` branch. Live block reduction depends on
+CHARAL's Skyrim block model. Exit: the authored slot, four-way NPC flag, cell eviction,
 shield read and guard fixtures pass, and the live oil-pool scenario passes. Track the live block
 damage check with the CHARAL dependency.
 
 Regression fixtures cover the canonical shield reader, authored weapon and spell slots, NPC
-dual-wield spawn loadouts, hand-state restoration after cell eviction and save/load, and guard
-classification (HND-READ-006, HND-SLOT-002, HND-STATE-003, HND-STATE-004, HND-READ-004,
-HND-SLOT-006, and HND-STATE-002, revisions 8–14).
+dual-wield spawn loadouts, hand-state restoration after cell eviction and save/load, guard
+classification, and the equipment transitions through the menu and Papyrus (HND-READ-006,
+HND-SLOT-002, HND-STATE-003, HND-STATE-004, HND-READ-004, HND-SLOT-006, and HND-STATE-002,
+revisions 8–15).
 
 ---
 
@@ -328,3 +341,6 @@ HND-SLOT-006, and HND-STATE-002, revisions 8–14).
 | 12 | 2026-11-24 | HND-READ-004 verified. The block-guard fixture covers shield priority, a left torch, a weapon in either hand, and empty hands. Live block reduction depends on the Skyrim `BlockModel`. | — |
 | 13 | 2026-11-24 | HND-SLOT-006 verified. A generated plugin overrides a right-hand spell to use a plugin-local slot with a left-hand parent. The fixture verifies that the load-order fold remaps the slot and resolves both the spell and a weapon through it. | — |
 | 14 | 2026-11-24 | HND-STATE-002 verified. A disk save and live overlay recover a left-hand weapon and right-hand spell after their plugin moves to a different slot. The fixture checks both FormIDs and the weapon's original inventory index and count. | — |
+| 15 | 2026-11-24 | The equipment-action fixture verifies the §7.2 transition sequence. Both menu actions equip distinct swords, the shield and bow displace earlier items, the torch displaces the two-handed bow, and Papyrus `EquipSpell` readies the spell on the right while the torch stays left. | — |
+| 16 | 2026-11-24 | Added `Actor.HasMagicEffectWithKeyword` over applied magic effects and load-order-remapped `MGEF.KWDA` (#7403). The Skyrim SE census removes all 792 declines at that call and admits the 43 gas-trap attachments. The 734 oil-pool attachments now stop at `ObjectReference.Reset`. | — |
+| 17 | 2026-11-24 | Implemented placed-destructible `ObjectReference.Reset` and admitted all 734 oil-pool attachments. Skyrim SE coverage reaches 17,089 of 19,412 scripted references (88.0%). The live gate crosses the model phantom and observes authored burn stages and reset with a torch. The sword control and stock torch run leave the pool undamaged. | — |

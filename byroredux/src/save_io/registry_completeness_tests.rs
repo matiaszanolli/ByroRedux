@@ -935,6 +935,7 @@ fn every_component_or_resource_impl_is_saved_or_explicitly_allowlisted() {
         ("StartGameQuestRegistry", "populated once from ESM QUST records; its own doc states repeated cell loads are idempotent by design"),
         ("TimerExpired", "one-shot event marker drained every frame by event_cleanup_system"),
         ("TriggerVolume", "occupancy is engineered (fix #1817) to self-correct via a None-sentinel cold-start re-seed with zero observable difference"),
+        ("ModelPhantomTrigger", "rebuilt with the trigger volume from the placement's model and script handlers"),
         ("TriggerOccupancyState", "previous-frame actor/volume occupancy scratch for NPC-driven crossings (scripting/trigger.rs) — EntityId-keyed session sets rebuilt from live positions every observed tick; the player-occupancy half that IS save-relevant lives in TriggerVolume itself"),
         ("TwoStateTransitionBatch", "one-shot presentation batch drained every tick; the state it summarizes (TwoStateActivator) is already registered"),
         ("UiMessageCommand", "one-shot command marker drained every frame; its only writer is unreachable in production today (same reason as MG07LabyrinthianDoor)"),

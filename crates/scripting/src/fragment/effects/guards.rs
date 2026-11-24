@@ -238,15 +238,9 @@ pub(super) fn evaluate_world_guard(
             let form_id = object_form_id(vmad, world, context, object, deferred)?;
             // An `Enable()` / `Disable()` earlier in the same fragment is
             // visible.
-            let enabled = match deferred
-                .reference_enable_changes
-                .iter()
-                .rev()
-                .find(|(changed, _)| *changed == form_id)
-            {
-                Some(&(_, enabled)) => enabled,
-                None => super::reference_enabled(world, form_id),
-            };
+            let enabled = crate::fragment::state::reference_enabled_with_pending(
+                world, form_id, None, &deferred.reference_enable_changes,
+            );
             enabled == *expected
         }
         FragmentGuard::Loaded3D { object, expected } => {

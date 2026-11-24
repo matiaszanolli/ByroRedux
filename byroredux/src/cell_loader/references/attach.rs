@@ -185,6 +185,31 @@ pub(super) fn trigger_volume_from_phantom(
     })
 }
 
+pub(super) fn attach_model_trigger(
+    world: &mut World,
+    entity: byroredux_core::ecs::EntityId,
+    reference: u32,
+    volume: byroredux_scripting::TriggerVolume,
+) -> bool {
+    use byroredux_scripting::{ModelPhantomTrigger, PapyrusReferenceScripts, TriggerVolume};
+
+    if world.has::<TriggerVolume>(entity) {
+        return false;
+    }
+    if !byroredux_scripting::obscript_objects::has_trigger_block(world, entity)
+        && !world.get::<PapyrusReferenceScripts>(entity).is_some_and(|scripts| scripts.handles("OnTriggerEnter"))
+    {
+        return false;
+    }
+    log::debug!(
+        "model trigger {entity} on ref {reference:08X} at {:?}, half-extents {:?}",
+        volume.center, volume.half_extents,
+    );
+    world.insert(entity, volume);
+    world.insert(entity, ModelPhantomTrigger);
+    true
+}
+
 /// Returns `true` when canonical behavior attached (either per-game arm
 /// recognized the script) — the cell loader counts these for its summary.
 ///

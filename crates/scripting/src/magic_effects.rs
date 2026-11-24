@@ -358,6 +358,16 @@ pub fn has_effect(world: &World, target: EntityId, mgef: u32) -> bool {
     world.get::<ActiveMagicEffects>(target).is_some_and(|active| active.0.iter().any(|effect| effect.mgef == mgef))
 }
 
+/// Papyrus `HasMagicEffectWithKeyword` checks the base magic effects currently on the actor.
+pub(crate) fn has_effect_with_keyword(world: &World, target: EntityId, keyword: u32) -> bool {
+    let Some(keywords) = world.try_resource::<crate::keywords::KeywordTable>() else {
+        return false;
+    };
+    world.get::<ActiveMagicEffects>(target).is_some_and(|active| {
+        active.0.iter().any(|effect| keywords.base_has(effect.mgef, keyword))
+    })
+}
+
 fn change_value(world: &World, target: EntityId, change: impl FnOnce(&mut ActorValues)) {
     if let Some(mut values) = world.query_mut::<ActorValues>()
         && let Some(values) = values.get_mut(target) {

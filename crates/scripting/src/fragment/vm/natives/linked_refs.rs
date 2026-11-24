@@ -47,7 +47,7 @@ impl Vm<'_> {
                     if !seen.insert(link) || seen.len() > MAX_LINK_CHAIN_HOPS {
                         break;
                     }
-                    self.deferred.reference_enable_changes.push((link, enabled));
+                    self.deferred.reference_enable_changes.push((link, Some(enabled)));
                     current = self.linked_ref(link, keyword);
                 }
                 Some(Value::None)

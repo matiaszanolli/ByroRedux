@@ -189,13 +189,27 @@ pub fn reference_enabled_with_parent(
     form_id: u32,
     first_hop: Option<byroredux_plugin::esm::cell::EnableParent>,
 ) -> bool {
+    reference_enabled_with_pending(world, form_id, first_hop, &[])
+}
+
+/// Read pending enable changes from the same fragment before consulting the live ledger.
+pub(super) fn reference_enabled_with_pending(
+    world: &World,
+    form_id: u32,
+    first_hop: Option<byroredux_plugin::esm::cell::EnableParent>,
+    pending: &[(u32, Option<bool>)],
+) -> bool {
     let (root, inverted) = {
         let authored = world.try_resource::<AuthoredDisabledReferences>();
         enable_root(authored.as_deref(), form_id, first_hop)
     };
-    let scripted = world
-        .try_resource::<ReferenceEnableState>()
-        .and_then(|state| state.override_for(root));
+    let scripted = pending
+        .iter()
+        .rev()
+        .find_map(|&(changed, enabled)| (changed == root).then_some(enabled))
+        .unwrap_or_else(|| {
+            world.try_resource::<ReferenceEnableState>().and_then(|state| state.override_for(root))
+        });
     let enabled = scripted.unwrap_or_else(|| {
         !world
             .try_resource::<AuthoredDisabledReferences>()
@@ -447,6 +461,11 @@ impl ReferenceEnableState {
             self.enabled.remove(&form_id);
             self.disabled.insert(form_id);
         }
+    }
+
+    pub(super) fn clear_override(&mut self, form_id: u32) {
+        self.enabled.remove(&form_id);
+        self.disabled.remove(&form_id);
     }
 
     /// An order-independent digest of every scripted override: a reference

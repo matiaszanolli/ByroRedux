@@ -12,6 +12,7 @@ pub(super) const READS: &[&str] = &[
     "cleardestruction",
     "setdestroyed",
     "isdestroyed",
+    "reset",
 ];
 
 impl Vm<'_> {
@@ -30,15 +31,10 @@ impl Vm<'_> {
                 if let Some(entity) = self.entity_of(*reference)
                     && let Some(outcome) = crate::destruction::damage_object(self.world, entity, *reference, amount) {
                         if outcome.new_stage != outcome.old_stage {
-                            crate::fragment::raise_reference_event(
-                                self.world,
-                                entity,
-                                "OnDestructionStageChanged",
-                                vec![VmStored::Int(outcome.old_stage), VmStored::Int(outcome.new_stage)],
-                            );
+                            crate::destruction::raise_papyrus_stage_change(self.world, entity, outcome);
                         }
                         if outcome.disable {
-                            self.deferred.reference_enable_changes.push((*reference, false));
+                            self.deferred.reference_enable_changes.push((*reference, Some(false)));
                         }
                     }
                 Some(Value::None)
@@ -60,6 +56,27 @@ impl Vm<'_> {
             }
             (Value::Form(reference), "isdestroyed") if args.is_empty() => {
                 Some(Value::Bool(crate::destruction::is_destroyed(self.world, *reference)))
+            }
+            // The placed destructible-object reset used by Skyrim's traps. Actor and inventory resets
+            // require the host's respawn and loadout paths, and an alternate destination is a move.
+            (Value::Form(reference), "reset") if args.len() <= 1 => {
+                let values = self.eval_args(frame, args)?;
+                if !matches!(values.as_slice(), [] | [Value::None]) {
+                    return stop("ObjectReference.Reset with an alternate destination");
+                }
+                let Some(entity) = self.entity_of(*reference) else {
+                    return stop("ObjectReference.Reset on an unloaded reference");
+                };
+                if !crate::destruction::is_destructible(self.world, entity)
+                    || self.world.has::<byroredux_core::ecs::components::Inventory>(entity)
+                    || !crate::fragment::move_to_editor_location(self.world, entity)
+                {
+                    return stop("ObjectReference.Reset needs a placed destructible reference without inventory");
+                }
+                crate::destruction::clear_destruction(self.world, *reference);
+                self.deferred.reference_enable_changes.push((*reference, None));
+                log::debug!("Reset: restored destructible reference {reference:08X} to its editor location");
+                Some(Value::None)
             }
             _ => None,
         })
@@ -91,6 +108,11 @@ impl Checker<'_> {
                 return Some(Kind::None);
             }
             (Kind::Object | Kind::Player, "isdestroyed") if arg_kinds.is_empty() => return Some(Kind::Bool),
+            (Kind::Object, "reset")
+                if statement && matches!(arg_kinds, [] | [Arg::Literal(Expr::NoneLit)]) =>
+            {
+                return Some(Kind::None);
+            }
             _ => {}
         }
         None

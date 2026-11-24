@@ -1,13 +1,14 @@
 //! Trigger-volume detection and scene-trigger actor approach.
 //!
-//! Split out of `quest_scene.rs` (#6704); the rows, their order and their comments are unchanged.
-
 use byroredux_core::ecs::{Scheduler, Stage, World};
 
 /// Trigger-volume detection and scene-trigger actor approach.
 pub(super) fn register_trigger_volumes_systems(scheduler: &mut Scheduler) {
     fn trigger_detection_dispatch(world: &World, _dt: f32) {
-        byroredux_scripting::trigger_detection_system(world)
+        let capsule = crate::systems::PlayerEntity::get(world)
+            .and_then(|player| world.get::<byroredux_physics::CharacterController>(player))
+            .map(|controller| (controller.half_height, controller.radius));
+        byroredux_scripting::detect_trigger_crossings(world, capsule);
     }
     // M47.2 — trigger detection runs BEFORE quest_advance so an
     // OnTriggerEnterEvent emitted this frame is consumed the same
