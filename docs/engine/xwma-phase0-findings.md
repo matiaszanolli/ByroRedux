@@ -84,9 +84,10 @@ and `cargo info`, and the first candidate's published source was read, not built
 | Symphonia 0.6 | MPL-2.0 | The engine's Rust audio stack. | No WMA codec (`crates/audio/src/fuz.rs`; its README lists none). |
 
 FFmpeg's wmav2 reads the `fmt ` chunk's extradata when it has one and falls back to defaults
-without it; whether the xWMA `fmt ` chunk (18 bytes, no extradata) decodes correctly when
-the engine hands the decoder packets of `block_align` bytes itself, with no FFmpeg demuxer,
-is **Phase 0: verify** and is V7's first check.
+without it. The xWMA `fmt ` chunk has no extradata, and V7 measured the consequence: handed
+packets of `block_align` bytes with no extradata, the decoder produced too few frames on
+every input. The wrapper must supply the six setup bytes FFmpeg's own xWMA demuxer supplies
+([V7](#v7--static-wmav2-build-and-corpus-comparison)).
 
 ## V3 — Candidate oracle and tolerance
 
@@ -224,6 +225,196 @@ All 129 commands exited successfully. The result covers named archive
 members in this installation. Embedded contents, loose files and other
 installs are outside the survey.
 
+## V7 — Static `wmav2` build and corpus comparison
+
+**Negative result for empty extradata.** A scalar, static FFmpeg 9.1 build
+decoded fewer frames than the installed V3 oracle on every input. With the
+six-byte codec setup that FFmpeg's xWMA demuxer normally supplies, the same
+harness matched the oracle on all 13 retained fixtures and 7,191 archive
+entries to within one s16 count, with equal channel count, sample rate and
+decoded frames. Both decoders produced fewer frames than `dpds` declared
+for 82 Fallout 4 entries.
+
+### Release and build
+
+FFmpeg 9.1 “Gauss” (`n9.1`, released 2026-11-20) was the latest stable
+release listed on 2026-11-24. The downloaded `ffmpeg-9.1.tar.xz` had SHA-256
+`1a4d394ae63d190a526cd052eb4415c156b5c5e2df37efab41a7de0b8fde2433`.
+The build used the untouched source. [FFmpeg downloads][v7-release].
+[Release tarball][v7-tarball].
+
+From the extracted source directory on Linux x86-64, with `TMPDIR` set to
+`/mnt/data/tmp/xwma-v7`, the exact configure line and build were:
+
+```sh
+./configure --disable-everything --enable-decoder=wmav2 --disable-asm --disable-faan --enable-static --disable-shared --disable-programs --disable-doc --disable-autodetect --disable-iconv --disable-network --disable-avdevice --disable-avformat --disable-avfilter --disable-swscale --disable-swresample
+make -j12 V=1
+```
+
+The build produced `libavcodec.a` (63.24.100) and `libavutil.a` (61.19.100).
+The only registered decoder was `wmav2`, which selects `sinewin` and
+`wma_freqs`. Common library code includes internal source and sink bitstream
+filters. The build has zero programs, demuxers, muxers, parsers, encoders
+and external FFmpeg library dependencies. `--disable-faan` removes the
+default video DCT helpers. The libraries retain native pthread support for
+shared initialization and independent contexts.
+
+The verified Linux toolchain was GCC 15.3.0 (C17), glibc 2.44 development
+headers and libraries, GNU Make 4.4.1, GNU binutils 2.47 (`as`, `ld`, `ar`,
+`ranlib`, `nm`, `strip`), a POSIX shell, and standard shell utilities. A
+second build with a restricted `PATH` succeeded with `awk`, `cat`, `chmod`,
+`cmp`, `cp`, `cut`, `dirname`, `expr`, `grep`, `head`, `mkdir`, `mktemp`,
+`rm`, `sed`, `sort`, `tail`, `touch`, `tr` and `uname` alongside those
+tools. NASM was absent, so `--disable-asm` was also a build requirement.
+The compiler still invokes the system assembler for its own C output.
+Git, a C++ compiler, pkg-config, Perl and documentation tools were absent
+from the restricted build's `PATH`. The generated link metadata lists
+`-pthread -lm -latomic`. The V7 harness linked with `-lm -pthread` and its
+dynamic dependencies were the host loader, `libc` and `libm`.
+
+### Packet harness and corpus
+
+The scratch work is in `/mnt/data/tmp/xwma-v7`. `harness.c` reads the RIFF
+and validates the `fmt `, `dpds` and `data` bounds, format tag, 18-byte format
+with zero `cbSize`, and packet-table shape. It initializes the codec from
+the format fields and sends padded buffers of exactly `block_align` bytes
+to `avcodec_send_packet`. It receives and drains frames, checks their
+format, rate and channel count, and interleaves planar float PCM, scaling
+by 32,768, saturating and rounding to s16le. `dpds` is measured independently
+of output length. The comparison consumes PCM in process memory and records
+only counts and digests. The harness links to the two static archives and
+uses no demuxer in either run. It was built from the scratch directory:
+
+```sh
+cc -std=c11 -O2 -Wall -Wextra -Werror -Iffmpeg-9.1-minimal harness.c \
+  ffmpeg-9.1-minimal/libavcodec/libavcodec.a ffmpeg-9.1-minimal/libavutil/libavutil.a \
+  -lm -pthread -o harness-minimal
+V7_HARNESS=harness-minimal V7_REPORTS=minimal python3 -u compare.py
+```
+
+The default run leaves `AVCodecContext.extradata` null. `--control` supplies
+the demuxer's six bytes with `0x1f` at offset four and all other bytes zero.
+In 9.1, `wmav2` initializes its
+flags to zero with empty extradata. The demuxer's setup enables exponent VLC,
+the bit reservoir and variable block lengths. The bitrate fields in these
+inputs require none of the demuxer's bitrate substitutions.
+[Pinned xWMA demuxer][v7-demuxer]. [Pinned WMA decoder][v7-decoder].
+
+`compare.py` ran the [V3 invocation](#v3--candidate-oracle-and-tolerance)
+with `/usr/bin/ffmpeg` `8.1.2-2ubuntu2` and checked stream shape using the
+installed `ffprobe`. The retained V3 scratch directory and its `oracle.log`
+contained 13 distinct inputs, including the two xWMA payloads already
+stripped from FUZE. All 13 oracle PCM digests reproduced. The installed
+oracle is a different release from the pinned library, as requested for V7.
+
+`extract.rs` batches `list_files` and `extract` from the
+[`bsa_extract_one`](../../crates/bsa/examples/bsa_extract_one.rs) and
+[`ba2_extract_one`](../../crates/bsa/examples/ba2_extract_one.rs) examples,
+reusing each open archive. The unmodified examples reproduced one batch
+entry each byte for byte. The run used `BYROREDUX_SKYRIMSE_DATA` and
+`BYROREDUX_FO4_DATA` with local Steam data roots as defaults because both
+variables were unset. Entries with case-insensitive `.xwm` extensions were
+sorted by archive member path. The archive SHA-256 digests are below.
+
+| Archive | Entries tested | Archive SHA-256 |
+|---|---:|---|
+| `Skyrim - Sounds.bsa` | 269 | `c18244acb9500db0d6e695ca27e9fd535483c9c1a0ec0d9fa7800a00231fc3b4` |
+| `Fallout4 - Sounds.ba2` | 6,922 | `e7d863b2ec8e795c7f9c6f75da2db4a2d889ef77a1be3fbf9fc4662254af9ffd` |
+
+### Results
+
+| Set | CLI frames | Empty extradata frames | Empty extradata decode errors | Empty extradata passes | Setup control passes | Setup control exact |
+|---|---:|---:|---:|---:|---:|---:|
+| V3 fixtures | 76,169,216 | 249,856 | 9 | 0 / 13 | 13 / 13 | 1 |
+| Skyrim archive | 869,476,352 | 8,960,000 | 254 | 0 / 269 | 269 / 269 | 0 |
+| Fallout 4 archive | 2,545,983,488 | 125,419,520 | 1,218 | 0 / 6,922 | 6,922 / 6,922 | 1,084 |
+
+A pass requires both decoders to succeed, exact channels, rate and frames,
+and peak difference at most one. Every RIFF parsed successfully. With
+empty extradata, the peak absolute difference over the shared output
+prefix reached 45,554 counts on the fixtures, 56,341 in Skyrim and 65,089
+in Fallout 4. The CLI and setup control decoded every entry successfully.
+In Fallout 4, 81 entries decoded 512 frames below the `dpds` declaration
+and one decoded 960 frames below it. These include the V3 radio fixture,
+which emitted 3,108,864 of 3,109,376 declared frames. The 960-frame case
+emitted 6,244,352 of 6,245,312 declared frames. Independent adjudication of
+the presentation-length rule under XWMA-DEC-002 remains open.
+
+[Per-file results](xwma-v7-results.tsv) contain 7,204 rows, SHA-256
+`c3ffa68f7fba49054c901cf63fc4dcee2f132d99fa5083099a6487a545480bb7`.
+The numeric `group` is 0 for V3 fixtures (scratch filename order), 1 for
+Skyrim and 2 for Fallout 4. `entry` is the zero-based index within each
+group. The input SHA-256 identifies content, including repeated content at
+different entries. `empty_` and `control_` identify the two harness runs.
+`declared` is the final `dpds` byte count divided by bytes per PCM frame.
+`packet` counts completed sends on success and gives the zero-based packet
+index on a decode error. `rc` records the libavcodec result (`-1094995529`
+is `AVERROR_INVALIDDATA`). Diff indices are zero-based interleaved sample
+indices. `first_diff_sample` and `max_abs_diff` compare the common prefix,
+and `first_missing_sample` records a length mismatch. A blank diff index
+means none and a blank peak means the runs shared no samples.
+
+The mono 44,100 Hz fixture with input SHA-256
+`ea896d63258ba5ded40e558a0f6e6778e77f5bbe1c88e348025d7e0e6428595d`
+was bit-identical at the default CPU flags, forced zero and forced
+SSE2/AVX/AVX2 (`0xc010`). The empty-extradata runs each emitted 2,048 frames
+with PCM SHA-256 `ad7facb2586fc6e966c004d7d1d16b024f5805ff7cb47c7a85dabd8b48892ca7`.
+The control runs each emitted 16,384 frames, with oracle-identical PCM
+SHA-256 `db90ff70e8ed3bd5589af80ce0eac838a29c82be925e9c0cc998ed54dbb6f80e`.
+This verifies CPU flag invariance for the test binary and fixture on one
+host. Cross-target floating-point reproducibility remains unmeasured.
+
+### Compiled source licences
+
+The `make V=1` compile commands and compiler `.d` dependencies account for
+145 `.c` translation units, four textually included `.c` templates and 193
+`.h` files from the FFmpeg tree. `licence-headers.txt` in scratch captures
+each leading notice. The path-by-path classification is `licence-files.tsv`,
+SHA-256 `a80e6f29119c4fc35c38f22ab077abe7ac48d2d14c221c4ca1fbb93e281ea03b`.
+Of the 342 files, 333 carry LGPL-2.1-or-later notices, including BSD-3-Clause
+notices in `fixed_dsp.c`, `fixed_dsp.h` and `uuid.c` and BSD SHA-2 provenance
+in `sha.c` and `sha512.c`. `avsscanf.c` carries MIT terms, `adler32.c`
+carries Zlib terms, and seven generated configuration, version or registry
+files have no separate licence headers. No GPL, LGPLv3-only, nonfree or
+Independent JPEG Group files appear in the final dependency inventory.
+The combined libraries are **LGPL-2.1-or-later**, with the permissive
+notices preserved. [Pinned FFmpeg licence][v7-licence].
+
+### Vendoring and cross-platform builds
+
+Follow [Ruffle's `PATCHES.md`](../../third_party/ruffle/PATCHES.md) with an
+unpacked, pinned source tree under `third_party/ffmpeg/`. Keep the release
+tag, upstream tarball URL and SHA-256, the exact configure recipe, licences
+and notices, and the source audit manifest there. Record local layout and
+patches, if any, and the re-vendoring steps in `PATCHES.md`. The tested
+build needs zero upstream patches. Generate configuration and archives in
+the build output directory from the checked-in source. Supply the matching
+source and build scripts, licence and attribution, and the application
+source or object material and instructions needed to relink against a
+modified FFmpeg when distributing statically linked binaries. Verify that
+relink procedure for each release target. [FFmpeg distribution guidance][v7-legal].
+[Pinned LGPL-2.1 text, §6][v7-lgpl].
+
+The [Cross-Platform Builds PRD](../prd/cross-platform-builds.md) would add
+this native build to the hosted CI and release lanes. Linux and Steam Deck
+use a C compiler and the shell/Make/binutils toolchain above. The Windows
+MSVC lane needs a POSIX build shell with GNU Make, such as MSYS2, and the
+Visual Studio compiler, linker, librarian and SDK with
+`--toolchain=msvc`. The macOS arm64 lane, if enabled, needs Xcode's C
+toolchain and SDK plus GNU Make. Keep `--disable-asm` on all targets.
+The Windows and macOS recipes still need validation of the target ABI,
+static link, compiled-file notices and PCM digests. Include a build and
+fixture digest check in each hosted lane. The installed CLI and game data
+are needed for the corpus test only. [FFmpeg platform build guide][v7-platform].
+
+[v7-release]: https://ffmpeg.org/download.html#release_9.1
+[v7-tarball]: https://ffmpeg.org/releases/ffmpeg-9.1.tar.xz
+[v7-demuxer]: https://github.com/FFmpeg/FFmpeg/blob/n9.1/libavformat/xwma.c
+[v7-decoder]: https://github.com/FFmpeg/FFmpeg/blob/n9.1/libavcodec/wmadec.c
+[v7-licence]: https://github.com/FFmpeg/FFmpeg/blob/n9.1/LICENSE.md
+[v7-lgpl]: https://github.com/FFmpeg/FFmpeg/blob/n9.1/COPYING.LGPLv2.1#L271
+[v7-legal]: https://ffmpeg.org/legal.html
+[v7-platform]: https://ffmpeg.org/platform.html
 [xaudio-loading]: https://learn.microsoft.com/en-us/windows/win32/xaudio2/how-to--load-audio-data-files-in-xaudio2
 [directxtk]: https://github.com/microsoft/DirectXTK/blob/main/Audio/WAVFileReader.cpp
 [subtypes]: https://learn.microsoft.com/en-us/windows/win32/medfound/audio-subtype-guids

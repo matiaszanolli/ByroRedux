@@ -364,7 +364,7 @@ the only dependencies.
 | V4 | `MUST` palette layers, loop units and the Fallout 4 pages' behaviour | xEdit `wbDefinitionsTES5.pas` and `wbDefinitionsFO4.pas`, the CK and Fallout CK wikis, vanilla records |
 | V5 | Which sources feed Skyrim and Fallout 4 music, in what order | UESP, the CK wikis, xEdit's record definitions |
 | V6 | Whether any Starfield archive carries `.xwm` | `ba2_extensions` over its archives |
-| V7 | That a pinned FFmpeg release built with every component but the `wmav2` decoder, with assembly disabled, decodes the vanilla corpus fed packets by the engine's own xWMA parser to the oracle's samples; the licence of the files it compiles; how its source is vendored | a build of the release; the release's own licence file; the `third_party/ruffle` vendoring as the model |
+| V7 | That a pinned FFmpeg release built with every component but the `wmav2` decoder, with assembly disabled, decodes the vanilla corpus fed packets by the engine's own xWMA parser to the oracle's samples; the licence of the files it compiles; how its source is vendored | [V7 findings](../engine/xwma-phase0-findings.md#v7--static-wmav2-build-and-corpus-comparison) |
 
 **Phase 0 — Sources, oracle and design (no engine code).** Closes V1 to V7, writes the
 decoder's design in `docs/engine/` and links it from Related, and takes Q1 to Q4 to the
