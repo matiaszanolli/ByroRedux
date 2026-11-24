@@ -5,6 +5,9 @@
 use super::*;
 use std::time::Duration;
 
+#[path = "../../xwma/tests/support/fixture.rs"]
+mod xwma_fixture;
+
 /// Every production source file of the crate, for the source-scan pins
 /// below. `lib.rs` was split into `dsp` / `world` / `components` / `system`
 /// / `cache` / `stream_decoder`; a pin that read `lib.rs` alone would go vacuous (#6140), so
@@ -2041,6 +2044,137 @@ fn wav_bytes(frames: usize) -> Vec<u8> {
     b.extend_from_slice(&(data_len as u32).to_le_bytes());
     b.resize(b.len() + data_len, 0u8);
     b
+}
+
+#[test]
+fn static_xwma_preserves_sample_rate_and_frame_count() {
+    for channels in [1, 2] {
+        let bytes = xwma_fixture::stream(&xwma_fixture::format(channels), 6144);
+        let sound = load_sound_from_bytes(bytes).expect("decode synthetic xWMA");
+        assert_eq!(sound.sample_rate, 48_000);
+        assert_eq!(sound.num_frames(), 6144);
+        assert!(
+            sound
+                .frames
+                .iter()
+                .all(|frame| *frame == Frame::from_mono(0.0))
+        );
+    }
+}
+
+#[test]
+fn sound_cache_reuses_decoded_xwma_by_path() {
+    let mut cache = SoundCache::new();
+    let path = r"sound\fx\mod\step.xwm";
+    let first = cache
+        .get_or_load(path, || {
+            Some(xwma_fixture::stream(&xwma_fixture::format(1), 6144))
+        })
+        .expect("decode the first request");
+    assert_eq!(first.num_frames(), 6144);
+
+    let second = cache
+        .get_or_load(path, || panic!("cached xWMA must skip the loader"))
+        .expect("reuse the cached sound");
+    assert!(Arc::ptr_eq(&first, &second));
+}
+
+#[test]
+fn static_xwma_keeps_short_decodes_with_playable_frames() {
+    let failures = SoundFailures::default();
+    let bytes = xwma_fixture::stream(&xwma_fixture::format(2), 6656);
+    let sound = failures
+        .decode("sound/short.xwm", bytes)
+        .expect("keep decoded PCM");
+    assert_eq!(sound.num_frames(), 6144);
+    assert!(failures.entries().is_empty());
+}
+
+#[test]
+fn sound_failures_deduplicate_across_caches_and_retries() {
+    let failures = SoundFailures::default();
+    let mut sounds = SoundCache::with_failures(failures.clone());
+    let mut voices = VoiceSoundCache::with_budget_and_failures(
+        VoiceSoundCache::DEFAULT_BUDGET_BYTES,
+        failures.clone(),
+    );
+    let path = r"Sound\FX\broken.xwm";
+    let invalid_length = || Some(b"RIFF\0\0\0\0XWMA".to_vec());
+    let missing_format = || Some(b"RIFF\x04\0\0\0XWMA".to_vec());
+
+    assert!(sounds.get_or_load(path, invalid_length).is_none());
+    sounds.clear();
+    assert!(sounds.get_or_load(path, missing_format).is_none());
+    assert!(
+        voices
+            .get_or_load("sound/fx/BROKEN.xwm", missing_format)
+            .is_none()
+    );
+    assert!(sounds.get_or_load("sound/fx/absent.xwm", || None).is_none());
+
+    assert_eq!(
+        failures.entries(),
+        [(
+            path.to_owned(),
+            "invalid xWMA RIFF (RIFF length does not match source)".to_owned()
+        )]
+    );
+}
+
+#[test]
+fn voice_cache_records_the_static_pcm_limit_refusal() {
+    let failures = SoundFailures::default();
+    let mut cache = VoiceSoundCache::with_budget_and_failures(
+        VoiceSoundCache::DEFAULT_BUDGET_BYTES,
+        failures.clone(),
+    );
+    let path = r"sound\fx\mus\radio\long.xwm";
+    let over_limit = (fuz::MAX_PCM_BYTES / size_of::<Frame>() + 1) as u32;
+    let bytes = xwma_fixture::stream(&xwma_fixture::format(1), over_limit);
+    assert!(cache.get_or_load(path, || Some(bytes)).is_none());
+    let reason = format!(
+        "xWMA exceeds the static PCM limit ({} bytes)",
+        fuz::MAX_PCM_BYTES
+    );
+    assert_eq!(failures.entries(), [(path.to_owned(), reason)]);
+}
+
+#[test]
+fn static_xwma_rejects_oversized_pcm_declarations() {
+    // Even mono uses two f32 samples per stored kira frame.
+    let over_limit = (fuz::MAX_PCM_BYTES / size_of::<Frame>() + 1) as u32;
+    for channels in [1, 2] {
+        let bytes = xwma_fixture::stream(&xwma_fixture::format(channels), over_limit);
+        assert!(matches!(
+            load_sound_from_bytes(bytes),
+            Err(FromFileError::IoError(error))
+                if error.kind() == std::io::ErrorKind::InvalidData
+                    && error.to_string().contains("static PCM limit")
+        ));
+    }
+}
+
+#[test]
+fn static_xwma_rejects_malformed_riff() {
+    let mut bytes = xwma_fixture::stream(&xwma_fixture::format(2), 6144);
+    bytes.pop();
+    assert!(matches!(
+        load_sound_from_bytes(bytes),
+        Err(FromFileError::IoError(error))
+            if error.get_ref().is_some_and(|source| source.is::<byroredux_xwma::Error>())
+    ));
+}
+
+#[test]
+fn static_wav_and_ogg_match_kiras_decoder() {
+    // The Ogg fixture is a synthetic 440 Hz tone encoded with libvorbis.
+    let ogg = include_bytes!("../tests/fixtures/static-tone.ogg");
+    for bytes in [wav_bytes(24), ogg.to_vec()] {
+        let expected = StaticSoundData::from_cursor(Cursor::new(bytes.as_slice())).unwrap();
+        assert!(expected.num_frames() > 0);
+        let actual = load_sound_from_bytes(bytes).unwrap();
+        assert!(actual == expected);
+    }
 }
 
 /// #5382 — voice decodes evict least-recently-used once the byte budget

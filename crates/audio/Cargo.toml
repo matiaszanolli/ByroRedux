@@ -6,6 +6,7 @@ rust-version.workspace = true
 
 [dependencies]
 byroredux-core = { workspace = true }
+byroredux-xwma = { path = "../xwma" }
 kira = { workspace = true }
 symphonia = { workspace = true }
 log = { workspace = true }

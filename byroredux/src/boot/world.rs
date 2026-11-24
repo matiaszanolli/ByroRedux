@@ -237,7 +237,10 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // `None` and every subsequent audio operation no-ops. Boot
     // never fails on a missing audio device.
     world.insert_resource(byroredux_audio::AudioWorld::new());
-    world.insert_resource(byroredux_audio::SoundCache::new());
+    let sound_failures = byroredux_audio::SoundFailures::default();
+    world.insert_resource(byroredux_audio::SoundCache::with_failures(
+        sound_failures.clone(),
+    ));
     // #5148 — per-kind combat one-shot request counts, surfaced by
     // `combat.status` so the P2 smoke gate can tell a combat sound from the
     // footstep `combat.approach` provokes.
@@ -246,7 +249,11 @@ pub(crate) fn build_world(debug_mode: bool, args: &[String]) -> World {
     // the process-lifetime `SoundCache`: the voices archive is an
     // open-ended keyspace (105k FNV candidates, ~0.19 MB PCM per voiced
     // second) that would otherwise grow resident memory without bound.
-    world.insert_resource(byroredux_audio::VoiceSoundCache::new());
+    world.insert_resource(byroredux_audio::VoiceSoundCache::with_budget_and_failures(
+        byroredux_audio::VoiceSoundCache::DEFAULT_BUDGET_BYTES,
+        sound_failures.clone(),
+    ));
+    world.insert_resource(sound_failures);
     // M44 Phase 3.5 — footstep config. `default_sound` is None
     // until/unless the cell loader (or a future asset-provider
     // hook) decodes a BSA-archived sound and stores it here.

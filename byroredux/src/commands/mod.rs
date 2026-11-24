@@ -16,8 +16,8 @@
 //! - [`pack_ambient`] — why an actor runs its package (`pack.ambient`)
 //! - [`perk`] — the perk hook catalog and the traced composer (`perk.hooks`, `perk.compose`)
 //! - [`depth`] — depth-buffer precision diagnostics (`depth.stats`)
-//! - [`assets`] — texture / mesh / skin diagnostics
-//!   (`tex.*`, `mesh.*`, `skin.*`)
+//! - [`assets`] — texture, sound, mesh and skin diagnostics
+//!   (`tex.*`, `snd.failed`, `mesh.*`, `skin.*`)
 //! - [`view`] — camera + selection / picking
 //!   (`prid`, `cam.*`, `near`, `pick`, `interaction.status`, `input.*`,
 //!   `player.status`)
@@ -189,6 +189,7 @@ pub(crate) fn build_command_registry() -> CommandRegistry {
     registry.register(SystemsCommand);
     registry.register(SdkCompatCommand);
     registry.register(TexMissingCommand);
+    registry.register(SndFailedCommand);
     registry.register(TexLoadedCommand);
     registry.register(TexDumpCommand);
     registry.register(TexResidencyCommand);

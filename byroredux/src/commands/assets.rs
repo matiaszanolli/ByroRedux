@@ -1,6 +1,6 @@
-//! Texture / mesh / skin diagnostic commands.
+//! Texture, sound, mesh and skin diagnostic commands.
 //!
-//! `tex.missing`, `tex.loaded`, `tex.dump`, `mesh.info`, `mesh.cache`,
+//! `tex.missing`, `snd.failed`, `tex.loaded`, `tex.dump`, `mesh.info`, `mesh.cache`,
 //! `skin.coverage`, `skin.list`, `skin.dump`.
 
 use super::shared::*;
@@ -129,6 +129,76 @@ impl ConsoleCommand for TexMissingCommand {
             lines.push(format!("  ... and {} more", sorted.len() - 50));
         }
         CommandOutput::lines(lines)
+    }
+}
+
+pub(crate) struct SndFailedCommand;
+impl ConsoleCommand for SndFailedCommand {
+    fn name(&self) -> &str {
+        "snd.failed"
+    }
+    fn description(&self) -> &str {
+        "List static sounds that failed to decode this session with their paths and reasons"
+    }
+    fn execute(&self, world: &World, _args: &str) -> CommandOutput {
+        let Some(failures) = world.try_resource::<byroredux_audio::SoundFailures>() else {
+            return CommandOutput::line("SoundFailures resource not present");
+        };
+        let entries = failures.entries();
+        if entries.is_empty() {
+            return CommandOutput::line("No sound failed to decode");
+        }
+
+        let mut lines = vec![format!("Sounds that failed to decode ({})", entries.len())];
+        lines.extend(
+            entries
+                .into_iter()
+                .map(|(path, reason)| format!("  {path}: {reason}")),
+        );
+        CommandOutput::lines(lines)
+    }
+}
+
+#[cfg(test)]
+#[path = "../../../crates/xwma/tests/support/fixture.rs"]
+mod xwma_fixture;
+
+#[cfg(test)]
+mod snd_failed_tests {
+    use super::*;
+    use byroredux_audio::{Frame, SoundFailures, fuz::MAX_PCM_BYTES};
+
+    #[test]
+    fn snd_failed_lists_paths_and_reasons() {
+        let mut world = World::new();
+        let failures = SoundFailures::default();
+        let registry = crate::commands::build_command_registry();
+        world.insert_resource(failures.clone());
+        assert_eq!(
+            registry.execute(&world, "snd.failed").lines,
+            ["No sound failed to decode"]
+        );
+
+        let radio_path = r"sound\fx\mus\radio\long.xwm";
+        let over_limit = (MAX_PCM_BYTES / size_of::<Frame>() + 1) as u32;
+        let bytes = xwma_fixture::stream(&xwma_fixture::format(1), over_limit);
+        assert!(failures.decode(radio_path, bytes).is_none());
+        assert!(
+            failures
+                .decode("sound/fx/broken.xwm", b"RIFF\x04\0\0\0XWMA".to_vec())
+                .is_none()
+        );
+
+        assert_eq!(
+            registry.execute(&world, "snd.failed").lines,
+            [
+                "Sounds that failed to decode (2)".to_owned(),
+                "  sound/fx/broken.xwm: invalid xWMA RIFF (missing fmt chunk)".to_owned(),
+                format!(
+                    "  {radio_path}: xWMA exceeds the static PCM limit ({MAX_PCM_BYTES} bytes)"
+                ),
+            ]
+        );
     }
 }
 

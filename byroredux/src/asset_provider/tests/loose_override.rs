@@ -10,13 +10,13 @@
 
 use super::super::*;
 
-fn write(root: &std::path::Path, rel: &str, bytes: &[u8]) {
+pub(super) fn write(root: &std::path::Path, rel: &str, bytes: &[u8]) {
     let path = root.join(rel);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, bytes).unwrap();
 }
 
-fn esm_args(data: &std::path::Path) -> Vec<String> {
+pub(super) fn esm_args(data: &std::path::Path) -> Vec<String> {
     vec![
         "--esm".to_owned(),
         data.join("Test.esm").to_string_lossy().into_owned(),

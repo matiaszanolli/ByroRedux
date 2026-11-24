@@ -1,5 +1,6 @@
 use super::*;
 
+use byroredux_audio::SoundFailures;
 use byroredux_nif::import::{MaterialTextureSet, MeshResolver};
 use byroredux_renderer::{TextureColorSpace, VulkanContext};
 
@@ -351,7 +352,7 @@ impl MeshResolver for TextureProvider {
 ///     every occurrence failed to open — already logged by
 ///     [`build_sound_archive_provider`]).
 ///   - No [`FOOTSTEP_CANDIDATES`] key is present in any opened archive.
-///   - The decode fails through `byroredux_audio::load_sound_from_bytes`.
+///   - The shared sound failure report records a decode error.
 ///
 /// Each failure logs at WARN; engine boot continues regardless.
 pub(crate) fn try_load_default_footstep(
@@ -368,16 +369,16 @@ pub(crate) fn try_load_default_footstep(
     }
     // Vanilla dirt-walk footsteps ship with left/right alternation; pick
     // one entry per game as the default until FOOT records land.
-    let Some((chosen, bytes)) = first_default_sound_hit(sounds, FOOTSTEP_CANDIDATES) else {
+    let Some((candidate, bytes)) = first_default_sound_hit(sounds, FOOTSTEP_CANDIDATES) else {
         log::warn!("M44 Phase 3.5: no --sounds-bsa archive carries any default footstep candidate");
         return;
     };
-    let sound = match byroredux_audio::load_sound_from_bytes(bytes) {
-        Ok(s) => s,
-        Err(e) => {
-            log::warn!("M44 Phase 3.5: decode '{chosen}': {e}");
-            return;
-        }
+    let chosen = format!("{} ({})", candidate.key, candidate.games.join("/"));
+    let Some(sound) = world
+        .resource::<SoundFailures>()
+        .decode(candidate.key, bytes)
+    else {
+        return;
     };
     let mut config = world.resource_mut::<crate::components::FootstepConfig>();
     config.default_sound = Some(std::sync::Arc::new(sound));
@@ -399,8 +400,7 @@ pub(crate) fn try_load_default_footstep(
 /// needs game data) re-asserts each row against the archive on disk.
 /// Verified 2026-09-06 against `Fallout - Sound.bsa` (FNV 6,465 entries /
 /// FO3 2,709), `Skyrim - Sounds.bsa` (6,198) and `Oblivion - Sounds.bsa`
-/// (1,533). FO4's `Fallout4 - Sounds.ba2` ships its splashes as `.xwm`,
-/// which `byroredux_audio` doesn't decode, so it has no row.
+/// (1,533). FO4's `Fallout4 - Sounds.ba2` ships its splashes as `.xwm`.
 pub(crate) struct DefaultSoundCandidate {
     /// Sound-candidate game tags whose vanilla sound archive carries
     /// `key` (for example, `skyrimse`; the matching debug profile is
@@ -453,21 +453,15 @@ pub(crate) const WATER_SPLASH_CANDIDATES: &[DefaultSoundCandidate] = &[
 ];
 
 /// First candidate (in table order) that extracts from any opened
-/// `--sounds-bsa` archive, as `"<key> (<game tags>)"` for the log line
-/// plus its bytes. Only one game's archives are ever open in a session,
-/// so table order only matters within a game; the tag in the label says
-/// which game's naming the opened archive turned out to follow.
+/// `--sounds-bsa` archive, plus its bytes.
 fn first_default_sound_hit(
     sounds: &SoundArchiveProvider,
-    candidates: &[DefaultSoundCandidate],
-) -> Option<(String, Vec<u8>)> {
+    candidates: &'static [DefaultSoundCandidate],
+) -> Option<(&'static DefaultSoundCandidate, Vec<u8>)> {
     candidates.iter().find_map(|candidate| {
-        sounds.extract(candidate.key).map(|bytes| {
-            (
-                format!("{} ({})", candidate.key, candidate.games.join("/")),
-                bytes,
-            )
-        })
+        sounds
+            .extract(candidate.key)
+            .map(|bytes| (candidate, bytes))
     })
 }
 
@@ -490,16 +484,16 @@ pub(crate) fn try_load_default_water_splash(
         log::info!("water acoustics: no --sounds-bsa archive supplied — splash sound skipped");
         return;
     }
-    let Some((chosen, bytes)) = first_default_sound_hit(sounds, WATER_SPLASH_CANDIDATES) else {
+    let Some((candidate, bytes)) = first_default_sound_hit(sounds, WATER_SPLASH_CANDIDATES) else {
         log::warn!("water acoustics: no splash candidate found in any --sounds-bsa archive");
         return;
     };
-    let sound = match byroredux_audio::load_sound_from_bytes(bytes) {
-        Ok(s) => s,
-        Err(e) => {
-            log::warn!("water acoustics: decode '{chosen}': {e}");
-            return;
-        }
+    let chosen = format!("{} ({})", candidate.key, candidate.games.join("/"));
+    let Some(sound) = world
+        .resource::<SoundFailures>()
+        .decode(candidate.key, bytes)
+    else {
+        return;
     };
     world
         .resource_mut::<crate::components::WaterAudioConfig>()

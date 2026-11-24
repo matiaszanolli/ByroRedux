@@ -2,46 +2,9 @@ use std::io::Cursor;
 
 use crate::{Decoder, Error, Metadata, to_s16};
 
-fn format() -> [u8; 18] {
-    let mut fmt = [0; 18];
-    fmt[..2].copy_from_slice(&0x0161u16.to_le_bytes());
-    fmt[2..4].copy_from_slice(&2u16.to_le_bytes());
-    fmt[4..8].copy_from_slice(&48_000u32.to_le_bytes());
-    fmt[8..12].copy_from_slice(&6_000u32.to_le_bytes());
-    fmt[12..14].copy_from_slice(&32u16.to_le_bytes());
-    fmt[14..16].copy_from_slice(&16u16.to_le_bytes());
-    fmt
-}
-
-fn set_riff_len(bytes: &mut [u8]) {
-    let len = (bytes.len() - 8) as u32;
-    bytes[4..8].copy_from_slice(&len.to_le_bytes());
-}
-
-fn riff(chunks: &[(&[u8; 4], &[u8])]) -> Vec<u8> {
-    let mut bytes = b"RIFF\0\0\0\0XWMA".to_vec();
-    for &(name, payload) in chunks {
-        bytes.extend_from_slice(name);
-        bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-        bytes.extend_from_slice(payload);
-        if payload.len() % 2 != 0 {
-            bytes.push(0);
-        }
-    }
-    set_riff_len(&mut bytes);
-    bytes
-}
-
-fn stream(fmt: &[u8], frames: u32) -> Vec<u8> {
-    // Four silent codec frames before priming. FFmpeg drops the first two
-    // and emits one on drain. The zero-coded channels use the packet's padding.
-    riff(&[
-        (b"JUNK", &[1, 2, 3]),
-        (b"data", &[5]),
-        (b"dpds", &(frames * 4).to_le_bytes()),
-        (b"fmt ", fmt),
-    ])
-}
+#[path = "../tests/support/fixture.rs"]
+mod fixture;
+use fixture::{format, riff, set_riff_len, stream};
 
 fn open_error(bytes: &[u8]) -> Error {
     match Decoder::open(bytes) {
@@ -53,7 +16,7 @@ fn open_error(bytes: &[u8]) -> Error {
 #[test]
 fn decodes_and_drains_a_padded_packet_from_a_seekable_reader() {
     let mut bytes = b"prefix".to_vec();
-    bytes.extend(stream(&format(), 6144));
+    bytes.extend(stream(&format(2), 6144));
     let mut source = Cursor::new(bytes);
     source.set_position(6);
     let mut decoder = Decoder::from_reader(source).unwrap();
@@ -74,7 +37,7 @@ fn decodes_and_drains_a_padded_packet_from_a_seekable_reader() {
 
 #[test]
 fn short_codec_output_returns_its_samples_then_invalidates_the_decoder() {
-    let bytes = stream(&format(), 6656);
+    let bytes = stream(&format(2), 6656);
     let mut decoder = Decoder::open(&bytes).unwrap();
     let mut frames = 0;
     loop {
@@ -93,7 +56,7 @@ fn short_codec_output_returns_its_samples_then_invalidates_the_decoder() {
 
 #[test]
 fn malformed_container_bounds_return_errors() {
-    let bytes = stream(&format(), 6144);
+    let bytes = stream(&format(2), 6144);
     for cut in 0..bytes.len() {
         open_error(&bytes[..cut]);
     }
@@ -110,7 +73,7 @@ fn malformed_container_bounds_return_errors() {
     huge_chunk[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
     open_error(&huge_chunk);
 
-    let mut missing_pad = riff(&[(b"fmt ", &format()), (b"dpds", &[0; 4]), (b"data", &[3])]);
+    let mut missing_pad = riff(&[(b"fmt ", &format(2)), (b"dpds", &[0; 4]), (b"data", &[3])]);
     missing_pad.pop();
     set_riff_len(&mut missing_pad);
     assert!(matches!(
@@ -126,7 +89,7 @@ fn malformed_container_bounds_return_errors() {
 
 #[test]
 fn required_chunks_are_unique_and_present() {
-    let fmt = format();
+    let fmt = format(2);
     let mut chunks: Vec<(&[u8; 4], &[u8])> =
         vec![(b"fmt ", &fmt), (b"dpds", &[0; 4]), (b"data", &[3])];
     for index in 0..chunks.len() {
@@ -141,13 +104,13 @@ fn required_chunks_are_unique_and_present() {
 
 #[test]
 fn rejects_unrecognized_or_unbounded_format_fields() {
-    let mut wrong_tag = format();
+    let mut wrong_tag = format(2);
     wrong_tag[..2].copy_from_slice(&0x0162u16.to_le_bytes());
     let error = open_error(&stream(&wrong_tag, 6144));
     assert!(matches!(error, Error::UnsupportedTag(0x0162)));
     assert!(error.to_string().contains("0x0162"));
 
-    open_error(&stream(&format()[..17], 6144));
+    open_error(&stream(&format(2)[..17], 6144));
     for (offset, value) in [
         (2, 0),
         (2, 3),
@@ -160,7 +123,7 @@ fn rejects_unrecognized_or_unbounded_format_fields() {
         (14, 24),
         (16, 1),
     ] {
-        let mut bad_format = format();
+        let mut bad_format = format(2);
         let len = if matches!(offset, 4 | 8) { 4 } else { 2 };
         bad_format[offset..offset + len].copy_from_slice(&value.to_le_bytes()[..len]);
         open_error(&stream(&bad_format, 6144));
@@ -169,7 +132,7 @@ fn rejects_unrecognized_or_unbounded_format_fields() {
 
 #[test]
 fn rejects_inconsistent_packet_tables_and_unbounded_duration() {
-    let fmt = format();
+    let fmt = format(2);
     open_error(&riff(&[
         (b"fmt ", &fmt),
         (b"dpds", &[0; 3]),

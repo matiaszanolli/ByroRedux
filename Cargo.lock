@@ -615,6 +615,7 @@ version = "0.1.0"
 dependencies = [
  "byroredux-bsa",
  "byroredux-core",
+ "byroredux-xwma",
  "glam 0.33.12",
  "kira",
  "log",

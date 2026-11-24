@@ -350,7 +350,7 @@ commands were unreachable from `byro-dbg` because `tex.missing` parsed as
 
 The console commands are registered in `byroredux/src/commands/mod.rs`
 (`build_command_registry()`) plus the save/load implementations in
-`byroredux/src/save_io.rs`. Current registered commands (**206**) grouped by
+`byroredux/src/save_io.rs`. Current registered commands (**207**) grouped by
 purpose:
 
 **FormID arguments are hex**, bare or `0x`-prefixed: `quest.show 18B4B`, `quest.show
@@ -398,8 +398,9 @@ cam.tp <entity_id>          → teleport camera to over-the-shoulder framing of
                               the entity (200 back + 50 up, look-at).
                               No-arg form uses the picked ref (prid)
 
-# Asset / texture diagnostics
+# Asset diagnostics
 tex.missing                 → entities with fallback texture + expected paths
+snd.failed                  → static sound decode failures this session, with paths and reasons
 tex.loaded                  → unique loaded textures + fallback count
 tex.dump <bsa> <tex> [out]  → extract one texture from an on-disk archive,
                              decode it, and write a PNG for offline

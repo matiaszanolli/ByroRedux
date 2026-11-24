@@ -1,6 +1,11 @@
 //! Sound loaders and the `SoundCache` / `VoiceSoundCache` resources.
 
 use super::*;
+use crate::fuz::MAX_PCM_BYTES;
+use byroredux_xwma::{Decoder, Error as XwmaError, Metadata};
+use std::collections::{BTreeMap, btree_map::Entry};
+use std::io::{Error, ErrorKind};
+use std::sync::Mutex;
 
 /// Decode a fully-buffered audio blob into a `StaticSoundData`.
 ///
@@ -9,13 +14,12 @@ use super::*;
 /// `StaticSoundData::from_cursor` to `T: AsRef<[u8]> + Send + Sync` (no
 /// longer `'static`), since the data is fully decoded during the call.
 ///
-/// Format detection is automatic via symphonia's probe. The workspace
-/// explicitly enables kira's `wav` + `pcm`, `ogg` + `vorbis`, `mp3`, and
-/// `flac` features in the root `Cargo.toml` (the container features need
-/// their matching codec features). The two formats present in vanilla
-/// `Fallout - Sound.bsa`
-/// — WAV (4233 / 6465 files) and OGG Vorbis (2232 / 6465 files) —
-/// both decode through this path.
+/// RIFF/XWMA is decoded by `byroredux-xwma`. Other formats use Symphonia's
+/// format probe. The workspace explicitly enables kira's `wav` + `pcm`,
+/// `ogg` + `vorbis`, `mp3`, and `flac` features in the root `Cargo.toml`.
+/// The container features need their matching codec features. WAV (4233 /
+/// 6465 files) and OGG Vorbis (2232 / 6465 files) in vanilla
+/// `Fallout - Sound.bsa` both use this path.
 ///
 /// **Not** for ambient music or other long-running streams: those
 /// should land on `kira::sound::streaming` once Phase 5 wires it.
@@ -23,8 +27,122 @@ use super::*;
 /// up-front, which is what we want for short SFX (footsteps, impacts,
 /// gunshots) but wasteful for multi-minute ambient loops.
 pub fn load_sound_from_bytes(bytes: Vec<u8>) -> Result<StaticSoundData, FromFileError> {
-    let cursor = Cursor::new(bytes);
-    StaticSoundData::from_cursor(cursor)
+    load_named_sound_from_bytes("<in-memory sound>", bytes)
+}
+
+/// Decode a static sound with the asset path available for diagnostics.
+pub fn load_named_sound_from_bytes(
+    path: &str,
+    bytes: Vec<u8>,
+) -> Result<StaticSoundData, FromFileError> {
+    if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"XWMA") {
+        return load_xwma_sound(path, &bytes);
+    }
+    StaticSoundData::from_cursor(Cursor::new(bytes))
+}
+
+fn load_xwma_sound(path: &str, bytes: &[u8]) -> Result<StaticSoundData, FromFileError> {
+    let invalid_xwma = |error| Error::new(ErrorKind::InvalidData, error);
+    let mut decoder = Decoder::open(bytes).map_err(invalid_xwma)?;
+    let Metadata {
+        channels,
+        sample_rate,
+        frame_count,
+    } = decoder.metadata();
+
+    // Account for the declared f32 PCM and for kira's stereo storage even for mono sources.
+    let bytes_per_frame = (usize::from(channels) * size_of::<f32>()).max(size_of::<Frame>());
+    let frame_count = usize::try_from(frame_count)
+        .ok()
+        .filter(|count| {
+            count
+                .checked_mul(bytes_per_frame)
+                .is_some_and(|bytes| bytes <= MAX_PCM_BYTES)
+        })
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::InvalidData,
+                format!("xWMA exceeds the static PCM limit ({MAX_PCM_BYTES} bytes)"),
+            )
+        })?;
+    let mut frames = Vec::new();
+    frames
+        .try_reserve_exact(frame_count)
+        .map_err(|error| Error::new(ErrorKind::OutOfMemory, error))?;
+    loop {
+        let samples = match decoder.next_f32() {
+            Ok(Some(samples)) => samples,
+            Ok(None) => break,
+            Err(error) if accept_short_xwma_decode(&error) => {
+                log::warn!("M44: short xWMA decode for sound '{path}': {error}");
+                break;
+            }
+            Err(error) => return Err(invalid_xwma(error).into()),
+        };
+        if channels == 1 {
+            frames.extend(samples.iter().copied().map(Frame::from_mono));
+        } else {
+            let (stereo, _) = samples.as_chunks::<2>();
+            frames.extend(stereo.iter().map(|&[left, right]| Frame::new(left, right)));
+        }
+    }
+    Ok(StaticSoundData {
+        sample_rate,
+        frames: frames.into(),
+        settings: SoundSettings::default(),
+        slice: None,
+    })
+}
+
+/// Accept playable PCM from a short decode provisionally, pending Windows
+/// adjudication in #7413. Return `false` here to make short output a failure.
+fn accept_short_xwma_decode(error: &XwmaError) -> bool {
+    matches!(error, XwmaError::FrameCountMismatch { declared, decoded } if *decoded > 0 && decoded < declared)
+}
+
+/// Static sound decode failures for one engine session. Clones share the
+/// report across the audio caches and the boot-time default sound loaders.
+#[derive(Clone, Default)]
+pub struct SoundFailures {
+    // Normalized archive key to the first reported path spelling and reason.
+    entries: Arc<Mutex<BTreeMap<String, (String, String)>>>,
+}
+
+impl Resource for SoundFailures {}
+
+impl SoundFailures {
+    /// Decode a static sound and report the first failure for its asset path.
+    pub fn decode(&self, path: &str, bytes: Vec<u8>) -> Option<StaticSoundData> {
+        match load_named_sound_from_bytes(path, bytes) {
+            Ok(sound) => Some(sound),
+            Err(error) => {
+                self.record(path, &error);
+                None
+            }
+        }
+    }
+
+    fn record(&self, path: &str, error: &FromFileError) {
+        let key = path.replace('/', "\\").to_lowercase();
+        let mut entries = self.entries.lock().expect("sound failure report poisoned");
+        let Entry::Vacant(entry) = entries.entry(key) else {
+            return;
+        };
+        let reason = error.to_string();
+        entry.insert((path.to_owned(), reason.clone()));
+        drop(entries);
+        log::warn!("M44: decode failed for sound '{path}': {reason}");
+    }
+
+    /// Snapshot of the first path and reason for each failure, in archive-key order.
+    pub fn entries(&self) -> Vec<(String, String)> {
+        self.entries
+            .lock()
+            .expect("sound failure report poisoned")
+            .values()
+            .cloned()
+            .collect()
+    }
 }
 
 /// #5367 Phase V — a settings-only copy of `sound` that starts `secs`
@@ -162,6 +280,7 @@ pub struct SoundCache {
     // `None` is a negative-cache entry: a missing archive member or a
     // malformed sound is not probed again on every gameplay event.
     pub(crate) map: HashMap<String, Option<Arc<StaticSoundData>>>,
+    failures: SoundFailures,
 }
 
 impl Default for SoundCache {
@@ -172,8 +291,13 @@ impl Default for SoundCache {
 
 impl SoundCache {
     pub fn new() -> Self {
+        Self::with_failures(SoundFailures::default())
+    }
+
+    pub fn with_failures(failures: SoundFailures) -> Self {
         Self {
             map: HashMap::new(),
+            failures,
         }
     }
 
@@ -203,9 +327,9 @@ impl SoundCache {
     /// cached too, preventing repeated archive probes for unavailable SFX.
     ///
     /// Returns `None` when the loader has no bytes or the bytes fail to
-    /// decode. Callers can log + skip; subsequent calls for this path do
-    /// not invoke the loader again. Use [`Self::clear`] to retry after
-    /// changing the archive set.
+    /// decode. The failure report logs the first decode error for the path.
+    /// Subsequent calls for this path reuse the cache entry. Use
+    /// [`Self::clear`] to retry after changing the archive set.
     pub fn get_or_load<F>(&mut self, path: &str, loader: F) -> Option<Arc<StaticSoundData>>
     where
         F: FnOnce() -> Option<Vec<u8>>,
@@ -218,14 +342,13 @@ impl SoundCache {
             self.map.insert(key, None);
             return None;
         };
-        match load_sound_from_bytes(bytes) {
-            Ok(sound) => {
+        match self.failures.decode(path, bytes) {
+            Some(sound) => {
                 let arc = Arc::new(sound);
                 self.map.insert(key, Some(Arc::clone(&arc)));
                 Some(arc)
             }
-            Err(e) => {
-                log::warn!("M44: decode failed for sound '{path}': {e}");
+            None => {
                 self.map.insert(key, None);
                 None
             }
@@ -305,6 +428,7 @@ pub struct VoiceSoundCache {
     pub(crate) entries: Vec<(String, Arc<StaticSoundData>, usize)>,
     pub(crate) resident_bytes: usize,
     pub(crate) negatives: std::collections::HashSet<String>,
+    failures: SoundFailures,
 }
 
 /// Negative-entry cap: past this many distinct misses the set clears and
@@ -320,18 +444,23 @@ impl Default for VoiceSoundCache {
 }
 
 impl VoiceSoundCache {
-    pub const DEFAULT_BUDGET_BYTES: usize = 64 * 1024 * 1024;
+    pub const DEFAULT_BUDGET_BYTES: usize = MAX_PCM_BYTES;
 
     pub fn new() -> Self {
         Self::with_budget(Self::DEFAULT_BUDGET_BYTES)
     }
 
     pub fn with_budget(budget_bytes: usize) -> Self {
+        Self::with_budget_and_failures(budget_bytes, SoundFailures::default())
+    }
+
+    pub fn with_budget_and_failures(budget_bytes: usize, failures: SoundFailures) -> Self {
         Self {
             budget_bytes,
             entries: Vec::new(),
             resident_bytes: 0,
             negatives: std::collections::HashSet::new(),
+            failures,
         }
     }
 
@@ -358,8 +487,8 @@ impl VoiceSoundCache {
             self.remember_negative(key);
             return None;
         };
-        match load_sound_from_bytes(bytes) {
-            Ok(sound) => {
+        match self.failures.decode(path, bytes) {
+            Some(sound) => {
                 let pcm_bytes = sound.frames.len() * std::mem::size_of::<kira::Frame>();
                 self.resident_bytes += pcm_bytes;
                 let arc = Arc::new(sound);
@@ -370,8 +499,7 @@ impl VoiceSoundCache {
                 }
                 Some(arc)
             }
-            Err(e) => {
-                log::warn!("M44: decode failed for voice '{path}': {e}");
+            None => {
                 self.remember_negative(key);
                 None
             }
