@@ -400,7 +400,7 @@ pub(crate) fn try_load_default_footstep(
 /// needs game data) re-asserts each row against the archive on disk.
 /// Verified 2026-09-06 against `Fallout - Sound.bsa` (FNV 6,465 entries /
 /// FO3 2,709), `Skyrim - Sounds.bsa` (6,198) and `Oblivion - Sounds.bsa`
-/// (1,533). FO4's `Fallout4 - Sounds.ba2` ships its splashes as `.xwm`.
+/// (1,533), and `Fallout4 - Sounds.ba2` (6,922 `.xwm`; its rows are #7414's).
 pub(crate) struct DefaultSoundCandidate {
     /// Sound-candidate game tags whose vanilla sound archive carries
     /// `key` (for example, `skyrimse`; the matching debug profile is
@@ -427,6 +427,11 @@ pub(crate) const FOOTSTEP_CANDIDATES: &[DefaultSoundCandidate] = &[
         games: &["oblivion"],
         key: r"sound\fx\fst\earth\fst_earth_01.wav",
     },
+    // Fallout 4 ships its effects as xWMA (#7414); the dirt walk keeps the `l\` / `r\` alternation.
+    DefaultSoundCandidate {
+        games: &["fo4"],
+        key: r"sound\fx\fst\player\dirt\walk\l\fst_dirt_walk_player_03.xwm",
+    },
 ];
 
 /// Default medium water-splash one-shot per game — see
@@ -449,6 +454,10 @@ pub(crate) const WATER_SPLASH_CANDIDATES: &[DefaultSoundCandidate] = &[
     DefaultSoundCandidate {
         games: &["oblivion"],
         key: r"sound\fx\phy\genericcollisions\water\medium\phy_water_m_01.wav",
+    },
+    DefaultSoundCandidate {
+        games: &["fo4"],
+        key: r"sound\fx\phy\generic\phy_generic_water_medium_01.xwm",
     },
 ];
 
@@ -1341,11 +1350,12 @@ mod tests {
 
         use byroredux_plugin::esm::test_paths;
         type GameArchiveCase<'a> = (&'a str, fn() -> PathBuf, &'a str);
-        let games: [GameArchiveCase; 4] = [
+        let games: [GameArchiveCase; 5] = [
             ("fnv", test_paths::fnv_data_dir, "Fallout - Sound.bsa"),
             ("fo3", test_paths::fo3_data_dir, "Fallout - Sound.bsa"),
             ("skyrimse", test_paths::skyrim_se_data_dir, "Skyrim - Sounds.bsa"),
             ("oblivion", test_paths::oblivion_data_dir, "Oblivion - Sounds.bsa"),
+            ("fo4", test_paths::fo4_data_dir, "Fallout4 - Sounds.ba2"),
         ];
         let tables = [
             ("FOOTSTEP_CANDIDATES", FOOTSTEP_CANDIDATES),
