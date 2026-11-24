@@ -25,6 +25,12 @@ const STABLE: &[&str] = &[
     "EventRegistrations", "DistanceWatches", "HitRegistrations", "AnimationEventRegistrations", "MenuEventRegistrations",
     "ScriptUpdates", "AliasScriptOwners", "CinematicPresentationState", "FormIdComponent", "FactionRelations",
     "PapyrusProviderContinuationQueue",
+    // LMC Q5 — keyed and valued by PapyrusUtil form text (`0x<local id>|<plugin file>`): stable by construction.
+    "StorageUtilValues",
+    // LMC Q5 — JContainers' heap holds forms as `FormRef` (plugin identity + local id).
+    "JcHeap",
+    // Hand Equipment #7399 — the hands' readied spells (`left_spell` / `right_spell`), stable FormIDs.
+    "EquipmentSlots",
     // Restored before the cell reload (`PRE_RELOAD_RESOURCES`): the live load reloads the session's own plugins, so
     // the load order they read through before the reload is the one it rebuilds (Phase 7 slice 3).
     "ReferenceEnableState", "ReferenceLockState", "ReferenceScriptState", "ScriptedFactionChanges",
@@ -33,7 +39,7 @@ const STABLE: &[&str] = &[
 
 /// Columns that hold no FormID (entity ids, counts, flags, strings, poses, clocks).
 const NO_FORM_IDS: &[&str] = &[
-    "Transform", "Name", "Parent", "Children", "EquipmentSlots", "LightSource", "LightFlicker", "AnimationPlayer",
+    "Transform", "Name", "Parent", "Children", "LightSource", "LightFlicker", "AnimationPlayer",
     "AnimationStack", "ScriptTimer", "TwoStateActivator", "LevelUpPoints", "CharacterLevel", "SkillUseLevel",
     "DismemberRecord", "Dead", "Sneaking", "WanderState", "TravelState", "Traveled", "FollowState", "EscortState",
     "Escorted", "GuardState", "PatrolState", "Seated", "ActorControlState", "Bleedout", "CharacterController", "Material",

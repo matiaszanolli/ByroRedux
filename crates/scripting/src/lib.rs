@@ -63,6 +63,7 @@ pub mod ownership;
 pub mod crime_knowledge;
 pub mod guards;
 pub mod hands;
+pub mod jcontainers;
 pub mod json_util;
 pub mod mcm;
 /// LMC-SCR-004 — the per-function extender catalog and its measured coverage.

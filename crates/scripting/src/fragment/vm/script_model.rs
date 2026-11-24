@@ -311,6 +311,7 @@ pub(super) fn static_class(e: &Expr) -> Option<&str> {
     };
     ["game", "utility", "debug", "math", "weather", "mcmhost", "mcmhelper", "jsonutil", "storageutil", "skse", "f4se"]
         .into_iter()
+        .chain(super::natives::JC_CLASSES.iter().copied())
         .find(|class| name.0.eq_ignore_ascii_case(class))
 }
 

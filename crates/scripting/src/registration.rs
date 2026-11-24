@@ -80,6 +80,10 @@ pub fn register(world: &mut World) {
     alias_overrides::install(world);
     // M47.2 — created-object references (saved, like the ledger above; #5802).
     created_references::install(world);
+    // LMC Q5 — PapyrusUtil StorageUtil's form-keyed values (saved).
+    crate::json_util::install(world);
+    // LMC Q5 — JContainers' object heap (saved).
+    crate::jcontainers::install(world);
     world.register::<ActivateEvent>();
     world.register::<NativeActivation>();
     world.register::<DefaultActivation>();
@@ -182,7 +186,7 @@ mod tests {
     fn register_installs_the_same_resource_set() {
         let mut world = World::new();
         register(&mut world);
-        assert_eq!(world.resource_count(), 154, "the resource set `register` installs changed");
+        assert_eq!(world.resource_count(), 156, "the resource set `register` installs changed");
 
         macro_rules! present {
             ($($ty:path),+ $(,)?) => {$(
