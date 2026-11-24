@@ -194,7 +194,7 @@ fn report(game: &str, paths: &[String]) -> Vec<(u32, [u8; 4], String)> {
 }
 
 /// `names` found in `data`, whatever their case on disk; `None` when any is missing.
-fn paths_in(data: std::path::PathBuf, names: &[&str]) -> Option<Vec<String>> {
+pub(super) fn paths_in(data: std::path::PathBuf, names: &[&str]) -> Option<Vec<String>> {
     let files: Vec<std::path::PathBuf> = std::fs::read_dir(&data).ok()?.flatten().map(|entry| entry.path()).collect();
     names
         .iter()
