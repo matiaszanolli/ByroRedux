@@ -1,6 +1,7 @@
 # Legacy Mod Compatibility — Product Requirements
 
-**Status**: ACTIVE (2026-11-23). Revision 41 serves Fallout 4's MCM (LMC-UI-002 slice 5): menus by their
+**Status**: ACTIVE (2026-11-23). Revision 42 reads every plugin as the profile's game (LMC-REC-009) and reports
+light and medium records past their object space (LMC-ID-008). Revision 41 serves Fallout 4's MCM (LMC-UI-002 slice 5): menus by their
 config folders, F4SE's external events. Revision 40 records that no `.xwm` decodes (LMC-AST-009, catalog
 A7.xwma). Revision 39 serves MCM Helper's hotkeys (LMC-UI-002 slice 4b). Revision 38 measures LMC-PERF-001: a 1,000-plugin profile with
 paired archives activates in 0.35 s, and archive pairing is linear. Revision 37 serves MCM Helper's config menus (LMC-UI-002 slice 4), with
@@ -439,6 +440,13 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
   records) ([Ortham](https://blog.ortham.net/posts/2024-06-28-load-order-in-starfield/)).
   The original engines' active-plugin ceilings for each class do not exist
   here (LMC-ID-004).
+  At HEAD on 2026-11-23 (#6670) the flags decide only a plugin's slot, read
+  as the profile's game (LMC-REC-009), and so its Form ID decoding; no
+  record count is imposed. A light or medium plugin's own records whose
+  object ids its space cannot hold are masked into it, as the slot decodes
+  them, and the fold logs how many (`own_records_outside_object_space`,
+  `byroredux/src/cell_loader/load_order.rs`). The per-class slot ceilings
+  that remain are LMC-ID-004's.
 - **LMC-ID-009.** Plugin names, archive names, asset paths and script names
   MUST resolve case-insensitively, with `\` and `/` equivalent, on every
   host filesystem.
@@ -666,6 +674,16 @@ Games: Obl = oblivion, FO3 = fo3, FNV = fnv, Sky = skyrim, FO4 = fo4, SF = starf
 - **LMC-REC-009.** A plugin's game dialect comes from its header and the
   profile's game, never from consumer branches
   ([per-game translation rule](../engine/nif-engine-translation-layer.md)).
+  Built (#6670): the base master names the profile's game (`ProfileGame`,
+  `crates/plugin/src/esm/reader.rs`), and the fold reads every plugin's
+  record layouts and TES4 light and medium bits as that game, as xEdit tests
+  a file's light bit against the game it loads (`TwbMainRecordStructFlags.IsLight`:
+  `gcLightPlugins in aGameDef.Capabilities` and the game's `LightFlag`). An
+  ESL-flagged plugin with an older header is light in a Skyrim SE profile; a
+  plugin whose header bands as another game is read as the profile's game
+  and logged. The header still gives the plugin's own HEDR, which picks its
+  character rules (Fallout 3 or New Vegas). The preflight's ObScript scan
+  reads plugins the same way.
 - **LMC-REC-010.** Sub-records the parser does not decode MUST be preserved
   as opaque bytes with provenance, so a later decoder sees them and the
   explain tooling can show that a mod touched them
@@ -1671,3 +1689,4 @@ the verdict vocabulary of the [PRD standard](README.md#8-manual-review):
 | 39 | 2026-11-23 | LMC-UI-002 slice 4b: MCM Helper's `keybinds.json` hotkeys; a key map with an id binds a key (bindings per game and named profile, over an earlier install's); a press runs the function call, `SendEvent` delivers `OnControlDown` / `OnControlUp`; `RunConsoleCommand` is declined (no game-console interpreter) | — |
 | 40 | 2026-11-23 | LMC-AST-009 measured: no `.xwm` decodes (Fallout 4's xWMA effects, 77% of its sounds, and Skyrim's and Fallout 4's music); catalog A7 split, A7.xwma at D5 with target D1, tracked by the xWMA decoder PRD | — |
 | 41 | 2026-11-23 | LMC-UI-002 slice 5 (Fallout 4): FO4 MCM (1.40, version code 9) from its author documentation; configs listed by their `MCM/Config/<mod>` folders under the mod roots when their plugin or requirements are loaded; FO4's control names (button added; image, positioner and numeric text inputs left out, failed groups hidden); F4SE `RegisterForExternalEvent` served (per session) with `OnMCMSettingChange` / `OnMCMMenuOpen` / `OnMCMMenuClose`; `MCM.RefreshMenu()`; New Vegas' MCM is its own slice | — |
+| 42 | 2026-11-23 | LMC-REC-009 built: every plugin is read as the profile's game (`ProfileGame` from the base master: record layouts and the TES4 light / medium bits, as xEdit's `IsLight`); LMC-ID-008 verified (the flags decide only the slot) with a fold warning for light / medium records past their object space | — |
