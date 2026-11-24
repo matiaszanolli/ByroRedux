@@ -146,6 +146,7 @@ dependency is only ever consumed by that one crate:
 | byroredux-papyrus           | (none — leaf) |
 | byroredux-bink2             | (none — leaf; clean-room, no dependencies by design) |
 | byroredux-binkaudio         | (none — leaf; clean-room; `byroredux-bink2` dev-only) |
+| byroredux-xwma              | (none — leaf; links FFmpeg's `wmav2` statically, fetched at a pinned digest and built by `build.rs`; `byroredux-bsa` and `rayon` dev-only) |
 | byroredux-cxx-bridge        | (none — leaf) |
 | byroredux-debug-protocol    | (none — leaf) |
 | byroredux-platform          | (none — leaf) |
@@ -169,7 +170,7 @@ dependency is only ever consumed by that one crate:
 | byroredux-debug-server      | byroredux-core (`inspect`), byroredux-papyrus, byroredux-scripting, byroredux-debug-protocol |
 | byroredux-debug-ui          | byroredux-core, byroredux-sdk, byroredux-native-ui |
 | byroredux-native-ui         | byroredux-core |
-| byroredux (binary)          | every engine crate above except fsr3-sys (reached through the renderer), bink2 / binkaudio (through video), pex (through scripting) and debug-protocol (through debug-server), + byro-texture-upscale; debug-server is optional, on by default; `byroredux-papyrus` dev-only |
+| byroredux (binary)          | every engine crate above except fsr3-sys (reached through the renderer), bink2 / binkaudio (through video), xwma (not yet used by the engine; the xWMA PRD's Phase 2 wires it through audio), pex (through scripting) and debug-protocol (through debug-server), + byro-texture-upscale; debug-server is optional, on by default; `byroredux-papyrus` dev-only |
 | byro-dbg (tool)             | byroredux-debug-protocol |
 | byro-launcher (tool)        | byroredux-core, byroredux-boot-request, byroredux-game-detect, byroredux-settings-io |
 | byro-detect (tool)          | byroredux-game-detect |

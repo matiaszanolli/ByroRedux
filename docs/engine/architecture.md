@@ -55,6 +55,7 @@ byroredux/
 │   ├── video/                 Bink 1 / Bink 2 movie playback (decode thread, soundtrack)
 │   ├── bink2/                 Clean-room Bink 2 video decoder (no dependencies)
 │   ├── binkaudio/             Clean-room Bink Audio decoder (no dependencies)
+│   ├── xwma/                  xWMA decoder: FFmpeg wmav2 built statically from a pinned tarball (no dependencies)
 │   ├── ui/                    Scaleform/SWF UI system (Ruffle integration)
 │   ├── menuxml/               Oblivion / FO3 / FNV legacy MenuXml UI track
 │   ├── scripting/             ECS-native scripting (events, timers, conditions,

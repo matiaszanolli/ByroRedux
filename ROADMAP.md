@@ -711,7 +711,7 @@ Workspace counts at the Session 120 close (2026-11-24, `54d314395`). The NIF swe
 | Rust source lines (tracked `.rs` in `src/` dirs, excl. `third_party/`) | 1 023 870 |
 | Rust total lines (tracked `.rs`, excl. `third_party/`) | 1 085 817 |
 | Source files (tracked `.rs`, excl. `third_party/`) | 1960 total · 1844 outside `tests/` dirs |
-| Workspace members                       | 39 (count the `[workspace] members` block only; 34 crates — `video`, `bink2`, `binkaudio` joined in Session 111, `native-ui` with M48 GUI-PAGE-006 — + `byroredux` binary + 4 tools — `tools/nifskope` is on disk but not a member) |
+| Workspace members                       | 40 (count the `[workspace] members` block only; 35 crates — `video`, `bink2`, `binkaudio` joined in Session 111, `native-ui` with M48 GUI-PAGE-006, `xwma` with the xWMA PRD — + `byroredux` binary + 4 tools — `tools/nifskope` is on disk but not a member) |
 | Tests                                   | **13 440 passing, 0 failing, 506 ignored** (`cargo test --workspace --no-fail-fast` on rustc 1.100.0, 2026-11-24). Pass `--no-fail-fast` so the count includes suites scheduled after any failure. |
 | Open issue directories                  | 7118 (`.claude/issues/`)     |
 | NIFs in per-game integration sweeps     | **562 069** across eight games (Skyrim SE re-measured 2026-09-29 at 33 468 over 8 archives, #3712 added Animations; FO76's tail closed by #3461 and the 2026-10-03 re-measure (#4628) swept 102 980 over 5 of its 20 mesh-bearing archives; Skyrim LE 22 466 gated since fb8173fe0; earlier widenings #3369/#3466, Oblivion DLC #3925, Starfield #4440). Oblivion 9 612 · FO3 17 172 · FNV 20 746 · Skyrim SE 33 468 · Skyrim LE 22 466 · FO4 235 082 · FO76 102 980 · Starfield 120 543. |

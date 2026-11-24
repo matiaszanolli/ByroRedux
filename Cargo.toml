@@ -26,6 +26,7 @@ members = [
     "crates/pex",
     "crates/facegen",
     "crates/audio",
+    "crates/xwma",
     "crates/video",
     "crates/bink2",
     "crates/binkaudio",

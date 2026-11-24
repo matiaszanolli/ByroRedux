@@ -996,6 +996,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "byroredux-xwma"
+version = "0.1.0"
+dependencies = [
+ "byroredux-bsa",
+ "cc",
+ "libc",
+ "rayon",
+ "sha2",
+]
+
+[[package]]
 name = "bytemuck"
 version = "1.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
