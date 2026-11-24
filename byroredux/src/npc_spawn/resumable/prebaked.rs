@@ -128,12 +128,7 @@ pub(super) fn prepare_prebaked_state(
     // instances.
     if !player_body {
         world.insert(placement_root, equip.inventory);
-        let mut equipment_slots = equip.equipment_slots;
-        // #3112 — same weapon-slot mirror as the resumable finalize path above.
-        if let Some(weapon) = equip.equipped_weapon {
-            equipment_slots.equip_weapon(weapon.inventory_index);
-        }
-        world.insert(placement_root, equipment_slots);
+        world.insert(placement_root, equip.equipment_slots);
         if let Some(weapon) = equip.equipped_weapon {
             world.insert(placement_root, weapon);
         }

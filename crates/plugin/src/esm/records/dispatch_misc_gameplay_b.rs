@@ -175,7 +175,7 @@ pub(super) fn dispatch_misc_gameplay_b_group(
             index.explosions.insert(fid, parse_expl(fid, subs, game));
         })?,
         b"CSTY" => extract_records(reader, end, b"CSTY", &mut |fid, subs| {
-            index.combat_styles.insert(fid, parse_csty(fid, subs));
+            index.combat_styles.insert(fid, parse_csty(fid, subs, game));
         })?,
         b"IDLE" => extract_records(reader, end, b"IDLE", &mut |fid, subs| {
             index.idle_animations.insert(fid, parse_idle(fid, subs));

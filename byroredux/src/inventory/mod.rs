@@ -155,8 +155,8 @@ fn queue_by_form_id(
 
 /// The weapon equips scripts asked for (`player.equipitem <weapon>`, the VCG02 tutorial's rifle), and the
 /// player's shields and torches (Hand Equipment #7398 / #7399):
-/// the player's row for each is toggled on through the menu's own door, unless that weapon is
-/// already the wielded one. Another actor's request, or an item that is no weapon the player
+/// the player's row for each is equipped through the same action as the menu, honoring the item's
+/// resolved slot. Another actor's request, or an item that is no weapon the player
 /// carries, is logged and dropped (an NPC's wielded weapon is not driven from inventory rows yet).
 fn drain_script_weapon_equips(world: &mut World) {
     let requests: Vec<_> = world
@@ -193,20 +193,9 @@ fn drain_script_weapon_equips(world: &mut World) {
             log::debug!("script EquipItem {form_id:08X}: the player does not carry it");
             continue;
         };
-        // Already where it was asked for: the left hand asks for its own slot (`EquipItemEx(item, 2)`),
-        // anything else for the item anywhere.
-        let row_index = InventoryIndex(row as u32);
-        let held = world.get::<EquipmentSlots>(actor).is_some_and(|slots| match hand {
-            byroredux_scripting::hands::Hand::Left => slots.left_hand == Some(row_index),
-            byroredux_scripting::hands::Hand::Right => slots.is_equipped(row_index),
-        });
-        if !held
-            && let Some(mut pending) = world.try_resource_mut::<PendingInventoryActions>() {
-                pending.0.push(match hand {
-                    byroredux_scripting::hands::Hand::Left => byroredux_native_ui::InventoryAction::EquipLeft { index: row as u32 },
-                    byroredux_scripting::hands::Hand::Right => byroredux_native_ui::InventoryAction::ToggleEquip { index: row as u32 },
-                });
-            }
+        if actions::equip_in(world, row as u32, hand, actions::EquipMode::Equip) == MutationResult::Unavailable {
+            log::debug!("script EquipItem {form_id:08X}: the item cannot equip in its slot");
+        }
     }
 }
 
@@ -227,21 +216,16 @@ fn drop_stale_player_weapon(world: &mut World) {
 /// Drain the queued inventory actions through the canonical menu door.
 /// Called on the main thread beside the other player-action steps.
 pub(crate) fn drain_pending_inventory_actions(world: &mut World) {
-    drain_script_weapon_equips(world);
     drop_stale_player_weapon(world);
-    let Some(mut pending) = world.try_resource_mut::<PendingInventoryActions>() else {
-        return;
-    };
-    if pending.0.is_empty() {
-        return;
-    }
-    let actions = std::mem::take(&mut pending.0);
-    drop(pending);
+    let actions = world.try_resource_mut::<PendingInventoryActions>()
+        .map(|mut pending| std::mem::take(&mut pending.0))
+        .unwrap_or_default();
     for action in actions {
         if apply_action(world, action) == MutationResult::Unavailable {
             log::warn!("queued inventory action was unavailable for the current player/item");
         }
     }
+    drain_script_weapon_equips(world);
 }
 
 /// M65 (SNK-DET-010) — the summed weight of what `actor` has equipped (each item

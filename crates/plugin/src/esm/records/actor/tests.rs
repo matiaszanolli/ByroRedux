@@ -4,7 +4,20 @@
 //! `#[cfg(test)] mod tests;`. Body preserved verbatim.
 
 use super::*;
+use crate::esm::reader::FormIdRemap;
 use crate::esm::records::test_support::sub;
+
+#[test]
+fn skyrim_npc_combat_style_uses_the_plugin_form_remap() {
+    let remap = Some(FormIdRemap::regular(7, vec![0]));
+    let style = sub(b"ZNAM", 0x0100_0800_u32.to_le_bytes());
+    let npc = parse_npc(1, std::slice::from_ref(&style), GameKind::Skyrim, &remap);
+    assert_eq!(npc.combat_style_form_id, Some(0x0700_0800));
+    let other = parse_npc(1, &[style], GameKind::Fallout4, &remap);
+    assert_eq!(other.combat_style_form_id, None);
+    let unset = parse_npc(1, &[sub(b"ZNAM", [0u8; 4])], GameKind::Skyrim, &remap);
+    assert_eq!(unset.combat_style_form_id, None);
+}
 
 #[test]
 fn skyrim_race_preserves_gendered_skeletons_separately_from_body_models() {

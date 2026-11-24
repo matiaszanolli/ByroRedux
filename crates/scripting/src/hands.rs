@@ -25,6 +25,15 @@ pub struct HandWeapon {
     pub hands: SlotHands,
 }
 
+/// Missing weapon `ETYP` uses the one-hand fallback. An authored slot must resolve to a hand.
+pub fn weapon_slot_hands(index: &EsmIndex, equip_type: u32) -> SlotHands {
+    if equip_type == 0 {
+        SlotHands::Either
+    } else {
+        slot_hands(&index.equip_slots, equip_type)
+    }
+}
+
 /// The load order's weapons by base FormID, its shields (armor whose `ETYP` slot takes the left hand
 /// only), its torches (lights with the "can be carried" flag) and its spells' slots. Empty off Skyrim.
 /// `NOT_SAVED_BY_DESIGN`: rebuilt from the records every boot.
@@ -47,7 +56,7 @@ impl HandCatalog {
         for (&form, item) in &index.items {
             match &item.kind {
                 ItemKind::Weapon { anim_type, equip_type, .. } => {
-                    let hands = slot_hands(&index.equip_slots, *equip_type);
+                    let hands = weapon_slot_hands(index, *equip_type);
                     catalog.weapons.insert(form, HandWeapon { anim_type: *anim_type, hands });
                 }
                 ItemKind::Armor { equip_type, .. }
@@ -80,9 +89,13 @@ impl HandCatalog {
         self.weapons.get(&form).copied()
     }
 
+    pub fn weapon_hands(&self, form: u32) -> SlotHands {
+        self.weapon(form).map_or(SlotHands::Either, |weapon| weapon.hands)
+    }
+
     /// Whether the weapon `form` takes both hands.
     pub fn two_handed(&self, form: u32) -> bool {
-        self.weapon(form).is_some_and(|weapon| weapon.hands == SlotHands::Both)
+        self.weapon_hands(form) == SlotHands::Both
     }
 
     pub fn is_shield(&self, form: u32) -> bool {
@@ -241,8 +254,8 @@ pub fn torch_out(world: &World, actor: EntityId) -> bool {
 /// What goes into a hand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HandEquip {
-    /// A weapon's inventory entry; `two_handed` when its slot takes both hands.
-    Weapon { index: InventoryIndex, two_handed: bool },
+    /// A weapon's inventory entry and resolved equip slot.
+    Weapon { index: InventoryIndex, hands: SlotHands },
     /// A shield's inventory entry and its biped mask (its model's slot).
     Shield { index: InventoryIndex, mask: u64 },
     Torch { index: InventoryIndex },
@@ -297,31 +310,31 @@ pub struct HandChange {
     pub right_weapon_changed: bool,
 }
 
-/// The hands `item` takes when equipped into `hand`, as (left, right); `None` for a spell whose slot
-/// is no hand (a Voice power).
+/// The hands `item` takes when equipped into `hand`, as (left, right). An explicit non-hand slot
+/// has no destination.
 pub fn hands_taken(item: HandEquip, hand: Hand) -> Option<(bool, bool)> {
     let asked = (hand == Hand::Left, hand == Hand::Right);
     Some(match item {
-        HandEquip::Weapon { two_handed: true, .. } => (true, true),
-        HandEquip::Weapon { .. } => asked,
+        HandEquip::Weapon { hands: SlotHands::Right | SlotHands::Either, .. } => asked,
         HandEquip::Shield { .. } | HandEquip::Torch { .. } => (true, false),
         // CK *EquipSpell - Actor*: the source "will be overridden by the Spell's Equip Slot"; a
         // BothHands slot takes both (HND-SLOT-002).
-        HandEquip::Spell { hands: SlotHands::Both, .. } => (true, true),
-        HandEquip::Spell { hands: SlotHands::Left, .. } => (true, false),
+        HandEquip::Weapon { hands: SlotHands::Both, .. } | HandEquip::Spell { hands: SlotHands::Both, .. } => (true, true),
+        HandEquip::Weapon { hands: SlotHands::Left, .. } | HandEquip::Spell { hands: SlotHands::Left, .. } => (true, false),
         HandEquip::Spell { hands: SlotHands::Right, .. } => (false, true),
         HandEquip::Spell { hands: SlotHands::Either, .. } => asked,
-        HandEquip::Spell { hands: SlotHands::None, .. } => return None,
+        HandEquip::Weapon { hands: SlotHands::None, .. } | HandEquip::Spell { hands: SlotHands::None, .. } => return None,
     })
 }
 
 /// Equip `item` into `hand` by the equip-slot rules (CK *Equip Slot*: "Items marked with the same slot
 /// can't be equipped simultaneously. Attempting to equip one will automatically unequip the other"):
 /// what held each hand it takes comes off first, a two-handed occupant from both hands, and one item
-/// of a stack moved to the other hand leaves the first. Returns what came off; `None` (nothing changed)
-/// for a spell whose slot is no hand.
+/// of a stack moved to the other hand leaves the first. Returns what came off. A non-hand slot
+/// returns `None` without changing occupancy.
 pub fn equip_to_hand(slots: &mut EquipmentSlots, item: HandEquip, hand: Hand, facts: &HandFacts) -> Option<HandChange> {
-    let (mut left, mut right) = hands_taken(item, hand)?;
+    let (into_left, into_right) = hands_taken(item, hand)?;
+    let (mut left, mut right) = (into_left, into_right);
     if facts.right_two_handed {
         // A two-handed occupant fills both hands: taking either frees both.
         (left, right) = (true, true);
@@ -330,8 +343,10 @@ pub fn equip_to_hand(slots: &mut EquipmentSlots, item: HandEquip, hand: Hand, fa
         HandEquip::Weapon { index, .. } | HandEquip::Shield { index, .. } | HandEquip::Torch { index } => Some(index),
         HandEquip::Spell { .. } => None,
     };
-    // One item of a single stack in the other hand moves rather than doubles.
-    if let Some(index) = index.filter(|_| facts.stack_count < 2) {
+    // A single item moves rather than doubles. Clear an older right-hand copy of a fixed-left weapon too.
+    if let Some(index) = index.filter(|_| {
+        facts.stack_count < 2 || matches!(item, HandEquip::Weapon { hands: SlotHands::Left, .. })
+    }) {
         left |= slots.left_hand == Some(index);
         right |= slots.weapon == Some(index);
     }
@@ -356,8 +371,8 @@ pub fn equip_to_hand(slots: &mut EquipmentSlots, item: HandEquip, hand: Hand, fa
         }
     }
     match item {
-        HandEquip::Weapon { index, two_handed } => {
-            if two_handed || hand == Hand::Right {
+        HandEquip::Weapon { index, .. } => {
+            if into_right {
                 slots.weapon = Some(index);
                 change.right_weapon_changed = true;
             } else {
@@ -367,7 +382,6 @@ pub fn equip_to_hand(slots: &mut EquipmentSlots, item: HandEquip, hand: Hand, fa
         HandEquip::Shield { index, mask } => change.items.extend(slots.equip(mask, index)),
         HandEquip::Torch { index } => slots.left_hand = Some(index),
         HandEquip::Spell { form, .. } => {
-            let (into_left, into_right) = hands_taken(item, hand)?;
             if into_left {
                 slots.left_spell = Some(form);
             }
@@ -492,8 +506,8 @@ mod tests {
     #[test]
     fn torches_and_spells_take_their_hands_by_the_slot_rules() {
         let (world, actor) = world();
-        let sword = HandEquip::Weapon { index: InventoryIndex(0), two_handed: false };
-        let dagger = HandEquip::Weapon { index: InventoryIndex(1), two_handed: false };
+        let sword = HandEquip::Weapon { index: InventoryIndex(0), hands: SlotHands::Right };
+        let dagger = HandEquip::Weapon { index: InventoryIndex(1), hands: SlotHands::Right };
         equip(&world, actor, sword, Hand::Right);
         equip(&world, actor, dagger, Hand::Left);
         let change = equip(&world, actor, HandEquip::Torch { index: InventoryIndex(5) }, Hand::Right);
@@ -519,7 +533,7 @@ mod tests {
         assert_eq!(codes(&world, actor), (10, 0));
 
         // A greatsword takes the shield off; a torch then frees both hands of it.
-        equip(&world, actor, HandEquip::Weapon { index: InventoryIndex(2), two_handed: true }, Hand::Right);
+        equip(&world, actor, HandEquip::Weapon { index: InventoryIndex(2), hands: SlotHands::Both }, Hand::Right);
         assert_eq!(codes(&world, actor), (5, 5));
         let change = equip(&world, actor, HandEquip::Torch { index: InventoryIndex(5) }, Hand::Left);
         assert_eq!((change.items, change.right_weapon_changed), (vec![InventoryIndex(2)], true));

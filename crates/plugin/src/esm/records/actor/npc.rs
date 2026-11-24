@@ -296,6 +296,8 @@ pub struct NpcRecord {
     /// (Oblivion's 0-100 aggression scale feeds a disposition formula with
     /// no settled source).
     pub ai_data: Option<ActorAiData>,
+    /// Skyrim `ZNAM`, inherited through the Use AI Data template category.
+    pub combat_style_form_id: Option<u32>,
     /// #4415 — the actor's spell list (`SPLO`, one FormID each, load-order
     /// remapped): SPEL / SHOU / LVSP targets, in authored order. FO3/FNV
     /// call it the "Actor Effect" list and author it on NPC_ and CREA;
@@ -552,6 +554,7 @@ pub fn parse_npc(
         worn_skin: None,
         ai_packages: Vec::new(),
         ai_data: None,
+        combat_style_form_id: None,
         spells: Vec::new(),
         death_item_form_id: 0,
         level: 1,
@@ -692,6 +695,11 @@ fn parse_npc_core(
         b"CNAM" if sub.data.len() >= 4 => {
             let raw = SubReader::new(&sub.data).u32_or_default();
             record.class_form_id = remap_fid(raw, remap);
+        }
+        b"ZNAM" if game == GameKind::Skyrim && sub.data.len() >= 4 => {
+            let raw = SubReader::new(&sub.data).u32_or_default();
+            let form_id = remap_fid(raw, remap);
+            record.combat_style_form_id = (form_id != 0).then_some(form_id);
         }
         // CRIF — the faction the actor reports crimes to (Skyrim+ `NPC_`).
         b"CRIF" if sub.data.len() >= 4 => {

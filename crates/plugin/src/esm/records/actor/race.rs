@@ -207,6 +207,13 @@ pub struct RaceRecord {
     pub bleedout: Option<BleedoutData>,
 }
 
+impl RaceRecord {
+    /// Skyrim RACE DATA bit 30, exposed by the Creation Kit as Can Dual Wield.
+    pub fn skyrim_can_dual_wield(&self) -> bool {
+        self.race_flags & 0x4000_0000 != 0
+    }
+}
+
 /// Starfield's authored bleedout parameters, six `f32` in xEdit order —
 /// the RACE `DAT2` *Bleedout* struct and the `NPC_` `ONA2` *Bleedout Data*
 /// override share it (#6259). `Starfield.esm`: `HumanRace` authors

@@ -756,7 +756,7 @@ pub struct ResolvedNpc<'a> {
     /// #4415 — "Use Actor Effect List" / "Spell List" chain terminal: the
     /// `SPLO` spell list.
     pub spells: &'a crate::esm::records::actor::NpcRecord,
-    /// #4414 — "Use AI Data" chain terminal: the `AIDT` disposition.
+    /// "Use AI Data" chain terminal: `AIDT` disposition and Skyrim `ZNAM` combat style.
     pub ai_data: &'a crate::esm::records::actor::NpcRecord,
     /// M47.2 — "Use Base Data" chain terminal: the Essential / Protected
     /// `ACBS` flags.

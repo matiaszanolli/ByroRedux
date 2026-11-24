@@ -1,6 +1,8 @@
 //! UI-driven inventory mutation: snapshot, consume / equip actions, and the equipped-weapon reconcilers.
 
 use super::*;
+use byroredux_plugin::esm::records::SlotHands;
+use byroredux_scripting::hands::{hands_taken, Hand, HandCatalog, HandEquip};
 
 /// Build the presentation snapshot only while the native inventory is visible.
 pub(crate) fn snapshot(world: &World) -> Option<byroredux_native_ui::InventorySnapshot> {
@@ -15,7 +17,7 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_native_ui::InventorySn
     let equipped_ammo = crate::bow::equipped_ammo(world, player);
     let catalog = world.try_resource::<InventoryCatalog>();
     let pool = world.try_resource::<byroredux_core::ecs::resources::ItemInstancePool>();
-    let hands = world.try_resource::<byroredux_scripting::hands::HandCatalog>();
+    let hands = world.try_resource::<HandCatalog>();
 
     let mut items = Vec::with_capacity(inventory.items.len());
     for (raw_index, stack) in inventory.items.iter().enumerate() {
@@ -33,6 +35,12 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_native_ui::InventorySn
             .and_then(|instance| pool.as_ref()?.get(instance).map(|inst| inst.quality))
             .unwrap_or(0);
         let improvement = (quality > 0).then(|| crate::smithing::describe(quality, definition));
+        let weapon_hands = hands
+            .as_ref()
+            .filter(|hands| hands.is_active() && definition.is_some_and(|item| item.equip_target == Some(EquipTarget::Weapon)))
+            .map(|hands| hands.weapon_hands(stack.base_form_id));
+        let equipped = equipment.as_ref().is_some_and(|slots| slots.is_equipped(InventoryIndex(index)))
+            || equipped_ammo == Some(stack.base_form_id);
         items.push(byroredux_native_ui::InventoryItemView {
             index,
             form_id: stack.base_form_id,
@@ -52,17 +60,14 @@ pub(crate) fn snapshot(world: &World) -> Option<byroredux_native_ui::InventorySn
             // #3112 — `is_equipped`, not a bare `occupants` scan: the
             // wielded weapon lives outside the biped array and would
             // otherwise render as unequipped in the menu.
-            equipped: equipment
-                .as_ref()
-                .is_some_and(|slots| slots.is_equipped(InventoryIndex(index)))
-                || equipped_ammo == Some(stack.base_form_id),
-            equippable: definition.is_some_and(|definition| definition.equip_target.is_some()),
+            equipped,
+            equippable: definition.is_some_and(|definition| definition.equip_target.is_some())
+                && (equipped || weapon_hands != Some(SlotHands::None)),
             consumable: catalog.as_ref().is_some_and(|catalog| {
                 catalog.restorations.contains_key(&stack.base_form_id) || catalog.script_effects.contains_key(&stack.base_form_id)
             }),
             // Hand Equipment (Q2) — a one-handed weapon where the hands are modelled.
-            either_hand: definition.is_some_and(|definition| definition.equip_target == Some(EquipTarget::Weapon))
-                && hands.as_ref().is_some_and(|hands| hands.is_active() && !hands.two_handed(stack.base_form_id)),
+            either_hand: matches!(weapon_hands, Some(SlotHands::Right | SlotHands::Either)),
             in_left: equipment.as_ref().is_some_and(|slots| slots.left_hand == Some(InventoryIndex(index))),
             in_right: equipment.as_ref().is_some_and(|slots| slots.weapon == Some(InventoryIndex(index))),
         });
@@ -385,8 +390,8 @@ pub(crate) fn apply_action(
     use byroredux_native_ui::InventoryAction;
     let result = match action {
         InventoryAction::Consume { index, form_id } => consume_item(world, index, form_id),
-        InventoryAction::ToggleEquip { index } => toggle_equip_in(world, index, byroredux_scripting::hands::Hand::Right),
-        InventoryAction::EquipLeft { index } => toggle_equip_in(world, index, byroredux_scripting::hands::Hand::Left),
+        InventoryAction::ToggleEquip { index } => equip_in(world, index, Hand::Right, EquipMode::Toggle),
+        InventoryAction::EquipLeft { index } => equip_in(world, index, Hand::Left, EquipMode::Toggle),
         InventoryAction::Drop { index, form_id } => drop_item(world, index, form_id),
     };
     if result == MutationResult::Unavailable {
@@ -434,13 +439,14 @@ pub(super) fn notify_refused_action(world: &World, action: byroredux_native_ui::
     );
 }
 
-/// Equip or unequip one player inventory row through the catalog's
-/// recorded destination.
-/// Toggle `index`'s equip state into `hand`: an item already there comes off; otherwise it goes on by
-/// the equip-slot rules ([`byroredux_scripting::hands::equip_to_hand`]) when it is held in a hand (a
-/// weapon, shield or torch on Skyrim), else into its biped slots. The right hand is the default (the
-/// menu's equip); the left takes a one-handed weapon (`EquipLeft`).
-pub(super) fn toggle_equip_in(world: &mut World, index: u32, hand: byroredux_scripting::hands::Hand) -> MutationResult {
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum EquipMode {
+    Toggle,
+    Equip,
+}
+
+/// Apply a menu toggle or a script equip through the same resolved destination.
+pub(super) fn equip_in(world: &mut World, index: u32, hand: Hand, mode: EquipMode) -> MutationResult {
     // #4701 — `consume_item` carries its own `Dead` refusal; equip is the
     // other half of the menu and refuses the same way.
     if !crate::systems::player_can_act(world) {
@@ -486,14 +492,13 @@ pub(super) fn toggle_equip_in(world: &mut World, index: u32, hand: byroredux_scr
     // Hand Equipment — the item's hand form and what the hands hold, read before the equipment is borrowed.
     let hand_model;
     let hand_equip = {
-        use byroredux_scripting::hands::{HandCatalog, HandEquip};
         let catalog = world.try_resource::<HandCatalog>();
         let catalog = catalog.as_deref().filter(|catalog| catalog.is_active());
         hand_model = catalog.is_some();
         match (equip_target, catalog) {
             (EquipTarget::Weapon, catalog) => Some(HandEquip::Weapon {
                 index: inventory_index,
-                two_handed: catalog.is_some_and(|catalog| catalog.two_handed(form_id)),
+                hands: catalog.map_or(SlotHands::Either, |catalog| catalog.weapon_hands(form_id)),
             }),
             (EquipTarget::Torch, _) => Some(HandEquip::Torch { index: inventory_index }),
             (EquipTarget::BipedSlots(mask), Some(catalog)) if catalog.is_shield(form_id) => {
@@ -510,33 +515,42 @@ pub(super) fn toggle_equip_in(world: &mut World, index: u32, hand: byroredux_scr
         return MutationResult::Unavailable;
     };
 
-    // #3112 — release/equip through the whole-entry helpers so a toggle
-    // reaches both destinations, and route the equip through the variant the
-    // catalog recorded rather than a slot mask that could address either.
-    let mut changes = Vec::new();
-    // Taken off: what the asked hand holds (the left hand's weapon for `EquipLeft`), else the item
-    // wherever it is (the menu's toggle).
-    let left = hand == byroredux_scripting::hands::Hand::Left
-        && matches!(hand_equip, Some(byroredux_scripting::hands::HandEquip::Weapon { two_handed: false, .. }));
-    let release = if left {
-        let held = equipment.left_hand == Some(inventory_index);
-        if held {
-            equipment.unequip_left_hand();
-        }
-        held
-    } else if hand_model && matches!(hand_equip, Some(byroredux_scripting::hands::HandEquip::Weapon { two_handed: false, .. })) {
-        // The right hand's own toggle: off when it holds the weapon, else into it (a second of the left
-        // hand's stack, or the left hand's only one moved over).
-        let held = equipment.weapon == Some(inventory_index);
-        if held {
-            equipment.unequip_weapon();
-        }
-        held
-    } else {
-        equipment.release(inventory_index)
+    let destination = hand_equip.and_then(|item| hands_taken(item, hand));
+    let single_weapon_hand = match (hand_equip, destination, mode) {
+        // Fixed-slot menu rows have one toggle. It can also clear an occupant saved in the old slot.
+        (Some(HandEquip::Weapon { hands: SlotHands::Left, .. }), _, EquipMode::Toggle) => None,
+        (Some(HandEquip::Weapon { .. }), Some((true, false)), _) => Some(Hand::Left),
+        (Some(HandEquip::Weapon { .. }), Some((false, true)), _) if hand_model => Some(Hand::Right),
+        _ => None,
     };
-    let mut weapon_changed = equip_target == EquipTarget::Weapon && release;
-    let mutation = if release {
+    let held = match single_weapon_hand {
+        Some(Hand::Left) => equipment.left_hand == Some(inventory_index),
+        Some(Hand::Right) => equipment.weapon == Some(inventory_index),
+        None => equipment.is_equipped(inventory_index),
+    };
+    if mode == EquipMode::Equip {
+        if hand_equip.is_some() && destination.is_none() {
+            return MutationResult::Unavailable;
+        }
+        if held {
+            return MutationResult::Equipped;
+        }
+    }
+
+    let previous_weapon = equipment.weapon;
+    let mut changes = Vec::new();
+    let mutation = if held {
+        match single_weapon_hand {
+            Some(Hand::Left) => {
+                equipment.unequip_left_hand();
+            }
+            Some(Hand::Right) => {
+                equipment.unequip_weapon();
+            }
+            None => {
+                equipment.release(inventory_index);
+            }
+        }
         changes.push(byroredux_scripting::EquipmentChange {
             item_form_id: form_id,
             equipped: false,
@@ -546,8 +560,9 @@ pub(super) fn toggle_equip_in(world: &mut World, index: u32, hand: byroredux_scr
     } else {
         let displaced = match hand_equip {
             Some(item) => {
-                let change = byroredux_scripting::hands::equip_to_hand(equipment, item, hand, &facts).unwrap_or_default();
-                weapon_changed |= change.right_weapon_changed;
+                let Some(change) = byroredux_scripting::hands::equip_to_hand(equipment, item, hand, &facts) else {
+                    return MutationResult::Unavailable;
+                };
                 // A readied spell a hand item takes off is no inventory row: nothing to report for it.
                 change.items
             }
@@ -578,7 +593,7 @@ pub(super) fn toggle_equip_in(world: &mut World, index: u32, hand: byroredux_scr
     // player's weapon.
     let equipped_weapon = equipment.weapon;
     drop(equipment_query);
-    if weapon_changed {
+    if equipped_weapon != previous_weapon {
         reconcile_equipped_weapon(world, player, equipped_weapon);
     }
     byroredux_scripting::emit_equipment_changes(world, player, changes);

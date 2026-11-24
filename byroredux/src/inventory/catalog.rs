@@ -1,6 +1,9 @@
 //! Item-record metadata, the player character / inventory templates, vitals, and the catalog install that seeds the player.
 
 use super::*;
+use byroredux_plugin::esm::reader::GameKind;
+use byroredux_plugin::esm::records::{slot_hands, SlotHands};
+use byroredux_scripting::hands::{equip_to_hand, weapon_slot_hands, Hand, HandEquip, HandFacts};
 
 /// Immutable display/equipment metadata derived from the active plugin set.
 #[derive(Debug, Clone)]
@@ -767,6 +770,7 @@ pub(super) fn build_player_template_for(index: &EsmIndex, player_form_id: u32) -
         }
     }
 
+    let equipped_weapon = equip_starting_weapon(index, &inventory, &mut equipment, equipped_weapon);
     PlayerInventoryTemplate {
         inventory,
         equipment,
@@ -797,7 +801,7 @@ pub(super) fn equip_armor(
 /// Select one deterministic weapon from authored inventory: highest base
 /// damage wins, then lowest FormID breaks ties. Multiple LVLI outcomes can
 /// still be carried, but only one becomes live combat state.
-pub(super) fn prefer_weapon(
+pub(crate) fn prefer_weapon(
     index: &EsmIndex,
     form_id: u32,
     inventory_index: InventoryIndex,
@@ -807,11 +811,15 @@ pub(super) fn prefer_weapon(
         damage,
         reach,
         speed,
+        equip_type,
         ..
     }) = index.items.get(&form_id).map(|item| &item.kind)
     else {
         return;
     };
+    if index.game == GameKind::Skyrim && weapon_slot_hands(index, *equip_type) == SlotHands::None {
+        return;
+    }
     let candidate = EquippedWeapon {
         inventory_index,
         base_form_id: form_id,
@@ -827,6 +835,49 @@ pub(super) fn prefer_weapon(
     }
 }
 
+/// Assign the chosen starting weapon to its authored hand and keep the right-hand combat cache in sync.
+pub(crate) fn equip_starting_weapon(
+    index: &EsmIndex,
+    inventory: &Inventory,
+    equipment: &mut EquipmentSlots,
+    selected: Option<EquippedWeapon>,
+) -> Option<EquippedWeapon> {
+    let weapon = selected?;
+    if index.game != GameKind::Skyrim {
+        equipment.equip_weapon(weapon.inventory_index);
+        return Some(weapon);
+    }
+    let ItemKind::Weapon { equip_type, .. } = &index.items.get(&weapon.base_form_id)?.kind else {
+        return None;
+    };
+    let hands = weapon_slot_hands(index, *equip_type);
+    let shields_worn = if matches!(hands, SlotHands::Left | SlotHands::Both) {
+        worn_skyrim_shields(index, inventory, equipment).collect()
+    } else {
+        Vec::new()
+    };
+    equip_to_hand(
+        equipment,
+        HandEquip::Weapon { index: weapon.inventory_index, hands },
+        Hand::Right,
+        &HandFacts { shields_worn, ..Default::default() },
+    )?;
+    (equipment.weapon == Some(weapon.inventory_index)).then_some(weapon)
+}
+
+/// Worn armor rows whose authored equip slot occupies Skyrim's left hand.
+pub(crate) fn worn_skyrim_shields<'a>(
+    index: &'a EsmIndex,
+    inventory: &'a Inventory,
+    equipment: &'a EquipmentSlots,
+) -> impl Iterator<Item = InventoryIndex> + 'a {
+    equipment.occupants.iter().flatten().copied().filter(move |&row| {
+        let Some(stack) = inventory.get(row) else { return false };
+        matches!(index.items.get(&stack.base_form_id).map(|item| &item.kind),
+            Some(ItemKind::Armor { equip_type, .. }) if slot_hands(&index.equip_slots, *equip_type) == SlotHands::Left)
+    })
+}
+
 /// Attach canonical inventory state to a newly-created player body.
 pub(crate) fn attach_to_player(world: &mut World, player: byroredux_core::ecs::EntityId) {
     let template = world
@@ -834,16 +885,7 @@ pub(crate) fn attach_to_player(world: &mut World, player: byroredux_core::ecs::E
         .map(|template| template.clone())
         .unwrap_or_default();
     world.insert(player, template.inventory);
-    let mut equipment = template.equipment;
-    // #3112 — mirror the template's starting weapon into the equipment's
-    // weapon slot. `prefer_weapon` only fills `equipped_weapon`, so pre-fix
-    // the slots and the component disagreed from spawn: the very first menu
-    // toggle re-derived `EquippedWeapon` from an empty slot and dropped the
-    // authored starting weapon.
-    if let Some(weapon) = template.equipped_weapon {
-        equipment.equip_weapon(weapon.inventory_index);
-    }
-    world.insert(player, equipment);
+    world.insert(player, template.equipment);
     if let Some(weapon) = template.equipped_weapon {
         world.insert(player, weapon);
     }

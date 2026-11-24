@@ -3429,6 +3429,96 @@ fn hands_follow_the_equip_slot_rules() {
     assert_eq!(right_weapon(&world), None, "and the wielded-weapon cache follows");
 }
 
+#[test]
+fn authored_weapon_slots_control_player_equips_and_starting_inventory() {
+    use byroredux_native_ui::InventoryAction::{EquipLeft, ToggleEquip};
+    use byroredux_plugin::esm::reader::SubRecord;
+    use byroredux_plugin::esm::records::{items::parse_weap, EqupRecord, NpcInventoryEntry, NpcRecord};
+    use byroredux_scripting::hands::{hand_item, Hand, HandCatalog};
+
+    const LEFT_ONLY_WEAPON: u32 = 0xD1;
+    const NON_HAND_WEAPON: u32 = 0xD2;
+    const LEFT_SLOT: u32 = 0x13F43;
+    const VOICE_SLOT: u32 = 0x25BEE;
+    const NO_SLOT_SWORD: u32 = 0x9ABC;
+
+    let mut index = EsmIndex { game: GameKind::Skyrim, ..Default::default() };
+    for (form_id, editor_id) in [(LEFT_SLOT, "LeftHand"), (VOICE_SLOT, "Voice")] {
+        index.equip_slots.insert(form_id, EqupRecord { form_id, editor_id: editor_id.into(), ..Default::default() });
+    }
+    for (form_id, slot, damage) in [(LEFT_ONLY_WEAPON, LEFT_SLOT, 12u16), (NON_HAND_WEAPON, VOICE_SLOT, 20)] {
+        let mut data = vec![0; 8];
+        data.extend_from_slice(&damage.to_le_bytes());
+        index.items.insert(form_id, parse_weap(form_id, &[
+            SubRecord { sub_type: *b"ETYP", data: slot.to_le_bytes().to_vec() },
+            SubRecord { sub_type: *b"DATA", data },
+        ], GameKind::Skyrim, &None));
+    }
+    index.items.insert(NO_SLOT_SWORD, parse_weap(NO_SLOT_SWORD, &[], GameKind::Skyrim, &None));
+
+    let (mut world, player) = fixture();
+    world.insert_resource(HandCatalog::from_index(&index));
+    {
+        let mut inventory = world.query_mut::<Inventory>().unwrap();
+        let inventory = inventory.get_mut(player).unwrap();
+        inventory.push(ItemStack::new(LEFT_ONLY_WEAPON, 1));
+        inventory.push(ItemStack::new(NON_HAND_WEAPON, 1));
+    }
+    {
+        let mut catalog = world.resource_mut::<InventoryCatalog>();
+        let definition = catalog.entries[&NO_SLOT_SWORD].clone();
+        catalog.entries.insert(LEFT_ONLY_WEAPON, definition.clone());
+        catalog.entries.insert(NON_HAND_WEAPON, definition);
+    }
+    let view = snapshot(&world).unwrap();
+    let row = |form_id| view.items.iter().find(|item| item.form_id == form_id).unwrap();
+    assert!(row(NO_SLOT_SWORD).either_hand);
+    assert!(row(LEFT_ONLY_WEAPON).equippable && !row(LEFT_ONLY_WEAPON).either_hand);
+    assert!(!row(NON_HAND_WEAPON).equippable);
+
+    assert_eq!(apply_action(&mut world, ToggleEquip { index: 2 }), MutationResult::Equipped);
+    assert_eq!(apply_action(&mut world, ToggleEquip { index: 3 }), MutationResult::Equipped);
+    let held = |world: &World, hand| hand_item(world, player, hand).weapon();
+    assert_eq!(held(&world, Hand::Left), Some(LEFT_ONLY_WEAPON));
+    assert_eq!(held(&world, Hand::Right), Some(NO_SLOT_SWORD));
+    assert_eq!(apply_action(&mut world, ToggleEquip { index: 4 }), MutationResult::Unavailable);
+    assert_eq!(apply_action(&mut world, EquipLeft { index: 4 }), MutationResult::Unavailable);
+    assert_eq!(held(&world, Hand::Left), Some(LEFT_ONLY_WEAPON));
+    assert_eq!(world.get::<EquippedWeapon>(player).unwrap().base_form_id, NO_SLOT_SWORD);
+
+    assert_eq!(apply_action(&mut world, ToggleEquip { index: 3 }), MutationResult::Unequipped);
+    world.insert_resource(byroredux_scripting::PendingNonArmorEquips(vec![
+        (player, LEFT_ONLY_WEAPON, Hand::Right),
+        (player, LEFT_ONLY_WEAPON, Hand::Right),
+        (player, NON_HAND_WEAPON, Hand::Left),
+    ]));
+    drain_pending_inventory_actions(&mut world);
+    assert_eq!(held(&world, Hand::Left), Some(LEFT_ONLY_WEAPON));
+    assert_eq!(held(&world, Hand::Right), Some(NO_SLOT_SWORD));
+    assert!(!world.get::<byroredux_scripting::EquipmentEventBatch>(player).unwrap().0.iter()
+        .any(|change| change.item_form_id == NON_HAND_WEAPON));
+
+    // A save from before HND-SLOT-002 can still hold a fixed-left weapon in the right slot.
+    {
+        let slots = world.get_mut::<EquipmentSlots>(player).unwrap();
+        slots.unequip_left_hand();
+        slots.equip_weapon(InventoryIndex(3));
+    }
+    assert_eq!(apply_action(&mut world, ToggleEquip { index: 3 }), MutationResult::Unequipped);
+    assert!(held(&world, Hand::Right).is_none());
+
+    index.npcs.insert(PLAYER_NPC_FORM_ID, NpcRecord {
+        form_id: PLAYER_NPC_FORM_ID,
+        inventory: [NON_HAND_WEAPON, LEFT_ONLY_WEAPON].into_iter()
+            .map(|item_form_id| NpcInventoryEntry { item_form_id, count: 1 }).collect(),
+        ..Default::default()
+    });
+    let template = build_player_template(&index);
+    let starting_left = template.equipment.left_hand.and_then(|row| template.inventory.get(row));
+    assert_eq!(starting_left.map(|stack| stack.base_form_id), Some(LEFT_ONLY_WEAPON));
+    assert!(template.equipment.weapon.is_none() && template.equipped_weapon.is_none());
+}
+
 /// Hand Equipment #7399 — a torch from the menu takes the left hand (off the dagger held there), and a
 /// held torch lights its surroundings (Q3): one light at the holder, gone when the torch is put away.
 #[test]

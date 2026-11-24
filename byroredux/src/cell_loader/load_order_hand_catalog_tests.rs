@@ -46,4 +46,12 @@ fn skyrim_hand_slots_shields_and_two_handers_decode_from_the_official_load_order
     // Dragonborn 66. A broken ARMO `ETYP` decode, EQUP decode or `slot_hands` drops them all.
     assert_eq!(&shields_by_plugin[..5], &[237, 0, 7, 0, 66], "shields per plugin, measured 2026-11-23");
     assert_eq!(both, 1526, "weapons whose ETYP slot takes both hands, measured 2026-11-23");
+
+    // These stock styles disagree between the record header and DATA. DATA is the authored gate.
+    assert!(index.combat_styles[&0x0001_6E25].allows_dual_wield, "csAlikrBerserker sets DATA only");
+    assert!(!index.combat_styles[&0x0010_611C].allows_dual_wield, "csWEMageShieldStaff sets the header bit only");
+    let delphine = &index.npcs[&0x0001_3478];
+    assert_eq!(delphine.combat_style_form_id, Some(0x0010_D4BE), "Delphine's ZNAM resolves to csDelphine");
+    assert!(index.combat_styles[&0x0010_D4BE].allows_dual_wield);
+    assert!(index.races[&delphine.race_form_id].skyrim_can_dual_wield());
 }

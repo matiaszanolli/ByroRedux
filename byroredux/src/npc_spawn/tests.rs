@@ -1501,7 +1501,7 @@ fn weapon_item(form_id: u32, damage: u32) -> byroredux_plugin::esm::records::Ite
 
 #[test]
 fn prebaked_equip_state_selects_one_highest_damage_weapon() {
-    use byroredux_plugin::esm::records::NpcInventoryEntry;
+    use byroredux_plugin::esm::records::{EqupRecord, NpcInventoryEntry};
 
     const NPC: u32 = 0x0100_0010;
     const BATTLEAXE: u32 = 0x0001_CB64;
@@ -1535,6 +1535,109 @@ fn prebaked_equip_state_selects_one_highest_damage_weapon() {
         Some(BATTLEAXE),
         "equipped state must point at the winning inventory row"
     );
+
+    let left_slot = 0x13F43;
+    let voice_slot = 0x25BEE;
+    for (form_id, editor_id) in [(left_slot, "LeftHand"), (voice_slot, "Voice")] {
+        index.equip_slots.insert(form_id, EqupRecord { form_id, editor_id: editor_id.into(), ..Default::default() });
+    }
+    for (weapon, slot) in [(BATTLEAXE, voice_slot), (GREATSWORD, left_slot)] {
+        let ItemKind::Weapon { equip_type, .. } = &mut index.items.get_mut(&weapon).unwrap().kind else {
+            unreachable!("the fixture is a weapon")
+        };
+        *equip_type = slot;
+    }
+    let state = build_npc_equip_state(&ResolvedNpc::resolve(&npc, &index), &index, GameKind::Skyrim, Gender::Male);
+    let left = state.equipment_slots.left_hand.and_then(|row| state.inventory.get(row));
+    assert_eq!(left.map(|item| item.base_form_id), Some(GREATSWORD), "skip the higher-damage non-hand weapon");
+    assert!(state.equipment_slots.weapon.is_none() && state.equipped_weapon.is_none());
+}
+
+#[test]
+fn skyrim_npc_dual_wield_requires_both_flags_and_a_free_left_hand() {
+    use byroredux_plugin::equip::{TEMPLATE_FLAG_USE_AI_DATA, TEMPLATE_FLAG_USE_TRAITS};
+    use byroredux_plugin::esm::reader::SubRecord;
+    use byroredux_plugin::esm::records::{items::parse_armo, parse_csty, parse_npc, parse_race, EqupRecord, NpcInventoryEntry};
+
+    const RACE: u32 = 0x10;
+    const STYLE: u32 = 0x20;
+    const TEMPLATE: u32 = 0x30;
+    const SWORD: u32 = 0x40;
+    const DAGGER: u32 = 0x50;
+    const GREATSWORD: u32 = 0x60;
+    const SHIELD: u32 = 0x70;
+    const LEFT: u32 = 0x13F43;
+    const RIGHT: u32 = 0x13F42;
+    const BOTH: u32 = 0x13F45;
+    const SHIELD_MASK: u32 = 1 << 12;
+
+    let mut index = EsmIndex { game: GameKind::Skyrim, ..Default::default() };
+    for (form_id, editor_id) in [(LEFT, "LeftHand"), (RIGHT, "RightHand")] {
+        index.equip_slots.insert(form_id, EqupRecord { form_id, editor_id: editor_id.into(), ..Default::default() });
+    }
+    index.equip_slots.insert(BOTH, EqupRecord {
+        form_id: BOTH, editor_id: "BothHands".into(), parents: vec![LEFT, RIGHT], use_all_parents: true,
+    });
+    index.items.insert(SWORD, weapon_item(SWORD, 12));
+    index.items.insert(DAGGER, weapon_item(DAGGER, 8));
+    let mut greatsword = weapon_item(GREATSWORD, 18);
+    if let ItemKind::Weapon { equip_type, .. } = &mut greatsword.kind {
+        *equip_type = BOTH;
+    }
+    index.items.insert(GREATSWORD, greatsword);
+    let sub = |sub_type, value: u32| SubRecord { sub_type, data: value.to_le_bytes().to_vec() };
+    index.items.insert(SHIELD, parse_armo(
+        SHIELD, &[sub(*b"ETYP", LEFT), sub(*b"BOD2", SHIELD_MASK)], GameKind::Skyrim, &None,
+    ));
+    index.npcs.insert(TEMPLATE, parse_npc(
+        TEMPLATE, &[sub(*b"RNAM", RACE), sub(*b"ZNAM", STYLE)], GameKind::Skyrim, &None,
+    ));
+
+    let mut npc = test_npc(0x80, "DualWieldFixture");
+    npc.template_form_id = TEMPLATE;
+    npc.template_flags = TEMPLATE_FLAG_USE_TRAITS | TEMPLATE_FLAG_USE_AI_DATA;
+    npc.inventory = vec![
+        NpcInventoryEntry { item_form_id: SWORD, count: 1 },
+        NpcInventoryEntry { item_form_id: DAGGER, count: 1 },
+    ];
+    fn spawn_equip<'a>(npc: &'a NpcRecord, index: &'a EsmIndex) -> NpcEquipState<'a> {
+        build_npc_equip_state(&ResolvedNpc::resolve(npc, index), index, GameKind::Skyrim, Gender::Male)
+    }
+    let left_weapon = |state: &NpcEquipState<'_>| {
+        state.equipment_slots.left_hand.and_then(|row| state.inventory.get(row)).map(|stack| stack.base_form_id)
+    };
+    for (race_allows, style_allows) in [(false, false), (false, true), (true, false), (true, true)] {
+        let mut race_data = vec![0; 164];
+        let flags: u32 = if race_allows { 0x4000_0000 } else { 0 };
+        race_data[32..36].copy_from_slice(&flags.to_le_bytes());
+        index.races.insert(RACE, parse_race(RACE, &[SubRecord { sub_type: *b"DATA", data: race_data }], GameKind::Skyrim, &None));
+        let style_flags = if style_allows { 0x05 } else { 0x01 };
+        index.combat_styles.insert(STYLE, parse_csty(STYLE, &[sub(*b"DATA", style_flags)], GameKind::Skyrim));
+
+        let state = spawn_equip(&npc, &index);
+        assert_eq!(state.equipped_weapon.unwrap().base_form_id, SWORD);
+        assert_eq!(left_weapon(&state), (race_allows && style_allows).then_some(DAGGER),
+            "race allows {race_allows}, style allows {style_allows}");
+    }
+
+    npc.inventory.pop();
+    assert_eq!(left_weapon(&spawn_equip(&npc, &index)), None, "one copy fills one hand");
+    npc.inventory[0].count = 2;
+    let state = spawn_equip(&npc, &index);
+    assert_eq!(left_weapon(&state), Some(SWORD), "a second copy can share the inventory row");
+    assert_eq!(state.equipped_weapon.unwrap().base_form_id, SWORD);
+
+    npc.inventory.push(NpcInventoryEntry { item_form_id: SHIELD, count: 1 });
+    let state = spawn_equip(&npc, &index);
+    assert_eq!(left_weapon(&state), None);
+    let shield = state.equipment_slots.at(12).and_then(|row| state.inventory.get(row));
+    assert_eq!(shield.map(|stack| stack.base_form_id), Some(SHIELD));
+
+    npc.inventory.push(NpcInventoryEntry { item_form_id: GREATSWORD, count: 1 });
+    let state = spawn_equip(&npc, &index);
+    assert_eq!(state.equipped_weapon.unwrap().base_form_id, GREATSWORD);
+    assert_eq!(left_weapon(&state), None, "the primary two-hander already occupies both hands");
+    assert_eq!(state.equipment_slots.at(12), None, "the two-hander displaces the shield");
 }
 
 /// A templated Skyrim NPC with an empty own CNTO and

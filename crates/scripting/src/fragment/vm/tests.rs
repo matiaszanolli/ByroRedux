@@ -6744,9 +6744,14 @@ fn message_show_waits_for_its_answer_and_branches_on_it() {
 #[test]
 fn the_native_wave_reads_locks_doors_cells_states_shields_weapons_and_templates() {
     use byroredux_core::ecs::components::{CellFormId, EquipmentSlots, EquippedWeapon, Inventory, InventoryIndex, ItemStack, Locked};
+    use byroredux_plugin::esm::reader::{GameKind, SubRecord};
+    use byroredux_plugin::esm::records::{items::parse_armo, EqupRecord, EsmIndex};
     const DOOR: u32 = 0x0000_D002;
     const CELL: u32 = 0x0000_CE11;
     const SHIELD: u32 = 0x0000_5E1D;
+    const OTHER_ARMOR: u32 = 0x0000_5E1E;
+    const LEFT_HAND_SLOT: u32 = 0x0001_3F43;
+    const SHIELD_MASK: u32 = 1 << 12;
     const SWORD: u32 = 0x0000_5A0D;
     const PACKAGE: u32 = 0x0000_9A01;
     const TEMPLATE: u32 = 0x0000_9A02;
@@ -6774,7 +6779,24 @@ fn the_native_wave_reads_locks_doors_cells_states_shields_weapons_and_templates(
     let door_script = parsed_source("ScriptName VmDoorScript extends ObjectReference\nAuto State Waiting\nEndState\n");
     let mut world = World::new();
     crate::register(&mut world);
-    world.insert_resource(crate::ScriptGame(byroredux_plugin::esm::reader::GameKind::Skyrim));
+    world.insert_resource(crate::ScriptGame(GameKind::Skyrim));
+    let mut index = EsmIndex { game: GameKind::Skyrim, ..Default::default() };
+    index.equip_slots.insert(
+        LEFT_HAND_SLOT,
+        EqupRecord { form_id: LEFT_HAND_SLOT, editor_id: "LeftHand".into(), ..Default::default() },
+    );
+    // HND-READ-006: the authored equip slot identifies this shield even when its biped mask differs.
+    let shield = parse_armo(
+        SHIELD,
+        &[
+            SubRecord { sub_type: *b"ETYP", data: LEFT_HAND_SLOT.to_le_bytes().to_vec() },
+            SubRecord { sub_type: *b"BOD2", data: SHIELD_MASK.to_le_bytes().to_vec() },
+        ],
+        GameKind::Skyrim,
+        &None,
+    );
+    index.items.insert(SHIELD, shield);
+    world.insert_resource(crate::hands::HandCatalog::from_index(&index));
     world.insert_resource(QuestStageState::default());
     world.insert_resource(crate::QuestScriptVariables::default());
     world.insert_resource(crate::QuestScriptObjects::default());
@@ -6792,9 +6814,11 @@ fn the_native_wave_reads_locks_doors_cells_states_shields_weapons_and_templates(
     let mut inventory = Inventory::new();
     inventory.push(ItemStack::new(SHIELD, 1));
     inventory.push(ItemStack::new(SWORD, 1));
+    inventory.push(ItemStack::new(OTHER_ARMOR, 1));
     world.insert(player, inventory);
     let mut slots = EquipmentSlots::new();
-    slots.equip(1 << 9, InventoryIndex(0));
+    slots.equip(u64::from(SHIELD_MASK), InventoryIndex(0));
+    slots.equip(1 << 9, InventoryIndex(2));
     slots.equip_weapon(InventoryIndex(1));
     world.insert(player, slots);
     world.insert(player, EquippedWeapon { inventory_index: InventoryIndex(1), base_form_id: SWORD, damage: 7.0, reach: 1.0, speed: 1.0 });

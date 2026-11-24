@@ -4,6 +4,7 @@
 //! and the ahead-of-time check of the same calls.
 
 use super::*;
+use byroredux_plugin::esm::reader::GameKind;
 
 /// The method names this family reads (gating the receiver's evaluation).
 pub(super) const READS: &[&str] = &[
@@ -26,18 +27,6 @@ pub(super) const READS: &[&str] = &[
     "isweapondrawn",
     "gettemplate",
 ];
-
-/// The biped slot a shield occupies in `game`, as an `EquipmentSlots` bit: Oblivion's is the block
-/// model's (UESP *Oblivion Mod:Mod File Format/ARMO*, bit 13), Skyrim's slot 39 (CK *Biped Object*:
-/// "39 - shield"; slots start at 30, so bit 9). The Fallouts and Starfield have no shields.
-pub(in crate::fragment::vm) fn shield_biped_bit(game: byroredux_plugin::esm::reader::GameKind) -> Option<u8> {
-    use byroredux_plugin::esm::reader::GameKind;
-    match game {
-        GameKind::Oblivion => Some(byroredux_core::character::block::BlockModel::OBLIVION.shield_bit),
-        GameKind::Skyrim => Some(39 - 30),
-        _ => None,
-    }
-}
 
 impl Vm<'_> {
     /// The actor reads of [`Vm::object_read`].
@@ -77,8 +66,7 @@ impl Vm<'_> {
                     None => return stop("IsCommandedActor on an actor that is not loaded"),
                 }
             }
-            // CK *GetEquippedShield - Actor*: "the actor's currently equipped shield" — the armor in
-            // the game's shield slot; None when the slot is empty or the game has no shields.
+            // Skyrim reads canonical hand occupancy (HND-READ-006). Oblivion uses its block model's biped slot.
             (Value::Form(actor), "getequippedshield") if args.is_empty() => {
                 let entity = if *actor == PLAYER_REF {
                     crate::papyrus_demo::PapyrusPlayerEntity::get(self.world)
@@ -88,24 +76,32 @@ impl Vm<'_> {
                 let Some(entity) = entity else {
                     return stop("GetEquippedShield on an actor that is not loaded");
                 };
-                let bit = self.world.try_resource::<crate::ScriptGame>().and_then(|game| shield_biped_bit(game.0));
-                let index = bit.and_then(|bit| {
-                    self.world
-                        .get::<byroredux_core::ecs::components::EquipmentSlots>(entity)
-                        .and_then(|slots| slots.at(bit))
-                });
-                let shield = index.and_then(|index| {
-                    self.world
-                        .get::<byroredux_core::ecs::components::Inventory>(entity)
-                        .and_then(|inventory| inventory.get(index).map(|stack| stack.base_form_id))
-                });
+                let game = self.world.try_resource::<crate::ScriptGame>().map(|game| game.0);
+                let shield = match game {
+                    Some(GameKind::Skyrim) => match crate::hands::hand_item(self.world, entity, crate::hands::Hand::Left) {
+                        crate::hands::HandItem::Shield { base, .. } => Some(base),
+                        _ => None,
+                    },
+                    Some(GameKind::Oblivion) => {
+                        let bit = byroredux_core::character::block::BlockModel::OBLIVION.shield_bit;
+                        let index = self.world
+                            .get::<byroredux_core::ecs::components::EquipmentSlots>(entity)
+                            .and_then(|slots| slots.at(bit));
+                        index.and_then(|index| {
+                            self.world
+                                .get::<byroredux_core::ecs::components::Inventory>(entity)
+                                .and_then(|inventory| inventory.get(index).map(|stack| stack.base_form_id))
+                        })
+                    }
+                    _ => None,
+                };
                 Some(shield.filter(|&form| form != 0).map_or(Value::None, Value::Form))
             }
             // CK *GetEquippedWeapon - Actor*: "If true, will return the weapon equipped in the actor's
             // left hand. If false, will return the right-hand weapon instead" (the default); None when
             // the hand holds no weapon. A two-handed weapon is in both (Hand Equipment PRD, HND-READ-002).
             // CK *GetEquippedItemType - Actor*: the hand's item type, 0 left and 1 right (HND-READ-001).
-            // CK *GetEquippedSpell - Actor*: the spell in source 0 (left) or 1 (right) (HND-READ-002);
+            // CK *GetEquippedSpell - Actor*: the spell in source 0 (left) or 1 (right) (HND-READ-005);
             // the Other and Instant sources (2, 3) stop. CK *IsWeaponDrawn - Actor*: "whether this actor
             // has its weapon drawn", the condition function IsWeaponOut's state.
             (Value::Form(actor), "getequippedweapon" | "getequippeditemtype" | "getequippedspell" | "isweapondrawn")

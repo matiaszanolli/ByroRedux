@@ -383,6 +383,30 @@ fn unload_cell_inner(
     protected: &HashSet<EntityId>,
 ) -> UnloadPhaseTimings {
     let mut timings = UnloadPhaseTimings::default();
+    let victims = prepare_cell_eviction(world, cell_root, retained, protected, &mut timings);
+    let victim_count = victims.len();
+    let (mesh_drops, freed_meshes, texture_drops) =
+        release_entities_timed(world, ctx, victims, &mut timings);
+
+    log::info!(
+        "Cell unload: {} entities, {} mesh refs ({} freed), {} texture refs released (cell_root {})",
+        victim_count,
+        mesh_drops,
+        freed_meshes,
+        texture_drops,
+        cell_root,
+    );
+    timings
+}
+
+/// Drain cell ownership and park gameplay state before releasing the entities and their resources.
+pub(super) fn prepare_cell_eviction(
+    world: &mut World,
+    cell_root: EntityId,
+    retained: &HashSet<EntityId>,
+    protected: &HashSet<EntityId>,
+    timings: &mut UnloadPhaseTimings,
+) -> Vec<EntityId> {
     let phase_started = Instant::now();
     // Drain victims from the `CellRootIndex` inverted map (#791). Pre-#791
     // this filtered the entire `CellRoot` SparseSet to find victims of a
@@ -438,19 +462,7 @@ fn unload_cell_inner(
     // #5870 — the unloaded actors' reported packages go with them.
     byroredux_scripting::retire_active_packages(world, &victims);
     timings.snapshot_capture = phase_started.elapsed();
-
-    let (mesh_drops, freed_meshes, texture_drops) =
-        release_entities_timed(world, ctx, victims.clone(), &mut timings);
-
-    log::info!(
-        "Cell unload: {} entities, {} mesh refs ({} freed), {} texture refs released (cell_root {})",
-        victims.len(),
-        mesh_drops,
-        freed_meshes,
-        texture_drops,
-        cell_root,
-    );
-    timings
+    victims
 }
 
 

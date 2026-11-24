@@ -1,7 +1,7 @@
 # Hand Equipment — Design
 
-**Status**: PHASE 2 BUILT (2026-11-24), for the [Hand Equipment PRD](../prd/hand-equipment.md) (APPROVED),
-written by its Phase 0. Skyrim only (PRD §7.1).
+**Status**: Phase 2 implementation landed (2026-11-24). The active
+[Hand Equipment PRD](../prd/hand-equipment.md) tracks acceptance and remaining Skyrim work.
 
 ## 1. What the data says
 
@@ -62,12 +62,20 @@ Nothing documents how an NPC picks what goes in which hand, or whether it takes 
 dark. By the owner's rule (no decoding the original executables for behaviour), that is a declared
 gap. The engine rule, stated as ours:
 
-1. The right hand takes the weapon the spawn path wields today.
-2. The left hand takes a shield the NPC carries when the right weapon is one-handed (not
-   `BothHands`).
-3. Without a shield, the left hand takes a second one-handed weapon only when both the race's "Can
-   Dual Wield" and the combat style's "Allow Dual Wielding" are set.
+1. The selected starting weapon takes its authored hands. The default hand for a flexible weapon
+   is right. A weapon with a non-hand slot stays in inventory.
+2. A worn shield occupies the left hand until a starting weapon takes that hand.
+3. A right-hand one-handed weapon can be paired with a second one-handed weapon when the left hand
+   is free and both the race's "Can Dual Wield" and the combat style's "Allow Dual Wielding" are set.
+   Choose the eligible inventory stack with the highest base damage, breaking ties by lowest FormID.
+   Using the same stack in both hands requires at least two copies.
 4. An NPC never takes out a torch on its own (declared gap). A script can still equip one.
+
+Read the race through the NPC's Traits template and combat style (`NPC_.ZNAM`) through its AI Data
+template. The flags are `RACE.DATA` bit 30 and `CSTY.DATA` bit 2. An absent race or combat style
+leaves the second weapon unequipped. In the five Skyrim SE official masters, 15 styles set the
+`DATA` flag with CSTY header bit 19 clear, and `csWEMageShieldStaff` has the opposite combination.
+The spawn rule uses the `DATA` field. [xEdit Skyrim CSTY definitions](https://github.com/TES5Edit/TES5Edit/blob/dev-4.1.6/Core/wbDefinitionsTES5.pas#L4418-L4474)
 
 ## 3. State
 
@@ -80,6 +88,10 @@ component of their own:
   is in both.
 - A shield keeps its biped slot for its model, and a reader finds it among the occupants.
 
+Cell eviction parks `EquipmentSlots` with its inventory under the placed reference's identity.
+When the cell returns, the NPC receives its authored loadout first. The placement stamp then
+restores the parked slots and inventory together, preserving the held item's index (HND-STATE-004).
+
 `byroredux_scripting::hands::hand_item(world, actor, hand)` derives what a hand holds, with
 `HandCatalog` (each weapon's animation type and slot hands, the shields, the torches and the spells'
 slots, built from the records):
@@ -88,24 +100,25 @@ slots, built from the records):
 - The left hand is the right weapon when its slot is `BothHands`. Otherwise it is its spell, else
   `left_hand` (a torch or a weapon), else a worn shield.
 
-Nothing stores a second record of a hand, so two readers can never disagree.
+`EquipmentSlots` is authoritative for all Skyrim hand readers in §4.
 
 One function writes the hands: `byroredux_scripting::hands::equip_to_hand(slots, item, hand, facts)`,
 following CK *Equip Slot* ("Attempting to equip one will automatically unequip the other"):
 
-- The item takes the hands its slot names (`hands_taken`): a `BothHands` weapon or spell both, a
-  shield or torch the left, a `LeftHand` / `RightHand` spell its own, a one-handed weapon or an
-  `EitherHand` spell the hand asked for, a Voice power none (refused).
+- `hands_taken` applies the [PRD slot rules](../prd/hand-equipment.md#51-slots-hnd-slot). An explicit
+  left-only weapon takes the left hand and a non-hand slot has no hand destination. A weapon with
+  no `ETYP` uses the same rule as a flexible one-handed weapon.
 - Whatever held those hands comes off first; a two-handed occupant comes off both.
 - One item of a single stack moved to the other hand leaves the first.
 
 Every equip goes through it:
 
 - the inventory menu's equip, `EquipLeft` and the console's `inv.equip <form> [left]`
-  (`toggle_equip_in`);
+  (`equip_in`);
 - a script's `EquipItem` / `EquipItemEx` of a weapon, torch or the player's shield, queued with its
   hand to that same path (`PendingNonArmorEquips`);
-- a script's `EquipSpell` and another actor's shield, applied in the scripting crate.
+- a script's `EquipSpell` and another actor's shield, applied in the scripting crate;
+- starting weapon selection for the player and NPCs (`equip_starting_weapon`).
 
 `EquippedWeapon` stays the right hand's cache (damage, reach, speed; 51 combat readers). It is
 re-derived whenever the menu path changes the right weapon, and dropped every frame when it names a
@@ -121,12 +134,12 @@ the torch leaves the hand. The hand bone is not followed, and the torch's burn t
 |---|---|
 | `GetEquippedItemType(hand)` | 0 empty; a weapon by its `DNAM` animation type (1 OneHandSword … 8 Staff; 9 Crossbow is code 12); 9 spell; 10 shield; 11 torch (CK *GetEquippedItemType - Actor*) |
 | `GetEquippedWeapon(abLeftHand)` | the hand's weapon or None |
-| `GetEquippedShield` | the left hand when it holds a shield |
+| `GetEquippedShield` | Skyrim returns the shield in the canonical left hand (HND-READ-006). Oblivion reads its block model's biped slot. |
 | `GetEquippedSpell(source)` | 0 left, 1 right: the hand's spell |
-| `EquipItemEx(item, slot)` / `EquipSpell(spell, source)` | `equip_into_hand` with that hand; a spell's own slot overrides the source unless it is BothHands (CK *EquipSpell - Actor*) |
+| `EquipItemEx(item, slot)` / `EquipSpell(spell, source)` | Route through `equip_to_hand`. Fixed spell slots determine occupancy and `EitherHand` uses the requested hand under the current rule. PRD HND-READ-003 and HND-READ-007 cover slot arguments and source verification. |
 | `IsWeaponDrawn` | the drawn state `IsWeaponOut` reads |
 | `IsTorchOut` (condition 102) | a torch in either hand; declined off Skyrim |
-| Block | the left hand: a shield, else a torch or weapon in either hand, else bare hands (UESP *Skyrim:Block*). Skyrim has no block numbers yet (only Oblivion's `BlockModel`), so the guard is read but nothing is blocked |
+| Block | `block_guard` classifies a left shield, otherwise a left torch or a weapon in either hand, otherwise bare hands. Skyrim's damage path requires a `BlockModel` before calling the helper, and the Skyrim profile leaves that model unset. |
 
 ## 5. Phases
 
@@ -146,8 +159,8 @@ As the PRD §9.
   weapon takes a worn shield off;
 - the inventory menu's per-hand entries (Q2);
 - `EquipItemEx`'s hand argument, `IsWeaponDrawn`, the `IsTorchOut` condition;
-- block's guard read from the hands.
+- the helper to classify block guards from the hands.
 
-Left for later: NPC dual wield (§2 rule 3) needs the RACE "Can Dual Wield" and CSTY "Allow Dual
-Wielding" flags, which are not parsed yet (xEdit names the CSTY flag both as a record flag, bit 19, and
-as `DATA` 0x04, so it needs a measurement of the masters first); the torch's burn time; the hand bone.
+Phase 3 implements the dual-wield spawn rule in §2. The right-hand weapon still supplies the existing
+combat stats under Q1. The [PRD's delivery sequence](../prd/hand-equipment.md#9-delivery-sequence)
+tracks remaining acceptance. Torch burn time and the hand bone remain follow-ups.

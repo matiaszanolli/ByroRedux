@@ -1,6 +1,8 @@
 //! Equipment components and build_npc_equip_state, the spawn-time armor / weapon assembly.
 
 use super::*;
+use byroredux_plugin::esm::records::SlotHands;
+use byroredux_scripting::hands::{equip_to_hand, weapon_slot_hands, Hand, HandEquip, HandFacts};
 
 /// One armor piece resolved against the ESM index, queued for mesh
 /// dispatch. The borrow into `EsmIndex` keeps this lifetime-tied to
@@ -360,27 +362,8 @@ pub(super) fn build_npc_equip_state<'a>(
             continue;
         };
         let biped_flags = match &item.kind {
-            ItemKind::Weapon {
-                damage,
-                reach,
-                speed,
-                ..
-            } => {
-                let candidate = EquippedWeapon {
-                    inventory_index: inv_idx,
-                    base_form_id: form_id,
-                    damage: *damage as f32,
-                    reach: *reach,
-                    speed: *speed,
-                };
-                let replace = equipped_weapon.is_none_or(|current| {
-                    candidate.damage > current.damage
-                        || (candidate.damage == current.damage
-                            && candidate.base_form_id < current.base_form_id)
-                });
-                if replace {
-                    equipped_weapon = Some(candidate);
-                }
+            ItemKind::Weapon { .. } => {
+                crate::inventory::prefer_weapon(index, form_id, inv_idx, &mut equipped_weapon);
                 continue;
             }
             ItemKind::Armor { biped_flags, .. } => *biped_flags,
@@ -408,38 +391,15 @@ pub(super) fn build_npc_equip_state<'a>(
         }
     }
 
-    // Hand Equipment §2 (HND-STATE-003), the engine rule for an NPC's hands (the original's choice is
-    // undocumented): rule 1, the right hand holds the weapon this path wields; rule 2, a shield is held
-    // only beside a one-handed weapon, so a two-handed one takes a worn shield off (its mesh then
-    // leaves with the displaced-mesh pass below). Rule 3 (dual wield) waits for the RACE / CSTY flags.
-    if let Some(weapon) = equipped_weapon {
-        equipment_slots.equip_weapon(weapon.inventory_index);
-        if game == GameKind::Skyrim {
-            use byroredux_plugin::esm::records::{slot_hands, SlotHands};
-            let hands_of = |form: u32| match index.items.get(&form).map(|item| &item.kind) {
-                Some(ItemKind::Weapon { equip_type, .. } | ItemKind::Armor { equip_type, .. }) if *equip_type != 0 => {
-                    Some(slot_hands(&index.equip_slots, *equip_type))
-                }
-                _ => None,
-            };
-            if hands_of(weapon.base_form_id) == Some(SlotHands::Both) {
-                let shields: Vec<InventoryIndex> = equipment_slots
-                    .occupants
-                    .iter()
-                    .flatten()
-                    .copied()
-                    .filter(|&idx| {
-                        inventory.get(idx).is_some_and(|stack| {
-                            matches!(index.items.get(&stack.base_form_id).map(|item| &item.kind), Some(ItemKind::Armor { .. }))
-                                && hands_of(stack.base_form_id) == Some(SlotHands::Left)
-                        })
-                    })
-                    .collect();
-                for shield in shields {
-                    equipment_slots.release(shield);
-                }
-            }
-        }
+    // The selected weapon takes its authored hands before the displaced-mesh pass below.
+    let equipped_weapon = crate::inventory::equip_starting_weapon(
+        index,
+        &inventory,
+        &mut equipment_slots,
+        equipped_weapon,
+    );
+    if let Some(primary) = equipped_weapon {
+        equip_npc_offhand(resolved, index, &inventory, &mut equipment_slots, primary);
     }
 
     // A race skin can cover several regions in one mesh. If later armor wins
@@ -562,5 +522,74 @@ pub(super) fn build_npc_equip_state<'a>(
         armor_to_spawn,
         restore_skin_paths,
         facegen_hidden_mask,
+    }
+}
+
+/// Fill a Skyrim NPC's free left hand when the race and combat style both permit it.
+fn equip_npc_offhand(
+    resolved: &ResolvedNpc<'_>,
+    index: &EsmIndex,
+    inventory: &Inventory,
+    equipment: &mut EquipmentSlots,
+    primary: EquippedWeapon,
+) {
+    if index.game != GameKind::Skyrim
+        || equipment.left_hand.is_some()
+        || !index
+            .races
+            .get(&resolved.r#traits.race_form_id)
+            .is_some_and(RaceRecord::skyrim_can_dual_wield)
+        || !resolved
+            .ai_data
+            .combat_style_form_id
+            .and_then(|style| index.combat_styles.get(&style))
+            .is_some_and(|style| style.allows_dual_wield)
+    {
+        return;
+    }
+    let Some(ItemKind::Weapon { equip_type, .. }) =
+        index.items.get(&primary.base_form_id).map(|item| &item.kind)
+    else {
+        return;
+    };
+    if weapon_slot_hands(index, *equip_type) == SlotHands::Both
+        || crate::inventory::worn_skyrim_shields(index, inventory, equipment)
+            .next()
+            .is_some()
+    {
+        return;
+    }
+
+    let best = inventory
+        .items
+        .iter()
+        .enumerate()
+        .filter_map(|(row, stack)| {
+            let row = InventoryIndex(row as u32);
+            if stack.count == 0 || (row == primary.inventory_index && stack.count < 2) {
+                return None;
+            }
+            let ItemKind::Weapon { equip_type, damage, .. } = &index.items.get(&stack.base_form_id)?.kind else {
+                return None;
+            };
+            let hands = weapon_slot_hands(index, *equip_type);
+            matches!(hands, SlotHands::Left | SlotHands::Right | SlotHands::Either).then_some((
+                *damage,
+                stack.base_form_id,
+                HandEquip::Weapon { index: row, hands },
+                stack.count,
+            ))
+        })
+        .min_by_key(|&(damage, form_id, _, _)| (std::cmp::Reverse(damage), form_id));
+    if let Some((_, _, weapon, stack_count)) = best {
+        let _ = equip_to_hand(
+            equipment,
+            weapon,
+            Hand::Left,
+            &HandFacts {
+                stack_count,
+                ..Default::default()
+            },
+        );
     }
 }

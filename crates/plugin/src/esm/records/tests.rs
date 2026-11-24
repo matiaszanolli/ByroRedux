@@ -3061,7 +3061,7 @@ const EXEMPT_JUSTIFIED: &[(&str, &str, &str)] = &[
     (
         "misc/character.rs",
         "parse_csty",
-        "CSTD's only u32 is `csty_flags`, a bitfield.",
+        "The legacy CSTD flags and Skyrim DATA flags are bitfields.",
     ),
     (
         "condition.rs",

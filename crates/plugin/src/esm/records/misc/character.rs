@@ -2,7 +2,7 @@
 //! FO3 / FNV radiation sickness stages.
 
 use super::super::common::{read_zstring, remap_fid, CommonNamedFields};
-use crate::esm::reader::{FormIdRemap, SubRecord};
+use crate::esm::reader::{FormIdRemap, GameKind, SubRecord};
 use crate::esm::sub_reader::SubReader;
 
 /// Head part record (`HDPT`). Used by FaceGen to assemble NPC faces —
@@ -142,10 +142,8 @@ pub fn parse_hair(form_id: u32, subs: &[SubRecord]) -> HairRecord {
 
 /// CSTY — combat style record. NPC combat AI behavior profile
 /// (aggression, stealth preference, ranged vs melee). Per-NPC
-/// reference via NPC.SPCT. `CSTD` carries the FO3/FNV 124-byte
-/// payload; the stub captures only the first 4 bytes of CSTD as a
-/// flags scalar so the dispatch is verifiable. Full CSTD decode
-/// lands with the AI consumer. See audit `FNV-D2-NEW-02` / #809.
+/// reference via Skyrim `NPC_.ZNAM`. `CSTD` carries the FO3/FNV payload.
+/// See audit `FNV-D2-NEW-02` / #809.
 #[derive(Debug, Clone, Default)]
 pub struct CstyRecord {
     pub form_id: u32,
@@ -153,9 +151,11 @@ pub struct CstyRecord {
     /// `CSTD` offset 0..4 — combat-style flag bitfield (u32). Decoded
     /// lazily per-game; vanilla FNV uses ~12 bits.
     pub csty_flags: u32,
+    /// Skyrim `DATA` bit 2 (Allow Dual Wielding).
+    pub allows_dual_wield: bool,
 }
 
-pub fn parse_csty(form_id: u32, subs: &[SubRecord]) -> CstyRecord {
+pub fn parse_csty(form_id: u32, subs: &[SubRecord], game: GameKind) -> CstyRecord {
     let mut out = CstyRecord {
         form_id,
         ..Default::default()
@@ -170,6 +170,9 @@ pub fn parse_csty(form_id: u32, subs: &[SubRecord]) -> CstyRecord {
         match &sub.sub_type {
             b"CSTD" if sub.data.len() >= 4 => {
                 out.csty_flags = SubReader::new(&sub.data).u32_or_default();
+            }
+            b"DATA" if game == GameKind::Skyrim && sub.data.len() == 4 => {
+                out.allows_dual_wield = SubReader::new(&sub.data).u32_or_default() & 0x04 != 0;
             }
             _ => {}
         }
@@ -305,9 +308,19 @@ mod tests {
         let mut cstd = [0u8; 124];
         cstd[0..4].copy_from_slice(&0x0000_0042_u32.to_le_bytes());
         let subs = vec![sub(b"EDID", b"csyAggressive\0"), sub(b"CSTD", cstd)];
-        let c = parse_csty(0x0008_3122, &subs);
+        let c = parse_csty(0x0008_3122, &subs, GameKind::Fallout3NV);
         assert_eq!(c.editor_id, "csyAggressive");
         assert_eq!(c.csty_flags, 0x42);
+    }
+
+    #[test]
+    fn skyrim_combat_style_dual_wield_comes_from_data_bit_two() {
+        for (bits, expected) in [(0x01_u32, false), (0x02, false), (0x05, true), (0x06, true)] {
+            let subs = [sub(b"DATA", bits.to_le_bytes())];
+            assert_eq!(parse_csty(1, &subs, GameKind::Skyrim).allows_dual_wield, expected);
+            assert!(!parse_csty(1, &subs, GameKind::Fallout4).allows_dual_wield);
+        }
+        assert!(!parse_csty(1, &[sub(b"DATA", [0x04])], GameKind::Skyrim).allows_dual_wield);
     }
 
     #[test]

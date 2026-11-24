@@ -1,12 +1,8 @@
 # Hand Equipment — Product Requirements
 
-**Status**: ACTIVE (2026-11-24). Revision 6 records Phase 2's build (#7399). Revision 5 records Phase 1's build (#7398). Revision 4 files the tracking issues. Revision 3 settles Phase 0's verify items from the masters and the
-CK / UESP pages, and links the design Phase 0 wrote. Revision 2: the owner approved the first draft
-and took every §10 recommendation. Statements about how an original engine, format or tool behaves cite external
-sources; a claim that could not be verified is marked **Phase 0: verify** instead of being stated as
-fact.
+**Status**: ACTIVE (2026-11-24). Revision 11 records NPC hand-state verification across cell eviction. See §12 for the revision history.
 
-**Tracking**: #7397 (parent), #7398 (Phase 1), #7399 (Phase 2). Phase 0 is done (revision 3).
+**Tracking**: #7397 (parent and follow-ups), #7398 (Phase 1), #7399 (Phase 2). Revision 3 records the initial Phase 0 work.
 
 **Scope**: what each of an actor's two hands holds in Skyrim — a weapon, a shield, a torch, a spell or
 nothing — as the plugin data says it may, kept per actor, saved, and read by the scripts, conditions
@@ -31,13 +27,11 @@ designs. Requirement IDs use the `HND-` prefix.
 
 ## 1. Product thesis
 
-Skyrim content asks which hand holds what. The Papyrus VM's coverage census on vanilla `Skyrim.esm`
-(2026-11-23, after the native waves) shows `GetEquippedItemType` declining 1,359 scripted references
-on its own — the oil-pool and gas traps that ignite when the actor entering holds a torch or a fire
-spell (792), and the weapon racks that read the player's left and right hands (567) — and the left
-hand of `GetEquippedWeapon` declining with it. The engine keeps one wielded weapon and the armour
-biped slots; it has no left hand. Answering "nothing in the left hand" would be a fabrication, so
-those scripts stay declined until the hands exist.
+Skyrim players and mod authors rely on scripts that know which hand holds an item. Weapon racks
+query the player's hands, and oil and gas traps read equipped items as part of their ignition
+logic. Before this work the VM declined several of those readers. The Skyrim SE census at
+`ba14baeeb` admits the weapon-rack activation script. The trap families still stop at
+`HasMagicEffectWithKeyword`; §7.2 tracks live ignition separately.
 
 The promise: an actor's two hands are real state, filled by the same rules the plugin data gives the
 original (equip slots, "both hands", "either hand"), so every reader — a script, a condition, the
@@ -70,9 +64,10 @@ SPEL](https://en.uesp.net/wiki/Skyrim_Mod:Mod_File_Format/SPEL) `ETYP`). A weapo
 from its slot: its `DNAM` animation type (0 Other, 1 OneHandSword … 7 Bow, 8 Staff, 9 Crossbow) is not
 how many hands it takes (UESP WEAP notes: "ETYP is purely how many hands the weapon needs").
 
-The engine at HEAD on 2026-11-23 (`66668ed4b`):
+Pre-implementation baseline on 2026-11-23 (`66668ed4b`). See the
+[current equipment state and readers](../engine/hand-equipment.md#3-state).
 
-| # | Item | Class | Today |
+| # | Item | Class | At the baseline |
 |---|---|---|---|
 | 1 | `EQUP` records and `ETYP` on WEAP / SPEL | data | Not parsed (no `ETYP` / `EQUP` in `crates/plugin/src/esm/records`). |
 | 2 | Weapon kind (WEAP `DNAM` animation type) | data | Parsed for Skyrim (`crates/plugin/src/esm/records/items.rs`, `b"DNAM" if Skyrim` → `anim_type`). |
@@ -90,7 +85,8 @@ The engine at HEAD on 2026-11-23 (`66668ed4b`):
 - G1. Each actor's two hands hold what the data allows, by the equip-slot rules of §3.
 - G2. Every reader asks the hands: Papyrus, conditions, the block rule, traps.
 - G3. The hands survive saves and cell reloads, as the inventory does.
-- G4. Vanilla's declined hand readers run: the 1,359 references of §1 move to the VM.
+- G4. The baseline script families can call both hand readers. The census records admission and
+  remaining blockers, and the live gate checks the trap's ignition behavior (§7.2).
 
 ### 4.2 Non-goals
 
@@ -105,48 +101,87 @@ The engine at HEAD on 2026-11-23 (`66668ed4b`):
 
 ### 5.1 Slots (`HND-SLOT`)
 
-- **HND-SLOT-001.** The engine MUST read every `EQUP` record (`PNAM` parents, `DATA` "use all
-  parents") and the `ETYP` of WEAP and SPEL records, from every plugin, as the [UESP
-  EQUP](https://en.uesp.net/wiki/Skyrim_Mod:Mod_File_Format/EQUP) page lays them out.
-- **HND-SLOT-002.** An item's hands MUST follow its slot: a slot that uses all its parents takes every
-  parent hand; one that does not takes one of them ([CK: Equip Slot](https://ck.uesp.net/wiki/Equip_Slot)).
-  An item whose slot fits one hand (`RightHand`, as 1,286 of Skyrim.esm's weapons are, or
-  `EitherHand`) goes in the hand the equip call names, the right by default ([CK:
-  EquipItemEx](https://ck.uesp.net/wiki/EquipItemEx_-_Actor): 0 default, 1 right, 2 left).
+- **HND-SLOT-001.** The engine MUST resolve each weapon's `ETYP` through the Skyrim load order's
+  `EQUP` catalog, preserving `PNAM` parents and the `DATA` use-all-parents flag. See
+  [UESP EQUP](https://en.uesp.net/wiki/Skyrim_Mod:Mod_File_Format/EQUP).
+- **HND-SLOT-002.** An item's occupancy MUST follow the resolved slot and the applicable equip
+  request. Skyrim's authored parent rules are described in [CK Equip Slot](https://ck.uesp.net/wiki/Equip_Slot).
+
+  | Resolved slot | Weapon occupancy | Spell occupancy |
+  |---|---|---|
+  | Both hands | Both | Both |
+  | Either hand | Requested hand. ByroRedux uses the right hand for a default request. | Requested hand under ByroRedux's current rule. Original behavior is a verification item under HND-READ-007. |
+  | `RightHand` | Right by default. A deliberate left equip is available for ordinary one-handed weapons (Q2). | Right, overriding the requested source |
+  | Explicit `LeftHand` | Left | Left, overriding the requested source |
+  | Explicit slot resolving to neither hand | Refuse the hand equip | Leave hand occupancy unchanged |
+  | Missing `ETYP` | ByroRedux's one-hand fallback uses the requested hand or the default right. | ByroRedux uses the requested hand. |
+
+  `authored_weapon_slots_control_player_equips_and_starting_inventory` checks explicit left-only
+  and non-hand `ETYP` fixtures through menu actions, scripted equips and starting inventory.
+  The NPC loadout fixture checks the same selection rule for starting weapons.
 - **HND-SLOT-003.** Equipping an item MUST unequip what held the hands it takes ("Items marked with the
   same slot can't be equipped simultaneously").
-- **HND-SLOT-004.** A shield MUST occupy the left hand, by its ARMO `ETYP`: all 237 of Skyrim.esm's
-  shields name the `Shield` slot, whose one parent is `LeftHand` (design §1).
+- **HND-SLOT-004.** A shield MUST occupy the left hand through its ARMO `ETYP` resolving to the
+  left hand. See the [authored slot census](../engine/hand-equipment.md#1-what-the-data-says).
 - **HND-SLOT-005.** A carryable light (LIGH flag `0x0002` "Can be carried", [UESP: LIGH](https://en.uesp.net/wiki/Skyrim_Mod:Mod_File_Format/LIGH)) MUST be equippable into the left hand as a
-  torch. No light carries an `ETYP` (Skyrim.esm: none of 435), so the hand is the documented rule:
-  "To block with a shield or torch, equip one to your left hand" ([UESP:
-  Skyrim:Block](https://en.uesp.net/wiki/Skyrim:Block)).
+  torch. The [authored slot census](../engine/hand-equipment.md#1-what-the-data-says) records
+  lights without `ETYP`. [UESP Skyrim:Block](https://en.uesp.net/wiki/Skyrim:Block) describes
+  equipping a torch to the left hand for blocking.
+- **HND-SLOT-006.** The engine MUST resolve each Skyrim spell's authored `ETYP` through the
+  same folded `EQUP` catalog as weapons. The fixture checks spell-slot resolution from a plugin
+  override. See [UESP SPEL](https://en.uesp.net/wiki/Skyrim_Mod:Mod_File_Format/SPEL).
 
 ### 5.2 State (`HND-STATE`)
 
-- **HND-STATE-001.** Each actor MUST keep what each hand holds as one component, written only by the
-  equip and unequip paths.
-- **HND-STATE-002.** The state MUST be saved, its FormIDs as stable identities, and parked across a
-  cell's eviction with the inventory it indexes.
+- **HND-STATE-001.** Each actor MUST keep one authoritative hand state in `EquipmentSlots`.
+  Equip and unequip apply the occupancy rules from HND-SLOT-002 and HND-SLOT-003.
+- **HND-STATE-002.** Save and load MUST restore the held items and spells. A round-trip fixture
+  changes a spell's plugin slot and checks that the hand still resolves to the same spell.
 - **HND-STATE-003.** An NPC MUST spawn with the hands its loadout implies, within the documented limits:
   it dual wields only when its race's "Can Dual Wield" ([CK: Race](https://ck.uesp.net/wiki/Race)) and
   its combat style's "Allow Dual Wielding" ([CK: Combat Style](https://ck.uesp.net/wiki/Combat_Style))
-  are both set. How the original picks an NPC's hand items, and whether it takes out a torch, is
-  undocumented: a declared gap, filled by the engine rule in the design's §2.
+  are both set. Use the [design's NPC loadout rule](../engine/hand-equipment.md#2-npc-hands-hnd-state-003).
+  **Phase 0: verify** the original's choices if parity is required. Compare NPCs with the same
+  inventory across the flag combinations and light levels, recording the held items and torch use.
+- **HND-STATE-004.** The same NPC MUST regain its hand occupancy when its cell is evicted and
+  returns. The fixture checks restored hand items against the restored inventory after respawn.
 
 ### 5.3 Readers (`HND-READ`)
 
 - **HND-READ-001.** `GetEquippedItemType(aiHand)` MUST return the CK's codes for the hand asked (0
   left, 1 right): 0 nothing, 1–8 the weapon kinds, 9 a spell, 10 a shield, 11 a torch, 12 a crossbow
   ([CK: GetEquippedItemType](https://ck.uesp.net/wiki/GetEquippedItemType_-_Actor)).
-- **HND-READ-002.** `GetEquippedWeapon(abLeftHand)` MUST return the named hand's weapon ([CK:
-  GetEquippedWeapon](https://ck.uesp.net/wiki/GetEquippedWeapon_-_Actor)); `GetEquippedSpell(aiSource)`
-  the spell in the left or right hand ([CK: GetEquippedSpell](https://ck.uesp.net/wiki/GetEquippedSpell_-_Actor)).
-- **HND-READ-003.** `EquipSpell(akSpell, aiSource)` and `EquipItemEx` MUST equip into the hand they
-  name, the item's own slot overriding it as the CK says ("it will be overridden by the Spell's Equip
-  Slot if it is set to anything other than BothHands").
-- **HND-READ-004.** The block rule MUST read the left hand (a shield, a torch or a weapon), replacing
-  the shield-bit read.
+- **HND-READ-002.** `GetEquippedWeapon(abLeftHand)` MUST return the named hand's weapon. See
+  [CK GetEquippedWeapon](https://ck.uesp.net/wiki/GetEquippedWeapon_-_Actor).
+- **HND-READ-003.** Skyrim's `EquipItemEx(item, equipSlot)` MUST apply HND-SLOT-002 to the SKSE slot
+  argument. See the [SKSE Actor script](https://github.com/ianpatt/skse64/blob/master/scripts/modified/Actor.psc).
+
+  | `equipSlot` | Meaning |
+  |---|---|
+  | 0 | Default. ByroRedux uses the resolved item's default. |
+  | 1 | Request the right hand |
+  | 2 | Request the left hand |
+
+- **HND-READ-004.** Skyrim's hand state MUST classify its block guard as a left-hand shield,
+  otherwise a left-hand torch or a weapon in either hand, otherwise bare hands. At HEAD
+  `ba14baeeb`, `combat.rs::block_guard` classifies the guard and `target_block` requires a
+  `BlockModel`. A live damage check depends on the Skyrim model in [CHARAL](../engine/charal.md).
+- **HND-READ-005.** `GetEquippedSpell(aiSource)` MUST return the spell in left source 0 or right
+  source 1. See [CK GetEquippedSpell](https://ck.uesp.net/wiki/GetEquippedSpell_-_Actor).
+- **HND-READ-006.** Skyrim `GetEquippedShield()` MUST return the shield in the canonical left
+  hand. Test a shield whose `ETYP` resolves left and whose biped mask omits the conventional
+  shield bit. The VM regression `the_native_wave_reads_locks_doors_cells_states_shields_weapons_and_templates`
+  checks this with another item in the conventional slot.
+- **HND-READ-007.** `EquipSpell(akSpell, aiSource)` MUST use HND-SLOT-002 for hand sources. The
+  [CK EquipSpell documentation](https://ck.uesp.net/wiki/EquipSpell_-_Actor) describes slot
+  precedence. **Phase 0: verify** the original `EitherHand` behavior with the same spell and
+  each requested hand in a local Skyrim install. Record occupancy after each call.
+
+  | `aiSource` | Meaning |
+  |---|---|
+  | 0 | Request the left hand |
+  | 1 | Request the right hand |
+  | 2 | Voice, outside hand occupancy |
 
 ---
 
@@ -154,8 +189,9 @@ The engine at HEAD on 2026-11-23 (`66668ed4b`):
 
 | # | Original behaviour | Redux behaviour | Becomes redundant | Risk and its requirement |
 |---|---|---|---|---|
-| 1 | Hands follow the data's slots | The same (HND-SLOT-002) | None | None: a faithful model. |
-| 2 | A spell in a hand is cast from it | Held, not cast (NG1) | None | A mod that reads a hand's spell sees it; casting from it waits for its design. |
+| 1 | Casting can use a spell equipped in a hand ([CK EquipSpell](https://ck.uesp.net/wiki/EquipSpell_-_Actor)) | The hand exposes the equipped spell to readers. Casting is assigned to the separate design in NG1. | None | A mod can read the hand's spell before per-hand casting is available. HND-READ-005. |
+| 2 | Temporary carried lights have an authored duration ([CK Light](https://ck.uesp.net/wiki/Light)) | A point light follows the actor at a fixed offset and lasts while the torch is held. See [design §3](../engine/hand-equipment.md#3-state). | None | The light can drift from the hand pose or last longer than in the original. Q3 and the torch-light check in §7.2 cover the current behavior. |
+| 3 | Original NPC hand choices and automatic torch use are Phase 0 verification items when parity is required | The [design's loadout rule](../engine/hand-equipment.md#2-npc-hands-hnd-state-003) supplies predictable hands. NPCs equip torches through scripts. | None | An NPC can choose different equipment or leave a dark area unlit. HND-STATE-003. |
 
 ---
 
@@ -168,19 +204,39 @@ The engine at HEAD on 2026-11-23 (`66668ed4b`):
 | Oblivion | no | One weapon and a shield slot; its block rule already reads the shield bit. |
 | Fallout 3 | no | One weapon, no shields. |
 | Fallout: New Vegas | no | One weapon, no shields. |
-| Skyrim (LE / SE / AE) | yes | The equip-slot model this PRD describes (Wave 1). |
-| Fallout 4 | no | Its 38 `EQUP` slots model creature limbs, grenades and alternate attacks; no shields (design §1). |
-| Fallout 76 | n/a | Out of every PRD. |
-| Starfield | no | Its 25 `EQUP` slots model creature limbs and grenades, as Fallout 4's (design §1). |
+| Skyrim (LE / SE / AE) | yes | All editions are in authored-data scope. Wave 1 uses Skyrim SE for the measured census and the planned runtime gates. LE is [parse-only in ROADMAP](../../ROADMAP.md#compatibility-matrix), and AE runtime acceptance still needs an edition-specific run. |
+| Fallout 4 | no | Its authored slots serve a different model. See the [slot census](../engine/hand-equipment.md#1-what-the-data-says). |
+| Fallout 76 | no | Parse-only support provides no actor runtime for this feature's hand-state checks. |
+| Starfield | no | Its authored slots serve a different model. See the [slot census](../engine/hand-equipment.md#1-what-the-data-says). |
 
 ### 7.2 Acceptance
 
-1. The VM's coverage census on vanilla `Skyrim.esm` no longer declines `GetEquippedItemType` or the
-   left hand of `GetEquippedWeapon`.
-2. A Skyrim gate: the player equips a one-handed sword in each hand, then a shield (the left sword
-   comes off), then a bow (both hands), then a torch; after each, the VM's hand readers return the
-   CK's codes, and a save and a reload keep the hands.
-3. An oil-pool trap ignites when the player walks in holding a torch, and not with a sword.
+Use local Skyrim SE data for the real-data scenarios. A missing install is a skip. The parser
+and VM fixtures use synthetic forms and can run without game data.
+
+| Scenario | Runner and data | Pass condition |
+|---|---|---|
+| VM admission census | Run `refr_script_coverage` with `VM_REASONS=1` and `VM_REASON_FAMILIES` for `getequippeditemtype` and `getequippedweapon`, with local `Skyrim.esm` and `Skyrim - Misc.bsa`. See the [example invocation](../../crates/scripting/examples/refr_script_coverage.rs). | Report the baseline families' admission and remaining decline reasons. At HEAD `ba14baeeb`, the weapon-rack activation family is admitted and the trap families still stop at `HasMagicEffectWithKeyword`. |
+| Papyrus hand readback | `cargo test -p byroredux-scripting --lib`. The VM tests cover weapon and spell readback and a shield whose biped mask differs from its hand slot. | Each hand reports the expected type code. The weapon, shield and spell readers return the corresponding form or `None`. |
+| Equipment actions | Extend `hands_follow_the_equip_slot_rules` in `cargo test -p byroredux --bin byroredux` with the transition table below. Use both menu actions from Q2 and the Papyrus spell equip path. | Canonical occupancy after each transition matches the expected code pair and forms. |
+| Authored slots | Run `skyrim_hand_slots_shields_and_two_handers_decode_from_the_official_load_order` in the `byroredux` binary tests with `--ignored` and the Skyrim SE masters. Run `authored_weapon_slots_control_player_equips_and_starting_inventory` for the synthetic weapon cases. Add a spell slot override fixture for HND-SLOT-006. | The official load order resolves the expected slots. The fixtures exercise the authored weapon and spell slots. |
+| Save restoration | Add a `cargo test -p byroredux --bin byroredux` fixture using the live save/load path, a left-hand inventory item and a right-hand spell from a generated plugin. Change the spell plugin's slot between save and reload. | Both readers recover the same items by identity, and the inventory index still names the intended stack. HND-STATE-002. |
+| Cell eviction | Run `skyrim_npc_hands_survive_cell_eviction` in the `byroredux` binary tests. The synthetic cell uses the production eviction and placement-restore steps. | The same placed reference resolves to a fresh actor with the original right-hand spell and the left-hand weapon at its restored inventory index. HND-STATE-004. |
+| Torch light | Run `a_held_torch_takes_the_left_hand_and_lights_it` in the `byroredux` binary tests. | A torch equips to the left, supplies one light while held, and removes that light when it leaves the hand. Q3. |
+| NPC dual-wield flags | Run `skyrim_npc_dual_wield_requires_both_flags_and_a_free_left_hand`. Run the official-load-order fixture in the authored slots row to check the decoded race and combat style data. | Across all four flag combinations, the right-hand weapon stays consistent and the second weapon appears only with both flags set. A shield, two-handed primary, or missing second copy prevents a second weapon. HND-STATE-003. |
+| Block guard | Add a `byroredux` binary fixture for HND-READ-004 covering a left shield, a left torch, a right-only weapon, and empty hands. | Each case resolves to its expected guard. Live damage reduction awaits the Skyrim `BlockModel`. |
+| Live oil-pool ignition | Extend a headless Skyrim SE smoke test using `--bench-hold` and `byro-dbg`. Select a placed reference bound to `TrapOilPool` from the local master and record its cell and reference ID in the fixture. Start fresh for each trial, with a torch or sword equipped and no fire effect on the actor. | The same trigger ignites with the torch and remains unlit with the sword. This gate waits on the Papyrus VM's `HasMagicEffectWithKeyword`. |
+
+Use distinct synthetic forms for each one-handed sword, the shield, bow, torch and spell.
+Assert the codes after each action in order, with the left code listed first.
+
+| Action | Expected hand item type codes |
+|---|---|
+| Equip the left and right swords through the two menu actions | `(1, 1)` |
+| Equip the shield | `(10, 1)` |
+| Equip the two-handed bow | `(7, 7)` |
+| Equip the torch, displacing the bow | `(11, 0)` |
+| Equip an `EitherHand` spell to the right | `(11, 9)` |
 
 ---
 
@@ -188,20 +244,40 @@ The engine at HEAD on 2026-11-23 (`66668ed4b`):
 
 | Metric | Definition | Granularity |
 |---|---|---|
-| Hand-reader coverage | scripted references declined by a hand reader ÷ the same at the baseline (1,359) | per game |
+| Baseline hand-reader cohort admitted | Script attachments currently admitted by the VM ÷ all script attachments in the fixed cohort that declined on a hand reader at `66668ed4b`. Count attachments by placed reference and attached script. Report other blockers separately. | Skyrim SE, by script family and total |
+
+Publish the cohort count and remaining blockers in the Skyrim SE row of the
+[ROADMAP compatibility matrix](../../ROADMAP.md#compatibility-matrix). The VM's aggregate
+coverage measures a broader population and is a separate result.
 
 ---
 
 ## 9. Delivery sequence
 
-**Phase 0 — Verify and design (no engine code).** Settle every **Phase 0: verify** item from the data
-and the CK / UESP pages; write `docs/engine/hand-equipment.md`. Exit: no unverified item left.
+**Phase 0 — Verify and design.** Revision 3 records the authored slot census and the hand-equipment
+design. Exit: the design and the slot census are linked. Record any verification items reopened
+in this review under #7397 before claiming the corresponding parity.
 
-**Phase 1 — Slots, state and readers.** HND-SLOT-001..003, HND-STATE-001..002, HND-READ-001..002 for
-weapons and shields, the save format bump. Exit: acceptance 1, and 2 without the torch.
+**Phase 1 — Weapon and shield state and readers (#7398).** HND-SLOT-001…004 for weapon and shield
+occupancy, HND-STATE-001…002 for inventory items, and HND-READ-001…002. Exit: the official-load-order
+slot check and the weapon, shield and bow readbacks pass. The v148 change is recorded in revision 5.
 
-**Phase 2 — Torches, spells in hands, NPC loadouts, block.** HND-SLOT-004..005, HND-STATE-003,
-HND-READ-003..004. Exit: acceptance 2 and 3.
+**Phase 2 — Torches, spells, equip actions and initial NPC loadouts (#7399).** HND-SLOT-005…006,
+HND-READ-003, HND-READ-005 and HND-READ-007, the single-weapon and shield portion of HND-STATE-003,
+and the spell portion of HND-STATE-002. Exit: the torch and spell readbacks, both inventory actions
+(Q2), torch-light fixture (Q3) and hand-state save round trip pass. Revision 6 records the v149 build.
+
+**Phase 3 — Remaining acceptance and integrations (#7397).** Complete authored left-only and
+non-hand weapon cases (HND-SLOT-002), NPC dual wield (HND-STATE-003), cell eviction (HND-STATE-004),
+canonical shield reads (HND-READ-006), and block guard classification (HND-READ-004). The oil-pool
+check depends on the M47.2 Papyrus VM's `HasMagicEffectWithKeyword`. Live block reduction depends
+on CHARAL's Skyrim block model. Exit: the authored slot, four-way NPC flag, cell eviction,
+shield read and guard fixtures pass, and the live oil-pool scenario passes. Track the live block
+damage check with the CHARAL dependency.
+
+Regression fixtures cover the canonical shield reader, authored weapon slots, NPC dual-wield
+spawn loadouts, and NPC hand-state restoration after cell eviction (HND-READ-006, HND-SLOT-002,
+HND-STATE-003, and HND-STATE-004, revisions 8–11).
 
 ---
 
@@ -228,6 +304,7 @@ HND-READ-003..004. Exit: acceptance 2 and 3.
 | How the slots and the hand state are built | [Hand Equipment — design](../engine/hand-equipment.md) |
 | Actor values and the block rule | [CHARAL](../engine/charal.md) |
 | The player's casting | [Player Spellcasting PRD](player-spellcasting.md) |
+| Papyrus hand readers and VM dependencies | [Scripting](../engine/scripting.md) |
 | Live milestone state and published metrics | [ROADMAP.md](../../ROADMAP.md) |
 
 ---
@@ -242,3 +319,8 @@ HND-READ-003..004. Exit: acceptance 2 and 3.
 | 4 | 2026-11-23 | ACTIVE: tracking issues #7397 (parent), #7398 (Phase 1), #7399 (Phase 2) | — |
 | 5 | 2026-11-23 | Phase 1 built (#7398): EQUP catalog, WEAP / ARMO `ETYP`, `EquipmentSlots.left_hand` (format v148) as the hand state instead of a new component, `equip_into_hand`, `GetEquippedItemType` / `GetEquippedWeapon(true)`; the shield's ARMO `ETYP` (HND-SLOT-004) landed with it. The design's §3 and §5 follow | — |
 | 6 | 2026-11-24 | Phase 2 built (#7399): torches in the left hand and their light (Q3), spells in hands (SPEL `ETYP`, `EquipSpell` / `UnequipSpell` / `GetEquippedSpell`, format v149), `EquipItemEx`'s hand, `IsWeaponDrawn`, `IsTorchOut`, the menu's per-hand entries (Q2), block's guard from the hands, the NPC rule's parts 1–2. NPC dual wield (HND-STATE-003's flags) is left for a follow-up: the RACE / CSTY flags are not parsed yet | — |
+| 7 | 2026-11-24 | Review round 1 folded in: Skyrim census and trap blocker, slot and shield semantics, block dependency, save and live gate criteria, per-game scope, phase ownership and metrics | codex: revise |
+| 8 | 2026-11-24 | HND-READ-006 implemented. Skyrim's `GetEquippedShield` reads the canonical left hand, with a VM regression for a shield outside the conventional biped bit. | — |
+| 9 | 2026-11-24 | HND-SLOT-002 implemented. Menu and scripted equips and starting loadouts honor explicit left-only and non-hand weapon slots. Fixtures cover the missing-slot fallback and repeated script requests. | — |
+| 10 | 2026-11-24 | HND-STATE-003 implemented. NPC spawn resolves RACE `DATA` bit 30 through the Traits template and `NPC_.ZNAM` through the AI Data template. `CSTY.DATA` bit 2 supplies the style permission. Fixtures cover all four flag combinations, a worn shield, a two-handed primary, and inventory copy counts. | — |
+| 11 | 2026-11-24 | HND-STATE-004 verified. A persistent Skyrim NPC recovers a runtime-equipped weapon and spell after cell eviction and respawn. The fixture checks both hands and the inventory index through the placed reference. | — |

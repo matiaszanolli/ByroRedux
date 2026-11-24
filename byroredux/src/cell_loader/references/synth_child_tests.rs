@@ -149,6 +149,107 @@ fn actor_placement_stamp_restores_travel_using_placed_not_base_identity() {
     assert!(world.resource::<StreamStateSnapshots>().is_empty());
 }
 
+#[test]
+fn skyrim_npc_hands_survive_cell_eviction() {
+    use crate::cell_loader::load::stamp_cell_root;
+    use crate::cell_loader::reference_state::PersistentReferenceStates;
+    use crate::cell_loader::unload::prepare_cell_eviction;
+    use crate::components::CellRootIndex;
+    use byroredux_core::ecs::components::{CellRoot, EquipmentSlots, Inventory, ItemStack};
+    use byroredux_plugin::esm::records::SlotHands;
+    use byroredux_scripting::condition::resolve_entity_by_global_form_id;
+    use byroredux_scripting::hands::{
+        equip_to_hand, hand_item, Hand, HandCatalog, HandEquip, HandFacts, HandItem, HandWeapon,
+    };
+
+    const STARTING_WEAPON: u32 = 0x300;
+    const HELD_WEAPON: u32 = 0x301;
+    const HELD_SPELL: u32 = 0x400;
+
+    let mut world = World::new();
+    world.insert_resource(CellRootIndex::new());
+    world.insert_resource(FormIdPool::new());
+    world.insert_resource(PersistentReferenceStates::default());
+    let mut catalog = HandCatalog::default();
+    let sword = HandWeapon { anim_type: 1, hands: SlotHands::Right };
+    for form in [STARTING_WEAPON, HELD_WEAPON] {
+        catalog.insert_weapon(form, sword);
+    }
+    catalog.insert_spell(HELD_SPELL, SlotHands::Right);
+    world.insert_resource(catalog);
+
+    let placement = actor_placement_fixture();
+    let order = LoadOrder::all_regular(vec!["Test.esm".into()]);
+    let spawn_cell = |world: &mut World| {
+        // Stand in for the mesh-bearing NPC job, which installs its starting loadout before stamping.
+        let actor = world.spawn();
+        let mut inventory = Inventory::new();
+        let starting_weapon = inventory.push(ItemStack::new(STARTING_WEAPON, 1));
+        let mut equipment = EquipmentSlots::new();
+        equipment.equip_weapon(starting_weapon);
+        world.insert(actor, inventory);
+        world.insert(actor, equipment);
+        stamp_quest_reference(world, actor, &placement, &order);
+        let end = world.next_entity_id();
+        let root = world.spawn();
+        stamp_cell_root(world, root, actor, end);
+        (root, actor)
+    };
+
+    let (old_root, old_actor) = spawn_cell(&mut world);
+    let held_index = world
+        .get_mut::<Inventory>(old_actor)
+        .unwrap()
+        .push(ItemStack::new(HELD_WEAPON, 2));
+    {
+        let mut slots = world.get_mut::<EquipmentSlots>(old_actor).unwrap();
+        equip_to_hand(
+            &mut slots,
+            HandEquip::Weapon { index: held_index, hands: SlotHands::Right },
+            Hand::Left,
+            &HandFacts { stack_count: 2, ..Default::default() },
+        ).expect("equip the left weapon");
+        equip_to_hand(
+            &mut slots,
+            HandEquip::Spell { form: HELD_SPELL, hands: SlotHands::Right },
+            Hand::Right,
+            &HandFacts::default(),
+        ).expect("ready the right spell");
+    }
+    let held_weapon = HandItem::Weapon {
+        index: held_index,
+        base: HELD_WEAPON,
+        anim_type: sword.anim_type,
+        both: false,
+    };
+    let held_spell = HandItem::Spell { form: HELD_SPELL };
+    assert_eq!(hand_item(&world, old_actor, Hand::Left), held_weapon);
+    assert_eq!(hand_item(&world, old_actor, Hand::Right), held_spell);
+
+    let victims = prepare_cell_eviction(
+        &mut world,
+        old_root,
+        &Default::default(),
+        &Default::default(),
+        &mut Default::default(),
+    );
+    // The synthetic cell owns only ECS rows, so it can despawn without a renderer.
+    world.despawn_batch(victims);
+    assert!(!world.has::<CellRoot>(old_root));
+    assert!(resolve_entity_by_global_form_id(&world, placement.form_id).is_none());
+
+    let (new_root, _) = spawn_cell(&mut world);
+    let restored = resolve_entity_by_global_form_id(&world, placement.form_id)
+        .expect("reloaded NPC reference");
+    assert_ne!(restored, old_actor);
+    assert_eq!(world.get::<CellRoot>(restored).unwrap().0, new_root);
+    assert_eq!(hand_item(&world, restored, Hand::Left), held_weapon);
+    assert_eq!(hand_item(&world, restored, Hand::Right), held_spell);
+    let inventory = world.get::<Inventory>(restored).unwrap();
+    let stack = inventory.get(held_index).expect("held stack restored at its inventory index");
+    assert_eq!((stack.base_form_id, stack.count), (HELD_WEAPON, 2));
+}
+
 /// #1890 / DELTA-01 — the spawn-path half of the VWD chain: a base record
 /// whose `visible_when_distant` flag is set ends with a `VisibleWhenDistant`
 /// marker on its placement root, and an unflagged one does not. Complements
