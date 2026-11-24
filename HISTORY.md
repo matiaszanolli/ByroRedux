@@ -26,6 +26,31 @@ Commits hold that record.
 
 ---
 
+## Session 119 — "The Adjustment Bureau": the Mod Configuration Menu host serves SkyUI, MCM Helper and Fallout 4 menus on a native page, and New Vegas' MCM is designed  (2026-11-23, MCM work `f8b606245..66b89286f`)
+
+Script extenders are what most configurable mods lean on, and the Legacy Mod Compatibility PRD promises their script-facing surface without the extender binaries. The Mod Configuration Menu (LMC-UI-002, catalog row U2) was the most-used piece still missing. In this window it went from a design to five shipped slices. Two sessions shared the work: one took slices 1–2, the other slices 3–6, coordinating file by file in one checkout. Every front end draws on the same native page, and each format's rules come from its published source: SkyUI's wiki, MCM Helper's MIT source, and Fallout 4 MCM's author wiki. Fallout 4 MCM's unlicensed plugin code was not read.
+
+- **SkyUI (slices 1–2)**
+  - Quest scripts receive `OnInit` once per save (`f8b606245`).
+  - An engine `SKI_ConfigBase` and `McmHost` model shadow SkyUI's and dispatch state options as SkyUI does. Config scripts register again after every load, and `ShowMessage` blocks (`ce0f153ce`).
+- **Native page (slice 3)**
+  - `crates/native-ui/src/mcm.rs` draws the mod and page list, the two-column option grid and every dialog (slider, menu, colour, key map with unmap, input, message). It is reached from the pause menu and draws only listed engine words (`e843fb09f`).
+  - The binary adapter feeds it from `McmHost`, translating `$` keys through the Scaleform table installed for the page (`8bc1dcbea`).
+  - A script message box raised while the page is open shows on it (`8c2a321b2`).
+- **MCM Helper (slices 4, 4b)**
+  - Engine `MCM_ConfigBase` and `MCM` lay pages out from `config.json` with mod-setting, script-property and global value sources, group conditions and checked actions (`e6b3615ad`).
+  - Settings live in one INI per mod per game and named profile (`--profile-name`, which a boot request's `[mods] name` sets). An earlier install's file is read but never written. These were the owner's decisions.
+  - `keybinds.json` hotkeys bind through key maps and run on a key press. The scancode table is now the full DirectInput keyboard set (`7e152fe9b`).
+- **Fallout 4 MCM (slice 5)**
+  - Menus are found by their `MCM/Config/<mod>` folders, laid out by FO4's control names (button added, image left out, failed groups hidden), and need no config script.
+  - The VM serves F4SE's `RegisterForExternalEvent`, so `OnMCMSettingChange`, `OnMCMMenuOpen` and `OnMCMMenuClose` reach listener scripts (`d18f2e665`).
+- **New Vegas MCM (slice 6, designed)**
+  - The owner chose an engine stand-in for MCM and NVSE string variables in the ObScript VM.
+  - NVSE's byte forms will come from real plugins (source aligned with compiled bytes), not from a GPL reimplementation's stated layout. MCM.dll's undocumented commands are declared gaps, not taken from a disassembly.
+  - Building waits on the MCM Guide and NVSE-compiled plugins, because published scripts already disagree with secondary notes on trait addresses (`4ba0357fd`).
+
+Net: three MCM front ends on one native page, each pinned by end-to-end VM tests on generated config scripts and by click-driven page tests; PRD revisions 32–35, 37, 39 and 41 record the slices. No live run against a real SkyUI, MCM Helper or FO4 MCM mod yet.
+
 ## Session 118 — "Heat": terrain displacement closes stage 4.3 and re-measures itself, the console reads FormIDs as hex, the FO3 audit lands clean, and four audits drain their findings  (2026-11-22 → 2026-11-23, `3bdc0f7f0..070e124d2`, 96 commits)
 
 Session 117 left terrain displacement at stage 4.3's selector, the console parsing FormIDs two ways, FO3 unaudited since 10-31, and the scripting, gameplay and save audits freshly filed. This window finished 4.3 and spent most of its effort re-measuring it, found that two numbers in its own write-up were wrong, fixed the console's FormID parsing, audited FO3, and drained four audit bundles. Several sessions shared one machine, and one run lost a pose to a memory stall from a concurrent build.
