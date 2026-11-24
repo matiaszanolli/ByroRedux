@@ -26,6 +26,17 @@ Commits hold that record.
 
 ---
 
+## Session 120 — "The Sword in the Stone": Skyrim hand-equipment acceptance (2026-11-24, `ba14baeeb..54d314395`, 3 commits)
+
+The hand-equipment follow-ups checked that the same authored slots drive the inventory, NPC loadouts, saves, and Papyrus. The live trap trial exercised the equipment check on a placed Skyrim reference.
+
+- **Hand state (#7397).** Authored slots control player and NPC equips. Fixtures pin dual-wield eligibility, cell eviction, shield and guard reads, spell overrides, and restoration when the plugin order changes (`9f9efec2f`, `76809cd6f`).
+- **Trap scripts (#7403).** Papyrus reads applied magic-effect keywords, receives model-phantom crossings, and advances authored destruction stages. The Bleak Falls smoke checks the stock torch and the torch and sword with the equipment gate enabled. The enabled torch requests the original explosion and resets the pool. A stock gas trap confirmed the hand check with authored settings (`54d314395`).
+
+The workspace has 77 more passing tests than at the Session 119 close. Live Skyrim block reduction follows the CHARAL dependency. [Compatibility matrix](ROADMAP.md#compatibility-matrix)
+
+---
+
 ## Session 119 — "The Adjustment Bureau": the Mod Configuration Menu host serves SkyUI, MCM Helper and Fallout 4 menus on a native page, a live load follows the session's plugins, Skyrim's hands hold what the equip slots say, and the concurrency and renderer audits drain  (2026-11-23, `070e124d2..01d576da1`, 76 commits)
 
 Session 118 closed mid-afternoon with the legacy-mod record layer folding and four audits drained. This window carried the Legacy Mod Compatibility PRD into its script-facing surface, its save model and its scale targets, took the hand-equipment PRD from approval to a shipped first phase, and ran fresh concurrency and renderer audits and fixed nearly everything they filed. The largest single piece was the Mod Configuration Menu (LMC-UI-002, catalog row U2): script extenders are what most configurable mods lean on, the PRD promises their script-facing surface without the extender binaries, and the MCM was the most-used piece still missing. It went from a design to five shipped slices. Two sessions shared that work: one took slices 1–2, the other slices 3–6, coordinating file by file in one checkout. Every front end draws on the same native page, and each format's rules come from its published source: SkyUI's wiki, MCM Helper's MIT source, and Fallout 4 MCM's author wiki. Fallout 4 MCM's unlicensed plugin code was not read.

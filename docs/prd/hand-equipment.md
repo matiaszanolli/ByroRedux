@@ -1,6 +1,6 @@
 # Hand Equipment — Product Requirements
 
-**Status**: ACTIVE (2026-11-24). Revision 17 records the oil-pool VM admission and live hand-equipment check. See §12 for the revision history.
+**Status**: ACTIVE (2026-11-24). Revision 18 records the fixed hand-reader cohort measurement. See §12 for the revision history.
 
 **Tracking**: #7397 (parent and follow-ups), #7398 (Phase 1), #7399 (Phase 2). Revision 3 records the initial Phase 0 work.
 
@@ -217,7 +217,7 @@ and VM fixtures use synthetic forms and can run without game data.
 
 | Scenario | Runner and data | Pass condition |
 |---|---|---|
-| VM admission census | Run `refr_script_coverage` with `VM_REASONS=1` and `VM_REASON_FAMILIES` set to the reader or native under test, with local `Skyrim.esm` and `Skyrim - Misc.bsa`. See the [example invocation](../../crates/scripting/examples/refr_script_coverage.rs). | The weapon-rack activation script remains admitted. Declines at `HasMagicEffectWithKeyword` and `Reset` reach zero. The VM admits all 43 `TrapExplosiveGas` and 734 `TrapOilPool` attachments. |
+| VM admission census | Run `refr_script_coverage` with `VM_REASONS=1` and `VM_REASON_FAMILIES` set to the reader or native under test, with local `Skyrim.esm` and `Skyrim - Misc.bsa`. See the [example invocation](../../crates/scripting/examples/refr_script_coverage.rs). | The weapon-rack activation script remains admitted. Declines at `HasMagicEffectWithKeyword` and `Reset` reach zero. The gas-trap and oil-pool families are admitted. §8 counts unique attachments. |
 | Papyrus hand readback | `cargo test -p byroredux-scripting --lib`. The VM tests cover weapon and spell readback and a shield whose biped mask differs from its hand slot. | Each hand reports the expected type code. The weapon, shield and spell readers return the corresponding form or `None`. |
 | Equipment actions | Run `hands_follow_the_equip_slot_rules` in the `byroredux` binary tests. It runs the transition table below through both menu actions from Q2 and Papyrus `EquipSpell`. | Canonical occupancy after each transition matches the expected code pair and forms. |
 | Authored slots | Run `skyrim_hand_slots_shields_and_two_handers_decode_from_the_official_load_order` in the `byroredux` binary tests with `--ignored` and the Skyrim SE masters. Run `authored_weapon_slots_control_player_equips_and_starting_inventory` and `skyrim_spell_override_resolves_its_authored_equip_slot` for the synthetic cases. | The official load order resolves the expected slots. The spell override and a weapon resolve the same remapped `EQUP` slot. HND-SLOT-006. |
@@ -258,9 +258,13 @@ Assert the codes after each action in order, with the left code listed first.
 |---|---|---|
 | Baseline hand-reader cohort admitted | Script attachments currently admitted by the VM ÷ all script attachments in the fixed cohort that declined on a hand reader at `66668ed4b`. Count attachments by placed reference and attached script. Report other blockers separately. | Skyrim SE, by script family and total |
 
-Publish the cohort count and remaining blockers in the Skyrim SE row of the
-[ROADMAP compatibility matrix](../../ROADMAP.md#compatibility-matrix). The VM's aggregate
-coverage measures a broader population and is a separate result.
+The Skyrim SE row of the [ROADMAP compatibility matrix](../../ROADMAP.md#compatibility-matrix)
+reports the fixed cohort and its remaining blockers. To reproduce it, copy the current
+`refr_script_coverage.rs` example into a detached checkout of `66668ed4b` and build each checkout in
+its own target directory. Run both with `VM_REPORT_ATTACHMENTS=1` against the same `Skyrim.esm` and
+`Skyrim - Misc.bsa`. Keep baseline `declined` rows whose first VM reason names a hand reader, then
+join on FormID and case-insensitive script name. Count current `vm` rows as admitted. The attachment
+report emits each FormID and script pair once, even when both a base and its placement name it.
 
 ---
 
@@ -344,3 +348,4 @@ revisions 8–15).
 | 15 | 2026-11-24 | The equipment-action fixture verifies the §7.2 transition sequence. Both menu actions equip distinct swords, the shield and bow displace earlier items, the torch displaces the two-handed bow, and Papyrus `EquipSpell` readies the spell on the right while the torch stays left. | — |
 | 16 | 2026-11-24 | Added `Actor.HasMagicEffectWithKeyword` over applied magic effects and load-order-remapped `MGEF.KWDA` (#7403). The Skyrim SE census removes all 792 declines at that call and admits the 43 gas-trap attachments. The 734 oil-pool attachments now stop at `ObjectReference.Reset`. | — |
 | 17 | 2026-11-24 | Implemented placed-destructible `ObjectReference.Reset` and admitted all 734 oil-pool attachments. Skyrim SE coverage reaches 17,089 of 19,412 scripted references (88.0%). The live gate crosses the model phantom and observes authored burn stages and reset with a torch. The sword control and stock torch run leave the pool undamaged. | — |
+| 18 | 2026-11-24 | Published the unique hand-reader baseline cohort and remaining VM blockers in the ROADMAP compatibility matrix. The revision 16 and 17 census totals count raw rows, including repeated VMAD attachments. | — |
