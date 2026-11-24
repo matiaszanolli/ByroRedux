@@ -305,7 +305,11 @@ pub(super) fn capture_entity_projections(
                             }
                         })
                 });
-                let weapon_equipped = equipment.is_some_and(|slots| slots.weapon == Some(index));
+                // Held in either hand: the right hand's `weapon`, or what the left hand holds besides a shield (a
+                // weapon or a torch; a shield is a biped occupant above). #7406 — `left_hand` was left out, so a
+                // weapon held only in the left hand read as unequipped across the mod-host boundary.
+                let weapon_equipped = equipment
+                    .is_some_and(|slots| slots.weapon == Some(index) || slots.left_hand == Some(index));
                 let metadata = item_catalog
                     .as_ref()
                     .and_then(|catalog| catalog.sdk_metadata(stack.base_form_id));

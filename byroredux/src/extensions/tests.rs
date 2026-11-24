@@ -3937,6 +3937,38 @@ fn inventory_projection_keeps_starfield_spacesuit_slots() {
     assert!(entry.is_equipped());
 }
 
+/// #7406 — a weapon held only in the left hand (Hand Equipment) is equipped across the mod-host boundary: the
+/// projection's hand flag covers `left_hand` as well as the right hand's `weapon`. A row in neither hand stays
+/// unequipped.
+#[test]
+fn inventory_projection_counts_a_left_hand_weapon_as_equipped() {
+    let mut world = World::new();
+    let actor = world.spawn();
+    let mut inventory = Inventory::new();
+    let right = inventory.push(byroredux_core::ecs::components::ItemStack::new(0x5678, 1));
+    let left = inventory.push(byroredux_core::ecs::components::ItemStack::new(0x9ABC, 1));
+    inventory.push(byroredux_core::ecs::components::ItemStack::new(0x4321, 1));
+    world.insert(actor, inventory);
+    let mut equipment = EquipmentSlots::new();
+    equipment.equip_weapon(right);
+    equipment.equip_left_hand(left);
+    world.insert(actor, equipment);
+    let order = crate::cell_loader::load_order::LoadOrder::new(
+        vec!["Skyrim.esm".into()],
+        vec![byroredux_plugin::esm::reader::GlobalSlot::Regular(0)],
+    );
+    world.insert_resource(
+        crate::cell_loader::load_order::GlobalFormIdResolver::from_load_order(&order),
+    );
+
+    let projections = capture_entity_projections(&world, &BTreeSet::from([actor]));
+    let snapshot = projections[&actor].inventory.as_ref().unwrap();
+    let entry = |local: u32| snapshot.entries().iter().find(|entry| entry.item().local() == local).unwrap();
+    assert!(entry(0x5678).weapon_equipped() && entry(0x5678).is_equipped(), "the right hand's weapon");
+    assert!(entry(0x9ABC).weapon_equipped() && entry(0x9ABC).is_equipped(), "the left hand's weapon");
+    assert!(!entry(0x4321).is_equipped(), "a row in neither hand");
+}
+
 #[test]
 fn inventory_projection_aggregates_portable_forms_and_equipment_slots() {
     let mut world = World::new();
