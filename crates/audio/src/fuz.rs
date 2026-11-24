@@ -17,14 +17,12 @@
 //! packet seek table. The census profile is uniform: mono 44.1 kHz,
 //! `block_align` 1487 (the classic WMA2 packet size), ~32 kbps.
 //!
-//! **Parse, don't link.** No Rust audio stack in this workspace
-//! (kira/symphonia) has a WMA decoder, and linking ffmpeg is out. The
-//! engine therefore parses the container itself — parameters, `dpds`
-//! duration, packet data — and hands the payload to a host `ffmpeg`
-//! binary when one exists (probed at use, optional: without it a Skyrim
-//! line stays silent on the subtitle estimate exactly as pre-#5912, one
-//! warn, no error). With it, the decoded WAV bytes flow into
-//! [`load_sound_from_bytes`] like any other vanilla format.
+//! The xWMA PRD's Q1 decision (2026-11-24) links FFmpeg's `wmav2` decoder
+//! statically through `crates/xwma`, whose build script fetches and builds it.
+//! Until Phase 3 (#7415) removes the host-`ffmpeg` path, this module parses
+//! the container and hands the payload to the host binary when available.
+//! Without it, the line stays silent on the subtitle estimate with a warning.
+//! With it, decoded WAV bytes flow into [`load_sound_from_bytes`].
 
 use std::io::{Read, Write};
 use std::process::{Command, ExitStatus, Stdio};

@@ -1,12 +1,14 @@
 # xWMA Audio Decoding — Product Requirements
 
-**Status**: ACTIVE (2026-11-24). Revision 7 files the tracking issues; revision 6 records the
-owner's approval. Revision 5 records the owner's Q2 to Q4 decisions (§10): voices move to the
-same decoder, effects ship before voices before music, and files decode in the engine at play
-time. Revision 4 records the owner's Q1 decision (§10):
-Alternative B, FFmpeg's `wmav2` decoder vendored and linked statically; it carries that
-through the requirements, deviations, acceptance and phases. Revision 3 records the Phase 0 evidence: V1 and V3 to V6
-are sourced in the [findings](../engine/xwma-phase0-findings.md) and the decoder's
+**Status**: ACTIVE (2026-11-24). Revision 8 records the build-time FFmpeg fetch and the 627
+short entries measured in Phase 1 slices A to C. Revision 7 files the tracking issues.
+Revision 6 records the owner's approval. Revision 5 records the owner's Q2 to Q4 decisions
+(§10): voices move to the same decoder, effects ship before voices before music, and files
+decode in the engine at play time. Revision 4 records the owner's Q1 decision (§10):
+Alternative B, FFmpeg's `wmav2` decoder fetched at build time and linked statically. It
+carries that through the requirements, deviations, acceptance and phases. Revision 3 records
+the Phase 0 evidence: V1 and V3 to V6 are sourced in the
+[findings](../engine/xwma-phase0-findings.md) and the decoder's
 [design](../engine/xwma-decoding.md) is drafted. V2 is a negative result, which is a Q1
 trigger (§10). Revision 2 folded in review round 1: it wrote the
 terminology, goals, requirements, deviations, per-game scope, acceptance, metrics and
@@ -88,7 +90,7 @@ formats are out (UESP, *Skyrim:Music*: "PS4 uses Sony Atrac format (.at9) at
 | **Route** | How an xWMA is used: Static, Streamed or Voice, defined in §3. |
 | **Music stack** | The part of the Skyrim and Fallout 4 music model that waits on the decoder: a music type's priority and ducking (`MUSC`) and its tracks' palette, single and silent kinds (`MUST`). |
 | **Oracle** | The `ffmpeg` command-line tool of the same pinned FFmpeg release the engine links, run outside the engine on the same file. It is a test tool, never a dependency. Because it is the same codec, agreement pins the integration (packetising, sample conversion), not the codec; the codec itself is adjudicated against Microsoft's decoder where V3 finds a disagreement. |
-| **Vendored FFmpeg** | One pinned FFmpeg release's source, kept in the repository the way `third_party/ruffle` is, configured to build only the `wmav2` decoder and what it needs, and linked statically (Q1). |
+| **Pinned FFmpeg** | One FFmpeg release, with its version, tarball URL and SHA-256 in [`crates/xwma/build.rs`](../../crates/xwma/build.rs) and [`third_party/ffmpeg/PATCHES.md`](../../third_party/ffmpeg/PATCHES.md). The build fetches and verifies the tarball, builds the `wmav2` decoder and its support code with every other component disabled, and links the resulting libraries statically. It deletes the extracted source and object files after the build (Q1). |
 | **Unresolved** | The music outcome for a source the build does not play, with its reason ([Music](../engine/music.md) §2). |
 
 ---
@@ -179,13 +181,18 @@ installed Oblivion, Fallout 3 and New Vegas BSAs (54 archives) hold no `.xwm` an
 
 - **XWMA-DEC-001.** The decoder MUST decode every xWMA entry of `Skyrim - Sounds.bsa`,
   `Fallout4 - Sounds.ba2`, `Skyrim - Voices_en0.bsa` and `Fallout4 - Voices.ba2` to its last
-  frame with no error. Today no in-process decoder exists (§3 rows 1 to 5).
+  frame with no error. Today: 198,073 of 198,700 entries reach the declared end. The 627
+  short entries remain open until adjudicated against Microsoft's decoder
+  ([Phase 1 results](../engine/xwma-phase1-results.md)).
 - **XWMA-DEC-002.** The decoder's samples MUST equal the oracle's decode of the same file,
   for every vanilla file, to within one signed 16-bit PCM count per sample, with equal channel
   count, sample rate and frame count (the difference V3 measured between two execution paths
-  of one FFmpeg build). The one vanilla file whose FFmpeg frame count differs from its `dpds`
-  declaration (V3) MUST be adjudicated against Microsoft's decoder before Phase 1 exits.
-  Today no in-process decoder exists.
+  of one FFmpeg build). The 627 of 198,700 entries whose FFmpeg frame count falls short of
+  `dpds` (82 in `Fallout4 - Sounds.ba2`, 389 in `Skyrim - Voices_en0.bsa`, 156 in
+  `Fallout4 - Voices.ba2`) MUST be adjudicated against Microsoft's decoder before Phase 1
+  exits. Today the wrapper and the V3 CLI invocation agree within tolerance across the
+  corpus. The [Phase 1 results](../engine/xwma-phase1-results.md) record the CLI version
+  and the pending Windows measurement.
 - **XWMA-DEC-003.** For a file it decodes, the decoder MUST report channel count, sample
   rate and frame count, and the frames it produces MUST equal the frame count it reported.
 - **XWMA-DEC-004.** A malformed or truncated file, or a `fmt ` format tag other than
@@ -193,14 +200,20 @@ installed Oblivion, Fallout 3 and New Vegas BSAs (54 archives) hold no `.xwm` an
   an unbounded allocation or an unbounded wait. Today `crates/audio/src/fuz.rs` refuses a
   voice stream whose tag is not `0x0161` ("refusing to guess").
 - **XWMA-DEC-005.** The decoder MUST be FFmpeg's `wmav2` decoder from one pinned release,
-  vendored in the repository and linked statically with every other FFmpeg component
-  disabled, so that neither a build nor a run needs FFmpeg on the machine (Q1). Today
-  `crates/audio/src/fuz.rs` starts the host's `ffmpeg` binary for voices and nothing else
-  decodes xWMA.
+  fetched as a pinned tarball at build time and linked statically with every other FFmpeg
+  component disabled. The decoder MUST build and run without an FFmpeg installation (Q1).
+  The build needs network access for the initial fetch on an empty cache or a local copy
+  supplied through `XWMA_FFMPEG_TARBALL`. It uses `curl` for the download, a `tar` that
+  reads `.xz`, a C compiler, GNU Make and a POSIX shell. Today the voice route still starts
+  the host's `ffmpeg` binary through `crates/audio/src/fuz.rs` until Phase 3 (#7415).
 - **XWMA-DEC-006.** The repository MUST carry the pinned release's identifier, its source
-  digest, the licence notice of the files compiled and the configure line that built it, and
-  the build MUST disable assembly so the decoded samples do not vary with the CPU: V3
-  measured a difference of one count between CPU-optimised and scalar runs of one build.
+  digest, the compiled files' licence notice and the configure line that built it.
+  [`third_party/ffmpeg/PATCHES.md`](../../third_party/ffmpeg/PATCHES.md) records the release,
+  digest and licence notice with the [`licence-files.tsv`](../../third_party/ffmpeg/licence-files.tsv)
+  inventory. [`crates/xwma/build.rs`](../../crates/xwma/build.rs) defines the configure line.
+  The build MUST disable assembly so the decoded samples do not vary with the CPU.
+  Phase 1 verified CPU-flag invariance. V3 measured one count of difference between
+  CPU-optimised and scalar runs of one build.
 
 ### 5.2 Static route: effects (`XWMA-STAT`)
 
@@ -292,7 +305,7 @@ original runtime ([V4 evidence on the shared fields](../engine/xwma-phase0-findi
 
 | # | Original behaviour | Redux behaviour | Becomes redundant | Risk and its requirement |
 |---|---|---|---|---|
-| 1 | The games play xWMA through the platform's codec ([V1](../engine/xwma-phase0-findings.md#v1--riff-xwma-format-tag-and-packet-table) verifies platform support. The games' use of the API is **Phase 0: verify**). | FFmpeg's `wmav2` decoder, vendored and statically linked (XWMA-DEC-005). | A host codec install; the `ffmpeg` binary for voices (Q2). | The decoder's samples differ from the original's: XWMA-DEC-002, with the one disagreeing file adjudicated against Microsoft's decoder. The decoder is C code reading untrusted mod files: XWMA-DEC-004 and scenario 6. The build needs a C toolchain and the engine carries an LGPL notice: XWMA-DEC-006, V7. |
+| 1 | The games play xWMA through the platform's codec ([V1](../engine/xwma-phase0-findings.md#v1--riff-xwma-format-tag-and-packet-table) verifies platform support. The games' use of the API is **Phase 0: verify**). | FFmpeg's `wmav2` decoder, fetched at build time and linked statically (XWMA-DEC-005). | A host codec install; the `ffmpeg` binary for voices (Q2). | The decoder's samples may differ from the original's. XWMA-DEC-002 requires Microsoft decoder adjudication for the 627 of 198,700 entries short against `dpds` (82 in `Fallout4 - Sounds.ba2`, 389 in `Skyrim - Voices_en0.bsa`, 156 in `Fallout4 - Voices.ba2`). The decoder is C code reading untrusted mod files: XWMA-DEC-004 and scenario 6. The build needs a C toolchain and the engine carries an LGPL notice: XWMA-DEC-006, V7. |
 | 2 | The CK describes music stack behaviour; the original's exact timing is not documented ([V4 comparison of the CK pages and record definitions](../engine/xwma-phase0-findings.md#v4--palette-layout-loop-data-and-fallout-4-behavior)). | The controller's playlist and crossfade model plays it (XWMA-MUSC-002 to -008). | None. | Music that chooses differently from the original: V4 and V5 settle the source order and the flags before Phase 4. |
 | 3 | A `.fuz` line decodes through whatever the host provides. | In-process (XWMA-VOX-001), `ffmpeg` no longer started. | The `ffmpeg` dependency for every Skyrim and Fallout 4 player. | A voice that played through `ffmpeg` now fails: scenario 5 compares every vanilla line, XWMA-DEC-001, XWMA-VOX-002. |
 
@@ -368,7 +381,7 @@ the only dependencies.
 | V4 | `MUST` palette layers, loop units and the Fallout 4 pages' behaviour | xEdit `wbDefinitionsTES5.pas` and `wbDefinitionsFO4.pas`, the CK and Fallout CK wikis, vanilla records |
 | V5 | Which sources feed Skyrim and Fallout 4 music, in what order | UESP, the CK wikis, xEdit's record definitions |
 | V6 | Whether any Starfield archive carries `.xwm` | `ba2_extensions` over its archives |
-| V7 | That a pinned FFmpeg release built with every component but the `wmav2` decoder, with assembly disabled, decodes the vanilla corpus fed packets by the engine's own xWMA parser to the oracle's samples; the licence of the files it compiles; how its source is vendored | [V7 findings](../engine/xwma-phase0-findings.md#v7--static-wmav2-build-and-corpus-comparison) |
+| V7 | That a pinned FFmpeg release built with every component but the `wmav2` decoder, with assembly disabled, decodes the vanilla corpus fed packets by the engine's own xWMA parser to the oracle's samples. Also covers the licence of the compiled files and the source provenance. | [V7 findings](../engine/xwma-phase0-findings.md#v7--static-wmav2-build-and-corpus-comparison) and the [build-time fetch](../../third_party/ffmpeg/PATCHES.md) |
 
 **Phase 0 — Sources, oracle and design (no engine code).** Closes V1 to V7, writes the
 decoder's design in `docs/engine/` and links it from Related, and takes Q1 to Q4 to the
@@ -376,9 +389,9 @@ owner. Exit: the count of **Phase 0: verify** items in this file is zero or each
 one is filed as an issue, the design exists and passes the PRD gate's link check, and every
 §10 question carries **Decided**.
 
-**Phase 1 — The decoder.** XWMA-DEC-001 to XWMA-DEC-006, the vendored build, and the amended
-note in `crates/audio/src/fuz.rs` that said linking FFmpeg was out. Exit: scenarios 1 and 2
-pass, with decode coverage published for both games.
+**Phase 1 — The decoder.** XWMA-DEC-001 to XWMA-DEC-006, the build that fetches the pinned
+release, and the amended note in `crates/audio/src/fuz.rs` that said linking FFmpeg was out.
+Exit: scenarios 1 and 2 pass, with decode coverage published for both games.
 
 **Phase 2 — Effects.** XWMA-STAT-001, XWMA-STAT-002, XWMA-MOD-001, XWMA-REP-001 and
 XWMA-REP-002. Exit: scenario 3 and scenario 7 pass.
@@ -417,6 +430,7 @@ is published for Skyrim and Fallout 4.
    MIT binary. This reopens the parse-don't-link stance of `crates/audio/src/fuz.rs`, which
    Phase 1 amends. If V7 finds the compiled files' licence unusable, the clean-room route
    (the recommendation above) is the fallback and Q1 returns to the owner.
+   Amended (2026-11-24, owner): the source is fetched at the pinned digest during the build, compiled and deleted, not committed.
 2. **Q2 — Whether voices move to the same decoder.** Recommended: yes, once it decodes
    every vanilla voice stream (XWMA-DEC-001), so `.fuz` lines stop depending on `ffmpeg` and
    the three routes share one codec. Alternative: keep `ffmpeg` for voices, which leaves two
@@ -435,8 +449,8 @@ is published for Skyrim and Fallout 4.
    [Asset Preprocessing PRD](asset-preprocessing.md) (PROPOSED, no decision taken there) would
    do: the runtime then needs no xWMA decoder at all, at the cost of an install-time pass,
    the disk space of decoded audio, and a step a mod's new files must go through.
-   **Decided** (2026-11-24): in the engine, at play time. The conversion alternative would not
-   remove the vendored FFmpeg, since the conversion tool needs it too.
+   **Decided** (2026-11-24): in the engine, at play time.
+   The conversion alternative would still need pinned FFmpeg for the conversion tool.
 
 ---
 
@@ -467,3 +481,4 @@ is published for Skyrim and Fallout 4.
 | 5 | 2026-11-24 | Q2 to Q4 decided (owner): voices move to the in-process decoder, effects then voices then music, decode in the engine at play time; the Q2 conditionals in the scope, XWMA-G-003, XWMA-VOX-001, §9 and the design's Voice row are removed | — |
 | 6 | 2026-11-24 | Owner approval: every §10 question decided, the gate passes; PROPOSED to APPROVED | owner: approved |
 | 7 | 2026-11-24 | APPROVED to ACTIVE: parent #7411 and phase issues #7412 to #7416 filed; the three open Phase 0 verify markers are tracked in #7412; `**Tracking**` line added | — |
+| 8 | 2026-11-24 | Fetch-at-build wording and the 627-entry count folded in after Phase 1 slices A to C; no requirement observable changed | — |

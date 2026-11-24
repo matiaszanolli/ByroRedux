@@ -407,6 +407,15 @@ static link, compiled-file notices and PCM digests. Include a build and
 fixture digest check in each hosted lane. The installed CLI and game data
 are needed for the corpus test only. [FFmpeg platform build guide][v7-platform].
 
+**Update (2026-11-24).** The 82 short entries reported by V7 were all from
+`Fallout4 - Sounds.ba2`. Phase 1 measured 627 short entries out of 198,700
+across four archives. It found another 389 in `Skyrim - Voices_en0.bsa` and
+156 in `Fallout4 - Voices.ba2`. The build-time fetch superseded the in-repo
+vendoring plan above. The build verifies the pinned tarball's SHA-256,
+links the compiled libraries statically, and deletes the extracted source
+and object files. [Phase 1 corpus results](xwma-phase1-results.md).
+[FFmpeg build and provenance](../../third_party/ffmpeg/PATCHES.md).
+
 [v7-release]: https://ffmpeg.org/download.html#release_9.1
 [v7-tarball]: https://ffmpeg.org/releases/ffmpeg-9.1.tar.xz
 [v7-demuxer]: https://github.com/FFmpeg/FFmpeg/blob/n9.1/libavformat/xwma.c

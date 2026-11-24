@@ -7,9 +7,10 @@ This design covers the in-process decoder of the
 [Phase 0 findings](xwma-phase0-findings.md) record the evidence
 for the container, oracle and unresolved codec details.
 
-**Decided** (2026-11-24, PRD Q1): the codec is FFmpeg's `wmav2` decoder, vendored at one
-pinned release and linked statically with every other component disabled. The
-public-description search found no source to write a decoder from
+**Decided** (2026-11-24, PRD Q1): the codec is FFmpeg's `wmav2` decoder from one pinned
+release. The build fetches and verifies the tarball by SHA-256, builds with every other
+component disabled, links the libraries statically, and deletes the extracted source and
+object files. The public-description search found no source to write a decoder from
 ([V2](xwma-phase0-findings.md#v2--public-wma-v2-descriptions)), and the other existing
 decoders were set aside ([V2 addendum](xwma-phase0-findings.md#v2-addendum--existing-decoders-for-alternative-b)).
 The sections below describe the wrapper around that codec: the byte-source boundary, the
@@ -28,19 +29,19 @@ point consumes loose and archived assets from either game.
 | Stage | Contract |
 |---|---|
 | Open | Validate the RIFF `XWMA` form and the `fmt `, `dpds` and `data` ranges. Check little-endian lengths, odd-chunk padding, overflow and enclosing source bounds. Skip well-formed unknown chunks and reject ambiguous duplicate required chunks. A supported stream reports channels, sample rate and a validated presentation frame count. |
-| Configure | Support `WAVE_FORMAT_WMAUDIO2` (`0x0161`), mono and stereo. Verify the declared channels, rate and block alignment before opening the codec or allocating. Give the codec the six-byte setup that FFmpeg's xWMA demuxer supplies (`0x1f` at offset four, the rest zero; [V7](xwma-phase0-findings.md#v7--static-wmav2-build-and-corpus-comparison)): with empty extradata the decoder emitted too few frames on every vanilla input. Report unsupported tags with the tag value. Accept only the variants V7 has shown the vendored build decodes. |
+| Configure | Support `WAVE_FORMAT_WMAUDIO2` (`0x0161`), mono and stereo. Verify the declared channels, rate and block alignment before opening the codec or allocating. Give the codec the six-byte setup that FFmpeg's xWMA demuxer supplies (`0x1f` at offset four, the rest zero; [V7](xwma-phase0-findings.md#v7--static-wmav2-build-and-corpus-comparison)): with empty extradata the decoder emitted too few frames on every vanilla input. Report unsupported tags with the tag value. Accept only the variants V7 has shown the pinned build decodes. |
 | Read | Use the declared compressed packet boundaries and the packet table's cumulative decoded byte counts. Check the table shape, count, monotonicity and PCM-frame alignment. Keep table access over the source range or in a fixed-size cache. |
 | Decode | Send one `block_align` packet at a time to the codec and receive its frames one at a time, copying each into a bounded buffer, so multiple frames in one compressed packet never cause a packet-sized PCM allocation. The wrapper bounds every input it hands the codec: packet size, packet count and the declared duration. |
 | Drain | Account for codec priming, trailing padding and overlap in one presentation timeline. Ordinary EOF requires the validated presentation count to have been delivered. Early EOF, excess output under the verified count rules, and an incomplete packet become terminal errors. |
 
 Microsoft's `dpds` table supplies a decoded-size declaration, and its byte
 units must be converted using the validated PCM width and channel count.
-The [V3 radio fixture](xwma-phase0-findings.md#v3--candidate-oracle-and-tolerance)
-shows a 512-frame difference between the declaration and FFmpeg output from
-a complete file. Establish its presentation-length rule with an independent
-oracle before freezing the open contract. An unexplained discrepancy cannot
-pass by adding silence, trimming to the shorter result or widening the
-sample tolerance.
+Phase 1 found FFmpeg output short of the declaration on 627 of 198,700 entries
+(82 in `Fallout4 - Sounds.ba2`, 389 in `Skyrim - Voices_en0.bsa`, 156 in
+`Fallout4 - Voices.ba2`). Establish the presentation-length rule against Microsoft's decoder
+before freezing the open contract. An unexplained discrepancy cannot pass by adding
+silence, trimming to the shorter result or widening the sample tolerance.
+[Phase 1 corpus results](xwma-phase1-results.md).
 
 The bitstream parser is C code reading files that mods supply. The wrapper treats it as
 untrusted-input handling: inputs are bounded before the call, a decode step either
@@ -140,26 +141,34 @@ digest and metadata.
 
 ## Build, provenance and oracle
 
-The codec is not written here, so there is no clean-room record. What the repository owes
-instead is a reproducible build and a licence trail.
-
-- **One pinned release, vendored.** The release identifier, its source digest, the licence
-  notice of every file compiled and the exact configure line live in the repository,
-  vendored the way `third_party/ruffle` is. The configure line disables every component but
-  the `wmav2` decoder and what it needs, and disables assembly. V3 measured a one-count
-  difference between CPU-optimised and scalar runs of one build, so a scalar build makes the
-  decoded samples the same on every machine (PRD XWMA-DEC-006).
-- **Static link, no FFmpeg on the machine.** The engine neither starts the `ffmpeg` binary
-  nor loads a system `libavcodec` (PRD XWMA-DEC-005). The build needs a C toolchain; V7
-  records what else it needs and how the cross-platform builds PRD is affected.
-- **Licence.** The library is LGPL-2.1-or-later as a whole; V7 confirms the licence of the
-  files a `wmav2`-only build compiles. The engine ships the notice and the means to relink.
+- **One pinned release, fetched at build time.** The version, tarball URL and SHA-256 are
+  pinned in [`crates/xwma/build.rs`](../../crates/xwma/build.rs) and
+  [`third_party/ffmpeg/PATCHES.md`](../../third_party/ffmpeg/PATCHES.md). The build script
+  verifies the tarball and extracts it under `OUT_DIR`. It keeps `libavcodec.a` and
+  `libavutil.a`, deletes the extracted source and object files, and caches the tarball in
+  `target/<profile>/xwma-ffmpeg-cache/` by default.
+- **Scalar build.** The configure line in the build script enables `wmav2` and its support
+  code, disables every other component, and disables assembly for CPU-independent decoded
+  samples (PRD XWMA-DEC-006). V3 measured a one-count difference between CPU-optimised and
+  scalar runs. Phase 1 verified bit-identical output under default and forced-zero CPU
+  flags on 16 corpus files. [Phase 1 corpus results](xwma-phase1-results.md).
+- **Static link, no FFmpeg on the machine.** The in-process decoder needs no FFmpeg
+  installation at build or run time (PRD XWMA-DEC-005). An empty cache requires network access
+  and `curl` for the initial download or `XWMA_FFMPEG_TARBALL` pointing to a local copy. The
+  build uses a `tar` that reads `.xz`, a C toolchain, GNU Make and a POSIX shell. The voice
+  route uses the host's `ffmpeg` until Phase 3 (#7415).
+- **Licence.** The library is LGPL-2.1-or-later as a whole. The compiled-file inventory and
+  notices are recorded in
+  [`licence-files.tsv`](../../third_party/ffmpeg/licence-files.tsv) and
+  [`PATCHES.md`](../../third_party/ffmpeg/PATCHES.md). The engine ships the notice and the
+  means to relink.
 - **The oracle is the same code.** The `ffmpeg` command line of the same pinned release,
   run out of process on the same file, decodes it with the command in the
-  [V3 findings](xwma-phase0-findings.md#v3--candidate-oracle-and-tolerance). Agreement
-  proves the wrapper's packetising and sample conversion, not the codec. The
-  codec is adjudicated against Microsoft's decoder wherever the two disagree, starting with
-  the Fallout 4 radio file whose output is 512 frames shorter than its `dpds` declaration.
+  [V3 findings](xwma-phase0-findings.md#v3--candidate-oracle-and-tolerance). Agreement checks
+  the wrapper's packetising and sample conversion. The Phase 1 run used the V3 invocation
+  with FFmpeg `8.1.2-2ubuntu2`. The Windows measurement will adjudicate the 627 short entries
+  against Microsoft's decoder.
+  [Phase 1 corpus results](xwma-phase1-results.md#microsoft-decoder-adjudication).
 - **What is recorded per file** is the corpus input hash, stream format, oracle version and
   invocation, reported and actual frames, first differing sample and maximum absolute
   signed-16-bit difference. Exact frame count, channel order, sample rate and alignment are
