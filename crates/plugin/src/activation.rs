@@ -354,10 +354,10 @@ pub fn activate(profile: &[ProfilePlugin]) -> Activation {
 /// Whether the files at `a` and `b` hold the same bytes: true at once for one file under two spellings, false at once
 /// for two lengths, otherwise compared in chunks up to the first difference.
 pub fn same_file_content(a: &Path, b: &Path) -> std::io::Result<bool> {
-    if let (Ok(a), Ok(b)) = (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
-        if a == b {
-            return Ok(true);
-        }
+    if let (Ok(a), Ok(b)) = (std::fs::canonicalize(a), std::fs::canonicalize(b))
+        && a == b
+    {
+        return Ok(true);
     }
     if std::fs::metadata(a)?.len() != std::fs::metadata(b)?.len() {
         return Ok(false);
