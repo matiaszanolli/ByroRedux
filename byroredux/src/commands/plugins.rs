@@ -223,7 +223,7 @@ fn owning_carrier(record: Option<&ListMergeRecord>, carriers: &[Carrier]) -> usi
     record.and_then(|record| carriers.iter().rposition(|carrier| carrier.plugin == record.owner())).unwrap_or(last)
 }
 
-/// One carrier chain, `A → B → C (wins)`, a deletion marked; `C (merged)` when the fold merged the form's record
+/// One carrier chain, `A → B → C (wins)`, a deletion or a partial form (#7275) marked; `C (merged)` when the fold merged the form's record
 /// rather than keeping the last one (LMC-REC-003); `B (wins) → C [no-op]` when C's override took no ownership
 /// (LMC-REC-006).
 fn chain(order: &LoadOrder, form_id: u32, carriers: &[Carrier]) -> String {
@@ -237,6 +237,9 @@ fn chain(order: &LoadOrder, form_id: u32, carriers: &[Carrier]) -> String {
             let mut text = plugin_name(order, carrier.plugin as usize).to_owned();
             if carrier.deletes {
                 text.push_str(" [deletes]");
+            }
+            if order.provenance().is_partial(form_id, carrier.plugin) {
+                text.push_str(" [partial]");
             }
             if index == owner {
                 text.push_str(kept);
@@ -630,6 +633,44 @@ mod tests {
         let row = |name: &str| lines.iter().find(|line| line.contains(name)).unwrap().split_whitespace().skip(2).collect::<Vec<_>>().join(" ");
         assert_eq!(row("deadmoney.esm"), "1 0 0", "{lines:?}");
         assert_eq!(row("mymod.esp"), "0 1 0", "{lines:?}");
+    }
+
+    /// #7275 — a partial-form override of a location keeps the master's name and parent through the fold, and the report
+    /// marks it `[partial]`.
+    #[test]
+    fn a_partial_location_override_inherits_and_is_marked() {
+        use byroredux_plugin::esm::records::list_merge::ListMerge;
+        use byroredux_plugin::esm::records::{EsmIndex, FoldProvenance, LctnRecord};
+        const LOC: u32 = 0x0001_0DFB;
+        let master = LctnRecord {
+            form_id: LOC,
+            editor_id: "CityNewAtlantis".into(),
+            full_name: "New Atlantis".into(),
+            parent: Some(0x60),
+            carried: byroredux_plugin::esm::records::lctn_carried::FULL | byroredux_plugin::esm::records::lctn_carried::PARENT,
+            ..Default::default()
+        };
+        let partial = LctnRecord { form_id: LOC, editor_id: "CityNewAtlantis".into(), ..Default::default() };
+        let (mut merged, mut provenance, mut merge) = (EsmIndex::default(), FoldProvenance::default(), ListMerge::new(MergePolicy::Merge));
+        for (position, (record, is_partial)) in [(master, false), (partial, true)].into_iter().enumerate() {
+            let mut index = EsmIndex::default();
+            index.record_types.insert(LOC, *b"LCTN");
+            index.locations.insert(LOC, record);
+            if is_partial {
+                index.partial_records.insert(LOC);
+            }
+            provenance.note_plugin(position, &index, &merged, |_| Some(0));
+            let pending = merge.note_plugin(position, &index, &merged, &provenance, &|a: u32, b: u32| b < a);
+            merged.merge_from(index);
+            pending.apply(&mut merged);
+        }
+        assert_eq!(merged.locations[&LOC].full_name, "New Atlantis");
+        assert_eq!(merged.locations[&LOC].parent, Some(0x60));
+
+        let mut order = LoadOrder::all_regular(vec!["starfield.esm".into(), "sfbgs003.esm".into()]);
+        order.set_fold(provenance, merge);
+        let lines = form_lines(&order, LOC, Some(*b"LCTN")).join("\n");
+        assert!(lines.contains("starfield.esm → sfbgs003.esm [partial] (wins)"), "{lines}");
     }
 
     /// LMC-REC-010 in the report: the sub-records no parser decodes are named per plugin and form, in the form's own report

@@ -8,7 +8,7 @@
 //! headers the walk traced (`record_types`, `deleted_record_metadata`), so it costs a lookup per record and stores
 //! only the forms that are overridden, injected or deleted.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::EsmIndex;
 
@@ -28,6 +28,8 @@ pub struct FoldProvenance {
     overridden: HashMap<u32, Vec<Carrier>>,
     /// Forms first carried by a plugin that does not own their ID space, with that plugin's position (LMC-REC-005).
     injected: HashMap<u32, u32>,
+    /// `(form, plugin position)` of each override written as a partial form (record flag `0x4000`, #7275).
+    partial: HashSet<(u32, u32)>,
 }
 
 impl FoldProvenance {
@@ -61,6 +63,16 @@ impl FoldProvenance {
                 self.injected.insert(form_id, position);
             }
         }
+        for &form_id in &plugin.partial_records {
+            if self.overridden.contains_key(&form_id) {
+                self.partial.insert((form_id, position));
+            }
+        }
+    }
+
+    /// Whether the plugin at load-order `position` overrode `form_id` with a partial form (#7275).
+    pub fn is_partial(&self, form_id: u32, position: u32) -> bool {
+        self.partial.contains(&(form_id, position))
     }
 
     /// Record that the plugin at `position` wrote `form_id`: the first call names the form's first carrier, each later

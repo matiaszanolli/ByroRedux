@@ -109,7 +109,7 @@ pub use misc::{
     AliasFlags, AliasInjectedData, AliasLinkedAlias, ArmaRecord, AvifRecord, BptdPart, BptdRecord,
     CobjRecord, CstyRecord, DialRecord, DialogueCategory, DlbrRecord, CndfRecord, EqupRecord, KywdRecord, AttractionRuleRecord, EcznRecord, EfshFill, EfshRecord, EnchRecord, ExplRecord, EyesRecord,
     HairRecord, HdptRecord, IdleRecord, ImadColorKey, ImadRecord, ImadScalarKey, ImgsRecord,
-    ImodRecord, InfoDataHeader, InfoRecord, IpctRecord, IpdsRecord, LctnRecord, RelaRecord, LgtmRecord, MagicEffectItem, MesgRecord,
+    ImodRecord, InfoDataHeader, InfoRecord, IpctRecord, IpdsRecord, LctnRecord, LctnRefTables, lctn_carried, RelaRecord, LgtmRecord, MagicEffectItem, MesgRecord,
     MgefRecord, MinimalEsmRecord, NaviRecord, NavmExternalConnection, NavmRecord, NavmTriangle,
     PackClock, PackDataInput, PackDataTarget, PackDataTargetKind, PackDataValue, PackDays,
     PackLocation, PackLocationTarget, PackMonth, PackObjectClass, PackProcedure, PackRecord, PackSchedule, PackSeason, PackTarget, PackTargetKind,
