@@ -1,9 +1,9 @@
 # xWMA Audio Decoding — Product Requirements
 
-**Status**: PROPOSED (2026-11-24). Revision 5 records the owner's Q2 to Q4 decisions (§10):
-voices move to the same decoder, effects ship before voices before music, and files decode in
-the engine at play time; every question is now decided, and the owner's approval is not yet
-recorded. Revision 4 records the owner's Q1 decision (§10):
+**Status**: ACTIVE (2026-11-24). Revision 7 files the tracking issues; revision 6 records the
+owner's approval. Revision 5 records the owner's Q2 to Q4 decisions (§10): voices move to the
+same decoder, effects ship before voices before music, and files decode in the engine at play
+time. Revision 4 records the owner's Q1 decision (§10):
 Alternative B, FFmpeg's `wmav2` decoder vendored and linked statically; it carries that
 through the requirements, deviations, acceptance and phases. Revision 3 records the Phase 0 evidence: V1 and V3 to V6
 are sourced in the [findings](../engine/xwma-phase0-findings.md) and the decoder's
@@ -15,6 +15,8 @@ format-tag and music-type claims, moved Q1's two research conditions into Phase 
 recorded what the shipped decisions already settle (§10). Statements about how an original
 engine, format or tool behaves cite external sources; a claim that could not be verified
 is marked **Phase 0: verify** instead of being stated as fact.
+
+**Tracking**: #7411 (parent). Phases: #7413 (1), #7414 (2), #7415 (3), #7416 (4). Phase 0 residuals: #7412.
 
 **Scope**: the engine decodes every xWMA (`.xwm`) stream that Skyrim and Fallout 4 ship,
 and a mod's, in process: the Fallout 4 effects (Static route), the Skyrim and Fallout 4
@@ -463,3 +465,5 @@ is published for Skyrim and Fallout 4.
 | 3 | 2026-11-24 | Phase 0 evidence recorded: V1 and V3 to V6 sourced in the findings, V2 a negative result (Q1 trigger), decoder design drafted, Related and document map link both | — |
 | 4 | 2026-11-24 | Q1 decided (owner): Alternative B, vendored static FFmpeg `wmav2`; XWMA-DEC-002 and XWMA-DEC-005 rewritten, XWMA-DEC-006 added, V7 added, deviation row 1, scenario 6, terminology and Phase 1 follow; clean-room precedent wording replaced | — |
 | 5 | 2026-11-24 | Q2 to Q4 decided (owner): voices move to the in-process decoder, effects then voices then music, decode in the engine at play time; the Q2 conditionals in the scope, XWMA-G-003, XWMA-VOX-001, §9 and the design's Voice row are removed | — |
+| 6 | 2026-11-24 | Owner approval: every §10 question decided, the gate passes; PROPOSED to APPROVED | owner: approved |
+| 7 | 2026-11-24 | APPROVED to ACTIVE: parent #7411 and phase issues #7412 to #7416 filed; the three open Phase 0 verify markers are tracked in #7412; `**Tracking**` line added | — |
