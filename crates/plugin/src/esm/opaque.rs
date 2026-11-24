@@ -319,7 +319,7 @@ mod tests {
             return;
         };
         let bytes = std::fs::read(&path).unwrap();
-        let index = parse_esm_with_options(&bytes, None, ParseOptions { collect_opaque: true }).expect("parse");
+        let index = parse_esm_with_options(&bytes, None, ParseOptions { collect_opaque: true, ..Default::default() }).expect("parse");
         assert_eq!(index.game, GameKind::Fallout4);
 
         let layout = layout_of(&bytes).unwrap();
@@ -366,7 +366,7 @@ mod tests {
         }
         let timed = |collect_opaque| {
             let started = std::time::Instant::now();
-            parse_esm_with_options(&bytes, None, ParseOptions { collect_opaque }).expect("parse");
+            parse_esm_with_options(&bytes, None, ParseOptions { collect_opaque, ..Default::default() }).expect("parse");
             started.elapsed().as_secs_f64()
         };
         eprintln!(

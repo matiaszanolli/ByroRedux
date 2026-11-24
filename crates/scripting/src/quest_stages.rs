@@ -380,10 +380,8 @@ impl QuestStageState {
     pub fn set_stage(&mut self, quest: QuestFormId, stage: u16) -> u16 {
         self.revision.bump();
         // `SetStage` on a quest that has not started starts it (it enters the map running).
-        if !self.quests.contains_key(&quest) {
-            if !self.started.contains(&quest) {
-                self.started.push(quest);
-            }
+        if !self.quests.contains_key(&quest) && !self.started.contains(&quest) {
+            self.started.push(quest);
         }
         let entry = self.quests.entry(quest).or_default();
         let prev = entry.current_stage;

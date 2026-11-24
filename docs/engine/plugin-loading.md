@@ -28,18 +28,20 @@ What the engine does today with a legacy plugin set (`--master …` `--esm`), th
    capital changed identity, and ids saved against it no longer resolve. The fold is also not any filesystem's case
    rule: final sigma and `İ` fold differently from NTFS's per-character table. Which host rule to match is an open
    LMC-ID-009 decision (#7249).
-2. **Activation (LMC-ID-003, -011)**, once at boot, before anything reads argv
+2. **Activation (LMC-ID-003, -010, -011)**, once at boot, before anything reads argv
    (`byroredux/src/plugin_activation.rs` over `crates/plugin/src/activation.rs`). The profile is the `--master` plugins
    in argv order, then the `--esm`. Each plugin's `TES4` record alone is read for its masters. A master the profile
    lists after one of its dependents is hoisted to just ahead of the first dependent that needs it; nothing else moves,
    so profile order decides among unrelated plugins. A plugin whose master is not in the profile is disabled with every
    plugin that transitively depends on it, and activation continues; so are a duplicate identity, a master cycle and an
-   unreadable header. The activated `--master` list replaces the given one in the effective args, so the cell loader,
+   unreadable header. A duplicate (a later entry with an earlier entry's identity) is compared byte for byte with the
+   earlier one, which loads either way: the same file or the same bytes is reported as a repeat, different bytes as an
+   identity collision (LMC-ID-010). The activated `--master` list replaces the given one in the effective args, so the cell loader,
    the exterior context, the HUD probes, `--list-cells` and the plugin set a save records all see one order. Every move
    and every disabled plugin (with the chain back to the missing master) is logged as a warning and kept for
    `plugins.activation`. The `--esm` must activate and stay last, or boot stops with the report: a missing master of
    its own names the `--master` to add.
-3. **The fold (LMC-REC-002, -005, -007).** `parse_record_indexes_in_load_order` walks the plugins in parallel and folds
+3. **The fold (LMC-REC-002, -005, -007, -009; LMC-ID-008).** `parse_record_indexes_in_load_order` walks the plugins in parallel and folds
    them in load order with `EsmIndex::merge_from`, the last carrier of a record winning it whole (the `legacy` policy;
    `merge`, LMC-REC-003, combines records with lists, item 6). Before each plugin's merge, `FoldProvenance::note_plugin`
    (`crates/plugin/src/esm/records/provenance.rs`) notes, from the record headers the walk traced, every form that
@@ -51,6 +53,12 @@ What the engine does today with a legacy plugin set (`--master …` `--esm`), th
    index's included (cells, modelled base objects, pack-ins, texture sets, material swaps), and a deleted reference
    leaves its cell; `load_order_deletion_tests.rs` measures this on FNV, Skyrim SE and Fallout 4 + UFO4P against a raw
    record walk.
+   Every plugin is read as the profile's game, the base master's (`ProfileGame`, LMC-REC-009): its TES4 light and
+   medium bits mean what that game defines (xEdit tests them against the game it loads, not the file's own header), so
+   an ESL-flagged plugin with an older header is light in a Skyrim SE profile; a plugin whose header bands as another
+   game is read as the profile's anyway and logged. Those bits decide only the plugin's slot, and so its Form ID
+   decoding (LMC-ID-008): no record count is imposed, but a light or medium plugin's own records whose object ids its
+   space cannot hold (above `0xFFF` or `0xFFFF`) are masked into it and may collide, and the fold logs how many.
 4. **The conflict report (LMC-REC-007).** `plugins.conflicts` lists the overridden forms with wins, losses and
    injections per plugin; `plugins.conflicts <formid>` one form's carriers in load order, its winner and the policy;
    and `plugins.conflicts <formid> fields` reads each carrier's record back from its file
@@ -117,8 +125,9 @@ What the engine does today with a legacy plugin set (`--master …` `--esm`), th
    first; the base master's directory, the game's `Data`, is the implicit unmanaged root and sorts first. Before
    activation, each root lists the plugins and archives at its top level, and a `--master` or `--esm` given as a bare
    file name that names no file resolves through the roots, the highest-priority root first and the unmanaged root
-   last (the resolved path replaces it in the effective args). A root's identity is its directory name, case-folded;
-   two roots sharing one are reported (LMC-ID-010). After activation, each root learns which of the profile's plugins
+   last (the resolved path replaces it in the effective args). A root's identity is its directory name, case-folded.
+   A directory listed twice, under any spelling, is one root at its first place; two different directories with one
+   identity are reported as an identity collision and both load (LMC-ID-010). After activation, each root learns which of the profile's plugins
    it ships; a root whose every such plugin was disabled is disabled with them and its loose files leave the session,
    while a root that keeps one keeps its assets with a warning. When the profile names any root, activation writes the
    enabled roots into the effective args as `--loose-root` flags in order, and every asset provider's loose tier is
