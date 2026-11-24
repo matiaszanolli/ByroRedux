@@ -39,9 +39,10 @@
 //! entries (`0xFFFFFFFF`, a slot the author left empty) hold a place, not a form: they are never an operation and keep
 //! their positions. Per-entry extra data (`COED` owner and condition) is not decoded, so it takes no part in the
 //! comparison. Locations (`LCTN`) and quests (`QUST`) still follow `legacy`: Fallout 4 and Starfield write overrides of
-//! both as *partial forms* (record flag `0x4000`, xEdit "Partial Form"), which carry only the sub-records they change,
-//! and the fold does not overlay a partial form on the record it overrides yet, so an absent sub-record would read as a
-//! removal. Every record without a list follows `legacy` too.
+//! both as *partial forms* (record flag `0x4000`, xEdit "Partial Form"), which carry only the sub-records they change.
+//! The fold overlays a partial `LCTN` or `QUST` on the record it overrides (#7275, `LctnRecord::overlaid_on`,
+//! `QustRecord::overlaid_on`), so their absent members are inherited; extending the per-field merge to them is still
+//! to do. Every record without a list follows `legacy` too.
 
 use std::collections::HashMap;
 

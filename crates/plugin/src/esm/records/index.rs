@@ -311,6 +311,10 @@ pub struct EsmIndex {
     /// Tombstones retained across plugin merges so deleted overrides remove
     /// metadata inherited from an earlier master.
     pub deleted_record_metadata: HashSet<u32>,
+    /// This plugin's records that set record flag `0x4000`, xEdit's "Partial Form" (#7275). Per plugin: the fold reads
+    /// it from the index it is folding in (a partial `LCTN` overlays the record it overrides, and the provenance marks
+    /// the override) and never carries it into the merged index.
+    pub partial_records: HashSet<u32>,
     /// The sub-records no parser decoded in the plugin this index was parsed from, by remapped FormID (LMC-REC-010).
     /// Empty unless the parse asked for them ([`super::ParseOptions::collect_opaque`]); the load-order fold takes them
     /// out per plugin, stamps them with the plugin ([`crate::esm::opaque::OpaqueStore`]) and does not merge them.
@@ -1728,6 +1732,20 @@ impl EsmIndex {
             .extend(std::mem::take(&mut other.record_types));
         self.deleted_record_metadata.extend(deleted_record_metadata);
 
+        // #7275 — a partial form carries only the sub-records it changes; overlay it on the record it overrides so the
+        // members it left out are inherited, not cleared. Quests (xEdit's "Partial Form" flag, `misc/quest.rs`) and
+        // locations (inferred, `misc/location.rs`); `CELL`, `DIAL` and `WRLD` partials still replace whole.
+        for form_id in std::mem::take(&mut other.partial_records) {
+            if let (Some(partial), Some(previous)) = (other.locations.get(&form_id), self.locations.get(&form_id)) {
+                let overlaid = partial.overlaid_on(previous);
+                other.locations.insert(form_id, overlaid);
+            }
+            if let (Some(partial), Some(previous)) = (other.quests.get(&form_id), self.quests.get(&form_id)) {
+                let overlaid = partial.overlaid_on(previous);
+                other.quests.insert(form_id, overlaid);
+            }
+        }
+
         // Every top-level record category is merged by the same table that
         // drives `total()` and `category_breakdown()`, so a new category
         // cannot be left out of load-order folding (#2907).
@@ -2259,6 +2277,12 @@ mod tests {
         /// Maps that are deliberately NOT record counts, each with the reason
         /// a reader would otherwise have to reconstruct.
         const EXCLUSIONS: &[(&str, &str)] = &[
+            (
+                "partial_records",
+                "#7275 — a plugin's partial-form records, read by the load-order fold from the plugin it folds in (a \
+                 partial LCTN overlays the record it overrides; the provenance marks the override) and never carried \
+                 into the merged index; no records",
+            ),
             (
                 "weekday_origin",
                 "AIP-SCHED-004 — one scalar (`Option<u8>`), the weekday the game clock starts on, resolved from \

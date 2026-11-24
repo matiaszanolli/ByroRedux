@@ -501,6 +501,7 @@ pub fn parse_esm_with_options(data: &[u8], remap: Option<FormIdRemap>, options: 
         .into_inner();
     index.record_types = record_type_trace.record_types;
     index.deleted_record_metadata = record_type_trace.deleted_records;
+    index.partial_records = record_type_trace.partial_records;
     // #1272 — drain per-cell navmeshes (collected by the cell walker's
     // child-GRUP loop) into the global `EsmIndex.navmeshes` map. The
     // top-level NAVM dispatch at the `b"NAVM"` arm above only ever

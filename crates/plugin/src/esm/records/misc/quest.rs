@@ -429,6 +429,181 @@ pub struct QustRecord {
     /// Consumed by the scripting alias-fill/injection runtime. See
     /// [`QuestAlias`].
     pub aliases: Vec<QuestAlias>,
+    /// The [`qust_carried`] bits of the top-level members this record
+    /// carried, so a partial form ([`QustRecord::overlaid_on`]) inherits
+    /// exactly the ones it left out (#7275).
+    pub carried: u32,
+}
+
+/// The top-level `QUST` members of xEdit's `wbRecord(QUST)` (`wbDefinitionsFO4.pas`, `wbDefinitionsSF1.pas`) that
+/// [`QustRecord`] decodes, one bit each. A partial form (record flag `0x4000`, which xEdit names "Partial Form" on
+/// `QUST`) carries only the members it changes; every member it leaves out comes from the previous override (xEdit
+/// `wbConflict.pas`, the last element walked back past partial forms), and a block member (stages, objectives,
+/// aliases) is carried or inherited whole.
+pub mod qust_carried {
+    pub const SCRIPTS: u32 = 1 << 0;
+    pub const FULL: u32 = 1 << 1;
+    pub const GENERAL: u32 = 1 << 2;
+    pub const SCRIPT_REF: u32 = 1 << 3;
+    pub const EVENT: u32 = 1 << 4;
+    pub const LOCATION: u32 = 1 << 5;
+    pub const COMPLETION_XP: u32 = 1 << 6;
+    pub const DISPLAY_GLOBALS: u32 = 1 << 7;
+    pub const FILTER: u32 = 1 << 8;
+    pub const DIALOGUE_CONDITIONS: u32 = 1 << 9;
+    pub const SECONDARY_CONDITIONS: u32 = 1 << 10;
+    pub const STAGES: u32 = 1 << 11;
+    pub const OBJECTIVES: u32 = 1 << 12;
+    pub const TARGETS: u32 = 1 << 13;
+    pub const NEXT_ALIAS: u32 = 1 << 14;
+    pub const ALIASES: u32 = 1 << 15;
+    pub const DESCRIPTION: u32 = 1 << 16;
+    pub const GROUP: u32 = 1 << 17;
+    pub const SWF: u32 = 1 << 18;
+}
+
+/// The [`qust_carried`] members `subs` carries, walked in xEdit's member order: a sub-record belongs to the quest
+/// itself until a stage (`INDX`), objective (`QOBJ`) or alias (`ALST` / `ALLS` … `ALED`) opens, and the shared
+/// signatures (`CTDA`, `NNAM`, `SNAM`, …) count only at quest level. `ANAM` and an alias's `ALED` return to it; a
+/// ref collection alias (`ALCS`, FO4) has no `ALED`, and its only other member, `ALMI`, maps to nothing.
+fn qust_carried_members(subs: &[SubRecord]) -> u32 {
+    use qust_carried::*;
+    #[derive(PartialEq)]
+    enum At {
+        Quest,
+        Block,
+    }
+    let mut at = At::Quest;
+    let mut after_next = false;
+    let mut carried = 0;
+    for sub in subs {
+        match &sub.sub_type {
+            b"INDX" => {
+                carried |= STAGES;
+                at = At::Block;
+            }
+            b"QOBJ" => {
+                carried |= OBJECTIVES;
+                at = At::Block;
+            }
+            b"ALST" | b"ALLS" => {
+                carried |= ALIASES;
+                at = At::Block;
+            }
+            b"ALCS" => {
+                carried |= ALIASES;
+                at = At::Quest;
+            }
+            b"ALED" => at = At::Quest,
+            b"ANAM" => {
+                carried |= NEXT_ALIAS;
+                at = At::Quest;
+            }
+            _ if at == At::Block => {}
+            b"NEXT" => {
+                after_next = true;
+                carried |= SECONDARY_CONDITIONS;
+            }
+            b"CTDA" | b"CIS1" | b"CIS2" => carried |= if after_next { SECONDARY_CONDITIONS } else { DIALOGUE_CONDITIONS },
+            b"VMAD" => carried |= SCRIPTS,
+            b"FULL" => carried |= FULL,
+            b"DNAM" | b"DATA" => carried |= GENERAL,
+            b"SCRI" => carried |= SCRIPT_REF,
+            b"ENAM" => carried |= EVENT,
+            b"LNAM" => carried |= LOCATION,
+            b"XNAM" => carried |= COMPLETION_XP,
+            b"QTGL" => carried |= DISPLAY_GLOBALS,
+            b"FLTR" => carried |= FILTER,
+            b"QSTA" => carried |= TARGETS,
+            b"NNAM" => carried |= DESCRIPTION,
+            b"GNAM" => carried |= GROUP,
+            b"SNAM" => carried |= SWF,
+            _ => {}
+        }
+    }
+    carried
+}
+
+impl QustRecord {
+    /// This record as a partial form (record flag `0x4000`, #7275) over `previous`, the record it overrides: every
+    /// [`qust_carried`] member it carried replaces `previous`'s, every member it left out is inherited. `EDID` is
+    /// always carried (xEdit keeps it in a partial form).
+    pub fn overlaid_on(&self, previous: &QustRecord) -> QustRecord {
+        use qust_carried::*;
+        let has = |bit: u32| self.carried & bit != 0;
+        let mut out = previous.clone();
+        out.form_id = self.form_id;
+        out.editor_id = self.editor_id.clone();
+        out.carried = self.carried | previous.carried;
+        if has(SCRIPTS) {
+            out.fragments = self.fragments.clone();
+            out.script_instance = self.script_instance.clone();
+            out.alias_scripts = self.alias_scripts.clone();
+        }
+        if has(FULL) {
+            out.full_name = self.full_name.clone();
+        }
+        if has(GENERAL) {
+            out.skyrim_plus = self.skyrim_plus;
+            out.quest_flags = self.quest_flags;
+            out.priority = self.priority;
+            out.quest_delay = self.quest_delay;
+            out.general_version = self.general_version;
+            out.general_aux = self.general_aux;
+            out.quest_type = self.quest_type;
+        }
+        if has(SCRIPT_REF) {
+            out.script_ref = self.script_ref;
+        }
+        if has(EVENT) {
+            out.event = self.event;
+        }
+        if has(LOCATION) {
+            out.location = self.location;
+        }
+        if has(COMPLETION_XP) {
+            out.completion_xp = self.completion_xp;
+        }
+        if has(DISPLAY_GLOBALS) {
+            out.text_display_globals = self.text_display_globals.clone();
+        }
+        if has(FILTER) {
+            out.object_window_filter = self.object_window_filter.clone();
+        }
+        if has(DIALOGUE_CONDITIONS) {
+            out.dialogue_conditions = self.dialogue_conditions.clone();
+        }
+        if has(SECONDARY_CONDITIONS) {
+            out.secondary_conditions = self.secondary_conditions.clone();
+        }
+        if has(STAGES) {
+            out.stages = self.stages.clone();
+            out.start_up_stage = self.start_up_stage;
+            out.shut_down_stage = self.shut_down_stage;
+        }
+        if has(OBJECTIVES) {
+            out.objectives = self.objectives.clone();
+        }
+        if has(TARGETS) {
+            out.targets = self.targets.clone();
+        }
+        if has(NEXT_ALIAS) {
+            out.next_alias_id = self.next_alias_id;
+        }
+        if has(ALIASES) {
+            out.aliases = self.aliases.clone();
+        }
+        if has(DESCRIPTION) {
+            out.description = self.description.clone();
+        }
+        if has(GROUP) {
+            out.quest_group = self.quest_group;
+        }
+        if has(SWF) {
+            out.swf_file = self.swf_file.clone();
+        }
+        out
+    }
 }
 
 /// Which block-structured sub-record we're currently inside while
@@ -516,6 +691,7 @@ pub fn parse_qust(
 
     // Flush whichever block was open at the end of the stream.
     flush_block(&mut out, block);
+    out.carried = qust_carried_members(subs);
     if !skyrim_plus {
         attach_stage_result_scripts(&mut out, subs, remap);
     }
@@ -2162,4 +2338,72 @@ mod tests {
             declared,
         );
     }
+
+    /// #7275 — the member walk follows xEdit's QUST order: quest-level
+    /// conditions before `NEXT` are the dialogue conditions and after it the
+    /// Story Manager's; a stage's `CTDA`, an objective's `NNAM` and an alias's
+    /// sub-records belong to their block, and `NNAM` / `GNAM` after the last
+    /// alias's `ALED` are the quest's own again.
+    #[test]
+    fn qust_members_are_classified_in_xedit_order() {
+        use qust_carried::*;
+        let ctda = || sub(b"CTDA", [0u8; 32]);
+        let subs = vec![
+            sub(b"EDID", b"MQ101\0"),
+            sub(b"VMAD", [5, 0, 2, 0, 0, 0]),
+            sub(b"DNAM", [0x01, 0x01, 80, 0, 0, 0, 0, 0, 1, 0, 0, 0]),
+            ctda(),
+            sub(b"NEXT", []),
+            sub(b"INDX", [0x0A, 0x00, 0x00, 0x00]),
+            ctda(),
+            sub(b"QOBJ", 10u16.to_le_bytes()),
+            sub(b"NNAM", b"Objective text\0"),
+            sub(b"ANAM", 8u32.to_le_bytes()),
+            sub(b"ALST", 7i32.to_le_bytes()),
+            sub(b"ALID", b"QuestGiver\0"),
+            sub(b"ALED", []),
+            sub(b"NNAM", b"Quest description\0"),
+            sub(b"GNAM", 0x51u32.to_le_bytes()),
+        ];
+        let carried = qust_carried_members(&subs);
+        assert_eq!(
+            carried,
+            SCRIPTS | GENERAL | DIALOGUE_CONDITIONS | SECONDARY_CONDITIONS | STAGES | OBJECTIVES | NEXT_ALIAS
+                | ALIASES | DESCRIPTION | GROUP
+        );
+        assert_eq!(qust_carried_members(&[sub(b"EDID", b"DLC04MQ\0"), sub(b"VMAD", [5, 0, 2, 0, 0, 0])]), SCRIPTS);
+    }
+
+    /// #7275 — a partial `QUST` inherits every member it leaves out: the
+    /// `DLCNukaWorld.esm` `QUST 0005DEE4` shape, a partial carrying one member
+    /// over a master with a name, a general block, stages and aliases.
+    #[test]
+    fn a_partial_quest_inherits_what_it_leaves_out() {
+        let master = parse_qust(
+            0x5DEE4,
+            &[
+                sub(b"EDID", b"MQ101\0"),
+                sub(b"FULL", b"Main Quest\0"),
+                sub(b"DNAM", [0x01, 0x01, 80, 0, 0, 0, 0, 0, 1, 0, 0, 0]),
+                sub(b"INDX", [0x0A, 0x00, 0x00, 0x00]),
+                sub(b"INDX", [0x14, 0x00, 0x00, 0x00]),
+                sub(b"ANAM", 8u32.to_le_bytes()),
+                sub(b"ALST", 7i32.to_le_bytes()),
+                sub(b"ALID", b"QuestGiver\0"),
+                sub(b"ALED", []),
+            ],
+            &None,
+        );
+        let partial = parse_qust(0x5DEE4, &[sub(b"EDID", b"MQ101\0"), sub(b"FULL", b"Renamed\0")], &None);
+        assert!(partial.stages.is_empty() && partial.aliases.is_empty(), "on its own the partial form has neither");
+
+        let folded = partial.overlaid_on(&master);
+        assert_eq!(folded.full_name, "Renamed", "a carried member replaces the earlier one");
+        assert_eq!(folded.stages.len(), 2);
+        assert_eq!(folded.aliases.len(), 1);
+        assert_eq!(folded.quest_flags, master.quest_flags);
+        assert_eq!(folded.priority, 80);
+        assert_eq!(folded.next_alias_id, master.next_alias_id);
+    }
 }
+

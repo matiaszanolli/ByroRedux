@@ -32,6 +32,12 @@ pub(crate) const FLAG_COMPRESSED: u32 = 0x00040000;
 /// along. One name, one bit.
 pub(crate) const FLAG_DELETED: u32 = 0x0000_0020;
 
+/// Record flag `0x4000`, xEdit's "Partial Form" (`wbDefinitionsFO4.pas`, `wbDefinitionsSF1.pas`): an override that
+/// carries only the sub-records it changes (#7275). The fold overlays such a record on the one it overrides where the
+/// record type allows it (`LctnRecord::overlaid_on`); [`RecordTypeTrace::partial_records`] keeps the flag for the
+/// conflict report.
+pub(crate) const FLAG_PARTIAL_FORM: u32 = 0x0000_4000;
+
 /// Largest inflation multiple a compressed record may claim over its own
 /// compressed byte count (#3399, recalibrated #4640).
 ///
@@ -451,6 +457,8 @@ pub struct EsmReader<'a> {
 pub struct RecordTypeTrace {
     pub record_types: HashMap<u32, [u8; 4]>,
     pub deleted_records: HashSet<u32>,
+    /// The records that set [`FLAG_PARTIAL_FORM`] (#7275).
+    pub partial_records: HashSet<u32>,
 }
 
 /// FormID mod-index remap rule for a single plugin in a load order.
@@ -1028,10 +1036,16 @@ impl<'a> EsmReader<'a> {
                 let mut trace = trace.borrow_mut();
                 if flags & FLAG_DELETED != 0 {
                     trace.record_types.remove(&form_id);
+                    trace.partial_records.remove(&form_id);
                     trace.deleted_records.insert(form_id);
                 } else {
                     trace.deleted_records.remove(&form_id);
                     trace.record_types.insert(form_id, record_type);
+                    if flags & FLAG_PARTIAL_FORM != 0 {
+                        trace.partial_records.insert(form_id);
+                    } else {
+                        trace.partial_records.remove(&form_id);
+                    }
                 }
             }
         Ok(RecordHeader {

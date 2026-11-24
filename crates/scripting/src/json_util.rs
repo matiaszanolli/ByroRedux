@@ -142,14 +142,13 @@ fn parse_path(path: &str) -> Option<Vec<Segment>> {
             let (index, tail) = after.split_once(']')?;
             segments.push(Segment::Index(index.trim().parse().ok()?));
             rest = tail;
-        } else if let Some(after) = rest.strip_prefix('.') {
+        } else {
+            let after = rest.strip_prefix('.')?;
             let end = after.find(['.', '[']).unwrap_or(after.len());
             if end > 0 {
                 segments.push(Segment::Member(after[..end].to_owned()));
             }
             rest = &after[end..];
-        } else {
-            return None;
         }
     }
     Some(segments)
@@ -195,7 +194,7 @@ impl ValueDoc {
 
     /// The value of `key` in `kind`'s section.
     pub fn get(&self, kind: Kind, key: &str) -> Option<Json> {
-        self.root().get(kind.section())?.get(&key.to_ascii_lowercase()).cloned()
+        self.root().get(kind.section())?.get(key.to_ascii_lowercase()).cloned()
     }
 
     /// Set `key` in `kind`'s section.
@@ -217,7 +216,7 @@ impl ValueDoc {
 
     /// `key`'s list in `kind`'s list section, if any.
     pub fn list(&self, kind: Kind, key: &str) -> Option<Vec<Json>> {
-        self.root().get(kind.list_section())?.get(&key.to_ascii_lowercase())?.as_array().cloned()
+        self.root().get(kind.list_section())?.get(key.to_ascii_lowercase())?.as_array().cloned()
     }
 
     /// Edit `key`'s list, creating it; the edit returns whether it changed the list. An emptied list is

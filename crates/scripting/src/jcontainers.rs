@@ -664,15 +664,14 @@ fn parse_path(path: &str) -> Option<Vec<PathElement>> {
             let (inner, tail) = after.split_once(']')?;
             elements.push(PathElement::Bracket(inner.to_owned()));
             rest = tail;
-        } else if let Some(after) = rest.strip_prefix('.') {
+        } else {
+            let after = rest.strip_prefix('.')?;
             let end = after.find(['.', '[']).unwrap_or(after.len());
             if end == 0 {
                 return None;
             }
             elements.push(PathElement::Member(after[..end].to_owned()));
             rest = &after[end..];
-        } else {
-            return None;
         }
     }
     Some(elements)
