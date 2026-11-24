@@ -42,6 +42,7 @@ mod ownership_crime;
 mod quest;
 mod reference;
 mod scanning;
+mod skse_util;
 
 pub(super) use collections::{layer_native, LayerNative, COLLECTION_NATIVES};
 

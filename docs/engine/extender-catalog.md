@@ -127,8 +127,8 @@ call set per family. The preflight reports those calls that are not covered.
 
 | Family | Functions | Dated by a changelog or wiki | VM | SDK | Served |
 |---|---|---|---|---|---|
-| SKSE64 | 804 | 67 | 20 | 21 | 31 |
-| F4SE | 227 | 13 | 6 | 3 | 9 |
+| SKSE64 | 804 | 67 | 50 | 21 | 61 |
+| F4SE | 227 | 13 | 14 | 3 | 17 |
 | xNVSE | 565 | 50 | 0 | 4 | 4 |
 | JIP LN | 733 | 0 | 0 | 0 | 0 |
 | JohnnyGuitar | 142 | 31 | 0 | 0 | 0 |
@@ -174,7 +174,7 @@ call set per family. The preflight reports those calls that are not covered.
 
   ```
     extender catalog (LMC-SCR-005): 0 method call(s) on receivers of a type no table names
-      skse64: 12 function(s) called, 3 served, 9 not — StringUtil.Split (1.7.3), …
+      skse64: 12 function(s) called, 3 served, 9 not — Form.GetName (1.1.0), …
   ```
 
   The JSON carries every call as `catalog_calls`, with `unresolved_receivers`.
@@ -220,8 +220,8 @@ conservative choice: mods read 0 as "no extender", never as a newer one.
 **The preflight** prints the answer under each family's line, and the JSON carries it as `probe_answers`:
 
 ```
-    skse64: 2 function(s) called, 1 served, 1 not — StringUtil.Split (1.7.3)
-      probes answer absent, capped by StringUtil.Split (1.7.3)
+    skse64: 2 function(s) called, 1 served, 1 not — Form.GetName (1.1.0)
+      probes answer absent, capped by Form.GetName (1.1.0)
 ```
 
 **At run time** (Skyrim and Fallout 4 sessions):
@@ -245,3 +245,32 @@ conservative choice: mods read 0 as "no extender", never as a newer one.
   (`mcm-host.md` §6.9). The preflight reports their levels already.
 - A level below the oldest documented release answers release 0, so most of SKSE64's 2.0.x range reads as "absent" to
   a mod that checks the release alone.
+
+## 8. Catalog growth: the pure SKSE / F4SE natives (2026-11-24)
+
+The first functions served past the probes are the ones that need nothing from the world, and almost every SKSE
+mod calls them: 30 SKSE64 functions and 8 F4SE ones, all from each family's first release, so an unserved one
+caps a mod at "absent" (§7). They run in `fragment/vm/natives/skse_util.rs`.
+
+| Script | Functions |
+|---|---|
+| `StringUtil` (SKSE64) | `GetLength`, `GetNthChar`, `IsLetter`, `IsDigit`, `IsPunctuation`, `IsPrintable`, `AsOrd`, `AsChar`, `Find`, `Substring`, `Split` |
+| `Math` (SKSE64, F4SE) | `LeftShift`, `RightShift`, `LogicalAnd`, `LogicalOr`, `LogicalXor`, `LogicalNot`, `Log`; F4SE's `Exp` |
+| `Utility` (SKSE64) | `Create{Bool,Int,Float,String,Form,Alias}Array`, `Resize{…}Array` |
+
+**Behaviour** is the extenders' own native implementations at the pinned commits (SKSE64's
+`PapyrusStringUtil.cpp`, `PapyrusMath.cpp`, `PapyrusUtility.cpp`; F4SE's `PapyrusMath.cpp`), read for behaviour
+only, and pinned by `skse_util`'s tests:
+
+- SKSE's strings are C byte strings; the engine's are Unicode decoded from the game's single-byte code page, so one
+  character here is one byte there. The character classes are the C locale's: ASCII only.
+- Index and size parameters are `UInt32`, so a negative Papyrus `Int` wraps: a negative start finds nothing, a
+  negative `Substring` length reads to the end, a negative shift gives 0.
+- `Find` and `Split` ignore ASCII case. `Split`'s delimiter is a set of characters, and empty tokens are dropped.
+- `AsOrd` is MSVC's signed `char`: a byte past 127 is negative. A character no single byte holds has no answer, and
+  the call stops with that reason.
+- The array functions are bounded as `new` is (`MAX_SCRIPT_ARRAY_ELEMENTS`); SKSE has no bound, and a negative size
+  would wrap to billions, so a size past the bound stops the call.
+
+**Next** are the functions that read the world: `Form` names, types, weights and keywords, `Form`'s key, menu and
+mod-event registrations, `Input`'s key state, `Utility.GetINI*`, and `Actor`'s equipment.

@@ -8110,3 +8110,32 @@ fn skse_version_probes_answer_the_calling_mods_level() {
     assert_eq!(probe_answer_for(&world, "skse64", "SomeoneElse").level, None);
     assert_eq!(probe_answer_for(&world, "f4se", "QF_VmProbe").level, None);
 }
+
+/// LMC-SCR-004 catalog growth: SKSE's `StringUtil`, `Math` bit operations and `Utility` arrays run in the VM as a
+/// mod script writes them (a settings string split into its parts, flags tested, an array built and grown).
+#[test]
+fn skse_string_math_and_array_natives_run_in_the_vm() {
+    let script = parsed_source(
+        "ScriptName QF_VmSkseUtil extends Quest\n\
+         Int Property Results Auto\n\
+         Function Fragment_1()\n\
+           String[] parts = StringUtil.Split(\"Iron;Steel;;Ebony\", \";\")\n\
+           If parts.Length == 3 && parts[2] == \"Ebony\"\n Results += 1\n EndIf\n\
+           If StringUtil.Find(parts[1], \"EEL\") == 2 && StringUtil.Substring(parts[0], 1, 2) == \"ro\"\n Results += 10\n EndIf\n\
+           Int flags = Math.LogicalOr(Math.LeftShift(1, 3), 1)\n\
+           If Math.LogicalAnd(flags, 8) != 0 && flags == 9\n Results += 100\n EndIf\n\
+           Int[] counts = Utility.CreateIntArray(2, 7)\n\
+           counts = Utility.ResizeIntArray(counts, 4)\n\
+           If counts.Length == 4 && counts[1] == 7 && counts[3] == 0\n Results += 1000\n EndIf\n\
+           If StringUtil.GetLength(StringUtil.AsChar(65)) == 1 && StringUtil.IsDigit(\"4\")\n Results += 10000\n EndIf\n\
+         EndFunction\n",
+    );
+    if let Err(why) = crate::fragment::vm::checker::check_function_reason(Arc::clone(&script), "Fragment_1", None) {
+        panic!("{why}")
+    }
+    let mut world = world_with_fragment(script);
+    world.insert_resource(crate::QuestScriptVariables::default());
+    world.resource_mut::<QuestStageState>().set_stage(Q, 10);
+    crate::fragment::quest_fragment_dispatch_system(&world);
+    assert_eq!(quest_property(&world, "Results"), Some(11_111.0));
+}

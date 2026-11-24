@@ -68,6 +68,10 @@ impl Vm<'_> {
         if class == "skse" || class == "f4se" {
             return self.read_extender_probe(frame, class, name, args);
         }
+        // SKSE's pure natives: `StringUtil`, `Math`'s bit operations, `Utility`'s arrays.
+        if super::skse_util::is_skse_util(class, name) {
+            return self.read_skse_util(frame, class, name, args);
+        }
         Ok(match (class, name) {
             ("game", "getplayer") => Some(Value::Form(PLAYER_REF)),
             // CK *ShakeCamera - Game*: shakes the camera "from the specified
@@ -275,6 +279,9 @@ impl Checker<'_> {
         }
         if super::jcontainers::CLASSES.contains(&class) {
             return self.check_jcontainers(class, name);
+        }
+        if class == "stringutil" || super::skse_util::is_skse_util(class, name) {
+            return self.check_skse_util(class, name, arg_kinds.len());
         }
         if class == "game" && name == "getplayer" {
             return Some(Kind::Player);

@@ -183,6 +183,7 @@ pub(crate) const SOURCES: &str = concat!(
     include_str!("fragment/vm/natives/quest.rs"),
     include_str!("fragment/vm/natives/reference.rs"),
     include_str!("fragment/vm/natives/scanning.rs"),
+    include_str!("fragment/vm/natives/skse_util.rs"),
 );
 
 #[cfg(test)]

@@ -304,12 +304,12 @@ pub(super) fn script_member_type(script: &Script, name: &str) -> Option<Type> {
 
 /// `Game` / `Utility` / `Debug` / `Math` — the global-function classes, with the engine's own (`McmHost`,
 /// `McmHelper`), the engine-served PapyrusUtil `JsonUtil` / `StorageUtil` (its file functions) and the extenders'
-/// version probes (`SKSE`, `F4SE`).
+/// version probes (`SKSE`, `F4SE`) and its `StringUtil`.
 pub(super) fn static_class(e: &Expr) -> Option<&str> {
     let Expr::Ident(name) = e else {
         return None;
     };
-    ["game", "utility", "debug", "math", "weather", "mcmhost", "mcmhelper", "jsonutil", "storageutil", "skse", "f4se"]
+    ["game", "utility", "debug", "math", "weather", "mcmhost", "mcmhelper", "jsonutil", "storageutil", "skse", "f4se", "stringutil"]
         .into_iter()
         .chain(super::natives::JC_CLASSES.iter().copied())
         .find(|class| name.0.eq_ignore_ascii_case(class))
