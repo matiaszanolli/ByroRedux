@@ -96,10 +96,13 @@ pub(crate) fn capture_effect_shader_data(shader: &BSEffectShaderProperty) -> BsE
 /// MultiLayerParallax (11) for the inner layer and its environment
 /// strength (also `include/ray_hit.glsl`), ParallaxOcc (7) through the
 /// POM path (passes / scale), and EnvironmentMap (1) through the
-/// explicit-environment gate. EyeEnvmap (16) and MultiLayerParallax's
-/// `refraction_scale` are packed into the GPU material but not yet
-/// shaded (#5961). The purpose of this function is to ensure no
-/// variant is silently discarded at the import boundary.
+/// explicit-environment gate. EyeEnvmap (16) shades through the
+/// iris-centred authored-cubemap branch (`isEyeEnvmap`, its fields packed
+/// by `pack_eye_fields` in `byroredux/src/render/static_meshes.rs`), and
+/// MultiLayerParallax's `refraction_scale` offsets the inner layer's UV
+/// (`MLP_REFRACTION_UV_PER_UNIT`); both since #5961. The purpose of this
+/// function is to ensure no variant is silently discarded at the import
+/// boundary.
 pub(crate) fn apply_shader_type_data(info: &mut MaterialInfo, data: &ShaderTypeData) {
     // Env-map scale lives on its own field for backwards compatibility with
     // pre-#343 readers; the other variants copy through `ShaderTypeFields`.

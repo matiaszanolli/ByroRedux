@@ -398,10 +398,20 @@ fn improve_item(world: &World, player: EntityId, recipe: &Recipe, enchanted: boo
         // One copy out of a stack: split it off as its own improved row.
         (false, _) => {
             let id = pooled(world, &|pool| Some(pool.allocate(ItemInstance { quality: plan.to })))?;
-            if let Some(mut inventories) = world.query_mut::<Inventory>() {
+            let left = if let Some(mut inventories) = world.query_mut::<Inventory>() {
                 let inventory = inventories.get_mut(player).ok_or("no inventory")?;
                 inventory.items[plan.stack].count -= 1;
                 inventory.push(ItemStack { base_form_id: recipe.output, count: 1, instance: Some(id) });
+                Some(inventory.items[plan.stack].count)
+            } else {
+                None
+            };
+            // #7405 — the split copy leaves the stack: a stack held in both hands that is down to one keeps one hand.
+            if let Some(left) = left
+                && let Some(mut equipment) = world.query_mut::<byroredux_core::ecs::components::EquipmentSlots>()
+                && let Some(slots) = equipment.get_mut(player)
+            {
+                slots.settle_hands_for_count(InventoryIndex(plan.stack as u32), left);
             }
         }
     }
@@ -821,6 +831,25 @@ mod tests {
         assert!(recipes_at(&world, wheel)[0].name.contains("no better quality"), "both swords are at the best quality now");
         assert!(craft(&world, TEMPER, wheel).is_err());
         assert_eq!(world.get::<Inventory>(player).unwrap().count_of(STEEL_INGOT), 1);
+    }
+
+    /// #7405 — improving one of two swords held one in each hand splits it off the stack, which leaves one plain
+    /// sword: it stays in the right hand and the left hand is empty, not the one sword in both.
+    #[test]
+    fn improving_one_of_two_dual_wielded_swords_leaves_the_plain_one_in_one_hand() {
+        use byroredux_core::ecs::components::{EquipmentSlots, InventoryIndex};
+        let (mut world, player, wheel) = tempering_world(45.0, false);
+        world.register::<EquipmentSlots>();
+        let row = world.get::<Inventory>(player).unwrap().items.iter().position(|s| s.base_form_id == STEEL_SWORD).unwrap();
+        let mut slots = EquipmentSlots::default();
+        slots.equip_weapon(InventoryIndex(row as u32));
+        slots.equip_left_hand(InventoryIndex(row as u32));
+        world.insert(player, slots);
+
+        craft(&world, TEMPER, wheel).unwrap();
+        assert_eq!(world.get::<Inventory>(player).unwrap().items[row].count, 1, "the plain stack is down to one");
+        let slots = world.get::<EquipmentSlots>(player).unwrap();
+        assert_eq!((slots.weapon, slots.left_hand), (Some(InventoryIndex(row as u32)), None));
     }
 
     /// Too little Smithing improves nothing; an enchanted item needs Arcane Blacksmith, whose absence hides the

@@ -423,6 +423,19 @@ impl EquipmentSlots {
         }
         released
     }
+
+    /// #7405 — a row in both hands whose count has dropped to `count` keeps only the right hand once it holds fewer
+    /// than two. The hand rules let one row sit in [`weapon`](Self::weapon) and [`left_hand`](Self::left_hand) only
+    /// while it holds two or more (one item cannot be in both hands), so a removal that leaves one must not leave it
+    /// in both. The right hand is kept because it carries the wielded-weapon cache. Returns whether the left hand
+    /// was released.
+    pub fn settle_hands_for_count(&mut self, idx: InventoryIndex, count: u32) -> bool {
+        if count < 2 && self.weapon == Some(idx) && self.left_hand == Some(idx) {
+            self.left_hand = None;
+            return true;
+        }
+        false
+    }
 }
 
 impl Component for EquipmentSlots {

@@ -1258,20 +1258,27 @@ impl<'a> EsmReader<'a> {
     pub fn skip_group(&mut self, header: &GroupHeader) {
         let end = self.pos + self.group_content_len(header);
         if self.opaque.is_some() {
-            self.note_skipped_content(end);
+            self.note_skipped_content(end, 0);
         }
         self.pos = end;
     }
 
     /// Note every record under the skipped group content up to `end` as opaque (LMC-REC-010). The records are read
     /// without the record-type trace: nobody consumes them, so they are not forms the fold carried.
-    fn note_skipped_content(&mut self, end: usize) {
+    ///
+    /// #7404 — the descent honours [`MAX_GRUP_NESTING_DEPTH`] like every other self-recursive GRUP walker (#3237,
+    /// #3503): a crafted plugin of nested empty GRUPs otherwise recursed once per 24 bytes and overflowed the stack.
+    /// `depth` counts from the skipped group, since `skip_group` is not told its caller's depth; the stack stays
+    /// bounded by the caller's cap plus this one. A group past the cap is skipped, its records not noted.
+    fn note_skipped_content(&mut self, end: usize, depth: u32) {
         let trace = self.record_type_trace.take();
         while self.pos < end.min(self.data.len()) {
             if self.is_group() {
                 let Ok(group) = self.read_group_header() else { break };
-                let group_end = (self.pos + self.group_content_len(&group)).min(end);
-                self.note_skipped_content(group_end);
+                let Some(group_end) = self.bounded_group_content_end(&group, depth, end, "opaque collector") else {
+                    continue;
+                };
+                self.note_skipped_content(group_end, depth + 1);
                 self.pos = group_end;
             } else {
                 let Ok(header) = self.read_record_header() else { break };

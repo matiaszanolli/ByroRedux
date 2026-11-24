@@ -316,6 +316,21 @@ mod supplemental_lane_guard {
             );
         }
     }
+
+    /// #7408 — the same two halves for the Skyrim shader-type fields #5961 shaded: the eye-envmap centres and scale
+    /// and the multi-layer-parallax refraction scale are read by a shader, and the import boundary's doc
+    /// (`apply_shader_type_data`) no longer calls them packed but unshaded.
+    #[test]
+    fn the_eye_envmap_and_mlp_refraction_fields_are_shaded_and_the_import_doc_says_so() {
+        for field in ["eyeCubemapScale", "eyeLeftCenterX", "eyeRightCenterX", "multiLayerRefractionScale"] {
+            assert!(!sampling_sites(field).is_empty(), "`mat.{field}` is no longer read by any GLSL source (#5961)");
+        }
+        const SHADER_DATA_RS: &str = include_str!("../../../nif/src/import/material/shader_data.rs");
+        assert!(
+            !SHADER_DATA_RS.contains("shaded (#5961)"),
+            "the import boundary's doc still says EyeEnvmap / refraction_scale are unshaded (#7408)"
+        );
+    }
 }
 
 /// Regression guard for `GpuMaterial` GLSL field names —

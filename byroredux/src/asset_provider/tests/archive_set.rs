@@ -161,23 +161,39 @@ fn archives_store_their_keys_normalized() {
 
 /// Real data (ignored): across every archive of each installed game's main pools, in the order the engine lists them, the
 /// index agrees with the scan for every entry and for spellings of it. Reports the pool sizes.
+///
+/// #7409 — each pool is opened through the production path (`open_with_numeric_siblings`), so a zero-based series pulls
+/// its siblings in boot order (Skyrim SE's `Textures0` brings `Textures1`..`Textures8`, the series the index exists
+/// for), and a listed archive that is missing from an installed game fails instead of being dropped: the SE leg used
+/// to name `Dawnguard.bsa` / `Update.bsa`, which SE does not ship, and silently checked three archives.
 #[test]
 #[ignore = "needs game archives on disk"]
 fn the_index_agrees_with_the_scan_on_real_archives() {
     use byroredux_plugin::esm::test_paths::{fnv_data_dir, fo4_data_dir, skyrim_se_data_dir};
     let pools: [(&str, std::path::PathBuf, &[&str]); 3] = [
         ("FNV", fnv_data_dir(), &["Fallout - Meshes.bsa", "Fallout - Textures.bsa", "Fallout - Textures2.bsa", "DeadMoney - Main.bsa"]),
-        ("Skyrim SE", skyrim_se_data_dir(), &["Skyrim - Meshes0.bsa", "Skyrim - Meshes1.bsa", "Skyrim - Textures0.bsa", "Dawnguard.bsa", "Update.bsa"]),
+        (
+            "Skyrim SE",
+            skyrim_se_data_dir(),
+            &["Skyrim - Meshes0.bsa", "Skyrim - Textures0.bsa", "Skyrim - Animations.bsa", "Skyrim - Misc.bsa", "Skyrim - Sounds.bsa"],
+        ),
         ("FO4", fo4_data_dir(), &["Fallout4 - Meshes.ba2", "Fallout4 - MeshesExtra.ba2", "DLCRobot - Main.ba2", "DLCCoast - Main.ba2"]),
     ];
     let mut checked_any = false;
     for (game, dir, names) in pools {
-        let archives: Vec<Archive> = names.iter().filter_map(|name| Archive::open(&dir.join(name).to_string_lossy()).ok()).collect();
-        if archives.len() < 2 {
+        let present: Vec<std::path::PathBuf> = names.iter().map(|name| dir.join(name)).filter(|path| path.is_file()).collect();
+        if present.is_empty() {
             continue;
         }
+        assert_eq!(present.len(), names.len(), "{game}: a listed archive is missing from the install: {names:?}");
         checked_any = true;
-        let pool = ArchiveSet::from(archives.clone());
+        let mut pool = ArchiveSet::new();
+        let mut opened = std::collections::HashSet::new();
+        for path in &present {
+            open_with_numeric_siblings(&path.to_string_lossy(), game, &mut pool, &mut opened);
+        }
+        let archives: Vec<Archive> = pool.to_vec();
+        assert!(archives.len() >= names.len(), "{game}: every listed archive opened");
         let mut checked = 0usize;
         for archive in &archives {
             for key in archive.all_paths() {

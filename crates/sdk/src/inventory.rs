@@ -122,6 +122,8 @@ impl InventoryEntry {
         self.biped_slots
     }
 
+    /// Whether the item is held in a hand: the right hand's weapon, or what the left hand holds besides a shield
+    /// (a weapon or a torch). A shield, like armor, is reported through [`Self::biped_slots`].
     pub const fn weapon_equipped(&self) -> bool {
         self.weapon_equipped
     }
